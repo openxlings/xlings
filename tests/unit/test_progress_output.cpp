@@ -41,6 +41,9 @@ TEST(ProgressOutput, AgentRedirectionAndCliModeDisableTtyRewrite) {
 // all until the download finished -- a multi-minute silence that reads as a
 // hang. The two questions are answered by two predicates.
 TEST(ProgressOutput, NoColorSuppressesColourButNotProgress) {
+    const auto* previous_term = std::getenv("TERM");
+    const std::string saved_term = previous_term ? previous_term : "";
+    xlings::platform::set_env_variable("TERM", "xterm-256color");
     const auto* previous = std::getenv("NO_COLOR");
     const std::string saved = previous ? previous : "";
 
@@ -63,9 +66,8 @@ TEST(ProgressOutput, NoColorSuppressesColourButNotProgress) {
     EXPECT_TRUE(xlings::palette::opted_out_());
     xlings::palette::set_plain(false);
 
-    if (!saved.empty()) {
-        xlings::platform::set_env_variable("NO_COLOR", saved);
-    }
+    xlings::platform::set_env_variable("NO_COLOR", saved);
+    xlings::platform::set_env_variable("TERM", saved_term);
 }
 
 TEST(ProgressOutput, RedirectedRenderingHasNoControlBytes) {

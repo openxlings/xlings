@@ -256,3 +256,7 @@ xlings remove gcc --subos probe    # 只卸载 probe 这个 SubOS 里的 gcc
 - 版本切换仅影响当前 SubOS 环境（或宿主环境）
 - 卸载某版本时，若其他环境仍在引用，物理文件不会被删除
 - 使用 `xlings list` 确认当前环境的活跃版本
+- 包能否在你的平台上安装，取决于**配方**而不是 xlings：只有当配方逐架构列出了自己的产物、
+  而其中没有你的架构时，`xlings install` 才会拒绝；配方只提供单一产物时照常安装，并提示
+  该配方无法确认你的架构。目前 Linux x86_64 覆盖最完整，aarch64 / macOS / Windows 上
+  不少配方只发布了部分架构的产物。

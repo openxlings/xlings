@@ -1,0 +1,32 @@
+# The test library, as its own package (design §24.3).
+#
+# What every end-to-end test needs and every test used to write for itself:
+# find the binary under test, give it a home that is not the developer's, run
+# it with an environment the test chose rather than one it inherited, and
+# say why a test did not run. `tests/unit/test_interface_protocol.cpp` and the
+# 161 shell scripts each carry their own copy of those four things, and the
+# copies disagree -- one inherits XLINGS_ACTIVE_SUBOS from whoever runs it,
+# which is how a developer inside a subos sees a failure CI never does.
+#
+# Linked by tests only (`[dev-dependencies]` of the root). It depends on the
+# JSON and generic platform modules, without the product adapters: tests drive the product through the
+# binary, the same way a user does, so a test cannot reach around the
+# interface it is checking.
+#
+# gtest is NOT a dependency of the module. The `XTEST` macro and the result
+# listener live in `include/xlings/xtest.hpp`, because a macro cannot be
+# exported from a module and a listener must be registered by the test binary.
+[package]
+namespace = "xlings"
+name      = "testkit"
+version   = "0.1.0"
+
+[targets.testkit]
+kind = "lib"
+
+[dependencies]
+libs = { path = "../libs" }
+platform = { path = "../platform" }
+
+[build]
+include_dirs = ["../libs/src/json"]

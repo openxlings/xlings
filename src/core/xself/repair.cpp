@@ -16,11 +16,7 @@ bool is_shell_safe_token(std::string_view s) {
 }
 
 std::string quiet_suffix() {
-#if defined(_WIN32)
-    return " >NUL 2>&1";
-#else
-    return " >/dev/null 2>&1";
-#endif
+    return std::format(" >{} 2>&1", platform::null_device);
 }
 
 bool probe_reinstallable(const std::string& target, const std::string& version, const CommandRunner& run, const std::string& client) {

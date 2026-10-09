@@ -336,3 +336,30 @@ TEST(ShimAnchorOwner, NestedHomePathsAreNotReRootedByTheOuterSubos) {
     EXPECT_EQ(xlings::xvm::normalize_subos_paths(baked, inner.string(), innerActive),
               "--sysroot=" + innerActive);
 }
+
+// Deployment S (design part 2 §2.1): the home's entry is a link to a system
+// package's binary outside every home. A shim's owner is where the SHIM is,
+// not where its link chain ends -- resolving the chain anchored every shim of
+// such a home to nothing.
+TEST(ShimAnchorOwner, AShimOfAHomeWhoseEntryIsASystemBinaryAnchorsToThatHome) {
+    if constexpr (xlings::platform::is_windows) GTEST_SKIP() << "symlinked entries are POSIX";
+    TempDir tmp;
+    auto home = tmp.path / "home";
+    auto bin = make_home(home);
+    auto system = tmp.path / "usr" / "bin" / kXlingsBin;
+    touch(system);
+    fs::remove(home / "bin" / kXlingsBin);
+    fs::create_symlink(system, home / "bin" / kXlingsBin);
+    fs::create_symlink(fs::path("..") / ".." / ".." / "bin" / kXlingsBin, bin / "gcc");
+    auto owner = xlings::xvm::resolve_owner_home(bin / "gcc");
+    ASSERT_TRUE(owner.has_value());
+    EXPECT_EQ(fs::weakly_canonical(*owner), fs::weakly_canonical(home));
+
+    // A link from outside every home to that shim still reaches the home.
+    auto outside = tmp.path / "elsewhere" / "gcc";
+    fs::create_directories(outside.parent_path());
+    fs::create_symlink(bin / "gcc", outside);
+    owner = xlings::xvm::resolve_owner_home(outside);
+    ASSERT_TRUE(owner.has_value());
+    EXPECT_EQ(fs::weakly_canonical(*owner), fs::weakly_canonical(home));
+}

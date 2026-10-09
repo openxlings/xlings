@@ -9,6 +9,12 @@ on:
   pull_request:
     branches: [main, master, 'release/**']
 
+# A newer push to the same PR supersedes the run in flight; main and release
+# branches keep every run (each one is a commit that landed).
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 env:
   GIT_TERMINAL_PROMPT: 0
   # CI runs on github.com; force GLOBAL mirror so xim doesn't try gitee
@@ -23,12 +29,14 @@ env:
   # so treat that variable as documentation, not as a lock, until it is
   # either honoured everywhere or removed.
   BOOTSTRAP_XLINGS_VERSION: v2026.8.27.5
-  # Must contain the mcpp version pinned in .xlings.json (2026.9.28.3).
-  XIM_PKGINDEX_REF: 7b9bf4368663f50eb3e736a41009d0eaf2051180
+  # Must contain the mcpp version pinned in .xlings.json (2026.10.5.3).
+  XIM_PKGINDEX_REF: ebf1fbb3417ec513b923279044433887b3af8850
 
 jobs:
   build-and-test:
     runs-on: ubuntu-24.04
+    outputs:
+      release_ready: ${{ steps.candidate.outcome == 'success' }}
 
     steps:
       - name: Checkout
@@ -40,11 +48,17 @@ jobs:
       - name: fresh-install must track the published latest
         run: bash tests/fresh-install/no_xlings_version_pin_check.sh
 
-      # A subos home is user data; one function deletes a whole subos, and
-      # only with the user's confirmation. This fails any other remove_all on
-      # a subos path. Milliseconds, no build.
-      - name: subos directories are deleted in one place
-        run: bash tools/lint_subos_remove_all.sh
+      # Repository rules, every tools/lint_*.sh: a subos is deleted in one
+      # place (user data); system headers only in modules/platform; platform
+      # selection is `if constexpr`; package layers import downward only.
+      # Milliseconds, no build. A new lint joins by being a tools/lint_*.sh.
+      - name: repository lints (tools/lint_*.sh)
+        run: |
+          rc=0
+          for lint in tools/lint_*.sh; do
+            echo "::group::$lint"; bash "$lint" || rc=1; echo "::endgroup::"
+          done
+          exit $rc
 
       # ── Phase 1: Configure Environment via xlings ─────────────────
 
@@ -285,6 +299,19 @@ jobs:
 
       # ── Phase 1.5: Unit Tests ────────────────────────────────────
 
+      # The capabilities this lane promises (tests/README.md). A test that
+      # needs one of them and finds it missing FAILS here instead of skipping:
+      # an isolation test that quietly skips on the one machine that runs it is
+      # F13 in the SubOS design. GitHub's ubuntu-24.04 image restricts
+      # unprivileged user namespaces through AppArmor; the lane lifts that for
+      # itself -- what a user does about it is `xlings self doctor --isolation`.
+      - name: Lane capabilities (user namespaces, bwrap)
+        run: |
+          sudo apt-get install -y -qq bubblewrap passt
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+          echo "XDEV_LANE=linux-unit" >> "$GITHUB_ENV"
+          echo "XDEV_LANE_CAPS=linux,posix,pty,xlings-bin,userns,bwrap,sandbox,pasta,landlock,network" >> "$GITHUB_ENV"
+
       - name: Build and run unit tests
         run: |
           # `mcpp build` can transiently fail with "dependency '...': index
@@ -296,26 +323,37 @@ jobs:
             echo "::warning::mcpp build failed (likely stale index entry); retrying after auto-refresh"
             mcpp build
           }
-          mcpp test || {
-            status=$?
-            echo "::group::mcpp build diagnostics"
-
-            ninja_bin="$(command -v ninja || true)"
-            if [[ -z "$ninja_bin" ]]; then
-              ninja_bin="$(find "$HOME/.mcpp" "$XLINGS_HOME" -name ninja -type f -perm -111 2>/dev/null | head -1 || true)"
-            fi
-            if [[ -z "$ninja_bin" ]]; then
-              echo "ninja not found"
-            else
-              while IFS= read -r build_file; do
-                build_dir="$(dirname "$build_file")"
-                echo "\$ $ninja_bin -C $build_dir -v"
-                "$ninja_bin" -C "$build_dir" -v || true
-              done < <(find target -name build.ninja -type f | sort)
-            fi
-            echo "::endgroup::"
-            exit "$status"
-          }
+          # xdev runs `mcpp test` and renders the report; the step summary is
+          # rendered once, by the report job, from every lane. Built static
+          # (musl) so the e2e and report jobs can run this same binary: a glibc
+          # dev build's loader lives in this runner's mcpp registry.
+          mcpp build -p xdev --target x86_64-linux-musl
+          # A member's binary lands under the root's target/ or the member's
+          # own, depending on the mcpp version.
+          xdev="$(find target apps/xdev -path '*musl*' -name xdev -type f -perm -111 2>/dev/null | head -1)"
+          [[ -n "$xdev" ]] || { echo "::error::mcpp build -p xdev produced no xdev"; find . -name 'xdev*' -not -path './.git/*' | head; exit 1; }
+          # linux_release.sh cleans the musl target; retain the static runner
+          # outside that tree for candidate acceptance and downstream lanes.
+          mkdir -p target/xdev/runner/bin
+          cp "$xdev" target/xdev/runner/bin/xdev
+          xdev="$GITHUB_WORKSPACE/target/xdev/runner/bin/xdev"
+          echo "XDEV=$xdev" >> "$GITHUB_ENV"
+          export XDEV_BIN="$xdev"
+          mkdir -p target/xdev/linux-xdev
+          printf '%s\n' '{"name":"linux-xdev","platform":"linux","probes":{}}' > target/xdev/linux-xdev/lane.json
+          XTEST_META_OUT="$GITHUB_WORKSPACE/target/xdev/linux-xdev/meta.ndjson" \
+          XTEST_RESULTS_OUT="$GITHUB_WORKSPACE/target/xdev/linux-xdev/cases.ndjson" \
+            mcpp test -p xdev
+          mcpp test --no-run --message-format json
+          "$xdev" test --no-build --out target/xdev/linux-unit
+          # Retain only the already-built candidate acceptance programs.
+          for test in e2e/test_domain_source e2e/test_domain_producer e2e/test_subos_perf unit/test_root_generation_perf; do
+            binary="$(find target -type f -path "*/bin/$test" | head -1)"
+            test -x "$binary"
+            destination="target/xdev/retained/bin/$test"
+            mkdir -p "$(dirname "$destination")"
+            cp -p "$binary" "$destination"
+          done
 
       # A separate step, `if: failure()`, and not an `|| { ... }` on one
       # command.
@@ -356,23 +394,40 @@ jobs:
           xlings --version 2>&1 | head -2 || true
 
       - name: Multiplatform contract scripts
+        env:
+          XDEV_LANE: linux-contracts
         run: |
-          bash tests/scripts/test_quick_install.sh
-          python3 tests/scripts/test_release_candidate_gate.py
-          python3 tests/scripts/test_index_pointer_history.py
-          python3 tests/scripts/test_version_consistency.py
-          python3 tests/scripts/test_windows_header_hygiene.py
-          python3 tests/scripts/test_selector_contrast.py
-          bin=$(find target -path '*/bin/xlings' -type f -perm -111 -exec ls -t {} + | head -1)
-          python3 tests/scripts/test_docs_examples.py --xlings "$bin"
-          python3 tests/scripts/test_generated_command_reference.py --xlings "$bin"
-          python3 tests/scripts/test_cli_spec_parity.py --xlings "$bin"
-          XLINGS_BIN="$bin" python3 tests/scripts/test_i18n_coverage.py
+          "$XDEV" test --no-mcpp --suite contract-scripts --out target/xdev/linux-contracts
+
+      # openkal beside this toolchain's runtimes (design part 3 §4.3): glibc,
+      # and the static musl target the release uses.
+      - name: openkal coexistence (OPENKAL-COEXIST)
+        run: |
+          cd tools/openkal-coexistence
+          for target in "" "--target x86_64-linux-musl"; do
+            mcpp build $target
+            bin="$(find target -path '*/bin/openkal-coexistence' -type f -newer mcpp.toml | xargs ls -t | head -1)"
+            out="$("$bin")"
+            echo "$out"
+            grep -qx 'libstdc++ says: hello' <<<"$out"
+            grep -qx 'openkal says: hello' <<<"$out"
+            grep -q '^kal_version=' <<<"$out"
+          done
+
+      # The same repository lints as the first step, through xdev this time,
+      # so what they cover (LAYOUT-DEPS ...) is evidence in the requirement
+      # report and not only a green step.
+      - name: Repository lints (requirement evidence)
+        env:
+          XDEV_LANE: linux-lint
+        run: |
+          "$XDEV" test --no-mcpp --suite lint --out target/xdev/linux-lint
 
       # ── Phase 2: Build via Release Script ───────────────────────
-      # NOTE: the E2E suite (E2E-00..E2E-28) moved to xlings-ci-linux-e2e.yml
-      # so it runs in parallel with this build+unit job. This job keeps the
-      # release build + artifact upload.
+      # The ONE release build of this commit on Linux x86_64. The e2e job
+      # below takes this artifact instead of building its own (it used to be a
+      # separate workflow with a second source build and a third release
+      # build of the same commit).
 
       - name: Build (linux_release)
         run: |
@@ -386,6 +441,7 @@ jobs:
           cp "$tarball" build/release.tar.gz
 
       - name: Candidate cold-home lifecycle
+        id: candidate
         run: |
           sha256sum build/release.tar.gz > build/release.tar.gz.sha256
           bash tests/candidate-install/smoke.sh \
@@ -396,9 +452,473 @@ jobs:
         if: success()
         with:
           name: xlings-linux-x86_64
-          path: build/release.tar.gz
+          path: |
+            build/release.tar.gz
+            build/xlings-*-linux-x86_64.tar.gz
+
+      - name: Static domain lifecycle, checked system source and image export
+        id: static_domain
+        continue-on-error: true
+        env:
+          XDEV_LANE: linux-static-domain
+        run: |
+          candidate="$(find "$GITHUB_WORKSPACE/build" -path '*/bin/xlings' -type f | head -1)"
+          test -x "$candidate"
+          export XLINGS_BIN="$candidate"
+          status=0
+          "$XDEV" test e2e/test_domain_source --no-build --require-metadata \
+            --out target/xdev/linux-static-domain || status=$?
+          "$XDEV" test e2e/test_domain_producer --no-build --require-metadata \
+            --out target/xdev/linux-static-domain-producer || status=$?
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          results = [json.loads(line) for directory in ('linux-static-domain', 'linux-static-domain-producer')
+                     for line in Path(f'target/xdev/{directory}/cases.ndjson').read_text().splitlines()]
+          for case in ('DomainSourceProducer.ReusesOnlyCheckedReadonlyBytesAndExportsAnOwnedImage',
+                       'RootExport.OwnsBorrowedClosureAndOmitsOtherScopeVersions',
+                       'DomainProducer.InstallsAtLogicalPrefixInsideANamespaceAndPreservesHostData'):
+              checked = [row for row in results if row.get('test') == case]
+              assert len(checked) == 1 and checked[0]['status'] == 'pass', f'{case} must actually pass'
+          PY
+          exit "$status"
+
+      - name: Static SubOS performance budgets
+        id: static_perf
+        continue-on-error: true
+        env:
+          XDEV_LANE: linux-static-perf
+        run: |
+          candidate="$(find "$GITHUB_WORKSPACE/build" -path '*/bin/xlings' -type f | head -1)"
+          test -x "$candidate"
+          export XLINGS_BIN="$candidate"
+          # Timing budgets are asserted here, where each case runs alone.
+          export XLINGS_PERF_BUDGETS=1
+          status=0
+          "$XDEV" test e2e/test_subos_perf --no-build --require-metadata \
+            --out target/xdev/linux-static-perf || status=$?
+          "$XDEV" test unit/test_root_generation_perf --no-build --require-metadata \
+            --out target/xdev/linux-static-generation-perf || status=$?
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          for directory, count in (('linux-static-perf', 4), ('linux-static-generation-perf', 3)):
+              results = [json.loads(line) for line in Path(f'target/xdev/{directory}/cases.ndjson').read_text().splitlines()]
+              assert len(results) == count and all(row['status'] == 'pass' for row in results), results
+          PY
+          exit "$status"
+
+      - name: Attach xdev and its runs
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: xdev-linux-build
+          path: |
+            ${{ env.XDEV }}
+            target/xdev/
+          if-no-files-found: ignore
+
+      - name: Require every static acceptance gate
+        if: always()
+        env:
+          CANDIDATE_OUTCOME: ${{ steps.candidate.outcome }}
+          DOMAIN_OUTCOME: ${{ steps.static_domain.outcome }}
+          PERF_OUTCOME: ${{ steps.static_perf.outcome }}
+        run: |
+          for outcome in "$CANDIDATE_OUTCOME" "$DOMAIN_OUTCOME" "$PERF_OUTCOME"; do
+            [[ "$outcome" == success ]] || { echo "::error::static acceptance is incomplete or failed"; exit 1; }
+          done
+
+  # The shell e2e suite, against the artifact built above.
+  e2e:
+    needs: build-and-test
+    if: ${{ !cancelled() && needs.build-and-test.outputs.release_ready == 'true' }}
+    runs-on: ubuntu-24.04
+    env:
+      XDEV_LANE: linux-e2e
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install system deps
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y curl git build-essential
+
+      - name: Fetch the release artifact and xdev
+        uses: actions/download-artifact@v4
+        with:
+          name: xlings-linux-x86_64
+          path: build
+
+      - name: Fetch xdev
+        uses: actions/download-artifact@v4
+        with:
+          name: xdev-linux-build
+          path: xdev-artifact
+
+      - name: Prepare fixture index repo
+        run: |
+          bash tests/e2e/prepare_fixture_index.sh
+
+      - name: Binary under test
+        run: |
+          mkdir -p build/extracted
+          tar -xzf build/release.tar.gz -C build/extracted
+          bin="$(find "$GITHUB_WORKSPACE/build/extracted" -path '*/bin/xlings' -type f | head -1)"
+          [[ -x "$bin" ]] || { echo "::error::no bin/xlings in the release artifact"; exit 1; }
+          echo "XLINGS_BIN=$bin" >> "$GITHUB_ENV"
+          xdev="$(find "$GITHUB_WORKSPACE/xdev-artifact" -name xdev -type f | head -1)"
+          chmod +x "$xdev"
+          echo "XDEV=$xdev" >> "$GITHUB_ENV"
+
+      - name: "E2E-01: Bootstrap Home (portable + installed)"
+        run: |
+          bash tests/e2e/bootstrap_home_test.sh
+
+      - name: "E2E suite (E2E-02..E2E-42, timed)"
+        run: |
+          "$XDEV" test --no-mcpp --suite e2e-shell --tarball build/release.tar.gz \
+            --out target/xdev/linux-e2e
+
+      - name: Attach the e2e run
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: xdev-linux-e2e
+          path: target/xdev/
+          if-no-files-found: ignore
+
+  # The root repair for AppArmor-restricted user namespaces, on a runner
+  # left exactly as the image ships it (#640's comment). It installs
+  # /usr/lib/xlings/bwrap and an AppArmor profile with sudo, which is why it
+  # has a runner of its own.
+  isolation-fix:
+    needs: build-and-test
+    if: ${{ !cancelled() && needs.build-and-test.outputs.release_ready == 'true' }}
+    runs-on: ubuntu-24.04
+    env:
+      XDEV_LANE: linux-isolation-fix
+      XDEV_LANE_CAPS: linux,xlings-bin,sudo,network
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Fetch the release artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: xlings-linux-x86_64
+          path: build
+
+      - name: Fetch xdev
+        uses: actions/download-artifact@v4
+        with:
+          name: xdev-linux-build
+          path: xdev-artifact
+
+      - name: Binary under test
+        run: |
+          mkdir -p build/extracted
+          tar -xzf build/release.tar.gz -C build/extracted
+          echo "XLINGS_BIN=$(find "$GITHUB_WORKSPACE/build/extracted" -path '*/bin/xlings' -type f | head -1)" >> "$GITHUB_ENV"
+          xdev="$(find "$GITHUB_WORKSPACE/xdev-artifact" -name xdev -type f | head -1)"
+          chmod +x "$xdev"
+          echo "XDEV=$xdev" >> "$GITHUB_ENV"
+
+      - name: self doctor --isolation --fix
+        run: |
+          "$XDEV" test --no-mcpp --suite isolation-fix --require-metadata --out target/xdev/linux-isolation-fix
+
+      - name: Attach the run
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: xdev-linux-isolation-fix
+          path: target/xdev/
+          if-no-files-found: ignore
+
+  # Deployment S as a distribution ships it (design part 2 §5): the AUR
+  # recipe built from THIS build's release artifact, installed with pacman,
+  # used by two users. Replaces xlings-ci-archlinux.yml, which ran only when
+  # config/aur changed and built a 0.4.14 download.
+  arch-package:
+    needs: build-and-test
+    if: ${{ !cancelled() && needs.build-and-test.outputs.release_ready == 'true' }}
+    runs-on: ubuntu-24.04
+    container:
+      image: archlinux:latest
+    env:
+      XDEV_LANE: linux-arch-package
+      XDEV_LANE_CAPS: linux,root,network
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Fetch the release artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: xlings-linux-x86_64
+          path: build
+
+      - name: Fetch xdev
+        uses: actions/download-artifact@v4
+        with:
+          name: xdev-linux-build
+          path: xdev-artifact
+
+      - name: Package, install, use
+        run: |
+          xdev="$(find "$GITHUB_WORKSPACE/xdev-artifact" -name xdev -type f | head -1)"
+          chmod +x "$xdev"
+          "$xdev" test --no-mcpp --suite aur --tarball build/release.tar.gz \
+            --out target/xdev/linux-arch-package
+
+      - name: Attach the run
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: xdev-linux-arch-package
+          path: target/xdev/
+          if-no-files-found: ignore
+
+  # The root projection (SubOS design part 2): Luban roots from the published
+  # editions -- entered in bwrap, exported to docker, booted under qemu with
+  # their own kernel -- against THIS build's release binary (static: an
+  # exported image's xlings runs with no host under it).
+  plan-distro:
+    needs: build-and-test
+    if: ${{ !cancelled() && needs.build-and-test.outputs.release_ready == 'true' }}
+    runs-on: ubuntu-24.04
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: xdev-linux-build
+          path: xdev-artifact
+      - name: Restore measured main-branch shard weights
+        uses: actions/cache/restore@v4
+        with:
+          path: target/xdev/history
+          key: xdev-history-v1-linux-${{ github.sha }}
+          restore-keys: xdev-history-v1-linux-
+      - name: Plan root scenarios with the local selector
+        id: plan
+        run: |
+          xdev="$(find "$GITHUB_WORKSPACE/xdev-artifact" -name xdev -type f | head -1)"
+          test -n "$xdev"
+          chmod +x "$xdev"
+          weights=()
+          if [[ -f target/xdev/history/timings.json ]]; then weights+=(--timings target/xdev/history/timings.json); fi
+          matrix="$("$xdev" ci plan --no-mcpp --suite distro --platform linux --lane main --shards 3 --require-metadata "${weights[@]}")"
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+
+  distro:
+    needs: [build-and-test, plan-distro]
+    if: ${{ !cancelled() && needs.build-and-test.outputs.release_ready == 'true' && needs.plan-distro.result == 'success' }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan-distro.outputs.matrix) }}
+    runs-on: ubuntu-24.04
+    env:
+      XDEV_LANE: linux-distro-${{ strategy.job-index }}
+      XDEV_LANE_CAPS: linux,xlings-bin,bwrap,userns,network,docker,qemu,sudo
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Fetch the release artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: xlings-linux-x86_64
+          path: build
+
+      - name: Fetch xdev
+        uses: actions/download-artifact@v4
+        with:
+          name: xdev-linux-build
+          path: xdev-artifact
+
+      - name: Lane capabilities (bwrap, qemu, kvm)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq bubblewrap qemu-system-x86 e2fsprogs
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+          # KVM when the runner has it: a boot in seconds instead of a minute.
+          if [[ -e /dev/kvm ]]; then sudo chmod 666 /dev/kvm; fi
+
+      - name: Binary under test
+        run: |
+          mkdir -p build/extracted
+          tar -xzf build/release.tar.gz -C build/extracted
+          echo "XLINGS_BIN=$(find "$GITHUB_WORKSPACE/build/extracted" -path '*/bin/xlings' -type f | head -1)" >> "$GITHUB_ENV"
+          xdev="$(find "$GITHUB_WORKSPACE/xdev-artifact" -name xdev -type f | head -1)"
+          chmod +x "$xdev"
+          echo "XDEV=$xdev" >> "$GITHUB_ENV"
+
+      - name: Roots, images, boots
+        run: |
+          "$XDEV" test --no-mcpp --suite distro --lane main --shard '${{ matrix.shard }}' \
+            --require-metadata --out target/xdev/linux-distro-${{ strategy.job-index }}
+
+      # The luban-tiny tarball the image scenario exported, for wsl --import.
+      - name: Attach the root tarball
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: luban-tiny-tar
+          path: /tmp/xlings-e2e-*/rootfs_image/tiny.tar.gz
+          if-no-files-found: ignore
+
+      - name: Attach the run
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: xdev-linux-distro-${{ strategy.job-index }}
+          path: target/xdev/
+          if-no-files-found: ignore
+
+  # EXPORT-WSL (design part 2 §13): the tarball a Linux build exported,
+  # imported by Windows. GitHub's Windows runners offer WSL1 only, through a
+  # third-party action; per the design's decision this lane REPORTS and does
+  # not block (a WSL1 failure says nothing about WSL2): a pass or a skip
+  # with the reason, in the same report as everything else.
+  wsl-import:
+    needs: distro
+    if: always()
+    runs-on: windows-2022
+    steps:
+      - name: Fetch the root tarball
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: luban-tiny-tar
+          path: root
+
+      - name: WSL
+        id: setup
+        continue-on-error: true
+        uses: Vampire/setup-wsl@v5
+        with:
+          distribution: Alpine
+          wsl-version: 1
+
+      - name: wsl --import, run
+        id: run
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $tar = Get-ChildItem -Recurse root -Filter tiny.tar.gz | Select-Object -First 1
+          if (-not $tar) { throw "no tarball from the distro job" }
+          New-Item -ItemType Directory -Force C:\luban | Out-Null
+          wsl --import luban C:\luban $tar.FullName --version 1
+          if ($LASTEXITCODE -ne 0) { throw "wsl --import failed" }
+          $out = wsl -d luban -- /bin/sh -c '. /etc/os-release; echo "os=$ID/$VARIANT_ID"; xlings --version'
+          $out
+          if (-not ($out -match "os=luban/tiny")) { throw "not luban tiny: $out" }
+          if (-not ($out -match "^xlings ")) { throw "no xlings: $out" }
+
+      - name: Record
+        if: always()
+        shell: pwsh
+        run: |
+          $dir = "target/xdev/windows-wsl"
+          New-Item -ItemType Directory -Force $dir | Out-Null
+          $name = "wsl: subos export --tar imports with wsl --import (WSL1)"
+          '{"name":"windows-wsl","platform":"windows","probes":{}}' | Set-Content "$dir/lane.json"
+          ('{"test":"' + $name + '","area":"scenario","covers":["EXPORT-WSL"],"requires":[],"proves":"flow"}') | Set-Content "$dir/meta.ndjson"
+          if ("${{ steps.run.outcome }}" -eq "success") { $st = "pass"; $msg = "" }
+          elseif ("${{ steps.setup.outcome }}" -ne "success") { $st = "skip"; $msg = "WSL1 could not be set up on this runner" }
+          else { $st = "skip"; $msg = "best effort on WSL1 (design part 2 §17.1): the import or the run failed; see the job log" }
+          ('{"test":"' + $name + '","status":"' + $st + '","ms":0,"message":"' + $msg + '"}') | Set-Content "$dir/scripts.ndjson"
+
+      - name: Attach the run
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: xdev-linux-wsl
+          path: target/xdev/
+
+  # One report for the Linux lanes, in the step summary.
+  report:
+    needs: [build-and-test, e2e, isolation-fix, arch-package, distro, wsl-import]
+    if: always()
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Fetch the runs
+        uses: actions/download-artifact@v4
+        with:
+          pattern: xdev-linux-*
+          path: runs
+
+      - name: Restore main-branch execution history
+        uses: actions/cache/restore@v4
+        with:
+          path: target/xdev/history
+          key: xdev-history-v1-linux-${{ github.sha }}
+          restore-keys: xdev-history-v1-linux-
+
+      - name: Report
+        run: |
+          xdev="$(find runs -name xdev -type f | head -1)"
+          [[ -n "$xdev" ]] || { echo "no xdev binary: the build job failed before building it"; exit 1; }
+          chmod +x "$xdev"
+          args=()
+          for d in $(find runs -name lane.json -exec dirname {} \;); do args+=(--in "$d"); done
+          # --fail-uncovered: a `required` ID in tests/requirements.toml with
+          # no test, or a test naming an ID the file does not declare, fails.
+          history=()
+          if [[ -f target/xdev/history/trend.json ]]; then history+=(--trend target/xdev/history/trend.json); fi
+          mkdir -p target/xdev/current-report
+          status=0
+          "$xdev" report "${args[@]}" "${history[@]}" --summary \
+            --requirements tests/requirements.toml --fail-uncovered \
+            --write target/xdev/current-report --timings-out target/xdev/current-report/timings.json || status=$?
+          python3 - <<'PY' || status=1
+          import json
+          from pathlib import Path
+          report = json.loads(Path('target/xdev/current-report/report.json').read_text())
+          # Windows quoting has its own mandatory Windows gate; WSL1 is the
+          # design's explicit best-effort lane and remains visible as such.
+          elsewhere = {'SUBOS-CMD-WIN-QUOTING', 'EXPORT-WSL'}
+          missing = [name for name, evidence in report['requirements'].items()
+                     if name not in elsewhere and not evidence['passed_by']]
+          assert not missing, f'required behavior lacks passing execution evidence: {missing}'
+          PY
+          if [[ -f target/xdev/current-report/trend.json && -f target/xdev/current-report/timings.json ]]; then
+            mkdir -p target/xdev/history
+            cp target/xdev/current-report/{trend,timings}.json target/xdev/history/
+          fi
+          exit "$status"
+
+      - name: Attach reports and retained trends
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: xdev-linux-report
+          path: target/xdev/current-report
+          retention-days: 90
+          if-no-files-found: ignore
+
+      - name: Retain main-branch trends for subsequent plans
+        if: always() && github.event_name == 'push' && github.ref == 'refs/heads/main' && hashFiles('target/xdev/history/trend.json') != ''
+        uses: actions/cache/save@v4
+        with:
+          path: target/xdev/history
+          key: xdev-history-v1-linux-${{ github.sha }}
 
   unit-asan:
+    # Off the PR critical path (design §24.5): it is the slowest job (~27 min,
+    # most of it the instrumented build) and gates nothing a PR changes more
+    # often than main does. It runs on every push to main and release/**,
+    # and on a PR that carries the `ci:asan` label. A failure on main is a
+    # regression to revert or fix at once.
+    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:asan')
+    #
     # Sanitizer profile for the unit suite (mcpp.toml `[profile.asan]`,
     # issue #433: a use-after-free reached three releases undetected because
     # nothing ever ran the tests instrumented). Measured locally 2026-09-12:
@@ -580,6 +1100,16 @@ jobs:
           mcpp --version 2>&1 | head -2 || true
           mcpp self version 2>&1 | head -3 || true
           xlings --version 2>&1 | head -2 || true
+
+      # E2E-00: a fresh mcpp home builds xlings for the musl target. It
+      # used to run on every PR in the e2e workflow; the PR build job and the
+      # release build above already prove the same build with the same mcpp,
+      # so it now runs where the instrumented build runs: on main.
+      - name: "E2E-00: mcpp builds xlings from source (fresh mcpp home)"
+        if: github.event_name == 'push'
+        run: |
+          bash tests/e2e/prepare_fixture_index.sh
+          bash tests/e2e/mcpp_build_xlings_test.sh
 
       - name: Sanitizer verdict
         if: always()

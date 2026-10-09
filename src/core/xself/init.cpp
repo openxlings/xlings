@@ -9,16 +9,19 @@ import xlings.core.log;
 import xlings.platform;
 import xlings.core.xself.compat;
 import xlings.core.xself.profile_resources;
-import xlings.core.subos.manifest;
+import xlings.subos.manifest;
 import xlings.core.xim.commands;
 import xlings.core.xvm.types;
 import xlings.core.xvm.db;
+import xlings.core.xvm.owner;
 import xlings.core.xvm.shim;
 import xlings.core.xvm.shim_table;
 import xlings.core.xvm.shim_identity;
 import xlings.core.xvm.lock;
 import xlings.core.entry_binary;
 import xlings.core.home_identity;
+import xlings.core.home;
+import xlings.core.subos.root;
 
 namespace xlings::xself {
 
@@ -34,20 +37,12 @@ bool is_bootstrap_home_root(const fs::path& root) {
     std::error_code ec;
     if (root.empty() || !fs::exists(root / ".xlings.json", ec)) return false;
     if (!fs::exists(root / "bin", ec) || !fs::is_directory(root / "bin", ec)) return false;
-#ifdef _WIN32
-    return fs::exists(root / "bin" / "xlings.exe", ec);
-#else
-    return fs::exists(root / "bin" / "xlings", ec);
-#endif
+    return fs::exists(root / "bin" / ("xlings" + std::string(platform::exe_suffix)), ec);
 }
 
 fs::path xlings_binary_in_home(const fs::path& home_dir) {
-#ifdef _WIN32
-    constexpr std::string_view name = "xlings.exe";
-#else
-    constexpr std::string_view name = "xlings";
-#endif
-    auto bin = home_dir / "bin" / std::string(name);
+    const auto name = "xlings" + std::string(platform::exe_suffix);
+    auto bin = home_dir / "bin" / name;
     if (fs::exists(bin)) return bin;
 
     // Bootstrap layout. Before `self init` runs, the binary sits directly at
@@ -62,6 +57,26 @@ fs::path xlings_binary_in_home(const fs::path& home_dir) {
     if (fs::exists(bootstrap)) return bootstrap;
 
     return {};
+}
+
+bool ensure_system_entry_link(const fs::path& home_dir) {
+    if (home_dir.empty()) return false;
+    if (!xlings_binary_in_home(home_dir).empty()) return true;
+    if constexpr (!platform::is_posix) return false;
+    const auto exe = platform::get_executable_path();
+    if (!home::describe_entry(exe, home_dir).system) return false;
+    std::error_code ec;
+    const auto link = home_dir / "bin" / "xlings";
+    fs::create_directories(link.parent_path(), ec);
+    fs::create_symlink(exe, link, ec);
+    if (ec) {
+        log::debug("[xlings:self]: cannot link {} to {}: {}", link.string(), exe.string(),
+                   ec.message());
+        return false;
+    }
+    log::info("this home's xlings is the system's: {} -> {}", Config::display_path(link),
+              exe.string());
+    return true;
 }
 
 LinkResult create_shim(const fs::path& source, const fs::path& target) {
@@ -86,19 +101,19 @@ LinkResult create_shim(const fs::path& source, const fs::path& target) {
     }
     ec.clear();
 
-#if !defined(_WIN32)
-    // Unix: prefer relative symlink
-    auto rel = fs::relative(source, target.parent_path(), ec);
-    if (!ec && !rel.empty()) {
-        fs::create_symlink(rel, target, ec);
+    if constexpr (platform::is_posix) {
+        // Unix: prefer relative symlink
+        auto rel = fs::relative(source, target.parent_path(), ec);
+        if (!ec && !rel.empty()) {
+            fs::create_symlink(rel, target, ec);
+            if (!ec) return LinkResult::Symlink;
+        }
+        ec.clear();
+        // Fallback: absolute symlink
+        fs::create_symlink(source, target, ec);
         if (!ec) return LinkResult::Symlink;
+        ec.clear();
     }
-    ec.clear();
-    // Fallback: absolute symlink
-    fs::create_symlink(source, target, ec);
-    if (!ec) return LinkResult::Symlink;
-    ec.clear();
-#endif
 
     // Hardlink (Unix fallback / Windows primary)
     fs::create_hard_link(source, target, ec);
@@ -447,6 +462,19 @@ bool ensure_home_layout(const fs::path& home_dir) {
             log::warn("[xlings:self]: {} -- the home is recognised by its layout "
                       "until the marker can be written", w.error());
     }
+    // Declared at creation (xlings.core.home): the deployment mode this home
+    // was set up in, and the layout it is at. Inference is for markers that
+    // predate modes; a home created now says what it is.
+    {
+        const auto source = home_dir == Config::paths().homeDir
+            ? Config::paths().homeSource : home::Source::Default;
+        const auto ctx = home::describe(home_dir, source);
+        if (ctx.writable() && home_identity::has_marker(home_dir)) {
+            (void)home::declare(home_dir,
+                                ctx.modeDeclared ? std::nullopt : std::optional(ctx.mode),
+                                home::kLayout);
+        }
+    }
 
     // Not write_if_missing_: every home that predates `subos_info` already has
     // this file, so "missing" is exactly the case that never fires on the
@@ -476,6 +504,7 @@ bool ensure_home_layout(const fs::path& home_dir) {
 
     ensure_home_config_defaults_(home_dir);
 
+    ensure_system_entry_link(home_dir);
     auto xlings_bin = xlings_binary_in_home(home_dir);
     if (!xlings_bin.empty()) {
         // A home whose shims could not be written is not a laid-out home. It
@@ -497,13 +526,14 @@ bool ensure_home_layout(const fs::path& home_dir) {
         // `self doctor --fix` by hand -- 172 names on a measured home, every one
         // of them an active program the user cannot invoke.
         //
-        // `self init` runs on install AND on update, so the upgrade that fixes
-        // the cause also repairs what it did. On a healthy home the diff is
-        // empty and this costs one directory scan.
+        // Explicit self init and the install path both rebuild the table.
+        // On a healthy home the diff is empty and costs one directory scan.
         //
         // Not fatal on failure: the table is derived and converges on the next
         // install / use, and a home whose shims are laid out IS laid out.
-        if (auto sync = sync_shim_tables(); sync.changed()) {
+        const auto sync = sync_shim_tables();
+        if (!sync.root_error.empty()) return false;
+        if (sync.changed()) {
             log::info("routing table: +{} -{} ~{} shim(s)",
                       sync.added, sync.removed, sync.repointed);
         }
@@ -634,6 +664,39 @@ xvm::TableReport apply_shim_table(const fs::path& subos_dir,
 
 ShimSyncSummary sync_shim_tables() {
     ShimSyncSummary summary;
+    // The first write command of a home whose xlings is a system package's:
+    // the package manager installed a binary, not a home, and no `self init`
+    // ever ran for it. Lay the home out now (that rebuilds this table too),
+    // and read the state it wrote -- the workspace this command loaded at
+    // startup did not exist yet, so it is "not observed", and the table
+    // would refuse to rebuild from it.
+    if (const auto home = Config::paths().homeDir;
+        xlings_binary_in_home(home).empty() && ensure_system_entry_link(home)) {
+        ensure_home_layout(home);
+        Config::reload_state();
+    }
+    // A rootfs SubOS's /usr is derived from the same workspace (design part 2
+    // §6): every workspace change gives it a new generation. Before the entry
+    // check: a root's /usr does not need shims.
+    if (const auto dir = Config::xvm_artifact_subos_dir();
+        (dir != Config::global_subos_dir() || Config::global_workspace_observed())
+        && dir.parent_path() == Config::paths().homeDir / "subos") {
+        const auto name = dir.filename().string();
+        if (auto r = subos_root::refresh(Config::paths().homeDir, name, dir, Config::workspace(),
+                                         Config::versions(), "workspace change")) {
+            if (!*r) {
+                summary.root_error = std::format("the root of subos '{}' was not updated: {}",
+                                                 name, r->error());
+                log::error("{}", summary.root_error);
+                return summary;
+            } else if ((*r)->changed) {
+                log::info("subos '{}': root generation {}{}", name, (*r)->generation,
+                          (*r)->conflicts ? std::format(" ({} name conflict(s), see `xlings subos "
+                                                        "status {}`)", (*r)->conflicts, name)
+                                          : std::string{});
+            }
+        }
+    }
     auto entry = xlings_binary_in_home(Config::paths().homeDir);
     std::error_code ec;
     if (entry.empty() || !fs::exists(entry, ec)) {
@@ -717,6 +780,7 @@ ShimSyncSummary sync_shim_tables() {
             : true;
     sync_one(Config::xvm_artifact_subos_dir(), Config::workspace(), "scope",
              scopeObserved);
+
 
     // In project scope, the global active subos too: the project's bin is
     // never on PATH, so its command names must also exist in the directory
@@ -879,16 +943,81 @@ RepointSummary repoint_stale_shims(const fs::path& home) {
 
 bool replace_entry_binary(const fs::path& payloadBinary, const fs::path& entry,
                           std::string_view coordinate,
-                          std::string_view toVersion) {
+                          std::string_view toVersion,
+                          const PackageEntryActivation& activation) {
+    const auto home = entry.parent_path().filename() == "bin"
+                          ? entry.parent_path().parent_path()
+                          : entry.parent_path();
+    // The system home of a machine whose root is a SubOS (deployment R,
+    // part 2 §5): its /usr/bin/xlings is a link of the current generation
+    // into this payload, so the version that runs moves with the generation
+    // and a rollback brings the previous one back. The entry is stage-0's
+    // and stays the build the machine booted with.
+    {
+        if (subos_root::running_host(home)) {
+            log::info("xlings {}: /usr/bin/xlings follows the root's generation; the entry "
+                      "({}) stays as stage-0", toVersion, Config::display_path(entry));
+            return true;
+        }
+    }
+    try {
+        if (activation.provider != "xim:xlings" && activation.provider != "xlings") {
+            log::error("shared entry activation requires the xlings package provider");
+            return false;
+        }
+        const auto root = fs::canonical(home);
+        const auto scope = Config::subos_scope();
+        std::error_code ec;
+        const auto declared = fs::symlink_status(
+            root / "config" / "subos" / scope.name / "policy.json", ec);
+        if (ec && ec != std::errc::no_such_file_or_directory) {
+            log::error("shared entry activation cannot inspect scope policy: {}", ec.message());
+            return false;
+        }
+        const auto entered = std::getenv("XLINGS_SUBOS_MODE");
+        const bool borrowed = !activation.source_home.empty();
+        if (Config::workspace_config_path().lexically_normal() !=
+                (Config::global_subos_dir() / ".xlings.json").lexically_normal() || borrowed ||
+            declared.type() != fs::file_type::not_found || (entered && *entered)) {
+            log::info("xlings {} is active in this scope; the home owner's shared entry stays {}",
+                      toVersion, Config::display_path(entry));
+            return true;
+        }
+        const auto source = fs::canonical(payloadBinary);
+        const auto store = root / "data" / "xpkgs";
+        const auto relative = source.lexically_relative(store);
+        const auto owner = xvm::coordinate_from_payload_path(source.generic_string());
+        if (!owner || owner->package != "xlings" ||
+            (!owner->ns.empty() && owner->ns != "xim") || relative.empty() ||
+            relative.is_absolute() ||
+            (relative.begin()->string() != "xim-x-xlings" && relative.begin()->string() != "xlings")) {
+            log::error("shared entry activation requires this home's xlings package payload");
+            return false;
+        }
+        if (!Config::home_context().writable()) {
+            log::error("shared entry activation refused: this home's layout is read-only");
+            return false;
+        }
+        if constexpr (platform::is_posix) {
+            const auto home_owner = platform::file_ownership(root);
+            const auto entry_owner = platform::file_ownership(entry);
+            const auto uid = platform::user_ids().uid;
+            if (!home_owner || !entry_owner ||
+                (uid != 0 && (home_owner->uid != uid || entry_owner->uid != uid))) {
+                log::error("shared entry activation requires the home owner's authority");
+                return false;
+            }
+        }
+    } catch (const std::exception& error) {
+        log::error("shared entry activation refused: {}", error.what());
+        return false;
+    }
     if (!entry_binary::replace_with(payloadBinary, entry, coordinate,
                                     toVersion)) {
         return false;
     }
     // `<home>/bin/xlings`, or `<home>/xlings` in the bootstrap layout
     // (`xlings_binary_in_home` accepts both, so this must too).
-    const auto home = entry.parent_path().filename() == "bin"
-        ? entry.parent_path().parent_path()
-        : entry.parent_path();
     const auto summary = repoint_stale_shims(home);
     if (summary.repointed != 0) {
         log::info("re-pointed {} shim(s) to the new entry binary",

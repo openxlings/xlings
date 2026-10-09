@@ -10,6 +10,7 @@ import xlings.core.log;
 import xlings.core.palette;
 import xlings.core.compact;
 import xlings.platform;
+import xlings.platform.loopback_http;
 import xlings.core.config;
 import xlings.libs.tinyhttps;
 import xlings.runtime.cancellation;
@@ -636,6 +637,22 @@ DownloadResult download_one(const DownloadTask& task, std::function<void(double 
         if (cancel) {
             opts.isCancelled = [cancel] { return cancel->is_paused() || cancel->is_cancelled(); };
         }
+        opts.loopbackHttp = [&opts](const std::string& url, const fs::path& destination) {
+            namespace http = platform::loopback_http;
+            auto wire = http::download(url, destination, std::chrono::seconds(opts.maxTimeSec),
+                                       opts.onProgress, opts.isCancelled);
+            tinyhttps::FailureKind kind = tinyhttps::FailureKind::None;
+            switch (wire.failure) {
+                case http::Failure::None: break;
+                case http::Failure::Source: kind = tinyhttps::FailureKind::Source; break;
+                case http::Failure::Transfer: kind = tinyhttps::FailureKind::Transfer; break;
+                case http::Failure::Local: kind = tinyhttps::FailureKind::Local; break;
+                case http::Failure::Cancelled: kind = tinyhttps::FailureKind::Cancelled; break;
+            }
+            return tinyhttps::DownloadFileResult{
+                .success = wire.success, .error = std::move(wire.error), .bytesWritten = wire.written,
+                .expectedBytes = wire.expected, .finalUrl = url, .failure = kind};
+        };
         // A stalled host is throttled for us right now, and a host that
         // served bytes failing the integrity check is worse — demote both
         // for the rest of the session so later downloads skip them.

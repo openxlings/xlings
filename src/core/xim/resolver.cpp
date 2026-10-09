@@ -41,6 +41,59 @@ std::string pin_target_to_subos(const std::string& target,
     return namePart + "@" + active;
 }
 
+std::expected<void, std::string> require_install_tool(InstallPlan& plan,
+                                                     std::string_view toolKey) {
+    auto nodes = plan.nodes;
+    std::unordered_map<std::string, std::size_t> indices;
+    for (std::size_t i = 0; i < nodes.size(); ++i) {
+        const auto key = node_key_(nodes[i].canonicalName, nodes[i].version);
+        if (!indices.emplace(key, i).second)
+            return std::unexpected("duplicate installation node: " + key);
+    }
+    const auto tool = indices.find(std::string(toolKey));
+    if (tool == indices.end())
+        return std::unexpected("installation tool is absent from the plan: " + std::string(toolKey));
+    std::vector<std::vector<std::size_t>> dependencies(nodes.size());
+    for (std::size_t i = 0; i < nodes.size(); ++i) {
+        for (const auto& edge : nodes[i].depEdges) {
+            const auto dependency = indices.find(edge.nodeKey);
+            if (dependency == indices.end())
+                return std::unexpected("installation dependency is absent from the plan: " + edge.nodeKey);
+            dependencies[i].push_back(dependency->second);
+        }
+    }
+    std::vector<unsigned> colors(nodes.size());
+    std::vector<std::size_t> order;
+    std::function<bool(std::size_t)> visit = [&](std::size_t node) {
+        if (colors[node] == 1) return false;
+        if (colors[node] == 2) return true;
+        colors[node] = 1;
+        for (const auto dependency : dependencies[node])
+            if (!visit(dependency)) return false;
+        colors[node] = 2;
+        order.push_back(node);
+        return true;
+    };
+    if (!visit(tool->second))
+        return std::unexpected("cyclic installation tool dependencies: " + std::string(toolKey));
+    const std::set<std::size_t> toolClosure(order.begin(), order.end());
+    for (std::size_t i = 0; i < nodes.size(); ++i) {
+        if (toolClosure.contains(i)) continue;
+        if (std::ranges::find(dependencies[i], tool->second) == dependencies[i].end()) {
+            dependencies[i].push_back(tool->second);
+            nodes[i].depEdges.push_back({.spec = nodes[tool->second].canonicalName,
+                                        .kind = DepKind::Build, .nodeKey = std::string(toolKey)});
+        }
+    }
+    for (std::size_t i = 0; i < nodes.size(); ++i)
+        if (!visit(i)) return std::unexpected("cyclic installation dependencies");
+    std::vector<PlanNode> ordered;
+    ordered.reserve(nodes.size());
+    for (const auto i : order) ordered.push_back(std::move(nodes[i]));
+    plan.nodes = std::move(ordered);
+    return {};
+}
+
 std::expected<InstallPlan, std::string>
 resolve(PackageCatalog& catalog, std::span<const std::string> targets, const std::string& platform, const SubosVersionFn& subosVersionOf, const std::string& hostArch) {
 

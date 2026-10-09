@@ -1,9 +1,0 @@
-[Trigger]
-Operation = Remove
-Type = Package
-Target = xlings
-
-[Action]
-Description = xlings self uninstall
-When = PreTransaction
-Exec = /usr/bin/env xlings self uninstall

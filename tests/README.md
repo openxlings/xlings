@@ -1,165 +1,79 @@
-# xlings Tests
+# xlings tests
 
-This directory contains unit tests and end-to-end usability tests for `xlings`.
+Design: `.agents/docs/2026-10-05-subos-architecture-design.md` §24.
 
-## Unit Tests
+## Layout
 
-Script: `tests/unit/test_main.cpp` (51 gtest tests, 11 suites)
+| Path | What | Runs with |
+|---|---|---|
+| `tests/unit/test_*.cpp` | gtest unit tests (and testkit's own tests) | `mcpp test` |
+| `tests/e2e/test_*.cpp` | end-to-end tests in C++: drive the built binary through `modules/testkit` | `mcpp test` |
+| `tests/e2e/*_test.sh`, `*.ps1` | legacy end-to-end scripts | `tests/e2e/run_all.sh`, or `xdev test --suite e2e-shell` |
+| `tests/scripts/` | contract scripts (Python / shell) | `xdev test --suite contract-scripts` |
+| `tests/suites.toml` | the legacy suites xdev knows | `xdev test --suite <name>` |
+| `tests/fresh-install/`, `tests/candidate-install/` | install-path suites | their workflows |
 
-| Suite | Tests | Coverage |
-|-------|-------|----------|
-| I18nTest | 7 | 多语言翻译 |
-| LogTest | 4 | 日志级别与文件输出 |
-| UtilsTest | 5 | 字符串工具 |
-| CmdlineTest | 4 | CLI 解析 |
-| UiTest | 2 | UI 组件 |
-| XimTypesTest | 4 | PlanNode, InstallPlan 等类型 |
-| XimIndexTest | 9 | 索引构建/搜索/版本匹配/加载 |
-| XimResolverTest | 4 | 依赖解析/拓扑排序/循环检测 |
-| XimDownloaderTest | 3 | 下载任务/归档解压 |
-| XimInstallerTest | 4 | 安装编排/错误处理 |
-| XimCommandsTest | 5 | 命令执行 (search/list/info) |
+New tests are written in C++. A script leaves `tests/suites.toml` when it is
+ported.
 
-### Run
+## Writing an end-to-end test
+
+```cpp
+#include <gtest/gtest.h>
+import xlings.testkit;          // before the header (mcpp scans imports in the source)
+#include "xlings/xtest.hpp"
+import std;
+
+namespace tk = xlings::testkit;
+
+XTEST(SubosExec, ExitCodeIsTheCommands,
+      .area = "subos", .covers = {"EXIT-CMD"},
+      .requires_ = {"linux", "xlings-bin", "sandbox"}, .resources = {"sandbox"}) {
+    auto home = tk::Home::isolated("exec");      // temp dir, never under $HOME
+    auto r = home.xlings({"subos", "new", "box"});
+    ASSERT_EQ(r.exit_code, 0) << r.transcript();
+}
+```
+
+- `Home::isolated()` gives a fresh home; every run starts from an environment
+  the test names (`Home::env()` plus what it adds) — nothing is inherited.
+- `requires_` names capabilities (`xdev doctor` lists them). Missing on a
+  developer machine: the test is skipped and says why. Missing on a CI lane
+  that declared it in `XDEV_LANE_CAPS`: the test fails.
+- `covers` names requirement IDs; `proves = "isolation"` marks a test that
+  runs a real sandbox (a fake provider only proves the flow).
+- A failed test keeps its home and copies its config/logs/state to
+  `target/xtest-artifacts/<Suite.Name>/`.
+
+## xdev
 
 ```bash
-mcpp build
-mcpp test
+mcpp build && mcpp build -p xdev
+XDEV=$(find target -path '*/bin/xdev/xdev' | head -1)
+
+$XDEV doctor                              # what this machine can test
+$XDEV test                                # all C++ tests, one report
+$XDEV test test_testkit                   # a pattern, passed to mcpp test
+$XDEV test --no-mcpp --suite contract-scripts
+$XDEV report                              # re-render target/xdev/run
 ```
 
-Note: XimIndex/Resolver/Installer/Commands tests require the `xim-pkgindex` repo at a known path. They will `GTEST_SKIP` if not found.
+The report (terminal, `target/xdev/run/report.{md,json}`, and the GitHub step
+summary in CI) lists pass/fail/skip for test binaries, XTEST cases and legacy
+scripts, failures with their output, skips grouped by reason, the slowest
+tests and the lane's capabilities.
 
-## E2E Linux Usability Test
+## Local runs
 
-Script: `tests/e2e/linux_usability_test.sh`
+- Run from a clean environment: a shell inside a subos exports
+  `XLINGS_ACTIVE_SUBOS`, which some older unit tests still inherit.
+- Inside China set `XLINGS_TEST_MIRROR=CN` (AGENTS.md: an unreachable mirror
+  looks like the command under test hanging).
+- Network is opt-in: `XDEV_NETWORK=1`.
 
-What it validates in an isolated extracted release package:
 
-- basic CLI availability (`xlings -h`, `xlings config`, `xvm --version`)
-- `xlings info <target>` mapping to `xvm info`
-- `subos` lifecycle (`new`, `use`, `list`, `info`, `remove`)
-- `subos new` fails when `config/xvm` is missing (package incomplete)
-- new `subos` short aliases (`ls`, `i`, `rm`)
-- backward compatibility for existing `subos` commands
-- self-maintenance dry-run command
-- optional network install scenario (`xlings install d2x`)
-
-### Run
-
-```bash
-# auto-detect latest build/xlings-*-linux-x86_64.tar.gz
-bash tests/e2e/linux_usability_test.sh
-
-# specify archive explicitly
-bash tests/e2e/linux_usability_test.sh build/xlings-0.4.0-linux-x86_64.tar.gz
-```
-
-### Network Scenario
-
-By default network-dependent installation checks are enabled.
-
-```bash
-SKIP_NETWORK_TESTS=1 bash tests/e2e/linux_usability_test.sh
-```
-
-Same toggle works for macOS and Windows scripts.
-
-## E2E Project Scenarios
-
-Scenario configs:
-
-- `tests/e2e/scenarios/local_repo/.xlings.json`
-- `tests/e2e/scenarios/global_fallback/.xlings.json`
-- `tests/e2e/scenarios/xlings_res_cn/.xlings.json`
-- `tests/e2e/scenarios/xlings_res_project_override/.xlings.json`
-- `tests/e2e/scenarios/xlings_res_region_map/.xlings.json`
-- `tests/e2e/scenarios/xlings_res_multi_server/.xlings.json`
-
-Scenario scripts:
-
-- `tests/e2e/project_local_repo_test.sh`
-- `tests/e2e/project_global_fallback_test.sh`
-- `tests/e2e/project_xlings_res_test.sh`
-- `tests/e2e/project_xlings_res_override_test.sh`
-- `tests/e2e/project_xlings_res_region_map_test.sh`
-- `tests/e2e/project_xlings_res_multi_server_test.sh`
-- `tests/e2e/subos_payload_refcount_test.sh`
-- `tests/e2e/release_self_install_test.sh`
-- `tests/e2e/release_quick_install_test.sh`
-- `tests/e2e/release_subos_smoke_test.sh`
-
-Aggregate scripts:
-
-- `tests/e2e/project_data_routing_test.sh` runs the local-repo + global-fallback routing checks
-- `tests/e2e/project_e2e_test.sh` runs all fixed project scenarios
-
-Runtime homes:
-
-- `tests/e2e/runtime/`
-
-Each scenario script creates and reuses its own isolated `XLINGS_HOME` under this directory, so E2E runs never touch the real machine-global environment.
-
-What they validate:
-
-- project-local index repo routing into `.xlings/data`
-- global fallback routing into isolated `XLINGS_HOME/data`
-- single-command multi-version installs for the same package
-- `XLINGS_RES` mirror resolution and install execution
-- project-level `XLINGS_RES` string override
-- project-level `XLINGS_RES` region-object override
-- multi-server resource selection that falls back from an unreachable endpoint to the fastest reachable one
-- real shim execution after `xlings use`
-- shared payload reuse across multiple subos, with final payload GC only after the last reference is removed
-- release archive `self install` into an isolated user home
-- quick-install bootstrap into an isolated user home
-- extracted release package basic commands, subos lifecycle, d2x reuse, and RPATH verification
-
-### Run
-
-```bash
-bash tests/e2e/project_data_routing_test.sh
-bash tests/e2e/project_e2e_test.sh
-bash tests/e2e/release_self_install_test.sh build/release.tar.gz
-bash tests/e2e/release_quick_install_test.sh
-bash tests/e2e/release_subos_smoke_test.sh build/release.tar.gz
-```
-
-## E2E Bootstrap Home
-
-Script: `tests/e2e/bootstrap_home_test.sh`
-
-What it validates:
-
-- a bootstrap package root with only `.xlings.json` and `bin/xlings` is auto-detected as `XLINGS_HOME`
-- `xlings self init` materializes `data/`, `subos/`, and `config/shell/` in place
-- `xlings self install` copies that bootstrap home into an installed `~/.xlings`-style root
-- portable and installed homes share the same top-level structure
-
-### Run
-
-```bash
-bash tests/e2e/bootstrap_home_test.sh
-```
-
-## Install-time shims
-
-CI verifies that after `xlings self install`, `subos/default/bin` contains all required shims (xlings, xvm, xvm-shim, xim, xsubos, xself). Shims are created at install time, not in the package, to reduce archive size.
-
-## E2E macOS Usability Test
-
-Script: `tests/e2e/macos_usability_test.sh`
-
-```bash
-bash tests/e2e/macos_usability_test.sh
-SKIP_NETWORK_TESTS=0 bash tests/e2e/macos_usability_test.sh
-```
-
-## E2E Windows Usability Test
-
-Script: `tests/e2e/windows_usability_test.ps1`
-
-```powershell
-powershell -ExecutionPolicy Bypass -File tests/e2e/windows_usability_test.ps1
-$env:SKIP_NETWORK_TESTS = "0"
-powershell -ExecutionPolicy Bypass -File tests/e2e/windows_usability_test.ps1
-```
+`xdev report --requirements tests/requirements.toml --fail-uncovered` 检查需求的测试声明。
+报告另外列出执行证据，跳过的测试不能证明需求已验证。发布验收使用 `--fail-unverified`
+检查合并后的各车道记录；隔离需求还要求 `proves=isolation`。JSON 报告中的
+`requirements.<id>.declared_by` 与 `passed_by` 分别给出两种证据。
+`xdev test --out` 必须选择空目录，避免覆盖已有现场或用户文件。

@@ -1,41 +1,55 @@
 # Members are independent packages with their own mcpp.toml, referenced by
 # path. Listed leaves-first, which is also dependency order:
 #
-#   cancellation  leaf, std only
-#   platform      -> cancellation      (81 of 211 TUs import it)
-#   theme         leaf, std + the JSON header
-#   apps/gui      the GUI binary's library half
+#   libs      json, sha256, tinyhttps: self-contained, nothing of xlings
+#   runtime   -> libs: cancellation, guard (confirmation), observe (journal)
+#   platform  -> runtime: the OS boundary -- every system header and call
+#   ui        -> platform: theme and i18n
+#   store     -> libs, platform: what keeps a payload alive (GC roots, the
+#                retained ledger)
+#   subos     -> libs, runtime, platform, store: the SubOS core
+#   confine   -> subos: the sandbox implementations, their selector, the
+#                platform matrix
+#   carrier   -> subos: where a SubOS runs (local, wsl2, vz) and how this
+#                xlings reaches it
+#   luban     -> modules: what exists only when a SubOS is a machine --
+#                boot entries, stage-0 (apps/luban-init), the machine's /etc
+#   testkit   -> libs: end-to-end test library (dev-dependency only)
+#   apps/gui  the GUI binary's library half
+#   apps/xdev the development tool (never linked into xlings)
 #
 # `apps/` holds what becomes a binary; `modules/` holds what gets linked into
-# one. `src/` is what has not been separated yet -- core, cli, ui, runtime --
-# and shrinking it is the direction.
-#
-# The vendored units moved too (json wraps nlohmann's header, tinyhttps wraps
-# mcpplibs'): a module this project builds and exports is a module of this
-# project, whoever wrote the code inside. Keeping them under `src/libs` while
-# `modules/` existed meant two names for one idea, and `libs/` vs `src/libs/`
-# already read as the same thing.
+# one, a package per responsibility (not per file). `src/` is what has not
+# been separated yet -- core, cli, ui, runtime -- and shrinking it is the
+# direction.
 [workspace]
 members = [
-    "modules/json",
-    "modules/sha256",
-    "modules/cancellation",
+    "modules/libs",
+    "modules/runtime",
     "modules/platform",
-    "modules/i18n",
-    "modules/tinyhttps",
-    "modules/theme",
+    "modules/ui",
+    "modules/store",
+    "modules/subos",
+    "modules/confine",
+    "modules/carrier",
+    "luban",
+    "apps/luban-init",
+    "modules/testkit",
     "apps/gui",
+    "apps/xdev",
 ]
 
 [package]
 name = "xlings"
-version = "2026.10.8.1"
+version = "2026.10.9.1"
 description = "Universal package management infrastructure tool with SubOS isolation"
 license = "Apache-2.0"
 repo = "https://github.com/openxlings/xlings"
 
 [build]
-include_dirs = ["modules/json/src/json"]
+# modules/testkit/include holds xtest.hpp (the XTEST macro). Only test sources
+# include it; it is here because test TUs are compiled with the root's flags.
+include_dirs = ["modules/libs/src/json", "modules/testkit/include"]
 # Minimum supported macOS for produced binaries (mcpp 0.0.50+ honors
 # this; the MACOSX_DEPLOYMENT_TARGET env in CI/release remains as the
 # second line of assurance and covers older bootstrap mcpp versions).
@@ -116,25 +130,27 @@ linkage = "static"
 linkage = "static"
 
 [dependencies]
-theme        = { path = "modules/theme" }
-platform     = { path = "modules/platform" }
-cancellation = { path = "modules/cancellation" }
-i18n         = { path = "modules/i18n" }
-json         = { path = "modules/json" }
-sha256       = { path = "modules/sha256" }
-# Named `xhttp` here to avoid colliding with `mcpplibs.tinyhttps`, which this
-# member wraps. mcpp resolves dependency names in one namespace, so a member
-# that wraps a registry package cannot share its bare name.
-xhttp        = { path = "modules/tinyhttps" }
+libs     = { path = "modules/libs" }
+runtime  = { path = "modules/runtime" }
+platform = { path = "modules/platform" }
+ui       = { path = "modules/ui" }
+store    = { path = "modules/store" }
+subos    = { path = "modules/subos" }
+confine  = { path = "modules/confine" }
+carrier  = { path = "modules/carrier" }
+luban    = { path = "luban" }
 
 [dependencies.compat]
 ftxui      = "6.1.9"
 libarchive = "3.8.7"
 
 [dependencies.mcpplibs]
+xpkg = { git = "https://github.com/openxlings/libxpkg.git", rev = "912720f7aa2204a4c48f0d989331af993bb3c1e4" }
 cmdline = "0.0.2"
-xpkg = "0.0.60"
 capi.lua = "0.0.3"
+
+[dev-dependencies]
+testkit = { path = "modules/testkit" }
 
 [dev-dependencies.compat]
 gtest = "1.15.2"

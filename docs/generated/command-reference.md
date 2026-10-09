@@ -16,7 +16,7 @@ Options: `-h, --help` — Show help for the selected command; `--version` — Sh
 
 Install packages
 
-Options: `-g, --global` — Use global scope; `-u, --use` — Activate installed version; `--reconfig` — Run the configuration step again, even where it already ran
+Options: `-g, --global` — Use global scope; `-u, --use` — Activate installed version; `--reconfig` — Run the configuration step again, even where it already ran; `--subos <NAME>` — Install into this subos instead of the current one; `--system` — Install into the system layer (/xlings): every user of this machine gets it
 
 ## `xlings remove <package> [version]`
 
@@ -68,13 +68,13 @@ Manage SubOS environments
 
 Create a SubOS
 
-Options: `--storage <MODE>` — shared, tmpfs or image; `--image-size <SIZE>` — Image size; `--from <SOURCE>` — Fork source; `--runtime <SPEC>` — Runtime binding, e.g. glibc@2.44
+Options: `--sandbox [PRESET]` — Declare its isolation once: dev (default), private or locked; `--storage <MODE>` — shared, tmpfs or image; `--image-size <SIZE>` — Image size; `--from <SOURCE>` — Fork source; `--runtime <SPEC>` — Runtime binding, e.g. glibc@2.44; `--rootfs` — Make it a root: entered, exported or booted as /; `--domain <HOME>` — Build a rootfs at this logical home prefix in an owned namespace; `--carrier <NAME>` — Where it runs: local, wsl2 (Windows) or vz (macOS); default chosen by what it is; `--abi <ABI>` — native (this machine's programs) or linux
 
 ## `xlings subos use [name]`
 
 Enter a SubOS
 
-Options: `--global` — Persist the active SubOS; `--shell [KIND]` — Emit shell activation code; `--sandbox [BACKEND]` — Enable sandbox (bwrap or proot on Linux); `--cmd <COMMAND>` — Run one command; `--keep` — Keep the namespace keeper; `--no-keep` — Disable the namespace keeper; `--ttl <SECONDS>` — Keeper idle timeout; `--gpu` — Expose GPU devices (bwrap only)
+Options: `--global` — Persist the active SubOS; `--shell [KIND]` — Emit shell activation code; `--sandbox [BACKEND]` — Enable sandbox (bwrap, proot or landlock on Linux); --sandbox=dev|private|locked picks a preset; `--net <MODE>` — This call only: host, nat, none or proxy (may only tighten); `--proxy <URL>` — SOCKS5h endpoint for net=proxy; `--observe <LEVEL>` — This call only: off, basic, standard or full; `--fetch <ACTION>` — This call only: auto, ask or deny (may only tighten); `--allow <GRANT>` — This call only: grant from the policy's grants_allowed; `--no-degrade` — Refuse to enter when anything asked for is missing; `--mount <HOST[:INSIDE][:ro|rw]>` — This call only: map a host path into the SubOS; repeatable; `--cmd <COMMAND>` — Run one command; `--keep` — Keep the session after the shell exits; `--no-keep` — End the session with the shell; `--ttl <SECONDS>` — Session idle timeout; `--gpu` — Expose GPU devices (bwrap only)
 
 ## `xlings subos list`
 
@@ -90,7 +90,101 @@ Show SubOS details
 
 ## `xlings subos stop <name>`
 
-Stop a SubOS keeper
+Stop a SubOS's running session
+
+## `xlings subos exec [name] [command]...`
+
+Run a command in a SubOS from outside it
+
+Options: `--sandbox [BACKEND]` — Run in the SubOS's sandbox (bwrap, proot or landlock on Linux); --sandbox=dev|private|locked picks a preset; `--net <MODE>` — This call only: host, nat, none or proxy (may only tighten); `--proxy <URL>` — SOCKS5h endpoint for net=proxy; `--observe <LEVEL>` — This call only: off, basic, standard or full; `--fetch <ACTION>` — This call only: auto, ask or deny (may only tighten); `--allow <GRANT>` — This call only: grant from the policy's grants_allowed; `--no-degrade` — Refuse to run when anything asked for is missing; `--publish <HOST:SANDBOX>` — With net=nat: publish a TCP port; repeatable; `--mount <HOST[:INSIDE][:ro|rw]>` — This call only: map a host path into the SubOS; repeatable; `--cwd <DIR>` — Working directory inside; `--env <K=V>` — Set a variable; repeatable; `--timeout <DURATION>` — End the command after DURATION (90, 30s, 10m, 2h); exits 124; `--json` — Print the result as JSON on stderr when the command ends; `--temp` — Use a throwaway SubOS, removed afterwards (its audit is kept); `--from <SOURCE>` — With --temp: fork it from this SubOS or package
+
+## `xlings subos start <name>`
+
+Start a SubOS session that runs without a terminal
+
+Options: `--sandbox [BACKEND]` — Sandbox backend (bwrap, proot or landlock); --sandbox=dev|private|locked picks a preset; `--net <MODE>` — host, nat, none or proxy (may only tighten); `--proxy <URL>` — SOCKS5h endpoint for net=proxy; `--observe <LEVEL>` — This call only: off, basic, standard or full; `--allow <GRANT>` — Grant from the policy's grants_allowed; `--no-degrade` — Refuse to start when anything asked for is missing; `--publish <HOST:SANDBOX>` — With net=nat: publish a TCP port; repeatable; `--mount <HOST[:INSIDE][:ro|rw]>` — This call only: map a host path into the SubOS; repeatable; `--ttl <DURATION>` — End after DURATION idle (90, 30s, 10m, 2h); default: until stop
+
+## `xlings subos cp <src> <dst>`
+
+Copy files into or out of a SubOS
+
+## `xlings subos config <name>`
+
+Show or change what a SubOS may do (its policy)
+
+Options: `--sandbox <PRESET>` — Start from a preset (dev, private, locked) or a policy package (ns:name[@version]); `--policy-upgrade` — Move to the newest version of the selected policy package; `--net <MODE>` — host, nat, none or proxy; `--proxy <URL>` — SOCKS5h endpoint for net=proxy; `--fetch <ACTION>` — Installing a missing package from inside: auto, ask or deny; `--index-update <ACTION>` — Updating the index from inside: auto, ask or deny; `--observe <LEVEL>` — off, basic, standard or full; `--allow <GRANT>` — Grant display, audio, camera, gpu, ssh-agent, dbus or host-loopback; `--disallow <GRANT>` — Withdraw a grant; `--grants-allowed <LIST>` — Grants a single call may add; `--env-pass <NAME>` — Let this host variable in; NAME* for a prefix; `--mount <HOST[:INSIDE][:ro|rw]>` — Map a host path into the SubOS, every time it is entered; `--unmount <PATH>` — Stop mapping it; `--no-degrade` — Refuse to enter when anything asked for is missing; `--degrade` — Enter and report what is missing; `--reset` — Remove the policy file; `--json` — Machine-readable output
+
+## `xlings subos status [name]`
+
+Show what a SubOS asks for and what this host gives it
+
+Options: `--json` — Machine-readable output
+
+## `xlings subos doctor [name]`
+
+Check each SubOS: policy, entry on this host, policy package, sessions
+
+Options: `--json` — Machine-readable output; `--fix` — Re-install a selected policy package whose payload is missing
+
+## `xlings subos requests <name>`
+
+List what a SubOS's sandbox asked for and is waiting on
+
+Options: `--json` — One JSON object per request
+
+## `xlings subos approve <name> <id>`
+
+Run a request a SubOS's sandbox is waiting on
+
+## `xlings subos deny <name> <id>`
+
+Refuse a request a SubOS's sandbox is waiting on
+
+## `xlings subos report [name]`
+
+Summarise what happened in a SubOS: sessions, programs, permissions, files
+
+Options: `--session <ID>` — Only this session; `--json` — Machine-readable output
+
+## `xlings subos ps [name]`
+
+List running SubOS sessions
+
+Options: `--json` — One JSON object per session
+
+## `xlings subos log [name]`
+
+Show a SubOS's audit events
+
+Options: `--kind <KIND>` — Only this kind (ops, lifecycle, perm, exec, net, fs); repeatable; `--session <ID>` — Only this session; `-n, --lines <N>` — Show the last N events (default 50); `-f, --follow` — Keep printing new events; `--json` — One JSON object per event
+
+## `xlings subos rollback <name>`
+
+Move a root SubOS back to an earlier generation
+
+Options: `--to <N>` — This generation (default: the one before); `--list` — List the generations
+
+## `xlings subos boot [name]`
+
+Choose the SubOS a machine boots, from the next boot on
+
+Options: `--once` — Only the next boot (a trial); `--fallback` — Boot it when the default fails; `--mark-good` — This boot worked: keep booting it; `--now` — Switch user space to it now, where the init can (no reboot)
+
+## `xlings subos export <name>`
+
+Export a root SubOS as a directory, a tarball or a disk image
+
+Options: `--rootfs <DIR>` — A root directory (chroot, bwrap, nspawn); `--tar <FILE>` — A root tarball (docker import, podman import, wsl --import); `--disk <FILE>` — An ext4 disk image to boot; `--size <SIZE>` — Disk size (default 4G); `--with-data` — Include /root, /home, /var, /srv, /opt
+
+## `xlings subos diff <a> <b>`
+
+Compare the packages of two SubOS
+
+## `xlings subos pack <name>`
+
+Pack a SubOS's declaration as a subos-type xpkg
+
+Options: `--as <NS:NAME@VERSION>` — The package it becomes; `--out <DIR>` — Where the tarball goes
 
 ## `xlings subos runtime <binding> [name]`
 
@@ -118,6 +212,8 @@ Initialize directories
 
 Update xlings
 
+Options: `--user` — Install into this home even when xlings is a system package's
+
 ## `xlings self config`
 
 Show configuration
@@ -136,7 +232,7 @@ Migrate old layout
 
 Verify installation
 
-Options: `--deep` — Audit package payloads and runtime functionality; `--scope <PACKAGE[@VERSION]>` — Limit deep payload/runtime audit to one local package coordinate; `--subos <NAME>` — Check/repair one specific subos instead of the active one; `--fix` — Repair (implies --deep; walks every subos that owns a finding); `--dry-run` — Preview repairs without changing detection depth; `--show-ok` — Show all findings, including non-defects; `--all` — Deprecated alias for --show-ok; `--reset-metadata` — Discard unreadable metadata
+Options: `--deep` — Audit package payloads and runtime functionality; `--scope <PACKAGE[@VERSION]>` — Limit deep payload/runtime audit to one local package coordinate; `--subos <NAME>` — Check/repair one specific subos instead of the active one; `--fix` — Repair (implies --deep; walks every subos that owns a finding); `--dry-run` — Preview repairs without changing detection depth; `--show-ok` — Show all findings, including non-defects; `--all` — Deprecated alias for --show-ok; `--reset-metadata` — Discard unreadable metadata; `--isolation` — Check what this host can isolate SubOS sandboxes with; with --fix, install a root-owned bwrap and its AppArmor profile; `--json` — Machine-readable output (with --isolation)
 
 ## `xlings script <script-file> [args]...`
 

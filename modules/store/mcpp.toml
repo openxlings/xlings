@@ -1,0 +1,28 @@
+# The payload store, as its own package (SubOS design part 3 §7.1).
+#
+# What keeps a payload in <home>/data/xpkgs alive. A workspace that has it
+# installed is one holder; a retained root generation that links into it is
+# another -- rolling back to that generation must find every link's target.
+# This package states the second kind and remembers what was removed from
+# every workspace but is still held that way (the retained ledger), so the
+# payload is deleted when the last generation holding it is pruned, and not
+# before.
+#
+# It knows paths and records, not workspaces or generations: the caller says
+# which roots exist (xlings.subos.rootfs reads generations, xlings core reads
+# workspaces), and an unreadable root is reported as a holder, never as
+# absent -- "could not read" is not "empty" (AGENTS.md).
+[package]
+namespace = "xlings"
+name      = "store"
+version   = "0.1.0"
+
+[targets.store]
+kind = "lib"
+
+[dependencies]
+libs     = { path = "../libs" }       # json
+platform = { path = "../platform" }   # atomic writes
+
+[build]
+include_dirs = ["../libs/src/json"]

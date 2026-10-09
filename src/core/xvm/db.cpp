@@ -582,21 +582,21 @@ std::string normalize_subos_paths(const std::string& text,
         return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z');
     };
     auto path_equal = [](std::string_view a, std::string_view b) {
-#if defined(_WIN32)
         // Windows compares paths case-insensitively and treats / and \ alike.
-        if (a.size() != b.size()) return false;
-        auto fold = [](char c) -> char {
-            if (c == '\\') return '/';
-            if (c >= 'A' && c <= 'Z') return static_cast<char>(c - 'A' + 'a');
-            return c;
-        };
-        for (std::size_t i = 0; i < a.size(); ++i) {
-            if (fold(a[i]) != fold(b[i])) return false;
+        if constexpr (platform::is_windows) {
+            if (a.size() != b.size()) return false;
+            auto fold = [](char c) -> char {
+                if (c == '\\') return '/';
+                if (c >= 'A' && c <= 'Z') return static_cast<char>(c - 'A' + 'a');
+                return c;
+            };
+            for (std::size_t i = 0; i < a.size(); ++i) {
+                if (fold(a[i]) != fold(b[i])) return false;
+            }
+            return true;
+        } else {
+            return a == b;
         }
-        return true;
-#else
-        return a == b;
-#endif
     };
 
     std::string out;
@@ -753,6 +753,12 @@ std::string expand_path(const std::string& path, const std::string& xlings_home)
 nlohmann::json vdata_to_json(const VData& vdata) {
     nlohmann::json j;
     j["path"] = vdata.path;
+    if (!vdata.sourceHome.empty()) {
+        j["layer"] = vdata.layerMetadata.empty() ? nlohmann::json::object()
+                                                : nlohmann::json::parse(vdata.layerMetadata);
+        j["layer"]["home"] = vdata.sourceHome;
+        j["layer"]["scope"] = vdata.sourceScope;
+    }
     if (!vdata.kind.empty()) j["kind"] = vdata.kind;
     if (!vdata.sourceName.empty()) j["sourceName"] = vdata.sourceName;
     if (!vdata.destinationName.empty())
@@ -855,6 +861,18 @@ VData vdata_from_json(const nlohmann::json& j) {
         return escaped;
     };
 
+    if (auto layer = j.find("layer"); layer != j.end()) {
+        if (layer->is_object() && layer->contains("home") && (*layer)["home"].is_string() &&
+            layer->contains("scope") && (*layer)["scope"].is_string() &&
+            !(*layer)["home"].get<std::string>().empty() && !(*layer)["scope"].get<std::string>().empty()) {
+            vdata.sourceHome = (*layer)["home"].get<std::string>();
+            vdata.sourceScope = (*layer)["scope"].get<std::string>();
+            vdata.layerMetadata = layer->dump();
+        } else {
+            recordIssue("invalid-layer-provenance", "/layer");
+            vdata.bindingUnreadable["layer"] = layer->dump();
+        }
+    }
     if (j.contains("path") && j["path"].is_string())
         vdata.path = j["path"].get<std::string>();
     if (j.contains("kind") && j["kind"].is_string())
@@ -1130,6 +1148,11 @@ nlohmann::json versions_to_json(const VersionDB& db) {
         j[it->first] = vinfo_to_json(it->second);
     }
     return j;
+}
+
+VersionDB empty_version_db() {
+    VersionDB result;
+    return result;
 }
 
 VersionDB versions_from_json(const nlohmann::json& j) {

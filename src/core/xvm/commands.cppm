@@ -3,7 +3,7 @@ export module xlings.core.xvm.commands;
 import std;
 
 import xlings.core.config;
-import xlings.core.subos.manifest;
+import xlings.subos.manifest;
 import xlings.runtime;
 import xlings.core.semver;
 import xlings.core.entry_binary;
@@ -17,12 +17,13 @@ import xlings.core.xvm.inspect;
 import xlings.core.xvm.errors;
 import xlings.core.xvm.switch_plan;
 import xlings.core.xvm.shim;
+import xlings.core.xvm.materialize;
 
 export namespace xlings::xvm {
 
 namespace fs = std::filesystem;
 
-// Cross-platform link: symlink on Unix, directory junction or copy on Windows
+// Cross-platform link: symlink on Unix, directory junction or hard link on Windows
 void create_link_(const fs::path& src, const fs::path& dst);
 
 // Where a header asset lands: `<sysroot>/include/<destinationPrefix>`, or
@@ -53,36 +54,39 @@ fs::path header_destination_(const HeaderAsset& asset,
 // ever wrong there.
 bool sysroot_source_is_local_(const fs::path& src);
 
-// Install header symlinks from source includedir into sysroot include/
-void install_headers(const std::string& includedir, const fs::path& sysroot_include);
+using MaterializationResult = std::expected<std::vector<materialize::Proof>, std::string>;
+
+// Install header links, preserving entries without old ledger or fresh proof.
+MaterializationResult install_headers(const std::string& includedir, const fs::path& sysroot_include,
+    std::span<const materialize::AssetClaim> claims = {});
 
 // Remove header symlinks that point into the given source includedir
-void remove_headers(const std::string& includedir, const fs::path& sysroot_include);
+std::expected<void, std::string> remove_headers(const std::string& includedir, const fs::path& sysroot_include,
+    std::span<const materialize::AssetClaim> claims = {});
 
 // Same two operations, addressed by header asset rather than by bare source
 // directory, so the destination prefix is honored.
-void install_headers(const HeaderAsset& asset, const fs::path& sysroot_include);
+MaterializationResult install_headers(const HeaderAsset& asset, const fs::path& sysroot_include,
+    std::span<const materialize::AssetClaim> claims = {});
 
-void remove_headers(const HeaderAsset& asset, const fs::path& sysroot_include);
+std::expected<void, std::string> remove_headers(const HeaderAsset& asset, const fs::path& sysroot_include,
+    std::span<const materialize::AssetClaim> claims = {});
 
-// Place one file at an exact destination, replacing whatever is there.
+// Place one file at an exact destination, replacing only a proven derived link.
 //
 // Shared by libraries and by declared file assets: both are "this payload
 // file becomes that path in the subos", and both need the same replacement
 // discipline.
 //
-// Replaces by rename rather than remove-then-link. Two versions of a library
-// share a soname, so a switch overwrites the same name -- and `use`
-// re-materializes the active release on every invocation to repair a drifted
-// sysroot, so remove-then-link would open a window on every one of those
-// calls where the file is simply absent. Long enough for a concurrent build
-// step to fail on it. rename(2) replaces atomically; Windows has no
-// equivalent for every entry kind, so the staging file is cleaned up and the
-// direct path is taken there.
-void place_asset(const std::string& source, const fs::path& destination);
+// Old entries are retained in unique owned staging until commit. Platforms
+// with exchange publish atomically; the guarded fallback never overwrites an
+// unknown entry. Copies of regular files are not ownership evidence.
+MaterializationResult place_asset(const std::string& source, const fs::path& destination,
+    std::span<const materialize::AssetClaim> claims = {});
 
 // Take one placed file back out.
-void remove_asset(const fs::path& destination);
+std::expected<void, std::string> remove_asset(const fs::path& destination,
+    std::span<const materialize::AssetClaim> claims = {});
 
 // Remove the directories that only existed to hold a declared asset.
 //
@@ -120,22 +124,22 @@ void prune_empty_asset_dirs(const fs::path& absolute,
 // `usr/include/scsi`, is claimed by two packages, and both mistakes are
 // reachable there.
 //
-// Directories that only existed to hold these assets go too, down to three
-// path components: `usr/include/xkbcommon` is ours, `usr/include` is the
-// sysroot's own shape.
-void reclaim_declared_assets(const fs::path& subosDir,
+// Old claims must be captured before unregistering outgoing metadata.
+// Real parent directories are retained when their ownership is unobserved.
+std::expected<void, std::string> reclaim_declared_assets(const fs::path& subosDir,
                              const fs::path& payloadRoot,
                              const std::set<std::string>& destinations,
                              const VersionDB& db,
-                             const Workspace& activeAfter);
+                             const Workspace& activeAfter,
+                             std::span<const materialize::AssetClaim> claims = {});
 
 // Library-shaped wrappers, kept because the sysroot lib directory is implied
 // rather than declared for libraries.
-void place_library(const std::string& source,
+MaterializationResult place_library(const std::string& source,
                    const std::string& name,
                    const fs::path& sysroot_lib);
 
-void remove_library(const std::string& name, const fs::path& sysroot_lib);
+std::expected<void, std::string> remove_library(const std::string& name, const fs::path& sysroot_lib);
 
 // Helper: filter a list of version keys (`ns:ver` or bare) down to those
 // that appear in the current subos's installed[] for `target`. Tolerant

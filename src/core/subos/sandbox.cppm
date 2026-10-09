@@ -1,22 +1,3 @@
-module;
-
-// System headers used by the sandbox backends only. `import std;` does not
-// pull these in, and the named-module purview forbids including them there.
-#include <cstdio>
-#if defined(_WIN32)
-#define WIN32_LEAN_AND_MEAN
-// See src/core/subos.cppm: windows.h's min/max macros break std::min({...}).
-// Not yet triggered here, and that is exactly why it is worth closing --
-// the failure only appears on Windows, and only once someone writes the call.
-#define NOMINMAX
-#include <windows.h>
-#else
-#include <cerrno>
-#include <cstring>
-#include <unistd.h>
-#include <sys/wait.h>
-#endif
-
 export module xlings.core.subos.sandbox;
 
 import std;
@@ -25,7 +6,9 @@ import xlings.core.config;
 import xlings.platform;
 import xlings.runtime;
 import xlings.core.xim.commands;  // auto_install_backend_ needs cmd_install
-import xlings.core.subos.gpu;
+import xlings.subos.gpu;
+import xlings.subos.policy;
+import xlings.libs.json;
 import xlings.core.xvm.shim;   // resolve_owner_home: reject another home's shim
 
 // Runtime isolation for a subos: proot/bwrap backends, storage images, GPU
@@ -80,13 +63,7 @@ export inline StorageMode storage_from_string_(const std::string& s) {
 export StorageMode read_storage_mode_(const fs::path& subos_dir);
 
 
-// /etc/* template builders + sandbox dir layout init. uid_t / gid_t
-// are POSIX types — Windows MSVC doesn't have them. Sandbox is
-// Linux-only by design (proot uses ptrace + Linux syscall semantics);
-// the only caller (use_sandbox_mode_) is also Linux-guarded, so we
-// guard these helpers too rather than fight the type system with
-// platform-portable substitutes.
-#if defined(__linux__) || defined(__APPLE__)
+// /etc/* templates for POSIX sandboxes (plain data, compiled everywhere).
 
 inline constexpr std::string_view kEtcHosts =
     "127.0.0.1 localhost\n::1 localhost\n";
@@ -157,7 +134,6 @@ inline void write_sandbox_rc_(const fs::path& home_dir) {
     try_write(fish_dir / "config.fish", kSandboxFishConfig);
 }
 
-#endif // __linux__ / __APPLE__
 
 // ── Image storage helpers (V6) ────────────────────────────────────
 
@@ -170,34 +146,7 @@ export bool is_mounted_(const fs::path& path);
 // Unmount an image file.
 export int unmount_image_(const fs::path& mountpoint);
 
-// ── Unified bind list (shared by proot + bwrap) ──────────────────────
-//
-// Both backends use the SAME set of host-RO paths and sandbox-private
-// overrides. This ensures identical security profile (same info exposed,
-// same paths isolated) regardless of backend. Only the CLI syntax
-// differs: proot uses `--bind=src:dst`, bwrap uses `--ro-bind src dst`
-// or `--bind src dst`.
-//
-// Design principle: MINIMAL host exposure. Only bind paths that are
-// functionally required. Everything else stays invisible (proot: maps
-// to empty <subos>/<path>; bwrap: not bound at all).
-//
-// See .agents/docs/sandbox-v5-dual-backend-design.md for rationale.
-
-struct SandboxBind {
-    std::string src;
-    std::string dst;
-    bool readonly;   // true = host RO; false = sandbox RW override
-};
-
-// ── Backend detection + auto-install ─────────────────────────────────
-
-enum class SandboxBackend { Bwrap, Proot };
-
-struct BackendInfo {
-    SandboxBackend type;
-    fs::path binary;
-};
+// ── Backend auto-install ─────────────────────────────────────────────
 
 int auto_install_backend_(const fs::path& home_dir, EventStream& stream);
 
@@ -208,6 +157,42 @@ int auto_install_backend_(const fs::path& home_dir, EventStream& stream);
 // force one via `--sandbox bwrap` or `--sandbox proot`.
 //
 // See .agents/docs/sandbox-v5-dual-backend-design.md for full design.
+// How an instance is entered (design §12). One entry for every surface: the
+// legacy `--cmd` string (run as `sh -c`), an argv (`subos exec -- ...`), an
+// interactive shell (neither), and a detached session (`subos start`).
+export struct EnterOptions {
+    std::string backend;                          // "" | "bwrap" | "proot"
+    bool gpu { false };
+    std::string cmd;                              // legacy --cmd
+    std::vector<std::string> argv;                // exec form
+    std::string cwd;                              // inside
+    std::map<std::string, std::string> env;       // --env K=V
+    std::optional<std::chrono::milliseconds> timeout;
+    int ttl { 0 };                                // idle seconds (detached / --keep)
+    bool detached { false };                      // `subos start`
+    // `subos exec`: a failure before the command starts exits 125 (and the
+    // command's own code otherwise), instead of the CLI's usual 1.
+    bool exec_codes { false };
+    // Report "entering <subos>". A command run from outside (`exec`) is not
+    // someone entering anything; its own output is the whole story.
+    bool announce { true };
+    // A preset named on this call (--sandbox=dev|private|locked) and its
+    // overrides; both may only tighten the instance's own policy.
+    std::optional<policy::Preset> preset;
+    policy::Overrides overrides;
+    std::vector<std::string> publish;             // --publish HOST:SANDBOX (net=nat)
+};
+
+export int enter(const std::string& name, EventStream& stream, const EnterOptions& options);
+
+// What entering `name` under `pol` would give on this host, without entering:
+// the compiled spec (or the refusal), and the platform matrix. For
+// `subos status` and the interface. Nothing is created or mounted.
+export nlohmann::json preview(const std::string& name, const policy::Policy& pol, EventStream& stream);
+
+// `xlings self doctor --isolation [--fix] [--json]`.
+export int doctor_isolation(bool fix, bool yes, bool json, EventStream& stream);
+
 export int enter(const std::string& name, EventStream& stream,
                       const std::string& preferred_backend = "",
                       bool gpu = false,

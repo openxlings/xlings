@@ -21,7 +21,7 @@ macOS/Windows 的重定向不是不受信代码的安全边界。
 - **[二、使用指南](#二使用指南)**
   - [2.1 多版本管理](quick-start/multi-version.md)
   - [2.2 项目环境](quick-start/project-env.md)
-  - [2.3 SubOS 与 Agent](quick-start/subos-and-agent.md)
+  - [2.3 SubOS 使用指南（场景与示例）](quick-start/subos-and-agent.md)
   - [2.4 自定义包索引](quick-start/custom-index.md)
   - [2.5 自我管理与修复](quick-start/self-management.md)
 - **[三、高级主题](#三高级主题)**
@@ -61,19 +61,23 @@ xlings remove gcc                       # 卸载
 | 项目环境复现 | 在项目目录放 `.xlings.json` 声明依赖,`xlings install` 一键安装 |
 | 为 Agent 创建隔离环境 | `xlings subos new agent-ws --from subos:dev-env@latest` |
 | 进入隔离的 SubOS | `xlings subos use agent-ws --sandbox` |
-| 在 SubOS 中执行命令 | `xlings subos use agent-ws --sandbox --cmd "python run.py"` |
+| 在 SubOS 中执行命令 | `xlings subos exec agent-ws --sandbox -- python run.py` |
+| 创建时声明隔离程度 | `xlings subos new agent-ws --sandbox=private` |
 | 升级 xlings 自己 | `xlings self update` |
 | 环境出问题、命令报错 | `xlings self doctor` 体检，`xlings self doctor --fix` 一键修复 |
 
 ### 1.4 SubOS 环境隔离
 
-SubOS 提供三级隔离,满足从日常开发到 Agent 安全执行的不同需求:
+SubOS 是有名字的环境：自己的工具版本、home 和策略。隔离程度由策略声明，而不是由进入方式决定：
 
-| 级别 | 隔离范围 | 需要 root | 适用场景 |
-|------|----------|:---------:|----------|
-| Shell | 工具版本 | 否 | 日常开发、版本切换 |
-| FS | 文件系统(HOME, /tmp) | 否 | Agent 运行、实验、不信任代码 |
-| Image | 块设备完整隔离 | 是 | 重型工作负载 |
+| 层次 | 怎么用 | 隔离 |
+|------|--------|------|
+| 环境 | `xlings subos use <name>` | 工具版本（PATH），宿主文件照常可见 |
+| 沙箱 | `xlings subos use <name> --sandbox` / `subos exec <name> --sandbox -- <cmd>` | Linux：文件系统、进程；macOS / Windows：仅 home |
+| 策略 | `xlings subos new <name> --sandbox=dev\|private\|locked`（或之后 `subos config`） | 声明一次，之后每次进入都按它；在沙箱之上再加网络、身份、装包审批、审计 |
+
+存储（`--storage shared / tmpfs / image`）只决定 home 放在哪里，不增加边界。
+场景和命令见 [SubOS 使用指南](quick-start/subos-and-agent.md)，行为说明见 [SubOS 隔离模型](design/subos-isolation.md)。
 
 ### 1.5 包索引
 

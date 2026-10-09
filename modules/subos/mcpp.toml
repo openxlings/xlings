@@ -1,0 +1,32 @@
+# The SubOS core, as its own package (design §23).
+#
+# What a SubOS IS, independent of how xlings installs packages into one:
+# the instance model and its manifest, the policy and the function that
+# decides, the compiler from policy + host capabilities to a sandbox spec,
+# the platform interfaces and their providers, the session (supervisor,
+# session-init, broker server), userdata rules, GPU / graphics facts.
+#
+# It may not import `xlings.core.*`. That is the point of the package: a
+# build that reaches for the package manager from here fails to compile. What
+# the SubOS core needs from xlings it receives through `Ports` (installing a
+# backend, recognising a foreign shim, executing a broker request), and it
+# answers in structured results -- it never renders text for a person.
+#
+# Possible future: published as its own mcpp package with its own semver,
+# and an `apps/xsubos` front end.
+[package]
+namespace = "xlings"
+name      = "subos"
+version   = "0.1.0"
+
+[targets.subos]
+kind = "lib"
+
+[dependencies]
+libs     = { path = "../libs" }
+platform = { path = "../platform" }
+store    = { path = "../store" }      # payload roots of a generation
+runtime  = { path = "../runtime" }   # guard, observe
+
+[build]
+include_dirs = ["../libs/src/json"]

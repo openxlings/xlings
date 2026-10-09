@@ -1,16 +1,7 @@
 module;
 
-#include <cstdio>
-#include <cstdlib>
-#if !defined(_WIN32)
-#include <sys/wait.h>
-#include <unistd.h>
-#include <fcntl.h>
-#else
-#include <io.h>
-#define NOMINMAX
-#include <windows.h>
-#endif
+// The primary interface declares; it includes nothing. System headers live
+// in the implementation unit that calls them (AGENTS.md, "System headers").
 
 export module xlings.platform;
 
@@ -21,9 +12,46 @@ export import :macos;
 export import :windows;
 // Shared POSIX implementations (linux + macos). Empty TU on Windows.
 export import :unix;
+// Processes, signals, descriptors and local sockets (a supervisor's needs).
+export import :process;
+export import :tcp;
+export import :network;
+export import :net_notify;
+export import :asset_paths;
+export import :machine_etc;
+export import :domain_mount;
+// The kernel's isolation mechanisms: namespaces, Landlock, seccomp, beneath.
+export import :isolation;
 
 namespace xlings {
 namespace platform {
+
+    // The platform this binary was built for, as constants: `if constexpr`
+    // rather than `#if` wherever both branches compile on every platform.
+    // `#if` stays for what only exists on one (headers, system calls).
+#if defined(_WIN32)
+    export inline constexpr bool is_windows = true;
+#else
+    export inline constexpr bool is_windows = false;
+#endif
+#if defined(__APPLE__)
+    export inline constexpr bool is_macos = true;
+#else
+    export inline constexpr bool is_macos = false;
+#endif
+#if defined(__linux__)
+    export inline constexpr bool is_linux = true;
+#else
+    export inline constexpr bool is_linux = false;
+#endif
+    export inline constexpr bool is_posix = !is_windows;
+    // What a file name needs to be an executable here: ".exe" on Windows.
+    export inline constexpr std::string_view exe_suffix = is_windows ? ".exe" : "";
+    // The null device, as a shell redirection target.
+    export inline constexpr std::string_view null_device = is_windows ? "NUL" : "/dev/null";
+    // The calendar fields of `t` in the local time zone (localtime_r / _s).
+    export std::tm local_time(std::time_t t);
+    export bool remove_empty_directory(const std::filesystem::path& path);
 
     export using platform_impl::PATH_SEPARATOR;
     export using platform_impl::OS_NAME;
@@ -84,12 +112,6 @@ namespace platform {
     // so it is directly unit-testable on every platform. Returns nullopt
     // unless both numeric ids are present and well-formed.
     export [[nodiscard]] std::optional<SudoInvoker> parse_sudo_env();
-
-    // Shell-command prefix for privileged ops (mount/umount/chown):
-    // "" when already root (sudo is redundant and often absent in minimal
-    // root containers), "sudo " otherwise — identical to the historical
-    // hardcoded string for the non-root case.
-    export [[nodiscard]] std::string priv_prefix();
 
     // The invoking user iff launched via sudo (root EUID + SUDO_* set).
     // nullopt for pure root (no demotion target) and unprivileged runs.
@@ -234,6 +256,24 @@ namespace platform {
     // POSIX, everything else spawns and waits.
     export int run_shell(std::string_view command, bool interactive);
 
+    // Run an argv -- no shell, nothing to quote for one -- with this process's
+    // stdio and environment, and return its exit code: 127 when the program
+    // is not found, 126 when it cannot be executed, 128+n for signal n (the
+    // `subos exec` exit-code table, design §12.2).
+    export int run_argv(const std::vector<std::string>& argv);
+
+    // Run `argv` with administrator rights, waiting for it (SubOS design
+    // part 3 §6.4, "Elevation"): directly when this process already has
+    // them; otherwise `sudo` on Linux and macOS (the terminal asks), and the
+    // UAC prompt on Windows (ShellExecuteEx "runas"). No shell: argv is
+    // passed as given. 126 when elevation could not be started, 127 when the
+    // program does not exist. Callers record what they elevated
+    // (xlings.subos.elevation); this function only runs it.
+    export int run_elevated(const std::vector<std::string>& argv);
+
+    // Whether this process already runs with administrator rights.
+    export bool is_elevated();
+
     // Escape a single argument for safe embedding in a shell command string.
     export [[nodiscard]] std::string shell_quote(const std::string& arg);
 
@@ -254,32 +294,39 @@ namespace platform {
     // the whole new one, and an interruption before the rename leaves the
     // old content untouched.
 
-    // fsync the data we just wrote. Without it the rename can reach the disk
-    // before the staging file's contents do, which on a power loss yields an
-    // atomically-renamed *empty* file — the exact failure we are removing.
-    inline bool sync_file_handle_(std::FILE* fp) {
-#if defined(_WIN32)
-        return ::_commit(::_fileno(fp)) == 0;
-#else
-        return ::fsync(::fileno(fp)) == 0;
-#endif
-    }
+    // Flush a file's data to stable storage (fsync; _commit on Windows).
+    // Without it a rename can reach the disk before the staged contents do,
+    // which on a power loss yields an atomically-renamed *empty* file.
+    export bool sync_file(const std::filesystem::path& path);
 
-    // fsync the directory so the rename itself is durable. Best-effort: not
-    // all filesystems support it, and failing here does not make the result
-    // any less correct than the non-atomic write it replaces.
-    inline void sync_directory_(const std::filesystem::path& dir) {
-#if !defined(_WIN32)
-        int fd = ::open(dir.c_str(), O_RDONLY | O_DIRECTORY);
-        if (fd < 0) return;
-        ::fsync(fd);
-        ::close(fd);
-#else
-        (void)dir;  // no directory-handle fsync equivalent on Windows
-#endif
-    }
+    // Flush a directory so a rename or link created in it is durable.
+    // Best-effort: Windows has no directory-handle fsync, and some file
+    // systems refuse it; neither makes the result less correct than the
+    // non-durable write it hardens.
+    export void sync_directory(const std::filesystem::path& dir);
+
+    // What changes whenever an entry's own metadata or a directory's entries
+    // change: inode and ctime, not following a final symlink (lstat). ctime
+    // cannot be set back by a user, so an equal stamp means "not touched
+    // since". nullopt where it cannot be read, and always on Windows (no
+    // root projection exists there).
+    export struct ChangeStamp {
+        std::uint64_t inode { 0 };
+        std::int64_t seconds { 0 };
+        std::int64_t nanoseconds { 0 };
+        bool operator==(const ChangeStamp&) const = default;
+    };
+    export std::optional<ChangeStamp> change_stamp(const std::filesystem::path& path);
+
+    // Publish a same-filesystem scratch atomically, refusing every existing destination.
+    // No copy or check-then-rename fallback when the OS cannot enforce this.
+    export std::expected<void, std::string> rename_no_replace(
+        const std::filesystem::path& from, const std::filesystem::path& to);
 
     export void write_file_atomic(const std::string& filepath, const std::string& content);
+    // Acquire a link target once; macOS may return EINVAL while its symlink
+    // vnode is being replaced. Persistent errors remain errors.
+    export std::filesystem::path read_symlink(const std::filesystem::path& path, std::error_code& error);
 
     export void write_string_to_file(const std::string& filepath, const std::string& content);
 

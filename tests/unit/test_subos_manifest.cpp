@@ -8,9 +8,9 @@
 #include <gtest/gtest.h>
 
 import std;
-import xlings.core.subos.manifest;
+import xlings.subos.manifest;
 import xlings.libs.json;
-import xlings.core.subos.userdata;
+import xlings.subos.userdata;
 
 namespace m = xlings::subos::manifest;
 namespace fs = std::filesystem;

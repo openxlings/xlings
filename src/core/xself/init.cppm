@@ -8,7 +8,7 @@ import xlings.core.config;
 import xlings.core.xself.compat;
 // Generated at build time from config/shell/*.{sh,fish,ps1}; see mcpp.toml.
 import xlings.core.xself.profile_resources;
-import xlings.core.subos.manifest;
+import xlings.subos.manifest;
 // The routing table's decision layer. Imported by the INTERFACE because the
 // three writer functions below name its types; the pure/testable half stays
 // in xvm, this module is only its binding to a home.
@@ -37,6 +37,14 @@ export enum class LinkResult { Symlink, Hardlink, Copy, Failed };
 export bool is_builtin_shim(std::string_view name);
 export bool is_bootstrap_home_root(const fs::path& root);
 export fs::path xlings_binary_in_home(const fs::path& home_dir);
+// Deployment S (design part 2 §5): the running binary is a system package's
+// and `home_dir` has no entry of its own. Every shim links to
+// `<home>/bin/xlings`, so without one nothing installed is reachable -- the
+// packages land and `cmake` is still the host's. The entry becomes a symlink
+// to the system binary: the package manager's upgrade reaches every user, and
+// `self update` still refuses (what runs is the system file). True when the
+// home has an entry afterwards; never replaces one that exists.
+export bool ensure_system_entry_link(const fs::path& home_dir);
 export LinkResult create_shim(const fs::path& source, const fs::path& target);
 // Returns how many shims could not be created. NOT void: every result used to
 // be discarded, so a shim that failed -- which on Windows is what a locked
@@ -85,9 +93,9 @@ export xvm::TableReport apply_shim_table(const fs::path& subos_dir,
 // arrive as derived table entries with an owner and a reclamation path,
 // rather than as files nobody records and nothing can remove.
 //
-// Best-effort by design: a failure here means a name is momentarily missing
-// from PATH, not that the install did not happen. Failures are logged, and
-// `self doctor` reports the drift.
+// Shim updates are best-effort and doctor reports drift. A root projection
+// failure is returned to the write command: its /usr must not be reported as
+// updated when it still names the previous generation.
 
 // What a rebuild changed, summed over the scopes it touched. Returned so the
 // callers that run on UPGRADE can say what they repaired -- a repair nobody
@@ -97,6 +105,7 @@ export struct ShimSyncSummary {
     std::size_t removed {};
     std::size_t repointed {};
     std::size_t refused {};   // scopes whose workspace could not be observed
+    std::string root_error;   // a root projection did not converge
 
     [[nodiscard]] bool changed() const {
         return added != 0 || removed != 0 || repointed != 0;
@@ -156,10 +165,16 @@ export std::string entry_command(const fs::path& home, std::string_view args);
 // changes the entry's file object is the one that knows every hard-link shim
 // just detached from it, so the repair lives with the change rather than
 // with each caller remembering it.
+export struct PackageEntryActivation {
+    std::string provider;
+    fs::path source_home;
+};
+
 export bool replace_entry_binary(const fs::path& payloadBinary,
                                  const fs::path& entry,
                                  std::string_view coordinate,
-                                 std::string_view toVersion);
+                                 std::string_view toVersion,
+                                 const PackageEntryActivation& activation);
 
 bool is_builtin_shim(std::string_view name);
 

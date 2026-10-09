@@ -5,6 +5,11 @@
 # file must not change depending on which command ran last.
 version = 2
 
+[package."mcpplibs.xpkg"]
+version = "912720f7aa2204a4c48f0d989331af993bb3c1e4"
+source  = "git+https://github.com/openxlings/libxpkg.git#rev=912720f7aa2204a4c48f0d989331af993bb3c1e4"
+hash    = "fnv1a:84ad1e27eb935f69"
+
 [package."compat.bzip2"]
 namespace = "compat"
 version = "1.0.8"
@@ -70,12 +75,6 @@ namespace = "mcpplibs"
 version = "0.2.9"
 source  = "index+mcpplibs@0.2.9"
 hash    = "fnv1a:a01132893163f775"
-
-[package."mcpplibs.xpkg"]
-namespace = "mcpplibs"
-version = "0.0.60"
-source  = "index+mcpplibs@0.0.60"
-hash    = "fnv1a:86ae98702bf16787"
 
 [package."mcpplibs.capi.lua"]
 namespace = "mcpplibs.capi"

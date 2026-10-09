@@ -1,0 +1,29 @@
+# Runtime primitives the xlings core and the SubOS core both use, and
+# neither may own.
+#
+#   cancellation  cooperative cancellation. `std` only: `platform` depends on
+#                 it, and `platform` is imported by most of the product.
+#   guard         `UserConfirmed`, the token only `ask()` produces -- a
+#                 function that deletes user data takes one, so a code path
+#                 that never asked (a repair, an upgrade) cannot call it --
+#                 and the `Asker` port the interaction surfaces implement.
+#   observe       one event model and one journal (design §22): the
+#                 destructive-operation record, and a SubOS's audit written by
+#                 its supervisor outside the sandbox. Writing never fails the
+#                 operation it describes; lines carry names, never values, for
+#                 anything that can hold a secret; a journal rotates by size.
+#
+# None of them knows about events on a screen, homes or sandboxes.
+[package]
+namespace = "xlings"
+name      = "runtime"
+version   = "0.1.0"
+
+[targets.runtime]
+kind = "lib"
+
+[dependencies]
+libs = { path = "../libs" }
+
+[build]
+include_dirs = ["../libs/src/json"]

@@ -1,0 +1,20 @@
+# openkal beside xlings' runtimes (SubOS design part 3 §4.3, question 1).
+#
+# Not a workspace member, and outside tests/ (whose every .cpp is a test of
+# the root package): nothing of xlings links openkal yet. CI builds this
+# with the toolchain xlings builds with -- glibc, and the static musl target the
+# release uses -- and runs it, so a toolchain or openkal change that breaks
+# their coexistence is a red lane, not a surprise the day xlings adopts it.
+[package]
+name = "openkal-coexistence"
+version = "0.1.0"
+
+[targets.openkal-coexistence]
+kind = "bin"
+main = "src/main.cpp"
+
+[dependencies.mcpplibs]
+openkal = "0.15.0"
+
+[target.'cfg(os = "linux")'.dependencies.mcpplibs]
+openkal-linux = "0.16.1"

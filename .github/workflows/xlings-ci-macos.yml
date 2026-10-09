@@ -9,6 +9,12 @@ on:
   pull_request:
     branches: [main, master, 'release/**']
 
+# A newer push to the same PR supersedes the run in flight; main and release
+# branches keep every run (each one is a commit that landed).
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 env:
   GIT_TERMINAL_PROMPT: 0
   MACOSX_DEPLOYMENT_TARGET: "14.0"
@@ -24,8 +30,8 @@ env:
   # so treat that variable as documentation, not as a lock, until it is
   # either honoured everywhere or removed.
   BOOTSTRAP_XLINGS_VERSION: v2026.8.27.5
-  # Must contain the mcpp version pinned in .xlings.json (2026.9.28.3).
-  XIM_PKGINDEX_REF: 7b9bf4368663f50eb3e736a41009d0eaf2051180
+  # Must contain the mcpp version pinned in .xlings.json (2026.10.5.3).
+  XIM_PKGINDEX_REF: ebf1fbb3417ec513b923279044433887b3af8850
 
 jobs:
   build-and-test:
@@ -270,28 +276,26 @@ jobs:
       # ── Phase 1.5: Unit Tests ────────────────────────────────────
 
       - name: Build and run unit tests
+        env:
+          XDEV_LANE: macos-unit
+          XDEV_LANE_CAPS: macos,posix,pty,xlings-bin,sandbox
+          XDEV_SUMMARY: "1"
         run: |
           mcpp build
-          mcpp test || {
-            status=$?
-            echo "::group::mcpp build diagnostics"
-
-            ninja_bin="$(command -v ninja || true)"
-            if [[ -z "$ninja_bin" ]]; then
-              ninja_bin="$(find "$HOME/.mcpp" "$XLINGS_HOME" -name ninja -type f -perm -111 2>/dev/null | head -1 || true)"
-            fi
-            if [[ -z "$ninja_bin" ]]; then
-              echo "ninja not found"
-            else
-              while IFS= read -r build_file; do
-                build_dir="$(dirname "$build_file")"
-                echo "\$ $ninja_bin -C $build_dir -v"
-                "$ninja_bin" -C "$build_dir" -v || true
-              done < <(find target -name build.ninja -type f | sort)
-            fi
-            echo "::endgroup::"
-            exit "$status"
-          }
+          mcpp build -p xdev
+          # A member's binary lands under the root's target/ or the member's
+          # own, depending on the mcpp version.
+          xdev="$(find target apps/xdev -name xdev -type f -perm -111 2>/dev/null | head -1)"
+          [[ -n "$xdev" ]] || { echo "::error::mcpp build -p xdev produced no xdev"; find . -name 'xdev*' -not -path './.git/*' | head; exit 1; }
+          xdev="$GITHUB_WORKSPACE/$xdev"
+          export XDEV_BIN="$xdev"
+          mkdir -p target/xdev/macos-xdev
+          printf '%s\n' '{"name":"macos-xdev","platform":"macosx","probes":{}}' > target/xdev/macos-xdev/lane.json
+          XTEST_META_OUT="$GITHUB_WORKSPACE/target/xdev/macos-xdev/meta.ndjson" \
+          XTEST_RESULTS_OUT="$GITHUB_WORKSPACE/target/xdev/macos-xdev/cases.ndjson" \
+            mcpp test -p xdev
+          mcpp test --no-run --message-format json
+          "$xdev" test --no-build --out target/xdev/macos-unit
 
       # A separate step, `if: failure()`, and not an `|| { ... }` on one
       # command.
@@ -362,9 +366,6 @@ jobs:
         run: |
           chmod +x ./tools/macos_release.sh
           SKIP_NETWORK_VERIFY=1 ./tools/macos_release.sh
-
-      - name: SubOS sandbox command contract
-        run: bash tests/e2e/subos_cmd_contract_test.sh
 
       - name: Platform core contract
         # 2026-09-12 robustness/usability round: bash e2e contracts that

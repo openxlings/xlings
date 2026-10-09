@@ -48,7 +48,7 @@ int cmd_help(EventStream& stream) {
         {{"name", "install"},   {"desc", "Install xlings from release package"}},
         {{"name", "uninstall"}, {"desc", "Remove this xlings install entirely (-y / --keep-data / --dry-run)"}},
         {{"name", "init"},      {"desc", "Create home/data/subos dirs"}},
-        {{"name", "update"},    {"desc", "Update index + install latest xlings"}},
+        {{"name", "update"},    {"desc", "Update index + install latest xlings (--user: into this home, beside a system package's xlings)"}},
         {{"name", "config"},    {"desc", "Show configuration details"}},
         {{"name", "clean"},     {"desc", "Remove cache + gc orphaned packages (--dry-run)"}},
         {{"name", "migrate"},   {"desc", "Migrate old layout to subos/default"}},
@@ -108,8 +108,12 @@ int run(int argc, char* argv[], EventStream& stream) {
         return cmd_init();
     }
     if (action == "update") {
-        if (auto rc = reject_surplus(action); rc != 0) return rc;
-        return cmd_update();
+        bool user = false;
+        for (const auto& a : args) {
+            if (a == "--user") user = true;
+            else return reject("update", a);
+        }
+        return cmd_update(user);
     }
     if (action == "config") {
         if (auto rc = reject_surplus(action); rc != 0) return rc;
@@ -138,6 +142,9 @@ int run(int argc, char* argv[], EventStream& stream) {
         for (std::size_t i = 0; i < args.size(); ++i) {
             const auto& arg = args[i];
             if (arg == "--fix") fix = true;
+            // Spelled here for the parser; `--isolation` is answered before
+            // this (cli.cpp), and --json only shapes that report.
+            else if (arg == "--json" || arg == "--isolation") {}
             // Discards unreadable binding metadata, so it is opt-in on top
             // of --fix rather than part of it.
             else if (arg == "--reset-metadata") resetMetadata = true;

@@ -66,4 +66,11 @@ std::string version_of(const fs::path& entry);
 bool replace_with(const fs::path& payloadBinary, const fs::path& entry,
                   std::string_view coordinate, std::string_view toVersion);
 
+struct ManagedMirror {
+    fs::path ownerHome;
+    fs::path privateHome;
+};
+// A managed domain dispatcher follows its caller; only recorded bytes may be replaced.
+std::expected<bool, std::string> refresh_mirror(const fs::path& source, const ManagedMirror& mirror);
+
 }  // namespace xlings::entry_binary

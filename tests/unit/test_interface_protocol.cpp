@@ -87,9 +87,14 @@ std::pair<std::string, int> run_xlings_(
         // would override the `cd <neutral_cwd>` isolation below by
         // forcing the spawned binary to use the leaked project root.
         _putenv_s("XLINGS_PROJECT_DIR", "");
+        // Same leak, one level down: a shell inside a subos exports which
+        // subos it is in, and the spawned binary obeys it over the test
+        // home's own choice.
+        _putenv_s("XLINGS_ACTIVE_SUBOS", "");
 #else
         ::setenv("XLINGS_HOME", xlings_home.c_str(), 1);
         ::unsetenv("XLINGS_PROJECT_DIR");
+        ::unsetenv("XLINGS_ACTIVE_SUBOS");
 #endif
     }
 
@@ -192,7 +197,7 @@ TEST(InterfaceProtocol, VersionFlagPrintsProtocolVersion) {
     auto j = nlohmann::json::parse(out, nullptr, false);
     ASSERT_FALSE(j.is_discarded()) << "non-JSON output: " << out;
     ASSERT_TRUE(j.contains("protocol_version"));
-    EXPECT_EQ(j["protocol_version"].get<std::string>(), "1.5");
+    EXPECT_EQ(j["protocol_version"].get<std::string>(), "1.6");
     std::filesystem::remove_all(home);
 }
 

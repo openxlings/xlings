@@ -7,11 +7,13 @@ module;
 
 module xlings.cli;
 
+import xlings.core.xim.lua_boundary;
 import std;
 import mcpplibs.cmdline;
 import mcpplibs.capi.lua;
 import mcpplibs.xpkg.executor;
 import xlings.core.config;
+import xlings.core.home;
 import xlings.core.notice;
 import xlings.core.home_config;
 import xlings.libs.json;
@@ -23,6 +25,9 @@ import xlings.runtime;
 import xlings.ui;
 import xlings.i18n;
 import xlings.platform;
+import xlings.subos.broker;
+import xlings.subos.policy;
+import xlings.core.subos.sandbox;
 import xlings.capabilities;
 import xlings.agent;
 import xlings.agent.text_renderer;
@@ -78,7 +83,23 @@ std::vector<completion::Candidate> completion_live_values_(
         } else if (option == "--storage") {
             for (auto value : {"shared", "tmpfs", "image"}) add(value);
         } else if (option == "--sandbox") {
-            for (auto value : {"bwrap", "proot"}) add(value);
+            // `subos config` takes a preset; everywhere else the word after
+            // `--sandbox` is a backend (a preset there is `--sandbox=<preset>`).
+            if (request.command == "subos config") {
+                for (auto value : {"dev", "private", "locked"}) add(value);
+            } else {
+                for (auto value : {"bwrap", "proot", "landlock"}) add(value);
+            }
+        } else if (option == "--net") {
+            for (auto value : {"host", "nat", "none", "proxy"}) add(value);
+        } else if (option == "--fetch") {
+            for (auto value : {"auto", "ask", "deny"}) add(value);
+        } else if (option == "--index-update") {
+            for (auto value : {"auto", "ask", "deny"}) add(value);
+        } else if (option == "--observe") {
+            for (auto value : {"off", "basic", "standard", "full"}) add(value);
+        } else if (option == "--allow" || option == "--disallow") {
+            for (auto value : subos::policy::kGrants) add(std::string(value));
         } else if (option == "--shell") {
             // Kept in step with what xvm::parse_shell accepts; aliases are
             // cheap to offer and the parser is the authority.
@@ -430,8 +451,14 @@ void dispatch_data_event(const DataEvent& e) {
         std::vector<std::tuple<std::string, std::string, int, int, bool>> entries;
         if (json.contains("entries") && json["entries"].is_array()) {
             for (auto& e : json["entries"]) {
+                // A root says so, and what it is to this machine (part 2 §3.4).
+                std::string name = e.value("name", "");
+                if (e.value("kind", "view") == "rootfs") {
+                    name += e.value("host", false) ? " (root, /)" : " (root)";
+                    if (e.value("boot_entry", false)) name += " [boot]";
+                }
                 entries.emplace_back(
-                    e.value("name", ""),
+                    name,
                     e.value("dir", ""),
                     e.value("commands", e.value("pkgCount", 0)),
                     e.value("packages", -1),
@@ -736,6 +763,61 @@ bool parse_target_spec_(const mcpplibs::cmdline::ParsedArgs& args,
 }
 
 // Install packages from project .xlings.json workspace
+// `install --system` (deployment M, SubOS design part 2 §10): the system
+// layer is a home of its own -- root's, /xlings unless XLINGS_SYSTEM_LAYER
+// names another -- and the install runs in it. Every user's profile puts its
+// programs after their home's own, so a user's version wins and the system's
+// is used without a copy; nobody but root can write it.
+int install_into_system_layer_(const std::vector<std::string>& targets, bool yes, bool reconfig) {
+    namespace fs = std::filesystem;
+    const char* named = std::getenv("XLINGS_SYSTEM_LAYER");
+    const auto layer = fs::path(named && *named ? named : "/xlings");
+    if (targets.empty()) {
+        log::error("install --system needs the packages to install");
+        return 2;
+    }
+    if (!platform::is_root()) {
+        log::error("the system layer {} is root's: sudo xlings install --system ...", layer.string());
+        return 13;
+    }
+    std::error_code ec;
+    fs::create_directories(layer / "bin", ec);
+    if (ec) {
+        log::error("cannot initialize the system layer {}: {}", layer.string(), ec.message());
+        return 1;
+    }
+    if (!fs::exists(layer / ".xlings-home", ec)) {
+        std::ofstream(layer / ".xlings-home") << "{\n  \"layout\": 2,\n  \"mode\": \"multi\"\n}\n";
+    }
+    // Its entry: this binary when it is a system package's (the package
+    // manager updates it), a copy of it otherwise.
+    const auto exe = platform::get_executable_path();
+    const auto entry = layer / "bin" / "xlings";
+    if (!fs::exists(entry, ec)) {
+        if (home::describe_entry(exe, layer).system) fs::create_symlink(exe, entry, ec);
+        else fs::copy_file(exe, entry, ec);
+        if (ec) {
+            log::error("cannot place {}: {}", entry.string(), ec.message());
+            return 1;
+        }
+    }
+    platform::set_env_variable("XLINGS_HOME", layer.string());
+    platform::unset_env_variable("XLINGS_ACTIVE_SUBOS");
+    if (int rc = platform::run_argv_with_timeout(std::vector<std::string>{entry.string(), "self", "init"},
+                                                 std::chrono::hours(1));
+        rc != 0)
+        return rc;
+    std::vector<std::string> argv{entry.string(), std::string("install")};
+    if (yes) argv.push_back("-y");
+    if (reconfig) argv.push_back("--reconfig");
+    argv.insert(argv.end(), targets.begin(), targets.end());
+    const int rc = platform::run_argv_with_timeout(argv, std::chrono::hours(6));
+    if (rc == 0)
+        log::info("in the system layer {}: every user's shell finds it after their own "
+                  "(their profile, from the next shell on)", layer.string());
+    return rc;
+}
+
 int install_from_project_config_(EventStream& stream, bool reconfig) {
     namespace fs = std::filesystem;
     std::error_code ec;
@@ -1561,7 +1643,15 @@ int dispatch_(int argc, char* argv[]) {
 
     // Scan for global flags (--verbose, -v, --quiet, -q, --agent) anywhere
     // in argv so they work regardless of position.
-    bool agent_mode = false;
+    // The audience is DECLARED, never inferred from a terminal (design §13):
+    // `--agent` for one command, XLINGS_AGENT_MODE=1 for a whole process tree
+    // (0 declares a human). Exported below so every xlings this one starts --
+    // including the one inside a sandbox, where the variable is allow-listed
+    // -- keeps the same contract.
+    bool agent_mode = [] {
+        const char* v = std::getenv("XLINGS_AGENT_MODE");
+        return v != nullptr && std::string_view(v) == "1";
+    }();
     std::string uiModeFlag;
     for (int i = 1; i < argc; ++i) {
         std::string_view a { argv[i] };
@@ -1648,6 +1738,7 @@ int dispatch_(int argc, char* argv[]) {
     // Unlike interface mode, we do NOT set tui_mode(true) — log output should
     // still reach the terminal, just without ANSI decoration.
     if (agent_mode) {
+        platform::set_env_variable("XLINGS_AGENT_MODE", "1");
         stream.set_enabled(tui_listener, false);
         log::enable_color(false);
         // One switch for every writer, not just log's own prefixes.
@@ -1739,6 +1830,29 @@ int dispatch_(int argc, char* argv[]) {
         // plain text nor names a single skill. The whole point of this command
         // family is that a machine reads its output.
         if (cmd == "agent") return agent::run(fargc, fargv.data());
+
+        // Inside a SubOS sandbox the home is read-only (design §8): what would
+        // change it goes to the broker, which decides with the instance's
+        // policy and runs it outside; what only the owner may do is refused
+        // here, with the command that does it outside.
+        if (subos::broker::available()) {
+            std::vector<std::string> rest;
+            for (int i = 1; i < fargc; ++i) rest.emplace_back(fargv[i]);
+            const char* active = std::getenv("XLINGS_ACTIVE_SUBOS");
+            const std::string instance = active ? active : "";
+            const auto cls = subos::broker::classify(rest, instance);
+            if (cls.route == subos::broker::Route::Owner) {
+                std::string line;
+                for (auto& a : rest) line += " " + a;
+                diag::emit({
+                    .code    = "subos.owner_only",
+                    .summary = "E_PERMISSION: only the owner, outside the sandbox, can do this",
+                    .actions = { { "outside the sandbox", "xlings" + line } },
+                });
+                return subos::broker::kExitPermission;
+            }
+            if (cls.route == subos::broker::Route::Broker) return subos::broker::forward(rest);
+        }
 
         // Intercept subcommand help: xlings <cmd> -h/--help
         bool wantsHelp = false;
@@ -1870,7 +1984,51 @@ int dispatch_(int argc, char* argv[]) {
             }
         }
 
+        // The agent contract (design §13.3): nothing waits for input. An
+        // interactive shell is the one subos entry that does by design, so an
+        // agent is pointed at the form that does not -- decided here, at the
+        // interaction surface, never inside the core.
+        if (cmd == "subos" && agent_mode && fargc >= 4
+            && std::string_view(fargv[2]) == "use") {
+            bool non_interactive = false;
+            for (int i = 3; i < fargc; ++i) {
+                std::string_view a{fargv[i]};
+                if (a == "--cmd" || a.starts_with("--cmd=") || a == "--shell"
+                    || a.starts_with("--shell=") || a == "--global")
+                    non_interactive = true;
+            }
+            if (!non_interactive) {
+                std::string name;
+                for (int i = 3; i < fargc && name.empty(); ++i)
+                    if (fargv[i][0] != '-') name = fargv[i];
+                diag::emit({
+                    .code    = "subos.interactive_in_agent_mode",
+                    .summary = "`subos use` without --cmd opens an interactive shell, "
+                               "and in agent mode nothing waits for input",
+                    .actions = { { "run a command", std::format("xlings subos exec {} -- <command...>",
+                                                                name.empty() ? "<name>" : name) },
+                                 { "keep a session", std::format("xlings subos start {}", name.empty() ? "<name>" : name) } },
+                });
+                return 2;
+            }
+        }
         if (cmd == "subos") return subos::run(fargc, fargv.data(), stream);
+        // `self doctor --isolation`: what this host can isolate with, and the
+        // one root repair (design §20). Answered by the SubOS adapter.
+        if (cmd == "self" && fargc >= 3 && std::string_view(fargv[2]) == "doctor") {
+            bool isolation = false, fix = false, yes = false, json = false;
+            for (int i = 3; i < fargc; ++i) {
+                std::string_view a{fargv[i]};
+                if (a == "--isolation") isolation = true;
+                else if (a == "--fix") fix = true;
+                else if (a == "--json") json = true;
+            }
+            for (int i = 1; i < argc; ++i) {
+                std::string_view a{argv[i]};
+                if (a == "-y" || a == "--yes") yes = true;
+            }
+            if (isolation) return subos::sandbox::doctor_isolation(fix, yes, json, stream);
+        }
         if (cmd == "self") return xself::run(fargc, fargv.data(), stream);
         if (cmd == "profile") return run_profile_(fargc, fargv.data(), stream);
         if (cmd == "script") {
@@ -1880,11 +2038,6 @@ int dispatch_(int argc, char* argv[]) {
             }
             namespace fs = std::filesystem;
             fs::path scriptFile = fargv[2];
-            auto execResult = mcpplibs::xpkg::create_executor(scriptFile);
-            if (!execResult) {
-                log::error("failed to load script: {}", execResult.error());
-                return 1;
-            }
             mcpplibs::xpkg::ExecutionContext ctx;
             ctx.platform = std::string(platform::OS_NAME);
             ctx.bin_dir = Config::paths().binDir;
@@ -1893,6 +2046,11 @@ int dispatch_(int argc, char* argv[]) {
             ctx.xpkg_dir = Config::paths().dataDir / "xpkgs";
             for (int i = 3; i < fargc; ++i) {
                 ctx.args.emplace_back(fargv[i]);
+            }
+            auto execResult = xim::lua_boundary::create_executor(scriptFile, ctx);
+            if (!execResult) {
+                log::error("failed to load script: {}", execResult.error());
+                return 1;
             }
             auto result = execResult->run_script(ctx);
             if (!result.success) {
@@ -1940,6 +2098,8 @@ int dispatch_(int argc, char* argv[]) {
             .option(cmdline::Option("global").short_name('g').help("Install to global scope (not project-local subos)"))
             .option(cmdline::Option("use").short_name('u').help("Activate the installed version even if another version is currently active"))
             .option(cmdline::Option("reconfig").help("Run the configuration step again, even for packages already configured here"))
+            .option(cmdline::Option("subos").takes_value().value_name("NAME").help("Install into this subos instead of the current one"))
+            .option(cmdline::Option("system").help("Install into the system layer (/xlings): every user of this machine gets it"))
             .arg("packages").help("Package names with optional version")
             .action(wrap_rc([&stream](const cmdline::ParsedArgs& args) -> int {
                 apply_global_opts_(args);
@@ -1967,6 +2127,21 @@ int dispatch_(int argc, char* argv[]) {
                 }
 
                 const bool reconfig = args.is_flag_set("reconfig");
+                if (args.is_flag_set("system"))
+                    return install_into_system_layer_(targets, args.is_flag_set("yes"), reconfig);
+                // --subos <name> (design §9; remove already had it): act on
+                // that subos, set the way `subos runtime` does -- the override
+                // recomputes the cached paths, the variable is what the
+                // activation path re-reads.
+                if (auto named = args.value("subos")) {
+                    const std::string name(*named);
+                    if (name.empty() || !std::filesystem::is_directory(Config::subos_dir(name))) {
+                        log::error("no subos named '{}' (xlings subos list)", name);
+                        return 1;
+                    }
+                    platform::set_env_variable("XLINGS_ACTIVE_SUBOS", name);
+                    (void)Config::set_active_subos_override(name);
+                }
                 if (targets.empty()) return install_from_project_config_(stream, reconfig);
 
                 bool yes = args.is_flag_set("yes");

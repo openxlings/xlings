@@ -1,31 +1,68 @@
 import std;
 
 import xlings.cli;
+import xlings.core.xim.lua_boundary;
 import xlings.core.config;
 import xlings.core.log;
 import xlings.platform;
 import xlings.core.xvm.shim;
 import xlings.core.home_identity;
+import xlings.core.home;
+import xlings.subos.session;
+import luban.stage0;
+import xlings.carrier.wsl2;
+import xlings.observe;
 import xlings.core.xvm.lock;
 import xlings.core.destructive_log;
 // Cross-version compat shims (alias migrations, profile auto-upgrade).
 // See compact/xself.cppm — each compat lives in its own version sub-namespace.
 import xlings.core.xself.compat;
 
-#ifdef _WIN32
-#include <io.h>
-#define isatty _isatty
-#define STDOUT_FD 1
-#else
-#include <unistd.h>
-#define STDOUT_FD STDOUT_FILENO
-#endif
-
-#ifdef __APPLE__
-#include <cstdlib>  // std::_Exit
-#endif
 
 int main(int argc, char* argv[]) {
+    // `xlings __carrier-env K=V ... -- <args>`: a carrier's launcher carries
+    // no variables and its guest has no env(1) (design part 3 §5.1). Set
+    // them and go on as `xlings <args>`.
+    std::vector<char*> carried;
+    if (argc >= 2 && std::string_view(argv[1]) == "__carrier-env") {
+        int i = 2;
+        for (; i < argc && std::string_view(argv[i]) != "--"; ++i) {
+            const std::string_view kv(argv[i]);
+            const auto eq = kv.find('=');
+            if (eq == std::string_view::npos || eq == 0) {
+                std::println(std::cerr, "xlings __carrier-env: expected K=V, got '{}'", kv);
+                return 2;
+            }
+            xlings::platform::set_env_variable(std::string(kv.substr(0, eq)), std::string(kv.substr(eq + 1)));
+        }
+        carried.push_back(argv[0]);
+        for (++i; i < argc; ++i) carried.push_back(argv[i]);
+        carried.push_back(nullptr);
+        argc = static_cast<int>(carried.size()) - 1;
+        argv = carried.data();
+    }
+    if (argc >= 2 && std::string_view(argv[1]) == "__xpkg-worker")
+        return xlings::xim::lua_boundary::worker_main(argc, argv);
+    // A machine's first process when its root is a SubOS (design part 2
+    // §8.2): before anything reads a home -- /proc is not even mounted yet.
+    if (argc >= 1 && std::filesystem::path(argv[0]).filename() == luban::stage0::kName)
+        return luban::stage0::run(argc, argv);
+
+    // The first process inside a SubOS sandbox (xlings.subos.session). Before
+    // everything: it must not read, adopt or write any home -- inside, the
+    // home is the sandbox's view of it -- and it is not a shim.
+    // Inside a carrier's machine (design part 3 §5.3): mount one granted
+    // Windows directory. Run there by the xlings on the host, as root.
+    if (argc >= 2 && std::string_view(argv[1]) == "__carrier-grant") {
+        std::vector<std::string> args(argv + 2, argv + argc);
+        return xlings::carrier::wsl2::guest_grant(args);
+    }
+
+    if (argc >= 2 && std::string_view(argv[1]) == "__session-init") {
+        std::vector<std::string> args(argv + 2, argv + argc);
+        return xlings::subos::session::session_init(args);
+    }
+
     // Shim handoff (#615), before anything else runs -- in particular before
     // any path is narrowed to the ANSI code page, which is where a stale
     // client dies silently in a directory outside it (mcpp#693).
@@ -56,7 +93,7 @@ int main(int argc, char* argv[]) {
     // Restore terminal cursor visibility on exit (safety net for TUI download progress)
     // Only emit when stdout is a TTY to avoid polluting captured output
     std::atexit([]() {
-        if (isatty(STDOUT_FD)) {
+        if (xlings::platform::stdout_is_terminal()) {
             std::cout << "\033[?25h" << std::flush;
         }
     });
@@ -125,6 +162,40 @@ int main(int argc, char* argv[]) {
         // recognised by its layout.
         if (is_cli) xlings::home_identity::adopt_legacy_home(p.homeDir);
 
+        // What kind of home this is (xlings.core.home). A home a NEWER client
+        // moved to a layout this one does not know is read, never written:
+        // writing would undo what this client cannot see. Otherwise the mode
+        // is declared once (inferred from where the home is, for a marker that
+        // predates modes) and the layout raised to this client's -- layout 2
+        // only adds directories, so an older client is unaffected. Commands
+        // only, for the same reason as the marker above.
+        bool refused = false;
+        if (is_cli) {
+            const auto& ctx = xlings::Config::home_context();
+            xlings::observe::trace("home", std::format("{} source={} mode={}{} layout={}", ctx.home.string(),
+                xlings::home::to_string(ctx.source), xlings::home::to_string(ctx.mode),
+                ctx.modeDeclared ? "" : " (inferred)", ctx.layout));
+            if (!ctx.writable()) {
+                std::vector<std::string_view> rest(argv + 1, argv + argc);
+                if (!xlings::home::is_read_only_command(rest)) {
+                    xlings::log::error(
+                        "{} is at home layout {}, written by a newer xlings; this "
+                        "client knows layout {} and only reads it. Run the home's "
+                        "own client: {}",
+                        p.homeDir.string(), ctx.layout, xlings::home::kLayout,
+                        (p.homeDir / "bin" / "xlings").string());
+                    rc = 1;
+                    refused = true;
+                }
+            } else if (xlings::home_identity::has_marker(p.homeDir)
+                       && (!ctx.modeDeclared || ctx.layout < xlings::home::kLayout)) {
+                (void)xlings::home::declare(
+                    p.homeDir,
+                    ctx.modeDeclared ? std::nullopt : std::optional(ctx.mode),
+                    xlings::home::kLayout);
+            }
+        }
+
         // What this process calls itself when another one has to wait for its
         // state lock. Set here because this is the only place that has argv and
         // is not itself a command; see xvm/lock.cppm.
@@ -142,7 +213,9 @@ int main(int argc, char* argv[]) {
             xlings::xvm::set_lock_command_hint(std::move(command));
         }
 
-        if (is_cli) {
+        if (refused) {
+            // rc set above; fall through to the platform exit path.
+        } else if (is_cli) {
             rc = xlings::cli::run(argc, argv);
         } else {
             rc = xlings::xvm::shim_dispatch(program_name, argc, argv);
@@ -155,14 +228,13 @@ int main(int argc, char* argv[]) {
         rc = 1;
     }
 
-#ifdef __APPLE__
-    // On macOS, static libc++ linked with dynamic libc++abi causes SIGABRT
-    // during static destruction. Skip destructors — CLI tool needs no cleanup.
-    // _Exit skips atexit handlers, so restore cursor explicitly here.
-    if (isatty(STDOUT_FD)) std::cout << "\033[?25h" << std::flush;
-    std::cerr.flush();
-    std::_Exit(rc);
-#else
+    if constexpr (xlings::platform::is_macos) {
+        // On macOS, static libc++ linked with dynamic libc++abi causes SIGABRT
+        // during static destruction. Skip destructors — CLI tool needs no cleanup.
+        // _Exit skips atexit handlers, so restore cursor explicitly here.
+        if (xlings::platform::stdout_is_terminal()) std::cout << "\033[?25h" << std::flush;
+        std::cerr.flush();
+        std::_Exit(rc);
+    }
     return rc;
-#endif
 }

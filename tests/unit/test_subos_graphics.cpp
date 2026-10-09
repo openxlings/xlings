@@ -17,7 +17,7 @@
 #include <string>
 
 import std;
-import xlings.core.subos.graphics;
+import xlings.subos.graphics;
 
 namespace gfx = xlings::subos::graphics;
 namespace fs = std::filesystem;

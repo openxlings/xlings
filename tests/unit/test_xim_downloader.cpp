@@ -44,7 +44,7 @@ import xlings.platform;
 import xlings.libs.json;
 import xlings.core.xself;
 import xlings.core.profile;
-import xlings.core.subos.gpu;
+import xlings.subos.gpu;
 import xlings.core.xim.downloader;
 import xlings.runtime;
 import xlings.capabilities;

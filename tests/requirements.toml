@@ -1,0 +1,734 @@
+# Requirement IDs and their status (design §24.4).
+#
+# Every ID here names a behaviour the SubOS design (or a finding it fixes)
+# promises. Tests claim IDs with `covers = {...}` in their XTEST metadata;
+# `xdev report --requirements tests/requirements.toml --fail-uncovered`
+# fails when
+#   - a `required` ID has no test, or
+#   - a test names an ID this file does not declare (a typo would otherwise
+#     cover nothing and look like coverage).
+#
+# kind   = "flow"       any test covers it
+#        = "isolation"  only a test with `proves = "isolation"` (one that runs
+#                       a real sandbox) covers it; the fake provider proves
+#                       that the path is wired, not that anything is isolated
+# status = "required"   built; must be covered
+#        = "planned"    designed, its checkpoint has not landed yet; the
+#                       commit that lands it flips the status
+#        = "deferred"   not in this PR; `why` says so
+
+# ── testkit (T1) ────────────────────────────────────────────────────
+
+[TK-RUN]
+text = "the runner reports exit code, stdout and stderr"
+status = "required"
+
+[TK-HERMETIC]
+text = "a run starts from the environment the test names, nothing inherited"
+status = "required"
+
+[TK-TIMEOUT]
+text = "a timed-out run is killed with its process group"
+status = "required"
+
+[TK-PTY]
+text = "a pty with nothing typed exposes a program that waits for input"
+status = "required"
+
+[TK-HOME]
+text = "an isolated home lives outside the user's home and is removed"
+status = "required"
+
+[TK-CAPS]
+text = "an unknown capability fails; network is opt-in"
+status = "required"
+
+[TK-META]
+text = "XTEST metadata is registered before tests run"
+status = "required"
+
+# ── findings (design §1) ────────────────────────────────────────────
+
+[F1]
+text = "inside a sandbox the xlings home is read-only except the instance's own tree"
+kind = "isolation"
+status = "required"
+
+[F2]
+text = "X11 is unreachable unless granted (no host abstract sockets)"
+kind = "isolation"
+status = "required"
+
+[F3]
+text = "only allow-listed environment variables enter the sandbox"
+kind = "isolation"
+status = "required"
+
+[F4]
+text = "host processes are invisible (pid namespace)"
+kind = "isolation"
+status = "required"
+
+[F5]
+text = "net=nat/none hides the host's network identity (ARP, interfaces)"
+kind = "isolation"
+status = "required"
+
+[F6]
+text = "other instances' trees are invisible"
+kind = "isolation"
+status = "required"
+
+[F7]
+text = "hostname, timezone and locale are neutral under private/locked"
+kind = "isolation"
+status = "required"
+
+[F8]
+text = "terminal injection (TIOCSTI) is blocked"
+kind = "isolation"
+status = "required"
+
+[F10]
+text = "backend lookup: root-owned bwrap, then a system bwrap that probes, then the payload; no setuid"
+status = "required"
+
+[F11]
+text = "--keep / --ttl mean session idle time (the keeper is replaced by the session)"
+status = "required"
+
+[F12]
+text = "a failed probe reports the raw error and least-privilege fixes, never a global sysctl"
+status = "required"
+
+[F13]
+text = "a lane that declares a capability fails when it is missing"
+status = "required"
+
+[F14]
+text = "a system install's shared config is not world-writable"
+status = "required"
+
+[F15]
+text = "a supervisor outside the sandbox writes the audit; the sandbox cannot reach it"
+kind = "isolation"
+status = "required"
+
+[F16]
+text = "subos exec runs argv without a shell, from outside the instance"
+status = "required"
+
+# ── subos use --cmd (existing contract, T1) ────────────────────────
+
+[SUBOS-CMD-EXIT]
+text = "--cmd returns the command's exit code"
+status = "required"
+
+[SUBOS-CMD-HOME]
+text = "--cmd runs with the sandbox's home"
+status = "required"
+
+[SUBOS-CMD-WIN-QUOTING]
+text = "Windows: cmd.exe quoting is not rewritten by the PowerShell path"
+status = "required"
+
+# ── exit codes (design §12.2, §13.3) ───────────────────────────────
+
+[EXIT-CMD]
+text = "exec returns the command's own exit code"
+status = "required"
+
+[EXIT-125]
+text = "a failure before the command starts exits 125 with phase=setup"
+status = "required"
+
+[EXIT-126]
+text = "a command that cannot be executed exits 126"
+status = "required"
+
+[EXIT-127]
+text = "a command that is not found exits 127"
+status = "required"
+
+[EXIT-124]
+text = "--timeout exits 124"
+status = "required"
+
+[EXIT-SIGNAL]
+text = "a command killed by signal n exits 128+n"
+status = "required"
+
+[EXIT-13]
+text = "a denied permission exits 13 (E_PERMISSION)"
+status = "required"
+
+[EXIT-75]
+text = "a request waiting for approval exits 75"
+status = "required"
+
+[EXIT-2-CONFIRM]
+text = "agent mode without -y refuses a confirmation with exit 2"
+status = "required"
+
+# ── agent contract (design §13) ────────────────────────────────────
+
+[AGENT-NO-PROMPT]
+text = "in agent mode no command waits for input"
+status = "required"
+
+[AGENT-CANDIDATES]
+text = "a choice without a default is an error with structured candidates"
+status = "required"
+
+[AGENT-DECLARED]
+text = "the audience is declared (--agent, XLINGS_AGENT_MODE=1/0), never inferred"
+status = "required"
+
+[AGENT-ENV-PROPAGATES]
+text = "XLINGS_AGENT_MODE reaches the xlings running inside a sandbox"
+status = "required"
+
+# ── policy (design §7, §9) ─────────────────────────────────────────
+
+[POL-PRESETS]
+text = "presets dev / private / locked compile to their documented specs"
+status = "required"
+
+[POL-SANDBOX-ALIAS]
+text = "--sandbox alone means the dev preset; --sandbox=<preset> selects one"
+status = "required"
+
+[POL-UNKNOWN-REFUSED]
+text = "an unknown security-relevant policy field refuses entry"
+status = "required"
+
+[POL-OUTSIDE-INSTANCE]
+text = "the policy file lives outside the instance and is read-only inside"
+kind = "isolation"
+status = "required"
+
+[POL-DECIDE]
+text = "one decide() answers for the client and the broker"
+status = "required"
+
+[POL-RULES]
+text = "ordered rules: first match wins"
+status = "required"
+
+[POL-PACK]
+text = "a policy package supplies a policy by reference"
+status = "required"
+
+[POL-CONFIG-STATUS]
+text = "subos config edits the policy; subos status shows requested vs effective"
+status = "required"
+
+# ── isolation spec and capabilities (design §16–§18) ───────────────
+
+[ISO-SPEC-GOLDEN]
+text = "Policy + Caps compile to a SandboxSpec that has golden tests"
+status = "required"
+
+[ISO-PROBE-SAME-SPEC]
+text = "the probe runs the same spec with /bin/true"
+status = "required"
+
+[ISO-CAPS-CACHE]
+text = "capabilities are cached per kernel/boot/provider/version"
+status = "required"
+
+[ISO-MUST-SHOULD]
+text = "a missing must-item refuses (125); a missing should-item degrades and says so"
+status = "required"
+
+[ISO-NO-DEGRADE]
+text = "--no-degrade turns any missing item into a refusal"
+status = "required"
+
+[ISO-LANDLOCK]
+text = "the Landlock provider restricts writes without namespaces"
+kind = "isolation"
+status = "required"
+
+[ISO-MOUNT]
+text = "--mount src:dst[:ro|rw] maps a host path into the instance"
+kind = "isolation"
+status = "required"
+
+[ISO-GRANTS]
+text = "--allow <grant> opens exactly one named capability"
+status = "required"
+
+[ISO-NET-NONE]
+text = "net=none leaves only loopback"
+kind = "isolation"
+status = "required"
+
+[ISO-NET-NAT]
+text = "net=nat gives egress through pasta with a private namespace"
+kind = "isolation"
+status = "required"
+
+[ISO-NET-PROXY]
+text = "net=proxy: egress only through the declared proxy"
+kind = "isolation"
+status = "required"
+
+[OBS-NET]
+text = "nat and proxy network attempts are journaled before the supervisor permits them"
+status = "required"
+
+[ISO-DISABLE-USERNS]
+text = "private / locked forbid nested user namespaces"
+kind = "isolation"
+status = "required"
+
+[ISO-ROOTFS]
+text = "an instance can run on its own rootfs"
+kind = "isolation"
+status = "required"
+
+# ── sessions (design §12, §16) ─────────────────────────────────────
+
+[SES-SUPERVISOR]
+text = "entering forks and supervises instead of exec-replacing xlings"
+status = "required"
+
+[SES-JOIN]
+text = "use / exec join a running session of the same instance"
+status = "required"
+
+[SES-START-STOP]
+text = "subos start / stop manage a detached session with an idle TTL"
+status = "required"
+
+[SES-TEMP]
+text = "exec --temp runs in a throwaway instance whose audit survives it"
+status = "required"
+
+[SES-CP]
+text = "subos cp copies files in and out"
+status = "required"
+
+[SES-SIGNALS]
+text = "SIGTERM/SIGHUP reach the session; the supervisor ignores SIGINT while waiting"
+status = "required"
+
+# ── broker and permissions (design §8, §9) ─────────────────────────
+
+[PERM-FETCH-AUTO]
+text = "fetch=auto installs a missing package from inside the sandbox"
+status = "required"
+
+[PERM-FETCH-ASK]
+text = "fetch=ask queues a request; approve runs it"
+status = "required"
+
+[PERM-FETCH-DENY]
+text = "fetch=deny refuses with E_PERMISSION"
+status = "required"
+
+[PERM-INSTALL-SUBOS]
+text = "install --subos <s> installs into that instance from outside"
+status = "required"
+
+# ── observability (design §22) ─────────────────────────────────────
+
+[OBS-LIFECYCLE]
+text = "session start/end events with the isolation snapshot"
+status = "required"
+
+[OBS-OPS]
+text = "every xlings command run for an instance is recorded"
+status = "required"
+
+[OBS-EXEC]
+text = "every program executed in a locked sandbox is recorded"
+kind = "isolation"
+status = "required"
+
+[OBS-PERM]
+text = "permission decisions are recorded"
+status = "required"
+
+[OBS-FS]
+text = "files changed in rw mounts are listed at session end"
+status = "required"
+
+[OBS-REDACT]
+text = "audit lines carry variable names, never values"
+status = "required"
+
+[OBS-LOG]
+text = "subos log / ps / report read the audit"
+status = "required"
+
+[OBS-IFACE-EVENTS]
+text = "the interface exposes subos_events"
+status = "required"
+
+[IFACE-EXEC-STREAM]
+text = "subos_exec streams distinct stdout/stderr chunks before exit and reaps the command on cancellation"
+status = "required"
+
+[OBS-TRACE]
+text = "XLINGS_TRACE=<categories> prints the decision trace"
+status = "required"
+
+# ── home and deployment (design §3–§6) ─────────────────────────────
+
+[HOME-CONTEXT]
+text = "one HomeContext answers which home and which mode"
+status = "required"
+
+[HOME-MODE-DECLARED]
+text = ".xlings-home declares mode and layout"
+status = "required"
+
+[HOME-LAYOUT-READONLY]
+text = "a higher layout than this client knows is read, never written"
+status = "required"
+
+[HOME-KEEP-UNKNOWN-KEYS]
+text = "writers keep keys they do not know"
+status = "required"
+
+[HOME-SYSTEM-MODE]
+text = "a system install (mode S): the entry left to its package manager, /etc/xlings/config.json as defaults, the system layer found and reported"
+status = "required"
+
+[PERM-FETCH-LAYER]
+text = "fetch=layer: what the xlings inside installs goes into the root's own scope; a view refuses it"
+status = "required"
+
+[HOME-LAYER-RESOLVE]
+text = "packages in the system layer (M) resolve in a user's shell without a copy, after the user's own"
+status = "required"
+
+# ── compatibility and platforms ────────────────────────────────────
+
+[COMPAT-ALIASES]
+text = "--gpu, --cmd, --keep, --ttl keep working"
+status = "required"
+
+[COMPAT-UNDECLARED]
+text = "an instance with no policy keeps its behaviour apart from the S0 fixes"
+status = "required"
+
+[PLAT-HINT]
+text = "an unsupported item prints the shared hint format on every platform"
+status = "required"
+
+[PLAT-STATUS-MATRIX]
+text = "subos status prints the probed capability matrix"
+status = "required"
+
+[DOC-ISOLATION]
+text = "self doctor --isolation diagnoses; --fix installs the root-owned backend"
+status = "required"
+
+[PERF-SHIM]
+text = "static shim dispatch inside a sandbox avoids the broker and adds less than 10 ms"
+status = "required"
+
+[PERF-EXEC-HOT]
+text = "static hot-session exec adds at most 5 ms over direct exec measured with the same runner"
+status = "required"
+
+[PERF-EXEC-COLD]
+text = "static cold exec adds at most 10 ms over the equivalent direct bwrap provider invocation"
+status = "required"
+
+[PERF-ROOT-ENTRY]
+text = "entering an actual rootfs with its checked closure adds at most 100 ms over view cold exec"
+status = "required"
+
+[POL-DECLARE-AT-NEW]
+text = "subos new --sandbox declares the isolation once; entries need no flag; a fork inherits its source's"
+status = "required"
+
+[SUBOS-DOCTOR]
+text = "subos doctor: per instance, the policy, entry on this host, the policy package, sessions"
+status = "required"
+
+# ── part 2: the host is a SubOS (design part 2 §14) ──────────────────
+# `planned` until its checkpoint lands with a test, then `required`.
+
+[DEPLOY-S-ENTRY]
+text = "a system entry: a fresh home links its entry to it, so what it installs runs; self update still refuses"
+status = "required"
+
+[DEPLOY-S-AUR]
+text = "the AUR package of the current build: two users each install and run a package"
+status = "required"
+
+[DEPLOY-M-SYSTEM]
+text = "install --system into /xlings; users use it without a copy, override it, cannot write it"
+status = "required"
+
+[DOM-PREFIX]
+text = "searched locations (interp, rpath/runpath, .pc, .la, shebangs) name only the prefix domain"
+status = "required"
+
+[DOM-BUILD-INSIDE]
+text = "a root's payloads are installed with its home at the path the root sees it at; no recipe changes (a multi image is built in /xlings and runs there)"
+status = "required"
+
+[DOM-BOOTSTRAP]
+text = "inside a tiny root (no host), xlings installs packages with the root's own tools"
+status = "required"
+
+[DOM-ELFPATCH-FAILCLOSED]
+text = "no patchelf: xim:patchelf is installed first; still none: the package fails, never 'installed' unpatched"
+status = "required"
+
+[DOM-LAYOUTS]
+text = "deployment R in both layouts: multi (/xlings) and single (/home/<u>/.xlings)"
+status = "required"
+
+[ECO-HOST-INDEPENDENT]
+text = "every form-X executable of tiny/core resolves its closure in an empty root; programs run with no mapping outside it"
+status = "required"
+
+[SHIM-NO-SHELL]
+text = "a shim (aliases included) dispatches in a root with no /bin/sh"
+status = "required"
+
+[ROOT-ROLE-TABLE]
+text = "every subos command x every kind/role is accepted or refused by the one table"
+status = "required"
+
+[ROOT-PROJECT]
+text = "root projection: merged-usr links, /usr at the current generation, direct links"
+status = "required"
+
+[ROOT-SAME-TREE]
+text = "one declaration gives the same tree as a bwrap instance, a container and a boot"
+status = "required"
+
+[ROOT-GEN-ATOMIC]
+text = "a generation switch is one rename; the pointer is old or new, never neither"
+status = "required"
+
+[ROOT-ROLLBACK]
+text = "rollback moves the pointer; it does not re-run use"
+status = "required"
+
+[ROOT-ETC-FACTORY]
+text = "factory /etc fills only what is missing; sysusers only appends"
+status = "required"
+
+[ROOT-LIBSEARCH]
+text = "a host-built program (PT_INTERP /lib64/ld-linux) runs in a root, finding its libraries through /lib64 = the root's /usr/lib"
+status = "required"
+
+[ROOT-NO-HOST]
+text = "a process in a root maps nothing from outside it"
+status = "required"
+
+[ROOT-SURVIVES-GLIBC]
+text = "with glibc broken, the static xlings rolls the root back"
+status = "required"
+
+[ROOT-SELF-UPDATE]
+text = "in deployment R, self update is a new generation of the host SubOS and can be rolled back"
+status = "required"
+
+[INST-ROOTFS]
+text = "--rootfs instance: uid 0 inside, no host /usr, policy, broker and audit as for any instance"
+status = "required"
+
+[EXPORT-OCI]
+text = "subos export --tar is a root docker imports and runs"
+status = "required"
+
+[EXPORT-WSL]
+text = "subos export --tar imports with wsl --import (WSL1 on CI: reported, not blocking)"
+status = "required"
+
+[EXPORT-DISK]
+text = "subos export --disk boots under qemu"
+status = "required"
+
+[BOOT-STAGE0]
+text = "stage-0 picks the host from boot.json, points /usr at it and execs its init"
+status = "required"
+
+[BOOT-ONCE-FALLBACK]
+text = "a trial boot not marked good falls back; marked good it becomes the default"
+status = "required"
+
+[BOOT-NOW]
+text = "subos boot --now switches user space where the init supports it, refuses elsewhere"
+status = "required"
+
+[LUBAN-TINY]
+text = "luban-tiny: created from its xpkg, exported, booted, installs inside"
+status = "required"
+
+[LUBAN-CORE]
+text = "luban-core: compiles and runs a program inside"
+status = "required"
+
+[LUBAN-DESKTOP-RENDER]
+text = "luban-desktop: a GL program compiled inside renders a frame offscreen, every GL object from the payloads"
+status = "required"
+
+[LUBAN-FROM-CHAIN]
+text = "an xpkg's from chain merges workspaces, the upper one winning"
+status = "required"
+
+[ROOT-LDCACHE]
+text = "a root's own /etc/ld.so.cache (ldconfig) is read by programs that enter through /lib64"
+status = "required"
+
+[OUTPUT-PRESERVE]
+text = "pack/export refuse existing outputs; cleanup only removes exclusively owned staging"
+status = "required"
+
+[STATE-STRICT]
+text = "missing legacy metadata defaults; invalid or unreadable present SubOS/boot metadata is refused"
+status = "required"
+
+[STATE-KEEP-UNKNOWN]
+text = "SubOS/boot metadata writes preserve unknown fields"
+status = "required"
+
+[OBS-AUDIT-FAIL]
+text = "locked refuses startup and terminates execution when its audit journal cannot be written"
+status = "required"
+
+[ROOT-REFRESH-FAIL]
+text = "workspace write commands fail when their root projection cannot be updated"
+status = "required"
+
+[POLICY-MIN-CLIENT]
+text = "policy declares a minimum client; unsupported clients refuse and doctor explains compatibility"
+status = "required"
+
+[REPORT-EXECUTION-EVIDENCE]
+text = "report distinguishes declaration coverage from passed evidence; skipped tests cannot verify requirements"
+status = "required"
+
+[CI-TEST-SELECTION]
+text = "ci plan and test share real discovery, transitive change impact, capability selection and deterministic duration-aware shards without duplicates or omissions"
+status = "required"
+
+[CI-RESOURCE-LOCKS]
+text = "test resources are locked across concurrent runners with deterministic acquisition and automatic release"
+status = "required"
+
+[TEST-HTTP-FIXTURE]
+text = "local HTTP fixtures serve owned test data on loopback without external network access"
+status = "required"
+
+[CI-TRENDS]
+text = "Reports retain per-platform execution trends, flag intermittent results, and export measured shard weights"
+kind = "flow"
+status = "required"
+
+[ROOT-STORE-CLOSURE]
+text = "Root sessions expose only checked runtime payloads and immutable generations, with synchronous broker refresh"
+kind = "isolation"
+status = "required"
+
+[DOM-SOURCE]
+text = "A private logical-prefix domain borrows only proved read-only system payloads and exports its checked closure as image-owned data"
+kind = "isolation"
+status = "required"
+
+[PERF-GEN-BUILD]
+text = "Building a root generation from 300 package payloads takes at most one second"
+kind = "flow"
+status = "required"
+
+[PERF-GEN-SWITCH]
+text = "Switching an existing root generation takes at most ten milliseconds"
+kind = "flow"
+status = "required"
+
+[PERF-STAGE0]
+text = "Real PID 1 startup through preparing exec init takes at most 200 milliseconds, including fallback and boot --now"
+kind = "flow"
+status = "required"
+
+# ── SubOS design part 3 (C43-C53) ───────────────────────────────────
+
+[LAYOUT-DEPS]
+text = "packages import downward only: luban -> modules, modules -/-> luban or the frontend; platform selection is if constexpr"
+status = "required"
+
+[ROOT-GC-ROOT]
+text = "a payload a retained generation links into is not deleted by remove; rolling back to that generation finds every target"
+status = "required"
+
+[ROOT-GEN-RETAIN]
+text = "a SubOS keeps kKeepGenerations besides its current one; what only pruned ones held is released; a pointer naming no generation prunes nothing"
+status = "required"
+
+[ROOT-GEN-DURABLE]
+text = "a generation and its pointer reach stable storage before the switch is reported (fsync of files and directories)"
+status = "required"
+
+[ROOT-SWITCH-SCALE]
+text = "a checked switch reads a generation's change stamps, not every link: 300 payloads within 10 ms, 3000 within 20 ms"
+status = "required"
+
+[TOOL-RESOLVE]
+text = "every external tool is resolved in one place (in-process > xlings payload > declared host tool) and reported with its source"
+status = "required"
+
+[INTENT-EQ]
+text = "the Intent IR and the confine registry produce byte-identical bwrap argv to the code they replaced"
+status = "required"
+
+[GATE-CONFORM]
+text = "the platform matrix is the implementations' probes, not a hand-kept table"
+status = "required"
+
+[CARRIER-LOCAL]
+text = "where a SubOS runs is chosen by what it is (part 3 §5.6), recorded and listed; a carrier is reached through a launcher prefix and the NDJSON interface"
+status = "required"
+
+[CARRIER-WSL-LIFECYCLE]
+text = "a wsl2 carrier is created per home on first need, reached through wsl.exe, stopped when idle, unregistered only by a confirmed removal"
+status = "required"
+
+[CARRIER-WSL-INTEROP-OFF]
+text = "inside a wsl2 carrier, Windows executables cannot run and /mnt/c is not mounted"
+status = "required"
+
+[CARRIER-WSL-GRANT]
+text = "only granted host directories are visible in a wsl2 carrier, and only for the session"
+status = "required"
+
+[CARRIER-UNAVAILABLE]
+text = "without a usable carrier a Must refuses with the route and a native SubOS is unaffected"
+status = "required"
+
+[VIEW-CARRIER-EQ]
+text = "one content declaration yields the same root view on every carrier"
+status = "deferred"
+why = "needs a real guest kernel (WSL2 or a VZ VM): hosted runners have no nested virtualization, and the stand-in wsl.exe runs on the host kernel -- it proves routing, not the guest root; tests/e2e/windows_carrier_wsl2_test.ps1 runs it wherever WSL2 exists"
+
+[CARRIER-VZ-LIFECYCLE]
+text = "a vz carrier VM is created per home on first need through its helper's contract, started when stopped, reached through it, and grants are the helper's virtiofs shares"
+status = "required"
+
+[CARRIER-VZ-HELPER]
+text = "xlings-vm, the signed Virtualization.framework helper that answers the vz carrier's contract, is published as a payload"
+status = "deferred"
+why = "a separate Swift package signed with com.apple.security.virtualization; hosted macOS runners cannot nest a VM to test it. Until it is published the vz carrier is refused with `xlings install xlings-vm` as its route (CARRIER-UNAVAILABLE)"
+
+[SESSION-NATIVE-SUPERVISED]
+text = "a native SubOS on macOS runs under the supervisor (start, join, stop, --timeout, the exit-code table); on Windows its command runs in a Job Object (tree ended at --timeout, the command's exit code); joining a running session on Windows needs a CreateProcess supervisor and is part 3 §6.3's next step"
+status = "required"
+
+[OPENKAL-COEXIST]
+text = "openkal-linux links and runs beside xlings' C and C++ runtimes (glibc and the static musl release target)"
+status = "deferred"
+why = "evidence, not a product behaviour: the xlings-ci-linux step 'openkal coexistence' builds and runs tools/openkal-coexistence for both targets on every PR; nothing of xlings links openkal yet (part 3 §19, C53)"
+
+[LUBAN-INIT]
+text = "stage-0 is its own static binary and reads no Config"
+status = "required"

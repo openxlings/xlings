@@ -35,6 +35,7 @@ import xlings.core.xim.catalog;
 import xlings.core.xim.resolver;
 import xlings.core.xim.downloader;
 import xlings.core.xim.installer;
+import xlings.core.xvm.materialize;
 import xlings.core.xim.commands;
 import xlings.core.xim.repo;
 import xlings.core.xim.extract;
@@ -57,7 +58,7 @@ import xlings.platform;
 import xlings.libs.json;
 import xlings.core.xself;
 import xlings.core.profile;
-import xlings.core.subos.gpu;
+import xlings.subos.gpu;
 import xlings.core.xim.downloader;
 import xlings.runtime;
 import xlings.capabilities;
@@ -6642,6 +6643,10 @@ int run_xvm_registration_production_child_(
     xlings::platform::set_env_variable(
         "XLINGS_ACTIVE_SUBOS", "env-scope");
     xlings::platform::set_env_variable("XLINGS_PROJECT_DIR", "");
+    // The child is a fresh home's global scope, whatever SubOS the test runs
+    // in: an inherited XLINGS_SUBOS_MODE reads as "entered", and the entry is
+    // then (correctly) left alone -- a result about the caller, not the code.
+    xlings::platform::set_env_variable("XLINGS_SUBOS_MODE", "");
     xlings::platform::set_env_variable(
         "XDG_CONFIG_HOME", (root / "config").string());
     xlings::platform::set_env_variable(
@@ -6694,7 +6699,8 @@ int run_xvm_registration_production_child_(
             std::string name,
             std::string version,
             const fs::path& installDir,
-            bool useAfterInstall) {
+            bool useAfterInstall,
+            std::string namespaceName = {}) {
         auto executor = mcpplibs::xpkg::create_executor(recipe);
         if (!executor) {
             std::cerr << executor.error() << '\n';
@@ -6702,7 +6708,11 @@ int run_xvm_registration_production_child_(
         }
         xlings::xim::PlanNode node;
         node.name = std::move(name);
-        node.canonicalName = node.name;
+        node.namespaceName = std::move(namespaceName);
+        node.canonicalName = node.namespaceName.empty()
+            ? node.name : node.namespaceName + ":" + node.name;
+        if (!node.namespaceName.empty())
+            node.storeRoot = home / "data" / "xpkgs";
         node.version = std::move(version);
         mcpplibs::xpkg::ExecutionContext context;
         context.pkg_name = node.name;
@@ -6795,7 +6805,7 @@ int run_xvm_registration_production_child_(
             selfRecipe, "xlings", "xlings-real")) {
         return fail(12, "failed to write self-replace recipe");
     }
-    const auto selfPayload = payload / "self";
+    const auto selfPayload = home / "data" / "xpkgs" / "xim-x-xlings" / "2.0.0";
     const auto selfSource =
         selfPayload / "bin"
         / ("xlings-real"
@@ -6813,10 +6823,11 @@ int run_xvm_registration_production_child_(
         fs::perm_options::replace);
     if (!run_config(
             selfRecipe,
-            "task3b-self-provider",
+            "xlings",
             "2.0.0",
             selfPayload,
-            true)) {
+            true,
+            "xim")) {
         return fail(14, "force-global self config hook failed");
     }
     if (!xlings::Config::global_versions().contains("xlings")
@@ -7344,8 +7355,10 @@ TEST(XimXvmRemovalArtifactTest,
     ASSERT_TRUE(removalResult.has_value())
         << removalResult.error().message;
 
-    xlings::xim::cleanup_removed_xvm_library_artifacts(
-        libDir, dbBefore, db, *removalResult);
+    const std::vector<xlings::xvm::materialize::AssetClaim> claims{
+        {oldSource, libDir / destinationName}};
+    ASSERT_TRUE(xlings::xim::cleanup_removed_xvm_library_artifacts(
+        libDir, dbBefore, db, *removalResult, claims));
 
     EXPECT_FALSE(fs::exists(libDir / destinationName));
     ASSERT_TRUE(fs::exists(libDir / target));
@@ -7404,8 +7417,10 @@ TEST(XimXvmRemovalArtifactTest,
         },
     };
 
-    xlings::xim::cleanup_removed_xvm_library_artifacts(
-        libDir, dbBefore, {}, removalResult);
+    const std::vector<xlings::xvm::materialize::AssetClaim> claims{
+        {sourceDir / filename, libDir / filename}};
+    ASSERT_TRUE(xlings::xim::cleanup_removed_xvm_library_artifacts(
+        libDir, dbBefore, {}, removalResult, claims));
 
     EXPECT_FALSE(fs::exists(libDir / filename));
     std::error_code ec;
@@ -7447,8 +7462,8 @@ TEST(XimXvmRemovalArtifactTest,
         },
     };
 
-    xlings::xim::cleanup_removed_xvm_library_artifacts(
-        libDir, dbBefore, currentDb, removalResult);
+    ASSERT_TRUE(xlings::xim::cleanup_removed_xvm_library_artifacts(
+        libDir, dbBefore, currentDb, removalResult));
 
     ASSERT_TRUE(fs::exists(libDir / filename));
     EXPECT_EQ(
@@ -7494,8 +7509,8 @@ TEST(XimXvmRemovalArtifactTest,
         },
     };
 
-    xlings::xim::cleanup_removed_xvm_program_artifacts(
-        binDir, dbBefore, currentDb, installed, removalResult);
+    ASSERT_TRUE(xlings::xim::cleanup_removed_xvm_program_artifacts(
+        binDir, dbBefore, currentDb, installed, removalResult));
 
     EXPECT_TRUE(fs::exists(shim));
     EXPECT_EQ(
@@ -7535,8 +7550,8 @@ TEST(XimXvmRemovalArtifactTest,
         },
     };
 
-    xlings::xim::cleanup_removed_xvm_program_artifacts(
-        binDir, dbBefore, {}, {}, removalResult);
+    ASSERT_TRUE(xlings::xim::cleanup_removed_xvm_program_artifacts(
+        binDir, dbBefore, {}, {}, removalResult));
 
     EXPECT_TRUE(fs::exists(shim));
     EXPECT_EQ(
@@ -8357,4 +8372,32 @@ TEST(XvmExactRemovalTest, VersionlessRemovalWithTwoRecordsIsStillAmbiguous) {
     EXPECT_EQ(result.error().kind,
               xlings::xvm::RemovalErrorKind::AmbiguousVersion);
     EXPECT_EQ(db["fd"].versions.size(), 2u);
+}
+
+TEST(XimXvmMetadataBatchTest, AnActiveOnlyLegacyBindingSurvivesAnUnrelatedPublication) {
+    xlings::xvm::VersionDB db;
+    db["gcc-specs-config"].versions["0.0.1"].path = "/shared/specs/bin";
+    xlings::xvm::Workspace active{{"gcc-specs-config", "0.0.1"}};
+    xlings::xvm::WorkspaceInstalled installed{{"retained", {"repo:2.0.0", "repo:1.0.0"}}};
+    xlings::xim::PlanNode node;
+    node.name = "unrelated";
+    node.version = "1.0.0";
+    node.namespaceName = "fixture";
+    node.canonicalName = "fixture:unrelated";
+    const std::vector<mcpplibs::xpkg::XvmOp> operations{
+        {.op = "add", .name = "unrelated", .bindir = "/shared/unrelated/bin"}};
+    const auto plan = xlings::xim::normalize_xpkg_registration_plan(
+        node, operations, "fixture", "/data", false);
+    ASSERT_TRUE(plan) << plan.error().message;
+    const auto result = xlings::xim::apply_xpkg_xvm_metadata_batch(
+        db, active, installed, operations, {}, *plan);
+    ASSERT_TRUE(result);
+    EXPECT_EQ(active.at("gcc-specs-config"), "0.0.1");
+    ASSERT_TRUE(installed.contains("gcc-specs-config"));
+    EXPECT_EQ(installed.at("gcc-specs-config"), (std::vector<std::string>{"0.0.1"}));
+    EXPECT_EQ(installed.at("retained"), (std::vector<std::string>{"repo:1.0.0", "repo:2.0.0"}));
+    const auto persisted = xlings::xvm::subos_workspace_from_json(
+        xlings::xvm::subos_workspace_to_json({.active = active, .installed = installed}));
+    EXPECT_EQ(persisted.active, active);
+    EXPECT_EQ(persisted.installed, installed);
 }

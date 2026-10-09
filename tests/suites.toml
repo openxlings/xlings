@@ -1,0 +1,74 @@
+# Legacy test suites, run by `xdev test --suite <name>` (design §24.3).
+#
+# These are the shell and Python scripts that predate the C++ test library.
+# They run unchanged through xdev's adapter: one record per command, its exit
+# code, its duration and the tail of its log, in the same report as the C++
+# tests. New tests are written in C++ (tests/**/test_*.cpp with XTEST); a
+# script leaves this file when it is ported.
+#
+# Placeholders: {xlings} is the binary under test, {tarball} is --tarball.
+
+# Contracts that need only a built binary: no home, no network.
+[contract-scripts]
+platforms = ["linux"]
+commands = [
+  "bash tests/scripts/test_quick_install.sh",
+  "python3 tests/scripts/test_release_candidate_gate.py",
+  "python3 tests/scripts/test_index_pointer_history.py",
+  "python3 tests/scripts/test_version_consistency.py",
+  "python3 tests/scripts/test_windows_header_hygiene.py",
+  "python3 tests/scripts/test_selector_contrast.py",
+  "python3 tests/scripts/test_docs_examples.py --xlings {xlings}",
+  "python3 tests/scripts/test_generated_command_reference.py --xlings {xlings}",
+  "python3 tests/scripts/test_cli_spec_parity.py --xlings {xlings}",
+  "XLINGS_BIN={xlings} python3 tests/scripts/test_i18n_coverage.py",
+]
+
+# Repository rules checked without a build.
+[lint]
+commands = [
+  "bash tests/fresh-install/no_xlings_version_pin_check.sh",
+  "bash tools/lint_subos_remove_all.sh",
+  "bash tools/lint_platform_headers.sh",
+  "bash tools/lint_platform_branches.sh",
+  "bash tools/lint_layer_deps.sh",
+  "bash tools/lint_tool_resolve.sh",
+]
+
+# The end-to-end shell suite against a release tarball.
+[e2e-shell]
+platforms = ["linux"]
+commands = [
+  "bash tests/e2e/run_all.sh {tarball}",
+  "bash tests/e2e/luban_init_test.sh {tarball}",
+]
+
+# What needs root on a stock Ubuntu 24.04 (CI-only: it uses sudo): the
+# isolation repair, and a system package's entry (deployment S).
+[isolation-fix]
+platforms = ["linux"]
+commands = [
+  "bash tests/e2e/isolation_doctor_fix_test.sh",
+  "bash tests/e2e/system_install_test.sh",
+  "bash tests/e2e/system_layer_test.sh",
+]
+
+# The root projection (SubOS design part 2): Luban roots made from the
+# published editions, entered in bwrap, exported to docker, booted by qemu.
+# CI-only: the `distro` job (bwrap, docker, qemu/kvm, sudo).
+[distro]
+platforms = ["linux"]
+commands = [
+  "bash tests/e2e/rootfs_instance_test.sh",
+  "bash tests/e2e/rootfs_image_test.sh",
+  "bash tests/e2e/rootfs_boot_test.sh",
+]
+
+# Deployment S as a distribution packages it: the AUR recipe built from the
+# binary under test and used by two users (CI-only: root in an archlinux
+# container, the `arch-package` job).
+[aur]
+platforms = ["linux"]
+commands = [
+  "bash tests/e2e/aur_package_test.sh {tarball}",
+]

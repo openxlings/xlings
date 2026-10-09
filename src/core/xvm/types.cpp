@@ -54,6 +54,6 @@ bool has_program_kind(const VersionDB& db, const std::string& target) {
 
  // namespace xlings::xvm
 
-#if !defined(_MSC_VER)
+#if !defined(_MSC_VER)  // platform-if-ok: compiler, not platform: GCC/MSVC module special members
 
 #endif

@@ -34,7 +34,7 @@ def contrast(fg, bg):
     return (hi + 0.05) / (lo + 0.05)
 
 
-# The default dark theme's surface, from modules/theme. Read rather than
+# The default dark theme's surface, from modules/ui/src/theme.cppm. Read rather than
 # hardcoded so a theme change moves this test with it.
 def dark_slot(name):
     src = (ROOT / "src" / "core" / "palette.cppm").read_text()

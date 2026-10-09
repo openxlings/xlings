@@ -1,5 +1,6 @@
 module xlings.core.xim.installer;
 
+import xlings.core.xim.lua_boundary;
 import std;
 import mcpplibs.xpkg;
 import mcpplibs.xpkg.loader;
@@ -8,6 +9,7 @@ import mcpplibs.xpkg.executor;
 import xlings.core.xim.libxpkg.types.type;
 import xlings.core.xim.compatibility;
 import xlings.core.xim.payload;
+import xlings.core.xim.retention;
 import xlings.core.xim.install_state;
 import xlings.core.xim.index;
 import xlings.core.xim.catalog;
@@ -17,6 +19,10 @@ import xlings.core.log;
 import xlings.platform;
 import xlings.platform.target;
 import xlings.core.config;
+import xlings.core.home;
+import xlings.core.home.layers;
+import xlings.core.home.evidence;
+import xlings.core.home.domain_producer_source;
 import xlings.core.semver;
 import xlings.core.entry_binary;
 import xlings.core.elf_same_source;
@@ -29,8 +35,10 @@ import xlings.core.xvm.owner;
 import xlings.core.xvm.bindings;
 import xlings.core.xvm.removal;
 import xlings.core.xvm.registration;
+import xlings.core.xvm.materialize;
+import xlings.core.xvm.switch_plan;
 import xlings.core.xvm.errors;
-import xlings.core.subos.manifest;
+import xlings.subos.manifest;
 import xlings.core.profile;
 import xlings.core.xvm.commands;
 import xlings.core.xvm.shim;
@@ -39,6 +47,19 @@ import xlings.core.xim.libxpkg.types.subos;
 import xlings.runtime.cancellation;
 
 namespace xlings::xim {
+
+namespace {
+void normalize_scope_metadata(xvm::Workspace& active, xvm::WorkspaceInstalled& installed);
+
+std::filesystem::path node_payload_path(const PlanNode& node,
+                                        const std::filesystem::path& dataDir) {
+    if (!node.borrowedPayload.empty()) {
+        return node.borrowedPayload;
+    }
+    return (node.storeRoot.empty() ? dataDir / "xpkgs" : node.storeRoot) /
+           package_store_name(node.namespaceName, node.name) / node.version;
+}
+}
 
 XpkgSpecSupport xpkg_spec_support(std::string_view spec) {
     if (spec.empty()) return {.supported = true, .declared = 1};
@@ -192,10 +213,7 @@ normalize_xpkg_registration_plan(
         }
         return version;
     };
-    const auto fallbackPath =
-        (node.storeRoot.empty() ? dataDir / "xpkgs" : node.storeRoot)
-        / package_store_name(node.namespaceName, node.name)
-        / node.version;
+    const auto fallbackPath = node_payload_path(node, dataDir);
     XpkgRegistrationPlan plan{
         .batch = {
             .provider = node.canonicalName.empty()
@@ -213,6 +231,16 @@ normalize_xpkg_registration_plan(
 
     for (std::size_t index = 0; index < operations.size(); ++index) {
         const auto& operation = operations[index];
+        if (operation.op == "add" && operation.name == "xlings" &&
+            plan.batch.provider != "xim:xlings" && plan.batch.provider != "xlings") {
+            return std::unexpected(XpkgRegistrationError{
+                .kind = XpkgRegistrationErrorKind::InvalidBinding,
+                .operationIndex = index,
+                .target = operation.name,
+                .version = operation.version,
+                .message = "only the xlings package may register the shared client",
+            });
+        }
         if (operation.op == "headers") {
             plan.batch.headers.push_back({
                 .sourceDir = operation.includedir,
@@ -570,6 +598,7 @@ apply_xpkg_xvm_metadata_batch(xvm::VersionDB& db, xvm::Workspace& workspace, xvm
         registered = std::move(*registrationResult);
     }
 
+    normalize_scope_metadata(candidateWorkspace, candidateInstalled);
     db.swap(candidateDb);
     workspace.swap(candidateWorkspace);
     installed.swap(candidateInstalled);
@@ -581,118 +610,113 @@ apply_xpkg_xvm_metadata_batch(xvm::VersionDB& db, xvm::Workspace& workspace, xvm
     };
 }
 
-void cleanup_removed_xvm_library_artifacts(
-        const std::filesystem::path& libDir,
-        const xvm::VersionDB& dbBeforeRemoval,
-        const xvm::VersionDB& currentDb,
-        const xvm::RemovalBatchResult& removalResult) {
-    auto destinationName = [](
-            const std::string& target,
-            const xvm::VInfo& info,
-            const xvm::VData& data) {
+namespace {
+void normalize_scope_metadata(xvm::Workspace& active, xvm::WorkspaceInstalled& installed) {
+    xvm::SubosWorkspace scope;
+    scope.active = active;
+    scope.installed = installed;
+    const auto saved = xvm::subos_workspace_from_json(xvm::subos_workspace_to_json(scope));
+    active = saved.active;
+    installed = saved.installed;
+}
+}
+
+std::expected<void, std::string> cleanup_removed_xvm_library_artifacts(
+    const std::filesystem::path& libDir, const xvm::VersionDB& dbBeforeRemoval,
+    const xvm::VersionDB& currentDb, const xvm::RemovalBatchResult& removalResult,
+    std::span<const xvm::materialize::AssetClaim> claims) {
+    auto destinationName = [](const std::string& target, const xvm::VInfo& info,
+                              const xvm::VData& data) {
         if (!data.destinationName.empty()) {
             return data.destinationName;
         }
-        if (!info.filename.empty()) return info.filename;
+        if (!info.filename.empty())
+            return info.filename;
         return target;
     };
 
     std::set<std::string> destinations;
     for (const auto& removed : removalResult.removed) {
         auto targetIt = dbBeforeRemoval.find(removed.target);
-        if (targetIt == dbBeforeRemoval.end()) continue;
-        auto versionIt =
-            targetIt->second.versions.find(removed.version);
-        if (versionIt == targetIt->second.versions.end()) continue;
+        if (targetIt == dbBeforeRemoval.end())
+            continue;
+        auto versionIt = targetIt->second.versions.find(removed.version);
+        if (versionIt == targetIt->second.versions.end())
+            continue;
         const auto& data = versionIt->second;
-        const auto kind = data.kind.empty()
-            ? targetIt->second.type
-            : data.kind;
-        if (kind != "lib") continue;
-        destinations.insert(destinationName(
-            removed.target, targetIt->second, data));
+        const auto kind = data.kind.empty() ? targetIt->second.type : data.kind;
+        if (kind != "lib")
+            continue;
+        destinations.insert(destinationName(removed.target, targetIt->second, data));
     }
 
     for (const auto& name : destinations) {
-        const auto hasSurvivingOwner = std::ranges::any_of(
-            currentDb,
-            [&](const auto& targetEntry) {
-                return std::ranges::any_of(
-                    targetEntry.second.versions,
-                    [&](const auto& versionEntry) {
-                        const auto& data = versionEntry.second;
-                        const auto kind = data.kind.empty()
-                            ? targetEntry.second.type
-                            : data.kind;
-                        return kind == "lib"
-                            && destinationName(
-                                targetEntry.first,
-                                targetEntry.second,
-                                data) == name;
-                    });
+        const auto hasSurvivingOwner = std::ranges::any_of(currentDb, [&](const auto& targetEntry) {
+            return std::ranges::any_of(targetEntry.second.versions, [&](const auto& versionEntry) {
+                const auto& data = versionEntry.second;
+                const auto kind = data.kind.empty() ? targetEntry.second.type : data.kind;
+                return kind == "lib" &&
+                       destinationName(targetEntry.first, targetEntry.second, data) == name;
             });
-        if (hasSurvivingOwner) continue;
+        });
+        if (hasSurvivingOwner)
+            continue;
 
         const auto destination = libDir / name;
-        std::error_code ec;
-        if (std::filesystem::exists(destination, ec)
-            || std::filesystem::is_symlink(destination, ec)) {
-            ec.clear();
-            std::filesystem::remove(destination, ec);
-        }
+        const auto claim = std::ranges::find_if(
+            claims, [&](const auto& proof) { return proof.destination == destination; });
+        std::vector<xvm::materialize::AssetChange> changes{
+            {claim == claims.end() ? std::filesystem::path{} : claim->source, destination, true}};
+        auto prepared =
+            xvm::materialize::preflight_materialization(changes, claims, libDir.parent_path());
+        if (!prepared)
+            return std::unexpected(prepared.error());
+        auto applied = prepared->execute();
+        if (!applied)
+            return std::unexpected(applied.error());
+        if (auto committed = applied->commit(); !committed)
+            return committed;
     }
+    return {};
 }
 
-void cleanup_removed_xvm_program_artifacts(
-        const std::filesystem::path& binDir,
-        const xvm::VersionDB& dbBeforeRemoval,
-        const xvm::VersionDB& currentDb,
-        const xvm::WorkspaceInstalled& installed,
-        const xvm::RemovalBatchResult& removalResult) {
+std::expected<void, std::string> cleanup_removed_xvm_program_artifacts(
+    const std::filesystem::path& binDir, const xvm::VersionDB& dbBeforeRemoval,
+    const xvm::VersionDB& currentDb, const xvm::WorkspaceInstalled& installed,
+    const xvm::RemovalBatchResult& removalResult) {
     std::set<std::string> removedPrograms;
     for (const auto& removed : removalResult.removed) {
         auto targetIt = dbBeforeRemoval.find(removed.target);
-        if (targetIt == dbBeforeRemoval.end()) continue;
-        auto versionIt =
-            targetIt->second.versions.find(removed.version);
-        if (versionIt == targetIt->second.versions.end()) continue;
-        const auto kind = versionIt->second.kind.empty()
-            ? targetIt->second.type
-            : versionIt->second.kind;
+        if (targetIt == dbBeforeRemoval.end())
+            continue;
+        auto versionIt = targetIt->second.versions.find(removed.version);
+        if (versionIt == targetIt->second.versions.end())
+            continue;
+        const auto kind =
+            versionIt->second.kind.empty() ? targetIt->second.type : versionIt->second.kind;
         if (kind == "program") {
             removedPrograms.insert(removed.target);
         }
     }
 
     for (const auto& target : removedPrograms) {
-        if (xvm::has_usable_workspace_version(
-                currentDb, installed, target)) {
+        if (xvm::has_usable_workspace_version(currentDb, installed, target)) {
             continue;
         }
-#ifdef _WIN32
-        constexpr std::string_view shimExtension = ".exe";
-#else
-        constexpr std::string_view shimExtension = "";
-#endif
+        constexpr std::string_view shimExtension = platform::exe_suffix;
         std::string shimName = target;
-        if (!shimExtension.empty()
-            && !shimName.ends_with(shimExtension)) {
+        if (!shimExtension.empty() && !shimName.ends_with(shimExtension)) {
             shimName += shimExtension;
         }
         const auto shimPath = binDir / shimName;
         std::error_code ec;
-        if (!std::filesystem::exists(shimPath, ec)
-            && !std::filesystem::is_symlink(shimPath, ec)) {
+        if (!std::filesystem::exists(shimPath, ec) && !std::filesystem::is_symlink(shimPath, ec)) {
             continue;
         }
-        ec.clear();
-        std::filesystem::remove(shimPath, ec);
-        if (ec) {
-            log::warn("could not remove shim {}: {}; will be replaced "
-                      "on next install/use",
-                      shimPath.string(), ec.message());
-        }
+        return std::unexpected("program shim cleanup requires sync_shim_tables: " +
+                               shimPath.string());
     }
+    return {};
 }
 
 // The third member of the cleanup family, missing since declared assets
@@ -714,28 +738,30 @@ void cleanup_removed_xvm_program_artifacts(
 // What to do with each destination is `reclaim_declared_assets`'s decision,
 // shared with the detach and `use` paths. All this adds is the question of
 // which destinations are being given up.
-void cleanup_removed_xvm_file_artifacts(
-        const std::filesystem::path& subosDir,
-        const std::filesystem::path& payloadRoot,
-        const xvm::VersionDB& dbBeforeRemoval,
-        const xvm::VersionDB& currentDb,
-        const xvm::Workspace& currentWorkspace,
-        const xvm::RemovalBatchResult& removalResult) {
+std::expected<void, std::string> cleanup_removed_xvm_file_artifacts(
+    const std::filesystem::path& subosDir, const std::filesystem::path& payloadRoot,
+    const xvm::VersionDB& dbBeforeRemoval, const xvm::VersionDB& currentDb,
+    const xvm::Workspace& currentWorkspace, const xvm::RemovalBatchResult& removalResult,
+    std::span<const xvm::materialize::AssetClaim> claims) {
     std::set<std::string> removedDestinations;
     for (const auto& removed : removalResult.removed) {
         auto targetIt = dbBeforeRemoval.find(removed.target);
-        if (targetIt == dbBeforeRemoval.end()) continue;
+        if (targetIt == dbBeforeRemoval.end())
+            continue;
         auto versionIt = targetIt->second.versions.find(removed.version);
-        if (versionIt == targetIt->second.versions.end()) continue;
+        if (versionIt == targetIt->second.versions.end())
+            continue;
         const auto& data = versionIt->second;
-        if (xvm::effective_kind(targetIt->second, data) != "files") continue;
+        if (xvm::effective_kind(targetIt->second, data) != "files")
+            continue;
         // Re-checked rather than trusted: a hand-edited record must not be
         // able to steer a delete outside the subos.
-        if (!xvm::is_permitted_file_destination(data.fileDst)) continue;
+        if (!xvm::is_permitted_file_destination(data.fileDst))
+            continue;
         removedDestinations.insert(data.fileDst);
     }
-    xvm::reclaim_declared_assets(subosDir, payloadRoot, removedDestinations,
-                                 currentDb, currentWorkspace);
+    return xvm::reclaim_declared_assets(subosDir, payloadRoot, removedDestinations, currentDb,
+                                        currentWorkspace, claims);
 }
 
 // What an extraction failure means on the wire.
@@ -1115,10 +1141,7 @@ std::string effective_version_namespace_(
         const xvm::VersionDB& db,
         const PlanNode& node,
         const std::filesystem::path& dataDir) {
-    const auto payloadDir =
-        (node.storeRoot.empty() ? dataDir / "xpkgs" : node.storeRoot)
-        / package_store_name(node.namespaceName, node.name)
-        / node.version;
+    const auto payloadDir = node_payload_path(node, dataDir);
     return effective_version_namespace_(
         db, node.namespaceName, node.name, node.canonicalName, node.version,
         payloadDir);
@@ -1189,6 +1212,56 @@ std::filesystem::path xpkg_snapshot_file_(const std::filesystem::path& installDi
 }
 
 std::expected<void, std::string>
+save_resolution_(const PlanNode& node, const mcpplibs::xpkg::ExecutionContext& ctx) {
+    namespace fs = std::filesystem;
+    try {
+        for (const auto& spec : node.runtime_deps) {
+            if (!ctx.resolved_deps.contains(spec)) {
+                return std::unexpected("missing resolved runtime dependency: " + spec);
+            }
+        }
+        std::error_code ec;
+        const auto payload = fs::symlink_status(ctx.install_dir, ec);
+        if (ec || !fs::is_directory(payload)) {
+            return std::unexpected("cannot record resolution in a non-directory payload: " +
+                                   ctx.install_dir.string());
+        }
+        const auto path = ctx.install_dir / ".xlings-resolution.json";
+        const auto status = fs::symlink_status(path, ec);
+        if (ec && ec != std::errc::no_such_file_or_directory) {
+            return std::unexpected("cannot inspect resolution record: " + ec.message());
+        }
+        if (status.type() != fs::file_type::not_found && !fs::is_regular_file(status)) {
+            return std::unexpected("resolution record is not a regular file: " + path.string());
+        }
+        nlohmann::json record;
+        const auto identity = node.canonicalName.empty()
+                                  ? configured_identity(node.namespaceName, node.name, node.version)
+                                  : std::format("{}@{}", node.canonicalName, node.version);
+        record["package"] = identity;
+        record["deps"] = nlohmann::json::array();
+        std::vector<std::string> specs;
+        for (const auto& [spec, dep] : ctx.resolved_deps) {
+            specs.push_back(spec);
+        }
+        std::ranges::sort(specs);
+        for (const auto& spec : specs) {
+            const auto& dep = ctx.resolved_deps.at(spec);
+            record["deps"].push_back({{"spec", dep.spec},
+                                      {"name", dep.name},
+                                      {"version", dep.version},
+                                      {"install_dir", dep.install_dir},
+                                      {"libdirs", dep.libdirs},
+                                      {"source", dep.source}});
+        }
+        platform::write_file_atomic(path.string(), record.dump(2) + "\n");
+        return {};
+    } catch (const std::exception& error) {
+        return std::unexpected("cannot record payload resolution: " + std::string(error.what()));
+    }
+}
+
+std::expected<void, std::string>
 save_xpkg_snapshot_(const std::filesystem::path& sourcePkgFile,
                     const std::filesystem::path& installDir) {
     namespace fs = std::filesystem;
@@ -1236,7 +1309,8 @@ std::filesystem::path uninstall_xpkg_file_(const std::filesystem::path& indexPkg
 
 bool is_archive_(const std::filesystem::path& path) {
     auto filename = path.filename().string();
-    return filename.ends_with(".tar.gz")
+    return filename.ends_with(".tar")
+        || filename.ends_with(".tar.gz")
         || filename.ends_with(".tar.xz")
         || filename.ends_with(".tar.bz2")
         || filename.ends_with(".tgz")
@@ -1620,62 +1694,6 @@ bool is_version_referenced_anywhere_(PackageScope scope, const std::string& targ
     return true;
 }
 
-void remove_target_shims_(const std::string& target, const std::string& version) {
-    namespace fs = std::filesystem;
-    auto db = Config::versions();
-    auto* vinfo = xvm::get_vinfo(db, target);
-    auto& binDir = Config::paths().binDir;
-    std::error_code ec;
-
-    // A program's shim is a generic dispatcher to the bootstrap; the actual
-    // version it routes to is the workspace pointer (read at runtime). So
-    // the shim is only stale when **the current subos** has dropped its
-    // last version of the name. With surviving versions still in this
-    // subos's installed[], the shim must stay — auto-fallback in
-    // detach_current_subos_ updates `active` to the highest remaining
-    // version and the shim resolves through that.
-    //
-    // 0.4.19+: this check is now scoped to the **current subos's
-    // installed[]**, not the global versions DB. Pre-0.4.19 the gate
-    // was `is_last_version_for(global)`, which under-removed: subos A
-    // could drain its installed[] for a target while subos B still had
-    // some other version of it, leaving a stale shim in A's bin/. With
-    // C2 schema each subos's bin/ is independent — so is each subos's
-    // shim-lifetime decision.
-    //
-    // Caller contract: detach_current_subos_ has already pruned
-    // `version` from this subos's installed[] before calling us. So
-    // checking "is the post-removal installed[] empty?" gives the
-    // correct answer.
-    const auto& wsi = Config::workspace_installed();
-    auto subos_has_any_version_of = [&](const std::string& name) {
-        auto it = wsi.find(name);
-        return it != wsi.end() && !it->second.empty();
-    };
-
-    auto mainName = (vinfo && !vinfo->filename.empty()) ? vinfo->filename : target;
-    if (!subos_has_any_version_of(target)) {
-        auto mainShim = binDir / mainName;
-        if (fs::exists(mainShim, ec) || fs::is_symlink(mainShim, ec)) {
-            ec.clear();
-            fs::remove(mainShim, ec);
-        }
-    }
-
-    if (!vinfo) return;
-    for (auto& [bindingName, vermap] : vinfo->bindings) {
-        auto vit = vermap.find(version);
-        if (vit == vermap.end()) continue;
-        if (subos_has_any_version_of(bindingName)) continue;  // still in use here
-        auto bindPath = binDir / bindingName;
-        ec.clear();
-        if (fs::exists(bindPath, ec) || fs::is_symlink(bindPath, ec)) {
-            ec.clear();
-            fs::remove(bindPath, ec);
-        }
-    }
-}
-
 // Members of the release `target@version` belongs to, plus the coordinate
 // itself.
 //
@@ -1695,157 +1713,136 @@ release_members_(const xvm::VersionDB& db,
     return members;
 }
 
-void detach_current_subos_(const std::string& target, const std::string& version, bool persist) {
-    auto& ws = Config::workspace_mut();
-    auto& wsi = Config::workspace_installed_mut();
-    const auto db = Config::versions();
-
-    // The RELEASE, not the name the user typed.
-    //
-    // Every sysroot artifact registers on a member: libraries as their own
-    // soname targets (`libglib-2.0.so.0`), declared assets as generated ones
-    // (`glib.files.274`). The package's own entry carries none of them. So
-    // asking about `target` alone -- which is what this function did until
-    // 2026.8.26.1 -- reclaimed nothing at all on any modern home, and left
-    // the whole release's footprint pointing at a payload this subos had just
-    // opted out of. Not dangling, which is what made it invisible: the links
-    // still worked, so a compiler kept using headers from a package the user
-    // had removed (openxlings/xlings#423).
+void detach_selection_(const xvm::VersionDB& db, xvm::Workspace& active,
+                       xvm::WorkspaceInstalled& installed, const std::string& target,
+                       const std::string& version) {
     const auto members = release_members_(db, target, version);
-
-    // Step 1 (0.4.19+): always drop the release from this subos's
-    // installed[] set, even when it isn't the currently active version.
-    // The set is the per-subos opt-in list; an explicit `xlings remove
-    // foo@X` always means "this subos no longer wants X".
-    //
-    // Members included since 2026.8.26.1. Dropping only `target` left the
-    // subos claiming 140 of its 268 workspace entries for a release it had
-    // detached, and the entries were swept later by `self doctor --fix` --
-    // which is another command finishing this one's work, not this one
-    // working.
-    bool installedChanged = false;
-    for (const auto& [memberTarget, memberVersion] : members) {
-        auto it = wsi.find(memberTarget);
-        if (it == wsi.end()) continue;
-        auto& list = it->second;
-        const auto before = list.size();
-        std::erase(list, memberVersion);
-        if (list.size() == before) continue;
-        installedChanged = true;
-        if (list.empty()) wsi.erase(it);
+    for (const auto& [name, key] : members) {
+        if (auto it = installed.find(name); it != installed.end()) {
+            std::erase(it->second, key);
+            if (it->second.empty())
+                installed.erase(it);
+        }
     }
+    const auto selected = active.find(target);
+    if (selected == active.end() || selected->second != version)
+        return;
+    std::string fallback;
+    if (const auto it = installed.find(target); it != installed.end() && !it->second.empty())
+        fallback = it->second.back();
+    for (const auto& [name, key] : members) {
+        if (const auto it = active.find(name); it != active.end() && it->second == key)
+            active.erase(it);
+    }
+    if (!fallback.empty()) {
+        for (const auto& [name, key] : release_members_(db, target, fallback))
+            active[name] = key;
+    }
+}
 
-    // Step 2: if `version` was the active pointer, do the actual subos
-    // teardown (remove headers / libs / assets / shims) and then either fall
-    // back to another installed version or clear the pointer entirely.
-    auto wit = ws.find(target);
-    bool wasActive = wit != ws.end() && wit->second == version;
-
-    if (wasActive) {
-        const auto& p = Config::paths();
-        const auto sysroot_include = p.subosDir / "usr" / "include";
-        const auto sysroot_lib = p.libDir;
-        const auto payloadRoot = p.dataDir / "xpkgs";
-
-        // Auto-fallback: when the user removes the active version but
-        // still has other versions installed in this subos, switch
-        // active to the highest remaining (installed[] is stored
-        // sorted ascending by subos_workspace_to_json — `back()` is
-        // the lexicographically-highest, which approximates "newest"
-        // for typical semver-ish version strings).
-        std::string fallbackVersion;
-        if (auto sit = wsi.find(target);
-            sit != wsi.end() && !sit->second.empty()) {
-            fallbackVersion = sit->second.back();
-        }
-        const auto fallbackMembers = fallbackVersion.empty()
-            ? std::map<std::string, std::string>{}
-            : release_members_(db, target, fallbackVersion);
-
-        // What `active` will say once this lands, computed BEFORE anything is
-        // torn down. Reconciling against the before-view would preserve links
-        // belonging to the very release being taken away.
-        auto activeAfter = ws;
-        for (const auto& [memberTarget, _] : members) {
-            activeAfter.erase(memberTarget);
-        }
-        for (const auto& [memberTarget, memberVersion] : fallbackMembers) {
-            activeAfter[memberTarget] = memberVersion;
-        }
-
-        std::set<std::string> destinations;
-        std::set<std::string> outgoingLibNames;
-        for (const auto& [memberTarget, memberVersion] : members) {
-            for (const auto& asset :
-                     xvm::group_header_assets(db, memberTarget, memberVersion)) {
-                xvm::remove_headers(asset, sysroot_include);
-            }
-            if (const auto placement = xvm::library_placement(
-                    db, memberTarget, memberVersion,
-                    Config::paths().homeDir.string());
-                !placement.empty()) {
-                outgoingLibNames.insert(placement.name);
-            }
-        }
-        for (const auto& placement : xvm::release_file_placements(
-                 db, target, version, Config::paths().homeDir.string())) {
-            if (!xvm::is_permitted_file_destination(placement.destination)) {
+std::expected<void, std::string>
+publish_removal_state_(xvm::VersionDB candidateDb, xvm::Workspace candidateWorkspace,
+                       xvm::WorkspaceInstalled candidateInstalled,
+                       const std::vector<mcpplibs::xpkg::XvmOp>& operations = {}) {
+    normalize_scope_metadata(candidateWorkspace, candidateInstalled);
+    namespace mat = xvm::materialize;
+    const auto beforeDb = Config::versions();
+    const auto beforeWorkspace = Config::workspace();
+    const auto beforeInstalled = Config::workspace_installed();
+    const auto root = Config::xvm_artifact_subos_dir();
+    const auto homeDir = Config::paths().homeDir.string();
+    auto claims = mat::collect_claims(beforeDb, beforeInstalled, root, root / "lib", homeDir);
+    if (!claims)
+        return std::unexpected(claims.error());
+    xvm::WorkspaceInstalled activeOnly;
+    for (const auto& [name, key] : candidateWorkspace)
+        activeOnly[name] = {key};
+    auto desired = mat::collect_claims(candidateDb, activeOnly, root, root / "lib", homeDir, mat::ClaimSource::Present);
+    if (!desired)
+        return std::unexpected(desired.error());
+    auto obsolete = mat::obsolete_assets(*claims, *desired);
+    if (!obsolete) return std::unexpected(obsolete.error());
+    auto changes = std::move(*obsolete);
+    for (const auto& next : *desired)
+        changes.push_back({next.source, next.destination, false});
+    for (const auto& op : operations) {
+        if (op.op != "remove_headers")
+            continue;
+        const auto source = std::filesystem::path(xvm::expand_path(op.includedir, homeDir));
+        std::vector<mat::AssetClaim> selected;
+        for (const auto& old : *claims) {
+            const auto relative = old.source.lexically_relative(source);
+            if (relative.empty() || *relative.begin() == "..")
                 continue;
-            }
-            destinations.insert(placement.destination);
+            selected.push_back(old);
         }
-
-        // Same rule the libraries get from the uninstall path, and the same
-        // rule the assets get below: a name an active release still claims is
-        // re-pointed at that release rather than deleted. Without it,
-        // detaching musl's release would take `libc.so.6` away from the glibc
-        // release still active here.
-        std::map<std::string, std::string> activeLibSources;
-        for (const auto& [activeTarget, activeVersion] : activeAfter) {
-            const auto placement = xvm::library_placement(
-                db, activeTarget, activeVersion,
-                Config::paths().homeDir.string());
-            if (placement.empty()) continue;
-            if (!outgoingLibNames.contains(placement.name)) continue;
-            activeLibSources.emplace(placement.name, placement.source);
-        }
-        for (const auto& name : outgoingLibNames) {
-            if (const auto it = activeLibSources.find(name);
-                it != activeLibSources.end()) {
-                xvm::place_library(it->second, name, sysroot_lib);
-            } else {
-                xvm::remove_library(name, sysroot_lib);
-            }
-        }
-
-        xvm::reclaim_declared_assets(p.subosDir, payloadRoot, destinations,
-                                     db, activeAfter);
-
-        // The release being fallen back to may declare assets the outgoing
-        // one did not; `reclaim_declared_assets` only ever visits the
-        // outgoing set, so those would be missing. Placing is idempotent, so
-        // this is a stat for everything already correct.
-        if (!fallbackVersion.empty()) {
-            for (const auto& placement : xvm::release_file_placements(
-                     db, target, fallbackVersion,
-                     Config::paths().homeDir.string())) {
-                xvm::place_asset(placement.source,
-                                 p.subosDir / placement.destination);
-            }
-        }
-
-        remove_target_shims_(target, version);
-
-        // The whole release moves or none of it does. Leaving members
-        // pointing at the outgoing version while `target` moved to the
-        // fallback is the mixed state INV-2 reports and the binding-group
-        // model exists to prevent.
-        ws = std::move(activeAfter);
+        auto removedHeaders = mat::obsolete_assets(selected, *desired);
+        if (!removedHeaders) return std::unexpected(removedHeaders.error());
+        changes.insert(changes.end(), removedHeaders->begin(), removedHeaders->end());
     }
-
-    if (persist && (wasActive || installedChanged)) {
+    auto prepared = mat::preflight_materialization(changes, *claims, root);
+    if (!prepared)
+        return std::unexpected(prepared.error());
+    const auto versionPath = &Config::versions_mut() == &Config::global_versions()
+                                 ? Config::paths().homeDir / ".xlings.json"
+                                 : Config::project_state_path();
+    const auto workspacePath = Config::workspace_config_path(false);
+    auto oldVersions = home::read_json_for_update(versionPath);
+    auto oldWorkspace = home::read_json_for_update(workspacePath);
+    if (!oldVersions || !oldWorkspace)
+        return std::unexpected("cannot observe metadata before removal");
+    auto applied = prepared->execute();
+    if (!applied)
+        return std::unexpected(applied.error());
+    Config::versions_mut() = std::move(candidateDb);
+    Config::workspace_mut() = std::move(candidateWorkspace);
+    Config::workspace_installed_mut() = std::move(candidateInstalled);
+    try {
+        Config::save_versions();
         Config::save_workspace();
+        auto versions = home::read_json_for_update(versionPath);
+        auto workspace = home::read_json_for_update(workspacePath);
+        if (!versions || !workspace ||
+            versions->value("versions", nlohmann::json::object()) !=
+                xvm::versions_to_json(Config::versions()))
+            throw std::runtime_error("version metadata was not saved");
+        const auto persisted = xvm::subos_workspace_from_json(workspace->at("workspace"));
+        if (persisted.active != Config::workspace() ||
+            persisted.installed != Config::workspace_installed())
+            throw std::runtime_error("scope metadata was not saved");
+        if (const auto sync = xself::sync_shim_tables(); !sync.root_error.empty())
+            throw std::runtime_error(sync.root_error);
+    } catch (const std::exception& error) {
+        std::string failure = error.what();
+        Config::versions_mut() = beforeDb;
+        Config::workspace_mut() = beforeWorkspace;
+        Config::workspace_installed_mut() = beforeInstalled;
+        try {
+            platform::write_file_atomic(versionPath.string(), oldVersions->dump(2));
+            if (workspacePath != versionPath)
+                platform::write_file_atomic(workspacePath.string(), oldWorkspace->dump(2));
+        } catch (const std::exception& rollback) {
+            failure += "; metadata rollback failed: " + std::string(rollback.what());
+        }
+        if (const auto rollback = applied->rollback(); !rollback)
+            failure += "; asset rollback failed: " + rollback.error();
+        if (const auto sync = xself::sync_shim_tables(); !sync.root_error.empty())
+            failure += "; root rollback failed: " + sync.root_error;
+        return std::unexpected(std::move(failure));
     }
+    auto committed = applied->commit();
+    if (!committed) return committed;
+    for (const auto& change : changes)
+        if (change.remove) xvm::prune_empty_asset_dirs(change.destination, root);
+    return {};
+}
+
+std::expected<void, std::string> detach_current_subos_(const std::string& target,
+                                                       const std::string& version) {
+    auto active = Config::workspace();
+    auto installed = Config::workspace_installed();
+    detach_selection_(Config::versions(), active, installed, target, version);
+    return publish_removal_state_(Config::versions(), std::move(active), std::move(installed));
 }
 
 bool apply_subos_env_ops_(const std::vector<mcpplibs::xpkg::XvmOp>& operations,
@@ -2090,512 +2087,278 @@ bool apply_subos_env_ops_(const std::vector<mcpplibs::xpkg::XvmOp>& operations,
     return true;
 }
 
-bool process_xvm_operations_(const PlanNode& node,
-                             const std::filesystem::path& dataDir,
-                             mcpplibs::xpkg::PackageExecutor& executor,
-                             bool useAfterInstall) {
-    auto xvm_ops = executor.xvm_operations();
-
-    // Before the early return below. A package that declares only env and
-    // registers nothing with xvm has an empty registration batch, and would
-    // otherwise install cleanly with its declarations dropped on the floor --
-    // the exact shape where "nothing happened" and "it worked" look alike.
-    if (!apply_subos_env_ops_(xvm_ops, node)) return false;
-
-    auto& paths = Config::paths();
-    auto& scopedDb = Config::versions_mut();
-    auto& scopedWorkspace = Config::workspace_mut();
-    auto& scopedInstalled = Config::workspace_installed_mut();
-    const auto artifactSubosDir =
-        Config::xvm_artifact_subos_dir();
-    const auto artifactBinDir = artifactSubosDir / "bin";
-    const auto sysroot_lib = artifactSubosDir / "lib";
-    const auto sysroot_include =
-        artifactSubosDir / "usr" / "include";
-
-    // Locate xlings binary for shim creation
-#ifdef _WIN32
-    auto xlings_bin = paths.homeDir / "bin" / "xlings.exe";
-    constexpr std::string_view shim_ext = ".exe";
-#else
-    auto xlings_bin = paths.homeDir / "bin" / "xlings";
-    constexpr std::string_view shim_ext = "";
-#endif
-    if (!std::filesystem::exists(xlings_bin))
-        xlings_bin = paths.homeDir / "xlings";
-
-    // Default-index versions keep their historical bare keys, other repos
-    // their namespace -- and a release already on disk keeps whichever it
-    // was written with (effective_version_namespace_), so install and exact
-    // removal resolve the same keys.
-    const auto versionNamespace =
-        effective_version_namespace_(scopedDb, node, dataDir);
-
-    auto registration = normalize_xpkg_registration_plan(
-        node, xvm_ops, versionNamespace, dataDir, useAfterInstall);
+bool process_xvm_operations_(const PlanNode& node, const std::filesystem::path& dataDir,
+                             mcpplibs::xpkg::PackageExecutor& executor, bool useAfterInstall,
+                             const home::layers::BorrowPlan* borrowed) {
+    namespace mat = xvm::materialize;
+    const auto xvmOps = executor.xvm_operations();
+    const auto dbBefore = Config::versions();
+    const auto workspaceBefore = Config::workspace();
+    const auto installedBefore = Config::workspace_installed();
+    auto candidateDb = dbBefore;
+    auto candidateWorkspace = workspaceBefore;
+    auto candidateInstalled = installedBefore;
+    const auto scope = Config::xvm_artifact_subos_dir();
+    const auto homeDir = Config::paths().homeDir.string();
+    const auto versionNamespace = effective_version_namespace_(candidateDb, node, dataDir);
+    auto registration =
+        normalize_xpkg_registration_plan(node, xvmOps, versionNamespace, dataDir, useAfterInstall);
     if (!registration) {
-        log::warn(
-            "xvm registration normalization failed for {}@{}: {} "
-            "(operation={}, target='{}', version='{}')",
-            node.canonicalName.empty()
-                ? canonical_package_name(node.namespaceName, node.name)
-                : node.canonicalName,
-            node.version,
-            registration.error().message,
-            registration.error().operationIndex,
-            registration.error().target,
-            registration.error().version);
+        log::error("xvm registration refused for {}@{}: {}", node.name, node.version,
+                   registration.error().message);
         return false;
     }
-    const bool hasRemoval = std::ranges::any_of(
-        xvm_ops,
-        [](const auto& operation) {
-            return operation.op == "remove"
-                || operation.op == "remove_all";
-        });
-    if (!hasRemoval
-        && registration->batch.nodes.empty()
-        && registration->batch.headers.empty()
-        && registration->effects.empty()) {
-        return true;
-    }
-
-    xvm::RemovalContext removalContext;
-    if (hasRemoval) {
-        auto snapshot = snapshot_xpkg_removal_context(
-            scopedDb, scopedWorkspace, xvm_ops,
-            registration->batch.provider,
-            registration->batch.providerVersion);
-        if (!snapshot) {
-            // Selection runs before any mutation, so nothing has moved yet.
-            log::error("{}", xvm::render(
-                xvm::describe(
-                    snapshot.error(),
-                    std::format("{}@{}",
-                                registration->batch.provider,
-                                registration->batch.providerVersion)),
-                /*nothingChanged=*/true));
+    const bool declarativeBorrow =
+        borrowed && xvmOps.empty() && (node.pkgType == 1 || node.pkgType == 4);
+    if (borrowed) {
+        auto source = home::layers::read_source_snapshot(node.sourceHome, node.sourceScope);
+        if (!source) {
+            log::error("{}", source.error());
             return false;
         }
-        removalContext = std::move(*snapshot);
-    }
-
-    const auto dbBeforeRemoval = scopedDb;
-    const auto workspaceBeforeRemoval = scopedWorkspace;
-    auto metadata = apply_xpkg_xvm_metadata_batch(
-        scopedDb,
-        scopedWorkspace,
-        scopedInstalled,
-        xvm_ops,
-        removalContext,
-        *registration);
-    if (!metadata) {
-        const auto owner = std::format("{}@{}",
-                                       registration->batch.provider,
-                                       registration->batch.providerVersion);
-        // apply_xpkg_xvm_metadata_batch works on copies and only swaps them
-        // in on success, so a failure here has left the stored state alone.
-        if (std::holds_alternative<xvm::RemovalError>(
-                metadata.error())) {
-            log::error("{}", xvm::render(
-                xvm::describe(
-                    std::get<xvm::RemovalError>(metadata.error()), owner),
-                /*nothingChanged=*/true));
-        } else {
-            log::error("{}", xvm::render(
-                xvm::describe(
-                    std::get<xvm::RegistrationError>(metadata.error()), owner),
-                /*nothingChanged=*/true));
+        auto checked = home::layers::plan_borrow_package(
+            *source, dbBefore, registration->batch.provider, node.version);
+        if (!checked || !*checked || (**checked).requestedPayload != node.borrowedPayload) {
+            log::error("{}: the checked system release changed before configuration", node.name);
+            return false;
         }
+        for (const auto& [target, imported] : borrowed->registrations) {
+            const bool requested = borrowed->requestedMembers.contains(target);
+            if (requested && !declarativeBorrow)
+                continue;
+            auto& into = candidateDb[target];
+            into.type = imported.type;
+            into.filename = imported.filename;
+            for (const auto& [key, value] : imported.versions)
+                into.versions[key] = value;
+            for (const auto& [peer, edges] : imported.bindings)
+                for (const auto& [key, linked] : edges)
+                    into.bindings[peer][key] = linked;
+        }
+        for (const auto& [target, key] : borrowed->members) {
+            if (borrowed->requestedMembers.contains(target) && !declarativeBorrow)
+                continue;
+            auto& versions = candidateInstalled[target];
+            if (std::ranges::find(versions, key) == versions.end())
+                versions.push_back(key);
+            if (useAfterInstall || !candidateWorkspace.contains(target))
+                candidateWorkspace[target] = key;
+        }
+    }
+    xvm::RemovalContext removal;
+    if (std::ranges::any_of(
+            xvmOps, [](const auto& op) { return op.op == "remove" || op.op == "remove_all"; })) {
+        auto selected = snapshot_xpkg_removal_context(candidateDb, candidateWorkspace, xvmOps,
+                                                      registration->batch.provider,
+                                                      registration->batch.providerVersion);
+        if (!selected) {
+            log::error("{}", xvm::render(xvm::describe(selected.error(), node.name), true));
+            return false;
+        }
+        removal = std::move(*selected);
+    }
+    auto metadata = apply_xpkg_xvm_metadata_batch(
+        candidateDb, candidateWorkspace, candidateInstalled, xvmOps, removal, *registration);
+    if (!metadata) {
+        if (std::holds_alternative<xvm::RemovalError>(metadata.error()))
+            log::error(
+                "{}",
+                xvm::render(xvm::describe(std::get<xvm::RemovalError>(metadata.error()), node.name),
+                            true));
+        else
+            log::error("{}",
+                       xvm::render(xvm::describe(std::get<xvm::RegistrationError>(metadata.error()),
+                                                 node.name),
+                                   true));
         return false;
     }
-
-    cleanup_removed_xvm_library_artifacts(
-        sysroot_lib,
-        dbBeforeRemoval,
-        scopedDb,
-        metadata->removal);
-    // Re-registration replaces the release's declarations wholesale, so a
-    // destination the new version no longer declares is exactly as removed as
-    // one from an uninstalled package -- and was exactly as leaked. This is
-    // also what makes a granularity change converge: when a package that used
-    // to claim a whole directory starts declaring its contents per file, the
-    // old directory link is reclaimed here and `place_asset` unwraps whatever
-    // is left into a real directory, in either install order.
-    cleanup_removed_xvm_file_artifacts(
-        artifactSubosDir,
-        Config::paths().dataDir / "xpkgs",
-        dbBeforeRemoval,
-        scopedDb,
-        scopedWorkspace,
-        metadata->removal);
-
-    // Removal takes the removed release's headers out of the sysroot. When
-    // it then falls back to a surviving release, nothing put that release's
-    // headers back -- the sysroot ended up with none at all, and `xlings use`
-    // could not repair it because switching to an already-active version is
-    // a no-op. Re-materialize whatever the fallback made active.
-    for (const auto& [target, version] : scopedWorkspace) {
-        auto beforeIt = workspaceBeforeRemoval.find(target);
-        if (beforeIt != workspaceBeforeRemoval.end()
-            && beforeIt->second == version) {
-            continue;  // unchanged
-        }
-        auto infoIt = scopedDb.find(target);
-        if (infoIt == scopedDb.end()) continue;
-        auto dataIt = infoIt->second.versions.find(version);
-        if (dataIt == infoIt->second.versions.end()) continue;
-        for (const auto& asset :
-                 xvm::group_header_assets(scopedDb, target, version)) {
-            xvm::install_headers(asset, sysroot_include);
-        }
-        if (const auto placement = xvm::library_placement(
-                scopedDb, target, version, Config::paths().homeDir.string());
-            !placement.empty()) {
-            xvm::place_library(placement.source, placement.name, sysroot_lib);
-        }
-        if (const auto file = xvm::file_placement(
-                scopedDb, target, version, Config::paths().homeDir.string());
-            !file.empty()) {
-            xvm::place_asset(file.source,
-                             Config::paths().subosDir / file.destination);
+    if (!node.sourceHome.empty()) {
+        for (const auto& member : metadata->registered) {
+            auto target = candidateDb.find(member.target);
+            if (target == candidateDb.end())
+                return false;
+            auto version = target->second.versions.find(member.version);
+            if (version == target->second.versions.end())
+                return false;
+            version->second.sourceHome = node.sourceHome.string();
+            version->second.sourceScope = node.sourceScope;
         }
     }
-
-    // Written after the batch, not inside it: the batch owns the group model
-    // and must not be taught a legacy field. This runs against the committed
-    // scopedDb, so a package whose own name is not a registered target simply
-    // gets no marker rather than a phantom entry.
-    if (const auto headerVersion =
-            xvm::make_ns_version(versionNamespace, node.version);
-        attach_legacy_header_dir(
-            scopedDb, node.name, headerVersion, metadata->effects) == 0) {
-        const bool declaresHeaders = std::ranges::any_of(
-            metadata->effects, [](const XpkgFilesystemEffect& effect) {
-                return effect.kind == XpkgFilesystemEffectKind::InstallHeaders;
-            });
-        if (declaresHeaders) {
-            log::debug(
-                "[xim] headers declared but '{}@{}' is not a registered "
-                "target; `xlings use` will not swap them",
-                node.name, headerVersion);
-        }
+    attach_legacy_header_dir(candidateDb, node.name,
+                             xvm::make_ns_version(versionNamespace, node.version),
+                             metadata->effects);
+    xvm::Workspace selectedFiles;
+    for (const auto& member : metadata->registered) {
+        const auto active = candidateWorkspace.find(member.target);
+        if (active != candidateWorkspace.end() && active->second == member.version)
+            selectedFiles[member.target] = member.version;
     }
+    xvm::reclaim_conflicting_file_bindings(candidateDb, candidateWorkspace, selectedFiles, homeDir);
 
-    // Places this batch's filesystem effects (headers, file assets,
-    // libraries, shims) into ONE subos's sysroot. Extracted so a
-    // registration rewrite can be replayed against every OTHER subos that
-    // pins this version too (#586) without duplicating the per-effect-kind
-    // logic -- the call below for the CURRENT subos is unchanged from
-    // before the extraction.
-    //
-    // `ws` is what gates every `resolved->active` check inside
-    // `resolve_xpkg_filesystem_effect` and the shim branch's own lookup:
-    // passing another subos's workspace here is what makes this only ever
-    // place what THAT subos has made active, never something of ours.
-    // `scopedDb` (the version DB), `xlings_bin` and `shim_ext` stay captured
-    // from the enclosing scope -- they describe the shared payload store and
-    // the one home-level entry binary, neither of which is per-subos.
-    // No `installed[]` parameter: no effect kind placed here needs it,
-    // unlike the caller's own per-subos state (`Config::workspace_
-    // installed()`), which activation elsewhere in this function does read.
-    auto place_effects_into = [&](const std::filesystem::path& subosDir,
-                                   const xvm::Workspace& ws) {
-        const auto binDir = subosDir / "bin";
-        const auto libDir = subosDir / "lib";
-        const auto includeDir = subosDir / "usr" / "include";
+    auto changes_for = [&](const std::filesystem::path& root, const xvm::Workspace& active,
+                           const xvm::WorkspaceInstalled& oldInstalled)
+        -> std::expected<mat::Prepared, std::string> {
+        auto claims = mat::collect_claims(dbBefore, oldInstalled, root, root / "lib", homeDir);
+        if (!claims)
+            return std::unexpected(claims.error());
+        xvm::WorkspaceInstalled activeOnly;
+        for (const auto& [target, key] : active)
+            activeOnly[target] = {key};
+        auto desired = mat::collect_claims(candidateDb, activeOnly, root, root / "lib", homeDir, mat::ClaimSource::Present);
+        if (!desired)
+            return std::unexpected(desired.error());
+        auto obsolete = mat::obsolete_assets(*claims, *desired);
+        if (!obsolete) return std::unexpected(obsolete.error());
+        auto changes = std::move(*obsolete);
+        for (const auto& next : *desired)
+            changes.push_back({next.source, next.destination, false});
+        return mat::preflight_materialization(changes, *claims, root);
+    };
+    auto prepared = changes_for(scope, candidateWorkspace, installedBefore);
+    if (!prepared) {
+        log::error("{}: sysroot update refused before metadata changed: {}", node.name,
+                   prepared.error());
+        return false;
+    }
+    std::vector<mat::Applied> applied;
+    auto current = prepared->execute();
+    if (!current) {
+        log::error("{}", current.error());
+        return false;
+    }
+    applied.push_back(std::move(*current));
 
-        for (const auto& effect : metadata->effects) {
-            auto resolved = resolve_xpkg_filesystem_effect(
-                scopedDb, ws, effect);
-            if (!resolved) {
-                log::warn(
-                    "validated xvm effect target disappeared or changed kind: "
-                    "{}@{}",
-                    effect.target, effect.version);
-                continue;
-            }
-            if (resolved->kind
-                == XpkgFilesystemEffectKind::InstallHeaders) {
-                if (!resolved->active) {
-                    // Installing a non-active version must not disturb the
-                    // sysroot: `xlings use` is what moves headers, and it cannot
-                    // undo this because switching to an already-active version
-                    // is a no-op.
-                    log::debug("[xim] headers for {}@{} not installed: not the "
-                               "active version", resolved->target, resolved->version);
-                    continue;
-                }
-                xvm::install_headers(
-                    resolved->sourceDir, includeDir);
-                continue;
-            }
-            if (resolved->kind
-                == XpkgFilesystemEffectKind::RemoveHeaders) {
-                xvm::remove_headers(
-                    resolved->sourceDir, includeDir);
-                continue;
-            }
-            if (resolved->kind
-                == XpkgFilesystemEffectKind::ProgramShim) {
-                // A shim is only meaningful for a name that has an active
-                // version -- that is what shim_dispatch resolves against, and
-                // without one the file can only ever print "no active version
-                // of 'X' in current subos". Writing it anyway is what produced
-                // doctor's `orphan shim`, an error the user could not fix:
-                // `--fix` deleted the file and the next install recreated it.
-                //
-                // Registration deliberately withholds activation from a release
-                // whose group already has an active member (see
-                // registration.cppm, `activateGroup`), so every name that is new
-                // in that release lands here. The sibling effects below already
-                // guard on activation; this one did not.
-                //
-                // The question is about the NAME, not this version: a second
-                // version of an active program must not delete or skip the shim
-                // its active sibling needs. And a name activated later still
-                // gets its file -- `cmd_use` creates shims for every member of
-                // the release it switches to (xvm/commands.cppm).
-                const auto activeIt = ws.find(resolved->target);
-                const bool nameHasActiveVersion =
-                    activeIt != ws.end()
-                    && !activeIt->second.empty();
-                if (!nameHasActiveVersion) {
-                    log::debug(
-                        "[xim] shim for {}@{} not created: no active version of "
-                        "'{}' in this subos",
-                        resolved->target, effect.version, resolved->target);
-                    continue;
-                }
-                // The file itself is not written here any more.
-                //
-                // `xself::sync_shim_tables()` below derives the whole routing
-                // table from the workspace as soon as this node's registrations
-                // are saved -- per node, not once per plan: a later node's hook
-                // may run this one's command by name (see the PATH note at the
-                // elfpatch step). That is what removed the second half of this
-                // block: a project-scope
-                // mirror into the global bin that nothing recorded and nothing
-                // could reclaim. Reaching this point still means "this name is
-                // active here", which is exactly what the table will conclude.
+    std::vector<std::string> unreadable;
+    const auto pinning = profile::find_subos_pinning_version(Config::paths().homeDir, node.name,
+                                                             node.version, &unreadable);
+    for (const auto& name : unreadable)
+        log::warn("{}: unreadable workspace; its sysroot was not refreshed; run xlings self doctor --subos {}", name, name);
+    for (const auto& name : pinning) {
+        if (name == Config::paths().activeSubos)
+            continue;
+        const auto root = Config::paths().homeDir / "subos" / name;
+        if (root == scope)
+            continue;
+        auto workspace = load_workspace_file_checked_(root / ".xlings.json");
+        if (!workspace) {
+            log::error("{}: unreadable workspace", name);
+            return false;
+        }
+        auto other = changes_for(root, workspace->active, workspace->installed);
+        if (!other) {
+            log::error("{}: {}", name, other.error());
+            return false;
+        }
+        auto changed = other->execute();
+        if (!changed) {
+            log::error("{}: {}", name, changed.error());
+            return false;
+        }
+        applied.push_back(std::move(*changed));
+    }
+    if (!apply_subos_env_ops_(xvmOps, node))
+        return false;
 
-                if (resolved->active
-                    && xvm::is_xlings_binary(resolved->target)
-                    && std::filesystem::exists(xlings_bin)
-                    && !resolved->path.empty()
-                    && !resolved->sourceName.empty()) {
-                    auto activeName = resolved->sourceName;
-                    if (!shim_ext.empty()
-                        && !activeName.ends_with(shim_ext)) {
-                        activeName += shim_ext;
-                    }
-                    const auto activeBin =
-                        std::filesystem::path(resolved->path)
-                        / activeName;
-                    if (std::filesystem::exists(activeBin)) {
-                        // The same writer `xlings use xlings <v>` goes through.
-                        // Two independent replacements of the one file every shim
-                        // dispatches through is how a home ends up running a
-                        // client nobody chose -- see entry_binary.cppm.
-                        xself::replace_entry_binary(
-                            activeBin, xlings_bin,
-                            std::format("{}@{}", resolved->target, effect.version),
-                            effect.version);
-                    }
-                    xself::compat::v0_4_8::cleanup_legacy_alias_shims(
-                        binDir, xlings_bin);
-                }
-                continue;
-            }
-            if (resolved->kind == XpkgFilesystemEffectKind::FileAsset) {
-                if (!resolved->active) {
-                    log::debug("[xim] file asset {}@{} not placed: not the "
-                               "active version", resolved->target,
-                               resolved->version);
-                    continue;
-                }
-                if (const auto file = xvm::file_placement(
-                        scopedDb, resolved->target, resolved->version,
-                        Config::paths().homeDir.string());
-                    !file.empty()) {
-                    xvm::place_asset(file.source,
-                                     subosDir / file.destination);
-                } else {
-                    log::warn("[xim] file asset {}@{} declares no usable "
-                              "destination; nothing placed",
-                              resolved->target, resolved->version);
-                }
-                continue;
-            }
-            if (resolved->kind != XpkgFilesystemEffectKind::Library
-                || resolved->path.empty()) {
-                continue;
-            }
-            if (!resolved->active) {
-                // Installing a version that does not become active must not
-                // disturb the sysroot. `InstallHeaders` has been gated this way
-                // since 0.4.70; `Library` was not, so installing a second version
-                // of a package overwrote the active version's library while its
-                // headers stayed put -- the sysroot then held a library from one
-                // release beside headers from another, which compiles and fails
-                // at run time. `xlings use` is what moves libraries.
-                log::debug("[xim] library {}@{} not placed: not the active "
-                           "version", resolved->target, resolved->version);
-                continue;
-            }
-
-            const auto source =
-                std::filesystem::path(resolved->path)
-                / resolved->sourceName;
-            const auto destination =
-                libDir / resolved->destinationName;
-            std::filesystem::create_directories(libDir);
-            std::error_code ec;
-            if (std::filesystem::exists(destination, ec)
-                || std::filesystem::is_symlink(destination, ec)) {
-                std::filesystem::remove(destination, ec);
-            }
-            ec.clear();
-            if (std::filesystem::exists(source, ec)) {
-                std::filesystem::create_symlink(
-                    source, destination, ec);
-            }
+    const auto versionPath = &Config::versions_mut() == &Config::global_versions()
+                                 ? Config::paths().homeDir / ".xlings.json"
+                                 : Config::project_state_path();
+    const auto workspacePath = Config::workspace_config_path(false);
+    auto oldVersionDocument = home::read_json_for_update(versionPath);
+    auto oldWorkspaceDocument = home::read_json_for_update(workspacePath);
+    if (!oldVersionDocument || !oldWorkspaceDocument) {
+        log::error("cannot observe metadata before publishing {}", node.name);
+        return false;
+    }
+    auto restore = [&]() {
+        Config::versions_mut() = dbBefore;
+        Config::workspace_mut() = workspaceBefore;
+        Config::workspace_installed_mut() = installedBefore;
+        try {
+            platform::write_file_atomic(versionPath.string(), oldVersionDocument->dump(2));
+            if (workspacePath != versionPath)
+                platform::write_file_atomic(workspacePath.string(), oldWorkspaceDocument->dump(2));
+        } catch (const std::exception& error) {
+            log::error("metadata rollback failed: {}", error.what());
         }
     };
-
-    place_effects_into(artifactSubosDir, scopedWorkspace);
-
-    // A registration rewrite (e.g. `remove` + `install` for the same
-    // version, or a recipe update that changes a release's declared paths)
-    // must not leave every OTHER subos that pins this version with dangling
-    // sysroot links -- the loop above only ever touched the subos this
-    // command is running in. `find_subos_pinning_version` is the same
-    // predicate `xlings remove`'s "pinned by" reporting already uses
-    // (xim/commands.cpp): active OR installed[], either pins the payload
-    // just as hard. It only ever considers `<home>/subos/*` (see
-    // `load_subos_snapshots`), never a project-scoped subos, so resolving
-    // each name against `homeDir / "subos" / name` below matches exactly
-    // what produced it.
-    //
-    // Deliberately NOT `ScopedSubosOverride` / `Config::set_active_subos_
-    // override` here, and not just because xim.commands (which owns the
-    // guard) imports xim.installer, making that a module cycle. Measured
-    // directly: the override's own reload (`Config::reload_state()`, needed
-    // on every transition or `Config::workspace()` reads one subos stale --
-    // see its comment in config.cpp) re-reads `globalVersions_` from
-    // `~/.xlings.json` on disk. That clobbers `scopedDb` -- a REFERENCE to
-    // that same member -- with whatever was there before this call, because
-    // `Config::save_versions()` for THIS batch has not run yet (it happens
-    // once, after this whole loop). The library branch below then resolves
-    // `resolved->path` from the stale pre-batch entry, silently placing
-    // nothing for every other subos while headers still moved (their source
-    // path rides on `effect.sourceDir`, captured before the DB write, not
-    // looked up through `scopedDb`). So: read each other subos's own
-    // workspace file directly -- read-only, and the version DB it is
-    // resolved against stays the one this batch just registered.
-    // `unreadable` names subos this scan could not even open to check --
-    // a subos whose file was already corrupted BEFORE this batch ran, so it
-    // never had the chance to be named as pinning anything (load_subos_
-    // snapshots skips it entirely, per its own doc comment). It might be
-    // the one pinning this exact version -- there is no way to tell -- so
-    // warn about it too, the same way the loop below warns about a file
-    // that turns out unreadable mid-scan.
-    std::vector<std::string> unreadableSubos;
-    auto pinningSubos = xlings::profile::find_subos_pinning_version(
-        Config::paths().homeDir, node.name, node.version, &unreadableSubos);
-    for (const auto& name : unreadableSubos) {
-        if (name == Config::paths().activeSubos) continue;
-        const auto configPath =
-            Config::paths().homeDir / "subos" / name / ".xlings.json";
-        log::warn(
-            "{}: its workspace file ({}) could not be read, so it is not "
-            "known whether it pins {}@{} -- its sysroot was NOT refreshed; "
-            "run `xlings self doctor --subos {}` to repair it",
-            name, configPath.string(), node.name, node.version, name);
-    }
-    for (const auto& otherSubos : pinningSubos) {
-        if (otherSubos == Config::paths().activeSubos) continue;
-        const auto otherSubosDir =
-            Config::paths().homeDir / "subos" / otherSubos;
-        const auto otherSubosConfig = otherSubosDir / ".xlings.json";
-        auto sws = load_workspace_file_checked_(otherSubosConfig);
-        if (!sws) {
-            // `find_subos_pinning_version` just said this subos pins
-            // `node.name`@`node.version`, which only happens by reading a
-            // valid workspace object out of this exact file -- so a failure
-            // reading it again here, moments later, means the file is
-            // unreadable (missing, truncated, invalid JSON), not that the
-            // subos legitimately has an empty workspace. Silently
-            // continuing would leave that subos's sysroot on whatever it
-            // pointed at before -- possibly dangling, per #586 -- with
-            // nothing in the log to say so. `self doctor --subos <name>`
-            // is the same repair `xlings remove`'s cross-subos reporting
-            // already points at for a broken payload; it lands in this
-            // same release.
-            log::warn(
-                "{}: pins {}@{}, but its workspace file could not be read "
-                "({}) -- its sysroot was not refreshed; run `xlings self "
-                "doctor --subos {}` to repair it",
-                otherSubos, node.name, node.version,
-                otherSubosConfig.string(), otherSubos);
-            continue;
-        }
-        place_effects_into(otherSubosDir, sws->active);
-    }
-
-    cleanup_removed_xvm_program_artifacts(
-        artifactBinDir,
-        dbBeforeRemoval,
-        scopedDb,
-        scopedInstalled,
-        metadata->removal);
-
-    // Announce any owner-less entry this install took over.
-    //
-    // Adoption replaces the contents recorded for a name@version that an
-    // older client wrote without ownership (xvm/registration.cppm). It is the
-    // right thing to do — the refusal it replaced left the user with no exit
-    // (#422) — but it is still a payload changing behind a name, so it is
-    // said out loud rather than applied silently.
-    for (const auto& member : metadata->registered) {
-        if (!member.adoptedLegacy) continue;
-        log::warn("[xvm] adopted a pre-ownership registration: {}@{} ('{}' changed)",
-                  member.target, member.version, member.adoptedLegacyField);
-    }
-
-    // Announce anything the batch left behind rather than refused over.
-    //
-    // These are names an older client registered for this same payload on a
-    // platform whose recipe produces them and this one's does not (a Windows
-    // llvm leaves `cl`, `lib`, `link`, `rc`). They keep their record and lose
-    // their edge to this release; `self doctor` reports them and can prune
-    // them. Silence here would make a release quietly shed members.
-    for (const auto& member : metadata->detachedLegacy) {
-        log::warn("[xvm] detached a legacy entry this platform no longer "
-                  "registers: {} (run `xlings self doctor --fix` to clear it)",
-                  xvm::display_coordinate(member.target, member.version));
-    }
-
-    if (!metadata->removal.removed.empty()
-        || !metadata->registered.empty()) {
+    Config::versions_mut() = std::move(candidateDb);
+    Config::workspace_mut() = std::move(candidateWorkspace);
+    Config::workspace_installed_mut() = std::move(candidateInstalled);
+    try {
         Config::save_versions();
         Config::save_workspace();
-        // The routing table is derived from the workspace, so it is written
-        // in the same breath. In project scope this also carries the
-        // project's command names into the global subos's table -- the job
-        // `mirror_shim_to_global_bin` used to do, now with an owner
-        // (`knownProjects`) and a reclamation path.
-        xself::sync_shim_tables();
+        auto versions = home::read_json_for_update(versionPath);
+        auto workspace = home::read_json_for_update(workspacePath);
+        if (!versions || !workspace ||
+            versions->value("versions", nlohmann::json::object()) !=
+                xvm::versions_to_json(Config::versions()))
+            throw std::runtime_error("version metadata was not saved");
+        const auto persisted = xvm::subos_workspace_from_json(workspace->at("workspace"));
+        if (persisted.active != Config::workspace() ||
+            persisted.installed != Config::workspace_installed())
+            throw std::runtime_error("scope metadata was not saved");
+        if (const auto sync = xself::sync_shim_tables(); !sync.root_error.empty())
+            throw std::runtime_error(sync.root_error);
+    } catch (const std::exception& error) {
+        log::error("{}: metadata publication failed: {}", node.name, error.what());
+        restore();
+        for (auto& changed : applied) {
+            if (const auto rollback = changed.rollback(); !rollback)
+                log::error("derived rollback failed: {}", rollback.error());
+        }
+        if (const auto sync = xself::sync_shim_tables(); !sync.root_error.empty())
+            log::error("root rollback refresh failed: {}", sync.root_error);
+        return false;
     }
+    for (const auto& effect : metadata->effects) {
+        if (effect.kind != XpkgFilesystemEffectKind::ProgramShim)
+            continue;
+        const auto resolved =
+            resolve_xpkg_filesystem_effect(Config::versions(), Config::workspace(), effect);
+        if (!resolved || !resolved->active || !xvm::is_xlings_binary(resolved->target))
+            continue;
+        const auto entry = Config::paths().homeDir / "bin" / ("xlings" + std::string(platform::exe_suffix));
+        auto sourceName = resolved->sourceName;
+        if (!sourceName.ends_with(platform::exe_suffix))
+            sourceName += platform::exe_suffix;
+        const auto source = std::filesystem::path(resolved->path) / sourceName;
+        if (std::filesystem::exists(source) &&
+            !xself::replace_entry_binary(source, entry, resolved->target + "@" + effect.version,
+                                         effect.version,
+                                         {registration->batch.provider, node.sourceHome})) {
+            restore();
+            for (auto& changed : applied) {
+                if (const auto rollback = changed.rollback(); !rollback)
+                    log::error("derived rollback failed: {}", rollback.error());
+            }
+            if (const auto sync = xself::sync_shim_tables(); !sync.root_error.empty())
+                log::error("root rollback refresh failed: {}", sync.root_error);
+            return false;
+        }
+    }
+    for (auto& changed : applied) {
+        if (const auto committed = changed.commit(); !committed) {
+            log::error("{}: derived backup cleanup failed: {}", node.name, committed.error());
+            return false;
+        }
+    }
+    for (const auto& member : metadata->registered)
+        if (member.adoptedLegacy)
+            log::warn("[xvm] adopted a pre-ownership registration: {}@{}", member.target,
+                      member.version);
+    for (const auto& member : metadata->detachedLegacy)
+        log::warn("[xvm] detached legacy registration {}; run `xlings self doctor`", member.target);
     return true;
 }
 
-bool run_config_hook_(const PlanNode& node, const std::filesystem::path& dataDir, mcpplibs::xpkg::PackageExecutor& executor, mcpplibs::xpkg::ExecutionContext& ctx, std::function<void(const InstallStatus&)> onStatus, bool useAfterInstall, std::string* failureMessage) {
-    if (!executor.has_hook(mcpplibs::xpkg::HookType::Config)) return true;
+bool run_config_hook_(const PlanNode& node, const std::filesystem::path& dataDir, mcpplibs::xpkg::PackageExecutor& executor, mcpplibs::xpkg::ExecutionContext& ctx, std::function<void(const InstallStatus&)> onStatus, bool useAfterInstall, std::string* failureMessage,
+                      const home::layers::BorrowPlan* borrowed) {
+    if (!executor.has_hook(mcpplibs::xpkg::HookType::Config))
+        return process_xvm_operations_(node, dataDir, executor, useAfterInstall, borrowed);
     if (onStatus) {
         onStatus({ node.name, InstallPhase::Configuring, 0.8f, "" });
     }
-    ScopedCurrentDir_ configCwd(ctx.install_dir);
+    ScopedCurrentDir_ configCwd(borrowed ? std::filesystem::path{} : ctx.install_dir);
     ctx.hook_log = hook_log_path_(
         node.canonicalName.empty() ? node.name : node.canonicalName,
         node.version, "config");
@@ -2612,7 +2375,7 @@ bool run_config_hook_(const PlanNode& node, const std::filesystem::path& dataDir
         }
         return false;
     }
-    if (!process_xvm_operations_(node, dataDir, executor, useAfterInstall)) {
+    if (!process_xvm_operations_(node, dataDir, executor, useAfterInstall, borrowed)) {
         if (failureMessage) *failureMessage = "config hook failed";
         return false;
     }
@@ -2717,12 +2480,12 @@ std::filesystem::path Installer::locate_dep_install_dir_(const InstallPlan& plan
                             std::string_view depRef) {
     const auto* n = detail_::dep_node_for_(plan, consumer, depRef);
     if (!n) return {};
-    auto root = n->storeRoot.empty() ? (dataDir / "xpkgs") : n->storeRoot;
-    return root / detail_::effective_store_name_(*n) / n->version;
+    return node_payload_path(*n, dataDir);
 }
 
-std::expected<void, std::string> Installer::execute(const InstallPlan& plan, const DownloaderConfig& dlConfig, std::function<void(const InstallStatus&)> onStatus, InstallRequestHandler onInstallRequests, DownloadProgressSink onProgressState, CancellationToken* cancel, bool useAfterInstall, bool reconfig) {
+std::expected<void, std::string> Installer::execute(const InstallPlan& requestedPlan, const DownloaderConfig& dlConfig, std::function<void(const InstallStatus&)> onStatus, InstallRequestHandler onInstallRequests, DownloadProgressSink onProgressState, CancellationToken* cancel, bool useAfterInstall, bool reconfig) {
 
+    auto plan = requestedPlan;
     if (plan.has_errors()) {
         return std::unexpected(
             std::format("plan has errors: {}", plan.errors[0]));
@@ -2758,6 +2521,55 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& plan, con
 
     auto platform = detect_platform_();
 
+    std::optional<home::layers::Snapshot> systemSnapshot;
+    std::map<std::string, home::layers::BorrowPlan> borrowedPlans;
+    auto systemLayer = home::read_system_layer();
+    if (!systemLayer) return std::unexpected(systemLayer.error());
+    if (*systemLayer) {
+        std::error_code ec;
+        if (!std::filesystem::equivalent(**systemLayer, Config::paths().homeDir, ec)) {
+            auto physicalHome = home::domain_producer_source::persisted_home(**systemLayer);
+            if (!physicalHome) return std::unexpected(physicalHome.error());
+            auto snapshot = home::layers::read_source_snapshot(*physicalHome);
+            if (!snapshot) return std::unexpected(snapshot.error());
+            systemSnapshot.emplace(std::move(*snapshot));
+        }
+    }
+    if (systemSnapshot) {
+        for (auto& node : plan.nodes) {
+            if (node.isSystemPM || node.pkgType == 3) continue;
+            const auto localPayload = node_payload_path(node, dataDir);
+            std::error_code ec;
+            const auto localStatus = std::filesystem::symlink_status(localPayload, ec);
+            if (ec && ec != std::errc::no_such_file_or_directory)
+                return std::unexpected(localPayload.string() + ": " + ec.message());
+            auto sourceMount = home::domain_producer_source::borrowed_mount(localPayload);
+            if (!sourceMount) return std::unexpected(sourceMount.error());
+            if (localStatus.type() != std::filesystem::file_type::not_found && !*sourceMount) continue;
+            const auto provider = node.canonicalName.empty()
+                ? canonical_package_name(node.namespaceName, node.name) : node.canonicalName;
+            auto choice = home::layers::plan_borrow_package(
+                *systemSnapshot, Config::versions(), provider, node.version);
+            if (!choice) return std::unexpected(choice.error());
+            if (!*choice) continue;
+            auto& selected = **choice;
+            if (const auto revision = payload_revision_verdict(selected.requestedPayload, node.revision);
+                revision.stale) {
+                return std::unexpected(provider + "@" + node.version + ": system payload " +
+                    revision.reason() + "; its owner must reinstall with --reconfig");
+            }
+            if (classify_payload_platform(selected.requestedPayload) == PayloadPlatform::Foreign)
+                return std::unexpected(provider + ": system payload is for another platform");
+            if (stamped_incomplete(selected.requestedPayload))
+                return std::unexpected(provider + ": system payload has a recorded failure; its owner must --reconfig");
+            node.borrowedPayload = selected.requestedPayload;
+            node.sourceHome = systemSnapshot->sourceHome;
+            node.sourceScope = systemSnapshot->scope;
+            node.storeRoot = selected.requestedPayload.parent_path().parent_path();
+            borrowedPlans.emplace(detail_::plan_key_(node), std::move(selected));
+        }
+    }
+
     // Phase 1: Collect download tasks for non-installed packages
     log::debug("installer: {} node(s) in plan, dataDir={}", plan.nodes.size(), dataDir.string());
     std::vector<DownloadTask> dlTasks;
@@ -2770,11 +2582,11 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& plan, con
     std::unordered_set<std::string> refusedNodes;
     for (auto& node : plan.nodes) {
         currentPlanKey = detail_::plan_key_(node);
-        if (node.alreadyInstalled) continue;
+        if (node.alreadyInstalled || !node.borrowedPayload.empty()) continue;
 
         const std::string hostArch =
             mcpplibs::xpkg::normalize_arch(detail_::detect_arch_());
-        auto pkg = load_native_recipe(node.pkgFile);
+        auto pkg = load_native_recipe(node.pkgFile, node.canonicalName);
         if (!pkg) {
             log::warn("skipping {}: {}", node.name, pkg.error());
             continue;
@@ -2954,28 +2766,14 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& plan, con
             onStatus({ node.name, InstallPhase::Installing, 0.5f, "" });
         }
 
-        // Create executor and run hooks
-        auto execResult = mcpplibs::xpkg::create_executor(node.pkgFile);
-        if (!execResult) {
-            log::error("failed to create executor for {}: {}",
-                       node.name, execResult.error());
-            if (onStatus) {
-                onStatus({ node.name, InstallPhase::Failed, 0.0f,
-                           execResult.error() });
-            }
-            continue;
-        }
-
-        auto& executor = *execResult;
-        executor.set_log_level(std::string(log::level_string()));
-
         // Build execution context
         mcpplibs::xpkg::ExecutionContext ctx;
         ctx.pkg_name = node.name;
         ctx.version = node.version;
         ctx.platform = platform;
         auto targetRoot = node.storeRoot.empty() ? (dataDir / "xpkgs") : node.storeRoot;
-        ctx.install_dir = targetRoot / detail_::effective_store_name_(node) / node.version;
+        ctx.install_dir = node_payload_path(node, dataDir);
+        const bool borrowedPayload = !node.sourceHome.empty();
         detail_::configure_xpkg_execution_artifact_paths_(
             ctx);
         detail_::configure_dependency_store_roots_(ctx, targetRoot);
@@ -3037,10 +2835,7 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& plan, con
                 const auto* chosen = detail_::dep_node_for_(plan, node, dep_spec);
                 if (!chosen) continue;
                 const auto& depNode = *chosen;
-                auto depRoot = depNode.storeRoot.empty()
-                    ? (dataDir / "xpkgs") : depNode.storeRoot;
-                auto depInstallDir = depRoot
-                    / detail_::effective_store_name_(depNode) / depNode.version;
+                auto depInstallDir = node_payload_path(depNode, dataDir);
 
                 // Recorded for EVERY runtime dep, declared exports or not.
                 //
@@ -3101,6 +2896,49 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& plan, con
         }
 
         auto planKey = detail_::plan_key_(node);
+        if (borrowedPayload) {
+            const auto& selected = borrowedPlans.at(planKey);
+            auto record = home::read_json_for_update(ctx.install_dir / ".xlings-resolution.json");
+            if (!record) return std::unexpected(record.error());
+            try {
+                ctx.resolved_deps.clear();
+                ctx.deps_exports.clear();
+                ctx.runtime_deps_list.clear();
+                for (const auto& entry : record->at("deps")) {
+                    mcpplibs::xpkg::ResolvedDep dep;
+                    dep.spec = entry.at("spec").get<std::string>();
+                    dep.name = entry.at("name").get<std::string>();
+                    dep.version = entry.at("version").get<std::string>();
+                    dep.install_dir = entry.at("install_dir").get<std::string>();
+                    dep.libdirs = entry.at("libdirs").get<std::vector<std::string>>();
+                    dep.source = "system-layer-recorded";
+                    std::error_code ec;
+                    const auto actual = std::filesystem::canonical(dep.install_dir, ec);
+                    if (ec || std::ranges::find(selected.payloads, actual) == selected.payloads.end())
+                        return std::unexpected("recorded dependency escaped the checked system closure");
+                    mcpplibs::xpkg::DepExport exports;
+                    exports.libdirs = dep.libdirs;
+                    const auto matching = std::ranges::find_if(plan.nodes, [&](const auto& candidate) {
+                        return candidate.canonicalName == dep.name && candidate.version == dep.version;
+                    });
+                    if (matching != plan.nodes.end()) {
+                        exports.abi = matching->exports.abi;
+                        if (!matching->exports.loader.empty())
+                            exports.loader = (actual / matching->exports.loader).string();
+                    }
+                    if (!exports.loader.empty() || !exports.libdirs.empty())
+                        ctx.deps_exports[dep.spec] = std::move(exports);
+                    ctx.runtime_deps_list.push_back(dep.spec);
+                    ctx.resolved_deps[dep.spec] = std::move(dep);
+                }
+                ctx.deps_list = ctx.runtime_deps_list;
+                for (const auto& spec : ctx.build_deps_list)
+                    if (std::ranges::find(ctx.deps_list, spec) == ctx.deps_list.end()) ctx.deps_list.push_back(spec);
+            } catch (const std::exception& error) {
+                return std::unexpected("cannot read checked system dependency context: " +
+                                       std::string(error.what()));
+            }
+        }
         auto dlIt = downloadResults.find(planKey);
 
         if (plannedDownloads.contains(planKey) && dlIt == downloadResults.end()) {
@@ -3120,6 +2958,28 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& plan, con
         // relative paths and determining project install locations.
         ctx.run_dir = std::filesystem::current_path();
 
+        if (dlIt != downloadResults.end()) ctx.install_file = dlIt->second.localFile;
+        // Create executor and run hooks
+        std::vector<std::filesystem::path> hookLogs;
+        for (const auto hook : {"installed", "build", "install", "config", "uninstall"}) {
+            hookLogs.push_back(detail_::hook_log_path_(
+                node.canonicalName.empty() ? node.name : node.canonicalName,
+                node.version, hook));
+        }
+        auto execResult = lua_boundary::create_executor(node.pkgFile, ctx, hookLogs, borrowedPayload);
+        if (!execResult) {
+            log::error("failed to create executor for {}: {}",
+                       node.name, execResult.error());
+            if (onStatus) {
+                onStatus({ node.name, InstallPhase::Failed, 0.0f,
+                           execResult.error() });
+            }
+            continue;
+        }
+
+        auto& executor = *execResult;
+        executor.set_log_level(std::string(log::level_string()));
+
         // Whether install() will run for this node. Extracting beside the
         // archive in the shared runtime directory is the install hook's
         // contract, not a general one: the example at xpkg-manifest-v1 §8.2
@@ -3134,15 +2994,14 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& plan, con
             executor.has_hook(mcpplibs::xpkg::HookType::Install);
 
         if (dlIt != downloadResults.end()) {
-            ctx.install_file = dlIt->second.localFile;
             if (hasInstallHook && detail_::is_archive_(dlIt->second.localFile)) {
                 if (onStatus) {
                     onStatus({ node.name, InstallPhase::Extracting, 0.35f, "" });
                 }
                 // Extract into the same runtime dir as the download.
-                auto runtimeDir = dlIt->second.localFile.parent_path();
+                auto runtimeDir = ctx.install_file.parent_path();
                 auto extracted = extract_archive_detailed(
-                    dlIt->second.localFile, runtimeDir);
+                    ctx.install_file, runtimeDir);
                 if (!extracted) {
                     auto error = std::move(extracted).error();
                     if (evict_invalid_archive_cache_(
@@ -3174,7 +3033,7 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& plan, con
         // of the package index, destroying the index entry.
 
         // Ensure install_dir exists so hooks can mv/cp into it
-        {
+        if (!borrowedPayload) {
             std::error_code ec;
             std::filesystem::create_directories(ctx.install_dir, ec);
             // A genuine failure here (commonly EACCES on a root-owned
@@ -3194,6 +3053,11 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& plan, con
             classify_payload_platform(ctx.install_dir);
         const bool foreignPayload =
             payloadVerdict == PayloadPlatform::Foreign;
+        if (foreignPayload && borrowedPayload) {
+            const auto message = "system-layer payload is for another platform; reinstall it in its owner home";
+            if (onStatus) onStatus({node.name, InstallPhase::Failed, 0.0f, message});
+            continue;
+        }
         if (foreignPayload) {
             log::warn("{}: installed payload is not for {} — reinstalling",
                       node.name, host_platform_tag());
@@ -3201,7 +3065,7 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& plan, con
                       Config::display_path(ctx.install_dir));
         }
 
-        bool payloadInstalled = node.alreadyInstalled && !foreignPayload;
+        bool payloadInstalled = (node.alreadyInstalled || borrowedPayload) && !foreignPayload;
 
         // Check if already installed via hook
         if (foreignPayload) {
@@ -3310,7 +3174,7 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& plan, con
         // Positive evidence only -- a stamp that predates the `registered`
         // field yields no verdict, so a home installed by an older client
         // does not start reinstalling itself. See install_state.cppm.
-        if (payloadInstalled && !foreignPayload) {
+        if (payloadInstalled && !foreignPayload && !borrowedPayload) {
             const auto state = installation_state(
                 ledgerIndex, node.namespaceName, node.name, node.version,
                 ctx.install_dir);
@@ -3335,7 +3199,7 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& plan, con
         // `replacement`, which removes the partial tree and puts the old one
         // back (PayloadReplacement, payload.cppm).
         std::optional<PayloadReplacement> replacement;
-        if (const auto revision = foreignPayload
+        if (const auto revision = foreignPayload || borrowedPayload
                 ? RevisionVerdict{}
                 : payload_revision_verdict(ctx.install_dir, node.revision);
             revision.stale) {
@@ -3407,7 +3271,7 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& plan, con
             // would delete the CWD and cause subsequent getcwd() calls
             // to fail.
             auto hookCwd = (dlIt != downloadResults.end())
-                ? dlIt->second.localFile.parent_path()
+                ? ctx.install_file.parent_path()
                 : detail_::runtime_dir_(node, dataDir); // fallback to runtime dir
             detail_::ScopedCurrentDir_ installCwd(hookCwd);
 
@@ -3640,6 +3504,19 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& plan, con
                 platform::set_env_variable("PATH",
                     binDir + std::string(1, platform::PATH_SEPARATOR) + curPath);
             }
+            // Fail closed (part 2 §2.4 G1b): a payload that needs relocating
+            // and no patchelf to do it is not installed, whatever elfpatch
+            // would have said about skipping.
+            if (!ctx.resolved_deps.empty() && !xim::patchelf_reachable()
+                && std::ranges::any_of(ctx.resolved_deps, [](const auto& kv) {
+                       return kv.first.find("glibc") != std::string::npos; })) {
+                const std::string why = "it links the xlings glibc and must be relocated with "
+                                        "patchelf, which this host does not have (xlings install "
+                                        "xim:patchelf)";
+                write_payload_failure_marker(ctx.install_dir, node.version, why);
+                if (onStatus) onStatus({ node.name, InstallPhase::Failed, 0.0f, why });
+                continue;
+            }
             auto epResult = executor.apply_elfpatch_auto();
             if (epResult.success && !epResult.output.empty()) {
                 log::debug("{}: elfpatch auto: {}", node.name, epResult.output);
@@ -3656,41 +3533,6 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& plan, con
             // it replaces is a segmentation fault in the user's terminal
             // days later, reported as an undefined GLIBC_PRIVATE symbol
             // that names neither a package nor a version.
-            // The decision, kept as data next to what it produced.
-            //
-            // A log line answers "why is it 2.39 here" only for as long
-            // as someone still has the log and the store has not moved
-            // on. Anything that has to be reproduced to be inspected is
-            // not traceable — and reproducing THIS means recreating a
-            // store state, which is the thing that varies.
-            if (!ctx.resolved_deps.empty()) {
-                nlohmann::json rec;
-                rec["package"] = std::format("{}@{}", node.name, node.version);
-                rec["deps"] = nlohmann::json::array();
-                // Sorted, so two installs of the same plan produce the
-                // same bytes and a diff between homes means something.
-                std::vector<std::string> specs;
-                for (const auto& [spec, _] : ctx.resolved_deps)
-                    specs.push_back(spec);
-                std::ranges::sort(specs);
-                for (const auto& spec : specs) {
-                    const auto& r = ctx.resolved_deps.at(spec);
-                    rec["deps"].push_back({
-                        {"spec",        r.spec},
-                        {"name",        r.name},
-                        {"version",     r.version},
-                        {"install_dir", r.install_dir},
-                        {"libdirs",     r.libdirs},
-                        {"source",      r.source},
-                    });
-                }
-                std::error_code wec;
-                if (std::filesystem::is_directory(ctx.install_dir, wec)) {
-                    std::ofstream out(ctx.install_dir / ".xlings-resolution.json");
-                    if (out) out << rec.dump(2) << '\n';
-                }
-            }
-
             if (auto bad = elfcheck::scan_payload(ctx.install_dir);
                 !bad.empty()) {
                 for (const auto& f : bad) {
@@ -3723,6 +3565,18 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& plan, con
             }
         }
 
+        if (!borrowedPayload && node.pkgType != 3 /* Config */ && (!payloadInstalled || reconfig)) {
+            if (auto evidence = detail_::save_resolution_(node, ctx); !evidence) {
+                log::error("failed to record resolution for {}: {}", node.name, evidence.error());
+                write_payload_failure_marker(ctx.install_dir, node.version, evidence.error());
+                if (onStatus) {
+                    onStatus({node.name, InstallPhase::Failed, 0.0f, evidence.error()});
+                }
+                continue;
+            }
+        }
+
+        std::size_t appliedInstallRequests = 0;
         // Process deferred pkgmanager.install()/remove() requests synchronously
         // before config hook, so config can access sub-dependencies
         {
@@ -3732,6 +3586,7 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& plan, con
                     log::debug("[{}] deferred {}: {}", node.name, req.op, req.target);
                 }
                 onInstallRequests(reqs);
+                appliedInstallRequests = reqs.size();
             }
         }
 
@@ -3742,7 +3597,7 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& plan, con
             // NOT take over a workspace slot or get a PATH shim.
             log::debug("[{}] kind=Build: skipping config hook / workspace activation",
                        node.name);
-        } else if (!executor.has_hook(mcpplibs::xpkg::HookType::Config) && node.pkgType == 1 /* Script */) {
+        } else if (!executor.has_hook(mcpplibs::xpkg::HookType::Config) && node.pkgType == 1 /* Script */ && !borrowedPayload) {
             if (!script::default_config(
                     node,
                     dataDir,
@@ -3754,7 +3609,7 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& plan, con
                 }
                 continue;
             }
-        } else if (!executor.has_hook(mcpplibs::xpkg::HookType::Config) && node.pkgType == 4 /* Subos */) {
+        } else if (!executor.has_hook(mcpplibs::xpkg::HookType::Config) && node.pkgType == 4 /* Subos */ && !borrowedPayload) {
             if (!subos::default_config(
                     node,
                     dataDir,
@@ -3770,14 +3625,16 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& plan, con
             std::string configFailure;
             if (!detail_::run_config_hook_(
                     node, dataDir, executor, ctx, onStatus,
-                    useAfterInstall, &configFailure)) {
+                    useAfterInstall, &configFailure,
+                    borrowedPayload ? &borrowedPlans.at(planKey) : nullptr)) {
                 // Same reason as the install hook above, and this one
                 // matters more: config is where registration happens, so
                 // its failure is exactly "payload on disk, ledger empty" --
                 // the state that used to be indistinguishable from a
                 // package that legitimately registers nothing.
-                write_payload_failure_marker(
-                    ctx.install_dir, node.version, configFailure);
+                if (!borrowedPayload) {
+                    write_payload_failure_marker(ctx.install_dir, node.version, configFailure);
+                }
                 if (onStatus) {
                     onStatus({ node.name, InstallPhase::Failed, 0.0f,
                                std::move(configFailure) });
@@ -3786,7 +3643,18 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& plan, con
             }
         }
 
-        if (node.pkgType != 3 /* Config */) {
+        const auto allRequests = executor.install_requests();
+        if (allRequests.size() < appliedInstallRequests) {
+            return std::unexpected("hook install request snapshot regressed");
+        }
+        if (onInstallRequests && allRequests.size() > appliedInstallRequests) {
+            std::vector<mcpplibs::xpkg::InstallRequest> pendingRequests(
+                allRequests.begin() + static_cast<std::ptrdiff_t>(appliedInstallRequests),
+                allRequests.end());
+            onInstallRequests(pendingRequests);
+        }
+
+        if (!borrowedPayload && node.pkgType != 3 /* Config */) {
             // TODO(config): same soft policy as the install stamp. A
             // config package with no author-created payload must not
             // become installed solely because xlings copied metadata into
@@ -3849,8 +3717,10 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& plan, con
             const auto registered = count_ledger_registrations(
                 Config::versions(), Config::paths().homeDir.string(),
                 node.namespaceName, node.name, node.version);
-            write_payload_stamp(ctx.install_dir, node.version, registered,
-                                node.revision);
+            if (!borrowedPayload) {
+                write_payload_stamp(ctx.install_dir, node.version, registered,
+                                    node.revision);
+            }
 
             // Only here, after every step that can fail: the record is what
             // lets the next install skip this node, so it must never say
@@ -4059,6 +3929,38 @@ std::expected<Installer::UninstallOutcome, std::string> Installer::uninstall(con
         : (recipeUnavailable ? recipeUnavailableProviderVersion
                              : xvm::strip_namespace(detachVersion));
 
+    bool borrowedRemoval = false;
+    for (const auto& [registeredTarget, info] : Config::versions()) {
+        for (const auto& [key, data] : info.versions) {
+            const auto owner = xvm::recorded_owner(Config::versions(), registeredTarget, key);
+            if (!owner || (owner->ns.empty() ? owner->package : owner->ns + ":" + owner->package) !=
+                              executingProvider || owner->version != executingProviderVersion ||
+                data.sourceHome.empty())
+                continue;
+            auto executionHome = home::domain_producer_source::execution_home(data.sourceHome);
+            if (!executionHome) return std::unexpected(executionHome.error());
+            auto physical = home::evidence::physical_store_root(
+                *executionHome, xvm::expand_path(data.path, executionHome->string()));
+            if (!physical)
+                return std::unexpected(physical.error());
+            auto source = home::layers::read_source_snapshot(data.sourceHome, data.sourceScope);
+            if (!source)
+                return std::unexpected(source.error());
+            auto proof = home::layers::plan_borrow_package(
+                *source, Config::versions(), executingProvider, executingProviderVersion);
+            if (!proof || !*proof || (**proof).requestedPayload != physical->root)
+                return std::unexpected(proof ? "borrowed payload source no longer matches its evidence"
+                                             : proof.error());
+            installDir = physical->root;
+            detachTarget = registeredTarget;
+            detachVersion = key;
+            borrowedRemoval = true;
+            break;
+        }
+        if (borrowedRemoval)
+            break;
+    }
+
     auto removalSnapshot = snapshot_xpkg_removal_context(
         Config::versions_mut(), Config::workspace(), {},
         executingProvider, executingProviderVersion,
@@ -4110,13 +4012,13 @@ std::expected<Installer::UninstallOutcome, std::string> Installer::uninstall(con
         detachVersion = memberIt->second;
     }
 
-    auto stillReferenced = !detachVersion.empty()
+    auto stillReferenced = borrowedRemoval || (!detachVersion.empty()
         && detail_::is_version_referenced_anywhere_(
             resolvedMatch ? resolvedMatch->scope : PackageScope::Global,
             detachTarget,
             detachVersion,
             currentWorkspacePath,
-            force);
+            force));
 
     // The `configured` record (#632) describes a binding in THIS scope, so it
     // goes with the binding on both paths below: a later install here must
@@ -4129,7 +4031,8 @@ std::expected<Installer::UninstallOutcome, std::string> Installer::uninstall(con
     };
 
     if (stillReferenced) {
-        detail_::detach_current_subos_(detachTarget, detachVersion);
+        if (auto detached = detail_::detach_current_subos_(detachTarget, detachVersion); !detached)
+            return std::unexpected(detached.error());
         if (forget_configured_here()) Config::save_workspace();
         log::debug("{}@{} detached from current subos; payload retained",
                   detachTarget, detachVersion);
@@ -4160,14 +4063,6 @@ std::expected<Installer::UninstallOutcome, std::string> Installer::uninstall(con
             log::debug("using xpkg snapshot for uninstall: {}", executorPkgFile.string());
         }
 
-        auto execResult = mcpplibs::xpkg::create_executor(executorPkgFile);
-        if (!execResult) {
-            return std::unexpected(execResult.error());
-        }
-
-        auto& executor = *execResult;
-        executor.set_log_level(std::string(log::level_string()));
-
         ctx.pkg_name = resolvedMatch ? resolvedMatch->name : name;
         ctx.version = resolvedMatch ? resolvedMatch->version : std::string{};
         auto selectedStore = resolvedMatch
@@ -4179,6 +4074,20 @@ std::expected<Installer::UninstallOutcome, std::string> Installer::uninstall(con
         ctx.install_dir = installDir;
         ctx.xpkg_dir = pkgFile.parent_path();
         ctx.pkgindex_dir = detail_::pkgindex_root_for_(pkgFile);
+
+
+        auto execResult = lua_boundary::create_executor(executorPkgFile, ctx, {
+            detail_::hook_log_path_(
+                resolvedMatch && !resolvedMatch->canonicalName.empty()
+                    ? resolvedMatch->canonicalName : name,
+                ctx.version, "uninstall")});
+        if (!execResult) {
+            return std::unexpected(execResult.error());
+        }
+
+        auto& executor = *execResult;
+        executor.set_log_level(std::string(log::level_string()));
+
 
         if (executor.has_hook(mcpplibs::xpkg::HookType::Uninstall)) {
             log::debug("uninstalling {}...", name);
@@ -4232,21 +4141,20 @@ std::expected<Installer::UninstallOutcome, std::string> Installer::uninstall(con
     // Process xvm operations collected by the uninstall hook, or synthesise
     // the default removal op when there was no hook to ask (script/subos
     // type, or no recipe at all), or the one there was threw.
-    if (useDefaultRemoval) {
+    if (useDefaultRemoval && removalContext.hasSelection) {
         xvm_ops.push_back({
             .op = "remove",
             .name = detachTarget,
             .version = detachVersion,
         });
     }
-    auto sysroot_include =
-        artifactSubosDir / "usr" / "include";
-
-    const auto dbBeforeRemoval = Config::versions_mut();
+    auto candidateDb = Config::versions();
+    auto candidateWorkspace = Config::workspace();
+    auto candidateInstalled = Config::workspace_installed();
     auto removalResult = apply_xpkg_removal_operations(
-        Config::versions_mut(),
-        Config::workspace_mut(),
-        Config::workspace_installed_mut(),
+        candidateDb,
+        candidateWorkspace,
+        candidateInstalled,
         xvm_ops,
         removalContext,
         xvm::RemovalBatchOptions{
@@ -4260,6 +4168,27 @@ std::expected<Installer::UninstallOutcome, std::string> Installer::uninstall(con
             removalResult.error().message,
             removalResult.error().target,
             removalResult.error().version));
+    }
+
+    bool detachedByBatch = false;
+    for (const auto& removed : removalResult->removed) {
+        if (removed.target == detachTarget && removed.version == detachVersion)
+            detachedByBatch = true;
+    }
+    if (!detachedByBatch && !detachVersion.empty())
+        detail_::detach_selection_(candidateDb, candidateWorkspace, candidateInstalled,
+                                  detachTarget, detachVersion);
+    auto published = detail_::publish_removal_state_(
+        std::move(candidateDb), std::move(candidateWorkspace), std::move(candidateInstalled), xvm_ops);
+    if (!published)
+        return std::unexpected(published.error());
+    if (forget_configured_here()) {
+        try {
+            Config::save_workspace();
+        } catch (const std::exception& error) {
+            return std::unexpected(std::string("removal committed; configured record update failed: ") +
+                                   error.what());
+        }
     }
 
     // Drop this package's subos env section. Keyed by binding, so it takes
@@ -4306,59 +4235,24 @@ std::expected<Installer::UninstallOutcome, std::string> Installer::uninstall(con
         }
     }
 
-    for (const auto& op : xvm_ops) {
-        if (op.op == "remove_headers") {
-            xvm::remove_headers(op.includedir, sysroot_include);
-        }
-    }
-
-    bool detachedByBatch = false;
-    for (const auto& removed : removalResult->removed) {
-        if (removed.target == detachTarget
-            && removed.version == detachVersion) {
-            detachedByBatch = true;
-        }
-    }
-    cleanup_removed_xvm_library_artifacts(
-        artifactSubosDir / "lib",
-        dbBeforeRemoval,
-        Config::versions_mut(),
-        *removalResult);
-    cleanup_removed_xvm_program_artifacts(
-        artifactSubosDir / "bin",
-        dbBeforeRemoval,
-        Config::versions_mut(),
-        Config::workspace_installed(),
-        *removalResult);
-    // Third of three. Before this line a removal reclaimed the release's
-    // programs and libraries and left every declared asset on disk -- see the
-    // note on the function (openxlings/xlings#423).
-    cleanup_removed_xvm_file_artifacts(
-        artifactSubosDir,
-        Config::paths().dataDir / "xpkgs",
-        dbBeforeRemoval,
-        Config::versions_mut(),
-        Config::workspace(),
-        *removalResult);
-    if (!detachedByBatch && !detachVersion.empty()) {
-        detail_::detach_current_subos_(
-            detachTarget, detachVersion, false);
-    }
-    forget_configured_here();
-
-    Config::save_versions();
-    Config::save_workspace();
-    // Same reason as the install path: a removal that took a name out of the
-    // workspace must take it out of the table too, or the file stays behind
-    // as exactly the kind of unreachable entry this design removes.
-    xself::sync_shim_tables();
-
     if (catalog_) {
         catalog_->mark_installed(*resolvedMatch, false);
     } else {
         index_->mark_installed(name, false);
     }
     std::error_code ec;
+    // A retained root generation that links into this payload holds it too
+    // (SubOS design part 3 §7.1): rolling back to that generation must find
+    // its files. Everything else of the removal is done; the directory waits
+    // in the retained ledger until the last such generation is pruned.
+    if (const auto pins = retention::generation_pins(installDir); pins.held()) {
+        if (auto kept = retention::retain(installDir, detachTarget, detachVersion); !kept)
+            log::warn("[xim] {}", kept.error());
+        log::info("{}@{} removed; its files stay for rollback until {} {} pruned",
+                  name, resolvedMatch ? resolvedMatch->version : detachVersion,
+                  retention::describe(pins),
+                  pins.holders.size() + pins.unreadable.size() == 1 ? "is" : "are");
+    } else {
     // Sweep first: whatever an earlier removal had to park is dead weight,
     // and clearing it here is the "removed on a later run" this strategy
     // promises. Cheap -- an empty or absent trash directory is one stat.
@@ -4377,6 +4271,7 @@ std::expected<Installer::UninstallOutcome, std::string> Installer::uninstall(con
         log::warn("  they are marked incomplete, so nothing will mistake them "
                   "for an install; re-run `xlings remove {}` once that process "
                   "has gone", name);
+    }
     }
 
     // installDir is the version directory (e.g. .../xim-x-node/22.17.1).
@@ -4428,15 +4323,28 @@ std::expected<Installer::UninstallOutcome, std::string> Installer::uninstall(con
 }
 
 std::string Installer::detect_platform_() {
-    #if defined(__linux__)
-        return "linux";
-    #elif defined(__APPLE__)
-        return "macosx";
-    #elif defined(_WIN32)
-        return "windows";
-    #else
-        return "unknown";
-    #endif
+    return std::string(host_platform_tag());
 }
 
 } // namespace xlings::xim
+
+namespace xlings::xim {
+
+bool patchelf_reachable() {
+    namespace fs = std::filesystem;
+    if constexpr (!platform::is_linux) return true;
+    std::error_code ec;
+    if (fs::exists(Config::paths().binDir / "patchelf", ec)) return true;
+    const char* path = std::getenv("PATH");
+    std::string_view rest = path ? path : "";
+    while (!rest.empty()) {
+        const auto c = rest.find(platform::PATH_SEPARATOR);
+        const auto dir = rest.substr(0, c);
+        if (!dir.empty() && fs::exists(fs::path(std::string(dir)) / "patchelf", ec)) return true;
+        if (c == std::string_view::npos) break;
+        rest.remove_prefix(c + 1);
+    }
+    return false;
+}
+
+}  // namespace xlings::xim

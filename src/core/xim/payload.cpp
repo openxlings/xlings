@@ -8,13 +8,9 @@ import xlings.core.log;
 namespace xlings::xim {
 
 std::string_view host_platform_tag() {
-#if defined(_WIN32)
-    return "windows";
-#elif defined(__APPLE__)
-    return "macosx";
-#else
-    return "linux";
-#endif
+    if constexpr (platform::is_windows) return "windows";
+    else if constexpr (platform::is_macos) return "macosx";
+    else return "linux";
 }
 
 std::string_view executable_format_(const std::filesystem::path& file) {

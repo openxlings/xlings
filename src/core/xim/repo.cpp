@@ -54,20 +54,20 @@ bool ensure_local_repo_link_(const std::filesystem::path& localDir,
         return false;
     }
 
-#if defined(_WIN32)
-    if (!platform::create_directory_link(localDir, sourceDir)) {
-        log::error("failed to create directory link: {} -> {}",
-                   localDir.string(), sourceDir.string());
-        return false;
+    if constexpr (platform::is_windows) {
+        if (!platform::create_directory_link(localDir, sourceDir)) {
+            log::error("failed to create directory link: {} -> {}",
+                       localDir.string(), sourceDir.string());
+            return false;
+        }
+    } else {
+        fs::create_directory_symlink(sourceDir, localDir, ec);
+        if (ec) {
+            log::error("failed to create symlink: {} -> {} ({})",
+                       localDir.string(), sourceDir.string(), ec.message());
+            return false;
+        }
     }
-#else
-    fs::create_directory_symlink(sourceDir, localDir, ec);
-    if (ec) {
-        log::error("failed to create symlink: {} -> {} ({})",
-                   localDir.string(), sourceDir.string(), ec.message());
-        return false;
-    }
-#endif
 
     log::debug("linked local index repo: {} -> {}", localDir.string(), sourceDir.string());
     return true;

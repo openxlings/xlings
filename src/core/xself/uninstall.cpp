@@ -6,7 +6,8 @@ import xlings.core.log;
 import xlings.core.xself.shell_profile;
 import xlings.platform;
 import xlings.core.destructive_log;
-import xlings.core.subos.userdata;
+import xlings.subos.userdata;
+import xlings.core.subos.ports;
 
 namespace xlings::xself {
 
@@ -78,18 +79,11 @@ bool home_dir_safe_to_remove_(const fs::path& home) {
 // the directory we're about to delete. Returns the path it moved to.
 fs::path chdir_to_safe_() {
     std::error_code ec;
-#ifdef _WIN32
-    fs::path safe = "C:\\";
-    if (auto* tmp = std::getenv("TEMP")) safe = tmp;
-#else
-    fs::path safe = "/";
-    if (auto* tmp = std::getenv("TMPDIR")) safe = tmp;
-#endif
+    fs::path safe = platform::is_windows ? "C:\\" : "/";
+    if (auto* tmp = std::getenv(platform::is_windows ? "TEMP" : "TMPDIR")) safe = tmp;
     fs::current_path(safe, ec);
     return safe;
 }
-
-#ifdef _WIN32
 
 // Move xlings.exe out of XLINGS_HOME and schedule the moved copy for
 // delete-on-reboot. Returns true on success (or no-op if file already
@@ -126,8 +120,6 @@ bool windows_self_displace_(const fs::path& xlingsExe) {
     // For now, the temp file lingers harmlessly until reboot or manual delete.
     return true;
 }
-
-#endif
 
 int print_summary_(const fs::path& home,
                           const UninstallOpts& opts,
@@ -196,18 +188,18 @@ std::vector<fs::path> hooked_startup_files_(const fs::path& userHome) {
     std::vector<fs::path> files;
     for (auto& rel : rc_files) files.push_back(userHome / rel);
 
-#ifdef _WIN32
     // Not a fixed path under the home: each PowerShell host reports its own
     // $PROFILE, and OneDrive folder redirection can move both. Same probe
     // install used to find them.
-    for (const auto& p : shell_profile::probe_hosts(
-             shell_profile::kPowerShellHosts,
-             [](const std::string& cmd) {
-                 return platform::run_command_capture(cmd);
-             })) {
-        if (p.status == shell_profile::ProbeStatus::Answered) files.push_back(p.path);
+    if constexpr (platform::is_windows) {
+        for (const auto& p : shell_profile::probe_hosts(
+                 shell_profile::kPowerShellHosts,
+                 [](const std::string& cmd) {
+                     return platform::run_command_capture(cmd);
+                 })) {
+            if (p.status == shell_profile::ProbeStatus::Answered) files.push_back(p.path);
+        }
     }
-#endif
     return files;
 }
 
@@ -299,14 +291,14 @@ int cmd_uninstall(UninstallOpts opts) {
     auto safe = chdir_to_safe_();
     log::debug("self uninstall: chdir → {}", safe.string());
 
-#ifdef _WIN32
     // Displace the running xlings.exe before bulk-removing the home tree.
-    auto xlingsExe = home / "bin" / "xlings.exe";
-    if (!windows_self_displace_(xlingsExe)) {
-        log::error("self uninstall: failed to displace running xlings.exe; aborting");
-        return 1;
+    if constexpr (platform::is_windows) {
+        auto xlingsExe = home / "bin" / "xlings.exe";
+        if (!windows_self_displace_(xlingsExe)) {
+            log::error("self uninstall: failed to displace running xlings.exe; aborting");
+            return 1;
+        }
     }
-#endif
 
     // Sub-paths to remove. --keep-data keeps the user's data: the package payloads under data/,
     // and every subos with its home. A later `self install` picks both up as
@@ -381,9 +373,8 @@ int cmd_uninstall(UninstallOpts opts) {
     } else {
         log::println("xlings uninstalled. {} removed.", home.string());
     }
-#ifdef _WIN32
-    log::println("the launcher binary will be cleaned up on next system restart.");
-#endif
+    if constexpr (platform::is_windows)
+        log::println("the launcher binary will be cleaned up on next system restart.");
     return 0;
 }
 

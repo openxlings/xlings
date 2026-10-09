@@ -2,6 +2,7 @@ module xlings.core.xself.update;
 
 import std;
 import xlings.core.config;
+import xlings.core.home;
 import xlings.core.entry_binary;
 import xlings.core.xself.init;
 import xlings.core.xvm.db;
@@ -9,6 +10,8 @@ import xlings.core.log;
 import xlings.platform;
 
 namespace xlings::xself {
+
+namespace fs = std::filesystem;
 
 bool update_landed_on_index_build(std::string_view activeVersion) {
     // Empty is NOT a failure: it means nothing recorded an active version,
@@ -29,7 +32,31 @@ bool update_landed_on_index_build(std::string_view activeVersion) {
     return activeVersion.substr(0, colon) != "local";
 }
 
-int cmd_update() {
+int cmd_update(bool user) {
+    // Deployment S (design §4): this binary is a system package's. Replacing
+    // it is the package manager's job, and installing a second xlings into
+    // the home behind the user's back would leave two clients answering to
+    // `xlings` depending on PATH order. Say so; `--user` is the explicit ask.
+    if (!user) {
+        const auto entry = home::describe_entry(platform::get_executable_path(),
+                                                Config::paths().homeDir);
+        if (entry.system) {
+            // The command for the package manager this host has.
+            std::string how = "the system's package manager";
+            std::error_code ec;
+            for (auto [bin, cmd] : {std::pair{"/usr/bin/pacman", "sudo pacman -Syu xlings"},
+                                    std::pair{"/usr/bin/apt-get", "sudo apt-get install --only-upgrade xlings"},
+                                    std::pair{"/usr/bin/dnf", "sudo dnf upgrade xlings"},
+                                    std::pair{"/usr/bin/zypper", "sudo zypper update xlings"},
+                                    std::pair{"/sbin/apk", "sudo apk upgrade xlings"}}) {
+                if (fs::exists(bin, ec)) { how = std::format("`{}`", cmd); break; }
+            }
+            log::error("{} belongs to a system package; update it with {}", entry.path.string(), how);
+            log::error("  or install a user-level xlings into {} that updates itself: "
+                       "`xlings self update --user`", Config::paths().homeDir.string());
+            return 1;
+        }
+    }
     // Both children run with `--ui-mode cli`: no progress bars. This command's
     // output is a short narrative of steps; a bar redrawn inside it, followed
     // by the next step's log, left the two glued together, and the downloads

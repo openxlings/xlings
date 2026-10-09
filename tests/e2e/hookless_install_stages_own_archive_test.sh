@@ -185,12 +185,13 @@ MULTI_DIR="$HOME_DIR/data/xpkgs/xim-x-hookless-multi-fixture/1.0.0"
 
 # Entry set equals the archive's own top-level entry set: {bin, lib,
 # README.txt}, nothing else -- except xlings's own bookkeeping
-# (.xpkg-install.json, the platform stamp; .xpkg.lua, the recipe
+# (.xpkg-install.json, the platform stamp; .xlings-resolution.json, the
+# resolved dependency closure; .xpkg.lua, the recipe
 # snapshot), which every install writes regardless of this fix and is not
 # part of "the archive's entries". Checked as a count plus membership
 # (not string equality against a fixed ordering) because `sort`'s
 # collation of "README.txt" against "bin"/"lib" is locale-dependent.
-entry_count="$(ls -A "$MULTI_DIR" | grep -v -E '^\.xpkg' | wc -l | tr -d ' ')"
+entry_count="$(ls -A "$MULTI_DIR" | grep -v -E '^(\.xpkg-install\.json|\.xpkg\.lua|\.xlings-resolution\.json)$' | wc -l | tr -d ' ')"
 [[ "$entry_count" == "3" ]] \
   || fail "hookless-multi-fixture install_dir has $entry_count non-bookkeeping entries, expected exactly 3 (bin, lib, README.txt); got: $(ls -A "$MULTI_DIR")"
 [[ -f "$MULTI_DIR/bin/tool" ]] || fail "hookless-multi-fixture: bin/tool missing"
@@ -229,7 +230,7 @@ SINGLE_DIR="$HOME_DIR/data/xpkgs/xim-x-hookless-single-fixture/3.0.0"
 [[ ! -e "$SINGLE_DIR/bin" ]] \
   || fail "LAYOUT REGRESSION: install_dir/bin exists directly -- the top-level directory was stripped"
 
-single_entry_count="$(ls -A "$SINGLE_DIR" | grep -v -E '^\.xpkg' | wc -l | tr -d ' ')"
+single_entry_count="$(ls -A "$SINGLE_DIR" | grep -v -E '^(\.xpkg-install\.json|\.xpkg\.lua|\.xlings-resolution\.json)$' | wc -l | tr -d ' ')"
 [[ "$single_entry_count" == "1" ]] \
   || fail "hookless-single-fixture install_dir has $single_entry_count non-bookkeeping entries, expected exactly 1 (hookless-single-3.0.0); got: $(ls -A "$SINGLE_DIR")"
 

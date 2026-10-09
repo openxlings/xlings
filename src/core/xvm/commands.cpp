@@ -2,11 +2,13 @@ module xlings.core.xvm.commands;
 
 import std;
 import xlings.core.config;
+import xlings.core.home;
+import xlings.core.home.layers;
 import xlings.core.log;
 import xlings.core.diag;
 import xlings.core.version_order;
 import xlings.core.palette;
-import xlings.core.subos.manifest;
+import xlings.subos.manifest;
 import xlings.platform;
 import xlings.runtime;
 import xlings.libs.json;
@@ -22,26 +24,23 @@ import xlings.core.xvm.errors;
 import xlings.core.xvm.owner;
 import xlings.core.xvm.switch_plan;
 import xlings.core.xvm.shim;
+import xlings.core.xvm.materialize;
 import xlings.i18n;
 
 namespace xlings::xvm {
 
 void create_link_(const fs::path& src, const fs::path& dst) {
     std::error_code ec;
-#if defined(_WIN32)
-    if (fs::is_directory(src)) {
-        // Use directory junction on Windows (no admin required)
-        platform::create_directory_link(dst.string(), src.string());
-    } else {
-        fs::create_hard_link(src, dst, ec);
-        if (ec) {
-            ec.clear();
-            fs::copy_file(src, dst, fs::copy_options::overwrite_existing, ec);
+    if constexpr (platform::is_windows) {
+        if (fs::is_directory(src)) {
+            // Use directory junction on Windows (no admin required)
+            platform::create_directory_link(dst.string(), src.string());
+        } else {
+            fs::create_hard_link(src, dst, ec);
         }
+    } else {
+        fs::create_symlink(src, dst, ec);
     }
-#else
-    fs::create_symlink(src, dst, ec);
-#endif
     if (ec) log::warn("[xvm] link failed: {} -> {}",
                       Config::display_path(dst), Config::display_path(src));
 }
@@ -67,311 +66,91 @@ bool sysroot_source_is_local_(const fs::path& src) {
             || a.starts_with(b + "/");
     };
     const auto& p = Config::paths();
-    return under(p.dataDir) || under(p.homeDir);
-}
-
-void install_headers(const std::string& includedir, const fs::path& sysroot_include) {
-    fs::create_directories(sysroot_include);
-    std::error_code ec;
-    fs::path src(includedir);
-    if (!fs::exists(src, ec)) return;
-    if (!sysroot_source_is_local_(src)) {
-        // Warned, not refused. A recipe may legitimately expose headers from
-        // outside the store (a wrapper around system headers is the obvious
-        // one), and refusing would break packages that work today. What is
-        // NOT legitimate is the run that produced the measured damage, and
-        // this is the moment it becomes visible instead of surfacing weeks
-        // later as a missing header from a subos the user is not even in.
-        log::warn("[xvm] linking headers from outside this home: {}",
-                  Config::display_path(src));
-        log::warn("  into sysroot: {}", Config::display_path(sysroot_include));
-        log::warn("  these links outlive the run that made them; "
-                  "`xlings self doctor --fix` removes them once they dangle");
-    }
-    for (auto& entry : platform::dir_entries(src)) {
-        auto target = sysroot_include / entry.path().filename();
-        // Already pointing at this exact source: leave it alone.
-        // `xlings use` now re-materializes the active release on every
-        // invocation so it can repair a sysroot that drifted, and
-        // remove-then-relink would open a window on every one of those
-        // calls where the header is simply absent -- long enough for a
-        // concurrent build to fail on it. equivalent() covers symlinks,
-        // Windows junctions and hard links alike; a copy fallback compares
-        // unequal and is relinked, which is correct.
-        std::error_code sameEc;
-        if (std::filesystem::equivalent(target, entry.path(), sameEc)
-            && !sameEc) {
-            continue;
-        }
-        if (fs::exists(target, ec) || fs::is_symlink(target, ec)) {
-            log::debug("[xvm] overwriting header: {}", entry.path().filename().string());
-            fs::remove_all(target, ec);
-        }
-        create_link_(entry.path(), target);
-    }
-}
-
-void remove_headers(const std::string& includedir, const fs::path& sysroot_include) {
-    if (includedir.empty()) return;
-    fs::path src(includedir);
-    std::error_code ec;
-    if (!fs::exists(src, ec)) return;
-    for (auto& entry : platform::dir_entries(src)) {
-        auto target = sysroot_include / entry.path().filename();
-        if (fs::is_symlink(target, ec)) {
-            fs::remove(target, ec);
-#if defined(_WIN32)
-        } else if (fs::exists(target, ec)) {
-            // On Windows, directory junctions appear as dirs, not symlinks
-            fs::remove_all(target, ec);
-#endif
-        }
-    }
-}
-
-void install_headers(const HeaderAsset& asset, const fs::path& sysroot_include) {
-    install_headers(asset.sourceDir, header_destination_(asset, sysroot_include));
-}
-
-void remove_headers(const HeaderAsset& asset, const fs::path& sysroot_include) {
-    const auto destination = header_destination_(asset, sysroot_include);
-    remove_headers(asset.sourceDir, destination);
-    // A prefix directory that only ever held this release's links is litter
-    // once they are gone. remove() on a non-empty directory fails, so this
-    // cannot take anything else with it.
-    if (!asset.destinationPrefix.empty()) {
-        std::error_code ec;
-        fs::remove(destination, ec);
-    }
-}
-
-// Is this path a symlink we placed, pointing into the payload store?
-bool is_payload_link_(const fs::path& path, const fs::path& payloadRoot) {
-    std::error_code ec;
-    if (!fs::is_symlink(path, ec)) return false;
-    const auto linkTarget = fs::read_symlink(path, ec);
-    if (ec) return false;
-    const auto normalize = [](std::string s) {
-        std::ranges::replace(s, '\\', '/');
-        while (s.size() > 1 && s.back() == '/') s.pop_back();
-        return s;
-    };
-    const auto root = normalize(payloadRoot.string());
-    return !root.empty() && normalize(linkTarget.string()).starts_with(root);
-}
-
-// Make every directory on the way to `destination` a real directory.
-//
-// `create_directories` treats an existing symlink-to-directory as "already
-// there" and returns success, so placing `usr/include/scsi/sg.h` while
-// `usr/include/scsi` is a directory-granularity asset link writes the new
-// entry **inside another package's payload**. Measured, not theorised: the
-// link lands in `data/xpkgs/<pkg>/<ver>/include/scsi/`, where every subos on
-// the machine reads it, and no uninstall will ever take it out again.
-//
-// Nothing in the index produces this shape today (measured: zero directory
-// assets whose destination is an ancestor of another package's asset). It
-// becomes reachable the moment a package that shares a directory declares its
-// contents per-file instead -- which is exactly the fix for `usr/include/scsi`
-// being one package's directory rather than both packages' merge.
-//
-// Converting rather than refusing, and losing nothing while doing it: the
-// link is replaced by a real directory holding one link per entry the payload
-// directory offered. That is the same shape `install_headers` builds and the
-// same shape `declare_headers_tree` produces, so the package whose asset is
-// being unwrapped keeps every header it was providing -- it just provides
-// them individually now. Order-independent by construction: whichever of the
-// two packages is installed first, neither loses anything.
-//
-// A symlink that is NOT a payload link is left alone rather than refused.
-// Only the payload store can be corrupted by writing through a link -- it is
-// shared by every subos on the machine and nothing ever audits it. A symlink
-// anywhere else is somebody's normal filesystem: `/tmp` is a link to
-// `/private/tmp` on macOS, and refusing over it would mean no isolated test
-// home on that platform could place an asset at all.
-//
-// Bounded at the xlings home for the same reason it is bounded at all: no
-// path above it can be a payload link, and walking to `/` for each of a
-// thousand assets buys nothing.
-bool ensure_real_parent_dirs_(const fs::path& destination) {
-    const auto& paths = Config::paths();
-    const auto payloadRoot = paths.dataDir / "xpkgs";
-    const auto homeDir = paths.homeDir;
-
-    std::vector<fs::path> ancestors;
-    for (auto p = destination.parent_path();
-         !p.empty() && p != p.parent_path() && p != homeDir;
-         p = p.parent_path()) {
-        ancestors.push_back(p);
-    }
-
-    std::error_code ec;
-    for (auto& ancestor : ancestors | std::views::reverse) {
-        if (!is_payload_link_(ancestor, payloadRoot)) continue;
-        const auto payloadDir = fs::read_symlink(ancestor, ec);
-        if (ec) {
-            // Refusing here is right -- writing through a link we cannot read
-            // is how a payload gets a file in it -- but refusing in silence
-            // would make it look like the asset was placed.
-            log::warn("[xvm] not writing under {}: it is a link into the "
-                      "payload store that cannot be read ({})",
-                      Config::display_path(ancestor), ec.message());
-            return false;
-        }
-
-        ec.clear();
-        fs::remove(ancestor, ec);
-        fs::create_directories(ancestor, ec);
-        if (ec) {
-            log::warn("[xvm] could not unwrap {}: {}",
-                      Config::display_path(ancestor), ec.message());
-            return false;
-        }
-        // Give back everything the directory asset was providing, one link
-        // per FILE, so unwrapping is not a deletion.
-        //
-        // Recursively, and that is not tidiness. Linking a sub-directory
-        // wholesale would put back exactly the shape being unwrapped, one
-        // level down -- and an undeclared one, which nothing reclaims and
-        // which turns a later removal of a leaf beneath it into a delete
-        // inside the payload. Measured against real packages before this
-        // recursed: `usr/include/scsi/fc` came back as a link, and giving up
-        // the package emptied `include/scsi/fc/` out of its payload.
-        //
-        // Same depth cap the index's own tree walker uses: a payload that
-        // links a directory back at an ancestor would otherwise not
-        // terminate.
-        const auto rebuild = [](auto&& self, const fs::path& from,
-                                const fs::path& into, int depth) -> void {
-            if (depth > 8) return;
-            std::error_code listEc;
-            if (!fs::is_directory(from, listEc)) return;
-            for (const auto& entry : platform::dir_entries(from)) {
-                const auto destination = into / entry.path().filename();
-                std::error_code dirEc;
-                if (fs::is_directory(entry.path(), dirEc)
-                    && !fs::is_symlink(entry.path(), dirEc)) {
-                    fs::create_directories(destination, dirEc);
-                    self(self, entry.path(), destination, depth + 1);
-                } else {
-                    create_link_(entry.path(), destination);
-                }
-            }
-        };
-        rebuild(rebuild, payloadDir, ancestor, 0);
-        log::debug("[xvm] unwrapped directory asset {} into a real directory",
-                   Config::display_path(ancestor));
-    }
-    return true;
-}
-
-void place_asset(const std::string& source, const fs::path& destination) {
-    if (source.empty() || destination.empty()) return;
-    std::error_code ec;
-    fs::path src(source);
-    if (!fs::exists(src, ec)) {
-        log::debug("[xvm] asset source missing, not placed: {}",
-                   Config::display_path(source));
-        return;
-    }
-    if (!ensure_real_parent_dirs_(destination)) return;
-    fs::create_directories(destination.parent_path(), ec);
-
-    // Already pointing at this exact file: leave it alone. Keeps the repeated
-    // re-materialization that `use` performs down to a stat.
-    std::error_code sameEc;
-    if (fs::equivalent(destination, src, sameEc) && !sameEc) return;
-
-    const auto staging =
-        destination.parent_path()
-        / (destination.filename().string() + ".xlings-new");
-    fs::remove_all(staging, ec);
-    create_link_(src, staging);
-    if (!fs::exists(staging, ec) && !fs::is_symlink(staging, ec)) {
-        log::warn("[xvm] could not stage asset: {}",
-                  Config::display_path(destination));
-        return;
-    }
-    ec.clear();
-    fs::rename(staging, destination, ec);
-    if (ec) {
-        // Platforms without an atomic replace for this entry kind. Accept the
-        // window rather than leave the staging file behind.
-        std::error_code rmEc;
-        fs::remove_all(destination, rmEc);
-        ec.clear();
-        fs::rename(staging, destination, ec);
-        if (ec) {
-            fs::remove_all(staging, rmEc);
-            log::warn("[xvm] could not place asset {}: {}",
-                      Config::display_path(destination), ec.message());
-        }
-    }
-}
-
-void remove_asset(const fs::path& destination) {
-    if (destination.empty()) return;
-    std::error_code ec;
-    if (fs::is_symlink(destination, ec) || fs::exists(destination, ec)) {
-        fs::remove_all(destination, ec);
-    }
-}
-
-// Take one declared asset out, and take the directories that only existed to
-// hold it out too.
-//
-// `fs::remove`, never `remove_all`: on a platform where the asset is a
-// followable entry (a Windows junction, or a link some other tool replaced
-// with a real directory) `remove_all` walks into it and deletes the payload
-// behind it. `self doctor --fix` carries the same note for the same reason.
-//
-// The directory sweep stops at three components -- see prune_empty_asset_dirs.
-//
-// A destination whose ANCESTOR is a payload link is not removed at all. It is
-// the mirror of the trap `ensure_real_parent_dirs_` guards on the way in, and
-// it bites harder: `usr/include/scsi/fc/fc_fs.h` where `usr/include/scsi/fc`
-// links into a payload does not name a file in the subos, it names the
-// PACKAGE'S OWN FILE, shared by every subos on the machine. Measured while
-// testing this very change against real packages: giving up linux-headers in
-// one subos emptied `include/scsi/fc/` out of its payload -- four headers
-// gone from a package that was still installed and still active elsewhere.
-//
-// Refused rather than repaired. The ancestor link points into SOME payload,
-// not necessarily the one being given up, so unlinking it here could take a
-// directory away from a package nobody asked about. What is left is an
-// undeclared link, which doctor reports once its payload goes.
-bool ancestor_is_a_payload_link_(const fs::path& subosDir,
-                                 const fs::path& absolute,
-                                 const fs::path& payloadRoot) {
-    for (auto p = absolute.parent_path();
-         !p.empty() && p != p.parent_path() && p != subosDir;
-         p = p.parent_path()) {
-        if (is_payload_link_(p, payloadRoot)) return true;
-    }
+    if (under(p.dataDir) || under(p.homeDir)) return true;
+    const auto versions = Config::versions();
+    for (const auto& [target, info] : versions)
+        for (const auto& [version, data] : info.versions)
+            if (!data.sourceHome.empty() && home::layers::owns_source_payload(data.sourceHome, src)) return true;
     return false;
 }
 
-void remove_declared_asset_(const fs::path& subosDir,
-                            const fs::path& payloadRoot,
-                            const std::string& destination) {
-    const auto absolute = subosDir / destination;
-    if (ancestor_is_a_payload_link_(subosDir, absolute, payloadRoot)) {
-        log::warn("[xvm] not removing {}: a directory on the way to it links "
-                  "into a package payload, so this path names that package's "
-                  "own file rather than anything in this subos",
-                  Config::display_path(absolute));
-        return;
-    }
-    std::error_code ec;
-    if (fs::is_symlink(absolute, ec) || fs::exists(absolute, ec)) {
-        ec.clear();
-        if (!fs::remove(absolute, ec) && ec) {
-            log::warn("[xvm] could not remove declared asset {}: {}",
-                      Config::display_path(absolute), ec.message());
-            return;
+namespace {
+fs::path materialization_root_(const fs::path& destination, std::span<const materialize::AssetClaim> claims = {}) {
+    const auto scope = fs::absolute(Config::paths().subosDir).lexically_normal();
+    const auto path = fs::absolute(destination).lexically_normal();
+    const auto relative = path.lexically_relative(scope);
+    if (!relative.empty() && *relative.begin() != "..") return scope;
+    // Standalone callers supply an isolated sysroot and explicit old claims.
+    auto root = path.parent_path();
+    for (const auto& claim : claims) {
+        const auto asset = fs::absolute(claim.destination).lexically_normal();
+        while (root != root.parent_path()) {
+            const auto from = asset.lexically_relative(root);
+            if (!from.empty() && *from.begin() != "..") break;
+            root = root.parent_path();
         }
+        if (root == asset) root = root.parent_path();
     }
-    prune_empty_asset_dirs(absolute, subosDir);
+    return root;
+}
+MaterializationResult apply_assets_(std::vector<materialize::AssetChange> changes,
+    const fs::path& root, std::span<const materialize::AssetClaim> supplied) {
+    std::vector<materialize::AssetClaim> claims(supplied.begin(), supplied.end());
+    if (supplied.empty()) {
+        auto recorded = materialize::collect_claims(Config::versions(), Config::workspace_installed(),
+            Config::paths().subosDir, Config::paths().libDir, Config::paths().homeDir.string());
+        if (!recorded) return std::unexpected(recorded.error());
+        claims = std::move(*recorded);
+    }
+    auto prepared = materialize::preflight_materialization(changes, claims, root);
+    if (!prepared) return std::unexpected(prepared.error());
+    auto applied = prepared->execute();
+    if (!applied) return std::unexpected(applied.error());
+    auto proofs = applied->proofs();
+    auto committed = applied->commit();
+    if (!committed) return std::unexpected(committed.error());
+    return proofs;
+}
+}
+
+MaterializationResult install_headers(const HeaderAsset& asset, const fs::path& includeRoot,
+    std::span<const materialize::AssetClaim> claims) {
+    if (!asset.sourceDir.empty() && !sysroot_source_is_local_(asset.sourceDir)) {
+        log::warn("[xvm] linking headers from outside this home: {}", Config::display_path(asset.sourceDir));
+    }
+    std::vector<materialize::AssetChange> changes;
+    auto expanded = materialize::append_headers(changes, asset, includeRoot);
+    if (!expanded) return std::unexpected(expanded.error());
+    return apply_assets_(std::move(changes), materialization_root_(includeRoot, claims), claims);
+}
+MaterializationResult install_headers(const std::string& source, const fs::path& includeRoot,
+    std::span<const materialize::AssetClaim> claims) {
+    return install_headers(HeaderAsset{source, ""}, includeRoot, claims);
+}
+std::expected<void, std::string> remove_headers(const HeaderAsset& asset, const fs::path& includeRoot,
+    std::span<const materialize::AssetClaim> claims) {
+    std::vector<materialize::AssetChange> changes;
+    auto expanded = materialize::append_headers(changes, asset, includeRoot, true);
+    if (!expanded) return std::unexpected(expanded.error());
+    auto applied = apply_assets_(std::move(changes), materialization_root_(includeRoot, claims), claims);
+    if (!applied) return std::unexpected(applied.error());
+    return {};
+}
+std::expected<void, std::string> remove_headers(const std::string& source, const fs::path& includeRoot,
+    std::span<const materialize::AssetClaim> claims) {
+    return remove_headers(HeaderAsset{source, ""}, includeRoot, claims);
+}
+MaterializationResult place_asset(const std::string& source, const fs::path& destination,
+    std::span<const materialize::AssetClaim> claims) {
+    if (source.empty() || destination.empty()) return std::vector<materialize::Proof>{};
+    return apply_assets_({{source, destination, false}}, materialization_root_(destination, claims), claims);
+}
+std::expected<void, std::string> remove_asset(const fs::path& destination,
+    std::span<const materialize::AssetClaim> claims) {
+    if (destination.empty()) return {};
+    auto removed = apply_assets_({{{}, destination, true}}, materialization_root_(destination, claims), claims);
+    if (!removed) return std::unexpected(removed.error());
+    return {};
 }
 
 void prune_empty_asset_dirs(const fs::path& absolute,
@@ -399,84 +178,41 @@ void prune_empty_asset_dirs(const fs::path& absolute,
     auto relative = relativeToRoot.parent_path();
     while (components(relative) >= 3) {
         std::error_code rmEc;
-        if (!fs::remove(subosRoot / relative, rmEc)) break;
+        const auto directory = subosRoot / relative;
+        if (!fs::is_directory(fs::symlink_status(directory, rmEc)) || rmEc ||
+            !platform::remove_empty_directory(directory)) break;
         relative = relative.parent_path();
     }
 }
 
-// Is this destination still ours to delete, as far as the filesystem can say?
-//
-// Only POSIX can say anything. There the asset is a symlink, so one pointing
-// outside the payload store was replaced after we placed it -- that is
-// `xvm-sysroot-drift`, someone else's decision, and giving up a release has
-// no business overruling it. On Windows the same asset is a hard link or a
-// copy (`create_link_`), which carries no origin at all, so the declaration
-// in the database is the only authority there is. Returning true is therefore
-// the correct Windows answer and not a gap: the caller has already
-// established that a record it is dropping claimed this path.
-bool declared_asset_is_ours_(const fs::path& absolute,
-                             const fs::path& payloadRoot) {
-    std::error_code ec;
-    if (!fs::is_symlink(absolute, ec)) return true;
-    return is_payload_link_(absolute, payloadRoot);
-}
-
-void reclaim_declared_assets(const fs::path& subosDir,
-                             const fs::path& payloadRoot,
-                             const std::set<std::string>& destinations,
-                             const VersionDB& db,
-                             const Workspace& activeAfter) {
-    if (destinations.empty()) return;
-
-    // One pass over the database, not one per destination. The library
-    // cleanup rescans everything for each name, which is free for the fifteen
-    // sonames a toolchain ships and is not free for the 274 assets one glib
-    // install declares.
-    std::map<std::string, std::pair<std::string, std::string>> activeClaims;
-    for (const auto& [target, info] : db) {
-        const auto activeIt = activeAfter.find(target);
-        if (activeIt == activeAfter.end()) continue;
-        auto versionIt = info.versions.find(activeIt->second);
-        if (versionIt == info.versions.end()) continue;
-        const auto& data = versionIt->second;
-        if (effective_kind(info, data) != "files") continue;
-        if (data.fileDst.empty()) continue;
-        if (!destinations.contains(data.fileDst)) continue;
-        activeClaims.emplace(data.fileDst,
-                             std::pair{target, activeIt->second});
-    }
-
+std::expected<void, std::string> reclaim_declared_assets(const fs::path& subosDir,
+    const fs::path&, const std::set<std::string>& destinations,
+    const VersionDB& db, const Workspace& activeAfter,
+    std::span<const materialize::AssetClaim> claims) {
+    std::vector<materialize::AssetChange> changes;
     for (const auto& destination : destinations) {
-        if (const auto claim = activeClaims.find(destination);
-            claim != activeClaims.end()) {
-            const auto placement = file_placement(
-                db, claim->second.first, claim->second.second,
-                Config::paths().homeDir.string());
-            if (!placement.empty()) {
-                place_asset(placement.source, subosDir / destination);
-                continue;
+        bool put = false;
+        for (const auto& [target, version] : activeAfter) {
+            const auto placement = file_placement(db, target, version, Config::paths().homeDir.string());
+            if (placement.destination == destination && !placement.empty()) {
+                changes.push_back({placement.source, subosDir / destination, false});
+                put = true;
             }
         }
-        if (!declared_asset_is_ours_(subosDir / destination, payloadRoot)) {
-            log::warn("[xvm] {} was replaced after xlings placed it; leaving "
-                      "it alone (run `xlings self doctor` to see it)",
-                      Config::display_path(subosDir / destination));
-            continue;
-        }
-        remove_declared_asset_(subosDir, payloadRoot, destination);
+        if (!put) changes.push_back({{}, subosDir / destination, true});
     }
+    auto result = apply_assets_(std::move(changes), subosDir, claims);
+    if (!result) return std::unexpected(result.error());
+    return {};
 }
-
-void place_library(const std::string& source,
-                   const std::string& name,
-                   const fs::path& sysroot_lib) {
-    if (name.empty()) return;
-    place_asset(source, sysroot_lib / name);
+MaterializationResult place_library(const std::string& source, const std::string& name,
+    const fs::path& sysroot_lib) {
+    if (name.empty()) return std::vector<materialize::Proof>{};
+    return place_asset(source, sysroot_lib / name);
 }
-
-void remove_library(const std::string& name, const fs::path& sysroot_lib) {
-    if (name.empty()) return;
-    remove_asset(sysroot_lib / name);
+std::expected<void, std::string> remove_library(const std::string& name, const fs::path& sysroot_lib) {
+    if (name.empty()) return {};
+    return remove_asset(sysroot_lib / name);
 }
 
 bool runtime_activation_refused_(const VersionDB& db,
@@ -584,47 +320,74 @@ int cmd_use(const std::string& target, const std::string& version, EventStream& 
 
     auto db = Config::versions();
     auto& p  = Config::paths();
+    const auto versionStatePath = &Config::versions_mut() == &Config::global_versions()
+        ? p.homeDir / ".xlings.json" : Config::project_state_path();
+    const auto workspaceStatePath = Config::workspace_config_path(false);
 
-    if (!has_target(db, target)) {
-        log::error("[xlings:use] '{}' not found in version database", target);
-        log::error("  hint: install it first with `xlings install {}`", target);
-        return 1;
-    }
-
-    // "latest" means pick the highest available version.
+    std::optional<home::layers::BorrowPlan> borrowed;
     std::string resolved;
-    if (version == "latest") {
-        // Scope-aware: pick_highest_version strips the "<scope>:" prefix (e.g.
-        // the bootstrap "local:0.4.47") before comparing by numeric semver, so
-        // a higher real release (e.g. 0.4.52) wins. semver::sort_desc alone
-        // cannot parse "local:..." and falls back to lexicographic order, where
-        // "local:0.4.47" wrongly beats "0.4.52" — the bug that made
-        // `xlings self update` install the new version yet stay on the old
-        // local one (xlings -> local:0.4.47).
-        auto it = db.find(target);
-        if (it == db.end() || it->second.versions.empty()) {
-            log::error("no versions installed for '{}'", target);
+    if (has_target(db, target)) {
+        auto owned = db.at(target);
+        std::erase_if(owned.versions, [](const auto& entry) { return !entry.second.sourceHome.empty(); });
+        const VersionDB preferred{{target, std::move(owned)}};
+        resolved = version == "latest" ? pick_highest_version(preferred.at(target).versions)
+                                       : match_version(preferred, target, version);
+        if (resolved.empty()) resolved = version == "latest" ? pick_highest_version(db.at(target).versions)
+                                                            : match_version(db, target, version);
+    }
+    const auto* existing = resolved.empty() ? nullptr : get_vdata(db, target, resolved);
+    if (resolved.empty() || (existing && !existing->sourceHome.empty())) {
+        auto declared = home::read_system_layer();
+        if (!declared) { log::error("{}", declared.error()); return 1; }
+        if (*declared) {
+            auto layer = home::layers::read_source_snapshot(**declared);
+            if (!layer) { log::error("{}", layer.error()); return 1; }
+            if (existing && existing->sourceHome != layer->sourceHome.string()) {
+                log::error("{}: borrowed registration belongs to a different system layer", target);
+                return 1;
+            }
+            const auto chosen = has_target(layer->versions, target)
+                ? (version == "latest" ? pick_highest_version(layer->versions.at(target).versions)
+                                        : match_version(layer->versions, target, version))
+                : std::string{};
+            if (!chosen.empty()) {
+                auto closure = home::layers::plan_borrow(*layer, db, target, chosen);
+                if (!closure) { log::error("{}", closure.error()); return 1; }
+                borrowed = std::move(*closure);
+                resolved = chosen;
+                for (const auto& [name, imported] : borrowed->registrations) {
+                    auto& info = db[name];
+                    info.type = imported.type;
+                    info.filename = imported.filename;
+                    for (const auto& [key, data] : imported.versions) info.versions[key] = data;
+                    for (const auto& [peer, edges] : imported.bindings)
+                        for (const auto& [key, linked] : edges) info.bindings[peer][key] = linked;
+                }
+            } else if (existing) {
+                log::error("{}: borrowed release is no longer registered by its source layer", target);
+                return 1;
+            }
+        } else if (existing) {
+            log::error("{}: the declared system layer for this borrowed release is missing", target);
             return 1;
         }
-        resolved = pick_highest_version(it->second.versions);
-    } else {
-        // Fuzzy match version
-        resolved = match_version(db, target, version);
     }
-
     if (resolved.empty()) {
-        log::error("version '{}' not found for '{}'", version, target);
-        auto all = get_all_versions(db, target);
-        if (!all.empty()) {
-            std::string avail;
-            for (auto& v : all) {
-                if (!avail.empty()) avail += ", ";
-                avail += v;
+        if (!has_target(db, target)) {
+            log::error("[xlings:use] '{}' not found in version database", target);
+            log::error("  hint: install it first with `xlings install {}`", target);
+        } else {
+            log::error("version '{}' not found for '{}'", version, target);
+            std::string available;
+            for (const auto& key : get_all_versions(db, target)) {
+                if (!available.empty()) available += ", ";
+                available += key;
             }
-            log::error("  available: {}", avail);
+            if (!available.empty()) log::error("  available: {}", available);
         }
         return 1;
     }
+    if (runtime_activation_refused_(db, target, resolved)) return 1;
 
     log::debug("fuzzy version match: {} -> {}", version, resolved);
 
@@ -641,11 +404,11 @@ int cmd_use(const std::string& target, const std::string& version, EventStream& 
     // `-print-sysroot` -- and could not compile, because `usr/include` was
     // empty. Nothing said so.
     //
-    // `use` cannot fix that: it cannot even name what is missing. So it stops
-    // pretending to. Switching stays what it says it is -- moving between
-    // versions this subos has -- and getting a version into a subos belongs to
-    // `install`, which resolves dependencies and materialises them.
-    if (filter_to_subos_installed_(target, {resolved}).empty()) {
+    // Owned payloads still require install's scope opt-in. The system-layer
+    // branch above is a separate proof: it validated every recorded runtime
+    // dependency and plans their views together, so it can opt that complete
+    // borrowed closure in without running or inheriting another scope's config.
+    if (!borrowed && filter_to_subos_installed_(target, {resolved}).empty()) {
         const auto origin = Config::version_origin(target);
         // The package that records `target@resolved`, if a record proves one;
         // `target` itself is a program name and may not be installable.
@@ -689,6 +452,35 @@ int cmd_use(const std::string& target, const std::string& version, EventStream& 
         log::error("{}", render(plan.error(), true));
         return 1;
     }
+    if (borrowed) {
+        // Each package release is planned against the SAME outgoing workspace.
+        // Dependencies are materialized as well as the requested release.
+        for (const auto& [name, key] : borrowed->members) {
+            if (plan->members.contains(name)) continue;
+            auto dependency = plan_use_switch(db, workspace, name, key, p.homeDir.string());
+            if (!dependency) { log::error("{}", render(dependency.error(), true)); return 1; }
+            for (const auto& [member, memberVersion] : dependency->members) {
+                const auto found = plan->members.find(member);
+                if (found != plan->members.end() && found->second != memberVersion) {
+                    log::error("{}: contradictory layer closure switch", member);
+                    return 1;
+                }
+                plan->members[member] = memberVersion;
+            }
+            plan->switches.insert(plan->switches.end(), dependency->switches.begin(), dependency->switches.end());
+            plan->removeHeaders.insert(plan->removeHeaders.end(), dependency->removeHeaders.begin(), dependency->removeHeaders.end());
+            plan->installHeaders.insert(plan->installHeaders.end(), dependency->installHeaders.begin(), dependency->installHeaders.end());
+            plan->stranded.insert(plan->stranded.end(), dependency->stranded.begin(), dependency->stranded.end());
+            plan->reclaimFiles.insert(dependency->reclaimFiles.begin(), dependency->reclaimFiles.end());
+        }
+        // Refuse unreadable local authorities before persisting imported metadata.
+        auto versionDocument = home::read_json_for_update(versionStatePath);
+        auto scopeDocument = home::read_json_for_update(workspaceStatePath);
+        if (!versionDocument || !scopeDocument) {
+            log::error("{}", !versionDocument ? versionDocument.error() : scopeDocument.error());
+            return 1;
+        }
+    }
     const auto& to_switch = plan->members;
 
     // A program the outgoing release had and this one does not keeps
@@ -721,100 +513,112 @@ int cmd_use(const std::string& target, const std::string& version, EventStream& 
         return 1;
     }
 
-    // Everything above this line is a decision; everything below changes the
-    // filesystem. Members that are already where they belong emit no change.
-    auto sysroot_include = p.subosDir / "usr" / "include";
-    // `<subos>/lib`, which is where the install path has always put
-    // libraries (`Config::paths().libDir`) and where they actually are: 94
-    // entries on a real installation, against one on `<subos>/usr/lib`.
-    // This line used to read `usr/lib`, and the disagreement was invisible
-    // because the switch side never emitted any library work at all --
-    // `VData::libdir` has no writer. Making libraries switch without fixing
-    // it would have started filling a second, unused directory.
-    auto sysroot_lib     = p.libDir;
-    // Headers first, and as two whole passes rather than per member: they are
-    // an asset of the release, not of any one member of it. Interleaving the
-    // passes -- remove one member's, install the next member's -- let the
-    // outgoing release's removal delete a link the incoming release had
-    // already put down, for every header name the two versions share. The
-    // plan has the two lists deduplicated and disjoint already.
-    for (const auto& asset : plan->removeHeaders) {
-        remove_headers(asset, sysroot_include);
+    // Prepare the entire new projection before changing either authority.
+    const auto previousDb = Config::versions_mut();
+    const auto previousActive = Config::workspace();
+    const auto previousInstalled = Config::workspace_installed();
+    auto versionDocument = home::read_json_for_update(versionStatePath);
+    auto workspaceDocument = home::read_json_for_update(workspaceStatePath);
+    if (!versionDocument || !workspaceDocument) {
+        log::error("{}", !versionDocument ? versionDocument.error() : workspaceDocument.error());
+        return 1;
     }
-    for (const auto& asset : plan->installHeaders) {
-        install_headers(asset, sysroot_include);
-    }
-
-    for (const auto& change : plan->switches) {
-        if (!change.removeLibName.empty())
-            remove_library(change.removeLibName, sysroot_lib);
-        if (!change.installLibSource.empty())
-            place_library(change.installLibSource, change.installLibName,
-                          sysroot_lib);
-        // File assets carry their own destination, relative to the subos
-        // root, so they are joined here rather than assumed into a fixed dir.
-        if (!change.removeFileDest.empty())
-            remove_asset(p.subosDir / change.removeFileDest);
-        if (!change.installFileSource.empty())
-            place_asset(change.installFileSource,
-                        p.subosDir / change.installFileDest);
-        log::debug("switching {}: {} -> {}", change.target,
-                   change.previousVersion.empty() ? "(none)"
-                                                  : change.previousVersion,
-                   change.version);
-    }
-
-    // Update workspace for all nodes in the binding tree, and opt this
-    // subos into the version's installed[] set if it wasn't already.
-    //
-    // The entry target is guaranteed to be in installed[] already -- the gate
-    // above refused otherwise. What this still covers is the *members*: a
-    // release can gain a program between versions (gcc 16 adding a binary gcc
-    // 15 did not have), and a member the subos never saw is arriving as part
-    // of a release it did ask for, not instead of one. Its payload is the same
-    // already-materialised payload, so recording it is bookkeeping, not an
-    // install.
-    auto& wsi = Config::workspace_installed_mut();
-    for (auto& [name, ver] : to_switch) {
-        Config::workspace_mut()[name] = ver;
-        auto& list = wsi[name];
-        if (std::find(list.begin(), list.end(), ver) == list.end()) {
-            list.push_back(ver);
-            log::debug("auto-add to installed[]: {} += {}", name, ver);
-        }
-        log::debug("binding sync: {} -> {}", name, ver);
-    }
-
-    // Assets the release being left declared and the incoming one does not.
-    //
-    // Deactivated FIRST, and that order is the whole of it. Reclaiming asks
-    // "does anything still active declare this destination", so a member left
-    // active answers yes about itself and its link is re-pointed straight
-    // back at the release being left -- the switch then changes nothing at
-    // all. The release moved; a member it has no version of did not come
-    // along, and saying so is not a guess about intent.
-    //
-    // `installed[]` is untouched: the payload is still there and `use` can
-    // bring it back. Only `active` moves.
-    std::set<std::string> reclaimDests;
-    auto& activeAfter = Config::workspace_mut();
-    for (const auto& [memberTarget, memberVersion] : plan->reclaimFiles) {
-        const auto placement = file_placement(db, memberTarget, memberVersion,
-                                              Config::paths().homeDir.string());
-        if (!placement.destination.empty()) {
-            reclaimDests.insert(placement.destination);
-        }
-        if (const auto it = activeAfter.find(memberTarget);
-            it != activeAfter.end() && it->second == memberVersion) {
-            activeAfter.erase(it);
-            log::debug("deactivated {}@{}: the release moved and this member "
-                       "did not come along", memberTarget, memberVersion);
+    auto candidateDb = previousDb;
+    if (borrowed) {
+        for (const auto& [name, imported] : borrowed->registrations) {
+            auto& info = candidateDb[name];
+            info.type = imported.type;
+            info.filename = imported.filename;
+            for (const auto& [key, data] : imported.versions) info.versions[key] = data;
+            for (const auto& [peer, edges] : imported.bindings)
+                for (const auto& [key, linked] : edges) info.bindings[peer][key] = linked;
         }
     }
-    reclaim_declared_assets(p.subosDir, p.dataDir / "xpkgs",
-                            reclaimDests, db, activeAfter);
-
-    Config::save_workspace();
+    auto candidateActive = previousActive;
+    auto candidateInstalled = previousInstalled;
+    for (const auto& [name, key] : to_switch) {
+        candidateActive[name] = key;
+        auto& installed = candidateInstalled[name];
+        if (std::ranges::find(installed, key) == installed.end()) installed.push_back(key);
+    }
+    for (auto& [name, keys] : candidateInstalled) {
+        std::ranges::sort(keys);
+        keys.erase(std::unique(keys.begin(), keys.end()), keys.end());
+    }
+    for (const auto& [name, key] : plan->reclaimFiles) {
+        const auto found = candidateActive.find(name);
+        if (found != candidateActive.end() && found->second == key) candidateActive.erase(found);
+    }
+    auto oldClaims = materialize::collect_claims(Config::versions(), previousInstalled,
+        p.subosDir, p.libDir, p.homeDir.string());
+    reclaim_conflicting_file_bindings(candidateDb, candidateActive, to_switch, p.homeDir.string());
+    WorkspaceInstalled selected;
+    for (const auto& [name, key] : candidateActive) selected[name] = {key};
+    auto desired = materialize::collect_claims(db, selected, p.subosDir, p.libDir, p.homeDir.string(),
+        materialize::ClaimSource::Present);
+    if (!oldClaims || !desired) {
+        log::error("{}", !oldClaims ? oldClaims.error() : desired.error());
+        return 1;
+    }
+    auto obsolete = materialize::obsolete_assets(*oldClaims, *desired);
+    if (!obsolete) { log::error("{}", obsolete.error()); return 1; }
+    auto changes = std::move(*obsolete);
+    for (const auto& claim : *desired) {
+        changes.push_back({claim.source, claim.destination, false});
+    }
+    auto prepared = materialize::preflight_materialization(changes, *oldClaims, p.subosDir);
+    if (!prepared) { log::error("{}", prepared.error()); return 1; }
+    auto applied = prepared->execute();
+    if (!applied) { log::error("{}", applied.error()); return 1; }
+    bool metadataTouched = false;
+    const auto restore = [&](const std::string& reason) {
+        log::error("{}", reason);
+        auto restored = applied->rollback();
+        if (!restored) log::error("materializer recovery: {}", restored.error());
+        Config::versions_mut() = previousDb;
+        Config::workspace_mut() = previousActive;
+        Config::workspace_installed_mut() = previousInstalled;
+        if (metadataTouched) {
+            try {
+                if (borrowed) platform::write_file_atomic(versionStatePath.string(), versionDocument->dump(2));
+                platform::write_file_atomic(workspaceStatePath.string(), workspaceDocument->dump(2));
+            } catch (const std::exception& error) {
+                log::error("activation metadata recovery failed: {}", error.what());
+                return;
+            }
+            const auto sync = xself::sync_shim_tables();
+            if (!sync.root_error.empty()) log::error("previous root projection recovery failed: {}", sync.root_error);
+        }
+    };
+    Config::versions_mut() = candidateDb;
+    Config::workspace_mut() = candidateActive;
+    Config::workspace_installed_mut() = candidateInstalled;
+    metadataTouched = true;
+    try {
+        if (borrowed) Config::save_versions();
+        Config::save_workspace();
+        auto recorded = home::read_json_for_update(workspaceStatePath);
+        if (!recorded || !recorded->contains("workspace")) {
+            restore("activation workspace could not be persisted");
+            return 1;
+        }
+        const auto actual = subos_workspace_from_json((*recorded)["workspace"]);
+        if (actual.active != candidateActive || actual.installed != candidateInstalled) {
+            restore("activation workspace write did not record the planned state");
+            return 1;
+        }
+        if (borrowed) {
+            auto recordedDb = home::read_json_for_update(versionStatePath);
+            if (!recordedDb || !recordedDb->contains("versions") ||
+                (*recordedDb)["versions"] != versions_to_json(candidateDb)) {
+                restore("borrowed layer metadata could not be persisted");
+                return 1;
+            }
+        }
+    } catch (const std::exception& error) {
+        restore(std::string("activation metadata write failed: ") + error.what());
+        return 1;
+    }
 
     // The routing table follows the workspace that was just written.
     //
@@ -830,18 +634,16 @@ int cmd_use(const std::string& target, const std::string& version, EventStream& 
     // get two spellings depending on which path created it, and only one of
     // them dispatches: `shim_dispatch` looks the name up in the workspace,
     // which is keyed by target. `sync_shim_tables` has one spelling.
-#ifdef _WIN32
-    auto xlings_bin = p.homeDir / "bin" / "xlings.exe";
-    constexpr std::string_view shim_ext = ".exe";
-#else
-    auto xlings_bin = p.homeDir / "bin" / "xlings";
-    constexpr std::string_view shim_ext = "";
-#endif
+    constexpr std::string_view shim_ext = platform::exe_suffix;
+    auto xlings_bin = p.homeDir / "bin" / ("xlings" + std::string(shim_ext));
     if (!fs::exists(xlings_bin)) {
         xlings_bin = p.homeDir / "xlings";
     }
 
-    xself::sync_shim_tables();
+    if (const auto sync = xself::sync_shim_tables(); !sync.root_error.empty()) {
+        restore(sync.root_error);
+        return 1;
+    }
 
     // Self-replace: when the user switches to a different version of xlings
     // (or its multicall aliases xim/xvm), physically replace the bootstrap
@@ -860,9 +662,19 @@ int cmd_use(const std::string& target, const std::string& version, EventStream& 
             auto active_bin = fs::path(vd->path)
                             / ("xlings" + std::string(shim_ext));
             if (fs::exists(active_bin)) {
-                xself::replace_entry_binary(
-                    active_bin, xlings_bin,
-                    std::format("{}@{}", target, resolved), resolved);
+                const auto owner = recorded_owner(db, target, resolved);
+                if (!owner) {
+                    restore(std::format("{}@{}: entry activation has no proven package owner", target, resolved));
+                    return 1;
+                }
+                const auto provider = owner->ns.empty() ? owner->package
+                                                       : owner->ns + ":" + owner->package;
+                if (!xself::replace_entry_binary(
+                    active_bin, xlings_bin, std::format("{}@{}", target, resolved), resolved,
+                    xself::PackageEntryActivation{provider, vd->sourceHome})) {
+                    restore("entry activation failed");
+                    return 1;
+                }
             }
         }
         // COMPAT(0.4.8 → drop in 0.6.0): opportunistically drop legacy
@@ -871,6 +683,9 @@ int cmd_use(const std::string& target, const std::string& version, EventStream& 
         // `xlings use xlings latest` — so first-upgrade self-heals.
         xself::compat::v0_4_8::cleanup_legacy_alias_shims(p.binDir, xlings_bin);
     }
+
+    auto committed = applied->commit();
+    if (!committed) { log::error("{}", committed.error()); return 1; }
 
     // Which release did this actually move?
     //

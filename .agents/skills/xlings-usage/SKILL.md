@@ -68,13 +68,27 @@ the output**; `--strict` refuses such a switch instead.
 
 ## SubOS — Environment Isolation
 
-### Three levels
+### What isolates, and how much
 
-| Level | Command | Root? | Use case |
-|-------|---------|:---:|---|
-| Shell | `xlings subos use <name>` | No | Version isolation only |
-| FS (sandbox) | `xlings subos use <name> --sandbox` | No | Linux filesystem isolation; macOS/Windows home redirection only |
-| Image | `xlings subos use <name> --sandbox` (storage=image) | Yes | Block-device isolation |
+| Level | Command | Use case |
+|-------|---------|---|
+| Shell | `xlings subos use <name>` | Version isolation only |
+| Sandbox | `xlings subos use <name> --sandbox` / `subos exec <name> --sandbox -- <cmd>` | Linux: bwrap namespaces; macOS/Windows: home redirection only |
+| Policy | `xlings subos new <name> --sandbox=dev\|private\|locked` (or later `subos config`) | Declared once on the instance; holds however it is entered, no flag needed |
+
+| Preset | Network | Identity | Fetching packages from inside |
+|---|---|---|---|
+| `dev` | host | host | auto |
+| `private` | nat (pasta) | neutral (user / instance hostname / UTC) | ask (owner approves outside) |
+| `locked` | none | neutral | deny |
+
+Backends: bwrap (default), `--sandbox landlock` (a kernel write fence, no
+namespaces, the host's sockets reachable -- only when asked for, never for
+untrusted code), `--sandbox proot` (a view, not a boundary). What a backend cannot give degrades under `dev` and refuses
+(exit 125, with the reason and the fix) under `private` / `locked`.
+`xlings subos status <name>` shows what is requested and what is in effect;
+`xlings subos doctor` checks every instance; `xlings self doctor --isolation
+--fix` repairs Ubuntu 24.04's user-namespace restriction (one sudo).
 
 ### Lifecycle
 
@@ -84,19 +98,30 @@ xlings subos new dev-env
 xlings subos new dev-env --storage tmpfs          # ephemeral data
 xlings subos new dev-env --from subos:py-ds@1.0.0 # fork from xpkg base
 
+# Declare what it may do -- once, at creation; entries then need no flag
+xlings subos new agent-env --sandbox=private      # a preset; `use` / `exec` enter it that way
+xlings subos config dev-env --sandbox=private     # or declare / change it later
+xlings subos config dev-env --allow gpu --mount ~/proj:/work
+xlings subos config dev-env --sandbox xim:policy-ci@1   # a policy package (locked by sha256)
+
 # Enter
 xlings subos use dev-env                          # interactive shell
 xlings subos use dev-env --sandbox                # sandbox mode
-xlings subos use dev-env --cmd "echo hello"       # single command
-xlings subos use dev-env --sandbox --cmd "..."    # sandbox + command
+xlings subos exec dev-env --sandbox -- make -j8   # one command, its own exit code
+xlings subos exec dev-env --sandbox=locked -- ./untrusted   # a call may only tighten
 
-# List / info
+# Sessions: one instance, many commands
+xlings subos start dev-env --ttl 30m              # later exec/use join it
+xlings subos exec dev-env -- make test
+xlings subos ps
+xlings subos stop dev-env
+
+# Inspect
 xlings subos list
 xlings subos info dev-env
-
-# Keeper (high-frequency exec)
-xlings subos use dev-env --sandbox --keep         # keep mount namespace alive
-xlings subos stop dev-env                         # release keeper
+xlings subos status dev-env                       # requested vs in effect
+xlings subos log dev-env --kind perm              # audit (outside the sandbox)
+xlings subos report dev-env                       # programs run, files changed
 
 # Remove — deletes the SubOS AND its home (user data). It asks first;
 # with nobody at a terminal it deletes nothing and exits 2 unless -y is given.
@@ -123,12 +148,23 @@ xlings install     # installs deps into project isolation
 
 ### Agent runs inside SubOS
 
-Treat `--sandbox` as a security boundary only on Linux with bwrap/proot.
-macOS and Windows redirect HOME/USERPROFILE and must not run untrusted code.
+Treat `--sandbox` as a security boundary only on Linux with bwrap (proot is
+a view, landlock fences writes only). macOS and Windows redirect
+HOME/USERPROFILE and must not run untrusted code.
+
+Declare the audience: `XLINGS_AGENT_MODE=1` (or `--agent`). In agent mode no
+command waits for input; an interactive `subos use` is refused (exit 2) and
+names `subos exec`.
+
+Inside a sandbox the xlings home is read-only and xlings still works: reads
+run locally, `install` / `remove` go to the owner's broker and are decided by
+the instance's policy, owner-only commands return 13 with the command to run
+outside, and `fetch=ask` requests wait (exit 75) for
+`xlings subos requests / approve / deny` outside.
 
 ```bash
 # Create isolated env for agent
-xlings subos new agent-ws --from subos:dev-env@latest
+xlings subos new agent-ws --from subos:dev-env@latest --sandbox=private
 
 # Enter — agent runs INSIDE this world
 xlings subos use agent-ws --sandbox
@@ -150,7 +186,9 @@ xlings interface
 ### One-shot command execution
 
 ```bash
-xlings subos use agent-ws --sandbox --cmd "python analyze.py"
+xlings subos exec agent-ws --sandbox -- python analyze.py
+# exit codes: the command's own; 125 setup; 126/127 cannot run / not found;
+# 124 timeout (--timeout); 128+n signal; 13 E_PERMISSION; 75 queued for approval
 ```
 
 ## Package Index Ecosystem
@@ -192,13 +230,14 @@ xlings subos new exp --from subos:py-ds@1.0.0 # fork (0s, shared storage)
 
 | Flag | Context | Effect |
 |------|---------|--------|
-| `--cmd "<cmd>"` | `subos use` | Non-interactive single command exec |
-| `--sandbox` | `subos use` | Enable FS-level isolation (bwrap/proot) |
+| `--cmd "<cmd>"` | `subos use` | Non-interactive single command exec (prefer `subos exec -- argv`) |
+| `--sandbox[=preset\|backend]` | `subos use/exec/start/config` | Isolation: dev / private / locked, or bwrap / landlock / proot |
+| `--net`, `--fetch`, `--allow`, `--mount`, `--observe` | `subos config` (declares) / a call (tightens only) | Policy overrides |
 | `--storage <mode>` | `subos new` | shared / tmpfs / image |
 | `--from <spec>` | `subos new` | Fork from local subos or pkg-spec |
-| `--keep` | `subos use` | Keep mount namespace alive (no timeout) |
-| `--no-keep` | `subos use` | Force disable keeper |
-| `--ttl <sec>` | `subos use` | Custom keeper idle timeout |
+| `--keep` | `subos use` | The session outlives the shell until `subos stop` (Linux) |
+| `--no-keep` | `subos use` | End the session with the shell |
+| `--ttl <sec>` | `subos use/start` | Session idle timeout |
 | `-y` | `install` | Skip confirmation prompts |
 | `-g` | `install` | Install to global scope (not project) |
 | `--reconfig` | `install` | Run config() again for the whole closure; without it a package already configured in this scope at its recipe revision is left alone |

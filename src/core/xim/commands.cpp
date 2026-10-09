@@ -11,6 +11,7 @@ module;
 
 module xlings.core.xim.commands;
 
+import xlings.core.xim.lua_boundary;
 import std;
 import xlings.core.xim.index;
 import xlings.core.xim.libxpkg.types.type;
@@ -30,11 +31,12 @@ import xlings.core.xim.overlay;
 // subos's own declaration here closes no cycle. The alternative was a second
 // manifest reader living in xim, and this repo has paid for "the same decision
 // derived in two places" often enough to not add another.
-import xlings.core.subos.manifest;
+import xlings.subos.manifest;
 import xlings.core.log;
 import xlings.core.diag;
 import xlings.core.xvm.errors;
 import xlings.core.config;
+import xlings.core.home;
 import xlings.core.profile;
 import xlings.runtime;
 import xlings.libs.json;
@@ -453,6 +455,30 @@ int install_(std::span<const std::string> targets, bool yes, bool noDeps,
 
     auto platform = detect_platform();
     std::vector<std::string> targetVec(targets.begin(), targets.end());
+    std::optional<std::size_t> relocationTool;
+    bool injectedRelocationTool = false;
+    // A payload linked against the xlings glibc is relocated with patchelf at
+    // install (elfpatch). A host without one -- a fresh root, a minimal
+    // container -- used to get every such payload installed UNPATCHED and
+    // reported as installed (design part 2 §2.4 G1b). The static upstream
+    // build comes first instead.
+    if constexpr (platform::is_linux) {
+        const auto asked = std::ranges::find_if(targetVec, [](const std::string& t) {
+            return t == "patchelf" || t.ends_with(":patchelf") || t.starts_with("patchelf@")
+                || t.find(":patchelf@") != std::string::npos;
+        });
+        if (!dryRun && !targetVec.empty() && !patchelf_reachable()) {
+            if (asked == targetVec.end()) {
+                log::info("payloads are relocated with patchelf and this host has none: "
+                          "installing xim:patchelf first");
+                targetVec.insert(targetVec.begin(), "xim:patchelf");
+                relocationTool = 0;
+                injectedRelocationTool = true;
+            } else {
+                relocationTool = static_cast<std::size_t>(asked - targetVec.begin());
+            }
+        }
+    }
     std::vector<PackageMatch> requestedMatches;
     // C2 (#366 UX): allow at most one on-demand index refresh per install call.
     bool refreshedForMissing = false;
@@ -719,8 +745,9 @@ int install_(std::span<const std::string> targets, bool yes, bool noDeps,
         }
         // One match per request, in request order, so the count so far is
         // this request's index.
-        if (report && requestedMatches.size() < report->size()) {
-            auto& entry = (*report)[requestedMatches.size()];
+        if (report && (!injectedRelocationTool || !requestedMatches.empty()) &&
+            requestedMatches.size() - static_cast<std::size_t>(injectedRelocationTool) < report->size()) {
+            auto& entry = (*report)[requestedMatches.size() - static_cast<std::size_t>(injectedRelocationTool)];
             entry.namespaceName = match->namespaceName;
             entry.name = match->name;
             entry.version = match->version;
@@ -752,6 +779,18 @@ int install_(std::span<const std::string> targets, bool yes, bool noDeps,
         }
         return 1;
     }
+
+    if (relocationTool) {
+        const auto& tool = requestedMatches[*relocationTool];
+        auto ordered = require_install_tool(plan, node_key_(tool));
+        if (!ordered) {
+            stream.emit(ErrorEvent{ .code = ErrorCode::InvalidInput,
+                .message = "cannot bootstrap payload relocation: " + ordered.error(), .recoverable = false });
+            return 1;
+        }
+    }
+    if (injectedRelocationTool)
+        requestedMatches.erase(requestedMatches.begin());
 
     // -g: register versions/workspace in global scope so tools work outside project dir
     if (forceGlobal) {
@@ -979,7 +1018,7 @@ int install_(std::span<const std::string> targets, bool yes, bool noDeps,
         }
         record_report();
         activate_requested_targets();
-        xself::sync_shim_tables();
+        if (const auto sync = xself::sync_shim_tables(); !sync.root_error.empty()) return 1;
         return 0;
     }
 
@@ -1181,7 +1220,8 @@ int install_(std::span<const std::string> targets, bool yes, bool noDeps,
         // home back to the invoking user so a later non-sudo `xlings install`
         // isn't locked out by EACCES. No-op for pure root / non-root installs
         // (lchown is metadata-only, so even large payload trees are cheap).
-        platform::chown_to_invoker(Config::paths().homeDir);
+        if (Config::home_context().user_owned())
+            platform::chown_to_invoker(Config::paths().homeDir);
     }
     // Per-package failures (download / extract / hook) are surfaced via
     // InstallPhase::Failed callbacks and recorded in `outcomes`;
@@ -1229,7 +1269,8 @@ selected_payloadless_config_has_uninstall_(
             "uninstall recipe is not a local file: {}", recipe.string()));
     }
 
-    auto executor = xpkg::create_executor(recipe);
+    xpkg::ExecutionContext context;
+    auto executor = lua_boundary::create_executor(recipe, context);
     if (!executor) return std::unexpected(executor.error());
     return executor->has_hook(xpkg::HookType::Uninstall);
 }

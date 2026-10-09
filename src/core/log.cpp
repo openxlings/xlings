@@ -83,12 +83,7 @@ std::string colored_err_(palette::Rgb c, const char* text) {
 std::string timestamp_() {
     auto now = std::chrono::system_clock::now();
     auto tt = std::chrono::system_clock::to_time_t(now);
-    std::tm tm;
-#if defined(_WIN32)
-    ::localtime_s(&tm, &tt);
-#else
-    ::localtime_r(&tt, &tm);
-#endif
+    const std::tm tm = platform::local_time(tt);
     char buf[32];
     std::snprintf(buf, sizeof(buf), "%04d-%02d-%02d %02d:%02d:%02d",
                   tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,

@@ -1,0 +1,27 @@
+# Luban: what exists only when a SubOS is a machine (SubOS design part 3 §8).
+#
+#   boot     which SubOS a machine boots (boot.json: default, fallback, a trial)
+#   stage0   the machine's first process -- before /proc, before any home or
+#            Config is read; its own binary, apps/luban-init
+#   machine  the machine's /etc: factory files, sysusers
+#
+# It depends on modules/ (the shared layer) and never on the xlings frontend
+# (src/): tools/lint_layer_deps.sh fails an `import xlings.core.*` here, which
+# is how "nothing on stage-0's path reads Config" is a build rule and not a
+# convention.
+[package]
+namespace = "luban"
+name      = "luban"
+version   = "0.1.0"
+
+[targets.luban]
+kind = "lib"
+
+[dependencies]
+libs     = { path = "../modules/libs" }
+platform = { path = "../modules/platform" }
+runtime  = { path = "../modules/runtime" }
+subos    = { path = "../modules/subos" }
+
+[build]
+include_dirs = ["../modules/libs/src/json"]

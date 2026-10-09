@@ -1,11 +1,3 @@
-module;
-
-// The NSS cell needs the caller's effective uid. `import std;` does not pull
-// POSIX in, and a named module's purview forbids including it there, so it
-// goes in the global module fragment -- same arrangement as subos/sandbox.cppm.
-#if !defined(_WIN32)
-#include <unistd.h>
-#endif
 module xlings.core.xself.doctor;
 
 import std;
@@ -20,6 +12,7 @@ import xlings.core.utils;
 import xlings.runtime;
 import xlings.core.elf_same_source;
 import xlings.core.entry_binary;
+import xlings.core.home;
 import xlings.core.version_order;
 import xlings.core.xvm.types;
 import xlings.core.xvm.bindings;
@@ -33,13 +26,14 @@ import xlings.core.xvm.relocation;
 // prune_empty_asset_dirs: `--fix` deletes the same links the removal path
 // deletes and must leave the same shape behind.
 import xlings.core.xvm.commands;
+import xlings.core.xvm.materialize;
 import xlings.core.xself.repair;
 import xlings.core.xim.catalog;
 import xlings.core.xim.payload;
 import xlings.core.xim.install_state;
 import xlings.core.xim.commands;
 import xlings.core.profile;
-import xlings.core.subos.manifest;
+import xlings.subos.manifest;
 import xlings.core.xim.repo;
 import xlings.core.destructive_log;
 import xlings.core.home_config;
@@ -47,12 +41,6 @@ import xlings.platform.target;
 import xlings.core.home_identity;
 
 namespace xlings::xself {
-
-#ifdef _WIN32
-
-#else
-
-#endif
 
 // First `limit` names, comma-joined, with a count for the rest.
 //
@@ -110,11 +98,7 @@ DoctorState load_state_() {
         st.otherSnapshots.push_back(std::move(snapshot));
     }
 
-#ifdef _WIN32
-    st.xlingsBin = p.homeDir / "bin" / "xlings.exe";
-#else
-    st.xlingsBin = p.homeDir / "bin" / "xlings";
-#endif
+    st.xlingsBin = p.homeDir / "bin" / (platform::is_windows ? "xlings.exe" : "xlings");
     if (!fs::exists(st.xlingsBin)) st.xlingsBin = p.homeDir / "xlings";
 
     // Was this database written for another root?
@@ -170,18 +154,18 @@ bool payload_has_any_executable_(const fs::path& dir) {
         for (auto& e : platform::dir_entries(d)) {
             std::error_code fec;
             if (!e.is_regular_file(fec) && !e.is_symlink(fec)) continue;
-#if defined(_WIN32)
-            auto ext = e.path().extension().string();
-            if (ext == ".exe" || ext == ".bat" || ext == ".cmd") return true;
-#else
-            auto st = fs::status(e.path(), fec);
-            if (!fec && (st.permissions() & (fs::perms::owner_exec
-                                             | fs::perms::group_exec
-                                             | fs::perms::others_exec))
-                        != fs::perms::none) {
-                return true;
+            if constexpr (platform::is_windows) {
+                auto ext = e.path().extension().string();
+                if (ext == ".exe" || ext == ".bat" || ext == ".cmd") return true;
+            } else {
+                auto st = fs::status(e.path(), fec);
+                if (!fec && (st.permissions() & (fs::perms::owner_exec
+                                                 | fs::perms::group_exec
+                                                 | fs::perms::others_exec))
+                            != fs::perms::none) {
+                    return true;
+                }
             }
-#endif
         }
         return false;
     };
@@ -976,6 +960,8 @@ Scan detect_(const DoctorState& st, const CoordinateProbe& probe,
     }
 
     for (auto&& f : detect_entry_binary_(st)) add(std::move(f));
+    for (auto&& f : detect_policy_clients_(p.homeDir,
+            entry_binary::version_of(entry_binary::path_of(p.homeDir)))) add(std::move(f));
 
     for (auto&& f : detect_versions_sources_()) add(std::move(f));
 
@@ -2271,93 +2257,93 @@ Scan detect_(const DoctorState& st, const CoordinateProbe& probe,
         // Notice, not Error, when it works: this is the cell that is supposed
         // to be boring. When it fails it is an Error, because a home whose
         // packages resolve no users is broken in a way nothing else reports.
-#ifdef __linux__
-        for (const auto& root : payloadAuditRoots) {
-            const auto& storeName = root.storeName;
-            // `<ns>-x-glibc`, any namespace.
-            if (!storeName.ends_with("-x-glibc")) continue;
-            std::error_code sec;
-            const auto lib64  = root.path / "lib64";
-            const auto loader = lib64 / "ld-linux-x86-64.so.2";
-            const auto getent = root.path / "bin" / "getent";
-            if (!fs::is_regular_file(loader, sec)) continue;
-            if (!fs::is_regular_file(getent, sec)) continue;
+        if constexpr (platform::is_linux) {
+            for (const auto& root : payloadAuditRoots) {
+                const auto& storeName = root.storeName;
+                // `<ns>-x-glibc`, any namespace.
+                if (!storeName.ends_with("-x-glibc")) continue;
+                std::error_code sec;
+                const auto lib64  = root.path / "lib64";
+                const auto loader = lib64 / "ld-linux-x86-64.so.2";
+                const auto getent = root.path / "bin" / "getent";
+                if (!fs::is_regular_file(loader, sec)) continue;
+                if (!fs::is_regular_file(getent, sec)) continue;
 
-            const auto& version = root.version;
-            const auto cmd = std::format(
-                "\"{}\" --library-path \"{}\" \"{}\" passwd {} 2>/dev/null",
-                loader.string(), lib64.string(), getent.string(),
-                ::geteuid());
-            auto [rc, out] = platform::run_command_capture(cmd);
+                const auto& version = root.version;
+                const auto cmd = std::format(
+                    "\"{}\" --library-path \"{}\" \"{}\" passwd {} 2>/dev/null",
+                    loader.string(), lib64.string(), getent.string(),
+                    platform::user_ids().euid);
+                auto [rc, out] = platform::run_command_capture(cmd);
 
-            if (rc == 0 && !out.empty()) {
-                add({
-                    .kind    = FindingKind::NssResolution,
-                    .level   = FindingLevel::Notice,
-                    .target  = storeName,
-                    .version = version,
-                    .detail  = std::format(
-                        "glibc {}: resolves the current user "
-                        "(getent passwd {} under our loader)",
-                        version, ::geteuid()),
-                });
-                continue;
-            }
+                if (rc == 0 && !out.empty()) {
+                    add({
+                        .kind    = FindingKind::NssResolution,
+                        .level   = FindingLevel::Notice,
+                        .target  = storeName,
+                        .version = version,
+                        .detail  = std::format(
+                            "glibc {}: resolves the current user "
+                            "(getent passwd {} under our loader)",
+                            version, platform::user_ids().euid),
+                    });
+                    continue;
+                }
 
-            // Which backends this host asks for that we do not ship. Part of
-            // the finding, not a separate check: it is the only actionable
-            // thing about the failure.
-            std::string missing;
-            {
-                std::ifstream nss("/etc/nsswitch.conf");
-                std::set<std::string> seen;
-                for (std::string line; std::getline(nss, line);) {
-                    if (auto h = line.find('#'); h != std::string::npos)
-                        line.resize(h);
-                    auto colon = line.find(':');
-                    if (colon == std::string::npos) continue;
-                    auto rest = line.substr(colon + 1);
-                    // `[NOTFOUND=return]` is control flow, not a module.
-                    while (true) {
-                        auto ob = rest.find('[');
-                        if (ob == std::string::npos) break;
-                        auto cb = rest.find(']', ob);
-                        if (cb == std::string::npos) {
-                            rest.resize(ob);
-                            break;
+                // Which backends this host asks for that we do not ship. Part of
+                // the finding, not a separate check: it is the only actionable
+                // thing about the failure.
+                std::string missing;
+                {
+                    std::ifstream nss("/etc/nsswitch.conf");
+                    std::set<std::string> seen;
+                    for (std::string line; std::getline(nss, line);) {
+                        if (auto h = line.find('#'); h != std::string::npos)
+                            line.resize(h);
+                        auto colon = line.find(':');
+                        if (colon == std::string::npos) continue;
+                        auto rest = line.substr(colon + 1);
+                        // `[NOTFOUND=return]` is control flow, not a module.
+                        while (true) {
+                            auto ob = rest.find('[');
+                            if (ob == std::string::npos) break;
+                            auto cb = rest.find(']', ob);
+                            if (cb == std::string::npos) {
+                                rest.resize(ob);
+                                break;
+                            }
+                            rest.erase(ob, cb - ob + 1);
                         }
-                        rest.erase(ob, cb - ob + 1);
-                    }
-                    std::istringstream toks(rest);
-                    for (std::string mod; toks >> mod;) {
-                        if (!seen.insert(mod).second) continue;
-                        if (!fs::is_regular_file(
-                                lib64 / ("libnss_" + mod + ".so.2"), sec)) {
-                            if (!missing.empty()) missing += ", ";
-                            missing += mod;
+                        std::istringstream toks(rest);
+                        for (std::string mod; toks >> mod;) {
+                            if (!seen.insert(mod).second) continue;
+                            if (!fs::is_regular_file(
+                                    lib64 / ("libnss_" + mod + ".so.2"), sec)) {
+                                if (!missing.empty()) missing += ", ";
+                                missing += mod;
+                            }
                         }
                     }
                 }
-            }
 
-            add({
-                .kind    = FindingKind::NssResolution,
-                .level   = FindingLevel::Error,
-                .target  = storeName,
-                .version = version,
-                .detail  = std::format(
-                    "glibc {}: does NOT resolve the current user under our "
-                    "loader{}. Any package switched to this interpreter will "
-                    "see no user, silently.",
-                    version,
-                    missing.empty()
-                        ? std::string{}
-                        : std::format(
-                            " -- /etc/nsswitch.conf names backend(s) this "
-                            "payload does not ship: {}", missing)),
-            });
+                add({
+                    .kind    = FindingKind::NssResolution,
+                    .level   = FindingLevel::Error,
+                    .target  = storeName,
+                    .version = version,
+                    .detail  = std::format(
+                        "glibc {}: does NOT resolve the current user under our "
+                        "loader{}. Any package switched to this interpreter will "
+                        "see no user, silently.",
+                        version,
+                        missing.empty()
+                            ? std::string{}
+                            : std::format(
+                                " -- /etc/nsswitch.conf names backend(s) this "
+                                "payload does not ship: {}", missing)),
+                });
+            }
         }
-#endif
 
         // The whole subos tree, not four directories one level deep.
         //
@@ -3034,12 +3020,37 @@ void repair_local_(const DoctorState& st, const Scan& scan,
                                      Config::display_path(source)));
                     continue;
                 }
-                xvm::place_asset(source, f.shimPath);
-                // Verified, not assumed. place_asset is best-effort by
-                // design (it logs and returns on a source that vanished
-                // mid-run), so trusting it here would let "re-pointed but
-                // still dangling" print as a repair -- the exact shape this
-                // whole change exists to remove.
+                auto claims = xvm::materialize::collect_claims(st.db, st.wsInstalled,
+                    Config::paths().subosDir, Config::paths().libDir, st.homeStr);
+                if (claims) {
+                    const auto store = (Config::paths().dataDir / "xpkgs").lexically_normal();
+                    const auto payload = [&](fs::path path) {
+                        path = path.lexically_normal();
+                        while (!path.empty() && path != path.parent_path()) {
+                            if (path.parent_path().parent_path() == store) return path;
+                            path = path.parent_path();
+                        }
+                        return fs::path{};
+                    };
+                    ec.clear();
+                    auto old = fs::read_symlink(f.shimPath, ec);
+                    if (!ec) {
+                        if (old.is_relative()) old = f.shimPath.parent_path() / old;
+                        old = old.lexically_normal();
+                        const auto owner = payload(source);
+                        const bool exists = fs::exists(f.shimPath, ec);
+                        if (!ec && !exists && !owner.empty() && payload(old) == owner &&
+                            old.filename() == fs::path(source).filename())
+                            claims->push_back({old, f.shimPath, false});
+                    }
+                }
+                const auto placed = claims
+                    ? xvm::place_asset(source, f.shimPath, *claims)
+                    : xvm::MaterializationResult(std::unexpected(claims.error()));
+                if (!placed) {
+                    note(glyph::mark(glyph::failed, "sysroot repair failed"), placed.error());
+                    continue;
+                }
                 ec.clear();
                 if (fs::exists(f.shimPath, ec)) {
                     note(glyph::mark(glyph::bullet, "link repointed"),
@@ -3122,7 +3133,15 @@ void repair_local_(const DoctorState& st, const Scan& scan,
                                  Config::display_path(source)));
                 continue;
             }
-            xvm::place_asset(source, f.shimPath);
+            const auto claims = xvm::materialize::collect_claims(st.db, st.wsInstalled,
+                Config::paths().subosDir, Config::paths().libDir, st.homeStr);
+            const auto placed = claims
+                ? xvm::place_asset(source, f.shimPath, *claims)
+                : xvm::MaterializationResult(std::unexpected(claims.error()));
+            if (!placed) {
+                note(glyph::mark(glyph::failed, "sysroot repair failed"), placed.error());
+                continue;
+            }
             std::error_code pec;
             if (fs::exists(f.shimPath, pec)) {
                 note(glyph::mark(glyph::bullet, "link placed"),
@@ -4814,6 +4833,10 @@ Counts count_(const Scan& scan) {
                 // the command. The line still prints, with the command that
                 // settles it.
                 break;
+            case FindingKind::PolicyClientUnsupported:
+                if (f.level == FindingLevel::Error) ++c.subos;
+                else ++c.warnings;
+                break;
             case FindingKind::EntryBinaryDrift:
                 // Counts as nothing either: both shapes it reports are states
                 // a user may have chosen on purpose. It must be visible, not
@@ -5217,6 +5240,11 @@ void render_(const Scan& scan, const RepairReport& repair, bool fix,
                         add("  " + glyph::mark(glyph::note, "note"), f.remedyNote);
                 }
                 break;
+            case FindingKind::PolicyClientUnsupported:
+                add(glyph::mark(glyph::failed, "policy client"), f.detail);
+                if (!f.remedy.empty()) add("  " + glyph::mark(glyph::remedy, "run"), f.remedy);
+                if (!f.remedyNote.empty()) add("  " + glyph::mark(glyph::note, "note"), f.remedyNote);
+                break;
             case FindingKind::EntryBinaryDrift:
                 // Printed in full, always -- NOT collapsed into the notice
                 // summary. There are at most two of these, and each one
@@ -5502,6 +5530,37 @@ int cmd_doctor(EventStream& stream, bool fix, bool resetMetadata, bool dryRun, b
     // directories are immutable, so their scan results are cacheable by path
     // and mtime -- which is a separate change with its own risk surface.
     // See .agents/docs/2026-08-10-doctor-fix-hang-and-537.md (D2 vs D3).
+    // What a system install contributes (design §4), said once at the top:
+    // which binary is answering, and the system files it reads.
+    {
+        const auto entry = home::describe_entry(platform::get_executable_path(),
+                                                Config::paths().homeDir);
+        if (entry.system)
+            stream.emit(LogEvent{LogLevel::info, std::format(
+                "entry: {} (a system package's; its package manager updates it)",
+                entry.path.string())});
+        // Without `<home>/bin/xlings` every shim is skipped and nothing this
+        // home installs is on PATH (design part 2 §2.1). Any write command
+        // links it; `--fix` does too.
+        if (entry.system && xlings_binary_in_home(Config::paths().homeDir).empty()) {
+            if (fix && !dryRun && ensure_system_entry_link(Config::paths().homeDir)) {
+                stream.emit(LogEvent{LogLevel::info, "fixed: this home's entry now links to "
+                                                     + entry.path.string()});
+            } else {
+                stream.emit(LogEvent{LogLevel::error, std::format(
+                    "this home has no entry: nothing it installs is on PATH until it links to "
+                    "{} -- run `xlings self doctor --fix` (or any install)", entry.path.string())});
+            }
+        }
+        std::error_code ec;
+        if (const auto cfg = home::system_config_path(); fs::is_regular_file(cfg, ec))
+            stream.emit(LogEvent{LogLevel::info, std::format(
+                "system config: {} (defaults this home's .xlings.json overrides)", cfg.string())});
+        if (const auto layer = home::system_layer())
+            stream.emit(LogEvent{LogLevel::info, std::format(
+                "system layer: {} (its programs follow this home's on PATH; `sudo xlings install --system` adds to it)", layer->string())});
+    }
+
     const bool deepAudit = deep || fix;
     if (scope && !deepAudit) {
         stream.emit(ErrorEvent{

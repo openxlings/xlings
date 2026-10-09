@@ -14,47 +14,51 @@ Core capabilities:
 ## Repository Structure
 
 ```
-src/
-├── main.cpp                         # Entry point
-├── cli.cppm                         # CLI dispatch (positional + flag parsing)
-├── interface.cppm                   # NDJSON programmatic interface (protocol v1.1)
-├── core/
-│   ├── config.cppm                  # 3-layer config (global → subos → project)
-│   ├── subos.cppm                   # SubOS lifecycle (create/use/fork/remove/stop)
-│   ├── subos/keeper.cppm            # Auto-keeper primitives (Linux namespace reuse)
-│   ├── xself.cppm                   # Self-install/update
-│   ├── xself/                       # Self-management submodules
-│   ├── xim/                         # Package management subsystem
-│   │   ├── installer.cppm           # Install orchestration (type dispatch)
-│   │   ├── resolver.cppm            # DAG dependency resolution
-│   │   ├── downloader.cppm          # Parallel download + SHA256
-│   │   ├── index.cppm               # Package index + cache
-│   │   ├── catalog.cppm             # Multi-repo catalog loading
-│   │   └── libxpkg/types/           # Per-type handlers:
-│   │       ├── type.cppm            #   PlanNode, enums, shared types
-│   │       ├── script.cppm          #   type="script" default hooks
-│   │       └── subos.cppm           #   type="subos" default hooks
-│   └── xvm/                         # Version management
-│       ├── db.cppm                  # VersionDB CRUD + JSON
-│       ├── shim.cppm                # Multicall shim dispatch
-│       └── commands.cppm            # xvm commands (use, list, register)
-├── platform.cppm                    # Cross-platform abstractions
-├── platform/                        # Platform implementations
-├── libs/                            # Vendored libs (json, tinyhttps)
-└── ui/                              # TUI (ftxui-based)
+modules/                             # packages linked into xlings, one per responsibility
+├── libs/       json, sha256, tinyhttps        nothing of xlings
+├── runtime/    cancellation, guard, observe   shared by core and SubOS core
+├── platform/   the OS boundary: every system header and call
+│   └── src/    platform.cppm (declares, includes nothing); os/ (linux, macos,
+│               windows, unix), process/ (spawn, worker, stream), net/,
+│               isolation/ (ns, Landlock, seccomp, mounts), fs/, triple/
+├── ui/         theme, i18n
+├── store/      what keeps a payload alive: GC roots (retained generations), the retained ledger
+├── subos/      the SubOS core
+│   └── src/    model/ (model, manifest, roles, ports, userdata), policy/, intent/ (policy -> Intent),
+│               sandbox/ (spec types, caps, tools table, elevation, network, gpu),
+│               views/root/ (root projection, generations, library cache),
+│               session/ (supervisor + session-init, broker)
+├── confine/    sandbox implementations (linux-bwrap/proot/landlock, home-redirect, fake),
+│               the selector, the compile skeleton, provider argv, the platform matrix
+├── carrier/    where a SubOS runs: local, wsl2, vz; choose(); terminal/control over NDJSON
+└── testkit/    C++ e2e test library (dev-dependency)
+luban/                               # only what a SubOS that is a MACHINE needs (luban.*)
+└── src/        boot (boot entries), stage0 (first process), machine (/etc, sysusers)
+apps/
+├── gui/        GUI library half
+├── luban-init/ stage-0 as its own binary (links luban + modules/, never src/)
+└── xdev/       dev tool: tests, report, requirement map (not shipped)
+src/                                 # not yet separated: core, cli, ui, runtime
+├── main.cpp                         # entry point
+├── cli.cpp, cli/spec.cpp            # CLI dispatch and the command spec
+├── interface.cpp                    # NDJSON programmatic interface
+└── core/
+    ├── config.cppm                  # 3-layer config (global -> subos -> project)
+    ├── home/                        # HomeContext: deployment mode, layout, system config
+    ├── subos/cmd.cpp                # `subos` commands (new/use/exec/start/config/...)
+    ├── subos/sandbox.cpp            # adapter: policy + caps -> spec -> session
+    ├── subos/root/                  # a workspace -> its root projection; rollback/boot/export
+    ├── subos/domain/                # prefix domains, their producer, layers, evidence
+    ├── subos/carrier_image.cpp      # the image a guest carrier imports
+    ├── xself/                       # self install/update/doctor
+    ├── xim/                         # package management (installer, resolver, index...)
+    └── xvm/                         # version management, shims
 
 tests/
-├── e2e/                             # End-to-end shell tests
-│   ├── project_test_lib.sh          # Shared helpers (find_xlings_bin, run_xlings)
-│   ├── fixtures/                    # Test fixture packages
-│   └── subos_xpkg_*.sh             # SubOS-as-xpkg e2e tests
-└── (unit tests via `mcpp test`)
-
-.agents/
-├── docs/                            # Agent working docs (see .agents/docs/README.md)
-├── skills/                          # Agent skills (this section)
-├── plans/                           # Implementation plans
-└── tasks/                           # Task tracking
+├── unit/, e2e/                      # C++ tests (`mcpp test`, XTEST + testkit)
+├── e2e/*.sh                         # legacy shell e2e (tests/suites.toml)
+├── requirements.toml                # requirement IDs every test `covers`
+└── suites.toml                      # legacy suites run through xdev
 ```
 
 ## Build System
@@ -70,10 +74,19 @@ xlings use gcc@16.1.0       # switch to glibc-linked dev toolchain
 mcpp build                   # dev binary → target/<triple>/<fingerprint>/bin/xlings
 
 # Test:
-mcpp test                    # unit tests
+mcpp test                    # unit tests + C++ e2e tests (tests/**/test_*.cpp)
 XLINGS_BIN=$(find target -path '*/bin/xlings' -type f | head -1) \
-  bash tests/e2e/<test>.sh                             # e2e tests
+  bash tests/e2e/<test>.sh                             # legacy e2e scripts
+
+# xdev (dev tool, not shipped): one report for C++ tests and legacy suites
+mcpp build -p xdev
+XDEV=$(find target -path '*/bin/xdev/xdev' | head -1)
+$XDEV doctor                 # which capabilities this machine can test
+$XDEV test [pattern] [--suite contract-scripts|lint|e2e-shell]
 ```
+
+New tests are C++ with `modules/testkit` (`XTEST`, `Home::isolated`); see
+`tests/README.md`.
 
 For release packaging (static binary):
 - Linux: `tools/linux_release.sh` (musl-gcc static)
@@ -84,7 +97,7 @@ For release packaging (static binary):
 
 ### CLI argparse
 
-Manual positional parsing in each subcommand's `run()` function (see `subos.cppm` line ~1700). Pattern:
+Manual positional parsing in each subcommand's `run()` function (see `src/core/subos/cmd.cpp`). Pattern:
 ```cpp
 for (int i = 3; i < argc; ++i) {
     std::string a = argv[i];
@@ -93,6 +106,90 @@ for (int i = 3; i < argc; ++i) {
     else { usageError("unknown option: " + a); return 1; }
 }
 ```
+
+### Platform code lives in `xlings.platform`
+
+**System headers and system calls are in `modules/platform` and nowhere
+else** (`tools/lint_platform_headers.sh`, in the lint suite). What another
+module needs from the OS -- a fork, a socket that carries descriptors, a
+Landlock fence, a file's owner -- is a function there, declared on every
+platform and reporting "unavailable" where it does not exist; the caller
+holds the logic and no `#include`. Two exceptions, both outside the
+product: `modules/testkit` (the harness does not share the product's failure
+modes) and `tests/` (a test may call the kernel to check what it does).
+
+**Platform selection is `if constexpr`, not `#if`.** Branch with
+`if constexpr (platform::is_windows)` (also `is_linux`, `is_macos`,
+`is_posix`; and the values `platform::exe_suffix`, `platform::null_device`):
+every build then compiles every branch, so the Linux CI catches a typo in the
+Windows one, and a branch that only one CI compiles is the branch that breaks.
+A function that only one OS can implement is declared on every platform in
+`modules/platform` and reports "unavailable" elsewhere -- so the caller can
+use `if constexpr` instead of hiding the call behind `#if`.
+
+`#if` on `_WIN32` / `__linux__` / `__APPLE__` / `_MSC_VER` outside
+`modules/platform` needs `// platform-if-ok: <why>` on its line
+(`tools/lint_platform_branches.sh`). The legitimate reasons are few and say
+so: a declaration that differs per COMPILER (the GCC/MSVC module special
+members in `xvm/types.cppm`), or a module below `xlings.platform` that cannot
+import its constants (`runtime/observe.cpp`). Inside `modules/platform`,
+`#if` is for headers and system calls; logic still prefers `if constexpr`.
+
+**Headers stay in the smallest unit that uses them.** A system header is
+included by the implementation unit (`.cpp`) that makes the call, never by an
+interface unit (`.cppm`): the primary interface `platform.cppm` includes
+nothing, and a partition's interface includes at most the C++-wrapped C
+library (`<cstdio>` for `stdout`) its declarations need. A type a declaration
+must name opaquely (`HANDLE`) is stored as `void*` with the sentinel spelled
+out, as `ProcessHandle` and `FileLock` do. The lint checks both rules; testkit
+and `tests/` are outside the product and carry the same constants under the
+same names.
+
+### SubOS = content x view x carrier (SubOS design part 3)
+
+One noun: a SubOS is CONTENT (workspace, home, policy). How a process sees it
+is its VIEW (overlay, sandbox, root, machine); where it runs is its CARRIER
+(local, wsl2, vz, native). A payload's target ABI decides the carrier -- a
+Linux SubOS on Windows runs in a WSL2 distribution of the home's own, which
+the user never enters (`xlings subos ...` is forwarded through `wsl.exe -d
+<name> -u root --exec /xlings/bin/xlings __carrier-env ... -- <args>`).
+`instance.json`'s `carrier` / `abi` record it (absent = local/native).
+`.agents/docs/2026-10-09-subos-architecture-design-part3.md`.
+
+Rules that came with it:
+
+* **External programs come from one table** (`xlings.subos.tools`: payload,
+  then the machine's paths it names, never another home's shim), and
+  administrator rights through one door (`xlings.subos.elevation`, recorded
+  in `logs/elevation.ndjson`). `tools/lint_tool_resolve.sh` fails a
+  `std::system`, an argv that starts with a tool's literal name, or an
+  administrator argv outside `elevation::run`.
+* **Package layers import downward** (`tools/lint_layer_deps.sh`): `luban/`
+  -> `modules/`; `modules/` never imports `luban.*` or the frontend. A binary
+  that must not carry the frontend is its OWN package (`apps/luban-init`): a
+  package's binaries link every source of that package.
+* **A retained generation is a GC root.** `remove` completes and keeps the
+  payload in `<data>/retained.json` while a generation links into it; a prune
+  releases it. A generation's switch is durable and checked by its inventory
+  (`root.gen/.<k>.inventory`); never edit a placed generation.
+* **The sandbox a policy compiles to is a golden** (`tests/fixtures/intent-eq`,
+  INTENT-EQ). A change to it is a change to what a sandbox IS: regenerate with
+  `XLINGS_INTENT_GOLDEN_WRITE=1` only on purpose, and say so in the commit.
+
+### Core and interaction surfaces are separate (2026.10, #640)
+
+Who is reading the output (a person or an agent) and how it is drawn (cli,
+tui, `--json`, the NDJSON interface) are two independent axes, and neither
+belongs in core code. Core returns structured results and asks questions only
+through the `Asker` port (`xlings.guard`); it never branches on the audience
+and never assembles user-facing text. The audience is DECLARED, never
+inferred: `--agent` or `XLINGS_AGENT_MODE=1` (`0` turns it off). In agent mode
+a command never waits for input -- a question it cannot answer becomes a
+structured error with the candidates and the exact flag that answers it.
+
+The SubOS design this comes from, and the module layout it implies
+(`modules/runtime`, `modules/subos`, `src/core/home/`), is
+`.agents/docs/2026-10-05-subos-architecture-design.md`.
 
 ### Type-specific install dispatch
 
@@ -228,6 +325,28 @@ prints its remedy with the entry's full path, because `xlings` on PATH is one
 of the stale files. A home an older client upgraded needs that command once
 (`& "$env:USERPROFILE\.xlings\bin\xlings.exe" self init` also works): new code
 never runs there on its own.
+
+### A SubOS can be a root (SubOS design part 2)
+
+A SubOS's content (workspace, home, policy) is one thing and how a process
+sees it is another: the PATH overlay, the sandbox view, and the **root** --
+`subos new --rootfs`, where `/usr` is a generation of links into payloads
+and `/etc`, `/home`, `/var` are the root's own machine state. The design is
+`.agents/docs/2026-10-06-subos-architecture-design-part2.md`; what to keep
+in mind when changing code near it:
+
+* **Every workspace change of a rootfs SubOS is a new generation**, made by
+  `xself::sync_shim_tables` (the one writer). A generation is switched with
+  one rename and never edited; rollback moves the pointer.
+* **What may be done to a SubOS is `roles::check(op, kind, role)`** -- a
+  running host is not removed, a boot entry is not removed, a view has no
+  root to export. A new command that can hurt a running system asks it.
+* **Stage-0 (`<home>/boot/xlings-init`) runs before anything reads a home**:
+  /proc is not mounted yet. Nothing on its path may use Config.
+* Deployment forms: S (a package manager's `/usr/bin/xlings`; a home links
+  its entry to it on first write), M (`sudo xlings install --system` into a
+  root-owned `/xlings`, after each user's own on PATH), R (a machine whose
+  userland is a SubOS: `/etc/xlings/root.json` names its system home).
 
 ### SubOS user data
 

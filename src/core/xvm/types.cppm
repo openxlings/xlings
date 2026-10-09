@@ -24,6 +24,9 @@ struct BindingIntegrityIssue {
 
 struct VData {
     std::string path;
+    std::string sourceHome;  // borrowed registration provenance; empty means this home
+    std::string sourceScope;
+    std::string layerMetadata;  // retain unknown provenance keys on load/save
     std::string kind;
     std::string sourceName;
     std::string destinationName;
@@ -64,7 +67,7 @@ struct VData {
     // dependency on the JSON library.
     std::map<std::string, std::string> bindingUnreadable;
 
-#if defined(_MSC_VER)
+#if defined(_MSC_VER)  // platform-if-ok: compiler, not platform: GCC/MSVC module special members
     VData() = default;
     ~VData() = default;
     VData(const VData&) = default;
@@ -87,7 +90,7 @@ struct VInfo {
     std::map<std::string, VData> versions;
     std::map<std::string, std::map<std::string, std::string>> bindings;
 
-#if defined(_MSC_VER)
+#if defined(_MSC_VER)  // platform-if-ok: compiler, not platform: GCC/MSVC module special members
     VInfo() = default;
     ~VInfo() = default;
     VInfo(const VInfo&) = default;
@@ -210,7 +213,7 @@ bool has_program_kind(const VersionDB& db, const std::string& target);
 
 } // namespace xlings::xvm
 
-#if !defined(_MSC_VER)
+#if !defined(_MSC_VER)  // platform-if-ok: compiler, not platform: GCC/MSVC module special members
 // Out-of-line special members to work around GCC module boundary issues
 xlings::xvm::VData::VData() = default;
 xlings::xvm::VData::~VData() = default;

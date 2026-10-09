@@ -2,6 +2,7 @@ module xlings.core.xvm.switch_plan;
 
 import std;
 import xlings.core.xvm.types;
+import xlings.core.xvm.db;
 import xlings.core.xvm.bindings;
 import xlings.core.xvm.errors;
 
@@ -28,6 +29,22 @@ std::pair<std::string, std::string> provider_of_(const VersionDB& db,
 }
 
 namespace xlings::xvm {
+void reclaim_conflicting_file_bindings(const VersionDB& db, Workspace& workspace,
+                                      const Workspace& selected, const std::string& home) {
+    for (const auto& [target, version] : selected) {
+        const auto* data = get_vdata(db, target, version);
+        const auto incoming = file_placement(db, target, version,
+            data && !data->sourceHome.empty() ? data->sourceHome : home);
+        std::error_code ec;
+        if (incoming.empty() || !std::filesystem::is_regular_file(incoming.source, ec) || ec)
+            continue;
+        std::erase_if(workspace, [&](const auto& entry) {
+            if (selected.contains(entry.first)) return false;
+            const auto old = file_placement(db, entry.first, entry.second, home);
+            return !old.empty() && old.destination == incoming.destination;
+        });
+    }
+}
 
 std::expected<UseSwitchPlan, XvmUserError> plan_use_switch(
         const VersionDB& db,

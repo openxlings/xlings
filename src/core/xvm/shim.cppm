@@ -1,11 +1,3 @@
-module;
-
-#include <cstdlib>
-
-#if defined(__linux__) || defined(__APPLE__)
-#include <unistd.h>
-#endif
-
 export module xlings.core.xvm.shim;
 
 import std;
@@ -90,6 +82,12 @@ handoff_target(const std::filesystem::path& ownImage);
 // nothing this process starts inherits it: a tool that runs another shim must
 // see that shim make its own decision.
 bool consume_handoff_marker();
+
+// Runtime link settings for a formally registered glibc GCC driver in a
+// verified root projection. Shared payload specs remain scope-independent.
+std::expected<std::string, std::string> root_compiler_alias(std::string alias,
+    const VData& data, const std::filesystem::path& scope,
+    const std::filesystem::path& root = "/");
 
 // Resolve the real executable path for a shim target
 std::filesystem::path resolve_executable(const std::string& program_name,

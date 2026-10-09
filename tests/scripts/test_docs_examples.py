@@ -43,7 +43,7 @@ for match in re.finditer(r"```(?:bash|console)\n(.*?)```", text, re.DOTALL):
         if not line.startswith("xlings "):
             continue
         try:
-            tokens = shlex.split(line)
+            tokens = shlex.split(line, comments=True)
         except ValueError as error:
             raise SystemExit(f"unparseable documented command: {line}: {error}")
         if len(tokens) < 2:
@@ -62,6 +62,9 @@ for match in re.finditer(r"```(?:bash|console)\n(.*?)```", text, re.DOTALL):
         allowed = root_options | set().union(
             *(aliases(o) for o in node["options"]))
         for token in tokens[2:]:
+            # `--` ends the options: what follows is the command's own argv.
+            if token == "--":
+                break
             if not token.startswith("-"):
                 continue
             option = token.split("=", 1)[0]

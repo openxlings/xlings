@@ -10,7 +10,9 @@ namespace xlings::xself {
 // platform::exec rather than calling cmd_install/cmd_use directly: that
 // avoids the circular module dependency that would otherwise arise
 // (xim.commands and xvm.commands both import xlings.core.xself).
-export int cmd_update();
+// `user`: install a home-level xlings even though this one is a system
+// package's (deployment S), which is otherwise refused.
+export int cmd_update(bool user = false);
 
 // Did `use xlings latest` land on the build the index handed us?
 //

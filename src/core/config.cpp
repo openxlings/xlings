@@ -8,6 +8,7 @@ import xlings.libs.json;
 import xlings.core.log;
 import xlings.platform;
 import xlings.core.utils;
+import xlings.core.home;
 import xlings.libs.tinyhttps;
 import xlings.core.xvm.types;
 import xlings.core.xvm.db;
@@ -578,8 +579,10 @@ Config::Config() {
         // Owner-anchored shim dispatch: the dispatch home was chosen
         // before Config construction (main.cpp → resolve_dispatch_home).
         paths_.homeDir = *anchored;
+        paths_.homeSource = home::Source::Anchored;
     } else if (!envHome.empty()) {
         paths_.homeDir = envHome;
+        paths_.homeSource = home::Source::Env;
     } else {
         auto exePath   = platform::get_executable_path();
         auto exeParent = exePath.parent_path();
@@ -612,9 +615,20 @@ Config::Config() {
         if (isSelfContained) {
             paths_.homeDir       = candidate;
             paths_.selfContained = true;
+            paths_.homeSource    = home::Source::SelfContained;
         } else {
             paths_.homeDir = fs::path(platform::get_home_dir()) / ".xlings";
         }
+    }
+
+    // A system install's defaults (/etc/xlings/config.json, design §4): read
+    // first, so this home's own file overrides every key it sets.
+    {
+        const auto sys = home::read_system_config();
+        if (auto it = sys.find("mirror"); it != sys.end() && it->is_string())
+            mirror_ = it->get<std::string>();
+        if (auto it = sys.find("lang"); it != sys.end() && it->is_string())
+            lang_ = it->get<std::string>();
     }
 
     auto configPath = paths_.homeDir / ".xlings.json";
@@ -1031,6 +1045,12 @@ void Config::reload_state() { instance_().reload_state_(); }
 
 [[nodiscard]] const Config::PathInfo& Config::paths() { return instance_().paths_; }
 
+[[nodiscard]] const home::HomeContext& Config::home_context() {
+    static const home::HomeContext ctx =
+        home::describe(paths().homeDir, paths().homeSource);
+    return ctx;
+}
+
 [[nodiscard]] std::string Config::display_path(
             const std::filesystem::path& p) {
     const auto& home = paths().homeDir;
@@ -1245,12 +1265,12 @@ void Config::load_ui_prefs_from_json_(const nlohmann::json& json) {
     auto value = repo.url;
     if (value.rfind("file://", 0) == 0) {
         value.erase(0, 7);
-#ifdef _WIN32
         // file:///C:/path → /C:/path after erase; strip leading '/' before drive letter
-        if (value.size() >= 3 && value[0] == '/' && std::isalpha(static_cast<unsigned char>(value[1])) && value[2] == ':') {
-            value.erase(0, 1);
+        if constexpr (platform::is_windows) {
+            if (value.size() >= 3 && value[0] == '/' && std::isalpha(static_cast<unsigned char>(value[1])) && value[2] == ':') {
+                value.erase(0, 1);
+            }
         }
-#endif
         return fs::path(value).lexically_normal();
     }
     if (value.find("://") != std::string::npos) {
@@ -1466,14 +1486,18 @@ void Config::save_versions() {
         if (!projectHomeDir.empty()) fs::create_directories(projectHomeDir);
     }
 
-    nlohmann::json json;
-    if (fs::exists(configPath)) {
-        try {
-            auto content = platform::read_file_to_string(configPath.string());
-            json = nlohmann::json::parse(content, nullptr, false);
-            if (json.is_discarded()) json = nlohmann::json::object();
-        } catch (...) { json = nlohmann::json::object(); }
+    // Refuse rather than replace (home::read_json_for_update): this file
+    // also holds the mirror, the subos registry and known projects, and
+    // writing `versions` into a blank object over an unparseable one would
+    // erase all of them. The same promise the workspace writer below makes.
+    auto read = home::read_json_for_update(configPath);
+    if (!read) {
+        log::warn("{} -- leaving it untouched rather than overwriting it; the "
+                  "version change is not recorded. Run `xlings self doctor`.",
+                  read.error());
+        return;
     }
+    nlohmann::json json = std::move(*read);
 
     auto& versions = useGlobal ? self.globalVersions_ : self.projectVersions_;
     json["versions"] = xvm::versions_to_json(versions);
@@ -1487,7 +1511,7 @@ void Config::save_versions() {
         // database, never an authority.)
         json["dbIndex"] = xvm::program_index_to_json(versions);
     }
-    platform::write_string_to_file(configPath.string(), json.dump(2));
+    platform::write_file_atomic(configPath.string(), json.dump(2));
 
     if (useGlobal) {
         // The DB file gets its own copy of the versions map, wrapped with a
@@ -1895,35 +1919,9 @@ void Config::save_workspace() {
     // is never followed by a spurious write failure (issue #471).
     fs::create_directories(subosConfigPath.parent_path());
 
-    nlohmann::json json = nlohmann::json::object();
-    if (fs::exists(subosConfigPath)) {
-        bool parsedOk = false;
-        try {
-            auto content = platform::read_file_to_string(subosConfigPath.string());
-            auto parsed = nlohmann::json::parse(content, nullptr, false);
-            if (!parsed.is_discarded() && parsed.is_object()) {
-                json = std::move(parsed);
-                parsedOk = true;
-            }
-        } catch (...) { /* parsedOk stays false */ }
-        if (!parsedOk) {
-            // Refuse rather than replace: an unreadable file is not an
-            // empty one. Blanking it here would discard `subos_info`, envs,
-            // and anything else this write does not itself own -- turning
-            // "this subos could not be read" into "this subos is now
-            // empty", the one failure mode a repair cannot walk back.
-            // profile::save_subos_workspace already makes this same
-            // promise for every OTHER subos's file (doctor's cross-subos
-            // repairs write through it); this is THIS subos's own writer,
-            // reached on nearly every install/remove/use, making it too.
-            log::warn(
-                "{}: could not be parsed as JSON; leaving it untouched "
-                "rather than overwriting it with a blank workspace. Run "
-                "`xlings self doctor` to see what needs repair.",
-                display_path(subosConfigPath));
-            return;
-        }
-    }
+    const auto observed = home::read_json_for_update(subosConfigPath);
+    if (!observed) throw std::runtime_error(observed.error() + "; workspace left untouched");
+    nlohmann::json json = *observed;
 
     // All four destination paths above target subos-side files
     // (named project subos, anonymous project subos / state file, or
@@ -1961,7 +1959,7 @@ void Config::save_workspace() {
     } else {
         json["configured"] = sws.configured;
     }
-    platform::write_string_to_file(subosConfigPath.string(), json.dump(2));
+    platform::write_file_atomic(subosConfigPath.string(), json.dump(2));
 }
 
 // The map `save_workspace` writes for the scope this command acts on -- the

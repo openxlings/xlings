@@ -7,10 +7,25 @@ module;
 module xlings.core.xim.extract;
 
 import std;
+import xlings.platform;
 
 namespace xlings::xim {
 
 namespace detail_ {
+
+// libarchive's "write to disk" sink takes care of file creation,
+// permissions, ownership, hardlink/symlink resolution. We only flip on
+// the safety bits — no ACLs / extended attributes / fflags. We do NOT
+// set SECURE_NOABSOLUTEPATHS here because we deliberately rewrite each
+// entry's pathname into the (absolute) destDir below; that flag would
+// reject every entry. Absolute paths in the original archive are
+// filtered out by check_safe_pathname_() before rebasing.
+constexpr int kWriteFlags =
+      ARCHIVE_EXTRACT_TIME
+    | ARCHIVE_EXTRACT_PERM
+    | ARCHIVE_EXTRACT_SECURE_NODOTDOT      // reject "../" in entry path
+    | ARCHIVE_EXTRACT_SECURE_SYMLINKS;     // refuse following symlinks during extraction
+
 
 std::expected<std::string, std::string>
 check_safe_pathname_(const char* raw) {
@@ -106,16 +121,16 @@ copy_entry_data_(struct archive* src, struct archive* dst) {
 void ensure_archive_locale_() {
     static std::once_flag once;
     std::call_once(once, [] {
-#ifdef _WIN32
-        if (!std::setlocale(LC_CTYPE, ".UTF-8")) {
-            std::setlocale(LC_CTYPE, "");
+        if constexpr (platform::is_windows) {
+            if (!std::setlocale(LC_CTYPE, ".UTF-8")) {
+                std::setlocale(LC_CTYPE, "");
+            }
+        } else {
+            if (!std::setlocale(LC_CTYPE, "C.UTF-8")
+                && !std::setlocale(LC_CTYPE, "en_US.UTF-8")) {
+                std::setlocale(LC_CTYPE, "");
+            }
         }
-#else
-        if (!std::setlocale(LC_CTYPE, "C.UTF-8")
-            && !std::setlocale(LC_CTYPE, "en_US.UTF-8")) {
-            std::setlocale(LC_CTYPE, "");
-        }
-#endif
     });
 }
 
@@ -309,3 +324,141 @@ extract_archive(const std::filesystem::path& archive,
 }
 
 }
+
+
+namespace xlings::xim {
+
+std::expected<void, std::string> write_tar_gz(const std::filesystem::path& root,
+                                              const std::filesystem::path& output,
+                                              ArchiveOwner owner, std::string_view prefix) {
+    namespace fs = std::filesystem;
+    struct Handles {
+        struct archive* disk { ::archive_read_disk_new() };
+        struct archive* out { ::archive_write_new() };
+        struct archive_entry* entry { ::archive_entry_new() };
+        ~Handles() {
+            if (entry) ::archive_entry_free(entry);
+            if (disk) { ::archive_read_close(disk); ::archive_read_free(disk); }
+            if (out) ::archive_write_free(out);
+        }
+    } h;
+    if (!h.disk || !h.out || !h.entry) return std::unexpected("libarchive: failed to allocate handles");
+    auto failed = [](struct archive* a, std::string_view what) {
+        const char* why = ::archive_error_string(a);
+        return std::unexpected(std::format("{}: {}", what, why ? why : "libarchive error"));
+    };
+    ::archive_read_disk_set_symlink_physical(h.disk);   // store links, never follow them
+    ::archive_read_disk_set_standard_lookup(h.disk);
+    if (::archive_write_add_filter_gzip(h.out) != ARCHIVE_OK) return failed(h.out, "gzip");
+    if (::archive_write_set_format_pax_restricted(h.out) != ARCHIVE_OK) return failed(h.out, "tar format");
+    if (::archive_write_open_filename(h.out, output.string().c_str()) != ARCHIVE_OK)
+        return failed(h.out, "cannot create " + output.string());
+    if (::archive_read_disk_open(h.disk, root.string().c_str()) != ARCHIVE_OK)
+        return failed(h.disk, "cannot read " + root.string());
+
+    const auto base = root.lexically_normal();
+    std::vector<char> buffer(1 << 20);
+    for (;;) {
+        ::archive_entry_clear(h.entry);
+        const int r = ::archive_read_next_header2(h.disk, h.entry);
+        if (r == ARCHIVE_EOF) break;
+        if (r != ARCHIVE_OK && r != ARCHIVE_WARN) return failed(h.disk, "reading " + root.string());
+        ::archive_read_disk_descend(h.disk);
+        const fs::path source = ::archive_entry_sourcepath(h.entry);
+        const auto rel = source.lexically_normal().lexically_relative(base);
+        std::string name = rel.empty() || rel == "." ? std::string(prefix)
+                                                     : (fs::path(std::string(prefix)) / rel).generic_string();
+        if (::archive_entry_filetype(h.entry) == AE_IFDIR && !name.ends_with('/')) name += '/';
+        ::archive_entry_copy_pathname(h.entry, name.c_str());
+        if (owner == ArchiveOwner::Root) {
+            ::archive_entry_set_uid(h.entry, 0);
+            ::archive_entry_set_gid(h.entry, 0);
+            ::archive_entry_copy_uname(h.entry, "root");
+            ::archive_entry_copy_gname(h.entry, "root");
+        } else {
+            ::archive_entry_copy_uname(h.entry, nullptr);   // numeric, as --numeric-owner
+            ::archive_entry_copy_gname(h.entry, nullptr);
+        }
+        if (::archive_write_header(h.out, h.entry) != ARCHIVE_OK) return failed(h.out, "writing " + name);
+        if (::archive_entry_filetype(h.entry) != AE_IFREG || ::archive_entry_size(h.entry) == 0) continue;
+        std::ifstream in(source, std::ios::binary);
+        if (!in) return std::unexpected("cannot open " + source.string());
+        while (in) {
+            in.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
+            const auto n = in.gcount();
+            if (n > 0 && ::archive_write_data(h.out, buffer.data(), static_cast<std::size_t>(n)) < 0)
+                return failed(h.out, "writing " + name);
+        }
+        if (in.bad()) return std::unexpected("cannot read " + source.string());
+    }
+    if (::archive_write_close(h.out) != ARCHIVE_OK) return failed(h.out, "finishing " + output.string());
+    return {};
+}
+
+std::expected<void, std::string> write_tar_gz_entries(const std::filesystem::path& output,
+                                                      std::span<const TarEntry> entries) {
+    struct Handles {
+        struct archive* out { ::archive_write_new() };
+        struct archive_entry* entry { ::archive_entry_new() };
+        ~Handles() {
+            if (entry) ::archive_entry_free(entry);
+            if (out) ::archive_write_free(out);
+        }
+    } h;
+    if (!h.out || !h.entry) return std::unexpected("libarchive: failed to allocate handles");
+    auto failed = [&](std::string_view what) {
+        const char* why = ::archive_error_string(h.out);
+        return std::unexpected(std::format("{}: {}", what, why ? why : "libarchive error"));
+    };
+    if (::archive_write_add_filter_gzip(h.out) != ARCHIVE_OK) return failed("gzip");
+    if (::archive_write_set_format_pax_restricted(h.out) != ARCHIVE_OK) return failed("tar format");
+    if (::archive_write_open_filename(h.out, output.string().c_str()) != ARCHIVE_OK)
+        return failed("cannot create " + output.string());
+    std::vector<char> buffer(1 << 20);
+    for (const auto& e : entries) {
+        ::archive_entry_clear(h.entry);
+        std::string name = "./" + e.path;
+        if (e.directory && !name.ends_with('/')) name += '/';
+        ::archive_entry_copy_pathname(h.entry, name.c_str());
+        ::archive_entry_set_uid(h.entry, 0);
+        ::archive_entry_set_gid(h.entry, 0);
+        ::archive_entry_copy_uname(h.entry, "root");
+        ::archive_entry_copy_gname(h.entry, "root");
+        ::archive_entry_set_mtime(h.entry, 0, 0);
+        std::uintmax_t size = 0;
+        if (e.directory) {
+            ::archive_entry_set_filetype(h.entry, AE_IFDIR);
+            ::archive_entry_set_perm(h.entry, e.mode == 0644 ? 0755 : e.mode);
+        } else if (!e.link.empty()) {
+            ::archive_entry_set_filetype(h.entry, AE_IFLNK);
+            ::archive_entry_set_perm(h.entry, 0777);
+            ::archive_entry_copy_symlink(h.entry, e.link.c_str());
+        } else {
+            ::archive_entry_set_filetype(h.entry, AE_IFREG);
+            ::archive_entry_set_perm(h.entry, e.mode);
+            std::error_code ec;
+            size = e.from.empty() ? e.content.size() : std::filesystem::file_size(e.from, ec);
+            if (ec) return std::unexpected("cannot read " + e.from.string() + ": " + ec.message());
+            ::archive_entry_set_size(h.entry, static_cast<la_int64_t>(size));
+        }
+        if (::archive_write_header(h.out, h.entry) != ARCHIVE_OK) return failed("writing " + name);
+        if (size == 0) continue;
+        if (e.from.empty()) {
+            if (::archive_write_data(h.out, e.content.data(), e.content.size()) < 0) return failed("writing " + name);
+            continue;
+        }
+        std::ifstream in(e.from, std::ios::binary);
+        if (!in) return std::unexpected("cannot open " + e.from.string());
+        while (in) {
+            in.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
+            const auto n = in.gcount();
+            if (n > 0 && ::archive_write_data(h.out, buffer.data(), static_cast<std::size_t>(n)) < 0)
+                return failed("writing " + name);
+        }
+        if (in.bad()) return std::unexpected("cannot read " + e.from.string());
+    }
+    if (::archive_write_close(h.out) != ARCHIVE_OK) return failed("finishing " + output.string());
+    return {};
+}
+
+}  // namespace xlings::xim

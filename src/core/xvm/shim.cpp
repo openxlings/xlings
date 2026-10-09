@@ -1,11 +1,3 @@
-module;
-
-#include <cstdlib>
-
-#if defined(__linux__) || defined(__APPLE__)
-#include <unistd.h>
-#endif
-
 module xlings.core.xvm.shim;
 
 import std;
@@ -28,8 +20,37 @@ import xlings.core.xvm.shim_table;
 import xlings.core.xvm.shim_view;
 import xlings.core.home_config;
 import xlings.core.home_identity;
+import xlings.subos.rootfs;
+import xlings.platform.target;
 
 namespace xlings::xvm {
+
+std::expected<std::string, std::string> root_compiler_alias(std::string alias,
+    const VData& data, const std::filesystem::path& scope, const std::filesystem::path& root) {
+    if constexpr (platform::OS_NAME != "linux") return alias;
+    if (!data.bindingGroup || data.bindingGroup->provider != "xim:gcc"
+        || data.bindingGroup->rootTarget != "xim-gnu-gcc") return alias;
+    const auto end = alias.find_first_of(" \t");
+    const auto driver = std::filesystem::path(alias.substr(0, end)).filename().string();
+    const bool compiler = driver == "gcc" || driver == "g++" || driver == "cc" || driver == "c++"
+        || driver.ends_with("-gcc") || driver.ends_with("-g++") || driver.ends_with("-c++");
+    if (!compiler || !subos::rootfs::running_projection(root, scope)) return alias;
+    const auto flag = "--sysroot=" + scope.string();
+    const auto found = alias.find(flag);
+    if (found == alias.npos || (found > 0 && alias[found - 1] != ' ' && alias[found - 1] != '\t')
+        || (found + flag.size() != alias.size() && alias[found + flag.size()] != ' '
+            && alias[found + flag.size()] != '\t')) return alias;
+    std::string loader;
+    if constexpr (platform::build_arch() == "x86_64") loader = "/lib64/ld-linux-x86-64.so.2";
+    else if constexpr (platform::build_arch() == "aarch64") loader = "/lib/ld-linux-aarch64.so.1";
+    else return std::unexpected("this GCC root has no supported logical loader for its architecture");
+    std::error_code ec;
+    if (!std::filesystem::is_regular_file(root / std::filesystem::path(loader).relative_path(), ec) || ec)
+        return std::unexpected("the GCC root has no logical glibc loader " + loader + "; install glibc in this scope");
+    alias.replace(found, flag.size(), "--sysroot=/");
+    alias += " -Wl,--dynamic-linker," + loader;
+    return alias;
+}
 
 bool is_xlings_binary(std::string_view name) {
     return name == "xlings";
@@ -48,11 +69,24 @@ resolve_owner_home(const std::filesystem::path& invoked) {
     // marker, else the legacy layout minus a SubOS. The structural predicate
     // this replaced accepted a SubOS, since every SubOS has an empty `subos/`
     // of its own (#617), and the walk stopped one level too early.
+    //
+    // One link at a time, the file's own location first. Resolving the whole
+    // chain answered with where the ENTRY lives, which is the home only when
+    // the entry is the home's own file: a home whose entry links to a system
+    // package's binary (deployment S) had every shim anchored to nothing. A
+    // link to a shim from outside any home still reaches it on the next hop.
     auto walk_up = [](fs::path p) -> std::optional<fs::path> {
-        std::error_code ec;
-        auto canon = fs::weakly_canonical(p, ec);
-        if (!ec && !canon.empty()) p = canon;
-        return home_identity::nearest_home(p.parent_path());
+        for (int hop = 0; hop < 16; ++hop) {
+            std::error_code ec;
+            auto dir = fs::weakly_canonical(p.parent_path(), ec);
+            if (ec || dir.empty()) dir = p.parent_path();
+            if (auto h = home_identity::nearest_home(dir)) return h;
+            if (!fs::is_symlink(p, ec)) break;
+            auto target = fs::read_symlink(p, ec);
+            if (ec) break;
+            p = target.is_absolute() ? target : dir / target;
+        }
+        return std::nullopt;
     };
 
     if (invoked.has_parent_path() && !invoked.parent_path().empty()) {
@@ -599,23 +633,20 @@ void report_passthrough_(const std::string& program_name,
 int exec_host_program_(const std::filesystem::path& host,
                        int argc, char* argv[]) {
     auto hostStr = host.string();
-    std::vector<const char*> newArgv;
-    newArgv.push_back(hostStr.c_str());
-    for (int i = 1; i < argc; ++i) newArgv.push_back(argv[i]);
-    newArgv.push_back(nullptr);
-
-#if defined(__linux__) || defined(__APPLE__)
-    execvp(hostStr.c_str(), const_cast<char* const*>(newArgv.data()));
-    log::error("xlings: failed to exec '{}'", hostStr);
-    return 127;
-#else
-    std::string cmd = platform::shell_quote(hostStr);
-    for (int i = 1; i < argc; ++i) {
-        cmd += " ";
-        cmd += platform::shell_quote(argv[i]);
+    if constexpr (platform::is_posix) {
+        std::vector<std::string> args{hostStr};
+        for (int i = 1; i < argc; ++i) args.emplace_back(argv[i]);
+        (void)platform::exec_program(args, platform::environment());
+        log::error("xlings: failed to exec '{}'", hostStr);
+        return 127;
+    } else {
+        std::string cmd = platform::shell_quote(hostStr);
+        for (int i = 1; i < argc; ++i) {
+            cmd += " ";
+            cmd += platform::shell_quote(argv[i]);
+        }
+        return platform::exec(cmd);
     }
-    return platform::exec(cmd);
-#endif
 }
 
 // ── `ldd` answers in the file's world, not this subos's ──────────────
@@ -1139,6 +1170,9 @@ int shim_dispatch(const std::string& program_name, int argc, char* argv[]) {
         // is the only layer that knows which subos this process resolved to
         // -- which is exactly why the answer was not in the database.
         alias_cmd = expand_subos_placeholder(alias_cmd, active_subos_dir);
+        const auto root_alias = root_compiler_alias(alias_cmd, *vdata, active_subos_dir);
+        if (!root_alias) { log::error("xlings: {}", root_alias.error()); return 1; }
+        alias_cmd = *root_alias;
 
         // Refuse rather than hand a vanishing reference to the shell.
         //
@@ -1181,6 +1215,31 @@ int shim_dispatch(const std::string& program_name, int argc, char* argv[]) {
         }
 
         platform::set_env_variable("XLINGS_SHIM_DEPTH", std::to_string(depth + 1));
+
+        // An alias that is plain words naming this payload's own program
+        // (gcc's `gcc --sysroot=<dir>`) runs directly: no /bin/sh between
+        // the shim and the compiler, so it dispatches in a root that has no
+        // shell (design part 2 §2.4 G2, SHIM-NO-SHELL). Anything the shell
+        // would interpret -- a variable, a quote, a pipe -- still goes
+        // through it, as before.
+        if constexpr (platform::is_posix) {
+            if (alias_cmd.find_first_of("$`'\"\\|;&<>()*?[]{}~#\n") == std::string::npos) {
+                std::vector<std::string> words;
+                std::istringstream in(alias_cmd);
+                for (std::string w; in >> w;) words.push_back(w);
+                if (!words.empty()) {
+                    auto exe = resolve_executable(words.front(), vdata->path, xlings_home);
+                    if (!exe.empty()) {
+                        std::vector<std::string> args{exe.string()};
+                        args.insert(args.end(), words.begin() + 1, words.end());
+                        for (int i = 1; i < argc; ++i) args.emplace_back(argv[i]);
+                        (void)platform::exec_program(args, platform::environment());
+                        log::error("xlings: failed to exec '{}'", exe.string());
+                        return 127;
+                    }
+                }
+            }
+        }
 
         // Build command: resolved alias + original args, run via platform::exec
         std::string cmd = alias_cmd;
@@ -1240,33 +1299,25 @@ int shim_dispatch(const std::string& program_name, int argc, char* argv[]) {
         return 1;
     }
 
-    // Build argv for execvp
-    auto exe_str = exe_path.string();
-    std::vector<const char*> new_argv;
-    new_argv.push_back(exe_str.c_str());
-    for (int i = 1; i < argc; ++i) {
-        new_argv.push_back(argv[i]);
-    }
-    new_argv.push_back(nullptr);
-
     // Increment shim depth before exec so child processes see it
     platform::set_env_variable("XLINGS_SHIM_DEPTH", std::to_string(depth + 1));
 
-#if defined(__linux__) || defined(__APPLE__)
-    execvp(exe_path.c_str(), const_cast<char* const*>(new_argv.data()));
-    // If execvp returns, it failed
-    log::error("xlings: failed to exec '{}'",
-               Config::display_path(exe_path));
-    return 1;
-#else
-    // Fallback for platforms without execvp
-    std::string cmd = platform::shell_quote(exe_path.string());
-    for (int i = 1; i < argc; ++i) {
-        cmd += " ";
-        cmd += platform::shell_quote(argv[i]);
+    if constexpr (platform::is_posix) {
+        std::vector<std::string> args{exe_path.string()};
+        for (int i = 1; i < argc; ++i) args.emplace_back(argv[i]);
+        (void)platform::exec_program(args, platform::environment());
+        // Returned: the exec failed.
+        log::error("xlings: failed to exec '{}'",
+                   Config::display_path(exe_path));
+        return 1;
+    } else {
+        std::string cmd = platform::shell_quote(exe_path.string());
+        for (int i = 1; i < argc; ++i) {
+            cmd += " ";
+            cmd += platform::shell_quote(argv[i]);
+        }
+        return platform::exec(cmd);
     }
-    return platform::exec(cmd);
-#endif
 }
 
 }
