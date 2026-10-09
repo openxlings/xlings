@@ -106,6 +106,7 @@ XTEST(SubosNewTemplate, AHostThatCannotMakeARootIsToldBeforeAnythingIsFetched,
       .area = "subos", .cost = tk::Cost::Medium,
       .covers = {"UX-PREFLIGHT"}, .requires_ = {"linux", "xlings-bin"}) {
     if constexpr (!tk::is_linux) GTEST_SKIP() << "a rootfs SubOS is a Linux root";
+    if (tk::current_user() == "root") GTEST_SKIP() << "root is not who the user-namespace restriction is for";
     auto home = fixture_home("subos-new-preflight");
     // The only bwrap this home can see fails the way Ubuntu's AppArmor
     // restriction makes it fail.
@@ -116,18 +117,19 @@ XTEST(SubosNewTemplate, AHostThatCannotMakeARootIsToldBeforeAnythingIsFetched,
     auto created = home.xlings({"subos", "new", "box", "--from", "fixture:t-top@1.0.0"},
                                {{"XLINGS_TOOLS_SEARCH", "home"}}, std::chrono::seconds(90));
     ASSERT_FALSE(created.timed_out) << created.transcript();
-    EXPECT_NE(created.exit_code, 0) << created.transcript();
-    EXPECT_FALSE(fs::exists(home.dir() / "data/xpkgs/fixture-x-hello"))
-        << "the declared packages were fetched for a root this host cannot run\n" << created.transcript();
     std::ifstream sysctl("/proc/sys/kernel/apparmor_restrict_unprivileged_userns");
     std::string restricted;
     std::getline(sysctl, restricted);
     if (restricted == "1") {
+        EXPECT_FALSE(fs::exists(home.dir() / "data/xpkgs/fixture-x-hello"))
+            << "the declared packages were fetched for a root this host cannot run\n" << created.transcript();
         EXPECT_EQ(created.exit_code, 2) << "a question nobody can answer: exit 2\n" << created.transcript();
         EXPECT_NE(created.transcript().find("one-time setup"), std::string::npos) << created.transcript();
         EXPECT_NE(created.transcript().find("-y"), std::string::npos) << "the answer, spelled\n" << created.transcript();
     } else {
-        EXPECT_NE(created.transcript().find("setting up uid map"), std::string::npos)
+        // Nothing the setup lifts: said before the download, and the root is
+        // still made (an export does not need to enter it).
+        EXPECT_NE(created.transcript().find("cannot enter a root yet"), std::string::npos)
             << "the cause, first\n" << created.transcript();
     }
 }

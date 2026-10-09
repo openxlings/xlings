@@ -1309,31 +1309,28 @@ int doctor_isolation(bool fix, bool yes, bool json, EventStream& stream) {
 
 int prepare_root_host(bool yes, EventStream& stream) {
     if constexpr (!platform::is_linux) return 0;   // a root elsewhere is refused where it is made
+    // root is not who the restriction is for (unprivileged user namespaces).
+    if (platform::user_ids().euid == 0) return 0;
     const auto home = subos::home_view();
     const auto ports = subos::make_ports(stream);
-    auto found = caps::locate_bwrap(home, ports);
-    if (found && found->usable) return 0;
+    auto candidates = caps::bwrap_candidates(home, ports);
+    if (std::ranges::any_of(candidates, [](const caps::Backend& b) { return b.usable; })) return 0;
     std::ifstream sysctl("/proc/sys/kernel/apparmor_restrict_unprivileged_userns");
     std::string restricted;
     std::getline(sysctl, restricted);
-    if (restricted != "1") {
-        // Not the restriction the repair lifts: say what is in the way.
-        stream.emit(ErrorEvent{ .code = ErrorCode::InvalidInput,
-            .message = found ? classify_bwrap_probe_error_(found->probe_output, found->bin)
-                             : std::string("a root needs bwrap, and this host has none"),
-            .recoverable = true,
-            .hint = found ? "nothing was downloaded; see `xlings self doctor --isolation`"
-                          : "xlings install bwrap" });
-        return 1;
+    if (candidates.empty() || restricted != "1") {
+        // Nothing the one-time setup changes: the root is still worth making
+        // (an export, an image for another machine) -- said now, not after
+        // the download, and entering it will say the same.
+        log::warn("this host cannot enter a root yet: {}",
+                  candidates.empty() ? std::string("there is no bwrap (xlings install bwrap)")
+                                     : classify_bwrap_probe_error_(candidates.front().probe_output,
+                                                                   candidates.front().bin));
+        return 0;
     }
-    // The restriction most desktops ship (Ubuntu 23.10+). It is lifted once,
-    // for this machine, by one narrow profile -- before anything is fetched.
-    auto candidates = caps::bwrap_candidates(home, ports, /*fresh=*/true);
-    if (std::ranges::none_of(candidates, [](const caps::Backend& b) { return b.source != "root-owned"; })) {
-        const std::vector<std::string> bwrap{"bwrap"};
-        if (xim::cmd_install_step(bwrap, "", stream, /*plumbing=*/true) != 0) return 1;
-        candidates = caps::bwrap_candidates(home, ports, /*fresh=*/true);
-    }
+    // The restriction most desktops ship (Ubuntu 23.10+), on a bwrap that is
+    // here: lifted once, for this machine, by one narrow profile -- before
+    // anything is fetched.
     log::println("this machine needs a one-time setup before it can run a root:");
     log::println("  AppArmor keeps programs without a profile from making the sandbox a root runs in.");
     log::println("  The setup installs a root-owned bwrap and one AppArmor profile that allows it");
