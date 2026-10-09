@@ -21,8 +21,10 @@ std::string bytes(const fs::path& file, std::size_t offset, std::size_t n) {
 }
 }  // namespace
 
+// Images are made on Linux (`subos export` refuses elsewhere); on Windows
+// libarchive's ISO writer looks the boot file up by a native path.
 XTEST(ArchiveFormats, ACdImageCarriesAnElToritoRecordForItsBootFile,
-      .area = "luban", .covers = {"LUBAN-ISO"}) {
+      .area = "luban", .covers = {"LUBAN-ISO"}, .requires_ = {"linux"}) {
     auto home = tk::Home::isolated("iso-write");
     auto tree = home.root() / "tree";
     if (const char* from = std::getenv("XTEST_ISO_FROM"); from && *from) tree = from;   // a real one, by hand
