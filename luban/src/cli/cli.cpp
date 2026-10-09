@@ -553,6 +553,58 @@ int write_cmd_(std::span<const std::string> rest, bool json, bool agent, bool ye
                                          "luban write: a boot drive");
 }
 
+// One connection of a private machine to its proxy: qemu runs this for each
+// connection the guest makes to 10.0.2.100:1080 (guestfwd ...-cmd:), with the
+// connection on stdin/stdout; it relays to the proxy and back. A proxy that
+// is down refuses that connection -- the machine has no other way out.
+int pipe_(const std::string& host, const std::string& port_text) {
+    namespace net = xlings::platform::network;
+    std::uint16_t port = 0;
+    std::from_chars(port_text.data(), port_text.data() + port_text.size(), port);
+    auto addresses = net::resolve_proxy(host, port);
+    if (!addresses || addresses->empty()) return 1;
+    auto connecting = net::connect_to(addresses->front());
+    if (!connecting) return 1;
+    const int proxy = connecting->fd;
+    for (int i = 0; !connecting->ready; ++i) {
+        auto done = net::connected(proxy);
+        if (!done || (*done && !**done) || i > 5000) return 1;
+        if (*done) break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    auto send_all = [](int fd, std::string_view bytes) {
+        while (!bytes.empty()) {
+            auto n = net::send(fd, bytes);
+            if (!n) return false;
+            if (!*n) { std::this_thread::sleep_for(std::chrono::milliseconds(1)); continue; }
+            bytes.remove_prefix(**n);
+        }
+        return true;
+    };
+    std::array<char, 65536> buffer{};
+    bool in_open = true;
+    for (;;) {
+        bool moved = false;
+        if (in_open) {
+            auto r = net::receive(0, buffer);
+            if (!r) return 0;
+            if (*r) {
+                if (**r == 0) { in_open = false; net::shutdown_write(proxy); }
+                else if (!send_all(proxy, std::string_view(buffer.data(), **r))) return 0;
+                moved = true;
+            }
+        }
+        auto r = net::receive(proxy, buffer);
+        if (!r) return 0;
+        if (*r) {
+            if (**r == 0) return 0;
+            if (!send_all(1, std::string_view(buffer.data(), **r))) return 0;
+            moved = true;
+        }
+        if (!moved) std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+}
+
 int try_cmd_(std::span<const std::string> rest, bool json) {
     const auto pos = positionals_(rest, {"--proxy", "--memory"});
     if (pos.size() != 1) return usage("`luban try <environment or image>`", json);
@@ -586,7 +638,12 @@ int try_cmd_(std::span<const std::string> rest, bool json) {
     if (auto proxy = option_(rest, "--proxy")) {
         const auto at = proxy->find("://");
         const auto endpoint = at == std::string::npos ? *proxy : proxy->substr(at + 3);
-        q.insert(q.end(), {"-nic", std::format("user,restrict=on,guestfwd=tcp:10.0.2.100:1080-tcp:{}", endpoint)});
+        const auto colon = endpoint.rfind(':');
+        if (colon == std::string::npos) return usage("--proxy socks5h://HOST:PORT", json);
+        const auto self = xlings::platform::get_executable_path().string();
+        if (self.find(',') != std::string::npos) return usage("luban's own path has a comma; qemu cannot run it", json);
+        q.insert(q.end(), {"-nic", std::format("user,restrict=on,guestfwd=tcp:10.0.2.100:1080-cmd:{} __pipe {} {}", self,
+                                               endpoint.substr(0, colon), endpoint.substr(colon + 1))});
         std::println(std::cerr, "luban: its only network is the proxy, at socks5h://10.0.2.100:1080 inside");
     } else {
         q.insert(q.end(), {"-nic", "user"});
@@ -667,6 +724,8 @@ int run(int argc, char* argv[]) {
     const auto& cmd = rest.front();
     // Internal: the raw copy, as `luban write` runs it with administrator rights.
     if (cmd == "__write" && rest.size() == 3) return raw_write_(rest[1], rest[2]);
+    // Internal: a private machine's connection to its proxy (`luban try --proxy`).
+    if (cmd == "__pipe" && rest.size() == 3) return pipe_(rest[1], rest[2]);
     if (cmd == "--version" || cmd == "-V") {
         std::println("luban {}", kVersion);
         return 0;

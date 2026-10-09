@@ -746,7 +746,7 @@ jobs:
       - name: Lane capabilities (bwrap, qemu, kvm)
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq bubblewrap qemu-system-x86 e2fsprogs
+          sudo apt-get install -y -qq bubblewrap qemu-system-x86 e2fsprogs ovmf xorriso fdisk build-essential
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
           # KVM when the runner has it: a boot in seconds instead of a minute.
           if [[ -e /dev/kvm ]]; then sudo chmod 666 /dev/kvm; fi

@@ -45,12 +45,24 @@ grep -q "subos created: t" "$RUNTIME_DIR/new.log" || fail "no creation report: $
 
 OVMF=""
 for f in /usr/share/ovmf/OVMF.fd /usr/share/qemu/OVMF.fd; do [[ -f "$f" ]] && { OVMF="$f"; break; }; done
+# Runs a command (its own session) until its output shows the console
+# prompt -- a booted system waits there forever -- then stops all of it.
+until_console() {   # $1 log, then the command
+  local log="$1"; shift
+  setsid "$@" > "$log" 2>&1 < /dev/null &
+  local pid=$! t=0
+  until tr -d '\r' < "$log" | grep -aq "Please press Enter to activate this console"; do
+    sleep 2; t=$((t + 2))
+    kill -0 "$pid" 2>/dev/null && (( t < 600 )) || break
+  done
+  kill -- "-$pid" 2>/dev/null || true
+  wait "$pid" 2>/dev/null || true
+}
 boot() {   # $1 log name, then qemu's media arguments
   local name="$1"; shift
   local accel=()
   [[ -w /dev/kvm ]] && accel=(-enable-kvm -cpu host)
-  timeout 300 qemu-system-x86_64 "${accel[@]}" -m 2048 -smp 2 -nographic -no-reboot -nic none "$@" \
-    > "$RUNTIME_DIR/$name.log" 2>&1 || true
+  until_console "$RUNTIME_DIR/$name.log" qemu-system-x86_64 "${accel[@]}" -m 2048 -smp 2 -nographic -no-reboot -nic none "$@"
   tr -d '\r' < "$RUNTIME_DIR/$name.log" | grep -aq "luban-init: booting 'default'" \
     || { tr -d '\r' < "$RUNTIME_DIR/$name.log" | tail -25; fail "$name: did not reach stage-0"; }
   tr -d '\r' < "$RUNTIME_DIR/$name.log" | grep -aq "Please press Enter to activate this console" \
@@ -72,10 +84,29 @@ fi
 boot drive-bios -drive "file=$RUNTIME_DIR/t.img,format=raw,if=virtio"
 if [[ -n "$OVMF" ]]; then boot drive-uefi -bios "$OVMF" -drive "file=$RUNTIME_DIR/t.img,format=raw,if=virtio"; fi
 
-log "luban try t.iso --proxy: the proxy is its only network"
-set +e
-out="$(timeout 120 env XLINGS_HOME="$H" "$H/bin/luban" try "$RUNTIME_DIR/t.iso" --proxy socks5h://127.0.0.1:9 --memory 2048 </dev/null 2>&1)"
-set -e
+log "luban __pipe: a private machine's connection reaches its proxy, both ways"
+relayed="$(python3 - "$H/bin/luban" <<'PY'
+import socket, subprocess, sys, threading
+srv = socket.socket(); srv.bind(("127.0.0.1", 0)); srv.listen(1)
+def echo():
+    c, _ = srv.accept()
+    while (d := c.recv(4096)): c.sendall(d.upper())
+    c.close()
+threading.Thread(target=echo, daemon=True).start()
+a, b = socket.socketpair()   # what qemu's guestfwd cmd: hands over
+p = subprocess.Popen([sys.argv[1], "__pipe", "127.0.0.1", str(srv.getsockname()[1])], stdin=b, stdout=b)
+b.close(); a.sendall(b"through the proxy"); a.shutdown(socket.SHUT_WR); a.settimeout(10)
+out = b""
+while (d := a.recv(4096)): out += d
+p.wait(timeout=10); print(out.decode(), p.returncode)
+PY
+)"
+[[ "$relayed" == "THROUGH THE PROXY 0" ]] || fail "the relay: '$relayed'"
+
+log "luban try t.iso --proxy: the proxy is its only network (and it boots with the proxy down)"
+until_console "$RUNTIME_DIR/try.log" env XLINGS_HOME="$H" DISPLAY= WAYLAND_DISPLAY= "$H/bin/luban" try "$RUNTIME_DIR/t.iso" \
+  --proxy socks5h://127.0.0.1:9 --memory 2048
+out="$(tr -d '\r' < "$RUNTIME_DIR/try.log")"
 grep -q "its only network is the proxy" <<<"$out" || fail "try --proxy: $(tail -5 <<<"$out")"
-grep -aq "luban-init: booting" <<<"$(tr -d '\r' <<<"$out")" || fail "try: did not boot: $(tail -10 <<<"$out")"
+grep -aq "luban-init: booting" <<<"$out" || fail "try: did not boot: $(tail -10 <<<"$out")"
 log "PASS: ISO and drive boot (BIOS$( [[ -n "$OVMF" ]] && echo ", UEFI")); luban try --proxy"
