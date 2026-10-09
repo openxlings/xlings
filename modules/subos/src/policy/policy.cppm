@@ -49,7 +49,7 @@ inline constexpr std::array<std::string_view, 7> kGrants{
     "display", "audio", "camera", "gpu", "ssh-agent", "dbus", "host-loopback"};
 
 // First client that implements this policy schema; new files carry this floor.
-inline constexpr std::string_view kPolicyMinClient = "2026.10.9.1";
+inline constexpr std::string_view kPolicyMinClient = "2026.10.10.1";
 
 struct Policy {
     Preset preset { Preset::Legacy };

@@ -37,7 +37,7 @@ std::filesystem::path xlings_path();
 
 // luban is released with the xlings it drives: the same date version
 // (YYYY.M.D.N). tests/unit/test_luban_cli.cpp holds the two equal.
-inline constexpr std::string_view kVersion = "2026.10.9.2";
+inline constexpr std::string_view kVersion = "2026.10.10.1";
 
 // A drive `luban write` may write (Linux): what it is, read from sysfs and the
 // mount table (parameters, so a test can hand it a made-up machine).

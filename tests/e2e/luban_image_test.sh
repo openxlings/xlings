@@ -42,6 +42,10 @@ until L new t tiny >"$RUNTIME_DIR/new.log" 2>&1; do
   X subos remove -y t >/dev/null 2>&1 || true; sleep 5
 done
 grep -q "subos created: t" "$RUNTIME_DIR/new.log" || fail "no creation report: $(tail -5 "$RUNTIME_DIR/new.log")"
+# A machine image boots a kernel; the edition does not carry one (Luban
+# design §A6) -- installed into the root, as a user would.
+retry X install -y --subos t xim:linux-kernel >"$RUNTIME_DIR/kernel.log" 2>&1 \
+  || { tail -20 "$RUNTIME_DIR/kernel.log"; fail "install the kernel into the root"; }
 
 OVMF=""
 for f in /usr/share/ovmf/OVMF.fd /usr/share/qemu/OVMF.fd; do [[ -f "$f" ]] && { OVMF="$f"; break; }; done

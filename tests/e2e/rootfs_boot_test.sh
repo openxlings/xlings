@@ -31,6 +31,10 @@ trap 'docker rmi -f "$IMG" >/dev/null 2>&1 || true' EXIT
 rootfs_home "$RUNTIME_DIR/home"
 H="$RH"
 rootfs_new tiny subos:luban-tiny "$RUNTIME_DIR/new.log" || fail "subos new --from subos:luban-tiny"
+# The kernel is the machine's, not the edition's (Luban design §A6): installed
+# into the root to boot it (an edition from before that already has it).
+retry X install -y --subos tiny xim:linux-kernel >"$RUNTIME_DIR/kernel.log" 2>&1 \
+  || { tail -20 "$RUNTIME_DIR/kernel.log"; fail "install the kernel into the root"; }
 S="$H/subos/tiny"
 KERNEL="$(ls "$S"/root/usr/lib/modules/*/vmlinuz | head -1)"
 [[ -f "$KERNEL" ]] || fail "the root has no kernel"
