@@ -22,6 +22,7 @@
 | R8 | 容器里创建的文件归 root，清理 trap 失败使成功的构建报失败 | res-build CI | 容器结束前 chown |
 | R9 | 本机安装写出的 `.xlings-index-cache.json` 被提交 | 提交前检查 | 恢复，原样保留 |
 | R10 | 启动层是普通 `package`，规范要求 config 注册包名 | 索引静态测试 `test_spec_d1` | 加上 config / uninstall |
+| R12 | stage-0 预算的间歇失败（1.6 s / 2.2 s / 2.05 s） | 分段计时（X2）后读到：只有 `--now` 交接那一次慢，慢在 library_cache（1.44 s）和 record（0.56 s）两次持久写入，冷启动是 25 ms 和 2 ms | 两次写入在交接时把仍在运行的上一个系统的脏页一起刷出，这个开销不属于 stage-0。200 ms 预算只约束开机；`--now` 的耗时照常报告 |
 | R11 | hook 中 `os.arch()` 未绑定，按架构选 console 不可靠 | 读 glibc recipe 的注释 | virt 写两个 console，内核跳过不存在的 |
 
 ## 2. 分角度检查
