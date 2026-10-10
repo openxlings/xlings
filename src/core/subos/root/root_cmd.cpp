@@ -238,6 +238,10 @@ struct Declared {
     // The kernel a machine of it boots, and the least one its userland
     // needs (§A6) -- hints for an image, never installed into the root.
     nlohmann::json boot = nlohmann::json::object();
+    // The edition layer (Luban design part 2 §3.2): the templates below the
+    // top one, as their `from` named them, and the policy the chain declares.
+    std::vector<std::string> chain;
+    std::string policy;
 };
 
 // An `abi` as an object, or the triple it abbreviates ("x86_64-linux-gnu").
@@ -294,9 +298,12 @@ std::optional<Declared> declared_by_template_(const fs::path& instance, EventStr
             if (!fs::exists(fs::symlink_status(at, sec)))
                 fs::copy(it->path(), at, fs::copy_options::copy_symlinks, sec);
         }
+        d.chain.push_back(from);
         chain.push_back(read_json_(dir / ".xlings.json"));
         from = chain.back().value("from", std::string());
     }
+    for (const auto& m : chain)   // the top-most declaration wins
+        if (auto p = m.find("policy"); p != m.end() && p->is_string()) { d.policy = p->get<std::string>(); break; }
     std::map<std::string, std::string> by_key;
     std::vector<std::string> order;
     for (auto it = chain.rbegin(); it != chain.rend(); ++it) {   // bottom first
@@ -472,6 +479,39 @@ int declare_root_at_creation_(const std::string& name, bool rootfs, const std::s
             for (auto& p : declared->packages) list += " " + p;
             log::info("'{}' is made but not complete: `xlings install -y --subos {}{}` finishes it, "
                       "`xlings subos remove {}` takes it away", name, name, list, name);
+            return 1;
+        }
+    }
+    if (declared) {
+        // What the edition brought, as it resolved (an unversioned package is
+        // the version installed now): what `subos upgrade` diffs against, and
+        // what tells the edition's packages from the user's.
+        auto top = resolve_base_package_(from, stream);
+        std::string ref = from;
+        if (!top.empty() && from.find('@') == std::string::npos) ref += "@" + top.filename().string();
+        // `configured` names each package this scope installed as
+        // "<ns>:<name>@<version>" -- whether or not it put a program on PATH.
+        const auto configured = read_json_(HomeView{home}.instance(name) / ".xlings.json")
+                                    .value("configured", nlohmann::json::object());
+        nlohmann::json packages = nlohmann::json::object();
+        for (const auto& spec : declared->packages) {
+            const auto key = spec.substr(0, spec.find('@'));
+            const bool qualified = key.find(':') != std::string::npos;
+            nlohmann::json version(nullptr);
+            for (auto it = configured.begin(); it != configured.end(); ++it) {
+                const auto at = it.key().rfind('@');
+                if (at == std::string::npos) continue;
+                const auto pkg = it.key().substr(0, at);
+                if (pkg == key || (!qualified && pkg.ends_with(":" + key))) version = it.key().substr(at + 1);
+            }
+            packages[key] = version;
+        }
+        const auto file = HomeView{home}.instance_file(name);
+        auto j = read_json_(file);
+        j["edition"] = {{"ref", ref}, {"chain", declared->chain}, {"packages", packages}};
+        if (!declared->policy.empty()) j["edition"]["policy"] = declared->policy;
+        if (auto written = write_json_(file, j); !written) {
+            error_(stream, written.error(), {}, ErrorCode::Internal);
             return 1;
         }
     }

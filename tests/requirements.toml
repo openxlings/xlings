@@ -39,6 +39,10 @@ status = "required"
 text = "an edition whose manifest names a min_client newer than this xlings is refused before anything is fetched, with xlings self update"
 status = "required"
 
+[LUBAN-EDITION-RECORD]
+text = "a root made from an edition records its edition layer in instance.json: the resolved ref, the from chain, each declared package as installed, the declared policy"
+status = "required"
+
 [LUBAN-CLI-LEVELS]
 text = "a command tree is declared once; help shows the common commands and says how to see more, then everything"
 status = "required"

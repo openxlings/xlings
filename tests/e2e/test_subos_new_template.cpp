@@ -101,6 +101,10 @@ XTEST(SubosNewTemplate, AtATerminalTheChainAndItsPackagesAreOnePlanAndNothingHan
     EXPECT_EQ(count(created.out, "still resolves to"), 0u) << created.out;
     EXPECT_EQ(count(created.out, "subos created"), 1u) << created.out;
     EXPECT_TRUE(fs::exists(home.dir() / "data/xpkgs/fixture-x-hello/1.0.0/bin/hello"));
+    const auto made = Json::parse(tk::read_file(home.dir() / "config/subos/box/instance.json"));
+    EXPECT_EQ(made["edition"]["ref"], "fixture:t-top@1.0.0") << made.dump();
+    EXPECT_EQ(made["edition"]["chain"], Json::array({"fixture:t-base@1.0.0"})) << made.dump();
+    EXPECT_EQ(made["edition"]["packages"]["fixture:hello"], "1.0.0") << made.dump();
 }
 
 XTEST(SubosNewTemplate, AHostThatCannotMakeARootIsToldBeforeAnythingIsFetched,
@@ -136,7 +140,7 @@ XTEST(SubosNewTemplate, AHostThatCannotMakeARootIsToldBeforeAnythingIsFetched,
 }
 
 XTEST(SubosNewTemplate, AnEditionDeclaresItsAbiAndOneThisMachineCannotRunIsRefusedFirst,
-      .area = "luban", .cost = tk::Cost::Medium, .covers = {"LUBAN-ABI", "LUBAN-EDITION-MIN-CLIENT"}, .requires_ = {"linux", "xlings-bin"}) {
+      .area = "luban", .cost = tk::Cost::Medium, .covers = {"LUBAN-ABI", "LUBAN-EDITION-MIN-CLIENT", "LUBAN-EDITION-RECORD"}, .requires_ = {"linux", "xlings-bin"}) {
     if constexpr (!tk::is_linux) GTEST_SKIP() << "a rootfs SubOS is a Linux root";
     auto home = fixture_home("subos-new-abi");
     const auto bwrap = home.dir() / "data/xpkgs/xim-x-bwrap/0.11.2/bin/bwrap";
@@ -177,6 +181,10 @@ XTEST(SubosNewTemplate, AnEditionDeclaresItsAbiAndOneThisMachineCannotRunIsRefus
     const auto instance = Json::parse(tk::read_file(home.dir() / "config/subos/c/instance.json"));
     EXPECT_EQ(instance["root_abi"]["arch"], host);
     EXPECT_EQ(instance["root_abi"]["libc"], "gnu");
+    // The edition layer, as it resolved: what an upgrade diffs against.
+    EXPECT_EQ(instance["edition"]["ref"], "fixture:abi-here@1.0.0") << instance.dump();
+    EXPECT_TRUE(instance["edition"]["chain"].empty()) << instance.dump();
+    EXPECT_EQ(instance["edition"]["packages"]["fixture:hello"], "1.0.0") << instance.dump();
     EXPECT_EQ(instance["boot"]["kernel"], "xim:linux-kernel-virt") << "a hint for an image, recorded";
     EXPECT_FALSE(fs::exists(home.dir() / "data/xpkgs/xim-x-linux-kernel-virt")) << "never installed into the root";
 }
