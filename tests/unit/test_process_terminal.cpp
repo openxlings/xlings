@@ -65,3 +65,44 @@ XTEST(ProcessTerminal, AChildInItsOwnGroupMayUseTheTerminalAndTheTerminalComesBa
         << "99: the terminal did not come back; 100+N: the child exited N (124: stopped until the deadline)";
 #endif
 }
+
+XTEST(ProcessTerminal, AJoinedCommandsTerminalFollowsTheCallersWindowSize,
+      .area = "subos", .covers = {"SES-JOIN-TERMINAL"}, .requires_ = {"posix"}) {
+#if defined(_WIN32)
+    GTEST_SKIP() << "a POSIX terminal's window size";
+#else
+    // The caller's terminal (its master stands for the terminal emulator) and
+    // the joined command's, made by session-init; the relay between them.
+    auto open_pair = [](int& master, int& slave) {
+        master = ::posix_openpt(O_RDWR | O_NOCTTY);
+        ASSERT_GE(master, 0);
+        ASSERT_EQ(::grantpt(master), 0);
+        ASSERT_EQ(::unlockpt(master), 0);
+        slave = ::open(::ptsname(master), O_RDWR | O_NOCTTY);
+        ASSERT_GE(slave, 0);
+    };
+    int caller_master = -1, caller = -1;
+    open_pair(caller_master, caller);
+    struct winsize start{.ws_row = 24, .ws_col = 80, .ws_xpixel = 0, .ws_ypixel = 0};
+    ASSERT_EQ(::ioctl(caller_master, TIOCSWINSZ, &start), 0);
+    auto command = xlings::platform::open_pty(caller);
+    ASSERT_TRUE(command);
+    std::thread relay([m = (*command)[0], caller] { xlings::platform::relay_terminal(m, caller, caller); });
+    auto size_of = [](int fd) { struct winsize w{}; ::ioctl(fd, TIOCGWINSZ, &w); return std::pair{w.ws_row, w.ws_col}; };
+    EXPECT_EQ(size_of((*command)[1]), (std::pair<unsigned short, unsigned short>{24, 80})) << "made at the caller's size";
+    // The person resizes the window: the command's terminal follows, soon.
+    struct winsize wide{.ws_row = 50, .ws_col = 200, .ws_xpixel = 0, .ws_ypixel = 0};
+    ASSERT_EQ(::ioctl(caller_master, TIOCSWINSZ, &wide), 0);
+    bool followed = false;
+    for (int i = 0; i < 50 && !followed; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        followed = size_of((*command)[1]) == std::pair<unsigned short, unsigned short>{50, 200};
+    }
+    EXPECT_TRUE(followed) << "the joined command's terminal did not follow the resize within 500 ms";
+    ::close((*command)[1]);   // the command ends: the relay ends
+    relay.join();
+    ::close((*command)[0]);
+    ::close(caller);
+    ::close(caller_master);
+#endif
+}

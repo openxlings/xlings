@@ -69,7 +69,8 @@ Policy legacy() {
     Policy p;
     p.preset = Preset::Legacy;
     p.env_pass.assign(kDevEnvPass.begin(), kDevEnvPass.end());
-    for (auto g : kGrants) p.grants_allowed.insert(std::string(g));
+    for (auto g : kGrants)
+        if (std::ranges::find(kExplicitGrants, g) == kExplicitGrants.end()) p.grants_allowed.insert(std::string(g));
     return p;
 }
 

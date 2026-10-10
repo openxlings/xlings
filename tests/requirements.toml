@@ -398,6 +398,14 @@ status = "required"
 text = "entering forks and supervises instead of exec-replacing xlings"
 status = "required"
 
+[SES-JOIN-TERMINAL]
+text = "an interactive command that joins a session runs on a terminal of its own that follows the caller's window size (within 100 ms), its signals and its bytes"
+status = "required"
+
+[SUBOS-CLIPBOARD]
+text = "a SubOS reaches the host's clipboard through the broker under grants of their own (clipboard: copy, clipboard-paste: read), never implied and never the whole display; without the grant copy goes through the terminal (OSC 52) and says how to get the host's; status says which"
+status = "required"
+
 [SES-JOIN]
 text = "use / exec join a running session of the same instance"
 status = "required"

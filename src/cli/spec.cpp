@@ -150,6 +150,10 @@ const CommandSpec& root() {
                     {{"--json", "Machine-readable output"}}, {}},
                 {"use", "Pin an index source to a snapshot", {}, {{"name", "Index source", true}, {"version", "Snapshot version, or 'latest'", true}}, {}, {}},
             }},
+            {"clipboard", "The clipboard, without the display (in a SubOS: the clipboard grants)", {}, {}, {}, {
+                {"copy", "Copy stdin to the clipboard (else through the terminal, OSC 52)", {}, {}, {}, {}},
+                {"paste", "Print the clipboard", {}, {}, {}, {}},
+            }},
             {"agent", "Agent integration", {}, {}, {}, {
                 {"skills", "List or show built-in skills", {}, {{"name", "Optional skill name", false}}, {}, {}},
             }},

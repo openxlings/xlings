@@ -439,6 +439,22 @@ I1..I8 ──► 索引验收（用已发布的 xlings 和本 PR）全绿 ──
 3. **libc=musl 被一律拒绝**（"the index publishes gnu ones today"）：tiny-musl 发布后不再成立。musl 可用，索引没有载荷的 libc 仍拒绝并点名。
 4. **`-y` 是全局选项**，在分发前被过滤；`subos upgrade` 改为接收记录下来的 `yesGiven`（第一版因此"给了 -y 仍询问"）。
 
+### 9.2b 交互式 join 与剪贴板（用户报告，2026-10-11）
+
+**报告**：fish 在 join 的环境里拿不到控制终端；嵌套 PTY 后窗口尺寸不同步；私有环境没有独立的剪贴板能力，只能开放整个 display。
+
+**确认**：
+- 报告者的 home 运行的是 **2026.10.9.2**，早于 join PTY 的修复。
+- **fish 拿不到控制终端：** 属实，是 xlings 侧的问题，已在 2026.10.10.2 修复：session-init 为交互式 join 打开自己的 PTY，并把它设为命令的控制终端；INT、TERM、HUP、QUIT 转发给命令；client 离开时命令随之结束。
+- **尺寸不同步：** 报告中的 `script` 是使用侧对旧版本的绕法。2026.10.10.2 的中继按轮询复制调用方终端的尺寸（不依赖 SIGWINCH 转发），但有两处不足：调用方输入结束后不再同步；最长延迟 250 ms。本轮改为始终同步、每 100 ms 检查，并加了单元测试（`ProcessTerminal.AJoinedCommandsTerminalFollowsTheCallersWindowSize`）。
+- **剪贴板：** 属实，是 SubOS 的能力缺口。本轮的修复：
+  - 新增两个授权：`clipboard`（复制到宿主）和 `clipboard-paste`（读取宿主）。
+  - 新增命令 `xlings clipboard copy|paste`：在宿主上使用 wl-copy / xclip / xsel / pbcopy / clip.exe；在 sandbox 里经 broker，由策略决定。
+  - 没有授权时，复制经终端（OSC 52）进行，并给出授权命令。
+  - `subos status` / `luban status` 列出当前的剪贴板方式。
+  - 这两个授权永远不会被预设隐含；持有其中之一的策略文件写入 `min_client` 2026.10.11.1。
+  - 需求项：SUBOS-CLIPBOARD、SES-JOIN-TERMINAL。
+
 ### 9.3 与本文的差异
 
 1. 新 edition、策略和启动层的版本是合入当天的 `2026.10.11.1`（D14），xlings 也随之是 2026.10.11.1：#945 里原先的 `2026.10.10.1` 从未合入索引 main（未发布），所以可以改；已发布的只有 tiny / core / desktop 的 `0.1.0`，golden 守住它们。

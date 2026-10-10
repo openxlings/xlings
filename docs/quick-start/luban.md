@@ -58,6 +58,13 @@ luban status agent
 - 一个固定的、中性的身份：主机名和 machine-id 在创建时随机一次，之后不变；时区默认跟随代理出口（经代理查询，查不到就用 UTC，绝不用宿主的）。
 - 共享内核时无法隐藏的（内核版本、CPU 型号、绑定进来的宿主路径），`luban status` 如实列出。需要完全隔离时：`luban try agent --proxy socks5h://127.0.0.1:7897`——同一个环境运行在自己的内核上，网络只有代理。
 - 只需要把 agent 和宿主隔开、不需要隐藏身份时：`luban config agent policy xim:agent-confined`。
+- 剪贴板不需要开放整个显示：
+  - 复制：`xlings clipboard copy`（读 stdin）。没有授权时经终端（OSC 52）复制，在你所坐的那台机器的剪贴板上生效。
+  - 粘贴：终端的粘贴（bracketed paste）。
+  - 要读写宿主的剪贴板：`luban config agent allow clipboard`（复制到宿主）、`allow clipboard-paste`（读取宿主），二者分开授权，都经 broker 执行。
+  - `luban status agent` 会列出当前的方式。
+  - TUI 的复制可以设成 OSC 52（例如 nvim 的 `vim.g.clipboard = 'osc52'`，tmux 的 `set-clipboard on`）或 `xlings clipboard copy`。
+- 从第二个终端进入正在运行的环境（`luban enter` / `luban run`）时，命令有自己的终端：job control、Ctrl-C 等信号，以及窗口尺寸都会跟随（100 ms 内）。
 - agent（claude）在 edition 里不锁版本：创建时装当时的最新版并记录下来，`luban upgrade agent` 更新它。升级只会收紧隔离：新版本的策略若放宽了任何一项，升级保留旧策略并列出放宽的项，切换要显式 `luban config agent policy ...`。
 
 ## 4. 打造自己的发行版

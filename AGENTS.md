@@ -222,6 +222,13 @@ guide is `docs/quick-start/luban.md`. What to keep in mind near it:
   policy is applied only when `policy::loosened` is empty -- an upgrade never
   loosens isolation. A template ref without a version resolves to the
   index's `latest`, never to whichever version happens to be installed.
+* **The clipboard is not the display.** `clipboard` (copy into the host's)
+  and `clipboard-paste` (read it) are grants of their own, decided by the
+  broker for `xlings clipboard copy|paste`, never in a preset's
+  `grants_allowed` (an older client would refuse the file); a policy holding
+  one records `min_client` 2026.10.11.1. Without them copy goes through the
+  terminal (OSC 52). A joined interactive command's terminal follows the
+  caller's window size in the relay (`relay_terminal`, every 100 ms).
 * **A neutral identity is a persona** (`xlings.subos.persona`): the same
   host name and machine-id on every entry, made once per instance, never
   copied by a fork; its zone is UTC, a chosen one, or the proxy's exit asked

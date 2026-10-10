@@ -45,6 +45,7 @@ import xlings.cli.completion;
 import xlings.core.xim.index_cmd;
 import xlings.core.xim.repo;
 import xlings.core.palette;
+import xlings.core.clipboard;
 
 namespace xlings::cli {
 
@@ -1830,6 +1831,15 @@ int dispatch_(int argc, char* argv[]) {
         // plain text nor names a single skill. The whole point of this command
         // family is that a machine reads its output.
         if (cmd == "agent") return agent::run(fargc, fargv.data());
+        const bool clipboardHelp = cmd == "clipboard" && std::ranges::any_of(
+            std::span(fargv.data() + 1, fargc - 1), [](const char* a) {
+                return std::string_view(a) == "-h" || std::string_view(a) == "--help"; });
+        if (cmd == "clipboard" && !clipboardHelp) {
+            std::vector<std::string> args;
+            for (int i = 2; i < fargc; ++i) args.emplace_back(fargv[i]);
+            const bool brokered = !args.empty() && (args[0] == "copy" || args[0] == "paste");
+            if (!subos::broker::available() || !brokered) return clipboard::run(args);
+        }
 
         // Inside a SubOS sandbox the home is read-only (design §8): what would
         // change it goes to the broker, which decides with the instance's
@@ -1851,6 +1861,9 @@ int dispatch_(int argc, char* argv[]) {
                 });
                 return subos::broker::kExitPermission;
             }
+            // Copy without the grant still works, through the terminal.
+            if (cmd == "clipboard" && rest.size() > 1 && rest[1] == "copy" && !clipboardHelp)
+                return clipboard::copy_inside(rest, instance);
             if (cls.route == subos::broker::Route::Broker) return subos::broker::forward(rest);
         }
 

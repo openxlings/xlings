@@ -611,6 +611,16 @@ int run_status_(int argc, char* argv[], EventStream& stream,
         id["route"] = "a machine view runs it on a kernel of its own";
         out["identity"] = std::move(id);
     }
+    // The clipboard, said (it is the first thing a TUI misses in a private
+    // environment): the host's through the broker when granted, else only
+    // copying through the terminal (OSC 52); the whole display is never
+    // needed for it.
+    {
+        const bool display = pol.grants.contains("display");
+        out["clipboard"] = {{"copy", pol.grants.contains("clipboard") || display ? "host" : "terminal (OSC 52)"},
+                            {"paste", pol.grants.contains("clipboard-paste") || display ? "host" : "terminal (bracketed paste)"},
+                            {"grant", std::format("xlings subos config {} --allow clipboard[,clipboard-paste]", name)}};
+    }
     if (json) {
         std::println(std::cout, "{}", out.dump());
         return 0;
@@ -658,6 +668,12 @@ int run_status_(int argc, char* argv[], EventStream& stream,
         std::println(std::cout, "  identity   hostname={} tz={}", id.value("hostname", "(made on first entry)"), tz);
         std::println(std::cout, "  not hidden on a shared kernel: the kernel version, the CPU model, the host "
                                 "paths of what is bound in -- {}", id.value("route", ""));
+    }
+    {
+        const auto& cb = out["clipboard"];
+        std::println(std::cout, "  clipboard  copy: {}, paste: {}{}", cb.value("copy", ""), cb.value("paste", ""),
+                     cb.value("copy", "") == "host" && cb.value("paste", "") == "host" ? std::string{}
+                         : "  (xlings clipboard copy|paste; the host's: " + cb.value("grant", "") + ")");
     }
     if (out.contains("session"))
         std::println(std::cout, "  session    {} ({})", out["session"].value("id", ""),

@@ -264,6 +264,18 @@ Options: `--json` — Machine-readable output
 
 Pin an index source to a snapshot
 
+## `xlings clipboard`
+
+The clipboard, without the display (in a SubOS: the clipboard grants)
+
+## `xlings clipboard copy`
+
+Copy stdin to the clipboard (else through the terminal, OSC 52)
+
+## `xlings clipboard paste`
+
+Print the clipboard
+
 ## `xlings agent`
 
 Agent integration
