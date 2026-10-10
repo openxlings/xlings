@@ -11,6 +11,9 @@ if command -v unshare >/dev/null; then
     step "locked: no nested user namespaces" ok 'nested=no' -- X subos exec hmp --sandbox=locked --no-degrade -- \
         /bin/sh -c 'if unshare -U true 2>/dev/null; then echo nested=yes; else echo nested=no; fi'
 fi
-step "locked: the host's home is not there" ok 'hidden' -- X subos exec hmp --sandbox=locked --no-degrade -- \
-    /bin/sh -c "test -e '$HOME/.xlings/.xlings.json' && echo visible || echo hidden"
+echo secret > "$HOME/hm-secret"
+step "locked: the user's files are not there" ok 'hidden' -- X subos exec hmp --sandbox=locked --no-degrade -- \
+    /bin/sh -c "test -e '$HOME/hm-secret' && echo visible || echo hidden"
+step "dev: the user's files are not there either" ok 'hidden' -- X subos exec hmp --sandbox=dev -- \
+    /bin/sh -c "test -e '$HOME/hm-secret' && echo visible || echo hidden"
 done_

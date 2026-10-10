@@ -18,7 +18,7 @@ namespace rf = xlings::subos::rootfs;
 using Json = nlohmann::json;
 
 XTEST(RootStoreClosure, PrivateSkeletonExposesOnlyOptedInPayloadsAndMetadata, .area = "subos",
-      .covers = {"ROOT-STORE-CLOSURE"}) {
+      .covers = {"ROOT-STORE-CLOSURE", "LUBAN-TOOL-SHIPPED"}) {
     if constexpr (!tk::is_posix)
         GTEST_SKIP() << "root projection uses directory symlinks";
     auto home = tk::Home::isolated("root-store-closure");
@@ -36,6 +36,9 @@ XTEST(RootStoreClosure, PrivateSkeletonExposesOnlyOptedInPayloadsAndMetadata, .a
         {"hidden",
          {{"type", "program"}, {"versions", {{"fixture:2.0.0", {{"path", hidden.string()}}}}}}}};
     tk::write_file(fs::canonical(home.dir()) / ".xlings.json", Json{{"versions", versions}}.dump());
+    // The entry and luban beside it: a root's /usr/bin/luban links there.
+    tk::write_file(fs::canonical(home.dir()) / "bin/xlings", "entry");
+    tk::write_file(fs::canonical(home.dir()) / "bin/luban", "luban");
     tk::write_file(
         scope / ".xlings.json",
         Json{{"workspace",
@@ -59,6 +62,12 @@ XTEST(RootStoreClosure, PrivateSkeletonExposesOnlyOptedInPayloadsAndMetadata, .a
     }));
     EXPECT_FALSE(fs::exists((*prepared)->private_instance().parent_path().parent_path() /
                             "data/xpkgs/fixture-x-hidden/2.0.0"));
+    for (const auto* program : {"xlings", "luban"}) {
+        const auto at = fs::canonical(home.dir()) / "bin" / program;
+        EXPECT_TRUE(std::ranges::any_of(bindings, [&](const auto& binding) {
+            return binding.source == at && binding.destination == at;
+        })) << program << " is not in the root's view";
+    }
     const auto primary = std::ranges::find_if(bindings, [&](const auto& binding) {
         return binding.destination == fs::canonical(home.dir()) / ".xlings.json";
     });

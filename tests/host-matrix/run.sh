@@ -32,6 +32,9 @@ done
 mkdir -p "$evidence"; evidence="$(realpath "$evidence")"
 
 as_root() { if [[ $EUID -eq 0 ]]; then "$@"; else sudo "$@"; fi; }
+# From nowhere in particular: a directory with a .xlings.json (this checkout)
+# would make every command a project's.
+cd /
 userhome="/home/$user"
 work="$userhome/hm"
 as_user() {   # env assignments, then the command
