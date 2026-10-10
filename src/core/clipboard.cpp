@@ -49,6 +49,14 @@ std::optional<std::vector<std::string>> host_argv_(bool copy) {
     }
 }
 
+// copy reads what is piped to it; from a terminal it would wait for typing
+// (an agent never waits, and a person would only see it hang).
+bool stdin_is_a_terminal_() {
+    if (!platform::stdin_is_terminal()) return false;
+    std::println(std::cerr, "xlings: clipboard copy reads what is piped to it: echo text | xlings clipboard copy");
+    return true;
+}
+
 std::optional<std::string> read_stdin_() {
     std::string data;
     char buf[65536];
@@ -114,6 +122,7 @@ int run(std::span<const std::string> args) {
         return 2;
     }
     const bool copy = sub == "copy";
+    if (copy && stdin_is_a_terminal_()) return 2;
     if (auto argv = host_argv_(copy)) return platform::run_argv(*argv) == 0 ? 0 : 1;
     if (!copy) {
         std::println(std::cerr, "xlings: this machine has no clipboard to read (no display: wl-paste, xclip "
@@ -126,6 +135,7 @@ int run(std::span<const std::string> args) {
 }
 
 int copy_inside(std::span<const std::string> argv, std::string_view instance) {
+    if (stdin_is_a_terminal_()) return 2;
     auto data = read_stdin_();
     if (!data) { std::println(std::cerr, "xlings: more than {} MiB is not a clipboard", kLimit >> 20); return 1; }
     // The data as the broker's stdin: a file of this process's, gone once open.
