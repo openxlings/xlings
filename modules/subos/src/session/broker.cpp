@@ -72,9 +72,10 @@ Classified classify(std::span<const std::string> argv, std::string_view instance
         c.ops.push_back(op("instance_admin", "index"));
     } else if (cmd == "profile" && argv.size() > 1 && argv[1] != "list") {
         c.route = Route::Broker;
-    } else if (cmd == "clipboard" && argv.size() > 1 && (argv[1] == "copy" || argv[1] == "paste")) {
-        // The host's clipboard, and nothing else of the display: what the
-        // instance's policy grants (`--allow clipboard` / `clipboard-paste`).
+    } else if (cmd == "__clipboard" && argv.size() > 1 && (argv[1] == "copy" || argv[1] == "paste")) {
+        // The clipboard bridge (wl-copy & co. inside): the host's clipboard,
+        // and nothing else of the display, as the instance's policy grants
+        // (`--allow clipboard` / `clipboard-paste`).
         c.route = Route::Broker;
         c.ops.push_back(op("grant", argv[1] == "copy" ? "clipboard" : "clipboard-paste"));
     }

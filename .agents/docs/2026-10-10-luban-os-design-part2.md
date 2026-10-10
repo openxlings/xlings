@@ -444,13 +444,13 @@ I1..I8 ──► 索引验收（用已发布的 xlings 和本 PR）全绿 ──
 **报告**：fish 在 join 的环境里拿不到控制终端；嵌套 PTY 后窗口尺寸不同步；私有环境没有独立的剪贴板能力，只能开放整个 display。
 
 **确认**：
-- 报告者的 home 运行的是 **2026.10.9.2**，早于 join PTY 的修复。
+- 报告时所用的 xlings 是 **2026.10.9.2**，早于 join PTY 的修复。
 - **fish 拿不到控制终端：** 属实，是 xlings 侧的问题，已在 2026.10.10.2 修复：session-init 为交互式 join 打开自己的 PTY，并把它设为命令的控制终端；INT、TERM、HUP、QUIT 转发给命令；client 离开时命令随之结束。
 - **尺寸不同步：** 报告中的 `script` 是使用侧对旧版本的绕法。2026.10.10.2 的中继按轮询复制调用方终端的尺寸（不依赖 SIGWINCH 转发），但有两处不足：调用方输入结束后不再同步；最长延迟 250 ms。本轮改为始终同步、每 100 ms 检查，并加了单元测试（`ProcessTerminal.AJoinedCommandsTerminalFollowsTheCallersWindowSize`）。
 - **剪贴板：** 属实，是 SubOS 的能力缺口。本轮的修复：
   - 新增两个授权：`clipboard`（复制到宿主）和 `clipboard-paste`（读取宿主）。
-  - 新增命令 `xlings clipboard copy|paste`：在宿主上使用 wl-copy / xclip / xsel / pbcopy / clip.exe；在 sandbox 里经 broker，由策略决定。
-  - 没有授权时，复制经终端（OSC 52）进行，并给出授权命令。
+  - 不新增命令：能力先是配置，一级子命令最谨慎（AGENTS.md「The command tree is designed」）。授权后，sandbox 里 `PATH` 最前的 `/run/xlings/bin` 下有 `wl-copy`、`wl-paste`、`xclip`、`xsel`，它们是 session-init 创建的、指向 session 自己的 xlings 的链接；xlings 按程序名把文本交给 broker。broker 按授权在外面执行隐藏的 `__clipboard`，使用宿主的 wl-copy / xclip / xsel / pbcopy / clip.exe。
+  - 没有授权时不创建链接：程序经终端（OSC 52）复制；链接在授权被撤回后仍被调用时，同样退回 OSC 52，并给出授权命令。
   - `subos status` / `luban status` 列出当前的剪贴板方式。
   - 这两个授权永远不会被预设隐含；持有其中之一的策略文件写入 `min_client` 2026.10.11.1。
   - 需求项：SUBOS-CLIPBOARD、SES-JOIN-TERMINAL。

@@ -54,6 +54,10 @@ inline constexpr std::array<std::string_view, 9> kGrants{
 // `--allow`. A policy holding one needs a client that knows them.
 inline constexpr std::array<std::string_view, 2> kExplicitGrants{"clipboard", "clipboard-paste"};
 inline constexpr std::string_view kClipboardMinClient = "2026.10.11.1";
+// Where a sandbox granted the clipboard finds the clipboard tools' names
+// (links to the session's xlings, made by session-init; first on PATH).
+inline constexpr std::string_view kClipboardBridgeDir = "/run/xlings/bin";
+inline constexpr std::array<std::string_view, 4> kClipboardTools{"wl-copy", "wl-paste", "xclip", "xsel"};
 
 // First client that implements this policy schema; new files carry this floor.
 inline constexpr std::string_view kPolicyMinClient = "2026.10.10.1";

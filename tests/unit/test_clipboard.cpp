@@ -3,6 +3,9 @@
 #include <gtest/gtest.h>
 import xlings.testkit;
 #include "xlings/xtest.hpp"
+#if !defined(_WIN32)   // setenv: the bridge is a Linux sandbox's
+#include <stdlib.h>
+#endif
 
 import std;
 import xlings.libs.json;
@@ -28,8 +31,8 @@ XTEST(Clipboard, TheGrantsAreTheirOwnNeverImpliedAndAPolicyHoldingOneSaysWhichCl
       .area = "subos", .covers = {"SUBOS-CLIPBOARD"}) {
     using V = std::vector<std::string>;
     namespace b = xlings::subos::broker;
-    auto copy = b::classify(V{"clipboard", "copy"}, "box");
-    auto paste = b::classify(V{"clipboard", "paste"}, "box");
+    auto copy = b::classify(V{"__clipboard", "copy"}, "box");
+    auto paste = b::classify(V{"__clipboard", "paste"}, "box");
     ASSERT_EQ(copy.route, b::Route::Broker);
     auto p = pol::preset(pol::Preset::Private);
     EXPECT_EQ(b::decide(p, copy).action, pol::Action::Deny);
@@ -48,4 +51,20 @@ XTEST(Clipboard, TheGrantsAreTheirOwnNeverImpliedAndAPolicyHoldingOneSaysWhichCl
     ASSERT_TRUE(xlings::subos::policy_store::write(view, "granted", p));
     auto granted = nlohmann::json::parse(tk::read_file(view.policy_file("granted")));
     EXPECT_EQ(granted["min_client"], std::string(pol::kClipboardMinClient));
+}
+
+XTEST(Clipboard, TheBridgeIsTheToolsNamesInAGrantedSandboxNeverAShim,
+      .area = "subos", .covers = {"SUBOS-CLIPBOARD"}) {
+#if defined(_WIN32)
+    GTEST_SKIP() << "the bridge lives in a Linux sandbox";
+#else
+    using xlings::clipboard::bridge_tool;
+    ::setenv("XLINGS_CLIPBOARD_BRIDGE", "/run/xlings/bin", 1);
+    EXPECT_EQ(bridge_tool("wl-copy"), std::optional<std::string>("wl-copy")) << "started by name from PATH";
+    EXPECT_EQ(bridge_tool("/run/xlings/bin/xclip"), std::optional<std::string>("xclip"));
+    EXPECT_FALSE(bridge_tool("/home/u/.xlings/subos/box/bin/xclip")) << "a package's shim of the same name";
+    EXPECT_FALSE(bridge_tool("xlings"));
+    ::unsetenv("XLINGS_CLIPBOARD_BRIDGE");
+    EXPECT_FALSE(bridge_tool("wl-copy")) << "not granted: no bridge";
+#endif
 }

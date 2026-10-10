@@ -612,9 +612,9 @@ int run_status_(int argc, char* argv[], EventStream& stream,
         out["identity"] = std::move(id);
     }
     // The clipboard, said (it is the first thing a TUI misses in a private
-    // environment): the host's through the broker when granted, else only
-    // copying through the terminal (OSC 52); the whole display is never
-    // needed for it.
+    // environment): the host's through the broker when granted (wl-copy,
+    // wl-paste, xclip, xsel inside reach it), else copying through the
+    // terminal (OSC 52); the whole display is never needed for it.
     {
         const bool display = pol.grants.contains("display");
         out["clipboard"] = {{"copy", pol.grants.contains("clipboard") || display ? "host" : "terminal (OSC 52)"},
@@ -673,7 +673,7 @@ int run_status_(int argc, char* argv[], EventStream& stream,
         const auto& cb = out["clipboard"];
         std::println(std::cout, "  clipboard  copy: {}, paste: {}{}", cb.value("copy", ""), cb.value("paste", ""),
                      cb.value("copy", "") == "host" && cb.value("paste", "") == "host" ? std::string{}
-                         : "  (xlings clipboard copy|paste; the host's: " + cb.value("grant", "") + ")");
+                         : "  (the host's: " + cb.value("grant", "") + ")");
     }
     if (out.contains("session"))
         std::println(std::cout, "  session    {} ({})", out["session"].value("id", ""),

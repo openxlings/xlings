@@ -223,8 +223,10 @@ guide is `docs/quick-start/luban.md`. What to keep in mind near it:
   loosens isolation. A template ref without a version resolves to the
   index's `latest`, never to whichever version happens to be installed.
 * **The clipboard is not the display.** `clipboard` (copy into the host's)
-  and `clipboard-paste` (read it) are grants of their own, decided by the
-  broker for `xlings clipboard copy|paste`, never in a preset's
+  and `clipboard-paste` (read it) are grants of their own; granted, the
+  sandbox's `wl-copy` / `wl-paste` / `xclip` / `xsel` are links to the
+  session's xlings (`xlings.core.clipboard`), which hands the text to the
+  broker (`__clipboard`, run outside with the host's tool). Never in a preset's
   `grants_allowed` (an older client would refuse the file); a policy holding
   one records `min_client` 2026.10.11.1. Without them copy goes through the
   terminal (OSC 52). A joined interactive command's terminal follows the
@@ -234,6 +236,33 @@ guide is `docs/quick-start/luban.md`. What to keep in mind near it:
   copied by a fork; its zone is UTC, a chosen one, or the proxy's exit asked
   through the proxy -- never the host's. A policy whose zone is unchosen does
   not write "UTC".
+
+### The command tree is designed, not accumulated (2026.10.11)
+
+The CLI (`src/cli/spec.cpp`, luban's `luban.cli` tree) is one classified tree
+with progressive disclosure. Before adding to it, decide where the thing
+belongs -- and usually it is not a new command:
+
+* **A capability is configuration first.** Something an environment may or
+  may not do is a setting of the noun it belongs to (`subos config <n>
+  --allow clipboard`, `luban config <n> allow clipboard`), not a command of
+  its own. What programs then use is what they already call (the clipboard:
+  `wl-copy` / `xclip` linked in the sandbox), not a new xlings verb.
+* **Strictness by level.** A first-level subcommand (`xlings <x>`, `luban
+  <x>`) is the rarest change: it must be a new noun or a verb on every noun,
+  and it is discussed first. A second-level subcommand (`xlings subos
+  upgrade`) goes under the noun it acts on. An option on an existing command
+  is the cheapest. Example: the clipboard is a grant, not a top-level
+  `xlings clipboard`.
+* **Semantics are the user's words.** A command says what it does to what
+  (`subos upgrade <n>`: moves this environment to its edition's newest), the
+  same verb means the same thing under every noun (`config`, `status`,
+  `export`), and luban's verbs map 1:1 onto the xlings commands they run.
+* **Plumbing is hidden.** What only xlings itself calls (`__session-init`,
+  `__carrier-env`, `__clipboard`, `luban __pipe`) starts with `__`, is never
+  in the spec, help or completion, and is not a promise to users.
+* **Every addition updates the tree's artefacts**: the spec (help, levels,
+  completion), `docs/generated/command-reference.md`, and a test.
 
 ### Core and interaction surfaces are separate (2026.10, #640)
 

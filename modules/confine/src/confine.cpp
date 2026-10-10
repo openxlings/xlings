@@ -305,6 +305,14 @@ std::expected<sp::SandboxSpec, sp::Refusal> compile(const policy::Policy& pol, c
     const bool windows = caps.platform == "windows";
     s.env["XLINGS_SUBOS_LIB"] = windows ? (i.instance_dir / "lib").string() : posix(i.instance_dir / "lib");
     impl.finish(i, home, caps, grant_env, s);
+    // The clipboard grants (Luban OS design part 2 §9.2b): the names programs
+    // already call for a clipboard -- wl-copy, wl-paste, xclip, xsel -- first
+    // on PATH, linked by session-init to the session's xlings, which reaches
+    // the host's clipboard through the broker. Not the display.
+    if (s.backend == sp::Backend::Bwrap && (i.grants.contains("clipboard") || i.grants.contains("clipboard-paste"))) {
+        s.env["XLINGS_CLIPBOARD_BRIDGE"] = std::string(policy::kClipboardBridgeDir);
+        s.env["PATH"] = std::string(policy::kClipboardBridgeDir) + ":" + s.env["PATH"];
+    }
     return s;
 }
 

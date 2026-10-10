@@ -6,6 +6,7 @@ import xlings.subos.broker;
 import xlings.subos.tools;
 import xlings.subos.home_view;
 import xlings.subos.ports;
+import xlings.subos.policy;
 
 namespace xlings::clipboard {
 
@@ -53,7 +54,7 @@ std::optional<std::vector<std::string>> host_argv_(bool copy) {
 // (an agent never waits, and a person would only see it hang).
 bool stdin_is_a_terminal_() {
     if (!platform::stdin_is_terminal()) return false;
-    std::println(std::cerr, "xlings: clipboard copy reads what is piped to it: echo text | xlings clipboard copy");
+    std::println(std::cerr, "xlings: copying reads what is piped to it (echo text | wl-copy)");
     return true;
 }
 
@@ -114,49 +115,86 @@ std::string osc52(std::string_view data) {
     return "\x1b]52;c;" + b64 + "\x07";
 }
 
-int run(std::span<const std::string> args) {
-    const std::string sub = args.empty() ? std::string{} : args[0];
-    if (sub != "copy" && sub != "paste") {
-        std::println(std::cerr, "usage: xlings clipboard copy   (stdin to the clipboard)\n"
-                                "       xlings clipboard paste  (the clipboard to stdout)");
-        return 2;
-    }
-    const bool copy = sub == "copy";
-    if (copy && stdin_is_a_terminal_()) return 2;
-    if (auto argv = host_argv_(copy)) return platform::run_argv(*argv) == 0 ? 0 : 1;
-    if (!copy) {
-        std::println(std::cerr, "xlings: this machine has no clipboard to read (no display: wl-paste, xclip "
-                                "or xsel with WAYLAND_DISPLAY / DISPLAY; pbpaste; PowerShell)");
-        return 1;
-    }
-    auto data = read_stdin_();
-    if (!data) { std::println(std::cerr, "xlings: more than {} MiB is not a clipboard", kLimit >> 20); return 1; }
-    return copy_through_terminal_(*data, "this machine has no clipboard tool for its display");
+std::optional<std::string> bridge_tool(std::string_view argv0) {
+    const auto dir = env_("XLINGS_CLIPBOARD_BRIDGE");
+    if (dir.empty()) return std::nullopt;
+    const std::filesystem::path p(argv0);
+    const auto name = p.filename().string();
+    if (std::ranges::find(subos::policy::kClipboardTools, name) == subos::policy::kClipboardTools.end())
+        return std::nullopt;
+    // Started by name from PATH (the bridge's directory is first), or by
+    // the bridge's own path; never a package's shim of the same name.
+    if (p.has_parent_path() && p.parent_path() != std::filesystem::path(dir)) return std::nullopt;
+    return name;
 }
 
-int copy_inside(std::span<const std::string> argv, std::string_view instance) {
-    if (stdin_is_a_terminal_()) return 2;
-    auto data = read_stdin_();
-    if (!data) { std::println(std::cerr, "xlings: more than {} MiB is not a clipboard", kLimit >> 20); return 1; }
-    // The data as the broker's stdin: a file of this process's, gone once open.
+int bridge(std::string_view tool, std::span<const std::string> args) {
+    auto has = [&](std::initializer_list<std::string_view> flags) {
+        return std::ranges::any_of(args, [&](const std::string& a) {
+            return std::ranges::find(flags, std::string_view(a)) != flags.end();
+        });
+    };
+    bool paste = tool == "wl-paste";
+    if (tool == "xclip") paste = has({"-o", "-out"});
+    if (tool == "xsel") paste = has({"-o", "--output"}) || (!has({"-i", "--input"}) && platform::stdin_is_terminal());
+    const std::string instance = env_("XLINGS_ACTIVE_SUBOS");
+    const auto grant = std::format("outside this environment: xlings subos config {} --allow {}",
+                                   instance.empty() ? "<name>" : instance, paste ? "clipboard-paste" : "clipboard");
+    if (!subos::broker::available()) {
+        std::println(std::cerr, "{}: no broker to reach the host's clipboard", tool);
+        return 1;
+    }
+    if (paste) {
+        const std::vector<std::string> argv{"__clipboard", "paste"};
+        const int rc = subos::broker::forward(argv, {}, /*quiet_refusal=*/true);
+        if (rc == subos::broker::kExitPermission)
+            std::println(std::cerr, "{}: reading the host's clipboard is not granted ({})", tool, grant);
+        return rc;
+    }
+    // wl-copy TEXT...: the arguments are the text.
+    std::string text;
+    if (tool == "wl-copy")
+        for (const auto& a : args)
+            if (!a.starts_with('-')) text += (text.empty() ? "" : " ") + a;
+    std::optional<std::string> data = text.empty() ? std::optional<std::string>{} : std::optional{text};
+    if (!data) {
+        if (stdin_is_a_terminal_()) return 2;
+        data = read_stdin_();
+        if (!data) { std::println(std::cerr, "{}: more than {} MiB is not a clipboard", tool, kLimit >> 20); return 1; }
+    }
+    // The text as the broker's stdin: a file of this process's, gone once open.
     const auto file = std::filesystem::temp_directory_path()
                       / std::format("xlings-clipboard-{}", platform::get_pid());
     {
         std::ofstream out(file, std::ios::binary | std::ios::trunc);
         out << *data;
-        if (!out) { std::println(std::cerr, "xlings: cannot stage the copy in {}", file.string()); return 1; }
+        if (!out) return copy_through_terminal_(*data, "the text could not be staged for the broker");
     }
     const int in = platform::open_for_read(file);
     std::error_code ec;
     std::filesystem::remove(file, ec);
-    if (in < 0) return copy_through_terminal_(*data, "the broker could not be given the text");
+    if (in < 0) return copy_through_terminal_(*data, "the text could not be staged for the broker");
     const int stdio[3] = {in, 1, 2};
+    const std::vector<std::string> argv{"__clipboard", "copy"};
     const int rc = subos::broker::forward(argv, stdio, /*quiet_refusal=*/true);
     platform::close_fd(in);
     if (rc != subos::broker::kExitPermission) return rc;
-    return copy_through_terminal_(*data, std::format(
-        "this environment is not granted the host's clipboard; outside it: "
-        "xlings subos config {} --allow clipboard", instance.empty() ? "<name>" : instance));
+    return copy_through_terminal_(*data, "the host's clipboard is not granted; " + grant);
+}
+
+int host(std::span<const std::string> args) {
+    const std::string sub = args.empty() ? std::string{} : args[0];
+    if (sub != "copy" && sub != "paste") return 2;
+    const bool copy = sub == "copy";
+    if (auto argv = host_argv_(copy)) return platform::run_argv(*argv) == 0 ? 0 : 1;
+    if (!copy) {
+        std::println(std::cerr, "xlings: the host has no clipboard to read (no display: wl-paste, xclip "
+                                "or xsel with WAYLAND_DISPLAY / DISPLAY; pbpaste; PowerShell)");
+        return 1;
+    }
+    auto data = read_stdin_();
+    if (!data) return 1;
+    return copy_through_terminal_(*data, "the host has no clipboard tool for a display");
 }
 
 }  // namespace xlings::clipboard

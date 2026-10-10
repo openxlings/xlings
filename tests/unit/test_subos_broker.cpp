@@ -58,14 +58,14 @@ TEST(SubosBroker, TheStrictestTargetDecides) {
 // The clipboard, without the display: copy and paste are grants of their
 // own, decided outside; neither is implied by a preset.
 TEST(SubosBroker, TheClipboardIsAGrantOfItsOwnAndNeverImplied) {
-    auto copy = b::classify(V{"clipboard", "copy"}, "box");
+    auto copy = b::classify(V{"__clipboard", "copy"}, "box");
     EXPECT_EQ(copy.route, b::Route::Broker);
     ASSERT_EQ(copy.ops.size(), 1u);
     EXPECT_EQ(copy.ops[0].kind, "grant");
     EXPECT_EQ(copy.ops[0].target, "clipboard");
-    auto paste = b::classify(V{"clipboard", "paste"}, "box");
+    auto paste = b::classify(V{"__clipboard", "paste"}, "box");
     EXPECT_EQ(paste.ops.at(0).target, "clipboard-paste");
-    EXPECT_EQ(b::classify(V{"clipboard"}, "box").route, b::Route::Local) << "usage is local";
+    EXPECT_EQ(b::classify(V{"__clipboard"}, "box").route, b::Route::Local) << "nothing to do";
 
     auto p = pol::preset(pol::Preset::Private);
     EXPECT_EQ(b::decide(p, copy).action, pol::Action::Deny);

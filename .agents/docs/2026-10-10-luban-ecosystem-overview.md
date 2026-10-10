@@ -4,7 +4,7 @@
   Luban OS 与 agent 私有工作区设计（`2026-10-09-luban-os-and-agent-private-design`）、
   PR #650 / #651 的实施与 review、xim-pkgindex #945 的包设计讨论（本文 §5）。
 - 状态基线：xlings 2026.10.10.2 已发布；#653（bwrap 探测，发布为 2026.10.11.1）未合入；xim-pkgindex #945 未合入。
-- 维护者已确认（2026-10-10）：
+- 已确认的决策：
   - 包设计 1–6 全部按建议；不改 xpkg 规范，在现有规范内设计；
   - edition 用自己的发布日期作版本；
   - 启动层用 `luban export … --boot <profile>` 选择；
