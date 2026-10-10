@@ -272,6 +272,17 @@ end
     ASSERT_EQ(again.exit_code, 0) << again.transcript();
     EXPECT_NE(again.out.find("up to date"), std::string::npos) << again.transcript();
 
+    // An unpinned package (an agent) is at the index's newest when made:
+    // not an upgrade until the index has a newer one.
+    tk::write_file(repo / "pkgs/u/unpinned.lua", template_recipe("unpinned",
+        Json{{"subos_kind", "rootfs"}, {"abi", host + "-linux-gnu"}, {"packages", {"fixture:lib"}},
+             {"workspace", Json::object()}}));
+    auto fresh = home.xlings({"subos", "new", "un", "--from", "fixture:unpinned@1.0.0"}, env);
+    ASSERT_EQ(fresh.exit_code, 0) << fresh.transcript();
+    auto current = home.xlings({"subos", "upgrade", "un", "--dry-run"}, env);
+    ASSERT_EQ(current.exit_code, 0) << current.transcript();
+    EXPECT_NE(current.out.find("up to date"), std::string::npos) << current.transcript();
+
     // An environment not made from an edition says so.
     ASSERT_EQ(home.xlings({"subos", "new", "plain"}, env).exit_code, 0);
     auto none = home.xlings({"subos", "upgrade", "plain"}, env);

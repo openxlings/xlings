@@ -639,7 +639,18 @@ int run_upgrade_(int argc, char* argv[], EventStream& stream, const UsageError& 
             return 1;
         }
     }
-    const auto plan = subos::edition::plan(*now, chain->packages, configured_keys_(home, name));
+    // An unpinned package (an agent) follows the index's newest: compared
+    // as that version, so one already at it is not an upgrade.
+    std::vector<std::string> declared;
+    for (const auto& spec : chain->packages) {
+        if (spec.find('@') == std::string::npos)
+            if (auto v = xim::index_version_of(spec, xim::CatalogAccess::LocalOnly)) {
+                declared.push_back(spec + "@" + *v);
+                continue;
+            }
+        declared.push_back(spec);
+    }
+    const auto plan = subos::edition::plan(*now, declared, configured_keys_(home, name));
 
     // The policy: applied when it allows nothing more than the one in force.
     std::vector<std::string> loosened;
