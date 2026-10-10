@@ -39,7 +39,7 @@ const std::map<std::string, std::string, std::less<>>& equivalents() {
 }
 
 const std::set<std::string, std::less<>>& official_editions() {
-    static const std::set<std::string, std::less<>> value{"nano", "tiny", "core", "desktop", "agent-workspace"};
+    static const std::set<std::string, std::less<>> value{"nano", "tiny", "core", "agent-workspace"};
     return value;
 }
 
@@ -184,7 +184,7 @@ const spec::CommandSpec& tree() {
         },
         .children = {
             {.name = "new", .description = "Make an environment (edition: core by default)",
-             .arguments = {{"name", "Its name", true}, {"edition", "core, tiny, nano, desktop, agent-workspace, or ns:name"}},
+             .arguments = {{"name", "Its name", true}, {"edition", "core, tiny, nano, agent-workspace, or ns:name"}},
              .options = {{"--from <EDITION>", "The edition, as an option", false, Level::More},
                          {"--proxy <URL>", "Its network goes only through this SOCKS5h proxy", false, Level::More},
                          {"--carrier <CARRIER>", "Where it runs: local, wsl2, vz", false, Level::Expert}}},

@@ -9,7 +9,7 @@ Luban 是一个最小 OS 模型：内核之上只有 xlings（包）和 luban（
 ```bash
 luban                         # 一屏概要：在哪里、有哪些环境、下一步
 luban new box                 # 新建环境（默认 Luban Core）
-luban new box tiny            # 指定 edition：nano / tiny / core / desktop / agent-workspace / ns:name
+luban new box tiny            # 指定 edition：nano / tiny / core / agent-workspace / ns:name（预览版：luban-desktop）
 luban enter box               # 进入
 luban run box -- make -j8     # 运行一个命令
 luban ls                      # 列出环境
