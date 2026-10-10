@@ -206,9 +206,11 @@ guide is `docs/quick-start/luban.md`. What to keep in mind near it:
   (`sandbox::prepare_root_host`) and an edition's ABI is checked when its
   template is read; the one-time setup is asked there, through the one door
   for administrator rights. Nobody to ask is exit 2 with the command.
-* **An edition does not carry a kernel.** `boot.kernel` / `kernel_min` are
-  hints an image export uses; the kernel is installed into the root only to
-  make an image. `export --iso` (the root as initramfs, limine) and
+* **An edition does not carry a kernel.** It names a boot profile
+  (`boot.profile`; `export --boot` overrides): a package whose
+  `share/luban/boot.json` gives the kernel release and command line, installed
+  into the root only to make an image. `boot.kernel` / `kernel_min` remain
+  hints for an edition without one. `export --iso` (the root as initramfs, limine) and
   `--drive` (GPT, FAT system partition, ext4 root by PARTUUID; written
   in-process by `luban.image`) boot on BIOS and UEFI --
   tests/e2e/luban_image_test.sh boots both under qemu.

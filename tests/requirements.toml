@@ -43,6 +43,10 @@ status = "required"
 text = "a root made from an edition records its edition layer in instance.json: the resolved ref, the from chain, each declared package as installed, the declared policy"
 status = "required"
 
+[LUBAN-BOOT-PROFILE]
+text = "an image boots by a boot profile (--boot, else the edition's boot.profile): it is installed into the root, and its kernel release and command line are the image's; --boot and --kernel together are refused"
+status = "required"
+
 [LUBAN-CLI-LEVELS]
 text = "a command tree is declared once; help shows the common commands and says how to see more, then everything"
 status = "required"

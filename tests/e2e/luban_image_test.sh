@@ -7,7 +7,7 @@
 # limine comes from its release (the binary files and its tool built here);
 # xorriso, when the machine has it, makes the ISO a BIOS+UEFI hybrid.
 #
-# xtest: covers=LUBAN-ISO,LUBAN-DRIVE,LUBAN-TRY requires=linux,qemu,bwrap,network
+# xtest: covers=LUBAN-ISO,LUBAN-DRIVE,LUBAN-TRY,LUBAN-BOOT-PROFILE requires=linux,qemu,bwrap,network
 set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/project_test_lib.sh"
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/rootfs_lib.sh"
@@ -79,6 +79,39 @@ L export t "$RUNTIME_DIR/t.iso" > "$RUNTIME_DIR/iso.log" 2>&1 || { cat "$RUNTIME
 file "$RUNTIME_DIR/t.iso" | grep -q "ISO 9660" || fail "not an ISO: $(file "$RUNTIME_DIR/t.iso")"
 boot iso-bios -cdrom "$RUNTIME_DIR/t.iso" -boot d
 if [[ -n "$OVMF" ]] && command -v xorriso >/dev/null; then boot iso-uefi -bios "$OVMF" -cdrom "$RUNTIME_DIR/t.iso"; fi
+
+log "luban export t p.iso --boot <profile>: the profile is installed into the root, its kernel and command line boot"
+# A boot profile (Luban OS design part 2 §2.4) from an index of this test's:
+# the kernel already in the root, and a command line of its own.
+release="$(basename "$(dirname "$(ls "$H"/subos/t/root/usr/lib/modules/*/vmlinuz | head -1)")")"
+FIX="$RUNTIME_DIR/fixture-index"
+mkdir -p "$FIX/pkgs/l"
+echo 'xim_indexrepos = {}' > "$FIX/xim-indexrepos.lua"
+cat > "$FIX/pkgs/l/luban-boot-test.lua" <<EOF
+package = { spec = '1', name = 'luban-boot-test', archs = {'x86_64', 'aarch64'}, xpm = { linux = { ['1.0.0'] = {} } } }
+import('xim.libxpkg.pkginfo')
+function install()
+    local dir = path.join(pkginfo.install_dir(), 'share', 'luban')
+    os.mkdir(dir)
+    io.writefile(path.join(dir, 'boot.json'),
+        '{"profile":"test","release":"$release","cmdline":["console=ttyS0","luban.profile=test"]}')
+    return true
+end
+EOF
+python3 -c '
+import json, sys
+cfg = json.load(open(sys.argv[1]))
+repos = cfg.setdefault("index_repos", [])   # the default index stays (Config keeps it)
+repos.append({"name": "fixture", "url": sys.argv[2], "source": "git"})
+json.dump(cfg, open(sys.argv[1], "w"))
+' "$H/.xlings.json" "$FIX"
+L export t "$RUNTIME_DIR/p.iso" --boot fixture:luban-boot-test > "$RUNTIME_DIR/profile.log" 2>&1 \
+  || { cat "$RUNTIME_DIR/profile.log"; fail "export --boot"; }
+grep -aq "luban.profile=test" "$RUNTIME_DIR/p.iso" || fail "the profile's command line is not in the image"
+if X subos export t --iso "$RUNTIME_DIR/both.iso" --boot generic --kernel /dev/null >/dev/null 2>&1; then
+  fail "--boot and --kernel together were accepted"
+fi
+boot iso-profile -cdrom "$RUNTIME_DIR/p.iso" -boot d
 
 log "luban export t t.img (a drive), booted"
 L export t "$RUNTIME_DIR/t.img" --size 1G > "$RUNTIME_DIR/drive.log" 2>&1 || { cat "$RUNTIME_DIR/drive.log"; fail "export drive"; }

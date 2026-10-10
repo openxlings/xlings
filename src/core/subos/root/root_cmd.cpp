@@ -30,6 +30,7 @@ import xlings.core.subos.ports;
 import xlings.core.xself;
 import xlings.core.xim.extract;
 import xlings.core.xim.commands;
+import xlings.core.xim.catalog;
 import luban.image;
 import xlings.platform.target;
 import xlings.subos.tools;
@@ -316,7 +317,7 @@ std::optional<Declared> declared_by_template_(const fs::path& instance, EventStr
         }
         if (auto b = it->find("boot"); b != it->end() && b->is_object()) {
             if (auto init = b->value("init", std::string()); !init.empty()) d.init = init;
-            for (const auto* k : {"kernel", "kernel_min"})
+            for (const auto* k : {"kernel", "kernel_min", "profile"})
                 if (b->contains(k) && (*b)[k].is_string()) d.boot[k] = (*b)[k];
         }
         if (auto a = it->find("abi"); a != it->end()) d.abi = abi_of_(*a);
@@ -791,6 +792,13 @@ std::expected<fs::path, std::pair<std::string, std::string>> kernel_of_(const fs
     fs::path kernel = given;
     std::string version;
     if (kernel.empty()) {
+        // The boot profile's kernel when it names one (a root may hold more).
+        if (const auto release = boot.is_object() ? boot.value("release", std::string()) : std::string(); !release.empty()) {
+            const auto candidate = in_stage_(stage, fs::path("/usr/lib/modules") / release / "vmlinuz");
+            if (fs::is_regular_file(candidate, ec)) { kernel = candidate; version = release; }
+        }
+    }
+    if (kernel.empty()) {
         const auto modules = in_stage_(stage, "/usr/lib/modules");
         for (fs::directory_iterator it(modules, ec), end; !ec && it != end; it.increment(ec)) {
             const auto candidate = in_stage_(stage, fs::path("/usr/lib/modules") / it->path().filename() / "vmlinuz");
@@ -810,6 +818,48 @@ std::expected<fs::path, std::pair<std::string, std::string>> kernel_of_(const fs
             std::format("a newer kernel: xlings install {} --subos {}",
                         boot.value("kernel", std::string("linux-kernel")), name)});
     return kernel;
+}
+
+// The console and the rest of a kernel command line an image adds to what it
+// must say (its root, its init): the boot profile's, or a machine's default.
+std::string kernel_args_(const nlohmann::json& boot) {
+    std::string line;
+    if (auto c = boot.is_object() ? boot.find("cmdline") : boot.end(); boot.is_object() && c != boot.end() && c->is_array())
+        for (const auto& a : *c) if (a.is_string()) line += (line.empty() ? "" : " ") + a.get<std::string>();
+    return line.empty() ? std::string("console=tty0 console=ttyS0") : line;
+}
+
+// "virt" -> xim:luban-boot-virt; a full reference stays as it is.
+std::string boot_profile_ref_(std::string_view profile) {
+    return profile.find(':') == std::string_view::npos ? std::format("xim:luban-boot-{}", profile) : std::string(profile);
+}
+
+// A boot profile (Luban OS design part 2 §2.4) is installed into the root,
+// as a kernel is to make an image: its kernel and limine come with it, and
+// its share/luban/boot.json says which kernel and what command line.
+std::expected<nlohmann::json, std::pair<std::string, std::string>> apply_boot_profile_(
+    const fs::path& home, const std::string& name, const std::string& ref, EventStream& stream) {
+    log::info("boot profile {} ...", ref);
+    const std::vector<std::string> targets{ref};
+    if (xim::cmd_install_step(targets, name, stream, /*plumbing=*/true) != 0)
+        return std::unexpected(std::pair{std::format("the boot profile {} could not be installed into '{}'", ref, name),
+                                         std::string("--boot generic, or --kernel <vmlinuz>")});
+    const auto key = ref.substr(0, ref.find('@'));
+    const auto configured = read_json_(HomeView{home}.instance(name) / ".xlings.json").value("configured", nlohmann::json::object());
+    for (auto it = configured.begin(); it != configured.end(); ++it) {
+        const auto at = it.key().rfind('@');
+        if (at == std::string::npos || it.key().substr(0, at) != key) continue;
+        const auto colon = key.find(':');
+        const auto file = home / "data" / "xpkgs"
+            / xim::package_store_name(colon == std::string::npos ? "xim" : key.substr(0, colon),
+                                      colon == std::string::npos ? key : key.substr(colon + 1))
+            / it.key().substr(at + 1) / "share" / "luban" / "boot.json";
+        auto profile = read_json_(file);
+        if (!profile.is_object() || profile.empty())
+            return std::unexpected(std::pair{std::format("{} has no share/luban/boot.json", ref), std::string{}});
+        return profile;
+    }
+    return std::unexpected(std::pair{std::format("{} is not installed in '{}'", ref, name), std::string{}});
 }
 
 std::uint64_t size_bytes_(std::string_view size) {
@@ -861,8 +911,8 @@ std::expected<void, std::pair<std::string, std::string>> write_drive_(
     const std::string conf = std::format(
         "# A Luban drive (xlings subos export --drive)\ntimeout: 3\n\n/Luban\n    protocol: linux\n"
         "    path: boot():/boot/vmlinuz\n"
-        "    cmdline: root=PARTUUID={} rw rootwait console=tty0 console=ttyS0 init={}/boot/{}\n",
-        luban::image::to_string(root_uuid), home.generic_string(), init);
+        "    cmdline: root=PARTUUID={} rw rootwait {} init={}/boot/{}\n",
+        luban::image::to_string(root_uuid), kernel_args_(boot), home.generic_string(), init);
     std::vector<luban::image::File> files{
         {.path = "EFI/BOOT/BOOTX64.EFI", .from = *limine / "BOOTX64.EFI"},
         {.path = "boot/vmlinuz", .from = *kernel},
@@ -930,7 +980,7 @@ std::expected<void, std::pair<std::string, std::string>> write_live_iso_(
         conf << "# A live Luban system (xlings subos export --iso)\n"
              << "timeout: 3\n\n/Luban\n    protocol: linux\n    path: boot():/boot/vmlinuz\n"
              << "    module_path: boot():/boot/initramfs.img\n"
-             << std::format("    cmdline: console=tty0 console=ttyS0 rdinit={}/boot/{}\n", home.generic_string(), init);
+             << std::format("    cmdline: {} rdinit={}/boot/{}\n", kernel_args_(boot), home.generic_string(), init);
         if (!conf) return std::unexpected(std::pair{std::string("cannot write limine.conf"), std::string{}});
     }
     const auto output = scratch / "output";
@@ -964,7 +1014,7 @@ std::expected<void, std::pair<std::string, std::string>> write_live_iso_(
 int run_export_(int argc, char* argv[], EventStream& stream, const UsageError& usageError) {
     std::string name;
     fs::path rootfs_dir, tarball, disk, drive, iso, qcow2, kernel_file;
-    std::string size = "4G";
+    std::string size = "4G", boot_profile;
     bool with_data = false;
     for (int i = 3; i < argc; ++i) {
         std::string a = argv[i];
@@ -975,6 +1025,7 @@ int run_export_(int argc, char* argv[], EventStream& stream, const UsageError& u
         else if (a == "--drive" && i + 1 < argc) drive = argv[++i];
         else if (a == "--qcow2" && i + 1 < argc) qcow2 = argv[++i];
         else if (a == "--kernel" && i + 1 < argc) kernel_file = argv[++i];
+        else if (a == "--boot" && i + 1 < argc) boot_profile = argv[++i];
         else if (a == "--size" && i + 1 < argc) size = argv[++i];
         else if (a == "--with-data") with_data = true;
         else if (!a.empty() && a[0] != '-' && name.empty()) name = a;
@@ -984,7 +1035,7 @@ int run_export_(int argc, char* argv[], EventStream& stream, const UsageError& u
                         + !qcow2.empty();
     if (name.empty() || outputs != 1) {
         usageError("usage: xlings subos export <name> --rootfs <dir> | --tar <file> | --disk <file> | "
-                   "--drive <file> | --qcow2 <file> | --iso <file> [--size 4G] [--kernel <vmlinuz>] [--with-data]");
+                   "--drive <file> | --qcow2 <file> | --iso <file> [--size 4G] [--boot <profile> | --kernel <vmlinuz>] [--with-data]");
         return 1;
     }
     // The flag and the file, whichever was asked for.
@@ -1026,6 +1077,14 @@ int run_export_(int argc, char* argv[], EventStream& stream, const UsageError& u
         error_(stream, "--kernel names the kernel an ISO or a drive boots; a --disk boots the kernel given to it");
         return 1;
     }
+    if (!boot_profile.empty() && (iso.empty() && drive.empty() && qcow2.empty())) {
+        error_(stream, "--boot names how an ISO or a drive boots");
+        return 1;
+    }
+    if (!boot_profile.empty() && !kernel_file.empty()) {
+        error_(stream, "--boot and --kernel both say which kernel: give one");
+        return 1;
+    }
     if (auto fresh = require_new_output_(out); !fresh) {
         error_(stream, fresh.error(), "choose a new output path");
         return 1;
@@ -1033,6 +1092,17 @@ int run_export_(int argc, char* argv[], EventStream& stream, const UsageError& u
 
     const auto home = home_dir_();
     const auto instance = HomeView{home}.instance(name);
+    // How an image boots: --boot, else the edition's profile; else the
+    // root's own kernel (or --kernel). Applied before the root is read.
+    auto boot = read_json_(HomeView{home}.instance_file(name)).value("boot", nlohmann::json::object());
+    if (boot_profile.empty() && kernel_file.empty() && (!iso.empty() || !drive.empty() || !qcow2.empty()))
+        boot_profile = boot.value("profile", std::string());
+    if (!boot_profile.empty()) {
+        auto profile = apply_boot_profile_(home, name, boot_profile_ref_(boot_profile), stream);
+        if (!profile) { error_(stream, profile.error().first, profile.error().second); return 1; }
+        for (const auto* k : {"release", "cmdline"})
+            if (profile->contains(k)) boot[k] = (*profile)[k];
+    }
     // The image's xlings runs with no host under it: the static release build.
     fs::path entry = home / "bin" / "xlings";
     std::error_code ec;
@@ -1347,9 +1417,7 @@ int run_export_(int argc, char* argv[], EventStream& stream, const UsageError& u
         rc = run_tool_(*argv, stream, "writing the disk image");
     } else if (!drive.empty() || !qcow2.empty()) {
         const auto raw = scratch->path() / (drive.empty() ? "drive.raw" : "output");
-        if (auto made = write_drive_(stage, home, kernel_file, size, scratch->path(), raw,
-                                     read_json_(HomeView{home}.instance_file(name)).value("boot", nlohmann::json::object()),
-                                     name, stream); !made) {
+        if (auto made = write_drive_(stage, home, kernel_file, size, scratch->path(), raw, boot, name, stream); !made) {
             error_(stream, made.error().first, made.error().second);
             return 1;
         }
@@ -1360,9 +1428,7 @@ int run_export_(int argc, char* argv[], EventStream& stream, const UsageError& u
                             (scratch->path() / "output").string()}, stream, "converting to qcow2");
         }
     } else if (!iso.empty()) {
-        if (auto made = write_live_iso_(stage, home, kernel_file, scratch->path(),
-                                        read_json_(HomeView{home}.instance_file(name)).value("boot", nlohmann::json::object()),
-                                        name, stream); !made) {
+        if (auto made = write_live_iso_(stage, home, kernel_file, scratch->path(), boot, name, stream); !made) {
             error_(stream, made.error().first, made.error().second);
             return 1;
         }

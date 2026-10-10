@@ -204,7 +204,8 @@ const spec::CommandSpec& tree() {
             {.name = "export", .description = "Make an image: .iso, .img, .qcow2, .tar(.zst|.gz), or a directory",
              .arguments = {{"name", "Which", true}, {"file", "Where; the format follows the name", true}},
              .options = {{"--format <FORMAT>", "iso, img, qcow2, tar or dir, whatever the name says"},
-                         {"--size <SIZE>", "Disk size (img, qcow2)"}},
+                         {"--size <SIZE>", "Disk size (img, qcow2)"},
+                         {"--boot <PROFILE>", "How an image boots: generic (machines), virt (VMs), or ns:name"}},
              .level = Level::More},
             {.name = "write", .description = "Make a boot drive from an image or an environment",
              .arguments = {{"source", "An image file, or an environment", true}, {"device", "The drive, e.g. /dev/sdb", true}},
@@ -213,6 +214,7 @@ const spec::CommandSpec& tree() {
             {.name = "try", .description = "Boot an environment or an image in a local virtual machine",
              .arguments = {{"source", "An environment or an image file", true}},
              .options = {{"--proxy <URL>", "Its only network is this proxy (a private machine)"},
+                         {"--boot <PROFILE>", "How it boots (default virt; the root's own kernel when there is none)"},
                          {"--memory <MB>", "Its memory (default 2048)"},
                          {"--nographic", "Its console in this terminal"}},
              .level = Level::More},
@@ -285,7 +287,7 @@ std::expected<std::vector<std::string>, std::string> to_xlings(std::span<const s
     std::vector<std::string> after;   // after `--`
     std::map<std::string, std::string, std::less<>> values;
     static const std::set<std::string, std::less<>> takes{"--from", "--proxy", "--carrier", "--to", "--format",
-                                                           "--size", "--serial"};
+                                                           "--size", "--serial", "--boot"};
     for (std::size_t i = 1; i < args.size(); ++i) {
         const auto& a = args[i];
         if (a == "--") { after.assign(args.begin() + static_cast<std::ptrdiff_t>(i) + 1, args.end()); break; }
@@ -376,6 +378,7 @@ std::expected<std::vector<std::string>, std::string> to_xlings(std::span<const s
         if (f == flag_of.end()) return std::unexpected(std::format("no format '{}': iso, img, qcow2, tar, dir", format));
         x = {"subos", "export", positional[0], f->second, positional[1]};
         if (auto s = value("--size")) x.insert(x.end(), {"--size", *s});
+        if (auto b = value("--boot")) x.insert(x.end(), {"--boot", *b});
     } else if (cmd == "rm" || cmd == "remove") {
         if (auto e = need(1, "a name")) return std::unexpected(*e);
         x = {"subos", "remove", positional[0]};
@@ -456,13 +459,14 @@ struct Exported {
 };
 
 std::expected<fs::path, int> source_image_(const std::string& source, std::string_view flag, std::string_view ext,
-                                           Exported& keep) {
+                                           Exported& keep, std::string_view boot = {}) {
     std::error_code ec;
     if (fs::is_regular_file(source, ec)) return fs::absolute(source);
     keep.file = fs::temp_directory_path() / std::format("luban-{}-{}{}", source, xlings::platform::get_pid(), ext);
     std::println(std::cerr, "luban: making an image of '{}' ...", source);
-    const int rc = xlings::platform::run_argv({xlings_path().string(), "subos", "export", source,
-                                              std::string(flag), keep.file.string()});
+    std::vector<std::string> argv{xlings_path().string(), "subos", "export", source, std::string(flag), keep.file.string()};
+    if (!boot.empty()) argv.insert(argv.end(), {"--boot", std::string(boot)});
+    const int rc = xlings::platform::run_argv(argv);
     if (rc != 0) return std::unexpected(rc);
     return keep.file;
 }
@@ -612,7 +616,7 @@ int pipe_(const std::string& host, const std::string& port_text) {
 }
 
 int try_cmd_(std::span<const std::string> rest, bool json) {
-    const auto pos = positionals_(rest, {"--proxy", "--memory"});
+    const auto pos = positionals_(rest, {"--proxy", "--memory", "--boot"});
     if (pos.size() != 1) return usage("`luban try <environment or image>`", json);
     std::string arch = "x86_64";
     if (auto m = read_first_line("/proc/sys/kernel/arch"); !m.empty()) arch = m;
@@ -625,7 +629,14 @@ int try_cmd_(std::span<const std::string> rest, bool json) {
         return 1;
     }
     Exported keep;
-    auto image = source_image_(pos[0], "--iso", ".iso", keep);
+    // A virtual machine boots the virt profile (a small kernel for virtio);
+    // where the index has none, the root's own kernel.
+    const auto boot = option_(rest, "--boot");
+    auto image = source_image_(pos[0], "--iso", ".iso", keep, boot.value_or("virt"));
+    if (std::error_code file_ec; !image && !boot && !fs::is_regular_file(pos[0], file_ec)) {
+        std::println(std::cerr, "luban: no virt boot profile for it here; with the root's own kernel");
+        image = source_image_(pos[0], "--iso", ".iso", keep);
+    }
     if (!image) return image.error();
     std::vector<std::string> q{qemu->bin.string(), "-m", option_(rest, "--memory").value_or("2048"), "-smp", "2"};
     std::error_code ec;

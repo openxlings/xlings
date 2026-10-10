@@ -32,6 +32,7 @@ luban rollback box [--to 3]           # 回滚
 luban export box box.iso              # live ISO（BIOS 和 UEFI，从内存运行）
 luban export box box.img              # 驱动器镜像（GPT，BIOS 和 UEFI，ext4 根，持久）
 luban export box box.qcow2            # 同上，qcow2
+luban export box box.iso --boot virt  # 启动层：generic（真机，默认按 edition）/ virt（虚拟机）/ ns:name
 luban export box box.tar.zst          # rootfs（docker import / wsl --import）
 luban write box.iso /dev/sdb          # 制作启动盘（会要求输入驱动器名确认）
 luban write box /dev/sdb              # 直接把环境装到驱动器上
@@ -39,7 +40,7 @@ luban try box                         # 在本地虚拟机里试运行（qemu）
 luban rm box                          # 删除（会先询问）
 ```
 
-镜像需要内核：`xlings install linux-kernel --subos box`（edition 的 `boot.kernel` 会在提示里给出推荐的那个）。limine：`xlings install limine`。
+镜像怎么启动由启动层（boot profile）决定：内核、limine 和内核命令行。`--boot` 指定，否则用 edition 声明的；导出时它被装进环境里（和装内核一样）。没有启动层时，用环境里已有的内核（`xlings install linux-kernel --subos box`），或 `--kernel <vmlinuz>`。`luban try` 默认用 virt，索引里没有时退回环境自己的内核。
 
 `luban write` 只写整个驱动器，拒绝分区、已挂载或被占用的驱动器（包括系统所在的盘）。agent 模式下必须同时给出 `-y` 和 `--serial <驱动器序列号>`。
 

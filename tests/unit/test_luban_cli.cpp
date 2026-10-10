@@ -55,6 +55,8 @@ XTEST(LubanCli, EachCommandIsTheXlingsCommandItNames, .area = "luban", .covers =
 
 XTEST(LubanCli, AnImageFormatFollowsItsNameAndAnUnknownNameIsRefused, .area = "luban", .covers = {"LUBAN-CLI-MAP"}) {
     EXPECT_EQ(x({"export", "box", "box.iso"}), (V{"subos", "export", "box", "--iso", "box.iso"}));
+    EXPECT_EQ(x({"export", "box", "box.iso", "--boot", "virt"}),
+              (V{"subos", "export", "box", "--iso", "box.iso", "--boot", "virt"}));
     EXPECT_EQ(x({"export", "box", "box.img", "--size", "8G"}),
               (V{"subos", "export", "box", "--drive", "box.img", "--size", "8G"}));
     EXPECT_EQ(x({"export", "box", "box.qcow2"}), (V{"subos", "export", "box", "--qcow2", "box.qcow2"}));
