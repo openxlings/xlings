@@ -13,6 +13,11 @@ rootfs_home() {
     mkdir -p "$dir"
     mkdir -p "$dir/bin"
     cp "$BIN" "$dir/bin/xlings"
+    # luban and luban-init beside it, as an install has them: a root's
+    # /usr/bin/luban-init (what a Luban edition's init restarts into) is one.
+    local luban="$(dirname "$BIN")/luban"
+    [[ -x "$luban" ]] || luban="$(dirname "$BIN")/luban-tool/luban"
+    if [[ -x "$luban" ]]; then cp "$luban" "$dir/bin/luban"; cp "$luban" "$dir/bin/luban-init"; fi
     # XLINGS_TEST_INDEX: an index to use instead of the published one (a
     # local checkout while its PR is open).
     if [[ -n "${XLINGS_TEST_INDEX:-}" ]]; then

@@ -4,7 +4,7 @@
 # stage-0 and its init -- on BIOS, and on UEFI where OVMF is. Then
 # `luban try --proxy`: the machine's only network is the proxy.
 #
-# limine comes from its release (the binary files and its tool built here);
+# limine and the kernel come with the edition's boot profile (luban-boot-generic);
 # xorriso, when the machine has it, makes the ISO a BIOS+UEFI hybrid.
 #
 # xtest: covers=LUBAN-ISO,LUBAN-DRIVE,LUBAN-TRY,LUBAN-BOOT-PROFILE requires=linux,qemu,bwrap,network
@@ -24,17 +24,8 @@ cp "$LUBAN" "$H/bin/luban"
 cp "$LUBAN" "$H/bin/luban-init"
 L() { ( cd /tmp && env -u XLINGS_ACTIVE_SUBOS -u XLINGS_SUBOS_MODE XLINGS_HOME="$H" DISPLAY= WAYLAND_DISPLAY= "$H/bin/luban" "$@" ); }
 
-log "limine (release binary files, its tool built here)"
-LIMINE="$H/data/xpkgs/xim-x-limine/12.9.3"
-mkdir -p "$LIMINE/share/limine" "$LIMINE/bin"
-retry curl -fsSL -o "$RUNTIME_DIR/limine.tgz" \
-  https://github.com/limine-bootloader/limine/releases/download/v12.9.3/limine-binary.tar.gz
-tar -xzf "$RUNTIME_DIR/limine.tgz" -C "$RUNTIME_DIR"
-src="$RUNTIME_DIR/limine-binary"
-cp "$src"/limine-bios-cd.bin "$src"/limine-bios.sys "$src"/limine-uefi-cd.bin "$src"/BOOTX64.EFI "$LIMINE/share/limine/"
-cc -O2 -std=gnu11 -static -o "$LIMINE/bin/limine" "$src/limine.c" 2>/dev/null \
-  || cc -O2 -std=gnu11 -o "$LIMINE/bin/limine" "$src/limine.c"
-
+# limine: the index's (prebuilt boot files and a static tool), installed by
+# the edition's boot profile when the first image is made.
 log "luban new t tiny"
 n=0
 until L new t tiny >"$RUNTIME_DIR/new.log" 2>&1; do
