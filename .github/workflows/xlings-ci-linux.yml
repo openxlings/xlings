@@ -640,6 +640,18 @@ jobs:
           path: target/xdev/
           if-no-files-found: ignore
 
+  # The host matrix's smoke legs on this build (Luban OS design part 2 §5):
+  # Ubuntu 24.04 with its user-namespace restriction as shipped, and a
+  # Fedora userland -- each as an ordinary user without sudo. Every leg:
+  # nightly and on demand (xlings-ci-host-matrix.yml).
+  host-matrix:
+    needs: build-and-test
+    if: ${{ !cancelled() && needs.build-and-test.outputs.release_ready == 'true' }}
+    uses: ./.github/workflows/xlings-ci-host-matrix.yml
+    with:
+      legs: smoke
+      artifact: xlings-linux-x86_64
+
   # Deployment S as a distribution ships it (design part 2 §5): the AUR
   # recipe built from THIS build's release artifact, installed with pacman,
   # used by two users. Replaces xlings-ci-archlinux.yml, which ran only when
