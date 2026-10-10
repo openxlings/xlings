@@ -631,6 +631,46 @@ std::expected<Policy, std::string> apply(Policy p, const Overrides& o) {
     return p;
 }
 
+std::vector<std::string> loosened(const Policy& from, const Policy& to) {
+    std::vector<std::string> out;
+    if (rank(to.net) < rank(from.net))
+        out.push_back(std::format("net {} -> {}", to_string(from.net), to_string(to.net)));
+    if (rank(to.fetch) < rank(from.fetch))
+        out.push_back(std::format("fetch {} -> {}", to_string(from.fetch), to_string(to.fetch)));
+    if (rank(to.index_update) < rank(from.index_update))
+        out.push_back(std::format("index_update {} -> {}", to_string(from.index_update), to_string(to.index_update)));
+    if (rank(to.observe) < rank(from.observe))
+        out.push_back(std::format("observe {} -> {}", to_string(from.observe), to_string(to.observe)));
+    if (from.identity == Identity::Neutral && to.identity == Identity::Host) out.push_back("identity neutral -> host");
+    for (const auto& [dim, need] : from.needs) {
+        auto it = to.needs.find(dim);
+        if (need == Need::Must && (it == to.needs.end() || it->second != Need::Must))
+            out.push_back(std::format("needs.{} must -> should", dim));
+    }
+    for (const auto& e : to.env_pass)
+        if (std::ranges::find(from.env_pass, e) == from.env_pass.end()) out.push_back("env_pass + " + e);
+    if (to.env_inherit && !from.env_inherit) out.push_back("env_inherit");
+    if (to.env_explicit_any && !from.env_explicit_any) out.push_back("env_explicit_any");
+    for (const auto& m : to.mounts) {
+        auto same = std::ranges::find_if(from.mounts, [&](const Mount& f) { return f.src == m.src && f.dst == m.dst; });
+        if (same == from.mounts.end()) out.push_back("mount + " + m.src);
+        else if (m.rw && !same->rw) out.push_back("mount " + m.src + " ro -> rw");
+    }
+    for (const auto& g : to.grants) if (!from.grants.contains(g)) out.push_back("grant + " + g);
+    for (const auto& g : to.grants_allowed) if (!from.grants_allowed.contains(g)) out.push_back("grants_allowed + " + g);
+    if (from.disable_userns && !to.disable_userns) out.push_back("nested user namespaces allowed");
+    if (from.no_degrade && !to.no_degrade) out.push_back("no_degrade off");
+    if (from.mounts_ro_default && !to.mounts_ro_default) out.push_back("mounts read-write by default");
+    // Fetch rules are ordered: any change to them is not provably tighter.
+    auto rules_equal = [](const std::vector<Policy::Rule>& a, const std::vector<Policy::Rule>& b) {
+        return std::ranges::equal(a, b, [](const Policy::Rule& x, const Policy::Rule& y) {
+            return x.match == y.match && x.index == y.index && x.size_gt == y.size_gt && x.action == y.action;
+        });
+    };
+    if (!rules_equal(from.fetch_rules, to.fetch_rules)) out.push_back("fetch rules changed");
+    return out;
+}
+
 std::vector<std::string> diff(const Policy& a, const Policy& b) {
     // Objects are walked; a list is one value (a reordered or extended grant
     // list reads as one change, not as one line per shifted index).

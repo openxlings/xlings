@@ -49,6 +49,9 @@ XTEST(LubanCli, EachCommandIsTheXlingsCommandItNames, .area = "luban", .covers =
               (V{"subos", "config", "box", "--sandbox", "xim:agent-private"}));
     EXPECT_EQ(x({"history", "box"}), (V{"subos", "rollback", "box", "--list"}));
     EXPECT_EQ(x({"rollback", "box", "--to", "3"}), (V{"subos", "rollback", "box", "--to", "3"}));
+    EXPECT_EQ(x({"upgrade", "box"}), (V{"subos", "upgrade", "box"}));
+    EXPECT_EQ(x({"upgrade", "box", "--to", "2026.11.1.1", "--dry-run", "-y"}),
+              (V{"subos", "upgrade", "box", "--to", "2026.11.1.1", "--dry-run", "-y"}));
     EXPECT_EQ(x({"rm", "box"}), (V{"subos", "remove", "box"}));
     EXPECT_EQ(x({"setup"}), (V{"self", "doctor", "--isolation", "--fix"}));
 }

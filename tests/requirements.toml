@@ -47,6 +47,14 @@ status = "required"
 text = "an image boots by a boot profile (--boot, else the edition's boot.profile): it is installed into the root, and its kernel release and command line are the image's; --boot and --kernel together are refused"
 status = "required"
 
+[LUBAN-UPGRADE]
+text = "subos upgrade / luban upgrade moves an environment made from an edition to a newer version: what the edition brought follows it, what the user moved stays theirs, what it dropped stays installed; one new generation; nothing changes without confirmation (agent: exit 2 with -y)"
+status = "required"
+
+[LUBAN-UPGRADE-NEVER-LOOSENS]
+text = "an upgrade applies the edition's policy only when it allows nothing more than the one in force; a looser one is kept out and named, with the subos config command that switches to it"
+status = "required"
+
 [LUBAN-CLI-LEVELS]
 text = "a command tree is declared once; help shows the common commands and says how to see more, then everything"
 status = "required"

@@ -115,6 +115,8 @@ const CommandSpec& root() {
                      {"-n, --lines <N>", "Show the last N events (default 50)"},
                      {"-f, --follow", "Keep printing new events"},
                      {"--json", "One JSON object per event"}}, {}},
+                {"upgrade", "Move a SubOS made from an edition to its newest version (your packages stay yours)", {}, {{"name", "SubOS name", true}},
+                    {{"--to <VERSION>", "This version of the edition"}, {"--dry-run", "Show the plan only"}}, {}},
                 {"rollback", "Move a root SubOS back to an earlier generation", {}, {{"name", "SubOS name", true}},
                     {{"--to <N>", "This generation (default: the one before)"}, {"--list", "List the generations"}}, {}},
                 {"boot", "Choose the SubOS a machine boots, from the next boot on", {}, {{"name", "SubOS name; omit to show", false}},

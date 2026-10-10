@@ -954,12 +954,15 @@ fs::path locate_base_pkg_(const PkgRef& ref) {
         return fs::is_directory(candidate) ? candidate : fs::path{};
     }
 
-    // No version → take the highest-sorted installed version directory.
+    // No version and none in the index: the newest installed one.
     fs::path latest;
     std::error_code ec;
     for (auto it = fs::directory_iterator(base, ec);
          !ec && it != std::default_sentinel; it.increment(ec)) {
-        if (it->is_directory(ec)) latest = it->path();
+        if (it->is_directory(ec)
+            && (latest.empty() || version_order::compare(it->path().filename().string(),
+                                                         latest.filename().string()) > 0))
+            latest = it->path();
     }
     return latest;
 }
@@ -970,6 +973,10 @@ fs::path resolve_base_package_(const std::string& fromSpec, EventStream& stream)
     auto& p = Config::paths();
     // ── pkg-spec path: locate or install the base xpkg ────────────
     auto ref = new_from_detail_::parse_pkg_spec_(fromSpec);
+    // No version: the index's (its `latest`), not whichever is installed --
+    // an edition installed once would otherwise be the newest forever.
+    if (ref.ver.empty())
+        if (auto v = xim::index_version_of(fromSpec, xim::CatalogAccess::LocalOnly)) ref.ver = *v;
     auto baseDir = new_from_detail_::locate_base_pkg_(ref);
 
     if (!baseDir.empty()) {
@@ -2581,6 +2588,7 @@ int run(int argc, char* argv[], EventStream& stream) {
         return run_log_(argc, argv, stream, usageError);
     }
     if (sub == "rollback") return run_rollback_(argc, argv, stream, usageError);
+    if (sub == "upgrade") return run_upgrade_(argc, argv, stream, usageError, yesGiven);
     if (sub == "boot") return run_boot_(argc, argv, stream, usageError);
     if (sub == "export") return run_export_(argc, argv, stream, usageError);
     if (sub == "diff") return run_diff_(argc, argv, stream, usageError);

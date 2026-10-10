@@ -35,6 +35,9 @@ import luban.image;
 import xlings.platform.target;
 import xlings.subos.tools;
 import xlings.subos.caps;
+import xlings.subos.edition;
+import xlings.core.version_order;
+import xlings.core.confirm;
 
 namespace xlings::subos {
 
@@ -529,6 +532,229 @@ int declare_root_at_creation_(const std::string& name, bool rootfs, const std::s
     if (!fs::exists(usr / "bin" / "sh", ec))
         log::info("it has no shell yet: `xlings install busybox --subos {}`, or create it "
                   "--from subos:luban-tiny", name);
+    return 0;
+}
+
+// ── upgrade ──────────────────────────────────────────────────────────
+//
+// `subos upgrade <name> [--to <version>] [--dry-run] [-y]` (Luban OS design
+// part 2 §3.3): an environment made from an edition moves to a newer version
+// of it. One new generation (rollback undoes the packages); the packages the
+// user moved stay theirs; the ones the edition dropped stay installed; the
+// edition's policy is applied only when it allows nothing more than the one
+// in force -- a looser one is the owner's explicit `subos config`.
+
+namespace {
+
+// A template's manifest and the `from` chain below it, as refs and
+// manifests, top first -- read, never copied anywhere.
+struct Chain {
+    std::vector<std::pair<std::string, fs::path>> templates;   // ref, payload dir
+    std::vector<std::string> packages;                          // merged, as declared
+    std::string policy;
+};
+
+std::optional<Chain> chain_of_(const std::string& ref, EventStream& stream) {
+    Chain c;
+    std::map<std::string, std::string> by_key;
+    std::vector<std::string> order;
+    std::vector<nlohmann::json> manifests;
+    for (std::string from = ref; !from.empty();) {
+        if (c.templates.size() > 8) {
+            error_(stream, "the `from` chain is longer than 8: a cycle?");
+            return std::nullopt;
+        }
+        const auto dir = resolve_base_package_(from, stream);
+        if (dir.empty()) return std::nullopt;
+        std::string resolved = from;
+        if (from.find('@') == std::string::npos) resolved += "@" + dir.filename().string();
+        c.templates.emplace_back(resolved, dir);
+        manifests.push_back(read_json_(dir / ".xlings.json"));
+        from = manifests.back().value("from", std::string());
+    }
+    for (auto it = manifests.rbegin(); it != manifests.rend(); ++it)   // bottom first
+        for (auto& p : it->value("packages", nlohmann::json::array())) {
+            if (!p.is_string()) continue;
+            const auto key = package_key_(p.get<std::string>());
+            if (!by_key.contains(key)) order.push_back(key);
+            by_key[key] = p.get<std::string>();
+        }
+    for (auto& k : order) c.packages.push_back(by_key[k]);
+    for (const auto& m : manifests)
+        if (auto p = m.find("policy"); p != m.end() && p->is_string()) { c.policy = p->get<std::string>(); break; }
+    return c;
+}
+
+std::vector<std::string> configured_keys_(const fs::path& home, const std::string& name) {
+    std::vector<std::string> out;
+    const auto configured = read_json_(HomeView{home}.instance(name) / ".xlings.json")
+                                .value("configured", nlohmann::json::object());
+    for (auto it = configured.begin(); it != configured.end(); ++it) out.push_back(it.key());
+    return out;
+}
+
+}  // namespace
+
+int run_upgrade_(int argc, char* argv[], EventStream& stream, const UsageError& usageError, bool yes) {
+    std::string name, to;
+    bool dry = false;
+    for (int i = 3; i < argc; ++i) {
+        std::string a = argv[i];
+        if (a == "--to" && i + 1 < argc) to = argv[++i];
+        else if (a == "--dry-run") dry = true;
+        else if (!a.empty() && a[0] != '-' && name.empty()) name = a;
+        else { usageError("unknown option for `xlings subos upgrade`: " + a); return 1; }
+    }
+    if (name.empty()) { usageError("usage: xlings subos upgrade <name> [--to <version>] [--dry-run] [-y]"); return 1; }
+    if (!exists_(name)) { error_(stream, "no SubOS named '" + name + "'"); return 1; }
+    if (!role_allows_(roles::Op::Packages, name, stream)) return 1;
+    const auto home = home_dir_();
+    const auto file = HomeView{home}.instance_file(name);
+    auto instance = read_json_(file);
+    const auto now = subos::edition::read(instance);
+    if (!now) {
+        error_(stream, std::format("'{}' has no edition to upgrade from: it was not made from one, or was made "
+                                   "before xlings recorded it (2026.10.10.3)", name),
+               std::format("xlings install <package> --subos {} updates a package; a new environment from the "
+                           "edition has the newest of everything", name));
+        return 1;
+    }
+    const auto [key, version] = subos::edition::split(now->ref);
+    // The newest of the edition, or the version asked for. The index is
+    // whatever this home has: `xlings update` refreshes it.
+    const auto target = to.empty() ? key : key + "@" + to;
+    const auto chain = chain_of_(target, stream);
+    if (!chain) return 1;
+    const auto& top = chain->templates.front();
+    if (auto refused = root_abi_refusal_(read_json_(top.second / ".xlings.json"))) {
+        error_(stream, std::format("{} cannot run here: {}", top.first, *refused));
+        return 1;
+    }
+    if (const auto m = read_json_(top.second / ".xlings.json").value("min_client", std::string()); !m.empty()) {
+        const auto order = policy::compare_client_versions(Info::VERSION, m);
+        if (!order || *order < 0) {
+            error_(stream, std::format("{} needs xlings >= {}, this is {}", top.first, m, Info::VERSION),
+                   "xlings self update");
+            return 1;
+        }
+    }
+    const auto plan = subos::edition::plan(*now, chain->packages, configured_keys_(home, name));
+
+    // The policy: applied when it allows nothing more than the one in force.
+    std::vector<std::string> loosened;
+    bool apply_policy = false;
+    if (!chain->policy.empty() && chain->policy != now->policy) {
+        auto current = policy_store::read(HomeView{home}, name);
+        auto next = select_policy_package_(chain->policy, /*upgrade=*/false);
+        if (!next) { error_(stream, next.error().second); return next.error().first; }
+        const auto base = current && *current ? **current : policy::legacy();
+        loosened = policy::loosened(base, *next);
+        apply_policy = loosened.empty();
+    }
+
+    const bool same = top.first == now->ref;
+    log::println("{}: {} -> {}", name, now->ref, top.first);
+    for (const auto& s : plan.upgrade)
+        log::println("  upgrade  {} {} -> {}", s.key, s.from.empty() ? "?" : s.from,
+                     subos::edition::split(s.to).second.empty() ? "newest" : subos::edition::split(s.to).second);
+    for (const auto& s : plan.add) log::println("  add      {}", s.to);
+    for (const auto& s : plan.kept)
+        log::println("  keep     {} {} (yours; the edition has {})", s.key, s.from, s.to);
+    for (const auto& k : plan.dropped) log::println("  keep     {} (the edition no longer has it; `xlings remove` drops it)", k);
+    if (!chain->policy.empty() && chain->policy != now->policy) {
+        if (apply_policy) log::println("  policy   {} -> {}", now->policy.empty() ? "(none)" : now->policy, chain->policy);
+        else {
+            std::string what;
+            for (const auto& l : loosened) what += (what.empty() ? "" : ", ") + l;
+            log::println("  policy   {} kept: {} allows more ({})", now->policy, chain->policy, what);
+            log::println("           to switch: xlings subos config {} --sandbox {}", name, chain->policy);
+        }
+    }
+    if (plan.empty() && same && !apply_policy) {
+        log::println("{} is up to date", name);
+        return 0;
+    }
+    if (dry) return 0;
+    auto asked = confirm::ask(stream, "subos_upgrade", std::format("upgrade '{}'?", name), yes, "-y");
+    if (asked.outcome == confirm::Outcome::Declined) return 0;
+    if (asked.outcome == confirm::Outcome::NobodyToAsk) {
+        stream.emit(ErrorEvent{.code = ErrorCode::InvalidInput,
+            .message = std::format("upgrading '{}' needs confirmation; nothing changed", name),
+            .recoverable = true, .hint = std::format("xlings subos upgrade {} -y", name)});
+        return 2;
+    }
+
+    // The templates' files (factory /etc and the rest an edition ships):
+    // derived data, the edition's, so the new one's replace them; the top's
+    // win. The manifest keys an edition owns follow it; the scope's own keys
+    // (workspace, configured, subos_info) stay.
+    const auto dir = HomeView{home}.instance(name);
+    std::error_code ec;
+    for (auto t = chain->templates.rbegin(); t != chain->templates.rend(); ++t) {
+        for (fs::recursive_directory_iterator it(t->second, ec), end; !ec && it != end; it.increment(ec)) {
+            const auto rel = it->path().lexically_relative(t->second);
+            if (rel == ".xlings.json" || *rel.begin() == "bin") continue;
+            std::error_code sec;
+            if (it->is_directory(sec) && !it->is_symlink(sec)) { fs::create_directories(dir / rel, sec); continue; }
+            fs::remove(dir / rel, sec);
+            fs::copy(it->path(), dir / rel, fs::copy_options::copy_symlinks, sec);
+        }
+    }
+    {
+        auto manifest = read_json_(dir / ".xlings.json");
+        const auto next = read_json_(top.second / ".xlings.json");
+        for (const auto* k : {"subos_kind", "from", "packages", "abi", "boot", "policy", "min_client"}) {
+            if (next.contains(k)) manifest[k] = next[k];
+            else manifest.erase(k);
+        }
+        if (auto w = write_json_(dir / ".xlings.json", manifest); !w) { error_(stream, w.error(), {}, ErrorCode::Internal); return 1; }
+    }
+    std::vector<std::string> specs;
+    for (const auto& s : plan.upgrade) specs.push_back(s.to);
+    for (const auto& s : plan.add) specs.push_back(s.to);
+    if (!specs.empty() && xim::cmd_install_step(specs, name, stream, /*plumbing=*/false) != 0) {
+        log::info("'{}' is partly upgraded: `xlings subos upgrade {}` again finishes it, "
+                  "`xlings subos rollback {}` goes back", name, name, name);
+        return 1;
+    }
+    if (apply_policy) {
+        std::vector<std::string> words{"xlings", "subos", "config", name, "--sandbox", chain->policy};
+        std::vector<char*> args;
+        for (auto& w : words) args.push_back(w.data());
+        args.push_back(nullptr);
+        if (auto r = run_config_(static_cast<int>(words.size()), args.data(), stream, usageError); r != 0) return r;
+    }
+    // The record: what the edition brought now, as installed.
+    subos::edition::Record next{.ref = top.first, .chain = {}, .packages = {},
+                                .policy = apply_policy || now->policy.empty() ? chain->policy : now->policy};
+    for (std::size_t i = 1; i < chain->templates.size(); ++i) next.chain.push_back(chain->templates[i].first);
+    const auto configured = configured_keys_(home, name);
+    for (const auto& spec : chain->packages) {
+        const auto k = subos::edition::split(spec).first;
+        std::string installed;
+        for (const auto& c : configured) {
+            auto [ck, cv] = subos::edition::split(c);
+            if (ck == k && (installed.empty() || version_order::compare(cv, installed) > 0)) installed = cv;
+        }
+        // The user's version of a package they moved is theirs: the record
+        // keeps what the edition last brought.
+        if (std::ranges::any_of(plan.kept, [&](const auto& s) { return s.key == k; }))
+            installed = now->packages.contains(k) ? now->packages.at(k) : std::string();
+        next.packages[k] = installed;
+    }
+    instance = read_json_(file);
+    instance["edition"] = subos::edition::to_json(next);
+    if (auto w = write_json_(file, instance); !w) { error_(stream, w.error(), {}, ErrorCode::Internal); return 1; }
+    auto r = subos_root::refresh(home, name, "subos upgrade");
+    if (r && !*r) {
+        error_(stream, "the root of '" + name + "' could not be laid out: " + r->error(), {}, ErrorCode::Internal);
+        return 1;
+    }
+    observe::append(HomeView{home}.logs_dir(name) / "events.ndjson", observe::Event{
+        .kind = observe::Kind::Lifecycle,
+        .fields = {{"event", "upgrade"}, {"instance", name}, {"from", now->ref}, {"to", top.first}}});
+    log::info("'{}' is {} (generation {}); `xlings subos rollback {}` goes back", name, top.first,
+              r && *r ? (*r)->generation : 0, name);
     return 0;
 }
 

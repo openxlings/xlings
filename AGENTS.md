@@ -214,6 +214,14 @@ guide is `docs/quick-start/luban.md`. What to keep in mind near it:
   `--drive` (GPT, FAT system partition, ext4 root by PARTUUID; written
   in-process by `luban.image`) boot on BIOS and UEFI --
   tests/e2e/luban_image_test.sh boots both under qemu.
+* **An environment made from an edition can move to a newer one**
+  (`subos upgrade` / `luban upgrade`). `instance.json` `edition` records what
+  the edition brought (ref, chain, packages as installed, policy);
+  `xlings.subos.edition::plan` decides: the edition's packages follow it, the
+  ones the user moved stay theirs, the ones it dropped stay installed. A
+  policy is applied only when `policy::loosened` is empty -- an upgrade never
+  loosens isolation. A template ref without a version resolves to the
+  index's `latest`, never to whichever version happens to be installed.
 * **A neutral identity is a persona** (`xlings.subos.persona`): the same
   host name and machine-id on every entry, made once per instance, never
   copied by a fork; its zone is UTC, a chosen one, or the proxy's exit asked

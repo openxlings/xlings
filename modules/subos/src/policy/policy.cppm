@@ -205,6 +205,11 @@ bool fetches_into_layer(const Policy& p);
 
 // Field-by-field differences, for the audit of a policy change.
 std::vector<std::string> diff(const Policy& before, const Policy& after);
+// What `to` allows that `from` does not, one line per dimension (empty: `to`
+// is as strict or stricter everywhere). An upgrade applies a policy only
+// when this is empty; a looser one is the owner's explicit choice
+// (Luban OS design part 2 §3.3).
+std::vector<std::string> loosened(const Policy& from, const Policy& to);
 
 // ── The one decision (design §9) ─────────────────────────────────────
 

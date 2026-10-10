@@ -29,6 +29,7 @@ const std::map<std::string, std::string, std::less<>>& equivalents() {
         {"status", "xlings subos status <name>"},
         {"config", "xlings subos config <name> --<key> <value>"},
         {"history", "xlings subos rollback <name> --list"},
+        {"upgrade", "xlings subos upgrade <name> [--to <version>] [--dry-run] [-y]"},
         {"rollback", "xlings subos rollback <name> [--to <N>]"},
         {"export", "xlings subos export <name> --iso|--drive|--qcow2|--tar|--rootfs <file>"},
         {"rm", "xlings subos remove <name>"},
@@ -199,6 +200,11 @@ const spec::CommandSpec& tree() {
              .level = Level::More},
             {.name = "history", .description = "An environment's generations", .arguments = {{"name", "Which"}},
              .level = Level::More},
+            {.name = "upgrade", .description = "Move an environment to its edition's newest version",
+             .arguments = {{"name", "Which", true}},
+             .options = {{"--to <VERSION>", "This version of the edition"}, {"--dry-run", "Show the plan only"},
+                         {"-y, --yes", "Do not ask"}},
+             .level = Level::More},
             {.name = "rollback", .description = "Go back a generation", .arguments = {{"name", "Which"}},
              .options = {{"--to <N>", "This generation"}}, .level = Level::More},
             {.name = "export", .description = "Make an image: .iso, .img, .qcow2, .tar(.zst|.gz), or a directory",
@@ -358,6 +364,10 @@ std::expected<std::vector<std::string>, std::string> to_xlings(std::span<const s
                 return std::unexpected(std::format("no setting '{}': proxy, tz, policy, allow, disallow, mount, "
                                                    "unmount, fetch, observe", key));
         }
+    } else if (cmd == "upgrade") {
+        if (auto e = need(1, "a name")) return std::unexpected(*e);
+        x = {"subos", "upgrade", positional[0]};
+        if (auto v = value("--to")) x.insert(x.end(), {"--to", *v});
     } else if (cmd == "history" || cmd == "rollback") {
         std::string name = positional.empty() ? std::string{} : positional[0];
         if (name.empty())

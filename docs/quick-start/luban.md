@@ -27,6 +27,7 @@ luban config box                      # 查看设置
 luban config box proxy socks5h://127.0.0.1:7897
 luban config box tz utc               # utc / proxy（代理出口）/ Asia/Tokyo
 luban config box policy xim:agent-confined
+luban upgrade box [--dry-run]         # 升到 edition 的最新版本：先列出变化；你自己装或改过版本的包保持不变；一代，可回滚
 luban history box                     # 代的历史
 luban rollback box [--to 3]           # 回滚
 luban export box box.iso              # live ISO（BIOS 和 UEFI，从内存运行）
@@ -57,6 +58,7 @@ luban status agent
 - 一个固定的、中性的身份：主机名和 machine-id 在创建时随机一次，之后不变；时区默认跟随代理出口（经代理查询，查不到就用 UTC，绝不用宿主的）。
 - 共享内核时无法隐藏的（内核版本、CPU 型号、绑定进来的宿主路径），`luban status` 如实列出。需要完全隔离时：`luban try agent --proxy socks5h://127.0.0.1:7897`——同一个环境运行在自己的内核上，网络只有代理。
 - 只需要把 agent 和宿主隔开、不需要隐藏身份时：`luban config agent policy xim:agent-confined`。
+- agent（claude）在 edition 里不锁版本：创建时装当时的最新版并记录下来，`luban upgrade agent` 更新它。升级只会收紧隔离：新版本的策略若放宽了任何一项，升级保留旧策略并列出放宽的项，切换要显式 `luban config agent policy ...`。
 
 ## 4. 打造自己的发行版
 
