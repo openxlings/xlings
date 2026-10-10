@@ -3,7 +3,7 @@
 # fetched (agent mode: exit 2 and the command), each edition the index has is
 # made and entered, and luban reports them.
 source "$(dirname "$0")/../lib.sh"
-has() { X search "$1" 2>/dev/null | grep -q "$1"; }
+has() { X info "subos:$1" >/dev/null 2>&1; }   # search echoes the query: not a test
 first=tiny; has luban-nano && first=nano
 if [[ -z "${HM_SETUP_DONE:-}" ]] && ! X self doctor --isolation >/dev/null 2>&1; then
     step "agent mode: luban new asks nothing, exits 2 with the setup" 2 'self doctor --isolation --fix|luban setup' -- \
