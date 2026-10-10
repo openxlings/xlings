@@ -1223,7 +1223,10 @@ int doctor_isolation(bool fix, bool yes, bool json, EventStream& stream) {
         for (auto& b : candidates) {
             auto first = b.probe_output.substr(0, b.probe_output.find('\n'));
             report["bwrap"].push_back({{"path", b.bin.string()}, {"source", b.source}, {"usable", b.usable},
-                                       {"probe", b.usable ? std::string("ok") : first}});
+                                       {"probe", !b.usable ? first : b.disable_userns_fails.empty() ? std::string("ok")
+                                           : "ok, but cannot forbid nested user namespaces (a private policy "
+                                             "needs that): " + b.disable_userns_fails},
+                                       {"forbids_userns", b.usable && b.disable_userns_fails.empty()}});
         }
     }
     // Where every external tool would come from (xlings.subos.tools): the
@@ -1257,7 +1260,13 @@ int doctor_isolation(bool fix, bool yes, bool json, EventStream& stream) {
     for (auto& g : xlings::confine::gates::probe(host_caps))
         report["gates"].push_back({{"gate", g.gate}, {"supported", g.supported},
                                    {"enforced", std::string(xlings::confine::gates::to_string(g.enforced))}, {"reason", g.reason}});
-    const bool ok = host_caps.platform != "linux" || (host_caps.bwrap && host_caps.bwrap->usable);
+    // Under the AppArmor restriction the one-time setup also gives a bwrap
+    // that can forbid nested user namespaces (a setuid one cannot): until
+    // then a private policy refuses to enter, so this host is not ready.
+    const bool restricted = read_sysctl("/proc/sys/kernel/apparmor_restrict_unprivileged_userns") == "1";
+    const bool ok = host_caps.platform != "linux" ||
+        (host_caps.bwrap && host_caps.bwrap->usable &&
+         (host_caps.bwrap->disable_userns_fails.empty() || !restricted));
     report["ok"] = ok;
 
     auto print = [&] {
@@ -1313,10 +1322,21 @@ int prepare_root_host(bool yes, EventStream& stream) {
     const auto home = subos::home_view();
     const auto ports = subos::make_ports(stream);
     auto candidates = caps::bwrap_candidates(home, ports);
-    if (std::ranges::any_of(candidates, [](const caps::Backend& b) { return b.usable; })) return 0;
     std::ifstream sysctl("/proc/sys/kernel/apparmor_restrict_unprivileged_userns");
     std::string restricted;
     std::getline(sysctl, restricted);
+    if (std::ranges::any_of(candidates, [](const caps::Backend& b) {
+            return b.usable && b.disable_userns_fails.empty(); })) return 0;
+    if (auto usable = std::ranges::find_if(candidates, [](const caps::Backend& b) { return b.usable; });
+        usable != candidates.end()) {
+        // It enters; only a policy that forbids nested user namespaces will
+        // refuse (a setuid bwrap). Said now, with the fix, not asked: most
+        // roots do not need it.
+        log::warn("{} cannot forbid nested user namespaces ({}): a private policy will refuse to enter{}",
+                  usable->bin.string(), usable->disable_userns_fails,
+                  restricted == "1" ? " -- fix: xlings self doctor --isolation --fix" : "");
+        return 0;
+    }
     if (candidates.empty() || restricted != "1") {
         // Nothing the one-time setup changes: the root is still worth making
         // (an export, an image for another machine) -- said now, not after

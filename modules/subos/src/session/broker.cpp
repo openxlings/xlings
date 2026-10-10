@@ -72,6 +72,11 @@ Classified classify(std::span<const std::string> argv, std::string_view instance
         c.ops.push_back(op("instance_admin", "index"));
     } else if (cmd == "profile" && argv.size() > 1 && argv[1] != "list") {
         c.route = Route::Broker;
+    } else if (cmd == "clipboard" && argv.size() > 1 && (argv[1] == "copy" || argv[1] == "paste")) {
+        // The host's clipboard, and nothing else of the display: what the
+        // instance's policy grants (`--allow clipboard` / `clipboard-paste`).
+        c.route = Route::Broker;
+        c.ops.push_back(op("grant", argv[1] == "copy" ? "clipboard" : "clipboard-paste"));
     }
     return c;
 }
@@ -148,7 +153,7 @@ bool available() {
     return fs::exists(socket_path(), ec);
 }
 
-int forward(std::span<const std::string> argv) {
+int forward(std::span<const std::string> argv, std::span<const int> stdio_in, bool quiet_refusal) {
     const auto path = socket_path();
     const int fd = platform::unix_connect(path);
     if (fd < 0) {
@@ -157,7 +162,8 @@ int forward(std::span<const std::string> argv) {
         return kExitPermission;
     }
     nlohmann::json req{{"op", "run"}, {"argv", std::vector<std::string>(argv.begin(), argv.end())}};
-    const int stdio[3] = {0, 1, 2};
+    const int standard[3] = {0, 1, 2};
+    const std::span<const int> stdio = stdio_in.size() == 3 ? stdio_in : std::span<const int>(standard);
     if (!platform::send_message(fd, req.dump(), stdio)) {
         platform::close_fd(fd);
         return kExitPermission;
@@ -168,6 +174,7 @@ int forward(std::span<const std::string> argv) {
         auto j = nlohmann::json::parse(m->data, nullptr, false);
         if (j.is_discarded() || j.contains("started")) continue;
         code = j.value("exit", kExitPermission);
+        if (quiet_refusal && code == kExitPermission) break;
         if (auto e = j.value("error", ""); !e.empty()) std::println(std::cerr, "[xlings] {}", e);
         if (auto h = j.value("hint", ""); !h.empty()) std::println(std::cerr, "[xlings] {}", h);
         break;

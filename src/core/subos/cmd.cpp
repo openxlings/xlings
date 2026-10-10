@@ -954,12 +954,15 @@ fs::path locate_base_pkg_(const PkgRef& ref) {
         return fs::is_directory(candidate) ? candidate : fs::path{};
     }
 
-    // No version → take the highest-sorted installed version directory.
+    // No version and none in the index: the newest installed one.
     fs::path latest;
     std::error_code ec;
     for (auto it = fs::directory_iterator(base, ec);
          !ec && it != std::default_sentinel; it.increment(ec)) {
-        if (it->is_directory(ec)) latest = it->path();
+        if (it->is_directory(ec)
+            && (latest.empty() || version_order::compare(it->path().filename().string(),
+                                                         latest.filename().string()) > 0))
+            latest = it->path();
     }
     return latest;
 }
@@ -970,6 +973,10 @@ fs::path resolve_base_package_(const std::string& fromSpec, EventStream& stream)
     auto& p = Config::paths();
     // ── pkg-spec path: locate or install the base xpkg ────────────
     auto ref = new_from_detail_::parse_pkg_spec_(fromSpec);
+    // No version: the index's (its `latest`), not whichever is installed --
+    // an edition installed once would otherwise be the newest forever.
+    if (ref.ver.empty())
+        if (auto v = xim::index_version_of(fromSpec, xim::CatalogAccess::LocalOnly)) ref.ver = *v;
     auto baseDir = new_from_detail_::locate_base_pkg_(ref);
 
     if (!baseDir.empty()) {
@@ -1062,6 +1069,19 @@ int new_from(const std::string& name, const fs::path& customDir,
     if (new_from_detail_::is_pkg_spec_(fromSpec)) {
         std::ifstream manifestIn(baseDir / ".xlings.json");
         auto manifest = nlohmann::json::parse(manifestIn, nullptr, false);
+        // An edition that uses what a newer client reads says so (Luban
+        // design part 2 §2.6): refused before anything is fetched.
+        if (auto m = manifest.is_object() ? manifest.find("min_client") : manifest.end();
+            !manifest.is_discarded() && manifest.is_object() && m != manifest.end() && m->is_string()) {
+            const auto order = policy::compare_client_versions(Info::VERSION, m->get<std::string>());
+            if (!order || *order < 0) {
+                stream.emit(ErrorEvent{.code = ErrorCode::InvalidInput,
+                    .message = std::format("{} needs xlings >= {}, this is {}", fromSpec, m->get<std::string>(),
+                                           Info::VERSION),
+                    .recoverable = true, .hint = "xlings self update"});
+                return 1;
+            }
+        }
         if (auto refused = root_abi_refusal_(manifest.is_discarded() ? nlohmann::json() : manifest)) {
             stream.emit(ErrorEvent{.code = ErrorCode::InvalidInput,
                                    .message = std::format("'{}' cannot be made here from {}: {}", name, fromSpec, *refused),
@@ -2568,6 +2588,7 @@ int run(int argc, char* argv[], EventStream& stream) {
         return run_log_(argc, argv, stream, usageError);
     }
     if (sub == "rollback") return run_rollback_(argc, argv, stream, usageError);
+    if (sub == "upgrade") return run_upgrade_(argc, argv, stream, usageError, yesGiven);
     if (sub == "boot") return run_boot_(argc, argv, stream, usageError);
     if (sub == "export") return run_export_(argc, argv, stream, usageError);
     if (sub == "diff") return run_diff_(argc, argv, stream, usageError);

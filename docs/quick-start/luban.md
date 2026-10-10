@@ -9,7 +9,7 @@ Luban 是一个最小 OS 模型：内核之上只有 xlings（包）和 luban（
 ```bash
 luban                         # 一屏概要：在哪里、有哪些环境、下一步
 luban new box                 # 新建环境（默认 Luban Core）
-luban new box tiny            # 指定 edition：nano / tiny / core / desktop / agent-workspace / ns:name
+luban new box tiny            # 指定 edition：nano / tiny / core / agent-workspace / ns:name（预览版：luban-desktop）
 luban enter box               # 进入
 luban run box -- make -j8     # 运行一个命令
 luban ls                      # 列出环境
@@ -27,11 +27,13 @@ luban config box                      # 查看设置
 luban config box proxy socks5h://127.0.0.1:7897
 luban config box tz utc               # utc / proxy（代理出口）/ Asia/Tokyo
 luban config box policy xim:agent-confined
+luban upgrade box [--dry-run]         # 升到 edition 的最新版本：先列出变化；你自己装或改过版本的包保持不变；一代，可回滚
 luban history box                     # 代的历史
 luban rollback box [--to 3]           # 回滚
 luban export box box.iso              # live ISO（BIOS 和 UEFI，从内存运行）
 luban export box box.img              # 驱动器镜像（GPT，BIOS 和 UEFI，ext4 根，持久）
 luban export box box.qcow2            # 同上，qcow2
+luban export box box.iso --boot virt  # 启动层：generic（真机，默认按 edition）/ virt（虚拟机）/ ns:name
 luban export box box.tar.zst          # rootfs（docker import / wsl --import）
 luban write box.iso /dev/sdb          # 制作启动盘（会要求输入驱动器名确认）
 luban write box /dev/sdb              # 直接把环境装到驱动器上
@@ -39,7 +41,7 @@ luban try box                         # 在本地虚拟机里试运行（qemu）
 luban rm box                          # 删除（会先询问）
 ```
 
-镜像需要内核：`xlings install linux-kernel --subos box`（edition 的 `boot.kernel` 会在提示里给出推荐的那个）。limine：`xlings install limine`。
+镜像怎么启动由启动层（boot profile）决定：内核、limine 和内核命令行。`--boot` 指定，否则用 edition 声明的；导出时它被装进环境里（和装内核一样）。没有启动层时，用环境里已有的内核（`xlings install linux-kernel --subos box`），或 `--kernel <vmlinuz>`。`luban try` 默认用 virt，索引里没有时退回环境自己的内核。
 
 `luban write` 只写整个驱动器，拒绝分区、已挂载或被占用的驱动器（包括系统所在的盘）。agent 模式下必须同时给出 `-y` 和 `--serial <驱动器序列号>`。
 
@@ -56,6 +58,14 @@ luban status agent
 - 一个固定的、中性的身份：主机名和 machine-id 在创建时随机一次，之后不变；时区默认跟随代理出口（经代理查询，查不到就用 UTC，绝不用宿主的）。
 - 共享内核时无法隐藏的（内核版本、CPU 型号、绑定进来的宿主路径），`luban status` 如实列出。需要完全隔离时：`luban try agent --proxy socks5h://127.0.0.1:7897`——同一个环境运行在自己的内核上，网络只有代理。
 - 只需要把 agent 和宿主隔开、不需要隐藏身份时：`luban config agent policy xim:agent-confined`。
+- 剪贴板不需要开放整个显示：
+  - 复制：`xlings clipboard copy`（读 stdin）。没有授权时经终端（OSC 52）复制，在你所坐的那台机器的剪贴板上生效。
+  - 粘贴：终端的粘贴（bracketed paste）。
+  - 要读写宿主的剪贴板：`luban config agent allow clipboard`（复制到宿主）、`allow clipboard-paste`（读取宿主），二者分开授权，都经 broker 执行。
+  - `luban status agent` 会列出当前的方式。
+  - TUI 的复制可以设成 OSC 52（例如 nvim 的 `vim.g.clipboard = 'osc52'`，tmux 的 `set-clipboard on`）或 `xlings clipboard copy`。
+- 从第二个终端进入正在运行的环境（`luban enter` / `luban run`）时，命令有自己的终端：job control、Ctrl-C 等信号，以及窗口尺寸都会跟随（100 ms 内）。
+- agent（claude）在 edition 里不锁版本：创建时装当时的最新版并记录下来，`luban upgrade agent` 更新它。升级只会收紧隔离：新版本的策略若放宽了任何一项，升级保留旧策略并列出放宽的项，切换要显式 `luban config agent policy ...`。
 
 ## 4. 打造自己的发行版
 

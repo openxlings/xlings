@@ -35,6 +35,26 @@ status = "required"
 text = "a pty with nothing typed exposes a program that waits for input"
 status = "required"
 
+[LUBAN-EDITION-MIN-CLIENT]
+text = "an edition whose manifest names a min_client newer than this xlings is refused before anything is fetched, with xlings self update"
+status = "required"
+
+[LUBAN-EDITION-RECORD]
+text = "a root made from an edition records its edition layer in instance.json: the resolved ref, the from chain, each declared package as installed, the declared policy"
+status = "required"
+
+[LUBAN-BOOT-PROFILE]
+text = "an image boots by a boot profile (--boot, else the edition's boot.profile): it is installed into the root, and its kernel release and command line are the image's; --boot and --kernel together are refused"
+status = "required"
+
+[LUBAN-UPGRADE]
+text = "subos upgrade / luban upgrade moves an environment made from an edition to a newer version: what the edition brought follows it, what the user moved stays theirs, what it dropped stays installed; one new generation; nothing changes without confirmation (agent: exit 2 with -y)"
+status = "required"
+
+[LUBAN-UPGRADE-NEVER-LOOSENS]
+text = "an upgrade applies the edition's policy only when it allows nothing more than the one in force; a looser one is kept out and named, with the subos config command that switches to it"
+status = "required"
+
 [LUBAN-CLI-LEVELS]
 text = "a command tree is declared once; help shows the common commands and says how to see more, then everything"
 status = "required"
@@ -93,6 +113,10 @@ status = "required"
 
 [LUBAN-ABI]
 text = "an edition declares its ABI (arch, kernel, libc, libc floor); one this machine cannot run is refused before anything is fetched; a kernel is a hint for images, never installed into the root"
+status = "required"
+
+[PRIVATE-USERNS-RESTRICTED-HOST]
+text = "a policy that forbids nested user namespaces refuses, before the entry and with the fix, a bwrap that cannot (setuid); the doctor is not satisfied by one; after the one-time setup it enters"
 status = "required"
 
 [PROXY-NET-RESTRICTED-HOST]
@@ -372,6 +396,14 @@ status = "required"
 
 [SES-SUPERVISOR]
 text = "entering forks and supervises instead of exec-replacing xlings"
+status = "required"
+
+[SES-JOIN-TERMINAL]
+text = "an interactive command that joins a session runs on a terminal of its own that follows the caller's window size (within 100 ms), its signals and its bytes"
+status = "required"
+
+[SUBOS-CLIPBOARD]
+text = "a SubOS reaches the host's clipboard through the broker under grants of their own (clipboard: copy, clipboard-paste: read), never implied and never the whole display; without the grant copy goes through the terminal (OSC 52) and says how to get the host's; status says which"
 status = "required"
 
 [SES-JOIN]

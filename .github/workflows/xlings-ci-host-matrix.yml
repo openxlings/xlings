@@ -1,0 +1,171 @@
+name: xlings-ci-host-matrix
+
+# The host matrix (Luban OS design part 2 §5): the same scenarios
+# (tests/host-matrix/scenarios) on the hosts users have -- AppArmor's user
+# namespace restriction on and off, SELinux, other kernels, other userlands --
+# each run as an ORDINARY user without sudo, where a one-time setup is asked
+# for the way a person meets it. Every incident of 2026.10.10 came from a CI
+# host cleaner than a user's machine; this is the layer that is not.
+#
+#   K legs (kernel / LSM): the runner images themselves, and other
+#   distributions' cloud images under KVM (tests/host-matrix/vm.sh).
+#   U legs (userland): distribution containers, on a host whose restriction is
+#   lifted -- what they test is the distribution, not the runner's AppArmor.
+#
+# smoke: the PR's own build on the two legs most likely to break
+# (xlings-ci-linux.yml calls it); full: every leg, nightly on the published
+# release and on demand; another repository (xim-pkgindex) calls it with its
+# index checkout.
+on:
+  workflow_call:
+    inputs:
+      legs: { type: string, default: smoke, description: "smoke | full" }
+      artifact: { type: string, default: "", description: "an artifact of this run holding release.tar.gz (x86_64)" }
+      version: { type: string, default: "", description: "a published release (default: the latest)" }
+      index_repository: { type: string, default: "" }
+      index_ref: { type: string, default: "" }
+  workflow_dispatch:
+    inputs:
+      legs: { type: choice, options: [smoke, full], default: full }
+      version: { type: string, default: "" }
+      run: { type: string, default: "", description: "an xlings-ci-linux run whose xlings-linux-x86_64 is the build under test (x86_64 legs)" }
+      index_repository: { type: string, default: "" }
+      index_ref: { type: string, default: "" }
+  schedule:
+    - cron: "30 6 * * *"
+
+permissions:
+  contents: read
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      legs: ${{ steps.plan.outputs.legs }}
+      version: ${{ steps.plan.outputs.version }}
+    steps:
+      - id: plan
+        env:
+          LEGS: ${{ inputs.legs || 'full' }}
+          VERSION: ${{ inputs.version }}
+          ARTIFACT: ${{ inputs.artifact || inputs.run }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          smoke='[
+            {"leg":"k-ubuntu-2404-restricted","kind":"runner","runner":"ubuntu-24.04","arch":"x86_64"},
+            {"leg":"u-fedora","kind":"container","runner":"ubuntu-24.04","arch":"x86_64","image":"fedora:latest",
+             "setup":"dnf -y -q install python3 curl sudo util-linux shadow-utils tar gzip findutils procps-ng >/dev/null"}]'
+          full='[
+            {"leg":"k-ubuntu-2404-restricted","kind":"runner","runner":"ubuntu-24.04","arch":"x86_64"},
+            {"leg":"k-ubuntu-2404-open","kind":"runner","runner":"ubuntu-24.04","arch":"x86_64","sysctl":"0"},
+            {"leg":"k-ubuntu-2204","kind":"runner","runner":"ubuntu-22.04","arch":"x86_64"},
+            {"leg":"k-ubuntu-2404-arm","kind":"runner","runner":"ubuntu-24.04-arm","arch":"aarch64"},
+            {"leg":"k-fedora","kind":"vm","runner":"ubuntu-24.04","arch":"x86_64","distro":"fedora"},
+            {"leg":"k-debian-12","kind":"vm","runner":"ubuntu-24.04","arch":"x86_64","distro":"debian-12"},
+            {"leg":"k-arch","kind":"vm","runner":"ubuntu-24.04","arch":"x86_64","distro":"arch"},
+            {"leg":"u-fedora","kind":"container","runner":"ubuntu-24.04","arch":"x86_64","image":"fedora:latest",
+             "setup":"dnf -y -q install python3 curl sudo util-linux shadow-utils tar gzip findutils procps-ng >/dev/null"},
+            {"leg":"u-arch","kind":"container","runner":"ubuntu-24.04","arch":"x86_64","image":"archlinux:latest",
+             "setup":"pacman -Sy --noconfirm --needed python curl sudo util-linux tar gzip findutils >/dev/null"},
+            {"leg":"u-tumbleweed","kind":"container","runner":"ubuntu-24.04","arch":"x86_64","image":"opensuse/tumbleweed:latest",
+             "setup":"zypper -n -q install python3 curl sudo util-linux shadow tar gzip findutils >/dev/null"},
+            {"leg":"u-debian-testing","kind":"container","runner":"ubuntu-24.04","arch":"x86_64","image":"debian:testing",
+             "setup":"apt-get -qq update && apt-get -qq install -y python3 curl sudo util-linux passwd ca-certificates >/dev/null"},
+            {"leg":"u-debian-12","kind":"container","runner":"ubuntu-24.04","arch":"x86_64","image":"debian:12",
+             "setup":"apt-get -qq update && apt-get -qq install -y python3 curl sudo util-linux passwd ca-certificates >/dev/null"},
+            {"leg":"u-ubuntu-2004","kind":"container","runner":"ubuntu-24.04","arch":"x86_64","image":"ubuntu:20.04",
+             "setup":"apt-get -qq update && DEBIAN_FRONTEND=noninteractive apt-get -qq install -y python3 curl sudo util-linux passwd ca-certificates >/dev/null"}]'
+          if [[ "$LEGS" == smoke ]]; then legs="$smoke"; else legs="$full"; fi
+          # A run's artifact is an x86_64 build: those legs only.
+          [[ -n "$ARTIFACT" ]] && legs="$(echo "$legs" | jq -c '[.[] | select(.arch == "x86_64")]')"
+          # The PR's artifact is an x86_64 build: smoke legs only.
+          echo "legs=$(echo "$legs" | jq -c .)" >> "$GITHUB_OUTPUT"
+          if [[ -z "$ARTIFACT" ]]; then
+            v="${VERSION:-$(gh release view -R openxlings/xlings --json tagName --jq .tagName)}"
+            echo "version=${v#v}" >> "$GITHUB_OUTPUT"
+          fi
+
+  leg:
+    needs: plan
+    name: ${{ matrix.leg }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 75
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.plan.outputs.legs) }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: openxlings/xlings
+          ref: ${{ github.repository == 'openxlings/xlings' && github.sha || 'main' }}
+          path: xlings
+      - name: The build under test (this run's artifact)
+        if: inputs.artifact != ''
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.artifact }}
+          path: build
+      - name: The build under test (another run's artifact)
+        if: inputs.run != ''
+        uses: actions/download-artifact@v4
+        with:
+          name: xlings-linux-x86_64
+          path: build
+          run-id: ${{ inputs.run }}
+          repository: openxlings/xlings
+          github-token: ${{ github.token }}
+      - name: The build under test (a release)
+        if: inputs.artifact == '' && inputs.run == ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          V: ${{ needs.plan.outputs.version }}
+        run: |
+          mkdir -p build
+          gh release download "v$V" -R openxlings/xlings -p "xlings-$V-linux-${{ matrix.arch }}.tar.gz" -O build/release.tar.gz
+      - name: The index under test
+        if: inputs.index_repository != ''
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.index_repository }}
+          ref: ${{ inputs.index_ref }}
+          path: index
+      - name: Run (${{ matrix.kind }})
+        env:
+          KIND: ${{ matrix.kind }}
+          SYSCTL: ${{ matrix.sysctl }}
+          IMAGE: ${{ matrix.image }}
+          SETUP: ${{ matrix.setup }}
+          DISTRO: ${{ matrix.distro }}
+        run: |
+          set -euo pipefail
+          tar=build/release.tar.gz
+          idx=(); [[ -d index ]] && idx=(--index index)
+          echo "apparmor_restrict_unprivileged_userns=$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns 2>/dev/null || echo absent)"
+          case "$KIND" in
+            runner)
+              [[ -n "$SYSCTL" ]] && sudo sysctl -q -w kernel.apparmor_restrict_unprivileged_userns="$SYSCTL"
+              sudo bash xlings/tests/host-matrix/run.sh --tarball "$tar" --evidence evidence "${idx[@]}" ;;
+            container)
+              # The container tests the distribution's userland: the
+              # runner's AppArmor restriction is the K legs' subject.
+              sudo sysctl -q -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+              docker run --rm --security-opt seccomp=unconfined --security-opt apparmor=unconfined \
+                --security-opt systempaths=unconfined --cap-add SYS_ADMIN \
+                -v "$PWD:/w" -w /w "$IMAGE" bash -c "$SETUP && bash xlings/tests/host-matrix/run.sh --tarball /w/$tar --evidence /w/evidence ${idx[*]:+--index /w/index}" ;;
+            vm)
+              sudo apt-get -qq update && sudo apt-get -qq install -y qemu-system-x86 qemu-utils cloud-image-utils >/dev/null
+              sudo chmod 666 /dev/kvm
+              bash xlings/tests/host-matrix/vm.sh "$DISTRO" --tarball "$tar" --evidence evidence "${idx[@]}" ;;
+          esac
+      - name: Summary
+        if: always()
+        run: |
+          { echo "### ${{ matrix.leg }}"; cat evidence/summary.md 2>/dev/null || echo "(no summary)"; } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: host-matrix-${{ matrix.leg }}
+          path: evidence/
+          if-no-files-found: ignore

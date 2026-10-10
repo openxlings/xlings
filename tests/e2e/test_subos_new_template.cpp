@@ -101,6 +101,10 @@ XTEST(SubosNewTemplate, AtATerminalTheChainAndItsPackagesAreOnePlanAndNothingHan
     EXPECT_EQ(count(created.out, "still resolves to"), 0u) << created.out;
     EXPECT_EQ(count(created.out, "subos created"), 1u) << created.out;
     EXPECT_TRUE(fs::exists(home.dir() / "data/xpkgs/fixture-x-hello/1.0.0/bin/hello"));
+    const auto made = Json::parse(tk::read_file(home.dir() / "config/subos/box/instance.json"));
+    EXPECT_EQ(made["edition"]["ref"], "fixture:t-top@1.0.0") << made.dump();
+    EXPECT_EQ(made["edition"]["chain"], Json::array({"fixture:t-base@1.0.0"})) << made.dump();
+    EXPECT_EQ(made["edition"]["packages"]["fixture:hello"], "1.0.0") << made.dump();
 }
 
 XTEST(SubosNewTemplate, AHostThatCannotMakeARootIsToldBeforeAnythingIsFetched,
@@ -136,7 +140,7 @@ XTEST(SubosNewTemplate, AHostThatCannotMakeARootIsToldBeforeAnythingIsFetched,
 }
 
 XTEST(SubosNewTemplate, AnEditionDeclaresItsAbiAndOneThisMachineCannotRunIsRefusedFirst,
-      .area = "luban", .cost = tk::Cost::Medium, .covers = {"LUBAN-ABI"}, .requires_ = {"linux", "xlings-bin"}) {
+      .area = "luban", .cost = tk::Cost::Medium, .covers = {"LUBAN-ABI", "LUBAN-EDITION-MIN-CLIENT", "LUBAN-EDITION-RECORD"}, .requires_ = {"linux", "xlings-bin"}) {
     if constexpr (!tk::is_linux) GTEST_SKIP() << "a rootfs SubOS is a Linux root";
     auto home = fixture_home("subos-new-abi");
     const auto bwrap = home.dir() / "data/xpkgs/xim-x-bwrap/0.11.2/bin/bwrap";
@@ -153,21 +157,135 @@ XTEST(SubosNewTemplate, AnEditionDeclaresItsAbiAndOneThisMachineCannotRunIsRefus
     };
     edition("abi-other", other + "-linux-gnu");
     edition("abi-musl", Json{{"arch", host}, {"kernel", "linux"}, {"libc", "musl"}});
+    edition("abi-uclibc", Json{{"arch", host}, {"kernel", "linux"}, {"libc", "uclibc"}});
     edition("abi-here", host + "-linux-gnu");
+    tk::write_file(repo / "pkgs/n/newer.lua", template_recipe("newer",
+        Json{{"subos_kind", "rootfs"}, {"min_client", "9999.1.1.1"}, {"packages", {"fixture:hello@1.0.0"}},
+             {"abi", host + "-linux-gnu"}, {"workspace", Json::object()}}));
     const std::map<std::string, std::string> env{{"XLINGS_TOOLS_SEARCH", "home"}};
+    // An edition that uses what a newer client reads says so: refused first.
+    auto newer = home.xlings({"subos", "new", "n", "--from", "fixture:newer@1.0.0"}, env);
+    EXPECT_NE(newer.exit_code, 0) << newer.transcript();
+    EXPECT_NE(newer.transcript().find("needs xlings >= 9999.1.1.1"), std::string::npos) << newer.transcript();
+    EXPECT_NE(newer.transcript().find("xlings self update"), std::string::npos) << newer.transcript();
+    EXPECT_FALSE(fs::exists(home.dir() / "subos/n")) << "half-made";
     auto refused = home.xlings({"subos", "new", "a", "--from", "fixture:abi-other@1.0.0"}, env);
     EXPECT_NE(refused.exit_code, 0) << refused.transcript();
     EXPECT_NE(refused.transcript().find("built for " + other), std::string::npos) << refused.transcript();
     EXPECT_FALSE(fs::exists(home.dir() / "data/xpkgs/fixture-x-hello")) << "fetched for a root it then refused";
     EXPECT_FALSE(fs::exists(home.dir() / "subos/a")) << "half-made";
+    // libc is a choice: musl is made (luban-tiny-musl), one the index has no
+    // payloads for is refused, naming it.
     auto musl = home.xlings({"subos", "new", "b", "--from", "fixture:abi-musl@1.0.0"}, env);
-    EXPECT_NE(musl.exit_code, 0);
-    EXPECT_NE(musl.transcript().find("libc=musl"), std::string::npos) << musl.transcript();
+    EXPECT_EQ(musl.exit_code, 0) << musl.transcript();
+    auto uclibc = home.xlings({"subos", "new", "b2", "--from", "fixture:abi-uclibc@1.0.0"}, env);
+    EXPECT_NE(uclibc.exit_code, 0);
+    EXPECT_NE(uclibc.transcript().find("libc=uclibc"), std::string::npos) << uclibc.transcript();
     auto made = home.xlings({"subos", "new", "c", "--from", "fixture:abi-here@1.0.0"}, env);
     ASSERT_EQ(made.exit_code, 0) << made.transcript();
     const auto instance = Json::parse(tk::read_file(home.dir() / "config/subos/c/instance.json"));
     EXPECT_EQ(instance["root_abi"]["arch"], host);
     EXPECT_EQ(instance["root_abi"]["libc"], "gnu");
+    // The edition layer, as it resolved: what an upgrade diffs against.
+    EXPECT_EQ(instance["edition"]["ref"], "fixture:abi-here@1.0.0") << instance.dump();
+    EXPECT_TRUE(instance["edition"]["chain"].empty()) << instance.dump();
+    EXPECT_EQ(instance["edition"]["packages"]["fixture:hello"], "1.0.0") << instance.dump();
     EXPECT_EQ(instance["boot"]["kernel"], "xim:linux-kernel-virt") << "a hint for an image, recorded";
     EXPECT_FALSE(fs::exists(home.dir() / "data/xpkgs/xim-x-linux-kernel-virt")) << "never installed into the root";
+}
+
+XTEST(SubosNewTemplate, AnUpgradeMovesTheEditionsPackagesKeepsTheUsersAndNeedsAYes,
+      .area = "luban", .cost = tk::Cost::Medium, .covers = {"LUBAN-UPGRADE", "LUBAN-EDITION-RECORD"},
+      .requires_ = {"linux", "xlings-bin"}) {
+    if constexpr (!tk::is_linux) GTEST_SKIP() << "a rootfs SubOS is a Linux root";
+    auto home = fixture_home("subos-upgrade");
+    const auto bwrap = home.dir() / "data/xpkgs/xim-x-bwrap/0.11.2/bin/bwrap";
+    tk::write_file(bwrap, "#!/bin/sh\nexit 0\n");
+    fs::permissions(bwrap, fs::perms::owner_all | fs::perms::group_read | fs::perms::group_exec);
+    const auto repo = home.root() / "index";
+    const std::string host = xlings::platform::host().arch;
+    // A package in two versions, one the edition drops, one it adds.
+    auto plain = [&](std::string name, std::vector<std::string> versions) {
+        std::string xpm;
+        for (auto& v : versions) xpm += std::format("['{}'] = {{}}, ", v);
+        tk::write_file(repo / "pkgs" / name.substr(0, 1) / (name + ".lua"), std::format(R"LUA(
+package = {{ spec = '1', name = '{}', archs = {{'x86_64', 'aarch64'}}, xpm = {{ linux = {{ {} }} }} }}
+import('xim.libxpkg.pkginfo')
+function install()
+    local dir = pkginfo.install_dir()
+    os.mkdir(path.join(dir, 'share'))
+    io.writefile(path.join(dir, 'share', 'v'), pkginfo.version())
+    return true
+end
+)LUA", name, xpm));
+    };
+    plain("lib", {"1.0.0", "2.0.0"});
+    plain("old", {"1.0.0"});
+    plain("added", {"1.0.0"});
+    const Json v1{{"subos_kind", "rootfs"}, {"abi", host + "-linux-gnu"},
+                  {"packages", {"fixture:lib@1.0.0", "fixture:old@1.0.0"}}, {"workspace", Json::object()}};
+    const Json v2{{"subos_kind", "rootfs"}, {"abi", host + "-linux-gnu"},
+                  {"packages", {"fixture:lib@2.0.0", "fixture:added@1.0.0"}}, {"workspace", Json::object()}};
+    tk::write_file(repo / "pkgs/e/ed.lua", std::format(R"LUA(
+package = {{ spec = '1', name = 'ed', type = 'subos', archs = {{'x86_64', 'aarch64'}},
+            xpm = {{ linux = {{ ['latest'] = {{ ref = '2.0.0' }}, ['1.0.0'] = {{}}, ['2.0.0'] = {{}} }} }} }}
+import('xim.libxpkg.pkginfo')
+local manifests = {{ ['1.0.0'] = {}, ['2.0.0'] = {} }}
+function install()
+    local dir = pkginfo.install_dir()
+    os.mkdir(path.join(dir, 'usr', 'share', 'factory', 'etc'))
+    io.writefile(path.join(dir, '.xlings.json'), manifests[pkginfo.version()])
+    io.writefile(path.join(dir, 'usr', 'share', 'factory', 'etc', 'motd'), 'ed ' .. pkginfo.version() .. '\n')
+    return true
+end
+)LUA", Json(v1.dump()).dump(), Json(v2.dump()).dump()));
+    const std::map<std::string, std::string> env{{"XLINGS_TOOLS_SEARCH", "home"}};
+    auto made = home.xlings({"subos", "new", "u", "--from", "fixture:ed@1.0.0"}, env);
+    ASSERT_EQ(made.exit_code, 0) << made.transcript();
+    auto record = [&] { return Json::parse(tk::read_file(home.dir() / "config/subos/u/instance.json"))["edition"]; };
+    EXPECT_EQ(record()["ref"], "fixture:ed@1.0.0");
+
+    // The plan: lib follows the edition, added comes, old stays (said).
+    auto dry = home.xlings({"subos", "upgrade", "u", "--dry-run"}, env);
+    ASSERT_EQ(dry.exit_code, 0) << dry.transcript();
+    EXPECT_NE(dry.out.find("fixture:ed@1.0.0 -> fixture:ed@2.0.0"), std::string::npos) << dry.transcript();
+    EXPECT_NE(dry.out.find("upgrade  fixture:lib 1.0.0 -> 2.0.0"), std::string::npos) << dry.transcript();
+    EXPECT_NE(dry.out.find("add      fixture:added@1.0.0"), std::string::npos) << dry.transcript();
+    EXPECT_NE(dry.out.find("fixture:old (the edition no longer has it"), std::string::npos) << dry.transcript();
+    EXPECT_EQ(record()["ref"], "fixture:ed@1.0.0") << "a dry run changes nothing";
+
+    // Nobody to ask: nothing changes, the exact flag is given.
+    auto unasked = home.xlings({"subos", "upgrade", "u"}, env);
+    EXPECT_EQ(unasked.exit_code, 2) << unasked.transcript();
+    EXPECT_NE(unasked.transcript().find("-y"), std::string::npos) << unasked.transcript();
+    EXPECT_EQ(record()["ref"], "fixture:ed@1.0.0");
+
+    auto done = home.xlings({"subos", "upgrade", "u", "-y"}, env);
+    ASSERT_EQ(done.exit_code, 0) << done.transcript();
+    EXPECT_EQ(record()["ref"], "fixture:ed@2.0.0") << record().dump();
+    EXPECT_EQ(record()["packages"]["fixture:lib"], "2.0.0") << record().dump();
+    EXPECT_EQ(record()["packages"]["fixture:added"], "1.0.0") << record().dump();
+    EXPECT_TRUE(fs::exists(home.dir() / "data/xpkgs/fixture-x-old/1.0.0")) << "dropped by the edition, kept here";
+    EXPECT_NE(tk::read_file(home.dir() / "subos/u/usr/share/factory/etc/motd").find("ed 2.0.0"), std::string::npos)
+        << "the edition's files are the new one's";
+    auto again = home.xlings({"subos", "upgrade", "u", "-y"}, env);
+    ASSERT_EQ(again.exit_code, 0) << again.transcript();
+    EXPECT_NE(again.out.find("up to date"), std::string::npos) << again.transcript();
+
+    // An unpinned package (an agent) is at the index's newest when made:
+    // not an upgrade until the index has a newer one.
+    tk::write_file(repo / "pkgs/u/unpinned.lua", template_recipe("unpinned",
+        Json{{"subos_kind", "rootfs"}, {"abi", host + "-linux-gnu"}, {"packages", {"fixture:lib"}},
+             {"workspace", Json::object()}}));
+    auto fresh = home.xlings({"subos", "new", "un", "--from", "fixture:unpinned@1.0.0"}, env);
+    ASSERT_EQ(fresh.exit_code, 0) << fresh.transcript();
+    auto current = home.xlings({"subos", "upgrade", "un", "--dry-run"}, env);
+    ASSERT_EQ(current.exit_code, 0) << current.transcript();
+    EXPECT_NE(current.out.find("up to date"), std::string::npos) << current.transcript();
+
+    // An environment not made from an edition says so.
+    ASSERT_EQ(home.xlings({"subos", "new", "plain"}, env).exit_code, 0);
+    auto none = home.xlings({"subos", "upgrade", "plain"}, env);
+    EXPECT_NE(none.exit_code, 0);
+    EXPECT_NE(none.transcript().find("has no edition to upgrade from"), std::string::npos) << none.transcript();
 }

@@ -93,3 +93,34 @@ XTEST(Confine, TheSelectorHonoursANamedBackendOrSaysWhyNotAndLandlockStartsAsThi
     EXPECT_EQ(cf::launch_argv(launched, std::nullopt, "/self/xlings"),
               (std::vector<std::string>{"/self/xlings", "__session-init", "--", "make"}));
 }
+
+XTEST(Confine, APolicyThatForbidsNestedUserNamespacesRefusesABwrapThatCannotWithTheFix,
+      .area = "subos", .covers = {"DOC-ISOLATION", "INTENT-EQ", "PRIVATE-USERNS-RESTRICTED-HOST"}) {
+    // A setuid bwrap (a recipe's, where sudo needs no password) enters, but
+    // does not support --disable-userns: bwrap failing after the entry left
+    // the session without its init (xim-pkgindex #945, Ubuntu 24.04 runner).
+    namespace policy = xlings::subos::policy;
+    sp::Request r;
+    r.instance = "box";
+    r.instance_dir = "/h/subos/box";
+    r.user = "u";
+    r.argv = {"make"};
+    r.host_exists = [](std::string_view) { return true; };
+    const xlings::subos::HomeView home{"/h"};
+    auto locked = policy::preset(policy::Preset::Locked);
+    locked.no_degrade = true;
+    ASSERT_TRUE(locked.disable_userns);
+    auto able = cf::compile(locked, home, linux_host(true, false, 0), r);
+    ASSERT_TRUE(able);
+    EXPECT_TRUE(able->disable_userns);
+    auto setuid = linux_host(true, false, 0);
+    setuid.bwrap->disable_userns_fails = "bwrap: --disable-userns not supported in setuid mode";
+    auto refused = cf::compile(locked, home, setuid, r);
+    ASSERT_FALSE(refused);
+    const auto& why = refused.error().missing.front();
+    EXPECT_EQ(why.dimension, "userns");
+    EXPECT_NE(why.reason.find("setuid mode"), std::string::npos) << why.reason;
+    EXPECT_NE(why.fix.find("self doctor --isolation --fix"), std::string::npos) << why.fix;
+    // A policy that does not forbid them is not affected.
+    EXPECT_TRUE(cf::compile(policy::legacy(), home, setuid, r));
+}

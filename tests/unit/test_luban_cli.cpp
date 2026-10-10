@@ -34,6 +34,9 @@ XTEST(LubanCli, EachCommandIsTheXlingsCommandItNames, .area = "luban", .covers =
     EXPECT_EQ(x({"new", "box", "--from=tiny@2026.10.20.1"}),
               expect_new(V{"subos", "new", "box", "--from", "subos:luban-tiny@2026.10.20.1"}));
     EXPECT_EQ(x({"new", "box", "acme:my-os"}), expect_new(V{"subos", "new", "box", "--from", "acme:my-os"}));
+    // A preview edition has no short name; its full one still works.
+    EXPECT_EQ(cli::edition_ref("desktop"), "desktop");
+    EXPECT_EQ(cli::edition_ref("luban-desktop"), "subos:luban-desktop");
     EXPECT_EQ(x({"enter", "box"}), (V{"subos", "use", "box"}));
     EXPECT_EQ(x({"run", "box", "--", "ls", "-l"}), (V{"subos", "exec", "box", "--", "ls", "-l"}));
     EXPECT_EQ(x({"ls"}), (V{"subos", "list"}));
@@ -46,12 +49,17 @@ XTEST(LubanCli, EachCommandIsTheXlingsCommandItNames, .area = "luban", .covers =
               (V{"subos", "config", "box", "--sandbox", "xim:agent-private"}));
     EXPECT_EQ(x({"history", "box"}), (V{"subos", "rollback", "box", "--list"}));
     EXPECT_EQ(x({"rollback", "box", "--to", "3"}), (V{"subos", "rollback", "box", "--to", "3"}));
+    EXPECT_EQ(x({"upgrade", "box"}), (V{"subos", "upgrade", "box"}));
+    EXPECT_EQ(x({"upgrade", "box", "--to", "2026.11.1.1", "--dry-run", "-y"}),
+              (V{"subos", "upgrade", "box", "--to", "2026.11.1.1", "--dry-run", "-y"}));
     EXPECT_EQ(x({"rm", "box"}), (V{"subos", "remove", "box"}));
     EXPECT_EQ(x({"setup"}), (V{"self", "doctor", "--isolation", "--fix"}));
 }
 
 XTEST(LubanCli, AnImageFormatFollowsItsNameAndAnUnknownNameIsRefused, .area = "luban", .covers = {"LUBAN-CLI-MAP"}) {
     EXPECT_EQ(x({"export", "box", "box.iso"}), (V{"subos", "export", "box", "--iso", "box.iso"}));
+    EXPECT_EQ(x({"export", "box", "box.iso", "--boot", "virt"}),
+              (V{"subos", "export", "box", "--iso", "box.iso", "--boot", "virt"}));
     EXPECT_EQ(x({"export", "box", "box.img", "--size", "8G"}),
               (V{"subos", "export", "box", "--drive", "box.img", "--size", "8G"}));
     EXPECT_EQ(x({"export", "box", "box.qcow2"}), (V{"subos", "export", "box", "--qcow2", "box.qcow2"}));

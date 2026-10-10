@@ -420,11 +420,15 @@ void relay_terminal(int master, int in, int out) {
         }
         return true;
     };
+    // The window size is the caller's terminal's, read again every 100 ms:
+    // a resize signals the caller's foreground group (the joining xlings),
+    // not this process, so it is followed here -- also after the caller's
+    // input has ended (a pane resized while output still runs).
     while (true) {
         struct pollfd p[2] = {{master, POLLIN, 0}, {input_open ? in : -1, POLLIN, 0}};
-        const int r = ::poll(p, 2, 250);
+        const int r = ::poll(p, 2, 100);
         if (r < 0 && errno != EINTR) return;
-        if (input_open) (void)copy_window_size(in, master);
+        if (in >= 0) (void)copy_window_size(in, master);
         if (r <= 0) continue;
         if (p[0].revents & (POLLIN | POLLHUP | POLLERR)) {
             const auto n = ::read(master, buf, sizeof(buf));
@@ -450,6 +454,10 @@ int open_null() {
 
 int open_for_append(const std::filesystem::path& path) {
     return ::open(path.c_str(), O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0600);
+}
+
+int open_for_read(const std::filesystem::path& path) {
+    return ::open(path.c_str(), O_RDONLY | O_CLOEXEC);
 }
 
 int poll_fds(std::span<PollFd> fds, int timeout_ms) {
@@ -745,6 +753,7 @@ void restore_terminal(int, const std::string&) {}
 void relay_terminal(int, int, int) {}
 int open_null() { return -1; }
 int open_for_append(const std::filesystem::path&) { return -1; }
+int open_for_read(const std::filesystem::path&) { return -1; }
 int poll_fds(std::span<PollFd>, int) { return 0; }
 int unix_listen(const std::filesystem::path&) { return -1; }
 int unix_connect(const std::filesystem::path&) { return -1; }

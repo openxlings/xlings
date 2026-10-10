@@ -45,8 +45,15 @@ std::expected<Mount, std::string> parse_mount(std::string_view spec, std::string
                                               std::string_view cwd);
 
 // Named grants (design §21.2): each opens exactly one capability.
-inline constexpr std::array<std::string_view, 7> kGrants{
-    "display", "audio", "camera", "gpu", "ssh-agent", "dbus", "host-loopback"};
+// clipboard / clipboard-paste: `xlings clipboard copy|paste` reach the host's
+// clipboard through the broker -- the clipboard, not the whole display.
+inline constexpr std::array<std::string_view, 9> kGrants{
+    "display", "audio", "camera", "gpu", "ssh-agent", "dbus", "host-loopback",
+    "clipboard", "clipboard-paste"};
+// Grants never implied (not in a preset's grants_allowed): only an explicit
+// `--allow`. A policy holding one needs a client that knows them.
+inline constexpr std::array<std::string_view, 2> kExplicitGrants{"clipboard", "clipboard-paste"};
+inline constexpr std::string_view kClipboardMinClient = "2026.10.11.1";
 
 // First client that implements this policy schema; new files carry this floor.
 inline constexpr std::string_view kPolicyMinClient = "2026.10.10.1";
@@ -205,6 +212,11 @@ bool fetches_into_layer(const Policy& p);
 
 // Field-by-field differences, for the audit of a policy change.
 std::vector<std::string> diff(const Policy& before, const Policy& after);
+// What `to` allows that `from` does not, one line per dimension (empty: `to`
+// is as strict or stricter everywhere). An upgrade applies a policy only
+// when this is empty; a looser one is the owner's explicit choice
+// (Luban OS design part 2 §3.3).
+std::vector<std::string> loosened(const Policy& from, const Policy& to);
 
 // ── The one decision (design §9) ─────────────────────────────────────
 

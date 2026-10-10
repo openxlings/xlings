@@ -36,6 +36,7 @@
 | S14 | agent-private 没有代理时，修复提示写的是字段名 | 拒绝路径检查 | 给出确切命令 `xlings subos config <n> --proxy ...` |
 | S15 | 推送一直静默失败（分支没有 upstream，`git push -q`），CI 测的是旧提交 | CI 结果对不上本地 | 设置 upstream，推送时检查输出 |
 | S16 | 别名经 `std::system`，即经 `/bin/sh`，在 nano 根里不可用 | 按 A4 的要求审查 | 普通单词直接 exec |
+| S17 | setuid 的 bwrap（免密 sudo 的机器上 recipe 会这样装）能进入，但不支持 `--disable-userns`；探测只测了能否进入，doctor 判定可用、跳过一次性设置，agent-private 进入时 bwrap 才失败（"trusted init did not supply namespace descriptors"） | xim-pkgindex #945 在 Ubuntu 24.04 runner 上的真实验收（2026.10.10.2） | 探测同时测 `--disable-userns`；选择器优先能禁止嵌套命名空间的 bwrap；需要它的策略在进入前拒绝并给出 `self doctor --isolation --fix`；受限宿主上 doctor 不再判定可用；`isolation_doctor_fix_test.sh` 覆盖 setuid 与修复后两种情况（2026.10.10.3） |
 
 ## 2. 分角度检查
 

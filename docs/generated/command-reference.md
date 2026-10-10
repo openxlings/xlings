@@ -158,6 +158,12 @@ Show a SubOS's audit events
 
 Options: `--kind <KIND>` — Only this kind (ops, lifecycle, perm, exec, net, fs); repeatable; `--session <ID>` — Only this session; `-n, --lines <N>` — Show the last N events (default 50); `-f, --follow` — Keep printing new events; `--json` — One JSON object per event
 
+## `xlings subos upgrade <name>`
+
+Move a SubOS made from an edition to its newest version (your packages stay yours)
+
+Options: `--to <VERSION>` — This version of the edition; `--dry-run` — Show the plan only
+
 ## `xlings subos rollback <name>`
 
 Move a root SubOS back to an earlier generation
@@ -174,7 +180,7 @@ Options: `--once` — Only the next boot (a trial); `--fallback` — Boot it whe
 
 Export a root SubOS as a directory, a tarball or a disk image
 
-Options: `--rootfs <DIR>` — A root directory (chroot, bwrap, nspawn); `--tar <FILE>` — A root tarball (docker import, podman import, wsl --import); `--disk <FILE>` — An ext4 disk image to boot; `--drive <FILE>` — A drive image that boots a machine (GPT, UEFI and BIOS, an ext4 root); `--qcow2 <FILE>` — The drive image as qcow2 (qemu, clouds); `--iso <FILE>` — A live ISO: boots from a CD or a drive and runs from memory; `--kernel <VMLINUZ>` — The kernel a live ISO boots (default: the root's own); `--size <SIZE>` — Disk size (default 4G); `--with-data` — Include /root, /home, /var, /srv, /opt
+Options: `--rootfs <DIR>` — A root directory (chroot, bwrap, nspawn); `--tar <FILE>` — A root tarball (docker import, podman import, wsl --import); `--disk <FILE>` — An ext4 disk image to boot; `--drive <FILE>` — A drive image that boots a machine (GPT, UEFI and BIOS, an ext4 root); `--qcow2 <FILE>` — The drive image as qcow2 (qemu, clouds); `--iso <FILE>` — A live ISO: boots from a CD or a drive and runs from memory; `--kernel <VMLINUZ>` — The kernel a live ISO boots (default: the root's own); `--boot <PROFILE>` — The boot profile of an ISO or a drive: generic, virt, or ns:name (default: the edition's); `--size <SIZE>` — Disk size (default 4G); `--with-data` — Include /root, /home, /var, /srv, /opt
 
 ## `xlings subos diff <a> <b>`
 
@@ -257,6 +263,18 @@ Options: `--json` — Machine-readable output
 ## `xlings index use <name> <version>`
 
 Pin an index source to a snapshot
+
+## `xlings clipboard`
+
+The clipboard, without the display (in a SubOS: the clipboard grants)
+
+## `xlings clipboard copy`
+
+Copy stdin to the clipboard (else through the terminal, OSC 52)
+
+## `xlings clipboard paste`
+
+Print the clipboard
 
 ## `xlings agent`
 

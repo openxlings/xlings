@@ -365,6 +365,19 @@ else
 fi
 info "OK: package is a fresh home"
 
+# ── 4g. No index cache: it records this machine's absolute paths ─
+#
+# `.xlings-index-cache.json` is derived (rebuilt from the index on first
+# use) and names every recipe by the absolute path it had HERE
+# (/home/runner/work/...). Shipped, `self install` copied it into users'
+# homes; where that path exists but is unreadable -- a CI runner, a shared
+# machine -- the catalog failed on it (the host matrix found it).
+find "$OUT_DIR" -name .xlings-index-cache.json -type f -delete
+if [[ -n "$(find "$OUT_DIR" -name .xlings-index-cache.json -print -quit)" ]]; then
+  fail "an index cache is still in the package"
+fi
+info "OK: no index cache in the package"
+
 # ── 5. Create archive ───────────────────────────────────────────
 info ""
 info "All checks passed. Creating release archive..."

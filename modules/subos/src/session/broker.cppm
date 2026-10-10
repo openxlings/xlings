@@ -47,8 +47,10 @@ policy::Decision decide(const policy::Policy& p, const Classified& c);
 // Whether this process is a sandbox's xlings with a broker to talk to.
 bool available();
 
-// Send the command and this process's stdio; returns the exit code.
-int forward(std::span<const std::string> argv);
+// Send the command and this process's stdio (or `stdio`: three descriptors);
+// returns the exit code. `quiet_refusal`: a refusal (exit 13) prints nothing
+// -- the caller has a way of its own (clipboard copy: the terminal).
+int forward(std::span<const std::string> argv, std::span<const int> stdio = {}, bool quiet_refusal = false);
 
 // ── outside: the queue of requests waiting for the owner ─────────────
 

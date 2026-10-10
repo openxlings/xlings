@@ -206,12 +206,29 @@ guide is `docs/quick-start/luban.md`. What to keep in mind near it:
   (`sandbox::prepare_root_host`) and an edition's ABI is checked when its
   template is read; the one-time setup is asked there, through the one door
   for administrator rights. Nobody to ask is exit 2 with the command.
-* **An edition does not carry a kernel.** `boot.kernel` / `kernel_min` are
-  hints an image export uses; the kernel is installed into the root only to
-  make an image. `export --iso` (the root as initramfs, limine) and
+* **An edition does not carry a kernel.** It names a boot profile
+  (`boot.profile`; `export --boot` overrides): a package whose
+  `share/luban/boot.json` gives the kernel release and command line, installed
+  into the root only to make an image. `boot.kernel` / `kernel_min` remain
+  hints for an edition without one. `export --iso` (the root as initramfs, limine) and
   `--drive` (GPT, FAT system partition, ext4 root by PARTUUID; written
   in-process by `luban.image`) boot on BIOS and UEFI --
   tests/e2e/luban_image_test.sh boots both under qemu.
+* **An environment made from an edition can move to a newer one**
+  (`subos upgrade` / `luban upgrade`). `instance.json` `edition` records what
+  the edition brought (ref, chain, packages as installed, policy);
+  `xlings.subos.edition::plan` decides: the edition's packages follow it, the
+  ones the user moved stay theirs, the ones it dropped stay installed. A
+  policy is applied only when `policy::loosened` is empty -- an upgrade never
+  loosens isolation. A template ref without a version resolves to the
+  index's `latest`, never to whichever version happens to be installed.
+* **The clipboard is not the display.** `clipboard` (copy into the host's)
+  and `clipboard-paste` (read it) are grants of their own, decided by the
+  broker for `xlings clipboard copy|paste`, never in a preset's
+  `grants_allowed` (an older client would refuse the file); a policy holding
+  one records `min_client` 2026.10.11.1. Without them copy goes through the
+  terminal (OSC 52). A joined interactive command's terminal follows the
+  caller's window size in the relay (`relay_terminal`, every 100 ms).
 * **A neutral identity is a persona** (`xlings.subos.persona`): the same
   host name and machine-id on every entry, made once per instance, never
   copied by a fork; its zone is UTC, a chosen one, or the proxy's exit asked

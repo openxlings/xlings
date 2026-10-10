@@ -50,6 +50,18 @@ const std::vector<Entry>& table() {
         // question does not leave from here.
         {{"curl", "curl"}, "xim-x-curl",
          {{Source::Payload, "bin"}, {Source::Host, "/usr/bin/curl"}, {Source::Host, "/usr/local/bin/curl"}}},
+        // The host's clipboard (`xlings clipboard`; a sandbox reaches it
+        // through the broker under the `clipboard` grants): the desktop's own
+        // tools, never a payload -- they are the display's.
+        {{"wl-copy", ""}, "", {{Source::Host, "/usr/bin/wl-copy"}, {Source::Host, "/usr/local/bin/wl-copy"}}},
+        {{"wl-paste", ""}, "", {{Source::Host, "/usr/bin/wl-paste"}, {Source::Host, "/usr/local/bin/wl-paste"}}},
+        {{"xclip", ""}, "", {{Source::Host, "/usr/bin/xclip"}, {Source::Host, "/usr/local/bin/xclip"}}},
+        {{"xsel", ""}, "", {{Source::Host, "/usr/bin/xsel"}, {Source::Host, "/usr/local/bin/xsel"}}},
+        {{"pbcopy", ""}, "", {{Source::Host, "/usr/bin/pbcopy"}}},
+        {{"pbpaste", ""}, "", {{Source::Host, "/usr/bin/pbpaste"}}},
+        {{"clip", ""}, "", {{Source::Host, "C:\\Windows\\System32\\clip.exe"}}},
+        {{"powershell", ""}, "",
+         {{Source::Host, "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"}}},
         // A Luban image, made and tried (Luban design §A9, §B3.5).
         {{"mksquashfs", "squashfs-tools"}, "xim-x-squashfs-tools",
          {{Source::Payload, "bin"}, {Source::Payload, "sbin"},

@@ -54,3 +54,25 @@ TEST(SubosBroker, TheStrictestTargetDecides) {
     auto mixed = b::classify(V{"install", "gcc", "evil-tool"}, "box");
     EXPECT_EQ(b::decide(p, mixed).action, pol::Action::Deny);
 }
+
+// The clipboard, without the display: copy and paste are grants of their
+// own, decided outside; neither is implied by a preset.
+TEST(SubosBroker, TheClipboardIsAGrantOfItsOwnAndNeverImplied) {
+    auto copy = b::classify(V{"clipboard", "copy"}, "box");
+    EXPECT_EQ(copy.route, b::Route::Broker);
+    ASSERT_EQ(copy.ops.size(), 1u);
+    EXPECT_EQ(copy.ops[0].kind, "grant");
+    EXPECT_EQ(copy.ops[0].target, "clipboard");
+    auto paste = b::classify(V{"clipboard", "paste"}, "box");
+    EXPECT_EQ(paste.ops.at(0).target, "clipboard-paste");
+    EXPECT_EQ(b::classify(V{"clipboard"}, "box").route, b::Route::Local) << "usage is local";
+
+    auto p = pol::preset(pol::Preset::Private);
+    EXPECT_EQ(b::decide(p, copy).action, pol::Action::Deny);
+    EXPECT_NE(b::decide(p, copy).owner_command.find("--allow clipboard"), std::string::npos);
+    p.grants.insert("clipboard");
+    EXPECT_EQ(b::decide(p, copy).action, pol::Action::Allow);
+    EXPECT_EQ(b::decide(p, paste).action, pol::Action::Deny) << "copying out does not let it read the host's";
+    EXPECT_FALSE(pol::legacy().grants_allowed.contains("clipboard")) << "never implied by a preset";
+    EXPECT_FALSE(pol::legacy().grants_allowed.contains("clipboard-paste"));
+}

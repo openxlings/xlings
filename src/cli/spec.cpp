@@ -115,6 +115,8 @@ const CommandSpec& root() {
                      {"-n, --lines <N>", "Show the last N events (default 50)"},
                      {"-f, --follow", "Keep printing new events"},
                      {"--json", "One JSON object per event"}}, {}},
+                {"upgrade", "Move a SubOS made from an edition to its newest version (your packages stay yours)", {}, {{"name", "SubOS name", true}},
+                    {{"--to <VERSION>", "This version of the edition"}, {"--dry-run", "Show the plan only"}}, {}},
                 {"rollback", "Move a root SubOS back to an earlier generation", {}, {{"name", "SubOS name", true}},
                     {{"--to <N>", "This generation (default: the one before)"}, {"--list", "List the generations"}}, {}},
                 {"boot", "Choose the SubOS a machine boots, from the next boot on", {}, {{"name", "SubOS name; omit to show", false}},
@@ -124,7 +126,7 @@ const CommandSpec& root() {
                 {"export", "Export a root SubOS as a directory, a tarball or a disk image", {}, {{"name", "SubOS name", true}},
                     {{"--rootfs <DIR>", "A root directory (chroot, bwrap, nspawn)"},
                      {"--tar <FILE>", "A root tarball (docker import, podman import, wsl --import)"},
-                     {"--disk <FILE>", "An ext4 disk image to boot"}, {"--drive <FILE>", "A drive image that boots a machine (GPT, UEFI and BIOS, an ext4 root)"}, {"--qcow2 <FILE>", "The drive image as qcow2 (qemu, clouds)"}, {"--iso <FILE>", "A live ISO: boots from a CD or a drive and runs from memory"}, {"--kernel <VMLINUZ>", "The kernel a live ISO boots (default: the root's own)"}, {"--size <SIZE>", "Disk size (default 4G)"},
+                     {"--disk <FILE>", "An ext4 disk image to boot"}, {"--drive <FILE>", "A drive image that boots a machine (GPT, UEFI and BIOS, an ext4 root)"}, {"--qcow2 <FILE>", "The drive image as qcow2 (qemu, clouds)"}, {"--iso <FILE>", "A live ISO: boots from a CD or a drive and runs from memory"}, {"--kernel <VMLINUZ>", "The kernel a live ISO boots (default: the root's own)"}, {"--boot <PROFILE>", "The boot profile of an ISO or a drive: generic, virt, or ns:name (default: the edition's)"}, {"--size <SIZE>", "Disk size (default 4G)"},
                      {"--with-data", "Include /root, /home, /var, /srv, /opt"}}, {}},
                 {"diff", "Compare the packages of two SubOS", {}, {{"a", "SubOS", true}, {"b", "SubOS", true}}, {}, {}},
                 {"pack", "Pack a SubOS's declaration as a subos-type xpkg", {}, {{"name", "SubOS name", true}},
@@ -147,6 +149,10 @@ const CommandSpec& root() {
                 {"list", "List published index snapshots", {"ls"}, {{"name", "Optional index source", false}},
                     {{"--json", "Machine-readable output"}}, {}},
                 {"use", "Pin an index source to a snapshot", {}, {{"name", "Index source", true}, {"version", "Snapshot version, or 'latest'", true}}, {}, {}},
+            }},
+            {"clipboard", "The clipboard, without the display (in a SubOS: the clipboard grants)", {}, {}, {}, {
+                {"copy", "Copy stdin to the clipboard (else through the terminal, OSC 52)", {}, {}, {}, {}},
+                {"paste", "Print the clipboard", {}, {}, {}, {}},
             }},
             {"agent", "Agent integration", {}, {}, {}, {
                 {"skills", "List or show built-in skills", {}, {{"name", "Optional skill name", false}}, {}, {}},
