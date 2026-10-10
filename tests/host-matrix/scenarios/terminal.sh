@@ -4,5 +4,6 @@
 source "$(dirname "$0")/../lib.sh"
 command -v script >/dev/null || skip "no script(1) for a terminal"
 require_isolation
-step "luban new at a terminal finishes" ok -- timeout 900 script -qec "$XLINGS_HOME/bin/luban new hmtt nano" /dev/null
+edition=tiny; X info subos:luban-nano >/dev/null 2>&1 && edition=nano
+step "luban new at a terminal finishes ($edition)" ok -- timeout 900 script -qec "$XLINGS_HOME/bin/luban new hmtt $edition" /dev/null
 done_
