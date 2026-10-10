@@ -30,10 +30,14 @@ import xlings.core.subos.ports;
 import xlings.core.xself;
 import xlings.core.xim.extract;
 import xlings.core.xim.commands;
+import xlings.core.xim.catalog;
 import luban.image;
 import xlings.platform.target;
 import xlings.subos.tools;
 import xlings.subos.caps;
+import xlings.subos.edition;
+import xlings.core.version_order;
+import xlings.core.confirm;
 
 namespace xlings::subos {
 
@@ -238,6 +242,10 @@ struct Declared {
     // The kernel a machine of it boots, and the least one its userland
     // needs (§A6) -- hints for an image, never installed into the root.
     nlohmann::json boot = nlohmann::json::object();
+    // The edition layer (Luban design part 2 §3.2): the templates below the
+    // top one, as their `from` named them, and the policy the chain declares.
+    std::vector<std::string> chain;
+    std::string policy;
 };
 
 // An `abi` as an object, or the triple it abbreviates ("x86_64-linux-gnu").
@@ -255,7 +263,8 @@ nlohmann::json abi_of_(const nlohmann::json& v) {
 }
 
 // Whether this machine can make (and run) a root of that ABI here; the
-// reason when it cannot. The model takes any libc; the index publishes gnu.
+// reason when it cannot. The model takes any libc; the index publishes gnu
+// and musl (luban-tiny-musl).
 std::optional<std::string> abi_refusal_(const nlohmann::json& abi) {
     const auto arch = abi.value("arch", std::string());
     const auto host = platform::host().arch;
@@ -266,8 +275,8 @@ std::optional<std::string> abi_refusal_(const nlohmann::json& abi) {
         return std::format("its kernel ABI is {}; this machine runs linux (a carrier that provides {} runs it)",
                            kernel, kernel);
     const auto libc = abi.value("libc", std::string());
-    if (!libc.empty() && libc != "gnu" && libc != "none")
-        return std::format("its payloads are for libc={}; the index publishes gnu ones today", libc);
+    if (!libc.empty() && libc != "gnu" && libc != "musl" && libc != "none")
+        return std::format("its payloads are for libc={}; the index publishes gnu and musl ones", libc);
     return std::nullopt;
 }
 
@@ -294,9 +303,12 @@ std::optional<Declared> declared_by_template_(const fs::path& instance, EventStr
             if (!fs::exists(fs::symlink_status(at, sec)))
                 fs::copy(it->path(), at, fs::copy_options::copy_symlinks, sec);
         }
+        d.chain.push_back(from);
         chain.push_back(read_json_(dir / ".xlings.json"));
         from = chain.back().value("from", std::string());
     }
+    for (const auto& m : chain)   // the top-most declaration wins
+        if (auto p = m.find("policy"); p != m.end() && p->is_string()) { d.policy = p->get<std::string>(); break; }
     std::map<std::string, std::string> by_key;
     std::vector<std::string> order;
     for (auto it = chain.rbegin(); it != chain.rend(); ++it) {   // bottom first
@@ -309,7 +321,7 @@ std::optional<Declared> declared_by_template_(const fs::path& instance, EventStr
         }
         if (auto b = it->find("boot"); b != it->end() && b->is_object()) {
             if (auto init = b->value("init", std::string()); !init.empty()) d.init = init;
-            for (const auto* k : {"kernel", "kernel_min"})
+            for (const auto* k : {"kernel", "kernel_min", "profile"})
                 if (b->contains(k) && (*b)[k].is_string()) d.boot[k] = (*b)[k];
         }
         if (auto a = it->find("abi"); a != it->end()) d.abi = abi_of_(*a);
@@ -475,6 +487,39 @@ int declare_root_at_creation_(const std::string& name, bool rootfs, const std::s
             return 1;
         }
     }
+    if (declared) {
+        // What the edition brought, as it resolved (an unversioned package is
+        // the version installed now): what `subos upgrade` diffs against, and
+        // what tells the edition's packages from the user's.
+        auto top = resolve_base_package_(from, stream);
+        std::string ref = from;
+        if (!top.empty() && from.find('@') == std::string::npos) ref += "@" + top.filename().string();
+        // `configured` names each package this scope installed as
+        // "<ns>:<name>@<version>" -- whether or not it put a program on PATH.
+        const auto configured = read_json_(HomeView{home}.instance(name) / ".xlings.json")
+                                    .value("configured", nlohmann::json::object());
+        nlohmann::json packages = nlohmann::json::object();
+        for (const auto& spec : declared->packages) {
+            const auto key = spec.substr(0, spec.find('@'));
+            const bool qualified = key.find(':') != std::string::npos;
+            nlohmann::json version(nullptr);
+            for (auto it = configured.begin(); it != configured.end(); ++it) {
+                const auto at = it.key().rfind('@');
+                if (at == std::string::npos) continue;
+                const auto pkg = it.key().substr(0, at);
+                if (pkg == key || (!qualified && pkg.ends_with(":" + key))) version = it.key().substr(at + 1);
+            }
+            packages[key] = version;
+        }
+        const auto file = HomeView{home}.instance_file(name);
+        auto j = read_json_(file);
+        j["edition"] = {{"ref", ref}, {"chain", declared->chain}, {"packages", packages}};
+        if (!declared->policy.empty()) j["edition"]["policy"] = declared->policy;
+        if (auto written = write_json_(file, j); !written) {
+            error_(stream, written.error(), {}, ErrorCode::Internal);
+            return 1;
+        }
+    }
     auto r = subos_root::refresh(home, name, "subos new --rootfs");
     if (r && !*r) {
         error_(stream, "the root of '" + name + "' could not be laid out: " + r->error(), {},
@@ -488,6 +533,241 @@ int declare_root_at_creation_(const std::string& name, bool rootfs, const std::s
     if (!fs::exists(usr / "bin" / "sh", ec))
         log::info("it has no shell yet: `xlings install busybox --subos {}`, or create it "
                   "--from subos:luban-tiny", name);
+    return 0;
+}
+
+// ── upgrade ──────────────────────────────────────────────────────────
+//
+// `subos upgrade <name> [--to <version>] [--dry-run] [-y]` (Luban OS design
+// part 2 §3.3): an environment made from an edition moves to a newer version
+// of it. One new generation (rollback undoes the packages); the packages the
+// user moved stay theirs; the ones the edition dropped stay installed; the
+// edition's policy is applied only when it allows nothing more than the one
+// in force -- a looser one is the owner's explicit `subos config`.
+
+namespace {
+
+// A template's manifest and the `from` chain below it, as refs and
+// manifests, top first -- read, never copied anywhere.
+struct Chain {
+    std::vector<std::pair<std::string, fs::path>> templates;   // ref, payload dir
+    std::vector<std::string> packages;                          // merged, as declared
+    std::string policy;
+};
+
+std::optional<Chain> chain_of_(const std::string& ref, EventStream& stream) {
+    Chain c;
+    std::map<std::string, std::string> by_key;
+    std::vector<std::string> order;
+    std::vector<nlohmann::json> manifests;
+    for (std::string from = ref; !from.empty();) {
+        if (c.templates.size() > 8) {
+            error_(stream, "the `from` chain is longer than 8: a cycle?");
+            return std::nullopt;
+        }
+        const auto dir = resolve_base_package_(from, stream);
+        if (dir.empty()) return std::nullopt;
+        std::string resolved = from;
+        if (from.find('@') == std::string::npos) resolved += "@" + dir.filename().string();
+        c.templates.emplace_back(resolved, dir);
+        manifests.push_back(read_json_(dir / ".xlings.json"));
+        from = manifests.back().value("from", std::string());
+    }
+    for (auto it = manifests.rbegin(); it != manifests.rend(); ++it)   // bottom first
+        for (auto& p : it->value("packages", nlohmann::json::array())) {
+            if (!p.is_string()) continue;
+            const auto key = package_key_(p.get<std::string>());
+            if (!by_key.contains(key)) order.push_back(key);
+            by_key[key] = p.get<std::string>();
+        }
+    for (auto& k : order) c.packages.push_back(by_key[k]);
+    for (const auto& m : manifests)
+        if (auto p = m.find("policy"); p != m.end() && p->is_string()) { c.policy = p->get<std::string>(); break; }
+    return c;
+}
+
+std::vector<std::string> configured_keys_(const fs::path& home, const std::string& name) {
+    std::vector<std::string> out;
+    const auto configured = read_json_(HomeView{home}.instance(name) / ".xlings.json")
+                                .value("configured", nlohmann::json::object());
+    for (auto it = configured.begin(); it != configured.end(); ++it) out.push_back(it.key());
+    return out;
+}
+
+}  // namespace
+
+int run_upgrade_(int argc, char* argv[], EventStream& stream, const UsageError& usageError, bool yes) {
+    std::string name, to;
+    bool dry = false;
+    for (int i = 3; i < argc; ++i) {
+        std::string a = argv[i];
+        if (a == "--to" && i + 1 < argc) to = argv[++i];
+        else if (a == "--dry-run") dry = true;
+        else if (!a.empty() && a[0] != '-' && name.empty()) name = a;
+        else { usageError("unknown option for `xlings subos upgrade`: " + a); return 1; }
+    }
+    if (name.empty()) { usageError("usage: xlings subos upgrade <name> [--to <version>] [--dry-run] [-y]"); return 1; }
+    if (!exists_(name)) { error_(stream, "no SubOS named '" + name + "'"); return 1; }
+    if (!role_allows_(roles::Op::Packages, name, stream)) return 1;
+    const auto home = home_dir_();
+    const auto file = HomeView{home}.instance_file(name);
+    auto instance = read_json_(file);
+    const auto now = subos::edition::read(instance);
+    if (!now) {
+        error_(stream, std::format("'{}' has no edition to upgrade from: it was not made from one, or was made "
+                                   "before xlings recorded it (2026.10.11.1)", name),
+               std::format("xlings install <package> --subos {} updates a package; a new environment from the "
+                           "edition has the newest of everything", name));
+        return 1;
+    }
+    const auto [key, version] = subos::edition::split(now->ref);
+    // The newest of the edition, or the version asked for. The index is
+    // whatever this home has: `xlings update` refreshes it.
+    const auto target = to.empty() ? key : key + "@" + to;
+    const auto chain = chain_of_(target, stream);
+    if (!chain) return 1;
+    const auto& top = chain->templates.front();
+    if (auto refused = root_abi_refusal_(read_json_(top.second / ".xlings.json"))) {
+        error_(stream, std::format("{} cannot run here: {}", top.first, *refused));
+        return 1;
+    }
+    if (const auto m = read_json_(top.second / ".xlings.json").value("min_client", std::string()); !m.empty()) {
+        const auto order = policy::compare_client_versions(Info::VERSION, m);
+        if (!order || *order < 0) {
+            error_(stream, std::format("{} needs xlings >= {}, this is {}", top.first, m, Info::VERSION),
+                   "xlings self update");
+            return 1;
+        }
+    }
+    // An unpinned package (an agent) follows the index's newest: compared
+    // as that version, so one already at it is not an upgrade.
+    std::vector<std::string> declared;
+    for (const auto& spec : chain->packages) {
+        if (spec.find('@') == std::string::npos)
+            if (auto v = xim::index_version_of(spec, xim::CatalogAccess::LocalOnly)) {
+                declared.push_back(spec + "@" + *v);
+                continue;
+            }
+        declared.push_back(spec);
+    }
+    const auto plan = subos::edition::plan(*now, declared, configured_keys_(home, name));
+
+    // The policy: applied when it allows nothing more than the one in force.
+    std::vector<std::string> loosened;
+    bool apply_policy = false;
+    if (!chain->policy.empty() && chain->policy != now->policy) {
+        auto current = policy_store::read(HomeView{home}, name);
+        auto next = select_policy_package_(chain->policy, /*upgrade=*/false);
+        if (!next) { error_(stream, next.error().second); return next.error().first; }
+        const auto base = current && *current ? **current : policy::legacy();
+        loosened = policy::loosened(base, *next);
+        apply_policy = loosened.empty();
+    }
+
+    const bool same = top.first == now->ref;
+    log::println("{}: {} -> {}", name, now->ref, top.first);
+    for (const auto& s : plan.upgrade)
+        log::println("  upgrade  {} {} -> {}", s.key, s.from.empty() ? "?" : s.from,
+                     subos::edition::split(s.to).second.empty() ? "newest" : subos::edition::split(s.to).second);
+    for (const auto& s : plan.add) log::println("  add      {}", s.to);
+    for (const auto& s : plan.kept)
+        log::println("  keep     {} {} (yours; the edition has {})", s.key, s.from, s.to);
+    for (const auto& k : plan.dropped) log::println("  keep     {} (the edition no longer has it; `xlings remove` drops it)", k);
+    if (!chain->policy.empty() && chain->policy != now->policy) {
+        if (apply_policy) log::println("  policy   {} -> {}", now->policy.empty() ? "(none)" : now->policy, chain->policy);
+        else {
+            std::string what;
+            for (const auto& l : loosened) what += (what.empty() ? "" : ", ") + l;
+            log::println("  policy   {} kept: {} allows more ({})", now->policy, chain->policy, what);
+            log::println("           to switch: xlings subos config {} --sandbox {}", name, chain->policy);
+        }
+    }
+    if (plan.empty() && same && !apply_policy) {
+        log::println("{} is up to date (as this home's index has it; `xlings update` refreshes the index)", name);
+        return 0;
+    }
+    if (dry) return 0;
+    auto asked = confirm::ask(stream, "subos_upgrade", std::format("upgrade '{}'?", name), yes, "-y");
+    if (asked.outcome == confirm::Outcome::Declined) return 0;
+    if (asked.outcome == confirm::Outcome::NobodyToAsk) {
+        stream.emit(ErrorEvent{.code = ErrorCode::InvalidInput,
+            .message = std::format("upgrading '{}' needs confirmation; nothing changed", name),
+            .recoverable = true, .hint = std::format("xlings subos upgrade {} -y", name)});
+        return 2;
+    }
+
+    // The templates' files under usr/ (the factory /etc and the rest an
+    // edition ships): derived data, the edition's, so the new one's replace
+    // them; the top's win. Nothing outside usr/ is touched -- home/ and the
+    // machine's state are the user's. The manifest keys an edition owns
+    // follow it; the scope's own keys (workspace, configured, subos_info) stay.
+    const auto dir = HomeView{home}.instance(name);
+    std::error_code ec;
+    for (auto t = chain->templates.rbegin(); t != chain->templates.rend(); ++t) {
+        for (fs::recursive_directory_iterator it(t->second, ec), end; !ec && it != end; it.increment(ec)) {
+            const auto rel = it->path().lexically_relative(t->second);
+            if (rel.empty() || *rel.begin() != "usr") continue;
+            std::error_code sec;
+            if (it->is_directory(sec) && !it->is_symlink(sec)) { fs::create_directories(dir / rel, sec); continue; }
+            fs::remove(dir / rel, sec);
+            fs::copy(it->path(), dir / rel, fs::copy_options::copy_symlinks, sec);
+        }
+    }
+    {
+        auto manifest = read_json_(dir / ".xlings.json");
+        const auto next = read_json_(top.second / ".xlings.json");
+        for (const auto* k : {"subos_kind", "from", "packages", "abi", "boot", "policy", "min_client"}) {
+            if (next.contains(k)) manifest[k] = next[k];
+            else manifest.erase(k);
+        }
+        if (auto w = write_json_(dir / ".xlings.json", manifest); !w) { error_(stream, w.error(), {}, ErrorCode::Internal); return 1; }
+    }
+    std::vector<std::string> specs;
+    for (const auto& s : plan.upgrade) specs.push_back(s.to);
+    for (const auto& s : plan.add) specs.push_back(s.to);
+    if (!specs.empty() && xim::cmd_install_step(specs, name, stream, /*plumbing=*/false) != 0) {
+        log::info("'{}' is partly upgraded: `xlings subos upgrade {}` again finishes it, "
+                  "`xlings subos rollback {}` goes back", name, name, name);
+        return 1;
+    }
+    if (apply_policy) {
+        std::vector<std::string> words{"xlings", "subos", "config", name, "--sandbox", chain->policy};
+        std::vector<char*> args;
+        for (auto& w : words) args.push_back(w.data());
+        args.push_back(nullptr);
+        if (auto r = run_config_(static_cast<int>(words.size()), args.data(), stream, usageError); r != 0) return r;
+    }
+    // The record: what the edition brought now, as installed.
+    subos::edition::Record next{.ref = top.first, .chain = {}, .packages = {},
+                                .policy = apply_policy || now->policy.empty() ? chain->policy : now->policy};
+    for (std::size_t i = 1; i < chain->templates.size(); ++i) next.chain.push_back(chain->templates[i].first);
+    const auto configured = configured_keys_(home, name);
+    for (const auto& spec : chain->packages) {
+        const auto k = subos::edition::split(spec).first;
+        std::string installed;
+        for (const auto& c : configured) {
+            auto [ck, cv] = subos::edition::split(c);
+            if (ck == k && (installed.empty() || version_order::compare(cv, installed) > 0)) installed = cv;
+        }
+        // The user's version of a package they moved is theirs: the record
+        // keeps what the edition last brought.
+        if (std::ranges::any_of(plan.kept, [&](const auto& s) { return s.key == k; }))
+            installed = now->packages.contains(k) ? now->packages.at(k) : std::string();
+        next.packages[k] = installed;
+    }
+    instance = read_json_(file);
+    instance["edition"] = subos::edition::to_json(next);
+    if (auto w = write_json_(file, instance); !w) { error_(stream, w.error(), {}, ErrorCode::Internal); return 1; }
+    auto r = subos_root::refresh(home, name, "subos upgrade");
+    if (r && !*r) {
+        error_(stream, "the root of '" + name + "' could not be laid out: " + r->error(), {}, ErrorCode::Internal);
+        return 1;
+    }
+    observe::append(HomeView{home}.logs_dir(name) / "events.ndjson", observe::Event{
+        .kind = observe::Kind::Lifecycle,
+        .fields = {{"event", "upgrade"}, {"instance", name}, {"from", now->ref}, {"to", top.first}}});
+    log::info("'{}' is {} (generation {}); `xlings subos rollback {}` goes back", name, top.first,
+              r && *r ? (*r)->generation : 0, name);
     return 0;
 }
 
@@ -595,7 +875,8 @@ int run_boot_(int argc, char* argv[], EventStream& stream, const UsageError& usa
     if (!role_allows_(roles::Op::Boot, name, stream)) return 1;
     // --now (part 2 §8.1): hand / to it without restarting the kernel. Only
     // an init that can re-exec stage-0 can do that -- busybox init with a
-    // `::restart:` entry naming /usr/bin/xlings-init (luban-tiny's), on the
+    // `::restart:` entry naming stage-0 (/usr/bin/luban-init, or xlings-init
+    // in luban-tiny 0.1.0), on the
     // machine this home is the root of. Anything else would leave the
     // running processes on one SubOS and new ones on another: refused, and
     // a reboot does it.
@@ -605,7 +886,8 @@ int run_boot_(int argc, char* argv[], EventStream& stream, const UsageError& usa
         const auto init = fs::read_symlink("/proc/1/exe", ec).filename().string();
         const auto inittab = read_text_("/etc/inittab");
         const bool restartable = host && init == "busybox"
-            && inittab.find("::restart:/usr/bin/xlings-init") != std::string::npos;
+            && (inittab.find("::restart:/usr/bin/luban-init") != std::string::npos
+                || inittab.find("::restart:/usr/bin/xlings-init") != std::string::npos);
         if (!restartable) {
             error_(stream, !host ? "this home is not the root of the running machine"
                                  : "this machine's init cannot hand / to another SubOS without a reboot",
@@ -749,6 +1031,13 @@ std::expected<fs::path, std::pair<std::string, std::string>> kernel_of_(const fs
     fs::path kernel = given;
     std::string version;
     if (kernel.empty()) {
+        // The boot profile's kernel when it names one (a root may hold more).
+        if (const auto release = boot.is_object() ? boot.value("release", std::string()) : std::string(); !release.empty()) {
+            const auto candidate = in_stage_(stage, fs::path("/usr/lib/modules") / release / "vmlinuz");
+            if (fs::is_regular_file(candidate, ec)) { kernel = candidate; version = release; }
+        }
+    }
+    if (kernel.empty()) {
         const auto modules = in_stage_(stage, "/usr/lib/modules");
         for (fs::directory_iterator it(modules, ec), end; !ec && it != end; it.increment(ec)) {
             const auto candidate = in_stage_(stage, fs::path("/usr/lib/modules") / it->path().filename() / "vmlinuz");
@@ -768,6 +1057,48 @@ std::expected<fs::path, std::pair<std::string, std::string>> kernel_of_(const fs
             std::format("a newer kernel: xlings install {} --subos {}",
                         boot.value("kernel", std::string("linux-kernel")), name)});
     return kernel;
+}
+
+// The console and the rest of a kernel command line an image adds to what it
+// must say (its root, its init): the boot profile's, or a machine's default.
+std::string kernel_args_(const nlohmann::json& boot) {
+    std::string line;
+    if (auto c = boot.is_object() ? boot.find("cmdline") : boot.end(); boot.is_object() && c != boot.end() && c->is_array())
+        for (const auto& a : *c) if (a.is_string()) line += (line.empty() ? "" : " ") + a.get<std::string>();
+    return line.empty() ? std::string("console=tty0 console=ttyS0") : line;
+}
+
+// "virt" -> xim:luban-boot-virt; a full reference stays as it is.
+std::string boot_profile_ref_(std::string_view profile) {
+    return profile.find(':') == std::string_view::npos ? std::format("xim:luban-boot-{}", profile) : std::string(profile);
+}
+
+// A boot profile (Luban OS design part 2 §2.4) is installed into the root,
+// as a kernel is to make an image: its kernel and limine come with it, and
+// its share/luban/boot.json says which kernel and what command line.
+std::expected<nlohmann::json, std::pair<std::string, std::string>> apply_boot_profile_(
+    const fs::path& home, const std::string& name, const std::string& ref, EventStream& stream) {
+    log::info("boot profile {} ...", ref);
+    const std::vector<std::string> targets{ref};
+    if (xim::cmd_install_step(targets, name, stream, /*plumbing=*/true) != 0)
+        return std::unexpected(std::pair{std::format("the boot profile {} could not be installed into '{}'", ref, name),
+                                         std::string("--boot virt or --boot generic, or --kernel <vmlinuz>")});
+    const auto key = ref.substr(0, ref.find('@'));
+    const auto configured = read_json_(HomeView{home}.instance(name) / ".xlings.json").value("configured", nlohmann::json::object());
+    for (auto it = configured.begin(); it != configured.end(); ++it) {
+        const auto at = it.key().rfind('@');
+        if (at == std::string::npos || it.key().substr(0, at) != key) continue;
+        const auto colon = key.find(':');
+        const auto file = home / "data" / "xpkgs"
+            / xim::package_store_name(colon == std::string::npos ? "xim" : key.substr(0, colon),
+                                      colon == std::string::npos ? key : key.substr(colon + 1))
+            / it.key().substr(at + 1) / "share" / "luban" / "boot.json";
+        auto profile = read_json_(file);
+        if (!profile.is_object() || profile.empty())
+            return std::unexpected(std::pair{std::format("{} has no share/luban/boot.json", ref), std::string{}});
+        return profile;
+    }
+    return std::unexpected(std::pair{std::format("{} is not installed in '{}'", ref, name), std::string{}});
 }
 
 std::uint64_t size_bytes_(std::string_view size) {
@@ -819,8 +1150,8 @@ std::expected<void, std::pair<std::string, std::string>> write_drive_(
     const std::string conf = std::format(
         "# A Luban drive (xlings subos export --drive)\ntimeout: 3\n\n/Luban\n    protocol: linux\n"
         "    path: boot():/boot/vmlinuz\n"
-        "    cmdline: root=PARTUUID={} rw rootwait console=tty0 console=ttyS0 init={}/boot/{}\n",
-        luban::image::to_string(root_uuid), home.generic_string(), init);
+        "    cmdline: root=PARTUUID={} rw rootwait {} init={}/boot/{}\n",
+        luban::image::to_string(root_uuid), kernel_args_(boot), home.generic_string(), init);
     std::vector<luban::image::File> files{
         {.path = "EFI/BOOT/BOOTX64.EFI", .from = *limine / "BOOTX64.EFI"},
         {.path = "boot/vmlinuz", .from = *kernel},
@@ -888,7 +1219,7 @@ std::expected<void, std::pair<std::string, std::string>> write_live_iso_(
         conf << "# A live Luban system (xlings subos export --iso)\n"
              << "timeout: 3\n\n/Luban\n    protocol: linux\n    path: boot():/boot/vmlinuz\n"
              << "    module_path: boot():/boot/initramfs.img\n"
-             << std::format("    cmdline: console=tty0 console=ttyS0 rdinit={}/boot/{}\n", home.generic_string(), init);
+             << std::format("    cmdline: {} rdinit={}/boot/{}\n", kernel_args_(boot), home.generic_string(), init);
         if (!conf) return std::unexpected(std::pair{std::string("cannot write limine.conf"), std::string{}});
     }
     const auto output = scratch / "output";
@@ -922,7 +1253,7 @@ std::expected<void, std::pair<std::string, std::string>> write_live_iso_(
 int run_export_(int argc, char* argv[], EventStream& stream, const UsageError& usageError) {
     std::string name;
     fs::path rootfs_dir, tarball, disk, drive, iso, qcow2, kernel_file;
-    std::string size = "4G";
+    std::string size = "4G", boot_profile;
     bool with_data = false;
     for (int i = 3; i < argc; ++i) {
         std::string a = argv[i];
@@ -933,6 +1264,7 @@ int run_export_(int argc, char* argv[], EventStream& stream, const UsageError& u
         else if (a == "--drive" && i + 1 < argc) drive = argv[++i];
         else if (a == "--qcow2" && i + 1 < argc) qcow2 = argv[++i];
         else if (a == "--kernel" && i + 1 < argc) kernel_file = argv[++i];
+        else if (a == "--boot" && i + 1 < argc) boot_profile = argv[++i];
         else if (a == "--size" && i + 1 < argc) size = argv[++i];
         else if (a == "--with-data") with_data = true;
         else if (!a.empty() && a[0] != '-' && name.empty()) name = a;
@@ -942,14 +1274,16 @@ int run_export_(int argc, char* argv[], EventStream& stream, const UsageError& u
                         + !qcow2.empty();
     if (name.empty() || outputs != 1) {
         usageError("usage: xlings subos export <name> --rootfs <dir> | --tar <file> | --disk <file> | "
-                   "--drive <file> | --qcow2 <file> | --iso <file> [--size 4G] [--kernel <vmlinuz>] [--with-data]");
+                   "--drive <file> | --qcow2 <file> | --iso <file> [--size 4G] [--boot <profile> | --kernel <vmlinuz>] [--with-data]");
         return 1;
     }
-    // The flag and the file, whichever was asked for.
-    const auto [flag, target] = !rootfs_dir.empty() ? std::pair{"--rootfs", rootfs_dir}
+    // The flag and the file, whichever was asked for. A directory may be
+    // written `dir/` (that is how luban tells the format): the name is `dir`.
+    const auto [flag, given] = !rootfs_dir.empty() ? std::pair{"--rootfs", rootfs_dir}
         : !tarball.empty() ? std::pair{"--tar", tarball} : !disk.empty() ? std::pair{"--disk", disk}
         : !drive.empty() ? std::pair{"--drive", drive} : !iso.empty() ? std::pair{"--iso", iso}
         : std::pair{"--qcow2", qcow2};
+    const fs::path target = given.has_filename() ? given : given.parent_path();
     auto domainScope = xlings::home::domain_producer::read_scope(home_dir_(), name);
     if (!domainScope) { error_(stream, domainScope.error()); return 1; }
     if (*domainScope) {
@@ -984,6 +1318,14 @@ int run_export_(int argc, char* argv[], EventStream& stream, const UsageError& u
         error_(stream, "--kernel names the kernel an ISO or a drive boots; a --disk boots the kernel given to it");
         return 1;
     }
+    if (!boot_profile.empty() && (iso.empty() && drive.empty() && qcow2.empty())) {
+        error_(stream, "--boot names how an ISO or a drive boots");
+        return 1;
+    }
+    if (!boot_profile.empty() && !kernel_file.empty()) {
+        error_(stream, "--boot and --kernel both say which kernel: give one");
+        return 1;
+    }
     if (auto fresh = require_new_output_(out); !fresh) {
         error_(stream, fresh.error(), "choose a new output path");
         return 1;
@@ -991,6 +1333,17 @@ int run_export_(int argc, char* argv[], EventStream& stream, const UsageError& u
 
     const auto home = home_dir_();
     const auto instance = HomeView{home}.instance(name);
+    // How an image boots: --boot, else the edition's profile; else the
+    // root's own kernel (or --kernel). Applied before the root is read.
+    auto boot = read_json_(HomeView{home}.instance_file(name)).value("boot", nlohmann::json::object());
+    if (boot_profile.empty() && kernel_file.empty() && (!iso.empty() || !drive.empty() || !qcow2.empty()))
+        boot_profile = boot.value("profile", std::string());
+    if (!boot_profile.empty()) {
+        auto profile = apply_boot_profile_(home, name, boot_profile_ref_(boot_profile), stream);
+        if (!profile) { error_(stream, profile.error().first, profile.error().second); return 1; }
+        for (const auto* k : {"release", "cmdline"})
+            if (profile->contains(k)) boot[k] = (*profile)[k];
+    }
     // The image's xlings runs with no host under it: the static release build.
     fs::path entry = home / "bin" / "xlings";
     std::error_code ec;
@@ -1305,9 +1658,7 @@ int run_export_(int argc, char* argv[], EventStream& stream, const UsageError& u
         rc = run_tool_(*argv, stream, "writing the disk image");
     } else if (!drive.empty() || !qcow2.empty()) {
         const auto raw = scratch->path() / (drive.empty() ? "drive.raw" : "output");
-        if (auto made = write_drive_(stage, home, kernel_file, size, scratch->path(), raw,
-                                     read_json_(HomeView{home}.instance_file(name)).value("boot", nlohmann::json::object()),
-                                     name, stream); !made) {
+        if (auto made = write_drive_(stage, home, kernel_file, size, scratch->path(), raw, boot, name, stream); !made) {
             error_(stream, made.error().first, made.error().second);
             return 1;
         }
@@ -1318,9 +1669,7 @@ int run_export_(int argc, char* argv[], EventStream& stream, const UsageError& u
                             (scratch->path() / "output").string()}, stream, "converting to qcow2");
         }
     } else if (!iso.empty()) {
-        if (auto made = write_live_iso_(stage, home, kernel_file, scratch->path(),
-                                        read_json_(HomeView{home}.instance_file(name)).value("boot", nlohmann::json::object()),
-                                        name, stream); !made) {
+        if (auto made = write_live_iso_(stage, home, kernel_file, scratch->path(), boot, name, stream); !made) {
             error_(stream, made.error().first, made.error().second);
             return 1;
         }

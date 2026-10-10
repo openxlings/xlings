@@ -571,6 +571,9 @@ int run_ps_(int argc, char* argv[], EventStream& stream);
 int run_log_(int argc, char* argv[], EventStream& stream, const UsageError& usageError);
 // src/core/subos/root/root_cmd.cpp: the root projection's commands.
 int run_rollback_(int argc, char* argv[], EventStream& stream, const UsageError& usageError);
+int run_upgrade_(int argc, char* argv[], EventStream& stream, const UsageError& usageError, bool yes);
+// src/core/subos/configure.cpp: a policy package, read and locked (installed when absent).
+std::expected<policy::Policy, std::pair<int, std::string>> select_policy_package_(const std::string& ref, bool upgrade);
 int run_boot_(int argc, char* argv[], EventStream& stream, const UsageError& usageError);
 int run_export_(int argc, char* argv[], EventStream& stream, const UsageError& usageError);
 int run_diff_(int argc, char* argv[], EventStream& stream, const UsageError& usageError);

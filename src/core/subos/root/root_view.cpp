@@ -366,11 +366,15 @@ class PrivateView final : public View {
                 continue;
             bind(guestHome, source, guestInstance / name);
         }
-        const auto entry = physicalHome / "bin/xlings";
+        // The entry, and luban beside it (projected into every root as
+        // /usr/bin/luban, Luban design §A1): what the root's links name.
         std::error_code ec;
-        const auto entryStatus = fs::symlink_status(entry, ec);
-        if (entryStatus.type() != fs::file_type::not_found)
-            bind(guestHome, fs::canonical(entry), guestHome / "bin/xlings");
+        for (const auto* program : {"xlings", "luban", "luban-init"}) {
+            const auto entry = physicalHome / "bin" / program;
+            const auto entryStatus = fs::symlink_status(entry, ec);
+            if (entryStatus.type() != fs::file_type::not_found)
+                bind(guestHome, fs::canonical(entry), guestHome / "bin" / program);
+        }
 
         auto primary = home::read_json_for_update(physicalHome / ".xlings.json");
         if (!primary)

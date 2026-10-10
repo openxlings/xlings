@@ -194,6 +194,15 @@ Info "OK: shipped themes present and parseable"
 
 Info "OK: self init materialized bootstrap home"
 
+# -- 4g. No index cache: it records this machine's absolute paths --
+# Derived (rebuilt on first use) and naming every recipe by its path HERE;
+# shipped, `self install` copied it into users' homes (see linux_release.sh).
+Get-ChildItem -Path $OUT_DIR -Recurse -Force -Filter ".xlings-index-cache.json" | Remove-Item -Force
+if (Get-ChildItem -Path $OUT_DIR -Recurse -Force -Filter ".xlings-index-cache.json") {
+  throw "an index cache is still in the package"
+}
+Info "OK: no index cache in the package"
+
 # -- 5. Create archive -------------------------------------------
 Info ""
 Info "All checks passed. Creating release archive..."

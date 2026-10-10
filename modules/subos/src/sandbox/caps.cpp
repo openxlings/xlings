@@ -63,10 +63,14 @@ std::string cache_key(const Backend& b, std::string_view context) {
     auto mtime = fs::last_write_time(b.bin, ec).time_since_epoch().count();
     const auto own = platform::file_ownership(b.bin).value_or(platform::FileOwnership{});
     const unsigned mode = own.mode, uid = own.uid;
-    return std::format("userns-v2|{}|{}|{}|{:o}|{}|{}|{}|{}|{}", b.bin.string(), size, mtime, mode, uid,
+    return std::format("userns-v3|{}|{}|{}|{:o}|{}|{}|{}|{}|{}", b.bin.string(), size, mtime, mode, uid,
                        read_line("/proc/sys/kernel/osrelease"),
                        read_line("/proc/sys/kernel/random/boot_id"),
                        read_line("/proc/sys/kernel/apparmor_restrict_unprivileged_userns"), context);
+}
+
+nlohmann::json entry_of(const Backend& b) {
+    return {{"usable", b.usable}, {"output", b.probe_output}, {"disable_userns_fails", b.disable_userns_fails}};
 }
 
 // state/isolation-caps.json (design §18): probe results per key. A probe
@@ -93,19 +97,20 @@ void probe_cached(std::vector<Backend>& all, const HomeView& home, bool fresh) {
         if (auto it = cache.find(key); it != cache.end() && it->is_object()) {
             b.usable = it->value("usable", false);
             b.probe_output = it->value("output", "");
+            b.disable_userns_fails = it->value("disable_userns_fails", "");
             observe::trace("caps", std::format("{}: cached ({})", b.bin.string(), b.usable ? "usable" : "fails"));
             continue;
         }
         probe_bwrap(b);
         observe::trace("caps", std::format("{}: probed ({})", b.bin.string(), b.usable ? "usable" : "fails"));
-        cache[key] = {{"usable", b.usable}, {"output", b.probe_output}};
+        cache[key] = entry_of(b);
         dirty = true;
     }
     if (!dirty) return;
     fs::create_directories(file.parent_path(), ec);
     // Bounded: entries for binaries and boots long gone are not worth keeping.
     if (cache.size() > 32) cache = nlohmann::json::object();
-    for (auto& b : all) cache[cache_key(b, *context)] = {{"usable", b.usable}, {"output", b.probe_output}};
+    for (auto& b : all) cache[cache_key(b, *context)] = entry_of(b);
     auto tmp = fs::path(file.string() + ".tmp");
     std::ofstream(tmp) << cache.dump();
     fs::rename(tmp, file, ec);
@@ -123,6 +128,7 @@ std::vector<Backend> bwrap_candidates(const HomeView& home, const Ports& ports, 
 
 std::optional<Backend> locate_bwrap(const HomeView& home, const Ports& ports) {
     auto all = bwrap_candidates(home, ports);
+    for (auto& b : all) if (b.usable && b.disable_userns_fails.empty()) return b;
     for (auto& b : all) if (b.usable) return b;
     if (!all.empty()) return all.front();
     return std::nullopt;
@@ -154,6 +160,14 @@ void probe_bwrap(Backend& b) {
     auto [status, output] = platform::run_command_capture(cmd);
     b.usable = status == 0;
     b.probe_output = b.usable ? std::string{} : std::move(output);
+    b.disable_userns_fails.clear();
+    if (!b.usable) return;
+    auto [locked, why] = platform::run_command_capture(
+        platform::shell_quote(b.bin.string()) + " --unshare-user --disable-userns --ro-bind / / -- /bin/true");
+    if (locked != 0) {
+        b.disable_userns_fails = why.substr(0, why.find('\n'));
+        if (b.disable_userns_fails.empty()) b.disable_userns_fails = std::format("exit {}", locked);
+    }
 }
 
 Caps probe(const HomeView& home, const Ports& ports) {

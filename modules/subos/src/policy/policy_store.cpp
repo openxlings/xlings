@@ -67,6 +67,13 @@ std::expected<void, std::string> write(const HomeView& home, std::string_view in
     auto order = policy::compare_client_versions(saved.min_client, policy::kPolicyMinClient);
     if (!order) return std::unexpected(order.error());
     if (*order < 0) saved.min_client = policy::kPolicyMinClient;
+    // A grant an older client does not know: the file says which one does.
+    const auto explicit_grant = [&](const std::set<std::string, std::less<>>& set) {
+        return std::ranges::any_of(policy::kExplicitGrants, [&](std::string_view g) { return set.contains(g); });
+    };
+    if (explicit_grant(saved.grants) || explicit_grant(saved.grants_allowed))
+        if (auto o = policy::compare_client_versions(saved.min_client, policy::kClipboardMinClient); o && *o < 0)
+            saved.min_client = policy::kClipboardMinClient;
     nlohmann::json doc = policy::to_json(saved);
     if (*existing) {
         const auto& old = **existing;

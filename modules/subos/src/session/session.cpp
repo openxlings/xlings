@@ -1062,6 +1062,19 @@ int session_init(std::span<const std::string> args) {
         std::thread([bridge, fd = *listener] { (void)network::gateway_run(bridge, fd); }).detach();
     }
 
+    // The clipboard grants: the tools' names, linked to this binary (the
+    // session's xlings), where PATH looks first. Nothing when not granted.
+    if (const char* bridge = std::getenv("XLINGS_CLIPBOARD_BRIDGE"); bridge && *bridge) {
+        std::error_code bec;
+        const fs::path dir(bridge);
+        fs::create_directories(dir, bec);
+        const auto self = platform::get_executable_path();
+        for (const auto tool : policy::kClipboardTools) {
+            fs::remove(dir / tool, bec);
+            fs::create_symlink(self, dir / tool, bec);
+        }
+    }
+
     const bool rootView = env_int(kRootViewEnv, 0) == 1;
     platform::unset_env_variable(std::string(kRootViewEnv));
     if (rootView) {

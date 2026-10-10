@@ -9,6 +9,7 @@ import xlings.core.xvm.shim;
 import xlings.core.home_identity;
 import xlings.core.home;
 import xlings.subos.session;
+import xlings.core.clipboard;
 import luban.stage0;
 import xlings.carrier.wsl2;
 import xlings.observe;
@@ -61,6 +62,19 @@ int main(int argc, char* argv[]) {
     if (argc >= 2 && std::string_view(argv[1]) == "__session-init") {
         std::vector<std::string> args(argv + 2, argv + argc);
         return xlings::subos::session::session_init(args);
+    }
+
+    // The clipboard of a sandbox granted it: started as wl-copy / wl-paste /
+    // xclip / xsel from the bridge's directory (session-init's links), or the
+    // broker's side of it on the host. Configured, never a command of its own.
+    if (argc >= 1)
+        if (auto tool = xlings::clipboard::bridge_tool(argv[0])) {
+            std::vector<std::string> args(argv + 1, argv + argc);
+            return xlings::clipboard::bridge(*tool, args);
+        }
+    if (argc >= 2 && std::string_view(argv[1]) == "__clipboard") {
+        std::vector<std::string> args(argv + 2, argv + argc);
+        return xlings::clipboard::host(args);
     }
 
     // Shim handoff (#615), before anything else runs -- in particular before

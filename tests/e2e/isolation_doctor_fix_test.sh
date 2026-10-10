@@ -10,8 +10,11 @@
 #      unconfined, and AppArmor denies it user namespaces;
 #   2. the doctor says so, names the restriction, and does not advise sysctl;
 #   3. --fix -y installs the root-owned copy and its profile;
-#   4. a sandbox now enters, through /usr/lib/xlings/bwrap.
-# xtest: covers=F12,DOC-ISOLATION,PROXY-NET-RESTRICTED-HOST requires=linux,xlings-bin,sudo,network
+#   4. a sandbox now enters, through /usr/lib/xlings/bwrap;
+#   0. (first, when the recipe made its bwrap setuid) a setuid bwrap enters but
+#      cannot forbid nested user namespaces: the doctor is not satisfied, and a
+#      policy that needs it refuses before the entry, with the fix.
+# xtest: covers=F12,DOC-ISOLATION,PROXY-NET-RESTRICTED-HOST,PRIVATE-USERNS-RESTRICTED-HOST requires=linux,xlings-bin,sudo,network
 set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/project_test_lib.sh"
 
@@ -28,10 +31,24 @@ X() { ( cd /tmp && "$BIN" "$@" ); }
 X self init >/dev/null
 X install -y bwrap >/dev/null
 X subos new box >/dev/null
-# The recipe makes its bwrap setuid when sudo answers without a password --
-# true on a CI runner, not on a user's machine. Leave it as a user has it.
 payload="$(find "$XLINGS_HOME/data/xpkgs/xim-x-bwrap" -path '*/bin/bwrap' -type f | head -1)"
 [[ -n "$payload" ]] || fail "no payload bwrap"
+# The recipe makes its bwrap setuid when sudo answers without a password --
+# true on a CI runner (and what xim-pkgindex #945's acceptance met).
+if [[ "$(stat -c '%u %a' "$payload")" == 0\ 4* ]]; then
+    log "0. a setuid bwrap: it enters, but a private policy's nested-namespace ban is refused up front"
+    set +e
+    doctor="$(X self doctor --isolation 2>&1)"; rc=$?
+    entry="$(X subos exec box --sandbox=locked --no-degrade -- true 2>&1)"; erc=$?
+    set -e
+    printf '%s\n%s\n' "$doctor" "$entry" | sed 's/^/      | /'
+    [[ $rc -ne 0 ]] || fail "the doctor was satisfied by a bwrap that cannot forbid nested user namespaces"
+    grep -q 'cannot forbid nested user namespaces' <<<"$doctor" || fail "the doctor did not say why"
+    [[ $erc -ne 0 ]] || fail "a policy that forbids nested user namespaces entered a setuid bwrap"
+    grep -q 'self doctor --isolation --fix' <<<"$entry" || fail "the refusal did not give the fix"
+    ! grep -q 'namespace descriptors' <<<"$entry" || fail "refused after the entry, not before"
+fi
+# Leave it as a user has it.
 sudo chown "$(id -u):$(id -g)" "$payload"
 chmod 0755 "$payload"
 
@@ -73,4 +90,9 @@ X subos config box --sandbox=private --net proxy --proxy socks5h://127.0.0.1:9 >
 out="$(X subos exec box -- /bin/sh -c 'echo ifaces=$(tail -n +3 /proc/net/dev | cut -d: -f1 | tr -d " " | tr "\n" ,)' 2>&1)" \
   || fail "net=proxy did not enter with the restriction on: $out"
 grep -q 'ifaces=lo,' <<<"$out" || fail "net=proxy: not lo only: $out"
+log "5. after: a policy that forbids nested user namespaces enters, and they are forbidden"
+X subos config box --sandbox=dev >/dev/null
+out="$(X subos exec box --sandbox=locked --no-degrade -- /bin/sh -c 'command -v unshare >/dev/null || { echo nested=untested; exit 0; }; if unshare -U true 2>/dev/null; then echo nested=yes; else echo nested=no; fi' 2>&1)" \
+  || fail "a locked policy did not enter through the root-owned bwrap: $out"
+grep -q 'nested=no' <<<"$out" || fail "nested user namespaces were not forbidden: $out"
 log "PASS: self doctor --isolation --fix makes sandboxes (and a proxy-only network) work with the restriction left on"

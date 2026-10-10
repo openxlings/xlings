@@ -24,6 +24,10 @@ struct Backend {
     std::string source;
     bool usable { false };       // the probe passed
     std::string probe_output;    // raw stdout+stderr of a failed probe
+    // Why `--disable-userns` fails with it (bwrap's first line), empty when
+    // it works: a setuid bwrap does not support it, and a private policy
+    // needs it.
+    std::string disable_userns_fails;
 };
 
 struct Caps {
@@ -53,7 +57,8 @@ inline constexpr std::string_view kRootOwnedBwrap = "/usr/lib/xlings/bwrap";
 // Every bwrap found, in that order, each probed. The doctor reports them all.
 // `fresh` probes every one again (the doctor's view) and refreshes the cache.
 std::vector<Backend> bwrap_candidates(const HomeView& home, const Ports& ports, bool fresh = false);
-// The first usable one; otherwise the first found (with its probe output).
+// The first usable one that can also forbid nested user namespaces, then the
+// first usable one; otherwise the first found (with its probe output).
 std::optional<Backend> locate_bwrap(const HomeView& home, const Ports& ports);
 // The payload only (what `xlings install bwrap` put there).
 std::optional<Backend> payload_bwrap(const HomeView& home);
@@ -63,7 +68,8 @@ std::optional<Backend> locate_proot(const HomeView& home, const Ports& ports);
 // usual paths when it is not a shim. Usable only with /dev/net/tun.
 std::optional<fs::path> locate_pasta(const HomeView& home, const Ports& ports, std::string& why_not);
 
-// `bwrap --unshare-user --ro-bind / / -- /bin/true`; fills usable / probe_output.
+// `bwrap --unshare-user --ro-bind / / -- /bin/true`; fills usable / probe_output,
+// then the same with --disable-userns; fills disable_userns_fails.
 void probe_bwrap(Backend& b);
 
 // Locate and probe everything. Cheap enough to run per entry today; the

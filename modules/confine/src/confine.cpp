@@ -148,9 +148,17 @@ std::expected<sp::SandboxSpec, sp::Refusal> compile(const policy::Policy& pol, c
                               i.need("identity")});
     }
     if (i.disable_userns) {
-        if (kernel) {
+        // A setuid bwrap does not support --disable-userns: the probe says
+        // so before the entry, never bwrap after it.
+        const auto cannot = s.backend == sp::Backend::Bwrap && caps.bwrap ? caps.bwrap->disable_userns_fails
+                                                                           : std::string{};
+        if (kernel && cannot.empty()) {
             s.unshare_user = true;
             s.disable_userns = true;
+        } else if (kernel) {
+            unmet.push_back({"userns", "this bwrap cannot forbid nested user namespaces (" + cannot + ")",
+                             "xlings self doctor --isolation --fix  (one sudo: a root-owned bwrap with a "
+                             "narrow AppArmor profile)", i.need("userns")});
         } else {
             unmet.push_back({"userns", "nested user namespaces cannot be forbidden here", "", i.need("userns")});
         }
@@ -297,6 +305,14 @@ std::expected<sp::SandboxSpec, sp::Refusal> compile(const policy::Policy& pol, c
     const bool windows = caps.platform == "windows";
     s.env["XLINGS_SUBOS_LIB"] = windows ? (i.instance_dir / "lib").string() : posix(i.instance_dir / "lib");
     impl.finish(i, home, caps, grant_env, s);
+    // The clipboard grants (Luban OS design part 2 §9.2b): the names programs
+    // already call for a clipboard -- wl-copy, wl-paste, xclip, xsel -- first
+    // on PATH, linked by session-init to the session's xlings, which reaches
+    // the host's clipboard through the broker. Not the display.
+    if (s.backend == sp::Backend::Bwrap && (i.grants.contains("clipboard") || i.grants.contains("clipboard-paste"))) {
+        s.env["XLINGS_CLIPBOARD_BRIDGE"] = std::string(policy::kClipboardBridgeDir);
+        s.env["PATH"] = std::string(policy::kClipboardBridgeDir) + ":" + s.env["PATH"];
+    }
     return s;
 }
 

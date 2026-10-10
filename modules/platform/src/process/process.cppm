@@ -112,6 +112,7 @@ void relay_terminal(int master, int in, int out);
 int open_null();
 // Owner-only (0600), created when missing, appended to.
 int open_for_append(const std::filesystem::path& path);
+int open_for_read(const std::filesystem::path& path);           // -1 when it cannot
 
 struct PollFd {
     int fd { -1 };
