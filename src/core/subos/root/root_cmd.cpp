@@ -635,7 +635,8 @@ int run_boot_(int argc, char* argv[], EventStream& stream, const UsageError& usa
     if (!role_allows_(roles::Op::Boot, name, stream)) return 1;
     // --now (part 2 §8.1): hand / to it without restarting the kernel. Only
     // an init that can re-exec stage-0 can do that -- busybox init with a
-    // `::restart:` entry naming /usr/bin/xlings-init (luban-tiny's), on the
+    // `::restart:` entry naming stage-0 (/usr/bin/luban-init, or xlings-init
+    // in luban-tiny 0.1.0), on the
     // machine this home is the root of. Anything else would leave the
     // running processes on one SubOS and new ones on another: refused, and
     // a reboot does it.
@@ -645,7 +646,8 @@ int run_boot_(int argc, char* argv[], EventStream& stream, const UsageError& usa
         const auto init = fs::read_symlink("/proc/1/exe", ec).filename().string();
         const auto inittab = read_text_("/etc/inittab");
         const bool restartable = host && init == "busybox"
-            && inittab.find("::restart:/usr/bin/xlings-init") != std::string::npos;
+            && (inittab.find("::restart:/usr/bin/luban-init") != std::string::npos
+                || inittab.find("::restart:/usr/bin/xlings-init") != std::string::npos);
         if (!restartable) {
             error_(stream, !host ? "this home is not the root of the running machine"
                                  : "this machine's init cannot hand / to another SubOS without a reboot",
