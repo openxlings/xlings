@@ -1277,11 +1277,13 @@ int run_export_(int argc, char* argv[], EventStream& stream, const UsageError& u
                    "--drive <file> | --qcow2 <file> | --iso <file> [--size 4G] [--boot <profile> | --kernel <vmlinuz>] [--with-data]");
         return 1;
     }
-    // The flag and the file, whichever was asked for.
-    const auto [flag, target] = !rootfs_dir.empty() ? std::pair{"--rootfs", rootfs_dir}
+    // The flag and the file, whichever was asked for. A directory may be
+    // written `dir/` (that is how luban tells the format): the name is `dir`.
+    const auto [flag, given] = !rootfs_dir.empty() ? std::pair{"--rootfs", rootfs_dir}
         : !tarball.empty() ? std::pair{"--tar", tarball} : !disk.empty() ? std::pair{"--disk", disk}
         : !drive.empty() ? std::pair{"--drive", drive} : !iso.empty() ? std::pair{"--iso", iso}
         : std::pair{"--qcow2", qcow2};
+    const fs::path target = given.has_filename() ? given : given.parent_path();
     auto domainScope = xlings::home::domain_producer::read_scope(home_dir_(), name);
     if (!domainScope) { error_(stream, domainScope.error()); return 1; }
     if (*domainScope) {

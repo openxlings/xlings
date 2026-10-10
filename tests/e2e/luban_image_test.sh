@@ -113,6 +113,10 @@ if X subos export t --iso "$RUNTIME_DIR/both.iso" --boot generic --kernel /dev/n
 fi
 boot iso-profile -cdrom "$RUNTIME_DIR/p.iso" -boot d
 
+log "luban export t <dir>/ (a directory is written with its slash)"
+L export t "$RUNTIME_DIR/rootdir/" > "$RUNTIME_DIR/dir.log" 2>&1 || { cat "$RUNTIME_DIR/dir.log"; fail "export dir/"; }
+[[ -d "$RUNTIME_DIR/rootdir/usr" && -d "$RUNTIME_DIR/rootdir/etc" ]] || fail "export dir/ wrote no root"
+
 log "luban export t t.img (a drive), booted"
 L export t "$RUNTIME_DIR/t.img" --size 1G > "$RUNTIME_DIR/drive.log" 2>&1 || { cat "$RUNTIME_DIR/drive.log"; fail "export drive"; }
 if command -v sfdisk >/dev/null; then
