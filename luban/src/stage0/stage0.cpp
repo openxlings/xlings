@@ -158,6 +158,15 @@ int run(int argc, char* argv[]) {
         return 1;
     }
     const auto started = std::chrono::steady_clock::now();
+    // Where the budget goes, per phase (a boot that is slow says which step).
+    nlohmann::json phases = nlohmann::json::object();
+    auto lap = started;
+    auto mark = [&](const char* phase) {
+        const auto now = std::chrono::steady_clock::now();
+        phases[phase] = phases.value(phase, std::int64_t{0}) +
+            std::chrono::duration_cast<std::chrono::microseconds>(now - lap).count();
+        lap = now;
+    };
     for (auto [type, target] : {std::pair{"proc", "/proc"}, std::pair{"sysfs", "/sys"},
                                 std::pair{"devtmpfs", "/dev"}, std::pair{"tmpfs", "/run"}}) {
         if (!platform::mount_kernel_fs(type, target))
@@ -165,6 +174,7 @@ int run(int argc, char* argv[]) {
                             platform::error_text(platform::last_error())));
     }
     if (!platform::remount_root_rw()) recover("/ stays read-only; boot state cannot be recorded");
+    mark("mounts");
     const auto anchor = read_home_anchor(std::string(kAnchor));
     if (!anchor) recover(anchor.error());
     const HomeView home{*anchor};
@@ -185,6 +195,7 @@ int run(int argc, char* argv[]) {
         say(std::format("the trial '{}' is not a bootable SubOS; dropped", *config->once));
         config = next;
     }
+    mark("select");
     const auto candidates = boot::candidates(*config, [&](std::string_view name) {
         return bootable[std::string(name)];
     });
@@ -202,21 +213,26 @@ int run(int argc, char* argv[]) {
             }
             continue;
         }
+        mark("init");
         const auto dir = home.instance(candidate.subos);
         if (auto laid = rootfs::lay_out("/", rootfs::usr_of(dir), home.home); !laid) {
             say(laid.error());
             continue;
         }
+        mark("lay_out");
         if (auto etc = luban::machine::fill_machine_etc("/etc", dir); !etc) recover("machine /etc: " + etc.error());
         if (auto users = luban::machine::apply_sysusers("/etc", rootfs::usr_of(dir)); !users) recover("machine /etc: " + users.error());
+        mark("machine_etc");
         if (auto cache = library_cache::refresh("/", home, candidate.subos); !cache) recover(cache.error());
+        mark("library_cache");
         const auto next = boot::record_boot(*config, candidate);
         if (auto saved = boot::save(home.boot_file(), next); !saved) recover(saved.error());
+        mark("record");
         const auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
             std::chrono::steady_clock::now() - started).count();
         log_event(home, {{"event", "boot"}, {"subos", candidate.subos}, {"via", candidate.via},
                          {"generation", rootfs::current(dir).value_or(0)}, {"init", (*init)->string()},
-                         {"stage0_elapsed_us", elapsed}});
+                         {"stage0_elapsed_us", elapsed}, {"stage0_phases_us", phases}});
         say(std::format("booting '{}' ({}), generation {}", candidate.subos, candidate.via,
                         rootfs::current(dir).value_or(0)));
         const std::map<std::string, std::string> env{
