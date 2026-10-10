@@ -28,6 +28,7 @@ on:
     inputs:
       legs: { type: choice, options: [smoke, full], default: full }
       version: { type: string, default: "" }
+      run: { type: string, default: "", description: "an xlings-ci-linux run whose xlings-linux-x86_64 is the build under test (x86_64 legs)" }
       index_repository: { type: string, default: "" }
       index_ref: { type: string, default: "" }
   schedule:
@@ -47,7 +48,7 @@ jobs:
         env:
           LEGS: ${{ inputs.legs || 'full' }}
           VERSION: ${{ inputs.version }}
-          ARTIFACT: ${{ inputs.artifact }}
+          ARTIFACT: ${{ inputs.artifact || inputs.run }}
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
@@ -76,6 +77,8 @@ jobs:
             {"leg":"u-ubuntu-2004","kind":"container","runner":"ubuntu-24.04","arch":"x86_64","image":"ubuntu:20.04",
              "setup":"apt-get -qq update && DEBIAN_FRONTEND=noninteractive apt-get -qq install -y python3 curl sudo util-linux passwd ca-certificates >/dev/null"}]'
           if [[ "$LEGS" == smoke ]]; then legs="$smoke"; else legs="$full"; fi
+          # A run's artifact is an x86_64 build: those legs only.
+          [[ -n "$ARTIFACT" ]] && legs="$(echo "$legs" | jq -c '[.[] | select(.arch == "x86_64")]')"
           # The PR's artifact is an x86_64 build: smoke legs only.
           echo "legs=$(echo "$legs" | jq -c .)" >> "$GITHUB_OUTPUT"
           if [[ -z "$ARTIFACT" ]]; then
@@ -104,8 +107,17 @@ jobs:
         with:
           name: ${{ inputs.artifact }}
           path: build
+      - name: The build under test (another run's artifact)
+        if: inputs.run != ''
+        uses: actions/download-artifact@v4
+        with:
+          name: xlings-linux-x86_64
+          path: build
+          run-id: ${{ inputs.run }}
+          repository: openxlings/xlings
+          github-token: ${{ github.token }}
       - name: The build under test (a release)
-        if: inputs.artifact == ''
+        if: inputs.artifact == '' && inputs.run == ''
         env:
           GH_TOKEN: ${{ github.token }}
           V: ${{ needs.plan.outputs.version }}
