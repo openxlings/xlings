@@ -27,6 +27,10 @@
 | D8 | **edition、策略、启动层用自己的发布日期作版本**，与 xlings 版本独立；上游软件保持上游版本 |
 | D9 | **宿主矩阵 CI**：真实用户的宿主（AppArmor 限制、SELinux、没有免密 sudo、setuid 与否）成为测试维度，参考 mcpp 的 `ci-fresh-install` |
 | D10 | 每个仓库一个 PR，commit 作为检查点；cmdline 库不动（luban 的命令只加在它自己的命令树里） |
+| D11 | **宿主矩阵的 VM 腿是测试基础设施**，放在 xlings 的 `tests/host-matrix/` 和可复用的 `xlings-ci-host-matrix.yml`（索引调用同一套），不是包，也不进 `modules/`、`luban/` |
+| D12 | **upgrade 从不放宽隔离**：新策略有任何一项放宽，就保留旧策略并给出 `subos config <n> --sandbox <ref>`；不加 `--accept-policy` |
+| D13 | `linux-kernel-virt` 用 6.12 LTS（6.12.112） |
+| D14 | 版本日期按实际合入当天，xlings 与索引的 edition 可以不同日 |
 
 ---
 
@@ -169,7 +173,7 @@ function install() return luban.edition("Core", versions) end
 ```
 
 - 这里记录的是 **edition 层**：模板在创建时带来的包。之后用户装的包是 **用户层**：workspace 里有、而 edition 层里没有的包。
-- 没有这个字段的旧实例：第一次 `upgrade` 时，用当时的 `from` 和模板内容推导一次，并说明是推导出来的。
+- 没有这个字段的旧实例（2026.10.10.3 之前创建，或不是从 edition 创建）：`upgrade` 如实拒绝并说明原因，不推导——当时用的是哪个顶层模板没有记录，推导出来的"edition 层"可能把用户的包当成 edition 的。
 
 ### 3.3 `luban upgrade <环境>`（xlings：`subos upgrade`）
 
@@ -186,17 +190,16 @@ proceed? [Y/n]
 **规则**
 - 一次升级 = 一个新的代。`luban rollback dev` 回到上一代。
 - **用户层优先：** 用户自己装的某个包，如果和 edition 层是同名的另一个版本，保留用户的版本，并报告。
-- **策略方向：**
-  - 收紧（多拒绝一些东西）随升级生效，并列出；
-  - 放宽必须确认：agent 模式下是退出码 2 加上确切的参数 `--accept-policy`。
-  - 判断"收紧还是放宽"由策略编译器比较两个 Intent，与 INTENT-EQ golden 用的是同一套比较。
+- **策略方向（D12）：**
+  - 新策略不放宽任何一项（`policy::loosened` 为空）时随升级生效；
+  - 有任何放宽（包括收紧与放宽混合）时保留旧策略，列出放宽的项，并给出 `xlings subos config <n> --sandbox <新策略>`——放宽只能由所有者显式切换。
 - **不带版本的包**（agent）重新解析为最新版。
 - **非 rootfs 的 SubOS**（没有 edition）：提示没有可升级的 edition。
 
-**参数**（只加在 luban 的命令树里；xlings 侧是 `subos upgrade`）
+**参数**（luban 的命令树里加 `upgrade`；xlings 侧是 `subos upgrade`）
 - `--to <版本>`
 - `--dry-run`
-- `-y`
+- `-y`（全局选项）
 
 ### 3.4 其他
 
@@ -406,3 +409,38 @@ I1..I8 ──► 索引验收（用已发布的 xlings 和本 PR）全绿 ──
 3. **§3.3 放宽策略在 agent 模式下用 `--accept-policy` 确认**：可以吗？
 4. **§2.3 linux-kernel-virt 的上游版本**：用 6.12 LTS（推荐），还是与 generic 保持 6.8？
 5. **§6 版本日期**：按实际合入当天的日期，xlings 和索引的 edition 可以不同日。
+
+---
+
+## 9. 实施记录（2026-10-10，xlings PR #653 / xim-pkgindex PR #945）
+
+### 9.1 已实现
+
+| 项 | 内容 | 验证 |
+|---|---|---|
+| X1 | bwrap 探测测 `--disable-userns`；setuid 的 bwrap 不能禁止嵌套命名空间，需要它的策略在进入前拒绝并给出修复 | `test_confine`；`isolation_doctor_fix_test.sh`（setuid 与修复后） |
+| X2 | stage-0 分段计时（`stage0_phases_us`）；200 ms 只在有 KVM 时强制 | `rootfs_boot_test.sh` |
+| X3 | edition manifest 的 `min_client` 在下载前检查 | `test_subos_new_template` |
+| X4 | `instance.json.edition`（ref、from 链、包的实际版本、策略） | 同上 |
+| X5 | `subos upgrade` / `luban upgrade`；`xlings.subos.edition::plan`；`policy::loosened` | `test_subos_edition`，升级 e2e（1.0.0 → 2.0.0） |
+| X6 | 启动层：`export --boot`，edition 的 `boot.profile`；`luban try` 默认 virt | `luban_image_test.sh`（fixture 启动层，qemu 启动） |
+| X7 | desktop 改为 preview（无短名） | `test_luban_cli` |
+| X8 | 宿主矩阵：`tests/host-matrix`（场景、run.sh、vm.sh），`xlings-ci-host-matrix.yml`；PR 跑 smoke | CI |
+| I1 | `libs/luban.lua`；edition 与策略改成数据；已发布版本不变的 golden | `test_luban_published` |
+| I2 | `tools/res/build.sh`、`res-build.yml`：limine（静态工具）、linux-kernel-virt 6.12.112、aarch64 busybox；经 `xpkg_ci.py mirror` 发布到 GitHub 与 GitCode，两边按内容校验 | res-build CI；本机安装 |
+| I3–I5 | limine 改为 XLINGS_RES；linux-kernel-virt；busybox aarch64；luban-boot-generic / virt；tiny（from nano、luban-init、无架构的 ABI、aarch64、boot.profile）；tiny-musl；agent-workspace 的 claude 不带版本 | 静态测试；`test-luban-editions.sh`（ISO 经 virt 启动） |
+| I6 | 索引 `docs/luban-packages.md` | — |
+| I7 | 验收接受指定的 xlings 构建；editions 任务 | CI |
+
+### 9.2 实施中发现并修复的缺陷
+
+1. **不带版本的模板引用取的是"已安装的随便哪个"**（目录遍历的最后一项，而且没有排序）：`luban new box tiny` 装过一次旧模板后永远用旧的，`upgrade` 也永远看不到新版本。现在取索引的 `latest`，退回时按版本排序。
+2. **`subos boot --now` 只认 inittab 里的 `xlings-init`**：新 edition 改用 `luban-init` 后会被无理由拒绝。两者都认。
+3. **libc=musl 被一律拒绝**（"the index publishes gnu ones today"）：tiny-musl 发布后不再成立。musl 可用，索引没有载荷的 libc 仍拒绝并点名。
+4. **`-y` 是全局选项**，在分发前被过滤；`subos upgrade` 改为接收记录下来的 `yesGiven`（第一版因此"给了 -y 仍询问"）。
+
+### 9.3 与本文的差异
+
+1. 新 edition 的版本仍是 `2026.10.10.1`：这些版本此前从未合入索引 main（未发布），所以可以修改；已发布的只有 tiny / core / desktop 的 `0.1.0`，golden 守住它们。
+2. aarch64 做到 tiny 这一层（edition 与包）；aarch64 的镜像不在本轮：`luban try` 只跑 x86_64，驱动器的 ESP 只放 BOOTX64.EFI。`luban-boot-generic` 只有 x86_64（没有 aarch64 的 generic 内核），aarch64 用 `--boot virt`。
+3. virt 启动层同时写 `console=ttyS0 console=ttyAMA0`：recipe 的 hook 里拿不到架构（`os.arch()` 在 hook 中未绑定），内核会跳过机器上没有的那个。
