@@ -34,9 +34,12 @@ log() { printf '[vm %s] %s\n' "$distro" "$*" >&2; }
 
 case "$distro" in
     fedora)
-        base=https://download.fedoraproject.org/pub/fedora/linux/releases/42/Cloud/x86_64/images
-        image=Fedora-Cloud-Base-Generic-42-1.1.x86_64.qcow2
-        sums="$base/Fedora-Cloud-42-1.1-x86_64-CHECKSUM"; sumtool=sha256sum
+        # The current release; its point-release names come from the listing
+        # (an older release moves to the archive and its URL 404s).
+        base=https://download.fedoraproject.org/pub/fedora/linux/releases/44/Cloud/x86_64/images
+        listing="$(curl -fsSL --retry 3 "$base/")"
+        image="$(grep -oE 'Fedora-Cloud-Base-Generic-[0-9]+-[0-9.]+\.x86_64\.qcow2' <<<"$listing" | sort -u | tail -1)"
+        sums="$base/$(grep -oE 'Fedora-Cloud-[0-9]+-[0-9.]+-x86_64-CHECKSUM' <<<"$listing" | sort -u | tail -1)"; sumtool=sha256sum
         prepare='sudo dnf -y -q install python3 curl util-linux sudo tar gzip findutils >/dev/null' ;;
     debian-12)
         base=https://cloud.debian.org/images/cloud/bookworm/latest
@@ -79,12 +82,21 @@ cloud-localds "$work/seed.img" "$work/user-data" "$work/meta-data"
 log "booting (ssh on 127.0.0.1:$port)"
 qemu-system-x86_64 -enable-kvm -cpu host -m 4096 -smp 4 -display none \
     -drive "file=$work/disk.qcow2,if=virtio" -drive "file=$work/seed.img,if=virtio,format=raw" \
-    -nic "user,hostfwd=tcp:127.0.0.1:$port-:22" -serial "file:$evidence/console-$distro.log" \
+    -nic "user,model=virtio-net-pci,hostfwd=tcp:127.0.0.1:$port-:22" -serial "file:$evidence/console-$distro.log" \
     -pidfile "$work/qemu.pid" -daemonize
 trap 'kill "$(cat "$work/qemu.pid" 2>/dev/null)" 2>/dev/null || true; rm -rf "$work"' EXIT
-SSH=(ssh -q -i "$work/key" -p "$port" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=5 admin@127.0.0.1)
+# virtio-net: Debian's genericcloud kernel has no e1000 (qemu's default NIC).
+SSH=(ssh -q -i "$work/key" -p "$port" -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=5 admin@127.0.0.1)
 SCP=(scp -q -i "$work/key" -P "$port" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null)
-for i in $(seq 120); do "${SSH[@]}" true 2>/dev/null && break; sleep 5; [[ $i -lt 120 ]] || { log "no ssh"; tail -40 "$evidence/console-$distro.log"; exit 1; }; done
+for i in $(seq 120); do
+    "${SSH[@]}" true 2>/dev/null && break
+    sleep 5
+    if [[ $i -eq 120 ]]; then
+        log "no ssh"; tail -40 "$evidence/console-$distro.log"
+        "${SSH[@]/-q/-v}" true 2>&1 | tail -20
+        exit 1
+    fi
+done
 log "up: $("${SSH[@]}" 'uname -r; cat /sys/fs/selinux/enforce 2>/dev/null || true' | tr '\n' ' ')"
 "${SSH[@]}" "$prepare"
 "${SSH[@]}" 'mkdir -p hm-in'
