@@ -157,6 +157,7 @@ XTEST(SubosNewTemplate, AnEditionDeclaresItsAbiAndOneThisMachineCannotRunIsRefus
     };
     edition("abi-other", other + "-linux-gnu");
     edition("abi-musl", Json{{"arch", host}, {"kernel", "linux"}, {"libc", "musl"}});
+    edition("abi-uclibc", Json{{"arch", host}, {"kernel", "linux"}, {"libc", "uclibc"}});
     edition("abi-here", host + "-linux-gnu");
     tk::write_file(repo / "pkgs/n/newer.lua", template_recipe("newer",
         Json{{"subos_kind", "rootfs"}, {"min_client", "9999.1.1.1"}, {"packages", {"fixture:hello@1.0.0"}},
@@ -173,9 +174,13 @@ XTEST(SubosNewTemplate, AnEditionDeclaresItsAbiAndOneThisMachineCannotRunIsRefus
     EXPECT_NE(refused.transcript().find("built for " + other), std::string::npos) << refused.transcript();
     EXPECT_FALSE(fs::exists(home.dir() / "data/xpkgs/fixture-x-hello")) << "fetched for a root it then refused";
     EXPECT_FALSE(fs::exists(home.dir() / "subos/a")) << "half-made";
+    // libc is a choice: musl is made (luban-tiny-musl), one the index has no
+    // payloads for is refused, naming it.
     auto musl = home.xlings({"subos", "new", "b", "--from", "fixture:abi-musl@1.0.0"}, env);
-    EXPECT_NE(musl.exit_code, 0);
-    EXPECT_NE(musl.transcript().find("libc=musl"), std::string::npos) << musl.transcript();
+    EXPECT_EQ(musl.exit_code, 0) << musl.transcript();
+    auto uclibc = home.xlings({"subos", "new", "b2", "--from", "fixture:abi-uclibc@1.0.0"}, env);
+    EXPECT_NE(uclibc.exit_code, 0);
+    EXPECT_NE(uclibc.transcript().find("libc=uclibc"), std::string::npos) << uclibc.transcript();
     auto made = home.xlings({"subos", "new", "c", "--from", "fixture:abi-here@1.0.0"}, env);
     ASSERT_EQ(made.exit_code, 0) << made.transcript();
     const auto instance = Json::parse(tk::read_file(home.dir() / "config/subos/c/instance.json"));

@@ -263,7 +263,8 @@ nlohmann::json abi_of_(const nlohmann::json& v) {
 }
 
 // Whether this machine can make (and run) a root of that ABI here; the
-// reason when it cannot. The model takes any libc; the index publishes gnu.
+// reason when it cannot. The model takes any libc; the index publishes gnu
+// and musl (luban-tiny-musl).
 std::optional<std::string> abi_refusal_(const nlohmann::json& abi) {
     const auto arch = abi.value("arch", std::string());
     const auto host = platform::host().arch;
@@ -274,8 +275,8 @@ std::optional<std::string> abi_refusal_(const nlohmann::json& abi) {
         return std::format("its kernel ABI is {}; this machine runs linux (a carrier that provides {} runs it)",
                            kernel, kernel);
     const auto libc = abi.value("libc", std::string());
-    if (!libc.empty() && libc != "gnu" && libc != "none")
-        return std::format("its payloads are for libc={}; the index publishes gnu ones today", libc);
+    if (!libc.empty() && libc != "gnu" && libc != "musl" && libc != "none")
+        return std::format("its payloads are for libc={}; the index publishes gnu and musl ones", libc);
     return std::nullopt;
 }
 
@@ -1069,7 +1070,7 @@ std::expected<nlohmann::json, std::pair<std::string, std::string>> apply_boot_pr
     const std::vector<std::string> targets{ref};
     if (xim::cmd_install_step(targets, name, stream, /*plumbing=*/true) != 0)
         return std::unexpected(std::pair{std::format("the boot profile {} could not be installed into '{}'", ref, name),
-                                         std::string("--boot generic, or --kernel <vmlinuz>")});
+                                         std::string("--boot virt or --boot generic, or --kernel <vmlinuz>")});
     const auto key = ref.substr(0, ref.find('@'));
     const auto configured = read_json_(HomeView{home}.instance(name) / ".xlings.json").value("configured", nlohmann::json::object());
     for (auto it = configured.begin(); it != configured.end(); ++it) {
