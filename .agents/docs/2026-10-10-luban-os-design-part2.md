@@ -173,7 +173,7 @@ function install() return luban.edition("Core", versions) end
 ```
 
 - 这里记录的是 **edition 层**：模板在创建时带来的包。之后用户装的包是 **用户层**：workspace 里有、而 edition 层里没有的包。
-- 没有这个字段的旧实例（2026.10.10.3 之前创建，或不是从 edition 创建）：`upgrade` 如实拒绝并说明原因，不推导——当时用的是哪个顶层模板没有记录，推导出来的"edition 层"可能把用户的包当成 edition 的。
+- 没有这个字段的旧实例（2026.10.11.1 之前创建，或不是从 edition 创建）：`upgrade` 如实拒绝并说明原因，不推导——当时用的是哪个顶层模板没有记录，推导出来的"edition 层"可能把用户的包当成 edition 的。
 
 ### 3.3 `luban upgrade <环境>`（xlings：`subos upgrade`）
 
@@ -441,6 +441,6 @@ I1..I8 ──► 索引验收（用已发布的 xlings 和本 PR）全绿 ──
 
 ### 9.3 与本文的差异
 
-1. 新 edition 的版本仍是 `2026.10.10.1`：这些版本此前从未合入索引 main（未发布），所以可以修改；已发布的只有 tiny / core / desktop 的 `0.1.0`，golden 守住它们。
+1. 新 edition、策略和启动层的版本是合入当天的 `2026.10.11.1`（D14），xlings 也随之是 2026.10.11.1：#945 里原先的 `2026.10.10.1` 从未合入索引 main（未发布），所以可以改；已发布的只有 tiny / core / desktop 的 `0.1.0`，golden 守住它们。
 2. aarch64 做到 tiny 这一层（edition 与包）；aarch64 的镜像不在本轮：`luban try` 只跑 x86_64，驱动器的 ESP 只放 BOOTX64.EFI。`luban-boot-generic` 只有 x86_64（没有 aarch64 的 generic 内核），aarch64 用 `--boot virt`。
 3. virt 启动层同时写 `console=ttyS0 console=ttyAMA0`：recipe 的 hook 里拿不到架构（`os.arch()` 在 hook 中未绑定），内核会跳过机器上没有的那个。

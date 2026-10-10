@@ -1,6 +1,6 @@
 # PR #653 / xim-pkgindex #945 自我 review（Luban OS part 2，2026-10-10）
 
-- 范围：xlings PR #653（2026.10.10.3）与 xim-pkgindex PR #945 的重构。
+- 范围：xlings PR #653（2026.10.11.1）与 xim-pkgindex PR #945 的重构。
 - 依据：
   - `.agents/docs/2026-10-10-luban-os-design-part2.md`（含 §9 实施记录）；
   - 总图 `2026-10-10-luban-ecosystem-overview.md`；
@@ -49,7 +49,7 @@
 **兼容性与无感升级**
 - `instance.json` 只追加字段。已发布的 0.1.0 写出的字节不变（golden）。
 - 新字段在旧客户端上都能安全退化：`boot.profile` 被忽略时退回 `boot.kernel`；不带版本的包被旧客户端当作最新。
-- 新 edition 用 `min_client` 要求 2026.10.10.3，从这个版本起由客户端执行。
+- 新 edition 用 `min_client` 要求 2026.10.11.1，从这个版本起由客户端执行。
 - busybox 的 x86_64 下载地址和 sha256 不变，只新增 aarch64。
 
 **跨平台**

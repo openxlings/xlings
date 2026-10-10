@@ -615,7 +615,7 @@ int run_upgrade_(int argc, char* argv[], EventStream& stream, const UsageError& 
     const auto now = subos::edition::read(instance);
     if (!now) {
         error_(stream, std::format("'{}' has no edition to upgrade from: it was not made from one, or was made "
-                                   "before xlings recorded it (2026.10.10.3)", name),
+                                   "before xlings recorded it (2026.10.11.1)", name),
                std::format("xlings install <package> --subos {} updates a package; a new environment from the "
                            "edition has the newest of everything", name));
         return 1;
