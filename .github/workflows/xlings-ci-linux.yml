@@ -649,7 +649,8 @@ jobs:
     if: ${{ !cancelled() && needs.build-and-test.outputs.release_ready == 'true' }}
     uses: ./.github/workflows/xlings-ci-host-matrix.yml
     with:
-      legs: smoke
+      # The label `host-matrix-full` runs every x86_64 leg on this build.
+      legs: ${{ contains(github.event.pull_request.labels.*.name, 'host-matrix-full') && 'full' || 'smoke' }}
       artifact: xlings-linux-x86_64
 
   # Deployment S as a distribution ships it (design part 2 §5): the AUR
