@@ -35,6 +35,10 @@ status = "required"
 text = "a pty with nothing typed exposes a program that waits for input"
 status = "required"
 
+[LUBAN-EDITION-MIN-CLIENT]
+text = "an edition whose manifest names a min_client newer than this xlings is refused before anything is fetched, with xlings self update"
+status = "required"
+
 [LUBAN-CLI-LEVELS]
 text = "a command tree is declared once; help shows the common commands and says how to see more, then everything"
 status = "required"

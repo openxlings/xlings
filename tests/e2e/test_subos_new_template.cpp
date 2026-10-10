@@ -136,7 +136,7 @@ XTEST(SubosNewTemplate, AHostThatCannotMakeARootIsToldBeforeAnythingIsFetched,
 }
 
 XTEST(SubosNewTemplate, AnEditionDeclaresItsAbiAndOneThisMachineCannotRunIsRefusedFirst,
-      .area = "luban", .cost = tk::Cost::Medium, .covers = {"LUBAN-ABI"}, .requires_ = {"linux", "xlings-bin"}) {
+      .area = "luban", .cost = tk::Cost::Medium, .covers = {"LUBAN-ABI", "LUBAN-EDITION-MIN-CLIENT"}, .requires_ = {"linux", "xlings-bin"}) {
     if constexpr (!tk::is_linux) GTEST_SKIP() << "a rootfs SubOS is a Linux root";
     auto home = fixture_home("subos-new-abi");
     const auto bwrap = home.dir() / "data/xpkgs/xim-x-bwrap/0.11.2/bin/bwrap";
@@ -154,7 +154,16 @@ XTEST(SubosNewTemplate, AnEditionDeclaresItsAbiAndOneThisMachineCannotRunIsRefus
     edition("abi-other", other + "-linux-gnu");
     edition("abi-musl", Json{{"arch", host}, {"kernel", "linux"}, {"libc", "musl"}});
     edition("abi-here", host + "-linux-gnu");
+    tk::write_file(repo / "pkgs/n/newer.lua", template_recipe("newer",
+        Json{{"subos_kind", "rootfs"}, {"min_client", "9999.1.1.1"}, {"packages", {"fixture:hello@1.0.0"}},
+             {"abi", host + "-linux-gnu"}, {"workspace", Json::object()}}));
     const std::map<std::string, std::string> env{{"XLINGS_TOOLS_SEARCH", "home"}};
+    // An edition that uses what a newer client reads says so: refused first.
+    auto newer = home.xlings({"subos", "new", "n", "--from", "fixture:newer@1.0.0"}, env);
+    EXPECT_NE(newer.exit_code, 0) << newer.transcript();
+    EXPECT_NE(newer.transcript().find("needs xlings >= 9999.1.1.1"), std::string::npos) << newer.transcript();
+    EXPECT_NE(newer.transcript().find("xlings self update"), std::string::npos) << newer.transcript();
+    EXPECT_FALSE(fs::exists(home.dir() / "subos/n")) << "half-made";
     auto refused = home.xlings({"subos", "new", "a", "--from", "fixture:abi-other@1.0.0"}, env);
     EXPECT_NE(refused.exit_code, 0) << refused.transcript();
     EXPECT_NE(refused.transcript().find("built for " + other), std::string::npos) << refused.transcript();

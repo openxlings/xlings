@@ -1062,6 +1062,19 @@ int new_from(const std::string& name, const fs::path& customDir,
     if (new_from_detail_::is_pkg_spec_(fromSpec)) {
         std::ifstream manifestIn(baseDir / ".xlings.json");
         auto manifest = nlohmann::json::parse(manifestIn, nullptr, false);
+        // An edition that uses what a newer client reads says so (Luban
+        // design part 2 §2.6): refused before anything is fetched.
+        if (auto m = manifest.is_object() ? manifest.find("min_client") : manifest.end();
+            !manifest.is_discarded() && manifest.is_object() && m != manifest.end() && m->is_string()) {
+            const auto order = policy::compare_client_versions(Info::VERSION, m->get<std::string>());
+            if (!order || *order < 0) {
+                stream.emit(ErrorEvent{.code = ErrorCode::InvalidInput,
+                    .message = std::format("{} needs xlings >= {}, this is {}", fromSpec, m->get<std::string>(),
+                                           Info::VERSION),
+                    .recoverable = true, .hint = "xlings self update"});
+                return 1;
+            }
+        }
         if (auto refused = root_abi_refusal_(manifest.is_discarded() ? nlohmann::json() : manifest)) {
             stream.emit(ErrorEvent{.code = ErrorCode::InvalidInput,
                                    .message = std::format("'{}' cannot be made here from {}: {}", name, fromSpec, *refused),
