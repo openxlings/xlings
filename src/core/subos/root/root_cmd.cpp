@@ -672,7 +672,7 @@ int run_upgrade_(int argc, char* argv[], EventStream& stream, const UsageError& 
         }
     }
     if (plan.empty() && same && !apply_policy) {
-        log::println("{} is up to date", name);
+        log::println("{} is up to date (as this home's index has it; `xlings update` refreshes the index)", name);
         return 0;
     }
     if (dry) return 0;
@@ -685,16 +685,17 @@ int run_upgrade_(int argc, char* argv[], EventStream& stream, const UsageError& 
         return 2;
     }
 
-    // The templates' files (factory /etc and the rest an edition ships):
-    // derived data, the edition's, so the new one's replace them; the top's
-    // win. The manifest keys an edition owns follow it; the scope's own keys
-    // (workspace, configured, subos_info) stay.
+    // The templates' files under usr/ (the factory /etc and the rest an
+    // edition ships): derived data, the edition's, so the new one's replace
+    // them; the top's win. Nothing outside usr/ is touched -- home/ and the
+    // machine's state are the user's. The manifest keys an edition owns
+    // follow it; the scope's own keys (workspace, configured, subos_info) stay.
     const auto dir = HomeView{home}.instance(name);
     std::error_code ec;
     for (auto t = chain->templates.rbegin(); t != chain->templates.rend(); ++t) {
         for (fs::recursive_directory_iterator it(t->second, ec), end; !ec && it != end; it.increment(ec)) {
             const auto rel = it->path().lexically_relative(t->second);
-            if (rel == ".xlings.json" || *rel.begin() == "bin") continue;
+            if (rel.empty() || *rel.begin() != "usr") continue;
             std::error_code sec;
             if (it->is_directory(sec) && !it->is_symlink(sec)) { fs::create_directories(dir / rel, sec); continue; }
             fs::remove(dir / rel, sec);
