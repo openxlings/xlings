@@ -148,9 +148,17 @@ std::expected<sp::SandboxSpec, sp::Refusal> compile(const policy::Policy& pol, c
                               i.need("identity")});
     }
     if (i.disable_userns) {
-        if (kernel) {
+        // A setuid bwrap does not support --disable-userns: the probe says
+        // so before the entry, never bwrap after it.
+        const auto cannot = s.backend == sp::Backend::Bwrap && caps.bwrap ? caps.bwrap->disable_userns_fails
+                                                                           : std::string{};
+        if (kernel && cannot.empty()) {
             s.unshare_user = true;
             s.disable_userns = true;
+        } else if (kernel) {
+            unmet.push_back({"userns", "this bwrap cannot forbid nested user namespaces (" + cannot + ")",
+                             "xlings self doctor --isolation --fix  (one sudo: a root-owned bwrap with a "
+                             "narrow AppArmor profile)", i.need("userns")});
         } else {
             unmet.push_back({"userns", "nested user namespaces cannot be forbidden here", "", i.need("userns")});
         }

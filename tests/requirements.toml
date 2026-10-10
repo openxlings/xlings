@@ -95,6 +95,10 @@ status = "required"
 text = "an edition declares its ABI (arch, kernel, libc, libc floor); one this machine cannot run is refused before anything is fetched; a kernel is a hint for images, never installed into the root"
 status = "required"
 
+[PRIVATE-USERNS-RESTRICTED-HOST]
+text = "a policy that forbids nested user namespaces refuses, before the entry and with the fix, a bwrap that cannot (setuid); the doctor is not satisfied by one; after the one-time setup it enters"
+status = "required"
+
 [PROXY-NET-RESTRICTED-HOST]
 text = "net=proxy enters on a host that restricts unprivileged user namespaces once its one-time setup is done: bwrap makes the namespace"
 status = "required"
