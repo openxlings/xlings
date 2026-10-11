@@ -137,7 +137,9 @@ std::string links_outside_(const fs::path& payload, const std::vector<fs::path>&
         if (!info->interpreter.empty()) paths.push_back(info->interpreter);
         for (const auto& p : paths) {
             if (p.find("/xpkgs/") == std::string::npos || p.find('$') != std::string::npos) continue;
-            const auto path = fs::path(p).lexically_normal();
+            std::error_code cec;
+            auto path = fs::weakly_canonical(fs::path(p), cec);
+            if (cec) path = fs::path(p).lexically_normal();
             if (within_(payload, path)) continue;
             if (std::ranges::any_of(allowed, [&](const fs::path& a) { return within_(a, path); })) continue;
             return p;
@@ -157,9 +159,16 @@ void scope_evidence_(InstallPlan& plan) {
     if (!installs_into_root_()) return;
     std::unordered_map<std::string, const PlanNode*> byKey;
     for (const auto& n : plan.nodes) byKey[node_key_(n.canonicalName, n.version)] = &n;
-    const auto dir_of = [](const PlanNode& n) {
+    // Compared as the file system sees them: a home reached through a link
+    // records one spelling and plans with the other.
+    const auto same_file = [](const fs::path& p) {
+        std::error_code ec;
+        auto c = fs::weakly_canonical(p, ec);
+        return ec ? p.lexically_normal() : c;
+    };
+    const auto dir_of = [&](const PlanNode& n) {
         const auto store = n.storeRoot.empty() ? Config::paths().dataDir / "xpkgs" : n.storeRoot;
-        return (store / package_store_name(n.namespaceName, n.name) / n.version).lexically_normal();
+        return same_file(store / package_store_name(n.namespaceName, n.name) / n.version);
     };
     std::vector<std::string> unreadable;
     const auto snapshots = profile::load_subos_snapshots(Config::paths().homeDir, &unreadable);
@@ -194,8 +203,8 @@ void scope_evidence_(InstallPlan& plan) {
         std::size_t matched = 0;
         for (const auto& d : doc["deps"]) {
             if (!d.is_object()) continue;
-            const auto recorded = fs::path(xvm::expand_path(d.value("install_dir", std::string{}),
-                                                            Config::paths().homeDir.string())).lexically_normal();
+            const auto recorded = same_file(xvm::expand_path(d.value("install_dir", std::string{}),
+                                                             Config::paths().homeDir.string()));
             if (std::ranges::find(deps, recorded) != deps.end()) { ++matched; continue; }
             const auto libdirs = d.value("libdirs", nlohmann::json::array());
             if (!libdirs.is_array() || libdirs.empty()) { node.migrateRecord = true; continue; }
@@ -206,6 +215,7 @@ void scope_evidence_(InstallPlan& plan) {
             const auto version = d.value("version", std::string{});
             const auto bare = name.substr(name.rfind(':') + 1);
             const auto pkgBare = node.name;
+            const auto wanted = depByName.contains(name) ? depByName[name]->version : std::string("another");
             for (const auto& snap : snapshots) {
                 if (snap.name == here) continue;
                 auto inst = snap.workspace.installed.find(pkgBare);
@@ -215,15 +225,13 @@ void scope_evidence_(InstallPlan& plan) {
                 if (xvm::strip_namespace(xvm::get_active_version(snap.workspace.active, bare)) == version) {
                     plan.errors.push_back(std::format(
                         "{}@{} is linked against {}@{}, which subos '{}' still uses; this root needs it "
-                        "against {} -- move '{}' to the same runtime (xlings subos runtime {} ...), or "
-                        "make this root with that runtime", node.canonicalName, node.version, name, version,
-                        snap.name, depByName.contains(name) ? depByName[name]->version : std::string("another"),
-                        snap.name, snap.name));
+                        "against {} -- move '{}' to it (xlings subos runtime {}@{} {}), or make this root "
+                        "with the runtime '{}' has", node.canonicalName, node.version, name, version,
+                        snap.name, wanted, snap.name, bare, wanted, snap.name, snap.name));
                 }
             }
             node.migrateRecord = false;
-            node.rebindReason = std::format("built against {} {}; this root has {}", bare, version,
-                depByName.contains(name) ? depByName[name]->version : std::string("another"));
+            node.rebindReason = std::format("built against {} {}; this root has {}", bare, version, wanted);
             break;
         }
         if (node.rebindReason.empty() && matched < deps.size()) node.migrateRecord = true;
