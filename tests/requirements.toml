@@ -866,5 +866,5 @@ text = "--qcow2 is written in-process (qcow2 v3, zero clusters unallocated) and 
 status = "required"
 
 [CARRIER-WSL-SETUP]
-text = "a Windows machine's first Linux SubOS gets its one-time setup from xlings -- WSL from the index (xim:wsl, Microsoft's MSI) and the Virtual Machine Platform through the elevation door -- asked where it is needed, never a command to find and type"
+text = "a Windows machine's first Linux SubOS gets its one-time setup from xlings -- WSL from the index (xim:wsl-installer, Microsoft's MSI) and the Virtual Machine Platform through the elevation door -- asked where it is needed, never a command to find and type"
 status = "required"

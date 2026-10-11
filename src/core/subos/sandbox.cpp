@@ -1178,7 +1178,7 @@ int repair_isolation_(const HomeView& home, const subos::Ports& ports,
 }
 
 // Windows: what its first Linux SubOS needs (the wsl2 carrier) -- WSL from
-// the index (xim:wsl, Microsoft's MSI, pinned by its digest) and the Virtual
+// the index (xim:wsl-installer, Microsoft's MSI, pinned by its digest) and the Virtual
 // Machine Platform, each through the one door for administrator rights
 // (UAC). Asked once, the commands printed; nothing to find or install by
 // hand. 3010 is Windows asking for one restart.
@@ -1195,14 +1195,14 @@ int repair_wsl_(const HomeView& home, bool yes, EventStream& stream) {
         log::info("nothing changed");
         return 1;
     }
-    auto msi = subos::tools::payload_file(home, "wsl", "wsl.msi");
+    auto msi = subos::tools::payload_file(home, "wsl-installer", "wsl.msi");
     if (!msi) {
-        const std::vector<std::string> wsl{"xim:wsl"};
+        const std::vector<std::string> wsl{"xim:wsl-installer"};
         if (xim::cmd_install_step(wsl, {}, stream, /*plumbing=*/false) != 0) return 1;
-        msi = subos::tools::payload_file(home, "wsl", "wsl.msi");
+        msi = subos::tools::payload_file(home, "wsl-installer", "wsl.msi");
     }
     if (!msi) {
-        stream.emit(ErrorEvent{ .code = ErrorCode::NotFound, .message = "xim:wsl installed no wsl.msi",
+        stream.emit(ErrorEvent{ .code = ErrorCode::NotFound, .message = "xim:wsl-installer installed no wsl.msi",
                                 .recoverable = false });
         return 1;
     }

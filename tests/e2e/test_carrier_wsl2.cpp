@@ -48,10 +48,10 @@ XTEST(CarrierWsl2, ItsListingIsReadInEitherEncodingAndItsNameIsTheHomes,
 // Microsoft Store, never a command the user types.
 XTEST(CarrierWsl2, ItsOneTimeSetupIsTheIndexsWslAndTheVirtualMachinePlatform,
       .area = "subos", .covers = {"CARRIER-WSL-SETUP"}) {
-    const auto steps = w2::setup_steps("C:/h/data/xpkgs/xim-x-wsl/3.0.1/wsl.msi", "C:/Windows/System32");
+    const auto steps = w2::setup_steps("C:/h/data/xpkgs/xim-x-wsl-installer/3.0.1/wsl.msi", "C:/Windows/System32");
     ASSERT_EQ(steps.size(), 2u);
     EXPECT_EQ(steps[0], (std::vector<std::string>{(fs::path("C:/Windows/System32") / "msiexec.exe").string(), "/i",
-                                                  "C:/h/data/xpkgs/xim-x-wsl/3.0.1/wsl.msi", "/quiet", "/norestart"}));
+                                                  "C:/h/data/xpkgs/xim-x-wsl-installer/3.0.1/wsl.msi", "/quiet", "/norestart"}));
     EXPECT_EQ(steps[1][0], (fs::path("C:/Windows/System32") / "dism.exe").string());
     EXPECT_NE(std::ranges::find(steps[1], "/featurename:VirtualMachinePlatform"), steps[1].end());
     EXPECT_EQ(w2::kRestartRequired, 3010);

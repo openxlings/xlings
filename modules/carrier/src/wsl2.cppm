@@ -41,7 +41,7 @@ std::vector<std::string> launcher(const fs::path& wsl, std::string_view name);
 
 // The one-time setup a Windows machine needs before its first Linux SubOS
 // (the aarch64 design, the user's own words: nothing to install or configure
-// by hand): WSL from the index (xim:wsl, Microsoft's MSI, pinned by its
+// by hand): WSL from the index (xim:wsl-installer, Microsoft's MSI, pinned by its
 // digest) and the Virtual Machine Platform WSL2 runs on -- what
 // `xlings self doctor --isolation --fix` runs, each step through the one
 // door for administrator rights. `system32` is %SystemRoot%\System32.
