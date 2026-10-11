@@ -25,6 +25,16 @@ rootfs_home "$RUNTIME_DIR/home"
 H="$RH"
 cp "$LUBAN" "$H/bin/luban"
 cp "$LUBAN" "$H/bin/luban-init"
+# The index under test, when CI names one (an xim-pkgindex PR not yet
+# published: tools/ci/xlings_tools.sh checked it out), instead of the published.
+if [[ -d "${XLINGS_TOOLS_HOME:-}/index-under-test" ]]; then
+  python3 -c '
+import json, os, sys
+cfg = json.load(open(sys.argv[1])) if os.path.exists(sys.argv[1]) else {}
+cfg["index_repos"] = [{"name": "xim", "url": sys.argv[2]}]
+json.dump(cfg, open(sys.argv[1], "w"), indent=2)
+' "$H/.xlings.json" "$XLINGS_TOOLS_HOME/index-under-test"
+fi
 L() { ( cd /tmp && env -u XLINGS_ACTIVE_SUBOS -u XLINGS_SUBOS_MODE XLINGS_HOME="$H" DISPLAY= WAYLAND_DISPLAY= "$H/bin/luban" "$@" ); }
 
 # limine: the index's (prebuilt boot files and a static tool), installed by
