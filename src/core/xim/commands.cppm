@@ -107,6 +107,14 @@ int cmd_remove(const std::string& target, bool yes, EventStream& stream,
                bool force = false, bool all = false,
                std::optional<std::string> subosScope = std::nullopt);
 
+// `remove <name> --older-than <V>`: every installed version strictly older
+// than V, across the home's subos, except what is still in use -- active in
+// a subos or a known project, the running xlings, or linked by a dependent
+// (removal_check). Lists what goes and what stays (and why), then asks once.
+// `dryRun` lists only.
+int cmd_remove_older_than(const std::string& name, const std::string& threshold,
+                          bool yes, bool dryRun, EventStream& stream);
+
 // Debounce on-demand index refreshes triggered by install misses (C2 / #366
 // UX): returns true at most once per cooldown window so a tight loop of
 // `install <genuinely-absent-pkg>` can't spin repeated full resyncs. Combined
@@ -212,6 +220,42 @@ struct Dependent { std::string name; std::string version; };
 std::vector<Dependent> direct_dependents_of(PackageCatalog& catalog,
                                             std::string_view targetBare,
                                             std::string_view targetCanonical = {});
+
+// What removing ONE payload (`target` at `version`, in `installDir`) would
+// break -- the remove guard's question, asked about a version rather than a
+// name. A dependent blocks only when the removal really breaks it:
+//
+//   linked       it resolved THIS payload and loads from it: the record has
+//                libdirs, or one of its scripts (bin/, etc/) names the
+//                payload's path, or it has no record and the payload has
+//                libraries to link against;
+//   unsatisfied  it only runs the payload's programs, and no other installed
+//                version meets the constraint it declared.
+//
+// A dependent that only runs the programs and still has a version that meets
+// its constraint is `remaining` (allowed; the caller says which version
+// stays). One that resolved another version is not affected at all.
+struct RemovalBlocker {
+    std::string name;
+    std::string version;
+    std::string reason;     // "linked" | "unsatisfied"
+    std::string detail;     // the script that names the payload, or the constraint
+};
+struct RemovalAllowance {
+    std::string name;
+    std::string version;
+    std::string remaining;  // the installed version that still satisfies it
+};
+struct RemovalCheck {
+    std::vector<RemovalBlocker> blockers;
+    std::vector<RemovalAllowance> allowed;
+};
+RemovalCheck removal_check(PackageCatalog& catalog,
+                           std::string_view targetBare,
+                           std::string_view targetCanonical,
+                           std::string_view version,
+                           const std::filesystem::path& installDir,
+                           std::span<const std::string> alsoGoing = {});
 
 std::expected<bool, std::string>
 selected_payloadless_config_has_uninstall_(

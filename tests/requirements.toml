@@ -872,3 +872,13 @@ status = "required"
 [XVM-PROJECTION-DELTA]
 text = "a change to a scope's activation (use, a registration, a removal) materialises the names that move and nothing else: the cost of switching one package does not grow with the SubOS"
 status = "required"
+
+# ── remove: versions (2026.10.12.2) ─────────────────────────────────
+
+[XIM-REMOVE-GUARD-VERSION]
+text = "removing a version is refused only when it breaks a dependent: one that links that payload, or runs its programs and has no other installed version meeting its constraint"
+status = "required"
+
+[XIM-REMOVE-OLDER-THAN]
+text = "remove <name> --older-than V removes every older version nothing uses, keeps (and says why) what is active in a subos or project or linked, asks first, and --dry-run changes nothing"
+status = "required"

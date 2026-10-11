@@ -38,7 +38,7 @@ xlings self doctor --isolation --json
 版本 **1.7**；完整约定见 [specs/interface-ndjson-v1](../specs/interface-ndjson-v1.md)。
 
 ```bash
-xlings interface --version     # {"protocol_version":"1.7"}
+xlings interface --version     # {"protocol_version":"1.8"}
 xlings interface --list        # every capability, with its JSON Schema
 xlings interface install_packages --args '{"targets":["gcc@16.1.0"],"yes":true}'
 xlings interface install_packages --args-file ./args.json

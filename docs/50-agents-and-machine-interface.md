@@ -42,7 +42,7 @@ per line, every line flushed as it is written. Version **1.7**; the full
 contract is [specs/interface-ndjson-v1](specs/interface-ndjson-v1.md).
 
 ```bash
-xlings interface --version     # {"protocol_version":"1.7"}
+xlings interface --version     # {"protocol_version":"1.8"}
 xlings interface --list        # every capability, with its JSON Schema
 xlings interface install_packages --args '{"targets":["gcc@16.1.0"],"yes":true}'
 xlings interface install_packages --args-file ./args.json

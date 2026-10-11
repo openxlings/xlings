@@ -51,6 +51,8 @@ import xlings.core.xvm.shim;
 import xlings.core.profile;
 import xlings.runtime.cancellation;
 import xlings.core.version_order;
+import xlings.core.semver;
+import xlings.core.destructive_log;
 import xlings.core.utils;
 
 namespace xlings::xim {
@@ -1413,6 +1415,176 @@ std::vector<Dependent> direct_dependents_of(PackageCatalog& catalog,
     return dependents;
 }
 
+namespace {
+
+// Does a script of `consumer` (a text file under bin/ or etc/) name
+// `payload` by path? A wrapper that runs `<payload>/bin/tool` is a link
+// the loader never sees. Bounded: two directories, small text files only.
+std::string script_naming_(const std::filesystem::path& consumer,
+                           const std::filesystem::path& payload) {
+    namespace fs = std::filesystem;
+    const auto needle = payload.lexically_normal().string();
+    if (needle.empty()) return {};
+    std::size_t budget = 2000;
+    for (const auto* sub : {"bin", "etc"}) {
+        std::error_code ec;
+        fs::recursive_directory_iterator it(consumer / sub,
+            fs::directory_options::skip_permission_denied, ec), end;
+        for (; !ec && it != end && budget > 0; it.increment(ec)) {
+            std::error_code fec;
+            if (!it->is_regular_file(fec) || it->is_symlink(fec)) continue;
+            --budget;
+            const auto size = it->file_size(fec);
+            if (fec || size == 0 || size > (1u << 20)) continue;
+            auto text = platform::read_file_to_string(it->path().string());
+            if (text.starts_with("\x7f" "ELF") || text.find('\0') != std::string::npos) continue;
+            if (text.find(needle) != std::string::npos) return it->path().string();
+        }
+    }
+    return {};
+}
+
+bool has_libraries_(const std::filesystem::path& payload) {
+    for (const auto* sub : {"lib", "lib64"}) {
+        std::error_code ec;
+        if (std::filesystem::is_directory(payload / sub, ec)
+            && !std::filesystem::is_empty(payload / sub, ec)) return true;
+    }
+    return false;
+}
+
+}  // namespace
+
+RemovalCheck removal_check(PackageCatalog& catalog,
+                           std::string_view targetBare,
+                           std::string_view targetCanonical,
+                           std::string_view version,
+                           const std::filesystem::path& installDir,
+                           std::span<const std::string> alsoGoing) {
+    namespace fs = std::filesystem;
+    RemovalCheck out;
+    const auto platform = detect_platform();
+    const auto bare_of = [](const std::string& s) {
+        auto noVer = s.substr(0, s.find('@'));
+        return noVer.substr(noVer.rfind(':') + 1);
+    };
+    const auto constraint_of = [](std::string_view spec) {
+        auto at = spec.find('@');
+        return at == std::string_view::npos ? std::string{} : std::string(spec.substr(at + 1));
+    };
+    // Every other installed version of the target: the payloads beside it.
+    std::vector<std::string> others;
+    {
+        std::error_code ec;
+        for (const auto& e : fs::directory_iterator(installDir.parent_path(), ec)) {
+            auto v = e.path().filename().string();
+            std::error_code dec;
+            if (v != version && !v.starts_with(".") && e.is_directory(dec)
+                && !fs::is_empty(e.path(), dec)
+                && std::ranges::find(alsoGoing, v) == alsoGoing.end()) {
+                others.push_back(std::move(v));
+            }
+        }
+    }
+    const auto remaining_for = [&](std::string_view constraint) {
+        std::string best;
+        for (const auto& v : others) {
+            if (!semver::satisfies_expr(v, constraint)) continue;
+            if (best.empty() || semver::compare(v, best) > 0) best = v;
+        }
+        return best;
+    };
+    // A dependent that only runs the target's programs.
+    const auto program_only = [&](const std::string& name, const std::string& ver,
+                                  std::string_view constraint) {
+        auto stays = remaining_for(constraint);
+        if (stays.empty()) {
+            out.blockers.push_back({name, ver, "unsatisfied",
+                constraint.empty() ? std::string("any version") : std::string(constraint)});
+        } else {
+            out.allowed.push_back({name, ver, stays});
+        }
+    };
+
+    for (const auto& rec : collect_inventory(catalog, /*allSubos=*/false)) {
+        if (bare_of(rec.canonicalName) == targetBare) continue;
+        auto depMatch = catalog.resolve_target(rec.canonicalName + "@" + rec.version, platform);
+        if (!depMatch) continue;
+        const auto consumerDir = depMatch->storeRoot
+            / package_store_name(depMatch->namespaceName, depMatch->name) / depMatch->version;
+
+        // What its install resolved, when it recorded it.
+        std::error_code rec_ec;
+        const auto record = consumerDir / ".xlings-resolution.json";
+        if (fs::is_regular_file(record, rec_ec)) {
+            auto doc = nlohmann::json::parse(
+                platform::read_file_to_string(record.string()), nullptr, false);
+            if (!doc.is_discarded() && doc.contains("deps") && doc["deps"].is_array()) {
+                for (const auto& d : doc["deps"]) {
+                    if (!d.is_object()) continue;
+                    const auto name = d.value("name", std::string{});
+                    if (targetCanonical.empty() ? bare_of(name) != targetBare
+                                                : name != targetCanonical) continue;
+                    // It resolved another version: this removal is not its
+                    // business -- unless that version is gone already, and
+                    // then it runs whichever one PATH finds.
+                    if (d.value("version", std::string{}) != version) {
+                        std::error_code gone_ec;
+                        const auto recorded = d.value("install_dir", std::string{});
+                        if (!recorded.empty() && !fs::exists(recorded, gone_ec)) {
+                            program_only(rec.canonicalName, rec.version,
+                                         constraint_of(d.value("spec", std::string{})));
+                        }
+                        break;
+                    }
+                    const auto libdirs = d.value("libdirs", nlohmann::json::array());
+                    if (libdirs.is_array() && !libdirs.empty()) {
+                        out.blockers.push_back({rec.canonicalName, rec.version, "linked",
+                                                libdirs.front().get<std::string>()});
+                    } else if (auto script = script_naming_(consumerDir, installDir); !script.empty()) {
+                        out.blockers.push_back({rec.canonicalName, rec.version, "linked", script});
+                    } else {
+                        program_only(rec.canonicalName, rec.version,
+                                     constraint_of(d.value("spec", std::string{})));
+                    }
+                    break;
+                }
+                continue;
+            }
+        }
+
+        // No record (an older client installed it): what the recipe declares.
+        auto depPkg = catalog.load_package(*depMatch);
+        if (!depPkg) continue;
+        const std::vector<std::string>* list = nullptr;
+        if (auto it = depPkg->xpm.runtime_deps.find(platform);
+            it != depPkg->xpm.runtime_deps.end() && !it->second.empty()) {
+            list = &it->second;
+        } else if (auto it2 = depPkg->xpm.deps.find(platform);
+                   it2 != depPkg->xpm.deps.end() && !it2->second.empty()) {
+            list = &it2->second;
+        }
+        if (!list) continue;
+        for (const auto& dep : *list) {
+            if (bare_of(dep) != targetBare) continue;
+            const auto constraint = constraint_of(dep);
+            if (!constraint.empty() && !semver::satisfies_expr(version, constraint)) break;
+            // Which version it linked against is not on record: a payload with
+            // libraries may be the one, so it blocks.
+            if (has_libraries_(installDir)) {
+                out.blockers.push_back({rec.canonicalName, rec.version, "linked",
+                                        (installDir / "lib").string()});
+            } else if (auto script = script_naming_(consumerDir, installDir); !script.empty()) {
+                out.blockers.push_back({rec.canonicalName, rec.version, "linked", script});
+            } else {
+                program_only(rec.canonicalName, rec.version, constraint);
+            }
+            break;
+        }
+    }
+    return out;
+}
+
 // One target string ("name", "name@version", "ns:name@version"), resolved
 // and removed from whatever subos Config's active-subos override currently
 // points at. Everything from the self-binary guard through the uninstall
@@ -1556,15 +1728,32 @@ int cmd_remove_resolved_(const std::string& target,
         const auto targetBare =
             match ? bare_of(match->canonicalName) : bare_of(target);
 
-        auto dependents = direct_dependents_of(
-            catalog, targetBare,
-            match ? std::string_view(match->canonicalName) : std::string_view{});
+        // With a resolved payload the question is about THIS version
+        // (removal_check); without one, by name, as before.
+        RemovalCheck check;
+        if (match && !match->version.empty()) {
+            const auto storeRoot = match->storeRoot.empty()
+                ? Config::paths().dataDir / "xpkgs" : match->storeRoot;
+            check = removal_check(catalog, targetBare, match->canonicalName, match->version,
+                storeRoot / package_store_name(match->namespaceName, match->name) / match->version);
+        } else {
+            for (auto& d : direct_dependents_of(catalog, targetBare)) {
+                check.blockers.push_back({d.name, d.version, "linked", {}});
+            }
+        }
 
-        if (!dependents.empty()) {
+        if (!check.blockers.empty()) {
             log::error("{}@{} is required by {} installed package(s) in subos '{}':",
-                       displayName, displayVersion, dependents.size(), subos);
-            for (const auto& d : dependents) {
-                log::println("    {}@{}", d.name, d.version);
+                       displayName, displayVersion, check.blockers.size(), subos);
+            for (const auto& d : check.blockers) {
+                if (d.reason == "unsatisfied") {
+                    log::println("    {}@{}  runs it, and no other installed version meets {}",
+                                 d.name, d.version, d.detail);
+                } else if (!d.detail.empty()) {
+                    log::println("    {}@{}  links it ({})", d.name, d.version, d.detail);
+                } else {
+                    log::println("    {}@{}", d.name, d.version);
+                }
             }
             log::println("  remove those first, or re-run with --force to break the link "
                          "anyway.");
@@ -1574,11 +1763,16 @@ int cmd_remove_resolved_(const std::string& target,
             blockedPayload["name"] = displayName;
             blockedPayload["version"] = displayVersion;
             auto& arr = blockedPayload["required_by"] = nlohmann::json::array();
-            for (const auto& d : dependents) {
-                arr.push_back({{"name", d.name}, {"version", d.version}});
+            for (const auto& d : check.blockers) {
+                arr.push_back({{"name", d.name}, {"version", d.version},
+                               {"reason", d.reason}});
             }
             stream.emit(DataEvent{"remove_blocked", blockedPayload.dump()});
             return 2;
+        }
+        for (const auto& a : check.allowed) {
+            log::println("  {}@{} runs {} from PATH; {} remains", a.name, a.version,
+                         targetBare, a.remaining);
         }
     }
 
@@ -2040,6 +2234,185 @@ int cmd_remove_in_scope_(const std::string& target, bool yes,
                                        force, catalog, subos,
                                        payloadlessUninstallProven);
         if (one != 0) rc = one;
+    }
+    return rc;
+}
+
+int cmd_remove_older_than(const std::string& name, const std::string& threshold,
+                          bool yes, bool dryRun, EventStream& stream) {
+    namespace fs = std::filesystem;
+    if (name.find('@') != std::string::npos) {
+        log::error("--older-than takes a package name, not a version: {}", name);
+        return 1;
+    }
+    if (!semver::parse(threshold)) {
+        log::error("--older-than needs a version, got '{}'", threshold);
+        return 1;
+    }
+    // Held while deciding; each removal below takes it again (cmd_remove),
+    // and a lock is not re-entrant.
+    std::optional<xvm::StateLock> stateLock;
+    if (auto lock = xvm::acquire_state_lock(Config::paths().homeDir); lock) {
+        stateLock.emplace(std::move(*lock));
+    } else {
+        log::error("{}", lock.error());
+        return 1;
+    }
+    Config::reload_state();
+    auto& catalog = get_catalog();
+    if (!catalog.is_loaded()) {
+        log::error("package index not available");
+        return 1;
+    }
+    const auto bareName = name.substr(name.rfind(':') + 1);
+
+    // The candidates: every registered version strictly older than the bound.
+    std::vector<std::string> candidates;
+    std::vector<std::pair<std::string, std::string>> keep;  // version, why
+    std::map<std::string, std::string> coordinate;          // version -> ns:name@version
+    const auto target_of = [&](const std::string& v) {
+        auto it = coordinate.find(v);
+        return it != coordinate.end() ? it->second : std::format("{}@{}", name, v);
+    };
+    {
+        const auto db = Config::versions();
+        if (const auto* vinfo = xvm::get_vinfo(db, bareName)) {
+            // Keys carry the namespace of a non-default index ("fixture:1.0.0").
+            for (const auto& [key, _] : vinfo->versions) {
+                const auto v = xvm::strip_namespace(key);
+                if (!semver::parse(v)) { keep.push_back({v, "not a version"}); continue; }
+                if (semver::compare(v, threshold) >= 0) continue;
+                candidates.push_back(v);
+                if (auto colon = key.find(':'); colon != std::string::npos) {
+                    coordinate[v] = std::format("{}:{}@{}", key.substr(0, colon), bareName, v);
+                }
+            }
+        }
+    }
+    if (candidates.empty()) {
+        log::println("{}: nothing installed is older than {}", bareName, threshold);
+        return 0;
+    }
+    version_order::sort_desc(candidates);
+
+    // What is still in use, and where each candidate is installed.
+    std::vector<std::string> unreadable;
+    const auto snapshots = profile::load_subos_snapshots(Config::paths().homeDir, &unreadable);
+    std::map<std::string, std::string> inUse;                    // version -> why
+    std::map<std::string, std::vector<std::string>> installedIn; // version -> subos
+    for (const auto& snap : snapshots) {
+        auto active = xvm::strip_namespace(xvm::get_active_version(snap.workspace.active, bareName));
+        if (!active.empty()) inUse.try_emplace(active, std::format("active in subos '{}'", snap.name));
+        if (auto it = snap.workspace.installed.find(bareName); it != snap.workspace.installed.end()) {
+            for (const auto& v : it->second) installedIn[xvm::strip_namespace(v)].push_back(snap.name);
+        }
+    }
+    for (const auto& root : Config::known_projects()) {
+        auto state = nlohmann::json::parse(
+            platform::read_file_to_string((root / ".xlings" / ".xlings.json").string()),
+            nullptr, false);
+        if (state.is_discarded() || !state.is_object() || !state.contains("workspace")) continue;
+        auto active = xvm::strip_namespace(xvm::get_active_version(
+            xvm::subos_workspace_from_json(state["workspace"]).active, bareName));
+        if (!active.empty()) inUse.try_emplace(active, std::format("used by project {}", root.string()));
+    }
+    if (xvm::is_xlings_binary(bareName)) {
+        inUse.try_emplace(std::string(Info::VERSION), "the running xlings");
+    }
+
+    struct Going { std::string version; fs::path dir; destructive_log::Size size; };
+    std::vector<Going> going;
+    for (const auto& v : candidates) {
+        if (!unreadable.empty()) {
+            keep.push_back({v, std::format("subos '{}' is unreadable", unreadable.front())});
+        } else if (auto it = inUse.find(v); it != inUse.end()) {
+            keep.push_back({v, it->second});
+        } else {
+            auto match = catalog.resolve_target(target_of(v), detect_platform());
+            fs::path dir;
+            if (match) {
+                const auto store = match->storeRoot.empty()
+                    ? Config::paths().dataDir / "xpkgs" : match->storeRoot;
+                dir = store / package_store_name(match->namespaceName, match->name) / v;
+            }
+            going.push_back({v, dir, dir.empty() ? destructive_log::Size{} : destructive_log::measure(dir)});
+        }
+    }
+    // A dependent that links one of them keeps it -- asked in every subos it is
+    // installed in, with the whole batch counted as gone.
+    std::vector<std::string> goingVersions;
+    for (const auto& g : going) goingVersions.push_back(g.version);
+    std::erase_if(going, [&](const Going& g) {
+        if (g.dir.empty()) return false;
+        auto where = installedIn[g.version];
+        if (where.empty()) where.push_back(std::string{});
+        for (const auto& subosName : where) {
+            ScopedSubosOverride scope(subosName);
+            auto check = removal_check(catalog, bareName, {}, g.version, g.dir, goingVersions);
+            if (!check.blockers.empty()) {
+                const auto& b = check.blockers.front();
+                keep.push_back({g.version, b.reason == "linked"
+                    ? std::format("linked by {}@{}", b.name, b.version)
+                    : std::format("{}@{} needs {}", b.name, b.version, b.detail)});
+                std::erase(goingVersions, g.version);
+                return true;
+            }
+        }
+        return false;
+    });
+
+    std::uintmax_t total = 0;
+    for (const auto& g : going) total += g.size.bytes;
+    version_order::sort_desc(goingVersions);
+
+    nlohmann::json plan;
+    plan["name"] = bareName;
+    plan["older_than"] = threshold;
+    plan["dry_run"] = dryRun;
+    plan["bytes"] = total;
+    plan["remove"] = nlohmann::json::array();
+    for (const auto& g : going) plan["remove"].push_back({{"version", g.version}, {"bytes", g.size.bytes}});
+    plan["keep"] = nlohmann::json::array();
+    for (const auto& [v, why] : keep) plan["keep"].push_back({{"version", v}, {"reason", why}});
+    stream.emit(DataEvent{"remove_plan", plan.dump()});
+
+    log::println("{}: {} version(s) older than {} ({})", bareName, going.size(), threshold,
+                 destructive_log::human_bytes(total));
+    for (const auto& g : going) {
+        log::println("  remove  {:<20} {}", g.version, destructive_log::human_bytes(g.size.bytes));
+    }
+    for (const auto& [v, why] : keep) log::println("  keep    {:<20} {}", v, why);
+    if (going.empty() || dryRun) return 0;
+
+    if (!yes) {
+        int rc = 0;
+        if (!confirmed_or_refused_(stream, "confirm_remove",
+                std::format("Remove {} version(s) of {} ({})?", going.size(), bareName,
+                            destructive_log::human_bytes(total)),
+                "n",
+                std::format("remove {} version(s) of {} older than {}", going.size(),
+                            bareName, threshold),
+                WhenNobodyCanAnswer::Refuse, &rc)) {
+            return rc;
+        }
+    }
+
+    int rc = 0;
+    stateLock.reset();
+    for (const auto& g : going) {
+        auto where = installedIn[g.version];
+        if (where.empty()) where.push_back(std::string{});
+        int one = 0;
+        for (const auto& subosName : where) {
+            one = cmd_remove(target_of(g.version), /*yes=*/true, stream,
+                             /*force=*/false, /*all=*/false, subosName);
+            if (one != 0) break;
+        }
+        if (one != 0) { rc = one; continue; }
+        destructive_log::record({.op = "package-remove", .path = g.dir,
+                                 .bytes = g.size.bytes, .files = g.size.files,
+                                 .confirmedBy = yes ? "-y" : "terminal",
+                                 .detail = "--older-than " + threshold});
     }
     return rc;
 }

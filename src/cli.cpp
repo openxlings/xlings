@@ -2167,6 +2167,8 @@ int dispatch_(int argc, char* argv[]) {
             .option(cmdline::Option("all").help("Remove every installed version, not just the active one"))
             .option(cmdline::Option("all-subos").help("Remove from every subos that has it installed"))
             .option(cmdline::Option("subos").takes_value().value_name("NAME").help("Act on this subos only, instead of the current one"))
+            .option(cmdline::Option("older-than").takes_value().value_name("VERSION").help("Remove every installed version older than VERSION that nothing uses"))
+            .option(cmdline::Option("dry-run").help("With --older-than: list what would be removed, and change nothing"))
             .arg("package").required().help("Package to remove (name or name@ver)")
             .arg("version").help("Optional version (alternative to name@ver form)")
             .action(wrap_rc([&stream](const cmdline::ParsedArgs& args) -> int {
@@ -2177,6 +2179,14 @@ int dispatch_(int argc, char* argv[]) {
                 std::string target;
                 if (!parse_target_spec_(args, target)) return 1;
                 bool yes = args.is_flag_set("yes");
+                if (auto bound = args.value("older-than")) {
+                    return xim::cmd_remove_older_than(target, std::string(*bound), yes,
+                                                      args.is_flag_set("dry-run"), stream);
+                }
+                if (args.is_flag_set("dry-run")) {
+                    log::error("--dry-run goes with --older-than");
+                    return 1;
+                }
                 // Separate from `yes`, deliberately. `-y` says "do not ask me",
                 // which is a statement about prompting; breaking a dependency
                 // link is a different decision and a scripted `remove -y`
