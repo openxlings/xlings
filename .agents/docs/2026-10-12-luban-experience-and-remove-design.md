@@ -358,3 +358,19 @@ mcpp 用环境内的 `/usr/bin/xlings` 为自己的沙箱 home（`/root/.mcpp/re
 | 性能（A2） | 大 home 生成器不能让 CI 太慢 | 合成的 payload 只放空头文件（约 2,500 个小文件，几 MB），生成在 30 s 内 |
 
 仍需 review 的一点：**§4.3 第 3 条对决定 3 的细化**——原地重装，加上在真实冲突时拒绝。
+
+## 15. 实现结果（2026.10.12.2）
+
+| # | 实际根因 / 做法 | 与设计的差异 | 测试 |
+|---|---|---|---|
+| P1 | 大 home 上 `remove` 一个未使用的版本 28.6 s：`uninstall` 开头的借用 payload 扫描每个条目都调用一次 `Config::versions()`（按值返回整个版本库），是平方级复制；安装时每注册一个程序也复制一次。改为扫描前取一次。28.6 s → 1.9 s（未优化构建）。剩余的每节点成本是版本库写回与回读校验（3.4 MB 时约 1.2 s，未优化），仍按 §1.3 第 5 条不在本轮 | `XLINGS_TRACE=timing` 用 `observe::Timed` 实现；超过 2 s 的阶段（路由重建、root 代）打印一行"正在做什么" | `HomePerf`（`test_home_perf.cpp`，静态性能通道，5,000 条注册、10 个项目，6 个预算）。`self update` 的激活步骤未纳入（夹具里没有 xlings 包） |
+| P2 | 按设计 | 无记录的依赖方：被删 payload 有 `lib/` 就按"链接"拒绝（无法知道它链接的是哪个版本）；记录指向的版本已不存在时按"程序依赖"判断 | `RemoveVersions.OnlyARemovalThatBreaksADependentIsRefused` |
+| P3 | 按设计；跨 SubOS：候选版本在每个安装了它的 SubOS 中各删一次 | 无 | `RemoveVersions.OlderThan…` |
+| P4 | 按设计，在计划器做（`resolver.cpp: scope_evidence_`），只在目标 scope 是 root 时；`migrateRecord` 写记录，`rebindReason` 走已有的过期 payload 替换（原地重装）；冲突是计划错误 | 无记录时用 ELF 的 INTERP/RUNPATH 判断能否只写记录 | `SubosNewTemplate.AnOlderClientsPayloads…`、`…RebuiltOrTheConflictNamed`；host matrix `oldhome` |
+| P5 | edition 一行；模板安装不打印逐节点行；每代一行降为 debug；依赖失败合并为一行（interface 增加 `install_skipped`）；`instance.json` 的 `making` 记录请求，重跑同一条命令补全 | 没有做 luban 侧的独立渲染器（xlings 的输出改好后不需要第二个渲染器） | `SubosNewTemplate.TheEditionIsOneLine…` |
+| P6 | 沙箱内 `XLINGS_HOME=<自己的 home> xlings self init` 被当作只有宿主才能做的事拒绝（broker 路由不看 home）。改为：home 在沙箱内可写就在内部执行；只有会话的只读 home 走 broker。顺带：`--help` 不再转发给 broker（之前打印的是宿主 xlings 的帮助） | 修复在 xlings，mcpp 不用改 | `SubosHomeReadOnly.AHomeOfTheSandboxsOwnIsWrittenInside`；host matrix `oldhome` |
+| P7 | 按设计 | 无 | `ThemeNotice` |
+| P8 | 终端背景色查询（`query_terminal_is_light`）在后台进程组里 `tcsetattr`，SIGTTOU 停住整个组；会话里 broker 的子进程正是这样一个后台组，而它与 `luban enter` 同组。修复：查询前检查前台；UI 把"不在前台的终端"当作非终端；broker 的子进程有自己的会话 | 无 | `TerminalJobControl`（testkit 新增 `pty_background`；在 12.1 上失败）；host matrix `terminal` |
+| P9 | root 里有 bash 就用 bash，否则 sh；提示符经 `PS1` 环境变量 `[luban:<name>]`；进入时的一行说明 edition 和 `luban status` | 不新增 `shell` 设置、不改 edition 清单（按是否有 bash 判断已覆盖 core 与 tiny/nano）；不写 `/etc/profile.d` | host matrix `terminal` |
+| P10 | `docs/luban/01-quick-start.md`（替换 01-getting-started）与 README 的 Luban 小节 | 无 | `test_docs.py` |
+| 遗留 | qemu-arm / qemu-x86 绑定到 release（index，revision 1）；全新 home 上未被需要的运行时声明是 Notice | 无 | index 静态测试；`subos_runtime_authority_test.sh` |
