@@ -22,6 +22,15 @@ struct Entry {
     std::vector<Location> order;
 };
 
+// Three layers (the aarch64 design §2.1). A tool is a package of the index
+// (T1): its payload first, a copy the machine happens to have after it, and
+// what a missing one is told is `xlings install <package>` -- never the
+// machine's package manager. Only what the operating system itself is (T0)
+// has no package, and says why. What a few hundred lines can write -- the
+// image formats, a file clone -- is not here at all: it is in-process (T2).
+// bwrap is the one tool whose machine copies come before the payload: a
+// root-owned one (or the distribution's, which its AppArmor profile lets
+// make user namespaces) can do what an unprivileged payload cannot.
 const std::vector<Entry>& table() {
     static const std::vector<Entry> t{
         {{"bwrap", "bwrap"}, "xim-x-bwrap",
@@ -33,13 +42,10 @@ const std::vector<Entry>& table() {
           {Source::Host, "/usr/bin/proot"}, {Source::Host, "/usr/local/bin/proot"}}},
         {{"pasta", "passt"}, "xim-x-passt",
          {{Source::Payload, "bin"}, {Source::Host, "/usr/bin/pasta"}, {Source::Host, "/usr/local/bin/pasta"}}},
-        // The machine's copy, for its copy-on-write flags (--reflink,
-        // APFS clonefile); a SubOS fork falls back to std::filesystem.
-        {{"cp", ""}, "",
-         {{Source::Host, "/bin/cp"}, {Source::Host, "/usr/bin/cp"}}},
         // The VMM the vz carrier drives (part 3 §5.4): a signed helper with
-        // Virtualization.framework's entitlement, as a payload.
-        {{"xlings-vm", "xlings-vm"}, "xim-x-xlings-vm",
+        // Virtualization.framework's entitlement, as a payload -- not
+        // published yet (planned).
+        {{"xlings-vm", "xlings-vm", {}, "macos", "CARRIER-VZ-HELPER"}, "xim-x-xlings-vm",
          {{Source::Payload, "bin"}}},
         {{"mkfs.ext4", "e2fsprogs"}, "xim-x-e2fsprogs",
          {{Source::Payload, "sbin"}, {Source::Payload, "bin"},
@@ -50,34 +56,32 @@ const std::vector<Entry>& table() {
         // question does not leave from here.
         {{"curl", "curl"}, "xim-x-curl",
          {{Source::Payload, "bin"}, {Source::Host, "/usr/bin/curl"}, {Source::Host, "/usr/local/bin/curl"}}},
-        // The host's clipboard (`xlings clipboard`; a sandbox reaches it
-        // through the broker under the `clipboard` grants): the desktop's own
-        // tools, never a payload -- they are the display's.
-        {{"wl-copy", ""}, "", {{Source::Host, "/usr/bin/wl-copy"}, {Source::Host, "/usr/local/bin/wl-copy"}}},
-        {{"wl-paste", ""}, "", {{Source::Host, "/usr/bin/wl-paste"}, {Source::Host, "/usr/local/bin/wl-paste"}}},
-        {{"xclip", ""}, "", {{Source::Host, "/usr/bin/xclip"}, {Source::Host, "/usr/local/bin/xclip"}}},
-        {{"xsel", ""}, "", {{Source::Host, "/usr/bin/xsel"}, {Source::Host, "/usr/local/bin/xsel"}}},
-        {{"pbcopy", ""}, "", {{Source::Host, "/usr/bin/pbcopy"}}},
-        {{"pbpaste", ""}, "", {{Source::Host, "/usr/bin/pbpaste"}}},
-        {{"clip", ""}, "", {{Source::Host, "C:\\Windows\\System32\\clip.exe"}}},
-        {{"powershell", ""}, "",
+        // The host's clipboard, for a sandbox granted it (the broker runs
+        // these outside): the display's protocol, which any build speaks.
+        {{"wl-copy", "wl-clipboard"}, "xim-x-wl-clipboard",
+         {{Source::Payload, "bin"}, {Source::Host, "/usr/bin/wl-copy"}, {Source::Host, "/usr/local/bin/wl-copy"}}},
+        {{"wl-paste", "wl-clipboard"}, "xim-x-wl-clipboard",
+         {{Source::Payload, "bin"}, {Source::Host, "/usr/bin/wl-paste"}, {Source::Host, "/usr/local/bin/wl-paste"}}},
+        {{"xsel", "xsel"}, "xim-x-xsel",
+         {{Source::Payload, "bin"}, {Source::Host, "/usr/bin/xsel"}, {Source::Host, "/usr/local/bin/xsel"}}},
+        {{"pbcopy", "", "the operating system's (macOS)"}, "", {{Source::Host, "/usr/bin/pbcopy"}}},
+        {{"pbpaste", "", "the operating system's (macOS)"}, "", {{Source::Host, "/usr/bin/pbpaste"}}},
+        {{"clip", "", "the operating system's (Windows)"}, "", {{Source::Host, "C:\\Windows\\System32\\clip.exe"}}},
+        {{"powershell", "", "the operating system's (Windows)"}, "",
          {{Source::Host, "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"}}},
-        // A Luban image, made and tried (Luban design §A9, §B3.5).
-        {{"mksquashfs", "squashfs-tools"}, "xim-x-squashfs-tools",
-         {{Source::Payload, "bin"}, {Source::Payload, "sbin"},
-          {Source::Host, "/usr/bin/mksquashfs"}, {Source::Host, "/usr/sbin/mksquashfs"}}},
-        {{"xorriso", "xorriso"}, "xim-x-xorriso",
-         {{Source::Payload, "bin"}, {Source::Host, "/usr/bin/xorriso"}, {Source::Host, "/usr/local/bin/xorriso"}}},
+        // A Luban image, made and tried (Luban design §A9, §B3.5). The image
+        // formats themselves (GPT, FAT, ISO 9660 + El Torito, qcow2) are
+        // written in-process; these are what boots it.
         {{"limine", "limine"}, "xim-x-limine",
          {{Source::Payload, "bin"}, {Source::Host, "/usr/bin/limine"}, {Source::Host, "/usr/local/bin/limine"}}},
-        {{"qemu-system-x86_64", "qemu"}, "xim-x-qemu",
+        // One package for both emulators: static, with user networking (what
+        // `luban try --proxy` needs) and its firmware in share/qemu.
+        {{"qemu-system-x86_64", "qemu-system"}, "xim-x-qemu-system",
          {{Source::Payload, "bin"}, {Source::Host, "/usr/bin/qemu-system-x86_64"},
           {Source::Host, "/usr/local/bin/qemu-system-x86_64"}}},
-        {{"qemu-system-aarch64", "qemu"}, "xim-x-qemu",
+        {{"qemu-system-aarch64", "qemu-system"}, "xim-x-qemu-system",
          {{Source::Payload, "bin"}, {Source::Host, "/usr/bin/qemu-system-aarch64"},
           {Source::Host, "/usr/local/bin/qemu-system-aarch64"}}},
-        {{"qemu-img", "qemu"}, "xim-x-qemu",
-         {{Source::Payload, "bin"}, {Source::Host, "/usr/bin/qemu-img"}, {Source::Host, "/usr/local/bin/qemu-img"}}},
     };
     return t;
 }
@@ -178,6 +182,20 @@ std::string install_hint(std::string_view tool) {
     const auto* e = entry(tool);
     if (!e || e->tool.package.empty()) return {};
     return "xlings install " + std::string(e->tool.package);
+}
+
+std::optional<fs::path> payload_file(const HomeView& home, std::string_view package, const fs::path& relative) {
+    // data/xpkgs/xim-x-<package>/<version>/<relative>, the newest version first.
+    const auto root = home.home / "data" / "xpkgs" / ("xim-x-" + std::string(package));
+    std::error_code ec;
+    if (!fs::is_directory(root, ec)) return std::nullopt;
+    std::vector<fs::path> versions;
+    for (auto it = fs::directory_iterator(root, ec); !ec && it != std::default_sentinel; it.increment(ec))
+        versions.push_back(it->path());
+    std::ranges::sort(versions, std::greater{});
+    for (const auto& v : versions)
+        if (std::error_code fe; fs::is_regular_file(v / relative, fe)) return v / relative;
+    return std::nullopt;
 }
 
 }  // namespace xlings::subos::tools

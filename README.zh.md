@@ -12,12 +12,12 @@
 </div>
 
 [官网]: https://openxlings.github.io/
-[文档]: docs/
+[文档]: docs/zh/README.md
 [包索引]: https://openxlings.github.io/xim-pkgindex
 [社区论坛]: https://forum.d2learn.org/category/9/xlings
 
 <p align=center>
-  <em>使用者: <a href="https://github.com/mcpp-community/mcpp">MCPP</a> · 即将推出的 <b>Luban</b> Linux</em>
+  <em>使用者: <a href="https://github.com/mcpp-community/mcpp">MCPP</a> · <a href="docs/zh/luban/README.md"><b>Luban</b></a></em>
 </p>
 
 一个工具，安装任意版本的任意软件，无需 root 运行，并像一个独立的 OS 一样隔离它 ——
@@ -56,14 +56,14 @@ xlings list                            # 已安装的包
 
 ## 场景
 
-**多套工具链，互不冲突** —— [指南](docs/quick-start/multi-version.md)
+**多套工具链，互不冲突** —— [指南](docs/zh/03-packages-and-versions.md)
 
 ```bash
 xlings install gcc@16 gcc@11 node@24
 xlings use gcc@11        # 随时切回，两个版本都保留
 ```
 
-**整个团队同一个环境** —— [指南](docs/quick-start/project-env.md)
+**整个团队同一个环境** —— [指南](docs/zh/04-projects.md)
 
 ```json
 { "workspace": { "xmake": "3.0.7", "gcc": { "linux": "16.1.0" }, "llvm": { "macosx": "20.1.7" } } }
@@ -73,7 +73,7 @@ xlings use gcc@11        # 随时切回，两个版本都保留
 cd my-project/ && xlings install     # 项目自己的 SubOS，装声明的版本
 ```
 
-**在沙箱里运行 Agent 和不受信任的代码** —— [指南](docs/quick-start/subos-and-agent.md)
+**在沙箱里运行 Agent 和不受信任的代码** —— [指南](docs/zh/10-subos.md)
 
 ```bash
 xlings subos new agent-ws --sandbox=private      # 隔离程度在创建时声明一次
@@ -83,14 +83,14 @@ xlings subos use agent-ws                        # 或进入一个 shell，不�
 
 | 平台 | 发布产物 | `--sandbox` 隔离的是 |
 |---|---|---|
-| Linux x86_64 / aarch64 | ✅ | 文件系统、进程、网络、身份（bwrap；aarch64 需该架构有可用的 bwrap） |
+| Linux x86_64 / aarch64 | ✅ | 文件系统、进程、网络、身份（bwrap） |
 | macOS 14+ arm64 | ✅ | **仅 `$HOME`** |
 | Windows x86_64 | ✅ | **仅 `%USERPROFILE%`** |
 
 > macOS 与 Windows 的 `--sandbox` 不是安全边界：运行不受信任的代码请使用操作系统级沙箱或
 > 虚拟机。`xlings subos status <name>` 会显示一个 SubOS 要求什么、这台机器实际给了什么。
 
-**升级与修复** —— [指南](docs/quick-start/self-management.md)
+**升级与修复** —— [指南](docs/zh/06-self-management.md)
 
 ```bash
 xlings self update
@@ -101,16 +101,21 @@ xlings self doctor --fix
 
 | 类别 | 文档 |
 |---|---|
-| **指南** | [多版本](docs/quick-start/multi-version.md) · [项目环境](docs/quick-start/project-env.md) · [SubOS 与 Agent](docs/quick-start/subos-and-agent.md) · [自定义索引](docs/quick-start/custom-index.md) · [自我管理](docs/quick-start/self-management.md) · [从源码构建](docs/build-from-source.md) |
-| **设计** | [架构](docs/architecture/overview.md) · [SubOS 隔离](docs/design/subos-isolation.md) · [SubOS-as-XPKG](docs/design/subos-as-xpkg.md) · [xvm 版本管理](docs/design/xvm-version-management.md) · [索引生态](docs/design/package-index-ecosystem.md) · [接口协议](docs/design/interface-protocol.md) |
-| **规范** | [xpkg manifest v1](docs/spec/xpkg-manifest-v1.md) · [.xlings.json schema](docs/spec/xlings-json-schema.md) · [Interface NDJSON v1](docs/spec/interface-ndjson-v1.md) · [命令参考](docs/generated/command-reference.md) |
-| **对比** | [xlings 与 apt / nix / docker](docs/comparison.md) |
+| **开始** | [xlings 是什么](docs/zh/00-what-xlings-is.md) · [快速开始](docs/zh/01-getting-started.md) · [场景](docs/zh/02-scenarios.md) · [按场景查命令](docs/zh/09-commands-by-scenario.md) |
+| **使用** | [包与版本](docs/zh/03-packages-and-versions.md) · [项目](docs/zh/04-projects.md) · [索引与镜像](docs/zh/05-indexes-and-mirrors.md) · [自我管理](docs/zh/06-self-management.md) |
+| **SubOS** | [SubOS](docs/zh/10-subos.md) · [沙箱与策略](docs/zh/11-sandbox-and-policy.md) · [根与代](docs/zh/12-roots-and-generations.md) · [macOS 与 Windows](docs/zh/13-subos-on-macos-and-windows.md) |
+| **扩展** | [编写包](docs/zh/30-authoring-a-package.md) · [自建索引](docs/zh/31-hosting-an-index.md) · [SubOS 模板](docs/zh/32-authoring-a-subos-template.md) |
+| **约定** | [Agent 与机器接口](docs/zh/50-agents-and-machine-interface.md) · [支持的平台](docs/zh/51-supported-platforms.md) · [规范（英文）](docs/specs/README.md) · [命令参考](docs/generated/command-reference.md) |
+| **Luban** | [Luban OS](docs/zh/luban/README.md) —— 建在 xlings 上的环境、edition、镜像与机器 |
+| **xlings 本身** | [从源码构建](docs/zh/90-build-from-source.md) · [架构](docs/zh/91-architecture.md) · [发布](docs/zh/92-release.md) |
+
+全部文档：[docs/zh/](docs/zh/README.md)。
 
 ## 生态与社区
 
 - [MCPP](https://github.com/mcpp-community/mcpp) —— 现代 C++ 工具链，通过 xlings 分发
 - [xim-pkgindex](https://github.com/openxlings/xim-pkgindex) —— 官方包索引
-- **Luban Linux** —— 即将推出的发行版，用 xlings 作为系统包管理器
+- [Luban](docs/zh/luban/README.md) —— 建在 xlings 上的 OS 模型：环境、edition、可启动镜像
 - [论坛](https://forum.d2learn.org/category/9/xlings) · QQ 群 167535744 / 1006282943 · [Issues](https://github.com/openxlings/xlings/issues)
 - 参与贡献：[Issue 与 Bug 修复](https://xlings.d2learn.org/documents/community/contribute/issues.html) · [添加新包](https://xlings.d2learn.org/documents/community/contribute/add-xpkg.html) · [文档编写](https://xlings.d2learn.org/documents/community/contribute/documentation.html)
 

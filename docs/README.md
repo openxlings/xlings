@@ -1,139 +1,109 @@
-# xlings 文档
+# Documentation
 
-xlings 是一个通用包管理基础设施,支持多版本共存、OS-like SubOS 环境隔离和去中心化包索引生态。可以作为操作系统的系统级包管理器使用。
+**English** | [简体中文](zh/README.md)
 
-| 发布目标 | 包管理 | Sandbox 边界 |
+This tree is the **manual for what xlings implements**: each chapter says what
+a capability does, how it is used, and where it stops. Why a design is the way
+it is, the alternatives that were turned down, and work that is planned rather
+than shipped live in the design records, not here.
+
+## Where a document lives
+
+| tree | reader | contents |
 |---|---|---|
-| Linux x86_64 / aarch64 | 支持 | bwrap/proot 文件系统隔离 |
-| macOS 14+ arm64 | 支持 | 仅 HOME 重定向 |
-| Windows x86_64 | 支持 | 仅 USERPROFILE 重定向 |
+| `docs/**` | someone with a task in hand | how to use what xlings implements |
+| [`docs/luban/**`](luban/README.md) | someone running Luban environments, images or machines | Luban OS: editions, environments, images, the machine |
+| [`docs/specs/**`](specs/README.md) | someone implementing against a format or a protocol: index authors, agent and tool authors | formats, protocols and their rules |
+| [`docs/generated/**`](generated/command-reference.md) | anyone looking up a command | the command references, generated from the command trees |
+| `.agents/docs/**` | whoever changes xlings, and whoever later asks why | design records, measurements, what was refuted |
 
-macOS/Windows 的重定向不是不受信代码的安全边界。
+A chapter points to a specification for exact rules; it does not point to a
+design record — a record describes a moment and promises nothing, so what a
+reader needs is written here or in a specification.
 
-## 目录
+## Start here
 
-- **[一、快速开始](#一快速开始)**
-  - [1.1 安装](#11-安装)
-  - [1.2 基本使用](#12-基本使用)
-  - [1.3 典型场景](#13-典型场景)
-  - [1.4 SubOS 环境隔离](#14-subos-环境隔离)
-  - [1.5 包索引](#15-包索引)
-- **[二、使用指南](#二使用指南)**
-  - [2.1 多版本管理](quick-start/multi-version.md)
-  - [2.2 项目环境](quick-start/project-env.md)
-  - [2.3 SubOS 使用指南（场景与示例）](quick-start/subos-and-agent.md)
-  - [2.4 自定义包索引](quick-start/custom-index.md)
-  - [2.5 自我管理与修复](quick-start/self-management.md)
-  - [2.6 Luban：环境、镜像与 agent 私有工作区](quick-start/luban.md)
-- **[三、高级主题](#三高级主题)**
-  - [3.1 架构](#31-架构)
-  - [3.2 设计](#32-设计)
-  - [3.3 规范](#33-规范)
+| To | Read |
+|---|---|
+| install xlings and a first package | [01](01-getting-started.md) |
+| keep several versions of a tool | [03](03-packages-and-versions.md) |
+| give a project its own toolchain | [04](04-projects.md) |
+| run an agent or untrusted code in a sandbox | [10](10-subos.md), [11](11-sandbox-and-policy.md), [50](50-agents-and-machine-interface.md) |
+| make an environment, an image or a machine of its own | [Luban](luban/README.md) |
+| publish packages, or an index of your own | [30](30-authoring-a-package.md), [31](31-hosting-an-index.md) |
+| repair a home that misbehaves | [06](06-self-management.md) |
+| build xlings itself | [90](90-build-from-source.md) |
 
----
+## Chapters
 
-## 一、快速开始
+The first digit is the part; within a part the order is a reading order.
 
-### 1.1 安装
+| | |
+|---|---|
+| `0x` | the fundamentals |
+| `1x` | SubOS: environments, sandboxes, roots |
+| `3x` | extending xlings: packages, indexes, templates |
+| `5x` | the contracts a program may rely on |
+| `9x` | xlings itself |
 
-```bash
-# Linux / macOS
-curl -fsSL https://raw.githubusercontent.com/openxlings/xlings/main/tools/other/quick_install.sh | bash
+### 0x — Fundamentals
 
-# Windows PowerShell
-irm https://raw.githubusercontent.com/openxlings/xlings/main/tools/other/quick_install.ps1 | iex
-```
+- [00 — What xlings Is](00-what-xlings-is.md) — what it does, and how it differs from apt, nix and docker
+- [01 — Getting Started](01-getting-started.md) — install, a first package, where to go next
+- [02 — Scenarios](02-scenarios.md) — common tasks and the features each uses
+- [03 — Packages and Versions](03-packages-and-versions.md) — install, use, remove; many versions side by side
+- [04 — Projects](04-projects.md) — `.xlings.json`: a project's own toolchain
+- [05 — Indexes and Mirrors](05-indexes-and-mirrors.md) — where packages come from
+- [06 — Self-Management](06-self-management.md) — update, doctor, clean
+- [09 — Commands by Scenario](09-commands-by-scenario.md) — the lookup, once the nouns are known
 
-### 1.2 基本使用
+### 1x — SubOS
 
-```bash
-xlings install gcc@16 node@24 cmake    # 安装工具(支持指定版本)
-xlings use gcc@16                       # 切换当前使用的版本
-xlings search python                    # 搜索可用包
-xlings list                             # 查看已安装的包
-xlings remove gcc                       # 卸载
-```
+- [10 — SubOS](10-subos.md) — named environments: create, enter, run, share, remove
+- [11 — Sandbox and Policy](11-sandbox-and-policy.md) — isolation, network, identity, grants, audit
+- [12 — Roots and Generations](12-roots-and-generations.md) — a SubOS as `/`: generations, rollback, export, boot
+- [13 — SubOS on macOS and Windows](13-subos-on-macos-and-windows.md) — what each platform enforces; Linux SubOS on Windows
 
-### 1.3 典型场景
+### 3x — Extending xlings
 
-| 场景 | 操作 |
-|------|------|
-| 多版本共存 | `xlings install gcc@16 gcc@11` 后通过 `xlings use` 切换 |
-| 项目环境复现 | 在项目目录放 `.xlings.json` 声明依赖,`xlings install` 一键安装 |
-| 为 Agent 创建隔离环境 | `xlings subos new agent-ws --from subos:dev-env@latest` |
-| 进入隔离的 SubOS | `xlings subos use agent-ws --sandbox` |
-| 在 SubOS 中执行命令 | `xlings subos exec agent-ws --sandbox -- python run.py` |
-| 创建时声明隔离程度 | `xlings subos new agent-ws --sandbox=private` |
-| 升级 xlings 自己 | `xlings self update` |
-| 环境出问题、命令报错 | `xlings self doctor` 体检，`xlings self doctor --fix` 一键修复 |
+- [30 — Authoring a Package](30-authoring-a-package.md) — an xpkg recipe
+- [31 — Hosting an Index](31-hosting-an-index.md) — a package index of your own
+- [32 — Authoring a SubOS Template](32-authoring-a-subos-template.md) — `type = "subos"` packages
 
-### 1.4 SubOS 环境隔离
+### 5x — Contracts for programs
 
-SubOS 是有名字的环境：自己的工具版本、home 和策略。隔离程度由策略声明，而不是由进入方式决定：
+- [50 — Agents and the Machine Interface](50-agents-and-machine-interface.md) — agent mode, `--json`, the NDJSON interface
+- [51 — Supported Platforms](51-supported-platforms.md) — platforms, what a machine must provide, versions and compatibility
 
-| 层次 | 怎么用 | 隔离 |
-|------|--------|------|
-| 环境 | `xlings subos use <name>` | 工具版本（PATH），宿主文件照常可见 |
-| 沙箱 | `xlings subos use <name> --sandbox` / `subos exec <name> --sandbox -- <cmd>` | Linux：文件系统、进程；macOS / Windows：仅 home |
-| 策略 | `xlings subos new <name> --sandbox=dev\|private\|locked`（或之后 `subos config`） | 声明一次，之后每次进入都按它；在沙箱之上再加网络、身份、装包审批、审计 |
+### 9x — xlings itself
 
-存储（`--storage shared / tmpfs / image`）只决定 home 放在哪里，不增加边界。
-场景和命令见 [SubOS 使用指南](quick-start/subos-and-agent.md)，行为说明见 [SubOS 隔离模型](design/subos-isolation.md)。
+- [90 — Building from Source](90-build-from-source.md)
+- [91 — Architecture](91-architecture.md) — modules, data layout, how an install and a SubOS work inside
+- [92 — Releasing](92-release.md)
 
-### 1.5 包索引
+## Look it up
 
-支持同时使用多个包索引仓库:
+**Commands**
 
-- 官方索引:`openxlings/xim-pkgindex`
-- 第三方社区索引:任何人可以创建
-- 自建私有索引:团队内部使用
+| | chapter | | chapter |
+|---|---|---|---|
+| `install`, `use`, `remove`, `list`, `search` | [03](03-packages-and-versions.md) | `update`, `index` | [05](05-indexes-and-mirrors.md) |
+| `self update`, `self doctor`, `self clean` | [06](06-self-management.md) | `config` | [05](05-indexes-and-mirrors.md), [06](06-self-management.md) |
+| `subos new / use / exec / start / cp / remove` | [10](10-subos.md) | `subos config / status / log / report` | [11](11-sandbox-and-policy.md) |
+| `subos rollback / export / boot / pack` | [12](12-roots-and-generations.md) | `interface` | [50](50-agents-and-machine-interface.md) |
+| every command and option | [generated](generated/command-reference.md) | `luban …` | [luban](luban/README.md), [generated](generated/luban-command-reference.md) |
 
----
+**Files and keys**
 
-## 二、使用指南
+| | where |
+|---|---|
+| `.xlings.json` (home, project, SubOS) | [04](04-projects.md), [spec](specs/xlings-json.md) |
+| an xpkg recipe (`pkgs/<x>/<name>.lua`) | [30](30-authoring-a-package.md), [spec](specs/xpkg-manifest-v1.md) |
+| a SubOS policy (`policy.json`) | [11](11-sandbox-and-policy.md) |
+| the NDJSON interface | [50](50-agents-and-machine-interface.md), [spec](specs/interface-ndjson-v1.md) |
+| diagnostics and exit codes | [specs/diagnostics](specs/diagnostics.md), [10](10-subos.md) |
+| themes | [specs/themes](specs/themes.md) |
 
-详细的操作说明,按主题组织。
+## Specifications
 
-| 文档 | 内容 |
-|------|------|
-| [多版本管理](quick-start/multi-version.md) | 安装、切换、共存原理 |
-| [项目环境](quick-start/project-env.md) | .xlings.json 配置、一键安装、项目级 SubOS |
-| [SubOS 与 Agent](quick-start/subos-and-agent.md) | 创建隔离环境、运行 Agent、多实例 |
-| [自定义包索引](quick-start/custom-index.md) | 搭建私有仓库、添加第三方索引 |
-| [自我管理与修复](quick-start/self-management.md) | `self update` 升级、`self doctor` 体检与一键修复、清理 |
-| [从源码构建](build-from-source.md) | 用 mcpp 构建 xlings 本身 |
-| [与其他工具对比](comparison.md) | xlings vs apt / nix / docker |
-
----
-
-## 三、高级主题
-
-面向需要了解内部实现或参与开发的读者。
-
-### 3.1 架构
-
-| 文档 | 内容 |
-|------|------|
-| [系统架构概览](architecture/overview.md) | 模块关系、数据布局、安装流程、隔离模型 |
-
-### 3.2 设计
-
-| 文档 | 内容 |
-|------|------|
-| [SubOS-as-XPKG](design/subos-as-xpkg.md) | type="subos" 包格式、fork 机制、非交互执行 |
-| [xpkg 资源解析](design/xpkg-resource-resolution.md) | `xpm.source`、多架构 SHA256、libxpkg compat 与索引发布契约 |
-| [xvm 版本管理](design/xvm-version-management.md) | 版本视图 + 引用计数实现多版本共存 |
-| [SubOS 隔离机制](design/subos-isolation.md) | 三级隔离(shell / FS / image)的实现细节 |
-| [包索引生态](design/package-index-ecosystem.md) | 去中心化索引设计 |
-| [Interface 协议](design/interface-protocol.md) | `xlings interface` NDJSON 通信协议 |
-| [命令参考（生成）](generated/command-reference.md) | 由内置 `CommandSpec` 生成并经 CI 校验 |
-
-### 3.3 规范
-
-| 文档 | 内容 |
-|------|------|
-| [xpkg 包描述格式 v1](spec/xpkg-manifest-v1.md) | .lua 包描述文件的字段、type、hook、`xpm.source` 与多架构资源约定 |
-| [.xlings.json 字段](spec/xlings-json-schema.md) | 配置文件各字段语义 |
-| [Interface NDJSON v1](spec/interface-ndjson-v1.md) | 请求/响应/事件协议 |
-| [诊断信息规约](spec/diagnostics.md) | 一个问题一个标记、`source`/`actions`、严重级、`--ui-mode`、交互与配置面 |
-| [配色主题](spec/themes.md) | 九个角色槽、部分覆盖、路径引用、自带主题 |
+- [specs/](specs/README.md) — the index of all specifications

@@ -18,7 +18,7 @@ commands = [
   "python3 tests/scripts/test_version_consistency.py",
   "python3 tests/scripts/test_windows_header_hygiene.py",
   "python3 tests/scripts/test_selector_contrast.py",
-  "python3 tests/scripts/test_docs_examples.py --xlings {xlings}",
+  "python3 tests/scripts/test_docs.py --xlings {xlings}",
   "python3 tests/scripts/test_generated_command_reference.py --xlings {xlings}",
   "python3 tests/scripts/test_cli_spec_parity.py --xlings {xlings}",
   "XLINGS_BIN={xlings} python3 tests/scripts/test_i18n_coverage.py",
@@ -33,6 +33,8 @@ commands = [
   "bash tools/lint_platform_branches.sh",
   "bash tools/lint_layer_deps.sh",
   "bash tools/lint_tool_resolve.sh",
+  "bash tools/lint_host_deps.sh",
+  "bash tools/lint_tools_provenance.sh",
 ]
 
 # The end-to-end shell suite against a release tarball.

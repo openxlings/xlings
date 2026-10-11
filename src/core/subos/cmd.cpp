@@ -26,6 +26,7 @@ import xlings.core.confirm;
 import xlings.core.destructive_log;
 import xlings.subos.userdata;
 import xlings.carrier;
+import xlings.carrier.wsl2;
 import xlings.core.subos.carrier_image;
 import xlings.subos.caps;
 import xlings.subos.model;
@@ -887,55 +888,16 @@ int copy_tree_(const fs::path& src, const fs::path& dst,
         return 1;
     }
 
-    // Use the system cp with reflink/clonefile flags; falls back to
-    // full copy when the FS doesn't support it. Skip the bin/ subtree
-    // here — shims are regenerated below.
-    // argv, not a shell line: a path with a quote in it is a path.
-    std::vector<std::string> copy_argv;
-    if (auto cp = subos::tools::first("cp", subos::home_view(), subos::Ports{})) {
-        const auto from = (src / ".").string(), to = (dst / "").string();
-        if constexpr (platform::is_linux) {
-            // cp -a preserves mode/ownership/timestamps; --reflink=auto uses
-            // COW where available (btrfs/xfs) and full copy otherwise.
-            copy_argv = {cp->bin.string(), "-a", "--reflink=auto", from, to};
-        } else if constexpr (platform::is_macos) {
-            // APFS clonefile via /bin/cp -c
-            copy_argv = {cp->bin.string(), "-ac", from, to};
-        }
-    }
-
-    if (!copy_argv.empty()) {
-        auto rc = platform::run_argv(copy_argv);
-        if (rc != 0) {
-            log::warn("cp -a/--reflink failed (rc={}), falling back to "
-                      "std::filesystem::copy", rc);
-            fs::copy(src, dst,
-                     fs::copy_options::recursive |
-                     fs::copy_options::overwrite_existing |
-                     fs::copy_options::copy_symlinks, ec);
-            if (ec) {
-                stream.emit(ErrorEvent{
-                    .code = ErrorCode::Internal,
-                    .message = "fork copy failed: " + ec.message(),
-                    .recoverable = false,
-                });
-                return 1;
-            }
-        }
-    } else {
-        // Windows / generic
-        fs::copy(src, dst,
-                 fs::copy_options::recursive |
-                 fs::copy_options::overwrite_existing |
-                 fs::copy_options::copy_symlinks, ec);
-        if (ec) {
-            stream.emit(ErrorEvent{
-                .code = ErrorCode::Internal,
-                .message = "fork copy failed: " + ec.message(),
-                .recoverable = false,
-            });
-            return 1;
-        }
+    // In process: each file cloned where the filesystem shares blocks
+    // (btrfs, XFS, APFS), copied where it does not; links stay links, modes
+    // and times are kept. Shims are regenerated below.
+    if (auto copied = platform::copy_tree(src, dst); !copied) {
+        stream.emit(ErrorEvent{
+            .code = ErrorCode::Internal,
+            .message = "fork copy failed: " + copied.error(),
+            .recoverable = false,
+        });
+        return 1;
     }
     return 0;
 }
@@ -2199,8 +2161,20 @@ int run(int argc, char* argv[], EventStream& stream) {
         if (abi != "native" && abi != "linux") { usageError("--abi expects native or linux"); return 1; }
         const auto platformName = std::string(caps::platform_name());
         if (abi == "linux" && platformName == "linux") abi = "native";
-        const auto choice = carrier::choose(platformName,
+        auto choice = carrier::choose(platformName,
             carrier::Want{.requested = requestedCarrier, .abi = abi, .root = rootfs}, probe_carrier_);
+        if (!choice && platformName == "windows" && choice.error().route.starts_with(carrier::wsl2::kSetupCommand)) {
+            // A Linux SubOS on Windows: the carrier's one-time setup, asked
+            // here rather than handed back as a command to type.
+            const int ready = sandbox::prepare_carrier_host(yesGiven, stream);
+            if (ready == 3) {
+                log::info("restart Windows once, then run this again: xlings subos new {}", name);
+                return 3;
+            }
+            if (ready != 0) return ready;
+            choice = carrier::choose(platformName,
+                carrier::Want{.requested = requestedCarrier, .abi = abi, .root = rootfs}, probe_carrier_);
+        }
         if (!choice) {
             stream.emit(ErrorEvent{.code = ErrorCode::NotFound, .message = choice.error().reason,
                                    .recoverable = true, .hint = choice.error().route});

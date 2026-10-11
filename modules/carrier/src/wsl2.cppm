@@ -39,6 +39,17 @@ std::vector<ImageFile> image_files();
 // The launcher that runs a command in distribution `name`.
 std::vector<std::string> launcher(const fs::path& wsl, std::string_view name);
 
+// The one-time setup a Windows machine needs before its first Linux SubOS
+// (the aarch64 design, the user's own words: nothing to install or configure
+// by hand): WSL from the index (xim:wsl-installer, Microsoft's MSI, pinned by its
+// digest) and the Virtual Machine Platform WSL2 runs on -- what
+// `xlings self doctor --isolation --fix` runs, each step through the one
+// door for administrator rights. `system32` is %SystemRoot%\System32.
+// An exit of 3010 from either is Windows saying "restart once to finish".
+std::vector<std::vector<std::string>> setup_steps(const fs::path& msi, const fs::path& system32);
+inline constexpr int kRestartRequired = 3010;
+inline constexpr std::string_view kSetupCommand = "xlings self doctor --isolation --fix";
+
 // `xlings __carrier-grant <source> <target> <rw|ro>`, run INSIDE the
 // distribution: create the mount point and mount the Windows directory there
 // with drvfs (WSL's /init, as mount.drvfs).

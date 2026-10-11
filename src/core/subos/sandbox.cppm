@@ -197,6 +197,12 @@ export int doctor_isolation(bool fix, bool yes, bool json, EventStream& stream);
 // command stops with the cause and the route, nothing fetched.
 export int prepare_root_host(bool yes, EventStream& stream);
 
+// Windows, before its first Linux SubOS: the wsl2 carrier's one-time setup
+// (WSL from the index, the Virtual Machine Platform), asked where it is
+// needed -- as prepare_root_host asks Linux's. 0: ready now; 3: done, after a
+// restart of Windows; 2: nobody to ask; 1: failed or declined.
+export int prepare_carrier_host(bool yes, EventStream& stream);
+
 export int enter(const std::string& name, EventStream& stream,
                       const std::string& preferred_backend = "",
                       bool gpu = false,

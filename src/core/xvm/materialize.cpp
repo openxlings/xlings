@@ -179,6 +179,12 @@ struct Applied::State {
 };
 
 Prepared::Prepared() : state_(std::make_unique<State>()) {}
+std::vector<fs::path> Prepared::removals() const {
+    std::vector<fs::path> out;
+    for (const auto& operation : state_->operations)
+        if (operation.change.remove) out.push_back(operation.change.destination);
+    return out;
+}
 Prepared::~Prepared() {}
 Prepared::Prepared(Prepared&& other) : state_(std::move(other.state_)) {}
 Prepared& Prepared::operator=(Prepared&& other) { state_ = std::move(other.state_); return *this; }
@@ -637,4 +643,53 @@ std::expected<Applied, std::string> Prepared::execute() {
     }
     return result;
 }
+
+std::expected<Prepared, std::string> prepare_projection_change(
+    const VersionDB& dbBefore, const WorkspaceInstalled& installedBefore, const Workspace& activeBefore,
+    const VersionDB& dbAfter, const WorkspaceInstalled& installedAfter, const Workspace& activeAfter,
+    const std::set<std::string>& reconfigured,
+    const fs::path& subosRoot, const fs::path& libraryRoot, const std::string& home,
+    std::span<const fs::path> releasedSources) {
+    std::set<std::string> moved(reconfigured.begin(), reconfigured.end());
+    const auto differs = [&](const auto& before, const auto& after) {
+        for (const auto& [name, value] : after) {
+            const auto it = before.find(name);
+            if (it == before.end() || it->second != value) moved.insert(name);
+        }
+        for (const auto& [name, value] : before)
+            if (!after.contains(name)) moved.insert(name);
+    };
+    differs(activeBefore, activeAfter);
+    differs(installedBefore, installedAfter);
+
+    WorkspaceInstalled oldMoved, newMoved, staying;
+    for (const auto& [name, keys] : installedBefore)
+        if (moved.contains(name)) oldMoved[name] = keys;
+    for (const auto& [name, key] : activeAfter)
+        (moved.contains(name) ? newMoved : staying)[name] = {key};
+
+    auto recorded = collect_claims(dbBefore, installedBefore, subosRoot, libraryRoot, home);
+    if (!recorded) return std::unexpected(recorded.error());
+    auto leaving = collect_claims(dbBefore, oldMoved, subosRoot, libraryRoot, home);
+    if (!leaving) return std::unexpected(leaving.error());
+    for (const auto& released : releasedSources)
+        for (const auto& claim : *recorded) {
+            const auto relative = claim.source.lexically_relative(released);
+            if (!relative.empty() && *relative.begin() != "..") leaving->push_back(claim);
+        }
+    auto desired = collect_claims(dbAfter, newMoved, subosRoot, libraryRoot, home, ClaimSource::Present);
+    if (!desired) return std::unexpected(desired.error());
+    auto kept = collect_claims(dbAfter, staying, subosRoot, libraryRoot, home);
+    if (!kept) return std::unexpected(kept.error());
+
+    auto retained = *desired;
+    retained.insert(retained.end(), kept->begin(), kept->end());
+    auto obsolete = obsolete_assets(*leaving, retained);
+    if (!obsolete) return std::unexpected(obsolete.error());
+    auto changes = std::move(*obsolete);
+    for (const auto& claim : *desired) changes.push_back({claim.source, claim.destination, false});
+    return preflight_materialization(changes, *recorded, subosRoot);
 }
+
+}
+

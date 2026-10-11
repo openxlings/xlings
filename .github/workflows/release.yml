@@ -43,10 +43,9 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Install system deps
+      - name: The runner's own tools (T0; nothing installed)
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y curl git build-essential
+          for t in curl git cc make jq tar xz python3; do command -v "$t" >/dev/null || { echo "::error::the runner image has no $t"; exit 1; }; done
 
       - name: Install bootstrap xlings (pinned ${{ env.BOOTSTRAP_XLINGS_VERSION }})
         env:
@@ -308,10 +307,9 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Install system deps
+      - name: The runner's own tools (T0; nothing installed)
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y curl git build-essential jq
+          for t in curl git cc make jq tar xz python3; do command -v "$t" >/dev/null || { echo "::error::the runner image has no $t"; exit 1; }; done
 
       - name: Install bootstrap xlings (pinned ${{ env.BOOTSTRAP_XLINGS_VERSION }})
         env:

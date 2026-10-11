@@ -1785,38 +1785,16 @@ publish_removal_state_(xvm::VersionDB candidateDb, xvm::Workspace candidateWorks
     const auto beforeInstalled = Config::workspace_installed();
     const auto root = Config::xvm_artifact_subos_dir();
     const auto homeDir = Config::paths().homeDir.string();
-    auto claims = mat::collect_claims(beforeDb, beforeInstalled, root, root / "lib", homeDir);
-    if (!claims)
-        return std::unexpected(claims.error());
-    xvm::WorkspaceInstalled activeOnly;
-    for (const auto& [name, key] : candidateWorkspace)
-        activeOnly[name] = {key};
-    auto desired = mat::collect_claims(candidateDb, activeOnly, root, root / "lib", homeDir, mat::ClaimSource::Present);
-    if (!desired)
-        return std::unexpected(desired.error());
-    auto obsolete = mat::obsolete_assets(*claims, *desired);
-    if (!obsolete) return std::unexpected(obsolete.error());
-    auto changes = std::move(*obsolete);
-    for (const auto& next : *desired)
-        changes.push_back({next.source, next.destination, false});
-    for (const auto& op : operations) {
-        if (op.op != "remove_headers")
-            continue;
-        const auto source = std::filesystem::path(xvm::expand_path(op.includedir, homeDir));
-        std::vector<mat::AssetClaim> selected;
-        for (const auto& old : *claims) {
-            const auto relative = old.source.lexically_relative(source);
-            if (relative.empty() || *relative.begin() == "..")
-                continue;
-            selected.push_back(old);
-        }
-        auto removedHeaders = mat::obsolete_assets(selected, *desired);
-        if (!removedHeaders) return std::unexpected(removedHeaders.error());
-        changes.insert(changes.end(), removedHeaders->begin(), removedHeaders->end());
-    }
-    auto prepared = mat::preflight_materialization(changes, *claims, root);
+    std::vector<std::filesystem::path> released;
+    for (const auto& op : operations)
+        if (op.op == "remove_headers")
+            released.push_back(xvm::expand_path(op.includedir, homeDir));
+    auto prepared = mat::prepare_projection_change(beforeDb, beforeInstalled, beforeWorkspace, candidateDb,
+                                                   candidateInstalled, candidateWorkspace, {}, root, root / "lib",
+                                                   homeDir, released);
     if (!prepared)
         return std::unexpected(prepared.error());
+    const auto removals = prepared->removals();
     const auto versionPath = &Config::versions_mut() == &Config::global_versions()
                                  ? Config::paths().homeDir / ".xlings.json"
                                  : Config::project_state_path();
@@ -1866,8 +1844,8 @@ publish_removal_state_(xvm::VersionDB candidateDb, xvm::Workspace candidateWorks
     }
     auto committed = applied->commit();
     if (!committed) return committed;
-    for (const auto& change : changes)
-        if (change.remove) xvm::prune_empty_asset_dirs(change.destination, root);
+    for (const auto& removed : removals)
+        xvm::prune_empty_asset_dirs(removed, root);
     return {};
 }
 
@@ -2229,26 +2207,18 @@ bool process_xvm_operations_(const PlanNode& node, const std::filesystem::path& 
     }
     xvm::reclaim_conflicting_file_bindings(candidateDb, candidateWorkspace, selectedFiles, homeDir);
 
-    auto changes_for = [&](const std::filesystem::path& root, const xvm::Workspace& active,
-                           const xvm::WorkspaceInstalled& oldInstalled)
+    // The registered release's assets are placed again (and whatever its
+    // registration moved); every other active package stays as it is.
+    std::set<std::string> reconfigured;
+    for (const auto& member : metadata->registered) reconfigured.insert(member.target);
+    auto changes_for = [&](const std::filesystem::path& root,
+                           const xvm::Workspace& activeBefore, const xvm::WorkspaceInstalled& installedOld,
+                           const xvm::Workspace& activeAfter, const xvm::WorkspaceInstalled& installedNew)
         -> std::expected<mat::Prepared, std::string> {
-        auto claims = mat::collect_claims(dbBefore, oldInstalled, root, root / "lib", homeDir);
-        if (!claims)
-            return std::unexpected(claims.error());
-        xvm::WorkspaceInstalled activeOnly;
-        for (const auto& [target, key] : active)
-            activeOnly[target] = {key};
-        auto desired = mat::collect_claims(candidateDb, activeOnly, root, root / "lib", homeDir, mat::ClaimSource::Present);
-        if (!desired)
-            return std::unexpected(desired.error());
-        auto obsolete = mat::obsolete_assets(*claims, *desired);
-        if (!obsolete) return std::unexpected(obsolete.error());
-        auto changes = std::move(*obsolete);
-        for (const auto& next : *desired)
-            changes.push_back({next.source, next.destination, false});
-        return mat::preflight_materialization(changes, *claims, root);
+        return mat::prepare_projection_change(dbBefore, installedOld, activeBefore, candidateDb, installedNew,
+                                              activeAfter, reconfigured, root, root / "lib", homeDir);
     };
-    auto prepared = changes_for(scope, candidateWorkspace, installedBefore);
+    auto prepared = changes_for(scope, workspaceBefore, installedBefore, candidateWorkspace, candidateInstalled);
     if (!prepared) {
         log::error("{}: sysroot update refused before metadata changed: {}", node.name,
                    prepared.error());
@@ -2278,7 +2248,7 @@ bool process_xvm_operations_(const PlanNode& node, const std::filesystem::path& 
             log::error("{}: unreadable workspace", name);
             return false;
         }
-        auto other = changes_for(root, workspace->active, workspace->installed);
+        auto other = changes_for(root, workspace->active, workspace->installed, workspace->active, workspace->installed);
         if (!other) {
             log::error("{}: {}", name, other.error());
             return false;
@@ -3582,6 +3552,15 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& requested
             if (!binDir.empty() && curPath.find(binDir) == std::string::npos) {
                 platform::set_env_variable("PATH",
                     binDir + std::string(1, platform::PATH_SEPARATOR) + curPath);
+                curPath = binDir + std::string(1, platform::PATH_SEPARATOR) + curPath;
+            }
+            // The patchelf this plan installs is the one the later nodes are
+            // relocated with -- from its payload, since a home that was
+            // never initialised has no shim for it. (One the user removed
+            // is not used: only this plan's.)
+            if (node.name == "patchelf" && std::filesystem::is_regular_file(ctx.install_dir / "bin" / "patchelf")) {
+                platform::set_env_variable("PATH", (ctx.install_dir / "bin").string()
+                    + std::string(1, platform::PATH_SEPARATOR) + curPath);
             }
             // Fail closed (part 2 §2.4 G1b): a payload that needs relocating
             // and no patchelf to do it is not installed, whatever elfpatch

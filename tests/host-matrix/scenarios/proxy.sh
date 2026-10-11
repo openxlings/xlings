@@ -2,10 +2,11 @@
 # net=proxy: names go to the proxy and are resolved there; the host's
 # loopback and its network are out of reach -- with the restriction left on.
 source "$(dirname "$0")/../lib.sh"
-command -v python3 >/dev/null || skip "no python3 for the proxy fixture"
+py="${HM_PYTHON:-python3}"
+command -v "$py" >/dev/null || skip "no python3 for the proxy fixture"
 command -v curl >/dev/null || skip "no curl"
 require_isolation
-python3 "$(dirname "$0")/../socks5.py" "$HM_STATE/proxy.port" "$HM_STATE/proxy.log" &
+"$py" "$(dirname "$0")/../socks5.py" "$HM_STATE/proxy.port" "$HM_STATE/proxy.log" &
 fixture=$!; trap 'kill $fixture 2>/dev/null' EXIT
 for _ in $(seq 50); do [[ -s "$HM_STATE/proxy.port" ]] && break; sleep 0.1; done
 port="$(cat "$HM_STATE/proxy.port")"

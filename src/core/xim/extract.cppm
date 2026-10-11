@@ -97,15 +97,19 @@ std::expected<void, std::string> write_tar_gz(const std::filesystem::path& root,
 //                runs its init -- a live system with nothing to mount. A
 //                /dev/console is added when the tree has none, so the first
 //                process has somewhere to speak.
-//   Iso9660      a CD image with Rock Ridge names and, when `boot` names a
-//                file of the tree, an El Torito no-emulation boot record for
-//                it (BIOS; a 4-sector load with a boot-info table, as limine's
-//                CD stage expects). `volume` is its label.
+//   Iso9660      a CD image with Rock Ridge and Joliet names and, when
+//                `boot` names a file of the tree, an El Torito no-emulation
+//                boot record for it: a 4-sector load with a boot-info table
+//                patched in, as limine's BIOS CD stage expects -- or, with
+//                `boot_info_table` off, the file untouched (a FAT image a
+//                firmware boots; luban.image::make_iso_hybrid finishes it).
+//                `volume` is its label.
 enum class ArchiveFormat { TarGz, CpioNewcGz, Iso9660 };
 struct ArchiveOptions {
     ArchiveOwner owner { ArchiveOwner::Root };
     std::string prefix { "." };
     std::string boot;          // Iso9660: path inside the tree
+    bool boot_info_table { true };
     std::string volume { "LUBAN" };
 };
 std::expected<void, std::string> write_archive(const std::filesystem::path& root,

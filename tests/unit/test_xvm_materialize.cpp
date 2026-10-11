@@ -324,3 +324,59 @@ XTEST(XvmMaterialize, AnAssetThePayloadDoesNotShipIsNotPlacedAndDoesNotRefuseThe
     std::error_code ec;
     EXPECT_FALSE(fs::exists(fs::symlink_status(scope / "lib/libasan.so", ec))) << "absent: not placed";
 }
+
+// A change to one package's activation materialises that package and
+// nothing else: another active package's tree is neither walked nor placed
+// again (a link of its that went missing stays missing -- `self doctor --fix`
+// repairs drift, not every switch). Before, every `use` and every
+// registration re-placed every active package's files, so switching one
+// cost the size of the whole SubOS.
+XTEST(XvmMaterialize, AProjectionChangeMovesOnlyTheNamesThatMove,
+      .area = "xvm", .covers = {"XVM-PROJECTION-DELTA"}, .requires_ = {"posix"}) {
+    auto home = tk::Home::isolated("projection-delta");
+    const auto scope = home.dir() / "subos/default";
+    const auto tool1 = home.dir() / "data/xpkgs/tool/1", tool2 = home.dir() / "data/xpkgs/tool/2";
+    const auto lib = home.dir() / "data/xpkgs/big/1";
+    tk::write_file(tool1 / "include/tool.h", "1");
+    tk::write_file(tool2 / "include/tool.h", "2");
+    tk::write_file(lib / "include/big/a.h", "a");
+    tk::write_file(lib / "include/big/b.h", "b");
+    xlings::xvm::VersionDB db;
+    for (const auto& [target, version, payload, src, dst] :
+         std::vector<std::tuple<std::string, std::string, fs::path, std::string, std::string>>{
+             {"tool.files.1", "1", tool1, "include/tool.h", "usr/include/tool.h"},
+             {"tool.files.1", "2", tool2, "include/tool.h", "usr/include/tool.h"},
+             {"big.files.1", "1", lib, "include/big", "usr/include/big"}}) {
+        xlings::xvm::add_version(db, target, version, payload.string());
+        auto& data = db[target].versions[version];
+        data.kind = "files";
+        data.fileSrc = src;
+        data.fileDst = dst;
+    }
+    fs::create_directories(scope / "usr/include");
+    derived(tool1 / "include/tool.h", scope / "usr/include/tool.h");
+    // big's directory link went missing: drift, not this switch's business.
+    const xlings::xvm::Workspace before{{"tool.files.1", "1"}, {"big.files.1", "1"}};
+    const xlings::xvm::WorkspaceInstalled installedBefore{{"tool.files.1", {"1"}}, {"big.files.1", {"1"}}};
+    xlings::xvm::Workspace after = before;
+    after["tool.files.1"] = "2";
+    xlings::xvm::WorkspaceInstalled installedAfter{{"tool.files.1", {"1", "2"}}, {"big.files.1", {"1"}}};
+
+    auto prepared = m::prepare_projection_change(db, installedBefore, before, db, installedAfter, after, {},
+                                                 scope, scope / "lib", home.dir().string());
+    ASSERT_TRUE(prepared) << prepared.error();
+    auto applied = prepared->execute();
+    ASSERT_TRUE(applied) << applied.error();
+    ASSERT_TRUE(applied->commit());
+    EXPECT_EQ(fs::read_symlink(scope / "usr/include/tool.h"), tool2 / "include/tool.h") << "the switched name moved";
+    EXPECT_FALSE(fs::exists(fs::symlink_status(scope / "usr/include/big"))) << "an unmoved name is not placed again";
+
+    // Named as reconfigured, a release is placed again even at the same version.
+    auto again = m::prepare_projection_change(db, installedAfter, after, db, installedAfter, after, {"big.files.1"},
+                                              scope, scope / "lib", home.dir().string());
+    ASSERT_TRUE(again) << again.error();
+    auto placed = again->execute();
+    ASSERT_TRUE(placed) << placed.error();
+    ASSERT_TRUE(placed->commit());
+    EXPECT_TRUE(fs::exists(scope / "usr/include/big/a.h"));
+}

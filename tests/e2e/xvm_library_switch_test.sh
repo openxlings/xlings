@@ -24,7 +24,7 @@
 #   1. install v1        → library and header both materialize at v1
 #   2. install v2        → v1 stays active; the sysroot must not move
 #   3. use v2            → library, header AND declared file all move
-#   4. use v1            → both move back
+#   4. use v1            → both move back; use of the active release repairs its own links
 #   5. remove (no teardown hook) → every entry of the release deregisters
 
 set -euo pipefail
@@ -247,6 +247,15 @@ RUN use libfixture.so.1 2.0.0 >/dev/null 2>&1 || fail "S4b: use failed"
 expect_sysroot_at "2.0.0" "S4b"
 [[ "$(active_version fixture-tool)" == "2.0.0" ]] \
   || fail "S4b: entering from the library left the program behind"
+
+# `use` places the release it is given again -- a link of its own that went
+# missing comes back -- and moves nothing else (only what the switch moves
+# is re-materialised: a large SubOS no longer re-walks every header of every
+# package to switch one).
+log "S4c: use of the active release puts its own missing link back"
+rm -f "$SYSROOT_HDR"
+RUN use fixture-tool 2.0.0 >/dev/null 2>&1 || fail "S4c: use failed"
+expect_sysroot_at "2.0.0" "S4c"
 
 # ── Scenario 5 ────────────────────────────────────────────────────
 log "S5: remove with an empty uninstall() → the whole release deregisters"

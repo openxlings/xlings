@@ -12,12 +12,12 @@
 </div>
 
 [Website]: https://openxlings.github.io/
-[Docs]: docs/
+[Docs]: docs/README.md
 [Package Index]: https://openxlings.github.io/xim-pkgindex
 [Forum]: https://forum.d2learn.org/category/9/xlings
 
 <p align=center>
-  <em>Used by: <a href="https://github.com/mcpp-community/mcpp">MCPP</a> · upcoming <b>Luban</b> Linux</em>
+  <em>Used by: <a href="https://github.com/mcpp-community/mcpp">MCPP</a> · <a href="docs/luban/README.md"><b>Luban</b></a></em>
 </p>
 
 One tool to install any version of anything, run it without root, and isolate
@@ -57,14 +57,14 @@ written for agents ships with xlings.
 
 ## Scenarios
 
-**Several toolchains, no conflicts** — [guide](docs/quick-start/multi-version.md)
+**Several toolchains, no conflicts** — [guide](docs/03-packages-and-versions.md)
 
 ```bash
 xlings install gcc@16 gcc@11 node@24
 xlings use gcc@11        # switch back any time; both stay installed
 ```
 
-**One environment for the whole team** — [guide](docs/quick-start/project-env.md)
+**One environment for the whole team** — [guide](docs/04-projects.md)
 
 ```json
 { "workspace": { "xmake": "3.0.7", "gcc": { "linux": "16.1.0" }, "llvm": { "macosx": "20.1.7" } } }
@@ -74,7 +74,7 @@ xlings use gcc@11        # switch back any time; both stay installed
 cd my-project/ && xlings install     # the project's own SubOS, the declared versions
 ```
 
-**Agents and untrusted code in a sandbox** — [guide](docs/quick-start/subos-and-agent.md)
+**Agents and untrusted code in a sandbox** — [guide](docs/10-subos.md)
 
 ```bash
 xlings subos new agent-ws --sandbox=private      # isolation is declared once, here
@@ -84,7 +84,7 @@ xlings subos use agent-ws                        # or a shell inside -- no flag 
 
 | Platform | Release | `--sandbox` isolates |
 |---|---|---|
-| Linux x86_64 / aarch64 | ✅ | filesystem, processes, network, identity (bwrap; on aarch64, once a bwrap is available for it) |
+| Linux x86_64 / aarch64 | ✅ | filesystem, processes, network, identity (bwrap) |
 | macOS 14+ arm64 | ✅ | **only `$HOME`** |
 | Windows x86_64 | ✅ | **only `%USERPROFILE%`** |
 
@@ -92,7 +92,7 @@ xlings subos use agent-ws                        # or a shell inside -- no flag 
 > sandbox or a VM for code you do not trust. `xlings subos status <name>`
 > shows what a SubOS asks for and what this machine gives it.
 
-**Upgrade and repair** — [guide](docs/quick-start/self-management.md)
+**Upgrade and repair** — [guide](docs/06-self-management.md)
 
 ```bash
 xlings self update
@@ -103,16 +103,21 @@ xlings self doctor --fix
 
 | Topic | Docs |
 |---|---|
-| **Guides** | [Multi-version](docs/quick-start/multi-version.md) · [Project env](docs/quick-start/project-env.md) · [SubOS & Agent](docs/quick-start/subos-and-agent.md) · [Custom index](docs/quick-start/custom-index.md) · [Self-management](docs/quick-start/self-management.md) · [Build from source](docs/build-from-source.md) |
-| **Design** | [Architecture](docs/architecture/overview.md) · [SubOS isolation](docs/design/subos-isolation.md) · [SubOS-as-XPKG](docs/design/subos-as-xpkg.md) · [xvm versioning](docs/design/xvm-version-management.md) · [Index ecosystem](docs/design/package-index-ecosystem.md) · [Interface protocol](docs/design/interface-protocol.md) |
-| **Spec** | [xpkg manifest v1](docs/spec/xpkg-manifest-v1.md) · [.xlings.json schema](docs/spec/xlings-json-schema.md) · [Interface NDJSON v1](docs/spec/interface-ndjson-v1.md) · [Commands](docs/generated/command-reference.md) |
-| **Compare** | [xlings vs apt / nix / docker](docs/comparison.md) |
+| **Start** | [What xlings is](docs/00-what-xlings-is.md) · [Getting started](docs/01-getting-started.md) · [Scenarios](docs/02-scenarios.md) · [Commands by scenario](docs/09-commands-by-scenario.md) |
+| **Use** | [Packages and versions](docs/03-packages-and-versions.md) · [Projects](docs/04-projects.md) · [Indexes and mirrors](docs/05-indexes-and-mirrors.md) · [Self-management](docs/06-self-management.md) |
+| **SubOS** | [SubOS](docs/10-subos.md) · [Sandbox and policy](docs/11-sandbox-and-policy.md) · [Roots and generations](docs/12-roots-and-generations.md) · [macOS and Windows](docs/13-subos-on-macos-and-windows.md) |
+| **Extend** | [Authoring a package](docs/30-authoring-a-package.md) · [Hosting an index](docs/31-hosting-an-index.md) · [SubOS templates](docs/32-authoring-a-subos-template.md) |
+| **Contracts** | [Agents and the machine interface](docs/50-agents-and-machine-interface.md) · [Supported platforms](docs/51-supported-platforms.md) · [Specifications](docs/specs/README.md) · [Commands](docs/generated/command-reference.md) |
+| **Luban** | [Luban OS](docs/luban/README.md) — environments, editions, images and machines on xlings |
+| **xlings itself** | [Build from source](docs/90-build-from-source.md) · [Architecture](docs/91-architecture.md) · [Release](docs/92-release.md) |
+
+All of it: [docs/](docs/README.md).
 
 ## Ecosystem and community
 
 - [MCPP](https://github.com/mcpp-community/mcpp) — modern C++ toolchain, distributed through xlings
 - [xim-pkgindex](https://github.com/openxlings/xim-pkgindex) — the official package index
-- **Luban Linux** — upcoming distribution using xlings as its system package manager
+- [Luban](docs/luban/README.md) — the OS model on xlings: environments, editions, bootable images
 - [Forum](https://forum.d2learn.org/category/9/xlings) · QQ 167535744 / 1006282943 · [Issues](https://github.com/openxlings/xlings/issues)
 - Contributing: [issues](https://xlings.d2learn.org/en/documents/community/contribute/issues.html) · [packages](https://xlings.d2learn.org/en/documents/community/contribute/add-xpkg.html) · [docs](https://xlings.d2learn.org/en/documents/community/contribute/documentation.html)
 

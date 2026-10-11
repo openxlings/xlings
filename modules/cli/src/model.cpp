@@ -146,6 +146,8 @@ nlohmann::json help_json(const CommandSpec& command) {
     nlohmann::json value;
     value["name"] = command.name;
     value["description"] = command.description;
+    // Which help shows it: `--help` (common), `help --all` (more), `help --expert`.
+    value["level"] = command.level == Level::Common ? "common" : command.level == Level::More ? "more" : "expert";
     value["arguments"] = nlohmann::json::array();
     value["options"] = nlohmann::json::array();
     value["subcommands"] = nlohmann::json::array();

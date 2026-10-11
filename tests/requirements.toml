@@ -844,3 +844,31 @@ why = "evidence, not a product behaviour: the xlings-ci-linux step 'openkal coex
 [LUBAN-INIT]
 text = "stage-0 is its own static binary and reads no Config"
 status = "required"
+
+[TOOLS-PROVENANCE]
+text = "every external tool is a package of the index, for every architecture it is released for, unless the operating system itself is the tool (and the table says why); a missing tool's remedy is `xlings install <package>`, never a machine's package manager"
+status = "required"
+
+[HOST-DEPS-T0]
+text = "what xlings and its tests take from the machine is the T0 list (kernel, sudo, apparmor_parser, mount, the OS's own tools); CI and tests install everything else through xlings (tools/lint_host_deps.sh)"
+status = "required"
+
+[LUBAN-ISO-UEFI]
+text = "an exported ISO boots on UEFI without xorriso: an El Torito EFI entry written in-process (beside the BIOS default where the machine has a BIOS, as the default where it does not)"
+status = "required"
+
+[LUBAN-ISO-HYBRID]
+text = "an exported ISO written to a drive boots it too: a hybrid GPT whose EFI system partition is the El Torito image, the backup table appended, still an ISO 9660 image"
+status = "required"
+
+[LUBAN-QCOW2]
+text = "--qcow2 is written in-process (qcow2 v3, zero clusters unallocated) and reads back as the raw disk"
+status = "required"
+
+[CARRIER-WSL-SETUP]
+text = "a Windows machine's first Linux SubOS gets its one-time setup from xlings -- WSL from the index (xim:wsl-installer, Microsoft's MSI) and the Virtual Machine Platform through the elevation door -- asked where it is needed, never a command to find and type"
+status = "required"
+
+[XVM-PROJECTION-DELTA]
+text = "a change to a scope's activation (use, a registration, a removal) materialises the names that move and nothing else: the cost of switching one package does not grow with the SubOS"
+status = "required"

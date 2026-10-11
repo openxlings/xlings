@@ -40,12 +40,9 @@ std::optional<std::vector<std::string>> host_argv_(bool copy) {
             if (auto t = tool_(copy ? "wl-copy" : "wl-paste"))
                 return copy ? std::vector<std::string>{t->string()}
                             : std::vector<std::string>{t->string(), "--no-newline"};
-        if (!env_("DISPLAY").empty()) {
-            if (auto t = tool_("xclip"))
-                return std::vector<std::string>{t->string(), "-selection", "clipboard", copy ? "-in" : "-out"};
+        if (!env_("DISPLAY").empty())
             if (auto t = tool_("xsel"))
                 return std::vector<std::string>{t->string(), "--clipboard", copy ? "--input" : "--output"};
-        }
         return std::nullopt;
     }
 }
@@ -188,8 +185,8 @@ int host(std::span<const std::string> args) {
     const bool copy = sub == "copy";
     if (auto argv = host_argv_(copy)) return platform::run_argv(*argv) == 0 ? 0 : 1;
     if (!copy) {
-        std::println(std::cerr, "xlings: the host has no clipboard to read (no display: wl-paste, xclip "
-                                "or xsel with WAYLAND_DISPLAY / DISPLAY; pbpaste; PowerShell)");
+        std::println(std::cerr, "xlings: the host has no clipboard to read (wl-paste with WAYLAND_DISPLAY, "
+                                "xsel with DISPLAY: xlings install wl-clipboard xsel; pbpaste; PowerShell)");
         return 1;
     }
     auto data = read_stdin_();

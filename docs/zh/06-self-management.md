@@ -1,0 +1,132 @@
+# 自我管理
+
+[English](../06-self-management.md) | **简体中文**
+
+`xlings self` 管理 xlings 自身：升级客户端、检查并修复 home、清理缓存。日常几乎用不到——升级之后，
+或者某个命令开始报奇怪的错时，从这里开始。
+
+## 升级
+
+```bash
+xlings self update
+```
+
+它刷新索引，然后把最新的 xlings 作为一个包安装。如果 home 里的包是更早的客户端注册的，可能会看到：
+
+```text
+packages installed by the previous client may still be registered in its format
+  run  xlings self doctor --fix
+```
+
+这不是错误：跑一次 `--fix` 迁移记录，这行提示就不再出现。
+
+## 体检
+
+```bash
+xlings self doctor
+```
+
+只读。它检查以下几层是否一致：
+
+| 层 | 检查什么 |
+|---|---|
+| workspace | 当前 SubOS 声明的活跃版本 |
+| 版本数据库 | 每个 `包@版本` 的注册记录 |
+| shim | `bin/` 下的转发链接 |
+| payload | 记录指向的目录及其中的程序 |
+| sysroot | `lib/`、`lib64/`、`usr/`、`etc/`、`share/` 下的链接 |
+
+退出码 0 表示当前 SubOS 健康；只有告警不会让它失败。
+
+```bash
+xlings self doctor --show-ok          # every check, the good ones too
+xlings self doctor --subos work       # another SubOS
+xlings self doctor --isolation        # what this machine can sandbox with (see 11)
+```
+
+## 修复
+
+```bash
+xlings self doctor --fix
+```
+
+一次跑完，把能修的都修掉：
+
+- 补上缺失的 shim，删除多余的；
+- 丢掉指向不存在版本的绑定；
+- 指向未注册版本的活跃项取消激活——包括其他 SubOS 的；
+- payload 坏掉的包重新注册，不行就重装；
+- 断掉的 sysroot 链接按版本数据库**重新指回去**，没有任何记录说明它该指向哪里时才删除；
+- 应该在却不在的链接放回去；
+- 被整体挪动过的 home，记录重新指向当前位置（见下文）；
+- 任何东西都救不回来、也没有索引提供的记录被清除。
+
+结束后会再检查一遍：你看到的报告是修复**之后**的状态。
+
+```bash
+xlings self doctor --fix --dry-run    # what it would do, changing nothing
+```
+
+### 清除记录
+
+只有同时满足这些条件，`--fix` 才会删除一条注册记录：payload 已经不在、重新注册和重装都失败、没有索引提供它、
+没有别的 SubOS 在用它。这会丢失一个事实（"它曾经装过"），所以这样的运行不会以 `OK` 结束，而是说明清除了几条。
+删除 sysroot 链接同样如此。退出码仍是 0：它回答的是"这个 home 还需不需要人来处理"。
+
+### 挪动过的 home
+
+用 `mv` 搬动 home 不受支持：payload 里的程序把旧路径写在 `PT_INTERP` 和 `RPATH` 里。`self doctor` 会说明：
+
+```text
+✗ home relocated   this home is at <new path>, but its records were written for <old path>
+  → run            xlings self doctor --fix
+  • note           re-points the versions database and the sysroot links;
+                   binaries that baked the old path into PT_INTERP/RPATH are
+                   NOT repaired — re-provision the home if the toolchain fails
+```
+
+`--fix` 把 xlings 自己的记录和所有 SubOS 的 sysroot 链接指向当前根。它不会因此宣称工具链能用了。
+
+### 建议的命令一定能跑
+
+报告里 `→ run` 后面是可以直接粘贴的完整命令。它给出的是**包**，不是程序名（`nm` 由 llvm 提供，没有叫 `nm` 的包）。
+没有任何东西能提供某个条目时，它会直说，而不是给一条跑不通的命令。
+
+### 重置元数据
+
+```bash
+xlings self doctor --reset-metadata
+```
+
+它和 `--fix` 分开，因为它会丢信息：读不出来的发布元数据被丢弃，条目退回成一个可单独切换的版本。
+只在元数据已经损坏、重装也救不回来时使用。
+
+## 清理
+
+```bash
+xlings self clean            # caches, and payloads nothing references
+xlings self clean --dry-run  # what it would delete
+```
+
+SubOS 的 home 是用户数据，从不被清理：只有用户发起并确认的删除（`subos remove`）才会删除它。
+
+## 其他命令
+
+```bash
+xlings self config     # the home, the current SubOS, the mirror
+xlings self install    # install from a release tarball (what the installer runs)
+xlings self init       # create the home's directories
+xlings self migrate    # move an old layout into subos/default
+xlings self uninstall  # remove xlings, asking first
+```
+
+## 出问题时
+
+```bash
+xlings self doctor                   # what is wrong
+xlings self doctor --fix --dry-run   # what it would do
+xlings self doctor --fix             # repair
+xlings self doctor                   # exit 0: clean
+```
+
+还有剩余问题时，报告逐条说明原因。属于其他 SubOS 的 payload 问题不在这里修——那会把包拉进当前环境——报告会指出是哪个 SubOS。

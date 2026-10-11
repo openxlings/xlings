@@ -998,9 +998,14 @@ std::optional<fs::path> limine_data_(const fs::path& home, EventStream& stream) 
     for (fs::directory_iterator it(home / "data" / "xpkgs" / "xim-x-limine", ec), end; !ec && it != end; it.increment(ec))
         candidates.push_back(it->path() / "share" / "limine");
     candidates.insert(candidates.end(), {"/usr/share/limine", "/usr/local/share/limine"});
-    for (const auto& d : candidates)
-        if (fs::is_regular_file(d / "limine-bios-cd.bin", ec) && fs::is_regular_file(d / "limine-bios.sys", ec))
-            return d;
+    // What this machine boots with: limine's UEFI loader and CD image, and
+    // its BIOS stages where the machine has a BIOS.
+    const auto& machine = luban::image::native_arch();
+    for (const auto& d : candidates) {
+        bool all = fs::is_regular_file(d / machine.efi_loader, ec) && fs::is_regular_file(d / "limine-uefi-cd.bin", ec);
+        if (machine.bios) all = all && fs::is_regular_file(d / "limine-bios-cd.bin", ec) && fs::is_regular_file(d / "limine-bios.sys", ec);
+        if (all) return d;
+    }
     return std::nullopt;
 }
 
@@ -1127,16 +1132,21 @@ std::expected<void, std::pair<std::string, std::string>> write_drive_(
     if (!kernel) return std::unexpected(kernel.error());
     auto limine = limine_data_(home, stream);
     std::error_code ec;
-    if (!limine || !fs::is_regular_file(*limine / "BOOTX64.EFI", ec))
+    if (!limine)
         return std::unexpected(std::pair{std::string("limine's boot files are not here"), subos::tools::install_hint("limine")});
+    const auto& machine = luban::image::native_arch();
     const std::uint64_t esp_bytes = 64ull << 20;
     const std::uint64_t root_bytes = size_bytes_(size);
     if (root_bytes < (64ull << 20)) return std::unexpected(std::pair{"--size " + size + ": too small for a root", std::string{}});
     const auto root_uuid = luban::image::random_guid();
-    // BIOS boot (limine's second stage), the system partition, the root.
+    // BIOS boot (limine's second stage) where the machine has a BIOS, the
+    // system partition, the root.
     const std::uint64_t bios_bytes = 1ull << 20;
-    const std::array<std::uint64_t, 3> sizes{bios_bytes, esp_bytes, root_bytes};
+    std::vector<std::uint64_t> sizes;
+    if (machine.bios) sizes.push_back(bios_bytes);
+    sizes.insert(sizes.end(), {esp_bytes, root_bytes});
     const auto starts = luban::image::layout(sizes);
+    const auto esp_start = starts[machine.bios ? 1 : 0];
     // The root filesystem, as --disk makes it.
     auto mkfs = tool_("mkfs.ext4", stream);
     if (!mkfs) return std::unexpected(std::pair{std::string("mkfs.ext4 is not available"), subos::tools::install_hint("mkfs.ext4")});
@@ -1153,25 +1163,27 @@ std::expected<void, std::pair<std::string, std::string>> write_drive_(
         "    cmdline: root=PARTUUID={} rw rootwait {} init={}/boot/{}\n",
         luban::image::to_string(root_uuid), kernel_args_(boot), home.generic_string(), init);
     std::vector<luban::image::File> files{
-        {.path = "EFI/BOOT/BOOTX64.EFI", .from = *limine / "BOOTX64.EFI"},
+        {.path = "EFI/BOOT/" + std::string(machine.efi_loader), .from = *limine / machine.efi_loader},
         {.path = "boot/vmlinuz", .from = *kernel},
         {.path = "boot/limine/limine.conf", .content = conf},
-        {.path = "boot/limine/limine-bios.sys", .from = *limine / "limine-bios.sys"},
     };
+    if (machine.bios) files.push_back({.path = "boot/limine/limine-bios.sys", .from = *limine / "limine-bios.sys"});
     const auto esp = scratch / "esp.fat";
-    if (auto w = luban::image::write_fat(esp, esp_bytes, files, static_cast<std::uint32_t>(starts[1]), "LUBANESP"); !w)
+    if (auto w = luban::image::write_fat(esp, esp_bytes, files, static_cast<std::uint32_t>(esp_start), "LUBANESP"); !w)
         return std::unexpected(std::pair{"the system partition: " + w.error(), std::string{}});
-    const std::array<luban::image::Partition, 3> parts{
-        luban::image::Partition{.name = "BIOS boot", .type = luban::image::kBiosBootType,
-                                .uuid = luban::image::random_guid(), .content = {}, .bytes = bios_bytes},
-        luban::image::Partition{.name = "EFI system", .type = luban::image::kEspType,
-                                .uuid = luban::image::random_guid(), .content = esp, .bytes = esp_bytes},
-        luban::image::Partition{.name = "luban", .type = luban::image::kLinuxType, .uuid = root_uuid,
-                                .content = rootfs, .bytes = root_bytes}};
+    std::vector<luban::image::Partition> parts;
+    if (machine.bios)
+        parts.push_back({.name = "BIOS boot", .type = luban::image::kBiosBootType,
+                         .uuid = luban::image::random_guid(), .content = {}, .bytes = bios_bytes});
+    parts.push_back({.name = "EFI system", .type = luban::image::kEspType,
+                     .uuid = luban::image::random_guid(), .content = esp, .bytes = esp_bytes});
+    parts.push_back({.name = "luban", .type = luban::image::kLinuxType, .uuid = root_uuid,
+                     .content = rootfs, .bytes = root_bytes});
     if (auto w = luban::image::write_gpt_disk(output, parts); !w)
         return std::unexpected(std::pair{"the drive: " + w.error(), std::string{}});
     fs::remove(esp, ec);
     fs::remove(rootfs, ec);
+    if (!machine.bios) return {};
     auto ports = subos::make_ports(stream);
     if (auto tool = subos::tools::first("limine", home_view(), ports)) {
         if (run_tool_({tool->bin.string(), "bios-install", output.string()}, stream, "making it boot on BIOS too") != 0)
@@ -1184,10 +1196,11 @@ std::expected<void, std::pair<std::string, std::string>> write_drive_(
 
 // A live ISO of the image in `stage` (Luban design §A9): limine boots the
 // kernel with the whole root as its initramfs -- the kernel unpacks it into
-// memory and runs stage-0 there, nothing to mount and no module to load. A
-// BIOS+UEFI hybrid with xorriso, BIOS-only in-process without; made
-// bootable from a drive too (`limine bios-install`) when limine's tool is
-// here.
+// memory and runs stage-0 there, nothing to mount and no module to load.
+// Written in-process (the aarch64 design §4.2): ISO 9660 with a BIOS El
+// Torito entry where the machine has a BIOS and a UEFI one always, and a
+// hybrid GPT, so it boots from a disc and from a drive it is written to --
+// on BIOS too once `limine bios-install` has run (x86_64).
 std::expected<void, std::pair<std::string, std::string>> write_live_iso_(
     const fs::path& stage, const fs::path& home, const fs::path& kernel_file, const fs::path& scratch,
     const nlohmann::json& boot, std::string_view name, EventStream& stream) {
@@ -1199,6 +1212,7 @@ std::expected<void, std::pair<std::string, std::string>> write_live_iso_(
     if (!limine)
         return std::unexpected(std::pair{std::string("limine's boot files are not here"),
                                          subos::tools::install_hint("limine")});
+    const auto& machine = luban::image::native_arch();
     const auto iso = scratch / "iso";
     for (const auto* d : {"boot/limine", "EFI/BOOT"}) fs::create_directories(iso / d, ec);
     fs::copy_file(kernel, iso / "boot" / "vmlinuz", ec);
@@ -1206,13 +1220,13 @@ std::expected<void, std::pair<std::string, std::string>> write_live_iso_(
     log::info("packing the root as the live system's memory image ...");
     if (auto packed = xim::write_archive(stage, iso / "boot" / "initramfs.img", xim::ArchiveFormat::CpioNewcGz); !packed)
         return std::unexpected(std::pair{"writing the live image: " + packed.error(), std::string{}});
-    bool uefi = true;
-    for (const auto* f : {"limine-bios-cd.bin", "limine-bios.sys", "limine-uefi-cd.bin"}) {
-        if (!fs::is_regular_file(*limine / f, ec)) { uefi = false; continue; }
+    std::vector<std::string> boot_files{"limine-uefi-cd.bin"};
+    if (machine.bios) boot_files.insert(boot_files.end(), {"limine-bios-cd.bin", "limine-bios.sys"});
+    for (const auto& f : boot_files) {
         fs::copy_file(*limine / f, iso / "boot" / "limine" / f, ec);
+        if (ec) return std::unexpected(std::pair{"cannot copy " + f + ": " + ec.message(), std::string{}});
     }
-    if (fs::is_regular_file(*limine / "BOOTX64.EFI", ec)) fs::copy_file(*limine / "BOOTX64.EFI", iso / "EFI/BOOT/BOOTX64.EFI", ec);
-    else uefi = false;
+    fs::copy_file(*limine / machine.efi_loader, iso / "EFI" / "BOOT" / machine.efi_loader, ec);
     const auto init = fs::exists(stage / home.relative_path() / "boot" / "luban-init", ec) ? "luban-init" : "xlings-init";
     {
         std::ofstream conf(iso / "boot" / "limine" / "limine.conf");
@@ -1223,26 +1237,23 @@ std::expected<void, std::pair<std::string, std::string>> write_live_iso_(
         if (!conf) return std::unexpected(std::pair{std::string("cannot write limine.conf"), std::string{}});
     }
     const auto output = scratch / "output";
+    // The El Torito default entry: BIOS where there is one (limine's CD
+    // stage, a boot-info table patched in), else the EFI image itself.
+    const auto default_boot = machine.bios ? xim::ArchiveOptions{.boot = "boot/limine/limine-bios-cd.bin"}
+                                           : xim::ArchiveOptions{.boot = "boot/limine/limine-uefi-cd.bin", .boot_info_table = false};
+    if (auto written = xim::write_archive(iso, output, xim::ArchiveFormat::Iso9660, default_boot); !written)
+        return std::unexpected(std::pair{"writing the ISO: " + written.error(), std::string{}});
+    auto efi = luban::image::iso_find(output, "boot/limine/limine-uefi-cd.bin");
+    if (!efi) return std::unexpected(std::pair{"the ISO: " + efi.error(), std::string{}});
+    if (auto hybrid = luban::image::make_iso_hybrid(output, *efi, machine.bios); !hybrid)
+        return std::unexpected(std::pair{"making the ISO boot on UEFI: " + hybrid.error(), std::string{}});
+    if (!machine.bios) return {};
     auto ports = subos::make_ports(stream);
-    if (auto xorriso = subos::tools::first("xorriso", home_view(), ports); xorriso && uefi) {
-        if (run_tool_({xorriso->bin.string(), "-as", "mkisofs", "-quiet", "-R", "-r", "-J", "-V", "LUBAN",
-                       "-b", "boot/limine/limine-bios-cd.bin", "-no-emul-boot", "-boot-load-size", "4",
-                       "-boot-info-table", "--efi-boot", "boot/limine/limine-uefi-cd.bin", "-efi-boot-part",
-                       "--efi-boot-image", "--protective-msdos-label", iso.string(), "-o", output.string()},
-                      stream, "writing the ISO") != 0)
-            return std::unexpected(std::pair{std::string("xorriso could not write the ISO"), std::string{}});
-    } else {
-        if (uefi) log::info("  BIOS boot only: a UEFI one too needs xorriso ({})", subos::tools::install_hint("xorriso"));
-        if (auto written = xim::write_archive(iso, output, xim::ArchiveFormat::Iso9660,
-                                              xim::ArchiveOptions{.boot = "boot/limine/limine-bios-cd.bin"});
-            !written)
-            return std::unexpected(std::pair{"writing the ISO: " + written.error(), std::string{}});
-    }
     if (auto tool = subos::tools::first("limine", home_view(), ports)) {
-        if (run_tool_({tool->bin.string(), "bios-install", output.string()}, stream, "making it bootable from a drive") != 0)
-            log::warn("the ISO boots from a CD; from a drive it needs `limine bios-install` to work here");
+        if (run_tool_({tool->bin.string(), "bios-install", output.string()}, stream, "making it boot from a drive on BIOS") != 0)
+            log::warn("the ISO boots on UEFI and from a CD; from a drive on BIOS it needs `limine bios-install` to work here");
     } else {
-        log::info("  boots from a CD (and qemu -cdrom); from a USB drive it also needs limine's tool ({})",
+        log::info("  boots on UEFI and from a CD; from a drive on BIOS too with limine's tool ({})",
                   subos::tools::install_hint("limine"));
     }
     return {};
@@ -1363,8 +1374,8 @@ int run_export_(int argc, char* argv[], EventStream& stream, const UsageError& u
     if (auto info = elfread::read(entry); !info || !info->interpreter.empty()) {
         error_(stream, entry.string() + " is not a static build; an image's xlings must run with no "
                                         "host libraries",
-               "use the release build of xlings (xlings install xlings), or `mcpp build --target "
-               "x86_64-linux-musl`");
+               std::format("use the release build of xlings (xlings install xlings), or `mcpp build --target {}`",
+                           luban::image::native_arch().triple));
         return 1;
     }
     auto ws = workspace_of_(name);
@@ -1663,10 +1674,10 @@ int run_export_(int argc, char* argv[], EventStream& stream, const UsageError& u
             return 1;
         }
         if (!qcow2.empty()) {
-            auto img = tool_("qemu-img", stream);
-            if (!img) return 1;
-            rc = run_tool_({*img, "convert", "-q", "-f", "raw", "-O", "qcow2", raw.string(),
-                            (scratch->path() / "output").string()}, stream, "converting to qcow2");
+            if (auto q = luban::image::write_qcow2(raw, scratch->path() / "output"); !q) {
+                error_(stream, "writing the qcow2: " + q.error(), {});
+                return 1;
+            }
         }
     } else if (!iso.empty()) {
         if (auto made = write_live_iso_(stage, home, kernel_file, scratch->path(), boot, name, stream); !made) {

@@ -549,24 +549,14 @@ int cmd_use(const std::string& target, const std::string& version, EventStream& 
         const auto found = candidateActive.find(name);
         if (found != candidateActive.end() && found->second == key) candidateActive.erase(found);
     }
-    auto oldClaims = materialize::collect_claims(Config::versions(), previousInstalled,
-        p.subosDir, p.libDir, p.homeDir.string());
     reclaim_conflicting_file_bindings(candidateDb, candidateActive, to_switch, p.homeDir.string());
-    WorkspaceInstalled selected;
-    for (const auto& [name, key] : candidateActive) selected[name] = {key};
-    auto desired = materialize::collect_claims(db, selected, p.subosDir, p.libDir, p.homeDir.string(),
-        materialize::ClaimSource::Present);
-    if (!oldClaims || !desired) {
-        log::error("{}", !oldClaims ? oldClaims.error() : desired.error());
-        return 1;
-    }
-    auto obsolete = materialize::obsolete_assets(*oldClaims, *desired);
-    if (!obsolete) { log::error("{}", obsolete.error()); return 1; }
-    auto changes = std::move(*obsolete);
-    for (const auto& claim : *desired) {
-        changes.push_back({claim.source, claim.destination, false});
-    }
-    auto prepared = materialize::preflight_materialization(changes, *oldClaims, p.subosDir);
+    // Only what this switch moves: the release being used (its own links are
+    // placed again, so `use` repairs them) and every name whose activation
+    // changes (members, a reclaimed file binding) -- materialize's one rule.
+    std::set<std::string> used;
+    for (const auto& [name, key] : to_switch) used.insert(name);
+    auto prepared = materialize::prepare_projection_change(Config::versions(), previousInstalled, previousActive,
+        db, candidateInstalled, candidateActive, used, p.subosDir, p.libDir, p.homeDir.string());
     if (!prepared) { log::error("{}", prepared.error()); return 1; }
     auto applied = prepared->execute();
     if (!applied) { log::error("{}", applied.error()); return 1; }
