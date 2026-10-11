@@ -110,19 +110,29 @@ set +e
 DECLARED_ONLY_OUT="$(
   cd /tmp && env -i HOME="$DECLARED_ONLY_HOME" \
     PATH=/usr/bin:/bin XLINGS_HOME="$DECLARED_ONLY_HOME" \
-    "$XLINGS_BIN" self doctor 2>&1
+    "$XLINGS_BIN" self doctor --all 2>&1
 )"
 declared_only_rc=$?
+DECLARED_ONLY_DEFAULT="$(
+  cd /tmp && env -i HOME="$DECLARED_ONLY_HOME" \
+    PATH=/usr/bin:/bin XLINGS_HOME="$DECLARED_ONLY_HOME" \
+    "$XLINGS_BIN" self doctor 2>&1 | strip_ansi
+)"
 set -e
 [[ "$declared_only_rc" -eq 0 ]] \
   || fail "doctor treated an unmaterialized cold-home runtime as broken:
 $DECLARED_ONLY_OUT"
 DECLARED_ONLY_CLEAN="$(printf '%s\n' "$DECLARED_ONLY_OUT" | strip_ansi)"
+# Nothing here needs it yet: a notice (--all), not a warning (2026.10.12.2).
 grep -Fq 'subos runtime' <<<"$DECLARED_ONLY_CLEAN" \
-  || fail "doctor hid the unmaterialized runtime warning"
+  || fail "doctor --all hid the unmaterialized runtime"
 grep -Fq 'glibc@2.44' <<<"$DECLARED_ONLY_CLEAN" \
-  || fail "doctor warning did not name the declared runtime"
-log "  ✓ unmaterialized cold-home runtime is visible but non-fatal"
+  || fail "doctor did not name the declared runtime"
+if grep -Fq 'subos runtime' <<<"$DECLARED_ONLY_DEFAULT"; then
+  fail "a runtime nothing needs yet is still a warning:
+$DECLARED_ONLY_DEFAULT"
+fi
+log "  ✓ unmaterialized cold-home runtime is a notice, non-fatal"
 
 active_version() {
   python3 - "$SUBOS_FILE" "$1" <<'PY'

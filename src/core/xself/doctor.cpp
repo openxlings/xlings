@@ -572,6 +572,25 @@ std::vector<Finding> detect_subos_manifest_(const xvm::VersionDB& db,
         // Naming only "create a new SubOS" made this a dead end it never was.
         const bool differentActive = !mismatch->active.empty()
             && mismatch->active != mismatch->declared;
+        // Declared and not yet needed: a fresh home's default SubOS, where
+        // nothing but xlings is active. Its runtime is installed with the
+        // first package that links it; that is a fact, not a warning.
+        const bool nothingNeedsIt = unmaterializedDeclaration
+            && std::ranges::all_of(workspace, [&](const auto& entry) {
+                   return xvm::is_xlings_binary(entry.first) || entry.first == runtimeName
+                       || entry.second.empty();
+               });
+        if (nothingNeedsIt) {
+            out.push_back({
+                .kind    = FindingKind::SubosRuntimeMissing,
+                .level   = FindingLevel::Notice,
+                .target  = subosName,
+                .version = mismatch->declared,
+                .detail  = std::format("subos '{}' declares runtime {}; it is installed with the "
+                                       "first package that needs it", subosName, mismatch->declared),
+            });
+            return out;
+        }
         if (differentActive) {
             detail += std::format(
                 "; nothing here was ever activated against {}",
@@ -4797,7 +4816,7 @@ Counts count_(const Scan& scan) {
                 break;
             case FindingKind::SubosRuntimeMissing:
                 if (f.level == FindingLevel::Error) ++c.subos;
-                else ++c.warnings;
+                else if (f.level == FindingLevel::Warning) ++c.warnings;
                 break;
             case FindingKind::SubosRuntimeDrift:
                 ++c.warnings;
@@ -5149,6 +5168,10 @@ void render_(const Scan& scan, const RepairReport& repair, bool fix,
                 add(glyph::mark(glyph::warn, "subos env conflict"), f.detail);
                 break;
             case FindingKind::SubosRuntimeMissing:
+                if (f.level == FindingLevel::Notice) {
+                    if (verbose) add(glyph::mark(glyph::note, "subos runtime"), f.detail);
+                    break;
+                }
                 add(f.level == FindingLevel::Error
                         ? glyph::mark(glyph::failed, "subos runtime")
                         : glyph::mark(glyph::warn, "subos runtime"),
