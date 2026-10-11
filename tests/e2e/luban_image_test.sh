@@ -64,6 +64,16 @@ retry X install -y xim:edk2-firmware >"$RUNTIME_DIR/firmware.log" 2>&1 \
   || { tail -20 "$RUNTIME_DIR/firmware.log"; fail "install edk2-firmware"; }
 OVMF="$(ls "$H"/data/xpkgs/xim-x-edk2-firmware/*/share/edk2/edk2-"$arch"-code.fd | head -1)"
 [[ -f "$OVMF" ]] || fail "no UEFI firmware for $arch"
+# How a machine is handed it: virt takes the code image as its -bios; a PC
+# maps it as flash (its size is not the BIOS ROM's), with a variable store
+# beside it -- a copy of the empty one qemu-system ships.
+UEFI=(-bios "$OVMF")
+if [[ "$arch" == x86_64 ]]; then
+  vars="$(dirname "$(readlink -f "$(command -v qemu-system-x86_64)")")/../share/qemu/edk2-i386-vars.fd"
+  [[ -f "$vars" ]] || fail "no UEFI variable store beside qemu-system-x86_64 ($vars)"
+  cp "$vars" "$RUNTIME_DIR/vars.fd"
+  UEFI=(-drive "if=pflash,format=raw,unit=0,readonly=on,file=$OVMF" -drive "if=pflash,format=raw,unit=1,file=$RUNTIME_DIR/vars.fd")
+fi
 # Runs a command (its own session) until its output shows the console
 # prompt -- a booted system waits there forever -- then stops all of it.
 until_console() {   # $1 log, then the command
@@ -104,8 +114,8 @@ if [[ "$arch" == x86_64 ]]; then
   boot iso-as-drive-bios -drive "file=$RUNTIME_DIR/t.iso,format=raw,if=virtio,readonly=on"
 fi
 cdrom "$RUNTIME_DIR/t.iso"
-boot iso-uefi -bios "$OVMF" "${CD[@]}"
-boot iso-as-drive-uefi -bios "$OVMF" -drive "file=$RUNTIME_DIR/t.iso,format=raw,if=virtio,readonly=on"
+boot iso-uefi "${UEFI[@]}" "${CD[@]}"
+boot iso-as-drive-uefi "${UEFI[@]}" -drive "file=$RUNTIME_DIR/t.iso,format=raw,if=virtio,readonly=on"
 
 if [[ "$arch" == x86_64 ]]; then
 log "luban export t p.iso --boot <profile>: the profile is installed into the root, its kernel and command line boot"
@@ -161,12 +171,12 @@ types = {str(uuid.UUID(bytes_le=d.read(size)[:16])) for _ in range(n)}
 sys.exit(0 if "c12a7328-f81f-11d2-ba4b-00a0c93ec93b" in types else 1)
 ' "$RUNTIME_DIR/t.img" || fail "no EFI system partition in the drive's GPT"
 if [[ "$arch" == x86_64 ]]; then boot drive-bios -drive "file=$RUNTIME_DIR/t.img,format=raw,if=virtio"; fi
-boot drive-uefi -bios "$OVMF" -drive "file=$RUNTIME_DIR/t.img,format=raw,if=virtio"
+boot drive-uefi "${UEFI[@]}" -drive "file=$RUNTIME_DIR/t.img,format=raw,if=virtio"
 
 log "luban export t t.qcow2 (in-process), booted"
 L export t "$RUNTIME_DIR/t.qcow2" --size 1G "${BOOT[@]}" > "$RUNTIME_DIR/qcow2.log" 2>&1 || { cat "$RUNTIME_DIR/qcow2.log"; fail "export qcow2"; }
 [[ "$(head -c 4 "$RUNTIME_DIR/t.qcow2" | od -An -tx1 | tr -d ' \n')" == 514649fb ]] || fail "not a qcow2"
-boot qcow2-uefi -bios "$OVMF" -drive "file=$RUNTIME_DIR/t.qcow2,format=qcow2,if=virtio"
+boot qcow2-uefi "${UEFI[@]}" -drive "file=$RUNTIME_DIR/t.qcow2,format=qcow2,if=virtio"
 
 log "luban __pipe: a private machine's connection reaches its proxy, both ways"
 relayed="$(python3 - "$H/bin/luban" <<'PY'
