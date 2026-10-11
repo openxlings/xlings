@@ -232,7 +232,7 @@ int unmount_image_(const fs::path& mountpoint) {
 
 // ─────────────────────────────────────────────────────────────────────
 // Sandbox entry: policy + host capabilities -> spec -> a session (Linux),
-// or the home redirect (macOS, Windows). See docs/design/subos-isolation.md.
+// or the home redirect (macOS, Windows). See docs/11-sandbox-and-policy.md.
 // ─────────────────────────────────────────────────────────────────────
 
 

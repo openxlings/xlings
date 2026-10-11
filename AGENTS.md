@@ -167,6 +167,20 @@ Rules that came with it:
   in `logs/elevation.ndjson`). `tools/lint_tool_resolve.sh` fails a
   `std::system`, an argv that starts with a tool's literal name, or an
   administrator argv outside `elevation::run`.
+* **A host dependency is T0, T1 or T2, and nothing else.** T0 is the
+  operating system itself (the kernel, `sudo`, `apparmor_parser`, `pbcopy`,
+  `clip`, `wsl.exe`, `msiexec`, `dism`) -- an `os` entry in the tools table.
+  T1 is a package in the index, for every architecture the feature runs on
+  (bwrap, pasta, e2fsprogs, limine, qemu-system, edk2-firmware,
+  wl-clipboard, xsel, wsl-installer); its hint is only ever
+  `xlings install <pkg>`. T2 is done in-process (GPT, FAT, ISO 9660 with El
+  Torito and the hybrid GPT, qcow2, the tree copy) -- not a program at all.
+  Never a host package manager: `tools/lint_tools_provenance.sh` checks
+  every table package exists in the index for its platform, and
+  `tools/lint_host_deps.sh` fails an apt/dnf/brew line in workflows, tests
+  and tools (`host-dep-ok: <why>` on its line for the few that test a
+  distribution itself). CI installs its tools the same way
+  (`tools/ci/xlings_tools.sh`).
 * **Package layers import downward** (`tools/lint_layer_deps.sh`): `luban/`
   -> `modules/`; `modules/` never imports `luban.*` or the frontend. A binary
   that must not carry the frontend is its OWN package (`apps/luban`): a
@@ -181,8 +195,9 @@ Rules that came with it:
 
 ### Luban: the OS model, its tool, its images (2026.10.10.1)
 
-`.agents/docs/2026-10-09-luban-os-and-agent-private-design.md`; the user's
-guide is `docs/quick-start/luban.md`. What to keep in mind near it:
+`.agents/docs/2026-10-09-luban-os-and-agent-private-design.md` and
+`.agents/docs/2026-10-11-luban-aarch64-and-docs-i18n-design.md`; the user's
+guide is `docs/luban/`. What to keep in mind near it:
 
 * **luban is one implementation over xlings, never a second one.** Each
   environment command is the xlings command it names, run on the same
@@ -210,10 +225,12 @@ guide is `docs/quick-start/luban.md`. What to keep in mind near it:
   (`boot.profile`; `export --boot` overrides): a package whose
   `share/luban/boot.json` gives the kernel release and command line, installed
   into the root only to make an image. `boot.kernel` / `kernel_min` remain
-  hints for an edition without one. `export --iso` (the root as initramfs, limine) and
-  `--drive` (GPT, FAT system partition, ext4 root by PARTUUID; written
-  in-process by `luban.image`) boot on BIOS and UEFI --
-  tests/e2e/luban_image_test.sh boots both under qemu.
+  hints for an edition without one. `export --iso` (the root as initramfs, limine;
+  ISO 9660 with El Torito entries and a hybrid GPT) and `--drive` (GPT, FAT
+  system partition, ext4 root by PARTUUID) and `.qcow2` are all written
+  in-process by `luban.image`; they boot on BIOS and UEFI on x86_64 and on
+  UEFI on aarch64 (`luban.image`'s `Arch` table says what differs) --
+  tests/e2e/luban_image_test.sh boots each under qemu on both.
 * **An environment made from an edition can move to a newer one**
   (`subos upgrade` / `luban upgrade`). `instance.json` `edition` records what
   the edition brought (ref, chain, packages as installed, policy);
@@ -619,6 +636,16 @@ This is enforced, not merely written down —
 the fresh-install workflow deliberately does not. A rule enforced only after
 merge is a rule that gets merged.
 
+## Documentation
+
+`docs/` is laid out by chapter number (0x start, 1x SubOS, 3x extending, 5x
+contracts, 9x xlings itself), English by default with a mirror in `docs/zh/`
+(same headings, same code blocks); `docs/luban/` is Luban's, `docs/specs/` the
+normative specifications (English only), `docs/generated/` the command
+references generated from the command trees. A doc change follows
+`.agents/skills/xlings-docs-writing/SKILL.md`; `tests/scripts/test_docs.py`
+checks the parity, the links and that every command shown parses.
+
 ## Agent Skills
 
 | Skill | Purpose |
@@ -626,6 +653,7 @@ merge is a rule that gets merged.
 | `xlings-usage` | Complete xlings usage guide (install, subos, project mode, agent workflows) |
 | `xlings-contributing` | Contribution workflow (issue → implement → test → PR → CI) |
 | `xlings-build` | Platform-specific build instructions (Linux musl / macOS LLVM / Windows MSVC) |
+| `xlings-docs-writing` | How docs are written: layout, English default with `docs/zh/`, what never goes in |
 | `xlings-quickstart` | Quick-start operations (legacy, see xlings-usage for updated version) |
 | `system-design` | System design patterns |
 | `mcpp-style-ref` | C++ coding style reference |

@@ -12,7 +12,7 @@
 #   libxpkg's Lua sandbox, and that script's own progress indicator writes
 #   raw terminal text -- "\r[i/n] ns::name\x1b[K" -- straight onto the
 #   process's real stdout. The interface protocol allows nothing but one
-#   JSON object per line there (docs/spec/interface-ndjson-v1.md §5); a
+#   JSON object per line there (docs/specs/interface-ndjson-v1.md §5); a
 #   client reading NDJSON hits a line that is not JSON and the stream is
 #   no longer parseable from that point on.
 #

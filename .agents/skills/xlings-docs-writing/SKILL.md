@@ -1,82 +1,72 @@
 ---
 name: xlings-docs-writing
-description: xlings 项目文档编写规范 — 面向人的 docs/ 目录文档应遵循的风格、格式和组织约定。Use when creating or modifying documents in the docs/ directory.
+description: How xlings's human-facing docs are written and organised — layout by chapter number, English by default with a docs/zh/ mirror, specs in English only, and what never goes into docs/. Use when creating or modifying anything under docs/ (or the README files).
 ---
 
-# xlings 文档编写规范
+# Writing xlings docs
 
-## 适用范围
+Applies to everything under `docs/` and to `README.md` / `README.zh.md`. It does
+not apply to `.agents/docs/` (the agents' working area, free form).
 
-`docs/` 目录下的所有文档。此规范不适用于 `.agents/docs/`(agent 工作区,格式自由)。
-
-## 语言风格
-
-- 使用中文
-- 简洁的陈述性语句,学术/技术文档风格
-- 不使用口语化表达、网络用语、推广性语句
-- 不使用语气词("吧"、"呢"、"啊")
-- 不使用 emoji(除 README.md 以外)
-- 不添加面向 agent 的指令或元信息(如"约定"、"规则"段落)
-
-## 文档结构
-
-每份文档必须包含:
-
-```markdown
-# 标题
-
-> 编写日期: YYYY-MM-DD | 版本: X.Y.Z
-
-## 第一节
-...
-```
-
-- 标题用一级标题 `#`
-- 紧跟日期和版本标识(blockquote 格式)
-- 正文从二级标题 `##` 开始
-
-## 图表
-
-- 所有图表使用 Mermaid 语法(GitHub 原生渲染)
-- 支持的图表类型:graph、sequenceDiagram、flowchart、classDiagram
-- 不使用 ASCII art
-
-## 目录组织
+## Layout
 
 ```
 docs/
-├── README.md              文档索引(含快速了解 + 分章节目录)
-├── architecture/          系统级全景
-├── design/                子系统设计决策
-├── spec/                  接口契约(版本化)
-└── guide/                 面向使用者的操作指南
+├── README.md                 the map: who reads what, then every chapter
+├── 0x  start                 00 what xlings is, 01 getting started, 02 scenarios, 03–06 use, 09 commands by scenario
+├── 1x  SubOS                 10 SubOS, 11 sandbox and policy, 12 roots and generations, 13 macOS and Windows
+├── 3x  extending             30 a package, 31 an index, 32 a SubOS template
+├── 5x  contracts             50 agents and the machine interface, 51 supported platforms
+├── 9x  xlings itself         90 build from source, 91 architecture, 92 release
+├── luban/                    Luban: its own README and 00–07, 91
+├── specs/                    normative specifications, English only
+├── generated/                command references, generated — never edited by hand
+└── zh/                       the Chinese mirror of every chapter and of luban/
 ```
 
-### 各层内容定位
+- A new chapter takes the next free number in its group; a file name is
+  `NN-kebab-case.md`. It is listed in `docs/README.md` and `docs/zh/README.md`.
+- A chapter explains how to use something; the exact rules go into
+  `docs/specs/` and the chapter links there.
+- `docs/generated/*.md` come from the command trees:
+  `python3 tests/scripts/test_generated_command_reference.py --write`.
 
-| 层 | 回答什么问题 | 读者 |
-|---|---|---|
-| architecture | "系统整体是什么样的" | 初次了解项目的人 |
-| design | "为什么这样设计" | 需要修改/扩展功能的开发者 |
-| spec | "接口契约是什么" | 包作者、Agent 集成者 |
-| guide | "怎么操作" | 终端用户 |
+## English first, Chinese mirrored
 
-## docs/README.md 格式
+- The English file is the source; `docs/zh/<same path>` is its translation.
+  Both are changed in the same commit.
+- Line 3 of each is the language line:
+  `**English** | [简体中文](zh/NN-name.md)` in English,
+  `[English](../NN-name.md) | **简体中文**` in Chinese (one more `../` under
+  `luban/`).
+- The two have the **same `##` / `###` headings, in the same order**, and **the
+  same code blocks, byte for byte** — comments inside code are English in both.
+- Links from `docs/zh/` go to the Chinese chapter when there is one, otherwise
+  to the English file (`../specs/...`, `../generated/...`).
+- `docs/specs/` and `docs/generated/` are English only.
 
-1. 开头:一段话概述项目(无标题前缀)
-2. "快速了解"表格:核心概念速查
-3. 分章节目录:一、架构 → 二、设计 → 三、规范 → 四、指南
-4. 不包含编写约定、agent 指令等元信息
+## Style
 
-## 文件命名
+- Plain declarative sentences; say what a thing does to what. No promotion, no
+  filler, no emoji outside the README files.
+- Commands shown must run as written against the current CLI (the docs test
+  parses every `xlings` / `luban` line of a `bash` block).
+- Diagrams in Mermaid, never ASCII art for anything but directory trees.
+- A spec starts with a status line: in force since which version, implemented
+  where; an addition is marked with the client version that reads it.
 
-- 使用 kebab-case:`subos-as-xpkg.md`、`xvm-version-management.md`
-- 不加日期前缀(日期在文档内部标注)
-- 文件名应能独立表达内容主题
+## What never goes into docs/
 
-## 注意事项
+- attributions — who said or decided something, a maintainer's name, "as of a
+  conversation on ...";
+- personal paths (`/home/<someone>/...`) — use `~/.xlings`, `$XLINGS_HOME`,
+  `/home/user`;
+- links into `.agents/` — that is a working area, not published;
+- agent instructions or meta sections ("conventions for agents");
+- a stub left at an old path after a move.
 
-- docs/ 目录面向人类读者,不放 agent 工作草稿
-- agent 工作草稿放 `.agents/docs/`(命名格式 `YYYY-MM-DD-xxx.md`)
-- 设计文档从 `.agents/docs/` 定稿后升级到 `docs/design/`
-- 已规划但未编写的文档在 README.md 中用 *(待补充)* 标注
+## Checks
+
+`tests/scripts/test_docs.py` (contract-scripts suite) checks the heading and
+code-block parity of every pair, the language lines, every relative link, the
+forbidden strings above, and that every command in a `bash` block parses.
