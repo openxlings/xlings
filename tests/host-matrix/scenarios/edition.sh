@@ -23,7 +23,16 @@ step "tiny: luban runs inside" ok -- L run hmt -- /usr/bin/luban --version
 step "luban status" ok -- L status hmt
 step "luban ls" ok 'hmt' -- L ls
 if has luban-tiny-musl; then
-    step "luban new hmm luban-tiny-musl" ok -- L new hmm luban-tiny-musl
-    step "tiny-musl: a shell on musl" ok musl -- L run hmm -- /bin/sh -c 'ls /lib/ld-musl-* /usr/lib/ld-musl-* 2>/dev/null'
+    out="$(L new hmm luban-tiny-musl 2>&1)"; rc=$?
+    if grep -q 'E_UNSUPPORTED_TARGET' <<<"$out"; then
+        # Not built for this machine (musl has no build for it): refused
+        # before anything is made -- that is the answer to check.
+        check "tiny-musl is refused before anything is made (not built for $(uname -m))" -- \
+            test "$rc" -ne 0 -a ! -e "$XLINGS_HOME/subos/hmm"
+    else
+        record "luban new hmm luban-tiny-musl" "$([[ $rc -eq 0 ]] && echo true || echo false)" "$rc" "$out"
+        [[ $rc -eq 0 ]] || FAILED=1
+        step "tiny-musl: a shell on musl" ok musl -- L run hmm -- /bin/sh -c 'ls /lib/ld-musl-* /usr/lib/ld-musl-* 2>/dev/null'
+    fi
 fi
 done_
