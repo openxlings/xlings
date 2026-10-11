@@ -351,8 +351,19 @@ int install_(std::span<const std::string> targets, bool yes, bool noDeps,
              bool dryRun, bool useAfterInstall, bool reconfig,
              std::vector<InstallTargetReport_>* report);
 
+namespace {
+// A plumbing step (a template of a `subos new --from`) says nothing per node:
+// the edition is named once by the command that asked for it.
+bool gNodeLinesQuiet = false;
+}  // namespace
+
 int cmd_install_step(std::span<const std::string> targets, std::string_view subos,
                      EventStream& stream, bool plumbing) {
+    struct Quiet {
+        bool saved = gNodeLinesQuiet;
+        explicit Quiet(bool on) { gNodeLinesQuiet = gNodeLinesQuiet || on; }
+        ~Quiet() { gNodeLinesQuiet = saved; }
+    } quiet{plumbing};
     EventStream step;
     step.set_can_confirm(stream.can_confirm());
     step.set_can_select(stream.interactive());
@@ -885,6 +896,8 @@ int install_(std::span<const std::string> targets, bool yes, bool noDeps,
         std::string hint;
     };
     std::unordered_map<std::string, NodeOutcome> outcomes;
+    // Dependents not installed because a dependency failed, by that dependency.
+    std::map<std::string, std::vector<std::string>> cascades;
     for (auto& [key, already] : requestedAlreadyInstalled) {
         if (already) outcomes[key] = { NodeStatus::AlreadyPresent, {}, {}, {} };
     }
@@ -1194,7 +1207,8 @@ int install_(std::span<const std::string> targets, bool yes, bool noDeps,
                                      / static_cast<float>(total),
                             .message = std::format("{} {}", verb, what),
                         });
-                        log::println("  [{}/{}] {} {}", doneNow, total, verb, what);
+                        if (!gNodeLinesQuiet)
+                            log::println("  [{}/{}] {} {}", doneNow, total, verb, what);
                     }
                     // A node whose payload was present and current also ends
                     // in Done (its config hook runs again); it is recorded as
@@ -1215,12 +1229,24 @@ int install_(std::span<const std::string> targets, bool yes, bool noDeps,
                     // blanket E_INTERNAL. An extraction failure carries
                     // E_INVALID_INPUT or E_DISK_FULL plus a hint, so a client
                     // can tell "retry" from "free some space".
-                    stream.emit(ErrorEvent{
-                        .code = error_code_from_wire(status.errorCode),
-                        .message = "[" + status.name + "] failed: " + status.message,
-                        .recoverable = true,
-                        .hint = status.hint,
-                    });
+                    // A dependent of a failed package is one line at the
+                    // end, not one error each: the cause was said once.
+                    if (constexpr std::string_view because = "not installed: its dependency ";
+                        status.message.starts_with(because)) {
+                        auto cause = status.message.substr(because.size());
+                        if (auto sp = cause.rfind(" failed"); sp != std::string::npos) cause.resize(sp);
+                        cascades[cause].push_back(status.planKey.empty() ? status.name : status.planKey);
+                        stream.emit(DataEvent{"install_skipped", nlohmann::json{
+                            {"name", status.planKey.empty() ? status.name : status.planKey},
+                            {"because", cause}}.dump()});
+                    } else {
+                        stream.emit(ErrorEvent{
+                            .code = error_code_from_wire(status.errorCode),
+                            .message = "[" + status.name + "] failed: " + status.message,
+                            .recoverable = true,
+                            .hint = status.hint,
+                        });
+                    }
                     // The record, not a counter: the exit code, the summary and
                     // the activation notice all read this one entry.
                     if (!status.planKey.empty()) {
@@ -1258,6 +1284,17 @@ int install_(std::span<const std::string> targets, bool yes, bool noDeps,
         },
         dlSink, cancel, useAfterInstall, reconfig);
     record_report();
+    for (const auto& [cause, names] : cascades) {
+        std::string list;
+        for (std::size_t i = 0; i < names.size() && i < 6; ++i) list += (i ? ", " : "") + names[i];
+        if (names.size() > 6) list += std::format(", and {} more", names.size() - 6);
+        stream.emit(ErrorEvent{
+            .code = ErrorCode::Internal,
+            .message = std::format("{} package(s) not installed because {} failed (see above): {}",
+                                   names.size(), cause, list),
+            .recoverable = true,
+        });
+    }
 
     if (!result) {
         // #374: structured error on the wire (was a swallowed log::error)

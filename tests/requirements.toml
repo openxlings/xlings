@@ -902,3 +902,11 @@ status = "required"
 [PERF-LARGE-HOME]
 text = "in a home of thousands of targets and several known projects, use / install --use / remove / remove --older-than / list / self doctor of one package stay within their budgets: their cost is what the change moves, not what the home holds"
 status = "required"
+
+[LUBAN-NEW-OUTPUT]
+text = "luban new / subos new --from names the edition and its chain once, prints no per-template or per-generation lines, and reports packages that failed only because a dependency did as one line under that cause"
+status = "required"
+
+[LUBAN-NEW-RERUN]
+text = "an environment a failure left unfinished is finished by running the same luban new / subos new --from again; another edition under the same name is refused with the command that finishes it"
+status = "required"

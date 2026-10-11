@@ -103,7 +103,8 @@ XTEST(InstallFailure, ADependentOfAFailedPackageIsNotRunAndNotBlamed, .area = "x
     const auto out = bad.transcript();
     EXPECT_NE(bad.exit_code, 0) << out;
     EXPECT_NE(out.find("simulated base failure"), std::string::npos) << out;
-    EXPECT_NE(out.find("not installed: its dependency fixture:basebroken@1.0.0 failed"),
+    // Said once, under its cause (2026.10.12.2): not one error per dependent.
+    EXPECT_NE(out.find("1 package(s) not installed because fixture:basebroken@1.0.0 failed"),
               std::string::npos) << out;
     EXPECT_EQ(out.find("registered none"), std::string::npos) << out;
     EXPECT_FALSE(fs::exists(home.dir() / "data" / "xpkgs" / "fixture-x-on-basebroken" / "1.0.0" / "ran"))

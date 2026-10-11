@@ -694,7 +694,10 @@ ShimSyncSummary sync_shim_tables() {
                 log::error("{}", summary.root_error);
                 return summary;
             } else if ((*r)->changed) {
-                log::info("subos '{}': root generation {}{}", name, (*r)->generation,
+                // Every workspace change is a generation: one line per node of
+                // an install is noise; `subos status` keeps the count and the
+                // conflicts, and the command that made the root says where it is.
+                log::debug("subos '{}': root generation {}{}", name, (*r)->generation,
                           (*r)->conflicts ? std::format(" ({} name conflict(s), see `xlings subos "
                                                         "status {}`)", (*r)->conflicts, name)
                                           : std::string{});

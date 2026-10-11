@@ -457,3 +457,83 @@ end
     EXPECT_NE(made.transcript().find("built against libr 1.0.0"), std::string::npos) << made.transcript();
     EXPECT_EQ(Json::parse(tk::read_file(record))["deps"][0]["version"], "2.0.0") << made.transcript();
 }
+
+// What `luban new` says (Luban design 2026-10-12 §5): the edition once, not
+// one `[1/1] installed` per template; a package whose dependency failed is
+// one line under the cause, not an error each; an unfinished environment is
+// finished by running the same command again -- never by a pasted
+// `xlings install` of every package.
+XTEST(SubosNewTemplate, TheEditionIsOneLineAndTheSameCommandFinishesWhatFailed,
+      .area = "subos", .cost = tk::Cost::Medium,
+      .covers = {"LUBAN-NEW-OUTPUT", "LUBAN-NEW-RERUN"}, .requires_ = {"linux", "xlings-bin"}) {
+    if constexpr (!tk::is_linux) GTEST_SKIP() << "a rootfs SubOS is a Linux root";
+    fs::path gate;
+    auto home = fixture_home("subos-new-rerun", [&](const fs::path& repo) {
+        gate = repo.parent_path() / "base-fails";
+        tk::write_file(repo / "pkgs/b/base.lua", std::format(R"LUA(
+package = {{ spec = '1', name = 'base', archs = {{'x86_64', 'aarch64'}}, programs = {{'base'}},
+            xpm = {{ linux = {{ ['1.0.0'] = {{}} }} }} }}
+import('xim.libxpkg.pkginfo')
+import('xim.libxpkg.xvm')
+function install()
+    if os.isfile('{}') then error('base cannot be built here') end
+    os.mkdir(path.join(pkginfo.install_dir(), 'bin'))
+    io.writefile(path.join(pkginfo.install_dir(), 'bin', 'base'), '#!/bin/sh\n')
+    return true
+end
+function config()
+    xvm.add('base', {{bindir = path.join(pkginfo.install_dir(), 'bin')}})
+    return true
+end
+)LUA", gate.generic_string()));
+        for (const auto* top : {"onbase-a", "onbase-b"}) {
+            tk::write_file(repo / "pkgs/o" / std::format("{}.lua", top), std::format(R"LUA(
+package = {{ spec = '1', name = '{}', archs = {{'x86_64', 'aarch64'}},
+            xpm = {{ linux = {{ deps = {{'fixture:base'}}, ['1.0.0'] = {{}} }} }} }}
+import('xim.libxpkg.pkginfo')
+function install()
+    os.mkdir(path.join(pkginfo.install_dir(), 'share'))
+    io.writefile(path.join(pkginfo.install_dir(), 'share', 'x'), 'x')
+    return true
+end
+)LUA", top));
+        }
+        tk::write_file(repo / "pkgs/t/t-rerun.lua", template_recipe("t-rerun",
+            Json{{"subos_kind", "rootfs"}, {"from", "fixture:t-base@1.0.0"},
+                 {"packages", {"fixture:onbase-a@1.0.0", "fixture:onbase-b@1.0.0"}},
+                 {"workspace", Json::object()}}));
+    });
+    const auto bwrap = home.dir() / "data/xpkgs/xim-x-bwrap/0.11.2/bin/bwrap";
+    tk::write_file(bwrap, "#!/bin/sh\nexit 0\n");
+    fs::permissions(bwrap, fs::perms::owner_all | fs::perms::group_read | fs::perms::group_exec);
+    const std::map<std::string, std::string> env{{"XLINGS_TOOLS_SEARCH", "home"}};
+    const std::vector<std::string> make{"subos", "new", "dev", "--from", "fixture:t-rerun@1.0.0", "-y"};
+
+    tk::write_file(gate, "1");
+    auto failed = home.xlings(make, env);
+    const auto out = failed.transcript();
+    EXPECT_NE(failed.exit_code, 0) << out;
+    EXPECT_NE(out.find("from fixture:t-rerun@1.0.0 <- fixture:t-base@1.0.0"), std::string::npos) << out;
+    EXPECT_EQ(out.find("installed fixture:t-"), std::string::npos) << "a template is plumbing\n" << out;
+    EXPECT_EQ(out.find("root generation"), std::string::npos) << out;
+    EXPECT_NE(out.find("base cannot be built here"), std::string::npos) << out;
+    EXPECT_NE(out.find("2 package(s) not installed because fixture:base@1.0.0 failed"), std::string::npos) << out;
+    EXPECT_EQ(count(out, "its dependency"), 0u) << "the cascade is one line\n" << out;
+    EXPECT_NE(out.find("the same command again finishes it"), std::string::npos) << out;
+    EXPECT_EQ(out.find("xlings install -y --subos"), std::string::npos) << out;
+
+    // Another edition under the same name is not a re-run.
+    auto other = home.xlings({"subos", "new", "dev", "--from", "fixture:t-top@1.0.0", "-y"}, env);
+    EXPECT_NE(other.exit_code, 0) << other.transcript();
+    EXPECT_NE(other.transcript().find("was being made from fixture:t-rerun@1.0.0"), std::string::npos)
+        << other.transcript();
+
+    fs::remove(gate);
+    auto finished = home.xlings(make, env);
+    EXPECT_EQ(finished.exit_code, 0) << finished.transcript();
+    EXPECT_NE(finished.transcript().find("finishing 'dev'"), std::string::npos) << finished.transcript();
+    const auto instance = Json::parse(tk::read_file(home.dir() / "config/subos/dev/instance.json"));
+    EXPECT_FALSE(instance.contains("making")) << instance.dump();
+    EXPECT_EQ(instance["edition"]["ref"], "fixture:t-rerun@1.0.0") << instance.dump();
+    EXPECT_EQ(instance["edition"]["packages"]["fixture:onbase-a"], "1.0.0") << instance.dump();
+}

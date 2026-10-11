@@ -2242,6 +2242,32 @@ int run(int argc, char* argv[], EventStream& stream) {
             if (auto result = produce_domain_at_creation_(name, rootfs, domain, producerArgs, stream))
                 return *result;
         }
+        // The same command again, for an environment a failure left
+        // unfinished: it finishes it -- the edition's packages that are not
+        // there yet, then its record. Only the edition it was made from; any
+        // other is a different request and `already exists` stays the answer.
+        if (!fromSpec.empty() && fs::exists(Config::subos_dir(name))) {
+            const auto file = home_view().instance_file(name);
+            std::error_code fec;
+            auto instance = fs::is_regular_file(file, fec)
+                ? nlohmann::json::parse(platform::read_file_to_string(file.string()), nullptr, false)
+                : nlohmann::json();
+            if (instance.is_object() && instance.value("making", std::string{}) == fromSpec) {
+                log::info("finishing '{}' ({})", name, fromSpec);
+                if (auto r = declare_root_at_creation_(name, true, fromSpec, stream, domain); r != 0) return r;
+                nlohmann::json payload{{"name", name}, {"from", fromSpec},
+                                       {"dir", Config::subos_dir(name).string()}};
+                stream.emit(DataEvent{"subos_forked", payload.dump()});
+                return 0;
+            }
+            if (instance.is_object() && instance.contains("making")) {
+                usageError(std::format("'{}' was being made from {}; `xlings subos new {} --from {}` "
+                                       "finishes it, or remove it first", name,
+                                       instance.value("making", std::string{}), name,
+                                       instance.value("making", std::string{})));
+                return 1;
+            }
+        }
         // A root is checked for before it costs a download (`--rootfs`; a
         // template that declares one is checked once it is read, in new_from).
         if (rootfs && fromSpec.empty())

@@ -475,15 +475,30 @@ int declare_root_at_creation_(const std::string& name, bool rootfs, const std::s
             return 1;
         }
     }
+    if (declared) {
+        // The edition, once: the templates were installed without a word.
+        std::string chain = from;
+        for (const auto& below : declared->chain) chain += " <- " + below;
+        log::info("'{}' from {}: {} package(s)", name, chain, declared->packages.size());
+        // What was asked, recorded before anything can fail: running the
+        // same command again finishes an environment a failure left behind.
+        const auto file = HomeView{home}.instance_file(name);
+        auto j = read_json_(file);
+        j["making"] = from;
+        if (auto written = write_json_(file, j); !written) {
+            error_(stream, written.error(), {}, ErrorCode::Internal);
+            return 1;
+        }
+    }
     if (declared && !declared->packages.empty()) {
         // Its packages, installed into it: the same install as any other,
-        // so the generation that follows is the usual one.
+        // so the generation that follows is the usual one. Whatever is
+        // installed already (a re-run) is not done again.
         log::debug("installing what '{}' declares: {} package(s)", name, declared->packages.size());
         if (xim::cmd_install_step(declared->packages, name, stream, /*plumbing=*/false) != 0) {
-            std::string list;
-            for (auto& p : declared->packages) list += " " + p;
-            log::info("'{}' is made but not complete: `xlings install -y --subos {}{}` finishes it, "
-                      "`xlings subos remove {}` takes it away", name, name, list, name);
+            log::info("'{}' is made but not complete: the same command again finishes it "
+                      "(`xlings subos new {} --from {}`, `luban new {}`); `xlings subos remove {}` "
+                      "takes it away", name, name, from, name, name);
             return 1;
         }
     }
@@ -515,6 +530,7 @@ int declare_root_at_creation_(const std::string& name, bool rootfs, const std::s
         auto j = read_json_(file);
         j["edition"] = {{"ref", ref}, {"chain", declared->chain}, {"packages", packages}};
         if (!declared->policy.empty()) j["edition"]["policy"] = declared->policy;
+        j.erase("making");
         if (auto written = write_json_(file, j); !written) {
             error_(stream, written.error(), {}, ErrorCode::Internal);
             return 1;
