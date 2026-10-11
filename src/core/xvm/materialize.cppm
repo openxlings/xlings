@@ -61,12 +61,33 @@ public:
     Prepared(const Prepared&) = delete;
     Prepared& operator=(const Prepared&) = delete;
     std::expected<Applied, std::string> execute();
+    // The destinations this plan removes (for pruning emptied directories).
+    std::vector<fs::path> removals() const;
 private:
     struct State;
     std::unique_ptr<State> state_;
     friend std::expected<Prepared, std::string> preflight_materialization(
         std::span<const AssetChange>, std::span<const AssetClaim>, const fs::path&);
 };
+
+// What a change of a scope's activation does to its projection, prepared.
+// A projection is a function of what is active; a change to some names is a
+// change to their assets and nothing else's. So the delta is computed from
+// the names that move -- whose active version or installed set differs
+// between before and after, plus `reconfigured` (a release registered again,
+// whose assets are placed again) -- never by recomputing every active
+// package's tree: that made one switch cost the size of the whole SubOS.
+// Everything else enters only as recorded claims (one per declared
+// directory, not walked): the ownership a preflight proves, and what stays
+// placed when a destination is shared. `releasedSources` are source trees a
+// removal gives up by path (a legacy header directory): what was placed from
+// them leaves too.
+std::expected<Prepared, std::string> prepare_projection_change(
+    const VersionDB& dbBefore, const WorkspaceInstalled& installedBefore, const Workspace& activeBefore,
+    const VersionDB& dbAfter, const WorkspaceInstalled& installedAfter, const Workspace& activeAfter,
+    const std::set<std::string>& reconfigured,
+    const fs::path& subosRoot, const fs::path& libraryRoot, const std::string& home,
+    std::span<const fs::path> releasedSources = {});
 
 // Entire-plan preflight is read-only. execute revalidates ownership before
 // publication and keeps old derived entries for rollback until commit.

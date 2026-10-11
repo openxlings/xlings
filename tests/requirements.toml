@@ -868,3 +868,7 @@ status = "required"
 [CARRIER-WSL-SETUP]
 text = "a Windows machine's first Linux SubOS gets its one-time setup from xlings -- WSL from the index (xim:wsl-installer, Microsoft's MSI) and the Virtual Machine Platform through the elevation door -- asked where it is needed, never a command to find and type"
 status = "required"
+
+[XVM-PROJECTION-DELTA]
+text = "a change to a scope's activation (use, a registration, a removal) materialises the names that move and nothing else: the cost of switching one package does not grow with the SubOS"
+status = "required"

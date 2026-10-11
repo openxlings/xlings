@@ -549,50 +549,14 @@ int cmd_use(const std::string& target, const std::string& version, EventStream& 
         const auto found = candidateActive.find(name);
         if (found != candidateActive.end() && found->second == key) candidateActive.erase(found);
     }
-    // The recorded claims of everything installed: what preflight may prove
-    // derived. Cheap -- a header directory is one claim, not walked.
-    auto oldClaims = materialize::collect_claims(Config::versions(), previousInstalled,
-        p.subosDir, p.libDir, p.homeDir.string());
     reclaim_conflicting_file_bindings(candidateDb, candidateActive, to_switch, p.homeDir.string());
-    // Only what this switch moves is re-materialised: the release being used
-    // (its own links are placed again, so `use` repairs them) and every name
-    // whose active version changes (its members, a reclaimed file binding).
-    // Walking every header directory of every package in the SubOS -- glibc,
-    // alsa, tiff -- to switch one with none (mcpp) made a `use` minutes of
-    // silence on a large home, holding the state lock throughout.
-    std::set<std::string> affected;
-    for (const auto& [name, key] : to_switch) affected.insert(name);
-    for (const auto& [name, key] : candidateActive) {
-        const auto before = previousActive.find(name);
-        if (before == previousActive.end() || before->second != key) affected.insert(name);
-    }
-    for (const auto& [name, key] : previousActive)
-        if (!candidateActive.contains(name)) affected.insert(name);
-    WorkspaceInstalled oldAffected, selected, kept;
-    for (const auto& [name, keys] : previousInstalled)
-        if (affected.contains(name)) oldAffected[name] = keys;
-    for (const auto& [name, key] : candidateActive)
-        (affected.contains(name) ? selected : kept)[name] = {key};
-    auto oldMoved = materialize::collect_claims(Config::versions(), oldAffected,
-        p.subosDir, p.libDir, p.homeDir.string());
-    auto desired = materialize::collect_claims(db, selected, p.subosDir, p.libDir, p.homeDir.string(),
-        materialize::ClaimSource::Present);
-    // What stays active keeps what it placed, a shared destination included.
-    auto staying = materialize::collect_claims(db, kept, p.subosDir, p.libDir, p.homeDir.string());
-    if (!oldClaims || !oldMoved || !desired || !staying) {
-        log::error("{}", !oldClaims ? oldClaims.error() : !oldMoved ? oldMoved.error()
-                         : !desired ? desired.error() : staying.error());
-        return 1;
-    }
-    auto retained = *desired;
-    retained.insert(retained.end(), staying->begin(), staying->end());
-    auto obsolete = materialize::obsolete_assets(*oldMoved, retained);
-    if (!obsolete) { log::error("{}", obsolete.error()); return 1; }
-    auto changes = std::move(*obsolete);
-    for (const auto& claim : *desired) {
-        changes.push_back({claim.source, claim.destination, false});
-    }
-    auto prepared = materialize::preflight_materialization(changes, *oldClaims, p.subosDir);
+    // Only what this switch moves: the release being used (its own links are
+    // placed again, so `use` repairs them) and every name whose activation
+    // changes (members, a reclaimed file binding) -- materialize's one rule.
+    std::set<std::string> used;
+    for (const auto& [name, key] : to_switch) used.insert(name);
+    auto prepared = materialize::prepare_projection_change(Config::versions(), previousInstalled, previousActive,
+        db, candidateInstalled, candidateActive, used, p.subosDir, p.libDir, p.homeDir.string());
     if (!prepared) { log::error("{}", prepared.error()); return 1; }
     auto applied = prepared->execute();
     if (!applied) { log::error("{}", applied.error()); return 1; }
