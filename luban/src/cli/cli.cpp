@@ -786,6 +786,12 @@ int run(int argc, char* argv[]) {
         std::println("luban {}", kVersion);
         return 0;
     }
+    // Internal: the tree as JSON, what docs/generated/luban-command-reference.md
+    // and the docs' command checks are made from (as xlings').
+    if (cmd == "--command-reference-json" && rest.size() == 1) {
+        std::println("{}", spec::help_json(tree()).dump());
+        return 0;
+    }
     const auto* node = spec::find_in(tree(), std::array<std::string_view, 1>{cmd});
     if (cmd == "--help" || cmd == "-h" || cmd == "help") {
         const bool all = flag(rest, "--all"), expert = flag(rest, "--expert");
