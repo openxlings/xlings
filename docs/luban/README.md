@@ -50,7 +50,7 @@ comes from the index.
 ## Read in this order
 
 - [00 — What Luban Is](00-what-luban-is.md) — the model, and what it is for
-- [01 — Getting Started](01-getting-started.md) — make, enter, run, list
+- [01 — Quick Start](01-quick-start.md) — one path through it: an environment, rollback, an agent, an upgrade, a machine
 - [02 — Editions](02-editions.md) — what each has, and how a version is chosen
 - [03 — Environments](03-environments.md) — settings, grants, upgrade, rollback
 - [04 — The Agent Workspace](04-agent-workspace.md) — a private place for an agent

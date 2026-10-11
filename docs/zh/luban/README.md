@@ -41,7 +41,7 @@ graph TD
 ## 阅读顺序
 
 - [00 —— Luban 是什么](00-what-luban-is.md) —— 模型，以及它用来做什么
-- [01 —— 快速开始](01-getting-started.md) —— 创建、进入、运行、列出
+- [01 —— 快速开始](01-quick-start.md) —— 一条完整路线：环境、回退、agent、升级、机器
 - [02 —— Edition](02-editions.md) —— 每个包含什么，版本怎样选择
 - [03 —— 环境](03-environments.md) —— 设置、授权、升级、回滚
 - [04 —— Agent 工作区](04-agent-workspace.md) —— 给 agent 的私有空间
