@@ -633,3 +633,18 @@ preflight 逐项核对、重放。切换一个没有任何资产的包，工作�
 测试：单元 `AProjectionChangeMovesOnlyTheNamesThatMove`（XVM-PROJECTION-DELTA）；e2e
 xvm_library_switch S4c；以及 declared file assets、group/library switch、install/use 语义、
 pinning 刷新、多 SubOS doctor 等 14 个 sysroot 相关 e2e 全部通过。
+
+## 13. 发布前的自我 review（多视角，2026.10.12.1）
+
+| 视角 | 结论 | 依据 / 余项 |
+|---|---|---|
+| 架构 | 宿主依赖收敛为 T0/T1/T2，工具表是唯一来源；镜像格式全部进程内写出（GPT、FAT、El Torito + hybrid GPT、qcow2）；SubOS 投影的变化由一条规则（`prepare_projection_change`）计算 | `lint_tools_provenance`、`lint_host_deps` 在 lint suite 与 CI |
+| 稳定性 | x86_64 BIOS/UEFI、aarch64 UEFI 的 ISO（CD 与驱动器）、drive、qcow2 都在 CI 中真实启动；`luban try --proxy` 在两个架构上验证 | UEFI 在 PC 上以 pflash（代码 + 每次新建的变量库）启动 |
+| 优雅简洁 | 删除 xorriso、qemu-img、mksquashfs、cp、xclip 依赖；一个 `qemu-system` 包给出两个模拟器、用户态网络与固件 | — |
+| 用户体验 | `luban try` 缺什么就给出 `xlings install qemu-system`；Windows 第一次 Linux SubOS 自动提出 WSL 一次性设置；`use`/`install --use` 不再随 SubOS 规模变慢（72 s → 0.9 s） | 余项：版本库仍是一个 3.8 MB 文档，约 1 s 的解析/写回 |
+| 兼容性 | 已发布资源不改（`-r1` + revision）；nvim 旧版本条目逐字节不变；`gcc-specs-config` revision 1；站点旧 URL（quick-start、contributing、xpackage-spec）保留 | index-compat 下限不变（2026.10.8.1） |
+| 跨平台 | Windows 归档路径（`\\?\` 前缀）修复；Windows WSL e2e 接受"提出设置"；macOS/Windows CI 绿 | aarch64 的 tiny-musl、core、agent-workspace 在 arm runner 上构建 |
+| 一致性 | 文档 en/zh 同构（标题、代码块逐字节）由 test_docs 检查；命令示例按命令树校验；规范只有英文 | xim-pkgindex 同样的 test_docs（static） |
+| 无感升级 | 旧 home：`use` 会把被切换 release 自己缺失的链接放回，其余漂移仍由 `self doctor --fix`；未初始化 home 的 patchelf 由本计划安装的那一份重定位 | 删除过的 patchelf 不会被悄悄复用 |
+
+发布后余项（已登记）：11 个配方与 2 个 libs 的注释指向旧文档路径；版本库按目标拆分；actions 升级与 runner 标签显式化（G1/G2）。
