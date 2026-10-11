@@ -45,8 +45,9 @@ xlings self doctor --isolation          # is WSL2 ready here
 xlings self doctor --isolation --fix    # install WSL and turn on the Virtual Machine Platform
 ```
 
-When Windows asks for a restart, restart once, then create the SubOS again. In
-agent mode nothing is asked: the command exits 2 and names this setup.
+When Windows asks for a restart, `subos new` exits 3: restart once, then create
+the SubOS again. In agent mode nothing is asked: the command exits 2 and names
+this setup.
 
 ## A Linux SubOS on macOS
 

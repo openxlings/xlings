@@ -72,8 +72,8 @@ XTEST(SubosTools, EveryToolIsAPackageOrTheOperatingSystemAndSaysWhich,
     for (const auto gone : {"cp", "xorriso", "qemu-img", "mksquashfs", "xclip"})
         EXPECT_TRUE(std::ranges::none_of(tools::known(), [&](const auto& t) { return t.name == gone; }))
             << gone << " is written in process, or another tool covers it";
-    EXPECT_EQ(tools::install_hint("qemu-system-x86_64"), "xlings install qemu-x86");
-    EXPECT_EQ(tools::install_hint("qemu-system-aarch64"), "xlings install qemu-arm");
+    EXPECT_EQ(tools::install_hint("qemu-system-x86_64"), "xlings install qemu-system");
+    EXPECT_EQ(tools::install_hint("qemu-system-aarch64"), "xlings install qemu-system");
     EXPECT_EQ(tools::install_hint("wl-copy"), "xlings install wl-clipboard");
 }
 

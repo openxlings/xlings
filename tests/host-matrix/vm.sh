@@ -8,7 +8,7 @@
 #   tests/host-matrix/vm.sh <fedora|debian-12|arch> --tarball <f> --evidence <dir>
 #                           [--index <dir>] [--scenarios "a b"]
 #
-# Needs qemu-system-x86_64 (xim:qemu-x86: tools/ci/xlings_tools.sh), python3
+# Needs qemu-system-x86_64 (xim:qemu-system: tools/ci/xlings_tools.sh), python3
 # and ssh (the runner's), and /dev/kvm. Images are cached in $HM_CACHE
 # (default ~/.cache/hm-images) and checked against the distribution's
 # published checksums. The image is booted as a snapshot (nothing written

@@ -643,8 +643,8 @@ int try_cmd_(std::span<const std::string> rest, bool json) {
         return 1;
     }
     // UEFI firmware: the edk2-firmware package's, else the one the emulator's
-    // package carries (qemu-arm has it uncompressed). A machine with no BIOS
-    // has nothing else to start.
+    // package carries (qemu-system's share/qemu, uncompressed). A machine with
+    // no BIOS has nothing else to start.
     auto firmware = xlings::subos::tools::payload_file(home, "edk2-firmware", fs::path("share/edk2") / machine.firmware);
     if (!firmware)
         for (const auto& t : xlings::subos::tools::known())

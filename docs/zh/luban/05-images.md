@@ -50,8 +50,8 @@ luban try box --nographic           # its console in this terminal
 ```
 
 `luban try` 默认用 `virt` 启动层（没有时退回环境自己的内核）；这个用户能用 KVM 时用 KVM，否则纯模拟。aarch64 上它在 qemu 的
-`virt` 机器上启动 UEFI 固件。它需要的东西来自索引——缺失时 luban 会说明，例如 `xlings install qemu-x86`（x86_64）
-或 `xlings install qemu-arm edk2-firmware`（aarch64）。
+`virt` 机器上启动 UEFI 固件。它需要的东西来自索引——`xlings install qemu-system`，一个包含两个模拟器、用户态网络
+和 UEFI 固件的包；缺失时 luban 会说明。
 
 ## 写入驱动器
 

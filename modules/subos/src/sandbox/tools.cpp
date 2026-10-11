@@ -74,10 +74,12 @@ const std::vector<Entry>& table() {
         // written in-process; these are what boots it.
         {{"limine", "limine"}, "xim-x-limine",
          {{Source::Payload, "bin"}, {Source::Host, "/usr/bin/limine"}, {Source::Host, "/usr/local/bin/limine"}}},
-        {{"qemu-system-x86_64", "qemu-x86"}, "xim-x-qemu-x86",
+        // One package for both emulators: static, with user networking (what
+        // `luban try --proxy` needs) and its firmware in share/qemu.
+        {{"qemu-system-x86_64", "qemu-system"}, "xim-x-qemu-system",
          {{Source::Payload, "bin"}, {Source::Host, "/usr/bin/qemu-system-x86_64"},
           {Source::Host, "/usr/local/bin/qemu-system-x86_64"}}},
-        {{"qemu-system-aarch64", "qemu-arm"}, "xim-x-qemu-arm",
+        {{"qemu-system-aarch64", "qemu-system"}, "xim-x-qemu-system",
          {{Source::Payload, "bin"}, {Source::Host, "/usr/bin/qemu-system-aarch64"},
           {Source::Host, "/usr/local/bin/qemu-system-aarch64"}}},
     };

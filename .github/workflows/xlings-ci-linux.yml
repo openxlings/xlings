@@ -765,7 +765,7 @@ jobs:
         run: |
           # Every tool from the index (tools/ci/xlings_tools.sh): the images
           # themselves are written in-process (no xorriso, no qemu-img).
-          bash tools/ci/xlings_tools.sh bwrap qemu-x86 e2fsprogs edk2-firmware limine
+          bash tools/ci/xlings_tools.sh bwrap qemu-system e2fsprogs edk2-firmware limine
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
           # KVM when the runner has it: a boot in seconds instead of a minute.
           if [[ -e /dev/kvm ]]; then sudo chmod 666 /dev/kvm; fi

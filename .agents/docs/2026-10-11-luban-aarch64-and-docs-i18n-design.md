@@ -583,3 +583,20 @@ graph TD
 | V | 发布、GitCode、bump、真实验证（§7） | 全部 | 以上 |
 
 关键路径：R1（gcc）→ R2 → I1/I2 → C1 → xlings CI 全绿 → 发布。A、B、D、G 与 R1 并行。
+
+### 12.3 实施中的第二批修正
+
+| 项 | 修正 | 原因 |
+|---|---|---|
+| qemu | 工具表的两个模拟器都指向新的 **`qemu-system`**（9.2.4，静态 musl，x86_64 与 aarch64 两个 softmmu，libslirp 4.8.0 与 libfdt（dtc 1.6.1，qemu 9.2 的 dtc.wrap 所指）静态，固件解压在 `share/qemu`），不再用 `qemu-x86` / `qemu-arm` | 实测：xPack 的 qemu-arm 与 index 的 qemu-x86 都没有编译 `user` 网络后端，`luban try --proxy`（`-nic user,restrict=on,guestfwd=...`）在两个架构上都起不来；一个包同时给出两个模拟器和固件，`luban try` 只需要 `xlings install qemu-system` |
+| 容器构建的失败传播 | `alpine()` / `debian()` 用 `trap ... EXIT` 交还文件，不再在 `$1` 之后接 `; chown` | `sh -e` 下 `a && b; chown` 中 `a` 失败不退出，构建失败被报告为成功，直到下游找不到产物 |
+| 站点 | `docs.tree` 增加 `untranslated`（只有英文的 `specs/` 不报缺译文）；显式 entry 在目录中保留原位与 slug（`quick-start`、`contributing`、`xpackage-spec` 的旧 URL 不失效）；生成器固定到 xpkgindex `v0.3.0` | `--strict` 把缺译文当错误；改用目录发现不能让已被引用的页面 404 |
+| 未初始化 home 的 patchelf | `patchelf_reachable` 最后查 home 自己的 `xim-x-patchelf` 载荷并把它的 `bin/` 放上 PATH | bare 宿主（host matrix 的 fedora 腿）上，同一计划先装了 patchelf，python 仍报"宿主没有 patchelf"：未 `self init` 的 home 没有 shim |
+| Windows 上的 ISO 写入 | `archive_entry_sourcepath` 去掉 `\\?\` 长路径前缀后再求相对路径；不在根下的路径是错误 | Windows 的 libarchive 读盘给出带前缀的路径，条目名变成 `..\..` 形式，El Torito 找不到引导镜像 |
+| WSL 的 e2e | 没有 WSL2 时接受退出码 2（一次性设置被提出、无人确认）或 125 | 新行为是提出设置而不是直接拒绝 |
+| `subos new` 在 Windows 需要重启 | 退出码 3，文档写明 | 3010 是 Windows 要求重启，此时创建不能继续 |
+
+### 12.4 登记的后续项
+
+- xim-pkgindex 中 11 个配方与 2 个 `libs/` 模块的注释仍指向旧文档路径（`docs/V2/xpackage-spec.md`、`docs/contributing.md §5.x`）。改注释会让 ci-test 在三个平台上重装这些包（含 android-ndk、qt），本轮不动；各配方下次修改时顺带更新。新路径：`docs/specs/xpackage-v2.md`、`docs/10-adding-a-package.md`。
+- 用 `docs.tree` 的其他站点（mcpp）迁移时同样用显式 entry 保留旧 slug。

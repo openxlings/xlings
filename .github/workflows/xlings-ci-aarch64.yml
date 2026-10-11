@@ -103,9 +103,9 @@ jobs:
         with:
           name: xlings-linux-aarch64-candidate
           path: candidate
-      - name: Tools from the index (qemu-arm, edk2-firmware, bwrap, e2fsprogs, limine)
+      - name: Tools from the index (qemu-system, edk2-firmware, bwrap, e2fsprogs, limine)
         run: |
-          bash tools/ci/xlings_tools.sh bwrap qemu-arm edk2-firmware e2fsprogs limine
+          bash tools/ci/xlings_tools.sh bwrap qemu-system edk2-firmware e2fsprogs limine
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
           if [[ -e /dev/kvm ]]; then sudo chmod 666 /dev/kvm; fi
       - name: Export and boot

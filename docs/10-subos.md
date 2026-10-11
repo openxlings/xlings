@@ -117,6 +117,7 @@ never delete it.
 | 13 | `E_PERMISSION`: only the owner can do it, or the policy refuses |
 | 75 | a request is queued for approval |
 | 2 | agent mode needs a confirmation, or an interactive entry was refused |
+| 3 | `subos new` on Windows: the one-time setup is done and Windows asks for a restart first |
 
 ## When it does not work
 

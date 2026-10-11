@@ -151,7 +151,7 @@ jobs:
               # qemu from the index (tools/ci/xlings_tools.sh); the VM's seed is
               # served over its network and its disk is a snapshot: no
               # cloud-image-utils, no qemu-img.
-              bash xlings/tools/ci/xlings_tools.sh qemu-x86
+              bash xlings/tools/ci/xlings_tools.sh qemu-system
               sudo chmod 666 /dev/kvm
               bash xlings/tests/host-matrix/vm.sh "$DISTRO" --tarball "$tar" --evidence evidence "${idx[@]}" ;;
           esac

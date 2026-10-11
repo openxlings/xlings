@@ -58,8 +58,8 @@ luban try box --nographic           # its console in this terminal
 `luban try` boots the `virt` profile by default (falling back to the
 environment's own kernel), with KVM when this user may use it and emulated
 otherwise. On aarch64 it boots UEFI firmware on qemu's `virt` machine. What it
-needs comes from the index — say `xlings install qemu-x86` (x86_64) or
-`xlings install qemu-arm edk2-firmware` (aarch64); luban names it when it is
+needs comes from the index — `xlings install qemu-system`, one package with
+both emulators, user networking and the UEFI firmware; luban names it when it is
 missing.
 
 ## Writing a drive
