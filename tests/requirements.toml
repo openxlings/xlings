@@ -894,3 +894,7 @@ status = "required"
 [UPGRADE-OLD-HOME-LUBAN]
 text = "an environment made from an edition on a home an older client filled (payloads without resolution records, or recorded against another runtime) is made without failures: the plan migrates the record or reinstalls the payload, and never asks the user to run --reconfig"
 status = "required"
+
+[SUBOS-OWN-HOME-INSIDE]
+text = "inside a sandbox, a command for a home the sandbox owns (XLINGS_HOME it can write, e.g. mcpp's registry) runs there; only the session's read-only home goes to the broker or is owner-only"
+status = "required"

@@ -1859,7 +1859,21 @@ int dispatch_(int argc, char* argv[]) {
         // change it goes to the broker, which decides with the instance's
         // policy and runs it outside; what only the owner may do is refused
         // here, with the command that does it outside.
-        if (subos::broker::available()) {
+        //
+        // Only for the session's home, though. A home of the sandbox's own --
+        // mcpp's registry under /root/.mcpp, a test's -- is the user's to
+        // write in here, and a command for it runs here: `XLINGS_HOME=<that>
+        // xlings self init` was refused as owner-only (mcpp: "sandbox not
+        // initialized") and an install into it would have gone to the
+        // owner's home. The session's home is the one that is read-only here.
+        const auto home_is_ours = [] {
+            const auto home = Config::paths().homeDir;
+            std::error_code ec;
+            if (!std::filesystem::exists(home, ec)) return true;
+            std::ofstream probe(home / ".xlings.lock", std::ios::app);
+            return static_cast<bool>(probe);
+        };
+        if (subos::broker::available() && !home_is_ours()) {
             std::vector<std::string> rest;
             for (int i = 1; i < fargc; ++i) rest.emplace_back(fargv[i]);
             const char* active = std::getenv("XLINGS_ACTIVE_SUBOS");
