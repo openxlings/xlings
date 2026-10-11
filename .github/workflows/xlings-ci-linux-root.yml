@@ -37,10 +37,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install system deps
+      - name: The runner's own tools (T0; nothing installed)
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y curl git build-essential
+          for t in curl git cc make jq tar xz python3; do command -v "$t" >/dev/null || { echo "::error::the runner image has no $t"; exit 1; }; done
 
       - name: Install bootstrap xlings (pinned ${{ env.BOOTSTRAP_XLINGS_VERSION }})
         env:
@@ -305,7 +304,7 @@ jobs:
       - name: Install minimal deps (no sudo)
         run: |
           apt-get update -qq
-          apt-get install -y curl ca-certificates tar findutils perl git
+          apt-get install -y curl ca-certificates tar findutils perl git  # host-dep-ok: a bare container, prepared to install xlings
           echo "sudo intentionally NOT installed:"; command -v sudo || echo "  (absent — good)"
 
       - name: Download release artifact

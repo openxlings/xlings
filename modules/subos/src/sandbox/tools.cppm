@@ -31,10 +31,18 @@ struct Found {
 };
 
 // The tools this table knows. `package` is the xim package that provides it
-// (empty: none does); `install` is the command that brings the payload.
+// -- every tool has one, except what the operating system itself is: `os`
+// says which and why (T0). `platform` limits a tool to one platform
+// ("linux", "macos", "windows"; empty: wherever it is asked for), and
+// `planned` names the requirement (tests/requirements.toml) that tracks a
+// package not yet in the index. tests/scripts/test_tools_provenance.py holds the table to the
+// index: each package exists, for each architecture xlings is released for.
 struct Tool {
     std::string_view name;
     std::string_view package;
+    std::string_view os = {};
+    std::string_view platform = {};
+    std::string_view planned = {};
 };
 std::span<const Tool> known();
 
@@ -46,5 +54,9 @@ std::optional<Found> first(std::string_view tool, const HomeView& home, const Po
 
 // "xlings install <package>" or empty.
 std::string install_hint(std::string_view tool);
+
+// A data file a package carries (firmware, boot files): <relative> under the
+// newest installed version of xim:<package> in the home, if there is one.
+std::optional<fs::path> payload_file(const HomeView& home, std::string_view package, const fs::path& relative);
 
 }  // namespace xlings::subos::tools

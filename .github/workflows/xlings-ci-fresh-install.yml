@@ -159,7 +159,7 @@ jobs:
               # curl and tar are hard requirements of quick_install.sh; it also
               # locates the extracted directory with a glob, so findutils/which
               # are installed explicitly rather than assumed present.
-              yum -y install curl tar gzip xz git which findutils ca-certificates
+              yum -y install curl tar gzip xz git which findutils ca-certificates  # host-dep-ok: a bare distribution, prepared to install xlings
 
               # The stock CA bundle predates the roots the GitHub asset CDN
               # serves; without this, downloads fail at TLS handshake.

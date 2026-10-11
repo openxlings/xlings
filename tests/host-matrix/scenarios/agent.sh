@@ -2,10 +2,11 @@
 # agent-private on this host: a persona of its own (stable, not the host's),
 # the proxy as the only network, no nested user namespaces.
 source "$(dirname "$0")/../lib.sh"
-command -v python3 >/dev/null || skip "no python3 for the proxy fixture"
+py="${HM_PYTHON:-python3}"
+command -v "$py" >/dev/null || skip "no python3 for the proxy fixture"
 X info xim:agent-private 2>/dev/null | grep -q '2026\.' || skip "the index has no date-versioned agent-private yet"
 require_isolation
-python3 "$(dirname "$0")/../socks5.py" "$HM_STATE/aproxy.port" "$HM_STATE/aproxy.log" &
+"$py" "$(dirname "$0")/../socks5.py" "$HM_STATE/aproxy.port" "$HM_STATE/aproxy.log" &
 fixture=$!; trap 'kill $fixture 2>/dev/null' EXIT
 for _ in $(seq 50); do [[ -s "$HM_STATE/aproxy.port" ]] && break; sleep 0.1; done
 port="$(cat "$HM_STATE/aproxy.port")"

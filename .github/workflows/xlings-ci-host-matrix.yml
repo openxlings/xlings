@@ -54,8 +54,7 @@ jobs:
           set -euo pipefail
           smoke='[
             {"leg":"k-ubuntu-2404-restricted","kind":"runner","runner":"ubuntu-24.04","arch":"x86_64"},
-            {"leg":"u-fedora","kind":"container","runner":"ubuntu-24.04","arch":"x86_64","image":"fedora:latest",
-             "setup":"dnf -y -q install python3 curl sudo util-linux shadow-utils tar gzip findutils procps-ng >/dev/null"}]'
+            {"leg":"u-fedora","kind":"container","runner":"ubuntu-24.04","arch":"x86_64","image":"fedora:latest","setup":"bash xlings/tests/host-matrix/bare.sh"}]'
           full='[
             {"leg":"k-ubuntu-2404-restricted","kind":"runner","runner":"ubuntu-24.04","arch":"x86_64"},
             {"leg":"k-ubuntu-2404-open","kind":"runner","runner":"ubuntu-24.04","arch":"x86_64","sysctl":"0"},
@@ -64,18 +63,12 @@ jobs:
             {"leg":"k-fedora","kind":"vm","runner":"ubuntu-24.04","arch":"x86_64","distro":"fedora"},
             {"leg":"k-debian-12","kind":"vm","runner":"ubuntu-24.04","arch":"x86_64","distro":"debian-12"},
             {"leg":"k-arch","kind":"vm","runner":"ubuntu-24.04","arch":"x86_64","distro":"arch"},
-            {"leg":"u-fedora","kind":"container","runner":"ubuntu-24.04","arch":"x86_64","image":"fedora:latest",
-             "setup":"dnf -y -q install python3 curl sudo util-linux shadow-utils tar gzip findutils procps-ng >/dev/null"},
-            {"leg":"u-arch","kind":"container","runner":"ubuntu-24.04","arch":"x86_64","image":"archlinux:latest",
-             "setup":"pacman -Sy --noconfirm --needed python curl sudo util-linux tar gzip findutils >/dev/null"},
-            {"leg":"u-tumbleweed","kind":"container","runner":"ubuntu-24.04","arch":"x86_64","image":"opensuse/tumbleweed:latest",
-             "setup":"zypper -n -q install python3 curl sudo util-linux shadow tar gzip findutils >/dev/null"},
-            {"leg":"u-debian-testing","kind":"container","runner":"ubuntu-24.04","arch":"x86_64","image":"debian:testing",
-             "setup":"apt-get -qq update && apt-get -qq install -y python3 curl sudo util-linux passwd ca-certificates >/dev/null"},
-            {"leg":"u-debian-12","kind":"container","runner":"ubuntu-24.04","arch":"x86_64","image":"debian:12",
-             "setup":"apt-get -qq update && apt-get -qq install -y python3 curl sudo util-linux passwd ca-certificates >/dev/null"},
-            {"leg":"u-ubuntu-2004","kind":"container","runner":"ubuntu-24.04","arch":"x86_64","image":"ubuntu:20.04",
-             "setup":"apt-get -qq update && DEBIAN_FRONTEND=noninteractive apt-get -qq install -y python3 curl sudo util-linux passwd ca-certificates >/dev/null"}]'
+            {"leg":"u-fedora","kind":"container","runner":"ubuntu-24.04","arch":"x86_64","image":"fedora:latest","setup":"bash xlings/tests/host-matrix/bare.sh"},
+            {"leg":"u-arch","kind":"container","runner":"ubuntu-24.04","arch":"x86_64","image":"archlinux:latest","setup":"bash xlings/tests/host-matrix/bare.sh"},
+            {"leg":"u-tumbleweed","kind":"container","runner":"ubuntu-24.04","arch":"x86_64","image":"opensuse/tumbleweed:latest","setup":"bash xlings/tests/host-matrix/bare.sh"},
+            {"leg":"u-debian-testing","kind":"container","runner":"ubuntu-24.04","arch":"x86_64","image":"debian:testing","setup":"bash xlings/tests/host-matrix/bare.sh"},
+            {"leg":"u-debian-12","kind":"container","runner":"ubuntu-24.04","arch":"x86_64","image":"debian:12","setup":"bash xlings/tests/host-matrix/bare.sh"},
+            {"leg":"u-ubuntu-2004","kind":"container","runner":"ubuntu-24.04","arch":"x86_64","image":"ubuntu:20.04","setup":"bash xlings/tests/host-matrix/bare.sh"}]'
           if [[ "$LEGS" == smoke ]]; then legs="$smoke"; else legs="$full"; fi
           # A run's artifact is an x86_64 build: those legs only.
           [[ -n "$ARTIFACT" ]] && legs="$(echo "$legs" | jq -c '[.[] | select(.arch == "x86_64")]')"
@@ -155,7 +148,10 @@ jobs:
                 --security-opt systempaths=unconfined --cap-add SYS_ADMIN \
                 -v "$PWD:/w" -w /w "$IMAGE" bash -c "$SETUP && bash xlings/tests/host-matrix/run.sh --tarball /w/$tar --evidence /w/evidence ${idx[*]:+--index /w/index}" ;;
             vm)
-              sudo apt-get -qq update && sudo apt-get -qq install -y qemu-system-x86 qemu-utils cloud-image-utils >/dev/null
+              # qemu from the index (tools/ci/xlings_tools.sh); the VM's seed is
+              # served over its network and its disk is a snapshot: no
+              # cloud-image-utils, no qemu-img.
+              bash xlings/tools/ci/xlings_tools.sh qemu-x86
               sudo chmod 666 /dev/kvm
               bash xlings/tests/host-matrix/vm.sh "$DISTRO" --tarball "$tar" --evidence evidence "${idx[@]}" ;;
           esac

@@ -27,6 +27,12 @@ concurrency:
   cancel-in-progress: true
 
 env:
+  # An xim-pkgindex branch whose packages are not published yet (a PR's,
+  # while both PRs are in flight; the repository variable is unset when the
+  # index PR merges): what CI installs its tools from (tools/ci/xlings_tools.sh)
+  # and what the tool table is held to (tools/lint_tools_provenance.sh).
+  XLINGS_TOOLS_INDEX_REF: ${{ vars.XLINGS_INDEX_UNDER_TEST || '' }}
+  XLINGS_PROVENANCE_INDEX_REF: ${{ vars.XLINGS_INDEX_UNDER_TEST || 'main' }}
   # A bootstrap pin is not neutral setup: the client that lays down
   # `subos/default` decides the runtime binding, so this line has to name a
   # client whose binding the index can satisfy.
@@ -80,6 +86,42 @@ jobs:
           bash tests/candidate-install/smoke.sh \
             candidate/*.tar.gz candidate/*.tar.gz.sha256
 
+  # Luban images on aarch64 (the aarch64 design §4): the candidate exports
+  # tiny as an ISO (UEFI El Torito, hybrid GPT), a drive and a qcow2 -- all
+  # in-process -- and boots each under qemu-system-aarch64 (virt, edk2), then
+  # `luban try`. The arm runner has no KVM: every boot is emulated.
+  luban-images:
+    name: luban images (aarch64, UEFI)
+    needs: cross-build-and-run
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 90
+    env:
+      XDEV_LANE: linux-aarch64-images
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: xlings-linux-aarch64-candidate
+          path: candidate
+      - name: Tools from the index (qemu-arm, edk2-firmware, bwrap, e2fsprogs, limine)
+        run: |
+          bash tools/ci/xlings_tools.sh bwrap qemu-arm edk2-firmware e2fsprogs limine
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+          if [[ -e /dev/kvm ]]; then sudo chmod 666 /dev/kvm; fi
+      - name: Export and boot
+        run: |
+          package_root=$(mktemp -d)
+          tar -xzf candidate/*.tar.gz -C "$package_root"
+          bin=$(find "$package_root" -path '*/bin/xlings' -type f | head -1)
+          XLINGS_BIN="$bin" bash tests/e2e/luban_image_test.sh
+      - name: Attach the boots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: luban-images-aarch64
+          path: /tmp/xlings-e2e-*/luban_image/*.log
+          if-no-files-found: ignore
+
   cross-build-and-run:
     name: cross-build xlings aarch64 (host x86_64) + qemu run
     runs-on: ubuntu-24.04
@@ -88,12 +130,9 @@ jobs:
       - name: Checkout xlings
         uses: actions/checkout@v4
 
-      - name: Install system deps
+      - name: The runner's own tools (T0; nothing installed)
         run: |
-          sudo rm -f /etc/apt/sources.list.d/microsoft*.list \
-                     /etc/apt/sources.list.d/microsoft*.sources
-          sudo apt-get update -qq
-          sudo apt-get install -y curl git build-essential
+          for t in curl git cc make jq tar xz python3; do command -v "$t" >/dev/null || { echo "::error::the runner image has no $t"; exit 1; }; done
 
       - name: Install bootstrap xlings
         env:

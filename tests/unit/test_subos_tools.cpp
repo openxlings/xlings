@@ -9,6 +9,7 @@ import xlings.subos.home_view;
 import xlings.subos.ports;
 import xlings.subos.tools;
 import xlings.core.xim.extract;
+import xlings.platform;
 
 namespace tk = xlings::testkit;
 namespace fs = std::filesystem;
@@ -43,13 +44,62 @@ XTEST(SubosTools, AMachineBinaryThatIsAnotherHomesShimIsNotATool,
       .area = "subos", .covers = {"TOOL-RESOLVE"}, .requires_ = {"linux"}) {
     auto home = tk::Home::isolated("tools-shim");
     const HomeView view{home.dir()};
-    auto machine = tools::candidates("cp", view, Ports{});
-    if (machine.empty()) GTEST_SKIP() << "no /bin/cp or /usr/bin/cp on this machine";
+    auto machine = tools::candidates("curl", view, Ports{});
+    if (machine.empty()) GTEST_SKIP() << "no /usr/bin/curl on this machine";
     EXPECT_EQ(machine.front().source, tools::Source::Host);
     EXPECT_EQ(tools::to_string(machine.front().source), "system");
     Ports shims;
     shims.shim_owner = [](const fs::path&) -> std::optional<fs::path> { return fs::path("/elsewhere"); };
-    EXPECT_TRUE(tools::candidates("cp", view, shims).empty());
+    EXPECT_TRUE(tools::candidates("curl", view, shims).empty());
+}
+
+// The three layers (the aarch64 design §2.1): every tool is a package of the
+// index unless the operating system itself is the tool, and then it says
+// why; no hint ever names a machine's package manager.
+XTEST(SubosTools, EveryToolIsAPackageOrTheOperatingSystemAndSaysWhich,
+      .area = "subos", .covers = {"TOOLS-PROVENANCE"}) {
+    for (const auto& tool : tools::known()) {
+        if (tool.package.empty()) {
+            EXPECT_FALSE(tool.os.empty()) << tool.name << ": no package and no reason the OS provides it";
+            EXPECT_TRUE(tools::install_hint(tool.name).empty()) << tool.name;
+        } else {
+            EXPECT_TRUE(tool.os.empty()) << tool.name << ": a package and the OS's at once";
+            EXPECT_EQ(tools::install_hint(tool.name), "xlings install " + std::string(tool.package)) << tool.name;
+        }
+        EXPECT_TRUE(tool.platform.empty() || tool.platform == "linux" || tool.platform == "macos" ||
+                    tool.platform == "windows") << tool.name;
+    }
+    for (const auto gone : {"cp", "xorriso", "qemu-img", "mksquashfs", "xclip"})
+        EXPECT_TRUE(std::ranges::none_of(tools::known(), [&](const auto& t) { return t.name == gone; }))
+            << gone << " is written in process, or another tool covers it";
+    EXPECT_EQ(tools::install_hint("qemu-system-x86_64"), "xlings install qemu-x86");
+    EXPECT_EQ(tools::install_hint("qemu-system-aarch64"), "xlings install qemu-arm");
+    EXPECT_EQ(tools::install_hint("wl-copy"), "xlings install wl-clipboard");
+}
+
+XTEST(SubosTools, ATreeIsCopiedInProcessWithLinksModesAndTimes,
+      .area = "subos", .covers = {"TOOLS-PROVENANCE"}, .requires_ = {"posix"}) {
+    auto home = tk::Home::isolated("tools-copy-tree");
+    const auto from = home.root() / "from";
+    tk::write_file(from / "usr/bin/tool", "#!/bin/sh\necho tool\n");
+    fs::permissions(from / "usr/bin/tool", fs::perms::owner_all | fs::perms::group_read);
+    fs::create_directory_symlink("usr/bin", from / "bin");
+    tk::write_file(from / "etc/ro/file", "x");
+    fs::permissions(from / "etc/ro", fs::perms::owner_read | fs::perms::owner_exec);
+    const auto to = home.root() / "to";
+    tk::write_file(to / "already", "kept");
+    auto copied = xlings::platform::copy_tree(from, to);
+    fs::permissions(from / "etc/ro", fs::perms::owner_all);
+    ASSERT_TRUE(copied) << copied.error();
+    EXPECT_EQ(tk::read_file(to / "usr/bin/tool"), "#!/bin/sh\necho tool\n");
+    EXPECT_EQ(fs::status(to / "usr/bin/tool").permissions() & fs::perms::all,
+              fs::perms::owner_all | fs::perms::group_read);
+    EXPECT_TRUE(fs::is_symlink(to / "bin"));
+    EXPECT_EQ(fs::read_symlink(to / "bin"), fs::path("usr/bin"));
+    EXPECT_EQ(tk::read_file(to / "already"), "kept") << "merged into, not replaced";
+    EXPECT_EQ(fs::status(to / "etc/ro").permissions() & fs::perms::owner_write, fs::perms::none)
+        << "a read-only directory's mode is applied after its contents";
+    fs::permissions(to / "etc/ro", fs::perms::owner_all);
 }
 
 XTEST(SubosTools, ATarballIsWrittenInProcessWithLinksKeptAndRootOwnedEntries,

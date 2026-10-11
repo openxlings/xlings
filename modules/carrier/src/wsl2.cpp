@@ -49,7 +49,9 @@ std::string first_lines(const std::string& text, int n) {
     return out;
 }
 
-constexpr std::string_view kInstall = "wsl --install --no-distribution   (once, as administrator; then restart)";
+// The one-time setup (setup_steps): WSL from the index, the Virtual Machine
+// Platform, through the elevation door -- asked once, by xlings.
+const std::string kInstall = std::string(kSetupCommand) + "   (once: WSL from the index and the Virtual Machine Platform; administrator; then restart)";
 
 Probe probe(const subos::HomeView&) {
     const auto wsl = wsl_exe();
@@ -68,11 +70,25 @@ Probe probe(const subos::HomeView&) {
     if (flat.find("WSL 2 is not supported") != std::string::npos ||
         flat.find("requires an update to its kernel component") != std::string::npos)
         return {.supported = false, .reason = "only WSL1 is available here; a SubOS needs WSL2's kernel",
-                .route = "enable the Virtual Machine Platform, then: wsl --update", .evidence = first_lines(flat, 6)};
+                .route = std::string(kInstall), .evidence = first_lines(flat, 6)};
     return {.supported = true, .reason = "WSL2", .evidence = first_lines(flat, 6)};
 }
 
 fs::path carrier_dir(const subos::HomeView& home) { return home.home / "carriers" / "wsl2"; }
+
+}  // namespace
+
+std::vector<std::vector<std::string>> setup_steps(const fs::path& msi, const fs::path& system32) {
+    return {
+        // WSL itself, quietly; Windows restarts nothing on its own.
+        {(system32 / "msiexec.exe").string(), "/i", msi.string(), "/quiet", "/norestart"},
+        // The hypervisor platform WSL2's kernel runs in.
+        {(system32 / "dism.exe").string(), "/online", "/enable-feature", "/featurename:VirtualMachinePlatform",
+         "/all", "/norestart"},
+    };
+}
+
+namespace {
 
 std::expected<Endpoint, std::string> ensure(const subos::HomeView& home) {
     const auto wsl = wsl_exe();

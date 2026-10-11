@@ -9,6 +9,8 @@ import xlings.subos.home_view;
 import xlings.subos.ports;
 import xlings.subos.tools;
 import xlings.subos.elevation;
+import luban.image;
+import xlings.platform.target;
 
 namespace luban::cli {
 
@@ -628,14 +630,28 @@ int pipe_(const std::string& host, const std::string& port_text) {
 int try_cmd_(std::span<const std::string> rest, bool json) {
     const auto pos = positionals_(rest, {"--proxy", "--memory", "--boot"});
     if (pos.size() != 1) return usage("`luban try <environment or image>`", json);
-    std::string arch = "x86_64";
-    if (auto m = read_first_line("/proc/sys/kernel/arch"); !m.empty()) arch = m;
-    if (arch != "x86_64")
-        return usage(std::format("`luban try` runs x86_64 images in this version (this machine is {})", arch), json);
+    // The machine is this one's: an image is the root's architecture (the
+    // aarch64 design §4.1), and what differs between machines is luban.image's.
+    const auto& machine = luban::image::native_arch();
+    if (machine.qemu.empty())
+        return usage(std::format("`luban try` runs x86_64 and aarch64 images (this machine is {})",
+                                 xlings::platform::build_arch()), json);
     const xlings::subos::HomeView home{home_dir_()};
-    auto qemu = xlings::subos::tools::first("qemu-system-x86_64", home, xlings::subos::Ports{});
+    auto qemu = xlings::subos::tools::first(machine.qemu, home, xlings::subos::Ports{});
     if (!qemu) {
-        std::println(std::cerr, "luban: trying needs qemu -- {}", xlings::subos::tools::install_hint("qemu-system-x86_64"));
+        std::println(std::cerr, "luban: trying needs qemu -- {}", xlings::subos::tools::install_hint(machine.qemu));
+        return 1;
+    }
+    // UEFI firmware: the edk2-firmware package's, else the one the emulator's
+    // package carries (qemu-arm has it uncompressed). A machine with no BIOS
+    // has nothing else to start.
+    auto firmware = xlings::subos::tools::payload_file(home, "edk2-firmware", fs::path("share/edk2") / machine.firmware);
+    if (!firmware)
+        for (const auto& t : xlings::subos::tools::known())
+            if (t.name == machine.qemu && !t.package.empty())
+                firmware = xlings::subos::tools::payload_file(home, t.package, fs::path("share/qemu") / machine.firmware);
+    if (machine.firmware_required && !firmware) {
+        std::println(std::cerr, "luban: trying on {} needs UEFI firmware -- xlings install edk2-firmware", machine.name);
         return 1;
     }
     Exported keep;
@@ -648,17 +664,30 @@ int try_cmd_(std::span<const std::string> rest, bool json) {
         image = source_image_(pos[0], "--iso", ".iso", keep);
     }
     if (!image) return image.error();
-    std::vector<std::string> q{qemu->bin.string(), "-m", option_(rest, "--memory").value_or("2048"), "-smp", "2"};
+    std::vector<std::string> q{qemu->bin.string()};
+    if (!machine.machine.empty()) q.insert(q.end(), {"-M", std::string(machine.machine)});
+    q.insert(q.end(), {"-m", option_(rest, "--memory").value_or("2048"), "-smp", "2"});
     std::error_code ec;
     // A character device this user may open, never a file made by asking.
     if (std::fstream kvm; fs::is_character_file("/dev/kvm", ec)
-        && (kvm.open("/dev/kvm", std::ios::in | std::ios::out), kvm.is_open()))
+        && (kvm.open("/dev/kvm", std::ios::in | std::ios::out), kvm.is_open())) {
         q.insert(q.end(), {"-enable-kvm", "-cpu", "host"});
-    else std::println(std::cerr, "luban: no KVM here -- it runs, slowly (emulated)");
+    } else {
+        if (!machine.cpu.empty()) q.insert(q.end(), {"-cpu", std::string(machine.cpu)});
+        std::println(std::cerr, "luban: no KVM here -- it runs, slowly (emulated)");
+    }
+    if (machine.firmware_required) q.insert(q.end(), {"-bios", firmware->string()});
     const auto ext = image->extension().string();
-    if (ext == ".iso") q.insert(q.end(), {"-cdrom", image->string(), "-boot", "d"});
-    else q.insert(q.end(), {"-drive", std::format("file={},format={},if=virtio", image->string(),
-                                                  ext == ".qcow2" ? "qcow2" : "raw")});
+    if (ext == ".iso" && machine.ide_cdrom) {
+        q.insert(q.end(), {"-cdrom", image->string(), "-boot", "d"});
+    } else if (ext == ".iso") {
+        // No IDE on this machine: the CD is SCSI, on virtio.
+        q.insert(q.end(), {"-device", "virtio-scsi-pci,id=scsi", "-device", "scsi-cd,drive=cd", "-drive",
+                           std::format("if=none,id=cd,media=cdrom,readonly=on,format=raw,file={}", image->string())});
+    } else {
+        q.insert(q.end(), {"-drive", std::format("file={},format={},if=virtio", image->string(),
+                                                 ext == ".qcow2" ? "qcow2" : "raw")});
+    }
     // Its network: the machine's NAT, or -- for a private one -- nothing but
     // the proxy (Luban design §C5 L3): restrict=on keeps every other route
     // out, and the guest reaches the proxy at 10.0.2.100:1080.

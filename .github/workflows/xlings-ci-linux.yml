@@ -16,6 +16,12 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
+  # An xim-pkgindex branch whose packages are not published yet (a PR's,
+  # while both PRs are in flight; the repository variable is unset when the
+  # index PR merges): what CI installs its tools from (tools/ci/xlings_tools.sh)
+  # and what the tool table is held to (tools/lint_tools_provenance.sh).
+  XLINGS_TOOLS_INDEX_REF: ${{ vars.XLINGS_INDEX_UNDER_TEST || '' }}
+  XLINGS_PROVENANCE_INDEX_REF: ${{ vars.XLINGS_INDEX_UNDER_TEST || 'main' }}
   GIT_TERMINAL_PROMPT: 0
   # CI runs on github.com; force GLOBAL mirror so xim doesn't try gitee
   # endpoints (which need auth and aren't reachable in CI).
@@ -62,10 +68,9 @@ jobs:
 
       # ── Phase 1: Configure Environment via xlings ─────────────────
 
-      - name: Install system deps
+      - name: The runner's own tools (T0; nothing installed)
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y curl git build-essential
+          for t in curl git cc make jq tar xz python3; do command -v "$t" >/dev/null || { echo "::error::the runner image has no $t"; exit 1; }; done
 
       - name: Install bootstrap xlings (pinned ${{ env.BOOTSTRAP_XLINGS_VERSION }})
         env:
@@ -307,7 +312,8 @@ jobs:
       # itself -- what a user does about it is `xlings self doctor --isolation`.
       - name: Lane capabilities (user namespaces, bwrap)
         run: |
-          sudo apt-get install -y -qq bubblewrap passt
+          # bwrap and pasta from the index (tools/ci/xlings_tools.sh), not apt.
+          bash tools/ci/xlings_tools.sh bwrap passt
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
           echo "XDEV_LANE=linux-unit" >> "$GITHUB_ENV"
           echo "XDEV_LANE_CAPS=linux,posix,pty,xlings-bin,userns,bwrap,sandbox,pasta,landlock,network" >> "$GITHUB_ENV"
@@ -543,10 +549,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install system deps
+      - name: The runner's own tools (T0; nothing installed)
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y curl git build-essential
+          for t in curl git cc make jq tar xz python3; do command -v "$t" >/dev/null || { echo "::error::the runner image has no $t"; exit 1; }; done
 
       - name: Fetch the release artifact and xdev
         uses: actions/download-artifact@v4
@@ -758,8 +763,9 @@ jobs:
 
       - name: Lane capabilities (bwrap, qemu, kvm)
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq bubblewrap qemu-system-x86 e2fsprogs ovmf xorriso fdisk build-essential
+          # Every tool from the index (tools/ci/xlings_tools.sh): the images
+          # themselves are written in-process (no xorriso, no qemu-img).
+          bash tools/ci/xlings_tools.sh bwrap qemu-x86 e2fsprogs edk2-firmware limine
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
           # KVM when the runner has it: a boot in seconds instead of a minute.
           if [[ -e /dev/kvm ]]; then sudo chmod 666 /dev/kvm; fi
@@ -957,10 +963,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install system deps
+      - name: The runner's own tools (T0; nothing installed)
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y curl git build-essential
+          for t in curl git cc make jq tar xz python3; do command -v "$t" >/dev/null || { echo "::error::the runner image has no $t"; exit 1; }; done
 
       - name: Install bootstrap xlings (pinned ${{ env.BOOTSTRAP_XLINGS_VERSION }})
         env:

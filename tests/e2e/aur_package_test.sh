@@ -18,7 +18,7 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 log() { echo "[aur] $*"; }
 [[ -f /etc/arch-release ]] || fail "not Arch Linux"
 
-pacman -Sy --noconfirm --needed base-devel >/dev/null
+pacman -Sy --noconfirm --needed base-devel >/dev/null  # host-dep-ok: the AUR package is the subject
 for u in builder alice bob; do id "$u" >/dev/null 2>&1 || useradd -m "$u"; done
 
 # `head` closes the pipe early; tar's SIGPIPE is not a failure of this test.
@@ -30,7 +30,7 @@ cp "$TARBALL" "$work/xlings-$ver-linux-x86_64.tar.gz"
 chown -R builder "$work"
 log "makepkg $ver"
 su builder -c "cd '$work' && XLINGS_LOCAL_TARBALL=xlings-$ver-linux-x86_64.tar.gz makepkg --noconfirm" >/dev/null
-pacman -U --noconfirm "$work"/xlings-"$ver"-*.pkg.tar.zst >/dev/null
+pacman -U --noconfirm "$work"/xlings-"$ver"-*.pkg.tar.zst >/dev/null  # host-dep-ok: the AUR package is the subject
 
 log "1. the package holds the binary and nothing else"
 files="$(pacman -Qlq xlings | grep -v '/$')"
@@ -47,7 +47,7 @@ for u in alice bob; do
   su "$u" -c "'$home/subos/default/bin/xz' --version" | grep -q "XZ Utils" || fail "$u: xz does not run"
   log "3. $u's self update points at pacman"
   out="$(su "$u" -c 'cd ~ && xlings self update' 2>&1 || true)"
-  grep -q "pacman -Syu xlings" <<<"$out" || fail "$u: self update did not name pacman: $out"
+  grep -q "pacman -Syu xlings" <<<"$out" || fail "$u: self update did not name pacman: $out"  # host-dep-ok: what it must say
 done
 
 log "4. removing the package leaves the homes"

@@ -490,7 +490,8 @@ std::expected<void, std::string> write_archive(const std::filesystem::path& root
         if (::archive_write_set_format_iso9660(h.out) != ARCHIVE_OK) return failed(h.out, "iso9660 format");
         std::string opts = "rockridge,joliet,volume-id=" + options.volume;
         if (!options.boot.empty())
-            opts += ",boot=" + options.boot + ",boot-type=no-emulation,boot-load-size=4,boot-info-table";
+            opts += ",boot=" + options.boot + ",boot-type=no-emulation,boot-load-size=4" +
+                    (options.boot_info_table ? ",boot-info-table" : "");
         if (::archive_write_set_options(h.out, opts.c_str()) != ARCHIVE_OK) return failed(h.out, "iso9660 options");
         break;
     }

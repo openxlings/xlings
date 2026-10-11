@@ -57,9 +57,16 @@ if as_user sudo -n true >/dev/null 2>&1; then echo "$user can sudo: not a user's
 as_user bash -c "cd '$work/xlings' && tar -xzf ../xlings.tar.gz && cd */ && ./bin/xlings self install </dev/null" \
     > "$evidence/install.log" 2>&1 || { tail -30 "$evidence/install.log"; echo "self install failed" >&2; exit 1; }
 as_user "$userhome/.xlings/bin/xlings" config --mirror "$mirror" >/dev/null
+# What the scenarios' fixtures run on (a SOCKS proxy, a JSON edit): python,
+# from xlings -- a home of its own, not the user's -- never the machine's
+# package manager (bare.sh installed nothing of it).
+as_user env XLINGS_HOME="$work/tools" XLINGS_NON_INTERACTIVE=1 "$userhome/.xlings/bin/xlings" install -y xim:python \
+    </dev/null > "$evidence/python.log" 2>&1 || { tail -20 "$evidence/python.log"; echo "xlings install python failed" >&2; exit 1; }
+py="$(ls "$work"/tools/data/xpkgs/xim-x-python/*/bin/python3 | head -1)"
+[[ -x "$py" ]] || { echo "no python3 in the tools home" >&2; exit 1; }
 if [[ -n "$index" ]]; then
     # The index under test (a PR's checkout) instead of the published one.
-    as_user python3 -c '
+    as_user "$py" -c '
 import json, sys
 p = sys.argv[1]
 cfg = json.load(open(p))
@@ -74,7 +81,7 @@ setup_done=""
 for s in $scenarios; do
     echo "== $s"
     attempt() {
-        as_user env HM_EVIDENCE="$work/evidence" HM_STATE="$work/state" ${setup_done:+HM_SETUP_DONE=1} \
+        as_user env HM_EVIDENCE="$work/evidence" HM_STATE="$work/state" HM_PYTHON="$py" ${setup_done:+HM_SETUP_DONE=1} \
             bash "$work/suite/scenarios/$s.sh"
     }
     set +e; attempt; rc=$?; set -e

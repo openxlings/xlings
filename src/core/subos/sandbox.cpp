@@ -33,6 +33,7 @@ import xlings.subos.roles;
 import xlings.subos.elevation;
 import xlings.subos.tools;
 import xlings.carrier;
+import xlings.carrier.wsl2;
 import xlings.subos.userdata;
 import xlings.subos.persona;
 import xlings.platform.stream;
@@ -1175,6 +1176,55 @@ int repair_isolation_(const HomeView& home, const subos::Ports& ports,
                after ? after->probe_output.substr(0, after->probe_output.find('\n')) : std::string("no bwrap"));
     return 1;
 }
+
+// Windows: what its first Linux SubOS needs (the wsl2 carrier) -- WSL from
+// the index (xim:wsl, Microsoft's MSI, pinned by its digest) and the Virtual
+// Machine Platform, each through the one door for administrator rights
+// (UAC). Asked once, the commands printed; nothing to find or install by
+// hand. 3010 is Windows asking for one restart.
+int repair_wsl_(const HomeView& home, bool yes, EventStream& stream) {
+    log::info("this machine needs a one-time setup before it can run a Linux SubOS:");
+    log::info("  WSL (Microsoft's, from the xlings index) and the Virtual Machine Platform it runs on.");
+    auto asked = confirm::ask(stream, "self.doctor.isolation.wsl",
+                              "install WSL and turn on the Virtual Machine Platform? (administrator)", yes, "-y");
+    if (asked.outcome != confirm::Outcome::Confirmed) {
+        if (asked.outcome == confirm::Outcome::NobodyToAsk) {
+            log::error("nothing changed: this needs confirmation -- re-run with -y");
+            return 2;
+        }
+        log::info("nothing changed");
+        return 1;
+    }
+    auto msi = subos::tools::payload_file(home, "wsl", "wsl.msi");
+    if (!msi) {
+        const std::vector<std::string> wsl{"xim:wsl"};
+        if (xim::cmd_install_step(wsl, {}, stream, /*plumbing=*/false) != 0) return 1;
+        msi = subos::tools::payload_file(home, "wsl", "wsl.msi");
+    }
+    if (!msi) {
+        stream.emit(ErrorEvent{ .code = ErrorCode::NotFound, .message = "xim:wsl installed no wsl.msi",
+                                .recoverable = false });
+        return 1;
+    }
+    const char* root = std::getenv("SystemRoot");
+    const fs::path system32 = fs::path(root && *root ? root : "C:\\Windows") / "System32";
+    bool restart = false;
+    for (const auto& step : carrier::wsl2::setup_steps(*msi, system32)) {
+        std::string line;
+        for (const auto& a : step) line += (line.empty() ? "" : " ") + platform::shell_quote(a);
+        log::info("$ {}", line);
+        const int rc = subos::elevation::run(home, step, "self doctor --isolation --fix (WSL)");
+        if (rc == carrier::wsl2::kRestartRequired) { restart = true; continue; }
+        if (rc != 0) {
+            log::error("failed (exit {}): {}", rc, line);
+            return 1;
+        }
+    }
+    if (restart) log::info("done -- restart Windows once, then a Linux SubOS runs (xlings subos new <name> --carrier wsl2)");
+    else log::info("done -- a Linux SubOS runs here now (xlings subos new <name> --carrier wsl2)");
+    return 0;
+}
+
 }  // namespace
 
 // `xlings self doctor --isolation [--fix]` (design §18, §20; #640 F10, F12).
@@ -1234,11 +1284,18 @@ int doctor_isolation(bool fix, bool yes, bool json, EventStream& stream) {
     report["tools"] = nlohmann::json::array();
     for (const auto& tool : subos::tools::known()) {
         auto found = subos::tools::first(tool.name, home, ports);
-        report["tools"].push_back(found
+        auto row = found
             ? nlohmann::json{{"name", tool.name}, {"path", found->bin.string()},
                              {"source", subos::tools::to_string(found->source)}}
             : nlohmann::json{{"name", tool.name}, {"path", nullptr},
-                             {"install", subos::tools::install_hint(tool.name)}});  // tool-ok: a JSON key
+                             {"install", subos::tools::install_hint(tool.name)}};  // tool-ok: a JSON key
+        // Where it comes from when it is not here: a package of the index,
+        // or the operating system itself (and why).
+        row["package"] = tool.package;
+        if (!tool.os.empty()) row["os"] = tool.os;
+        if (!tool.platform.empty()) row["platform"] = tool.platform;
+        if (!tool.planned.empty()) row["planned"] = tool.planned;
+        report["tools"].push_back(std::move(row));
     }
     // Where a SubOS can run on this machine (design part 3 §5): each carrier
     // this platform has, measured.
@@ -1264,9 +1321,14 @@ int doctor_isolation(bool fix, bool yes, bool json, EventStream& stream) {
     // that can forbid nested user namespaces (a setuid one cannot): until
     // then a private policy refuses to enter, so this host is not ready.
     const bool restricted = read_sysctl("/proc/sys/kernel/apparmor_restrict_unprivileged_userns") == "1";
-    const bool ok = host_caps.platform != "linux" ||
-        (host_caps.bwrap && host_caps.bwrap->usable &&
-         (host_caps.bwrap->disable_userns_fails.empty() || !restricted));
+    // On Windows a Linux SubOS runs in the wsl2 carrier: ready when it is.
+    const bool wsl_ready = std::ranges::any_of(report["carriers"], [](const nlohmann::json& c) {
+        return c["name"] == "wsl2" && c["supported"].get<bool>();
+    });
+    const bool ok = host_caps.platform == "linux"
+        ? host_caps.bwrap && host_caps.bwrap->usable &&
+              (host_caps.bwrap->disable_userns_fails.empty() || !restricted)
+        : host_caps.platform != "windows" || wsl_ready;
     report["ok"] = ok;
 
     auto print = [&] {
@@ -1298,14 +1360,17 @@ int doctor_isolation(bool fix, bool yes, bool json, EventStream& stream) {
     print();
     if (ok || !fix) {
         if (!ok && !json)
-            std::println(std::cout, "\n  fix: xlings self doctor --isolation --fix   "
-                                 "(one sudo: a root-owned bwrap with a narrow AppArmor profile)");
+            std::println(std::cout, "\n  fix: xlings self doctor --isolation --fix   {}",
+                         platform::is_windows ? "(once, administrator: WSL from the index and the Virtual Machine Platform)"
+                                              : "(one sudo: a root-owned bwrap with a narrow AppArmor profile)");
         return ok ? 0 : 1;
     }
 
     if constexpr (platform::is_linux) {
         return repair_isolation_(home, ports, candidates, yes, stream,
                                  "install the root-owned bwrap and its AppArmor profile?");
+    } else if constexpr (platform::is_windows) {
+        return repair_wsl_(home, yes, stream);
     } else {
         (void)yes;
         stream.emit(ErrorEvent{ .code = ErrorCode::InvalidInput,
@@ -1313,6 +1378,16 @@ int doctor_isolation(bool fix, bool yes, bool json, EventStream& stream) {
             .recoverable = false });
         return 1;
     }
+}
+
+int prepare_carrier_host(bool yes, EventStream& stream) {
+    if constexpr (!platform::is_windows) return 1;
+    const auto home = subos::home_view();
+    const auto* wsl = carrier::find("wsl2");
+    if (wsl && wsl->probe(home).supported) return 0;
+    const int rc = repair_wsl_(home, yes, stream);
+    if (rc != 0) return rc;
+    return wsl && wsl->probe(home).supported ? 0 : 3;
 }
 
 int prepare_root_host(bool yes, EventStream& stream) {
