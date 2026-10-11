@@ -882,3 +882,7 @@ status = "required"
 [XIM-REMOVE-OLDER-THAN]
 text = "remove <name> --older-than V removes every older version nothing uses, keeps (and says why) what is active in a subos or project or linked, asks first, and --dry-run changes nothing"
 status = "required"
+
+[UX-THEME-ONCE]
+text = "a configured theme that cannot be used is reported once per setting and cause, and never inside a SubOS view or a Luban root, where the default is used silently"
+status = "required"

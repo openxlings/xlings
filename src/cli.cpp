@@ -1431,12 +1431,32 @@ int run_profile_(int argc, char* argv[], EventStream& stream) {
 // the shape this whole round is about: "I configured a theme" and "my theme
 // file has a typo in it" would produce identical output, and the user would
 // conclude the setting does nothing.
+//
+// Once per cause, though: a theme that is not there is said the first time
+// and remembered (hintsSeen, keyed by the setting and the cause); changing
+// the setting asks again. And not inside an environment -- a SubOS view or
+// a Luban root -- where the home's theme files are not projected and the
+// environment is not where a theme is configured: there the default is used
+// without a word.
+bool theme_problem_is_news_(std::string_view cause) {
+    std::error_code ec;
+    if (const char* mode = std::getenv("XLINGS_SUBOS_MODE"); (mode && *mode)
+        || std::filesystem::exists("/etc/xlings/root.json", ec)) {
+        return false;
+    }
+    const auto id = std::format("theme:{}:{}", Config::theme(), cause);
+    if (Config::hint_seen(id)) return false;
+    Config::mark_hint_seen(id);
+    return true;
+}
+
 void load_configured_theme_() {
     const auto path = Config::resolve_theme_path();
     if (path.empty()) return;              // built-in default, nothing to do
 
     std::error_code ec;
     if (!std::filesystem::is_regular_file(path, ec)) {
+        if (!theme_problem_is_news_("not_found")) return;
         diag::emit({
             .level   = diag::Level::Warn,
             .code    = "theme.not_found",
@@ -1453,6 +1473,7 @@ void load_configured_theme_() {
     try {
         content = platform::read_file_to_string(path.string());
     } catch (...) {
+        if (!theme_problem_is_news_("unreadable")) return;
         diag::emit({
             .level   = diag::Level::Warn,
             .code    = "theme.unreadable",
@@ -1465,7 +1486,10 @@ void load_configured_theme_() {
     }
 
     auto loaded = theme::load_from_json(content, theme::builtin_default());
+    const bool sayIssues = loaded.issues.empty()
+        || theme_problem_is_news_(std::format("issues:{}", std::hash<std::string>{}(content)));
     for (const auto& issue : loaded.issues) {
+        if (!sayIssues) break;
         diag::Diagnostic d {
             .level  = diag::Level::Warn,
             .source = Config::display_path(path),
