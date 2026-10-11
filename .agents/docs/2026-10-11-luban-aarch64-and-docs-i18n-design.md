@@ -600,3 +600,21 @@ graph TD
 
 - xim-pkgindex 中 11 个配方与 2 个 `libs/` 模块的注释仍指向旧文档路径（`docs/V2/xpackage-spec.md`、`docs/contributing.md §5.x`）。改注释会让 ci-test 在三个平台上重装这些包（含 android-ndk、qt），本轮不动；各配方下次修改时顺带更新。新路径：`docs/specs/xpackage-v2.md`、`docs/10-adding-a-package.md`。
 - 用 `docs.tree` 的其他站点（mcpp）迁移时同样用显式 entry 保留旧 slug。
+
+### 12.5 `install --use` / `update` 在大 home 上长时间无输出（用户报告，本 PR 修复）
+
+现象：`xlings update mcpp -y` 打印 "is in the store" 后长时间无输出，CPU 约 74%，大量
+`mmap/munmap`，逐项检查 SubOS 的 `usr/include` 链接（glibc、alsa、tiff……），并持有全局状态锁，
+其他安装被阻塞。不是锁等待，是 bug：
+
+- `xvm::cmd_use` 为了切换**一个**目标（mcpp 没有任何头文件/库/文件资产），对 SubOS 中**每个**
+  激活目标重新收集 claims（`ClaimSource::Present` 递归展开每个头文件目录），并把它们全部作为
+  changes 交给 preflight 逐项核对和重放——工作量与整个 SubOS 的头文件数成正比，而不是与这次
+  切换成正比；`Config::versions()` 每次按值复制整个版本库（3.8 MB 的 home 配置），这就是
+  `mmap/munmap` 的来源。
+- 修复：只重新物化这次切换移动的名字——被 use 的 release 本身（它自己缺失的链接会放回，`use`
+  仍能修复自己）以及激活版本发生变化的名字（成员、被回收的文件绑定）。其余激活目标的 claims
+  只以记录形式（目录级，不展开）参与保留判定和所有权证明，因此共享目的地不会被误删。整体漂移
+  的修复仍是 `self doctor --fix` 的职责。
+- 测试：xvm_library_switch S4c（use 当前 release 放回自己缺失的头文件），以及 group switch、
+  declared file assets、install/use 语义的既有 e2e 全部通过。
