@@ -514,8 +514,16 @@ std::expected<void, std::string> write_archive(const std::filesystem::path& root
         if (r == ARCHIVE_EOF) break;
         if (r != ARCHIVE_OK && r != ARCHIVE_WARN) return failed(h.disk, "reading " + root.string());
         ::archive_read_disk_descend(h.disk);
-        const fs::path source = ::archive_entry_sourcepath(h.entry);
+        // Windows' reader names its source with the long-path prefix
+        // ("\\?\C:\..."), which the root it was opened at does not carry.
+        const char* raw = ::archive_entry_sourcepath(h.entry);
+        std::string spelled = raw ? raw : "";
+        if (spelled.starts_with("\\\\?\\UNC\\")) spelled = "\\\\" + spelled.substr(8);
+        else if (spelled.starts_with("\\\\?\\")) spelled.erase(0, 4);
+        const fs::path source = spelled;
         const auto rel = source.lexically_normal().lexically_relative(base);
+        if (rel.empty() || *rel.begin() == "..")
+            return std::unexpected(std::format("{} is not under {}", spelled, base.string()));
         std::string name;
         if (initramfs || iso) {
             if (rel.empty() || rel == ".") continue;

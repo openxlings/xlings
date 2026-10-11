@@ -4428,6 +4428,15 @@ bool patchelf_reachable() {
         if (c == std::string_view::npos) break;
         rest.remove_prefix(c + 1);
     }
+    // A home that was never initialised has no shims, but the patchelf this
+    // plan installed first is there: its bin/ goes on PATH for elfpatch.
+    for (const auto& v : fs::directory_iterator(Config::paths().dataDir / "xpkgs" / "xim-x-patchelf", ec)) {
+        const auto bin = v.path() / "bin";
+        if (!fs::is_regular_file(bin / "patchelf", ec)) continue;
+        const std::string cur = path ? path : "";
+        platform::set_env_variable("PATH", bin.string() + (cur.empty() ? "" : std::string(1, platform::PATH_SEPARATOR) + cur));
+        return true;
+    }
     return false;
 }
 

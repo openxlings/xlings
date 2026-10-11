@@ -68,6 +68,7 @@ OVMF="$(ls "$H"/data/xpkgs/xim-x-edk2-firmware/*/share/edk2/edk2-"$arch"-code.fd
 # prompt -- a booted system waits there forever -- then stops all of it.
 until_console() {   # $1 log, then the command
   local log="$1"; shift
+  : > "$log"
   setsid "$@" > "$log" 2>&1 < /dev/null &
   local pid=$! t=0
   until tr -d '\r' < "$log" | grep -aq "Please press Enter to activate this console"; do

@@ -53,7 +53,12 @@ if ($wsl2 -and $rc -eq 0) {
     exit 0
 }
 
-if ($rc -ne 125) { Fail "without WSL2 the carrier must refuse with exit 125 (got $rc)" }
+# Without WSL2 the one-time setup (WSL from the index, the Virtual Machine
+# Platform) is offered; with nobody to confirm it, nothing changes and the
+# exit is 2 naming it. Where it cannot be set up at all the refusal is 125.
+if ($rc -eq 2) {
+    if ($out -notmatch 'one-time setup' -or $out -notmatch 'WSL') { Fail "exit 2 does not name the WSL setup: $out" }
+} elseif ($rc -ne 125) { Fail "without WSL2 the carrier must offer its setup (2) or refuse (125), got $rc" }
 if ($out -notmatch 'wsl|WSL') { Fail "the refusal does not name WSL or its route: $out" }
 if (Test-Path "$PKG_DIR\subos\carrierbox") { Fail "a refused carrier SubOS left a directory behind" }
 & xlings subos new nativebox
