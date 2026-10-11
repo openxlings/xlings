@@ -41,7 +41,11 @@ done
 sh_target="$(readlink "$S/root/usr/bin/sh")"
 [[ "$sh_target" == "$H/data/xpkgs/xim-x-busybox/"*"/bin/sh" ]] \
   || fail "/usr/bin/sh is not a direct link into busybox: $sh_target"
-[[ -e "$S/root/usr/lib/modules/6.8.0-71-generic/vmlinuz" ]] || fail "no kernel at /usr/lib/modules"
+# An edition does not carry a kernel (Luban design §A6): an image's comes with
+# its boot profile, installed when the image is made.
+[[ ! -e "$S/root/usr/lib/modules/6.8.0-71-generic/vmlinuz" ]] || fail "the edition put a kernel into the root"
+grep -q '"profile": *"xim:luban-boot-generic@' "$H/config/subos/tiny/instance.json" \
+  || fail "the edition's boot profile is not recorded"
 [[ -L "$S/rootfs/etc/inittab" && -x "$S/rootfs/etc/init.d/rcS" ]] || fail "factory /etc missing"
 grep -q '^ID=luban' "$S/rootfs/etc/os-release" || fail "no luban os-release"
 echo "mine" > "$S/rootfs/etc/hostname.local"

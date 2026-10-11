@@ -101,50 +101,37 @@ status=$?
 set -e
 [[ $status -eq 37 && "$(cat "$marker")" == candidate ]]
 
-case "$(uname -s)-$(uname -m)" in
-  Linux-aarch64|Linux-arm64)
-    set +e
-    sandbox_output=$(run_candidate "$installed" subos use candidate-probe \
-      --sandbox --cmd 'exit 37' 2>&1)
-    status=$?
-    set -e
-    [[ $status -ne 0 ]]
-    grep -q 'E_UNSUPPORTED_TARGET.*linux-aarch64' <<<"$sandbox_output"
-    ! grep -Eqi 'download|HTTP|404|failed to install sandbox backend' \
-      <<<"$sandbox_output"
-    ;;
-  *)
-    # The sandbox backend is fetched from the package index, so this step --
-    # unlike every other one here -- depends on a third-party mirror being
-    # reachable. These jobs gate `create-release`, and a mirror hiccup must not
-    # be able to block a publish, so it retries and then degrades to a loud
-    # skip. Everything else in this script stays hard.
-    #
-    # The coverage is not lost: E2E-25 exercises the same path in the PR
-    # workflows, where a red run costs a re-run rather than a release.
-    sandbox_marker="$candidate_home/subos/candidate-probe/home/${USER:-user}/marker"
-    sandbox_ok=0
-    for attempt in 1 2 3; do
-      rm -f "$sandbox_marker"
-      set +e
-      run_candidate "$installed" subos use candidate-probe --sandbox \
-        --cmd 'printf sandbox > "$HOME/marker"; exit 37'
-      status=$?
-      set -e
-      if [[ $status -eq 37 && "$(cat "$sandbox_marker" 2>/dev/null)" == sandbox ]]; then
-        sandbox_ok=1
-        break
-      fi
-      echo "candidate smoke: sandbox attempt ${attempt} failed (status ${status})"
-      sleep $((attempt * 5))
-    done
-    if [[ $sandbox_ok -ne 1 ]]; then
-      echo "::warning::candidate smoke SKIPPED the sandbox lifecycle after 3 attempts -- \
+# Every architecture the index has a sandbox backend for (aarch64 since
+# bwrap 0.11.2's aarch64 build). The backend is fetched from the package
+# index, so this step --
+# unlike every other one here -- depends on a third-party mirror being
+# reachable. These jobs gate `create-release`, and a mirror hiccup must not
+# be able to block a publish, so it retries and then degrades to a loud
+# skip. Everything else in this script stays hard.
+#
+# The coverage is not lost: E2E-25 exercises the same path in the PR
+# workflows, where a red run costs a re-run rather than a release.
+sandbox_marker="$candidate_home/subos/candidate-probe/home/${USER:-user}/marker"
+sandbox_ok=0
+for attempt in 1 2 3; do
+  rm -f "$sandbox_marker"
+  set +e
+  run_candidate "$installed" subos use candidate-probe --sandbox \
+    --cmd 'printf sandbox > "$HOME/marker"; exit 37'
+  status=$?
+  set -e
+  if [[ $status -eq 37 && "$(cat "$sandbox_marker" 2>/dev/null)" == sandbox ]]; then
+    sandbox_ok=1
+    break
+  fi
+  echo "candidate smoke: sandbox attempt ${attempt} failed (status ${status})"
+  sleep $((attempt * 5))
+done
+if [[ $sandbox_ok -ne 1 ]]; then
+  echo "::warning::candidate smoke SKIPPED the sandbox lifecycle after 3 attempts -- \
 the backend could not be installed from the package index. Every other \
 lifecycle step passed."
-    fi
-    ;;
-esac
+fi
 
 run_candidate "$installed" subos info candidate-probe >/dev/null
 run_candidate "$installed" subos remove candidate-probe -y

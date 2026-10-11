@@ -102,6 +102,23 @@ TEST(XpkgCompatibility, WeakEvidenceInstallsAndOnlyAdvises) {
     EXPECT_TRUE(matching.advisory.empty());
 }
 
+// A template (type = "subos", a Luban edition) ships no artifact: its archs
+// is the only statement of where it runs, so it decides -- an x86_64 edition
+// on aarch64 is refused before anything is made.
+TEST(XpkgCompatibility, ATemplatesArchsDecide) {
+    mcpplibs::xpkg::PlatformResource entry;   // a template: nothing to download
+    auto tiny = with_entry("luban-tiny", {"x86_64"}, "linux", "0.1.0", entry);
+    tiny.type = mcpplibs::xpkg::PackageType::Subos;
+    const auto* resolved = find_entry(tiny, "linux", "0.1.0");
+    ASSERT_NE(resolved, nullptr);
+    auto arm = check_target_compatibility(tiny, resolved, "linux", "aarch64");
+    EXPECT_FALSE(arm.supported);
+    EXPECT_EQ(arm.supportedTargets, (std::vector<std::string>{"linux-x86_64"}));
+    EXPECT_TRUE(check_target_compatibility(tiny, resolved, "linux", "x86_64").supported);
+    tiny.archs = {"x86_64", "aarch64"};
+    EXPECT_TRUE(check_target_compatibility(tiny, resolved, "linux", "aarch64").supported);
+}
+
 // An ${arch} template or an XLINGS_RES resource is arch-parametric by
 // construction. Nothing local can bound the set, so nothing local refuses.
 TEST(XpkgCompatibility, OpenEvidenceNeverRefuses) {

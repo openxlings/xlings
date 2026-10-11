@@ -124,6 +124,16 @@ TargetCompatibility check_target_compatibility(
                     return mcpplibs::xpkg::arch_matches(packageArch,
                                                         normalizedArch);
                 });
+            // A template (type = "subos": an edition) ships no artifact: its
+            // `archs` is the only statement of where it runs, and the truth --
+            // an aarch64 host given an x86_64 edition was half-made, then
+            // failed on its first package.
+            if (package.type == mcpplibs::xpkg::PackageType::Subos) {
+                result.supported = declared;
+                for (const auto& packageArch : package.archs)
+                    result.supportedTargets.push_back(label(mcpplibs::xpkg::normalize_arch(packageArch)));
+                break;
+            }
             // Deliberately still supported. This is the V1 under-declaration
             // case: a single artifact whose `archs` was never enforced and is
             // routinely wrong for exactly this OS.
