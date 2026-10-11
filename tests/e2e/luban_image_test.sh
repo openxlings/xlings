@@ -71,7 +71,7 @@ UEFI=(-bios "$OVMF")
 if [[ "$arch" == x86_64 ]]; then
   vars="$(dirname "$(readlink -f "$(command -v qemu-system-x86_64)")")/../share/qemu/edk2-i386-vars.fd"
   [[ -f "$vars" ]] || fail "no UEFI variable store beside qemu-system-x86_64 ($vars)"
-  cp "$vars" "$RUNTIME_DIR/vars.fd"
+  cp "$vars" "$RUNTIME_DIR/vars.empty.fd"
   UEFI=(-drive "if=pflash,format=raw,unit=0,readonly=on,file=$OVMF" -drive "if=pflash,format=raw,unit=1,file=$RUNTIME_DIR/vars.fd")
 fi
 # Runs a command (its own session) until its output shows the console
@@ -90,11 +90,14 @@ until_console() {   # $1 log, then the command
 }
 boot() {   # $1 log name, then qemu's media arguments
   local name="$1"; shift
+  # Each boot from an empty variable store: one boot's entries (a CD that is
+  # gone) are not the next machine's.
+  [[ -f "$RUNTIME_DIR/vars.empty.fd" ]] && cp "$RUNTIME_DIR/vars.empty.fd" "$RUNTIME_DIR/vars.fd"
   local accel=()
   if [[ -w /dev/kvm ]]; then accel=(-enable-kvm -cpu host); elif [[ "$arch" != x86_64 ]]; then accel=(-cpu max); fi
   until_console "$RUNTIME_DIR/$name.log" "${QEMU[@]}" "${accel[@]}" -m 2048 -smp 2 -nographic -no-reboot -nic none "$@"
   tr -d '\r' < "$RUNTIME_DIR/$name.log" | grep -aq "luban-init: booting 'default'" \
-    || { tr -d '\r' < "$RUNTIME_DIR/$name.log" | tail -25; fail "$name: did not reach stage-0"; }
+    || { tr -d '\r' < "$RUNTIME_DIR/$name.log" | tail -60; fail "$name: did not reach stage-0"; }
   tr -d '\r' < "$RUNTIME_DIR/$name.log" | grep -aq "Please press Enter to activate this console" \
     || { tr -d '\r' < "$RUNTIME_DIR/$name.log" | tail -15; fail "$name: did not reach its init"; }
   log "  $name: stage-0 and init"
