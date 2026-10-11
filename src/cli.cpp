@@ -1873,7 +1873,17 @@ int dispatch_(int argc, char* argv[]) {
             std::ofstream probe(home / ".xlings.lock", std::ios::app);
             return static_cast<bool>(probe);
         };
-        if (subos::broker::available() && !home_is_ours()) {
+        // Nor for help, which changes nothing: forwarded, `remove --help`
+        // printed the HOST's xlings's help, whatever version that is.
+        const bool asksHelp = [&] {
+            for (int i = 2; i < fargc; ++i) {
+                const std::string_view a{fargv[i]};
+                if (a == "--") break;
+                if (a == "-h" || a == "--help") return true;
+            }
+            return false;
+        }();
+        if (subos::broker::available() && !asksHelp && !home_is_ours()) {
             std::vector<std::string> rest;
             for (int i = 1; i < fargc; ++i) rest.emplace_back(fargv[i]);
             const char* active = std::getenv("XLINGS_ACTIVE_SUBOS");

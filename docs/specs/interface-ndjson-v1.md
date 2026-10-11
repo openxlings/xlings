@@ -51,7 +51,7 @@ xlings interface --version
 prints one line and exits:
 
 ```json
-{"protocol_version":"1.7"}
+{"protocol_version":"1.8"}
 ```
 
 ### 3.2 The capabilities
@@ -63,7 +63,7 @@ xlings interface --list
 prints the capability list and exits:
 
 ```json
-{"protocol_version":"1.7","capabilities":[{"name":"install_packages","description":"...","destructive":true,"inputSchema":{},"outputSchema":{}}]}
+{"protocol_version":"1.8","capabilities":[{"name":"install_packages","description":"...","destructive":true,"inputSchema":{},"outputSchema":{}}]}
 ```
 
 ### 3.3 Running a capability

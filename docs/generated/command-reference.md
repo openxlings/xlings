@@ -22,7 +22,7 @@ Options: `-g, --global` — Use global scope; `-u, --use` — Activate installed
 
 Remove a package
 
-Options: `-g, --global` — Use global scope; `--force` — Remove even if packages depend on it, the recipe is gone, or its uninstall hook fails; `--all` — Remove every installed version, not just the active one; `--all-subos` — Remove from every subos that has it installed; `--subos <NAME>` — Act on this subos only, instead of the current one
+Options: `-g, --global` — Use global scope; `--force` — Remove even if packages depend on it, the recipe is gone, or its uninstall hook fails; `--all` — Remove every installed version, not just the active one; `--all-subos` — Remove from every subos that has it installed; `--subos <NAME>` — Act on this subos only, instead of the current one; `--older-than <VERSION>` — Remove every installed version older than VERSION that nothing uses; `--dry-run` — With --older-than: list what would be removed, and change nothing
 
 ## `xlings update [package] [version]`
 
