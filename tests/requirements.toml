@@ -886,3 +886,7 @@ status = "required"
 [UX-THEME-ONCE]
 text = "a configured theme that cannot be used is reported once per setting and cause, and never inside a SubOS view or a Luban root, where the default is used silently"
 status = "required"
+
+[SES-TTY-JOBCTL]
+text = "a command on a terminal whose foreground is another process group (a background job, a brokered command on a session's terminal) never changes the terminal's modes, so the kernel never stops it -- nor `luban enter` with it"
+status = "required"

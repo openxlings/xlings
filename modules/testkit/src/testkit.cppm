@@ -112,7 +112,17 @@ struct RunOptions {
     // input there times out instead of finishing -- which is the observation
     // the agent contract scan makes. POSIX only.
     bool pty { false };
+    // With pty: run the program as a BACKGROUND job of that terminal (a
+    // process group that is not its foreground), the way a shell's `cmd &`
+    // or a command run for somebody else on their terminal is. A program that
+    // changes the terminal's modes there is stopped by the kernel; the run
+    // then ends with kStoppedByTerminal. POSIX only.
+    bool pty_background { false };
 };
+
+// The exit code of a pty_background run whose program the kernel stopped
+// for touching the terminal (SIGTTOU / SIGTTIN).
+inline constexpr int kStoppedByTerminal = 150;
 
 struct RunResult {
     int exit_code { -1 };       // -1 when it did not exit (timeout / signal)

@@ -698,6 +698,13 @@ int supervise(const HomeView& home, Launch& L, Info& info, int listen_fd, std::a
                 const int bp = platform::fork_process();
                 if (bp == 0) {
                     platform::reset_signals();
+                    // A session of its own. The descriptors it is handed are
+                    // the caller's terminal, whose foreground is the caller's
+                    // job inside; in this (the owner's) session that terminal
+                    // is the controlling one, and the first change of its
+                    // modes stopped this group with SIGTTOU -- the supervisor
+                    // and `luban enter` with it.
+                    platform::new_session();
                     // From the home: a directory that is a home ends the
                     // project search, so the session owner's cwd (a project,
                     // perhaps) never becomes the scope this runs in.

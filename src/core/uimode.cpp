@@ -25,11 +25,16 @@ UiCapabilities gCaps_ {};
     // probes and their reasoning (NO_COLOR asks for no colour, not for no
     // cursor control; a pipe has no width limit rather than a default of 80).
     // Re-deriving any of it here would be a fifth knob.
+    // A terminal whose foreground is another process group (a background
+    // job; a command the SubOS broker runs on a session's terminal) is no
+    // terminal to draw on or ask through: redrawing and prompting change its
+    // modes, and the kernel stops the whole group for that.
+    const bool foreground = platform::in_terminal_foreground();
     return Detected{
-        .stdoutIsTerminal = palette::stdout_is_terminal(),
+        .stdoutIsTerminal = palette::stdout_is_terminal() && foreground,
         // From platform rather than palette: palette answers questions about
         // what may be DRAWN, and all of those are about the output side.
-        .stdinIsTerminal  = platform::stdin_is_terminal(),
+        .stdinIsTerminal  = platform::stdin_is_terminal() && foreground,
         .colorAllowed     = palette::colors_enabled(),
     };
 }
