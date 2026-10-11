@@ -155,7 +155,7 @@ void print_subos_removed(const std::string& name);
 // The subos NAME is rendered in bold green (matching the prompt marker
 // styling) so the user's eye lands on it; the rest of the line stays in
 // the magenta accent that distinguishes "spawn" from "switched" (cyan).
-void print_subos_entering(const std::string& name);
+void print_subos_entering(const std::string& name, const std::string& edition = {});
 
 // `xlings subos use <same>` while already in <same>: nothing happens, but
 // we tell the user so they know the command was received and acknowledged.

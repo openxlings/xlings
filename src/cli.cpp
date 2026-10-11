@@ -482,7 +482,7 @@ void dispatch_data_event(const DataEvent& e) {
             json.value("name", ""), json.value("dir", ""));
     }
     else if (e.kind == "subos_entering") {
-        ui::print_subos_entering(json.value("name", ""));
+        ui::print_subos_entering(json.value("name", ""), json.value("edition", ""));
     }
     else if (e.kind == "subos_already_in") {
         ui::print_subos_already_in(json.value("name", ""));
