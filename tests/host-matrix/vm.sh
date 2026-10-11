@@ -95,7 +95,7 @@ seedpid=$!
 log "booting (ssh on 127.0.0.1:$port)"
 qemu-system-x86_64 -enable-kvm -cpu host -m 4096 -smp 4 -display none \
     -drive "file=$cache/$image,if=virtio,snapshot=on" -drive "file=$work/home.img,if=virtio,format=raw" \
-    -smbios "type=1,serial=ds=nocloud;s=http://10.0.2.2:$seedport/" \
+    -smbios "type=1,serial=ds=nocloud-net;s=http://10.0.2.2:$seedport/" \
     -nic "user,model=virtio-net-pci,hostfwd=tcp:127.0.0.1:$port-:22" -serial "file:$evidence/console-$distro.log" \
     -pidfile "$work/qemu.pid" -daemonize
 trap 'kill "$(cat "$work/qemu.pid" 2>/dev/null)" "$seedpid" 2>/dev/null || true; rm -rf "$work"' EXIT
