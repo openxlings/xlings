@@ -3250,9 +3250,9 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& requested
         if (const auto revision = foreignPayload || borrowedPayload
                 ? RevisionVerdict{}
                 : payload_revision_verdict(ctx.install_dir, node.revision);
-            revision.stale) {
-            log::info("reinstalling {}@{}: {}",
-                      node.name, node.version, revision.reason());
+            revision.stale || (payloadInstalled && !node.rebindReason.empty())) {
+            log::info("reinstalling {}@{}: {}", node.name, node.version,
+                      revision.stale ? revision.reason() : node.rebindReason);
             auto aside = set_aside_payload(ctx.install_dir);
             if (!aside) {
                 const auto message = std::format(
@@ -3276,7 +3276,8 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& requested
         // takes every node down the path below, which is what every install
         // did before -- 89 nodes of config and ~85 s for an app that was
         // already installed, with nothing printed.
-        if (payloadInstalled && !reconfig && node.pkgType != 3 /* Config */) {
+        if (payloadInstalled && !reconfig && node.pkgType != 3 /* Config */
+            && !node.migrateRecord && node.rebindReason.empty()) {
             bool done = node.kind == DepKind::Build;
             if (!done) {
                 const auto verdict = configured_verdict(
@@ -3623,7 +3624,8 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& requested
             }
         }
 
-        if (!borrowedPayload && node.pkgType != 3 /* Config */ && (!payloadInstalled || reconfig)) {
+        if (!borrowedPayload && node.pkgType != 3 /* Config */
+            && (!payloadInstalled || reconfig || node.migrateRecord)) {
             if (auto evidence = detail_::save_resolution_(node, ctx); !evidence) {
                 log::error("failed to record resolution for {}: {}", node.name, evidence.error());
                 write_payload_failure_marker(ctx.install_dir, node.version, evidence.error());

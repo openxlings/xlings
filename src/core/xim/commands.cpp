@@ -1001,6 +1001,8 @@ int install_(std::span<const std::string> targets, bool yes, bool noDeps,
                 std::string note;
                 if (!node.staleReason.empty()) {
                     note = "reinstall: " + node.staleReason;
+                } else if (!node.rebindReason.empty()) {
+                    note = "reinstall: " + node.rebindReason;
                 }
                 planPackages.push_back({nameVer, note, node.revision});
             }
@@ -1023,7 +1025,7 @@ int install_(std::span<const std::string> targets, bool yes, bool noDeps,
     const auto node_has_work = [reconfig](const PlanNode& node) {
         if (!node.alreadyInstalled) return true;
         if (node.kind == DepKind::Build) return false;
-        return reconfig || node.pkgType == 3 || !node.configuredHere;
+        return reconfig || node.pkgType == 3 || !node.configuredHere || node.migrateRecord;
     };
 
     // Nothing to do at all. Before #632 this still ran config() for every

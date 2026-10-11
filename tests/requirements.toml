@@ -890,3 +890,7 @@ status = "required"
 [SES-TTY-JOBCTL]
 text = "a command on a terminal whose foreground is another process group (a background job, a brokered command on a session's terminal) never changes the terminal's modes, so the kernel never stops it -- nor `luban enter` with it"
 status = "required"
+
+[UPGRADE-OLD-HOME-LUBAN]
+text = "an environment made from an edition on a home an older client filled (payloads without resolution records, or recorded against another runtime) is made without failures: the plan migrates the record or reinstalls the payload, and never asks the user to run --reconfig"
+status = "required"

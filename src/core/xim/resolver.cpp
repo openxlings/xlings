@@ -11,6 +11,10 @@ import xlings.core.xim.compatibility;
 import xlings.core.log;
 import xlings.core.semver;
 import xlings.platform;
+import xlings.core.elfread;
+import xlings.core.profile;
+import xlings.core.xvm.db;
+import xlings.libs.json;
 
 namespace xlings::xim {
 
@@ -92,6 +96,142 @@ std::expected<void, std::string> require_install_tool(InstallPlan& plan,
     for (const auto i : order) ordered.push_back(std::move(nodes[i]));
     plan.nodes = std::move(ordered);
     return {};
+}
+
+
+namespace {
+
+namespace fs = std::filesystem;
+
+bool within_(const fs::path& root, const fs::path& path) {
+    const auto relative = path.lexically_relative(root);
+    return path == root
+        || (!relative.empty() && !relative.is_absolute() && *relative.begin() != "..");
+}
+
+// Is the scope this plan installs into a root (a rootfs SubOS)? Its
+// instance.json says so; a project or a view is not one.
+bool installs_into_root_() {
+    const auto dir = Config::xvm_artifact_subos_dir();
+    const auto home = Config::paths().homeDir;
+    if (dir.parent_path() != home / "subos") return false;
+    const auto instance = home / "config" / "subos" / dir.filename() / "instance.json";
+    std::error_code ec;
+    if (!fs::is_regular_file(instance, ec)) return false;
+    auto doc = nlohmann::json::parse(platform::read_file_to_string(instance.string()), nullptr, false);
+    return !doc.is_discarded() && doc.is_object() && doc.value("kind", std::string{}) == "rootfs";
+}
+
+// The first path an ELF of `payload` loads from the store that is not the
+// payload itself nor one of `allowed`; empty when there is none.
+std::string links_outside_(const fs::path& payload, const std::vector<fs::path>& allowed) {
+    std::error_code ec;
+    for (auto it = fs::recursive_directory_iterator(payload, fs::directory_options::skip_permission_denied, ec);
+         !ec && it != fs::recursive_directory_iterator(); it.increment(ec)) {
+        std::error_code fec;
+        if (it->is_symlink(fec) || !it->is_regular_file(fec)) continue;
+        if (!elfread::is_elf(it->path())) continue;
+        const auto info = elfread::read(it->path());
+        if (!info) continue;
+        auto paths = info->searchPaths;
+        if (!info->interpreter.empty()) paths.push_back(info->interpreter);
+        for (const auto& p : paths) {
+            if (p.find("/xpkgs/") == std::string::npos || p.find('$') != std::string::npos) continue;
+            const auto path = fs::path(p).lexically_normal();
+            if (within_(payload, path)) continue;
+            if (std::ranges::any_of(allowed, [&](const fs::path& a) { return within_(a, path); })) continue;
+            return p;
+        }
+    }
+    return {};
+}
+
+}  // namespace
+
+// What a root scope needs of each payload this plan reuses: a resolution
+// record naming payloads of the plan (store_closure checks exactly that).
+// One answer per node, given here so the plan shows it and the installer acts
+// on it -- not discovered after the config hook ran, as "metadata publication
+// failed ... run owner install --reconfig" on every such node.
+void scope_evidence_(InstallPlan& plan) {
+    if (!installs_into_root_()) return;
+    std::unordered_map<std::string, const PlanNode*> byKey;
+    for (const auto& n : plan.nodes) byKey[node_key_(n.canonicalName, n.version)] = &n;
+    const auto dir_of = [](const PlanNode& n) {
+        const auto store = n.storeRoot.empty() ? Config::paths().dataDir / "xpkgs" : n.storeRoot;
+        return (store / package_store_name(n.namespaceName, n.name) / n.version).lexically_normal();
+    };
+    std::vector<std::string> unreadable;
+    const auto snapshots = profile::load_subos_snapshots(Config::paths().homeDir, &unreadable);
+    const auto here = Config::xvm_artifact_subos_dir().filename().string();
+    for (auto& node : plan.nodes) {
+        if (!node.alreadyInstalled || node.pkgType == 3 || node.kind == DepKind::Build
+            || !node.borrowedPayload.empty() || !node.staleReason.empty()) continue;
+        const auto payload = dir_of(node);
+        std::vector<fs::path> deps;
+        std::map<std::string, const PlanNode*> depByName;
+        for (const auto& edge : node.depEdges) {
+            if (edge.kind == DepKind::Build) continue;
+            if (auto it = byKey.find(edge.nodeKey); it != byKey.end()) {
+                deps.push_back(dir_of(*it->second));
+                depByName[it->second->canonicalName] = it->second;
+            }
+        }
+        const auto record = payload / ".xlings-resolution.json";
+        std::error_code ec;
+        if (!fs::is_regular_file(record, ec)) {
+            if (auto outside = links_outside_(payload, deps); !outside.empty())
+                node.rebindReason = std::format("it links {}, which this root does not have", outside);
+            else
+                node.migrateRecord = true;
+            continue;
+        }
+        auto doc = nlohmann::json::parse(platform::read_file_to_string(record.string()), nullptr, false);
+        if (doc.is_discarded() || !doc.contains("deps") || !doc["deps"].is_array()) {
+            node.migrateRecord = true;
+            continue;
+        }
+        std::size_t matched = 0;
+        for (const auto& d : doc["deps"]) {
+            if (!d.is_object()) continue;
+            const auto recorded = fs::path(xvm::expand_path(d.value("install_dir", std::string{}),
+                                                            Config::paths().homeDir.string())).lexically_normal();
+            if (std::ranges::find(deps, recorded) != deps.end()) { ++matched; continue; }
+            const auto libdirs = d.value("libdirs", nlohmann::json::array());
+            if (!libdirs.is_array() || libdirs.empty()) { node.migrateRecord = true; continue; }
+            // It links a payload this root does not hold. Reinstalling it
+            // against the plan's moves it for every scope that uses it, so
+            // one that still declares the old runtime is a real conflict.
+            const auto name = d.value("name", std::string{});
+            const auto version = d.value("version", std::string{});
+            const auto bare = name.substr(name.rfind(':') + 1);
+            const auto pkgBare = node.name;
+            for (const auto& snap : snapshots) {
+                if (snap.name == here) continue;
+                auto inst = snap.workspace.installed.find(pkgBare);
+                if (inst == snap.workspace.installed.end()
+                    || std::ranges::none_of(inst->second, [&](const std::string& v) {
+                           return xvm::strip_namespace(v) == node.version; })) continue;
+                if (xvm::strip_namespace(xvm::get_active_version(snap.workspace.active, bare)) == version) {
+                    plan.errors.push_back(std::format(
+                        "{}@{} is linked against {}@{}, which subos '{}' still uses; this root needs it "
+                        "against {} -- move '{}' to the same runtime (xlings subos runtime {} ...), or "
+                        "make this root with that runtime", node.canonicalName, node.version, name, version,
+                        snap.name, depByName.contains(name) ? depByName[name]->version : std::string("another"),
+                        snap.name, snap.name));
+                }
+            }
+            node.migrateRecord = false;
+            node.rebindReason = std::format("built against {} {}; this root has {}", bare, version,
+                depByName.contains(name) ? depByName[name]->version : std::string("another"));
+            break;
+        }
+        if (node.rebindReason.empty() && matched < deps.size()) node.migrateRecord = true;
+        if (!node.rebindReason.empty()) {
+            node.alreadyInstalled = false;
+            node.configuredHere = false;
+        }
+    }
 }
 
 std::expected<InstallPlan, std::string>
@@ -357,6 +497,7 @@ resolve(PackageCatalog& catalog, std::span<const std::string> targets, const std
         }
     }
 
+    scope_evidence_(plan);
     return plan;
 }
 
