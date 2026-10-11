@@ -39,9 +39,9 @@ import xlings.runtime.cancellation;
 
 export namespace xlings::xim {
 
-// Whether elfpatch has a patchelf to run: the scope's bin/, PATH, or the
-// home's own payload (whose bin/ is then put on PATH). Always true off Linux,
-// where nothing is patched.
+// Whether elfpatch has a patchelf to run: the scope's bin/ or PATH (where a
+// plan that installs patchelf puts its payload's bin/). Always true off
+// Linux, where nothing is patched.
 bool patchelf_reachable();
 
 enum class XpkgRegistrationErrorKind {

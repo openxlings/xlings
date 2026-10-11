@@ -3582,6 +3582,15 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& requested
             if (!binDir.empty() && curPath.find(binDir) == std::string::npos) {
                 platform::set_env_variable("PATH",
                     binDir + std::string(1, platform::PATH_SEPARATOR) + curPath);
+                curPath = binDir + std::string(1, platform::PATH_SEPARATOR) + curPath;
+            }
+            // The patchelf this plan installs is the one the later nodes are
+            // relocated with -- from its payload, since a home that was
+            // never initialised has no shim for it. (One the user removed
+            // is not used: only this plan's.)
+            if (node.name == "patchelf" && std::filesystem::is_regular_file(ctx.install_dir / "bin" / "patchelf")) {
+                platform::set_env_variable("PATH", (ctx.install_dir / "bin").string()
+                    + std::string(1, platform::PATH_SEPARATOR) + curPath);
             }
             // Fail closed (part 2 §2.4 G1b): a payload that needs relocating
             // and no patchelf to do it is not installed, whatever elfpatch
@@ -4427,15 +4436,6 @@ bool patchelf_reachable() {
         if (!dir.empty() && fs::exists(fs::path(std::string(dir)) / "patchelf", ec)) return true;
         if (c == std::string_view::npos) break;
         rest.remove_prefix(c + 1);
-    }
-    // A home that was never initialised has no shims, but the patchelf this
-    // plan installed first is there: its bin/ goes on PATH for elfpatch.
-    for (const auto& v : fs::directory_iterator(Config::paths().dataDir / "xpkgs" / "xim-x-patchelf", ec)) {
-        const auto bin = v.path() / "bin";
-        if (!fs::is_regular_file(bin / "patchelf", ec)) continue;
-        const std::string cur = path ? path : "";
-        platform::set_env_variable("PATH", bin.string() + (cur.empty() ? "" : std::string(1, platform::PATH_SEPARATOR) + cur));
-        return true;
     }
     return false;
 }

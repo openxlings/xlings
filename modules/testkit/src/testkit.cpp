@@ -227,9 +227,12 @@ std::optional<std::string> probe_uncached(std::string_view cap) {
     }
     if (cap == "qemu") {
         if constexpr (!is_linux) return "the boot scenarios run on Linux";
-        for (auto p : {"/usr/bin/qemu-system-x86_64", "/usr/bin/qemu-system-aarch64"})
+        // A machine's copy, or the index's linked into /usr/local/bin (CI's
+        // tools come from xlings: tools/ci/xlings_tools.sh).
+        for (auto p : {"/usr/bin/qemu-system-x86_64", "/usr/bin/qemu-system-aarch64",
+                       "/usr/local/bin/qemu-system-x86_64", "/usr/local/bin/qemu-system-aarch64"})
             if (fs::exists(p)) return std::nullopt;
-        return "qemu-system is not installed";
+        return "qemu-system is not installed (xlings install qemu-system)";
     }
     if (cap == "kvm") {
         if (::access("/dev/kvm", R_OK | W_OK) == 0) return std::nullopt;
