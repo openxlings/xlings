@@ -898,3 +898,7 @@ status = "required"
 [SUBOS-OWN-HOME-INSIDE]
 text = "inside a sandbox, a command for a home the sandbox owns (XLINGS_HOME it can write, e.g. mcpp's registry) runs there; only the session's read-only home goes to the broker or is owner-only"
 status = "required"
+
+[PERF-LARGE-HOME]
+text = "in a home of thousands of targets and several known projects, use / install --use / remove / remove --older-than / list / self doctor of one package stay within their budgets: their cost is what the change moves, not what the home holds"
+status = "required"

@@ -13,6 +13,7 @@ module xlings.core.xim.commands;
 
 import xlings.core.xim.lua_boundary;
 import std;
+import xlings.observe;
 import xlings.core.xim.index;
 import xlings.core.xim.libxpkg.types.type;
 import mcpplibs.xpkg;
@@ -787,7 +788,9 @@ int install_(std::span<const std::string> targets, bool yes, bool noDeps,
     }
 
     // Resolve dependencies
+    std::optional<observe::Timed> planTimed(std::in_place, "plan");
     auto planResult = resolve(catalog, targetVec, platform, subos_version_of_);
+    planTimed.reset();
     if (!planResult) {
         // #374: structured error on the wire (was a swallowed log::error)
         stream.emit(ErrorEvent{
@@ -1121,6 +1124,7 @@ int install_(std::span<const std::string> targets, bool yes, bool noDeps,
         stream.emit(DataEvent{"download_progress", payload.dump()});
     };
 
+    observe::Timed executeTimed("install (download, hooks, registration)");
     auto result = installer.execute(plan, dlConfig,
         [&, cancel](const InstallStatus& status) {
             switch (status.phase) {
@@ -1732,6 +1736,7 @@ int cmd_remove_resolved_(const std::string& target,
 
         // With a resolved payload the question is about THIS version
         // (removal_check); without one, by name, as before.
+        observe::Timed guardTimed("remove guard");
         RemovalCheck check;
         if (match && !match->version.empty()) {
             const auto storeRoot = match->storeRoot.empty()
@@ -1802,7 +1807,9 @@ int cmd_remove_resolved_(const std::string& target,
     }
 
     Installer installer(catalog);
+    std::optional<observe::Timed> uninstallTimed(std::in_place, "uninstall");
     auto result = installer.uninstall(resolveTarget, force);
+    uninstallTimed.reset();
     if (!result) {
         log::error("uninstall failed: {}", result.error());
         return 1;

@@ -70,6 +70,23 @@ bool trace_enabled(std::string_view category);
 // One line on stderr, prefixed `[trace:<category>]`, when enabled.
 void trace(std::string_view category, std::string_view message);
 
+// A phase of a command, timed. With XLINGS_TRACE=timing it says how long it
+// took when it ends (`[trace:timing] routes 812 ms`), so a slow command's
+// report names the phase. `announce`, when given, is said on stderr if the
+// phase is still running after 2 s -- a command never sits silent while it
+// holds the home's lock. A scope object: an early return is timed too.
+class Timed {
+public:
+    explicit Timed(std::string phase, std::string announce = {});
+    ~Timed();
+    Timed(const Timed&) = delete;
+    Timed& operator=(const Timed&) = delete;
+private:
+    std::string phase_;
+    std::chrono::steady_clock::time_point start_;
+    std::shared_ptr<struct TimedWatch> watch_;
+};
+
 }  // namespace xlings::observe
 
 export namespace xlings::observe::destructive {

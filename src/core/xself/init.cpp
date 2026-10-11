@@ -2,6 +2,7 @@ module xlings.core.xself.init;
 
 
 import std;
+import xlings.observe;
 import xlings.core.config;
 import xlings.core.home_config;
 import xlings.libs.json;
@@ -663,6 +664,7 @@ xvm::TableReport apply_shim_table(const fs::path& subos_dir,
 }
 
 ShimSyncSummary sync_shim_tables() {
+    observe::Timed timed("routes and root");
     ShimSyncSummary summary;
     // The first write command of a home whose xlings is a system package's:
     // the package manager installed a binary, not a home, and no `self init`
@@ -682,6 +684,8 @@ ShimSyncSummary sync_shim_tables() {
         (dir != Config::global_subos_dir() || Config::global_workspace_observed())
         && dir.parent_path() == Config::paths().homeDir / "subos") {
         const auto name = dir.filename().string();
+        observe::Timed rootTimed("root generation " + name,
+                                 std::format("updating the root of '{}'", name));
         if (auto r = subos_root::refresh(Config::paths().homeDir, name, dir, Config::workspace(),
                                          Config::versions(), "workspace change")) {
             if (!*r) {
@@ -718,6 +722,8 @@ ShimSyncSummary sync_shim_tables() {
 
     auto projects = project_contributions();
     auto db = Config::versions();
+    observe::Timed routesTimed(std::format("routes ({} projects)", projects.size()),
+                               std::format("rebuilding command routes for {} project(s)", projects.size()));
 
     const auto sync_one = [&](const fs::path& subosDir,
                               const xvm::Workspace& active,
