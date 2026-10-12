@@ -50,9 +50,13 @@ void home_view_ro(std::vector<sp::MountOp>& m, const HomeView& home, const in::I
     m.push_back({MountKind::RoBind, h, h});
     m.push_back({MountKind::Tmpfs, "", posix(home.subos_root())});
     m.push_back({MountKind::Bind, posix(i.instance_dir), posix(home.instance(i.instance))});
-    m.push_back({MountKind::Tmpfs, "", posix(home.home / "config" / "subos")});
-    if (i.exists(posix(home.config_dir(i.instance))))
-        m.push_back({MountKind::RoBind, posix(home.config_dir(i.instance)), posix(home.config_dir(i.instance))});
+    // Only where it is: bwrap cannot make a mount point inside the read-only
+    // home, and a home with no config/subos has nothing there to hide.
+    if (i.exists(posix(home.home / "config" / "subos"))) {
+        m.push_back({MountKind::Tmpfs, "", posix(home.home / "config" / "subos")});
+        if (i.exists(posix(home.config_dir(i.instance))))
+            m.push_back({MountKind::RoBind, posix(home.config_dir(i.instance)), posix(home.config_dir(i.instance))});
+    }
     for (auto dir : {"logs", "run", "state"})
         m.push_back({MountKind::Tmpfs, "", posix(home.home / dir)});
 }
