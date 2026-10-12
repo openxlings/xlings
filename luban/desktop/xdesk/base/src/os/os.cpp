@@ -1,5 +1,7 @@
 module;
 
+// The POSIX side of xdesk.os (os_windows.cpp is the other).
+#if !defined(_WIN32)   // platform-if-ok: xdesk.os is xdesk's own system layer; this file is its POSIX half
 #include <cerrno>
 #include <csignal>
 #include <cstring>
@@ -11,11 +13,13 @@ module;
 #include <sys/un.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#endif
 
 module xdesk.os;
 
 import std;
 
+#if !defined(_WIN32)   // platform-if-ok: the POSIX half (see above)
 namespace xdesk::os {
 
 namespace {
@@ -237,3 +241,4 @@ bool terminate(int pid) { return ::kill(pid, SIGTERM) == 0; }
 bool kill(int pid) { return ::kill(pid, SIGKILL) == 0; }
 
 }  // namespace xdesk::os
+#endif

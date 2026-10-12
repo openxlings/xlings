@@ -1874,13 +1874,15 @@ int dispatch_(int argc, char* argv[]) {
     // The operation journal (design §13): one file per operation, which
     // every process it runs appends to under the trace id it inherits.
     // A read-only command (a dry run among them) starts none of its own, and
-    // joins the one it is a step of.
+    // joins the one it is a step of. `self uninstall` keeps none: it removes
+    // the home the journal is in (and a cancelled one leaves it untouched).
     const char* inherited = std::getenv("XLINGS_TRACE_ID");
     std::vector<std::string_view> commandWords;
     for (int i = 1; i < fargc; ++i)
         if (!commandWords.empty() || !std::string_view(fargv[i]).starts_with("-")) commandWords.emplace_back(fargv[i]);
     const bool joining = inherited && *inherited;
-    if (!cmd.empty() && !(cmd == "self" && fargc > 2 && std::string_view(fargv[2]) == "log")
+    const bool self_ = cmd == "self" && commandWords.size() > 1;
+    if (!cmd.empty() && !(self_ && (commandWords[1] == "log" || commandWords[1] == "uninstall"))
         && (joining || !changes_nothing_(commandWords))) {
         const auto trace = observe::ops::trace_from_environment();
         std::vector<std::string> words;
