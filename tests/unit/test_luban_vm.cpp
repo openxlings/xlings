@@ -67,3 +67,16 @@ XTEST(LubanVm, OnlyAStaticBinaryCanBeAMachinesFirstProcess, .area = "luban", .co
         if (fs::exists("/bin/sh")) EXPECT_FALSE(luban::vm::is_static_elf(fs::canonical("/bin/sh")));
     }
 }
+
+XTEST(LubanVm, SoundIsTheHostsPulseSocketThroughAForwardedPort, .area = "luban", .covers = {"LUBAN-AUDIO"}) {
+    auto home = tk::Home::isolated("luban-sound");
+    const auto socket = home.root() / "pulse-native";
+    tk::write_file(socket, "");
+    EXPECT_FALSE(luban::vm::sound_forward(false, socket, "/opt/luban")) << "no grant, no sound";
+    EXPECT_FALSE(luban::vm::sound_forward(true, home.root() / "missing", "/opt/luban")) << "no socket on this host";
+    auto s = luban::vm::sound_forward(true, socket, "/opt/luban");
+    ASSERT_TRUE(s);
+    EXPECT_NE(s->guestfwd.find("__pipe-unix " + socket.string()), std::string::npos) << s->guestfwd;
+    EXPECT_EQ(s->pulse_server, "tcp:10.0.2.101:4713");
+    EXPECT_FALSE(luban::vm::sound_forward(true, socket, "/opt/a,b/luban")) << "qemu cannot run a path with a comma";
+}

@@ -68,7 +68,7 @@ text = "the release ships luban (one static binary, also luban-init), versioned 
 status = "required"
 
 [LUBAN-CLI-MAP]
-text = "each luban command is the xlings command it names; edition short names and image formats are luban's"
+text = "a luban command line is its object as a word and its attributes as options (new <n> --edition E, enter <n> --mode M); each command is one luban.service operation over xlings; edition short names and image formats are luban's"
 status = "required"
 
 [LUBAN-CLI-E2E]
@@ -104,7 +104,7 @@ text = "luban write refuses a partition, a mounted or held drive (the system's o
 status = "required"
 
 [LUBAN-TRY]
-text = "luban try boots an environment or an image in a local virtual machine; with --proxy its only network is the proxy"
+text = "luban enter <image> boots an image as it is in a local virtual machine with its console on the terminal; an environment entered as a machine whose policy is proxy-only has the proxy as its only network"
 status = "required"
 
 [LUBAN-DRIVE]

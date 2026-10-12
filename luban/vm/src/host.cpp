@@ -140,11 +140,9 @@ Network network_(const service::Context& c, std::string_view name) {
         audio = std::ranges::any_of(*g, [](const Json& v) { return v.is_string() && v.get<std::string>() == "audio"; });
     const char* runtime = std::getenv("XDG_RUNTIME_DIR");
     const auto pulse = runtime ? fs::path(runtime) / "pulse" / "native" : fs::path{};
-    std::error_code ec;
-    if (audio && !pulse.empty() && fs::exists(pulse, ec) && pulse.string().find(',') == std::string::npos && n.args.size() == 2
-        && n.args[1].starts_with("user")) {
-        n.args[1] += std::format(",guestfwd=tcp:10.0.2.101:4713-cmd:{} __pipe-unix {}", luban_(c.home).string(), pulse.string());
-        n.env["PULSE_SERVER"] = "tcp:10.0.2.101:4713";
+    if (auto sound = sound_forward(audio, pulse, luban_(c.home)); sound && n.args.size() == 2 && n.args[1].starts_with("user")) {
+        n.args[1] += "," + sound->guestfwd;
+        n.env["PULSE_SERVER"] = sound->pulse_server;
         n.summary += ", sound";
     }
     return n;
@@ -504,6 +502,14 @@ bool ask_(std::string_view question) {
 }  // namespace
 
 fs::path run_dir(const fs::path& home, std::string_view name) { return home / "run" / "machines" / name; }
+
+std::optional<SoundForward> sound_forward(bool granted, const fs::path& pulse, const fs::path& luban) {
+    std::error_code ec;
+    if (!granted || pulse.empty() || !fs::exists(pulse, ec)) return std::nullopt;
+    if (pulse.string().find(',') != std::string::npos || luban.string().find(',') != std::string::npos) return std::nullopt;
+    return SoundForward{std::format("guestfwd=tcp:10.0.2.101:4713-cmd:{} __pipe-unix {}", luban.string(), pulse.string()),
+                        "tcp:10.0.2.101:4713"};
+}
 
 int start(const service::Context& c, std::string_view name, const EnterOptions& o) {
     if (running(c.home, name)) return 0;

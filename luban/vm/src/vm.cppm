@@ -81,6 +81,12 @@ int guest_init(int argc, char* argv[]);
 fs::path run_dir(const fs::path& home, std::string_view name);
 fs::path log_dir(const fs::path& home, std::string_view name);
 
+// A machine's sound (design §9.4): with the audio grant and a host
+// PipeWire / PulseAudio socket, the guestfwd that relays to it and the
+// PULSE_SERVER its sessions use; nothing otherwise.
+struct SoundForward { std::string guestfwd; std::string pulse_server; };
+std::optional<SoundForward> sound_forward(bool granted, const fs::path& pulse_socket, const fs::path& luban);
+
 // Whether `file` is an ELF that needs no loader (what an initramfs can run).
 bool is_static_elf(const fs::path& file);
 
