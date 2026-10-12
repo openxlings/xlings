@@ -198,3 +198,44 @@ function install() return true end
     EXPECT_EQ(r.transcript().find("Permission denied"), std::string::npos) << r.transcript();
     fs::permissions(elsewhere, fs::perms::owner_all);
 }
+
+// A declared runtime that is not installed is linked by nothing here (a
+// package that links it pulls it in), so it is a notice -- also once the
+// home has packages. 2026.10.12.2 still warned as soon as one was active, on
+// every fresh home after its first install, and an upgrade reported it.
+XTEST(Upgrade, ADeclaredRuntimeNothingLinksIsANoticeNotAPendingStep, .area = "self",
+      .covers = {"UPGRADE-LADDER"}, .requires_ = {"xlings-bin"}) {
+    auto home = tk::Home::isolated("upgrade-runtime-notice");
+    const auto primary = home.root() / "primary";
+    const auto repo = home.root() / "index";
+    tk::write_file(primary / "xim-indexrepos.lua", "xim_indexrepos = {}\n");
+    fs::create_directories(primary / "pkgs");
+    tk::write_file(repo / "xim-indexrepos.lua", "xim_indexrepos = {}\n");
+    tk::write_file(repo / "pkgs/t/tool.lua", R"LUA(
+package = { spec = '1', name = 'tool', archs = {'x86_64', 'aarch64'}, programs = {'tool'},
+            xpm = { linux = { ['1.0.0'] = {} }, macosx = { ['1.0.0'] = {} }, windows = { ['1.0.0'] = {} } } }
+import('xim.libxpkg.pkginfo')
+import('xim.libxpkg.xvm')
+function install()
+    os.mkdir(path.join(pkginfo.install_dir(), 'bin'))
+    io.writefile(path.join(pkginfo.install_dir(), 'bin', 'tool'), '#!/bin/sh\n')
+    return true
+end
+function config()
+    xvm.add('tool', {bindir = path.join(pkginfo.install_dir(), 'bin')})
+    return true
+end
+)LUA");
+    tk::write_file(home.dir() / ".xlings.json", Json{{"mirror", "GLOBAL"},
+        {"xim", {{"index-repo", primary.generic_string()}}},
+        {"index_repos", Json::array({{{"name", "xim"}, {"url", primary.generic_string()}, {"source", "git"}},
+                                     {{"name", "fixture"}, {"url", repo.generic_string()}, {"source", "git"}}})}}.dump());
+    ASSERT_EQ(home.xlings({"self", "init"}).exit_code, 0);
+    set_upgraded_to(home, "2026.1.1.1");
+    auto installed = home.xlings({"install", "fixture:tool@1.0.0", "-y"});
+    ASSERT_EQ(installed.exit_code, 0) << installed.transcript();
+    EXPECT_EQ(installed.transcript().find("could not take by itself"), std::string::npos)
+        << installed.transcript();
+    auto doctor = home.xlings({"self", "doctor"});
+    EXPECT_EQ(doctor.transcript().find("subos runtime"), std::string::npos) << doctor.transcript();
+}

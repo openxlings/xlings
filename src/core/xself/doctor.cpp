@@ -573,14 +573,12 @@ std::vector<Finding> detect_subos_manifest_(const xvm::VersionDB& db,
         // Naming only "create a new SubOS" made this a dead end it never was.
         const bool differentActive = !mismatch->active.empty()
             && mismatch->active != mismatch->declared;
-        // Declared and not yet needed: a fresh home's default SubOS, where
-        // nothing but xlings is active. Its runtime is installed with the
-        // first package that links it; that is a fact, not a warning.
-        const bool nothingNeedsIt = unmaterializedDeclaration
-            && std::ranges::all_of(workspace, [&](const auto& entry) {
-                   return xvm::is_xlings_binary(entry.first) || entry.first == runtimeName
-                       || entry.second.empty();
-               });
+        // Declared and not installed: nothing here links it -- a package
+        // that does pulls it in when it is installed -- so it is installed
+        // with the first package that needs it. A fact, not a warning; it was
+        // one, on every fresh home after its first install, and the first
+        // thing an upgrade reported.
+        const bool nothingNeedsIt = unmaterializedDeclaration;
         if (nothingNeedsIt) {
             out.push_back({
                 .kind    = FindingKind::SubosRuntimeMissing,
