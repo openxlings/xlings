@@ -355,8 +355,14 @@ XTEST(SubosPolicyE2E, IsolationIsDeclaredWhenTheInstanceIsMade,
 
     // No --sandbox on the entry: the declaration is what counts.
     if (tk::probe("sandbox") == std::nullopt && tk::probe("linux") == std::nullopt) {
+        // Inside the declared sandbox the host's name is not the one seen.
         auto r = home.xlings({"subos", "use", "agent", "--cmd", "hostname"});
         EXPECT_EQ(r.exit_code, 0) << r.transcript();
-        EXPECT_NE(r.out.find("agent"), std::string::npos) << r.transcript();
+        std::string host;
+        std::getline(std::ifstream("/proc/sys/kernel/hostname"), host);
+        auto inside = r.out;
+        while (!inside.empty() && (inside.back() == '\n' || inside.back() == '\r')) inside.pop_back();
+        EXPECT_FALSE(inside.empty()) << r.transcript();
+        EXPECT_NE(inside, host) << "entered without its sandbox\n" << r.transcript();
     }
 }
