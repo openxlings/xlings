@@ -101,19 +101,24 @@ std::unique_ptr<Console> Console::machine(const fs::path& home, const std::strin
 
 std::unique_ptr<Console> Console::sandbox(const fs::path& xlings, const fs::path& home, const std::string& name,
                                           const std::string& persist, std::function<void()> wake, std::string& error) {
+    auto env = platform::environment();
+    env["XLINGS_HOME"] = home.string();
+    env.erase("XLINGS_SUBOS_MODE");
+    env.erase("XLINGS_ACTIVE_SUBOS");
+    std::vector<std::string> argv{xlings.string(), "subos", "use", name};
+    if (!persist.empty() && persist != "all") argv.insert(argv.end(), {"--persist", persist});
+    return process(argv, std::move(env), name, std::move(wake), error);
+}
+
+std::unique_ptr<Console> Console::process(const std::vector<std::string>& argv, std::map<std::string, std::string> env,
+                                          const std::string& name, std::function<void()> wake, std::string& error) {
     auto pty = platform::open_pty();
     if (!pty) { error = "no pseudo-terminal here"; return nullptr; }
     std::unique_ptr<Console> c(new Console());
     c->name_ = name;
     c->wake_ = std::move(wake);
     platform::set_terminal_size((*pty)[0], static_cast<unsigned short>(c->rows_), static_cast<unsigned short>(c->cols_));
-    auto env = platform::environment();
     env["TERM"] = "xterm-256color";
-    env["XLINGS_HOME"] = home.string();
-    env.erase("XLINGS_SUBOS_MODE");
-    env.erase("XLINGS_ACTIVE_SUBOS");
-    std::vector<std::string> argv{xlings.string(), "subos", "use", name};
-    if (!persist.empty() && persist != "all") argv.insert(argv.end(), {"--persist", persist});
     const int pid = platform::fork_process();
     if (pid == 0) {
         platform::new_session();
@@ -208,8 +213,16 @@ std::pair<int, int> draw_console(Console& c, void* mono, float size, bool focuse
                 text.clear();
                 utf8_(text, cell.ch);
                 const float alpha = (cell.attrs & term::Faint) ? 0.6f : 1.0f;
-                dl->AddText(font, size, ImVec2(x, y), rgb_(fg, alpha), text.data(), text.data() + text.size());
-                if (cell.attrs & term::Bold) dl->AddText(font, size, ImVec2(x + 0.6f, y), rgb_(fg, alpha), text.data(), text.data() + text.size());
+                // A wide character fills its two cells: drawn larger, centred in them.
+                const float glyphSize = span == 2 ? size * 1.2f : size;
+                float gx = x, gy = y;
+                if (span == 2) {
+                    const auto w = font->CalcTextSizeA(glyphSize, 1e9f, 0, text.data(), text.data() + text.size()).x;
+                    gx = x + (cw * 2 - w) / 2;
+                    gy = y - (glyphSize - size) * 0.6f;
+                }
+                dl->AddText(font, glyphSize, ImVec2(gx, gy), rgb_(fg, alpha), text.data(), text.data() + text.size());
+                if (cell.attrs & term::Bold) dl->AddText(font, glyphSize, ImVec2(gx + 0.6f, gy), rgb_(fg, alpha), text.data(), text.data() + text.size());
             }
             if (cell.attrs & term::Underline) dl->AddLine(ImVec2(x, y + ch - 2), ImVec2(x + cw * span, y + ch - 2), rgb_(fg));
         }

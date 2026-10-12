@@ -70,6 +70,10 @@ public:
                                             std::string& error);
     static std::unique_ptr<Console> sandbox(const fs::path& xlings, const fs::path& home, const std::string& name,
                                             const std::string& persist, std::function<void()> wake, std::string& error);
+    // Any program on a pseudo-terminal (what a sandbox's shell is; tests run
+    // a program of their own the same way).
+    static std::unique_ptr<Console> process(const std::vector<std::string>& argv, std::map<std::string, std::string> env,
+                                            const std::string& name, std::function<void()> wake, std::string& error);
     ~Console();
     void write(std::string_view bytes);
     void resize(int rows, int cols);

@@ -347,3 +347,38 @@ XTEST(LubanOs, TheCountdownMovesFrameByFrame, .area = "luban", .covers = {"LUBAN
     ASSERT_EQ(r.exit_code, 0) << r.transcript();
     EXPECT_NE(tk::read_file(a), tk::read_file(b)) << "the countdown did not change what is drawn";
 }
+
+XTEST(LubanOs, AConsoleShowsColourAndWideTextAndTakesWhatIsTyped, .area = "luban",
+      .covers = {"LUBAN-OS-INTERACTION", "LUBAN-TERM"}, .requires_ = {"linux", "xlings-bin"}) {
+    if (!app_binary()) GTEST_SKIP() << "no luban-os beside the xlings under test";
+    auto home = tk::Home::isolated("luban-os-console");
+    ASSERT_EQ(home.xlings({"self", "init"}).exit_code, 0);
+    const auto shot = home.root() / "console.ppm", st = home.root() / "console.json";
+    auto r = run_script(home, std::format(R"(wait console
+waitfor console.rows.1 ready 10
+type hello
+key Return
+waitfor console.rows.3 hello 10
+frames 2
+screenshot {}
+screenshot {}
+state {}
+)", shot.string(), artifact("console.bmp").string(), st.string()),
+                        {"--console-exec", "/bin/sh", "-c", R"(printf '\033[31mred\033[0m 中文 wide\nready\n'; exec cat)"});
+    ASSERT_EQ(r.exit_code, 0) << r.transcript();
+    const auto s = read_state(st);
+    const auto rows = s["console"]["rows"];
+    EXPECT_EQ(rows[0], "red 中文 wide") << s.dump(2);
+    EXPECT_EQ(rows[2], "hello") << "the terminal's echo of what was typed\n" << s.dump(2);
+    EXPECT_EQ(rows[3], "hello") << "the program's answer\n" << s.dump(2);
+    // The red is drawn red: a reddish pixel in the first line.
+    const auto img = read_ppm(shot);
+    const auto c = rect(s, "console");
+    bool red = false;
+    for (int y = static_cast<int>(c[1]); y < static_cast<int>(c[1]) + 18 && !red; ++y)
+        for (int x = static_cast<int>(c[0]); x < static_cast<int>(c[0]) + 40 && !red; ++x) {
+            const auto p = img.at(x, y);
+            red = p[0] > 150 && p[1] < 130 && p[2] < 130;
+        }
+    EXPECT_TRUE(red) << "no red in the first line";
+}

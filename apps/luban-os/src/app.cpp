@@ -630,6 +630,7 @@ void console_view_(App& a) {
         }
     }
     const auto [rows, cols] = draw_console(*a.console, a.window->mono_font(), a.window->mono_size(), !a.menu);
+    mark_(a, "console");
     a.console->resize(rows, cols);
     ImGui::End();
     if (!a.console->alive()) {
@@ -935,6 +936,33 @@ Json state_(const App& a) {
     j["name"] = std::string(a.new_name);
     j["admin_tab"] = a.admin_tab;
     j["admin_selected"] = a.admin_selected < static_cast<int>(a.systems.size()) ? a.systems[a.admin_selected].name : std::string{};
+    if (a.console) {
+        // What a console shows, as text: its lines, trailing blanks dropped.
+        Json rows = Json::array();
+        std::lock_guard l(a.console->lock());
+        auto& screen = a.console->screen();
+        for (int r = 0; r < screen.rows(); ++r) {
+            std::string line;
+            for (int c = 0; c < screen.cols(); ++c) {
+                const auto& cell = screen.at(r, c);
+                if (cell.continuation) continue;
+                const char32_t ch = cell.ch;
+                if (ch < 0x80) line += static_cast<char>(ch);
+                else if (ch < 0x800) { line += static_cast<char>(0xC0 | (ch >> 6)); line += static_cast<char>(0x80 | (ch & 0x3F)); }
+                else if (ch < 0x10000) {
+                    line += static_cast<char>(0xE0 | (ch >> 12)); line += static_cast<char>(0x80 | ((ch >> 6) & 0x3F));
+                    line += static_cast<char>(0x80 | (ch & 0x3F));
+                } else {
+                    line += static_cast<char>(0xF0 | (ch >> 18)); line += static_cast<char>(0x80 | ((ch >> 12) & 0x3F));
+                    line += static_cast<char>(0x80 | ((ch >> 6) & 0x3F)); line += static_cast<char>(0x80 | (ch & 0x3F));
+                }
+            }
+            while (!line.empty() && line.back() == ' ') line.pop_back();
+            rows.push_back(line);
+        }
+        while (!rows.empty() && rows.back().get<std::string>().empty()) rows.erase(rows.size() - 1);
+        j["console"] = {{"rows", rows}, {"alive", a.console->alive()}, {"size", Json::array({screen.rows(), screen.cols()})}};
+    }
     if (a.display) {
         j["desktop"] = {{"texture", Json::array({a.texture.width, a.texture.height})},
                         {"asked", Json::array({a.desktop_size.width, a.desktop_size.height})}};
@@ -1181,6 +1209,7 @@ int run(int argc, char* argv[]) {
     std::string screenshot;
     std::optional<Script> script;
     std::vector<std::string> desktop_exec;   // tests: a desktop from any program speaking opensal.wire
+    std::vector<std::string> console_exec;   // tests: a console of any program, on a pseudo-terminal
     for (int i = 1; i < argc; ++i) {
         const std::string_view arg = argv[i];
         if (arg == "--attach" && i + 1 < argc) a.attach = argv[++i];
@@ -1194,6 +1223,7 @@ int run(int argc, char* argv[]) {
             if (!script) { std::println(std::cerr, "luban-os: cannot read the script {}", argv[i]); return 2; }
         }
         else if (arg == "--desktop-exec" && i + 1 < argc) { desktop_exec.assign(argv + i + 1, argv + argc); break; }
+        else if (arg == "--console-exec" && i + 1 < argc) { console_exec.assign(argv + i + 1, argv + argc); break; }
         else if (arg == "--view" && i + 1 < argc) {
             const std::string_view v = argv[++i];
             if (v == "admin") { a.before_admin = View::Launcher; a.view = View::Admin; }
@@ -1214,7 +1244,15 @@ int run(int argc, char* argv[]) {
     a.window->set_title("Luban OS");
     if (auto refused = a.ctx.port.handshake()) a.notice = *refused;
     a.refresh();
-    if (!desktop_exec.empty()) {
+    if (!console_exec.empty()) {
+        std::string error;
+        auto* win = a.window.get();
+        a.current = "console";
+        a.console = Console::process(console_exec, platform::environment(), a.current, [win] { win->wake(); }, error);
+        if (!a.console) { std::println(std::cerr, "luban-os: {}", error); return 1; }
+        a.view = View::Console;
+        a.window->text_input(true);
+    } else if (!desktop_exec.empty()) {
         std::string error;
         const auto [w, h] = a.window->size();
         a.desktop_size = {static_cast<std::uint32_t>(w), static_cast<std::uint32_t>(h)};
