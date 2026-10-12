@@ -89,6 +89,55 @@ private:
 
 }  // namespace xlings::observe
 
+// ── The operation journal (Luban OS architecture design §13) ────────────
+//
+// One file per operation, `<home>/logs/ops/<YYYY-MM-DD>/<trace>.ndjson`: the
+// command that started it and every process it ran under the same trace id
+// (XLINGS_TRACE_ID, which the frontend exports for its children) append to it.
+// Lines: `op` (the start: client, platform, argv with credentials removed,
+// the names of the environment), `span` (a phase: begin and end with its
+// milliseconds and result), `event`, `end` (the exit code). What the screen
+// shows at each level is a filter of these lines; `xlings self log` reads them.
+// Nothing here is sent anywhere.
+export namespace xlings::observe::ops {
+
+// XLINGS_TRACE_ID when a parent set it, else a new one (16 hex digits).
+std::string trace_from_environment();
+// Begin this process's part of the operation `trace`; `header` is written as
+// the `op` line by the process that started it (a child with an inherited
+// trace writes a `child` line instead). Removes date directories older than
+// `keep_days`. Never throws.
+void begin(const std::filesystem::path& home, const std::string& trace, nlohmann::json header,
+           bool started_here, int keep_days = 14) noexcept;
+bool active() noexcept;
+std::string trace() noexcept;
+std::filesystem::path file() noexcept;
+// A side file for raw output (a tool's stdout and stderr), referenced from the
+// journal: `<trace>.d/<name>.log` beside it. Empty when not active.
+std::filesystem::path artifact(std::string_view name) noexcept;
+void event(std::string_view what, nlohmann::json fields = nlohmann::json::object()) noexcept;
+void end(int exit_code) noexcept;
+
+// A phase of the operation: a span line when it begins and when it ends.
+class Span {
+public:
+    explicit Span(std::string name, nlohmann::json fields = nlohmann::json::object());
+    ~Span();
+    void fail(std::string why) { failed_ = std::move(why); }
+    Span(const Span&) = delete;
+    Span& operator=(const Span&) = delete;
+private:
+    std::string name_;
+    std::string failed_;
+    std::chrono::steady_clock::time_point start_;
+};
+
+// Credentials out of a command line: `user:password@` in a URL becomes
+// `***@`; the value after an option whose name looks secret is `***`.
+std::vector<std::string> redact_argv(std::span<const std::string> argv);
+
+}  // namespace xlings::observe::ops
+
 export namespace xlings::observe::destructive {
 
 // The destructive-operation record (AGENTS.md "SubOS user data"), moved here

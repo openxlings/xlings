@@ -13,6 +13,7 @@ import xlings.core.subos.store_closure;
 import xlings.libs.json;
 import xlings.core.log;
 import xlings.platform;
+import xlings.platform.stream;
 import xlings.core.profile;
 import xlings.core.xvm.types;
 import xlings.core.xvm.db;
@@ -143,12 +144,40 @@ std::expected<void, std::string> copy_tree_(const fs::path& from, const fs::path
     return {};
 }
 
+// A tool's own output (limine's, mkfs's) is the operation's side file, not the
+// screen's (design §5.2): `-v` shows it as well, a failure prints its last 20
+// lines and where the rest is.
 int run_tool_(const std::vector<std::string>& argv, EventStream& stream, std::string_view what) {
-    const int rc = platform::run_argv_with_timeout(argv, std::chrono::minutes(30));
+    const auto name = argv.empty() ? std::string("tool") : fs::path(argv.front()).filename().string();
+    auto file = observe::ops::artifact(name);
+    if (file.empty()) file = home_dir_() / "logs" / "tools" / (name + ".log");
+    std::error_code ec;
+    fs::create_directories(file.parent_path(), ec);
+    std::ofstream out(file, std::ios::app);
+    const bool echo = log::get_level() == log::Level::Debug;
+    std::string tail;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::minutes(30);
+    observe::ops::Span span(std::string(what), {{"tool", name}});
+    const int rc = platform::stream::run(argv, [&](std::string_view, std::string_view bytes) {
+        out << bytes;
+        tail.append(bytes);
+        if (tail.size() > 64 * 1024) tail.erase(0, tail.size() - 32 * 1024);
+        if (echo) std::cerr << bytes;
+    }, [&] { return std::chrono::steady_clock::now() > deadline; });
+    out.close();
     if (rc != 0) {
-        std::string line;
-        for (auto& a : argv) line += (line.empty() ? "" : " ") + a;
-        error_(stream, std::format("{} failed (exit {}): {}", what, rc, line),
+        span.fail(std::format("exit {}", rc));
+        std::vector<std::string_view> last;
+        for (std::string_view rest = tail; !rest.empty();) {
+            const auto nl = rest.find('\n');
+            last.push_back(rest.substr(0, nl));
+            rest = nl == std::string_view::npos ? std::string_view{} : rest.substr(nl + 1);
+        }
+        if (last.size() > 20) last.erase(last.begin(), last.end() - 20);
+        std::string shown;
+        for (auto l : last) shown += std::string("\n    ") + std::string(l);
+        error_(stream, std::format("{} failed (exit {}); the last lines of {}:{}", what, rc,
+                                   Config::display_path(file), shown),
                {}, ErrorCode::Internal);
     }
     return rc;

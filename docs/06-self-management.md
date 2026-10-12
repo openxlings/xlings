@@ -151,6 +151,22 @@ xlings self migrate    # move an old layout into subos/default
 xlings self uninstall  # remove xlings, asking first
 ```
 
+## What a command did
+
+Every command writes one operation journal, `logs/ops/<date>/<trace>.ndjson`,
+and every process it runs (a hook, a repair, a command inside a SubOS) joins the
+same file under the trace it inherits. Phases, their times and failures are
+there, and a tool's own output (limine's, mkfs's) is a side file next to it.
+
+```bash
+xlings self log                      # the latest operations
+xlings self log 4ed6cd2b             # one of them (a prefix of its trace)
+xlings self log 4ed6cd2b --bundle    # one file for a bug report, without your paths or name
+```
+
+The journal stays on this machine; old days are removed after two weeks. The
+format is in [Operation journal](specs/operation-journal.md).
+
 ## When something is wrong
 
 ```bash

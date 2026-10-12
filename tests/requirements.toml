@@ -941,6 +941,10 @@ status = "required"
 text = "a machine's boot entries and the images a machine boots are Luban's: xlings says where `subos boot` and `subos export --iso/--drive/--qcow2` went, keeps the implementation behind plumbing names, never imports luban.*, and a home whose stage-0 was xlings boots luban-init after the upgrade"
 status = "required"
 
+[OPS-JOURNAL]
+text = "every command writes one operation journal (logs/ops/<date>/<trace>.ndjson) that the processes it runs join under the trace they inherit; credentials never reach it; `self log` lists and shows operations and bundles one without the home's paths or the user's name"
+status = "required"
+
 [ELEVATION-NOBODY-TO-ASK]
 text = "administrator rights are never asked for where nobody can answer (agent mode, no terminal, the background of one): rights that need no question are used, otherwise nothing runs and the command that needs them is named; doctor's repair children run unattended with the null device as input"
 status = "required"

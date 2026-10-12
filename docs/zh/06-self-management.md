@@ -133,6 +133,19 @@ xlings self migrate    # move an old layout into subos/default
 xlings self uninstall  # remove xlings, asking first
 ```
 
+## 一条命令做了什么
+
+每条命令写一份操作日志 `logs/ops/<日期>/<trace>.ndjson`；它运行的每个进程（hook、修复、SubOS 里的命令）按继承的 trace
+写进同一个文件。里面有各个阶段、耗时和失败；工具自己的输出（limine、mkfs 的）放在旁边的文件里。
+
+```bash
+xlings self log                      # the latest operations
+xlings self log 4ed6cd2b             # one of them (a prefix of its trace)
+xlings self log 4ed6cd2b --bundle    # one file for a bug report, without your paths or name
+```
+
+日志只留在本机；两周前的会被删除。格式见[操作日志](../specs/operation-journal.md)。
+
 ## 出问题时
 
 ```bash

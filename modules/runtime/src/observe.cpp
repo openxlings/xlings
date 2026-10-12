@@ -204,6 +204,7 @@ struct TimedWatch {
 
 Timed::Timed(std::string phase, std::string announce)
     : phase_(std::move(phase)), start_(std::chrono::steady_clock::now()) {
+    ops::event("span", {{"span", phase_}, {"at", "begin"}});
     if (announce.empty()) return;
     watch_ = std::make_shared<TimedWatch>();
     watch_->thread = std::thread([w = watch_, text = std::move(announce)] {
@@ -219,13 +220,178 @@ Timed::~Timed() {
         watch_->cv.notify_all();
         if (watch_->thread.joinable()) watch_->thread.join();
     }
-    if (!trace_enabled("timing")) return;
     const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now() - start_).count();
+    ops::event("span", {{"span", phase_}, {"at", "end"}, {"ms", ms}});
+    if (!trace_enabled("timing")) return;
     std::cerr << "[trace:timing] " << phase_ << " " << ms << " ms\n";
 }
 
 }  // namespace xlings::observe
+
+namespace xlings::observe::ops {
+
+namespace {
+
+struct State {
+    std::mutex m;
+    bool active { false };
+    std::string trace;
+    std::string proc;           // this process within the trace
+    fs::path file;
+};
+
+State& state_() {
+    static auto* s = new State();   // never destroyed: lines are written from atexit paths
+    return *s;
+}
+
+std::string hex_(std::size_t digits) {
+    static std::mt19937_64 rng{std::random_device{}() ^
+                               static_cast<std::uint64_t>(std::chrono::steady_clock::now().time_since_epoch().count())};
+    std::string out;
+    while (out.size() < digits) out += std::format("{:016x}", rng());
+    return out.substr(0, digits);
+}
+
+std::string today_() {
+    return std::format("{:%Y-%m-%d}", std::chrono::floor<std::chrono::days>(std::chrono::system_clock::now()));
+}
+
+void write_(const nlohmann::json& line) noexcept {
+    auto& st = state_();
+    if (!st.active) return;
+    nlohmann::json j = line;
+    j["ts"] = utc_now();
+    j["trace"] = st.trace;
+    j["proc"] = st.proc;
+    append_json(st.file, j, JournalLimits{.max_bytes = 16u * 1024u * 1024u, .keep = 1});
+}
+
+bool valid_trace_(std::string_view t) {
+    return !t.empty() && t.size() <= 64
+        && std::ranges::all_of(t, [](char c) { return std::isalnum(static_cast<unsigned char>(c)) || c == '-'; });
+}
+
+}  // namespace
+
+std::string trace_from_environment() {
+    if (const char* t = std::getenv("XLINGS_TRACE_ID"); t && valid_trace_(t)) return t;
+    return hex_(16);
+}
+
+void begin(const fs::path& home, const std::string& trace, nlohmann::json header, bool started_here,
+           int keep_days) noexcept {
+    try {
+        auto& st = state_();
+        std::lock_guard lock(st.m);
+        if (st.active || home.empty() || !valid_trace_(trace)) return;
+        const auto root = home / "logs" / "ops";
+        std::error_code ec;
+        // A child appends to its parent's file, wherever the day was.
+        fs::path file;
+        if (!started_here)
+            for (fs::directory_iterator it(root, ec), end; !ec && it != end; it.increment(ec))
+                if (fs::exists(it->path() / (trace + ".ndjson"))) { file = it->path() / (trace + ".ndjson"); break; }
+        if (file.empty()) file = root / today_() / (trace + ".ndjson");
+        if (started_here && keep_days > 0) {
+            const auto cutoff = std::format("{:%Y-%m-%d}", std::chrono::floor<std::chrono::days>(
+                std::chrono::system_clock::now() - std::chrono::days(keep_days)));
+            for (fs::directory_iterator it(root, ec), end; !ec && it != end; it.increment(ec)) {
+                const auto name = it->path().filename().string();
+                if (name.size() == 10 && name < cutoff) fs::remove_all(it->path(), ec);
+            }
+        }
+        st.trace = trace;
+        st.proc = hex_(8);
+        st.file = file;
+        st.active = true;
+        if (!header.is_object()) header = nlohmann::json::object();
+        header["line"] = started_here ? "op" : "child";
+        nlohmann::json j = header;
+        j["ts"] = utc_now();
+        j["trace"] = st.trace;
+        j["proc"] = st.proc;
+        append_json(st.file, j);
+    } catch (...) {
+    }
+}
+
+bool active() noexcept { return state_().active; }
+std::string trace() noexcept { try { return state_().trace; } catch (...) { return {}; } }
+fs::path file() noexcept { try { return state_().file; } catch (...) { return {}; } }
+
+fs::path artifact(std::string_view name) noexcept {
+    try {
+        auto& st = state_();
+        if (!st.active) return {};
+        auto dir = st.file.parent_path() / (st.trace + ".d");
+        std::error_code ec;
+        fs::create_directories(dir, ec);
+        std::string safe;
+        for (char c : name) safe += std::isalnum(static_cast<unsigned char>(c)) || c == '-' || c == '.' ? c : '-';
+        return dir / std::format("{}-{}.log", st.proc, safe);
+    } catch (...) {
+        return {};
+    }
+}
+
+void event(std::string_view what, nlohmann::json fields) noexcept {
+    try {
+        if (!state_().active) return;
+        nlohmann::json j = fields.is_object() ? std::move(fields) : nlohmann::json::object();
+        j["line"] = std::string(what);
+        write_(j);
+    } catch (...) {
+    }
+}
+
+void end(int exit_code) noexcept {
+    event("end", {{"exit", exit_code}});
+}
+
+Span::Span(std::string name, nlohmann::json fields) : name_(std::move(name)), start_(std::chrono::steady_clock::now()) {
+    nlohmann::json j = fields.is_object() ? std::move(fields) : nlohmann::json::object();
+    j["span"] = name_;
+    j["at"] = "begin";
+    event("span", std::move(j));
+}
+
+Span::~Span() {
+    const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start_).count();
+    nlohmann::json j{{"span", name_}, {"at", "end"}, {"ms", ms}};
+    if (!failed_.empty()) j["failed"] = failed_;
+    event("span", std::move(j));
+}
+
+std::vector<std::string> redact_argv(std::span<const std::string> argv) {
+    std::vector<std::string> out;
+    bool hide_next = false;
+    for (const auto& a : argv) {
+        if (hide_next) { out.push_back("***"); hide_next = false; continue; }
+        std::string v = a;
+        if (const auto scheme = v.find("://"); scheme != std::string::npos) {
+            const auto at = v.find('@', scheme + 3);
+            const auto slash = v.find('/', scheme + 3);
+            if (at != std::string::npos && (slash == std::string::npos || at < slash))
+                v = v.substr(0, scheme + 3) + "***" + v.substr(at);
+        }
+        if (v.starts_with("--")) {
+            const auto eq = v.find('=');
+            const auto name = v.substr(2, eq == std::string::npos ? std::string::npos : eq - 2);
+            std::string upper;
+            for (char c : name) upper += c == '-' ? '_' : static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+            if (looks_secret(upper)) {
+                if (eq == std::string::npos) hide_next = true;
+                else v = v.substr(0, eq + 1) + "***";
+            }
+        }
+        out.push_back(std::move(v));
+    }
+    return out;
+}
+
+}  // namespace xlings::observe::ops
 
 namespace xlings::observe::destructive {
 

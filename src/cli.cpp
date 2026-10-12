@@ -27,6 +27,8 @@ import xlings.runtime;
 import xlings.ui;
 import xlings.i18n;
 import xlings.platform;
+import xlings.observe;
+import xlings.home.format;
 import xlings.subos.broker;
 import xlings.subos.policy;
 import xlings.core.subos.sandbox;
@@ -1592,6 +1594,19 @@ std::vector<std::string> inject_omitted_values_(int argc, char* argv[]) {
     return out;
 }
 
+// The environment's names an operation's journal keeps: what changes how
+// xlings behaves, never what a user's other programs keep there.
+std::vector<std::string> journal_env_names_() {
+    std::vector<std::string> out;
+    for (const auto& name : observe::redact_env(platform::environment())) {
+        const bool kept = name.starts_with("XLINGS_") || name.starts_with("LUBAN_") || name == "LANG"
+            || name.starts_with("LC_") || name == "TERM" || name == "SHELL" || name == "DISPLAY"
+            || name == "WAYLAND_DISPLAY" || name.ends_with("_PROXY") || name.ends_with("_proxy");
+        if (kept) out.push_back(name);
+    }
+    return out;
+}
+
 int dispatch_(int argc, char* argv[]) {
     // Tab completion. Handled before anything else so a Tab press does not pay
     // for the event stream, theme, i18n or the capability registry — its
@@ -1845,6 +1860,30 @@ int dispatch_(int argc, char* argv[]) {
     for (int i = 1; i < fargc; ++i) {
         std::string_view a { fargv[i] };
         if (!a.starts_with("-")) { cmd = std::string(a); break; }
+    }
+
+    // The operation journal (design §13): one file per operation, which
+    // every process it runs appends to under the trace id it inherits.
+    if (!cmd.empty() && !(cmd == "self" && fargc > 2 && std::string_view(fargv[2]) == "log")) {
+        const char* inherited = std::getenv("XLINGS_TRACE_ID");
+        const auto trace = observe::ops::trace_from_environment();
+        std::vector<std::string> words;
+        bool agentFlag = false;
+        for (int i = 1; i < fargc; ++i) {
+            words.emplace_back(fargv[i]);
+            agentFlag = agentFlag || std::string_view(fargv[i]) == "--agent";
+        }
+        const char* agentEnv = std::getenv("XLINGS_AGENT_MODE");
+        const bool agent = agentFlag || (agentEnv && std::string_view(agentEnv) == "1");
+        observe::ops::begin(Config::paths().homeDir, trace,
+                            nlohmann::json{{"client", "xlings"}, {"version", std::string(Info::VERSION)},
+                                           {"argv", observe::ops::redact_argv(words)},
+                                           {"platform", std::string(platform::OS_NAME)},
+                                           {"layout", home::format::kLayout},
+                                           {"actor", agent ? "agent" : cmd == "interface" ? "program" : "cli"},
+                                           {"env", journal_env_names_()}},
+                            !(inherited && trace == inherited));
+        platform::set_env_variable("XLINGS_TRACE_ID", trace);
     }
 
     // Told once per version, not once per command -- see
@@ -2526,7 +2565,15 @@ void after_command(int argc, char* argv[]) {
     }
 }
 
+int run_guarded_(int argc, char* argv[]);
+
 int run(int argc, char* argv[]) {
+    const int rc = run_guarded_(argc, argv);
+    observe::ops::end(rc);
+    return rc;
+}
+
+int run_guarded_(int argc, char* argv[]) {
     try {
         return dispatch_(argc, argv);
     } catch (const std::filesystem::filesystem_error& e) {
