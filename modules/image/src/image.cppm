@@ -1,13 +1,13 @@
-// A machine's images, written in-process (Luban design §A9; the aarch64
+// Disk and disc images, written in-process (Luban design §A9; the aarch64
 // design §4): a GPT disk and the FAT system partition a firmware and limine
 // read; an ISO 9660 image made to boot on UEFI from a disc and from a drive
 // (El Torito EFI entry, hybrid GPT); a qcow2 of a raw disk. No partitioning,
 // FAT, ISO or qemu-img tool is needed on the machine that makes them.
-export module luban.image;
+export module xlings.image;
 
 import std;
 
-export namespace luban::image {
+export namespace xlings::image {
 
 // The machine an image is for -- the root's own architecture. What differs
 // between machines is here and nowhere else.
@@ -120,4 +120,4 @@ std::expected<std::vector<GptPartition>, std::string> read_gpt(const std::filesy
 // cluster of zeros is not stored. What `qemu-img convert -O qcow2` makes.
 std::expected<void, std::string> write_qcow2(const std::filesystem::path& raw, const std::filesystem::path& out);
 
-}  // namespace luban::image
+}  // namespace xlings::image

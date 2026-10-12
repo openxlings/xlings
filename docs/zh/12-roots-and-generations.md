@@ -41,12 +41,12 @@ glibc 坏了也不妨碍回滚：xlings 是静态的。
 xlings subos export box --tar box.tar.gz        # docker import / podman import / wsl --import
 xlings subos export box --rootfs ./box/         # a directory
 xlings subos export box --disk box.img --size 8G   # an ext4 filesystem image
-xlings subos export box --drive box-drive.img --size 8G   # a bootable drive: GPT, UEFI (and BIOS on x86_64)
-xlings subos export box --qcow2 box.qcow2 --size 8G       # the same drive as qcow2
-xlings subos export box --iso box.iso           # a live ISO: the root in memory
+luban export box box-drive.img --size 8G        # a bootable drive: GPT, UEFI (and BIOS on x86_64)
+luban export box box.qcow2 --size 8G            # the same drive as qcow2
+luban export box box.iso                        # a live ISO: the root in memory
 ```
 
-导出的镜像是自足的：实例成为镜像里默认的 SubOS，带上闭包里的每个 payload（workspace、已安装的包、每个 ELF 的
+机器启动用的镜像属于 Luban（`luban export`）；`xlings subos export` 把根写成目录、tar 包或文件系统镜像。导出的镜像是自足的：实例成为镜像里默认的 SubOS，带上闭包里的每个 payload（workspace、已安装的包、每个 ELF 的
 loader 与搜索路径）、静态的 xlings 以及启动阶段。镜像在进程内写出——GPT、FAT、带 BIOS 与 UEFI El Torito 启动项的
 ISO 9660、让同一个 ISO 也能从驱动器启动的混合分区表、qcow2——所以制作镜像的机器不需要分区、ISO 或 qemu-img 工具。
 由什么来启动它（内核、limine、内核命令行）是启动层（boot profile），见 [Luban：镜像](luban/05-images.md)。
@@ -55,14 +55,14 @@ ISO 9660、让同一个 ISO 也能从驱动器启动的混合分区表、qcow2�
 
 ## 启动
 
-以 `init=<home>/boot/xlings-init`（或 `luban-init`）启动的内核运行 stage-0：挂载内核文件系统，按 `boot.json` 选一个 SubOS，
+以 `init=<home>/boot/luban-init`（`xlings-init` 是它以前的名字）启动的内核运行 stage-0：挂载内核文件系统，按 `boot.json` 选一个 SubOS，
 把 `/usr` 指向它，执行它的 init；init 起不来就试下一个。
 
 ```bash
-xlings subos boot box --once       # try box on the next boot; back to the default unless confirmed
-xlings subos boot box --mark-good  # confirm it
-xlings subos boot box              # make it the default
-xlings subos boot box --now        # switch userland without restarting the kernel (when the init supports it)
+luban boot box --once       # try box on the next boot; back to the default unless confirmed
+luban boot box --mark-good  # confirm it
+luban boot box              # make it the default
+luban boot box --now        # switch userland without restarting the kernel (when the init supports it)
 ```
 
 ## 域：镜像里的 home 在哪里

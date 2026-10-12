@@ -92,7 +92,7 @@ XTEST(SubosStateE2E, CorruptBootStateCannotRemoveProtectionOrBeOverwrittenByABoo
              {"subos", "config", "box", "--sandbox=dev"},
              {"subos", "remove", "box", "-y"},
              {"interface", "remove_subos", "--args", R"({"name":"box","yes":true})"},
-             {"subos", "boot", "--mark-good"}}) {
+             {"subos", "__boot", "--mark-good"}}) {
         const auto result = home.xlings(args);
         EXPECT_NE(result.exit_code, 0) << result.transcript();
         EXPECT_NE(result.transcript().find("boot.json"), std::string::npos) << result.transcript();

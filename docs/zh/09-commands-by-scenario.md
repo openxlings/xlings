@@ -50,7 +50,7 @@ luban 的在[它自己的参考](../generated/luban-command-reference.md)里。
 | 看里面发生过什么 | `xlings subos log work`、`xlings subos report work` |
 | 升到它的 edition 的最新版 | `xlings subos upgrade work` |
 | 根回滚 | `xlings subos rollback box` |
-| 做成镜像 | `xlings subos export box --iso box.iso` |
+| 做成镜像 | `luban export box box.iso` |
 | 删除 | `xlings subos remove work` |
 
 ## xlings 本身

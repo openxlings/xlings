@@ -13,6 +13,7 @@ import luban.cli;
 
 int main(int argc, char* argv[]) {
     const auto self = argc > 0 && argv[0] ? std::filesystem::path(argv[0]).filename().string() : std::string{};
-    if (self.starts_with("luban-init")) return luban::stage0::run(argc, argv);
+    // xlings-init: a machine set up before luban-init, handed here by xlings.
+    if (self.starts_with("luban-init") || self == "xlings-init") return luban::stage0::run(argc, argv);
     return luban::cli::run(argc, argv);
 }

@@ -64,3 +64,8 @@ bin/mdbook*
 .xlings-sandbox/
 /.xlings/
 .cache/
+
+# Local tool state and lock files (not part of the source)
+.claude/
+mcpp.lock
+skills-lock.json

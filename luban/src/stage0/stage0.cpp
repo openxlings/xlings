@@ -4,8 +4,8 @@ module luban.stage0;
 import std;
 import xlings.libs.json;
 import xlings.platform;
-import luban.boot;
-import luban.machine;
+import xlings.subos.boot;
+import xlings.subos.root_etc;
 import xlings.subos.rootfs;
 import xlings.subos.library_cache;
 import xlings.subos.home_view;
@@ -15,6 +15,8 @@ namespace luban::stage0 {
 namespace platform = xlings::platform;
 namespace rootfs = xlings::subos::rootfs;
 namespace library_cache = xlings::subos::library_cache;
+namespace boot = xlings::subos::boot;
+namespace root_etc = xlings::subos::root_etc;
 using xlings::subos::HomeView;
 
 namespace {
@@ -220,8 +222,8 @@ int run(int argc, char* argv[]) {
             continue;
         }
         mark("lay_out");
-        if (auto etc = luban::machine::fill_machine_etc("/etc", dir); !etc) recover("machine /etc: " + etc.error());
-        if (auto users = luban::machine::apply_sysusers("/etc", rootfs::usr_of(dir)); !users) recover("machine /etc: " + users.error());
+        if (auto etc = xlings::subos::root_etc::fill_machine_etc("/etc", dir); !etc) recover("machine /etc: " + etc.error());
+        if (auto users = xlings::subos::root_etc::apply_sysusers("/etc", rootfs::usr_of(dir)); !users) recover("machine /etc: " + users.error());
         mark("machine_etc");
         if (auto cache = library_cache::refresh("/", home, candidate.subos); !cache) recover(cache.error());
         mark("library_cache");

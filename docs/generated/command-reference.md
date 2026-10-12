@@ -170,17 +170,11 @@ Move a root SubOS back to an earlier generation
 
 Options: `--to <N>` — This generation (default: the one before); `--list` — List the generations
 
-## `xlings subos boot [name]`
-
-Choose the SubOS a machine boots, from the next boot on
-
-Options: `--once` — Only the next boot (a trial); `--fallback` — Boot it when the default fails; `--mark-good` — This boot worked: keep booting it; `--now` — Switch user space to it now, where the init can (no reboot)
-
 ## `xlings subos export <name>`
 
-Export a root SubOS as a directory, a tarball or a disk image
+Export a root SubOS as a directory or a tarball (an image a machine boots: luban export)
 
-Options: `--rootfs <DIR>` — A root directory (chroot, bwrap, nspawn); `--tar <FILE>` — A root tarball (docker import, podman import, wsl --import); `--disk <FILE>` — An ext4 disk image to boot; `--drive <FILE>` — A drive image that boots a machine (GPT, UEFI and BIOS, an ext4 root); `--qcow2 <FILE>` — The drive image as qcow2 (qemu, clouds); `--iso <FILE>` — A live ISO: boots from a CD or a drive and runs from memory; `--kernel <VMLINUZ>` — The kernel a live ISO boots (default: the root's own); `--boot <PROFILE>` — The boot profile of an ISO or a drive: generic, virt, or ns:name (default: the edition's); `--size <SIZE>` — Disk size (default 4G); `--with-data` — Include /root, /home, /var, /srv, /opt
+Options: `--rootfs <DIR>` — A root directory (chroot, bwrap, nspawn); `--tar <FILE>` — A root tarball (docker import, podman import, wsl --import); `--disk <FILE>` — An ext4 filesystem image; `--size <SIZE>` — Disk size (default 4G); `--with-data` — Include /root, /home, /var, /srv, /opt
 
 ## `xlings subos diff <a> <b>`
 

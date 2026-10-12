@@ -937,6 +937,10 @@ status = "required"
 text = "switching the client to an older one says what of this home's layout it will not see, whether it can still write it, and the way back"
 status = "required"
 
+[LAYER-LUBAN-OWNS-MACHINE]
+text = "a machine's boot entries and the images a machine boots are Luban's: xlings says where `subos boot` and `subos export --iso/--drive/--qcow2` went, keeps the implementation behind plumbing names, never imports luban.*, and a home whose stage-0 was xlings boots luban-init after the upgrade"
+status = "required"
+
 [ELEVATION-NOBODY-TO-ASK]
 text = "administrator rights are never asked for where nobody can answer (agent mode, no terminal, the background of one): rights that need no question are used, otherwise nothing runs and the command that needs them is named; doctor's repair children run unattended with the null device as input"
 status = "required"

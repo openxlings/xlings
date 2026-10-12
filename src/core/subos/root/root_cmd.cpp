@@ -24,14 +24,14 @@ import xlings.subos.policy;
 import xlings.subos.rootfs;
 import xlings.subos.library_cache;
 import xlings.subos.roles;
-import luban.boot;
+import xlings.subos.boot;
 import xlings.observe;
 import xlings.core.subos.ports;
 import xlings.core.xself;
 import xlings.core.xim.extract;
 import xlings.core.xim.commands;
 import xlings.core.xim.catalog;
-import luban.image;
+import xlings.image;
 import xlings.platform.target;
 import xlings.subos.tools;
 import xlings.subos.caps;
@@ -44,7 +44,7 @@ namespace xlings::subos {
 namespace {
 
 namespace rf = xlings::subos::rootfs;
-namespace bt = luban::boot;
+namespace bt = xlings::subos::boot;
 
 fs::path home_dir_() { return Config::paths().homeDir; }
 
@@ -869,7 +869,7 @@ int run_boot_(int argc, char* argv[], EventStream& stream, const UsageError& usa
         else if (a == "--fallback") fallback = true;
         else if (a == "--mark-good") mark_good = true;
         else if (!a.empty() && a[0] != '-' && name.empty()) name = a;
-        else { usageError("unknown option for `xlings subos boot`: " + a); return 1; }
+        else { usageError("unknown option for `luban boot`: " + a); return 1; }
     }
     auto cfg = bt::load(file);
     if (!cfg) { error_(stream, cfg.error()); return 1; }
@@ -907,7 +907,7 @@ int run_boot_(int argc, char* argv[], EventStream& stream, const UsageError& usa
         if (!restartable) {
             error_(stream, !host ? "this home is not the root of the running machine"
                                  : "this machine's init cannot hand / to another SubOS without a reboot",
-                   std::format("xlings subos boot {} --once, then reboot", name));
+                   std::format("luban boot {} --once, then reboot", name));
             return 1;
         }
         cfg->once = name;
@@ -1016,7 +1016,7 @@ std::optional<fs::path> limine_data_(const fs::path& home, EventStream& stream) 
     candidates.insert(candidates.end(), {"/usr/share/limine", "/usr/local/share/limine"});
     // What this machine boots with: limine's UEFI loader and CD image, and
     // its BIOS stages where the machine has a BIOS.
-    const auto& machine = luban::image::native_arch();
+    const auto& machine = xlings::image::native_arch();
     for (const auto& d : candidates) {
         bool all = fs::is_regular_file(d / machine.efi_loader, ec) && fs::is_regular_file(d / "limine-uefi-cd.bin", ec);
         if (machine.bios) all = all && fs::is_regular_file(d / "limine-bios-cd.bin", ec) && fs::is_regular_file(d / "limine-bios.sys", ec);
@@ -1139,7 +1139,7 @@ std::uint64_t size_bytes_(std::string_view size) {
 // system partition with limine (UEFI, and BIOS when limine's tool is here),
 // the kernel and limine.conf, and an ext4 root the kernel mounts by its
 // PARTUUID -- a drive that boots on a machine as on qemu, and keeps what it
-// writes. The GPT and the FAT are written in-process (luban.image).
+// writes. The GPT and the FAT are written in-process (xlings.image).
 std::expected<void, std::pair<std::string, std::string>> write_drive_(
     const fs::path& stage, const fs::path& home, const fs::path& kernel_file, const std::string& size,
     const fs::path& scratch, const fs::path& output, const nlohmann::json& boot, std::string_view name,
@@ -1150,18 +1150,18 @@ std::expected<void, std::pair<std::string, std::string>> write_drive_(
     std::error_code ec;
     if (!limine)
         return std::unexpected(std::pair{std::string("limine's boot files are not here"), subos::tools::install_hint("limine")});
-    const auto& machine = luban::image::native_arch();
+    const auto& machine = xlings::image::native_arch();
     const std::uint64_t esp_bytes = 64ull << 20;
     const std::uint64_t root_bytes = size_bytes_(size);
     if (root_bytes < (64ull << 20)) return std::unexpected(std::pair{"--size " + size + ": too small for a root", std::string{}});
-    const auto root_uuid = luban::image::random_guid();
+    const auto root_uuid = xlings::image::random_guid();
     // BIOS boot (limine's second stage) where the machine has a BIOS, the
     // system partition, the root.
     const std::uint64_t bios_bytes = 1ull << 20;
     std::vector<std::uint64_t> sizes;
     if (machine.bios) sizes.push_back(bios_bytes);
     sizes.insert(sizes.end(), {esp_bytes, root_bytes});
-    const auto starts = luban::image::layout(sizes);
+    const auto starts = xlings::image::layout(sizes);
     const auto esp_start = starts[machine.bios ? 1 : 0];
     // The root filesystem, as --disk makes it.
     auto mkfs = tool_("mkfs.ext4", stream);
@@ -1174,28 +1174,28 @@ std::expected<void, std::pair<std::string, std::string>> write_drive_(
     // The system partition.
     const auto init = fs::exists(stage / home.relative_path() / "boot" / "luban-init", ec) ? "luban-init" : "xlings-init";
     const std::string conf = std::format(
-        "# A Luban drive (xlings subos export --drive)\ntimeout: 3\n\n/Luban\n    protocol: linux\n"
+        "# A Luban drive (luban export <name> <file>.img)\ntimeout: 3\n\n/Luban\n    protocol: linux\n"
         "    path: boot():/boot/vmlinuz\n"
         "    cmdline: root=PARTUUID={} rw rootwait {} init={}/boot/{}\n",
-        luban::image::to_string(root_uuid), kernel_args_(boot), home.generic_string(), init);
-    std::vector<luban::image::File> files{
+        xlings::image::to_string(root_uuid), kernel_args_(boot), home.generic_string(), init);
+    std::vector<xlings::image::File> files{
         {.path = "EFI/BOOT/" + std::string(machine.efi_loader), .from = *limine / machine.efi_loader},
         {.path = "boot/vmlinuz", .from = *kernel},
         {.path = "boot/limine/limine.conf", .content = conf},
     };
     if (machine.bios) files.push_back({.path = "boot/limine/limine-bios.sys", .from = *limine / "limine-bios.sys"});
     const auto esp = scratch / "esp.fat";
-    if (auto w = luban::image::write_fat(esp, esp_bytes, files, static_cast<std::uint32_t>(esp_start), "LUBANESP"); !w)
+    if (auto w = xlings::image::write_fat(esp, esp_bytes, files, static_cast<std::uint32_t>(esp_start), "LUBANESP"); !w)
         return std::unexpected(std::pair{"the system partition: " + w.error(), std::string{}});
-    std::vector<luban::image::Partition> parts;
+    std::vector<xlings::image::Partition> parts;
     if (machine.bios)
-        parts.push_back({.name = "BIOS boot", .type = luban::image::kBiosBootType,
-                         .uuid = luban::image::random_guid(), .content = {}, .bytes = bios_bytes});
-    parts.push_back({.name = "EFI system", .type = luban::image::kEspType,
-                     .uuid = luban::image::random_guid(), .content = esp, .bytes = esp_bytes});
-    parts.push_back({.name = "luban", .type = luban::image::kLinuxType, .uuid = root_uuid,
+        parts.push_back({.name = "BIOS boot", .type = xlings::image::kBiosBootType,
+                         .uuid = xlings::image::random_guid(), .content = {}, .bytes = bios_bytes});
+    parts.push_back({.name = "EFI system", .type = xlings::image::kEspType,
+                     .uuid = xlings::image::random_guid(), .content = esp, .bytes = esp_bytes});
+    parts.push_back({.name = "luban", .type = xlings::image::kLinuxType, .uuid = root_uuid,
                      .content = rootfs, .bytes = root_bytes});
-    if (auto w = luban::image::write_gpt_disk(output, parts); !w)
+    if (auto w = xlings::image::write_gpt_disk(output, parts); !w)
         return std::unexpected(std::pair{"the drive: " + w.error(), std::string{}});
     fs::remove(esp, ec);
     fs::remove(rootfs, ec);
@@ -1228,7 +1228,7 @@ std::expected<void, std::pair<std::string, std::string>> write_live_iso_(
     if (!limine)
         return std::unexpected(std::pair{std::string("limine's boot files are not here"),
                                          subos::tools::install_hint("limine")});
-    const auto& machine = luban::image::native_arch();
+    const auto& machine = xlings::image::native_arch();
     const auto iso = scratch / "iso";
     for (const auto* d : {"boot/limine", "EFI/BOOT"}) fs::create_directories(iso / d, ec);
     fs::copy_file(kernel, iso / "boot" / "vmlinuz", ec);
@@ -1246,7 +1246,7 @@ std::expected<void, std::pair<std::string, std::string>> write_live_iso_(
     const auto init = fs::exists(stage / home.relative_path() / "boot" / "luban-init", ec) ? "luban-init" : "xlings-init";
     {
         std::ofstream conf(iso / "boot" / "limine" / "limine.conf");
-        conf << "# A live Luban system (xlings subos export --iso)\n"
+        conf << "# A live Luban system (luban export <name> <file>.iso)\n"
              << "timeout: 3\n\n/Luban\n    protocol: linux\n    path: boot():/boot/vmlinuz\n"
              << "    module_path: boot():/boot/initramfs.img\n"
              << std::format("    cmdline: {} rdinit={}/boot/{}\n", kernel_args_(boot), home.generic_string(), init);
@@ -1259,9 +1259,9 @@ std::expected<void, std::pair<std::string, std::string>> write_live_iso_(
                                            : xim::ArchiveOptions{.boot = "boot/limine/limine-uefi-cd.bin", .boot_info_table = false};
     if (auto written = xim::write_archive(iso, output, xim::ArchiveFormat::Iso9660, default_boot); !written)
         return std::unexpected(std::pair{"writing the ISO: " + written.error(), std::string{}});
-    auto efi = luban::image::iso_find(output, "boot/limine/limine-uefi-cd.bin");
+    auto efi = xlings::image::iso_find(output, "boot/limine/limine-uefi-cd.bin");
     if (!efi) return std::unexpected(std::pair{"the ISO: " + efi.error(), std::string{}});
-    if (auto hybrid = luban::image::make_iso_hybrid(output, *efi, machine.bios); !hybrid)
+    if (auto hybrid = xlings::image::make_iso_hybrid(output, *efi, machine.bios); !hybrid)
         return std::unexpected(std::pair{"making the ISO boot on UEFI: " + hybrid.error(), std::string{}});
     if (!machine.bios) return {};
     auto ports = subos::make_ports(stream);
@@ -1391,7 +1391,7 @@ int run_export_(int argc, char* argv[], EventStream& stream, const UsageError& u
         error_(stream, entry.string() + " is not a static build; an image's xlings must run with no "
                                         "host libraries",
                std::format("use the release build of xlings (xlings install xlings), or `mcpp build --target {}`",
-                           luban::image::native_arch().triple));
+                           xlings::image::native_arch().triple));
         return 1;
     }
     auto ws = workspace_of_(name);
@@ -1584,9 +1584,11 @@ int run_export_(int argc, char* argv[], EventStream& stream, const UsageError& u
     ec.clear();
     fs::create_directories(image_home / "boot", ec);
     if (!check_io()) return 1;
-    fs::create_symlink("../bin/xlings", image_home / "boot" / "xlings-init", ec);
-    if (!ec && fs::exists(image_home / "bin" / "luban-init"))
-        fs::create_symlink("../bin/luban-init", image_home / "boot" / "luban-init", ec);
+    {
+        const bool luban_init = fs::exists(image_home / "bin" / "luban-init");
+        fs::create_symlink(luban_init ? "../bin/luban-init" : "../bin/xlings", image_home / "boot" / "xlings-init", ec);
+        if (!ec && luban_init) fs::create_symlink("../bin/luban-init", image_home / "boot" / "luban-init", ec);
+    }
     if (!check_io()) return 1;
     {
         // The home config: this instance's packages, nothing of the builder's.
@@ -1690,7 +1692,7 @@ int run_export_(int argc, char* argv[], EventStream& stream, const UsageError& u
             return 1;
         }
         if (!qcow2.empty()) {
-            if (auto q = luban::image::write_qcow2(raw, scratch->path() / "output"); !q) {
+            if (auto q = xlings::image::write_qcow2(raw, scratch->path() / "output"); !q) {
                 error_(stream, "writing the qcow2: " + q.error(), {});
                 return 1;
             }

@@ -46,18 +46,18 @@ cat > "$S/rootfs/etc/rc.local" <<'EOF'
 #!/bin/sh
 # The scenario's driver: what this boot is, then the next step.
 state=$(cat /root/.stage 2>/dev/null || echo 0)
-boot=$(xlings subos boot 2>/dev/null | sed -n 's/^this boot \([^ ]*\) via \([^ ,]*\).*/\1:\2/p')
+boot=$(luban boot 2>/dev/null | sed -n 's/^this boot \([^ ]*\) via \([^ ,]*\).*/\1:\2/p')
 tree=$(cd /usr && for f in bin/* lib/*; do printf "%s %s\n" "$f" "$(readlink "$f")"; done \
        | sed -E "s|/subos/[^/]+/|/subos/*/|g" | md5sum | cut -d' ' -f1)
 elapsed=$(grep '"event":"boot"' "$XLINGS_HOME/logs/boot.ndjson" | tail -1 | sed -n 's/.*"stage0_elapsed_us":\([0-9][0-9]*\).*/\1/p')
 phases=$(grep '"event":"boot"' "$XLINGS_HOME/logs/boot.ndjson" | tail -1 | sed -n 's/.*"stage0_phases_us":\({[^}]*}\).*/\1/p')
 echo "LUBAN-BOOT stage=$state boot=$boot tree=$tree stage0_us=$elapsed phases=$phases"
 case "$state" in
-  0) echo 1 > /root/.stage; xlings subos boot trial --once >/dev/null 2>&1 ;;
+  0) echo 1 > /root/.stage; luban boot trial --once >/dev/null 2>&1 ;;
   1) echo 2 > /root/.stage; sync
      # After this script (and init's sysinit) has finished: init then takes
      # the signal, re-execs stage-0, and the next user space is default's.
-     ( sleep 2; xlings subos boot default --now ) </dev/null >/dev/console 2>&1 &
+     ( sleep 2; luban boot default --now ) </dev/null >/dev/console 2>&1 &
      exit 0 ;;
   2) echo 3 > /root/.stage ;;
   *) ;;

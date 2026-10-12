@@ -1,10 +1,10 @@
-module luban.boot;
+module xlings.subos.boot;
 
 import std;
 import xlings.libs.json;
 import xlings.platform;
 
-namespace luban::boot {
+namespace xlings::subos::boot {
 
 namespace platform = xlings::platform;
 
@@ -166,4 +166,4 @@ Config mark_good(Config c) {
     return c;
 }
 
-}  // namespace luban::boot
+}  // namespace xlings::subos::boot

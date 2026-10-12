@@ -9,7 +9,7 @@ import xlings.subos.home_view;
 import xlings.subos.ports;
 import xlings.subos.tools;
 import xlings.subos.elevation;
-import luban.image;
+import xlings.image;
 import xlings.platform.target;
 
 namespace luban::cli {
@@ -388,7 +388,7 @@ std::expected<std::vector<std::string>, std::string> to_xlings(std::span<const s
             {"iso", "--iso"}, {"img", "--drive"}, {"qcow2", "--qcow2"}, {"tar", "--tar"}, {"dir", "--rootfs"}};  // tool-ok: format names, not programs
         auto f = flag_of.find(format);
         if (f == flag_of.end()) return std::unexpected(std::format("no format '{}': iso, img, qcow2, tar, dir", format));
-        x = {"subos", "export", positional[0], f->second, positional[1]};
+        x = {"subos", f->second == "--rootfs" || f->second == "--tar" ? "export" : "__export", positional[0], f->second, positional[1]};
         if (auto s = value("--size")) x.insert(x.end(), {"--size", *s});
         if (auto b = value("--boot")) x.insert(x.end(), {"--boot", *b});
     } else if (cmd == "rm" || cmd == "remove") {
@@ -397,7 +397,7 @@ std::expected<std::vector<std::string>, std::string> to_xlings(std::span<const s
     } else if (cmd == "setup") {
         x = {"self", "doctor", "--isolation", "--fix"};
     } else if (cmd == "boot") {
-        x = {"subos", "boot"};
+        x = {"subos", "__boot"};
         x.insert(x.end(), positional.begin(), positional.end());
     } else {
         return std::unexpected("");
@@ -476,7 +476,7 @@ std::expected<fs::path, int> source_image_(const std::string& source, std::strin
     if (fs::is_regular_file(source, ec)) return fs::absolute(source);
     keep.file = fs::temp_directory_path() / std::format("luban-{}-{}{}", source, xlings::platform::get_pid(), ext);
     std::println(std::cerr, "luban: making an image of '{}' ...", source);
-    std::vector<std::string> argv{xlings_path().string(), "subos", "export", source, std::string(flag), keep.file.string()};
+    std::vector<std::string> argv{xlings_path().string(), "subos", "__export", source, std::string(flag), keep.file.string()};
     if (!boot.empty()) argv.insert(argv.end(), {"--boot", std::string(boot)});
     const int rc = xlings::platform::run_argv(argv);
     if (rc != 0) return std::unexpected(rc);
@@ -631,8 +631,8 @@ int try_cmd_(std::span<const std::string> rest, bool json) {
     const auto pos = positionals_(rest, {"--proxy", "--memory", "--boot"});
     if (pos.size() != 1) return usage("`luban try <environment or image>`", json);
     // The machine is this one's: an image is the root's architecture (the
-    // aarch64 design §4.1), and what differs between machines is luban.image's.
-    const auto& machine = luban::image::native_arch();
+    // aarch64 design §4.1), and what differs between machines is xlings.image's.
+    const auto& machine = xlings::image::native_arch();
     if (machine.qemu.empty())
         return usage(std::format("`luban try` runs x86_64 and aarch64 images (this machine is {})",
                                  xlings::platform::build_arch()), json);

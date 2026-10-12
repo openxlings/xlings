@@ -1,0 +1,15 @@
+# Disk and disc image formats, written in-process (T2 in the host dependency
+# rule): GPT, FAT, ISO 9660 with El Torito and the hybrid GPT, qcow2. A format
+# is not a machine: xlings writes a root's tree into one, Luban writes the
+# images a machine boots, and neither needs a partitioning, FAT, ISO or
+# qemu-img tool on the machine that makes them.
+[package]
+namespace = "xlings"
+name      = "image"
+version   = "0.1.0"
+
+[targets.image]
+kind = "lib"
+
+[dependencies]
+platform = { path = "../platform" }   # xlings.platform.target (the build's architecture)

@@ -38,7 +38,7 @@ bool installed_(std::string_view version) {
 }  // namespace
 
 std::span<const home::format::Step> format_steps() {
-    static const std::array<home::format::Step, 1> value{{
+    static const std::array<home::format::Step, 2> value{{
         // The directories and the marker every home of this layout has
         // (ensure_home_layout, idempotent): a home an older client made lacks
         // the newer ones.
@@ -54,6 +54,27 @@ std::span<const home::format::Step> format_steps() {
          [](const fs::path& h) -> std::expected<std::string, std::string> {
              if (!ensure_home_layout(h)) return std::unexpected("the home's directories could not be made");
              return std::string("the home's directories and marker are this layout's");
+         }},
+        // Stage-0 is luban-init (it was xlings itself under the name
+        // xlings-init): a machine booting `init=<home>/boot/xlings-init` boots
+        // the luban-init beside it from now on. xlings still hands the old
+        // name over (main.cpp), so this is the fast path, not the only one.
+        {"boot-stage0",
+         [](const fs::path& h) {
+             std::error_code ec;
+             const auto link = h / "boot" / "xlings-init";
+             if (!fs::is_symlink(link, ec) || !fs::exists(h / "bin" / "luban-init", ec)) return false;
+             return fs::read_symlink(link, ec).filename() != "luban-init";
+         },
+         [](const fs::path& h) -> std::expected<std::string, std::string> {
+             std::error_code ec;
+             const auto link = h / "boot" / "xlings-init";
+             const auto staged = h / "boot" / ".xlings-init.new";
+             fs::remove(staged, ec);
+             fs::create_symlink("../bin/luban-init", staged, ec);
+             if (!ec) fs::rename(staged, link, ec);
+             if (ec) return std::unexpected("boot/xlings-init could not be pointed at luban-init: " + ec.message());
+             return std::string("boot/xlings-init is luban-init");
          }},
     }};
     return value;

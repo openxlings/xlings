@@ -1,4 +1,4 @@
-export module luban.boot;
+export module xlings.subos.boot;
 
 import std;
 import xlings.libs.json;
@@ -11,7 +11,7 @@ import xlings.libs.json;
 // stage-0 runs. Pure: the file's content in, the choice and the content to
 // write back out. Stage-0 and `subos boot` share it, and the tests drive it
 // without a machine.
-export namespace luban::boot {
+export namespace xlings::subos::boot {
 
 namespace fs = std::filesystem;
 
@@ -27,7 +27,8 @@ struct Config {
     std::string booted;
     std::string via;                          // "once" | "default" | "fallback"
     bool good { false };
-    nlohmann::json document { nlohmann::json::object() }; // unknown schema fields survive updates
+    // Assignment, not braces: `json{json::object()}` is an array holding an object.
+    nlohmann::json document = nlohmann::json::object(); // unknown schema fields survive updates
 };
 
 Config from_json(const nlohmann::json& j);
@@ -57,4 +58,4 @@ Config record_boot(Config c, const Candidate& chosen);
 // The running boot worked: its tries are restored.
 Config mark_good(Config c);
 
-}  // namespace luban::boot
+}  // namespace xlings::subos::boot

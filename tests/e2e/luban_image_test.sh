@@ -149,7 +149,7 @@ json.dump(cfg, open(sys.argv[1], "w"))
 L export t "$RUNTIME_DIR/p.iso" --boot fixture:luban-boot-test > "$RUNTIME_DIR/profile.log" 2>&1 \
   || { cat "$RUNTIME_DIR/profile.log"; fail "export --boot"; }
 grep -aq "luban.profile=test" "$RUNTIME_DIR/p.iso" || fail "the profile's command line is not in the image"
-if X subos export t --iso "$RUNTIME_DIR/both.iso" --boot generic --kernel /dev/null >/dev/null 2>&1; then
+if X subos __export t --iso "$RUNTIME_DIR/both.iso" --boot generic --kernel /dev/null >/dev/null 2>&1; then
   fail "--boot and --kernel together were accepted"
 fi
 boot iso-profile -cdrom "$RUNTIME_DIR/p.iso" -boot d

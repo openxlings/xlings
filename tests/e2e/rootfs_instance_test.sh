@@ -75,7 +75,7 @@ X subos rollback tiny --to "${after##*/}" >/dev/null 2>&1 || fail "rollback --to
 [[ -e "$S/root/usr/bin/make" ]] || fail "rollback --to did not bring make back"
 
 log "4. the role table"
-X subos boot tiny >/dev/null 2>&1 || fail "subos boot tiny"
+X subos __boot tiny >/dev/null 2>&1 || fail "subos boot tiny"
 out="$(X subos remove -y tiny 2>&1)" && fail "a boot entry was removed"
 grep -q "boot entry" <<<"$out" || fail "the refusal does not say why: $out"
 for verb in "rollback default" "boot default" "export default --tar $RUNTIME_DIR/x.tar"; do

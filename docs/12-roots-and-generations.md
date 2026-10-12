@@ -44,12 +44,13 @@ A broken glibc does not prevent a rollback: xlings is static.
 xlings subos export box --tar box.tar.gz        # docker import / podman import / wsl --import
 xlings subos export box --rootfs ./box/         # a directory
 xlings subos export box --disk box.img --size 8G   # an ext4 filesystem image
-xlings subos export box --drive box-drive.img --size 8G   # a bootable drive: GPT, UEFI (and BIOS on x86_64)
-xlings subos export box --qcow2 box.qcow2 --size 8G       # the same drive as qcow2
-xlings subos export box --iso box.iso           # a live ISO: the root in memory
+luban export box box-drive.img --size 8G        # a bootable drive: GPT, UEFI (and BIOS on x86_64)
+luban export box box.qcow2 --size 8G            # the same drive as qcow2
+luban export box box.iso                        # a live ISO: the root in memory
 ```
 
-An exported image is self-contained: the instance becomes the image's default
+The images a machine boots are Luban's (`luban export`); `xlings subos export`
+writes the root as a directory, a tarball or a filesystem image. An exported image is self-contained: the instance becomes the image's default
 SubOS, with every payload of its closure (workspace, installed packages, each ELF's
 loader and search path), a static xlings, and the boot stage. Images are written
 in-process — GPT, FAT, ISO 9660 with El Torito entries for BIOS and UEFI, the
@@ -62,16 +63,16 @@ The output must not exist; a reused target is refused and left alone.
 
 ## Booting
 
-A kernel started with `init=<home>/boot/xlings-init` (or `luban-init`) runs
-stage-0: it mounts the kernel filesystems, picks a SubOS from `boot.json`, points
+A kernel started with `init=<home>/boot/luban-init` (`xlings-init` is its older
+name) runs stage-0: it mounts the kernel filesystems, picks a SubOS from `boot.json`, points
 `/usr` at it and executes its init; an init that does not come up falls back to
 the next.
 
 ```bash
-xlings subos boot box --once       # try box on the next boot; back to the default unless confirmed
-xlings subos boot box --mark-good  # confirm it
-xlings subos boot box              # make it the default
-xlings subos boot box --now        # switch userland without restarting the kernel (when the init supports it)
+luban boot box --once       # try box on the next boot; back to the default unless confirmed
+luban boot box --mark-good  # confirm it
+luban boot box              # make it the default
+luban boot box --now        # switch userland without restarting the kernel (when the init supports it)
 ```
 
 ## Domains: where the home is inside the image

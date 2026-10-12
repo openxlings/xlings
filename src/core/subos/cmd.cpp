@@ -2020,7 +2020,7 @@ int run(int argc, char* argv[], EventStream& stream) {
     // A SubOS on another carrier: its xlings answers there (part 3 §5).
     static const std::set<std::string, std::less<>> kNamed{
         "use", "exec", "start", "stop", "remove", "info", "config", "status", "doctor", "cp", "log",
-        "report", "requests", "approve", "deny", "rollback", "boot", "export", "diff", "pack"};
+        "report", "requests", "approve", "deny", "rollback", "boot", "__boot", "export", "__export", "diff", "pack"};
     if (kNamed.contains(sub)) {
         for (int i = 3; i < argc; ++i) {
             const std::string a = argv[i];
@@ -2589,8 +2589,16 @@ int run(int argc, char* argv[], EventStream& stream) {
     }
     if (sub == "rollback") return run_rollback_(argc, argv, stream, usageError);
     if (sub == "upgrade") return run_upgrade_(argc, argv, stream, usageError, yesGiven);
-    if (sub == "boot") return run_boot_(argc, argv, stream, usageError);
-    if (sub == "export") return run_export_(argc, argv, stream, usageError);
+    // A machine's boot entries and the images a machine boots are Luban's
+    // (design §2): `luban boot`, `luban export`. Their implementation is here,
+    // reached by luban through the plumbing names `subos __boot` /
+    // `subos __export`; the user-facing spellings say where they went.
+    // A machine's boot entries and the images a machine boots are Luban's
+    // (design §2): `luban boot`, `luban export`, which reach this
+    // implementation through the plumbing names (cli.cpp says where the
+    // user-facing spellings went).
+    if (sub == "__boot") return run_boot_(argc, argv, stream, usageError);
+    if (sub == "__export" || sub == "export") return run_export_(argc, argv, stream, usageError);
     if (sub == "diff") return run_diff_(argc, argv, stream, usageError);
     if (sub == "pack") return run_pack_(argc, argv, stream, usageError);
 

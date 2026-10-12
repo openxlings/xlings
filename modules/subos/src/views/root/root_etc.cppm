@@ -1,12 +1,12 @@
-export module luban.machine;
+export module xlings.subos.root_etc;
 
 import std;
 
-// A machine's own /etc (SubOS design part 2 §6.4, part 3 §8): what a root
-// needs when it is a machine -- factory files linked in where the machine has
+// A root's own /etc (SubOS design part 2 §6.4, part 3 §8): what a root
+// needs as a system -- in a sandbox view or as a machine: factory files linked in where it has
 // none, users and groups its packages declare. Machine state is user data:
 // nothing that exists is replaced.
-export namespace luban::machine {
+export namespace xlings::subos::root_etc {
 
 namespace fs = std::filesystem;
 
@@ -28,4 +28,4 @@ std::expected<std::vector<std::string>, std::string> fill_machine_etc(const fs::
 // exists. Nothing is rewritten. Returns the names added.
 std::expected<std::vector<std::string>, std::string> apply_sysusers(const fs::path& etc, const fs::path& usr);
 
-}  // namespace luban::machine
+}  // namespace xlings::subos::root_etc

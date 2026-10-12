@@ -6,12 +6,12 @@ import xlings.testkit;
 #include "xlings/xtest.hpp"
 
 import std;
-import luban.image;
+import xlings.image;
 import xlings.core.xim.extract;
 
 namespace tk = xlings::testkit;
 namespace fs = std::filesystem;
-namespace image = luban::image;
+namespace image = xlings::image;
 
 namespace {
 std::string read_at(const fs::path& f, std::uint64_t offset, std::size_t n) {

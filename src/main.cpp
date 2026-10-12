@@ -10,7 +10,6 @@ import xlings.core.home_identity;
 import xlings.core.home;
 import xlings.subos.session;
 import xlings.core.clipboard;
-import luban.stage0;
 import xlings.carrier.wsl2;
 import xlings.observe;
 import xlings.core.xvm.lock;
@@ -45,9 +44,21 @@ int main(int argc, char* argv[]) {
     if (argc >= 2 && std::string_view(argv[1]) == "__xpkg-worker")
         return xlings::xim::lua_boundary::worker_main(argc, argv);
     // A machine's first process when its root is a SubOS (design part 2
-    // §8.2): before anything reads a home -- /proc is not even mounted yet.
-    if (argc >= 1 && std::filesystem::path(argv[0]).filename() == luban::stage0::kName)
-        return luban::stage0::run(argc, argv);
+    // §8.2) is luban-init; a machine set up before it existed boots
+    // `init=<home>/boot/xlings-init`, which is this binary. Handed to the
+    // luban-init beside it (boot/ or bin/), by path -- /proc is not mounted yet.
+    // COMPAT(2026.10.13 -> drop in 2027.4): the home's format step repoints
+    // boot/xlings-init at luban-init, so only a machine that has not run a
+    // newer client since still comes here.
+    if (argc >= 1 && argv[0] && std::filesystem::path(argv[0]).filename() == "xlings-init") {
+        const auto here = std::filesystem::path(argv[0]).parent_path();
+        for (const auto& candidate : {here / "luban-init", here.parent_path() / "bin" / "luban-init"}) {
+            std::error_code ec;
+            if (std::filesystem::exists(candidate, ec)) (void)xlings::platform::handoff_exec(candidate, argc, argv);
+        }
+        std::println(std::cerr, "xlings-init: stage-0 is luban-init, and there is none beside {}", argv[0]);
+        return 1;
+    }
 
     // The first process inside a SubOS sandbox (xlings.subos.session). Before
     // everything: it must not read, adopt or write any home -- inside, the

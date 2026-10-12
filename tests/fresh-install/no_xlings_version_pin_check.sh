@@ -76,7 +76,7 @@ environment for that run instead of committing it. If a release genuinely
 requires a pin here, say why in this file and add the exception explicitly --
 the point is that it cannot happen by accident.
 
-See AGENTS.md ("Never pin a released xlings version into CI") and
+See AGENTS.md ("Versions and releases") and
 .agents/skills/xlings-contributing/SKILL.md.
 WHY
   exit 1

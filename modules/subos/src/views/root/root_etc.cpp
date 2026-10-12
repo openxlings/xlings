@@ -1,10 +1,10 @@
-module luban.machine;
+module xlings.subos.root_etc;
 
 import std;
 import xlings.platform;
 import xlings.subos.rootfs;
 
-namespace luban::machine {
+namespace xlings::subos::root_etc {
 
 namespace platform = xlings::platform;
 
@@ -198,4 +198,4 @@ std::expected<std::vector<std::string>, std::string> apply_sysusers(const fs::pa
     return added;
 }
 
-}  // namespace luban::machine
+}  // namespace xlings::subos::root_etc

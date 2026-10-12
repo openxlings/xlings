@@ -17,8 +17,10 @@
 #                platform matrix
 #   carrier   -> subos: where a SubOS runs (local, wsl2, vz) and how this
 #                xlings reaches it
+#   image     -> platform: disk and disc image formats, written in-process
 #   luban     -> modules: what exists only when a SubOS is a machine --
-#                boot entries, stage-0 and the luban command (apps/luban), the machine's /etc
+#                stage-0 and the luban command (apps/luban); xlings never
+#                imports it (tools/lint_layer_deps.sh)
 #   testkit   -> libs: end-to-end test library (dev-dependency only)
 #   apps/gui  the GUI binary's library half
 #   apps/xdev the development tool (never linked into xlings)
@@ -39,6 +41,7 @@ members = [
     "modules/subos",
     "modules/confine",
     "modules/carrier",
+    "modules/image",
     "luban",
     "apps/luban",
     "modules/testkit",
@@ -77,11 +80,11 @@ cxxflags = ["-DLIBARCHIVE_STATIC", "-DUNICODE", "-D_UNICODE"]
 # THIS manifest only once it has been re-pointed (`replace_entry_binary`) or
 # hands off to the entry at startup (#615).
 [resources]
-files = ["res/xlings.rc"]
+files = ["docs/res/xlings.rc"]
 # The .rc input scanner recognises the `MANIFEST` keyword but not the
-# equivalent numeric resource type (`24`) used in res/xlings.rc, so the
+# equivalent numeric resource type (`24`) used in docs/res/xlings.rc, so the
 # manifest is declared here as well to make sure editing it relinks.
-extra-inputs = ["res/xlings.exe.manifest"]
+extra-inputs = ["docs/res/xlings.exe.manifest"]
 
 [targets.xlings]
 kind = "bin"
@@ -147,7 +150,7 @@ store    = { path = "modules/store" }
 subos    = { path = "modules/subos" }
 confine  = { path = "modules/confine" }
 carrier  = { path = "modules/carrier" }
-luban    = { path = "luban" }
+image    = { path = "modules/image" }
 
 [dependencies.compat]
 ftxui      = "6.1.9"
@@ -160,6 +163,9 @@ capi.lua = "0.0.3"
 
 [dev-dependencies]
 testkit = { path = "modules/testkit" }
+# Tests drive Luban's own modules (stage-0, the luban command); the xlings
+# binary itself never links them.
+luban   = { path = "luban" }
 
 [dev-dependencies.compat]
 gtest = "1.15.2"

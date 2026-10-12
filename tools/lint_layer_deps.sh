@@ -3,7 +3,11 @@
 #
 #   luban/     a SubOS that is a machine     may import modules/, never src/
 #   modules/   shared by xlings and Luban    may import neither luban/ nor src/
-#   src/       the xlings frontend           may import both
+#   src/       the xlings frontend           may import modules/, never luban/
+#
+# Luban is one implementation over xlings: luban drives xlings, xlings never
+# links Luban. What both read (boot.json, a root's /etc, image formats) is a
+# module under modules/.
 #
 # A module name says where it lives: `luban.*` is under luban/, `xlings.core.*`
 # (and the frontend's other top-level names) under src/. An import that points
@@ -51,8 +55,13 @@ if [ -d luban ]; then
   done < <(imports luban)
 fi
 
+while read -r where module; do
+  [ -n "${module:-}" ] || continue
+  case "$module" in luban|luban.*) report "${where%%:*}" "src/ imports $module ($where): xlings never links Luban; move what both need to modules/" ;; esac
+done < <(imports src)
+
 if [ "$bad" -gt 0 ]; then
   echo "layer dependency lint: FAIL ($bad upward import(s))"
   exit 1
 fi
-echo "layer dependency lint: PASS (luban -> modules, modules -/-> luban, src)"
+echo "layer dependency lint: PASS (luban -> modules, modules -/-> luban, src; src -/-> luban)"

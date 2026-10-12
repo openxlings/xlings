@@ -53,7 +53,7 @@ commands is the `xlings subos` command it names ([Luban](luban/README.md)).
 | see what happened in it | `xlings subos log work`, `xlings subos report work` |
 | move it to its edition's newest | `xlings subos upgrade work` |
 | roll a root back | `xlings subos rollback box` |
-| make an image of it | `xlings subos export box --iso box.iso` |
+| make an image of it | `luban export box box.iso` |
 | remove it | `xlings subos remove work` |
 
 ## xlings itself

@@ -1,9 +1,9 @@
-module luban.image;
+module xlings.image;
 
 import std;
 import xlings.platform.target;
 
-namespace luban::image {
+namespace xlings::image {
 
 namespace fs = std::filesystem;
 
@@ -824,4 +824,4 @@ std::expected<void, std::string> write_qcow2(const fs::path& raw, const fs::path
     return {};
 }
 
-}  // namespace luban::image
+}  // namespace xlings::image

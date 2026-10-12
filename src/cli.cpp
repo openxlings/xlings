@@ -201,6 +201,8 @@ bool kind_is_interface_only_(std::string_view kind) {
         // What each request of an install resolved to (protocol 1.1); the
         // terminal already shows the plan, the progress and the summary.
         "install_targets",
+        // `subos __boot` with no name prints the entries itself (for luban).
+        "subos_boot",
     };
     return std::ranges::contains(kCapabilityOnly, kind)
         || std::ranges::contains(kWireDuplicate, kind);
@@ -2042,7 +2044,28 @@ int dispatch_(int argc, char* argv[]) {
             return 2;
         }
 
-        if (cmd == "subos" || cmd == "self" || cmd == "profile") {
+        // What moved to Luban (design §2) says where it went before the spec
+        // can call it unknown; its implementation is the plumbing `subos
+        // __boot` / `subos __export` (never in the spec, help or completion).
+        if (cmd == "subos" && fargc >= 3) {
+            const std::string_view sub = fargv[2];
+            bool bootable = false;
+            for (int i = 3; i < fargc && sub == "export"; ++i) {
+                const std::string_view a = fargv[i];
+                bootable = bootable || a == "--iso" || a == "--drive" || a == "--qcow2" || a == "--kernel" || a == "--boot";
+            }
+            if (sub == "boot" || bootable) {
+                std::string rest;
+                for (int i = 3; i < fargc; ++i) rest += std::string(" ") + fargv[i];
+                log::error("{}", sub == "boot"
+                    ? std::format("a machine's boot entries are Luban's now: luban boot{}", rest)
+                    : std::string("an image a machine boots is Luban's now: luban export <name> <file> "
+                                  "(.iso, .img, .qcow2); `xlings subos export` writes --rootfs, --tar and --disk"));
+                return 2;
+            }
+        }
+        const bool plumbing = cmd == "subos" && fargc >= 3 && std::string_view(fargv[2]).starts_with("__");
+        if ((cmd == "subos" && !plumbing) || cmd == "self" || cmd == "profile") {
             const std::array<std::string_view, 1> path{cmd};
             if (const auto* command = spec::find(path)) {
                 std::vector<std::string_view> manualArgs;

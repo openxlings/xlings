@@ -124,7 +124,7 @@ jobs:
           # (gcc@15.1.0-musl), so a CI build and a release build hash the same
           # -- sharing one key across workflows is wrong on its own terms even
           # though it was not what caused this.
-          key: mcpp-v4-release-${{ runner.os }}-${{ hashFiles('mcpp.toml', 'mcpp.lock', '.xlings.json') }}-${{ env.BOOTSTRAP_XLINGS_VERSION }}
+          key: mcpp-v4-release-${{ runner.os }}-${{ hashFiles('mcpp.toml', '.xlings.json') }}-${{ env.BOOTSTRAP_XLINGS_VERSION }}
           restore-keys: |
             mcpp-v4-release-${{ runner.os }}-
       # An inexact restore (the `restore-keys` fallback) brings BMIs built
@@ -476,7 +476,7 @@ jobs:
           # poisoned at their exact key, so the guard below -- which only fires
           # on an INEXACT restore -- can never reach them. Retiring the prefix
           # is what discards them; the guard is what stops it recurring.
-          key: mcpp-v4-release-${{ runner.os }}-${{ hashFiles('mcpp.toml', 'mcpp.lock', '.xlings.json') }}-${{ env.BOOTSTRAP_XLINGS_VERSION }}
+          key: mcpp-v4-release-${{ runner.os }}-${{ hashFiles('mcpp.toml', '.xlings.json') }}-${{ env.BOOTSTRAP_XLINGS_VERSION }}
           restore-keys: |
             mcpp-v4-release-${{ runner.os }}-
       # An inexact restore brings BMIs built under a different dependency set.
@@ -707,7 +707,7 @@ jobs:
           # poisoned at their exact key, so the guard below -- which only fires
           # on an INEXACT restore -- can never reach them. Retiring the prefix
           # is what discards them; the guard is what stops it recurring.
-          key: mcpp-v4-release-${{ runner.os }}-${{ hashFiles('mcpp.toml', 'mcpp.lock', '.xlings.json') }}-${{ env.BOOTSTRAP_XLINGS_VERSION }}
+          key: mcpp-v4-release-${{ runner.os }}-${{ hashFiles('mcpp.toml', '.xlings.json') }}-${{ env.BOOTSTRAP_XLINGS_VERSION }}
           restore-keys: |
             mcpp-v4-release-${{ runner.os }}-
       # An inexact restore brings BMIs built under a different dependency set.
