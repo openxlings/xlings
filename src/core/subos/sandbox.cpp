@@ -1416,6 +1416,17 @@ int prepare_root_host(bool yes, EventStream& stream) {
     const auto home = subos::home_view();
     const auto ports = subos::make_ports(stream);
     auto candidates = caps::bwrap_candidates(home, ports);
+    if (candidates.empty()) {
+        // No bwrap at all. It is a package (T1) and a root cannot do without
+        // it -- not to enter, and not to make its loader cache, which failed
+        // half-way through an edition's install on a home that had none --
+        // so it is installed now, before the edition's download, the way
+        // `luban try` installs its emulator.
+        log::info("a root needs bwrap: installing xim:bwrap first");
+        const std::vector<std::string> bwrap{"xim:bwrap"};
+        if (xim::cmd_install_step(bwrap, {}, stream, /*plumbing=*/true) == 0)
+            candidates = caps::bwrap_candidates(home, ports);
+    }
     std::ifstream sysctl("/proc/sys/kernel/apparmor_restrict_unprivileged_userns");
     std::string restricted;
     std::getline(sysctl, restricted);

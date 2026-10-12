@@ -589,32 +589,32 @@ std::vector<Finding> detect_subos_manifest_(const xvm::VersionDB& db,
                 .detail  = std::format("subos '{}' declares runtime {}; it is installed with the "
                                        "first package that needs it", subosName, mismatch->declared),
             });
-            return out;
+        } else {
+            if (differentActive) {
+                detail += std::format(
+                    "; nothing here was ever activated against {}",
+                    mismatch->declared);
+            }
+            out.push_back({
+                .kind    = FindingKind::SubosRuntimeMissing,
+                .level   = unmaterializedDeclaration
+                    ? FindingLevel::Warning : FindingLevel::Error,
+                .target  = subosName,
+                .version = mismatch->declared,
+                .detail  = std::move(detail),
+                .remedy  = differentActive
+                    ? std::string("xlings self doctor --fix")
+                    : std::format("xlings install {}", mismatch->declared),
+                .remedyNote = differentActive
+                    ? std::format(
+                        "adopts {}; to migrate instead: `xlings install {}` then "
+                        "`xlings use {} {}`",
+                        mismatch->active, mismatch->declared,
+                        mf::binding_name(mismatch->declared),
+                        mf::binding_version(mismatch->declared))
+                    : std::string{},
+            });
         }
-        if (differentActive) {
-            detail += std::format(
-                "; nothing here was ever activated against {}",
-                mismatch->declared);
-        }
-        out.push_back({
-            .kind    = FindingKind::SubosRuntimeMissing,
-            .level   = unmaterializedDeclaration
-                ? FindingLevel::Warning : FindingLevel::Error,
-            .target  = subosName,
-            .version = mismatch->declared,
-            .detail  = std::move(detail),
-            .remedy  = differentActive
-                ? std::string("xlings self doctor --fix")
-                : std::format("xlings install {}", mismatch->declared),
-            .remedyNote = differentActive
-                ? std::format(
-                    "adopts {}; to migrate instead: `xlings install {}` then "
-                    "`xlings use {} {}`",
-                    mismatch->active, mismatch->declared,
-                    mf::binding_name(mismatch->declared),
-                    mf::binding_version(mismatch->declared))
-                : std::string{},
-        });
     }
 
     // D6 — the declaration and the SYSROOT disagree.

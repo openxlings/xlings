@@ -13,8 +13,11 @@ step "luban new at a terminal finishes ($edition)" ok -- timeout 900 script -qec
 shelled=hmtt
 if [[ "$edition" != tiny ]]; then shelled=hmtp; step "luban new hmtp tiny" ok -- L new hmtp tiny; fi
 absent() { ! grep -Eqi -- "$1" <<<"$LAST_OUT"; }
+# Typed as a person types, once the shell is there: typed ahead, the lines
+# are read by the terminal queries of the commands starting up (the colour
+# probe), as they would be on any terminal.
 step "luban enter: the prompt, and an install inside finishes" ok "\\[luban:$shelled\\]" -- \
-    bash -c "printf 'echo PROMPT=\$PS1\nxlings install -y ninja\necho INSTALL=\$?\nexit\n' | timeout 600 script -qec '$XLINGS_HOME/bin/luban enter $shelled' /dev/null"
+    bash -c "( sleep 10; printf 'echo PROMPT=\$PS1\n'; sleep 2; printf 'xlings install -y ninja; echo INSTALL=\$?\n'; sleep 240 ) | timeout 600 script -qec '$XLINGS_HOME/bin/luban enter $shelled' /dev/null"
 check "the install inside ended" -- grep -q 'INSTALL=0' <<<"$LAST_OUT"
 check "nothing was stopped" -- absent 'stopped'
 done_

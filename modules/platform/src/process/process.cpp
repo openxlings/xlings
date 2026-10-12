@@ -329,8 +329,14 @@ UserIds user_ids() {
 bool stdout_is_terminal() { return ::isatty(1) == 1; }
 
 bool in_terminal_foreground() {
-    for (int fd = 0; fd != 3; ++fd)
-        if (::isatty(fd)) return ::tcgetpgrp(fd) == ::getpgrp();
+    // Only the CONTROLLING terminal stops a background group (SIGTTOU /
+    // SIGTTIN); tcgetpgrp fails on any other, and there is nothing to fear.
+    for (int fd = 0; fd != 3; ++fd) {
+        if (!::isatty(fd)) continue;
+        const auto foreground = ::tcgetpgrp(fd);
+        if (foreground < 0) continue;
+        return foreground == ::getpgrp();
+    }
     return true;
 }
 

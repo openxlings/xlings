@@ -21,7 +21,10 @@ N() { XLINGS_HOME="$old" "$XLINGS_HOME/bin/xlings" "$@"; }
 NL() { XLINGS_HOME="$old" "$XLINGS_HOME/bin/luban" "$@"; }
 step "it lays out a home" ok -- O self init
 O config --mirror "${HM_MIRROR:-GLOBAL}" >/dev/null 2>&1
-step "the older client installs what an edition reuses" ok -- O install -y patchelf make ninja zlib
+# patchelf on its own first: that client could not relocate a payload with a
+# patchelf of the same plan (fixed in 2026.10.12.1).
+step "the older client installs patchelf" ok -- O install -y patchelf
+step "the older client installs what an edition reuses" ok -- O install -y make ninja zlib
 # A client older still wrote no resolution records at all.
 rm -f "$old"/data/xpkgs/xim-x-patchelf/*/.xlings-resolution.json
 # The upgrade: the build under test becomes the home's entry.
