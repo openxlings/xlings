@@ -109,7 +109,7 @@ std::vector<App> scan(const std::vector<fs::path>& from, std::string_view lang) 
             if (ec) break;
             if (it->path().extension() != ".desktop") continue;
             // Desktop file ids: the path under applications/, '/' as '-'.
-            auto rel = fs::relative(it->path(), dir, ec).string();
+            auto rel = fs::relative(it->path(), dir, ec).generic_string();   // '/' on every system
             rel = rel.substr(0, rel.size() - std::string_view(".desktop").size());
             std::ranges::replace(rel, '/', '-');
             if (by_id.contains(rel)) continue;
