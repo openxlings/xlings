@@ -16,7 +16,7 @@ xlings self update
 一个不在了的 payload 是一个问题，不论它登记了多少个名字）、修复它们的一条命令、详情在哪里：
 
 ```text
-[warn] xlings 2026.10.12.4 (from 2026.10.12.3): 1 problem(s) in this home it could not fix by itself
+[warn] xlings 2026.10.13.1 (from 2026.10.12.3): 1 problem(s) in this home it could not fix by itself
          fix          xlings self doctor --fix
          details      xlings self doctor   (log: @xlings/logs/upgrade.ndjson)
          or go back   xlings use xlings 2026.10.12.3

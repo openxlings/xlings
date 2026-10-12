@@ -25,6 +25,12 @@ case "$PROJ" in
     p="xlings-${VER}"
     DEFAULT_ASSETS="${p}-linux-x86_64.tar.gz ${p}-linux-x86_64.tar.gz.sha256 ${p}-linux-aarch64.tar.gz ${p}-linux-aarch64.tar.gz.sha256 ${p}-macosx-arm64.tar.gz ${p}-macosx-arm64.tar.gz.sha256 ${p}-windows-x86_64.zip ${p}-windows-x86_64.zip.sha256"
     ;;
+  luban-os)
+    # The Luban OS app, released with xlings (its own payload, Linux x86_64).
+    : "${SRC_REPO:=openxlings/xlings}"
+    p="luban-os-${VER}"
+    DEFAULT_ASSETS="${p}-linux-x86_64.tar.gz ${p}-linux-x86_64.tar.gz.sha256"
+    ;;
   mcpp)
     : "${SRC_REPO:=mcpp-community/mcpp}"
     # Mirror each archive and its authoritative checksum sidecar so resource
@@ -33,7 +39,7 @@ case "$PROJ" in
     DEFAULT_ASSETS="${p}-linux-x86_64.tar.gz ${p}-linux-x86_64.tar.gz.sha256 ${p}-linux-aarch64.tar.gz ${p}-linux-aarch64.tar.gz.sha256 ${p}-macosx-arm64.tar.gz ${p}-macosx-arm64.tar.gz.sha256 ${p}-windows-x86_64.zip ${p}-windows-x86_64.zip.sha256"
     ;;
   *)
-    echo "[mirror] unknown project '$PROJ' (expected xlings|mcpp)" >&2
+    echo "[mirror] unknown project '$PROJ' (expected xlings|luban-os|mcpp)" >&2
     exit 2
     ;;
 esac

@@ -294,6 +294,23 @@ jobs:
           name: xlings-linux-x86_64
           path: build/xlings-*-linux-x86_64.tar.gz
 
+      # The Luban OS app (a window: glibc and X11, through SDL), released with
+      # this xlings as its own payload -- the index's xim:luban-os depends on
+      # the index's glibc and X11, which an install patches it onto.
+      - name: Build the Luban OS app (luban_os_release)
+        run: |
+          bash tools/ci/xlings_tools.sh patchelf
+          mcpp build -p luban-os --profile dist
+          bash tools/luban_os_release.sh
+
+      - name: Upload the Luban OS app
+        uses: actions/upload-artifact@v4
+        with:
+          name: luban-os-linux-x86_64
+          path: |
+            build/luban-os-*-linux-x86_64.tar.gz
+            build/luban-os-*-linux-x86_64.tar.gz.sha256
+
   # Cross-build the aarch64-linux-musl release artefact on an x86_64 runner via
   # mcpp's cross toolchain (xim:aarch64-linux-musl-gcc). Uses the latest mcpp
   # (built from main) and a freshly-updated package index, so the produced
@@ -933,6 +950,8 @@ jobs:
           prerelease: false
           files: |
             artifacts/xlings-linux-x86_64/xlings-*-linux-x86_64.tar.gz
+            artifacts/luban-os-linux-x86_64/luban-os-*-linux-x86_64.tar.gz
+            artifacts/luban-os-linux-x86_64/luban-os-*-linux-x86_64.tar.gz.sha256
             artifacts/xlings-linux-aarch64/xlings-*-linux-aarch64.tar.gz
             artifacts/xlings-macosx-arm64/xlings-*-macosx-arm64.tar.gz
             artifacts/xlings-windows-x86_64/xlings-*-windows-x86_64.zip
@@ -1065,9 +1084,11 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.XLINGS_RES_TOKEN }}
         run: |
-          chmod +x tools/gtc tools/mirror_xlings_res.sh
+          chmod +x tools/gtc tools/mirror_xlings_res.sh tools/mirror_res.sh
           export PATH="$PWD/tools:$PATH"
           bash tools/mirror_xlings_res.sh "${{ steps.version.outputs.version }}"
+          # The Luban OS app beside it (xlings-res/luban-os).
+          bash tools/mirror_res.sh luban-os "${{ steps.version.outputs.version }}"
 
       - name: Report mirror outcome
         if: ${{ always() && env.XLINGS_RES_TOKEN != '' }}

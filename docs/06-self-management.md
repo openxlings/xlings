@@ -22,7 +22,7 @@ is gone is one problem, however many names it registered), the one command that
 repairs them, and where the details are:
 
 ```text
-[warn] xlings 2026.10.12.4 (from 2026.10.12.3): 1 problem(s) in this home it could not fix by itself
+[warn] xlings 2026.10.13.1 (from 2026.10.12.3): 1 problem(s) in this home it could not fix by itself
          fix          xlings self doctor --fix
          details      xlings self doctor   (log: @xlings/logs/upgrade.ndjson)
          or go back   xlings use xlings 2026.10.12.3

@@ -858,7 +858,7 @@ int run(int argc, char* argv[]) {
             if (v == "admin") { a.before_admin = View::Launcher; a.view = View::Admin; }
             else if (v == "quick-start") a.view = View::QuickStart;
         }
-        else if (arg == "--version") { std::println("luban-os 2026.10.12.3"); return 0; }
+        else if (arg == "--version") { std::println("luban-os {}", service::kVersion); return 0; }
         else if (arg == "--help" || arg == "-h") {
             std::println("luban-os [--attach <name>]   Luban OS: the systems of this home, in a window");
             return 0;

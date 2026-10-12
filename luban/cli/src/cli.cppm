@@ -10,6 +10,7 @@ export module luban.cli;
 
 import std;
 import xlings.cli.model;
+import luban.service;
 
 export namespace luban::cli {
 
@@ -37,9 +38,8 @@ struct Parsed {
 };
 std::expected<Parsed, std::string> parse(std::span<const std::string> args);
 
-// luban is released with the xlings it drives: the same date version
-// (YYYY.M.D.N). tests/unit/test_luban_cli.cpp holds the two equal.
-inline constexpr std::string_view kVersion = "2026.10.12.3";
+// The luban command's version: Luban's (luban.service).
+inline constexpr std::string_view kVersion = luban::service::kVersion;
 
 // A drive `luban write` may write (Linux): what it is, read from sysfs and the
 // mount table (parameters, so a test can hand it a made-up machine).
