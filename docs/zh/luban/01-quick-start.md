@@ -8,7 +8,7 @@
 ## 1. 一个环境
 
 ```bash
-luban new box --edition tiny            # an edition: nano, tiny, core, agent-workspace, or ns:name
+luban new box --edition tiny            # an edition: nano, tiny, core, desktop, desktop-xdesk, agent-workspace, or ns:name
 ```
 
 你会看到 edition 只出现一行（`'box' from subos:luban-tiny@… <- …: N package(s)`）、下载过程，以及

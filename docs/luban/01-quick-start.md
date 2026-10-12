@@ -11,7 +11,7 @@ Each step says what you should see.
 ## 1. An environment
 
 ```bash
-luban new box --edition tiny            # an edition: nano, tiny, core, agent-workspace, or ns:name
+luban new box --edition tiny            # an edition: nano, tiny, core, desktop, desktop-xdesk, agent-workspace, or ns:name
 ```
 
 You see the edition once (`'box' from subos:luban-tiny@… <- …: N package(s)`),
