@@ -1,6 +1,6 @@
 # Luban OS：分层、home 格式框架、呈现层、运行方式与 desktop —— 总体设计
 
-日期：2026-10-12　基线：2026.10.12.3　状态：已确认，按 §11 实施（xlings 一个 PR，按 checkpoint 提交；跨仓库见 §17）
+日期：2026-10-12　基线：2026.10.12.3　状态：已确认，按 §11 实施，发布为 2026.10.13.1（xlings 一个 PR，按 checkpoint 提交；跨仓库见 §17；实施时的决定见 §11.1）
 
 来源：在一个长期使用的 home（398 个 payload）上从旧客户端升级到 2026.10.12.3 的完整记录（`self doctor --fix`、
 升级提示），以及按 README 第一次体验 Luban（`luban new`、`luban try`）的记录。本文把这些问题和围绕它们的讨论
@@ -400,6 +400,30 @@ C11 文档与规范、C12 CI、C13 版本与发布：贯穿，最后收口
 | C13 | 版本号三处（mcpp.toml、config.cppm、luban kVersion）、发布、CN 镜像、index | 全部 | 发布 | fresh-install、真实升级 |
 
 收口的规则：一个 checkpoint 只有在它的测试通过后才提交；PR 合并要求全部 checkpoint 完成、CI 全绿、自我 review 通过。
+
+### 11.1 实施时的决定（2026-10-13）
+
+- **C9 的桥在 `luban/desktop/wlr`（opensal-wlr）**：自己实现 Wayland wire（guest 里的 luban 是静态的，不带 libwayland），只用
+  screencopy、virtual-keyboard（evdev 键码、US keymap，由合成器用它自己的 xkeyboard-config 编译）、virtual-pointer、
+  output-management。会话按 freedesktop 声明（`share/wayland-sessions/<id>.desktop` + `X-Opensal-Interfaces=`），
+  headless 后端 + pixman 软件渲染。机器里由 agent 在一个通道上桥接；沙箱里是 `xlings subos use --cmd 'luban __desktop'`
+  的两条管道——窗口两边都是 opensal.wire 的提供端。opensal.wire 增加了 `s`（消费端实际绘制的大小）。
+- **桌面栈是一个可重定位的包 `labwc-desktop`**：资源工厂把 Alpine 3.20 的构建（labwc、yambar、fuzzel、foot、swaybg、grim、
+  Xwayland、字体）连同 musl loader 与依赖库打成一棵树；库放在 `libexec/lib`（根会把 payload 的 `lib/` 链进 `/usr/lib`），
+  并把每个 ELF 的 PT_INTERP 改成 PT_NULL（根检查每个 ELF 的 loader 在闭包内；这些程序只由树自己的 loader 运行）。
+  工厂在 Debian 12 里跑一个 headless 会话，画出背景与面板才算构建成功。
+- **edition 的默认设置**是根里的 `usr/share/luban/settings.json`（`mode`、`persist`、`desktop`、`on_close`），用户设置的优先，
+  随升级更新；desktop edition 默认以机器运行并启动 labwc-desktop。
+- **机器的 `/run`、`/tmp` 是 tmpfs**，在挂 home 之前挂（home 可能就在 `/tmp` 下）：否则会话留下的 socket 归宿主用户所有，
+  下一个会话被拒绝。
+- **luban-os 的发布形态**：glibc + X11（SDL 直接链接 X11）的普通 payload，loader 用系统路径、无 RPATH，`xim:luban-os`
+  依赖索引的 glibc 与 X11 库，安装时由 elfpatch 接上——与其他 glibc 包相同。索引的 X11 库只有 x86_64，所以本版 luban-os 只有
+  x86_64；aarch64 上桌面本身可以运行（机器、桥、`luban __desktop`），窗口待 X11 库有 aarch64 版本后再发布。
+- **实验线 `desktop-xdesk` 不在本版**（§12）：本版建立了它需要的接入点——会话声明、`X-Opensal-Interfaces`、opensal.wire 通道；
+  原生 opensal 消费端的桌面另立版本。
+- **CI 的"被测索引"此前没有生效**：`self install` 同步过的索引目录在改 `index_repos` 之后仍然留着，工具一直来自已发布的索引
+  （aarch64 因此拿到没有 9p 的 qemu r1）。`tools/ci/xlings_tools.sh` 与镜像测试的 home 现在删掉它再 `xlings update`，并核对
+  正在用的就是被测索引。客户端本身"改了默认索引的 url 却继续用旧目录"是另一个问题，记在这里，不在本版修。
 
 ---
 
