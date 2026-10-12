@@ -62,7 +62,9 @@ pending the upgrade says nothing. Otherwise it says once: each item (the first
 five), each distinct command, and `xlings use xlings <from>` when that version
 is still installed.
 
-The steps do not run inside a SubOS session (the session's home is its owner's,
+The steps do not run in a command another xlings started while holding the
+home's lock (a hook's, `self update`'s own steps: the outermost command does
+it), inside a SubOS session (the session's home is its owner's,
 upgraded by the owner's next command), after a session's command (`subos use`,
 `exec`, `start`, `stop`: their exit code is the program's), nor for `xlings self
 ...` and `xlings interface`, which report the same facts as part of their own

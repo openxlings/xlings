@@ -37,6 +37,10 @@ bool installed_(std::string_view version) {
 std::optional<Outcome> on_first_command() {
     try {
         if (const char* mode = std::getenv("XLINGS_SUBOS_MODE"); mode && *mode) return std::nullopt;
+        // A command an xlings runs for itself (a hook's, `self update`'s
+        // steps): the outermost one upgrades the home, after it is done,
+        // never in the middle of its transaction.
+        if (const char* held = std::getenv("XLINGS_STATE_LOCK_HELD"); held && *held) return std::nullopt;
         const std::string now(Info::VERSION);
         const auto record = Config::recorded_upgrade();
         std::string last = record.value("to", std::string{});
