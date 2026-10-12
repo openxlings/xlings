@@ -16,7 +16,9 @@ url="https://github.com/openxlings/xlings/releases/download/v$OLD/xlings-$OLD-li
 step "the older client ($OLD)" ok -- curl -fsSL "$url" -o "$HOME/hm-old-client/x.tar.gz"
 tar -xzf "$HOME/hm-old-client/x.tar.gz" -C "$HOME/hm-old-client"
 oldbin="$(find "$HOME/hm-old-client" -path '*/bin/xlings' -type f | head -1)"
-O() { XLINGS_HOME="$old" "$oldbin" "$@"; }
+# As its user's shell has it: the home's SubOS bin on PATH (that client
+# looked for patchelf there).
+O() { PATH="$old/subos/default/bin:$old/bin:$PATH" XLINGS_HOME="$old" "$oldbin" "$@"; }
 N() { XLINGS_HOME="$old" "$XLINGS_HOME/bin/xlings" "$@"; }
 NL() { XLINGS_HOME="$old" "$XLINGS_HOME/bin/luban" "$@"; }
 step "it lays out a home" ok -- O self init
