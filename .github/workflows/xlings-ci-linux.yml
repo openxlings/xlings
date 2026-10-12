@@ -332,6 +332,9 @@ jobs:
           # luban, beside the xlings the e2e tests run (tests/e2e/test_luban.cpp
           # finds bin/luban-tool/luban next to bin/xlings).
           mcpp build -p luban-tool
+          # The Luban OS app (a window): built on every platform, its headless
+          # tests (SDL's offscreen driver) find it beside bin/xlings.
+          mcpp build -p luban-os
           # xdev runs `mcpp test` and renders the report; the step summary is
           # rendered once, by the report job, from every lane. Built static
           # (musl) so the e2e and report jobs can run this same binary: a glibc

@@ -281,6 +281,9 @@ jobs:
           mcpp build
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           mcpp build -p luban-tool
+          # The Luban OS app (a window): built on every platform, its headless
+          # tests (SDL's offscreen driver) find it beside bin/xlings.
+          mcpp build -p luban-os
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           mcpp build -p xdev
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

@@ -981,6 +981,10 @@ status = "required"
 text = "opensal.wire carries a surface across an address space: damaged rectangles of pixels and every opensal event, whole whatever the cut of the stream, refusing what is not the protocol"
 status = "required"
 
+[LUBAN-OS-APP]
+text = "the Luban OS app is a window that is a display: no system yet is quick start, one or more is the launcher (one list, the default first, a countdown that any input cancels, 0 for none), the system's console or desktop fills the window, the management panel holds everything else; it reaches environments and machines only through luban.service and luban.vm"
+status = "required"
+
 [ELEVATION-NOBODY-TO-ASK]
 text = "administrator rights are never asked for where nobody can answer (agent mode, no terminal, the background of one): rights that need no question are used, otherwise nothing runs and the command that needs them is named; doctor's repair children run unattended with the null device as input"
 status = "required"
