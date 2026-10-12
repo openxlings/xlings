@@ -54,11 +54,12 @@ luban upgrade box             # one new generation; rollback undoes it
 
 ```bash
 luban export box box.iso      # a live ISO: BIOS and UEFI, x86_64 and aarch64
+xlings install -y qemu-system # the VM luban try boots it in
 luban try box                 # export it and boot it in a local VM
 ```
 
-`luban try` 通过 xlings 安装它需要的模拟器（`qemu-system`），然后启动镜像；你会看到启动过程和登录提示。
-`--nographic` 把它的控制台放在当前终端。
+`luban try` 用 `qemu-system`（一个包，两种架构，带固件）启动镜像；你会看到启动过程和登录提示。没有它时，
+`luban try` 会给出安装它的命令。`--nographic` 把它的控制台放在当前终端。
 
 ## 7. 启动盘（可选）
 

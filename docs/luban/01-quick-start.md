@@ -61,12 +61,13 @@ luban upgrade box             # one new generation; rollback undoes it
 
 ```bash
 luban export box box.iso      # a live ISO: BIOS and UEFI, x86_64 and aarch64
+xlings install -y qemu-system # the VM luban try boots it in
 luban try box                 # export it and boot it in a local VM
 ```
 
-`luban try` installs the emulator it needs (`qemu-system`) through xlings and
-boots the image; you see the boot and a login. `--nographic` puts its console in
-this terminal.
+`luban try` boots the image in `qemu-system` (one package, both architectures,
+with its firmware); you see the boot and a login. Without it, `luban try` names
+the command that installs it. `--nographic` puts its console in this terminal.
 
 ## 7. A boot drive (optional)
 
