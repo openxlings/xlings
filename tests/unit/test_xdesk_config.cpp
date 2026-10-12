@@ -1,0 +1,44 @@
+// xdesk.config (Luban OS desktop part 2 §2.4, D6): a profile's settings and
+// a person's own over them, key by key; what a file gets wrong said, not fatal.
+#include <gtest/gtest.h>
+import xlings.testkit;
+#include "xlings/xtest.hpp"
+
+import std;
+import xdesk.config;
+
+namespace config = xdesk::config;
+namespace fs = std::filesystem;
+
+XTEST(XdeskConfig, AnIniIsReadAndWhatIsWrongIsSaidByLine, .area = "luban", .covers = {"XDESK-CONFIG"}) {
+    const auto s = config::Settings::parse("# a comment\n[Desktop]\nterminal = foot -e fish\nautostart = a\nautostart = b\n"
+                                           "gap=12\n[theme]\naccent = #7aa2f7\nbackground = blue\noops\n[broken\n", "t.ini");
+    EXPECT_EQ(s.get("desktop", "terminal"), "foot -e fish");          // sections and keys by any case
+    EXPECT_EQ(s.all("desktop", "autostart"), (std::vector<std::string>{"a", "b"}));
+    EXPECT_EQ(s.get_int("desktop", "gap", 8), 12);
+    EXPECT_EQ(s.get_int("desktop", "workspaces", 4), 4);
+    EXPECT_EQ(s.colour("theme", "accent", 0), 0x7aa2f7u);
+    EXPECT_EQ(s.colour("theme", "background", 0x123456), 0x123456u);   // not a colour: the fallback
+    ASSERT_EQ(s.problems.size(), 2u);
+    EXPECT_EQ(s.problems[0], "t.ini:10: not key = value");
+    EXPECT_EQ(s.problems[1], "t.ini:11: a section without its ]");
+}
+
+XTEST(XdeskConfig, APersonsOwnFileWinsKeyByKeyOverTheProfiles, .area = "luban", .covers = {"XDESK-CONFIG"}) {
+    const auto root = fs::temp_directory_path() / std::format("xdesk-config-{}", std::random_device{}());
+    fs::create_directories(root / "etc" / "xdesk");
+    fs::create_directories(root / "home" / ".config" / "xdesk");
+    std::ofstream(root / "etc" / "xdesk" / "canvas.ini") << "[desktop]\nterminal = foot\nautostart = a\nautostart = b\n[theme]\naccent = #111111\n";
+    std::ofstream(root / "home" / ".config" / "xdesk" / "canvas.ini") << "[theme]\naccent = #222222\n[desktop]\nautostart = mine\n";
+    const std::map<std::string, std::string> env{{"XDG_CONFIG_DIRS", (root / "etc").string()}, {"HOME", (root / "home").string()}};
+    const auto files = config::files("canvas", env);
+    ASSERT_EQ(files.size(), 2u);
+    EXPECT_EQ(files.back(), root / "home" / ".config" / "xdesk" / "canvas.ini");   // the person's last
+    const auto s = config::load("canvas", env);
+    EXPECT_EQ(s.get("desktop", "terminal"), "foot");                  // from the profile
+    EXPECT_EQ(s.colour("theme", "accent", 0), 0x222222u);             // theirs
+    EXPECT_EQ(s.all("desktop", "autostart"), (std::vector<std::string>{"mine"}));   // their list, not added to
+    EXPECT_TRUE(config::load("classic", env).get("desktop", "terminal").empty());   // another profile: nothing
+    std::error_code ec;
+    fs::remove_all(root, ec);
+}

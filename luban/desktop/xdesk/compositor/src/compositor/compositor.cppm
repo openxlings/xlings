@@ -17,6 +17,12 @@ struct Options {
     std::string profile { "classic" };
     std::vector<std::string> terminal { "foot" };              // Super/Alt+Return
     std::vector<std::vector<std::string>> autostart;           // started once the socket is up
+    int gap { 8 };                               // between windows and the edges
+    int workspaces { 4 };
+    std::optional<std::uint32_t> accent;         // 0xrrggbb: the theme's, when absent
+    std::optional<std::uint32_t> background;
+    std::string keyboard_layout { "us" };        // an xkb layout (others need xkeyboard-config)
+    int repeat_rate { 30 }, repeat_delay { 500 };
     std::function<void(std::string_view)> log;
 };
 

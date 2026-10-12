@@ -9,6 +9,8 @@
 #   xdesk.layout  the layout engine: tile, float, canvas (pure logic)
 #   xdesk.apps    the applications on the system (desktop entries): found,
 #                 searched, started -- a launcher's model
+#   xdesk.config  a desktop's settings: a profile's defaults and a person's
+#                 own (INI under the XDG config directories)
 #
 # What draws or serves Wayland -- and so needs the C graphics libraries -- is
 # xdesk-compositor. Neither imports anything of xlings or Luban

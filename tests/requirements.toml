@@ -1041,6 +1041,10 @@ status = "required"
 text = "a system someone exported (.luban) is imported from the quick start, the launcher or by dropping the file on the window: a preview shows its edition, its packages and its isolation, lists in plain words what it may do beyond a new system's default (grants, host mounts, no isolation, a policy this version cannot read) and needs that agreed to; the import makes it from its edition, restores what it carried, and goes in"
 status = "required"
 
+[XDESK-CONFIG]
+text = "a desktop's settings are the profile's defaults ($XDG_CONFIG_DIRS/xdesk/<profile>.ini, what a config: package installs) with a person's own ($XDG_CONFIG_HOME/xdesk/<profile>.ini) over them key by key (a repeated key's list replaced whole); the terminal, what starts with it, gaps, workspaces, colours and the keyboard layout and repeat are set there, the command line winning; what a file gets wrong is said by line and skipped"
+status = "required"
+
 [LUBAN-MACHINE-DESKTOP]
 text = "a machine whose root declares a desktop session shows it to the Luban OS window: the guest starts the session headless with its /run and /tmp its own, bridges it on a channel of the machine (opensal.wire), at the size the window asks; what is typed into it runs there"
 status = "required"

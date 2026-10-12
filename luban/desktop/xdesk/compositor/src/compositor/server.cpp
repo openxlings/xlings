@@ -204,8 +204,12 @@ struct Server {
 
     explicit Server(const Options& opts)
         : o(opts), size(opts.size),
-          lay({.mode = opts.profile == "canvas" ? layout::Mode::canvas : layout::Mode::tile, .gap = 8}),
-          theme(shell::theme(opts.profile)) {}
+          lay({.mode = opts.profile == "canvas" ? layout::Mode::canvas : layout::Mode::tile,
+               .gap = static_cast<double>(std::clamp(opts.gap, 0, 64)), .workspaces = std::clamp(opts.workspaces, 1, 9)}),
+          theme(shell::theme(opts.profile)) {
+        if (opts.accent) theme.accent = theme.selected = draw::Color::rgb(*opts.accent);
+        if (opts.background) theme.background = draw::Color::rgb(*opts.background);
+    }
 
     bool canvas() const { return lay.mode() == layout::Mode::canvas; }
     draw::Fonts* ui() { return ui_font ? &*ui_font : nullptr; }
@@ -1117,12 +1121,18 @@ struct Server {
         static const wlr_keyboard_impl impl{.name = "opensal-keyboard", .led_update = nullptr};
         wlr_keyboard_init(&keyboard, &impl, "opensal-keyboard");
         xkb = xkb_context_new(XKB_CONTEXT_NO_FLAGS);
-        const std::string text(builtin_keymap());
+        // The layout asked for, compiled from the system's xkeyboard-config;
+        // US (carried in the program) when that is what is asked or there is none.
+        std::string text(builtin_keymap());
+        if (!o.keyboard_layout.empty() && o.keyboard_layout != "us") {
+            if (auto k = keymap_text(o.keyboard_layout)) text = *k;
+            else log(std::format("keyboard layout {}: {} (US instead)", o.keyboard_layout, k.error()));
+        }
         xkb_keymap* keymap = xkb_keymap_new_from_string(xkb, text.c_str(), XKB_KEYMAP_FORMAT_TEXT_V1, XKB_KEYMAP_COMPILE_NO_FLAGS);
         if (!keymap) { log("the keymap does not compile"); return false; }
         wlr_keyboard_set_keymap(&keyboard, keymap);
         xkb_keymap_unref(keymap);
-        wlr_keyboard_set_repeat_info(&keyboard, 30, 500);
+        wlr_keyboard_set_repeat_info(&keyboard, std::clamp(o.repeat_rate, 1, 100), std::clamp(o.repeat_delay, 100, 2000));
         wlr_seat_set_keyboard(seat, &keyboard);
 
         if (!wlr_backend_start(backend)) { log("the backend did not start"); return false; }

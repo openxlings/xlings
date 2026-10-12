@@ -698,7 +698,7 @@ const spec::CommandSpec& tree() {
         .children = {
             {.name = "new", .description = "Make an environment",
              .arguments = {{"name", "Its name", true}},
-             .options = {{"--edition <EDITION>", "nano, tiny, core (default), desktop, agent-workspace, or ns:name[@version]"},
+             .options = {{"--edition <EDITION>", "nano, tiny, core (default), desktop, desktop-xdesk, agent-workspace, or ns:name[@version]"},
                          {"--proxy <URL>", "Its network goes only through this SOCKS5h proxy", false, Level::More},
                          {"--carrier <CARRIER>", "Where it runs: local, wsl2, vz", false, Level::Expert}}},
             {.name = "enter", .description = "Go into an environment, or boot an image",
