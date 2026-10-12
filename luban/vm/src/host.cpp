@@ -133,6 +133,20 @@ Network network_(const service::Context& c, std::string_view name) {
             n.env[k] = "socks5h://10.0.2.100:1080";
         n.summary = "only its proxy";
     }
+    // Sound (design §9.4): with the audio grant, the guest's Pulse clients
+    // reach this host's PipeWire / PulseAudio socket through a forwarded port.
+    bool audio = false;
+    if (auto g = in.find("grants"); g != in.end() && g->is_array())
+        audio = std::ranges::any_of(*g, [](const Json& v) { return v.is_string() && v.get<std::string>() == "audio"; });
+    const char* runtime = std::getenv("XDG_RUNTIME_DIR");
+    const auto pulse = runtime ? fs::path(runtime) / "pulse" / "native" : fs::path{};
+    std::error_code ec;
+    if (audio && !pulse.empty() && fs::exists(pulse, ec) && pulse.string().find(',') == std::string::npos && n.args.size() == 2
+        && n.args[1].starts_with("user")) {
+        n.args[1] += std::format(",guestfwd=tcp:10.0.2.101:4713-cmd:{} __pipe-unix {}", luban_(c.home).string(), pulse.string());
+        n.env["PULSE_SERVER"] = "tcp:10.0.2.101:4713";
+        n.summary += ", sound";
+    }
     return n;
 }
 

@@ -405,6 +405,31 @@ int pipe_(const std::string& host, const std::string& port_text) {
     }
 }
 
+// One connection of a machine's sound to this host's PipeWire / PulseAudio
+// socket: qemu runs this per connection (guestfwd ...-cmd:), the connection on
+// stdin/stdout.
+int pipe_unix_(const std::string& socket) {
+    namespace platform = xlings::platform;
+    const int fd = platform::unix_connect_stream(socket);
+    if (fd < 0) return 1;
+    std::array<char, 65536> buf{};
+    bool in_open = true;
+    for (;;) {
+        std::array<platform::PollFd, 2> p{{{.fd = in_open ? 0 : -1}, {.fd = fd}}};
+        platform::poll_fds(p, -1);
+        if (in_open && (p[0].readable || p[0].closed)) {
+            auto n = platform::read_some(0, buf);
+            if (!n || *n == 0) in_open = false;
+            else if (!platform::write_all(fd, std::string_view(buf.data(), *n))) return 0;
+        }
+        if (p[1].readable || p[1].closed) {
+            auto n = platform::read_some(fd, buf);
+            if (!n || *n == 0) return 0;
+            if (!platform::write_all(1, std::string_view(buf.data(), *n))) return 0;
+        }
+    }
+}
+
 int host_status(const svc::Context& c, const Globals& g) {
     auto report = c.port.json({"self", "doctor", "--isolation", "--json"});
     const bool ready = report && report->is_object() && report->value("ok", false);
@@ -873,6 +898,7 @@ int run(int argc, char* argv[]) {
     if (!rest.empty() && rest.front() == "__write" && rest.size() == 3) return raw_write_(rest[1], rest[2]);
     if (!rest.empty() && rest.front() == "__pipe" && rest.size() == 3) return pipe_(rest[1], rest[2]);
     if (!rest.empty() && rest.front() == "__vm-supervise" && rest.size() == 3) return vm::supervise(rest[1], rest[2]);
+    if (!rest.empty() && rest.front() == "__pipe-unix" && rest.size() == 2) return pipe_unix_(rest[1]);
     if (!rest.empty() && (rest.front() == "--version" || rest.front() == "-V")) {
         std::println("luban {}", kVersion);
         return 0;
