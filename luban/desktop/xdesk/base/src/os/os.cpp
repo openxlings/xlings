@@ -13,6 +13,9 @@ module;
 #include <sys/un.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#if defined(__APPLE__)   // platform-if-ok: macOS gives a program its environment through _NSGetEnviron
+#include <crt_externs.h>
+#endif
 #endif
 
 module xdesk.os;
@@ -177,7 +180,12 @@ int pid() { return static_cast<int>(::getpid()); }
 
 std::map<std::string, std::string> environment() {
     std::map<std::string, std::string> out;
-    for (char** e = environ; e && *e; ++e) {
+#if defined(__APPLE__)   // platform-if-ok: see the include
+    char** const all = *::_NSGetEnviron();
+#else
+    char** const all = environ;
+#endif
+    for (char** e = all; e && *e; ++e) {
         const std::string_view kv(*e);
         if (const auto eq = kv.find('='); eq != std::string_view::npos)
             out.emplace(std::string(kv.substr(0, eq)), std::string(kv.substr(eq + 1)));

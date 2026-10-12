@@ -595,3 +595,50 @@ screenshot {}
     EXPECT_EQ(b.at(950, 350), kGreen);
     EXPECT_NE(a.at(150, 350), kGreen) << "the overview did not zoom out";
 }
+
+XTEST(LubanOs, XdeskLauncherStartsWhatIsTypedAndThePanelSwitchesWorkspaces, .area = "luban",
+      .covers = {"XDESK-COMPOSITOR", "XDESK-SHELL", "XDESK-APPS"}, .requires_ = {"linux", "xlings-bin"}) {
+    if (!app_binary()) GTEST_SKIP() << "no luban-os beside the xlings under test";
+    if (!xdesk_binary()) GTEST_SKIP() << "no xdesk beside luban-os (mcpp build -p xdesk-app)";
+    auto home = tk::Home::isolated("luban-os-xdesk-launcher");
+    ASSERT_EQ(home.xlings({"self", "init"}).exit_code, 0);
+    const auto runtime = home.root() / "run", data = home.root() / "share";
+    fs::create_directories(runtime);
+    fs::permissions(runtime, fs::perms::owner_all, fs::perm_options::replace);
+    fs::create_directories(data / "applications");
+    // The one application there: a green window.
+    tk::write_file(data / "applications" / "greenery.desktop",
+                   std::format("[Desktop Entry]\nType=Application\nName=Greenery\nExec=python3 {} 40c040\n",
+                               colour_client(home).string()));
+    const auto open = home.root() / "open.ppm", started = home.root() / "started.ppm", other = home.root() / "other.ppm";
+    auto r = run_script(home, std::format(R"(wait desktop
+waitfor desktop.texture.0 1100
+sleep 500
+key Alt+space
+sleep 300
+type gree
+sleep 300
+screenshot {}
+screenshot {}
+key Return
+sleep 2500
+screenshot {}
+screenshot {}
+click 109 15
+sleep 500
+screenshot {}
+)", open.string(), artifact("xdesk-launcher.bmp").string(), started.string(), artifact("xdesk-launched.bmp").string(),
+                                          other.string()),
+                        {"--desktop-exec", xdesk_binary()->string(), "--profile", "classic"},
+                        {{"XDG_RUNTIME_DIR", runtime.string()}, {"XDG_DATA_DIRS", data.string()}, {"HOME", home.root().string()}});
+    ASSERT_EQ(r.exit_code, 0) << r.transcript();
+    // The launcher is up, its first row chosen (the accent's blue).
+    const auto a = read_ppm(open);
+    EXPECT_NE(a.at(550, 210), (std::array<int, 3>{0x1b, 0x1e, 0x25})) << "no launcher over the desktop";
+    // Enter started it: green fills the output under the panel.
+    const auto b = read_ppm(started);
+    EXPECT_EQ(b.at(550, 400), kGreen);
+    // Workspace 2 from the panel: empty.
+    const auto c = read_ppm(other);
+    EXPECT_NE(c.at(550, 400), kGreen);
+}

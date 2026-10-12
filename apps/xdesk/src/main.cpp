@@ -1,6 +1,7 @@
 import std;
 import opensal;
 import xdesk.compositor;
+import xdesk.apps;
 
 int main(int argc, char* argv[]) {
     const std::vector<std::string_view> args(argv + 1, argv + argc);
@@ -29,7 +30,7 @@ int main(int argc, char* argv[]) {
         const auto a = args[i];
         std::optional<std::string> v;
         if (a == "--profile" && (v = value())) o.profile = *v;
-        else if (a == "--terminal" && (v = value())) o.terminal = {"/bin/sh", "-c", "exec " + *v};
+        else if (a == "--terminal" && (v = value())) o.terminal = xdesk::apps::argv(*v);   // as an Exec= line
         else if (a == "--autostart" && (v = value())) o.autostart.push_back({"/bin/sh", "-c", "exec " + *v});
         else if (a == "--size" && (v = value())) {
             unsigned w = 0, h = 0;

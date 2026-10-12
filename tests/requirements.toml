@@ -1021,6 +1021,10 @@ status = "required"
 text = "xdesk.apps reads freedesktop desktop entries (localized Name/Comment by the user's language, hidden and non-application entries skipped, the more specific directory's entry of an id winning), turns Exec into argv without field codes, and searches as a person types (a name's prefix first, then words, then generic names, keywords and comments)"
 status = "required"
 
+[XDESK-SHELL]
+text = "xdesk draws its own shell with no GPU and no toolkit: windows' title bars (the title, a close button), a panel (classic: applications, workspaces, the focused title, a clock across the top; canvas: a pill at the bottom with the zoom and the overview), a launcher that searches the system's applications as one types and starts the chosen one, text shaped from the system's fonts (CJK by a fallback face); English or Chinese by the user's language"
+status = "required"
+
 [LUBAN-MACHINE-DESKTOP]
 text = "a machine whose root declares a desktop session shows it to the Luban OS window: the guest starts the session headless with its /run and /tmp its own, bridges it on a channel of the machine (opensal.wire), at the size the window asks; what is typed into it runs there"
 status = "required"

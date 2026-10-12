@@ -104,6 +104,8 @@ public:
     void pan(double dx, double dy);
     void zoom_at(double factor, double sx, double sy);
     double zoom() const;
+    // The world point at the view's top-left (canvas; 0 in tile).
+    std::pair<double, double> camera() const;
     void overview(bool on);
     bool in_overview() const;
 

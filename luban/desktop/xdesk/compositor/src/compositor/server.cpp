@@ -6,6 +6,9 @@ import opensal.wire;
 import opensal.keys;
 import xdesk.os;
 import xdesk.layout;
+import xdesk.draw;
+import xdesk.shell;
+import xdesk.apps;
 import wlroots;
 import xdesk.native.wayland;
 import freedesktop.wayland.server;
@@ -17,6 +20,9 @@ namespace {
 namespace os = xdesk::os;
 namespace layout = xdesk::layout;
 namespace key = xdesk::native::key;
+namespace draw = xdesk::draw;
+namespace shell = xdesk::shell;
+namespace apps = xdesk::apps;
 namespace fs = std::filesystem;
 
 // A wl_listener that calls a function: the C++ side of wl_signal.
@@ -38,10 +44,39 @@ struct Hook {
     ~Hook() { disconnect(); }
 };
 
-constexpr int kTitle = 26;                 // a window's title bar, in pixels
-constexpr float kBackground[4] = {0.106f, 0.118f, 0.145f, 1.0f};
-constexpr float kTitleActive[4] = {0.196f, 0.282f, 0.408f, 1.0f};
-constexpr float kTitleIdle[4] = {0.157f, 0.169f, 0.200f, 1.0f};
+constexpr int kTitle = shell::kTitleHeight;  // a window's title bar, in pixels
+constexpr std::uint32_t kARGB8888 = 0x34325241;  // DRM_FORMAT_ARGB8888 ('AR24')
+
+// A picture xdesk drew, as a buffer wlroots shows (read in place).
+struct ImageBuffer {
+    wlr_buffer base;                // first: the wlr_buffer is the ImageBuffer
+    draw::Image image;
+};
+
+const wlr_buffer_impl kImageBuffer {
+    .destroy = [](wlr_buffer* b) { delete reinterpret_cast<ImageBuffer*>(b); },
+    .get_dmabuf = nullptr,
+    .get_shm = nullptr,
+    .begin_data_ptr_access = [](wlr_buffer* b, std::uint32_t flags, void** data, std::uint32_t* format, std::size_t* stride) -> bool {
+        if (flags & static_cast<std::uint32_t>(wlr_buffer_data_ptr_access_flag::WLR_BUFFER_DATA_PTR_ACCESS_WRITE)) return false;
+        auto* ib = reinterpret_cast<ImageBuffer*>(b);
+        *data = ib->image.data();
+        *format = kARGB8888;
+        *stride = static_cast<std::size_t>(ib->image.stride());
+        return true;
+    },
+    .end_data_ptr_access = [](wlr_buffer*) {},
+};
+
+// Shows `img` in `node` (the node keeps the buffer; nobody else does).
+void show(wlr_scene_buffer* node, draw::Image img) {
+    if (!node || img.empty()) return;
+    auto* ib = new ImageBuffer{};
+    ib->image = std::move(img);
+    wlr_buffer_init(&ib->base, &kImageBuffer, ib->image.width(), ib->image.height());
+    wlr_scene_buffer_set_buffer(node, &ib->base);
+    wlr_buffer_drop(&ib->base);
+}
 constexpr layout::Size kPreferred { 900, 600 };   // a new window's frame, until it says
 
 struct Server;
@@ -51,14 +86,15 @@ struct View {
     layout::Id id { 0 };
     wlr_xdg_toplevel* toplevel { nullptr };
     wlr_scene_tree* frame { nullptr };          // the decoration and the content
-    wlr_scene_rect* title { nullptr };
+    wlr_scene_buffer* title { nullptr };
+    std::string drawn;                          // what the title bar shows: title, width, focus, hover
     wlr_scene_tree* content { nullptr };
     bool mapped { false };
     bool laid { false };                        // in the layout
     bool placed { false };                      // shown somewhere already (then it glides)
     bool moving { false };                      // its frame is on its way (springs)
     layout::Spring x, y;
-    Hook map, unmap, commit, destroy, request_maximize, request_fullscreen;
+    Hook map, unmap, commit, destroy, request_maximize, request_fullscreen, set_title;
 };
 
 struct Popup {
@@ -81,7 +117,12 @@ struct Server {
     wlr_output_layout* outputs { nullptr };
     wlr_scene_tree* background_layer { nullptr };
     wlr_scene_tree* window_layer { nullptr };
+    wlr_scene_tree* shell_layer { nullptr };    // the panel
+    wlr_scene_tree* overlay_layer { nullptr };  // the launcher
     wlr_scene_rect* background { nullptr };
+    wlr_scene_buffer* canvas_dots { nullptr };  // canvas: the grid over the background
+    wlr_scene_buffer* panel_node { nullptr };
+    wlr_scene_buffer* launcher_node { nullptr };
     wlr_output* output { nullptr };
     wlr_scene_output* scene_output { nullptr };
     wlr_xdg_shell* xdg_shell { nullptr };
@@ -103,6 +144,16 @@ struct Server {
     Hook new_toplevel, new_popup, new_decoration, frame, request_cursor, request_selection;
     wl_event_source* input_source { nullptr };
     wl_event_source* tick { nullptr };
+    wl_event_source* clock { nullptr };
+    shell::Theme theme;
+    bool zh { false };
+    std::optional<draw::Fonts> ui_font, big_font;
+    shell::Picture panel_picture;
+    std::string panel_drawn;
+    std::string dots_drawn;
+    shell::Launcher launcher;
+    layout::Id close_hover { 0 };
+    std::vector<layout::Placement> placements;   // the last arrangement
     layout::Layout lay;
     layout::Id next_id { 1 };
     double zoom_shown { 1 };                     // the zoom the windows were last scaled to
@@ -112,7 +163,13 @@ struct Server {
 
     explicit Server(const Options& opts)
         : o(opts), size(opts.size),
-          lay({.mode = opts.profile == "canvas" ? layout::Mode::canvas : layout::Mode::tile, .gap = 8}) {}
+          lay({.mode = opts.profile == "canvas" ? layout::Mode::canvas : layout::Mode::tile, .gap = 8}),
+          theme(shell::theme(opts.profile)) {}
+
+    bool canvas() const { return lay.mode() == layout::Mode::canvas; }
+    draw::Fonts* ui() { return ui_font ? &*ui_font : nullptr; }
+    layout::Insets reserved() const { return canvas() ? layout::Insets{} : layout::Insets{.top = shell::kPanelHeight}; }
+    layout::Size output_size() const { return {static_cast<double>(size.width), static_cast<double>(size.height)}; }
 
     std::uint32_t now_ms() const {
         return static_cast<std::uint32_t>(
@@ -134,16 +191,12 @@ struct Server {
 
     void focus(View* v) {
         if (!v || !v->mapped) return;
-        if (View* was = focused(); was && was != v) {
-            wlr_xdg_toplevel_set_activated(was->toplevel, false);
-            wlr_scene_rect_set_color(was->title, kTitleIdle);
-        }
+        if (View* was = focused(); was && was != v) wlr_xdg_toplevel_set_activated(was->toplevel, false);
         // To the front of the list and of the scene.
         for (auto it = views.begin(); it != views.end(); ++it)
             if (&*it == v) { views.splice(views.begin(), views, it); break; }
         wlr_scene_node_raise_to_top(&v->frame->node);
         wlr_xdg_toplevel_set_activated(v->toplevel, true);
-        wlr_scene_rect_set_color(v->title, kTitleActive);
         wlr_seat_keyboard_notify_enter(seat, v->toplevel->base->surface, keyboard.keycodes, keyboard.num_keycodes,
                                        &keyboard.modifiers);
         if (v->laid && lay.focused() != v->id) lay.focus(v->id);
@@ -158,14 +211,15 @@ struct Server {
     // Where the layout puts everything: sizes now, positions by springs
     // (at once when `instant`: a window dragged follows the pointer).
     void arrange(bool instant = false) {
-        const auto placements = lay.arrange({static_cast<double>(size.width), static_cast<double>(size.height)});
+        placements = lay.arrange(output_size(), reserved());
         const double zoom = lay.zoom();
         for (auto& v : views) {
             const auto p = std::ranges::find(placements, v.id, &layout::Placement::id);
             wlr_scene_node_set_enabled(&v.frame->node, v.mapped && p != placements.end());
             if (p == placements.end()) continue;
             const int title = static_cast<int>(std::lround(kTitle * zoom));
-            wlr_scene_rect_set_size(v.title, std::max(1, static_cast<int>(std::lround(p->rect.width))), title);
+            draw_title(v, static_cast<int>(std::lround(p->rect.width / zoom)), p->focused);
+            wlr_scene_buffer_set_dest_size(v.title, std::max(1, static_cast<int>(std::lround(p->rect.width))), title);
             wlr_scene_node_set_position(&v.content->node, 0, title);
             // The client is asked for its size at zoom 1 (the canvas scales it).
             const int cw = std::max(1, static_cast<int>(std::lround(p->rect.width / zoom)));
@@ -185,6 +239,110 @@ struct Server {
                 if (View* v = view_of(p.id)) wlr_scene_node_raise_to_top(&v->frame->node);
         scale(zoom);
         animate();
+        draw_shell();
+    }
+
+    // A window's title bar, drawn again only when what it shows changed.
+    void draw_title(View& v, int width, bool active) {
+        const char* t = v.toplevel->title;
+        const std::string title = t ? t : (v.toplevel->app_id ? v.toplevel->app_id : "");
+        const bool hover = close_hover == v.id;
+        auto key = std::format("{}\x1f{}\x1f{}\x1f{}", title, width, active, hover);
+        if (key == v.drawn) return;
+        v.drawn = std::move(key);
+        show(v.title, shell::title_bar(ui(), theme, title, width, active, hover));
+    }
+
+    // The panel and (canvas) the grid, drawn again only when they changed.
+    void draw_shell() {
+        shell::PanelState st;
+        st.workspace = lay.workspace();
+        st.workspaces = lay.workspaces();
+        st.occupied.assign(static_cast<std::size_t>(st.workspaces), false);
+        for (const auto& v : views)
+            if (v.mapped)
+                if (const auto w = lay.workspace_of(v.id)) st.occupied[static_cast<std::size_t>(*w)] = true;
+        if (View* f = focused(); f && lay.workspace_of(f->id) == lay.workspace() && f->toplevel->title) st.title = f->toplevel->title;
+        st.clock = clock_text();
+        st.zoom = lay.zoom();
+        st.overview = lay.in_overview();
+        st.zh = zh;
+        auto key = std::format("{} {} {} {} {} {} {} {}x{}", st.workspace, st.occupied, st.title, st.clock, st.zoom, st.overview,
+                               lay.mode() == layout::Mode::canvas, size.width, size.height);
+        if (key != panel_drawn) {
+            panel_drawn = std::move(key);
+            panel_picture = shell::panel(ui(), theme, st, static_cast<int>(size.width), static_cast<int>(size.height), canvas());
+            wlr_scene_node_set_position(&panel_node->node, static_cast<int>(panel_picture.x), static_cast<int>(panel_picture.y));
+            show(panel_node, std::move(panel_picture.image));
+            panel_picture.image = {};
+        }
+        if (canvas()) {
+            const auto [cx, cy] = lay.camera();
+            auto dots = std::format("{} {} {} {}x{}", cx, cy, lay.zoom(), size.width, size.height);
+            if (dots != dots_drawn) {
+                dots_drawn = std::move(dots);
+                show(canvas_dots, shell::canvas_background(theme, static_cast<int>(size.width), static_cast<int>(size.height), cx, cy, lay.zoom()));
+            }
+        }
+    }
+
+    static std::string clock_text() {
+        const auto now = std::chrono::floor<std::chrono::seconds>(std::chrono::system_clock::now());
+        try {
+            return std::format("{:%H:%M}", std::chrono::zoned_time{std::chrono::current_zone(), now});
+        } catch (...) {
+            return std::format("{:%H:%M}", now);    // no time zone database: UTC
+        }
+    }
+
+    // ── the launcher ─────────────────────────────────────────────────
+
+    void open_launcher() {
+        auto env = os::environment();
+        std::string lang;
+        for (const char* k : {"LC_ALL", "LC_MESSAGES", "LANG"})
+            if (env.contains(k) && !env.at(k).empty()) { lang = env.at(k); break; }
+        launcher.open(apps::scan(apps::dirs(env), lang));
+        draw_launcher();
+    }
+
+    void draw_launcher() {
+        if (!launcher.is_open()) {
+            wlr_scene_node_set_enabled(&launcher_node->node, false);
+            return;
+        }
+        auto pic = launcher.draw(ui(), big_font ? &*big_font : nullptr, theme, static_cast<int>(size.width), static_cast<int>(size.height), zh);
+        show(launcher_node, std::move(pic.image));
+        wlr_scene_node_set_enabled(&launcher_node->node, true);
+    }
+
+    void start_app(const apps::App& app) {
+        auto argv = apps::argv(app.exec);
+        if (argv.empty()) return;
+        if (app.terminal) {
+            auto in_terminal = o.terminal;
+            in_terminal.insert(in_terminal.end(), argv.begin(), argv.end());
+            argv = std::move(in_terminal);
+        }
+        launch(argv);
+    }
+
+    // A key while the launcher is open: it is the launcher's.
+    void launcher_key(std::uint32_t code) {
+        const xkb_keysym_t* syms = nullptr;
+        const int n = xkb_state_key_get_syms(keyboard.xkb_state, code + 8, &syms);
+        const xkb_keysym_t sym = n > 0 ? syms[0] : 0;
+        if (sym == key::Escape) launcher.close();
+        else if (sym == key::Return || sym == key::KP_Enter) { if (auto app = launcher.choose()) start_app(*app); }
+        else if (sym == key::Up) launcher.move(-1);
+        else if (sym == key::Down || sym == key::Tab) launcher.move(1);
+        else if (sym == key::BackSpace) launcher.backspace();
+        else {
+            std::array<char, 16> utf8{};
+            const int len = xkb_state_key_get_utf8(keyboard.xkb_state, code + 8, utf8.data(), utf8.size());
+            if (len > 0 && static_cast<unsigned char>(utf8[0]) >= 0x20 && utf8[0] != 0x7f) launcher.type(std::string_view(utf8.data(), static_cast<std::size_t>(len)));
+        }
+        draw_launcher();
     }
 
     // The canvas's zoom on each window's surfaces (a surface's own commit
@@ -247,7 +405,7 @@ struct Server {
         v.toplevel = toplevel;
         v.frame = wlr_scene_tree_create(window_layer);
         wlr_scene_node_set_enabled(&v.frame->node, false);
-        v.title = wlr_scene_rect_create(v.frame, 1, kTitle, kTitleIdle);
+        v.title = wlr_scene_buffer_create(v.frame, nullptr);
         v.content = wlr_scene_xdg_surface_create(v.frame, toplevel->base);
         wlr_scene_node_set_position(&v.content->node, 0, kTitle);
         v.content->node.data = &v;
@@ -284,6 +442,9 @@ struct Server {
             follow_focus();
             if (!focused()) for (auto& other : views) if (other.mapped) { focus(&other); break; }
         });
+        v.set_title.connect(&toplevel->events.set_title, [this, self](void*) {
+            if (self->mapped) arrange();
+        });
         v.request_maximize.connect(&toplevel->events.request_maximize, [self](void*) {
             if (self->toplevel->base->initialized) wlr_xdg_surface_schedule_configure(self->toplevel->base);
         });
@@ -295,7 +456,7 @@ struct Server {
             for (auto it = views.begin(); it != views.end(); ++it)
                 if (&*it == self) {
                     it->map.disconnect(); it->unmap.disconnect(); it->commit.disconnect(); it->destroy.disconnect();
-                    it->request_maximize.disconnect(); it->request_fullscreen.disconnect();
+                    it->request_maximize.disconnect(); it->request_fullscreen.disconnect(); it->set_title.disconnect();
                     wlr_scene_node_destroy(&it->frame->node);
                     views.erase(it);
                     break;
@@ -373,6 +534,10 @@ struct Server {
             };
             switch (sym) {
                 case key::Return: launch(o.terminal); return true;
+                case key::space: case key::d:
+                    if (launcher.is_open()) { launcher.close(); draw_launcher(); }
+                    else open_launcher();
+                    return true;
                 case key::q: if (focused()) wlr_xdg_toplevel_send_close(focused()->toplevel); return true;
                 case key::Left: case key::h: return way(layout::Direction::left);
                 case key::Right: case key::l: return way(layout::Direction::right);
@@ -407,6 +572,10 @@ struct Server {
                                                     : wl_keyboard_key_state::WL_KEYBOARD_KEY_STATE_RELEASED};
             wlr_keyboard_notify_key(&keyboard, &ev);
             if (down && shortcut(code)) return;
+            if (launcher.is_open()) {
+                if (down) launcher_key(code);
+                return;
+            }
             wlr_seat_set_keyboard(seat, &keyboard);
             wlr_seat_keyboard_notify_key(seat, ev.time_msec, code, static_cast<std::uint32_t>(ev.state));
             wlr_seat_keyboard_notify_modifiers(seat, &keyboard.modifiers);
@@ -435,6 +604,10 @@ struct Server {
             arrange(true);
             return;
         }
+        if (const auto hover = close_under_pointer(); hover != close_hover) {
+            close_hover = hover;
+            arrange();
+        }
         double sx = 0, sy = 0;
         wlr_surface* surface = nullptr;
         if (live()) {
@@ -451,14 +624,50 @@ struct Server {
         wlr_seat_pointer_notify_motion(seat, now_ms(), sx, sy);
     }
 
-    std::optional<layout::Rect> placement_of(layout::Id id) {
-        for (const auto& p : lay.arrange({static_cast<double>(size.width), static_cast<double>(size.height)}))
+    std::optional<layout::Rect> placement_of(layout::Id id) const {
+        for (const auto& p : placements)
             if (p.id == id) return p.rect;
         return std::nullopt;
     }
 
+    // The window whose close button is under the pointer (at zoom 1).
+    layout::Id close_under_pointer() const {
+        if (!live()) return 0;
+        const auto id = lay.at(cursor->x, cursor->y);
+        if (!id) return 0;
+        const auto r = placement_of(*id);
+        if (!r) return 0;
+        const auto b = shell::close_button(static_cast<int>(r->width));
+        const double x = cursor->x - r->x, y = cursor->y - r->y;
+        return x >= b.x && x < b.x + b.width && y >= b.y && y < b.y + b.height ? *id : 0;
+    }
+
     void button(const opensal::PointerButton& b) {
         if (!b.down && drag != Drag::none) { drag = Drag::none; return; }
+        // The launcher: a row starts it, anywhere else closes it.
+        if (launcher.is_open()) {
+            if (b.down) {
+                if (auto app = launcher.choose_at(cursor->x, cursor->y)) start_app(*app);
+                else launcher.close();
+                draw_launcher();
+            }
+            return;
+        }
+        // The panel's buttons.
+        if (const auto a = shell::hit(panel_picture, cursor->x, cursor->y)) {
+            if (b.down) {
+                if (a->target == shell::Target::launcher) open_launcher();
+                else if (a->target == shell::Target::workspace) { lay.show(a->index); arrange(); follow_focus(); }
+                else if (a->target == shell::Target::overview) { lay.overview(!lay.in_overview()); arrange(); }
+            }
+            return;
+        }
+        // A title bar's close button.
+        if (const auto id = close_under_pointer()) {
+            if (b.down)
+                if (View* v = view_of(id)) wlr_xdg_toplevel_send_close(v->toplevel);
+            return;
+        }
         const auto hit = lay.at(cursor->x, cursor->y);
         if (b.down) {
             View* v = hit ? view_of(*hit) : nullptr;
@@ -572,6 +781,7 @@ struct Server {
         if (wlr_output_commit_state(output, &st)) {
             size = want;
             wlr_scene_rect_set_size(background, static_cast<int>(want.width), static_cast<int>(want.height));
+            draw_launcher();
             arrange();
         } else {
             log(std::format("the output did not take {}x{}", want.width, want.height));
@@ -660,7 +870,21 @@ struct Server {
         scene_layout = wlr_scene_attach_output_layout(scene, outputs);
         background_layer = wlr_scene_tree_create(&scene->tree);
         window_layer = wlr_scene_tree_create(&scene->tree);
-        background = wlr_scene_rect_create(background_layer, static_cast<int>(size.width), static_cast<int>(size.height), kBackground);
+        shell_layer = wlr_scene_tree_create(&scene->tree);
+        overlay_layer = wlr_scene_tree_create(&scene->tree);
+        const float bg[4] = {theme.background.r / 255.0f, theme.background.g / 255.0f, theme.background.b / 255.0f, 1.0f};
+        background = wlr_scene_rect_create(background_layer, static_cast<int>(size.width), static_cast<int>(size.height), bg);
+        if (canvas()) canvas_dots = wlr_scene_buffer_create(background_layer, nullptr);
+        panel_node = wlr_scene_buffer_create(shell_layer, nullptr);
+        launcher_node = wlr_scene_buffer_create(overlay_layer, nullptr);
+        wlr_scene_node_set_enabled(&launcher_node->node, false);
+        // Text: the system's faces (no fonts, no text -- the shapes still are).
+        const auto env = os::environment();
+        zh = shell::chinese(env);
+        const auto faces = draw::system_fonts(env);
+        if (auto f = draw::Fonts::open(faces, 13); f) ui_font = std::move(*f);
+        else log("no fonts for text: " + f.error());
+        if (auto f = draw::Fonts::open(faces, 19); f) big_font = std::move(*f);
 
         xdg_shell = wlr_xdg_shell_create(display, 6);
         new_toplevel.connect(&xdg_shell->events.new_toplevel, [this](void* d) { add_view(static_cast<wlr_xdg_toplevel*>(d)); });
@@ -734,6 +958,15 @@ struct Server {
                                             },
                                             this);
         tick = wl_event_loop_add_timer(loop, [](void* data) -> int { static_cast<Server*>(data)->step(); return 0; }, this);
+        // The panel's clock, looked at every few seconds.
+        clock = wl_event_loop_add_timer(loop, [](void* data) -> int {
+            auto* self = static_cast<Server*>(data);
+            self->draw_shell();
+            wl_event_source_timer_update(self->clock, 5000);
+            return 0;
+        }, this);
+        wl_event_source_timer_update(clock, 5000);
+        draw_shell();
         using I = opensal::Interface;
         send(opensal::wire::encode('h', std::to_string(I::Surface | I::Mode | I::Keyboard | I::Pointer)));
         for (const auto& a : o.autostart) launch(a);
@@ -754,6 +987,7 @@ struct Server {
     ~Server() {
         if (input_source) wl_event_source_remove(input_source);
         if (tick) wl_event_source_remove(tick);
+        if (clock) wl_event_source_remove(clock);
         for (int pid : children) os::terminate(pid);
         new_toplevel.disconnect(); new_popup.disconnect(); new_decoration.disconnect(); frame.disconnect();
         request_cursor.disconnect(); request_selection.disconnect();

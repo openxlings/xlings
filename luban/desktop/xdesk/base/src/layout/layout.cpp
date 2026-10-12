@@ -297,6 +297,10 @@ void Layout::zoom_at(double factor, double sx, double sy) {
 
 double Layout::zoom() const { return o_.mode == Mode::canvas ? space_().zoom : 1.0; }
 bool Layout::in_overview() const { return space_().overview; }
+std::pair<double, double> Layout::camera() const {
+    if (o_.mode != Mode::canvas) return {0, 0};
+    return {space_().cx, space_().cy};
+}
 
 void Layout::overview(bool on) {
     auto& s = space_();
