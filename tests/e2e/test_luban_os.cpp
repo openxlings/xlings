@@ -272,7 +272,10 @@ sleep 300
     EXPECT_FLOAT_EQ(d[2] - d[0], 320.0f);
     EXPECT_EQ(img.at(static_cast<int>(d[0]) + 20, static_cast<int>(d[1]) + 20), (std::array<int, 3>{0xC0, 0x80, 0x40}));
     const auto sent = tk::read_file(log);
-    EXPECT_NE(sent.find("H 399 1100 700 1"), std::string::npos) << "the window's interfaces (surface, pointer, keyboard, mode, text, clipboard) and size, first\n" << sent;
+    EXPECT_NE(sent.find("H 399 1100 700 1 1"), std::string::npos)
+        << "the window's interfaces (surface, pointer, keyboard, mode, text, clipboard), size, density and pacing, first\n" << sent;
+    // Pacing: once it has shown the frame, it says so (the next may come).
+    EXPECT_NE(sent.find("E presented"), std::string::npos) << sent;
     // The click, in the desktop's own pixels (its middle), down and up.
     EXPECT_NE(sent.find("E motion 160 100"), std::string::npos) << sent;
     EXPECT_NE(sent.find("E button 1 1 0"), std::string::npos) << sent;

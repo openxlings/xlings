@@ -1046,6 +1046,8 @@ void desktop_view_(App& a) {
         if (a.texture.handle && u.rect.x + u.rect.width <= static_cast<std::uint32_t>(a.texture.width)
             && u.rect.y + u.rect.height <= static_cast<std::uint32_t>(a.texture.height))
             a.window->update(a.texture, u.rect, u.rows);
+    // Pacing: what it sent is shown with this frame; it may draw the next.
+    if (!updates.empty()) d.send(opensal::FramePresented{});
     const ImVec2 origin = ImGui::GetCursorScreenPos();
     const ImVec2 avail = ImGui::GetContentRegionAvail();
     if (a.texture.handle) {

@@ -1010,7 +1010,7 @@ text = "opensal-wlr shows a wlroots compositor's output as an opensal surface th
 status = "required"
 
 [XDESK-COMPOSITOR]
-text = "xdesk is a wlroots compositor that speaks opensal.wire itself (a session file's X-Opensal-Native=true: it is given the stream, nothing is bridged): headless and software-rendered, no GPU; it shows its desktop at the size the window asks, takes the window's keys and pointer, opens a terminal (Alt+Return), arranges and decorates windows itself, and ends when the stream does"
+text = "xdesk is a wlroots compositor that speaks opensal.wire itself (a session file's X-Opensal-Native=true: it is given the stream, nothing is bridged): headless and software-rendered, no GPU; it shows its desktop at the size the window asks, takes the window's keys and pointer, opens a terminal (Alt+Return), arranges and decorates windows itself, and ends when the stream does; to a window that paces (its hello says so) it sends the next frame only once the last is shown (a second at most), so a slow channel does not pile frames up"
 status = "required"
 
 [XDESK-LAYOUT]

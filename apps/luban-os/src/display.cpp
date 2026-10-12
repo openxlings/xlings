@@ -186,7 +186,7 @@ void Display::provider_(std::string_view bytes) {
             if (clip_.copy || clip_.paste) provided = provided | I::Clipboard;
             opensal::Size s;
             { std::lock_guard l(m_); s = wanted_; }
-            send_(opensal::wire::encode('H', std::format("{} {} {} 1", provided, s.width, s.height)));
+            send_(opensal::wire::encode('H', std::format("{} {} {} 1 1", provided, s.width, s.height)));
         } else if (msg.kind == 's') {
             std::istringstream in(msg.payload);
             opensal::Size s;

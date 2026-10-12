@@ -176,6 +176,7 @@ struct Server {
     wl_event_source* input_source { nullptr };
     wl_event_source* tick { nullptr };
     wl_event_source* clock { nullptr };
+    wl_event_source* pace_timer { nullptr };
     shell::Theme theme;
     bool zh { false };
     std::optional<draw::Fonts> ui_font, big_font;
@@ -186,6 +187,8 @@ struct Server {
     layout::Id close_hover { 0 };
     std::vector<layout::Placement> placements;   // the last arrangement
     opensal::Interfaces provided { 0 };            // what the window gives (its hello)
+    bool paced { false };                          // the window says when a frame is shown
+    std::optional<std::chrono::steady_clock::time_point> in_flight;   // a frame sent, not yet shown
     std::list<TextInput> text_inputs;
     wlr_text_input_manager_v3* text_input_manager { nullptr };
     std::string caret_sent;                        // the last 't' sent
@@ -915,6 +918,10 @@ struct Server {
             preedit(*p);
         } else if (const auto* c = std::get_if<opensal::ClipboardText>(&ev)) {
             host_clipboard(c->text);
+        } else if (std::holds_alternative<opensal::FramePresented>(ev)) {
+            // Shown: what changed meanwhile goes now.
+            in_flight.reset();
+            wlr_output_schedule_frame(output);
         } else if (const auto* f = std::get_if<opensal::Focus>(&ev)) {
             // Focus left the window: nothing it holds stays pressed here.
             if (!f->in) {
@@ -938,7 +945,10 @@ struct Server {
             if (msg.kind == 'H') {
                 std::istringstream in(msg.payload);
                 std::uint32_t bits = 0, w = 0, h = 0;
+                double scale = 1;
+                int pacing = 0;
                 if (in >> bits >> w >> h) {
+                    if (in >> scale >> pacing) paced = pacing == 1;
                     provided = bits;
                     resize({w, h});
                 }
@@ -967,7 +977,13 @@ struct Server {
     }
 
     // The frame wlroots rendered: its damaged rectangles, as opensal frames.
+    // A window that paces is sent the next frame once it has shown the last
+    // (a second at most: a frame it lost does not stop the desktop).
     void render() {
+        if (paced && in_flight && std::chrono::steady_clock::now() - *in_flight < std::chrono::seconds(1)) {
+            wl_event_source_timer_update(pace_timer, 1000);   // held: sent anyway if no word comes
+            return;
+        }
         wlr_output_state st;
         wlr_output_state_init(&st);
         if (zoom_shown != 1) scale(zoom_shown);
@@ -1009,6 +1025,7 @@ struct Server {
                     for (std::uint32_t x = 0; x < r.width; ++x) dst[x * 4 + 3] = static_cast<char>(0xff);
                 }
                 if (!send(opensal::wire::encode('f', payload))) break;
+                in_flight = std::chrono::steady_clock::now();
             }
             wlr_buffer_end_data_ptr_access(st.buffer);
         }
@@ -1148,6 +1165,12 @@ struct Server {
             return 0;
         }, this);
         wl_event_source_timer_update(clock, 5000);
+        pace_timer = wl_event_loop_add_timer(loop, [](void* data) -> int {
+            auto* self = static_cast<Server*>(data);
+            self->in_flight.reset();
+            wlr_output_schedule_frame(self->output);
+            return 0;
+        }, this);
         draw_shell();
         using I = opensal::Interface;
         send(opensal::wire::encode('h', std::to_string(I::Surface | I::Mode | I::Keyboard | I::Pointer | I::Text | I::Clipboard)));
@@ -1170,6 +1193,7 @@ struct Server {
         if (input_source) wl_event_source_remove(input_source);
         if (tick) wl_event_source_remove(tick);
         if (clock) wl_event_source_remove(clock);
+        if (pace_timer) wl_event_source_remove(pace_timer);
         for (int pid : children) os::terminate(pid);
         new_toplevel.disconnect(); new_popup.disconnect(); new_decoration.disconnect(); frame.disconnect();
         request_cursor.disconnect(); request_selection.disconnect(); set_selection.disconnect(); new_text_input.disconnect();

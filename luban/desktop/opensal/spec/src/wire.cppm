@@ -17,7 +17,10 @@
 //                     frame and whenever it changes (it may not be the
 //                     provider's: a compositor that cannot follow it)
 //   provider -> consumer
-//     'H'  hello      provided interfaces, size, density     "<bits> <w> <h> <scale>"
+//     'H'  hello      provided interfaces, size, density,    "<bits> <w> <h> <scale> [<paced>]"
+//                     and whether it paces (1: it says FramePresented once
+//                     it has shown what it was sent; a consumer then sends
+//                     the next frame only after it -- older providers: absent)
 //     'E'  event      one opensal::Event                     (see encode_event)
 //
 // A side skips a kind it does not know; lengths are bounded (a frame by its
