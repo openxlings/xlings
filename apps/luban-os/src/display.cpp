@@ -69,10 +69,90 @@ std::unique_ptr<Display> Display::machine(const fs::path& home, const std::strin
     return d;
 }
 
+std::unique_ptr<Display> Display::sandbox(const fs::path& xlings, const fs::path& luban, const fs::path& home,
+                                          const std::string& name, const std::string& session, const std::string& persist,
+                                          opensal::Size size, std::function<void()> wake, std::string& error) {
+    namespace platform = xlings::platform;
+    auto to = platform::make_pipe(), from = platform::make_pipe();
+    if (!to || !from) { error = "no pipe for the desktop"; return nullptr; }
+    auto env = platform::environment();
+    env["XLINGS_HOME"] = home.string();
+    env.erase("XLINGS_SUBOS_MODE");
+    env.erase("XLINGS_ACTIVE_SUBOS");
+    // `subos use --cmd`: the session as the environment's own (its sandbox, what it keeps).
+    auto quoted = [](std::string_view w) {
+        std::string out = "'";
+        for (char ch : w) { if (ch == '\'') out += "'\\''"; else out += ch; }
+        return out + "'";
+    };
+    std::vector<std::string> argv{xlings.string(), "subos", "use", name};
+    if (!persist.empty() && persist != "all") argv.insert(argv.end(), {"--persist", persist});
+    argv.insert(argv.end(), {"--cmd", std::format("exec {} __desktop {} --size {}x{}", quoted(luban.string()),
+                                                  quoted(session.empty() ? "-" : session), size.width, size.height)});
+    const int log = platform::open_for_append(home / "logs" / "luban-os.log");
+    const int pid = platform::fork_process();
+    if (pid == 0) {
+        platform::new_session();
+        const std::array<int, 3> stdio{(*to)[0], (*from)[1], log >= 0 ? log : (*from)[1]};
+        platform::redirect_stdio(stdio);
+        platform::exec_program(argv, env);
+        platform::exit_now(127);
+    }
+    std::vector<int> theirs{(*to)[0], (*from)[1]};
+    if (log >= 0) theirs.push_back(log);
+    platform::close_fds(theirs);
+    if (pid < 0) {
+        std::vector<int> rest{(*to)[1], (*from)[0]};
+        platform::close_fds(rest);
+        error = "cannot start the desktop";
+        return nullptr;
+    }
+    std::unique_ptr<Display> d(new Display());
+    d->name_ = name;
+    d->wake_ = std::move(wake);
+    d->wanted_ = size;
+    d->to_ = (*to)[1];
+    d->from_ = (*from)[0];
+    d->pid_ = pid;
+    auto* self = d.get();
+    d->io_ = std::thread([self] {
+        std::array<char, 65536> buf{};
+        while (!self->stop_) {
+            std::array<platform::PollFd, 1> p{{{.fd = self->from_}}};
+            platform::poll_fds(p, 100);
+            if (!p[0].readable && !p[0].closed) continue;
+            auto n = platform::read_some(self->from_, buf);
+            if (!n || *n == 0) break;
+            self->provider_(std::string_view(buf.data(), *n));
+            if (!self->alive_) break;
+        }
+        if (auto st = platform::wait_process(self->pid_, true); st && platform::exit_code(*st) != 0) {
+            std::lock_guard l(self->m_);
+            if (self->error_.empty()) self->error_ = std::format("the desktop ended ({})", platform::exit_code(*st));
+        }
+        self->alive_ = false;
+        if (self->wake_) self->wake_();
+    });
+    return d;
+}
+
 Display::~Display() {
     stop_ = true;
     if (client_ && alive_) client_->close(kDisplayChannel);
+    if (to_ >= 0) {
+        // The stream's end stops the bridge, and it its compositor.
+        std::vector<int> fds{to_};
+        xlings::platform::close_fds(fds);
+        to_ = -1;
+    }
     if (io_.joinable()) io_.join();
+    if (from_ >= 0) { std::vector<int> fds{from_}; xlings::platform::close_fds(fds); }
+}
+
+bool Display::send_(std::string_view wire_bytes) {
+    if (client_) return client_->send(kDisplayChannel, wire_bytes);
+    std::lock_guard l(sending_);
+    return to_ >= 0 && xlings::platform::write_all(to_, wire_bytes);
 }
 
 void Display::provider_(std::string_view bytes) {
@@ -94,7 +174,7 @@ void Display::provider_(std::string_view bytes) {
             const auto provided = I::Surface | I::Mode | I::Pointer | I::Keyboard;
             opensal::Size s;
             { std::lock_guard l(m_); s = wanted_; }
-            client_->send(kDisplayChannel, opensal::wire::encode('H', std::format("{} {} {} 1", provided, s.width, s.height)));
+            send_(opensal::wire::encode('H', std::format("{} {} {} 1", provided, s.width, s.height)));
         } else if (msg.kind == 's') {
             std::istringstream in(msg.payload);
             opensal::Size s;
@@ -124,7 +204,7 @@ void Display::send(const opensal::Event& e) {
         std::lock_guard l(m_);
         wanted_ = r->size;
     }
-    client_->send(kDisplayChannel, opensal::wire::encode('E', opensal::wire::encode_event(e)));
+    send_(opensal::wire::encode('E', opensal::wire::encode_event(e)));
 }
 
 opensal::Size Display::take(std::vector<Update>& out) {

@@ -49,18 +49,17 @@ or `--kernel <vmlinuz>` with `xlings subos export`.
 ## Trying an image
 
 ```bash
-luban enter box --mode machine --temp                       # export and boot in a local VM
-luban enter box.iso                   # an image you already have
-luban enter box --mode machine --temp   # its only network is the proxy
-luban enter box --mode machine --temp           # its console in this terminal
+luban enter box.iso                     # an image boots as it is; its console in this terminal
+luban enter box --mode machine --temp   # the environment itself in a local VM; nothing stays
 ```
 
-`luban enter --mode machine` boots the `virt` profile by default (falling back to the
-environment's own kernel), with KVM when this user may use it and emulated
-otherwise. On aarch64 it boots UEFI firmware on qemu's `virt` machine. What it
-needs comes from the index — `xlings install qemu-system`, one package with
-both emulators, user networking and the UEFI firmware; luban names it when it is
-missing.
+An image boots as it is and keeps nothing. `luban enter <name> --mode machine`
+boots the environment itself, not an image of it: its tree is shared with the
+machine, and the `virt` profile's kernel boots it. Its only network is the proxy
+when it has one. Both use KVM when this user may, and emulation otherwise; on
+aarch64, UEFI firmware on qemu's `virt` machine. What they need comes from the
+index — `xlings install qemu-system`, one package with both emulators, user
+networking, 9p and the UEFI firmware; luban names it when it is missing.
 
 ## Writing a drive
 

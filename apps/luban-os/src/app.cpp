@@ -222,10 +222,36 @@ struct App {
         texture = {};
     }
 
+    // The luban a sandbox runs for its desktop: the one beside this app, else the home's.
+    fs::path luban_binary() const {
+        std::error_code ec;
+        for (const auto& p : {platform::get_executable_path().parent_path() / "luban", home / "bin" / "luban"})
+            if (fs::is_regular_file(p, ec)) return p;
+        return {};
+    }
+
     void open_console(const std::string& name, bool machine) {
         std::string error;
         auto* w = window.get();
         auto env = service::describe(ctx, name);
+        // A sandbox shows its desktop the same way a machine does: the
+        // session, bridged, on two pipes instead of a channel.
+        if (!machine) {
+            const auto luban = luban_binary();
+            if (auto session = desktop_session(home, name, env ? env->settings.desktop : std::string{}); session && !luban.empty()) {
+                const auto [ww, wh] = window->size();
+                desktop_size = {static_cast<std::uint32_t>(ww), static_cast<std::uint32_t>(wh)};
+                display = Display::sandbox(ctx.port.xlings(), luban, home, name, *session, env ? env->settings.persist : "all",
+                                           desktop_size, [w] { w->wake(); }, error);
+                if (display) {
+                    view = View::Desktop;
+                    window->set_title(title_for(name));
+                    window->text_input(false);
+                    return;
+                }
+                notice = error;
+            }
+        }
         console = machine ? Console::machine(home, name, [w] { w->wake(); }, error)
                           : Console::sandbox(ctx.port.xlings(), home, name, env ? env->settings.persist : "all", [w] { w->wake(); }, error);
         if (!console) {
@@ -649,13 +675,20 @@ void desktop_view_(App& a) {
     if (!d.alive()) {
         // A desktop that could not start (or ended) leaves the machine's console.
         const auto why = d.error();
+        const bool machine = d.is_machine();
         a.close_display();
-        if (vm::running(a.home, a.current)) {
+        if (machine && !vm::running(a.home, a.current)) {
+            a.view = View::Off;
+        } else if (machine) {
             a.notice = why;
             a.open_console(a.current, true);
             if (a.console) a.notice.clear();
         } else {
-            a.view = View::Off;
+            // A sandbox's desktop that ended is the end of that session.
+            a.notice = why;
+            a.view = View::Launcher;
+            a.refresh();
+            a.window->set_title("Luban OS");
         }
     }
 }

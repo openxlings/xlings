@@ -13,7 +13,7 @@ edition 是环境的模板：它带来的包、创建时所用的策略、怎样
 | `luban-tiny-musl` | `luban-tiny-musl` | 用 musl 代替 glibc 的 tiny | 是 | 是 |
 | `luban-core` | `core`（默认） | bash、fish、vim、nvim、git、mcpp、ninja、coreutils、gcc、binutils、make、openssl | 是 | 是 |
 | `luban-agent-workspace` | `agent-workspace` | core、一个 agent（claude）和 `agent-private` 策略 | 是 | 是 |
-| `luban-desktop` | `subos:luban-desktop` | 桌面组件（预览） | 是 | — |
+| `luban-desktop` | `desktop` | core 加一个桌面（labwc、面板、启动器、终端），以机器方式运行 | 是 | 是 |
 
 每个都 `from` 它下面的那一个（`core` 来自 `tiny`，`tiny` 来自 `nano`）；为另一种架构构建的 edition 在创建任何东西之前就会被拒绝。
 
@@ -49,6 +49,12 @@ edition 是一份 manifest：
 | `policy` | 创建时使用的策略（`xim:agent-private@…`） |
 | `boot` | 它的 init，以及它的镜像使用的启动层 |
 | `min_client` | 能理解它的最旧 xlings |
+
+根里有两个文件说明它怎么运行，都不是代码：
+
+- `usr/share/luban/settings.json`——edition 给 `luban config` 的默认值（`mode`、`persist`、`desktop`、
+  `on_close`）；用户设置的优先，并且随升级更新。desktop edition 的是 `{ "mode": "machine", "desktop": "labwc-desktop" }`。
+- `share/wayland-sessions/<id>.desktop`——一个桌面会话，由某个包带来（[桌面](08-desktop.md)）。
 
 从它创建环境、调整、然后发布：
 

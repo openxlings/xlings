@@ -33,6 +33,7 @@ graph TD
 | 镜像：ISO、驱动器、qcow2、tar | 是 | 是 | — | — |
 | 启动：BIOS 与 UEFI | 是 | UEFI | — | — |
 | `luban enter --mode machine`（本地虚拟机） | 是 | 是（没有 KVM 时纯模拟） | — | — |
+| Luban OS 窗口里的桌面 | 是 | 是 | — | — |
 | 启动层 | `generic`（真机）、`virt`（虚拟机） | `virt` | — | — |
 
 宿主上，Linux 除了内核之外什么都不需要，Ubuntu 23.10 及以后另需一次性设置（[07](07-host-support.md)）；
@@ -45,9 +46,10 @@ graph TD
 - [02 —— Edition](02-editions.md) —— 每个包含什么，版本怎样选择
 - [03 —— 环境](03-environments.md) —— 设置、授权、升级、回滚
 - [04 —— Agent 工作区](04-agent-workspace.md) —— 给 agent 的私有空间
-- [05 —— 镜像](05-images.md) —— ISO、驱动器、qcow2、tar；启动层；`try`；写入驱动器
+- [05 —— 镜像](05-images.md) —— ISO、驱动器、qcow2、tar；启动层；启动镜像；写入驱动器
 - [06 —— 机器](06-machine.md) —— Luban 作为一台机器的系统：stage-0、启动项、启动时回滚
 - [07 —— 宿主支持](07-host-support.md) —— 哪些宿主、一次性设置、失败时怎么办
+- [08 —— 桌面与 Luban OS 窗口](08-desktop.md) —— 窗口、桌面、你自己的合成器
 - [91 —— 架构](91-architecture.md) —— 给开发者：它是怎样构建的
 
 全部 luban 命令和参数：[生成的参考](../../generated/luban-command-reference.md)。

@@ -25,7 +25,25 @@ luban config box --mount ~/code/proj:/work          # a host directory inside
 | `mount` | a host directory inside the environment |
 
 Each is the `xlings subos config` setting of the same name
-([Sandbox and policy](../11-sandbox-and-policy.md)).
+([Sandbox and policy](../11-sandbox-and-policy.md)). These are luban's own:
+
+```bash
+luban config box --mode machine       # luban enter starts it with a kernel of its own
+luban config box --persist home       # each session starts from its baseline; /home stays
+luban config box --shell fish         # its login shell
+luban config box --desktop none       # its console, not its desktop, in the window
+luban config box --on-close background
+```
+
+| Key | |
+|---|---|
+| `mode` | `sandbox` (this machine's kernel) or `machine` (a local VM booting the environment itself) |
+| `persist` | `all` (default), `home` (the system part is restored each time, `/home` stays) or `none` (nothing stays) |
+| `shell` | its login shell, from its own `/etc/passwd` |
+| `desktop` | the desktop session the window shows, or `none` ([The desktop](08-desktop.md)) |
+| `on-close` | closing the window of a running machine: `ask`, `background` or `poweroff` |
+
+An edition may set their defaults; what you set wins.
 
 ## Upgrading
 

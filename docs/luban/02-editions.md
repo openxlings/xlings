@@ -15,7 +15,7 @@ it is made under, how it boots. Editions are packages of the index
 | `luban-tiny-musl` | `luban-tiny-musl` | tiny with musl instead of glibc | yes | yes |
 | `luban-core` | `core` (the default) | bash, fish, vim, nvim, git, mcpp, ninja, coreutils, gcc, binutils, make, openssl | yes | yes |
 | `luban-agent-workspace` | `agent-workspace` | core, an agent (claude), and the `agent-private` policy | yes | yes |
-| `luban-desktop` | `subos:luban-desktop` | a desktop stack (preview) | yes | — |
+| `luban-desktop` | `desktop` | core and a desktop (labwc, a panel, a launcher, a terminal), run as a machine | yes | yes |
 
 Each starts `from` the one below it (`core` from `tiny`, `tiny` from `nano`);
 an edition built for another architecture than this machine's is refused before
@@ -59,6 +59,14 @@ An edition is a manifest:
 | `policy` | the policy it is made under (`xim:agent-private@…`) |
 | `boot` | its init, and the boot profile an image of it uses |
 | `min_client` | the oldest xlings that understands it |
+
+Two files of the root say how it runs, and neither is code:
+
+- `usr/share/luban/settings.json` — the edition's defaults for `luban config`
+  (`mode`, `persist`, `desktop`, `on_close`); what a user sets wins, and they
+  follow an upgrade. The desktop edition's is `{ "mode": "machine", "desktop": "labwc-desktop" }`.
+- `share/wayland-sessions/<id>.desktop` — a desktop session, from a package
+  ([The desktop](08-desktop.md)).
 
 Make an environment from it, adjust it, and publish it:
 

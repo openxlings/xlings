@@ -105,12 +105,18 @@ class Display {
 public:
     static std::unique_ptr<Display> machine(const fs::path& home, const std::string& name, const std::string& session,
                                             opensal::Size size, std::function<void()> wake, std::string& error);
+    // In a sandbox: `xlings subos use <name> --cmd 'luban __desktop <session>'`,
+    // opensal.wire on its standard input and output.
+    static std::unique_ptr<Display> sandbox(const fs::path& xlings, const fs::path& luban, const fs::path& home,
+                                            const std::string& name, const std::string& session, const std::string& persist,
+                                            opensal::Size size, std::function<void()> wake, std::string& error);
     ~Display();
     void send(const opensal::Event& e);
     bool alive() const { return alive_; }
     // Why it ended, when it could not start.
     std::string error() const { std::lock_guard l(m_); return error_; }
     const std::string& name() const { return name_; }
+    bool is_machine() const { return client_.has_value(); }
 
     struct Update { opensal::Rect rect; std::string rows; };
     // The surface's size (0 until the first frame) and the rectangles since the last call.
@@ -121,7 +127,10 @@ private:
     void provider_(std::string_view bytes);
     std::string name_;
     mutable std::mutex m_;
+    bool send_(std::string_view wire_bytes);
     std::optional<vm::Client> client_;
+    int to_ { -1 }, from_ { -1 }, pid_ { -1 };   // a sandbox's process
+    std::mutex sending_;
     std::thread io_;
     std::atomic<bool> alive_ { true };
     std::atomic<bool> stop_ { false };

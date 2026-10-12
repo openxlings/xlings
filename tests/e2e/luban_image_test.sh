@@ -221,17 +221,28 @@ grep -q "MACHINE-" <<<"$machine" || fail "machine: the session ran nothing: $(ta
 [[ ! -e "$H/subos/t/rootfs/root/machine.txt" ]] || fail "machine --temp: what it wrote stayed"
 [[ ! -e "$H/run/machines/t/scratch" ]] || fail "machine --temp: its copy stayed"
 log "the desktop: labwc-desktop in t, its session bridged by opensal-wlr to a client of the machine, as the Luban OS window is"
+CLIENT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/luban_desktop_client.py"
 retry X install -y --subos t xim:labwc-desktop >"$RUNTIME_DIR/labwc.log" 2>&1 \
   || { tail -20 "$RUNTIME_DIR/labwc.log"; fail "install labwc-desktop into t"; }
 L config t --mode machine --on-close background >/dev/null 2>&1 || fail "config t --mode machine --on-close background"
 { (sleep 120; printf 'exit\n'; sleep 5) 2>/dev/null || true; } \
   | timeout 300 script -qfec "env XLINGS_HOME=$H DISPLAY= WAYLAND_DISPLAY= $H/bin/luban enter t" /dev/null >"$RUNTIME_DIR/desktop-boot.log" 2>&1 || true
 [[ -S "$H/run/machines/t/luban.sock" ]] || fail "desktop: t is not running: $(tail -10 "$RUNTIME_DIR/desktop-boot.log")"
-desk="$(timeout 300 python3 "$(dirname "${BASH_SOURCE[0]}")/luban_desktop_client.py" "$H/run/machines/t" \
+desk="$(timeout 300 python3 "$CLIENT" "$H/run/machines/t" \
   '{Alt+Return}echo DESKTOP-$(uname -m) > /root/desktop.txt\n' "$RUNTIME_DIR/desktop.ppm" || true)"
 cp "$H/subos/t/rootfs/var/log/luban/desktop.log" "$RUNTIME_DIR/machine-desktop.log" 2>/dev/null || true
 grep -q '"drew": true' <<<"$desk" || fail "desktop: it never drew: $desk $(tail -20 "$RUNTIME_DIR/machine-desktop.log" 2>/dev/null)"
 [[ "$(cat "$H/subos/t/rootfs/root/desktop.txt" 2>/dev/null)" == "DESKTOP-$arch" ]] \
   || fail "desktop: what was typed into its terminal did not run ($desk)"
 L stop t >/dev/null 2>&1 || true
-log "PASS ($arch): ISO (CD and drive), drive and qcow2 boot ($( [[ "$arch" == x86_64 ]] && echo "BIOS and UEFI" || echo UEFI)); an image entered; the environment as a machine, its proxy the only network; its desktop shown and typed into"
+
+log "the same desktop in a sandbox: luban __desktop under xlings subos use --cmd, as the window runs it"
+L config t --mode sandbox >/dev/null 2>&1 || fail "config t --mode sandbox"
+sbox="$(cd /tmp && timeout 300 python3 "$CLIENT" --exec \
+  '{Alt+Return}echo SANDBOX-$(uname -m) > /root/sandbox.txt\n' "$RUNTIME_DIR/sandbox.ppm" -- \
+  env -u XLINGS_ACTIVE_SUBOS -u XLINGS_SUBOS_MODE XLINGS_HOME="$H" "$H/bin/xlings" subos use t \
+  --cmd "exec '$H/bin/luban' __desktop - --size 1024x640" 2>"$RUNTIME_DIR/sandbox-desktop.log" || true)"
+grep -q '"drew": true' <<<"$sbox" || fail "sandbox desktop: it never drew: $sbox $(tail -20 "$RUNTIME_DIR/sandbox-desktop.log")"
+[[ "$(cat "$H/subos/t/rootfs/root/sandbox.txt" 2>/dev/null)" == "SANDBOX-$arch" ]] \
+  || fail "sandbox desktop: what was typed into its terminal did not run ($sbox)"
+log "PASS ($arch): ISO (CD and drive), drive and qcow2 boot ($( [[ "$arch" == x86_64 ]] && echo "BIOS and UEFI" || echo UEFI)); an image entered; the environment as a machine, its proxy the only network; its desktop shown and typed into, as a machine and in a sandbox"

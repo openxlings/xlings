@@ -23,7 +23,25 @@ luban config box --mount ~/code/proj:/work          # a host directory inside
 | `allow` | 一项授权：`display`、`audio`、`gpu`、`ssh-agent`、`clipboard`、`clipboard-paste` 等 |
 | `mount` | 映射进环境的宿主目录 |
 
-每一项都是同名的 `xlings subos config` 设置（[沙箱与策略](../11-sandbox-and-policy.md)）。
+每一项都是同名的 `xlings subos config` 设置（[沙箱与策略](../11-sandbox-and-policy.md)）。下面这些是 luban 自己的：
+
+```bash
+luban config box --mode machine       # luban enter starts it with a kernel of its own
+luban config box --persist home       # each session starts from its baseline; /home stays
+luban config box --shell fish         # its login shell
+luban config box --desktop none       # its console, not its desktop, in the window
+luban config box --on-close background
+```
+
+| 设置 | |
+|---|---|
+| `mode` | `sandbox`（本机内核）或 `machine`（本地虚拟机启动环境本身） |
+| `persist` | `all`（默认）、`home`（系统部分每次恢复，`/home` 保留）或 `none`（什么都不保留） |
+| `shell` | 它的登录 shell，取自它自己的 `/etc/passwd` |
+| `desktop` | 窗口显示的桌面会话，或 `none`（[桌面](08-desktop.md)） |
+| `on-close` | 关闭正在运行的机器的窗口时：`ask`、`background` 或 `poweroff` |
+
+edition 可以给出这些设置的默认值；你设置的优先。
 
 ## 升级
 

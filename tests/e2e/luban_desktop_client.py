@@ -6,27 +6,44 @@ frames -- this side the provider (the size, the input), the guest's
 opensal-wlr the consumer (the pixels).
 
     luban_desktop_client.py <run dir of the machine> <keys> <out.ppm>
+    luban_desktop_client.py --exec <keys> <out.ppm> -- <command...>
 
 <keys> is typed once the desktop has drawn: characters, \\n for Return,
-{Alt+Return}-style chords. Prints what it saw as one JSON line; exits 1 when
-the desktop never drew."""
+{Alt+Return}-style chords. With --exec the desktop is a command whose standard
+input and output are opensal.wire (a sandbox's `luban __desktop`), as the
+window runs it. Prints what it saw as one JSON line; exits 1 when the desktop
+never drew."""
 import json
+import os
 import socket
 import struct
+import subprocess
 import sys
 import time
 
-RUN, KEYS, OUT = sys.argv[1], sys.argv[2], sys.argv[3]
+EXEC = sys.argv[1] == "--exec"
+RUN, KEYS, OUT = (None, sys.argv[2], sys.argv[3]) if EXEC else (sys.argv[1], sys.argv[2], sys.argv[3])
 CHANNEL = 2
 W, H = 1024, 640
 
-s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-s.connect(RUN + "/luban.sock")
-s.setblocking(False)
+if EXEC:
+    proc = subprocess.Popen(sys.argv[sys.argv.index("--") + 1:], stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+    os.set_blocking(proc.stdout.fileno(), False)
+else:
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    s.connect(RUN + "/luban.sock")
+    s.setblocking(False)
 
 
 def frame(kind, payload=b""):
     payload = payload.encode() if isinstance(payload, str) else payload
+    if EXEC:
+        if kind == "D":
+            proc.stdin.write(payload)
+            proc.stdin.flush()
+        elif kind == "C":
+            proc.stdin.close()
+        return
     s.sendall(kind.encode() + struct.pack(">II", CHANNEL, len(payload)) + payload)
 
 
@@ -35,7 +52,18 @@ def wire(kind, payload):
     frame("D", kind.encode() + struct.pack(">I", len(payload)) + payload)
 
 
-frame("O", json.dumps({"display": {"session": "", "width": W, "height": H}}))
+def receive():
+    """The machine's frames, or (with --exec) the command's output as one data frame; b"" at the end."""
+    if EXEC:
+        d = proc.stdout.read(1 << 20)
+        if d is None:
+            raise BlockingIOError
+        return b"D" + struct.pack(">II", CHANNEL, len(d)) + d if d else b""
+    return s.recv(1 << 20)
+
+
+if not EXEC:
+    frame("O", json.dumps({"display": {"session": "", "width": W, "height": H}}))
 vm_buf, wire_buf = b"", b""
 seen = {"h": 0, "s": 0, "f": 0}
 size, fb, ended = [0, 0], bytearray(), None
@@ -46,9 +74,9 @@ def pump(seconds):
     end = time.time() + seconds
     while time.time() < end and ended is None:
         try:
-            d = s.recv(1 << 20)
+            d = receive()
             if not d:
-                ended = "the machine closed the connection"
+                ended = "the desktop's stream ended"
                 return
             vm_buf += d
         except BlockingIOError:
@@ -130,5 +158,10 @@ if drew:
         f.write(b"P6\n%d %d\n255\n" % (size[0], size[1]))
         f.write(bytes(b for i in range(0, len(fb), 4) for b in (fb[i + 2], fb[i + 1], fb[i])))
 frame("C")
+if EXEC:
+    try:
+        proc.wait(timeout=20)
+    except subprocess.TimeoutExpired:
+        proc.kill()
 print(json.dumps({"drew": drew, "size": size, "messages": seen, "ended": ended}))
 sys.exit(0 if drew else 1)
