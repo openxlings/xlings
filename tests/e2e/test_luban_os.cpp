@@ -944,3 +944,39 @@ XTEST(LubanOs, XdeskTakesAPersonsSettingsOverItsProfiles, .area = "luban", .cove
     ASSERT_EQ(r.exit_code, 0) << r.transcript();
     EXPECT_EQ(read_ppm(shot).at(550, 400), (std::array<int, 3>{0x20, 0x30, 0x40}));
 }
+
+XTEST(LubanOs, XdeskDrawsForTheScreensDensityAndThePointerLandsWhereItIs, .area = "luban",
+      .covers = {"XDESK-COMPOSITOR", "LUBAN-OS-INTERACTION"}, .requires_ = {"linux", "xlings-bin"}) {
+    if (!app_binary()) GTEST_SKIP() << "no luban-os beside the xlings under test";
+    if (!xdesk_binary()) GTEST_SKIP() << "no xdesk beside luban-os (mcpp build -p xdesk-app)";
+    auto home = tk::Home::isolated("luban-os-xdesk-density");
+    ASSERT_EQ(home.xlings({"self", "init"}).exit_code, 0);
+    const auto runtime = home.root() / "run", st = home.root() / "density.json";
+    const auto open = home.root() / "open.ppm", closed = home.root() / "closed.ppm";
+    fs::create_directories(runtime);
+    fs::permissions(runtime, fs::perms::owner_all, fs::perm_options::replace);
+    // A screen of density 2: the desktop is asked for twice the pixels and
+    // shown at the window's size; a click on a title bar's close button
+    // (logical 1079, 51) closes that window.
+    auto r = run_script(home, std::format(R"(wait desktop
+waitfor desktop.texture.0 2200
+sleep 2000
+frames 2
+state {}
+screenshot {}
+screenshot {}
+click 1079 51
+sleep 1000
+frames 2
+screenshot {}
+)", st.string(), open.string(), artifact("xdesk-density-2.bmp").string(), closed.string()),
+                        {"--density", "2", "--desktop-exec", xdesk_binary()->string(), "--profile", "classic", "--autostart",
+                         std::format("python3 {} c04040", colour_client(home).string())},
+                        {{"XDG_RUNTIME_DIR", runtime.string()}});
+    ASSERT_EQ(r.exit_code, 0) << r.transcript();
+    EXPECT_EQ(read_state(st)["desktop"]["texture"], Json::array({2200, 1400}));
+    const auto a = read_ppm(open);
+    EXPECT_EQ(a.at(550, 400), kRed);                                 // the window, at the window's size
+    EXPECT_NE(a.at(550, 15), (std::array<int, 3>{0x1b, 0x1e, 0x25})) << "no panel across the top";
+    EXPECT_NE(read_ppm(closed).at(550, 400), kRed) << "the click did not reach the close button";
+}

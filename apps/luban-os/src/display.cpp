@@ -185,8 +185,9 @@ void Display::provider_(std::string_view bytes) {
             auto provided = I::Surface | I::Mode | I::Pointer | I::Keyboard | I::Text;
             if (clip_.copy || clip_.paste) provided = provided | I::Clipboard;
             opensal::Size s;
-            { std::lock_guard l(m_); s = wanted_; }
-            send_(opensal::wire::encode('H', std::format("{} {} {} 1 1", provided, s.width, s.height)));
+            double density = 1;
+            { std::lock_guard l(m_); s = wanted_; density = density_; }
+            send_(opensal::wire::encode('H', std::format("{} {} {} {} 1", provided, s.width, s.height, density)));
         } else if (msg.kind == 's') {
             std::istringstream in(msg.payload);
             opensal::Size s;
@@ -225,6 +226,11 @@ void Display::send(const opensal::Event& e) {
     if (const auto* r = std::get_if<opensal::Resized>(&e)) {
         std::lock_guard l(m_);
         wanted_ = r->size;
+    }
+    // A hello sent after this says it too: in whichever order they cross, the last word is this.
+    if (const auto* d = std::get_if<opensal::DensityChanged>(&e)) {
+        std::lock_guard l(m_);
+        density_ = d->scale;
     }
     send_(opensal::wire::encode('E', opensal::wire::encode_event(e)));
 }

@@ -70,6 +70,10 @@ void Canvas::clear(Color c) {
 }
 
 void Canvas::fill(Rect r, Color c, double radius) {
+    fill_device_({r.x * scale_, r.y * scale_, r.width * scale_, r.height * scale_}, c, radius * scale_);
+}
+
+void Canvas::fill_device_(Rect r, Color c, double radius) {
     radius = std::clamp(radius, 0.0, std::min(r.width, r.height) / 2);
     const int x0 = std::max(0, static_cast<int>(std::floor(r.x))), x1 = std::min(target_.width(), static_cast<int>(std::ceil(r.x + r.width)));
     const int y0 = std::max(0, static_cast<int>(std::floor(r.y))), y1 = std::min(target_.height(), static_cast<int>(std::ceil(r.y + r.height)));
@@ -87,6 +91,9 @@ void Canvas::fill(Rect r, Color c, double radius) {
 }
 
 void Canvas::frame(Rect r, Color c, double width, double radius) {
+    r = {r.x * scale_, r.y * scale_, r.width * scale_, r.height * scale_};
+    width *= scale_;
+    radius *= scale_;
     // The ring between the rectangle and the one `width` inside it.
     const Rect inner { r.x + width, r.y + width, r.width - 2 * width, r.height - 2 * width };
     const double inner_radius = std::max(0.0, radius - width);
@@ -102,7 +109,7 @@ void Canvas::frame(Rect r, Color c, double width, double radius) {
 }
 
 void Canvas::image(const Image& src, double x, double y) {
-    const int ox = static_cast<int>(std::lround(x)), oy = static_cast<int>(std::lround(y));
+    const int ox = static_cast<int>(std::lround(x * scale_)), oy = static_cast<int>(std::lround(y * scale_));
     for (int sy = 0; sy < src.height(); ++sy) {
         const int ty = oy + sy;
         if (ty < 0 || ty >= target_.height()) continue;
@@ -133,7 +140,8 @@ struct Fonts::Impl {
     };
     std::vector<Face> faces;
     std::map<std::pair<std::size_t, unsigned>, Glyph> glyphs;
-    double ascent { 0 }, descent { 0 }, line { 0 };
+    double ascent { 0 }, descent { 0 }, line { 0 };     // logical pixels
+    double scale { 1 };
 
     ~Impl() {
         for (auto& f : faces) {
@@ -217,9 +225,11 @@ Fonts::Fonts(Fonts&&) noexcept = default;
 Fonts& Fonts::operator=(Fonts&&) noexcept = default;
 Fonts::~Fonts() = default;
 
-std::expected<Fonts, std::string> Fonts::open(std::span<const fs::path> files, double px) {
+std::expected<Fonts, std::string> Fonts::open(std::span<const fs::path> files, double px, double scale) {
     Fonts f;
     auto& i = *f.impl_;
+    i.scale = scale > 0 ? scale : 1;
+    px *= i.scale;
     if (FT_Init_FreeType(&i.library) != 0) return std::unexpected(std::string("FreeType did not start"));
     std::string why;
     for (const auto& file : files) {
@@ -235,12 +245,13 @@ std::expected<Fonts, std::string> Fonts::open(std::span<const fs::path> files, d
     }
     if (i.faces.empty()) return std::unexpected(why.empty() ? std::string("no font files") : why);
     const auto& m = i.faces.front().ft->size->metrics;
-    i.ascent = m.ascender / 64.0;
-    i.descent = -m.descender / 64.0;
-    i.line = m.height / 64.0;
+    i.ascent = m.ascender / 64.0 / i.scale;
+    i.descent = -m.descender / 64.0 / i.scale;
+    i.line = m.height / 64.0 / i.scale;
     return f;
 }
 
+double Fonts::scale() const { return impl_->scale; }
 double Fonts::ascent() const { return impl_->ascent; }
 double Fonts::descent() const { return impl_->descent; }
 double Fonts::line() const { return impl_->line; }
@@ -249,11 +260,15 @@ std::size_t Fonts::faces() const { return impl_->faces.size(); }
 double Fonts::width(std::string_view utf8) {
     double advance = 0;
     (void)impl_->shape(utf8, advance);
-    return advance;
+    return advance / impl_->scale;
 }
 
 double Canvas::text(Fonts& fonts, std::string_view utf8, double x, double y, Color c, double max_width) {
     auto& f = *fonts.impl_;
+    // Shaped and placed in the fonts' device pixels; given and returned in logical ones.
+    x *= scale_;
+    y *= scale_;
+    max_width *= f.scale;
     double advance = 0;
     auto glyphs = f.shape(utf8, advance);
     if (max_width > 0 && advance > max_width) {
@@ -272,6 +287,7 @@ double Canvas::text(Fonts& fonts, std::string_view utf8, double x, double y, Col
         for (auto& d : dots) { d.x += at; glyphs.push_back(d); }
         advance = at + tail;
     }
+    advance /= f.scale;
     for (const auto& g : glyphs) {
         const auto& bitmap = f.glyph(g.face, g.id);
         const int ox = static_cast<int>(std::lround(x + g.x)) + bitmap.left;

@@ -159,6 +159,7 @@ private:
     std::atomic<bool> stop_ { false };
     std::function<void()> wake_;
     opensal::Size wanted_;
+    double density_ { 1 };
     opensal::Size size_;
     ClipboardGrant clip_;
     std::optional<std::string> text_input_, clipboard_;

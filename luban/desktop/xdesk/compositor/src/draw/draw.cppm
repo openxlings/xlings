@@ -51,12 +51,15 @@ private:
     std::vector<std::uint32_t> pixels_;
 };
 
-// Faces at one pixel size, the first the main one.
+// Faces at one pixel size, the first the main one. At a density (`scale`,
+// device pixels per logical one) glyphs are rendered for the device, and
+// every measure is given in logical pixels.
 class Fonts {
 public:
     // The faces in `files`, in order; the ones that do not open are skipped
     // (and named in the error only when none does).
-    static std::expected<Fonts, std::string> open(std::span<const fs::path> files, double px);
+    static std::expected<Fonts, std::string> open(std::span<const fs::path> files, double px, double scale = 1);
+    double scale() const;
     Fonts(Fonts&&) noexcept;
     Fonts& operator=(Fonts&&) noexcept;
     ~Fonts();
@@ -81,9 +84,11 @@ private:
 // /usr/share/fonts and /usr/local/share/fonts.
 std::vector<fs::path> system_fonts(const std::map<std::string, std::string>& env);
 
+// Draws in logical pixels onto an image of device pixels (`scale` of them
+// to one): what is drawn at 2 is as sharp as the screen.
 class Canvas {
 public:
-    explicit Canvas(Image& target) : target_(target) {}
+    explicit Canvas(Image& target, double scale = 1) : target_(target), scale_(scale > 0 ? scale : 1) {}
     void clear(Color c);
     void fill(Rect r, Color c, double radius = 0);
     // A border `width` wide inside `r`.
@@ -95,7 +100,9 @@ public:
 
 private:
     void blend_(int x, int y, Color c, double coverage);
+    void fill_device_(Rect r, Color c, double radius);
     Image& target_;
+    double scale_ { 1 };
 };
 
 }  // namespace xdesk::draw

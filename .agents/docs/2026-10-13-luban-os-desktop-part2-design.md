@@ -314,6 +314,7 @@ D9 测试与关键帧、D10 文档 / 版本 / 发布：贯穿，最后收口
 | D4 | 完成：`xdesk.draw`（HarfBuzz + FreeType，CJK 回退）、`xdesk.apps`、`xdesk.shell`（标题栏、面板、画布药丸与网格、启动器） |
 | D5 | 完成：text-input-v3 ↔ 宿主输入法；剪贴板双向，受环境授权 |
 | D6 | 完成（修订）：`xdesk.config`（INI，XDG 目录）——配置随 xdesk 发布（`share/xdesk/<profile>.ini`），edition 在 `/etc/xdg/xdesk` 定制系统级，用户 `~/.config/xdesk` 逐键覆盖；不再单独发布 `config:xdesk-*` 包（配置与读它的代码同版本）；切换桌面仍是 `luban config <n> --desktop` |
+| 节拍与密度 | 完成：提供端在 hello 里声明节拍、显示后报告 `FramePresented`，xdesk 之后才送下一帧（最多一秒）；密度：窗口按设备像素请求、报告密度，xdesk 设输出 scale，外壳按密度绘制，指针换算到逻辑像素 |
 | D8 | 大部分完成：两组卡片、索引可用性、nano 如实、非 Linux 说明、导入（快速开始、列表、拖放、预览与确认）；新用户全流程的真实 CI（`linux-luban-os-first-use`） |
 | D1、D6、D7、D9、D10 | 进行中 |
 

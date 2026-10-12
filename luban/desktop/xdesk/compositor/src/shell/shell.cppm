@@ -40,8 +40,11 @@ bool chinese(const std::map<std::string, std::string>& env);
 
 // ── title bars ───────────────────────────────────────────────────────
 
+// Every picture is drawn for a density (`scale` device pixels to a logical
+// one), its size and areas given in logical pixels.
 inline constexpr int kTitleHeight = 26;
-draw::Image title_bar(draw::Fonts* fonts, const Theme& t, std::string_view title, int width, bool active, bool close_hover);
+draw::Image title_bar(draw::Fonts* fonts, const Theme& t, std::string_view title, int width, bool active, bool close_hover,
+                      double scale = 1);
 // Its close button, in the bar's pixels.
 draw::Rect close_button(int width);
 
@@ -73,12 +76,13 @@ struct Picture {
 };
 
 inline constexpr int kPanelHeight = 30;     // classic: what the bar keeps at the top
-Picture panel(draw::Fonts* fonts, const Theme& t, const PanelState& s, int output_width, int output_height, bool canvas);
+Picture panel(draw::Fonts* fonts, const Theme& t, const PanelState& s, int output_width, int output_height, bool canvas,
+              double scale = 1);
 std::optional<Area> hit(const Picture& p, double x, double y);
 
 // The canvas's background: dots on a grid that pans and zooms with the view
 // (`cx`, `cy` the world point at the top-left).
-draw::Image canvas_background(const Theme& t, int width, int height, double cx, double cy, double zoom);
+draw::Image canvas_background(const Theme& t, int width, int height, double cx, double cy, double zoom, double scale = 1);
 
 // ── the launcher ─────────────────────────────────────────────────────
 
@@ -93,7 +97,7 @@ public:
     // The application chosen (Enter), and the launcher closed.
     std::optional<apps::App> choose();
     std::optional<apps::App> choose_at(double x, double y);
-    Picture draw(draw::Fonts* ui, draw::Fonts* big, const Theme& t, int width, int height, bool zh);
+    Picture draw(draw::Fonts* ui, draw::Fonts* big, const Theme& t, int width, int height, bool zh, double scale = 1);
     const std::string& query() const { return query_; }
     std::size_t selected() const { return selected_; }
     std::size_t shown() const { return std::min(results_.size(), kRows); }

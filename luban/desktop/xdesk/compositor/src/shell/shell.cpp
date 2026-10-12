@@ -9,6 +9,15 @@ namespace xdesk::shell {
 using draw::Color;
 using draw::Rect;
 
+namespace {
+
+// An image of `width` x `height` logical pixels, at a density.
+draw::Image device_image_(double width, double height, double scale) {
+    return draw::Image(std::max(1, static_cast<int>(std::ceil(width * scale))), std::max(1, static_cast<int>(std::ceil(height * scale))));
+}
+
+}  // namespace
+
 Theme theme(std::string_view profile) {
     Theme t {
         .background = Color::rgb(0x1b1e25),
@@ -45,9 +54,10 @@ bool chinese(const std::map<std::string, std::string>& env) {
 
 Rect close_button(int width) { return {static_cast<double>(width - kTitleHeight), 0, kTitleHeight, kTitleHeight}; }
 
-draw::Image title_bar(draw::Fonts* fonts, const Theme& t, std::string_view title, int width, bool active, bool close_hover) {
-    draw::Image img(std::max(1, width), kTitleHeight);
-    draw::Canvas c(img);
+draw::Image title_bar(draw::Fonts* fonts, const Theme& t, std::string_view title, int width, bool active, bool close_hover,
+                      double scale) {
+    draw::Image img = device_image_(std::max(1, width), kTitleHeight, scale);
+    draw::Canvas c(img, scale);
     c.clear(active ? t.title_active : t.title_idle);
     const Rect close = close_button(width);
     if (close_hover) c.fill(close, t.close_hover);
@@ -74,14 +84,15 @@ std::string_view tr_(bool zh, std::string_view en, std::string_view cn) { return
 
 }  // namespace
 
-Picture panel(draw::Fonts* fonts, const Theme& t, const PanelState& s, int output_width, int output_height, bool canvas) {
+Picture panel(draw::Fonts* fonts, const Theme& t, const PanelState& s, int output_width, int output_height, bool canvas,
+              double scale) {
     Picture p;
     const double text_w = fonts ? fonts->width(tr_(s.zh, "Apps", "应用")) : 30.0;
     if (!canvas) {
         // Classic: a bar across the top -- applications and workspaces on the
         // left, the focused window's title in the middle, the clock right.
-        p.image = draw::Image(std::max(1, output_width), kPanelHeight);
-        draw::Canvas c(p.image);
+        p.image = device_image_(std::max(1, output_width), kPanelHeight, scale);
+        draw::Canvas c(p.image, scale);
         c.clear(t.panel);
         const double baseline = fonts ? std::round((kPanelHeight + fonts->ascent() - fonts->descent()) / 2) : 0;
         double x = 6;
@@ -120,10 +131,10 @@ Picture panel(draw::Fonts* fonts, const Theme& t, const PanelState& s, int outpu
     const double zoom_w = fonts ? fonts->width(zoom) : 30, overview_w = fonts ? fonts->width(overview) : 50;
     const double width = 8 + (text_w + 24) + 10 + s.workspaces * 26.0 + 10 + zoom_w + 16 + (overview_w + 24) + 8;
     const int height = 40;
-    p.image = draw::Image(static_cast<int>(std::ceil(width)), height);
+    p.image = device_image_(std::ceil(width), height, scale);
     p.x = std::round((output_width - width) / 2);
     p.y = output_height - height - 14;
-    draw::Canvas c(p.image);
+    draw::Canvas c(p.image, scale);
     c.fill({0, 0, width, static_cast<double>(height)}, t.panel, height / 2.0);
     const double baseline = fonts ? std::round((height + fonts->ascent() - fonts->descent()) / 2) : 0;
     double x = 8;
@@ -157,9 +168,9 @@ std::optional<Area> hit(const Picture& p, double x, double y) {
     return std::nullopt;
 }
 
-draw::Image canvas_background(const Theme& t, int width, int height, double cx, double cy, double zoom) {
-    draw::Image img(std::max(1, width), std::max(1, height));
-    draw::Canvas c(img);
+draw::Image canvas_background(const Theme& t, int width, int height, double cx, double cy, double zoom, double scale) {
+    draw::Image img = device_image_(std::max(1, width), std::max(1, height), scale);
+    draw::Canvas c(img, scale);
     c.clear(t.background);
     // A dot every 32 world pixels; sparser when zoomed far out.
     double step = 32 * zoom;
@@ -232,10 +243,10 @@ std::optional<apps::App> Launcher::choose_at(double x, double y) {
     return std::nullopt;
 }
 
-Picture Launcher::draw(draw::Fonts* ui, draw::Fonts* big, const Theme& t, int width, int height, bool zh) {
+Picture Launcher::draw(draw::Fonts* ui, draw::Fonts* big, const Theme& t, int width, int height, bool zh, double scale) {
     Picture p;
-    p.image = draw::Image(std::max(1, width), std::max(1, height));
-    draw::Canvas c(p.image);
+    p.image = device_image_(std::max(1, width), std::max(1, height), scale);
+    draw::Canvas c(p.image, scale);
     c.fill({0, 0, static_cast<double>(width), static_cast<double>(height)}, t.overlay);
     const double box_w = std::min(560.0, width - 40.0);
     const double row_h = 44, field_h = 56;

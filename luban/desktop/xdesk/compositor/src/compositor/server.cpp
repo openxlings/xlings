@@ -68,9 +68,13 @@ const wlr_buffer_impl kImageBuffer {
     .end_data_ptr_access = [](wlr_buffer*) {},
 };
 
-// Shows `img` in `node` (the node keeps the buffer; nobody else does).
-void show(wlr_scene_buffer* node, draw::Image img) {
+// Shows `img` in `node` (the node keeps the buffer; nobody else does); an
+// image drawn at a density is shown at its logical size.
+void show(wlr_scene_buffer* node, draw::Image img, double scale = 1) {
     if (!node || img.empty()) return;
+    if (scale != 1)
+        wlr_scene_buffer_set_dest_size(node, std::max(1, static_cast<int>(std::lround(img.width() / scale))),
+                                       std::max(1, static_cast<int>(std::lround(img.height() / scale))));
     auto* ib = new ImageBuffer{};
     ib->image = std::move(img);
     wlr_buffer_init(&ib->base, &kImageBuffer, ib->image.width(), ib->image.height());
@@ -166,8 +170,9 @@ struct Server {
     std::list<View> views;                       // front: focused most recently
     std::list<Popup> popups;
     std::vector<int> children;
-    opensal::Size size;
+    opensal::Size size;                          // the output, in device pixels
     opensal::Size told;
+    double scale { 1 };                          // device pixels to a logical one (the window's density)
     bool stop { false };
     std::chrono::steady_clock::time_point start { std::chrono::steady_clock::now() };
     std::chrono::steady_clock::time_point last_tick { start };
@@ -214,7 +219,10 @@ struct Server {
     bool canvas() const { return lay.mode() == layout::Mode::canvas; }
     draw::Fonts* ui() { return ui_font ? &*ui_font : nullptr; }
     layout::Insets reserved() const { return canvas() ? layout::Insets{} : layout::Insets{.top = shell::kPanelHeight}; }
-    layout::Size output_size() const { return {static_cast<double>(size.width), static_cast<double>(size.height)}; }
+    // The output in logical pixels: what windows and the shell are laid out in.
+    layout::Size output_size() const { return {size.width / scale, size.height / scale}; }
+    int logical_w() const { return static_cast<int>(std::lround(size.width / scale)); }
+    int logical_h() const { return static_cast<int>(std::lround(size.height / scale)); }
 
     std::uint32_t now_ms() const {
         return static_cast<std::uint32_t>(
@@ -279,7 +287,9 @@ struct Server {
             const wlr_box c = t->current.cursor_rectangle;
             const wlr_box g = f->toplevel->base->geometry;
             const int x = f->frame->node.x + c.x - g.x, y = f->frame->node.y + kTitle + c.y - g.y;
-            msg = std::format("1 {} {} {} {}", x, y, std::max(1, c.width), std::max(1, c.height));
+            // In the window's (device) pixels.
+            msg = std::format("1 {} {} {} {}", std::lround(x * scale), std::lround(y * scale), std::max<long>(1, std::lround(c.width * scale)),
+                              std::max<long>(1, std::lround(c.height * scale)));
         }
         if (msg == caret_sent) return;
         caret_sent = msg;
@@ -411,7 +421,7 @@ struct Server {
         for (const auto& p : placements)
             if (p.floating)
                 if (View* v = view_of(p.id)) wlr_scene_node_raise_to_top(&v->frame->node);
-        scale(zoom);
+        zoom_surfaces(zoom);
         animate();
         draw_shell();
     }
@@ -421,10 +431,10 @@ struct Server {
         const char* t = v.toplevel->title;
         const std::string title = t ? t : (v.toplevel->app_id ? v.toplevel->app_id : "");
         const bool hover = close_hover == v.id;
-        auto key = std::format("{}\x1f{}\x1f{}\x1f{}", title, width, active, hover);
+        auto key = std::format("{}\x1f{}\x1f{}\x1f{}\x1f{}", title, width, active, hover, scale);
         if (key == v.drawn) return;
         v.drawn = std::move(key);
-        show(v.title, shell::title_bar(ui(), theme, title, width, active, hover));
+        show(v.title, shell::title_bar(ui(), theme, title, width, active, hover, scale));
     }
 
     // The panel and (canvas) the grid, drawn again only when they changed.
@@ -441,21 +451,21 @@ struct Server {
         st.zoom = lay.zoom();
         st.overview = lay.in_overview();
         st.zh = zh;
-        auto key = std::format("{} {} {} {} {} {} {} {}x{}", st.workspace, st.occupied, st.title, st.clock, st.zoom, st.overview,
-                               lay.mode() == layout::Mode::canvas, size.width, size.height);
+        auto key = std::format("{} {} {} {} {} {} {} {}x{}@{}", st.workspace, st.occupied, st.title, st.clock, st.zoom, st.overview,
+                               lay.mode() == layout::Mode::canvas, size.width, size.height, scale);
         if (key != panel_drawn) {
             panel_drawn = std::move(key);
-            panel_picture = shell::panel(ui(), theme, st, static_cast<int>(size.width), static_cast<int>(size.height), canvas());
+            panel_picture = shell::panel(ui(), theme, st, logical_w(), logical_h(), canvas(), scale);
             wlr_scene_node_set_position(&panel_node->node, static_cast<int>(panel_picture.x), static_cast<int>(panel_picture.y));
-            show(panel_node, std::move(panel_picture.image));
+            show(panel_node, std::move(panel_picture.image), scale);
             panel_picture.image = {};
         }
         if (canvas()) {
             const auto [cx, cy] = lay.camera();
-            auto dots = std::format("{} {} {} {}x{}", cx, cy, lay.zoom(), size.width, size.height);
+            auto dots = std::format("{} {} {} {}x{}@{}", cx, cy, lay.zoom(), size.width, size.height, scale);
             if (dots != dots_drawn) {
                 dots_drawn = std::move(dots);
-                show(canvas_dots, shell::canvas_background(theme, static_cast<int>(size.width), static_cast<int>(size.height), cx, cy, lay.zoom()));
+                show(canvas_dots, shell::canvas_background(theme, logical_w(), logical_h(), cx, cy, lay.zoom(), scale), scale);
             }
         }
     }
@@ -485,8 +495,8 @@ struct Server {
             wlr_scene_node_set_enabled(&launcher_node->node, false);
             return;
         }
-        auto pic = launcher.draw(ui(), big_font ? &*big_font : nullptr, theme, static_cast<int>(size.width), static_cast<int>(size.height), zh);
-        show(launcher_node, std::move(pic.image));
+        auto pic = launcher.draw(ui(), big_font ? &*big_font : nullptr, theme, logical_w(), logical_h(), zh, scale);
+        show(launcher_node, std::move(pic.image), scale);
         wlr_scene_node_set_enabled(&launcher_node->node, true);
     }
 
@@ -521,7 +531,7 @@ struct Server {
 
     // The canvas's zoom on each window's surfaces (a surface's own commit
     // sets its size back, so this runs before each frame while zoomed).
-    void scale(double zoom) {
+    void zoom_surfaces(double zoom) {
         if (zoom == 1 && zoom_shown == 1) return;
         for (auto& v : views) {
             wlr_scene_node_for_each_buffer(&v.content->node, [](wlr_scene_buffer* b, int, int, void* data) {
@@ -904,7 +914,7 @@ struct Server {
         if (const auto* k = std::get_if<opensal::Key>(&ev)) {
             key(*k);
         } else if (const auto* m = std::get_if<opensal::PointerMotion>(&ev)) {
-            wlr_cursor_warp_closest(cursor, nullptr, m->x, m->y);
+            wlr_cursor_warp_closest(cursor, nullptr, m->x / scale, m->y / scale);   // device pixels to logical
             pointer_moved();
             wlr_seat_pointer_notify_frame(seat);
         } else if (const auto* b = std::get_if<opensal::PointerButton>(&ev)) {
@@ -915,6 +925,8 @@ struct Server {
             wlr_seat_pointer_notify_frame(seat);
         } else if (const auto* r = std::get_if<opensal::Resized>(&ev)) {
             resize(r->size);
+        } else if (const auto* d = std::get_if<opensal::DensityChanged>(&ev)) {
+            set_scale(d->scale);
         } else if (const auto* t = std::get_if<opensal::TextCommit>(&ev)) {
             if (launcher.is_open()) { launcher.type(t->text); draw_launcher(); }
             else text_commit(t->text);
@@ -949,12 +961,13 @@ struct Server {
             if (msg.kind == 'H') {
                 std::istringstream in(msg.payload);
                 std::uint32_t bits = 0, w = 0, h = 0;
-                double scale = 1;
+                double density = 1;
                 int pacing = 0;
                 if (in >> bits >> w >> h) {
-                    if (in >> scale >> pacing) paced = pacing == 1;
+                    if (in >> density >> pacing) paced = pacing == 1;
                     provided = bits;
                     resize({w, h});
+                    if (density > 0) set_scale(density);
                 }
             } else if (msg.kind == 'E') {
                 if (auto e = opensal::wire::decode_event(msg.payload)) input(*e);
@@ -971,13 +984,46 @@ struct Server {
         wlr_output_state_set_custom_mode(&st, static_cast<std::int32_t>(want.width), static_cast<std::int32_t>(want.height), 0);
         if (wlr_output_commit_state(output, &st)) {
             size = want;
-            wlr_scene_rect_set_size(background, static_cast<int>(want.width), static_cast<int>(want.height));
+            wlr_scene_rect_set_size(background, logical_w(), logical_h());
             draw_launcher();
             arrange();
         } else {
             log(std::format("the output did not take {}x{}", want.width, want.height));
         }
         wlr_output_state_finish(&st);
+    }
+
+    // The window's density: the output's scale (clients are told it and draw
+    // for it), the shell drawn again at it, the layout in logical pixels.
+    void set_scale(double want) {
+        want = std::clamp(want, 0.5, 4.0);
+        if (std::abs(want - scale) < 0.01) return;
+        wlr_output_state st;
+        wlr_output_state_init(&st);
+        wlr_output_state_set_scale(&st, static_cast<float>(want));
+        if (wlr_output_commit_state(output, &st)) {
+            scale = want;
+            open_fonts();
+            for (auto& v : views) v.drawn.clear();
+            panel_drawn.clear();
+            dots_drawn.clear();
+            wlr_scene_rect_set_size(background, logical_w(), logical_h());
+            draw_launcher();
+            arrange();
+        } else {
+            log(std::format("the output did not take scale {}", want));
+        }
+        wlr_output_state_finish(&st);
+    }
+
+    // Text: the system's faces at this density (no fonts, no text -- the shapes still are).
+    void open_fonts() {
+        const auto faces = draw::system_fonts(os::environment());
+        ui_font.reset();
+        big_font.reset();
+        if (auto f = draw::Fonts::open(faces, 13, scale); f) ui_font = std::move(*f);
+        else log("no fonts for text: " + f.error());
+        if (auto f = draw::Fonts::open(faces, 19, scale); f) big_font = std::move(*f);
     }
 
     // The frame wlroots rendered: its damaged rectangles, as opensal frames.
@@ -990,7 +1036,7 @@ struct Server {
         }
         wlr_output_state st;
         wlr_output_state_init(&st);
-        if (zoom_shown != 1) scale(zoom_shown);
+        if (zoom_shown != 1) zoom_surfaces(zoom_shown);
         if (!wlr_scene_output_build_state(scene_output, &st, nullptr) || !st.buffer) {
             wlr_output_state_finish(&st);
             return;
@@ -1076,13 +1122,8 @@ struct Server {
         panel_node = wlr_scene_buffer_create(shell_layer, nullptr);
         launcher_node = wlr_scene_buffer_create(overlay_layer, nullptr);
         wlr_scene_node_set_enabled(&launcher_node->node, false);
-        // Text: the system's faces (no fonts, no text -- the shapes still are).
-        const auto env = os::environment();
-        zh = shell::chinese(env);
-        const auto faces = draw::system_fonts(env);
-        if (auto f = draw::Fonts::open(faces, 13); f) ui_font = std::move(*f);
-        else log("no fonts for text: " + f.error());
-        if (auto f = draw::Fonts::open(faces, 19); f) big_font = std::move(*f);
+        zh = shell::chinese(os::environment());
+        open_fonts();
 
         xdg_shell = wlr_xdg_shell_create(display, 6);
         new_toplevel.connect(&xdg_shell->events.new_toplevel, [this](void* d) { add_view(static_cast<wlr_xdg_toplevel*>(d)); });

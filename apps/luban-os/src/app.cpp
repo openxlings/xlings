@@ -175,6 +175,7 @@ struct App {
     host::Window::Texture texture;
     opensal::Size desktop_size;        // what the window shows it at
     bool desktop_text { false };       // the desktop takes text (its caret is set)
+    double sent_density { 1 };         // the density the desktop was told
     std::string ended_why;             // a failed session's last lines (the off screen shows them)
     int ended_code { 0 };
     bool paste_on_open { true };       // the host's clipboard, given once it shows
@@ -272,7 +273,7 @@ struct App {
         if (auto session = desktop_session(home, name, env ? env->settings.desktop : std::string{})) {
             std::string error;
             const auto [w, h] = window->size();
-            desktop_size = {static_cast<std::uint32_t>(w), static_cast<std::uint32_t>(h)};
+            desktop_size = device_size_(w, h);
             auto* win = window.get();
             display = Display::machine(home, name, *session, desktop_size, clipboard_grant(name), [win] { win->wake(); }, error);
             if (display) {
@@ -284,6 +285,21 @@ struct App {
             notice = error;
         }
         open_console(name, true);
+    }
+
+    // The screen's density (device pixels to a logical one); tests set it (--density).
+    double density_override { 0 };
+    double density() const {
+        if (density_override > 0) return density_override;
+        const double d = window ? window->density() : 1.0;
+        return d > 0 ? d : 1.0;
+    }
+
+    // A desktop's size for a window of w x h logical pixels: in its device
+    // pixels, so that what the desktop draws is as sharp as the screen.
+    opensal::Size device_size_(int w, int h) const {
+        const double d = density();
+        return {static_cast<std::uint32_t>(std::lround(w * d)), static_cast<std::uint32_t>(std::lround(h * d))};
     }
 
     // What the environment lets cross the clipboard: its grants; an
@@ -298,6 +314,7 @@ struct App {
 
     void close_display() {
         desktop_text = false;
+        sent_density = 1;
         paste_on_open = true;
         pasted.clear();
         display.reset();
@@ -323,7 +340,7 @@ struct App {
             const auto luban = luban_binary();
             if (auto session = desktop_session(home, name, env ? env->settings.desktop : std::string{}); session && !luban.empty()) {
                 const auto [ww, wh] = window->size();
-                desktop_size = {static_cast<std::uint32_t>(ww), static_cast<std::uint32_t>(wh)};
+                desktop_size = device_size_(ww, wh);
                 display = Display::sandbox(ctx.port.xlings(), luban, home, name, *session, env ? env->settings.persist : "all",
                                            desktop_size, clipboard_grant(name), [w] { w->wake(); }, error);
                 if (display) {
@@ -1051,7 +1068,9 @@ void desktop_view_(App& a) {
     const ImVec2 origin = ImGui::GetCursorScreenPos();
     const ImVec2 avail = ImGui::GetContentRegionAvail();
     if (a.texture.handle) {
-        const float scale = std::min({1.0f, avail.x / a.texture.width, avail.y / a.texture.height});
+        // Its device pixels at the window's density (1:1 on the screen), smaller when it does not fit.
+        const float density = static_cast<float>(a.density());
+        const float scale = std::min({1.0f / density, avail.x / a.texture.width, avail.y / a.texture.height});
         const ImVec2 shown(a.texture.width * scale, a.texture.height * scale);
         const ImVec2 at(origin.x + (avail.x - shown.x) / 2, origin.y + (avail.y - shown.y) / 2);
         ImGui::SetCursorScreenPos(at);
@@ -1125,7 +1144,13 @@ void desktop_view_(App& a) {
         center_text_(std::vformat(tr("Starting the desktop of {}…", "正在启动 {} 的桌面…"), std::make_format_args(a.current)));
     }
     // The window's size is the desktop's, once it has held still a moment.
-    const opensal::Size want{static_cast<std::uint32_t>(avail.x), static_cast<std::uint32_t>(avail.y)};
+    // The window's density, said once and whenever it changes (a screen
+    // with another scale); the size it wants, in device pixels.
+    if (const double density = a.density(); std::abs(density - a.sent_density) > 0.01) {
+        d.send(opensal::DensityChanged{density});
+        a.sent_density = density;
+    }
+    const opensal::Size want = a.device_size_(static_cast<int>(avail.x), static_cast<int>(avail.y));
     if (want != a.desktop_size) { a.desktop_size = want; a.resize_at = std::chrono::steady_clock::now() + std::chrono::milliseconds(300); }
     if (a.resize_at && std::chrono::steady_clock::now() >= *a.resize_at) { d.send(opensal::Resized{want}); a.resize_at.reset(); }
     ImGui::End();
@@ -1657,6 +1682,7 @@ int run(int argc, char* argv[]) {
         const std::string_view arg = argv[i];
         if (arg == "--attach" && i + 1 < argc) a.attach = argv[++i];
         else if (arg == "--headless") { o.hidden = true; platform::set_env_variable("SDL_VIDEODRIVER", "offscreen"); }
+        else if (arg == "--density" && i + 1 < argc) a.density_override = std::atof(argv[++i]);   // tests: a screen's density
         else if (arg == "--frames" && i + 1 < argc) frames = std::atoi(argv[++i]);
         else if (arg == "--screenshot" && i + 1 < argc) screenshot = argv[++i];
         else if (arg == "--dump-state") a.dump_state = true;
@@ -1698,7 +1724,7 @@ int run(int argc, char* argv[]) {
     } else if (!desktop_exec.empty()) {
         std::string error;
         const auto [w, h] = a.window->size();
-        a.desktop_size = {static_cast<std::uint32_t>(w), static_cast<std::uint32_t>(h)};
+        a.desktop_size = a.device_size_(w, h);
         auto* win = a.window.get();
         a.current = "desktop";
         a.display = Display::process(desktop_exec, platform::environment(), a.home / "logs" / "luban-os.log", a.current,
