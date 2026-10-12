@@ -78,7 +78,7 @@ home and never touch the user's. Release builds: `tools/{linux,macos}_release.sh
 
 - Releases are `YYYY.M.D.N`; **N starts at 1**, `.0` is reserved for a deliberate
   formal release. Bump `mcpp.toml`, `src/core/config.cppm` and
-  `luban/src/cli/cli.cppm` (kVersion) together.
+  `luban/cli/src/cli.cppm` (kVersion) together.
 - After `release.yml` is green: push the assets to the CN mirror from a CN machine
   (`tools/mirror-latest.sh xlings`, verify with GET), then bump
   `xim-pkgindex/pkgs/x/xlings.lua` (every platform block and `latest`).

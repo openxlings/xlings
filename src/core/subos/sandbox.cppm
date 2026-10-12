@@ -181,6 +181,9 @@ export struct EnterOptions {
     std::optional<policy::Preset> preset;
     policy::Overrides overrides;
     std::vector<std::string> publish;             // --publish HOST:SANDBOX (net=nat)
+    // `--persist home|none`: a root's state through a memory overlay, gone
+    // when the session ends (Luban OS architecture §10.1).
+    std::string persist { "all" };
 };
 
 export int enter(const std::string& name, EventStream& stream, const EnterOptions& options);

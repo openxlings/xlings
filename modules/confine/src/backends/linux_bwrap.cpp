@@ -8,6 +8,7 @@ import xlings.subos.caps;
 import xlings.subos.intent;
 import xlings.subos.policy;
 import xlings.subos.spec;
+import xlings.subos.root_etc;
 
 namespace xlings::confine::backends {
 
@@ -34,6 +35,18 @@ std::optional<sp::Unmet> namespaces_view(const in::Intent& i, const HomeView& ho
             return sp::Unmet{"root", "a root needs an owner-checked read-only store closure",
                              "run owner `xlings install --reconfig` and retry", policy::Need::Must};
         s.mounts.insert(s.mounts.end(), i.root_mounts.begin(), i.root_mounts.end());
+        // persist home / none: the root's own state seen through a memory
+        // overlay, so what the session writes is gone when it ends.
+        if (i.persist != sp::Persist::All) {
+            std::vector<std::string> volatile_dirs{"etc", "var", "root", "opt", "srv"};
+            if (i.persist == sp::Persist::None) volatile_dirs.push_back("home");
+            for (const auto& d : volatile_dirs) {
+                std::error_code ec;
+                if (fs::is_directory(i.root / d, ec))
+                    s.mounts.push_back({MountKind::TmpOverlay, posix(i.root / d), "/" + d});
+            }
+            s.mounts.push_back({MountKind::Tmpfs, "", "/tmp"});
+        }
         if (i.net.mode != policy::Net::None && i.exists("/etc/resolv.conf"))
             s.mounts.push_back({MountKind::RoBind, "/etc/resolv.conf", "/etc/resolv.conf"});
         s.unshare_user = true;
@@ -94,13 +107,15 @@ void root_finish(const in::Intent& i, const HomeView& home, const std::map<std::
     s.env["HOME"] = "/root";
     s.env["USER"] = "root";
     s.env["LOGNAME"] = "root";
-    s.env["SHELL"] = "/bin/sh";
+    // The root's own login shell (design §7): its passwd says, not the host.
+    const auto shell = xlings::subos::root_etc::login_shell(i.root);
+    s.env["SHELL"] = shell;
     s.env["XLINGS_HOME"] = posix(home.home);
     s.env["PATH"] = "/usr/local/sbin:/usr/local/bin:/usr/bin:/bin:/run/xlings";
     common::explicit_env(i, s, i.instance);
     s.cwd = i.cwd.empty() ? fs::path("/root") : fs::path(i.cwd);
     if (i.argv.empty()) {
-        s.argv = {"/bin/sh"};
+        s.argv = {shell};
         if (i.interactive) s.argv.push_back("-i");
     } else {
         s.argv = i.argv;

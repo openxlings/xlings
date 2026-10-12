@@ -28,4 +28,16 @@ std::expected<std::vector<std::string>, std::string> fill_machine_etc(const fs::
 // exists. Nothing is rewritten. Returns the names added.
 std::expected<std::vector<std::string>, std::string> apply_sysusers(const fs::path& etc, const fs::path& usr);
 
+// The login shell (Luban OS architecture design §7): the environment answers,
+// not the command that enters it. A root made now gives root the best shell its
+// /usr has (fish, then bash, else sh); `luban config <n> --shell` changes it;
+// installing fish later does not (a distribution does not chsh for you).
+std::string best_shell(const fs::path& usr);
+// The shell `user`'s passwd entry names in this root, when the root has it;
+// otherwise /bin/sh.
+std::string login_shell(const fs::path& root, std::string_view user = "root");
+// Rewrite `user`'s shell in etc/passwd -- the root's own regular file, never a
+// link to a factory one.
+std::expected<void, std::string> set_login_shell(const fs::path& etc, std::string_view user, std::string_view shell);
+
 }  // namespace xlings::subos::root_etc

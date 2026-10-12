@@ -8,7 +8,7 @@
 ## 1. 一个环境
 
 ```bash
-luban new box tiny            # an edition: nano, tiny, core, agent-workspace, or ns:name
+luban new box --edition tiny            # an edition: nano, tiny, core, agent-workspace, or ns:name
 ```
 
 你会看到 edition 只出现一行（`'box' from subos:luban-tiny@… <- …: N package(s)`）、下载过程，以及
@@ -35,12 +35,12 @@ luban rollback box            # back one: cmake is gone again
 ## 4. agent 的工作区
 
 ```bash
-luban new agent agent-workspace
+luban new agent --edition agent-workspace
 luban run agent -- claude
 luban status agent            # what it may do: its policy, network and grants
 ```
 
-agent 的工作区由它的策略隔离；它唯一的网络可以是一个代理（`luban config agent proxy socks5h://127.0.0.1:7897`）。
+agent 的工作区由它的策略隔离；它唯一的网络可以是一个代理（`luban config agent --proxy socks5h://127.0.0.1:7897`）。
 见 [Agent 工作区](04-agent-workspace.md)。
 
 ## 5. 升级
@@ -54,12 +54,12 @@ luban upgrade box             # one new generation; rollback undoes it
 
 ```bash
 luban export box box.iso      # a live ISO: BIOS and UEFI, x86_64 and aarch64
-xlings install -y qemu-system # the VM luban try boots it in
-luban try box                 # export it and boot it in a local VM
+xlings install -y qemu-system # the VM luban enter boots --mode machine --temp it in
+luban enter box --mode machine --temp                 # export it and boot it in a local VM
 ```
 
-`luban try` 用 `qemu-system`（一个包，两种架构，带固件）启动镜像；你会看到启动过程和登录提示。没有它时，
-`luban try` 会给出安装它的命令。`--nographic` 把它的控制台放在当前终端。
+`luban enter --mode machine` 用 `qemu-system`（一个包，两种架构，带固件）启动镜像；你会看到启动过程和登录提示。没有它时，
+`luban enter --mode machine` 会给出安装它的命令。`--nographic` 把它的控制台放在当前终端。
 
 ## 7. 启动盘（可选）
 

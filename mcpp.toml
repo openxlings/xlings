@@ -18,9 +18,10 @@
 #   carrier   -> subos: where a SubOS runs (local, wsl2, vz) and how this
 #                xlings reaches it
 #   image     -> platform: disk and disc image formats, written in-process
-#   luban     -> modules: what exists only when a SubOS is a machine --
-#                stage-0 and the luban command (apps/luban); xlings never
-#                imports it (tools/lint_layer_deps.sh)
+#   luban/*   -> modules: Luban OS -- system (stage-0), service (environments
+#                and machines as operations), vm (a machine run here), cli (the
+#                luban command; apps/luban is its binary); xlings never imports
+#                them (tools/lint_layer_deps.sh)
 #   testkit   -> libs: end-to-end test library (dev-dependency only)
 #   apps/gui  the GUI binary's library half
 #   apps/xdev the development tool (never linked into xlings)
@@ -42,7 +43,10 @@ members = [
     "modules/confine",
     "modules/carrier",
     "modules/image",
-    "luban",
+    "luban/system",
+    "luban/service",
+    "luban/vm",
+    "luban/cli",
     "apps/luban",
     "modules/testkit",
     "apps/gui",
@@ -165,7 +169,8 @@ capi.lua = "0.0.3"
 testkit = { path = "modules/testkit" }
 # Tests drive Luban's own modules (stage-0, the luban command); the xlings
 # binary itself never links them.
-luban   = { path = "luban" }
+luban-system = { path = "luban/system" }
+luban-cli    = { path = "luban/cli" }
 
 [dev-dependencies.compat]
 gtest = "1.15.2"

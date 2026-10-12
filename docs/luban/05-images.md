@@ -49,13 +49,13 @@ or `--kernel <vmlinuz>` with `xlings subos export`.
 ## Trying an image
 
 ```bash
-luban try box                       # export and boot in a local VM
-luban try box.iso                   # an image you already have
-luban try box --proxy socks5h://127.0.0.1:7897   # its only network is the proxy
-luban try box --nographic           # its console in this terminal
+luban enter box --mode machine --temp                       # export and boot in a local VM
+luban enter box.iso                   # an image you already have
+luban enter box --mode machine --temp   # its only network is the proxy
+luban enter box --mode machine --temp           # its console in this terminal
 ```
 
-`luban try` boots the `virt` profile by default (falling back to the
+`luban enter --mode machine` boots the `virt` profile by default (falling back to the
 environment's own kernel), with KVM when this user may use it and emulated
 otherwise. On aarch64 it boots UEFI firmware on qemu's `virt` machine. What it
 needs comes from the index — `xlings install qemu-system`, one package with

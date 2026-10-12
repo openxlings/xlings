@@ -1362,8 +1362,31 @@ std::map<std::string, std::string> declared_env_(const std::string& name) {
 }
 
 int use_spawn_shell(const std::string& name, EventStream& stream, bool sandbox, const std::string& sandbox_backend, bool gpu, const std::string& cmd,
-                    std::optional<policy::Preset> preset, const policy::Overrides& overrides)
+                    std::optional<policy::Preset> preset, const policy::Overrides& overrides, std::string_view persist)
 {
+    const std::string persisted(persist.empty() ? "all" : persist);
+    if (persisted != "all" && persisted != "home" && persisted != "none") {
+        stream.emit(ErrorEvent{.code = ErrorCode::InvalidInput,
+                               .message = std::format("--persist {}: all, home or none", persist), .recoverable = false});
+        return 2;
+    }
+    if (persisted != "all") {
+        const auto kind = subos_root::read_kind(Config::paths().homeDir, name);
+        if (!kind || *kind != roles::Kind::Rootfs) {
+            stream.emit(ErrorEvent{.code = ErrorCode::InvalidInput,
+                                   .message = std::format("--persist {} keeps a root's state from a session; '{}' is not a root", persist, name),
+                                   .recoverable = false});
+            return 2;
+        }
+        if (session::find(home_view(), name)) {
+            stream.emit(ErrorEvent{.code = ErrorCode::InvalidInput,
+                                   .message = std::format("'{}' has a running session, which keeps what it writes; "
+                                                          "`xlings subos stop {}` first", name, name),
+                                   .recoverable = true});
+            return 2;
+        }
+        sandbox = true;
+    }
     // A declared instance is entered under its policy however it is entered
     // (design §10: the secure default belongs to the instance, not the flag).
     if (!sandbox && (preset || enters_sandboxed_(name))) sandbox = true;
@@ -1392,7 +1415,7 @@ int use_spawn_shell(const std::string& name, EventStream& stream, bool sandbox, 
         warn_sandbox_without_gpu_(name, gpu, stream);
         return sandbox::enter(name, stream, sandbox::EnterOptions{
             .backend = sandbox_backend, .gpu = gpu, .cmd = cmd, .env = declared_env_(name),
-            .preset = preset, .overrides = overrides });
+            .preset = preset, .overrides = overrides, .persist = persisted });
     }
     warn_storage_dormant_on_shell_(name);
 
@@ -2346,6 +2369,7 @@ int run(int argc, char* argv[], EventStream& stream) {
         // already passes /dev and /sys through wholesale).
         // Ref: .agents/docs/2026-05-22-subos-sandbox-gpu-passthrough.md
         bool gpu = false;
+        std::string persist;
         std::vector<std::pair<int, std::string>> normalizedMounts;
         for (int i = 3; i < argc; ++i) {
             std::string a = argv[i];
@@ -2405,6 +2429,9 @@ int run(int argc, char* argv[], EventStream& stream) {
             }
             else if (a == "--gpu") {
                 gpu = true;
+            }
+            else if (a == "--persist" && i + 1 < argc) {
+                persist = argv[++i];
             }
             else if (!a.empty() && a[0] != '-' && name.empty()) {
                 name = std::move(a);
@@ -2488,7 +2515,7 @@ int run(int argc, char* argv[], EventStream& stream) {
             if (rc != 0) return rc;
         }
         return use_spawn_shell(name, stream, sandbox, sandbox_backend, gpu, cmd,
-                               iso.preset, iso.overrides);
+                               iso.preset, iso.overrides, persist);
     }
     if (sub == "list")   return run_list_(stream);
     if (sub == "remove") {

@@ -43,13 +43,13 @@ luban export box box.iso --boot virt
 ## 试运行镜像
 
 ```bash
-luban try box                       # export and boot in a local VM
-luban try box.iso                   # an image you already have
-luban try box --proxy socks5h://127.0.0.1:7897   # its only network is the proxy
-luban try box --nographic           # its console in this terminal
+luban enter box --mode machine --temp                       # export and boot in a local VM
+luban enter box.iso                   # an image you already have
+luban enter box --mode machine --temp   # its only network is the proxy
+luban enter box --mode machine --temp           # its console in this terminal
 ```
 
-`luban try` 默认用 `virt` 启动层（没有时退回环境自己的内核）；这个用户能用 KVM 时用 KVM，否则纯模拟。aarch64 上它在 qemu 的
+`luban enter --mode machine` 默认用 `virt` 启动层（没有时退回环境自己的内核）；这个用户能用 KVM 时用 KVM，否则纯模拟。aarch64 上它在 qemu 的
 `virt` 机器上启动 UEFI 固件。它需要的东西来自索引——`xlings install qemu-system`，一个包含两个模拟器、用户态网络
 和 UEFI 固件的包；缺失时 luban 会说明。
 

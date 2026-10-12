@@ -1,88 +1,113 @@
-// luban (Luban design §B3): each command is an xlings command; edition names,
-// image formats and the version are luban's own.
+// luban (Luban OS architecture design §6): the command line, edition names,
+// image formats, machine settings, the archive and the version.
 #include <gtest/gtest.h>
 import xlings.testkit;
 #include "xlings/xtest.hpp"
 
 import std;
 import luban.cli;
+import luban.service;
+import luban.service.archive;
+import xlings.libs.json;
 import xlings.core.config;
 
 namespace cli = luban::cli;
+namespace svc = luban::service;
 namespace tk = xlings::testkit;
 using V = std::vector<std::string>;
 
-namespace {
-V x(std::initializer_list<std::string> args) {
-    const V a(args);
-    auto r = cli::to_xlings(a);
-    return r ? *r : V{"ERROR", r.error()};
-}
-}  // namespace
-
-XTEST(LubanCli, EachCommandIsTheXlingsCommandItNames, .area = "luban", .covers = {"LUBAN-CLI-MAP"}) {
-    // A Luban edition is a Linux root: on Windows and macOS it runs on that
-    // platform's carrier, with the same command.
-    auto expect_new = [](V v) {
-        if (const auto c = cli::default_carrier(); !c.empty()) v.insert(v.end(), {"--carrier", c});
-        return v;
-    };
-    EXPECT_EQ(x({"new", "box"}), expect_new(V{"subos", "new", "box", "--from", "subos:luban-core"}));
-    EXPECT_EQ(x({"new", "box", "--carrier", "local"}), (V{"subos", "new", "box", "--from", "subos:luban-core", "--carrier", "local"}));
-    EXPECT_EQ(x({"new", "agent", "agent-workspace", "--proxy", "socks5h://127.0.0.1:7897"}),
-              expect_new(V{"subos", "new", "agent", "--from", "subos:luban-agent-workspace", "--proxy", "socks5h://127.0.0.1:7897"}));
-    EXPECT_EQ(x({"new", "box", "--from=tiny@2026.10.20.1"}),
-              expect_new(V{"subos", "new", "box", "--from", "subos:luban-tiny@2026.10.20.1"}));
-    EXPECT_EQ(x({"new", "box", "acme:my-os"}), expect_new(V{"subos", "new", "box", "--from", "acme:my-os"}));
-    // A preview edition has no short name; its full one still works.
-    EXPECT_EQ(cli::edition_ref("desktop"), "desktop");
-    EXPECT_EQ(cli::edition_ref("luban-desktop"), "subos:luban-desktop");
-    EXPECT_EQ(x({"enter", "box"}), (V{"subos", "use", "box"}));
-    EXPECT_EQ(x({"run", "box", "--", "ls", "-l"}), (V{"subos", "exec", "box", "--", "ls", "-l"}));
-    EXPECT_EQ(x({"ls"}), (V{"subos", "list"}));
-    EXPECT_EQ(x({"status", "box"}), (V{"subos", "status", "box"}));
-    EXPECT_EQ(x({"config", "box", "proxy", "socks5h://p:1"}),
-              (V{"subos", "config", "box", "--net", "proxy", "--proxy", "socks5h://p:1"}));
-    EXPECT_EQ(x({"config", "box", "proxy", "off"}), (V{"subos", "config", "box", "--net", "host"}));
-    EXPECT_EQ(x({"config", "box", "tz", "utc"}), (V{"subos", "config", "box", "--tz", "utc"}));
-    EXPECT_EQ(x({"config", "box", "policy", "xim:agent-private"}),
-              (V{"subos", "config", "box", "--sandbox", "xim:agent-private"}));
-    EXPECT_EQ(x({"history", "box"}), (V{"subos", "rollback", "box", "--list"}));
-    EXPECT_EQ(x({"rollback", "box", "--to", "3"}), (V{"subos", "rollback", "box", "--to", "3"}));
-    EXPECT_EQ(x({"upgrade", "box"}), (V{"subos", "upgrade", "box"}));
-    EXPECT_EQ(x({"upgrade", "box", "--to", "2026.11.1.1", "--dry-run", "-y"}),
-              (V{"subos", "upgrade", "box", "--to", "2026.11.1.1", "--dry-run", "-y"}));
-    EXPECT_EQ(x({"rm", "box"}), (V{"subos", "remove", "box"}));
-    EXPECT_EQ(x({"setup"}), (V{"self", "doctor", "--isolation", "--fix"}));
+XTEST(LubanCli, ACommandLineIsItsWordsItsOptionsAndWhatFollowsTheDoubleDash, .area = "luban", .covers = {"LUBAN-CLI-MAP"}) {
+    auto p = cli::parse(V{"new", "box", "--edition", "tiny", "--proxy=socks5h://127.0.0.1:1080"});
+    ASSERT_TRUE(p) << p.error();
+    EXPECT_EQ(p->command, "new");
+    EXPECT_EQ(p->words, (V{"box"}));
+    EXPECT_EQ(p->option("--edition"), "tiny");
+    EXPECT_EQ(p->option("--proxy"), "socks5h://127.0.0.1:1080");
+    auto r = cli::parse(V{"run", "box", "--", "ls", "-l"});
+    ASSERT_TRUE(r);
+    EXPECT_EQ(r->after, (V{"ls", "-l"}));
+    auto e = cli::parse(V{"enter", "box", "--mode", "machine", "--temp"});
+    ASSERT_TRUE(e);
+    EXPECT_EQ(e->option("--mode"), "machine");
+    EXPECT_TRUE(e->flag("--temp"));
+    // An edition is an option, not a second word; an unknown option is refused.
+    auto unknown = cli::parse(V{"new", "box", "--from", "tiny"});
+    ASSERT_FALSE(unknown);
+    EXPECT_NE(unknown.error().find("--from"), std::string::npos) << unknown.error();
+    EXPECT_FALSE(cli::parse(V{"config", "box", "--mode"})) << "a value is missing";
 }
 
-XTEST(LubanCli, AnImageFormatFollowsItsNameAndAnUnknownNameIsRefused, .area = "luban", .covers = {"LUBAN-CLI-MAP"}) {
-    EXPECT_EQ(x({"export", "box", "box.iso"}), (V{"subos", "__export", "box", "--iso", "box.iso"}));
-    EXPECT_EQ(x({"export", "box", "box.iso", "--boot", "virt"}),
-              (V{"subos", "__export", "box", "--iso", "box.iso", "--boot", "virt"}));
-    EXPECT_EQ(x({"export", "box", "box.img", "--size", "8G"}),
-              (V{"subos", "__export", "box", "--drive", "box.img", "--size", "8G"}));
-    EXPECT_EQ(x({"export", "box", "box.qcow2"}), (V{"subos", "__export", "box", "--qcow2", "box.qcow2"}));
-    EXPECT_EQ(x({"export", "box", "box.tar.zst"}), (V{"subos", "export", "box", "--tar", "box.tar.zst"}));
-    EXPECT_EQ(x({"export", "box", "out/"}), (V{"subos", "export", "box", "--rootfs", "out/"}));
-    EXPECT_EQ(x({"export", "box", "box.bin", "--format", "img"}), (V{"subos", "__export", "box", "--drive", "box.bin"}));
-    const auto refused = x({"export", "box", "box.bin"});
-    ASSERT_EQ(refused.front(), "ERROR");
-    EXPECT_NE(refused[1].find("--format"), std::string::npos) << refused[1];
+XTEST(LubanCli, EditionsAndFormatsAreNamedTheUsersWay, .area = "luban", .covers = {"LUBAN-CLI-MAP"}) {
+    EXPECT_EQ(svc::edition_ref("tiny"), "subos:luban-tiny");
+    EXPECT_EQ(svc::edition_ref("tiny@2026.10.20.1"), "subos:luban-tiny@2026.10.20.1");
+    EXPECT_EQ(svc::edition_ref("desktop"), "subos:luban-desktop");
+    EXPECT_EQ(svc::edition_ref("luban-x"), "subos:luban-x");
+    EXPECT_EQ(svc::edition_ref("acme:my-os"), "acme:my-os");
+    EXPECT_EQ(svc::export_format("box.iso"), "iso");
+    EXPECT_EQ(svc::export_format("box.img"), "img");
+    EXPECT_EQ(svc::export_format("box.qcow2"), "qcow2");
+    EXPECT_EQ(svc::export_format("box.tar.zst"), "tar");
+    EXPECT_EQ(svc::export_format("box.luban"), "luban");
+    EXPECT_EQ(svc::export_format("out/"), "dir");
+    EXPECT_EQ(svc::export_format("box.bin"), "");
 }
 
-XTEST(LubanCli, AMissingWordIsAUsageErrorThatSaysWhatIsMissing, .area = "luban", .covers = {"LUBAN-CLI-MAP"}) {
-    EXPECT_EQ(x({"enter"}).front(), "ERROR");
-    EXPECT_EQ(x({"run", "box"}).front(), "ERROR");
-    const auto noValue = x({"config", "box", "proxy"});
-    ASSERT_EQ(noValue.front(), "ERROR");
-    EXPECT_NE(noValue[1].find("luban config box"), std::string::npos) << noValue[1];
-    EXPECT_EQ(x({"config", "box", "colour", "red"}).front(), "ERROR");
+XTEST(LubanCli, MachineSettingsAreCheckedAndEveryOtherKeySurvives, .area = "luban", .covers = {"LUBAN-SETTINGS"}) {
+    auto home = tk::Home::isolated("luban-settings");
+    auto defaults = svc::read_settings(home.dir(), "box");
+    ASSERT_TRUE(defaults);
+    EXPECT_EQ(defaults->mode, "sandbox");
+    EXPECT_EQ(defaults->persist, "all");
+    EXPECT_EQ(defaults->on_close, "ask");
+    ASSERT_TRUE(svc::set_setting(home.dir(), "box", "mode", "machine"));
+    ASSERT_TRUE(svc::set_setting(home.dir(), "box", "on-close", "background"));
+    EXPECT_FALSE(svc::set_setting(home.dir(), "box", "persist", "some")) << "not a value it takes";
+    EXPECT_FALSE(svc::set_setting(home.dir(), "box", "colour", "red"));
+    auto doc = nlohmann::json::parse(tk::read_file(svc::settings_file(home.dir(), "box")));
+    doc["future"] = "kept";
+    tk::write_file(svc::settings_file(home.dir(), "box"), doc.dump());
+    ASSERT_TRUE(svc::set_setting(home.dir(), "box", "persist", "home"));
+    auto now = svc::read_settings(home.dir(), "box");
+    ASSERT_TRUE(now);
+    EXPECT_EQ(now->mode, "machine");
+    EXPECT_EQ(now->persist, "home");
+    EXPECT_EQ(now->on_close, "background");
+    EXPECT_EQ(now->document.value("future", ""), "kept");
+    tk::write_file(svc::settings_file(home.dir(), "box"), "{not json");
+    EXPECT_FALSE(svc::read_settings(home.dir(), "box")) << "could not read is not the defaults";
+}
+
+XTEST(LubanCli, AnArchiveCarriesTheManifestAndTheRootsStateAndNothingThatLeaves, .area = "luban", .covers = {"LUBAN-ARCHIVE"}) {
+    namespace archive = luban::service::archive;
+    auto home = tk::Home::isolated("luban-archive");
+    const auto root = home.root() / "root";
+    tk::write_file(root / "etc/hostname", "box\n");
+    tk::write_file(root / "home/user/a-very-long-name-that-needs-a-pax-record-because-it-is-longer-than-one-hundred-bytes-in-all.txt", "x");
+    std::filesystem::create_directories(root / "var/empty");
+    std::filesystem::create_symlink("/usr/share/factory/etc/os-release", root / "etc/os-release");
+    tk::write_file(root / "usr/bin/sh", "not state");
+    const auto file = home.root() / "box.luban";
+    auto written = archive::write(file, {{"format", std::string(archive::kFormat)}, {"version", archive::kVersion}, {"name", "box"}}, root);
+    ASSERT_TRUE(written) << written.error();
+    EXPECT_FALSE(archive::write(file, {}, root)) << "an existing file is not overwritten";
+    const auto into = home.root() / "into";
+    auto placed = archive::extract_state(file, into);
+    ASSERT_TRUE(placed) << placed.error();
+    EXPECT_EQ(tk::read_file(into / "etc/hostname"), "box\n");
+    EXPECT_EQ(std::filesystem::read_symlink(into / "etc/os-release"), "/usr/share/factory/etc/os-release");
+    EXPECT_TRUE(std::filesystem::exists(into / "home/user/a-very-long-name-that-needs-a-pax-record-because-it-is-longer-than-one-hundred-bytes-in-all.txt"));
+    EXPECT_TRUE(std::filesystem::is_directory(into / "var/empty"));
+    EXPECT_FALSE(std::filesystem::exists(into / "usr")) << "/usr is not the root's state";
+    auto manifest = archive::read(file);
+    ASSERT_TRUE(manifest);
+    EXPECT_EQ(manifest->value("name", ""), "box");
+    tk::write_file(home.root() / "plain.tar", std::string(1024, '\0'));
+    EXPECT_FALSE(archive::read(home.root() / "plain.tar")) << "no manifest, not an archive";
 }
 
 XTEST(LubanCli, LubanIsReleasedAsTheXlingsItDrives, .area = "luban", .covers = {"LUBAN-TOOL-SHIPPED"}) {
     EXPECT_EQ(cli::kVersion, xlings::Info::VERSION)
-        << "bump luban/src/cli/cli.cppm kVersion with mcpp.toml and src/core/config.cppm";
+        << "bump luban/cli/src/cli.cppm kVersion with mcpp.toml and src/core/config.cppm";
 }
 
 XTEST(LubanCli, ADriveIsWrittenOnlyWhenItIsAWholeDriveNobodyUses, .area = "luban", .covers = {"LUBAN-WRITE-SAFE"}) {

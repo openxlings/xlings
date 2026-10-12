@@ -32,7 +32,7 @@ graph TD
 | 私有的 agent 工作区 | 是 | 是 | — | 经 `wsl2` |
 | 镜像：ISO、驱动器、qcow2、tar | 是 | 是 | — | — |
 | 启动：BIOS 与 UEFI | 是 | UEFI | — | — |
-| `luban try`（本地虚拟机） | 是 | 是（没有 KVM 时纯模拟） | — | — |
+| `luban enter --mode machine`（本地虚拟机） | 是 | 是（没有 KVM 时纯模拟） | — | — |
 | 启动层 | `generic`（真机）、`virt`（虚拟机） | `virt` | — | — |
 
 宿主上，Linux 除了内核之外什么都不需要，Ubuntu 23.10 及以后另需一次性设置（[07](07-host-support.md)）；

@@ -11,7 +11,7 @@ Each step says what you should see.
 ## 1. An environment
 
 ```bash
-luban new box tiny            # an edition: nano, tiny, core, agent-workspace, or ns:name
+luban new box --edition tiny            # an edition: nano, tiny, core, agent-workspace, or ns:name
 ```
 
 You see the edition once (`'box' from subos:luban-tiny@… <- …: N package(s)`),
@@ -41,13 +41,13 @@ luban rollback box            # back one: cmake is gone again
 ## 4. An agent's workspace
 
 ```bash
-luban new agent agent-workspace
+luban new agent --edition agent-workspace
 luban run agent -- claude
 luban status agent            # what it may do: its policy, network and grants
 ```
 
 An agent's workspace is isolated by its policy; its only network can be a proxy
-(`luban config agent proxy socks5h://127.0.0.1:7897`). See
+(`luban config agent --proxy socks5h://127.0.0.1:7897`). See
 [Agent workspace](04-agent-workspace.md).
 
 ## 5. Upgrade
@@ -61,12 +61,12 @@ luban upgrade box             # one new generation; rollback undoes it
 
 ```bash
 luban export box box.iso      # a live ISO: BIOS and UEFI, x86_64 and aarch64
-xlings install -y qemu-system # the VM luban try boots it in
-luban try box                 # export it and boot it in a local VM
+xlings install -y qemu-system # the VM luban enter boots --mode machine --temp it in
+luban enter box --mode machine --temp                 # export it and boot it in a local VM
 ```
 
-`luban try` boots the image in `qemu-system` (one package, both architectures,
-with its firmware); you see the boot and a login. Without it, `luban try` names
+`luban enter --mode machine` boots the image in `qemu-system` (one package, both architectures,
+with its firmware); you see the boot and a login. Without it, `luban enter --mode machine` names
 the command that installs it. `--nographic` puts its console in this terminal.
 
 ## 7. A boot drive (optional)

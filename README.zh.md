@@ -103,8 +103,8 @@ xlings self doctor --fix
 由 edition 创建环境、按代回滚、导出为镜像。[快速开始](docs/zh/luban/01-quick-start.md)
 
 ```bash
-luban new box tiny        # an environment: a Linux userland, no root needed
-luban try box             # boot it as a machine in a local VM (qemu, UEFI)
+luban new box --edition tiny        # an environment: a Linux userland, no root needed
+luban enter box --mode machine --temp   # boot it with its own kernel in a local VM
 luban export box box.iso  # a bootable ISO: BIOS and UEFI, x86_64 and aarch64
 ```
 

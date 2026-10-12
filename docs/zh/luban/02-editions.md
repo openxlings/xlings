@@ -20,7 +20,7 @@ edition 是环境的模板：它带来的包、创建时所用的策略、怎样
 ## 版本
 
 - edition 按发布日期编号（`2026.10.11.2`），已发布版本的输出永不改变。
-- `luban new box core` 取 edition 的 `latest`；`subos:luban-core@2026.10.11.1` 取那个版本。
+- `luban new box --edition core` 取 edition 的 `latest`；`subos:luban-core@2026.10.11.1` 取那个版本。
 - 需要比你更新的客户端的 edition 会说明这一点（`min_client`）并给出升级命令，而不是半残地运行。
 - 环境记得它来自哪个 edition 的哪个版本，以及那个版本带来了什么；`luban upgrade` 把它升到最新（[03](03-environments.md)）。
 
@@ -57,5 +57,5 @@ xlings subos new mydistro --rootfs --from subos:luban-nano
 xlings subos pack mydistro --as myns:mydistro@2026.10.12.1
 ```
 
-之后有你的索引的人就可以 `luban new box myns:mydistro` 并导出它。把 edition、策略和启动层写成配方，
+之后有你的索引的人就可以 `luban new box --edition myns:mydistro` 并导出它。把 edition、策略和启动层写成配方，
 见索引的 [Luban 包](https://github.com/openxlings/xim-pkgindex/blob/main/docs/zh/12-luban-packages.md)一章。

@@ -42,7 +42,7 @@ security boundary. [10](10-subos.md), [11](11-sandbox-and-policy.md)
 ## A private workspace for an agent
 
 ```bash
-luban new agent agent-workspace --proxy socks5h://127.0.0.1:7897
+luban new agent --edition agent-workspace --proxy socks5h://127.0.0.1:7897
 luban run agent -- claude
 ```
 
@@ -53,9 +53,9 @@ workspace](luban/04-agent-workspace.md)
 ## A Linux environment, an image, a machine
 
 ```bash
-luban new box tiny                  # a small Linux userland of its own
+luban new box --edition tiny                  # a small Linux userland of its own
 luban export box box.iso            # a live image; or box.img, a drive
-luban try box                       # boot it in a local virtual machine
+luban enter box --mode machine --temp                       # boot it in a local virtual machine
 ```
 
 [Luban](luban/README.md)

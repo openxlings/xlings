@@ -9,11 +9,11 @@ generations.
 
 ```bash
 luban config box                                  # its settings
-luban config box proxy socks5h://127.0.0.1:7897   # its only network is this proxy
-luban config box tz utc                           # utc, proxy (the proxy's exit), or a zone
-luban config box policy xim:agent-confined        # another policy
-luban config box allow clipboard                  # a grant
-luban config box mount ~/code/proj:/work          # a host directory inside
+luban config box --proxy socks5h://127.0.0.1:7897   # its only network is this proxy
+luban config box --tz utc                           # utc, proxy (the proxy's exit), or a zone
+luban config box --policy xim:agent-confined        # another policy
+luban config box --allow clipboard                  # a grant
+luban config box --mount ~/code/proj:/work          # a host directory inside
 ```
 
 | Key | |
@@ -44,7 +44,7 @@ An environment knows what its edition brought. An upgrade:
 - leaves installed what the new edition dropped, and says so;
 - applies the new edition's policy only if it **allows nothing more** than the
   current one; otherwise it keeps the current policy and lists what would have
-  been loosened — switching is your explicit `luban config box policy …`.
+  been loosened — switching is your explicit `luban config box --policy …`.
 
 An upgrade is one new generation, so it can be rolled back.
 

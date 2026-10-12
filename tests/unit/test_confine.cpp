@@ -124,3 +124,67 @@ XTEST(Confine, APolicyThatForbidsNestedUserNamespacesRefusesABwrapThatCannotWith
     // A policy that does not forbid them is not affected.
     EXPECT_TRUE(cf::compile(policy::legacy(), home, setuid, r));
 }
+
+// persist home / none (Luban OS architecture §10.1): a root's own state is seen
+// through bwrap's memory overlay, so a session leaves nothing behind; /home
+// stays only with `home`; a backend without a mount namespace refuses.
+XTEST(Confine, PersistPutsTheRootsStateBehindAMemoryOverlay, .area = "subos", .covers = {"LUBAN-PERSIST"}) {
+    auto home = xlings::testkit::Home::isolated("confine-persist");
+    const auto root = home.dir() / "subos" / "box" / "rootfs";
+    for (const auto* d : {"etc", "var", "root", "home"}) std::filesystem::create_directories(root / d);
+    sp::Request r;
+    r.instance = "box";
+    r.instance_dir = home.dir() / "subos" / "box";
+    r.user = "u";
+    r.argv = {"sh"};
+    r.root = root;
+    r.root_mounts = {{sp::MountKind::RoBind, "/h/.xlings/data/xpkgs/x", "/h/.xlings/data/xpkgs/x"}};
+    r.host_exists = [](std::string_view) { return true; };
+    const xlings::subos::HomeView view{home.dir()};
+    const auto overlays = [](const sp::SandboxSpec& s) {
+        std::set<std::string> out;
+        for (const auto& m : s.mounts) if (m.kind == sp::MountKind::TmpOverlay) out.insert(m.dst);
+        return out;
+    };
+    r.persist = sp::Persist::All;
+    auto all = cf::compile(xlings::subos::policy::legacy(), view, linux_host(true, false, 0), r);
+    ASSERT_TRUE(all);
+    EXPECT_TRUE(overlays(*all).empty());
+    r.persist = sp::Persist::Home;
+    auto kept = cf::compile(xlings::subos::policy::legacy(), view, linux_host(true, false, 0), r);
+    ASSERT_TRUE(kept);
+    EXPECT_EQ(overlays(*kept), (std::set<std::string>{"/etc", "/root", "/var"}));
+    r.persist = sp::Persist::None;
+    auto none = cf::compile(xlings::subos::policy::legacy(), view, linux_host(true, false, 0), r);
+    ASSERT_TRUE(none);
+    EXPECT_EQ(overlays(*none), (std::set<std::string>{"/etc", "/home", "/root", "/var"}));
+    const auto argv = cf::launch_argv(*none, std::nullopt, "/self/xlings");
+    EXPECT_NE(std::ranges::find(argv, std::string("--tmp-overlay")), argv.end());
+    r.preferred = sp::Backend::Proot;
+    auto proot = cf::compile(xlings::subos::policy::legacy(), view, linux_host(false, true, 0), r);
+    ASSERT_FALSE(proot);
+    EXPECT_EQ(proot.error().missing.front().dimension, "persist");
+}
+
+// A sandboxed SubOS shares the home's common part (payloads, indexes, shims)
+// and never another instance: their trees are behind an empty tmpfs, and of
+// config/ only its own directory is there, read-only.
+XTEST(Confine, AnInstanceSeesNoOtherInstanceOrItsConfig, .area = "subos", .covers = {"SUBOS-INSTANCES-APART"}) {
+    sp::Request r;
+    r.instance = "box";
+    r.instance_dir = "/h/subos/box";
+    r.user = "u";
+    r.argv = {"sh"};
+    r.host_exists = [](std::string_view) { return true; };
+    const xlings::subos::HomeView home{"/h"};
+    auto s = cf::compile(xlings::subos::policy::legacy(), home, linux_host(true, false, 0), r);
+    ASSERT_TRUE(s);
+    const auto has = [&](sp::MountKind k, std::string_view dst) {
+        return std::ranges::any_of(s->mounts, [&](const sp::MountOp& m) { return m.kind == k && m.dst == dst; });
+    };
+    EXPECT_TRUE(has(sp::MountKind::RoBind, "/h")) << "the home, read-only";
+    EXPECT_TRUE(has(sp::MountKind::Tmpfs, "/h/subos")) << "other instances out of sight";
+    EXPECT_TRUE(has(sp::MountKind::Bind, "/h/subos/box")) << "its own tree, writable";
+    EXPECT_TRUE(has(sp::MountKind::Tmpfs, "/h/config/subos")) << "other instances' policy, persona and record";
+    EXPECT_TRUE(has(sp::MountKind::RoBind, "/h/config/subos/box")) << "its own config, read-only";
+}

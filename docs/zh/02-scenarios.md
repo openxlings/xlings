@@ -39,7 +39,7 @@ Linux 上沙箱隔离文件系统、进程、网络和身份；macOS 与 Windows
 ## 给 agent 的私有工作区
 
 ```bash
-luban new agent agent-workspace --proxy socks5h://127.0.0.1:7897
+luban new agent --edition agent-workspace --proxy socks5h://127.0.0.1:7897
 luban run agent -- claude
 ```
 
@@ -49,9 +49,9 @@ luban run agent -- claude
 ## 一个 Linux 环境、一个镜像、一台机器
 
 ```bash
-luban new box tiny                  # a small Linux userland of its own
+luban new box --edition tiny                  # a small Linux userland of its own
 luban export box box.iso            # a live image; or box.img, a drive
-luban try box                       # boot it in a local virtual machine
+luban enter box --mode machine --temp                       # boot it in a local virtual machine
 ```
 
 [Luban](luban/README.md)

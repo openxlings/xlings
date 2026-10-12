@@ -25,7 +25,7 @@ anything is made.
 
 - An edition is versioned by the date it was published (`2026.10.11.2`), and a
   published version's output never changes.
-- `luban new box core` takes the edition's `latest`; `subos:luban-core@2026.10.11.1`
+- `luban new box --edition core` takes the edition's `latest`; `subos:luban-core@2026.10.11.1`
   takes that version.
 - An edition that needs a newer client than yours says so (`min_client`) and
   names the upgrade, instead of half-working.
@@ -67,6 +67,6 @@ xlings subos new mydistro --rootfs --from subos:luban-nano
 xlings subos pack mydistro --as myns:mydistro@2026.10.12.1
 ```
 
-Then anyone with your index can `luban new box myns:mydistro` and export it.
+Then anyone with your index can `luban new box --edition myns:mydistro` and export it.
 The index's [Luban packages](https://github.com/openxlings/xim-pkgindex/blob/main/docs/12-luban-packages.md)
 chapter covers editions, policies and boot profiles as recipes.

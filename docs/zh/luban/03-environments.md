@@ -8,11 +8,11 @@
 
 ```bash
 luban config box                                  # its settings
-luban config box proxy socks5h://127.0.0.1:7897   # its only network is this proxy
-luban config box tz utc                           # utc, proxy (the proxy's exit), or a zone
-luban config box policy xim:agent-confined        # another policy
-luban config box allow clipboard                  # a grant
-luban config box mount ~/code/proj:/work          # a host directory inside
+luban config box --proxy socks5h://127.0.0.1:7897   # its only network is this proxy
+luban config box --tz utc                           # utc, proxy (the proxy's exit), or a zone
+luban config box --policy xim:agent-confined        # another policy
+luban config box --allow clipboard                  # a grant
+luban config box --mount ~/code/proj:/work          # a host directory inside
 ```
 
 | 设置 | |
@@ -39,7 +39,7 @@ luban upgrade box --to 2026.10.11.2
 - **你**自己装的、或改过版本的包保持不变；
 - 安装新 edition 新增的包；
 - 新 edition 去掉的包保持安装，并说明；
-- 新 edition 的策略只有在**不放宽任何一项**时才应用；否则保留当前策略并列出会被放宽的项——切换要你显式执行 `luban config box policy …`。
+- 新 edition 的策略只有在**不放宽任何一项**时才应用；否则保留当前策略并列出会被放宽的项——切换要你显式执行 `luban config box --policy …`。
 
 一次升级是新的一代，所以可以回滚。
 

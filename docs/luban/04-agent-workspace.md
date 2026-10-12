@@ -8,7 +8,7 @@ not after you remember to lock it down.
 ## Making one
 
 ```bash
-luban new agent agent-workspace --proxy socks5h://127.0.0.1:7897
+luban new agent --edition agent-workspace --proxy socks5h://127.0.0.1:7897
 luban run agent -- claude
 luban status agent
 ```
@@ -34,7 +34,7 @@ status` lists them. For a kernel of its own, the same environment in a local VM,
 its only network still the proxy:
 
 ```bash
-luban try agent --proxy socks5h://127.0.0.1:7897
+luban enter agent --mode machine --temp
 ```
 
 Your accounts (an API key, a git identity) still say who you are.
@@ -45,7 +45,7 @@ For an agent that may use this machine's network and only needs to be kept from
 your files:
 
 ```bash
-luban config agent policy xim:agent-confined
+luban config agent --policy xim:agent-confined
 ```
 
 ## Keeping it current

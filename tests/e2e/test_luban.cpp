@@ -118,7 +118,7 @@ XTEST(Luban, ANewEnvironmentFromATemplateIsListedAndDescribed,
     EXPECT_NE(empty.out.find("on this host"), std::string::npos) << empty.out;
     EXPECT_NE(empty.out.find("no environments yet"), std::string::npos) << empty.out;
 
-    auto made = luban(home, {"new", "box", "fixture:my-os@1.0.0"}, /*pty=*/true);
+    auto made = luban(home, {"new", "box", "--edition", "fixture:my-os@1.0.0"}, /*pty=*/true);
     ASSERT_FALSE(made.timed_out) << made.transcript();
     ASSERT_EQ(made.exit_code, 0) << made.transcript();
     EXPECT_TRUE(fs::exists(home.dir() / "data/xpkgs/fixture-x-hello/1.0.0/bin/hello"));
@@ -146,7 +146,7 @@ XTEST(Luban, AnAgentIsNeverAskedAndAPersonIsToldTheNearestCommand,
     const auto bin = luban_binary();
     if (!bin) GTEST_SKIP() << "no luban beside the xlings under test (mcpp build -p luban-tool, or LUBAN_BIN)";
     auto home = luban_home("luban-agent", *bin);
-    auto made = luban(home, {"new", "box", "fixture:my-os@1.0.0"});
+    auto made = luban(home, {"new", "box", "--edition", "fixture:my-os@1.0.0"});
     ASSERT_EQ(made.exit_code, 0) << made.transcript();
 
     // Removing asks first. An agent, with nobody to ask and no --yes: exit 2,
@@ -174,7 +174,7 @@ XTEST(Luban, AWorkspaceIsPrivateWhenItIsMadeNotAfter,
     const auto bin = luban_binary();
     if (!bin) GTEST_SKIP() << "no luban beside the xlings under test (mcpp build -p luban-tool, or LUBAN_BIN)";
     auto home = luban_home("luban-ws", *bin);
-    auto made = luban(home, {"new", "agent", "fixture:agent-ws@1.0.0", "--proxy", "socks5h://127.0.0.1:1080"});
+    auto made = luban(home, {"new", "agent", "--edition", "fixture:agent-ws@1.0.0", "--proxy", "socks5h://127.0.0.1:1080"});
     ASSERT_EQ(made.exit_code, 0) << made.transcript();
     // Before anything has entered it: the template's policy, selected and
     // locked, with the proxy as its only network.
@@ -185,4 +185,82 @@ XTEST(Luban, AWorkspaceIsPrivateWhenItIsMadeNotAfter,
     EXPECT_EQ(doc["resolved"]["from"], "fixture:agent-test@1.0.0") << doc.dump();
     EXPECT_EQ(doc["isolation"]["net"], "proxy") << doc.dump();
     EXPECT_EQ(doc["isolation"]["proxy"], "socks5h://127.0.0.1:1080") << doc.dump();
+}
+
+// The default output is the conclusion and the next step (design §5.2): one
+// line for what was made, how to go in, and none of the steps' own lines --
+// those are -v's.
+XTEST(Luban, NewSaysWhatItMadeAndHowToGoInAndNotItsSteps,
+      .area = "luban", .cost = tk::Cost::Medium, .covers = {"LUBAN-OUTPUT"}, .requires_ = {"linux", "xlings-bin"}) {
+    if constexpr (!tk::is_linux) GTEST_SKIP() << "a Luban root is a Linux root";
+    const auto bin = luban_binary();
+    if (!bin) GTEST_SKIP() << "no luban beside the xlings under test";
+    auto home = luban_home("luban-output", *bin);
+    auto made = luban(home, {"new", "box", "--edition", "fixture:my-os@1.0.0"});
+    ASSERT_EQ(made.exit_code, 0) << made.transcript();
+    EXPECT_NE(made.out.find("making box"), std::string::npos) << made.out;
+    EXPECT_NE(made.out.find("luban enter box"), std::string::npos) << made.out;
+    EXPECT_EQ(made.transcript().find("[xlings]"), std::string::npos) << "an xlings step's own line\n" << made.transcript();
+    EXPECT_EQ(made.transcript().find("xlings subos use"), std::string::npos) << "an xlings command as the next step\n"
+                                                                            << made.transcript();
+    auto again = luban(home, {"new", "box2", "--edition", "fixture:my-os@1.0.0", "-v"});
+    ASSERT_EQ(again.exit_code, 0) << again.transcript();
+    EXPECT_GT(again.out.size(), made.out.size()) << "-v shows the steps\n" << again.out;
+    auto json = luban(home, {"--json", "new", "box3", "--edition", "fixture:my-os@1.0.0"});
+    ASSERT_EQ(json.exit_code, 0) << json.transcript();
+    bool result = false;
+    std::istringstream in(json.out);
+    for (std::string line; std::getline(in, line);) {
+        auto j = Json::parse(line, nullptr, false);
+        ASSERT_TRUE(j.is_object()) << "not an event: " << line;
+        result = result || j.contains("result");
+    }
+    EXPECT_TRUE(result) << json.out;
+}
+
+XTEST(Luban, AnEnvironmentsSettingsAreItsAndItsShellIsItsPasswds,
+      .area = "luban", .cost = tk::Cost::Medium, .covers = {"LUBAN-SETTINGS", "LUBAN-SHELL"}, .requires_ = {"linux", "xlings-bin"}) {
+    if constexpr (!tk::is_linux) GTEST_SKIP() << "a Luban root is a Linux root";
+    const auto bin = luban_binary();
+    if (!bin) GTEST_SKIP() << "no luban beside the xlings under test";
+    auto home = luban_home("luban-config", *bin);
+    ASSERT_EQ(luban(home, {"new", "box", "--edition", "fixture:my-os@1.0.0"}).exit_code, 0);
+    auto set = luban(home, {"config", "box", "--mode", "machine", "--persist", "home", "--on-close", "background"});
+    ASSERT_EQ(set.exit_code, 0) << set.transcript();
+    const auto doc = Json::parse(tk::read_file(home.dir() / "config/subos/box/machine.json"));
+    EXPECT_EQ(doc["mode"], "machine");
+    EXPECT_EQ(doc["persist"], "home");
+    EXPECT_EQ(doc["on_close"], "background");
+    auto bad = luban(home, {"config", "box", "--persist", "sometimes"});
+    EXPECT_EQ(bad.exit_code, 2) << bad.transcript();
+    auto shown = luban(home, {"--json", "config", "box"});
+    ASSERT_EQ(shown.exit_code, 0) << shown.transcript();
+    EXPECT_NE(shown.out.find("\"persist\":\"home\""), std::string::npos) << shown.out;
+    // A shell the root does not have is refused with the install that brings it.
+    auto noFish = luban(home, {"config", "box", "--shell", "fish"});
+    EXPECT_NE(noFish.exit_code, 0);
+    EXPECT_NE(noFish.err.find("xlings install fish --subos box"), std::string::npos) << noFish.transcript();
+}
+
+XTEST(Luban, AnExportedEnvironmentIsImportedWithItsStateAndANewPersona,
+      .area = "luban", .cost = tk::Cost::Medium, .covers = {"LUBAN-ARCHIVE"}, .requires_ = {"linux", "xlings-bin"}) {
+    if constexpr (!tk::is_linux) GTEST_SKIP() << "a Luban root is a Linux root";
+    const auto bin = luban_binary();
+    if (!bin) GTEST_SKIP() << "no luban beside the xlings under test";
+    auto home = luban_home("luban-archive-e2e", *bin);
+    ASSERT_EQ(luban(home, {"new", "box", "--edition", "fixture:my-os@1.0.0"}).exit_code, 0);
+    const auto tree = home.dir() / "subos/box/rootfs";
+    ASSERT_TRUE(fs::is_directory(tree / "etc")) << "the fixture made no root";
+    tk::write_file(tree / "root/notes.txt", "mine\n");
+    ASSERT_EQ(luban(home, {"config", "box", "--persist", "home"}).exit_code, 0);
+    const auto file = home.root() / "box.luban";
+    auto exported = luban(home, {"export", "box", file.string()});
+    ASSERT_EQ(exported.exit_code, 0) << exported.transcript();
+    EXPECT_NE(exported.out.find("luban import"), std::string::npos) << exported.out;
+    auto taken = luban(home, {"import", file.string()});
+    EXPECT_EQ(taken.exit_code, 2) << "the name is taken\n" << taken.transcript();
+    auto imported = luban(home, {"import", file.string(), "--name", "copy"});
+    ASSERT_EQ(imported.exit_code, 0) << imported.transcript();
+    EXPECT_EQ(tk::read_file(home.dir() / "subos/copy/rootfs/root/notes.txt"), "mine\n");
+    EXPECT_EQ(Json::parse(tk::read_file(home.dir() / "config/subos/copy/machine.json"))["persist"], "home");
 }

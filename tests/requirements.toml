@@ -945,6 +945,30 @@ status = "required"
 text = "every command writes one operation journal (logs/ops/<date>/<trace>.ndjson) that the processes it runs join under the trace they inherit; credentials never reach it; `self log` lists and shows operations and bundles one without the home's paths or the user's name"
 status = "required"
 
+[LUBAN-PERSIST]
+text = "an environment's persist setting decides what a session keeps of a root's own state: all, only /home, or nothing (a memory overlay, gone when the session ends); a backend without a mount namespace refuses it with the route"
+status = "required"
+
+[LUBAN-SETTINGS]
+text = "an environment's machine settings (mode, persist, desktop, on-close) are checked values in its machine.json; every key another luban wrote survives a change, and a file that cannot be read is an error, never the defaults"
+status = "required"
+
+[LUBAN-ARCHIVE]
+text = "`luban export <n> x.luban` writes the manifest (edition, packages, policy, settings) and the root's own state, links as links, nothing of /usr, no persona; import refuses a path that leaves the environment, an existing name, and a policy looser than the edition's without -y"
+status = "required"
+
+[LUBAN-OUTPUT]
+text = "luban's default output is one line per phase, the conclusion and the next step in luban's own commands; a step's own lines are -v's; --json is one event per line and the result"
+status = "required"
+
+[LUBAN-SHELL]
+text = "an environment's login shell is its passwd's: a root made now gets the best shell its /usr has (fish, bash, else sh), luban config --shell changes it, a shell the root lacks is refused with the install that brings it, and every way in reads the same answer"
+status = "required"
+
+[SUBOS-INSTANCES-APART]
+text = "a sandboxed SubOS shares the home's common part (payloads, indexes, shims) read-only and never another instance: other instances' trees and their config (policy, persona, record) are out of sight; its own config is read-only; a backend that cannot hide them (proot) says so as a degradation and a policy that requires the file-system gate refuses it"
+status = "required"
+
 [ELEVATION-NOBODY-TO-ASK]
 text = "administrator rights are never asked for where nobody can answer (agent mode, no terminal, the background of one): rights that need no question are used, otherwise nothing runs and the command that needs them is named; doctor's repair children run unattended with the null device as input"
 status = "required"

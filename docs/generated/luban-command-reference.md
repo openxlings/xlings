@@ -11,19 +11,21 @@ Levels: `common` is what `luban --help` shows, `more` what `luban help --all` ad
 
 ## `luban`
 
-Luban: environments and the system they run on
+Luban OS: environments, and the machines they run as
 
-Options: `--json` — Machine-readable output; `--agent` — For an agent: plain output, never a question; `-y, --yes` — Answer yes to confirmations; `-v, --verbose` — More detail; `-q, --quiet` — Less output; `-h, --help` — This help; `--version` — The luban version
+Options: `--json` — Machine-readable output: the events and the result; `--agent` — For an agent: plain output, never a question; `-y, --yes` — Answer yes to confirmations; `-v, --verbose` — Each step as well; `-q, --quiet` — Only what failed; `-h, --help` — This help; `--version` — The luban version
 
-## `luban new <name> [edition]` (common)
+## `luban new <name>` (common)
 
-Make an environment (edition: core by default)
+Make an environment
 
-Options: `--from <EDITION>` — The edition, as an option; `--proxy <URL>` — Its network goes only through this SOCKS5h proxy; `--carrier <CARRIER>` — Where it runs: local, wsl2, vz
+Options: `--edition <EDITION>` — nano, tiny, core (default), desktop, agent-workspace, or ns:name[@version]; `--proxy <URL>` — Its network goes only through this SOCKS5h proxy; `--carrier <CARRIER>` — Where it runs: local, wsl2, vz
 
 ## `luban enter <name>` (common)
 
-Go into an environment
+Go into an environment, or boot an image
+
+Options: `--mode <MODE>` — sandbox (this machine's kernel) or machine (its own); default: its setting; `--temp` — Nothing it writes stays; `--display <DISPLAY>` — terminal or window; default: its desktop decides
 
 ## `luban run <name> <command>...` (common)
 
@@ -37,9 +39,15 @@ List the environments
 
 This host, or one environment
 
-## `luban config <name> [key] [value]` (more)
+## `luban config <name>` (more)
 
-Show or set an environment's settings (proxy, tz, policy, allow, mount)
+Show or change an environment's settings
+
+Options: `--mode <MODE>` — sandbox or machine: how `luban enter` starts it; `--persist <WHAT>` — all, home (only /home stays) or none: what a session keeps; `--shell <SHELL>` — Its login shell (fish, bash, sh, or a path); `--desktop <SESSION>` — The desktop it starts, or none; `--on-close <WHAT>` — ask, background or poweroff: closing its window; `--policy <PRESET>` — dev, private, locked, or ns:name; `--proxy <URL>` — Its only network is this SOCKS5h proxy; off for none; `--tz <ZONE>` — utc, proxy, or Area/City; `--allow <GRANT>` — Grant a capability (clipboard, gpu, audio, ...); `--disallow <GRANT>` — Take a grant back; `--mount <HOST[:INSIDE][:ro|rw]>` — Map a host directory into it; `--unmount <INSIDE>` — Remove a mapping; `--fetch <ACTION>` — auto, ask or deny: installing from inside; `--observe <LEVEL>` — off, basic, standard or full
+
+## `luban stop <name>` (more)
+
+Stop a running environment or machine
 
 ## `luban history [name]` (more)
 
@@ -49,7 +57,7 @@ An environment's generations
 
 Move an environment to its edition's newest version
 
-Options: `--to <VERSION>` — This version of the edition; `--dry-run` — Show the plan only; `-y, --yes` — Do not ask
+Options: `--to <VERSION>` — This version of the edition; `--dry-run` — Show the plan only
 
 ## `luban rollback [name]` (more)
 
@@ -59,21 +67,21 @@ Options: `--to <N>` — This generation
 
 ## `luban export <name> <file>` (more)
 
-Make an image: .iso, .img, .qcow2, .tar(.zst|.gz), or a directory
+Write it out: .iso, .img, .qcow2, .tar(.zst), .luban, or a directory
 
-Options: `--format <FORMAT>` — iso, img, qcow2, tar or dir, whatever the name says; `--size <SIZE>` — Disk size (img, qcow2); `--boot <PROFILE>` — How an image boots: generic (machines), virt (VMs), or ns:name
+Options: `--format <FORMAT>` — iso, img, qcow2, tar, luban or dir, whatever the name says; `--size <SIZE>` — Disk size (img, qcow2); `--boot <PROFILE>` — How an image boots: generic (machines), virt (VMs), or ns:name
+
+## `luban import <file>` (more)
+
+Make an environment from a .luban someone exported
+
+Options: `--name <NAME>` — Its name here (default: the one it had)
 
 ## `luban write <source> <device>` (more)
 
 Make a boot drive from an image or an environment
 
 Options: `--serial <SERIAL>` — The drive's serial (required with --agent)
-
-## `luban try <source>` (more)
-
-Boot an environment or an image in a local virtual machine
-
-Options: `--proxy <URL>` — Its only network is this proxy (a private machine); `--boot <PROFILE>` — How it boots (default virt; the root's own kernel when there is none); `--memory <MB>` — Its memory (default 2048); `--nographic` — Its console in this terminal
 
 ## `luban rm <name>` (more)
 

@@ -23,6 +23,9 @@ Implementation linux_landlock() {
     impl.available = [](const Caps& caps, const in::Intent& i, fs::path&) -> std::optional<sp::Unmet> {
         // Only when asked for: it restricts writes and hides nothing, so it
         // never stands in for bwrap on its own.
+        if (i.persist != sp::Persist::All)
+            return sp::Unmet{"persist", "keeping nothing of a session needs bwrap's memory overlay",
+                             "xlings install bwrap", policy::Need::Must};
         if (caps.landlock_abi < 1)
             return sp::Unmet{"backend", "Landlock is not available on this kernel "
                                         "(5.13 or later, with landlock in the LSM list)",

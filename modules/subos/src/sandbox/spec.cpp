@@ -44,11 +44,28 @@ std::string_view kind_name(MountKind k) {
     case MountKind::Proc:    return "proc";
     case MountKind::Dev:     return "dev";
     case MountKind::Dir:     return "dir";
+    case MountKind::TmpOverlay: return "tmp-overlay";
     }
     return "?";
 }
 
 }  // namespace
+
+std::string_view to_string(Persist p) {
+    switch (p) {
+    case Persist::All: return "all";
+    case Persist::Home: return "home";
+    case Persist::None: return "none";
+    }
+    return "all";
+}
+
+std::optional<Persist> persist_from_string(std::string_view s) {
+    if (s == "all") return Persist::All;
+    if (s == "home") return Persist::Home;
+    if (s == "none") return Persist::None;
+    return std::nullopt;
+}
 
 nlohmann::json SandboxSpec::describe() const {
     nlohmann::json j;

@@ -20,6 +20,7 @@ and AI agents talk to xlings over standard IO. The protocol is **1.8**, over NDJ
 | 1.6 | 2026.10.9.1 | `subos_exec_output` sends separate stdout / stderr byte chunks while the command runs; a chunk that is not valid UTF-8 is `encoding: base64`; a cancel reaps the child |
 | 1.7 | 2026.10.10.2 | added: `install_packages`'s `extract` progress event; `hook` events first after 10 s, then every 30 s (§6.1.2); an unpacking write failure is `E_DISK_FULL` or `E_PERMISSION` by cause; a node whose dependency failed reports that cause and runs no hook (§6.1.4) |
 | 1.8 | 2026.10.12.2 | added: `remove_package`'s `older_than` and `dry_run`, and the `remove_plan` of a bulk removal (§8.2); `remove_blocked`'s per-dependent `reason` (§8.1); a node whose dependency failed is an `install_skipped` data event, and one `error` per failed dependency names them all (§6.1.4) |
+| 1.9 | 2026.10.13.1 | added: `subos_command` -- any `xlings subos` subcommand with its log lines, progress, data and errors as events (what luban renders itself) |
 
 A minor version only adds: a 1.0 client reads 1.1 output unchanged. A client
 **probes for a capability** (for example, whether `install_targets` appears)
@@ -464,6 +465,7 @@ Sent after 5 s of silence: the process is alive.
 | `create_subos` | create a SubOS | yes |
 | `switch_subos` | switch the active SubOS | yes |
 | `remove_subos` | remove a SubOS | yes |
+| `subos_command` | run one `xlings subos` subcommand (`argv` after `subos`); its log lines, progress, data and errors are the events; `yes` answers its confirmation | yes |
 | `subos_exec` | run one command in a SubOS from outside it, as argv (§10) | yes |
 | `subos_start` | start a SubOS session without a terminal, for a series of `subos_exec` calls (`ttl` ends it after that long idle) | no |
 | `subos_stop` | end a SubOS's running session; succeeds when none is running | no |

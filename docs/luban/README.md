@@ -40,7 +40,7 @@ machine's boot.
 | the private agent workspace | yes | yes | — | through `wsl2` |
 | images: ISO, drive, qcow2, tar | yes | yes | — | — |
 | boot: BIOS and UEFI | yes | UEFI | — | — |
-| `luban try` (a local VM) | yes | yes (emulated without KVM) | — | — |
+| `luban enter --mode machine` (a local VM) | yes | yes (emulated without KVM) | — | — |
 | boot profiles | `generic` (machines), `virt` (VMs) | `virt` | — | — |
 
 On the host, Linux needs nothing but its kernel and, on Ubuntu 23.10 and later,

@@ -163,7 +163,7 @@ std::expected<std::vector<std::string>, std::string> apply_sysusers(const fs::pa
         add_group(name, uid);
         users.emplace_back(name, std::format("{}:x:{}:{}:{}:{}:{}\n", name, uid, uid, gecos, home, shell));
     };
-    add_user("root", "0", "root", "/root", "/bin/sh");
+    add_user("root", "0", "root", "/root", best_shell(usr));
     auto confDirectory = factory_directory(usr / "lib" / "sysusers.d");
     if (!confDirectory) return std::unexpected(confDirectory.error());
     if (*confDirectory) {
@@ -196,6 +196,58 @@ std::expected<std::vector<std::string>, std::string> apply_sysusers(const fs::pa
     for (const auto& name : *groupNames) added.push_back("group " + name);
     for (const auto& name : *userNames) added.push_back("user " + name);
     return added;
+}
+
+std::string best_shell(const fs::path& usr) {
+    for (const auto* name : {"fish", "bash"}) {
+        std::error_code ec;
+        if (fs::symlink_status(usr / "bin" / name, ec).type() != fs::file_type::not_found)
+            return std::string("/usr/bin/") + name;
+    }
+    return "/bin/sh";
+}
+
+std::string login_shell(const fs::path& root, std::string_view user) {
+    std::ifstream in(root / "etc" / "passwd");
+    for (std::string line; std::getline(in, line);) {
+        std::vector<std::string_view> f;
+        for (std::string_view rest = line;;) {
+            const auto colon = rest.find(':');
+            f.push_back(rest.substr(0, colon));
+            if (colon == std::string_view::npos) break;
+            rest.remove_prefix(colon + 1);
+        }
+        if (f.size() < 7 || f[0] != user || f[6].empty() || f[6].front() != '/') continue;
+        std::error_code ec;
+        if (fs::symlink_status(root / fs::path(std::string(f[6])).relative_path(), ec).type() != fs::file_type::not_found)
+            return std::string(f[6]);
+        break;  // named but not there (a package removed): the fallback below
+    }
+    return "/bin/sh";
+}
+
+std::expected<void, std::string> set_login_shell(const fs::path& etc, std::string_view user, std::string_view shell) {
+    if (shell.empty() || shell.front() != '/' || shell.find(':') != std::string_view::npos || shell.find('\n') != std::string_view::npos)
+        return std::unexpected(std::format("'{}' is not a shell's path", shell));
+    const auto file = etc / "passwd";
+    std::error_code ec;
+    if (fs::is_symlink(file, ec) || !fs::is_regular_file(file, ec))
+        return std::unexpected(file.string() + " is not the root's own file");
+    std::ifstream in(file);
+    std::string out;
+    bool found = false;
+    for (std::string line; std::getline(in, line);) {
+        const auto first = line.find(':');
+        if (first != std::string::npos && std::string_view(line).substr(0, first) == user
+            && std::ranges::count(line, ':') == 6) {
+            line = line.substr(0, line.rfind(':') + 1) + std::string(shell);
+            found = true;
+        }
+        out += line + "\n";
+    }
+    if (!found) return std::unexpected(std::format("no user '{}' in {}", user, file.string()));
+    platform::write_file_atomic(file.string(), out);
+    return {};
 }
 
 }  // namespace xlings::subos::root_etc

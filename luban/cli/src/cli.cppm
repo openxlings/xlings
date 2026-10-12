@@ -1,11 +1,11 @@
-// luban: the Luban OS management tool (Luban design §B3).
+// luban: the Luban OS command (Luban OS architecture design §6).
 //
-// One noun -- an environment -- and a handful of verbs, shown by level (help
-// lists the common ones). Everything an environment IS stays in xlings: each
-// command here is an xlings command, run on the same terminal (so there is
-// one implementation, and `--help` names the xlings command for whoever
-// needs more). What is luban's own: where you are, the overview, the
-// edition names, the image formats, and the machine (stage-0, boot).
+// One noun -- an environment -- and the verbs on it, shown by level (help
+// lists the common ones). The operations are luban.service's; this module is
+// the command tree and the terminal's rendering of their events: one line per
+// phase, the conclusion and the next step, `-v` for the steps, `--json` for the
+// events themselves. A machine (an environment booted with its own kernel) is
+// luban.vm's.
 export module luban.cli;
 
 import std;
@@ -20,24 +20,22 @@ enum class Place { Host, Environment, Machine };
 Place where();
 std::string_view to_string(Place p);
 
-// `core` -> `subos:luban-core`; a full reference (`ns:name[@v]`) as given.
-std::string edition_ref(std::string_view edition);
-
 // Where a Luban edition (a Linux root) runs from this host when no carrier is
 // named: empty on Linux (here), wsl2 on Windows, vz on macOS.
 std::string default_carrier();
 
-// What `luban export` writes, from the file name: iso, img, qcow2, tar, dir;
-// empty when the name says nothing it knows.
-std::string export_format(std::string_view file);
-
-// The xlings command a luban command is. `args` is argv after `luban`, the
-// global options already taken out. A usage error is the message.
-std::expected<std::vector<std::string>, std::string> to_xlings(std::span<const std::string> args);
-
-// The xlings this luban drives: $LUBAN_XLINGS, next to this binary,
-// $XLINGS_HOME/bin, then PATH.
-std::filesystem::path xlings_path();
+// What a luban command line asks for, before anything runs: the command, its
+// positional words and its options (`--x v`, `--x=v`, flags). A usage error is
+// the message.
+struct Parsed {
+    std::string command;
+    std::vector<std::string> words;
+    std::vector<std::pair<std::string, std::string>> options;   // in order; a flag's value is ""
+    std::vector<std::string> after;                             // after `--`
+    std::optional<std::string> option(std::string_view name) const;
+    bool flag(std::string_view name) const;
+};
+std::expected<Parsed, std::string> parse(std::span<const std::string> args);
 
 // luban is released with the xlings it drives: the same date version
 // (YYYY.M.D.N). tests/unit/test_luban_cli.cpp holds the two equal.
@@ -55,9 +53,6 @@ struct Drive {
 };
 Drive inspect_drive(const std::filesystem::path& dev, const std::filesystem::path& sys = "/sys",
                     const std::filesystem::path& mounts = "/proc/self/mounts");
-
-// The lowest xlings interface protocol this luban speaks.
-inline constexpr std::string_view kMinProtocol = "1.6";
 
 int run(int argc, char* argv[]);
 
