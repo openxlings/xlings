@@ -59,6 +59,12 @@ public:
     // The Host key (Ctrl+Alt, or Ctrl+Option on macOS) pressed and released alone.
     bool host_key() const { return host_key_; }
     bool close_requested() const { return close_requested_; }
+    // Files dropped onto the window this frame.
+    const std::vector<std::filesystem::path>& dropped() const { return dropped_; }
+    // The system's dialog for one file to open (`pattern`: "luban", the
+    // extensions it shows); its answer, once given, by picked().
+    void pick_file(const std::string& title, const std::string& filter_name, const std::string& pattern);
+    std::optional<std::filesystem::path> picked();
     void clear_close_request() { close_requested_ = false; }
 
     // A texture for a remote surface's pixels (BGRA), drawn with imgui's Image.
@@ -84,6 +90,7 @@ public:
     void inject_pointer(float x, float y);
     void inject_button(float x, float y, int button, bool down);
     void inject_close();
+    void inject_drop(const std::filesystem::path& file);
     void set_size(int width, int height);
     std::string title() const;
 
@@ -95,6 +102,7 @@ private:
     std::vector<KeyPress> keys_;
     bool host_key_ { false };
     bool close_requested_ { false };
+    std::vector<std::filesystem::path> dropped_;
     void* ui_font_ { nullptr };
     void* mono_font_ { nullptr };
     float mono_size_ { 15.0f };

@@ -139,6 +139,10 @@ struct Window::Impl {
     bool grabbed { false };
     SDL_Keymod injected_mods { SDL_KMOD_NONE };
     std::deque<std::string> injected_text;      // an SDL text event points at its text until it is taken
+    std::deque<std::string> injected_drops;     // likewise a drop event's file name
+    std::mutex picking;                         // the file dialog answers on another thread
+    std::optional<std::filesystem::path> picked;
+    std::string filter_name, filter_pattern;    // alive while the dialog is
 };
 
 std::expected<std::unique_ptr<Window>, std::string> Window::open(const Options& o) {
@@ -201,6 +205,7 @@ void Window::wake() {
 bool Window::begin_frame(int timeout_ms) {
     events_.clear();
     keys_.clear();
+    dropped_.clear();
     host_key_ = false;
     auto& im = *impl_;
     SDL_Event e;
@@ -215,6 +220,9 @@ bool Window::begin_frame(int timeout_ms) {
             break;
         case SDL_EVENT_WINDOW_RESIZED:
             events_.push_back(opensal::Resized{{static_cast<std::uint32_t>(e.window.data1), static_cast<std::uint32_t>(e.window.data2)}});
+            break;
+        case SDL_EVENT_DROP_FILE:
+            if (e.drop.data) dropped_.emplace_back(std::filesystem::path(reinterpret_cast<const char8_t*>(e.drop.data)));
             break;
         case SDL_EVENT_WINDOW_DISPLAY_SCALE_CHANGED: {
             const float scale = SDL_GetWindowDisplayScale(im.window);
@@ -412,6 +420,46 @@ void Window::inject_button(float x, float y, int button, bool down) {
     e.button.x = x;
     e.button.y = y;
     SDL_PushEvent(&e);
+}
+
+void Window::inject_drop(const std::filesystem::path& file) {
+    auto& im = *impl_;
+    im.injected_drops.emplace_back(file.string());
+    if (im.injected_drops.size() > 16) im.injected_drops.pop_front();
+    SDL_Event e{};
+    e.type = SDL_EVENT_DROP_FILE;
+    e.drop.windowID = SDL_GetWindowID(im.window);
+    e.drop.data = im.injected_drops.back().c_str();
+    SDL_PushEvent(&e);
+}
+
+void Window::pick_file(const std::string& title, const std::string& filter_name, const std::string& pattern) {
+    auto& im = *impl_;
+    im.filter_name = filter_name;
+    im.filter_pattern = pattern;
+    static SDL_DialogFileFilter filter;
+    filter = {im.filter_name.c_str(), im.filter_pattern.c_str()};
+    SDL_PropertiesID props = SDL_CreateProperties();
+    SDL_SetPointerProperty(props, SDL_PROP_FILE_DIALOG_FILTERS_POINTER, &filter);
+    SDL_SetNumberProperty(props, SDL_PROP_FILE_DIALOG_NFILTERS_NUMBER, 1);
+    SDL_SetPointerProperty(props, SDL_PROP_FILE_DIALOG_WINDOW_POINTER, im.window);
+    SDL_SetStringProperty(props, SDL_PROP_FILE_DIALOG_TITLE_STRING, title.c_str());
+    SDL_ShowFileDialogWithProperties(SDL_FILEDIALOG_OPENFILE, [](void* data, const char* const* files, int) {
+        auto* w = static_cast<Window*>(data);
+        {
+            std::lock_guard l(w->impl_->picking);
+            w->impl_->picked = files && files[0] ? std::optional<std::filesystem::path>(std::filesystem::path(
+                                                       reinterpret_cast<const char8_t*>(files[0])))
+                                                 : std::optional<std::filesystem::path>(std::filesystem::path{});
+        }
+        w->wake();
+    }, this, props);
+    SDL_DestroyProperties(props);
+}
+
+std::optional<std::filesystem::path> Window::picked() {
+    std::lock_guard l(impl_->picking);
+    return std::exchange(impl_->picked, std::nullopt);
 }
 
 void Window::inject_close() {

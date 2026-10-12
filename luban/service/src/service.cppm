@@ -32,6 +32,18 @@ struct Context {
 std::string edition_ref(std::string_view edition);
 std::span<const std::string_view> official_editions();
 
+// What the index says of an edition: whether it is there, its status, the
+// architectures it is built for, its description and latest version.
+struct EditionAvailability {
+    bool listed { false };
+    std::string status;
+    std::vector<std::string> archs;
+    std::string description;
+    std::string latest;
+};
+// An error only when the index could not be asked; not listed is a value.
+std::expected<EditionAvailability, std::string> edition_availability(const Context& c, std::string_view edition);
+
 struct Environment {
     std::string name;
     std::string kind;              // root | view

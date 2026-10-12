@@ -58,18 +58,30 @@ between frames with input injected as SDL delivers a person's:
 - `resize W H`, `close`
 - `wait <view>`, `waitfor <path> <value>`, `expect <path> <value>`: the
   state, where every named control was drawn included
+- `see [<n>s] <text>`: until the text is shown (a console's lines, a job, a
+  notice)
+- `commit <text>` (as an input method commits it), `clipboard <text>` (the
+  host's clipboard), `drop <file>` (dropped on the window)
 - `screenshot <file>` (`.ppm` to read, `.bmp` to look at)
 
 `--desktop-exec <program>` shows a program speaking opensal.wire on its
 stdio as a desktop, so a desktop's drawing and input are tested without a
-machine. The tests check:
+machine; xdesk runs that way with a small Wayland client (Python, the plain
+wire) that fills its window with one colour and reports the text and the
+clipboard it was given. The tests run under SDL's software renderer, the one
+a machine without a GPU has. They check:
 
 - what can be decided: every view reached by keys and pointer;
 - the highlight following the choice;
 - every control on screen, apart from the others and big enough to hit, at
   three sizes in English and Chinese;
 - a desktop's pixels, its input in its own coordinates, and its size;
-- what moves changing between frames.
+- what moves changing between frames;
+- **a first-time user, for real** (`linux-luban-os-first-use`, the release
+  client, network): the quick start makes a system, its console opens and runs
+  what is typed; an exported system is imported and has what it carried. On
+  macOS and Windows the window's own tests run, and the quick start says what
+  that computer can do before anything is tried.
 
 **By eye, key frames.** Proportion, hierarchy, density and finish are judged
 by a person. The tests keep every key frame in

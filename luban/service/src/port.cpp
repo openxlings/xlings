@@ -47,7 +47,11 @@ std::optional<Event> event_of(const nlohmann::json& j) {
     if (kind == "progress")
         return Event{.kind = Event::Kind::Progress, .phase = j.value("phase", ""), .text = j.value("message", ""),
                      .percent = j.contains("percent") && j["percent"].is_number() ? j["percent"].get<double>() : -1.0};
-    if (kind == "error") return error(j.value("message", ""), j.value("hint", ""));
+    if (kind == "error") {
+        auto e = error(j.value("message", ""), j.value("hint", ""));
+        e.code = j.value("code", "");
+        return e;
+    }
     if (kind == "data") {
         Event e{.kind = Event::Kind::Data, .data_kind = j.value("dataKind", "")};
         if (auto p = j.find("payload"); p != j.end()) e.data = *p;

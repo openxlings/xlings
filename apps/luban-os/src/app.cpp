@@ -4,9 +4,12 @@ import std;
 import luban.desktop.imgui;
 import xlings.subos.home_view;
 import xlings.subos.policy_store;
+import xlings.subos.policy;
+import luban.service.archive;
 import xlings.libs.json;
 import xlings.observe;
 import xlings.platform;
+import xlings.platform.target;
 import opensal;
 import luban.service;
 import luban.vm;
@@ -88,20 +91,71 @@ fs::path home_dir_() {
     return ".xlings";
 }
 
-enum class View { Launcher, QuickStart, Job, Console, Off, Admin, Desktop };
+enum class View { Launcher, QuickStart, Job, Console, Off, Admin, Desktop, Import };
 
+// The quick start's systems: Luban's official editions, in two groups. What
+// each is, in both languages, ships with Luban; whether it can be had here
+// (published, for this machine) the index answers.
 struct Edition {
-    std::string_view name;
+    std::string_view name;                  // `luban new --edition`
+    bool desktop;                           // the desktop group
     std::string_view title_en, title_zh;
-    std::string_view about_en, about_zh;
+    std::string_view about_en, about_zh;    // one line
+    std::string_view detail_en, detail_zh;  // what is in it, and for whom
+    std::string_view badge_en, badge_zh;
+    bool goes_in;                           // there is something to log into
 };
 
-constexpr std::array<Edition, 4> kQuick{{
-    {"nano", "nano", "nano", "the smallest system: a shell", "最小的系统：一个 shell"},
-    {"tiny", "tiny", "tiny", "a shell and the basic tools", "shell 与基础工具"},
-    {"core", "core", "core", "a development system", "开发用的系统"},
-    {"desktop", "desktop", "desktop", "a graphical desktop", "图形桌面"},
+constexpr std::array<Edition, 5> kQuick{{
+    {"nano", false, "nano", "nano", "xlings and luban only", "只有 xlings 与 luban",
+     "The base an edition of your own is built on. It has no shell: there is nothing to log into.",
+     "自己定制 edition 的基础。没有 shell：没有可以登录的界面。", "base", "基础", false},
+    {"tiny", false, "tiny", "tiny", "a shell and the basic tools", "shell 与基础工具",
+     "BusyBox and xlings: small and quick to make; add what you need with xlings install.",
+     "BusyBox 与 xlings：小，创建快；需要什么用 xlings install 添加。", "stable", "稳定", true},
+    {"core", false, "core", "core", "a console to develop in", "开发用的控制台",
+     "glibc, bash, git, curl and xlings: a console for development.",
+     "glibc、bash、git、curl 与 xlings：做开发的控制台。", "stable", "稳定", true},
+    {"desktop", true, "Classic desktop", "经典桌面", "windows side by side, a panel, a launcher", "窗口并排、面板、启动器",
+     "Everything of core, a desktop, and the tools people reach for: terminals, editors, node, python, git, agents.",
+     "core 的一切、一个桌面，以及常用的工具：终端、编辑器、node、python、git、agents。", "preview · recommended", "preview · 推荐", true},
+    {"desktop-xdesk", true, "xdesk canvas", "xdesk 画布", "an infinite canvas to place windows on", "在无限画布上摆放窗口",
+     "The same environment on xdesk's canvas: pan, zoom, see everything at once. To explore.",
+     "同样的环境，桌面是 xdesk 的画布：平移、缩放、一眼看全。供探索。", "explore", "探索", true},
 }};
+
+// What the index said of an edition (asked once, in the background).
+struct Availability {
+    bool known { false };       // answered
+    bool listed { true };       // in the index
+    bool here { true };         // built for this machine
+    std::string arch;
+};
+
+// An archive about to be imported: what it is, read before anything is made.
+struct ImportPreview {
+    fs::path file;
+    std::string error;          // it could not be read
+    std::string edition;
+    std::size_t packages { 0 };
+    std::string preset;
+    std::vector<std::string> wider;     // what it may do beyond a new environment's default
+    char name[64] = {};
+    bool confirmed { false };
+};
+
+// A character onto UTF-8 text.
+void append_utf8_(std::string& out, char32_t ch) {
+    if (ch < 0x80) out += static_cast<char>(ch);
+    else if (ch < 0x800) { out += static_cast<char>(0xC0 | (ch >> 6)); out += static_cast<char>(0x80 | (ch & 0x3F)); }
+    else if (ch < 0x10000) {
+        out += static_cast<char>(0xE0 | (ch >> 12)); out += static_cast<char>(0x80 | ((ch >> 6) & 0x3F));
+        out += static_cast<char>(0x80 | (ch & 0x3F));
+    } else {
+        out += static_cast<char>(0xF0 | (ch >> 18)); out += static_cast<char>(0x80 | ((ch >> 12) & 0x3F));
+        out += static_cast<char>(0x80 | ((ch >> 6) & 0x3F)); out += static_cast<char>(0x80 | (ch & 0x3F));
+    }
+}
 
 struct App {
     fs::path home = home_dir_();
@@ -121,6 +175,8 @@ struct App {
     host::Window::Texture texture;
     opensal::Size desktop_size;        // what the window shows it at
     bool desktop_text { false };       // the desktop takes text (its caret is set)
+    std::string ended_why;             // a failed session's last lines (the off screen shows them)
+    int ended_code { 0 };
     bool paste_on_open { true };       // the host's clipboard, given once it shows
     std::string pasted;                // what crossed last (not sent back)
     std::optional<std::chrono::steady_clock::time_point> resize_at;
@@ -131,6 +187,12 @@ struct App {
     std::string notice;
     // Quick start
     char new_name[64] = {};
+    std::map<std::string, Availability> available;     // by edition, from the index
+    std::unique_ptr<std::jthread> availability_job;
+    std::mutex available_m;
+    std::optional<ImportPreview> import;
+    std::string quick_said;            // the quick start's line under the cards
+    bool quick_can_make { true };
     std::string auto_name;             // what the name field was given, until the person types
     int new_edition { 2 };
     int new_mode { 0 };
@@ -349,24 +411,29 @@ void launcher_(App& a) {
     const float listWidth = std::min(560.0f, ImGui::GetWindowWidth() - 80);
     ImGui::SetCursorPosX((ImGui::GetWindowWidth() - listWidth) / 2);
     ImGui::BeginChild("systems", ImVec2(listWidth, ImGui::GetWindowHeight() * 0.5f));
-    const int rows = static_cast<int>(a.systems.size()) + 1;
+    // The systems, then a new one, then one from a file.
+    const int rows = static_cast<int>(a.systems.size()) + 2;
     const float lineH = ImGui::GetTextLineHeight();
     for (int i = 0; i < rows; ++i) {
-        const bool last = i == rows - 1;
+        const bool importing = i == rows - 1, last = i == rows - 2;
         ImGui::PushID(i);
         const bool picked = ImGui::Selectable("##row", a.selected == i, 0, ImVec2(0, 36));
-        mark_(a, last ? std::string("row:new") : "row:" + a.systems[i].name);
+        mark_(a, importing ? std::string("row:import") : last ? std::string("row:new") : "row:" + a.systems[i].name);
         if (picked) {
             a.selected = i;
             a.countdown_until.reset();
-            if (last) a.view = View::QuickStart;
+            if (importing) a.window->pick_file(std::string(tr("Import a Luban system", "导入 Luban 系统")), "Luban", "luban");
+            else if (last) a.view = View::QuickStart;
             else a.enter(a.systems[i].name);
         }
         const auto mn = ImGui::GetItemRectMin(), mx = ImGui::GetItemRectMax();
         const float y = (mn.y + mx.y - lineH) / 2;
         auto* dl = ImGui::GetWindowDrawList();
         const ImU32 text = ImGui::GetColorU32(ImGuiCol_Text), dim = ImGui::GetColorU32(ImGuiCol_TextDisabled);
-        if (last) {
+        if (importing) {
+            const std::string label = std::string("↓  ") + std::string(tr("Import from a file…", "从文件导入…"));
+            dl->AddText(ImVec2(mn.x + 16, y), dim, label.c_str());
+        } else if (last) {
             const std::string label = std::string("+  ") + std::string(tr("New system", "新系统"));
             dl->AddText(ImVec2(mn.x + 16, y), dim, label.c_str());
         } else {
@@ -394,37 +461,120 @@ void launcher_(App& a) {
     ImGui::End();
 }
 
+// Asks the index, once, what of each edition can be had here.
+void ask_availability_(App& a) {
+    if (a.availability_job) return;
+    auto* app = &a;
+    a.availability_job = std::make_unique<std::jthread>([app, ctx = a.ctx] {
+        const std::string arch(platform::build_arch());
+        for (const auto& e : kQuick) {
+            Availability v{.known = true, .arch = arch};
+            if (auto got = service::edition_availability(ctx, e.name)) {
+                v.listed = got->listed;
+                v.here = !got->listed || got->archs.empty() || std::ranges::find(got->archs, arch) != got->archs.end();
+            }   // the index could not be asked: offered, and making it says why
+            std::lock_guard l(app->available_m);
+            app->available[std::string(e.name)] = v;
+        }
+        if (app->window) app->window->wake();
+    });
+}
+
+// Why this edition cannot be made here, or nothing.
+std::string unavailable_(App& a, const Edition& e) {
+    if constexpr (!platform::is_linux)
+        return std::string(tr("Luban systems are Linux systems: they run on a Linux computer.",
+                              "Luban 的系统是 Linux 系统：在 Linux 电脑上运行。"));
+    std::lock_guard l(a.available_m);
+    const auto it = a.available.find(std::string(e.name));
+    if (it == a.available.end() || !it->second.known) return {};
+    if (!it->second.listed) return std::string(tr("Not published yet.", "尚未发布。"));
+    if (!it->second.here)
+        return std::vformat(tr("Not built for {} yet.", "尚未提供 {} 版本。"), std::make_format_args(it->second.arch));
+    return {};
+}
+
+// A card: drawn by hand so a title, a badge and a line can sit apart.
+bool card_(App& a, const Edition& e, float width, float height, bool chosen, bool usable) {
+    ImGui::PushID(e.name.data());
+    const bool clicked = ImGui::InvisibleButton("card", ImVec2(width, height));
+    mark_(a, "card:" + std::string(e.name));
+    const auto mn = ImGui::GetItemRectMin(), mx = ImGui::GetItemRectMax();
+    auto* dl = ImGui::GetWindowDrawList();
+    const bool hover = ImGui::IsItemHovered();
+    const ImU32 fill = chosen ? ImGui::GetColorU32(ImGuiCol_Header) : hover ? IM_COL32(48, 54, 66, 255) : IM_COL32(36, 40, 50, 255);
+    dl->AddRectFilled(mn, mx, fill, 10);
+    if (chosen) dl->AddRect(mn, mx, ImGui::GetColorU32(ImGuiCol_HeaderActive), 10, 0, 2.0f);
+    const ImU32 text = usable ? ImGui::GetColorU32(ImGuiCol_Text) : ImGui::GetColorU32(ImGuiCol_TextDisabled);
+    const ImU32 dim = ImGui::GetColorU32(ImGuiCol_TextDisabled);
+    auto* font = ImGui::GetFont();
+    const float size = ImGui::GetFontSize();
+    dl->AddText(font, size * 1.2f, ImVec2(mn.x + 12, mn.y + 10), text, std::string(tr(e.title_en, e.title_zh)).c_str());
+    const std::string badge(tr(e.badge_en, e.badge_zh));
+    const ImU32 badge_color = e.badge_en.starts_with("preview") ? IM_COL32(110, 170, 255, 255)
+                              : e.badge_en == "explore"          ? IM_COL32(200, 150, 255, 255)
+                                                                 : dim;
+    dl->AddText(font, size * 0.85f, ImVec2(mn.x + 12, mn.y + 14 + size * 1.2f), badge_color, badge.c_str());
+    dl->AddText(font, size * 0.95f, ImVec2(mn.x + 12, mn.y + 22 + size * 2.1f), text, std::string(tr(e.about_en, e.about_zh)).c_str(),
+                nullptr, width - 24);
+    ImGui::PopID();
+    return clicked;
+}
+
 void quick_start_(App& a) {
     begin_full_("quick");
-    // The form is about 420 pixels tall: centred, a little above the middle.
-    ImGui::SetCursorPosY(std::max(24.0f, (ImGui::GetWindowHeight() - 420.0f) * 0.42f));
+    ask_availability_(a);
+    const float W = ImGui::GetWindowWidth(), H = ImGui::GetWindowHeight();
+    // About 470 pixels of form: centred, a little above the middle.
+    ImGui::SetCursorPosY(std::max(16.0f, (H - 470.0f) * 0.45f));
     center_text_(tr("Welcome to Luban OS", "欢迎使用 Luban OS"), 1.6f);
-    center_text_(tr("Pick a system: one click makes it and goes in", "选一个系统，点一下就创建并进入"));
-    ImGui::Dummy(ImVec2(0, 20));
-    const float card = 180, gap = 16;
-    const float total = card * kQuick.size() + gap * (kQuick.size() - 1);
-    ImGui::SetCursorPosX((ImGui::GetWindowWidth() - total) / 2);
-    for (std::size_t i = 0; i < kQuick.size(); ++i) {
-        if (i) ImGui::SameLine(0, gap);
-        const auto& e = kQuick[i];
-        ImGui::PushID(static_cast<int>(i));
-        // The chosen card: a quiet fill and an accent edge, its text as readable as the others'.
-        const bool chosen = a.new_edition == static_cast<int>(i);
-        if (chosen) ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_Header));
-        const auto text = std::format("{}\n\n{}", tr(e.title_en, e.title_zh), tr(e.about_en, e.about_zh));
-        if (ImGui::Button(text.c_str(), ImVec2(card, 120))) a.new_edition = static_cast<int>(i);
-        mark_(a, "card:" + std::string(e.name));
-        if (chosen) {
-            ImGui::PopStyleColor();
-            ImGui::GetWindowDrawList()->AddRect(ImGui::GetItemRectMin(), ImGui::GetItemRectMax(),
-                                                ImGui::GetColorU32(ImGuiCol_HeaderActive), ImGui::GetStyle().FrameRounding, 0, 2.0f);
-        }
-        ImGui::PopID();
+    center_text_(tr("Pick a system: a console to shape yourself, or a desktop ready to use",
+                    "选一个系统：自己定制的控制台，或开箱即用的桌面"));
+    if constexpr (!platform::is_linux) {
+        // On a Mac or a PC: said first, not discovered by a failure.
+        ImGui::Dummy(ImVec2(0, 6));
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.78f, 0.4f, 1));
+        center_text_(tr("This computer cannot run Luban systems yet: they are Linux systems and run on a Linux computer.",
+                        "这台电脑还不能运行 Luban 系统：它们是 Linux 系统，在 Linux 电脑上运行。"));
+        ImGui::PopStyleColor();
     }
-    ImGui::Dummy(ImVec2(0, 16));
+    ImGui::Dummy(ImVec2(0, 14));
+    // Two groups of cards, as wide as the window allows.
+    const float gap = 12, group_gap = 28;
+    const float card = std::clamp((W - 48 - 4 * gap - group_gap) / 5, 120.0f, 176.0f), card_h = 112;
+    const float total = 5 * card + 3 * gap + group_gap;
+    const float x0 = (W - total) / 2;
+    const float label_y = ImGui::GetCursorPosY();
+    ImGui::SetCursorPos(ImVec2(x0, label_y));
+    ImGui::TextDisabled("%s", std::string(tr("Console — small, yours to shape", "控制台 — 精简，自己定制")).c_str());
+    ImGui::SetCursorPos(ImVec2(x0 + 3 * (card + gap) - gap + group_gap, label_y));
+    ImGui::TextDisabled("%s", std::string(tr("Desktop — ready to use", "桌面 — 开箱即用")).c_str());
+    const float cards_y = label_y + ImGui::GetTextLineHeight() + 8;
+    for (std::size_t i = 0; i < kQuick.size(); ++i) {
+        const auto& e = kQuick[i];
+        const float x = x0 + static_cast<float>(i) * (card + gap) + (e.desktop ? group_gap - gap : 0);
+        ImGui::SetCursorPos(ImVec2(x, cards_y));
+        if (card_(a, e, card, card_h, a.new_edition == static_cast<int>(i), unavailable_(a, e).empty()))
+            a.new_edition = static_cast<int>(i);
+    }
+    ImGui::SetCursorPosY(cards_y + card_h + 12);
+    // The chosen one: what is in it, or why it cannot be made here.
+    const auto& chosen = kQuick[static_cast<std::size_t>(a.new_edition)];
+    const auto why_not = unavailable_(a, chosen);
+    {
+        const float width = std::min(total, W - 48);
+        ImGui::SetCursorPosX((W - width) / 2);
+        ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + width);
+        if (!why_not.empty()) ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.4f, 1), "%s", why_not.c_str());
+        else ImGui::TextDisabled("%s", std::string(tr(chosen.detail_en, chosen.detail_zh)).c_str());
+        ImGui::PopTextWrapPos();
+        a.quick_said = why_not.empty() ? std::string(tr(chosen.detail_en, chosen.detail_zh)) : why_not;
+        a.quick_can_make = why_not.empty();
+    }
+    ImGui::Dummy(ImVec2(0, 8));
     // The name follows the edition until the person types one of their own.
     if (a.new_name[0] == 0 || a.auto_name == a.new_name) {
-        const auto base = std::string(kQuick[a.new_edition].name);
+        const auto base = std::string(chosen.name);
         for (int k = 1; k < 100; ++k) {
             const auto candidate = std::format("{}-{}", base, k);
             if (std::ranges::none_of(a.systems, [&](const auto& s) { return s.name == candidate; })) {
@@ -435,7 +585,7 @@ void quick_start_(App& a) {
         }
     }
     // A form row: its label on the left, the field, all of it centred.
-    const float labelWidth = 90, fieldWidth = 260, rowX = (ImGui::GetWindowWidth() - labelWidth - fieldWidth) / 2;
+    const float labelWidth = 90, fieldWidth = 260, rowX = (W - labelWidth - fieldWidth) / 2;
     auto label = [&](std::string_view text) {
         ImGui::SetCursorPosX(rowX);
         ImGui::AlignTextToFramePadding();
@@ -455,31 +605,180 @@ void quick_start_(App& a) {
         ImGui::Combo("##mode", &a.new_mode, modes, 2);
         mark_(a, "mode");
     }
-    ImGui::Dummy(ImVec2(0, 12));
-    ImGui::SetCursorPosX((ImGui::GetWindowWidth() - 200) / 2);
-    const bool make = ImGui::Button(std::string(tr("Make it and go in", "创建并进入")).c_str(), ImVec2(200, 40));
+    ImGui::Dummy(ImVec2(0, 10));
+    ImGui::SetCursorPosX((W - 200) / 2);
+    ImGui::BeginDisabled(!why_not.empty());
+    const auto make_label = chosen.goes_in ? tr("Make it and go in", "创建并进入") : tr("Make it", "创建");
+    const bool make = ImGui::Button(std::string(make_label).c_str(), ImVec2(200, 40));
+    ImGui::EndDisabled();
     mark_(a, "make");
     if (make) {
         const std::string name = a.new_name;
-        const std::string edition(kQuick[a.new_edition].name);
-        const bool machine = a.new_mode == 1;
+        const std::string edition(chosen.name);
+        const bool machine = a.new_mode == 1, goes_in = chosen.goes_in;
         a.start_job(std::format("{} {}", tr("Making", "创建"), name),
                     [name, edition, machine](Job& j, service::Context c) {
                         auto out = service::create(c, {.name = name, .edition = edition});
                         j.code = out.code;
                         if (out.ok() && machine) (void)service::configure(c, name, {{"mode", "machine"}});
                     },
-                    [name](App& app) {
+                    [name, goes_in](App& app) {
                         if (app.job->code != 0) return;
                         app.refresh();
-                        app.enter(name);
+                        if (goes_in) { app.enter(name); return; }
+                        // Nothing to log into: it is in the list, and said so.
+                        app.view = View::Launcher;
+                        app.notice = std::vformat(tr("{} is made: a base for an edition of your own (luban new <name> --from {}).",
+                                                     "{} 已创建：自己的 edition 的基础（luban new <名字> --from {}）。"),
+                                                  std::make_format_args(name, name));
                     });
     }
+    // The other way in: a system someone exported.
+    ImGui::Dummy(ImVec2(0, 4));
+    const auto import_label = std::string(tr("Import from a file (.luban)…", "从文件导入（.luban）…"));
+    ImGui::SetCursorPosX((W - ImGui::CalcTextSize(import_label.c_str()).x) / 2);
+    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.45f, 0.68f, 1.0f, 1));
+    if (ImGui::Selectable(import_label.c_str(), false, 0, ImGui::CalcTextSize(import_label.c_str())))
+        a.window->pick_file(std::string(tr("Import a Luban system", "导入 Luban 系统")), "Luban", "luban");
+    ImGui::PopStyleColor();
+    mark_(a, "import");
     if (!a.systems.empty()) {
-        ImGui::SetCursorPosX((ImGui::GetWindowWidth() - 200) / 2);
+        ImGui::SetCursorPosX((W - 200) / 2);
         if (ImGui::Button(std::string(tr("Back", "返回")).c_str(), ImVec2(200, 32))) a.view = View::Launcher;
         mark_(a, "back");
     }
+    ImGui::End();
+}
+
+// Reads an archive for its preview: what it is and what it may do.
+ImportPreview preview_import_(const fs::path& file, const std::vector<std::string>& taken) {
+    ImportPreview p;
+    p.file = file;
+    auto manifest = luban::service::archive::read(file);
+    if (!manifest) { p.error = manifest.error(); return p; }
+    const auto& m = *manifest;
+    if (m.contains("edition") && m["edition"].is_object()) p.edition = m["edition"].value("ref", "");
+    if (m.contains("packages") && m["packages"].is_object()) p.packages = m["packages"].size();
+    if (m.contains("policy") && m["policy"].is_object()) {
+        if (auto pol = xlings::subos::policy::from_json(m["policy"])) {
+            p.preset = std::string(xlings::subos::policy::to_string(pol->preset));
+            if (pol->preset == xlings::subos::policy::Preset::Legacy)
+                p.wider.push_back(std::string(tr("no isolation preset (as an environment made before policies)",
+                                                 "没有隔离预设（如同策略出现之前的环境）")));
+            // A grant as what it lets the system do.
+            static constexpr std::array<std::array<std::string_view, 3>, 6> kGrants{{
+                {"clipboard", "can copy to this computer's clipboard", "可以复制到这台电脑的剪贴板"},
+                {"clipboard-paste", "can read this computer's clipboard", "可以读取这台电脑的剪贴板"},
+                {"display", "can show windows on this computer's screen", "可以在这台电脑的屏幕上显示窗口"},
+                {"audio", "can play and record sound", "可以播放和录制声音"},
+                {"gpu", "can use this computer's graphics card", "可以使用这台电脑的显卡"},
+                {"ssh-agent", "can use your SSH keys", "可以使用你的 SSH 密钥"},
+            }};
+            for (const auto& g : pol->grants) {
+                const auto known = std::ranges::find_if(kGrants, [&](const auto& k) { return k[0] == g; });
+                p.wider.push_back(known != kGrants.end() ? std::string(tr((*known)[1], (*known)[2]))
+                                                         : std::vformat(tr("granted: {}", "授权：{}"), std::make_format_args(g)));
+            }
+            for (const auto& mnt : pol->mounts)
+                p.wider.push_back(std::format("{} {} ({})", tr("mounts the host's", "挂载宿主的"), mnt.src, mnt.rw ? "rw" : "ro"));
+        } else {
+            p.wider.push_back(std::vformat(tr("a policy this version cannot read: {}", "本版本读不懂的策略：{}"),
+                                           std::make_format_args(pol.error())));
+        }
+    }
+    // A name: the file's, made unique.
+    std::string base = file.stem().string();
+    std::ranges::replace_if(base, [](char c) { return !std::isalnum(static_cast<unsigned char>(c)) && c != '-' && c != '_'; }, '-');
+    if (base.empty()) base = "imported";
+    std::string name = base;
+    for (int k = 2; std::ranges::find(taken, name) != taken.end() && k < 100; ++k) name = std::format("{}-{}", base, k);
+    std::snprintf(p.name, sizeof p.name, "%s", name.c_str());
+    return p;
+}
+
+void import_view_(App& a) {
+    begin_full_("import");
+    auto& p = *a.import;
+    const float W = ImGui::GetWindowWidth();
+    ImGui::SetCursorPosY(ImGui::GetWindowHeight() * 0.16f);
+    const auto file_name = p.file.filename().string();
+    center_text_(std::vformat(tr("Import {}", "导入 {}"), std::make_format_args(file_name)), 1.4f);
+    ImGui::Dummy(ImVec2(0, 12));
+    const float width = std::min(560.0f, W - 80), x = (W - width) / 2;
+    if (!p.error.empty()) {
+        ImGui::SetCursorPosX(x);
+        ImGui::PushTextWrapPos(x + width);
+        ImGui::TextColored(ImVec4(0.95f, 0.45f, 0.45f, 1), "%s", std::vformat(tr("It cannot be read: {}", "无法读取：{}"),
+                                                                              std::make_format_args(p.error)).c_str());
+        ImGui::PopTextWrapPos();
+    } else {
+        auto row = [&](std::string_view k, const std::string& v) {
+            ImGui::SetCursorPosX(x);
+            ImGui::TextDisabled("%s", std::string(k).c_str());
+            ImGui::SameLine(x + 130);
+            ImGui::TextUnformatted(v.c_str());
+        };
+        row(tr("Edition", "Edition"), p.edition.empty() ? std::string("—") : p.edition);
+        row(tr("Packages", "软件包"), std::to_string(p.packages));
+        row(tr("Isolation", "隔离"), p.preset.empty() ? std::string(tr("the default", "默认")) : p.preset);
+        if (!p.wider.empty()) {
+            // More than a new environment may do: said before, agreed to.
+            ImGui::Dummy(ImVec2(0, 8));
+            ImGui::SetCursorPosX(x);
+            ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.35f, 1), "%s",
+                               std::string(tr("It may do more than a new system:", "它能做的比新系统更多：")).c_str());
+            for (const auto& w : p.wider) {
+                ImGui::SetCursorPosX(x + 16);
+                ImGui::TextUnformatted(("· " + w).c_str());
+            }
+            ImGui::SetCursorPosX(x);
+            ImGui::Checkbox(std::string(tr("I know; import it as it is", "我知道了，按原样导入")).c_str(), &p.confirmed);
+            mark_(a, "import:confirm");
+        }
+        ImGui::Dummy(ImVec2(0, 10));
+        ImGui::SetCursorPosX(x);
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextUnformatted(std::string(tr("Name", "名字")).c_str());
+        ImGui::SameLine(x + 130);
+        ImGui::SetNextItemWidth(width - 130);
+        ImGui::InputText("##import-name", p.name, sizeof p.name);
+        mark_(a, "import:name");
+        ImGui::Dummy(ImVec2(0, 12));
+        if constexpr (!platform::is_linux) {
+            ImGui::SetCursorPosX(x);
+            ImGui::PushTextWrapPos(x + width);
+            ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.4f, 1), "%s",
+                               std::string(tr("This computer cannot run Luban systems yet: they are Linux systems and run on a Linux computer.",
+                                              "这台电脑还不能运行 Luban 系统：它们是 Linux 系统，在 Linux 电脑上运行。")).c_str());
+            ImGui::PopTextWrapPos();
+        }
+        ImGui::SetCursorPosX((W - 200) / 2);
+        ImGui::BeginDisabled((!p.wider.empty() && !p.confirmed) || !platform::is_linux);
+        const bool go = ImGui::Button(std::string(tr("Import and go in", "导入并进入")).c_str(), ImVec2(200, 40));
+        ImGui::EndDisabled();
+        mark_(a, "import:go");
+        if (go) {
+            const std::string name = p.name;
+            const fs::path file = p.file;
+            a.import.reset();
+            a.start_job(std::format("{} {}", tr("Importing", "导入"), name),
+                        [name, file](Job& j, service::Context c) { j.code = service::import_environment(c, file, name).code; },
+                        [name](App& app) {
+                            if (app.job->code != 0) return;
+                            app.refresh();
+                            app.enter(name);
+                        });
+            ImGui::End();
+            return;
+        }
+    }
+    ImGui::Dummy(ImVec2(0, 6));
+    ImGui::SetCursorPosX((W - 200) / 2);
+    if (ImGui::Button(std::string(tr("Cancel", "取消")).c_str(), ImVec2(200, 32))) {
+        a.import.reset();
+        a.view = a.systems.empty() ? View::QuickStart : View::Launcher;
+    }
+    mark_(a, "import:cancel");
     ImGui::End();
 }
 
@@ -530,6 +829,17 @@ void off_(App& a) {
     ImGui::SetCursorPosY(ImGui::GetWindowHeight() * 0.4f);
     center_text_(std::vformat(tr("{} is off", "{} 已关机"), std::make_format_args(a.current)), 1.4f);
     center_text_(tr("Enter starts it again · Esc goes back to the list", "Enter 重新启动 · Esc 返回列表"));
+    if (!a.ended_why.empty()) {
+        // Why: what the session said last, as it said it.
+        ImGui::Dummy(ImVec2(0, 18));
+        center_text_(std::vformat(tr("It stopped (exit {}). It said:", "它停止了（退出码 {}）。最后的输出："), std::make_format_args(a.ended_code)));
+        const float width = std::min(720.0f, ImGui::GetWindowWidth() - 80);
+        ImGui::SetCursorPosX((ImGui::GetWindowWidth() - width) / 2);
+        ImGui::BeginChild("why", ImVec2(width, 130), ImGuiChildFlags_Borders);
+        ImGui::TextUnformatted(a.ended_why.c_str());
+        ImGui::EndChild();
+        mark_(a, "why");
+    }
     ImGui::End();
     for (const auto& k : a.window->keys()) {
         if (k.name == "Enter") a.enter(a.current);
@@ -650,6 +960,27 @@ void console_view_(App& a) {
     ImGui::End();
     if (!a.console->alive()) {
         const bool machine = a.console->is_machine();
+        // A session that failed says why on the way out: its last lines are
+        // the reason shown, not a blank "off".
+        a.ended_why.clear();
+        if (a.console->exit_code() != 0) {
+            std::lock_guard l(a.console->lock());
+            auto& screen = a.console->screen();
+            std::vector<std::string> lines;
+            for (int row = 0; row < screen.rows(); ++row) {
+                std::string line;
+                for (int col = 0; col < screen.cols(); ++col) {
+                    const auto& cell = screen.at(row, col);
+                    if (cell.continuation) continue;
+                    append_utf8_(line, cell.ch ? cell.ch : U' ');
+                }
+                while (!line.empty() && line.back() == ' ') line.pop_back();
+                if (!line.empty()) lines.push_back(line);
+            }
+            if (lines.size() > 6) lines.erase(lines.begin(), lines.end() - 6);
+            for (const auto& l2 : lines) a.ended_why += l2 + "\n";
+            a.ended_code = a.console->exit_code();
+        }
         a.console.reset();
         if (machine && vm::running(a.home, a.current)) {
             a.notice = std::vformat(tr("{} keeps running", "{} 仍在运行"), std::make_format_args(a.current));
@@ -989,7 +1320,7 @@ void admin_(App& a) {
 // What a test asserts on: the view and its state, the window's title, and
 // where each named control was drawn.
 Json state_(const App& a) {
-    static constexpr std::array<std::string_view, 7> names{"launcher", "quick-start", "job", "console", "off", "admin", "desktop"};
+    static constexpr std::array<std::string_view, 8> names{"launcher", "quick-start", "job", "console", "off", "admin", "desktop", "import"};
     Json j{{"view", std::string(names[static_cast<int>(a.view)])}, {"systems", Json::array()}};
     for (const auto& s : a.systems) j["systems"].push_back(s.name);
     if (a.countdown_until) j["countdown_to"] = a.systems.empty() ? "" : a.systems[0].name;
@@ -1003,6 +1334,17 @@ Json state_(const App& a) {
     j["name"] = std::string(a.new_name);
     j["admin_tab"] = a.admin_tab;
     j["desktop_text"] = a.desktop_text;
+    j["ended_why"] = a.ended_why;
+    if (a.view == View::QuickStart) j["quick_start"] = {{"said", a.quick_said}, {"can_make", a.quick_can_make}};
+    if (a.import)
+        j["import"] = {{"file", a.import->file.string()}, {"error", a.import->error}, {"edition", a.import->edition},
+                       {"packages", a.import->packages}, {"wider", a.import->wider}, {"name", std::string(a.import->name)},
+                       {"can_go", a.import->error.empty() && (a.import->wider.empty() || a.import->confirmed) && platform::is_linux}};
+    {
+        std::lock_guard l(const_cast<App&>(a).available_m);
+        for (const auto& [name, v] : a.available)
+            j["available"][name] = v.known ? (!v.listed ? "unlisted" : !v.here ? "not-here" : "yes") : "checking";
+    }
     j["clipboard"] = a.window ? a.window->clipboard() : std::string{};
     j["admin_selected"] = a.admin_selected < static_cast<int>(a.systems.size()) ? a.systems[a.admin_selected].name : std::string{};
     if (a.console) {
@@ -1015,16 +1357,7 @@ Json state_(const App& a) {
             for (int c = 0; c < screen.cols(); ++c) {
                 const auto& cell = screen.at(r, c);
                 if (cell.continuation) continue;
-                const char32_t ch = cell.ch;
-                if (ch < 0x80) line += static_cast<char>(ch);
-                else if (ch < 0x800) { line += static_cast<char>(0xC0 | (ch >> 6)); line += static_cast<char>(0x80 | (ch & 0x3F)); }
-                else if (ch < 0x10000) {
-                    line += static_cast<char>(0xE0 | (ch >> 12)); line += static_cast<char>(0x80 | ((ch >> 6) & 0x3F));
-                    line += static_cast<char>(0x80 | (ch & 0x3F));
-                } else {
-                    line += static_cast<char>(0xF0 | (ch >> 18)); line += static_cast<char>(0x80 | ((ch >> 12) & 0x3F));
-                    line += static_cast<char>(0x80 | ((ch >> 6) & 0x3F)); line += static_cast<char>(0x80 | (ch & 0x3F));
-                }
+                append_utf8_(line, cell.ch);
             }
             while (!line.empty() && line.back() == ' ') line.pop_back();
             rows.push_back(line);
@@ -1038,7 +1371,10 @@ Json state_(const App& a) {
     }
     if (a.job) {
         std::lock_guard l(a.job->m);
-        j["job"] = {{"title", a.job->title}, {"done", a.job->done.load()}, {"code", a.job->code}};
+        Json phases = Json::array();
+        for (const auto& ph : a.job->phases) phases.push_back(ph.text + ": " + ph.state);
+        j["job"] = {{"title", a.job->title}, {"done", a.job->done.load()}, {"code", a.job->code}, {"current", a.job->current},
+                    {"phases", phases}, {"errors", a.job->errors}};
     }
     j["anchors"] = Json::object();
     for (const auto& [k, r] : a.anchors) j["anchors"][k] = Json::array({r[0], r[1], r[2], r[3]});
@@ -1087,6 +1423,11 @@ bool write_screenshot_(const host::Window& w, const fs::path& file) {
 //   move <x> <y>                    frames <n>        sleep <ms>
 //   resize <w> <h>                  close             quit
 //   screenshot <file>               state <file>
+//   see [<n>s] <text>               until the text is shown (a console's lines,
+//                                    a job, a notice; default 60 s)
+//   commit <text>                   as the input method commits it
+//   drop <file>                     dropped on the window
+//   clipboard <text>                the host's clipboard
 //   expect <path> <value>           (path: dotted, into the state; a string
 //                                    compares as it is, anything else as JSON;
 //                                    `present` / `absent` ask whether it is there)
@@ -1168,6 +1509,24 @@ void script_step_(App& a, Script& sc) {
         const auto got = path_(state_(a), path);
         if (matches_(got, want)) next();
         else if (!waiting(seconds)) fail(std::format("{} is {}, not {}", path, got ? got->dump() : "absent", want));
+    } else if (cmd == "see") {
+        std::string text;
+        std::getline(words >> std::ws, text);
+        double seconds = 60;
+        if (const auto sp = text.find(' '); sp != std::string::npos && sp > 1 && text[sp - 1] == 's'
+            && std::ranges::all_of(text.substr(0, sp - 1), [](char c) { return std::isdigit(static_cast<unsigned char>(c)); })) {
+            seconds = std::stod(text.substr(0, sp - 1));
+            text = text.substr(sp + 1);
+        }
+        const auto st = state_(a);
+        std::string shown;
+        if (st.contains("console"))
+            for (const auto& row : st["console"]["rows"])
+                if (row.is_string()) shown += row.get<std::string>() + "\n";
+        if (st.contains("job")) shown += st["job"].dump();
+        shown += st.value("notice", std::string{});
+        if (shown.find(text) != std::string::npos) next();
+        else if (!waiting(seconds)) fail(std::format("`{}` is not shown; shown:\n{}", text, shown));
     } else if (cmd == "expect") {
         std::string path, want;
         words >> path;
@@ -1194,6 +1553,12 @@ void script_step_(App& a, Script& sc) {
         sc.pending.push_back([keys](App& app) {
             for (auto it = keys.rbegin(); it != keys.rend(); ++it) app.window->inject_key(*it, false);
         });
+        next();
+    } else if (cmd == "drop") {
+        // A file dropped on the window, as a file manager drops it.
+        std::string file;
+        std::getline(words >> std::ws, file);
+        sc.pending.push_back([file](App& app) { app.window->inject_drop(file); });
         next();
     } else if (cmd == "commit" || cmd == "clipboard") {
         // Text as the host's input method commits it; the host's clipboard.
@@ -1415,6 +1780,22 @@ int run(int argc, char* argv[]) {
                 a.input_at = std::chrono::steady_clock::now() + std::chrono::seconds(1);
             }
         }
+        // A .luban file -- picked in the dialog, or dropped on the window --
+        // opens its preview (not over a system in use).
+        {
+            std::optional<fs::path> file = a.window->picked();
+            if (file && file->empty()) file.reset();   // the dialog was cancelled
+            for (const auto& d : a.window->dropped())
+                if (d.extension() == ".luban") file = d;
+            const bool free = a.view == View::Launcher || a.view == View::QuickStart || a.view == View::Admin || a.view == View::Import;
+            if (file && free) {
+                std::vector<std::string> taken;
+                for (const auto& sys : a.systems) taken.push_back(sys.name);
+                a.import = preview_import_(*file, taken);
+                a.countdown_until.reset();
+                a.view = View::Import;
+            }
+        }
         if (a.view == View::Job && a.job && a.job->done && a.job->code == 0 && a.after_job) {
             auto then = std::move(a.after_job);
             a.after_job = nullptr;
@@ -1430,6 +1811,7 @@ int run(int argc, char* argv[]) {
         case View::Off: off_(a); break;
         case View::Admin: admin_(a); break;
         case View::Desktop: desktop_view_(a); break;
+        case View::Import: import_view_(a); break;
         }
         if (a.menu) host_menu_(a);
         if (a.close_dialog) close_dialog_(a);

@@ -1029,6 +1029,18 @@ status = "required"
 text = "the host's input method and clipboard reach a desktop's windows: xdesk asks the Luban OS window for the caret of the focused text field (text-input-v3) and gives it what the input method commits and composes (a character is not also sent as a key); the host's clipboard becomes the windows' selection as the desktop opens and whenever it changes, and a window's copy becomes the host's clipboard -- each way only as far as the environment's grants allow (clipboard, clipboard-paste; an environment without a policy as before)"
 status = "required"
 
+[LUBAN-OS-FIRST-USE]
+text = "a first-time user, with nothing yet, makes a system from the Luban OS quick start and uses it without leaving the window: the quick start is what opens, the chosen edition is made for real (downloaded, set up) with its progress shown, the system's console opens by itself and runs what is typed, and the next start shows it in the list"
+status = "required"
+
+[LUBAN-OS-QUICK-START]
+text = "the Luban OS quick start shows two groups -- consoles to shape (nano, tiny, core) and desktops ready to use (classic, the xdesk canvas) -- each with what it is, its standing (base, stable, preview, explore) and what is in it; whether it can be made here comes from the index (published, built for this machine's architecture) and, on a computer that cannot run Luban systems, is said before anything is tried; nano says it has no shell and is made without going in"
+status = "required"
+
+[LUBAN-OS-IMPORT]
+text = "a system someone exported (.luban) is imported from the quick start, the launcher or by dropping the file on the window: a preview shows its edition, its packages and its isolation, lists in plain words what it may do beyond a new system's default (grants, host mounts, no isolation, a policy this version cannot read) and needs that agreed to; the import makes it from its edition, restores what it carried, and goes in"
+status = "required"
+
 [LUBAN-MACHINE-DESKTOP]
 text = "a machine whose root declares a desktop session shows it to the Luban OS window: the guest starts the session headless with its /run and /tmp its own, bridges it on a channel of the machine (opensal.wire), at the size the window asks; what is typed into it runs there"
 status = "required"

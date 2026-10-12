@@ -6,8 +6,10 @@ import xlings.testkit;
 #include "xlings/xtest.hpp"
 import std;
 import xlings.libs.json;
+import xlings.platform;
 
 namespace tk = xlings::testkit;
+namespace platform = xlings::platform;
 namespace fs = std::filesystem;
 using Json = nlohmann::json;
 
@@ -17,7 +19,8 @@ std::optional<fs::path> app_binary() {
     if (const char* forced = std::getenv("LUBAN_OS_BIN"); forced && *forced) return fs::path(forced);
     const auto xlings = tk::xlings_binary();
     if (xlings.empty()) return std::nullopt;
-    for (const auto& c : {xlings.parent_path() / "luban-os", xlings.parent_path() / "luban-os" / "luban-os"})
+    for (const auto& c : {xlings.parent_path() / "luban-os", xlings.parent_path() / "luban-os" / "luban-os",
+                          xlings.parent_path() / "luban-os.exe", xlings.parent_path() / "luban-os" / "luban-os.exe"})
         if (fs::is_regular_file(c)) return c;
     return std::nullopt;
 }
@@ -120,7 +123,7 @@ fs::path artifact(std::string_view name) {
 }
 
 tk::RunResult run_script(const tk::Home& home, std::string_view script, std::vector<std::string> args = {},
-                         std::map<std::string, std::string> env = {}) {
+                         std::map<std::string, std::string> env = {}, std::chrono::seconds timeout = std::chrono::seconds(240)) {
     const auto file = home.root() / "script.txt";
     tk::write_file(file, script);
     tk::RunOptions o;
@@ -132,7 +135,7 @@ tk::RunResult run_script(const tk::Home& home, std::string_view script, std::vec
     // The renderer a machine without a GPU has, here as in CI.
     o.env["SDL_RENDER_DRIVER"] = "software";
     for (auto& [k, v] : env) o.env[k] = v;
-    o.timeout = std::chrono::seconds(240);
+    o.timeout = timeout;
     return tk::run(o);
 }
 
@@ -728,4 +731,195 @@ state {}
     EXPECT_EQ(log.find("commit a\n"), std::string::npos) << "a character arrived twice (as a key too)\n" << log;
     // ...and what it copied is the host's clipboard.
     EXPECT_EQ(read_state(st)["clipboard"], "from-the-guest");
+}
+
+// A person's first time: nothing yet, the quick start, a system made for
+// real (downloaded, unpacked, set up), and then used -- what a new user sees,
+// end to end, as they would do it.
+XTEST(LubanOs, AFirstTimeUserMakesASystemFromTheQuickStartAndUsesIt, .area = "luban",
+      .covers = {"LUBAN-OS-APP", "LUBAN-OS-FIRST-USE"}, .requires_ = {"linux", "xlings-bin", "static-xlings", "sandbox", "network"}) {
+    if (!app_binary()) GTEST_SKIP() << "no luban-os beside the xlings under test";
+    auto home = tk::Home::isolated("luban-os-first-use");
+    ASSERT_EQ(home.xlings({"self", "init"}).exit_code, 0);
+    const auto made = home.root() / "made.ppm", st = home.root() / "first.json";
+    auto r = run_script(home, std::format(R"(wait quick-start
+frames 2
+screenshot {}
+click card:tiny
+expect edition tiny
+click make
+wait job
+see 5s tiny-1
+screenshot {}
+wait console 900
+see 120s $
+screenshot {}
+screenshot {}
+type echo luban-$((6*7))
+key Return
+see 30s luban-42
+state {}
+)", artifact("first-use-1-quick-start.bmp").string(), artifact("first-use-2-making.bmp").string(),
+                                          artifact("first-use-3-console.bmp").string(), made.string(), st.string()),
+                        {}, {}, std::chrono::seconds(1500));
+    ASSERT_EQ(r.exit_code, 0) << r.transcript();
+    const auto s = read_state(st);
+    EXPECT_EQ(s["view"], "console");
+    EXPECT_EQ(s["current"], "tiny-1");
+    EXPECT_EQ(s["job"]["code"], 0) << s["job"].dump();
+    // It is in the list from now on: the next start shows the launcher.
+    auto again = run_script(home, "wait launcher\nexpect systems.0 tiny-1\n");
+    EXPECT_EQ(again.exit_code, 0) << again.transcript();
+}
+
+// A .luban archive, as luban export writes one (POSIX ustar): its manifest
+// and the files of its state.
+void write_luban_(const fs::path& file, const Json& manifest, const std::vector<std::pair<std::string, std::string>>& state = {}) {
+    std::string out;
+    auto put = [&](const std::string& name, char type, const std::string& data, unsigned mode) {
+        std::array<char, 512> h{};
+        auto field = [&](std::size_t at, std::size_t len, const std::string& v) { std::memcpy(h.data() + at, v.data(), std::min(len, v.size())); };
+        auto octal = [&](std::size_t at, std::size_t len, std::uint64_t v) { field(at, len, std::format("{:0{}o}", v, len - 1)); };
+        field(0, 100, name);
+        octal(100, 8, mode);
+        octal(108, 8, 0);
+        octal(116, 8, 0);
+        octal(124, 12, data.size());
+        octal(136, 12, 0);
+        h[156] = type;
+        field(257, 6, std::string("ustar\0", 6));
+        field(263, 2, "00");
+        std::memset(h.data() + 148, ' ', 8);
+        unsigned sum = 0;
+        for (char c : h) sum += static_cast<unsigned char>(c);
+        field(148, 8, std::format("{:06o}", sum) + std::string("\0 ", 2));
+        out.append(h.data(), h.size());
+        out += data;
+        out.append((512 - data.size() % 512) % 512, '\0');
+    };
+    put("manifest.json", '0', manifest.dump(), 0644);
+    for (const auto& [path, content] : state) put("state/" + path, '0', content, 0644);
+    out.append(1024, '\0');
+    tk::write_file(file, out);
+}
+
+Json shared_box_manifest_() {
+    return Json{{"format", "luban-environment"}, {"version", 1}, {"name", "shared-box"},
+                {"edition", {{"ref", "subos:luban-tiny"}, {"chain", Json::array()}, {"packages", Json::object()}}},
+                {"packages", Json::object()},
+                {"policy", {{"extends", "dev"},
+                            {"isolation", {{"net", "host"}, {"identity", "host"}, {"grants", Json::array({"clipboard"})},
+                                           {"grants_allowed", Json::array()}, {"env_pass", Json::array()},
+                                           {"disable_userns", false}, {"no_degrade", false}}},
+                            {"mounts", Json::array()}}}};
+}
+
+XTEST(LubanOs, TheQuickStartSaysWhatEachSystemIsAndWhatThisComputerCanMake, .area = "luban",
+      .covers = {"LUBAN-OS-QUICK-START"}, .requires_ = {"xlings-bin"}) {
+    if (!app_binary()) GTEST_SKIP() << "no luban-os beside the xlings under test";
+    auto home = tk::Home::isolated("luban-os-quick");
+    ASSERT_EQ(home.xlings({"self", "init"}).exit_code, 0);
+    const auto nano = home.root() / "nano.json", core = home.root() / "core.json";
+    // Linux makes them (once the index has answered); another computer says
+    // why it cannot before anything is tried.
+    const std::string can = platform::is_linux ? "true" : "false";
+    auto r = run_script(home, std::format(R"(wait quick-start
+expect edition core
+expect name core-1
+waitfor quick_start.can_make {0} 30
+frames 2
+state {1}
+screenshot {3}
+click card:nano
+expect edition nano
+expect name nano-1
+frames 2
+state {2}
+click card:desktop
+expect edition desktop
+expect name desktop-1
+click card:tiny
+expect edition tiny
+)", can, core.string(), nano.string(), artifact(std::string("quick-start-") + std::string(platform::OS_NAME) + ".bmp").string()),
+                        {}, {{"LUBAN_OS_LANG", "en_US.UTF-8"}});
+    ASSERT_EQ(r.exit_code, 0) << r.transcript();
+    const auto said_core = read_state(core)["quick_start"]["said"].get<std::string>();
+    const auto said_nano = read_state(nano)["quick_start"]["said"].get<std::string>();
+    if constexpr (platform::is_linux) {
+        // What it is -- or, as the index answered for this home, why it
+        // cannot be made: never a card that fails only once clicked.
+        auto expect_said = [&](const Json& st, const std::string& edition, const std::string& said, std::string_view detail) {
+            const auto answer = st.value("available", Json::object()).value(edition, std::string("checking"));
+            if (answer == "unlisted") EXPECT_EQ(said, "Not published yet.") << edition;
+            else if (answer == "not-here") EXPECT_NE(said.find("Not built for"), std::string::npos) << said;
+            else EXPECT_NE(said.find(detail), std::string::npos) << edition << ": " << said;
+        };
+        expect_said(read_state(core), "core", said_core, "glibc");
+        // nano is said to have nothing to log into (it has no shell).
+        expect_said(read_state(nano), "nano", said_nano, "no shell");
+    } else {
+        EXPECT_NE(said_core.find("Linux computer"), std::string::npos) << said_core;
+    }
+    // Both groups are on the screen.
+    const auto s = read_state(core);
+    for (const auto* card : {"card:nano", "card:tiny", "card:core", "card:desktop", "card:desktop-xdesk", "make", "import"})
+        EXPECT_TRUE(s["anchors"].contains(card)) << card;
+}
+
+XTEST(LubanOs, AnArchiveIsPreviewedBeforeItIsImportedAndWhatItMayDoIsAgreedTo, .area = "luban",
+      .covers = {"LUBAN-OS-IMPORT"}, .requires_ = {"xlings-bin"}) {
+    if (!app_binary()) GTEST_SKIP() << "no luban-os beside the xlings under test";
+    auto home = tk::Home::isolated("luban-os-import-preview");
+    ASSERT_EQ(home.xlings({"self", "init"}).exit_code, 0);
+    const auto file = home.root() / "shared-box.luban", st = home.root() / "import.json";
+    write_luban_(file, shared_box_manifest_());
+    tk::write_file(home.root() / "notes.txt", "not an archive");
+    const std::string can = platform::is_linux ? "true" : "false";
+    auto r = run_script(home, std::format(R"(wait quick-start
+drop {0}
+wait import
+expect import.edition subos:luban-tiny
+expect import.name shared-box
+expect import.wider.0 can copy to this computer's clipboard
+expect import.can_go false
+frames 2
+screenshot {2}
+click import:confirm
+expect import.can_go {3}
+state {1}
+click import:cancel
+wait quick-start
+drop {4}
+frames 3
+expect view quick-start
+)", file.string(), st.string(), artifact("import-preview.bmp").string(), can, (home.root() / "notes.txt").string()),
+                        {}, {{"LUBAN_OS_LANG", "en_US.UTF-8"}});
+    ASSERT_EQ(r.exit_code, 0) << r.transcript();
+    EXPECT_EQ(read_state(st)["import"]["error"], "");
+}
+
+// Someone's system, imported from its archive, is made from its edition and
+// has what the archive carried -- the whole way, as a person does it.
+XTEST(LubanOs, AnImportedSystemHasWhatItsArchiveCarried, .area = "luban",
+      .covers = {"LUBAN-OS-IMPORT", "LUBAN-OS-FIRST-USE"}, .requires_ = {"linux", "xlings-bin", "static-xlings", "sandbox", "network"}) {
+    if (!app_binary()) GTEST_SKIP() << "no luban-os beside the xlings under test";
+    auto home = tk::Home::isolated("luban-os-import");
+    ASSERT_EQ(home.xlings({"self", "init"}).exit_code, 0);
+    const auto file = home.root() / "shared-box.luban";
+    write_luban_(file, shared_box_manifest_(), {{"root/carried.txt", "carried-across\n"}});
+    auto r = run_script(home, std::format(R"(wait quick-start
+drop {}
+wait import
+click import:confirm
+click import:go
+wait job
+wait console 900
+see 120s $
+type cat /root/carried.txt
+key Return
+see 30s carried-across
+screenshot {}
+)", file.string(), artifact("import-console.bmp").string()),
+                        {}, {{"LUBAN_OS_LANG", "en_US.UTF-8"}}, std::chrono::seconds(1500));
+    ASSERT_EQ(r.exit_code, 0) << r.transcript();
 }

@@ -196,8 +196,14 @@ nano → tiny → core → desktop = core + 富环境层 + xdesk + xdesk-essenti
 
 - 每张卡：标题、一句话、状态（stable / preview / 探索）、运行方式（沙箱 / 机器）、大小、需要什么（qemu、KVM）。
   选中后展开详情：里面有什么、适合谁。
-- **卡片内容来自索引**：edition 包加 `title` / `summary`（中英）、`size`、`status`、`audience`（console / desktop）、
-  `runs`（sandbox / machine）、`requires`；应用内有离线兜底。新增 edition 或改描述只改索引。
+- **卡片的"能不能在这里创建"来自索引，说明随 Luban 发布**（实现时修订）：`package_info` 报告 edition 是否已发布、
+  `status` 与 `archs`，快速开始在后台询问一次，未发布 / 本机架构没有 / 本机不能运行 Luban 系统时，卡片变暗并在
+  卡片下说明原因、"创建"不可用——不会出现点了才失败的卡片。官方 edition 的标题与说明（中英）随 Luban 版本发布；
+  索引条目的格式（libxpkg）不为 Luban 增加字段。
+- **nano 如实说明**：nano 没有 shell，没有可以登录的界面；它的按钮是"创建"而不是"创建并进入"，创建后回到列表并
+  说明它是自定义 edition 的基础。默认选中 core。
+- **失败要说出原因**：进入一个系统失败时（会话立即退出、退出码非零），"已关机"页显示它最后的输出与退出码，
+  而不是只说"已关机"。
 - **创建过程**：阶段 + 大小 + 速度 + 剩余时间；缺 qemu 等依赖时给出一键安装（普通的 `xlings install`），
   不让用户回终端。
 
@@ -211,6 +217,13 @@ nano → tiny → core → desktop = core + 富环境层 + xdesk + xdesk-essenti
 
 流程：选文件（系统文件对话框，SDL3）→ 预览（edition、大小、包、策略；**策略比默认宽时先显示再确认**）→ 名字
 （重名给出建议）→ 导入并进入。管理面板里同样有"导入"。
+
+### 4.3 非 Linux 电脑（macOS、Windows）
+
+Luban 的系统是 Linux 系统，在 Linux 电脑上运行（环境与机器都需要 Linux 内核 / KVM）。在 macOS、Windows 上
+Luban OS 窗口照常打开：快速开始先说明"这台电脑还不能运行 Luban 系统"，卡片仍可浏览，创建与导入不可用并说明原因；
+导入的预览照常可读。CI 在 macOS、Windows 上运行窗口自己的无头测试（布局、两种语言、快速开始对本机的说明）。
+在这两种电脑上运行机器（HVF / WHPX）是之后的工作。
 
 ## 5. 生态与跨仓库
 
@@ -253,6 +266,20 @@ nano → tiny → core → desktop = core + 富环境层 + xdesk + xdesk-essenti
 - 浏览器、文件管理器后续单独评估（体积、依赖、沙箱）。
 - aarch64：compat 包与 xdesk-essentials 两种架构一起构建；dsh 等用户包先标注。
 
+## 7.1 实现中确定的约定
+
+- **头文件收敛在绑定模块**（§2.0）：`xdesk.native.wayland`、`xdesk.native.text`、`luban.desktop.imgui`；
+  `tools/lint_c_headers.sh` 检查。wlroots 模块缺的两个创建函数在 mcpplibs/wlroots 的生成器修复后从绑定里删去。
+- **桌面图像分块绘制**：SDL 的软件渲染器（没有 GPU 的机器）画不出比约 1000×700 大的单个三角形，窗口把桌面按
+  512 像素分块画；测试固定用软件渲染器，与 CI、虚拟机一致。
+- **节拍是契约的一部分**：消费端（xdesk）在提供端说上一帧已显示（`FramePresented`）之前不送下一帧，否则慢通道
+  （机器的 vsock）上帧会堆积、写入阻塞会卡住合成器。**密度**同理：窗口报告密度（macOS Retina、Windows 缩放），
+  xdesk 设输出 scale，文字清晰而不是放大。这两项在 D9 前完成。
+- **画布的交互**：空白处滚轮以指针为中心缩放、Super+拖动在任何地方平移、全览离开时回到进入前的视图；
+  缩小到很小时窗口画成标签。
+- **剪贴板的 serial**：宿主的剪贴板以 serial 0 成为选区，之后任何客户端的复制都能替换它。
+- **输入法与按键**：桌面请求文字输入时，可打印字符只经输入法（提交）到达，不再作为按键重复到达。
+
 ## 8. Checkpoint 与依赖（全部在本 PR）
 
 ```
@@ -276,6 +303,18 @@ D9 测试与关键帧、D10 文档 / 版本 / 发布：贯穿，最后收口
 | D8 | Luban OS 应用：快速开始两组 + desktop 二选一 + 索引元数据 + 导入（三入口、拖放、预览确认） | D7 | 无头脚本走完新建与导入；关键帧 |
 | D9 | 测试：引擎、合成器、端到端两版、关键帧 | 全部 | CI 全绿；关键帧评估通过 |
 | D10 | 文档（docs/luban 中英、规范）、版本、发布、CN 镜像、索引 PR 合入、真实验证 | 全部 | 发布后 fresh install 走通桌面 |
+
+### 8.1 进度
+
+| # | 状态 |
+|---|---|
+| D0 | 完成 |
+| D2 | 完成：xdesk 作为原生会话（`X-Opensal-Native`），平铺、装饰、终端；Xwayland 与 layer-shell 待 D7 前 |
+| D3 | 完成：`xdesk.layout` 与合成器接入（键、拖动、缩放、全览、工作区、弹簧动画） |
+| D4 | 完成：`xdesk.draw`（HarfBuzz + FreeType，CJK 回退）、`xdesk.apps`、`xdesk.shell`（标题栏、面板、画布药丸与网格、启动器） |
+| D5 | 完成：text-input-v3 ↔ 宿主输入法；剪贴板双向，受环境授权 |
+| D8 | 大部分完成：两组卡片、索引可用性、nano 如实、非 Linux 说明、导入（快速开始、列表、拖放、预览与确认）；新用户全流程的真实 CI（`linux-luban-os-first-use`） |
+| D1、D6、D7、D9、D10 | 进行中 |
 
 ## 9. 多视角自我 review
 

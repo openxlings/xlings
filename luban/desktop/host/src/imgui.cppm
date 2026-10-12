@@ -121,4 +121,11 @@ using ::ImGui::Text;
 using ::ImGui::TextColored;
 using ::ImGui::TextDisabled;
 using ::ImGui::TextUnformatted;
+using ::ImGui::GetFont;
+using ::ImGui::GetFontSize;
+using ::ImGui::GetCursorPosY;
+using ::ImGui::PushTextWrapPos;
+using ::ImGui::PopTextWrapPos;
+using ::ImGui::BeginDisabled;
+using ::ImGui::EndDisabled;
 }  // namespace ImGui

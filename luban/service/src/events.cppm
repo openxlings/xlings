@@ -17,6 +17,7 @@ struct Event {
     std::string state;            // Phase: begin | done | failed
     std::string text;             // what a person reads
     std::string hint;             // Error, Notice: the command or step that helps
+    std::string code;             // Error: the protocol's (E_NOT_FOUND, ...)
     std::string level;            // Log: debug | info | warn | error
     double percent { -1 };        // Progress: 0..1, or -1 when not known
     std::string data_kind;        // Data: what `data` is

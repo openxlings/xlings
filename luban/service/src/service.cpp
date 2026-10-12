@@ -67,6 +67,39 @@ std::span<const std::string_view> official_editions() {
     return value;
 }
 
+std::expected<EditionAvailability, std::string> edition_availability(const Context& c, std::string_view edition) {
+    std::vector<Json> data;
+    std::string error;
+    bool not_found = false;
+    const int rc = c.port.capability("package_info", Json{{"target", edition_ref(edition)}},
+                                     [&](const Event& e) {
+                                         if (e.kind != Event::Kind::Error) return;
+                                         not_found = not_found || e.code == "E_NOT_FOUND";
+                                         if (error.empty()) error = e.text;
+                                     }, &data);
+    EditionAvailability out;
+    for (const auto& d : data) {
+        if (d.value("dataKind", "") != "info_panel" || !d.contains("payload")) continue;
+        out.listed = true;
+        for (const auto& f : d["payload"].value("fields", Json::array())) {
+            const auto label = f.value("label", ""), value = f.value("value", "");
+            if (label == "status") out.status = value;
+            else if (label == "description") out.description = value;
+            else if (label == "archs") {
+                for (std::size_t at = 0; at < value.size();) {
+                    const auto sp = value.find(' ', at);
+                    if (sp != at) out.archs.push_back(value.substr(at, sp == std::string::npos ? std::string::npos : sp - at));
+                    if (sp == std::string::npos) break;
+                    at = sp + 1;
+                }
+            } else if (label == "aliases" && value.starts_with("latest -> ")) out.latest = value.substr(10);
+        }
+    }
+    // Not listed is an answer; a failure that is not "no such package" is not.
+    if (!out.listed && rc != 0 && !not_found) return std::unexpected(error.empty() ? std::string("the index could not be asked") : error);
+    return out;
+}
+
 std::string edition_ref(std::string_view edition) {
     if (edition.empty()) return "subos:luban-core";
     if (edition.find(':') != std::string_view::npos) return std::string(edition);
