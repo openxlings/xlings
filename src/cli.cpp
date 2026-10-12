@@ -1845,9 +1845,6 @@ int dispatch_(int argc, char* argv[]) {
     // `cmd` from an argument that does NOT start with `-`, so `cmd` can
     // never hold either of those (and `cmd.empty()` already covers a bare
     // `xlings` with no command at all).
-    if (!cmd.empty() && cmd != "self" && cmd != "interface") {
-        show_upgrade_notice_once_();
-    }
     // A home config xlings cannot read is one failure domain: every command
     // still runs, and every command says what falls back and the fix --
     // never silently, which is how a corrupt file used to look like an
@@ -2473,6 +2470,31 @@ int dispatch_(int argc, char* argv[]) {
 // found no handler, and aborted with SIGABRT after printing a full report
 // (issue #583). A handler that lives in the caller cannot be outrun by a
 // dispatch decision made in the callee.
+void after_command(int argc, char* argv[]) {
+    // The words of the command, without the global options before it.
+    std::vector<std::string_view> words;
+    for (int i = 1; i < argc; ++i) {
+        const std::string_view a{argv[i]};
+        if (words.empty() && a.starts_with("-")) {
+            if (a == "--ui-mode" || a == "--mirror" || a == "--lang") ++i;
+            continue;
+        }
+        words.push_back(a);
+    }
+    if (words.empty() || home::is_read_only_command(words)) return;
+    const auto cmd = words[0];
+    if (cmd == "self" || cmd == "interface" || (cmd == "config" && words.size() == 1)) return;
+    // A session's exit code is the program's that ran in it, not a sign the
+    // home changed.
+    if (cmd == "subos" && words.size() > 1
+        && (words[1] == "use" || words[1] == "exec" || words[1] == "start" || words[1] == "stop"))
+        return;
+    try {
+        show_upgrade_notice_once_();
+    } catch (...) {
+    }
+}
+
 int run(int argc, char* argv[]) {
     try {
         return dispatch_(argc, argv);

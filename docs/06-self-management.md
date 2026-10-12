@@ -13,7 +13,8 @@ xlings self update
 ```
 
 It refreshes the indexes and installs the newest xlings as a package. The first
-command the new version runs then upgrades the home by itself: it checks the
+command of the new version that changes the home then upgrades it by itself,
+once that command has succeeded: it checks the
 home config, rebuilds the command routes and checks the home the way
 `self doctor` does. When all of that worked, it says nothing. What it could not
 do by itself it says once, with the command for each:

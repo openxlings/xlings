@@ -22,4 +22,9 @@ namespace xlings::cli {
 
 export int run(int argc, char* argv[]);
 
+// After a command that changed the home and succeeded: the home's upgrade to
+// this client, once per version (xself::upgrade). Never after a read-only or
+// a refused command -- those leave the home exactly as it was.
+export void after_command(int argc, char* argv[]);
+
 } // namespace xlings::cli

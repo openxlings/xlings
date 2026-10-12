@@ -32,9 +32,10 @@ empty, and never silently.**
 
 ## 2. The upgrade
 
-The first command a client runs on a home whose last upgrade was by another
-version (`upgrade.to` in the home config; `verifiedBy` or `version` when that
-is absent):
+After the first command a client runs on a home that changes it and succeeds
+(a read-only or a refused command leaves the home exactly as it was), when the
+home's last upgrade was by another version (`upgrade.to` in the home config;
+`verifiedBy` or `version` when that is absent):
 
 | The recorded version is | What happens |
 |---|---|
@@ -62,8 +63,10 @@ five), each distinct command, and `xlings use xlings <from>` when that version
 is still installed.
 
 The steps do not run inside a SubOS session (the session's home is its owner's,
-upgraded by the owner's next command), nor for `xlings self ...` and `xlings
-interface`, which report the same facts as part of their own work.
+upgraded by the owner's next command), after a session's command (`subos use`,
+`exec`, `start`, `stop`: their exit code is the program's), nor for `xlings self
+...` and `xlings interface`, which report the same facts as part of their own
+work.
 
 ## 3. Compatibility
 

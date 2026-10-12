@@ -1,7 +1,8 @@
 // The upgrade a user does not notice, and the failure that stays small.
 //
 // docs/specs/upgrade-and-compatibility.md: the first command of a new client
-// runs the home's upgrade steps by itself and records them; what it cannot do
+// that changes the home (and succeeds) runs its upgrade steps by itself and
+// records them; what it cannot do
 // is said once, with its command; an older client says how to go back. And a
 // broken piece of state is one failure domain: every command still runs, the
 // broken piece is named with its fix, and nothing else is lost.
@@ -41,9 +42,15 @@ XTEST(Upgrade, TheFirstCommandOfANewClientUpgradesTheHomeByItselfAndSaysNothing,
       .covers = {"UPGRADE-LADDER"}, .requires_ = {"xlings-bin"}) {
     auto home = initialised("upgrade-silent");
     set_upgraded_to(home, "2026.1.1.1");
-    auto first = home.xlings({"list"});
+    // A read-only command leaves the home as it is, the upgrade record too.
+    auto looked = home.xlings({"list"});
+    EXPECT_EQ(looked.exit_code, 0) << looked.transcript();
+    EXPECT_EQ(config_of(home)["upgrade"].value("to", ""), "2026.1.1.1");
+    // The first one that changes it upgrades it, after it succeeded.
+    auto first = home.xlings({"subos", "new", "probe"});
     EXPECT_EQ(first.exit_code, 0) << first.transcript();
-    EXPECT_EQ(first.transcript().find("[warn]"), std::string::npos) << first.transcript();
+    EXPECT_EQ(first.transcript().find("could not take by itself"), std::string::npos) << first.transcript();
+    EXPECT_EQ(first.transcript().find("self.upgrade"), std::string::npos) << first.transcript();
     const auto record = config_of(home)["upgrade"];
     EXPECT_EQ(record.value("from", ""), "2026.1.1.1") << record.dump();
     EXPECT_NE(record.value("to", ""), "2026.1.1.1") << record.dump();
@@ -57,13 +64,13 @@ XTEST(Upgrade, WhatItCannotDoByItselfIsSaidOnceWithItsCommand, .area = "self",
     ASSERT_EQ(home.xlings({"subos", "new", "other"}).exit_code, 0);
     tk::write_file(home.dir() / "subos" / "other" / ".xlings.json", "{not json");
     set_upgraded_to(home, "2026.1.1.1");
-    auto first = home.xlings({"list"});
+    auto first = home.xlings({"subos", "new", "probe"});
     const auto out = first.transcript();
-    EXPECT_EQ(first.exit_code, 0) << "the command asked for still runs\n" << out;
+    EXPECT_EQ(first.exit_code, 0) << "the command asked for still ran\n" << out;
     EXPECT_NE(out.find("need a step it could not take by itself"), std::string::npos) << out;
     EXPECT_NE(out.find("subos 'other'"), std::string::npos) << out;
     EXPECT_NE(out.find("xlings self doctor --fix"), std::string::npos) << out;
-    auto second = home.xlings({"list"});
+    auto second = home.xlings({"subos", "new", "probe2"});
     EXPECT_EQ(second.transcript().find("could not take by itself"), std::string::npos)
         << "said once\n" << second.transcript();
     EXPECT_EQ(config_of(home)["upgrade"]["pending"].size(), 1u);
@@ -73,7 +80,7 @@ XTEST(Upgrade, AnOlderClientChangesNothingAndSaysHowToGoBack, .area = "self",
       .covers = {"UPGRADE-DOWNGRADE"}, .requires_ = {"xlings-bin"}) {
     auto home = initialised("upgrade-downgrade");
     set_upgraded_to(home, "2099.1.1.1");
-    auto first = home.xlings({"list"});
+    auto first = home.xlings({"subos", "new", "probe"});
     EXPECT_EQ(first.exit_code, 0) << first.transcript();
     EXPECT_NE(first.transcript().find("last upgraded by xlings 2099.1.1.1"), std::string::npos)
         << first.transcript();

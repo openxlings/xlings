@@ -15,13 +15,16 @@ rm -rf "$old" "$HOME/hm-old-client"; mkdir -p "$HOME/hm-old-client"
 url="https://github.com/openxlings/xlings/releases/download/v$OLD/xlings-$OLD-linux-$(uname -m).tar.gz"
 step "the older client ($OLD)" ok -- curl -fsSL "$url" -o "$HOME/hm-old-client/x.tar.gz"
 tar -xzf "$HOME/hm-old-client/x.tar.gz" -C "$HOME/hm-old-client"
-oldbin="$(find "$HOME/hm-old-client" -path '*/bin/xlings' -type f | head -1)"
-# As its user's shell has it: the home's SubOS bin on PATH (that client
-# looked for patchelf there).
+olddir="$(dirname "$(dirname "$(find "$HOME/hm-old-client" -path '*/bin/xlings' -type f | head -1)")")"
+# As a user has it: installed by its own `self install`, its home's entry the
+# older client, the home's SubOS bin on PATH (that client looked for patchelf
+# there).
+step "the older client installs itself into a home" ok -- \
+    bash -c "cd '$olddir' && XLINGS_HOME='$old' ./bin/xlings self install -y </dev/null"
+oldbin="$old/bin/xlings"
 O() { PATH="$old/subos/default/bin:$old/bin:$PATH" XLINGS_HOME="$old" "$oldbin" "$@"; }
 N() { XLINGS_HOME="$old" "$XLINGS_HOME/bin/xlings" "$@"; }
 NL() { XLINGS_HOME="$old" "$XLINGS_HOME/bin/luban" "$@"; }
-step "it lays out a home" ok -- O self init
 O config --mirror "${HM_MIRROR:-GLOBAL}" >/dev/null 2>&1
 # patchelf on its own first: that client could not relocate a payload with a
 # patchelf of the same plan (fixed in 2026.10.12.1).

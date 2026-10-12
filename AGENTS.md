@@ -326,8 +326,9 @@ keep in mind:
   needs it, and every command that touches it names the file, what falls back
   and the fix -- "could not read" is never silently "empty". New state that can
   break gets a domain of its own in that table.
-* **The upgrade runs itself** (`xself::upgrade`): the first command of a new
-  client checks the home config, rebuilds derived state and runs doctor's
+* **The upgrade runs itself** (`xself::upgrade`): after the first command of a
+  new client that changes the home and succeeds (never a read-only or refused
+  one), it checks the home config, rebuilds derived state and runs doctor's
   detector; each step is isolated, the result is recorded (`upgrade` in the
   home config, `logs/upgrade.ndjson`), and only what it could not do is said,
   once, with its command and the way back. A change that needs a migration
