@@ -72,9 +72,11 @@ XTEST(OpsJournal, AnOperationIsOneFileItsChildrenJoin, .area = "self", .covers =
 
 XTEST(OpsJournal, CredentialsAndPathsAreTakenOut, .area = "self", .covers = {"OPS-JOURNAL"}) {
     namespace ops = xlings::observe::ops;
-    const std::vector<std::string> argv{"install", "--token", "abc", "--password=x", "https://u:p@host/x", "plain"};
+    const std::vector<std::string> argv{"install", "--token", "abc", "--password=x", "https://u:p@host/x", "plain",
+                                        "--env", "PLAIN=v", "--env=K=v2", "API_SECRET=s", "a=b"};
     const auto r = ops::redact_argv(argv);
-    EXPECT_EQ(r, (std::vector<std::string>{"install", "--token", "***", "--password=***", "https://***@host/x", "plain"}));
+    EXPECT_EQ(r, (std::vector<std::string>{"install", "--token", "***", "--password=***", "https://***@host/x", "plain",
+                                           "--env", "PLAIN=***", "--env=K=***", "API_SECRET=***", "a=b"}));
     const auto b = xlings::xself::redact_for_bundle("/home/someone/.xlings/x /home/someone/y someone", "/home/someone/.xlings",
                                                     "/home/someone", "someone");
     EXPECT_EQ(b, "$XLINGS_HOME/x ~/y user");  // privacy-ok: the fixture of the redaction itself

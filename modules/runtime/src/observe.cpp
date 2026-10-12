@@ -366,9 +366,32 @@ Span::~Span() {
 
 std::vector<std::string> redact_argv(std::span<const std::string> argv) {
     std::vector<std::string> out;
-    bool hide_next = false;
+    bool hide_next = false, env_next = false;
+    // NAME=value: the value goes when it is an environment assignment
+    // (`--env NAME=value`) or the name looks secret.
+    const auto assignment = [](std::string_view v) -> std::optional<std::size_t> {
+        const auto eq = v.find('=');
+        if (eq == std::string_view::npos || eq == 0) return std::nullopt;
+        for (std::size_t k = 0; k < eq; ++k) {
+            const char c = v[k];
+            if (!(std::isalnum(static_cast<unsigned char>(c)) || c == '_')) return std::nullopt;
+        }
+        return eq;
+    };
     for (const auto& a : argv) {
         if (hide_next) { out.push_back("***"); hide_next = false; continue; }
+        if (env_next) {
+            env_next = false;
+            if (auto eq = assignment(a)) { out.push_back(a.substr(0, *eq + 1) + "***"); continue; }
+        }
+        if (a == "--env" || a == "-e") { env_next = true; out.push_back(a); continue; }
+        if (a.starts_with("--env=")) {
+            if (auto eq = assignment(std::string_view(a).substr(6))) { out.push_back(a.substr(0, 6 + *eq + 1) + "***"); continue; }
+        }
+        if (auto eq = assignment(a); eq && looks_secret(a.substr(0, *eq))) {
+            out.push_back(a.substr(0, *eq + 1) + "***");
+            continue;
+        }
         std::string v = a;
         if (const auto scheme = v.find("://"); scheme != std::string::npos) {
             const auto at = v.find('@', scheme + 3);

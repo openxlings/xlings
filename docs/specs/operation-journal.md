@@ -40,8 +40,10 @@ does not know.
 
 - the values of environment variables (only the names of those that change how
   xlings behaves: `XLINGS_*`, `LUBAN_*`, locale, terminal, shell, display, proxies);
-- credentials in a command line: `user:password@` in a URL becomes `***@`, and the
-  value of an option whose name looks secret (token, password, key, auth) is `***`.
+- credentials in a command line: `user:password@` in a URL becomes `***@`; the
+  value of an option whose name looks secret (token, password, key, auth) is `***`;
+  an environment assignment (`--env NAME=value`, or `NAME=value` whose name looks
+  secret) keeps its name and loses its value.
 
 `xlings self log <trace> --bundle` writes the operation and its side files into one
 file with the home's path replaced by `$XLINGS_HOME`, the user's home by `~` and
