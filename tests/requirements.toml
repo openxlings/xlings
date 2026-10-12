@@ -1013,6 +1013,10 @@ status = "required"
 text = "xdesk is a wlroots compositor that speaks opensal.wire itself (a session file's X-Opensal-Native=true: it is given the stream, nothing is bridged): headless and software-rendered, no GPU; it shows its desktop at the size the window asks, takes the window's keys and pointer, opens a terminal (Alt+Return), arranges and decorates windows itself, and ends when the stream does"
 status = "required"
 
+[XDESK-LAYOUT]
+text = "xdesk.layout places windows without drawing anything: tile (one or two windows share the output, more scroll with the focused one in view, a new one beside the focus, widths through thirds, halves and the whole), floating (centred above, where it is put), the canvas (beside the focus, panned, zoomed around a point up to 1, an overview that fits every window and returns to the focus), a layout per workspace; motion by a critically damped spring"
+status = "required"
+
 [LUBAN-MACHINE-DESKTOP]
 text = "a machine whose root declares a desktop session shows it to the Luban OS window: the guest starts the session headless with its /run and /tmp its own, bridges it on a channel of the machine (opensal.wire), at the size the window asks; what is typed into it runs there"
 status = "required"

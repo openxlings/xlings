@@ -22,6 +22,7 @@ import opensal;
 import opensal.wire;
 import opensal.keys;
 import xdesk.os;
+import xdesk.layout;
 import wlroots;
 import freedesktop.wayland.server;
 
@@ -30,6 +31,7 @@ namespace xdesk::compositor {
 namespace {
 
 namespace os = xdesk::os;
+namespace layout = xdesk::layout;
 namespace fs = std::filesystem;
 
 // A wl_listener that calls a function: the C++ side of wl_signal.
@@ -55,16 +57,22 @@ constexpr int kTitle = 26;                 // a window's title bar, in pixels
 constexpr float kBackground[4] = {0.106f, 0.118f, 0.145f, 1.0f};
 constexpr float kTitleActive[4] = {0.196f, 0.282f, 0.408f, 1.0f};
 constexpr float kTitleIdle[4] = {0.157f, 0.169f, 0.200f, 1.0f};
+constexpr layout::Size kPreferred { 900, 600 };   // a new window's frame, until it says
 
 struct Server;
 
 struct View {
     Server* server { nullptr };
+    layout::Id id { 0 };
     wlr_xdg_toplevel* toplevel { nullptr };
     wlr_scene_tree* frame { nullptr };          // the decoration and the content
     wlr_scene_rect* title { nullptr };
     wlr_scene_tree* content { nullptr };
     bool mapped { false };
+    bool laid { false };                        // in the layout
+    bool placed { false };                      // shown somewhere already (then it glides)
+    bool moving { false };                      // its frame is on its way (springs)
+    layout::Spring x, y;
     Hook map, unmap, commit, destroy, request_maximize, request_fullscreen;
 };
 
@@ -72,6 +80,9 @@ struct Popup {
     wlr_xdg_popup* popup { nullptr };
     Hook commit, destroy;
 };
+
+// What a held button is doing.
+enum class Drag { none, pan, move };
 
 struct Server {
     const Options& o;
@@ -82,7 +93,7 @@ struct Server {
     wlr_allocator* allocator { nullptr };
     wlr_scene* scene { nullptr };
     wlr_scene_output_layout* scene_layout { nullptr };
-    wlr_output_layout* layout { nullptr };
+    wlr_output_layout* outputs { nullptr };
     wlr_scene_tree* background_layer { nullptr };
     wlr_scene_tree* window_layer { nullptr };
     wlr_scene_rect* background { nullptr };
@@ -95,18 +106,28 @@ struct Server {
     wlr_keyboard keyboard {};
     xkb_context* xkb { nullptr };
     std::string socket;
-    std::list<View> views;                       // front: focused
+    std::list<View> views;                       // front: focused most recently
     std::list<Popup> popups;
     std::vector<int> children;
     opensal::Size size;
     opensal::Size told;
     bool stop { false };
     std::chrono::steady_clock::time_point start { std::chrono::steady_clock::now() };
+    std::chrono::steady_clock::time_point last_tick { start };
     opensal::wire::Decoder decoder;
     Hook new_toplevel, new_popup, new_decoration, frame, request_cursor, request_selection;
     wl_event_source* input_source { nullptr };
+    wl_event_source* tick { nullptr };
+    layout::Layout lay;
+    layout::Id next_id { 1 };
+    double zoom_shown { 1 };                     // the zoom the windows were last scaled to
+    Drag drag { Drag::none };
+    layout::Id dragged { 0 };
+    double drag_x { 0 }, drag_y { 0 };           // where the pointer was
 
-    explicit Server(const Options& opts) : o(opts), size(opts.size) {}
+    explicit Server(const Options& opts)
+        : o(opts), size(opts.size),
+          lay({.mode = opts.profile == "canvas" ? layout::Mode::canvas : layout::Mode::tile, .gap = 8}) {}
 
     std::uint32_t now_ms() const {
         return static_cast<std::uint32_t>(
@@ -120,6 +141,10 @@ struct Server {
 
     // ── windows ──────────────────────────────────────────────────────
 
+    View* view_of(layout::Id id) {
+        for (auto& v : views) if (v.id == id) return &v;
+        return nullptr;
+    }
     View* focused() { return views.empty() || !views.front().mapped ? nullptr : &views.front(); }
 
     void focus(View* v) {
@@ -136,33 +161,107 @@ struct Server {
         wlr_scene_rect_set_color(v->title, kTitleActive);
         wlr_seat_keyboard_notify_enter(seat, v->toplevel->base->surface, keyboard.keycodes, keyboard.num_keycodes,
                                        &keyboard.modifiers);
+        if (v->laid && lay.focused() != v->id) lay.focus(v->id);
     }
 
-    // The first layout: mapped windows side by side, each a column (the
-    // layout engine replaces this).
-    void arrange() {
-        std::vector<View*> shown;
-        for (auto& v : views) if (v.mapped) shown.push_back(&v);
-        std::ranges::sort(shown, std::less{}, [](View* v) { return v->toplevel; });
-        if (shown.empty()) return;
-        const int gap = 8;
-        const int n = static_cast<int>(shown.size());
-        const int width = (static_cast<int>(size.width) - gap * (n + 1)) / n;
-        const int height = static_cast<int>(size.height) - 2 * gap;
-        for (int k = 0; k < n; ++k) {
-            View* v = shown[static_cast<std::size_t>(k)];
-            const int x = gap + k * (width + gap), y = gap;
-            wlr_scene_node_set_position(&v->frame->node, x, y);
-            wlr_scene_rect_set_size(v->title, width, kTitle);
-            wlr_xdg_toplevel_set_size(v->toplevel, width, std::max(1, height - kTitle));
+    // The layout's focus, given to its window.
+    void follow_focus() {
+        if (const auto id = lay.focused())
+            if (View* v = view_of(*id); v && v != focused()) focus(v);
+    }
+
+    // Where the layout puts everything: sizes now, positions by springs
+    // (at once when `instant`: a window dragged follows the pointer).
+    void arrange(bool instant = false) {
+        const auto placements = lay.arrange({static_cast<double>(size.width), static_cast<double>(size.height)});
+        const double zoom = lay.zoom();
+        for (auto& v : views) {
+            const auto p = std::ranges::find(placements, v.id, &layout::Placement::id);
+            wlr_scene_node_set_enabled(&v.frame->node, v.mapped && p != placements.end());
+            if (p == placements.end()) continue;
+            const int title = static_cast<int>(std::lround(kTitle * zoom));
+            wlr_scene_rect_set_size(v.title, std::max(1, static_cast<int>(std::lround(p->rect.width))), title);
+            wlr_scene_node_set_position(&v.content->node, 0, title);
+            // The client is asked for its size at zoom 1 (the canvas scales it).
+            const int cw = std::max(1, static_cast<int>(std::lround(p->rect.width / zoom)));
+            const int ch = std::max(1, static_cast<int>(std::lround(p->rect.height / zoom)) - kTitle);
+            if (v.toplevel->base->initialized) wlr_xdg_toplevel_set_size(v.toplevel, cw, ch);
+            // The first place is taken at once; after that the frame glides.
+            v.x.target = p->rect.x;
+            v.y.target = p->rect.y;
+            if (!v.placed || instant) { v.x.snap(); v.y.snap(); }
+            v.placed = v.placed || v.mapped;
+            v.moving = v.x.value != v.x.target || v.y.value != v.y.target;
+            wlr_scene_node_set_position(&v.frame->node, static_cast<int>(std::lround(v.x.value)), static_cast<int>(std::lround(v.y.value)));
         }
+        // Stacking: floating windows above the rest.
+        for (const auto& p : placements)
+            if (p.floating)
+                if (View* v = view_of(p.id)) wlr_scene_node_raise_to_top(&v->frame->node);
+        scale(zoom);
+        animate();
+    }
+
+    // The canvas's zoom on each window's surfaces (a surface's own commit
+    // sets its size back, so this runs before each frame while zoomed).
+    void scale(double zoom) {
+        if (zoom == 1 && zoom_shown == 1) return;
+        for (auto& v : views) {
+            wlr_scene_node_for_each_buffer(&v.content->node, [](wlr_scene_buffer* b, int, int, void* data) {
+                const double z = *static_cast<double*>(data);
+                auto* s = wlr_scene_surface_try_from_buffer(b);
+                if (!s) return;
+                if (z == 1) wlr_scene_buffer_set_dest_size(b, s->surface->current.width, s->surface->current.height);
+                else wlr_scene_buffer_set_dest_size(b, std::max(1, static_cast<int>(s->surface->current.width * z)),
+                                                    std::max(1, static_cast<int>(s->surface->current.height * z)));
+            }, &zoom);
+        }
+        zoom_shown = zoom;
+    }
+
+    // Frames on their way: a step per tick until every spring has settled.
+    void animate() {
+        bool any = false;
+        for (const auto& v : views) any = any || v.moving;
+        if (any && tick) wl_event_source_timer_update(tick, 16);
+    }
+
+    void step() {
+        const auto now = std::chrono::steady_clock::now();
+        const double dt = std::min(0.05, std::chrono::duration<double>(now - last_tick).count());
+        last_tick = now;
+        bool any = false;
+        for (auto& v : views) {
+            if (!v.moving) continue;
+            v.x.step(dt);
+            v.y.step(dt);
+            v.moving = !(v.x.value == v.x.target && v.y.value == v.y.target);
+            wlr_scene_node_set_position(&v.frame->node, static_cast<int>(std::lround(v.x.value)), static_cast<int>(std::lround(v.y.value)));
+            any = any || v.moving;
+        }
+        if (any) wl_event_source_timer_update(tick, 16);
+    }
+
+    void lay_out(View& v) {
+        if (v.laid) return;
+        auto* t = v.toplevel;
+        // A dialog (it has a parent, or one fixed size) floats.
+        const bool fixed = t->current.min_width > 0 && t->current.min_width == t->current.max_width
+                           && t->current.min_height > 0 && t->current.min_height == t->current.max_height;
+        const bool floats = t->parent != nullptr || fixed;
+        layout::Size preferred = kPreferred;
+        if (fixed) preferred = {static_cast<double>(t->current.min_width), static_cast<double>(t->current.min_height + kTitle)};
+        lay.add(v.id, preferred, floats);
+        v.laid = true;
     }
 
     void add_view(wlr_xdg_toplevel* toplevel) {
         auto& v = views.emplace_back();
         v.server = this;
+        v.id = next_id++;
         v.toplevel = toplevel;
         v.frame = wlr_scene_tree_create(window_layer);
+        wlr_scene_node_set_enabled(&v.frame->node, false);
         v.title = wlr_scene_rect_create(v.frame, 1, kTitle, kTitleIdle);
         v.content = wlr_scene_xdg_surface_create(v.frame, toplevel->base);
         wlr_scene_node_set_position(&v.content->node, 0, kTitle);
@@ -170,22 +269,35 @@ struct Server {
         toplevel->base->data = v.content;
         View* self = &v;
         v.commit.connect(&toplevel->base->surface->events.commit, [this, self](void*) {
-            // The first commit is the client asking what to be: answer with a size.
+            // The first commit is the client asking what to be: the layout answers.
             if (self->toplevel->base->initial_commit) {
+                lay_out(*self);
                 wlr_xdg_toplevel_set_size(self->toplevel, 0, 0);
                 arrange();
             }
         });
         v.map.connect(&toplevel->base->surface->events.map, [this, self](void*) {
             self->mapped = true;
+            lay_out(*self);
+            // A floating window keeps the size it drew, centred where the layout put it.
+            if (lay.floating(self->id)) {
+                const wlr_box g = self->toplevel->base->geometry;
+                const double w = std::max(g.width, 1), h = std::max(g.height, 1) + kTitle;
+                lay.place(self->id, {(size.width - w) / 2, (size.height - h) / 2, w, h});
+            }
+            lay.focus(self->id);
             arrange();
             focus(self);
         });
         v.unmap.connect(&toplevel->base->surface->events.unmap, [this, self](void*) {
             self->mapped = false;
+            self->laid = false;
+            self->placed = false;
+            lay.remove(self->id);
+            wlr_scene_node_set_enabled(&self->frame->node, false);
             arrange();
-            if (View* next = focused()) focus(next);
-            else for (auto& other : views) if (other.mapped) { focus(&other); break; }
+            follow_focus();
+            if (!focused()) for (auto& other : views) if (other.mapped) { focus(&other); break; }
         });
         v.request_maximize.connect(&toplevel->events.request_maximize, [self](void*) {
             if (self->toplevel->base->initialized) wlr_xdg_surface_schedule_configure(self->toplevel->base);
@@ -194,6 +306,7 @@ struct Server {
             if (self->toplevel->base->initialized) wlr_xdg_surface_schedule_configure(self->toplevel->base);
         });
         v.destroy.connect(&toplevel->events.destroy, [this, self](void*) {
+            if (self->laid) lay.remove(self->id);
             for (auto it = views.begin(); it != views.end(); ++it)
                 if (&*it == self) {
                     it->map.disconnect(); it->unmap.disconnect(); it->commit.disconnect(); it->destroy.disconnect();
@@ -243,23 +356,57 @@ struct Server {
 
     // ── input ────────────────────────────────────────────────────────
 
-    // A chord the desktop keeps for itself (Super or Alt held).
+    bool held(wlr_keyboard_modifier m) {
+        return wlr_keyboard_get_modifiers(&keyboard) & static_cast<std::uint32_t>(m);
+    }
+
+    // A chord the desktop keeps for itself: Super, or Alt where the host
+    // keeps Super (docs/luban/08-desktop.md lists them).
     bool shortcut(std::uint32_t code) {
-        const std::uint32_t mods = wlr_keyboard_get_modifiers(&keyboard);
-        const bool super = mods & static_cast<std::uint32_t>(wlr_keyboard_modifier::WLR_MODIFIER_LOGO);
-        const bool alt = mods & static_cast<std::uint32_t>(wlr_keyboard_modifier::WLR_MODIFIER_ALT);
+        const bool super = held(wlr_keyboard_modifier::WLR_MODIFIER_LOGO);
+        const bool alt = held(wlr_keyboard_modifier::WLR_MODIFIER_ALT);
+        const bool shift = held(wlr_keyboard_modifier::WLR_MODIFIER_SHIFT);
         if (!super && !alt) return false;
+        // Workspaces by the digit keys' codes (Shift changes their symbols).
+        if (code >= 2 && code <= 5) {
+            const int n = static_cast<int>(code) - 2;
+            if (shift) { if (const auto f = lay.focused()) lay.send_to(*f, n); }
+            else lay.show(n);
+            arrange();
+            follow_focus();
+            return true;
+        }
         const xkb_keysym_t* syms = nullptr;
         const int n = xkb_state_key_get_syms(keyboard.xkb_state, code + 8, &syms);
         for (int k = 0; k < n; ++k) {
-            const auto sym = syms[k];
-            if (sym == XKB_KEY_Return) { launch(o.terminal); return true; }
-            if ((sym == XKB_KEY_q || sym == XKB_KEY_Q) && focused()) { wlr_xdg_toplevel_send_close(focused()->toplevel); return true; }
-            if (sym == XKB_KEY_Tab && alt) {
-                // The least recently focused window to the front.
-                for (auto it = views.rbegin(); it != views.rend(); ++it)
-                    if (it->mapped && &*it != focused()) { focus(&*it); return true; }
+            const auto sym = xkb_keysym_to_lower(syms[k]);
+            auto way = [&](layout::Direction d) {
+                if (shift) lay.move(d); else lay.move_focus(d);
+                arrange();
+                follow_focus();
                 return true;
+            };
+            switch (sym) {
+                case XKB_KEY_Return: launch(o.terminal); return true;
+                case XKB_KEY_q: if (focused()) wlr_xdg_toplevel_send_close(focused()->toplevel); return true;
+                case XKB_KEY_Left: case XKB_KEY_h: return way(layout::Direction::left);
+                case XKB_KEY_Right: case XKB_KEY_l: return way(layout::Direction::right);
+                case XKB_KEY_Up: case XKB_KEY_k: return way(layout::Direction::up);
+                case XKB_KEY_Down: case XKB_KEY_j: return way(layout::Direction::down);
+                case XKB_KEY_f: if (const auto f = lay.focused()) { lay.toggle_floating(*f); arrange(); } return true;
+                case XKB_KEY_r: lay.cycle_width(); arrange(); return true;
+                case XKB_KEY_o: lay.overview(!lay.in_overview()); arrange(); return true;
+                case XKB_KEY_Tab:
+                    if (!alt) break;
+                    // The least recently focused window to the front.
+                    for (auto it = views.rbegin(); it != views.rend(); ++it)
+                        if (it->mapped && &*it != focused() && lay.workspace_of(it->id) == lay.workspace()) {
+                            focus(&*it);
+                            arrange();
+                            return true;
+                        }
+                    return true;
+                default: break;
             }
         }
         return false;
@@ -280,19 +427,36 @@ struct Server {
             wlr_seat_keyboard_notify_modifiers(seat, &keyboard.modifiers);
         };
         // A character that needs Shift and was given without it.
-        const bool shifted = wlr_keyboard_get_modifiers(&keyboard) & static_cast<std::uint32_t>(wlr_keyboard_modifier::WLR_MODIFIER_SHIFT);
-        const bool add_shift = stroke->shift && !shifted && k.down && opensal::keys::modifier_of(k.keysym) == 0;
+        const bool add_shift = stroke->shift && !held(wlr_keyboard_modifier::WLR_MODIFIER_SHIFT) && k.down
+                               && opensal::keys::modifier_of(k.keysym) == 0;
         if (add_shift) press(42, true);
         press(stroke->code, k.down);
         if (add_shift) { press(stroke->code, false); press(42, false); }
     }
 
+    // Pointer input goes to windows only at zoom 1 (zoomed out, a click picks one).
+    bool live() const { return lay.zoom() == 1; }
+
     void pointer_moved() {
+        if (drag != Drag::none) {
+            const double dx = cursor->x - drag_x, dy = cursor->y - drag_y;
+            drag_x = cursor->x;
+            drag_y = cursor->y;
+            if (drag == Drag::pan) {
+                lay.pan(dx, dy);
+            } else if (const auto p = placement_of(dragged)) {
+                lay.place(dragged, {p->x + dx, p->y + dy, p->width, p->height});
+            }
+            arrange(true);
+            return;
+        }
         double sx = 0, sy = 0;
-        wlr_scene_node* node = wlr_scene_node_at(&scene->tree.node, cursor->x, cursor->y, &sx, &sy);
         wlr_surface* surface = nullptr;
-        if (node && node->type == wlr_scene_node_type::WLR_SCENE_NODE_BUFFER)
-            if (auto* sb = wlr_scene_surface_try_from_buffer(wlr_scene_buffer_from_node(node))) surface = sb->surface;
+        if (live()) {
+            wlr_scene_node* node = wlr_scene_node_at(&scene->tree.node, cursor->x, cursor->y, &sx, &sy);
+            if (node && node->type == wlr_scene_node_type::WLR_SCENE_NODE_BUFFER)
+                if (auto* sb = wlr_scene_surface_try_from_buffer(wlr_scene_buffer_from_node(node))) surface = sb->surface;
+        }
         if (!surface) {
             wlr_cursor_set_xcursor(cursor, cursors, "default");
             wlr_seat_pointer_clear_focus(seat);
@@ -302,15 +466,70 @@ struct Server {
         wlr_seat_pointer_notify_motion(seat, now_ms(), sx, sy);
     }
 
-    View* view_at(double x, double y) {
-        for (auto& v : views) {
-            if (!v.mapped) continue;
-            const auto& n = v.frame->node;
-            const wlr_box box = v.toplevel->base->geometry;
-            const int w = std::max(box.width, 1), h = std::max(box.height, 1) + kTitle;
-            if (x >= n.x && y >= n.y && x < n.x + w && y < n.y + h) return &v;
+    std::optional<layout::Rect> placement_of(layout::Id id) {
+        for (const auto& p : lay.arrange({static_cast<double>(size.width), static_cast<double>(size.height)}))
+            if (p.id == id) return p.rect;
+        return std::nullopt;
+    }
+
+    void button(const opensal::PointerButton& b) {
+        if (!b.down && drag != Drag::none) { drag = Drag::none; return; }
+        const auto hit = lay.at(cursor->x, cursor->y);
+        if (b.down) {
+            View* v = hit ? view_of(*hit) : nullptr;
+            if (!live()) {
+                // Zoomed out: a click goes in to the window under it.
+                if (v) { lay.focus(v->id); lay.overview(false); arrange(); focus(v); }
+                return;
+            }
+            const bool super = held(wlr_keyboard_modifier::WLR_MODIFIER_LOGO) || held(wlr_keyboard_modifier::WLR_MODIFIER_ALT);
+            const bool on_title = v && cursor->y - v->frame->node.y < kTitle;
+            if (v && (super || on_title) && (lay.floating(v->id) || lay.mode() == layout::Mode::canvas)) {
+                // A window moved by its title (or anywhere with Super held).
+                focus(v);
+                drag = Drag::move;
+                dragged = v->id;
+                drag_x = cursor->x;
+                drag_y = cursor->y;
+                return;
+            }
+            if (!v && lay.mode() == layout::Mode::canvas) {
+                // The canvas's background: dragging it pans.
+                drag = Drag::pan;
+                drag_x = cursor->x;
+                drag_y = cursor->y;
+                return;
+            }
+            if (v) { focus(v); arrange(); }
         }
-        return nullptr;
+        wlr_seat_pointer_notify_button(seat, now_ms(), opensal::keys::evdev_button(b.button),
+                                       b.down ? wl_pointer_button_state::WL_POINTER_BUTTON_STATE_PRESSED
+                                              : wl_pointer_button_state::WL_POINTER_BUTTON_STATE_RELEASED);
+    }
+
+    void wheel(const opensal::Wheel& w) {
+        const bool super = held(wlr_keyboard_modifier::WLR_MODIFIER_LOGO) || held(wlr_keyboard_modifier::WLR_MODIFIER_ALT);
+        const bool over_window = lay.at(cursor->x, cursor->y).has_value();
+        if (lay.mode() == layout::Mode::canvas && (super || !over_window || !live())) {
+            // The canvas: Super+wheel zooms around the pointer, the wheel elsewhere pans.
+            if (super) lay.zoom_at(w.dy > 0 ? 1.1 : 1 / 1.1, cursor->x, cursor->y);
+            else lay.pan(w.dx * 40, w.dy * 40);
+            arrange();
+            return;
+        }
+        if (lay.mode() == layout::Mode::tile && super) {
+            lay.pan(w.dy * 60, 0);
+            arrange();
+            return;
+        }
+        auto axis = [&](wl_pointer_axis orientation, double steps) {
+            if (steps == 0) return;
+            wlr_seat_pointer_notify_axis(seat, now_ms(), orientation, steps * 15.0, static_cast<std::int32_t>(steps * 120),
+                                         wl_pointer_axis_source::WL_POINTER_AXIS_SOURCE_WHEEL,
+                                         wl_pointer_axis_relative_direction::WL_POINTER_AXIS_RELATIVE_DIRECTION_IDENTICAL);
+        };
+        axis(wl_pointer_axis::WL_POINTER_AXIS_VERTICAL_SCROLL, -w.dy);
+        axis(wl_pointer_axis::WL_POINTER_AXIS_HORIZONTAL_SCROLL, w.dx);
     }
 
     void input(const opensal::Event& ev) {
@@ -321,32 +540,23 @@ struct Server {
             pointer_moved();
             wlr_seat_pointer_notify_frame(seat);
         } else if (const auto* b = std::get_if<opensal::PointerButton>(&ev)) {
-            if (b->down)
-                if (View* v = view_at(cursor->x, cursor->y)) focus(v);
-            wlr_seat_pointer_notify_button(seat, now_ms(), opensal::keys::evdev_button(b->button),
-                                           b->down ? wl_pointer_button_state::WL_POINTER_BUTTON_STATE_PRESSED
-                                                   : wl_pointer_button_state::WL_POINTER_BUTTON_STATE_RELEASED);
+            button(*b);
             wlr_seat_pointer_notify_frame(seat);
         } else if (const auto* w = std::get_if<opensal::Wheel>(&ev)) {
-            auto axis = [&](wl_pointer_axis orientation, double steps) {
-                if (steps == 0) return;
-                wlr_seat_pointer_notify_axis(seat, now_ms(), orientation, steps * 15.0, static_cast<std::int32_t>(steps * 120),
-                                             wl_pointer_axis_source::WL_POINTER_AXIS_SOURCE_WHEEL,
-                                             wl_pointer_axis_relative_direction::WL_POINTER_AXIS_RELATIVE_DIRECTION_IDENTICAL);
-            };
-            axis(wl_pointer_axis::WL_POINTER_AXIS_VERTICAL_SCROLL, -w->dy);
-            axis(wl_pointer_axis::WL_POINTER_AXIS_HORIZONTAL_SCROLL, w->dx);
+            wheel(*w);
             wlr_seat_pointer_notify_frame(seat);
         } else if (const auto* r = std::get_if<opensal::Resized>(&ev)) {
             resize(r->size);
         } else if (const auto* f = std::get_if<opensal::Focus>(&ev)) {
             // Focus left the window: nothing it holds stays pressed here.
-            if (!f->in)
+            if (!f->in) {
+                drag = Drag::none;
                 for (std::uint32_t k = 0; k < keyboard.num_keycodes; ++k) {
                     wlr_keyboard_key_event up{.time_msec = now_ms(), .keycode = keyboard.keycodes[k], .update_state = true,
                                               .state = wl_keyboard_key_state::WL_KEYBOARD_KEY_STATE_RELEASED};
                     wlr_keyboard_notify_key(&keyboard, &up);
                 }
+            }
         }
     }
 
@@ -388,6 +598,7 @@ struct Server {
     void render() {
         wlr_output_state st;
         wlr_output_state_init(&st);
+        if (zoom_shown != 1) scale(zoom_shown);
         if (!wlr_scene_output_build_state(scene_output, &st, nullptr) || !st.buffer) {
             wlr_output_state_finish(&st);
             return;
@@ -459,9 +670,9 @@ struct Server {
         wlr_fractional_scale_manager_v1_create(display, 1);
         wlr_presentation_create(display, backend, 2);
 
-        layout = wlr_output_layout_create(display);
+        outputs = wlr_output_layout_create(display);
         scene = wlr_scene_create();
-        scene_layout = wlr_scene_attach_output_layout(scene, layout);
+        scene_layout = wlr_scene_attach_output_layout(scene, outputs);
         background_layer = wlr_scene_tree_create(&scene->tree);
         window_layer = wlr_scene_tree_create(&scene->tree);
         background = wlr_scene_rect_create(background_layer, static_cast<int>(size.width), static_cast<int>(size.height), kBackground);
@@ -478,7 +689,7 @@ struct Server {
         });
 
         cursor = wlr_cursor_create();
-        wlr_cursor_attach_output_layout(cursor, layout);
+        wlr_cursor_attach_output_layout(cursor, outputs);
         cursors = wlr_xcursor_manager_create(nullptr, 24);
         wlr_xcursor_manager_load(cursors, 1);
         seat = wlr_seat_create(display, "seat0");
@@ -514,7 +725,7 @@ struct Server {
         wlr_output_state_set_enabled(&on, true);
         wlr_output_commit_state(output, &on);
         wlr_output_state_finish(&on);
-        wlr_output_layout_output* lo = wlr_output_layout_add_auto(layout, output);
+        wlr_output_layout_output* lo = wlr_output_layout_add_auto(outputs, output);
         scene_output = wlr_scene_output_create(scene, output);
         wlr_scene_output_layout_add_output(scene_layout, lo, scene_output);
         frame.connect(&output->events.frame, [this](void*) { render(); });
@@ -537,6 +748,7 @@ struct Server {
                                                 return 0;
                                             },
                                             this);
+        tick = wl_event_loop_add_timer(loop, [](void* data) -> int { static_cast<Server*>(data)->step(); return 0; }, this);
         using I = opensal::Interface;
         send(opensal::wire::encode('h', std::to_string(I::Surface | I::Mode | I::Keyboard | I::Pointer)));
         for (const auto& a : o.autostart) launch(a);
@@ -556,6 +768,7 @@ struct Server {
 
     ~Server() {
         if (input_source) wl_event_source_remove(input_source);
+        if (tick) wl_event_source_remove(tick);
         for (int pid : children) os::terminate(pid);
         new_toplevel.disconnect(); new_popup.disconnect(); new_decoration.disconnect(); frame.disconnect();
         request_cursor.disconnect(); request_selection.disconnect();

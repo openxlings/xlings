@@ -434,3 +434,164 @@ state {}
         EXPECT_NEAR(px[2], 0x25, 2);
     }
 }
+
+// A Wayland client in one colour (xdg-shell over the plain wire, its pixels
+// in shared memory), so where xdesk puts a window is read off the picture.
+fs::path colour_client(const tk::Home& home) {
+    const auto file = home.root() / "client.py";
+    tk::write_file(file, R"PY(# A Wayland client in one colour: xdg-shell over the plain wire, its pixels
+# in shared memory. Closes when asked. argv: RRGGBB [title]
+import os, socket, struct, sys, mmap, tempfile
+colour = int(sys.argv[1], 16)
+title = sys.argv[2] if len(sys.argv) > 2 else sys.argv[1]
+sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+sock.connect(os.path.join(os.environ["XDG_RUNTIME_DIR"], os.environ["WAYLAND_DISPLAY"]))
+next_id = [2]
+def new():
+    i = next_id[0]; next_id[0] += 1; return i
+def string(s):
+    b = s.encode() + b"\0"
+    return struct.pack("<I", len(b)) + b + b"\0" * (-len(b) % 4)
+def send(obj, op, args=b"", fds=()):
+    msg = struct.pack("<II", obj, ((8 + len(args)) << 16) | op) + args
+    if fds: sock.sendmsg([msg], [(socket.SOL_SOCKET, socket.SCM_RIGHTS, struct.pack("<%di" % len(fds), *fds))])
+    else: sock.sendall(msg)
+registry = new()
+send(1, 1, struct.pack("<I", registry))            # wl_display.get_registry
+sync = new()
+send(1, 0, struct.pack("<I", sync))                # wl_display.sync
+globals_ = {}
+buf = b""
+def events():
+    global buf
+    while True:
+        while len(buf) >= 8:
+            obj, word = struct.unpack("<II", buf[:8])
+            size, op = word >> 16, word & 0xffff
+            if len(buf) < size: break
+            body, buf = buf[8:size], buf[size:]
+            yield obj, op, body
+        data = sock.recv(65536)
+        if not data: return
+        buf += data
+it = events()
+for obj, op, body in it:
+    if obj == registry and op == 0:
+        name, = struct.unpack("<I", body[:4]); n, = struct.unpack("<I", body[4:8])
+        iface = body[8:8 + n - 1].decode(); ver, = struct.unpack("<I", body[8 + n + (-n % 4):][:4])
+        globals_[iface] = (name, ver)
+    elif obj == sync: break
+def bind(iface, ver):
+    name, have = globals_[iface]; i = new()
+    send(registry, 0, struct.pack("<I", name) + string(iface) + struct.pack("<II", min(ver, have), i))
+    return i
+compositor, shm, wm = bind("wl_compositor", 4), bind("wl_shm", 1), bind("xdg_wm_base", 1)
+surface = new(); send(compositor, 0, struct.pack("<I", surface))
+xdg_surface = new(); send(wm, 2, struct.pack("<II", xdg_surface, surface))
+toplevel = new(); send(xdg_surface, 1, struct.pack("<I", toplevel))
+send(toplevel, 2, string(title))                   # set_title
+send(surface, 6)                                   # commit
+size = (0, 0); drawn = None
+def draw(w, h):
+    stride = w * 4
+    f = tempfile.TemporaryFile()          # unlinked: memory the compositor maps
+    fd = f.fileno()
+    os.ftruncate(fd, stride * h)
+    with mmap.mmap(fd, stride * h) as m:
+        m.write(struct.pack("<I", 0xff000000 | colour) * (w * h))
+    pool = new(); send(shm, 0, struct.pack("<Ii", pool, stride * h), [fd])
+    buffer = new(); send(pool, 0, struct.pack("<IiiiiI", buffer, 0, w, h, stride, 1))
+    f.close()
+    send(surface, 1, struct.pack("<Iii", buffer, 0, 0))     # attach
+    send(surface, 2, struct.pack("<iiii", 0, 0, w, h))      # damage
+    send(surface, 6)
+for obj, op, body in it:
+    if obj == toplevel and op == 0:
+        w, h = struct.unpack("<ii", body[:8]); size = (w or 400, h or 300)
+    elif obj == toplevel and op == 1:
+        break                                      # close
+    elif obj == xdg_surface and op == 0:
+        send(xdg_surface, 4, body[:4])             # ack_configure
+        if size != drawn: draw(*size); drawn = size
+    elif obj == wm and op == 0:
+        send(wm, 3, body[:4])                      # pong
+)PY");
+    return file;
+}
+
+tk::RunResult xdesk_with(const tk::Home& home, std::string_view profile, std::string_view script) {
+    const auto runtime = home.root() / "run";
+    fs::create_directories(runtime);
+    fs::permissions(runtime, fs::perms::owner_all, fs::perm_options::replace);
+    const auto client = colour_client(home).string();
+    // Three windows, one after the other: red, green, blue.
+    return run_script(home, script,
+                      {"--desktop-exec", xdesk_binary()->string(), "--profile", std::string(profile),
+                       "--autostart", std::format("python3 {} c04040", client),
+                       "--autostart", std::format("sh -c 'sleep 0.6; exec python3 {} 40c040'", client),
+                       "--autostart", std::format("sh -c 'sleep 1.2; exec python3 {} 4040c0'", client)},
+                      {{"XDG_RUNTIME_DIR", runtime.string()}});
+}
+
+constexpr std::array<int, 3> kRed { 0xc0, 0x40, 0x40 }, kGreen { 0x40, 0xc0, 0x40 }, kBlue { 0x40, 0x40, 0xc0 };
+
+XTEST(LubanOs, XdeskClassicTilesWindowsAndScrollsToTheFocusedOne, .area = "luban",
+      .covers = {"XDESK-COMPOSITOR", "XDESK-LAYOUT"}, .requires_ = {"linux", "xlings-bin"}) {
+    if (!app_binary()) GTEST_SKIP() << "no luban-os beside the xlings under test";
+    if (!xdesk_binary()) GTEST_SKIP() << "no xdesk beside luban-os (mcpp build -p xdesk-app)";
+    auto home = tk::Home::isolated("luban-os-xdesk-tile");
+    ASSERT_EQ(home.xlings({"self", "init"}).exit_code, 0);
+    const auto three = home.root() / "three.ppm", left = home.root() / "left.ppm";
+    auto r = xdesk_with(home, "classic", std::format(R"(wait desktop
+waitfor desktop.texture.0 1100
+sleep 3000
+screenshot {}
+screenshot {}
+key Alt+Left
+key Alt+Left
+sleep 1000
+screenshot {}
+)", three.string(), artifact("xdesk-classic-three.bmp").string(), left.string()));
+    ASSERT_EQ(r.exit_code, 0) << r.transcript();
+    // Three halves: the last two shown, the newest (focused) on the right.
+    const auto a = read_ppm(three);
+    EXPECT_EQ(a.at(275, 400), kGreen);
+    EXPECT_EQ(a.at(825, 400), kBlue);
+    // The focus two to the left: the strip scrolled back to the first.
+    const auto b = read_ppm(left);
+    EXPECT_EQ(b.at(275, 400), kRed);
+    EXPECT_EQ(b.at(825, 400), kGreen);
+}
+
+XTEST(LubanOs, XdeskCanvasShowsEveryWindowInItsOverviewAndAClickGoesIn, .area = "luban",
+      .covers = {"XDESK-COMPOSITOR", "XDESK-LAYOUT"}, .requires_ = {"linux", "xlings-bin"}) {
+    if (!app_binary()) GTEST_SKIP() << "no luban-os beside the xlings under test";
+    if (!xdesk_binary()) GTEST_SKIP() << "no xdesk beside luban-os (mcpp build -p xdesk-app)";
+    auto home = tk::Home::isolated("luban-os-xdesk-canvas");
+    ASSERT_EQ(home.xlings({"self", "init"}).exit_code, 0);
+    const auto all = home.root() / "overview.ppm", in = home.root() / "in.ppm";
+    auto r = xdesk_with(home, "canvas", std::format(R"(wait desktop
+waitfor desktop.texture.0 1100
+sleep 3000
+key Alt+o
+sleep 1000
+screenshot {}
+screenshot {}
+click desktop
+sleep 1000
+screenshot {}
+)", all.string(), artifact("xdesk-canvas-overview.bmp").string(), in.string()));
+    ASSERT_EQ(r.exit_code, 0) << r.transcript();
+    // Zoomed out: the three side by side, the middle one in the middle.
+    const auto a = read_ppm(all);
+    std::set<std::array<int, 3>> seen;
+    for (int x = 0; x < 1100; x += 10) seen.insert(a.at(x, 350));
+    EXPECT_TRUE(seen.contains(kRed) && seen.contains(kGreen) && seen.contains(kBlue));
+    EXPECT_EQ(a.at(550, 350), kGreen);
+    // A click on it: back to 1, it in the middle of the view.
+    const auto b = read_ppm(in);
+    EXPECT_EQ(b.at(550, 350), kGreen);
+    EXPECT_EQ(b.at(150, 350), kGreen) << "still zoomed out (it is as wide as it was made)";
+    EXPECT_EQ(b.at(950, 350), kGreen);
+    EXPECT_NE(a.at(150, 350), kGreen) << "the overview did not zoom out";
+}
