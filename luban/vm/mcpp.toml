@@ -17,6 +17,7 @@ runtime  = { path = "../../modules/runtime" }
 subos    = { path = "../../modules/subos" }
 image    = { path = "../../modules/image" }
 luban-service = { path = "../service" }
+luban-desktop-wlr = { path = "../desktop/wlr" }
 
 [build]
 include_dirs = ["../../modules/libs/src/json"]

@@ -44,14 +44,20 @@ int start(const service::Context& c, std::string_view name, const EnterOptions& 
 
 // One connection to a running machine's supervisor: sessions on channels
 // (luban.vm.protocol), what the terminal relay and the Luban OS window use.
+// Sending is safe from more than one thread (a frame is written whole);
+// poll is one thread's.
 class Client {
 public:
     static std::expected<Client, std::string> connect(const fs::path& home, std::string_view name);
-    Client(Client&& other) noexcept : fd_(std::exchange(other.fd_, -1)), buffer_(std::move(other.buffer_)) {}
+    Client(Client&& other) noexcept
+        : fd_(std::exchange(other.fd_, -1)), buffer_(std::move(other.buffer_)), writing_(std::move(other.writing_)) {}
     Client& operator=(Client&& other) noexcept;
     ~Client();
     // A session: the root's login shell on a pty of this size.
     bool open(std::uint32_t channel, int rows, int cols, const nlohmann::json& env = nlohmann::json::object());
+    // A desktop: the session `session` (empty: the first the environment
+    // declares), headless at this size, its bytes opensal.wire (opensal-wlr).
+    bool open_display(std::uint32_t channel, std::string_view session, int width, int height);
     bool send(std::uint32_t channel, std::string_view bytes);
     bool resize(std::uint32_t channel, int rows, int cols);
     bool close(std::uint32_t channel);
@@ -61,8 +67,10 @@ public:
     int fd() const { return fd_; }
 private:
     explicit Client(int fd) : fd_(fd) {}
+    bool write_(std::string_view frame);      // whole frames, from any thread
     int fd_ { -1 };
     std::string buffer_;
+    std::unique_ptr<std::mutex> writing_ = std::make_unique<std::mutex>();
 };
 
 // The environment a session needs inside (its network's proxy), from the

@@ -77,6 +77,30 @@ XTEST(LubanCli, MachineSettingsAreCheckedAndEveryOtherKeySurvives, .area = "luba
     EXPECT_FALSE(svc::read_settings(home.dir(), "box")) << "could not read is not the defaults";
 }
 
+XTEST(LubanCli, AnEditionsDefaultsAreBehindWhatTheUserSet, .area = "luban", .covers = {"LUBAN-SETTINGS"}) {
+    auto home = tk::Home::isolated("luban-settings-edition");
+    // The root an edition made: its /etc, and its defaults in /usr/share/luban.
+    const auto root = home.dir() / "subos" / "desk" / "rootfs";
+    tk::write_file(root / "etc/hostname", "desk\n");
+    tk::write_file(root / "usr/share/luban/settings.json",
+                   R"({"mode": "machine", "desktop": "labwc-desktop", "persist": "sometimes"})");
+    auto s = svc::read_settings(home.dir(), "desk");
+    ASSERT_TRUE(s);
+    EXPECT_EQ(s->mode, "machine");
+    EXPECT_EQ(s->desktop, "labwc-desktop");
+    EXPECT_EQ(s->persist, "all") << "a value the key does not take is not a default";
+    ASSERT_TRUE(svc::set_setting(home.dir(), "desk", "mode", "sandbox"));
+    EXPECT_EQ(svc::read_settings(home.dir(), "desk")->mode, "sandbox") << "what the user set wins";
+    EXPECT_EQ(svc::read_settings(home.dir(), "desk")->desktop, "labwc-desktop");
+    ASSERT_TRUE(svc::set_setting(home.dir(), "desk", "desktop", "none"));
+    EXPECT_EQ(svc::read_settings(home.dir(), "desk")->desktop, "none");
+    // An unreadable defaults file is no defaults (the user's file is what must be read).
+    tk::write_file(root / "usr/share/luban/settings.json", "{oops");
+    auto again = svc::read_settings(home.dir(), "desk");
+    ASSERT_TRUE(again);
+    EXPECT_EQ(again->mode, "sandbox");
+}
+
 XTEST(LubanCli, AnArchiveCarriesTheManifestAndTheRootsStateAndNothingThatLeaves, .area = "luban", .covers = {"LUBAN-ARCHIVE"}) {
     namespace archive = luban::service::archive;
     auto home = tk::Home::isolated("luban-archive");

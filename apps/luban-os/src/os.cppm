@@ -13,6 +13,8 @@ import xlings.libs.json;
 import luban.service;
 import luban.vm;
 import luban.desktop.term;
+import opensal;
+import opensal.wire;
 
 export namespace luban::os {
 
@@ -94,6 +96,47 @@ private:
     std::function<void()> wake_;
     int rows_ { 24 }, cols_ { 80 };
 };
+
+// A machine's desktop on this window: opensal.wire on one of its channels
+// (the guest bridges its compositor, opensal-wlr). This side is the
+// provider: it says the size it shows the surface at and sends the input;
+// the pixels come back as damaged rectangles, applied on the window's thread.
+class Display {
+public:
+    static std::unique_ptr<Display> machine(const fs::path& home, const std::string& name, const std::string& session,
+                                            opensal::Size size, std::function<void()> wake, std::string& error);
+    ~Display();
+    void send(const opensal::Event& e);
+    bool alive() const { return alive_; }
+    // Why it ended, when it could not start.
+    std::string error() const { std::lock_guard l(m_); return error_; }
+    const std::string& name() const { return name_; }
+
+    struct Update { opensal::Rect rect; std::string rows; };
+    // The surface's size (0 until the first frame) and the rectangles since the last call.
+    opensal::Size take(std::vector<Update>& out);
+
+private:
+    Display() = default;
+    void provider_(std::string_view bytes);
+    std::string name_;
+    mutable std::mutex m_;
+    std::optional<vm::Client> client_;
+    std::thread io_;
+    std::atomic<bool> alive_ { true };
+    std::atomic<bool> stop_ { false };
+    std::function<void()> wake_;
+    opensal::Size wanted_;
+    opensal::Size size_;
+    std::vector<Update> updates_;
+    std::string error_;
+    opensal::wire::Decoder decoder_;
+};
+
+// The desktop session `name` shows when it is entered: its setting
+// (`luban config <n> --desktop`), else the first its root declares; nothing
+// when it declares none or the setting is `none`.
+std::optional<std::string> desktop_session(const fs::path& home, const std::string& name, const std::string& setting);
 
 // Draws `c` filling the current imgui window; returns the cell grid it fits.
 std::pair<int, int> draw_console(Console& c, void* mono_font, float font_size, bool focused);

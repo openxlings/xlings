@@ -208,8 +208,12 @@ grep -aq "qemu" <<<"$(grep -a "booting t.iso" <<<"$out")" && fail "enter t.iso n
 
 log "luban enter t --mode machine: the environment itself, its own kernel, a session with its shell"
 L config t --proxy socks5h://127.0.0.1:9 >/dev/null 2>&1 || fail "config --proxy"
-machine="$( (sleep 120; printf 'echo MACHINE-$(uname -r) > /root/machine.txt; cat /root/machine.txt; exit\n'; sleep 10) \
-  | timeout 600 script -qfec "env XLINGS_HOME=$H DISPLAY= WAYLAND_DISPLAY= $H/bin/luban enter t --mode machine --temp" /dev/null 2>&1 | tr -d '\r')"
+# The machine's own logs are kept with the test's, whatever happens next.
+keep_machine_logs() { for f in "$H"/logs/machines/t/*.log; do [[ -f "$f" ]] && cp "$f" "$RUNTIME_DIR/machine-$(basename "$f")"; done; true; }
+trap keep_machine_logs EXIT
+machine="$( { (sleep 120; printf 'echo MACHINE-$(uname -r) > /root/machine.txt; cat /root/machine.txt; exit\n'; sleep 10) 2>/dev/null || true; } \
+  | timeout 600 script -qfec "env XLINGS_HOME=$H DISPLAY= WAYLAND_DISPLAY= $H/bin/luban enter t --mode machine --temp" /dev/null 2>&1 | tr -d '\r' || true)"
+printf '%s\n' "$machine" > "$RUNTIME_DIR/machine-session.log"
 grep -q "t is up" <<<"$machine" || fail "machine: did not come up: $(tail -20 <<<"$machine"; tail -20 "$H"/logs/machines/t/console.log 2>/dev/null)"
 grep -q "only its proxy" <<<"$machine" || fail "machine: its network is not only the proxy: $(grep -a starting <<<"$machine")"
 grep -q "MACHINE-" <<<"$machine" || fail "machine: the session ran nothing: $(tail -20 <<<"$machine")"

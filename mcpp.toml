@@ -49,6 +49,7 @@ members = [
     "luban/cli",
     "luban/desktop/spec",
     "luban/desktop/term",
+    "luban/desktop/wlr",
     "luban/desktop/host",
     "apps/luban",
     "apps/luban-os",
@@ -177,6 +178,7 @@ luban-system = { path = "luban/system" }
 luban-cli    = { path = "luban/cli" }
 luban-desktop-spec = { path = "luban/desktop/spec" }
 luban-desktop-term = { path = "luban/desktop/term" }
+luban-desktop-wlr  = { path = "luban/desktop/wlr" }
 
 [dev-dependencies.compat]
 gtest = "1.15.2"

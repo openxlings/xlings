@@ -13,6 +13,7 @@ import luban.service;
 import luban.vm;
 import luban.desktop.host;
 import luban.desktop.term;
+import luban.desktop.wlr;
 
 namespace luban::os {
 
@@ -88,7 +89,7 @@ fs::path home_dir_() {
     return ".xlings";
 }
 
-enum class View { Launcher, QuickStart, Job, Console, Off, Admin };
+enum class View { Launcher, QuickStart, Job, Console, Off, Admin, Desktop };
 
 struct Edition {
     std::string_view name;
@@ -117,6 +118,10 @@ struct App {
     std::unique_ptr<Job> job;
     std::function<void(App&)> after_job;
     std::unique_ptr<Console> console;
+    std::unique_ptr<Display> display;  // a machine's desktop
+    host::Window::Texture texture;
+    opensal::Size desktop_size;        // what the window shows it at
+    std::optional<std::chrono::steady_clock::time_point> resize_at;
     std::string current;               // the system on screen
     bool menu { false };               // the Host key's menu
     bool close_dialog { false };
@@ -182,11 +187,38 @@ struct App {
                       [name](Job& j, service::Context c) { j.code = vm::start(c, name, {}); },
                       [name](App& a) {
                           if (a.job->code != 0) return;
-                          a.open_console(name, true);
+                          a.open_machine(name);
                       });
         } else {
             open_console(name, false);
         }
+    }
+
+    // A machine shows its desktop when its root declares one (and its
+    // setting is not `none`), else its console.
+    void open_machine(const std::string& name) {
+        auto env = service::describe(ctx, name);
+        if (auto session = desktop_session(home, name, env ? env->settings.desktop : std::string{})) {
+            std::string error;
+            const auto [w, h] = window->size();
+            desktop_size = {static_cast<std::uint32_t>(w), static_cast<std::uint32_t>(h)};
+            auto* win = window.get();
+            display = Display::machine(home, name, *session, desktop_size, [win] { win->wake(); }, error);
+            if (display) {
+                view = View::Desktop;
+                window->set_title(title_for(name));
+                window->text_input(false);
+                return;
+            }
+            notice = error;
+        }
+        open_console(name, true);
+    }
+
+    void close_display() {
+        display.reset();
+        if (texture.handle) window->destroy(texture);
+        texture = {};
     }
 
     void open_console(const std::string& name, bool machine) {
@@ -446,6 +478,7 @@ void close_dialog_(App& a) {
                 (void)vm::stop(c, a.current);
             }
             a.console.reset();
+            a.close_display();
             a.quit = true;
         }
         ImGui::EndPopup();
@@ -462,6 +495,7 @@ void host_menu_(App& a) {
         if (item("Back to the list", "回到列表")) {
             a.menu = false;
             a.console.reset();
+            a.close_display();
             a.view = View::Launcher;
             a.refresh();
             a.window->set_title("Luban OS");
@@ -476,7 +510,12 @@ void host_menu_(App& a) {
             (void)platform::spawn_detached({self.string(), "--attach", a.current}, a.home / "logs" / "luban-os.log");
             a.menu = false;
         }
-        if (a.console && a.console->is_machine() && item("Power off", "关机")) { a.menu = false; a.console.reset(); a.power_off(a.current); }
+        if (((a.console && a.console->is_machine()) || a.display) && item("Power off", "关机")) {
+            a.menu = false;
+            a.console.reset();
+            a.close_display();
+            a.power_off(a.current);
+        }
         if (item("Close this menu", "关闭菜单") || ImGui::IsKeyPressed(ImGuiKey_Escape)) a.menu = false;
         if (!a.menu) ImGui::CloseCurrentPopup();
         ImGui::EndPopup();
@@ -525,9 +564,73 @@ void console_view_(App& a) {
     }
 }
 
+// A machine's desktop: its surface drawn whole (1:1 when it fits), and the
+// window's input given to it -- the pointer in the surface's pixels.
+void desktop_view_(App& a) {
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
+    begin_full_("desktop");
+    ImGui::PopStyleVar();
+    if (!a.display) { ImGui::End(); return; }
+    auto& d = *a.display;
+    std::vector<Display::Update> updates;
+    const auto size = d.take(updates);
+    if (size.width && size.height
+        && (a.texture.width != static_cast<int>(size.width) || a.texture.height != static_cast<int>(size.height))) {
+        if (a.texture.handle) a.window->destroy(a.texture);
+        a.texture = a.window->texture(static_cast<int>(size.width), static_cast<int>(size.height));
+    }
+    for (const auto& u : updates)
+        if (a.texture.handle && u.rect.x + u.rect.width <= static_cast<std::uint32_t>(a.texture.width)
+            && u.rect.y + u.rect.height <= static_cast<std::uint32_t>(a.texture.height))
+            a.window->update(a.texture, u.rect, u.rows);
+    const ImVec2 origin = ImGui::GetCursorScreenPos();
+    const ImVec2 avail = ImGui::GetContentRegionAvail();
+    if (a.texture.handle) {
+        const float scale = std::min({1.0f, avail.x / a.texture.width, avail.y / a.texture.height});
+        const ImVec2 shown(a.texture.width * scale, a.texture.height * scale);
+        const ImVec2 at(origin.x + (avail.x - shown.x) / 2, origin.y + (avail.y - shown.y) / 2);
+        ImGui::SetCursorScreenPos(at);
+        ImGui::Image(static_cast<ImTextureID>(reinterpret_cast<std::uintptr_t>(a.texture.handle)), shown);
+        // The guest draws its own pointer into the picture.
+        if (ImGui::IsItemHovered()) ImGui::SetMouseCursor(ImGuiMouseCursor_None);
+        if (!a.menu && !a.close_dialog) {
+            for (const auto& e : a.window->events()) {
+                if (const auto* m = std::get_if<opensal::PointerMotion>(&e))
+                    d.send(opensal::PointerMotion{(m->x - at.x) / scale, (m->y - at.y) / scale});
+                else if (std::holds_alternative<opensal::Key>(e) || std::holds_alternative<opensal::PointerButton>(e)
+                         || std::holds_alternative<opensal::Wheel>(e) || std::holds_alternative<opensal::Focus>(e))
+                    d.send(e);
+            }
+        }
+    } else {
+        ImGui::SetCursorPosY(avail.y * 0.45f);
+        center_text_(std::vformat(tr("Starting the desktop of {}…", "正在启动 {} 的桌面…"), std::make_format_args(a.current)));
+    }
+    // The window's size is the desktop's, once it has held still a moment.
+    const opensal::Size want{static_cast<std::uint32_t>(avail.x), static_cast<std::uint32_t>(avail.y)};
+    if (want != a.desktop_size) { a.desktop_size = want; a.resize_at = std::chrono::steady_clock::now() + std::chrono::milliseconds(300); }
+    if (a.resize_at && std::chrono::steady_clock::now() >= *a.resize_at) { d.send(opensal::Resized{want}); a.resize_at.reset(); }
+    ImGui::End();
+    if (!d.alive()) {
+        // A desktop that could not start (or ended) leaves the machine's console.
+        const auto why = d.error();
+        a.close_display();
+        if (vm::running(a.home, a.current)) {
+            a.notice = why;
+            a.open_console(a.current, true);
+            if (a.console) a.notice.clear();
+        } else {
+            a.view = View::Off;
+        }
+    }
+}
+
 void admin_(App& a) {
     begin_full_("admin");
-    if (ImGui::Button(std::string(tr("← Back", "← 返回")).c_str())) { a.view = a.console ? View::Console : View::Launcher; a.refresh(); }
+    if (ImGui::Button(std::string(tr("← Back", "← 返回")).c_str())) {
+        a.view = a.display ? View::Desktop : a.console ? View::Console : View::Launcher;
+        a.refresh();
+    }
     ImGui::SameLine();
     ImGui::TextUnformatted(std::string(tr("Luban OS · Manage", "Luban OS · 管理")).c_str());
     ImGui::Separator();
@@ -563,6 +666,25 @@ void admin_(App& a) {
                 setting("mode", tr("runs as", "运行方式"), {"sandbox", "machine"}, e.settings.mode);
                 setting("persist", tr("keeps", "保留修改"), {"all", "home", "none"}, e.settings.persist);
                 setting("on-close", tr("closing", "关窗口时"), {"ask", "background", "poweroff"}, e.settings.on_close);
+                {
+                    // The desktop: the sessions its root declares, or none (its console).
+                    std::vector<std::string> ids{"", "none"};
+                    if (const auto root = service::root_of(a.home, e.name))
+                        for (const auto& s : luban::desktop::wlr::sessions({*root / "usr" / "share" / "wayland-sessions"})) ids.push_back(s.id);
+                    int index = 0;
+                    for (std::size_t k = 0; k < ids.size(); ++k) if (ids[k] == e.settings.desktop) index = static_cast<int>(k);
+                    std::string items = std::string(tr("(the first it declares)", "（它声明的第一个）")) + '\0';
+                    for (std::size_t k = 1; k < ids.size(); ++k) { items += ids[k]; items += '\0'; }
+                    ImGui::SetNextItemWidth(180);
+                    if (ImGui::Combo(std::string(tr("desktop", "桌面")).c_str(), &index, items.c_str())) {
+                        (void)service::configure(a.ctx, e.name, {{"desktop", ids[index]}});
+                        a.refresh();
+                    }
+                    if (!ids[index].empty()) {
+                        ImGui::SameLine();
+                        ImGui::TextDisabled("luban config %s --desktop %s", e.name.c_str(), ids[index].c_str());
+                    }
+                }
                 if (!e.shell.empty()) ImGui::Text("%s  %s", std::string(tr("shell", "shell")).c_str(), e.shell.c_str());
                 ImGui::Separator();
                 if (ImGui::Button(std::string(tr("Enter", "进入")).c_str())) a.enter(e.name);
@@ -641,7 +763,7 @@ void admin_(App& a) {
 }
 
 std::string dump_(const App& a) {
-    static constexpr std::array<std::string_view, 6> names{"launcher", "quick-start", "job", "console", "off", "admin"};
+    static constexpr std::array<std::string_view, 7> names{"launcher", "quick-start", "job", "console", "off", "admin", "desktop"};
     Json j{{"view", std::string(names[static_cast<int>(a.view)])}, {"systems", Json::array()}};
     for (const auto& s : a.systems) j["systems"].push_back(s.name);
     if (a.countdown_until) j["countdown_to"] = a.systems.empty() ? "" : a.systems[0].name;
@@ -688,10 +810,10 @@ int run(int argc, char* argv[]) {
     else if (a.systems.empty()) a.view = View::QuickStart;
     else if (a.settings.countdown > 0) a.countdown_until = std::chrono::steady_clock::now() + std::chrono::seconds(a.settings.countdown);
     for (int frame = 0; (frames < 0 || frame < frames) && !a.quit; ++frame) {
-        const bool busy = a.countdown_until || (a.job && !a.job->done) || frames >= 0;
+        const bool busy = a.countdown_until || (a.job && !a.job->done) || frames >= 0 || a.resize_at;
         if (!a.window->begin_frame(busy ? 100 : 1000) && !a.close_dialog) {
             // The window is to close: a running machine's on-close decides.
-            if (a.view == View::Console && a.console && a.console->is_machine()) {
+            if ((a.view == View::Console && a.console && a.console->is_machine()) || a.view == View::Desktop) {
                 auto env = service::describe(a.ctx, a.current);
                 const auto on_close = env ? env->settings.on_close : std::string("ask");
                 if (on_close == "ask") { a.close_dialog = true; }
@@ -712,9 +834,9 @@ int run(int argc, char* argv[]) {
             if (input) a.countdown_until.reset();
             else if (std::chrono::steady_clock::now() >= *a.countdown_until && !a.systems.empty()) a.enter(a.systems[0].name);
         }
-        if (a.window->host_key() && (a.view == View::Console || a.view == View::Off)) a.menu = !a.menu;
+        if (a.window->host_key() && (a.view == View::Console || a.view == View::Off || a.view == View::Desktop)) a.menu = !a.menu;
         for (const auto& k : a.window->keys())
-            if (k.name == "F2" && a.view != View::Console) { a.before_admin = a.view; a.view = View::Admin; }
+            if (k.name == "F2" && a.view != View::Console && a.view != View::Desktop) { a.before_admin = a.view; a.view = View::Admin; }
         if (a.view == View::Launcher) {
             for (const auto& k : a.window->keys()) {
                 const int rows = static_cast<int>(a.systems.size()) + 1;
@@ -754,6 +876,7 @@ int run(int argc, char* argv[]) {
         case View::Console: console_view_(a); break;
         case View::Off: off_(a); break;
         case View::Admin: admin_(a); break;
+        case View::Desktop: desktop_view_(a); break;
         }
         if (a.menu) host_menu_(a);
         if (a.close_dialog) close_dialog_(a);

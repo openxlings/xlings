@@ -23,8 +23,9 @@ struct Settings {
 
 fs::path settings_file(const fs::path& home, std::string_view name);
 
-// Absent is the defaults; unreadable is an error (never a reason to boot a
-// machine some other way than it was set up to).
+// Absent is the defaults -- the edition's (`usr/share/luban/settings.json` in
+// its root, the same keys), else the ones above; unreadable is an error (never
+// a reason to boot a machine some other way than it was set up to).
 std::expected<Settings, std::string> read_settings(const fs::path& home, std::string_view name);
 
 // One key, checked: mode, persist, desktop, on-close. The file is rewritten

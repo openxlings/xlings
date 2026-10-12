@@ -25,6 +25,7 @@ luban-vm           = { path = "../../luban/vm" }
 luban-desktop-spec = { path = "../../luban/desktop/spec" }
 luban-desktop-term = { path = "../../luban/desktop/term" }
 luban-desktop-host = { path = "../../luban/desktop/host" }
+luban-desktop-wlr  = { path = "../../luban/desktop/wlr" }
 
 [dependencies.compat]
 imgui = "1.92.8-docking"

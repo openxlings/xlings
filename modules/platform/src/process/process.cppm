@@ -161,6 +161,8 @@ std::optional<std::pair<unsigned short, unsigned short>> terminal_size(int fd);
 bool set_terminal_size(int fd, unsigned short rows, unsigned short cols);
 // Whether a process of this id exists (kill(pid, 0)).
 bool process_alive(int pid);
+// This process's id.
+int current_pid();
 // `argv` in a session of its own that outlives this process (double fork),
 // standard input the null device, output and errors appended to `log`. Its
 // pid; nullopt when it could not be started.
@@ -173,5 +175,16 @@ struct Message {
 bool send_message(int sock, std::string_view data, std::span<const int> fds = {});
 // nullopt on end of stream or error.
 std::optional<Message> receive_message(int sock, std::size_t max = std::size_t{1} << 20);
+
+// Memory another process can map: an anonymous file of `size` bytes, mapped
+// here read-write; its descriptor is what is handed over. nullopt where there
+// is none (only Linux has it now).
+struct SharedMemory {
+    int fd { -1 };
+    std::byte* data { nullptr };
+    std::size_t size { 0 };
+};
+std::optional<SharedMemory> create_shared_memory(std::size_t size);
+void release_shared_memory(SharedMemory& m);
 
 }  // namespace xlings::platform

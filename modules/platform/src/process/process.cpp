@@ -10,6 +10,7 @@ module;
 #include <fcntl.h>
 #include <poll.h>
 #include <sys/ioctl.h>
+#include <sys/mman.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -767,6 +768,28 @@ std::optional<Message> receive_message(int sock, std::size_t max) {
     return out;
 }
 
+int current_pid() { return static_cast<int>(::getpid()); }
+
+std::optional<SharedMemory> create_shared_memory(std::size_t size) {
+#if defined(__linux__)
+    const int fd = ::memfd_create("xlings-shm", MFD_CLOEXEC);
+    if (fd < 0) return std::nullopt;
+    if (::ftruncate(fd, static_cast<off_t>(size)) != 0) { ::close(fd); return std::nullopt; }
+    void* at = ::mmap(nullptr, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    if (at == MAP_FAILED) { ::close(fd); return std::nullopt; }
+    return SharedMemory{fd, static_cast<std::byte*>(at), size};
+#else
+    (void)size;
+    return std::nullopt;
+#endif
+}
+
+void release_shared_memory(SharedMemory& m) {
+    if (m.data) ::munmap(m.data, m.size);
+    if (m.fd >= 0) ::close(m.fd);
+    m = SharedMemory{};
+}
+
 #else  // no POSIX process model here
 
 bool send_signal(int, int) { return false; }
@@ -886,11 +909,14 @@ int open_device(const std::filesystem::path&) { return -1; }
 std::optional<std::pair<unsigned short, unsigned short>> terminal_size(int) { return std::nullopt; }
 bool set_terminal_size(int, unsigned short, unsigned short) { return false; }
 bool process_alive(int) { return false; }
+int current_pid() { return static_cast<int>(::GetCurrentProcessId()); }
 std::optional<int> spawn_detached(const std::vector<std::string>&, const std::filesystem::path&) { return std::nullopt; }
 int unix_accept(int) { return -1; }
 std::optional<std::array<int, 2>> unix_pair() { return std::nullopt; }
 bool send_message(int, std::string_view, std::span<const int>) { return false; }
 std::optional<Message> receive_message(int, std::size_t) { return std::nullopt; }
+std::optional<SharedMemory> create_shared_memory(std::size_t) { return std::nullopt; }
+void release_shared_memory(SharedMemory& m) { m = SharedMemory{}; }
 
 #endif
 

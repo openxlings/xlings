@@ -1004,3 +1004,7 @@ status = "required"
 [FAULT-ISOLATION]
 text = "an unreadable SubOS state stops nothing else: the other SubOS and the commands that do not need it carry on"
 status = "required"
+
+[LUBAN-DESKTOP-WLR]
+text = "opensal-wlr shows a wlroots compositor's output as an opensal surface through its standard protocols only: screencopy into shared memory (the whole output first, then what it says changed, opaque), keys as evdev codes on a US keymap with the modifiers beside them (a host's repeat is not repeated), the pointer absolute on the output, the window's size as a custom mode; a compositor without screencopy is said so; a session is a wayland-sessions file with X-Opensal-Interfaces"
+status = "required"

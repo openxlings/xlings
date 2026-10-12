@@ -13,6 +13,9 @@
 //     'c'  cursor     a shape by name                        "<name>"
 //     't'  text input on/off and the caret                   "1 x y w h" | "0"
 //     'b'  clipboard  the consumer's selection, offered      <utf-8>
+//     's'  size       what it draws at: before its first     "<w> <h>"
+//                     frame and whenever it changes (it may not be the
+//                     provider's: a compositor that cannot follow it)
 //   provider -> consumer
 //     'H'  hello      provided interfaces, size, density     "<bits> <w> <h> <scale>"
 //     'E'  event      one opensal::Event                     (see encode_event)

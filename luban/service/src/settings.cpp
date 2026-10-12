@@ -30,6 +30,27 @@ fs::path settings_file(const fs::path& home, std::string_view name) {
 
 std::expected<Settings, std::string> read_settings(const fs::path& home, std::string_view name) {
     Settings s;
+    // The edition's defaults first (its root carries them, so they follow an
+    // upgrade); a file that cannot be read is no defaults, never an error here.
+    if (const auto root = root_of(home, name)) {
+        const auto defaults = *root / "usr" / "share" / "luban" / "settings.json";
+        std::error_code dec;
+        if (fs::is_regular_file(defaults, dec)) {
+            auto d = nlohmann::json::parse(xlings::platform::read_file_to_string(defaults.string()), nullptr, false);
+            if (d.is_object()) {
+                for (const auto& [key, values] : allowed_()) {
+                    const auto k = json_key_(key);
+                    if (!d.contains(k) || !d[k].is_string()) continue;
+                    const auto v = d[k].get<std::string>();
+                    if (!values.empty() && std::ranges::find(values, v) == values.end()) continue;
+                    if (k == "mode") s.mode = v;
+                    else if (k == "persist") s.persist = v;
+                    else if (k == "desktop") s.desktop = v;
+                    else if (k == "on_close") s.on_close = v;
+                }
+            }
+        }
+    }
     const auto file = settings_file(home, name);
     std::error_code ec;
     if (!fs::exists(file, ec)) return s;
@@ -59,7 +80,7 @@ std::expected<Settings, std::string> set_setting(const fs::path& home, std::stri
         for (auto v : it->second) list += (list.empty() ? "" : ", ") + std::string(v);
         return std::unexpected(std::format("--{} {}: one of {}", key, value, list));
     }
-    if (key == "desktop" && (value.empty() || value.find_first_of("/\\ ") != std::string_view::npos))
+    if (key == "desktop" && value.find_first_of("/\\ ") != std::string_view::npos)
         return std::unexpected(std::format("--desktop {}: a session's name, or none", value));
     auto current = read_settings(home, name);
     if (!current) return std::unexpected(current.error());

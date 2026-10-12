@@ -531,8 +531,14 @@ Client& Client::operator=(Client&& other) noexcept {
         if (fd_ >= 0) { std::vector<int> fds{fd_}; platform::close_fds(fds); }
         fd_ = std::exchange(other.fd_, -1);
         buffer_ = std::move(other.buffer_);
+        writing_ = std::move(other.writing_);
     }
     return *this;
+}
+
+bool Client::write_(std::string_view frame) {
+    std::lock_guard l(*writing_);
+    return platform::write_all(fd_, frame);
 }
 
 Client::~Client() {
@@ -541,15 +547,19 @@ Client::~Client() {
 
 bool Client::open(std::uint32_t channel, int rows, int cols, const nlohmann::json& env) {
     const char* term = std::getenv("TERM");
-    return platform::write_all(fd_, proto::encode_json('O', channel, Json{{"rows", rows}, {"cols", cols},
+    return write_(proto::encode_json('O', channel, Json{{"rows", rows}, {"cols", cols},
                                                                           {"term", term ? term : "xterm-256color"}, {"env", env}}));
 }
-bool Client::send(std::uint32_t channel, std::string_view bytes) { return platform::write_all(fd_, proto::encode('D', channel, bytes)); }
-bool Client::resize(std::uint32_t channel, int rows, int cols) {
-    return platform::write_all(fd_, proto::encode_json('R', channel, Json{{"rows", rows}, {"cols", cols}}));
+bool Client::open_display(std::uint32_t channel, std::string_view session, int width, int height) {
+    return write_(proto::encode_json('O', channel, Json{{"display", Json{{"session", std::string(session)},
+                                                                                           {"width", width}, {"height", height}}}}));
 }
-bool Client::close(std::uint32_t channel) { return platform::write_all(fd_, proto::encode('C', channel)); }
-bool Client::power_off() { return platform::write_all(fd_, proto::encode('P', 0)); }
+bool Client::send(std::uint32_t channel, std::string_view bytes) { return write_(proto::encode('D', channel, bytes)); }
+bool Client::resize(std::uint32_t channel, int rows, int cols) {
+    return write_(proto::encode_json('R', channel, Json{{"rows", rows}, {"cols", cols}}));
+}
+bool Client::close(std::uint32_t channel) { return write_(proto::encode('C', channel)); }
+bool Client::power_off() { return write_(proto::encode('P', 0)); }
 
 std::optional<std::vector<std::pair<char, std::pair<std::uint32_t, std::string>>>> Client::poll(int timeout_ms) {
     std::vector<std::pair<char, std::pair<std::uint32_t, std::string>>> out;
