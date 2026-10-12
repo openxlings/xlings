@@ -1,7 +1,8 @@
 // xdesk.config: a desktop's settings, as the freedesktop way keeps them --
-// a profile's defaults in $XDG_CONFIG_DIRS/xdesk/<profile>.ini (a config:
-// package puts them in a root's /etc/xdg), and a person's own in
-// $XDG_CONFIG_HOME/xdesk/<profile>.ini, which wins key by key.
+// a profile's defaults as data, $XDG_DATA_DIRS/xdesk/<profile>.ini (what a
+// config: package places in an environment's share), a system's in
+// $XDG_CONFIG_DIRS/xdesk/<profile>.ini, and a person's own in
+// $XDG_CONFIG_HOME/xdesk/<profile>.ini -- each later one winning key by key.
 //
 // The files are INI: `[section]`, `key = value`, `#` or `;` comments; a key
 // may repeat (autostart). What a file gets wrong is said, by line, and
@@ -35,7 +36,8 @@ private:
     std::map<std::pair<std::string, std::string>, std::vector<std::string>> values_;
 };
 
-// Where a profile's files are, the person's last: $XDG_CONFIG_DIRS (or
+// Where a profile's files are, read in this order (the person's last):
+// $XDG_DATA_DIRS (or /usr/local/share:/usr/share), $XDG_CONFIG_DIRS (or
 // /etc/xdg), then $XDG_CONFIG_HOME (or ~/.config).
 std::vector<fs::path> files(std::string_view profile, const std::map<std::string, std::string>& env);
 // Every file there, read in order and merged.

@@ -27,15 +27,20 @@ XTEST(XdeskConfig, AnIniIsReadAndWhatIsWrongIsSaidByLine, .area = "luban", .cove
 XTEST(XdeskConfig, APersonsOwnFileWinsKeyByKeyOverTheProfiles, .area = "luban", .covers = {"XDESK-CONFIG"}) {
     const auto root = fs::temp_directory_path() / std::format("xdesk-config-{}", std::random_device{}());
     fs::create_directories(root / "etc" / "xdesk");
+    fs::create_directories(root / "share" / "xdesk");
+    std::ofstream(root / "share" / "xdesk" / "canvas.ini") << "[desktop]\nterminal = from-share\nworkspaces = 6\n";
     fs::create_directories(root / "home" / ".config" / "xdesk");
     std::ofstream(root / "etc" / "xdesk" / "canvas.ini") << "[desktop]\nterminal = foot\nautostart = a\nautostart = b\n[theme]\naccent = #111111\n";
     std::ofstream(root / "home" / ".config" / "xdesk" / "canvas.ini") << "[theme]\naccent = #222222\n[desktop]\nautostart = mine\n";
-    const std::map<std::string, std::string> env{{"XDG_CONFIG_DIRS", (root / "etc").string()}, {"HOME", (root / "home").string()}};
+    const std::map<std::string, std::string> env{{"XDG_DATA_DIRS", (root / "share").string()},
+                                                 {"XDG_CONFIG_DIRS", (root / "etc").string()}, {"HOME", (root / "home").string()}};
     const auto files = config::files("canvas", env);
-    ASSERT_EQ(files.size(), 2u);
+    ASSERT_EQ(files.size(), 3u);
+    EXPECT_EQ(files.front(), root / "share" / "xdesk" / "canvas.ini");             // a profile's defaults first
     EXPECT_EQ(files.back(), root / "home" / ".config" / "xdesk" / "canvas.ini");   // the person's last
     const auto s = config::load("canvas", env);
-    EXPECT_EQ(s.get("desktop", "terminal"), "foot");                  // from the profile
+    EXPECT_EQ(s.get("desktop", "terminal"), "foot");                  // the system's over the profile's
+    EXPECT_EQ(s.get_int("desktop", "workspaces", 4), 6);              // the profile's, nobody else set it
     EXPECT_EQ(s.colour("theme", "accent", 0), 0x222222u);             // theirs
     EXPECT_EQ(s.all("desktop", "autostart"), (std::vector<std::string>{"mine"}));   // their list, not added to
     EXPECT_TRUE(config::load("classic", env).get("desktop", "terminal").empty());   // another profile: nothing

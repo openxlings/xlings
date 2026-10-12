@@ -35,7 +35,7 @@ built="$(dirname "$binary")/.."
 name="xdesk-$version-linux-$arch"
 out="$project/build/$name"
 rm -rf "$out"
-mkdir -p "$out/bin" "$out/libexec/lib" "$out/share/wayland-sessions"
+mkdir -p "$out/bin" "$out/libexec/lib" "$out/share/wayland-sessions" "$out/share/xdesk"
 cp "$binary" "$out/bin/xdesk"
 chmod 755 "$out/bin/xdesk"
 case "$arch" in
@@ -71,6 +71,8 @@ done
 readelf -l "$out/bin/xdesk" | grep -q "interpreter: $loader" || fail "the loader is not $loader"
 
 cp "$project"/apps/xdesk/share/wayland-sessions/*.desktop "$out/share/wayland-sessions/"
+# The profiles' defaults (xdesk.config reads them from $XDG_DATA_DIRS/xdesk).
+cp "$project"/apps/xdesk/share/xdesk/*.ini "$out/share/xdesk/"
 printf 'xdesk %s (openxlings/xlings, apps/xdesk): the Luban OS desktop compositor and shell; glibc, loader %s, no RPATH; %s in libexec/lib -- an xlings install patches it onto the index'"'"'s glibc and gcc-runtime\n' \
   "$version" "$loader" "$private" > "$out/README.provenance"
 

@@ -79,18 +79,21 @@ std::vector<fs::path> files(std::string_view profile, const std::map<std::string
     auto get = [&](const char* k) { const auto it = env.find(k); return it == env.end() ? std::string{} : it->second; };
     const std::string name = std::string(profile) + ".ini";
     std::vector<fs::path> out;
-    std::string dirs = get("XDG_CONFIG_DIRS");
-    if (dirs.empty()) dirs = "/etc/xdg";
-    // $XDG_CONFIG_DIRS lists the most important first: read it last.
-    std::vector<fs::path> system;
-    for (std::size_t at = 0; at <= dirs.size();) {
-        const auto colon = dirs.find(':', at);
-        const auto part = dirs.substr(at, colon == std::string::npos ? std::string::npos : colon - at);
-        if (!part.empty()) system.push_back(fs::path(part) / "xdesk" / name);
-        if (colon == std::string::npos) break;
-        at = colon + 1;
-    }
-    out.insert(out.end(), system.rbegin(), system.rend());
+    // A list names the most important first: it is read last.
+    auto list = [&](std::string dirs, std::string_view fallback) {
+        if (dirs.empty()) dirs = std::string(fallback);
+        std::vector<fs::path> found;
+        for (std::size_t at = 0; at <= dirs.size();) {
+            const auto colon = dirs.find(':', at);
+            const auto part = dirs.substr(at, colon == std::string::npos ? std::string::npos : colon - at);
+            if (!part.empty()) found.push_back(fs::path(part) / "xdesk" / name);
+            if (colon == std::string::npos) break;
+            at = colon + 1;
+        }
+        out.insert(out.end(), found.rbegin(), found.rend());
+    };
+    list(get("XDG_DATA_DIRS"), "/usr/local/share:/usr/share");
+    list(get("XDG_CONFIG_DIRS"), "/etc/xdg");
     if (const auto home = get("XDG_CONFIG_HOME"); !home.empty()) out.push_back(fs::path(home) / "xdesk" / name);
     else if (const auto h = get("HOME"); !h.empty()) out.push_back(fs::path(h) / ".config" / "xdesk" / name);
     return out;

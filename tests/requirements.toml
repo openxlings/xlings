@@ -1042,7 +1042,7 @@ text = "a system someone exported (.luban) is imported from the quick start, the
 status = "required"
 
 [XDESK-CONFIG]
-text = "a desktop's settings are the profile's defaults ($XDG_CONFIG_DIRS/xdesk/<profile>.ini, what a config: package installs) with a person's own ($XDG_CONFIG_HOME/xdesk/<profile>.ini) over them key by key (a repeated key's list replaced whole); the terminal, what starts with it, gaps, workspaces, colours and the keyboard layout and repeat are set there, the command line winning; what a file gets wrong is said by line and skipped"
+text = "a desktop's settings are the profile's defaults ($XDG_DATA_DIRS/xdesk/<profile>.ini, shipped with xdesk), a system's ($XDG_CONFIG_DIRS/xdesk/<profile>.ini, what an edition sets) and a person's own ($XDG_CONFIG_HOME/xdesk/<profile>.ini) over them key by key (a repeated key's list replaced whole); the terminal, what starts with it, gaps, workspaces, colours and the keyboard layout and repeat are set there, the command line winning; what a file gets wrong is said by line and skipped"
 status = "required"
 
 [LUBAN-MACHINE-DESKTOP]
