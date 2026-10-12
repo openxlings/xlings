@@ -3,6 +3,7 @@ module xlings.core.xvm.commands;
 import std;
 import xlings.core.config;
 import xlings.core.home;
+import xlings.home.format;
 import xlings.core.home.layers;
 import xlings.core.log;
 import xlings.core.diag;
@@ -676,6 +677,15 @@ int cmd_use(const std::string& target, const std::string& version, EventStream& 
 
     auto committed = applied->commit();
     if (!committed) { log::error("{}", committed.error()); return 1; }
+
+    // Switching the client to an older one: say what it will not see of this
+    // home's format, and the way back (design §4.3). Said after the switch:
+    // every layout change so far only ADDS what an older client ignores.
+    if (is_xlings_binary(target)) {
+        const auto layout = home::describe(p.homeDir, home::Source::Default).layout;
+        if (auto note = home::format::switch_note(layout, strip_namespace(resolved)))
+            log::warn("{}; back: xlings use xlings {}", note->text, Info::VERSION);
+    }
 
     // Which release did this actually move?
     //

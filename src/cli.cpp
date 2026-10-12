@@ -601,25 +601,33 @@ void show_upgrade_notice_once_() {
         return;
     }
     if (outcome->pending.empty()) return;
+    // Said in three lines: how many root causes, the one command that repairs
+    // them (`--fix` runs the right step for each), where the details are.
+    // Every item, with its own command, is in logs/upgrade.ndjson and in
+    // `self doctor`; `-v` prints the first of them here too.
+    const auto problems = outcome->problems();
     diag::Diagnostic d {
         .level   = diag::Level::Warn,
         .code    = "self.upgrade_pending",
-        .summary = std::format("xlings {} (from {}): {} thing(s) in this home need a step it could "
-                               "not take by itself", outcome->to, outcome->from, outcome->pending.size()),
+        .summary = outcome->firstRecord
+            ? std::format("xlings {}: this home has {} problem(s) it could not fix by itself "
+                          "(already there before this version)", outcome->to, problems)
+            : std::format("xlings {} (from {}): {} problem(s) in this home it could not fix by itself",
+                          outcome->to, outcome->from, problems),
     };
-    std::vector<std::string> commands;
-    for (std::size_t i = 0; i < outcome->pending.size(); ++i) {
-        const auto& p = outcome->pending[i];
-        if (i < 5) {
-            auto what = p.what.size() > 160 ? p.what.substr(0, 157) + "..." : p.what;
-            d.facts.push_back({ "needs", std::move(what) });
+    if (log::get_level() == log::Level::Debug) {
+        std::set<std::string> shown;
+        for (const auto& p : outcome->pending) {
+            const auto& key = p.group.empty() ? p.what : p.group;
+            if (!shown.insert(key).second) continue;
+            if (shown.size() > 10) break;
+            d.facts.push_back({ "needs", p.what.size() > 160 ? p.what.substr(0, 157) + "..." : p.what });
         }
-        if (std::ranges::find(commands, p.command) == commands.end()) commands.push_back(p.command);
     }
-    if (outcome->pending.size() > 5)
-        d.facts.push_back({ "and", std::format("{} more: xlings self doctor", outcome->pending.size() - 5) });
-    for (const auto& c : commands) d.actions.push_back({ "run", c });
-    if (outcome->canGoBack)
+    d.actions.push_back({ "fix", "xlings self doctor --fix" });
+    d.actions.push_back({ "details", std::format("xlings self doctor   (log: {})",
+                                                 Config::display_path(Config::paths().homeDir / "logs" / "upgrade.ndjson")) });
+    if (outcome->canGoBack && !outcome->firstRecord)
         d.actions.push_back({ "or go back", std::format("xlings use xlings {}", outcome->from) });
     diag::emit(d);
 }

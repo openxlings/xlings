@@ -12,13 +12,17 @@ xlings self update
 ```
 
 它刷新索引，然后把最新的 xlings 作为一个包安装。新版本第一条修改 home 的命令成功之后，随即自己完成 home 的升级：检查 home
-配置、重建命令路由，并像 `self doctor` 一样检查 home。都成功时什么也不说；自己做不到的，说一次，每项附上命令：
+配置、重建命令路由，并像 `self doctor` 一样检查 home。都成功时什么也不说；自己做不到的，说一次：有几个问题（按原因计——
+一个不在了的 payload 是一个问题，不论它登记了多少个名字）、修复它们的一条命令、详情在哪里：
 
 ```text
-[warn] xlings 2026.10.12.2 (from 2026.10.11.1): 1 thing(s) in this home need a step it could not take by itself
-         needs   subos 'other' has an unreadable @xlings/subos/other/.xlings.json
-         run     xlings self doctor --fix
+[warn] xlings 2026.10.12.4 (from 2026.10.12.3): 1 problem(s) in this home it could not fix by itself
+         fix          xlings self doctor --fix
+         details      xlings self doctor   (log: @xlings/logs/upgrade.ndjson)
+         or go back   xlings use xlings 2026.10.12.3
 ```
+
+每一项及其命令都在日志和 `xlings self doctor` 里；命令加 `-v` 时也在这里列出。从没有升级记录的 home 会说这些问题在这个版本之前就已存在。
 
 上一个版本还在时，回去只要一条命令：
 

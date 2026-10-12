@@ -108,22 +108,28 @@ xlings 已发布的 `subos boot`、`subos export --iso` 被移走后，xlings �
 
 ## 4. home 格式框架（`modules/home`）
 
-### 4.1 schema 纪元
+### 4.1 布局版本（实施时的修正）
 
-- 格式的版本是 `.xlings-home` 里的整数 `schema`（已有，值为 1），**与发布版本无关**。每次不兼容的布局或格式变化 +1。
-- 拆掉被重载的 `layout`：部署形态是 `mode`（user / root）+ `root_layout`（single / multi），由迁移步骤改写。
-- 发布版本只用来回答"哪个客户端认识哪个 schema"：兼容表 `client → max_schema`，随客户端发布。
+- 格式的版本是 `.xlings-home` 里的**整数 `layout`**，与发布版本无关。原因：2026.10.9.1 起发布的客户端按它决定能不能写这个 home
+  （高于自己认识的就只读）——换一个键会让这些客户端把新 home 当作旧的来写。`schema` 是标记文件本身的文档版本，不是 home 的格式。
+- 只有旧客户端写入会破坏的变化才提高 `layout`；只增加旧客户端会忽略的文件和键（本版的 instance.json 新键、`logs/ops/`、`.luban` 归档）不提高。
+  本版仍是 layout 2。
+- root 部署的标记里 `layout` 是 root 的形状（`single` / `multi`），这是现有的、有意的约定（导出的镜像、前缀域都这样写），本版不改。
+- 兼容表（`xlings.home.format`）：2026.10.9.1 之前的客户端不读 layout（照写，看不到新布局带来的东西）；之后的客户端认识到它发布时的 layout。
+  每个 layout 记录它带来了什么，切换到旧客户端时据此说明。
 
 ### 4.2 迁移注册表
 
 ```cpp
-struct Migration {
-    int from, to;                              // schema 纪元
+struct Step {                                  // xlings.home.format
     std::string_view name;
-    Applies (*check)(const HomeContext&);      // 只读：这个 home 需要吗
-    Result  (*apply)(HomeContext&);            // 幂等；结果写入 upgrade 记录与 logs/upgrade.ndjson
+    std::function<bool(const fs::path& home)> needed;                                    // 只读
+    std::function<std::expected<std::string, std::string>(const fs::path& home)> apply;  // 幂等
 };
+Report run(const fs::path& home, std::span<const Step> steps);   // 每步一个故障域
 ```
+
+步骤由拥有所需能力的一方注册（需要 Config 的步骤在 xlings 前端注册），运行器只负责排序、隔离与记录；升级阶梯与 `self doctor --fix` 运行同一组步骤。
 
 - 有序、幂等、记录已执行的；一个步骤失败是它自己的故障域（升级阶梯已有的规则），不阻止其他步骤和用户的命令。
 - **向前迁移 + 读者宽容 N-1**，不做"按版本把每个操作分派给对应版本的处理函数"——那要求永久保留每种旧格式的读写代码。
@@ -136,8 +142,8 @@ struct Migration {
 `xlings use xlings <old>` 由**当前**客户端在切换前查兼容表：
 
 ```
-这个 home 的格式是 3，xlings 0.4.40 只认识到 1：它在这个 home 上只读，root、edition 升级等功能不可用。
-继续：xlings use xlings 0.4.40 -y
+[warn] this home is layout 2; xlings 0.4.40 knows layout 1: it does not see SubOS policies, sessions, roots and
+       Luban environments (they stay as they are for a newer client); back: xlings use xlings 2026.10.12.4
 ```
 
 旧客户端遇到新格式的行为不变（`home_context().writable()`：只读，并给出 home 自己的客户端）。

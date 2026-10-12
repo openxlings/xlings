@@ -4,6 +4,7 @@ import std;
 import xlings.libs.json;
 import xlings.platform;
 import xlings.core.home_identity;
+import xlings.home.format;
 
 // Which home this run uses, and what kind of home it is (design §3-§6).
 //
@@ -34,7 +35,8 @@ export namespace xlings::home {
 
 namespace fs = std::filesystem;
 
-inline constexpr int kLayout = 2;
+// The layout this client writes: xlings.home.format owns it.
+inline constexpr int kLayout = format::kLayout;
 
 enum class Mode { User, Custom, Portable, System, Multi, Root };
 enum class Source { Anchored, Env, SelfContained, Default };

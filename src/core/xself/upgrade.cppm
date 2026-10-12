@@ -14,12 +14,14 @@
 export module xlings.core.xself.upgrade;
 
 import std;
+import xlings.home.format;
 
 export namespace xlings::xself::upgrade {
 
 struct Pending {
     std::string what;
     std::string command;
+    std::string group;      // one root cause; several items can share it
 };
 
 struct Outcome {
@@ -32,11 +34,25 @@ struct Outcome {
     // The version it came from is still installed, so `xlings use xlings
     // <from>` goes back to it.
     bool canGoBack { false };
+    // The home carried no upgrade record: `from` is the oldest version it
+    // names, and what is pending was already there -- not something this
+    // upgrade did or could not do.
+    bool firstRecord { false };
+    // Distinct root causes among `pending`.
+    std::size_t problems() const {
+        std::set<std::string> groups;
+        for (const auto& p : pending) groups.insert(p.group.empty() ? p.what : p.group);
+        return groups.size();
+    }
 };
 
 // nullopt when there is nothing to do or say: the home was already upgraded
 // to this version, it is a fresh home, or this runs inside a SubOS session
 // (the owner's home is the owner's to upgrade). Never throws.
 std::optional<Outcome> on_first_command();
+
+// The steps that bring an older home to this client's format (xlings.home.
+// format runs them): the upgrade's second step, and `self doctor --fix`.
+std::span<const home::format::Step> format_steps();
 
 }  // namespace xlings::xself::upgrade

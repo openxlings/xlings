@@ -753,14 +753,18 @@ int enter(const std::string& name, EventStream& stream, const EnterOptions& opts
                 });
                 return kFail;
             }
-            if (mount_image_(img, image_mountpoint, user) != 0) {
+            if (const int mounted = mount_image_(img, image_mountpoint, user); mounted != 0) {
+                const bool nobody = mounted == subos::elevation::kNobodyToAsk;
                 stream.emit(ErrorEvent{
-                    .code = ErrorCode::Internal,
-                    .message = "failed to mount home.img",
-                    .recoverable = false,
-                    .hint = "ensure you have sudo permission for mount",
+                    .code = nobody ? ErrorCode::Permission : ErrorCode::Internal,
+                    .message = nobody ? subos::elevation::nobody_to_ask(
+                                            std::format("mounting the home image of '{}'", name),
+                                            std::format("xlings subos use {}", name))
+                                      : "failed to mount home.img",
+                    .recoverable = nobody,
+                    .hint = nobody ? std::string{} : "ensure you have sudo permission for mount",
                 });
-                return kFail;
+                return nobody ? 2 : kFail;
             }
         }
 

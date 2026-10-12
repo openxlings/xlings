@@ -623,6 +623,9 @@ struct Counts {
 export struct PendingStep {
     std::string what;
     std::string command;
+    // One root cause: a payload (every name it registered is one problem),
+    // else the command that repairs it.
+    std::string group;
 };
 export std::vector<PendingStep> upgrade_check();
 

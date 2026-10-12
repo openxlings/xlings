@@ -918,7 +918,27 @@ text = "the first command of a new client runs the home's upgrade steps by itsel
 status = "required"
 
 [UPGRADE-PENDING-ONCE]
-text = "what the upgrade cannot do by itself is said once, by the command that found it, each item with the command that does it; the command asked for still runs"
+text = "what the upgrade cannot do by itself is said once, by the command that found it: how many root causes, the one command that repairs them and where the items are (each with its command in logs/upgrade.ndjson; -v prints them); the command asked for still runs"
+status = "required"
+
+[UPGRADE-FIRST-RECORD]
+text = "a home without an upgrade record reports what it finds as already there, not as something this version could not do, and offers no way back"
+status = "required"
+
+[DOCTOR-REMEDY-CLEARS]
+text = "a finding doctor reports with a repair is one the repair clears: the package's own registration at its payload root (`xvm.add(package.name)`) is not a broken program"
+status = "required"
+
+[HOME-FORMAT-STEPS]
+text = "the steps that bring an older home to this client's layout are ordered, idempotent and recorded, each its own failure domain; the upgrade runs them and so does `self doctor --fix`"
+status = "required"
+
+[HOME-FORMAT-SWITCH-NOTE]
+text = "switching the client to an older one says what of this home's layout it will not see, whether it can still write it, and the way back"
+status = "required"
+
+[ELEVATION-NOBODY-TO-ASK]
+text = "administrator rights are never asked for where nobody can answer (agent mode, no terminal, the background of one): rights that need no question are used, otherwise nothing runs and the command that needs them is named; doctor's repair children run unattended with the null device as input"
 status = "required"
 
 [UPGRADE-DOWNGRADE]

@@ -4,6 +4,9 @@
 #   libs      json, sha256, tinyhttps: self-contained, nothing of xlings
 #   runtime   -> libs: cancellation, guard (confirmation), observe (journal)
 #   platform  -> runtime: the OS boundary -- every system header and call
+#   home      -> libs, platform: the home's format -- its layout version,
+#                which clients understand it, the steps that bring an older
+#                home forward, the classes a problem falls into
 #   ui        -> platform: theme and i18n
 #   cli       -> libs: the command-line model (a declared command tree;
 #                validation, tiered help, completion), shared by xlings and luban
@@ -29,6 +32,7 @@ members = [
     "modules/libs",
     "modules/runtime",
     "modules/platform",
+    "modules/home",
     "modules/ui",
     "modules/cli",
     "modules/store",
@@ -136,6 +140,7 @@ linkage = "static"
 libs     = { path = "modules/libs" }
 runtime  = { path = "modules/runtime" }
 platform = { path = "modules/platform" }
+home     = { path = "modules/home" }
 ui       = { path = "modules/ui" }
 cli      = { path = "modules/cli" }
 store    = { path = "modules/store" }

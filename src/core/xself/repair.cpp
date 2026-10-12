@@ -16,7 +16,17 @@ bool is_shell_safe_token(std::string_view s) {
 }
 
 std::string quiet_suffix() {
-    return std::format(" >{} 2>&1", platform::null_device);
+    return std::format(" <{0} >{0} 2>&1", platform::null_device);
+}
+
+int run_unattended(const std::string& cmd) {
+    const char* before = std::getenv("XLINGS_AGENT_MODE");
+    const std::optional<std::string> saved = before ? std::optional<std::string>(before) : std::nullopt;
+    platform::set_env_variable("XLINGS_AGENT_MODE", "1");
+    const int rc = platform::exec(cmd);
+    if (saved) platform::set_env_variable("XLINGS_AGENT_MODE", *saved);
+    else platform::unset_env_variable("XLINGS_AGENT_MODE");
+    return rc;
 }
 
 bool probe_reinstallable(const std::string& target, const std::string& version, const CommandRunner& run, const std::string& client) {

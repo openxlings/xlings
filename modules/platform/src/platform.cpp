@@ -475,6 +475,13 @@ bool is_elevated() {
 #endif
 }
 
+bool elevation_needs_no_question() {
+    if (is_elevated()) return true;
+    if constexpr (is_windows) return false;
+    // `-n`: fail instead of prompting. Output discarded: only the answer counts.
+    return run_command_capture("sudo -n true 2>&1").first == 0;
+}
+
 int run_elevated(const std::vector<std::string>& argv) {
     if (argv.empty()) return 127;
     if (is_elevated()) return run_argv(argv);

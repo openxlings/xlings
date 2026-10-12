@@ -274,6 +274,12 @@ namespace platform {
     // (xlings.subos.elevation); this function only runs it.
     export int run_elevated(const std::vector<std::string>& argv);
 
+    // Whether administrator rights are available WITHOUT a question: this
+    // process already has them, or (Linux, macOS) sudo would run a command
+    // without asking (`sudo -n true` -- a cached credential or a NOPASSWD
+    // rule). Windows always asks (UAC) unless already elevated.
+    export bool elevation_needs_no_question();
+
     // Whether this process already runs with administrator rights.
     export bool is_elevated();
 
