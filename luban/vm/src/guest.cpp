@@ -157,7 +157,8 @@ std::expected<Session, std::string> desktop_(const Json& display, std::map<std::
                             inherited.push_back(other.read);
                             if (other.write != other.read) inherited.push_back(other.write);
                         }
-                        auto s = desktop_(*display, session_env_(open, "/bin/sh"), std::move(inherited));
+                        // Its terminals open the root's login shell, as a session's does.
+                        auto s = desktop_(*display, session_env_(open, xlings::subos::root_etc::login_shell("/")), std::move(inherited));
                         if (!s) {
                             (void)platform::write_all(port, proto::encode_json('X', frame.channel, Json{{"code", 127}, {"error", s.error()}}));
                             continue;

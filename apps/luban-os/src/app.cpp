@@ -881,7 +881,9 @@ int run(int argc, char* argv[]) {
         const bool busy = a.countdown_until || (a.job && !a.job->done) || frames >= 0 || a.resize_at;
         if (!a.window->begin_frame(busy ? 100 : 1000) && !a.close_dialog) {
             // The window is to close: a running machine's on-close decides.
-            if ((a.view == View::Console && a.console && a.console->is_machine()) || a.view == View::Desktop) {
+            // A sandbox's session ends with its window; only a machine has a choice.
+            if ((a.view == View::Console && a.console && a.console->is_machine())
+                || (a.view == View::Desktop && a.display && a.display->is_machine())) {
                 auto env = service::describe(a.ctx, a.current);
                 const auto on_close = env ? env->settings.on_close : std::string("ask");
                 if (on_close == "ask") { a.close_dialog = true; }
