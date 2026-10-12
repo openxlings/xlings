@@ -41,7 +41,7 @@ machine's boot.
 | images: ISO, drive, qcow2, tar | yes | yes | — | — |
 | boot: BIOS and UEFI | yes | UEFI | — | — |
 | `luban enter --mode machine` (a local VM) | yes | yes (emulated without KVM) | — | — |
-| a desktop in the Luban OS window | yes | yes | — | — |
+| a desktop in the Luban OS window | yes | the desktop runs; the window is not packaged yet | — | — |
 | boot profiles | `generic` (machines), `virt` (VMs) | `virt` | — | — |
 
 On the host, Linux needs nothing but its kernel and, on Ubuntu 23.10 and later,
