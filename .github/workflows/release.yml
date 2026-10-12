@@ -302,6 +302,10 @@ jobs:
           bash tools/ci/xlings_tools.sh patchelf
           mcpp build -p luban-os --profile dist
           bash tools/luban_os_release.sh
+          # xdesk, the desktop compositor of the desktop editions: its own
+          # payload too (xim:xdesk).
+          mcpp build -p xdesk-app --profile dist
+          bash tools/xdesk_release.sh
 
       - name: Upload the Luban OS app
         uses: actions/upload-artifact@v4
@@ -310,6 +314,8 @@ jobs:
           path: |
             build/luban-os-*-linux-x86_64.tar.gz
             build/luban-os-*-linux-x86_64.tar.gz.sha256
+            build/xdesk-*-linux-x86_64.tar.gz
+            build/xdesk-*-linux-x86_64.tar.gz.sha256
 
   # Cross-build the aarch64-linux-musl release artefact on an x86_64 runner via
   # mcpp's cross toolchain (xim:aarch64-linux-musl-gcc). Uses the latest mcpp
@@ -952,6 +958,8 @@ jobs:
             artifacts/xlings-linux-x86_64/xlings-*-linux-x86_64.tar.gz
             artifacts/luban-os-linux-x86_64/luban-os-*-linux-x86_64.tar.gz
             artifacts/luban-os-linux-x86_64/luban-os-*-linux-x86_64.tar.gz.sha256
+            artifacts/luban-os-linux-x86_64/xdesk-*-linux-x86_64.tar.gz
+            artifacts/luban-os-linux-x86_64/xdesk-*-linux-x86_64.tar.gz.sha256
             artifacts/xlings-linux-aarch64/xlings-*-linux-aarch64.tar.gz
             artifacts/xlings-macosx-arm64/xlings-*-macosx-arm64.tar.gz
             artifacts/xlings-windows-x86_64/xlings-*-windows-x86_64.zip
@@ -1089,6 +1097,7 @@ jobs:
           bash tools/mirror_xlings_res.sh "${{ steps.version.outputs.version }}"
           # The Luban OS app beside it (xlings-res/luban-os).
           bash tools/mirror_res.sh luban-os "${{ steps.version.outputs.version }}"
+          bash tools/mirror_res.sh xdesk "${{ steps.version.outputs.version }}"
 
       - name: Report mirror outcome
         if: ${{ always() && env.XLINGS_RES_TOKEN != '' }}

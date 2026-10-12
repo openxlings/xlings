@@ -345,6 +345,9 @@ jobs:
           bash tools/ci/xlings_tools.sh patchelf
           mcpp build -p luban-os --profile dist
           bash tools/luban_os_release.sh
+          # xdesk's release payload, as release.yml makes it.
+          mcpp build -p xdesk-app --profile dist
+          bash tools/xdesk_release.sh
           # xdev runs `mcpp test` and renders the report; the step summary is
           # rendered once, by the report job, from every lane. Built static
           # (musl) so the e2e and report jobs can run this same binary: a glibc

@@ -83,9 +83,9 @@ home and never touch the user's. Release builds: `tools/{linux,macos}_release.sh
   formal release. Bump `mcpp.toml`, `src/core/config.cppm` and
   `luban/service/src/service.cppm` (kVersion) together.
 - After `release.yml` is green: push the assets to the CN mirror from a CN machine
-  (`tools/mirror-latest.sh xlings`, then `luban-os`; verify with GET), then bump
-  `xim-pkgindex/pkgs/x/xlings.lua` (every platform block and `latest`) and
-  `pkgs/l/luban-os.lua`.
+  (`tools/mirror-latest.sh xlings`, then `luban-os` and `xdesk`; verify with GET), then
+  bump `xim-pkgindex/pkgs/x/xlings.lua` (every platform block and `latest`),
+  `pkgs/l/luban-os.lua` and `pkgs/x/xdesk.lua`.
 - Never pin a released xlings version in CI (`tests/fresh-install/` follows `latest`).
 
 ## Contributing
