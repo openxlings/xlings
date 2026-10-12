@@ -6,8 +6,8 @@
 // to minutes there before 2026.10.12.1, because every one of them redid the
 // whole SubOS's projection. This home is generated (no network, small files)
 // and each command has a budget, asserted in the static performance lane
-// (XLINGS_PERF_BUDGETS=1); elsewhere the timings are printed. A failure
-// carries the command's XLINGS_TRACE=timing lines, which name the phase.
+// (XLINGS_PERF_BUDGETS=1), the only place it runs. A failure carries the
+// command's XLINGS_TRACE=timing lines, which name the phase.
 #include <gtest/gtest.h>
 import xlings.testkit;
 #include "xlings/xtest.hpp"
@@ -60,6 +60,12 @@ struct Timing { std::string command; long long ms; std::string trace; };
 
 XTEST(HomePerf, ChangingOnePackageCostsWhatItMovesNotWhatTheHomeHolds, .area = "xim",
       .cost = tk::Cost::Slow, .covers = {"PERF-LARGE-HOME"}, .requires_ = {"xlings-bin"}) {
+    // Only where its timings mean something: generating the home takes
+    // minutes on an unoptimised build, and a suite that runs everything
+    // (`mcpp test`, the root lane) has a per-binary limit.
+    const char* lane = std::getenv("XLINGS_PERF_BUDGETS");
+    if (!lane || std::string_view(lane) != "1")
+        GTEST_SKIP() << "the static performance lane's (XLINGS_PERF_BUDGETS=1)";
     auto home = tk::Home::isolated("home-perf");
     const auto repo = home.root() / "index";
     const auto primary = home.root() / "primary";
@@ -118,8 +124,6 @@ XTEST(HomePerf, ChangingOnePackageCostsWhatItMovesNotWhatTheHomeHolds, .area = "
         timings.push_back({line, r.elapsed.count(), r.err});
         std::cout << Json{{"perf", line}, {"ms", r.elapsed.count()}, {"budget_ms", c.budgetMs}}.dump() << '\n';
     }
-    if (const char* on = std::getenv("XLINGS_PERF_BUDGETS"); !on || std::string_view(on) != "1")
-        GTEST_SKIP() << "workload validated; the timing budgets are the static performance lane's";
     for (std::size_t i = 0; i < cases.size(); ++i) {
         EXPECT_LE(timings[i].ms, cases[i].budgetMs)
             << timings[i].command << " took " << timings[i].ms << " ms\n" << timings[i].trace;
