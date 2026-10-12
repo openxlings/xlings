@@ -1,6 +1,6 @@
 # Luban OS：分层、home 格式框架、呈现层、运行方式与 desktop —— 总体设计
 
-日期：2026-10-12　基线：2026.10.12.3　状态：设计 checkpoint，待 review
+日期：2026-10-12　基线：2026.10.12.3　状态：已确认，按 §11 实施（xlings 一个 PR，按 checkpoint 提交；跨仓库见 §17）
 
 来源：在一个长期使用的 home（398 个 payload）上从旧客户端升级到 2026.10.12.3 的完整记录（`self doctor --fix`、
 升级提示），以及按 README 第一次体验 Luban（`luban new`、`luban try`）的记录。本文把这些问题和围绕它们的讨论
@@ -11,6 +11,16 @@
 1. 依赖方向反转：xlings 不再导入 `luban.*`；`xlings subos boot`、可启动镜像的导出（iso / img / qcow2 / drive）移到 luban。
 2. Luban 目前没有用户：命令树一次改到位，不留兼容写法。
 3. 目录按职责三分：`modules/` 通用库，`luban/` Luban OS 的组件与服务，`apps/` 用户直接接触的程序。
+4. home 格式只做向前迁移 + 读者宽容 N-1（§4.2）；机器模式直接启动环境本身（§8.1）；显示协议在 guest 一侧（§9）。
+5. 没有过渡方案：机器模式从第一版起就保留修改（原 §8.4 删除）。
+6. GUI 应用叫 **Luban OS**（包与二进制 `luban-os`），产品名一律写作 "Luban OS"（§14）。
+7. 桌面与显示相关的规范属于 Luban 的桌面子系统（`luban/desktop/spec`，openxx 一族：opensal 等），
+   Luban 不另造一套；不属于桌面的，先用 Luban 自己的格式（§15）。
+8. 窗口与输入走 opensal 的宿主 backend；控件用 imgui，画在 opensal 的 surface 上（§14.6）。
+9. 官方桌面两条线：传统桌面、xdesk 实验版，底层都走 opensal（§9.3）。
+10. 音频先做简单版本：virtio-snd 与 PipeWire / Pulse 的现成标准，不写新协议（§9.4）。
+11. 关窗口：每次都问；"确认并设为默认" 写入**该环境**的配置（§14.4）。
+12. 桌面子系统按需实现在 `luban/desktop/` 下，只放现在需要的，代码、注释与文档自成一体（§16）。
 
 ---
 
@@ -40,7 +50,7 @@
    藏不住的差异用 OS 的话说（"这台机器没有硬件虚拟化，会慢"，而不是 "no KVM"）。
 2. **默认只说结论和下一步**；`-v` 显示步骤；一切细节（含外部工具的输出）在日志里，失败时打印日志最后 20 行和路径。
 3. **一个问题一个回答者**：登录 shell、home 格式版本、一个发现项的修复，各自只有一处代码决定。
-4. **core 产出结构化结果和事件，前端渲染**（#640 已有原则）；luban CLI、luban desktop、xlings CLI、`--json`、interface 是同一事件流的不同渲染器。
+4. **core 产出结构化结果和事件，前端渲染**（#640 已有原则）；luban CLI、Luban OS、xlings CLI、`--json`、interface 是同一事件流的不同渲染器。
 5. **xlings 知道自己每个版本的格式**：已知格式的变化与派生状态由框架自动处理，只把真正需要用户决定的事交给用户。
 6. **依赖只向下**：`apps/` → `luban/` → `modules/`；`apps/xlings` 不导入 `luban/`。
 
@@ -52,23 +62,18 @@
 modules/            通用：xlings 和 luban 都用，不知道"机器"
   libs runtime platform ui cli store     已有
   home        新：home 的布局、schema、迁移、显式 home 上下文（§4）
-  pkg         从 src/core/xim + xvm 抽出：解析、安装、版本、注册（§3）
-  subos       已有；加上从 src/core/subos 抽出的操作（new / rm / config / upgrade / rollback / generation）
-              和 root 的 /etc（sysusers、出厂文件、登录 shell 规则 §7）
+  subos       已有；加上 root 的 /etc（sysusers、出厂文件、登录 shell 规则 §7）
   carrier     已有（local、wsl2、vz）；加 vm（§8）
   image       从 luban/image 移来：GPT、FAT、ISO 9660 + El Torito、qcow2——格式本身通用
-  interface   NDJSON 协议的类型与客户端（服务端仍在 xlings）
-  ui-gui      从 apps/gui 抽出：imgui 的主题与组件
-luban/              Luban OS 的组件与服务：知道"机器"
-  boot stage0 machine        已有（machine 只留机器才有的部分）
-  vm          机器运行时：每台机器一个 supervisor、控制台中继、显示通道（§8、§9）
-  archive     环境归档 .luban 的格式（§10）
-  service     服务层：环境与机器的生命周期、结构化事件；CLI 与 desktop 共用（§5）
+luban/              Luban OS 的组件与服务：知道"机器"（布局见 §16）
+  system      boot、stage0、machine、archive
+  service     服务层：环境与机器的生命周期、结构化事件；CLI 与 Luban OS 共用（§5）
+  vm          机器运行时：supervisor、终端中继、guest 会话进程（§8）
+  desktop     桌面子系统：opensal 与 wire、宿主 backend、imgui 在 opensal 上、终端模拟、opensal-wlr（§9、§14）
 apps/               用户直接接触的程序
-  xlings        现在的 src/，最终只留前端
   luban         luban 命令树与终端呈现 + luban-init（stage-0），静态链接
-  luban-desktop 动态链接（静态 musl 没有 dlopen，打不开窗口——apps/gui/mcpp.toml 已说明）
-  xlings-gui  xdev
+  luban-os      Luban OS 应用，动态链接（静态 musl 没有 dlopen，打不开窗口）
+  gui  xdev
 ```
 
 移动清单（P11）：
@@ -79,7 +84,6 @@ apps/               用户直接接触的程序
 | `luban/src/machine` 中 root 的 `/etc`（sysusers、出厂文件） | `modules/subos/views/root`——root 在 sandbox 里进入也需要 passwd，它属于 root view |
 | xlings 二进制兼当 `xlings-init`（`main.cpp` 导入 `luban.stage0`） | 只有 `luban-init`；home 的 `boot/xlings-init` 链接由 §4 的迁移步骤改指向 luban |
 | `xlings subos boot`、`subos export --iso/--drive/.img/.qcow2` | `luban boot`、`luban export`；xlings 的 `subos export` 只留目录和 tar |
-| `apps/gui`（库的一半） | `modules/ui-gui` + `apps/xlings-gui` |
 
 规则由 lint 保证：`tools/lint_layer_deps.sh` 增加 "`apps/xlings` 与 `src/` 不导入 `luban.*`"、"`modules/` 不新增 `Config::`"。
 
@@ -95,8 +99,9 @@ xlings 已发布的 `subos boot`、`subos export --iso` 被移走后，xlings �
 
 - `modules/home` 提供 `HomeContext`：路径、home 配置的读取（带 `upgrade-and-compatibility.md` 的故障域：读不了不当作空）、状态锁。
 - 被移动的函数接收上下文；`Config` 在过渡期是 `HomeContext` 在 xlings 前端的一个适配器，最终消失。
-- **按 luban 需要的顺序抽**：先 SubOS 生命周期操作与 `xim::cmd_install_step`（嵌套安装，§5 服务层要用），再 xim / xvm 其余部分进 `modules/pkg`。
-- 抽出后 luban 服务层**进程内调用**，不再拼命令行、不解析文本；多个进程同时写 home 由已有的状态锁保证（与多个 xlings 并发相同）。
+- **按 luban 需要的顺序抽**：先 SubOS 生命周期操作与 `xim::cmd_install_step`（嵌套安装），再 xim / xvm 其余部分。
+- 服务层经一个**端口**（`XlingsPort`）调用 xlings 的操作：本版由 interface（结构化 NDJSON，按需补充 capability）实现，
+  抽取完成的操作换成进程内实现——服务层与它的前端都不变。不拼命令行、不解析文本；多个进程同时写 home 由已有的状态锁保证。
 - NDJSON 只留给 agent，以及跨 carrier 的调用（宿主 ↔ guest）。
 
 ---
@@ -206,7 +211,7 @@ xlings 已升级到 2026.10.12.4。这个 home 里有 3 个已有的问题。
 | 常用 | `new <name> --edition <E>` | 默认 edition 为 core；`--proxy` |
 | 常用 | `enter <name\|镜像路径> [--mode sandbox\|machine] [--temp] [--display terminal\|window]` | 进入环境；参数是镜像路径时等于 `--mode machine --temp` |
 | 常用 | `run <name> -- <cmd>`、`ls`、`status [name]` | |
-| 更多 | `config <name> [--policy] [--proxy] [--tz] [--shell] [--mode] [--persist] [--allow/--disallow] [--mount/--unmount] [--fetch]` | 全部是选项，与 `xlings subos config` 一一对应 |
+| 更多 | `config <name> [--policy] [--proxy] [--tz] [--shell] [--mode] [--persist] [--desktop] [--on-close] [--allow/--disallow] [--mount/--unmount] [--fetch]` | 全部是选项；隔离相关的与 `xlings subos config` 一一对应，机器相关的（mode、persist、desktop、on-close）是 luban 的 |
 | 更多 | `stop <name>` | 停止一台运行中的机器或会话 |
 | 更多 | `history`、`upgrade`、`rollback`、`rm`、`setup` | 不变 |
 | 更多 | `export <name> <file> [--boot]`、`import <file> [--name]`、`write <source> <device>` | §10 |
@@ -268,37 +273,61 @@ live 镜像只用于 `export`。
 - 关窗口或离开终端只是断开；关机是 `luban stop` 或 guest 内关机。
 - 下载之前先检查宿主（已有原则）：硬件虚拟化、qemu-system（T1）、固件；缺什么用 OS 的话说，并给出 `xlings install …`。
 
-### 8.4 在 vm carrier 之前（P6 的过渡）
+## 9. 显示、桌面与音频
 
-先发布的 CLI 中，`--mode machine --temp` 由现有的 live 镜像路径实现，控制台按 §8.2 由 luban 中继（第一版可直接中继串口）；
-`--mode machine` 不带 `--temp` 时明确拒绝并说明"保留修改的机器模式尚未提供"，而不是悄悄变成临时的。
+### 9.1 画面从 guest 来，经 opensal 到宿主窗口
 
----
+guest 里的桌面画在一个 opensal surface 上；这个 surface 的**提供端在宿主**：Luban OS 窗口。两端之间是
+opensal 的跨地址空间传输（opensal wire，§15 的 X 层）；Luban 只提供它走的通道（unix socket、virtio-serial），不定义协议。
 
-## 9. 显示与 luban desktop
+```
+guest：  桌面（labwc 经 bridge，或 xdesk）── opensal wire 消费端 ──┐
+         通道：sandbox 是 unix socket，machine 是 virtio-serial      │
+host：   Luban OS 窗口 ── opensal wire 提供端 ── 宿主 backend（x11 / wayland / win32 / cocoa）
+```
 
-### 9.1 帧从 guest 来
+- 同一个桌面在 sandbox 与 machine 两种运行方式里一样，Luban OS 窗口不知道下面是哪一种。
+- 开机阶段显示 Luban OS 自己的启动画面（§14.3）。
+- 窗口大小与缩放 → `opensal.mode` / `opensal.density`；Host 键与键盘锁定 → `opensal.capture`；
+  宿主输入法 → `opensal.text`；宿主剪贴板 → `opensal.clipboard`（受环境的 clipboard 授权约束）。
 
-| 做法 | 一致性 | 取舍 |
-|---|---|---|
-| 各载体自己的窗口（qemu gtk、VZVirtualMachineView、WSLg） | 差 | 正是要避免的 |
-| **luban 自己的窗口 + guest 内输出帧** | 好 | 采用 |
-| 每个应用一个宿主原生窗口 | 最好 | 以后再评估（macOS / Windows 上要自建 Wayland 桥） |
+### 9.2 opensal 在本版需要的接口
 
-- 桌面 edition 在 guest 里运行合成器，以 RFB（VNC）协议经 virtio-serial / vsock 输出（wayvnc 或 weston 的 VNC 后端）。
-  显示协议在 guest 一侧（OS 这一侧，归 luban 管），所以 qemu、vz、WSL2、网络上的真机看起来一样。
-- 开机阶段显示 luban 自己的启动画面；需要看固件和 limine 时（调试），qemu 载体用 `-vnc unix:` 接到同一个窗口（`-v`）。
-- 每台运行中的机器一个窗口；窗口外框（名字、状态）由 luban 画，多个窗口一致。
-- RFB 先行（客户端在进程内一两千行）；RDP（音频、剪贴板、带宽）以后再换。剪贴板走已有的 clipboard 授权通道。
-  GPU 加速各载体不同（virgl / venus、vz 半虚拟化 GPU、dxgkrnl），画面一致，只有性能差别。
-- `--display` 的默认值：edition 声明了桌面且宿主有显示环境 → window；否则 terminal。
+只实现现在用到的（§16）：
 
-### 9.2 desktop 是服务层的 GUI
+| 接口 | 用途 |
+|---|---|
+| `opensal.surface`（核心） | 像素与节奏（帧完成） |
+| `opensal.pointer`、`opensal.keyboard` | 输入 |
+| `opensal.mode`、`opensal.density` | 窗口大小 → guest 分辨率；高分屏 |
+| `opensal.capture` | 聚焦时收下全部按键（含宿主的组合键），Host 键释放 |
+| `opensal.cursor` | 光标形状 |
+| `opensal.text` | 宿主输入法提交的文字与预编辑，消费端回报光标位置 |
+| `opensal.clipboard` | 宿主剪贴板 |
+| opensal wire | 以上接口跨地址空间：帧格式、接口协商（缺什么可以由一次操作得知）、脏区域、压缩 |
 
-- `apps/luban-desktop`：GLFW + imgui（`modules/ui-gui`）+ `luban/service`；index 中的 T1 包 `luban-desktop`。
-- 功能：环境列表、新建 / 配置 / 升级 / 回滚 / 导出 / 导入、启动 / 停止、状态、每台机器的窗口。
-- **规则：desktop 没有 CLI 或 interface 做不到的管理功能**；它独有的只是"显示机器的画面"。agent 与命令行因此始终完整，测试针对服务层。
-- CLI 需要窗口时启动 `luban-desktop --attach <name>`；没装时提示 `xlings install luban-desktop`。
+### 9.3 官方桌面两条线
+
+| edition | 桌面 | 接入 | 状态 |
+|---|---|---|---|
+| `desktop` | 传统层叠桌面：labwc + 面板 + 启动器 + 终端 | `opensal-wlr`：guest 内的桥，用 wlroots 的标准协议取画面（screencopy）、注入输入（virtual-keyboard / virtual-pointer）、提交文字（input-method）、同步剪贴板（data-control）、调整输出（output-management），对外是 opensal wire 消费端 | 正式线 |
+| `desktop-xdesk` | xdesk | 原生 opensal 消费端 | 实验线（preview） |
+
+- 两条线同一个传输、同一个 Luban OS 窗口，输入法、剪贴板、分辨率行为一致。
+- 用户在 nano / tiny / core 上自己装桌面：任何实现了上述 wlroots 协议的合成器经 `opensal-wlr` 接入。
+- 桌面会话的声明用 freedesktop 的 `wayland-sessions/*.desktop`，加一个键 `X-Opensal-Interfaces=`（它用到哪些
+  opensal 接口）；edition 指定默认会话，`luban config <n> --desktop <会话|none>` 切换。
+- 实验线升为默认的门槛：真实程序的兼容矩阵、opensal 一致性测试、帧延迟预算、aarch64、CN 镜像。
+
+### 9.4 音频（简单版本，现成标准）
+
+- machine：virtio-snd（qemu `-audiodev` 接宿主的 PipeWire / Pulse / CoreAudio / Windows 音频；内核 `SND_VIRTIO`）。
+- sandbox：`audio` 授权，映射宿主 PipeWire / Pulse 的 socket（能力先是配置）。
+- 不写新协议；Luban OS 需要按系统控制音量时，再按 §15 判断。
+
+### 9.5 GPU
+
+软件渲染是基线（所有载体都能跑）；sandbox 有 GPU 授权时用 render node，machine 里 virtio-gpu。画面一致，只有性能差别。
 
 ---
 
@@ -334,28 +363,219 @@ live 镜像只用于 `export`。
 
 ---
 
-## 11. 分阶段
+## 11. 任务与依赖
 
-| 阶段 | 内容 | 可单独发布 | 测试要点 |
-|---|---|---|---|
-| 0 | 本文 | — | — |
-| 1 | P1–P5：doctor 子进程不提问、修复必须消除发现项、按根因归并、基线、三行升级提示 + `-v` + 日志 | 是 | 每种带修复的 FindingKind 的"修复后消失"；子进程在后台进程组不读终端；升级提示快照 |
-| 2 | `modules/home`：schema 纪元、迁移注册表、`HomeContext`、兼容表、问题分类；现有迁移收编 | 是 | 每个迁移的 check / apply / 幂等；旧 home fixture 升级（host matrix `oldhome`） |
-| 3 | 分层：image → modules、root 的 `/etc` → subos、stage-0 / boot / 可启动 export → luban、ui-gui；lint | 是 | `lint_layer_deps` 新规则；luban_image_test 不变通过 |
-| 4 | 抽取：SubOS 生命周期操作与 install step 进 modules，接收上下文 | 是 | 现有 subos / install 测试不变通过 |
-| 5 | `luban/service` + 呈现层 + 新命令树 + shell 规则 + `.luban` 归档 + sandbox 的 persist；`--mode machine --temp` 过渡实现（§8.4） | 是 | 命令树快照、help 级别、export→import 往返、persist 三档、默认 `--display` 路径的启动测试（修 P6 的盲区） |
-| 6 | `vm` carrier：启动环境本身、终端中继、supervisor、machine 的 persist；edition 新版本 | 是 | qemu 下 enter → 修改 → 重进仍在；`--temp` 不留；窗口大小同步 |
-| 7 | luban-desktop：RFB 客户端、启动画面、环境管理、每机器一窗口 | 是 | 服务层的测试覆盖它的每个操作 |
+xlings 一个 PR，每个 checkpoint 一个提交：能构建、它的测试通过、在本表里标明对应的节。跨仓库的 PR 见 §17。
 
-每个阶段一个 PR；需求 ID 在实现时加入 `tests/requirements.toml`。
+```
+C1 升级与 doctor ─────────────┐
+C2 modules/home ──► C3 分层 ──┼──► C5 服务层 + 命令树 ──► C6 机器模式 ──► C8 Luban OS 应用 ──► C9 guest 桌面
+C4 可观测性 ──────────────────┘                    ▲              │                ▲
+C7 桌面子系统基础（opensal、backends、ui、term）─────┴──────────────┼────────────────┘
+                                                                   └──► C10 音频
+C11 文档与规范、C12 CI、C13 版本与发布：贯穿，最后收口
+```
+
+| # | 内容 | 依赖 | 主要视角 | 测试 |
+|---|---|---|---|---|
+| C1 | P1–P5：doctor 子进程不提问（agent 模式 + 前台）；修复必须消除发现项；按根因归并；基线；三行升级提示 + `-v` + 日志 | — | 稳定性、体验 | 每种带修复的发现项"修复后消失"；后台进程组的子进程不读终端；升级提示快照 |
+| C2 | `modules/home`：schema 纪元、迁移注册表、`HomeContext`、兼容表、问题分类；`layout` 拆为 `mode` + `root_layout`；现有自愈收编 | — | 无感升级、兼容 | 每个迁移的 check / apply / 幂等；旧 home 升级；降级切换前的提示 |
+| C3 | 分层：`modules/image`、root 的 `/etc` 进 `modules/subos`、stage-0 只在 luban、`subos boot` 与可启动导出移到 luban；lint | C2 | 架构、一致性 | `lint_layer_deps` 新规则；镜像启动测试不变通过 |
+| C4 | 可观测性：trace id 贯穿进程、span、按操作的日志、外部工具输出进日志、`xlings self log` | — | 可观测、隐私 | 跨子进程的 trace 还原；`--bundle` 去除 home 路径 |
+| C5 | `luban/service` + 呈现层 + 命令树（§6）+ 登录 shell（§7）+ `.luban` 归档 + sandbox 的 persist + on-close 配置 | C3、C4 | 体验、一致性 | 命令树快照、help 级别、export → import 往返、persist 三档、默认输出快照 |
+| C6 | 机器模式：`vm` carrier（qemu）、9p 映射环境本身、guest 会话进程与终端中继、supervisor、machine 的 persist、主机检查 | C3、C5 | 稳定性、跨平台 | qemu 下 进入 → 修改 → 重进仍在；`--temp` 不留；窗口大小同步；没有 KVM 时的提示 |
+| C7 | `luban/desktop`：opensal（§9.2）与 wire、宿主 backend、mem、imgui 在 opensal 上、终端模拟 | — | 架构、跨平台 | 一致性：同一消费者经 mem 与经 wire 像素相同（带反向对照）；终端序列测试 |
+| C8 | `apps/luban-os`：窗口即显示器、启动器、快速开始、启动画面、控制台、关窗口、Host 键与标题栏、管理面板、多实例、桌面入口 | C5、C6、C7 | 用户体验、视觉 | mem backend 下的界面快照；快速开始的完整流程；关窗口三种选择 |
+| C9 | guest 桌面：`opensal-wlr`、xdesk 实验版、两个 edition | C6、C7 | 生态、一致性 | 桥的一致性测试；两个 edition 各启动一次 |
+| C10 | 音频：virtio-snd、`audio` 授权 | C6 | 跨平台 | 授权映射；qemu 参数 |
+| C11 | 文档与规范：docs/luban（中英）、docs/specs、命令参考、AGENTS.md 的规则、README | 全部 | 一致性 | `tests/scripts/test_docs.py` |
+| C12 | CI：新 lint、新测试、host matrix 场景 | 全部 | 覆盖度 | 三平台 CI 全绿 |
+| C13 | 版本号三处（mcpp.toml、config.cppm、luban kVersion）、发布、CN 镜像、index | 全部 | 发布 | fresh-install、真实升级 |
+
+收口的规则：一个 checkpoint 只有在它的测试通过后才提交；PR 合并要求全部 checkpoint 完成、CI 全绿、自我 review 通过。
 
 ---
 
 ## 12. 待定与风险
 
-- P1 中子 subos 为什么需要提权：待复现后决定是去掉该步骤的提权，还是只把它变成待办。
-- 9p 与 virtiofs 的性能；rootless virtiofsd 的可用性。
-- Windows 上的机器模式：qemu + WHPX 的性能；Hyper-V 以后再评估。
-- RFB 经 virtio-serial 的带宽；有 vsock 时改用 vsock。
-- 抽取的规模：777 处 `Config::`；阶段 4 只抽 luban 需要的部分，其余随后。
-- xlings 移走 `subos boot`、`subos export --iso` 影响 2026.10 已发布的用法：发布说明写明，xlings 给出一行指向 luban 的拒绝。
+- P1 中子 subos 为什么需要提权：C1 中复现后决定去掉该步骤的提权还是只变成待办。
+- 9p 的性能；以后需要时换 virtiofs（virtiofsd 作为 T1 包，内核要 `FUSE_FS` + `VIRTIO_FS`）。
+- Windows 上的机器模式：qemu + WHPX 的性能。
+- opensal wire 在 virtio-serial 上的带宽：脏区域 + 压缩；同机（sandbox）用共享内存。
+- 宿主 backend 的多窗口、换显示器时的缩放、Wayland 上的键盘锁定（keyboard-shortcuts-inhibit）、macOS 不拦截 Cmd+Tab。
+- imgui 不支持屏幕阅读器：完整的键盘导航与对比度，文档中写明。
+- 抽取的规模（`src/core` 中 777 处 `Config::`）：本 PR 的服务层经一个端口调用 xlings（§5.1），端口的进程内实现随抽取替换。
+- xlings 移走 `subos boot`、`subos export --iso`：发布说明写明；xlings 对这些参数给出一行指向 luban 的拒绝。
+- 不在本版：RFB 兼容档（非 wlroots 系的第三方桌面）、opends 的 agent 桌面操作、xdesk 在真机上原生运行。
+
+---
+
+## 13. 可观测性
+
+一个事件模型，同时用于显示、日志、调试与评估。
+
+1. **trace id 向下传递**：顶层命令生成，经环境变量 `XLINGS_TRACE_ID` 传给子进程、hook、会话，经 carrier 的 control 通道进 guest，interface 请求带同名字段。
+2. **span + event**：`phase` 是 span（开始、结束、耗时、结果），其余是 event；§5 的呈现事件就是它们，屏幕显示是按级别过滤后的结果。
+3. **按操作的日志** `logs/ops/<日期>/<trace-id>.ndjson`：每条带客户端版本、home schema、平台、参数、环境变量的名字（不记值）；外部工具的原始输出放在旁边的文件里，由日志引用。upgrade、destructive、elevation 三个日志保留，带 trace id。
+4. **机器的日志** `logs/machines/<name>/`：串口、supervisor、guest 会话事件，同一个 trace id。
+5. **操作者**：`actor` 取 person（座位上的人）、cli、agent、program、system。
+6. **保留**：日志是派生数据，按大小与时间轮转（已有的 journal 轮转）。
+7. **调试**：`XLINGS_TRACE=<分类>` 写入同一事件流，开启时也到 stderr。
+8. **评估**：性能预算（`test_home_perf`）、host matrix、`xdev report` 读同一份 span；"点击到 shell 出现" 这类体验指标也从这里来。
+9. **查看与报告**：`xlings self log [trace-id] [--bundle]`（`self` 下，不新增顶层命令），`luban status <n> --log`，Luban OS 管理面板的 "活动" 页；`--bundle` 按隐私规则去除 home 路径与用户名。日志只在本地。
+
+---
+
+## 14. Luban OS 应用
+
+### 14.1 窗口即显示器
+
+- 一个窗口只显示一个系统：控制台型整个窗口是它的控制台，桌面型整个窗口是它的桌面；没有标签页、侧栏、工具栏。
+- 窗口大小即分辨率：控制台的行列、桌面的分辨率随窗口变化。标题：`<名字> — Luban OS`。
+- 可以开多个窗口，每个是独立进程；系统由 supervisor 运行，窗口崩溃不影响系统。
+- 两个窗口选同一个系统：控制台型开一个新的登录会话（像切到 tty2）；桌面型把已打开的窗口调到前面。
+- 系统里关机后：窗口显示 "已关机"，Enter 重新启动，Esc 回到列表。
+
+### 14.2 启动器
+
+```
+┌──────────────────────────────────────────────┐
+│                                            ⚙ │
+│                   Luban OS                   │
+│                                              │
+│        ▸ box        core                 ●   │
+│          agent      agent-workspace          │
+│          studio     desktop                  │
+│          ＋ 新系统                            │
+│                                              │
+│               8 秒后进入 box                   │
+└──────────────────────────────────────────────┘
+```
+
+- 只有一个列表；⚙ 或 F2 进管理面板；● 表示运行中；"＋ 新系统" 是列表最后一行。
+- 倒计时 10 秒（可设置，0 为不自动进入），任何鼠标移动或按键取消。
+- 顺序：用户设定的默认系统在第一位，没有设定时按最近使用。
+- 已经运行的系统：选中即连上。主机条件不满足时：检查清单，"设置" / "安装" 按钮，提权弹系统自带的框。
+
+### 14.3 快速开始与进度
+
+- 没有任何系统时：nano、tiny、core、desktop 四张卡片，说明与大小来自 index 中 edition 的 `title` / `summary` / `size`。
+- 名字自动生成（`core-1`），"更多选项" 收起：shell、运行方式、保留修改、代理。
+- 点击后同一窗口显示进度：检查主机 → 下载 → 安装 → 生成系统 → 启动；进度条按阶段加权（下载按字节，安装按包数）；
+  "详情" 是这次操作日志的实时滚动；"取消" 不留下半个系统（`new` 是事务性的）。完成后直接进入。
+- 启动画面：超过约 300 ms 才显示；logo、系统名、阶段；Esc 显示控制台日志。
+
+### 14.4 关窗口
+
+```
+┌ 关闭 box ────────────────────────────────────┐
+│ box 里正在运行：mcpp build                    │
+│   ◉ 在后台继续运行                            │
+│   ○ 关机                                     │
+│        [取消]   [确认]   [确认并设为默认]       │
+└──────────────────────────────────────────────┘
+```
+
+- 每次都问；"确认并设为默认" 写入**该环境**的配置：`luban config <n> --on-close ask|background|poweroff`。
+- 临时环境的关机写作 "关机（修改将丢弃）"。已设默认时第一次这样关，发一次系统通知。
+- 宿主注销或关机：supervisor 收到 SIGTERM 让 guest 正常关机，超时后再强制。
+
+### 14.5 Host 键与标题栏
+
+- 单独按下再松开一组修饰键（Linux / Windows `Ctrl+Alt`，macOS `Ctrl+Option`，可设置）：键盘被锁定时释放，否则打开 Host 菜单（回到列表、管理、全屏、新会话、关机）。
+- 标题栏始终写着现在按它会发生什么：`box — Luban OS · Ctrl+Alt 菜单` / `box — Luban OS · Ctrl+Alt 释放键盘`。
+- 全屏没有标题栏：进入全屏的头 3 秒叠加提示，鼠标到顶边滑出细工具条。
+- 控制台模式不锁定键盘；桌面模式点进窗口后锁定。
+
+### 14.6 管理面板与界面技术
+
+- 独立窗口、全局一个；功能：系统列表与状态、启动停止、设置、历史与回滚、软件、隔离、存储、日志、新建、导入导出、写盘、主机、活动（span 树）、应用设置。
+- 每个操作显示 "等价命令"，可复制；没有 CLI 做不到的管理功能。
+- 多个系统的控制台并排、分离窗口只在这里（imgui docking）。
+- 界面：imgui 画在 opensal surface 上（软件光栅化），窗口与输入来自 opensal 的宿主 backend；事件驱动重绘（空闲时 CPU 接近 0）；
+  深色默认、浅色可选，颜色取 `ui/theme`；界面字体与等宽字体都带中文；高分屏按显示器缩放。
+
+### 14.7 安装与入口
+
+`xlings install luban-os` 安装应用；安装器按 freedesktop Desktop Entry（Linux）、`.app`（macOS）、开始菜单（Windows）生成入口与图标，卸载时删除。CLI 的 `luban enter <n> --display window` 启动 `luban-os --attach <n>`。
+
+---
+
+## 15. 规范放在哪里
+
+按顺序判断：
+
+1. 已有现成标准 → 直接用（virtio-snd、freedesktop 的会话与桌面入口、PipeWire / Pulse、Wayland 协议）。
+2. 属于桌面与显示（surface、输入、文字、剪贴板、窗口、桌面语义）→ 桌面子系统的规范，`luban/desktop/spec`（openxx 一族），
+   一个共享的能力放在它的所有提供者都够得着的那一份里。
+3. 不属于桌面、只有 Luban 用 → Luban 自己的格式，写在 `docs/specs/`（终端中继、`.luban` 归档、home schema、操作日志）；
+   以后有第二个实现者时再提升。
+
+opensal 的边界分三层：S（构建时选定）、L（加载时、同一地址空间）、X（另一个地址空间或权限级别）。核心接口都能跨 X；
+X 部署经 opensal wire 转发，而不是经提供者的函数表。
+
+---
+
+## 16. `luban/` 的布局与包划分
+
+一个包（一个 `mcpp.toml`）对应三件事一起变化的边界：依赖的系统库、被哪一类二进制链接（静态 CLI、动态 GUI、guest 程序）、以后要不要一起拆出去。包内按职责分模块与分区；不会一个文件一个包。
+
+```
+luban/
+├── system/      luban-system：boot、stage0、machine、archive          静态
+├── service/     luban-service：环境与机器的生命周期、事件、呈现事件    静态
+├── vm/          luban-vm：supervisor、终端中继、通道、guest 会话进程    静态
+└── desktop/     桌面子系统（以后可整体拆出）
+    ├── spec/        opensal（含 wire）
+    ├── backends/    host/（x11、wayland、win32、cocoa）、virtual/（mem、wire）   按依赖分包
+    ├── ui/          imgui 在 opensal 上：光栅化、输入、字体
+    ├── term/        终端模拟：VT 解析、屏幕、选择
+    └── bridge/      opensal-wlr（guest 内）
+apps/
+├── luban        静态：CLI + luban-init；不链接 desktop
+├── luban-os     动态：service + vm 客户端 + desktop
+```
+
+规则（lint）：
+
+- `luban/desktop/**` 只依赖 `modules/` 与它自己，不导入 `luban.system` / `luban.service` / `luban.vm`；把它们接起来的只有 `apps/luban-os`。
+- 系统头文件：`modules/platform` 之外，只有 `luban/desktop/backends` 与 `luban/desktop/bridge`（图形一侧的平台边界）。
+- `apps/luban` 不链接 `luban/desktop`；`src/` 与 `apps/xlings` 不导入 `luban.*`。
+- 基础能力（日志、进程、pty、配置）只有一套：`modules/`。
+- 桌面子系统按需新写：只放现在需要的接口，代码、注释、文档自成一体，不引用任何内部探索项目。
+
+---
+
+## 17. 跨仓库与联调
+
+| 仓库 | 内容 | 与 xlings 的先后 |
+|---|---|---|
+| xlings | 本文全部（一个 PR） | — |
+| xlings-res/linux-kernel-virt | 新版本：`OVERLAY_FS`（persist）、`SND_VIRTIO`（音频）；boot profile 加 `quiet` | 先于 C6 的验证 |
+| xlings-res（桌面栈） | wlroots、labwc、foot、fuzzel 等的构建，两个架构 | 先于 C9 的验证 |
+| xim-pkgindex（一个 PR） | 内核与 boot profile 新版本；edition 新日期版本（`title/summary/size`、`shell`、`display`、会话进程）；`desktop` 与 `desktop-xdesk`；桌面栈的包；`luban-os` 包与桌面入口；PipeWire；xlings 的新版本与 `latest` | 包可先合；依赖新客户端的 edition 带 `min_client`，在 xlings 发布后合 |
+| CN 镜像 | 新的大文件（内核、桌面栈、字体、luban-os） | 发布当天，本地 `gtc` |
+
+联调顺序：内核与桌面栈的构建 → index PR（包）→ xlings PR 在 CI 中用 index PR 的分支验证 → xlings 发布与镜像 → index PR 合入（edition、`latest`）→ fresh-install 与真实升级验证。
+
+---
+
+## 18. 多视角检查
+
+每个 checkpoint 提交前按下表过一遍，结果写在提交说明里。
+
+| 视角 | 要问的 |
+|---|---|
+| 第一次使用的人 | 每一步有反馈吗？出错时知道下一步吗？ |
+| 日常开发者 | 快吗？会打断工作吗？修改会丢吗？ |
+| agent | 没有终端、不能提问时，每个操作完成或给出结构化的错误吗？ |
+| 发行版作者 | edition 能声明 shell、桌面、persist 的默认值吗？已发布的 manifest 不变吗？ |
+| 安全 | 隔离会被悄悄放宽吗？提权走一个入口吗（GUI 里是系统自带的提权框）？import 的 policy 被检查了吗？ |
+| 平台 | Linux / macOS / Windows，x86_64 / aarch64，有无 GPU，Wayland / X11 |
+| 网络 | CN 镜像、离线、只有代理 |
+| 规模 | 大 home、同时运行多个系统 |
+| 故障 | 一个系统、一个文件坏了，影响会扩散吗？ |
+| 升级 | 旧 home、旧客户端、降级 |
+| 可及性 | 只用键盘、中英文、对比度、中文输入法 |
+| 可观测 | 能从日志还原发生了什么吗？ |
+
