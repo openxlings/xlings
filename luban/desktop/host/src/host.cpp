@@ -139,6 +139,7 @@ struct Window::Impl {
     bool grabbed { false };
     SDL_Keymod injected_mods { SDL_KMOD_NONE };
     std::deque<std::string> injected_text;      // an SDL text event points at its text until it is taken
+    bool imgui { false };                       // its context and backends are up (and to be shut down)
     std::deque<std::string> injected_drops;     // likewise a drop event's file name
     std::mutex picking;                         // the file dialog answers on another thread
     std::optional<std::filesystem::path> picked;
@@ -167,6 +168,7 @@ std::expected<std::unique_ptr<Window>, std::string> Window::open(const Options& 
     ImGui::GetStyle().FontScaleDpi = scale;
     ImGui_ImplSDL3_InitForSDLRenderer(im.window, im.renderer);
     ImGui_ImplSDLRenderer3_Init(im.renderer);
+    im.imgui = true;
     // Fonts: the interface's (CJK when there is one) and the console's
     // monospace with the CJK font merged in for wide characters.
     const auto ui = first_existing_(ui_font_candidates());
@@ -188,9 +190,12 @@ std::expected<std::unique_ptr<Window>, std::string> Window::open(const Options& 
 
 Window::~Window() {
     if (!impl_) return;
-    ImGui_ImplSDLRenderer3_Shutdown();
-    ImGui_ImplSDL3_Shutdown();
-    ImGui::DestroyContext();
+    // Only what was set up: a window that could not open says why, it does not abort.
+    if (impl_->imgui) {
+        ImGui_ImplSDLRenderer3_Shutdown();
+        ImGui_ImplSDL3_Shutdown();
+        ImGui::DestroyContext();
+    }
     if (impl_->renderer) SDL_DestroyRenderer(impl_->renderer);
     if (impl_->window) SDL_DestroyWindow(impl_->window);
     SDL_Quit();
