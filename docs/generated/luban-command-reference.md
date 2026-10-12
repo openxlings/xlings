@@ -19,7 +19,7 @@ Options: `--json` — Machine-readable output: the events and the result; `--age
 
 Make an environment
 
-Options: `--edition <EDITION>` — nano, tiny, core (default), desktop, agent-workspace, or ns:name[@version]; `--proxy <URL>` — Its network goes only through this SOCKS5h proxy; `--carrier <CARRIER>` — Where it runs: local, wsl2, vz
+Options: `--edition <EDITION>` — nano, tiny, core (default), desktop, desktop-xdesk, agent-workspace, or ns:name[@version]; `--proxy <URL>` — Its network goes only through this SOCKS5h proxy; `--carrier <CARRIER>` — Where it runs: local, wsl2, vz
 
 ## `luban enter <name>` (common)
 
