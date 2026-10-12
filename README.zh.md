@@ -100,12 +100,14 @@ xlings self doctor --fix
 ## Luban
 
 一条命令得到完整的 Linux 用户态，无需 root——然后把它当作机器启动。Luban 是建立在 xlings 上的 OS 模型：
-由 edition 创建环境、按代回滚、导出为镜像。[快速开始](docs/zh/luban/01-quick-start.md)
+由 edition 创建环境、按代回滚、导出为镜像，并连同桌面显示在 Luban OS 窗口里。
+[快速开始](docs/zh/luban/01-quick-start.md) · [桌面](docs/zh/luban/08-desktop.md)
 
 ```bash
 luban new box --edition tiny        # an environment: a Linux userland, no root needed
 luban enter box --mode machine --temp   # boot it with its own kernel in a local VM
 luban export box box.iso  # a bootable ISO: BIOS and UEFI, x86_64 and aarch64
+luban new desk --edition desktop    # a desktop; luban-os shows it in a window
 ```
 
 ## 文档

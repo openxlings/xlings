@@ -103,12 +103,14 @@ xlings self doctor --fix
 
 A whole Linux userland in one command, rootless — then boot it as a machine.
 Luban is the OS model on xlings: environments made from editions, rolled back by
-generation, exported as images. [Quick start](docs/luban/01-quick-start.md)
+generation, exported as images, shown in the Luban OS window with their desktop.
+[Quick start](docs/luban/01-quick-start.md) · [The desktop](docs/luban/08-desktop.md)
 
 ```bash
 luban new box --edition tiny        # an environment: a Linux userland, no root needed
 luban enter box --mode machine --temp   # boot it with its own kernel in a local VM
 luban export box box.iso  # a bootable ISO: BIOS and UEFI, x86_64 and aarch64
+luban new desk --edition desktop    # a desktop; luban-os shows it in a window
 ```
 
 ## Documentation
