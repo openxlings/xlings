@@ -121,3 +121,12 @@ xlings 的状态按故障域划分，每个域坏了只影响它自己：
 | `FAULT-ISOLATION` | `FaultIsolation.AnUnreadableSubosStopsNothingElse` |
 | 真实升级路径 | host matrix `oldhome`（旧客户端 2026.10.9.2 填满的 home） |
 | 别处写的索引缓存 | `FaultIsolation.AnIndexCacheWrittenElsewhereIsRebuiltNotTrusted`：缓存记录的配方路径不在索引目录下时重建。2026.10.9.2 的发布包带着构建机路径的缓存，该客户端在 CI runner 上因 EACCES 失败；当前客户端在 `luban new` 读取 edition 时同样信任它（host matrix 的 k-ubuntu 腿在修复前失败）；`oldhome` 场景把发布包的缓存放回后由被测版本接管，验证这一修复 |
+
+## 7. 发布后的真实验证（2026.10.12.2 → 2026.10.12.3）
+
+- 全新安装（`quick_install.sh`）：`xlings 2026.10.12.2`、`luban 2026.10.12.2`，interface 1.8，`--older-than` 可用。
+- 从 2026.10.12.1 `self update` 到 2026.10.12.2：升级阶梯运行并记录；唯一的待办是"声明了 glibc 运行时但没装"——
+  这不该是待办：没装就说明没有任何包链接它（链接它的包会把它带进来）。2026.10.12.2 只在"除了 xlings 什么都没激活"
+  时才把它当 Notice，home 一有包就变回 Warning，于是每个全新 home 装完第一个包就有一条警告，升级也报告它。
+- 2026.10.12.3：声明了且未安装的运行时一律是 Notice（`self doctor --all` 可见）；测试
+  `Upgrade.ADeclaredRuntimeNothingLinksIsANoticeNotAPendingStep`（在 2026.10.12.2 上失败）。
