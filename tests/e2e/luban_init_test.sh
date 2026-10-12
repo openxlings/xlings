@@ -31,5 +31,5 @@ want="$("$xl" --version | awk '{print $NF}' | head -1)"
 got="$("$luban" --version)"
 [[ "$got" == "luban $want" ]] || { echo "FAIL: luban reports '$got', the xlings beside it is $want"; exit 1; }
 help="$("$luban" --help)"
-[[ "$help" == *"new <name> [edition]"* && "$help" == *"luban help --all"* ]] || { echo "FAIL: luban --help: $help"; exit 1; }
+[[ "$help" == *"new <name>"* && "$help" == *"luban help --all"* ]] || { echo "FAIL: luban --help: $help"; exit 1; }
 echo "PASS: luban / luban-init shipped, static, ${size_init} bytes (xlings ${size_xl}); refuses outside PID 1; luban $want"

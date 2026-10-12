@@ -661,8 +661,10 @@ int cmd_boot(const svc::Context& c, const Parsed& p, const Globals& g, Renderer&
         std::println("default   {}", b.value("default", std::string("default")));
         std::println("fallback  {}", b.value("fallback", std::string("default")));
         if (b.contains("once") && b["once"].is_string()) std::println("next boot {} (once)", b["once"].get<std::string>());
-        if (!b.value("booted", std::string{}).empty())
-            std::println("this boot {} via {}{}", b.value("booted", ""), b.value("via", ""), b.value("good", false) ? ", marked good" : "");
+        // This boot, as stage-0 recorded it (boot.json's `last`).
+        if (auto last = b.find("last"); last != b.end() && last->is_object() && !last->value("subos", std::string{}).empty())
+            std::println("this boot {} via {}{}", last->value("subos", ""), last->value("via", ""),
+                         last->value("good", false) ? ", marked good" : "");
     }
     return 0;
 }

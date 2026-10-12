@@ -264,3 +264,19 @@ XTEST(Luban, AnExportedEnvironmentIsImportedWithItsStateAndANewPersona,
     EXPECT_EQ(tk::read_file(home.dir() / "subos/copy/rootfs/root/notes.txt"), "mine\n");
     EXPECT_EQ(Json::parse(tk::read_file(home.dir() / "config/subos/copy/machine.json"))["persist"], "home");
 }
+
+XTEST(Luban, BootSaysWhatThisBootWas,
+      .area = "luban", .cost = tk::Cost::Fast, .covers = {"LUBAN-BOOT-ENTRIES"}, .requires_ = {"linux", "xlings-bin"}) {
+    if constexpr (!tk::is_linux) GTEST_SKIP() << "boot entries are a Linux machine's";
+    const auto bin = luban_binary();
+    if (!bin) GTEST_SKIP() << "no luban beside the xlings under test";
+    auto home = luban_home("luban-boot", *bin);
+    // What stage-0 records of the boot it made (boot.json's `last`).
+    tk::write_file(home.dir() / "boot.json",
+                   R"({"default":"default","fallback":"default","once":null,"tries":{},)"
+                   R"("last":{"subos":"default","via":"default","good":true}})");
+    auto shown = luban(home, {"boot"});
+    ASSERT_EQ(shown.exit_code, 0) << shown.transcript();
+    EXPECT_NE(shown.out.find("default   default"), std::string::npos) << shown.out;
+    EXPECT_NE(shown.out.find("this boot default via default, marked good"), std::string::npos) << shown.out;
+}

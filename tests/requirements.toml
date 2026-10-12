@@ -1016,3 +1016,7 @@ status = "required"
 [SUBOS-CMD-STDOUT]
 text = "`subos use <n> --cmd <c>` is a script: its standard output is the command's alone, byte for byte -- no announcement of the entry"
 status = "required"
+
+[LUBAN-BOOT-ENTRIES]
+text = "`luban boot` shows a machine's boot entries -- default, fallback, the next boot once -- and what this boot was (the entry, how it was chosen, whether it was marked good), as stage-0 recorded it"
+status = "required"
