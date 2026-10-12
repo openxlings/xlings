@@ -347,7 +347,19 @@ std::expected<void, std::string> IndexManager::load_or_rebuild(const std::string
         xpkg::PackageIndex cached;
         auto cacheResult = cache_detail_::load_index_cache(
             cacheFile, cached, defaultNamespace_);
-        if (cacheResult.valid && cacheResult.repoHeadHash == repoHeadHash) {
+        // A cache records absolute recipe paths. One that names files outside
+        // this index directory was written somewhere else -- shipped inside a
+        // release, or carried along with a moved home -- and trusting it sent
+        // every install to a path that is not there (or not readable: one
+        // CI runner refused it with EACCES). Rebuilt, not trusted.
+        const auto root = repoDir_.lexically_normal().string();
+        const bool here = std::ranges::all_of(cached.entries, [&](const auto& kv) {
+            const auto path = kv.second.path.lexically_normal().string();
+            return path.empty() || path.starts_with(root);
+        });
+        if (cacheResult.valid && cacheResult.repoHeadHash == repoHeadHash && !here)
+            log::debug("index cache of {} names files elsewhere; rebuilding it", repoDir_.string());
+        if (cacheResult.valid && cacheResult.repoHeadHash == repoHeadHash && here) {
             index_ = std::move(cached);
             loaded_ = true;
             log::debug("index loaded from cache: {} entries", index_.entries.size());

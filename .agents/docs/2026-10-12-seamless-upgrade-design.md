@@ -120,3 +120,4 @@ xlings 的状态按故障域划分，每个域坏了只影响它自己：
 | `FAULT-HOME-CONFIG` | `FaultIsolation.ABrokenHomeConfig…`、`…AFieldOfTheWrongShape…` |
 | `FAULT-ISOLATION` | `FaultIsolation.AnUnreadableSubosStopsNothingElse` |
 | 真实升级路径 | host matrix `oldhome`（旧客户端 2026.10.9.2 填满的 home） |
+| 别处写的索引缓存 | `FaultIsolation.AnIndexCacheWrittenElsewhereIsRebuiltNotTrusted`：缓存记录的配方路径不在索引目录下时重建。2026.10.9.2 的发布包带着构建机路径的缓存，该客户端在 CI runner 上因 EACCES 失败；当前客户端在这条路径上本就不读这些路径，此修复与测试是防御性的 |

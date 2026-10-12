@@ -150,3 +150,51 @@ XTEST(FaultIsolation, AnUnreadableSubosStopsNothingElse, .area = "subos",
     auto doctor = home.xlings({"self", "doctor"});
     EXPECT_NE(doctor.transcript().find("subos 'other'"), std::string::npos) << doctor.transcript();
 }
+
+// An index cache written somewhere else -- shipped inside a release, carried
+// along with a moved home -- names recipe files outside this index. It is
+// rebuilt, not trusted: trusted, it sent every install to a path that was not
+// there (or, on one CI runner, not readable).
+XTEST(FaultIsolation, AnIndexCacheWrittenElsewhereIsRebuiltNotTrusted, .area = "xim",
+      .covers = {"FAULT-ISOLATION"}, .requires_ = {"xlings-bin"}) {
+    auto home = tk::Home::isolated("fault-index-cache");
+    const auto primary = home.root() / "primary";
+    const auto repo = home.root() / "index";
+    tk::write_file(primary / "xim-indexrepos.lua", "xim_indexrepos = {}\n");
+    fs::create_directories(primary / "pkgs");
+    tk::write_file(repo / "xim-indexrepos.lua", "xim_indexrepos = {}\n");
+    tk::write_file(repo / "pkgs/h/hello.lua", R"LUA(
+package = { spec = '1', name = 'hello', description = 'hi', archs = {'x86_64', 'aarch64'},
+            xpm = { linux = { ['1.0.0'] = {} }, macosx = { ['1.0.0'] = {} }, windows = { ['1.0.0'] = {} } } }
+function install() return true end
+)LUA");
+    // Keyed like an artifact index (a release ships one), so its cache is trusted.
+    tk::write_file(repo / ".xlings-index-version", "fixture-1\n");
+    tk::write_file(home.dir() / ".xlings.json", Json{{"mirror", "GLOBAL"},
+        {"xim", {{"index-repo", primary.generic_string()}}},
+        {"index_repos", Json::array({{{"name", "xim"}, {"url", primary.generic_string()}, {"source", "git"}},
+                                     {{"name", "fixture"}, {"url", repo.generic_string()}, {"source", "git"}}})}}.dump());
+    ASSERT_EQ(home.xlings({"self", "init"}).exit_code, 0);
+    ASSERT_EQ(home.xlings({"info", "fixture:hello"}).exit_code, 0);
+    // Elsewhere, and not readable: what the cache of a release names on a
+    // machine where its build directory exists and belongs to someone else.
+    const auto elsewhere = home.root() / "locked";
+    fs::create_directories(elsewhere / "build");
+    std::vector<fs::path> caches;
+    for (const auto& e : fs::recursive_directory_iterator(home.root()))
+        if (e.path().filename() == ".xlings-index-cache.json") caches.push_back(e.path());
+    ASSERT_FALSE(caches.empty()) << "a git index leaves a cache";
+    std::string sample = "fixture:hello";
+    for (const auto& cache : caches) {
+        auto text = tk::read_file(cache);
+        const auto repo = cache.parent_path().string();
+        for (auto at = text.find(repo); at != std::string::npos; at = text.find(repo, at + 1))
+            text.replace(at, repo.size(), (elsewhere / "build" / "index").string());
+        tk::write_file(cache, text);
+    }
+    fs::permissions(elsewhere, fs::perms::none);
+    auto r = home.xlings({"info", sample});
+    EXPECT_EQ(r.exit_code, 0) << sample << "\n" << r.transcript();
+    EXPECT_EQ(r.transcript().find("Permission denied"), std::string::npos) << r.transcript();
+    fs::permissions(elsewhere, fs::perms::owner_all);
+}

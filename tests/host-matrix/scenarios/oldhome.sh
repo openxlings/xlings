@@ -22,6 +22,10 @@ olddir="$(dirname "$(dirname "$(find "$HOME/hm-old-client" -path '*/bin/xlings' 
 step "the older client installs itself into a home" ok -- \
     bash -c "cd '$olddir' && XLINGS_HOME='$old' ./bin/xlings self install -y </dev/null"
 oldbin="$old/bin/xlings"
+# That release shipped index caches naming its build machine's paths, and
+# that client trusted them (EACCES where the path exists, on a CI runner);
+# today's rebuilds such a cache. Cleared, so the older client can work.
+find "$old/data" -name .xlings-index-cache.json -delete 2>/dev/null
 O() { PATH="$old/subos/default/bin:$old/bin:$PATH" XLINGS_HOME="$old" "$oldbin" "$@"; }
 N() { XLINGS_HOME="$old" "$XLINGS_HOME/bin/xlings" "$@"; }
 NL() { XLINGS_HOME="$old" "$XLINGS_HOME/bin/luban" "$@"; }
