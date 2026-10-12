@@ -857,23 +857,23 @@ struct Server {
             View* v = hit ? view_of(*hit) : nullptr;
             if (!live()) {
                 // Zoomed out: a click goes in to the window under it.
-                if (v) { lay.focus(v->id); lay.overview(false); arrange(); focus(v); }
+                if (v) { lay.center(v->id); arrange(); focus(v); }
                 return;
             }
             const bool super = held(wlr_keyboard_modifier::WLR_MODIFIER_LOGO) || held(wlr_keyboard_modifier::WLR_MODIFIER_ALT);
             const bool on_title = v && cursor->y - v->frame->node.y < kTitle;
+            if (lay.mode() == layout::Mode::canvas && (super || !v)) {
+                // The canvas: dragging its background -- or anywhere, with Super -- pans.
+                drag = Drag::pan;
+                drag_x = cursor->x;
+                drag_y = cursor->y;
+                return;
+            }
             if (v && (super || on_title) && (lay.floating(v->id) || lay.mode() == layout::Mode::canvas)) {
                 // A window moved by its title (or anywhere with Super held).
                 focus(v);
                 drag = Drag::move;
                 dragged = v->id;
-                drag_x = cursor->x;
-                drag_y = cursor->y;
-                return;
-            }
-            if (!v && lay.mode() == layout::Mode::canvas) {
-                // The canvas's background: dragging it pans.
-                drag = Drag::pan;
                 drag_x = cursor->x;
                 drag_y = cursor->y;
                 return;
@@ -889,9 +889,11 @@ struct Server {
         const bool super = held(wlr_keyboard_modifier::WLR_MODIFIER_LOGO) || held(wlr_keyboard_modifier::WLR_MODIFIER_ALT);
         const bool over_window = lay.at(cursor->x, cursor->y).has_value();
         if (lay.mode() == layout::Mode::canvas && (super || !over_window || !live())) {
-            // The canvas: Super+wheel zooms around the pointer, the wheel elsewhere pans.
-            if (super) lay.zoom_at(w.dy > 0 ? 1.1 : 1 / 1.1, cursor->x, cursor->y);
-            else lay.pan(w.dx * 40, w.dy * 40);
+            // The canvas: the wheel on its background (or with Super, anywhere)
+            // zooms around the pointer, so the point under it stays put; a
+            // sideways scroll pans.
+            if (w.dy != 0) lay.zoom_at(w.dy > 0 ? 1.1 : 1 / 1.1, cursor->x, cursor->y);
+            if (w.dx != 0) lay.pan(-w.dx * 40, 0);
             arrange();
             return;
         }

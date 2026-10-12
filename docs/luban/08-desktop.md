@@ -77,9 +77,11 @@ profiles:
 | O | canvas: the overview (everything at once); a click goes in to a window |
 | Tab | Alt+Tab: the window used before |
 
-On the canvas, drag the background to pan, Super+wheel zooms around the
-pointer, and a window moves by its title bar. Windows' title bars have a close
-button.
+On the canvas, drag the background (or anywhere with Super) to pan; the wheel
+on the background (or anywhere with Super) zooms around the pointer, so what is
+under it stays put. The overview leaves you exactly where you were; a click in
+it goes in to that window. A window moves by its title bar, and title bars
+have a close button.
 
 The input method of the host types into the desktop's windows (what it
 composes is shown there), and the clipboard is shared — each way as far as

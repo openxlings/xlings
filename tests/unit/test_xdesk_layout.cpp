@@ -122,9 +122,11 @@ XTEST(XdeskLayout, TheCanvasPlacesBesideAndPansAndZoomsAroundAPoint, .area = "lu
     EXPECT_EQ(l.focused(), 1u);
 }
 
-XTEST(XdeskLayout, TheOverviewFitsEveryWindowAndLeavingItReturnsToTheFocus, .area = "luban", .covers = {"XDESK-LAYOUT"}) {
+XTEST(XdeskLayout, TheOverviewFitsEveryWindowAndLeavingItIsBackWhereItWas, .area = "luban", .covers = {"XDESK-LAYOUT"}) {
     Layout l({.mode = Mode::canvas, .gap = 10});
     for (layout::Id id = 1; id <= 5; ++id) l.add(id, {800, 600});
+    l.pan(-123, 45);
+    const auto before = of(l.arrange(kOutput), 2).rect;
     l.overview(true);
     EXPECT_TRUE(l.in_overview());
     const auto ps = l.arrange(kOutput);                          // fitted as it is arranged
@@ -134,11 +136,18 @@ XTEST(XdeskLayout, TheOverviewFitsEveryWindowAndLeavingItReturnsToTheFocus, .are
         EXPECT_GE(p.rect.x, 0);
         EXPECT_LE(p.rect.x + p.rect.width, kOutput.width + 1e-6);
     }
-    l.focus(3);
+    // Leaving it is back where it was, exactly.
     l.overview(false);
+    EXPECT_EQ(of(l.arrange(kOutput), 2).rect, before);
+    // Going in to a window from it: zoom 1, that window in the middle.
+    l.overview(true);
+    l.arrange(kOutput);
+    l.center(3);
+    EXPECT_FALSE(l.in_overview());
     EXPECT_EQ(l.zoom(), 1.0);
+    EXPECT_EQ(l.focused(), 3u);
     const auto r = of(l.arrange(kOutput), 3).rect;
-    EXPECT_NEAR(r.x + r.width / 2, kOutput.width / 2, 1e-6);   // centred on the one chosen
+    EXPECT_NEAR(r.x + r.width / 2, kOutput.width / 2, 1e-6);
 }
 
 XTEST(XdeskLayout, EachWorkspaceIsALayoutOfItsOwn, .area = "luban", .covers = {"XDESK-LAYOUT"}) {

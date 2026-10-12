@@ -1014,7 +1014,7 @@ text = "xdesk is a wlroots compositor that speaks opensal.wire itself (a session
 status = "required"
 
 [XDESK-LAYOUT]
-text = "xdesk.layout places windows without drawing anything: tile (one or two windows share the output, more scroll with the focused one in view, a new one beside the focus, widths through thirds, halves and the whole), floating (centred above, where it is put), the canvas (beside the focus, panned, zoomed around a point up to 1, an overview that fits every window and returns to the focus), a layout per workspace; motion by a critically damped spring"
+text = "xdesk.layout places windows without drawing anything: tile (one or two windows share the output, more scroll with the focused one in view, a new one beside the focus, widths through thirds, halves and the whole), floating (centred above, where it is put), the canvas (beside the focus, panned, zoomed around a point up to 1, an overview that fits every window, left back exactly where the view was, or into a chosen window), a layout per workspace; motion by a critically damped spring"
 status = "required"
 
 [XDESK-APPS]

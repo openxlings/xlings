@@ -100,7 +100,8 @@ public:
 
     // The canvas's camera. pan() moves the view by screen pixels; zoom_at()
     // scales it around a screen point (0.1 to 1); overview() fits every
-    // window, and leaving it goes back to 1 around the focused window.
+    // window, and leaving it returns to the view before it, exactly;
+    // center() goes in to a window (zoom 1, it in the middle; the overview left).
     void pan(double dx, double dy);
     void zoom_at(double factor, double sx, double sy);
     double zoom() const;
@@ -108,6 +109,7 @@ public:
     std::pair<double, double> camera() const;
     void overview(bool on);
     bool in_overview() const;
+    void center(Id id);
 
     // Where everything of the shown workspace is, for this output.
     std::vector<Placement> arrange(Size output, Insets reserved = {});
@@ -135,7 +137,7 @@ private:
         double cx { 0 }, cy { 0 };      // canvas: world point at the view's top-left
         double zoom { 1 };
         bool overview { false };
-        double saved_zoom { 1 };
+        double saved_zoom { 1 }, saved_cx { 0 }, saved_cy { 0 };   // the view before the overview
     };
 
     Space& space_() { return spaces_[static_cast<std::size_t>(shown_)]; }

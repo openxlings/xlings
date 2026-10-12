@@ -309,16 +309,30 @@ void Layout::overview(bool on) {
     if (on) {
         s.overview = true;
         s.saved_zoom = s.zoom;
+        s.saved_cx = s.cx;
+        s.saved_cy = s.cy;
         (void)area;   // fitted by each arrangement, as windows come and go
     } else {
+        // Back to where it was, exactly: it is still there.
         s.overview = false;
-        s.zoom = 1;
-        // Back in, around the focused window.
-        if (s.focus)
-            if (const auto* w = window_(*s.focus); w && w->placed && !w->floating) {
-                s.cx = w->free.x + w->free.width / 2 - area.width / 2;
-                s.cy = w->free.y + w->free.height / 2 - area.height / 2;
-            }
+        s.zoom = s.saved_zoom;
+        s.cx = s.saved_cx;
+        s.cy = s.saved_cy;
+        (void)area;
+    }
+}
+
+void Layout::center(Id id) {
+    auto* s = space_of_(id);
+    const auto* w = window_(id);
+    if (!s || !w || o_.mode != Mode::canvas) return;
+    s->overview = false;
+    s->zoom = 1;
+    s->focus = id;
+    if (w->placed && !w->floating) {
+        const Rect area = inset_(output_, reserved_);
+        s->cx = w->free.x + w->free.width / 2 - area.width / 2;
+        s->cy = w->free.y + w->free.height / 2 - area.height / 2;
     }
 }
 
