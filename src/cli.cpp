@@ -2088,11 +2088,11 @@ int dispatch_(int argc, char* argv[]) {
         // __boot` / `subos __export` (never in the spec, help or completion).
         if (cmd == "subos" && fargc >= 3) {
             const std::string_view sub = fargv[2];
+            // `subos export`'s bootable formats, which `luban export` writes now.
+            static constexpr std::array<std::string_view, 5> moved{"--iso", "--drive", "--qcow2", "--kernel", "--boot"};
             bool bootable = false;
-            for (int i = 3; i < fargc && sub == "export"; ++i) {
-                const std::string_view a = fargv[i];
-                bootable = bootable || a == "--iso" || a == "--drive" || a == "--qcow2" || a == "--kernel" || a == "--boot";
-            }
+            for (int i = 3; i < fargc && sub == "export"; ++i)
+                bootable = bootable || std::ranges::find(moved, std::string_view(fargv[i])) != moved.end();
             if (sub == "boot" || bootable) {
                 std::string rest;
                 for (int i = 3; i < fargc; ++i) rest += std::string(" ") + fargv[i];
