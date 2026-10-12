@@ -73,9 +73,23 @@ void copy_tree_(const fs::path& from, const fs::path& to, const std::set<std::st
     }
 }
 
-// The initramfs: this luban as /init and the mount points it needs.
-std::expected<fs::path, std::string> initramfs_(const fs::path& home, std::string_view name) {
+// The static luban a machine runs from (its /init, its supervisor, its proxy
+// relay): this binary when it is luban, else the luban beside it (the Luban OS
+// app), else the home's.
+fs::path luban_(const fs::path& home) {
+    if (const char* forced = std::getenv("LUBAN_BIN"); forced && *forced) return forced;
     const auto self = platform::get_executable_path();
+    std::error_code ec;
+    if (self.filename().string().starts_with("luban") && !self.filename().string().starts_with("luban-os")) return self;
+    const auto exe = std::string(platform::exe_suffix);
+    for (const auto& candidate : {self.parent_path() / ("luban" + exe), home / "bin" / ("luban" + exe)})
+        if (fs::is_regular_file(candidate, ec)) return candidate;
+    return self;
+}
+
+// The initramfs: the static luban as /init and the mount points it needs.
+std::expected<fs::path, std::string> initramfs_(const fs::path& home, std::string_view name) {
+    const auto self = luban_(home);
     if (self.empty() || !is_static_elf(self))
         return std::unexpected("a machine starts from a static luban (a release build); this one needs a loader");
     const auto out = run_dir(home, name) / "initramfs.cpio";
@@ -111,7 +125,7 @@ Network network_(const service::Context& c, std::string_view name) {
         const auto at = url.find("://");
         const auto endpoint = at == std::string::npos ? url : url.substr(at + 3);
         const auto colon = endpoint.rfind(':');
-        const auto self = platform::get_executable_path().string();
+        const auto self = luban_(c.home).string();
         if (colon == std::string::npos || self.find(',') != std::string::npos) return {.args = {"-nic", "none"}, .summary = "no network (its proxy cannot be reached)"};
         n.args = {"-nic", std::format("user,restrict=on,guestfwd=tcp:10.0.2.100:1080-cmd:{} __pipe {} {}", self,
                                       endpoint.substr(0, colon), endpoint.substr(colon + 1))};
@@ -161,7 +175,7 @@ std::string tail_(const fs::path& file, std::size_t lines) {
 }
 
 // Starts the machine's supervisor and waits for its agent.
-int start_(const service::Context& c, std::string_view name, const EnterOptions& o) {
+int start_impl_(const service::Context& c, std::string_view name, const EnterOptions& o) {
     const auto& arch = xlings::image::native_arch();
     const xlings::subos::HomeView view{c.home};
     if (arch.qemu.empty()) {
@@ -258,7 +272,7 @@ int start_(const service::Context& c, std::string_view name, const EnterOptions&
                {"env", net.env}, {"started", xlings::observe::utc_now()}, {"accel", kvm ? "kvm" : "tcg"}, {"memory", memory}};
     platform::write_file_atomic(state_file_(c.home, name).string(), state.dump(2));
     fs::remove(client_socket_(c.home, name), ec);
-    const auto self = platform::get_executable_path().string();
+    const auto self = luban_(c.home).string();
     const auto started = std::chrono::steady_clock::now();
     const auto text = std::format("starting {} ({} MB, {}, {})", name, memory, kvm ? "hardware virtualization" : "emulated, slowly", net.summary);
     say_(c, service::phase("boot", "begin", text));
@@ -476,6 +490,68 @@ bool ask_(std::string_view question) {
 }  // namespace
 
 fs::path run_dir(const fs::path& home, std::string_view name) { return home / "run" / "machines" / name; }
+
+int start(const service::Context& c, std::string_view name, const EnterOptions& o) {
+    if (running(c.home, name)) return 0;
+    return start_impl_(c, name, o);
+}
+
+nlohmann::json session_env(const fs::path& home, std::string_view name) {
+    return read_json_(state_file_(home, name)).value("env", Json::object());
+}
+
+std::expected<Client, std::string> Client::connect(const fs::path& home, std::string_view name) {
+    const int fd = connect_client_(home, name);
+    if (fd < 0) return std::unexpected(std::format("{} is not running", name));
+    return Client(fd);
+}
+
+Client& Client::operator=(Client&& other) noexcept {
+    if (this != &other) {
+        if (fd_ >= 0) { std::vector<int> fds{fd_}; platform::close_fds(fds); }
+        fd_ = std::exchange(other.fd_, -1);
+        buffer_ = std::move(other.buffer_);
+    }
+    return *this;
+}
+
+Client::~Client() {
+    if (fd_ >= 0) { std::vector<int> fds{fd_}; platform::close_fds(fds); }
+}
+
+bool Client::open(std::uint32_t channel, int rows, int cols, const nlohmann::json& env) {
+    const char* term = std::getenv("TERM");
+    return platform::write_all(fd_, proto::encode_json('O', channel, Json{{"rows", rows}, {"cols", cols},
+                                                                          {"term", term ? term : "xterm-256color"}, {"env", env}}));
+}
+bool Client::send(std::uint32_t channel, std::string_view bytes) { return platform::write_all(fd_, proto::encode('D', channel, bytes)); }
+bool Client::resize(std::uint32_t channel, int rows, int cols) {
+    return platform::write_all(fd_, proto::encode_json('R', channel, Json{{"rows", rows}, {"cols", cols}}));
+}
+bool Client::close(std::uint32_t channel) { return platform::write_all(fd_, proto::encode('C', channel)); }
+bool Client::power_off() { return platform::write_all(fd_, proto::encode('P', 0)); }
+
+std::optional<std::vector<std::pair<char, std::pair<std::uint32_t, std::string>>>> Client::poll(int timeout_ms) {
+    std::vector<std::pair<char, std::pair<std::uint32_t, std::string>>> out;
+    std::array<platform::PollFd, 1> p{{{.fd = fd_}}};
+    if (platform::poll_fds(p, timeout_ms) > 0) {
+        std::array<char, 65536> buf{};
+        auto n = platform::read_some(fd_, buf);
+        if (!n || *n == 0) return std::nullopt;
+        buffer_.append(buf.data(), *n);
+    }
+    // Complete frames out; an incomplete one stays for the next poll.
+    while (buffer_.size() >= 9) {
+        std::uint32_t len = 0, ch = 0;
+        for (int k = 0; k < 4; ++k) ch = (ch << 8) | static_cast<unsigned char>(buffer_[1 + k]);
+        for (int k = 0; k < 4; ++k) len = (len << 8) | static_cast<unsigned char>(buffer_[5 + k]);
+        if (len > proto::kMaxPayload) return std::nullopt;
+        if (buffer_.size() < 9 + len) break;
+        out.push_back({buffer_[0], {ch, buffer_.substr(9, len)}});
+        buffer_.erase(0, 9 + len);
+    }
+    return out;
+}
 fs::path log_dir(const fs::path& home, std::string_view name) { return home / "logs" / "machines" / name; }
 
 bool is_static_elf(const fs::path& file) {
@@ -521,7 +597,7 @@ int enter(const service::Context& c, std::string_view name_or_image, const Enter
         return platform::run_argv({app.string(), "--attach", name});
     }
     if (!running(c.home, name)) {
-        if (const int rc = start_(c, name, o); rc != 0) return rc;
+        if (const int rc = start_impl_(c, name, o); rc != 0) return rc;
     } else if (o.temp) {
         say_(c, service::notice(std::format("{} is already running and keeps what it writes; this session joins it", name)));
     }

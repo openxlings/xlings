@@ -973,6 +973,14 @@ status = "required"
 text = "luban enter <n> --mode machine boots the environment itself with its own kernel: its tree and the home are shared with the guest (9p), a supervisor outlives the terminal and serves every session over one socket, each session a pty with the root's login shell and the terminal's size; persist home/none and --temp boot a copy that goes with the machine; an image file boots as it is with its console on the terminal; closing follows the environment's on-close setting"
 status = "required"
 
+[LUBAN-TERM]
+text = "the Luban OS window's console is a terminal whose screen follows what shells and full-screen programs write (cursor motion, erase, scroll regions, the alternate screen, SGR in three colour depths, wide characters, bracketed paste, the title), answers what a shell asks, keeps history, and sends keys as xterm does"
+status = "required"
+
+[LUBAN-DESKTOP-WIRE]
+text = "opensal.wire carries a surface across an address space: damaged rectangles of pixels and every opensal event, whole whatever the cut of the stream, refusing what is not the protocol"
+status = "required"
+
 [ELEVATION-NOBODY-TO-ASK]
 text = "administrator rights are never asked for where nobody can answer (agent mode, no terminal, the background of one): rights that need no question are used, otherwise nothing runs and the command that needs them is named; doctor's repair children run unattended with the null device as input"
 status = "required"

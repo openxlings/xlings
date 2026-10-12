@@ -16,7 +16,8 @@
 6. GUI 应用叫 **Luban OS**（包与二进制 `luban-os`），产品名一律写作 "Luban OS"（§14）。
 7. 桌面与显示相关的规范属于 Luban 的桌面子系统（`luban/desktop/spec`，openxx 一族：opensal 等），
    Luban 不另造一套；不属于桌面的，先用 Luban 自己的格式（§15）。
-8. 窗口与输入走 opensal 的宿主 backend；控件用 imgui，画在 opensal 的 surface 上（§14.6）。
+8. opensal 是桌面与显示之间的抽象；宿主一侧的提供端本版以 SDL3（mcpp 索引的 `compat.sdl3`：Linux 上 X11，Windows、macOS 原生）实现，
+   imgui 经 SDL 的渲染器绘制（§14.6）。一个后端覆盖所有平台，原生后端以后可以替换它而应用不变。
 9. 官方桌面两条线：传统桌面、xdesk 实验版，底层都走 opensal（§9.3）。
 10. 音频先做简单版本：virtio-snd 与 PipeWire / Pulse 的现成标准，不写新协议（§9.4）。
 11. 关窗口：每次都问；"确认并设为默认" 写入**该环境**的配置（§14.4）。
@@ -498,7 +499,8 @@ C11 文档与规范、C12 CI、C13 版本与发布：贯穿，最后收口
 - 独立窗口、全局一个；功能：系统列表与状态、启动停止、设置、历史与回滚、软件、隔离、存储、日志、新建、导入导出、写盘、主机、活动（span 树）、应用设置。
 - 每个操作显示 "等价命令"，可复制；没有 CLI 做不到的管理功能。
 - 多个系统的控制台并排、分离窗口只在这里（imgui docking）。
-- 界面：imgui 画在 opensal surface 上（软件光栅化），窗口与输入来自 opensal 的宿主 backend；事件驱动重绘（空闲时 CPU 接近 0）；
+- 界面：imgui 经 SDL 渲染器绘制，窗口、输入、输入法、剪贴板、密度来自宿主提供端（`luban/desktop/host`，SDL3）；事件驱动重绘（空闲时 CPU 接近 0）；
+  测试用 SDL 的 offscreen 驱动无头渲染并截图；Linux 上本版输入法组合（IBus / fcitx）不可用（`compat.sdl3` 未带 dbus），Windows、macOS 可用；
   深色默认、浅色可选，颜色取 `ui/theme`；界面字体与等宽字体都带中文；高分屏按显示器缩放。
 
 ### 14.7 安装与入口

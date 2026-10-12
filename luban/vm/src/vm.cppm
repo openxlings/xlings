@@ -38,6 +38,37 @@ int enter(const service::Context& c, std::string_view name_or_image, const Enter
 // Whether `name` runs as a machine here, and its supervisor's pid.
 std::optional<int> running(const fs::path& home, std::string_view name);
 
+// Starts `name` as a machine when it is not running (the events go to the
+// context's sink); 0 once it answers.
+int start(const service::Context& c, std::string_view name, const EnterOptions& o);
+
+// One connection to a running machine's supervisor: sessions on channels
+// (luban.vm.protocol), what the terminal relay and the Luban OS window use.
+class Client {
+public:
+    static std::expected<Client, std::string> connect(const fs::path& home, std::string_view name);
+    Client(Client&& other) noexcept : fd_(std::exchange(other.fd_, -1)), buffer_(std::move(other.buffer_)) {}
+    Client& operator=(Client&& other) noexcept;
+    ~Client();
+    // A session: the root's login shell on a pty of this size.
+    bool open(std::uint32_t channel, int rows, int cols, const nlohmann::json& env = nlohmann::json::object());
+    bool send(std::uint32_t channel, std::string_view bytes);
+    bool resize(std::uint32_t channel, int rows, int cols);
+    bool close(std::uint32_t channel);
+    bool power_off();
+    // The frames that arrived within `timeout_ms`; nullopt when the machine is gone.
+    std::optional<std::vector<std::pair<char, std::pair<std::uint32_t, std::string>>>> poll(int timeout_ms);
+    int fd() const { return fd_; }
+private:
+    explicit Client(int fd) : fd_(fd) {}
+    int fd_ { -1 };
+    std::string buffer_;
+};
+
+// The environment a session needs inside (its network's proxy), from the
+// machine's state.
+nlohmann::json session_env(const fs::path& home, std::string_view name);
+
 // Power it off (the guest shuts down; after a while it is stopped).
 service::Outcome stop(const service::Context& c, std::string_view name);
 

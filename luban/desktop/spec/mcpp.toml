@@ -1,0 +1,14 @@
+# opensal, as Luban's desktop subsystem needs it now (Luban OS architecture
+# design §9.2, §15): a surface -- something that is given pixels and gives back
+# events -- its optional interfaces, and the wire that carries them across an
+# address space (a guest's desktop to the Luban OS window). A specification
+# with more than one implementer: the host's provider (luban/desktop/host),
+# the guest's consumers (a desktop, the wlroots bridge). It depends on nothing
+# of Luban.
+[package]
+namespace = "luban"
+name      = "luban-desktop-spec"
+version   = "0.1.0"
+
+[targets.luban-desktop-spec]
+kind = "lib"

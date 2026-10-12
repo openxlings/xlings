@@ -1,0 +1,33 @@
+# Luban OS, the app (Luban OS architecture design §14): a window that is a
+# display -- a list of systems, then the system itself, its console or its
+# desktop -- and a management panel for everything else. It reaches
+# environments and machines through luban.service and luban.vm only, so it can
+# do nothing the luban command cannot; what it adds is showing them.
+#
+# Dynamically linked (it opens a window); shipped as the index package
+# `luban-os`, which also installs its desktop entry.
+[package]
+namespace = "luban"
+name      = "luban-os"
+version   = "0.1.0"
+
+[targets.luban-os]
+kind = "bin"
+main = "src/main.cpp"
+
+[dependencies]
+libs               = { path = "../../modules/libs" }
+platform           = { path = "../../modules/platform" }
+runtime            = { path = "../../modules/runtime" }
+subos              = { path = "../../modules/subos" }
+luban-service      = { path = "../../luban/service" }
+luban-vm           = { path = "../../luban/vm" }
+luban-desktop-spec = { path = "../../luban/desktop/spec" }
+luban-desktop-term = { path = "../../luban/desktop/term" }
+luban-desktop-host = { path = "../../luban/desktop/host" }
+
+[dependencies.compat]
+imgui = "1.92.8-docking"
+
+[build]
+include_dirs = ["../../modules/libs/src/json"]
