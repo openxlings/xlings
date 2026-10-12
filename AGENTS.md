@@ -296,6 +296,44 @@ The SubOS design this comes from, and the module layout it implies
 (`modules/runtime`, `modules/subos`, `src/core/home/`), is
 `.agents/docs/2026-10-05-subos-architecture-design.md`.
 
+### A large home, a terminal, a sandbox's own home (2026.10.12.2)
+
+`.agents/docs/2026-10-12-luban-experience-and-remove-design.md` §15. What to
+keep in mind:
+
+* **`Config::versions()` and `Config::workspace()` return a copy.** Take one
+  per scan, never one per entry: a loop that asked it per entry made `remove`
+  of an unused version take 28.6 s on a home of 5,000 registrations.
+  `XLINGS_TRACE=timing` names the phase a slow command spent its time in;
+  `tests/e2e/test_home_perf.cpp` (static performance lane) holds the budgets.
+* **A command in the background of its controlling terminal never changes
+  the terminal's modes or queries it** (`platform::in_terminal_foreground`):
+  the kernel stops the whole process group for that (SIGTTOU), and inside
+  `luban enter` that group was the session's owner. The broker's command has
+  a session of its own. testkit's `pty_background` runs a command that way.
+* **Inside a sandbox, only the session's home is the broker's.** A home the
+  sandbox can write (mcpp's registry, a test's) is used there, and `--help`
+  is never forwarded.
+* **A root's plan settles each reused payload's evidence** (`resolver.cpp:
+  scope_evidence_`): write the resolution record, rebuild against the root's
+  runtime in place, or name the subos that still uses the old one. Never
+  "run `install --reconfig`".
+* **`remove` asks about the version, not the name** (`removal_check`): a
+  dependent blocks only when it links that payload or would have no installed
+  version meeting its constraint.
+* **A failure stays in its domain** (`docs/specs/upgrade-and-compatibility.md`):
+  a broken home config, SubOS state, payload, policy or theme stops only what
+  needs it, and every command that touches it names the file, what falls back
+  and the fix -- "could not read" is never silently "empty". New state that can
+  break gets a domain of its own in that table.
+* **The upgrade runs itself** (`xself::upgrade`): after the first command of a
+  new client that changes the home and succeeds (never a read-only or refused
+  one), it checks the home config, rebuilds derived state and runs doctor's
+  detector; each step is isolated, the result is recorded (`upgrade` in the
+  home config, `logs/upgrade.ndjson`), and only what it could not do is said,
+  once, with its command and the way back. A change that needs a migration
+  adds a step there, not a self-heal on the startup path.
+
 ### Type-specific install dispatch
 
 `installer.cppm` checks `node.pkgType`:
@@ -456,7 +494,7 @@ in mind when changing code near it:
 ### SubOS user data
 
 **A SubOS's home is user data. Only a deletion the user initiated may remove
-it, and only after they confirmed.** The maintainer's rule, 2026-09-26:
+it, and only after they confirmed.** The rule (2026-09-26):
 
 | What | Examples | Who may delete it |
 |---|---|---|
@@ -571,6 +609,27 @@ Same name with another url is refused. See
 xpkg = "0.0.42"
 ```
 For joint development, use mcpp's local dependency override/workspace mechanism.
+
+## Privacy
+
+**Nothing in the repository identifies a person** -- code, comments, tests,
+docs, `.agents/` notes, commit messages and PR descriptions alike:
+
+- no personal home or user paths (`/home/<someone>/`, `/Users/<someone>/`, a
+  session's temp directory): write `~/.xlings`, `$XLINGS_HOME`, `/home/user`;
+- no personal names, account names or email addresses as the source of a
+  rule, a decision or a measurement;
+- no attribution -- whose rule it is, who confirmed it, whose home or machine
+  it was measured on: state the rule, and "a home in long use" for where it
+  was measured;
+- no one's environment, machine or habits.
+
+A role is not a person ("a maintainer reviews and merges", a package's
+`maintainers` field). Functional public infrastructure stays as it is: a
+repository URL the product fetches from, CODEOWNERS, AUR's `# Maintainer:`.
+`tools/lint_privacy.sh` (the lint suite) enforces the paths, emails and
+attribution phrases; a line that must say what it flags carries
+`privacy-ok: <why>`.
 
 ## Version numbering
 

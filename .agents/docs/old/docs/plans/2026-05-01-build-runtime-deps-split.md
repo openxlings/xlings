@@ -218,7 +218,7 @@ cd ~/workspace/github/mcpplibs/libxpkg && vim src/xpkg.cppm
 
 # Build xlings against local libxpkg
 cd ~/workspace/github/openxlings/xlings
-xmake f --local_libxpkg=/home/speak/workspace/github/mcpplibs/libxpkg ...
+xmake f --local_libxpkg=~/workspace/mcpplibs/libxpkg ...
 xmake build
 ```
 

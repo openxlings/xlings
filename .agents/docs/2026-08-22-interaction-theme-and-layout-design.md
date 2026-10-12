@@ -591,7 +591,7 @@ ui.mode_degraded         theme.unreadable      xim.remove_absent
 诊断正文只是一半。`xlings config` 这类命令的输出里,左列全是标签,它们同样是面向用户的散文:
 
 ```
-    XLINGS_HOME   /home/speak/.xlings          ← 环境变量名,专有名词,保持英文
+    XLINGS_HOME   ~/.xlings          ← 环境变量名,专有名词,保持英文
     XLINGS_DATA   @xlings/data                 ← 同上
   ▸ active subos  default                      ← 「当前子系统」
     bin           @xlings/subos/default/bin    ← 「可执行目录」

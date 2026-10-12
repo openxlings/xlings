@@ -328,6 +328,18 @@ UserIds user_ids() {
 
 bool stdout_is_terminal() { return ::isatty(1) == 1; }
 
+bool in_terminal_foreground() {
+    // Only the CONTROLLING terminal stops a background group (SIGTTOU /
+    // SIGTTIN); tcgetpgrp fails on any other, and there is nothing to fear.
+    for (int fd = 0; fd != 3; ++fd) {
+        if (!::isatty(fd)) continue;
+        const auto foreground = ::tcgetpgrp(fd);
+        if (foreground < 0) continue;
+        return foreground == ::getpgrp();
+    }
+    return true;
+}
+
 std::map<std::string, std::string> environment() {
     std::map<std::string, std::string> env;
     for (char** e = XLINGS_ENVIRON; e && *e; ++e) {
@@ -721,6 +733,7 @@ int run_argv_with_timeout(const std::vector<std::string>& argv, std::chrono::mil
 }
 UserIds user_ids() { return {}; }
 bool stdout_is_terminal() { return ::_isatty(1) != 0; }
+bool in_terminal_foreground() { return true; }
 std::map<std::string, std::string> environment() {
     std::map<std::string, std::string> env;
     wchar_t* block = ::GetEnvironmentStringsW();

@@ -58,7 +58,7 @@
                      ├─> B3 commit + push #519 ─> B4 全平台 CI terminal green
   B2 PR 正文更新 ────┘                                    │
                                                           ▼
-                                        C1 squash merge (Sunrisepeak, --admin)
+                                        C1 squash merge (--admin)
                                                           │
                                                           ▼
                                         C2 release 2026.8.10.1 全平台 assets
@@ -100,7 +100,7 @@
 
 ### C — 发布
 
-- [ ] **C1** squash merge（切到 Sunrisepeak，`--admin`，合完切回）
+- [ ] **C1** squash merge（用有合并权限的账号，`--admin`，合完切回）
 - [ ] **C2** release workflow → 等全平台 assets + sidecar
   - **绿了但没产物 = 失败**
 - [ ] **C3** 本地 `bash tools/mirror-latest.sh xlings`（gtc 补 GitCode 资源）

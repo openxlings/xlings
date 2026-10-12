@@ -100,6 +100,26 @@ XTEST(SubosHomeReadOnly, WhatOnlyTheOwnerDoesIsRefusedInside,
     EXPECT_TRUE(fs::exists(box.home.dir() / "subos" / "other"));
 }
 
+// A home of the sandbox's own -- what mcpp makes under /root/.mcpp for its
+// toolchains -- is the user's to write in there: its commands run there, not
+// at the broker, which only ever acts on the session's home. Before, its
+// `self init` was refused as owner-only and mcpp stopped with "sandbox not
+// initialized". The session's home is still the broker's.
+XTEST(SubosHomeReadOnly, AHomeOfTheSandboxsOwnIsWrittenInside,
+      .area = "subos", .cost = tk::Cost::Medium, .covers = {"SUBOS-OWN-HOME-INSIDE"},
+      .requires_ = {"linux", "xlings-bin", "sandbox"}, .resources = {"sandbox"}) {
+    Box box;
+    auto r = box.in("XLINGS_HOME=$HOME/own xlings self init >/dev/null 2>&1; echo own=$?; "
+                    "test -f $HOME/own/subos/default/.xlings.json && echo OWN-INIT; "
+                    "xlings self update; echo self=$?");
+    // Not refused (13); whether its index could be fetched from in there is
+    // not this test's business, so only the layout is asserted.
+    EXPECT_NE(r.out.find("own="), std::string::npos) << r.transcript();
+    EXPECT_EQ(r.out.find("own=13"), std::string::npos) << r.transcript();
+    EXPECT_NE(r.out.find("OWN-INIT"), std::string::npos) << r.transcript();
+    EXPECT_NE(r.out.find("self=13"), std::string::npos) << r.transcript();
+}
+
 XTEST(SubosHomeReadOnly, FetchDenyAndAskAreDecidedOutside,
       .area = "subos", .cost = tk::Cost::Medium,
       .covers = {"PERM-FETCH-DENY", "PERM-FETCH-ASK", "EXIT-75"},

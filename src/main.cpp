@@ -230,7 +230,9 @@ int main(int argc, char* argv[]) {
         if (refused) {
             // rc set above; fall through to the platform exit path.
         } else if (is_cli) {
+            xlings::observe::Timed timed("command");
             rc = xlings::cli::run(argc, argv);
+            if (rc == 0) xlings::cli::after_command(argc, argv);
         } else {
             rc = xlings::xvm::shim_dispatch(program_name, argc, argv);
         }

@@ -106,7 +106,7 @@ needs guard/observe); C5→C26; T1→every new e2e test.
 
 Recorded here so the PR description and the final report say the same thing:
 
-- **C27 rootfs** stays out of this PR (the design leaves it to the maintainer;
+- **C27 rootfs** stays out of this PR (the design leaves it open;
   it needs subuid mapping and a rootfs package format, neither of which the
   rest depends on). The `RootfsRuntime` interface exists and reports
   `unsupported`.

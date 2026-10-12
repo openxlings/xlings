@@ -1,12 +1,12 @@
-# NDJSON Interface Protocol v1.7
+# NDJSON Interface Protocol v1.8
 
-> Status: in force; protocol 1.7 since xlings 2026.10.10.2. Implemented in
+> Status: in force; protocol 1.8 since xlings 2026.10.12.2. Implemented in
 > `src/interface.cpp`; `xlings interface --list` is the authoritative schema.
 
 ## 1. Overview
 
 `xlings interface` is the structured API for programs: IDE plugins, CI scripts
-and AI agents talk to xlings over standard IO. The protocol is **1.7**, over NDJSON
+and AI agents talk to xlings over standard IO. The protocol is **1.8**, over NDJSON
 (newline-delimited JSON).
 
 | Protocol | xlings | Change |
@@ -19,6 +19,7 @@ and AI agents talk to xlings over standard IO. The protocol is **1.7**, over NDJ
 | 1.5 | 2026.9.30.1 | added: `install_packages`'s `hook` progress event (§6.1.2); output of commands a hook runs goes to the hook log, no longer forwarded to stderr as `[stray stdout]` (§5); a download failing on a local write (disk full, no permission) is `E_DISK_FULL` (§6.1.3) |
 | 1.6 | 2026.10.9.1 | `subos_exec_output` sends separate stdout / stderr byte chunks while the command runs; a chunk that is not valid UTF-8 is `encoding: base64`; a cancel reaps the child |
 | 1.7 | 2026.10.10.2 | added: `install_packages`'s `extract` progress event; `hook` events first after 10 s, then every 30 s (§6.1.2); an unpacking write failure is `E_DISK_FULL` or `E_PERMISSION` by cause; a node whose dependency failed reports that cause and runs no hook (§6.1.4) |
+| 1.8 | 2026.10.12.2 | added: `remove_package`'s `older_than` and `dry_run`, and the `remove_plan` of a bulk removal (§8.2); `remove_blocked`'s per-dependent `reason` (§8.1); a node whose dependency failed is an `install_skipped` data event, and one `error` per failed dependency names them all (§6.1.4) |
 
 A minor version only adds: a 1.0 client reads 1.1 output unchanged. A client
 **probes for a capability** (for example, whether `install_targets` appears)
@@ -50,7 +51,7 @@ xlings interface --version
 prints one line and exits:
 
 ```json
-{"protocol_version":"1.7"}
+{"protocol_version":"1.8"}
 ```
 
 ### 3.2 The capabilities
@@ -62,7 +63,7 @@ xlings interface --list
 prints the capability list and exits:
 
 ```json
-{"protocol_version":"1.7","capabilities":[{"name":"install_packages","description":"...","destructive":true,"inputSchema":{},"outputSchema":{}}]}
+{"protocol_version":"1.8","capabilities":[{"name":"install_packages","description":"...","destructive":true,"inputSchema":{},"outputSchema":{}}]}
 ```
 
 ### 3.3 Running a capability
@@ -238,10 +239,18 @@ links (Android's app sandbox, FAT, exFAT) is no longer a failure: an archive's
 hard-link entry becomes a copy of the file it names, with the same permissions and
 modification time.
 
-When a node fails, every node of the plan that depends on it (directly or not)
-reports one failure, message `not installed: its dependency <ns:name@version>
-failed`, with that dependency's `code`; their hooks do not run, and they no
-longer report "installed but registered none of its declared programs".
+When a node fails, the nodes of the plan that depend on it (directly or not)
+do not run their hooks and do not report "installed but registered none of its
+declared programs". Since 1.8 each is a data event, not an error:
+
+```json
+{"kind":"data","dataKind":"install_skipped","payload":{"name":"xim:gcc@16.1.0","because":"xim:patchelf@0.18.0"}}
+```
+
+and after the plan one `error` per failed dependency names them, message
+`<n> package(s) not installed because <ns:name@version> failed (see above): <names>`.
+Up to 1.7 each dependent was an `error` of its own with message
+`not installed: its dependency <ns:name@version> failed`.
 
 ### 6.2 `log`
 
@@ -553,14 +562,25 @@ homes migrate on their own. A recipe that changes what its config does raises
 
 ### 8.1 `remove_package` refusing for reverse dependencies (2026.8.8.1+)
 
-When an installed package in the active SubOS **directly depends** on the target,
-`remove_package` refuses: it sends `remove_blocked`, then ends with exitCode 2:
+When removing the target would break an installed package of the active SubOS
+that **directly depends** on it, `remove_package` refuses: it sends
+`remove_blocked`, then ends with exitCode 2. Since 1.8 the question is about the
+version being removed, and each dependent says why (`reason`):
+
+| reason | when |
+|---|---|
+| `linked` | it resolved this payload and loads from it: its record names the payload with library directories, one of its scripts (`bin/`, `etc/`) names the payload's path, or it has no record and the payload has libraries |
+| `unsatisfied` | it only runs the target's programs, and no other installed version meets the constraint it declared |
+
+A dependent that resolved another version is not affected. One that only runs
+the programs and still has a version meeting its constraint does not block (the
+CLI names the version that stays).
 
 ```json
 {"kind":"data","dataKind":"remove_blocked","payload":{
   "subos":"default","name":"glibc","version":"2.39",
-  "required_by":[{"name":"xim:binutils","version":"2.42"},
-                 {"name":"xim:llvm","version":"22.1.8"}]}}
+  "required_by":[{"name":"xim:binutils","version":"2.42","reason":"linked"},
+                 {"name":"xim:llvm","version":"22.1.8","reason":"linked"}]}}
 {"kind":"result","exitCode":2}
 ```
 
@@ -569,6 +589,26 @@ When an installed package in the active SubOS **directly depends** on the target
 Only **direct** dependants count: a dependant's libdirs enter its payload's RPATH
 closure only when declared directly, so a package one hop away has this payload on
 no search path, and removing it cannot affect that package through the loader.
+
+### 8.2 Removing every older version (1.8+)
+
+`{"target":"mcpp","older_than":"2026.10.1"}` removes every installed version of
+`mcpp` strictly older than the bound, across the home's SubOS, except what is
+still in use. It first sends the plan:
+
+```json
+{"kind":"data","dataKind":"remove_plan","payload":{
+  "name":"mcpp","older_than":"2026.10.1","dry_run":false,"bytes":1843200000,
+  "remove":[{"version":"2026.9.30.2","bytes":61440000}],
+  "keep":[{"version":"2026.9.10.2","reason":"active in subos 'default'"},
+          {"version":"2026.9.3.1","reason":"linked by xim:huxerui@0.3.0"}]}}
+```
+
+A version is kept when it is active in a SubOS or a known project, is the
+running xlings, or is linked by a dependent (§8.1); a version string that is not
+a version is kept and says so. `"dry_run": true` ends there. Otherwise it needs
+`"yes": true` (without it, exitCode 2 and nothing changes), then removes each
+version and records it in `logs/destructive.ndjson`.
 
 ## 9. A complete session
 

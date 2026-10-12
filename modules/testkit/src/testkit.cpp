@@ -402,6 +402,27 @@ RunResult run(const RunOptions& o) {
             ::ioctl(slave, TIOCSCTTY, 0);
             ::dup2(slave, 0); ::dup2(slave, 1); ::dup2(slave, 2);
             if (slave > 2) ::close(slave);
+            if (o.pty_background) {
+                // This process keeps the terminal's foreground; the program
+                // runs in a group of its own, as a shell's background job.
+                pid_t job = ::fork();
+                if (job < 0) ::_exit(126);
+                if (job == 0) {
+                    ::setpgid(0, 0);
+                    if (::chdir(cwd_s.c_str()) != 0) ::_exit(126);
+                    ::execve(program.c_str(), argv.data(), envp.data());
+                    ::_exit(127);
+                }
+                ::setpgid(job, job);
+                int st = 0;
+                while (::waitpid(job, &st, WUNTRACED) < 0 && errno == EINTR) {}
+                if (WIFSTOPPED(st)) {
+                    std::fprintf(stderr, "testkit: the job was stopped by signal %d\n", WSTOPSIG(st));
+                    ::kill(-job, SIGKILL);
+                    ::_exit(kStoppedByTerminal);
+                }
+                ::_exit(WIFEXITED(st) ? WEXITSTATUS(st) : 128 + WTERMSIG(st));
+            }
         } else {
             ::setpgid(0, 0);
             ::dup2(in_pipe[0], 0);

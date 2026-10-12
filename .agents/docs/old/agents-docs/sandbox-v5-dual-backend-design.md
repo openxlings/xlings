@@ -458,7 +458,7 @@ $ xlings subos use mybox --sandbox
   ◆ xim:bwrap@0.11.2
   ✓ downloaded
   [info] setting up namespace permission...
-  [sudo] password for speak: ********
+  [sudo] password for user: ********
   ✓ bwrap sandbox ready
 
 ▸ entering subos mybox (sandbox: bwrap)
@@ -474,7 +474,7 @@ $ xlings subos use mybox --sandbox
 [info] no sandbox backend found, installing...
   ◆ xim:bwrap@0.11.2
   [info] setting up namespace permission...
-  [sudo] password for speak: ^C               ← 用户取消
+  [sudo] password for user: ^C               ← 用户取消
   [info] setcap skipped, installing proot fallback...
   ◆ xim:proot@5.4.0
   ✓ installed

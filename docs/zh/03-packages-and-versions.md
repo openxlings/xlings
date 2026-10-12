@@ -162,13 +162,20 @@ xlings subos exec dev-latest -- gcc --version    # 16.1.0
 - `--all` —— 它的每一个已安装版本
 - `--all-subos` —— 每一个装了它的 SubOS
 - `--subos <NAME>` —— 指定的那个 SubOS
+- `--older-than <VERSION>` —— 早于该版本、且没有被使用的每一个版本，跨所有 SubOS
+  （`--dry-run` 只列出）
 
 ```bash
 xlings remove gcc --all-subos
 xlings remove gcc --subos probe
+xlings remove mcpp --older-than 2026.10.1 --dry-run
 ```
 
-仍被其他环境使用的 payload 会保留。
+仍被其他环境使用的 payload 会保留。`--older-than` 先列出要删除的版本（及大小）和保留的版本及原因——
+在某个 SubOS 或项目中处于激活状态、正在运行的 xlings、被其他包链接——然后只确认一次。
+
+只有删除会弄坏依赖它的包时才拒绝：依赖方链接着这个 payload，或者依赖方只运行它的程序、而删除后没有满足其约束的
+已安装版本。只运行程序且仍有其他版本的依赖方，会被告知保留的是哪个版本。`--force` 仍然删除。
 
 ## 平台
 

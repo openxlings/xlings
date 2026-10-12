@@ -40,7 +40,7 @@ xlings 已经做对了大方向（域内 origin + 多镜像回退 + 延迟探测
 ### 1.2 主索引 `xim-pkgindex`
 
 - `GLOBAL`: `https://github.com/openxlings/xim-pkgindex.git`
-- `CN`: `https://gitee.com/sunrisepeak/xim-pkgindex.git` ✅ **有真实国内镜像**
+- `CN`: `https://gitee.com/<owner>/xim-pkgindex.git` ✅ **有真实国内镜像**
 - 机制：`git clone --depth 1` 到 `XLINGS_HOME/data/xim-pkgindex/`，更新用 `git pull --ff-only`
   →（失败）`git fetch + reset --hard`。非强制时 **7 天节流**（`.xlings-sync-stamp`）。
   代码：`repo.cppm:164-249`、`config.cppm:90-96`。

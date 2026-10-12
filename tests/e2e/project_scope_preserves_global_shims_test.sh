@@ -21,7 +21,7 @@
 #       state for a fresh subos. Fixed by making "not observed" its own value
 #       and refusing to rebuild on it.
 #
-# Measured before the fix, on the maintainer's home: 172 routing entries gone,
+# Measured before the fix, on a home in long use: 172 routing entries gone,
 # `gcc` active at 16.1.0 and not on PATH. In CI it showed up as every
 # `fresh-install (core)` cell failing `self doctor` since 2026-09-03.
 #

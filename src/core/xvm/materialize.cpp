@@ -1,6 +1,7 @@
 module xlings.core.xvm.materialize;
 
 import std;
+import xlings.observe;
 import xlings.platform;
 import xlings.core.log;
 import xlings.core.xvm.db;
@@ -650,6 +651,7 @@ std::expected<Prepared, std::string> prepare_projection_change(
     const std::set<std::string>& reconfigured,
     const fs::path& subosRoot, const fs::path& libraryRoot, const std::string& home,
     std::span<const fs::path> releasedSources) {
+    observe::Timed timed("projection");
     std::set<std::string> moved(reconfigured.begin(), reconfigured.end());
     const auto differs = [&](const auto& before, const auto& after) {
         for (const auto& [name, value] : after) {

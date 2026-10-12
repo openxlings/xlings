@@ -15,7 +15,7 @@
 ```fish
 $ xlings subos use mode-image-test
 [xlings] storage=image requires sandbox, entering sandbox mode...
-[sudo] password for speak:
+[sudo] password for user:
 [error] image storage requires bwrap (proot does not support mount namespace)
 [error]   run: xlings install bwrap
 
@@ -336,7 +336,7 @@ P2-7  install hook sudo prompt 体验
 
 ### 关键证据
 ```
-$ /home/speak/.xlings/data/xpkgs/xim-x-bwrap/0.11.2/bin/bwrap --ro-bind / / -- /bin/true
+$ /home/user/.xlings/data/xpkgs/xim-x-bwrap/0.11.2/bin/bwrap --ro-bind / / -- /bin/true
 bwrap: setuid use of bubblewrap is not supported in this build       ← 关键
 exit=1
 

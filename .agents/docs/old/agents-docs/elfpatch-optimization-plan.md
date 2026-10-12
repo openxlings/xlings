@@ -63,7 +63,7 @@ macOS 没有 interpreter 概念，bins/libs 都做 rpath 修正。
 
 ### 文件: `elfpatch.lua` (libxpkg)
 
-路径: `/home/speak/workspace/github/mcpplibs/libxpkg/src/lua-stdlib/xim/libxpkg/elfpatch.lua`
+路径: `~/workspace/mcpplibs/libxpkg/src/lua-stdlib/xim/libxpkg/elfpatch.lua`
 
 #### 1. `M.auto()` — 接收 bins/libs 参数
 
@@ -292,8 +292,8 @@ gcc: elfpatch auto: 43 43 0
 
 ## 验证
 
-1. `cd /home/speak/workspace/github/mcpplibs/libxpkg && xmake build && xmake run mcpplibs-xpkg-tests`
-2. `cd /home/speak/workspace/github/d2learn/xlings && rm -rf build && xmake build && xmake run xlings_tests`
+1. `cd ~/workspace/mcpplibs/libxpkg && xmake build && xmake run mcpplibs-xpkg-tests`
+2. `cd ~/workspace/d2learn/xlings && rm -rf build && xmake build && xmake run xlings_tests`
 3. `xlings install xim:gcc@15.1.0 -y --force --verbose 2>&1 | grep -i elfpatch`
 4. `readelf -l ~/.xlings/data/xpkgs/xim-x-gcc/15.1.0/bin/gcc | grep interpreter` → 用户本地路径
 5. `gcc --version` → 正常运行

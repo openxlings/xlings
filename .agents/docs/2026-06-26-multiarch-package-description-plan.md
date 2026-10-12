@@ -27,14 +27,14 @@
 Three repos participate. **⇄ = can be developed in parallel** under the local override; **→ = hard sequential dependency at landing/release time.**
 
 ```
- libxpkg (openxlings/libxpkg)            xlings (openxlings/xlings)              xim-pkgindex (gitee:sunrisepeak / openxlings)
+ libxpkg (openxlings/libxpkg)            xlings (openxlings/xlings)              xim-pkgindex (gitee:<owner> / openxlings)
  Phase A: loader V2 schema      ⇄        Phase B: install-time resolution  ⇄    Phase D: V2 spec + recipe fixes
    tag v0.0.42                  ───→       bump add_requires pin 0.0.42  ───→     (recipes only need V2 once xlings 0.4.61 ships)
    publish to mcpplibs-index    ───→       release 0.4.61                ───→     publish index artifact → xlings update
 ```
 
 - **DEV phase is fully parallel:** build xlings against in-flight libxpkg source with
-  `xmake f --local_libxpkg=/home/speak/workspace/github/mcpplibs/libxpkg` (xlings `xmake.lua:42-46`). No release needed to co-develop + test Phases A+B+D together.
+  `xmake f --local_libxpkg=~/workspace/mcpplibs/libxpkg` (xlings `xmake.lua:42-46`). No release needed to co-develop + test Phases A+B+D together.
 - **LANDING phase is sequential (the closure):**
   1. Land + tag **libxpkg `v0.0.42`** → publish `mcpplibs-xpkg 0.0.42` to **`mcpplibs/mcpplibs-index`** (separate repo; libxpkg's own `release.yml` is stale, so this is a manual `git tag` + index-PR step).
   2. Bump xlings `xmake.lua:45` `add_requires("mcpplibs-xpkg 0.0.42")` (in the feature PR or a dedicated pin-bump PR).
@@ -48,14 +48,14 @@ Three repos participate. **⇄ = can be developed in parallel** under the local 
 
 ## File Structure
 
-**libxpkg** (`/home/speak/workspace/github/mcpplibs/libxpkg`):
+**libxpkg** (`~/workspace/mcpplibs/libxpkg`):
 - Modify `src/xpkg.cppm` — extend `PlatformResource` with V2 fields (per-arch map, sha256-by-arch, arch_alias, is_res).
 - Modify `src/xpkg-loader.cppm:296-325` — parse the new shapes into those fields.
 - Create `src/arch.cppm` (or fold into existing util module) — `normalize_arch()` + alias table. One responsibility: arch name canonicalization. Shared so xlings can mirror it.
 - Modify `tests/test_loader.cppm` — V2 parse tests (GoogleTest).
 - Create `tests/fixtures/pkgindex/pkgs/_v2/*.lua` — fixture recipes exercising each new shape.
 
-**xlings** (`/home/speak/workspace/github/openxlings/xlings`):
+**xlings** (`~/workspace/openxlings/xlings`):
 - Modify `src/core/xim/installer.cppm` — (a) `normalize_arch_()` wrapping `detect_arch_()` (123-140); (b) `load_platform_entries_` sandbox parser (≈831-920) accept new shapes; (c) install-time arch resolution in the download path (≈1012-1065, where `XLINGS_RES`/mirror are resolved); (d) `package.archs` fail-closed validation before download.
 - Modify `src/core/xim/index.cppm:40-100` — serialize/deserialize the new resource fields so the index cache round-trips raw arch data.
 - Modify `src/core/xim/resolver.cppm` — thread arch into dep/version resolution only where it already reads resources (no arch logic needed if resolution stays install-time; verify it passes resources through opaquely).
@@ -64,7 +64,7 @@ Three repos participate. **⇄ = can be developed in parallel** under the local 
 - Create `tests/e2e/multiarch_resolution_test.sh` — e2e: a fixture multi-arch recipe resolves to the host arch's URL+sha256.
 - Modify xlings unit test harness (`tests/unit/test_main.cpp` per recon) — add arch-normalization + validation unit tests.
 
-**xim-pkgindex** (`/home/speak/workspace/github/openxlings/xlings/.xlings-home-dev/data/xim-pkgindex`, remote gitee:sunrisepeak / openxlings):
+**xim-pkgindex** (`~/workspace/openxlings/xlings/.xlings-home-dev/data/xim-pkgindex`, remote gitee:<owner> / openxlings):
 - Create `docs/V2/xpackage-spec.md` + `docs/V2/xpackage-template.lua` (derive from V1, add arch shapes).
 - Modify `pkgs/g/github-gh.lua`, `pkgs/n/node.lua` — fix the broken/inconsistent arch declarations using V2 shapes (these are the documented bugs).
 - Modify `pkgs/c/cmake.lua`, `pkgs/b/bun.lua` — migrate to V2 `archs`/`res+sha256` where they currently lean on `XLINGS_RES` or npm.
@@ -81,8 +81,8 @@ Three repos participate. **⇄ = can be developed in parallel** under the local 
 ### Task A1: Arch normalization utility
 
 **Files:**
-- Create: `/home/speak/workspace/github/mcpplibs/libxpkg/src/arch.cppm`
-- Test: `/home/speak/workspace/github/mcpplibs/libxpkg/tests/test_loader.cppm` (add an `ArchTest` suite, or a new `tests/test_arch.cppm` wired in `tests/xmake.lua`)
+- Create: `~/workspace/mcpplibs/libxpkg/src/arch.cppm`
+- Test: `~/workspace/mcpplibs/libxpkg/tests/test_loader.cppm` (add an `ArchTest` suite, or a new `tests/test_arch.cppm` wired in `tests/xmake.lua`)
 
 **Interfaces:**
 - Produces: `std::string xlings::xpkg::normalize_arch(std::string_view raw)` → canonical (`x86_64`|`aarch64`|`x86`|raw-lowered if unknown). Also `bool xlings::xpkg::arch_matches(std::string_view a, std::string_view b)` (normalize both, compare).
@@ -100,7 +100,7 @@ TEST(ArchTest, NormalizesAliases) {
     EXPECT_EQ(normalize_arch("AArch64"),"aarch64");  // case-insensitive
 }
 ```
-- [ ] **Step 2: Run, expect FAIL** — `cd /home/speak/workspace/github/mcpplibs/libxpkg && xmake build xpkg_loader_test` → unresolved `normalize_arch`.
+- [ ] **Step 2: Run, expect FAIL** — `cd ~/workspace/mcpplibs/libxpkg && xmake build xpkg_loader_test` → unresolved `normalize_arch`.
 - [ ] **Step 3: Implement `src/arch.cppm`**
 ```cpp
 export module xlings.xpkg.arch;
@@ -125,7 +125,7 @@ inline bool arch_matches(std::string_view a, std::string_view b) {
 
 ### Task A2: Extend `PlatformResource` with V2 fields
 
-**Files:** Modify `/home/speak/workspace/github/mcpplibs/libxpkg/src/xpkg.cppm:15-20`
+**Files:** Modify `~/workspace/mcpplibs/libxpkg/src/xpkg.cppm:15-20`
 
 **Interfaces:**
 - Produces: extended `PlatformResource`. New fields default-empty so legacy parse is unchanged.
@@ -147,7 +147,7 @@ struct PlatformResource {
 
 ### Task A3: Parse Scheme B (per-arch map) in the loader
 
-**Files:** Modify `/home/speak/workspace/github/mcpplibs/libxpkg/src/xpkg-loader.cppm:296-325`; fixture `tests/fixtures/pkgindex/pkgs/.../v2b.lua`; test `tests/test_loader.cppm`.
+**Files:** Modify `~/workspace/mcpplibs/libxpkg/src/xpkg-loader.cppm:296-325`; fixture `tests/fixtures/pkgindex/pkgs/.../v2b.lua`; test `tests/test_loader.cppm`.
 
 **Interfaces:**
 - Consumes: `normalize_arch` (A1), extended `PlatformResource` (A2).
@@ -246,7 +246,7 @@ TEST(LoaderTest, V2_PerArchMap_ParsesBothArches) {
 
 **Files:** Create `tests/e2e/multiarch_resolution_test.sh`; fixture recipe under `tests/fixtures/xim-pkgindex/`.
 - [ ] **Step 1:** Write the e2e: with a temp `XLINGS_HOME` and a fixture multi-arch recipe pointing at local `file://` tarballs for both arches, `xlings install v2map` selects the host-arch tarball + verifies its sha256. Use `tests/e2e/project_test_lib.sh` helpers.
-- [ ] **Step 2:** `xmake f --local_libxpkg=/home/speak/workspace/github/mcpplibs/libxpkg && xmake` then run unit tests + `XLINGS_BIN=... bash tests/e2e/multiarch_resolution_test.sh`. Expected PASS.
+- [ ] **Step 2:** `xmake f --local_libxpkg=~/workspace/mcpplibs/libxpkg && xmake` then run unit tests + `XLINGS_BIN=... bash tests/e2e/multiarch_resolution_test.sh`. Expected PASS.
 - [ ] **Step 3:** Run the broader e2e set touching index (`index_cache_test.sh`, `mirror_fallback_test.sh`) to confirm no regression.
 - [ ] **Step 4: Commit** — `test(e2e): multi-arch install-time resolution`.
 

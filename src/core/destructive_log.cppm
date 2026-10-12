@@ -7,7 +7,7 @@ export import xlings.observe;
 // `<XLINGS_HOME>/logs/destructive.ndjson`.
 //
 // It exists because of an investigation that could not be finished: a
-// maintainer lost user data from several SubOS home directories and suspected
+// user lost data from several SubOS home directories and suspected
 // auto-repair, an upgrade or `self doctor --fix`. Every command that can
 // delete a SubOS was found and measured, but nothing had written down which
 // one ran, when, from where, or how it was confirmed -- so the loss could not

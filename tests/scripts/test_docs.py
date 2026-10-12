@@ -96,7 +96,7 @@ FORBIDDEN = [
     (re.compile(r"\]\((\.\./)*\.agents/"), "a link into .agents/"),
     (re.compile(r"\.agents/docs/\d{4}-"), "a reference to a working document in .agents/docs"),
     (re.compile(r"编写日期|更新日期"), "the old dated header"),
-    (re.compile(r"maintainer's rule|维护者.{0,6}(说|规定|定的)"), "an attribution"),
+    (re.compile(r"maintainer's rule|维护者.{0,6}(说|规定|定的)"), "an attribution"),  # privacy-ok: the pattern that catches it
     (re.compile(r"xlings subos create|xlings subos enter|\{\"action\":\"subos\.new\""), "a removed command"),
 ]
 for path in published:

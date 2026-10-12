@@ -75,7 +75,7 @@ label 长于 14 时,每多 1 个字符就少算 1 列。实测算术:
 溢出 3 → 末尾 3 个字符 `bin` 被丢掉,**无省略号、无任何提示**:
 
 ```
-  15.1.0-aarch64-musl  /home/speak/.xlings/data/xpkgs/xim-x-aarch64-linux-musl-gcc/15.1.0/
+  15.1.0-aarch64-musl  ~/.xlings/data/xpkgs/xim-x-aarch64-linux-musl-gcc/15.1.0/
                                                                                           ↑ 丢了 "bin"
 ```
 
@@ -243,7 +243,7 @@ ftxui `Terminal::Size()` 在非 TTY 下返回 80×24(`terminal.cpp:41-42`)。CI 
 
 ```
 xlings config:   XLINGS_DATA     @xlings/data
-xlings use gcc:  15.1.0          /home/speak/.xlings/data/xpkgs/xim-x-gcc/15.1.0/bin
+xlings use gcc:  15.1.0          ~/.xlings/data/xpkgs/xim-x-gcc/15.1.0/bin
 ```
 
 而 `use` 恰恰是被路径长度撑爆的那个命令 —— **缩写函数已经存在,用上它就能让 P0-1/P0-2 的溢出直接消失**。
@@ -255,10 +255,10 @@ xlings use gcc:  15.1.0          /home/speak/.xlings/data/xpkgs/xim-x-gcc/15.1.0
 ```
 $ xlings --agent use gcc
 gcc versions (current subos)
-  15.1.0: /home/speak/.xlings/data/xpkgs/xim-x-gcc/15.1.0/bin
-  15.1.0-aarch64-musl: /home/speak/.xlings/data/xpkgs/xim-x-aarch64-linux-musl-gcc/15.1.0/bin   ← 完整
-  15.1.0-musl: /home/speak/.xlings/data/xpkgs/xim-x-musl-gcc/15.1.0/bin
-  16.1.0: /home/speak/.xlings/data/xpkgs/xim-x-gcc/16.1.0/bin
+  15.1.0: ~/.xlings/data/xpkgs/xim-x-gcc/15.1.0/bin
+  15.1.0-aarch64-musl: ~/.xlings/data/xpkgs/xim-x-aarch64-linux-musl-gcc/15.1.0/bin   ← 完整
+  15.1.0-musl: ~/.xlings/data/xpkgs/xim-x-musl-gcc/15.1.0/bin
+  16.1.0: ~/.xlings/data/xpkgs/xim-x-gcc/16.1.0/bin
 ```
 
 不截断、不折行、无转义污染。**TUI 在这里没有增加任何信息,只减少了信息。**

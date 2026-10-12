@@ -173,8 +173,8 @@ auto PlanInstall::execute(Params params, EventStream& stream) -> Result {
 auto RemovePackage::spec() const -> CapabilitySpec {
     return {
         .name = "remove_package",
-        .description = "Remove one package or one specific version. Only removes one target per call — to remove multiple versions, call multiple times",
-        .inputSchema = R"({"type":"object","properties":{"target":{"type":"string","description":"Format: name, name@version, or namespace:name@version"},"yes":{"type":"boolean","description":"Auto-confirm without prompting"}},"required":["target"]})",
+        .description = "Remove one package or one specific version; with older_than, every version older than it that nothing uses",
+        .inputSchema = R"JSON({"type":"object","properties":{"target":{"type":"string","description":"Format: name, name@version, or namespace:name@version"},"yes":{"type":"boolean","description":"Auto-confirm without prompting"},"older_than":{"type":"string","description":"Remove every installed version of target older than this one that nothing uses (target is a name)"},"dry_run":{"type":"boolean","description":"With older_than: report the remove_plan only"}},"required":["target"]})JSON",
         .outputSchema = R"({"type":"object","properties":{"exitCode":{"type":"integer"}}})",
         .destructive = true,
     };
@@ -184,6 +184,10 @@ auto RemovePackage::execute(Params params, EventStream& stream) -> Result {
     auto json = nlohmann::json::parse(params, nullptr, false);
     bool yes = json.value("yes", false);
     bool force = json.value("force", false);
+    if (auto bound = json.value("older_than", std::string{}); !bound.empty()) {
+        return exit_result(xim::cmd_remove_older_than(
+            json.value("target", ""), bound, yes, json.value("dry_run", false), stream));
+    }
     return exit_result(
         xim::cmd_remove(json.value("target", ""), yes, stream, force));
 }

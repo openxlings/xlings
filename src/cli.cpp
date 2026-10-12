@@ -15,6 +15,8 @@ import mcpplibs.xpkg.executor;
 import xlings.core.config;
 import xlings.core.home;
 import xlings.core.notice;
+import xlings.core.xself.upgrade;
+import xlings.core.home_health;
 import xlings.core.home_config;
 import xlings.libs.json;
 import xlings.core.log;
@@ -482,7 +484,7 @@ void dispatch_data_event(const DataEvent& e) {
             json.value("name", ""), json.value("dir", ""));
     }
     else if (e.kind == "subos_entering") {
-        ui::print_subos_entering(json.value("name", ""));
+        ui::print_subos_entering(json.value("name", ""), json.value("edition", ""));
     }
     else if (e.kind == "subos_already_in") {
         ui::print_subos_already_in(json.value("name", ""));
@@ -581,23 +583,45 @@ void show_interactive_hint_once_() {
 // `self`/`interface`: `self doctor`/`self update` already say this as part of
 // their job, and `interface` is a machine's NDJSON stream.
 void show_upgrade_notice_once_() {
-    if (!platform::supports_rewrite_output()) return;
-
-    auto verified = Config::recorded_verified_version();
-    if (verified.empty()) verified = Config::recorded_client_version();
-    // An absent record is not a mismatch -- the same rule `migration_hint`
-    // applies to its own empty guard. A home with neither field set (one
-    // from before either existed, or one built by `self init` alone) has
-    // nothing to compare against, and announcing a claim this code cannot
-    // back up would be worse than saying nothing.
-    if (verified.empty() || verified == Info::VERSION) return;
-
-    notice::notice_once("client.upgraded", Info::VERSION, {
-        .code    = "self.upgraded",
-        .summary = std::format("xlings is now {}; this home was last "
-                               "verified by {}", Info::VERSION, verified),
-        .actions = { { "check the home", "xlings self doctor" } },
-    });
+    // The upgrade itself (xself::upgrade): its steps run here, by the first
+    // command of a new version, and are recorded. Silent when they all did
+    // what they had to -- that is what an upgrade nobody notices looks like.
+    // What they could not do is said now, once, each with its command.
+    const auto outcome = xself::upgrade::on_first_command();
+    if (!outcome) return;
+    if (outcome->downgrade) {
+        notice::notice_once("client.downgraded", Info::VERSION, {
+            .code    = "self.downgraded",
+            .summary = std::format("this home was last upgraded by xlings {}; this is {}, which "
+                                   "leaves what it does not know as it is", outcome->from, outcome->to),
+            .actions = { outcome->canGoBack
+                             ? diag::Action{ "back to it", std::format("xlings use xlings {}", outcome->from) }
+                             : diag::Action{ "the newest", "xlings self update" } },
+        });
+        return;
+    }
+    if (outcome->pending.empty()) return;
+    diag::Diagnostic d {
+        .level   = diag::Level::Warn,
+        .code    = "self.upgrade_pending",
+        .summary = std::format("xlings {} (from {}): {} thing(s) in this home need a step it could "
+                               "not take by itself", outcome->to, outcome->from, outcome->pending.size()),
+    };
+    std::vector<std::string> commands;
+    for (std::size_t i = 0; i < outcome->pending.size(); ++i) {
+        const auto& p = outcome->pending[i];
+        if (i < 5) {
+            auto what = p.what.size() > 160 ? p.what.substr(0, 157) + "..." : p.what;
+            d.facts.push_back({ "needs", std::move(what) });
+        }
+        if (std::ranges::find(commands, p.command) == commands.end()) commands.push_back(p.command);
+    }
+    if (outcome->pending.size() > 5)
+        d.facts.push_back({ "and", std::format("{} more: xlings self doctor", outcome->pending.size() - 5) });
+    for (const auto& c : commands) d.actions.push_back({ "run", c });
+    if (outcome->canGoBack)
+        d.actions.push_back({ "or go back", std::format("xlings use xlings {}", outcome->from) });
+    diag::emit(d);
 }
 
 void handle_prompt(EventStream& stream, const PromptEvent& p) {
@@ -1431,12 +1455,32 @@ int run_profile_(int argc, char* argv[], EventStream& stream) {
 // the shape this whole round is about: "I configured a theme" and "my theme
 // file has a typo in it" would produce identical output, and the user would
 // conclude the setting does nothing.
+//
+// Once per cause, though: a theme that is not there is said the first time
+// and remembered (hintsSeen, keyed by the setting and the cause); changing
+// the setting asks again. And not inside an environment -- a SubOS view or
+// a Luban root -- where the home's theme files are not projected and the
+// environment is not where a theme is configured: there the default is used
+// without a word.
+bool theme_problem_is_news_(std::string_view cause) {
+    std::error_code ec;
+    if (const char* mode = std::getenv("XLINGS_SUBOS_MODE"); (mode && *mode)
+        || std::filesystem::exists("/etc/xlings/root.json", ec)) {
+        return false;
+    }
+    const auto id = std::format("theme:{}:{}", Config::theme(), cause);
+    if (Config::hint_seen(id)) return false;
+    Config::mark_hint_seen(id);
+    return true;
+}
+
 void load_configured_theme_() {
     const auto path = Config::resolve_theme_path();
     if (path.empty()) return;              // built-in default, nothing to do
 
     std::error_code ec;
     if (!std::filesystem::is_regular_file(path, ec)) {
+        if (!theme_problem_is_news_("not_found")) return;
         diag::emit({
             .level   = diag::Level::Warn,
             .code    = "theme.not_found",
@@ -1453,6 +1497,7 @@ void load_configured_theme_() {
     try {
         content = platform::read_file_to_string(path.string());
     } catch (...) {
+        if (!theme_problem_is_news_("unreadable")) return;
         diag::emit({
             .level   = diag::Level::Warn,
             .code    = "theme.unreadable",
@@ -1465,7 +1510,10 @@ void load_configured_theme_() {
     }
 
     auto loaded = theme::load_from_json(content, theme::builtin_default());
+    const bool sayIssues = loaded.issues.empty()
+        || theme_problem_is_news_(std::format("issues:{}", std::hash<std::string>{}(content)));
     for (const auto& issue : loaded.issues) {
+        if (!sayIssues) break;
         diag::Diagnostic d {
             .level  = diag::Level::Warn,
             .source = Config::display_path(path),
@@ -1797,8 +1845,13 @@ int dispatch_(int argc, char* argv[]) {
     // `cmd` from an argument that does NOT start with `-`, so `cmd` can
     // never hold either of those (and `cmd.empty()` already covers a bare
     // `xlings` with no command at all).
-    if (!cmd.empty() && cmd != "self" && cmd != "interface") {
-        show_upgrade_notice_once_();
+    // A home config xlings cannot read is one failure domain: every command
+    // still runs, and every command says what falls back and the fix --
+    // never silently, which is how a corrupt file used to look like an
+    // empty home. `self doctor` reports it as its own finding.
+    if (!(cmd == "self" && fargc > 2 && std::string_view(fargv[2]) == "doctor") && cmd != "interface") {
+        if (auto found = home_health::quick_problems(Config::paths().homeDir); !found.empty())
+            log::warn("{}", home_health::summary(Config::paths().homeDir, found));
     }
 
     // Special: subos, self, script need raw argc/argv
@@ -1835,7 +1888,31 @@ int dispatch_(int argc, char* argv[]) {
         // change it goes to the broker, which decides with the instance's
         // policy and runs it outside; what only the owner may do is refused
         // here, with the command that does it outside.
-        if (subos::broker::available()) {
+        //
+        // Only for the session's home, though. A home of the sandbox's own --
+        // mcpp's registry under /root/.mcpp, a test's -- is the user's to
+        // write in here, and a command for it runs here: `XLINGS_HOME=<that>
+        // xlings self init` was refused as owner-only (mcpp: "sandbox not
+        // initialized") and an install into it would have gone to the
+        // owner's home. The session's home is the one that is read-only here.
+        const auto home_is_ours = [] {
+            const auto home = Config::paths().homeDir;
+            std::error_code ec;
+            if (!std::filesystem::exists(home, ec)) return true;
+            std::ofstream probe(home / ".xlings.lock", std::ios::app);
+            return static_cast<bool>(probe);
+        };
+        // Nor for help, which changes nothing: forwarded, `remove --help`
+        // printed the HOST's xlings's help, whatever version that is.
+        const bool asksHelp = [&] {
+            for (int i = 2; i < fargc; ++i) {
+                const std::string_view a{fargv[i]};
+                if (a == "--") break;
+                if (a == "-h" || a == "--help") return true;
+            }
+            return false;
+        }();
+        if (subos::broker::available() && !asksHelp && !home_is_ours()) {
             std::vector<std::string> rest;
             for (int i = 1; i < fargc; ++i) rest.emplace_back(fargv[i]);
             const char* active = std::getenv("XLINGS_ACTIVE_SUBOS");
@@ -2167,6 +2244,8 @@ int dispatch_(int argc, char* argv[]) {
             .option(cmdline::Option("all").help("Remove every installed version, not just the active one"))
             .option(cmdline::Option("all-subos").help("Remove from every subos that has it installed"))
             .option(cmdline::Option("subos").takes_value().value_name("NAME").help("Act on this subos only, instead of the current one"))
+            .option(cmdline::Option("older-than").takes_value().value_name("VERSION").help("Remove every installed version older than VERSION that nothing uses"))
+            .option(cmdline::Option("dry-run").help("With --older-than: list what would be removed, and change nothing"))
             .arg("package").required().help("Package to remove (name or name@ver)")
             .arg("version").help("Optional version (alternative to name@ver form)")
             .action(wrap_rc([&stream](const cmdline::ParsedArgs& args) -> int {
@@ -2177,6 +2256,14 @@ int dispatch_(int argc, char* argv[]) {
                 std::string target;
                 if (!parse_target_spec_(args, target)) return 1;
                 bool yes = args.is_flag_set("yes");
+                if (auto bound = args.value("older-than")) {
+                    return xim::cmd_remove_older_than(target, std::string(*bound), yes,
+                                                      args.is_flag_set("dry-run"), stream);
+                }
+                if (args.is_flag_set("dry-run")) {
+                    log::error("--dry-run goes with --older-than");
+                    return 1;
+                }
                 // Separate from `yes`, deliberately. `-y` says "do not ask me",
                 // which is a statement about prompting; breaking a dependency
                 // link is a different decision and a scripted `remove -y`
@@ -2383,6 +2470,31 @@ int dispatch_(int argc, char* argv[]) {
 // found no handler, and aborted with SIGABRT after printing a full report
 // (issue #583). A handler that lives in the caller cannot be outrun by a
 // dispatch decision made in the callee.
+void after_command(int argc, char* argv[]) {
+    // The words of the command, without the global options before it.
+    std::vector<std::string_view> words;
+    for (int i = 1; i < argc; ++i) {
+        const std::string_view a{argv[i]};
+        if (words.empty() && a.starts_with("-")) {
+            if (a == "--ui-mode" || a == "--mirror" || a == "--lang") ++i;
+            continue;
+        }
+        words.push_back(a);
+    }
+    if (words.empty() || home::is_read_only_command(words)) return;
+    const auto cmd = words[0];
+    if (cmd == "self" || cmd == "interface" || (cmd == "config" && words.size() == 1)) return;
+    // A session's exit code is the program's that ran in it, not a sign the
+    // home changed.
+    if (cmd == "subos" && words.size() > 1
+        && (words[1] == "use" || words[1] == "exec" || words[1] == "start" || words[1] == "stop"))
+        return;
+    try {
+        show_upgrade_notice_once_();
+    } catch (...) {
+    }
+}
+
 int run(int argc, char* argv[]) {
     try {
         return dispatch_(argc, argv);

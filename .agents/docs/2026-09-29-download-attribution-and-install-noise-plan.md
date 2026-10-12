@@ -1,6 +1,6 @@
 # 下载失败的归因、安装输出的噪声、依赖声明：生态优化方案
 
-2026-09-29。来源：维护者在真实 home 上跑的三条命令（xlings 2026.9.29.1，索引 `dbc7715`）。
+2026-09-29。来源：在一个真实使用中的 home 上跑的三条命令（xlings 2026.9.29.1，索引 `dbc7715`）。
 
 ```
 xlings install chatgpt                 # 26.924.22138：成功，但被 7-Zip 的输出和 ERROR 刷屏
@@ -112,7 +112,7 @@ xlings downloader.cpp:690  bytesWritten != expectedBytes   // 永远走不到，
 3. 判定为 **Local** 时：删掉 staging 文件，立即返回，不试其他候选，**不调用** `onUrlAttemptFailed`。错误信息里带上 `fs::space(dir).available`：
    ```
    could not write chatgpt_26.917.71314_amd64.deb: 220979200 of 420831054 bytes reached the disk
-   (/home/speak/.xlings/data/runtimedir: 0 B free)
+   (~/.xlings/data/runtimedir: 0 B free)
    ```
 4. `sha256 mismatch` 这个分支只会在大小完整、内容不对时走到，归为 Source，行为不变。
 5. tinyhttps 0.3.2 的 LocalWrite 直接映射成 Local。A2 的 stat 检查保留：它核对的是磁盘上的实际结果，成本只有一次 stat。

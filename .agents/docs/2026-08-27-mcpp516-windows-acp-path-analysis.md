@@ -160,7 +160,7 @@ MSVC STL 的 `path::string()` → `__std_fs_convert_wide_to_narrow(ACP, …)`,
 
 ## 4. 先例:mcpp#230 修的就是这个,只是漏了一处
 
-#230(0.0.95 起 windows CI exit 127)的根因,按 Sunrisepeak 自己的结论:
+#230(0.0.95 起 windows CI exit 127)的根因,按此前的结论:
 
 > 在 windows runner(ACP=1252)上撞到 vendored xim-pkgindex 里的中文文件名
 > `bug-report---问题反馈.md`,`path_matches_glob` 的 `generic_string()` 宽→窄转换抛

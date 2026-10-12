@@ -2,7 +2,7 @@
 
 > 状态:**已实现**(2026.9.3.1,分支 `fix/shim-routing-vs-state`)。基线 HEAD `7c35579`
 > (发布版 2026.9.2.1)。实施中被实测推翻/修正的判断见 §3(推翻 6-9),逐条标注而不是悄悄改掉。
-> 所有数字都在真实 home(`/home/speak/.xlings`)上**只读**实测,命令写在各节的「实测」里。
+> 所有数字都在真实 home(`~/.xlings`)上**只读**实测,命令写在各节的「实测」里。
 
 **Goal:** 让「一个名字归 xlings 路由」和「某个 scope 激活了这个名字的某个版本」成为两件
 分开表达的事,从而消灭项目安装在全局 bin 里留下的、不可见也不可回收的悬空名字。
@@ -74,7 +74,7 @@ EOF
 
 ```
 $ ls -la ~/.xlings/subos/default/bin/slang
-lrwxrwxrwx ... /home/speak/.xlings/subos/default/bin/slang -> ../../../bin/xlings
+lrwxrwxrwx ... ~/.xlings/subos/default/bin/slang -> ../../../bin/xlings
 ```
 
 项目外运行的真实行为:
@@ -410,7 +410,7 @@ desired(N) = { shim_filename(name)
 
 ```json
 "knownProjects": {
-  "/home/speak/work/api": { "lastSeen": "2026-09-03T10:12:00Z" }
+  "~/work/api": { "lastSeen": "2026-09-03T10:12:00Z" }
 }
 ```
 

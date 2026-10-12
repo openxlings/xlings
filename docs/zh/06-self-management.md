@@ -11,14 +11,23 @@
 xlings self update
 ```
 
-它刷新索引，然后把最新的 xlings 作为一个包安装。如果 home 里的包是更早的客户端注册的，可能会看到：
+它刷新索引，然后把最新的 xlings 作为一个包安装。新版本第一条修改 home 的命令成功之后，随即自己完成 home 的升级：检查 home
+配置、重建命令路由，并像 `self doctor` 一样检查 home。都成功时什么也不说；自己做不到的，说一次，每项附上命令：
 
 ```text
-packages installed by the previous client may still be registered in its format
-  run  xlings self doctor --fix
+[warn] xlings 2026.10.12.2 (from 2026.10.11.1): 1 thing(s) in this home need a step it could not take by itself
+         needs   subos 'other' has an unreadable @xlings/subos/other/.xlings.json
+         run     xlings self doctor --fix
 ```
 
-这不是错误：跑一次 `--fix` 迁移记录，这行提示就不再出现。
+上一个版本还在时，回去只要一条命令：
+
+```bash
+xlings use xlings 2026.10.11.1
+```
+
+`self update` 本身无法完成时，它会说该试什么：另一个镜像（`xlings config --mirror CN`），或者安装脚本——它覆盖安装，
+保留 home 里的一切。规则见[升级与兼容](../specs/upgrade-and-compatibility.md)。
 
 ## 体检
 

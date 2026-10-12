@@ -145,6 +145,18 @@ struct PlanNode {
     // this command writes, at this revision (xim::configured_verdict, #632).
     // Such a node has nothing left to do unless `--reconfig` asks for it.
     bool configuredHere { false };
+    // A root scope checks every payload's resolution record against the
+    // payloads it holds (subos_root::store_closure). For a payload an older
+    // client left, the plan settles that before anything runs, and only one
+    // of these is set (resolver: scope_evidence_):
+    //   migrateRecord  no record, or one naming only program dependencies
+    //                  this plan resolves differently, and nothing in the
+    //                  payload links outside the plan: the record is written
+    //                  from this plan's resolution;
+    //   rebindReason   it links a runtime this root does not have: the
+    //                  payload is reinstalled against the plan's, in place.
+    bool migrateRecord { false };
+    std::string rebindReason;
 
     // Explicit special members to work around GCC 15 module linker bug
     PlanNode() = default;

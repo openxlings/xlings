@@ -84,6 +84,12 @@ UserIds user_ids();
 
 std::map<std::string, std::string> environment();
 bool stdout_is_terminal();
+// False when a standard stream is this process's controlling terminal and
+// its foreground is another process group: a background job, or a command
+// run for somebody else on their terminal. Such a process may write lines, and must not change the
+// terminal's modes or query it -- the kernel stops the whole group for that
+// (SIGTTOU). True with no terminal, and always on Windows (no process groups).
+bool in_terminal_foreground();
 void unset_env_variable(const std::string& name);
 
 // ── descriptors ──────────────────────────────────────────────────────

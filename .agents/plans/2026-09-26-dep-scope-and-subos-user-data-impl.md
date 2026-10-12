@@ -219,7 +219,7 @@ AGENTS.md(subos 用户数据规则 + 依赖按声明方解析)、`docs/spec/inte
 2. `XLINGS_TEST_MIRROR=CN bash tests/e2e/run_all.sh`(或按 CI 的方式跑新增与受影响的测试)。
 3. 推 PR,等 Linux/macOS/Windows CI 全绿。
 4. 自审(整个 diff 过一遍 + code-review)。
-5. 以 Sunrisepeak squash 合并;`gh workflow run release.yml --ref main`。
+5. 以有合并权限的账号 squash 合并;`gh workflow run release.yml --ref main`。
 6. release 资源一出现就本地 `bash tools/mirror-latest.sh xlings`(gtc)补 GitCode,GET 验证。
 7. A3 bump 合并,等索引发布。
 8. 真机验证:`xlings config --mirror CN`,`xlings self update`,然后在 `xlings subos new <v> && xlings subos use <v> --sandbox --cmd "..."` 里验证:xmake 能装(显式 scode 配置下)、`subos remove` 需要确认、doctor/GC 行为、`index use scode`。

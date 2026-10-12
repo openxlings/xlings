@@ -356,7 +356,7 @@ jobs:
           mcpp test --no-run --message-format json
           "$xdev" test --no-build --out target/xdev/linux-unit
           # Retain only the already-built candidate acceptance programs.
-          for test in e2e/test_domain_source e2e/test_domain_producer e2e/test_subos_perf unit/test_root_generation_perf; do
+          for test in e2e/test_domain_source e2e/test_domain_producer e2e/test_subos_perf e2e/test_home_perf unit/test_root_generation_perf; do
             binary="$(find target -type f -path "*/bin/$test" | head -1)"
             test -x "$binary"
             destination="target/xdev/retained/bin/$test"
@@ -508,10 +508,15 @@ jobs:
             --out target/xdev/linux-static-perf || status=$?
           "$XDEV" test unit/test_root_generation_perf --no-build --require-metadata \
             --out target/xdev/linux-static-generation-perf || status=$?
+          # A home of 5,000 registrations and 10 projects: one package's
+          # use / install / remove / doctor within their budgets.
+          "$XDEV" test e2e/test_home_perf --no-build --require-metadata \
+            --out target/xdev/linux-static-home-perf || status=$?
           python3 - <<'PY'
           import json
           from pathlib import Path
-          for directory, count in (('linux-static-perf', 4), ('linux-static-generation-perf', 3)):
+          for directory, count in (('linux-static-perf', 4), ('linux-static-generation-perf', 3),
+                                   ('linux-static-home-perf', 1)):
               results = [json.loads(line) for line in Path(f'target/xdev/{directory}/cases.ndjson').read_text().splitlines()]
               assert len(results) == count and all(row['status'] == 'pass' for row in results), results
           PY

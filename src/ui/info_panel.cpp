@@ -377,10 +377,13 @@ void print_subos_removed(const std::string& name) {
     std::println(stdout, "{}  {} subos removed: {}{}{}", green(), theme::icon::done, bold(), name, reset());
 }
 
-void print_subos_entering(const std::string& name) {
+void print_subos_entering(const std::string& name, const std::string& edition) {
     using namespace subos_ansi_;
-    std::println(stdout, "{}  {} entering subos {}{}{}{}{}  (exit to leave){}",
-                 magenta(), theme::icon::arrow, green(), bold(), name, reset(), magenta(), reset());
+    // An environment made from an edition says which, and where to look.
+    const auto from = edition.empty() ? std::string{}
+                                      : std::format(" · {} · luban status {}", edition, name);
+    std::println(stdout, "{}  {} entering subos {}{}{}{}{}{}  (exit to leave){}",
+                 magenta(), theme::icon::arrow, green(), bold(), name, reset(), magenta(), from, reset());
 }
 
 void print_subos_already_in(const std::string& name) {

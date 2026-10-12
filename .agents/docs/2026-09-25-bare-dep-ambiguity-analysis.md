@@ -230,7 +230,7 @@ F1 和 F2 互相不能替代:F1 修好之后,用户直接敲的裸名仍然会�
 ## 8. 复现时遇到的一个坑
 
 复制出来的 home 里,`.xlings-index-cache.json` 记录的是**真实 home 的 recipe
-绝对路径**(`/home/speak/.xlings/data/xim-pkgindex/pkgs/x/xmake.lua`)。所以第一次
+绝对路径**(`~/.xlings/data/xim-pkgindex/pkgs/x/xmake.lua`)。所以第一次
 修改副本里的 xmake.lua 完全没有生效,还是读到了真实 home 的文件。删掉副本里的缓存
 文件后才读到了副本。A/B 两条腿读的是同一批 recipe,对比结论不受影响;但以后凡是要
 在副本里改 recipe 的实验,**都必须先删掉缓存**,否则改了等于没改。这个缓存也意味着

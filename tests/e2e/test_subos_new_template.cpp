@@ -40,7 +40,8 @@ end
 )LUA", name, Json(manifest.dump()).dump());
 }
 
-tk::Home fixture_home(std::string_view name) {
+tk::Home fixture_home(std::string_view name,
+                      const std::function<void(const fs::path&)>& more = {}) {
     auto home = tk::Home::isolated(name);
     const auto primary = home.root() / "primary";
     const auto repo = home.root() / "index";
@@ -63,6 +64,7 @@ end
     tk::write_file(repo / "pkgs/t/t-top.lua", template_recipe("t-top",
         Json{{"subos_kind", "rootfs"}, {"from", "fixture:t-base@1.0.0"}, {"packages", Json::array()},
              {"workspace", Json::object()}}));
+    if (more) more(repo);
     Json config{{"mirror", "GLOBAL"}, {"xim", {{"index-repo", primary.generic_string()}}},
         {"index_repos", Json::array({{{"name", "xim"}, {"url", primary.generic_string()}, {"source", "git"}},
                                     {{"name", "fixture"}, {"url", repo.generic_string()}, {"source", "git"}}})}};
@@ -288,4 +290,250 @@ end
     auto none = home.xlings({"subos", "upgrade", "plain"}, env);
     EXPECT_NE(none.exit_code, 0);
     EXPECT_NE(none.transcript().find("has no edition to upgrade from"), std::string::npos) << none.transcript();
+}
+
+// A home an older client filled: its payloads carry no resolution record (the
+// evidence a root scope checks), and a record of one points at a runtime this
+// root does not have. `subos new --from` makes the root anyway -- the plan
+// migrates what it can prove and reinstalls what it cannot -- instead of
+// failing every node that needs one and telling the user to run
+// `install --reconfig`.
+XTEST(SubosNewTemplate, AnOlderClientsPayloadsAreMigratedNotRefused,
+      .area = "subos", .cost = tk::Cost::Medium,
+      .covers = {"UPGRADE-OLD-HOME-LUBAN"}, .requires_ = {"linux", "xlings-bin"}) {
+    if constexpr (!tk::is_linux) GTEST_SKIP() << "a rootfs SubOS is a Linux root";
+    // A root with a loader cache (an ldconfig) is one whose every payload is
+    // checked against its resolution record when the root is refreshed.
+    auto home = fixture_home("subos-new-old-payloads", [](const fs::path& repo) {
+        tk::write_file(repo / "pkgs/l/libc.lua", R"LUA(
+package = { spec = '1', name = 'libc', archs = {'x86_64', 'aarch64'}, programs = {'ldconfig'},
+            xpm = { linux = { ['1.0.0'] = {} } } }
+import('xim.libxpkg.pkginfo')
+import('xim.libxpkg.xvm')
+function install()
+    local dir = pkginfo.install_dir()
+    os.mkdir(path.join(dir, 'bin'))
+    io.writefile(path.join(dir, 'bin', 'ldconfig'), '#!/bin/sh\nexit 0\n')
+    return true
+end
+function config()
+    xvm.add('ldconfig', {bindir = path.join(pkginfo.install_dir(), 'bin')})
+    return true
+end
+)LUA");
+        // A tool a package of the edition depends on (patchelf, make, ninja).
+        tk::write_file(repo / "pkgs/t/tool.lua", R"LUA(
+package = { spec = '1', name = 'tool', archs = {'x86_64', 'aarch64'}, programs = {'tool'},
+            xpm = { linux = { ['1.0.0'] = {} } } }
+import('xim.libxpkg.pkginfo')
+import('xim.libxpkg.xvm')
+function install()
+    local dir = pkginfo.install_dir()
+    os.mkdir(path.join(dir, 'bin'))
+    io.writefile(path.join(dir, 'bin', 'tool'), '#!/bin/sh\necho tool\n')
+    return true
+end
+function config()
+    xvm.add('tool', {bindir = path.join(pkginfo.install_dir(), 'bin')})
+    return true
+end
+)LUA");
+        tk::write_file(repo / "pkgs/a/app.lua", R"LUA(
+package = { spec = '1', name = 'app', archs = {'x86_64', 'aarch64'},
+            xpm = { linux = { deps = {'fixture:tool'}, ['1.0.0'] = {} } } }
+import('xim.libxpkg.pkginfo')
+function install()
+    os.mkdir(path.join(pkginfo.install_dir(), 'share'))
+    io.writefile(path.join(pkginfo.install_dir(), 'share', 'app'), 'app')
+    return true
+end
+)LUA");
+        tk::write_file(repo / "pkgs/t/t-libc.lua", template_recipe("t-libc",
+            Json{{"subos_kind", "rootfs"}, {"packages", {"fixture:libc@1.0.0", "fixture:app@1.0.0"}},
+                 {"workspace", Json::object()}}));
+    });
+    // The home's bwrap says yes, and "runs" the root's ldconfig: a cache in
+    // the staging directory it is handed.
+    const auto bwrap = home.dir() / "data/xpkgs/xim-x-bwrap/0.11.2/bin/bwrap";
+    tk::write_file(bwrap, "#!/bin/sh\nfor a in \"$@\"; do case \"$a\" in\n"
+                          "  */ldcache-*/ld.so.cache) printf 'glibc-ld.so.cache1.1%040d' 0 > \"$a\";;\n"
+                          "  */ldcache-*) [ -d \"$a\" ] && printf 'glibc-ld.so.cache1.1%040d' 0 > \"$a/ld.so.cache\";;\n"
+                          "esac; done\nexit 0\n");
+    fs::permissions(bwrap, fs::perms::owner_all | fs::perms::group_read | fs::perms::group_exec);
+    const std::map<std::string, std::string> env{{"XLINGS_TOOLS_SEARCH", "home"}};
+
+    auto installed = home.xlings({"install", "fixture:tool@1.0.0", "-y"}, env);
+    ASSERT_EQ(installed.exit_code, 0) << installed.transcript();
+    const auto payload = home.dir() / "data/xpkgs/fixture-x-tool/1.0.0";
+    ASSERT_TRUE(fs::exists(payload / ".xlings-resolution.json"));
+    fs::remove(payload / ".xlings-resolution.json");   // as an older client left it
+
+    auto made = home.xlings({"subos", "new", "box", "--from", "fixture:t-libc@1.0.0", "-y"}, env);
+    const auto out = made.transcript();
+    EXPECT_EQ(made.exit_code, 0) << out;
+    EXPECT_EQ(out.find("--reconfig"), std::string::npos) << out;
+    EXPECT_EQ(out.find("missing checked runtime resolution"), std::string::npos) << out;
+    EXPECT_TRUE(fs::exists(payload / ".xlings-resolution.json")) << out;
+}
+
+// A payload recorded against another runtime than the root's (zlib built
+// against glibc 2.44, a root of 2.44.3) is reinstalled against the root's, in
+// place -- unless a subos still uses it with the old runtime, which is a real
+// conflict and is said before anything changes.
+XTEST(SubosNewTemplate, APayloadBuiltAgainstAnotherRuntimeIsRebuiltOrTheConflictNamed,
+      .area = "subos", .cost = tk::Cost::Medium,
+      .covers = {"UPGRADE-OLD-HOME-LUBAN"}, .requires_ = {"linux", "xlings-bin"}) {
+    if constexpr (!tk::is_linux) GTEST_SKIP() << "a rootfs SubOS is a Linux root";
+    auto home = fixture_home("subos-new-rebind", [](const fs::path& repo) {
+        tk::write_file(repo / "pkgs/l/libr.lua", R"LUA(
+package = { spec = '1', name = 'libr', archs = {'x86_64', 'aarch64'}, programs = {'libr'},
+            xpm = { linux = { ['1.0.0'] = {}, ['2.0.0'] = {} } } }
+import('xim.libxpkg.pkginfo')
+import('xim.libxpkg.xvm')
+function install()
+    local dir = pkginfo.install_dir()
+    os.mkdir(path.join(dir, 'bin')); os.mkdir(path.join(dir, 'lib'))
+    io.writefile(path.join(dir, 'bin', 'libr'), '#!/bin/sh\nexit 0\n')
+    io.writefile(path.join(dir, 'lib', 'libr.so'), 'x')
+    return true
+end
+function config()
+    xvm.add('libr', {bindir = path.join(pkginfo.install_dir(), 'bin')})
+    return true
+end
+)LUA");
+        tk::write_file(repo / "pkgs/z/zz.lua", R"LUA(
+package = { spec = '1', name = 'zz', archs = {'x86_64', 'aarch64'}, programs = {'zz'},
+            xpm = { linux = { deps = {'fixture:libr@2.0.0'}, ['1.0.0'] = {} } } }
+import('xim.libxpkg.pkginfo')
+import('xim.libxpkg.xvm')
+function install()
+    local dir = pkginfo.install_dir()
+    os.mkdir(path.join(dir, 'bin'))
+    io.writefile(path.join(dir, 'bin', 'zz'), '#!/bin/sh\nexit 0\n')
+    return true
+end
+function config()
+    xvm.add('zz', {bindir = path.join(pkginfo.install_dir(), 'bin')})
+    return true
+end
+)LUA");
+        tk::write_file(repo / "pkgs/t/t-zz.lua", template_recipe("t-zz",
+            Json{{"subos_kind", "rootfs"}, {"packages", {"fixture:libr@2.0.0", "fixture:zz@1.0.0"}},
+                 {"workspace", Json::object()}}));
+    });
+    const auto bwrap = home.dir() / "data/xpkgs/xim-x-bwrap/0.11.2/bin/bwrap";
+    tk::write_file(bwrap, "#!/bin/sh\nexit 0\n");
+    fs::permissions(bwrap, fs::perms::owner_all | fs::perms::group_read | fs::perms::group_exec);
+    const std::map<std::string, std::string> env{{"XLINGS_TOOLS_SEARCH", "home"}};
+    for (const auto* t : {"fixture:libr@1.0.0", "fixture:libr@2.0.0", "fixture:zz@1.0.0"}) {
+        auto r = home.xlings({"install", t, "-y"}, env);
+        ASSERT_EQ(r.exit_code, 0) << t << "\n" << r.transcript();
+    }
+    const auto store = home.dir() / "data/xpkgs";
+    const auto record = store / "fixture-x-zz/1.0.0/.xlings-resolution.json";
+    // As a client of the old runtime recorded it: linked against libr 1.0.0.
+    auto old_record = [&] {
+        auto doc = Json::parse(tk::read_file(record));
+        doc["deps"][0]["version"] = "1.0.0";
+        doc["deps"][0]["install_dir"] = (store / "fixture-x-libr/1.0.0").string();
+        doc["deps"][0]["libdirs"] = Json::array({(store / "fixture-x-libr/1.0.0/lib").string()});
+        tk::write_file(record, doc.dump(2));
+    };
+
+    // default still uses zz with libr 1.0.0: a conflict, said before anything is made.
+    old_record();
+    ASSERT_EQ(home.xlings({"use", "libr", "1.0.0"}, env).exit_code, 0);
+    auto refused = home.xlings({"subos", "new", "conflict", "--from", "fixture:t-zz@1.0.0", "-y"}, env);
+    EXPECT_NE(refused.exit_code, 0) << refused.transcript();
+    EXPECT_NE(refused.transcript().find("which subos 'default' still uses"), std::string::npos)
+        << refused.transcript();
+    EXPECT_NE(Json::parse(tk::read_file(record))["deps"][0]["version"], "2.0.0");
+
+    // default has moved to 2.0.0: zz is rebuilt against it, in place.
+    ASSERT_EQ(home.xlings({"use", "libr", "2.0.0"}, env).exit_code, 0);
+    auto made = home.xlings({"subos", "new", "box", "--from", "fixture:t-zz@1.0.0", "-y"}, env);
+    EXPECT_EQ(made.exit_code, 0) << made.transcript();
+    EXPECT_NE(made.transcript().find("built against libr 1.0.0"), std::string::npos) << made.transcript();
+    EXPECT_EQ(Json::parse(tk::read_file(record))["deps"][0]["version"], "2.0.0") << made.transcript();
+}
+
+// What `luban new` says (Luban design 2026-10-12 §5): the edition once, not
+// one `[1/1] installed` per template; a package whose dependency failed is
+// one line under the cause, not an error each; an unfinished environment is
+// finished by running the same command again -- never by a pasted
+// `xlings install` of every package.
+XTEST(SubosNewTemplate, TheEditionIsOneLineAndTheSameCommandFinishesWhatFailed,
+      .area = "subos", .cost = tk::Cost::Medium,
+      .covers = {"LUBAN-NEW-OUTPUT", "LUBAN-NEW-RERUN"}, .requires_ = {"linux", "xlings-bin"}) {
+    if constexpr (!tk::is_linux) GTEST_SKIP() << "a rootfs SubOS is a Linux root";
+    fs::path gate;
+    auto home = fixture_home("subos-new-rerun", [&](const fs::path& repo) {
+        gate = repo.parent_path() / "base-fails";
+        tk::write_file(repo / "pkgs/b/base.lua", std::format(R"LUA(
+package = {{ spec = '1', name = 'base', archs = {{'x86_64', 'aarch64'}}, programs = {{'base'}},
+            xpm = {{ linux = {{ ['1.0.0'] = {{}} }} }} }}
+import('xim.libxpkg.pkginfo')
+import('xim.libxpkg.xvm')
+function install()
+    if os.isfile('{}') then error('base cannot be built here') end
+    os.mkdir(path.join(pkginfo.install_dir(), 'bin'))
+    io.writefile(path.join(pkginfo.install_dir(), 'bin', 'base'), '#!/bin/sh\n')
+    return true
+end
+function config()
+    xvm.add('base', {{bindir = path.join(pkginfo.install_dir(), 'bin')}})
+    return true
+end
+)LUA", gate.generic_string()));
+        for (const auto* top : {"onbase-a", "onbase-b"}) {
+            tk::write_file(repo / "pkgs/o" / std::format("{}.lua", top), std::format(R"LUA(
+package = {{ spec = '1', name = '{}', archs = {{'x86_64', 'aarch64'}},
+            xpm = {{ linux = {{ deps = {{'fixture:base'}}, ['1.0.0'] = {{}} }} }} }}
+import('xim.libxpkg.pkginfo')
+function install()
+    os.mkdir(path.join(pkginfo.install_dir(), 'share'))
+    io.writefile(path.join(pkginfo.install_dir(), 'share', 'x'), 'x')
+    return true
+end
+)LUA", top));
+        }
+        tk::write_file(repo / "pkgs/t/t-rerun.lua", template_recipe("t-rerun",
+            Json{{"subos_kind", "rootfs"}, {"from", "fixture:t-base@1.0.0"},
+                 {"packages", {"fixture:onbase-a@1.0.0", "fixture:onbase-b@1.0.0"}},
+                 {"workspace", Json::object()}}));
+    });
+    const auto bwrap = home.dir() / "data/xpkgs/xim-x-bwrap/0.11.2/bin/bwrap";
+    tk::write_file(bwrap, "#!/bin/sh\nexit 0\n");
+    fs::permissions(bwrap, fs::perms::owner_all | fs::perms::group_read | fs::perms::group_exec);
+    const std::map<std::string, std::string> env{{"XLINGS_TOOLS_SEARCH", "home"}};
+    const std::vector<std::string> make{"subos", "new", "dev", "--from", "fixture:t-rerun@1.0.0", "-y"};
+
+    tk::write_file(gate, "1");
+    auto failed = home.xlings(make, env);
+    const auto out = failed.transcript();
+    EXPECT_NE(failed.exit_code, 0) << out;
+    EXPECT_NE(out.find("from fixture:t-rerun@1.0.0 <- fixture:t-base@1.0.0"), std::string::npos) << out;
+    EXPECT_EQ(out.find("installed fixture:t-"), std::string::npos) << "a template is plumbing\n" << out;
+    EXPECT_EQ(out.find("root generation"), std::string::npos) << out;
+    EXPECT_NE(out.find("base cannot be built here"), std::string::npos) << out;
+    EXPECT_NE(out.find("2 package(s) not installed because fixture:base@1.0.0 failed"), std::string::npos) << out;
+    EXPECT_EQ(count(out, "its dependency"), 0u) << "the cascade is one line\n" << out;
+    EXPECT_NE(out.find("the same command again finishes it"), std::string::npos) << out;
+    EXPECT_EQ(out.find("xlings install -y --subos"), std::string::npos) << out;
+
+    // Another edition under the same name is not a re-run.
+    auto other = home.xlings({"subos", "new", "dev", "--from", "fixture:t-top@1.0.0", "-y"}, env);
+    EXPECT_NE(other.exit_code, 0) << other.transcript();
+    EXPECT_NE(other.transcript().find("was being made from fixture:t-rerun@1.0.0"), std::string::npos)
+        << other.transcript();
+
+    fs::remove(gate);
+    auto finished = home.xlings(make, env);
+    EXPECT_EQ(finished.exit_code, 0) << finished.transcript();
+    EXPECT_NE(finished.transcript().find("finishing 'dev'"), std::string::npos) << finished.transcript();
+    const auto instance = Json::parse(tk::read_file(home.dir() / "config/subos/dev/instance.json"));
+    EXPECT_FALSE(instance.contains("making")) << instance.dump();
+    EXPECT_EQ(instance["edition"]["ref"], "fixture:t-rerun@1.0.0") << instance.dump();
+    EXPECT_EQ(instance["edition"]["packages"]["fixture:onbase-a"], "1.0.0") << instance.dump();
 }

@@ -181,13 +181,24 @@ xlings subos exec dev-latest -- gcc --version    # 16.1.0
 - `--all` — every installed version of it
 - `--all-subos` — in every SubOS that has it
 - `--subos <NAME>` — in that SubOS
+- `--older-than <VERSION>` — every version older than that one that nothing
+  uses, in every SubOS (`--dry-run` lists them)
 
 ```bash
 xlings remove gcc --all-subos
 xlings remove gcc --subos probe
+xlings remove mcpp --older-than 2026.10.1 --dry-run
 ```
 
-A payload another environment still uses is kept.
+A payload another environment still uses is kept. `--older-than` lists what it
+removes (with sizes) and what it keeps and why — active in a SubOS or a project,
+the xlings that is running, linked by another package — then asks once.
+
+A version is refused only when removing it breaks a package that depends on it:
+one linked against that payload, or one that runs its programs and would have no
+installed version left that meets its constraint. One that only runs the program
+and still has another version is told which version stays. `--force` removes it
+anyway.
 
 ## Platforms
 

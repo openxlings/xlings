@@ -1661,6 +1661,27 @@ std::expected<void, std::string> rmw_home_config_locked_(
     } catch (...) { return {}; }
 }
 
+[[nodiscard]] nlohmann::json Config::recorded_upgrade() {
+    namespace fs = std::filesystem;
+    auto configPath = instance_().paths_.homeDir / ".xlings.json";
+    if (!fs::exists(configPath)) return nlohmann::json::object();
+    try {
+        auto json = nlohmann::json::parse(platform::read_file_to_string(configPath.string()), nullptr, false);
+        if (json.is_discarded() || !json.is_object()) return nlohmann::json::object();
+        auto it = json.find("upgrade");
+        return it != json.end() && it->is_object() ? *it : nlohmann::json::object();
+    } catch (...) { return nlohmann::json::object(); }
+}
+
+std::expected<void, std::string> Config::record_upgrade(const nlohmann::json& record) {
+    auto& self = instance_();
+    auto configPath = self.paths_.homeDir / ".xlings.json";
+    return rmw_home_config_locked_(self.paths_.homeDir, configPath, [&](nlohmann::json& json) {
+        json["upgrade"] = record;
+        return true;
+    });
+}
+
 std::expected<void, std::string>
 Config::record_client_version(const std::string& version) {
     auto& self = instance_();

@@ -11,7 +11,7 @@ import xlings.core.version_order;
 // The local index used to be a write-only drawer: `config --add-xpkg` copied
 // a recipe in, and nothing after that could say what was in there, where it
 // came from, or whether the synced index had already caught up with it. On
-// the maintainer's own machine 159 recipes had accumulated this way, 157 of
+// one home in long use 159 recipes had accumulated this way, 157 of
 // them byte-identical to what `xim` now ships — every one of them a bare
 // name that resolves ambiguously and prints a namespace-priority warning,
 // with no command to find out why or clean it up.

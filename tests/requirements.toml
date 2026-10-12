@@ -872,3 +872,63 @@ status = "required"
 [XVM-PROJECTION-DELTA]
 text = "a change to a scope's activation (use, a registration, a removal) materialises the names that move and nothing else: the cost of switching one package does not grow with the SubOS"
 status = "required"
+
+# ── remove: versions (2026.10.12.2) ─────────────────────────────────
+
+[XIM-REMOVE-GUARD-VERSION]
+text = "removing a version is refused only when it breaks a dependent: one that links that payload, or runs its programs and has no other installed version meeting its constraint"
+status = "required"
+
+[XIM-REMOVE-OLDER-THAN]
+text = "remove <name> --older-than V removes every older version nothing uses, keeps (and says why) what is active in a subos or project or linked, asks first, and --dry-run changes nothing"
+status = "required"
+
+[UX-THEME-ONCE]
+text = "a configured theme that cannot be used is reported once per setting and cause, and never inside a SubOS view or a Luban root, where the default is used silently"
+status = "required"
+
+[SES-TTY-JOBCTL]
+text = "a command on a terminal whose foreground is another process group (a background job, a brokered command on a session's terminal) never changes the terminal's modes, so the kernel never stops it -- nor `luban enter` with it"
+status = "required"
+
+[UPGRADE-OLD-HOME-LUBAN]
+text = "an environment made from an edition on a home an older client filled (payloads without resolution records, or recorded against another runtime) is made without failures: the plan migrates the record or reinstalls the payload, and never asks the user to run --reconfig"
+status = "required"
+
+[SUBOS-OWN-HOME-INSIDE]
+text = "inside a sandbox, a command for a home the sandbox owns (XLINGS_HOME it can write, e.g. mcpp's registry) runs there; only the session's read-only home goes to the broker or is owner-only"
+status = "required"
+
+[PERF-LARGE-HOME]
+text = "in a home of thousands of targets and several known projects, use / install --use / remove / remove --older-than / list / self doctor of one package stay within their budgets: their cost is what the change moves, not what the home holds"
+status = "required"
+
+[LUBAN-NEW-OUTPUT]
+text = "luban new / subos new --from names the edition and its chain once, prints no per-template or per-generation lines, and reports packages that failed only because a dependency did as one line under that cause"
+status = "required"
+
+[LUBAN-NEW-RERUN]
+text = "an environment a failure left unfinished is finished by running the same luban new / subos new --from again; another edition under the same name is refused with the command that finishes it"
+status = "required"
+
+# ── upgrade and fault isolation (docs/specs/upgrade-and-compatibility.md) ──
+
+[UPGRADE-LADDER]
+text = "the first command of a new client runs the home's upgrade steps by itself, records {from, to, pending} and logs/upgrade.ndjson, and says nothing when nothing is pending"
+status = "required"
+
+[UPGRADE-PENDING-ONCE]
+text = "what the upgrade cannot do by itself is said once, by the command that found it, each item with the command that does it; the command asked for still runs"
+status = "required"
+
+[UPGRADE-DOWNGRADE]
+text = "a client older than the one that last upgraded the home changes no record and says how to go back to the newer one"
+status = "required"
+
+[FAULT-HOME-CONFIG]
+text = "a home config that is not readable JSON, or a field of the wrong shape, is named by every command with its fix; self doctor reports it; --fix keeps the file and rebuilds the version records and the SubOS registry"
+status = "required"
+
+[FAULT-ISOLATION]
+text = "an unreadable SubOS state stops nothing else: the other SubOS and the commands that do not need it carry on"
+status = "required"

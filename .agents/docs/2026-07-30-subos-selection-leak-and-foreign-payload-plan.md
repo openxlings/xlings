@@ -46,7 +46,7 @@
 
 ```json
 "g++": { "versions": { "16.1.0": {
-    "alias": ["g++ --sysroot=/home/speak/.xlings/subos/dev-hello"] }}}
+    "alias": ["g++ --sysroot=~/.xlings/subos/dev-hello"] }}}
 ```
 
 `gcc` / `cc` / `c++` / `x86_64-linux-gnu-{gcc,g++,c++}` 的 15.1.0 与 16.1.0 全是这一条。而同一文件里：
@@ -561,7 +561,7 @@ mcpplibs/libxpkg           不需要改动             ← 方案 2 相对方案
 2. pkgindex 的 B-2/B-3 合并后，CI 仍会拉到**旧索引产物**一段时间（memory `reference_index_publish_lag`）—— 此期间 llvm 相关失败可能是陈旧索引而非新 bug，不要据此回滚。
 3. 若希望 xlings CI 立刻验证新 `llvm.lua`，需同步 bump **6 个 workflow 的 `XIM_PKGINDEX_REF`**（memory `project_ci_index_ref_pin`）。
 4. fresh-install CI 的 llvm 单元格目前是**已知红**（memory `project_fresh_install_ci`）；B-2 可能改变其表现，判读时以"是否仍是同一原因"为准。
-5. PR 合并用 Sunrisepeak 账号 squash + `--admin`（memory `feedback_merge_as_sunrisepeak_bypass_squash`）。
+5. PR 合并用有合并权限的账号 squash + `--admin`（合并约定：bypass squash）。
 
 **建议开的 issue**（当前最大号 #453，下一个 ≈ #454）：①②③ 合一（A 族，引用 #408 作为上位设计）、④ 挂到 #419/#423、⑤ 单独一条（隔离泄漏）、⑥⑦⑧ 合一（B 族，引用 #447）、⑨ 单独一条。
 
@@ -760,7 +760,7 @@ probe，而 `current` 已经把同一个问题解决到"新客户端完全正确
 
 ```
 ~/.xlings/.xlings.json      versions."g++"."15.1.0".alias
-    = ["g++ --sysroot=/home/speak/.xlings/subos/default"]     ← per-subos 的值
+    = ["g++ --sysroot=~/.xlings/subos/default"]     ← per-subos 的值
 
 ~/.xlings/subos/default/.xlings.json
     = {"workspace": {...}}          ← 只有"哪个版本是活的"，没有 alias/envs/path

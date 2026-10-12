@@ -65,6 +65,9 @@ docs/
 - agent instructions or meta sections ("conventions for agents");
 - a stub left at an old path after a move.
 
+The first two hold everywhere in the repository, not only in docs/: AGENTS.md
+"Privacy", enforced by `tools/lint_privacy.sh`.
+
 ## Checks
 
 `tests/scripts/test_docs.py` (contract-scripts suite) checks the heading and

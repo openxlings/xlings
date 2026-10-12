@@ -232,6 +232,6 @@ int cmd_remove(const std::string& target, bool yes, EventStream&, bool force,
 
 - [ ] `mcpp build && mcpp test`;`bash tests/e2e/run_all.sh`;`/code-review` 自审一次,修掉发现。
 - [ ] `git push -u origin fix/robustness-usability-2026.9.12`;`gh pr create`(标题 `fix(remove,doctor,xim,hints): ... (2026.9.12.1)`,正文按 .agents/docs 惯例:改了什么、不变量、真机数字、留下的);等 6 个 workflow 全绿(fork 不需要 approval,本仓分支)。
-- [ ] 合并:按 memory `feedback_merge_as_sunrisepeak_bypass_squash`。
+- [ ] 合并:按合并约定 `feedback_merge_bypass_squash`。
 - [ ] 发布:`gh workflow run release.yml`(按 `.agents/docs/2026-09-06-release-2026.9.5.1-notes.md` 的步骤);release asset 一出即 `gtc` 补 gitcode(memory `project_ecosystem_release_chain`、`reference_gitcode_release_download_verify`),不等 mirror job;bump xim-pkgindex 的 xlings 条目(memory `project_release_cancel_recovery` 的手动 bump 配方)。
 - [ ] 真机验证(只读或隔离):`xlings config --mirror CN`;`xlings self update` 到 2026.9.12.1;`xlings self doctor` 的 "no package in any index provides" 计数(期望 3,与 `--deep` 一致);`xlings subos <name> --sandbox --cmd "gcc --version"`、`--cmd "python3 --version"` 等生态命令;`xlings config --list-xpkg` 看到 157 identical;写 `.agents/docs/2026-09-12-release-2026.9.12.1-notes.md`。

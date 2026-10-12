@@ -2,6 +2,7 @@ module xlings.core.xim.installer;
 
 import xlings.core.xim.lua_boundary;
 import std;
+import xlings.observe;
 import mcpplibs.xpkg;
 import mcpplibs.xpkg.loader;
 import mcpplibs.xpkg.compat;
@@ -2267,6 +2268,7 @@ bool process_xvm_operations_(const PlanNode& node, const std::filesystem::path& 
                                  ? Config::paths().homeDir / ".xlings.json"
                                  : Config::project_state_path();
     const auto workspacePath = Config::workspace_config_path(false);
+    observe::Timed publishTimed(node.name + " metadata (read, save, verify)");
     auto oldVersionDocument = home::read_json_for_update(versionPath);
     auto oldWorkspaceDocument = home::read_json_for_update(workspacePath);
     if (!oldVersionDocument || !oldWorkspaceDocument) {
@@ -2314,11 +2316,16 @@ bool process_xvm_operations_(const PlanNode& node, const std::filesystem::path& 
             log::error("root rollback refresh failed: {}", sync.root_error);
         return false;
     }
+    // One copy of the database and workspace for every effect: both are
+    // returned by value, and per effect that was a copy of the whole home's
+    // registrations for each program a package registers.
+    const auto effectDb = Config::versions();
+    const auto effectWorkspace = Config::workspace();
     for (const auto& effect : metadata->effects) {
         if (effect.kind != XpkgFilesystemEffectKind::ProgramShim)
             continue;
         const auto resolved =
-            resolve_xpkg_filesystem_effect(Config::versions(), Config::workspace(), effect);
+            resolve_xpkg_filesystem_effect(effectDb, effectWorkspace, effect);
         if (!resolved || !resolved->active || !xvm::is_xlings_binary(resolved->target))
             continue;
         const auto entry = Config::paths().homeDir / "bin" / ("xlings" + std::string(platform::exe_suffix));
@@ -2370,6 +2377,7 @@ bool run_config_hook_(const PlanNode& node, const std::filesystem::path& dataDir
     {
         HookHeartbeat_ heartbeat(onStatus, node.name, plan_key_(node),
                                  "config", ctx.hook_log);
+        observe::Timed timed(plan_key_(node) + " config hook");
         hookResult = executor.run_hook(mcpplibs::xpkg::HookType::Config, ctx);
     }
     const auto hookLog = std::exchange(ctx.hook_log, {});
@@ -3250,9 +3258,9 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& requested
         if (const auto revision = foreignPayload || borrowedPayload
                 ? RevisionVerdict{}
                 : payload_revision_verdict(ctx.install_dir, node.revision);
-            revision.stale) {
-            log::info("reinstalling {}@{}: {}",
-                      node.name, node.version, revision.reason());
+            revision.stale || (payloadInstalled && !node.rebindReason.empty())) {
+            log::info("reinstalling {}@{}: {}", node.name, node.version,
+                      revision.stale ? revision.reason() : node.rebindReason);
             auto aside = set_aside_payload(ctx.install_dir);
             if (!aside) {
                 const auto message = std::format(
@@ -3276,7 +3284,8 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& requested
         // takes every node down the path below, which is what every install
         // did before -- 89 nodes of config and ~85 s for an app that was
         // already installed, with nothing printed.
-        if (payloadInstalled && !reconfig && node.pkgType != 3 /* Config */) {
+        if (payloadInstalled && !reconfig && node.pkgType != 3 /* Config */
+            && !node.migrateRecord && node.rebindReason.empty()) {
             bool done = node.kind == DepKind::Build;
             if (!done) {
                 const auto verdict = configured_verdict(
@@ -3373,6 +3382,7 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& requested
             {
                 detail_::HookHeartbeat_ heartbeat(onStatus, node.name, planKey,
                                                   "install", ctx.hook_log);
+                observe::Timed timed(planKey + " install hook");
                 hookResult = executor.run_hook(
                     mcpplibs::xpkg::HookType::Install, ctx);
             }
@@ -3623,7 +3633,8 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& requested
             }
         }
 
-        if (!borrowedPayload && node.pkgType != 3 /* Config */ && (!payloadInstalled || reconfig)) {
+        if (!borrowedPayload && node.pkgType != 3 /* Config */
+            && (!payloadInstalled || reconfig || node.migrateRecord)) {
             if (auto evidence = detail_::save_resolution_(node, ctx); !evidence) {
                 log::error("failed to record resolution for {}: {}", node.name, evidence.error());
                 write_payload_failure_marker(ctx.install_dir, node.version, evidence.error());
@@ -3888,7 +3899,7 @@ std::expected<Installer::UninstallOutcome, std::string> Installer::uninstall(con
     // True when no index could resolve a recipe at all -- the version
     // record and its payload are the only evidence left, and removal has
     // to work from those instead of refusing (openxlings/xlings#578 and the
-    // maintainer's "remove --all --force must always work").
+    // rule that "remove --all --force must always work").
     bool recipeUnavailable = false;
     // The record's OWN provider/providerVersion (its bindingGroup, when it
     // has one) -- read here because there is no PackageMatch to derive it
@@ -3993,9 +4004,13 @@ std::expected<Installer::UninstallOutcome, std::string> Installer::uninstall(con
                              : xvm::strip_namespace(detachVersion));
 
     bool borrowedRemoval = false;
-    for (const auto& [registeredTarget, info] : Config::versions()) {
+    // One copy of the database for the whole scan. `Config::versions()`
+    // returns it by value, and asking it once per entry made this loop
+    // quadratic: 24 s of a `remove` on a home of 5,000 entries.
+    const auto versionDb = Config::versions();
+    for (const auto& [registeredTarget, info] : versionDb) {
         for (const auto& [key, data] : info.versions) {
-            const auto owner = xvm::recorded_owner(Config::versions(), registeredTarget, key);
+            const auto owner = xvm::recorded_owner(versionDb, registeredTarget, key);
             if (!owner || (owner->ns.empty() ? owner->package : owner->ns + ":" + owner->package) !=
                               executingProvider || owner->version != executingProviderVersion ||
                 data.sourceHome.empty())
@@ -4010,7 +4025,7 @@ std::expected<Installer::UninstallOutcome, std::string> Installer::uninstall(con
             if (!source)
                 return std::unexpected(source.error());
             auto proof = home::layers::plan_borrow_package(
-                *source, Config::versions(), executingProvider, executingProviderVersion);
+                *source, versionDb, executingProvider, executingProviderVersion);
             if (!proof || !*proof || (**proof).requestedPayload != physical->root)
                 return std::unexpected(proof ? "borrowed payload source no longer matches its evidence"
                                              : proof.error());

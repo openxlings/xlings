@@ -16,7 +16,7 @@ set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 tarball="" evidence="" index="" mirror="${HM_MIRROR:-GLOBAL}"
-scenarios="install doctor presets proxy clipboard edition agent upgrade terminal"
+scenarios="install doctor presets proxy clipboard edition agent upgrade terminal oldhome"
 user="${HM_USER:-hm}"
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -81,7 +81,7 @@ setup_done=""
 for s in $scenarios; do
     echo "== $s"
     attempt() {
-        as_user env HM_EVIDENCE="$work/evidence" HM_STATE="$work/state" HM_PYTHON="$py" ${setup_done:+HM_SETUP_DONE=1} \
+        as_user env HM_EVIDENCE="$work/evidence" HM_STATE="$work/state" HM_PYTHON="$py" HM_MIRROR="$mirror" ${setup_done:+HM_SETUP_DONE=1} \
             bash "$work/suite/scenarios/$s.sh"
     }
     set +e; attempt; rc=$?; set -e

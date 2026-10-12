@@ -3,7 +3,7 @@
 > 2026-08-09 · 基线:**v2026.8.9.2**(origin/main @ f203b6b,本地树与其零 diff)
 > 方法:44 条 open issue 按子系统分 8 域并行调查(读全文+全部评论 → 在当前树核实代码路径 → 分类);
 > 全部 25 个关闭决定的承重证据(commit / file:line / CI run / 线上探测 / 外部仓库事实)在主线**逐条二次复核**后才执行。
-> 处置(以 speak-agent 账号执行):关闭 25 条(13 completed + 12 not planned,其中 3 条为合并)、
+> 处置(以一个 agent 账号执行):关闭 25 条(13 completed + 12 not planned,其中 3 条为合并)、
 > 在 3 个合并目标上留合并说明、新开汇总帖 **#517** 承接关闭说明与残留清单。
 
 ---
@@ -33,7 +33,7 @@
 | #45 | semver 模块请求(2024-12) | `src/core/semver.cppm`(#289 引入;2913a09 = v2026.8.9.2 通用化为 N 段+字母段+单比较子);`resolver.cppm:47,60` 生产消费;`tests/unit/test_semver.cpp` |
 | #48 | OS/架构对安装的影响(2024-12) | 配方 `xpm.{linux,macosx,windows}` + per-arch 资源表;`compatibility.cppm`(ArchEvidence 模型);`resolver.cppm:155-164` 与 `installer.cppm:2298-2307` 双处 fail-closed;OS 版本差异由自包含 payload + subos runtime 绑定(C1,054be37)消化 |
 | #55 | 结构统一提案(2024-12,英文) | MC++ 重写(4adfd9c)交付了提案分层:src/cli、src/runtime、src/core/{config,xim,xvm,subos};`remove` vs `self uninstall` 歧义已解(spec.cppm:53,78) |
-| #58 | 指定依赖安装目录(2024-12) | 单根模型:`config.cppm:638` `dataDir = homeDir/"data"`;整根经 XLINGS_HOME 重定位;维护者当年宣布的方案形态即现状 |
+| #58 | 指定依赖安装目录(2024-12) | 单根模型:`config.cppm:638` `dataDir = homeDir/"data"`;整根经 XLINGS_HOME 重定位;当年宣布的方案形态即现状 |
 | #102 | fix 自动修复命令(2025-06) | `xlings self doctor --fix`(spec.cppm:84;doctor.cppm detect→repair→re-detect 收敛;e2e doctor_fix_convergence);mongodb 式外部 runbook 未采用→记 #517 残留 |
 | #130 | 安装路径自定义(2026-02) | `config.cppm:553-563` XLINGS_HOME 最高优先;`install.cppm:203-219`「显式目标即权威(含首装)」(0c362cf,v2026.8.3.1);quick_install 零 sudo;e2e fresh_xlings_home 双平台 |
 | #155 | CentOS7 装 gcc 找不到命令(2026-02) | 根因是当时索引 linux gcc 委托 musl-gcc 只注册 musl- 前缀;xim-pkgindex#56(4e6d7634,实测确touch gcc.lua)换真实 glibc 预构建 + programs={gcc,g++,c++};fresh-install CI CentOS 7 cell 持续绿(run 31277647290) |
@@ -49,7 +49,7 @@
 | # | 判据 |
 |---|---|
 | #16 #21 #96 | d2x 教学模块(run 命令 / LLM 提示 / 编辑器)随 4adfd9c(2026-02 MC++ 重写)整体移出;后继 d2learn/d2x 已有 editor.cppm/assistant.cppm(实测在);编辑器本身在 xlings 是普通包 |
-| #54 | 架构走了提案的反方向:自持安装 + xvm shim + SubOS;pm 封装层已删(src 零命中);thread 内维护者已表态「xvm shouldnt process system's package-manager directly」「系统 PM 不支持多版本(core reason)」 |
+| #54 | 架构走了提案的反方向:自持安装 + xvm shim + SubOS;pm 封装层已删(src 零命中);thread 内已表态「xvm shouldnt process system's package-manager directly」「系统 PM 不支持多版本(core reason)」 |
 | #104 | PR #105 的宿主 PATH 探测(code@system)未随重写保留;现行自包含口径下「下载自己的副本」是设计行为;恢复路径(code.lua installed() 钩子)记 #517 残留 |
 | #37 | 底层痛点(清单/干净卸载/更新)已由 self uninstall/update + 单根解决;AUR 在树内但 PKGBUILD 停 0.4.14、release 无自动 bump;渠道扩展记 #517 残留 |
 | #29 | 包名层模糊纠正已存在(commands.cppm:335-360);命令层 did-you-mean 记 #517 残留(cli.cppm:916-928 编辑距离即可) |

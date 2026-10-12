@@ -111,6 +111,11 @@ std::optional<bool> query_terminal_is_light() {
         int fd = ::open("/dev/tty", O_RDWR | O_NOCTTY);
         if (fd < 0) return std::nullopt;
         struct CloseGuard { int fd; ~CloseGuard() { ::close(fd); } } _g{fd};
+        // Not the terminal's foreground (a background job, or a command the
+        // SubOS broker runs on a session's terminal): changing its modes
+        // below would stop this whole process group with SIGTTOU -- and with
+        // it whatever started it (`luban enter`).
+        if (::tcgetpgrp(fd) != ::getpgrp()) return std::nullopt;
 
         struct termios saved{};
         if (::tcgetattr(fd, &saved) != 0) return std::nullopt;

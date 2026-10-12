@@ -36,6 +36,7 @@ import xlings.carrier;
 import xlings.carrier.wsl2;
 import xlings.subos.userdata;
 import xlings.subos.persona;
+import xlings.subos.edition;
 import xlings.platform.stream;
 
 namespace xlings::subos::sandbox {
@@ -679,10 +680,27 @@ int enter(const std::string& name, EventStream& stream, const EnterOptions& opts
     request.explicit_env = opts.env;
     request.cwd = opts.cwd;
     if (opts.detached) request.interactive = false;
+    std::string edition;
     if (rootfs) {
         request.root = subos_root::tree_of(p.homeDir, name);
         if (!cmd.empty()) request.argv = {"/bin/sh", "-c", cmd};
-        request.shell = "/bin/sh";
+        // The root's own shell: bash where the edition brings it (core,
+        // agent-workspace), sh otherwise (tiny, nano). A link into a payload
+        // counts; whether its target resolves from here does not matter.
+        std::error_code sec;
+        request.shell = fs::symlink_status(request.root / "usr" / "bin" / "bash", sec).type()
+                                != fs::file_type::not_found
+                            ? "/bin/bash" : "/bin/sh";
+        if (fs::is_regular_file(home.instance_file(name), sec)) {
+            auto doc = nlohmann::json::parse(
+                platform::read_file_to_string(home.instance_file(name).string()), nullptr, false);
+            if (!doc.is_discarded())
+                if (auto rec = subos::edition::read(doc)) edition = rec->ref;
+        }
+        // Where you are, in the prompt: sh and bash read PS1 from the
+        // environment (bash's own default would otherwise be `bash-5.2#`).
+        if (cmd.empty() && opts.argv.empty())
+            request.explicit_env.try_emplace("PS1", std::format("[luban:{}] \\w \\$ ", name));
     }
 
     // A neutral identity is a persona (Luban design §C4): the same host name
@@ -911,6 +929,7 @@ int enter(const std::string& name, EventStream& stream, const EnterOptions& opts
 
         payload["backend"] = backend_name;
         payload["shell"] = request.shell;
+        if (!edition.empty()) payload["edition"] = edition;
         payload["storage"] = storage_to_string_(storage);
         if (opts.announce) stream.emit(DataEvent{"subos_entering", payload.dump()});
         std::fflush(nullptr);
@@ -1397,6 +1416,17 @@ int prepare_root_host(bool yes, EventStream& stream) {
     const auto home = subos::home_view();
     const auto ports = subos::make_ports(stream);
     auto candidates = caps::bwrap_candidates(home, ports);
+    if (candidates.empty()) {
+        // No bwrap at all. It is a package (T1) and a root cannot do without
+        // it -- not to enter, and not to make its loader cache, which failed
+        // half-way through an edition's install on a home that had none --
+        // so it is installed now, before the edition's download, the way
+        // `luban try` installs its emulator.
+        log::info("a root needs bwrap: installing xim:bwrap first");
+        const std::vector<std::string> bwrap{"xim:bwrap"};
+        if (xim::cmd_install_step(bwrap, {}, stream, /*plumbing=*/true) == 0)
+            candidates = caps::bwrap_candidates(home, ports);
+    }
     std::ifstream sysctl("/proc/sys/kernel/apparmor_restrict_unprivileged_userns");
     std::string restricted;
     std::getline(sysctl, restricted);

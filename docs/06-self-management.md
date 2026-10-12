@@ -12,15 +12,29 @@ a command starts failing strangely, start here.
 xlings self update
 ```
 
-It refreshes the indexes and installs the newest xlings as a package. A home
-whose packages an older client registered may print:
+It refreshes the indexes and installs the newest xlings as a package. The first
+command of the new version that changes the home then upgrades it by itself,
+once that command has succeeded: it checks the
+home config, rebuilds the command routes and checks the home the way
+`self doctor` does. When all of that worked, it says nothing. What it could not
+do by itself it says once, with the command for each:
 
 ```text
-packages installed by the previous client may still be registered in its format
-  run  xlings self doctor --fix
+[warn] xlings 2026.10.12.2 (from 2026.10.11.1): 1 thing(s) in this home need a step it could not take by itself
+         needs   subos 'other' has an unreadable @xlings/subos/other/.xlings.json
+         run     xlings self doctor --fix
 ```
 
-That is not an error: one `--fix` migrates the records and the line goes away.
+Going back is one command while the previous version is installed:
+
+```bash
+xlings use xlings 2026.10.11.1
+```
+
+When `self update` itself cannot work, it says what to try: the other mirror
+(`xlings config --mirror CN`), or the install script, which installs over the
+home and keeps everything in it. The rules are in
+[Upgrade and compatibility](specs/upgrade-and-compatibility.md).
 
 ## Check
 

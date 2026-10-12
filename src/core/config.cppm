@@ -11,7 +11,7 @@ import xlings.core.home;
 namespace xlings {
 
 export struct Info {
-    static constexpr std::string_view VERSION = "2026.10.12.1";
+    static constexpr std::string_view VERSION = "2026.10.12.2";
     static constexpr std::string_view REPO = "https://github.com/openxlings/xlings";
 };
 
@@ -762,6 +762,12 @@ public:
     // version forever. The field is what tells a user their packages predate
     // their client, so a stale one is worse than none.
     [[nodiscard]] static std::string recorded_client_version();
+
+    // The home's upgrade record (xself::upgrade): `{from, to, at, pending}`,
+    // written once per client version by the first command it runs. Empty
+    // object when there is none or the file cannot be read.
+    [[nodiscard]] static nlohmann::json recorded_upgrade();
+    static std::expected<void, std::string> record_upgrade(const nlohmann::json& record);
 
     // Read-modify-write of the single field, deliberately: the file also
     // holds the xvm versions DB and the user's config, and this is called

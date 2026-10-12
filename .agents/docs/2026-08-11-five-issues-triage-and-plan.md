@@ -1,6 +1,6 @@
 # #532 / #534 / #537 / #540 / #541 深度分诊:两个根因,一个假问题
 
-> 全部结论在 2026-08-11 于**用户真实 home**(`/home/speak/.xlings`,124 包 / NVIDIA
+> 全部结论在 2026-08-11 于**用户真实 home**(`~/.xlings`,124 包 / NVIDIA
 > RTX 4080 / 550.144.03 / X11)上实测复现,客户端 `2026.8.10.5`(分支
 > `fix/doctor-hang-and-537`,PR #538 未合并;已发布最新版仍是 `2026.8.10.4`)。
 >
@@ -113,7 +113,7 @@ COLLECT_GCC_OPTIONS='--sysroot=' ...        ← 空值,不是标记字面量
 
 ```console
 $ xlings subos use default --cmd 'echo "sysroot=[$(gcc -print-sysroot)]"; gcc -o /tmp/v /tmp/v.c && /tmp/v'
-sysroot=[/home/speak/.xlings/subos/default]
+sysroot=[~/.xlings/subos/default]
 BUILD+RUN OK
 ```
 

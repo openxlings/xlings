@@ -35,6 +35,7 @@ commands = [
   "bash tools/lint_tool_resolve.sh",
   "bash tools/lint_host_deps.sh",
   "bash tools/lint_tools_provenance.sh",
+  "bash tools/lint_privacy.sh",
 ]
 
 # The end-to-end shell suite against a release tarball.

@@ -195,6 +195,36 @@ void trace(std::string_view category, std::string_view message) {
     std::cerr << "[trace:" << category << "] " << message << '\n';
 }
 
+struct TimedWatch {
+    std::mutex m;
+    std::condition_variable cv;
+    bool done { false };
+    std::thread thread;
+};
+
+Timed::Timed(std::string phase, std::string announce)
+    : phase_(std::move(phase)), start_(std::chrono::steady_clock::now()) {
+    if (announce.empty()) return;
+    watch_ = std::make_shared<TimedWatch>();
+    watch_->thread = std::thread([w = watch_, text = std::move(announce)] {
+        std::unique_lock lock(w->m);
+        if (!w->cv.wait_for(lock, std::chrono::seconds(2), [&] { return w->done; }))
+            std::cerr << "[xlings] " << text << "...\n";
+    });
+}
+
+Timed::~Timed() {
+    if (watch_) {
+        { std::lock_guard lock(watch_->m); watch_->done = true; }
+        watch_->cv.notify_all();
+        if (watch_->thread.joinable()) watch_->thread.join();
+    }
+    if (!trace_enabled("timing")) return;
+    const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - start_).count();
+    std::cerr << "[trace:timing] " << phase_ << " " << ms << " ms\n";
+}
+
 }  // namespace xlings::observe
 
 namespace xlings::observe::destructive {

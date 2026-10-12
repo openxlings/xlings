@@ -127,8 +127,8 @@ NSS `user.name`、UTF-8 全过。**所以不是"能用/不能用",是"无头能�
 ```
 $ <我们的 ld.so> --library-path <jdk>:<glibc> java -XshowSettings:properties -version
     os.name   = Linux
-    user.name = speak          ← getpwuid 通过 libnss_files,成功
-    user.home = /home/speak
+    user.name = user          ← getpwuid 通过 libnss_files,成功
+    user.home = /home/user
 ```
 
 四个包的完整测量(全部 ELF,不只启动器):
@@ -337,7 +337,7 @@ G3(规范,最便宜) → G1(差分,挡住核心缺陷类) → G5(裸依赖名)
 
 ```
 INTERP: <home>/data/xpkgs/xim-x-glibc/2.44/lib64/ld-linux-x86-64.so.2   ← 已切
-python 3.13.12 · ssl OpenSSL 3.5.5 · user = speak(NSS 通)· enc = utf-8
+python 3.13.12 · ssl OpenSSL 3.5.5 · user = user(NSS 通)· enc = utf-8
 ```
 
 **L0 llvm-tools** — 用改后的 recipe 真装:
@@ -353,12 +353,12 @@ RPATH **恰好等于声明的闭包**,一个不多一个不少。G1 对着 xling
 **沙箱内**(`xlings subos use l0check --sandbox --cmd ...`):
 
 ```
-py 3.13.12 ssl 3.5.5 user speak
+py 3.13.12 ssl 3.5.5 user user
 clangd 22.1.8 / clang-format 22.1.8 / clang-tidy 22.1.8
 ```
 
 **这一步差点变成假通过,值得记下来。**第一次跑沙箱,`python3 -c ...` 输出
-`py ok speak OpenSSL 3.0.13` —— 看着是过的,其实跑的是**宿主的 python**
+`py ok user OpenSSL 3.0.13` —— 看着是过的,其实跑的是**宿主的 python**
 (`/usr/bin/python3`,3.12.3)。因为 shim 没激活、PATH 落到 `/usr/bin`,而
 `--sandbox` 在这里并没有封掉 `/usr`。
 **断言"跑起来了"会通过;断言"跑的是谁"才不会。**
@@ -382,7 +382,7 @@ doctor 对两个 glibc 都报 `✓ nss resolution`。
 > 而真实 home 已经占着这些 shim 名字,xlings 于是拒绝写入**并且明确告诉了我**:
 >
 > ```
-> [warn] shim 'python3' owned by /home/speak/.xlings is also resolvable in
+> [warn] shim 'python3' owned by ~/.xlings is also resolvable in
 >        XLINGS_HOME=…; using the owner home
 > ```
 >

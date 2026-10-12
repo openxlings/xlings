@@ -241,4 +241,4 @@ xim-pkgindex 的角色从"版本数据库"变成"包元信息目录"，定位类
 
 ---
 
-> 这份文档归档自 2026-04-25 与 Sunrisepeak 在飞书群上的设计讨论。包含 Phase A 止血方案、Phase B/C 长期路线、以及当前 0.4.3 的人工 backfill 建议。后续如果 Phase A 落地，把对应的 issue/PR 号补到本文档。
+> 这份文档归档自 2026-04-25 的在飞书群上的设计讨论。包含 Phase A 止血方案、Phase B/C 长期路线、以及当前 0.4.3 的人工 backfill 建议。后续如果 Phase A 落地，把对应的 issue/PR 号补到本文档。

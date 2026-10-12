@@ -11,7 +11,7 @@
 # whatever the OLD registration named, and once that location is gone
 # (this fixture's install() wipes its own install dir before writing the
 # new layout -- a real reinstall-from-a-cleared-payload does the same),
-# the link is left dangling. Measured on the maintainer's real home:
+# the link is left dangling. Measured on a home in long use:
 # freetype's links were valid in 4 subos and dangling in 3.
 #
 # The fixture makes the rewrite deterministic: install() picks one of two
