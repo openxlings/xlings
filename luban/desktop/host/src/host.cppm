@@ -76,6 +76,17 @@ public:
     // Tests: what the window last drew, as BGRA rows.
     std::vector<std::uint8_t> read_pixels(int& width, int& height) const;
 
+    // Tests: input as SDL delivers it, so the window, imgui and the app all
+    // take it the way they take a person's. A key by name ("Down", "Return",
+    // "Escape", "F2", "Ctrl", "Alt", "Shift", "Super", or one character).
+    bool inject_key(std::string_view name, bool down);
+    void inject_text(std::string_view text);
+    void inject_pointer(float x, float y);
+    void inject_button(float x, float y, int button, bool down);
+    void inject_close();
+    void set_size(int width, int height);
+    std::string title() const;
+
 private:
     Window() = default;
     struct Impl;

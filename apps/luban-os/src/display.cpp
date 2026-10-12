@@ -72,10 +72,7 @@ std::unique_ptr<Display> Display::machine(const fs::path& home, const std::strin
 std::unique_ptr<Display> Display::sandbox(const fs::path& xlings, const fs::path& luban, const fs::path& home,
                                           const std::string& name, const std::string& session, const std::string& persist,
                                           opensal::Size size, std::function<void()> wake, std::string& error) {
-    namespace platform = xlings::platform;
-    auto to = platform::make_pipe(), from = platform::make_pipe();
-    if (!to || !from) { error = "no pipe for the desktop"; return nullptr; }
-    auto env = platform::environment();
+    auto env = xlings::platform::environment();
     env["XLINGS_HOME"] = home.string();
     env.erase("XLINGS_SUBOS_MODE");
     env.erase("XLINGS_ACTIVE_SUBOS");
@@ -89,7 +86,18 @@ std::unique_ptr<Display> Display::sandbox(const fs::path& xlings, const fs::path
     if (!persist.empty() && persist != "all") argv.insert(argv.end(), {"--persist", persist});
     argv.insert(argv.end(), {"--cmd", std::format("exec {} __desktop {} --size {}x{}", quoted(luban.string()),
                                                   quoted(session.empty() ? "-" : session), size.width, size.height)});
-    const int log = platform::open_for_append(home / "logs" / "luban-os.log");
+    return process(argv, std::move(env), home / "logs" / "luban-os.log", name, size, std::move(wake), error);
+}
+
+std::unique_ptr<Display> Display::process(const std::vector<std::string>& argv, std::map<std::string, std::string> env,
+                                          const fs::path& log_file, const std::string& name, opensal::Size size,
+                                          std::function<void()> wake, std::string& error) {
+    namespace platform = xlings::platform;
+    auto to = platform::make_pipe(), from = platform::make_pipe();
+    if (!to || !from) { error = "no pipe for the desktop"; return nullptr; }
+    std::error_code ec;
+    fs::create_directories(log_file.parent_path(), ec);
+    const int log = platform::open_for_append(log_file);
     const int pid = platform::fork_process();
     if (pid == 0) {
         platform::new_session();

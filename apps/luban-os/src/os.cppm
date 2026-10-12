@@ -110,6 +110,11 @@ public:
     static std::unique_ptr<Display> sandbox(const fs::path& xlings, const fs::path& luban, const fs::path& home,
                                             const std::string& name, const std::string& session, const std::string& persist,
                                             opensal::Size size, std::function<void()> wake, std::string& error);
+    // Any program whose standard input and output are opensal.wire (what a
+    // sandbox runs; tests run a desktop of their own the same way).
+    static std::unique_ptr<Display> process(const std::vector<std::string>& argv, std::map<std::string, std::string> env,
+                                            const fs::path& log, const std::string& name, opensal::Size size,
+                                            std::function<void()> wake, std::string& error);
     ~Display();
     void send(const opensal::Event& e);
     bool alive() const { return alive_; }

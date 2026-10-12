@@ -137,6 +137,8 @@ struct Window::Impl {
     std::uint32_t wake_event { 0 };
     bool ctrl_down { false }, alt_down { false }, chord_spoiled { false }, chord_armed { false };
     bool grabbed { false };
+    SDL_Keymod injected_mods { SDL_KMOD_NONE };
+    std::deque<std::string> injected_text;      // an SDL text event points at its text until it is taken
 };
 
 std::expected<std::unique_ptr<Window>, std::string> Window::open(const Options& o) {
@@ -331,6 +333,98 @@ void Window::update(Texture& t, const opensal::Rect& r, std::string_view rows) {
 void Window::destroy(Texture& t) {
     if (t.handle) SDL_DestroyTexture(static_cast<SDL_Texture*>(t.handle));
     t = {};
+}
+
+namespace {
+
+std::optional<std::pair<SDL_Keycode, SDL_Keymod>> key_named_(std::string_view n) {
+    static constexpr std::array<std::tuple<std::string_view, SDL_Keycode, SDL_Keymod>, 17> named{{
+        {"Down", SDLK_DOWN, SDL_KMOD_NONE}, {"Up", SDLK_UP, SDL_KMOD_NONE}, {"Left", SDLK_LEFT, SDL_KMOD_NONE},
+        {"Right", SDLK_RIGHT, SDL_KMOD_NONE}, {"Return", SDLK_RETURN, SDL_KMOD_NONE}, {"Enter", SDLK_RETURN, SDL_KMOD_NONE},
+        {"Escape", SDLK_ESCAPE, SDL_KMOD_NONE}, {"Tab", SDLK_TAB, SDL_KMOD_NONE}, {"Backspace", SDLK_BACKSPACE, SDL_KMOD_NONE},
+        {"Space", SDLK_SPACE, SDL_KMOD_NONE}, {"Home", SDLK_HOME, SDL_KMOD_NONE}, {"End", SDLK_END, SDL_KMOD_NONE},
+        {"Ctrl", SDLK_LCTRL, SDL_KMOD_LCTRL}, {"Alt", SDLK_LALT, SDL_KMOD_LALT}, {"Shift", SDLK_LSHIFT, SDL_KMOD_LSHIFT},
+        {"Super", SDLK_LGUI, SDL_KMOD_LGUI}, {"Delete", SDLK_DELETE, SDL_KMOD_NONE}}};
+    for (const auto& [name, key, mod] : named)
+        if (n == name) return std::pair{key, mod};
+    if (n.size() >= 2 && n.front() == 'F') {
+        int k = 0;
+        if (std::from_chars(n.data() + 1, n.data() + n.size(), k).ec == std::errc{} && k >= 1 && k <= 12)
+            return std::pair{static_cast<SDL_Keycode>(SDLK_F1 + (k - 1)), SDL_KMOD_NONE};
+    }
+    if (n.size() == 1) {
+        const char c = static_cast<char>(std::tolower(static_cast<unsigned char>(n[0])));
+        return std::pair{static_cast<SDL_Keycode>(c), SDL_KMOD_NONE};
+    }
+    return std::nullopt;
+}
+
+}  // namespace
+
+bool Window::inject_key(std::string_view name, bool down) {
+    auto k = key_named_(name);
+    if (!k) return false;
+    auto& im = *impl_;
+    if (k->second != SDL_KMOD_NONE)
+        im.injected_mods = static_cast<SDL_Keymod>(down ? (im.injected_mods | k->second) : (im.injected_mods & ~k->second));
+    SDL_Event e{};
+    e.type = down ? SDL_EVENT_KEY_DOWN : SDL_EVENT_KEY_UP;
+    e.key.windowID = SDL_GetWindowID(im.window);
+    e.key.key = k->first;
+    e.key.scancode = SDL_GetScancodeFromKey(k->first, nullptr);
+    e.key.mod = im.injected_mods;
+    e.key.down = down;
+    SDL_PushEvent(&e);
+    return true;
+}
+
+void Window::inject_text(std::string_view text) {
+    auto& im = *impl_;
+    im.injected_text.emplace_back(text);
+    if (im.injected_text.size() > 64) im.injected_text.pop_front();
+    SDL_Event e{};
+    e.type = SDL_EVENT_TEXT_INPUT;
+    e.text.windowID = SDL_GetWindowID(im.window);
+    e.text.text = im.injected_text.back().c_str();
+    SDL_PushEvent(&e);
+}
+
+void Window::inject_pointer(float x, float y) {
+    SDL_Event e{};
+    e.type = SDL_EVENT_MOUSE_MOTION;
+    e.motion.windowID = SDL_GetWindowID(impl_->window);
+    e.motion.x = x;
+    e.motion.y = y;
+    SDL_PushEvent(&e);
+}
+
+void Window::inject_button(float x, float y, int button, bool down) {
+    SDL_Event e{};
+    e.type = down ? SDL_EVENT_MOUSE_BUTTON_DOWN : SDL_EVENT_MOUSE_BUTTON_UP;
+    e.button.windowID = SDL_GetWindowID(impl_->window);
+    e.button.button = static_cast<std::uint8_t>(button);
+    e.button.down = down;
+    e.button.clicks = 1;
+    e.button.x = x;
+    e.button.y = y;
+    SDL_PushEvent(&e);
+}
+
+void Window::inject_close() {
+    SDL_Event e{};
+    e.type = SDL_EVENT_WINDOW_CLOSE_REQUESTED;
+    e.window.windowID = SDL_GetWindowID(impl_->window);
+    SDL_PushEvent(&e);
+}
+
+void Window::set_size(int width, int height) {
+    SDL_SetWindowSize(impl_->window, width, height);
+    SDL_SyncWindow(impl_->window);
+}
+
+std::string Window::title() const {
+    const char* t = SDL_GetWindowTitle(impl_->window);
+    return t ? t : "";
 }
 
 std::vector<std::uint8_t> Window::read_pixels(int& width, int& height) const {

@@ -1020,3 +1020,11 @@ status = "required"
 [LUBAN-BOOT-ENTRIES]
 text = "`luban boot` shows a machine's boot entries -- default, fallback, the next boot once -- and what this boot was (the entry, how it was chosen, whether it was marked good), as stage-0 recorded it"
 status = "required"
+
+[LUBAN-OS-INTERACTION]
+text = "the Luban OS window is used as a person uses it -- keys (arrows, Enter, F2, the Host key), the pointer, text, the window's size and close -- tested headless with input injected as the window system delivers it: every view is reached, the highlight follows the choice, a desktop gets its input in its own pixels"
+status = "required"
+
+[LUBAN-OS-LAYOUT]
+text = "every control of the Luban OS window is on screen, apart from the others and big enough to hit, at small, usual and large window sizes, in English and Chinese; what moves (the countdown) changes what is drawn; the screenshots are kept for people to look at"
+status = "required"

@@ -58,6 +58,13 @@ XTEST(OpsJournal, AnOperationIsOneFileItsChildrenJoin, .area = "self", .covers =
     EXPECT_EQ(text.find("secret"), std::string::npos) << "a credential reached the journal";
     EXPECT_NE(text.find("***@127.0.0.1"), std::string::npos) << text;
 
+    // A read-only command, or a dry run, changes nothing and records nothing
+    // of its own (it joins the operation it is a step of, above).
+    const auto before = journals(home).size();
+    EXPECT_EQ(home.xlings({"subos", "list"}).exit_code, 0);
+    (void)home.xlings({"self", "uninstall", "--dry-run"});
+    EXPECT_EQ(journals(home).size(), before) << "a read-only command or a dry run left a journal";
+
     auto listed = home.xlings({"self", "log"});
     EXPECT_EQ(listed.exit_code, 0) << listed.transcript();
     EXPECT_NE(listed.out.find("feedfacecafe"), std::string::npos) << listed.transcript();

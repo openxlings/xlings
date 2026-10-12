@@ -535,6 +535,16 @@ jobs:
             target/xdev/
           if-no-files-found: ignore
 
+      # The Luban OS window as its tests saw it (every view, three sizes,
+      # English and Chinese, a desktop and the Host key's menu): for people.
+      - name: Attach the Luban OS screenshots
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: luban-os-screenshots
+          path: target/xtest-artifacts/luban-os/
+          if-no-files-found: ignore
+
       - name: Require every static acceptance gate
         if: always()
         env:

@@ -1594,6 +1594,15 @@ std::vector<std::string> inject_omitted_values_(int argc, char* argv[]) {
     return out;
 }
 
+// A command that changes nothing in the home: a read-only one, or a dry run
+// (which says what would happen). It starts no journal and is not the first
+// command of an upgrade.
+bool changes_nothing_(std::span<const std::string_view> words) {
+    // `interface --version` is a program asking which protocol this is.
+    if (words.size() == 2 && words[0] == "interface" && words[1] == "--version") return true;
+    return home::is_read_only_command(words) || std::ranges::find(words, std::string_view("--dry-run")) != words.end();
+}
+
 // The environment's names an operation's journal keeps: what changes how
 // xlings behaves, never what a user's other programs keep there.
 std::vector<std::string> journal_env_names_() {
@@ -1864,8 +1873,15 @@ int dispatch_(int argc, char* argv[]) {
 
     // The operation journal (design §13): one file per operation, which
     // every process it runs appends to under the trace id it inherits.
-    if (!cmd.empty() && !(cmd == "self" && fargc > 2 && std::string_view(fargv[2]) == "log")) {
-        const char* inherited = std::getenv("XLINGS_TRACE_ID");
+    // A read-only command (a dry run among them) starts none of its own, and
+    // joins the one it is a step of.
+    const char* inherited = std::getenv("XLINGS_TRACE_ID");
+    std::vector<std::string_view> commandWords;
+    for (int i = 1; i < fargc; ++i)
+        if (!commandWords.empty() || !std::string_view(fargv[i]).starts_with("-")) commandWords.emplace_back(fargv[i]);
+    const bool joining = inherited && *inherited;
+    if (!cmd.empty() && !(cmd == "self" && fargc > 2 && std::string_view(fargv[2]) == "log")
+        && (joining || !changes_nothing_(commandWords))) {
         const auto trace = observe::ops::trace_from_environment();
         std::vector<std::string> words;
         bool agentFlag = false;
@@ -2551,7 +2567,7 @@ void after_command(int argc, char* argv[]) {
         }
         words.push_back(a);
     }
-    if (words.empty() || home::is_read_only_command(words)) return;
+    if (words.empty() || changes_nothing_(words)) return;
     const auto cmd = words[0];
     if (cmd == "self" || cmd == "interface" || (cmd == "config" && words.size() == 1)) return;
     // A session's exit code is the program's that ran in it, not a sign the

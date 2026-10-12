@@ -45,6 +45,38 @@ XTEST(SubosExec, ExitCodeIsTheCommands,
 - A failed test keeps its home and copies its config/logs/state to
   `target/xtest-artifacts/<Suite.Name>/`.
 
+## A window (the Luban OS app)
+
+A GUI is tested in two halves.
+
+**Automated, headless** (`tests/e2e/test_luban_os.cpp`). The app renders for
+real under SDL's offscreen driver, and `luban-os --script <file>` drives it
+between frames with input injected as SDL delivers a person's:
+
+- `key Down`, `key Ctrl+Alt` (held in order, released in reverse), `type text`
+- `click <anchor>`: a named control, clicked once it holds still
+- `resize W H`, `close`
+- `wait <view>`, `waitfor <path> <value>`, `expect <path> <value>`: the
+  state, where every named control was drawn included
+- `screenshot <file>` (`.ppm` to read, `.bmp` to look at)
+
+`--desktop-exec <program>` shows a program speaking opensal.wire on its
+stdio as a desktop, so a desktop's drawing and input are tested without a
+machine. The tests check:
+
+- what can be decided: every view reached by keys and pointer;
+- the highlight following the choice;
+- every control on screen, apart from the others and big enough to hit, at
+  three sizes in English and Chinese;
+- a desktop's pixels, its input in its own coordinates, and its size;
+- what moves changing between frames.
+
+**By eye, key frames.** Proportion, hierarchy, density and finish are judged
+by a person. The tests keep every key frame in
+`target/xtest-artifacts/luban-os/` (CI: the `luban-os-screenshots` artifact),
+and `python3 tools/luban_os_keyframes.py` puts them on one page. Look at it
+before a change to the window is merged.
+
 ## xdev
 
 ```bash
