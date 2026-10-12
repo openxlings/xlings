@@ -97,6 +97,37 @@ struct View {
     Hook map, unmap, commit, destroy, request_maximize, request_fullscreen, set_title;
 };
 
+// A client's text-input-v3 object, and what it says.
+struct TextInput {
+    wlr_text_input_v3* input { nullptr };
+    Hook enable, commit, disable, destroy;
+};
+
+// The window's clipboard text, offered to the clients as their selection.
+struct HostSelection {
+    wlr_data_source base;           // first: the wlr_data_source is the HostSelection
+    std::string text;
+};
+
+const wlr_data_source_impl kHostSelection {
+    .send = [](wlr_data_source* s, const char*, std::int32_t fd) {
+        (void)os::write_all(fd, reinterpret_cast<HostSelection*>(s)->text);
+        os::close(fd);
+    },
+    .accept = nullptr,
+    .destroy = [](wlr_data_source* s) { delete reinterpret_cast<HostSelection*>(s); },
+    .dnd_drop = nullptr,
+    .dnd_finish = nullptr,
+    .dnd_action = nullptr,
+};
+
+// A client's selection being read, to give to the window.
+struct SelectionRead {
+    int fd { -1 };
+    wl_event_source* source { nullptr };
+    std::string text;
+};
+
 struct Popup {
     wlr_xdg_popup* popup { nullptr };
     Hook commit, destroy;
@@ -154,6 +185,13 @@ struct Server {
     shell::Launcher launcher;
     layout::Id close_hover { 0 };
     std::vector<layout::Placement> placements;   // the last arrangement
+    opensal::Interfaces provided { 0 };            // what the window gives (its hello)
+    std::list<TextInput> text_inputs;
+    wlr_text_input_manager_v3* text_input_manager { nullptr };
+    std::string caret_sent;                        // the last 't' sent
+    HostSelection* host_selection { nullptr };     // ours while the clients hold it
+    std::unique_ptr<SelectionRead> reading;
+    Hook new_text_input, set_selection;
     layout::Layout lay;
     layout::Id next_id { 1 };
     double zoom_shown { 1 };                     // the zoom the windows were last scaled to
@@ -200,6 +238,135 @@ struct Server {
         wlr_seat_keyboard_notify_enter(seat, v->toplevel->base->surface, keyboard.keycodes, keyboard.num_keycodes,
                                        &keyboard.modifiers);
         if (v->laid && lay.focused() != v->id) lay.focus(v->id);
+        text_focus(v->toplevel->base->surface);
+    }
+
+    // ── text input and the clipboard ────────────────────────────────
+
+    // The text inputs of the focused surface's client enter it; the others leave.
+    void text_focus(wlr_surface* surface) {
+        wl_client* client = surface ? wl_resource_get_client(surface->resource) : nullptr;
+        for (auto& t : text_inputs) {
+            if (t.input->focused_surface && t.input->focused_surface != surface) wlr_text_input_v3_send_leave(t.input);
+            if (surface && !t.input->focused_surface && wl_resource_get_client(t.input->resource) == client)
+                wlr_text_input_v3_send_enter(t.input, surface);
+        }
+        caret();
+    }
+
+    // The focused text input, if one is on.
+    wlr_text_input_v3* active_text() {
+        View* f = focused();
+        if (!f) return nullptr;
+        for (auto& t : text_inputs)
+            if (t.input->current_enabled && t.input->focused_surface == f->toplevel->base->surface) return t.input;
+        return nullptr;
+    }
+
+    // Where the window's input method writes: the caret, on the output; or off.
+    void caret() {
+        if (!opensal::has(provided, opensal::Interface::Text)) return;
+        std::string msg = "0";
+        if (auto* t = active_text()) {
+            View* f = focused();
+            const wlr_box c = t->current.cursor_rectangle;
+            const wlr_box g = f->toplevel->base->geometry;
+            const int x = f->frame->node.x + c.x - g.x, y = f->frame->node.y + kTitle + c.y - g.y;
+            msg = std::format("1 {} {} {} {}", x, y, std::max(1, c.width), std::max(1, c.height));
+        }
+        if (msg == caret_sent) return;
+        caret_sent = msg;
+        send(opensal::wire::encode('t', msg));
+    }
+
+    void add_text_input(wlr_text_input_v3* input) {
+        auto& t = text_inputs.emplace_back();
+        t.input = input;
+        TextInput* self = &t;
+        t.enable.connect(&input->events.enable, [this](void*) { caret(); });
+        t.commit.connect(&input->events.commit, [this](void*) { caret(); });
+        t.disable.connect(&input->events.disable, [this](void*) { caret(); });
+        t.destroy.connect(&input->events.destroy, [this, self](void*) {
+            for (auto it = text_inputs.begin(); it != text_inputs.end(); ++it)
+                if (&*it == self) {
+                    it->enable.disconnect(); it->commit.disconnect(); it->disable.disconnect(); it->destroy.disconnect();
+                    text_inputs.erase(it);
+                    break;
+                }
+            caret();
+        });
+        if (View* f = focused()) text_focus(f->toplevel->base->surface);
+    }
+
+    void text_commit(const std::string& text) {
+        if (auto* t = active_text()) {
+            wlr_text_input_v3_send_commit_string(t, text.c_str());
+            wlr_text_input_v3_send_done(t);
+        }
+    }
+
+    void preedit(const opensal::Preedit& p) {
+        if (auto* t = active_text()) {
+            const auto at = static_cast<std::int32_t>(p.cursor < 0 ? p.text.size() : static_cast<std::size_t>(p.cursor));
+            wlr_text_input_v3_send_preedit_string(t, p.text.empty() ? nullptr : p.text.c_str(), at, at);
+            wlr_text_input_v3_send_done(t);
+        }
+    }
+
+    // The window's clipboard became the clients' selection.
+    void host_clipboard(std::string text) {
+        auto* sel = new HostSelection{};
+        sel->text = std::move(text);
+        wlr_data_source_init(&sel->base, &kHostSelection);
+        for (const char* mime : {"text/plain;charset=utf-8", "text/plain", "UTF8_STRING", "TEXT", "STRING"}) {
+            // wlroots frees them: malloc'd copies.
+            auto* slot = static_cast<char**>(wl_array_add(&sel->base.mime_types, sizeof(char*)));
+            if (!slot) continue;
+            const std::size_t n = std::strlen(mime) + 1;
+            *slot = static_cast<char*>(std::malloc(n));
+            if (*slot) std::memcpy(*slot, mime, n);
+        }
+        host_selection = sel;
+        // Serial 0: whatever a client copies after this (with any serial it
+        // was given) replaces it -- a newer serial would refuse the clients.
+        wlr_seat_set_selection(seat, &sel->base, 0);
+    }
+
+    // A client's selection, read and given to the window.
+    void selection_changed() {
+        wlr_data_source* src = seat->selection_source;
+        if (!src) return;
+        if (host_selection && src == &host_selection->base) return;   // ours: the window has it
+        host_selection = nullptr;
+        if (!opensal::has(provided, opensal::Interface::Clipboard)) return;
+        const char* chosen = nullptr;
+        for (const char* want : {"text/plain;charset=utf-8", "UTF8_STRING", "text/plain", "TEXT", "STRING"}) {
+            char** m = static_cast<char**>(src->mime_types.data);
+            for (std::size_t k = 0; k < src->mime_types.size / sizeof(char*); ++k)
+                if (std::string_view(m[k]) == want) { chosen = want; break; }
+            if (chosen) break;
+        }
+        if (!chosen) return;
+        auto ends = os::pipe();
+        if (!ends) return;
+        if (reading) { wl_event_source_remove(reading->source); os::close(reading->fd); }
+        reading = std::make_unique<SelectionRead>();
+        reading->fd = (*ends)[0];
+        wlr_data_source_send(src, chosen, (*ends)[1]);   // it closes the write end
+        reading->source = wl_event_loop_add_fd(loop, reading->fd, WL_EVENT_READABLE_ | WL_EVENT_HANGUP_,
+            [](int, std::uint32_t, void* data) -> int {
+                auto* self = static_cast<Server*>(data);
+                auto& rd = *self->reading;
+                std::array<char, 65536> buf{};
+                const auto n = os::read_some(rd.fd, buf);
+                if (n && *n > 0 && rd.text.size() < (16u << 20)) { rd.text.append(buf.data(), *n); return 0; }
+                // The end (or an error): what was read is the selection.
+                wl_event_source_remove(rd.source);
+                os::close(rd.fd);
+                if (!rd.text.empty()) self->send(opensal::wire::encode('b', rd.text));
+                self->reading.reset();
+                return 0;
+            }, this);
     }
 
     // The layout's focus, given to its window.
@@ -741,6 +908,13 @@ struct Server {
             wlr_seat_pointer_notify_frame(seat);
         } else if (const auto* r = std::get_if<opensal::Resized>(&ev)) {
             resize(r->size);
+        } else if (const auto* t = std::get_if<opensal::TextCommit>(&ev)) {
+            if (launcher.is_open()) { launcher.type(t->text); draw_launcher(); }
+            else text_commit(t->text);
+        } else if (const auto* p = std::get_if<opensal::Preedit>(&ev)) {
+            preedit(*p);
+        } else if (const auto* c = std::get_if<opensal::ClipboardText>(&ev)) {
+            host_clipboard(c->text);
         } else if (const auto* f = std::get_if<opensal::Focus>(&ev)) {
             // Focus left the window: nothing it holds stays pressed here.
             if (!f->in) {
@@ -764,7 +938,10 @@ struct Server {
             if (msg.kind == 'H') {
                 std::istringstream in(msg.payload);
                 std::uint32_t bits = 0, w = 0, h = 0;
-                if (in >> bits >> w >> h) resize({w, h});
+                if (in >> bits >> w >> h) {
+                    provided = bits;
+                    resize({w, h});
+                }
             } else if (msg.kind == 'E') {
                 if (auto e = opensal::wire::decode_event(msg.payload)) input(*e);
             }
@@ -913,6 +1090,11 @@ struct Server {
             auto* ev = static_cast<wlr_seat_request_set_selection_event*>(d);
             wlr_seat_set_selection(seat, ev->source, ev->serial);
         });
+        set_selection.connect(&seat->events.set_selection, [this](void*) { selection_changed(); });
+        // The window's input method, through text-input-v3.
+        text_input_manager = wlr_text_input_manager_v3_create(display);
+        new_text_input.connect(&text_input_manager->events.new_text_input,
+                               [this](void* d) { add_text_input(static_cast<wlr_text_input_v3*>(d)); });
 
         // The keyboard: opensal's keys, on the keymap the program carries.
         static const wlr_keyboard_impl impl{.name = "opensal-keyboard", .led_update = nullptr};
@@ -968,7 +1150,7 @@ struct Server {
         wl_event_source_timer_update(clock, 5000);
         draw_shell();
         using I = opensal::Interface;
-        send(opensal::wire::encode('h', std::to_string(I::Surface | I::Mode | I::Keyboard | I::Pointer)));
+        send(opensal::wire::encode('h', std::to_string(I::Surface | I::Mode | I::Keyboard | I::Pointer | I::Text | I::Clipboard)));
         for (const auto& a : o.autostart) launch(a);
         return true;
     }
@@ -990,7 +1172,10 @@ struct Server {
         if (clock) wl_event_source_remove(clock);
         for (int pid : children) os::terminate(pid);
         new_toplevel.disconnect(); new_popup.disconnect(); new_decoration.disconnect(); frame.disconnect();
-        request_cursor.disconnect(); request_selection.disconnect();
+        request_cursor.disconnect(); request_selection.disconnect(); set_selection.disconnect(); new_text_input.disconnect();
+        if (reading) { wl_event_source_remove(reading->source); os::close(reading->fd); }
+        for (auto& t : text_inputs) { t.enable.disconnect(); t.commit.disconnect(); t.disable.disconnect(); t.destroy.disconnect(); }
+        text_inputs.clear();
         views.clear();
         popups.clear();
         if (display) wl_display_destroy_clients(display);

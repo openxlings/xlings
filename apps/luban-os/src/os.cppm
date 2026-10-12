@@ -105,20 +105,27 @@ private:
 // (the guest bridges its compositor, opensal-wlr). This side is the
 // provider: it says the size it shows the surface at and sends the input;
 // the pixels come back as damaged rectangles, applied on the window's thread.
+// What may cross the clipboard between the window and a desktop: the
+// environment's grants (`clipboard` out of it, `clipboard-paste` into it).
+struct ClipboardGrant {
+    bool copy { false };
+    bool paste { false };
+};
+
 class Display {
 public:
     static std::unique_ptr<Display> machine(const fs::path& home, const std::string& name, const std::string& session,
-                                            opensal::Size size, std::function<void()> wake, std::string& error);
+                                            opensal::Size size, ClipboardGrant clip, std::function<void()> wake, std::string& error);
     // In a sandbox: `xlings subos use <name> --cmd 'luban __desktop <session>'`,
     // opensal.wire on its standard input and output.
     static std::unique_ptr<Display> sandbox(const fs::path& xlings, const fs::path& luban, const fs::path& home,
                                             const std::string& name, const std::string& session, const std::string& persist,
-                                            opensal::Size size, std::function<void()> wake, std::string& error);
+                                            opensal::Size size, ClipboardGrant clip, std::function<void()> wake, std::string& error);
     // Any program whose standard input and output are opensal.wire (what a
     // sandbox runs; tests run a desktop of their own the same way).
     static std::unique_ptr<Display> process(const std::vector<std::string>& argv, std::map<std::string, std::string> env,
                                             const fs::path& log, const std::string& name, opensal::Size size,
-                                            std::function<void()> wake, std::string& error);
+                                            ClipboardGrant clip, std::function<void()> wake, std::string& error);
     ~Display();
     void send(const opensal::Event& e);
     bool alive() const { return alive_; }
@@ -126,6 +133,13 @@ public:
     std::string error() const { std::lock_guard l(m_); return error_; }
     const std::string& name() const { return name_; }
     bool is_machine() const { return client_.has_value(); }
+
+    // The desktop's caret for the input method ("1 x y w h" in its pixels,
+    // or "0"), and its selection for the window's clipboard (granted copy
+    // only): what it said since the last call.
+    std::optional<std::string> take_text_input();
+    std::optional<std::string> take_clipboard();
+    const ClipboardGrant& clipboard_grant() const { return clip_; }
 
     struct Update { opensal::Rect rect; std::string rows; };
     // The surface's size (0 until the first frame) and the rectangles since the last call.
@@ -146,6 +160,8 @@ private:
     std::function<void()> wake_;
     opensal::Size wanted_;
     opensal::Size size_;
+    ClipboardGrant clip_;
+    std::optional<std::string> text_input_, clipboard_;
     std::vector<Update> updates_;
     std::string error_;
     opensal::wire::Decoder decoder_;

@@ -32,13 +32,14 @@ std::optional<std::string> desktop_session(const fs::path& home, const std::stri
 }
 
 std::unique_ptr<Display> Display::machine(const fs::path& home, const std::string& name, const std::string& session,
-                                          opensal::Size size, std::function<void()> wake, std::string& error) {
+                                          opensal::Size size, ClipboardGrant clip, std::function<void()> wake, std::string& error) {
     auto client = vm::Client::connect(home, name);
     if (!client) { error = client.error(); return nullptr; }
     std::unique_ptr<Display> d(new Display());
     d->name_ = name;
     d->wake_ = std::move(wake);
     d->wanted_ = size;
+    d->clip_ = clip;
     d->client_.emplace(std::move(*client));
     if (!d->client_->open_display(kDisplayChannel, session, int(size.width), int(size.height))) {
         error = "the machine did not take a desktop";
@@ -71,7 +72,7 @@ std::unique_ptr<Display> Display::machine(const fs::path& home, const std::strin
 
 std::unique_ptr<Display> Display::sandbox(const fs::path& xlings, const fs::path& luban, const fs::path& home,
                                           const std::string& name, const std::string& session, const std::string& persist,
-                                          opensal::Size size, std::function<void()> wake, std::string& error) {
+                                          opensal::Size size, ClipboardGrant clip, std::function<void()> wake, std::string& error) {
     auto env = xlings::platform::environment();
     env["XLINGS_HOME"] = home.string();
     env.erase("XLINGS_SUBOS_MODE");
@@ -86,12 +87,12 @@ std::unique_ptr<Display> Display::sandbox(const fs::path& xlings, const fs::path
     if (!persist.empty() && persist != "all") argv.insert(argv.end(), {"--persist", persist});
     argv.insert(argv.end(), {"--cmd", std::format("exec {} __desktop {} --size {}x{}", quoted(luban.string()),
                                                   quoted(session.empty() ? "-" : session), size.width, size.height)});
-    return process(argv, std::move(env), home / "logs" / "luban-os.log", name, size, std::move(wake), error);
+    return process(argv, std::move(env), home / "logs" / "luban-os.log", name, size, clip, std::move(wake), error);
 }
 
 std::unique_ptr<Display> Display::process(const std::vector<std::string>& argv, std::map<std::string, std::string> env,
                                           const fs::path& log_file, const std::string& name, opensal::Size size,
-                                          std::function<void()> wake, std::string& error) {
+                                          ClipboardGrant clip, std::function<void()> wake, std::string& error) {
     namespace platform = xlings::platform;
     auto to = platform::make_pipe(), from = platform::make_pipe();
     if (!to || !from) { error = "no pipe for the desktop"; return nullptr; }
@@ -119,6 +120,7 @@ std::unique_ptr<Display> Display::process(const std::vector<std::string>& argv, 
     d->name_ = name;
     d->wake_ = std::move(wake);
     d->wanted_ = size;
+    d->clip_ = clip;
     d->to_ = (*to)[1];
     d->from_ = (*from)[0];
     d->pid_ = pid;
@@ -177,9 +179,11 @@ void Display::provider_(std::string_view bytes) {
         if (!*m) break;
         auto& msg = **m;
         if (msg.kind == 'h') {
-            // What this window provides: the surface, its size, input.
+            // What this window provides: the surface, its size, input, the
+            // host's input method, and the clipboard as far as it is granted.
             using I = opensal::Interface;
-            const auto provided = I::Surface | I::Mode | I::Pointer | I::Keyboard;
+            auto provided = I::Surface | I::Mode | I::Pointer | I::Keyboard | I::Text;
+            if (clip_.copy || clip_.paste) provided = provided | I::Clipboard;
             opensal::Size s;
             { std::lock_guard l(m_); s = wanted_; }
             send_(opensal::wire::encode('H', std::format("{} {} {} 1", provided, s.width, s.height)));
@@ -190,6 +194,16 @@ void Display::provider_(std::string_view bytes) {
                 std::lock_guard l(m_);
                 size_ = s;
                 updates_.clear();
+            }
+        } else if (msg.kind == 't') {
+            std::lock_guard l(m_);
+            text_input_ = msg.payload;
+            changed = true;
+        } else if (msg.kind == 'b') {
+            if (clip_.copy) {
+                std::lock_guard l(m_);
+                clipboard_ = msg.payload;
+                changed = true;
             }
         } else if (msg.kind == 'f') {
             if (auto f = opensal::wire::decode_frame(msg.payload)) {
@@ -213,6 +227,16 @@ void Display::send(const opensal::Event& e) {
         wanted_ = r->size;
     }
     send_(opensal::wire::encode('E', opensal::wire::encode_event(e)));
+}
+
+std::optional<std::string> Display::take_text_input() {
+    std::lock_guard l(m_);
+    return std::exchange(text_input_, std::nullopt);
+}
+
+std::optional<std::string> Display::take_clipboard() {
+    std::lock_guard l(m_);
+    return std::exchange(clipboard_, std::nullopt);
 }
 
 opensal::Size Display::take(std::vector<Update>& out) {

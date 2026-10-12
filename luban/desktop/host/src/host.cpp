@@ -251,6 +251,10 @@ bool Window::begin_frame(int timeout_ms) {
         case SDL_EVENT_TEXT_INPUT:
             events_.push_back(opensal::TextCommit{e.text.text ? e.text.text : ""});
             break;
+        case SDL_EVENT_CLIPBOARD_UPDATE:
+            // The host's clipboard changed (here or in another program): its text.
+            events_.push_back(opensal::ClipboardText{clipboard()});
+            break;
         case SDL_EVENT_TEXT_EDITING:
             events_.push_back(opensal::Preedit{e.edit.text ? e.edit.text : "", e.edit.start});
             break;

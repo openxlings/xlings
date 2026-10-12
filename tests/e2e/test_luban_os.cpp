@@ -269,7 +269,7 @@ sleep 300
     EXPECT_FLOAT_EQ(d[2] - d[0], 320.0f);
     EXPECT_EQ(img.at(static_cast<int>(d[0]) + 20, static_cast<int>(d[1]) + 20), (std::array<int, 3>{0xC0, 0x80, 0x40}));
     const auto sent = tk::read_file(log);
-    EXPECT_NE(sent.find("H 15 1100 700 1"), std::string::npos) << "the window's size, asked first\n" << sent;
+    EXPECT_NE(sent.find("H 399 1100 700 1"), std::string::npos) << "the window's interfaces (surface, pointer, keyboard, mode, text, clipboard) and size, first\n" << sent;
     // The click, in the desktop's own pixels (its middle), down and up.
     EXPECT_NE(sent.find("E motion 160 100"), std::string::npos) << sent;
     EXPECT_NE(sent.find("E button 1 1 0"), std::string::npos) << sent;
@@ -436,14 +436,21 @@ state {}
 }
 
 // A Wayland client in one colour (xdg-shell over the plain wire, its pixels
-// in shared memory), so where xdesk puts a window is read off the picture.
+// in shared memory), so where xdesk puts a window is read off the picture;
+// with --log it also takes text (text-input-v3) and the clipboard, and says
+// what it got.
 fs::path colour_client(const tk::Home& home) {
     const auto file = home.root() / "client.py";
     tk::write_file(file, R"PY(# A Wayland client in one colour: xdg-shell over the plain wire, its pixels
-# in shared memory. Closes when asked. argv: RRGGBB [title]
-import os, socket, struct, sys, mmap, tempfile
+# in shared memory. Closes when asked. argv: RRGGBB [--log FILE] [--copy TEXT]
+#   --log   text-input-v3 on: what is committed, and the selection it is
+#           offered, written to FILE ("commit <text>", "paste <text>")
+#   --copy  then its own selection: TEXT
+import os, socket, struct, sys, mmap, tempfile, array
 colour = int(sys.argv[1], 16)
-title = sys.argv[2] if len(sys.argv) > 2 else sys.argv[1]
+opts = dict(zip(sys.argv[2::2], sys.argv[3::2]))
+log = open(opts["--log"], "a", buffering=1) if "--log" in opts else None
+copy = opts.get("--copy")
 sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
 sock.connect(os.path.join(os.environ["XDG_RUNTIME_DIR"], os.environ["WAYLAND_DISPLAY"]))
 next_id = [2]
@@ -452,16 +459,15 @@ def new():
 def string(s):
     b = s.encode() + b"\0"
     return struct.pack("<I", len(b)) + b + b"\0" * (-len(b) % 4)
+def read_string(body):
+    n, = struct.unpack("<I", body[:4])
+    return body[4:4 + n - 1].decode(errors="replace") if n else None, body[4 + n + (-n % 4):]
 def send(obj, op, args=b"", fds=()):
     msg = struct.pack("<II", obj, ((8 + len(args)) << 16) | op) + args
     if fds: sock.sendmsg([msg], [(socket.SOL_SOCKET, socket.SCM_RIGHTS, struct.pack("<%di" % len(fds), *fds))])
     else: sock.sendall(msg)
-registry = new()
-send(1, 1, struct.pack("<I", registry))            # wl_display.get_registry
-sync = new()
-send(1, 0, struct.pack("<I", sync))                # wl_display.sync
-globals_ = {}
 buf = b""
+fds = []
 def events():
     global buf
     while True:
@@ -471,15 +477,20 @@ def events():
             if len(buf) < size: break
             body, buf = buf[8:size], buf[size:]
             yield obj, op, body
-        data = sock.recv(65536)
+        data, anc, _, _ = sock.recvmsg(65536, socket.CMSG_SPACE(16 * 4))
+        for level, kind, payload in anc:
+            if level == socket.SOL_SOCKET and kind == socket.SCM_RIGHTS:
+                a = array.array("i"); a.frombytes(payload[:len(payload) - len(payload) % 4]); fds.extend(a)
         if not data: return
         buf += data
 it = events()
+registry = new(); send(1, 1, struct.pack("<I", registry))
+sync = new(); send(1, 0, struct.pack("<I", sync))
+globals_ = {}
 for obj, op, body in it:
     if obj == registry and op == 0:
-        name, = struct.unpack("<I", body[:4]); n, = struct.unpack("<I", body[4:8])
-        iface = body[8:8 + n - 1].decode(); ver, = struct.unpack("<I", body[8 + n + (-n % 4):][:4])
-        globals_[iface] = (name, ver)
+        name, = struct.unpack("<I", body[:4]); iface, rest = read_string(body[4:])
+        globals_[iface] = (name, struct.unpack("<I", rest[:4])[0])
     elif obj == sync: break
 def bind(iface, ver):
     name, have = globals_[iface]; i = new()
@@ -489,9 +500,17 @@ compositor, shm, wm = bind("wl_compositor", 4), bind("wl_shm", 1), bind("xdg_wm_
 surface = new(); send(compositor, 0, struct.pack("<I", surface))
 xdg_surface = new(); send(wm, 2, struct.pack("<II", xdg_surface, surface))
 toplevel = new(); send(xdg_surface, 1, struct.pack("<I", toplevel))
-send(toplevel, 2, string(title))                   # set_title
-send(surface, 6)                                   # commit
-size = (0, 0); drawn = None
+send(toplevel, 2, string(sys.argv[1]))                      # set_title
+keyboard = text = device = source = None
+if log:
+    seat = bind("wl_seat", 5)
+    keyboard = new(); send(seat, 1, struct.pack("<I", keyboard))            # get_keyboard
+    inputs = bind("zwp_text_input_manager_v3", 1)                         # ids in the order they are sent
+    text = new(); send(inputs, 1, struct.pack("<II", text, seat))
+    manager = bind("wl_data_device_manager", 3)
+    device = new(); send(manager, 1, struct.pack("<II", device, seat))     # get_data_device
+send(surface, 6)                                             # commit
+size = (0, 0); drawn = None; offers = {}; pasted = False; enter_serial = 0
 def draw(w, h):
     stride = w * 4
     f = tempfile.TemporaryFile()          # unlinked: memory the compositor maps
@@ -509,12 +528,47 @@ for obj, op, body in it:
     if obj == toplevel and op == 0:
         w, h = struct.unpack("<ii", body[:8]); size = (w or 400, h or 300)
     elif obj == toplevel and op == 1:
-        break                                      # close
+        break                                                # close
     elif obj == xdg_surface and op == 0:
-        send(xdg_surface, 4, body[:4])             # ack_configure
+        send(xdg_surface, 4, body[:4])                       # ack_configure
         if size != drawn: draw(*size); drawn = size
     elif obj == wm and op == 0:
-        send(wm, 3, body[:4])                      # pong
+        send(wm, 3, body[:4])                                # pong
+    elif obj == keyboard and op == 0:
+        os.close(fds.pop(0))                                 # the keymap: not needed
+    elif obj == keyboard and op == 1:
+        enter_serial, = struct.unpack("<I", body[:4])
+    elif obj == text and op == 0:                            # enter: on, a caret at 20,30
+        send(text, 1); send(text, 6, struct.pack("<iiii", 20, 30, 2, 18)); send(text, 7)
+    elif obj == text and op == 3:
+        s, _ = read_string(body)
+        if s: log.write("commit %s\n" % s)
+    elif obj == text and op == 5:
+        send(text, 7)                                        # done: commit the state again
+    elif obj == device and op == 0:
+        offers[struct.unpack("<I", body[:4])[0]] = []        # data_offer
+    elif obj in offers and op == 0:
+        offers[obj].append(read_string(body)[0])             # offer: a mime type
+    elif obj == device and op == 5:                          # selection
+        offer, = struct.unpack("<I", body[:4])
+        if offer and not pasted and "text/plain;charset=utf-8" in offers.get(offer, []):
+            r, w = os.pipe()
+            send(offer, 1, string("text/plain;charset=utf-8"), [w]); os.close(w)
+            got = b""
+            while True:
+                chunk = os.read(r, 65536)
+                if not chunk: break
+                got += chunk
+            os.close(r)
+            log.write("paste %s\n" % got.decode(errors="replace"))
+            pasted = True
+            if copy:
+                source = new(); send(manager, 0, struct.pack("<I", source))
+                send(source, 0, string("text/plain;charset=utf-8"))
+                send(device, 1, struct.pack("<II", source, enter_serial))
+    elif obj == source and op == 1:                          # send: the text into the fd
+        read_string(body)                                    # the mime type: there is one
+        fd = fds.pop(0); os.write(fd, copy.encode()); os.close(fd)
 )PY");
     return file;
 }
@@ -641,4 +695,37 @@ screenshot {}
     // Workspace 2 from the panel: empty.
     const auto c = read_ppm(other);
     EXPECT_NE(c.at(550, 400), kGreen);
+}
+
+XTEST(LubanOs, XdeskGivesTheHostsInputMethodAndClipboardToItsWindows, .area = "luban",
+      .covers = {"XDESK-COMPOSITOR", "XDESK-TEXT-CLIPBOARD"}, .requires_ = {"linux", "xlings-bin"}) {
+    if (!app_binary()) GTEST_SKIP() << "no luban-os beside the xlings under test";
+    if (!xdesk_binary()) GTEST_SKIP() << "no xdesk beside luban-os (mcpp build -p xdesk-app)";
+    auto home = tk::Home::isolated("luban-os-xdesk-text");
+    ASSERT_EQ(home.xlings({"self", "init"}).exit_code, 0);
+    const auto runtime = home.root() / "run", got = home.root() / "client.log", st = home.root() / "text.json";
+    fs::create_directories(runtime);
+    fs::permissions(runtime, fs::perms::owner_all, fs::perm_options::replace);
+    auto r = run_script(home, std::format(R"(clipboard from-the-host
+wait desktop
+waitfor desktop.texture.0 1100
+waitfor desktop_text true
+commit 你好
+commit abc
+waitfor clipboard from-the-guest
+state {}
+)", st.string()),
+                        {"--desktop-exec", xdesk_binary()->string(), "--profile", "classic", "--autostart",
+                         std::format("python3 {} c04040 --log {} --copy from-the-guest", colour_client(home).string(), got.string())},
+                        {{"XDG_RUNTIME_DIR", runtime.string()}});
+    ASSERT_EQ(r.exit_code, 0) << r.transcript() << tk::read_file(got);
+    const auto log = tk::read_file(got);
+    // The host's clipboard reached the window as its selection...
+    EXPECT_NE(log.find("paste from-the-host"), std::string::npos) << log;
+    // ...what the input method committed reached it as text (a caret was asked for)...
+    EXPECT_NE(log.find("commit 你好"), std::string::npos) << log;
+    EXPECT_NE(log.find("commit abc"), std::string::npos) << log;
+    EXPECT_EQ(log.find("commit a\n"), std::string::npos) << "a character arrived twice (as a key too)\n" << log;
+    // ...and what it copied is the host's clipboard.
+    EXPECT_EQ(read_state(st)["clipboard"], "from-the-guest");
 }

@@ -2,6 +2,8 @@ module luban.os;
 
 import std;
 import luban.desktop.imgui;
+import xlings.subos.home_view;
+import xlings.subos.policy_store;
 import xlings.libs.json;
 import xlings.observe;
 import xlings.platform;
@@ -118,6 +120,9 @@ struct App {
     std::unique_ptr<Display> display;  // a machine's desktop
     host::Window::Texture texture;
     opensal::Size desktop_size;        // what the window shows it at
+    bool desktop_text { false };       // the desktop takes text (its caret is set)
+    bool paste_on_open { true };       // the host's clipboard, given once it shows
+    std::string pasted;                // what crossed last (not sent back)
     std::optional<std::chrono::steady_clock::time_point> resize_at;
     std::string current;               // the system on screen
     bool menu { false };               // the Host key's menu
@@ -207,7 +212,7 @@ struct App {
             const auto [w, h] = window->size();
             desktop_size = {static_cast<std::uint32_t>(w), static_cast<std::uint32_t>(h)};
             auto* win = window.get();
-            display = Display::machine(home, name, *session, desktop_size, [win] { win->wake(); }, error);
+            display = Display::machine(home, name, *session, desktop_size, clipboard_grant(name), [win] { win->wake(); }, error);
             if (display) {
                 view = View::Desktop;
                 window->set_title(title_for(name));
@@ -219,7 +224,20 @@ struct App {
         open_console(name, true);
     }
 
+    // What the environment lets cross the clipboard: its grants; an
+    // environment without a policy file is as open as it always was, and a
+    // policy that cannot be read lets nothing cross.
+    ClipboardGrant clipboard_grant(const std::string& name) const {
+        auto p = xlings::subos::policy_store::read(xlings::subos::HomeView{home}, name);
+        if (!p) return {};
+        if (!*p) return {.copy = true, .paste = true};
+        return {.copy = (*p)->grants.contains("clipboard"), .paste = (*p)->grants.contains("clipboard-paste")};
+    }
+
     void close_display() {
+        desktop_text = false;
+        paste_on_open = true;
+        pasted.clear();
         display.reset();
         if (texture.handle) window->destroy(texture);
         texture = {};
@@ -245,7 +263,7 @@ struct App {
                 const auto [ww, wh] = window->size();
                 desktop_size = {static_cast<std::uint32_t>(ww), static_cast<std::uint32_t>(wh)};
                 display = Display::sandbox(ctx.port.xlings(), luban, home, name, *session, env ? env->settings.persist : "all",
-                                           desktop_size, [w] { w->wake(); }, error);
+                                           desktop_size, clipboard_grant(name), [w] { w->wake(); }, error);
                 if (display) {
                     view = View::Desktop;
                     window->set_title(title_for(name));
@@ -720,13 +738,53 @@ void desktop_view_(App& a) {
         mark_(a, "desktop");
         // The guest draws its own pointer into the picture.
         if (ImGui::IsItemHovered()) ImGui::SetMouseCursor(ImGuiMouseCursor_None);
+        // Its caret: the host's input method writes there (in window pixels).
+        if (auto t = d.take_text_input()) {
+            int on = 0, x = 0, y = 0, w = 1, h = 1;
+            std::istringstream in(*t);
+            in >> on >> x >> y >> w >> h;
+            a.desktop_text = on == 1;
+            if (a.desktop_text)
+                a.window->text_input(true, static_cast<int>(at.x + x * scale), static_cast<int>(at.y + y * scale),
+                                     std::max(1, static_cast<int>(w * scale)), std::max(1, static_cast<int>(h * scale)));
+            else a.window->text_input(false);
+        }
+        // What it copied is the host's clipboard (it is not pasted back).
+        if (auto c = d.take_clipboard()) {
+            a.window->set_clipboard(*c);
+            a.pasted = *c;
+        }
+        // The host's clipboard into it, when it is granted: as it opens,
+        // whenever it changes, and whenever the window comes back to it.
+        auto paste = [&] {
+            if (!d.clipboard_grant().paste) return;
+            auto text = a.window->clipboard();
+            if (text.empty() || text == a.pasted) return;
+            a.pasted = text;
+            d.send(opensal::ClipboardText{std::move(text)});
+        };
+        if (std::exchange(a.paste_on_open, false)) paste();
         if (!a.menu && !a.close_dialog) {
             for (const auto& e : a.window->events()) {
-                if (const auto* m = std::get_if<opensal::PointerMotion>(&e))
+                if (const auto* m = std::get_if<opensal::PointerMotion>(&e)) {
                     d.send(opensal::PointerMotion{(m->x - at.x) / scale, (m->y - at.y) / scale});
-                else if (std::holds_alternative<opensal::Key>(e) || std::holds_alternative<opensal::PointerButton>(e)
-                         || std::holds_alternative<opensal::Wheel>(e) || std::holds_alternative<opensal::Focus>(e))
+                } else if (const auto* k = std::get_if<opensal::Key>(&e)) {
+                    // While it takes text, a character is the input method's
+                    // to give (as text), not a key's.
+                    const bool chord = k->mods & (opensal::Ctrl | opensal::Alt | opensal::Super);
+                    const bool character = (k->keysym >= 0x20 && k->keysym <= 0x7e) || (k->keysym >= 0xa0 && k->keysym <= 0xff)
+                                           || k->keysym >= 0x01000000;
+                    if (!(a.desktop_text && character && !chord)) d.send(e);
+                } else if (std::holds_alternative<opensal::TextCommit>(e) || std::holds_alternative<opensal::Preedit>(e)) {
+                    if (a.desktop_text) d.send(e);
+                } else if (const auto* f = std::get_if<opensal::Focus>(&e)) {
                     d.send(e);
+                    if (f->in) paste();
+                } else if (std::holds_alternative<opensal::ClipboardText>(e)) {
+                    paste();    // the host's clipboard changed
+                } else if (std::holds_alternative<opensal::PointerButton>(e) || std::holds_alternative<opensal::Wheel>(e)) {
+                    d.send(e);
+                }
             }
         }
     } else {
@@ -944,6 +1002,8 @@ Json state_(const App& a) {
     j["edition"] = std::string(kQuick[static_cast<std::size_t>(a.new_edition)].name);
     j["name"] = std::string(a.new_name);
     j["admin_tab"] = a.admin_tab;
+    j["desktop_text"] = a.desktop_text;
+    j["clipboard"] = a.window ? a.window->clipboard() : std::string{};
     j["admin_selected"] = a.admin_selected < static_cast<int>(a.systems.size()) ? a.systems[a.admin_selected].name : std::string{};
     if (a.console) {
         // What a console shows, as text: its lines, trailing blanks dropped.
@@ -1135,6 +1195,13 @@ void script_step_(App& a, Script& sc) {
             for (auto it = keys.rbegin(); it != keys.rend(); ++it) app.window->inject_key(*it, false);
         });
         next();
+    } else if (cmd == "commit" || cmd == "clipboard") {
+        // Text as the host's input method commits it; the host's clipboard.
+        std::string text;
+        std::getline(words >> std::ws, text);
+        if (cmd == "commit") sc.pending.push_back([text](App& app) { app.window->inject_text(text); });
+        else sc.pending.push_back([text](App& app) { app.window->set_clipboard(text); });
+        next();
     } else if (cmd == "type") {
         std::string text;
         std::getline(words >> std::ws, text);
@@ -1268,7 +1335,7 @@ int run(int argc, char* argv[]) {
         auto* win = a.window.get();
         a.current = "desktop";
         a.display = Display::process(desktop_exec, platform::environment(), a.home / "logs" / "luban-os.log", a.current,
-                                     a.desktop_size, [win] { win->wake(); }, error);
+                                     a.desktop_size, {.copy = true, .paste = true}, [win] { win->wake(); }, error);
         if (!a.display) { std::println(std::cerr, "luban-os: {}", error); return 1; }
         a.view = View::Desktop;
     } else if (!a.attach.empty()) a.enter(a.attach);
