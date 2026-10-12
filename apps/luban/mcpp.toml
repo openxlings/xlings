@@ -18,6 +18,7 @@ main = "src/main.cpp"
 [dependencies]
 luban-system = { path = "../../luban/system" }
 luban-cli = { path = "../../luban/cli" }
+luban-vm = { path = "../../luban/vm" }
 
 [build]
 include_dirs = ["../../modules/libs/src/json"]

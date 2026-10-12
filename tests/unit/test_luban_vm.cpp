@@ -1,0 +1,69 @@
+// A Luban machine (Luban OS architecture design §8): the frames its host and
+// agent exchange, the initramfs it starts from, and what it can start from.
+#include <gtest/gtest.h>
+import xlings.testkit;
+#include "xlings/xtest.hpp"
+
+import std;
+import xlings.libs.json;
+import xlings.image;
+import luban.vm;
+import luban.vm.protocol;
+
+namespace tk = xlings::testkit;
+namespace proto = luban::vm::protocol;
+namespace fs = std::filesystem;
+
+XTEST(LubanVm, FramesSurviveAnyCutOfTheStream, .area = "luban", .covers = {"LUBAN-MACHINE"}) {
+    std::string stream = proto::encode('D', 7, std::string("hello\0world", 11)) + proto::encode_json('R', 7, {{"rows", 40}, {"cols", 120}})
+                       + proto::encode('X', 7, "{\"code\":3}");
+    // Fed a byte at a time, the same three frames come out whole.
+    proto::Decoder d;
+    std::vector<proto::Frame> got;
+    for (char ch : stream) {
+        d.feed(std::string_view(&ch, 1));
+        for (;;) {
+            auto f = d.next();
+            ASSERT_TRUE(f) << f.error();
+            if (!*f) break;
+            got.push_back(**f);
+        }
+    }
+    ASSERT_EQ(got.size(), 3u);
+    EXPECT_EQ(got[0].type, 'D');
+    EXPECT_EQ(got[0].channel, 7u);
+    EXPECT_EQ(got[0].payload, std::string("hello\0world", 11));
+    EXPECT_EQ(nlohmann::json::parse(got[1].payload)["cols"], 120);
+    EXPECT_EQ(got[2].type, 'X');
+    // A length no frame has is not this protocol.
+    proto::Decoder bad;
+    bad.feed(std::string("D\0\0\0\1\x7f\xff\xff\xff", 9));
+    EXPECT_FALSE(bad.next());
+}
+
+XTEST(LubanVm, AnInitramfsIsNewcWithItsTrailer, .area = "luban", .covers = {"LUBAN-MACHINE"}) {
+    auto home = tk::Home::isolated("luban-cpio");
+    const auto out = home.root() / "initramfs.cpio";
+    const std::vector<xlings::image::CpioEntry> entries{
+        {.path = "dev", .kind = xlings::image::CpioEntry::Kind::Dir, .mode = 0755},
+        {.path = "init", .kind = xlings::image::CpioEntry::Kind::File, .data = "#!/bin/sh\n", .mode = 0755}};
+    ASSERT_TRUE(xlings::image::write_cpio(out, entries));
+    const auto bytes = tk::read_file(out);
+    EXPECT_TRUE(bytes.starts_with("070701"));
+    EXPECT_NE(bytes.find("init"), std::string::npos);
+    EXPECT_NE(bytes.find("TRAILER!!!"), std::string::npos);
+    EXPECT_EQ(bytes.size() % 4, 0u) << "every record is padded to four bytes";
+    const std::vector<xlings::image::CpioEntry> absolute{{.path = "/init"}};
+    EXPECT_FALSE(xlings::image::write_cpio(home.root() / "bad.cpio", absolute));
+}
+
+XTEST(LubanVm, OnlyAStaticBinaryCanBeAMachinesFirstProcess, .area = "luban", .covers = {"LUBAN-MACHINE"}) {
+    auto home = tk::Home::isolated("luban-static");
+    tk::write_file(home.root() / "script", "#!/bin/sh\n");
+    EXPECT_FALSE(luban::vm::is_static_elf(home.root() / "script"));
+    EXPECT_FALSE(luban::vm::is_static_elf(home.root() / "missing"));
+    if constexpr (tk::is_linux) {
+        // A program this machine runs through its loader.
+        if (fs::exists("/bin/sh")) EXPECT_FALSE(luban::vm::is_static_elf(fs::canonical("/bin/sh")));
+    }
+}

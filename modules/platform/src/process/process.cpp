@@ -40,10 +40,10 @@ namespace xlings::platform {
 
 namespace sig {
 #if defined(_WIN32)
-extern const int interrupt = 2, quit = 3, terminate = 15, hangup = 1, pipe = 13, kill = 9, child = 17;
+extern const int interrupt = 2, quit = 3, terminate = 15, hangup = 1, pipe = 13, kill = 9, child = 17, user2 = 12;
 #else
 extern const int interrupt = SIGINT, quit = SIGQUIT, terminate = SIGTERM, hangup = SIGHUP,
-          pipe = SIGPIPE, kill = SIGKILL, child = SIGCHLD;
+          pipe = SIGPIPE, kill = SIGKILL, child = SIGCHLD, user2 = SIGUSR2;
 #endif
 }  // namespace sig
 
@@ -515,6 +515,114 @@ int unix_accept(int listen_fd) {
     return fd;
 }
 
+int unix_connect_stream(const std::filesystem::path& path) {
+    const int fd = ::socket(AF_UNIX, SOCK_STREAM, 0);
+    if (fd < 0) return -1;
+    cloexec(fd);
+    UnixAddr a;
+    if (!make_addr(path, a) || ::connect(fd, reinterpret_cast<sockaddr*>(&a.addr), a.len) != 0) {
+        ::close(fd);
+        return -1;
+    }
+    return fd;
+}
+
+int unix_listen_stream(const std::filesystem::path& path) {
+    const int fd = ::socket(AF_UNIX, SOCK_STREAM, 0);
+    if (fd < 0) return -1;
+    cloexec(fd);
+    UnixAddr a;
+    if (!make_addr(path, a)) { ::close(fd); return -1; }
+    ::unlink(path.c_str());
+    const auto old = ::umask(0077);
+    const int rc = ::bind(fd, reinterpret_cast<sockaddr*>(&a.addr), a.len);
+    ::umask(old);
+    if (rc != 0 || ::listen(fd, 16) != 0) { ::close(fd); return -1; }
+    return fd;
+}
+
+std::optional<std::size_t> read_some(int fd, std::span<char> buf) {
+    for (;;) {
+        const auto n = ::read(fd, buf.data(), buf.size());
+        if (n >= 0) return static_cast<std::size_t>(n);
+        if (errno == EINTR) continue;
+        if (errno == EAGAIN || errno == EWOULDBLOCK) return std::optional<std::size_t>(std::nullopt);
+        return std::nullopt;
+    }
+}
+
+bool write_all(int fd, std::string_view data) {
+    while (!data.empty()) {
+        const auto n = ::write(fd, data.data(), data.size());
+        if (n < 0) {
+            if (errno == EINTR) continue;
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                pollfd p{fd, POLLOUT, 0};
+                ::poll(&p, 1, 1000);
+                continue;
+            }
+            return false;
+        }
+        data.remove_prefix(static_cast<std::size_t>(n));
+    }
+    return true;
+}
+
+int open_device(const std::filesystem::path& path) {
+    return ::open(path.c_str(), O_RDWR | O_NOCTTY | O_CLOEXEC);
+}
+
+std::optional<std::pair<unsigned short, unsigned short>> terminal_size(int fd) {
+    winsize w{};
+    if (::ioctl(fd, TIOCGWINSZ, &w) != 0) return std::nullopt;
+    return std::pair<unsigned short, unsigned short>{w.ws_row, w.ws_col};
+}
+
+bool set_terminal_size(int fd, unsigned short rows, unsigned short cols) {
+    winsize w{};
+    w.ws_row = rows;
+    w.ws_col = cols;
+    return ::ioctl(fd, TIOCSWINSZ, &w) == 0;
+}
+
+bool process_alive(int pid) { return pid > 0 && (::kill(pid, 0) == 0 || errno == EPERM); }
+
+std::optional<int> spawn_detached(const std::vector<std::string>& argv, const std::filesystem::path& log) {
+    if (argv.empty()) return std::nullopt;
+    int report[2];
+    if (::pipe(report) != 0) return std::nullopt;
+    const pid_t first = ::fork();
+    if (first < 0) { ::close(report[0]); ::close(report[1]); return std::nullopt; }
+    if (first == 0) {
+        ::close(report[0]);
+        ::setsid();
+        const pid_t second = ::fork();
+        if (second != 0) {
+            int pid = second;
+            (void)!::write(report[1], &pid, sizeof pid);
+            ::_exit(second < 0 ? 1 : 0);
+        }
+        ::close(report[1]);
+        const int in = ::open("/dev/null", O_RDONLY);
+        const int out = ::open(log.c_str(), O_WRONLY | O_CREAT | O_APPEND, 0600);
+        if (in >= 0) ::dup2(in, 0);
+        if (out >= 0) { ::dup2(out, 1); ::dup2(out, 2); }
+        std::vector<char*> args;
+        for (const auto& a : argv) args.push_back(const_cast<char*>(a.c_str()));
+        args.push_back(nullptr);
+        ::execv(args[0], args.data());
+        ::_exit(127);
+    }
+    ::close(report[1]);
+    int pid = -1;
+    const bool got = ::read(report[0], &pid, sizeof pid) == static_cast<ssize_t>(sizeof pid);
+    ::close(report[0]);
+    int status = 0;
+    ::waitpid(first, &status, 0);
+    if (!got || pid <= 0) return std::nullopt;
+    return pid;
+}
+
 std::optional<std::array<int, 2>> unix_pair() {
     int p[2];
     if (::socketpair(AF_UNIX, kMessageSocket, 0, p) != 0) return std::nullopt;
@@ -770,6 +878,15 @@ int open_for_read(const std::filesystem::path&) { return -1; }
 int poll_fds(std::span<PollFd>, int) { return 0; }
 int unix_listen(const std::filesystem::path&) { return -1; }
 int unix_connect(const std::filesystem::path&) { return -1; }
+int unix_connect_stream(const std::filesystem::path&) { return -1; }
+int unix_listen_stream(const std::filesystem::path&) { return -1; }
+std::optional<std::size_t> read_some(int, std::span<char>) { return std::nullopt; }
+bool write_all(int, std::string_view) { return false; }
+int open_device(const std::filesystem::path&) { return -1; }
+std::optional<std::pair<unsigned short, unsigned short>> terminal_size(int) { return std::nullopt; }
+bool set_terminal_size(int, unsigned short, unsigned short) { return false; }
+bool process_alive(int) { return false; }
+std::optional<int> spawn_detached(const std::vector<std::string>&, const std::filesystem::path&) { return std::nullopt; }
 int unix_accept(int) { return -1; }
 std::optional<std::array<int, 2>> unix_pair() { return std::nullopt; }
 bool send_message(int, std::string_view, std::span<const int>) { return false; }

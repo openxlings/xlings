@@ -93,4 +93,16 @@ bool mount_kernel_fs(std::string_view type, const std::filesystem::path& target)
 bool remount_root_rw();
 bool is_pid1();
 
+// ── a Luban machine's first process (Luban OS architecture §8.1) ──────
+//
+// A virtio 9p share by its tag at `target` (created when missing): how the
+// environment's own tree and the home reach the guest. The share's file
+// systems a mount moves with it; `/` becomes `newroot` (switch_root without
+// deleting the initramfs, which the kernel frees). Power off after sync.
+bool mount_9p(std::string_view tag, const std::filesystem::path& target, bool read_only);
+bool move_mount(const std::filesystem::path& from, const std::filesystem::path& to);
+bool switch_root(const std::filesystem::path& newroot);
+[[noreturn]] void power_off();
+bool set_hostname(std::string_view name);
+
 }  // namespace xlings::platform

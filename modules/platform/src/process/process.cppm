@@ -24,6 +24,7 @@ extern const int hangup;      // SIGHUP
 extern const int pipe;        // SIGPIPE
 extern const int kill;        // SIGKILL
 extern const int child;       // SIGCHLD
+extern const int user2;       // SIGUSR2 (busybox init: power off)
 }  // namespace sig
 
 bool send_signal(int pid, int signal);
@@ -139,6 +140,31 @@ int unix_listen(const std::filesystem::path& path);
 int unix_connect(const std::filesystem::path& path);
 int unix_accept(int listen_fd);
 std::optional<std::array<int, 2>> unix_pair();
+
+// A byte stream to a listening socket (SOCK_STREAM): what qemu's chardev
+// sockets are. -1 when nothing listens there.
+int unix_connect_stream(const std::filesystem::path& path);
+// Listens for byte-stream connections at `path` (owner-only).
+int unix_listen_stream(const std::filesystem::path& path);
+
+// ── plain descriptors ────────────────────────────────────────────────
+
+// What `fd` has now, up to `buf.size()` bytes: 0 at end of stream, nullopt on
+// an error (EINTR and EAGAIN are retried by the caller through poll_fds).
+std::optional<std::size_t> read_some(int fd, std::span<char> buf);
+// All of `data`, through short writes and EINTR.
+bool write_all(int fd, std::string_view data);
+// Read-write, no controlling terminal taken (a device, a fifo).
+int open_device(const std::filesystem::path& path);
+// The window size of terminal `fd` (rows, columns); nullopt for a non-terminal.
+std::optional<std::pair<unsigned short, unsigned short>> terminal_size(int fd);
+bool set_terminal_size(int fd, unsigned short rows, unsigned short cols);
+// Whether a process of this id exists (kill(pid, 0)).
+bool process_alive(int pid);
+// `argv` in a session of its own that outlives this process (double fork),
+// standard input the null device, output and errors appended to `log`. Its
+// pid; nullopt when it could not be started.
+std::optional<int> spawn_detached(const std::vector<std::string>& argv, const std::filesystem::path& log);
 
 struct Message {
     std::string data;

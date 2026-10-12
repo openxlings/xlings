@@ -969,6 +969,10 @@ status = "required"
 text = "a sandboxed SubOS shares the home's common part (payloads, indexes, shims) read-only and never another instance: other instances' trees and their config (policy, persona, record) are out of sight; its own config is read-only; a backend that cannot hide them (proot) says so as a degradation and a policy that requires the file-system gate refuses it"
 status = "required"
 
+[LUBAN-MACHINE]
+text = "luban enter <n> --mode machine boots the environment itself with its own kernel: its tree and the home are shared with the guest (9p), a supervisor outlives the terminal and serves every session over one socket, each session a pty with the root's login shell and the terminal's size; persist home/none and --temp boot a copy that goes with the machine; an image file boots as it is with its console on the terminal; closing follows the environment's on-close setting"
+status = "required"
+
 [ELEVATION-NOBODY-TO-ASK]
 text = "administrator rights are never asked for where nobody can answer (agent mode, no terminal, the background of one): rights that need no question are used, otherwise nothing runs and the command that needs them is named; doctor's repair children run unattended with the null device as input"
 status = "required"

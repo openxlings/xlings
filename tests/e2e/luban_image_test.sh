@@ -39,13 +39,13 @@ L() { ( cd /tmp && env -u XLINGS_ACTIVE_SUBOS -u XLINGS_SUBOS_MODE XLINGS_HOME="
 
 # limine: the index's (prebuilt boot files and a static tool), installed by
 # the edition's boot profile when the first image is made.
-log "luban new t tiny"
+log "luban new t --edition tiny"
 n=0
-until L new t tiny >"$RUNTIME_DIR/new.log" 2>&1; do
-  n=$((n + 1)); [[ $n -ge 3 ]] && { tail -30 "$RUNTIME_DIR/new.log"; fail "luban new t tiny"; }
+until L new t --edition tiny >"$RUNTIME_DIR/new.log" 2>&1; do
+  n=$((n + 1)); [[ $n -ge 3 ]] && { tail -30 "$RUNTIME_DIR/new.log"; fail "luban new t --edition tiny"; }
   X subos remove -y t >/dev/null 2>&1 || true; sleep 5
 done
-grep -q "subos created: t" "$RUNTIME_DIR/new.log" || fail "no creation report: $(tail -5 "$RUNTIME_DIR/new.log")"
+grep -q "t is ready" "$RUNTIME_DIR/new.log" || fail "no creation report: $(tail -5 "$RUNTIME_DIR/new.log")"
 arch="$(uname -m)"
 BOOT=()   # what export is told about the kernel
 if [[ "$arch" == x86_64 ]]; then
@@ -59,7 +59,7 @@ else
   BOOT=(--boot virt)
   QEMU=(qemu-system-aarch64 -M virt)
 fi
-# The UEFI firmware, from the index (into this home: `luban try` finds it there).
+# The UEFI firmware, from the index (into this home: `luban enter <image>` finds it there).
 retry X install -y xim:edk2-firmware >"$RUNTIME_DIR/firmware.log" 2>&1 \
   || { tail -20 "$RUNTIME_DIR/firmware.log"; fail "install edk2-firmware"; }
 OVMF="$(ls "$H"/data/xpkgs/xim-x-edk2-firmware/*/share/edk2/edk2-"$arch"-code.fd | head -1)"
@@ -200,10 +200,19 @@ PY
 )"
 [[ "$relayed" == "THROUGH THE PROXY 0" ]] || fail "the relay: '$relayed'"
 
-log "luban try t.iso --proxy: the proxy is its only network (and it boots with the proxy down)"
-until_console "$RUNTIME_DIR/try.log" env XLINGS_HOME="$H" DISPLAY= WAYLAND_DISPLAY= "$H/bin/luban" try "$RUNTIME_DIR/t.iso" \
-  --proxy socks5h://127.0.0.1:9 --memory 2048
-out="$(tr -d '\r' < "$RUNTIME_DIR/try.log")"
-grep -q "its only network is the proxy" <<<"$out" || fail "try --proxy: $(tail -5 <<<"$out")"
-grep -aq "luban-init: booting" <<<"$out" || fail "try: did not boot: $(tail -10 <<<"$out")"
-log "PASS ($arch): ISO (CD and drive), drive and qcow2 boot ($( [[ "$arch" == x86_64 ]] && echo "BIOS and UEFI" || echo UEFI)); luban try --proxy"
+log "luban enter t.iso: an image boots as it is, its console on the terminal"
+until_console "$RUNTIME_DIR/image.log" env XLINGS_HOME="$H" DISPLAY= WAYLAND_DISPLAY= "$H/bin/luban" enter "$RUNTIME_DIR/t.iso"
+out="$(tr -d '\r' < "$RUNTIME_DIR/image.log")"
+grep -aq "luban-init: booting" <<<"$out" || fail "enter t.iso: did not boot: $(tail -10 <<<"$out")"
+grep -aq "qemu" <<<"$(grep -a "booting t.iso" <<<"$out")" && fail "enter t.iso names its monitor: $(grep -a booting <<<"$out")"
+
+log "luban enter t --mode machine: the environment itself, its own kernel, a session with its shell"
+L config t --proxy socks5h://127.0.0.1:9 >/dev/null 2>&1 || fail "config --proxy"
+machine="$( (sleep 120; printf 'echo MACHINE-$(uname -r) > /root/machine.txt; cat /root/machine.txt; exit\n'; sleep 10) \
+  | timeout 600 script -qfec "env XLINGS_HOME=$H DISPLAY= WAYLAND_DISPLAY= $H/bin/luban enter t --mode machine --temp" /dev/null 2>&1 | tr -d '\r')"
+grep -q "t is up" <<<"$machine" || fail "machine: did not come up: $(tail -20 <<<"$machine"; tail -20 "$H"/logs/machines/t/console.log 2>/dev/null)"
+grep -q "only its proxy" <<<"$machine" || fail "machine: its network is not only the proxy: $(grep -a starting <<<"$machine")"
+grep -q "MACHINE-" <<<"$machine" || fail "machine: the session ran nothing: $(tail -20 <<<"$machine")"
+[[ ! -e "$H/subos/t/rootfs/root/machine.txt" ]] || fail "machine --temp: what it wrote stayed"
+[[ ! -e "$H/run/machines/t/scratch" ]] || fail "machine --temp: its copy stayed"
+log "PASS ($arch): ISO (CD and drive), drive and qcow2 boot ($( [[ "$arch" == x86_64 ]] && echo "BIOS and UEFI" || echo UEFI)); an image entered; the environment as a machine, its proxy the only network"

@@ -93,8 +93,11 @@ std::expected<Environment, std::string> describe(const Context& c, std::string_v
         for (const auto& [pkg, _] : record->packages) packages.insert(xlings::subos::edition::split(pkg).first);
     }
     const auto workspace = read_json_(view.instance(name) / ".xlings.json");
-    if (auto ws = workspace.find("workspace"); ws != workspace.end() && ws->is_object())
-        for (auto it = ws->begin(); it != ws->end(); ++it) packages.insert(it.key());
+    // The packages it was given (its file's `packages`), not the names they
+    // register (a glibc alone registers dozens).
+    if (auto declared = workspace.find("packages"); declared != workspace.end() && declared->is_array())
+        for (const auto& spec : *declared)
+            if (spec.is_string()) packages.insert(xlings::subos::edition::split(spec.get<std::string>()).first);
     e.packages = packages.size();
     if (e.kind == "root") {
         e.generation = xlings::subos::rootfs::current(view.instance(name));

@@ -120,4 +120,17 @@ std::expected<std::vector<GptPartition>, std::string> read_gpt(const std::filesy
 // cluster of zeros is not stored. What `qemu-img convert -O qcow2` makes.
 std::expected<void, std::string> write_qcow2(const std::filesystem::path& raw, const std::filesystem::path& out);
 
+// ── initramfs (cpio newc) ──────────────────────────────────────────────
+
+// What the kernel unpacks as its first root: SVR4 "newc" with no checksum,
+// uncompressed, the entries in the order given, a trailer last.
+struct CpioEntry {
+    enum class Kind { File, Dir, Symlink };
+    std::string path;          // relative, no leading '/'
+    Kind kind { Kind::File };
+    std::string data;          // File: content; Symlink: target
+    unsigned mode { 0644 };    // permission bits
+};
+std::expected<void, std::string> write_cpio(const std::filesystem::path& out, std::span<const CpioEntry> entries);
+
 }  // namespace xlings::image

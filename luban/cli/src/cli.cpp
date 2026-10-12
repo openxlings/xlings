@@ -506,7 +506,8 @@ int cmd_enter(const svc::Context& c, const Parsed& p, const Globals& g) {
         if (c.sink) c.sink(svc::error(settings.error()));
         return 1;
     }
-    const auto mode = p.option("--mode").value_or(settings->mode);
+    // A machine that is running is entered as the machine it is.
+    const auto mode = p.option("--mode").value_or(vm::running(c.home, target) ? std::string("machine") : settings->mode);
     if (mode != "sandbox" && mode != "machine") return usage("--mode sandbox|machine", g);
     if (mode == "machine") return vm::enter(c, target, o);
     if (o.display == "window") return usage("a sandboxed environment's programs use this desktop; a window is a machine's: --mode machine", g);
@@ -871,6 +872,7 @@ int run(int argc, char* argv[]) {
     // Plumbing first: what qemu, the drive writer and the docs tools run.
     if (!rest.empty() && rest.front() == "__write" && rest.size() == 3) return raw_write_(rest[1], rest[2]);
     if (!rest.empty() && rest.front() == "__pipe" && rest.size() == 3) return pipe_(rest[1], rest[2]);
+    if (!rest.empty() && rest.front() == "__vm-supervise" && rest.size() == 3) return vm::supervise(rest[1], rest[2]);
     if (!rest.empty() && (rest.front() == "--version" || rest.front() == "-V")) {
         std::println("luban {}", kVersion);
         return 0;
@@ -930,6 +932,7 @@ int run(int argc, char* argv[]) {
         if (p.command == "config") return cmd_config(c, p, g, render);
         if (p.command == "stop") {
             if (p.words.size() != 1) return usage("`luban stop <name>`", g);
+            if (vm::running(c.home, p.words[0])) return vm::stop(c, p.words[0]).code;
             return svc::stop(c, p.words[0]).code;
         }
         if (p.command == "history") return cmd_history(c, p, g, render);

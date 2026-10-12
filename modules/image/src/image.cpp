@@ -824,4 +824,28 @@ std::expected<void, std::string> write_qcow2(const fs::path& raw, const fs::path
     return {};
 }
 
+std::expected<void, std::string> write_cpio(const fs::path& out, std::span<const CpioEntry> entries) {
+    std::ofstream f(out, std::ios::binary | std::ios::trunc);
+    if (!f) return std::unexpected("cannot write " + out.string());
+    std::uint32_t ino = 1;
+    const auto put = [&](const std::string& name, unsigned mode, std::string_view data) {
+        const auto header = std::format("070701{:08X}{:08X}{:08X}{:08X}{:08X}{:08X}{:08X}{:08X}{:08X}{:08X}{:08X}{:08X}{:08X}",
+                                        ino++, mode, 0, 0, 1, 0, static_cast<std::uint32_t>(data.size()), 0, 0, 0, 0,
+                                        static_cast<std::uint32_t>(name.size() + 1), 0);
+        f << header << name << '\0';
+        for (auto n = header.size() + name.size() + 1; n % 4; ++n) f << '\0';
+        f << data;
+        for (auto n = data.size(); n % 4; ++n) f << '\0';
+    };
+    for (const auto& e : entries) {
+        if (e.path.empty() || e.path.front() == '/') return std::unexpected("cpio entry path must be relative: " + e.path);
+        const unsigned type = e.kind == CpioEntry::Kind::Dir ? 0040000u : e.kind == CpioEntry::Kind::Symlink ? 0120000u : 0100000u;
+        put(e.path, type | (e.mode & 07777), e.kind == CpioEntry::Kind::Dir ? std::string_view{} : std::string_view(e.data));
+    }
+    put("TRAILER!!!", 0, {});
+    f.close();
+    if (!f) return std::unexpected("writing " + out.string() + " failed");
+    return {};
+}
+
 }  // namespace xlings::image
