@@ -22,10 +22,12 @@ olddir="$(dirname "$(dirname "$(find "$HOME/hm-old-client" -path '*/bin/xlings' 
 step "the older client installs itself into a home" ok -- \
     bash -c "cd '$olddir' && XLINGS_HOME='$old' ./bin/xlings self install -y </dev/null"
 oldbin="$old/bin/xlings"
-# That release shipped index caches naming its build machine's paths, and
-# that client trusted them (EACCES where the path exists, on a CI runner);
-# today's rebuilds such a cache. Cleared, so the older client can work.
-find "$old/data" -name .xlings-index-cache.json -delete 2>/dev/null
+# That release shipped index caches naming its build machine's paths (EACCES
+# where that path exists and is someone else's, as on a CI runner). The older
+# client trusted them, so they are set aside while it works -- and put back
+# before the build under test takes over, which must rebuild them.
+while IFS= read -r cache; do mv "$cache" "$cache.shipped"; done \
+    < <(find "$old/data" -name .xlings-index-cache.json 2>/dev/null)
 O() { PATH="$old/subos/default/bin:$old/bin:$PATH" XLINGS_HOME="$old" "$oldbin" "$@"; }
 N() { XLINGS_HOME="$old" "$XLINGS_HOME/bin/xlings" "$@"; }
 NL() { XLINGS_HOME="$old" "$XLINGS_HOME/bin/luban" "$@"; }
@@ -36,7 +38,10 @@ step "the older client installs patchelf" ok -- O install -y patchelf
 step "the older client installs what an edition reuses" ok -- O install -y make ninja zlib
 # A client older still wrote no resolution records at all.
 rm -f "$old"/data/xpkgs/xim-x-patchelf/*/.xlings-resolution.json
-# The upgrade: the build under test becomes the home's entry.
+# The upgrade: the build under test becomes the home's entry, with the
+# release's caches back where they were.
+while IFS= read -r cache; do mv "$cache" "${cache%.shipped}"; done \
+    < <(find "$old/data" -name '.xlings-index-cache.json.shipped' 2>/dev/null)
 cp "$XLINGS_HOME/bin/xlings" "$old/bin/xlings"
 step "the build under test takes the home over" ok -- N self init
 step "luban new on it: no failed node" ok -- NL new hmo tiny -y
