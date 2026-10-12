@@ -296,6 +296,32 @@ The SubOS design this comes from, and the module layout it implies
 (`modules/runtime`, `modules/subos`, `src/core/home/`), is
 `.agents/docs/2026-10-05-subos-architecture-design.md`.
 
+### A large home, a terminal, a sandbox's own home (2026.10.12.2)
+
+`.agents/docs/2026-10-12-luban-experience-and-remove-design.md` §15. What to
+keep in mind:
+
+* **`Config::versions()` and `Config::workspace()` return a copy.** Take one
+  per scan, never one per entry: a loop that asked it per entry made `remove`
+  of an unused version take 28.6 s on a home of 5,000 registrations.
+  `XLINGS_TRACE=timing` names the phase a slow command spent its time in;
+  `tests/e2e/test_home_perf.cpp` (static performance lane) holds the budgets.
+* **A command in the background of its controlling terminal never changes
+  the terminal's modes or queries it** (`platform::in_terminal_foreground`):
+  the kernel stops the whole process group for that (SIGTTOU), and inside
+  `luban enter` that group was the session's owner. The broker's command has
+  a session of its own. testkit's `pty_background` runs a command that way.
+* **Inside a sandbox, only the session's home is the broker's.** A home the
+  sandbox can write (mcpp's registry, a test's) is used there, and `--help`
+  is never forwarded.
+* **A root's plan settles each reused payload's evidence** (`resolver.cpp:
+  scope_evidence_`): write the resolution record, rebuild against the root's
+  runtime in place, or name the subos that still uses the old one. Never
+  "run `install --reconfig`".
+* **`remove` asks about the version, not the name** (`removal_check`): a
+  dependent blocks only when it links that payload or would have no installed
+  version meeting its constraint.
+
 ### Type-specific install dispatch
 
 `installer.cppm` checks `node.pkgType`:
