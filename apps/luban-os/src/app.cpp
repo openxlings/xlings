@@ -136,7 +136,8 @@ struct App {
     int admin_selected { 0 };
     std::string attach;                // --attach
     bool dump_state { false };
-    std::string input;                 // tests: typed into the console once it shows something
+    std::string input;                 // tests: typed into the console (or desktop) once it shows something
+    std::optional<std::chrono::steady_clock::time_point> input_at;
     bool quit { false };
 
     void refresh() {
@@ -564,6 +565,40 @@ void console_view_(App& a) {
     }
 }
 
+// Tests: sends `input` up to its next chord (or all of it) to the desktop as
+// key presses; returns what is left.
+std::string type_desktop_(Display& d, std::string_view input) {
+    auto press = [&](std::uint32_t sym, std::uint32_t mods) {
+        d.send(opensal::Key{true, sym, mods});
+        d.send(opensal::Key{false, sym, mods});
+    };
+    static constexpr std::array<std::pair<std::string_view, std::uint32_t>, 6> names{{
+        {"Return", 0xff0d}, {"Tab", 0xff09}, {"Escape", 0xff1b}, {"BackSpace", 0xff08}, {"Up", 0xff52}, {"Down", 0xff54}}};
+    std::size_t k = 0;
+    if (input.starts_with('{')) {
+        const auto end = input.find('}');
+        if (end == std::string_view::npos) return {};
+        auto chord = input.substr(1, end - 1);
+        std::uint32_t mods = 0;
+        std::vector<std::uint32_t> held;
+        for (auto [name, bit, sym] : {std::tuple{"Alt+", opensal::Alt, 0xffe9u}, {"Ctrl+", opensal::Ctrl, 0xffe3u},
+                                      {"Shift+", opensal::Shift, 0xffe1u}, {"Super+", opensal::Super, 0xffebu}})
+            if (chord.starts_with(name)) { mods |= bit; held.push_back(sym); chord.remove_prefix(std::string_view(name).size()); }
+        for (auto sym : held) d.send(opensal::Key{true, sym, mods});
+        std::uint32_t key = chord.size() == 1 ? static_cast<unsigned char>(chord[0]) : 0;
+        for (const auto& [n, sym] : names) if (chord == n) key = sym;
+        if (key) press(key, mods);
+        for (auto sym : held) d.send(opensal::Key{false, sym, 0});
+        return std::string(input.substr(end + 1));
+    }
+    for (; k < input.size() && input[k] != '{'; ++k) {
+        if (input[k] == '\\' && k + 1 < input.size() && input[k + 1] == 'n') { press(0xff0d, 0); ++k; continue; }
+        const auto c = static_cast<unsigned char>(input[k]);
+        press(c, std::isupper(c) ? opensal::Shift : 0);
+    }
+    return std::string(input.substr(k));
+}
+
 // A machine's desktop: its surface drawn whole (1:1 when it fits), and the
 // window's input given to it -- the pointer in the surface's pixels.
 void desktop_view_(App& a) {
@@ -862,6 +897,15 @@ int run(int argc, char* argv[]) {
                 }
                 a.console->write(text);
                 a.input.clear();
+            }
+        }
+        // Tests: typed into the desktop once it shows something -- characters,
+        // `\n` for Return, `{Alt+Return}`-style chords -- a second apart per chord.
+        if (!a.input.empty() && a.view == View::Desktop && a.display && a.texture.handle) {
+            if (!a.input_at) a.input_at = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+            if (std::chrono::steady_clock::now() >= *a.input_at) {
+                a.input = type_desktop_(*a.display, a.input);
+                a.input_at = std::chrono::steady_clock::now() + std::chrono::seconds(1);
             }
         }
         if (a.view == View::Job && a.job && a.job->done && a.job->code == 0 && a.after_job) {

@@ -252,6 +252,11 @@ int guest_init(int, char*[]) {
     const auto home = params.contains("luban.home") ? fs::path(params.at("luban.home")) : fs::path{};
     if (home.empty() || !home.is_absolute()) give_up_("no luban.home on the kernel's command line");
     if (!platform::mount_9p("root", "/newroot", false)) give_up_("the environment's tree (9p tag root) did not mount");
+    // A machine's /run and /tmp are its own and go with it, as on any system
+    // (the tree would keep them: a desktop's sockets, owned by the host's user
+    // there, refuse the next session). Before the home, which may be under one.
+    if (!platform::mount_tmpfs("/newroot/run", 0755)) console_("cannot mount /run");
+    if (!platform::mount_tmpfs("/newroot/tmp", 01777)) console_("cannot mount /tmp");
     if (!platform::mount_9p("home", fs::path("/newroot") / home.relative_path(), true))
         give_up_("the home (9p tag home) did not mount");
     if (params.contains("luban.userhome") && params.at("luban.userhome") == "1"
@@ -264,6 +269,7 @@ int guest_init(int, char*[]) {
     // The agent's sessions are ptys before the environment's own start mounts
     // anything (its rcS mounting devpts again is harmless: already mounted).
     if (!platform::mount_kernel_fs("devpts", "/dev/pts")) console_("cannot mount devpts: sessions will fail");
+
     // Its name: the machine's own /etc/hostname, else the environment's.
     {
         std::ifstream in("/etc/hostname");

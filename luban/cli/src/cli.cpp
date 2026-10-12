@@ -10,6 +10,8 @@ import xlings.subos.home_view;
 import xlings.subos.elevation;
 import luban.service;
 import luban.vm;
+import luban.desktop.wlr;
+import opensal;
 
 namespace luban::cli {
 
@@ -878,6 +880,42 @@ Drive inspect_drive(const fs::path& dev, const fs::path& sys, const fs::path& mo
     return d;
 }
 
+// `luban __desktop <session | -> [--size WxH] [--socket PATH]`: a desktop
+// session headless (or a compositor already running at PATH), bridged by
+// opensal-wlr with opensal.wire on stdin and stdout -- what a sandbox runs for
+// the Luban OS window. `-` is the first session the environment declares.
+int desktop_(const std::vector<std::string>& rest) {
+    namespace wlr = luban::desktop::wlr;
+    std::string id = rest.size() > 1 ? rest[1] : "-";
+    std::string socket;
+    opensal::Size size{1280, 800};
+    for (std::size_t i = 2; i + 1 < rest.size(); i += 2) {
+        if (rest[i] == "--socket") socket = rest[i + 1];
+        else if (rest[i] == "--size") {
+            unsigned w = 0, h = 0;
+            if (std::sscanf(rest[i + 1].c_str(), "%ux%u", &w, &h) == 2 && w && h) size = {w, h};
+        }
+    }
+    auto log = [](std::string_view line) { std::println(std::cerr, "luban __desktop: {}", line); };
+    if (!socket.empty()) return wlr::bridge({.in = 0, .out = 1, .socket = socket, .log = log});
+    auto env = xlings::platform::environment();
+    const auto dirs = wlr::session_dirs(env);
+    std::optional<wlr::Session> session;
+    if (id == "-") { if (auto all = wlr::sessions(dirs); !all.empty()) session = all.front(); }
+    else session = wlr::find_session(id, dirs);
+    if (!session) {
+        log(id == "-" ? std::string("no desktop session is declared here (share/wayland-sessions)")
+                      : std::format("no desktop session {} here", id));
+        return 127;
+    }
+    wlr::SessionOptions o;
+    o.size = size;
+    o.env = std::move(env);
+    const fs::path runtime = o.env.contains("XDG_RUNTIME_DIR") ? fs::path(o.env.at("XDG_RUNTIME_DIR")) : fs::temp_directory_path();
+    o.runtime_root = runtime / "luban";
+    return wlr::run_session(*session, 0, 1, o);
+}
+
 int run(int argc, char* argv[]) {
     std::vector<std::string> args(argv + 1, argv + argc);
     Globals g;
@@ -899,6 +937,7 @@ int run(int argc, char* argv[]) {
     if (!rest.empty() && rest.front() == "__pipe" && rest.size() == 3) return pipe_(rest[1], rest[2]);
     if (!rest.empty() && rest.front() == "__vm-supervise" && rest.size() == 3) return vm::supervise(rest[1], rest[2]);
     if (!rest.empty() && rest.front() == "__pipe-unix" && rest.size() == 2) return pipe_unix_(rest[1]);
+    if (!rest.empty() && rest.front() == "__desktop") return desktop_(rest);
     if (!rest.empty() && (rest.front() == "--version" || rest.front() == "-V")) {
         std::println("luban {}", kVersion);
         return 0;

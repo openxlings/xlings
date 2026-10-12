@@ -210,6 +210,11 @@ int run_session(const Session& s, int in, int out, const SessionOptions& o) {
         const int log = o.log.empty() ? platform::open_null() : platform::open_for_append(o.log);
         const std::array<int, 3> stdio{null, log, log};
         platform::redirect_stdio(stdio);
+        // A session starts at home, as a login does (its terminals open there).
+        if (auto h = env.find("HOME"); h != env.end()) {
+            std::error_code here;
+            fs::current_path(h->second, here);
+        }
         platform::exec_path({"/bin/sh", "-c", "exec " + s.exec}, env);
         platform::exit_now(127);
     }

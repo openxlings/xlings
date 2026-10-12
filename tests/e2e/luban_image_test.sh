@@ -3,14 +3,15 @@
 # environment made with `luban`, exported as a live ISO, a drive and a qcow2,
 # each booted by qemu to stage-0 and its init -- on x86_64 by BIOS and by
 # UEFI, the ISO from a CD and as a drive (its hybrid GPT); on aarch64 by UEFI
-# (virt), every image written in-process. Then `luban try --proxy`: the
-# machine's only network is the proxy.
+# (virt), every image written in-process. Then the environment as a machine:
+# its only network is the proxy; then its desktop (xim:labwc-desktop) shown
+# to a client of the machine as the Luban OS window is, and typed into.
 #
 # The kernel: x86_64 installs xim:linux-kernel into the root (the generic
 # profile's); aarch64 exports with --boot virt. The firmware is
 # xim:edk2-firmware, installed into the test's home as a user would.
 #
-# xtest: covers=LUBAN-ISO,LUBAN-DRIVE,LUBAN-TRY,LUBAN-BOOT-PROFILE,LUBAN-ISO-UEFI,LUBAN-ISO-HYBRID,LUBAN-QCOW2 requires=linux,qemu,bwrap,network
+# xtest: covers=LUBAN-ISO,LUBAN-DRIVE,LUBAN-TRY,LUBAN-BOOT-PROFILE,LUBAN-ISO-UEFI,LUBAN-ISO-HYBRID,LUBAN-QCOW2,LUBAN-MACHINE-DESKTOP requires=linux,qemu,bwrap,network
 set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/project_test_lib.sh"
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/rootfs_lib.sh"
@@ -219,4 +220,18 @@ grep -q "only its proxy" <<<"$machine" || fail "machine: its network is not only
 grep -q "MACHINE-" <<<"$machine" || fail "machine: the session ran nothing: $(tail -20 <<<"$machine")"
 [[ ! -e "$H/subos/t/rootfs/root/machine.txt" ]] || fail "machine --temp: what it wrote stayed"
 [[ ! -e "$H/run/machines/t/scratch" ]] || fail "machine --temp: its copy stayed"
-log "PASS ($arch): ISO (CD and drive), drive and qcow2 boot ($( [[ "$arch" == x86_64 ]] && echo "BIOS and UEFI" || echo UEFI)); an image entered; the environment as a machine, its proxy the only network"
+log "the desktop: labwc-desktop in t, its session bridged by opensal-wlr to a client of the machine, as the Luban OS window is"
+retry X install -y --subos t xim:labwc-desktop >"$RUNTIME_DIR/labwc.log" 2>&1 \
+  || { tail -20 "$RUNTIME_DIR/labwc.log"; fail "install labwc-desktop into t"; }
+L config t --mode machine --on-close background >/dev/null 2>&1 || fail "config t --mode machine --on-close background"
+{ (sleep 120; printf 'exit\n'; sleep 5) 2>/dev/null || true; } \
+  | timeout 300 script -qfec "env XLINGS_HOME=$H DISPLAY= WAYLAND_DISPLAY= $H/bin/luban enter t" /dev/null >"$RUNTIME_DIR/desktop-boot.log" 2>&1 || true
+[[ -S "$H/run/machines/t/luban.sock" ]] || fail "desktop: t is not running: $(tail -10 "$RUNTIME_DIR/desktop-boot.log")"
+desk="$(timeout 300 python3 "$(dirname "${BASH_SOURCE[0]}")/luban_desktop_client.py" "$H/run/machines/t" \
+  '{Alt+Return}echo DESKTOP-$(uname -m) > /root/desktop.txt\n' "$RUNTIME_DIR/desktop.ppm" || true)"
+cp "$H/subos/t/rootfs/var/log/luban/desktop.log" "$RUNTIME_DIR/machine-desktop.log" 2>/dev/null || true
+grep -q '"drew": true' <<<"$desk" || fail "desktop: it never drew: $desk $(tail -20 "$RUNTIME_DIR/machine-desktop.log" 2>/dev/null)"
+[[ "$(cat "$H/subos/t/rootfs/root/desktop.txt" 2>/dev/null)" == "DESKTOP-$arch" ]] \
+  || fail "desktop: what was typed into its terminal did not run ($desk)"
+L stop t >/dev/null 2>&1 || true
+log "PASS ($arch): ISO (CD and drive), drive and qcow2 boot ($( [[ "$arch" == x86_64 ]] && echo "BIOS and UEFI" || echo UEFI)); an image entered; the environment as a machine, its proxy the only network; its desktop shown and typed into"

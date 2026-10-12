@@ -90,6 +90,8 @@ std::string kernel_release();
 // already mounted is success. And `/` read-write, which the kernel mounts
 // read-only unless told otherwise.
 bool mount_kernel_fs(std::string_view type, const std::filesystem::path& target);
+// A tmpfs at `target` with permissions `mode` (0755, 01777).
+bool mount_tmpfs(const std::filesystem::path& target, unsigned mode);
 bool remount_root_rw();
 bool is_pid1();
 
