@@ -1,6 +1,6 @@
 // A home the size of a real one: what changing ONE package costs there.
 //
-// Measured on a maintainer's home (2026-10-12): 3,986 targets in the version
+// Measured on a home in long use (2026-10-12): 3,986 targets in the version
 // database, 2,606 of them active in one SubOS, 18 known projects. `use`,
 // `install --use` and `remove` of a single package each took tens of seconds
 // to minutes there before 2026.10.12.1, because every one of them redid the

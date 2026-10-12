@@ -79,7 +79,7 @@ Objects related to iostream / locale / allocator state were effectively created 
 pointer being freed was not allocated
 ```
 
-This was not a `gtest` logic bug and not a general toolchain failure. It was a test-target link configuration problem in [`xmake.lua`](/Users/speak/workspace/github/xlings/xmake.lua).
+This was not a `gtest` logic bug and not a general toolchain failure. It was a test-target link configuration problem in [`xmake.lua`](~/workspace/xlings/xmake.lua).
 
 ## Fix
 

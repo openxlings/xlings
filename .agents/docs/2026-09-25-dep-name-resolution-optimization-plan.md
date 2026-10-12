@@ -6,7 +6,7 @@
 **起因**:
 - 第一部分:`xlings install xmake` 报 `package 'ncurses' is ambiguous`,分析见
   [2026-09-25-bare-dep-ambiguity-analysis.md](2026-09-25-bare-dep-ambiguity-analysis.md)
-- 第二部分:维护者反馈"自动修复、升级或 `self doctor --fix` 在某种情况下删掉了 subos 的用户
+- 第二部分:反馈"自动修复、升级或 `self doctor --fix` 在某种情况下删掉了 subos 的用户
   目录,丢了很多用户数据"。排查与方案见 §8–§14
 **前置设计**:[2026-08-05-dependency-resolution-single-source.md](2026-08-05-dependency-resolution-single-source.md)
 (把"依赖是哪个**版本**"收成一个回答者)。第一部分把同一原则延伸到"依赖是哪个**包**"。
@@ -166,7 +166,7 @@ std::vector<DepEdge> depEdges;
 > `index_repos` 里的条目(`index_cmd.cpp:30`,`collect_index_sources` 只遍历
 > `Config::global_index_repos()`)。所以要给 scode 这样的子索引**固定索引版本**,唯一的
 > 办法就是把它显式加进 `index_repos`。按 D2 "写入时拒绝",这个用法会被一起挡掉。
-> 下面是修订后的方案(D2',2026-09-26 维护者确认)。
+> 下面是修订后的方案(D2',2026-09-26 已确认)。
 
 修订方案(D2'):**名字和 URL 都和已声明的子索引一致的显式条目,不是第二个仓库,
 而是对同一个仓库的配置**(用来固定版本、指定 artifact 等)。
@@ -280,7 +280,7 @@ AC9 用真实的 plan 结果确认它。
 
 ---
 
-## 7. 已定的决定(2026-09-26 维护者评审)
+## 7. 已定的决定(2026-09-26 评审)
 
 | # | 问题 | 决定 |
 |---|---|---|
@@ -295,7 +295,7 @@ AC9 用真实的 plan 结果确认它。
 
 # 第二部分:SubOS 用户数据保护
 
-## 8. 规则(2026-09-26 维护者确认)
+## 8. 规则(2026-09-26 已确认)
 
 > subos 里的**安装包数据**坏了,可以卸载、删除,因为它是固定的、能恢复的;
 > subos 的 **home 目录以及用户产生的数据**,不能默认删除。
@@ -503,7 +503,7 @@ GC、`doctor --fix` 的删除和注销、`remove --force`。
 
 ## 12. 第二部分不做什么
 
-- **不做回收站或保留区**。维护者已确认:用户数据就在 `subos/<name>/` 下,删除靠确认把关。
+- **不做回收站或保留区**。已确认:用户数据就在 `subos/<name>/` 下,删除靠确认把关。
 - 不追溯恢复已经丢失的数据,也无从恢复。
 - 不改镜像模式的存储格式。
 
@@ -529,7 +529,7 @@ GC、`doctor --fix` 的删除和注销、`remove --force`。
 
 ---
 
-## 14. 第二部分的决定(2026-09-26 维护者评审)
+## 14. 第二部分的决定(2026-09-26 评审)
 
 | # | 问题 | 决定 |
 |---|---|---|
@@ -549,7 +549,7 @@ GC、`doctor --fix` 的删除和注销、`remove --force`。
 | W3 依赖链 | NDJSON ErrorEvent 新增 `chain` 字段 | 写进 `message`,沿用 `resolver.cpp` 已有的 `a -> b` 格式 | 协议结构不变,升级无感;agent 读 message 即可 |
 | W5 第二项 | 冲突集合加入子索引包名 | **不做** | xim 自己提供的名字已被现有规则要求写前缀;xim 没有的名字在 W1 之后先在声明方仓库解析。真正的漏洞是过期豁免,已由"豁免自动过期"覆盖 |
 | D6 回收站 | 保留区 | 不做(D6 定为不另存) | 用户数据留在 `subos/<name>/`,删除靠确认把关 |
-| S1 agent 提示 | — | 不带 `yes` 时返回 exit 2 + hint "this needs the user's confirmation. Tell the user what would be deleted; …" | 维护者要求"返回一个提示词给 agent 让其知情" |
+| S1 agent 提示 | — | 不带 `yes` 时返回 exit 2 + hint "this needs the user's confirmation. Tell the user what would be deleted; …" | 要求"返回一个提示词给 agent 让其知情" |
 | S3 收养 | `--adopt` | 复用确认:终端确认或 `-y` / `yes:true` | 少一个参数,和删除同一套确认语义 |
 | S2 共享模块 | subos.cpp 内部 | 新模块 `xlings.core.subos.userdata` | xself(`self install` / `uninstall`)也要用,而 subos 模块依赖 xself,不能反向 import |
 | `self uninstall --keep-data` | 未在方案中 | 同时保留 `subos/` | 实现时发现:摘要写 "data: KEEP",却删掉所有 subos home |

@@ -386,7 +386,7 @@ target。llvm-dev 改为 `X86;AMDGPU;SPIRV`,而 AMDGPU 正是让 gcc 16 ICE 的�
 仍然是拿宿主那份 XML 生成的。**
 
 ```
-$ ls /home/speak/.xlings/data/xpkgs/*wayland-protocols*   → 什么都没有
+$ ls ~/.xlings/data/xpkgs/*wayland-protocols*   → 什么都没有
 ```
 
 recipe 没错、payload 没错、O4 probe 也确实证明运行时 7/7 全是我们的。缺的只有**接线**:

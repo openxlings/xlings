@@ -18,6 +18,7 @@ Specifications are in English only.
 | [Themes](themes.md) | colour themes: nine role slots, the file format, failure behaviour |
 | [Index distribution](index-distribution.md) | how an index reaches a machine: artefacts, pointers, regions, bounds, self-hosting |
 | [Index version contract](index-version-contract.md) | how a snapshot declares the clients it needs, and how clients are routed |
+| [Upgrade and compatibility](upgrade-and-compatibility.md) | failure domains, the upgrade a new client runs by itself, what an older client does with newer state, releases |
 
 The command reference is generated from the command tree:
 [xlings](../generated/command-reference.md),

@@ -321,6 +321,17 @@ keep in mind:
 * **`remove` asks about the version, not the name** (`removal_check`): a
   dependent blocks only when it links that payload or would have no installed
   version meeting its constraint.
+* **A failure stays in its domain** (`docs/specs/upgrade-and-compatibility.md`):
+  a broken home config, SubOS state, payload, policy or theme stops only what
+  needs it, and every command that touches it names the file, what falls back
+  and the fix -- "could not read" is never silently "empty". New state that can
+  break gets a domain of its own in that table.
+* **The upgrade runs itself** (`xself::upgrade`): the first command of a new
+  client checks the home config, rebuilds derived state and runs doctor's
+  detector; each step is isolated, the result is recorded (`upgrade` in the
+  home config, `logs/upgrade.ndjson`), and only what it could not do is said,
+  once, with its command and the way back. A change that needs a migration
+  adds a step there, not a self-heal on the startup path.
 
 ### Type-specific install dispatch
 
@@ -482,7 +493,7 @@ in mind when changing code near it:
 ### SubOS user data
 
 **A SubOS's home is user data. Only a deletion the user initiated may remove
-it, and only after they confirmed.** The maintainer's rule, 2026-09-26:
+it, and only after they confirmed.** The rule (2026-09-26):
 
 | What | Examples | Who may delete it |
 |---|---|---|
@@ -597,6 +608,27 @@ Same name with another url is refused. See
 xpkg = "0.0.42"
 ```
 For joint development, use mcpp's local dependency override/workspace mechanism.
+
+## Privacy
+
+**Nothing in the repository identifies a person** -- code, comments, tests,
+docs, `.agents/` notes, commit messages and PR descriptions alike:
+
+- no personal home or user paths (`/home/<someone>/`, `/Users/<someone>/`, a
+  session's temp directory): write `~/.xlings`, `$XLINGS_HOME`, `/home/user`;
+- no personal names, account names or email addresses as the source of a
+  rule, a decision or a measurement;
+- no attribution -- whose rule it is, who confirmed it, whose home or machine
+  it was measured on: state the rule, and "a home in long use" for where it
+  was measured;
+- no one's environment, machine or habits.
+
+A role is not a person ("a maintainer reviews and merges", a package's
+`maintainers` field). Functional public infrastructure stays as it is: a
+repository URL the product fetches from, CODEOWNERS, AUR's `# Maintainer:`.
+`tools/lint_privacy.sh` (the lint suite) enforces the paths, emails and
+attribution phrases; a line that must say what it flags carries
+`privacy-ok: <why>`.
 
 ## Version numbering
 

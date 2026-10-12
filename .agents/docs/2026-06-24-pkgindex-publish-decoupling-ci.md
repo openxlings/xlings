@@ -23,7 +23,7 @@
 | 路径 | 载体 | 谁发布 | 客户端 |
 |---|---|---|---|
 | **artifact(默认 `auto` 优先)** | `xim-index[-<name>]-<ver>.tar.gz` + manifest + 指针 `xim-index-latest.json`,在 **xlings-res/xim-index**(GH+GitCode) | **仅 xlings release 的 `publish-index` job**(`build_xim_index_artifact.sh` + `push_index_pointers.sh`) | 拉指针→比 sha→下 artifact |
-| **git(回退)** | github `openxlings/xim-pkgindex` + gitee `sunrisepeak/xim-pkgindex`(`gitee-sync.yml`) | push 即更新 | `xlings update` git pull |
+| **git(回退)** | github `openxlings/xim-pkgindex` + gitee `<owner>/xim-pkgindex`(`gitee-sync.yml`) | push 即更新 | `xlings update` git pull |
 
 - `XLINGS_INDEX_SOURCE=git\|artifact\|auto`,默认 **auto = artifact 优先、git 回退**。
 - 索引仓自己的 `pkgindex-deloy.yml` **只建 GitHub Pages 文档站,不发 artifact**。

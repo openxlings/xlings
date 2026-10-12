@@ -763,6 +763,12 @@ public:
     // their client, so a stale one is worse than none.
     [[nodiscard]] static std::string recorded_client_version();
 
+    // The home's upgrade record (xself::upgrade): `{from, to, at, pending}`,
+    // written once per client version by the first command it runs. Empty
+    // object when there is none or the file cannot be read.
+    [[nodiscard]] static nlohmann::json recorded_upgrade();
+    static std::expected<void, std::string> record_upgrade(const nlohmann::json& record);
+
     // Read-modify-write of the single field, deliberately: the file also
     // holds the xvm versions DB and the user's config, and this is called
     // from a command that has not necessarily loaded either.

@@ -1,5 +1,5 @@
-xlings : /home/speak/workspace/github/openxlings/xlings/target/x86_64-linux-gnu/c4e948c2d216b2cc/bin/xlings
-home   : /tmp/claude-1000/-home-speak-workspace-github-openxlings-xlings/bd877344-74bb-4dba-8a6d-08de5f910578/scratchpad/verify-home
+xlings : ./target/x86_64-linux-gnu/c4e948c2d216b2cc/bin/xlings
+home   : /tmp/verify-home
 subos  : default
 display: :1
 
@@ -30,7 +30,7 @@ display: :1
   egl                    -                              llvmpipe (LLVM 20.1.7, 256 bit CPU (software)
   egl-surfaceless        DISPLAY=                       llvmpipe (LLVM 20.1.7, 256 bit CPU (software)
   egl-surfaceless        DISPLAY=;LIBGL_ALWAYS_SOFTWARE=1 llvmpipe (LLVM 20.1.7, 256 bit CPU (software)
-  egl-surfaceless        DISPLAY=;LIBGL_ALWAYS_SOFTWARE=1;__EGL_VENDOR_LIBRARY_FILENAMES=/tmp/claude-1000/-home-speak-workspace-github-openxlings-xlings/bd877344-74bb-4dba-8a6d-08de5f910578/scratchpad/verify-home/subos/default/share/glvnd/egl_vendor.d/50_mesa.json llvmpipe (LLVM 20.1.7, 256 bit CPU (software)
+  egl-surfaceless        DISPLAY=;LIBGL_ALWAYS_SOFTWARE=1;__EGL_VENDOR_LIBRARY_FILENAMES=/tmp/verify-home/subos/default/share/glvnd/egl_vendor.d/50_mesa.json llvmpipe (LLVM 20.1.7, 256 bit CPU (software)
   egl-device             DISPLAY=                       eglInitialize failed           no context
   gles1                  -                              llvmpipe (LLVM 20.1.7, 256 bit CPU (software)
   gles2                  -                              llvmpipe (LLVM 20.1.7, 256 bit CPU (software)
@@ -48,7 +48,7 @@ display: :1
   egl                    -                              llvmpipe (LLVM 20.1.7, 256 bit CPU (software)
   egl-surfaceless        DISPLAY=                       llvmpipe (LLVM 20.1.7, 256 bit CPU (software)
   egl-surfaceless        DISPLAY=;LIBGL_ALWAYS_SOFTWARE=1 llvmpipe (LLVM 20.1.7, 256 bit CPU (software)
-  egl-surfaceless        DISPLAY=;LIBGL_ALWAYS_SOFTWARE=1;__EGL_VENDOR_LIBRARY_FILENAMES=/tmp/claude-1000/-home-speak-workspace-github-openxlings-xlings/bd877344-74bb-4dba-8a6d-08de5f910578/scratchpad/verify-home/subos/default/share/glvnd/egl_vendor.d/50_mesa.json llvmpipe (LLVM 20.1.7, 256 bit CPU (software)
+  egl-surfaceless        DISPLAY=;LIBGL_ALWAYS_SOFTWARE=1;__EGL_VENDOR_LIBRARY_FILENAMES=/tmp/verify-home/subos/default/share/glvnd/egl_vendor.d/50_mesa.json llvmpipe (LLVM 20.1.7, 256 bit CPU (software)
   egl-device             DISPLAY=                       llvmpipe (LLVM 20.1.7, 256 bit CPU (software)
   gles1                  -                              llvmpipe (LLVM 20.1.7, 256 bit CPU (software)
   gles2                  -                              llvmpipe (LLVM 20.1.7, 256 bit CPU (software)
@@ -66,7 +66,7 @@ display: :1
   egl                    -                              llvmpipe (LLVM 20.1.7, 256 bit CPU (software)
   egl-surfaceless        DISPLAY=                       llvmpipe (LLVM 20.1.7, 256 bit CPU (software)
   egl-surfaceless        DISPLAY=;LIBGL_ALWAYS_SOFTWARE=1 llvmpipe (LLVM 20.1.7, 256 bit CPU (software)
-  egl-surfaceless        DISPLAY=;LIBGL_ALWAYS_SOFTWARE=1;__EGL_VENDOR_LIBRARY_FILENAMES=/tmp/claude-1000/-home-speak-workspace-github-openxlings-xlings/bd877344-74bb-4dba-8a6d-08de5f910578/scratchpad/verify-home/subos/default/share/glvnd/egl_vendor.d/50_mesa.json llvmpipe (LLVM 20.1.7, 256 bit CPU (software)
+  egl-surfaceless        DISPLAY=;LIBGL_ALWAYS_SOFTWARE=1;__EGL_VENDOR_LIBRARY_FILENAMES=/tmp/verify-home/subos/default/share/glvnd/egl_vendor.d/50_mesa.json llvmpipe (LLVM 20.1.7, 256 bit CPU (software)
   egl-device             DISPLAY=                       eglInitialize failed           no context
   gles1                  -                              llvmpipe (LLVM 20.1.7, 256 bit CPU (software)
   gles2                  -                              llvmpipe (LLVM 20.1.7, 256 bit CPU (software)

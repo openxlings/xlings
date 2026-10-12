@@ -36,7 +36,7 @@
 `~/.xlings/data/xim-pkgindex` 的 git reflog：
 
 ```
-d9c219e HEAD@{2026-06-27 20:33:35}: clone: from https://gitee.com/sunrisepeak/xim-pkgindex.git   ← 退回 git 的时刻
+d9c219e HEAD@{2026-06-27 20:33:35}: clone: from https://gitee.com/<owner>/xim-pkgindex.git   ← 退回 git 的时刻
 83e3ff1 HEAD@{2026-06-29 11:58:53}: pull --ff-only
 e33ddd6 HEAD@{2026-06-29 17:26:26}: pull --ff-only
 5e4f263 HEAD@{2026-06-29 19:10:58}: pull --ff-only

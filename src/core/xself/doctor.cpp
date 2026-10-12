@@ -37,6 +37,7 @@ import xlings.subos.manifest;
 import xlings.core.xim.repo;
 import xlings.core.destructive_log;
 import xlings.core.home_config;
+import xlings.core.home_health;
 import xlings.platform.target;
 import xlings.core.home_identity;
 
@@ -923,6 +924,21 @@ Scan detect_(const DoctorState& st, const CoordinateProbe& probe,
     Scan scan;
     scan.probeAvailable = audit.probeAvailable;
     const auto add = [&](Finding f) { scan.findings.push_back(std::move(f)); };
+
+    // The home config itself, before anything read from it is trusted: a
+    // broken one explains every finding of a registry or a record it lost.
+    for (const auto& problem : home_health::problems(p.homeDir)) {
+        add({
+            .kind    = FindingKind::HomeConfigUnreadable,
+            .level   = FindingLevel::Error,
+            .target  = problem.field.empty() ? std::string(".xlings.json") : problem.field,
+            .detail  = std::format("{} {} -- {}", Config::display_path(p.homeDir / ".xlings.json"),
+                                   problem.what, problem.consequence),
+            .remedy  = "xlings self doctor --fix",
+            .remedyNote = "keeps the file as .xlings.json.corrupt-<time>, rebuilds the version "
+                          "records from data/versions.json and the SubOS registry from subos/",
+        });
+    }
 
     // FIRST, because it explains the rest.
     //
@@ -3261,10 +3277,38 @@ void repair_home_layout_(const Scan& scan, bool dryRun, RepairReport& out) {
     }
 }
 
+std::vector<PendingStep> upgrade_check() {
+    std::vector<PendingStep> out;
+    const auto state = load_state_();
+    const CoordinateProbe resolvable = [](const xvm::InstallCoordinate&) { return true; };
+    const auto scan = detect_(state, resolvable, AuditSelection{});
+    for (const auto& f : scan.findings) {
+        if (f.level == FindingLevel::Notice || f.remedy.empty()) continue;
+        if (std::ranges::any_of(out, [&](const PendingStep& p) { return p.what == f.detail; })) continue;
+        out.push_back({f.detail, f.remedy});
+    }
+    return out;
+}
+
 void repair_state_(RepairReport& out) {
     const auto note = [&](std::string label, std::string text) {
         out.notes.emplace_back(std::move(label), std::move(text));
     };
+
+    // The home config first: everything below reads it.
+    if (!home_health::problems(Config::paths().homeDir).empty()) {
+        auto lock = xvm::acquire_state_lock(Config::paths().homeDir);
+        if (!lock) {
+            note(glyph::mark(glyph::failed, "home config"), lock.error());
+        } else if (auto repaired = home_health::repair(Config::paths().homeDir); !repaired) {
+            note(glyph::mark(glyph::failed, "home config"), repaired.error());
+        } else {
+            note(glyph::mark(glyph::bullet, "home config"),
+                 std::format("rebuilt; the file as it was is {}", Config::display_path(repaired->kept)));
+            for (const auto& n : repaired->notes) note(glyph::mark(glyph::bullet, "  "), n);
+            Config::reload_state();
+        }
+    }
 
     // A versions DB file that disagrees with the home config's `versions`
     // field (detect_versions_sources_). The file is DERIVED: removing it
@@ -4826,6 +4870,9 @@ Counts count_(const Scan& scan) {
                 // just from the older copy of one record.
                 ++c.warnings;
                 break;
+            case FindingKind::HomeConfigUnreadable:
+                ++c.subos;
+                break;
             case FindingKind::SubosRuntimeUnknown:
                 // Counts as nothing, on purpose, and for the reason spelled
                 // out on UnverifiedPayload: it reports state we could not
@@ -5187,6 +5234,11 @@ void render_(const Scan& scan, const RepairReport& repair, bool fix,
                     add("  " + glyph::mark(glyph::remedy, "run"), f.remedy);
                 if (!f.remedyNote.empty())
                     add("  " + glyph::mark(glyph::note, "note"), f.remedyNote);
+                break;
+            case FindingKind::HomeConfigUnreadable:
+                add(glyph::mark(glyph::failed, "home config"), f.detail);
+                add("  " + glyph::mark(glyph::remedy, "run"), f.remedy);
+                add("  " + glyph::mark(glyph::note, "note"), f.remedyNote);
                 break;
             case FindingKind::VersionsDbDivergence:
                 add(glyph::mark(glyph::warn, "versions dual-source drift"), f.detail);

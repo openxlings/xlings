@@ -87,7 +87,7 @@ Part 1 已形成声明策略 → spec 编译 → provider → supervisor/session
 | PR 原 head | `4df5c19ca525082eeeacf4d34ae468c95c52e619` |
 | 获取方式 | `git fetch origin main refs/pull/641/head:refs/remotes/origin/pr-641` |
 | 本地工作分支 | `review/pr-641-rebased` |
-| 独立 worktree | `/home/speak/workspace/github/openxlings/xlings-pr641` |
+| 独立 worktree | `~/workspace/openxlings/xlings-pr641` |
 | rebase 基线 | `origin/main`：`c55d89aa43ed4e048964af3791365d7f6532f13d`，#647 |
 | rebase 后 head | `a8c2aba1834737cad4b088ef2e6500bd05115248` |
 | 原 head 备份 | `backup/pr-641-before-rebase` |
@@ -244,7 +244,7 @@ Linux lint 阻断了新增 distro、AUR 和 isolation-fix；本地文档契约�
 
 ## 8. 明确保留的范围限制
 
-以下不应隐藏在“全部完成”里；其中若要随本 PR 发布，需维护者接受并在用户文档说明：
+以下不应隐藏在“全部完成”里；其中若要随本 PR 发布，需确认接受并在用户文档说明：
 
 - net=proxy；broker 安装的 hook 沙箱；interface subos_exec 实时流式输出：Part 1 实施记录明确延后。
 - root 的 ld.so.cache/glibc sysconfdir revision：Part 2 明确延后；`/lib64 = /usr/lib` 提供当前替代搜索路径。

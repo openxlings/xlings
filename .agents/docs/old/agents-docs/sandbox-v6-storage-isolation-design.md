@@ -78,7 +78,7 @@ sandbox=true:
 ~/.xlings/subos/dev/
 ├── bin/ lib/ usr/ generations/    ← subos 基础结构
 ├── .xlings.json                   ← workspace 配置
-├── home/speak/                    ← 明文目录（host 可见）
+├── home/user/                    ← 明文目录（host 可见）
 ├── tmp/                           ← 明文目录（host 可见）
 ├── etc/                           ← NSS 模板
 ├── subos/                         ← project-discovery marker
@@ -93,7 +93,7 @@ sandbox=true:
 ├── .xlings.json                   ← workspace 配置（含 storage 字段）
 ├── home.img                       ← sparse ext4 镜像（host 只看到此文件）
 ├── .mountpoint/                   ← 运行时挂载点（仅沙箱会话期间有内容）
-│   └── home/speak/               ← 解密后的真实数据
+│   └── home/user/               ← 解密后的真实数据
 ├── etc/                           ← NSS 模板（不敏感，明文）
 ├── subos/
 └── sandbox-root/
@@ -522,13 +522,13 @@ bin/  etc/  generations/  home.img  lib/  .mountpoint/  .xlings.json  usr/
 ```
 $ xlings subos use secure-dev
 [info] storage=image requires sandbox, entering sandbox mode...
-[sudo] password for speak: ********           ← 首次需要 sudo mount
+[sudo] password for user: ********           ← 首次需要 sudo mount
 ▸ entering subos secure-dev (sandbox: bwrap, storage: image)
 
 <xsubos:secure-dev> $ echo "secret data" > ~/private.txt
 <xsubos:secure-dev> $ exit
 
-$ cat ~/.xlings/subos/secure-dev/home/speak/private.txt
+$ cat ~/.xlings/subos/secure-dev/home/user/private.txt
 cat: No such file or directory                ← host 看不到！
 $ ls ~/.xlings/subos/secure-dev/home.img
 home.img                                       ← 只有镜像文件

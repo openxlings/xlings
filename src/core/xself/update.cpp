@@ -11,6 +11,17 @@ import xlings.platform;
 
 namespace xlings::xself {
 
+namespace {
+// The way back when updating in place cannot work: the install script
+// installs over the home and keeps what is in it (`self install`'s normal
+// path), on every platform.
+std::string reinstall_command_() {
+    if constexpr (platform::is_windows)
+        return "irm https://raw.githubusercontent.com/openxlings/xlings/main/tools/other/quick_install.ps1 | iex";
+    return "curl -fsSL https://raw.githubusercontent.com/openxlings/xlings/main/tools/other/quick_install.sh | bash";
+}
+}  // namespace
+
 namespace fs = std::filesystem;
 
 bool update_landed_on_index_build(std::string_view activeVersion) {
@@ -67,7 +78,11 @@ int cmd_update(bool user) {
     int rc = platform::exec("xlings --ui-mode cli update");
     platform::set_env_variable("XLINGS_INDEX_PIN", "");
     if (rc != 0) {
-        log::error("failed to update package index");
+        log::error("failed to update package index -- nothing was changed, you are still on {}",
+                   Info::VERSION);
+        log::error("  the other mirror:  xlings config --mirror {} && xlings self update",
+                   Config::mirror() == "CN" ? "GLOBAL" : "CN");
+        log::error("  or reinstall over this home (keeps everything in it): {}", reinstall_command_());
         return rc;
     }
 
@@ -116,6 +131,7 @@ int cmd_update(bool user) {
         log::error("could not install xlings@latest — you are still on the "
                    "current version");
         log::error("  hint: run `xlings install xlings@latest -y` to see why");
+        log::error("  or reinstall over this home (keeps everything in it): {}", reinstall_command_());
         return rc;
     }
 

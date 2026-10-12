@@ -270,6 +270,11 @@ enum class FindingKind {
     // dispatch still resolves from the config; the derived copy is merely
     // stale. A Warning, not an Error.
     VersionsDbDivergence,
+    // `<home>/.xlings.json` is not readable JSON, or a field xlings relies on
+    // has the wrong shape (xlings.core.home_health). Every command still
+    // runs and warns; what that field held falls back to defaults until
+    // `--fix` keeps the file beside it and rebuilds what can be derived.
+    HomeConfigUnreadable,
     // A payload whose top level carries the fingerprint of mcpp-community/mcpp#636: a
     // download-cache sidecar, or another package's archive, that a hookless
     // install used to sweep in from the shared runtime directory instead of
@@ -608,6 +613,18 @@ struct Counts {
              + subos + relocated + staleShims;
     }
 };
+
+// ── after an upgrade ─────────────────────────────────────────────────
+
+// What a new client's first command found that it cannot do by itself: the
+// home's errors and warnings that have a command repairing them. A
+// quick, read-only scan (no payload audit, no index probe) -- the same
+// detector `self doctor` runs, so the two never disagree.
+export struct PendingStep {
+    std::string what;
+    std::string command;
+};
+export std::vector<PendingStep> upgrade_check();
 
 // ── the command ──────────────────────────────────────────────────────
 

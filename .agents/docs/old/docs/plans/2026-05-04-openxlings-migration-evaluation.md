@@ -53,10 +53,10 @@
 
 必须改的功能性引用:
 
-- `config/xlings.json` 默认 GLOBAL index repo 仍是 `https://github.com/d2learn/xim-pkgindex.git`，CN 仍是 `https://gitee.com/sunrisepeak/xim-pkgindex.git`。
+- `config/xlings.json` 默认 GLOBAL index repo 仍是 `https://github.com/d2learn/xim-pkgindex.git`，CN 仍是 `https://gitee.com/<owner>/xim-pkgindex.git`。
 - `src/core/config.cppm` 的 `Info::REPO` 和默认 index repo 仍指向 `d2learn/xlings` / `d2learn/xim-pkgindex`。
 - `tools/other/quick_install.sh`、`tools/other/quick_install.ps1` 的 `GITHUB_REPO` 仍是 `d2learn/xlings`；banner 也输出 d2learn/forum。
-- release package fallback JSON 仍写入 `d2learn/xim-pkgindex`、`gitee.com/sunrisepeak/xim-pkgindex`、`gitee.com/sunrisepeak/xlings`。
+- release package fallback JSON 仍写入 `d2learn/xim-pkgindex`、`gitee.com/<owner>/xim-pkgindex`、`gitee.com/<owner>/xlings`。
 - xlings CI/release workflow 使用 `raw.githubusercontent.com/d2learn/xlings/.../quick_install.*` bootstrap 自身。
 - `xim-pkgindex/.github/workflows/pkgindex-deloy.yml` 通过 `pip install git+https://github.com/d2learn/xpkgindex.git` 安装站点生成器。
 - `xim-pkgindex/.github/workflows/gitee-sync.yml` 和 `xlings/.github/workflows/gitee-sync.yml` 的 `src` 为 `github/d2learn`，`dst` 为 `gitee/Sunrisepeak`。
@@ -152,7 +152,7 @@ GitHub transfer 注意点:
 
 CN 镜像建议单独决策:
 
-- 若继续用 `gitee.com/sunrisepeak/*` 和 `gitcode.com/xlings-res/*`，配置中保留 CN 但文档标注为镜像服务。
+- 若继续用 `gitee.com/<owner>/*` 和 `gitcode.com/xlings-res/*`，配置中保留 CN 但文档标注为镜像服务。
 - 若迁移到 openxlings 命名，应新增 Gitee/GitCode 组织或仓库，并更新 `gitee-sync` secrets。
 
 ### Phase 4: 验证清单

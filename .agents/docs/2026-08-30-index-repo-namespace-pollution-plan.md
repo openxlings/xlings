@@ -2,7 +2,7 @@
 
 > 状态:**已实现**(2026.8.30.1,PR #575,分支 `fix/index-repos-peer-semantics`)。
 > 落地结果与**被实测推翻的判断**见 §7,逐条标注而不是悄悄改掉。
-> 所有数字都在真实 home(`/home/speak/.xlings`)或它的忠实复现上实测,
+> 所有数字都在真实 home(`~/.xlings`)或它的忠实复现上实测,
 > 命令写在每节的「实测」里,可复现。
 
 > **For agentic workers:** REQUIRED SUB-SKILL: 用 `superpowers:subagent-driven-development`
@@ -554,7 +554,7 @@ std::vector<IndexRepo> Config::default_global_index_repos_(const std::string& mi
     // a home whose config predates that, not the source of truth.
     std::string url = defaultIndexRepoUrl_;
     if (url.empty()) {
-        url = mirror == "CN" ? "https://gitee.com/sunrisepeak/xim-pkgindex.git"
+        url = mirror == "CN" ? "https://gitee.com/<owner>/xim-pkgindex.git"
                              : "https://github.com/openxlings/xim-pkgindex.git";
     }
     return { IndexRepo{std::string(DEFAULT_INDEX_REPO_NAME), url} };
@@ -1036,7 +1036,7 @@ EOF
    键的 home,默认索引 URL 会从硬编码值变成他们写的值 —— 这正是它本该有的语义,
    但对他们是行为变更。发布说明要写。
 
-2. **用户 `/home/speak/.xlings` 的处置**。T1-T3 之后:
+2. **用户 `~/.xlings` 的处置**。T1-T3 之后:
    - `data/scode` 仍然是那份 xim 副本,`sync_repo` 的非破坏性护栏
      (`repo.cpp:208-228`)会 `return true` 而什么也不做 —— **代码修好不会自愈**。
      手工 `rm -rf ~/.xlings/data/scode` 一次即可;之后 `scode` 会正确地拿到

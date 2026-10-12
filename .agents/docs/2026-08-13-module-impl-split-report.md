@@ -293,7 +293,7 @@ the interface:**
 
 In a module interface, `inline` means "put this body in the BMI so importers can
 inline it". Removing it is a performance-visibility decision, not a move — the
-maintainer's call, not a mechanical migration's. Stripping it would take the
+deliberate decision, not a mechanical migration's. Stripping it would take the
 interface down by roughly another 13% and is the largest remaining lever.
 
 Measured on `main`'s own tree, the figure is **1,953 lines** — identical. So these

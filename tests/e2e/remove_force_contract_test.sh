@@ -7,7 +7,7 @@
 #
 #   S1  uninstall() hook throws, no --force: exit 1, but the DB/workspace/
 #       shim/store are ALL already clean (state withdrawn before the hook
-#       ran, per the maintainer's ask -- see the diagnostic actions)
+#       ran, as the contract asks -- see the diagnostic actions)
 #   S2  same hook, --force: exit 0
 #   S3  the recipe has left the index entirely: `remove --force` still
 #       works from the version record alone (recipeUnavailable path)

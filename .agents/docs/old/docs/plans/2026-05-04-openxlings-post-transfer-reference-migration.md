@@ -25,7 +25,7 @@
 本轮不处理:
 
 - `d2learn/xlings-project-templates`: 当前在 `xim-pkgindex` 的包元数据中仍被引用；本轮不 transfer，按 external/d2learn 保留。
-- `xlings-res/*`、`gitee.com/sunrisepeak/*`、`gitcode.com/xlings-res/*`: 当前属于资源镜像/CN 镜像范围，不随本次 GitHub transfer 自动迁移。
+- `xlings-res/*`、`gitee.com/<owner>/*`、`gitcode.com/xlings-res/*`: 当前属于资源镜像/CN 镜像范围，不随本次 GitHub transfer 自动迁移。
 
 ## 链接可用性取证
 

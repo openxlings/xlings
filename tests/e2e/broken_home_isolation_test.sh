@@ -2,7 +2,7 @@
 # E2E-106: one broken package (or subos) must not change what other
 # commands report for the rest of the home.
 #
-# The maintainer's requirement, made concrete: a home can accumulate several
+# The requirement, made concrete: a home can accumulate several
 # independent kinds of damage --
 #
 #   1. a subos directory whose .xlings.json is not valid JSON at all

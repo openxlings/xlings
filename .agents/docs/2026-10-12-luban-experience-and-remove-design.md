@@ -4,7 +4,7 @@
 
 **review 决定（第一轮）**：1. 批量清理只用 `--older-than`；2. 程序依赖且仍有可满足版本时直接允许并提示；3. `needs_rebind` 按 scope 运行时重装一份；4. 重跑 `luban new <name>` 补全；5. 视图内主题解析不到时静默回落；6. 版本按日期，`2026.10.12.x`。
 
-来源：维护者按《Luban OS 体验路线》实际使用 2026.10.12.1 时的完整记录（`xlings self update`、`xlings update mcpp`、
+来源：按《Luban OS 体验路线》使用 2026.10.12.1 的完整记录（`xlings self update`、`xlings update mcpp`、
 `xlings remove`、`luban new`、`luban enter` 后 `mcpp new/run`、`xlings install nvim`）。本文逐条给出现象、证据、根因和修复，
 并给出 CI 怎样把每一条固定下来。
 
@@ -14,7 +14,7 @@
 
 | # | 现象 | 性质 | 根因（已确认 / 待复现） |
 |---|---|---|---|
-| P1 | `self update`、`update mcpp`、`remove` 很卡 | 性能 bug | 已确认一部分并已在 12.1 修复（投影整体重算）；用户真实 home 上仍有残余，需按阶段计时定位 |
+| P1 | `self update`、`update mcpp`、`remove` 很卡 | 性能 bug | 已确认一部分并已在 12.1 修复（投影整体重算）；真实使用中的大 home 上仍有残余，需按阶段计时定位 |
 | P2 | 卸载 mcpp 的某个版本被"huxerui 依赖"拒绝 | 语义 bug | 反向依赖检查只比**包名**，不比版本，也不区分库绑定和程序依赖 |
 | P3 | 需要"删除某版本之前的所有版本" | 新能力 | — |
 | P4 | 旧 home 上 `luban new` 报 11 个失败 | 迁移 bug | root scope 要求旧客户端从未写过的证据（`.xlings-resolution.json`），并且旧记录指向的 glibc 不在这个 scope 中 |
@@ -42,9 +42,9 @@
 | `install mcpp --use` | 1.0 s |
 | `list` | 0.61 s |
 
-### 1.2 残余：用户真实 home 与合成 home 的差别
+### 1.2 残余：真实使用中的大 home 与合成 home 的差别
 
-合成 home 已经不慢，但用户真实 home 上 `remove` 仍然卡。两者的差别正是下一步要量的东西：
+合成 home 已经不慢，但真实使用中的大 home 上 `remove` 仍然卡。两者的差别正是下一步要量的东西：
 
 - 有 rootfs SubOS（`luban-test-1`）：它的每次工作区变化都是一代；需要确认 default 的变化是否也会触发它的代（pinning 刷新路径）；
 - 有 18 个 knownProjects：路由表要重建它们；
@@ -166,7 +166,7 @@ xim-x-glibc/2.44: recorded runtime dependency is not opted into this root scope
    - 原地重装之前，先列出引用这个 payload 的所有 scope（SubOS、项目、root）和它们声明的运行时：
      - 都与新运行时一致，或者没有声明运行时 → 原地重装，计划中显示为 `reinstall: runtime 2.44 → 2.44.3`；
      - 有 scope 仍然声明旧运行时 → 不重装，报一个说清两边的错误：哪个 scope 用旧运行时，可用 `xlings subos runtime` 把它移到新运行时。这是真实的冲突，不能替用户选择；
-   - 用户这次的情况属于第一种：default 声明的已经是 `glibc@2.44.3`，旧的 zlib 对它也是过期的。
+   - 记录中的情况属于第一种：default 声明的已经是 `glibc@2.44.3`，旧的 zlib 对它也是过期的。
 4. 错误信息中不再出现"让用户去跑 `--reconfig`"。能自动做的都在计划里做掉；只有 `unusable` 才报错，并说清原因。
 5. 连锁失败：依赖方的失败合并为一行 `9 packages not installed because patchelf failed (see above)`。
 
@@ -182,7 +182,7 @@ xim-x-glibc/2.44: recorded runtime dependency is not opted into this root scope
 
 ## 5. P5：`luban new` 的输出
 
-### 5.1 现状的问题（按用户记录）
+### 5.1 现状的问题（按使用记录）
 
 - edition 链 core ← tiny ← nano 打印成三段 `[1/1] installed subos:…`，像三个不相关的安装；
 - 计划表中出现 `reinstall: recipe revision 4, installed r…`：截断了，而且对用户没有意义；

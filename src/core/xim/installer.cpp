@@ -3899,7 +3899,7 @@ std::expected<Installer::UninstallOutcome, std::string> Installer::uninstall(con
     // True when no index could resolve a recipe at all -- the version
     // record and its payload are the only evidence left, and removal has
     // to work from those instead of refusing (openxlings/xlings#578 and the
-    // maintainer's "remove --all --force must always work").
+    // rule that "remove --all --force must always work").
     bool recipeUnavailable = false;
     // The record's OWN provider/providerVersion (its bindingGroup, when it
     // has one) -- read here because there is no PackageMatch to derive it

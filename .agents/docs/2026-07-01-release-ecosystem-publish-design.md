@@ -52,7 +52,7 @@ release 侧的基础设施**大部分已就绪**,唯独缺**最关键的一步:�
 | 更新索引**源** `pkgs/*/<proj>.lua` | ❌ **无自动化** ← stale 根因 | ❌ **手动 PR** | (仅索引仓 `version-check` cron,且只 Phase-1 dry-run) |
 
 ### 1.1 两个关键事实(实测)
-1. **mcpp `release.yml` 0 处引用 `xim-pkgindex`**:res 镜像 + 索引 bump 全手工(index#335 由 Sunrisepeak 本人开 PR,body 里的 GET-verify+sha256 靠手工)。
+1. **mcpp `release.yml` 0 处引用 `xim-pkgindex`**:res 镜像 + 索引 bump 全手工(index#335 由人工开 PR,body 里的 GET-verify+sha256 靠手工)。
 2. **xlings 索引 artifact 建自 `openxlings/xim-pkgindex` main**(`build_xim_index_artifact.sh:50-51` 默认 URL,`REF=main`)。源不 bump → artifact stale。
 
 ### 1.2 索引仓自动化的现状
@@ -118,13 +118,13 @@ ASSETS=...                                       # 按项目 tag 的产物命名
 ```
 **幂等**:`--apply` 对已存在版本 no-op;分支已存在则 `--force-with-lease` 或复用。
 **不自动合并**:脚本只负责把 PR 开出来(需 `XIM_PKGINDEX_TOKEN` 的 Contents+Pull requests 写权),
-合并由维护者人工完成 —— 索引 git 源不进 release 关键路径。
+合并人工完成 —— 索引 git 源不进 release 关键路径。
 
 ### 3.3 索引 artifact:复用现有三脚本,**不改时序**
 `build_xim_index_artifact.sh` / `publish_xim_index.sh` / `push_index_pointers.sh` **完全不动**。
 因为 bump 只开 PR、由人工合并,release 时 main 尚未含新版本,故:
 - release 的 `publish-index` 照常从 main 建 artifact(该次 artifact 对**被 bump 的包**尚是旧值,不影响其它包)。
-- **新版本进 artifact 的时刻 = 维护者合并 bump PR 时**:合并 push 到 main → 触发索引仓自己的
+- **新版本进 artifact 的时刻 = 合并 bump PR 时**:合并 push 到 main → 触发索引仓自己的
   解耦发布(`publish-artifact.yml`,见 `2026-06-24` 文档 §2)重建并发布 artifact + 指针。
 - git 回退路径同理:合并 → gitee-sync → 客户端 `xlings update` git pull 见新版本。
 
@@ -162,7 +162,7 @@ release 各平台 build 完、`create GitHub Release` 后,新增 `publish-ecosys
 > (指向 `github.com/mcpp-community`),与现有 XLINGS_RES 约定**不一致**(对 CN 用户回退更差)。
 > bump 只是 PR、人工 review,不会静默上线;但要让 mcpp 自动 bump 产出 XLINGS_RES 一致条目,
 > 应把 `mcpp.lua` 三平台改成 **`res_versioned = true` 并去掉 `url_template`**(mcpp 的 url_template
-> 只被 bot 消费)。这是索引仓的合约改动,留给维护者拍板(见 §9)。
+> 只被 bot 消费)。这是索引仓的合约改动,留待决定(见 §9)。
 > 注:mcpp 的索引 artifact 目前由 xlings release 的 `publish-index` 覆盖(主索引整体打包);
 > mcpp 侧本轮只需 ①源 bump + ②res 镜像。artifact 刷新沿用索引仓解耦发布
 > (见 `2026-06-24` 文档 §2 的 `publish-artifact.yml`)。
@@ -171,7 +171,7 @@ release 各平台 build 完、`create GitHub Release` 后,新增 `publish-ecosys
 
 ## 5. bump 落地:只开 PR,人工合并
 - **开 PR**:`gh pr create`,标题 `bump(<proj>): track <ver> as latest`,body 附检测证据(current/upstream/tag)。
-- **人工合并**:维护者 review 后手动合(与现有 mcpp index#335 的习惯一致)。
+- **人工合并**:review 后手动合(与现有 mcpp index#335 的习惯一致)。
 - **不需要**:`Allow auto-merge`、分支保护/required checks —— 人工 review 即门禁。
 - **为何这样**:索引 git 源不在 release 关键路径,可用性已由 xlings-res 侧保证;
   索引改动保留一个人工确认点,最简单且留痕。
@@ -189,7 +189,7 @@ release 各平台 build 完、`create GitHub Release` 后,新增 `publish-ecosys
 | 开 bump PR | `XLINGS_RES_TOKEN`(需含该仓写权) | `openxlings/xim-pkgindex` |
 | GitCode 上传 | `GITCODE_TOKEN` + vendored `tools/gtc` | `xlings-res/*`(GitCode) |
 
-> gitee-sync(→ `sunrisepeak/xim-pkgindex`,本地 clone 跟踪源)在 bump 合并后由索引仓自身
+> gitee-sync(→ `<owner>/xim-pkgindex`,本地 clone 跟踪源)在 bump 合并后由索引仓自身
 > 已配的 `GITEE_TOKEN`/`GITEE_SSH_KEY` 自动触发。
 > (具体 secret 落位与仓库设置是运维动作,不在本设计文档范围。)
 
@@ -201,10 +201,10 @@ tag v0.4.63 ─▶ build(4 平台) ─▶ create-release(GH)
                                    ├─▶ publish-index   ─▶ xlings-res/xim-index + 指针   [基础设施就绪]
                                    └─▶ bump-index      ─▶ 开 PR 到 pkgindex            [等人工]
 
-【人工段 —— 维护者点一下 merge】
+【人工段 —— 点一下 merge】
 merge bump PR ─▶ pkgindex main 含 0.4.63
                     ├─▶ 索引仓 publish-artifact.yml ─▶ 重建 artifact(含新版)+ 指针 ─▶ xlings-res/xim-index
-                    └─▶ gitee-sync ─▶ sunrisepeak/xim-pkgindex
+                    └─▶ gitee-sync ─▶ <owner>/xim-pkgindex
 
 用户 `xlings update` ─▶ 拉新指针/artifact(或 git 回退)─▶ 见 0.4.63
 ```
@@ -230,7 +230,7 @@ merge bump PR ─▶ pkgindex main 含 0.4.63
 ## 9. 未决 / 后续
 - [x] token 已就位:`XIM_PKGINDEX_TOKEN`(openxlings/xim-pkgindex,Contents+PR 写)已建并配到 xlings + mcpp 仓;`XLINGS_RES_TOKEN` 已 regenerate 并同步三仓。
 - [ ] **mcpp bump 格式(需拍板)**:把 `pkgs/m/mcpp.lua` 改成 `res_versioned=true`(去 `url_template`)
-      让自动 bump 产出 `XLINGS_RES`,还是接受 `url+sha256`?见 §4.2。索引仓 PR,维护者决定。
+      让自动 bump 产出 `XLINGS_RES`,还是接受 `url+sha256`?见 §4.2。索引仓 PR,另行决定。
 - [ ] mcpp 索引 artifact 是否需要独立于 xlings 主索引发布(当前主索引整体打包已覆盖 mcpp 条目)。
 - [ ] 两仓 vendored 脚本的同步策略:定期 diff 告警 vs 用 git subtree/submodule。
 

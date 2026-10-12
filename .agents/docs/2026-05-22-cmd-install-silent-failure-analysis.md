@@ -213,7 +213,7 @@ mcpp 用的 `~/.mcpp/registry/data/xpkgs/` 是全新隔离 home，第一次跑 l
 
 ```
 mirror          CN
-index-repo      xim : https://gitee.com/sunrisepeak/xim-pkgindex.git
+index-repo      xim : https://gitee.com/<owner>/xim-pkgindex.git
 ```
 
 而用户的 `~/.xlings/.xlings.json` 大概率是 `mirror=GLOBAL`（默认）。同一个 xim:llvm@20.1.7：

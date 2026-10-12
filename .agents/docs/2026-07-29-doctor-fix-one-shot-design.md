@@ -21,9 +21,9 @@
 ### 1.1 `llvm@20.1.7` 是一条 **Linux home 里的 Windows 注册**
 
 ```json
-"llvm":  { "versions": { "20.1.7": { "path": "/home/speak/.xlings\\data\\xpkgs\\xim-x-llvm\\20.1.7" } } }
+"llvm":  { "versions": { "20.1.7": { "path": "~/.xlings\\data\\xpkgs\\xim-x-llvm\\20.1.7" } } }
 "ar":    { "versions": { "20.1.7": { "alias": ["llvm-ar.exe"],
-                                     "path": "/home/speak/.xlings\\data\\xpkgs\\xim-x-llvm\\20.1.7/bin" } } }
+                                     "path": "~/.xlings\\data\\xpkgs\\xim-x-llvm\\20.1.7/bin" } } }
 ```
 
 9 条 entry（`llvm ar cl lib link nm ranlib rc strip`）路径全是反斜杠，别名全带
@@ -120,7 +120,7 @@ binding state   8                                                           ← 
 ### 1.6 `claude` 别名告警是真 bug：引号吃掉了绝对路径判断
 
 ```json
-"alias": ["\"/home/speak/.xlings/data/xpkgs/xim-x-claude/2.1.142/…/claude.exe\""]
+"alias": ["\"~/.xlings/data/xpkgs/xim-x-claude/2.1.142/…/claude.exe\""]
 ```
 
 `doctor.cppm:512` 的 `fs::path(alias_prog).is_absolute()` 拿到的字符串首字符是

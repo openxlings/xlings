@@ -56,7 +56,7 @@ V4 (0.4.23) 出来后用户实测发现 install 看着成功但装的包根本�
    - **修复**:`init_sandbox_dirs_` 多加一行 `mkdir <subos>/subos/`(空目录,纯 marker)。inside sandbox 看到 `/.xlings.json` + `/subos/` → boundary 触发 → 不进入 project mode → activeSubos 用 env = "tmp" → install 路径正确。
 
 2. **PATH 不会自动包含 sandbox subos bin**
-   - V4 进 sandbox 时只设 `HOME / XLINGS_ACTIVE_SUBOS / XLINGS_SUBOS_MODE`,**没设 PATH**。bash 继承父进程(host xlings)PATH ── 包含 `/home/speak/.xlings/data/xpkgs/...`、`/home/speak/.xlings/subos/default/bin` 这种 host 路径,但**不**包含 `~/.xlings/subos/tmp/bin`(sandbox 当前 subos 的 bin)。
+   - V4 进 sandbox 时只设 `HOME / XLINGS_ACTIVE_SUBOS / XLINGS_SUBOS_MODE`,**没设 PATH**。bash 继承父进程(host xlings)PATH ── 包含 `/home/user/.xlings/data/xpkgs/...`、`/home/user/.xlings/subos/default/bin` 这种 host 路径,但**不**包含 `~/.xlings/subos/tmp/bin`(sandbox 当前 subos 的 bin)。
    - 即使 install 落到正确位置,PATH 也找不到。
    - **修复**:`use_sandbox_mode_` exec proot 前显式设 `PATH=$HOME/.xlings/subos/<name>/bin:$HOME/.xlings/bin:/usr/local/bin:/usr/bin:/bin`(per-subos bin 第一,xlings 全局 bin 第二,host POSIX 兜底)。
    - 同时 `init_sandbox_dirs_` 在 `<subos>/home/<user>/` 写**最小 `.bashrc` / `.profile` / `.config/fish/config.fish`**,各自 source `~/.xlings/config/shell/xlings-profile.{sh,fish}`。交互式 shell 起来时 profile 被 source,XLINGS_SUBOS_MODE 被读到 → 提示符切成 `<xsubos:tmp>`(就是 0.4.23 标的 V4 区分符)。非交互 shell(`bash -c`、脚本)走显式 PATH 兜底。两条路都不漏。
@@ -86,7 +86,7 @@ E2E 加 3 个 regression 场景(11 → 14 scenarios):
   - **私有(对应 `<subos>/{home/<user>, tmp, etc/...}` 子树)**:`$HOME`、`/tmp`、`/etc/{passwd,group,hosts,nsswitch.conf}`(模板用真实 user,不再是 root 行)
   - **host RO**:`/proc /sys /dev`、`/etc/resolv.conf`、`/etc/ld.so.cache`、`/usr`(POSIX 工具 + 库)、`/usr/lib:/lib`、`/usr/lib64:/lib64`(usrmerge 兼容)
   - **host RW**:`~/.xlings`(嵌套 bind 在 `/home/<user>` 之上 ── proot 子路径覆盖父路径) ── 这就是为什么 sandbox 里 `xlings install/list/remove` 跟外面一模一样:同一个 xpkg 池,同一个 xvm DB,workspace 仍然 per-subos
-  - **真实 user 身份**:proot 不带 `-0`,`whoami` 返回 `speak`(uid 1000),`$HOME=/home/speak`,`$USER=speak`。sandbox 内创建的文件 owner 自然连续,出 sandbox 后用户能直接读写
+  - **真实 user 身份**:proot 不带 `-0`,`whoami` 返回 `user`(uid 1000),`$HOME=/home/user`,`$USER=user`。sandbox 内创建的文件 owner 自然连续,出 sandbox 后用户能直接读写
   - **shell 跟外界一致**:sandbox 用 `$SHELL`(用户当前 shell)。`/bin/<x>` 自动翻译成 `/usr/bin/<x>` 因为 sandbox `/bin` 私有不带 host 二进制
 
 - **删除的旧实现**(V1.1-V1.3,0.4.21-0.4.22):
@@ -102,8 +102,8 @@ E2E 加 3 个 regression 场景(11 → 14 scenarios):
   ```
   $ xlings subos new mybox
   $ xlings subos use mybox --sandbox
-  <xsubos:mybox> $ whoami                    # speak,真实身份
-  <xsubos:mybox> $ echo $HOME                # /home/speak,但是 sandbox 私有 dir
+  <xsubos:mybox> $ whoami                    # user,真实身份
+  <xsubos:mybox> $ echo $HOME                # /home/user,但是 sandbox 私有 dir
   <xsubos:mybox> $ ls ~/                      # 空(只有 .xlings,因为它是宿主 RW bind)
   <xsubos:mybox> $ xlings install fish        # 跟宿主一样,装到宿主 xpkg 池,workspace 进 mybox
   <xsubos:mybox> $ fish                       # 启动 fish

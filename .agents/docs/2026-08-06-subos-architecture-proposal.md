@@ -634,7 +634,7 @@ a release looking exactly like an unattended laptop")——但那是一个人在
 
 ## 7. 架构决策记录(AD-1 ~ AD-14)
 
-本节记录 review 中由 sunrisepeak 定下的架构决策,连同它们否掉的我的错误判断。
+本节记录 review 中定下的架构决策,连同它们否掉的我的错误判断。
 决策按定下的先后编号,内容按主题排列。
 
 ### AD-1:subos 同时是编译期与运行期概念,优先级规则是"能直连 payload 就直连"

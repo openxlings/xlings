@@ -1,6 +1,6 @@
 # install 的 config 触发、输出层与 elfpatch 跳过规则 —— 方案
 
-2026-09-29。来源：libxpkg#43、xlings#632、xlings#629，以及维护者提的两条：
+2026-09-29。来源：libxpkg#43、xlings#632、xlings#629，以及另外两条：
 `self update` 不要下载进度条、TUI 进度条后补空行；`install` 默认不重跑
 config，用 `--reconfig` 触发。
 
@@ -19,11 +19,11 @@ config，用 `--reconfig` 触发。
 
 ## 0. 范围
 
-**做：** libxpkg#43 ①②③；#629；#632 §1、§4；两条维护者需求。
+**做：** libxpkg#43 ①②③；#629；#632 §1、§4；另外两条需求。
 
 **不做：**
 - libxpkg#43 ④（`resolved_dep` 带 loader）：①② 做完后 chatgpt 可以回到自动 patch，配方不再需要接管。
-- #632 §2：维护者决定本轮不动。现状本来就是"可以自动匹配、但安装前要确认"，只有 `-y` 会跳过确认。
+- #632 §2：本轮不动。现状本来就是"可以自动匹配、但安装前要确认"，只有 `-y` 会跳过确认。
 - #632 §3：理由见 §2.10。
 - `subos.env{reason=}`：要改 spec，延后。
 - 各 index 的配方改动：qt 系列 revision、chatgpt 接管代码的删除、构建脚本。

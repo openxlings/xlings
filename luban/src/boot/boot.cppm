@@ -5,7 +5,7 @@ import xlings.libs.json;
 
 // Which SubOS a machine boots (design part 2 §8): `<home>/boot.json`.
 //
-// The maintainer's model: the boot entries are configured at run time and
+// The model: the boot entries are configured at run time and
 // take effect on the next boot. A package change inside the running host is
 // live (a new generation); changing WHICH SubOS is the host happens when
 // stage-0 runs. Pure: the file's content in, the choice and the content to

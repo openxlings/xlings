@@ -19,7 +19,7 @@ xlings subos use mybox --sandbox      # NEW:proot fs 隔离进入,提示符 <xsu
 
 1. **subos 概念不变**:仍然是 workspace 隔离单元。`xlings install`/`use`/`remove` 在 subos 内的语义跟以前一样(payload 进 host 池,workspace 进 `<subos>/.xlings.json`,shim 进 `<subos>/bin/`)。
 2. **xlings home 共享**:sandbox 内 `~/.xlings` 通过 RW bind 指向 host 的 `~/.xlings`,所以 xlings 命令在 sandbox 里跟 host 行为完全一致 ── 装包、查询、xvm 状态都共享。
-3. **真实 user**:proot 不带 `-0`。sandbox 内 `whoami` 返回真实 user(如 speak),`$USER`、`$HOME` 跟 host 同名。
+3. **真实 user**:proot 不带 `-0`。sandbox 内 `whoami` 返回真实 user(如 user),`$USER`、`$HOME` 跟 host 同名。
 4. **shell 跟 host 一致**:进 sandbox 用 `$SHELL`(用户当前 shell)。不再有"sandbox 必须先选 shell"概念。
 
 ### 排除项
@@ -82,7 +82,7 @@ proot 处理 bind 时,**最 specific 的路径胜出**:
 | `cat /etc/passwd` | sandbox 模板(只看到自己的 user 行 + root 行,看不到其他 host user) |
 | `mkdir /tmp/work` | `<subos>/tmp/work/` (sandbox 私有) |
 | `mkdir /usr/local/foo` | EROFS (host RO) |
-| `whoami` | 真实 user(如 `speak`) |
+| `whoami` | 真实 user(如 `user`) |
 | `id -u` | 真实 uid(如 `1000`) |
 
 ## 提示符规范

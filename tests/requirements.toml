@@ -910,3 +910,25 @@ status = "required"
 [LUBAN-NEW-RERUN]
 text = "an environment a failure left unfinished is finished by running the same luban new / subos new --from again; another edition under the same name is refused with the command that finishes it"
 status = "required"
+
+# ── upgrade and fault isolation (docs/specs/upgrade-and-compatibility.md) ──
+
+[UPGRADE-LADDER]
+text = "the first command of a new client runs the home's upgrade steps by itself, records {from, to, pending} and logs/upgrade.ndjson, and says nothing when nothing is pending"
+status = "required"
+
+[UPGRADE-PENDING-ONCE]
+text = "what the upgrade cannot do by itself is said once, by the command that found it, each item with the command that does it; the command asked for still runs"
+status = "required"
+
+[UPGRADE-DOWNGRADE]
+text = "a client older than the one that last upgraded the home changes no record and says how to go back to the newer one"
+status = "required"
+
+[FAULT-HOME-CONFIG]
+text = "a home config that is not readable JSON, or a field of the wrong shape, is named by every command with its fix; self doctor reports it; --fix keeps the file and rebuilds the version records and the SubOS registry"
+status = "required"
+
+[FAULT-ISOLATION]
+text = "an unreadable SubOS state stops nothing else: the other SubOS and the commands that do not need it carry on"
+status = "required"

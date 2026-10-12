@@ -754,7 +754,7 @@ plan ──► build（每个 OS × profile 只构建一次；mcpp 全局缓存�
 | C24 | `fetch=layer` | L3 + L4 |
 | C25 | `subos doctor`；完整环境矩阵；性能预算作为断言 | L6 + L7 |
 | C26 | 部署形态 S；系统层（M）的读取路径 | L5 |
-| C27 | rootfs（是否放进本 PR 由维护者决定） | L4 |
+| C27 | rootfs（是否放进本 PR 另行决定） | L4 |
 
 ## 27. 决策
 

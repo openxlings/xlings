@@ -2,7 +2,7 @@
 
 > 状态:**已实现**(2026.9.2.1,分支 `fix/version-key-namespace-flip`)。基线 HEAD `a16f82f`,
 > 发布版 `2026.8.30.2`;实施后 rebase 到 `f5a0775`(#576, 2026.8.30.2)。实施中被实测推翻/修正的判断见 §10,逐条标注而不是悄悄改掉。
-> 所有数字都在真实 home(`/home/speak/.xlings`)或它的 slice 上实测,命令写在每节的
+> 所有数字都在真实 home(`~/.xlings`)或它的 slice 上实测,命令写在每节的
 > 「实测」里,可复现。真实 home 全程只读:两次 `slice-real-home.sh verify-untouched`
 > 均为 OK。
 

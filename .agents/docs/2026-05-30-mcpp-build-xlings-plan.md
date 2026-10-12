@@ -18,7 +18,7 @@ target/x86_64-linux-musl/416f32eb2054cfae/bin/xlings
 
 ```bash
 KEEP_MCPP_RUNTIME=1 \
-MCPP_BIN=/home/speak/workspace/github/mcpp-community/mcpp/target/x86_64-linux-gnu/afb76caa74c38c77/bin/mcpp \
+MCPP_BIN=~/workspace/mcpp-community/mcpp/target/x86_64-linux-gnu/afb76caa74c38c77/bin/mcpp \
 bash tests/e2e/mcpp_build_xlings_test.sh
 ```
 
@@ -67,7 +67,7 @@ Finished release [optimized] in 34.83s
 为了让 xlings 构建成立，mcpp 仓库需要配套修复。当前修复在:
 
 ```text
-/home/speak/workspace/github/mcpp-community/mcpp
+~/workspace/mcpp-community/mcpp
 branch: feat/xlings-build-support
 binary: target/x86_64-linux-gnu/afb76caa74c38c77/bin/mcpp
 ```
@@ -75,12 +75,12 @@ binary: target/x86_64-linux-gnu/afb76caa74c38c77/bin/mcpp
 已验证的 mcpp 命令:
 
 ```bash
-MCPP_HOME=/home/speak/.xlings/data/xpkgs/xim-x-mcpp/0.0.20 \
-/home/speak/.xlings/data/xpkgs/xim-x-mcpp/0.0.30/bin/mcpp \
+MCPP_HOME=~/.xlings/data/xpkgs/xim-x-mcpp/0.0.20 \
+~/.xlings/data/xpkgs/xim-x-mcpp/0.0.30/bin/mcpp \
 test -- --gtest_filter=Scanner.*:PmCompat.*:Toml.*
 
-MCPP_HOME=/home/speak/.xlings/data/xpkgs/xim-x-mcpp/0.0.20 \
-/home/speak/.xlings/data/xpkgs/xim-x-mcpp/0.0.30/bin/mcpp \
+MCPP_HOME=~/.xlings/data/xpkgs/xim-x-mcpp/0.0.20 \
+~/.xlings/data/xpkgs/xim-x-mcpp/0.0.30/bin/mcpp \
 build --print-fingerprint
 ```
 

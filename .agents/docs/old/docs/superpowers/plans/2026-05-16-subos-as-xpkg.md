@@ -35,8 +35,8 @@
 
 | Path | Change |
 |---|---|
-| `/home/speak/workspace/github/mcpplibs/libxpkg/src/xpkg.cppm` | Add `Subos` to `PackageType` enum (line 12) |
-| `/home/speak/workspace/github/mcpplibs/libxpkg/src/xpkg-loader.cppm` | Map `"subos"` string → `PackageType::Subos` (line 153-156) |
+| `~/workspace/mcpplibs/libxpkg/src/xpkg.cppm` | Add `Subos` to `PackageType` enum (line 12) |
+| `~/workspace/mcpplibs/libxpkg/src/xpkg-loader.cppm` | Map `"subos"` string → `PackageType::Subos` (line 153-156) |
 | `src/core/xim/index.cppm` | Add `case 4 ↔ PackageType::Subos` to `int_to_type` and `type_to_int` (line 19-28) |
 | `src/core/xim/libxpkg/types/type.cppm` | Update comment `// 0=Package, 1=Script, ..., 4=Subos` (line 79) |
 | `src/core/xim/installer.cppm` | Add `else if pkgType == 4` dispatch to `subos::default_install`/`subos::default_config`/`subos::default_uninstall` (lines 1355, 1440 area, and uninstall section) |
@@ -53,14 +53,14 @@
 ### Task 1: Add `Subos` to mcpplibs/libxpkg + xlings type mapping
 
 **Files:**
-- Modify: `/home/speak/workspace/github/mcpplibs/libxpkg/src/xpkg.cppm:12`
-- Modify: `/home/speak/workspace/github/mcpplibs/libxpkg/src/xpkg-loader.cppm:153-156`
+- Modify: `~/workspace/mcpplibs/libxpkg/src/xpkg.cppm:12`
+- Modify: `~/workspace/mcpplibs/libxpkg/src/xpkg-loader.cppm:153-156`
 - Modify: `src/core/xim/index.cppm:19-28`
 - Modify: `src/core/xim/libxpkg/types/type.cppm:79`
 
 - [ ] **Step 1: Explore — Read the upstream PackageType definition and the loader's `type_from_string` logic to confirm naming pattern**
 
-Read: `/home/speak/workspace/github/mcpplibs/libxpkg/src/xpkg.cppm` (lines 1-50), and `xpkg-loader.cppm` (lines 140-170).
+Read: `~/workspace/mcpplibs/libxpkg/src/xpkg.cppm` (lines 1-50), and `xpkg-loader.cppm` (lines 140-170).
 
 Expected understanding: enum is `enum class PackageType { Package, Script, Template, Config };` — append `Subos` as 5th value.
 
@@ -116,7 +116,7 @@ int pkgType { 0 };  // 0=Package, 1=Script, 2=Template, 3=Config, 4=Subos
 
 - [ ] **Step 6: Rebuild mcpplibs/libxpkg and verify xlings picks up new enum**
 
-Run from `/home/speak/workspace/github/mcpplibs/libxpkg/`:
+Run from `~/workspace/mcpplibs/libxpkg/`:
 ```bash
 xmake -y
 ```
@@ -133,7 +133,7 @@ Expected: clean build, no errors. `xmake build` succeeds.
 
 ```bash
 # In mcpplibs/libxpkg:
-cd /home/speak/workspace/github/mcpplibs/libxpkg
+cd ~/workspace/mcpplibs/libxpkg
 git add src/xpkg.cppm src/xpkg-loader.cppm
 git commit -m "feat(xpkg): add PackageType::Subos for subos-as-xpkg support
 

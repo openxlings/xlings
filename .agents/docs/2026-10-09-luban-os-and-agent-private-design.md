@@ -388,7 +388,7 @@ $ luban new box
   ! 第一次在这台机器上运行 Luban 环境，需要一次系统设置：
     Ubuntu 限制了程序创建隔离环境；将安装一个 root 所有的 bwrap 和一个范围很窄的 AppArmor 规则
     （只做一次，之后所有用户都不再需要）
-  [sudo] speak 的密码：
+  [sudo] user 的密码：
   ✓ 系统设置完成
   [██████░░░░] 5/13 gcc 16.1.0   180/410 MB
   ✓ box 就绪
