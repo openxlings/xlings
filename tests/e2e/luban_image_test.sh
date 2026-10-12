@@ -35,6 +35,10 @@ cfg = json.load(open(sys.argv[1])) if os.path.exists(sys.argv[1]) else {}
 cfg["index_repos"] = [{"name": "xim", "url": sys.argv[2]}]
 json.dump(cfg, open(sys.argv[1], "w"), indent=2)
 ' "$H/.xlings.json" "$XLINGS_TOOLS_HOME/index-under-test"
+  # An index already synced stays until it is gone (tools/ci/xlings_tools.sh).
+  rm -rf "$H/data/xim-pkgindex"
+  X update >"$RUNTIME_DIR/update.log" 2>&1 || { tail -20 "$RUNTIME_DIR/update.log"; fail "xlings update (the index under test)"; }
+  log "index under test: $(readlink -f "$H/data/xim-pkgindex")"
 fi
 L() { ( cd /tmp && env -u XLINGS_ACTIVE_SUBOS -u XLINGS_SUBOS_MODE XLINGS_HOME="$H" DISPLAY= WAYLAND_DISPLAY= "$H/bin/luban" "$@" ); }
 
@@ -208,6 +212,8 @@ grep -aq "luban-init: booting" <<<"$out" || fail "enter t.iso: did not boot: $(t
 grep -aq "qemu" <<<"$(grep -a "booting t.iso" <<<"$out")" && fail "enter t.iso names its monitor: $(grep -a booting <<<"$out")"
 
 log "luban enter t --mode machine: the environment itself, its own kernel, a session with its shell"
+q="$(command -v "${QEMU[0]}" || true)"
+log "  qemu: ${q:-none} -> $(readlink -f "$q" 2>/dev/null); 9p: $("${QEMU[0]}" -M none -device virtio-9p-pci,help 2>&1 | head -1)"
 L config t --proxy socks5h://127.0.0.1:9 >/dev/null 2>&1 || fail "config --proxy"
 # The machine's own logs are kept with the test's, whatever happens next.
 keep_machine_logs() { for f in "$H"/logs/machines/t/*.log; do [[ -f "$f" ]] && cp "$f" "$RUNTIME_DIR/machine-$(basename "$f")"; done; true; }
