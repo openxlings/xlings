@@ -1012,3 +1012,7 @@ status = "required"
 [LUBAN-MACHINE-DESKTOP]
 text = "a machine whose root declares a desktop session shows it to the Luban OS window: the guest starts the session headless with its /run and /tmp its own, bridges it on a channel of the machine (opensal.wire), at the size the window asks; what is typed into it runs there"
 status = "required"
+
+[SUBOS-CMD-STDOUT]
+text = "`subos use <n> --cmd <c>` is a script: its standard output is the command's alone, byte for byte -- no announcement of the entry"
+status = "required"

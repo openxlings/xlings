@@ -1413,9 +1413,11 @@ int use_spawn_shell(const std::string& name, EventStream& stream, bool sandbox, 
         if (auto rc = use_detail_::validate_subos_(name, stream); rc != 0) return rc;
         use_detail_::apply_subos_env_(name);
         warn_sandbox_without_gpu_(name, gpu, stream);
+        // A `--cmd` run is a script: its standard output is the command's alone
+        // (a stream a program reads, as the Luban OS window reads a desktop's).
         return sandbox::enter(name, stream, sandbox::EnterOptions{
             .backend = sandbox_backend, .gpu = gpu, .cmd = cmd, .env = declared_env_(name),
-            .preset = preset, .overrides = overrides, .persist = persisted });
+            .announce = cmd.empty(), .preset = preset, .overrides = overrides, .persist = persisted });
     }
     warn_storage_dormant_on_shell_(name);
 

@@ -80,9 +80,14 @@ XTEST(LubanWlr, ASessionIsAFreedesktopSessionFile, .area = "luban", .covers = {"
     std::ofstream(root / "a" / "wayland-sessions" / "one.desktop") << "[Desktop Entry]\nExec=first\n";
     std::ofstream(root / "b" / "wayland-sessions" / "one.desktop") << "[Desktop Entry]\nExec=second\n";
     std::ofstream(root / "b" / "wayland-sessions" / "two.desktop") << "[Desktop Entry]\nExec=two\n";
-    const auto dirs = wlr::session_dirs({{"XDG_DATA_DIRS", (root / "a").string() + ":" + (root / "b").string()}});
-    ASSERT_GE(dirs.size(), 2u);
-    EXPECT_EQ(dirs[0], root / "a" / "wayland-sessions");
+    const std::vector<fs::path> dirs{root / "a" / "wayland-sessions", root / "b" / "wayland-sessions"};
+    // $XDG_DATA_DIRS: absolute POSIX paths, `:` between them (a freedesktop list).
+    if constexpr (!platform::is_windows) {
+        const auto from_env = wlr::session_dirs({{"XDG_DATA_DIRS", (root / "a").string() + ":" + (root / "b").string()}});
+        ASSERT_GE(from_env.size(), 2u);
+        EXPECT_EQ(from_env[0], dirs[0]);
+        EXPECT_EQ(from_env[1], dirs[1]);
+    }
     const auto all = wlr::sessions({dirs[0], dirs[1]});
     ASSERT_EQ(all.size(), 2u);
     EXPECT_EQ(all[0].exec, "first");
