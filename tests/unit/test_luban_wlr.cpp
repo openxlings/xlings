@@ -4,9 +4,13 @@
 // shared memory as the kernel gives it -- so what is checked is the bridge's
 // side of each protocol, not a particular compositor.
 #include <gtest/gtest.h>
+// The compositor this test plays needs POSIX's descriptor passing and shared
+// memory; the bridge runs in a Linux guest. The encoding tests run everywhere.
+#if !defined(_WIN32)
 #include <sys/mman.h>
 #include <sys/socket.h>
 #include <unistd.h>
+#endif
 import xlings.testkit;
 #include "xlings/xtest.hpp"
 
@@ -26,7 +30,7 @@ namespace fs = std::filesystem;
 namespace {
 fs::path temp_dir_(std::string_view what) {
     static int n = 0;
-    auto d = fs::temp_directory_path() / std::format("{}-{}-{}", what, ::getpid(), ++n);
+    auto d = fs::temp_directory_path() / std::format("{}-{}-{}", what, platform::current_pid(), ++n);
     fs::create_directories(d);
     return d;
 }
@@ -107,6 +111,7 @@ XTEST(LubanWlr, AKeysymIsTheEvdevKeyThatTypesIt, .area = "luban", .covers = {"LU
     EXPECT_EQ(wlr::evdev_button(opensal::Button::Right), 0x111u);
 }
 
+#if !defined(_WIN32)
 namespace {
 
 // The compositor's side: a socket, the globals, one output of 64x32, a
@@ -126,8 +131,14 @@ struct Compositor {
     std::uint32_t buffer { 0 };
     int frames { 0 };
 
+    // The bridge may be gone (the end of a test): no SIGPIPE, nothing asserted.
     void send(std::uint32_t object, std::uint16_t opcode, const wl::Args& a) {
-        ASSERT_TRUE(platform::write_all(fd, wl::message(object, opcode, a)));
+        const auto m = wl::message(object, opcode, a);
+#if defined(MSG_NOSIGNAL)
+        (void)::send(fd, m.data(), m.size(), MSG_NOSIGNAL);
+#else
+        (void)::send(fd, m.data(), m.size(), 0);
+#endif
     }
 
     // Reads what is there (bytes and descriptors), handles every whole message.
@@ -405,3 +416,4 @@ XTEST(LubanWlr, ACompositorWithoutScreencopyIsSaidSo, .area = "luban", .covers =
     std::error_code ec;
     fs::remove_all(dir, ec);
 }
+#endif  // !defined(_WIN32)

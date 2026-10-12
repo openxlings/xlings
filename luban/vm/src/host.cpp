@@ -201,9 +201,13 @@ int start_impl_(const service::Context& c, std::string_view name, const EnterOpt
         say_(c, service::error("a machine needs a virtual machine monitor here", xlings::subos::tools::install_hint(arch.qemu)));
         return 1;
     }
-    if (capture_({qemu->bin.string(), "-M", "none", "-device", "help"}).find("\"virtio-9p-pci\"") == std::string::npos) {
+    // 9p, asked of the device itself: its properties name the fsdev it shares.
+    if (const auto probe = capture_({qemu->bin.string(), "-M", "none", "-device", "virtio-9p-pci,help"});
+        probe.find("fsdev") == std::string::npos) {
         say_(c, service::phase("check", "failed", "checking this host"));
-        say_(c, service::error(std::format("{} cannot share a directory with a machine (no 9p)", qemu->bin.filename().string()),
+        const auto first = probe.substr(0, probe.find('\n'));
+        say_(c, service::error(std::format("{} cannot share a directory with a machine (no 9p{})", qemu->bin.string(),
+                                           first.empty() ? std::string{} : ": " + first),
                                "xlings install qemu-system@latest (revision 3 or later)"));
         return 1;
     }

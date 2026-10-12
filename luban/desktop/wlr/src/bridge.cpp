@@ -462,6 +462,10 @@ int Bridge::run() {
 }  // namespace
 
 int bridge(const Options& o) {
+    // A peer that has gone (the window, the compositor) is a write that
+    // fails, not a signal that ends this process before it stops its
+    // compositor. Set here, after the compositor was started: it is inherited.
+    platform::ignore_signals({platform::sig::pipe});
     auto c = wl::Connection::connect(o.socket);
     if (!c) { if (o.log) o.log(c.error()); return 2; }
     Bridge b(o, std::move(*c));
