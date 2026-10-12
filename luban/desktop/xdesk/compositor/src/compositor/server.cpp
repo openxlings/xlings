@@ -1,20 +1,3 @@
-module;
-
-#include <pixman.h>
-#include <xkbcommon/xkbcommon.h>
-// The wlroots module does not export these two creators yet (its generator
-// misses a declaration whose return type is on the line before); the module
-// and the header declare the same functions, so both may be seen.
-#define WLR_USE_UNSTABLE
-#include <stdbool.h>
-#include <stddef.h>
-#include <stdint.h>
-#include <wayland-server-core.h>
-extern "C" {
-#include <wlr/types/wlr_primary_selection_v1.h>
-#include <wlr/types/wlr_xdg_decoration_v1.h>
-}
-
 module xdesk.compositor;
 
 import std;
@@ -24,6 +7,7 @@ import opensal.keys;
 import xdesk.os;
 import xdesk.layout;
 import wlroots;
+import xdesk.native.wayland;
 import freedesktop.wayland.server;
 
 namespace xdesk::compositor {
@@ -32,6 +16,7 @@ namespace {
 
 namespace os = xdesk::os;
 namespace layout = xdesk::layout;
+namespace key = xdesk::native::key;
 namespace fs = std::filesystem;
 
 // A wl_listener that calls a function: the C++ side of wl_signal.
@@ -387,16 +372,16 @@ struct Server {
                 return true;
             };
             switch (sym) {
-                case XKB_KEY_Return: launch(o.terminal); return true;
-                case XKB_KEY_q: if (focused()) wlr_xdg_toplevel_send_close(focused()->toplevel); return true;
-                case XKB_KEY_Left: case XKB_KEY_h: return way(layout::Direction::left);
-                case XKB_KEY_Right: case XKB_KEY_l: return way(layout::Direction::right);
-                case XKB_KEY_Up: case XKB_KEY_k: return way(layout::Direction::up);
-                case XKB_KEY_Down: case XKB_KEY_j: return way(layout::Direction::down);
-                case XKB_KEY_f: if (const auto f = lay.focused()) { lay.toggle_floating(*f); arrange(); } return true;
-                case XKB_KEY_r: lay.cycle_width(); arrange(); return true;
-                case XKB_KEY_o: lay.overview(!lay.in_overview()); arrange(); return true;
-                case XKB_KEY_Tab:
+                case key::Return: launch(o.terminal); return true;
+                case key::q: if (focused()) wlr_xdg_toplevel_send_close(focused()->toplevel); return true;
+                case key::Left: case key::h: return way(layout::Direction::left);
+                case key::Right: case key::l: return way(layout::Direction::right);
+                case key::Up: case key::k: return way(layout::Direction::up);
+                case key::Down: case key::j: return way(layout::Direction::down);
+                case key::f: if (const auto f = lay.focused()) { lay.toggle_floating(*f); arrange(); } return true;
+                case key::r: lay.cycle_width(); arrange(); return true;
+                case key::o: lay.overview(!lay.in_overview()); arrange(); return true;
+                case key::Tab:
                     if (!alt) break;
                     // The least recently focused window to the front.
                     for (auto it = views.rbegin(); it != views.rend(); ++it)

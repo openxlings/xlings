@@ -1,10 +1,7 @@
-module;
-
-#include <imgui.h>
-
 module luban.os;
 
 import std;
+import luban.desktop.imgui;
 import xlings.libs.json;
 import xlings.platform;
 import luban.vm;

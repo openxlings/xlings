@@ -7,6 +7,8 @@
 #   xdesk.term    a terminal's screen from the bytes a program writes, and the
 #                 keys it is sent (the Luban OS window's console uses it)
 #   xdesk.layout  the layout engine: tile, float, canvas (pure logic)
+#   xdesk.apps    the applications on the system (desktop entries): found,
+#                 searched, started -- a launcher's model
 #
 # What draws or serves Wayland -- and so needs the C graphics libraries -- is
 # xdesk-compositor. Neither imports anything of xlings or Luban

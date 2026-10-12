@@ -7,6 +7,9 @@
 #   xdesk.draw        2D drawing and text for what the compositor draws itself
 #   xdesk.shell       the desktop around the windows: panel, launcher,
 #                     notifications, canvas navigation
+#   xdesk.native.*    the C libraries' headers, read only here (wayland:
+#                     xkbcommon, pixman; text: FreeType, HarfBuzz) -- the rest
+#                     imports them (tools/lint_c_headers.sh)
 #
 # The layout engine it arranges windows with is xdesk.layout (xdesk-base).
 # Like every xdesk package it imports nothing of xlings or Luban.
@@ -32,4 +35,7 @@ wayland-server = "1.26.0"
 libxkbcommon   = "1.13.2"
 
 [dependencies.compat]
-pixman = "0.46.4"
+pixman   = "0.46.4"
+# xdesk.draw's text: stable releases (libraries no user meets; §3.3).
+freetype = "2.13.3"
+harfbuzz = "14.3.0"

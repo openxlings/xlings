@@ -1017,6 +1017,10 @@ status = "required"
 text = "xdesk.layout places windows without drawing anything: tile (one or two windows share the output, more scroll with the focused one in view, a new one beside the focus, widths through thirds, halves and the whole), floating (centred above, where it is put), the canvas (beside the focus, panned, zoomed around a point up to 1, an overview that fits every window and returns to the focus), a layout per workspace; motion by a critically damped spring"
 status = "required"
 
+[XDESK-APPS]
+text = "xdesk.apps reads freedesktop desktop entries (localized Name/Comment by the user's language, hidden and non-application entries skipped, the more specific directory's entry of an id winning), turns Exec into argv without field codes, and searches as a person types (a name's prefix first, then words, then generic names, keywords and comments)"
+status = "required"
+
 [LUBAN-MACHINE-DESKTOP]
 text = "a machine whose root declares a desktop session shows it to the Luban OS window: the guest starts the session headless with its /run and /tmp its own, bridges it on a channel of the machine (opensal.wire), at the size the window asks; what is typed into it runs there"
 status = "required"

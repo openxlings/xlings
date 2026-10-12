@@ -38,6 +38,9 @@ home and never touch the user's. Release builds: `tools/{linux,macos}_release.sh
 - **System headers and calls live in `modules/platform`** (plus the desktop
   backends). Branch with `if constexpr (platform::is_windows)`, not `#if`; an `#if`
   elsewhere needs `// platform-if-ok: <why>`.
+- **C headers stay in their binding modules**: a library's header is read in one
+  module that exports the names used (macros as constants) and is imported
+  everywhere else (`xdesk.native.*`, `luban.desktop.imgui`; `tools/lint_c_headers.sh`).
 - **External programs come from one table** (`xlings.subos.tools`) and administrator
   rights through one door (`xlings.subos.elevation`, logged; never asked where
   nobody can answer). A host dependency is T0 (the OS), T1 (a package in the index:

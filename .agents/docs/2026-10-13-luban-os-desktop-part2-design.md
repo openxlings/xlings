@@ -47,7 +47,7 @@ part 1 打通了整条链：Luban OS 窗口（opensal 提供端）—opensal.wir
 | 家族 | 是什么 | mcpp 包 → C++ 模块 |
 |---|---|---|
 | **opensal** | 表面规范：一个 surface 与它的接口、跨地址空间的线协议 | `opensal` → `opensal`、`opensal.wire`；`opensal-wlr` → `opensal.wlr`、`opensal.wlr.wayland`（把任何 wlroots 系合成器接成 opensal 消费端的桥） |
-| **xdesk** | 桌面组件 | `xdesk-base`（只需 C++ 与操作系统）→ `xdesk.os`、`xdesk.term`、`xdesk.layout`；`xdesk-compositor`（需要 C 图形库：wlroots、pixman、freetype、harfbuzz）→ `xdesk.compositor`、`xdesk.draw`、`xdesk.shell` |
+| **xdesk** | 桌面组件 | `xdesk-base`（只需 C++ 与操作系统）→ `xdesk.os`、`xdesk.term`、`xdesk.layout`、`xdesk.apps`（desktop entry：查找、搜索、启动）；`xdesk-compositor`（需要 C 图形库：wlroots、pixman、freetype、harfbuzz）→ `xdesk.compositor`、`xdesk.draw`、`xdesk.shell`，以及绑定模块 `xdesk.native.wayland`、`xdesk.native.text` |
 
 **包按复用边界划分，不按文件**：一个包是别人会整体拿走的东西（"只要纯 C++ 的部分"、"要合成器"），
 包里按目录分模块；不为一个文件建一个 `mcpp.toml`。Luban OS 窗口只链接 `xdesk-base`（用 `xdesk.term`），
@@ -60,8 +60,12 @@ part 1 打通了整条链：Luban OS 窗口（opensal 提供端）—opensal.wir
 - 面向用户的名字：快速开始里 desktop 之下是 **"经典桌面（preview，推荐）"**（classic）与
   **"xdesk 画布（探索）"**（canvas）；edition 是 `luban-desktop` 与 `luban-desktop-xdesk`。
 - **独立性是检查出来的，不是约定**：`tools/lint_layer_deps.sh` 增加规则——`opensal*`、`xdesk*` 只能导入 `std`、
-  opensal、xdesk 与 C 依赖（compat 包），**从不导入 `xlings.*`、`luban.*`**。系统头文件只在 `xdesk.os` 与直接调用
-  C 库的实现单元里（同"桌面 backend"的例外）。这样任何一个组件都可以原样搬到自己的仓库。
+  opensal、xdesk 与 C 依赖（compat 包），**从不导入 `xlings.*`、`luban.*`**。这样任何一个组件都可以原样搬到自己的仓库。
+- **头文件收敛在绑定模块里**：系统头文件只在 `xdesk.os`；C 库的头文件只在 `xdesk.native.wayland`
+  （xkbcommon、pixman、wlroots 模块暂缺的两个创建函数）与 `xdesk.native.text`（FreeType、HarfBuzz）——
+  它们导出用到的名字（宏变成常量），其余代码只 `import`。Luban OS 窗口同理：`imgui.h` 只在宿主包
+  （SDL 后端与 `luban.desktop.imgui`），应用 `import luban.desktop.imgui`。由 `tools/lint_c_headers.sh` 检查。
+  上游包自己提供模块后（如 wlroots 已经是 `import wlroots;`），对应的绑定条目随之删去。
 - 现状的调整：`opensal-wlr` 现在用 `xlings.platform`，改用 `xdesk.os`；`luban.desktop.term` 改名 `xdesk.term`。
   Luban 专有的只剩 `luban/desktop/host`（Luban OS 窗口的 SDL 提供端）与应用本身。
 
@@ -73,8 +77,8 @@ luban/desktop/
 │   ├── spec/                 包 opensal       src/opensal.cppm、wire.cppm
 │   └── wlr/                  包 opensal-wlr   src/wlr.cppm、wayland.cppm、bridge.cpp、session.cpp
 ├── xdesk/
-│   ├── base/                 包 xdesk-base    src/os/、src/term/、src/layout/
-│   └── compositor/           包 xdesk-compositor  src/compositor/、src/draw/、src/shell/
+│   ├── base/                 包 xdesk-base    src/os/、src/term/、src/layout/、src/apps/
+│   └── compositor/           包 xdesk-compositor  src/compositor/、src/draw/、src/shell/、src/native/
 └── host/                     包 luban-desktop-host（Luban OS 窗口的宿主提供端，Luban 专有）
 apps/xdesk                    xdesk 程序：一个桌面会话（opensal 消费端，stdio 即 opensal.wire）
 apps/luban-os                 Luban OS 窗口
@@ -84,8 +88,9 @@ apps/luban-os                 Luban OS 窗口
 独立性规则保证以后拆出时只是搬目录。
 
 - **C++23 modules over wlroots 0.20**（当前稳定系列；0.19 已进入弃用。C API，经 mcpp 的 `compat.wlroots`）。wlroots 负责协议与缓冲区的正确性，
-  我们负责布局、交互、渲染策略与 opensal 输出。系统头文件只在实现单元里，规则同 `modules/platform`。
-- **静态链接（musl）**，与 luban 一样能在任何根里运行（glibc、musl、什么都没有的 nano）。
+  我们负责布局、交互、渲染策略与 opensal 输出。C 头文件只在绑定模块里（上文）。
+- **动态链接（glibc）**：wlroots 的 C 依赖（libwayland、libdrm 等）随包私有携带，安装时与 luban-os 一样
+  elfpatch 到索引的 glibc 上；桌面 edition 本来就带 glibc，nano/tiny 不跑桌面。
 - **作为会话声明**：`share/wayland-sessions/xdesk-classic.desktop`、`xdesk-canvas.desktop`，
   多一个键 `X-Opensal-Native=true`：`luban __desktop` 与机器 agent 见到它就把 stdio 直接接给它（不经桥）。
 

@@ -1,12 +1,9 @@
-module;
-
-#include <xkbcommon/xkbcommon.h>
-
 module xdesk.compositor;
 
 import std;
 import opensal;
 import wlroots;
+import xdesk.native.wayland;
 import freedesktop.wayland.server;
 
 namespace xdesk::compositor {
