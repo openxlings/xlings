@@ -17,6 +17,7 @@ import xlings.testkit;
 import std;
 import opensal;
 import opensal.wire;
+import opensal.keys;
 import xlings.platform;
 import opensal.wlr.wayland;
 import opensal.wlr;
@@ -71,6 +72,11 @@ XTEST(LubanWlr, ASessionIsAFreedesktopSessionFile, .area = "luban", .covers = {"
     EXPECT_EQ(s->name, "Luban Desktop (labwc)");
     using I = opensal::Interface;
     EXPECT_EQ(s->interfaces, I::Surface | I::Pointer | I::Keyboard | I::Mode);
+    EXPECT_FALSE(s->native);
+    // A session that speaks opensal.wire itself is given the stream.
+    auto native = wlr::parse_session("[Desktop Entry]\nExec=xdesk --profile classic\nX-Opensal-Native=true\n", "xdesk-classic");
+    ASSERT_TRUE(native);
+    EXPECT_TRUE(native->native);
     EXPECT_FALSE(wlr::parse_session("[Desktop Entry]\nName=x\n", "x"));                  // no Exec
     EXPECT_FALSE(wlr::parse_session("[Desktop Entry]\nExec=x\nHidden=true\n", "x"));      // hidden
     // The more specific directory's file of a name wins; the list is by name.
@@ -98,22 +104,22 @@ XTEST(LubanWlr, ASessionIsAFreedesktopSessionFile, .area = "luban", .covers = {"
 }
 
 XTEST(LubanWlr, AKeysymIsTheEvdevKeyThatTypesIt, .area = "luban", .covers = {"LUBAN-DESKTOP-WLR"}) {
-    EXPECT_EQ(wlr::evdev_key('a')->code, 30u);
-    EXPECT_FALSE(wlr::evdev_key('a')->shift);
-    EXPECT_EQ(wlr::evdev_key('A')->code, 30u);
-    EXPECT_TRUE(wlr::evdev_key('A')->shift);
-    EXPECT_EQ(wlr::evdev_key('1')->code, 2u);
-    EXPECT_EQ(wlr::evdev_key('0')->code, 11u);
-    EXPECT_EQ(wlr::evdev_key('!')->code, 2u);
-    EXPECT_TRUE(wlr::evdev_key('!')->shift);
-    EXPECT_EQ(wlr::evdev_key(0xff0d)->code, 28u);   // Return
-    EXPECT_EQ(wlr::evdev_key(0xffbe)->code, 59u);   // F1
-    EXPECT_EQ(wlr::evdev_key(0xffc9)->code, 88u);   // F12
-    EXPECT_EQ(wlr::evdev_key(0xffe3)->code, 29u);   // Control_L
-    EXPECT_FALSE(wlr::evdev_key(0x01000123));       // nothing the keymap has
-    EXPECT_EQ(wlr::modifier_of(0xffe1), static_cast<std::uint32_t>(opensal::Shift));
-    EXPECT_EQ(wlr::xkb_mods(opensal::Shift | opensal::Ctrl | opensal::Alt | opensal::Super), 1u | 4u | 8u | 64u);
-    EXPECT_EQ(wlr::evdev_button(opensal::Button::Right), 0x111u);
+    EXPECT_EQ(opensal::keys::evdev_key('a')->code, 30u);
+    EXPECT_FALSE(opensal::keys::evdev_key('a')->shift);
+    EXPECT_EQ(opensal::keys::evdev_key('A')->code, 30u);
+    EXPECT_TRUE(opensal::keys::evdev_key('A')->shift);
+    EXPECT_EQ(opensal::keys::evdev_key('1')->code, 2u);
+    EXPECT_EQ(opensal::keys::evdev_key('0')->code, 11u);
+    EXPECT_EQ(opensal::keys::evdev_key('!')->code, 2u);
+    EXPECT_TRUE(opensal::keys::evdev_key('!')->shift);
+    EXPECT_EQ(opensal::keys::evdev_key(0xff0d)->code, 28u);   // Return
+    EXPECT_EQ(opensal::keys::evdev_key(0xffbe)->code, 59u);   // F1
+    EXPECT_EQ(opensal::keys::evdev_key(0xffc9)->code, 88u);   // F12
+    EXPECT_EQ(opensal::keys::evdev_key(0xffe3)->code, 29u);   // Control_L
+    EXPECT_FALSE(opensal::keys::evdev_key(0x01000123));       // nothing the keymap has
+    EXPECT_EQ(opensal::keys::modifier_of(0xffe1), static_cast<std::uint32_t>(opensal::Shift));
+    EXPECT_EQ(opensal::keys::xkb_mods(opensal::Shift | opensal::Ctrl | opensal::Alt | opensal::Super), 1u | 4u | 8u | 64u);
+    EXPECT_EQ(opensal::keys::evdev_button(opensal::Button::Right), 0x111u);
 }
 
 #if !defined(_WIN32)
@@ -422,3 +428,38 @@ XTEST(LubanWlr, ACompositorWithoutScreencopyIsSaidSo, .area = "luban", .covers =
     fs::remove_all(dir, ec);
 }
 #endif  // !defined(_WIN32)
+
+XTEST(LubanWlr, ANativeSessionIsGivenTheStream, .area = "luban", .covers = {"LUBAN-DESKTOP-WLR", "XDESK-COMPOSITOR"}) {
+    if constexpr (!platform::is_linux) GTEST_SKIP() << "Linux";
+    // A session that speaks opensal.wire itself (xdesk) is the stream's other
+    // end: what the provider sends reaches it, what it writes reaches the
+    // provider, and nothing stands between.
+    const auto dir = temp_dir_("luban-wlr-native");
+    auto to = platform::make_pipe(), from = platform::make_pipe();
+    ASSERT_TRUE(to && from);
+    const wlr::Session s{.id = "echo", .name = "echo", .exec = "cat", .native = true};
+    std::atomic<int> code { -1 };
+    std::thread session([&] {
+        code = wlr::run_session(s, (*to)[0], (*from)[1],
+                                {.env = {{"PATH", "/usr/bin:/bin"}}, .runtime_root = dir});
+    });
+    const std::string hello("h\0\0\0\x02" "15", 7);
+    ASSERT_TRUE(platform::write_all((*to)[1], hello));
+    std::vector<int> sent{(*to)[1]};
+    platform::close_fds(sent);
+    session.join();
+    EXPECT_EQ(code, 0);
+    std::vector<int> ours{(*from)[1], (*to)[0]};
+    platform::close_fds(ours);
+    std::string got;
+    std::array<char, 64> buf{};
+    while (auto n = platform::read_some((*from)[0], buf)) {
+        if (!*n) break;
+        got.append(buf.data(), *n);
+    }
+    EXPECT_EQ(got, hello);
+    std::vector<int> rest{(*from)[0]};
+    platform::close_fds(rest);
+    std::error_code ec;
+    fs::remove_all(dir, ec);
+}

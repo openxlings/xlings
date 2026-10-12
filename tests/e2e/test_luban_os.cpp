@@ -129,6 +129,8 @@ tk::RunResult run_script(const tk::Home& home, std::string_view script, std::vec
     o.env = home.env();
     o.env["LUBAN_XLINGS"] = tk::xlings_binary().string();
     o.env["SDL_VIDEODRIVER"] = "offscreen";
+    // The renderer a machine without a GPU has, here as in CI.
+    o.env["SDL_RENDER_DRIVER"] = "software";
     for (auto& [k, v] : env) o.env[k] = v;
     o.timeout = std::chrono::seconds(240);
     return tk::run(o);
@@ -381,4 +383,54 @@ state {}
             red = p[0] > 150 && p[1] < 130 && p[2] < 130;
         }
     EXPECT_TRUE(red) << "no red in the first line";
+}
+
+// xdesk (apps/xdesk), built beside the app; XDESK_BIN names another.
+std::optional<fs::path> xdesk_binary() {
+    if (const char* forced = std::getenv("XDESK_BIN"); forced && *forced) return fs::path(forced);
+    const auto app = app_binary();
+    if (!app) return std::nullopt;
+    for (const auto& c : {app->parent_path() / "xdesk", app->parent_path().parent_path() / "xdesk-app" / "xdesk"})
+        if (fs::is_regular_file(c)) return c;
+    return std::nullopt;
+}
+
+XTEST(LubanOs, XdeskIsADesktopAtTheWindowsSize, .area = "luban",
+      .covers = {"XDESK-COMPOSITOR", "LUBAN-OS-INTERACTION"}, .requires_ = {"linux", "xlings-bin"}) {
+    if (!app_binary()) GTEST_SKIP() << "no luban-os beside the xlings under test";
+    const auto xdesk = xdesk_binary();
+    if (!xdesk) GTEST_SKIP() << "no xdesk beside luban-os (mcpp build -p xdesk-app)";
+    auto home = tk::Home::isolated("luban-os-xdesk");
+    ASSERT_EQ(home.xlings({"self", "init"}).exit_code, 0);
+    const auto runtime = home.root() / "run";
+    fs::create_directories(runtime);
+    fs::permissions(runtime, fs::perms::owner_all, fs::perm_options::replace);
+    const auto shot = home.root() / "xdesk.ppm", small = home.root() / "xdesk-small.ppm";
+    const auto st = home.root() / "xdesk.json", st_small = home.root() / "xdesk-small.json";
+    auto r = run_script(home, std::format(R"(wait desktop
+waitfor desktop.texture.0 1100
+sleep 500
+frames 2
+screenshot {}
+screenshot {}
+state {}
+resize 900 600
+waitfor desktop.texture.0 900
+sleep 500
+frames 2
+screenshot {}
+state {}
+)", shot.string(), artifact("xdesk-classic.bmp").string(), st.string(), small.string(), st_small.string()),
+                        {"--desktop-exec", xdesk->string(), "--profile", "classic"},
+                        {{"XDG_RUNTIME_DIR", runtime.string()}});
+    ASSERT_EQ(r.exit_code, 0) << r.transcript();
+    // Its own picture -- the desktop's background -- at the size it was asked.
+    EXPECT_EQ(read_state(st)["desktop"]["texture"], Json::array({1100, 700}));
+    for (const auto& [img, state] : {std::pair{read_ppm(shot), read_state(st)}, std::pair{read_ppm(small), read_state(st_small)}}) {
+        const auto d = rect(state, "desktop");
+        const auto px = img.at(static_cast<int>(d[0]) + 40, static_cast<int>(d[1]) + 40);
+        EXPECT_NEAR(px[0], 0x1b, 2) << state.dump();
+        EXPECT_NEAR(px[1], 0x1e, 2);
+        EXPECT_NEAR(px[2], 0x25, 2);
+    }
 }

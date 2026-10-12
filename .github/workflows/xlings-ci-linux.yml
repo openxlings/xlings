@@ -335,6 +335,10 @@ jobs:
           # The Luban OS app (a window): built on every platform, its headless
           # tests (SDL's offscreen driver) find it beside bin/xlings.
           mcpp build -p luban-os
+          # xdesk (the compositor of Luban OS's desktops): wlroots headless and
+          # pixman, no GPU; its test runs it as luban-os's desktop.
+          mcpp build -p xdesk-app
+          "$(find target -path '*bin/xdesk-app/xdesk' -type f | head -1)" --probe
           # Its release payload, as release.yml makes it (a glibc program, the
           # system's loader, no RPATH, its NEEDED checked): a release must not
           # be the first to find the packaging broken.

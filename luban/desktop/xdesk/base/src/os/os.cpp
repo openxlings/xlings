@@ -171,6 +171,16 @@ void release(SharedMemory& m) {
 
 int pid() { return static_cast<int>(::getpid()); }
 
+std::map<std::string, std::string> environment() {
+    std::map<std::string, std::string> out;
+    for (char** e = environ; e && *e; ++e) {
+        const std::string_view kv(*e);
+        if (const auto eq = kv.find('='); eq != std::string_view::npos)
+            out.emplace(std::string(kv.substr(0, eq)), std::string(kv.substr(eq + 1)));
+    }
+    return out;
+}
+
 void ignore_broken_pipes() { ::signal(SIGPIPE, SIG_IGN); }
 
 int spawn(const Spawn& s) {

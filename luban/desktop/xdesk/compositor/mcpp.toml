@@ -29,3 +29,7 @@ wlroots = { version = "0.20.2", default-features = false }
 
 [dependencies.freedesktop]
 wayland-server = "1.26.0"
+libxkbcommon   = "1.13.2"
+
+[dependencies.compat]
+pixman = "0.46.4"

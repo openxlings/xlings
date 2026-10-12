@@ -1,3 +1,7 @@
+module;
+
+#include <xkbcommon/xkbcommon.h>
+
 module xdesk.compositor;
 
 import std;
@@ -6,6 +10,21 @@ import wlroots;
 import freedesktop.wayland.server;
 
 namespace xdesk::compositor {
+
+std::expected<std::string, std::string> keymap_text(std::string_view layout) {
+    xkb_context* ctx = xkb_context_new(XKB_CONTEXT_NO_FLAGS);
+    if (!ctx) return std::unexpected("no xkb context");
+    const std::string l(layout);
+    xkb_rule_names names{.rules = "evdev", .model = "pc105", .layout = l.c_str(), .variant = nullptr, .options = nullptr};
+    xkb_keymap* km = xkb_keymap_new_from_names(ctx, &names, XKB_KEYMAP_COMPILE_NO_FLAGS);
+    if (!km) { xkb_context_unref(ctx); return std::unexpected("no keymap for layout " + l + " (XKB_CONFIG_ROOT?)"); }
+    char* text = xkb_keymap_get_as_string(km, XKB_KEYMAP_FORMAT_TEXT_V1);
+    std::string out = text ? text : "";
+    std::free(text);
+    xkb_keymap_unref(km);
+    xkb_context_unref(ctx);
+    return out;
+}
 
 std::expected<Frame, std::string> probe(opensal::Size size) {
     wl_display* display = wl_display_create();

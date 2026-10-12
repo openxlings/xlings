@@ -707,7 +707,19 @@ void desktop_view_(App& a) {
         const ImVec2 shown(a.texture.width * scale, a.texture.height * scale);
         const ImVec2 at(origin.x + (avail.x - shown.x) / 2, origin.y + (avail.y - shown.y) / 2);
         ImGui::SetCursorScreenPos(at);
-        ImGui::Image(static_cast<ImTextureID>(reinterpret_cast<std::uintptr_t>(a.texture.handle)), shown);
+        ImGui::Dummy(shown);
+        // Drawn in tiles: SDL's software renderer (no GPU, as in a VM) draws
+        // nothing of one triangle much bigger than about 1000x700.
+        const auto id = static_cast<ImTextureID>(reinterpret_cast<std::uintptr_t>(a.texture.handle));
+        constexpr int kTile = 512;
+        for (int ty = 0; ty < a.texture.height; ty += kTile)
+            for (int tx = 0; tx < a.texture.width; tx += kTile) {
+                const int tw = std::min(kTile, a.texture.width - tx), th = std::min(kTile, a.texture.height - ty);
+                const ImVec2 p0(at.x + tx * scale, at.y + ty * scale), p1(at.x + (tx + tw) * scale, at.y + (ty + th) * scale);
+                const ImVec2 uv0(static_cast<float>(tx) / a.texture.width, static_cast<float>(ty) / a.texture.height);
+                const ImVec2 uv1(static_cast<float>(tx + tw) / a.texture.width, static_cast<float>(ty + th) / a.texture.height);
+                ImGui::GetWindowDrawList()->AddImage(id, p0, p1, uv0, uv1);
+            }
         mark_(a, "desktop");
         // The guest draws its own pointer into the picture.
         if (ImGui::IsItemHovered()) ImGui::SetMouseCursor(ImGuiMouseCursor_None);

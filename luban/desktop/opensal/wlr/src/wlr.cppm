@@ -15,11 +15,14 @@
 //
 // A desktop session is what freedesktop already declares:
 // share/wayland-sessions/<id>.desktop, `Exec=` the compositor, and one key
-// of opensal's -- `X-Opensal-Interfaces=` the interfaces it uses.
+// of opensal's -- `X-Opensal-Interfaces=` the interfaces it uses. A session
+// that speaks opensal.wire itself (xdesk) says `X-Opensal-Native=true`: it is
+// given the stream, and nothing is bridged.
 export module opensal.wlr;
 
 import std;
 import opensal;
+export import opensal.keys;
 
 export namespace opensal::wlr {
 
@@ -30,6 +33,7 @@ struct Session {
     std::string name;
     std::string exec;
     opensal::Interfaces interfaces { 0 };
+    bool native { false };          // speaks opensal.wire on its stdin/stdout
     fs::path file;
 };
 
@@ -54,17 +58,6 @@ inline constexpr std::string_view kKeymap =
     "  xkb_geometry { include \"pc(pc105)\" };\n"
     "};\n";
 
-// An X11 keysym (what opensal.keyboard carries) as the evdev key that types
-// it on that keymap, and whether Shift is part of it.
-struct Stroke { std::uint32_t code { 0 }; bool shift { false }; };
-std::optional<Stroke> evdev_key(std::uint32_t keysym);
-// The modifier a keysym is (opensal::Mod bit), or 0.
-std::uint32_t modifier_of(std::uint32_t keysym);
-// opensal::Mod bits as the keymap's modifier mask (Shift, Control, Mod1, Mod4).
-std::uint32_t xkb_mods(std::uint32_t mods);
-// BTN_LEFT, BTN_MIDDLE, BTN_RIGHT.
-std::uint32_t evdev_button(opensal::Button b);
-
 struct Options {
     int in { 0 };                   // opensal.wire from the provider
     int out { 1 };                  // and to it
@@ -86,7 +79,8 @@ struct SessionOptions {
     fs::path log;                           // the compositor's output
 };
 
-// A session as a headless desktop, bridged on `in` / `out`: the compositor
+// A session as a headless desktop on `in` / `out` -- given them when it is
+// native, bridged otherwise: the compositor
 // (wlroots' headless backend, software rendering) in a runtime directory of
 // its own, stopped when the bridge ends. What a machine's agent runs for the
 // Luban OS window, and what a sandbox runs for it.

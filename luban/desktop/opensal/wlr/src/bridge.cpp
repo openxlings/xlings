@@ -10,6 +10,7 @@ namespace opensal::wlr {
 
 namespace os = xdesk::os;
 namespace wl = opensal::wlr::wayland;
+using namespace opensal::keys;
 
 namespace {
 
