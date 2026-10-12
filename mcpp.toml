@@ -47,9 +47,9 @@ members = [
     "luban/service",
     "luban/vm",
     "luban/cli",
-    "luban/desktop/spec",
-    "luban/desktop/term",
-    "luban/desktop/wlr",
+    "luban/desktop/opensal/spec",
+    "luban/desktop/opensal/wlr",
+    "luban/desktop/xdesk/base",
     "luban/desktop/host",
     "apps/luban",
     "apps/luban-os",
@@ -176,9 +176,9 @@ testkit = { path = "modules/testkit" }
 # binary itself never links them.
 luban-system = { path = "luban/system" }
 luban-cli    = { path = "luban/cli" }
-luban-desktop-spec = { path = "luban/desktop/spec" }
-luban-desktop-term = { path = "luban/desktop/term" }
-luban-desktop-wlr  = { path = "luban/desktop/wlr" }
+opensal     = { path = "luban/desktop/opensal/spec" }
+opensal-wlr = { path = "luban/desktop/opensal/wlr" }
+xdesk-base = { path = "luban/desktop/xdesk/base" }
 
 [dev-dependencies.compat]
 gtest = "1.15.2"

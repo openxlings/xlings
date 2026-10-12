@@ -8,7 +8,7 @@ import std;
 import xlings.libs.json;
 import xlings.platform;
 import luban.vm;
-import luban.desktop.term;
+import xdesk.term;
 
 namespace luban::os {
 

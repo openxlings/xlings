@@ -16,12 +16,12 @@
 // A desktop session is what freedesktop already declares:
 // share/wayland-sessions/<id>.desktop, `Exec=` the compositor, and one key
 // of opensal's -- `X-Opensal-Interfaces=` the interfaces it uses.
-export module luban.desktop.wlr;
+export module opensal.wlr;
 
 import std;
 import opensal;
 
-export namespace luban::desktop::wlr {
+export namespace opensal::wlr {
 
 namespace fs = std::filesystem;
 
@@ -92,4 +92,4 @@ struct SessionOptions {
 // Luban OS window, and what a sandbox runs for it.
 int run_session(const Session& s, int in, int out, const SessionOptions& o);
 
-}  // namespace luban::desktop::wlr
+}  // namespace opensal::wlr

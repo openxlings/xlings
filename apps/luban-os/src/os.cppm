@@ -12,7 +12,7 @@ import std;
 import xlings.libs.json;
 import luban.service;
 import luban.vm;
-import luban.desktop.term;
+import xdesk.term;
 import opensal;
 import opensal.wire;
 
@@ -25,7 +25,7 @@ int run(int argc, char* argv[]);
 namespace luban::os {
 
 namespace fs = std::filesystem;
-namespace term = luban::desktop::term;
+namespace term = xdesk::term;
 namespace service = luban::service;
 namespace vm = luban::vm;
 

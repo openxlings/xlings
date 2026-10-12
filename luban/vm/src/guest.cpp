@@ -5,7 +5,7 @@ import xlings.libs.json;
 import xlings.platform;
 import xlings.subos.root_etc;
 import luban.vm.protocol;
-import luban.desktop.wlr;
+import opensal.wlr;
 
 namespace luban::vm {
 
@@ -79,7 +79,7 @@ std::map<std::string, std::string> session_env_(const Json& open, const std::str
 // (or the first one declared), headless, bridged on two pipes (opensal-wlr).
 std::expected<Session, std::string> desktop_(const Json& display, std::map<std::string, std::string> env,
                                              std::vector<int> inherited) {
-    namespace wlr = luban::desktop::wlr;
+    namespace wlr = opensal::wlr;
     const auto dirs = wlr::session_dirs(env);
     const auto id = display.value("session", std::string{});
     std::optional<wlr::Session> session;

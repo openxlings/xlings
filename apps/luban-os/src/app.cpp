@@ -12,8 +12,8 @@ import opensal;
 import luban.service;
 import luban.vm;
 import luban.desktop.host;
-import luban.desktop.term;
-import luban.desktop.wlr;
+import xdesk.term;
+import opensal.wlr;
 
 namespace luban::os {
 
@@ -813,7 +813,7 @@ void admin_(App& a) {
                     // The desktop: the sessions its root declares, or none (its console).
                     std::vector<std::string> ids{"", "none"};
                     if (const auto root = service::root_of(a.home, e.name))
-                        for (const auto& s : luban::desktop::wlr::sessions({*root / "usr" / "share" / "wayland-sessions"})) ids.push_back(s.id);
+                        for (const auto& s : opensal::wlr::sessions({*root / "usr" / "share" / "wayland-sessions"})) ids.push_back(s.id);
                     int index = 0;
                     for (std::size_t k = 0; k < ids.size(); ++k) if (ids[k] == e.settings.desktop) index = static_cast<int>(k);
                     std::string items = std::string(tr("(the first it declares)", "（它声明的第一个）")) + '\0';

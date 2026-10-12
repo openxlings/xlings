@@ -6,12 +6,12 @@
 //   [object id: 4][size << 16 | opcode: 4][arguments]
 //
 // What is here is the encoding and the connection; which interfaces exist
-// and what their opcodes mean is the caller's (luban.desktop.wlr).
-export module luban.desktop.wayland;
+// and what their opcodes mean is the caller's (opensal.wlr).
+export module opensal.wlr.wayland;
 
 import std;
 
-export namespace luban::desktop::wayland {
+export namespace opensal::wlr::wayland {
 
 inline constexpr std::uint32_t kDisplay = 1;   // wl_display: always object 1
 inline constexpr std::size_t kMaxMessage = 4096;
@@ -94,4 +94,4 @@ private:
 // (absolute when it is one), else the first wayland-N socket there.
 std::optional<std::filesystem::path> find_socket(const std::filesystem::path& runtime_dir, std::string_view display = {});
 
-}  // namespace luban::desktop::wayland
+}  // namespace opensal::wlr::wayland

@@ -7,7 +7,7 @@ import opensal;
 import opensal.wire;
 import luban.service;
 import luban.vm;
-import luban.desktop.wlr;
+import opensal.wlr;
 
 namespace luban::os {
 
@@ -22,7 +22,7 @@ std::optional<std::string> desktop_session(const fs::path& home, const std::stri
     if (!root) return std::nullopt;
     // The root's /usr/share links lead into this home's payloads, which are
     // the same paths here: what the guest will find, read before it boots.
-    const auto found = luban::desktop::wlr::sessions({*root / "usr" / "local" / "share" / "wayland-sessions",
+    const auto found = opensal::wlr::sessions({*root / "usr" / "local" / "share" / "wayland-sessions",
                                                       *root / "usr" / "share" / "wayland-sessions"});
     if (found.empty()) return std::nullopt;
     if (setting.empty()) return found.front().id;

@@ -1,11 +1,11 @@
-module luban.desktop.wayland;
+module opensal.wlr.wayland;
 
 import std;
-import xlings.platform;
+import xdesk.os;
 
-namespace luban::desktop::wayland {
+namespace opensal::wlr::wayland {
 
-namespace platform = xlings::platform;
+namespace os = xdesk::os;
 namespace fs = std::filesystem;
 
 namespace {
@@ -76,13 +76,13 @@ std::expected<std::optional<Event>, std::string> Decoder::next() {
 }
 
 std::expected<Connection, std::string> Connection::connect(const fs::path& socket) {
-    const int fd = platform::unix_connect_stream(socket);
+    const int fd = os::connect_unix(socket);
     if (fd < 0) return std::unexpected("nothing listens at " + socket.string());
     return Connection(fd);
 }
 
 Connection::~Connection() {
-    if (fd_ >= 0) { std::vector<int> f{fd_}; platform::close_fds(f); }
+    os::close(fd_);
 }
 
 std::uint32_t Connection::new_id() {
@@ -96,17 +96,17 @@ std::uint32_t Connection::new_id() {
 
 bool Connection::send(std::uint32_t object, std::uint16_t opcode, const Args& a) {
     const auto m = message(object, opcode, a);
-    if (a.fds().empty()) return platform::write_all(fd_, m);
-    return platform::send_message(fd_, m, a.fds());
+    if (a.fds().empty()) return os::write_all(fd_, m);
+    return os::send_with_fds(fd_, m, a.fds());
 }
 
 std::optional<std::vector<Event>> Connection::poll(int timeout_ms) {
-    std::array<platform::PollFd, 1> p{{{.fd = fd_}}};
-    platform::poll_fds(p, timeout_ms);
+    std::array<os::PollFd, 1> p{{{.fd = fd_}}};
+    os::poll(p, timeout_ms);
     std::vector<Event> out;
     if (!p[0].readable && !p[0].closed) return out;
     std::array<char, 65536> buf{};
-    auto n = platform::read_some(fd_, buf);
+    auto n = os::read_some(fd_, buf);
     if (!n || *n == 0) return std::nullopt;
     decoder_.feed(std::string_view(buf.data(), *n));
     for (;;) {
@@ -144,4 +144,4 @@ std::optional<fs::path> find_socket(const fs::path& runtime_dir, std::string_vie
     return found.front();
 }
 
-}  // namespace luban::desktop::wayland
+}  // namespace opensal::wlr::wayland

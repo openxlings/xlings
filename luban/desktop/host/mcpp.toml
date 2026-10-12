@@ -14,7 +14,7 @@ version   = "0.1.0"
 kind = "lib"
 
 [dependencies]
-luban-desktop-spec = { path = "../spec" }
+opensal = { path = "../opensal/spec" }
 
 [dependencies.compat]
 sdl3  = "3.4.2"

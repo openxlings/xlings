@@ -11,11 +11,11 @@
 // erase, insert and delete, scroll regions, the alternate screen, SGR in all
 // three colour depths, wide characters, bracketed paste, mouse reporting, the
 // title. xterm's meaning for each.
-export module luban.desktop.term;
+export module xdesk.term;
 
 import std;
 
-export namespace luban::desktop::term {
+export namespace xdesk::term {
 
 struct Color {
     enum class Kind : std::uint8_t { Default, Indexed, Rgb };
@@ -127,4 +127,4 @@ std::string encode_key(std::string_view key, std::uint32_t mods, bool applicatio
 // program asked for them.
 std::string encode_paste(std::string_view text, bool bracketed);
 
-}  // namespace luban::desktop::term
+}  // namespace xdesk::term

@@ -10,7 +10,7 @@ import xlings.subos.home_view;
 import xlings.subos.elevation;
 import luban.service;
 import luban.vm;
-import luban.desktop.wlr;
+import opensal.wlr;
 import opensal;
 
 namespace luban::cli {
@@ -887,7 +887,7 @@ Drive inspect_drive(const fs::path& dev, const fs::path& sys, const fs::path& mo
 // opensal-wlr with opensal.wire on stdin and stdout -- what a sandbox runs for
 // the Luban OS window. `-` is the first session the environment declares.
 int desktop_(const std::vector<std::string>& rest) {
-    namespace wlr = luban::desktop::wlr;
+    namespace wlr = opensal::wlr;
     std::string id = rest.size() > 1 ? rest[1] : "-";
     std::string socket;
     opensal::Size size{1280, 800};

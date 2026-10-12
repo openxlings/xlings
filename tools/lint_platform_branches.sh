@@ -32,7 +32,7 @@ while IFS= read -r hit; do
     echo "::error::platform #if outside modules/platform (use if constexpr, or mark '$MARK <why>'): $hit"
     bad=$((bad + 1)) ;;
   esac
-done < <(grep -rnE --include='*.cpp' --include='*.cppm' "$branch" src modules apps 2>/dev/null \
+done < <(grep -rnE --include='*.cpp' --include='*.cppm' "$branch" src modules apps luban 2>/dev/null \
            | grep -v '^modules/platform/' | grep -v '^modules/testkit/' \
            | grep -v '^modules/libs/src/json/' || true)
 
@@ -46,5 +46,5 @@ if [ "$bad" -gt 0 ]; then
   echo "platform branch lint: FAIL ($bad finding(s))"
   exit 1
 fi
-marked=$(grep -rn --include='*.cpp' --include='*.cppm' "$MARK" src modules apps 2>/dev/null | wc -l)
+marked=$(grep -rn --include='*.cpp' --include='*.cppm' "$MARK" src modules apps luban 2>/dev/null | wc -l)
 echo "platform branch lint: PASS ($marked marked #if outside modules/platform)"

@@ -1,15 +1,15 @@
-module luban.desktop.wlr;
+module opensal.wlr;
 
 import std;
 import opensal;
 import opensal.wire;
-import xlings.platform;
-import luban.desktop.wayland;
+import xdesk.os;
+import opensal.wlr.wayland;
 
-namespace luban::desktop::wlr {
+namespace opensal::wlr {
 
-namespace platform = xlings::platform;
-namespace wl = luban::desktop::wayland;
+namespace os = xdesk::os;
+namespace wl = opensal::wlr::wayland;
 
 namespace {
 
@@ -75,7 +75,7 @@ private:
     void copy_();
     void frame_ready_();
     void resize_(opensal::Size want);
-    bool send_(std::string_view bytes) { return platform::write_all(o_.out, bytes); }
+    bool send_(std::string_view bytes) { return os::write_all(o_.out, bytes); }
 
     const Options& o_;
     wl::Connection c_;
@@ -101,7 +101,7 @@ private:
     std::chrono::steady_clock::time_point last_frame_ {};
     std::chrono::steady_clock::time_point retry_at_ {};
     // The buffer it copies into, kept while the size holds.
-    platform::SharedMemory shm_mem_;
+    os::SharedMemory shm_mem_;
     std::uint32_t pool_ { 0 }, buffer_ { 0 };
     Offer buffer_shape_;
 
@@ -262,8 +262,8 @@ void Bridge::copy_() {
     if (!buffer_ || buffer_shape_.size != f.size || buffer_shape_.stride != f.stride || buffer_shape_.format != f.format) {
         if (buffer_) c_.send(buffer_, op::buffer_destroy, wl::Args{});
         if (pool_) c_.send(pool_, op::pool_destroy, wl::Args{});
-        platform::release_shared_memory(shm_mem_);
-        auto m = platform::create_shared_memory(bytes);
+        os::release(shm_mem_);
+        auto m = os::shared_memory(bytes);
         if (!m) { log_("no shared memory for a frame"); provider_gone_ = true; return; }
         shm_mem_ = *m;
         pool_ = c_.new_id();
@@ -415,10 +415,10 @@ int Bridge::run() {
         c_.send(vkbd_manager_, op::vkbd_manager_create, wl::Args{}.u(seat_).u(vkbd_));
         std::string keymap(kKeymap);
         keymap.push_back('\0');
-        if (auto m = platform::create_shared_memory(keymap.size())) {
+        if (auto m = os::shared_memory(keymap.size())) {
             std::memcpy(m->data, keymap.data(), keymap.size());
             c_.send(vkbd_, op::vkbd_keymap, wl::Args{}.u(1).fd(m->fd).u(std::uint32_t(keymap.size())));
-            platform::release_shared_memory(*m);
+            os::release(*m);
         }
     } else {
         log_("no virtual keyboard: the desktop is shown without keys");
@@ -441,12 +441,12 @@ int Bridge::run() {
         if (o_.alive && !o_.alive()) { log_("the compositor ended"); return 1; }
         const auto now = std::chrono::steady_clock::now();
         if (!capturing_ && now >= last_frame_ + period && now >= retry_at_) capture_();
-        std::array<platform::PollFd, 2> p{{{.fd = o_.in}, {.fd = c_.fd()}}};
+        std::array<os::PollFd, 2> p{{{.fd = o_.in}, {.fd = c_.fd()}}};
         const auto wait = capturing_ ? 500 : static_cast<int>(std::max<std::int64_t>(1,
             std::chrono::duration_cast<std::chrono::milliseconds>(last_frame_ + period - now).count()));
-        platform::poll_fds(p, std::min(wait, 500));
+        os::poll(p, std::min(wait, 500));
         if (p[0].readable || p[0].closed) {
-            auto n = platform::read_some(o_.in, buf);
+            auto n = os::read_some(o_.in, buf);
             if (!n || *n == 0) return 0;
             if (!provider_(std::string_view(buf.data(), *n))) return 0;
         }
@@ -465,11 +465,11 @@ int bridge(const Options& o) {
     // A peer that has gone (the window, the compositor) is a write that
     // fails, not a signal that ends this process before it stops its
     // compositor. Set here, after the compositor was started: it is inherited.
-    platform::ignore_signals({platform::sig::pipe});
+    os::ignore_broken_pipes();
     auto c = wl::Connection::connect(o.socket);
     if (!c) { if (o.log) o.log(c.error()); return 2; }
     Bridge b(o, std::move(*c));
     return b.run();
 }
 
-}  // namespace luban::desktop::wlr
+}  // namespace opensal::wlr

@@ -18,8 +18,8 @@ cli      = { path = "../../modules/cli" }
 image    = { path = "../../modules/image" }
 luban-service = { path = "../service" }
 luban-vm = { path = "../vm" }
-luban-desktop-spec = { path = "../desktop/spec" }
-luban-desktop-wlr = { path = "../desktop/wlr" }
+opensal = { path = "../desktop/opensal/spec" }
+opensal-wlr = { path = "../desktop/opensal/wlr" }
 
 [build]
 include_dirs = ["../../modules/libs/src/json"]

@@ -8,9 +8,9 @@ import xlings.testkit;
 import std;
 import opensal;
 import opensal.wire;
-import luban.desktop.term;
+import xdesk.term;
 
-namespace term = luban::desktop::term;
+namespace term = xdesk::term;
 namespace wire = opensal::wire;
 
 namespace {

@@ -1,8 +1,8 @@
-module luban.desktop.term;
+module xdesk.term;
 
 import std;
 
-namespace luban::desktop::term {
+namespace xdesk::term {
 
 namespace {
 
@@ -482,4 +482,4 @@ std::string encode_paste(std::string_view text, bool bracketed) {
     return out;
 }
 
-}  // namespace luban::desktop::term
+}  // namespace xdesk::term

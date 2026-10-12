@@ -44,30 +44,40 @@ part 1 打通了整条链：Luban OS 窗口（opensal 提供端）—opensal.wir
 
 两个家族，都不属于 Luban，Luban 只是它们的第一个使用者：
 
-| 家族 | 是什么 | 组件（mcpp 包 / C++ 模块） |
+| 家族 | 是什么 | mcpp 包 → C++ 模块 |
 |---|---|---|
-| **opensal** | 表面规范：一个 surface 与它的接口、跨地址空间的线协议 | `opensal`（规范）、`opensal-wire`（线协议）、`opensal-wlr`（把任何 wlroots 系合成器接成 opensal 消费端的桥） |
-| **xdesk** | 桌面组件 | `xdesk-os`（它需要的少量系统调用）、`xdesk-draw`（2D 绘制与文字）、`xdesk-layout`（布局引擎）、`xdesk-compositor`（Wayland 合成器）、`xdesk-shell`（面板、启动器、通知、画布导航）、`xdesk-term`（终端模拟，今天 Luban OS 窗口的控制台在用） |
+| **opensal** | 表面规范：一个 surface 与它的接口、跨地址空间的线协议 | `opensal` → `opensal`、`opensal.wire`；`opensal-wlr` → `opensal.wlr`、`opensal.wlr.wayland`（把任何 wlroots 系合成器接成 opensal 消费端的桥） |
+| **xdesk** | 桌面组件 | `xdesk-base`（只需 C++ 与操作系统）→ `xdesk.os`、`xdesk.term`、`xdesk.layout`；`xdesk-compositor`（需要 C 图形库：wlroots、pixman、freetype、harfbuzz）→ `xdesk.compositor`、`xdesk.draw`、`xdesk.shell` |
+
+**包按复用边界划分，不按文件**：一个包是别人会整体拿走的东西（"只要纯 C++ 的部分"、"要合成器"），
+包里按目录分模块；不为一个文件建一个 `mcpp.toml`。Luban OS 窗口只链接 `xdesk-base`（用 `xdesk.term`），
+不会因此带上图形库。
 
 - 程序：**`xdesk`**（一个桌面会话：合成器 + 外壳 + 一份配置；`xdesk --profile classic|canvas`）。
-  别的系统可以只用 `xdesk-compositor` 配自己的外壳，或只用 `xdesk-layout`、`xdesk-term`。
+  别的系统可以只用 `xdesk-compositor` 配自己的外壳，或只用 `xdesk.layout`、`xdesk.term`。
 - 两种配置（profile）：**classic** = 平铺布局 + 传统外壳；**canvas** = 无限画布布局 + 画布外壳。
   会话文件 `xdesk-classic.desktop`、`xdesk-canvas.desktop`；配置包 `config:xdesk-classic`、`config:xdesk-canvas`。
 - 面向用户的名字：快速开始里 desktop 之下是 **"经典桌面（preview，推荐）"**（classic）与
   **"xdesk 画布（探索）"**（canvas）；edition 是 `luban-desktop` 与 `luban-desktop-xdesk`。
 - **独立性是检查出来的，不是约定**：`tools/lint_layer_deps.sh` 增加规则——`opensal*`、`xdesk*` 只能导入 `std`、
-  opensal、xdesk 与 C 依赖（compat 包），**从不导入 `xlings.*`、`luban.*`**。系统头文件只在 `xdesk-os` 与直接调用
+  opensal、xdesk 与 C 依赖（compat 包），**从不导入 `xlings.*`、`luban.*`**。系统头文件只在 `xdesk.os` 与直接调用
   C 库的实现单元里（同"桌面 backend"的例外）。这样任何一个组件都可以原样搬到自己的仓库。
-- 现状的调整：`opensal-wlr` 现在用 `xlings.platform`，改用 `xdesk-os`；`luban.desktop.term` 改名 `xdesk-term`。
+- 现状的调整：`opensal-wlr` 现在用 `xlings.platform`，改用 `xdesk.os`；`luban.desktop.term` 改名 `xdesk.term`。
   Luban 专有的只剩 `luban/desktop/host`（Luban OS 窗口的 SDL 提供端）与应用本身。
 
 ### 2.1 位置与形态
 
 ```
-luban/desktop/opensal/{spec,wire,wlr}                      opensal 家族
-luban/desktop/xdesk/{os,draw,layout,compositor,shell,term} xdesk 家族（各自一个 mcpp 包，namespace = "xdesk"）
-luban/desktop/host                                         Luban OS 窗口的宿主提供端（Luban 专有）
-apps/xdesk                                                 xdesk 程序：一个桌面会话（opensal 消费端，stdio 即 opensal.wire）
+luban/desktop/
+├── opensal/
+│   ├── spec/                 包 opensal       src/opensal.cppm、wire.cppm
+│   └── wlr/                  包 opensal-wlr   src/wlr.cppm、wayland.cppm、bridge.cpp、session.cpp
+├── xdesk/
+│   ├── base/                 包 xdesk-base    src/os/、src/term/、src/layout/
+│   └── compositor/           包 xdesk-compositor  src/compositor/、src/draw/、src/shell/
+└── host/                     包 luban-desktop-host（Luban OS 窗口的宿主提供端，Luban 专有）
+apps/xdesk                    xdesk 程序：一个桌面会话（opensal 消费端，stdio 即 opensal.wire）
+apps/luban-os                 Luban OS 窗口
 ```
 
 初期这些家族作为 `luban/desktop/` 下的子系统随 xlings 仓库一起演进（part 1 的决定），不单独发布；
@@ -111,7 +121,7 @@ apps/xdesk                                                 xdesk 程序：一个
 | 状态 | preview | 探索（可能变化） |
 
 - 面板、启动器、通知**画在合成器里**（同一渲染路径、同一动画与主题），不依赖 yambar / fuzzel；
-  文字用 `xdesk-draw`（pixman + freetype + harfbuzz；字体按路径加载，不经 fontconfig；CJK 字体随 `xdesk-essentials`）。
+  文字用 `xdesk.draw`（pixman + freetype + harfbuzz；字体按路径加载，不经 fontconfig；CJK 字体随 `xdesk-essentials`）。
 - 配置是 `config:` 包（xlings 已支持 `type = "config"`）：`config:xdesk-classic`、`config:xdesk-canvas`
   给出布局、快捷键、主题、面板、启动器条目；用户的 `~/.config/xdesk/` 覆盖。
 - 选会话：`luban config <n> --desktop xdesk-classic|xdesk-canvas|<其它会话>|none`。
@@ -224,7 +234,7 @@ nano → tiny → core → desktop = core + 富环境层 + xdesk + xdesk-essenti
 ## 6. 测试与验证
 
 - **布局引擎**：纯逻辑单元测试（tile 滚动与浮动、canvas 平移缩放、动画目标）。
-- **组件独立性**：lint 规则（§2.0）；`xdesk-layout`、`xdesk-draw`、`xdesk-term` 各自的单元测试不链接任何 Luban 模块。
+- **组件独立性**：lint 规则（§2.0）；`xdesk.layout`、`xdesk.draw`、`xdesk.term` 各自的单元测试不链接任何 Luban 模块。
 - **合成器**：`luban-os --desktop-exec xdesk --profile classic` 无头运行；脚本打开终端、切布局、平移画布，
   断言像素与状态；测试客户端（Wayland）验证 xdg-shell、text-input、剪贴板。
 - **端到端**：镜像通道（x86_64、aarch64）各启动 preview 与 xdesk 一次，机器与沙箱各一次，打字并确认在环境里运行。
@@ -250,11 +260,11 @@ D9 测试与关键帧、D10 文档 / 版本 / 发布：贯穿，最后收口
 
 | # | 内容 | 依赖 | 验收 |
 |---|---|---|---|
-| D0 | 家族与独立性：`luban/desktop/opensal/*`、`luban/desktop/xdesk/*` 布局；`xdesk-os`；`opensal-wlr` 脱离 `xlings.platform`；`xdesk-term` 改名；lint 规则 | — | lint 通过；现有测试不变 |
+| D0 | 家族与独立性：目录与包（opensal、opensal-wlr、xdesk-base）；`xdesk.os`；`opensal-wlr` 脱离 `xlings.platform`；`xdesk.term` 改名；lint（layer deps 的家族规则、headers 与 branches 覆盖 luban/） | — | lint 通过；现有测试不变 |
 | D1 | compat 包（wayland、wayland-protocols、xkbcommon、wlroots）；用户包补齐与升级（§5.1）；`xdesk-essentials` 工厂 | — | 两种架构构建通过；索引静态测试 |
 | D2 | `xdesk-compositor` + `xdesk` 程序核心：scene、无头 + pixman、opensal 原生输出 / 输入 / 尺寸、xdg-shell + 服务端装饰、Xwayland、layer-shell；`X-Opensal-Native` 会话 | D1 | 无头运行：终端打开、打字执行、截图像素正确 |
 | D3 | 布局引擎：tile / float / canvas、工作区、动画 | D2 | 单元测试；关键帧 |
-| D4 | `xdesk-draw` 与 `xdesk-shell`：面板、启动器、通知、画布导航；文字渲染；主题 | D3 | 无头脚本：启动器打开应用；关键帧审美评估 |
+| D4 | `xdesk.draw` 与 `xdesk.shell`：面板、启动器、通知、画布导航；文字渲染；主题 | D3 | 无头脚本：启动器打开应用；关键帧审美评估 |
 | D5 | 输入法（text-input-v3 ↔ opensal.text）、剪贴板（↔ opensal.clipboard，授权） | D2 | 测试客户端收到提交文字；剪贴板往返 |
 | D6 | `config:xdesk-classic` / `config:xdesk-canvas`、用户配置、`luban config --desktop` | D4 | 两种默认组合可切换 |
 | D7 | edition：desktop（preview）与 desktop-xdesk 新日期版本；富环境层；默认配置；区域镜像；按架构成员；元数据 | D1、D6 | 新建进入即可用；aarch64 缺的包被说明而不是失败 |
@@ -267,7 +277,7 @@ D9 测试与关键帧、D10 文档 / 版本 / 发布：贯穿，最后收口
 | 视角 | 问题 | 结论 / 处理 |
 |---|---|---|
 | 架构 | 两套桌面会不会分叉成两份代码？ | 一个合成器、一个布局引擎、一个外壳框架，差别只在 profile（配置）；新增布局或外壳组件两边都可用 |
-| 独立复用 | 组件会不会悄悄依赖 Luban？ | lint 规则禁止 `opensal*`/`xdesk*` 导入 `xlings.*`/`luban.*`；需要的系统调用在 `xdesk-os`；以后拆仓只是搬目录 |
+| 独立复用 | 组件会不会悄悄依赖 Luban？ | lint 规则禁止 `opensal*`/`xdesk*` 导入 `xlings.*`/`luban.*`；需要的系统调用在 `xdesk.os`；以后拆仓只是搬目录 |
 | 稳定性 | 自研合成器的风险？ | 协议正确性交给 wlroots（成熟）；我们只做布局、交互、渲染策略与 opensal 输出；wlroots 锁系列；无头 + pixman 在所有载体一致 |
 | 优雅简洁 | 是否引入了多余的进程或协议？ | 合成器直接输出 opensal（省掉桥、screencopy、输入注入）；面板与启动器在同一进程同一渲染路径；没有新增 xlings 命令，选择桌面是 `luban config --desktop` |
 | 用户体验 | 第一次进入是否就好用？ | edition 带完整环境与默认配置；快速开始两组卡片 + desktop 二选一 + 说明与大小；缺 qemu 一键安装；导入三入口；关键帧审美评估是合入前提 |

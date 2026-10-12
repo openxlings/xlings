@@ -64,4 +64,18 @@ if [ "$bad" -gt 0 ]; then
   echo "layer dependency lint: FAIL ($bad upward import(s))"
   exit 1
 fi
-echo "layer dependency lint: PASS (luban -> modules, modules -/-> luban, src; src -/-> luban)"
+# The desktop component families (Luban OS desktop part 2 §2.0): opensal and
+# xdesk are used by other systems on their own, so they import the standard
+# library, each other and their C libraries -- never xlings or Luban.
+for family in luban/desktop/opensal luban/desktop/xdesk; do
+  [ -d "$family" ] || continue
+  while read -r where module; do
+    [ -z "$module" ] && continue
+    case "$module" in
+      std|std.*|opensal|opensal.*|xdesk|xdesk.*) ;;
+      *) report "${where%%:*}" "$family imports $module ($where): opensal and xdesk are reusable on their own; what they need of the system is xdesk.os" ;;
+    esac
+  done < <(imports "$family")
+done
+
+echo "layer dependency lint: PASS (luban -> modules, modules -/-> luban, src; src -/-> luban; opensal, xdesk -> std only)"

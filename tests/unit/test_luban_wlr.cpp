@@ -18,11 +18,11 @@ import std;
 import opensal;
 import opensal.wire;
 import xlings.platform;
-import luban.desktop.wayland;
-import luban.desktop.wlr;
+import opensal.wlr.wayland;
+import opensal.wlr;
 
-namespace wl = luban::desktop::wayland;
-namespace wlr = luban::desktop::wlr;
+namespace wl = opensal::wlr::wayland;
+namespace wlr = opensal::wlr;
 namespace wire = opensal::wire;
 namespace platform = xlings::platform;
 namespace fs = std::filesystem;

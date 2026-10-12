@@ -1,13 +1,13 @@
-module luban.desktop.wlr;
+module opensal.wlr;
 
 import std;
 import opensal;
-import xlings.platform;
-import luban.desktop.wayland;
+import xdesk.os;
+import opensal.wlr.wayland;
 
-namespace luban::desktop::wlr {
+namespace opensal::wlr {
 
-namespace platform = xlings::platform;
+namespace os = xdesk::os;
 
 namespace {
 
@@ -189,7 +189,7 @@ std::uint32_t evdev_button(opensal::Button b) {
 
 int run_session(const Session& s, int in, int out, const SessionOptions& o) {
     std::error_code ec;
-    const auto runtime = o.runtime_root / std::format("display-{}", platform::current_pid());
+    const auto runtime = o.runtime_root / std::format("display-{}", os::pid());
     fs::remove_all(runtime, ec);
     fs::create_directories(runtime, ec);
     fs::permissions(runtime, fs::perms::owner_all, fs::perm_options::replace, ec);
@@ -203,41 +203,32 @@ int run_session(const Session& s, int in, int out, const SessionOptions& o) {
     env["WLR_LIBINPUT_NO_DEVICES"] = "1";
     env.erase("WAYLAND_DISPLAY");
     env.erase("DISPLAY");
-    const int pid = platform::fork_process();
-    if (pid == 0) {
-        platform::new_session();
-        const int null = platform::open_null();
-        const int log = o.log.empty() ? platform::open_null() : platform::open_for_append(o.log);
-        const std::array<int, 3> stdio{null, log, log};
-        platform::redirect_stdio(stdio);
-        // A session starts at home, as a login does (its terminals open there).
-        if (auto h = env.find("HOME"); h != env.end()) {
-            std::error_code here;
-            fs::current_path(h->second, here);
-        }
-        platform::exec_path({"/bin/sh", "-c", "exec " + s.exec}, env);
-        platform::exit_now(127);
-    }
+    // A session starts at home, as a login does (its terminals open there).
+    const int log = o.log.empty() ? -1 : os::open_append(o.log);
+    const int pid = os::spawn({.argv = {"/bin/sh", "-c", "exec " + s.exec}, .env = env,
+                               .cwd = env.contains("HOME") ? fs::path(env.at("HOME")) : fs::path{},
+                               .stdio = {-1, log, log}});
+    os::close(log);
     if (pid < 0) return 2;
     bool ended = false;
     auto alive = [&] {
-        if (!ended && platform::wait_process(pid, false)) ended = true;
+        if (!ended && os::exited(pid)) ended = true;
         return !ended;
     };
     std::optional<fs::path> socket;
     for (int i = 0; i < 150 && alive() && !socket; ++i) {
-        socket = desktop::wayland::find_socket(runtime);
+        socket = wayland::find_socket(runtime);
         if (!socket) std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
     int code = 1;
     if (socket) code = bridge({.in = in, .out = out, .socket = *socket, .alive = alive});
     if (alive()) {
-        platform::send_signal(pid, platform::sig::terminate);
+        os::terminate(pid);
         for (int i = 0; i < 30 && alive(); ++i) std::this_thread::sleep_for(std::chrono::milliseconds(100));
-        if (alive()) { platform::send_signal(pid, platform::sig::kill); (void)platform::wait_process(pid, true); }
+        if (alive()) { os::kill(pid); (void)os::wait(pid); }
     }
     fs::remove_all(runtime, ec);
     return code;
 }
 
-}  // namespace luban::desktop::wlr
+}  // namespace opensal::wlr

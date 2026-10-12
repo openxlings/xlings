@@ -22,10 +22,10 @@ runtime            = { path = "../../modules/runtime" }
 subos              = { path = "../../modules/subos" }
 luban-service      = { path = "../../luban/service" }
 luban-vm           = { path = "../../luban/vm" }
-luban-desktop-spec = { path = "../../luban/desktop/spec" }
-luban-desktop-term = { path = "../../luban/desktop/term" }
+opensal            = { path = "../../luban/desktop/opensal/spec" }
+xdesk-base = { path = "../../luban/desktop/xdesk/base" }
 luban-desktop-host = { path = "../../luban/desktop/host" }
-luban-desktop-wlr  = { path = "../../luban/desktop/wlr" }
+opensal-wlr        = { path = "../../luban/desktop/opensal/wlr" }
 
 [dependencies.compat]
 imgui = "1.92.8-docking"
