@@ -374,3 +374,10 @@ mcpp 用环境内的 `/usr/bin/xlings` 为自己的沙箱 home（`/root/.mcpp/re
 | P9 | root 里有 bash 就用 bash，否则 sh；提示符经 `PS1` 环境变量 `[luban:<name>]`；进入时的一行说明 edition 和 `luban status` | 不新增 `shell` 设置、不改 edition 清单（按是否有 bash 判断已覆盖 core 与 tiny/nano）；不写 `/etc/profile.d` | host matrix `terminal` |
 | P10 | `docs/luban/01-quick-start.md`（替换 01-getting-started）与 README 的 Luban 小节 | 无 | `test_docs.py` |
 | 遗留 | qemu-arm / qemu-x86 绑定到 release（index，revision 1）；全新 home 上未被需要的运行时声明是 Notice | 无 | index 静态测试；`subos_runtime_authority_test.sh` |
+
+CI 上发现并修复的三点（第一轮 PR CI）：
+
+- **前台判断只对控制终端成立**：SIGTTOU 只来自进程的控制终端；stdin 是一个非控制终端的 pty（`non_interactive_contract_test` N8）时 `tcgetpgrp` 失败，最初被当作"后台"，确认提示因此消失。改为：`tcgetpgrp` 失败的终端没有作业控制，按前台处理。
+- **运行时 Notice 不提前返回**：Notice 分支一度提前 `return`，跳过了后面的声明与 sysroot 不一致检查（`subos_runtime_describe_test` S4）。
+- **没有 bwrap 的 home 上做 root**：`oldhome` 场景在 u-fedora 上暴露：预检只警告"没有 bwrap"，edition 装到 glibc 时才因生成 loader 缓存需要 bwrap 而失败。改为预检时先装 `xim:bwrap`（T1，与 `luban try` 装模拟器同理）。
+- 场景本身：旧客户端（2026.10.9.2）不能在同一计划里用刚装的 patchelf 重定位（12.1 已修），所以先单独装 patchelf；`luban enter` 的输入要在 shell 起来之后再输入，提前输入的字节会被启动时的终端颜色查询读走。
