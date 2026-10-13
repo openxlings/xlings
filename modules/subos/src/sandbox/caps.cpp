@@ -70,7 +70,8 @@ std::string cache_key(const Backend& b, std::string_view context) {
 }
 
 nlohmann::json entry_of(const Backend& b) {
-    return {{"usable", b.usable}, {"output", b.probe_output}, {"disable_userns_fails", b.disable_userns_fails}};
+    return {{"usable", b.usable}, {"output", b.probe_output}, {"disable_userns_fails", b.disable_userns_fails},
+            {"overlay", b.overlay}};
 }
 
 // state/isolation-caps.json (design §18): probe results per key. A probe
@@ -94,10 +95,12 @@ void probe_cached(std::vector<Backend>& all, const HomeView& home, bool fresh) {
     bool dirty = false;
     for (auto& b : all) {
         const auto key = cache_key(b, *context);
-        if (auto it = cache.find(key); it != cache.end() && it->is_object()) {
+        // An entry from before a fact was probed is probed again.
+        if (auto it = cache.find(key); it != cache.end() && it->is_object() && it->contains("overlay")) {
             b.usable = it->value("usable", false);
             b.probe_output = it->value("output", "");
             b.disable_userns_fails = it->value("disable_userns_fails", "");
+            b.overlay = it->value("overlay", false);
             observe::trace("caps", std::format("{}: cached ({})", b.bin.string(), b.usable ? "usable" : "fails"));
             continue;
         }
@@ -128,7 +131,11 @@ std::vector<Backend> bwrap_candidates(const HomeView& home, const Ports& ports, 
 
 std::optional<Backend> locate_bwrap(const HomeView& home, const Ports& ports) {
     auto all = bwrap_candidates(home, ports);
+    // In the table's order, the one that can do the most: forbid nested user
+    // namespaces, then overlays.
+    for (auto& b : all) if (b.usable && b.disable_userns_fails.empty() && b.overlay) return b;
     for (auto& b : all) if (b.usable && b.disable_userns_fails.empty()) return b;
+    for (auto& b : all) if (b.usable && b.overlay) return b;
     for (auto& b : all) if (b.usable) return b;
     if (!all.empty()) return all.front();
     return std::nullopt;
@@ -161,7 +168,10 @@ void probe_bwrap(Backend& b) {
     b.usable = status == 0;
     b.probe_output = b.usable ? std::string{} : std::move(output);
     b.disable_userns_fails.clear();
+    b.overlay = false;
     if (!b.usable) return;
+    const auto help = platform::run_command_capture(platform::shell_quote(b.bin.string()) + " --help").second;
+    b.overlay = help.find("--overlay-src") != std::string::npos;
     auto [locked, why] = platform::run_command_capture(
         platform::shell_quote(b.bin.string()) + " --unshare-user --disable-userns --ro-bind / / -- /bin/true");
     if (locked != 0) {

@@ -740,7 +740,7 @@ state {}
 // real (downloaded, unpacked, set up), and then used -- what a new user sees,
 // end to end, as they would do it.
 XTEST(LubanOs, AFirstTimeUserMakesASystemFromTheQuickStartAndUsesIt, .area = "luban",
-      .covers = {"LUBAN-OS-APP", "LUBAN-OS-FIRST-USE"}, .requires_ = {"linux", "xlings-bin", "static-xlings", "sandbox", "network"}) {
+      .covers = {"LUBAN-OS-APP", "LUBAN-OS-FIRST-USE", "LUBAN-WELCOME"}, .requires_ = {"linux", "xlings-bin", "static-xlings", "sandbox", "network"}) {
     if (!app_binary()) GTEST_SKIP() << "no luban-os beside the xlings under test";
     auto home = tk::Home::isolated("luban-os-first-use");
     ASSERT_EQ(home.xlings({"self", "init"}).exit_code, 0);
@@ -756,6 +756,9 @@ see 5s tiny-1
 screenshot {}
 wait console 900
 see 120s [luban:tiny-1]
+see 5s Luban OS
+see 5s a sandbox on this host
+see 5s exit to leave
 screenshot {}
 screenshot {}
 type echo luban-$((6*7))

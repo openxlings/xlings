@@ -28,6 +28,9 @@ struct Backend {
     // it works: a setuid bwrap does not support it, and a private policy
     // needs it.
     std::string disable_userns_fails;
+    // It has overlays (--overlay-src, bwrap 0.10+): a session that keeps less
+    // than everything (persist home / none) needs them.
+    bool overlay { false };
 };
 
 struct Caps {

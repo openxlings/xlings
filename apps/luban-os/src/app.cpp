@@ -352,8 +352,14 @@ struct App {
                 notice = error;
             }
         }
-        console = machine ? Console::machine(home, name, [w] { w->wake(); }, error)
-                          : Console::sandbox(ctx.port.xlings(), home, name, env ? env->settings.persist : "all", [w] { w->wake(); }, error);
+        // The welcome a console says first, the same as `luban enter`'s.
+        std::string greeting;
+        if (env)
+            for (const auto& line : service::welcome(*env, machine ? "machine" : "sandbox", false, tr("en", "zh") == "zh"))
+                greeting += line + "\r\n";
+        console = machine ? Console::machine(home, name, [w] { w->wake(); }, error, greeting)
+                          : Console::sandbox(ctx.port.xlings(), home, name, env ? env->settings.persist : "all", [w] { w->wake(); },
+                                             error, greeting);
         if (!console) {
             notice = error;
             view = View::Launcher;

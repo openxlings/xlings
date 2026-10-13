@@ -55,10 +55,11 @@ void utf8_(std::string& out, char32_t c) {
 }  // namespace
 
 std::unique_ptr<Console> Console::machine(const fs::path& home, const std::string& name, std::function<void()> wake,
-                                          std::string& error) {
+                                          std::string& error, const std::string& greeting) {
     auto client = vm::Client::connect(home, name);
     if (!client) { error = client.error(); return nullptr; }
     std::unique_ptr<Console> c(new Console());
+    c->screen_.feed(greeting);
     c->name_ = name;
     c->machine_ = true;
     c->wake_ = std::move(wake);
@@ -97,21 +98,26 @@ std::unique_ptr<Console> Console::machine(const fs::path& home, const std::strin
 }
 
 std::unique_ptr<Console> Console::sandbox(const fs::path& xlings, const fs::path& home, const std::string& name,
-                                          const std::string& persist, std::function<void()> wake, std::string& error) {
+                                          const std::string& persist, std::function<void()> wake, std::string& error,
+                                          const std::string& greeting) {
     auto env = platform::environment();
     env["XLINGS_HOME"] = home.string();
+    // The welcome is ours; xlings' own line is not said.
+    if (!greeting.empty()) env["XLINGS_ENTER_QUIET"] = "1";
     env.erase("XLINGS_SUBOS_MODE");
     env.erase("XLINGS_ACTIVE_SUBOS");
     std::vector<std::string> argv{xlings.string(), "subos", "use", name};
     if (!persist.empty() && persist != "all") argv.insert(argv.end(), {"--persist", persist});
-    return process(argv, std::move(env), name, std::move(wake), error);
+    return process(argv, std::move(env), name, std::move(wake), error, greeting);
 }
 
 std::unique_ptr<Console> Console::process(const std::vector<std::string>& argv, std::map<std::string, std::string> env,
-                                          const std::string& name, std::function<void()> wake, std::string& error) {
+                                          const std::string& name, std::function<void()> wake, std::string& error,
+                                          const std::string& greeting) {
     auto pty = platform::open_pty();
     if (!pty) { error = "no pseudo-terminal here"; return nullptr; }
     std::unique_ptr<Console> c(new Console());
+    c->screen_.feed(greeting);
     c->name_ = name;
     c->wake_ = std::move(wake);
     platform::set_terminal_size((*pty)[0], static_cast<unsigned short>(c->rows_), static_cast<unsigned short>(c->cols_));

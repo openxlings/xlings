@@ -488,7 +488,11 @@ void dispatch_data_event(const DataEvent& e) {
             json.value("name", ""), json.value("dir", ""));
     }
     else if (e.kind == "subos_entering") {
-        ui::print_subos_entering(json.value("name", ""), json.value("edition", ""));
+        // A frontend that greets for itself (luban: its welcome) asks for no
+        // line of ours with XLINGS_ENTER_QUIET=1.
+        const char* quiet = std::getenv("XLINGS_ENTER_QUIET");
+        if (!(quiet && std::string_view(quiet) == "1"))
+            ui::print_subos_entering(json.value("name", ""), json.value("edition", ""));
     }
     else if (e.kind == "subos_already_in") {
         ui::print_subos_already_in(json.value("name", ""));

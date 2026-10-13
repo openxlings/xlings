@@ -56,6 +56,13 @@ struct Environment {
     std::string carrier { "local" };
 };
 
+// What a console says first, before its prompt: Luban OS's version, the
+// edition and the environment, how it runs and what it keeps, how to leave.
+// `mode` is how this session runs (sandbox or machine); in Chinese when `zh`.
+std::vector<std::string> welcome(const Environment& e, std::string_view mode, bool temp, bool zh);
+// The user's language (LC_ALL, LC_MESSAGES, LANG) is Chinese.
+bool chinese_locale();
+
 std::expected<std::vector<Environment>, std::string> list(const Context& c);
 std::expected<Environment, std::string> describe(const Context& c, std::string_view name);
 

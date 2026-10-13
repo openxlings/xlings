@@ -455,11 +455,43 @@ Outcome import_environment(const Context& c, const fs::path& file, std::string n
     return {.code = 0, .value = {{"name", name}, {"edition", edition}}};
 }
 
+bool chinese_locale() {
+    for (const char* key : {"LC_ALL", "LC_MESSAGES", "LANG"})
+        if (const char* v = std::getenv(key); v && *v) return std::string_view(v).starts_with("zh");
+    return false;
+}
+
+std::vector<std::string> welcome(const Environment& e, std::string_view mode, bool temp, bool zh) {
+    std::string edition = e.edition;
+    if (edition.starts_with("subos:luban-")) edition = edition.substr(12);
+    if (const auto at = edition.find('@'); at != std::string::npos) edition[at] = ' ';
+    std::string title = std::format("Luban OS {}", kVersion);
+    if (!edition.empty()) title += " · " + edition;
+    title += " · " + e.name;
+    const auto persist = temp ? std::string("none") : e.settings.persist;
+    // Short lines: a console is 80 columns.
+    std::string how, next;
+    if (zh) {
+        how = mode == "machine" ? "一台机器（自己的内核）" : "本机上的沙箱";
+        how += persist == "all" ? "，保留所有改动" : persist == "home" ? "，只保留 /home" : "，什么也不保留";
+        next = std::format("luban status {} · exit 离开", e.name);
+    } else {
+        how = mode == "machine" ? "a machine (its own kernel)" : "a sandbox on this host";
+        how += persist == "all" ? ", keeping what changes" : persist == "home" ? ", keeping only /home" : ", keeping nothing";
+        next = std::format("luban status {} · exit to leave", e.name);
+    }
+    return {title, "  " + how, "  " + next, ""};
+}
+
 int enter_sandbox(const Context& c, std::string_view name, bool temp) {
     std::vector<std::string> args{"subos", "use", std::string(name)};
     auto settings = read_settings(c.home, name);
     const auto persist = temp ? std::string("none") : settings ? settings->persist : std::string("all");
     if (persist != "all") args.insert(args.end(), {"--persist", persist});
+    if (auto e = describe(c, name)) {
+        for (const auto& line : welcome(*e, "sandbox", temp, chinese_locale())) std::println("{}", line);
+        xlings::platform::set_env_variable("XLINGS_ENTER_QUIET", "1");
+    }
     return c.port.terminal(args);
 }
 

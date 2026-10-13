@@ -34,6 +34,9 @@ std::optional<sp::Unmet> namespaces_view(const in::Intent& i, const HomeView& ho
             }))
             return sp::Unmet{"root", "a root needs an owner-checked read-only store closure",
                              "run owner `xlings install --reconfig` and retry", policy::Need::Must};
+        // persist home / none: a /tmp of its own -- before the store's binds,
+        // which a home under /tmp has there (mounted after, it hid them).
+        if (i.persist != sp::Persist::All) s.mounts.push_back({MountKind::Tmpfs, "", "/tmp"});
         s.mounts.insert(s.mounts.end(), i.root_mounts.begin(), i.root_mounts.end());
         // persist home / none: the root's own state seen through a memory
         // overlay, so what the session writes is gone when it ends.
@@ -45,7 +48,6 @@ std::optional<sp::Unmet> namespaces_view(const in::Intent& i, const HomeView& ho
                 if (fs::is_directory(i.root / d, ec))
                     s.mounts.push_back({MountKind::TmpOverlay, posix(i.root / d), "/" + d});
             }
-            s.mounts.push_back({MountKind::Tmpfs, "", "/tmp"});
         }
         if (i.net.mode != policy::Net::None && i.exists("/etc/resolv.conf"))
             s.mounts.push_back({MountKind::RoBind, "/etc/resolv.conf", "/etc/resolv.conf"});

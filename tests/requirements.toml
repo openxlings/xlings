@@ -63,6 +63,10 @@ status = "required"
 text = "luban setup (self doctor --isolation --fix) on a host with no bwrap installs it from the index first and goes on: the one-time setup is one step, never 'install this, then run it again'"
 status = "required"
 
+[LUBAN-WELCOME]
+text = "a console of an environment (luban enter, the window's console; sandbox or machine) says first, in the user's language: Luban OS and its version, the edition and its version, the environment, how it runs and what it keeps, how to see it and leave; xlings' own line is not said there"
+status = "required"
+
 [LUBAN-UPGRADE-NEVER-LOOSENS]
 text = "an upgrade applies the edition's policy only when it allows nothing more than the one in force; a looser one is kept out and named, with the subos config command that switches to it"
 status = "required"

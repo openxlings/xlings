@@ -635,6 +635,8 @@ int enter(const service::Context& c, std::string_view name_or_image, const Enter
     } else if (o.temp) {
         say_(c, service::notice(std::format("{} is already running and keeps what it writes; this session joins it", name)));
     }
+    if (auto e = service::describe(c, name))
+        for (const auto& line : service::welcome(*e, "machine", o.temp, service::chinese_locale())) std::println("{}", line);
     auto [ending, code] = session_(c, name);
     const auto state = read_json_(state_file_(c.home, name));
     const bool temp = state.value("temp", false) || state.value("persist", "all") != "all";

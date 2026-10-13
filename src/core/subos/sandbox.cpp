@@ -679,6 +679,30 @@ int enter(const std::string& name, EventStream& stream, const EnterOptions& opts
     else if (!opts.argv.empty()) request.argv = opts.argv;
     request.publish = opts.publish;
     request.persist = spec::persist_from_string(opts.persist).value_or(spec::Persist::All);
+    if constexpr (platform::is_linux) {
+        // Keeping less than everything is an overlay, which bwrap has from
+        // 0.10 (a distribution's may be older: Ubuntu 24.04 ships 0.9). It
+        // is a package (T1): brought before the session, as making a root does.
+        if (rootfs && request.persist != spec::Persist::All) {
+            const auto ports = subos::make_ports(stream);
+            auto overlays = [&] {
+                return std::ranges::any_of(caps::bwrap_candidates(home, ports),
+                                           [](const caps::Backend& b) { return b.usable && b.overlay; });
+            };
+            if (!overlays()) {
+                log::info("keeping {} needs a bwrap with overlays (0.10+): installing xim:bwrap first",
+                          request.persist == spec::Persist::Home ? "only /home" : "nothing");
+                const std::vector<std::string> bwrap{"xim:bwrap"};
+                if (xim::cmd_install_step(bwrap, {}, stream, /*plumbing=*/true) != 0 || !overlays()) {
+                    stream.emit(ErrorEvent{.code = ErrorCode::NotFound,
+                        .message = "no bwrap here has overlays, which keeping less than everything needs",
+                        .recoverable = true,
+                        .hint = std::format("xlings install bwrap, or enter {} keeping everything", name)});
+                    return kFail;
+                }
+            }
+        }
+    }
     request.explicit_env = opts.env;
     request.cwd = opts.cwd;
     if (opts.detached) request.interactive = false;
