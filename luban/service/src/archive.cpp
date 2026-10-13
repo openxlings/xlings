@@ -97,7 +97,9 @@ std::span<const std::string_view> state_dirs() {
     return value;
 }
 
-std::expected<std::size_t, std::string> write(const fs::path& file, const nlohmann::json& manifest, const fs::path& root) {
+std::expected<std::size_t, std::string> write(const fs::path& file, const nlohmann::json& manifest, const fs::path& root,
+                                              const fs::path& home) {
+    const auto home_prefix = home.empty() ? std::string{} : (home.lexically_normal() / "").generic_string();
     std::error_code ec;
     if (fs::exists(file, ec)) return std::unexpected(file.string() + " exists; name a new file");
     const auto staged = fs::path(file.string() + ".partial");
@@ -112,12 +114,16 @@ std::expected<std::size_t, std::string> write(const fs::path& file, const nlohma
         put_(out, "state/" + std::string(dir) + "/", '5', {}, 0755);
         for (fs::recursive_directory_iterator it(base, fs::directory_options::none, ec), end; !ec && it != end;
              it.increment(ec)) {
-            const auto rel = "state/" + fs::relative(it->path(), root, ec).generic_string();
+            // Lexically: fs::relative resolves a link first, naming the
+            // entry by where it points (outside the root, for a store link).
+            const auto rel = "state/" + it->path().lexically_relative(root).generic_string();
             const auto st = it->symlink_status(ec);
             const unsigned mode = static_cast<unsigned>(st.permissions()) & 07777;
             if (fs::is_symlink(st)) {
-                put_(out, rel, '2', {}, 0777, fs::read_symlink(it->path(), ec).generic_string());
+                const auto target = fs::read_symlink(it->path(), ec).generic_string();
                 it.disable_recursion_pending();
+                if (!home_prefix.empty() && target.starts_with(home_prefix)) continue;
+                put_(out, rel, '2', {}, 0777, target);
             } else if (fs::is_directory(st)) {
                 put_(out, rel + "/", '5', {}, mode);
             } else if (fs::is_regular_file(st)) {

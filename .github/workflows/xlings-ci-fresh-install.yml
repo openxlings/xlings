@@ -112,32 +112,8 @@ jobs:
       - name: Run ${{ matrix.suite }} suite
         run: bash tests/fresh-install/smoke.sh ${{ matrix.suite }}
 
-  # ────────────────────────────────────────────────────────────────────
-  # Luban OS as a first-time user meets it: the window installed, the quick
-  # start making a system whose console runs what is typed, the desktop
-  # edition showing xdesk in a sandbox and, with KVM, as a machine. Its key
-  # frames are kept (luban-os-fresh-screenshots) for a person to look at.
-  # ────────────────────────────────────────────────────────────────────
-  luban-fresh:
-    name: Linux fresh (luban)
-    if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success' }}
-    runs-on: ubuntu-24.04
-    timeout-minutes: 120
-    steps:
-      - uses: actions/checkout@v4
-      - name: KVM for the machine leg
-        run: |
-          if [ -e /dev/kvm ]; then sudo chmod 666 /dev/kvm; ls -l /dev/kvm; else echo "no /dev/kvm on this runner"; fi
-      - name: Run the luban suite
-        env:
-          LUBAN_SCREENSHOTS: ${{ github.workspace }}/luban-os-fresh
-        run: bash tests/fresh-install/smoke.sh luban
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: luban-os-fresh-screenshots
-          path: luban-os-fresh/
-          if-no-files-found: ignore
+  # Luban (the console, the window, archives, machines, an upgrade, other
+  # hosts) has a matrix of its own: xlings-ci-luban-fresh.yml.
 
   # ────────────────────────────────────────────────────────────────────
   # CentOS 7 — the old-glibc proof (glibc 2.17, EOL).

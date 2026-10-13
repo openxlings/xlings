@@ -11,7 +11,7 @@
 # native Linux leg and the CentOS 7 `docker run` leg execute byte-identical code
 # and neither needs $GITHUB_PATH.
 #
-#   usage: bash tests/fresh-install/smoke.sh <core|gcc|llvm>
+#   usage: bash tests/fresh-install/smoke.sh <core|gcc|llvm|luban-console|luban-window|luban-archive|luban-machine|luban-upgrade|luban-host>
 #
 # Run it locally the same way CI does — but note it uninstalls xlings from $HOME
 # at the end of the `core` suite, so point HOME somewhere disposable:
@@ -23,6 +23,8 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=tests/fresh-install/lib.sh
 . "$HERE/lib.sh"
+# shellcheck source=tests/fresh-install/luban.sh
+. "$HERE/luban.sh"
 
 # ── Versions under test ───────────────────────────────────────────────
 # Pinned rather than `latest` so an assertion can name an exact expected
@@ -56,8 +58,19 @@ bootstrap() {
 
     # No version argument: resolve to the newest release, which is the whole
     # point — this is the command printed in the README.
-    log "\$ curl -fsSL $QUICK_INSTALL_URL | bash"
-    curl -fsSL "$QUICK_INSTALL_URL" | bash \
+    # The upgrade leg starts one release back: the newest but one, asked of
+    # GitHub now -- never a number written here.
+    local from=()
+    if [ "${FROM_PREVIOUS_RELEASE:-0}" = 1 ]; then
+        local previous_release
+        previous_release="$(curl -fsSL "https://api.github.com/repos/openxlings/xlings/releases?per_page=2" \
+            | python3 -c 'import json,sys; print(json.load(sys.stdin)[1]["tag_name"])')" \
+            || fail "cannot ask GitHub for the release before the newest"
+        from=(-s -- "$previous_release")
+        log "starting from the release before the newest: $previous_release"
+    fi
+    log "\$ curl -fsSL $QUICK_INSTALL_URL | bash ${from[*]}"
+    curl -fsSL "$QUICK_INSTALL_URL" | bash "${from[@]}" \
         || fail "quick_install.sh exited $? — the published release is unusable"
 
     [ -x "$XLINGS_HOME_DIR/subos/current/bin/xlings" ] \
@@ -289,7 +302,7 @@ print(data[o], data[o + 1], data[o + 2])
 PY
 }
 
-suite_luban() {
+suite_luban_window() {
     [ "$(uname -s)" = Linux ] || fail "the luban suite is Linux's: Luban systems are Linux systems"
     local shots="${LUBAN_SCREENSHOTS:-$PWD/luban-os-fresh}"
     mkdir -p "$shots"
@@ -367,16 +380,19 @@ EOF
 main() {
     local suite="${1:-}"
     case "$suite" in
-        core|gcc|llvm|luban) ;;
-        '') fail "usage: $0 <core|gcc|llvm|luban>" ;;
-        *)  fail "unknown suite '$suite' — expected core, gcc, llvm or luban" ;;
+        core|gcc|llvm) ;;
+        luban|luban-window) suite=luban-window ;;
+        luban-console|luban-archive|luban-machine|luban-host) ;;
+        luban-upgrade) export FROM_PREVIOUS_RELEASE=1 ;;
+        '') fail "usage: $0 <core|gcc|llvm|luban-console|luban-window|luban-archive|luban-machine|luban-upgrade|luban-host>" ;;
+        *)  fail "unknown suite '$suite'" ;;
     esac
 
     printf '%s┌─ fresh-install: %s suite on %s %s%s\n' \
         "$YLW" "$suite" "$(uname -s)" "$(uname -m)" "$RST"
 
     bootstrap
-    "suite_$suite"
+    "suite_${suite//-/_}"
 
     section "PASS — $suite suite"
 }

@@ -67,6 +67,10 @@ status = "required"
 text = "a console of an environment (luban enter, the window's console; sandbox or machine) says first, in the user's language: Luban OS and its version, the edition and its version, the environment, how it runs and what it keeps, how to see it and leave; xlings' own line is not said there"
 status = "required"
 
+[LUBAN-ROLLBACK-PACKAGES]
+text = "a rollback takes an environment's packages back with its root (each generation records what it was built from), so the next entry does not rebuild the newer one; a generation from before the record is rolled back to its root and says so"
+status = "required"
+
 [LUBAN-UPGRADE-NEVER-LOOSENS]
 text = "an upgrade applies the edition's policy only when it allows nothing more than the one in force; a looser one is kept out and named, with the subos config command that switches to it"
 status = "required"

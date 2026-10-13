@@ -15,7 +15,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)]
-    [ValidateSet('core', 'gcc', 'llvm')]
+    [ValidateSet('core', 'gcc', 'llvm', 'luban-host')]
     [string]$Suite
 )
 
@@ -261,7 +261,38 @@ int main(void) { printf("fresh install ok\n"); return 0; }
 Write-Host "+- fresh-install: $Suite suite on Windows $env:PROCESSOR_ARCHITECTURE" -ForegroundColor Yellow
 
 Invoke-Bootstrap
+# ── luban-host: what a computer that cannot run Luban systems says ────
+
+# A command that must fail, saying why: not a crash, not silence.
+function Assert-Refuses {
+    param([string]$Desc, [string[]]$Command)
+    Write-Log "$ $($Command -join ' ')"
+    $exe = $Command[0]
+    $rest = @()
+    if ($Command.Count -gt 1) { $rest = $Command[1..($Command.Count - 1)] }
+    $out = (& $exe @rest 2>&1 | Out-String)
+    $code = $LASTEXITCODE
+    Write-Host $out
+    if ($code -eq 0) { Fail "${Desc}: '$($Command -join ' ')' succeeded" }
+    if ($code -ge 128 -or $code -lt 0) { Fail "${Desc}: '$($Command -join ' ')' died (exit $code)" }
+    if ([string]::IsNullOrWhiteSpace($out)) { Fail "${Desc}: '$($Command -join ' ')' failed without a word" }
+    Write-Ok $Desc
+}
+
+function Invoke-SuiteLubanHost {
+    Write-Section 'luban on Windows: what this computer can do'
+    Invoke-Step 'version' @('luban', '--version')
+    $overview = (& luban 2>&1 | Out-String)
+    Write-Host $overview
+    if ($overview -notmatch 'Luban OS') { Fail "the overview does not say Luban OS" }
+    Write-Ok 'the overview answers'
+    Invoke-Step 'host status' @('luban', 'status')
+    Assert-Refuses 'a Luban system is not made here without WSL2' @('luban', 'new', 'box', '--edition', 'tiny')
+    Assert-Refuses 'the window is not published for this platform' @('xlings', 'install', 'luban-os', '-y')
+}
+
 switch ($Suite) {
+    'luban-host' { Invoke-SuiteLubanHost }
     'core' { Invoke-SuiteCore }
     'gcc'  { Invoke-SuiteGcc }
     'llvm' { Invoke-SuiteLlvm }

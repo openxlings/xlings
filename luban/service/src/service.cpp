@@ -347,7 +347,7 @@ Outcome export_environment(const Context& c, const ExportOptions& o) {
         if (auto pol = xlings::subos::policy_store::read(view, o.name); pol && pol->has_value())
             manifest["policy"] = xlings::subos::policy::to_json(**pol);
         if (auto s = read_settings(c.home, o.name)) manifest["settings"] = s->document;
-        auto written = archive::write(o.file, manifest, *root);
+        auto written = archive::write(o.file, manifest, *root, c.home);
         if (!written) {
             if (c.sink) {
                 c.sink(error(written.error()));

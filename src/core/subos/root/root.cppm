@@ -44,6 +44,12 @@ subos::rootfs::Inputs inputs(const fs::path& home, const fs::path& subos_dir,
 
 std::expected<bool, std::string> refresh_cache(const fs::path& home, std::string_view name);
 
+// The packages a generation was built from (its `workspace`), recorded beside
+// it (generations/<N>.workspace.json) so that going back to it stays: the
+// next entry rebuilds the root from them. Restores that record into the
+// SubOS; false when the generation predates the record.
+std::expected<bool, std::string> restore_packages(const fs::path& home, std::string_view name, int generation);
+
 struct Refreshed {
     int generation { 0 };
     bool changed { false };

@@ -259,6 +259,18 @@ XTEST(Luban, AnExportedEnvironmentIsImportedWithItsStateAndANewPersona,
     const auto tree = home.dir() / "subos/box/rootfs";
     ASSERT_TRUE(fs::is_directory(tree / "etc")) << "the fixture made no root";
     tk::write_file(tree / "root/notes.txt", "mine\n");
+    // A link a package's configuration made into the home's store (as
+    // ca-certificates' /etc/ssl one is): named by where it is, not where it points.
+    // What a package's configuration makes (ca-certificates): an absolute link
+    // to the environment's own etc on this host, which links into the store.
+    const auto stored = home.dir() / "data/xpkgs/xim-x-ca-certificates/1/cacert.pem";
+    tk::write_file(stored, "a certificate\n");
+    fs::create_directories(home.dir() / "subos/box/etc/ssl");
+    fs::create_symlink(stored, home.dir() / "subos/box/etc/ssl/cert.pem");
+    fs::create_directories(tree / "etc/ssl");
+    fs::create_symlink(home.dir() / "subos/box/etc/ssl/cert.pem", tree / "etc/ssl/cert.pem");
+    // And one that means something inside the root.
+    fs::create_symlink("/usr/share/zoneinfo/UTC", tree / "etc/localtime");
     ASSERT_EQ(luban(home, {"config", "box", "--persist", "home"}).exit_code, 0);
     const auto file = home.root() / "box.luban";
     auto exported = luban(home, {"export", "box", file.string()});
@@ -269,6 +281,11 @@ XTEST(Luban, AnExportedEnvironmentIsImportedWithItsStateAndANewPersona,
     auto imported = luban(home, {"import", file.string(), "--name", "copy"});
     ASSERT_EQ(imported.exit_code, 0) << imported.transcript();
     EXPECT_EQ(tk::read_file(home.dir() / "subos/copy/rootfs/root/notes.txt"), "mine\n");
+    // This host's link is not carried (the copy makes its own); the root's is.
+    EXPECT_FALSE(fs::is_symlink(home.dir() / "subos/copy/rootfs/etc/ssl/cert.pem")
+                 && fs::read_symlink(home.dir() / "subos/copy/rootfs/etc/ssl/cert.pem").string().find("/subos/box/")
+                        != std::string::npos) << "the copy points at the original's files";
+    EXPECT_EQ(fs::read_symlink(home.dir() / "subos/copy/rootfs/etc/localtime"), "/usr/share/zoneinfo/UTC");
     EXPECT_EQ(Json::parse(tk::read_file(home.dir() / "config/subos/copy/machine.json"))["persist"], "home");
 }
 
@@ -387,4 +404,41 @@ end
     EXPECT_TRUE(fs::exists(home.dir() / "data/xpkgs/xim-x-bwrap/0.11.2/bin/bwrap")) << setup.transcript();
     EXPECT_EQ(setup.transcript().find("then run this again"), std::string::npos) << setup.transcript();
     EXPECT_EQ(setup.exit_code, 0) << setup.transcript();
+}
+
+XTEST(Luban, ARollbackTakesThePackagesBackSoTheNextEntryKeepsIt,
+      .area = "luban", .cost = tk::Cost::Medium, .covers = {"LUBAN-ROLLBACK-PACKAGES"}, .requires_ = {"linux", "xlings-bin"}) {
+    if constexpr (!tk::is_linux) GTEST_SKIP() << "a Luban root is a Linux root";
+    const auto bin = luban_binary();
+    if (!bin) GTEST_SKIP() << "no luban beside the xlings under test";
+    auto home = luban_home("luban-rollback", *bin);
+    // A package that registers a program, as a real one does (xvm).
+    tk::write_file(home.root() / "index/pkgs/w/world.lua", R"LUA(
+package = { spec = '1', name = 'world', archs = {'x86_64', 'aarch64'}, xvm_enable = true,
+            xpm = { linux = { ['1.0.0'] = {} } } }
+import('xim.libxpkg.pkginfo')
+import('xim.libxpkg.xvm')
+function install()
+    io.writefile(path.join(pkginfo.install_dir(), 'world'), '#!/bin/sh\necho world\n')
+    return true
+end
+function config()
+    xvm.add('world', { bindir = pkginfo.install_dir() })
+    return true
+end
+)LUA");
+    ASSERT_EQ(luban(home, {"new", "box", "--edition", "fixture:my-os@1.0.0"}).exit_code, 0);
+    const auto workspace = [&] {
+        auto j = Json::parse(tk::read_file(home.dir() / "subos/box/.xlings.json"), nullptr, false);
+        return j.is_object() ? j.value("workspace", Json::object()) : Json::object();
+    };
+    ASSERT_FALSE(workspace().contains("world"));
+    auto added = home.xlings({"install", "-y", "--subos", "box", "fixture:world@1.0.0"});
+    ASSERT_EQ(added.exit_code, 0) << added.transcript();
+    ASSERT_TRUE(workspace().contains("world")) << workspace().dump();
+    auto back = luban(home, {"rollback", "box", "-y"});
+    ASSERT_EQ(back.exit_code, 0) << back.transcript();
+    // The packages are the earlier generation's: the next entry rebuilds that root.
+    EXPECT_FALSE(workspace().contains("world")) << workspace().dump();
+    EXPECT_EQ(back.transcript().find("made before generations recorded"), std::string::npos) << back.transcript();
 }

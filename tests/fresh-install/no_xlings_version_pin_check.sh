@@ -29,7 +29,9 @@ FILES=(
   tests/fresh-install/smoke.ps1
   tests/fresh-install/lib.sh
   tests/fresh-install/lib.ps1
+  tests/fresh-install/luban.sh
   .github/workflows/xlings-ci-fresh-install.yml
+  .github/workflows/xlings-ci-luban-fresh.yml
 )
 
 fail_count=0

@@ -888,6 +888,15 @@ int run_rollback_(int argc, char* argv[], EventStream& stream, const UsageError&
         error_(stream, sw.error(), "xlings subos rollback " + name + " --list");
         return 1;
     }
+    // Its packages too, or the next entry rebuilds the root from today's.
+    if (auto restored = subos_root::restore_packages(home_dir_(), name, *to); !restored) {
+        error_(stream, "cannot restore the packages of generation " + std::to_string(*to) + ": " + restored.error());
+        if (now) (void)rf::switch_to(dir, *now, rf::Flush::Durable, rf::Verify::Tree);
+        return 1;
+    } else if (!*restored) {
+        log::warn("generation {} was made before generations recorded their packages: its root is back, and "
+                  "the next entry rebuilds it from the packages '{}' has now", *to, name);
+    }
     if (auto cache = subos_root::refresh_cache(home_dir_(), name); !cache) {
         if (now) {
             if (auto restored = rf::switch_to(dir, *now, rf::Flush::Durable, rf::Verify::Tree); !restored)
