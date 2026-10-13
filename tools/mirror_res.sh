@@ -122,6 +122,13 @@ ensure_local() {
 gh_failed=()
 if [[ -n "${XLINGS_RES_TOKEN:-}" ]] || gh auth status >/dev/null 2>&1; then
   info "GitHub $GH_DST tag $VER"
+  # A project mirrored for the first time has no repo yet; a release needs one
+  # with a commit (--add-readme), as the index's mirror job makes them.
+  if ! GH_TOKEN="${XLINGS_RES_TOKEN:-}" gh repo view "$GH_DST" >/dev/null 2>&1; then
+    GH_TOKEN="${XLINGS_RES_TOKEN:-}" gh repo create "$GH_DST" --public --add-readme \
+      --description "$PROJ release binaries (mirror of $SRC_REPO) for xlings" \
+      || echo "[mirror] cannot create $GH_DST (a token with repo creation in xlings-res is needed)" >&2
+  fi
   GH_TOKEN="${XLINGS_RES_TOKEN:-}" gh release view "$VER" -R "$GH_DST" >/dev/null 2>&1 \
     || GH_TOKEN="${XLINGS_RES_TOKEN:-}" gh release create "$VER" -R "$GH_DST" --title "$VER" --notes "$PROJ $VER (mirror of $SRC_REPO)"
   # One asset-list call so idempotent re-runs (release re-run after a cancel,
