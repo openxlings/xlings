@@ -134,7 +134,13 @@ std::expected<Environment, std::string> describe(const Context& c, std::string_v
     e.packages = packages.size();
     if (e.kind == "root") {
         e.generation = xlings::subos::rootfs::current(view.instance(name));
-        if (auto root = root_of(c.home, name)) e.shell = xlings::subos::root_etc::login_shell(*root);
+        if (auto root = root_of(c.home, name)) {
+            // Its login shell, when the root has one (nano has none).
+            std::error_code ec;
+            e.shell = xlings::subos::root_etc::login_shell(*root);
+            if (fs::symlink_status(*root / fs::path(e.shell).relative_path(), ec).type() == fs::file_type::not_found)
+                e.shell.clear();
+        }
     }
     e.running = xlings::subos::session::find(view, name).has_value();
     auto settings = read_settings(c.home, name);

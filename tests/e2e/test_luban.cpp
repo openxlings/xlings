@@ -199,7 +199,14 @@ XTEST(Luban, NewSaysWhatItMadeAndHowToGoInAndNotItsSteps,
     auto made = luban(home, {"new", "box", "--edition", "fixture:my-os@1.0.0"});
     ASSERT_EQ(made.exit_code, 0) << made.transcript();
     EXPECT_NE(made.out.find("making box"), std::string::npos) << made.out;
-    EXPECT_NE(made.out.find("luban enter box"), std::string::npos) << made.out;
+    // The fixture's root has no shell (as nano): the next step is a command
+    // run in it, and going in is refused with that.
+    EXPECT_NE(made.out.find("it has no shell"), std::string::npos) << made.out;
+    EXPECT_NE(made.out.find("luban run box --"), std::string::npos) << made.out;
+    auto entered = luban(home, {"enter", "box"});
+    EXPECT_EQ(entered.exit_code, 1) << entered.transcript();
+    EXPECT_NE(entered.err.find("box has no shell to go into"), std::string::npos) << entered.transcript();
+    EXPECT_NE(entered.err.find("luban run box -- <command>"), std::string::npos) << entered.transcript();
     EXPECT_EQ(made.transcript().find("[xlings]"), std::string::npos) << "an xlings step's own line\n" << made.transcript();
     EXPECT_EQ(made.transcript().find("xlings subos use"), std::string::npos) << "an xlings command as the next step\n"
                                                                             << made.transcript();

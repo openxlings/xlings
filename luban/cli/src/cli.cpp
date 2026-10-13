@@ -521,7 +521,13 @@ int cmd_new(const svc::Context& c, const Parsed& p, const Globals& g, Renderer& 
     if (out.value.contains("generation") && out.value["generation"].is_number())
         facts += std::format(" · generation {}", out.value["generation"].get<int>());
     r.say(std::format("  {}  {}", o.name, facts));
-    r.next("enter", std::format("luban enter {}", o.name));
+    if (out.value.value("shell", std::string{}).empty()) {
+        // Nothing to log into (nano): what it runs, it runs one command at a time.
+        r.say("  it has no shell: commands run in it one at a time");
+        r.next("run", std::format("luban run {} -- xlings --version", o.name));
+    } else {
+        r.next("enter", std::format("luban enter {}", o.name));
+    }
     return 0;
 }
 
@@ -540,6 +546,11 @@ int cmd_enter(const svc::Context& c, const Parsed& p, const Globals& g) {
     auto settings = svc::read_settings(c.home, target);
     if (!settings) {
         if (c.sink) c.sink(svc::error(settings.error()));
+        return 1;
+    }
+    if (auto e = svc::describe(c, target); e && e->kind == "root" && e->shell.empty()) {
+        if (c.sink) c.sink(svc::error(std::format("{} has no shell to go into", target),
+                                      std::format("luban run {} -- <command>", target)));
         return 1;
     }
     // A machine that is running is entered as the machine it is.
