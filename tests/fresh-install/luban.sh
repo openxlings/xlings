@@ -142,9 +142,11 @@ suite_luban_archive() {
 
     section "luban export box rootfs/: a root that runs with no home"
     capture "export dir" luban export box "$work/rootfs/"
-    local bwrap
-    bwrap="$( (ls "$HOME"/.xlings/data/xpkgs/xim-x-bwrap/*/bin/bwrap 2>/dev/null || true) | head -1)"
-    [ -n "$bwrap" ] || bwrap="$(command -v bwrap || true)"
+    # The bwrap xlings would choose: the root-owned copy the setup made
+    # (AppArmor lets it make namespaces), the system's, then the home's payload.
+    local bwrap=""
+    for b in /usr/lib/xlings/bwrap /usr/bin/bwrap; do [ -x "$b" ] && { bwrap="$b"; break; }; done
+    [ -n "$bwrap" ] || bwrap="$( (ls "$HOME"/.xlings/data/xpkgs/xim-x-bwrap/*/bin/bwrap 2>/dev/null || true) | head -1)"
     [ -n "$bwrap" ] || fail "no bwrap to run the exported root with"
     capture "it runs on its own" "$bwrap" --unshare-all --die-with-parent --ro-bind "$work/rootfs" / --dev /dev --proc /proc \
         --tmpfs /root --setenv HOME /root --setenv PATH /usr/bin:/bin -- /bin/sh -c 'xlings --version'
