@@ -1689,9 +1689,6 @@ int run(int argc, char* argv[]) {
         else if (arg == "--headless") {
             o.hidden = true;
             platform::set_env_variable("SDL_VIDEODRIVER", "offscreen");
-            // The window's own framebuffer, not a GL texture for it (macOS's
-            // default): offscreen has no GL, and software is what is tested.
-            platform::set_env_variable("SDL_FRAMEBUFFER_ACCELERATION", "0");
         }
         else if (arg == "--density" && i + 1 < argc) a.density_override = std::atof(argv[++i]);   // tests: a screen's density
         else if (arg == "--frames" && i + 1 < argc) frames = std::atoi(argv[++i]);

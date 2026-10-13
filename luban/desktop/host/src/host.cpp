@@ -154,8 +154,23 @@ std::expected<std::unique_ptr<Window>, std::string> Window::open(const Options& 
     auto& im = *w->impl_;
     SDL_WindowFlags flags = SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY;
     if (o.hidden) flags |= SDL_WINDOW_HIDDEN;
-    if (!SDL_CreateWindowAndRenderer(o.title.c_str(), o.width, o.height, flags, &im.window, &im.renderer))
+    if (o.hidden) {
+        // Headless (tests, a machine without a display): no graphics backend of
+        // the platform's choosing -- macOS would make it OpenGL, which an
+        // offscreen window cannot have -- and the renderer on the window's own surface.
+        SDL_PropertiesID props = SDL_CreateProperties();
+        SDL_SetStringProperty(props, SDL_PROP_WINDOW_CREATE_TITLE_STRING, o.title.c_str());
+        SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_WIDTH_NUMBER, o.width);
+        SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_HEIGHT_NUMBER, o.height);
+        SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_FLAGS_NUMBER, static_cast<Sint64>(flags));
+        SDL_SetBooleanProperty(props, SDL_PROP_WINDOW_CREATE_EXTERNAL_GRAPHICS_CONTEXT_BOOLEAN, true);
+        im.window = SDL_CreateWindowWithProperties(props);
+        SDL_DestroyProperties(props);
+        if (im.window) im.renderer = SDL_CreateRenderer(im.window, nullptr);
+        if (!im.window || !im.renderer) return std::unexpected(std::format("cannot open a window: {}", SDL_GetError()));
+    } else if (!SDL_CreateWindowAndRenderer(o.title.c_str(), o.width, o.height, flags, &im.window, &im.renderer)) {
         return std::unexpected(std::format("cannot open a window: {}", SDL_GetError()));
+    }
     SDL_SetRenderVSync(im.renderer, 1);
     im.wake_event = SDL_RegisterEvents(1);
     IMGUI_CHECKVERSION();
