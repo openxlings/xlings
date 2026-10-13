@@ -75,7 +75,10 @@ luban rollback box --to 3
 ```
 
 Every change to an environment's packages is a generation; rolling back moves a
-pointer and touches no data.
+pointer and touches no data. A generation records its packages too, so the
+environment stays at the one you went back to when it is entered again (one
+made before 2026.10.13.2 has no record: its files come back, and the next entry
+rebuilds them from the packages it has now -- the rollback says so).
 
 ## Removing
 

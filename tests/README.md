@@ -89,6 +89,25 @@ by a person. The tests keep every key frame in
 and `python3 tools/luban_os_keyframes.py` puts them on one page. Look at it
 before a change to the window is merged.
 
+## Luban, as a person meets it (fresh install)
+
+`tests/fresh-install/luban.sh` holds Luban's suites, run by
+`.github/workflows/xlings-ci-luban-fresh.yml` against the RELEASED client after
+every release, daily, and on dispatch (`index_ref` to try an unmerged index):
+
+| suite | hosts | what a person does |
+|---|---|---|
+| `luban-console` | ubuntu-24.04, -arm, 22.04 | nano, tiny and core made; a session typed into, `--temp`, `--persist home`; C++23 with core's gcc; a package in and rolled back; upgrade's plan; `rm` |
+| `luban-window` | ubuntu-24.04 | the window installed; the quick start; the desktop editions (sandbox, KVM machine) |
+| `luban-archive` | ubuntu-24.04, -arm | `.luban` out and in, a directory root that runs alone, a tar |
+| `luban-machine` | ubuntu-24.04 (KVM) | the environment as a machine (following the hint for what it needs), an exported image booted |
+| `luban-upgrade` | ubuntu-24.04 | an environment made by the release before, used after `xlings self update` |
+| `luban-host` | macOS, Windows | what a computer that cannot run Luban systems says |
+
+Run one locally against a build of your own (a static xlings, luban and
+luban-init in a throwaway home's `bin/`): source `lib.sh` and `luban.sh` and
+call the suite. They check what is said and what happens, not internals.
+
 ## xdev
 
 ```bash
