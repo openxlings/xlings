@@ -84,15 +84,23 @@ rm -f "$IH/subos/broken/$gen/usr/bin/init"
 printf '{"default":"default","fallback":"default","once":"broken","tries":{}}\n' > "$IH/boot.json"
 X subos export tiny --disk "$RUNTIME_DIR/probe.img" >/dev/null 2>&1 || true   # (exercises --disk itself)
 [[ -s "$RUNTIME_DIR/probe.img" ]] || fail "export --disk wrote nothing"
+# The machine's disk lives in memory where there is room: stage-0's budget is
+# its own work, and a CI runner's disk stalled on blocks no earlier boot had
+# touched (the trial's first ldconfig: 25 ms one run, 490 ms the next).
+DISK="$RUNTIME_DIR/disk.img"
+if [[ -d /dev/shm && -w /dev/shm ]] && (( $(df -Pk /dev/shm | awk 'NR==2 {print $4}') > 2 * 1024 * 1024 )); then
+  DISK="$(mktemp -d /dev/shm/xlings-e2e-boot.XXXXXX)/disk.img"
+  trap 'docker rmi -f "$IMG" >/dev/null 2>&1 || true; rm -rf "$(dirname "$DISK")"' EXIT
+fi
 bwrap --unshare-user --uid 0 --gid 0 --dev-bind / / -- \
-  "$(command -v mkfs.ext4 || ls /usr/sbin/mkfs.ext4 /sbin/mkfs.ext4 2>/dev/null | head -1)" -q -F -L luban -d "$R" "$RUNTIME_DIR/disk.img" 1G \
+  "$(command -v mkfs.ext4 || ls /usr/sbin/mkfs.ext4 /sbin/mkfs.ext4 2>/dev/null | head -1)" -q -F -L luban -d "$R" "$DISK" 1G \
   || fail "mkfs.ext4"
 
 qemu_boot() {
   local accel=()
   [[ -w /dev/kvm ]] && accel=(-enable-kvm -cpu host)
   timeout 600 qemu-system-x86_64 "${accel[@]}" -m 1024 -smp 2 -nographic -no-reboot -nic none \
-    -kernel "$KERNEL" -drive "file=$RUNTIME_DIR/disk.img,format=raw,if=virtio" \
+    -kernel "$KERNEL" -drive "file=$DISK,format=raw,if=virtio" \
     -append "root=/dev/vda rw console=ttyS0 panic=-1 init=$H/boot/xlings-init" \
     > "$RUNTIME_DIR/boot-$1.log" 2>&1 || true
   tr -d '\r' < "$RUNTIME_DIR/boot-$1.log" | grep -E "xlings-init:|LUBAN-BOOT" || true
