@@ -559,7 +559,7 @@ jobs:
           xdesk="$(find "$GITHUB_WORKSPACE/target" -path '*bin/xdesk-app/xdesk' -type f | head -1)"
           export LUBAN_OS_BIN="$(dirname "$(dirname "$xdesk")")/luban-os/luban-os"
           test -x "$LUBAN_OS_BIN"
-          "$XDEV" test e2e/test_luban_os --no-build --require-metadata --out target/xdev/linux-luban-os-first-use
+          "$XDEV" test e2e/test_luban --no-build --require-metadata --out target/xdev/linux-luban-os-first-use
 
       - name: Attach xdev and its runs
         uses: actions/upload-artifact@v4

@@ -337,3 +337,20 @@ end
     EXPECT_NE(order.err.find("luban new box3 --edition fixture:evolving"), std::string::npos) << order.err;
     EXPECT_FALSE(fs::exists(home.dir() / "subos/box3")) << "nothing is made from a guess";
 }
+
+XTEST(Luban, AnExportWithoutStageZeroSaysAMachineCannotBootIt,
+      .area = "luban", .cost = tk::Cost::Medium, .covers = {"LUBAN-EXPORT-STAGE0"}, .requires_ = {"linux", "xlings-bin", "static-xlings"}) {
+    if constexpr (!tk::is_linux) GTEST_SKIP() << "a Luban root is a Linux root";
+    const auto bin = luban_binary();
+    if (!bin) GTEST_SKIP() << "no luban beside the xlings under test";
+    // This home's bin/ has xlings and luban, and no luban-init.
+    auto home = luban_home("luban-export-stage0", *bin);
+    ASSERT_FALSE(fs::exists(home.dir() / "bin/luban-init"));
+    auto made = luban(home, {"new", "box", "--edition", "fixture:my-os@1.0.0"});
+    ASSERT_EQ(made.exit_code, 0) << made.transcript();
+    const auto dir = home.root() / "out" / "rootfs";
+    auto exported = luban(home, {"export", "box", dir.string() + "/"});
+    ASSERT_EQ(exported.exit_code, 0) << exported.transcript();
+    EXPECT_NE(exported.transcript().find("a machine cannot boot it"), std::string::npos) << exported.transcript();
+    EXPECT_NE(exported.transcript().find("xlings self update"), std::string::npos) << exported.transcript();
+}

@@ -1220,7 +1220,13 @@ std::expected<void, std::pair<std::string, std::string>> write_drive_(
     if (run_tool_(*argv, stream, "writing the root filesystem") != 0)
         return std::unexpected(std::pair{std::string("mkfs.ext4 failed"), std::string{}});
     // The system partition.
-    const auto init = fs::exists(stage / home.relative_path() / "boot" / "luban-init", ec) ? "luban-init" : "xlings-init";
+    // Stage-0 is luban-init: without it beside the client the image cannot
+    // start (xlings-init only hands over to it), so it is not made.
+    if (!fs::exists(stage / home.relative_path() / "boot" / "luban-init", ec))
+        return std::unexpected(std::pair{std::format("no luban-init beside {}: a machine starts with it, so the "
+                                                     "image would not boot", (home / "bin" / "xlings").string()),
+                                         std::string("xlings self update")});
+    const auto init = "luban-init";
     const std::string conf = std::format(
         "# A Luban drive (luban export <name> <file>.img)\ntimeout: 3\n\n/Luban\n    protocol: linux\n"
         "    path: boot():/boot/vmlinuz\n"
@@ -1291,7 +1297,13 @@ std::expected<void, std::pair<std::string, std::string>> write_live_iso_(
         if (ec) return std::unexpected(std::pair{"cannot copy " + f + ": " + ec.message(), std::string{}});
     }
     fs::copy_file(*limine / machine.efi_loader, iso / "EFI" / "BOOT" / machine.efi_loader, ec);
-    const auto init = fs::exists(stage / home.relative_path() / "boot" / "luban-init", ec) ? "luban-init" : "xlings-init";
+    // Stage-0 is luban-init: without it beside the client the image cannot
+    // start (xlings-init only hands over to it), so it is not made.
+    if (!fs::exists(stage / home.relative_path() / "boot" / "luban-init", ec))
+        return std::unexpected(std::pair{std::format("no luban-init beside {}: a machine starts with it, so the "
+                                                     "image would not boot", (home / "bin" / "xlings").string()),
+                                         std::string("xlings self update")});
+    const auto init = "luban-init";
     {
         std::ofstream conf(iso / "boot" / "limine" / "limine.conf");
         conf << "# A live Luban system (luban export <name> <file>.iso)\n"
@@ -1634,6 +1646,10 @@ int run_export_(int argc, char* argv[], EventStream& stream, const UsageError& u
     if (!check_io()) return 1;
     {
         const bool luban_init = fs::exists(image_home / "bin" / "luban-init");
+        if (!luban_init)
+            stream.emit(LogEvent{LogLevel::warn, std::format("no luban-init beside {}: this root runs its tools, "
+                                                             "but a machine cannot boot it (xlings self update)",
+                                                             entry.string())});
         fs::create_symlink(luban_init ? "../bin/luban-init" : "../bin/xlings", image_home / "boot" / "xlings-init", ec);
         if (!ec && luban_init) fs::create_symlink("../bin/luban-init", image_home / "boot" / "luban-init", ec);
     }
