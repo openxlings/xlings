@@ -1005,36 +1005,6 @@ jobs:
           XLINGS_RELEASE_PKGINDEX_URL=https://github.com/d2learn/xim-pkgindex-d2x.git \
             bash tools/build_xim_index_artifact.sh --name d2x --version "$VER" --out build/index
 
-      # The rolling `latest` release of xlings-res/xim-index holds at most 1000
-      # assets; a full one refuses every upload (HTTP 422). Its upkeep is
-      # xim-pkgindex's (xim-index-rolling-backup.yml): this release only checks
-      # for room and, when there is too little, asks for it and waits.
-      - name: Room in the rolling index release
-        if: ${{ env.XLINGS_RES_TOKEN != '' }}
-        env:
-          GH_TOKEN: ${{ secrets.XLINGS_RES_TOKEN }}
-          PKGINDEX_TOKEN: ${{ secrets.XIM_PKGINDEX_TOKEN }}
-        run: |
-          set -euo pipefail
-          count() { gh api repos/xlings-res/xim-index/releases/tags/latest --jq '.assets | length' 2>/dev/null || echo 0; }
-          n="$(count)"
-          # This release adds the main and three sub-indexes (and their pointers).
-          if (( n <= 1000 - 16 )); then echo "rolling release: $n assets, room"; exit 0; fi
-          [[ -n "$PKGINDEX_TOKEN" ]] || { echo "::error::rolling release has $n assets and no token to ask xim-pkgindex for room"; exit 1; }
-          since="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          GH_TOKEN="$PKGINDEX_TOKEN" gh api repos/openxlings/xim-pkgindex/dispatches -f event_type=xim-index-rolling-full
-          run=""
-          for _ in $(seq 1 30); do
-            run="$(gh run list -R openxlings/xim-pkgindex --workflow xim-index-rolling-backup.yml --event repository_dispatch \
-                     --json databaseId,createdAt --jq "[.[] | select(.createdAt >= \"$since\")] | first | .databaseId // empty")"
-            [[ -n "$run" ]] && break
-            sleep 10
-          done
-          [[ -n "$run" ]] || { echo "::error::xim-pkgindex did not start making room in the rolling release"; exit 1; }
-          gh run watch "$run" -R openxlings/xim-pkgindex --exit-status --interval 30 >/dev/null \
-            || { echo "::error::xim-pkgindex run $run failed: https://github.com/openxlings/xim-pkgindex/actions/runs/$run"; exit 1; }
-          echo "rolling release: $n assets before, $(count) after xim-pkgindex run $run"
-
       - name: Publish to GitHub (xlings-res/xim-index)
         if: ${{ env.XLINGS_RES_TOKEN != '' }}
         env:
