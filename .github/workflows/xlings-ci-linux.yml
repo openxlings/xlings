@@ -342,11 +342,11 @@ jobs:
           # xdesk (the compositor of Luban OS's desktops): wlroots headless and
           # pixman, no GPU; its test runs it as luban-os's desktop.
           mcpp build -p xdesk-app
-          # The binaries just built, by name: a member's lands in a target
+          # The binaries just built, by absolute name (tests run elsewhere): a member's lands in a target
           # directory of its own configuration, which need not be luban-os's,
           # and the dist builds below add more of each.
-          luban_os="$(find target -path '*bin/luban-os/luban-os' -type f | head -1)"
-          xdesk="$(find target -path '*bin/xdesk-app/xdesk' -type f | head -1)"
+          luban_os="$(find "$PWD/target" -path '*bin/luban-os/luban-os' -type f | head -1)"
+          xdesk="$(find "$PWD/target" -path '*bin/xdesk-app/xdesk' -type f | head -1)"
           test -x "$luban_os" && test -x "$xdesk"
           export LUBAN_OS_BIN="$luban_os" XDESK_BIN="$xdesk"
           { echo "LUBAN_OS_BIN=$luban_os"; echo "XDESK_BIN=$xdesk"; } >> "$GITHUB_ENV"
