@@ -1291,6 +1291,14 @@ int doctor_isolation(bool fix, bool yes, bool json, EventStream& stream) {
             }
         }
         candidates = caps::bwrap_candidates(home, ports, /*fresh=*/true);
+        if (fix && candidates.empty()) {
+            // No bwrap at all: it is a package (T1), so the fix brings it
+            // first, as making a root does -- the one-time setup is one step.
+            log::info("isolation needs bwrap: installing xim:bwrap first");
+            const std::vector<std::string> bwrap{"xim:bwrap"};
+            if (xim::cmd_install_step(bwrap, {}, stream, /*plumbing=*/true) == 0)
+                candidates = caps::bwrap_candidates(home, ports, /*fresh=*/true);
+        }
         report["bwrap"] = nlohmann::json::array();
         for (auto& b : candidates) {
             auto first = b.probe_output.substr(0, b.probe_output.find('\n'));

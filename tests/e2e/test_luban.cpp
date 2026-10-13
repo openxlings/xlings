@@ -354,3 +354,30 @@ XTEST(Luban, AnExportWithoutStageZeroSaysAMachineCannotBootIt,
     EXPECT_NE(exported.transcript().find("a machine cannot boot it"), std::string::npos) << exported.transcript();
     EXPECT_NE(exported.transcript().find("xlings self update"), std::string::npos) << exported.transcript();
 }
+
+XTEST(Luban, SetupIsOneStepOnAHostWithNoBwrap,
+      .area = "luban", .cost = tk::Cost::Medium, .covers = {"LUBAN-SETUP-ONE-STEP"}, .requires_ = {"linux", "xlings-bin"}) {
+    if constexpr (!tk::is_linux) GTEST_SKIP() << "the isolation setup is Linux's";
+    const auto bin = luban_binary();
+    if (!bin) GTEST_SKIP() << "no luban beside the xlings under test";
+    auto home = luban_home("luban-setup", *bin);
+    // A fresh machine: no bwrap anywhere this home looks (XLINGS_TOOLS_SEARCH=home),
+    // and the index has one.
+    fs::remove_all(home.dir() / "data/xpkgs/xim-x-bwrap");
+    tk::write_file(home.root() / "primary/pkgs/b/bwrap.lua", R"LUA(
+package = { spec = '1', name = 'bwrap', archs = {'x86_64', 'aarch64'}, xpm = { linux = { ['0.11.2'] = {} } } }
+import('xim.libxpkg.pkginfo')
+function install()
+    local bin = path.join(pkginfo.install_dir(), 'bin')
+    os.mkdir(bin)
+    io.writefile(path.join(bin, 'bwrap'), '#!/bin/sh\nexit 0\n')
+    os.execute('chmod 755 "' .. path.join(bin, 'bwrap') .. '"')
+    return true
+end
+)LUA");
+    auto setup = luban(home, {"setup"});
+    EXPECT_NE(setup.transcript().find("installing xim:bwrap first"), std::string::npos) << setup.transcript();
+    EXPECT_TRUE(fs::exists(home.dir() / "data/xpkgs/xim-x-bwrap/0.11.2/bin/bwrap")) << setup.transcript();
+    EXPECT_EQ(setup.transcript().find("then run this again"), std::string::npos) << setup.transcript();
+    EXPECT_EQ(setup.exit_code, 0) << setup.transcript();
+}

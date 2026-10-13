@@ -59,6 +59,10 @@ status = "required"
 text = "an export is made with the client's stage-0 (luban-init): a bootable image (.img, .iso) is refused without it, naming the fix; a root (a directory, a tar) is made and says a machine cannot boot it"
 status = "required"
 
+[LUBAN-SETUP-ONE-STEP]
+text = "luban setup (self doctor --isolation --fix) on a host with no bwrap installs it from the index first and goes on: the one-time setup is one step, never 'install this, then run it again'"
+status = "required"
+
 [LUBAN-UPGRADE-NEVER-LOOSENS]
 text = "an upgrade applies the edition's policy only when it allows nothing more than the one in force; a looser one is kept out and named, with the subos config command that switches to it"
 status = "required"
