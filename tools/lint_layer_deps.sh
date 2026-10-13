@@ -60,10 +60,6 @@ while read -r where module; do
   case "$module" in luban|luban.*) report "${where%%:*}" "src/ imports $module ($where): xlings never links Luban; move what both need to modules/" ;; esac
 done < <(imports src)
 
-if [ "$bad" -gt 0 ]; then
-  echo "layer dependency lint: FAIL ($bad upward import(s))"
-  exit 1
-fi
 # The desktop component families (Luban OS desktop part 2 §2.0): opensal and
 # xdesk are used by other systems on their own, so they import the standard
 # library, each other and their C libraries -- never xlings or Luban.
@@ -73,9 +69,15 @@ for family in luban/desktop/opensal luban/desktop/xdesk; do
     [ -z "$module" ] && continue
     case "$module" in
       std|std.*|opensal|opensal.*|xdesk|xdesk.*) ;;
-      *) report "${where%%:*}" "$family imports $module ($where): opensal and xdesk are reusable on their own; what they need of the system is xdesk.os" ;;
+      # Their C libraries' modules (mcpp packages: wlroots, freedesktop.*, compat.*).
+      wlroots|wlroots.*|freedesktop.*|compat.*) ;;
+      *) report "${where%%:*}" "$family imports $module ($where): opensal and xdesk are reusable on their own -- the standard library, each other and their C libraries, never xlings or Luban" ;;
     esac
   done < <(imports "$family")
 done
 
-echo "layer dependency lint: PASS (luban -> modules, modules -/-> luban, src; src -/-> luban; opensal, xdesk -> std only)"
+if [ "$bad" -gt 0 ]; then
+  echo "layer dependency lint: FAIL ($bad import(s) across a boundary)"
+  exit 1
+fi
+echo "layer dependency lint: PASS (luban -> modules, modules -/-> luban, src; src -/-> luban; opensal, xdesk -> std, each other, their C libraries)"

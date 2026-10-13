@@ -141,9 +141,9 @@ luban config box --desktop xdesk-classic
 
 ```mermaid
 graph LR
-    W[Luban OS 窗口] -- opensal.wire --> C[机器的一个通道，或沙箱的管道]
-    C --> X[xdesk，无头]
-    C --> B[opensal-wlr] -- screencopy、虚拟键盘与指针 --> D[其他合成器，无头]
+    W[the Luban OS window] -- opensal.wire --> C[a channel of the machine, or a sandbox's pipes]
+    C --> X[xdesk, headless]
+    C --> B[opensal-wlr] -- screencopy, virtual keyboard and pointer --> D[another compositor, headless]
 ```
 
 - **作为机器**（`luban config desk --mode machine`，桌面 edition 的默认）：机器里的 agent 以无头、软件渲染的方式启动会话，
