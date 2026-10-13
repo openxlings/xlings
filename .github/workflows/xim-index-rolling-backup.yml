@@ -4,13 +4,9 @@ name: xim-index rolling backup
 # (GitHub's 1000 assets): what is beyond the newest versions of each index is
 # packed into one tar with a manifest, uploaded to the `rolling-backup`
 # release and read back, and only then removed (tools/xim_index_rolling.py).
-# From then on publish_xim_index.sh trims before each upload.
+# From then on publish_xim_index.sh trims before each upload. Run once on
+# 2026-10-14 (798 assets; rolling-backup/xim-index-rolling-backup-20261013T194115Z.tar).
 on:
-  # Run from its own branch until it is on main (dispatch needs the default
-  # branch): a push there runs it with BACKUP_EXECUTE below.
-  push:
-    branches: [fix/xim-index-rolling]
-    paths: [.github/workflows/xim-index-rolling-backup.yml]
   workflow_dispatch:
     inputs:
       keep:
@@ -28,7 +24,7 @@ jobs:
     env:
       GH_TOKEN: ${{ secrets.XLINGS_RES_TOKEN }}
       KEEP: ${{ inputs.keep || '50' }}
-      BACKUP_EXECUTE: ${{ github.event_name == 'workflow_dispatch' && inputs.execute || 'true' }}
+      BACKUP_EXECUTE: ${{ inputs.execute }}
     steps:
       - uses: actions/checkout@v4
       - name: Back up and trim the rolling release
