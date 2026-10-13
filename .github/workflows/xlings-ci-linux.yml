@@ -1028,6 +1028,15 @@ jobs:
         run: |
           for t in curl git cc make jq tar xz python3; do command -v "$t" >/dev/null || { echo "::error::the runner image has no $t"; exit 1; }; done
 
+      # The instrumented build outgrew the runner's disk ("No space left on
+      # device", main from 2026-10-13): the image's SDKs this job never uses
+      # (.NET, Android, GHC, CodeQL) make room for it. Nothing is installed.
+      - name: Room for the instrumented build
+        run: |
+          df -h / | tail -1
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+          df -h / | tail -1
+
       - name: Install bootstrap xlings (pinned ${{ env.BOOTSTRAP_XLINGS_VERSION }})
         env:
           XLINGS_NON_INTERACTIVE: 1
