@@ -28,8 +28,8 @@ luban run box -- xlings install -y cmake
 
 ```
 Luban OS 2026.10.13.2 · tiny 2026.10.11.1 · box
-  本机上的沙箱，保留所有改动
-  luban status box · exit 离开
+  a sandbox on this host, keeping what changes
+  luban status box · exit to leave
 ```
 
 装软件仍然是 xlings：`xlings install <package>`——在环境里就装进那个环境。`exit` 离开。
