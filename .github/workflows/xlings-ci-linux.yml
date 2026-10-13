@@ -20,7 +20,7 @@ env:
   # while both PRs are in flight; the repository variable is unset when the
   # index PR merges): what CI installs its tools from (tools/ci/xlings_tools.sh)
   # and what the tool table is held to (tools/lint_tools_provenance.sh).
-  XLINGS_TOOLS_INDEX_REF: ${{ vars.XLINGS_INDEX_UNDER_TEST || '' }}
+  XLINGS_TOOLS_INDEX_REF: ${{ vars.XLINGS_INDEX_UNDER_TEST || 'main' }}
   XLINGS_PROVENANCE_INDEX_REF: ${{ vars.XLINGS_INDEX_UNDER_TEST || 'main' }}
   GIT_TERMINAL_PROMPT: 0
   # CI runs on github.com; force GLOBAL mirror so xim doesn't try gitee
