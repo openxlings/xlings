@@ -6,6 +6,11 @@ name: xim-index rolling backup
 # release and read back, and only then removed (tools/xim_index_rolling.py).
 # From then on publish_xim_index.sh trims before each upload.
 on:
+  # Run from its own branch until it is on main (dispatch needs the default
+  # branch): a push there runs it with BACKUP_EXECUTE below.
+  push:
+    branches: [fix/xim-index-rolling]
+    paths: [.github/workflows/xim-index-rolling-backup.yml]
   workflow_dispatch:
     inputs:
       keep:
@@ -22,8 +27,10 @@ jobs:
     timeout-minutes: 60
     env:
       GH_TOKEN: ${{ secrets.XLINGS_RES_TOKEN }}
+      KEEP: ${{ inputs.keep || '50' }}
+      BACKUP_EXECUTE: ${{ github.event_name == 'workflow_dispatch' && inputs.execute || 'false' }}
     steps:
       - uses: actions/checkout@v4
       - name: Back up and trim the rolling release
         run: |
-          python3 tools/xim_index_rolling.py backup --keep "${{ inputs.keep }}" ${{ inputs.execute && '--execute' || '' }}
+          python3 tools/xim_index_rolling.py backup --keep "$KEEP" $([ "$BACKUP_EXECUTE" = true ] && echo --execute)
