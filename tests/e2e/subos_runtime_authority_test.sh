@@ -134,6 +134,32 @@ $DECLARED_ONLY_DEFAULT"
 fi
 log "  ✓ unmaterialized cold-home runtime is a notice, non-fatal"
 
+# The same cold default SubOS, after another one (a Luban root) brought the
+# declared runtime's payload into the store: nothing HERE links it, so it is
+# still a notice -- it was an error on every home's first `luban new`.
+STORED_HOME="$RUNTIME_DIR/declared-stored"
+mkdir -p "$STORED_HOME/subos/default/bin" "$STORED_HOME/data/xpkgs/xim-x-glibc/2.44/lib"
+cp "$DECLARED_ONLY_HOME/subos/default/.xlings.json" "$STORED_HOME/subos/default/.xlings.json"
+cat > "$STORED_HOME/.xlings.json" <<JSON
+{
+  "activeSubos": "default",
+  "mirror": "GLOBAL",
+  "versions": {
+    "glibc": {"type": "group", "versions": {"2.44": {"kind": "group", "path": "$STORED_HOME/data/xpkgs/xim-x-glibc/2.44"}}}
+  }
+}
+JSON
+stored_rc=0
+STORED_OUT="$(cd /tmp && env -i HOME="$STORED_HOME" PATH=/usr/bin:/bin XLINGS_HOME="$STORED_HOME" \
+  "$XLINGS_BIN" self doctor 2>&1 | strip_ansi)" || stored_rc=$?
+[[ "$stored_rc" -eq 0 ]] || fail "a runtime another SubOS stored is not this one's problem:
+$STORED_OUT"
+if grep -Fq 'subos runtime' <<<"$STORED_OUT"; then
+  fail "a runtime nothing here links is reported:
+$STORED_OUT"
+fi
+log "  ✓ a runtime in the store that nothing here links is a notice"
+
 active_version() {
   python3 - "$SUBOS_FILE" "$1" <<'PY'
 import json, pathlib, sys

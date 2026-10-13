@@ -21,6 +21,8 @@ using spec::Level;
 namespace fs = std::filesystem;
 using Json = nlohmann::json;
 
+std::string default_carrier();
+
 namespace {
 
 // What each luban command is in xlings's words, at the foot of its help: the
@@ -434,13 +436,31 @@ int pipe_unix_(const std::string& socket) {
 
 int host_status(const svc::Context& c, const Globals& g) {
     auto report = c.port.json({"self", "doctor", "--isolation", "--json"});
-    const bool ready = report && report->is_object() && report->value("ok", false);
+    bool ready = report && report->is_object() && report->value("ok", false);
+    // Elsewhere than Linux a Luban root runs in a carrier (wsl2, vz): ready
+    // is that carrier's own answer, with its reason and its way forward.
+    Json carrier;
+    if (!xlings::platform::is_linux && report && report->is_object())
+        for (const auto& row : report->value("carriers", Json::array()))
+            if (row.value("name", "") == default_carrier()) carrier = row;
+    if (carrier.is_object()) ready = carrier.value("supported", false);
     if (g.json) {
         std::println("{}", Json{{"place", to_string(where())}, {"ready", ready},
                                 {"isolation", report ? *report : Json()}}.dump());
         return ready ? 0 : 1;
     }
     std::println("Luban OS -- {}", to_string(where()));
+    if (carrier.is_object()) {
+        if (ready) {
+            std::println("  ready: environments run in {} here", carrier.value("name", ""));
+            return 0;
+        }
+        std::println("  not ready: Luban systems run in {} here: {}", carrier.value("name", ""),
+                     carrier.value("reason", std::string("it is not available")));
+        if (const auto route = carrier.value("route", std::string{}); !route.empty()) std::println("  do it: {}", route);
+        else if (xlings::platform::is_windows) std::println("  do it: luban setup");
+        return 1;
+    }
     if (ready) {
         const auto backend = (*report)["backend"].is_object() ? (*report)["backend"].value("name", "") : std::string{};
         std::println("  ready: environments are isolated here ({})", backend);
@@ -1060,7 +1080,12 @@ int run(int argc, char* argv[]) {
         if (p.command == "export") return cmd_export(c, p, g, render);
         if (p.command == "import") return cmd_import(c, p, g, render);
         if (p.command == "rm") return cmd_rm(c, p, g);
-        if (p.command == "setup") return c.port.terminal({"self", "doctor", "--isolation", "--fix"});
+        if (p.command == "setup") {
+            // Its confirmation (the one sudo step) is luban's -y too.
+            std::vector<std::string> fix{"self", "doctor", "--isolation", "--fix"};
+            if (c.yes) fix.push_back("-y");
+            return c.port.terminal(fix);
+        }
         if (p.command == "boot") return cmd_boot(c, p, g, render);
         return unknown_command(cmd, g);
     }();

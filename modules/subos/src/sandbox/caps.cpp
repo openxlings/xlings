@@ -171,7 +171,10 @@ void probe_bwrap(Backend& b) {
     b.overlay = false;
     if (!b.usable) return;
     const auto help = platform::run_command_capture(platform::shell_quote(b.bin.string()) + " --help").second;
-    b.overlay = help.find("--overlay-src") != std::string::npos;
+    // A setuid bwrap refuses overlays ("not permitted in setuid mode").
+    std::error_code ec;
+    const bool setuid = (fs::status(b.bin, ec).permissions() & fs::perms::set_uid) != fs::perms::none;
+    b.overlay = !setuid && help.find("--overlay-src") != std::string::npos;
     auto [locked, why] = platform::run_command_capture(
         platform::shell_quote(b.bin.string()) + " --unshare-user --disable-userns --ro-bind / / -- /bin/true");
     if (locked != 0) {

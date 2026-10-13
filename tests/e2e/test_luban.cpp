@@ -442,3 +442,25 @@ end
     EXPECT_FALSE(workspace().contains("world")) << workspace().dump();
     EXPECT_EQ(back.transcript().find("made before generations recorded"), std::string::npos) << back.transcript();
 }
+
+XTEST(Luban, TheHostStatusIsWhatThisComputerCanMake,
+      .area = "luban", .cost = tk::Cost::Fast, .covers = {"LUBAN-HOST-STATUS"}, .requires_ = {"xlings-bin"}) {
+    const auto bin = luban_binary();
+    if (!bin) GTEST_SKIP() << "no luban beside the xlings under test";
+    auto home = tk::Home::isolated("luban-host-status");
+    ASSERT_EQ(home.xlings({"self", "init"}).exit_code, 0);
+    tk::RunOptions o;
+    o.argv = {bin->string(), "status"};
+    o.env = home.env();
+    o.env["LUBAN_XLINGS"] = tk::xlings_binary().string();
+    o.timeout = std::chrono::seconds(60);
+    auto r = tk::run(o);
+    EXPECT_TRUE(r.exit_code == 0 || r.exit_code == 1) << r.transcript();
+    EXPECT_NE(r.out.find("ready"), std::string::npos) << r.transcript();
+    if constexpr (!tk::is_linux) {
+        // Elsewhere a Luban system runs in a carrier: the status is its answer,
+        // never "isolated here" (which no carrier made true).
+        EXPECT_NE(r.out.find("Luban systems run in"), std::string::npos) << r.transcript();
+        EXPECT_EQ(r.out.find("isolated here"), std::string::npos) << r.transcript();
+    }
+}

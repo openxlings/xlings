@@ -53,7 +53,7 @@ suite_luban_console() {
     section "luban, before anything: where to start"
     capture "luban" luban
     says "an empty home names the first command" "luban new"
-    capture "luban setup" luban setup
+    capture "luban setup" luban setup -y
     ok "the one-time setup is one step"
 
     local e
@@ -129,7 +129,7 @@ suite_luban_console() {
 suite_luban_archive() {
     [ "$(uname -s)" = Linux ] || fail "the archive suite is Linux's"
     local work; work="$(mktemp -d)"
-    capture "setup" luban setup
+    capture "setup" luban setup -y
     capture "new" luban new box --edition tiny
     capture "a file in it" luban run box -- /bin/sh -c 'echo carried > /root/note'
 
@@ -163,7 +163,7 @@ suite_luban_archive() {
 suite_luban_machine() {
     [ "$(uname -s)" = Linux ] || fail "the machine suite is Linux's"
     [ -r /dev/kvm ] && [ -w /dev/kvm ] || fail "no usable /dev/kvm: this leg is the machine's"
-    capture "setup" luban setup
+    capture "setup" luban setup -y
     capture "new" luban new m --edition tiny
     capture "as a machine" luban config m --mode machine
 
@@ -225,7 +225,11 @@ suite_luban_host() {
     capture "version" luban --version
     capture "overview" luban
     says "the overview answers" "Luban OS"
-    capture "host status" luban status
+    # Ready or not, it answers (exit 1 is "not ready", with what to do).
+    log "\$ luban status"
+    OUT="$(luban status 2>&1)" || true
+    printf '%s\n' "$OUT" | sed 's/^/      /'
+    says "the host status answers" "ready"
     refuses "a Luban system is not made here" luban new box --edition tiny
     refuses "the window is not published for this platform" xlings install luban-os -y
 }

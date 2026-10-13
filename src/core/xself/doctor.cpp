@@ -559,8 +559,10 @@ std::vector<Finding> detect_subos_manifest_(const xvm::VersionDB& db,
         // active runtime exists. Keep the declaration visible as a warning;
         // an active mismatch or an active runtime whose payload disappeared
         // remains an error.
-        const bool unmaterializedDeclaration =
-            activeVersion.empty() && mismatch->payloadMissing;
+        // Nothing active is the same answer whether or not another SubOS has
+        // brought the payload into the store (a Luban root's glibc): nothing
+        // HERE links it yet.
+        const bool unmaterializedDeclaration = activeVersion.empty();
 
         const auto active = mismatch->active.empty()
             ? std::string("<none>") : mismatch->active;
