@@ -178,6 +178,12 @@ void release(SharedMemory& m) {
 
 int pid() { return static_cast<int>(::getpid()); }
 
+fs::path executable() {
+    std::error_code ec;
+    auto p = fs::read_symlink("/proc/self/exe", ec);
+    return ec ? fs::path{} : p;
+}
+
 std::map<std::string, std::string> environment() {
     std::map<std::string, std::string> out;
 #if defined(__APPLE__)   // platform-if-ok: see the include

@@ -81,8 +81,9 @@ private:
 // The font files for text on this system, the preferred first: a few UI
 // faces by name, then the ones that cover CJK. Searched in
 // $XDESK_FONT_DIRS, ~/.local/share/fonts, $XDG_DATA_DIRS/fonts,
-// /usr/share/fonts and /usr/local/share/fonts.
-std::vector<fs::path> system_fonts(const std::map<std::string, std::string>& env);
+// /usr/share/fonts and /usr/local/share/fonts, then `own` (what a program
+// carries, so it has text where the system has no fonts).
+std::vector<fs::path> system_fonts(const std::map<std::string, std::string>& env, const std::vector<fs::path>& own = {});
 
 // Draws in logical pixels onto an image of device pixels (`scale` of them
 // to one): what is drawn at 2 is as sharp as the screen.

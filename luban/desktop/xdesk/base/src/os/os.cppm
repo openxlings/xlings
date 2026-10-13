@@ -53,6 +53,8 @@ void release(SharedMemory& m);
 // ── processes ─────────────────────────────────────────────────────────
 
 int pid();
+// This program's file (Linux: /proc/self/exe); empty where it cannot be known.
+fs::path executable();
 // This process's environment.
 std::map<std::string, std::string> environment();
 // A peer that went is a write that fails, not a signal that ends this process.

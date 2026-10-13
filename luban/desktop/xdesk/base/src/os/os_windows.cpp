@@ -29,6 +29,7 @@ int accept(int) { return -1; }
 std::optional<SharedMemory> shared_memory(std::size_t) { return std::nullopt; }
 void release(SharedMemory& m) { m = {}; }
 int pid() { return ::_getpid(); }
+fs::path executable() { return {}; }
 std::map<std::string, std::string> environment() {
     std::map<std::string, std::string> out;
     for (char** e = _environ; e && *e; ++e) {

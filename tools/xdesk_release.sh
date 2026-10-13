@@ -73,8 +73,23 @@ readelf -l "$out/bin/xdesk" | grep -q "interpreter: $loader" || fail "the loader
 cp "$project"/apps/xdesk/share/wayland-sessions/*.desktop "$out/share/wayland-sessions/"
 # The profiles' defaults (xdesk.config reads them from $XDG_DATA_DIRS/xdesk).
 cp "$project"/apps/xdesk/share/xdesk/*.ini "$out/share/xdesk/"
-printf 'xdesk %s (openxlings/xlings, apps/xdesk): the Luban OS desktop compositor and shell; glibc, loader %s, no RPATH; %s in libexec/lib -- an xlings install patches it onto the index'"'"'s glibc and gcc-runtime\n' \
-  "$version" "$loader" "$private" > "$out/README.provenance"
+
+# Fonts of its own, so it has text in any root (a root's share/fonts is the
+# root's): DejaVu Sans and WenQuanYi Zen Hei, from the published labwc-desktop
+# tree, its digest checked.
+fonts_from="https://github.com/xlings-res/labwc-desktop/releases/download/0.7.2-r1/labwc-desktop-0.7.2-r1-linux-x86_64.tar.gz"
+fonts_sha=2e20a3cf3b79e0440a1a67ef4252b1aa32104aa49e322f921482eceed21a5bcc
+cache="$project/build/.xdesk-fonts.tar.gz"
+if ! echo "$fonts_sha  $cache" | sha256sum -c --status 2>/dev/null; then
+  curl -fsSL --retry 3 --max-time 600 -o "$cache" "$fonts_from" || fail "cannot fetch the fonts ($fonts_from)"
+  echo "$fonts_sha  $cache" | sha256sum -c --status || fail "the fonts' tree is not the one published (sha256)"
+fi
+mkdir -p "$out/share/xdesk/fonts"
+tar -xzf "$cache" -C "$out/share/xdesk/fonts" --strip-components=4 \
+  labwc-desktop-0.7.2-r1-linux-x86_64/share/fonts/dejavu/DejaVuSans.ttf \
+  labwc-desktop-0.7.2-r1-linux-x86_64/share/fonts/wqy-zenhei/wqy-zenhei.ttc || fail "no fonts in the tree"
+printf 'xdesk %s (openxlings/xlings, apps/xdesk): the Luban OS desktop compositor and shell; glibc, loader %s, no RPATH; %s in libexec/lib -- an xlings install patches it onto the index'"'"'s glibc and gcc-runtime\nfonts (share/xdesk/fonts): DejaVu Sans (Bitstream Vera / DejaVu licence) and WenQuanYi Zen Hei (GPL-2.0 with the font exception), from xlings-res/labwc-desktop 0.7.2-r1 (sha256 %s)\n' \
+  "$version" "$loader" "$private" "$fonts_sha" > "$out/README.provenance"
 
 file="$project/build/$name.tar.gz"
 tar --owner=0 --group=0 --numeric-owner -czf "$file" -C "$project/build" "$name"

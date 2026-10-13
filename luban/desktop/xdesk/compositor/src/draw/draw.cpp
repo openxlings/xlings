@@ -303,7 +303,7 @@ double Canvas::text(Fonts& fonts, std::string_view utf8, double x, double y, Col
 
 // ── fonts on this system ─────────────────────────────────────────────
 
-std::vector<fs::path> system_fonts(const std::map<std::string, std::string>& env) {
+std::vector<fs::path> system_fonts(const std::map<std::string, std::string>& env, const std::vector<fs::path>& own) {
     auto get = [&](const char* k) { const auto it = env.find(k); return it == env.end() ? std::string{} : it->second; };
     std::vector<fs::path> dirs;
     auto split = [&](const std::string& list, const char* suffix) {
@@ -320,6 +320,7 @@ std::vector<fs::path> system_fonts(const std::map<std::string, std::string>& env
     split(get("XDG_DATA_DIRS"), "fonts");
     dirs.push_back("/usr/local/share/fonts");
     dirs.push_back("/usr/share/fonts");
+    dirs.insert(dirs.end(), own.begin(), own.end());
     // Every font file there, by its name.
     std::map<std::string, fs::path> found;
     std::error_code ec;

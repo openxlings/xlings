@@ -1019,7 +1019,10 @@ struct Server {
 
     // Text: the system's faces at this density (no fonts, no text -- the shapes still are).
     void open_fonts() {
-        const auto faces = draw::system_fonts(os::environment());
+        // The system's faces first, then the ones xdesk carries (share/xdesk/fonts).
+        std::vector<fs::path> own;
+        if (const auto exe = os::executable(); !exe.empty()) own.push_back(exe.parent_path().parent_path() / "share" / "xdesk" / "fonts");
+        const auto faces = draw::system_fonts(os::environment(), own);
         ui_font.reset();
         big_font.reset();
         if (auto f = draw::Fonts::open(faces, 13, scale); f) ui_font = std::move(*f);
