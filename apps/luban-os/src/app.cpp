@@ -188,9 +188,9 @@ struct App {
     std::string notice;
     // Quick start
     char new_name[64] = {};
+    std::mutex available_m;            // before the job: it is joined while this still exists
     std::map<std::string, Availability> available;     // by edition, from the index
     std::unique_ptr<std::jthread> availability_job;
-    std::mutex available_m;
     std::optional<ImportPreview> import;
     std::string quick_said;            // the quick start's line under the cards
     bool quick_can_make { true };
@@ -482,9 +482,10 @@ void launcher_(App& a) {
 void ask_availability_(App& a) {
     if (a.availability_job) return;
     auto* app = &a;
-    a.availability_job = std::make_unique<std::jthread>([app, ctx = a.ctx] {
+    a.availability_job = std::make_unique<std::jthread>([app, ctx = a.ctx](std::stop_token stop) {
         const std::string arch(platform::build_arch());
         for (const auto& e : kQuick) {
+            if (stop.stop_requested()) return;   // the window is closing
             Availability v{.known = true, .arch = arch};
             if (auto got = service::edition_availability(ctx, e.name)) {
                 v.listed = got->listed;
@@ -493,7 +494,7 @@ void ask_availability_(App& a) {
             std::lock_guard l(app->available_m);
             app->available[std::string(e.name)] = v;
         }
-        if (app->window) app->window->wake();
+        if (!stop.stop_requested() && app->window) app->window->wake();
     });
 }
 
