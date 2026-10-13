@@ -974,7 +974,8 @@ jobs:
     runs-on: ubuntu-latest
     # secrets aren't available in step if: — surface them as env, gate on env.
     env:
-      XIM_PKGINDEX_TOKEN: ${{ secrets.XIM_PKGINDEX_TOKEN }}
+      XLINGS_RES_TOKEN: ${{ secrets.XLINGS_RES_TOKEN }}
+      GITCODE_TOKEN: ${{ secrets.GITCODE_TOKEN }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -989,54 +990,90 @@ jobs:
             echo "version=$VER" >> "$GITHUB_OUTPUT"
           fi
 
-      # The index repository is the one publisher of xlings-res/xim-index
-      # (its publish-artifact.yml: build, archive, trim the rolling release,
-      # pointers). The release asks it for this version's indexes, then checks
-      # that they are there.
-      - name: Ask xim-pkgindex for this release's indexes
-        id: ask
-        if: ${{ env.XIM_PKGINDEX_TOKEN != '' }}
-        env:
-          GH_TOKEN: ${{ secrets.XIM_PKGINDEX_TOKEN }}
+      - name: Build index artifacts (main + default sub-indexes)
         run: |
-          set -euo pipefail
+          mkdir -p build/index
           VER="${{ steps.version.outputs.version }}"
-          since="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          gh api repos/openxlings/xim-pkgindex/dispatches -f event_type=xlings-release -F "client_payload[version]=$VER"
-          echo "since=$since" >> "$GITHUB_OUTPUT"
-          echo "asked for the indexes of $VER"
+          # main index
+          XLINGS_RELEASE_MIRROR=GLOBAL bash tools/build_xim_index_artifact.sh \
+            --version "$VER" --out build/index
+          # default sub-indexes (URLs mirror the main index's xim-indexrepos.lua)
+          XLINGS_RELEASE_PKGINDEX_URL=https://github.com/openxlings/xim-pkgindex-awesome.git \
+            bash tools/build_xim_index_artifact.sh --name awesome --version "$VER" --out build/index
+          XLINGS_RELEASE_PKGINDEX_URL=https://github.com/openxlings/xim-pkgindex-scode.git \
+            bash tools/build_xim_index_artifact.sh --name scode --version "$VER" --out build/index
+          XLINGS_RELEASE_PKGINDEX_URL=https://github.com/d2learn/xim-pkgindex-d2x.git \
+            bash tools/build_xim_index_artifact.sh --name d2x --version "$VER" --out build/index
 
-      - name: Wait for it, and check what was published
-        if: ${{ steps.ask.outcome == 'success' }}
+      # The rolling `latest` release of xlings-res/xim-index holds at most 1000
+      # assets; a full one refuses every upload (HTTP 422). Its upkeep is
+      # xim-pkgindex's (xim-index-rolling-backup.yml): this release only checks
+      # for room and, when there is too little, asks for it and waits.
+      - name: Room in the rolling index release
+        if: ${{ env.XLINGS_RES_TOKEN != '' }}
         env:
-          GH_TOKEN: ${{ secrets.XIM_PKGINDEX_TOKEN }}
+          GH_TOKEN: ${{ secrets.XLINGS_RES_TOKEN }}
+          PKGINDEX_TOKEN: ${{ secrets.XIM_PKGINDEX_TOKEN }}
         run: |
           set -euo pipefail
-          VER="${{ steps.version.outputs.version }}"
-          since="${{ steps.ask.outputs.since }}"
+          count() { gh api repos/xlings-res/xim-index/releases/tags/latest --jq '.assets | length' 2>/dev/null || echo 0; }
+          n="$(count)"
+          # This release adds the main and three sub-indexes (and their pointers).
+          if (( n <= 1000 - 16 )); then echo "rolling release: $n assets, room"; exit 0; fi
+          [[ -n "$PKGINDEX_TOKEN" ]] || { echo "::error::rolling release has $n assets and no token to ask xim-pkgindex for room"; exit 1; }
+          since="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          GH_TOKEN="$PKGINDEX_TOKEN" gh api repos/openxlings/xim-pkgindex/dispatches -f event_type=xim-index-rolling-full
           run=""
           for _ in $(seq 1 30); do
-            run="$(gh run list -R openxlings/xim-pkgindex --workflow publish-artifact.yml --event repository_dispatch \
+            run="$(gh run list -R openxlings/xim-pkgindex --workflow xim-index-rolling-backup.yml --event repository_dispatch \
                      --json databaseId,createdAt --jq "[.[] | select(.createdAt >= \"$since\")] | first | .databaseId // empty")"
             [[ -n "$run" ]] && break
             sleep 10
           done
-          [[ -n "$run" ]] || { echo "::error::xim-pkgindex did not start publishing the indexes of $VER"; exit 1; }
-          echo "xim-pkgindex run $run"
+          [[ -n "$run" ]] || { echo "::error::xim-pkgindex did not start making room in the rolling release"; exit 1; }
           gh run watch "$run" -R openxlings/xim-pkgindex --exit-status --interval 30 >/dev/null \
             || { echo "::error::xim-pkgindex run $run failed: https://github.com/openxlings/xim-pkgindex/actions/runs/$run"; exit 1; }
-          # Each index of this release in its archive, and named by the pointer.
-          assets="$(gh api "repos/xlings-res/xim-index/releases/tags/v$VER" --jq '[.assets[].name] | join(" ")')"
-          pointer="$(curl -fsSL --retry 3 https://raw.githubusercontent.com/xlings-res/xim-index/main/xim-index-pointers.json)"
-          for n in "" awesome scode d2x; do
-            base="xim-index${n:+-$n}-$VER"
-            [[ " $assets " == *" $base.tar.gz "* ]] || { echo "::error::v$VER has no $base.tar.gz"; exit 1; }
-            # What clients are pointed at now (an index merge after the release
-            # may already have moved it on to a newer artifact: fine).
-            key="${n:-xim}"
-            echo "pointer $key -> $(python3 -c "import json,sys; print(json.load(sys.stdin)['indexes']['$key']['artifact']['name'])" <<<"$pointer")"
+          echo "rolling release: $n assets before, $(count) after xim-pkgindex run $run"
+
+      - name: Publish to GitHub (xlings-res/xim-index)
+        if: ${{ env.XLINGS_RES_TOKEN != '' }}
+        env:
+          GH_TOKEN: ${{ secrets.XLINGS_RES_TOKEN }}
+        run: |
+          VER="${{ steps.version.outputs.version }}"
+          bash tools/publish_xim_index.sh --version "$VER" --dir build/index --skip-gitcode
+          for n in awesome scode d2x; do
+            bash tools/publish_xim_index.sh --version "$VER" --name "$n" --dir build/index --skip-gitcode
           done
-          echo "✅ index: xlings-res/xim-index v$VER (main, awesome, scode, d2x), pointers updated" >> "$GITHUB_STEP_SUMMARY"
+
+      # GitCode publish uses the vendored tools/gtc + GITCODE_TOKEN. Non-blocking.
+      - name: Publish to GitCode (xlings-res/xim-index)
+        if: ${{ env.GITCODE_TOKEN != '' }}
+        run: |
+          chmod +x tools/gtc
+          export PATH="$PWD/tools:$PATH"
+          VER="${{ steps.version.outputs.version }}"
+          bash tools/publish_xim_index.sh --version "$VER" --dir build/index --skip-github \
+            || echo "gitcode main publish failed (non-blocking)"
+          for n in awesome scode d2x; do
+            bash tools/publish_xim_index.sh --version "$VER" --name "$n" --dir build/index --skip-github \
+              || echo "gitcode $n publish failed (non-blocking)"
+          done
+
+      # Push the rolling pointers as repo files (overwriteable, served raw) to
+      # both GitHub and GitCode. This is what clients read to find the latest
+      # artifact; repo files (unlike gitcode release assets) can be updated.
+      - name: Push index pointers (raw repo files, gh + gtc)
+        if: ${{ env.XLINGS_RES_TOKEN != '' || env.GITCODE_TOKEN != '' }}
+        env:
+          XLINGS_RES_TOKEN: ${{ secrets.XLINGS_RES_TOKEN }}
+          GITCODE_TOKEN: ${{ secrets.GITCODE_TOKEN }}
+          # #476: recorded at the pointer top level so a client routed to an
+          # older index snapshot can still learn a newer client exists. Without
+          # it, that client reads the old snapshot's own xlings recipe, is told
+          # it is current, and can never leave the snapshot it was routed to.
+          XLINGS_CLIENT_LATEST: ${{ steps.version.outputs.version }}
+        run: bash tools/push_index_pointers.sh build/index
 
   # Mirror the xlings binaries to xlings-res/xlings on GitHub + GitCode so
   # XLINGS_RES downloads resolve for all platforms (CN binary path is
