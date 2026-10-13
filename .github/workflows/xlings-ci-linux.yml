@@ -263,9 +263,13 @@ jobs:
           # dep of compat.libarchive, and absent from mcpp.lock, which only
           # pins direct deps) fetched from sourceware.org. It also made the
           # ~800 MB mcpp cache restored one step earlier almost worthless.
+          #
+          # The registry's subos stays too: it links into those payloads, and
+          # packages link into it (compat.libgbm's libgbm.so is a link to
+          # subos/default/lib) -- without it a warm cache links against nothing.
           prune_registry() {
             [ -d "$1" ] || return 0
-            find "$1" -mindepth 1 -maxdepth 1 ! -name data -exec rm -rf {} +
+            find "$1" -mindepth 1 -maxdepth 1 ! -name data ! -name subos -exec rm -rf {} +
             [ -d "$1/data" ] || return 0
             find "$1/data" -mindepth 1 -maxdepth 1 ! -name xpkgs -exec rm -rf {} +
           }
@@ -1117,9 +1121,13 @@ jobs:
 
       - name: Reinitialize mcpp registry (GLOBAL)
         run: |
+          # As build-and-test: the indexes and mirror config go; the payloads
+          # (data/xpkgs) and the registry's subos, which links into them and
+          # packages link into (compat.libgbm's libgbm.so is a link to
+          # subos/default/lib) -- without it a warm cache links against nothing.
           prune_registry() {
             [ -d "$1" ] || return 0
-            find "$1" -mindepth 1 -maxdepth 1 ! -name data -exec rm -rf {} +
+            find "$1" -mindepth 1 -maxdepth 1 ! -name data ! -name subos -exec rm -rf {} +
             [ -d "$1/data" ] || return 0
             find "$1/data" -mindepth 1 -maxdepth 1 ! -name xpkgs -exec rm -rf {} +
           }
