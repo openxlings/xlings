@@ -755,7 +755,7 @@ wait job
 see 5s tiny-1
 screenshot {}
 wait console 900
-see 120s $
+see 120s [luban:tiny-1]
 screenshot {}
 screenshot {}
 type echo luban-$((6*7))
@@ -917,7 +917,7 @@ click import:confirm
 click import:go
 wait job
 wait console 900
-see 120s $
+see 120s [luban:shared-box]
 type cat /root/carried.txt
 key Return
 see 30s carried-across
