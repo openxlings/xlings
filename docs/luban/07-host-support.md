@@ -37,7 +37,12 @@ xlings self doctor --isolation           # what this host can isolate with, and 
 ```
 
 `luban new` checks the host before anything is downloaded and asks for it
-there; in agent mode it exits 2 with the command.
+there; in agent mode it exits 2 with the command. Unattended (CI, a script),
+`luban setup -y` answers its one question.
+
+`luban status` on macOS and Windows answers for the carrier a Luban system
+runs in there (vz, wsl2): whether it is available, why not, and the way
+forward. Ready exits 0, not ready 1, the same on every platform.
 
 ## When something fails
 
@@ -52,6 +57,7 @@ xlings self doctor               # the home itself
 |---|---|---|
 | `setting up uid map: Permission denied` | AppArmor's restriction | `luban setup` |
 | a private environment refuses to enter: the bwrap cannot forbid nested user namespaces | a setuid bwrap | `luban setup` |
+| `--temp` or `--persist home` says no bwrap here has overlays | the host's bwrap is older than 0.10, or setuid | `xlings install bwrap` (it is installed the first time when it can be) |
 | exit 125 with a list | the policy asks for what this host cannot give | the list names each item and its fix |
 | an edition is refused before anything is made | it is not built for this machine's architecture | another edition ([02](02-editions.md)) |
 | exit 2 in agent mode | a question an agent cannot answer | the error names the option that answers it |

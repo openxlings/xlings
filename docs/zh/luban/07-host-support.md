@@ -31,7 +31,11 @@ luban setup                              # = xlings self doctor --isolation --fi
 xlings self doctor --isolation           # what this host can isolate with, and why not
 ```
 
-`luban new` 在下载任何东西之前检查宿主并当场询问；agent 模式下以退出码 2 结束并给出命令。
+`luban new` 在下载任何东西之前检查宿主并当场询问；agent 模式下以退出码 2 结束并给出命令。无人值守时（CI、脚本），
+`luban setup -y` 回答它唯一的那个问题。
+
+在 macOS 与 Windows 上，`luban status` 回答的是那里运行 Luban 系统的载体（vz、wsl2）：是否可用、为什么不可用、怎样继续。
+就绪退出码为 0，未就绪为 1，各平台一致。
 
 ## 出问题时
 
@@ -46,6 +50,7 @@ xlings self doctor               # the home itself
 |---|---|---|
 | `setting up uid map: Permission denied` | AppArmor 的限制 | `luban setup` |
 | 私有环境拒绝进入：bwrap 无法禁止嵌套 user namespace | setuid 的 bwrap | `luban setup` |
+| `--temp` 或 `--persist home` 说这里没有支持 overlay 的 bwrap | 宿主的 bwrap 早于 0.10，或者是 setuid 的 | `xlings install bwrap`（能装时第一次就会自动装上） |
 | 退出码 125 并附一个列表 | 策略要求这台宿主给不了的东西 | 列表逐项给出原因与修法 |
 | edition 在创建任何东西之前被拒绝 | 它没有为这台机器的架构构建 | 换一个 edition（[02](02-editions.md)） |
 | agent 模式下退出码 2 | agent 无法回答的问题 | 错误信息给出能回答它的参数 |

@@ -71,6 +71,10 @@ status = "required"
 text = "a rollback takes an environment's packages back with its root (each generation records what it was built from), so the next entry does not rebuild the newer one; a generation from before the record is rolled back to its root and says so"
 status = "required"
 
+[LUBAN-HOST-STATUS]
+text = "luban status on the host answers whether a Luban system can be made here: on Linux the isolation, elsewhere the carrier (wsl2, vz) and why not, with its way forward; ready exits 0, not ready 1, on every platform"
+status = "required"
+
 [LUBAN-UPGRADE-NEVER-LOOSENS]
 text = "an upgrade applies the edition's policy only when it allows nothing more than the one in force; a looser one is kept out and named, with the subos config command that switches to it"
 status = "required"

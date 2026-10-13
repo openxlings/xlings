@@ -286,7 +286,11 @@ function Invoke-SuiteLubanHost {
     Write-Host $overview
     if ($overview -notmatch 'Luban OS') { Fail "the overview does not say Luban OS" }
     Write-Ok 'the overview answers'
-    Invoke-Step 'host status' @('luban', 'status')
+    # Ready or not, it answers (exit 1 is "not ready", with what to do).
+    $status = (& luban status 2>&1 | Out-String)
+    Write-Host $status
+    if ($status -notmatch 'ready') { Fail "luban status did not say whether this host is ready" }
+    Write-Ok 'the host status answers'
     Assert-Refuses 'a Luban system is not made here without WSL2' @('luban', 'new', 'box', '--edition', 'tiny')
     Assert-Refuses 'the window is not published for this platform' @('xlings', 'install', 'luban-os', '-y')
 }
