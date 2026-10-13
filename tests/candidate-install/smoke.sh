@@ -17,18 +17,18 @@ work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 
 expected=$(awk 'NR == 1 && $1 ~ /^[0-9a-fA-F]{64}$/ {print tolower($1)}' "$sidecar")
-[[ -n "$expected" ]]
+[[ -n "$expected" ]] || fail "$sidecar holds no sha256"
 if command -v sha256sum >/dev/null 2>&1; then
   actual=$(sha256sum "$archive" | awk '{print $1}')
 else
   actual=$(shasum -a 256 "$archive" | awk '{print $1}')
 fi
-[[ "$actual" == "$expected" ]]
+[[ "$actual" == "$expected" ]] || fail "$(basename "$archive") is $actual; $(basename "$sidecar") says $expected"
 
 tar -xzf "$archive" -C "$work"
 package_root=$(find "$work" -mindepth 1 -maxdepth 1 -type d | head -1)
 bin=$(find "$package_root" -path '*/bin/xlings' -type f | head -1)
-test -x "$bin"
+test -x "$bin" || fail "$(basename "$archive") has no bin/xlings"
 home="$work/home"
 mkdir -p "$home"
 candidate_home="$home/explicit-cold-home"
