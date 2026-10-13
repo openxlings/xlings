@@ -659,6 +659,11 @@ void quick_start_(App& a) {
         a.window->pick_file(std::string(tr("Import a Luban system", "导入 Luban 系统")), "Luban", "luban");
     ImGui::PopStyleColor();
     mark_(a, "import");
+    if (!a.notice.empty()) {
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.75f, 0.4f, 1));
+        center_text_(a.notice);
+        ImGui::PopStyleColor();
+    }
     if (!a.systems.empty()) {
         ImGui::SetCursorPosX((W - 200) / 2);
         if (ImGui::Button(std::string(tr("Back", "返回")).c_str(), ImVec2(200, 32))) a.view = View::Launcher;
