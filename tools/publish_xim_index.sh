@@ -89,8 +89,17 @@ if [[ "$SKIP_GH" == 0 ]]; then
   # the release (gh --clobber can overwrite it). 0.4.54+ clients read the combined
   # repo-file pointer (tools/push_index_pointers.sh). GitCode can't overwrite a
   # release asset, so the legacy pointer is github-only; old CN clients fall to it.
-  publish_gh "$ROLLING_TAG" "$ART" "$LATEST_JSON"
+  # The archive first: a version's copy there is what lets the rolling release
+  # forget it. Then the rolling one, trimmed to this index's newest versions --
+  # a release holds at most 1000 assets, and a full one refuses every upload.
   publish_gh "$ARCHIVE_TAG" "$ART" "$MAN"
+  if [[ "$DRY" == 1 ]]; then
+    echo "[dry-run] python3 tools/xim_index_rolling.py --repo $GH_REPO trim --base '$NAME' --keep ${XIM_INDEX_ROLLING_KEEP:-50}"
+  else
+    python3 "$(dirname "${BASH_SOURCE[0]}")/xim_index_rolling.py" --repo "$GH_REPO" --tag "$ROLLING_TAG" \
+      trim --base "$NAME" --keep "${XIM_INDEX_ROLLING_KEEP:-50}"
+  fi
+  publish_gh "$ROLLING_TAG" "$ART" "$LATEST_JSON"
 fi
 if [[ "$SKIP_GTC" == 0 ]]; then
   info "GitCode $GTC_REPO: artifact -> rolling '$ROLLING_TAG' + archive '$ARCHIVE_TAG'"
