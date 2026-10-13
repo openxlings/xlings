@@ -538,6 +538,25 @@ jobs:
           PY
           exit "$status"
 
+      # Luban OS as a first-time user meets it: the quick start makes a real
+      # system (downloaded, set up), its console opens and runs what is typed;
+      # an exported system is imported and has what it carried. With the
+      # release client: a development build cannot enter a root.
+      - name: Luban OS first use, with the release client
+        env:
+          XDEV_LANE: linux-luban-os-first-use
+          XDEV_LANE_CAPS: linux,posix,pty,xlings-bin,static-xlings,userns,bwrap,sandbox,network
+        if: always() && steps.candidate.outcome == 'success'
+        run: |
+          candidate="$(find "$GITHUB_WORKSPACE/build" -path '*/bin/xlings' -type f | head -1)"
+          test -x "$candidate"
+          export XLINGS_BIN="$candidate"
+          # The window beside xdesk (its desktop tests find it there).
+          xdesk="$(find "$GITHUB_WORKSPACE/target" -path '*bin/xdesk-app/xdesk' -type f | head -1)"
+          export LUBAN_OS_BIN="$(dirname "$(dirname "$xdesk")")/luban-os/luban-os"
+          test -x "$LUBAN_OS_BIN"
+          "$XDEV" test e2e/test_luban_os --no-build --require-metadata --out target/xdev/linux-luban-os-first-use
+
       - name: Attach xdev and its runs
         uses: actions/upload-artifact@v4
         if: always()
@@ -568,24 +587,6 @@ jobs:
           for outcome in "$CANDIDATE_OUTCOME" "$DOMAIN_OUTCOME" "$PERF_OUTCOME"; do
             [[ "$outcome" == success ]] || { echo "::error::static acceptance is incomplete or failed"; exit 1; }
           done
-
-      # Luban OS as a first-time user meets it: the quick start makes a real
-      # system (downloaded, set up), its console opens and runs what is typed;
-      # an exported system is imported and has what it carried. With the
-      # release client: a development build cannot enter a root.
-      - name: Luban OS first use, with the release client
-        env:
-          XDEV_LANE: linux-luban-os-first-use
-          XDEV_LANE_CAPS: linux,posix,pty,xlings-bin,static-xlings,userns,bwrap,sandbox,network
-        run: |
-          candidate="$(find "$GITHUB_WORKSPACE/build" -path '*/bin/xlings' -type f | head -1)"
-          test -x "$candidate"
-          export XLINGS_BIN="$candidate"
-          # The window beside xdesk (its desktop tests find it there).
-          xdesk="$(find "$GITHUB_WORKSPACE/target" -path '*bin/xdesk-app/xdesk' -type f | head -1)"
-          export LUBAN_OS_BIN="$(dirname "$(dirname "$xdesk")")/luban-os/luban-os"
-          test -x "$LUBAN_OS_BIN"
-          "$XDEV" test e2e/test_luban_os --no-build --require-metadata --out target/xdev/linux-luban-os-first-use
 
   # The shell e2e suite, against the artifact built above.
   e2e:
