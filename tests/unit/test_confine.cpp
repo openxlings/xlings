@@ -160,6 +160,15 @@ XTEST(Confine, PersistPutsTheRootsStateBehindAMemoryOverlay, .area = "subos", .c
     EXPECT_EQ(overlays(*none), (std::set<std::string>{"/etc", "/home", "/root", "/var"}));
     const auto argv = cf::launch_argv(*none, std::nullopt, "/self/xlings");
     EXPECT_NE(std::ranges::find(argv, std::string("--tmp-overlay")), argv.end());
+    // The store's binds land under the home (/h/... here, /home/<user>/.xlings
+    // on a machine): every overlay and /tmp comes first, or they hide them.
+    std::size_t last_own = 0, first_store = none->mounts.size();
+    for (std::size_t k = 0; k < none->mounts.size(); ++k) {
+        const auto& m = none->mounts[k];
+        if (m.kind == sp::MountKind::TmpOverlay || (m.kind == sp::MountKind::Tmpfs && m.dst == "/tmp")) last_own = k;
+        if (m.dst == "/h/.xlings/data/xpkgs/x") first_store = std::min(first_store, k);
+    }
+    EXPECT_LT(last_own, first_store) << "an overlay or /tmp mounted over the store's binds";
     r.preferred = sp::Backend::Proot;
     auto proot = cf::compile(xlings::subos::policy::legacy(), view, linux_host(false, true, 0), r);
     ASSERT_FALSE(proot);

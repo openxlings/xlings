@@ -174,7 +174,7 @@ suite_luban_machine() {
     OUT="$( { sleep 5; printf 'exit\n'; } 2>/dev/null | timeout 300 script -qfec "luban enter m" /dev/null 2>&1 | tr -d '\r')" || rc=$?
     printf '%s\n' "$OUT" | sed 's/^/      /'
     local hint
-    hint="$(grep -oE 'xlings install [^ ]+' <<<"$OUT" | head -1 || true)"
+    hint="$(sed 's/\x1b\[[0-9;]*m//g' <<<"$OUT" | grep -oE 'xlings install [^ ]+' | head -1 || true)"
     if [ -n "$hint" ] && ! grep -qF "m is up" <<<"$OUT"; then
         # A person does what it says.
         capture "its hint" $hint -y
@@ -202,6 +202,9 @@ suite_luban_upgrade() {
     # Made by the release before, with what both releases speak (xlings'
     # own subos commands), then the client is updated as a person updates it.
     section "an environment made by the previous release"
+    # The one-time setup first, answered (that release's luban setup did not
+    # pass -y on; its xlings does).
+    capture "setup" xlings self doctor --isolation --fix -y
     capture "made" xlings subos new old --from subos:luban-tiny
     capture "it runs" xlings subos exec old -- /bin/sh -c 'echo before > /root/before; echo ok'
     says "the old client's environment runs" "ok"
