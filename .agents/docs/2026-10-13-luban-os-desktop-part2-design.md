@@ -337,3 +337,19 @@ D9 测试与关键帧、D10 文档 / 版本 / 发布：贯穿，最后收口
 | 许可 | 能否打包与静态链接？ | wlroots、wayland、xkbcommon、pixman、harfbuzz、foot、Xwayland 均为 MIT 类；freetype 用 FTL；允许静态链接与再分发，provenance 记录来源 |
 | 工作量与进度 | 同一个 PR 是否过大？ | D0–D10 每个 checkpoint 一个提交、各自可构建可测试；发布在最后；某个 checkpoint 受阻（如静态 wlroots）时先在 PR 里说明并给出替代（动态链接 + 随包库） |
 
+### 9.1 实现后的复审（多视角、生态全局）
+
+| 视角 | 查了什么 | 结论 / 处理 |
+|---|---|---|
+| 架构 | 家族边界、包粒度、头文件 | opensal / xdesk 不导入 xlings、luban（lint）；包按复用边界（xdesk-base 纯 C++：os、term、layout、apps、config；xdesk-compositor：compositor、draw、shell、native）；C 头文件只在绑定模块（lint） |
+| 稳定性 | 生命周期与并发 | wl_listener 封装在析构时断开；宿主剪贴板按实现识别而不是地址；Display 的跨线程状态在锁内；节拍有一秒兜底；会话失败时说出原因 |
+| 正确性 | 新用户路径的真实测试 | `linux-luban-os-first-use`（发布版客户端、网络）：快速开始创建并进入、导入恢复所带的文件；它找出了 nano 没有 shell 却写着"一个 shell"、会话失败只显示"已关机"两个问题，均已修 |
+| 用户体验 | 第一次打开、失败、导入 | 两组卡片各说明是什么；不能创建的卡片先说原因；导入先预览并确认更宽的权限；没有文件对话框时提示拖入；关键帧（两种语言、三种尺寸、两种桌面、密度 2）人工看过 |
+| 兼容性 | 协议与旧组件 | opensal.wire 只增（hello 的第五个数、`t`/`b` 已有）；旧提供端不声明节拍时照旧；package_info 只增字段，未找到改为 E_NOT_FOUND；labwc 会话保留 |
+| 跨平台 | macOS、Windows | 窗口的无头测试在两者上运行（暴露并修了：Windows 的 desktop 文件 id 分隔符、macOS 无头需关闭帧缓冲加速、窗口打不开时不再 abort）；快速开始在非 Linux 上先说明 |
+| 一致性 | 名字、配置、文档 | 会话 `xdesk-classic` / `xdesk-canvas` 与 `--profile`、`<profile>.ini` 同名；中英文档同步；生成的命令参考已更新 |
+| 无感升级 | 已有环境 | edition 新版本只影响新建与 `luban upgrade`；用户设置（`luban config`、`~/.config/xdesk`）始终优先；home 格式未变 |
+| 安全 | 权限与凭据 | 剪贴板两个方向分别受授权约束；导入时更宽的策略需确认；edition 里没有凭据；输入法的按键不重复发送 |
+| 生态 | 跨仓库 | xim-pkgindex：xdesk、两个桌面 edition、opencode、tmux、htop（工厂静态构建、两种架构）、jq 1.8.2、node 26.11.1 / 24.21.0、python 3.15.0；GitCode 镜像已补并按内容校验；mcpp 的 wlroots 生成器漏掉两个函数（绑定模块暂代，修复后删去） |
+| 后续 | 不在本 PR | xdesk 的 aarch64 发布与 Xwayland；在 macOS / Windows 上运行机器（HVF / WHPX）；静态 musl 的 xdesk（需要 mcpp 的静态变体） |
+
