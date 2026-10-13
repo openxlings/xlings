@@ -197,7 +197,6 @@ struct Server {
     std::list<TextInput> text_inputs;
     wlr_text_input_manager_v3* text_input_manager { nullptr };
     std::string caret_sent;                        // the last 't' sent
-    HostSelection* host_selection { nullptr };     // ours while the clients hold it
     std::unique_ptr<SelectionRead> reading;
     Hook new_text_input, set_selection;
     layout::Layout lay;
@@ -343,7 +342,6 @@ struct Server {
             *slot = static_cast<char*>(std::malloc(n));
             if (*slot) std::memcpy(*slot, mime, n);
         }
-        host_selection = sel;
         // Serial 0: whatever a client copies after this (with any serial it
         // was given) replaces it -- a newer serial would refuse the clients.
         wlr_seat_set_selection(seat, &sel->base, 0);
@@ -353,8 +351,9 @@ struct Server {
     void selection_changed() {
         wlr_data_source* src = seat->selection_source;
         if (!src) return;
-        if (host_selection && src == &host_selection->base) return;   // ours: the window has it
-        host_selection = nullptr;
+        // Ours (the window's own clipboard, offered back): known by what it is,
+        // not by an address a freed one's successor might have.
+        if (src->impl == &kHostSelection) return;
         if (!opensal::has(provided, opensal::Interface::Clipboard)) return;
         const char* chosen = nullptr;
         for (const char* want : {"text/plain;charset=utf-8", "UTF8_STRING", "text/plain", "TEXT", "STRING"}) {

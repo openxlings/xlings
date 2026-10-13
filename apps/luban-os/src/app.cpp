@@ -1812,6 +1812,9 @@ int run(int argc, char* argv[]) {
         // opens its preview (not over a system in use).
         {
             std::optional<fs::path> file = a.window->picked();
+            if (const auto why = a.window->pick_error(); !why.empty())
+                a.notice = std::vformat(tr("No file dialog here ({}): drop the .luban file on the window instead.",
+                                           "这里没有文件对话框（{}）：请把 .luban 文件拖进窗口。"), std::make_format_args(why));
             if (file && file->empty()) file.reset();   // the dialog was cancelled
             for (const auto& d : a.window->dropped())
                 if (d.extension() == ".luban") file = d;

@@ -143,6 +143,7 @@ struct Window::Impl {
     std::deque<std::string> injected_drops;     // likewise a drop event's file name
     std::mutex picking;                         // the file dialog answers on another thread
     std::optional<std::filesystem::path> picked;
+    std::string pick_error;
     std::string filter_name, filter_pattern;    // alive while the dialog is
 };
 
@@ -456,6 +457,8 @@ void Window::pick_file(const std::string& title, const std::string& filter_name,
             w->impl_->picked = files && files[0] ? std::optional<std::filesystem::path>(std::filesystem::path(
                                                        reinterpret_cast<const char8_t*>(files[0])))
                                                  : std::optional<std::filesystem::path>(std::filesystem::path{});
+            // No list at all is SDL's way of saying there is no dialog here.
+            if (!files) w->impl_->pick_error = SDL_GetError();
         }
         w->wake();
     }, this, props);
@@ -465,6 +468,11 @@ void Window::pick_file(const std::string& title, const std::string& filter_name,
 std::optional<std::filesystem::path> Window::picked() {
     std::lock_guard l(impl_->picking);
     return std::exchange(impl_->picked, std::nullopt);
+}
+
+std::string Window::pick_error() {
+    std::lock_guard l(impl_->picking);
+    return std::exchange(impl_->pick_error, std::string{});
 }
 
 void Window::inject_close() {

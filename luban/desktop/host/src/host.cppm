@@ -64,7 +64,10 @@ public:
     // The system's dialog for one file to open (`pattern`: "luban", the
     // extensions it shows); its answer, once given, by picked().
     void pick_file(const std::string& title, const std::string& filter_name, const std::string& pattern);
+    // The answer: a file, an empty path (cancelled), or nothing yet; when
+    // there is no dialog here, why (picked() then answers an empty path).
     std::optional<std::filesystem::path> picked();
+    std::string pick_error();
     void clear_close_request() { close_requested_ = false; }
 
     // A texture for a remote surface's pixels (BGRA), drawn with imgui's Image.
