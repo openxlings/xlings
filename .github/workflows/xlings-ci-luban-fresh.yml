@@ -68,6 +68,7 @@ jobs:
         if: runner.os != 'Windows'
         env:
           LUBAN_SCREENSHOTS: ${{ github.workspace }}/luban-fresh
+          GH_TOKEN: ${{ github.token }}
         run: bash tests/fresh-install/smoke.sh ${{ matrix.suite }}
       - name: Run ${{ matrix.suite }}
         if: runner.os == 'Windows'

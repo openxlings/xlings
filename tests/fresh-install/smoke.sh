@@ -63,7 +63,11 @@ bootstrap() {
     local from=()
     if [ "${FROM_PREVIOUS_RELEASE:-0}" = 1 ]; then
         local previous_release
-        previous_release="$(curl -fsSL "https://api.github.com/repos/openxlings/xlings/releases?per_page=2" \
+        # Authenticated where CI gives a token: the anonymous API limit is a
+        # runner IP's, shared, and answers 403 when spent.
+        local auth=()
+        [ -n "${GH_TOKEN:-}" ] && auth=(-H "Authorization: Bearer $GH_TOKEN")
+        previous_release="$(curl -fsSL --retry 3 "${auth[@]}" "https://api.github.com/repos/openxlings/xlings/releases?per_page=2" \
             | python3 -c 'import json,sys; print(json.load(sys.stdin)[1]["tag_name"])')" \
             || fail "cannot ask GitHub for the release before the newest"
         from=(-s -- "$previous_release")

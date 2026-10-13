@@ -18,7 +18,11 @@ export XLINGS_HOME="$home" XLINGS_NON_INTERACTIVE=1
 X="$home/bin/xlings"
 if [[ ! -x "$X" ]]; then
   arch="$(uname -m)"
-  tag="$(curl -fsSL https://api.github.com/repos/openxlings/xlings/releases/latest | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -1)"
+  # The newest release from the releases/latest redirect: the API's anonymous
+  # limit is shared by a runner's IP and answers 403 when spent.
+  tag="$(curl -fsSIL --retry 3 -o /dev/null -w '%{url_effective}' https://github.com/openxlings/xlings/releases/latest | sed -n 's|.*/releases/tag/||p')"
+  [[ -n "$tag" ]] || tag="$(curl -fsSL https://api.github.com/repos/openxlings/xlings/releases/latest | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -1)"
+  [[ -n "$tag" ]] || { echo "cannot tell the newest xlings release" >&2; exit 1; }
   v="${tag#v}"
   w="$(mktemp -d)"
   curl -fsSL --retry 3 -o "$w/x.tar.gz" "https://github.com/openxlings/xlings/releases/download/$tag/xlings-$v-linux-$arch.tar.gz"
