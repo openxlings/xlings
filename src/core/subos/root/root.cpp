@@ -223,6 +223,16 @@ refresh(const fs::path& home, std::string_view name, const fs::path& subos_dir,
     if (!gen) return std::unexpected(gen.error());
     out.generation = *gen;
     out.changed = !before || *before != *gen;
+    // What it was built from, for a rollback to restore (best effort: a
+    // generation without it is rolled back to its root only, and says so).
+    if (auto doc = read_json(subos_dir / ".xlings.json"); doc && doc->contains("workspace")) {
+        try {
+            const auto record = subos_dir / "generations" / std::format("{}.workspace.json", *gen);
+            fs::create_directories(record.parent_path());
+            platform::write_file_atomic(record.string(),
+                                        nlohmann::json{{"format", 1}, {"workspace", (*doc)["workspace"]}}.dump() + "\n");
+        } catch (...) {}
+    }
 
     const auto failed = [&](std::string error) -> std::expected<Refreshed, std::string> {
         if (before && out.changed) {
@@ -254,9 +264,40 @@ refresh(const fs::path& home, std::string_view name, const fs::path& subos_dir,
     }
     // Retention (design part 3 §7.1): the newest kKeepGenerations besides the
     // current one; what only the pruned ones held is released.
-    if (out.changed && !rf::prune(subos_dir, rf::kKeepGenerations).empty())
+    if (out.changed && !rf::prune(subos_dir, rf::kKeepGenerations).empty()) {
         (void)xim::retention::release();
+        // The records of generations no longer kept go with them.
+        std::error_code ec;
+        const auto kept = rf::generations(subos_dir);
+        for (const auto& entry : fs::directory_iterator(subos_dir / "generations", ec)) {
+            int n = 0;
+            const auto stem = entry.path().filename().string();
+            if (!stem.ends_with(".workspace.json")) continue;
+            std::from_chars(stem.data(), stem.data() + stem.size(), n);
+            if (std::ranges::find(kept, n) == kept.end()) fs::remove(entry.path(), ec);
+        }
+    }
     return out;
+}
+
+std::expected<bool, std::string> restore_packages(const fs::path& home, std::string_view name, int generation) {
+    const auto dir = subos::HomeView{home}.instance(name);
+    const auto record = dir / "generations" / std::format("{}.workspace.json", generation);
+    std::error_code ec;
+    if (!fs::is_regular_file(record, ec)) return false;
+    const auto saved = read_json(record);
+    if (!saved || !saved->contains("workspace"))
+        return std::unexpected("cannot read " + record.string() + (saved ? std::string{} : ": " + saved.error()));
+    const auto file = dir / ".xlings.json";
+    auto doc = read_json(file);
+    if (!doc) return std::unexpected(doc.error());
+    (*doc)["workspace"] = (*saved)["workspace"];
+    try {
+        platform::write_file_atomic(file.string(), doc->dump(2) + "\n");
+    } catch (const std::exception& e) {
+        return std::unexpected(e.what());
+    }
+    return true;
 }
 
 std::optional<std::expected<Refreshed, std::string>>

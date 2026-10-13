@@ -710,6 +710,25 @@ int run_upgrade_(int argc, char* argv[], EventStream& stream, const UsageError& 
     }
 
     const bool same = top.first == now->ref;
+    // The plan as data too: a frontend (luban) renders it, the log lines
+    // below being the terminal's.
+    {
+        nlohmann::json data{{"name", name}, {"from", now->ref}, {"to", top.first}, {"dry_run", dry},
+                            {"up_to_date", plan.empty() && same && !apply_policy}};
+        auto& rows = data["upgrade"] = nlohmann::json::array();
+        for (const auto& s : plan.upgrade)
+            rows.push_back({{"key", s.key}, {"from", s.from},
+                            {"to", subos::edition::split(s.to).second.empty() ? "newest" : subos::edition::split(s.to).second}});
+        auto& added = data["add"] = nlohmann::json::array();
+        for (const auto& s : plan.add) added.push_back(s.to);
+        auto& kept = data["keep"] = nlohmann::json::array();
+        for (const auto& s : plan.kept) kept.push_back({{"key", s.key}, {"from", s.from}, {"edition", s.to}});
+        for (const auto& k : plan.dropped) kept.push_back({{"key", k}, {"dropped", true}});
+        if (!chain->policy.empty() && chain->policy != now->policy)
+            data["policy"] = {{"from", now->policy}, {"to", chain->policy}, {"applied", apply_policy},
+                              {"loosened", loosened}};
+        stream.emit(DataEvent{"subos_upgrade_plan", data.dump()});
+    }
     log::println("{}: {} -> {}", name, now->ref, top.first);
     for (const auto& s : plan.upgrade)
         log::println("  upgrade  {} {} -> {}", s.key, s.from.empty() ? "?" : s.from,
@@ -868,6 +887,15 @@ int run_rollback_(int argc, char* argv[], EventStream& stream, const UsageError&
     if (auto sw = rf::switch_to(dir, *to); !sw) {
         error_(stream, sw.error(), "xlings subos rollback " + name + " --list");
         return 1;
+    }
+    // Its packages too, or the next entry rebuilds the root from today's.
+    if (auto restored = subos_root::restore_packages(home_dir_(), name, *to); !restored) {
+        error_(stream, "cannot restore the packages of generation " + std::to_string(*to) + ": " + restored.error());
+        if (now) (void)rf::switch_to(dir, *now, rf::Flush::Durable, rf::Verify::Tree);
+        return 1;
+    } else if (!*restored) {
+        log::warn("generation {} was made before generations recorded their packages: its root is back, and "
+                  "the next entry rebuilds it from the packages '{}' has now", *to, name);
     }
     if (auto cache = subos_root::refresh_cache(home_dir_(), name); !cache) {
         if (now) {
@@ -1201,7 +1229,13 @@ std::expected<void, std::pair<std::string, std::string>> write_drive_(
     if (run_tool_(*argv, stream, "writing the root filesystem") != 0)
         return std::unexpected(std::pair{std::string("mkfs.ext4 failed"), std::string{}});
     // The system partition.
-    const auto init = fs::exists(stage / home.relative_path() / "boot" / "luban-init", ec) ? "luban-init" : "xlings-init";
+    // Stage-0 is luban-init: without it beside the client the image cannot
+    // start (xlings-init only hands over to it), so it is not made.
+    if (!fs::exists(stage / home.relative_path() / "boot" / "luban-init", ec))
+        return std::unexpected(std::pair{std::format("no luban-init beside {}: a machine starts with it, so the "
+                                                     "image would not boot", (home / "bin" / "xlings").string()),
+                                         std::string("xlings self update")});
+    const auto init = "luban-init";
     const std::string conf = std::format(
         "# A Luban drive (luban export <name> <file>.img)\ntimeout: 3\n\n/Luban\n    protocol: linux\n"
         "    path: boot():/boot/vmlinuz\n"
@@ -1272,7 +1306,13 @@ std::expected<void, std::pair<std::string, std::string>> write_live_iso_(
         if (ec) return std::unexpected(std::pair{"cannot copy " + f + ": " + ec.message(), std::string{}});
     }
     fs::copy_file(*limine / machine.efi_loader, iso / "EFI" / "BOOT" / machine.efi_loader, ec);
-    const auto init = fs::exists(stage / home.relative_path() / "boot" / "luban-init", ec) ? "luban-init" : "xlings-init";
+    // Stage-0 is luban-init: without it beside the client the image cannot
+    // start (xlings-init only hands over to it), so it is not made.
+    if (!fs::exists(stage / home.relative_path() / "boot" / "luban-init", ec))
+        return std::unexpected(std::pair{std::format("no luban-init beside {}: a machine starts with it, so the "
+                                                     "image would not boot", (home / "bin" / "xlings").string()),
+                                         std::string("xlings self update")});
+    const auto init = "luban-init";
     {
         std::ofstream conf(iso / "boot" / "limine" / "limine.conf");
         conf << "# A live Luban system (luban export <name> <file>.iso)\n"
@@ -1615,6 +1655,10 @@ int run_export_(int argc, char* argv[], EventStream& stream, const UsageError& u
     if (!check_io()) return 1;
     {
         const bool luban_init = fs::exists(image_home / "bin" / "luban-init");
+        if (!luban_init)
+            stream.emit(LogEvent{LogLevel::warn, std::format("no luban-init beside {}: this root runs its tools, "
+                                                             "but a machine cannot boot it (xlings self update)",
+                                                             entry.string())});
         fs::create_symlink(luban_init ? "../bin/luban-init" : "../bin/xlings", image_home / "boot" / "xlings-init", ec);
         if (!ec && luban_init) fs::create_symlink("../bin/luban-init", image_home / "boot" / "luban-init", ec);
     }

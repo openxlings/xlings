@@ -51,6 +51,26 @@ status = "required"
 text = "subos upgrade / luban upgrade moves an environment made from an edition to a newer version: what the edition brought follows it, what the user moved stays theirs, what it dropped stays installed; one new generation; nothing changes without confirmation (agent: exit 2 with -y)"
 status = "required"
 
+[LUBAN-UPGRADE-PLAN]
+text = "luban upgrade shows what moves (the edition, packages added, upgraded and kept, the policy) before anything moves; --dry-run says it planned, not moved, and names the command that applies it; one already newest is said to be up to date"
+status = "required"
+
+[LUBAN-EXPORT-STAGE0]
+text = "an export is made with the client's stage-0 (luban-init): a bootable image (.img, .iso) is refused without it, naming the fix; a root (a directory, a tar) is made and says a machine cannot boot it"
+status = "required"
+
+[LUBAN-SETUP-ONE-STEP]
+text = "luban setup (self doctor --isolation --fix) on a host with no bwrap installs it from the index first and goes on: the one-time setup is one step, never 'install this, then run it again'"
+status = "required"
+
+[LUBAN-WELCOME]
+text = "a console of an environment (luban enter, the window's console; sandbox or machine) says first, in the user's language: Luban OS and its version, the edition and its version, the environment, how it runs and what it keeps, how to see it and leave; xlings' own line is not said there"
+status = "required"
+
+[LUBAN-ROLLBACK-PACKAGES]
+text = "a rollback takes an environment's packages back with its root (each generation records what it was built from), so the next entry does not rebuild the newer one; a generation from before the record is rolled back to its root and says so"
+status = "required"
+
 [LUBAN-UPGRADE-NEVER-LOOSENS]
 text = "an upgrade applies the edition's policy only when it allows nothing more than the one in force; a looser one is kept out and named, with the subos config command that switches to it"
 status = "required"

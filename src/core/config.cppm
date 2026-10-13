@@ -11,7 +11,7 @@ import xlings.core.home;
 namespace xlings {
 
 export struct Info {
-    static constexpr std::string_view VERSION = "2026.10.13.1";
+    static constexpr std::string_view VERSION = "2026.10.13.2";
     static constexpr std::string_view REPO = "https://github.com/openxlings/xlings";
 };
 

@@ -134,7 +134,13 @@ std::expected<Environment, std::string> describe(const Context& c, std::string_v
     e.packages = packages.size();
     if (e.kind == "root") {
         e.generation = xlings::subos::rootfs::current(view.instance(name));
-        if (auto root = root_of(c.home, name)) e.shell = xlings::subos::root_etc::login_shell(*root);
+        if (auto root = root_of(c.home, name)) {
+            // Its login shell, when the root has one (nano has none).
+            std::error_code ec;
+            e.shell = xlings::subos::root_etc::login_shell(*root);
+            if (fs::symlink_status(*root / fs::path(e.shell).relative_path(), ec).type() == fs::file_type::not_found)
+                e.shell.clear();
+        }
     }
     e.running = xlings::subos::session::find(view, name).has_value();
     auto settings = read_settings(c.home, name);
@@ -237,7 +243,21 @@ Outcome upgrade(const Context& c, std::string_view name, std::string_view to, bo
     auto args = argv_({"upgrade", name});
     if (!to.empty()) args.insert(args.end(), {"--to", std::string(to)});
     if (dry_run) args.push_back("--dry-run");
-    return {.code = step_(c, "upgrade", std::format("moving {} to its edition's newest", name), args, c.yes)};
+    // The plan comes back as data (subos_upgrade_plan); the rest goes on.
+    Json plan = Json::object();
+    const Sink watched = [&](const Event& e) {
+        if (e.kind == Event::Kind::Data && e.data_kind == "subos_upgrade_plan") plan = e.data;
+        else if (c.sink) c.sink(e);
+    };
+    const auto text = dry_run ? std::format("planning {}'s upgrade", name)
+                              : std::format("moving {} to its edition's newest", name);
+    if (c.sink) c.sink(phase("upgrade", "begin", text));
+    xlings::observe::ops::Span span("upgrade");
+    const int rc = c.port.subos(args, c.yes, watched);
+    if (rc != 0) span.fail(std::format("exit {}", rc));
+    const auto done = rc == 0 && plan.value("up_to_date", false) ? std::format("{} is up to date", name) : text;
+    if (c.sink) c.sink(phase("upgrade", rc == 0 ? "done" : "failed", done));
+    return {.code = rc, .value = plan};
 }
 
 Outcome rollback(const Context& c, std::string_view name, std::string_view to) {
@@ -327,7 +347,7 @@ Outcome export_environment(const Context& c, const ExportOptions& o) {
         if (auto pol = xlings::subos::policy_store::read(view, o.name); pol && pol->has_value())
             manifest["policy"] = xlings::subos::policy::to_json(**pol);
         if (auto s = read_settings(c.home, o.name)) manifest["settings"] = s->document;
-        auto written = archive::write(o.file, manifest, *root);
+        auto written = archive::write(o.file, manifest, *root, c.home);
         if (!written) {
             if (c.sink) {
                 c.sink(error(written.error()));
@@ -435,11 +455,43 @@ Outcome import_environment(const Context& c, const fs::path& file, std::string n
     return {.code = 0, .value = {{"name", name}, {"edition", edition}}};
 }
 
+bool chinese_locale() {
+    for (const char* key : {"LC_ALL", "LC_MESSAGES", "LANG"})
+        if (const char* v = std::getenv(key); v && *v) return std::string_view(v).starts_with("zh");
+    return false;
+}
+
+std::vector<std::string> welcome(const Environment& e, std::string_view mode, bool temp, bool zh) {
+    std::string edition = e.edition;
+    if (edition.starts_with("subos:luban-")) edition = edition.substr(12);
+    if (const auto at = edition.find('@'); at != std::string::npos) edition[at] = ' ';
+    std::string title = std::format("Luban OS {}", kVersion);
+    if (!edition.empty()) title += " · " + edition;
+    title += " · " + e.name;
+    const auto persist = temp ? std::string("none") : e.settings.persist;
+    // Short lines: a console is 80 columns.
+    std::string how, next;
+    if (zh) {
+        how = mode == "machine" ? "一台机器（自己的内核）" : "本机上的沙箱";
+        how += persist == "all" ? "，保留所有改动" : persist == "home" ? "，只保留 /home" : "，什么也不保留";
+        next = std::format("luban status {} · exit 离开", e.name);
+    } else {
+        how = mode == "machine" ? "a machine (its own kernel)" : "a sandbox on this host";
+        how += persist == "all" ? ", keeping what changes" : persist == "home" ? ", keeping only /home" : ", keeping nothing";
+        next = std::format("luban status {} · exit to leave", e.name);
+    }
+    return {title, "  " + how, "  " + next, ""};
+}
+
 int enter_sandbox(const Context& c, std::string_view name, bool temp) {
     std::vector<std::string> args{"subos", "use", std::string(name)};
     auto settings = read_settings(c.home, name);
     const auto persist = temp ? std::string("none") : settings ? settings->persist : std::string("all");
     if (persist != "all") args.insert(args.end(), {"--persist", persist});
+    if (auto e = describe(c, name)) {
+        for (const auto& line : welcome(*e, "sandbox", temp, chinese_locale())) std::println("{}", line);
+        xlings::platform::set_env_variable("XLINGS_ENTER_QUIET", "1");
+    }
     return c.port.terminal(args);
 }
 

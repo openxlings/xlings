@@ -14,11 +14,12 @@ Each step says what you should see.
 luban new box --edition tiny            # an edition: nano, tiny, core, desktop, desktop-xdesk, agent-workspace, or ns:name
 ```
 
-You see the edition once (`'box' from subos:luban-tiny@… <- …: N package(s)`),
-the download, and `subos created: box`. The first `luban new` on a host may ask
-for a one-time setup first (below). Made without an edition name it is Luban
-Core, which adds compilers and build tools. If it stops halfway, the same
-command again finishes it.
+You see `▸ making box (tiny)`, the download, then `✓ box is ready`, what it is
+(`box  tiny@… · N packages · generation N`) and the next step (`enter  luban
+enter box`). The first `luban new` on a host may ask for a one-time setup first
+(below). Made without an edition name it is Luban Core, which adds compilers
+and build tools. If it stops halfway, the same command again finishes it.
+`nano` has no shell: it says so, and its next step is `luban run box -- …`.
 
 ## 2. Work in it
 
@@ -26,6 +27,16 @@ command again finishes it.
 luban enter box               # a shell in it; the prompt says where: [luban:box] ~ #
 luban run box -- uname -a     # one command in it, from outside
 luban run box -- xlings install -y cmake
+```
+
+A console says first what it is: Luban OS and its version, the edition, how
+it runs and what it keeps, and how to leave (in Chinese where your language
+is), then its prompt:
+
+```
+Luban OS 2026.10.13.2 · tiny 2026.10.11.1 · box
+  a sandbox on this host, keeping what changes
+  luban status box · exit to leave
 ```
 
 Installing software is still xlings: `xlings install <package>` — inside an
@@ -37,6 +48,9 @@ environment it installs into that environment. `exit` leaves it.
 luban history box             # its generations: one per change
 luban rollback box            # back one: cmake is gone again
 ```
+
+A generation is the packages as well as the files they make: going back to it
+stays when you enter again.
 
 ## 4. An agent's workspace
 
@@ -53,9 +67,12 @@ An agent's workspace is isolated by its policy; its only network can be a proxy
 ## 5. Upgrade
 
 ```bash
-luban upgrade box --dry-run   # what the edition's newest version changes
+luban upgrade box --dry-run   # the plan: the edition, packages added, upgraded and kept
 luban upgrade box             # one new generation; rollback undoes it
 ```
+
+`--dry-run` moves nothing: it says `box is up to date`, or lists what would
+move and names `luban upgrade box`.
 
 ## 6. Run it as a machine
 
@@ -109,7 +126,11 @@ narrow AppArmor profile, for every user of the machine, with one `sudo`.
 luban setup                   # the same setup, whenever you like
 ```
 
-An agent (`--agent`) is never asked: the command exits 2 and names this setup.
+A host with no bwrap at all gets one from the index first, in the same step.
+A session that keeps less than everything (`--temp`, `--persist home`) needs a
+bwrap of 0.10 or later; on a host whose own is older (Ubuntu 24.04 ships 0.9)
+the index's is installed the first time. An agent (`--agent`) is never asked:
+the command exits 2 and names this setup.
 
 ## More
 

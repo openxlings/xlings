@@ -20,7 +20,7 @@ env:
   # while both PRs are in flight; the repository variable is unset when the
   # index PR merges): what CI installs its tools from (tools/ci/xlings_tools.sh)
   # and what the tool table is held to (tools/lint_tools_provenance.sh).
-  XLINGS_TOOLS_INDEX_REF: ${{ vars.XLINGS_INDEX_UNDER_TEST || '' }}
+  XLINGS_TOOLS_INDEX_REF: ${{ vars.XLINGS_INDEX_UNDER_TEST || 'main' }}
   XLINGS_PROVENANCE_INDEX_REF: ${{ vars.XLINGS_INDEX_UNDER_TEST || 'main' }}
   GIT_TERMINAL_PROMPT: 0
   # CI runs on github.com; force GLOBAL mirror so xim doesn't try gitee
@@ -342,7 +342,15 @@ jobs:
           # xdesk (the compositor of Luban OS's desktops): wlroots headless and
           # pixman, no GPU; its test runs it as luban-os's desktop.
           mcpp build -p xdesk-app
-          "$(find target -path '*bin/xdesk-app/xdesk' -type f | head -1)" --probe
+          # The binaries just built, by absolute name (tests run elsewhere): a member's lands in a target
+          # directory of its own configuration, which need not be luban-os's,
+          # and the dist builds below add more of each.
+          luban_os="$(find "$PWD/target" -path '*bin/luban-os/luban-os' -type f | head -1)"
+          xdesk="$(find "$PWD/target" -path '*bin/xdesk-app/xdesk' -type f | head -1)"
+          test -x "$luban_os" && test -x "$xdesk"
+          export LUBAN_OS_BIN="$luban_os" XDESK_BIN="$xdesk"
+          { echo "LUBAN_OS_BIN=$luban_os"; echo "XDESK_BIN=$xdesk"; } >> "$GITHUB_ENV"
+          "$xdesk" --probe
           # Its release payload, as release.yml makes it (a glibc program, the
           # system's loader, no RPATH, its NEEDED checked): a release must not
           # be the first to find the packaging broken.
@@ -555,11 +563,10 @@ jobs:
           candidate="$(find "$GITHUB_WORKSPACE/build" -path '*/bin/xlings' -type f | head -1)"
           test -x "$candidate"
           export XLINGS_BIN="$candidate"
-          # The window beside xdesk (its desktop tests find it there).
-          xdesk="$(find "$GITHUB_WORKSPACE/target" -path '*bin/xdesk-app/xdesk' -type f | head -1)"
-          export LUBAN_OS_BIN="$(dirname "$(dirname "$xdesk")")/luban-os/luban-os"
-          test -x "$LUBAN_OS_BIN"
-          "$XDEV" test e2e/test_luban_os --no-build --require-metadata --out target/xdev/linux-luban-os-first-use
+          # The window and xdesk the build step built (LUBAN_OS_BIN, XDESK_BIN).
+          test -x "$LUBAN_OS_BIN" || { echo "::error::no luban-os at '$LUBAN_OS_BIN'"; exit 1; }
+          test -x "$XDESK_BIN" || { echo "::error::no xdesk at '$XDESK_BIN'"; exit 1; }
+          "$XDEV" test e2e/test_luban --no-build --require-metadata --out target/xdev/linux-luban-os-first-use
 
       - name: Attach xdev and its runs
         uses: actions/upload-artifact@v4

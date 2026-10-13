@@ -11,9 +11,10 @@
 luban new box --edition tiny            # an edition: nano, tiny, core, desktop, desktop-xdesk, agent-workspace, or ns:name
 ```
 
-你会看到 edition 只出现一行（`'box' from subos:luban-tiny@… <- …: N package(s)`）、下载过程，以及
-`subos created: box`。宿主上第一次 `luban new` 可能先询问一次性设置（见下文）。不写 edition 名时是 Luban Core，
-它还带有编译器和构建工具。中途停下时，再运行同一条命令就会补全。
+你会看到 `▸ making box (tiny)`、下载过程，然后是 `✓ box is ready`、它是什么（`box  tiny@… · N packages ·
+generation N`）以及下一步（`enter  luban enter box`）。宿主上第一次 `luban new` 可能先询问一次性设置（见下文）。
+不写 edition 名时是 Luban Core，它还带有编译器和构建工具。中途停下时，再运行同一条命令就会补全。`nano` 没有 shell：
+它会这样说，下一步是 `luban run box -- …`。
 
 ## 2. 在里面工作
 
@@ -21,6 +22,14 @@ luban new box --edition tiny            # an edition: nano, tiny, core, desktop,
 luban enter box               # a shell in it; the prompt says where: [luban:box] ~ #
 luban run box -- uname -a     # one command in it, from outside
 luban run box -- xlings install -y cmake
+```
+
+控制台先说明它是什么：Luban OS 及其版本、edition、怎样运行、保留什么、怎样离开（你的语言是中文时用中文），然后才是提示符：
+
+```
+Luban OS 2026.10.13.2 · tiny 2026.10.11.1 · box
+  a sandbox on this host, keeping what changes
+  luban status box · exit to leave
 ```
 
 装软件仍然是 xlings：`xlings install <package>`——在环境里就装进那个环境。`exit` 离开。
@@ -31,6 +40,8 @@ luban run box -- xlings install -y cmake
 luban history box             # its generations: one per change
 luban rollback box            # back one: cmake is gone again
 ```
+
+一个 generation 既是文件，也是产生它们的软件包：回退之后再次进入，仍然是回退后的样子。
 
 ## 4. agent 的工作区
 
@@ -46,9 +57,11 @@ agent 的工作区由它的策略隔离；它唯一的网络可以是一个代�
 ## 5. 升级
 
 ```bash
-luban upgrade box --dry-run   # what the edition's newest version changes
+luban upgrade box --dry-run   # the plan: the edition, packages added, upgraded and kept
 luban upgrade box             # one new generation; rollback undoes it
 ```
+
+`--dry-run` 什么也不改：它说 `box is up to date`，或者列出会改变的内容，并给出 `luban upgrade box`。
 
 ## 6. 把它当作机器运行
 
@@ -96,7 +109,9 @@ Ubuntu 23.10 及以后，AppArmor 不允许没有 profile 的程序创建环境�
 luban setup                   # the same setup, whenever you like
 ```
 
-agent（`--agent`）从不被提问：命令以退出码 2 结束并给出这项设置。
+宿主上完全没有 bwrap 时，同一步里会先从索引装上一个。不保留全部改动的会话（`--temp`、`--persist home`）需要 0.10
+及以后的 bwrap；宿主自带的较旧时（Ubuntu 24.04 带的是 0.9），第一次会装上索引里的那个。agent（`--agent`）从不被提问：
+命令以退出码 2 结束并给出这项设置。
 
 ## 更多
 

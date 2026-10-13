@@ -195,20 +195,29 @@ int start_impl_(const service::Context& c, std::string_view name, const EnterOpt
         return 1;
     }
     say_(c, service::phase("check", "begin", "checking this host"));
-    auto qemu = xlings::subos::tools::first(arch.qemu, view, xlings::subos::Ports{});
-    if (!qemu) {
+    // In the table's order, the first that can share a directory with the
+    // machine (9p, asked of the device itself: its properties name the fsdev
+    // it shares) -- a host's qemu without it does not hide the index's.
+    const auto all = xlings::subos::tools::candidates(arch.qemu, view, xlings::subos::Ports{});
+    if (all.empty()) {
         say_(c, service::phase("check", "failed", "checking this host"));
         say_(c, service::error("a machine needs a virtual machine monitor here", xlings::subos::tools::install_hint(arch.qemu)));
         return 1;
     }
-    // 9p, asked of the device itself: its properties name the fsdev it shares.
-    if (const auto probe = capture_({qemu->bin.string(), "-M", "none", "-device", "virtio-9p-pci,help"});
-        probe.find("fsdev") == std::string::npos) {
+    std::optional<xlings::subos::tools::Found> qemu;
+    std::string refused;
+    for (const auto& found : all) {
+        const auto probe = capture_({found.bin.string(), "-M", "none", "-device", "virtio-9p-pci,help"});
+        if (probe.find("fsdev") != std::string::npos) { qemu = found; break; }
+        if (refused.empty()) {
+            const auto first = probe.substr(0, probe.find('\n'));
+            refused = std::format("{} cannot share a directory with a machine (no 9p{})", found.bin.string(),
+                                  first.empty() ? std::string{} : ": " + first);
+        }
+    }
+    if (!qemu) {
         say_(c, service::phase("check", "failed", "checking this host"));
-        const auto first = probe.substr(0, probe.find('\n'));
-        say_(c, service::error(std::format("{} cannot share a directory with a machine (no 9p{})", qemu->bin.string(),
-                                           first.empty() ? std::string{} : ": " + first),
-                               "xlings install qemu-system@latest (revision 3 or later)"));
+        say_(c, service::error(refused, "xlings install qemu-system@latest (revision 3 or later)"));
         return 1;
     }
     auto kernel = kernel_(c.home);
@@ -635,6 +644,8 @@ int enter(const service::Context& c, std::string_view name_or_image, const Enter
     } else if (o.temp) {
         say_(c, service::notice(std::format("{} is already running and keeps what it writes; this session joins it", name)));
     }
+    if (auto e = service::describe(c, name))
+        for (const auto& line : service::welcome(*e, "machine", o.temp, service::chinese_locale())) std::println("{}", line);
     auto [ending, code] = session_(c, name);
     const auto state = read_json_(state_file_(c.home, name));
     const bool temp = state.value("temp", false) || state.value("persist", "all") != "all";

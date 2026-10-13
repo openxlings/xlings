@@ -34,9 +34,11 @@ struct Entry {
 };
 
 // Writes `manifest` and every entry under `root`'s state dirs into `file`
-// (which must not exist).
+// (which must not exist). A link to a path in `home` (this host's xlings
+// home: what the environment's configuration made there) is not state --
+// the importing side makes its own -- and is left out.
 std::expected<std::size_t, std::string> write(const fs::path& file, const nlohmann::json& manifest,
-                                              const fs::path& root);
+                                              const fs::path& root, const fs::path& home = {});
 
 // Reads an archive: its manifest, and its state entries handed to `entry`
 // in order. A path that would leave the destination is an error.

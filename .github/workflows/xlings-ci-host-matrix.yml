@@ -41,7 +41,7 @@ permissions:
 # published (a repository variable, unset once the index PR merges): CI's
 # tools come from it (tools/ci/xlings_tools.sh).
 env:
-  XLINGS_TOOLS_INDEX_REF: ${{ vars.XLINGS_INDEX_UNDER_TEST || '' }}
+  XLINGS_TOOLS_INDEX_REF: ${{ vars.XLINGS_INDEX_UNDER_TEST || 'main' }}
 
 jobs:
   plan:

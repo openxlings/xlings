@@ -199,7 +199,14 @@ XTEST(Luban, NewSaysWhatItMadeAndHowToGoInAndNotItsSteps,
     auto made = luban(home, {"new", "box", "--edition", "fixture:my-os@1.0.0"});
     ASSERT_EQ(made.exit_code, 0) << made.transcript();
     EXPECT_NE(made.out.find("making box"), std::string::npos) << made.out;
-    EXPECT_NE(made.out.find("luban enter box"), std::string::npos) << made.out;
+    // The fixture's root has no shell (as nano): the next step is a command
+    // run in it, and going in is refused with that.
+    EXPECT_NE(made.out.find("it has no shell"), std::string::npos) << made.out;
+    EXPECT_NE(made.out.find("luban run box --"), std::string::npos) << made.out;
+    auto entered = luban(home, {"enter", "box"});
+    EXPECT_EQ(entered.exit_code, 1) << entered.transcript();
+    EXPECT_NE(entered.err.find("box has no shell to go into"), std::string::npos) << entered.transcript();
+    EXPECT_NE(entered.err.find("luban run box -- <command>"), std::string::npos) << entered.transcript();
     EXPECT_EQ(made.transcript().find("[xlings]"), std::string::npos) << "an xlings step's own line\n" << made.transcript();
     EXPECT_EQ(made.transcript().find("xlings subos use"), std::string::npos) << "an xlings command as the next step\n"
                                                                             << made.transcript();
@@ -252,6 +259,18 @@ XTEST(Luban, AnExportedEnvironmentIsImportedWithItsStateAndANewPersona,
     const auto tree = home.dir() / "subos/box/rootfs";
     ASSERT_TRUE(fs::is_directory(tree / "etc")) << "the fixture made no root";
     tk::write_file(tree / "root/notes.txt", "mine\n");
+    // A link a package's configuration made into the home's store (as
+    // ca-certificates' /etc/ssl one is): named by where it is, not where it points.
+    // What a package's configuration makes (ca-certificates): an absolute link
+    // to the environment's own etc on this host, which links into the store.
+    const auto stored = home.dir() / "data/xpkgs/xim-x-ca-certificates/1/cacert.pem";
+    tk::write_file(stored, "a certificate\n");
+    fs::create_directories(home.dir() / "subos/box/etc/ssl");
+    fs::create_symlink(stored, home.dir() / "subos/box/etc/ssl/cert.pem");
+    fs::create_directories(tree / "etc/ssl");
+    fs::create_symlink(home.dir() / "subos/box/etc/ssl/cert.pem", tree / "etc/ssl/cert.pem");
+    // And one that means something inside the root.
+    fs::create_symlink("/usr/share/zoneinfo/UTC", tree / "etc/localtime");
     ASSERT_EQ(luban(home, {"config", "box", "--persist", "home"}).exit_code, 0);
     const auto file = home.root() / "box.luban";
     auto exported = luban(home, {"export", "box", file.string()});
@@ -262,6 +281,11 @@ XTEST(Luban, AnExportedEnvironmentIsImportedWithItsStateAndANewPersona,
     auto imported = luban(home, {"import", file.string(), "--name", "copy"});
     ASSERT_EQ(imported.exit_code, 0) << imported.transcript();
     EXPECT_EQ(tk::read_file(home.dir() / "subos/copy/rootfs/root/notes.txt"), "mine\n");
+    // This host's link is not carried (the copy makes its own); the root's is.
+    EXPECT_FALSE(fs::is_symlink(home.dir() / "subos/copy/rootfs/etc/ssl/cert.pem")
+                 && fs::read_symlink(home.dir() / "subos/copy/rootfs/etc/ssl/cert.pem").string().find("/subos/box/")
+                        != std::string::npos) << "the copy points at the original's files";
+    EXPECT_EQ(fs::read_symlink(home.dir() / "subos/copy/rootfs/etc/localtime"), "/usr/share/zoneinfo/UTC");
     EXPECT_EQ(Json::parse(tk::read_file(home.dir() / "config/subos/copy/machine.json"))["persist"], "home");
 }
 
@@ -279,4 +303,142 @@ XTEST(Luban, BootSaysWhatThisBootWas,
     ASSERT_EQ(shown.exit_code, 0) << shown.transcript();
     EXPECT_NE(shown.out.find("default   default"), std::string::npos) << shown.out;
     EXPECT_NE(shown.out.find("this boot default via default, marked good"), std::string::npos) << shown.out;
+}
+
+XTEST(Luban, AnUpgradesPlanIsShownBeforeAnythingMovesAndTheOldNewOrderIsAnswered,
+      .area = "luban", .cost = tk::Cost::Medium, .covers = {"LUBAN-UPGRADE-PLAN", "LUBAN-CLI-SUGGEST"},
+      .requires_ = {"linux", "xlings-bin"}) {
+    if constexpr (!tk::is_linux) GTEST_SKIP() << "a Luban root is a Linux root";
+    const auto bin = luban_binary();
+    if (!bin) GTEST_SKIP() << "no luban beside the xlings under test";
+    auto home = luban_home("luban-upgrade-plan", *bin);
+    // An edition with two versions: the newer one adds a package.
+    const auto repo = home.root() / "index";
+    tk::write_file(repo / "pkgs/w/world.lua", R"LUA(
+package = { spec = '1', name = 'world', archs = {'x86_64', 'aarch64'}, xpm = { linux = { ['1.0.0'] = {} } } }
+import('xim.libxpkg.pkginfo')
+function install()
+    os.mkdir(path.join(pkginfo.install_dir(), 'bin'))
+    io.writefile(path.join(pkginfo.install_dir(), 'bin', 'world'), '#!/bin/sh\necho world\n')
+    return true
+end
+)LUA");
+    tk::write_file(repo / "pkgs/e/evolving.lua", R"LUA(
+package = { spec = '1', name = 'evolving', type = 'subos', archs = {'x86_64', 'aarch64'},
+            xpm = { linux = { ['latest'] = { ref = '1.1.0' }, ['1.0.0'] = {}, ['1.1.0'] = {} } } }
+import('xim.libxpkg.pkginfo')
+function install()
+    local packages = '"fixture:hello@1.0.0"'
+    if pkginfo.version() == '1.1.0' then packages = packages .. ', "fixture:world@1.0.0"' end
+    os.mkdir(pkginfo.install_dir())
+    io.writefile(path.join(pkginfo.install_dir(), '.xlings.json'),
+        '{"subos_kind":"rootfs","packages":[' .. packages .. '],"workspace":{}}')
+    return true
+end
+)LUA");
+    auto old = luban(home, {"new", "box", "--edition", "fixture:evolving@1.0.0"});
+    ASSERT_EQ(old.exit_code, 0) << old.transcript();
+    auto plan = luban(home, {"upgrade", "box", "--dry-run"});
+    ASSERT_EQ(plan.exit_code, 0) << plan.transcript();
+    EXPECT_NE(plan.out.find("planning box's upgrade"), std::string::npos) << plan.out;
+    EXPECT_EQ(plan.out.find("moving box"), std::string::npos) << "a dry run moves nothing\n" << plan.out;
+    EXPECT_NE(plan.out.find("fixture:evolving@1.0.0 -> fixture:evolving@1.1.0"), std::string::npos) << plan.out;
+    EXPECT_NE(plan.out.find("add      fixture:world@1.0.0"), std::string::npos) << plan.out;
+    EXPECT_NE(plan.out.find("luban upgrade box"), std::string::npos) << "the command that applies it\n" << plan.out;
+    auto as_json = luban(home, {"--json", "upgrade", "box", "--dry-run"});
+    ASSERT_EQ(as_json.exit_code, 0) << as_json.transcript();
+    EXPECT_NE(as_json.out.find(R"("up_to_date":false)"), std::string::npos) << as_json.out;
+
+    auto fresh = luban(home, {"new", "box2", "--edition", "fixture:evolving"});
+    ASSERT_EQ(fresh.exit_code, 0) << fresh.transcript();
+    auto none = luban(home, {"upgrade", "box2", "--dry-run"});
+    ASSERT_EQ(none.exit_code, 0) << none.transcript();
+    EXPECT_NE(none.out.find("box2 is up to date"), std::string::npos) << none.out;
+
+    // `luban new <name> <edition>`, the order before 2026.10.13.1.
+    auto order = luban(home, {"new", "box3", "fixture:evolving"});
+    EXPECT_EQ(order.exit_code, 2) << order.transcript();
+    EXPECT_NE(order.err.find("luban new box3 --edition fixture:evolving"), std::string::npos) << order.err;
+    EXPECT_FALSE(fs::exists(home.dir() / "subos/box3")) << "nothing is made from a guess";
+}
+
+XTEST(Luban, AnExportWithoutStageZeroSaysAMachineCannotBootIt,
+      .area = "luban", .cost = tk::Cost::Medium, .covers = {"LUBAN-EXPORT-STAGE0"}, .requires_ = {"linux", "xlings-bin", "static-xlings"}) {
+    if constexpr (!tk::is_linux) GTEST_SKIP() << "a Luban root is a Linux root";
+    const auto bin = luban_binary();
+    if (!bin) GTEST_SKIP() << "no luban beside the xlings under test";
+    // This home's bin/ has xlings and luban, and no luban-init.
+    auto home = luban_home("luban-export-stage0", *bin);
+    ASSERT_FALSE(fs::exists(home.dir() / "bin/luban-init"));
+    auto made = luban(home, {"new", "box", "--edition", "fixture:my-os@1.0.0"});
+    ASSERT_EQ(made.exit_code, 0) << made.transcript();
+    const auto dir = home.root() / "out" / "rootfs";
+    auto exported = luban(home, {"export", "box", dir.string() + "/"});
+    ASSERT_EQ(exported.exit_code, 0) << exported.transcript();
+    EXPECT_NE(exported.transcript().find("a machine cannot boot it"), std::string::npos) << exported.transcript();
+    EXPECT_NE(exported.transcript().find("xlings self update"), std::string::npos) << exported.transcript();
+}
+
+XTEST(Luban, SetupIsOneStepOnAHostWithNoBwrap,
+      .area = "luban", .cost = tk::Cost::Medium, .covers = {"LUBAN-SETUP-ONE-STEP"}, .requires_ = {"linux", "xlings-bin"}) {
+    if constexpr (!tk::is_linux) GTEST_SKIP() << "the isolation setup is Linux's";
+    const auto bin = luban_binary();
+    if (!bin) GTEST_SKIP() << "no luban beside the xlings under test";
+    auto home = luban_home("luban-setup", *bin);
+    // A fresh machine: no bwrap anywhere this home looks (XLINGS_TOOLS_SEARCH=home),
+    // and the index has one.
+    fs::remove_all(home.dir() / "data/xpkgs/xim-x-bwrap");
+    tk::write_file(home.root() / "primary/pkgs/b/bwrap.lua", R"LUA(
+package = { spec = '1', name = 'bwrap', archs = {'x86_64', 'aarch64'}, xpm = { linux = { ['0.11.2'] = {} } } }
+import('xim.libxpkg.pkginfo')
+function install()
+    local bin = path.join(pkginfo.install_dir(), 'bin')
+    os.mkdir(bin)
+    io.writefile(path.join(bin, 'bwrap'), '#!/bin/sh\nexit 0\n')
+    os.execute('chmod 755 "' .. path.join(bin, 'bwrap') .. '"')
+    return true
+end
+)LUA");
+    auto setup = luban(home, {"setup"});
+    EXPECT_NE(setup.transcript().find("installing xim:bwrap first"), std::string::npos) << setup.transcript();
+    EXPECT_TRUE(fs::exists(home.dir() / "data/xpkgs/xim-x-bwrap/0.11.2/bin/bwrap")) << setup.transcript();
+    EXPECT_EQ(setup.transcript().find("then run this again"), std::string::npos) << setup.transcript();
+    EXPECT_EQ(setup.exit_code, 0) << setup.transcript();
+}
+
+XTEST(Luban, ARollbackTakesThePackagesBackSoTheNextEntryKeepsIt,
+      .area = "luban", .cost = tk::Cost::Medium, .covers = {"LUBAN-ROLLBACK-PACKAGES"}, .requires_ = {"linux", "xlings-bin"}) {
+    if constexpr (!tk::is_linux) GTEST_SKIP() << "a Luban root is a Linux root";
+    const auto bin = luban_binary();
+    if (!bin) GTEST_SKIP() << "no luban beside the xlings under test";
+    auto home = luban_home("luban-rollback", *bin);
+    // A package that registers a program, as a real one does (xvm).
+    tk::write_file(home.root() / "index/pkgs/w/world.lua", R"LUA(
+package = { spec = '1', name = 'world', archs = {'x86_64', 'aarch64'}, xvm_enable = true,
+            xpm = { linux = { ['1.0.0'] = {} } } }
+import('xim.libxpkg.pkginfo')
+import('xim.libxpkg.xvm')
+function install()
+    io.writefile(path.join(pkginfo.install_dir(), 'world'), '#!/bin/sh\necho world\n')
+    return true
+end
+function config()
+    xvm.add('world', { bindir = pkginfo.install_dir() })
+    return true
+end
+)LUA");
+    ASSERT_EQ(luban(home, {"new", "box", "--edition", "fixture:my-os@1.0.0"}).exit_code, 0);
+    const auto workspace = [&] {
+        auto j = Json::parse(tk::read_file(home.dir() / "subos/box/.xlings.json"), nullptr, false);
+        return j.is_object() ? j.value("workspace", Json::object()) : Json::object();
+    };
+    ASSERT_FALSE(workspace().contains("world"));
+    auto added = home.xlings({"install", "-y", "--subos", "box", "fixture:world@1.0.0"});
+    ASSERT_EQ(added.exit_code, 0) << added.transcript();
+    ASSERT_TRUE(workspace().contains("world")) << workspace().dump();
+    auto back = luban(home, {"rollback", "box", "-y"});
+    ASSERT_EQ(back.exit_code, 0) << back.transcript();
+    // The packages are the earlier generation's: the next entry rebuilds that root.
+    EXPECT_FALSE(workspace().contains("world")) << workspace().dump();
+    EXPECT_EQ(back.transcript().find("made before generations recorded"), std::string::npos) << back.transcript();
 }

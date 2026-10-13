@@ -17,7 +17,7 @@ export namespace luban::service {
 // Luban is released with the xlings it drives: the same date version
 // (YYYY.M.D.N), bumped with mcpp.toml and src/core/config.cppm.
 // tests/unit/test_luban_cli.cpp holds them equal.
-inline constexpr std::string_view kVersion = "2026.10.13.1";
+inline constexpr std::string_view kVersion = "2026.10.13.2";
 
 namespace fs = std::filesystem;
 
@@ -55,6 +55,13 @@ struct Environment {
     Settings settings;
     std::string carrier { "local" };
 };
+
+// What a console says first, before its prompt: Luban OS's version, the
+// edition and the environment, how it runs and what it keeps, how to leave.
+// `mode` is how this session runs (sandbox or machine); in Chinese when `zh`.
+std::vector<std::string> welcome(const Environment& e, std::string_view mode, bool temp, bool zh);
+// The user's language (LC_ALL, LC_MESSAGES, LANG) is Chinese.
+bool chinese_locale();
 
 std::expected<std::vector<Environment>, std::string> list(const Context& c);
 std::expected<Environment, std::string> describe(const Context& c, std::string_view name);
