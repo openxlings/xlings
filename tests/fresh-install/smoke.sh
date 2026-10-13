@@ -378,13 +378,21 @@ EOF
     if [ -r /dev/kvm ] && [ -w /dev/kvm ]; then
         section "The desktop edition as a machine (KVM)"
         run "make a desktop machine" luban new deskm --edition desktop -y
+        # A first start names what this host needs (a machine monitor, T1);
+        # a person does what it says, then starts it again.
+        cat > "$shots/machine-first.script" <<EOF
+wait launcher
+click row:deskm
+see 300s xlings install qemu-system
+screenshot $shots/4-machine-hint.bmp
+EOF
+        luban_os "$shots/machine-first.script" || fail "a first start did not name what it needs (screenshots in $shots)"
+        run "its hint" xlings install qemu-system -y
         cat > "$shots/machine.script" <<EOF
 wait launcher
 click row:deskm
-sleep 180000
-screenshot $shots/4-machine-3min.bmp
-wait desktop 900
-waitfor desktop.texture.0 1100 900
+wait desktop 420
+waitfor desktop.texture.0 1100 120
 sleep 8000
 frames 2
 screenshot $shots/4-machine.ppm
