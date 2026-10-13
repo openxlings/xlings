@@ -710,6 +710,25 @@ int run_upgrade_(int argc, char* argv[], EventStream& stream, const UsageError& 
     }
 
     const bool same = top.first == now->ref;
+    // The plan as data too: a frontend (luban) renders it, the log lines
+    // below being the terminal's.
+    {
+        nlohmann::json data{{"name", name}, {"from", now->ref}, {"to", top.first}, {"dry_run", dry},
+                            {"up_to_date", plan.empty() && same && !apply_policy}};
+        auto& rows = data["upgrade"] = nlohmann::json::array();
+        for (const auto& s : plan.upgrade)
+            rows.push_back({{"key", s.key}, {"from", s.from},
+                            {"to", subos::edition::split(s.to).second.empty() ? "newest" : subos::edition::split(s.to).second}});
+        auto& added = data["add"] = nlohmann::json::array();
+        for (const auto& s : plan.add) added.push_back(s.to);
+        auto& kept = data["keep"] = nlohmann::json::array();
+        for (const auto& s : plan.kept) kept.push_back({{"key", s.key}, {"from", s.from}, {"edition", s.to}});
+        for (const auto& k : plan.dropped) kept.push_back({{"key", k}, {"dropped", true}});
+        if (!chain->policy.empty() && chain->policy != now->policy)
+            data["policy"] = {{"from", now->policy}, {"to", chain->policy}, {"applied", apply_policy},
+                              {"loosened", loosened}};
+        stream.emit(DataEvent{"subos_upgrade_plan", data.dump()});
+    }
     log::println("{}: {} -> {}", name, now->ref, top.first);
     for (const auto& s : plan.upgrade)
         log::println("  upgrade  {} {} -> {}", s.key, s.from.empty() ? "?" : s.from,

@@ -106,6 +106,10 @@ overlay_index() {
 
     rm -rf "$dst/pkgs"
     cp -R "$tmp/idx/pkgs" "$dst/pkgs" || fail "failed to overlay pkgs/"
+    # The catalog is the published index's, keyed on its version: kept, it
+    # does not know a package the branch adds, and the miss refreshes the
+    # index -- replacing these pkgs/ with the published ones again. Rebuilt.
+    rm -f "$dst/.xlings-index-cache.json"
     ok "pkgs/ replaced from xim-pkgindex@$XIM_PKGINDEX_REF ($(git -C "$tmp/idx" rev-parse --short HEAD))"
 }
 

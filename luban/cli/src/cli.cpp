@@ -498,6 +498,15 @@ std::optional<std::string> image_of_(std::string_view arg) {
 }
 
 int cmd_new(const svc::Context& c, const Parsed& p, const Globals& g, Renderer& r) {
+    if (p.words.size() == 2 && !p.option("--edition")) {
+        // The order before 2026.10.13.1, `luban new <name> <edition>`.
+        const auto& e = p.words[1];
+        const bool edition = e.find(':') != std::string::npos || e.starts_with("luban-")
+            || std::ranges::find(svc::official_editions(), std::string_view(e.substr(0, e.find('@'))))
+                   != svc::official_editions().end();
+        if (edition)
+            return usage(std::format("the edition is an option: `luban new {} --edition {}`", p.words[0], e), g);
+    }
     if (p.words.size() != 1) return usage("`luban new <name> [--edition E]`: one name", g);
     svc::NewOptions o{.name = p.words[0], .edition = p.option("--edition").value_or("core")};
     if (auto x = p.option("--proxy")) o.proxy = *x;
@@ -600,6 +609,32 @@ int cmd_history(const svc::Context& c, const Parsed& p, const Globals& g, Render
     for (const auto& row : out.value["generations"])
         std::println("{} {:>3}  {}  {}", row.value("current", false) ? "*" : " ", row.value("generation", 0),
                      row.value("created", ""), row.value("reason", ""));
+    return 0;
+}
+
+int cmd_upgrade(const svc::Context& c, const Parsed& p, const Globals& g, Renderer& r) {
+    if (p.words.size() != 1) return usage("`luban upgrade <name> [--to V] [--dry-run]`", g);
+    const bool dry = p.flag("--dry-run");
+    auto out = svc::upgrade(c, p.words[0], p.option("--to").value_or(""), dry);
+    r.value(out.value);
+    if (!out.ok() || g.json || out.value.value("up_to_date", true)) return out.code;
+    // What moves: the edition, its packages, its policy.
+    const auto& v = out.value;
+    const auto label = [](const std::string& ref) { return ref.starts_with("subos:luban-") ? ref.substr(12) : ref; };
+    r.say(std::format("  edition  {} -> {}", label(v.value("from", "")), label(v.value("to", ""))));
+    for (const auto& row : v.value("upgrade", Json::array()))
+        r.say(std::format("  upgrade  {} {} -> {}", row.value("key", ""), row.value("from", "?"), row.value("to", "")));
+    for (const auto& row : v.value("add", Json::array())) r.say(std::format("  add      {}", row.get<std::string>()));
+    for (const auto& row : v.value("keep", Json::array()))
+        r.say(row.value("dropped", false)
+                  ? std::format("  keep     {} (the edition no longer has it)", row.value("key", ""))
+                  : std::format("  keep     {} {} (yours; the edition has {})", row.value("key", ""),
+                                row.value("from", ""), row.value("edition", "")));
+    if (auto pol = v.find("policy"); pol != v.end() && pol->is_object())
+        r.say(pol->value("applied", false)
+                  ? std::format("  policy   {} -> {}", pol->value("from", "(none)"), pol->value("to", ""))
+                  : std::format("  policy   {} kept: {} allows more", pol->value("from", "(none)"), pol->value("to", "")));
+    if (dry) r.next("apply", std::format("luban upgrade {}", p.words[0]));
     return 0;
 }
 
@@ -1003,10 +1038,7 @@ int run(int argc, char* argv[]) {
             return svc::stop(c, p.words[0]).code;
         }
         if (p.command == "history") return cmd_history(c, p, g, render);
-        if (p.command == "upgrade") {
-            if (p.words.size() != 1) return usage("`luban upgrade <name> [--to V] [--dry-run]`", g);
-            return svc::upgrade(c, p.words[0], p.option("--to").value_or(""), p.flag("--dry-run")).code;
-        }
+        if (p.command == "upgrade") return cmd_upgrade(c, p, g, render);
         if (p.command == "rollback") {
             std::string name = p.words.empty() ? std::string{} : p.words[0];
             if (name.empty())

@@ -237,7 +237,21 @@ Outcome upgrade(const Context& c, std::string_view name, std::string_view to, bo
     auto args = argv_({"upgrade", name});
     if (!to.empty()) args.insert(args.end(), {"--to", std::string(to)});
     if (dry_run) args.push_back("--dry-run");
-    return {.code = step_(c, "upgrade", std::format("moving {} to its edition's newest", name), args, c.yes)};
+    // The plan comes back as data (subos_upgrade_plan); the rest goes on.
+    Json plan = Json::object();
+    const Sink watched = [&](const Event& e) {
+        if (e.kind == Event::Kind::Data && e.data_kind == "subos_upgrade_plan") plan = e.data;
+        else if (c.sink) c.sink(e);
+    };
+    const auto text = dry_run ? std::format("planning {}'s upgrade", name)
+                              : std::format("moving {} to its edition's newest", name);
+    if (c.sink) c.sink(phase("upgrade", "begin", text));
+    xlings::observe::ops::Span span("upgrade");
+    const int rc = c.port.subos(args, c.yes, watched);
+    if (rc != 0) span.fail(std::format("exit {}", rc));
+    const auto done = rc == 0 && plan.value("up_to_date", false) ? std::format("{} is up to date", name) : text;
+    if (c.sink) c.sink(phase("upgrade", rc == 0 ? "done" : "failed", done));
+    return {.code = rc, .value = plan};
 }
 
 Outcome rollback(const Context& c, std::string_view name, std::string_view to) {

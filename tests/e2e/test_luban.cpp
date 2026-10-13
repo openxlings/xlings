@@ -280,3 +280,60 @@ XTEST(Luban, BootSaysWhatThisBootWas,
     EXPECT_NE(shown.out.find("default   default"), std::string::npos) << shown.out;
     EXPECT_NE(shown.out.find("this boot default via default, marked good"), std::string::npos) << shown.out;
 }
+
+XTEST(Luban, AnUpgradesPlanIsShownBeforeAnythingMovesAndTheOldNewOrderIsAnswered,
+      .area = "luban", .cost = tk::Cost::Medium, .covers = {"LUBAN-UPGRADE-PLAN", "LUBAN-CLI-SUGGEST"},
+      .requires_ = {"linux", "xlings-bin"}) {
+    if constexpr (!tk::is_linux) GTEST_SKIP() << "a Luban root is a Linux root";
+    const auto bin = luban_binary();
+    if (!bin) GTEST_SKIP() << "no luban beside the xlings under test";
+    auto home = luban_home("luban-upgrade-plan", *bin);
+    // An edition with two versions: the newer one adds a package.
+    const auto repo = home.root() / "index";
+    tk::write_file(repo / "pkgs/w/world.lua", R"LUA(
+package = { spec = '1', name = 'world', archs = {'x86_64', 'aarch64'}, xpm = { linux = { ['1.0.0'] = {} } } }
+import('xim.libxpkg.pkginfo')
+function install()
+    os.mkdir(path.join(pkginfo.install_dir(), 'bin'))
+    io.writefile(path.join(pkginfo.install_dir(), 'bin', 'world'), '#!/bin/sh\necho world\n')
+    return true
+end
+)LUA");
+    tk::write_file(repo / "pkgs/e/evolving.lua", R"LUA(
+package = { spec = '1', name = 'evolving', type = 'subos', archs = {'x86_64', 'aarch64'},
+            xpm = { linux = { ['latest'] = { ref = '1.1.0' }, ['1.0.0'] = {}, ['1.1.0'] = {} } } }
+import('xim.libxpkg.pkginfo')
+function install()
+    local packages = '"fixture:hello@1.0.0"'
+    if pkginfo.version() == '1.1.0' then packages = packages .. ', "fixture:world@1.0.0"' end
+    os.mkdir(pkginfo.install_dir())
+    io.writefile(path.join(pkginfo.install_dir(), '.xlings.json'),
+        '{"subos_kind":"rootfs","packages":[' .. packages .. '],"workspace":{}}')
+    return true
+end
+)LUA");
+    auto old = luban(home, {"new", "box", "--edition", "fixture:evolving@1.0.0"});
+    ASSERT_EQ(old.exit_code, 0) << old.transcript();
+    auto plan = luban(home, {"upgrade", "box", "--dry-run"});
+    ASSERT_EQ(plan.exit_code, 0) << plan.transcript();
+    EXPECT_NE(plan.out.find("planning box's upgrade"), std::string::npos) << plan.out;
+    EXPECT_EQ(plan.out.find("moving box"), std::string::npos) << "a dry run moves nothing\n" << plan.out;
+    EXPECT_NE(plan.out.find("fixture:evolving@1.0.0 -> fixture:evolving@1.1.0"), std::string::npos) << plan.out;
+    EXPECT_NE(plan.out.find("add      fixture:world@1.0.0"), std::string::npos) << plan.out;
+    EXPECT_NE(plan.out.find("luban upgrade box"), std::string::npos) << "the command that applies it\n" << plan.out;
+    auto as_json = luban(home, {"--json", "upgrade", "box", "--dry-run"});
+    ASSERT_EQ(as_json.exit_code, 0) << as_json.transcript();
+    EXPECT_NE(as_json.out.find(R"("up_to_date":false)"), std::string::npos) << as_json.out;
+
+    auto fresh = luban(home, {"new", "box2", "--edition", "fixture:evolving"});
+    ASSERT_EQ(fresh.exit_code, 0) << fresh.transcript();
+    auto none = luban(home, {"upgrade", "box2", "--dry-run"});
+    ASSERT_EQ(none.exit_code, 0) << none.transcript();
+    EXPECT_NE(none.out.find("box2 is up to date"), std::string::npos) << none.out;
+
+    // `luban new <name> <edition>`, the order before 2026.10.13.1.
+    auto order = luban(home, {"new", "box3", "fixture:evolving"});
+    EXPECT_EQ(order.exit_code, 2) << order.transcript();
+    EXPECT_NE(order.err.find("luban new box3 --edition fixture:evolving"), std::string::npos) << order.err;
+    EXPECT_FALSE(fs::exists(home.dir() / "subos/box3")) << "nothing is made from a guess";
+}
