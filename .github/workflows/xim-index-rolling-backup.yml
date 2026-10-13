@@ -28,7 +28,7 @@ jobs:
     env:
       GH_TOKEN: ${{ secrets.XLINGS_RES_TOKEN }}
       KEEP: ${{ inputs.keep || '50' }}
-      BACKUP_EXECUTE: ${{ github.event_name == 'workflow_dispatch' && inputs.execute || 'false' }}
+      BACKUP_EXECUTE: ${{ github.event_name == 'workflow_dispatch' && inputs.execute || 'true' }}
     steps:
       - uses: actions/checkout@v4
       - name: Back up and trim the rolling release
