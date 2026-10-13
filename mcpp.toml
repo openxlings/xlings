@@ -4,6 +4,9 @@
 #   libs      json, sha256, tinyhttps: self-contained, nothing of xlings
 #   runtime   -> libs: cancellation, guard (confirmation), observe (journal)
 #   platform  -> runtime: the OS boundary -- every system header and call
+#   home      -> libs, platform: the home's format -- its layout version,
+#                which clients understand it, the steps that bring an older
+#                home forward, the classes a problem falls into
 #   ui        -> platform: theme and i18n
 #   cli       -> libs: the command-line model (a declared command tree;
 #                validation, tiered help, completion), shared by xlings and luban
@@ -14,8 +17,11 @@
 #                platform matrix
 #   carrier   -> subos: where a SubOS runs (local, wsl2, vz) and how this
 #                xlings reaches it
-#   luban     -> modules: what exists only when a SubOS is a machine --
-#                boot entries, stage-0 and the luban command (apps/luban), the machine's /etc
+#   image     -> platform: disk and disc image formats, written in-process
+#   luban/*   -> modules: Luban OS -- system (stage-0), service (environments
+#                and machines as operations), vm (a machine run here), cli (the
+#                luban command; apps/luban is its binary); xlings never imports
+#                them (tools/lint_layer_deps.sh)
 #   testkit   -> libs: end-to-end test library (dev-dependency only)
 #   apps/gui  the GUI binary's library half
 #   apps/xdev the development tool (never linked into xlings)
@@ -29,14 +35,26 @@ members = [
     "modules/libs",
     "modules/runtime",
     "modules/platform",
+    "modules/home",
     "modules/ui",
     "modules/cli",
     "modules/store",
     "modules/subos",
     "modules/confine",
     "modules/carrier",
-    "luban",
+    "modules/image",
+    "luban/system",
+    "luban/service",
+    "luban/vm",
+    "luban/cli",
+    "luban/desktop/opensal/spec",
+    "luban/desktop/opensal/wlr",
+    "luban/desktop/xdesk/base",
+    "luban/desktop/xdesk/compositor",
+    "luban/desktop/host",
     "apps/luban",
+    "apps/luban-os",
+    "apps/xdesk",
     "modules/testkit",
     "apps/gui",
     "apps/xdev",
@@ -44,7 +62,7 @@ members = [
 
 [package]
 name = "xlings"
-version = "2026.10.12.3"
+version = "2026.10.13.1"
 description = "Universal package management infrastructure tool with SubOS isolation"
 license = "Apache-2.0"
 repo = "https://github.com/openxlings/xlings"
@@ -73,11 +91,11 @@ cxxflags = ["-DLIBARCHIVE_STATIC", "-DUNICODE", "-D_UNICODE"]
 # THIS manifest only once it has been re-pointed (`replace_entry_binary`) or
 # hands off to the entry at startup (#615).
 [resources]
-files = ["res/xlings.rc"]
+files = ["docs/res/xlings.rc"]
 # The .rc input scanner recognises the `MANIFEST` keyword but not the
-# equivalent numeric resource type (`24`) used in res/xlings.rc, so the
+# equivalent numeric resource type (`24`) used in docs/res/xlings.rc, so the
 # manifest is declared here as well to make sure editing it relinks.
-extra-inputs = ["res/xlings.exe.manifest"]
+extra-inputs = ["docs/res/xlings.exe.manifest"]
 
 [targets.xlings]
 kind = "bin"
@@ -136,13 +154,14 @@ linkage = "static"
 libs     = { path = "modules/libs" }
 runtime  = { path = "modules/runtime" }
 platform = { path = "modules/platform" }
+home     = { path = "modules/home" }
 ui       = { path = "modules/ui" }
 cli      = { path = "modules/cli" }
 store    = { path = "modules/store" }
 subos    = { path = "modules/subos" }
 confine  = { path = "modules/confine" }
 carrier  = { path = "modules/carrier" }
-luban    = { path = "luban" }
+image    = { path = "modules/image" }
 
 [dependencies.compat]
 ftxui      = "6.1.9"
@@ -155,6 +174,13 @@ capi.lua = "0.0.3"
 
 [dev-dependencies]
 testkit = { path = "modules/testkit" }
+# Tests drive Luban's own modules (stage-0, the luban command); the xlings
+# binary itself never links them.
+luban-system = { path = "luban/system" }
+luban-cli    = { path = "luban/cli" }
+opensal     = { path = "luban/desktop/opensal/spec" }
+opensal-wlr = { path = "luban/desktop/opensal/wlr" }
+xdesk-base = { path = "luban/desktop/xdesk/base" }
 
 [dev-dependencies.compat]
 gtest = "1.15.2"

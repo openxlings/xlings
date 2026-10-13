@@ -476,7 +476,8 @@ int use_spawn_shell(const std::string& name, EventStream& stream,
                     bool gpu = false,
                     const std::string& cmd = "",
                     std::optional<policy::Preset> preset = std::nullopt,
-                    const policy::Overrides& overrides = {});
+                    const policy::Overrides& overrides = {},
+                    std::string_view persist = {});
 
 // Back-compat single-arg entry point: keeps existing callers (anyone who
 // imports xlings::subos::use directly) on the legacy global behavior.

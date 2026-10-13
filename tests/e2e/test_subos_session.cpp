@@ -159,11 +159,8 @@ XTEST(SubosSession, KeepAndTtlAreTheSessionsIdleTime,
     // --ttl: the session outlives the command, then ends once idle that long.
     auto ttl = box.home.xlings({"subos", "use", "box", "--sandbox", "--ttl", "2", "--cmd", "echo hi"});
     EXPECT_EQ(ttl.exit_code, 0) << ttl.transcript();
-    EXPECT_NE(ttl.out.find("hi"), std::string::npos) << ttl.transcript();
-    std::size_t banners = 0;
-    for (auto at = ttl.out.find("entering subos"); at != std::string::npos;
-         at = ttl.out.find("entering subos", at + 1)) ++banners;
-    EXPECT_EQ(banners, 1u) << "one entry, one announcement\n" << ttl.out;
+    // A --cmd run is a script: its output is the command's, no announcement.
+    EXPECT_EQ(ttl.out, "hi\n") << ttl.transcript();
     EXPECT_TRUE(box.running()) << "the session ended with the command";
     EXPECT_TRUE(wait_for([&] { return !box.running(); })) << "the session outlived --ttl";
 

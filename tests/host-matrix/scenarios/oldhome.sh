@@ -44,7 +44,7 @@ while IFS= read -r cache; do mv "$cache" "${cache%.shipped}"; done \
     < <(find "$old/data" -name '.xlings-index-cache.json.shipped' 2>/dev/null)
 cp "$XLINGS_HOME/bin/xlings" "$old/bin/xlings"
 step "the build under test takes the home over" ok -- N self init
-step "luban new on it: no failed node" ok -- NL new hmo tiny -y
+step "luban new on it: no failed node" ok -- NL new hmo --edition tiny -y
 absent() { ! grep -Eq -- "$1" <<<"$LAST_OUT"; }
 check "nothing asked for --reconfig" -- absent '--reconfig'
 step "what the older client installed, into the root" ok -- NL run hmo -- xlings install -y patchelf make ninja zlib

@@ -102,7 +102,7 @@ std::expected<void, std::string> write_tar_gz(const std::filesystem::path& root,
 //                boot record for it: a 4-sector load with a boot-info table
 //                patched in, as limine's BIOS CD stage expects -- or, with
 //                `boot_info_table` off, the file untouched (a FAT image a
-//                firmware boots; luban.image::make_iso_hybrid finishes it).
+//                firmware boots; xlings.image::make_iso_hybrid finishes it).
 //                `volume` is its label.
 enum class ArchiveFormat { TarGz, CpioNewcGz, Iso9660 };
 struct ArchiveOptions {

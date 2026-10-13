@@ -17,13 +17,20 @@ command of the new version that changes the home then upgrades it by itself,
 once that command has succeeded: it checks the
 home config, rebuilds the command routes and checks the home the way
 `self doctor` does. When all of that worked, it says nothing. What it could not
-do by itself it says once, with the command for each:
+do by itself it says once: how many problems (one per cause -- a payload that
+is gone is one problem, however many names it registered), the one command that
+repairs them, and where the details are:
 
 ```text
-[warn] xlings 2026.10.12.2 (from 2026.10.11.1): 1 thing(s) in this home need a step it could not take by itself
-         needs   subos 'other' has an unreadable @xlings/subos/other/.xlings.json
-         run     xlings self doctor --fix
+[warn] xlings 2026.10.13.1 (from 2026.10.12.3): 1 problem(s) in this home it could not fix by itself
+         fix          xlings self doctor --fix
+         details      xlings self doctor   (log: @xlings/logs/upgrade.ndjson)
+         or go back   xlings use xlings 2026.10.12.3
 ```
+
+Each item, with its own command, is in the log and in `xlings self doctor`;
+`-v` on the command prints them there too. A home that has never been through an
+upgrade record says the problems were already there before this version.
 
 Going back is one command while the previous version is installed:
 
@@ -143,6 +150,22 @@ xlings self init       # create the home's directories
 xlings self migrate    # move an old layout into subos/default
 xlings self uninstall  # remove xlings, asking first
 ```
+
+## What a command did
+
+Every command writes one operation journal, `logs/ops/<date>/<trace>.ndjson`,
+and every process it runs (a hook, a repair, a command inside a SubOS) joins the
+same file under the trace it inherits. Phases, their times and failures are
+there, and a tool's own output (limine's, mkfs's) is a side file next to it.
+
+```bash
+xlings self log                      # the latest operations
+xlings self log 4ed6cd2b             # one of them (a prefix of its trace)
+xlings self log 4ed6cd2b --bundle    # one file for a bug report, without your paths or name
+```
+
+The journal stays on this machine; old days are removed after two weeks. The
+format is in [Operation journal](specs/operation-journal.md).
 
 ## When something is wrong
 

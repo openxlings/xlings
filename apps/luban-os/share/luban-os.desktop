@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Luban OS
+Comment=Your Luban OS systems: start one, or manage them
+Exec=luban-os
+Icon=luban-os
+Terminal=false
+Categories=System;Emulator;

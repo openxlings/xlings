@@ -34,6 +34,12 @@ cfg = json.load(open(sys.argv[1]))
 cfg["index_repos"] = [{"name": "xim", "url": sys.argv[2]}]
 json.dump(cfg, open(sys.argv[1], "w"), indent=2)
 PY2
+    # The index `self install` synced (the published one) stays where it is
+    # until it is gone: without this every tool came from the published index.
+    rm -rf "$home/data/xim-pkgindex"
+    "$X" update </dev/null >"$home/update.log" 2>&1 || { tail -20 "$home/update.log"; exit 1; }
+    [[ "$(readlink -f "$home/data/xim-pkgindex")" == "$(readlink -f "$home/index-under-test")" ]] \
+      || { echo "the index under test is not the one in use" >&2; exit 1; }
   fi
 fi
 for pkg in "$@"; do
@@ -51,6 +57,10 @@ for pkg in "$@"; do
     done
   done
   echo "xlings tools: $pkg ($(ls -d "$home"/data/xpkgs/xim-x-"$pkg"/* | xargs -n1 basename | tr '\n' ' '))"
+  # Which build it is (a factory payload says so), for the log.
+  for prov in "$home"/data/xpkgs/xim-x-"$pkg"/*/README.provenance; do
+    [[ -f "$prov" ]] && echo "  $(head -c 300 "$prov")"
+  done
 done
 [[ -n "${GITHUB_ENV:-}" ]] && echo "XLINGS_TOOLS_HOME=$home" >> "$GITHUB_ENV"
 exit 0

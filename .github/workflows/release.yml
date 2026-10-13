@@ -124,7 +124,7 @@ jobs:
           # (gcc@15.1.0-musl), so a CI build and a release build hash the same
           # -- sharing one key across workflows is wrong on its own terms even
           # though it was not what caused this.
-          key: mcpp-v4-release-${{ runner.os }}-${{ hashFiles('mcpp.toml', 'mcpp.lock', '.xlings.json') }}-${{ env.BOOTSTRAP_XLINGS_VERSION }}
+          key: mcpp-v4-release-${{ runner.os }}-${{ hashFiles('mcpp.toml', '.xlings.json') }}-${{ env.BOOTSTRAP_XLINGS_VERSION }}
           restore-keys: |
             mcpp-v4-release-${{ runner.os }}-
       # An inexact restore (the `restore-keys` fallback) brings BMIs built
@@ -240,7 +240,7 @@ jobs:
           # ~800 MB mcpp cache restored one step earlier almost worthless.
           prune_registry() {
             [ -d "$1" ] || return 0
-            find "$1" -mindepth 1 -maxdepth 1 ! -name data -exec rm -rf {} +
+            find "$1" -mindepth 1 -maxdepth 1 ! -name data ! -name subos -exec rm -rf {} +  # the subos links into the payloads, and packages into it
             [ -d "$1/data" ] || return 0
             find "$1/data" -mindepth 1 -maxdepth 1 ! -name xpkgs -exec rm -rf {} +
           }
@@ -293,6 +293,29 @@ jobs:
         with:
           name: xlings-linux-x86_64
           path: build/xlings-*-linux-x86_64.tar.gz
+
+      # The Luban OS app (a window: glibc and X11, through SDL), released with
+      # this xlings as its own payload -- the index's xim:luban-os depends on
+      # the index's glibc and X11, which an install patches it onto.
+      - name: Build the Luban OS app (luban_os_release)
+        run: |
+          bash tools/ci/xlings_tools.sh patchelf
+          mcpp build -p luban-os --profile dist
+          bash tools/luban_os_release.sh
+          # xdesk, the desktop compositor of the desktop editions: its own
+          # payload too (xim:xdesk).
+          mcpp build -p xdesk-app --profile dist
+          bash tools/xdesk_release.sh
+
+      - name: Upload the Luban OS app
+        uses: actions/upload-artifact@v4
+        with:
+          name: luban-os-linux-x86_64
+          path: |
+            build/luban-os-*-linux-x86_64.tar.gz
+            build/luban-os-*-linux-x86_64.tar.gz.sha256
+            build/xdesk-*-linux-x86_64.tar.gz
+            build/xdesk-*-linux-x86_64.tar.gz.sha256
 
   # Cross-build the aarch64-linux-musl release artefact on an x86_64 runner via
   # mcpp's cross toolchain (xim:aarch64-linux-musl-gcc). Uses the latest mcpp
@@ -476,7 +499,7 @@ jobs:
           # poisoned at their exact key, so the guard below -- which only fires
           # on an INEXACT restore -- can never reach them. Retiring the prefix
           # is what discards them; the guard is what stops it recurring.
-          key: mcpp-v4-release-${{ runner.os }}-${{ hashFiles('mcpp.toml', 'mcpp.lock', '.xlings.json') }}-${{ env.BOOTSTRAP_XLINGS_VERSION }}
+          key: mcpp-v4-release-${{ runner.os }}-${{ hashFiles('mcpp.toml', '.xlings.json') }}-${{ env.BOOTSTRAP_XLINGS_VERSION }}
           restore-keys: |
             mcpp-v4-release-${{ runner.os }}-
       # An inexact restore brings BMIs built under a different dependency set.
@@ -587,7 +610,7 @@ jobs:
           # ~800 MB mcpp cache restored one step earlier almost worthless.
           prune_registry() {
             [ -d "$1" ] || return 0
-            find "$1" -mindepth 1 -maxdepth 1 ! -name data -exec rm -rf {} +
+            find "$1" -mindepth 1 -maxdepth 1 ! -name data ! -name subos -exec rm -rf {} +  # the subos links into the payloads, and packages into it
             [ -d "$1/data" ] || return 0
             find "$1/data" -mindepth 1 -maxdepth 1 ! -name xpkgs -exec rm -rf {} +
           }
@@ -707,7 +730,7 @@ jobs:
           # poisoned at their exact key, so the guard below -- which only fires
           # on an INEXACT restore -- can never reach them. Retiring the prefix
           # is what discards them; the guard is what stops it recurring.
-          key: mcpp-v4-release-${{ runner.os }}-${{ hashFiles('mcpp.toml', 'mcpp.lock', '.xlings.json') }}-${{ env.BOOTSTRAP_XLINGS_VERSION }}
+          key: mcpp-v4-release-${{ runner.os }}-${{ hashFiles('mcpp.toml', '.xlings.json') }}-${{ env.BOOTSTRAP_XLINGS_VERSION }}
           restore-keys: |
             mcpp-v4-release-${{ runner.os }}-
       # An inexact restore brings BMIs built under a different dependency set.
@@ -933,6 +956,10 @@ jobs:
           prerelease: false
           files: |
             artifacts/xlings-linux-x86_64/xlings-*-linux-x86_64.tar.gz
+            artifacts/luban-os-linux-x86_64/luban-os-*-linux-x86_64.tar.gz
+            artifacts/luban-os-linux-x86_64/luban-os-*-linux-x86_64.tar.gz.sha256
+            artifacts/luban-os-linux-x86_64/xdesk-*-linux-x86_64.tar.gz
+            artifacts/luban-os-linux-x86_64/xdesk-*-linux-x86_64.tar.gz.sha256
             artifacts/xlings-linux-aarch64/xlings-*-linux-aarch64.tar.gz
             artifacts/xlings-macosx-arm64/xlings-*-macosx-arm64.tar.gz
             artifacts/xlings-windows-x86_64/xlings-*-windows-x86_64.zip
@@ -1065,9 +1092,12 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.XLINGS_RES_TOKEN }}
         run: |
-          chmod +x tools/gtc tools/mirror_xlings_res.sh
+          chmod +x tools/gtc tools/mirror_xlings_res.sh tools/mirror_res.sh
           export PATH="$PWD/tools:$PATH"
           bash tools/mirror_xlings_res.sh "${{ steps.version.outputs.version }}"
+          # The Luban OS app beside it (xlings-res/luban-os).
+          bash tools/mirror_res.sh luban-os "${{ steps.version.outputs.version }}"
+          bash tools/mirror_res.sh xdesk "${{ steps.version.outputs.version }}"
 
       - name: Report mirror outcome
         if: ${{ always() && env.XLINGS_RES_TOKEN != '' }}

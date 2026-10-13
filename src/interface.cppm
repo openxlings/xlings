@@ -33,7 +33,7 @@ namespace xlings::interface {
 // unpacked as `extract` progress events; an extraction that cannot write
 // carries E_PERMISSION or E_DISK_FULL by its errno; a node whose dependency
 // failed is reported failed for that reason and nothing of it runs.
-export constexpr const char* kProtocolVersion = "1.8";
+export constexpr const char* kProtocolVersion = "1.9";
 
 // Convert any Event variant to one NDJSON line (no trailing newline).
 // Returns "" for events not surfaced to wire (e.g. CompletedEvent — the

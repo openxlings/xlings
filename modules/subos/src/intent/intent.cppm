@@ -51,6 +51,7 @@ struct Environment {
 };
 
 struct Intent {
+    spec::Persist persist { spec::Persist::All };
     std::string instance;
     fs::path instance_dir;
     Identity id;

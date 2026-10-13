@@ -1,0 +1,19 @@
+# opensal-wlr (Luban OS architecture design §9.3; desktop part 2 §2.0): a wlroots compositor's
+# output as an opensal surface -- the bridge in a guest that takes the
+# picture (screencopy), injects the input (virtual keyboard and pointer) and
+# follows the window's size (output management), all through the compositor's
+# standard Wayland protocols, and speaks opensal.wire on a byte stream. Any
+# compositor that implements those protocols is a Luban desktop this way. It
+# speaks the Wayland wire itself: a guest's luban is static and carries no
+# libwayland.
+[package]
+namespace = "opensal"
+name      = "opensal-wlr"
+version   = "0.1.0"
+
+[targets.opensal-wlr]
+kind = "lib"
+
+[dependencies]
+opensal  = { path = "../spec" }
+xdesk-base = { path = "../../xdesk/base" }

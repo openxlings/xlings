@@ -120,7 +120,7 @@ jobs:
           # (gcc@15.1.0-musl), so a CI build and a release build hash the same
           # -- sharing one key across workflows is wrong on its own terms even
           # though it was not what caused this.
-          key: mcpp-v4-ci-windows-${{ runner.os }}-${{ hashFiles('mcpp.toml', 'mcpp.lock', '.xlings.json') }}-${{ env.BOOTSTRAP_XLINGS_VERSION }}
+          key: mcpp-v4-ci-windows-${{ runner.os }}-${{ hashFiles('mcpp.toml', '.xlings.json') }}-${{ env.BOOTSTRAP_XLINGS_VERSION }}
           restore-keys: |
             mcpp-v4-ci-windows-${{ runner.os }}-
       # An inexact restore (the `restore-keys` fallback) brings BMIs built
@@ -281,6 +281,9 @@ jobs:
           mcpp build
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           mcpp build -p luban-tool
+          # The Luban OS app (a window): built on every platform, its headless
+          # tests (SDL's offscreen driver) find it beside bin/xlings.
+          mcpp build -p luban-os
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           mcpp build -p xdev
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

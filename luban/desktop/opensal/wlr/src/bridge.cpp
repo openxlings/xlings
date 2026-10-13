@@ -1,0 +1,476 @@
+module opensal.wlr;
+
+import std;
+import opensal;
+import opensal.wire;
+import xdesk.os;
+import opensal.wlr.wayland;
+
+namespace opensal::wlr {
+
+namespace os = xdesk::os;
+namespace wl = opensal::wlr::wayland;
+using namespace opensal::keys;
+
+namespace {
+
+// The opcodes used here, by interface (each protocol's XML, in order).
+namespace op {
+// wl_display
+constexpr std::uint16_t display_sync = 0, display_get_registry = 1;
+constexpr std::uint16_t display_error = 0;
+// wl_registry
+constexpr std::uint16_t registry_bind = 0;
+constexpr std::uint16_t registry_global = 0, registry_global_remove = 1;
+// wl_callback
+constexpr std::uint16_t callback_done = 0;
+// wl_shm, wl_shm_pool, wl_buffer
+constexpr std::uint16_t shm_create_pool = 0;
+constexpr std::uint16_t pool_create_buffer = 0, pool_destroy = 1;
+constexpr std::uint16_t buffer_destroy = 0;
+// wl_output
+constexpr std::uint16_t output_mode = 1;
+// zwlr_screencopy_manager_v1, zwlr_screencopy_frame_v1
+constexpr std::uint16_t screencopy_capture_output = 0;
+constexpr std::uint16_t frame_copy = 0, frame_destroy = 1, frame_copy_with_damage = 2;
+constexpr std::uint16_t frame_buffer = 0, frame_flags = 1, frame_ready = 2, frame_failed = 3, frame_damage = 4,
+                        frame_buffer_done = 6;
+// zwp_virtual_keyboard_manager_v1, zwp_virtual_keyboard_v1
+constexpr std::uint16_t vkbd_manager_create = 0;
+constexpr std::uint16_t vkbd_keymap = 0, vkbd_key = 1, vkbd_modifiers = 2;
+// zwlr_virtual_pointer_manager_v1, zwlr_virtual_pointer_v1
+constexpr std::uint16_t vptr_manager_create = 0, vptr_manager_create_with_output = 2;
+constexpr std::uint16_t vptr_motion_absolute = 1, vptr_button = 2, vptr_axis = 3, vptr_frame = 4;
+// zwlr_output_manager_v1, its head and mode, a configuration and its head
+constexpr std::uint16_t outman_create_configuration = 0;
+constexpr std::uint16_t outman_head = 0, outman_done = 1;
+constexpr std::uint16_t head_mode = 3, head_finished = 9;
+constexpr std::uint16_t config_enable_head = 0, config_apply = 2, config_destroy = 4;
+constexpr std::uint16_t config_succeeded = 0, config_failed = 1, config_cancelled = 2;
+constexpr std::uint16_t config_head_set_custom_mode = 1;
+}  // namespace op
+
+constexpr std::uint32_t kShmArgb = 0, kShmXrgb = 1;
+
+struct Global { std::uint32_t name { 0 }; std::uint32_t version { 0 }; };
+
+class Bridge {
+public:
+    Bridge(const Options& o, wl::Connection c) : o_(o), c_(std::move(c)), start_(std::chrono::steady_clock::now()) {}
+    int run();
+
+private:
+    void log_(std::string_view s) { if (o_.log) o_.log(s); }
+    std::uint32_t now_ms_() const {
+        return static_cast<std::uint32_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - start_).count());
+    }
+    std::uint32_t bind_(std::string_view iface, std::uint32_t max_version, std::uint32_t& version);
+    bool roundtrip_();
+    void handle_(const wl::Event& e);
+    bool provider_(std::string_view bytes);
+    void input_(const opensal::Event& e);
+    void key_(std::uint32_t code, bool down);
+    void modifiers_();
+    void capture_();
+    void copy_();
+    void frame_ready_();
+    void resize_(opensal::Size want);
+    bool send_(std::string_view bytes) { return os::write_all(o_.out, bytes); }
+
+    const Options& o_;
+    wl::Connection c_;
+    std::chrono::steady_clock::time_point start_;
+    std::uint32_t registry_ { 0 };
+    std::map<std::string, Global> globals_;
+    std::uint32_t sync_ { 0 };
+    bool synced_ { false };
+
+    std::uint32_t shm_ { 0 }, seat_ { 0 }, output_ { 0 }, screencopy_ { 0 }, vkbd_manager_ { 0 }, vptr_manager_ { 0 },
+                  outman_ { 0 };
+    std::uint32_t screencopy_version_ { 1 };
+    std::uint32_t vkbd_ { 0 }, vptr_ { 0 };
+    opensal::Size output_size_;
+
+    // The capture in flight.
+    std::uint32_t frame_ { 0 };
+    bool capturing_ { false };
+    bool first_ { true };
+    struct Offer { std::uint32_t format { 0 }; opensal::Size size; std::uint32_t stride { 0 }; };
+    std::optional<Offer> offer_;
+    std::vector<opensal::Rect> damage_;
+    std::chrono::steady_clock::time_point last_frame_ {};
+    std::chrono::steady_clock::time_point retry_at_ {};
+    // The buffer it copies into, kept while the size holds.
+    os::SharedMemory shm_mem_;
+    std::uint32_t pool_ { 0 }, buffer_ { 0 };
+    Offer buffer_shape_;
+
+    // Output management: the head (first), the serial to configure against.
+    std::uint32_t head_ { 0 };
+    std::set<std::uint32_t> heads_, modes_;
+    std::uint32_t serial_ { 0 };
+    bool have_serial_ { false };
+    std::uint32_t config_ { 0 };
+    std::optional<opensal::Size> wanted_;
+    opensal::Size told_;
+
+    // The provider's stream, and the keyboard's state.
+    opensal::wire::Decoder decoder_;
+    std::uint32_t mods_ { 0 };
+    std::set<std::uint32_t> held_;
+    bool provider_gone_ { false };
+};
+
+std::uint32_t Bridge::bind_(std::string_view iface, std::uint32_t max_version, std::uint32_t& version) {
+    auto it = globals_.find(std::string(iface));
+    if (it == globals_.end()) return 0;
+    version = std::min(max_version, it->second.version);
+    const auto id = c_.new_id();
+    c_.send(registry_, op::registry_bind, wl::Args{}.u(it->second.name).str(iface).u(version).u(id));
+    return id;
+}
+
+bool Bridge::roundtrip_() {
+    sync_ = c_.new_id();
+    synced_ = false;
+    c_.send(wl::kDisplay, op::display_sync, wl::Args{}.u(sync_));
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (!synced_) {
+        if (std::chrono::steady_clock::now() > deadline) return false;
+        auto events = c_.poll(200);
+        if (!events) return false;
+        for (const auto& e : *events) handle_(e);
+    }
+    return true;
+}
+
+void Bridge::handle_(const wl::Event& e) {
+    wl::Reader r(e.body);
+    if (e.object == wl::kDisplay && e.opcode == op::display_error) {
+        const auto object = r.u();
+        const auto code = r.u();
+        log_(std::format("the compositor refused a request (object {}, code {}): {}", object, code, r.str()));
+        return;
+    }
+    // The callback's id is the server's to delete and ours to use again: it
+    // is the sync only until it is done.
+    if (sync_ && e.object == sync_ && e.opcode == op::callback_done) { synced_ = true; sync_ = 0; return; }
+    if (e.object == registry_) {
+        if (e.opcode == op::registry_global) {
+            const auto name = r.u();
+            auto iface = r.str();
+            const auto version = r.u();
+            // The first of each: one output, one seat.
+            if (r.ok() && !globals_.contains(iface)) globals_[iface] = {name, version};
+        }
+        return;
+    }
+    if (e.object == output_ && e.opcode == op::output_mode) {
+        const auto flags = r.u();
+        const auto w = r.i(), h = r.i();
+        if (r.ok() && (flags & 1) && w > 0 && h > 0) output_size_ = {std::uint32_t(w), std::uint32_t(h)};
+        return;
+    }
+    if (frame_ && e.object == frame_) {
+        switch (e.opcode) {
+        case op::frame_buffer: {
+            Offer f;
+            f.format = r.u();
+            f.size.width = r.u();
+            f.size.height = r.u();
+            f.stride = r.u();
+            if (r.ok() && (f.format == kShmXrgb || f.format == kShmArgb) && !offer_) offer_ = f;
+            if (screencopy_version_ < 3 && offer_) copy_();
+            break;
+        }
+        case op::frame_buffer_done: if (offer_) copy_(); break;
+        case op::frame_damage: {
+            opensal::Rect d;
+            d.x = static_cast<std::int32_t>(r.u());
+            d.y = static_cast<std::int32_t>(r.u());
+            d.width = r.u();
+            d.height = r.u();
+            if (r.ok()) damage_.push_back(d);
+            break;
+        }
+        case op::frame_ready: frame_ready_(); break;
+        case op::frame_failed:
+            c_.send(frame_, op::frame_destroy, wl::Args{});
+            frame_ = 0;
+            capturing_ = false;
+            offer_.reset();
+            retry_at_ = std::chrono::steady_clock::now() + std::chrono::milliseconds(200);
+            break;
+        default: break;
+        }
+        return;
+    }
+    if (e.object == outman_) {
+        if (e.opcode == op::outman_head) {
+            const auto id = r.u();
+            heads_.insert(id);
+            if (!head_) head_ = id;
+        } else if (e.opcode == op::outman_done) {
+            serial_ = r.u();
+            have_serial_ = r.ok();
+            if (wanted_) resize_(*wanted_);
+        }
+        return;
+    }
+    if (heads_.contains(e.object)) {
+        if (e.opcode == op::head_mode) modes_.insert(r.u());
+        else if (e.opcode == op::head_finished) { heads_.erase(e.object); if (head_ == e.object) head_ = 0; }
+        return;
+    }
+    if (config_ && e.object == config_) {
+        if (e.opcode == op::config_succeeded || e.opcode == op::config_failed || e.opcode == op::config_cancelled) {
+            if (e.opcode != op::config_succeeded) log_("the compositor did not take the window's size");
+            c_.send(config_, op::config_destroy, wl::Args{});
+            config_ = 0;
+        }
+        return;
+    }
+}
+
+// The provider asks for its size; the compositor's output takes it as a
+// custom mode (output management), against the serial of its last state.
+void Bridge::resize_(opensal::Size want) {
+    wanted_ = want;
+    if (!outman_ || !head_ || !have_serial_ || config_ || want.width == 0 || want.height == 0) return;
+    if (want == output_size_) { wanted_.reset(); return; }
+    config_ = c_.new_id();
+    c_.send(outman_, op::outman_create_configuration, wl::Args{}.u(config_).u(serial_));
+    const auto ch = c_.new_id();
+    c_.send(config_, op::config_enable_head, wl::Args{}.u(ch).u(head_));
+    c_.send(ch, op::config_head_set_custom_mode, wl::Args{}.i(std::int32_t(want.width)).i(std::int32_t(want.height)).i(0));
+    c_.send(config_, op::config_apply, wl::Args{});
+    wanted_.reset();
+}
+
+// A capture: the compositor answers with the buffer it wants (copy_).
+void Bridge::capture_() {
+    frame_ = c_.new_id();
+    capturing_ = true;
+    damage_.clear();
+    offer_.reset();
+    c_.send(screencopy_, op::screencopy_capture_output, wl::Args{}.u(frame_).i(1).u(output_));
+}
+
+void Bridge::copy_() {
+    const auto f = *offer_;
+    const std::size_t bytes = std::size_t(f.stride) * f.size.height;
+    if (!buffer_ || buffer_shape_.size != f.size || buffer_shape_.stride != f.stride || buffer_shape_.format != f.format) {
+        if (buffer_) c_.send(buffer_, op::buffer_destroy, wl::Args{});
+        if (pool_) c_.send(pool_, op::pool_destroy, wl::Args{});
+        os::release(shm_mem_);
+        auto m = os::shared_memory(bytes);
+        if (!m) { log_("no shared memory for a frame"); provider_gone_ = true; return; }
+        shm_mem_ = *m;
+        pool_ = c_.new_id();
+        c_.send(shm_, op::shm_create_pool, wl::Args{}.u(pool_).fd(shm_mem_.fd).i(std::int32_t(bytes)));
+        buffer_ = c_.new_id();
+        c_.send(pool_, op::pool_create_buffer, wl::Args{}.u(buffer_).i(0).i(std::int32_t(f.size.width))
+                                                     .i(std::int32_t(f.size.height)).i(std::int32_t(f.stride)).u(f.format));
+        buffer_shape_ = f;
+        first_ = true;
+    }
+    // The first copy is whole; after it, only what changed (and the compositor waits until something has).
+    const bool damage = screencopy_version_ >= 2 && !first_;
+    c_.send(frame_, damage ? op::frame_copy_with_damage : op::frame_copy, wl::Args{}.u(buffer_));
+}
+
+void Bridge::frame_ready_() {
+    const auto f = buffer_shape_;
+    const opensal::Rect whole{0, 0, f.size.width, f.size.height};
+    std::vector<opensal::Rect> rects = first_ || damage_.empty() ? std::vector{whole} : damage_;
+    // Many small rectangles cost more in headers than their bounds do in pixels.
+    if (rects.size() > 8) {
+        std::int64_t x0 = rects[0].x, y0 = rects[0].y, x1 = x0, y1 = y0;
+        for (const auto& d : rects) {
+            x0 = std::min<std::int64_t>(x0, d.x);
+            y0 = std::min<std::int64_t>(y0, d.y);
+            x1 = std::max<std::int64_t>(x1, std::int64_t(d.x) + d.width);
+            y1 = std::max<std::int64_t>(y1, std::int64_t(d.y) + d.height);
+        }
+        rects = {opensal::Rect{std::int32_t(x0), std::int32_t(y0), std::uint32_t(x1 - x0), std::uint32_t(y1 - y0)}};
+    }
+    if (f.size != told_) {
+        // The size it is drawn at: first, and whenever it changes.
+        send_(opensal::wire::encode('s', std::format("{} {}", f.size.width, f.size.height)));
+        told_ = f.size;
+    }
+    auto* px = shm_mem_.data;
+    for (const auto& d : rects) {
+        // XRGB's fourth byte is undefined; opensal's pixels are opaque there.
+        if (f.format == kShmXrgb) {
+            const auto x1 = std::min<std::uint64_t>(std::uint64_t(d.x) + d.width, f.size.width);
+            const auto y1 = std::min<std::uint64_t>(std::uint64_t(d.y) + d.height, f.size.height);
+            for (std::uint64_t y = std::uint64_t(std::max(0, d.y)); y < y1; ++y)
+                for (std::uint64_t x = std::uint64_t(std::max(0, d.x)); x < x1; ++x)
+                    px[y * f.stride + x * 4 + 3] = std::byte{0xff};
+        }
+        const opensal::Pixels surface{f.size, f.stride, std::span<const std::byte>(px, shm_mem_.size)};
+        if (!send_(opensal::wire::encode_frame(surface, d))) { provider_gone_ = true; break; }
+    }
+    first_ = false;
+    c_.send(frame_, op::frame_destroy, wl::Args{});
+    frame_ = 0;
+    capturing_ = false;
+    offer_.reset();
+    damage_.clear();
+    last_frame_ = std::chrono::steady_clock::now();
+}
+
+void Bridge::key_(std::uint32_t code, bool down) {
+    if (!vkbd_) return;
+    if (down) held_.insert(code); else held_.erase(code);
+    c_.send(vkbd_, op::vkbd_key, wl::Args{}.u(now_ms_()).u(code).u(down ? 1 : 0));
+}
+
+void Bridge::modifiers_() {
+    if (vkbd_) c_.send(vkbd_, op::vkbd_modifiers, wl::Args{}.u(xkb_mods(mods_)).u(0).u(0).u(0));
+}
+
+void Bridge::input_(const opensal::Event& ev) {
+    if (const auto* k = std::get_if<opensal::Key>(&ev)) {
+        if (k->repeat) return;                  // the compositor repeats a held key itself
+        auto stroke = evdev_key(k->keysym);
+        if (!stroke) return;
+        if (const auto m = modifier_of(k->keysym)) {
+            if (k->down) mods_ |= m; else mods_ &= ~m;
+            key_(stroke->code, k->down);
+            modifiers_();
+            return;
+        }
+        // A character that needs Shift (one the window gave already shifted).
+        const bool add_shift = stroke->shift && !(mods_ & opensal::Shift) && k->down;
+        if (add_shift) { mods_ |= opensal::Shift; key_(42, true); modifiers_(); }
+        key_(stroke->code, k->down);
+        if (add_shift) { key_(stroke->code, false); mods_ &= ~opensal::Shift; key_(42, false); modifiers_(); }
+    } else if (const auto* m = std::get_if<opensal::PointerMotion>(&ev)) {
+        if (!vptr_ || output_size_.width == 0) return;
+        const auto x = static_cast<std::uint32_t>(std::clamp(m->x, 0.0, double(output_size_.width - 1)));
+        const auto y = static_cast<std::uint32_t>(std::clamp(m->y, 0.0, double(output_size_.height - 1)));
+        c_.send(vptr_, op::vptr_motion_absolute, wl::Args{}.u(now_ms_()).u(x).u(y).u(output_size_.width).u(output_size_.height));
+        c_.send(vptr_, op::vptr_frame, wl::Args{});
+    } else if (const auto* b = std::get_if<opensal::PointerButton>(&ev)) {
+        if (!vptr_) return;
+        c_.send(vptr_, op::vptr_button, wl::Args{}.u(now_ms_()).u(evdev_button(b->button)).u(b->down ? 1 : 0));
+        c_.send(vptr_, op::vptr_frame, wl::Args{});
+    } else if (const auto* w = std::get_if<opensal::Wheel>(&ev)) {
+        if (!vptr_) return;
+        // A wheel step is 15 units of scroll (libinput's); up is negative.
+        if (w->dy != 0) c_.send(vptr_, op::vptr_axis, wl::Args{}.u(now_ms_()).u(0).fixed(-w->dy * 15.0));
+        if (w->dx != 0) c_.send(vptr_, op::vptr_axis, wl::Args{}.u(now_ms_()).u(1).fixed(w->dx * 15.0));
+        c_.send(vptr_, op::vptr_frame, wl::Args{});
+    } else if (const auto* r = std::get_if<opensal::Resized>(&ev)) {
+        resize_(r->size);
+    } else if (const auto* f = std::get_if<opensal::Focus>(&ev)) {
+        // Focus left the window: nothing it holds stays pressed here.
+        if (!f->in) {
+            for (auto code : std::vector(held_.begin(), held_.end())) key_(code, false);
+            mods_ = 0;
+            modifiers_();
+        }
+    }
+}
+
+bool Bridge::provider_(std::string_view bytes) {
+    decoder_.feed(bytes);
+    for (;;) {
+        auto m = decoder_.next();
+        if (!m) { log_("the provider's stream is not opensal.wire"); return false; }
+        if (!*m) return true;
+        const auto& msg = **m;
+        if (msg.kind == 'H') {
+            // "<bits> <w> <h> <scale>"
+            std::istringstream in(msg.payload);
+            std::uint32_t bits = 0, w = 0, h = 0;
+            if (in >> bits >> w >> h) resize_({w, h});
+        } else if (msg.kind == 'E') {
+            if (auto e = opensal::wire::decode_event(msg.payload)) input_(*e);
+        }
+    }
+}
+
+int Bridge::run() {
+    registry_ = c_.new_id();
+    c_.send(wl::kDisplay, op::display_get_registry, wl::Args{}.u(registry_));
+    if (!roundtrip_()) { log_("the compositor did not answer"); return 2; }
+    std::uint32_t v = 0;
+    shm_ = bind_("wl_shm", 1, v);
+    seat_ = bind_("wl_seat", 1, v);
+    output_ = bind_("wl_output", 2, v);
+    screencopy_ = bind_("zwlr_screencopy_manager_v1", 3, screencopy_version_);
+    vkbd_manager_ = bind_("zwp_virtual_keyboard_manager_v1", 1, v);
+    std::uint32_t vptr_version = 0;
+    vptr_manager_ = bind_("zwlr_virtual_pointer_manager_v1", 2, vptr_version);
+    outman_ = bind_("zwlr_output_manager_v1", 2, v);
+    if (!shm_ || !output_ || !screencopy_) {
+        log_("the compositor has no screencopy (zwlr_screencopy_manager_v1) or no output: not a desktop opensal-wlr can show");
+        return 1;
+    }
+    if (vkbd_manager_ && seat_) {
+        vkbd_ = c_.new_id();
+        c_.send(vkbd_manager_, op::vkbd_manager_create, wl::Args{}.u(seat_).u(vkbd_));
+        std::string keymap(kKeymap);
+        keymap.push_back('\0');
+        if (auto m = os::shared_memory(keymap.size())) {
+            std::memcpy(m->data, keymap.data(), keymap.size());
+            c_.send(vkbd_, op::vkbd_keymap, wl::Args{}.u(1).fd(m->fd).u(std::uint32_t(keymap.size())));
+            os::release(*m);
+        }
+    } else {
+        log_("no virtual keyboard: the desktop is shown without keys");
+    }
+    if (vptr_manager_) {
+        vptr_ = c_.new_id();
+        if (vptr_version >= 2) c_.send(vptr_manager_, op::vptr_manager_create_with_output, wl::Args{}.u(seat_).u(output_).u(vptr_));
+        else c_.send(vptr_manager_, op::vptr_manager_create, wl::Args{}.u(seat_).u(vptr_));
+    }
+    if (!roundtrip_()) return 1;
+    using I = opensal::Interface;
+    opensal::Interfaces wanted = I::Surface | I::Mode;
+    if (vkbd_) wanted |= static_cast<opensal::Interfaces>(I::Keyboard);
+    if (vptr_) wanted |= static_cast<opensal::Interfaces>(I::Pointer);
+    if (!send_(opensal::wire::encode('h', std::to_string(wanted)))) return 0;
+
+    const auto period = std::chrono::milliseconds(1000 / std::max(1, o_.max_fps));
+    std::array<char, 65536> buf{};
+    while (!provider_gone_) {
+        if (o_.alive && !o_.alive()) { log_("the compositor ended"); return 1; }
+        const auto now = std::chrono::steady_clock::now();
+        if (!capturing_ && now >= last_frame_ + period && now >= retry_at_) capture_();
+        std::array<os::PollFd, 2> p{{{.fd = o_.in}, {.fd = c_.fd()}}};
+        const auto wait = capturing_ ? 500 : static_cast<int>(std::max<std::int64_t>(1,
+            std::chrono::duration_cast<std::chrono::milliseconds>(last_frame_ + period - now).count()));
+        os::poll(p, std::min(wait, 500));
+        if (p[0].readable || p[0].closed) {
+            auto n = os::read_some(o_.in, buf);
+            if (!n || *n == 0) return 0;
+            if (!provider_(std::string_view(buf.data(), *n))) return 0;
+        }
+        if (p[1].readable || p[1].closed) {
+            auto events = c_.poll(0);
+            if (!events) { log_("the compositor closed its socket"); return 1; }
+            for (const auto& e : *events) handle_(e);
+        }
+    }
+    return 0;
+}
+
+}  // namespace
+
+int bridge(const Options& o) {
+    // A peer that has gone (the window, the compositor) is a write that
+    // fails, not a signal that ends this process before it stops its
+    // compositor. Set here, after the compositor was started: it is inherited.
+    os::ignore_broken_pipes();
+    auto c = wl::Connection::connect(o.socket);
+    if (!c) { if (o.log) o.log(c.error()); return 2; }
+    Bridge b(o, std::move(*c));
+    return b.run();
+}
+
+}  // namespace opensal::wlr

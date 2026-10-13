@@ -14,8 +14,11 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 pattern='#[[:space:]]*include[[:space:]]*<(unistd|fcntl|poll|sched|signal|csignal|cerrno|cstring|cstddef|dirent|pwd|grp|termios|pty|spawn|crt_externs|io|windows|winsock2|ws2tcpip|sys/[^>]+|linux/[^>]+|mach/[^>]+)(\.h)?>|#[[:space:]]*include[[:space:]]*<time\.h>'
-hits="$(grep -rnE "$pattern" src modules apps --include='*.cpp' --include='*.cppm' \
-        | grep -v '^modules/platform/' | grep -v '^modules/testkit/' || true)"
+# luban/ too; the desktop components' own system layer (xdesk.os) is theirs,
+# since they are used without xlings.platform.
+hits="$(grep -rnE "$pattern" src modules apps luban --include='*.cpp' --include='*.cppm' \
+        | grep -v '^modules/platform/' | grep -v '^modules/testkit/' \
+        | grep -v '^luban/desktop/xdesk/base/src/os/' || true)"
 if [[ -n "$hits" ]]; then
     echo "platform headers outside modules/platform:"
     echo "$hits" | sed 's/^/  /'

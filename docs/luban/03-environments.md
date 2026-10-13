@@ -9,11 +9,11 @@ generations.
 
 ```bash
 luban config box                                  # its settings
-luban config box proxy socks5h://127.0.0.1:7897   # its only network is this proxy
-luban config box tz utc                           # utc, proxy (the proxy's exit), or a zone
-luban config box policy xim:agent-confined        # another policy
-luban config box allow clipboard                  # a grant
-luban config box mount ~/code/proj:/work          # a host directory inside
+luban config box --proxy socks5h://127.0.0.1:7897   # its only network is this proxy
+luban config box --tz utc                           # utc, proxy (the proxy's exit), or a zone
+luban config box --policy xim:agent-confined        # another policy
+luban config box --allow clipboard                  # a grant
+luban config box --mount ~/code/proj:/work          # a host directory inside
 ```
 
 | Key | |
@@ -25,7 +25,25 @@ luban config box mount ~/code/proj:/work          # a host directory inside
 | `mount` | a host directory inside the environment |
 
 Each is the `xlings subos config` setting of the same name
-([Sandbox and policy](../11-sandbox-and-policy.md)).
+([Sandbox and policy](../11-sandbox-and-policy.md)). These are luban's own:
+
+```bash
+luban config box --mode machine       # luban enter starts it with a kernel of its own
+luban config box --persist home       # each session starts from its baseline; /home stays
+luban config box --shell fish         # its login shell
+luban config box --desktop none       # its console, not its desktop, in the window
+luban config box --on-close background
+```
+
+| Key | |
+|---|---|
+| `mode` | `sandbox` (this machine's kernel) or `machine` (a local VM booting the environment itself) |
+| `persist` | `all` (default), `home` (the system part is restored each time, `/home` stays) or `none` (nothing stays) |
+| `shell` | its login shell, from its own `/etc/passwd` |
+| `desktop` | the desktop session the window shows, or `none` ([The desktop](08-desktop.md)) |
+| `on-close` | closing the window of a running machine: `ask`, `background` or `poweroff` |
+
+An edition may set their defaults; what you set wins.
 
 ## Upgrading
 
@@ -44,7 +62,7 @@ An environment knows what its edition brought. An upgrade:
 - leaves installed what the new edition dropped, and says so;
 - applies the new edition's policy only if it **allows nothing more** than the
   current one; otherwise it keeps the current policy and lists what would have
-  been loosened — switching is your explicit `luban config box policy …`.
+  been loosened — switching is your explicit `luban config box --policy …`.
 
 An upgrade is one new generation, so it can be rolled back.
 

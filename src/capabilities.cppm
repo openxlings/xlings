@@ -110,6 +110,16 @@ public:
     auto execute(Params params, EventStream& stream) -> Result override;
 };
 
+// Any `xlings subos` subcommand, its events on the stream (protocol 1.9):
+// what a frontend that renders SubOS operations itself (luban) runs instead of
+// the terminal command. The argv is validated against the command tree as the
+// terminal's is; plumbing names (`__boot`, `__export`) are accepted.
+class SubosCommand : public Capability {
+public:
+    auto spec() const -> CapabilitySpec override;
+    auto execute(Params params, EventStream& stream) -> Result override;
+};
+
 class SwitchSubos : public Capability {
 public:
     auto spec() const -> CapabilitySpec override;

@@ -20,6 +20,9 @@ Implementation linux_proot() {
     impl.name = "linux-proot";
     impl.available = [](const Caps& caps, const in::Intent& i, fs::path& chosen) -> std::optional<sp::Unmet> {
         if (!caps.proot) return sp::Unmet{"backend", "proot not installed", "xlings install proot", policy::Need::Must};
+        if (i.persist != sp::Persist::All)
+            return sp::Unmet{"persist", "keeping nothing of a session needs bwrap's memory overlay",
+                             "xlings install bwrap", policy::Need::Must};
         if (i.storage != sp::Storage::Shared) {
             std::string hint = "xlings install bwrap";
             if (caps.bwrap && !caps.bwrap->usable) hint = "xlings self doctor --isolation";
@@ -44,8 +47,10 @@ Implementation linux_proot() {
     };
     impl.processes = [](const in::Intent&, sp::SandboxSpec& s) {
         for (auto dim : {"fs", "pid", "ipc", "terminal"})
-            s.degraded.push_back({dim, "proot has no namespaces", "xlings self doctor --isolation",
-                                  policy::Need::Should});
+            s.degraded.push_back({dim, std::string(dim) == "fs"
+                                           ? "proot has no namespaces: the home, other SubOS included, stays writable"
+                                           : "proot has no namespaces",
+                                  "xlings self doctor --isolation", policy::Need::Should});
     };
     impl.finish = [](const in::Intent& i, const HomeView& home, const Caps&,
                      const std::map<std::string, std::string>& grant_env, sp::SandboxSpec& s) {

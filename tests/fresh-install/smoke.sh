@@ -262,14 +262,110 @@ EOF
     assert_runs "clang $LLVM_NEW binary" "$work/hello" "fresh install ok"
 }
 
+# ── luban: Luban OS as a first-time user meets it (Linux) ─────────────
+
+# luban_os <script> <screenshot-dir> [args...] -- the window, headless, driven
+# by a script of a person's input (luban-os --script; tests/README.md).
+luban_os() {
+    local script="$1"; shift
+    SDL_VIDEODRIVER=offscreen SDL_RENDER_DRIVER=software \
+        timeout 1800 "$LUBAN_OS" --headless --script "$script" "$@"
+}
+
+# pixel <ppm> <x> <y> -- "r g b" of a screenshot's pixel.
+pixel() {
+    python3 - "$@" <<'PY'
+import sys
+data = open(sys.argv[1], "rb").read()
+parts = data.split(b"\n", 3)
+w = int(parts[1].split()[0])
+x, y = int(sys.argv[2]), int(sys.argv[3])
+o = len(data) - len(parts[3]) + (y * w + x) * 3
+print(data[o], data[o + 1], data[o + 2])
+PY
+}
+
+suite_luban() {
+    [ "$(uname -s)" = Linux ] || fail "the luban suite is Linux's: Luban systems are Linux systems"
+    local shots="${LUBAN_SCREENSHOTS:-$PWD/luban-os-fresh}"
+    mkdir -p "$shots"
+
+    section "Install the Luban OS window, as a person does"
+    run "install luban-os" xlings install luban-os -y -g
+    LUBAN_OS="$(command -v luban-os)" || fail "luban-os is not on PATH after its install"
+    ok "luban-os at $LUBAN_OS"
+    # The one-time setup a restricted host asks for (docs/luban/07-host-support.md).
+    run "luban setup" luban setup -y
+
+    section "First use -- the quick start makes a system and its console runs what is typed"
+    cat > "$shots/first.script" <<EOF
+wait quick-start
+frames 2
+screenshot $shots/1-quick-start.bmp
+click card:tiny
+click make
+wait job
+wait console 900
+see 120s [luban:tiny-1]
+type echo luban-\$((6*7))
+key Return
+see 60s luban-42
+screenshot $shots/2-console.bmp
+EOF
+    luban_os "$shots/first.script" || fail "the first use did not go through (screenshots in $shots)"
+    ok "made tiny-1 from the quick start; its console ran echo"
+
+    section "A desktop -- the desktop edition in a sandbox shows xdesk"
+    run "make the desktop edition" luban new desk --edition desktop -y
+    run "run it in a sandbox" luban config desk --mode sandbox
+    cat > "$shots/desktop.script" <<EOF
+wait launcher
+click row:desk
+wait desktop 600
+waitfor desktop.texture.0 1100 600
+sleep 8000
+frames 2
+screenshot $shots/3-desktop.ppm
+screenshot $shots/3-desktop.bmp
+EOF
+    luban_os "$shots/desktop.script" || fail "the desktop did not show (screenshots in $shots)"
+    local bg panel
+    bg="$(pixel "$shots/3-desktop.ppm" 550 400)"
+    panel="$(pixel "$shots/3-desktop.ppm" 550 12)"
+    [ "$panel" != "$bg" ] || fail "no panel across the top of the desktop (pixel $panel, background $bg)"
+    ok "xdesk shows its panel (top $panel, background $bg)"
+
+    if [ -r /dev/kvm ] && [ -w /dev/kvm ]; then
+        section "The desktop edition as a machine (KVM)"
+        run "make a desktop machine" luban new deskm --edition desktop -y
+        cat > "$shots/machine.script" <<EOF
+wait launcher
+click row:deskm
+wait desktop 900
+waitfor desktop.texture.0 1100 900
+sleep 8000
+frames 2
+screenshot $shots/4-machine.ppm
+screenshot $shots/4-machine.bmp
+EOF
+        luban_os "$shots/machine.script" || fail "the machine's desktop did not show (screenshots in $shots)"
+        bg="$(pixel "$shots/4-machine.ppm" 550 400)"
+        panel="$(pixel "$shots/4-machine.ppm" 550 12)"
+        [ "$panel" != "$bg" ] || fail "no panel on the machine's desktop"
+        ok "the machine shows xdesk"
+    else
+        log "no usable /dev/kvm here: the machine leg is skipped"
+    fi
+}
+
 # ── entry point ───────────────────────────────────────────────────────
 
 main() {
     local suite="${1:-}"
     case "$suite" in
-        core|gcc|llvm) ;;
-        '') fail "usage: $0 <core|gcc|llvm>" ;;
-        *)  fail "unknown suite '$suite' — expected core, gcc or llvm" ;;
+        core|gcc|llvm|luban) ;;
+        '') fail "usage: $0 <core|gcc|llvm|luban>" ;;
+        *)  fail "unknown suite '$suite' — expected core, gcc, llvm or luban" ;;
     esac
 
     printf '%s┌─ fresh-install: %s suite on %s %s%s\n' \

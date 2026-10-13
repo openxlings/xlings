@@ -3,7 +3,11 @@
 #
 #   luban/     a SubOS that is a machine     may import modules/, never src/
 #   modules/   shared by xlings and Luban    may import neither luban/ nor src/
-#   src/       the xlings frontend           may import both
+#   src/       the xlings frontend           may import modules/, never luban/
+#
+# Luban is one implementation over xlings: luban drives xlings, xlings never
+# links Luban. What both read (boot.json, a root's /etc, image formats) is a
+# module under modules/.
 #
 # A module name says where it lives: `luban.*` is under luban/, `xlings.core.*`
 # (and the frontend's other top-level names) under src/. An import that points
@@ -51,8 +55,29 @@ if [ -d luban ]; then
   done < <(imports luban)
 fi
 
+while read -r where module; do
+  [ -n "${module:-}" ] || continue
+  case "$module" in luban|luban.*) report "${where%%:*}" "src/ imports $module ($where): xlings never links Luban; move what both need to modules/" ;; esac
+done < <(imports src)
+
+# The desktop component families (Luban OS desktop part 2 §2.0): opensal and
+# xdesk are used by other systems on their own, so they import the standard
+# library, each other and their C libraries -- never xlings or Luban.
+for family in luban/desktop/opensal luban/desktop/xdesk; do
+  [ -d "$family" ] || continue
+  while read -r where module; do
+    [ -z "$module" ] && continue
+    case "$module" in
+      std|std.*|opensal|opensal.*|xdesk|xdesk.*) ;;
+      # Their C libraries' modules (mcpp packages: wlroots, freedesktop.*, compat.*).
+      wlroots|wlroots.*|freedesktop.*|compat.*) ;;
+      *) report "${where%%:*}" "$family imports $module ($where): opensal and xdesk are reusable on their own -- the standard library, each other and their C libraries, never xlings or Luban" ;;
+    esac
+  done < <(imports "$family")
+done
+
 if [ "$bad" -gt 0 ]; then
-  echo "layer dependency lint: FAIL ($bad upward import(s))"
+  echo "layer dependency lint: FAIL ($bad import(s) across a boundary)"
   exit 1
 fi
-echo "layer dependency lint: PASS (luban -> modules, modules -/-> luban, src)"
+echo "layer dependency lint: PASS (luban -> modules, modules -/-> luban, src; src -/-> luban; opensal, xdesk -> std, each other, their C libraries)"

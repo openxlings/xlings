@@ -48,6 +48,7 @@ capability::Registry build_registry() {
     reg.register_capability(std::make_unique<ListSubos>());
     reg.register_capability(std::make_unique<ListSubosShims>());
     reg.register_capability(std::make_unique<CreateSubos>());
+    reg.register_capability(std::make_unique<SubosCommand>());
     reg.register_capability(std::make_unique<SwitchSubos>());
     reg.register_capability(std::make_unique<RemoveSubos>());
     reg.register_capability(std::make_unique<SubosExec>());
@@ -394,6 +395,36 @@ auto CreateSubos::execute(Params params, EventStream& stream) -> Result {
         dir.empty() ? std::filesystem::path{} : std::filesystem::path{dir},
         subos::sandbox::StorageMode::Shared, "50G", "", explicit_yes_(json), "yes:true",
         stream));
+}
+
+auto SubosCommand::spec() const -> CapabilitySpec {
+    return {
+        .name = "subos_command",
+        .description = "Run one `xlings subos` subcommand (argv after `subos`, e.g. [\"new\",\"box\",\"--from\",\"subos:luban-core\"]); "
+                       "its log lines, progress, data and errors are the events. A confirmation it needs is given with \"yes\": true",
+        .inputSchema = R"({"type":"object","properties":{"argv":{"type":"array","items":{"type":"string"},"description":"The subcommand and its arguments"},"yes":{"type":"boolean","description":"The user confirmed what the subcommand asks"}},"required":["argv"]})",
+        .outputSchema = R"({"type":"object","properties":{"exitCode":{"type":"integer"}}})",
+        .destructive = true,
+    };
+}
+
+auto SubosCommand::execute(Params params, EventStream& stream) -> Result {
+    auto json = nlohmann::json::parse(params, nullptr, false);
+    std::vector<std::string> words{"xlings", "subos"};
+    if (auto argv = json.find("argv"); argv != json.end() && argv->is_array())
+        for (const auto& a : *argv)
+            if (a.is_string()) words.push_back(a.get<std::string>());
+    if (words.size() < 3) {
+        stream.emit(ErrorEvent{.code = ErrorCode::InvalidInput, .message = "argv names no subcommand", .recoverable = false});
+        return nlohmann::json({{"exitCode", 2}}).dump();
+    }
+    if (explicit_yes_(json) && std::ranges::find(words, std::string("-y")) == words.end()
+        && std::ranges::find(words, std::string("--yes")) == words.end())
+        words.push_back("-y");
+    std::vector<char*> argv;
+    for (auto& w : words) argv.push_back(w.data());
+    argv.push_back(nullptr);
+    return exit_result(subos::run(static_cast<int>(words.size()), argv.data(), stream));
 }
 
 auto SwitchSubos::spec() const -> CapabilitySpec {

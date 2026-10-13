@@ -75,10 +75,11 @@ X subos rollback tiny --to "${after##*/}" >/dev/null 2>&1 || fail "rollback --to
 [[ -e "$S/root/usr/bin/make" ]] || fail "rollback --to did not bring make back"
 
 log "4. the role table"
-X subos boot tiny >/dev/null 2>&1 || fail "subos boot tiny"
+X subos __boot tiny >/dev/null 2>&1 || fail "subos boot tiny"
 out="$(X subos remove -y tiny 2>&1)" && fail "a boot entry was removed"
 grep -q "boot entry" <<<"$out" || fail "the refusal does not say why: $out"
-for verb in "rollback default" "boot default" "export default --tar $RUNTIME_DIR/x.tar"; do
+# (`subos __boot` is what `luban boot` runs: the role check is xlings's.)
+for verb in "rollback default" "__boot default" "export default --tar $RUNTIME_DIR/x.tar"; do
   out="$(X subos $verb 2>&1)" && fail "subos $verb on a view succeeded"
   grep -q "rootfs\|root" <<<"$out" || fail "subos $verb: no reason given: $out"
 done
@@ -197,7 +198,8 @@ out="$(X subos exec aview -- true 2>&1)" && fail "a view with fetch=layer was en
 grep -q "system scope" <<<"$out" || fail "no reason given: $out"
 
 log "9. luban-desktop renders offscreen"
-rootfs_new desk subos:luban-desktop "$RUNTIME_DIR/new-desk.log" || fail "subos new --from subos:luban-desktop"
+# 0.1.0: the edition that is a GL stack (Mesa); later ones are a session (labwc-desktop).
+rootfs_new desk subos:luban-desktop@0.1.0 "$RUNTIME_DIR/new-desk.log" || fail "subos new --from subos:luban-desktop@0.1.0"
 cp "$ROOT_DIR/tests/e2e/fixtures/glprobe.c" "$H/subos/desk/rootfs/root/glprobe.c"
 out="$(X subos exec desk -- /bin/sh -c 'cd /root && gcc glprobe.c -o glprobe -lEGL -lGL && ./glprobe' 2>&1)" \
   || fail "desktop: $out"

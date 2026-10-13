@@ -7,7 +7,7 @@
 ## 创建
 
 ```bash
-luban new agent agent-workspace --proxy socks5h://127.0.0.1:7897
+luban new agent --edition agent-workspace --proxy socks5h://127.0.0.1:7897
 luban run agent -- claude
 luban status agent
 ```
@@ -30,7 +30,7 @@ edition 的策略（`agent-private`）在任何东西进入环境之前就由 `l
 网络仍然只有那个代理：
 
 ```bash
-luban try agent --proxy socks5h://127.0.0.1:7897
+luban enter agent --mode machine --temp
 ```
 
 你的账号（API key、git 身份）仍然表明你是谁。
@@ -40,7 +40,7 @@ luban try agent --proxy socks5h://127.0.0.1:7897
 agent 可以使用这台机器的网络、只需要与你的文件隔开时：
 
 ```bash
-luban config agent policy xim:agent-confined
+luban config agent --policy xim:agent-confined
 ```
 
 ## 保持最新

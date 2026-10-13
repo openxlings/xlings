@@ -49,7 +49,7 @@ XTEST(Upgrade, TheFirstCommandOfANewClientUpgradesTheHomeByItselfAndSaysNothing,
     // The first one that changes it upgrades it, after it succeeded.
     auto first = home.xlings({"subos", "new", "probe"});
     EXPECT_EQ(first.exit_code, 0) << first.transcript();
-    EXPECT_EQ(first.transcript().find("could not take by itself"), std::string::npos) << first.transcript();
+    EXPECT_EQ(first.transcript().find("could not fix by itself"), std::string::npos) << first.transcript();
     EXPECT_EQ(first.transcript().find("self.upgrade"), std::string::npos) << first.transcript();
     const auto record = config_of(home)["upgrade"];
     EXPECT_EQ(record.value("from", ""), "2026.1.1.1") << record.dump();
@@ -67,13 +67,49 @@ XTEST(Upgrade, WhatItCannotDoByItselfIsSaidOnceWithItsCommand, .area = "self",
     auto first = home.xlings({"subos", "new", "probe"});
     const auto out = first.transcript();
     EXPECT_EQ(first.exit_code, 0) << "the command asked for still ran\n" << out;
-    EXPECT_NE(out.find("need a step it could not take by itself"), std::string::npos) << out;
-    EXPECT_NE(out.find("subos 'other'"), std::string::npos) << out;
+    EXPECT_NE(out.find("1 problem(s) in this home it could not fix by itself"), std::string::npos) << out;
     EXPECT_NE(out.find("xlings self doctor --fix"), std::string::npos) << out;
+    // The default says how many and the one command; the items are in the
+    // log (and in `-v`), not on the screen.
+    EXPECT_EQ(out.find("subos 'other'"), std::string::npos) << out;
+    EXPECT_NE(out.find("upgrade.ndjson"), std::string::npos) << out;
+    EXPECT_NE(tk::read_file(home.dir() / "logs" / "upgrade.ndjson").find("subos 'other'"), std::string::npos);
     auto second = home.xlings({"subos", "new", "probe2"});
-    EXPECT_EQ(second.transcript().find("could not take by itself"), std::string::npos)
+    EXPECT_EQ(second.transcript().find("could not fix by itself"), std::string::npos)
         << "said once\n" << second.transcript();
     EXPECT_EQ(config_of(home)["upgrade"]["pending"].size(), 1u);
+}
+
+XTEST(Upgrade, VerboseNamesTheItemsTheDefaultOnlyCounts, .area = "self",
+      .covers = {"UPGRADE-PENDING-ONCE"}, .requires_ = {"xlings-bin"}) {
+    auto home = initialised("upgrade-verbose");
+    ASSERT_EQ(home.xlings({"subos", "new", "other"}).exit_code, 0);
+    tk::write_file(home.dir() / "subos" / "other" / ".xlings.json", "{not json");
+    set_upgraded_to(home, "2026.1.1.1");
+    auto first = home.xlings({"subos", "new", "probe", "-v"});
+    EXPECT_EQ(first.exit_code, 0) << first.transcript();
+    EXPECT_NE(first.transcript().find("subos 'other'"), std::string::npos) << first.transcript();
+}
+
+// A home with no upgrade record has never been through the ladder: what it
+// finds was already there, and is not said as something this version did.
+XTEST(Upgrade, AHomeWithoutARecordReportsWhatWasAlreadyThere, .area = "self",
+      .covers = {"UPGRADE-FIRST-RECORD"}, .requires_ = {"xlings-bin"}) {
+    auto home = initialised("upgrade-first-record");
+    ASSERT_EQ(home.xlings({"subos", "new", "other"}).exit_code, 0);
+    tk::write_file(home.dir() / "subos" / "other" / ".xlings.json", "{not json");
+    auto doc = config_of(home);
+    doc.erase("upgrade");
+    doc.erase("verifiedBy");
+    doc["version"] = "0.4.40";
+    tk::write_file(home.dir() / ".xlings.json", doc.dump());
+    auto first = home.xlings({"subos", "new", "probe"});
+    const auto out = first.transcript();
+    EXPECT_EQ(first.exit_code, 0) << out;
+    EXPECT_NE(out.find("already there before this version"), std::string::npos) << out;
+    EXPECT_EQ(out.find("from 0.4.40"), std::string::npos) << out;
+    EXPECT_EQ(out.find("or go back"), std::string::npos) << out;
+    EXPECT_TRUE(config_of(home)["upgrade"].value("first_record", false));
 }
 
 XTEST(Upgrade, AnOlderClientChangesNothingAndSaysHowToGoBack, .area = "self",
@@ -234,8 +270,34 @@ end
     set_upgraded_to(home, "2026.1.1.1");
     auto installed = home.xlings({"install", "fixture:tool@1.0.0", "-y"});
     ASSERT_EQ(installed.exit_code, 0) << installed.transcript();
-    EXPECT_EQ(installed.transcript().find("could not take by itself"), std::string::npos)
+    EXPECT_EQ(installed.transcript().find("could not fix by itself"), std::string::npos)
         << installed.transcript();
     auto doctor = home.xlings({"self", "doctor"});
     EXPECT_EQ(doctor.transcript().find("subos runtime"), std::string::npos) << doctor.transcript();
+}
+
+// A recipe's `xvm.add(package.name)` registers the package's own name at its
+// payload's root; its programs are registered under their own names. That is
+// not a broken payload: reinstalling changes nothing, and `--fix` once
+// "repaired" the same finding on every pass.
+XTEST(Doctor, ThePackagesOwnRegistrationIsNotABrokenProgram, .area = "self",
+      .covers = {"DOCTOR-REMEDY-CLEARS"}, .requires_ = {"xlings-bin"}) {
+    auto home = initialised("doctor-umbrella");
+    const auto payload = home.dir() / "data" / "xpkgs" / "xim-x-umbrella" / "1.0.0";
+    fs::create_directories(payload / "bin");
+    tk::write_file(payload / "bin" / "umbrella-tool", "#!/bin/sh\nexit 0\n");
+    fs::permissions(payload / "bin" / "umbrella-tool", fs::perms::owner_all, fs::perm_options::add);
+    auto doc = config_of(home);
+    doc["versions"]["umbrella"] = {{"type", "program"}, {"versions", {{"1.0.0", {{"path", payload.string()}}}}}};
+    doc["versions"]["umbrella-tool"] = {{"type", "program"},
+                                         {"versions", {{"1.0.0", {{"path", (payload / "bin").string()}}}}}};
+    tk::write_file(home.dir() / ".xlings.json", doc.dump());
+    const auto ws = home.dir() / "subos" / "default" / ".xlings.json";
+    auto wsDoc = Json::parse(tk::read_file(ws));
+    wsDoc["workspace"]["umbrella"] = "1.0.0";
+    wsDoc["workspace"]["umbrella-tool"] = "1.0.0";
+    tk::write_file(ws, wsDoc.dump());
+    auto checked = home.xlings({"self", "doctor"});
+    const auto out = checked.transcript();
+    EXPECT_EQ(out.find("executable 'umbrella' not found"), std::string::npos) << out;
 }

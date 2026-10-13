@@ -31,6 +31,7 @@ import xlings.core.subos.store_closure;
 import xlings.core.subos.root_view;
 import xlings.subos.roles;
 import xlings.subos.elevation;
+import xlings.subos.root_etc;
 import xlings.subos.tools;
 import xlings.carrier;
 import xlings.carrier.wsl2;
@@ -677,6 +678,7 @@ int enter(const std::string& name, EventStream& stream, const EnterOptions& opts
     if (!cmd.empty()) request.argv = {request.shell, "-c", cmd};
     else if (!opts.argv.empty()) request.argv = opts.argv;
     request.publish = opts.publish;
+    request.persist = spec::persist_from_string(opts.persist).value_or(spec::Persist::All);
     request.explicit_env = opts.env;
     request.cwd = opts.cwd;
     if (opts.detached) request.interactive = false;
@@ -684,13 +686,10 @@ int enter(const std::string& name, EventStream& stream, const EnterOptions& opts
     if (rootfs) {
         request.root = subos_root::tree_of(p.homeDir, name);
         if (!cmd.empty()) request.argv = {"/bin/sh", "-c", cmd};
-        // The root's own shell: bash where the edition brings it (core,
-        // agent-workspace), sh otherwise (tiny, nano). A link into a payload
-        // counts; whether its target resolves from here does not matter.
+        // The root's own login shell: its passwd answers (design §7), the
+        // same answer the sandbox, a machine and a drive give.
         std::error_code sec;
-        request.shell = fs::symlink_status(request.root / "usr" / "bin" / "bash", sec).type()
-                                != fs::file_type::not_found
-                            ? "/bin/bash" : "/bin/sh";
+        request.shell = subos::root_etc::login_shell(request.root);
         if (fs::is_regular_file(home.instance_file(name), sec)) {
             auto doc = nlohmann::json::parse(
                 platform::read_file_to_string(home.instance_file(name).string()), nullptr, false);
@@ -753,14 +752,18 @@ int enter(const std::string& name, EventStream& stream, const EnterOptions& opts
                 });
                 return kFail;
             }
-            if (mount_image_(img, image_mountpoint, user) != 0) {
+            if (const int mounted = mount_image_(img, image_mountpoint, user); mounted != 0) {
+                const bool nobody = mounted == subos::elevation::kNobodyToAsk;
                 stream.emit(ErrorEvent{
-                    .code = ErrorCode::Internal,
-                    .message = "failed to mount home.img",
-                    .recoverable = false,
-                    .hint = "ensure you have sudo permission for mount",
+                    .code = nobody ? ErrorCode::Permission : ErrorCode::Internal,
+                    .message = nobody ? subos::elevation::nobody_to_ask(
+                                            std::format("mounting the home image of '{}'", name),
+                                            std::format("xlings subos use {}", name))
+                                      : "failed to mount home.img",
+                    .recoverable = nobody,
+                    .hint = nobody ? std::string{} : "ensure you have sudo permission for mount",
                 });
-                return kFail;
+                return nobody ? 2 : kFail;
             }
         }
 

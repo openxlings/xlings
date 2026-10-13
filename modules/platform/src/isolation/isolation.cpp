@@ -11,6 +11,7 @@ module;
 #include <sys/ioctl.h>
 #include <sys/mount.h>
 #include <sys/prctl.h>
+#include <sys/reboot.h>
 #include <sys/stat.h>
 #include <sys/syscall.h>
 #include <sys/uio.h>
@@ -522,11 +523,18 @@ bool mount_kernel_fs(std::string_view type, const fs::path& target) {
     fs::create_directories(target, ec);
     const std::string t(type);
     unsigned long flags = MS_NOSUID;
-    if (t != "devtmpfs") flags |= MS_NODEV;
+    if (t != "devtmpfs" && t != "devpts") flags |= MS_NODEV;   // a pty slave is a device
     if (t == "proc" || t == "sysfs") flags |= MS_NOEXEC;
     if (::mount(t.c_str(), target.c_str(), t.c_str(), flags, t == "tmpfs" ? "mode=0755" : nullptr) == 0)
         return true;
     return errno == EBUSY;
+}
+
+bool mount_tmpfs(const fs::path& target, unsigned mode) {
+    std::error_code ec;
+    fs::create_directories(target, ec);
+    const auto options = std::format("mode={:o}", mode);
+    return ::mount("tmpfs", target.c_str(), "tmpfs", MS_NOSUID | MS_NODEV, options.c_str()) == 0;
 }
 
 bool remount_root_rw() {
@@ -534,6 +542,35 @@ bool remount_root_rw() {
 }
 
 bool is_pid1() { return ::getpid() == 1; }
+
+bool mount_9p(std::string_view tag, const fs::path& target, bool read_only) {
+    std::error_code ec;
+    fs::create_directories(target, ec);
+    const std::string t(tag);
+    const unsigned long flags = read_only ? MS_RDONLY : 0;
+    return ::mount(t.c_str(), target.c_str(), "9p", flags, "trans=virtio,version=9p2000.L,msize=512000,cache=mmap") == 0;
+}
+
+bool move_mount(const fs::path& from, const fs::path& to) {
+    std::error_code ec;
+    fs::create_directories(to, ec);
+    return ::mount(from.c_str(), to.c_str(), nullptr, MS_MOVE, nullptr) == 0;
+}
+
+bool switch_root(const fs::path& newroot) {
+    if (::chdir(newroot.c_str()) != 0) return false;
+    if (::mount(newroot.c_str(), "/", nullptr, MS_MOVE, nullptr) != 0) return false;
+    if (::chroot(".") != 0) return false;
+    return ::chdir("/") == 0;
+}
+
+bool set_hostname(std::string_view name) { return ::sethostname(name.data(), name.size()) == 0; }
+
+void power_off() {
+    ::sync();
+    ::reboot(RB_POWER_OFF);
+    ::_exit(0);
+}
 
 #else
 
@@ -584,8 +621,14 @@ std::optional<FileOwnership> file_ownership(const fs::path& path) {
 }
 
 bool mount_kernel_fs(std::string_view, const fs::path&) { return false; }
+bool mount_tmpfs(const fs::path&, unsigned) { return false; }
 bool remount_root_rw() { return false; }
 bool is_pid1() { return false; }
+bool mount_9p(std::string_view, const fs::path&, bool) { return false; }
+bool move_mount(const fs::path&, const fs::path&) { return false; }
+bool switch_root(const fs::path&) { return false; }
+void power_off() { std::exit(0); }
+bool set_hostname(std::string_view) { return false; }
 
 std::string kernel_release() {
 #if defined(__APPLE__)

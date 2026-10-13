@@ -74,7 +74,7 @@ Options: `--sandbox [PRESET]` — Declare its isolation once: dev (default), pri
 
 Enter a SubOS
 
-Options: `--global` — Persist the active SubOS; `--shell [KIND]` — Emit shell activation code; `--sandbox [BACKEND]` — Enable sandbox (bwrap, proot or landlock on Linux); --sandbox=dev|private|locked picks a preset; `--net <MODE>` — This call only: host, nat, none or proxy (may only tighten); `--proxy <URL>` — SOCKS5h endpoint for net=proxy; `--observe <LEVEL>` — This call only: off, basic, standard or full; `--fetch <ACTION>` — This call only: auto, ask or deny (may only tighten); `--allow <GRANT>` — This call only: grant from the policy's grants_allowed; `--no-degrade` — Refuse to enter when anything asked for is missing; `--mount <HOST[:INSIDE][:ro|rw]>` — This call only: map a host path into the SubOS; repeatable; `--cmd <COMMAND>` — Run one command; `--keep` — Keep the session after the shell exits; `--no-keep` — End the session with the shell; `--ttl <SECONDS>` — Session idle timeout; `--gpu` — Expose GPU devices (bwrap only)
+Options: `--global` — Persist the active SubOS; `--shell [KIND]` — Emit shell activation code; `--sandbox [BACKEND]` — Enable sandbox (bwrap, proot or landlock on Linux); --sandbox=dev|private|locked picks a preset; `--net <MODE>` — This call only: host, nat, none or proxy (may only tighten); `--proxy <URL>` — SOCKS5h endpoint for net=proxy; `--observe <LEVEL>` — This call only: off, basic, standard or full; `--fetch <ACTION>` — This call only: auto, ask or deny (may only tighten); `--allow <GRANT>` — This call only: grant from the policy's grants_allowed; `--no-degrade` — Refuse to enter when anything asked for is missing; `--mount <HOST[:INSIDE][:ro|rw]>` — This call only: map a host path into the SubOS; repeatable; `--cmd <COMMAND>` — Run one command; `--keep` — Keep the session after the shell exits; `--no-keep` — End the session with the shell; `--ttl <SECONDS>` — Session idle timeout; `--gpu` — Expose GPU devices (bwrap only); `--persist <MODE>` — A root's state after this session: all, home (only /home stays) or none
 
 ## `xlings subos list`
 
@@ -170,17 +170,11 @@ Move a root SubOS back to an earlier generation
 
 Options: `--to <N>` — This generation (default: the one before); `--list` — List the generations
 
-## `xlings subos boot [name]`
-
-Choose the SubOS a machine boots, from the next boot on
-
-Options: `--once` — Only the next boot (a trial); `--fallback` — Boot it when the default fails; `--mark-good` — This boot worked: keep booting it; `--now` — Switch user space to it now, where the init can (no reboot)
-
 ## `xlings subos export <name>`
 
-Export a root SubOS as a directory, a tarball or a disk image
+Export a root SubOS as a directory or a tarball (an image a machine boots: luban export)
 
-Options: `--rootfs <DIR>` — A root directory (chroot, bwrap, nspawn); `--tar <FILE>` — A root tarball (docker import, podman import, wsl --import); `--disk <FILE>` — An ext4 disk image to boot; `--drive <FILE>` — A drive image that boots a machine (GPT, UEFI and BIOS, an ext4 root); `--qcow2 <FILE>` — The drive image as qcow2 (qemu, clouds); `--iso <FILE>` — A live ISO: boots from a CD or a drive and runs from memory; `--kernel <VMLINUZ>` — The kernel a live ISO boots (default: the root's own); `--boot <PROFILE>` — The boot profile of an ISO or a drive: generic, virt, or ns:name (default: the edition's); `--size <SIZE>` — Disk size (default 4G); `--with-data` — Include /root, /home, /var, /srv, /opt
+Options: `--rootfs <DIR>` — A root directory (chroot, bwrap, nspawn); `--tar <FILE>` — A root tarball (docker import, podman import, wsl --import); `--disk <FILE>` — An ext4 filesystem image; `--size <SIZE>` — Disk size (default 4G); `--with-data` — Include /root, /home, /var, /srv, /opt
 
 ## `xlings subos diff <a> <b>`
 
@@ -233,6 +227,12 @@ Options: `--dry-run` — Preview
 ## `xlings self migrate`
 
 Migrate old layout
+
+## `xlings self log [trace]`
+
+What an operation did: the latest ones, or one by its trace
+
+Options: `--bundle [FILE]` — The operation and its side files in one file, the home's paths and the user's name taken out; `--json` — The journal's lines as they are
 
 ## `xlings self doctor`
 

@@ -27,6 +27,8 @@ import xlings.runtime;
 import xlings.ui;
 import xlings.i18n;
 import xlings.platform;
+import xlings.observe;
+import xlings.home.format;
 import xlings.subos.broker;
 import xlings.subos.policy;
 import xlings.core.subos.sandbox;
@@ -201,6 +203,8 @@ bool kind_is_interface_only_(std::string_view kind) {
         // What each request of an install resolved to (protocol 1.1); the
         // terminal already shows the plan, the progress and the summary.
         "install_targets",
+        // `subos __boot` with no name prints the entries itself (for luban).
+        "subos_boot",
     };
     return std::ranges::contains(kCapabilityOnly, kind)
         || std::ranges::contains(kWireDuplicate, kind);
@@ -601,25 +605,33 @@ void show_upgrade_notice_once_() {
         return;
     }
     if (outcome->pending.empty()) return;
+    // Said in three lines: how many root causes, the one command that repairs
+    // them (`--fix` runs the right step for each), where the details are.
+    // Every item, with its own command, is in logs/upgrade.ndjson and in
+    // `self doctor`; `-v` prints the first of them here too.
+    const auto problems = outcome->problems();
     diag::Diagnostic d {
         .level   = diag::Level::Warn,
         .code    = "self.upgrade_pending",
-        .summary = std::format("xlings {} (from {}): {} thing(s) in this home need a step it could "
-                               "not take by itself", outcome->to, outcome->from, outcome->pending.size()),
+        .summary = outcome->firstRecord
+            ? std::format("xlings {}: this home has {} problem(s) it could not fix by itself "
+                          "(already there before this version)", outcome->to, problems)
+            : std::format("xlings {} (from {}): {} problem(s) in this home it could not fix by itself",
+                          outcome->to, outcome->from, problems),
     };
-    std::vector<std::string> commands;
-    for (std::size_t i = 0; i < outcome->pending.size(); ++i) {
-        const auto& p = outcome->pending[i];
-        if (i < 5) {
-            auto what = p.what.size() > 160 ? p.what.substr(0, 157) + "..." : p.what;
-            d.facts.push_back({ "needs", std::move(what) });
+    if (log::get_level() == log::Level::Debug) {
+        std::set<std::string> shown;
+        for (const auto& p : outcome->pending) {
+            const auto& key = p.group.empty() ? p.what : p.group;
+            if (!shown.insert(key).second) continue;
+            if (shown.size() > 10) break;
+            d.facts.push_back({ "needs", p.what.size() > 160 ? p.what.substr(0, 157) + "..." : p.what });
         }
-        if (std::ranges::find(commands, p.command) == commands.end()) commands.push_back(p.command);
     }
-    if (outcome->pending.size() > 5)
-        d.facts.push_back({ "and", std::format("{} more: xlings self doctor", outcome->pending.size() - 5) });
-    for (const auto& c : commands) d.actions.push_back({ "run", c });
-    if (outcome->canGoBack)
+    d.actions.push_back({ "fix", "xlings self doctor --fix" });
+    d.actions.push_back({ "details", std::format("xlings self doctor   (log: {})",
+                                                 Config::display_path(Config::paths().homeDir / "logs" / "upgrade.ndjson")) });
+    if (outcome->canGoBack && !outcome->firstRecord)
         d.actions.push_back({ "or go back", std::format("xlings use xlings {}", outcome->from) });
     diag::emit(d);
 }
@@ -1582,6 +1594,28 @@ std::vector<std::string> inject_omitted_values_(int argc, char* argv[]) {
     return out;
 }
 
+// A command that changes nothing in the home: a read-only one, or a dry run
+// (which says what would happen). It starts no journal and is not the first
+// command of an upgrade.
+bool changes_nothing_(std::span<const std::string_view> words) {
+    // `interface --version` is a program asking which protocol this is.
+    if (words.size() == 2 && words[0] == "interface" && words[1] == "--version") return true;
+    return home::is_read_only_command(words) || std::ranges::find(words, std::string_view("--dry-run")) != words.end();
+}
+
+// The environment's names an operation's journal keeps: what changes how
+// xlings behaves, never what a user's other programs keep there.
+std::vector<std::string> journal_env_names_() {
+    std::vector<std::string> out;
+    for (const auto& name : observe::redact_env(platform::environment())) {
+        const bool kept = name.starts_with("XLINGS_") || name.starts_with("LUBAN_") || name == "LANG"
+            || name.starts_with("LC_") || name == "TERM" || name == "SHELL" || name == "DISPLAY"
+            || name == "WAYLAND_DISPLAY" || name.ends_with("_PROXY") || name.ends_with("_proxy");
+        if (kept) out.push_back(name);
+    }
+    return out;
+}
+
 int dispatch_(int argc, char* argv[]) {
     // Tab completion. Handled before anything else so a Tab press does not pay
     // for the event stream, theme, i18n or the capability registry — its
@@ -1837,6 +1871,39 @@ int dispatch_(int argc, char* argv[]) {
         if (!a.starts_with("-")) { cmd = std::string(a); break; }
     }
 
+    // The operation journal (design §13): one file per operation, which
+    // every process it runs appends to under the trace id it inherits.
+    // A read-only command (a dry run among them) starts none of its own, and
+    // joins the one it is a step of. `self uninstall` keeps none: it removes
+    // the home the journal is in (and a cancelled one leaves it untouched).
+    const char* inherited = std::getenv("XLINGS_TRACE_ID");
+    std::vector<std::string_view> commandWords;
+    for (int i = 1; i < fargc; ++i)
+        if (!commandWords.empty() || !std::string_view(fargv[i]).starts_with("-")) commandWords.emplace_back(fargv[i]);
+    const bool joining = inherited && *inherited;
+    const bool self_ = cmd == "self" && commandWords.size() > 1;
+    if (!cmd.empty() && !(self_ && (commandWords[1] == "log" || commandWords[1] == "uninstall"))
+        && (joining || !changes_nothing_(commandWords))) {
+        const auto trace = observe::ops::trace_from_environment();
+        std::vector<std::string> words;
+        bool agentFlag = false;
+        for (int i = 1; i < fargc; ++i) {
+            words.emplace_back(fargv[i]);
+            agentFlag = agentFlag || std::string_view(fargv[i]) == "--agent";
+        }
+        const char* agentEnv = std::getenv("XLINGS_AGENT_MODE");
+        const bool agent = agentFlag || (agentEnv && std::string_view(agentEnv) == "1");
+        observe::ops::begin(Config::paths().homeDir, trace,
+                            nlohmann::json{{"client", "xlings"}, {"version", std::string(Info::VERSION)},
+                                           {"argv", observe::ops::redact_argv(words)},
+                                           {"platform", std::string(platform::OS_NAME)},
+                                           {"layout", home::format::kLayout},
+                                           {"actor", agent ? "agent" : cmd == "interface" ? "program" : "cli"},
+                                           {"env", journal_env_names_()}},
+                            !(inherited && trace == inherited));
+        platform::set_env_variable("XLINGS_TRACE_ID", trace);
+    }
+
     // Told once per version, not once per command -- see
     // show_upgrade_notice_once_. `self`/`interface` are excluded: `self
     // doctor`/`self update` report the same fact as part of their own job,
@@ -2034,7 +2101,28 @@ int dispatch_(int argc, char* argv[]) {
             return 2;
         }
 
-        if (cmd == "subos" || cmd == "self" || cmd == "profile") {
+        // What moved to Luban (design §2) says where it went before the spec
+        // can call it unknown; its implementation is the plumbing `subos
+        // __boot` / `subos __export` (never in the spec, help or completion).
+        if (cmd == "subos" && fargc >= 3) {
+            const std::string_view sub = fargv[2];
+            // `subos export`'s bootable formats, which `luban export` writes now.
+            static constexpr std::array<std::string_view, 5> moved{"--iso", "--drive", "--qcow2", "--kernel", "--boot"};
+            bool bootable = false;
+            for (int i = 3; i < fargc && sub == "export"; ++i)
+                bootable = bootable || std::ranges::find(moved, std::string_view(fargv[i])) != moved.end();
+            if (sub == "boot" || bootable) {
+                std::string rest;
+                for (int i = 3; i < fargc; ++i) rest += std::string(" ") + fargv[i];
+                log::error("{}", sub == "boot"
+                    ? std::format("a machine's boot entries are Luban's now: luban boot{}", rest)
+                    : std::string("an image a machine boots is Luban's now: luban export <name> <file> "
+                                  "(.iso, .img, .qcow2); `xlings subos export` writes --rootfs, --tar and --disk"));
+                return 2;
+            }
+        }
+        const bool plumbing = cmd == "subos" && fargc >= 3 && std::string_view(fargv[2]).starts_with("__");
+        if ((cmd == "subos" && !plumbing) || cmd == "self" || cmd == "profile") {
             const std::array<std::string_view, 1> path{cmd};
             if (const auto* command = spec::find(path)) {
                 std::vector<std::string_view> manualArgs;
@@ -2481,7 +2569,7 @@ void after_command(int argc, char* argv[]) {
         }
         words.push_back(a);
     }
-    if (words.empty() || home::is_read_only_command(words)) return;
+    if (words.empty() || changes_nothing_(words)) return;
     const auto cmd = words[0];
     if (cmd == "self" || cmd == "interface" || (cmd == "config" && words.size() == 1)) return;
     // A session's exit code is the program's that ran in it, not a sign the
@@ -2495,7 +2583,15 @@ void after_command(int argc, char* argv[]) {
     }
 }
 
+int run_guarded_(int argc, char* argv[]);
+
 int run(int argc, char* argv[]) {
+    const int rc = run_guarded_(argc, argv);
+    observe::ops::end(rc);
+    return rc;
+}
+
+int run_guarded_(int argc, char* argv[]) {
     try {
         return dispatch_(argc, argv);
     } catch (const std::filesystem::filesystem_error& e) {

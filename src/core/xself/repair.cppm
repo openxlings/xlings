@@ -143,8 +143,15 @@ using DependentsProvider =
     std::function<std::vector<Dependent>(const std::string& target)>;
 
 // Silences a probe. The probe's output is not part of doctor's report and
-// would interleave with it.
+// would interleave with it. Its input is the null device too: a child that
+// reads the terminal from the background of it is stopped by the kernel.
 std::string quiet_suffix();
+
+// Runs a repair child that never asks anything: XLINGS_AGENT_MODE=1 for its
+// duration, so a step that would need a confirmation or administrator rights
+// exits 2 with the command instead of prompting (a prompt from a child that is
+// not in the terminal's foreground can never be answered).
+int run_unattended(const std::string& cmd);
 
 // Can the index supply this package again?
 //

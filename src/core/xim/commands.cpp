@@ -2842,7 +2842,9 @@ int cmd_info(const std::string& target, EventStream& stream, bool allVersions) {
             });
             return 2;
         }
-        log::error("{}", match.error());
+        // Not in the index: a fact a program asking (package_info) can tell
+        // from a failure.
+        stream.emit(ErrorEvent{.code = ErrorCode::NotFound, .message = match.error(), .recoverable = false});
         return 1;
     }
 
@@ -2879,6 +2881,19 @@ int cmd_info(const std::string& target, EventStream& stream, bool allVersions) {
             catStr += c;
         }
         addField(fieldsJson, "categories", catStr);
+    }
+    // What it is and where it is made for: a reader (Luban OS's quick start)
+    // shows whether it can be had here.
+    addField(fieldsJson, "status", pkg->status == mcpplibs::xpkg::PackageStatus::Stable       ? "stable"
+                                   : pkg->status == mcpplibs::xpkg::PackageStatus::Deprecated ? "deprecated"
+                                                                                              : "dev");
+    if (!pkg->archs.empty()) {
+        std::string archStr;
+        for (auto& arch : pkg->archs) {
+            if (!archStr.empty()) archStr += " ";
+            archStr += arch;
+        }
+        addField(fieldsJson, "archs", archStr);
     }
 
     auto platform = detect_platform();

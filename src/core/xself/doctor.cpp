@@ -1,5 +1,7 @@
 module xlings.core.xself.doctor;
 
+import xlings.home.format;
+import xlings.core.xself.upgrade;
 import std;
 import xlings.core.xself.init;
 import xlings.core.xself.compat;
@@ -171,6 +173,16 @@ bool payload_has_any_executable_(const fs::path& dir) {
         return false;
     };
     return scan(dir) || scan(dir / "bin");
+}
+
+// A registration of the package's own name at its payload's root
+// (`data/xpkgs/<ns>-x-<name>/<version>`): what `xvm.add(package.name)`
+// writes. The recipe's programs are registered separately under their own
+// names; this one only names the package.
+bool umbrella_registration_(std::string_view name, const fs::path& payload) {
+    const auto store = payload.parent_path().filename().string();
+    const auto separator = store.find("-x-");
+    return separator != std::string::npos && std::string_view(store).substr(separator + 3) == name;
 }
 
 // An alias as the runtime would actually read it.
@@ -1668,6 +1680,25 @@ Scan detect_(const DoctorState& st, const CoordinateProbe& probe,
                         .detail  = std::format(
                             "{} registers no program of its own; it names the "
                             "release its libraries belong to",
+                            xvm::display_coordinate(name, version)),
+                    });
+                    continue;
+                }
+                // The recipe idiom `xvm.add(package.name)`: the package's own
+                // name, registered at its payload's root, while its programs
+                // (android-emulator -> `emulator`, qemu-riscv ->
+                // `qemu-system-riscv64`) are registered under their own names.
+                // Not a broken payload -- reinstalling changes nothing, which is
+                // how `--fix` once reported the same finding on every pass.
+                if (umbrella_registration_(name, expanded)) {
+                    add({
+                        .kind    = FindingKind::ReleaseAnchor,
+                        .level   = FindingLevel::Notice,
+                        .target  = name,
+                        .version = version,
+                        .detail  = std::format(
+                            "{} is the package's own registration; its programs are "
+                            "registered under their own names",
                             xvm::display_coordinate(name, version)),
                     });
                     continue;
@@ -3283,7 +3314,7 @@ std::vector<PendingStep> upgrade_check() {
     for (const auto& f : scan.findings) {
         if (f.level == FindingLevel::Notice || f.remedy.empty()) continue;
         if (std::ranges::any_of(out, [&](const PendingStep& p) { return p.what == f.detail; })) continue;
-        out.push_back({f.detail, f.remedy});
+        out.push_back({f.detail, f.remedy, !f.groupKey.empty() ? f.groupKey : f.remedy});
     }
     return out;
 }
@@ -3306,6 +3337,15 @@ void repair_state_(RepairReport& out) {
             for (const auto& n : repaired->notes) note(glyph::mark(glyph::bullet, "  "), n);
             Config::reload_state();
         }
+    }
+
+    // The home's format (xlings.home.format): the same steps the upgrade
+    // runs, so the command the upgrade names repairs what it could not.
+    {
+        const auto format = home::format::run(Config::paths().homeDir, upgrade::format_steps());
+        for (const auto& [step, what] : format.done) note(glyph::mark(glyph::bullet, "home layout"), what);
+        for (const auto& [step, why] : format.failed)
+            note(glyph::mark(glyph::failed, "home layout"), std::format("{}: {}", step, why));
     }
 
     // A versions DB file that disagrees with the home config's `versions`
@@ -3770,6 +3810,15 @@ void repair_other_subos_walk_(const Scan& scan, const std::string& client,
                     "run it directly (raise {} first if it is a slow, "
                     "legitimate install)",
                     name, cmd, timeoutSeconds, doctor_child_timeout_env_()));
+        } else if (rc == 2) {
+            // The child ran unattended (run_unattended) and stopped at a step
+            // only a person can answer -- administrator rights, a confirmation.
+            out.failedSubos.emplace_back(name, rc);
+            out.notes.emplace_back(
+                glyph::mark(glyph::failed, "cross-subos repair"),
+                std::format("subos '{}' needs an answer only you can give (administrator "
+                            "rights or a confirmation); run `xlings subos use {} && "
+                            "xlings self doctor --fix` at a terminal", name, name));
         } else if (rc != 0) {
             out.failedSubos.emplace_back(name, rc);
             out.notes.emplace_back(
@@ -3963,9 +4012,7 @@ void repair_payloads_(const DoctorState& st, const Scan& scan,
         }
     }
 
-    const CommandRunner run = [](const std::string& cmd) {
-        return platform::exec(cmd);
-    };
+    const CommandRunner run = [](const std::string& cmd) { return run_unattended(cmd); };
 
     // Repair with the client that is running, not with whatever `xlings`
     // resolves to on PATH. Normally the same binary; not when doctor was
@@ -5883,9 +5930,7 @@ int cmd_doctor(EventStream& stream, bool fix, bool resetMetadata, bool dryRun, b
         ++initialEntryIssues[{f.target, f.version}];
     }
 
-    const CommandRunner run = [](const std::string& cmd) {
-        return platform::exec(cmd);
-    };
+    const CommandRunner run = [](const std::string& cmd) { return run_unattended(cmd); };
 
     // Guarded here, not inside repair_other_subos_walk_: a child invoked
     // WITH --subos is already anchored to one subos and must not walk

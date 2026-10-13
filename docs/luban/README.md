@@ -40,7 +40,8 @@ machine's boot.
 | the private agent workspace | yes | yes | — | through `wsl2` |
 | images: ISO, drive, qcow2, tar | yes | yes | — | — |
 | boot: BIOS and UEFI | yes | UEFI | — | — |
-| `luban try` (a local VM) | yes | yes (emulated without KVM) | — | — |
+| `luban enter --mode machine` (a local VM) | yes | yes (emulated without KVM) | — | — |
+| a desktop in the Luban OS window | yes | the desktop runs; the window is not packaged yet | — | — |
 | boot profiles | `generic` (machines), `virt` (VMs) | `virt` | — | — |
 
 On the host, Linux needs nothing but its kernel and, on Ubuntu 23.10 and later,
@@ -54,9 +55,10 @@ comes from the index.
 - [02 — Editions](02-editions.md) — what each has, and how a version is chosen
 - [03 — Environments](03-environments.md) — settings, grants, upgrade, rollback
 - [04 — The Agent Workspace](04-agent-workspace.md) — a private place for an agent
-- [05 — Images](05-images.md) — ISO, drive, qcow2, tar; boot profiles; `try`; writing a drive
+- [05 — Images](05-images.md) — ISO, drive, qcow2, tar; boot profiles; booting one; writing a drive
 - [06 — The Machine](06-machine.md) — Luban as a machine's system: stage-0, boot entries, rollback at boot
 - [07 — Host Support](07-host-support.md) — which hosts, the one-time setup, what to do when it fails
+- [08 — The Desktop and the Luban OS Window](08-desktop.md) — the window, desktops, your own compositor
 - [91 — Architecture](91-architecture.md) — for developers: how it is built
 
 Every luban command and option: [the generated reference](../generated/luban-command-reference.md).

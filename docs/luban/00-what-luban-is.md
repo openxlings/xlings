@@ -39,4 +39,4 @@ The environment is the same in all three: the packages, its `/etc`, its policy.
   luban does not run containers.
 - Not a hiding place on a shared kernel: what a shared kernel cannot hide (its
   version, the CPU, the host paths bound in) is listed by `luban status`; a kernel
-  of its own is `luban try`.
+  of its own is `luban enter --mode machine`.

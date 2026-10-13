@@ -93,6 +93,10 @@ XTEST(SubosSpec, LegacyBwrapArgvIsTheOldOnePlusTheS0Fixes,
          "--ro-bind", "/h", "/h",
          "--tmpfs", "/h/subos",
          "--bind", "/h/subos/box", "/h/subos/box",
+         // Other instances' config (policy, persona, record) out of sight;
+         // its own read-only.
+         "--tmpfs", "/h/config/subos",
+         "--ro-bind", "/h/config/subos/box", "/h/config/subos/box",
          "--tmpfs", "/h/logs",
          "--tmpfs", "/h/run",
          "--tmpfs", "/h/state",

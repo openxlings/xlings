@@ -118,7 +118,7 @@ jobs:
           # (gcc@15.1.0-musl), so a CI build and a release build hash the same
           # -- sharing one key across workflows is wrong on its own terms even
           # though it was not what caused this.
-          key: mcpp-v4-ci-linux-root-${{ runner.os }}-${{ hashFiles('mcpp.toml', 'mcpp.lock', '.xlings.json') }}-${{ env.BOOTSTRAP_XLINGS_VERSION }}
+          key: mcpp-v4-ci-linux-root-${{ runner.os }}-${{ hashFiles('mcpp.toml', '.xlings.json') }}-${{ env.BOOTSTRAP_XLINGS_VERSION }}
           restore-keys: |
             mcpp-v4-ci-linux-root-${{ runner.os }}-
       # An inexact restore (the `restore-keys` fallback) brings BMIs built
@@ -233,7 +233,7 @@ jobs:
           # ~800 MB mcpp cache restored one step earlier almost worthless.
           prune_registry() {
             [ -d "$1" ] || return 0
-            find "$1" -mindepth 1 -maxdepth 1 ! -name data -exec rm -rf {} +
+            find "$1" -mindepth 1 -maxdepth 1 ! -name data ! -name subos -exec rm -rf {} +  # the subos links into the payloads, and packages into it
             [ -d "$1/data" ] || return 0
             find "$1/data" -mindepth 1 -maxdepth 1 ! -name xpkgs -exec rm -rf {} +
           }

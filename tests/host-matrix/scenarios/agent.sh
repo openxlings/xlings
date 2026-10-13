@@ -10,9 +10,9 @@ require_isolation
 fixture=$!; trap 'kill $fixture 2>/dev/null' EXIT
 for _ in $(seq 50); do [[ -s "$HM_STATE/aproxy.port" ]] && break; sleep 0.1; done
 port="$(cat "$HM_STATE/aproxy.port")"
-step "luban new hma tiny" ok -- L new hma tiny
-step "policy agent-private" ok -- L config hma policy xim:agent-private
-step "its proxy" ok -- L config hma proxy "socks5h://127.0.0.1:$port"
+step "luban new hma --edition tiny" ok -- L new hma --edition tiny
+step "policy agent-private" ok -- L config hma --policy xim:agent-private
+step "its proxy" ok -- L config hma --proxy "socks5h://127.0.0.1:$port"
 probe='echo HOST=$(hostname); echo MID=$(cat /etc/machine-id); tail -n +3 /proc/net/dev | cut -d: -f1 | tr -d " " | tr "\n" ,; echo'
 step "enters" ok 'HOST=' -- L run hma -- /bin/sh -c "$probe"
 first="$LAST_OUT"

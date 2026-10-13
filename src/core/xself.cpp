@@ -31,6 +31,7 @@ import xlings.core.xself.config;
 import xlings.core.xself.clean;
 import xlings.core.xself.migrate;
 import xlings.core.xself.doctor;
+import xlings.core.xself.oplog;
 import xlings.core.xself.compat;
 import xlings.libs.json;
 import xlings.runtime;
@@ -131,6 +132,7 @@ int run(int argc, char* argv[], EventStream& stream) {
         if (auto rc = reject_surplus(action); rc != 0) return rc;
         return cmd_migrate();
     }
+    if (action == "log") return cmd_log(args);
     if (action == "doctor") {
         bool fix = false;
         bool resetMetadata = false;

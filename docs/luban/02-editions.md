@@ -15,7 +15,8 @@ it is made under, how it boots. Editions are packages of the index
 | `luban-tiny-musl` | `luban-tiny-musl` | tiny with musl instead of glibc | yes | yes |
 | `luban-core` | `core` (the default) | bash, fish, vim, nvim, git, mcpp, ninja, coreutils, gcc, binutils, make, openssl | yes | yes |
 | `luban-agent-workspace` | `agent-workspace` | core, an agent (claude), and the `agent-private` policy | yes | yes |
-| `luban-desktop` | `subos:luban-desktop` | a desktop stack (preview) | yes | — |
+| `luban-desktop` | `desktop` | core, the xdesk classic desktop and the tools people reach for (node, python, uv, bun, ripgrep, fd, fzf, jq, tmux, htop, claude, codex, pi, opencode); run as a machine ([The desktop](08-desktop.md)) | yes | yes (labwc) |
+| `luban-desktop-xdesk` | `desktop-xdesk` | the same on the xdesk canvas (to explore) | yes | not yet |
 
 Each starts `from` the one below it (`core` from `tiny`, `tiny` from `nano`);
 an edition built for another architecture than this machine's is refused before
@@ -25,7 +26,7 @@ anything is made.
 
 - An edition is versioned by the date it was published (`2026.10.11.2`), and a
   published version's output never changes.
-- `luban new box core` takes the edition's `latest`; `subos:luban-core@2026.10.11.1`
+- `luban new box --edition core` takes the edition's `latest`; `subos:luban-core@2026.10.11.1`
   takes that version.
 - An edition that needs a newer client than yours says so (`min_client`) and
   names the upgrade, instead of half-working.
@@ -60,6 +61,14 @@ An edition is a manifest:
 | `boot` | its init, and the boot profile an image of it uses |
 | `min_client` | the oldest xlings that understands it |
 
+Two files of the root say how it runs, and neither is code:
+
+- `usr/share/luban/settings.json` — the edition's defaults for `luban config`
+  (`mode`, `persist`, `desktop`, `on_close`); what a user sets wins, and they
+  follow an upgrade. The desktop edition's is `{ "mode": "machine", "desktop": "xdesk-classic" }`.
+- `share/wayland-sessions/<id>.desktop` — a desktop session, from a package
+  ([The desktop](08-desktop.md)).
+
 Make an environment from it, adjust it, and publish it:
 
 ```bash
@@ -67,6 +76,6 @@ xlings subos new mydistro --rootfs --from subos:luban-nano
 xlings subos pack mydistro --as myns:mydistro@2026.10.12.1
 ```
 
-Then anyone with your index can `luban new box myns:mydistro` and export it.
+Then anyone with your index can `luban new box --edition myns:mydistro` and export it.
 The index's [Luban packages](https://github.com/openxlings/xim-pkgindex/blob/main/docs/12-luban-packages.md)
 chapter covers editions, policies and boot profiles as recipes.

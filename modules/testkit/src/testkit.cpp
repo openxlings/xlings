@@ -121,7 +121,7 @@ const std::map<std::string, Meta, std::less<>>& registry() { return registry_mut
 
 namespace {
 
-constexpr std::array<std::string_view, 17> kCapabilities {
+constexpr std::array<std::string_view, 18> kCapabilities {
     "linux", "macos", "windows", "posix",
     "xlings-bin",   // a built binary to drive
     "pty",          // pseudo-terminals (agent contract scan)
@@ -136,7 +136,27 @@ constexpr std::array<std::string_view, 17> kCapabilities {
     "docker",       // a docker daemon this user can drive
     "qemu",         // qemu-system for this architecture
     "kvm",          // /dev/kvm is usable (a boot finishes in seconds, not minutes)
+    "static-xlings",// the xlings under test has no loader (a release build): it can enter a root
 };
+
+// An ELF file with no PT_INTERP: what a static release build is. A build
+// linked to its toolchain's runtime cannot be a root's session client.
+bool elf_without_interpreter(const fs::path& file) {
+    std::ifstream in(file, std::ios::binary);
+    std::array<unsigned char, 64> h{};
+    if (!in.read(reinterpret_cast<char*>(h.data()), h.size()) || h[0] != 0x7f || h[1] != 'E' || h[4] != 2) return false;
+    auto u16 = [&](std::size_t at) { return static_cast<std::uint16_t>(h[at] | h[at + 1] << 8); };
+    std::uint64_t phoff = 0;
+    for (int k = 7; k >= 0; --k) phoff = phoff << 8 | h[0x20 + static_cast<std::size_t>(k)];
+    const auto size = u16(0x36), count = u16(0x38);
+    for (std::uint16_t i = 0; i < count; ++i) {
+        std::array<unsigned char, 4> type{};
+        in.seekg(static_cast<std::streamoff>(phoff + std::uint64_t(i) * size));
+        if (!in.read(reinterpret_cast<char*>(type.data()), 4)) return false;
+        if (type[0] == 3 && type[1] == 0 && type[2] == 0 && type[3] == 0) return false;   // PT_INTERP
+    }
+    return true;
+}
 
 // Run a probe command quietly; true when it exits 0.
 bool quiet_ok(const std::vector<std::string>& argv) {
@@ -164,6 +184,13 @@ std::optional<std::string> probe_uncached(std::string_view cap) {
     if (cap == "posix" || cap == "pty") {
         if constexpr (is_posix) return std::nullopt;
         else return "not POSIX";
+    }
+    if (cap == "static-xlings") {
+        if constexpr (!is_linux) return "not Linux";
+        if (xlings_binary().empty()) return "no xlings binary";
+        if (!elf_without_interpreter(xlings_binary()))
+            return "the xlings under test is a development build (it has a loader): set XLINGS_BIN to a release build";
+        return std::nullopt;
     }
     if (cap == "xlings-bin") {
         if (xlings_binary().empty())

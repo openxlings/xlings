@@ -1,0 +1,26 @@
+# The home's format, as its own package (Luban OS architecture design §4).
+#
+# What a home's layout version means, which client understands which, the
+# ordered steps that bring an older home to this client's layout, and the
+# classes a problem found in a home falls into. It knows the marker file and
+# nothing of Config: a step that needs more is registered by the frontend that
+# has it, and the runner here only orders, isolates and records them.
+#
+# The layout version is the marker's integer `layout`, because released
+# clients from 2026.10.9.1 on decide whether they may write a home by it. Only
+# a change an older client would undo by writing raises it; an additive one
+# (new files and keys an older client ignores) does not.
+[package]
+namespace = "xlings"
+name      = "home"
+version   = "0.1.0"
+
+[targets.home]
+kind = "lib"
+
+[dependencies]
+libs     = { path = "../libs" }       # json
+platform = { path = "../platform" }   # atomic writes
+
+[build]
+include_dirs = ["../libs/src/json"]

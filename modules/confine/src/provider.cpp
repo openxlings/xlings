@@ -37,6 +37,7 @@ std::vector<std::string> bwrap_argv(const spec::SandboxSpec& s, std::optional<in
         case MountKind::RoBind:  a.insert(a.end(), {"--ro-bind", m.src, m.dst}); break;
         case MountKind::Bind:    a.insert(a.end(), {"--bind", m.src, m.dst}); break;
         case MountKind::DevBind: a.insert(a.end(), {"--dev-bind", m.src, m.dst}); break;
+        case MountKind::TmpOverlay: a.insert(a.end(), {"--overlay-src", m.src, "--tmp-overlay", m.dst}); break;
         }
     }
     if (seccomp_fd) a.insert(a.end(), {"--seccomp", std::to_string(*seccomp_fd)});

@@ -1,0 +1,22 @@
+# xdesk: one desktop session -- the compositor, its shell and a profile
+# (classic: tile and a traditional desktop; canvas: an infinite canvas), an
+# opensal consumer whose standard input and output are opensal.wire (Luban OS
+# desktop part 2 §2).
+[package]
+namespace = "xdesk"
+name      = "xdesk-app"
+version   = "0.1.0"
+
+[targets.xdesk]
+kind = "bin"
+main = "src/main.cpp"
+
+[dependencies]
+xdesk-compositor = { path = "../../luban/desktop/xdesk/compositor" }
+opensal          = { path = "../../luban/desktop/opensal/spec" }
+xdesk-base       = { path = "../../luban/desktop/xdesk/base" }
+
+[build]
+# The GPU libraries wlroots' package links whether or not its GLES renderer is
+# built: unused here (headless, pixman), so they do not stay NEEDED.
+ldflags = ["-Wl,--as-needed"]

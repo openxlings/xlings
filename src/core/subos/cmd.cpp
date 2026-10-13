@@ -1362,8 +1362,31 @@ std::map<std::string, std::string> declared_env_(const std::string& name) {
 }
 
 int use_spawn_shell(const std::string& name, EventStream& stream, bool sandbox, const std::string& sandbox_backend, bool gpu, const std::string& cmd,
-                    std::optional<policy::Preset> preset, const policy::Overrides& overrides)
+                    std::optional<policy::Preset> preset, const policy::Overrides& overrides, std::string_view persist)
 {
+    const std::string persisted(persist.empty() ? "all" : persist);
+    if (persisted != "all" && persisted != "home" && persisted != "none") {
+        stream.emit(ErrorEvent{.code = ErrorCode::InvalidInput,
+                               .message = std::format("--persist {}: all, home or none", persist), .recoverable = false});
+        return 2;
+    }
+    if (persisted != "all") {
+        const auto kind = subos_root::read_kind(Config::paths().homeDir, name);
+        if (!kind || *kind != roles::Kind::Rootfs) {
+            stream.emit(ErrorEvent{.code = ErrorCode::InvalidInput,
+                                   .message = std::format("--persist {} keeps a root's state from a session; '{}' is not a root", persist, name),
+                                   .recoverable = false});
+            return 2;
+        }
+        if (session::find(home_view(), name)) {
+            stream.emit(ErrorEvent{.code = ErrorCode::InvalidInput,
+                                   .message = std::format("'{}' has a running session, which keeps what it writes; "
+                                                          "`xlings subos stop {}` first", name, name),
+                                   .recoverable = true});
+            return 2;
+        }
+        sandbox = true;
+    }
     // A declared instance is entered under its policy however it is entered
     // (design §10: the secure default belongs to the instance, not the flag).
     if (!sandbox && (preset || enters_sandboxed_(name))) sandbox = true;
@@ -1390,9 +1413,11 @@ int use_spawn_shell(const std::string& name, EventStream& stream, bool sandbox, 
         if (auto rc = use_detail_::validate_subos_(name, stream); rc != 0) return rc;
         use_detail_::apply_subos_env_(name);
         warn_sandbox_without_gpu_(name, gpu, stream);
+        // A `--cmd` run is a script: its standard output is the command's alone
+        // (a stream a program reads, as the Luban OS window reads a desktop's).
         return sandbox::enter(name, stream, sandbox::EnterOptions{
             .backend = sandbox_backend, .gpu = gpu, .cmd = cmd, .env = declared_env_(name),
-            .preset = preset, .overrides = overrides });
+            .announce = cmd.empty(), .preset = preset, .overrides = overrides, .persist = persisted });
     }
     warn_storage_dormant_on_shell_(name);
 
@@ -1726,7 +1751,7 @@ int forward_to_carrier_(const CarrierBinding_& b, std::vector<std::string> args,
         return 125;
     }
     std::map<std::string, std::string> env;
-    for (const auto* k : {"XLINGS_AGENT_MODE", "XLINGS_NON_INTERACTIVE", "XLINGS_TRACE", "NO_COLOR", "TERM", "LANG"})
+    for (const auto* k : {"XLINGS_AGENT_MODE", "XLINGS_NON_INTERACTIVE", "XLINGS_TRACE", "XLINGS_TRACE_ID", "NO_COLOR", "TERM", "LANG"})
         if (const char* v = std::getenv(k)) env[k] = v;
     return carrier::terminal(*at, args, env);
 }
@@ -2020,7 +2045,7 @@ int run(int argc, char* argv[], EventStream& stream) {
     // A SubOS on another carrier: its xlings answers there (part 3 §5).
     static const std::set<std::string, std::less<>> kNamed{
         "use", "exec", "start", "stop", "remove", "info", "config", "status", "doctor", "cp", "log",
-        "report", "requests", "approve", "deny", "rollback", "boot", "export", "diff", "pack"};
+        "report", "requests", "approve", "deny", "rollback", "boot", "__boot", "export", "__export", "diff", "pack"};
     if (kNamed.contains(sub)) {
         for (int i = 3; i < argc; ++i) {
             const std::string a = argv[i];
@@ -2346,6 +2371,7 @@ int run(int argc, char* argv[], EventStream& stream) {
         // already passes /dev and /sys through wholesale).
         // Ref: .agents/docs/2026-05-22-subos-sandbox-gpu-passthrough.md
         bool gpu = false;
+        std::string persist;
         std::vector<std::pair<int, std::string>> normalizedMounts;
         for (int i = 3; i < argc; ++i) {
             std::string a = argv[i];
@@ -2405,6 +2431,9 @@ int run(int argc, char* argv[], EventStream& stream) {
             }
             else if (a == "--gpu") {
                 gpu = true;
+            }
+            else if (a == "--persist" && i + 1 < argc) {
+                persist = argv[++i];
             }
             else if (!a.empty() && a[0] != '-' && name.empty()) {
                 name = std::move(a);
@@ -2488,7 +2517,7 @@ int run(int argc, char* argv[], EventStream& stream) {
             if (rc != 0) return rc;
         }
         return use_spawn_shell(name, stream, sandbox, sandbox_backend, gpu, cmd,
-                               iso.preset, iso.overrides);
+                               iso.preset, iso.overrides, persist);
     }
     if (sub == "list")   return run_list_(stream);
     if (sub == "remove") {
@@ -2589,8 +2618,16 @@ int run(int argc, char* argv[], EventStream& stream) {
     }
     if (sub == "rollback") return run_rollback_(argc, argv, stream, usageError);
     if (sub == "upgrade") return run_upgrade_(argc, argv, stream, usageError, yesGiven);
-    if (sub == "boot") return run_boot_(argc, argv, stream, usageError);
-    if (sub == "export") return run_export_(argc, argv, stream, usageError);
+    // A machine's boot entries and the images a machine boots are Luban's
+    // (design §2): `luban boot`, `luban export`. Their implementation is here,
+    // reached by luban through the plumbing names `subos __boot` /
+    // `subos __export`; the user-facing spellings say where they went.
+    // A machine's boot entries and the images a machine boots are Luban's
+    // (design §2): `luban boot`, `luban export`, which reach this
+    // implementation through the plumbing names (cli.cpp says where the
+    // user-facing spellings went).
+    if (sub == "__boot") return run_boot_(argc, argv, stream, usageError);
+    if (sub == "__export" || sub == "export") return run_export_(argc, argv, stream, usageError);
     if (sub == "diff") return run_diff_(argc, argv, stream, usageError);
     if (sub == "pack") return run_pack_(argc, argv, stream, usageError);
 

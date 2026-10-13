@@ -74,6 +74,7 @@ Intent lower(const policy::Policy& policy, const HomeView& home, const spec::Req
     in.disable_userns = policy.disable_userns;
     in.interactive = r.interactive;
     in.shell = r.shell;
+    in.persist = r.persist;
     in.argv = r.argv;
     in.cwd = r.cwd;
     in.host_env = r.host_env;

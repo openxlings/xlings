@@ -18,7 +18,10 @@ Implementation home_redirect() {
     impl.backend = sp::Backend::HomeRedirect;
     impl.name = "home-redirect";
     impl.advisory_fs = "this platform redirects the home directory only (advisory)";
-    impl.available = [](const Caps&, const in::Intent&, fs::path&) -> std::optional<sp::Unmet> {
+    impl.available = [](const Caps&, const in::Intent& i, fs::path&) -> std::optional<sp::Unmet> {
+        if (i.persist != sp::Persist::All)
+            return sp::Unmet{"persist", "keeping nothing of a session needs a mount namespace this platform's sandbox does not have",
+                             "luban enter <name> --mode machine --temp", xlings::subos::policy::Need::Must};
         return std::nullopt;
     };
     impl.view = [](const in::Intent&, const HomeView&, sp::SandboxSpec&) -> std::optional<sp::Unmet> {

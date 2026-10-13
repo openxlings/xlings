@@ -46,18 +46,18 @@ cat > "$S/rootfs/etc/rc.local" <<'EOF'
 #!/bin/sh
 # The scenario's driver: what this boot is, then the next step.
 state=$(cat /root/.stage 2>/dev/null || echo 0)
-boot=$(xlings subos boot 2>/dev/null | sed -n 's/^this boot \([^ ]*\) via \([^ ,]*\).*/\1:\2/p')
+boot=$(luban boot 2>/dev/null | sed -n 's/^this boot \([^ ]*\) via \([^ ,]*\).*/\1:\2/p')
 tree=$(cd /usr && for f in bin/* lib/*; do printf "%s %s\n" "$f" "$(readlink "$f")"; done \
        | sed -E "s|/subos/[^/]+/|/subos/*/|g" | md5sum | cut -d' ' -f1)
 elapsed=$(grep '"event":"boot"' "$XLINGS_HOME/logs/boot.ndjson" | tail -1 | sed -n 's/.*"stage0_elapsed_us":\([0-9][0-9]*\).*/\1/p')
 phases=$(grep '"event":"boot"' "$XLINGS_HOME/logs/boot.ndjson" | tail -1 | sed -n 's/.*"stage0_phases_us":\({[^}]*}\).*/\1/p')
 echo "LUBAN-BOOT stage=$state boot=$boot tree=$tree stage0_us=$elapsed phases=$phases"
 case "$state" in
-  0) echo 1 > /root/.stage; xlings subos boot trial --once >/dev/null 2>&1 ;;
+  0) echo 1 > /root/.stage; luban boot trial --once >/dev/null 2>&1 ;;
   1) echo 2 > /root/.stage; sync
      # After this script (and init's sysinit) has finished: init then takes
      # the signal, re-execs stage-0, and the next user space is default's.
-     ( sleep 2; xlings subos boot default --now ) </dev/null >/dev/console 2>&1 &
+     ( sleep 2; luban boot default --now ) </dev/null >/dev/console 2>&1 &
      exit 0 ;;
   2) echo 3 > /root/.stage ;;
   *) ;;
@@ -84,15 +84,23 @@ rm -f "$IH/subos/broken/$gen/usr/bin/init"
 printf '{"default":"default","fallback":"default","once":"broken","tries":{}}\n' > "$IH/boot.json"
 X subos export tiny --disk "$RUNTIME_DIR/probe.img" >/dev/null 2>&1 || true   # (exercises --disk itself)
 [[ -s "$RUNTIME_DIR/probe.img" ]] || fail "export --disk wrote nothing"
+# The machine's disk lives in memory where there is room: stage-0's budget is
+# its own work, and a CI runner's disk stalled on blocks no earlier boot had
+# touched (the trial's first ldconfig: 25 ms one run, 490 ms the next).
+DISK="$RUNTIME_DIR/disk.img"
+if [[ -d /dev/shm && -w /dev/shm ]] && (( $(df -Pk /dev/shm | awk 'NR==2 {print $4}') > 2 * 1024 * 1024 )); then
+  DISK="$(mktemp -d /dev/shm/xlings-e2e-boot.XXXXXX)/disk.img"
+  trap 'docker rmi -f "$IMG" >/dev/null 2>&1 || true; rm -rf "$(dirname "$DISK")"' EXIT
+fi
 bwrap --unshare-user --uid 0 --gid 0 --dev-bind / / -- \
-  "$(command -v mkfs.ext4 || ls /usr/sbin/mkfs.ext4 /sbin/mkfs.ext4 2>/dev/null | head -1)" -q -F -L luban -d "$R" "$RUNTIME_DIR/disk.img" 1G \
+  "$(command -v mkfs.ext4 || ls /usr/sbin/mkfs.ext4 /sbin/mkfs.ext4 2>/dev/null | head -1)" -q -F -L luban -d "$R" "$DISK" 1G \
   || fail "mkfs.ext4"
 
 qemu_boot() {
   local accel=()
   [[ -w /dev/kvm ]] && accel=(-enable-kvm -cpu host)
   timeout 600 qemu-system-x86_64 "${accel[@]}" -m 1024 -smp 2 -nographic -no-reboot -nic none \
-    -kernel "$KERNEL" -drive "file=$RUNTIME_DIR/disk.img,format=raw,if=virtio" \
+    -kernel "$KERNEL" -drive "file=$DISK,format=raw,if=virtio" \
     -append "root=/dev/vda rw console=ttyS0 panic=-1 init=$H/boot/xlings-init" \
     > "$RUNTIME_DIR/boot-$1.log" 2>&1 || true
   tr -d '\r' < "$RUNTIME_DIR/boot-$1.log" | grep -E "xlings-init:|LUBAN-BOOT" || true

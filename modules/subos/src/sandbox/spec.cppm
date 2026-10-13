@@ -33,7 +33,15 @@ enum class MountKind {
     Proc,       // a /proc for the sandbox's pid namespace
     Dev,        // a minimal /dev
     Dir,        // an empty directory
+    TmpOverlay, // `src` seen at `dst` with writes kept in memory, gone at exit
 };
+
+// What a root's own state keeps after a session (Luban OS architecture §10.1):
+// everything (All), its /home only (Home), nothing (None). Home and None put a
+// memory overlay over the rest, so every start is the same system.
+enum class Persist { All, Home, None };
+std::string_view to_string(Persist p);
+std::optional<Persist> persist_from_string(std::string_view s);
 
 struct MountOp {
     MountKind kind;
@@ -75,6 +83,7 @@ struct Request {
     // Host facts the compiler must not read itself, so a test can pin them.
     std::function<bool(std::string_view)> host_exists;
     std::vector<MountOp> root_mounts; // Owner-checked, private skeleton and exact RO leaves.
+    Persist persist { Persist::All };     // a root's state after the session
 };
 
 struct SandboxSpec {

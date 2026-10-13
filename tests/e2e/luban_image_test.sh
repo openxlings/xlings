@@ -3,14 +3,15 @@
 # environment made with `luban`, exported as a live ISO, a drive and a qcow2,
 # each booted by qemu to stage-0 and its init -- on x86_64 by BIOS and by
 # UEFI, the ISO from a CD and as a drive (its hybrid GPT); on aarch64 by UEFI
-# (virt), every image written in-process. Then `luban try --proxy`: the
-# machine's only network is the proxy.
+# (virt), every image written in-process. Then the environment as a machine:
+# its only network is the proxy; then its desktop (xim:labwc-desktop) shown
+# to a client of the machine as the Luban OS window is, and typed into.
 #
 # The kernel: x86_64 installs xim:linux-kernel into the root (the generic
 # profile's); aarch64 exports with --boot virt. The firmware is
 # xim:edk2-firmware, installed into the test's home as a user would.
 #
-# xtest: covers=LUBAN-ISO,LUBAN-DRIVE,LUBAN-TRY,LUBAN-BOOT-PROFILE,LUBAN-ISO-UEFI,LUBAN-ISO-HYBRID,LUBAN-QCOW2 requires=linux,qemu,bwrap,network
+# xtest: covers=LUBAN-ISO,LUBAN-DRIVE,LUBAN-TRY,LUBAN-BOOT-PROFILE,LUBAN-ISO-UEFI,LUBAN-ISO-HYBRID,LUBAN-QCOW2,LUBAN-MACHINE-DESKTOP requires=linux,qemu,bwrap,network
 set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/project_test_lib.sh"
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/rootfs_lib.sh"
@@ -34,18 +35,22 @@ cfg = json.load(open(sys.argv[1])) if os.path.exists(sys.argv[1]) else {}
 cfg["index_repos"] = [{"name": "xim", "url": sys.argv[2]}]
 json.dump(cfg, open(sys.argv[1], "w"), indent=2)
 ' "$H/.xlings.json" "$XLINGS_TOOLS_HOME/index-under-test"
+  # An index already synced stays until it is gone (tools/ci/xlings_tools.sh).
+  rm -rf "$H/data/xim-pkgindex"
+  X update >"$RUNTIME_DIR/update.log" 2>&1 || { tail -20 "$RUNTIME_DIR/update.log"; fail "xlings update (the index under test)"; }
+  log "index under test: $(readlink -f "$H/data/xim-pkgindex")"
 fi
 L() { ( cd /tmp && env -u XLINGS_ACTIVE_SUBOS -u XLINGS_SUBOS_MODE XLINGS_HOME="$H" DISPLAY= WAYLAND_DISPLAY= "$H/bin/luban" "$@" ); }
 
 # limine: the index's (prebuilt boot files and a static tool), installed by
 # the edition's boot profile when the first image is made.
-log "luban new t tiny"
+log "luban new t --edition tiny"
 n=0
-until L new t tiny >"$RUNTIME_DIR/new.log" 2>&1; do
-  n=$((n + 1)); [[ $n -ge 3 ]] && { tail -30 "$RUNTIME_DIR/new.log"; fail "luban new t tiny"; }
+until L new t --edition tiny >"$RUNTIME_DIR/new.log" 2>&1; do
+  n=$((n + 1)); [[ $n -ge 3 ]] && { tail -30 "$RUNTIME_DIR/new.log"; fail "luban new t --edition tiny"; }
   X subos remove -y t >/dev/null 2>&1 || true; sleep 5
 done
-grep -q "subos created: t" "$RUNTIME_DIR/new.log" || fail "no creation report: $(tail -5 "$RUNTIME_DIR/new.log")"
+grep -q "t is ready" "$RUNTIME_DIR/new.log" || fail "no creation report: $(tail -5 "$RUNTIME_DIR/new.log")"
 arch="$(uname -m)"
 BOOT=()   # what export is told about the kernel
 if [[ "$arch" == x86_64 ]]; then
@@ -59,7 +64,7 @@ else
   BOOT=(--boot virt)
   QEMU=(qemu-system-aarch64 -M virt)
 fi
-# The UEFI firmware, from the index (into this home: `luban try` finds it there).
+# The UEFI firmware, from the index (into this home: `luban enter <image>` finds it there).
 retry X install -y xim:edk2-firmware >"$RUNTIME_DIR/firmware.log" 2>&1 \
   || { tail -20 "$RUNTIME_DIR/firmware.log"; fail "install edk2-firmware"; }
 OVMF="$(ls "$H"/data/xpkgs/xim-x-edk2-firmware/*/share/edk2/edk2-"$arch"-code.fd | head -1)"
@@ -149,7 +154,7 @@ json.dump(cfg, open(sys.argv[1], "w"))
 L export t "$RUNTIME_DIR/p.iso" --boot fixture:luban-boot-test > "$RUNTIME_DIR/profile.log" 2>&1 \
   || { cat "$RUNTIME_DIR/profile.log"; fail "export --boot"; }
 grep -aq "luban.profile=test" "$RUNTIME_DIR/p.iso" || fail "the profile's command line is not in the image"
-if X subos export t --iso "$RUNTIME_DIR/both.iso" --boot generic --kernel /dev/null >/dev/null 2>&1; then
+if X subos __export t --iso "$RUNTIME_DIR/both.iso" --boot generic --kernel /dev/null >/dev/null 2>&1; then
   fail "--boot and --kernel together were accepted"
 fi
 boot iso-profile -cdrom "$RUNTIME_DIR/p.iso" -boot d
@@ -200,10 +205,50 @@ PY
 )"
 [[ "$relayed" == "THROUGH THE PROXY 0" ]] || fail "the relay: '$relayed'"
 
-log "luban try t.iso --proxy: the proxy is its only network (and it boots with the proxy down)"
-until_console "$RUNTIME_DIR/try.log" env XLINGS_HOME="$H" DISPLAY= WAYLAND_DISPLAY= "$H/bin/luban" try "$RUNTIME_DIR/t.iso" \
-  --proxy socks5h://127.0.0.1:9 --memory 2048
-out="$(tr -d '\r' < "$RUNTIME_DIR/try.log")"
-grep -q "its only network is the proxy" <<<"$out" || fail "try --proxy: $(tail -5 <<<"$out")"
-grep -aq "luban-init: booting" <<<"$out" || fail "try: did not boot: $(tail -10 <<<"$out")"
-log "PASS ($arch): ISO (CD and drive), drive and qcow2 boot ($( [[ "$arch" == x86_64 ]] && echo "BIOS and UEFI" || echo UEFI)); luban try --proxy"
+log "luban enter t.iso: an image boots as it is, its console on the terminal"
+until_console "$RUNTIME_DIR/image.log" env XLINGS_HOME="$H" DISPLAY= WAYLAND_DISPLAY= "$H/bin/luban" enter "$RUNTIME_DIR/t.iso"
+out="$(tr -d '\r' < "$RUNTIME_DIR/image.log")"
+grep -aq "luban-init: booting" <<<"$out" || fail "enter t.iso: did not boot: $(tail -10 <<<"$out")"
+grep -aq "qemu" <<<"$(grep -a "booting t.iso" <<<"$out")" && fail "enter t.iso names its monitor: $(grep -a booting <<<"$out")"
+
+log "luban enter t --mode machine: the environment itself, its own kernel, a session with its shell"
+q="$(command -v "${QEMU[0]}" || true)"
+log "  qemu: ${q:-none} -> $(readlink -f "$q" 2>/dev/null); 9p: $("${QEMU[0]}" -M none -device virtio-9p-pci,help 2>&1 | head -1)"
+L config t --proxy socks5h://127.0.0.1:9 >/dev/null 2>&1 || fail "config --proxy"
+# The machine's own logs are kept with the test's, whatever happens next.
+keep_machine_logs() { for f in "$H"/logs/machines/t/*.log; do [[ -f "$f" ]] && cp "$f" "$RUNTIME_DIR/machine-$(basename "$f")"; done; true; }
+trap keep_machine_logs EXIT
+machine="$( { (sleep 120; printf 'echo MACHINE-$(uname -r) > /root/machine.txt; cat /root/machine.txt; exit\n'; sleep 10) 2>/dev/null || true; } \
+  | timeout 600 script -qfec "env XLINGS_HOME=$H DISPLAY= WAYLAND_DISPLAY= $H/bin/luban enter t --mode machine --temp" /dev/null 2>&1 | tr -d '\r' || true)"
+printf '%s\n' "$machine" > "$RUNTIME_DIR/machine-session.log"
+grep -q "t is up" <<<"$machine" || fail "machine: did not come up: $(tail -20 <<<"$machine"; tail -20 "$H"/logs/machines/t/console.log 2>/dev/null)"
+grep -q "only its proxy" <<<"$machine" || fail "machine: its network is not only the proxy: $(grep -a starting <<<"$machine")"
+grep -q "MACHINE-" <<<"$machine" || fail "machine: the session ran nothing: $(tail -20 <<<"$machine")"
+[[ ! -e "$H/subos/t/rootfs/root/machine.txt" ]] || fail "machine --temp: what it wrote stayed"
+[[ ! -e "$H/run/machines/t/scratch" ]] || fail "machine --temp: its copy stayed"
+log "the desktop: labwc-desktop in t, its session bridged by opensal-wlr to a client of the machine, as the Luban OS window is"
+CLIENT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/luban_desktop_client.py"
+retry X install -y --subos t xim:labwc-desktop >"$RUNTIME_DIR/labwc.log" 2>&1 \
+  || { tail -20 "$RUNTIME_DIR/labwc.log"; fail "install labwc-desktop into t"; }
+L config t --mode machine --on-close background >/dev/null 2>&1 || fail "config t --mode machine --on-close background"
+{ (sleep 120; printf 'exit\n'; sleep 5) 2>/dev/null || true; } \
+  | timeout 300 script -qfec "env XLINGS_HOME=$H DISPLAY= WAYLAND_DISPLAY= $H/bin/luban enter t" /dev/null >"$RUNTIME_DIR/desktop-boot.log" 2>&1 || true
+[[ -S "$H/run/machines/t/luban.sock" ]] || fail "desktop: t is not running: $(tail -10 "$RUNTIME_DIR/desktop-boot.log")"
+desk="$(timeout 300 python3 "$CLIENT" "$H/run/machines/t" \
+  '{Alt+Return}echo DESKTOP-$(uname -m) > /root/desktop.txt\n' "$RUNTIME_DIR/desktop.ppm" || true)"
+cp "$H/subos/t/rootfs/var/log/luban/desktop.log" "$RUNTIME_DIR/machine-desktop.log" 2>/dev/null || true
+grep -q '"drew": true' <<<"$desk" || fail "desktop: it never drew: $desk $(tail -20 "$RUNTIME_DIR/machine-desktop.log" 2>/dev/null)"
+[[ "$(cat "$H/subos/t/rootfs/root/desktop.txt" 2>/dev/null)" == "DESKTOP-$arch" ]] \
+  || fail "desktop: what was typed into its terminal did not run ($desk)"
+L stop t >/dev/null 2>&1 || true
+
+log "the same desktop in a sandbox: luban __desktop under xlings subos use --cmd, as the window runs it"
+L config t --mode sandbox >/dev/null 2>&1 || fail "config t --mode sandbox"
+sbox="$(cd /tmp && timeout 300 python3 "$CLIENT" --exec \
+  '{Alt+Return}echo SANDBOX-$(uname -m) > /root/sandbox.txt\n' "$RUNTIME_DIR/sandbox.ppm" -- \
+  env -u XLINGS_ACTIVE_SUBOS -u XLINGS_SUBOS_MODE XLINGS_HOME="$H" "$H/bin/xlings" subos use t \
+  --cmd "exec '$H/bin/luban' __desktop - --size 1024x640" 2>"$RUNTIME_DIR/sandbox-desktop.log" || true)"
+grep -q '"drew": true' <<<"$sbox" || fail "sandbox desktop: it never drew: $sbox $(tail -20 "$RUNTIME_DIR/sandbox-desktop.log")"
+[[ "$(cat "$H/subos/t/rootfs/root/sandbox.txt" 2>/dev/null)" == "SANDBOX-$arch" ]] \
+  || fail "sandbox desktop: what was typed into its terminal did not run ($sbox)"
+log "PASS ($arch): ISO (CD and drive), drive and qcow2 boot ($( [[ "$arch" == x86_64 ]] && echo "BIOS and UEFI" || echo UEFI)); an image entered; the environment as a machine, its proxy the only network; its desktop shown and typed into, as a machine and in a sandbox"

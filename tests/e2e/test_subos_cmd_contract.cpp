@@ -26,7 +26,7 @@ fs::path sandbox_home(const tk::Home& home, std::string_view subos) {
 
 XTEST(SubosCmdContract, ExitCodeAndHomeOnLinux,
       .area = "subos", .cost = tk::Cost::Medium,
-      .covers = {"SUBOS-CMD-EXIT", "SUBOS-CMD-HOME"},
+      .covers = {"SUBOS-CMD-EXIT", "SUBOS-CMD-HOME", "SUBOS-CMD-STDOUT"},
       .requires_ = {"linux", "xlings-bin", "sandbox"}, .resources = {"sandbox"}) {
     auto home = tk::Home::isolated("cmd-contract");
     ASSERT_TRUE(home.seed_sandbox_backend());
@@ -39,6 +39,13 @@ XTEST(SubosCmdContract, ExitCodeAndHomeOnLinux,
     // Inside, HOME is /home/<user>; outside, that is <subos>/home/<user>.
     EXPECT_EQ(tk::read_file(sandbox_home(home, "probe") / "marker"),
               "/home/" + tk::current_user());
+
+    // A `--cmd` run is a script: its standard output is the command's alone,
+    // byte for byte (what a program reading it -- the Luban OS window reading
+    // a desktop's stream -- depends on).
+    auto out = home.xlings({"subos", "use", "probe", "--sandbox", "--cmd", R"(printf 'A\001B')"});
+    EXPECT_EQ(out.exit_code, 0) << out.transcript();
+    EXPECT_EQ(out.out, std::string("A\001B", 3)) << out.transcript();
 }
 
 XTEST(SubosCmdContract, ExitCodeAndHomeOnMacos,

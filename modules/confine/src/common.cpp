@@ -40,14 +40,23 @@ namespace {
 // profile, the payloads and the home config are code the host runs, and a
 // sandbox that can write them has escaped. Writable inside it is only this
 // instance's own tree. Other instances, the audit (logs/), the sockets
-// (run/) and the host facts (state/) are covered by empty tmpfs; config/
-// stays readable, so the xlings inside can read its own policy and cannot
-// change it.
+// (run/) and the host facts (state/) are covered by empty tmpfs. Of config/,
+// only this instance's own directory is there, read-only: the xlings inside
+// reads its own policy and cannot change it, and another instance's policy,
+// persona and record are not in sight. What instances share is the home's
+// common part -- the payloads, the indexes, the shims -- never each other.
 void home_view_ro(std::vector<sp::MountOp>& m, const HomeView& home, const in::Intent& i) {
     const auto h = posix(home.home);
     m.push_back({MountKind::RoBind, h, h});
     m.push_back({MountKind::Tmpfs, "", posix(home.subos_root())});
     m.push_back({MountKind::Bind, posix(i.instance_dir), posix(home.instance(i.instance))});
+    // Only where it is: bwrap cannot make a mount point inside the read-only
+    // home, and a home with no config/subos has nothing there to hide.
+    if (i.exists(posix(home.home / "config" / "subos"))) {
+        m.push_back({MountKind::Tmpfs, "", posix(home.home / "config" / "subos")});
+        if (i.exists(posix(home.config_dir(i.instance))))
+            m.push_back({MountKind::RoBind, posix(home.config_dir(i.instance)), posix(home.config_dir(i.instance))});
+    }
     for (auto dir : {"logs", "run", "state"})
         m.push_back({MountKind::Tmpfs, "", posix(home.home / dir)});
 }
