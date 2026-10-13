@@ -879,7 +879,7 @@ jobs:
         with: {name: xlings-linux-x86_64, path: candidate}
       - uses: actions/download-artifact@v4
         with: {name: xlings-release-sidecars, path: sidecars}
-      - run: bash tests/candidate-install/smoke.sh candidate/*.tar.gz sidecars/*linux-x86_64.tar.gz.sha256
+      - run: bash tests/candidate-install/smoke.sh candidate/*.tar.gz sidecars/xlings-*-linux-x86_64.tar.gz.sha256
 
   candidate-linux-aarch64:
     needs: [prepare-candidates]
@@ -890,7 +890,7 @@ jobs:
         with: {name: xlings-linux-aarch64, path: candidate}
       - uses: actions/download-artifact@v4
         with: {name: xlings-release-sidecars, path: sidecars}
-      - run: bash tests/candidate-install/smoke.sh candidate/*.tar.gz sidecars/*linux-aarch64.tar.gz.sha256
+      - run: bash tests/candidate-install/smoke.sh candidate/*.tar.gz sidecars/xlings-*-linux-aarch64.tar.gz.sha256
 
   candidate-macos-arm64:
     needs: [prepare-candidates]
@@ -901,7 +901,7 @@ jobs:
         with: {name: xlings-macosx-arm64, path: candidate}
       - uses: actions/download-artifact@v4
         with: {name: xlings-release-sidecars, path: sidecars}
-      - run: bash tests/candidate-install/smoke.sh candidate/*.tar.gz sidecars/*macosx-arm64.tar.gz.sha256
+      - run: bash tests/candidate-install/smoke.sh candidate/*.tar.gz sidecars/xlings-*-macosx-arm64.tar.gz.sha256
 
   candidate-windows-x86_64:
     needs: [prepare-candidates]
@@ -913,7 +913,7 @@ jobs:
       - uses: actions/download-artifact@v4
         with: {name: xlings-release-sidecars, path: sidecars}
       - shell: pwsh
-        run: powershell -File tests/candidate-install/smoke.ps1 (Get-ChildItem candidate/*.zip).FullName (Get-ChildItem sidecars/*windows-x86_64.zip.sha256).FullName
+        run: powershell -File tests/candidate-install/smoke.ps1 (Get-ChildItem candidate/*.zip).FullName (Get-ChildItem sidecars/xlings-*-windows-x86_64.zip.sha256).FullName
 
   create-release:
     needs: [candidate-linux-x86_64, candidate-linux-aarch64, candidate-macos-arm64, candidate-windows-x86_64]
@@ -957,9 +957,7 @@ jobs:
           files: |
             artifacts/xlings-linux-x86_64/xlings-*-linux-x86_64.tar.gz
             artifacts/luban-os-linux-x86_64/luban-os-*-linux-x86_64.tar.gz
-            artifacts/luban-os-linux-x86_64/luban-os-*-linux-x86_64.tar.gz.sha256
             artifacts/luban-os-linux-x86_64/xdesk-*-linux-x86_64.tar.gz
-            artifacts/luban-os-linux-x86_64/xdesk-*-linux-x86_64.tar.gz.sha256
             artifacts/xlings-linux-aarch64/xlings-*-linux-aarch64.tar.gz
             artifacts/xlings-macosx-arm64/xlings-*-macosx-arm64.tar.gz
             artifacts/xlings-windows-x86_64/xlings-*-windows-x86_64.zip
