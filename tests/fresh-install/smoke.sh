@@ -67,14 +67,14 @@ bootstrap() {
         # runner IP's, shared, and answers 403 when spent.
         local auth=()
         [ -n "${GH_TOKEN:-}" ] && auth=(-H "Authorization: Bearer $GH_TOKEN")
-        previous_release="$(curl -fsSL --retry 3 "${auth[@]}" "https://api.github.com/repos/openxlings/xlings/releases?per_page=2" \
+        previous_release="$(curl -fsSL --retry 3 ${auth[@]+"${auth[@]}"} "https://api.github.com/repos/openxlings/xlings/releases?per_page=2" \
             | python3 -c 'import json,sys; print(json.load(sys.stdin)[1]["tag_name"])')" \
             || fail "cannot ask GitHub for the release before the newest"
         from=(-s -- "$previous_release")
         log "starting from the release before the newest: $previous_release"
     fi
-    log "\$ curl -fsSL $QUICK_INSTALL_URL | bash ${from[*]}"
-    curl -fsSL "$QUICK_INSTALL_URL" | bash "${from[@]}" \
+    log "\$ curl -fsSL $QUICK_INSTALL_URL | bash ${from[*]+${from[*]}}"
+    curl -fsSL "$QUICK_INSTALL_URL" | bash ${from[@]+"${from[@]}"} \
         || fail "quick_install.sh exited $? — the published release is unusable"
 
     [ -x "$XLINGS_HOME_DIR/subos/current/bin/xlings" ] \
