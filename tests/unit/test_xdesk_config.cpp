@@ -26,6 +26,9 @@ XTEST(XdeskConfig, AnIniIsReadAndWhatIsWrongIsSaidByLine, .area = "luban", .cove
 
 XTEST(XdeskConfig, APersonsOwnFileWinsKeyByKeyOverTheProfiles, .area = "luban", .covers = {"XDESK-CONFIG"}) {
     const auto root = fs::temp_directory_path() / std::format("xdesk-config-{}", std::random_device{}());
+    // $XDG_*_DIRS are ':'-separated POSIX paths (a drive letter's ':' is not
+    // one of them): xdesk runs where they are.
+    if (root.string().find(':') != std::string::npos) GTEST_SKIP() << "XDG directory lists are POSIX paths";
     fs::create_directories(root / "etc" / "xdesk");
     fs::create_directories(root / "share" / "xdesk");
     std::ofstream(root / "share" / "xdesk" / "canvas.ini") << "[desktop]\nterminal = from-share\nworkspaces = 6\n";
