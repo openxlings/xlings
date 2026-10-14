@@ -428,3 +428,65 @@ jobs:
         run: |
           Write-Host "::error::unit tests failed (see the 'Build and run unit tests' step)"
           exit 1
+
+  # Luban OS on Windows, for real (part 4 §11.3): a Luban system in the Luban
+  # host machine on the runner's WSL 2. The hosted runner has nested
+  # virtualization, which WSL 2 needs, but GitHub does not promise it: a
+  # failure to set WSL 2 up is the environment's and is reported as such
+  # (its own step), apart from a failure of the code under test.
+  luban-wsl2:
+    needs: build-and-test
+    runs-on: windows-2025
+    timeout-minutes: 90
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Fetch the release under test
+        uses: actions/download-artifact@v4
+        with:
+          name: xlings-windows-x86_64
+          path: build
+
+      # The host machine's xlings and luban are the Linux build of the same
+      # commit (xlings-ci-linux.yml's release artifact), as a Windows home
+      # gets the Linux build of its own release.
+      - name: The Linux build of this commit, for the Luban host machine
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -u
+          for i in $(seq 1 80); do
+            id=$(gh run list -R "$GITHUB_REPOSITORY" -w xlings-ci-linux.yml -c "$SHA" --json databaseId -q '.[0].databaseId' 2>/dev/null || true)
+            if [ -n "$id" ] && gh run download "$id" -R "$GITHUB_REPOSITORY" -n xlings-linux-x86_64 -D guest 2>/dev/null; then break; fi
+            sleep 60
+          done
+          [ -f guest/release.tar.gz ] || { echo "::error::no Linux release build of $SHA appeared in xlings-ci-linux.yml"; exit 1; }
+          mkdir -p guest/x && tar -xzf guest/release.tar.gz -C guest/x
+          bin=$(find "$PWD/guest/x" -path '*/bin/xlings' -type f | head -1)
+          [ -n "$bin" ] && [ -f "$(dirname "$bin")/luban" ] || { echo "::error::the Linux build has no bin/xlings and bin/luban"; exit 1; }
+          echo "XLINGS_CARRIER_GUEST_XLINGS=$(cygpath -w "$bin")" >> "$GITHUB_ENV"
+
+      - name: WSL 2 (the runner's environment)
+        id: wsl
+        uses: Vampire/setup-wsl@v7
+        with:
+          distribution: Alpine-3.22
+          wsl-version: 2
+
+      - name: What the runner's WSL is
+        shell: pwsh
+        run: |
+          $env:WSL_UTF8 = '1'
+          wsl.exe --status
+          wsl.exe --version
+
+      - name: "Luban OS on WSL 2: status, a system, a command, a machine as reported"
+        shell: pwsh
+        run: |
+          & "$env:GITHUB_WORKSPACE\tests\e2e\windows_luban_wsl2_test.ps1" "build\release.zip"

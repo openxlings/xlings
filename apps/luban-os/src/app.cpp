@@ -330,6 +330,12 @@ struct App {
     // the home's.
     fs::path luban_binary(const std::string& name) const {
         std::error_code ec;
+        // On a carrier the session runs in its machine, which carries the
+        // Linux luban at /xlings/bin/luban.
+        if (std::ifstream in(xlings::subos::HomeView{home}.instance_file(name)); in) {
+            const auto doc = nlohmann::json::parse(in, nullptr, false);
+            if (doc.is_object() && doc.value("carrier", std::string("local")) != "local") return fs::path("/xlings/bin/luban");
+        }
         if (const auto at = xlings::subos::locate(xlings::subos::HomeView{home}, name); at.domain)
             return fs::is_regular_file(at.home.home / "bin" / "luban", ec) ? at.logical / "bin" / "luban" : fs::path{};
         for (const auto& p : {platform::get_executable_path().parent_path() / "luban", home / "bin" / "luban"})

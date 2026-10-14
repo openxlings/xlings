@@ -2200,15 +2200,28 @@ int run(int argc, char* argv[], EventStream& stream) {
         std::vector<std::string> forwardArgs;   // what the carrier's xlings is asked
         for (int i = 3; i < argc; ++i) {
             std::string a = argv[i];
-            if (a == "--proxy" && i + 1 < argc) { proxy = argv[++i]; forwardArgs.insert(forwardArgs.end(), {a, proxy}); continue; }
-            if (a.starts_with("--proxy=")) { proxy = a.substr(8); forwardArgs.push_back(a); continue; }
+            // Everything this argument took -- an option and its value --
+            // goes to the carrier as it was given, except where it runs.
+            struct Forward {
+                std::vector<std::string>& out;
+                char** argv;
+                int first;
+                const int& last;
+                bool keep { true };
+                ~Forward() {
+                    if (keep)
+                        for (int k = first; k <= last; ++k) out.emplace_back(argv[k]);
+                }
+            } forward{forwardArgs, argv, i, i};
+            if (a == "--proxy" && i + 1 < argc) { proxy = argv[++i]; continue; }
+            if (a.starts_with("--proxy=")) { proxy = a.substr(8); continue; }
             if ((a == "--carrier" || a == "--abi") && i + 1 < argc) {
                 (a == "--carrier" ? requestedCarrier : abi) = argv[++i];
+                forward.keep = false;
                 continue;
             }
-            if (a.starts_with("--carrier=")) { requestedCarrier = a.substr(10); continue; }
-            if (a.starts_with("--abi=")) { abi = a.substr(6); continue; }
-            forwardArgs.push_back(a);
+            if (a.starts_with("--carrier=")) { requestedCarrier = a.substr(10); forward.keep = false; continue; }
+            if (a.starts_with("--abi=")) { abi = a.substr(6); forward.keep = false; continue; }
             if (a == "--rootfs") { rootfs = true; continue; }
             if (a == "--domain" || a == "--domain-if-possible") {
                 if (i + 1 >= argc || !domain.empty()) { usageError(std::string(a) + " expects one absolute home path"); return 1; }

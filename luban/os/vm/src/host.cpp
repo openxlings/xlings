@@ -12,6 +12,7 @@ import xlings.platform.target;
 import xlings.subos.home_view;
 import xlings.subos.ports;
 import xlings.subos.tools;
+import xlings.carrier;
 import luban.service;
 import luban.vm.protocol;
 
@@ -653,9 +654,50 @@ std::optional<int> running(const fs::path& home, std::string_view name) {
     return std::nullopt;
 }
 
+// On Windows a machine runs in the Luban host machine (WSL 2), on its KVM:
+// the same luban, the same qemu and the same guest as on Linux, started
+// there (part 4 §8.2). The terminal is this one, through wsl.exe.
+int enter_in_carrier_(const service::Context& c, std::string_view name, const EnterOptions& o) {
+    const auto caps = service::capabilities(service::gather(c.home, c.port));
+    const auto* m = caps.mode("machine");
+    if (!m || !m->ready) {
+        say_(c, service::error(std::format("{} cannot run as a machine on this computer: {}", name,
+                                           m ? m->reason : std::string("this computer did not say")),
+                               m && !m->route.empty() ? m->route : std::format("luban enter {} (the sandbox)", name)));
+        return 1;
+    }
+    const auto* carrier = xlings::carrier::find("wsl2");
+    if (!carrier) {
+        say_(c, service::error("this luban has no wsl2 carrier"));
+        return 1;
+    }
+    auto at = carrier->ensure(xlings::subos::HomeView{c.home});
+    if (!at) {
+        say_(c, service::error("the Luban host machine did not start: " + at.error(), "luban status"));
+        return 1;
+    }
+    if (o.display == "window") {
+        say_(c, service::error("a machine's window is not shown from the Luban host machine in this version",
+                               std::format("luban enter {} --mode machine (its console here), or a desktop in the sandbox", name)));
+        return 1;
+    }
+    std::vector<std::string> argv = at->launcher;
+    argv.insert(argv.end(), {"/xlings/bin/luban", "enter", std::string(name), "--mode", "machine"});
+    if (o.temp) argv.push_back("--temp");
+    // wsl.exe carries only the variables WSLENV names: the operation's trace
+    // and actor, and the terminal's type.
+    platform::set_env_variable("WSLENV", "TERM/u:XLINGS_TRACE_ID/u:XLINGS_ACTOR/u:XLINGS_OPS_PARENT/u:XLINGS_AGENT_MODE/u");
+    return platform::run_argv(argv);
+}
+
 int enter(const service::Context& c, std::string_view name_or_image, const EnterOptions& o) {
+    if constexpr (platform::is_windows) {
+        std::error_code ec;
+        if (!fs::is_regular_file(name_or_image, ec)) return enter_in_carrier_(c, name_or_image, o);
+    }
     if constexpr (!platform::is_linux) {
-        say_(c, service::error("machine mode runs on Linux hosts in this version",
+        say_(c, service::error(platform::is_windows ? "an image file boots on a Linux host in this version"
+                                                    : "machine mode on this Mac needs the Luban host machine, not available in this build yet",
                                std::format("luban enter {} (the sandbox), or luban export {} {}.iso", name_or_image, name_or_image, name_or_image)));
         return 1;
     }

@@ -40,6 +40,12 @@ struct Carrier {
                                                            std::string_view name)> grant;
 };
 
+// Inside a carrier's machine (`xlings __carrier-probe`, run there by the
+// host): what this machine gives a Luban system, as one JSON line --
+// {"kvm": bool, "kernel": "<release>"}. The host keeps it as the carrier's
+// probe.json; `luban status` reads it (machine mode needs the KVM).
+int guest_probe();
+
 std::span<const Carrier> carriers();
 const Carrier* find(std::string_view name);
 

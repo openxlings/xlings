@@ -6,6 +6,8 @@ import xlings.platform;
 import xlings.observe;
 import xlings.subos.home_view;
 import xlings.subos.located;
+import xlings.carrier;
+import xlings.platform.stream;
 import xlings.subos.edition;
 import xlings.subos.policy;
 import xlings.subos.policy_store;
@@ -135,6 +137,40 @@ std::string edition_ref(std::string_view edition) {
     return std::string(edition);
 }
 
+// A system on a carrier lives in that carrier's machine: what it is comes
+// from the luban there, through the same interface (part 4 §7.4) -- the
+// edition, packages, generation and shell it has. False when the carrier
+// does not answer (a guest from before it carried luban): the record here
+// stands, without them.
+bool describe_in_carrier_(const Context& c, Environment& e) {
+    const auto* carrier = xlings::carrier::find(e.carrier);
+    if (!carrier) return false;
+    auto at = carrier->ensure(HomeView{c.home});
+    if (!at || at->launcher.empty()) return false;
+    std::vector<std::string> argv = at->launcher;
+    argv.insert(argv.end(), {"/xlings/bin/luban", "status", e.name, "--json"});
+    std::string out;
+    if (xlings::platform::stream::run(argv, [&](std::string_view stream, std::string_view bytes) {
+            if (stream == "stdout") out.append(bytes);
+        }) != 0)
+        return false;
+    std::istringstream lines(out);
+    nlohmann::json j;
+    for (std::string line; std::getline(lines, line);)
+        if (auto one = nlohmann::json::parse(line, nullptr, false); one.is_object()) {
+            if (one.contains("result") && one["result"].is_object()) one = one["result"];   // `--json`'s value line
+            if (one.contains("name")) j = one;
+        }
+    if (!j.is_object() || j.value("name", std::string{}) != e.name) return false;
+    e.kind = j.value("kind", e.kind);
+    e.edition = j.value("edition", e.edition);
+    e.packages = j.value("packages", e.packages);
+    e.shell = j.value("shell", std::string{});
+    e.running = j.value("running", false);
+    if (j.contains("generation") && j["generation"].is_number_integer()) e.generation = j["generation"].get<int>();
+    return true;
+}
+
 std::expected<Environment, std::string> describe(const Context& c, std::string_view name) {
     if (!exists_(c, name)) return std::unexpected(std::format("there is no environment '{}'", name));
     const HomeView view = xlings::subos::locate(HomeView{c.home}, name).home;
@@ -164,6 +200,7 @@ std::expected<Environment, std::string> describe(const Context& c, std::string_v
         }
     }
     e.running = xlings::subos::session::find(view, name).has_value();
+    if (e.carrier != "local") describe_in_carrier_(c, e);
     auto settings = read_settings(c.home, name);
     if (!settings) return std::unexpected(settings.error());
     e.settings = *settings;

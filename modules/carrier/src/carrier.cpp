@@ -44,6 +44,17 @@ std::vector<std::string> command(const Endpoint& at, std::span<const std::string
 
 }  // namespace
 
+int guest_probe() {
+    std::error_code ec;
+    bool kvm = false;
+    if (fs::is_character_file("/dev/kvm", ec)) {
+        std::fstream dev("/dev/kvm", std::ios::in | std::ios::out);
+        kvm = dev.is_open();
+    }
+    std::println("{}", nlohmann::json{{"kvm", kvm}, {"kernel", platform::kernel_release()}}.dump());
+    return 0;
+}
+
 std::span<const Carrier> carriers() {
     static const std::vector<Carrier> all{local(), wsl2::make(), vz::make()};
     return all;

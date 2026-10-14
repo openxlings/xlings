@@ -65,6 +65,14 @@ std::string trim_(std::string s) {
 
 fs::path home_dir_() {
     if (const char* h = std::getenv("XLINGS_HOME"); h && *h) return h;
+    // The home it was installed into, as the xlings beside it finds its own:
+    // <home>/bin/luban beside <home>/bin/xlings, with <home>/.xlings.json. A
+    // carrier's machine (/xlings) and a portable home are such homes.
+    std::error_code ec;
+    if (const auto bin = xlings::platform::get_executable_path().parent_path();
+        fs::exists(bin / (xlings::platform::is_windows ? "xlings.exe" : "xlings"), ec)
+        && fs::exists(bin.parent_path() / ".xlings.json", ec))
+        return bin.parent_path();
     if (const char* u = std::getenv("HOME"); u && *u) return fs::path(u) / ".xlings";
     return ".xlings";
 }

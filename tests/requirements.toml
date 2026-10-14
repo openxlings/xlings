@@ -1160,3 +1160,7 @@ status = "required"
 [CONTROL-PRINCIPAL]
 text = "every operation's journal names its actor (openas: kind, name, the chain it acts for), inherited by what it starts, and each process's parent step"
 status = "required"
+
+[CARRIER-WSL2-LUBAN]
+text = "on a Windows PC a Luban system lives in the Luban host machine (WSL 2): luban makes it there, describes it from the luban there, runs commands in it, removes it; a machine runs on the host machine's KVM or is refused with why and the next step"
+status = "required"

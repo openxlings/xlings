@@ -10,6 +10,7 @@ import xlings.core.home_identity;
 import xlings.core.home;
 import xlings.subos.session;
 import xlings.core.clipboard;
+import xlings.carrier;
 import xlings.carrier.wsl2;
 import xlings.observe;
 import xlings.core.xvm.lock;
@@ -65,6 +66,7 @@ int main(int argc, char* argv[]) {
     // home is the sandbox's view of it -- and it is not a shim.
     // Inside a carrier's machine (design part 3 §5.3): mount one granted
     // Windows directory. Run there by the xlings on the host, as root.
+    if (argc >= 2 && std::string_view(argv[1]) == "__carrier-probe") return xlings::carrier::guest_probe();
     if (argc >= 2 && std::string_view(argv[1]) == "__carrier-grant") {
         std::vector<std::string> args(argv + 2, argv + argc);
         return xlings::carrier::wsl2::guest_grant(args);

@@ -78,7 +78,7 @@ XTEST(CarrierWsl2, TheImageTurnsInteropAndAutomountOffAndAGrantIsOnlyUnderGrant,
 }
 
 XTEST(CarrierWsl2, ASubosOnTheCarrierIsCreatedThereOnceUsedThereAndRemovedThere,
-      .area = "subos", .covers = {"CARRIER-WSL-LIFECYCLE"}, .requires_ = {"linux", "xlings-bin"}) {
+      .area = "subos", .covers = {"CARRIER-WSL-LIFECYCLE", "PLATFORM-CAPS"}, .requires_ = {"linux", "xlings-bin"}) {
     auto home = tk::Home::isolated("carrier-wsl2");
     const auto wsl = home.root() / "wsl";
     fs::create_directories(wsl);
@@ -97,6 +97,13 @@ XTEST(CarrierWsl2, ASubosOnTheCarrierIsCreatedThereOnceUsedThereAndRemovedThere,
     auto instance = nlohmann::json::parse(tk::read_file(home.dir() / "config/subos/box/instance.json"));
     EXPECT_EQ(instance["carrier"], "wsl2");
     EXPECT_TRUE(fs::is_empty(home.dir() / "subos/box"));
+
+    // What its machine gives a Luban system (luban status reads it): asked
+    // there once the carrier is up.
+    const auto probe = nlohmann::json::parse(read_or_empty(home.dir() / "carriers/wsl2/probe.json"), nullptr, false);
+    ASSERT_TRUE(probe.is_object()) << read_or_empty(wsl / "calls.log");
+    EXPECT_TRUE(probe["kvm"].is_boolean()) << probe.dump();
+    EXPECT_FALSE(probe.value("kernel", std::string{}).empty()) << probe.dump();
 
     // Used there, through the same distribution: imported once.
     auto info = home.xlings({"subos", "info", "box"}, env);

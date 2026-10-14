@@ -73,6 +73,11 @@ std::expected<fs::path, std::string> image(const subos::HomeView& home, std::spa
         entries.push_back({.path = f.path, .content = f.content, .mode = f.mode, .link = f.link,
                            .directory = f.directory});
     entries.push_back({.path = "xlings/bin/xlings", .from = *guest, .mode = 0755});
+    // luban beside it (the Linux release carries both): what runs a machine
+    // there (part 4 §8.2). A guest without it still serves every SubOS.
+    std::error_code lec;
+    if (const auto luban = guest->parent_path() / "luban"; fs::is_regular_file(luban, lec))
+        entries.push_back({.path = "xlings/bin/luban", .from = luban, .mode = 0755});
     const auto out = home.home / "carriers" / "image.tar.gz";
     std::error_code ec;
     fs::create_directories(out.parent_path(), ec);

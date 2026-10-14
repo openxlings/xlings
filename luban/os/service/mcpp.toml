@@ -17,6 +17,7 @@ platform = { path = "../../../modules/platform" }
 runtime  = { path = "../../../modules/runtime" }
 subos    = { path = "../../../modules/subos" }
 image    = { path = "../../../modules/image" }
+carrier  = { path = "../../../modules/carrier" }
 openhal      = { path = "../../specs/openhal" }
 openhal-host = { path = "../../kits/openhal-host" }
 
