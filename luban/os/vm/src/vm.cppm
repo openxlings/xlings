@@ -84,7 +84,13 @@ service::Outcome stop(const service::Context& c, std::string_view name);
 // Plumbing: `luban __vm-supervise <home> <name>` (the supervisor), and the
 // guest's first process (the initramfs's /init).
 int supervise(const fs::path& home, std::string_view name);
+// `luban __vm <verb>`: the Luban host machine on a Mac -- the vz carrier's
+// helper (hostvm.cpp). Elsewhere `probe` says why not and the rest refuse.
+int host_machine(const fs::path& home, std::span<const std::string> args);
 int guest_init(int argc, char* argv[]);
+// The guest agent on a stream it is given instead of its port (tests: the
+// protocol, sessions and commands without a machine). Never returns.
+[[noreturn]] void serve_agent(int fd);
 
 // The machine's directories.
 fs::path run_dir(const fs::path& home, std::string_view name);

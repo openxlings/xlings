@@ -704,6 +704,14 @@ std::optional<std::array<int, 2>> unix_pair() {
     return std::array<int, 2>{p[0], p[1]};
 }
 
+std::optional<std::array<int, 2>> unix_stream_pair() {
+    int p[2];
+    if (::socketpair(AF_UNIX, SOCK_STREAM, 0, p) != 0) return std::nullopt;
+    cloexec(p[0]);
+    cloexec(p[1]);
+    return std::array<int, 2>{p[0], p[1]};
+}
+
 bool send_message(int sock, std::string_view data, std::span<const int> fds) {
 #if defined(__APPLE__)
     const auto size = static_cast<std::uint32_t>(data.size());
@@ -990,6 +998,7 @@ int current_pid() { return static_cast<int>(::GetCurrentProcessId()); }
 std::optional<int> spawn_detached(const std::vector<std::string>&, const std::filesystem::path&) { return std::nullopt; }
 int unix_accept(int) { return -1; }
 std::optional<std::array<int, 2>> unix_pair() { return std::nullopt; }
+std::optional<std::array<int, 2>> unix_stream_pair() { return std::nullopt; }
 bool send_message(int, std::string_view, std::span<const int>) { return false; }
 std::optional<Message> receive_message(int, std::size_t) { return std::nullopt; }
 std::optional<SharedMemory> create_shared_memory(std::size_t) { return std::nullopt; }

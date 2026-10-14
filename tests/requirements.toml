@@ -856,9 +856,8 @@ text = "a vz carrier VM is created per home on first need through its helper's c
 status = "required"
 
 [CARRIER-VZ-HELPER]
-text = "xlings-vm, the signed Virtualization.framework helper that answers the vz carrier's contract, is published as a payload"
-status = "deferred"
-why = "a separate Swift package signed with com.apple.security.virtualization; hosted macOS runners cannot nest a VM to test it. Until it is published the vz carrier is refused with `xlings install xlings-vm` as its route (CARRIER-UNAVAILABLE)"
+text = "the vz carrier's helper is the release's luban (`luban __vm`, Virtualization.framework through luban.vm.native.vz, signed with its entitlement): its agent runs a command on pipes (bytes as written, standard error apart, input closed on request, the exit code) or on a terminal; its framework binding is validated on macOS; a VM boots on a Mac (real Apple silicon, the maintainers' lane)"
+status = "required"
 
 [SESSION-NATIVE-SUPERVISED]
 text = "a native SubOS on macOS runs under the supervisor (start, join, stop, --timeout, the exit-code table); on Windows its command runs in a Job Object (tree ended at --timeout, the command's exit code); joining a running session on Windows needs a CreateProcess supervisor and is part 3 §6.3's next step"

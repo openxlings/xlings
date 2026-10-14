@@ -6,14 +6,21 @@
 //   [type: 1 byte][channel: 4 bytes, big endian][length: 4 bytes][payload]
 //
 //   H  hello       guest -> host, channel 0: the agent is up ({"agent": 1})
-//   O  open        host -> guest: a session ({"rows","cols","term","env":{}}),
-//                  or a desktop ({"display":{"session","width","height"}}):
-//                  then its D frames carry opensal.wire both ways
-//   D  data        both ways: a session's bytes
+//   O  open        host -> guest: a session ({"rows","cols","term","env":{}},
+//                  and "argv" for a command instead of the login shell), or a
+//                  desktop ({"display":{"session","width","height"}}): then
+//                  its D frames carry opensal.wire both ways; with
+//                  "pipes": true the command runs on pipes, not a terminal
+//   D  data        both ways: a session's bytes (a piped command's output)
+//   E  error       guest -> host: a piped command's standard error
+//   F  end         host -> guest: the end of a piped command's input
 //   R  resize      host -> guest: {"rows","cols"}
 //   X  exit        guest -> host: the session ended ({"code"}, and "error"
 //                  when it could not start)
 //   P  power off   host -> guest, channel 0
+//   S  share       client -> supervisor: {"grants": {name: [path, read-only]}},
+//                  the directories the Luban host machine sees at /grant
+//                  (a Mac's); answered with S {"ok"}
 //
 // Only additions: a side that gets a type it does not know skips the frame.
 export module luban.vm.protocol;

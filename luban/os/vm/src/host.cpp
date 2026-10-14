@@ -15,6 +15,7 @@ import xlings.subos.tools;
 import xlings.carrier;
 import luban.service;
 import luban.vm.protocol;
+import luban.vm.native.vz;
 
 namespace luban::vm {
 
@@ -690,16 +691,111 @@ int enter_in_carrier_(const service::Context& c, std::string_view name, const En
     return platform::run_argv(argv);
 }
 
+// A Mac's machine (part 4 §8.1): one of the Luban host machine's systems,
+// booted by Virtualization.framework from the files the Mac sees on the host
+// machine's volume -- its tree (or a copy that goes, with --temp), the host
+// machine's home read-only, the same Linux luban as /init, virtio-fs for 9p.
+int start_vz_(const service::Context& c, std::string_view name, const EnterOptions& o) {
+    if (const auto why = vz::unsupported(); !why.empty()) {
+        say_(c, service::error(why, std::format("luban enter {} (the sandbox)", name)));
+        return 1;
+    }
+    std::error_code ec;
+    const auto tree = c.home / "carriers" / "vz" / "root";
+    const auto guest_home = tree / "xlings";
+    if (!fs::exists(guest_home, ec)) {
+        say_(c, service::error("the Luban host machine's volume is not attached", "luban status (it starts with any system)"));
+        return 1;
+    }
+    auto root = service::root_of(guest_home, name);
+    if (!root) {
+        say_(c, service::error(std::format("'{}' has no root of its own to boot", name), "a system from an edition is one"));
+        return 2;
+    }
+    const auto kernel = tree / "boot" / "vmlinuz";
+    const auto luban = guest_home / "bin" / "luban";
+    if (!fs::exists(kernel, ec) || !is_static_elf(luban)) {
+        say_(c, service::error("the Luban host machine's tree has no machine kernel or no Linux luban", "luban status"));
+        return 1;
+    }
+    const auto dir = run_dir(c.home, name);
+    fs::create_directories(dir, ec);
+    fs::create_directories(log_dir(c.home, name), ec);
+    std::vector<xlings::image::CpioEntry> entries;
+    for (const auto* d : {"dev", "proc", "sys", "newroot"})
+        entries.push_back({.path = d, .kind = xlings::image::CpioEntry::Kind::Dir, .mode = 0755});
+    std::ifstream in(luban, std::ios::binary);
+    std::string bytes((std::istreambuf_iterator<char>(in)), {});
+    entries.push_back({.path = "init", .kind = xlings::image::CpioEntry::Kind::File, .data = std::move(bytes), .mode = 0755});
+    if (auto w = xlings::image::write_cpio(dir / "initramfs.cpio", entries); !w) {
+        say_(c, service::error(w.error()));
+        return 1;
+    }
+    auto settings = service::read_settings(c.home, name);
+    const auto persist = o.temp ? std::string("none") : settings ? settings->persist : std::string("all");
+    fs::path share = *root;
+    if (persist != "all") {
+        say_(c, service::phase("copy", "begin", "a fresh copy of it"));
+        share = dir / "scratch";
+        fs::remove_all(share, ec);
+        ec.clear();
+        copy_tree_(*root, share, persist == "home" ? std::set<std::string>{"home"} : std::set<std::string>{}, ec);
+        say_(c, service::phase("copy", ec ? "failed" : "done", "a fresh copy of it"));
+        if (ec) return 1;
+    }
+    const auto memory = o.memory.empty() ? std::string("2048") : o.memory;
+    const Json state{{"name", name}, {"hypervisor", "vz"}, {"persist", persist}, {"temp", o.temp},
+                     {"scratch", persist == "all" ? "" : share.string()}, {"env", Json::object()},
+                     {"started", xlings::observe::utc_now()}, {"accel", "vz"}, {"memory", memory},
+                     {"vz", {{"kernel", kernel.string()}, {"initrd", (dir / "initramfs.cpio").string()},
+                             {"cmdline", std::format("console=hvc0 quiet panic=-1 luban.home=/xlings luban.name={} luban.userhome=0 luban.fs=virtiofs", name)},
+                             {"cpus", 2}, {"memory", std::stoull(memory)}, {"network", true},
+                             {"shares", Json::array({{{"tag", "root"}, {"dir", share.string()}, {"read_only", false}},
+                                                     {{"tag", "home"}, {"dir", guest_home.string()}, {"read_only", true}}})}}}};
+    platform::write_file_atomic(state_file_(c.home, name).string(), state.dump(2));
+    const auto text = std::format("starting {} ({} MB, Virtualization.framework, NAT)", name, memory);
+    say_(c, service::phase("boot", "begin", text));
+    const auto started = std::chrono::steady_clock::now();
+    auto pid = platform::spawn_detached({luban_(c.home).string(), "__vm-supervise", c.home.string(), std::string(name)},
+                                        log_dir(c.home, name) / "supervisor.log");
+    if (!pid) {
+        say_(c, service::phase("boot", "failed", text));
+        return 1;
+    }
+    const auto deadline = started + std::chrono::seconds(90);
+    while (std::chrono::steady_clock::now() < deadline && platform::process_alive(*pid)) {
+        if (const int fd = connect_client_(c.home, name); fd >= 0) {
+            proto::Decoder d;
+            (void)platform::write_all(fd, proto::encode('Q', 0));
+            auto hello = wait_for_(fd, d, 'H', deadline, [&] { (void)platform::write_all(fd, proto::encode('Q', 0)); });
+            std::vector<int> close{fd};
+            platform::close_fds(close);
+            if (hello) {
+                const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started).count();
+                say_(c, service::phase("boot", "done", std::format("{} is up ({:.1f} s)", name, ms / 1000.0)));
+                return 0;
+            }
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    }
+    say_(c, service::phase("boot", "failed", text));
+    say_(c, service::error(std::format("{} did not come up; the end of its console:{}", name, tail_(log_dir(c.home, name) / "console.log", 15))));
+    return 1;
+}
+
 int enter(const service::Context& c, std::string_view name_or_image, const EnterOptions& o) {
     if constexpr (platform::is_windows) {
         std::error_code ec;
         if (!fs::is_regular_file(name_or_image, ec)) return enter_in_carrier_(c, name_or_image, o);
     }
     if constexpr (!platform::is_linux) {
-        say_(c, service::error(platform::is_windows ? "an image file boots on a Linux host in this version"
-                                                    : "machine mode on this Mac needs the Luban host machine, not available in this build yet",
-                               std::format("luban enter {} (the sandbox), or luban export {} {}.iso", name_or_image, name_or_image, name_or_image)));
-        return 1;
+        std::error_code ec;
+        if (platform::is_windows || fs::is_regular_file(name_or_image, ec) || o.display == "window") {
+            say_(c, service::error(platform::is_windows ? "an image file boots on a Linux host in this version"
+                                                        : "on a Mac a machine is one of its systems, on its console, in this version",
+                                   std::format("luban enter {} (the sandbox), or luban export {} {}.iso", name_or_image, name_or_image, name_or_image)));
+            return 1;
+        }
     }
     std::error_code ec;
     if (fs::is_regular_file(name_or_image, ec)) return boot_image_(c, fs::absolute(name_or_image), o);
@@ -713,7 +809,7 @@ int enter(const service::Context& c, std::string_view name_or_image, const Enter
         return platform::run_argv({app.string(), "--attach", name});
     }
     if (!running(c.home, name)) {
-        if (const int rc = start_impl_(c, name, o); rc != 0) return rc;
+        if (const int rc = platform::is_macos ? start_vz_(c, name, o) : start_impl_(c, name, o); rc != 0) return rc;
     } else if (o.temp) {
         say_(c, service::notice(std::format("{} is already running and keeps what it writes; this session joins it", name)));
     }
@@ -785,33 +881,15 @@ service::Outcome stop(const service::Context& c, std::string_view name) {
 
 // ── the supervisor ──────────────────────────────────────────────────────
 
-int supervise(const fs::path& home, std::string_view name) {
-    auto state = read_json_(state_file_(home, name));
-    std::vector<std::string> q;
-    for (const auto& a : state.value("qemu", Json::array())) q.push_back(a.get<std::string>());
-    if (q.empty()) return 1;
-    state["supervisor"] = platform::get_pid();
-    platform::write_file_atomic(state_file_(home, name).string(), state.dump(2));
-    const auto dir = run_dir(home, name);
-    std::error_code ec;
-    fs::remove(dir / "agent.sock", ec);
-    platform::ignore_signals({platform::sig::pipe, platform::sig::hangup});
-    const int qemu = platform::fork_process();
-    if (qemu == 0) {
-        platform::exec_path(q, platform::environment());
-        platform::exit_now(127);
-    }
-    if (qemu < 0) return 1;
-    int agent = -1;
-    for (int i = 0; i < 100 && agent < 0; ++i) {
-        agent = platform::unix_connect_stream(dir / "agent.sock");
-        if (agent < 0) std::this_thread::sleep_for(std::chrono::milliseconds(100));
-    }
-    const int listen = platform::unix_listen_stream(client_socket_(home, name));
-    if (agent < 0 || listen < 0) {
-        platform::send_signal(qemu, platform::sig::terminate);
-        return 1;
-    }
+namespace {
+
+// What a supervisor does whatever runs the machine: the agent's frames to
+// the client that opened the channel, a client's to the agent; `alive` says
+// whether the machine still runs, `kill` ends it when a power-off is not
+// heard; a client's `S` frame ({"grants": {name: [path, read-only]}}) is
+// handed to `grants` (a hypervisor that shares directories while running).
+void bridge_(const fs::path& home, std::string_view name, int agent, int listen, const std::function<bool()>& alive,
+             const std::function<void()>& kill, const std::function<bool(const Json&)>& grants) {
     platform::route_signals({platform::sig::terminate, platform::sig::interrupt}, {});
     struct Client { int fd; proto::Decoder d; std::map<std::uint32_t, std::uint32_t> channels; };   // local -> global
     std::vector<Client> clients;
@@ -822,15 +900,17 @@ int supervise(const fs::path& home, std::string_view name) {
     std::array<char, 65536> buf{};
     auto powering_off = std::optional<std::chrono::steady_clock::time_point>{};
     for (;;) {
-        if (auto ended = platform::wait_process(qemu, false)) break;
+        if (!alive()) break;
         for (int s : platform::pending_signals()) {
             if (!powering_off && (s == platform::sig::terminate || s == platform::sig::interrupt)) {
                 (void)platform::write_all(agent, proto::encode('P', 0));
                 powering_off = std::chrono::steady_clock::now();
             }
         }
-        if (powering_off && std::chrono::steady_clock::now() - *powering_off > std::chrono::seconds(20))
-            platform::send_signal(qemu, platform::sig::terminate);
+        if (powering_off && std::chrono::steady_clock::now() - *powering_off > std::chrono::seconds(20)) {
+            kill();
+            powering_off = std::chrono::steady_clock::now();
+        }
         std::vector<platform::PollFd> p{{.fd = agent}, {.fd = listen}};
         for (const auto& cl : clients) p.push_back({.fd = cl.fd});
         platform::poll_fds(p, 200);
@@ -887,6 +967,12 @@ int supervise(const fs::path& home, std::string_view name) {
                     if (!powering_off) powering_off = std::chrono::steady_clock::now();
                     continue;
                 }
+                if (frame.type == 'S') {
+                    const auto j = Json::parse(frame.payload, nullptr, false);
+                    const bool ok = j.is_object() && grants && grants(j);
+                    (void)platform::write_all(cl.fd, proto::encode_json('S', 0, Json{{"ok", ok}}));
+                    continue;
+                }
                 std::uint32_t global;
                 if (frame.type == 'O') {
                     global = next++;
@@ -902,14 +988,105 @@ int supervise(const fs::path& home, std::string_view name) {
         }
         std::erase_if(clients, [](const Client& cl) { return cl.fd < 0; });
     }
-    (void)platform::wait_process(qemu, true);
     std::vector<int> fds{agent, listen};
     for (auto& cl : clients) if (cl.fd >= 0) fds.push_back(cl.fd);
     platform::close_fds(fds);
+}
+
+void cleanup_(const fs::path& home, std::string_view name, const Json& state) {
+    std::error_code ec;
+    const auto dir = run_dir(home, name);
     if (const auto scratch = state.value("scratch", std::string{}); !scratch.empty() && scratch.starts_with(dir.string()))
         fs::remove_all(scratch, ec);
     fs::remove(client_socket_(home, name), ec);
     fs::remove(state_file_(home, name), ec);
+}
+
+// A Mac's machine (part 4 §6.6): Virtualization.framework in this process,
+// its loop on the main thread, the bridge on another; the agent's port is a
+// socket pair, the kernel's console a file.
+int supervise_vz_(const fs::path& home, std::string_view name, Json state) {
+    const auto& v = state["vz"];
+    vz::Plan plan;
+    plan.kernel = v.value("kernel", std::string{});
+    plan.initrd = v.value("initrd", std::string{});
+    plan.cmdline = v.value("cmdline", std::string{});
+    plan.cpus = v.value("cpus", 2u);
+    plan.memory_mb = v.value("memory", 2048ull);
+    plan.grants = v.value("grants", false);
+    plan.network = v.value("network", true);
+    for (const auto& sh : v.value("shares", Json::array()))
+        plan.shares.push_back({sh.value("tag", std::string{}), sh.value("dir", std::string{}), sh.value("read_only", false)});
+    auto pair = platform::unix_stream_pair();
+    const auto console = log_dir(home, name) / "console.log";
+    { std::ofstream truncate(console, std::ios::trunc); }
+    const int console_fd = platform::open_device(console);
+    const int listen = platform::unix_listen_stream(client_socket_(home, name));
+    if (!pair || listen < 0) return 1;
+    plan.agent_fd = (*pair)[1];
+    plan.console_fd = console_fd;
+    state["supervisor"] = platform::get_pid();
+    platform::write_file_atomic(state_file_(home, name).string(), state.dump(2));
+    platform::ignore_signals({platform::sig::pipe, platform::sig::hangup});
+    std::atomic<bool> alive{true};
+    std::map<std::string, std::pair<fs::path, bool>> granted;
+    std::mutex granting;
+    std::thread relay([&] {
+        bridge_(home, name, (*pair)[0], listen, [&] { return alive.load(); }, [] { vz::stop(); },
+                [&](const Json& j) {
+                    std::lock_guard l(granting);
+                    const auto asked = j.value("grants", Json::object());
+                    for (auto it = asked.begin(); it != asked.end(); ++it)
+                        if (it.value().is_array() && it.value().size() == 2)
+                            granted[it.key()] = {it.value()[0].get<std::string>(), it.value()[1].get<bool>()};
+                    vz::set_grants(granted);
+                    return true;
+                });
+        vz::stop();   // the agent went away: the machine with it
+    });
+    const int rc = vz::run(plan, [] {});
+    alive = false;
+    relay.join();
+    std::vector<int> rest{(*pair)[1], console_fd};
+    platform::close_fds(rest);
+    cleanup_(home, name, state);
+    return rc;
+}
+
+}  // namespace
+
+int supervise(const fs::path& home, std::string_view name) {
+    auto state = read_json_(state_file_(home, name));
+    if (state.value("hypervisor", std::string("qemu")) == "vz") return supervise_vz_(home, name, std::move(state));
+    std::vector<std::string> q;
+    for (const auto& a : state.value("qemu", Json::array())) q.push_back(a.get<std::string>());
+    if (q.empty()) return 1;
+    state["supervisor"] = platform::get_pid();
+    platform::write_file_atomic(state_file_(home, name).string(), state.dump(2));
+    const auto dir = run_dir(home, name);
+    std::error_code ec;
+    fs::remove(dir / "agent.sock", ec);
+    platform::ignore_signals({platform::sig::pipe, platform::sig::hangup});
+    const int qemu = platform::fork_process();
+    if (qemu == 0) {
+        platform::exec_path(q, platform::environment());
+        platform::exit_now(127);
+    }
+    if (qemu < 0) return 1;
+    int agent = -1;
+    for (int i = 0; i < 100 && agent < 0; ++i) {
+        agent = platform::unix_connect_stream(dir / "agent.sock");
+        if (agent < 0) std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+    const int listen = platform::unix_listen_stream(client_socket_(home, name));
+    if (agent < 0 || listen < 0) {
+        platform::send_signal(qemu, platform::sig::terminate);
+        return 1;
+    }
+    bridge_(home, name, agent, listen, [&] { return !platform::wait_process(qemu, false).has_value(); },
+            [&] { platform::send_signal(qemu, platform::sig::terminate); }, {});
+    (void)platform::wait_process(qemu, true);
+    cleanup_(home, name, state);
     return 0;
 }
 

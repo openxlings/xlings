@@ -56,13 +56,16 @@ struct Session {
     int write { -1 };
     int pid { -1 };
     bool desktop { false };
+    int err { -1 };             // a command on pipes: its standard error, sent as E frames
 };
 
 void close_session_(Session& s) {
     std::vector<int> fds{s.read};
-    if (s.write != s.read) fds.push_back(s.write);
+    if (s.write != s.read && s.write >= 0) fds.push_back(s.write);
+    if (s.err >= 0) fds.push_back(s.err);
     platform::close_fds(fds);
 }
+
 
 // Who a session logs in as (part 3 §6.1): the --user it was opened with,
 // else the root's etc/luban/login, else root; its passwd says the rest.
@@ -90,6 +93,40 @@ std::map<std::string, std::string> session_env_(const Json& open, const std::str
         for (auto it = e->begin(); it != e->end(); ++it)
             if (it.value().is_string()) env[it.key()] = it.value().get<std::string>();
     return env;
+}
+
+// A command on pipes, not a terminal (`"pipes": true` with its argv): what a
+// program reads -- an NDJSON stream must not be echoed or have its line ends
+// changed. Its output comes back as D frames, its standard error as E.
+std::optional<Session> piped_(const Json& open, const std::vector<int>& inherited) {
+    auto in = platform::make_pipe(), out = platform::make_pipe(), err = platform::make_pipe();
+    if (!in || !out || !err) return std::nullopt;
+    const auto who = login_(open);
+    const auto shell = xlings::subos::root_etc::login_shell("/", who.name);
+    std::vector<std::string> argv;
+    for (const auto& w : open.value("argv", Json::array()))
+        if (w.is_string()) argv.push_back(w.get<std::string>());
+    if (argv.empty()) return std::nullopt;
+    const int pid = platform::fork_process();
+    if (pid == 0) {
+        platform::new_session();
+        const std::array<int, 3> stdio{(*in)[0], (*out)[1], (*err)[1]};
+        platform::redirect_stdio(stdio);
+        auto rest = inherited;
+        rest.insert(rest.end(), {(*in)[1], (*out)[0], (*err)[0]});
+        platform::close_fds(rest);
+        as_login_(who);
+        platform::exec_program(argv, session_env_(open, shell, who));
+        platform::exit_now(127);
+    }
+    std::vector<int> theirs{(*in)[0], (*out)[1], (*err)[1]};
+    platform::close_fds(theirs);
+    if (pid < 0) {
+        std::vector<int> mine{(*in)[1], (*out)[0], (*err)[0]};
+        platform::close_fds(mine);
+        return std::nullopt;
+    }
+    return Session{.read = (*out)[0], .write = (*in)[1], .pid = pid, .err = (*err)[0]};
 }
 
 // A desktop for the Luban OS window: the session `display.session` names
@@ -143,8 +180,10 @@ std::expected<Session, std::string> desktop_(const Json& display, std::map<std::
     return Session{(*from)[0], (*to)[1], pid, true};
 }
 
-[[noreturn]] void agent_() {
-    platform::new_session();
+[[noreturn]] void serve_(int port, bool init);
+
+[[noreturn]] void agent_(bool init = false) {
+    if (!init) platform::new_session();
     std::optional<fs::path> dev;
     for (int i = 0; i < 300 && !dev; ++i) {
         dev = port_();
@@ -153,6 +192,11 @@ std::expected<Session, std::string> desktop_(const Json& display, std::map<std::
     if (!dev) { console_("no luban.agent port: this machine has no sessions"); platform::exit_now(1); }
     const int port = platform::open_device(*dev);
     if (port < 0) { console_("cannot open " + dev->string()); platform::exit_now(1); }
+    serve_(port, init);
+}
+
+// The agent's loop on its port: sessions, commands, a desktop, power off.
+[[noreturn]] void serve_(int port, bool init) {
     (void)platform::write_all(port, proto::encode_json('H', 0, Json{{"agent", 1}}));
     std::map<std::uint32_t, Session> sessions;
     std::vector<int> ended;     // closed by the host, not yet reaped
@@ -164,6 +208,10 @@ std::expected<Session, std::string> desktop_(const Json& display, std::map<std::
         std::vector<platform::PollFd> p{{.fd = port}};
         std::vector<std::uint32_t> order;
         for (const auto& [ch, s] : sessions) { p.push_back({.fd = s.read}); order.push_back(ch); }
+        // A piped command's standard error, after every session's output.
+        std::vector<std::uint32_t> errs;
+        for (const auto& [ch, s] : sessions)
+            if (s.err >= 0) { p.push_back({.fd = s.err}); errs.push_back(ch); }
         std::erase_if(ended, [](int pid) { return platform::wait_process(pid, false).has_value(); });
         platform::poll_fds(p, 500);
         if (p[0].readable) {
@@ -197,6 +245,17 @@ std::expected<Session, std::string> desktop_(const Json& display, std::map<std::
                         sessions[frame.channel] = *s;
                         continue;
                     }
+                    if (open.value("pipes", false)) {
+                        std::vector<int> inherited{port};
+                        for (const auto& [ch, other] : sessions) {
+                            inherited.push_back(other.read);
+                            if (other.write != other.read && other.write >= 0) inherited.push_back(other.write);
+                            if (other.err >= 0) inherited.push_back(other.err);
+                        }
+                        if (auto piped = piped_(open, inherited)) sessions[frame.channel] = *piped;
+                        else (void)platform::write_all(port, proto::encode_json('X', frame.channel, Json{{"code", 125}, {"error", "the command could not start"}}));
+                        continue;
+                    }
                     auto pty = platform::open_pty();
                     if (!pty) {
                         console_(std::format("no pty for a session: {}", platform::error_text(platform::last_error())));
@@ -226,6 +285,13 @@ std::expected<Session, std::string> desktop_(const Json& display, std::map<std::
                     sessions[frame.channel] = {(*pty)[0], (*pty)[0], pid};
                 } else if (frame.type == 'D') {
                     if (auto s = sessions.find(frame.channel); s != sessions.end()) (void)platform::write_all(s->second.write, frame.payload);
+                } else if (frame.type == 'F') {
+                    // The end of a piped command's input.
+                    if (auto s = sessions.find(frame.channel); s != sessions.end() && s->second.err >= 0 && s->second.write >= 0) {
+                        std::vector<int> in{s->second.write};
+                        platform::close_fds(in);
+                        s->second.write = -1;
+                    }
                 } else if (frame.type == 'R') {
                     auto j = Json::parse(frame.payload, nullptr, false);
                     if (auto s = sessions.find(frame.channel); s != sessions.end() && j.is_object() && !s->second.desktop)
@@ -239,10 +305,25 @@ std::expected<Session, std::string> desktop_(const Json& display, std::map<std::
                         sessions.erase(s);
                     }
                 } else if (frame.type == 'P') {
+                    // The agent as PID 1 (the host machine) powers off itself.
+                    if (init) platform::power_off();
                     // busybox init powers off on SIGUSR2; anything else in 10 s.
                     platform::send_signal(1, platform::sig::user2);
                     if (!powering_off) powering_off = std::chrono::steady_clock::now();
                 }
+            }
+        }
+        for (std::size_t k = 0; k < errs.size(); ++k) {
+            const auto& pf = p[1 + order.size() + k];
+            if (!pf.readable && !pf.closed) continue;
+            auto s = sessions.find(errs[k]);
+            if (s == sessions.end() || s->second.err < 0) continue;
+            auto n = platform::read_some(s->second.err, buf);
+            if (n && *n > 0) (void)platform::write_all(port, proto::encode('E', errs[k], std::string_view(buf.data(), *n)));
+            else {
+                std::vector<int> gone{s->second.err};
+                platform::close_fds(gone);
+                s->second.err = -1;
             }
         }
         for (std::size_t k = 0; k < order.size(); ++k) {
@@ -264,7 +345,28 @@ std::expected<Session, std::string> desktop_(const Json& display, std::map<std::
     }
 }
 
+// The Luban host machine's first process, after /dev, /proc and /sys: its
+// tree from the share, the granted directories at /grant, and the agent as
+// PID 1 -- it runs what the host asks (`luban __vm exec`), nothing else.
+[[noreturn]] void host_machine_(const std::function<bool(std::string_view, const fs::path&, bool)>& share) {
+    if (!share("root", "/newroot", false)) give_up_("the host machine's tree (tag root) did not mount");
+    if (!platform::mount_tmpfs("/newroot/run", 0755)) console_("cannot mount /run");
+    if (!platform::mount_tmpfs("/newroot/tmp", 01777)) console_("cannot mount /tmp");
+    for (const auto* at : {"/dev", "/proc", "/sys"})
+        if (!platform::move_mount(at, fs::path("/newroot") / fs::path(at).relative_path()))
+            give_up_(std::format("cannot move {} into the host machine", at));
+    if (!platform::switch_root("/newroot")) give_up_("cannot make the host machine's tree /");
+    if (!platform::mount_kernel_fs("devpts", "/dev/pts")) console_("cannot mount devpts: sessions will fail");
+    // What the host grants later appears under /grant (one share, a directory
+    // per grant); a host that grants nothing has none.
+    if (!share("grant", "/grant", false)) console_("no granted directories (tag grant)");
+    (void)platform::set_hostname("luban-host");
+    agent_(true);
+}
+
 }  // namespace
+
+void serve_agent(int fd) { serve_(fd, false); }
 
 int guest_init(int, char*[]) {
     if (!platform::is_pid1()) {
@@ -281,19 +383,28 @@ int guest_init(int, char*[]) {
     for (const auto& [type, at] : {std::pair{"proc", "/proc"}, {"sysfs", "/sys"}})
         if (!platform::mount_kernel_fs(type, at)) give_up_(std::format("cannot mount {} at {}", type, at));
     const auto params = cmdline_();
+    // How the host shares a directory: 9p (qemu), or virtio-fs (a Mac's
+    // Virtualization.framework, part 4 §6.6) -- the same tags either way.
+    const bool virtiofs = params.contains("luban.fs") && params.at("luban.fs") == "virtiofs";
+    const auto share = [&](std::string_view tag, const fs::path& at, bool ro) {
+        return virtiofs ? platform::mount_virtiofs(tag, at, ro) : platform::mount_9p(tag, at, ro);
+    };
+    // The Luban host machine (part 4 §6.2): its whole tree is the share, its
+    // home is /xlings in it, and the agent is all it runs.
+    if (params.contains("luban.carrier")) host_machine_(share);
     const auto home = params.contains("luban.home") ? fs::path(params.at("luban.home")) : fs::path{};
     if (home.empty() || !home.is_absolute()) give_up_("no luban.home on the kernel's command line");
-    if (!platform::mount_9p("root", "/newroot", false)) give_up_("the environment's tree (9p tag root) did not mount");
+    if (!share("root", "/newroot", false)) give_up_("the environment's tree (tag root) did not mount");
     // A machine's /run and /tmp are its own and go with it, as on any system
     // (the tree would keep them: a desktop's sockets, owned by the host's user
     // there, refuse the next session). Before the home, which may be under one.
     if (!platform::mount_tmpfs("/newroot/run", 0755)) console_("cannot mount /run");
     if (!platform::mount_tmpfs("/newroot/tmp", 01777)) console_("cannot mount /tmp");
-    if (!platform::mount_9p("home", fs::path("/newroot") / home.relative_path(), true))
-        give_up_("the home (9p tag home) did not mount");
+    if (!share("home", fs::path("/newroot") / home.relative_path(), true))
+        give_up_("the home (tag home) did not mount");
     if (params.contains("luban.userhome") && params.at("luban.userhome") == "1"
-        && !platform::mount_9p("userhome", "/newroot/home", false))
-        give_up_("its /home (9p tag userhome) did not mount");
+        && !share("userhome", "/newroot/home", false))
+        give_up_("its /home (tag userhome) did not mount");
     for (const auto* at : {"/dev", "/proc", "/sys"})
         if (!platform::move_mount(at, fs::path("/newroot") / fs::path(at).relative_path()))
             give_up_(std::format("cannot move {} into the environment", at));

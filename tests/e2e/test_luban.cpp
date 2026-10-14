@@ -556,9 +556,12 @@ XTEST(Luban, TheHostStatusIsWhatThisComputerCanMake,
     EXPECT_TRUE(r.exit_code == 0 || r.exit_code == 1) << r.transcript();
     EXPECT_NE(r.out.find("ready"), std::string::npos) << r.transcript();
     if constexpr (!tk::is_linux) {
-        // Elsewhere a Luban system runs in a carrier: the status is its answer,
-        // never "isolated here" (which no carrier made true).
-        EXPECT_NE(r.out.find("Luban systems run in"), std::string::npos) << r.transcript();
+        // Elsewhere a Luban system runs in the Luban host machine: the status
+        // is its carrier's answer, never "isolated here" (which no carrier
+        // made true) -- ready in it, or why not and what to do.
+        EXPECT_NE(r.out.find("sandbox"), std::string::npos) << r.transcript();
         EXPECT_EQ(r.out.find("isolated here"), std::string::npos) << r.transcript();
+        EXPECT_TRUE(r.out.find("Luban host machine") != std::string::npos || r.out.find("do it:") != std::string::npos)
+            << r.transcript();
     }
 }

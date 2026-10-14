@@ -153,6 +153,9 @@ int unix_listen(const std::filesystem::path& path);
 int unix_connect(const std::filesystem::path& path);
 int unix_accept(int listen_fd);
 std::optional<std::array<int, 2>> unix_pair();
+// Two connected byte streams (SOCK_STREAM): a channel one end of which is
+// handed to something that reads and writes bytes (a virtual machine's port).
+std::optional<std::array<int, 2>> unix_stream_pair();
 
 // A byte stream to a listening socket (SOCK_STREAM): what qemu's chardev
 // sockets are. -1 when nothing listens there.

@@ -46,7 +46,8 @@ std::expected<fs::path, std::string> download_linux_build(const fs::path& home) 
     }
     auto pkg = catalog.load_package(*match);
     if (!pkg) return std::unexpected(pkg.error());
-    const auto arch = std::string(platform::build_arch());
+    // A Mac's arm64 is Linux's aarch64.
+    const auto arch = std::string(platform::build_arch()) == "arm64" ? std::string("aarch64") : std::string(platform::build_arch());
     auto resource = xim::detail_::resolve_download_resource_(pkg->xpm, "xlings", match->version, "linux", arch,
                                                              Config::mirror());
     if (!resource) return std::unexpected("xim:xlings@" + match->version + " linux/" + arch + ": " + resource.error());
@@ -65,13 +66,55 @@ std::expected<fs::path, std::string> download_linux_build(const fs::path& home) 
     return std::unexpected("the linux artifact of xim:xlings@" + version + " holds no bin/xlings");
 }
 
+// The machine kernel a carrier boots (a Mac's Luban host machine): the
+// index's xim:linux-kernel-virt for Linux on this architecture, fetched once
+// per version into carriers/linux-kernel/<version>.
+std::expected<fs::path, std::string> linux_kernel(const fs::path& home) {
+    if (const char* named = std::getenv("XLINGS_CARRIER_GUEST_KERNEL"); named && *named) return fs::path(named);
+    auto& catalog = xim::get_catalog(xim::CatalogAccess::InstallReady);
+    auto match = catalog.resolve_target("xim:linux-kernel-virt", "linux");
+    if (!match) return std::unexpected("the index has no xim:linux-kernel-virt for linux: " + match.error());
+    const auto cache = home / "carriers" / "linux-kernel" / match->version;
+    const auto find = [&]() -> std::optional<fs::path> {
+        std::error_code ec;
+        for (auto it = fs::recursive_directory_iterator(cache, ec); !ec && it != fs::recursive_directory_iterator(); it.increment(ec))
+            if (it->path().filename() == "vmlinuz" && it->is_regular_file(ec)) return it->path();
+        return std::nullopt;
+    };
+    if (auto found = find()) return *found;
+    auto pkg = catalog.load_package(*match);
+    if (!pkg) return std::unexpected(pkg.error());
+    const auto arch = std::string(platform::build_arch()) == "arm64" ? std::string("aarch64") : std::string(platform::build_arch());
+    auto resource = xim::detail_::resolve_download_resource_(pkg->xpm, "linux-kernel-virt", match->version, "linux", arch,
+                                                             Config::mirror());
+    if (!resource) return std::unexpected("xim:linux-kernel-virt@" + match->version + " linux/" + arch + ": " + resource.error());
+    const auto downloads = home / "carriers" / "downloads";
+    std::error_code ec;
+    fs::create_directories(downloads, ec);
+    xim::DownloadTask task{.name = "linux-kernel-virt", .url = resource->url, .sha256 = resource->sha256, .destDir = downloads};
+    log::info("fetching the machine kernel ({}) for the Luban host machine...", match->version);
+    auto got = xim::download_one(task);
+    if (!got.success) return std::unexpected("download failed: " + got.error);
+    fs::create_directories(cache, ec);
+    if (auto extracted = xim::extract_archive(got.localFile, cache); !extracted) return std::unexpected(extracted.error());
+    if (auto found = find()) return *found;
+    return std::unexpected("xim:linux-kernel-virt@" + match->version + " holds no vmlinuz");
+}
+
 std::expected<fs::path, std::string> image(const subos::HomeView& home, std::span<const carrier::ImageFile> files) {
     auto guest = linux_xlings(home.home);
     if (!guest) return std::unexpected(guest.error());
     std::vector<xim::TarEntry> entries;
-    for (const auto& f : files)
+    for (const auto& f : files) {
+        if (f.kernel) {
+            auto kernel = linux_kernel(home.home);
+            if (!kernel) return std::unexpected("the machine kernel: " + kernel.error());
+            entries.push_back({.path = f.path, .from = *kernel, .mode = f.mode});
+            continue;
+        }
         entries.push_back({.path = f.path, .content = f.content, .mode = f.mode, .link = f.link,
                            .directory = f.directory});
+    }
     entries.push_back({.path = "xlings/bin/xlings", .from = *guest, .mode = 0755});
     // luban beside it (the Linux release carries both): what runs a machine
     // there (part 4 §8.2). A guest without it still serves every SubOS.

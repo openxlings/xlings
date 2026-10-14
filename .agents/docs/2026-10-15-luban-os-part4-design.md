@@ -180,9 +180,12 @@ OS 组件   环境与机器的生命周期 · generation · edition · 用户与
 wsl2 与 vz 两个载体已经按这个形状设计（"每个 xlings home 一台轻量 Linux VM，`/xlings` 是它的系统 home，用同一套 NDJSON 接口"）。
 part 4 把它定为跨平台的统一模型：
 
-- 它本身是一个 Luban 系统（`luban-core` 加 bwrap），由 luban 创建、升级、修复，和其他环境一样有 generation。
-- 环境的 payload 在宿主机自己的 ext4 磁盘上（`/xlings`），**不放在** APFS、NTFS 上：
-  大小写、符号链接、可执行位、性能都只有在 Linux 文件系统上才对。
+- 它是一台最小的 Linux 机器：静态的 xlings 与 luban（这个版本的 Linux 构建），`/xlings` 是它的 home；
+  bwrap 等其余一切像任何 Linux 宿主一样来自索引。它由载体创建、启动、停止，坏了可以重建（派生状态）。
+- 环境的 payload 在大小写敏感、保留符号链接与可执行位的文件系统上，**不放在** 普通的 APFS、NTFS 上：
+  - Windows：WSL 发行版自己的 ext4（vhdx）；
+  - Mac：一个**大小写敏感的 APFS 稀疏卷**（系统自带的 hdiutil 创建并挂载），整个宿主机的树都在上面，
+    经 virtio-fs 交给虚拟机；Mac 自己也看得见这些文件，所以 machine 可以直接从同一棵树启动一个系统。
 - 宿主的目录只以授予的形式进入：一次一个目录、一个会话（vz 用 virtiofs，wsl2 用 drvfs）。
 - 宿主机在第一次需要时启动，空闲后停止；`luban status` 报告它的状态。
 - 在 Linux 上没有宿主机：本机就是。
@@ -237,10 +240,13 @@ openkal 今天没有 1、2，3、4 只有一部分。这几项合成**一份**�
 
 ### 6.6 macOS 的虚拟化：C++ 绑定，签名的是 luban
 
-- Virtualization.framework 是 Objective-C 接口。绑定放在 `luban/os/vm` 的一个绑定 TU（`.mm`，mcpp 按 C++ 规则编译）里：
-  它导出 `extern "C"` 函数，一个 C++ 绑定模块（`luban.vm.native.vz`）声明并导出这些名字，其余代码只 `import`。
-- 备选：如果 `.mm` 与 C++ 模块在工具链上有问题，改用纯 C++ 经 Objective-C 运行时调用（`objc_msgSend`，与 metal-cpp 同一做法），
-  回调用 clang 的 blocks。代码只集中在绑定模块里。P4-4 的第一步是一个小验证，决定用哪一种。
+- Virtualization.framework 是 Objective-C 接口。绑定模块 `luban.vm.native.vz`（`luban/os/vm/src/native/vz.cpp`）
+  用纯 C++ 经 Objective-C 运行时调用（`objc_msgSend`，与 metal-cpp 同一做法），回调用 clang 的 blocks；
+  不用 `.mm`：一个 `.mm` 在 Linux 的 gcc 上无法编译，而这个 C++ 单元在其他平台上只剩"这是 Mac 的"几个函数。
+- 宿主机与 machine 是同一种 Luban 机器（`luban.vm`），只是 hypervisor 不同：qemu 的 9p 换成 virtio-fs，
+  virtio-serial 的 `luban.agent` 换成 virtio console 的同名端口，客户端、supervisor 的桥、guest 的 agent 都是同一份。
+  agent 增加了在管道上运行命令（`"pipes": true`：不回显、不改行尾、标准错误单独成 E 帧、F 帧关闭输入），
+  这正是 `luban __vm exec` 承载 NDJSON 接口所需要的。
 - 调用 Virtualization.framework 的进程需要 `com.apple.security.virtualization` 权限。这不是受限权限，ad-hoc 签名即可。
   所以由 `tools/macos_release.sh` 给 **luban** 签上这个权限。vz 是 `luban/os/vm` supervisor 的一个 hypervisor 后端，**不需要单独的辅助程序**。
 - xlings 的 vz 载体（`modules/carrier/src/vz.cppm` 已写好的契约）改为调用 `luban __vm <verb>`。

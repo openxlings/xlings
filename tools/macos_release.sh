@@ -145,6 +145,11 @@ mkdir -p "$OUT_DIR/bin"
 cp "$BIN_SRC"          "$OUT_DIR/bin/xlings"
 cp "$LUBAN_SRC"        "$OUT_DIR/bin/luban"
 chmod +x "$OUT_DIR/bin/"*
+# luban runs the Luban host machine (Virtualization.framework): signed, ad
+# hoc, with that framework's entitlement (part 4 §6.6). An ad-hoc signature
+# is what a downloaded binary without quarantine runs with.
+codesign --force --sign - --entitlements "$PROJECT_DIR/apps/luban/luban.entitlements" "$OUT_DIR/bin/luban" \
+  || fail "codesign bin/luban with the virtualization entitlement failed"
 
 # .xlings.json — release packages default to GLOBAL. Users can switch mirror
 # locally after install, and CI also keeps GLOBAL for github.com endpoints.
@@ -190,6 +195,9 @@ echo "$OTOOL_OUT" | grep -q "llvm" && fail "packaged bin/xlings still links agai
 info "OK: packaged bin/xlings has no LLVM runtime dependency"
 otool -L "$OUT_DIR/bin/luban" | grep -q "llvm" && fail "packaged bin/luban links against LLVM runtime dylibs"
 "$OUT_DIR/bin/luban" --version | grep -q "^luban $VERSION" || fail "bin/luban does not report $VERSION"
+codesign -d --entitlements - "$OUT_DIR/bin/luban" 2>&1 | grep -q "com.apple.security.virtualization" \
+  || fail "bin/luban is not signed with the virtualization entitlement"
+info "OK: bin/luban carries the virtualization entitlement"
 
 [[ -f "$OUT_DIR/.xlings.json" ]] || fail ".xlings.json missing"
 info "OK: .xlings.json present"

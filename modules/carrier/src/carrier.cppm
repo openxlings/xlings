@@ -101,6 +101,7 @@ struct ImageFile {
     unsigned mode { 0644 };
     std::string link;            // non-empty: a symbolic link to this target
     bool directory { false };
+    bool kernel { false };       // the Linux machine kernel of this architecture (xim:linux-kernel-virt), here
 };
 // Returns the image tarball (root-owned entries) for `files` plus the Linux
 // xlings at xlings/bin/xlings.
