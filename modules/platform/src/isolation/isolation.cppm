@@ -103,6 +103,8 @@ bool is_pid1();
 // deleting the initramfs, which the kernel frees). Power off after sync.
 bool mount_9p(std::string_view tag, const std::filesystem::path& target, bool read_only);
 bool move_mount(const std::filesystem::path& from, const std::filesystem::path& to);
+// `from` seen again at `to` (an existing directory; links on the way are followed).
+bool bind_mount(const std::filesystem::path& from, const std::filesystem::path& to);
 bool switch_root(const std::filesystem::path& newroot);
 [[noreturn]] void power_off();
 bool set_hostname(std::string_view name);

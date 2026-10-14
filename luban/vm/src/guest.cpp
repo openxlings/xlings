@@ -267,6 +267,11 @@ int guest_init(int, char*[]) {
         if (!platform::move_mount(at, fs::path("/newroot") / fs::path(at).relative_path()))
             give_up_(std::format("cannot move {} into the environment", at));
     if (!platform::switch_root("/newroot")) give_up_("cannot make the environment /");
+    // Its own default runtime is the home's runtime indirection here (part 3
+    // §4): what a payload bound through <home>/abi runs on.
+    if (std::error_code rec; fs::is_directory("/usr/lib/xlings-abi", rec) && fs::exists(home / "abi", rec)
+        && !platform::bind_mount("/usr/lib/xlings-abi", home / "abi"))
+        console_("cannot place its runtime at " + (home / "abi").string());
     // The agent's sessions are ptys before the environment's own start mounts
     // anything (its rcS mounting devpts again is harmless: already mounted).
     if (!platform::mount_kernel_fs("devpts", "/dev/pts")) console_("cannot mount devpts: sessions will fail");

@@ -189,6 +189,7 @@ void scope_evidence_(InstallPlan& plan) {
         const auto record = payload / ".xlings-resolution.json";
         std::error_code ec;
         if (!fs::is_regular_file(record, ec)) {
+            deps.push_back(Config::paths().homeDir / "abi");  // the runtime indirection
             if (auto outside = links_outside_(payload, deps); !outside.empty())
                 node.rebindReason = std::format("it links {}, which this root does not have", outside);
             else
@@ -203,6 +204,9 @@ void scope_evidence_(InstallPlan& plan) {
         std::size_t matched = 0;
         for (const auto& d : doc["deps"]) {
             if (!d.is_object()) continue;
+            // Bound through the environment's runtime (part 3 §4): whichever
+            // runtime this root has answers it -- not a conflict, not a rebind.
+            if (d.value("source", std::string{}) == "scope") { ++matched; continue; }
             const auto recorded = same_file(xvm::expand_path(d.value("install_dir", std::string{}),
                                                              Config::paths().homeDir.string()));
             if (std::ranges::find(deps, recorded) != deps.end()) { ++matched; continue; }

@@ -276,7 +276,8 @@ class PrivateView final : public View {
         for (const auto& [guest, physical] : homes) {
             auto skeleton = stage_ / "homes" / std::to_string(skeletons_.size());
             fs::create_directories(skeleton / "data/xpkgs");
-            for (const auto name : {"subos", "config", "logs", "run", "state", "bin"})
+            // abi: where the root's own runtime is seen (part 3 §4).
+            for (const auto name : {"subos", "config", "logs", "run", "state", "bin", "abi"})
                 fs::create_directories(skeleton / name);
             skeletons_.emplace(guest, skeleton);
             bindings_.push_back({skeleton, guest});

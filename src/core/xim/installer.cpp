@@ -28,6 +28,7 @@ import xlings.core.semver;
 import xlings.core.entry_binary;
 import xlings.core.elf_same_source;
 import xlings.core.closure_check;
+import xlings.core.abi;
 import xlings.libs.json;
 import xlings.core.xself;
 import xlings.core.xvm.types;
@@ -2881,6 +2882,33 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& requested
         // Every recipe in the index pinned exactly, which is why this held
         // for as long as it did. Ranges are the documented syntax, and the
         // resolver already honours them -- this one comparison did not.
+        // One default runtime per environment (part 3 §4): a runtime dep --
+        // the libc, the C++ runtime beside it -- is bound through the home's
+        // indirection, <home>/abi/<family>, not by its payload's path. The
+        // links are made current first, so this node's hooks run against
+        // them. A home whose links cannot be made binds by path, as before.
+        std::optional<std::string> scopeFamily;
+        bool scopeBinding = false;
+        if constexpr (platform::is_linux) {
+            if (std::ranges::any_of(node.runtime_deps, [&](const std::string& spec) {
+                    const auto* d = detail_::dep_node_for_(plan, node, spec);
+                    return d && abi::is_runtime(d->name);
+                })) {
+                if (auto refreshed = abi::refresh(Config::paths().homeDir, std::format("install {}", node.name))) {
+                    scopeBinding = true;
+                    for (const auto& w : refreshed->what) log::info("runtime {}", w);
+                } else {
+                    log::warn("{}: the home's runtime links could not be made ({}); binding by path",
+                              node.name, refreshed.error());
+                }
+            }
+        }
+        for (auto& dep_spec : node.runtime_deps) {
+            const auto* d = detail_::dep_node_for_(plan, node, dep_spec);
+            if (!scopeBinding || !d || abi::is_cxx_runtime(d->name)) continue;
+            if (auto p = abi::provider_at(d->name, d->version, node_payload_path(*d, dataDir)))
+                if (auto f = abi::family_of(*p)) scopeFamily = f->tag;
+        }
         for (auto& dep_spec : node.runtime_deps) {
             std::string dep_ver;
             if (auto at = dep_spec.find('@'); at != std::string::npos) {
@@ -2931,7 +2959,31 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& requested
                         }
                     }
                 }
+                // Bound through the environment's runtime: the record says so
+                // (`source: scope`), and its search path is the indirection.
+                std::optional<mcpplibs::xpkg::DepExport> scoped;
+                if (scopeBinding && abi::is_runtime(depNode.name)) {
+                    const auto provider = abi::provider_at(depNode.name, depNode.version, depInstallDir);
+                    const auto family = provider ? abi::family_of(*provider) : std::nullopt;
+                    const auto tag = family ? family->tag
+                                   : scopeFamily ? *scopeFamily
+                                   : std::format("linux-{}-glibc", platform::build_arch());
+                    const auto via = abi::dir(Config::paths().homeDir, tag);
+                    if (provider && (family || abi::is_cxx_runtime(depNode.name))) {
+                        r.libdirs = {via.string()};
+                        r.source = "scope";
+                        mcpplibs::xpkg::DepExport e;
+                        if (family) e.loader = abi::loader_path(Config::paths().homeDir, tag, provider->loader).string();
+                        e.abi = depNode.exports.abi;
+                        e.libdirs = {via.string()};
+                        scoped = std::move(e);
+                    }
+                }
                 ctx.resolved_deps[dep_spec] = std::move(r);
+                if (scoped) {
+                    ctx.deps_exports[dep_spec] = std::move(*scoped);
+                    continue;
+                }
 
                 if (depNode.exports.loader.empty() && depNode.exports.libdirs.empty()) {
                     // Nothing declared: no DepExport entry, by design.

@@ -14,6 +14,8 @@ import mcpplibs.capi.lua;
 import mcpplibs.xpkg.executor;
 import xlings.core.config;
 import xlings.core.home;
+import xlings.core.abi;
+import xlings.core.home.domain_producer;
 import xlings.core.notice;
 import xlings.core.xself.upgrade;
 import xlings.core.home_health;
@@ -819,6 +821,18 @@ bool parse_target_spec_(const mcpplibs::cmdline::ParsedArgs& args,
 // names another -- and the install runs in it. Every user's profile puts its
 // programs after their home's own, so a user's version wins and the system's
 // is used without a copy; nobody but root can write it.
+// A command for a Luban system in a prefix domain runs where it lives (part 3
+// §3.4): in its domain's namespace, where /xlings is the home. nullopt: the
+// subos is not in one, and the command goes on here.
+std::optional<int> run_in_domain_(const std::string& name, const std::vector<std::string>& arguments) {
+    auto scope = xlings::home::domain_producer::read_scope(Config::paths().homeDir, name);
+    if (!scope) { log::error("{}", scope.error()); return 1; }
+    if (!*scope) return std::nullopt;
+    auto rc = xlings::home::domain_producer::run((**scope).domain, arguments, std::nullopt, true);
+    if (!rc) { log::error("{}", rc.error()); return 1; }
+    return *rc;
+}
+
 int install_into_system_layer_(const std::vector<std::string>& targets, bool yes, bool reconfig) {
     namespace fs = std::filesystem;
     const char* named = std::getenv("XLINGS_SYSTEM_LAYER");
@@ -1212,6 +1226,37 @@ int cmd_config_(const mcpplibs::cmdline::ParsedArgs& args, EventStream& stream) 
         log::println("tui.interactive = {}", value);
     }
 
+    // --runtime <glibc@VERSION|glibc@latest>: the home's default runtime
+    // (part 3 §4.6). A pin stays until changed; latest follows the newest
+    // installed. The links switch after the edit lands.
+    bool runtimeChanged = false;
+    if (auto runtimeArg = args.value("runtime")) {
+        const std::string value(*runtimeArg);
+        const auto at = value.find('@');
+        const auto package = value.substr(0, at);
+        const auto version = at == std::string::npos ? std::string("latest") : value.substr(at + 1);
+        if (!abi::is_runtime(package) || abi::is_cxx_runtime(package) || version.empty()) {
+            log::error("'{}' is not a runtime: give glibc@VERSION or glibc@latest (musl likewise)", value);
+            return 2;
+        }
+        if (version != "latest") {
+            const auto installed = std::ranges::any_of(abi::select(Config::paths().homeDir, {{package, version}}),
+                [&](const abi::Family& f) { return f.libc.package == package && f.libc.version == version; });
+            if (!installed) {
+                log::error("{}@{} is not installed in this home", package, version);
+                log::println("  install it first: xlings install xim:{}@{} -y", package, version);
+                return 1;
+            }
+        }
+        edits.push_back([package, version](nlohmann::json& j) {
+            if (!j.contains("runtime") || !j["runtime"].is_object()) j["runtime"] = nlohmann::json::object();
+            if (version == "latest") j["runtime"].erase(package);
+            else j["runtime"][package] = version;
+            if (j["runtime"].empty()) j.erase("runtime");
+        });
+        runtimeChanged = true;
+    }
+
     auto commit_edits = [&]() -> bool {
         if (edits.empty()) return true;
         auto committed = update_home_config(
@@ -1381,7 +1426,15 @@ int cmd_config_(const mcpplibs::cmdline::ParsedArgs& args, EventStream& stream) 
     }
 
     if (!edits.empty()) {
-        return commit_edits() ? 0 : 1;
+        if (!commit_edits()) return 1;
+        if (runtimeChanged) {
+            auto switched = abi::refresh(Config::paths().homeDir, "config --runtime");
+            if (!switched) { log::error("{}", switched.error()); return 1; }
+            const auto now = abi::select(Config::paths().homeDir, abi::pins(Config::paths().homeDir));
+            for (const auto& f : now) log::println("runtime {} = {}@{}", f.tag, f.libc.package, f.libc.version);
+            if (now.empty()) log::println("runtime: none installed yet");
+        }
+        return 0;
     }
 
     // No options: show the current configuration.
@@ -2319,6 +2372,15 @@ int dispatch_(int argc, char* argv[]) {
                         log::error("no subos named '{}' (xlings subos list)", name);
                         return 1;
                     }
+                    // A Luban system in a prefix domain installs where it lives
+                    // (part 3 §3.4): into its domain's store, at its paths.
+                    std::vector<std::string> forwarded{"install"};
+                    forwarded.insert(forwarded.end(), targets.begin(), targets.end());
+                    forwarded.insert(forwarded.end(), {"--subos", name});
+                    if (args.is_flag_set("yes")) forwarded.push_back("-y");
+                    if (reconfig) forwarded.push_back("--reconfig");
+                    if (args.is_flag_set("use")) forwarded.push_back("--use");
+                    if (auto rc = run_in_domain_(name, forwarded)) return *rc;
                     platform::set_env_variable("XLINGS_ACTIVE_SUBOS", name);
                     (void)Config::set_active_subos_override(name);
                 }
@@ -2380,6 +2442,11 @@ int dispatch_(int argc, char* argv[]) {
                 std::optional<std::string> subosScope;
                 if (auto named = args.value("subos")) {
                     subosScope = *named;
+                    std::vector<std::string> forwarded{"remove", target, "--subos", std::string(*named)};
+                    if (yes) forwarded.push_back("-y");
+                    if (force) forwarded.push_back("--force");
+                    if (all) forwarded.push_back("--all");
+                    if (auto rc = run_in_domain_(std::string(*named), forwarded)) return *rc;
                 } else if (args.is_flag_set("all-subos")) {
                     subosScope = "*";
                 }
@@ -2507,6 +2574,7 @@ int dispatch_(int argc, char* argv[]) {
             .description("Show or modify xlings configuration")
             .option(cmdline::Option("lang").takes_value().value_name("LANG").help("Set language (en/zh)"))
             .option(cmdline::Option("mirror").takes_value().value_name("MIRROR").help("Set mirror (GLOBAL/CN)"))
+            .option(cmdline::Option("runtime").takes_value().value_name("LIBC@VERSION").help("Pin this home's default runtime (glibc@2.44.3), or follow the newest installed (glibc@latest)"))
             .option(cmdline::Option("ui-mode").takes_value().value_name("MODE").help("Set UI mode (cli/tui/auto)"))
             .option(cmdline::Option("theme").takes_value().value_name("THEME").help("Set colour theme (name or path)"))
             .option(cmdline::Option("interactive").takes_value().value_name("BOOL").help("Inline prompts in tui mode (true/false)"))

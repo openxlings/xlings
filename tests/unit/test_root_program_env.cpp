@@ -37,3 +37,21 @@ XTEST(RootProgramEnv, AProgramWithARegisteredEnvironmentKeepsItsShimInARoot,
     EXPECT_EQ(target_of("vim"), home.dir() / "bin/xlings") << "its environment is added by the shim";
     EXPECT_EQ(target_of("jq"), jq / "jq") << "nothing to add: linked straight to the payload";
 }
+
+// A root's default runtime is the one its generation carries (part 3 §4):
+// usr/lib/xlings-abi/<family>, what the home's runtime indirection is inside it.
+XTEST(RootProgramEnv, ARootCarriesItsOwnRuntimeInItsGeneration,
+      .area = "subos", .covers = {"RUNTIME-SCOPE"}) {
+    if constexpr (!tk::is_linux) GTEST_SKIP() << "the runtime indirection is Linux's";
+    auto home = tk::Home::isolated("root-runtime");
+    const auto glibc = home.dir() / "data/xpkgs/xim-x-glibc/2.44.3";
+    tk::write_file(glibc / "lib64/ld-linux-x86-64.so.2", "loader");
+    tk::write_file(glibc / "lib64/libc.so.6", "libc");
+    tk::write_file(glibc / "bin/ldd", "ldd");
+    xvm::VersionDB db;
+    xvm::add_version(db, "ldd", "2.44.3", (glibc / "bin").string());
+    const auto in = xlings::subos_root::inputs(home.dir(), home.dir() / "subos/box", xvm::Workspace{{"ldd", "2.44.3"}}, db);
+    std::map<std::string, fs::path> runtime(in.runtime.begin(), in.runtime.end());
+    EXPECT_EQ(runtime["linux-x86_64-glibc/libc.so.6"], glibc / "lib64/libc.so.6");
+    EXPECT_EQ(runtime["linux-x86_64-glibc/ld-linux-x86-64.so.2"], glibc / "lib64/ld-linux-x86-64.so.2");
+}

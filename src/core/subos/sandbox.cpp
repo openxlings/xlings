@@ -21,6 +21,8 @@ import xlings.confine.provider;
 import xlings.confine;
 import xlings.confine.gates;
 import xlings.subos.session;
+import xlings.subos.rootfs;
+import xlings.core.abi;
 import xlings.subos.broker;
 import xlings.core.elfread;
 import xlings.core.confirm;
@@ -821,6 +823,15 @@ int enter(const std::string& name, EventStream& stream, const EnterOptions& opts
             for (const auto& binding : rootView.view->bindings())
                 request.root_mounts.push_back({spec::MountKind::RoBind, binding.source.generic_string(),
                                               binding.destination.generic_string()});
+            // The root's own default runtime is the home's runtime
+            // indirection inside it (part 3 §4): a payload bound through
+            // <home>/abi runs on the runtime this generation carries.
+            if (std::error_code rec;
+                fs::is_directory(subos::rootfs::usr_of(subos_dir).parent_path() / std::string(subos::rootfs::kRuntimeDir), rec)
+                && abi::refresh(p.homeDir, std::format("enter {}", name)).has_value())
+                request.root_mounts.push_back({spec::MountKind::RoBind,
+                    (subos::rootfs::usr_of(subos_dir).parent_path() / std::string(subos::rootfs::kRuntimeDir)).generic_string(),
+                    (p.homeDir / "abi").generic_string()});
         }
 
         auto host_caps = caps::probe(home, ports);

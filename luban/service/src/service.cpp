@@ -229,6 +229,18 @@ Outcome configure(const Context& c, std::string_view name, const std::vector<std
                 if (c.sink) c.sink(error(set.error()));
                 return {.code = 1};
             }
+        } else if (key == "runtime") {
+            // Its default runtime is the one its generation carries (part 3
+            // §4): that version made active in it, a new generation.
+            if (value.find('@') == std::string::npos) {
+                if (c.sink) c.sink(error(std::format("'{}' names no version", value), "luban config " + std::string(name) + " --runtime glibc@2.44.3"));
+                return {.code = 2};
+            }
+            const auto spec = value.find(':') == std::string::npos ? "xim:" + value : value;
+            if (c.sink) c.sink(phase("runtime", "begin", std::format("moving {} to {}", name, value)));
+            const int rc = c.port.terminal({"install", spec, "--subos", std::string(name), "-y"});
+            if (c.sink) c.sink(phase("runtime", rc == 0 ? "done" : "failed", std::format("moving {} to {}", name, value)));
+            if (rc != 0) return {.code = rc};
         } else if (isolation_keys_().contains(key)) {
             if (key == "proxy") {
                 if (value == "off" || value == "none") isolation.insert(isolation.end(), {"--net", "host"});

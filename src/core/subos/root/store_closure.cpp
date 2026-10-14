@@ -232,6 +232,10 @@ std::expected<Closure, std::string> collect(const Inputs& inputs) {
         for (auto& [identity, source] : sources)
             result.sources.push_back(std::move(source));
         auto permitted_elf_path = [&](const fs::path& path) {
+            // The environment's runtime indirection (part 3 §4): a root
+            // carries its own in its generation, mounted there.
+            for (const auto& mount : result.mounts)
+                if (within(mount.guestHome / "abi", path.lexically_normal())) return true;
             for (const auto& mount : result.mounts) {
                 auto candidate = path.lexically_normal();
                 if (within(mount.destination, candidate))

@@ -1108,3 +1108,11 @@ status = "required"
 [LAYER-VISIBILITY]
 text = "each layer lists itself and what is below it: the host's `xlings subos list` counts the Luban systems in one line (--all lists them), and inside a system the domain's other systems are not listed"
 status = "required"
+
+[RUNTIME-SCOPE]
+text = "one default runtime per environment: a payload bound to a runtime (the libc, the C++ runtime beside it) names its environment's indirection <home>/abi/<family>, not a runtime payload; a home's points at its pinned or newest runtime, a Luban system's at the one its generation carries; switching changes links, never a payload; an ordinary library stays bound by its payload"
+status = "required"
+
+[RUNTIME-PIN]
+text = "a runtime is pinned as configuration (xlings config --runtime glibc@V, luban config <n> --runtime glibc@V) and followed again with @latest; a pin to a version not installed is refused with the install command; each switch is one rename, recorded in logs/abi.ndjson with its reason, and the state is abi.json"
+status = "required"

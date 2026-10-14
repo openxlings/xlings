@@ -49,7 +49,14 @@ struct Inputs {
     fs::path sysroot_usr;
     fs::path sysroot_lib;
     fs::path sysroot_share;
+    // The root's own default runtime (part 3 §4): `<family>/<file>` -> the
+    // runtime payload's file, at usr/lib/xlings-abi. The home's runtime
+    // indirection (<home>/abi) is this tree inside the root, so a payload
+    // bound through it runs on the root's runtime and switches with the
+    // generation.
+    std::vector<std::pair<std::string, fs::path>> runtime;
 };
+inline constexpr std::string_view kRuntimeDir = "usr/lib/xlings-abi";
 
 struct Link {
     std::string rel;         // "usr/bin/sh"

@@ -781,6 +781,7 @@ const spec::CommandSpec& tree() {
              .options = {{"--mode <MODE>", "sandbox or machine: how `luban enter` starts it"},
                          {"--persist <WHAT>", "all, home (only /home stays) or none: what a session keeps"},
                          {"--shell <SHELL>", "Its login shell (fish, bash, sh, or a path)"},
+                         {"--runtime <LIBC@VERSION>", "Its default runtime (glibc@2.44.3): a new generation runs on it", false, Level::More},
                          {"--desktop <SESSION>", "The desktop it starts, or none"},
                          {"--on-close <WHAT>", "ask, background or poweroff: closing its window"},
                          {"--policy <PRESET>", "dev, private, locked, or ns:name"},

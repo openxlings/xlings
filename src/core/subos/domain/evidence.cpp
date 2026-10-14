@@ -95,6 +95,10 @@ read_checked_resolution(const OwnedPayload& owner, const SourceResolver& resolve
             dependency.source = entry.at("source").get<std::string>();
             if (!specs.insert(dependency.spec).second)
                 return std::unexpected(path.string() + ": duplicate dependency spec");
+            // Bound through the environment's runtime (part 3 §4): the
+            // payload names <home>/abi, not this provider; whichever runtime
+            // the root has answers it, and the root's own closure proves that.
+            if (dependency.source == "scope") continue;
             dependency.installDir = xvm::expand_path(
                 entry.at("install_dir").get<std::string>(),
                 (owner.recordedHome.empty() ? owner.home : owner.recordedHome).string());
