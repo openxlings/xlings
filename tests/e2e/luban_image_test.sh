@@ -41,6 +41,9 @@ json.dump(cfg, open(sys.argv[1], "w"), indent=2)
   log "index under test: $(readlink -f "$H/data/xim-pkgindex")"
 fi
 L() { ( cd /tmp && env -u XLINGS_ACTIVE_SUBOS -u XLINGS_SUBOS_MODE XLINGS_HOME="$H" DISPLAY= WAYLAND_DISPLAY= "$H/bin/luban" "$@" ); }
+# Where a Luban system's own files are: in the system domain's private home
+# when this host built it there (part 3 §3.4), else in the home itself.
+sysdir() { local d="$H/domains/xlings/private/subos/$1"; [[ -d "$d" ]] && echo "$d" || echo "$H/subos/$1"; }
 
 # limine: the index's (prebuilt boot files and a static tool), installed by
 # the edition's boot profile when the first image is made.
@@ -129,7 +132,7 @@ if [[ "$arch" == x86_64 ]]; then
 log "luban export t p.iso --boot <profile>: the profile is installed into the root, its kernel and command line boot"
 # A boot profile (Luban OS design part 2 §2.4) from an index of this test's:
 # the kernel already in the root, and a command line of its own.
-release="$(basename "$(dirname "$(ls "$H"/subos/t/root/usr/lib/modules/*/vmlinuz | head -1)")")"
+release="$(basename "$(dirname "$(ls "$(sysdir t)"/root/usr/lib/modules/*/vmlinuz | head -1)")")"
 FIX="$RUNTIME_DIR/fixture-index"
 mkdir -p "$FIX/pkgs/l"
 echo 'xim_indexrepos = {}' > "$FIX/xim-indexrepos.lua"
@@ -224,7 +227,7 @@ printf '%s\n' "$machine" > "$RUNTIME_DIR/machine-session.log"
 grep -q "t is up" <<<"$machine" || fail "machine: did not come up: $(tail -20 <<<"$machine"; tail -20 "$H"/logs/machines/t/console.log 2>/dev/null)"
 grep -q "only its proxy" <<<"$machine" || fail "machine: its network is not only the proxy: $(grep -a starting <<<"$machine")"
 grep -q "MACHINE-" <<<"$machine" || fail "machine: the session ran nothing: $(tail -20 <<<"$machine")"
-[[ ! -e "$H/subos/t/rootfs/root/machine.txt" ]] || fail "machine --temp: what it wrote stayed"
+[[ ! -e "$(sysdir t)/rootfs/root/machine.txt" ]] || fail "machine --temp: what it wrote stayed"
 [[ ! -e "$H/run/machines/t/scratch" ]] || fail "machine --temp: its copy stayed"
 log "the desktop: labwc-desktop in t, its session bridged by opensal-wlr to a client of the machine, as the Luban OS window is"
 CLIENT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/luban_desktop_client.py"
@@ -236,9 +239,9 @@ L config t --mode machine --on-close background >/dev/null 2>&1 || fail "config 
 [[ -S "$H/run/machines/t/luban.sock" ]] || fail "desktop: t is not running: $(tail -10 "$RUNTIME_DIR/desktop-boot.log")"
 desk="$(timeout 300 python3 "$CLIENT" "$H/run/machines/t" \
   '{Alt+Return}echo DESKTOP-$(uname -m) > /root/desktop.txt\n' "$RUNTIME_DIR/desktop.ppm" || true)"
-cp "$H/subos/t/rootfs/var/log/luban/desktop.log" "$RUNTIME_DIR/machine-desktop.log" 2>/dev/null || true
+cp "$(sysdir t)/rootfs/var/log/luban/desktop.log" "$RUNTIME_DIR/machine-desktop.log" 2>/dev/null || true
 grep -q '"drew": true' <<<"$desk" || fail "desktop: it never drew: $desk $(tail -20 "$RUNTIME_DIR/machine-desktop.log" 2>/dev/null)"
-[[ "$(cat "$H/subos/t/rootfs/root/desktop.txt" 2>/dev/null)" == "DESKTOP-$arch" ]] \
+[[ "$(cat "$(sysdir t)/rootfs/root/desktop.txt" 2>/dev/null)" == "DESKTOP-$arch" ]] \
   || fail "desktop: what was typed into its terminal did not run ($desk)"
 L stop t >/dev/null 2>&1 || true
 
@@ -249,6 +252,6 @@ sbox="$(cd /tmp && timeout 300 python3 "$CLIENT" --exec \
   env -u XLINGS_ACTIVE_SUBOS -u XLINGS_SUBOS_MODE XLINGS_HOME="$H" "$H/bin/xlings" subos use t \
   --cmd "exec '$H/bin/luban' __desktop - --size 1024x640" 2>"$RUNTIME_DIR/sandbox-desktop.log" || true)"
 grep -q '"drew": true' <<<"$sbox" || fail "sandbox desktop: it never drew: $sbox $(tail -20 "$RUNTIME_DIR/sandbox-desktop.log")"
-[[ "$(cat "$H/subos/t/rootfs/root/sandbox.txt" 2>/dev/null)" == "SANDBOX-$arch" ]] \
+[[ "$(cat "$(sysdir t)/rootfs/root/sandbox.txt" 2>/dev/null)" == "SANDBOX-$arch" ]] \
   || fail "sandbox desktop: what was typed into its terminal did not run ($sbox)"
 log "PASS ($arch): ISO (CD and drive), drive and qcow2 boot ($( [[ "$arch" == x86_64 ]] && echo "BIOS and UEFI" || echo UEFI)); an image entered; the environment as a machine, its proxy the only network; its desktop shown and typed into, as a machine and in a sandbox"

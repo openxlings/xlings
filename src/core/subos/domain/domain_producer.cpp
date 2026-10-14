@@ -145,7 +145,11 @@ std::expected<void, std::string> prepare(const Domain& domain, const fs::path& e
     if (auto reserved = prefix_domain::prepare_private(domain); !reserved) return reserved;
     for (const auto* relative : {"bin", "subos", "data", "data/runtimedir", "tmp"})
         if (auto dir = mkdir_(domain.physicalHome / relative); !dir) return dir;
-    if (auto dir = mkdir_(domain.ownerHome / "data" / "runtimedir"); !dir) return dir;
+    // The owner's download cache, shared when it can be (never a reason to fail).
+    {
+        std::error_code ec;
+        fs::create_directories(domain.ownerHome / "data" / "runtimedir", ec);
+    }
     const auto configFile = domain.physicalHome / ".xlings.json";
     auto configExists = present_(configFile);
     if (!configExists) return std::unexpected(configExists.error());
