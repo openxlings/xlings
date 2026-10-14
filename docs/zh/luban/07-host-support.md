@@ -34,8 +34,29 @@ xlings self doctor --isolation           # what this host can isolate with, and 
 `luban new` 在下载任何东西之前检查宿主并当场询问；agent 模式下以退出码 2 结束并给出命令。无人值守时（CI、脚本），
 `luban setup -y` 回答它唯一的那个问题。
 
-在 macOS 与 Windows 上，`luban status` 回答的是那里运行 Luban 系统的载体（vz、wsl2）：是否可用、为什么不可用、怎样继续。
-就绪退出码为 0，未就绪为 1，各平台一致。
+## 这台电脑能做什么
+
+`luban status` 对每种运行方式说明它在这里是否就绪、怎样运行——不就绪时说明原因和下一步——然后是它找到的设备。
+Luban OS 应用的快速开始与 `luban status --json` 读的是同一份报告。
+
+```
+$ luban status
+Luban OS 2026.10.15.1 -- Linux 6.8.0 (x86_64), host
+  sandbox  ready      isolated here (bwrap)
+  machine  ready      its own kernel, with hardware virtualization (KVM)
+  desktop  ready      in a Luban OS window
+  devices  1 GPU (NVIDIA GeForce RTX 4090) · 2 displays · 3 audio outputs · 1 audio input
+```
+
+| | Linux | macOS（Apple 芯片） | Windows |
+|---|---|---|---|
+| sandbox | 本机内核，隔离运行（bwrap） | 在 Luban 宿主机里（Virtualization.framework） | 在 Luban 宿主机里（WSL 2） |
+| machine | 自己的内核：KVM；没有时为模拟运行（慢） | 自己的内核（Virtualization.framework） | 自己的内核，用宿主机的 KVM（Windows 11 为 WSL 2 提供嵌套虚拟化） |
+| desktop | Luban OS 窗口 | Luban OS 窗口 | Luban OS 窗口 |
+
+Luban 宿主机是每个 home 一台的小型 Linux 机器——它本身就是一个 Luban 系统——Mac 或 PC 上的系统都运行在它里面；
+系统的文件在它的 Linux 文件系统上，这台电脑的目录只有被授予时才进入某个系统。
+就绪（sandbox 或 machine 之一）退出码为 0，未就绪为 1，各平台一致。
 
 ## 出问题时
 

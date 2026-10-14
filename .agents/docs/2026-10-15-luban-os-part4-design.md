@@ -125,8 +125,8 @@ luban/specs/openhal/
 - 契约：一个 concept（"一个设备源能列出设备"）加一个一致性检查。检查本身也是一个 TU：编译通过即形状正确，
   运行时再查 id 稳定、读不到时报告"不可用"而不是空列表。
 
-消费者：P4-2 的能力报告、`--gpu` 的选择。现在只有 Linux 上有这项能力（`modules/subos/sandbox/gpu.cppm`）：
-其中枚举部分迁到 `kits/openhal-host` 的 Linux 提供端，授予部分（哪些设备节点绑进沙箱）留在 Luban。
+消费者：P4-2 的能力报告（`luban status` 的设备一节、Luban OS 应用）。`modules/subos/sandbox/gpu.cppm` 回答的是
+"哪些设备节点绑进沙箱"——那是授予，属于 Luban 的策略，留在原处；openhal 回答"有哪些设备"，两者不重复。
 
 本期不做：设备透传、热插拔事件、音频流。它们以后在同一个包里加接口。
 

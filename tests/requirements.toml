@@ -1144,3 +1144,11 @@ status = "required"
 [RECIPE-ADMIN-STEP]
 text = "a recipe never runs sudo: it declares a step only an administrator may take (libxpkg system.admin_step: the command and why); xlings asks once after the install where somebody can answer and runs the steps through subos::elevation, recorded; where nobody can, the install finishes, the steps are kept in state/admin-steps.json and said with their commands, and self doctor reports them until --fix takes them at a terminal"
 status = "required"
+
+[HAL-DEVICES]
+text = "openhal lists a machine's GPUs, displays, audio endpoints and input devices on Linux, macOS and Windows; what it cannot read it says with a reason, never as an empty list; every source passes the conformance check"
+status = "required"
+
+[PLATFORM-CAPS]
+text = "luban status (and its --json, and the Luban OS app) says per way of running -- sandbox, machine, desktop -- whether it is ready on this computer, how it runs, and when not why and the next step; Linux, macOS and Windows alike"
+status = "required"

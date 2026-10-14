@@ -191,6 +191,7 @@ struct App {
     char new_name[64] = {};
     std::mutex available_m;            // before the job: it is joined while this still exists
     std::map<std::string, Availability> available;     // by edition, from the index
+    std::optional<service::Capabilities> caps;         // what this computer can do (luban status), once asked
     std::unique_ptr<std::jthread> availability_job;
     std::optional<ImportPreview> import;
     std::string quick_said;            // the quick start's line under the cards
@@ -496,6 +497,13 @@ void ask_availability_(App& a) {
     if (a.availability_job) return;
     auto* app = &a;
     a.availability_job = std::make_unique<std::jthread>([app, ctx = a.ctx](std::stop_token stop) {
+        // What this computer can do: the same report `luban status` gives.
+        {
+            auto caps = service::capabilities(service::gather(ctx.home, ctx.port));
+            std::lock_guard l(app->available_m);
+            app->caps = std::move(caps);
+        }
+        if (!stop.stop_requested() && app->window) app->window->wake();
         const std::string arch(platform::build_arch());
         for (const auto& e : kQuick) {
             if (stop.stop_requested()) return;   // the window is closing
@@ -511,11 +519,33 @@ void ask_availability_(App& a) {
     });
 }
 
+// Whether this computer can run a Luban system (a sandbox or a machine is
+// ready), as the capability report said; until it has, what this platform
+// could always do.
+bool can_run_(App& a) {
+    std::lock_guard l(a.available_m);
+    if (!a.caps) return platform::is_linux;
+    const auto* s = a.caps->mode("sandbox");
+    const auto* m = a.caps->mode("machine");
+    return (s && s->ready) || (m && m->ready);
+}
+
+// Why this computer cannot run a Luban system, with the next step; nothing
+// when it can, or while that is not known yet.
+std::string cannot_run_(App& a) {
+    if (can_run_(a)) return {};
+    std::lock_guard l(a.available_m);
+    std::string out(tr("This computer cannot run Luban systems yet: ", "这台电脑还不能运行 Luban 系统："));
+    const auto* s = a.caps ? a.caps->mode("sandbox") : nullptr;
+    if (!s) return out + std::string(tr("they are Linux systems and need a way to run one here.", "它们是 Linux 系统，这里还没有运行它们的方式。"));
+    out += s->reason;
+    if (!s->route.empty()) out += std::string(tr(" -- do it: ", "——处理：")) + s->route;
+    return out;
+}
+
 // Why this edition cannot be made here, or nothing.
 std::string unavailable_(App& a, const Edition& e) {
-    if constexpr (!platform::is_linux)
-        return std::string(tr("Luban systems are Linux systems: they run on a Linux computer.",
-                              "Luban 的系统是 Linux 系统：在 Linux 电脑上运行。"));
+    if (auto why = cannot_run_(a); !why.empty()) return why;
     std::lock_guard l(a.available_m);
     const auto it = a.available.find(std::string(e.name));
     if (it == a.available.end() || !it->second.known) return {};
@@ -561,12 +591,11 @@ void quick_start_(App& a) {
     center_text_(tr("Welcome to Luban OS", "欢迎使用 Luban OS"), 1.6f);
     center_text_(tr("Pick a system: a console to shape yourself, or a desktop ready to use",
                     "选一个系统：自己定制的控制台，或开箱即用的桌面"));
-    if constexpr (!platform::is_linux) {
-        // On a Mac or a PC: said first, not discovered by a failure.
+    if (const auto why = cannot_run_(a); !why.empty()) {
+        // Said first, not discovered by a failure.
         ImGui::Dummy(ImVec2(0, 6));
         ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.78f, 0.4f, 1));
-        center_text_(tr("This computer cannot run Luban systems yet: they are Linux systems and run on a Linux computer.",
-                        "这台电脑还不能运行 Luban 系统：它们是 Linux 系统，在 Linux 电脑上运行。"));
+        center_text_(why);
         ImGui::PopStyleColor();
     }
     ImGui::Dummy(ImVec2(0, 14));
@@ -780,16 +809,14 @@ void import_view_(App& a) {
         ImGui::InputText("##import-name", p.name, sizeof p.name);
         mark_(a, "import:name");
         ImGui::Dummy(ImVec2(0, 12));
-        if constexpr (!platform::is_linux) {
+        if (const auto why = cannot_run_(a); !why.empty()) {
             ImGui::SetCursorPosX(x);
             ImGui::PushTextWrapPos(x + width);
-            ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.4f, 1), "%s",
-                               std::string(tr("This computer cannot run Luban systems yet: they are Linux systems and run on a Linux computer.",
-                                              "这台电脑还不能运行 Luban 系统：它们是 Linux 系统，在 Linux 电脑上运行。")).c_str());
+            ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.4f, 1), "%s", why.c_str());
             ImGui::PopTextWrapPos();
         }
         ImGui::SetCursorPosX((W - 200) / 2);
-        ImGui::BeginDisabled((!p.wider.empty() && !p.confirmed) || !platform::is_linux);
+        ImGui::BeginDisabled((!p.wider.empty() && !p.confirmed) || !can_run_(a));
         const bool go = ImGui::Button(std::string(tr("Import and go in", "导入并进入")).c_str(), ImVec2(200, 40));
         ImGui::EndDisabled();
         mark_(a, "import:go");
@@ -1385,7 +1412,13 @@ Json state_(const App& a) {
     if (a.import)
         j["import"] = {{"file", a.import->file.string()}, {"error", a.import->error}, {"edition", a.import->edition},
                        {"packages", a.import->packages}, {"wider", a.import->wider}, {"name", std::string(a.import->name)},
-                       {"can_go", a.import->error.empty() && (a.import->wider.empty() || a.import->confirmed) && platform::is_linux}};
+                       {"can_go", a.import->error.empty() && (a.import->wider.empty() || a.import->confirmed) && can_run_(const_cast<App&>(a))}};
+    {
+        const bool can = can_run_(const_cast<App&>(a));
+        std::lock_guard l(const_cast<App&>(a).available_m);
+        j["host"] = {{"known", a.caps.has_value()}, {"can_run", can}};
+        if (a.caps) j["host"]["report"] = service::to_json(*a.caps);
+    }
     {
         std::lock_guard l(const_cast<App&>(a).available_m);
         for (const auto& [name, v] : a.available)

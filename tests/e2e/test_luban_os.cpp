@@ -141,6 +141,17 @@ tk::RunResult run_script(const tk::Home& home, std::string_view script, std::vec
 
 Json read_state(const fs::path& file) { return Json::parse(tk::read_file(file)); }
 
+// Whether this computer can run a Luban system, as the app learned it from
+// the capability report (luban status): Linux with isolation, a Mac or a PC
+// with its Luban host machine -- and, on a CI runner without them, not.
+bool app_can_run_(const tk::Home& home) {
+    const auto st = home.root() / "host.json";
+    auto r = run_script(home, std::format("wait quick-start\nwaitfor host.known true 60\nstate {}\n", st.string()));
+    EXPECT_EQ(r.exit_code, 0) << r.transcript();
+    if (r.exit_code != 0) return platform::is_linux;
+    return read_state(st)["host"]["can_run"].get<bool>();
+}
+
 std::array<float, 4> rect(const Json& state, const std::string& anchor) {
     const auto& r = state.at("anchors").at(anchor);
     return {r[0].get<float>(), r[1].get<float>(), r[2].get<float>(), r[3].get<float>()};
@@ -826,9 +837,10 @@ XTEST(LubanOs, TheQuickStartSaysWhatEachSystemIsAndWhatThisComputerCanMake, .are
     auto home = tk::Home::isolated("luban-os-quick");
     ASSERT_EQ(home.xlings({"self", "init"}).exit_code, 0);
     const auto nano = home.root() / "nano.json", core = home.root() / "core.json";
-    // Linux makes them (once the index has answered); another computer says
-    // why it cannot before anything is tried.
-    const std::string can = platform::is_linux ? "true" : "false";
+    // A computer that can run a system makes them (once the index has
+    // answered); one that cannot says why before anything is tried.
+    const bool can_run = app_can_run_(home);
+    const std::string can = can_run ? "true" : "false";
     auto r = run_script(home, std::format(R"(wait quick-start
 expect edition core
 expect name core-1
@@ -851,7 +863,7 @@ expect edition tiny
     ASSERT_EQ(r.exit_code, 0) << r.transcript();
     const auto said_core = read_state(core)["quick_start"]["said"].get<std::string>();
     const auto said_nano = read_state(nano)["quick_start"]["said"].get<std::string>();
-    if constexpr (platform::is_linux) {
+    if (can_run) {
         // What it is -- or, as the index answered for this home, why it
         // cannot be made: never a card that fails only once clicked.
         auto expect_said = [&](const Json& st, const std::string& edition, const std::string& said, std::string_view detail) {
@@ -864,7 +876,8 @@ expect edition tiny
         // nano is said to have nothing to log into (it has no shell).
         expect_said(read_state(nano), "nano", said_nano, "no shell");
     } else {
-        EXPECT_NE(said_core.find("Linux computer"), std::string::npos) << said_core;
+        EXPECT_NE(said_core.find("cannot run Luban systems yet"), std::string::npos) << said_core;
+        EXPECT_NE(said_core.find("do it:"), std::string::npos) << said_core;
     }
     // Both groups are on the screen.
     const auto s = read_state(core);
@@ -880,7 +893,7 @@ XTEST(LubanOs, AnArchiveIsPreviewedBeforeItIsImportedAndWhatItMayDoIsAgreedTo, .
     const auto file = home.root() / "shared-box.luban", st = home.root() / "import.json";
     write_luban_(file, shared_box_manifest_());
     tk::write_file(home.root() / "notes.txt", "not an archive");
-    const std::string can = platform::is_linux ? "true" : "false";
+    const std::string can = app_can_run_(home) ? "true" : "false";
     auto r = run_script(home, std::format(R"(wait quick-start
 drop {0}
 wait import

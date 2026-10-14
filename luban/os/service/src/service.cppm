@@ -9,6 +9,7 @@ export module luban.service;
 export import luban.service.events;
 export import luban.service.port;
 export import luban.service.settings;
+export import luban.service.capabilities;
 import std;
 import xlings.libs.json;
 

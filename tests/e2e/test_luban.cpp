@@ -105,6 +105,36 @@ tk::RunResult luban(const tk::Home& home, std::vector<std::string> args, bool pt
 
 }  // namespace
 
+// What this computer can do: one line per way of running a system, ready
+// or why not and the next step -- on every platform the test runs on.
+XTEST(Luban, TheHostStatusSaysWhatThisComputerCanRun, .area = "luban",
+      .covers = {"PLATFORM-CAPS"}, .requires_ = {"xlings-bin"}) {
+    const auto bin = luban_binary();
+    if (!bin) GTEST_SKIP() << "no luban beside the xlings under test (mcpp build -p luban-tool, or LUBAN_BIN)";
+    auto home = luban_home("luban-caps", *bin);
+    auto st = luban(home, {"status", "--json"});
+    ASSERT_FALSE(st.timed_out) << st.transcript();
+    const auto j = Json::parse(st.out, nullptr, false);
+    ASSERT_TRUE(j.is_object()) << st.transcript();
+    ASSERT_EQ(j["modes"].size(), 3u) << st.out;
+    bool any = false;
+    for (const auto& m : j["modes"]) {
+        ASSERT_TRUE(m["ready"].is_boolean()) << m.dump();
+        if (m["ready"].get<bool>()) EXPECT_FALSE(m.value("how", std::string{}).empty()) << m.dump();
+        else {
+            EXPECT_FALSE(m.value("reason", std::string{}).empty()) << m.dump();
+            EXPECT_FALSE(m.value("route", std::string{}).empty()) << m.dump();
+        }
+        if (m["name"] != "desktop" && m["ready"].get<bool>()) any = true;
+    }
+    EXPECT_EQ(st.exit_code, any ? 0 : 1) << st.transcript();
+    for (const auto* kind : {"gpu", "display", "audio-output", "audio-input", "input"})
+        EXPECT_TRUE(j["devices"].contains(kind)) << kind;
+    auto text = luban(home, {"status"});
+    for (const auto* word : {"sandbox", "machine", "desktop", "devices"})
+        EXPECT_NE(text.out.find(word), std::string::npos) << text.transcript();
+}
+
 XTEST(Luban, ANewEnvironmentFromATemplateIsListedAndDescribed,
       .area = "luban", .cost = tk::Cost::Medium,
       .covers = {"LUBAN-CLI-E2E", "LUBAN-CLI-MAP"}, .requires_ = {"linux", "xlings-bin"}) {

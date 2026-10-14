@@ -55,12 +55,9 @@ std::optional<fs::path> kernel_(const fs::path& home) {
     return best;
 }
 
-bool kvm_() {
-    std::error_code ec;
-    if (!fs::is_character_file("/dev/kvm", ec)) return false;
-    std::fstream kvm("/dev/kvm", std::ios::in | std::ios::out);
-    return kvm.is_open();
-}
+// One answer to "is there hardware virtualization here": the capability
+// report's (luban status).
+bool kvm_() { return service::kvm_usable(); }
 
 void copy_tree_(const fs::path& from, const fs::path& to, const std::set<std::string>& skip, std::error_code& ec) {
     fs::create_directories(to, ec);

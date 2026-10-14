@@ -14,6 +14,7 @@ import luban.service;
 import luban.vm;
 import opensal.wlr;
 import opensal;
+import openhal;
 
 namespace luban::cli {
 
@@ -454,41 +455,59 @@ int pipe_unix_(const std::string& socket) {
     }
 }
 
+// What this computer can do with Luban (part 4 §6.3): one line per way of
+// running a system, and the devices -- the same report the Luban OS app and
+// an agent read. Exit 0 when a system can run here (a sandbox or a machine).
 int host_status(const svc::Context& c, const Globals& g) {
-    auto report = c.port.json({"self", "doctor", "--isolation", "--json"});
-    bool ready = report && report->is_object() && report->value("ok", false);
-    // Elsewhere than Linux a Luban root runs in a carrier (wsl2, vz): ready
-    // is that carrier's own answer, with its reason and its way forward.
-    Json carrier;
-    if (!xlings::platform::is_linux && report && report->is_object())
-        for (const auto& row : report->value("carriers", Json::array()))
-            if (row.value("name", "") == default_carrier()) carrier = row;
-    if (carrier.is_object()) ready = carrier.value("supported", false);
+    const auto caps = svc::capabilities(svc::gather(c.home, c.port));
+    const auto* sandbox = caps.mode("sandbox");
+    const auto* machine = caps.mode("machine");
+    const bool ready = (sandbox && sandbox->ready) || (machine && machine->ready);
     if (g.json) {
-        std::println("{}", Json{{"place", to_string(where())}, {"ready", ready},
-                                {"isolation", report ? *report : Json()}}.dump());
+        auto out = svc::to_json(caps);
+        out["place"] = to_string(where());
+        out["ready"] = sandbox && sandbox->ready;
+        out["isolation"] = caps.isolation;
+        std::println("{}", out.dump());
         return ready ? 0 : 1;
     }
-    std::println("Luban OS -- {}", to_string(where()));
-    if (carrier.is_object()) {
-        if (ready) {
-            std::println("  ready: environments run in {} here", carrier.value("name", ""));
-            return 0;
+    std::println("Luban OS {} -- {} ({}), {}", svc::kVersion, caps.os, caps.arch, to_string(where()));
+    for (const auto& m : caps.modes) {
+        if (m.ready) {
+            std::println("  {:<9}ready      {}", m.name, m.how);
+            continue;
         }
-        std::println("  not ready: Luban systems run in {} here: {}", carrier.value("name", ""),
-                     carrier.value("reason", std::string("it is not available")));
-        if (const auto route = carrier.value("route", std::string{}); !route.empty()) std::println("  do it: {}", route);
-        else if (xlings::platform::is_windows) std::println("  do it: luban setup");
-        return 1;
+        std::println("  {:<9}not ready  {}", m.name, m.reason);
+        if (!m.route.empty()) std::println("  {:<9}           do it: {}", "", m.route);
     }
-    if (ready) {
-        const auto backend = (*report)["backend"].is_object() ? (*report)["backend"].value("name", "") : std::string{};
-        std::println("  ready: environments are isolated here ({})", backend);
-        return 0;
+    // The devices, counted by kind: what each is, `--json`.
+    std::vector<std::string> parts, unread;
+    for (const auto& d : caps.devices) {
+        const auto kind = std::string(openhal::name_of(d.kind));
+        if (!d.unreadable.empty()) {
+            unread.push_back(kind);
+            continue;
+        }
+        if (d.devices.empty()) continue;
+        const auto first = d.devices.front().name;
+        if (d.kind == openhal::Kind::Gpu)
+            parts.push_back(d.devices.size() == 1 ? std::format("1 GPU ({})", first) : std::format("{} GPUs", d.devices.size()));
+        else if (d.kind == openhal::Kind::Display)
+            parts.push_back(std::format("{} display{}", d.devices.size(), d.devices.size() == 1 ? "" : "s"));
+        else if (d.kind == openhal::Kind::AudioOutput)
+            parts.push_back(std::format("{} audio output{}", d.devices.size(), d.devices.size() == 1 ? "" : "s"));
+        else if (d.kind == openhal::Kind::AudioInput)
+            parts.push_back(std::format("{} audio input{}", d.devices.size(), d.devices.size() == 1 ? "" : "s"));
     }
-    std::println("  not ready: this machine needs a one-time setup before it can run a Luban root");
-    std::println("  do it: luban setup");
-    return 1;
+    std::string line;
+    for (const auto& p : parts) line += (line.empty() ? "" : " · ") + p;
+    if (!unread.empty()) {
+        std::string what;
+        for (const auto& u : unread) what += (what.empty() ? "" : ", ") + u;
+        line += std::format("{}could not read: {} (why: luban status --json)", line.empty() ? "" : " · ", what);
+    }
+    std::println("  {:<9}{}", "devices", line.empty() ? std::string("none found") : line);
+    return ready ? 0 : 1;
 }
 
 std::string edition_label_(const svc::Environment& e) {
