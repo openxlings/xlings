@@ -113,6 +113,15 @@ std::expected<Session, std::string> desktop_(const Json& display, std::map<std::
     std::error_code ec;
     fs::create_directories("/var/log/luban", ec);
     o.log = "/var/log/luban/desktop.log";
+    // The user's own runtime directory and log: made here, as root, theirs
+    // before the session drops to them.
+    if (who.uid != 0) {
+        o.runtime_root = fs::path("/run/user") / std::to_string(who.uid);
+        fs::create_directories(o.runtime_root, ec);
+        (void)platform::give_to(o.runtime_root, who.uid, who.gid);
+        { std::ofstream touch(o.log, std::ios::app); }
+        (void)platform::give_to(o.log, who.uid, who.gid);
+    }
     const int pid = platform::fork_process();
     if (pid == 0) {
         // Nothing of the agent's stays open in the bridge (a shell's pty, the port).

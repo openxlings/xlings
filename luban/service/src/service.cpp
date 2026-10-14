@@ -200,30 +200,33 @@ Outcome create(const Context& c, const NewOptions& o) {
     if (rc != 0) return {.code = rc};
     // Its login user (part 3 §6.1): in its passwd, its group and wheel, the
     // password's hash in its shadow, and the one `luban enter` logs in as.
-    if (!o.user.empty()) {
+    // A desktop is never root's: made from the window (no question asked
+    // there), it gets the default user, without a password.
+    const auto user = o.user.empty() && needs_user(o.edition) ? std::string(kDefaultUser) : o.user;
+    if (!user.empty()) {
         const auto root = root_of(c.home, o.name);
         if (!root) {
             if (c.sink) c.sink(error(std::format("{} has no root to give a user", o.name)));
             return {.code = 1};
         }
         const auto rootUser = xlings::subos::root_etc::find_user(*root / "etc", "root");
-        auto made = xlings::subos::root_etc::add_user(*root, o.user, rootUser ? rootUser->shell : std::string("/bin/sh"),
+        auto made = xlings::subos::root_etc::add_user(*root, user, rootUser ? rootUser->shell : std::string("/bin/sh"),
                                                       o.password_hash, xlings::platform::user_ids().uid);
         if (!made) {
             if (c.sink) c.sink(error(made.error()));
             return {.code = 1};
         }
-        if (auto login = xlings::subos::root_etc::set_login_user(*root / "etc", o.user); !login) {
+        if (auto login = xlings::subos::root_etc::set_login_user(*root / "etc", user); !login) {
             if (c.sink) c.sink(error(login.error()));
             return {.code = 1};
         }
-        if (c.sink) c.sink(notice(std::format("{} logs in as {}{}", o.name, o.user,
+        if (c.sink) c.sink(notice(std::format("{} logs in as {}{}", o.name, user,
                                               o.password_hash.empty() ? " (no password)" : "")));
     }
     auto e = describe(c, o.name);
     if (!e) return {.code = 0};
     return {.code = 0, .value = {{"name", e->name}, {"edition", e->edition}, {"packages", e->packages},
-                                 {"user", o.user.empty() ? std::string("root") : o.user},
+                                 {"user", user.empty() ? std::string("root") : user},
                                  {"generation", e->generation ? Json(*e->generation) : Json()}, {"shell", e->shell}}};
 }
 
