@@ -1014,7 +1014,7 @@ text = "sound is existing standards, no new protocol: a sandbox's audio grant ma
 status = "required"
 
 [ELEVATION-NOBODY-TO-ASK]
-text = "administrator rights are never asked for where nobody can answer (agent mode, no terminal, the background of one): rights that need no question are used, otherwise nothing runs and the command that needs them is named; doctor's repair children run unattended with the null device as input"
+text = "administrator rights are never asked for where nobody can answer (agent mode, no terminal, the background of one): rights that need no question are used, otherwise nothing runs and the command that needs them is named; doctor's repair children run unattended: no terminal (a recipe's own sudo fails at once instead of waiting), the null device as input, and Ctrl-C at doctor's terminal ends them"
 status = "required"
 
 [UPGRADE-DOWNGRADE]

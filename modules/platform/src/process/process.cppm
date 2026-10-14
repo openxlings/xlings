@@ -79,6 +79,12 @@ bool take_controlling_terminal();       // stdin's terminal, TIOCSCTTY
 void redirect_stdio(std::span<const int> fds);
 // argv with a deadline, its own process group, killed whole when late (124).
 int run_argv_with_timeout(const std::vector<std::string>& argv, std::chrono::milliseconds limit);
+// A shell command run for nobody: its own session (no controlling terminal)
+// and the null device as input, so a question it asks -- a password, a
+// confirmation read from /dev/tty -- fails at once instead of waiting where
+// nobody can answer. Ctrl-C still reaches this process: it ends the child's
+// group, then is delivered here as usual. Windows: the shell, as std::system.
+int run_shell_unattended(const std::string& command);
 
 struct UserIds { unsigned uid { 0 }; unsigned gid { 0 }; unsigned euid { 0 }; };
 UserIds user_ids();

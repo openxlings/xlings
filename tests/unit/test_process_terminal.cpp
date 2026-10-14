@@ -66,6 +66,92 @@ XTEST(ProcessTerminal, AChildInItsOwnGroupMayUseTheTerminalAndTheTerminalComesBa
 #endif
 }
 
+// `self doctor --fix` repairs another SubOS through a child. A recipe in it
+// that runs `sudo` itself asked for a password on a terminal the child could
+// not read from (`timeout` had put it in a background group), and Ctrl-C did
+// nothing: the person was stuck for the child's whole half-hour bound.
+XTEST(ProcessTerminal, AnUnattendedChildHasNoTerminalToAskOn,
+      .area = "self", .covers = {"ELEVATION-NOBODY-TO-ASK"}, .requires_ = {"posix"}) {
+#if defined(_WIN32)
+    GTEST_SKIP() << "a POSIX controlling terminal";
+#else
+    const int master = ::posix_openpt(O_RDWR | O_NOCTTY);
+    ASSERT_GE(master, 0);
+    ASSERT_EQ(::grantpt(master), 0);
+    ASSERT_EQ(::unlockpt(master), 0);
+    const std::string slave = ::ptsname(master);
+
+    const pid_t pid = ::fork();
+    ASSERT_GE(pid, 0);
+    if (pid == 0) {
+        // A person at a terminal runs doctor.
+        ::setsid();
+        const int fd = ::open(slave.c_str(), O_RDWR);
+        if (fd < 0 || ::ioctl(fd, TIOCSCTTY, 0) != 0) ::_exit(90);
+        ::dup2(fd, 0); ::dup2(fd, 1); ::dup2(fd, 2);
+        // What sudo reads a password from: here it can be opened...
+        if (std::system("exec 3</dev/tty") != 0) ::_exit(91);
+        // ...and in the unattended child it cannot, nor is its input a terminal.
+        const int rc = xlings::platform::run_shell_unattended(
+            "if (exec 3</dev/tty) 2>/dev/null; then exit 10; fi; if [ -t 0 ]; then exit 11; fi; exit 0");
+        ::_exit(rc);
+    }
+    ::close(::open(slave.c_str(), O_RDWR | O_NOCTTY));
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+    int status = 0;
+    ::fcntl(master, F_SETFL, ::fcntl(master, F_GETFL) | O_NONBLOCK);
+    while (::waitpid(pid, &status, WNOHANG) == 0) {
+        char drain[256];
+        while (::read(master, drain, sizeof drain) > 0) {}
+        if (std::chrono::steady_clock::now() > deadline) {
+            ::kill(pid, SIGKILL);
+            ::waitpid(pid, &status, 0);
+            FAIL() << "the run did not end";
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+    ::close(master);
+    ASSERT_TRUE(WIFEXITED(status));
+    EXPECT_EQ(WEXITSTATUS(status), 0)
+        << "91: the test's terminal is not a controlling one; 10: the child could open /dev/tty; 11: its input is a terminal";
+#endif
+}
+
+XTEST(ProcessTerminal, CtrlCEndsAnUnattendedChildAndThenTheCaller,
+      .area = "self", .covers = {"ELEVATION-NOBODY-TO-ASK"}, .requires_ = {"posix"}) {
+#if defined(_WIN32)
+    GTEST_SKIP() << "POSIX signals";
+#else
+    auto home = xlings::testkit::Home::isolated("unattended-ctrl-c");
+    const auto started = home.dir() / "started";
+    const pid_t pid = ::fork();
+    ASSERT_GE(pid, 0);
+    if (pid == 0) {
+        (void)xlings::platform::run_shell_unattended(
+            std::format("echo $$ > '{}'; exec sleep 60", started.string()));
+        ::_exit(0);   // not reached: the held Ctrl-C is delivered after the child ends
+    }
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+    while (!std::filesystem::exists(started) && std::chrono::steady_clock::now() < deadline)
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    const auto pressed = std::chrono::steady_clock::now();
+    ::kill(pid, SIGINT);
+    int status = 0;
+    while (::waitpid(pid, &status, WNOHANG) == 0) {
+        if (std::chrono::steady_clock::now() > deadline) {
+            ::kill(pid, SIGKILL);
+            ::waitpid(pid, &status, 0);
+            FAIL() << "Ctrl-C did not end the run";
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+    EXPECT_LT(std::chrono::steady_clock::now() - pressed, std::chrono::seconds(5));
+    ASSERT_TRUE(WIFSIGNALED(status)) << "the caller must end as Ctrl-C ends it";
+    EXPECT_EQ(WTERMSIG(status), SIGINT);
+#endif
+}
+
 XTEST(ProcessTerminal, AJoinedCommandsTerminalFollowsTheCallersWindowSize,
       .area = "subos", .covers = {"SES-JOIN-TERMINAL"}, .requires_ = {"posix"}) {
 #if defined(_WIN32)

@@ -322,6 +322,59 @@ int run_argv_with_timeout(const std::vector<std::string>& argv, std::chrono::mil
     }
 }
 
+namespace {
+volatile std::sig_atomic_t g_unattended_stop = 0;
+void note_unattended_stop_(int signal) { g_unattended_stop = signal; }
+}
+
+int run_shell_unattended(const std::string& command) {
+    // Held, not blocked: another thread of this process may take the signal,
+    // and a handler sees it whichever thread does.
+    constexpr int stops[] = {SIGINT, SIGQUIT, SIGTERM, SIGHUP};
+    struct sigaction note{}, saved[std::size(stops)]{};
+    note.sa_handler = note_unattended_stop_;
+    sigemptyset(&note.sa_mask);
+    g_unattended_stop = 0;
+    for (std::size_t i = 0; i != std::size(stops); ++i) ::sigaction(stops[i], &note, &saved[i]);
+    const auto restore = [&] {
+        for (std::size_t i = 0; i != std::size(stops); ++i) ::sigaction(stops[i], &saved[i], nullptr);
+    };
+    const int pid = fork_process();
+    if (pid < 0) { restore(); return 126; }
+    if (pid == 0) {
+        ::setsid();
+        reset_signals();
+        if (const int null = ::open("/dev/null", O_RDONLY); null >= 0) {
+            ::dup2(null, 0);
+            if (null != 0) ::close(null);
+        }
+        ::execl("/bin/sh", "sh", "-c", command.c_str(), static_cast<char*>(nullptr));
+        ::_exit(127);
+    }
+    int rc = 0;
+    while (true) {
+        if (auto s = wait_process(pid, false)) { rc = exit_code(*s); break; }
+        if (const int stop = g_unattended_stop) {
+            // The session's leader leads its first group: the shell and what
+            // it runs. Asked first, then made to.
+            send_signal_group(pid, SIGTERM);
+            std::optional<ExitStatus> ended;
+            for (int i = 0; i != 100 && !(ended = wait_process(pid, false)); ++i)
+                std::this_thread::sleep_for(std::chrono::milliseconds(20));
+            if (!ended) {
+                send_signal_group(pid, SIGKILL);
+                (void)wait_process(pid, true);
+            }
+            rc = 128 + stop;
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+    restore();
+    if (const int stop = g_unattended_stop) ::raise(stop);  // as if it had come now
+    return rc;
+}
+
 UserIds user_ids() {
     return {static_cast<unsigned>(::getuid()), static_cast<unsigned>(::getgid()),
             static_cast<unsigned>(::geteuid())};
@@ -807,6 +860,7 @@ std::optional<std::pair<int, ExitStatus>> reap_child() { return std::nullopt; }
 bool new_session() { return false; }
 bool take_controlling_terminal() { return false; }
 void redirect_stdio(std::span<const int>) {}
+int run_shell_unattended(const std::string& command) { return std::system(command.c_str()); }
 // The Windows process scope (design part 3 §6.3): the program and everything
 // it starts in one Job Object that dies with this process (kill-on-close) and
 // is ended whole when it runs past `limit` (124).

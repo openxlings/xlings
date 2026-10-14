@@ -150,7 +150,9 @@ std::string quiet_suffix();
 // Runs a repair child that never asks anything: XLINGS_AGENT_MODE=1 for its
 // duration, so a step that would need a confirmation or administrator rights
 // exits 2 with the command instead of prompting (a prompt from a child that is
-// not in the terminal's foreground can never be answered).
+// not in the terminal's foreground can never be answered). What does not ask
+// through xlings -- a recipe's own `sudo` -- finds no terminal to ask on
+// (platform::run_shell_unattended) and fails at once.
 int run_unattended(const std::string& cmd);
 
 // Can the index supply this package again?

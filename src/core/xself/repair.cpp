@@ -23,7 +23,7 @@ int run_unattended(const std::string& cmd) {
     const char* before = std::getenv("XLINGS_AGENT_MODE");
     const std::optional<std::string> saved = before ? std::optional<std::string>(before) : std::nullopt;
     platform::set_env_variable("XLINGS_AGENT_MODE", "1");
-    const int rc = platform::exec(cmd);
+    const int rc = platform::run_shell_unattended(cmd);
     if (saved) platform::set_env_variable("XLINGS_AGENT_MODE", *saved);
     else platform::unset_env_variable("XLINGS_AGENT_MODE");
     return rc;
