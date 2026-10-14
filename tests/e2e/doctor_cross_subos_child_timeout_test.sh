@@ -7,7 +7,8 @@
 # bound at all -- a child stuck on (say) a stalled download hung the
 # PARENT right along with it, indistinguishable from any other slow
 # repair. `XLINGS_DOCTOR_CHILD_TIMEOUT` (seconds; default 30 min) now
-# bounds it, using `timeout(1)` when it is on PATH.
+# bounds it, in process (platform::run_shell_unattended; 2026.10.14 dropped
+# timeout(1), which put the child in a background process group).
 #
 # Deterministic by construction: the fixture's install() hook `os.sleep`s
 # for longer than the configured timeout, every time, so there is nothing
@@ -20,8 +21,6 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/project_test_lib.sh"
 
 require_fixture_index
 
-command -v timeout >/dev/null 2>&1 \
-  || fail "this test needs coreutils' timeout(1) on PATH to be meaningful"
 
 RUNTIME_DIR="$ROOT_DIR/tests/e2e/runtime/doctor_cross_subos_child_timeout"
 HOME_DIR="$RUNTIME_DIR/home"

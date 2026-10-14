@@ -178,6 +178,55 @@ XTEST(ProcessTerminal, CtrlCEndsAnUnattendedChildAndThenTheCaller,
 #endif
 }
 
+XTEST(ProcessTerminal, AnUnattendedChildPastItsLimitIsEndedWhole,
+      .area = "self", .covers = {"ELEVATION-NOBODY-TO-ASK"}, .requires_ = {"posix"}) {
+#if defined(_WIN32)
+    GTEST_SKIP() << "POSIX sessions";
+#else
+    const auto started = std::chrono::steady_clock::now();
+    const int rc = xlings::platform::run_shell_unattended("sleep 60 & sleep 60",
+                                                          std::chrono::milliseconds(200));
+    EXPECT_EQ(rc, 124);
+    EXPECT_LT(std::chrono::steady_clock::now() - started, std::chrono::seconds(5));
+#endif
+}
+
+XTEST(ProcessTerminal, AnUnattendedChildDiesWithItsCaller,
+      .area = "self", .covers = {"ELEVATION-NOBODY-TO-ASK"}, .requires_ = {"linux"}) {
+#if !defined(__linux__)
+    GTEST_SKIP() << "the parent-death signal is Linux's";
+#else
+    auto home = xlings::testkit::Home::isolated("unattended-orphan");
+    const auto started = home.dir() / "started";
+    const pid_t caller = ::fork();
+    ASSERT_GE(caller, 0);
+    if (caller == 0) {
+        (void)xlings::platform::run_shell_unattended(
+            std::format("echo $$ > '{}'; exec sleep 60", started.string()));
+        ::_exit(0);
+    }
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+    std::string pid_text;
+    while (pid_text.empty() && std::chrono::steady_clock::now() < deadline) {
+        std::ifstream(started) >> pid_text;
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+    ASSERT_FALSE(pid_text.empty());
+    ::kill(caller, SIGKILL);   // no handler runs: only the kernel can end the child now
+    ::waitpid(caller, nullptr, 0);
+    const auto stat = std::filesystem::path("/proc") / pid_text / "stat";
+    bool gone = false;
+    while (!gone && std::chrono::steady_clock::now() < deadline) {
+        std::string line;
+        std::getline(std::ifstream(stat), line);
+        const auto close = line.rfind(')');
+        gone = line.empty() || (close != std::string::npos && line.size() > close + 2 && line[close + 2] == 'Z');
+        if (!gone) std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+    EXPECT_TRUE(gone) << "the child outlived its caller";
+#endif
+}
+
 XTEST(ProcessTerminal, AJoinedCommandsTerminalFollowsTheCallersWindowSize,
       .area = "subos", .covers = {"SES-JOIN-TERMINAL"}, .requires_ = {"posix"}) {
 #if defined(_WIN32)

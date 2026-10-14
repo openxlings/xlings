@@ -83,8 +83,11 @@ int run_argv_with_timeout(const std::vector<std::string>& argv, std::chrono::mil
 // and the null device as input, so a question it asks -- a password, a
 // confirmation read from /dev/tty -- fails at once instead of waiting where
 // nobody can answer. Ctrl-C still reaches this process: it ends the child's
-// group, then is delivered here as usual. Windows: the shell, as std::system.
-int run_shell_unattended(const std::string& command);
+// group, then is delivered here as usual; when this process dies, the child
+// does too (Linux). Past `limit` it is ended whole and 124 returned.
+// Windows: the shell, as std::system.
+int run_shell_unattended(const std::string& command,
+                         std::optional<std::chrono::milliseconds> limit = std::nullopt);
 
 struct UserIds { unsigned uid { 0 }; unsigned gid { 0 }; unsigned euid { 0 }; };
 UserIds user_ids();

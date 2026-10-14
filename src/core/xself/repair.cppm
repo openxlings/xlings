@@ -146,6 +146,9 @@ using DependentsProvider =
 // would interleave with it. Its input is the null device too: a child that
 // reads the terminal from the background of it is stopped by the kernel.
 std::string quiet_suffix();
+// The same for a repair, whose output is kept: appended to `log` (created
+// with its directory), the file a failure points to.
+std::string logged_suffix(const std::filesystem::path& log);
 
 // Runs a repair child that never asks anything: XLINGS_AGENT_MODE=1 for its
 // duration, so a step that would need a confirmation or administrator rights
@@ -153,7 +156,7 @@ std::string quiet_suffix();
 // not in the terminal's foreground can never be answered). What does not ask
 // through xlings -- a recipe's own `sudo` -- finds no terminal to ask on
 // (platform::run_shell_unattended) and fails at once.
-int run_unattended(const std::string& cmd);
+int run_unattended(const std::string& cmd, std::optional<std::chrono::seconds> limit = std::nullopt);
 
 // Can the index supply this package again?
 //
@@ -211,10 +214,20 @@ std::optional<std::string> migration_hint(std::string_view recorded,
 //                   RemovalVerifier: on a multi-subos home those are different
 //                   statements, and reporting REMOVED for a version that is
 //                   still installed is a worse lie than any failure message.
+//
+// `stillFound` (optional) asks whether the finding is still there. A rung
+// whose command exits 0 is not taken at its word: an install that answers
+// "already installed, configuration current" changes nothing, and reporting
+// that as healed left doctor going round the same finding pass after pass.
+// R2 therefore runs config() again (`--reconfig`); when the finding outlives
+// it, R3 follows; when it outlives R3 too, the check -- not the package -- is
+// the suspect, and that is what is reported.
+using FindingCheck = std::function<bool()>;
 RepairResult repair_one(const RepairTask& task,
                         const RepairPolicy& policy,
                         const CommandRunner& run,
                         const RemovalVerifier& removalDone = nullptr,
-                        const DependentsProvider& dependentsOf = nullptr);
+                        const DependentsProvider& dependentsOf = nullptr,
+                        const FindingCheck& stillFound = nullptr);
 
 } // namespace xlings::xself

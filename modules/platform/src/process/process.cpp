@@ -9,6 +9,9 @@ module;
 #if defined(__linux__) || defined(__APPLE__)
 #include <fcntl.h>
 #include <poll.h>
+#if defined(__linux__)
+#include <sys/prctl.h>
+#endif
 #include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <sys/socket.h>
@@ -327,7 +330,7 @@ volatile std::sig_atomic_t g_unattended_stop = 0;
 void note_unattended_stop_(int signal) { g_unattended_stop = signal; }
 }
 
-int run_shell_unattended(const std::string& command) {
+int run_shell_unattended(const std::string& command, std::optional<std::chrono::milliseconds> limit) {
     // Held, not blocked: another thread of this process may take the signal,
     // and a handler sees it whichever thread does.
     constexpr int stops[] = {SIGINT, SIGQUIT, SIGTERM, SIGHUP};
@@ -339,10 +342,16 @@ int run_shell_unattended(const std::string& command) {
     const auto restore = [&] {
         for (std::size_t i = 0; i != std::size(stops); ++i) ::sigaction(stops[i], &saved[i], nullptr);
     };
+    const int parent = ::getpid();
     const int pid = fork_process();
     if (pid < 0) { restore(); return 126; }
     if (pid == 0) {
         ::setsid();
+#if defined(__linux__)
+        // A child of nobody's must not outlive the one who started it.
+        ::prctl(PR_SET_PDEATHSIG, SIGKILL);
+        if (::getppid() != parent) ::_exit(130);
+#endif
         reset_signals();
         if (const int null = ::open("/dev/null", O_RDONLY); null >= 0) {
             ::dup2(null, 0);
@@ -351,23 +360,24 @@ int run_shell_unattended(const std::string& command) {
         ::execl("/bin/sh", "sh", "-c", command.c_str(), static_cast<char*>(nullptr));
         ::_exit(127);
     }
+    // The session's leader leads its first group: the shell and what it
+    // runs. Asked first, then made to.
+    const auto end_it = [pid] {
+        send_signal_group(pid, SIGTERM);
+        std::optional<ExitStatus> ended;
+        for (int i = 0; i != 100 && !(ended = wait_process(pid, false)); ++i)
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        if (!ended) {
+            send_signal_group(pid, SIGKILL);
+            (void)wait_process(pid, true);
+        }
+    };
+    const auto deadline = limit ? std::optional(std::chrono::steady_clock::now() + *limit) : std::nullopt;
     int rc = 0;
     while (true) {
         if (auto s = wait_process(pid, false)) { rc = exit_code(*s); break; }
-        if (const int stop = g_unattended_stop) {
-            // The session's leader leads its first group: the shell and what
-            // it runs. Asked first, then made to.
-            send_signal_group(pid, SIGTERM);
-            std::optional<ExitStatus> ended;
-            for (int i = 0; i != 100 && !(ended = wait_process(pid, false)); ++i)
-                std::this_thread::sleep_for(std::chrono::milliseconds(20));
-            if (!ended) {
-                send_signal_group(pid, SIGKILL);
-                (void)wait_process(pid, true);
-            }
-            rc = 128 + stop;
-            break;
-        }
+        if (const int stop = g_unattended_stop) { end_it(); rc = 128 + stop; break; }
+        if (deadline && std::chrono::steady_clock::now() >= *deadline) { end_it(); rc = 124; break; }
         std::this_thread::sleep_for(std::chrono::milliseconds(20));
     }
     restore();
@@ -860,7 +870,9 @@ std::optional<std::pair<int, ExitStatus>> reap_child() { return std::nullopt; }
 bool new_session() { return false; }
 bool take_controlling_terminal() { return false; }
 void redirect_stdio(std::span<const int>) {}
-int run_shell_unattended(const std::string& command) { return std::system(command.c_str()); }
+int run_shell_unattended(const std::string& command, std::optional<std::chrono::milliseconds>) {
+    return std::system(command.c_str());
+}
 // The Windows process scope (design part 3 §6.3): the program and everything
 // it starts in one Job Object that dies with this process (kill-on-close) and
 // is ended whole when it runs past `limit` (124).

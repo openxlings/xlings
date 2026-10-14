@@ -19,11 +19,18 @@ std::string quiet_suffix() {
     return std::format(" <{0} >{0} 2>&1", platform::null_device);
 }
 
-int run_unattended(const std::string& cmd) {
+std::string logged_suffix(const std::filesystem::path& log) {
+    std::error_code ec;
+    std::filesystem::create_directories(log.parent_path(), ec);
+    return std::format(" <{} >>{} 2>&1", platform::null_device, platform::shell_quote(log.string()));
+}
+
+int run_unattended(const std::string& cmd, std::optional<std::chrono::seconds> limit) {
     const char* before = std::getenv("XLINGS_AGENT_MODE");
     const std::optional<std::string> saved = before ? std::optional<std::string>(before) : std::nullopt;
     platform::set_env_variable("XLINGS_AGENT_MODE", "1");
-    const int rc = platform::run_shell_unattended(cmd);
+    const int rc = platform::run_shell_unattended(
+        cmd, limit ? std::optional<std::chrono::milliseconds>(*limit) : std::nullopt);
     if (saved) platform::set_env_variable("XLINGS_AGENT_MODE", *saved);
     else platform::unset_env_variable("XLINGS_AGENT_MODE");
     return rc;
@@ -52,7 +59,7 @@ std::optional<std::string> migration_hint(std::string_view recorded,
     return std::format("set up by {}; last verified by {}", a, b);
 }
 
-RepairResult repair_one(const RepairTask& task, const RepairPolicy& policy, const CommandRunner& run, const RemovalVerifier& removalDone, const DependentsProvider& dependentsOf) {
+RepairResult repair_one(const RepairTask& task, const RepairPolicy& policy, const CommandRunner& run, const RemovalVerifier& removalDone, const DependentsProvider& dependentsOf, const FindingCheck& stillFound) {
     const auto coordinate = task.coordinate.empty()
         ? std::format("{}@{}", task.target, task.version)
         : task.coordinate;
@@ -71,6 +78,9 @@ RepairResult repair_one(const RepairTask& task, const RepairPolicy& policy, cons
 
     const auto install = std::format("{} install {} -y",
                                      policy.client, coordinate);
+    const auto reregister = std::format("{} install {} --reconfig -y",
+                                        policy.client, coordinate);
+    const auto cleared = [&] { return !stillFound || !stillFound(); };
     // --force: this remove is a MEANS to a reinstall, not the user's own
     // request to remove something. Without it, a recipe whose uninstall()
     // hook throws exits 1 -- but 2026.9.12's `remove` withdraws the version
@@ -90,7 +100,7 @@ RepairResult repair_one(const RepairTask& task, const RepairPolicy& policy, cons
     // having found "nothing to do" and this rung would report the finding
     // healed while the files a sweep left beside the package's own stayed
     // exactly where they were. See RepairKind::SweptPayload.
-    if (task.kind != RepairKind::SweptPayload && run(install) == 0) {
+    if (task.kind != RepairKind::SweptPayload && run(reregister) == 0 && cleared()) {
         return {true, "re-register", {}};
     }
 
@@ -132,7 +142,12 @@ RepairResult repair_one(const RepairTask& task, const RepairPolicy& policy, cons
         removalDone && !removalDone(task.target, task.version);
     const bool installed = run(install) == 0;
 
-    if (installed && !recordsSurvived) return {true, "reinstall", {}};
+    if (installed && !recordsSurvived) {
+        if (cleared()) return {true, "reinstall", {}};
+        return {false, "reinstall",
+                std::format("{} was reinstalled and the finding remains: the check, not the package, "
+                            "is the suspect (`xlings self doctor --all` shows it)", coordinate)};
+    }
 
     if (recordsSurvived) {
         return {false, installed ? "reinstall" : "none",
