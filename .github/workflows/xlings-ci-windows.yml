@@ -489,7 +489,8 @@ jobs:
             sleep 60
           done
           [ -f guest/release.tar.gz ] || { echo "::error::no Linux release build of $SHA appeared in xlings-ci-linux.yml"; exit 1; }
-          mkdir -p guest/x && tar -xzf guest/release.tar.gz -C guest/x
+          # Only its two programs: a Windows file system takes no Linux links.
+          mkdir -p guest/x && tar -xzf guest/release.tar.gz -C guest/x --wildcards '*/bin/xlings' '*/bin/luban'
           bin=$(find "$PWD/guest/x" -path '*/bin/xlings' -type f | head -1)
           [ -n "$bin" ] && [ -f "$(dirname "$bin")/luban" ] || { echo "::error::the Linux build has no bin/xlings and bin/luban"; exit 1; }
           echo "XLINGS_CARRIER_GUEST_XLINGS=$(cygpath -w "$bin")" >> "$GITHUB_ENV"
