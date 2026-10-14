@@ -80,8 +80,15 @@ end
                                     {{"name", "fixture"}, {"url", repo.generic_string()}, {"source", "git"}}})}};
     tk::write_file(home.dir() / ".xlings.json", config.dump());
     fs::create_directories(home.dir() / "bin");
-    fs::copy_file(tk::xlings_binary(), home.dir() / "bin/xlings");
-    fs::copy_file(luban, home.dir() / "bin/luban");
+    // Linked where the file system allows (a sanitizer build is hundreds of
+    // megabytes, and every test here makes a home), else copied.
+    const auto place = [](const fs::path& from, const fs::path& to) {
+        std::error_code ec;
+        fs::create_hard_link(from, to, ec);
+        if (ec) fs::copy_file(from, to);
+    };
+    place(tk::xlings_binary(), home.dir() / "bin/xlings");
+    place(luban, home.dir() / "bin/luban");
     const auto bwrap = home.dir() / "data/xpkgs/xim-x-bwrap/0.11.2/bin/bwrap";
     tk::write_file(bwrap, "#!/bin/sh\nexit 0\n");
     fs::permissions(bwrap, fs::perms::owner_all | fs::perms::group_read | fs::perms::group_exec);

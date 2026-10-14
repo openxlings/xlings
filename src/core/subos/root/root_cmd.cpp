@@ -418,6 +418,21 @@ std::optional<int> produce_domain_at_creation_(const std::string& name, bool,
     }
     auto produced = xlings::home::domain_producer::run(*selected, arguments);
     if (!produced || *produced != 0) {
+        // Asked to build it there only if this host can (luban new): what the
+        // private namespace could not make is made in this home's prefix, said
+        // once. Its half there is set aside, not deleted, so the name stays free
+        // for a later attempt. Nothing of it here yet, or this is not that.
+        const HomeView owner{home_dir_()};
+        if (fellBack && !fs::exists(owner.instance_file(name), ec) && !fs::exists(owner.instance(name), ec)) {
+            const auto half = HomeView{selected->physicalHome}.instance(name);
+            if (fs::exists(half, ec))
+                fs::rename(half, half.parent_path() / std::format(".unfinished-{}-{}", name, platform::get_pid()), ec);
+            *fellBack = true;
+            log::warn("'{}' could not be built in its private namespace on this host ({}); it is made in this home's "
+                      "prefix (xlings self doctor --isolation says why)", name,
+                      produced ? std::format("exit {}", *produced) : produced.error());
+            return std::nullopt;
+        }
         error_(stream, produced ? std::format("namespace producer failed (exit {}); private domain retained", *produced) : produced.error());
         return produced ? *produced : 1;
     }

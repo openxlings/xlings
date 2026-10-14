@@ -5,6 +5,8 @@ import xlings.libs.json;
 import xlings.platform;
 import xlings.observe;
 import xlings.core.version_order;
+import xlings.core.home;
+import xlings.core.home.domain_producer_source;
 
 namespace xlings::abi {
 
@@ -82,11 +84,27 @@ std::map<std::string, std::string> pins(const fs::path& home) {
     return out;
 }
 
+// Where runtime payloads are: this home's, then the machine's system layer
+// a user's home borrows from (deployment M) -- a payload bound through
+// <home>/abi may be the layer's.
+std::vector<fs::path> roots_(const fs::path& home) {
+    std::vector<fs::path> roots{home / "data" / "xpkgs"};
+    if (auto layer = xlings::home::read_system_layer(); layer && *layer) {
+        std::error_code ec;
+        if (!fs::equivalent(**layer, home, ec))
+            if (auto physical = xlings::home::domain_producer_source::persisted_home(**layer))
+                roots.push_back(*physical / "data" / "xpkgs");
+    }
+    return roots;
+}
+
 std::vector<Family> select(const fs::path& home, const std::map<std::string, std::string>& pinned) {
-    // Every installed runtime payload, by package.
+    // Every installed runtime payload, by package; a version the home has
+    // itself is the home's.
     std::map<std::string, std::vector<Provider>> found;
     std::error_code ec;
-    for (fs::directory_iterator s(home / "data" / "xpkgs", ec), end; !ec && s != end; s.increment(ec)) {
+    for (const auto& root : roots_(home))
+    for (fs::directory_iterator s(root, ec), end; !ec && s != end; s.increment(ec)) {
         const auto package = runtime_package_of_(s->path().filename().string());
         if (!package) continue;
         std::error_code vec;
@@ -94,6 +112,7 @@ std::vector<Family> select(const fs::path& home, const std::map<std::string, std
             const auto version = v->path().filename().string();
             if (version.starts_with('.') || !v->is_directory(vec)) continue;
             if (fs::exists(v->path() / ".xlings-failed", vec)) continue;
+            if (std::ranges::any_of(found[*package], [&](const Provider& p) { return p.version == version; })) continue;
             if (auto p = provider_at(*package, version, v->path())) found[*package].push_back(std::move(*p));
         }
     }

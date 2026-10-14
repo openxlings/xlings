@@ -61,10 +61,29 @@ Probe probe(const subos::HomeView&) {
             return {.supported = false, .reason = "the wsl2 carrier exists on Windows", .route = "--carrier local"};
         return {.supported = false, .reason = "WSL is not installed", .route = std::string(kInstall)};
     }
+    // A distribution already running on WSL 2 is the plainest evidence:
+    // `wsl --list --verbose` names each with its version (an inbox wsl.exe
+    // that predates `--status` answers this too).
+    if (auto listed = run(*wsl, {"--list", "--verbose"}); listed.rc == 0) {
+        std::string flat = listed.out;
+        std::erase(flat, '\0');
+        std::istringstream lines(flat);
+        for (std::string line; std::getline(lines, line);) {
+            std::erase(line, '\r');
+            while (!line.empty() && (line.back() == ' ' || line.back() == '\t')) line.pop_back();
+            if (line.ends_with(" 2") && line.find("VERSION") == std::string::npos)
+                return {.supported = true, .reason = "WSL2", .evidence = first_lines(flat, 6)};
+        }
+    }
     auto status = run(*wsl, {"--status"});
-    if (status.rc != 0)
-        return {.supported = false, .reason = "WSL did not answer: " + first_lines(status.out, 3),
-                .route = std::string(kInstall), .evidence = first_lines(status.out, 6)};
+    std::string said = status.out;
+    std::erase(said, '\0');
+    // An inbox wsl.exe without `--status` hands it to its default
+    // distribution's shell: not an answer either way.
+    const bool unanswered = said.find("not found") != std::string::npos && said.find("--status") != std::string::npos;
+    if (status.rc != 0 || unanswered)
+        return {.supported = false, .reason = "WSL did not say it runs WSL 2: " + first_lines(said, 3),
+                .route = std::string(kInstall), .evidence = first_lines(said, 6)};
     // WSL1 translates system calls: no namespaces, so no sandbox and no root.
     std::string flat = status.out;
     std::erase(flat, '\0');

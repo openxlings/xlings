@@ -78,7 +78,7 @@ XTEST(CarrierWsl2, TheImageTurnsInteropAndAutomountOffAndAGrantIsOnlyUnderGrant,
 }
 
 XTEST(CarrierWsl2, ASubosOnTheCarrierIsCreatedThereOnceUsedThereAndRemovedThere,
-      .area = "subos", .covers = {"CARRIER-WSL-LIFECYCLE", "PLATFORM-CAPS"}, .requires_ = {"linux", "xlings-bin"}) {
+      .area = "subos", .covers = {"CARRIER-WSL-LIFECYCLE", "PLATFORM-CAPS", "CARRIER-GUEST-CURRENT"}, .requires_ = {"linux", "xlings-bin"}) {
     auto home = tk::Home::isolated("carrier-wsl2");
     const auto wsl = home.root() / "wsl";
     fs::create_directories(wsl);
@@ -125,6 +125,38 @@ XTEST(CarrierWsl2, ASubosOnTheCarrierIsCreatedThereOnceUsedThereAndRemovedThere,
                 if (e["name"] == "box") { seen = true; EXPECT_EQ(e["carrier"], "wsl2"); }
     EXPECT_TRUE(seen) << listed.transcript();
 
+    // An upgrade reaches the guest (part 4 §9): a machine that reports another
+    // release is brought to this one -- `xlings self update` there, once per
+    // release, not on every command. (In this test, not a second one: each
+    // carrier image carries a whole xlings.)
+    {
+        const auto guest = distro / "xlings/bin/xlings";
+        const auto real = distro / "xlings/bin/xlings.real";
+        fs::rename(guest, real);
+        tk::write_file(guest, "#!/bin/sh\necho \"$*\" >> \"$(dirname \"$0\")/../calls\"\n"
+                              "case \"$1\" in __carrier-probe) echo '{\"kvm\":false,\"kernel\":\"6\",\"version\":\"2000.1.1.1\"}' ;; "
+                              "self) exit 0 ;; esac\nexec \"$(dirname \"$0\")/xlings.real\" \"$@\"\n");
+        fs::permissions(guest, fs::perms::owner_all);
+        const auto probe_file = home.dir() / "carriers/wsl2/probe.json";
+        const auto age = [&] { fs::last_write_time(probe_file, fs::file_time_type::clock::now() - std::chrono::hours(1)); };
+        const auto updates = [&] {
+            const auto calls = read_or_empty(distro / "xlings/calls");
+            std::size_t n = 0;
+            for (std::size_t at = 0; (at = calls.find("self update", at)) != std::string::npos; ++at) ++n;
+            return n;
+        };
+        age();
+        EXPECT_EQ(home.xlings({"subos", "info", "box"}, env).exit_code, 0);
+        EXPECT_EQ(updates(), 1u) << read_or_empty(distro / "xlings/calls");
+        const auto kept = nlohmann::json::parse(read_or_empty(probe_file), nullptr, false);
+        EXPECT_FALSE(kept.value("updated_for", std::string{}).empty()) << kept.dump();
+        age();
+        (void)home.xlings({"subos", "info", "box"}, env);
+        EXPECT_EQ(updates(), 1u) << "not again for the same release";
+        fs::remove(guest);
+        fs::rename(real, guest);
+    }
+
     // Removed there; then here.
     auto removed = home.xlings({"subos", "remove", "box", "-y"}, env);
     EXPECT_EQ(removed.exit_code, 0) << removed.transcript();
@@ -132,47 +164,4 @@ XTEST(CarrierWsl2, ASubosOnTheCarrierIsCreatedThereOnceUsedThereAndRemovedThere,
     EXPECT_FALSE(fs::exists(home.dir() / "subos/box"));
     EXPECT_FALSE(fs::exists(home.dir() / "config/subos/box/instance.json"));
     EXPECT_TRUE(fs::is_directory(distro)) << "the carrier is the home's; removing a SubOS keeps it";
-}
-
-// An upgrade reaches the guest (part 4 §9): a carrier's machine that reports
-// another release is brought to this one -- `xlings self update` there, once
-// per release, not on every command.
-XTEST(CarrierWsl2, AGuestOfAnotherReleaseIsBroughtToThisOneOnce,
-      .area = "subos", .covers = {"CARRIER-GUEST-CURRENT"}, .requires_ = {"linux", "xlings-bin"}) {
-    auto home = tk::Home::isolated("carrier-wsl2-current");
-    const auto wsl = home.root() / "wsl";
-    fs::create_directories(wsl);
-    const std::map<std::string, std::string> env{
-        {"XLINGS_WSL_EXE", fake_wsl().string()},
-        {"FAKE_WSL_ROOT", wsl.string()},
-        {"XLINGS_CARRIER_GUEST_XLINGS", tk::xlings_binary().string()},
-    };
-    auto made = home.xlings({"subos", "new", "box", "--carrier", "wsl2"}, env);
-    ASSERT_EQ(made.exit_code, 0) << made.transcript();
-    const auto distro = wsl / "distros" / w2::distro_name(home.dir());
-    // The guest becomes an older release: it says so, and records what it is asked.
-    const auto guest = distro / "xlings/bin/xlings";
-    fs::remove(guest);
-    tk::write_file(guest, "#!/bin/sh\necho \"$*\" >> \"$(dirname \"$0\")/../calls\"\n"
-                          "case \"$1\" in __carrier-probe) echo '{\"kvm\":false,\"kernel\":\"6\",\"version\":\"2000.1.1.1\"}' ;; esac\n"
-                          "exit 0\n");
-    fs::permissions(guest, fs::perms::owner_all);
-    const auto probe = home.dir() / "carriers/wsl2/probe.json";
-    const auto age = [&] { fs::last_write_time(probe, fs::file_time_type::clock::now() - std::chrono::hours(1)); };
-    age();
-    auto used = home.xlings({"subos", "info", "box"}, env);
-    EXPECT_EQ(used.exit_code, 0) << used.transcript();
-    const auto count = [&] {
-        const auto calls = read_or_empty(distro / "xlings/calls");
-        std::size_t n = 0;
-        for (std::size_t at = 0; (at = calls.find("self update", at)) != std::string::npos; ++at) ++n;
-        return n;
-    };
-    EXPECT_EQ(count(), 1u) << read_or_empty(distro / "xlings/calls");
-    const auto kept = nlohmann::json::parse(read_or_empty(probe), nullptr, false);
-    EXPECT_FALSE(kept.value("updated_for", std::string{}).empty()) << kept.dump();
-    // Asked again later: not updated again for the same release.
-    age();
-    (void)home.xlings({"subos", "info", "box"}, env);
-    EXPECT_EQ(count(), 1u) << read_or_empty(distro / "xlings/calls");
 }

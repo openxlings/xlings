@@ -166,6 +166,24 @@ std::expected<void, std::string> prepare(const Domain& domain, const fs::path& e
         if (auto regular = regular_(configFile); !regular) return regular;
         auto config = read_json_for_update(configFile);
         if (!config) return std::unexpected(config.error());
+        // Where packages come from is the owner's choice, followed as it
+        // changes (an index added later, another mirror): the domain's copy of
+        // those keys is brought to the owner's.
+        auto original = read_json_for_update(domain.ownerHome / ".xlings.json");
+        if (!original) return std::unexpected(original.error());
+        bool changed = false;
+        for (const auto* key : {"mirror", "xim", "index_repos", "resource_servers", "language"}) {
+            const bool there = original->contains(key);
+            if (there && (!config->contains(key) || (*config)[key] != (*original)[key])) {
+                (*config)[key] = (*original)[key];
+                changed = true;
+            } else if (!there && config->contains(key)) {
+                config->erase(key);
+                changed = true;
+            }
+        }
+        if (changed)
+            if (auto written = write_(configFile, *config); !written) return written;
     }
     return refresh_entry(domain, entry);
 }
