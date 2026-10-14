@@ -516,3 +516,53 @@ Luban 的每一条设计原则，同时也是一条可测性原则：
 3. 第一版对 openhal 只留位置。但能力报告本身就需要"有哪些设备"，不立 openhal，枚举代码就会继续散在 Linux 专用的模块里。
    所以以一个接口立起来。
 4. 托管 runner 的嵌套虚拟化不是官方承诺，第一版没有处理。现在规定环境不可用要单独标注，并写下 lane 降级的办法。
+
+## 14. 实现记录（2026-10-15）
+
+与 part 3 同在 PR #667，按阶段提交 checkpoint：
+
+| 提交 | 阶段 | 内容 |
+|---|---|---|
+| P4-1 | 目录与规则 | `luban/{specs,kits,os}`；lint 按三类检查（变异测试过）；specs、kits 的 README，opensal 的 SPEC.md，去掉它们对内部设计文档的引用 |
+| P4-2 | 设备与能力报告 | `specs/openhal`（一个接口：设备的枚举与描述，concept + 一致性检查与反向对照）、`kits/openhal-host`（Linux、macOS、Windows）；`luban.service.capabilities`；`luban status` 与 `--json`；Luban OS 应用的快速开始与导入读同一份 |
+| P4-3 | 控制面骨架 | `specs/openas`（主体与委托、效果类别、信封、一致性检查）；`CommandSpec.effect`；`luban interface --describe` 与 `luban interface <verb> --args`；操作日志的 `principal`（经 `XLINGS_ACTOR` 继承）与 `parent`（经 `XLINGS_OPS_PARENT`，因果链） |
+| P4-4a | Windows | 宿主机（wsl2）的镜像带 Linux luban；`xlings __carrier-probe` 与 `probe.json`；machine 在宿主机的 KVM 上（`enter_in_carrier_`）；luban 描述载体上的系统时问那里的 luban；luban 认得自己所在的 home；`subos new --carrier` 转发每个选项的值（之前丢掉 `--from` 的值，是真 bug）；Luban OS 应用为 macOS、Windows 打包发布 |
+| P4-4b | macOS | `luban.vm.native.vz`（Objective-C 运行时）；`luban __vm` 是 vz 载体的辅助程序；宿主机的树在大小写敏感的 APFS 卷上；guest 的 virtio-fs 与宿主机模式；agent 在管道上运行命令；qemu 与 vz 共用一个桥；luban 带 virtualization 权限签名；machine 经 vz 从同一棵树启动 |
+| docs | 文档 | 宿主支持（能力报告与三平台表）、架构（目录与包）、agent 一章（`luban interface`）、操作日志规范、各平台表、SubOS 在 macOS 上 |
+
+**与设计不同、实现时决定的：**
+
+1. `luban/desktop/host` 整体移到 `os/desktop`，SDL3 的 opensal 提供端等有第二个使用者再拆（§4.5）。
+2. 宿主机不是从 `luban-core` 创建的 Luban 系统，而是最小的 Linux 机器：静态的 xlings 与 luban，其余按需来自索引（§6.2）。
+3. vz 不用 `.mm`：Linux 上的 gcc 编译不了 `.mm`；纯 C++ 经 Objective-C 运行时在所有平台都能编译（§6.6）。
+4. agent 的 `"pipes": true`、`E`、`F`、`S` 帧：宿主机承载 NDJSON 接口所需，都是协议的增量。
+5. CI 的 linux-carrier lane 是 `tests/e2e/luban_carrier_test.sh`：发布包的静态构建经 wsl2 载体的替身走完 luban 的全路径
+   （创建、由那里的 luban 描述、运行命令、删除），而不是在 Linux 上用 qemu 再起一台宿主机；
+   宿主机里运行命令的协议由 `test_luban_agent` 覆盖，vz 的配置在 macOS CI 上由 `test_luban_vz` 交给框架验证。
+6. Windows 的 WSL1 拒绝路径沿用已有的 E2E-08（托管 runner 默认没有 WSL2）与 `wsl-import`，不另开 lane。
+
+**跨仓库：**
+
+- xim-pkgindex：`linux-kernel-virt` 6.12.112-r1（`FUSE_FS`、`VIRTIO_FS`；build.sh 支持配置修订）由 res-build 构建；
+  `luban-os` 的 macOS 与 Windows 段，xlings、luban-os、xdesk 的版本，随发布更新。
+- openkal：提案草稿 `2026-10-15-openkal-proposals-from-luban.md`，待维护者确认后提交。
+
+**需要真机验证的（维护者）：**
+
+- Apple 芯片上宿主机的创建、启动、`luban new / enter / run`、machine；
+- Windows 11 上 machine 经宿主机的 KVM 启动；
+- GPU 与显示。
+
+## 15. 自审（第三轮：实现之后）
+
+| 视角 | 检查 | 结论 |
+|---|---|---|
+| 架构 | 规范、kit、OS 三类边界是否被代码遵守？ | lint 逐条检查，变异测试证明能抓到；openhal、openas 都有消费者与一致性检查 |
+| 稳定性 | Linux 的机器与沙箱有没有被重构波及？ | supervisor 的桥抽成一个函数，qemu 一侧行为不变；luban 与机器的单元、e2e 在本机全过 |
+| 一致性 | 载体上的系统与本机系统，`luban status` 的说法一样吗？ | 一样：载体上的由那里的 luban 回答，同一个接口 |
+| 兼容性 | 协议、日志、`--json` 是否只加？ | 是：O 的 `argv`/`pipes`，E/F/S 帧，`principal`/`parent`，`modes`/`devices` |
+| 跨平台 | macOS 与 Windows 的代码能在没有它们的 CI 上验证多少？ | 载体逻辑经替身在 Linux 跑通（含静态发布包）；agent 的管道模式在 Linux 测；vz 配置在 macOS 由框架判定；真机开机留给维护者 |
+| 安全 | 宿主机会不会放宽隔离？ | WSL 不挂 Windows 盘、不开 interop；Mac 的目录只经 `S` 授予到 `/grant`；签名只加 virtualization 一项权限 |
+| 可观测 | 一次跨宿主机的操作能还原吗？ | trace、actor、parent 经 `__carrier-env` 与 `WSLENV` 进入宿主机 |
+| 发现并修复 | — | `subos new --carrier` 丢掉选项的值；luban 在宿主机里找不到自己的 home；`status` 的 JSON 是包在 `result` 里的值 |
+

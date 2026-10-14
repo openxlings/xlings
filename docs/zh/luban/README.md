@@ -28,16 +28,17 @@ graph TD
 
 | | x86_64 Linux | aarch64 Linux | macOS | Windows |
 |---|---|---|---|---|
-| 环境（nano、tiny、tiny-musl、core、agent-workspace） | 是 | 是 | 经 `vz`（尚未发布） | 经 `wsl2` |
-| 私有的 agent 工作区 | 是 | 是 | — | 经 `wsl2` |
+| 环境（nano、tiny、tiny-musl、core、agent-workspace） | 是 | 是 | 在 Luban 宿主机里（Apple 芯片，Virtualization.framework） | 在 Luban 宿主机里（WSL 2） |
+| 私有的 agent 工作区 | 是 | 是 | 在 Luban 宿主机里 | 在 Luban 宿主机里 |
 | 镜像：ISO、驱动器、qcow2、tar | 是 | 是 | — | — |
 | 启动：BIOS 与 UEFI | 是 | UEFI | — | — |
-| `luban enter --mode machine`（本地虚拟机） | 是 | 是（没有 KVM 时纯模拟） | — | — |
-| Luban OS 窗口里的桌面 | 是 | 桌面可以运行；窗口尚未打包 | — | — |
+| `luban enter --mode machine`（本地虚拟机） | 是 | 是（没有 KVM 时纯模拟） | 是（Virtualization.framework） | Windows 11 上（用宿主机的 KVM） |
+| Luban OS 窗口里的桌面 | 是 | 桌面可以运行；窗口尚未打包 | 窗口（macOS 版应用） | 窗口（Windows 版应用） |
 | 启动层 | `generic`（真机）、`virt`（虚拟机） | `virt` | — | — |
 
 宿主上，Linux 除了内核之外什么都不需要，Ubuntu 23.10 及以后另需一次性设置（[07](07-host-support.md)）；
-镜像或虚拟机需要的每个工具都来自索引。
+镜像或虚拟机需要的每个工具都来自索引。Mac 或 PC 上的系统运行在 Luban 宿主机里——每个 home 一台小型 Linux 机器；
+`luban status` 说明这台电脑能运行什么、不能的原因（[07](07-host-support.md)）。
 
 ## 阅读顺序
 

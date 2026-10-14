@@ -25,7 +25,7 @@ luban enter desk --display window
 | **桌面** — 开箱即用 | `经典桌面`（preview，推荐：窗口并排、面板、启动器）与 `xdesk 画布`（供探索：在无限画布上摆放窗口） |
 
 每张卡片写着它是什么；卡片下的一行说明选中的那个里面有什么，或者为什么这里不能创建——尚未发布、没有本机架构的版本，
-或者这台电脑不能运行 Luban 系统（macOS、Windows：它们是 Linux 系统）。名字跟随 edition，直到你自己输入；
+或者这台电脑暂时还不能运行 Luban 系统（`luban status` 给出的原因与下一步）。名字跟随 edition，直到你自己输入；
 **更多选项**选择沙箱或机器。一个按钮创建并进入，每一步都显示出来。
 
 **导入**别人导出的系统（`luban export box box.luban`）：快速开始里的链接、列表的最后一行，或者把 `.luban` 文件拖进窗口。
@@ -157,6 +157,6 @@ graph LR
 
 - GPU：渲染用软件，所有宿主都一样。
 - xdesk 里的 X11 程序（Xwayland）；它们在 labwc 会话里运行。
-- 窗口在 Linux 上需要 X11（Xwayland 也算）；原生 Wayland 窗口还不支持。在 macOS 与 Windows 上窗口照常打开，
-  并说明这台电脑还不能运行 Luban 系统。
+- 窗口在 Linux 上需要 X11（Xwayland 也算）；原生 Wayland 窗口还不支持。在 macOS 与 Windows 上，系统的桌面从 Luban 宿主机里显示；
+  机器自己的窗口暂不支持。
 - aarch64 上的 xdesk。

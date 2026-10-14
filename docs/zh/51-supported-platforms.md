@@ -8,7 +8,7 @@
 |---|---|---|---|---|
 | Linux x86_64 | 静态（musl） | 是 | bwrap、landlock、proot | 是；镜像在 BIOS 和 UEFI 上启动 |
 | Linux aarch64 | 静态（musl） | 是 | bwrap、landlock、proot | 是；镜像在 UEFI 上启动 |
-| macOS 14+ arm64 | 是 | 是 | 重定向 home（advisory） | 经 `vz` 承载（辅助程序尚未发布） |
+| macOS 14+ arm64 | 是 | 是 | 重定向 home（advisory） | 在 Luban 宿主机里（`vz`，Apple 芯片） |
 | Windows x86_64 | 是 | 是 | 重定向 `%USERPROFILE%`（advisory） | 经 `wsl2` 承载 |
 
 aarch64 镜像在虚拟机（`virt`）上启动；在 aarch64 真机上启动需要为它准备的内核，索引里暂时还没有。
