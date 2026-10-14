@@ -2894,7 +2894,13 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& requested
                     const auto* d = detail_::dep_node_for_(plan, node, spec);
                     return d && abi::is_runtime(d->name);
                 })) {
-                if (auto refreshed = abi::refresh(Config::paths().homeDir, std::format("install {}", node.name))) {
+                // Inside a root the runtime is its generation's, mounted at
+                // <home>/abi: bound through it, never switched from here.
+                const char* rootInstance = std::getenv("XLINGS_ROOT_INSTANCE");
+                if (std::error_code iec; rootInstance && *rootInstance
+                                         && std::filesystem::exists(Config::paths().homeDir / "abi", iec)) {
+                    scopeBinding = true;
+                } else if (auto refreshed = abi::refresh(Config::paths().homeDir, std::format("install {}", node.name))) {
                     scopeBinding = true;
                     for (const auto& w : refreshed->what) log::info("runtime {}", w);
                 } else {
