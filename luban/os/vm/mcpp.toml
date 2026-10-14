@@ -26,4 +26,5 @@ include_dirs = ["../../../modules/libs/src/json"]
 # A Mac's machines and its Luban host machine run on Virtualization.framework
 # (luban.vm.native.vz), called through the Objective-C runtime.
 [target.macos.build]
+cxxflags = ["-fblocks"]
 ldflags = ["-framework", "Virtualization", "-framework", "Foundation", "-framework", "CoreFoundation", "-lobjc"]
