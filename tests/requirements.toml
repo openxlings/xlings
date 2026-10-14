@@ -1136,3 +1136,7 @@ status = "required"
 [ID-WELCOME]
 text = "the welcome is two columns without a frame, at most 72 columns, ASCII when the locale is not UTF-8, colour only where it shows and never needed to read it; it names the system, how it runs (shared or its own kernel), what it keeps, who logs in, what xlings manages and the time, and how to leave"
 status = "required"
+
+[RECIPE-ADMIN-STEP]
+text = "a recipe never runs sudo: it declares a step only an administrator may take (libxpkg system.admin_step: the command and why); xlings asks once after the install where somebody can answer and runs the steps through subos::elevation, recorded; where nobody can, the install finishes, the steps are kept in state/admin-steps.json and said with their commands, and self doctor reports them until --fix takes them at a terminal"
+status = "required"

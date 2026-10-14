@@ -55,6 +55,7 @@ import xlings.core.version_order;
 import xlings.core.semver;
 import xlings.core.destructive_log;
 import xlings.core.utils;
+import xlings.core.admin_steps;
 
 namespace xlings::xim {
 
@@ -1138,6 +1139,9 @@ int install_(std::span<const std::string> targets, bool yes, bool noDeps,
     };
 
     observe::Timed executeTimed("install (download, hooks, registration)");
+    // Steps its recipes declared only an administrator may take: settled
+    // once, after the install, never by a recipe's own sudo (part 3 §8.2).
+    std::vector<admin_steps::Step> adminSteps;
     auto result = installer.execute(plan, dlConfig,
         [&, cancel](const InstallStatus& status) {
             switch (status.phase) {
@@ -1262,9 +1266,12 @@ int install_(std::span<const std::string> targets, bool yes, bool noDeps,
         },
         // Process deferred pkgmanager.install()/remove() requests synchronously
         // between install and config hooks so config can access sub-dependencies
-        [forceGlobal, useAfterInstall, reconfig, &stream](const std::vector<mcpplibs::xpkg::InstallRequest>& reqs) {
+        [forceGlobal, useAfterInstall, reconfig, &stream, &adminSteps](const std::vector<mcpplibs::xpkg::InstallRequest>& reqs) {
             for (auto& req : reqs) {
-                if (req.op == "install") {
+                if (req.op == "admin") {
+                    if (auto step = admin_steps::parse(req.target)) adminSteps.push_back(std::move(*step));
+                    else log::warn("a recipe declared an administrator step without a command: ignored");
+                } else if (req.op == "install") {
                     log::debug("installing sub-dependency: {}", req.target);
                     std::vector<std::string> subTargets = { req.target };
                     // Nested: no install_targets report of its own (see
@@ -1284,6 +1291,7 @@ int install_(std::span<const std::string> targets, bool yes, bool noDeps,
         },
         dlSink, cancel, useAfterInstall, reconfig);
     record_report();
+    if (!adminSteps.empty()) (void)admin_steps::settle(Config::paths().homeDir, std::move(adminSteps), yes, stream);
     for (const auto& [cause, names] : cascades) {
         std::string list;
         for (std::size_t i = 0; i < names.size() && i < 6; ++i) list += (i ? ", " : "") + names[i];

@@ -42,6 +42,7 @@ import xlings.core.home_config;
 import xlings.core.home_health;
 import xlings.platform.target;
 import xlings.core.home_identity;
+import xlings.core.admin_steps;
 
 namespace xlings::xself {
 
@@ -5616,6 +5617,18 @@ int cmd_doctor(EventStream& stream, bool fix, bool resetMetadata, bool dryRun, b
         }
         platform::set_env_variable("XLINGS_ACTIVE_SUBOS", *subos);
         Config::set_active_subos_override(*subos);
+    }
+
+    // Administrator steps recipes declared and nobody could answer (part 3
+    // §8.2): reported always, taken by --fix where somebody can be asked.
+    if (const auto waiting = admin_steps::pending(Config::paths().homeDir); !waiting.empty()) {
+        if (fix && !dryRun && !subos) {
+            (void)admin_steps::settle(Config::paths().homeDir, {}, false, stream);
+        } else {
+            log::println("{} step(s) wait for administrator rights:", waiting.size());
+            for (const auto& w : waiting) log::println("  {}: {}", w.why, admin_steps::command(w));
+            log::println("  take them: xlings self doctor --fix (at a terminal)");
+        }
     }
 
     // `--fix` implies `--deep`. Deliberate and load-bearing: the repair must
