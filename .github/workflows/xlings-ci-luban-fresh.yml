@@ -55,6 +55,9 @@ jobs:
           - { suite: luban-machine, os: ubuntu-24.04 }
           # made by the release before, used after `xlings self update`
           - { suite: luban-upgrade, os: ubuntu-24.04 }
+          # a home used for a while (default on an older glibc, its tools, a
+          # system of the old layout), then the new client
+          - { suite: luban-lived-in, os: ubuntu-24.04 }
           # what a computer that cannot run Luban systems says
           - { suite: luban-host, os: macos-14 }
           - { suite: luban-host, os: windows-latest }

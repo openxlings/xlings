@@ -11,7 +11,7 @@
 # native Linux leg and the CentOS 7 `docker run` leg execute byte-identical code
 # and neither needs $GITHUB_PATH.
 #
-#   usage: bash tests/fresh-install/smoke.sh <core|gcc|llvm|luban-console|luban-window|luban-archive|luban-machine|luban-upgrade|luban-host>
+#   usage: bash tests/fresh-install/smoke.sh <core|gcc|llvm|luban-console|luban-window|luban-archive|luban-machine|luban-upgrade|luban-lived-in|luban-host>
 #
 # Run it locally the same way CI does — but note it uninstalls xlings from $HOME
 # at the end of the `core` suite, so point HOME somewhere disposable:
@@ -416,8 +416,8 @@ main() {
         core|gcc|llvm) ;;
         luban|luban-window) suite=luban-window ;;
         luban-console|luban-archive|luban-machine|luban-host) ;;
-        luban-upgrade) export FROM_PREVIOUS_RELEASE=1 ;;
-        '') fail "usage: $0 <core|gcc|llvm|luban-console|luban-window|luban-archive|luban-machine|luban-upgrade|luban-host>" ;;
+        luban-upgrade|luban-lived-in) export FROM_PREVIOUS_RELEASE=1 ;;
+        '') fail "usage: $0 <core|gcc|llvm|luban-console|luban-window|luban-archive|luban-machine|luban-upgrade|luban-lived-in|luban-host>" ;;
         *)  fail "unknown suite '$suite'" ;;
     esac
 
