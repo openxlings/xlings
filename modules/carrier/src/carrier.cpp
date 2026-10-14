@@ -44,6 +44,59 @@ std::vector<std::string> command(const Endpoint& at, std::span<const std::string
 
 }  // namespace
 
+namespace {
+std::string& version_slot_() {
+    static std::string v;
+    return v;
+}
+
+std::optional<nlohmann::json> ask_probe_(const Endpoint& at) {
+    std::vector<std::string> argv = at.launcher;
+    argv.insert(argv.end(), {at.xlings, "__carrier-probe"});
+    std::string out;
+    if (platform::stream::run(argv, [&](std::string_view stream, std::string_view bytes) {
+            if (stream == "stdout") out.append(bytes);
+        }) != 0)
+        return std::nullopt;   // an older guest without the probe
+    auto j = nlohmann::json::parse(out, nullptr, false);
+    if (!j.is_object()) return std::nullopt;
+    return j;
+}
+}  // namespace
+
+void set_client_version(std::string version) { version_slot_() = std::move(version); }
+const std::string& client_version() { return version_slot_(); }
+
+void refresh_guest(const Endpoint& at, const fs::path& probe_file) {
+    std::error_code ec;
+    if (const auto t = fs::last_write_time(probe_file, ec); !ec && fs::file_time_type::clock::now() - t < std::chrono::minutes(10))
+        return;
+    nlohmann::json kept = nlohmann::json::object();
+    if (std::ifstream in(probe_file); in) {
+        auto j = nlohmann::json::parse(in, nullptr, false);
+        if (j.is_object()) kept = j;
+    }
+    auto j = ask_probe_(at).value_or(nlohmann::json::object());
+    const auto& mine = client_version();
+    const auto theirs = j.value("version", std::string{});
+    // Another release there (or one too old to say): brought to this one, once.
+    if (!mine.empty() && theirs != mine && kept.value("updated_for", std::string{}) != mine) {
+        std::vector<std::string> argv = at.launcher;
+        argv.insert(argv.end(), {at.xlings, "__carrier-env", "XLINGS_AGENT_MODE=1", "--", "self", "update"});
+        std::string log;
+        (void)platform::stream::run(argv, [&](std::string_view, std::string_view bytes) { log.append(bytes); });
+        fs::create_directories(probe_file.parent_path(), ec);
+        { std::ofstream out(probe_file.parent_path() / "update.log", std::ios::app); out << log; }
+        j = ask_probe_(at).value_or(j);
+        j["updated_for"] = mine;
+    } else if (kept.contains("updated_for")) {
+        j["updated_for"] = kept["updated_for"];
+    }
+    if (j.empty()) return;
+    fs::create_directories(probe_file.parent_path(), ec);
+    platform::write_file_atomic(probe_file.string(), j.dump() + "\n");
+}
+
 int guest_probe() {
     std::error_code ec;
     bool kvm = false;
@@ -51,7 +104,9 @@ int guest_probe() {
         std::fstream dev("/dev/kvm", std::ios::in | std::ios::out);
         kvm = dev.is_open();
     }
-    std::println("{}", nlohmann::json{{"kvm", kvm}, {"kernel", platform::kernel_release()}}.dump());
+    nlohmann::json j{{"kvm", kvm}, {"kernel", platform::kernel_release()}};
+    if (!client_version().empty()) j["version"] = client_version();
+    std::println("{}", j.dump());
     return 0;
 }
 

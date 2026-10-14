@@ -104,11 +104,12 @@ xlings self doctor --fix
 [快速开始](docs/zh/luban/01-quick-start.md) · [桌面](docs/zh/luban/08-desktop.md)
 
 ```bash
-luban new box --edition tiny        # an environment: a Linux userland, no root needed
-luban enter box --mode machine --temp   # boot it with its own kernel in a local VM
-luban export box box.iso  # a bootable ISO: BIOS and UEFI, x86_64 and aarch64
-luban new desk --edition desktop    # a desktop; luban-os shows it in a window
+luban new box       # a Linux system, no root needed (Luban Core: shells, editors, git, compilers)
+luban enter box     # its shell; exit to leave
 ```
+更小的或带桌面的 edition（`--edition tiny`、`--edition desktop`）、用自己的内核把同一个系统作为机器启动
+（`--mode machine`）、可启动镜像（`luban export`）、Luban OS 窗口、macOS 与 Windows：[快速开始](docs/zh/luban/01-quick-start.md)。
+
 
 ## 文档
 

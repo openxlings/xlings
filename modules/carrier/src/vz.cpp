@@ -94,6 +94,7 @@ std::expected<Endpoint, std::string> ensure(const subos::HomeView& home) {
     } else if (status.rc != 0) {
         return std::unexpected(std::format("the host machine {} answered {}: {}", name, status.rc, trimmed(status.out)));
     }
+    refresh_guest(at, home.home / "carriers" / "vz" / "probe.json");
     return at;
 }
 
@@ -109,6 +110,9 @@ std::vector<ImageFile> image_files() {
         {.path = "etc/passwd", .content = "root:x:0:0:root:/root:/xlings/bin/xlings\n"},
         {.path = "etc/group", .content = "root:x:0:\n"},
         {.path = "etc/hostname", .content = "xlings-carrier\n"},
+        // The kernel's own DHCP (ip=dhcp) writes the name servers it was
+        // given to /proc/net/pnp, in resolv.conf's form.
+        {.path = "etc/resolv.conf", .link = "/proc/net/pnp"},
         {.path = "etc/xlings", .directory = true},
         {.path = "etc/xlings/root.json", .content = "{ \"home\": \"/xlings\" }\n"},
         {.path = "xlings", .directory = true},

@@ -1163,3 +1163,7 @@ status = "required"
 [CARRIER-WSL2-LUBAN]
 text = "on a Windows PC a Luban system lives in the Luban host machine (WSL 2): luban makes it there, describes it from the luban there, runs commands in it, removes it; a machine runs on the host machine's KVM or is refused with why and the next step"
 status = "required"
+
+[CARRIER-GUEST-CURRENT]
+text = "a carrier's machine (WSL 2, a Mac's host machine) that reports another release is brought to the client's once per release (xlings self update there), never on every command"
+status = "required"

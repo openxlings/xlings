@@ -91,27 +91,6 @@ std::vector<std::vector<std::string>> setup_steps(const fs::path& msi, const fs:
 
 namespace {
 
-// What the carrier's machine gives (guest_probe), kept beside its disk for
-// `luban status`: asked again when it is ten minutes old (WSL restarts with
-// a changed .wslconfig; a probe once a command would cost every command).
-void refresh_probe_(const subos::HomeView& home, const Endpoint& at) {
-    const auto file = carrier_dir(home) / "probe.json";
-    std::error_code ec;
-    if (const auto t = fs::last_write_time(file, ec); !ec && fs::file_time_type::clock::now() - t < std::chrono::minutes(10))
-        return;
-    std::vector<std::string> argv = at.launcher;
-    argv.insert(argv.end(), {at.xlings, "__carrier-probe"});
-    std::string out;
-    if (platform::stream::run(argv, [&](std::string_view stream, std::string_view bytes) {
-            if (stream == "stdout") out.append(bytes);
-        }) != 0)
-        return;   // an older guest without the probe: nothing known, and said so
-    const auto j = nlohmann::json::parse(out, nullptr, false);
-    if (!j.is_object()) return;
-    fs::create_directories(file.parent_path(), ec);
-    platform::write_file_atomic(file.string(), j.dump() + "\n");
-}
-
 std::expected<Endpoint, std::string> ensure(const subos::HomeView& home) {
     const auto wsl = wsl_exe();
     if (!wsl) return std::unexpected("WSL is not installed");
@@ -119,7 +98,7 @@ std::expected<Endpoint, std::string> ensure(const subos::HomeView& home) {
     Endpoint at{.carrier = "wsl2", .instance = name, .launcher = launcher(*wsl, name), .xlings = "/xlings/bin/xlings"};
     auto listed = run(*wsl, {"--list", "--quiet"});
     if (listed.rc == 0 && std::ranges::contains(parse_list(listed.out), name)) {
-        refresh_probe_(home, at);
+        refresh_guest(at, carrier_dir(home) / "probe.json");
         return at;
     }
 
@@ -139,7 +118,7 @@ std::expected<Endpoint, std::string> ensure(const subos::HomeView& home) {
     check.insert(check.end(), {at.xlings, "--version"});
     if (const int rc = platform::run_argv(check); rc != 0)
         return std::unexpected(std::format("the carrier {} was imported but its xlings does not run (exit {})", name, rc));
-    refresh_probe_(home, at);
+    refresh_guest(at, carrier_dir(home) / "probe.json");
     return at;
 }
 

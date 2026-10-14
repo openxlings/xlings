@@ -16,6 +16,7 @@ runtime  = { path = "../../../modules/runtime" }
 subos    = { path = "../../../modules/subos" }
 cli      = { path = "../../../modules/cli" }
 image    = { path = "../../../modules/image" }
+carrier  = { path = "../../../modules/carrier" }
 luban-service = { path = "../service" }
 luban-vm = { path = "../vm" }
 opensal = { path = "../../specs/opensal" }

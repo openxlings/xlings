@@ -506,6 +506,14 @@ std::string export_format(std::string_view file) {
 
 Outcome export_environment(const Context& c, const ExportOptions& o) {
     if (!exists_(c, o.name)) return missing_(c, o.name);
+    // A system in the Luban host machine (a Mac, a PC) is written out there,
+    // not here, in this version: said before anything is made.
+    if (const auto instance = read_json_(HomeView{c.home}.instance_file(o.name));
+        instance.value("carrier", std::string("local")) != "local") {
+        if (c.sink) c.sink(error(std::format("'{}' lives in the Luban host machine; exporting it from this computer is not done in this version", o.name),
+                                 "export it on a Linux computer (luban export there), or carry it with luban export on Linux and luban import"));
+        return {.code = 2};
+    }
     const auto format = o.format.empty() ? export_format(o.file.generic_string()) : o.format;
     if (format.empty()) {
         if (c.sink) c.sink(error(std::format("cannot tell the format from '{}'", o.file.string()),

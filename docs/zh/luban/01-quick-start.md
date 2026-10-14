@@ -8,12 +8,13 @@
 ## 1. 一个环境
 
 ```bash
-luban new box --edition tiny            # an edition: nano, tiny, core, desktop, desktop-xdesk, agent-workspace, or ns:name
+luban new box                           # Luban Core, the default: shells, editors, git, compilers
+luban new small --edition tiny          # or an edition: nano, tiny, core, desktop, desktop-xdesk, agent-workspace, or ns:name
 ```
 
-你会看到 `▸ making box (tiny)`、下载过程，然后是 `✓ box is ready`、它是什么（`box  tiny@… · N packages ·
+一条就够。你会看到 `▸ making box (core)`、下载过程，然后是 `✓ box is ready`、它是什么（`box  core@… · N packages ·
 generation N`）以及下一步（`enter  luban enter box`）。宿主上第一次 `luban new` 可能先询问一次性设置（见下文）。
-不写 edition 名时是 Luban Core，它还带有编译器和构建工具。中途停下时，再运行同一条命令就会补全。`nano` 没有 shell：
+默认是 Luban Core：一个带编译器和构建工具的完整系统；`tiny` 是小的那个，`desktop` 带桌面。中途停下时，再运行同一条命令就会补全。`nano` 没有 shell：
 它会这样说，下一步是 `luban run box -- …`。
 
 ## 2. 在里面工作

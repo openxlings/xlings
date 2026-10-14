@@ -14,7 +14,9 @@
 // files, so a machine of one of its systems boots from them directly. The
 // machine is a Luban machine (luban.vm) run by Virtualization.framework: the
 // Linux luban of its tree as the initramfs's /init, the tree shared by
-// virtio-fs, the agent its only process, grants under /grant.
+// virtio-fs, the agent its only process, grants under /grant. It has no DHCP
+// client of its own: the kernel asks the framework's NAT (ip=dhcp), and its
+// /etc/resolv.conf is what that answer named (/proc/net/pnp).
 module luban.vm;
 
 import std;
@@ -188,7 +190,7 @@ int start_(const fs::path& home, const Args& a) {
     }
     const Json state{{"name", a.name}, {"hypervisor", "vz"}, {"started", xlings::observe::utc_now()},
                      {"vz", {{"kernel", kernel.string()}, {"initrd", (dir / "initramfs.cpio").string()},
-                             {"cmdline", "console=hvc0 quiet panic=-1 luban.carrier=1 luban.fs=virtiofs"},
+                             {"cmdline", "console=hvc0 quiet panic=-1 ip=dhcp luban.carrier=1 luban.fs=virtiofs"},
                              {"cpus", 2}, {"memory", 2048}, {"grants", true}, {"network", true},
                              {"shares", Json::array({{{"tag", "root"}, {"dir", tree.string()}, {"read_only", false}}})}}}};
     platform::write_file_atomic((dir / "state.json").string(), state.dump(2));

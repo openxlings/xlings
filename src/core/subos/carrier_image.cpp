@@ -140,6 +140,9 @@ std::expected<fs::path, std::string> linux_xlings(const fs::path& home) {
     return download_linux_build(home);
 }
 
-void install() { carrier::set_image_source(image); }
+void install() {
+    carrier::set_image_source(image);
+    carrier::set_client_version(std::string(Info::VERSION));
+}
 
 }  // namespace xlings::subos_carrier

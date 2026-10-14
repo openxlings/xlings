@@ -16,6 +16,7 @@ import opensal.wlr;
 import opensal;
 import openhal;
 import openas;
+import xlings.carrier;
 
 namespace luban::cli {
 
@@ -1296,6 +1297,8 @@ int run(int argc, char* argv[]) {
         else rest.push_back(a);
     }
     if (const char* mode = std::getenv("XLINGS_AGENT_MODE"); mode && std::string_view(mode) == "1") g.agent = true;
+    // A carrier's guest is brought to this release (luban and xlings are released together).
+    xlings::carrier::set_client_version(std::string(kVersion));
 
     // Plumbing first: what qemu, the drive writer and the docs tools run.
     if (!rest.empty() && rest.front() == "__write" && rest.size() == 3) return raw_write_(rest[1], rest[2]);

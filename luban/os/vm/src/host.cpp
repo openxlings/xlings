@@ -199,11 +199,20 @@ int start_impl_(const service::Context& c, std::string_view name, const EnterOpt
     // In the table's order, the first that can share a directory with the
     // machine (9p, asked of the device itself: its properties name the fsdev
     // it shares) -- a host's qemu without it does not hide the index's.
-    const auto all = xlings::subos::tools::candidates(arch.qemu, view, xlings::subos::Ports{});
+    auto all = xlings::subos::tools::candidates(arch.qemu, view, xlings::subos::Ports{});
     if (all.empty()) {
-        say_(c, service::phase("check", "failed", "checking this host"));
-        say_(c, service::error("a machine needs a virtual machine monitor here", xlings::subos::tools::install_hint(arch.qemu)));
-        return 1;
+        // Its monitor is a package of the index, installed the first time as
+        // its kernel is (a Windows PC's host machine has nobody to type it).
+        say_(c, service::phase("check", "done", "checking this host"));
+        say_(c, service::phase("vmm", "begin", "installing the virtual machine monitor"));
+        const int rc = c.port.capability("install_packages", {{"targets", Json::array({"xim:qemu-system"})}, {"yes", true}}, c.sink);
+        all = xlings::subos::tools::candidates(arch.qemu, view, xlings::subos::Ports{});
+        say_(c, service::phase("vmm", all.empty() ? "failed" : "done", "installing the virtual machine monitor"));
+        if (rc != 0 || all.empty()) {
+            say_(c, service::error("a machine needs a virtual machine monitor here", xlings::subos::tools::install_hint(arch.qemu)));
+            return 1;
+        }
+        say_(c, service::phase("check", "begin", "checking this host"));
     }
     std::optional<xlings::subos::tools::Found> qemu;
     std::string refused;

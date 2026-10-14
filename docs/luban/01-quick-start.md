@@ -11,14 +11,16 @@ Each step says what you should see.
 ## 1. An environment
 
 ```bash
-luban new box --edition tiny            # an edition: nano, tiny, core, desktop, desktop-xdesk, agent-workspace, or ns:name
+luban new box                           # Luban Core, the default: shells, editors, git, compilers
+luban new small --edition tiny          # or an edition: nano, tiny, core, desktop, desktop-xdesk, agent-workspace, or ns:name
 ```
 
-You see `▸ making box (tiny)`, the download, then `✓ box is ready`, what it is
-(`box  tiny@… · N packages · generation N`) and the next step (`enter  luban
-enter box`). The first `luban new` on a host may ask for a one-time setup first
-(below). Made without an edition name it is Luban Core, which adds compilers
-and build tools. If it stops halfway, the same command again finishes it.
+One is enough. You see `▸ making box (core)`, the download, then `✓ box is
+ready`, what it is (`box  core@… · N packages · generation N`) and the next
+step (`enter  luban enter box`). The first `luban new` on a host may ask for a
+one-time setup first (below). Luban Core is the default: a whole working
+system with compilers and build tools; `tiny` is the small one, `desktop` has a
+desktop. If it stops halfway, the same command again finishes it.
 `nano` has no shell: it says so, and its next step is `luban run box -- …`.
 
 ## 2. Work in it
