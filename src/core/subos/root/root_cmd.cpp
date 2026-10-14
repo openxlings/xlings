@@ -407,7 +407,7 @@ std::optional<int> produce_domain_at_creation_(const std::string& name, bool,
     const bool built = init && *init == 0 && fs::is_directory(selected->physicalHome / "subos" / "default", ec);
     if (!built && fellBack) {
         *fellBack = true;
-        log::info("this host cannot build '{}' in a private namespace ({}); it is made in this home's prefix "
+        log::warn("this host cannot build '{}' in a private namespace ({}); it is made in this home's prefix "
                   "(xlings self doctor --isolation says why)", name,
                   !init ? init.error() : *init != 0 ? std::format("exit {}", *init) : std::string("it did nothing"));
         return std::nullopt;
