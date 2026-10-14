@@ -43,6 +43,7 @@ import xlings.core.home_health;
 import xlings.platform.target;
 import xlings.core.home_identity;
 import xlings.core.admin_steps;
+import xlings.core.abi;
 
 namespace xlings::xself {
 
@@ -5617,6 +5618,13 @@ int cmd_doctor(EventStream& stream, bool fix, bool resetMetadata, bool dryRun, b
         }
         platform::set_env_variable("XLINGS_ACTIVE_SUBOS", *subos);
         Config::set_active_subos_override(*subos);
+    }
+
+    // The home's runtime links (part 3 §4) made what the home has now: a
+    // runtime removed by another client, or links never made.
+    if (fix && !dryRun) {
+        if (auto moved = abi::refresh(Config::paths().homeDir, "self doctor --fix"); moved)
+            for (const auto& w : moved->what) log::println("runtime {}", w);
     }
 
     // Administrator steps recipes declared and nobody could answer (part 3

@@ -73,7 +73,7 @@ std::vector<std::string> argv_(std::initializer_list<std::string_view> words) {
 std::vector<std::string> new_argv_(std::string_view name, std::string_view edition, std::string_view carrier) {
     auto args = argv_({"new", name, "--from", edition});
     if (!carrier.empty()) args.insert(args.end(), {"--carrier", std::string(carrier)});
-    else if constexpr (xlings::platform::is_linux) args.insert(args.end(), {"--rootfs", "--domain", "/xlings"});
+    else if constexpr (xlings::platform::is_linux) args.insert(args.end(), {"--rootfs", "--domain-if-possible", "/xlings"});
     return args;
 }
 
@@ -318,8 +318,15 @@ namespace {
 // archive -- its /etc, /home, /root, /var, /opt, /srv, its policy, settings
 // and the packages it had beyond its edition -- removed, and made again
 // there. The archive is kept until the new one stands, and named on failure.
+// Where a move found this host could not build the domain: not tried again.
+fs::path stays_here_(const Context& c, std::string_view name) {
+    return c.home / "state" / "luban" / "relayout" / std::format("{}.stays", name);
+}
+
 bool old_layout_(const Context& c, std::string_view name) {
     if constexpr (!xlings::platform::is_linux) return false;
+    std::error_code ec;
+    if (fs::exists(stays_here_(c, name), ec)) return false;
     const auto e = describe(c, name);
     return e && e->kind == "root" && e->carrier == "local" && !e->edition.empty()
         && !xlings::subos::locate(HomeView{c.home}, name).domain;
@@ -352,6 +359,12 @@ int relayout_(const Context& c, std::string_view name) {
         return made.code;
     }
     fs::remove(keep, ec);
+    if (!xlings::subos::locate(HomeView{c.home}, name).domain) {
+        // Made again in this home's prefix: this host cannot build the domain.
+        std::ofstream(stays_here_(c, name)) << "this host could not build the system domain\n";
+        if (c.sink) c.sink(notice(std::format("{} stays in this home's prefix: this host cannot build it its own "
+                                              "(xlings self doctor --isolation)", name)));
+    }
     if (c.sink) c.sink(phase("relayout", "done", text));
     return 0;
 }

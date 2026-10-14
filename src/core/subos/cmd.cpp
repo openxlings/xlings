@@ -2190,6 +2190,7 @@ int run(int argc, char* argv[], EventStream& stream) {
         // --rootfs: the instance can be presented as `/` (design part 2 §3.1).
         bool rootfs = false;
         std::string domain;
+        bool domainIfPossible = false;
         // --carrier / --abi (design part 3 §5.6): where it runs. Default:
         // this machine's kernel unless what it is needs another one.
         std::string requestedCarrier, abi = "native";
@@ -2209,8 +2210,9 @@ int run(int argc, char* argv[], EventStream& stream) {
             if (a.starts_with("--abi=")) { abi = a.substr(6); continue; }
             forwardArgs.push_back(a);
             if (a == "--rootfs") { rootfs = true; continue; }
-            if (a == "--domain") {
-                if (i + 1 >= argc || !domain.empty()) { usageError("--domain expects one absolute home path"); return 1; }
+            if (a == "--domain" || a == "--domain-if-possible") {
+                if (i + 1 >= argc || !domain.empty()) { usageError(std::string(a) + " expects one absolute home path"); return 1; }
+                domainIfPossible = a == "--domain-if-possible";
                 domain = argv[++i];
                 if (domain.empty() || domain[0] != '/') { usageError("--domain expects an absolute home path"); return 1; }
                 continue;
@@ -2350,11 +2352,16 @@ int run(int argc, char* argv[], EventStream& stream) {
         if (!domain.empty()) {
             std::vector<std::string> producerArgs{"subos", "new"};
             for (int i = 3; i < argc; ++i) {
-                if (std::string_view(argv[i]) == "--domain") { ++i; continue; }
+                if (std::string_view(argv[i]) == "--domain" || std::string_view(argv[i]) == "--domain-if-possible") { ++i; continue; }
                 producerArgs.emplace_back(argv[i]);
             }
-            if (auto result = produce_domain_at_creation_(name, rootfs, domain, producerArgs, stream))
+            bool fellBack = false;
+            if (auto result = produce_domain_at_creation_(name, rootfs, domain, producerArgs, stream,
+                                                          domainIfPossible ? &fellBack : nullptr))
                 return *result;
+            // This host cannot build in a private namespace: in this home's
+            // prefix instead, as before, said once (--domain-if-possible).
+            if (fellBack) domain.clear();
         }
         // The same command again, for an environment a failure left
         // unfinished: it finishes it -- the edition's packages that are not

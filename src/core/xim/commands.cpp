@@ -56,6 +56,7 @@ import xlings.core.semver;
 import xlings.core.destructive_log;
 import xlings.core.utils;
 import xlings.core.admin_steps;
+import xlings.core.abi;
 
 namespace xlings::xim {
 
@@ -2471,8 +2472,24 @@ int cmd_remove_older_than(const std::string& name, const std::string& threshold,
     return rc;
 }
 
+int cmd_remove_impl_(const std::string& target, bool yes, EventStream& stream,
+                     bool force, bool all, std::optional<std::string> subosScope);
+
 int cmd_remove(const std::string& target, bool yes, EventStream& stream,
                bool force, bool all, std::optional<std::string> subosScope) {
+    const int rc = cmd_remove_impl_(target, yes, stream, force, all, std::move(subosScope));
+    // A runtime removed: the home's runtime moves to what it still has
+    // (part 3 §4), so nothing bound through <home>/abi names a payload gone.
+    auto bare = target.substr(0, target.find('@'));
+    if (const auto colon = bare.find(':'); colon != std::string::npos) bare = bare.substr(colon + 1);
+    if (abi::is_runtime(bare))
+        if (auto moved = abi::refresh(Config::paths().homeDir, std::format("remove {}", target)); moved)
+            for (const auto& w : moved->what) log::info("runtime {}", w);
+    return rc;
+}
+
+int cmd_remove_impl_(const std::string& target, bool yes, EventStream& stream,
+                     bool force, bool all, std::optional<std::string> subosScope) {
     // Serialize against any other xlings mutating this home, then re-read
     // state under the lock: Config loaded it at process start, outside the
     // lock, so acting on that snapshot is how two commands lose each other's
