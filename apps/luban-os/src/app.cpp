@@ -3,6 +3,7 @@ module luban.os;
 import std;
 import luban.desktop.imgui;
 import xlings.subos.home_view;
+import xlings.subos.located;
 import xlings.subos.policy_store;
 import xlings.subos.policy;
 import luban.service.archive;
@@ -322,9 +323,14 @@ struct App {
         texture = {};
     }
 
-    // The luban a sandbox runs for its desktop: the one beside this app, else the home's.
-    fs::path luban_binary() const {
+    // The luban a sandbox runs for its desktop, as the sandbox sees it. A
+    // system in a prefix domain sees its own home (/xlings), not this one:
+    // the luban its domain carries. Elsewhere, the one beside this app, else
+    // the home's.
+    fs::path luban_binary(const std::string& name) const {
         std::error_code ec;
+        if (const auto at = xlings::subos::locate(xlings::subos::HomeView{home}, name); at.domain)
+            return fs::is_regular_file(at.home.home / "bin" / "luban", ec) ? at.logical / "bin" / "luban" : fs::path{};
         for (const auto& p : {platform::get_executable_path().parent_path() / "luban", home / "bin" / "luban"})
             if (fs::is_regular_file(p, ec)) return p;
         return {};
@@ -337,7 +343,7 @@ struct App {
         // A sandbox shows its desktop the same way a machine does: the
         // session, bridged, on two pipes instead of a channel.
         if (!machine) {
-            const auto luban = luban_binary();
+            const auto luban = luban_binary(name);
             if (auto session = desktop_session(home, name, env ? env->settings.desktop : std::string{}); session && !luban.empty()) {
                 const auto [ww, wh] = window->size();
                 desktop_size = device_size_(ww, wh);

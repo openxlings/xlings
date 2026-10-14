@@ -247,10 +247,14 @@ L stop t >/dev/null 2>&1 || true
 
 log "the same desktop in a sandbox: luban __desktop under xlings subos use --cmd, as the window runs it"
 L config t --mode sandbox >/dev/null 2>&1 || fail "config t --mode sandbox"
+# The luban the sandbox sees: a system in the prefix domain sees its own
+# home (/xlings) and the luban that domain carries, not this home's.
+inner_luban="$H/bin/luban"
+[[ -d "$H/domains/xlings/private/subos/t" ]] && inner_luban=/xlings/bin/luban
 sbox="$(cd /tmp && timeout 300 python3 "$CLIENT" --exec \
   '{Alt+Return}echo SANDBOX-$(uname -m) > /root/sandbox.txt\n' "$RUNTIME_DIR/sandbox.ppm" -- \
   env -u XLINGS_ACTIVE_SUBOS -u XLINGS_SUBOS_MODE XLINGS_HOME="$H" "$H/bin/xlings" subos use t \
-  --cmd "exec '$H/bin/luban' __desktop - --size 1024x640" 2>"$RUNTIME_DIR/sandbox-desktop.log" || true)"
+  --cmd "exec '$inner_luban' __desktop - --size 1024x640" 2>"$RUNTIME_DIR/sandbox-desktop.log" || true)"
 grep -q '"drew": true' <<<"$sbox" || fail "sandbox desktop: it never drew: $sbox $(tail -20 "$RUNTIME_DIR/sandbox-desktop.log")"
 [[ "$(cat "$(sysdir t)/rootfs/root/sandbox.txt" 2>/dev/null)" == "SANDBOX-$arch" ]] \
   || fail "sandbox desktop: what was typed into its terminal did not run ($sbox)"
