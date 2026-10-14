@@ -1092,3 +1092,11 @@ status = "required"
 [DOCTOR-LADDER]
 text = "a repair rung is judged by the finding, not by its exit code: re-register runs config() again (--reconfig), a finding that outlives it goes to reinstall, and one that outlives a reinstall is reported as the check's fault, not healed"
 status = "required"
+
+[ROOT-PROGRAM-ENV]
+text = "a program whose recipe registered an environment (vim's $VIM, curl's CA bundle, tmux's terminfo) keeps its shim in a root's /usr/bin, so the environment is there when it runs; a program with nothing to add links straight to its payload"
+status = "required"
+
+[ROOT-LOCALE]
+text = "a root is entered with LANG=C.UTF-8 and without the host's LC_* and LANGUAGE, sandbox and machine alike: the locale the root's glibc has"
+status = "required"

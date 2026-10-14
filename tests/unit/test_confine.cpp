@@ -125,6 +125,30 @@ XTEST(Confine, APolicyThatForbidsNestedUserNamespacesRefusesABwrapThatCannotWith
     EXPECT_TRUE(cf::compile(policy::legacy(), home, setuid, r));
 }
 
+// A root's userland has its own glibc's locales, not the host's: a host's
+// LC_ALL named one it lacks, and bash said so on every start.
+XTEST(Confine, ARootSpeaksCUtf8WhateverTheHostsLocale, .area = "subos", .covers = {"ROOT-LOCALE"}) {
+    auto home = xlings::testkit::Home::isolated("confine-locale");
+    const auto root = home.dir() / "subos" / "box" / "rootfs";
+    std::filesystem::create_directories(root / "etc");
+    sp::Request r;
+    r.instance = "box";
+    r.instance_dir = home.dir() / "subos" / "box";
+    r.user = "u";
+    r.argv = {"sh"};
+    r.root = root;
+    r.root_mounts = {{sp::MountKind::RoBind, "/h/.xlings/data/xpkgs/x", "/h/.xlings/data/xpkgs/x"}};
+    r.host_exists = [](std::string_view) { return true; };
+    r.host_env = {{"LANG", "en_US.UTF-8"}, {"LC_ALL", "en_US.UTF-8"}, {"LC_CTYPE", "zh_CN.UTF-8"},
+                  {"LANGUAGE", "en_US"}, {"TERM", "xterm-256color"}};
+    const xlings::subos::HomeView view{home.dir()};
+    auto spec = cf::compile(xlings::subos::policy::legacy(), view, linux_host(true, false, 0), r);
+    ASSERT_TRUE(spec);
+    EXPECT_EQ(spec->env.at("LANG"), "C.UTF-8");
+    for (const auto& [k, v] : spec->env)
+        EXPECT_FALSE(k.starts_with("LC_") || k == "LANGUAGE") << k << "=" << v;
+}
+
 // persist home / none (Luban OS architecture §10.1): a root's own state is seen
 // through bwrap's memory overlay, so a session leaves nothing behind; /home
 // stays only with `home`; a backend without a mount namespace refuses.

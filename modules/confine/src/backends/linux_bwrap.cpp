@@ -98,12 +98,12 @@ void root_finish(const in::Intent& i, const HomeView& home, const std::map<std::
                  sp::SandboxSpec& s) {
     // The root's own userland and its own root user. /run/xlings last: the
     // client hosting the session, whatever the root holds.
-    if (i.id.neutral) {
-        s.env["TZ"] = i.id.tz.empty() ? "UTC" : i.id.tz;
-        s.env["LANG"] = "C.UTF-8";
-        // As the view of the host does: a host's LC_* is where it is.
-        std::erase_if(s.env, [](const auto& kv) { return kv.first.starts_with("LC_"); });
-    }
+    if (i.id.neutral) s.env["TZ"] = i.id.tz.empty() ? "UTC" : i.id.tz;
+    // The root's own userland has the locale its glibc builds in, not the
+    // host's: a host's LANG / LC_* named one it does not have (bash:
+    // "setlocale: LC_ALL: cannot change locale"). The same as a machine.
+    s.env["LANG"] = "C.UTF-8";
+    std::erase_if(s.env, [](const auto& kv) { return kv.first.starts_with("LC_") || kv.first == "LANGUAGE"; });
     for (auto& [k, v] : grant_env) s.env[k] = v;
     s.env.erase("XLINGS_ACTIVE_SUBOS");
     s.env["XLINGS_ROOT_INSTANCE"] = i.instance;
