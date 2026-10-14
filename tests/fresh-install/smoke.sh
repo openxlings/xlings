@@ -346,7 +346,7 @@ click card:tiny
 click make
 wait job
 wait console 900
-see 120s [luban:tiny-1]
+see 120s root@tiny-1
 type echo luban-\$((6*7))
 key Return
 see 60s luban-42

@@ -355,7 +355,8 @@ struct App {
         // The welcome a console says first, the same as `luban enter`'s.
         std::string greeting;
         if (env)
-            for (const auto& line : service::welcome(*env, machine ? "machine" : "sandbox", false, tr("en", "zh") == "zh"))
+            for (const auto& line : service::welcome(*env, machine ? "machine" : "sandbox", false,
+                                                     {.zh = tr("en", "zh") == "zh", .color = true, .utf8 = true}))
                 greeting += line + "\r\n";
         console = machine ? Console::machine(home, name, [w] { w->wake(); }, error, greeting)
                           : Console::sandbox(ctx.port.xlings(), home, name, env ? env->settings.persist : "all", [w] { w->wake(); },

@@ -1,6 +1,8 @@
 module luban.cli;
 
 import std;
+import xlings.subos.root_etc;
+import xlings.libs.sha512;
 import xlings.cli.model;
 import xlings.libs.json;
 import xlings.observe;
@@ -229,6 +231,24 @@ bool ask_(std::string_view question) {
 }
 
 bool can_ask_(const Globals& g) { return !g.agent && !g.json && xlings::platform::stdin_is_terminal(); }
+
+// A line typed without being shown (a password): the terminal raw, nothing
+// echoed, backspace honoured, restored however it ends.
+std::string read_hidden_(std::string_view prompt) {
+    std::print("{}", prompt);
+    std::cout.flush();
+    std::string line;
+    const auto saved = xlings::platform::make_terminal_raw(0);
+    for (char ch = 0; xlings::platform::read_exact(0, &ch, 1);) {
+        if (ch == '\r' || ch == '\n') break;
+        if (ch == 3 || ch == 4) { line.clear(); break; }   // Ctrl-C / Ctrl-D: nothing
+        if ((ch == 127 || ch == 8) && !line.empty()) line.pop_back();
+        else if (static_cast<unsigned char>(ch) >= 32) line += ch;
+    }
+    if (saved) xlings::platform::restore_terminal(0, *saved);
+    std::println("");
+    return line;
+}
 
 // The raw copy, run by `luban write` itself or -- when the drive is not
 // writable -- through the one door for administrator rights.
@@ -530,6 +550,42 @@ int cmd_new(const svc::Context& c, const Parsed& p, const Globals& g, Renderer& 
     if (p.words.size() != 1) return usage("`luban new <name> [--edition E]`: one name", g);
     svc::NewOptions o{.name = p.words[0], .edition = p.option("--edition").value_or("core")};
     if (auto x = p.option("--proxy")) o.proxy = *x;
+    // Its login user (part 3 §6.1): asked for once, before the download,
+    // when a desktop needs one or --user names it; -y takes the defaults;
+    // agent mode asks nothing and names the flags.
+    if (auto x = p.option("--user")) o.user = *x;
+    if (o.user.empty() && svc::needs_user(o.edition)) {
+        if (g.yes) o.user = std::string(svc::kDefaultUser);
+        else if (!can_ask_(g))
+            return usage(std::format("a {} needs a user to log in as: --user <name> (and --password-file <file> or --no-password), or -y for {}",
+                                     o.edition, svc::kDefaultUser), g);
+        else {
+            std::print("▸ {} needs a user to log in as\n  user name [{}]: ", o.edition, svc::kDefaultUser);
+            std::string answer;
+            std::getline(std::cin, answer);
+            answer = trim_(answer);
+            o.user = answer.empty() ? std::string(svc::kDefaultUser) : answer;
+        }
+    }
+    if (!o.user.empty() && !xlings::subos::root_etc::valid_user_name(o.user))
+        return usage(std::format("'{}' is not a user name (a-z, 0-9, _ and -, a letter first)", o.user), g);
+    if (!o.user.empty()) {
+        std::string password;
+        if (auto file = p.option("--password-file")) {
+            std::ifstream in(*file);
+            if (!in) return usage(std::format("cannot read {}", *file), g);
+            std::getline(in, password);
+        } else if (!p.flag("--no-password") && !g.yes && can_ask_(g)) {
+            for (;;) {
+                const auto first = read_hidden_("  password (empty: none, log in without one): ");
+                if (first.empty()) break;
+                if (read_hidden_("  again: ") == first) { password = first; break; }
+                std::println("  the two did not match; again");
+            }
+        }
+        if (!password.empty()) o.password_hash = xlings::sha512::crypt(password, xlings::sha512::random_salt());
+        std::ranges::fill(password, '\0');
+    }
     if (auto x = p.option("--carrier")) o.carrier = *x;
     else o.carrier = default_carrier();
     auto out = svc::create(c, o);
@@ -576,9 +632,10 @@ int cmd_enter(const svc::Context& c, const Parsed& p, const Globals& g) {
     // A machine that is running is entered as the machine it is.
     const auto mode = p.option("--mode").value_or(vm::running(c.home, target) ? std::string("machine") : settings->mode);
     if (mode != "sandbox" && mode != "machine") return usage("--mode sandbox|machine", g);
+    if (auto u = p.option("--user")) o.user = *u;
     if (mode == "machine") return vm::enter(c, target, o);
     if (o.display == "window") return usage("a sandboxed environment's programs use this desktop; a window is a machine's: --mode machine", g);
-    return svc::enter_sandbox(c, target, o.temp);
+    return svc::enter_sandbox(c, target, o.temp, o.user);
 }
 
 int cmd_status(const svc::Context& c, const Parsed& p, const Globals& g, Renderer& r) {
@@ -765,15 +822,20 @@ const spec::CommandSpec& tree() {
             {.name = "new", .description = "Make an environment",
              .arguments = {{"name", "Its name", true}},
              .options = {{"--edition <EDITION>", "nano, tiny, core (default), desktop, desktop-xdesk, agent-workspace, or ns:name[@version]"},
+                         {"--user <NAME>", "Its login user (a desktop needs one; default lubanoser)"},
+                         {"--password-file <FILE>", "Its user's password, the file's first line", false, Level::More},
+                         {"--no-password", "Its user logs in without a password", false, Level::More},
                          {"--proxy <URL>", "Its network goes only through this SOCKS5h proxy", false, Level::More},
                          {"--carrier <CARRIER>", "Where it runs: local, wsl2, vz", false, Level::Expert}}},
             {.name = "enter", .description = "Go into an environment, or boot an image",
              .arguments = {{"name", "An environment, or an image file (.iso, .img, .qcow2)", true}},
              .options = {{"--mode <MODE>", "sandbox (this machine's kernel) or machine (its own); default: its setting"},
                          {"--temp", "Nothing it writes stays"},
+                         {"--user <NAME>", "Log in as this user this once (root, or one of its users)", false, Level::More},
                          {"--display <DISPLAY>", "terminal or window; default: its desktop decides", false, Level::More}}},
             {.name = "run", .description = "Run one command in an environment",
-             .arguments = {{"name", "Which", true}, {"command", "The command and its arguments, after --", true, true}}},
+             .arguments = {{"name", "Which", true}, {"command", "The command and its arguments, after --", true, true}},
+             .options = {{"--user <NAME>", "As this user (root, or one of its users)", false, Level::More}}},
             {.name = "ls", .description = "List the environments", .aliases = {"list"}},
             {.name = "status", .description = "This host, or one environment", .arguments = {{"name", "Which"}}},
             {.name = "config", .description = "Show or change an environment's settings",
@@ -781,6 +843,7 @@ const spec::CommandSpec& tree() {
              .options = {{"--mode <MODE>", "sandbox or machine: how `luban enter` starts it"},
                          {"--persist <WHAT>", "all, home (only /home stays) or none: what a session keeps"},
                          {"--shell <SHELL>", "Its login shell (fish, bash, sh, or a path)"},
+                         {"--login <NAME>", "Who luban enter logs in as: root, or one of its users", false, Level::More},
                          {"--runtime <LIBC@VERSION>", "Its default runtime (glibc@2.44.3): a new generation runs on it", false, Level::More},
                          {"--desktop <SESSION>", "The desktop it starts, or none"},
                          {"--on-close <WHAT>", "ask, background or poweroff: closing its window"},
@@ -1059,7 +1122,7 @@ int run(int argc, char* argv[]) {
         if (p.command == "enter") return cmd_enter(c, p, g);
         if (p.command == "run") {
             if (p.words.empty() || p.after.empty()) return usage("`luban run <name> -- <command...>`", g);
-            return svc::run_command(c, p.words[0], p.after);
+            return svc::run_command(c, p.words[0], p.after, p.option("--user").value_or(""));
         }
         if (p.command == "ls") return overview(c, g);
         if (p.command == "status") return cmd_status(c, p, g, render);

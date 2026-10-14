@@ -2,6 +2,7 @@ module luban.vm;
 
 import std;
 import xlings.subos.located;
+import xlings.subos.root_etc;
 import xlings.libs.json;
 import xlings.observe;
 import xlings.platform;
@@ -343,17 +344,45 @@ int start_impl_(const service::Context& c, std::string_view name, const EnterOpt
 enum class Ending { Exited, Detached, PowerOff, Lost };
 
 // One session of a running machine on this terminal.
-std::pair<Ending, int> session_(const service::Context& c, std::string_view name) {
+// What the welcome says of a machine that only its host knows: the kernel
+// package it boots, how it is accelerated, its size.
+service::WelcomeFacts machine_facts_(const service::Context& c, std::string_view name) {
+    service::WelcomeFacts f;
+    if (const auto k = kernel_(c.home)) {
+        for (auto it = k->begin(); it != k->end(); ++it)
+            if (it->string().find("linux-kernel") != std::string::npos && std::next(it) != k->end()) {
+                f.kernel = "Linux " + std::next(it)->string();
+                break;
+            }
+    }
+    const auto state = read_json_(state_file_(c.home, name));
+    int mb = 2048;
+    try { mb = std::stoi(state.value("memory", std::string("2048"))); } catch (...) {}
+    f.machine = std::format("{} · 2 CPU · {}", state.value("accel", "kvm") == "kvm" ? "KVM" : "emulated",
+                            mb % 1024 == 0 ? std::format("{} GiB", mb / 1024) : std::format("{} MiB", mb));
+    return f;
+}
+
+std::pair<Ending, int> session_(const service::Context& c, std::string_view name, std::string_view user = {}) {
     const int fd = connect_client_(c.home, name);
     if (fd < 0) return {Ending::Lost, 1};
     const auto state = read_json_(state_file_(c.home, name));
     const char* term = std::getenv("TERM");
     auto size = platform::terminal_size(0).value_or(std::pair<unsigned short, unsigned short>{24, 80});
-    Json open{{"rows", size.first}, {"cols", size.second}, {"term", term ? term : "xterm-256color"},
-              {"env", state.value("env", Json::object())}};
+    // Where it is, as a sandbox says it (part 3 §7.2): its kind, what it
+    // keeps, the prompt; the root it is, for what lists its siblings.
+    auto env = state.value("env", Json::object());
+    const auto persist = state.value("persist", std::string("all"));
+    const char* no_color = std::getenv("NO_COLOR");
+    env["LUBAN_KIND"] = "machine";
+    env["LUBAN_PERSIST"] = persist;
+    env["XLINGS_ROOT_INSTANCE"] = std::string(name);
+    env["PS1"] = xlings::subos::root_etc::prompt("machine", persist, term ? term : "xterm-256color", no_color && *no_color);
+    Json open{{"rows", size.first}, {"cols", size.second}, {"term", term ? term : "xterm-256color"}, {"env", env}};
+    if (!user.empty()) open["user"] = std::string(user);
     if (!platform::write_all(fd, proto::encode_json('O', 1, open))) return {Ending::Lost, 1};
     const auto saved = platform::make_terminal_raw(0);
-    std::println(std::cerr, "\r{} -- Ctrl-] d leaves it running, Ctrl-] p powers it off\r", name);
+
     proto::Decoder d;
     std::array<char, 65536> buf{};
     bool escape = false;
@@ -649,9 +678,19 @@ int enter(const service::Context& c, std::string_view name_or_image, const Enter
     } else if (o.temp) {
         say_(c, service::notice(std::format("{} is already running and keeps what it writes; this session joins it", name)));
     }
-    if (auto e = service::describe(c, name))
-        for (const auto& line : service::welcome(*e, "machine", o.temp, service::chinese_locale())) std::println("{}", line);
-    auto [ending, code] = session_(c, name);
+    if (auto e = service::describe(c, name)) {
+        auto facts = machine_facts_(c, name);
+        if (const auto root = service::root_of(c.home, name)) {
+            const auto who = o.user.empty() ? xlings::subos::root_etc::login_user(*root / "etc") : o.user;
+            if (const auto u = xlings::subos::root_etc::find_user(*root / "etc", who)) {
+                facts.user = u->name;
+                facts.user_home = u->home;
+            }
+        }
+        for (const auto& line : service::welcome(*e, "machine", o.temp, service::terminal_style(), facts))
+            std::println("{}", line);
+    }
+    auto [ending, code] = session_(c, name, o.user);
     const auto state = read_json_(state_file_(c.home, name));
     const bool temp = state.value("temp", false) || state.value("persist", "all") != "all";
     if (ending == Ending::Detached) {

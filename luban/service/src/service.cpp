@@ -184,6 +184,10 @@ std::expected<std::vector<Environment>, std::string> list(const Context& c) {
     return out;
 }
 
+bool needs_user(std::string_view edition) {
+    return edition == "desktop" || edition.starts_with("desktop-") || edition.find("luban-desktop") != std::string_view::npos;
+}
+
 Outcome create(const Context& c, const NewOptions& o) {
     if (o.name.empty()) {
         if (c.sink) c.sink(error("an environment needs a name", "luban new <name> --edition tiny"));
@@ -194,9 +198,32 @@ Outcome create(const Context& c, const NewOptions& o) {
     const int rc = step_(c, "make", std::format("making {} ({})", o.name, o.edition), args, false,
                          std::format("{} is ready", o.name));
     if (rc != 0) return {.code = rc};
+    // Its login user (part 3 §6.1): in its passwd, its group and wheel, the
+    // password's hash in its shadow, and the one `luban enter` logs in as.
+    if (!o.user.empty()) {
+        const auto root = root_of(c.home, o.name);
+        if (!root) {
+            if (c.sink) c.sink(error(std::format("{} has no root to give a user", o.name)));
+            return {.code = 1};
+        }
+        const auto rootUser = xlings::subos::root_etc::find_user(*root / "etc", "root");
+        auto made = xlings::subos::root_etc::add_user(*root, o.user, rootUser ? rootUser->shell : std::string("/bin/sh"),
+                                                      o.password_hash, xlings::platform::user_ids().uid);
+        if (!made) {
+            if (c.sink) c.sink(error(made.error()));
+            return {.code = 1};
+        }
+        if (auto login = xlings::subos::root_etc::set_login_user(*root / "etc", o.user); !login) {
+            if (c.sink) c.sink(error(login.error()));
+            return {.code = 1};
+        }
+        if (c.sink) c.sink(notice(std::format("{} logs in as {}{}", o.name, o.user,
+                                              o.password_hash.empty() ? " (no password)" : "")));
+    }
     auto e = describe(c, o.name);
     if (!e) return {.code = 0};
     return {.code = 0, .value = {{"name", e->name}, {"edition", e->edition}, {"packages", e->packages},
+                                 {"user", o.user.empty() ? std::string("root") : o.user},
                                  {"generation", e->generation ? Json(*e->generation) : Json()}, {"shell", e->shell}}};
 }
 
@@ -227,6 +254,17 @@ Outcome configure(const Context& c, std::string_view name, const std::vector<std
             }
             if (auto set = xlings::subos::root_etc::set_login_shell(*root / "etc", "root", shell); !set) {
                 if (c.sink) c.sink(error(set.error()));
+                return {.code = 1};
+            }
+        } else if (key == "login") {
+            // Who `luban enter` logs in as: root, or one of its users.
+            const auto root = root_of(c.home, name);
+            if (!root) {
+                if (c.sink) c.sink(error(std::format("'{}' is a view of this host: you are you", name)));
+                return {.code = 2};
+            }
+            if (auto set = xlings::subos::root_etc::set_login_user(*root / "etc", value); !set) {
+                if (c.sink) c.sink(error(set.error(), std::format("luban config {} --login root", name)));
                 return {.code = 1};
             }
         } else if (key == "runtime") {
@@ -553,42 +591,143 @@ bool chinese_locale() {
     return false;
 }
 
-std::vector<std::string> welcome(const Environment& e, std::string_view mode, bool temp, bool zh) {
+namespace {
+
+// Columns a line takes: a wide (CJK) character two, everything else one.
+std::size_t columns_(std::string_view s) {
+    std::size_t n = 0;
+    for (std::size_t i = 0; i < s.size();) {
+        const auto c = static_cast<unsigned char>(s[i]);
+        const int len = c < 0x80 ? 1 : c < 0xE0 ? 2 : c < 0xF0 ? 3 : 4;
+        char32_t cp = len == 1 ? c : len == 2 ? (c & 0x1F) : len == 3 ? (c & 0x0F) : (c & 0x07);
+        for (int k = 1; k < len && i + k < s.size(); ++k) cp = (cp << 6) | (static_cast<unsigned char>(s[i + k]) & 0x3F);
+        n += (cp >= 0x1100 && (cp <= 0x115F || (cp >= 0x2E80 && cp <= 0xA4CF) || (cp >= 0xAC00 && cp <= 0xD7A3)
+                               || (cp >= 0xF900 && cp <= 0xFAFF) || (cp >= 0xFE30 && cp <= 0xFE4F)
+                               || (cp >= 0xFF00 && cp <= 0xFF60) || (cp >= 0xFFE0 && cp <= 0xFFE6))) ? 2 : 1;
+        i += static_cast<std::size_t>(len);
+    }
+    return n;
+}
+
+// At most `width` columns: the middle of a long value goes, its ends stay.
+std::string fit_(std::string s, std::size_t width, bool utf8) {
+    if (columns_(s) <= width) return s;
+    const std::string dots = utf8 ? "…" : "...";
+    const std::size_t keep = width > 4 ? (width - (utf8 ? 1 : 3)) / 2 : 1;
+    return s.substr(0, keep) + dots + s.substr(s.size() - keep);
+}
+
+}  // namespace
+
+WelcomeStyle terminal_style() {
+    WelcomeStyle st;
+    st.zh = chinese_locale();
+    std::string locale;
+    for (const char* key : {"LC_ALL", "LC_CTYPE", "LANG"})
+        if (const char* v = std::getenv(key); v && *v) { locale = v; break; }
+    std::ranges::transform(locale, locale.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    st.utf8 = locale.empty() || locale.find("utf-8") != std::string::npos || locale.find("utf8") != std::string::npos;
+    const char* no = std::getenv("NO_COLOR");
+    const char* lc = std::getenv("LUBAN_COLOR");
+    const std::string term = std::getenv("TERM") ? std::getenv("TERM") : "";
+    const bool known = term.starts_with("xterm") || term.starts_with("screen") || term.starts_with("tmux")
+                    || term == "linux" || term.starts_with("rxvt") || term == "vt220" || term.find("color") != std::string::npos
+                    || term == "alacritty" || term == "foot" || term.starts_with("kitty") || term == "wezterm";
+    st.color = known && !(no && *no) && !(lc && std::string_view(lc) == "0") && xlings::platform::stdout_is_terminal();
+    return st;
+}
+
+std::string kind_mark(std::string_view mode, std::string_view persist) {
+    const auto keep = persist == "none" ? std::string(":temp") : persist == "home" ? std::string(":home") : std::string();
+    return mode == "machine" ? "<luban" + keep + ">" : "[luban" + keep + "]";
+}
+
+std::vector<std::string> welcome(const Environment& e, std::string_view mode, bool temp,
+                                 const WelcomeStyle& style, const WelcomeFacts& facts) {
+    constexpr std::size_t kWidth = 72, kLabel = 9;
+    const bool zh = style.zh;
+    const auto paint = [&](std::string_view code, const std::string& text) {
+        return style.color ? std::format("\x1b[{}m{}\x1b[0m", code, text) : text;
+    };
     std::string edition = e.edition;
     if (edition.starts_with("subos:luban-")) edition = edition.substr(12);
     if (const auto at = edition.find('@'); at != std::string::npos) edition[at] = ' ';
-    std::string title = std::format("Luban OS {}", kVersion);
-    if (!edition.empty()) title += " · " + edition;
-    title += " · " + e.name;
     const auto persist = temp ? std::string("none") : e.settings.persist;
-    // Short lines: a console is 80 columns.
-    std::string how, next;
-    if (zh) {
-        how = mode == "machine" ? "一台机器（自己的内核）" : "本机上的沙箱";
-        how += persist == "all" ? "，保留所有改动" : persist == "home" ? "，只保留 /home" : "，什么也不保留";
-        next = std::format("luban status {} · exit 离开", e.name);
+    const auto mark = kind_mark(mode, persist);
+    const auto mark_color = persist != "all" ? (persist == "none" ? "31" : "33") : mode == "machine" ? "35" : "36";
+    std::vector<std::string> out;
+    out.push_back(std::format(" {} · {} {}", paint("1", std::format("Luban OS {}", kVersion)), paint(mark_color, mark), e.name));
+    const std::string rule = " " + [&] {
+        std::string r;
+        for (std::size_t i = 0; i < 58; ++i) r += style.utf8 ? "─" : "-";
+        return r;
+    }();
+    out.push_back(rule);
+    const auto row = [&](std::string_view en, std::string_view cn, std::string value) {
+        std::string label(zh ? cn : en);
+        const auto pad = kLabel > columns_(label) ? kLabel - columns_(label) : 1;
+        label = paint("2", label) + std::string(pad, ' ');
+        out.push_back(" " + label + fit_(std::move(value), kWidth - kLabel - 1, style.utf8));
+    };
+    std::string system = edition.empty() ? std::string(zh ? "(未知的版本)" : "(no edition)") : edition;
+    if (e.generation) system += (zh ? std::format(" · 第 {} 代", *e.generation) : std::format(" · generation {}", *e.generation));
+    system += (zh ? std::format(" · {} 个包", e.packages) : std::format(" · {} packages", e.packages));
+    row("system", "系统", system);
+    if (mode == "machine") {
+        auto kernel = facts.kernel.empty() ? std::string("Linux") : facts.kernel;
+        if (!facts.machine.empty()) kernel += ", " + facts.machine;
+        row("runs as", "运行", (zh ? std::format("机器：自己的内核（{}）", kernel) : std::format("machine: its own kernel ({})", kernel)));
     } else {
-        how = mode == "machine" ? "a machine (its own kernel)" : "a sandbox on this host";
-        how += persist == "all" ? ", keeping what changes" : persist == "home" ? ", keeping only /home" : ", keeping nothing";
-        next = std::format("luban status {} · exit to leave", e.name);
+        const auto kernel = facts.kernel.empty() ? std::string("Linux") : facts.kernel;
+        row("runs as", "运行", (zh ? std::format("沙箱：与本机共用内核（{}）", kernel) : std::format("sandbox: shares this host's kernel ({})", kernel)));
     }
-    return {title, "  " + how, "  " + next, ""};
+    row("keeps", "保留", persist == "all" ? std::string(zh ? "所有改动" : "everything")
+                       : persist == "home" ? std::string(zh ? "只有 /home" : "only /home")
+                                           : std::string(zh ? "什么也不留：停下后写入的都会消失" : "nothing: what you write is gone when it stops"));
+    row("user", "用户", facts.user + " · " + facts.user_home);
+    row("xlings", "xlings", zh ? "只管理这个系统（R）" : "manages this system only (R)");
+    const auto now = std::chrono::floor<std::chrono::minutes>(std::chrono::system_clock::now());
+    row("time", "时间", std::format("{:%Y-%m-%d %H:%M} UTC", now));
+    if (!facts.network.empty()) row("network", "网络", facts.network);
+    out.push_back(rule);
+    std::string next = mode == "machine"
+        ? std::string(zh ? "exit 离开 · Ctrl-] d 让它继续运行 · Ctrl-] p 关机" : "exit to leave · Ctrl-] d leaves it running · Ctrl-] p powers it off")
+        : (zh ? std::format("exit 离开 · luban status {}", e.name) : std::format("exit to leave · luban status {}", e.name));
+    out.push_back(" " + next);
+    out.push_back("");
+    // A locale that is not UTF-8 gets ASCII only.
+    if (!style.utf8)
+        for (auto& line : out)
+            for (std::size_t at; (at = line.find("·")) != std::string::npos;) line.replace(at, std::string_view("·").size(), "-");
+    return out;
 }
 
-int enter_sandbox(const Context& c, std::string_view name, bool temp) {
+int enter_sandbox(const Context& c, std::string_view name, bool temp, std::string_view user) {
     std::vector<std::string> args{"subos", "use", std::string(name)};
+    if (!user.empty()) args.insert(args.end(), {"--user", std::string(user)});
     auto settings = read_settings(c.home, name);
     const auto persist = temp ? std::string("none") : settings ? settings->persist : std::string("all");
     if (persist != "all") args.insert(args.end(), {"--persist", persist});
     if (auto e = describe(c, name)) {
-        for (const auto& line : welcome(*e, "sandbox", temp, chinese_locale())) std::println("{}", line);
+        WelcomeFacts facts;
+        if (const auto release = xlings::platform::kernel_release(); !release.empty()) facts.kernel = "Linux " + release;
+        if (const auto root = root_of(c.home, name)) {
+            const auto who = user.empty() ? xlings::subos::root_etc::login_user(*root / "etc") : std::string(user);
+            if (const auto u = xlings::subos::root_etc::find_user(*root / "etc", who)) {
+                facts.user = u->name;
+                facts.user_home = u->home;
+            }
+        }
+        for (const auto& line : welcome(*e, "sandbox", temp, terminal_style(), facts)) std::println("{}", line);
         xlings::platform::set_env_variable("XLINGS_ENTER_QUIET", "1");
     }
     return c.port.terminal(args);
 }
 
-int run_command(const Context& c, std::string_view name, std::span<const std::string> argv) {
-    std::vector<std::string> args{"subos", "exec", std::string(name), "--"};
+int run_command(const Context& c, std::string_view name, std::span<const std::string> argv, std::string_view user) {
+    std::vector<std::string> args{"subos", "exec", std::string(name)};
+    if (!user.empty()) args.insert(args.end(), {"--user", std::string(user)});
+    args.push_back("--");
     args.insert(args.end(), argv.begin(), argv.end());
     return c.port.terminal(args);
 }

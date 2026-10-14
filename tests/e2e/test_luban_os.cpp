@@ -755,9 +755,9 @@ wait job
 see 5s tiny-1
 screenshot {}
 wait console 900
-see 120s [luban:tiny-1]
+see 120s root@tiny-1
 see 5s Luban OS
-see 5s a sandbox on this host
+see 5s shares this host's kernel
 see 5s exit to leave
 screenshot {}
 screenshot {}
@@ -920,7 +920,7 @@ click import:confirm
 click import:go
 wait job
 wait console 900
-see 120s [luban:shared-box]
+see 120s root@shared-box
 type cat /root/carried.txt
 key Return
 see 30s carried-across

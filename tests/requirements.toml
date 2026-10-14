@@ -1116,3 +1116,23 @@ status = "required"
 [RUNTIME-PIN]
 text = "a runtime is pinned as configuration (xlings config --runtime glibc@V, luban config <n> --runtime glibc@V) and followed again with @latest; a pin to a version not installed is refused with the install command; each switch is one rename, recorded in logs/abi.ndjson with its reason, and the state is abi.json"
 status = "required"
+
+[USER-PASSWORD]
+text = "a Luban system user's password is typed hidden, confirmed, and stored only as its SHA-512 crypt hash ($6$) in the system's /etc/shadow, computed in-process; it never reaches a log, an argv or a file in clear"
+status = "required"
+
+[USER-LOGIN]
+text = "a Luban system says who logs in (its etc/luban/login, root unless set): luban new --user makes that user (passwd, its group, wheel, shadow, its home), a desktop asks for one (lubanoser with -y; agent mode names the flags), luban config --login changes it, --user on enter and run chooses for one session, sandbox and machine alike"
+status = "required"
+
+[ID-HOSTNAME]
+text = "a Luban system's host name is its name, sandbox and machine alike, unless its /etc/hostname names another (the edition's placeholder `luban` is not a name); a neutral identity keeps its persona's"
+status = "required"
+
+[ID-PROMPT]
+text = "the prompt marks where you are: [luban] a system sharing the host's kernel, <luban> one with its own, :temp / :home when it keeps less; ANSI 16 colours only on a known terminal, none with NO_COLOR; the same from a login shell and after su - (etc/profile.d/luban.sh, written when missing, never rewritten)"
+status = "required"
+
+[ID-WELCOME]
+text = "the welcome is two columns without a frame, at most 72 columns, ASCII when the locale is not UTF-8, colour only where it shows and never needed to read it; it names the system, how it runs (shared or its own kernel), what it keeps, who logs in, what xlings manages and the time, and how to leave"
+status = "required"

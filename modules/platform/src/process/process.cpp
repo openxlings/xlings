@@ -8,6 +8,7 @@ module;
 #include <cstring>
 #if defined(__linux__) || defined(__APPLE__)
 #include <fcntl.h>
+#include <grp.h>
 #include <poll.h>
 #if defined(__linux__)
 #include <sys/prctl.h>
@@ -263,6 +264,10 @@ std::optional<std::pair<int, ExitStatus>> reap_child() {
 }
 
 bool new_session() { return ::setsid() >= 0; }
+bool become_user(unsigned uid, unsigned gid) {
+    if (::setgroups(0, nullptr) != 0 && ::getuid() == 0) return false;
+    return ::setgid(static_cast<gid_t>(gid)) == 0 && ::setuid(static_cast<uid_t>(uid)) == 0;
+}
 bool take_controlling_terminal() { return ::ioctl(0, TIOCSCTTY, 0) == 0; }
 
 void redirect_stdio(std::span<const int> fds) {
@@ -868,6 +873,7 @@ int exec_path(const std::vector<std::string>&, const std::map<std::string, std::
 std::optional<ExitStatus> wait_process(int, bool) { return std::nullopt; }
 std::optional<std::pair<int, ExitStatus>> reap_child() { return std::nullopt; }
 bool new_session() { return false; }
+bool become_user(unsigned, unsigned) { return false; }
 bool take_controlling_terminal() { return false; }
 void redirect_stdio(std::span<const int>) {}
 int run_shell_unattended(const std::string& command, std::optional<std::chrono::milliseconds>) {

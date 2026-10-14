@@ -78,15 +78,17 @@ suite_luban_console() {
     says "run" "luban-42"
     session 20 'echo IN-$((6*7)) > /root/kept; cat /root/kept; exit' e-tiny
     says "the welcome names Luban OS" "Luban OS"
-    says "and how it runs" "a sandbox on this host"
-    says "the prompt is the system's" "[luban:e-tiny]"
+    says "and how it runs" "shares this host's kernel"
+    says "the prompt marks the system" "[luban]"
+    says "and the host is the system's name" "root@e-tiny:"
     says "what is typed runs" "IN-42"
     capture "kept" luban run e-tiny -- cat /root/kept
     says "a session keeps what it wrote" "IN-42"
 
     section "tiny, keeping nothing: --temp"
     session 20 'echo GONE > /root/gone; cat /root/gone; exit' e-tiny --temp
-    says "the welcome says it keeps nothing" "keeping nothing"
+    says "the welcome says it keeps nothing" "what you write is gone"
+    says "and the prompt says so" "[luban:temp]"
     says "the session wrote" "GONE"
     refuses "what --temp wrote is gone" luban run e-tiny -- cat /root/gone
 
@@ -181,7 +183,8 @@ suite_luban_machine() {
     fi
     session 120 'echo MACHINE-$(uname -r); exit' m
     says "the machine came up" "m is up"
-    says "the welcome says it is a machine" "a machine (its own kernel)"
+    says "the welcome says it is a machine" "machine: its own kernel"
+    says "and the prompt says so" "<luban>"
     says "its own kernel answers" "MACHINE-"
     capture "stop" luban stop m
 

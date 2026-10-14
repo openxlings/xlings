@@ -56,10 +56,33 @@ struct Environment {
     std::string carrier { "local" };
 };
 
-// What a console says first, before its prompt: Luban OS's version, the
-// edition and the environment, how it runs and what it keeps, how to leave.
-// `mode` is how this session runs (sandbox or machine); in Chinese when `zh`.
-std::vector<std::string> welcome(const Environment& e, std::string_view mode, bool temp, bool zh);
+// What a console says first, before its prompt (part 3 §7.3): two columns,
+// no frame (a wide character misaligns a right border), at most 72 columns,
+// ASCII when the locale is not UTF-8, colour only where it is known to work
+// and never needed to read it. The same lines in a terminal, a machine's
+// console and the Luban OS window.
+struct WelcomeStyle {
+    bool zh { false };
+    bool color { false };
+    bool utf8 { true };
+};
+// This terminal's: NO_COLOR / LUBAN_COLOR=0, TERM, the locale.
+WelcomeStyle terminal_style();
+// What only the caller knows: the kernel ("Linux 6.8.0"), a machine's size
+// ("KVM · 2 CPU · 2 GiB"), who logs in, where its network goes.
+struct WelcomeFacts {
+    std::string kernel;
+    std::string machine;
+    std::string user { "root" };
+    std::string user_home { "/root" };
+    std::string network;
+};
+// `mode` is how this session runs (sandbox or machine).
+std::vector<std::string> welcome(const Environment& e, std::string_view mode, bool temp,
+                                 const WelcomeStyle& style, const WelcomeFacts& facts = {});
+// The prompt's mark of a system (part 3 §7.2): [luban] shares this host's
+// kernel, <luban> has its own; :temp / :home when it keeps less than all.
+std::string kind_mark(std::string_view mode, std::string_view persist);
 // The user's language (LC_ALL, LC_MESSAGES, LANG) is Chinese.
 bool chinese_locale();
 
@@ -71,7 +94,14 @@ struct NewOptions {
     std::string edition { "core" };
     std::string proxy;
     std::string carrier;
+    // Its login user (part 3 §6.1), made after it is: a name, and the
+    // password's crypt hash ("" = logs in without one). Empty: root.
+    std::string user;
+    std::string password_hash;
 };
+// An edition that cannot be used as root: a desktop (its browsers refuse it).
+bool needs_user(std::string_view edition);
+inline constexpr std::string_view kDefaultUser = "lubanoser";
 Outcome create(const Context& c, const NewOptions& o);
 
 // Changes, in the order given: machine settings (mode, persist, desktop,
@@ -103,7 +133,7 @@ Outcome import_environment(const Context& c, const fs::path& file, std::string n
 
 // On this terminal: the environment's shell (`temp`: nothing it writes stays),
 // or one command.
-int enter_sandbox(const Context& c, std::string_view name, bool temp);
-int run_command(const Context& c, std::string_view name, std::span<const std::string> argv);
+int enter_sandbox(const Context& c, std::string_view name, bool temp, std::string_view user = {});
+int run_command(const Context& c, std::string_view name, std::span<const std::string> argv, std::string_view user = {});
 
 }  // namespace luban::service

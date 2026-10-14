@@ -16,7 +16,7 @@ absent() { ! grep -Eqi -- "$1" <<<"$LAST_OUT"; }
 # Typed as a person types, once the shell is there: typed ahead, the lines
 # are read by the terminal queries of the commands starting up (the colour
 # probe), as they would be on any terminal.
-step "luban enter: the prompt, and an install inside finishes" ok "\\[luban:$shelled\\]" -- \
+step "luban enter: the prompt, and an install inside finishes" ok "luban\\].*@$shelled:" -- \
     bash -c "( sleep 10; printf 'echo PROMPT=\$PS1\n'; sleep 2; printf 'xlings install -y ninja; echo INSTALL=\$?\n'; sleep 240 ) | timeout 600 script -qec '$XLINGS_HOME/bin/luban enter $shelled' /dev/null"
 check "the install inside ended" -- grep -q 'INSTALL=0' <<<"$LAST_OUT"
 check "nothing was stopped" -- absent 'stopped'

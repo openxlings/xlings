@@ -74,6 +74,8 @@ std::optional<ExitStatus> wait_process(int pid, bool block);
 std::optional<std::pair<int, ExitStatus>> reap_child();
 
 bool new_session();                     // setsid
+// Gives up root for `uid`/`gid` (no supplementary groups). False when it could not.
+bool become_user(unsigned uid, unsigned gid);
 bool take_controlling_terminal();       // stdin's terminal, TIOCSCTTY
 // fds[0..2] become this process's stdin, stdout, stderr.
 void redirect_stdio(std::span<const int> fds);

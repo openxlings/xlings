@@ -715,17 +715,42 @@ int enter(const std::string& name, EventStream& stream, const EnterOptions& opts
         // The root's own login shell: its passwd answers (design §7), the
         // same answer the sandbox, a machine and a drive give.
         std::error_code sec;
-        request.shell = subos::root_etc::login_shell(request.root);
+        // Who logs in (part 3 §6.1): this call's --user, else the root's
+        // etc/luban/login, else root; the root's passwd says who that is.
+        const auto asked = utils::get_env_or_default("XLINGS_ROOT_LOGIN");
+        const auto who = asked.empty() ? subos::root_etc::login_user(request.root / "etc") : asked;
+        if (who != "root") {
+            const auto user = subos::root_etc::find_user(request.root / "etc", who);
+            if (!user) {
+                stream.emit(ErrorEvent{.code = ErrorCode::InvalidInput,
+                    .message = std::format("'{}' has no user '{}'", name, who), .recoverable = true,
+                    .hint = std::format("luban enter {} --user root", name)});
+                return kFail;
+            }
+            request.root_login = {user->name, user->uid, user->gid, user->home};
+        }
+        request.shell = subos::root_etc::login_shell(request.root, who);
         if (fs::is_regular_file(home.instance_file(name), sec)) {
             auto doc = nlohmann::json::parse(
                 platform::read_file_to_string(home.instance_file(name).string()), nullptr, false);
             if (!doc.is_discarded())
                 if (auto rec = subos::edition::read(doc)) edition = rec->ref;
         }
-        // Where you are, in the prompt: sh and bash read PS1 from the
-        // environment (bash's own default would otherwise be `bash-5.2#`).
-        if (cmd.empty() && opts.argv.empty())
-            request.explicit_env.try_emplace("PS1", std::format("[luban:{}] \\w \\$ ", name));
+        // Where you are, in the prompt (part 3 §7.2): sh and bash read PS1
+        // from the environment (bash's own default would otherwise be
+        // `bash-5.2#`); a login shell and `su -` read the root's
+        // profile.d/luban.sh, from LUBAN_KIND and LUBAN_PERSIST.
+        const auto persist = opts.persist.empty() ? std::string("all") : opts.persist;
+        request.explicit_env.try_emplace("LUBAN_KIND", "sandbox");
+        request.explicit_env.try_emplace("LUBAN_PERSIST", persist);
+        if (cmd.empty() && opts.argv.empty()) {
+            const char* term = std::getenv("TERM");
+            const char* no_color = std::getenv("NO_COLOR");
+            request.explicit_env.try_emplace("PS1", subos::root_etc::prompt("sandbox", persist, term ? term : "",
+                                                                             no_color && *no_color));
+        }
+        // Who it is: the system's name, unless its /etc says otherwise.
+        request.hostname = subos::root_etc::hostname(request.root / "etc", name);
     }
 
     // A neutral identity is a persona (Luban design §C4): the same host name

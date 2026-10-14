@@ -28,6 +28,7 @@ struct EnterOptions {
     bool temp { false };            // nothing it writes stays
     std::string display;            // terminal | window; empty: the environment's
     std::string memory;             // MB; empty: 2048
+    std::string user;               // who logs in this once; empty: its etc/luban/login
 };
 
 // The environment `name` as a machine, a session of it on this terminal

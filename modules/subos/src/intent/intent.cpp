@@ -77,6 +77,7 @@ Intent lower(const policy::Policy& policy, const HomeView& home, const spec::Req
     in.persist = r.persist;
     in.argv = r.argv;
     in.cwd = r.cwd;
+    in.root_login = r.root_login;
     in.host_env = r.host_env;
     in.explicit_env = r.explicit_env;
     in.host_exists = r.host_exists;

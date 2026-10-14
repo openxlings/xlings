@@ -64,9 +64,26 @@ void close_session_(Session& s) {
     platform::close_fds(fds);
 }
 
-std::map<std::string, std::string> session_env_(const Json& open, const std::string& shell) {
+// Who a session logs in as (part 3 §6.1): the --user it was opened with,
+// else the root's etc/luban/login, else root; its passwd says the rest.
+xlings::subos::root_etc::User login_(const Json& open) {
+    auto name = open.value("user", std::string{});
+    if (name.empty()) name = xlings::subos::root_etc::login_user("/etc");
+    if (auto u = xlings::subos::root_etc::find_user("/etc", name)) return *u;
+    return {"root", 0, 0, "/root", xlings::subos::root_etc::login_shell("/")};
+}
+
+// In a session's child, before its program: that user, at its home.
+void as_login_(const xlings::subos::root_etc::User& u) {
+    if (u.uid != 0 && !platform::become_user(u.uid, u.gid)) platform::exit_now(126);
+    std::error_code ec;
+    fs::current_path(u.home, ec);
+}
+
+std::map<std::string, std::string> session_env_(const Json& open, const std::string& shell,
+                                                const xlings::subos::root_etc::User& u) {
     std::map<std::string, std::string> env{
-        {"HOME", "/root"}, {"USER", "root"}, {"LOGNAME", "root"}, {"SHELL", shell},
+        {"HOME", u.home}, {"USER", u.name}, {"LOGNAME", u.name}, {"SHELL", shell},
         {"PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"},
         {"TERM", open.value("term", std::string("xterm-256color"))}, {"LANG", "C.UTF-8"}};
     if (auto e = open.find("env"); e != open.end() && e->is_object())
@@ -78,7 +95,7 @@ std::map<std::string, std::string> session_env_(const Json& open, const std::str
 // A desktop for the Luban OS window: the session `display.session` names
 // (or the first one declared), headless, bridged on two pipes (opensal-wlr).
 std::expected<Session, std::string> desktop_(const Json& display, std::map<std::string, std::string> env,
-                                             std::vector<int> inherited) {
+                                         std::vector<int> inherited, const xlings::subos::root_etc::User& who) {
     namespace wlr = opensal::wlr;
     const auto dirs = wlr::session_dirs(env);
     const auto id = display.value("session", std::string{});
@@ -101,6 +118,9 @@ std::expected<Session, std::string> desktop_(const Json& display, std::map<std::
         // Nothing of the agent's stays open in the bridge (a shell's pty, the port).
         inherited.insert(inherited.end(), {(*to)[1], (*from)[0]});
         platform::close_fds(inherited);
+        // A desktop is its user's (part 3 §6.1): a browser or an Electron
+        // application refuses root, or runs without its sandbox.
+        as_login_(who);
         platform::exit_now(wlr::run_session(*session, (*to)[0], (*from)[1], o));
     }
     std::vector<int> mine{(*to)[0], (*from)[1]};
@@ -158,7 +178,9 @@ std::expected<Session, std::string> desktop_(const Json& display, std::map<std::
                             if (other.write != other.read) inherited.push_back(other.write);
                         }
                         // Its terminals open the root's login shell, as a session's does.
-                        auto s = desktop_(*display, session_env_(open, xlings::subos::root_etc::login_shell("/")), std::move(inherited));
+                        const auto who = login_(open);
+                        auto s = desktop_(*display, session_env_(open, xlings::subos::root_etc::login_shell("/", who.name), who),
+                                          std::move(inherited), who);
                         if (!s) {
                             (void)platform::write_all(port, proto::encode_json('X', frame.channel, Json{{"code", 127}, {"error", s.error()}}));
                             continue;
@@ -173,21 +195,21 @@ std::expected<Session, std::string> desktop_(const Json& display, std::map<std::
                         continue;
                     }
                     platform::set_terminal_size((*pty)[0], open.value("rows", 24), open.value("cols", 80));
-                    const auto shell = xlings::subos::root_etc::login_shell("/");
+                    const auto who = login_(open);
+                    const auto shell = xlings::subos::root_etc::login_shell("/", who.name);
                     const int pid = platform::fork_process();
                     if (pid == 0) {
                         platform::new_session();
                         const std::array<int, 3> stdio{(*pty)[1], (*pty)[1], (*pty)[1]};
                         platform::redirect_stdio(stdio);
                         platform::take_controlling_terminal();
-                        std::error_code ec;
-                        fs::current_path("/root", ec);
+                        as_login_(who);
                         std::vector<std::string> argv{shell, "-l"};
                         if (auto a = open.find("argv"); a != open.end() && a->is_array() && !a->empty()) {
                             argv.clear();
                             for (const auto& w : *a) argv.push_back(w.get<std::string>());
                         }
-                        platform::exec_program(argv, session_env_(open, shell));
+                        platform::exec_program(argv, session_env_(open, shell, who));
                         platform::exit_now(127);
                     }
                     std::vector<int> slave{(*pty)[1]};
@@ -281,7 +303,8 @@ int guest_init(int, char*[]) {
         std::ifstream in("/etc/hostname");
         std::string name;
         std::getline(in, name);
-        if (name.empty() && params.contains("luban.name")) name = params.at("luban.name");
+        // The edition's placeholder is no name: the system's own is (part 3 §6.2).
+        if ((name.empty() || name == "luban") && params.contains("luban.name")) name = params.at("luban.name");
         if (!name.empty()) (void)platform::set_hostname(name);
     }
     if (platform::fork_process() == 0) agent_();

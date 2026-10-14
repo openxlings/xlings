@@ -84,6 +84,14 @@ struct Request {
     std::function<bool(std::string_view)> host_exists;
     std::vector<MountOp> root_mounts; // Owner-checked, private skeleton and exact RO leaves.
     Persist persist { Persist::All };     // a root's state after the session
+    // Who logs in to a root (part 3 §6.1): its passwd's answer. root unless
+    // the root names another (etc/luban/login) or the call does (--user).
+    struct RootLogin {
+        std::string name { "root" };
+        unsigned uid { 0 };
+        unsigned gid { 0 };
+        std::string home { "/root" };
+    } root_login;
 };
 
 struct SandboxSpec {

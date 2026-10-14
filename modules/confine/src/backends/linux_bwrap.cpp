@@ -53,8 +53,8 @@ std::optional<sp::Unmet> namespaces_view(const in::Intent& i, const HomeView& ho
         if (i.net.mode != policy::Net::None && i.exists("/etc/resolv.conf"))
             s.mounts.push_back({MountKind::RoBind, "/etc/resolv.conf", "/etc/resolv.conf"});
         s.unshare_user = true;
-        s.uid = 0;
-        s.gid = 0;
+        s.uid = i.root_login.uid;
+        s.gid = i.root_login.gid;
         if (i.gpu) {
             auto g = common::gpu_mounts(i);
             s.mounts.insert(s.mounts.end(), g.begin(), g.end());
@@ -106,17 +106,18 @@ void root_finish(const in::Intent& i, const HomeView& home, const std::map<std::
     std::erase_if(s.env, [](const auto& kv) { return kv.first.starts_with("LC_") || kv.first == "LANGUAGE"; });
     for (auto& [k, v] : grant_env) s.env[k] = v;
     s.env.erase("XLINGS_ACTIVE_SUBOS");
+    s.env.erase("XLINGS_ROOT_LOGIN");
     s.env["XLINGS_ROOT_INSTANCE"] = i.instance;
-    s.env["HOME"] = "/root";
-    s.env["USER"] = "root";
-    s.env["LOGNAME"] = "root";
+    s.env["HOME"] = i.root_login.home;
+    s.env["USER"] = i.root_login.name;
+    s.env["LOGNAME"] = i.root_login.name;
     // The root's own login shell (design §7): its passwd says, not the host.
-    const auto shell = xlings::subos::root_etc::login_shell(i.root);
+    const auto shell = xlings::subos::root_etc::login_shell(i.root, i.root_login.name);
     s.env["SHELL"] = shell;
     s.env["XLINGS_HOME"] = posix(home.home);
     s.env["PATH"] = "/usr/local/sbin:/usr/local/bin:/usr/bin:/bin:/run/xlings";
     common::explicit_env(i, s, i.instance);
-    s.cwd = i.cwd.empty() ? fs::path("/root") : fs::path(i.cwd);
+    s.cwd = i.cwd.empty() ? fs::path(i.root_login.home) : fs::path(i.cwd);
     if (i.argv.empty()) {
         s.argv = {shell};
         if (i.interactive) s.argv.push_back("-i");

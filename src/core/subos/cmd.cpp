@@ -2524,6 +2524,10 @@ int run(int argc, char* argv[], EventStream& stream) {
             else if (a == "--persist" && i + 1 < argc) {
                 persist = argv[++i];
             }
+            else if (a == "--user" && i + 1 < argc) {
+                // Who logs in to a root this once (part 3 §6.1).
+                platform::set_env_variable("XLINGS_ROOT_LOGIN", argv[++i]);
+            }
             else if (!a.empty() && a[0] != '-' && name.empty()) {
                 name = std::move(a);
             }

@@ -183,6 +183,7 @@ int run_exec_(int argc, char* argv[], EventStream& stream) {
         else if (a == "--temp") temp = true;
         else if (a == "--from" && i + 1 < argc) from = argv[++i];
         else if (a == "--cwd" && i + 1 < argc) cwd = argv[++i];
+        else if (a == "--user" && i + 1 < argc) platform::set_env_variable("XLINGS_ROOT_LOGIN", argv[++i]);
         else if (a == "--env" && i + 1 < argc) {
             auto kv = split_env_(argv[++i]);
             if (!kv) return fail("--env expects K=V");
