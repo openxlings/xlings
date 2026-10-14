@@ -23,11 +23,13 @@ XTEST(LubanVz, TheFrameworkJudgesTheHostMachinesWholeConfiguration, .area = "lub
     tk::write_file(dir / "vmlinuz", std::string(4096, '\0'));
     tk::write_file(dir / "initramfs.cpio", std::string(512, '\0'));
     fs::create_directories(dir / "tree");
+    // The agent's port and the console: a stream pair where there is one (not Windows).
     auto agent = platform::unix_stream_pair();
-    ASSERT_TRUE(agent);
+    if constexpr (platform::is_macos) ASSERT_TRUE(agent);
     vz::Plan plan{.kernel = dir / "vmlinuz", .initrd = dir / "initramfs.cpio",
                   .cmdline = "console=hvc0 quiet luban.carrier=1 luban.fs=virtiofs",
-                  .shares = {{"root", dir / "tree", false}}, .grants = true, .agent_fd = (*agent)[1], .console_fd = (*agent)[0]};
+                  .shares = {{"root", dir / "tree", false}}, .grants = true,
+                  .agent_fd = agent ? (*agent)[1] : -1, .console_fd = agent ? (*agent)[0] : -1};
     const auto checked = vz::validate(plan);
     if constexpr (!platform::is_macos) {
         EXPECT_FALSE(checked);
@@ -37,6 +39,8 @@ XTEST(LubanVz, TheFrameworkJudgesTheHostMachinesWholeConfiguration, .area = "lub
         if (!checked) EXPECT_NE(checked.error().find("entitlement"), std::string::npos)
             << "the configuration itself was refused: " << checked.error();
     }
-    std::vector<int> fds{(*agent)[0], (*agent)[1]};
-    platform::close_fds(fds);
+    if (agent) {
+        std::vector<int> fds{(*agent)[0], (*agent)[1]};
+        platform::close_fds(fds);
+    }
 }
