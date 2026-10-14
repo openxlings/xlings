@@ -23,8 +23,11 @@ struct OutputBinding { fs::path source; fs::path guest; };
 std::expected<std::vector<std::string>, std::string> command(const Domain& domain,
     std::span<const std::string> arguments, std::optional<OutputBinding> output = std::nullopt,
     const domain_producer_source::Facade* source = nullptr, bool runtime = false);
+// `lines`: the command's stdout, a line at a time, instead of this
+// terminal's -- for a caller that relays what it says (an interface call).
 std::expected<int, std::string> run(const Domain& domain, std::span<const std::string> arguments,
-    std::optional<OutputBinding> output = std::nullopt, bool runtime = false);
+    std::optional<OutputBinding> output = std::nullopt, bool runtime = false,
+    const std::function<void(std::string_view)>& lines = {});
 std::expected<void, std::string> check_control_removal(const Scope& scope, std::string_view name);
 std::expected<void, std::string> remove_control(const Scope& scope, std::string_view name);
 std::expected<void, std::string> publish_scope(const Domain& domain, std::string_view name);

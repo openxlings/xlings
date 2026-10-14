@@ -8,6 +8,7 @@ import xlings.core.home.prefix_domain;
 import xlings.core.home.domain_producer_source;
 import xlings.libs.json;
 import xlings.platform;
+import xlings.platform.stream;
 import xlings.subos.home_view;
 import xlings.subos.rootfs;
 import xlings.subos.caps;
@@ -117,6 +118,25 @@ std::expected<void, std::string> refresh_entry(const Domain& domain, const fs::p
     const auto shims = xself::repoint_stale_shims(domain.physicalHome);
     if (shims.refused || !shims.failed.empty())
         return std::unexpected("private dispatcher is current but stale shims could not be repaired; retry the owner command");
+    // The release's companions beside it: luban, and luban-init that boots a
+    // machine from one of the domain's systems. Replaced whole (a staged copy
+    // renamed over), only when they differ.
+    std::error_code ec;
+    const auto from = fs::canonical(entry, ec).parent_path();
+    for (const auto* tool : {"luban", "luban-init"}) {
+        const auto source = from / tool, target = domain.physicalHome / "bin" / tool;
+        if (!fs::is_regular_file(source, ec)) continue;
+        if (fs::is_regular_file(target, ec) && fs::file_size(source, ec) == fs::file_size(target, ec)
+            && platform::read_file_to_string(source.string()) == platform::read_file_to_string(target.string()))
+            continue;
+        const auto staged = fs::path(target.string() + ".xlings.new");
+        fs::remove(staged, ec);
+        if (!fs::copy_file(source, staged, ec) || ec) return std::unexpected(std::format("cannot place {}: {}", target.string(), ec.message()));
+        fs::permissions(staged, fs::perms::owner_all | fs::perms::group_read | fs::perms::group_exec
+                                | fs::perms::others_read | fs::perms::others_exec, ec);
+        fs::rename(staged, target, ec);
+        if (ec) return std::unexpected(std::format("cannot place {}: {}", target.string(), ec.message()));
+    }
     return {};
 }
 
@@ -215,8 +235,12 @@ std::expected<std::vector<std::string>, std::string> command(const Domain& domai
         (domain.logicalHome / "subos/default/bin").string() + ":" +
             (domain.logicalHome / "bin").string() + ":/usr/sbin:/usr/bin:/sbin:/bin",
         "--chdir", domain.logicalHome.string()});
+    // The proxy, and how the command is to speak and whether it may ask:
+    // what a command routed here from the owner's side was run with.
     for (const auto* key : {"HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
-                            "http_proxy", "https_proxy", "all_proxy", "no_proxy"}) {
+                            "http_proxy", "https_proxy", "all_proxy", "no_proxy",
+                            "XLINGS_AGENT_MODE", "XLINGS_NON_INTERACTIVE", "XLINGS_TRACE", "XLINGS_TRACE_ID",
+                            "NO_COLOR", "TERM", "COLUMNS"}) {
         if (const auto* value = std::getenv(key); value && *value)
             argv.insert(argv.end(), {"--setenv", key, value});
     }
@@ -239,7 +263,8 @@ std::expected<std::vector<std::string>, std::string> command(const Domain& domai
     return argv;
 }
 std::expected<int, std::string> run(const Domain& domain, std::span<const std::string> arguments,
-                                  std::optional<OutputBinding> output, bool runtime) {
+                                  std::optional<OutputBinding> output, bool runtime,
+                                  const std::function<void(std::string_view)>& lines) {
     if (auto refreshed = refresh_entry(domain, platform::get_executable_path()); !refreshed)
         return std::unexpected(refreshed.error());
     struct Stage {
@@ -266,7 +291,18 @@ std::expected<int, std::string> run(const Domain& domain, std::span<const std::s
     }
     auto argv = command(domain, arguments, output, facade ? &*facade : nullptr, runtime);
     if (!argv) return std::unexpected(argv.error());
-    return platform::run_argv_with_timeout(*argv, std::chrono::minutes(30));
+    if (!lines) return platform::run_argv_with_timeout(*argv, std::chrono::minutes(30));
+    std::string pending;
+    const int rc = platform::stream::run(*argv, [&](std::string_view channel, std::string_view bytes) {
+        if (channel == "stderr") { std::cerr << bytes; return; }
+        pending.append(bytes);
+        for (auto nl = pending.find('\n'); nl != std::string::npos; nl = pending.find('\n')) {
+            lines(std::string_view(pending).substr(0, nl));
+            pending.erase(0, nl + 1);
+        }
+    });
+    if (!pending.empty()) lines(pending);
+    return rc;
 }
 
 std::expected<void, std::string> check_control_removal(const Scope& scope, std::string_view name) {

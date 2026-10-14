@@ -1642,6 +1642,18 @@ int remove(const std::string& name, bool yes, std::string_view yesSpelling,
         }
     }
 
+    // Its record (config/subos/<n>: what it is, its policy, its persona,
+    // luban's settings) goes with it: a record of nothing is what a later
+    // `subos new` of the same name -- a Luban system moving into its prefix
+    // domain -- found and refused as "output already exists".
+    {
+        std::error_code ec;
+        const auto record = home_view().config_dir(name);
+        for (fs::directory_iterator it(record, ec), end; !ec && it != end; it.increment(ec))
+            if (it->is_regular_file(ec)) fs::remove(it->path(), ec);
+        fs::remove(record, ec);
+    }
+
     // remove_all above walks the whole subos tree and can run for a long
     // time on a big one. Deleting our key out of a document read before that
     // walk would resurrect every other key's pre-walk value.
@@ -1756,10 +1768,15 @@ int forward_to_carrier_(const CarrierBinding_& b, std::vector<std::string> args,
     return carrier::terminal(*at, args, env);
 }
 
-int run_list_(EventStream& stream) {
+int run_list_(EventStream& stream, bool listAll = false) {
     auto all = candidate_view().candidates;
     std::vector<std::tuple<std::string, std::string, int, int, bool>> entries;
+    // Inside a root, its domain's other systems are not here: their trees
+    // are not in this namespace, and what is not here is not listed.
+    const bool insideRoot = !utils::get_env_or_default("XLINGS_ROOT_INSTANCE").empty();
     for (auto& s : all) {
+        std::error_code ec;
+        if (insideRoot && !fs::is_directory(s.dir, ec)) continue;
         entries.emplace_back(s.name, s.dir.string(), s.commandCount,
                              s.packageCount, s.isActive);
     }
@@ -1787,6 +1804,10 @@ int run_list_(EventStream& stream) {
     }
     nlohmann::json payload;
     payload["entries"] = std::move(entriesJson);
+    // Each layer lists itself and what is below it (part 3 §3.2): a Luban
+    // system that is not the one you are in is luban's, said in one line
+    // unless --all. Every entry stays in the data.
+    payload["all"] = listAll;
     stream.emit(DataEvent{"subos_list", payload.dump()});
     return 0;
 }
@@ -2075,6 +2096,74 @@ int run(int argc, char* argv[], EventStream& stream) {
                 });
             }
             return rc;
+        }
+    }
+
+    // A Luban system in a prefix domain is answered where it lives (part 3
+    // §3.4): the same command runs again in its domain's namespace, where
+    // /xlings is the home and the system an ordinary root. A file it writes
+    // for the owner goes through the namespace's one output binding. Asked
+    // through the interface (luban, the window), what it says comes back as
+    // events; at a terminal it speaks there itself, and asks there.
+    if (static const std::set<std::string_view> routed{"upgrade", "boot", "__boot", "export", "__export"};
+        routed.contains(sub) && argc > 3 && argv[3][0] != '-') {
+        auto scope = xlings::home::domain_producer::read_scope(Config::paths().homeDir, argv[3]);
+        if (!scope) { usageError(scope.error()); return 1; }
+        if (*scope) {
+            std::vector<std::string> words;
+            for (int i = 2; i < argc; ++i) words.emplace_back(argv[i]);
+            std::optional<xlings::home::domain_producer::OutputBinding> output;
+            static const std::set<std::string_view> outputs{"--rootfs", "--tar", "--disk", "--iso", "--drive", "--qcow2"};
+            for (std::size_t i = 2; (sub == "export" || sub == "__export") && i + 1 < words.size(); ++i) {
+                if (!outputs.contains(words[i])) continue;
+                const fs::path file = fs::absolute(words[i + 1]);
+                const bool dir = file.filename().empty();
+                const auto leaf = dir ? file.parent_path().filename() : file.filename();
+                output = xlings::home::domain_producer::OutputBinding{
+                    dir ? file.parent_path().parent_path() : file.parent_path(), "/run/xlings-domain-output"};
+                words[i + 1] = (fs::path("/run/xlings-domain-output") / leaf).string() + (dir ? "/" : "");
+                break;
+            }
+            std::expected<int, std::string> rc = 0;
+            if (stream.interactive()) {
+                std::vector<std::string> args{"subos"};
+                args.insert(args.end(), words.begin(), words.end());
+                if (yesGiven) args.push_back("-y");
+                rc = xlings::home::domain_producer::run((**scope).domain, args, output, true);
+            } else {
+                nlohmann::json call{{"argv", words}};
+                if (yesGiven) call["yes"] = true;
+                const std::vector<std::string> args{"interface", "subos_command", "--args", call.dump()};
+                int answered = -1;
+                rc = xlings::home::domain_producer::run((**scope).domain, args, output, true,
+                    [&](std::string_view text) {
+                        auto j = nlohmann::json::parse(text, nullptr, false);
+                        if (!j.is_object()) return;
+                        const auto kind = j.value("kind", "");
+                        if (kind == "result") answered = j.value("exitCode", 1);
+                        else if (kind == "data")
+                            stream.emit(DataEvent{j.value("dataKind", ""), j.value("payload", nlohmann::json()).dump()});
+                        else if (kind == "progress")
+                            stream.emit(ProgressEvent{j.value("phase", ""), j.value("percent", 0.0f), j.value("message", "")});
+                        else if (kind == "log") {
+                            const auto level = j.value("level", "info");
+                            stream.emit(LogEvent{level == "warn" ? LogLevel::warn : level == "error" ? LogLevel::error
+                                                 : level == "debug" ? LogLevel::debug : LogLevel::info,
+                                                 j.value("message", "")});
+                        } else if (kind == "error")
+                            stream.emit(ErrorEvent{error_code_from_wire(j.value("code", "")), j.value("message", ""),
+                                                   j.value("recoverable", false), j.value("hint", "")});
+                        else if (kind == "prompt")
+                            stream.emit(ErrorEvent{ErrorCode::InvalidInput, j.value("question", ""), true,
+                                                   "answer it with -y"});
+                    });
+                if (rc && answered >= 0) rc = answered;
+            }
+            if (!rc) {
+                stream.emit(ErrorEvent{.code = ErrorCode::Internal, .message = rc.error(), .recoverable = true});
+                return 1;
+            }
+            return *rc;
         }
     }
 
@@ -2519,7 +2608,14 @@ int run(int argc, char* argv[], EventStream& stream) {
         return use_spawn_shell(name, stream, sandbox, sandbox_backend, gpu, cmd,
                                iso.preset, iso.overrides, persist);
     }
-    if (sub == "list")   return run_list_(stream);
+    if (sub == "list") {
+        bool all = false;
+        for (int i = 3; i < argc; ++i) {
+            if (std::string_view(argv[i]) == "--all") all = true;
+            else { usageError(std::format("unknown option '{}' (xlings subos list [--all])", argv[i])); return 1; }
+        }
+        return run_list_(stream, all);
+    }
     if (sub == "remove") {
         std::string target = argc > 3 ? argv[3] : std::string{};
         if (target.empty()) {

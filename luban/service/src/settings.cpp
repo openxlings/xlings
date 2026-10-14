@@ -4,6 +4,7 @@ import std;
 import xlings.libs.json;
 import xlings.platform;
 import xlings.subos.home_view;
+import xlings.subos.located;
 import xlings.subos.rootfs;
 
 namespace luban::service {
@@ -94,7 +95,8 @@ std::expected<Settings, std::string> set_setting(const fs::path& home, std::stri
 }
 
 std::optional<fs::path> root_of(const fs::path& home, std::string_view name) {
-    const auto tree = xlings::subos::HomeView{home}.instance(name) / std::string(xlings::subos::rootfs::kTree);
+    const auto at = xlings::subos::locate(xlings::subos::HomeView{home}, name);
+    const auto tree = at.home.instance(name) / std::string(xlings::subos::rootfs::kTree);
     std::error_code ec;
     if (fs::is_directory(tree / "etc", ec)) return tree;
     return std::nullopt;

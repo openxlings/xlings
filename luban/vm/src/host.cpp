@@ -1,6 +1,7 @@
 module luban.vm;
 
 import std;
+import xlings.subos.located;
 import xlings.libs.json;
 import xlings.observe;
 import xlings.platform;
@@ -246,8 +247,12 @@ int start_impl_(const service::Context& c, std::string_view name, const EnterOpt
                                "an environment from an edition is a root: luban new <name> --edition tiny"));
         return 2;
     }
-    const auto home = c.home.lexically_normal().string();
-    if (home.find(',') != std::string::npos || root->string().find(',') != std::string::npos) {
+    // The home the root's links name: a system in a prefix domain sees its
+    // domain's home at the logical path (/xlings); the files are elsewhere.
+    const auto at = xlings::subos::locate(xlings::subos::HomeView{c.home}, name);
+    const auto home = at.logical.lexically_normal().string();
+    const auto home_files = at.home.home.lexically_normal().string();
+    if (home_files.find(',') != std::string::npos || root->string().find(',') != std::string::npos) {
         say_(c, service::error("a machine cannot share a path with a comma in it", c.home.string()));
         return 1;
     }
@@ -284,7 +289,7 @@ int start_impl_(const service::Context& c, std::string_view name, const EnterOpt
                        "-display", "none", "-no-reboot",
                        "-serial", std::format("file:{}", (log_dir(c.home, name) / "console.log").string()),
                        "-virtfs", std::format("local,path={},mount_tag=root,security_model=none,id=root", share.string()),
-                       "-virtfs", std::format("local,path={},mount_tag=home,security_model=none,readonly=on,id=home", home),
+                       "-virtfs", std::format("local,path={},mount_tag=home,security_model=none,readonly=on,id=home", home_files),
                        "-device", "virtio-serial-pci",
                        "-chardev", std::format("socket,id=agent,path={},server=on,wait=off", (dir / "agent.sock").string()),
                        "-device", std::format("virtserialport,chardev=agent,name={}", proto::kPort),

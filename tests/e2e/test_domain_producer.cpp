@@ -347,3 +347,55 @@ XTEST(DomainProducer, InstallsAtLogicalPrefixInsideANamespaceAndPreservesHostDat
     EXPECT_EQ(tk::read_file(hostSentinel), "host must remain intact");
 
 }
+
+// Each layer lists itself and what is below it (part 3 §3.2): the host counts
+// its Luban systems in one line, and a system does not list its siblings.
+XTEST(DomainProducer, AHostCountsItsSystemsAndASystemDoesNotListItsSiblings,
+      .area = "subos", .cost = tk::Cost::Medium,
+      .covers = {"LAYER-VISIBILITY"}, .requires_ = {"linux", "bwrap", "xlings-bin"},
+      .resources = {"sandbox"}, .proves = "isolation") {
+    if constexpr (!tk::is_linux) GTEST_SKIP() << "Linux namespaces";
+    if (const auto why = tk::probe("bwrap")) GTEST_SKIP() << *why;
+    const auto executable = xlings::elfread::read(tk::xlings_binary());
+    ASSERT_TRUE(executable);
+    if (!executable->interpreter.empty()) GTEST_SKIP() << "a domain root runs the static release candidate";
+    auto home = tk::Home::isolated("domain-layers");
+    const auto repo = home.root() / "index";
+    const auto primary = home.root() / "primary";
+    tk::write_file(primary / "xim-indexrepos.lua", "xim_indexrepos = {}\n");
+    fs::create_directories(primary / "pkgs");
+    tk::write_file(repo / "xim-indexrepos.lua", "xim_indexrepos = {}\n");
+    tk::write_file(repo / "pkgs/d/domain-base.lua", R"LUA(
+        package = { spec='1', name='domain-base', type='subos', archs={'x86_64','aarch64'},
+            xpm={linux={['1.0.0']={}}} }
+        import('xim.libxpkg.pkginfo')
+        function install()
+            local dir = pkginfo.install_dir()
+            os.mkdir(path.join(dir, 'bin'))
+            io.writefile(path.join(dir, '.xlings.json'), '{"workspace":{},"subos_kind":"rootfs"}')
+            return true
+        end
+    )LUA");
+    Json config{{"mirror", "GLOBAL"}, {"xim", {{"index-repo", primary.generic_string()}}},
+        {"index_repos", Json::array({{{"name", "xim"}, {"url", primary.generic_string()}, {"source", "git"}},
+                                    {{"name", "fixture"}, {"url", repo.generic_string()}, {"source", "git"}}})}};
+    tk::write_file(home.dir() / ".xlings.json", config.dump());
+    fs::create_directories(home.dir() / "bin");
+    fs::copy_file(tk::xlings_binary(), home.dir() / "bin/xlings");
+    ASSERT_EQ(home.xlings({"self", "init"}).exit_code, 0);
+    for (const auto* name : {"sys-a", "sys-b"}) {
+        auto made = home.xlings({"subos", "new", name, "--rootfs", "--domain", "/xlings", "--from", "fixture:domain-base@1.0.0"});
+        ASSERT_EQ(made.exit_code, 0) << made.transcript();
+    }
+    const auto listed = home.xlings({"subos", "list"});
+    ASSERT_EQ(listed.exit_code, 0) << listed.transcript();
+    EXPECT_EQ(listed.out.find("sys-a"), std::string::npos) << listed.transcript();
+    EXPECT_NE(listed.transcript().find("2 Luban systems: luban ls"), std::string::npos) << listed.transcript();
+    const auto everything = home.xlings({"subos", "list", "--all"});
+    EXPECT_NE(everything.out.find("sys-a"), std::string::npos) << everything.transcript();
+    EXPECT_NE(everything.out.find("sys-b"), std::string::npos) << everything.transcript();
+    const auto inside = home.xlings({"subos", "exec", "sys-a", "--", "/xlings/bin/xlings", "subos", "list"});
+    ASSERT_EQ(inside.exit_code, 0) << inside.transcript();
+    EXPECT_NE(inside.out.find("sys-a"), std::string::npos) << inside.transcript();
+    EXPECT_EQ(inside.out.find("sys-b"), std::string::npos) << "a sibling is listed inside: " << inside.transcript();
+}

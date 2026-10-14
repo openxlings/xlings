@@ -80,6 +80,8 @@ Options: `--global` — Persist the active SubOS; `--shell [KIND]` — Emit shel
 
 List SubOS environments
 
+Options: `--all` — Also list the Luban systems (luban ls lists them as systems)
+
 ## `xlings subos remove <name>`
 
 Remove a SubOS

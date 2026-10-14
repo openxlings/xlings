@@ -5,6 +5,7 @@ import xlings.libs.json;
 import xlings.platform;
 import xlings.observe;
 import xlings.subos.home_view;
+import xlings.subos.located;
 import xlings.subos.edition;
 import xlings.subos.policy;
 import xlings.subos.policy_store;
@@ -25,6 +26,17 @@ Json read_json_(const fs::path& file) {
     if (!fs::is_regular_file(file, ec)) return Json::object();
     auto j = Json::parse(xlings::platform::read_file_to_string(file.string()), nullptr, false);
     return j.is_object() ? j : Json::object();
+}
+
+// Whether a root has the program at `path` (/bin/sh, /usr/bin/fish), looked
+// for in its /usr projection: the root's /bin and /usr are links that name
+// the system's own paths (/xlings in a domain), which this host need not
+// have. Merged /usr: /bin and /sbin are its bin.
+bool root_has_(const Context& c, std::string_view name, const fs::path& path) {
+    const auto usr = xlings::subos::rootfs::usr_of(xlings::subos::locate(HomeView{c.home}, name).home.instance(name));
+    std::error_code ec;
+    return fs::symlink_status(usr / "bin" / path.filename(), ec).type() != fs::file_type::not_found
+        || fs::symlink_status(usr / "sbin" / path.filename(), ec).type() != fs::file_type::not_found;
 }
 
 bool exists_(const Context& c, std::string_view name) {
@@ -52,6 +64,17 @@ std::vector<std::string> argv_(std::initializer_list<std::string_view> words) {
     std::vector<std::string> out;
     for (auto w : words) out.emplace_back(w);
     return out;
+}
+
+// A Luban system is its own userland (part 3 §3.4): on Linux it is made in
+// the system prefix domain (/xlings), so it shares no payload with this
+// host's SubOS -- not the runtime they were bound to, not the host's user
+// name in its paths. A carrier (WSL2, vz) makes it where it runs.
+std::vector<std::string> new_argv_(std::string_view name, std::string_view edition, std::string_view carrier) {
+    auto args = argv_({"new", name, "--from", edition});
+    if (!carrier.empty()) args.insert(args.end(), {"--carrier", std::string(carrier)});
+    else if constexpr (xlings::platform::is_linux) args.insert(args.end(), {"--rootfs", "--domain", "/xlings"});
+    return args;
 }
 
 const std::set<std::string, std::less<>>& isolation_keys_() {
@@ -114,7 +137,7 @@ std::string edition_ref(std::string_view edition) {
 
 std::expected<Environment, std::string> describe(const Context& c, std::string_view name) {
     if (!exists_(c, name)) return std::unexpected(std::format("there is no environment '{}'", name));
-    const HomeView view{c.home};
+    const HomeView view = xlings::subos::locate(HomeView{c.home}, name).home;
     Environment e;
     e.name = std::string(name);
     const auto instance = read_json_(view.instance_file(name));
@@ -136,10 +159,8 @@ std::expected<Environment, std::string> describe(const Context& c, std::string_v
         e.generation = xlings::subos::rootfs::current(view.instance(name));
         if (auto root = root_of(c.home, name)) {
             // Its login shell, when the root has one (nano has none).
-            std::error_code ec;
             e.shell = xlings::subos::root_etc::login_shell(*root);
-            if (fs::symlink_status(*root / fs::path(e.shell).relative_path(), ec).type() == fs::file_type::not_found)
-                e.shell.clear();
+            if (!root_has_(c, name, e.shell)) e.shell.clear();
         }
     }
     e.running = xlings::subos::session::find(view, name).has_value();
@@ -168,9 +189,8 @@ Outcome create(const Context& c, const NewOptions& o) {
         if (c.sink) c.sink(error("an environment needs a name", "luban new <name> --edition tiny"));
         return {.code = 2};
     }
-    auto args = argv_({"new", o.name, "--from", edition_ref(o.edition)});
+    auto args = new_argv_(o.name, edition_ref(o.edition), o.carrier);
     if (!o.proxy.empty()) args.insert(args.end(), {"--proxy", o.proxy});
-    if (!o.carrier.empty()) args.insert(args.end(), {"--carrier", o.carrier});
     const int rc = step_(c, "make", std::format("making {} ({})", o.name, o.edition), args, false,
                          std::format("{} is ready", o.name));
     if (rc != 0) return {.code = rc};
@@ -200,8 +220,7 @@ Outcome configure(const Context& c, std::string_view name, const std::vector<std
             }
             std::string shell = value;
             if (shell.find('/') == std::string::npos) shell = "/usr/bin/" + shell;
-            std::error_code ec;
-            if (fs::symlink_status(*root / fs::path(shell).relative_path(), ec).type() == fs::file_type::not_found) {
+            if (!root_has_(c, name, shell)) {
                 if (c.sink) c.sink(error(std::format("{} has no {}", name, shell),
                                          std::format("xlings install {} --subos {}", fs::path(shell).filename().string(), name)));
                 return {.code = 1};
@@ -238,8 +257,68 @@ Outcome configure(const Context& c, std::string_view name, const std::vector<std
     return {.code = 0, .value = value};
 }
 
+namespace {
+
+// A root made before 2026.10.14 lives in this home's own prefix (its payloads
+// shared with the host's SubOS, the host's user name in its paths). Its
+// upgrade first moves it into the system domain (part 3 §9): carried as an
+// archive -- its /etc, /home, /root, /var, /opt, /srv, its policy, settings
+// and the packages it had beyond its edition -- removed, and made again
+// there. The archive is kept until the new one stands, and named on failure.
+bool old_layout_(const Context& c, std::string_view name) {
+    if constexpr (!xlings::platform::is_linux) return false;
+    const auto e = describe(c, name);
+    return e && e->kind == "root" && e->carrier == "local" && !e->edition.empty()
+        && !xlings::subos::locate(HomeView{c.home}, name).domain;
+}
+
+int relayout_(const Context& c, std::string_view name) {
+    if (const auto e = describe(c, name); e && e->running) {
+        if (c.sink) c.sink(error(std::format("{} is running; it moves to its own userland when stopped", name),
+                                 std::format("luban stop {}", name)));
+        return 2;
+    }
+    const auto keep = c.home / "state" / "luban" / "relayout" / std::format("{}.luban", name);
+    std::error_code ec;
+    fs::create_directories(keep.parent_path(), ec);
+    fs::remove(keep, ec);
+    const auto text = std::format("moving {} into its own userland (/xlings)", name);
+    if (c.sink) c.sink(phase("relayout", "begin", text));
+    const auto quiet = Context{.home = c.home, .port = c.port, .sink = c.sink, .yes = true};
+    if (export_environment(quiet, {.name = std::string(name), .file = keep, .format = "luban"}).code != 0
+        || remove(quiet, name).code != 0) {
+        if (c.sink) c.sink(phase("relayout", "failed", text));
+        return 1;
+    }
+    if (const auto made = import_environment(quiet, keep, std::string(name)); made.code != 0) {
+        if (c.sink) {
+            c.sink(error(std::format("{} was carried to {} and could not be made again", name, keep.string()),
+                         std::format("luban import {} --name {} -y", keep.string(), name)));
+            c.sink(phase("relayout", "failed", text));
+        }
+        return made.code;
+    }
+    fs::remove(keep, ec);
+    if (c.sink) c.sink(phase("relayout", "done", text));
+    return 0;
+}
+
+}  // namespace
+
 Outcome upgrade(const Context& c, std::string_view name, std::string_view to, bool dry_run) {
     if (!exists_(c, name)) return missing_(c, name);
+    if (old_layout_(c, name)) {
+        if (dry_run) {
+            if (c.sink) c.sink(notice(std::format("{} first moves into its own userland (/xlings): its /etc, /home, "
+                                                  "/root, /var and its own packages come along", name)));
+        } else if (!c.yes) {
+            if (c.sink) c.sink(error(std::format("{} moves into its own userland (/xlings) first; its files come along",
+                                                 name), std::format("luban upgrade {} -y", name)));
+            return {.code = 2};
+        } else if (const int rc = relayout_(c, name); rc != 0) {
+            return {.code = rc};
+        }
+    }
     auto args = argv_({"upgrade", name});
     if (!to.empty()) args.insert(args.end(), {"--to", std::string(to)});
     if (dry_run) args.push_back("--dry-run");
@@ -337,7 +416,8 @@ Outcome export_environment(const Context& c, const ExportOptions& o) {
             return {.code = 2};
         }
         if (c.sink) c.sink(phase("archive", "begin", std::format("writing {}", o.file.string())));
-        const HomeView view{c.home};
+        const auto at = xlings::subos::locate(HomeView{c.home}, o.name);
+        const HomeView& view = at.home;
         const auto instance = read_json_(view.instance_file(o.name));
         Json manifest{{"format", std::string(archive::kFormat)}, {"version", archive::kVersion},
                       {"name", o.name}, {"kind", "root"}};
@@ -347,7 +427,7 @@ Outcome export_environment(const Context& c, const ExportOptions& o) {
         if (auto pol = xlings::subos::policy_store::read(view, o.name); pol && pol->has_value())
             manifest["policy"] = xlings::subos::policy::to_json(**pol);
         if (auto s = read_settings(c.home, o.name)) manifest["settings"] = s->document;
-        auto written = archive::write(o.file, manifest, *root, c.home);
+        auto written = archive::write(o.file, manifest, *root, at.logical);
         if (!written) {
             if (c.sink) {
                 c.sink(error(written.error()));
@@ -402,10 +482,10 @@ Outcome import_environment(const Context& c, const fs::path& file, std::string n
         }
         wanted = *parsed;
     }
-    if (const int rc = step_(c, "make", std::format("making {} ({})", name, edition), argv_({"new", name, "--from", edition}));
+    if (const int rc = step_(c, "make", std::format("making {} ({})", name, edition), new_argv_(name, edition, {}));
         rc != 0)
         return {.code = rc};
-    const HomeView view{c.home};
+    const HomeView view = xlings::subos::locate(HomeView{c.home}, name).home;
     if (wanted) {
         auto now = xlings::subos::policy_store::read(view, name);
         const auto base = now && now->has_value() ? **now : xlings::subos::policy::legacy();

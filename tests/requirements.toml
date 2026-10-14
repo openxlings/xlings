@@ -1100,3 +1100,11 @@ status = "required"
 [ROOT-LOCALE]
 text = "a root is entered with LANG=C.UTF-8 and without the host's LC_* and LANGUAGE, sandbox and machine alike: the locale the root's glibc has"
 status = "required"
+
+[DOMAIN-LUBAN-SYSTEM]
+text = "a Luban system on Linux is made in the system prefix domain (/xlings): it shares no payload with the host's SubOS, its paths name no host user, luban finds its files in the domain's private home, and a system made before is moved there by `luban upgrade -y` with its /etc, /home, /root, /var and own packages"
+status = "required"
+
+[LAYER-VISIBILITY]
+text = "each layer lists itself and what is below it: the host's `xlings subos list` counts the Luban systems in one line (--all lists them), and inside a system the domain's other systems are not listed"
+status = "required"

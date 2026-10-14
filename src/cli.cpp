@@ -455,8 +455,16 @@ void dispatch_data_event(const DataEvent& e) {
     }
     else if (e.kind == "subos_list") {
         std::vector<std::tuple<std::string, std::string, int, int, bool>> entries;
+        const bool all = json.value("all", false);
+        int systems = 0;
         if (json.contains("entries") && json["entries"].is_array()) {
             for (auto& e : json["entries"]) {
+                // Another Luban system is luban's (part 3 §3.2): counted, not listed.
+                if (!all && e.value("kind", "view") == "rootfs" && !e.value("active", false)
+                    && !e.value("host", false)) {
+                    ++systems;
+                    continue;
+                }
                 // A root says so, and what it is to this machine (part 2 §3.4).
                 std::string name = e.value("name", "");
                 if (e.value("kind", "view") == "rootfs") {
@@ -473,6 +481,9 @@ void dispatch_data_event(const DataEvent& e) {
             }
         }
         ui::print_subos_list(entries);
+        if (systems > 0)
+            ui::print_tip(std::format("{} Luban system{}: luban ls (or xlings subos list --all)",
+                                      systems, systems == 1 ? "" : "s"));
     }
     else if (e.kind == "subos_created") {
         ui::print_subos_created(
