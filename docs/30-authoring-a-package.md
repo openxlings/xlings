@@ -77,6 +77,23 @@ xlings config --remove-xpkg hello
 - A published version's resource is immutable: a new payload gets a new asset
   name and a raised revision.
 - A payload has no hard links (Android and FAT refuse `link(2)`).
+- **The runtime is the environment's.** A package that depends on `glibc` (or
+  `musl`, or `gcc-runtime`) is bound to its environment's runtime through
+  `<home>/abi/<family>`, not to the glibc it was installed with: one payload serves
+  every environment, and an environment changes its runtime without rewriting it.
+  A dependency on a runtime without a version is met by the runtime the environment
+  already has.
+- **Never run `sudo` in a hook.** An install nobody watches has no terminal to ask
+  on. Declare the step instead, and xlings asks once after the install (or keeps it
+  for `xlings self doctor --fix`):
+
+  ```lua
+  if system.admin_step then  -- libxpkg 0.0.63
+      system.admin_step({"chown", "root:root", helper}, "its sandbox helper must be root's")
+  end
+  ```
+
+  The index's static check refuses a hook that runs `sudo` unmarked.
 
 ## Publishing
 

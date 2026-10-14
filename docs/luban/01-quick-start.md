@@ -24,23 +24,57 @@ and build tools. If it stops halfway, the same command again finishes it.
 ## 2. Work in it
 
 ```bash
-luban enter box               # a shell in it; the prompt says where: [luban:box] ~ #
+luban enter box               # a shell in it; the prompt says where: [luban] root@box:~#
 luban run box -- uname -a     # one command in it, from outside
 luban run box -- xlings install -y cmake
 ```
 
-A console says first what it is: Luban OS and its version, the edition, how
-it runs and what it keeps, and how to leave (in Chinese where your language
-is), then its prompt:
+A console says first what it is -- the system and its edition, how it runs
+(sharing this host's kernel, or a machine with its own), what it keeps, who
+logs in, what xlings manages there, the time -- and how to leave (in Chinese
+where your language is), then its prompt:
 
 ```
-Luban OS 2026.10.13.2 · tiny 2026.10.11.1 · box
-  a sandbox on this host, keeping what changes
-  luban status box · exit to leave
+ Luban OS 2026.10.15.1 · [luban] box
+ ──────────────────────────────────────────────────────────
+ system    tiny 2026.10.11.1 · generation 4 · 4 packages
+ runs as   sandbox: shares this host's kernel (Linux 6.8.0)
+ keeps     everything
+ user      root · /root
+ xlings    manages this system only (R)
+ time      2026-10-15 09:00 UTC
+ ──────────────────────────────────────────────────────────
+ exit to leave · luban status box
 ```
+
+The prompt's mark says where you are: `[luban]` a system that shares this
+host's kernel, `<luban>` one with its own (`--mode machine`), `:temp` or
+`:home` when it keeps less than everything (`[luban:temp] root@box:~#`). Its
+host name is its name. A view of your host made with `xlings subos` is marked
+`(name)` instead.
+
+A Luban system is its own userland: its xlings manages only it (`/xlings`
+inside), it shares no package files with your host's SubOS, and your user
+name appears nowhere in it. Its users are its own (below).
 
 Installing software is still xlings: `xlings install <package>` — inside an
 environment it installs into that environment. `exit` leaves it.
+
+### Who logs in
+
+`luban enter` logs in as root unless the system names another user. A desktop
+always has one: `luban new d --edition desktop` asks for a name (`lubanoser`
+by default) and a password, typed hidden (empty: none, it logs in without
+one); `-y` takes the defaults. Any edition can have one:
+
+```bash
+luban new box --edition core --user alice --no-password
+luban enter box --user root   # root this once
+luban config box --login root # and from now on
+```
+
+The password is stored only as its hash, in the system's own `/etc/shadow`.
+To act as root inside, enter as root: you own the system from your host.
 
 ## 3. Go back a step
 

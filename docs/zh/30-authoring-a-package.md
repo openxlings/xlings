@@ -68,6 +68,18 @@ xlings config --remove-xpkg hello
 - 版本上的 **`revision`**：已发布版本的 payload 或 `config()` 的效果变了就提升它——这是每个已安装副本都会响应的唯一信号。
 - 已发布版本的资源不可变：新的 payload 用新的资产名，并提升 revision。
 - payload 里没有硬链接（Android 和 FAT 拒绝 `link(2)`）。
+- **运行时属于环境。** 依赖 `glibc`（或 `musl`、`gcc-runtime`）的包，经 `<home>/abi/<家族>` 绑定到它所在环境的运行时，
+  而不是安装时那一份 glibc：一个 payload 服务所有环境，环境换运行时也不改写它。不带版本的运行时依赖，由环境已有的运行时满足。
+- **hook 里不要运行 `sudo`。** 无人看守的安装没有终端可问。声明这一步，xlings 在安装结束后统一询问一次
+  （没人可问时留给 `xlings self doctor --fix`）：
+
+  ```lua
+  if system.admin_step then  -- libxpkg 0.0.63
+      system.admin_step({"chown", "root:root", helper}, "its sandbox helper must be root's")
+  end
+  ```
+
+  索引的静态检查会拒绝未标注就运行 `sudo` 的 hook。
 
 ## 发布
 

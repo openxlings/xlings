@@ -64,6 +64,13 @@ home and never touch the user's. Release builds: `tools/{linux,macos}_release.sh
   The marker's integer `layout` rises only for a change an older client would undo.
 - **A recipe that changes what its config does bumps `revision`.** Dependency names
   resolve in the declaring index.
+- **A recipe never runs `sudo`.** It declares the step (`system.admin_step`); xlings asks
+  once after the install through the one door, or keeps it for `self doctor --fix`. A child
+  run for nobody (a repair, a JSON call) has no terminal (`platform::run_shell_unattended`,
+  `platform::stream::run`).
+- **The runtime is the environment's**: a package's libc and C++ runtime are bound through
+  `<home>/abi/<family>` (`xlings.core.abi`), never rewritten per consumer; a Luban system
+  carries its own in its generation.
 - **The sandbox a policy compiles to is a golden** (`tests/fixtures/intent-eq`);
   regenerate with `XLINGS_INTENT_GOLDEN_WRITE=1` only on purpose.
 - **nlohmann::json brace-init**: `json{x}` of a single value makes an array; build

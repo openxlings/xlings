@@ -568,3 +568,19 @@ CI：
 | 稳定性 | 外部 `timeout` 把子进程放进别的进程组 | 进程内计时；调用者退出时子进程随之结束 |
 | 兼容 | 旧客户端遇到用 `admin_step` 的配方 | libxpkg 的旧版本没有这个函数：配方用 `if system.admin_step then … else` 退化为提示，不调用 `sudo` |
 | 跨仓库 | 多了 libxpkg | 改动小、先合入、打 tag；xlings 固定到该版本 |
+
+## 14. 实现记录（2026-10-15）
+
+实现在 xlings、xim-pkgindex、libxpkg 三个仓库的 PR 上，每个检查点一个 commit。与上文设计的对应和差异如下。
+
+| 设计 | 实现 | 差异与原因 |
+|---|---|---|
+| §8 无人值守 | `run_shell_unattended`（新会话、`/dev/null`、Ctrl-C 先结束子进程组、`PR_SET_PDEATHSIG`、进程内期限）；`stream::run` 新会话；修复子进程日志 `logs/doctor/<subos>.log`；修复梯级以发现项为准（R2 用 `--reconfig`） | 无 |
+| §8 配方声明管理员步骤 | libxpkg 0.0.63 `system.admin_step`（经延后请求通道，op `admin`）；xlings `xlings.core.admin_steps`：有人时问一次、经 elevation 执行，无人时写 `state/admin-steps.json`，doctor 报告、`--fix` 补做；xim-pkgindex 的 code 改用它，其余标 `elevation-ok`，静态检查 | 只有 code 在安装钩子里提权；其余是用户在终端里主动执行的动作，或本身就是宿主 apt 的包，保留并标注 |
+| §5 根里的环境 | 登记了 `envs` 的程序保留 shim；根模式 `C.UTF-8` | 找不到命令时的提示（可选）未做 |
+| §3 分层与前缀域 | `luban new` 在 Linux 上用 `--rootfs --domain /xlings`；`xlings.subos.located` 让 luban 的所有读取跟随系统到域里；`subos list` 默认一行统计系统（`--all`），根里只列本命名空间里存在的实例；升级、导出、启动等命令转发到域里执行（interface 调用时事件回传）；`install/remove --subos` 同样转发；`luban upgrade -y` 把旧布局系统搬入域；域的私有 home 带上 `luban`、`luban-init`；`subos remove` 连同记录目录一起删除 | 第一版的隔离到"列出"为止：同一个域里各系统共享域的版本数据库与注册表，看不到兄弟的目录，但数据层面尚未按系统拆成各自的 home（"每个系统一个 home、共享 store"留作后续） |
+| §4 一个环境一个默认运行时 | `xlings.core.abi`：`<home>/abi -> abi.gen/<n>`，原子切换、保留 3 代、`abi.json`、`logs/abi.ndjson`；安装时 runtime 依赖导出间接点（loader 与库目录），记录 `source: scope`；根的 generation 带 `usr/lib/xlings-abi`，沙箱与机器挂在 `<home>/abi`；闭包检查与 resolver 冲突检查承认 scope 绑定；不带版本的 runtime 依赖统一到本次计划已选的版本；`xlings config --runtime`、`luban config --runtime` | runtime 集合由 xlings 里一张表决定（glibc、musl、gcc-runtime），而不是配方声明；ABI 下限没有单独计算与写入索引——规划里 runtime 统一、home 取已安装的最新，二者已保证不低于包安装时的版本；`GLIBC_PRIVATE` 的固定绑定、`luban status --abi`、gcc specs 改写、索引侧 glibc 补丁检查未做 |
+| §6 用户与登录 | `root_etc` 的用户表（passwd、group、wheel、shadow、home、`etc/luban/login`）；进程内 SHA-512 crypt；`luban new --user/--password-file/--no-password`，desktop 交互提问或 `-y` 得 `lubanoser`，窗口里建的 desktop 自动得到默认用户；`luban config --login`、`enter/run --user`；沙箱以该用户的 uid 进入，机器的会话与桌面以该用户运行（运行目录与日志归它）；新用户优先取宿主用户的 uid（9p 共享按宿主属主） | 不随版本类型提供 sudo/doas：沙箱与 9p 共享里 setuid 不生效。系统里的管理员操作用 `luban enter <n> --user root`；`settings.json` 的 `user` 键改为按版本类型名判断（desktop 需要） |
+| §6.3 起点与共享 | 起点是登录用户的 home | 宿主目录共享沿用已有的 `luban config --mount`；"在已共享目录里进入则从那里开始"未做 |
+| §7 标识 | 主机名 = 系统名（沙箱 UTS、机器的 `luban` 占位视为未设置）；PS1 与 `etc/profile.d/luban.sh`（缺失时写入）；16 色与终端白名单；新的欢迎语渲染器（终端、机器、窗口共用） | fish / zsh 片段、宿主视图的 `(name)` 提示符集成未做 |
+| §11 测试与 CI | 单元：终端与会话、修复梯级、根的环境与运行时、locale、abi、SHA-512、身份与欢迎语、located；e2e：跨 SubOS 超时、管理员步骤、域内可见性、两个系统两个运行时共享 payload；luban-fresh 增加 lived-in 一腿 | 非 root 桌面一腿并入 luban-window（desktop 版本默认有用户） |

@@ -89,6 +89,13 @@ xlings subos export mydistro --tar mydistro.tar
 
 This needs a working bwrap and user namespaces.
 
+`luban new` makes every Luban system this way: its home is `/xlings` inside,
+it shares no payload with the host's SubOS, and `xlings subos list` on the
+host counts the systems in one line (`--all` lists them). Inside one, its own
+xlings sees it and its views, never the domain's other systems. A system
+carries its own runtime in its generation (`usr/lib/xlings-abi`), seen at
+`/xlings/abi`: two systems on two glibc versions share the same payloads.
+
 ## A distribution of your own
 
 ```bash
