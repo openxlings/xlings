@@ -419,6 +419,22 @@ jobs:
           name: xlings-windows-x86_64
           path: build/release.zip
 
+      # The Luban OS app built above, for the WSL 2 lane's window tests.
+      - name: Attach the Luban OS app
+        if: success()
+        shell: pwsh
+        run: |
+          $app = Get-ChildItem target -Recurse -Filter luban-os.exe -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName -match '[\\/]bin[\\/]luban-os[\\/]luban-os\.exe$' } | Select-Object -First 1
+          if (-not $app) { Write-Host "::error::no luban-os.exe under target/"; exit 1 }
+          New-Item -ItemType Directory -Force build/app | Out-Null
+          Copy-Item $app.FullName build/app/luban-os.exe
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: luban-os-windows-ci
+          path: build/app/luban-os.exe
+
       # The unit step is `continue-on-error` so it cannot skip the E2E suite;
       # this is where its result becomes the job's. Without it a unit failure
       # would report success, which is the opposite defect and a worse one.
@@ -450,6 +466,12 @@ jobs:
         with:
           name: xlings-windows-x86_64
           path: build
+
+      - name: Fetch the Luban OS app
+        uses: actions/download-artifact@v4
+        with:
+          name: luban-os-windows-ci
+          path: build/app
 
       # The host machine's xlings and luban are the Linux build of the same
       # commit (xlings-ci-linux.yml's release artifact), as a Windows home
@@ -489,4 +511,4 @@ jobs:
       - name: "Luban OS on WSL 2: status, a system, a command, a machine as reported"
         shell: pwsh
         run: |
-          & "$env:GITHUB_WORKSPACE\tests\e2e\windows_luban_wsl2_test.ps1" "build\release.zip"
+          & "$env:GITHUB_WORKSPACE\tests\e2e\windows_luban_wsl2_test.ps1" "build\release.zip" "build\app\luban-os.exe"

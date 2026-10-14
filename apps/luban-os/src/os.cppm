@@ -90,6 +90,11 @@ public:
 
 private:
     Console() : screen_(24, 80) {}
+    // A session on a channel of `client` (a machine's supervisor, a PC's host
+    // machine agent), opened by `open` at the console's size.
+    static std::unique_ptr<Console> over_(vm::Client client, const std::string& name, bool machine, std::function<void()> wake,
+                                          std::string& error, const std::string& greeting,
+                                          const std::function<bool(vm::Client&, int, int)>& open);
     std::string name_;
     bool machine_ { false };
     std::mutex m_;
@@ -136,7 +141,7 @@ public:
     // Why it ended, when it could not start.
     std::string error() const { std::lock_guard l(m_); return error_; }
     const std::string& name() const { return name_; }
-    bool is_machine() const { return client_.has_value(); }
+    bool is_machine() const { return machine_; }
 
     // The desktop's caret for the input method ("1 x y w h" in its pixels,
     // or "0"), and its selection for the window's clipboard (granted copy
@@ -151,6 +156,13 @@ public:
 
 private:
     Display() = default;
+    // A desktop on a channel of `client` (a machine's supervisor, a PC's host
+    // machine agent), opened by `open`.
+    static std::unique_ptr<Display> over_(vm::Client client, const std::string& name, bool machine, opensal::Size size,
+                                          ClipboardGrant clip, std::function<void()> wake, std::string& error,
+                                          const std::function<bool(vm::Client&)>& open, const fs::path& log);
+    bool machine_ { false };
+    fs::path log_;                    // a relayed desktop's standard error
     void provider_(std::string_view bytes);
     std::string name_;
     mutable std::mutex m_;
@@ -175,7 +187,9 @@ private:
 // The desktop session `name` shows when it is entered: its setting
 // (`luban config <n> --desktop`), else the first its root declares; nothing
 // when it declares none or the setting is `none`.
-std::optional<std::string> desktop_session(const fs::path& home, const std::string& name, const std::string& setting);
+// The desktop session a system starts: its setting (`none`: no desktop), else
+// the first its root declares (Environment::desktops).
+std::optional<std::string> desktop_session(const service::Environment& e);
 
 // Draws `c` filling the current imgui window; returns the cell grid it fits.
 std::pair<int, int> draw_console(Console& c, void* mono_font, float font_size, bool focused);

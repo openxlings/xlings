@@ -112,8 +112,11 @@ std::optional<Session> piped_(const Json& open, const std::vector<int>& inherite
         platform::new_session();
         const std::array<int, 3> stdio{(*in)[0], (*out)[1], (*err)[1]};
         platform::redirect_stdio(stdio);
+        // Its standard streams are its own now: the agent's (0 and 1 on a
+        // relay) are not closed under it.
         auto rest = inherited;
         rest.insert(rest.end(), {(*in)[1], (*out)[0], (*err)[0]});
+        std::erase_if(rest, [](int fd) { return fd <= 2; });
         platform::close_fds(rest);
         as_login_(who);
         platform::exec_program(argv, session_env_(open, shell, who));
@@ -163,6 +166,7 @@ std::expected<Session, std::string> desktop_(const Json& display, std::map<std::
     if (pid == 0) {
         // Nothing of the agent's stays open in the bridge (a shell's pty, the port).
         inherited.insert(inherited.end(), {(*to)[1], (*from)[0]});
+        std::erase_if(inherited, [](int fd) { return fd <= 2; });
         platform::close_fds(inherited);
         // A desktop is its user's (part 3 §6.1): a browser or an Electron
         // application refuses root, or runs without its sandbox.
@@ -180,7 +184,7 @@ std::expected<Session, std::string> desktop_(const Json& display, std::map<std::
     return Session{(*from)[0], (*to)[1], pid, true};
 }
 
-[[noreturn]] void serve_(int port, bool init);
+[[noreturn]] void serve_(int port, int out, bool init, bool machine);
 
 [[noreturn]] void agent_(bool init = false) {
     if (!init) platform::new_session();
@@ -192,12 +196,12 @@ std::expected<Session, std::string> desktop_(const Json& display, std::map<std::
     if (!dev) { console_("no luban.agent port: this machine has no sessions"); platform::exit_now(1); }
     const int port = platform::open_device(*dev);
     if (port < 0) { console_("cannot open " + dev->string()); platform::exit_now(1); }
-    serve_(port, init);
+    serve_(port, port, init, true);
 }
 
 // The agent's loop on its port: sessions, commands, a desktop, power off.
-[[noreturn]] void serve_(int port, bool init) {
-    (void)platform::write_all(port, proto::encode_json('H', 0, Json{{"agent", 1}}));
+[[noreturn]] void serve_(int port, int out, bool init, bool machine) {
+    (void)platform::write_all(out, proto::encode_json('H', 0, Json{{"agent", 1}}));
     std::map<std::uint32_t, Session> sessions;
     std::vector<int> ended;     // closed by the host, not yet reaped
     proto::Decoder d;
@@ -224,12 +228,12 @@ std::expected<Session, std::string> desktop_(const Json& display, std::map<std::
                 if (!*f) break;
                 const auto& frame = **f;
                 if (frame.type == 'Q') {
-                    (void)platform::write_all(port, proto::encode_json('H', 0, Json{{"agent", 1}}));
+                    (void)platform::write_all(out, proto::encode_json('H', 0, Json{{"agent", 1}}));
                 } else if (frame.type == 'O') {
                     auto open = Json::parse(frame.payload, nullptr, false);
                     if (!open.is_object()) open = Json::object();
                     if (auto display = open.find("display"); display != open.end() && display->is_object()) {
-                        std::vector<int> inherited{port};
+                        std::vector<int> inherited{port, out};
                         for (const auto& [ch, other] : sessions) {
                             inherited.push_back(other.read);
                             if (other.write != other.read) inherited.push_back(other.write);
@@ -239,27 +243,27 @@ std::expected<Session, std::string> desktop_(const Json& display, std::map<std::
                         auto s = desktop_(*display, session_env_(open, xlings::subos::root_etc::login_shell("/", who.name), who),
                                           std::move(inherited), who);
                         if (!s) {
-                            (void)platform::write_all(port, proto::encode_json('X', frame.channel, Json{{"code", 127}, {"error", s.error()}}));
+                            (void)platform::write_all(out, proto::encode_json('X', frame.channel, Json{{"code", 127}, {"error", s.error()}}));
                             continue;
                         }
                         sessions[frame.channel] = *s;
                         continue;
                     }
                     if (open.value("pipes", false)) {
-                        std::vector<int> inherited{port};
+                        std::vector<int> inherited{port, out};
                         for (const auto& [ch, other] : sessions) {
                             inherited.push_back(other.read);
                             if (other.write != other.read && other.write >= 0) inherited.push_back(other.write);
                             if (other.err >= 0) inherited.push_back(other.err);
                         }
                         if (auto piped = piped_(open, inherited)) sessions[frame.channel] = *piped;
-                        else (void)platform::write_all(port, proto::encode_json('X', frame.channel, Json{{"code", 125}, {"error", "the command could not start"}}));
+                        else (void)platform::write_all(out, proto::encode_json('X', frame.channel, Json{{"code", 125}, {"error", "the command could not start"}}));
                         continue;
                     }
                     auto pty = platform::open_pty();
                     if (!pty) {
                         console_(std::format("no pty for a session: {}", platform::error_text(platform::last_error())));
-                        (void)platform::write_all(port, proto::encode_json('X', frame.channel, Json{{"code", 125}}));
+                        (void)platform::write_all(out, proto::encode_json('X', frame.channel, Json{{"code", 125}}));
                         continue;
                     }
                     platform::set_terminal_size((*pty)[0], open.value("rows", 24), open.value("cols", 80));
@@ -305,6 +309,8 @@ std::expected<Session, std::string> desktop_(const Json& display, std::map<std::
                         sessions.erase(s);
                     }
                 } else if (frame.type == 'P') {
+                    // A relay's agent (a PC's host machine, on stdio) powers nothing off.
+                    if (!machine) continue;
                     // The agent as PID 1 (the host machine) powers off itself.
                     if (init) platform::power_off();
                     // busybox init powers off on SIGUSR2; anything else in 10 s.
@@ -319,7 +325,7 @@ std::expected<Session, std::string> desktop_(const Json& display, std::map<std::
             auto s = sessions.find(errs[k]);
             if (s == sessions.end() || s->second.err < 0) continue;
             auto n = platform::read_some(s->second.err, buf);
-            if (n && *n > 0) (void)platform::write_all(port, proto::encode('E', errs[k], std::string_view(buf.data(), *n)));
+            if (n && *n > 0) (void)platform::write_all(out, proto::encode('E', errs[k], std::string_view(buf.data(), *n)));
             else {
                 std::vector<int> gone{s->second.err};
                 platform::close_fds(gone);
@@ -333,12 +339,12 @@ std::expected<Session, std::string> desktop_(const Json& display, std::map<std::
             if (s == sessions.end()) continue;
             auto n = platform::read_some(s->second.read, buf);
             if (n && *n > 0) {
-                (void)platform::write_all(port, proto::encode('D', order[k], std::string_view(buf.data(), *n)));
+                (void)platform::write_all(out, proto::encode('D', order[k], std::string_view(buf.data(), *n)));
                 continue;
             }
             int code = 0;
             if (auto st = platform::wait_process(s->second.pid, true)) code = platform::exit_code(*st);
-            (void)platform::write_all(port, proto::encode_json('X', order[k], Json{{"code", code}}));
+            (void)platform::write_all(out, proto::encode_json('X', order[k], Json{{"code", code}}));
             close_session_(s->second);
             sessions.erase(s);
         }
@@ -366,7 +372,8 @@ std::expected<Session, std::string> desktop_(const Json& display, std::map<std::
 
 }  // namespace
 
-void serve_agent(int fd) { serve_(fd, false); }
+void serve_agent(int fd) { serve_(fd, fd, false, true); }
+void serve_stdio() { serve_(0, 1, false, false); }
 
 int guest_init(int, char*[]) {
     if (!platform::is_pid1()) {

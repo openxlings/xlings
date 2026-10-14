@@ -58,13 +58,21 @@ std::unique_ptr<Console> Console::machine(const fs::path& home, const std::strin
                                           std::string& error, const std::string& greeting) {
     auto client = vm::Client::connect(home, name);
     if (!client) { error = client.error(); return nullptr; }
+    const auto env = vm::session_env(home, name);
+    return over_(std::move(*client), name, true, std::move(wake), error, greeting,
+                 [env](vm::Client& cl, int rows, int cols) { return cl.open(1, rows, cols, env); });
+}
+
+std::unique_ptr<Console> Console::over_(vm::Client client, const std::string& name, bool machine, std::function<void()> wake,
+                                        std::string& error, const std::string& greeting,
+                                        const std::function<bool(vm::Client&, int, int)>& open) {
     std::unique_ptr<Console> c(new Console());
     c->screen_.feed(greeting);
     c->name_ = name;
-    c->machine_ = true;
+    c->machine_ = machine;
     c->wake_ = std::move(wake);
-    c->client_.emplace(std::move(*client));
-    if (!c->client_->open(1, c->rows_, c->cols_, vm::session_env(home, name))) { error = "the machine did not take a session"; return nullptr; }
+    c->client_.emplace(std::move(client));
+    if (!open(*c->client_, c->rows_, c->cols_)) { error = machine ? "the machine did not take a session" : "the session did not start"; return nullptr; }
     auto* self = c.get();
     c->io_ = std::thread([self] {
         while (!self->stop_) {
@@ -100,6 +108,18 @@ std::unique_ptr<Console> Console::machine(const fs::path& home, const std::strin
 std::unique_ptr<Console> Console::sandbox(const fs::path& xlings, const fs::path& home, const std::string& name,
                                           const std::string& persist, std::function<void()> wake, std::string& error,
                                           const std::string& greeting) {
+    if constexpr (platform::is_windows) {
+        // On a PC the sandbox is in the Luban host machine: its shell on a
+        // terminal there, through the host machine's agent.
+        auto agent = vm::host_machine_agent(home);
+        if (!agent) { error = agent.error(); return nullptr; }
+        std::vector<std::string> argv{"/xlings/bin/xlings", "subos", "use", name};
+        if (!persist.empty() && persist != "all") argv.insert(argv.end(), {"--persist", persist});
+        nlohmann::json env = nlohmann::json::object();
+        if (!greeting.empty()) env["XLINGS_ENTER_QUIET"] = "1";
+        return over_(std::move(*agent), name, false, std::move(wake), error, greeting,
+                     [argv, env](vm::Client& cl, int rows, int cols) { return cl.open_command(1, argv, rows, cols, env, false); });
+    }
     auto env = platform::environment();
     env["XLINGS_HOME"] = home.string();
     // The welcome is ours; xlings' own line is not said.

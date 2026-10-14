@@ -50,6 +50,32 @@ $desc = Run @('luban', 'status', 'box', '--json')
 if ($desc.Code -ne 0) { Fail "luban status box failed" }
 $null = $desc.Out | ConvertFrom-Json
 
+# The Luban OS window (part 4 §8.2): the same system's console in the app,
+# through the host machine's agent -- a command typed, its answer on screen.
+$APP = if ($args.Count -ge 2) { $args[1] } else { '' }
+if ($APP -and (Test-Path $APP)) {
+    Copy-Item $APP "$PKG_DIR\bin\luban-os.exe"
+    $script = Join-Path $PKG_DIR 'app-script.txt'
+    $state = Join-Path $PKG_DIR 'app-state.json'
+    @(
+        'wait console 120'
+        'type uname -s'
+        'key Return'
+        'see 120s Linux'
+        "state $state"
+    ) | Set-Content -Encoding ascii $script
+    $env:SDL_VIDEODRIVER = 'offscreen'
+    $env:SDL_RENDER_DRIVER = 'software'
+    $env:LUBAN_OS_LANG = 'en_US.UTF-8'
+    $app = Run @("$PKG_DIR\bin\luban-os.exe", '--headless', '--attach', 'box', '--script', $script)
+    if ($app.Code -ne 0) { Fail "the Luban OS window did not show box's console with its answer" }
+    $st = Get-Content $state -Raw | ConvertFrom-Json
+    if ($st.view -ne 'console') { Fail "the window is not on box's console: $($st.view)" }
+    Write-Host "the Luban OS window: box's console through the Luban host machine"
+} else {
+    Fail "no Luban OS app to test (the lane's second argument)"
+}
+
 # A machine: on the host machine's KVM, or refused with why and what to do.
 $caps = (Run @('luban', 'status', '--json')).Out | ConvertFrom-Json
 $machine = $caps.modes | Where-Object { $_.name -eq 'machine' }
@@ -63,6 +89,14 @@ if (-not $machine.ready) {
     Write-Host "machine not ready here, as reported: $($machine.reason)"
 } else {
     Write-Host "machine ready here: $($machine.how)"
+    # Started from the window, through the host machine; its console there.
+    $mscript = Join-Path $PKG_DIR 'app-machine.txt'
+    @('wait console 300', 'see 300s box', "state $state") | Set-Content -Encoding ascii $mscript
+    & luban config box --mode machine | Out-Null
+    $m = Run @("$PKG_DIR\bin\luban-os.exe", '--headless', '--attach', 'box', '--script', $mscript)
+    if ($m.Code -ne 0) { Fail "the Luban OS window did not start box as a machine" }
+    & luban stop box | Out-Null
+    & luban config box --mode sandbox | Out-Null
 }
 
 # Removed there; the host machine stays the home's.

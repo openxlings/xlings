@@ -157,6 +157,6 @@ graph LR
 
 - GPU：渲染用软件，所有宿主都一样。
 - xdesk 里的 X11 程序（Xwayland）；它们在 labwc 会话里运行。
-- 窗口在 Linux 上需要 X11（Xwayland 也算）；原生 Wayland 窗口还不支持。在 macOS 与 Windows 上，系统的桌面从 Luban 宿主机里显示；
-  机器自己的窗口暂不支持。
+- 窗口在 Linux 上需要 X11（Xwayland 也算）；原生 Wayland 窗口还不支持。在 macOS 与 Windows 上，窗口从 Luban 宿主机里显示系统的控制台与桌面，
+  无论它作为沙箱还是机器运行。
 - aarch64 上的 xdesk。

@@ -547,6 +547,15 @@ Luban 的每一条设计原则，同时也是一条可测性原则：
   `luban-os` 的 macOS 与 Windows 段，xlings、luban-os、xdesk 的版本，随发布更新。
 - openkal：需求聚合为 mcpplibs/openkal#47（`2026-10-15-openkal-proposals-from-luban.md`），只记录，不期望现在改动；Luban 按需使用 openkal。
 
+**Luban OS 应用的全平台（实现时补充）：**
+
+- 一个双工子进程（`xlings.platform.duplex`：POSIX 管道 + poll，Windows 管道 + 超时读取）让 `luban.vm` 的 Client
+  可以经一个中继说同一种协议；
+- Windows：沙箱的控制台与桌面经宿主机里的 agent（`wsl.exe ... luban __agent-stdio`：命令在终端或管道上运行），
+  机器经 `luban __pipe-unix` 到宿主机里的 supervisor，启动经 `luban __machine-start`（事件中继回来）；
+- macOS：机器经 vz，窗口直接连本机的 supervisor；
+- 系统的桌面会话随描述一起给出（`Environment::desktops`），载体上的由那里的 luban 回答。
+
 **需要真机验证的（一台 Apple 芯片的 Mac、一台 Windows 11 的 PC）：**
 
 - Apple 芯片上宿主机的创建、启动、`luban new / enter / run`、machine；

@@ -55,6 +55,9 @@ struct Environment {
     std::string shell;             // a root's login shell
     Settings settings;
     std::string carrier { "local" };
+    // The desktop sessions its root declares (share/wayland-sessions/<id>.desktop),
+    // read where the root's links lead -- or from the luban of its carrier's machine.
+    std::vector<std::string> desktops;
 };
 
 // What a console says first, before its prompt (part 3 §7.3): two columns,

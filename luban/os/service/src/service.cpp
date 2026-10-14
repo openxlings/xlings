@@ -150,6 +150,11 @@ void apply_guest_(Environment& e, const nlohmann::json& j) {
     e.shell = j.value("shell", std::string{});
     e.running = j.value("running", false);
     if (j.contains("generation") && j["generation"].is_number_integer()) e.generation = j["generation"].get<int>();
+    if (auto d = j.find("desktops"); d != j.end() && d->is_array()) {
+        e.desktops.clear();
+        for (const auto& id : *d)
+            if (id.is_string()) e.desktops.push_back(id.get<std::string>());
+    }
 }
 
 // `/xlings/bin/luban <args> --json` in the carrier's machine: its JSON lines.
@@ -226,6 +231,19 @@ std::expected<Environment, std::string> describe_(const Context& c, std::string_
         }
     }
     e.running = xlings::subos::session::find(view, name).has_value();
+    if (auto root = e.kind == "root" ? root_of(c.home, name) : std::nullopt) {
+        std::error_code ec;
+        for (const auto& dir : {*root / "usr" / "local" / "share" / "wayland-sessions", *root / "usr" / "share" / "wayland-sessions"}) {
+            std::vector<fs::path> entries;
+            for (fs::directory_iterator it(xlings::subos::physical(at, dir), ec), end; !ec && it != end; it.increment(ec))
+                entries.push_back(it->path());
+            ec.clear();
+            std::ranges::sort(entries);
+            for (const auto& entry : entries)
+                if (entry.extension() == ".desktop" && std::ranges::find(e.desktops, entry.stem().string()) == e.desktops.end())
+                    e.desktops.push_back(entry.stem().string());
+        }
+    }
     auto settings = read_settings(c.home, name);
     if (!settings) return std::unexpected(settings.error());
     e.settings = *settings;

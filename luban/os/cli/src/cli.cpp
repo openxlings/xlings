@@ -537,7 +537,7 @@ int overview(const svc::Context& c, const Globals& g) {
         if (envs)
             for (const auto& e : *envs) {
                 Json one{{"name", e.name}, {"edition", e.edition}, {"kind", e.kind}, {"packages", e.packages},
-                         {"running", e.running}, {"shell", e.shell}, {"carrier", e.carrier}};
+                         {"running", e.running}, {"shell", e.shell}, {"carrier", e.carrier}, {"desktops", e.desktops}};
                 if (e.generation) one["generation"] = *e.generation;
                 list.push_back(std::move(one));
             }
@@ -682,7 +682,7 @@ int cmd_status(const svc::Context& c, const Parsed& p, const Globals& g, Rendere
     if (!e) return usage(e.error(), g);
     Json j{{"name", e->name}, {"kind", e->kind}, {"edition", e->edition}, {"packages", e->packages},
            {"running", e->running}, {"mode", e->settings.mode}, {"persist", e->settings.persist},
-           {"shell", e->shell}, {"carrier", e->carrier}};
+           {"shell", e->shell}, {"carrier", e->carrier}, {"desktops", e->desktops}};
     if (e->generation) j["generation"] = *e->generation;
     if (g.json) { r.value(j); return 0; }
     std::println("{}  {}{}", e->name, edition_label_(*e), e->running ? "  (running)" : "");
@@ -1328,6 +1328,7 @@ int run(int argc, char* argv[]) {
     if (!rest.empty() && rest.front() == "__pipe" && rest.size() == 3) return pipe_(rest[1], rest[2]);
     if (!rest.empty() && rest.front() == "__vm-supervise" && rest.size() == 3) return vm::supervise(rest[1], rest[2]);
     if (!rest.empty() && rest.front() == "__vm") return vm::host_machine(home_dir_(), std::span<const std::string>(rest).subspan(1));
+    if (!rest.empty() && rest.front() == "__agent-stdio") vm::serve_stdio();
     if (!rest.empty() && rest.front() == "__pipe-unix" && rest.size() == 2) return pipe_unix_(rest[1]);
     if (!rest.empty() && rest.front() == "__desktop") return desktop_(rest);
     if (!rest.empty() && (rest.front() == "--version" || rest.front() == "-V")) {
@@ -1370,6 +1371,10 @@ int run(int argc, char* argv[]) {
     const int rc = [&]() -> int {
         if (rest.empty()) return overview(c, g);
         const auto& cmd = rest.front();
+        // Plumbing: start a machine here, its events on this output (what a
+        // PC's luban relays from its host machine).
+        if (cmd == "__machine-start" && rest.size() >= 2)
+            return vm::start(c, rest[1], {.temp = std::ranges::find(rest, std::string("--temp")) != rest.end()});
         const auto* node = spec::find_in(tree(), std::array<std::string_view, 1>{cmd});
         if (!node) return unknown_command(cmd, g);
         if (std::ranges::find(rest, std::string("--help")) != rest.end() || std::ranges::find(rest, std::string("-h")) != rest.end()) {

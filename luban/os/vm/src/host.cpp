@@ -557,6 +557,7 @@ bool ask_(std::string_view question) {
 }  // namespace
 
 fs::path run_dir(const fs::path& home, std::string_view name) { return home / "run" / "machines" / name; }
+fs::path relayed_marker_(const fs::path& home, std::string_view name) { return run_dir(home, name) / "in-host-machine"; }
 
 std::optional<SoundForward> sound_forward(bool granted, const fs::path& pulse, const fs::path& luban) {
     std::error_code ec;
@@ -568,14 +569,59 @@ std::optional<SoundForward> sound_forward(bool granted, const fs::path& pulse, c
 
 int start_vz_(const service::Context& c, std::string_view name, const EnterOptions& o);
 
-int start(const service::Context& c, std::string_view name, const EnterOptions& o) {
-    if (running(c.home, name)) return 0;
-    if constexpr (platform::is_macos) return start_vz_(c, name, o);
-    if constexpr (platform::is_windows) {
-        say_(c, service::error("on a PC a machine runs in the Luban host machine, on its console",
-                               std::format("luban enter {} --mode machine", name)));
+// On a PC: the luban in the Luban host machine starts it there (its KVM),
+// its events relayed here as they come.
+int start_in_carrier_(const service::Context& c, std::string_view name, const EnterOptions& o) {
+    const auto caps = service::capabilities(service::gather(c.home, c.port));
+    const auto* m = caps.mode("machine");
+    if (!m || !m->ready) {
+        say_(c, service::error(std::format("{} cannot run as a machine on this computer: {}", name,
+                                           m ? m->reason : std::string("this computer did not say")), m ? m->route : std::string{}));
         return 1;
     }
+    const auto* carrier = xlings::carrier::find("wsl2");
+    auto at = carrier ? carrier->ensure(xlings::subos::HomeView{c.home}) : std::unexpected(std::string("no wsl2 carrier"));
+    if (!at) {
+        say_(c, service::error("the Luban host machine did not start: " + at.error(), "luban status"));
+        return 1;
+    }
+    auto argv = at->launcher;
+    argv.insert(argv.end(), {"/xlings/bin/luban", "--json", "__machine-start", std::string(name)});
+    if (o.temp) argv.push_back("--temp");
+    std::string pending;
+    const int rc = platform::stream::run(argv, [&](std::string_view stream, std::string_view bytes) {
+        if (stream != "stdout") return;
+        pending.append(bytes);
+        for (auto nl = pending.find('\n'); nl != std::string::npos; nl = pending.find('\n')) {
+            const auto j = Json::parse(pending.substr(0, nl), nullptr, false);
+            pending.erase(0, nl + 1);
+            if (!j.is_object() || !j.contains("event")) continue;
+            service::Event e;
+            const auto kind = j.value("event", std::string{});
+            e.kind = kind == "phase" ? service::Event::Kind::Phase : kind == "progress" ? service::Event::Kind::Progress
+                   : kind == "error" ? service::Event::Kind::Error : kind == "notice" ? service::Event::Kind::Notice
+                   : kind == "data" ? service::Event::Kind::Data : service::Event::Kind::Log;
+            e.phase = j.value("phase", std::string{});
+            e.state = j.value("state", std::string{});
+            e.text = j.value("text", std::string{});
+            e.hint = j.value("hint", std::string{});
+            e.level = j.value("level", std::string{});
+            if (j.contains("percent") && j["percent"].is_number()) e.percent = j["percent"].get<double>();
+            say_(c, std::move(e));
+        }
+    });
+    if (rc == 0) {
+        std::error_code ec;
+        fs::create_directories(run_dir(c.home, name), ec);
+        std::ofstream(relayed_marker_(c.home, name)) << "started in the Luban host machine\n";
+    }
+    return rc;
+}
+
+int start(const service::Context& c, std::string_view name, const EnterOptions& o) {
+    if constexpr (platform::is_windows) return start_in_carrier_(c, name, o);
+    if (running(c.home, name)) return 0;
+    if constexpr (platform::is_macos) return start_vz_(c, name, o);
     return start_impl_(c, name, o);
 }
 
@@ -584,15 +630,47 @@ nlohmann::json session_env(const fs::path& home, std::string_view name) {
 }
 
 std::expected<Client, std::string> Client::connect(const fs::path& home, std::string_view name) {
+    if constexpr (platform::is_windows) {
+        const auto* carrier = xlings::carrier::find("wsl2");
+        auto at = carrier ? carrier->ensure(xlings::subos::HomeView{home}) : std::unexpected(std::string("no wsl2 carrier"));
+        if (!at) return std::unexpected(at.error());
+        auto argv = at->launcher;
+        argv.insert(argv.end(), {"/xlings/bin/luban", "__pipe-unix", std::format("/xlings/run/machines/{}/luban.sock", name)});
+        auto c = through(argv, log_dir(home, name) / "relay.log");
+        if (!c) return c;
+        // Up when the supervisor there answers.
+        (void)c->write_(proto::encode('Q', 0));
+        for (int i = 0; i < 30; ++i) {
+            auto frames = c->poll(100);
+            if (!frames) break;
+            for (const auto& [type, _] : *frames)
+                if (type == 'H') return c;
+        }
+        std::error_code ec;
+        fs::remove(relayed_marker_(home, name), ec);
+        return std::unexpected(std::format("{} is not running", name));
+    }
     const int fd = connect_client_(home, name);
     if (fd < 0) return std::unexpected(std::format("{} is not running", name));
     return Client(fd);
+}
+
+std::expected<Client, std::string> Client::through(const std::vector<std::string>& argv, const fs::path& log) {
+    std::string error;
+    std::error_code ec;
+    if (!log.empty()) fs::create_directories(log.parent_path(), ec);
+    auto child = xlings::platform::duplex::Child::start(argv, log, error);
+    if (!child) return std::unexpected(error);
+    Client c(-1);
+    c.child_ = std::move(child);
+    return c;
 }
 
 Client& Client::operator=(Client&& other) noexcept {
     if (this != &other) {
         if (fd_ >= 0) { std::vector<int> fds{fd_}; platform::close_fds(fds); }
         fd_ = std::exchange(other.fd_, -1);
+        child_ = std::move(other.child_);
         buffer_ = std::move(other.buffer_);
         writing_ = std::move(other.writing_);
     }
@@ -601,7 +679,42 @@ Client& Client::operator=(Client&& other) noexcept {
 
 bool Client::write_(std::string_view frame) {
     std::lock_guard l(*writing_);
+    if (child_) return child_->write(frame);
     return platform::write_all(fd_, frame);
+}
+
+bool Client::open_command(std::uint32_t channel, const std::vector<std::string>& argv, int rows, int cols,
+                          const nlohmann::json& env, bool pipes) {
+    Json open{{"argv", argv}, {"env", env}};
+    if (pipes) open["pipes"] = true;
+    else {
+        const char* term = std::getenv("TERM");
+        open["rows"] = rows;
+        open["cols"] = cols;
+        open["term"] = term ? term : "xterm-256color";
+    }
+    return write_(proto::encode_json('O', channel, open));
+}
+
+bool Client::end_input(std::uint32_t channel) { return write_(proto::encode('F', channel)); }
+
+std::expected<Client, std::string> host_machine_agent(const fs::path& home) {
+    if constexpr (!platform::is_windows) return std::unexpected(std::string("only a PC reaches its host machine through a relay"));
+    const auto* carrier = xlings::carrier::find("wsl2");
+    auto at = carrier ? carrier->ensure(xlings::subos::HomeView{home}) : std::unexpected(std::string("no wsl2 carrier"));
+    if (!at) return std::unexpected(at.error());
+    auto argv = at->launcher;
+    argv.insert(argv.end(), {"/xlings/bin/luban", "__agent-stdio"});
+    auto c = Client::through(argv, home / "logs" / "luban-os-relay.log");
+    if (!c) return c;
+    // The agent there says hello first.
+    for (int i = 0; i < 100; ++i) {
+        auto frames = c->poll(100);
+        if (!frames) return std::unexpected(std::string("the Luban host machine's agent did not answer (an older host machine: luban status)"));
+        for (const auto& [type, _] : *frames)
+            if (type == 'H') return c;
+    }
+    return std::unexpected(std::string("the Luban host machine's agent did not answer"));
 }
 
 Client::~Client() {
@@ -627,7 +740,11 @@ bool Client::power_off() { return write_(proto::encode('P', 0)); }
 std::optional<std::vector<std::pair<char, std::pair<std::uint32_t, std::string>>>> Client::poll(int timeout_ms) {
     std::vector<std::pair<char, std::pair<std::uint32_t, std::string>>> out;
     std::array<platform::PollFd, 1> p{{{.fd = fd_}}};
-    if (platform::poll_fds(p, timeout_ms) > 0) {
+    if (child_) {
+        auto got = child_->read(timeout_ms);
+        if (!got) return std::nullopt;
+        buffer_ += *got;
+    } else if (platform::poll_fds(p, timeout_ms) > 0) {
         std::array<char, 65536> buf{};
         auto n = platform::read_some(fd_, buf);
         if (!n || *n == 0) return std::nullopt;
@@ -665,7 +782,15 @@ bool is_static_elf(const fs::path& file) {
     return true;
 }
 
+// On a PC a machine runs in the Luban host machine; this side keeps that it
+// was started (a marker, cleared when it is stopped or found gone), so the
+// window's list does not ask the host machine on every frame.
+
 std::optional<int> running(const fs::path& home, std::string_view name) {
+    if constexpr (platform::is_windows) {
+        std::error_code ec;
+        return fs::exists(relayed_marker_(home, name), ec) ? std::optional<int>(1) : std::nullopt;
+    }
     const auto state = read_json_(state_file_(home, name));
     const int pid = state.value("supervisor", 0);
     if (pid > 0 && platform::process_alive(pid)) return pid;
@@ -695,9 +820,15 @@ int enter_in_carrier_(const service::Context& c, std::string_view name, const En
         return 1;
     }
     if (o.display == "window") {
-        say_(c, service::error("a machine's window is not shown from the Luban host machine in this version",
-                               std::format("luban enter {} --mode machine (its console here), or a desktop in the sandbox", name)));
-        return 1;
+        // The window reaches the machine through the host machine (the app's
+        // relay); the app starts it when it is not running.
+        std::error_code ec;
+        const auto app = platform::get_executable_path().parent_path() / "luban-os.exe";
+        if (!fs::exists(app, ec)) {
+            say_(c, service::error("a machine's window is the Luban OS app's", "xlings install luban-os"));
+            return 1;
+        }
+        return platform::run_argv({app.string(), "--attach", std::string(name)});
     }
     std::vector<std::string> argv = at->launcher;
     argv.insert(argv.end(), {"/xlings/bin/luban", "enter", std::string(name), "--mode", "machine"});
@@ -879,6 +1010,17 @@ int enter(const service::Context& c, std::string_view name_or_image, const Enter
 service::Outcome stop(const service::Context& c, std::string_view name) {
     auto pid = running(c.home, name);
     if (!pid) return {.code = 0};
+    if constexpr (platform::is_windows) {
+        say_(c, service::phase("stop", "begin", std::format("powering off {}", name)));
+        if (auto client = Client::connect(c.home, name)) {
+            (void)client->power_off();
+            std::this_thread::sleep_for(std::chrono::seconds(2));
+        }
+        std::error_code ec;
+        fs::remove(relayed_marker_(c.home, name), ec);
+        say_(c, service::phase("stop", "done", std::format("{} is off", name)));
+        return {.code = 0};
+    }
     say_(c, service::phase("stop", "begin", std::format("powering off {}", name)));
     const int fd = connect_client_(c.home, name);
     if (fd >= 0) {

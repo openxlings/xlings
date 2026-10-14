@@ -272,7 +272,7 @@ struct App {
     // setting is not `none`), else its console.
     void open_machine(const std::string& name) {
         auto env = service::describe(ctx, name);
-        if (auto session = desktop_session(home, name, env ? env->settings.desktop : std::string{})) {
+        if (auto session = env ? desktop_session(*env) : std::nullopt) {
             std::string error;
             const auto [w, h] = window->size();
             desktop_size = device_size_(w, h);
@@ -351,7 +351,7 @@ struct App {
         // session, bridged, on two pipes instead of a channel.
         if (!machine) {
             const auto luban = luban_binary(name);
-            if (auto session = desktop_session(home, name, env ? env->settings.desktop : std::string{}); session && !luban.empty()) {
+            if (auto session = env ? desktop_session(*env) : std::nullopt; session && !luban.empty()) {
                 const auto [ww, wh] = window->size();
                 desktop_size = device_size_(ww, wh);
                 display = Display::sandbox(ctx.port.xlings(), luban, home, name, *session, env ? env->settings.persist : "all",

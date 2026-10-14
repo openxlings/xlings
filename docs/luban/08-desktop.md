@@ -191,6 +191,6 @@ graph LR
 - A GPU: rendering is in software, the same on every host.
 - X11 programs in xdesk (Xwayland); they run in the labwc session.
 - The window on Linux needs X11 (Xwayland counts); a native Wayland window is
-  not supported yet. On macOS and Windows a system's desktop is shown from the
-  Luban host machine; a machine's own window there is not yet.
+  not supported yet. On macOS and Windows the window shows a system's console
+  and desktop, as a sandbox or as a machine, from the Luban host machine.
 - xdesk on aarch64.

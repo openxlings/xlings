@@ -19,6 +19,7 @@ export module luban.vm;
 import std;
 import xlings.libs.json;
 import luban.service;
+import xlings.platform.duplex;
 
 export namespace luban::vm {
 
@@ -49,9 +50,16 @@ int start(const service::Context& c, std::string_view name, const EnterOptions& 
 // poll is one thread's.
 class Client {
 public:
+    // The machine's supervisor. On a PC the machine is in the Luban host
+    // machine: reached through `wsl.exe ... luban __pipe-unix <its socket>`.
     static std::expected<Client, std::string> connect(const fs::path& home, std::string_view name);
+    // A relay that speaks the protocol on its input and output: on a PC the
+    // host machine's agent (`wsl.exe ... luban __agent-stdio`), where a
+    // sandbox's console and desktop run as commands (open_command).
+    static std::expected<Client, std::string> through(const std::vector<std::string>& argv, const fs::path& log = {});
     Client(Client&& other) noexcept
-        : fd_(std::exchange(other.fd_, -1)), buffer_(std::move(other.buffer_)), writing_(std::move(other.writing_)) {}
+        : fd_(std::exchange(other.fd_, -1)), child_(std::move(other.child_)), buffer_(std::move(other.buffer_)),
+          writing_(std::move(other.writing_)) {}
     Client& operator=(Client&& other) noexcept;
     ~Client();
     // A session: the root's login shell on a pty of this size.
@@ -59,6 +67,12 @@ public:
     // A desktop: the session `session` (empty: the first the environment
     // declares), headless at this size, its bytes opensal.wire (opensal-wlr).
     bool open_display(std::uint32_t channel, std::string_view session, int width, int height);
+    // A command instead of the login shell: on a terminal of rows x cols, or
+    // on pipes (`pipes`: its output as D, its standard error as E).
+    bool open_command(std::uint32_t channel, const std::vector<std::string>& argv, int rows, int cols,
+                      const nlohmann::json& env, bool pipes);
+    // The end of a piped command's input.
+    bool end_input(std::uint32_t channel);
     bool send(std::uint32_t channel, std::string_view bytes);
     bool resize(std::uint32_t channel, int rows, int cols);
     bool close(std::uint32_t channel);
@@ -70,9 +84,15 @@ private:
     explicit Client(int fd) : fd_(fd) {}
     bool write_(std::string_view frame);      // whole frames, from any thread
     int fd_ { -1 };
+    std::shared_ptr<xlings::platform::duplex::Child> child_;
     std::string buffer_;
     std::unique_ptr<std::mutex> writing_ = std::make_unique<std::mutex>();
 };
+
+// The agent of this home's Luban host machine (a PC's WSL 2), on a relay:
+// a sandbox's console and desktop there are commands it runs
+// (Client::open_command). Elsewhere: why there is none.
+std::expected<Client, std::string> host_machine_agent(const fs::path& home);
 
 // The environment a session needs inside (its network's proxy), from the
 // machine's state.
@@ -91,6 +111,10 @@ int guest_init(int argc, char* argv[]);
 // The guest agent on a stream it is given instead of its port (tests: the
 // protocol, sessions and commands without a machine). Never returns.
 [[noreturn]] void serve_agent(int fd);
+// The agent on this process's standard input and output (`luban
+// __agent-stdio`): what a PC's Luban OS window reaches the host machine's
+// sandboxes through, by wsl.exe. Powers nothing off. Never returns.
+[[noreturn]] void serve_stdio();
 
 // The machine's directories.
 fs::path run_dir(const fs::path& home, std::string_view name);

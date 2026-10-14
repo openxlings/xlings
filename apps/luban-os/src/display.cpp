@@ -18,29 +18,11 @@ namespace {
 constexpr std::uint32_t kDisplayChannel = 2;
 }  // namespace
 
-std::optional<std::string> desktop_session(const fs::path& home, const std::string& name, const std::string& setting) {
-    if (setting == "none") return std::nullopt;
-    const auto root = service::root_of(home, name);
-    if (!root) return std::nullopt;
-    // The root's /usr/share links name the system's own home (/xlings in a
-    // prefix domain or a Mac's host machine): followed into where this host
-    // has those files. Only the session's id is needed here -- the guest
-    // reads the rest -- so the entries are listed, not parsed.
-    const auto at = xlings::subos::locate(xlings::subos::HomeView{home}, name);
-    std::vector<std::string> ids;
-    std::error_code ec;
-    for (const auto& dir : {*root / "usr" / "local" / "share" / "wayland-sessions", *root / "usr" / "share" / "wayland-sessions"}) {
-        const auto here = xlings::subos::physical(at, dir);
-        std::vector<fs::path> entries;
-        for (fs::directory_iterator it(here, ec), end; !ec && it != end; it.increment(ec)) entries.push_back(it->path());
-        ec.clear();
-        std::ranges::sort(entries);
-        for (const auto& e : entries)
-            if (e.extension() == ".desktop" && std::ranges::find(ids, e.stem().string()) == ids.end()) ids.push_back(e.stem().string());
-    }
-    if (ids.empty()) return std::nullopt;
-    if (setting.empty()) return ids.front();
-    if (std::ranges::find(ids, setting) != ids.end()) return setting;
+std::optional<std::string> desktop_session(const service::Environment& e) {
+    const auto& setting = e.settings.desktop;
+    if (setting == "none" || e.desktops.empty()) return std::nullopt;
+    if (setting.empty()) return e.desktops.front();
+    if (std::ranges::find(e.desktops, setting) != e.desktops.end()) return setting;
     return std::nullopt;
 }
 
@@ -48,14 +30,24 @@ std::unique_ptr<Display> Display::machine(const fs::path& home, const std::strin
                                           opensal::Size size, ClipboardGrant clip, std::function<void()> wake, std::string& error) {
     auto client = vm::Client::connect(home, name);
     if (!client) { error = client.error(); return nullptr; }
+    return over_(std::move(*client), name, true, size, clip, std::move(wake), error,
+                 [session, size](vm::Client& cl) { return cl.open_display(kDisplayChannel, session, int(size.width), int(size.height)); },
+                 {});
+}
+
+std::unique_ptr<Display> Display::over_(vm::Client client, const std::string& name, bool machine, opensal::Size size,
+                                        ClipboardGrant clip, std::function<void()> wake, std::string& error,
+                                        const std::function<bool(vm::Client&)>& open, const fs::path& log) {
     std::unique_ptr<Display> d(new Display());
     d->name_ = name;
+    d->machine_ = machine;
+    d->log_ = log;
     d->wake_ = std::move(wake);
     d->wanted_ = size;
     d->clip_ = clip;
-    d->client_.emplace(std::move(*client));
-    if (!d->client_->open_display(kDisplayChannel, session, int(size.width), int(size.height))) {
-        error = "the machine did not take a desktop";
+    d->client_.emplace(std::move(client));
+    if (!open(*d->client_)) {
+        error = machine ? "the machine did not take a desktop" : "the desktop did not start";
         return nullptr;
     }
     auto* self = d.get();
@@ -66,7 +58,10 @@ std::unique_ptr<Display> Display::machine(const fs::path& home, const std::strin
             for (auto& [type, body] : *frames) {
                 if (body.first != kDisplayChannel) continue;
                 if (type == 'D') self->provider_(body.second);
-                else if (type == 'X') {
+                else if (type == 'E' && !self->log_.empty()) {
+                    std::ofstream out(self->log_, std::ios::app);
+                    out << body.second;
+                } else if (type == 'X') {
                     auto j = nlohmann::json::parse(body.second, nullptr, false);
                     std::lock_guard l(self->m_);
                     self->error_ = j.is_object() ? j.value("error", std::string{}) : std::string{};
@@ -86,6 +81,19 @@ std::unique_ptr<Display> Display::machine(const fs::path& home, const std::strin
 std::unique_ptr<Display> Display::sandbox(const fs::path& xlings, const fs::path& luban, const fs::path& home,
                                           const std::string& name, const std::string& session, const std::string& persist,
                                           opensal::Size size, ClipboardGrant clip, std::function<void()> wake, std::string& error) {
+    if constexpr (xlings::platform::is_windows) {
+        // On a PC the sandbox is in the Luban host machine: its desktop there,
+        // opensal.wire on a piped command of the host machine's agent.
+        auto agent = vm::host_machine_agent(home);
+        if (!agent) { error = agent.error(); return nullptr; }
+        std::vector<std::string> argv{"/xlings/bin/xlings", "subos", "use", name};
+        if (!persist.empty() && persist != "all") argv.insert(argv.end(), {"--persist", persist});
+        argv.insert(argv.end(), {"--cmd", std::format("exec /xlings/bin/luban __desktop '{}' --size {}x{}",
+                                                      session.empty() ? "-" : session, size.width, size.height)});
+        return over_(std::move(*agent), name, false, size, clip, std::move(wake), error,
+                     [argv](vm::Client& cl) { return cl.open_command(kDisplayChannel, argv, 0, 0, nlohmann::json::object(), true); },
+                     home / "logs" / "luban-os.log");
+    }
     auto env = xlings::platform::environment();
     env["XLINGS_HOME"] = home.string();
     env.erase("XLINGS_SUBOS_MODE");
