@@ -143,8 +143,9 @@ std::expected<void, std::string> refresh_entry(const Domain& domain, const fs::p
 std::expected<void, std::string> prepare(const Domain& domain, const fs::path& entry) {
     if (!domain.privateHome) return std::unexpected("namespace producer requires an owner-private domain");
     if (auto reserved = prefix_domain::prepare_private(domain); !reserved) return reserved;
-    for (const auto* relative : {"bin", "subos", "data", "tmp"})
+    for (const auto* relative : {"bin", "subos", "data", "data/runtimedir", "tmp"})
         if (auto dir = mkdir_(domain.physicalHome / relative); !dir) return dir;
+    if (auto dir = mkdir_(domain.ownerHome / "data" / "runtimedir"); !dir) return dir;
     const auto configFile = domain.physicalHome / ".xlings.json";
     auto configExists = present_(configFile);
     if (!configExists) return std::unexpected(configExists.error());
@@ -228,6 +229,12 @@ std::expected<std::vector<std::string>, std::string> command(const Domain& domai
     }
     if (ec && ec != std::errc::no_such_file_or_directory)
         return std::unexpected("cannot enumerate host build /run: " + ec.message());
+    // The owner's downloads are the domain's too (part 3 §3.3): archives are
+    // checked by their sha256 wherever they came from, so a system made from
+    // what the host already fetched downloads nothing again.
+    const auto downloads = domain.ownerHome / "data" / "runtimedir";
+    const bool shareDownloads = fs::is_directory(downloads, ec)
+                             && fs::is_directory(domain.physicalHome / "data" / "runtimedir", ec);
     argv.insert(argv.end(), {"--bind", domain.physicalHome.string(), domain.logicalHome.string(),
         "--dev", "/dev", "--proc", "/proc", "--clearenv",
         "--setenv", "XLINGS_HOME", domain.logicalHome.string(), "--setenv", "HOME", domain.logicalHome.string(),
@@ -244,6 +251,8 @@ std::expected<std::vector<std::string>, std::string> command(const Domain& domai
         if (const auto* value = std::getenv(key); value && *value)
             argv.insert(argv.end(), {"--setenv", key, value});
     }
+    if (shareDownloads)
+        argv.insert(argv.end(), {"--bind", downloads.string(), (domain.logicalHome / "data" / "runtimedir").string()});
     if (source) {
         argv.insert(argv.end(), {"--ro-bind", source->mapping.physicalHome.string(), source->mapping.recordedHome.string()});
         for (const auto& binding : source->metadata)
