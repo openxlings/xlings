@@ -312,6 +312,10 @@ void begin(const fs::path& home, const std::string& trace, nlohmann::json header
         j["ts"] = utc_now();
         j["trace"] = st.trace;
         j["proc"] = st.proc;
+        if (const char* parent = std::getenv("XLINGS_OPS_PARENT");
+            parent && std::string_view(parent).size() == 8
+            && std::ranges::all_of(std::string_view(parent), [](char c) { return std::isxdigit(static_cast<unsigned char>(c)) != 0; }))
+            j["parent"] = parent;
         append_json(st.file, j);
     } catch (...) {
     }
@@ -319,6 +323,7 @@ void begin(const fs::path& home, const std::string& trace, nlohmann::json header
 
 bool active() noexcept { return state_().active; }
 std::string trace() noexcept { try { return state_().trace; } catch (...) { return {}; } }
+std::string proc() noexcept { try { auto& st = state_(); return st.active ? st.proc : std::string{}; } catch (...) { return {}; } }
 fs::path file() noexcept { try { return state_().file; } catch (...) { return {}; } }
 
 fs::path artifact(std::string_view name) noexcept {

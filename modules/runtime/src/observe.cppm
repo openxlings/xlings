@@ -105,12 +105,17 @@ export namespace xlings::observe::ops {
 std::string trace_from_environment();
 // Begin this process's part of the operation `trace`; `header` is written as
 // the `op` line by the process that started it (a child with an inherited
-// trace writes a `child` line instead). Removes date directories older than
-// `keep_days`. Never throws.
+// trace writes a `child` line instead); XLINGS_OPS_PARENT, when a process of
+// the operation started this one, is its `parent`. Removes date directories
+// older than `keep_days`. Never throws.
 void begin(const std::filesystem::path& home, const std::string& trace, nlohmann::json header,
            bool started_here, int keep_days = 14) noexcept;
 bool active() noexcept;
 std::string trace() noexcept;
+// This process within the operation (8 hex digits): what a process it starts
+// names as its `parent` (XLINGS_OPS_PARENT), so the journal says which step
+// caused which. Empty when not active.
+std::string proc() noexcept;
 std::filesystem::path file() noexcept;
 // A side file for raw output (a tool's stdout and stderr), referenced from the
 // journal: `<trace>.d/<name>.log` beside it. Empty when not active.

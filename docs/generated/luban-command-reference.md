@@ -104,3 +104,9 @@ Options: `--all` — Every command; `--expert` — And the expert ones
 This machine's boot entries
 
 Options: `--once` — Only the next boot (a trial); `--fallback` — When the default fails; `--mark-good` — This boot worked; `--now` — Switch to it now
+
+## `luban interface [verb]` (expert)
+
+For programs: the verbs described (openas), or one run with JSON arguments, reported as NDJSON
+
+Options: `--describe` — Describe every verb: its arguments, options, effect and what answers it; `--args <JSON>` — The verb's arguments and options, by name; `--args-file <FILE>` — The same, read from a file

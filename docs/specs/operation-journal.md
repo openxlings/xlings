@@ -27,11 +27,19 @@ Every line is a JSON object with `ts` (UTC, second resolution), `trace`, `proc`
 
 | `line` | Written | Fields |
 |---|---|---|
-| `op` | once, by the process that started the operation | `client`, `version`, `argv`, `platform`, `layout`, `actor` (`cli`, `agent`, `program`), `env` (names only) |
-| `child` | by a process that inherited the trace | the same fields |
+| `op` | once, by the process that started the operation | `client`, `version`, `argv`, `platform`, `layout`, `actor` (`cli`, `agent`, `program`), `principal`, `env` (names only) |
+| `child` | by a process that inherited the trace | the same fields, and `parent` |
 | `span` | when a phase begins and ends | `span`, `at` (`begin` / `end`), on `end` `ms` and, when it failed, `failed` |
 | `end` | when a process exits | `exit` |
 | other | an event a step records | its own fields |
+
+`principal` is who runs it, in openas's form (`luban/specs/openas`:
+`agent:<name>;via=person:<name>`): `XLINGS_ACTOR` when whoever started the
+process set it, else `person`, `agent` or `program` as the process can tell.
+It is exported to everything the process starts, so a step is attributed to
+the actor of the operation, not to what it says of itself. `parent` is the
+`proc` of the process that started this one (`XLINGS_OPS_PARENT`), so the
+journal says which step caused which.
 
 Fields are only ever added. A reader skips lines it cannot parse and kinds it
 does not know.

@@ -1,0 +1,12 @@
+# openas: actors -- people, agents, programs, services -- what they did and
+# what they may do: the actor and its delegation, the effect classes of a
+# verb, the envelope a verb's run is reported in, and a description of the
+# verbs a system offers. A specification: declarations and a conformance
+# check; it depends on nothing but the standard library.
+[package]
+namespace = "openas"
+name      = "openas"
+version   = "0.1.0"
+
+[targets.openas]
+kind = "lib"

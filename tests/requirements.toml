@@ -1152,3 +1152,11 @@ status = "required"
 [PLATFORM-CAPS]
 text = "luban status (and its --json, and the Luban OS app) says per way of running -- sandbox, machine, desktop -- whether it is ready on this computer, how it runs, and when not why and the next step; Linux, macOS and Windows alike"
 status = "required"
+
+[CONTROL-DESCRIBE]
+text = "luban describes its verbs in openas (luban interface --describe): effect, arguments, options, what answers each; the description passes openas's conformance check; a verb runs from JSON arguments and is reported in openas's envelope ending with its result"
+status = "required"
+
+[CONTROL-PRINCIPAL]
+text = "every operation's journal names its actor (openas: kind, name, the chain it acts for), inherited by what it starts, and each process's parent step"
+status = "required"

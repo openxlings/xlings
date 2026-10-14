@@ -135,6 +135,74 @@ XTEST(Luban, TheHostStatusSaysWhatThisComputerCanRun, .area = "luban",
         EXPECT_NE(text.out.find(word), std::string::npos) << text.transcript();
 }
 
+// A program's way in (part 4 §7): the verbs described, one run from JSON
+// arguments reported as openas lines ending with its result, and the journal
+// naming who ran it -- inherited by every process it started -- and which
+// step started which.
+XTEST(Luban, AProgramDescribesTheVerbsRunsOneAndTheJournalSaysWhoAndWhy, .area = "luban",
+      .covers = {"CONTROL-DESCRIBE", "CONTROL-PRINCIPAL"}, .requires_ = {"xlings-bin"}) {
+    const auto bin = luban_binary();
+    if (!bin) GTEST_SKIP() << "no luban beside the xlings under test (mcpp build -p luban-tool, or LUBAN_BIN)";
+    auto home = luban_home("luban-interface", *bin);
+    auto d = luban(home, {"interface", "--describe"});
+    ASSERT_EQ(d.exit_code, 0) << d.transcript();
+    const auto desc = Json::parse(d.out, nullptr, false);
+    ASSERT_TRUE(desc.is_object()) << d.out;
+    EXPECT_EQ(desc["client"], "luban");
+    bool rm_asks = false;
+    for (const auto& v : desc["verbs"])
+        if (v["name"] == "rm") rm_asks = v["effect"] == "irreversible" && v["answers"].size() > 0;
+    EXPECT_TRUE(rm_asks) << d.out;
+
+    // Who: the agent that runs it says so through XLINGS_ACTOR.
+    tk::RunOptions o;
+    o.argv = {(home.dir() / "bin/luban").string(), "interface", "status", "--args", "{}"};
+    o.env = home.env();
+    o.env["XLINGS_TOOLS_SEARCH"] = "home";
+    o.env["XLINGS_ACTOR"] = "agent:tester;via=person:dev";
+    o.env.erase("XLINGS_TRACE_ID");
+    o.timeout = std::chrono::seconds(90);
+    auto r = tk::run(o);
+    std::vector<Json> lines;
+    std::istringstream in(r.out);
+    for (std::string l; std::getline(in, l);)
+        if (!l.empty()) lines.push_back(Json::parse(l, nullptr, false));
+    ASSERT_FALSE(lines.empty()) << r.transcript();
+    for (const auto& l : lines) ASSERT_TRUE(l.is_object() && l.contains("kind")) << r.out;
+    const auto& result = lines.back();
+    EXPECT_EQ(result["kind"], "result") << r.out;
+    EXPECT_EQ(result["exitCode"].get<int>(), r.exit_code);
+    EXPECT_EQ(result["actor"], "agent:tester;via=person:dev");
+    EXPECT_TRUE(std::ranges::any_of(lines, [](const Json& l) { return l["kind"] == "data" && l["data"].contains("modes"); })) << r.out;
+    // A verb that is not luban's, or arguments it does not take: refused, as a result.
+    auto bad = luban(home, {"interface", "ls", "--args", R"({"bogus":1})"});
+    EXPECT_EQ(bad.exit_code, 1) << bad.transcript();
+    EXPECT_NE(bad.out.find("E_INVALID_ARGS"), std::string::npos) << bad.out;
+
+    // The journal of that run: every process names the actor, and each
+    // names the step that started it.
+    const auto trace = result["trace"].get<std::string>();
+    ASSERT_FALSE(trace.empty());
+    std::vector<Json> journal;
+    for (const auto& day : fs::directory_iterator(home.dir() / "logs/ops"))
+        if (fs::exists(day.path() / (trace + ".ndjson"))) {
+            std::istringstream f(tk::read_file(day.path() / (trace + ".ndjson")));
+            for (std::string l; std::getline(f, l);) journal.push_back(Json::parse(l, nullptr, false));
+        }
+    std::map<std::string, std::string> parent_of;
+    std::string first;
+    for (const auto& j : journal) {
+        if (j.value("line", "") != "op" && j.value("line", "") != "child") continue;
+        EXPECT_EQ(j.value("principal", ""), "agent:tester;via=person:dev") << j.dump();
+        parent_of[j["proc"]] = j.value("parent", "");
+        if (j["line"] == "op") first = j["proc"];
+    }
+    ASSERT_FALSE(first.empty()) << trace;
+    EXPECT_GE(parent_of.size(), 2u) << "the verb ran as a process of its own";
+    for (const auto& [proc, parent] : parent_of)
+        if (proc != first) EXPECT_TRUE(parent_of.contains(parent)) << proc << " names " << parent;
+}
+
 XTEST(Luban, ANewEnvironmentFromATemplateIsListedAndDescribed,
       .area = "luban", .cost = tk::Cost::Medium,
       .covers = {"LUBAN-CLI-E2E", "LUBAN-CLI-MAP"}, .requires_ = {"linux", "xlings-bin"}) {

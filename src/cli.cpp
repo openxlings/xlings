@@ -1961,15 +1961,28 @@ int dispatch_(int argc, char* argv[]) {
         }
         const char* agentEnv = std::getenv("XLINGS_AGENT_MODE");
         const bool agent = agentFlag || (agentEnv && std::string_view(agentEnv) == "1");
+        // Who this is (openas, part 4 §7.3): the actor whoever started this
+        // process acts as, inherited through XLINGS_ACTOR -- never declared by
+        // this process for itself -- else what this process can tell.
+        std::string principal = agent ? "agent" : cmd == "interface" ? "program"
+                              : platform::stdin_is_terminal() ? "person" : "program";
+        if (const char* a = std::getenv("XLINGS_ACTOR"); a && *a && std::string_view(a).size() <= 256
+            && std::ranges::all_of(std::string_view(a), [](char c) {
+                   return std::isalnum(static_cast<unsigned char>(c)) || std::string_view(":;=,-_.@").find(c) != std::string_view::npos;
+               }))
+            principal = a;
         observe::ops::begin(Config::paths().homeDir, trace,
                             nlohmann::json{{"client", "xlings"}, {"version", std::string(Info::VERSION)},
                                            {"argv", observe::ops::redact_argv(words)},
                                            {"platform", std::string(platform::OS_NAME)},
                                            {"layout", home::format::kLayout},
                                            {"actor", agent ? "agent" : cmd == "interface" ? "program" : "cli"},
+                                           {"principal", principal},
                                            {"env", journal_env_names_()}},
                             !(inherited && trace == inherited));
         platform::set_env_variable("XLINGS_TRACE_ID", trace);
+        platform::set_env_variable("XLINGS_ACTOR", principal);
+        if (const auto proc = observe::ops::proc(); !proc.empty()) platform::set_env_variable("XLINGS_OPS_PARENT", proc);
     }
 
     // Told once per version, not once per command -- see

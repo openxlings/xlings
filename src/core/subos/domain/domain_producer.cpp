@@ -250,7 +250,7 @@ std::expected<std::vector<std::string>, std::string> command(const Domain& domai
     // what a command routed here from the owner's side was run with.
     for (const auto* key : {"HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
                             "http_proxy", "https_proxy", "all_proxy", "no_proxy",
-                            "XLINGS_AGENT_MODE", "XLINGS_NON_INTERACTIVE", "XLINGS_TRACE", "XLINGS_TRACE_ID",
+                            "XLINGS_AGENT_MODE", "XLINGS_NON_INTERACTIVE", "XLINGS_TRACE", "XLINGS_TRACE_ID", "XLINGS_ACTOR", "XLINGS_OPS_PARENT",
                             "NO_COLOR", "TERM", "COLUMNS"}) {
         if (const auto* value = std::getenv(key); value && *value)
             argv.insert(argv.end(), {"--setenv", key, value});

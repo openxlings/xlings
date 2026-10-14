@@ -36,6 +36,9 @@ struct CommandSpec {
     std::vector<OptionSpec> options;
     std::vector<CommandSpec> children;
     Level level { Level::Common };
+    // What running it does to the world, in openas's words: read,
+    // reversible, irreversible or external; empty when not declared.
+    std::string effect;
 };
 
 struct ParsedManualArgs {

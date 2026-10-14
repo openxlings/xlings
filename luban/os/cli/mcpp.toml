@@ -20,6 +20,7 @@ luban-service = { path = "../service" }
 luban-vm = { path = "../vm" }
 opensal = { path = "../../specs/opensal" }
 openhal = { path = "../../specs/openhal" }
+openas  = { path = "../../specs/openas" }
 opensal-wlr = { path = "../../kits/opensal-wlr" }
 
 [build]

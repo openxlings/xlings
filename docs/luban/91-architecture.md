@@ -7,18 +7,28 @@ small on purpose.
 
 ## Where the code is
 
+`luban/` holds three kinds of package (`luban/README.md`):
+
 | Package | What |
 |---|---|
-| `luban/src/cli` | the `luban` command: one declared tree (levels common, more, expert); each environment command builds the xlings command it is and runs it on the same terminal |
-| `luban/src/image` | images, in-process: GPT, FAT16 with long names, ISO 9660 El Torito entries and the hybrid GPT, qcow2; the table of what differs between machines (UEFI loader, BIOS or not, qemu machine, firmware) |
-| `luban/src/boot` | boot entries (`boot.json`: default, fallback, a trial) |
-| `luban/src/stage0` | the first process; reads nothing before `/proc` is mounted |
-| `luban/src/machine` | the machine's `/etc` (factory files) and system users |
+| `luban/specs/opensal` | a surface: given pixels, gives back events; `opensal.wire` across an address space |
+| `luban/specs/openhal` | devices: which GPUs, displays, audio endpoints and input devices a machine has |
+| `luban/specs/openas` | actors and what they do: the actor and its delegation, effect classes, the envelope of a run |
+| `luban/kits/openhal-host` | openhal's source on Linux, macOS and Windows |
+| `luban/kits/opensal-wlr`, `xdesk-base`, `xdesk-compositor` | a wlroots compositor as an opensal surface; the xdesk desktop |
+| `luban/os/system` | stage-0 (the first process), boot entries, a machine's `/etc`, archives |
+| `luban/os/service` | environments and machines as operations with events; what this computer can do (`luban status`) |
+| `luban/os/vm` | machines: supervisor, terminal relay, guest sessions, hypervisors |
+| `luban/os/cli` | the `luban` command: one declared tree; each command's effect; `luban interface` for programs |
+| `luban/os/desktop` | the Luban OS app's window (SDL3) and Dear ImGui |
+| `modules/image` | images, in-process: GPT, FAT, ISO 9660 with El Torito, qcow2 |
 | `apps/luban` | the binary: luban, or stage-0 when started as `luban-init` |
-| `src/core/subos/root` | the xlings side of a root: projection, generations, rollback, boot, export |
+| `src/core/subos/root` | the xlings side of a root: projection, generations, rollback, export |
 
-`luban/` imports `modules/` and never the xlings frontend: what is on stage-0's
-path cannot read Config. A build rule (`tools/lint_layer_deps.sh`) checks it.
+A specification imports only the standard library and itself; a kit never
+imports xlings or Luban; the OS service imports no presentation; nothing in
+`luban/` imports the xlings frontend (what is on stage-0's path cannot read
+Config). `tools/lint_layer_deps.sh` checks each rule.
 
 ## An environment from an edition
 

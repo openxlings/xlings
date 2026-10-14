@@ -1763,7 +1763,7 @@ int forward_to_carrier_(const CarrierBinding_& b, std::vector<std::string> args,
         return 125;
     }
     std::map<std::string, std::string> env;
-    for (const auto* k : {"XLINGS_AGENT_MODE", "XLINGS_NON_INTERACTIVE", "XLINGS_TRACE", "XLINGS_TRACE_ID", "NO_COLOR", "TERM", "LANG"})
+    for (const auto* k : {"XLINGS_AGENT_MODE", "XLINGS_NON_INTERACTIVE", "XLINGS_TRACE", "XLINGS_TRACE_ID", "XLINGS_ACTOR", "XLINGS_OPS_PARENT", "NO_COLOR", "TERM", "LANG"})
         if (const char* v = std::getenv(k)) env[k] = v;
     return carrier::terminal(*at, args, env);
 }

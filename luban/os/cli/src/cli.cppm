@@ -10,6 +10,8 @@ export module luban.cli;
 
 import std;
 import xlings.cli.model;
+import xlings.libs.json;
+import openas;
 import luban.service;
 
 export namespace luban::cli {
@@ -53,6 +55,16 @@ struct Drive {
 };
 Drive inspect_drive(const std::filesystem::path& dev, const std::filesystem::path& sys = "/sys",
                     const std::filesystem::path& mounts = "/proc/self/mounts");
+
+// The verbs as openas describes them (part 4 §7): every command with an
+// effect, its arguments, its options (the global ones too) and what answers
+// its questions -- what `luban interface --describe` prints.
+std::vector<openas::Verb> verbs();
+nlohmann::json describe_json();
+// The command line a verb's JSON arguments stand for (`luban interface
+// <verb> --args`): arguments by position, a repeated last one after `--`,
+// options by name; an unknown name is refused.
+std::expected<std::vector<std::string>, std::string> argv_of(const openas::Verb& v, const nlohmann::json& args);
 
 int run(int argc, char* argv[]);
 

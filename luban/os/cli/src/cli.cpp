@@ -15,6 +15,7 @@ import luban.vm;
 import opensal.wlr;
 import opensal;
 import openhal;
+import openas;
 
 namespace luban::cli {
 
@@ -823,6 +824,205 @@ bool Parsed::flag(std::string_view name) const {
     return std::ranges::any_of(options, [&](const auto& kv) { return kv.first == name; });
 }
 
+// Who runs this luban (openas §2): the actor whoever started it acts as,
+// inherited through XLINGS_ACTOR, else what this process can tell.
+openas::Actor principal(const Globals& g) {
+    if (const char* a = std::getenv("XLINGS_ACTOR"); a && *a)
+        if (auto known = openas::parse(a)) return *known;
+    if (g.agent) return {openas::Kind::Agent, {}, {}};
+    return {xlings::platform::stdin_is_terminal() ? openas::Kind::Person : openas::Kind::Program, {}, {}};
+}
+
+namespace {
+
+std::string long_name_(const spec::OptionSpec& o) {
+    for (auto a : spec::option_aliases(o))
+        if (a.starts_with("--")) return std::string(a.substr(2));
+    return {};
+}
+
+// The options a verb's questions are answered by, besides -y.
+const std::map<std::string, std::vector<std::string>, std::less<>>& extra_answers_() {
+    static const std::map<std::string, std::vector<std::string>, std::less<>> value{
+        {"new", {"user", "password-file", "no-password"}},
+        {"write", {"serial"}},
+    };
+    return value;
+}
+
+}  // namespace
+
+// luban's verbs as openas describes them (part 4 §7): the command tree, each
+// command with its effect, its arguments and options (the global ones too),
+// and what answers its questions.
+std::vector<openas::Verb> verbs() {
+    std::vector<openas::Verb> out;
+    for (const auto& cmd : tree().children) {
+        if (cmd.effect.empty()) continue;   // not a verb: interface, the binding itself
+        openas::Verb v{.name = cmd.name, .summary = cmd.description,
+                       .effect = openas::effect_from(cmd.effect).value_or(openas::Effect::External)};
+        for (const auto& a : cmd.arguments)
+            v.arguments.push_back({.name = a.name, .description = a.description, .required = a.required, .repeated = a.variadic});
+        for (const auto* list : {&cmd.options, &tree().options})
+            for (const auto& o : *list) {
+                if (list == &tree().options && !o.global) continue;
+                const auto name = long_name_(o);
+                if (name.empty()) continue;
+                v.options.push_back({.name = name, .description = o.description, .flag = o.syntax.find('<') == std::string::npos});
+            }
+        if (openas::asks_first(v.effect)) v.answers.push_back("yes");
+        if (auto it = extra_answers_().find(v.name); it != extra_answers_().end())
+            for (const auto& a : it->second) v.answers.push_back(a);
+        out.push_back(std::move(v));
+    }
+    return out;
+}
+
+Json describe_json() {
+    Json verbs_json = Json::array();
+    for (const auto& v : verbs()) {
+        Json args = Json::array(), opts = Json::array();
+        for (const auto& a : v.arguments)
+            args.push_back({{"name", a.name}, {"description", a.description}, {"required", a.required}, {"repeated", a.repeated}});
+        for (const auto& o : v.options) opts.push_back({{"name", o.name}, {"description", o.description}, {"flag", o.flag}});
+        verbs_json.push_back({{"name", v.name}, {"summary", v.summary}, {"effect", std::string(openas::name_of(v.effect))},
+                              {"arguments", std::move(args)}, {"options", std::move(opts)}, {"answers", v.answers}});
+    }
+    return {{"openas", std::string(openas::kVersion)}, {"client", "luban"}, {"version", std::string(kVersion)},
+            {"verbs", std::move(verbs_json)}};
+}
+
+// The argv a verb's JSON arguments stand for: arguments by position (a
+// repeated last one after `--`), options by name.
+std::expected<std::vector<std::string>, std::string> argv_of(const openas::Verb& v, const Json& args) {
+    if (!args.is_object()) return std::unexpected("the arguments are not a JSON object");
+    std::vector<std::string> out{v.name}, after;
+    std::set<std::string> used;
+    const auto text = [](const Json& j) -> std::optional<std::string> {
+        if (j.is_string()) return j.get<std::string>();
+        if (j.is_number_integer()) return std::to_string(j.get<long long>());
+        if (j.is_number()) return std::format("{}", j.get<double>());
+        return std::nullopt;
+    };
+    for (const auto& a : v.arguments) {
+        if (!args.contains(a.name)) {
+            if (a.required) return std::unexpected(std::format("{} needs `{}`", v.name, a.name));
+            continue;
+        }
+        used.insert(a.name);
+        const auto& val = args[a.name];
+        if (a.repeated) {
+            if (!val.is_array()) return std::unexpected(std::format("`{}` is a list", a.name));
+            for (const auto& one : val) {
+                auto t = text(one);
+                if (!t) return std::unexpected(std::format("`{}` holds a value that is not text", a.name));
+                after.push_back(*t);
+            }
+            continue;
+        }
+        auto t = text(val);
+        if (!t) return std::unexpected(std::format("`{}` is not text", a.name));
+        out.push_back(*t);
+    }
+    for (const auto& o : v.options) {
+        if (!args.contains(o.name)) continue;
+        used.insert(o.name);
+        const auto& val = args[o.name];
+        if (o.flag) {
+            if (!val.is_boolean()) return std::unexpected(std::format("`{}` is true or false", o.name));
+            if (val.get<bool>()) out.push_back("--" + o.name);
+            continue;
+        }
+        for (const auto& one : val.is_array() ? val : Json::array({val})) {
+            auto t = text(one);
+            if (!t) return std::unexpected(std::format("`{}` is not text", o.name));
+            out.push_back("--" + o.name);
+            out.push_back(*t);
+        }
+    }
+    for (auto it = args.begin(); it != args.end(); ++it)
+        if (!used.contains(it.key())) return std::unexpected(std::format("{} has no `{}`", v.name, it.key()));
+    if (!after.empty()) {
+        out.push_back("--");
+        out.insert(out.end(), after.begin(), after.end());
+    }
+    return out;
+}
+
+namespace {
+
+// `luban interface`: the binding of the verbs for a program (part 4 §7.1).
+// `--describe` prints the description; a verb runs as `luban --agent --json`
+// with the arguments it was given, and what it reports comes back as openas
+// envelope lines, ending with `result` (its exit code, the actor, the trace).
+int interface_(std::span<const std::string> rest, const Globals& g) {
+    const auto line = [](const Json& j) { std::println("{}", j.dump()); std::cout.flush(); };
+    if (std::ranges::find(rest, std::string("--describe")) != rest.end()) {
+        line(describe_json());
+        return 0;
+    }
+    const auto fail = [&](std::string text, std::string hint, int code) {
+        line({{"kind", "error"}, {"text", std::move(text)}, {"hint", std::move(hint)}, {"code", "E_INVALID_ARGS"}});
+        line({{"kind", "result"}, {"exitCode", code}, {"actor", openas::format(principal(g))},
+              {"trace", xlings::observe::ops::trace()}});
+        return code;
+    };
+    auto parsed = parse(rest);
+    if (!parsed || parsed->words.empty())
+        return fail("which verb?", "luban interface --describe lists them; luban interface <verb> --args '{...}'", 1);
+    const auto all = verbs();
+    const auto it = std::ranges::find_if(all, [&](const openas::Verb& v) { return v.name == parsed->words[0]; });
+    if (it == all.end()) return fail(std::format("no verb `{}`", parsed->words[0]), "luban interface --describe", 1);
+    Json args = Json::object();
+    if (auto text = parsed->option("--args")) args = Json::parse(*text, nullptr, false);
+    else if (auto file = parsed->option("--args-file")) {
+        std::ifstream in(*file);
+        args = in ? Json::parse(in, nullptr, false) : Json();
+    }
+    if (args.is_discarded() || !args.is_object())
+        return fail("the arguments are not a JSON object", "--args '{\"name\": \"box\"}'", 1);
+    auto argv = argv_of(*it, args);
+    if (!argv) return fail(argv.error(), std::format("luban interface --describe: what {} takes", it->name), 1);
+    std::vector<std::string> child{xlings::platform::get_executable_path().string(), "--agent", "--json"};
+    child.insert(child.end(), argv->begin(), argv->end());
+    // Lines as they come, per stream: the verb's own events become envelope
+    // lines; its result object is data; anything else is a log line.
+    std::map<std::string, std::string, std::less<>> pending;
+    const auto emit = [&](std::string_view stream, std::string_view text) {
+        if (text.empty()) return;
+        if (stream == "stdout") {
+            auto j = Json::parse(text, nullptr, false);
+            if (j.is_object() && j.contains("event") && j["event"].is_string()) {
+                Json out = {{"kind", j["event"]}};
+                for (auto f = j.begin(); f != j.end(); ++f)
+                    if (f.key() != "event") out[f.key()] = f.value();
+                line(out);
+                return;
+            }
+            if (j.is_object() || j.is_array()) {
+                line({{"kind", "data"}, {"data_kind", it->name}, {"data", j}});
+                return;
+            }
+        }
+        line({{"kind", "log"}, {"level", stream == "stderr" ? "warn" : "info"}, {"text", std::string(text)}});
+    };
+    const int rc = xlings::platform::stream::run(child, [&](std::string_view stream, std::string_view chunk) {
+        auto& buf = pending[std::string(stream)];
+        buf.append(chunk);
+        for (auto nl = buf.find('\n'); nl != std::string::npos; nl = buf.find('\n')) {
+            auto one = buf.substr(0, nl);
+            if (!one.empty() && one.back() == '\r') one.pop_back();
+            emit(stream, one);
+            buf.erase(0, nl + 1);
+        }
+    });
+    for (auto& [stream, rest_of] : pending) emit(stream, rest_of);
+    line({{"kind", "result"}, {"exitCode", rc}, {"actor", openas::format(principal(g))}, {"trace", xlings::observe::ops::trace()}});
+    return rc;
+}
+
+}  // namespace
+
 const spec::CommandSpec& tree() {
     using spec::CommandSpec;
     static const CommandSpec value{
@@ -845,18 +1045,18 @@ const spec::CommandSpec& tree() {
                          {"--password-file <FILE>", "Its user's password, the file's first line", false, Level::More},
                          {"--no-password", "Its user logs in without a password", false, Level::More},
                          {"--proxy <URL>", "Its network goes only through this SOCKS5h proxy", false, Level::More},
-                         {"--carrier <CARRIER>", "Where it runs: local, wsl2, vz", false, Level::Expert}}},
+                         {"--carrier <CARRIER>", "Where it runs: local, wsl2, vz", false, Level::Expert}}, .effect = "reversible"},
             {.name = "enter", .description = "Go into an environment, or boot an image",
              .arguments = {{"name", "An environment, or an image file (.iso, .img, .qcow2)", true}},
              .options = {{"--mode <MODE>", "sandbox (this machine's kernel) or machine (its own); default: its setting"},
                          {"--temp", "Nothing it writes stays"},
                          {"--user <NAME>", "Log in as this user this once (root, or one of its users)", false, Level::More},
-                         {"--display <DISPLAY>", "terminal or window; default: its desktop decides", false, Level::More}}},
+                         {"--display <DISPLAY>", "terminal or window; default: its desktop decides", false, Level::More}}, .effect = "reversible"},
             {.name = "run", .description = "Run one command in an environment",
              .arguments = {{"name", "Which", true}, {"command", "The command and its arguments, after --", true, true}},
-             .options = {{"--user <NAME>", "As this user (root, or one of its users)", false, Level::More}}},
-            {.name = "ls", .description = "List the environments", .aliases = {"list"}},
-            {.name = "status", .description = "This host, or one environment", .arguments = {{"name", "Which"}}},
+             .options = {{"--user <NAME>", "As this user (root, or one of its users)", false, Level::More}}, .effect = "reversible"},
+            {.name = "ls", .description = "List the environments", .aliases = {"list"}, .effect = "read"},
+            {.name = "status", .description = "This host, or one environment", .arguments = {{"name", "Which"}}, .effect = "read"},
             {.name = "config", .description = "Show or change an environment's settings",
              .arguments = {{"name", "Which", true}},
              .options = {{"--mode <MODE>", "sandbox or machine: how `luban enter` starts it"},
@@ -875,39 +1075,45 @@ const spec::CommandSpec& tree() {
                          {"--unmount <INSIDE>", "Remove a mapping"},
                          {"--fetch <ACTION>", "auto, ask or deny: installing from inside", false, Level::Expert},
                          {"--observe <LEVEL>", "off, basic, standard or full", false, Level::Expert}},
-             .level = Level::More},
+             .level = Level::More, .effect = "reversible"},
             {.name = "stop", .description = "Stop a running environment or machine", .arguments = {{"name", "Which", true}},
-             .level = Level::More},
+             .level = Level::More, .effect = "reversible"},
             {.name = "history", .description = "An environment's generations", .arguments = {{"name", "Which"}},
-             .level = Level::More},
+             .level = Level::More, .effect = "read"},
             {.name = "upgrade", .description = "Move an environment to its edition's newest version",
              .arguments = {{"name", "Which", true}},
              .options = {{"--to <VERSION>", "This version of the edition"}, {"--dry-run", "Show the plan only"}},
-             .level = Level::More},
+             .level = Level::More, .effect = "reversible"},
             {.name = "rollback", .description = "Go back a generation", .arguments = {{"name", "Which"}},
-             .options = {{"--to <N>", "This generation"}}, .level = Level::More},
+             .options = {{"--to <N>", "This generation"}}, .level = Level::More, .effect = "reversible"},
             {.name = "export", .description = "Write it out: .iso, .img, .qcow2, .tar(.zst), .luban, or a directory",
              .arguments = {{"name", "Which", true}, {"file", "Where; the format follows the name", true}},
              .options = {{"--format <FORMAT>", "iso, img, qcow2, tar, luban or dir, whatever the name says"},
                          {"--size <SIZE>", "Disk size (img, qcow2)"},
                          {"--boot <PROFILE>", "How an image boots: generic (machines), virt (VMs), or ns:name"}},
-             .level = Level::More},
+             .level = Level::More, .effect = "reversible"},
             {.name = "import", .description = "Make an environment from a .luban someone exported",
              .arguments = {{"file", "The .luban file", true}},
              .options = {{"--name <NAME>", "Its name here (default: the one it had)"}},
-             .level = Level::More},
+             .level = Level::More, .effect = "reversible"},
             {.name = "write", .description = "Make a boot drive from an image or an environment",
              .arguments = {{"source", "An image file, or an environment", true}, {"device", "The drive, e.g. /dev/sdb", true}},
              .options = {{"--serial <SERIAL>", "The drive's serial (required with --agent)"}},
-             .level = Level::More},
+             .level = Level::More, .effect = "irreversible"},
             {.name = "rm", .description = "Remove an environment (asks first)", .aliases = {"remove"},
-             .arguments = {{"name", "Which", true}}, .level = Level::More},
-            {.name = "setup", .description = "This host's one-time setup (isolation)", .level = Level::More},
+             .arguments = {{"name", "Which", true}}, .level = Level::More, .effect = "irreversible"},
+            {.name = "setup", .description = "This host's one-time setup (isolation)", .level = Level::More, .effect = "external"},
             {.name = "help", .description = "Help; --all for every command",
              .options = {{"--all", "Every command"}, {"--expert", "And the expert ones"}}, .level = Level::More},
             {.name = "boot", .description = "This machine's boot entries", .arguments = {{"name", "An environment"}},
              .options = {{"--once", "Only the next boot (a trial)"}, {"--fallback", "When the default fails"},
                          {"--mark-good", "This boot worked"}, {"--now", "Switch to it now"}},
+             .level = Level::Expert, .effect = "external"},
+            {.name = "interface", .description = "For programs: the verbs described (openas), or one run with JSON arguments, reported as NDJSON",
+             .arguments = {{"verb", "The verb to run"}},
+             .options = {{"--describe", "Describe every verb: its arguments, options, effect and what answers it"},
+                         {"--args <JSON>", "The verb's arguments and options, by name"},
+                         {"--args-file <FILE>", "The same, read from a file"}},
              .level = Level::Expert},
         },
     };
@@ -1112,12 +1318,18 @@ int run(int argc, char* argv[]) {
         // The operation journal: luban's own, which the xlings it runs joins.
         const auto trace = xlings::observe::ops::trace_from_environment();
         const char* inherited = std::getenv("XLINGS_TRACE_ID");
+        const auto who = openas::format(principal(g));
         xlings::observe::ops::begin(c.home, trace,
                                     Json{{"client", "luban"}, {"version", std::string(kVersion)},
                                          {"argv", xlings::observe::ops::redact_argv(rest)},
-                                         {"actor", g.agent ? "agent" : "cli"}},
+                                         {"actor", g.agent ? "agent" : "cli"}, {"principal", who}},
                                     !(inherited && trace == inherited));
         xlings::platform::set_env_variable("XLINGS_TRACE_ID", trace);
+        // What this runs acts as this does (openas §2.5), and names this step
+        // as its cause.
+        xlings::platform::set_env_variable("XLINGS_ACTOR", who);
+        if (const auto proc = xlings::observe::ops::proc(); !proc.empty())
+            xlings::platform::set_env_variable("XLINGS_OPS_PARENT", proc);
     }
     const int rc = [&]() -> int {
         if (rest.empty()) return overview(c, g);
@@ -1170,6 +1382,7 @@ int run(int argc, char* argv[]) {
             return c.port.terminal(fix);
         }
         if (p.command == "boot") return cmd_boot(c, p, g, render);
+        if (p.command == "interface") return interface_(rest, g);
         return unknown_command(cmd, g);
     }();
     xlings::observe::ops::end(rc);
