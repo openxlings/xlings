@@ -19,6 +19,7 @@ import xlings.testkit;
 
 import std;
 import xlings.platform;
+import xlings.platform.stream;
 
 XTEST(ProcessTerminal, AChildInItsOwnGroupMayUseTheTerminalAndTheTerminalComesBack,
       .area = "platform", .covers = {"PROCESS-TERMINAL-JOB"}, .requires_ = {"posix"}) {
@@ -66,37 +67,26 @@ XTEST(ProcessTerminal, AChildInItsOwnGroupMayUseTheTerminalAndTheTerminalComesBa
 #endif
 }
 
-// `self doctor --fix` repairs another SubOS through a child. A recipe in it
-// that runs `sudo` itself asked for a password on a terminal the child could
-// not read from (`timeout` had put it in a background group), and Ctrl-C did
-// nothing: the person was stuck for the child's whole half-hour bound.
-XTEST(ProcessTerminal, AnUnattendedChildHasNoTerminalToAskOn,
-      .area = "self", .covers = {"ELEVATION-NOBODY-TO-ASK"}, .requires_ = {"posix"}) {
-#if defined(_WIN32)
-    GTEST_SKIP() << "a POSIX controlling terminal";
-#else
+#if !defined(_WIN32)
+namespace {
+// Runs `body` in a child whose controlling terminal is a fresh pty, in its
+// foreground -- a person at a shell prompt -- and returns its wait status.
+int at_a_terminal(const std::function<int()>& body) {
     const int master = ::posix_openpt(O_RDWR | O_NOCTTY);
-    ASSERT_GE(master, 0);
-    ASSERT_EQ(::grantpt(master), 0);
-    ASSERT_EQ(::unlockpt(master), 0);
+    if (master < 0 || ::grantpt(master) != 0 || ::unlockpt(master) != 0) return -1;
     const std::string slave = ::ptsname(master);
-
     const pid_t pid = ::fork();
-    ASSERT_GE(pid, 0);
+    if (pid < 0) return -1;
     if (pid == 0) {
-        // A person at a terminal runs doctor.
         ::setsid();
         const int fd = ::open(slave.c_str(), O_RDWR);
         if (fd < 0 || ::ioctl(fd, TIOCSCTTY, 0) != 0) ::_exit(90);
         ::dup2(fd, 0); ::dup2(fd, 1); ::dup2(fd, 2);
-        // What sudo reads a password from: here it can be opened...
+        // What sudo reads a password from: here it can be opened.
         if (std::system("exec 3</dev/tty") != 0) ::_exit(91);
-        // ...and in the unattended child it cannot, nor is its input a terminal.
-        const int rc = xlings::platform::run_shell_unattended(
-            "if (exec 3</dev/tty) 2>/dev/null; then exit 10; fi; if [ -t 0 ]; then exit 11; fi; exit 0");
-        ::_exit(rc);
+        ::_exit(body());
     }
-    ::close(::open(slave.c_str(), O_RDWR | O_NOCTTY));
+    ::close(::open(slave.c_str(), O_RDWR | O_NOCTTY));   // keep the pty from hanging up early
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
     int status = 0;
     ::fcntl(master, F_SETFL, ::fcntl(master, F_GETFL) | O_NONBLOCK);
@@ -106,14 +96,50 @@ XTEST(ProcessTerminal, AnUnattendedChildHasNoTerminalToAskOn,
         if (std::chrono::steady_clock::now() > deadline) {
             ::kill(pid, SIGKILL);
             ::waitpid(pid, &status, 0);
-            FAIL() << "the run did not end";
+            break;
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(20));
     }
     ::close(master);
-    ASSERT_TRUE(WIFEXITED(status));
-    EXPECT_EQ(WEXITSTATUS(status), 0)
-        << "91: the test's terminal is not a controlling one; 10: the child could open /dev/tty; 11: its input is a terminal";
+    return status;
+}
+
+// Exits 10 when it could open the terminal, 11 when its input is one.
+constexpr const char* kAsksNobody =
+    "if (exec 3</dev/tty) 2>/dev/null; then exit 10; fi; if [ -t 0 ]; then exit 11; fi; exit 0";
+constexpr const char* kWhy =
+    "90/91: the test's terminal is not a controlling one; 10: the child could open /dev/tty; 11: its input is a terminal";
+}  // namespace
+#endif
+
+// `self doctor --fix` repairs another SubOS through a child. A recipe in it
+// that runs `sudo` itself asked for a password on a terminal the child could
+// not read from (`timeout` had put it in a background group), and Ctrl-C did
+// nothing: the person was stuck for the child's whole half-hour bound.
+XTEST(ProcessTerminal, AnUnattendedChildHasNoTerminalToAskOn,
+      .area = "self", .covers = {"ELEVATION-NOBODY-TO-ASK"}, .requires_ = {"posix"}) {
+#if defined(_WIN32)
+    GTEST_SKIP() << "a POSIX controlling terminal";
+#else
+    const int status = at_a_terminal([] { return xlings::platform::run_shell_unattended(kAsksNobody); });
+    ASSERT_TRUE(WIFEXITED(status)) << status;
+    EXPECT_EQ(WEXITSTATUS(status), 0) << kWhy;
+#endif
+}
+
+// The same for a child whose output is read, not shown (the luban service's
+// JSON calls, the Luban OS window's jobs): nobody sees a prompt it prints.
+XTEST(ProcessTerminal, AStreamedChildHasNoTerminalToAskOn,
+      .area = "self", .covers = {"ELEVATION-NOBODY-TO-ASK"}, .requires_ = {"posix"}) {
+#if defined(_WIN32)
+    GTEST_SKIP() << "a POSIX controlling terminal";
+#else
+    const int status = at_a_terminal([] {
+        return xlings::platform::stream::run({"/bin/sh", "-c", kAsksNobody},
+                                             [](std::string_view, std::string_view) {});
+    });
+    ASSERT_TRUE(WIFEXITED(status)) << status;
+    EXPECT_EQ(WEXITSTATUS(status), 0) << kWhy;
 #endif
 }
 
