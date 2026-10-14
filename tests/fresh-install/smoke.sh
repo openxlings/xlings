@@ -287,10 +287,29 @@ EOF
 
 # luban_os <script> <screenshot-dir> [args...] -- the window, headless, driven
 # by a script of a person's input (luban-os --script; tests/README.md).
+# A script that fails leaves the window's log and every machine's console
+# and supervisor logs beside its screenshots (the job's artifact), and the
+# end of each console here: a machine that never shows its desktop is only
+# explained by what it printed.
 luban_os() {
     local script="$1"; shift
+    local rc=0
     SDL_VIDEODRIVER=offscreen SDL_RENDER_DRIVER=software \
-        timeout 1800 "$LUBAN_OS" --headless --script "$script" "$@"
+        timeout 1800 "$LUBAN_OS" --headless --script "$script" "$@" || rc=$?
+    if [ "$rc" -ne 0 ]; then
+        local logs="${XLINGS_HOME_DIR:-$HOME/.xlings}/logs" out
+        out="$(dirname "$script")/logs"
+        mkdir -p "$out"
+        cp "$logs/luban-os.log" "$out/" 2>/dev/null || true
+        cp -r "$logs/machines" "$out/" 2>/dev/null || true
+        local console
+        for console in "$out"/machines/*/console.log; do
+            [ -f "$console" ] || continue
+            log "the end of $(basename "$(dirname "$console")")'s console:"
+            tail -n 40 "$console" | tr -d '\r' | sed 's/^/     /'
+        done
+    fi
+    return "$rc"
 }
 
 # pixel <ppm> <x> <y> -- "r g b" of a screenshot's pixel.
@@ -359,11 +378,21 @@ EOF
     if [ -r /dev/kvm ] && [ -w /dev/kvm ]; then
         section "The desktop edition as a machine (KVM)"
         run "make a desktop machine" luban new deskm --edition desktop -y
+        # A first start names what this host needs (a machine monitor, T1);
+        # a person does what it says, then starts it again.
+        cat > "$shots/machine-first.script" <<EOF
+wait launcher
+click row:deskm
+see 300s xlings install qemu-system
+screenshot $shots/4-machine-hint.bmp
+EOF
+        luban_os "$shots/machine-first.script" || fail "a first start did not name what it needs (screenshots in $shots)"
+        run "its hint" xlings install qemu-system -y
         cat > "$shots/machine.script" <<EOF
 wait launcher
 click row:deskm
-wait desktop 900
-waitfor desktop.texture.0 1100 900
+wait desktop 420
+waitfor desktop.texture.0 1100 120
 sleep 8000
 frames 2
 screenshot $shots/4-machine.ppm
