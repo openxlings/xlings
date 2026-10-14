@@ -155,9 +155,11 @@ rf::Inputs inputs(const fs::path& home, const fs::path& subos_dir,
             in.payloads.push_back(*root);
         if (kind == "program" && !dest.empty()) {
             if (dest == "xlings") have_xlings = true;
-            // Arguments have to be added at exec time: such a program keeps
-            // its shim. Nothing on the boot path has any.
-            if (!data.alias.empty()) {
+            // Arguments and the environment its recipe registered (vim's
+            // $VIM, curl's CA bundle, tmux's terminfo) have to be added at
+            // exec time: such a program keeps its shim. Nothing on the boot
+            // path has either.
+            if (!data.alias.empty() || !data.envs.empty()) {
                 in.programs.push_back({dest, entry_of(home)});
                 continue;
             }
