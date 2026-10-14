@@ -26,6 +26,13 @@ letters, digits and `-_.@`.
 2.5 An actor is inherited, not declared: what a process starts acts as that
 process's actor, or as a delegate of it.
 
+2.6 A record names how it knows its actor: given (by whoever started the
+run, on its command line), inherited (from the process that started it) or
+observed (what the process can tell of itself). An actor is as trustworthy as
+the boundary between it and the record: a record its process cannot write
+(another environment, another user) holds against it; one it can write does
+not.
+
 ## 3. Effects
 
 3.1 Every verb has one effect class:

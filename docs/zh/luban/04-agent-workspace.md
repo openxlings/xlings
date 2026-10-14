@@ -67,3 +67,9 @@ XLINGS_ACTOR=agent:my-agent luban interface new --args '{"name": "box", "edition
 没有任何东西会等待回答：需要回答的运行以退出码 2 结束，并给出对应的选项。`XLINGS_ACTOR` 说明是谁在运行
 （`agent:<名字>`，`;via=person:<名字>` 表示代谁）；它启动的一切都继承它，操作日志（`xlings self log`）记录它，
 以及每个进程是由哪一步启动的。
+
+`--as` 在命令行上说明是谁；在系统里运行的 agent 被它约束：记录在这个 home 里，系统里的任何东西都写不到。
+
+```bash
+luban run agent --as agent:claude -- claude
+```

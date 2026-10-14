@@ -1,6 +1,6 @@
 # openkal：来自 Luban 的上游提案（草稿）
 
-日期：2026-10-15　状态：草稿，确认后作为一个 issue 提交到 `mcpplibs/openkal`
+日期：2026-10-15　状态：已作为一个聚合 issue 提交（mcpplibs/openkal#47），只记录需求，不期望 openkal 现在改动
 
 依据：Luban OS part 4 §6.5（`2026-10-15-luban-os-part4-design.md`）。每一项写清 Luban 需要什么、openkal 0.15
 今天有什么、建议的接口，以及 Luban 怎样采用。`modules/platform` 里的实现按这里的形状写，提案被接受之后只换实现。

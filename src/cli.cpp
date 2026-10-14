@@ -1966,18 +1966,21 @@ int dispatch_(int argc, char* argv[]) {
         // this process for itself -- else what this process can tell.
         std::string principal = agent ? "agent" : cmd == "interface" ? "program"
                               : platform::stdin_is_terminal() ? "person" : "program";
+        std::string principalSource = "observed";
         if (const char* a = std::getenv("XLINGS_ACTOR"); a && *a && std::string_view(a).size() <= 256
             && std::ranges::all_of(std::string_view(a), [](char c) {
                    return std::isalnum(static_cast<unsigned char>(c)) || std::string_view(":;=,-_.@").find(c) != std::string_view::npos;
-               }))
+               })) {
             principal = a;
+            principalSource = "inherited";
+        }
         observe::ops::begin(Config::paths().homeDir, trace,
                             nlohmann::json{{"client", "xlings"}, {"version", std::string(Info::VERSION)},
                                            {"argv", observe::ops::redact_argv(words)},
                                            {"platform", std::string(platform::OS_NAME)},
                                            {"layout", home::format::kLayout},
                                            {"actor", agent ? "agent" : cmd == "interface" ? "program" : "cli"},
-                                           {"principal", principal},
+                                           {"principal", principal}, {"principal_source", principalSource},
                                            {"env", journal_env_names_()}},
                             !(inherited && trace == inherited));
         platform::set_env_variable("XLINGS_TRACE_ID", trace);

@@ -13,7 +13,7 @@ Levels: `common` is what `luban --help` shows, `more` what `luban help --all` ad
 
 Luban OS: environments, and the machines they run as
 
-Options: `--json` — Machine-readable output: the events and the result; `--agent` — For an agent: plain output, never a question; `-y, --yes` — Answer yes to confirmations; `-v, --verbose` — Each step as well; `-q, --quiet` — Only what failed; `-h, --help` — This help; `--version` — The luban version
+Options: `--json` — Machine-readable output: the events and the result; `--agent` — For an agent: plain output, never a question; `-y, --yes` — Answer yes to confirmations; `-v, --verbose` — Each step as well; `-q, --quiet` — Only what failed; `--as <ACTOR>` — Who this is (agent:<name>[;via=person:<name>]): recorded and inherited by what it runs; `-h, --help` — This help; `--version` — The luban version
 
 ## `luban new <name>` (common)
 

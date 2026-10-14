@@ -566,8 +566,16 @@ std::optional<SoundForward> sound_forward(bool granted, const fs::path& pulse, c
                         "tcp:10.0.2.101:4713"};
 }
 
+int start_vz_(const service::Context& c, std::string_view name, const EnterOptions& o);
+
 int start(const service::Context& c, std::string_view name, const EnterOptions& o) {
     if (running(c.home, name)) return 0;
+    if constexpr (platform::is_macos) return start_vz_(c, name, o);
+    if constexpr (platform::is_windows) {
+        say_(c, service::error("on a PC a machine runs in the Luban host machine, on its console",
+                               std::format("luban enter {} --mode machine", name)));
+        return 1;
+    }
     return start_impl_(c, name, o);
 }
 
@@ -799,9 +807,9 @@ int enter(const service::Context& c, std::string_view name_or_image, const Enter
     }
     if constexpr (!platform::is_linux) {
         std::error_code ec;
-        if (platform::is_windows || fs::is_regular_file(name_or_image, ec) || o.display == "window") {
+        if (platform::is_windows || fs::is_regular_file(name_or_image, ec)) {
             say_(c, service::error(platform::is_windows ? "an image file boots on a Linux host in this version"
-                                                        : "on a Mac a machine is one of its systems, on its console, in this version",
+                                                        : "on a Mac an image file does not boot in this version",
                                    std::format("luban enter {} (the sandbox), or luban export {} {}.iso", name_or_image, name_or_image, name_or_image)));
             return 1;
         }

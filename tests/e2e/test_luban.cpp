@@ -203,6 +203,49 @@ XTEST(Luban, AProgramDescribesTheVerbsRunsOneAndTheJournalSaysWhoAndWhy, .area =
         if (proc != first) EXPECT_TRUE(parent_of.contains(parent)) << proc << " names " << parent;
 }
 
+// Who ran it, and how the journal knows (openas §2.5): given on the command
+// line (--as), inherited from what started it (XLINGS_ACTOR), or observed.
+XTEST(Luban, TheJournalSaysWhoRanItAndHowItKnows, .area = "luban",
+      .covers = {"CONTROL-PRINCIPAL"}, .requires_ = {"xlings-bin"}) {
+    const auto bin = luban_binary();
+    if (!bin) GTEST_SKIP() << "no luban beside the xlings under test (mcpp build -p luban-tool, or LUBAN_BIN)";
+    auto home = luban_home("luban-as", *bin);
+    const auto ops_of = [&](const std::string& trace) {
+        std::vector<Json> lines;
+        for (const auto& day : fs::directory_iterator(home.dir() / "logs/ops"))
+            if (fs::exists(day.path() / (trace + ".ndjson"))) {
+                std::istringstream f(tk::read_file(day.path() / (trace + ".ndjson")));
+                for (std::string l; std::getline(f, l);) lines.push_back(Json::parse(l, nullptr, false));
+            }
+        return lines;
+    };
+    int runs = 0;
+    const auto first_line = [&](std::vector<std::string> args, std::map<std::string, std::string> env) {
+        tk::RunOptions o;
+        o.argv = {(home.dir() / "bin/luban").string()};
+        o.argv.insert(o.argv.end(), args.begin(), args.end());
+        o.env = home.env();
+        o.env["XLINGS_TOOLS_SEARCH"] = "home";
+        o.env["XLINGS_TRACE_ID"] = std::format("as-test-{}", ++runs);
+        for (auto& [k, v] : env) o.env[k] = v;
+        o.timeout = std::chrono::seconds(60);
+        (void)tk::run(o);
+        for (const auto& l : ops_of(o.env["XLINGS_TRACE_ID"]))
+            if (l.value("client", "") == "luban") return l;
+        return Json();
+    };
+    auto given = first_line({"--as", "agent:tester;via=person:dev", "config", "nobox"}, {});
+    EXPECT_EQ(given.value("principal", ""), "agent:tester;via=person:dev") << given.dump();
+    EXPECT_EQ(given.value("principal_source", ""), "given") << given.dump();
+    auto inherited = first_line({"config", "nobox"}, {{"XLINGS_ACTOR", "agent:other"}});
+    EXPECT_EQ(inherited.value("principal", ""), "agent:other") << inherited.dump();
+    EXPECT_EQ(inherited.value("principal_source", ""), "inherited") << inherited.dump();
+    // What is not an actor is not believed.
+    auto bad = first_line({"--as", "root:me", "config", "nobox"}, {});
+    EXPECT_NE(bad.value("principal", ""), "root:me") << bad.dump();
+    EXPECT_EQ(bad.value("principal_source", ""), "observed") << bad.dump();
+}
+
 XTEST(Luban, ANewEnvironmentFromATemplateIsListedAndDescribed,
       .area = "luban", .cost = tk::Cost::Medium,
       .covers = {"LUBAN-CLI-E2E", "LUBAN-CLI-MAP"}, .requires_ = {"linux", "xlings-bin"}) {

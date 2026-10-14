@@ -142,43 +142,69 @@ std::string edition_ref(std::string_view edition) {
 // edition, packages, generation and shell it has. False when the carrier
 // does not answer (a guest from before it carried luban): the record here
 // stands, without them.
-bool describe_in_carrier_(const Context& c, Environment& e) {
-    const auto* carrier = xlings::carrier::find(e.carrier);
-    if (!carrier) return false;
-    auto at = carrier->ensure(HomeView{c.home});
-    if (!at || at->launcher.empty()) return false;
-    std::vector<std::string> argv = at->launcher;
-    argv.insert(argv.end(), {"/xlings/bin/luban", "status", e.name, "--json"});
-    std::string out;
-    if (xlings::platform::stream::run(argv, [&](std::string_view stream, std::string_view bytes) {
-            if (stream == "stdout") out.append(bytes);
-        }) != 0)
-        return false;
-    std::istringstream lines(out);
-    nlohmann::json j;
-    for (std::string line; std::getline(lines, line);)
-        if (auto one = nlohmann::json::parse(line, nullptr, false); one.is_object()) {
-            if (one.contains("result") && one["result"].is_object()) one = one["result"];   // `--json`'s value line
-            if (one.contains("name")) j = one;
-        }
-    if (!j.is_object() || j.value("name", std::string{}) != e.name) return false;
+// What the luban there says of one system (its status --json fields).
+void apply_guest_(Environment& e, const nlohmann::json& j) {
     e.kind = j.value("kind", e.kind);
     e.edition = j.value("edition", e.edition);
     e.packages = j.value("packages", e.packages);
     e.shell = j.value("shell", std::string{});
     e.running = j.value("running", false);
     if (j.contains("generation") && j["generation"].is_number_integer()) e.generation = j["generation"].get<int>();
-    return true;
 }
 
-std::expected<Environment, std::string> describe(const Context& c, std::string_view name) {
+// `/xlings/bin/luban <args> --json` in the carrier's machine: its JSON lines.
+std::vector<nlohmann::json> ask_guest_luban_(const Context& c, std::string_view carrier_name, std::vector<std::string> args) {
+    const auto* carrier = xlings::carrier::find(carrier_name);
+    if (!carrier) return {};
+    auto at = carrier->ensure(HomeView{c.home});
+    if (!at || at->launcher.empty()) return {};
+    std::vector<std::string> argv = at->launcher;
+    argv.push_back("/xlings/bin/luban");
+    argv.insert(argv.end(), args.begin(), args.end());
+    argv.push_back("--json");
+    std::string out;
+    if (xlings::platform::stream::run(argv, [&](std::string_view stream, std::string_view bytes) {
+            if (stream == "stdout") out.append(bytes);
+        }) != 0)
+        return {};
+    std::vector<nlohmann::json> lines;
+    std::istringstream in(out);
+    for (std::string line; std::getline(in, line);)
+        if (auto one = nlohmann::json::parse(line, nullptr, false); one.is_object())
+            lines.push_back(one.contains("result") && one["result"].is_object() ? one["result"] : one);
+    return lines;
+}
+
+// A system on a carrier lives in that carrier's machine: what it is comes
+// from the luban there, through the same interface (part 4 §7.4) -- the
+// edition, packages, generation and shell it has. False when the carrier
+// does not answer (a guest from before it carried luban): the record here
+// stands, without them.
+bool describe_in_carrier_(const Context& c, Environment& e) {
+    for (const auto& j : ask_guest_luban_(c, e.carrier, {"status", e.name}))
+        if (j.value("name", std::string{}) == e.name) {
+            apply_guest_(e, j);
+            return true;
+        }
+    return false;
+}
+
+namespace {
+
+// What this home's record says, and what the system's own files say where
+// this host can read them (here, its prefix domain, a Mac's host machine
+// tree); `asked` when they are only in a carrier's machine (a PC's WSL).
+std::expected<Environment, std::string> describe_(const Context& c, std::string_view name, bool& asked) {
     if (!exists_(c, name)) return std::unexpected(std::format("there is no environment '{}'", name));
-    const HomeView view = xlings::subos::locate(HomeView{c.home}, name).home;
+    const auto at = xlings::subos::locate(HomeView{c.home}, name);
+    const HomeView view = at.home;
     Environment e;
     e.name = std::string(name);
+    const auto record = read_json_(HomeView{c.home}.instance_file(name));
     const auto instance = read_json_(view.instance_file(name));
     e.kind = instance.value("kind", "view") == "rootfs" ? "root" : "view";
-    e.carrier = instance.value("carrier", "local");
+    e.carrier = record.value("carrier", "local");
+    asked = e.carrier != "local" && !at.domain;
     std::set<std::string> packages;
     if (auto record = xlings::subos::edition::read(instance)) {
         e.edition = record->ref;
@@ -200,22 +226,44 @@ std::expected<Environment, std::string> describe(const Context& c, std::string_v
         }
     }
     e.running = xlings::subos::session::find(view, name).has_value();
-    if (e.carrier != "local") describe_in_carrier_(c, e);
     auto settings = read_settings(c.home, name);
     if (!settings) return std::unexpected(settings.error());
     e.settings = *settings;
     return e;
 }
 
+}  // namespace
+
+std::expected<Environment, std::string> describe(const Context& c, std::string_view name) {
+    bool asked = false;
+    auto e = describe_(c, name, asked);
+    if (e && asked) describe_in_carrier_(c, *e);
+    return e;
+}
+
+// Every system: those this host can read, read; those only a carrier's
+// machine has, asked of the luban there once for all of them (one round
+// trip per carrier, not one per system).
 std::expected<std::vector<Environment>, std::string> list(const Context& c) {
     std::vector<Environment> out;
+    std::map<std::string, std::vector<std::size_t>> by_carrier;
     std::error_code ec;
     for (fs::directory_iterator it(HomeView{c.home}.subos_root(), ec), end; !ec && it != end; it.increment(ec)) {
         const auto name = it->path().filename().string();
         if (name == "default" || name == "current" || name.starts_with('.') || !it->is_directory(ec)) continue;
-        auto e = describe(c, name);
+        bool asked = false;
+        auto e = describe_(c, name, asked);
         if (!e) return std::unexpected(e.error());
+        if (asked) by_carrier[e->carrier].push_back(out.size());
         out.push_back(std::move(*e));
+    }
+    for (const auto& [carrier, which] : by_carrier) {
+        std::map<std::string, nlohmann::json> there;
+        for (const auto& j : ask_guest_luban_(c, carrier, {"ls"}))
+            for (const auto& one : j.value("environments", nlohmann::json::array()))
+                if (one.is_object()) there[one.value("name", std::string{})] = one;
+        for (const auto i : which)
+            if (auto it = there.find(out[i].name); it != there.end()) apply_guest_(out[i], it->second);
     }
     std::ranges::sort(out, {}, &Environment::name);
     return out;

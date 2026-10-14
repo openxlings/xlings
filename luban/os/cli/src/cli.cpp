@@ -87,6 +87,7 @@ std::string human_size_(std::uintmax_t bytes) {
 }
 
 struct Globals {
+    std::string as;           // --as: who this is (openas), given by whoever ran it
     bool json { false };
     bool agent { false };
     bool yes { false };
@@ -531,7 +532,15 @@ int overview(const svc::Context& c, const Globals& g) {
     auto envs = svc::list(c);
     if (g.json) {
         Json list = Json::array();
-        if (envs) for (const auto& e : *envs) list.push_back({{"name", e.name}, {"edition", e.edition}, {"kind", e.kind}});
+        // What each is (the fields of `status <name> --json`): a host that asks
+        // a carrier's machine reads all of them in one call.
+        if (envs)
+            for (const auto& e : *envs) {
+                Json one{{"name", e.name}, {"edition", e.edition}, {"kind", e.kind}, {"packages", e.packages},
+                         {"running", e.running}, {"shell", e.shell}, {"carrier", e.carrier}};
+                if (e.generation) one["generation"] = *e.generation;
+                list.push_back(std::move(one));
+            }
         std::println("{}", Json{{"place", to_string(where())}, {"environments", list}}.dump());
         return envs ? 0 : 1;
     }
@@ -549,7 +558,7 @@ int overview(const svc::Context& c, const Globals& g) {
         return 1;
     }
     if (envs->empty()) {
-        std::println("  no environments yet\n\n  start   luban new box --edition tiny");
+        std::println("  no environments yet\n\n  start   luban new box");
         return 0;
     }
     for (const auto& e : *envs)
@@ -836,10 +845,21 @@ bool Parsed::flag(std::string_view name) const {
 // Who runs this luban (openas §2): the actor whoever started it acts as,
 // inherited through XLINGS_ACTOR, else what this process can tell.
 openas::Actor principal(const Globals& g) {
+    if (!g.as.empty())
+        if (auto given = openas::parse(g.as)) return *given;
     if (const char* a = std::getenv("XLINGS_ACTOR"); a && *a)
         if (auto known = openas::parse(a)) return *known;
     if (g.agent) return {openas::Kind::Agent, {}, {}};
     return {xlings::platform::stdin_is_terminal() ? openas::Kind::Person : openas::Kind::Program, {}, {}};
+}
+
+// How the journal knows who it is (openas §2.5): `given` on this command
+// line by whoever ran it, `inherited` from the process that started this
+// one (XLINGS_ACTOR), `observed` (a terminal, agent mode) otherwise.
+std::string_view principal_source(const Globals& g) {
+    if (!g.as.empty() && openas::parse(g.as)) return "given";
+    if (const char* a = std::getenv("XLINGS_ACTOR"); a && *a && openas::parse(a)) return "inherited";
+    return "observed";
 }
 
 namespace {
@@ -1043,6 +1063,7 @@ const spec::CommandSpec& tree() {
             {"-y, --yes", "Answer yes to confirmations", true, Level::More},
             {"-v, --verbose", "Each step as well", true, Level::More},
             {"-q, --quiet", "Only what failed", true, Level::Expert},
+            {"--as <ACTOR>", "Who this is (agent:<name>[;via=person:<name>]): recorded and inherited by what it runs", true, Level::Expert},
             {"-h, --help", "This help"},
             {"--version", "The luban version"},
         },
@@ -1289,6 +1310,8 @@ int run(int argc, char* argv[]) {
     for (std::size_t i = 0; i < args.size(); ++i) {
         const auto& a = args[i];
         if (a == "--") { rest.insert(rest.end(), args.begin() + static_cast<std::ptrdiff_t>(i), args.end()); break; }
+        if (a == "--as" && i + 1 < args.size()) { g.as = args[++i]; continue; }
+        if (a.starts_with("--as=")) { g.as = a.substr(5); continue; }
         if (a == "--json") g.json = true;
         else if (a == "--agent") g.agent = true;
         else if (a == "-y" || a == "--yes") g.yes = true;
@@ -1334,7 +1357,8 @@ int run(int argc, char* argv[]) {
         xlings::observe::ops::begin(c.home, trace,
                                     Json{{"client", "luban"}, {"version", std::string(kVersion)},
                                          {"argv", xlings::observe::ops::redact_argv(rest)},
-                                         {"actor", g.agent ? "agent" : "cli"}, {"principal", who}},
+                                         {"actor", g.agent ? "agent" : "cli"}, {"principal", who},
+                                         {"principal_source", std::string(principal_source(g))}},
                                     !(inherited && trace == inherited));
         xlings::platform::set_env_variable("XLINGS_TRACE_ID", trace);
         // What this runs acts as this does (openas §2.5), and names this step

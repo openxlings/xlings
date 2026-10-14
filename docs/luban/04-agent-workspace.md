@@ -77,3 +77,10 @@ names the option. `XLINGS_ACTOR` says who is running it (`agent:<name>`,
 `;via=person:<name>` for whom); everything it starts inherits it, and the
 operation journal (`xlings self log`) records it with the step that started
 each process.
+
+`--as` says it on the command line, and an agent run in a system is held to
+it: the record is this home's, which nothing in the system can write.
+
+```bash
+luban run agent --as agent:claude -- claude
+```

@@ -33,3 +33,27 @@ XTEST(SubosLocated, ASystemInAPrefixDomainIsFoundInItsPrivateHome, .area = "subo
         EXPECT_EQ(here.logical, home.dir()) << name;
     }
 }
+
+// What a root's links name (/xlings/...) is read from outside through them:
+// the desktop a system declares is found from the host (part 4, the Luban OS
+// app's desktop of a system in a prefix domain or a Mac's host machine).
+XTEST(SubosLocated, ALinkThatNamesTheSystemsHomeIsFollowedIntoWhereThisHostHasIt, .area = "subos",
+      .covers = {"DOMAIN-LUBAN-SYSTEM"}, .requires_ = {"linux"}) {
+    namespace fs = std::filesystem;
+    auto home = tk::Home::isolated("located-physical");
+    const auto physical = home.dir() / "domains/xlings/private";
+    const xlings::subos::Located at{xlings::subos::HomeView{physical}, "/xlings-located-test", true};
+    tk::write_file(physical / "data/xpkgs/x-labwc/1/share/wayland-sessions/labwc.desktop", "[Desktop Entry]\n");
+    const auto root = physical / "subos/box/rootfs";
+    fs::create_directories(root / "usr/share");
+    fs::create_symlink("/xlings-located-test/data/xpkgs/x-labwc/1/share/wayland-sessions", root / "usr/share/wayland-sessions");
+    const auto here = xlings::subos::physical(at, root / "usr/share/wayland-sessions");
+    EXPECT_EQ(here, (physical / "data/xpkgs/x-labwc/1/share/wayland-sessions").lexically_normal());
+    EXPECT_TRUE(fs::exists(here / "labwc.desktop"));
+    // A relative link on the way, and a path with no links, are what they are.
+    fs::create_symlink("share", root / "usr/share2");
+    EXPECT_EQ(xlings::subos::physical(at, root / "usr/share2/wayland-sessions"),
+              (physical / "data/xpkgs/x-labwc/1/share/wayland-sessions").lexically_normal());
+    const xlings::subos::Located here_only{xlings::subos::HomeView{home.dir()}, home.dir(), false};
+    EXPECT_EQ(xlings::subos::physical(here_only, root / "usr/share/wayland-sessions"), root / "usr/share/wayland-sessions");
+}

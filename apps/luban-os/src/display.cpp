@@ -1,6 +1,8 @@
 module luban.os;
 
 import std;
+import xlings.subos.home_view;
+import xlings.subos.located;
 import xlings.libs.json;
 import xlings.platform;
 import opensal;
@@ -20,14 +22,25 @@ std::optional<std::string> desktop_session(const fs::path& home, const std::stri
     if (setting == "none") return std::nullopt;
     const auto root = service::root_of(home, name);
     if (!root) return std::nullopt;
-    // The root's /usr/share links lead into this home's payloads, which are
-    // the same paths here: what the guest will find, read before it boots.
-    const auto found = opensal::wlr::sessions({*root / "usr" / "local" / "share" / "wayland-sessions",
-                                                      *root / "usr" / "share" / "wayland-sessions"});
-    if (found.empty()) return std::nullopt;
-    if (setting.empty()) return found.front().id;
-    for (const auto& s : found)
-        if (s.id == setting) return s.id;
+    // The root's /usr/share links name the system's own home (/xlings in a
+    // prefix domain or a Mac's host machine): followed into where this host
+    // has those files. Only the session's id is needed here -- the guest
+    // reads the rest -- so the entries are listed, not parsed.
+    const auto at = xlings::subos::locate(xlings::subos::HomeView{home}, name);
+    std::vector<std::string> ids;
+    std::error_code ec;
+    for (const auto& dir : {*root / "usr" / "local" / "share" / "wayland-sessions", *root / "usr" / "share" / "wayland-sessions"}) {
+        const auto here = xlings::subos::physical(at, dir);
+        std::vector<fs::path> entries;
+        for (fs::directory_iterator it(here, ec), end; !ec && it != end; it.increment(ec)) entries.push_back(it->path());
+        ec.clear();
+        std::ranges::sort(entries);
+        for (const auto& e : entries)
+            if (e.extension() == ".desktop" && std::ranges::find(ids, e.stem().string()) == ids.end()) ids.push_back(e.stem().string());
+    }
+    if (ids.empty()) return std::nullopt;
+    if (setting.empty()) return ids.front();
+    if (std::ranges::find(ids, setting) != ids.end()) return setting;
     return std::nullopt;
 }
 

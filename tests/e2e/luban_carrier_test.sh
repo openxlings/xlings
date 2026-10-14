@@ -43,6 +43,19 @@ assert j["packages"] > 0, j
 assert j.get("generation", 0) >= 1, j
 PY
 
+# Every system at once: one question to the luban there, not one per system.
+before=$(wc -l < "$work/wsl/calls.log")
+ls_json="$(run "$pkg/bin/luban" ls --json)" || fail "luban ls through the carrier"
+asked="$(tail -n +$((before + 1)) "$work/wsl/calls.log")"
+[[ $(grep -c '/xlings/bin/luban ls' <<<"$asked") -eq 1 ]] || fail "luban ls did not ask the carrier once: $asked"
+! grep -q '/xlings/bin/luban status' <<<"$asked" || fail "luban ls asked the carrier per system: $asked"
+python3 - "$ls_json" <<'PY' || fail "luban ls --json: $ls_json"
+import json, sys
+j = json.loads([l for l in sys.argv[1].splitlines() if l.strip()][-1])
+box = [e for e in j["environments"] if e["name"] == "cbox"][0]
+assert box["carrier"] == "wsl2" and box["kind"] == "root" and box["packages"] > 0, box
+PY
+
 # A command in it, there.
 got="$(run "$pkg/bin/luban" run cbox -- uname -s 2>&1)" || fail "luban run through the carrier: $got"
 [[ "$got" == *Linux* ]] || fail "uname in the system said: $got"
