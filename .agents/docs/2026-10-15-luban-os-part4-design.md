@@ -545,9 +545,9 @@ Luban 的每一条设计原则，同时也是一条可测性原则：
 
 - xim-pkgindex：`linux-kernel-virt` 6.12.112-r1（`FUSE_FS`、`VIRTIO_FS`；build.sh 支持配置修订）由 res-build 构建；
   `luban-os` 的 macOS 与 Windows 段，xlings、luban-os、xdesk 的版本，随发布更新。
-- openkal：提案草稿 `2026-10-15-openkal-proposals-from-luban.md`，待维护者确认后提交。
+- openkal：提案草稿 `2026-10-15-openkal-proposals-from-luban.md`，确认后作为一个 issue 提交。
 
-**需要真机验证的（维护者）：**
+**需要真机验证的（一台 Apple 芯片的 Mac、一台 Windows 11 的 PC）：**
 
 - Apple 芯片上宿主机的创建、启动、`luban new / enter / run`、machine；
 - Windows 11 上 machine 经宿主机的 KVM 启动；
