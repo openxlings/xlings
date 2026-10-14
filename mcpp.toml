@@ -43,15 +43,15 @@ members = [
     "modules/confine",
     "modules/carrier",
     "modules/image",
-    "luban/system",
-    "luban/service",
-    "luban/vm",
-    "luban/cli",
-    "luban/desktop/opensal/spec",
-    "luban/desktop/opensal/wlr",
-    "luban/desktop/xdesk/base",
-    "luban/desktop/xdesk/compositor",
-    "luban/desktop/host",
+    "luban/os/system",
+    "luban/os/service",
+    "luban/os/vm",
+    "luban/os/cli",
+    "luban/specs/opensal",
+    "luban/kits/opensal-wlr",
+    "luban/kits/xdesk-base",
+    "luban/kits/xdesk-compositor",
+    "luban/os/desktop",
     "apps/luban",
     "apps/luban-os",
     "apps/xdesk",
@@ -176,11 +176,11 @@ capi.lua = "0.0.3"
 testkit = { path = "modules/testkit" }
 # Tests drive Luban's own modules (stage-0, the luban command); the xlings
 # binary itself never links them.
-luban-system = { path = "luban/system" }
-luban-cli    = { path = "luban/cli" }
-opensal     = { path = "luban/desktop/opensal/spec" }
-opensal-wlr = { path = "luban/desktop/opensal/wlr" }
-xdesk-base = { path = "luban/desktop/xdesk/base" }
+luban-system = { path = "luban/os/system" }
+luban-cli    = { path = "luban/os/cli" }
+opensal     = { path = "luban/specs/opensal" }
+opensal-wlr = { path = "luban/kits/opensal-wlr" }
+xdesk-base = { path = "luban/kits/xdesk-base" }
 
 [dev-dependencies.compat]
 gtest = "1.15.2"

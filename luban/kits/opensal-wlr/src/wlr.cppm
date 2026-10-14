@@ -1,5 +1,4 @@
-// opensal-wlr: a wlroots compositor's output as an opensal surface (Luban OS
-// architecture design §9.3).
+// opensal-wlr: a wlroots compositor's output as an opensal surface.
 //
 // The bridge is an opensal.wire CONSUMER on a byte stream (the provider is
 // the Luban OS window, across a machine's virtio-serial or a sandbox's pipe)

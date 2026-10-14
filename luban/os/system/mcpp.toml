@@ -13,9 +13,9 @@ version   = "0.1.0"
 kind = "lib"
 
 [dependencies]
-libs     = { path = "../../modules/libs" }
-platform = { path = "../../modules/platform" }
-subos    = { path = "../../modules/subos" }
+libs     = { path = "../../../modules/libs" }
+platform = { path = "../../../modules/platform" }
+subos    = { path = "../../../modules/subos" }
 
 [build]
-include_dirs = ["../../modules/libs/src/json"]
+include_dirs = ["../../../modules/libs/src/json"]

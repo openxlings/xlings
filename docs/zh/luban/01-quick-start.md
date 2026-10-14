@@ -19,7 +19,7 @@ generation N`）以及下一步（`enter  luban enter box`）。宿主上第一�
 ## 2. 在里面工作
 
 ```bash
-luban enter box               # 进入它的 shell；提示符说明在哪里：[luban] root@box:~#
+luban enter box               # a shell in it; the prompt says where: [luban] root@box:~#
 luban run box -- uname -a     # one command in it, from outside
 luban run box -- xlings install -y cmake
 ```
@@ -30,14 +30,14 @@ luban run box -- xlings install -y cmake
 ```
  Luban OS 2026.10.15.1 · [luban] box
  ──────────────────────────────────────────────────────────
- 系统     tiny 2026.10.11.1 · 第 4 代 · 4 个包
- 运行     沙箱：与本机共用内核（Linux 6.8.0）
- 保留     所有改动
- 用户     root · /root
- xlings   只管理这个系统（R）
- 时间     2026-10-15 09:00 UTC
+ system    tiny 2026.10.11.1 · generation 4 · 4 packages
+ runs as   sandbox: shares this host's kernel (Linux 6.8.0)
+ keeps     everything
+ user      root · /root
+ xlings    manages this system only (R)
+ time      2026-10-15 09:00 UTC
  ──────────────────────────────────────────────────────────
- exit 离开 · luban status box
+ exit to leave · luban status box
 ```
 
 提示符的标记说明你在哪里：`[luban]` 是与本机共用内核的系统，`<luban>` 是有自己内核的系统（`--mode machine`），
@@ -55,8 +55,8 @@ Luban 系统是独立的用户态 OS：它里面的 xlings 只管理它自己（
 
 ```bash
 luban new box --edition core --user alice --no-password
-luban enter box --user root   # 这一次以 root 进入
-luban config box --login root # 以后都以 root 进入
+luban enter box --user root   # root this once
+luban config box --login root # and from now on
 ```
 
 密码只以哈希形式保存在系统自己的 `/etc/shadow` 里。要在里面以 root 操作，就以 root 进入：这个系统本来就归本机上的你所有。

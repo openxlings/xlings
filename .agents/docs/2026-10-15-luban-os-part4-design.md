@@ -84,7 +84,6 @@ luban/
 │   └── openas/            信封、主体、效果类别的 Schema；一致性检查
 ├── kits/                  规范的实现与可复用组件：独立项目。不导入 luban.* / xlings.*
 │   ├── opensal-wlr/       wlroots 系合成器 → opensal        （由 desktop/opensal/wlr 移来）
-│   ├── opensal-sdl/       SDL3 宿主窗口 → opensal           （由 desktop/host 拆出：只含 opensal 提供端）
 │   ├── openhal-host/      openhal 的宿主提供端：Linux（sysfs、DRM）、macOS（IOKit、Metal）、Windows（DXGI、SetupAPI）
 │   ├── xdesk-base/        桌面组件：os、term、layout、apps  （由 desktop/xdesk/base 移来）
 │   └── xdesk-compositor/  合成器、绘制、外壳                （由 desktop/xdesk/compositor 移来）
@@ -93,7 +92,7 @@ luban/
     ├── service/           环境与机器的生命周期、事件、能力报告、控制面的执行层
     ├── vm/                机器运行时：supervisor、终端中继、guest 会话进程、hypervisor 后端（qemu、vz）
     ├── cli/               luban 命令树与终端呈现
-    └── desktop/           Luban OS 应用的库：imgui 在 opensal 上、窗口与面板（desktop/host 余下部分）
+    └── desktop/           Luban OS 应用的窗口（SDL3 作为 opensal 的宿主提供端）与 imgui（由 desktop/host 移来）
 apps/                      用户直接接触的程序（不变）：luban、luban-os、xdesk、gui、xdev
 modules/                   xlings 与 luban 共用的通用库（不变）
 ```
@@ -145,7 +144,8 @@ luban/specs/openhal/
 ### 4.5 移动
 
 只移目录、不改模块名（`import opensal;` 等不变），放在一个单独的 checkpoint 里，`mcpp.toml` 的 workspace 成员与 path 依赖随之更新。
-`luban/desktop/host` 拆成两半：opensal 的 SDL3 提供端（`kits/opensal-sdl`）与 imgui 应用库（`os/desktop`）。
+`luban/desktop/host` 整体移到 `os/desktop`：它的窗口与 imgui 的帧循环是一体的，现在也只有 Luban OS 应用使用。
+等出现第二个使用者时，再把 SDL3 的 opensal 提供端拆成 `kits/opensal-sdl`（按需实现）。
 
 ## 5. Luban OS 的总体架构
 
@@ -156,7 +156,7 @@ luban/specs/openhal/
 OS 组件   环境与机器的生命周期 · generation · edition · 用户与身份 · 运行时（abi）· 策略与授予
 运行方式  sandbox（共享内核）· machine（自己的内核）
 载体      local（Linux 命名空间）· wsl2 · vz · qemu（KVM）                    ← 平台差异
-可移植层  modules/platform → openkal · openhal-host · opensal-sdl              ← 平台差异
+可移植层  modules/platform → openkal · openhal-host · os/desktop 的 SDL3 提供端             ← 平台差异
 宿主      Linux · macOS · Windows
 ```
 

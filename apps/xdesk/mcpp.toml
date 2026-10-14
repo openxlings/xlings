@@ -12,9 +12,9 @@ kind = "bin"
 main = "src/main.cpp"
 
 [dependencies]
-xdesk-compositor = { path = "../../luban/desktop/xdesk/compositor" }
-opensal          = { path = "../../luban/desktop/opensal/spec" }
-xdesk-base       = { path = "../../luban/desktop/xdesk/base" }
+xdesk-compositor = { path = "../../luban/kits/xdesk-compositor" }
+opensal          = { path = "../../luban/specs/opensal" }
+xdesk-base       = { path = "../../luban/kits/xdesk-base" }
 
 [build]
 # The GPU libraries wlroots' package links whether or not its GLES renderer is

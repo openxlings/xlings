@@ -1,5 +1,5 @@
 # xdesk-base: the parts of xdesk that need nothing but C++ and the operating
-# system (Luban OS desktop part 2 §2.0), each usable on its own:
+# system, each usable on its own:
 #
 #   xdesk.os      the few system calls xdesk and opensal-wlr make: descriptors,
 #                 poll, a socket that carries descriptors, shared memory,

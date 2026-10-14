@@ -14,7 +14,7 @@
 # upward is a build that compiles today and cannot be split tomorrow -- the
 # SubOS core reaching for the package manager is exactly what `Ports` exists
 # to prevent, and nothing else would notice until the split.
-# xtest: covers=LAYOUT-DEPS requires=
+# xtest: covers=LAYOUT-DEPS,LAYOUT-SPECS requires=
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -60,24 +60,55 @@ while read -r where module; do
   case "$module" in luban|luban.*) report "${where%%:*}" "src/ imports $module ($where): xlings never links Luban; move what both need to modules/" ;; esac
 done < <(imports src)
 
-# The desktop component families (Luban OS desktop part 2 §2.0): opensal and
-# xdesk are used by other systems on their own, so they import the standard
-# library, each other and their C libraries -- never xlings or Luban.
-for family in luban/desktop/opensal luban/desktop/xdesk; do
-  [ -d "$family" ] || continue
+# luban/ holds three kinds of package (Luban OS part 4 §4): specs/ and kits/
+# are independent projects kept here until they move to their own
+# repositories, os/ is Luban OS itself.
+#
+#   luban/specs/<name>  a specification: the standard library and its own
+#                       modules (<name>, <name>.*). Specifications never import
+#                       one another; implementations connect them.
+#   luban/kits/<name>   an implementation or a reusable component: the standard
+#                       library, specifications, other kits and their C
+#                       libraries -- never xlings or Luban.
+#   luban/os/service    the OS depends on no presentation: not the Luban OS
+#                       app's library (luban.desktop.*), not the desktop (xdesk.*).
+spec_roots=""
+if [ -d luban/specs ]; then
+  for d in luban/specs/*/; do spec_roots="$spec_roots $(basename "$d")"; done
+  for d in luban/specs/*/; do
+    own="$(basename "$d")"
+    while read -r where module; do
+      [ -z "${module:-}" ] && continue
+      case "$module" in std|std.*|"$own"|"$own".*) continue ;; esac
+      report "${where%%:*}" "the specification $own imports $module ($where): a specification imports the standard library and itself only"
+    done < <(imports "$d")
+  done
+fi
+is_spec() { local m="${1%%.*}" r; for r in $spec_roots; do [ "$m" = "$r" ] && return 0; done; return 1; }
+if [ -d luban/kits ]; then
   while read -r where module; do
-    [ -z "$module" ] && continue
+    [ -z "${module:-}" ] && continue
     case "$module" in
-      std|std.*|opensal|opensal.*|xdesk|xdesk.*) ;;
+      std|std.*|xdesk|xdesk.*) continue ;;
       # Their C libraries' modules (mcpp packages: wlroots, freedesktop.*, compat.*).
-      wlroots|wlroots.*|freedesktop.*|compat.*) ;;
-      *) report "${where%%:*}" "$family imports $module ($where): opensal and xdesk are reusable on their own -- the standard library, each other and their C libraries, never xlings or Luban" ;;
+      wlroots|wlroots.*|freedesktop.*|compat.*) continue ;;
     esac
-  done < <(imports "$family")
-done
+    is_spec "$module" && continue
+    case "$module" in
+      xlings|xlings.*|luban|luban.*) report "${where%%:*}" "luban/kits imports $module ($where): a kit is reusable on its own -- the standard library, specifications, other kits and their C libraries, never xlings or Luban" ;;
+    esac
+  done < <(imports luban/kits)
+fi
+if [ -d luban/os/service ]; then
+  while read -r where module; do
+    case "${module:-}" in
+      luban.desktop|luban.desktop.*|xdesk|xdesk.*) report "${where%%:*}" "luban/os/service imports $module ($where): the OS depends on no presentation" ;;
+    esac
+  done < <(imports luban/os/service)
+fi
 
 if [ "$bad" -gt 0 ]; then
   echo "layer dependency lint: FAIL ($bad import(s) across a boundary)"
   exit 1
 fi
-echo "layer dependency lint: PASS (luban -> modules, modules -/-> luban, src; src -/-> luban; opensal, xdesk -> std, each other, their C libraries)"
+echo "layer dependency lint: PASS (luban -> modules, modules -/-> luban, src; src -/-> luban; specs -> std and themselves; kits -/-> xlings, luban; the OS service -/-> presentation)"

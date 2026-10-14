@@ -12,11 +12,11 @@ version   = "0.1.0"
 kind = "lib"
 
 [dependencies]
-libs     = { path = "../../modules/libs" }
-platform = { path = "../../modules/platform" }
-runtime  = { path = "../../modules/runtime" }
-subos    = { path = "../../modules/subos" }
-image    = { path = "../../modules/image" }
+libs     = { path = "../../../modules/libs" }
+platform = { path = "../../../modules/platform" }
+runtime  = { path = "../../../modules/runtime" }
+subos    = { path = "../../../modules/subos" }
+image    = { path = "../../../modules/image" }
 
 [build]
-include_dirs = ["../../modules/libs/src/json"]
+include_dirs = ["../../../modules/libs/src/json"]

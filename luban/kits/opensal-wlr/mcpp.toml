@@ -1,4 +1,4 @@
-# opensal-wlr (Luban OS architecture design §9.3; desktop part 2 §2.0): a wlroots compositor's
+# opensal-wlr: a wlroots compositor's
 # output as an opensal surface -- the bridge in a guest that takes the
 # picture (screencopy), injects the input (virtual keyboard and pointer) and
 # follows the window's size (output management), all through the compositor's
@@ -15,5 +15,5 @@ version   = "0.1.0"
 kind = "lib"
 
 [dependencies]
-opensal  = { path = "../spec" }
-xdesk-base = { path = "../../xdesk/base" }
+opensal  = { path = "../../specs/opensal" }
+xdesk-base = { path = "../xdesk-base" }

@@ -10,14 +10,17 @@ Design records live in `.agents/docs/` (the current architecture:
 
 ```
 modules/   shared libraries (libs, runtime, platform, home, ui, cli, store, subos, confine, carrier, image, testkit)
-luban/     Luban OS components and services (stage-0, the luban command; desktop subsystem)
+luban/     specs/ (opensal, openhal, openas), kits/ (their implementations, xdesk) -- independent
+           projects kept here -- and os/ (Luban OS: stage-0, service, vm, the luban command, its app)
 apps/      binaries a user runs (luban, gui, xdev)
 src/       the xlings frontend and core still being moved into modules/
 tests/     unit/ and e2e/ (C++, XTEST + testkit), legacy e2e/*.sh, requirements.toml
 ```
 
 Imports go downward only (`tools/lint_layer_deps.sh`): `luban/` -> `modules/`;
-`modules/` never imports `luban.*` or `src/`; `src/` never imports `luban.*`.
+`modules/` never imports `luban.*` or `src/`; `src/` never imports `luban.*`. In `luban/`:
+a spec imports only the standard library and itself; a kit never imports `xlings.*` or
+`luban.*`; `os/service` imports no presentation (`luban/README.md`).
 What xlings and Luban both read (boot.json, a root's /etc, image formats) is a module.
 
 ## Build and test
@@ -88,7 +91,7 @@ home and never touch the user's. Release builds: `tools/{linux,macos}_release.sh
 
 - Releases are `YYYY.M.D.N`; **N starts at 1**, `.0` is reserved for a deliberate
   formal release. Bump `mcpp.toml`, `src/core/config.cppm` and
-  `luban/service/src/service.cppm` (kVersion) together.
+  `luban/os/service/src/service.cppm` (kVersion) together.
 - After `release.yml` is green: push the assets to the CN mirror from a CN machine
   (`tools/mirror-latest.sh xlings`, then `luban-os` and `xdesk`; verify with GET), then
   bump `xim-pkgindex/pkgs/x/xlings.lua` (every platform block and `latest`),

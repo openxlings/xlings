@@ -794,6 +794,10 @@ status = "required"
 text = "packages import downward only: luban -> modules, modules -/-> luban or the frontend; platform selection is if constexpr"
 status = "required"
 
+[LAYOUT-SPECS]
+text = "luban/ holds specs (standard library and themselves only), kits (never xlings or Luban) and os (Luban OS; its service imports no presentation)"
+status = "required"
+
 [ROOT-GC-ROOT]
 text = "a payload a retained generation links into is not deleted by remove; rolling back to that generation finds every target"
 status = "required"

@@ -20,12 +20,12 @@ libs               = { path = "../../modules/libs" }
 platform           = { path = "../../modules/platform" }
 runtime            = { path = "../../modules/runtime" }
 subos              = { path = "../../modules/subos" }
-luban-service      = { path = "../../luban/service" }
-luban-vm           = { path = "../../luban/vm" }
-opensal            = { path = "../../luban/desktop/opensal/spec" }
-xdesk-base = { path = "../../luban/desktop/xdesk/base" }
-luban-desktop-host = { path = "../../luban/desktop/host" }
-opensal-wlr        = { path = "../../luban/desktop/opensal/wlr" }
+luban-service      = { path = "../../luban/os/service" }
+luban-vm           = { path = "../../luban/os/vm" }
+opensal            = { path = "../../luban/specs/opensal" }
+xdesk-base = { path = "../../luban/kits/xdesk-base" }
+luban-desktop-host = { path = "../../luban/os/desktop" }
+opensal-wlr        = { path = "../../luban/kits/opensal-wlr" }
 
 [dependencies.compat]
 imgui = "1.92.8-docking"

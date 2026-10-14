@@ -84,8 +84,8 @@ xlings self doctor --fix
 ### 运行时
 
 ```bash
-xlings config --runtime glibc@2.44.3   # 锁定这个 home 的默认运行时
-xlings config --runtime glibc@latest   # 重新跟随已安装的最新版本
+xlings config --runtime glibc@2.44.3   # pin this home's default runtime
+xlings config --runtime glibc@latest   # follow the newest installed again
 ```
 
 这个 home 里绑定 glibc 的包都运行在同一个运行时上：锁定的版本，否则是已安装的最新版本。改变它只是切换链接

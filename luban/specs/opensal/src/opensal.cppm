@@ -1,4 +1,4 @@
-// opensal: a surface and what it gives back (Luban OS architecture §9.2).
+// opensal: a surface and what it gives back (SPEC.md).
 //
 // A surface is given pixels and gives back events. It is not a window: a
 // window is one way of acquiring one (a display server's), a machine's

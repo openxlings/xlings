@@ -1,4 +1,4 @@
-// xdesk.layout: where windows go (Luban OS desktop part 2 §2.3) -- pure
+// xdesk.layout: where windows go -- pure
 // logic, no drawing and no Wayland, so any compositor can use it and a test
 // can check every arrangement.
 //

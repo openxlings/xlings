@@ -1,5 +1,5 @@
-# xdesk-compositor: the parts of xdesk that serve Wayland and draw (Luban OS
-# desktop part 2 §2), over wlroots and the C graphics libraries:
+# xdesk-compositor: the parts of xdesk that serve Wayland and draw, over
+# wlroots and the C graphics libraries:
 #
 #   xdesk.compositor  a Wayland compositor whose output is an opensal surface
 #                     (no screencopy, no injected input): wlroots' headless
@@ -22,8 +22,8 @@ version   = "0.1.0"
 kind = "lib"
 
 [dependencies]
-xdesk-base = { path = "../base" }
-opensal    = { path = "../../opensal/spec" }
+xdesk-base = { path = "../xdesk-base" }
+opensal    = { path = "../../specs/opensal" }
 
 [dependencies.wlroots]
 # No DRM, libinput, session or GLES: headless and pixman are what a machine
@@ -36,6 +36,6 @@ libxkbcommon   = "1.13.2"
 
 [dependencies.compat]
 pixman   = "0.46.4"
-# xdesk.draw's text: stable releases (libraries no user meets; §3.3).
+# xdesk.draw's text: stable releases (libraries no user meets).
 freetype = "2.13.3"
 harfbuzz = "14.3.0"

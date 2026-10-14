@@ -131,7 +131,7 @@ XTEST(LubanCli, AnArchiveCarriesTheManifestAndTheRootsStateAndNothingThatLeaves,
 
 XTEST(LubanCli, LubanIsReleasedAsTheXlingsItDrives, .area = "luban", .covers = {"LUBAN-TOOL-SHIPPED"}) {
     EXPECT_EQ(cli::kVersion, xlings::Info::VERSION)
-        << "bump luban/cli/src/cli.cppm kVersion with mcpp.toml and src/core/config.cppm";
+        << "bump luban/os/cli/src/cli.cppm kVersion with mcpp.toml and src/core/config.cppm";
 }
 
 XTEST(LubanCli, ADriveIsWrittenOnlyWhenItIsAWholeDriveNobodyUses, .area = "luban", .covers = {"LUBAN-WRITE-SAFE"}) {
