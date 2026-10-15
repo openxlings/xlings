@@ -140,6 +140,33 @@ std::expected<void, std::string> refresh_entry(const Domain& domain, const fs::p
     return {};
 }
 
+// Where packages come from is the owner's choice, followed as it changes
+// (an index added later, another mirror): the domain's copy of those keys is
+// brought to the owner's before anything runs there.
+std::expected<void, std::string> follow_owner_config_(const Domain& domain) {
+    const auto configFile = domain.physicalHome / ".xlings.json";
+    std::error_code ec;
+    if (!fs::is_regular_file(configFile, ec)) return {};
+    auto config = read_json_for_update(configFile);
+    if (!config) return std::unexpected(config.error());
+    auto original = read_json_for_update(domain.ownerHome / ".xlings.json");
+    if (!original) return std::unexpected(original.error());
+    bool changed = false;
+    for (const auto* key : {"mirror", "xim", "index_repos", "resource_servers", "language"}) {
+        const bool there = original->contains(key);
+        if (there && (!config->contains(key) || (*config)[key] != (*original)[key])) {
+            (*config)[key] = (*original)[key];
+            changed = true;
+        } else if (!there && config->contains(key)) {
+            config->erase(key);
+            changed = true;
+        }
+    }
+    // Replaced in place (write_ publishes a new file and refuses an existing one).
+    if (changed) platform::write_file_atomic(configFile.string(), config->dump(2) + "\n");
+    return {};
+}
+
 std::expected<void, std::string> prepare(const Domain& domain, const fs::path& entry) {
     if (!domain.privateHome) return std::unexpected("namespace producer requires an owner-private domain");
     if (auto reserved = prefix_domain::prepare_private(domain); !reserved) return reserved;
@@ -164,26 +191,7 @@ std::expected<void, std::string> prepare(const Domain& domain, const fs::path& e
         if (auto written = write_(configFile, config); !written) return written;
     } else {
         if (auto regular = regular_(configFile); !regular) return regular;
-        auto config = read_json_for_update(configFile);
-        if (!config) return std::unexpected(config.error());
-        // Where packages come from is the owner's choice, followed as it
-        // changes (an index added later, another mirror): the domain's copy of
-        // those keys is brought to the owner's.
-        auto original = read_json_for_update(domain.ownerHome / ".xlings.json");
-        if (!original) return std::unexpected(original.error());
-        bool changed = false;
-        for (const auto* key : {"mirror", "xim", "index_repos", "resource_servers", "language"}) {
-            const bool there = original->contains(key);
-            if (there && (!config->contains(key) || (*config)[key] != (*original)[key])) {
-                (*config)[key] = (*original)[key];
-                changed = true;
-            } else if (!there && config->contains(key)) {
-                config->erase(key);
-                changed = true;
-            }
-        }
-        if (changed)
-            if (auto written = write_(configFile, *config); !written) return written;
+        if (auto synced = follow_owner_config_(domain); !synced) return synced;
     }
     return refresh_entry(domain, entry);
 }
@@ -298,6 +306,7 @@ std::expected<int, std::string> run(const Domain& domain, std::span<const std::s
                                   const std::function<void(std::string_view)>& lines) {
     if (auto refreshed = refresh_entry(domain, platform::get_executable_path()); !refreshed)
         return std::unexpected(refreshed.error());
+    if (auto synced = follow_owner_config_(domain); !synced) return std::unexpected(synced.error());
     struct Stage {
         fs::path path;
         ~Stage() {

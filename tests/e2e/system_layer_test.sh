@@ -48,7 +48,8 @@ out="$(env -u XLINGS_HOME "$BIN" install --system -y zlib 2>&1)" && fail "a user
 grep -q "root's" <<<"$out" || fail "the refusal does not say why: $out"
 
 log "4. the user's own wins"
-( cd /tmp && XLINGS_HOME="$U" "$U/bin/xlings" install -y xz >/dev/null 2>&1 ) || fail "user install xz"
+( cd /tmp && XLINGS_HOME="$U" "$U/bin/xlings" install -y xz > "$RUNTIME_DIR/user-install.log" 2>&1 ) \
+  || { tail -40 "$RUNTIME_DIR/user-install.log"; fail "user install xz"; }
 out="$(shell 'command -v xz')"
 [[ "$out" == "$U/subos/current/bin/xz" ]] || fail "the user's xz does not come first: $out"
 

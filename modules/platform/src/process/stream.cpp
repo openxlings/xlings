@@ -36,6 +36,9 @@ std::wstring wide(std::string_view text) {
     return result;
 }
 std::wstring quote(std::wstring_view value) {
+    // Quoted only when it must be: a program that parses its own command line
+    // (wsl.exe does) reads `"--status"` as a word, not as its option.
+    if (!value.empty() && value.find_first_of(L" \t\n\v\"") == std::wstring_view::npos) return std::wstring(value);
     std::wstring result{L"\""};
     std::size_t slashes{};
     for (const auto ch : value) {
