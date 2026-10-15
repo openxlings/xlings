@@ -78,6 +78,10 @@ xlings subos export mydistro --tar mydistro.tar
 
 这需要可用的 bwrap 和 user namespace。
 
+`luban new` 都这样建系统：里面的 home 是 `/xlings`，不与本机的 SubOS 共享 payload；本机上的 `xlings subos list`
+用一行统计这些系统（`--all` 列出全部）。在某个系统里，它自己的 xlings 只看得到它和它的视图，看不到同一个域里的其他系统。
+系统在自己的 generation 里带着自己的运行时（`usr/lib/xlings-abi`），里面看到的是 `/xlings/abi`：两个用不同 glibc 的系统共享同样的 payload。
+
 ## 自己的发行版
 
 ```bash

@@ -1,0 +1,11 @@
+# openhal: devices -- which GPUs, displays, audio endpoints and input devices
+# a machine has, and what each can do. A specification: declarations and a
+# conformance check, no implementation; it depends on nothing but the
+# standard library.
+[package]
+namespace = "openhal"
+name      = "openhal"
+version   = "0.1.0"
+
+[targets.openhal]
+kind = "lib"

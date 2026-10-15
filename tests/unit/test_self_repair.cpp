@@ -8,6 +8,8 @@
 // pass, which is this codebase's recurring failure shape.
 
 #include <gtest/gtest.h>
+import xlings.testkit;
+#include "xlings/xtest.hpp"
 
 import std;
 import xlings.core.xself.repair;
@@ -66,7 +68,7 @@ TEST(SelfRepairLadder, ReRegisterAloneIsEnoughWhenInstallSucceeds) {
     EXPECT_TRUE(r.healed);
     EXPECT_EQ(r.rung, "re-register");
     ASSERT_EQ(f.ran.size(), 1u);
-    EXPECT_EQ(f.ran[0], "xlings install linux-headers@5.11.1 -y");
+    EXPECT_EQ(f.ran[0], "xlings install linux-headers@5.11.1 --reconfig -y");
     EXPECT_FALSE(f.overran);
 }
 
@@ -103,6 +105,31 @@ TEST(SelfRepairLadder, BrokenPayloadStillTriesReRegisterFirst) {
     ASSERT_EQ(f.ran.size(), 1u);
 }
 
+// "Already installed, configuration current" exits 0 and changes nothing.
+// Taken at its word, doctor reported the finding healed and met it again on
+// the next pass. The rung is judged by the finding, not by the exit code.
+XTEST(SelfRepairLadder, AReRegisterThatLeavesTheFindingFallsThroughToReinstall,
+      .area = "self", .covers = {"DOCTOR-LADDER"}) {
+    FakeRunner f{.codes = {0, 0, 0}};
+    int asked = 0;
+    auto r = repair_one(task(), RepairPolicy{}, runner_of(f), nullptr, nullptr,
+                        [&] { return ++asked == 1; });   // still there after R2, gone after R3
+    EXPECT_TRUE(r.healed);
+    EXPECT_EQ(r.rung, "reinstall");
+    ASSERT_EQ(f.ran.size(), 3u);
+    EXPECT_EQ(f.ran[0], "xlings install linux-headers@5.11.1 --reconfig -y");
+}
+
+XTEST(SelfRepairLadder, AFindingThatOutlivesAReinstallBlamesTheCheck,
+      .area = "self", .covers = {"DOCTOR-LADDER"}) {
+    FakeRunner f{.codes = {0, 0, 0}};
+    auto r = repair_one(task(), RepairPolicy{}, runner_of(f), nullptr, nullptr, [] { return true; });
+    EXPECT_FALSE(r.healed);
+    EXPECT_EQ(r.rung, "reinstall");
+    EXPECT_NE(r.note.find("the check, not the package"), std::string::npos) << r.note;
+    EXPECT_NE(r.note.find("self doctor --all"), std::string::npos) << r.note;
+}
+
 // ---------------------------------------------------------------- R3
 
 TEST(SelfRepairLadder, FallsBackToRemoveThenInstall) {
@@ -112,7 +139,7 @@ TEST(SelfRepairLadder, FallsBackToRemoveThenInstall) {
     EXPECT_TRUE(r.healed);
     EXPECT_EQ(r.rung, "reinstall");
     ASSERT_EQ(f.ran.size(), 3u);
-    EXPECT_EQ(f.ran[0], "xlings install linux-headers@5.11.1 -y");
+    EXPECT_EQ(f.ran[0], "xlings install linux-headers@5.11.1 --reconfig -y");
     EXPECT_EQ(f.ran[1], "xlings remove linux-headers@5.11.1 --force -y");
     EXPECT_EQ(f.ran[2], "xlings install linux-headers@5.11.1 -y");
 }

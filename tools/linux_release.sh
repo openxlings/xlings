@@ -53,11 +53,18 @@ MCPP_BIN="${MCPP_BIN:-mcpp}"
 MCPP_TARGET="${MCPP_TARGET:-x86_64-linux-musl}"
 command -v "$MCPP_BIN" >/dev/null 2>&1 || fail "mcpp not found; run xlings install first"
 
-rm -rf "$PROJECT_DIR/target/$MCPP_TARGET"
+# A release is built from nothing. CI's candidate may start from the last
+# round's build instead (XLINGS_RELEASE_REUSE=1, its state settled by content:
+# tools/ci/build_state.sh); release.yml never sets it.
+reuse=()
+if [[ "${XLINGS_RELEASE_REUSE:-}" != 1 ]]; then
+  rm -rf "$PROJECT_DIR/target/$MCPP_TARGET"
+  reuse=(--no-cache)
+fi
 # --profile dist: -O3 + link-time strip. mcpp's default profile is dev
 # (-O0 -g) -- that default is what shipped 127 MB release binaries; the
 # artifact checks below make a silent fallback to dev fail instead.
-"$MCPP_BIN" build --profile dist --target "$MCPP_TARGET" --print-fingerprint --no-cache 2>&1 || fail "mcpp build failed"
+"$MCPP_BIN" build --profile dist --target "$MCPP_TARGET" --print-fingerprint "${reuse[@]}" 2>&1 || fail "mcpp build failed"
 
 # NEWEST by mtime, not last by fingerprint.
 #

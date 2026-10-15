@@ -1,0 +1,30 @@
+# A machine run by Luban (Luban OS architecture design §8): the environment
+# itself booted with its own kernel in a local virtual machine -- the vm
+# carrier, the supervisor that owns it, and the relay between a terminal (or
+# the Luban OS window) and the machine's console.
+[package]
+namespace = "luban"
+name      = "luban-vm"
+version   = "0.1.0"
+
+[targets.luban-vm]
+kind = "lib"
+
+[dependencies]
+libs     = { path = "../../../modules/libs" }
+platform = { path = "../../../modules/platform" }
+runtime  = { path = "../../../modules/runtime" }
+subos    = { path = "../../../modules/subos" }
+image    = { path = "../../../modules/image" }
+carrier  = { path = "../../../modules/carrier" }
+luban-service = { path = "../service" }
+opensal-wlr = { path = "../../kits/opensal-wlr" }
+
+[build]
+include_dirs = ["../../../modules/libs/src/json"]
+
+# A Mac's machines and its Luban host machine run on Virtualization.framework
+# (luban.vm.native.vz), called through the Objective-C runtime.
+[target.macos.build]
+cxxflags = ["-fblocks"]
+ldflags = ["-framework", "Virtualization", "-framework", "Foundation", "-framework", "CoreFoundation", "-lobjc"]

@@ -56,3 +56,31 @@ luban upgrade agent          # the newest agent, and the edition's other updates
 
 The agent is not pinned in the edition: the newest at creation is installed and
 recorded, and `upgrade` moves it. An upgrade never loosens isolation.
+
+## Driving Luban from an agent or a program
+
+The same verbs a person types are a program's, described and reported in
+openas (`luban/specs/openas`): each verb's effect -- read, reversible,
+irreversible, external -- its arguments and options, and the options that
+answer its questions; a run is NDJSON lines (`phase`, `progress`, `log`,
+`notice`, `error`, `data`) ending with `result`.
+
+```bash
+luban interface --describe                                   # every verb: effect, arguments, options, what answers it
+luban interface status --args '{}'                           # one verb, reported as NDJSON lines
+luban interface run --args '{"name": "agent", "command": ["uname", "-a"]}'
+XLINGS_ACTOR=agent:my-agent luban interface new --args '{"name": "box", "edition": "tiny"}'
+```
+
+Nothing waits for an answer: a run that needs one ends with exit code 2 and
+names the option. `XLINGS_ACTOR` says who is running it (`agent:<name>`,
+`;via=person:<name>` for whom); everything it starts inherits it, and the
+operation journal (`xlings self log`) records it with the step that started
+each process.
+
+`--as` says it on the command line, and an agent run in a system is held to
+it: the record is this home's, which nothing in the system can write.
+
+```bash
+luban run agent --as agent:claude -- claude
+```

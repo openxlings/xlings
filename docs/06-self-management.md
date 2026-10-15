@@ -84,7 +84,27 @@ One run repairs what can be repaired:
 - a home that was moved is re-pointed at where it is now (below);
 - a record nothing can restore and no index provides is removed.
 
-It checks again at the end: the report is the state **after** the repair.
+It checks again at the end: the report is the state **after** the repair. A
+repair is judged by whether the finding is gone, not by its command's exit code;
+one that outlives a reinstall is reported as the check's fault.
+
+A repair that runs another SubOS's `self doctor --fix` runs it with no terminal:
+nothing it starts can wait for a password, Ctrl-C ends it, and its output is in
+`logs/doctor/<subos>.log`. Steps a package declared need administrator rights
+(`system.admin_step`) and nobody could approve are listed by `self doctor`
+every time, and taken by `--fix` at a terminal.
+
+### The runtime
+
+```bash
+xlings config --runtime glibc@2.44.3   # pin this home's default runtime
+xlings config --runtime glibc@latest   # follow the newest installed again
+```
+
+Every package bound to glibc in this home runs on one runtime: the pinned
+version, else the newest installed. A change switches links (`<home>/abi`),
+never a package; `abi.json` says what it is and `logs/abi.ndjson` when and
+why it changed.
 
 ```bash
 xlings self doctor --fix --dry-run    # what it would do, changing nothing

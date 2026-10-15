@@ -36,17 +36,19 @@ machine's boot.
 
 | | x86_64 Linux | aarch64 Linux | macOS | Windows |
 |---|---|---|---|---|
-| environments (nano, tiny, tiny-musl, core, agent-workspace) | yes | yes | through `vz` (not yet published) | through `wsl2` |
-| the private agent workspace | yes | yes | — | through `wsl2` |
+| environments (nano, tiny, tiny-musl, core, agent-workspace) | yes | yes | in the Luban host machine (Apple silicon, Virtualization.framework) | in the Luban host machine (WSL 2) |
+| the private agent workspace | yes | yes | in the Luban host machine | in the Luban host machine |
 | images: ISO, drive, qcow2, tar | yes | yes | — | — |
 | boot: BIOS and UEFI | yes | UEFI | — | — |
-| `luban enter --mode machine` (a local VM) | yes | yes (emulated without KVM) | — | — |
-| a desktop in the Luban OS window | yes | the desktop runs; the window is not packaged yet | — | — |
+| `luban enter --mode machine` (a local VM) | yes | yes (emulated without KVM) | yes (Virtualization.framework) | on Windows 11 (the host machine's KVM) |
+| a desktop in the Luban OS window | yes | the desktop runs; the window is not packaged yet | the window (the app for macOS) | the window (the app for Windows) |
 | boot profiles | `generic` (machines), `virt` (VMs) | `virt` | — | — |
 
 On the host, Linux needs nothing but its kernel and, on Ubuntu 23.10 and later,
 a one-time setup ([07](07-host-support.md)); every tool an image or a VM needs
-comes from the index.
+comes from the index. A Mac or a PC runs its systems in the Luban host
+machine, one small Linux machine per home; `luban status` says what this
+computer can run, and why not ([07](07-host-support.md)).
 
 ## Read in this order
 

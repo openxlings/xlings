@@ -107,11 +107,13 @@ generation, exported as images, shown in the Luban OS window with their desktop.
 [Quick start](docs/luban/01-quick-start.md) · [The desktop](docs/luban/08-desktop.md)
 
 ```bash
-luban new box --edition tiny        # an environment: a Linux userland, no root needed
-luban enter box --mode machine --temp   # boot it with its own kernel in a local VM
-luban export box box.iso  # a bootable ISO: BIOS and UEFI, x86_64 and aarch64
-luban new desk --edition desktop    # a desktop; luban-os shows it in a window
+luban new box       # a Linux system, no root needed (Luban Core: shells, editors, git, compilers)
+luban enter box     # its shell; exit to leave
 ```
+Smaller or desktop editions (`--edition tiny`, `--edition desktop`), the same
+system as a machine with its own kernel (`--mode machine`), bootable images
+(`luban export`), the Luban OS window, macOS and Windows: [Quick start](docs/luban/01-quick-start.md).
+
 
 ## Documentation
 

@@ -78,15 +78,17 @@ suite_luban_console() {
     says "run" "luban-42"
     session 20 'echo IN-$((6*7)) > /root/kept; cat /root/kept; exit' e-tiny
     says "the welcome names Luban OS" "Luban OS"
-    says "and how it runs" "a sandbox on this host"
-    says "the prompt is the system's" "[luban:e-tiny]"
+    says "and how it runs" "shares this host's kernel"
+    says "the prompt marks the system" "[luban]"
+    says "and the host is the system's name" "root@e-tiny:"
     says "what is typed runs" "IN-42"
     capture "kept" luban run e-tiny -- cat /root/kept
     says "a session keeps what it wrote" "IN-42"
 
     section "tiny, keeping nothing: --temp"
     session 20 'echo GONE > /root/gone; cat /root/gone; exit' e-tiny --temp
-    says "the welcome says it keeps nothing" "keeping nothing"
+    says "the welcome says it keeps nothing" "what you write is gone"
+    says "and the prompt says so" "[luban:temp]"
     says "the session wrote" "GONE"
     refuses "what --temp wrote is gone" luban run e-tiny -- cat /root/gone
 
@@ -181,7 +183,8 @@ suite_luban_machine() {
     fi
     session 120 'echo MACHINE-$(uname -r); exit' m
     says "the machine came up" "m is up"
-    says "the welcome says it is a machine" "a machine (its own kernel)"
+    says "the welcome says it is a machine" "machine: its own kernel"
+    says "and the prompt says so" "<luban>"
     says "its own kernel answers" "MACHINE-"
     capture "stop" luban stop m
 
@@ -221,6 +224,66 @@ suite_luban_upgrade() {
     session 20 'echo after-$((6*7)); exit' old
     says "a console opens on it" "after-42"
     capture "upgrade plan" luban upgrade old --dry-run
+}
+
+# ── lived-in: a home used for a while, then the new client ───────────
+
+suite_luban_lived_in() {
+    [ "$(uname -s)" = Linux ] || fail "the lived-in suite is Linux's"
+    # What a person had before the new client: tools in their default SubOS
+    # on an older glibc than the editions use now, and a system made by the
+    # release before (its own prefix shared with the host's).
+    section "a home used for a while, by the release before"
+    capture "setup" xlings self doctor --isolation --fix -y
+    capture "an older runtime in default" xlings install -y xim:glibc@2.44
+    capture "tools on it" xlings install -y xim:xz xim:vim xim:git xim:tmux
+    capture "a system made then" xlings subos new old --from subos:luban-tiny
+    capture "with a file in it" xlings subos exec old -- /bin/sh -c 'echo kept > /root/kept'
+
+    section "xlings self update"
+    capture "self update" xlings self update
+    log "now $(tool_version xlings)"
+
+    section "luban new on that home: no runtime of default's in the way"
+    local e
+    for e in tiny core; do
+        capture "new $e" luban new "l-$e" --edition "$e"
+        says "l-$e is made" "l-$e is ready"
+        if grep -qF "still uses" <<<"$OUT"; then fail "l-$e: a runtime of another SubOS was in the way"; fi
+    done
+
+    section "the system made before moves into its own userland"
+    capture "upgrade it" luban upgrade old -y
+    capture "its file came along" luban run old -- cat /root/kept
+    says "what it had is there" "kept"
+    capture "its home is its own" luban run old -- /bin/sh -c 'echo "XH=$XLINGS_HOME"; ls /home'
+    says "xlings there is its own" "XH=/xlings"
+
+    section "programs in a system have what their recipes registered"
+    capture "vim and git into it" xlings install -y --subos l-core xim:vim xim:git
+    capture "vim finds its runtime" luban run l-core -- /bin/sh -c \
+        'vim -es -c "redir! > /tmp/v" -c "echo \$VIM" -c "redir END" -c q; cat /tmp/v'
+    says "\$VIM is set" "xpkgs/xim-x-vim"
+    capture "git speaks https" luban run l-core -- git ls-remote https://github.com/openxlings/xlings HEAD
+    says "git reached the remote" "HEAD"
+
+    section "a host locale the system does not have"
+    log "\$ LC_ALL=en_US.UTF-8 luban run l-core -- bash -c true"
+    OUT="$(LC_ALL=en_US.UTF-8 luban run l-core -- bash -c 'echo LANG=$LANG' 2>&1)" || fail "bash did not run"
+    printf '%s\n' "$OUT" | sed 's/^/      /'
+    if grep -qF "setlocale" <<<"$OUT"; then fail "the host's locale reached the system"; fi
+    says "it speaks its own" "LANG=C.UTF-8"
+
+    section "the runtime is the environment's"
+    capture "the home's runtime" xlings config --runtime glibc@latest
+    says "it names one" "runtime linux-"
+
+    section "self doctor --fix ends, asking nothing it cannot"
+    local rc=0
+    timeout 1800 xlings self doctor --fix -y </dev/null >"$HOME/doctor.log" 2>&1 || rc=$?
+    tail -n 20 "$HOME/doctor.log" | sed 's/^/      /'
+    [ "$rc" -ne 124 ] || fail "self doctor --fix did not end in 30 minutes"
+    ok "self doctor --fix ended (exit $rc)"
 }
 
 # ── host: macOS and Windows say what this computer can do ────────────

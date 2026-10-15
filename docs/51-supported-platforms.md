@@ -8,7 +8,7 @@
 |---|---|---|---|---|
 | Linux x86_64 | static (musl) | yes | bwrap, landlock, proot | yes; images boot on BIOS and UEFI |
 | Linux aarch64 | static (musl) | yes | bwrap, landlock, proot | yes; images boot on UEFI |
-| macOS 14+ arm64 | yes | yes | the home redirected (advisory) | through the `vz` carrier (helper not yet published) |
+| macOS 14+ arm64 | yes | yes | the home redirected (advisory) | in the Luban host machine (`vz`, Apple silicon) |
 | Windows x86_64 | yes | yes | `%USERPROFILE%` redirected (advisory) | through the `wsl2` carrier |
 
 An aarch64 image boots on a virtual machine (`virt`); booting aarch64 hardware

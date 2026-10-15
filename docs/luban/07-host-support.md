@@ -40,9 +40,34 @@ xlings self doctor --isolation           # what this host can isolate with, and 
 there; in agent mode it exits 2 with the command. Unattended (CI, a script),
 `luban setup -y` answers its one question.
 
-`luban status` on macOS and Windows answers for the carrier a Luban system
-runs in there (vz, wsl2): whether it is available, why not, and the way
-forward. Ready exits 0, not ready 1, the same on every platform.
+## What this computer can do
+
+`luban status` says, for each way of running a system, whether it is ready
+here and how it runs -- and when it is not, why and the next step -- then the
+devices it found. The Luban OS app's quick start and `luban status --json`
+read the same report.
+
+```
+$ luban status
+Luban OS 2026.10.15.1 -- Linux 6.8.0 (x86_64), host
+  sandbox  ready      isolated here (bwrap)
+  machine  ready      its own kernel, with hardware virtualization (KVM)
+  desktop  ready      in a Luban OS window
+  devices  1 GPU (NVIDIA GeForce RTX 4090) · 2 displays · 3 audio outputs · 1 audio input
+```
+
+| | Linux | macOS (Apple silicon) | Windows |
+|---|---|---|---|
+| sandbox | this computer's kernel, isolated (bwrap) | in the Luban host machine (Virtualization.framework) | in the Luban host machine (WSL 2) |
+| machine | its own kernel: KVM, or emulated (slow) without it | its own kernel (Virtualization.framework) | its own kernel on the host machine's KVM (Windows 11 gives WSL 2 nested virtualization) |
+| desktop | a Luban OS window | a Luban OS window | a Luban OS window |
+
+The Luban host machine is one small Linux machine per home -- xlings and
+luban with a static busybox and bwrap, all from the package index -- that the
+systems of a Mac or a PC run in; their files live on its
+Linux file system, and a folder of this computer reaches one only when it is
+granted. Ready (a sandbox or a machine) exits 0, not ready 1, the same on
+every platform.
 
 ## When something fails
 

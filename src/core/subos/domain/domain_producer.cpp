@@ -8,6 +8,7 @@ import xlings.core.home.prefix_domain;
 import xlings.core.home.domain_producer_source;
 import xlings.libs.json;
 import xlings.platform;
+import xlings.platform.stream;
 import xlings.subos.home_view;
 import xlings.subos.rootfs;
 import xlings.subos.caps;
@@ -117,14 +118,65 @@ std::expected<void, std::string> refresh_entry(const Domain& domain, const fs::p
     const auto shims = xself::repoint_stale_shims(domain.physicalHome);
     if (shims.refused || !shims.failed.empty())
         return std::unexpected("private dispatcher is current but stale shims could not be repaired; retry the owner command");
+    // The release's companions beside it: luban, and luban-init that boots a
+    // machine from one of the domain's systems. Replaced whole (a staged copy
+    // renamed over), only when they differ.
+    std::error_code ec;
+    const auto from = fs::canonical(entry, ec).parent_path();
+    for (const auto* tool : {"luban", "luban-init"}) {
+        const auto source = from / tool, target = domain.physicalHome / "bin" / tool;
+        if (!fs::is_regular_file(source, ec)) continue;
+        if (fs::is_regular_file(target, ec) && fs::file_size(source, ec) == fs::file_size(target, ec)
+            && platform::read_file_to_string(source.string()) == platform::read_file_to_string(target.string()))
+            continue;
+        const auto staged = fs::path(target.string() + ".xlings.new");
+        fs::remove(staged, ec);
+        if (!fs::copy_file(source, staged, ec) || ec) return std::unexpected(std::format("cannot place {}: {}", target.string(), ec.message()));
+        fs::permissions(staged, fs::perms::owner_all | fs::perms::group_read | fs::perms::group_exec
+                                | fs::perms::others_read | fs::perms::others_exec, ec);
+        fs::rename(staged, target, ec);
+        if (ec) return std::unexpected(std::format("cannot place {}: {}", target.string(), ec.message()));
+    }
+    return {};
+}
+
+// Where packages come from is the owner's choice, followed as it changes
+// (an index added later, another mirror): the domain's copy of those keys is
+// brought to the owner's before anything runs there.
+std::expected<void, std::string> follow_owner_config_(const Domain& domain) {
+    const auto configFile = domain.physicalHome / ".xlings.json";
+    std::error_code ec;
+    if (!fs::is_regular_file(configFile, ec)) return {};
+    auto config = read_json_for_update(configFile);
+    if (!config) return std::unexpected(config.error());
+    auto original = read_json_for_update(domain.ownerHome / ".xlings.json");
+    if (!original) return std::unexpected(original.error());
+    bool changed = false;
+    for (const auto* key : {"mirror", "xim", "index_repos", "resource_servers", "language"}) {
+        const bool there = original->contains(key);
+        if (there && (!config->contains(key) || (*config)[key] != (*original)[key])) {
+            (*config)[key] = (*original)[key];
+            changed = true;
+        } else if (!there && config->contains(key)) {
+            config->erase(key);
+            changed = true;
+        }
+    }
+    // Replaced in place (write_ publishes a new file and refuses an existing one).
+    if (changed) platform::write_file_atomic(configFile.string(), config->dump(2) + "\n");
     return {};
 }
 
 std::expected<void, std::string> prepare(const Domain& domain, const fs::path& entry) {
     if (!domain.privateHome) return std::unexpected("namespace producer requires an owner-private domain");
     if (auto reserved = prefix_domain::prepare_private(domain); !reserved) return reserved;
-    for (const auto* relative : {"bin", "subos", "data", "tmp"})
+    for (const auto* relative : {"bin", "subos", "data", "data/runtimedir", "tmp"})
         if (auto dir = mkdir_(domain.physicalHome / relative); !dir) return dir;
+    // The owner's download cache, shared when it can be (never a reason to fail).
+    {
+        std::error_code ec;
+        fs::create_directories(domain.ownerHome / "data" / "runtimedir", ec);
+    }
     const auto configFile = domain.physicalHome / ".xlings.json";
     auto configExists = present_(configFile);
     if (!configExists) return std::unexpected(configExists.error());
@@ -139,8 +191,7 @@ std::expected<void, std::string> prepare(const Domain& domain, const fs::path& e
         if (auto written = write_(configFile, config); !written) return written;
     } else {
         if (auto regular = regular_(configFile); !regular) return regular;
-        auto config = read_json_for_update(configFile);
-        if (!config) return std::unexpected(config.error());
+        if (auto synced = follow_owner_config_(domain); !synced) return synced;
     }
     return refresh_entry(domain, entry);
 }
@@ -208,6 +259,12 @@ std::expected<std::vector<std::string>, std::string> command(const Domain& domai
     }
     if (ec && ec != std::errc::no_such_file_or_directory)
         return std::unexpected("cannot enumerate host build /run: " + ec.message());
+    // The owner's downloads are the domain's too (part 3 §3.3): archives are
+    // checked by their sha256 wherever they came from, so a system made from
+    // what the host already fetched downloads nothing again.
+    const auto downloads = domain.ownerHome / "data" / "runtimedir";
+    const bool shareDownloads = fs::is_directory(downloads, ec)
+                             && fs::is_directory(domain.physicalHome / "data" / "runtimedir", ec);
     argv.insert(argv.end(), {"--bind", domain.physicalHome.string(), domain.logicalHome.string(),
         "--dev", "/dev", "--proc", "/proc", "--clearenv",
         "--setenv", "XLINGS_HOME", domain.logicalHome.string(), "--setenv", "HOME", domain.logicalHome.string(),
@@ -215,11 +272,17 @@ std::expected<std::vector<std::string>, std::string> command(const Domain& domai
         (domain.logicalHome / "subos/default/bin").string() + ":" +
             (domain.logicalHome / "bin").string() + ":/usr/sbin:/usr/bin:/sbin:/bin",
         "--chdir", domain.logicalHome.string()});
+    // The proxy, and how the command is to speak and whether it may ask:
+    // what a command routed here from the owner's side was run with.
     for (const auto* key : {"HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
-                            "http_proxy", "https_proxy", "all_proxy", "no_proxy"}) {
+                            "http_proxy", "https_proxy", "all_proxy", "no_proxy",
+                            "XLINGS_AGENT_MODE", "XLINGS_NON_INTERACTIVE", "XLINGS_TRACE", "XLINGS_TRACE_ID", "XLINGS_ACTOR", "XLINGS_OPS_PARENT",
+                            "NO_COLOR", "TERM", "COLUMNS"}) {
         if (const auto* value = std::getenv(key); value && *value)
             argv.insert(argv.end(), {"--setenv", key, value});
     }
+    if (shareDownloads)
+        argv.insert(argv.end(), {"--bind", downloads.string(), (domain.logicalHome / "data" / "runtimedir").string()});
     if (source) {
         argv.insert(argv.end(), {"--ro-bind", source->mapping.physicalHome.string(), source->mapping.recordedHome.string()});
         for (const auto& binding : source->metadata)
@@ -239,9 +302,11 @@ std::expected<std::vector<std::string>, std::string> command(const Domain& domai
     return argv;
 }
 std::expected<int, std::string> run(const Domain& domain, std::span<const std::string> arguments,
-                                  std::optional<OutputBinding> output, bool runtime) {
+                                  std::optional<OutputBinding> output, bool runtime,
+                                  const std::function<void(std::string_view)>& lines) {
     if (auto refreshed = refresh_entry(domain, platform::get_executable_path()); !refreshed)
         return std::unexpected(refreshed.error());
+    if (auto synced = follow_owner_config_(domain); !synced) return std::unexpected(synced.error());
     struct Stage {
         fs::path path;
         ~Stage() {
@@ -266,7 +331,18 @@ std::expected<int, std::string> run(const Domain& domain, std::span<const std::s
     }
     auto argv = command(domain, arguments, output, facade ? &*facade : nullptr, runtime);
     if (!argv) return std::unexpected(argv.error());
-    return platform::run_argv_with_timeout(*argv, std::chrono::minutes(30));
+    if (!lines) return platform::run_argv_with_timeout(*argv, std::chrono::minutes(30));
+    std::string pending;
+    const int rc = platform::stream::run(*argv, [&](std::string_view channel, std::string_view bytes) {
+        if (channel == "stderr") { std::cerr << bytes; return; }
+        pending.append(bytes);
+        for (auto nl = pending.find('\n'); nl != std::string::npos; nl = pending.find('\n')) {
+            lines(std::string_view(pending).substr(0, nl));
+            pending.erase(0, nl + 1);
+        }
+    });
+    if (!pending.empty()) lines(pending);
+    return rc;
 }
 
 std::expected<void, std::string> check_control_removal(const Scope& scope, std::string_view name) {

@@ -74,11 +74,24 @@ std::optional<ExitStatus> wait_process(int pid, bool block);
 std::optional<std::pair<int, ExitStatus>> reap_child();
 
 bool new_session();                     // setsid
+// Gives up root for `uid`/`gid` (no supplementary groups). False when it could not.
+bool become_user(unsigned uid, unsigned gid);
+// `path` owned by `uid`/`gid` (not following a link). False when it could not be.
+bool give_to(const std::filesystem::path& path, unsigned uid, unsigned gid);
 bool take_controlling_terminal();       // stdin's terminal, TIOCSCTTY
 // fds[0..2] become this process's stdin, stdout, stderr.
 void redirect_stdio(std::span<const int> fds);
 // argv with a deadline, its own process group, killed whole when late (124).
 int run_argv_with_timeout(const std::vector<std::string>& argv, std::chrono::milliseconds limit);
+// A shell command run for nobody: its own session (no controlling terminal)
+// and the null device as input, so a question it asks -- a password, a
+// confirmation read from /dev/tty -- fails at once instead of waiting where
+// nobody can answer. Ctrl-C still reaches this process: it ends the child's
+// group, then is delivered here as usual; when this process dies, the child
+// does too (Linux). Past `limit` it is ended whole and 124 returned.
+// Windows: the shell, as std::system.
+int run_shell_unattended(const std::string& command,
+                         std::optional<std::chrono::milliseconds> limit = std::nullopt);
 
 struct UserIds { unsigned uid { 0 }; unsigned gid { 0 }; unsigned euid { 0 }; };
 UserIds user_ids();
@@ -140,6 +153,9 @@ int unix_listen(const std::filesystem::path& path);
 int unix_connect(const std::filesystem::path& path);
 int unix_accept(int listen_fd);
 std::optional<std::array<int, 2>> unix_pair();
+// Two connected byte streams (SOCK_STREAM): a channel one end of which is
+// handed to something that reads and writes bytes (a virtual machine's port).
+std::optional<std::array<int, 2>> unix_stream_pair();
 
 // A byte stream to a listening socket (SOCK_STREAM): what qemu's chardev
 // sockets are. -1 when nothing listens there.

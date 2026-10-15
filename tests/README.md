@@ -126,6 +126,37 @@ summary in CI) lists pass/fail/skip for test binaries, XTEST cases and legacy
 scripts, failures with their output, skips grouped by reason, the slowest
 tests and the lane's capabilities.
 
+## Parallel runs
+
+Building the test binaries costs more than running them, so the tests are
+split in ways that combine:
+
+| | what | how |
+|---|---|---|
+| family | the binaries one `mcpp test --no-run <prefix>` builds together, in parallel, on the library built once (`unit/test_subos_*`) | always, when xdev builds |
+| jobs | tests running at once on one machine; a test's `.resources` keeps conflicting ones apart | `-j N` |
+| shard | one machine's share; it takes whole families, so it builds only what it runs | `--shard i/n` (`ci plan --shards n` prints the plan) |
+| reuse | one build feeding many machines: the development build is made once per round and taken by every test lane; the static release build by every system lane | `.github/actions/linux-build`, the release job |
+| cache | a round starts from the last round's build and rebuilds only what changed (`tools/ci/build_state.sh settle`: unchanged files and package payloads get one old time, changed ones the present) -- the development, instrumented and release-candidate builds alike; a published release is built from nothing | `.github/actions/linux-build` |
+
+`tests/lanes.toml` holds CI's choice per lane (shards, jobs, the build's
+profile); `xdev test --lane-config unit --shard 2/4` runs one machine's share
+of it, and the workflow's matrix comes from the same file
+(`tools/ci/lane_matrix.py`). Changing how CI spends machines is an edit there.
+
+```bash
+$XDEV test -j 8                           # this machine, 8 at a time
+$XDEV test --lane-config unit --shard 1/4 # what CI's first unit machine runs
+```
+
+The Linux round (`xlings-ci-linux.yml`): `plan` (lints, the matrices) starts
+`release` (the one release build) and `build` (the development build); the
+`unit` shards and `acceptance` (checks, then the static gates
+on the release build as soon as it is attached) take `build`'s, and on main the
+`asan` shards take `build-asan`'s; the system lanes start from the release
+build, and `report` reads every lane. A restored build that does not build is
+dropped and built from nothing: reuse makes a round faster, never wrong.
+
 ## Local runs
 
 - Run from a clean environment: a shell inside a subos exports

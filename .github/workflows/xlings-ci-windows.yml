@@ -419,6 +419,22 @@ jobs:
           name: xlings-windows-x86_64
           path: build/release.zip
 
+      # The Luban OS app built above, for the WSL 2 lane's window tests.
+      - name: Attach the Luban OS app
+        if: success()
+        shell: pwsh
+        run: |
+          $app = Get-ChildItem target -Recurse -Filter luban-os.exe -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName -match '[\\/]bin[\\/]luban-os[\\/]luban-os\.exe$' } | Select-Object -First 1
+          if (-not $app) { Write-Host "::error::no luban-os.exe under target/"; exit 1 }
+          New-Item -ItemType Directory -Force build/app | Out-Null
+          Copy-Item $app.FullName build/app/luban-os.exe
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: luban-os-windows-ci
+          path: build/app/luban-os.exe
+
       # The unit step is `continue-on-error` so it cannot skip the E2E suite;
       # this is where its result becomes the job's. Without it a unit failure
       # would report success, which is the opposite defect and a worse one.
@@ -428,3 +444,98 @@ jobs:
         run: |
           Write-Host "::error::unit tests failed (see the 'Build and run unit tests' step)"
           exit 1
+
+  # Luban OS on Windows, for real (part 4 §11.3): a Luban system in the Luban
+  # host machine on the runner's WSL 2. The hosted runner has nested
+  # virtualization, which WSL 2 needs, but GitHub does not promise it: a
+  # failure to set WSL 2 up is the environment's and is reported as such
+  # (its own step), apart from a failure of the code under test.
+  luban-wsl2:
+    needs: build-and-test
+    runs-on: windows-2025
+    # A green lane takes about 15 minutes. A hung `wsl --import` on the runner
+    # was not ended by its step's own bound (it held the job for 40 minutes):
+    # the job's bound is what ends it.
+    timeout-minutes: 40
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Fetch the release under test
+        uses: actions/download-artifact@v4
+        with:
+          name: xlings-windows-x86_64
+          path: build
+
+      - name: Fetch the Luban OS app
+        uses: actions/download-artifact@v4
+        with:
+          name: luban-os-windows-ci
+          path: build/app
+
+      # The host machine's xlings and luban are the Linux build of the same
+      # commit (xlings-ci-linux.yml's release artifact), as a Windows home
+      # gets the Linux build of its own release.
+      - name: The Linux build of this commit, for the Luban host machine
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -u
+          for i in $(seq 1 80); do
+            id=$(gh run list -R "$GITHUB_REPOSITORY" -w xlings-ci-linux.yml -c "$SHA" --json databaseId -q '.[0].databaseId' 2>/dev/null || true)
+            if [ -n "$id" ] && gh run download "$id" -R "$GITHUB_REPOSITORY" -n xlings-linux-x86_64 -D guest 2>/dev/null; then break; fi
+            sleep 60
+          done
+          [ -f guest/release.tar.gz ] || { echo "::error::no Linux release build of $SHA appeared in xlings-ci-linux.yml"; exit 1; }
+          # Only its two programs: a Windows file system takes no Linux links.
+          mkdir -p guest/x && tar -xzf guest/release.tar.gz -C guest/x --wildcards '*/bin/xlings' '*/bin/luban'
+          bin=$(find "$PWD/guest/x" -path '*/bin/xlings' -type f | head -1)
+          [ -n "$bin" ] && [ -f "$(dirname "$bin")/luban" ] || { echo "::error::the Linux build has no bin/xlings and bin/luban"; exit 1; }
+          echo "XLINGS_CARRIER_GUEST_XLINGS=$(cygpath -w "$bin")" >> "$GITHUB_ENV"
+
+      # The runner's WSL is the environment, not the code under test: its
+      # import has hung on a hosted runner (minutes on `wsl --import`, nothing
+      # after). Bounded, tried twice, and said to be the environment's when
+      # neither attempt sets it up.
+      - name: WSL 2 (the runner's environment)
+        id: wsl
+        continue-on-error: true
+        timeout-minutes: 8
+        uses: Vampire/setup-wsl@v7
+        with:
+          distribution: Alpine-3.22
+          wsl-version: 2
+
+      - name: WSL 2 (the runner's environment, again)
+        id: wsl_again
+        if: steps.wsl.outcome != 'success'
+        continue-on-error: true
+        timeout-minutes: 8
+        uses: Vampire/setup-wsl@v7
+        with:
+          distribution: Alpine-3.22
+          wsl-version: 2
+
+      - name: The runner's WSL 2 is there
+        if: steps.wsl.outcome != 'success' && steps.wsl_again.outcome != 'success'
+        shell: pwsh
+        run: |
+          Write-Host "::error::the runner's WSL 2 could not be set up twice (the environment, not xlings): see the two setup steps"
+          exit 1
+
+      - name: What the runner's WSL is
+        shell: pwsh
+        run: |
+          $env:WSL_UTF8 = '1'
+          wsl.exe --status
+          wsl.exe --version
+
+      - name: "Luban OS on WSL 2: status, a system, a command, a machine as reported"
+        shell: pwsh
+        run: |
+          & "$env:GITHUB_WORKSPACE\tests\e2e\windows_luban_wsl2_test.ps1" "build\release.zip" "build\app\luban-os.exe"

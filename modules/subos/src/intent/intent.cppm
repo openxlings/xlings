@@ -69,6 +69,7 @@ struct Intent {
     std::string shell;
     std::vector<std::string> argv;
     std::string cwd;
+    spec::Request::RootLogin root_login;
     std::map<std::string, std::string> host_env;
     std::map<std::string, std::string> explicit_env;
     std::function<bool(std::string_view)> host_exists;

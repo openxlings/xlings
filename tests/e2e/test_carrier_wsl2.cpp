@@ -78,7 +78,7 @@ XTEST(CarrierWsl2, TheImageTurnsInteropAndAutomountOffAndAGrantIsOnlyUnderGrant,
 }
 
 XTEST(CarrierWsl2, ASubosOnTheCarrierIsCreatedThereOnceUsedThereAndRemovedThere,
-      .area = "subos", .covers = {"CARRIER-WSL-LIFECYCLE"}, .requires_ = {"linux", "xlings-bin"}) {
+      .area = "subos", .covers = {"CARRIER-WSL-LIFECYCLE", "PLATFORM-CAPS", "CARRIER-GUEST-CURRENT"}, .requires_ = {"linux", "xlings-bin"}) {
     auto home = tk::Home::isolated("carrier-wsl2");
     const auto wsl = home.root() / "wsl";
     fs::create_directories(wsl);
@@ -86,17 +86,34 @@ XTEST(CarrierWsl2, ASubosOnTheCarrierIsCreatedThereOnceUsedThereAndRemovedThere,
         {"XLINGS_WSL_EXE", fake_wsl().string()},
         {"FAKE_WSL_ROOT", wsl.string()},
         {"XLINGS_CARRIER_GUEST_XLINGS", tk::xlings_binary().string()},
+        // The guest's userland (a static busybox in a real image).
+        {"XLINGS_CARRIER_GUEST_BUSYBOX", (home.root() / "busybox").string()},
+        {"XLINGS_CARRIER_GUEST_BWRAP", (home.root() / "bwrap").string()},
     };
+    tk::write_file(home.root() / "busybox", "#!/bin/sh\n");
+    tk::write_file(home.root() / "bwrap", "#!/bin/sh\n");
     auto made = home.xlings({"subos", "new", "box", "--carrier", "wsl2"}, env);
     ASSERT_EQ(made.exit_code, 0) << made.transcript();
     const auto name = w2::distro_name(home.dir());
     const auto distro = wsl / "distros" / name;
     ASSERT_TRUE(fs::is_directory(distro / "xlings/subos/box")) << made.transcript();
     EXPECT_NE(read_or_empty(distro / "etc/wsl.conf").find("[interop]\nenabled = false"), std::string::npos);
+    // A shell there, for what a package's hooks run (sh -c, find, ln).
+    EXPECT_TRUE(fs::is_regular_file(distro / "bin/busybox"));
+    EXPECT_EQ(fs::read_symlink(distro / "bin/sh"), "busybox");
+    // And bwrap, for what a root's making runs inside one.
+    EXPECT_TRUE(fs::is_regular_file(distro / "usr/bin/bwrap"));
     // Here: only the name and where it runs.
     auto instance = nlohmann::json::parse(tk::read_file(home.dir() / "config/subos/box/instance.json"));
     EXPECT_EQ(instance["carrier"], "wsl2");
     EXPECT_TRUE(fs::is_empty(home.dir() / "subos/box"));
+
+    // What its machine gives a Luban system (luban status reads it): asked
+    // there once the carrier is up.
+    const auto probe = nlohmann::json::parse(read_or_empty(home.dir() / "carriers/wsl2/probe.json"), nullptr, false);
+    ASSERT_TRUE(probe.is_object()) << read_or_empty(wsl / "calls.log");
+    EXPECT_TRUE(probe["kvm"].is_boolean()) << probe.dump();
+    EXPECT_FALSE(probe.value("kernel", std::string{}).empty()) << probe.dump();
 
     // Used there, through the same distribution: imported once.
     auto info = home.xlings({"subos", "info", "box"}, env);
@@ -117,6 +134,38 @@ XTEST(CarrierWsl2, ASubosOnTheCarrierIsCreatedThereOnceUsedThereAndRemovedThere,
             for (const auto& e : j["payload"]["entries"])
                 if (e["name"] == "box") { seen = true; EXPECT_EQ(e["carrier"], "wsl2"); }
     EXPECT_TRUE(seen) << listed.transcript();
+
+    // An upgrade reaches the guest (part 4 §9): a machine that reports another
+    // release is brought to this one -- `xlings self update` there, once per
+    // release, not on every command. (In this test, not a second one: each
+    // carrier image carries a whole xlings.)
+    {
+        const auto guest = distro / "xlings/bin/xlings";
+        const auto real = distro / "xlings/bin/xlings.real";
+        fs::rename(guest, real);
+        tk::write_file(guest, "#!/bin/sh\necho \"$*\" >> \"$(dirname \"$0\")/../calls\"\n"
+                              "case \"$1\" in __carrier-probe) echo '{\"kvm\":false,\"kernel\":\"6\",\"version\":\"2000.1.1.1\"}' ;; "
+                              "self) exit 0 ;; esac\nexec \"$(dirname \"$0\")/xlings.real\" \"$@\"\n");
+        fs::permissions(guest, fs::perms::owner_all);
+        const auto probe_file = home.dir() / "carriers/wsl2/probe.json";
+        const auto age = [&] { fs::last_write_time(probe_file, fs::file_time_type::clock::now() - std::chrono::hours(1)); };
+        const auto updates = [&] {
+            const auto calls = read_or_empty(distro / "xlings/calls");
+            std::size_t n = 0;
+            for (std::size_t at = 0; (at = calls.find("self update", at)) != std::string::npos; ++at) ++n;
+            return n;
+        };
+        age();
+        EXPECT_EQ(home.xlings({"subos", "info", "box"}, env).exit_code, 0);
+        EXPECT_EQ(updates(), 1u) << read_or_empty(distro / "xlings/calls");
+        const auto kept = nlohmann::json::parse(read_or_empty(probe_file), nullptr, false);
+        EXPECT_FALSE(kept.value("updated_for", std::string{}).empty()) << kept.dump();
+        age();
+        (void)home.xlings({"subos", "info", "box"}, env);
+        EXPECT_EQ(updates(), 1u) << "not again for the same release";
+        fs::remove(guest);
+        fs::rename(real, guest);
+    }
 
     // Removed there; then here.
     auto removed = home.xlings({"subos", "remove", "box", "-y"}, env);

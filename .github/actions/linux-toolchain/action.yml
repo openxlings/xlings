@@ -1,0 +1,294 @@
+# The Linux build toolchain every job of xlings-ci-linux.yml that builds
+# starts from: the bootstrap xlings, mcpp at the version .xlings.json pins,
+# the caches (payloads kept, BMIs never), the package indexes refreshed and
+# checked, the fixture index the tests read, and -- for a lane that runs
+# sandboxes -- user namespaces and bwrap. One copy, so the jobs that build
+# (the release, the test shards, the acceptance, the instrumented shards)
+# cannot drift apart.
+name: Linux toolchain
+description: Bootstrap xlings, mcpp, caches, indexes and the lane's sandbox capabilities.
+inputs:
+  mcpp-cache:
+    description: >-
+      The mcpp cache key's prefix. A profile whose BMIs differ (asan) has its own,
+      one no other profile's key or restore-keys begins with.
+    default: mcpp-v4-ci-linux-
+  sandbox:
+    description: Lift the runner's user-namespace restriction and install bwrap and pasta.
+    default: 'true'
+  room:
+    description: Remove the image's SDKs no job here uses (.NET, Android, GHC, CodeQL) first.
+    default: 'false'
+runs:
+  using: composite
+  steps:
+    # The instrumented build outgrew the runner's disk ("No space left on
+    # device", main from 2026-10-13). Nothing is installed.
+    - name: Room for the build
+      if: inputs.room == 'true'
+      shell: bash
+      run: |
+        df -h / | tail -1
+        sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+        df -h / | tail -1
+
+    - name: The runner's own tools (T0; nothing installed)
+      shell: bash
+      run: |
+        for t in curl git cc make jq tar xz python3; do command -v "$t" >/dev/null || { echo "::error::the runner image has no $t"; exit 1; }; done
+
+    - name: Install bootstrap xlings (pinned ${{ env.BOOTSTRAP_XLINGS_VERSION }})
+      env:
+        XLINGS_NON_INTERACTIVE: 1
+        XLINGS_VERSION: ${{ env.BOOTSTRAP_XLINGS_VERSION }}
+      shell: bash
+      run: |
+        # Retried, piped through a file, and asserted -- three fixes for one
+        # failure mode. `curl … | bash` reports the exit status of BASH, and
+        # bash fed an empty stdin exits 0, so a network reset installs
+        # nothing and the step goes GREEN. Measured on the 2026.9.4.1
+        # release: `curl: (35) Recv failure: Connection reset by peer` here,
+        # step reported success, and the run died two steps later with
+        # `xlings: command not found` (exit 127) pointing at the wrong
+        # thing entirely.
+        for attempt in 1 2 3; do
+          curl -fsSL --retry 3 --retry-delay 5 --connect-timeout 20 \
+            https://raw.githubusercontent.com/openxlings/xlings/main/tools/other/quick_install.sh \
+            -o /tmp/xlings-quick-install.sh && break
+          echo "bootstrap download failed (attempt $attempt/3); retrying"
+          sleep 10
+        done
+        test -s /tmp/xlings-quick-install.sh \
+          || { echo "::error::could not download quick_install.sh"; exit 1; }
+        bash /tmp/xlings-quick-install.sh
+        # The assertion that makes a silent no-op impossible: whatever the
+        # installer thought it did, the binary either exists here or it does
+        # not.
+        test -x "$HOME/.xlings/bin/xlings" \
+          || { echo "::error::bootstrap reported success but installed no xlings"; exit 1; }
+        echo "XLINGS_HOME=$HOME/.xlings"           >> "$GITHUB_ENV"
+        echo "$HOME/.xlings/subos/current/bin"     >> "$GITHUB_PATH"
+        echo "$HOME/.xlings/bin"                   >> "$GITHUB_PATH"
+
+    - name: Cache xlings package payloads
+      uses: actions/cache@v4
+      with:
+        path: ~/.xlings/data/xpkgs
+        key: xlings-deps-${{ runner.os }}-${{ hashFiles('.xlings.json') }}-${{ env.BOOTSTRAP_XLINGS_VERSION }}
+        restore-keys: |
+          xlings-deps-${{ runner.os }}-
+
+    - name: Cache mcpp sandbox and project packages
+      id: mcpp-cache
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.mcpp
+          !~/.mcpp/bmi
+          !~/.mcpp/build-cache
+          .mcpp
+          !.mcpp/bmi
+          !.mcpp/build-cache
+        # BMIs are NOT cached, and are deleted after every restore. That
+        # is the fix, and it took three prefix retirements to find.
+        #
+        # A restored BMI set never works. `import 'std' has CRC mismatch`
+        # follows, which reads like a compiler bug. What hid it is that the
+        # old guard wiped the BMIs on an INEXACT restore -- so retiring the
+        # key prefix forced an inexact restore, fired the guard, and produced
+        # one clean run. Each retirement therefore looked like a fix and was
+        # an accident; the next run got an exact hit, skipped the guard, and
+        # failed again. Read straight off two consecutive runs of THIS
+        # workflow: the one that passed shows "Drop stale BMIs" as `success`,
+        # the one that failed shows it `skipped`.
+        #
+        # So the wipe is unconditional now, and the BMI directories are
+        # excluded from the cache as well -- the exclusion is an optimisation
+        # (do not store bytes we delete on arrival), the unconditional wipe is
+        # the guarantee, and it cannot depend on exclude-pattern semantics.
+        #
+        # What the cache is FOR is `registry/data/xpkgs`: ~800 MB of payloads
+        # that are toolchain-independent and survive a round trip fine.
+        #
+        # The key still names the workflow that produced it. mcpp.toml
+        # declares both the dev toolchain (gcc@16.1.0) and the release target
+        # (gcc@15.1.0-musl), so a CI build and a release build hash the same
+        # -- sharing one key across workflows is wrong on its own terms even
+        # though it was not what caused this.
+        key: ${{ inputs.mcpp-cache }}${{ runner.os }}-${{ hashFiles('mcpp.toml', '.xlings.json') }}-${{ env.BOOTSTRAP_XLINGS_VERSION }}
+        restore-keys: |
+          mcpp-v4-ci-linux-${{ runner.os }}-
+    # An inexact restore (the `restore-keys` fallback) brings BMIs built
+    # under a different dependency set. Mixing them with anything rebuilt
+    # here fails as `import 'std' has CRC mismatch` — which reads like a
+    # compiler bug and is a cache restored for the wrong inputs. Measured on
+    # PR #480, where `mcpplibs.xpkg` went 0.0.47 → 0.0.48: the fallback
+    # cache's tinyhttps/cmdline BMIs no longer matched the `std` the fresh
+    # xpkg build produced.
+    #
+    # Only the BMIs go. The payload store under registry/data/xpkgs is
+    # dependency-independent and is what makes the ~800 MB cache worth
+    # restoring at all.
+    # Evidence for task #56, gathered where the failure actually happens.
+    #
+    # Four hypotheses were refuted on a developer machine (2026-08-06): two
+    # toolchains sharing one BMI store; the tar round trip destroying
+    # metadata (the .gcm set survives byte-for-byte, mtimes included); a full
+    # project rebuild against restored BMIs; and prune_registry running after
+    # the restore. None reproduces it locally, so the next honest step is to
+    # record what CI has that a laptop does not, rather than guess a fifth
+    # hypothesis.
+    #
+    # What to look for: two entries that disagree on driver_identity or
+    # sysroot for the same cpp_standard. That would mean the restored set is
+    # internally inconsistent, which is the answer.
+    #
+    # Never fails (a composite step has no continue-on-error, hence the
+    # `set +e` and the `exit 0`): a diagnostic must never be the reason a
+    # release is blocked. Set XLINGS_KEEP_RESTORED_BMIS=1 on a throwaway
+    # branch to skip the wipe below and let the failure happen with this
+    # record in hand.
+    - name: Record the restored BMI set (diagnostic for #56)
+      shell: bash
+      run: |
+        set +e
+        echo "cache-hit: ${{ steps.mcpp-cache.outputs.cache-hit }}"
+        for d in ~/.mcpp/bmi .mcpp/bmi ~/.mcpp/build-cache .mcpp/build-cache; do
+          if [ -d "$d" ]; then
+            echo "  $d: $(du -sh "$d" 2>/dev/null | cut -f1), $(find "$d" -name '*.gcm' 2>/dev/null | wc -l) .gcm"
+          else
+            echo "  $d: absent"
+          fi
+        done
+        echo "  --- build identity per BMI dir (first 40) ---"
+        find ~/.mcpp/bmi .mcpp/bmi -name std-module.json 2>/dev/null | head -40 |
+        while read -r f; do
+          printf '  %-18s %s %s\n' \
+            "$(basename "$(dirname "$f")")" \
+            "$(grep -o '"cpp_standard": *"[^"]*"' "$f" | cut -d'"' -f4)" \
+            "$(grep -o '"driver_identity": *"[^"]*"' "$f" | cut -d'"' -f4)"
+        done
+        echo "  --- distinct driver identities ---"
+        find ~/.mcpp/bmi .mcpp/bmi -name std-module.json 2>/dev/null |
+          xargs -r grep -ho '"driver_identity": *"[^"]*"' | sort -u
+        exit 0
+
+    - name: Drop restored BMIs
+      if: env.XLINGS_KEEP_RESTORED_BMIS != '1'
+      shell: bash
+      run: |
+        rm -rf ~/.mcpp/bmi ~/.mcpp/build-cache .mcpp/bmi .mcpp/build-cache
+
+    - name: Prepare bootstrap package index
+      shell: bash
+      run: |
+        rm -rf "$XLINGS_HOME/data/xim-pkgindex"
+        bash tests/e2e/prepare_fixture_index.sh "$XLINGS_HOME/data/xim-pkgindex"
+
+    - name: Install build dependencies (mcpp)
+      shell: bash
+      run: |
+        cd "$GITHUB_WORKSPACE"
+        xlings config --mirror GLOBAL
+        # Refresh the index before resolving anything out of it.
+        #
+        # Without this the run resolves against whatever index snapshot the
+        # bootstrap shipped with, which is not the one this PR needs: a
+        # freshly published `mcpplibs.xpkg@0.0.50` reported as "not found"
+        # while older entries from the same index downloaded fine. The
+        # failure names the package, so it reads as an unpublished
+        # dependency rather than as an index nobody refreshed.
+        xlings update || true
+        xlings install -y
+
+        # Installing is not switching, and this cache makes the difference
+        # visible. `xlings install` lays the payload down; the shim keeps
+        # resolving whatever version was already active -- the client says so
+        # ("installed, but 'x' still resolves to ..."), and with ~/.mcpp
+        # restored from a cache that line is the ONLY sign that the mcpp
+        # about to run is the old one. Measured 2026-08-06: .xlings.json
+        # pinned 2026.8.6.1 while the run used the cached build, whose index
+        # snapshot predated the dependency this PR needs -- surfacing as
+        # `mcpplibs.xpkg@0.0.53 not found` against an index that demonstrably
+        # had it.
+        # The pin comes from .xlings.json at runtime, not a literal -- a
+        # literal here is a value that changes, and the next mcpp bump would
+        # leave every workflow switching to the previous one.
+        pin="$(python3 -c 'import json;print(json.load(open(".xlings.json"))["workspace"]["mcpp"])' 2>/dev/null || true)"
+        [ -n "$pin" ] && xlings use mcpp "$pin" || true
+
+        mcpp self version
+
+    - name: Reinitialize mcpp registry (GLOBAL)
+      shell: bash
+      run: |
+        # Drop the resolved indexes and mirror config so they are
+        # re-resolved against GLOBAL, but KEEP registry/data/xpkgs -- the
+        # downloaded and extracted package payloads.
+        #
+        # Those payloads are sha256-pinned by their recipe, so they are
+        # mirror-independent: keeping them cannot leak a CN artifact into a
+        # GLOBAL build. Wiping them made every run re-fetch every transitive
+        # source from its upstream host, so CI failed wholesale whenever one
+        # of those hosts was unreachable -- e.g. compat.bzip2 (a transitive
+        # dep of compat.libarchive, and absent from mcpp.lock, which only
+        # pins direct deps) fetched from sourceware.org. It also made the
+        # ~800 MB mcpp cache restored one step earlier almost worthless.
+        #
+        # The registry's subos stays too: it links into those payloads, and
+        # packages link into it (compat.libgbm's libgbm.so is a link to
+        # subos/default/lib) -- without it a warm cache links against nothing.
+        prune_registry() {
+          [ -d "$1" ] || return 0
+          find "$1" -mindepth 1 -maxdepth 1 ! -name data ! -name subos -exec rm -rf {} +
+          [ -d "$1/data" ] || return 0
+          find "$1/data" -mindepth 1 -maxdepth 1 ! -name xpkgs -exec rm -rf {} +
+        }
+        prune_registry "$HOME/.mcpp/registry"
+        prune_registry "$GITHUB_WORKSPACE/.mcpp/registry"
+        mcpp self config --mirror GLOBAL
+
+        # Force the index refresh, then ASSERT what landed.
+        #
+        # The prune above drops the resolved indexes, and mcpp's own
+        # re-fetch happily uses whatever it finds in the restored cache --
+        # so a freshly published dependency reads as "not found" against an
+        # index that demonstrably has it. Measured 2026-08-06:
+        # `mcpplibs.xpkg@0.0.53 not found`, while the index commit, the
+        # published artifact, the rolling pointer and releases/latest all
+        # carried the entry.
+        #
+        # `mcpp index update` is the refresh; `mcpp index status` prints the
+        # revision each index landed on, which is the one datum that makes a
+        # stale-index failure readable instead of surfacing two layers away
+        # as `<pkg>@<ver> not found`.
+        mcpp index update || true
+        mcpp index status || true
+        # PER PLATFORM, not a whole-file grep.
+        #
+        # A grep for `["0.0.53"]` passes on a file where the entry exists
+        # only under `xpm.linux` -- which is exactly the bug this assert was
+        # written to catch and did not: both bumps edited the linux section
+        # alone, linux CI went green, and macOS/Windows failed against a
+        # file that literally contains the string. Slice the section for
+        # THIS platform first.
+
+    - name: Prepare unit fixture index repo
+      shell: bash
+      run: |
+        bash tests/e2e/prepare_fixture_index.sh ../xim-pkgindex
+
+    # The capabilities a lane promises (tests/README.md). A test that
+    # needs one of them and finds it missing FAILS here instead of skipping:
+    # an isolation test that quietly skips on the one machine that runs it is
+    # F13 in the SubOS design. GitHub's ubuntu-24.04 image restricts
+    # unprivileged user namespaces through AppArmor; the lane lifts that for
+    # itself -- what a user does about it is `xlings self doctor --isolation`.
+    # The job names its lane (XDEV_LANE, XDEV_LANE_CAPS).
+    - name: Lane capabilities (user namespaces, bwrap)
+      if: inputs.sandbox == 'true'
+      shell: bash
+      run: |
+        # bwrap and pasta from the index (tools/ci/xlings_tools.sh), not apt.
+        bash tools/ci/xlings_tools.sh bwrap passt
+        sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true

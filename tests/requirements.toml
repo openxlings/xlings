@@ -563,6 +563,9 @@ status = "required"
 text = "self doctor --isolation diagnoses; --fix installs the root-owned backend"
 status = "required"
 
+# The PERF budgets are for the machine they were set on (a hosted ubuntu-24.04
+# runner, 2026-10); a slower machine's budget moves with its direct baseline,
+# at most twice (tests/e2e/test_subos_perf.cpp, Samples::budget).
 [PERF-SHIM]
 text = "static shim dispatch inside a sandbox avoids the broker and adds less than 10 ms"
 status = "required"
@@ -794,6 +797,10 @@ status = "required"
 text = "packages import downward only: luban -> modules, modules -/-> luban or the frontend; platform selection is if constexpr"
 status = "required"
 
+[LAYOUT-SPECS]
+text = "luban/ holds specs (standard library and themselves only), kits (never xlings or Luban) and os (Luban OS; its service imports no presentation)"
+status = "required"
+
 [ROOT-GC-ROOT]
 text = "a payload a retained generation links into is not deleted by remove; rolling back to that generation finds every target"
 status = "required"
@@ -852,9 +859,8 @@ text = "a vz carrier VM is created per home on first need through its helper's c
 status = "required"
 
 [CARRIER-VZ-HELPER]
-text = "xlings-vm, the signed Virtualization.framework helper that answers the vz carrier's contract, is published as a payload"
-status = "deferred"
-why = "a separate Swift package signed with com.apple.security.virtualization; hosted macOS runners cannot nest a VM to test it. Until it is published the vz carrier is refused with `xlings install xlings-vm` as its route (CARRIER-UNAVAILABLE)"
+text = "the vz carrier's helper is the release's luban (`luban __vm`, Virtualization.framework through luban.vm.native.vz, signed with its entitlement): its agent runs a command on pipes (bytes as written, standard error apart, input closed on request, the exit code) or on a terminal; its framework binding is validated on macOS; a VM boots on a Mac (real Apple silicon, the maintainers' lane)"
+status = "required"
 
 [SESSION-NATIVE-SUPERVISED]
 text = "a native SubOS on macOS runs under the supervisor (start, join, stop, --timeout, the exit-code table); on Windows its command runs in a Job Object (tree ended at --timeout, the command's exit code); joining a running session on Windows needs a CreateProcess supervisor and is part 3 §6.3's next step"
@@ -1014,7 +1020,7 @@ text = "sound is existing standards, no new protocol: a sandbox's audio grant ma
 status = "required"
 
 [ELEVATION-NOBODY-TO-ASK]
-text = "administrator rights are never asked for where nobody can answer (agent mode, no terminal, the background of one): rights that need no question are used, otherwise nothing runs and the command that needs them is named; doctor's repair children run unattended with the null device as input"
+text = "administrator rights are never asked for where nobody can answer (agent mode, no terminal, the background of one): rights that need no question are used, otherwise nothing runs and the command that needs them is named; doctor's repair children run unattended: no terminal (a recipe's own sudo fails at once instead of waiting), the null device as input, and Ctrl-C at doctor's terminal ends them"
 status = "required"
 
 [UPGRADE-DOWNGRADE]
@@ -1087,4 +1093,80 @@ status = "required"
 
 [LUBAN-OS-LAYOUT]
 text = "every control of the Luban OS window is on screen, apart from the others and big enough to hit, at small, usual and large window sizes, in English and Chinese; what moves (the countdown) changes what is drawn; the screenshots are kept for people to look at"
+status = "required"
+
+[DOCTOR-LADDER]
+text = "a repair rung is judged by the finding, not by its exit code: re-register runs config() again (--reconfig), a finding that outlives it goes to reinstall, and one that outlives a reinstall is reported as the check's fault, not healed"
+status = "required"
+
+[ROOT-PROGRAM-ENV]
+text = "a program whose recipe registered an environment (vim's $VIM, curl's CA bundle, tmux's terminfo) keeps its shim in a root's /usr/bin, so the environment is there when it runs; a program with nothing to add links straight to its payload"
+status = "required"
+
+[ROOT-LOCALE]
+text = "a root is entered with LANG=C.UTF-8 and without the host's LC_* and LANGUAGE, sandbox and machine alike: the locale the root's glibc has"
+status = "required"
+
+[DOMAIN-LUBAN-SYSTEM]
+text = "a Luban system on Linux is made in the system prefix domain (/xlings): it shares no payload with the host's SubOS, its paths name no host user, luban finds its files in the domain's private home, and a system made before is moved there by `luban upgrade -y` with its /etc, /home, /root, /var and own packages"
+status = "required"
+
+[LAYER-VISIBILITY]
+text = "each layer lists itself and what is below it: the host's `xlings subos list` counts the Luban systems in one line (--all lists them), and inside a system the domain's other systems are not listed"
+status = "required"
+
+[RUNTIME-SCOPE]
+text = "one default runtime per environment: a payload bound to a runtime (the libc, the C++ runtime beside it) names its environment's indirection <home>/abi/<family>, not a runtime payload; a home's points at its pinned or newest runtime, a Luban system's at the one its generation carries; switching changes links, never a payload; an ordinary library stays bound by its payload"
+status = "required"
+
+[RUNTIME-PIN]
+text = "a runtime is pinned as configuration (xlings config --runtime glibc@V, luban config <n> --runtime glibc@V) and followed again with @latest; a pin to a version not installed is refused with the install command; each switch is one rename, recorded in logs/abi.ndjson with its reason, and the state is abi.json"
+status = "required"
+
+[USER-PASSWORD]
+text = "a Luban system user's password is typed hidden, confirmed, and stored only as its SHA-512 crypt hash ($6$) in the system's /etc/shadow, computed in-process; it never reaches a log, an argv or a file in clear"
+status = "required"
+
+[USER-LOGIN]
+text = "a Luban system says who logs in (its etc/luban/login, root unless set): luban new --user makes that user (passwd, its group, wheel, shadow, its home), a desktop asks for one (lubanoser with -y; agent mode names the flags), luban config --login changes it, --user on enter and run chooses for one session, sandbox and machine alike"
+status = "required"
+
+[ID-HOSTNAME]
+text = "a Luban system's host name is its name, sandbox and machine alike, unless its /etc/hostname names another (the edition's placeholder `luban` is not a name); a neutral identity keeps its persona's"
+status = "required"
+
+[ID-PROMPT]
+text = "the prompt marks where you are: [luban] a system sharing the host's kernel, <luban> one with its own, :temp / :home when it keeps less; ANSI 16 colours only on a known terminal, none with NO_COLOR; the same from a login shell and after su - (etc/profile.d/luban.sh, written when missing, never rewritten)"
+status = "required"
+
+[ID-WELCOME]
+text = "the welcome is two columns without a frame, at most 72 columns, ASCII when the locale is not UTF-8, colour only where it shows and never needed to read it; it names the system, how it runs (shared or its own kernel), what it keeps, who logs in, what xlings manages and the time, and how to leave"
+status = "required"
+
+[RECIPE-ADMIN-STEP]
+text = "a recipe never runs sudo: it declares a step only an administrator may take (libxpkg system.admin_step: the command and why); xlings asks once after the install where somebody can answer and runs the steps through subos::elevation, recorded; where nobody can, the install finishes, the steps are kept in state/admin-steps.json and said with their commands, and self doctor reports them until --fix takes them at a terminal"
+status = "required"
+
+[HAL-DEVICES]
+text = "openhal lists a machine's GPUs, displays, audio endpoints and input devices on Linux, macOS and Windows; what it cannot read it says with a reason, never as an empty list; every source passes the conformance check"
+status = "required"
+
+[PLATFORM-CAPS]
+text = "luban status (and its --json, and the Luban OS app) says per way of running -- sandbox, machine, desktop -- whether it is ready on this computer, how it runs, and when not why and the next step; Linux, macOS and Windows alike"
+status = "required"
+
+[CONTROL-DESCRIBE]
+text = "luban describes its verbs in openas (luban interface --describe): effect, arguments, options, what answers each; the description passes openas's conformance check; a verb runs from JSON arguments and is reported in openas's envelope ending with its result"
+status = "required"
+
+[CONTROL-PRINCIPAL]
+text = "every operation's journal names its actor (openas: kind, name, the chain it acts for), inherited by what it starts, and each process's parent step"
+status = "required"
+
+[CARRIER-WSL2-LUBAN]
+text = "on a Windows PC a Luban system lives in the Luban host machine (WSL 2): luban makes it there, describes it from the luban there, runs commands in it, removes it; a machine runs on the host machine's KVM or is refused with why and the next step"
+status = "required"
+
+[CARRIER-GUEST-CURRENT]
+text = "a carrier's machine (WSL 2, a Mac's host machine) that reports another release is brought to the client's once per release (xlings self update there), never on every command"
 status = "required"

@@ -1,6 +1,8 @@
 module xlings.core.subos.root;
 
 import std;
+import xlings.core.abi;
+import xlings.core.version_order;
 import xlings.subos.root_etc;
 import xlings.libs.json;
 import xlings.platform;
@@ -139,6 +141,7 @@ rf::Inputs inputs(const fs::path& home, const fs::path& subos_dir,
     in.sysroot_share = subos_dir / "share";
     const auto h = home.string();
     std::set<fs::path> seen;
+    std::vector<abi::Provider> runtimes;
     bool have_xlings = false;
     for (const auto& [target, version] : workspace) {
         auto it = db.find(target);
@@ -151,13 +154,21 @@ rf::Inputs inputs(const fs::path& home, const fs::path& subos_dir,
         const auto source = xvm::effective_source_name(target, info, data, kind);
         const auto dest = xvm::effective_destination_name(target, data, kind, source);
         const fs::path dir = xvm::expand_path(data.path, h);
-        if (auto root = store::payload_root(dir); root && seen.insert(*root).second)
+        if (auto root = store::payload_root(dir); root && seen.insert(*root).second) {
             in.payloads.push_back(*root);
+            // <ns>-x-<package>/<version>: a runtime payload is the root's runtime.
+            const auto store_name = root->parent_path().filename().string();
+            if (const auto x = store_name.find("-x-"); x != std::string::npos)
+                if (auto p = abi::provider_at(store_name.substr(x + 3), root->filename().string(), *root))
+                    runtimes.push_back(std::move(*p));
+        }
         if (kind == "program" && !dest.empty()) {
             if (dest == "xlings") have_xlings = true;
-            // Arguments have to be added at exec time: such a program keeps
-            // its shim. Nothing on the boot path has any.
-            if (!data.alias.empty()) {
+            // Arguments and the environment its recipe registered (vim's
+            // $VIM, curl's CA bundle, tmux's terminfo) have to be added at
+            // exec time: such a program keeps its shim. Nothing on the boot
+            // path has either.
+            if (!data.alias.empty() || !data.envs.empty()) {
                 in.programs.push_back({dest, entry_of(home)});
                 continue;
             }
@@ -184,6 +195,23 @@ rf::Inputs inputs(const fs::path& home, const fs::path& subos_dir,
     if (std::error_code ec; std::ranges::none_of(in.programs, [](const auto& p) { return p.name == "luban"; })
                             && fs::exists(home / "bin" / "luban", ec))
         in.programs.push_back({"luban", home / "bin" / "luban"});
+    // Its default runtime: each libc it has (the newest, when it has two),
+    // and the C++ runtime beside glibc.
+    std::vector<abi::Family> families;
+    const auto newest = [&](std::string_view package) -> std::optional<abi::Provider> {
+        std::optional<abi::Provider> best;
+        for (const auto& p : runtimes)
+            if (p.package == package && (!best || version_order::compare(best->version, p.version) == std::strong_ordering::less))
+                best = p;
+        return best;
+    };
+    for (const auto* libc : {"glibc", "musl"})
+        if (auto p = newest(libc))
+            if (auto f = abi::family_of(*p)) {
+                if (std::string_view(libc) == "glibc") f->cxx = newest("gcc-runtime");
+                families.push_back(std::move(*f));
+            }
+    for (auto& [rel, target] : abi::links(families)) in.runtime.emplace_back(rel.generic_string(), target);
     return in;
 }
 
@@ -257,6 +285,9 @@ refresh(const fs::path& home, std::string_view name, const fs::path& subos_dir,
         auto users = xlings::subos::root_etc::apply_sysusers(tree / "etc", usr);
         if (!users) return failed("machine /etc " + (tree / "etc").string() + ": " + users.error());
         out.users_added = std::move(*users);
+        if (auto written = xlings::subos::root_etc::ensure_prompt_script(tree / "etc"); !written)
+            return failed("machine /etc " + (tree / "etc").string() + ": " + written.error());
+        else if (*written) out.etc_added.push_back("profile.d/luban.sh");
         if (auto cache = refresh_cache(home, name); !cache)
             return failed(cache.error());
     } catch (const std::exception& error) {

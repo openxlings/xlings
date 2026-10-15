@@ -74,7 +74,22 @@ xlings self doctor --fix
 - 被整体挪动过的 home，记录重新指向当前位置（见下文）；
 - 任何东西都救不回来、也没有索引提供的记录被清除。
 
-结束后会再检查一遍：你看到的报告是修复**之后**的状态。
+结束后会再检查一遍：你看到的报告是修复**之后**的状态。修复是否成功，看发现项是否真的消失，而不是看命令的退出码；
+重装之后发现项仍在，报告为检查本身的问题。
+
+修复另一个 SubOS 时执行的 `self doctor --fix` 没有终端：它启动的任何程序都不会停下来等密码，Ctrl-C 能结束它，
+它的输出在 `logs/doctor/<subos>.log`。包声明了需要管理员权限的步骤（`system.admin_step`）而当时没人能确认的，
+`self doctor` 每次都会列出，在终端里执行 `--fix` 时补做。
+
+### 运行时
+
+```bash
+xlings config --runtime glibc@2.44.3   # pin this home's default runtime
+xlings config --runtime glibc@latest   # follow the newest installed again
+```
+
+这个 home 里绑定 glibc 的包都运行在同一个运行时上：锁定的版本，否则是已安装的最新版本。改变它只是切换链接
+（`<home>/abi`），不改写任何包；`abi.json` 说明当前是什么，`logs/abi.ndjson` 记录何时、为何改变。
 
 ```bash
 xlings self doctor --fix --dry-run    # what it would do, changing nothing

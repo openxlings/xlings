@@ -15,6 +15,7 @@ import xlings.core.elfread;
 import xlings.core.profile;
 import xlings.core.xvm.db;
 import xlings.libs.json;
+import xlings.core.abi;
 
 namespace xlings::xim {
 
@@ -189,6 +190,7 @@ void scope_evidence_(InstallPlan& plan) {
         const auto record = payload / ".xlings-resolution.json";
         std::error_code ec;
         if (!fs::is_regular_file(record, ec)) {
+            deps.push_back(Config::paths().homeDir / "abi");  // the runtime indirection
             if (auto outside = links_outside_(payload, deps); !outside.empty())
                 node.rebindReason = std::format("it links {}, which this root does not have", outside);
             else
@@ -203,6 +205,9 @@ void scope_evidence_(InstallPlan& plan) {
         std::size_t matched = 0;
         for (const auto& d : doc["deps"]) {
             if (!d.is_object()) continue;
+            // Bound through the environment's runtime (part 3 §4): whichever
+            // runtime this root has answers it -- not a conflict, not a rebind.
+            if (d.value("source", std::string{}) == "scope") { ++matched; continue; }
             const auto recorded = same_file(xvm::expand_path(d.value("install_dir", std::string{}),
                                                              Config::paths().homeDir.string()));
             if (std::ranges::find(deps, recorded) != deps.end()) { ++matched; continue; }
@@ -255,6 +260,17 @@ resolve(PackageCatalog& catalog, std::span<const std::string> targets, const std
 
     std::unordered_map<std::string, Color_> color;
     std::unordered_map<std::string, PlanNode> nodeMap;
+    // Each runtime's version in this plan: named by the request first, else
+    // the first one resolved.
+    std::map<std::string, std::string> runtimeChoice;
+    for (const auto& t : targets) {
+        const auto at = t.find('@');
+        if (at == std::string::npos) continue;
+        const auto colon = t.find(':');
+        const auto bare = t.substr(colon == std::string::npos || colon > at ? 0 : colon + 1,
+                                   at - (colon == std::string::npos || colon > at ? 0 : colon + 1));
+        if (abi::is_runtime(bare)) runtimeChoice.try_emplace(bare, t.substr(at + 1));
+    }
 
     // One report per distinct failure. The loader fans a flat `deps` list out
     // into BOTH runtime_deps and build_deps, so a dependency that could not be
@@ -290,11 +306,25 @@ resolve(PackageCatalog& catalog, std::span<const std::string> targets, const std
         // rather than to "package not found". The fallback asks the SAME
         // declaring index: a pin that index cannot satisfy is no reason to
         // take another index's package of the same name.
-        const auto pinned = pin_target_to_subos(target, subosVersionOf);
+        // A runtime is the environment's (part 3 §4): a dependency naming it
+        // without a version is a floor, met by the runtime this plan already
+        // chose -- not a second, newer one that would take the environment
+        // over by being installed last.
+        std::string spec = target;
+        if (spec.find('@') == std::string::npos) {
+            const auto colon = spec.find(':');
+            const auto bare = colon == std::string::npos ? spec : spec.substr(colon + 1);
+            if (abi::is_runtime(bare)) {
+                if (auto chosen = runtimeChoice.find(bare); chosen != runtimeChoice.end())
+                    spec += "@" + chosen->second;
+            }
+        }
+        const auto pinned = pin_target_to_subos(spec, subosVersionOf);
         auto resolved = lookup(pinned);
         if (!resolved && pinned != target) {
             resolved = lookup(target);
         }
+        if (resolved && abi::is_runtime(resolved->name)) runtimeChoice.try_emplace(resolved->name, resolved->version);
         if (!resolved) {
             // Say whose dependency it is. The user typed `xmake`; a bare
             // "package 'ncurses' is ambiguous" names nothing they asked for.

@@ -1,0 +1,21 @@
+# Luban's system side (Luban OS architecture design §16): what runs as a
+# machine's own -- stage-0, the first process, before /proc and before any home
+# or Config is read (apps/luban started as luban-init).
+#
+# Its own package so that "nothing on stage-0's path reads Config" is a build
+# fact: it links modules/ only (tools/lint_layer_deps.sh).
+[package]
+namespace = "luban"
+name      = "luban-system"
+version   = "0.1.0"
+
+[targets.luban-system]
+kind = "lib"
+
+[dependencies]
+libs     = { path = "../../../modules/libs" }
+platform = { path = "../../../modules/platform" }
+subos    = { path = "../../../modules/subos" }
+
+[build]
+include_dirs = ["../../../modules/libs/src/json"]

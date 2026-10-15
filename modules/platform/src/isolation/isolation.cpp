@@ -551,10 +551,21 @@ bool mount_9p(std::string_view tag, const fs::path& target, bool read_only) {
     return ::mount(t.c_str(), target.c_str(), "9p", flags, "trans=virtio,version=9p2000.L,msize=512000,cache=mmap") == 0;
 }
 
+bool mount_virtiofs(std::string_view tag, const fs::path& target, bool read_only) {
+    std::error_code ec;
+    fs::create_directories(target, ec);
+    const std::string t(tag);
+    return ::mount(t.c_str(), target.c_str(), "virtiofs", read_only ? MS_RDONLY : 0, nullptr) == 0;
+}
+
 bool move_mount(const fs::path& from, const fs::path& to) {
     std::error_code ec;
     fs::create_directories(to, ec);
     return ::mount(from.c_str(), to.c_str(), nullptr, MS_MOVE, nullptr) == 0;
+}
+
+bool bind_mount(const fs::path& from, const fs::path& to) {
+    return ::mount(from.c_str(), to.c_str(), nullptr, MS_BIND | MS_REC, nullptr) == 0;
 }
 
 bool switch_root(const fs::path& newroot) {
@@ -625,7 +636,9 @@ bool mount_tmpfs(const fs::path&, unsigned) { return false; }
 bool remount_root_rw() { return false; }
 bool is_pid1() { return false; }
 bool mount_9p(std::string_view, const fs::path&, bool) { return false; }
+bool mount_virtiofs(std::string_view, const fs::path&, bool) { return false; }
 bool move_mount(const fs::path&, const fs::path&) { return false; }
+bool bind_mount(const fs::path&, const fs::path&) { return false; }
 bool switch_root(const fs::path&) { return false; }
 void power_off() { std::exit(0); }
 bool set_hostname(std::string_view) { return false; }

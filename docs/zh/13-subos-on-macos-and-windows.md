@@ -43,8 +43,10 @@ Windows 要求重启时，`subos new` 以退出码 3 结束：重启一次，然
 
 ## macOS 上的 Linux SubOS
 
-`vz` 承载通过 Virtualization.framework 在虚拟机里运行 Linux SubOS，由一个签名的辅助程序（`xlings-vm`）驱动。
-这个辅助程序尚未发布；在此之前该承载会以这个原因被拒绝，本机原生的 SubOS 不受影响。
+`vz` 承载在 Luban 宿主机里运行 Linux SubOS：每个 home 一台小型 Linux 机器，由发布包里的 luban
+（`luban __vm`，带 virtualization 权限签名）经 Virtualization.framework 运行。它的文件在 `<home>/carriers/vz` 下一个
+大小写敏感的 APFS 卷上（用系统自带的 `hdiutil` 创建并挂载），经 virtio-fs 交给机器；第一次使用时取回这个版本的 Linux 构建
+与机器内核。不能运行虚拟机的 Mac（Intel Mac，或者它本身就是虚拟机）会以这个原因被拒绝，本机原生的 SubOS 不受影响。
 
 ## 选择承载
 

@@ -60,6 +60,7 @@ struct Selected {
     std::vector<std::string> requires_;
     std::vector<std::string> resources;
     std::size_t shard { 1 };
+    std::string family;               // the mcpp pattern that builds it with its family, member-qualified
 };
 
 std::expected<std::vector<Selected>, std::string>

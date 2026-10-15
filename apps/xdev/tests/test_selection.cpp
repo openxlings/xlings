@@ -111,6 +111,42 @@ XTEST(XdevSelection, HistoricalDurationShardsAreDeterministicDisjointAndComplete
     EXPECT_EQ(sel::matrix(tests, options), plan);
 }
 
+XTEST(XdevSelection, AShardTakesWholeFamiliesSoItBuildsEachInOneCall,
+      .area = "testkit", .covers = {"CI-TEST-SELECTION"}) {
+    std::vector<sel::Test> tests{
+        {.id = "unit/test_subos_a", .source = "tests/unit/test_subos_a.cpp", .duration_ms = 5},
+        {.id = "unit/test_subos_b", .source = "tests/unit/test_subos_b.cpp", .duration_ms = 5},
+        {.id = "unit/test_subos_c", .source = "tests/unit/test_subos_c.cpp", .duration_ms = 5},
+        {.id = "unit/test_luban", .source = "tests/unit/test_luban.cpp", .duration_ms = 6},
+        {.id = "unit/test_luban_vm", .source = "tests/unit/test_luban_vm.cpp", .duration_ms = 6},
+        {.id = "e2e/test_subos_x", .source = "tests/e2e/test_subos_x.cpp", .duration_ms = 4},
+        {.id = "xdev:tests/test_cli", .source = "apps/xdev/tests/test_cli.cpp", .member = "xdev", .duration_ms = 1},
+        {.id = "script:distro:0", .source = "tests/suites.toml", .script = true, .suite = "distro", .duration_ms = 3}};
+    sel::Options options{.platform = "linux", .shards = 3};
+    std::map<std::string, std::size_t> shardOfFamily;
+    std::set<std::string> seen;
+    for (std::size_t shard = 1; shard <= 3; ++shard) {
+        options.shard = shard;
+        const auto selected = sel::select(tests, options);
+        ASSERT_TRUE(selected.has_value());
+        for (const auto& test : *selected) {
+            EXPECT_TRUE(seen.insert(test.test.id).second) << "a test occurs in more than one shard";
+            const auto [at, fresh] = shardOfFamily.emplace(test.family, shard);
+            EXPECT_EQ(at->second, shard) << "a family is split across shards: " << test.test.id;
+            if (test.test.id.starts_with("unit/test_luban"))
+                EXPECT_EQ(test.family, "unit/test_luban") << "the pattern that builds it builds test_luban_vm too";
+            if (test.test.id.starts_with("unit/test_subos_"))
+                EXPECT_TRUE(test.family.starts_with("unit/test_subos_")) << test.family;
+            if (test.test.script) EXPECT_EQ(test.family, test.test.id);
+            if (!test.test.member.empty()) EXPECT_TRUE(test.family.starts_with(test.test.member + ":")) << test.family;
+            const auto name = test.test.id.substr(test.test.member.empty() ? 0 : test.test.member.size() + 1);
+            const auto pattern = test.family.substr(test.test.member.empty() ? 0 : test.test.member.size() + 1);
+            EXPECT_TRUE(test.test.script || name.starts_with(pattern)) << "its family's pattern builds it: " << test.family;
+        }
+    }
+    EXPECT_EQ(seen.size(), tests.size());
+}
+
 XTEST(XdevSelection, InvalidSelectorsTimingsAndUnknownMetadataFailExplicitly,
       .area = "testkit", .covers = {"CI-TEST-SELECTION"}) {
     for (auto bad : {"0/2", "3/2", "1/0", "1/1025", "1", "1/2x", "-1/2"})

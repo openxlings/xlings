@@ -36,6 +36,9 @@ std::wstring wide(std::string_view text) {
     return result;
 }
 std::wstring quote(std::wstring_view value) {
+    // Quoted only when it must be: a program that parses its own command line
+    // (wsl.exe does) reads `"--status"` as a word, not as its option.
+    if (!value.empty() && value.find_first_of(L" \t\n\v\"") == std::wstring_view::npos) return std::wstring(value);
     std::wstring result{L"\""};
     std::size_t slashes{};
     for (const auto ch : value) {
@@ -179,7 +182,11 @@ int run(const std::vector<std::string>& argv,
     const auto pid = ::fork();
     if (pid < 0) return 125;
     if (pid == 0) {
-        ::setpgid(0, 0);
+        // Its own session: nobody reads what it prints as it prints, so it
+        // has no terminal to ask on -- a password prompt fails at once
+        // instead of stopping a background group forever. The session's
+        // leader leads its group, so kill(-pid) still ends all of it.
+        if (::setsid() < 0) ::setpgid(0, 0);
         if (::dup2(input.value, 0) < 0 || ::dup2(out_write.value, 1) < 0 || ::dup2(err_write.value, 2) < 0)
             ::_exit(125);
 #if defined(__linux__) && defined(SYS_close_range)
@@ -189,7 +196,6 @@ int run(const std::vector<std::string>& argv,
         ::execvp(arguments.front(), arguments.data());
         ::_exit(errno == ENOENT ? 127 : 126);
     }
-    ::setpgid(pid, pid);
     out_write.close(); err_write.close(); input.close();
     struct Child {
         int pid;

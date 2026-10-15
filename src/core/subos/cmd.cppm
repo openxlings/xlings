@@ -548,8 +548,12 @@ fs::path resolve_base_package_(const std::string& spec, EventStream& stream);
 // `subos new --rootfs`, and a fork of a root (part 2 §11).
 std::expected<void, std::string> preflight_domain_at_creation_(std::string_view name, bool rootfs,
     std::string_view domain, std::string_view fromSpec);
+// `fellBack` (--domain-if-possible): when this host cannot build in a private
+// namespace, it is set and nullopt returned -- the caller makes the instance
+// in its own prefix instead.
 std::optional<int> produce_domain_at_creation_(const std::string& name, bool rootfs,
-    std::string_view domain, std::span<const std::string> arguments, EventStream& stream);
+    std::string_view domain, std::span<const std::string> arguments, EventStream& stream,
+    bool* fellBack = nullptr);
 std::optional<int> run_domain_operation_(const std::string& name,
     std::span<const std::string> arguments, EventStream& stream);
 int declare_root_at_creation_(const std::string& name, bool rootfs, const std::string& from,

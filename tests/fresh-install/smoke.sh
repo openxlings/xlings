@@ -11,7 +11,7 @@
 # native Linux leg and the CentOS 7 `docker run` leg execute byte-identical code
 # and neither needs $GITHUB_PATH.
 #
-#   usage: bash tests/fresh-install/smoke.sh <core|gcc|llvm|luban-console|luban-window|luban-archive|luban-machine|luban-upgrade|luban-host>
+#   usage: bash tests/fresh-install/smoke.sh <core|gcc|llvm|luban-console|luban-window|luban-archive|luban-machine|luban-upgrade|luban-lived-in|luban-host>
 #
 # Run it locally the same way CI does — but note it uninstalls xlings from $HOME
 # at the end of the `core` suite, so point HOME somewhere disposable:
@@ -336,6 +336,10 @@ suite_luban_window() {
     ok "luban-os at $LUBAN_OS"
     # The one-time setup a restricted host asks for (docs/luban/07-host-support.md).
     run "luban setup" luban setup -y
+    # Installed where xlings puts programs, not beside luban: luban finds it.
+    STATUS="$(luban status 2>&1)" || true
+    grep -Eq 'desktop +ready' <<<"$STATUS" || fail "the window is installed and luban status says no desktop: $STATUS"
+    ok "luban status: a desktop can be shown"
 
     section "First use -- the quick start makes a system and its console runs what is typed"
     cat > "$shots/first.script" <<EOF
@@ -346,7 +350,7 @@ click card:tiny
 click make
 wait job
 wait console 900
-see 120s [luban:tiny-1]
+see 120s root@tiny-1
 type echo luban-\$((6*7))
 key Return
 see 60s luban-42
@@ -416,8 +420,8 @@ main() {
         core|gcc|llvm) ;;
         luban|luban-window) suite=luban-window ;;
         luban-console|luban-archive|luban-machine|luban-host) ;;
-        luban-upgrade) export FROM_PREVIOUS_RELEASE=1 ;;
-        '') fail "usage: $0 <core|gcc|llvm|luban-console|luban-window|luban-archive|luban-machine|luban-upgrade|luban-host>" ;;
+        luban-upgrade|luban-lived-in) export FROM_PREVIOUS_RELEASE=1 ;;
+        '') fail "usage: $0 <core|gcc|llvm|luban-console|luban-window|luban-archive|luban-machine|luban-upgrade|luban-lived-in|luban-host>" ;;
         *)  fail "unknown suite '$suite'" ;;
     esac
 

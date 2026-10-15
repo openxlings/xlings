@@ -40,4 +40,45 @@ std::string login_shell(const fs::path& root, std::string_view user = "root");
 // link to a factory one.
 std::expected<void, std::string> set_login_shell(const fs::path& etc, std::string_view user, std::string_view shell);
 
+// Users of a root (part 3 §6.1): its passwd answers who logs in.
+struct User {
+    std::string name;
+    unsigned uid { 0 };
+    unsigned gid { 0 };
+    std::string home;
+    std::string shell;
+};
+// A name `useradd` would take: [a-z_][a-z0-9_-]*, at most 32.
+bool valid_user_name(std::string_view name);
+std::optional<User> find_user(const fs::path& etc, std::string_view name);
+// A login user: a passwd line (the first free uid from 1000, its own group),
+// membership in wheel, a shadow line (`hash`, or none: logs in without one),
+// and its home under `tree`. An existing name is an error.
+// `prefer`: the uid to take when it is free and at least 1000 -- the host
+// user's, so a machine's 9p share (which shows the host's owners) lets the
+// user write its own home.
+std::expected<User, std::string> add_user(const fs::path& tree, std::string_view name, std::string_view shell,
+                                          std::string_view hash, std::optional<unsigned> prefer = std::nullopt);
+// Replaces `name`'s shadow hash ("" = no password).
+std::expected<void, std::string> set_password(const fs::path& etc, std::string_view name, std::string_view hash);
+// Who `luban enter` logs in as: etc/luban/login, else root. Machine state.
+std::string login_user(const fs::path& etc);
+std::expected<void, std::string> set_login_user(const fs::path& etc, std::string_view name);
+
+// Who a root is to its own processes (part 3 §6.2): its /etc/hostname, unless
+// that is empty or the edition's placeholder `luban` -- then the system's name.
+std::string hostname(const fs::path& etc, std::string_view name);
+
+// Where you are, in the prompt (part 3 §7.2): `[luban]` for a system that
+// shares the host's kernel, `<luban>` for one with its own, `:temp` / `:home`
+// when it keeps less than everything, then `user@host:dir$`. ANSI's 16
+// colours only, and only on a terminal known to show them (`term`); never
+// when `no_color`. A PS1 sh, bash and busybox read.
+std::string prompt(std::string_view kind, std::string_view persist, std::string_view term, bool no_color);
+
+// The same, for a login shell and after `su -`: etc/profile.d/luban.sh, from
+// LUBAN_KIND and LUBAN_PERSIST, written when missing (machine state: an edit
+// stays). Returns whether it was written.
+std::expected<bool, std::string> ensure_prompt_script(const fs::path& etc);
+
 }  // namespace xlings::subos::root_etc

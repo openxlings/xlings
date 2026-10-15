@@ -1,0 +1,20 @@
+# openhal-host: openhal's device source for the machine a program runs on --
+# Linux (sysfs, DRM, ALSA, evdev), macOS (IOKit, CoreGraphics, CoreAudio),
+# Windows (DXGI, the display and audio device lists, raw input). The system
+# headers are read only under src/native/.
+[package]
+namespace = "openhal"
+name      = "openhal-host"
+version   = "0.1.0"
+
+[targets.openhal-host]
+kind = "lib"
+
+[dependencies]
+openhal = { path = "../../specs/openhal" }
+
+[target.macos.build]
+ldflags = ["-framework", "IOKit", "-framework", "CoreFoundation", "-framework", "CoreGraphics", "-framework", "CoreAudio"]
+
+[target.windows.build]
+ldflags = ["-ldxgi", "-luser32", "-lwinmm", "-lole32"]

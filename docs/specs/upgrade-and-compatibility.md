@@ -81,6 +81,9 @@ work.
 | the NDJSON interface | `protocol_version`, additions only within 1.x ([interface](interface-ndjson-v1.md)) | sees fields it ignores; a client probes capabilities, never versions |
 | a recipe | `revision` per version ([xpkg manifest](xpkg-manifest-v1.md)) | — a changed revision reconfigures every scope on its next install |
 | the version records | `data/versions.json` stamped against the home config | falls back to the home config's field (the source every client writes) |
+| the runtime indirection (2026.10.15) | `<home>/abi` -> `abi.gen/<n>`, `abi.json`, the record's `source: "scope"` | a payload bound through it runs on any client (its loader is an ordinary path); an older client rebinds such a package by path when it reinstalls it, which is still correct for that home |
+| a Luban system in the system domain (2026.10.15) | its control record's `prefix_domain` | an older `luban` lists it without its edition; `xlings subos` routes it through the domain as before |
+| administrator steps (2026.10.15) | `state/admin-steps.json` | ignored: the steps stay until a client that knows them runs `self doctor --fix` |
 
 Rules:
 
@@ -92,6 +95,19 @@ Rules:
 - **Additions only within a major version** of a protocol or a format.
 - **Compatibility code says when it goes**: `COMPAT(<since> … drop in <YYYY.M>)`,
   kept at least six months after the release that made it unnecessary.
+
+What moves forward on its own, without a layout change (2026.10.15):
+
+- **Payloads already bound by path** keep running: their glibc is still where
+  they name it. New installs are bound through `<home>/abi`; nothing rewrites
+  an installed payload.
+- **A Luban system made before** stays where it is and keeps working;
+  `luban upgrade <n> -y` moves it into the system domain (an archive of its
+  `/etc`, `/home`, `/root`, `/var`, its policy, settings and own packages,
+  kept until the new one stands, named if it does not).
+- **`/etc/hostname = luban`**, the editions' placeholder, is read as no name:
+  the system's own is used. `etc/profile.d/luban.sh` is written when missing,
+  never rewritten.
 
 ## 4. Releases
 

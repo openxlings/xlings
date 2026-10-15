@@ -292,7 +292,18 @@ function Invoke-SuiteLubanHost {
     if ($status -notmatch 'ready') { Fail "luban status did not say whether this host is ready" }
     Write-Ok 'the host status answers'
     Assert-Refuses 'a Luban system is not made here without WSL2' @('luban', 'new', 'box', '--edition', 'tiny')
-    Assert-Refuses 'the window is not published for this platform' @('xlings', 'install', 'luban-os', '-y')
+    # The window: published for Windows from 2026.10.15.1 (part 4 §8.2) --
+    # installed and answering; before that, refused (the latest a fresh
+    # install meets decides which).
+    $app = (& xlings install luban-os -y 2>&1 | Out-String)
+    if ($LASTEXITCODE -eq 0) {
+        $v = (& luban-os --version 2>&1 | Out-String)
+        if ($v -notmatch 'luban-os|Luban OS') { Fail "luban-os was installed but does not answer --version: $v" }
+        Write-Ok 'the Luban OS window is installed'
+    } else {
+        if ($app -notmatch 'windows|platform|not (published|available)') { Fail "luban-os was refused without saying why: $app" }
+        Write-Ok 'the window is not published for this platform yet'
+    }
 }
 
 switch ($Suite) {

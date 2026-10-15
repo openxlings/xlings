@@ -11,7 +11,7 @@ edition 是环境的模板：它带来的包、创建时所用的策略、怎样
 | `luban-nano` | `nano` | xlings 和 luban——别的都没有，连 shell 都没有 | 是 | 是 |
 | `luban-tiny` | `tiny` | BusyBox、glibc、CA 证书、BusyBox init | 是 | 是 |
 | `luban-tiny-musl` | `luban-tiny-musl` | 用 musl 代替 glibc 的 tiny | 是 | 是 |
-| `luban-core` | `core`（默认） | bash、fish、vim、nvim、git、mcpp、ninja、coreutils、gcc、binutils、make、openssl | 是 | 是 |
+| `luban-core` | `core`（默认） | bash、fish、vim、nvim、git、gh、mcpp、ninja、coreutils、gcc、binutils、make、openssl | 是 | 是 |
 | `luban-agent-workspace` | `agent-workspace` | core、一个 agent（claude）和 `agent-private` 策略 | 是 | 是 |
 | `luban-desktop` | `desktop` | core、xdesk 经典桌面，以及常用工具（node、python、uv、bun、ripgrep、fd、fzf、jq、tmux、htop、claude、codex、pi、opencode）；以机器方式运行（[桌面](08-desktop.md)） | 是 | 是（labwc） |
 | `luban-desktop-xdesk` | `desktop-xdesk` | 同样的环境，桌面是 xdesk 画布（供探索） | 是 | 暂无 |

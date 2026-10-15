@@ -250,4 +250,188 @@ std::expected<void, std::string> set_login_shell(const fs::path& etc, std::strin
     return {};
 }
 
+std::string hostname(const fs::path& etc, std::string_view name) {
+    std::ifstream in(etc / "hostname");
+    std::string line;
+    std::getline(in, line);
+    while (!line.empty() && std::isspace(static_cast<unsigned char>(line.back()))) line.pop_back();
+    return line.empty() || line == "luban" ? std::string(name) : line;
+}
+
+namespace {
+bool paints_(std::string_view term, bool no_color) {
+    if (no_color) return false;
+    return term.starts_with("xterm") || term.starts_with("screen") || term.starts_with("tmux") || term == "linux"
+        || term.starts_with("rxvt") || term == "vt220" || term.find("color") != std::string_view::npos
+        || term == "alacritty" || term == "foot" || term.starts_with("kitty") || term == "wezterm";
+}
+}  // namespace
+
+std::string prompt(std::string_view kind, std::string_view persist, std::string_view term, bool no_color) {
+    const std::string keep = persist == "none" ? ":temp" : persist == "home" ? ":home" : "";
+    const bool machine = kind == "machine";
+    const std::string mark = (machine ? "<luban" : "[luban") + keep + (machine ? ">" : "]");
+    if (!paints_(term, no_color)) return mark + R"( \u@\h:\w\$ )";
+    const char* colour = persist == "none" ? "31" : persist == "home" ? "33" : machine ? "35" : "36";
+    return std::format(R"(\[\033[{}m\]{}\[\033[0m\] \u@\h:\w\$ )", colour, mark);
+}
+
+std::expected<bool, std::string> ensure_prompt_script(const fs::path& etc) {
+    static constexpr std::string_view script = R"SH(# Where you are, in the prompt (Luban OS part 3 7.2): [luban] a system that
+# shares the host's kernel, <luban> one with its own, :temp / :home when it
+# keeps less than everything. Machine state: edit freely; an upgrade never
+# rewrites it.
+if [ -n "$LUBAN_KIND" ]; then
+    case "$LUBAN_PERSIST" in none) __lk=:temp __lc=31 ;; home) __lk=:home __lc=33 ;; *) __lk= __lc= ;; esac
+    if [ "$LUBAN_KIND" = machine ]; then __lm="<luban$__lk>"; : "${__lc:=35}"; else __lm="[luban$__lk]"; : "${__lc:=36}"; fi
+    __lp=
+    if [ -z "$NO_COLOR" ] && [ "$LUBAN_COLOR" != 0 ]; then
+        case "$TERM" in xterm*|screen*|tmux*|linux|rxvt*|vt220|*color*|alacritty|foot|kitty*|wezterm) __lp=1 ;; esac
+    fi
+    if [ -n "$__lp" ]; then PS1="\[\033[${__lc}m\]$__lm\[\033[0m\] \u@\h:\w\\$ "; else PS1="$__lm \u@\h:\w\\$ "; fi
+    unset __lk __lc __lm __lp
+fi
+)SH";
+    std::error_code ec;
+    const auto file = etc / "profile.d" / "luban.sh";
+    if (fs::exists(fs::symlink_status(file, ec))) return false;
+    fs::create_directories(file.parent_path(), ec);
+    if (ec) return std::unexpected(std::format("cannot make {}: {}", file.parent_path().string(), ec.message()));
+    std::ofstream out(file, std::ios::trunc);
+    out << script;
+    if (!out) return std::unexpected("cannot write " + file.string());
+    return true;
+}
+
+namespace {
+std::vector<std::vector<std::string>> table_(const fs::path& file) {
+    std::vector<std::vector<std::string>> rows;
+    std::ifstream in(file);
+    for (std::string line; std::getline(in, line);) {
+        std::vector<std::string> f;
+        for (std::string_view rest = line;;) {
+            const auto colon = rest.find(':');
+            f.emplace_back(rest.substr(0, colon));
+            if (colon == std::string_view::npos) break;
+            rest.remove_prefix(colon + 1);
+        }
+        rows.push_back(std::move(f));
+    }
+    return rows;
+}
+std::string join_(const std::vector<std::string>& f) {
+    std::string out;
+    for (std::size_t i = 0; i < f.size(); ++i) out += (i ? ":" : "") + f[i];
+    return out;
+}
+// The root's own regular file, rewritten whole (a staged copy renamed over).
+std::expected<void, std::string> write_table_(const fs::path& file, const std::vector<std::vector<std::string>>& rows,
+                                              fs::perms mode) {
+    std::error_code ec;
+    if (fs::is_symlink(file, ec)) return std::unexpected(file.string() + " is not the root's own file");
+    std::string text;
+    for (const auto& r : rows) text += join_(r) + "\n";
+    const auto staged = fs::path(file.string() + ".luban-new");
+    {
+        std::ofstream out(staged, std::ios::trunc);
+        out << text;
+        if (!out) return std::unexpected("cannot write " + staged.string());
+    }
+    fs::permissions(staged, mode, ec);
+    fs::rename(staged, file, ec);
+    if (ec) return std::unexpected(std::format("cannot replace {}: {}", file.string(), ec.message()));
+    return {};
+}
+constexpr std::string_view kDays = "20000";   // last change: any past day; nothing expires
+}  // namespace
+
+bool valid_user_name(std::string_view name) {
+    if (name.empty() || name.size() > 32) return false;
+    if (!(std::islower(static_cast<unsigned char>(name[0])) || name[0] == '_')) return false;
+    return std::ranges::all_of(name, [](char c) {
+        return std::islower(static_cast<unsigned char>(c)) || std::isdigit(static_cast<unsigned char>(c)) || c == '_' || c == '-';
+    });
+}
+
+std::optional<User> find_user(const fs::path& etc, std::string_view name) {
+    for (const auto& f : table_(etc / "passwd")) {
+        if (f.size() < 7 || f[0] != name) continue;
+        try {
+            return User{f[0], static_cast<unsigned>(std::stoul(f[2])), static_cast<unsigned>(std::stoul(f[3])), f[5], f[6]};
+        } catch (...) { return std::nullopt; }
+    }
+    return std::nullopt;
+}
+
+std::expected<User, std::string> add_user(const fs::path& tree, std::string_view name, std::string_view shell,
+                                          std::string_view hash, std::optional<unsigned> prefer) {
+    if (!valid_user_name(name)) return std::unexpected(std::format("'{}' is not a user name (a-z, 0-9, _ and -, a letter first)", name));
+    const auto etc = tree / "etc";
+    if (find_user(etc, name)) return std::unexpected(std::format("there is already a user '{}'", name));
+    auto passwd = table_(etc / "passwd");
+    auto group = table_(etc / "group");
+    std::set<unsigned> taken;
+    for (const auto* rows : {&passwd, &group})
+        for (const auto& f : *rows)
+            if (f.size() > 2) try { taken.insert(static_cast<unsigned>(std::stoul(f[2]))); } catch (...) {}
+    unsigned id = 1000;
+    if (prefer && *prefer >= 1000 && *prefer < 60000 && !taken.contains(*prefer)) id = *prefer;
+    while (taken.contains(id)) ++id;
+    User u{std::string(name), id, id, "/home/" + std::string(name), shell.empty() ? std::string("/bin/sh") : std::string(shell)};
+    passwd.push_back({u.name, "x", std::to_string(id), std::to_string(id), u.name, u.home, u.shell});
+    group.push_back({u.name, "x", std::to_string(id), ""});
+    bool wheel = false;
+    for (auto& f : group)
+        if (f.size() >= 4 && f[0] == "wheel") {
+            f[3] += (f[3].empty() ? "" : ",") + u.name;
+            wheel = true;
+        }
+    if (!wheel) group.push_back({"wheel", "x", "10", u.name});
+    if (auto w = write_table_(etc / "passwd", passwd, fs::perms::owner_read | fs::perms::owner_write | fs::perms::group_read | fs::perms::others_read); !w) return std::unexpected(w.error());
+    if (auto w = write_table_(etc / "group", group, fs::perms::owner_read | fs::perms::owner_write | fs::perms::group_read | fs::perms::others_read); !w) return std::unexpected(w.error());
+    if (auto w = set_password(etc, u.name, hash); !w) return std::unexpected(w.error());
+    std::error_code ec;
+    fs::create_directories(tree / fs::path(u.home).relative_path(), ec);
+    if (ec) return std::unexpected(std::format("cannot make {}: {}", u.home, ec.message()));
+    return u;
+}
+
+std::expected<void, std::string> set_password(const fs::path& etc, std::string_view name, std::string_view hash) {
+    if (hash.find(':') != std::string_view::npos || hash.find('\n') != std::string_view::npos)
+        return std::unexpected("a password hash has no ':' or line break");
+    auto shadow = table_(etc / "shadow");
+    bool found = false;
+    for (auto& f : shadow)
+        if (!f.empty() && f[0] == name) {
+            f.resize(std::max<std::size_t>(f.size(), 9));
+            f[1] = std::string(hash);
+            found = true;
+        }
+    if (!found) {
+        // root has a line too, locked: its way in is `luban enter <n> --user root`.
+        if (name != "root" && std::ranges::none_of(shadow, [](const auto& f) { return !f.empty() && f[0] == "root"; }))
+            shadow.push_back({"root", "!", std::string(kDays), "0", "99999", "7", "", "", ""});
+        shadow.push_back({std::string(name), std::string(hash), std::string(kDays), "0", "99999", "7", "", "", ""});
+    }
+    return write_table_(etc / "shadow", shadow, fs::perms::owner_read | fs::perms::owner_write);
+}
+
+std::string login_user(const fs::path& etc) {
+    std::ifstream in(etc / "luban" / "login");
+    std::string name;
+    std::getline(in, name);
+    while (!name.empty() && std::isspace(static_cast<unsigned char>(name.back()))) name.pop_back();
+    return valid_user_name(name) ? name : std::string("root");
+}
+
+std::expected<void, std::string> set_login_user(const fs::path& etc, std::string_view name) {
+    if (name != "root" && !find_user(etc, name)) return std::unexpected(std::format("there is no user '{}' in it", name));
+    std::error_code ec;
+    fs::create_directories(etc / "luban", ec);
+    std::ofstream out(etc / "luban" / "login", std::ios::trunc);
+    out << name << "\n";
+    if (!out) return std::unexpected("cannot write " + (etc / "luban" / "login").string());
+    return {};
+}
+
 }  // namespace xlings::subos::root_etc

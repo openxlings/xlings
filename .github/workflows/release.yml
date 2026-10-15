@@ -667,6 +667,23 @@ jobs:
           name: xlings-macosx-arm64
           path: build/xlings-*-macosx-arm64.tar.gz
 
+      # The Luban OS app for macOS (part 4 §8.1): its own payload, the
+      # system's frameworks only (tools/luban_os_release.sh checks).
+      - name: Build the Luban OS app (luban_os_release, macOS)
+        env:
+          MACOSX_DEPLOYMENT_TARGET: '14.0'
+        run: |
+          mcpp build -p luban-os --profile dist
+          bash tools/luban_os_release.sh
+
+      - name: Upload the Luban OS app (macOS)
+        uses: actions/upload-artifact@v4
+        with:
+          name: luban-os-macosx-arm64
+          path: |
+            build/luban-os-*-macosx-arm64.tar.gz
+            build/luban-os-*-macosx-arm64.tar.gz.sha256
+
   build-windows:
     runs-on: windows-latest
     steps:
@@ -855,6 +872,22 @@ jobs:
           name: xlings-windows-x86_64
           path: build/xlings-*-windows-x86_64.zip
 
+      # The Luban OS app for Windows (part 4 §8.2): its own payload.
+      - name: Build the Luban OS app (luban_os_release, Windows)
+        shell: pwsh
+        run: |
+          mcpp build -p luban-os --profile dist
+          if ($LASTEXITCODE -ne 0) { throw "mcpp build -p luban-os failed" }
+          & "$env:GITHUB_WORKSPACE\tools\luban_os_release.ps1"
+
+      - name: Upload the Luban OS app (Windows)
+        uses: actions/upload-artifact@v4
+        with:
+          name: luban-os-windows-x86_64
+          path: |
+            build/luban-os-*-windows-x86_64.zip
+            build/luban-os-*-windows-x86_64.zip.sha256
+
   prepare-candidates:
     needs: [build-linux, build-linux-aarch64, build-macos, build-windows]
     runs-on: ubuntu-24.04
@@ -958,6 +991,8 @@ jobs:
             artifacts/xlings-linux-x86_64/xlings-*-linux-x86_64.tar.gz
             artifacts/luban-os-linux-x86_64/luban-os-*-linux-x86_64.tar.gz
             artifacts/luban-os-linux-x86_64/xdesk-*-linux-x86_64.tar.gz
+            artifacts/luban-os-macosx-arm64/luban-os-*-macosx-arm64.tar.gz
+            artifacts/luban-os-windows-x86_64/luban-os-*-windows-x86_64.zip
             artifacts/xlings-linux-aarch64/xlings-*-linux-aarch64.tar.gz
             artifacts/xlings-macosx-arm64/xlings-*-macosx-arm64.tar.gz
             artifacts/xlings-windows-x86_64/xlings-*-windows-x86_64.zip

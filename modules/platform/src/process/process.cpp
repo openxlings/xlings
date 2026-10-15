@@ -8,7 +8,11 @@ module;
 #include <cstring>
 #if defined(__linux__) || defined(__APPLE__)
 #include <fcntl.h>
+#include <grp.h>
 #include <poll.h>
+#if defined(__linux__)
+#include <sys/prctl.h>
+#endif
 #include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <sys/socket.h>
@@ -260,6 +264,14 @@ std::optional<std::pair<int, ExitStatus>> reap_child() {
 }
 
 bool new_session() { return ::setsid() >= 0; }
+bool give_to(const std::filesystem::path& path, unsigned uid, unsigned gid) {
+    return ::lchown(path.c_str(), static_cast<uid_t>(uid), static_cast<gid_t>(gid)) == 0;
+}
+
+bool become_user(unsigned uid, unsigned gid) {
+    if (::setgroups(0, nullptr) != 0 && ::getuid() == 0) return false;
+    return ::setgid(static_cast<gid_t>(gid)) == 0 && ::setuid(static_cast<uid_t>(uid)) == 0;
+}
 bool take_controlling_terminal() { return ::ioctl(0, TIOCSCTTY, 0) == 0; }
 
 void redirect_stdio(std::span<const int> fds) {
@@ -320,6 +332,66 @@ int run_argv_with_timeout(const std::vector<std::string>& argv, std::chrono::mil
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(20));
     }
+}
+
+namespace {
+volatile std::sig_atomic_t g_unattended_stop = 0;
+void note_unattended_stop_(int signal) { g_unattended_stop = signal; }
+}
+
+int run_shell_unattended(const std::string& command, std::optional<std::chrono::milliseconds> limit) {
+    // Held, not blocked: another thread of this process may take the signal,
+    // and a handler sees it whichever thread does.
+    constexpr int stops[] = {SIGINT, SIGQUIT, SIGTERM, SIGHUP};
+    struct sigaction note{}, saved[std::size(stops)]{};
+    note.sa_handler = note_unattended_stop_;
+    sigemptyset(&note.sa_mask);
+    g_unattended_stop = 0;
+    for (std::size_t i = 0; i != std::size(stops); ++i) ::sigaction(stops[i], &note, &saved[i]);
+    const auto restore = [&] {
+        for (std::size_t i = 0; i != std::size(stops); ++i) ::sigaction(stops[i], &saved[i], nullptr);
+    };
+    const int parent = ::getpid();
+    const int pid = fork_process();
+    if (pid < 0) { restore(); return 126; }
+    if (pid == 0) {
+        ::setsid();
+#if defined(__linux__)
+        // A child of nobody's must not outlive the one who started it.
+        ::prctl(PR_SET_PDEATHSIG, SIGKILL);
+        if (::getppid() != parent) ::_exit(130);
+#endif
+        reset_signals();
+        if (const int null = ::open("/dev/null", O_RDONLY); null >= 0) {
+            ::dup2(null, 0);
+            if (null != 0) ::close(null);
+        }
+        ::execl("/bin/sh", "sh", "-c", command.c_str(), static_cast<char*>(nullptr));
+        ::_exit(127);
+    }
+    // The session's leader leads its first group: the shell and what it
+    // runs. Asked first, then made to.
+    const auto end_it = [pid] {
+        send_signal_group(pid, SIGTERM);
+        std::optional<ExitStatus> ended;
+        for (int i = 0; i != 100 && !(ended = wait_process(pid, false)); ++i)
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        if (!ended) {
+            send_signal_group(pid, SIGKILL);
+            (void)wait_process(pid, true);
+        }
+    };
+    const auto deadline = limit ? std::optional(std::chrono::steady_clock::now() + *limit) : std::nullopt;
+    int rc = 0;
+    while (true) {
+        if (auto s = wait_process(pid, false)) { rc = exit_code(*s); break; }
+        if (const int stop = g_unattended_stop) { end_it(); rc = 128 + stop; break; }
+        if (deadline && std::chrono::steady_clock::now() >= *deadline) { end_it(); rc = 124; break; }
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+    restore();
+    if (const int stop = g_unattended_stop) ::raise(stop);  // as if it had come now
+    return rc;
 }
 
 UserIds user_ids() {
@@ -632,6 +704,14 @@ std::optional<std::array<int, 2>> unix_pair() {
     return std::array<int, 2>{p[0], p[1]};
 }
 
+std::optional<std::array<int, 2>> unix_stream_pair() {
+    int p[2];
+    if (::socketpair(AF_UNIX, SOCK_STREAM, 0, p) != 0) return std::nullopt;
+    cloexec(p[0]);
+    cloexec(p[1]);
+    return std::array<int, 2>{p[0], p[1]};
+}
+
 bool send_message(int sock, std::string_view data, std::span<const int> fds) {
 #if defined(__APPLE__)
     const auto size = static_cast<std::uint32_t>(data.size());
@@ -805,8 +885,13 @@ int exec_path(const std::vector<std::string>&, const std::map<std::string, std::
 std::optional<ExitStatus> wait_process(int, bool) { return std::nullopt; }
 std::optional<std::pair<int, ExitStatus>> reap_child() { return std::nullopt; }
 bool new_session() { return false; }
+bool become_user(unsigned, unsigned) { return false; }
+bool give_to(const std::filesystem::path&, unsigned, unsigned) { return false; }
 bool take_controlling_terminal() { return false; }
 void redirect_stdio(std::span<const int>) {}
+int run_shell_unattended(const std::string& command, std::optional<std::chrono::milliseconds>) {
+    return std::system(command.c_str());
+}
 // The Windows process scope (design part 3 §6.3): the program and everything
 // it starts in one Job Object that dies with this process (kill-on-close) and
 // is ended whole when it runs past `limit` (124).
@@ -913,6 +998,7 @@ int current_pid() { return static_cast<int>(::GetCurrentProcessId()); }
 std::optional<int> spawn_detached(const std::vector<std::string>&, const std::filesystem::path&) { return std::nullopt; }
 int unix_accept(int) { return -1; }
 std::optional<std::array<int, 2>> unix_pair() { return std::nullopt; }
+std::optional<std::array<int, 2>> unix_stream_pair() { return std::nullopt; }
 bool send_message(int, std::string_view, std::span<const int>) { return false; }
 std::optional<Message> receive_message(int, std::size_t) { return std::nullopt; }
 std::optional<SharedMemory> create_shared_memory(std::size_t) { return std::nullopt; }

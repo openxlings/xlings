@@ -51,10 +51,14 @@ this setup.
 
 ## A Linux SubOS on macOS
 
-The `vz` carrier runs a Linux SubOS in a virtual machine through
-Virtualization.framework, driven by a signed helper (`xlings-vm`). The helper is
-not published yet; until it is, the carrier is refused with that reason, and a
-native SubOS is unaffected.
+The `vz` carrier runs a Linux SubOS in the Luban host machine: one small Linux
+machine per home, run by Virtualization.framework through the release's luban
+(`luban __vm`, signed with the virtualization entitlement). Its files are on a
+case-sensitive APFS volume under `<home>/carriers/vz` (made and attached with
+the system's `hdiutil`), shared with the machine by virtio-fs; the first use
+fetches the Linux build of this release and the machine kernel. A Mac that
+cannot run a virtual machine (an Intel Mac, or one that is itself a virtual
+machine) is refused with the reason, and a native SubOS is unaffected.
 
 ## Choosing the carrier
 

@@ -19,6 +19,7 @@ import xlings.testkit;
 
 import std;
 import xlings.platform;
+import xlings.platform.stream;
 
 XTEST(ProcessTerminal, AChildInItsOwnGroupMayUseTheTerminalAndTheTerminalComesBack,
       .area = "platform", .covers = {"PROCESS-TERMINAL-JOB"}, .requires_ = {"posix"}) {
@@ -63,6 +64,166 @@ XTEST(ProcessTerminal, AChildInItsOwnGroupMayUseTheTerminalAndTheTerminalComesBa
     ASSERT_TRUE(WIFEXITED(status));
     EXPECT_EQ(WEXITSTATUS(status), 0)
         << "99: the terminal did not come back; 100+N: the child exited N (124: stopped until the deadline)";
+#endif
+}
+
+#if !defined(_WIN32)
+namespace {
+// Runs `body` in a child whose controlling terminal is a fresh pty, in its
+// foreground -- a person at a shell prompt -- and returns its wait status.
+int at_a_terminal(const std::function<int()>& body) {
+    const int master = ::posix_openpt(O_RDWR | O_NOCTTY);
+    if (master < 0 || ::grantpt(master) != 0 || ::unlockpt(master) != 0) return -1;
+    const std::string slave = ::ptsname(master);
+    const pid_t pid = ::fork();
+    if (pid < 0) return -1;
+    if (pid == 0) {
+        ::setsid();
+        const int fd = ::open(slave.c_str(), O_RDWR);
+        if (fd < 0 || ::ioctl(fd, TIOCSCTTY, 0) != 0) ::_exit(90);
+        ::dup2(fd, 0); ::dup2(fd, 1); ::dup2(fd, 2);
+        // What sudo reads a password from: here it can be opened.
+        if (std::system("exec 3</dev/tty") != 0) ::_exit(91);
+        ::_exit(body());
+    }
+    ::close(::open(slave.c_str(), O_RDWR | O_NOCTTY));   // keep the pty from hanging up early
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+    int status = 0;
+    ::fcntl(master, F_SETFL, ::fcntl(master, F_GETFL) | O_NONBLOCK);
+    while (::waitpid(pid, &status, WNOHANG) == 0) {
+        char drain[256];
+        while (::read(master, drain, sizeof drain) > 0) {}
+        if (std::chrono::steady_clock::now() > deadline) {
+            ::kill(pid, SIGKILL);
+            ::waitpid(pid, &status, 0);
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+    ::close(master);
+    return status;
+}
+
+// Exits 10 when it could open the terminal, 11 when its input is one.
+constexpr const char* kAsksNobody =
+    "if (exec 3</dev/tty) 2>/dev/null; then exit 10; fi; if [ -t 0 ]; then exit 11; fi; exit 0";
+constexpr const char* kWhy =
+    "90/91: the test's terminal is not a controlling one; 10: the child could open /dev/tty; 11: its input is a terminal";
+}  // namespace
+#endif
+
+// `self doctor --fix` repairs another SubOS through a child. A recipe in it
+// that runs `sudo` itself asked for a password on a terminal the child could
+// not read from (`timeout` had put it in a background group), and Ctrl-C did
+// nothing: the person was stuck for the child's whole half-hour bound.
+XTEST(ProcessTerminal, AnUnattendedChildHasNoTerminalToAskOn,
+      .area = "self", .covers = {"ELEVATION-NOBODY-TO-ASK"}, .requires_ = {"posix"}) {
+#if defined(_WIN32)
+    GTEST_SKIP() << "a POSIX controlling terminal";
+#else
+    const int status = at_a_terminal([] { return xlings::platform::run_shell_unattended(kAsksNobody); });
+    ASSERT_TRUE(WIFEXITED(status)) << status;
+    EXPECT_EQ(WEXITSTATUS(status), 0) << kWhy;
+#endif
+}
+
+// The same for a child whose output is read, not shown (the luban service's
+// JSON calls, the Luban OS window's jobs): nobody sees a prompt it prints.
+XTEST(ProcessTerminal, AStreamedChildHasNoTerminalToAskOn,
+      .area = "self", .covers = {"ELEVATION-NOBODY-TO-ASK"}, .requires_ = {"posix"}) {
+#if defined(_WIN32)
+    GTEST_SKIP() << "a POSIX controlling terminal";
+#else
+    const int status = at_a_terminal([] {
+        return xlings::platform::stream::run({"/bin/sh", "-c", kAsksNobody},
+                                             [](std::string_view, std::string_view) {});
+    });
+    ASSERT_TRUE(WIFEXITED(status)) << status;
+    EXPECT_EQ(WEXITSTATUS(status), 0) << kWhy;
+#endif
+}
+
+XTEST(ProcessTerminal, CtrlCEndsAnUnattendedChildAndThenTheCaller,
+      .area = "self", .covers = {"ELEVATION-NOBODY-TO-ASK"}, .requires_ = {"posix"}) {
+#if defined(_WIN32)
+    GTEST_SKIP() << "POSIX signals";
+#else
+    auto home = xlings::testkit::Home::isolated("unattended-ctrl-c");
+    const auto started = home.dir() / "started";
+    const pid_t pid = ::fork();
+    ASSERT_GE(pid, 0);
+    if (pid == 0) {
+        (void)xlings::platform::run_shell_unattended(
+            std::format("echo $$ > '{}'; exec sleep 60", started.string()));
+        ::_exit(0);   // not reached: the held Ctrl-C is delivered after the child ends
+    }
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+    while (!std::filesystem::exists(started) && std::chrono::steady_clock::now() < deadline)
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    const auto pressed = std::chrono::steady_clock::now();
+    ::kill(pid, SIGINT);
+    int status = 0;
+    while (::waitpid(pid, &status, WNOHANG) == 0) {
+        if (std::chrono::steady_clock::now() > deadline) {
+            ::kill(pid, SIGKILL);
+            ::waitpid(pid, &status, 0);
+            FAIL() << "Ctrl-C did not end the run";
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+    EXPECT_LT(std::chrono::steady_clock::now() - pressed, std::chrono::seconds(5));
+    ASSERT_TRUE(WIFSIGNALED(status)) << "the caller must end as Ctrl-C ends it";
+    EXPECT_EQ(WTERMSIG(status), SIGINT);
+#endif
+}
+
+XTEST(ProcessTerminal, AnUnattendedChildPastItsLimitIsEndedWhole,
+      .area = "self", .covers = {"ELEVATION-NOBODY-TO-ASK"}, .requires_ = {"posix"}) {
+#if defined(_WIN32)
+    GTEST_SKIP() << "POSIX sessions";
+#else
+    const auto started = std::chrono::steady_clock::now();
+    const int rc = xlings::platform::run_shell_unattended("sleep 60 & sleep 60",
+                                                          std::chrono::milliseconds(200));
+    EXPECT_EQ(rc, 124);
+    EXPECT_LT(std::chrono::steady_clock::now() - started, std::chrono::seconds(5));
+#endif
+}
+
+XTEST(ProcessTerminal, AnUnattendedChildDiesWithItsCaller,
+      .area = "self", .covers = {"ELEVATION-NOBODY-TO-ASK"}, .requires_ = {"linux"}) {
+#if !defined(__linux__)
+    GTEST_SKIP() << "the parent-death signal is Linux's";
+#else
+    auto home = xlings::testkit::Home::isolated("unattended-orphan");
+    const auto started = home.dir() / "started";
+    const pid_t caller = ::fork();
+    ASSERT_GE(caller, 0);
+    if (caller == 0) {
+        (void)xlings::platform::run_shell_unattended(
+            std::format("echo $$ > '{}'; exec sleep 60", started.string()));
+        ::_exit(0);
+    }
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+    std::string pid_text;
+    while (pid_text.empty() && std::chrono::steady_clock::now() < deadline) {
+        std::ifstream(started) >> pid_text;
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+    ASSERT_FALSE(pid_text.empty());
+    ::kill(caller, SIGKILL);   // no handler runs: only the kernel can end the child now
+    ::waitpid(caller, nullptr, 0);
+    const auto stat = std::filesystem::path("/proc") / pid_text / "stat";
+    bool gone = false;
+    while (!gone && std::chrono::steady_clock::now() < deadline) {
+        std::string line;
+        std::getline(std::ifstream(stat), line);
+        const auto close = line.rfind(')');
+        gone = line.empty() || (close != std::string::npos && line.size() > close + 2 && line[close + 2] == 'Z');
+        if (!gone) std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+    EXPECT_TRUE(gone) << "the child outlived its caller";
 #endif
 }
 

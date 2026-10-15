@@ -13,7 +13,7 @@ it is made under, how it boots. Editions are packages of the index
 | `luban-nano` | `nano` | xlings and luban — nothing else, not even a shell | yes | yes |
 | `luban-tiny` | `tiny` | BusyBox, glibc, CA certificates, BusyBox init | yes | yes |
 | `luban-tiny-musl` | `luban-tiny-musl` | tiny with musl instead of glibc | yes | yes |
-| `luban-core` | `core` (the default) | bash, fish, vim, nvim, git, mcpp, ninja, coreutils, gcc, binutils, make, openssl | yes | yes |
+| `luban-core` | `core` (the default) | bash, fish, vim, nvim, git, gh, mcpp, ninja, coreutils, gcc, binutils, make, openssl | yes | yes |
 | `luban-agent-workspace` | `agent-workspace` | core, an agent (claude), and the `agent-private` policy | yes | yes |
 | `luban-desktop` | `desktop` | core, the xdesk classic desktop and the tools people reach for (node, python, uv, bun, ripgrep, fd, fzf, jq, tmux, htop, claude, codex, pi, opencode); run as a machine ([The desktop](08-desktop.md)) | yes | yes (labwc) |
 | `luban-desktop-xdesk` | `desktop-xdesk` | the same on the xdesk canvas (to explore) | yes | not yet |

@@ -16,11 +16,19 @@ namespace {
 constexpr int kStopped = 3;
 constexpr int kAbsent = 4;
 
-// The helper: XLINGS_VZ_HELPER names a stand-in (the tests' seam); otherwise
-// the tool table's xlings-vm payload.
-std::optional<fs::path> helper(const subos::HomeView& home) {
-    if (const char* seam = std::getenv("XLINGS_VZ_HELPER"); seam && *seam) return fs::path(seam);
-    if (auto found = subos::tools::first("xlings-vm", home, subos::Ports{})) return found->bin;
+// The helper (part 4 §6.6): luban beside this xlings, as `luban __vm` --
+// Virtualization.framework in a binary signed with its entitlement.
+// XLINGS_VZ_HELPER names a stand-in that answers the verbs directly (the
+// tests' seam).
+struct Helper {
+    std::vector<std::string> argv;   // what a verb is appended to
+};
+
+std::optional<Helper> helper(const subos::HomeView&) {
+    if (const char* seam = std::getenv("XLINGS_VZ_HELPER"); seam && *seam) return Helper{{seam}};
+    std::error_code ec;
+    const auto luban = platform::get_executable_path().parent_path() / "luban";
+    if (fs::is_regular_file(luban, ec)) return Helper{{luban.string(), "__vm"}};
     return std::nullopt;
 }
 
@@ -29,8 +37,8 @@ struct Ran {
     std::string out;
 };
 
-Ran run(const fs::path& h, std::vector<std::string> args) {
-    std::vector<std::string> argv{h.string()};
+Ran run(const Helper& h, std::vector<std::string> args) {
+    std::vector<std::string> argv = h.argv;
     argv.insert(argv.end(), args.begin(), args.end());
     Ran r;
     r.rc = platform::stream::run(argv, [&](std::string_view, std::string_view bytes) { r.out.append(bytes); });
@@ -49,23 +57,22 @@ Probe probe(const subos::HomeView& home) {
     const auto h = helper(home);
     if (!h)
         return {.supported = false,
-                .reason = "the vz carrier needs xlings-vm, a signed Virtualization.framework helper -- not "
-                          "installed (and not published yet: design part 3 §5.4)",
-                .route = "xlings install xlings-vm  (once it is published)"};
+                .reason = "the Luban host machine is luban's, and there is no luban beside this xlings",
+                .route = "xlings self update  (the release carries both)"};
     auto r = run(*h, {"probe"});
     if (r.rc != 0)
-        return {.supported = false, .reason = "this Mac cannot run the carrier's VM: " + trimmed(r.out),
-                .route = "macOS 13 or later on Apple silicon or a Mac with Virtualization.framework",
+        return {.supported = false, .reason = trimmed(r.out),
+                .route = "macOS 13 or later on Apple silicon, not inside another virtual machine",
                 .evidence = trimmed(r.out)};
     return {.supported = true, .reason = "Virtualization.framework", .evidence = trimmed(r.out)};
 }
 
 std::expected<Endpoint, std::string> ensure(const subos::HomeView& home) {
     const auto h = helper(home);
-    if (!h) return std::unexpected("the VM helper (xlings-vm) is not installed");
+    if (!h) return std::unexpected("there is no luban beside this xlings to run the Luban host machine");
     const auto name = vm_name(home.home);
-    Endpoint at{.carrier = "vz", .instance = name,
-                .launcher = {h->string(), "exec", "--name", name, "--"}, .xlings = "/xlings/bin/xlings"};
+    Endpoint at{.carrier = "vz", .instance = name, .launcher = h->argv, .xlings = "/xlings/bin/xlings"};
+    at.launcher.insert(at.launcher.end(), {"exec", "--name", name, "--"});
     auto status = run(*h, {"status", "--name", name});
     if (status.rc == kAbsent) {
         if (!image_source()) return std::unexpected("this build cannot make a carrier image");
@@ -76,17 +83,18 @@ std::expected<Endpoint, std::string> ensure(const subos::HomeView& home) {
         fs::create_directories(dir, ec);
         auto created = run(*h, {"create", "--name", name, "--dir", dir.string(), "--image", image->string()});
         if (created.rc != 0)
-            return std::unexpected(std::format("xlings-vm create {} failed (exit {}): {}", name, created.rc,
+            return std::unexpected(std::format("the host machine {} was not made (exit {}): {}", name, created.rc,
                                                trimmed(created.out)));
         status.rc = kStopped;
     }
     if (status.rc == kStopped) {
         if (auto started = run(*h, {"start", "--name", name}); started.rc != 0)
-            return std::unexpected(std::format("xlings-vm start {} failed (exit {}): {}", name, started.rc,
+            return std::unexpected(std::format("the host machine {} did not start (exit {}): {}", name, started.rc,
                                                trimmed(started.out)));
     } else if (status.rc != 0) {
-        return std::unexpected(std::format("xlings-vm status {} answered {}: {}", name, status.rc, trimmed(status.out)));
+        return std::unexpected(std::format("the host machine {} answered {}: {}", name, status.rc, trimmed(status.out)));
     }
+    refresh_guest(at, home.home / "carriers" / "vz" / "probe.json");
     return at;
 }
 
@@ -102,6 +110,9 @@ std::vector<ImageFile> image_files() {
         {.path = "etc/passwd", .content = "root:x:0:0:root:/root:/xlings/bin/xlings\n"},
         {.path = "etc/group", .content = "root:x:0:\n"},
         {.path = "etc/hostname", .content = "xlings-carrier\n"},
+        // The kernel's own DHCP (ip=dhcp) writes the name servers it was
+        // given to /proc/net/pnp, in resolv.conf's form.
+        {.path = "etc/resolv.conf", .link = "/proc/net/pnp"},
         {.path = "etc/xlings", .directory = true},
         {.path = "etc/xlings/root.json", .content = "{ \"home\": \"/xlings\" }\n"},
         {.path = "xlings", .directory = true},
@@ -117,6 +128,11 @@ std::vector<ImageFile> image_files() {
         {.path = "usr", .directory = true},
         {.path = "usr/bin", .directory = true},
         {.path = "usr/bin/xlings", .link = "/xlings/bin/xlings"},
+        // What Virtualization.framework boots: the machine kernel, beside
+        // the tree it shares (the Linux luban in it is the initramfs).
+        {.path = "boot", .directory = true},
+        {.path = "boot/vmlinuz", .mode = 0644, .kernel = true},
+        {.path = "newroot", .directory = true},
     };
 }
 
@@ -126,15 +142,17 @@ Carrier make() {
     c.probe = probe;
     c.ensure = ensure;
     c.stop = [](const Endpoint& at) -> std::expected<void, std::string> {
-        if (at.launcher.empty()) return std::unexpected("not a vz endpoint");
-        if (auto r = run(at.launcher.front(), {"stop", "--name", at.instance}); r.rc != 0)
-            return std::unexpected(std::format("xlings-vm stop {} failed: {}", at.instance, trimmed(r.out)));
+        const auto h = helper(subos::HomeView{});
+        if (!h) return std::unexpected("there is no luban beside this xlings");
+        if (auto r = run(*h, {"stop", "--name", at.instance}); r.rc != 0)
+            return std::unexpected(std::format("the host machine {} did not stop: {}", at.instance, trimmed(r.out)));
         return {};
     };
     c.grant = [](const Endpoint& at, const fs::path& host, bool writable,
                  std::string_view name) -> std::expected<std::string, std::string> {
-        if (at.launcher.empty()) return std::unexpected("not a vz endpoint");
-        auto r = run(at.launcher.front(), {"share", "--name", at.instance, "--host", host.string(), "--tag",
+        const auto h = helper(subos::HomeView{});
+        if (!h) return std::unexpected("there is no luban beside this xlings");
+        auto r = run(*h, {"share", "--name", at.instance, "--host", host.string(), "--tag",
                                            std::string(name), "--mode", writable ? "rw" : "ro"});
         if (r.rc != 0) return std::unexpected(std::format("cannot share {} with the carrier: {}", host.string(), trimmed(r.out)));
         return trimmed(r.out);

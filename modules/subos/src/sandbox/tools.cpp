@@ -42,11 +42,12 @@ const std::vector<Entry>& table() {
           {Source::Host, "/usr/bin/proot"}, {Source::Host, "/usr/local/bin/proot"}}},
         {{"pasta", "passt"}, "xim-x-passt",
          {{Source::Payload, "bin"}, {Source::Host, "/usr/bin/pasta"}, {Source::Host, "/usr/local/bin/pasta"}}},
-        // The VMM the vz carrier drives (part 3 §5.4): a signed helper with
-        // Virtualization.framework's entitlement, as a payload -- not
-        // published yet (planned).
-        {{"xlings-vm", "xlings-vm", {}, "macos", "CARRIER-VZ-HELPER"}, "xim-x-xlings-vm",
-         {{Source::Payload, "bin"}}},
+        // The Luban host machine on a Mac (part 4 §6.6): its volume, a
+        // case-sensitive APFS sparse image, made and attached by the system's
+        // hdiutil; its tree unpacked by the system's tar. The machine itself is
+        // luban's (`luban __vm`, Virtualization.framework, in-process).
+        {{"hdiutil", "", "the operating system's (macOS)", "macos"}, "", {{Source::Host, "/usr/bin/hdiutil"}}},
+        {{"tar", "", "the operating system's"}, "", {{Source::Host, "/usr/bin/tar"}, {Source::Host, "/bin/tar"}}},
         {{"mkfs.ext4", "e2fsprogs"}, "xim-x-e2fsprogs",
          {{Source::Payload, "sbin"}, {Source::Payload, "bin"},
           {Source::Host, "/usr/sbin/mkfs.ext4"}, {Source::Host, "/sbin/mkfs.ext4"},

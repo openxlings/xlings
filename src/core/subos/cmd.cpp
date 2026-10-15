@@ -1642,6 +1642,18 @@ int remove(const std::string& name, bool yes, std::string_view yesSpelling,
         }
     }
 
+    // Its record (config/subos/<n>: what it is, its policy, its persona,
+    // luban's settings) goes with it: a record of nothing is what a later
+    // `subos new` of the same name -- a Luban system moving into its prefix
+    // domain -- found and refused as "output already exists".
+    {
+        std::error_code ec;
+        const auto record = home_view().config_dir(name);
+        for (fs::directory_iterator it(record, ec), end; !ec && it != end; it.increment(ec))
+            if (it->is_regular_file(ec)) fs::remove(it->path(), ec);
+        fs::remove(record, ec);
+    }
+
     // remove_all above walks the whole subos tree and can run for a long
     // time on a big one. Deleting our key out of a document read before that
     // walk would resurrect every other key's pre-walk value.
@@ -1751,15 +1763,20 @@ int forward_to_carrier_(const CarrierBinding_& b, std::vector<std::string> args,
         return 125;
     }
     std::map<std::string, std::string> env;
-    for (const auto* k : {"XLINGS_AGENT_MODE", "XLINGS_NON_INTERACTIVE", "XLINGS_TRACE", "XLINGS_TRACE_ID", "NO_COLOR", "TERM", "LANG"})
+    for (const auto* k : {"XLINGS_AGENT_MODE", "XLINGS_NON_INTERACTIVE", "XLINGS_TRACE", "XLINGS_TRACE_ID", "XLINGS_ACTOR", "XLINGS_OPS_PARENT", "NO_COLOR", "TERM", "LANG"})
         if (const char* v = std::getenv(k)) env[k] = v;
     return carrier::terminal(*at, args, env);
 }
 
-int run_list_(EventStream& stream) {
+int run_list_(EventStream& stream, bool listAll = false) {
     auto all = candidate_view().candidates;
     std::vector<std::tuple<std::string, std::string, int, int, bool>> entries;
+    // Inside a root, its domain's other systems are not here: their trees
+    // are not in this namespace, and what is not here is not listed.
+    const bool insideRoot = !utils::get_env_or_default("XLINGS_ROOT_INSTANCE").empty();
     for (auto& s : all) {
+        std::error_code ec;
+        if (insideRoot && !fs::is_directory(s.dir, ec)) continue;
         entries.emplace_back(s.name, s.dir.string(), s.commandCount,
                              s.packageCount, s.isActive);
     }
@@ -1787,6 +1804,10 @@ int run_list_(EventStream& stream) {
     }
     nlohmann::json payload;
     payload["entries"] = std::move(entriesJson);
+    // Each layer lists itself and what is below it (part 3 §3.2): a Luban
+    // system that is not the one you are in is luban's, said in one line
+    // unless --all. Every entry stays in the data.
+    payload["all"] = listAll;
     stream.emit(DataEvent{"subos_list", payload.dump()});
     return 0;
 }
@@ -2078,6 +2099,74 @@ int run(int argc, char* argv[], EventStream& stream) {
         }
     }
 
+    // A Luban system in a prefix domain is answered where it lives (part 3
+    // §3.4): the same command runs again in its domain's namespace, where
+    // /xlings is the home and the system an ordinary root. A file it writes
+    // for the owner goes through the namespace's one output binding. Asked
+    // through the interface (luban, the window), what it says comes back as
+    // events; at a terminal it speaks there itself, and asks there.
+    if (static const std::set<std::string_view> routed{"upgrade", "boot", "__boot", "export", "__export"};
+        routed.contains(sub) && argc > 3 && argv[3][0] != '-') {
+        auto scope = xlings::home::domain_producer::read_scope(Config::paths().homeDir, argv[3]);
+        if (!scope) { usageError(scope.error()); return 1; }
+        if (*scope) {
+            std::vector<std::string> words;
+            for (int i = 2; i < argc; ++i) words.emplace_back(argv[i]);
+            std::optional<xlings::home::domain_producer::OutputBinding> output;
+            static const std::set<std::string_view> outputs{"--rootfs", "--tar", "--disk", "--iso", "--drive", "--qcow2"};
+            for (std::size_t i = 2; (sub == "export" || sub == "__export") && i + 1 < words.size(); ++i) {
+                if (!outputs.contains(words[i])) continue;
+                const fs::path file = fs::absolute(words[i + 1]);
+                const bool dir = file.filename().empty();
+                const auto leaf = dir ? file.parent_path().filename() : file.filename();
+                output = xlings::home::domain_producer::OutputBinding{
+                    dir ? file.parent_path().parent_path() : file.parent_path(), "/run/xlings-domain-output"};
+                words[i + 1] = (fs::path("/run/xlings-domain-output") / leaf).string() + (dir ? "/" : "");
+                break;
+            }
+            std::expected<int, std::string> rc = 0;
+            if (stream.interactive()) {
+                std::vector<std::string> args{"subos"};
+                args.insert(args.end(), words.begin(), words.end());
+                if (yesGiven) args.push_back("-y");
+                rc = xlings::home::domain_producer::run((**scope).domain, args, output, true);
+            } else {
+                nlohmann::json call{{"argv", words}};
+                if (yesGiven) call["yes"] = true;
+                const std::vector<std::string> args{"interface", "subos_command", "--args", call.dump()};
+                int answered = -1;
+                rc = xlings::home::domain_producer::run((**scope).domain, args, output, true,
+                    [&](std::string_view text) {
+                        auto j = nlohmann::json::parse(text, nullptr, false);
+                        if (!j.is_object()) return;
+                        const auto kind = j.value("kind", "");
+                        if (kind == "result") answered = j.value("exitCode", 1);
+                        else if (kind == "data")
+                            stream.emit(DataEvent{j.value("dataKind", ""), j.value("payload", nlohmann::json()).dump()});
+                        else if (kind == "progress")
+                            stream.emit(ProgressEvent{j.value("phase", ""), j.value("percent", 0.0f), j.value("message", "")});
+                        else if (kind == "log") {
+                            const auto level = j.value("level", "info");
+                            stream.emit(LogEvent{level == "warn" ? LogLevel::warn : level == "error" ? LogLevel::error
+                                                 : level == "debug" ? LogLevel::debug : LogLevel::info,
+                                                 j.value("message", "")});
+                        } else if (kind == "error")
+                            stream.emit(ErrorEvent{error_code_from_wire(j.value("code", "")), j.value("message", ""),
+                                                   j.value("recoverable", false), j.value("hint", "")});
+                        else if (kind == "prompt")
+                            stream.emit(ErrorEvent{ErrorCode::InvalidInput, j.value("question", ""), true,
+                                                   "answer it with -y"});
+                    });
+                if (rc && answered >= 0) rc = answered;
+            }
+            if (!rc) {
+                stream.emit(ErrorEvent{.code = ErrorCode::Internal, .message = rc.error(), .recoverable = true});
+                return 1;
+            }
+            return *rc;
+        }
+    }
+
     if (sub == "new") {
         if (argc < 4) { usageError("missing <name> for: xlings subos new"); return 1; }
         // Parse: xlings subos new <name> [--storage <mode>] [--image-size <size>] [--from <spec>]
@@ -2101,6 +2190,7 @@ int run(int argc, char* argv[], EventStream& stream) {
         // --rootfs: the instance can be presented as `/` (design part 2 §3.1).
         bool rootfs = false;
         std::string domain;
+        bool domainIfPossible = false;
         // --carrier / --abi (design part 3 §5.6): where it runs. Default:
         // this machine's kernel unless what it is needs another one.
         std::string requestedCarrier, abi = "native";
@@ -2110,18 +2200,32 @@ int run(int argc, char* argv[], EventStream& stream) {
         std::vector<std::string> forwardArgs;   // what the carrier's xlings is asked
         for (int i = 3; i < argc; ++i) {
             std::string a = argv[i];
-            if (a == "--proxy" && i + 1 < argc) { proxy = argv[++i]; forwardArgs.insert(forwardArgs.end(), {a, proxy}); continue; }
-            if (a.starts_with("--proxy=")) { proxy = a.substr(8); forwardArgs.push_back(a); continue; }
+            // Everything this argument took -- an option and its value --
+            // goes to the carrier as it was given, except where it runs.
+            struct Forward {
+                std::vector<std::string>& out;
+                char** argv;
+                int first;
+                const int& last;
+                bool keep { true };
+                ~Forward() {
+                    if (keep)
+                        for (int k = first; k <= last; ++k) out.emplace_back(argv[k]);
+                }
+            } forward{forwardArgs, argv, i, i};
+            if (a == "--proxy" && i + 1 < argc) { proxy = argv[++i]; continue; }
+            if (a.starts_with("--proxy=")) { proxy = a.substr(8); continue; }
             if ((a == "--carrier" || a == "--abi") && i + 1 < argc) {
                 (a == "--carrier" ? requestedCarrier : abi) = argv[++i];
+                forward.keep = false;
                 continue;
             }
-            if (a.starts_with("--carrier=")) { requestedCarrier = a.substr(10); continue; }
-            if (a.starts_with("--abi=")) { abi = a.substr(6); continue; }
-            forwardArgs.push_back(a);
+            if (a.starts_with("--carrier=")) { requestedCarrier = a.substr(10); forward.keep = false; continue; }
+            if (a.starts_with("--abi=")) { abi = a.substr(6); forward.keep = false; continue; }
             if (a == "--rootfs") { rootfs = true; continue; }
-            if (a == "--domain") {
-                if (i + 1 >= argc || !domain.empty()) { usageError("--domain expects one absolute home path"); return 1; }
+            if (a == "--domain" || a == "--domain-if-possible") {
+                if (i + 1 >= argc || !domain.empty()) { usageError(std::string(a) + " expects one absolute home path"); return 1; }
+                domainIfPossible = a == "--domain-if-possible";
                 domain = argv[++i];
                 if (domain.empty() || domain[0] != '/') { usageError("--domain expects an absolute home path"); return 1; }
                 continue;
@@ -2261,11 +2365,16 @@ int run(int argc, char* argv[], EventStream& stream) {
         if (!domain.empty()) {
             std::vector<std::string> producerArgs{"subos", "new"};
             for (int i = 3; i < argc; ++i) {
-                if (std::string_view(argv[i]) == "--domain") { ++i; continue; }
+                if (std::string_view(argv[i]) == "--domain" || std::string_view(argv[i]) == "--domain-if-possible") { ++i; continue; }
                 producerArgs.emplace_back(argv[i]);
             }
-            if (auto result = produce_domain_at_creation_(name, rootfs, domain, producerArgs, stream))
+            bool fellBack = false;
+            if (auto result = produce_domain_at_creation_(name, rootfs, domain, producerArgs, stream,
+                                                          domainIfPossible ? &fellBack : nullptr))
                 return *result;
+            // This host cannot build in a private namespace: in this home's
+            // prefix instead, as before, said once (--domain-if-possible).
+            if (fellBack) domain.clear();
         }
         // The same command again, for an environment a failure left
         // unfinished: it finishes it -- the edition's packages that are not
@@ -2435,6 +2544,10 @@ int run(int argc, char* argv[], EventStream& stream) {
             else if (a == "--persist" && i + 1 < argc) {
                 persist = argv[++i];
             }
+            else if (a == "--user" && i + 1 < argc) {
+                // Who logs in to a root this once (part 3 §6.1).
+                platform::set_env_variable("XLINGS_ROOT_LOGIN", argv[++i]);
+            }
             else if (!a.empty() && a[0] != '-' && name.empty()) {
                 name = std::move(a);
             }
@@ -2519,7 +2632,14 @@ int run(int argc, char* argv[], EventStream& stream) {
         return use_spawn_shell(name, stream, sandbox, sandbox_backend, gpu, cmd,
                                iso.preset, iso.overrides, persist);
     }
-    if (sub == "list")   return run_list_(stream);
+    if (sub == "list") {
+        bool all = false;
+        for (int i = 3; i < argc; ++i) {
+            if (std::string_view(argv[i]) == "--all") all = true;
+            else { usageError(std::format("unknown option '{}' (xlings subos list [--all])", argv[i])); return 1; }
+        }
+        return run_list_(stream, all);
+    }
     if (sub == "remove") {
         std::string target = argc > 3 ? argv[3] : std::string{};
         if (target.empty()) {

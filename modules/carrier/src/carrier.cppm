@@ -40,6 +40,24 @@ struct Carrier {
                                                            std::string_view name)> grant;
 };
 
+// Inside a carrier's machine (`xlings __carrier-probe`, run there by the
+// host): what this machine gives a Luban system, as one JSON line --
+// {"kvm": bool, "kernel": "<release>"}. The host keeps it as the carrier's
+// probe.json; `luban status` reads it (machine mode needs the KVM).
+int guest_probe();
+
+// The release this client is (xlings and luban are released together): a
+// guest machine reports its own in guest_probe, and one that is not this
+// release is brought to it once (`xlings self update` there, refresh_guest).
+void set_client_version(std::string version);
+const std::string& client_version();
+
+// What a guest machine gives, asked again when `probe_file` is ten minutes
+// old, and the guest brought to this release when it reports another
+// (once per release: a guest that cannot reach it is not asked every time).
+// Kept in `probe_file` for luban status. Best effort: never an error.
+void refresh_guest(const Endpoint& at, const fs::path& probe_file);
+
 std::span<const Carrier> carriers();
 const Carrier* find(std::string_view name);
 
@@ -95,6 +113,7 @@ struct ImageFile {
     unsigned mode { 0644 };
     std::string link;            // non-empty: a symbolic link to this target
     bool directory { false };
+    bool kernel { false };       // the Linux machine kernel of this architecture (xim:linux-kernel-virt), here
 };
 // Returns the image tarball (root-owned entries) for `files` plus the Linux
 // xlings at xlings/bin/xlings.

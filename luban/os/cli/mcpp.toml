@@ -1,0 +1,28 @@
+# The luban command (Luban OS architecture design §6): its tree (help by level,
+# completion, suggestions) and its terminal rendering of the service's events.
+# A library so that tests drive it; apps/luban is the binary.
+[package]
+namespace = "luban"
+name      = "luban-cli"
+version   = "0.1.0"
+
+[targets.luban-cli]
+kind = "lib"
+
+[dependencies]
+libs     = { path = "../../../modules/libs" }
+platform = { path = "../../../modules/platform" }
+runtime  = { path = "../../../modules/runtime" }
+subos    = { path = "../../../modules/subos" }
+cli      = { path = "../../../modules/cli" }
+image    = { path = "../../../modules/image" }
+carrier  = { path = "../../../modules/carrier" }
+luban-service = { path = "../service" }
+luban-vm = { path = "../vm" }
+opensal = { path = "../../specs/opensal" }
+openhal = { path = "../../specs/openhal" }
+openas  = { path = "../../specs/openas" }
+opensal-wlr = { path = "../../kits/opensal-wlr" }
+
+[build]
+include_dirs = ["../../../modules/libs/src/json"]

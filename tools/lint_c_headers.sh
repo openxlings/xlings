@@ -5,21 +5,24 @@
 # that includes it; a module exports just the names, macros as constants.
 #
 # In luban/ and apps/, an #include is allowed only in:
-#   luban/desktop/xdesk/base/src/os/           xdesk.os, the desktop family's system layer
-#   luban/desktop/xdesk/compositor/src/native/ xdesk.native.wayland / .text (xkbcommon,
+#   luban/kits/xdesk-base/src/os/              xdesk.os, the desktop family's system layer
+#   luban/kits/xdesk-compositor/src/native/    xdesk.native.wayland / .text (xkbcommon,
 #                                              pixman, FreeType, HarfBuzz, wlroots' missing two)
-#   luban/desktop/host/src/                    SDL and Dear ImGui's backends, and
+#   luban/kits/*/src/native/                   a kit's binding to its platform (openhal-host)
+#   luban/os/desktop/src/                      SDL and Dear ImGui's backends, and
 #                                              luban.desktop.imgui (ImGui for the app)
+#   luban/os/vm/src/native/                    a hypervisor's binding (Virtualization.framework)
 # Tests (any tests/ directory) include the test framework's headers.
 # (src/ and modules/: tools/lint_platform_headers.sh.)
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-hits="$(grep -rnE '^[[:space:]]*#[[:space:]]*include' luban apps --include='*.cpp' --include='*.cppm' \
+hits="$(grep -rnE '^[[:space:]]*#[[:space:]]*(include|import)' luban apps --include='*.cpp' --include='*.cppm' --include='*.mm' \
         | grep -v '/tests/' \
-        | grep -v '^luban/desktop/xdesk/base/src/os/' \
-        | grep -v '^luban/desktop/xdesk/compositor/src/native/' \
-        | grep -v '^luban/desktop/host/src/' || true)"
+        | grep -v '^luban/kits/xdesk-base/src/os/' \
+        | grep -vE '^luban/kits/[^/]+/src/native/' \
+        | grep -v '^luban/os/desktop/src/' \
+        | grep -v '^luban/os/vm/src/native/' || true)"
 if [[ -n "$hits" ]]; then
     echo "C headers outside their binding modules:"
     echo "$hits" | sed 's/^/  /'

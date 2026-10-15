@@ -38,12 +38,16 @@ XTEST(CarrierVz, AVmPerHomeIsCreatedOnceStartedWhenStoppedAndReachedThroughTheHe
     fs::create_directories(vms);
     const std::map<std::string, std::string> env{
         {"XLINGS_VZ_HELPER", fake_helper().string()}, {"FAKE_VZ_ROOT", vms.string()},
-        {"XLINGS_CARRIER_GUEST_XLINGS", tk::xlings_binary().string()}};
+        {"XLINGS_CARRIER_GUEST_XLINGS", tk::xlings_binary().string()},
+        {"XLINGS_CARRIER_GUEST_KERNEL", (home.root() / "vmlinuz").string()}};
+    tk::write_file(home.root() / "vmlinuz", "a machine kernel");
     auto made = home.xlings({"subos", "new", "box", "--carrier", "vz"}, env);
     ASSERT_EQ(made.exit_code, 0) << made.transcript();
     const auto vm = vms / "vms" / xlings::carrier::vz::vm_name(home.dir());
     EXPECT_TRUE(fs::is_directory(vm / "xlings/subos/box")) << made.transcript();
     EXPECT_FALSE(fs::exists(vm / "etc/wsl.conf")) << "a VM is not a WSL distribution";
+    // What Virtualization.framework boots is in its tree: the machine kernel.
+    EXPECT_EQ(read_or_empty(vm / "boot/vmlinuz"), "a machine kernel");
 
     auto info = home.xlings({"subos", "info", "box"}, env);
     EXPECT_EQ(info.exit_code, 0) << info.transcript();

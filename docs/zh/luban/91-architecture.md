@@ -6,17 +6,26 @@
 
 ## 代码在哪里
 
+`luban/` 里有三类包（`luban/README.md`）：
+
 | 包 | 内容 |
 |---|---|
-| `luban/src/cli` | `luban` 命令：一棵声明式的命令树（common、more、expert 三级）；每个环境命令构造它对应的 xlings 命令，在同一个终端上运行 |
-| `luban/src/image` | 进程内写出的镜像：GPT、支持长文件名的 FAT16、ISO 9660 的 El Torito 启动项与混合 GPT、qcow2；以及机器之间差异的表（UEFI 引导文件、有无 BIOS、qemu 机器、固件） |
-| `luban/src/boot` | 启动项（`boot.json`：默认、fallback、试启动） |
-| `luban/src/stage0` | 第一个进程；`/proc` 挂载之前什么都不读 |
-| `luban/src/machine` | 机器的 `/etc`（factory 文件）与系统用户 |
+| `luban/specs/opensal` | 表面：接收像素、返回事件；`opensal.wire` 跨地址空间传递 |
+| `luban/specs/openhal` | 设备：一台机器有哪些 GPU、显示器、音频端点和输入设备 |
+| `luban/specs/openas` | 主体与它们做的事：主体与委托、效果类别、一次运行的信封 |
+| `luban/kits/openhal-host` | openhal 在 Linux、macOS、Windows 上的设备源 |
+| `luban/kits/opensal-wlr`、`xdesk-base`、`xdesk-compositor` | 把 wlroots 合成器接成 opensal 表面；xdesk 桌面 |
+| `luban/os/system` | stage-0（第一个进程）、启动项、机器的 `/etc`、归档 |
+| `luban/os/service` | 环境与机器的操作与事件；这台电脑能做什么（`luban status`） |
+| `luban/os/vm` | 机器：supervisor、终端中继、guest 会话、hypervisor |
+| `luban/os/cli` | `luban` 命令：一棵声明式命令树；每个命令的效果类别；给程序用的 `luban interface` |
+| `luban/os/desktop` | Luban OS 应用的窗口（SDL3）与 Dear ImGui |
+| `modules/image` | 进程内写出的镜像：GPT、FAT、带 El Torito 的 ISO 9660、qcow2 |
 | `apps/luban` | 二进制：luban，或以 `luban-init` 启动时的 stage-0 |
-| `src/core/subos/root` | 根的 xlings 一侧：投影、代、回滚、启动、导出 |
+| `src/core/subos/root` | 根的 xlings 一侧：投影、代、回滚、导出 |
 
-`luban/` 引用 `modules/`，从不引用 xlings 前端：stage-0 路径上的东西不能读 Config。构建规则（`tools/lint_layer_deps.sh`）会检查这一点。
+规范只引用标准库和它自己；kit 从不引用 xlings 或 Luban；OS 服务不引用任何呈现层；`luban/` 里的任何东西都不引用
+xlings 前端（stage-0 路径上的东西不能读 Config）。`tools/lint_layer_deps.sh` 逐条检查。
 
 ## 由 edition 创建环境
 

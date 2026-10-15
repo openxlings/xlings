@@ -10,14 +10,17 @@ Design records live in `.agents/docs/` (the current architecture:
 
 ```
 modules/   shared libraries (libs, runtime, platform, home, ui, cli, store, subos, confine, carrier, image, testkit)
-luban/     Luban OS components and services (stage-0, the luban command; desktop subsystem)
+luban/     specs/ (opensal, openhal, openas), kits/ (their implementations, xdesk) -- independent
+           projects kept here -- and os/ (Luban OS: stage-0, service, vm, the luban command, its app)
 apps/      binaries a user runs (luban, gui, xdev)
 src/       the xlings frontend and core still being moved into modules/
 tests/     unit/ and e2e/ (C++, XTEST + testkit), legacy e2e/*.sh, requirements.toml
 ```
 
 Imports go downward only (`tools/lint_layer_deps.sh`): `luban/` -> `modules/`;
-`modules/` never imports `luban.*` or `src/`; `src/` never imports `luban.*`.
+`modules/` never imports `luban.*` or `src/`; `src/` never imports `luban.*`. In `luban/`:
+a spec imports only the standard library and itself; a kit never imports `xlings.*` or
+`luban.*`; `os/service` imports no presentation (`luban/README.md`).
 What xlings and Luban both read (boot.json, a root's /etc, image formats) is a module.
 
 ## Build and test
@@ -31,7 +34,9 @@ XLINGS_TEST_MIRROR=CN mcpp test [pattern]   # set the mirror when testing from C
 New tests are C++ (`modules/testkit`, `XTEST`, `Home::isolated`); every test
 `covers` a requirement ID in `tests/requirements.toml`. Tests use an isolated
 home and never touch the user's. Release builds: `tools/{linux,macos}_release.sh`,
-`tools/windows_release.ps1`.
+`tools/windows_release.ps1`. How CI splits the tests over machines (shards, workers,
+one build reused per round) is `tests/lanes.toml`; `xdev test -j N --shard i/n` does
+the same locally (`tests/README.md`).
 
 ## Rules the code is checked against
 
@@ -64,6 +69,13 @@ home and never touch the user's. Release builds: `tools/{linux,macos}_release.sh
   The marker's integer `layout` rises only for a change an older client would undo.
 - **A recipe that changes what its config does bumps `revision`.** Dependency names
   resolve in the declaring index.
+- **A recipe never runs `sudo`.** It declares the step (`system.admin_step`); xlings asks
+  once after the install through the one door, or keeps it for `self doctor --fix`. A child
+  run for nobody (a repair, a JSON call) has no terminal (`platform::run_shell_unattended`,
+  `platform::stream::run`).
+- **The runtime is the environment's**: a package's libc and C++ runtime are bound through
+  `<home>/abi/<family>` (`xlings.core.abi`), never rewritten per consumer; a Luban system
+  carries its own in its generation.
 - **The sandbox a policy compiles to is a golden** (`tests/fixtures/intent-eq`);
   regenerate with `XLINGS_INTENT_GOLDEN_WRITE=1` only on purpose.
 - **nlohmann::json brace-init**: `json{x}` of a single value makes an array; build
@@ -81,7 +93,7 @@ home and never touch the user's. Release builds: `tools/{linux,macos}_release.sh
 
 - Releases are `YYYY.M.D.N`; **N starts at 1**, `.0` is reserved for a deliberate
   formal release. Bump `mcpp.toml`, `src/core/config.cppm` and
-  `luban/service/src/service.cppm` (kVersion) together.
+  `luban/os/service/src/service.cppm` (kVersion) together.
 - After `release.yml` is green: push the assets to the CN mirror from a CN machine
   (`tools/mirror-latest.sh xlings`, then `luban-os` and `xdesk`; verify with GET), then
   bump `xim-pkgindex/pkgs/x/xlings.lua` (every platform block and `latest`),

@@ -42,6 +42,8 @@ import xlings.core.home_config;
 import xlings.core.home_health;
 import xlings.platform.target;
 import xlings.core.home_identity;
+import xlings.core.admin_steps;
+import xlings.core.abi;
 
 namespace xlings::xself {
 
@@ -3709,34 +3711,12 @@ int doctor_child_timeout_seconds_() {
     return default_doctor_child_timeout_seconds_();
 }
 
-// Whether GNU-style `timeout(1)` is on PATH, checked once per process.
-//
-// The only portable bound `std::system` admits without this repo taking on
-// its own process-group/fork machinery. Absent (stock macOS ships none;
-// some minimal containers don't either), the child runs unbounded exactly
-// as it always did -- documented, not silently degraded: the caller says so
-// once, and a hung child there still eventually surfaces as a hung `--fix`,
-// which is the pre-existing, understood failure mode this is only removing
-// on platforms that can support removing it.
-bool have_timeout_tool_() {
-    static const bool have = [] {
-        return platform::run_command_capture(
-                   "command -v timeout >/dev/null 2>&1").first == 0;
-    }();
-    return have;
-}
-
-// GNU coreutils `timeout` exits 124 when it had to kill the child (or
-// 128+signal for a child that caught and was killed by the escalation
-// signal -- not reached here, no `--signal`/`-k` is passed). This is the
-// one exit code this wrapper adds to whatever the child could have exited
-// with on its own, so it is what tells "timed out" apart from "the repair
-// itself failed with some ordinary non-zero code".
-constexpr int timeout_tool_killed_rc_() { return 124; }
+// The kill a bounded child gets past its limit (platform::run_shell_unattended):
+// what tells "timed out" apart from the repair's own non-zero exits.
+constexpr int child_timed_out_rc_() { return 124; }
 
 void repair_other_subos_walk_(const Scan& scan, const std::string& client,
-                              bool dryRun, const CommandRunner& run,
-                              RepairReport& out,
+                              bool dryRun, RepairReport& out,
                               const std::function<void(std::string_view)>& onStep = {}) {
     std::set<std::string> owners;
     for (const auto& f : scan.findings) {
@@ -3775,29 +3755,15 @@ void repair_other_subos_walk_(const Scan& scan, const std::string& client,
         if (onStep) onStep(std::format(
             "repairing subos {} — running `{}`", name, cmd));
 
+        // Bounded in process (POSIX): no timeout(1) that would put the
+        // child in a process group of its own. Its output goes to a log a
+        // failure names.
         const int timeoutSeconds = doctor_child_timeout_seconds_();
-        const bool bounded = timeoutSeconds > 0 && have_timeout_tool_();
-        const auto boundedCmd = bounded
-            ? std::format("timeout {}s {}", timeoutSeconds, cmd)
-            : cmd;
-        if (timeoutSeconds > 0 && !bounded) {
-            // Said once per walk, not per subos: the same fact ("this
-            // platform cannot enforce the bound") is true for every child
-            // this loop is about to run.
-            static bool warnedOnce = false;
-            if (!warnedOnce) {
-                warnedOnce = true;
-                out.notes.emplace_back(
-                    glyph::mark(glyph::warn, "no child timeout"),
-                    std::format(
-                        "`timeout` is not on PATH; a cross-subos repair "
-                        "child can run unbounded on this machine (set {} "
-                        "and install coreutils' `timeout` to bound it)",
-                        doctor_child_timeout_env_()));
-            }
-        }
-        const int rc = run(boundedCmd + quiet_suffix());
-        if (bounded && rc == timeout_tool_killed_rc_()) {
+        const auto log = Config::paths().homeDir / "logs" / "doctor" / (name + ".log");
+        const int rc = run_unattended(
+            cmd + logged_suffix(log),
+            timeoutSeconds > 0 ? std::optional(std::chrono::seconds(timeoutSeconds)) : std::nullopt);
+        if (timeoutSeconds > 0 && rc == child_timed_out_rc_()) {
             // -2: distinct from every real exit code a child can produce on
             // its own (0..127 from a normal exit, 128+signal from one it
             // caught) and from the -1 the shell-safety guard above already
@@ -3808,10 +3774,9 @@ void repair_other_subos_walk_(const Scan& scan, const std::string& client,
             out.notes.emplace_back(
                 glyph::mark(glyph::failed, "cross-subos repair"),
                 std::format(
-                    "subos '{}' — `{}` timed out after {}s and was killed; "
-                    "run it directly (raise {} first if it is a slow, "
-                    "legitimate install)",
-                    name, cmd, timeoutSeconds, doctor_child_timeout_env_()));
+                    "subos '{}' — `{}` timed out after {}s and was ended; its output: {} "
+                    "(raise {} first if it is a slow, legitimate install)",
+                    name, cmd, timeoutSeconds, log.string(), doctor_child_timeout_env_()));
         } else if (rc == 2) {
             // The child ran unattended (run_unattended) and stopped at a step
             // only a person can answer -- administrator rights, a confirmation.
@@ -3825,8 +3790,8 @@ void repair_other_subos_walk_(const Scan& scan, const std::string& client,
             out.failedSubos.emplace_back(name, rc);
             out.notes.emplace_back(
                 glyph::mark(glyph::failed, "cross-subos repair"),
-                std::format("subos '{}' — `{}` exited {}; run it directly "
-                            "to see why", name, cmd, rc));
+                std::format("subos '{}' — `{}` exited {}; its output: {}",
+                            name, cmd, rc, log.string()));
         } else {
             out.notes.emplace_back(
                 glyph::mark(glyph::bullet, "other subos repaired"),
@@ -4076,7 +4041,27 @@ void repair_payloads_(const DoctorState& st, const Scan& scan,
                 return out;
             };
         }
-        auto result = repair_one(task, policy, run, removalDone, dependentsOf);
+        // The finding itself, asked again after a rung: the same two checks
+        // the scan made (the payload's directory; the executable a shim
+        // would exec), so "healed" means the scan will not report it again.
+        const FindingCheck stillFound = [&] {
+            Config::reload_state();
+            const auto current = Config::versions();
+            const auto home = Config::paths().homeDir.string();
+            for (const auto* c : covered) {
+                const auto* vi = xvm::get_vinfo(current, c->target);
+                if (!vi) continue;
+                const auto vit = vi->versions.find(c->version);
+                if (vit == vi->versions.end()) continue;
+                std::error_code ec;
+                if (!fs::is_directory(xvm::expand_path(vit->second.path, home), ec)) return true;
+                if (c->detail.find("executable") != std::string::npos && vit->second.alias.empty()
+                    && xvm::resolve_executable(c->target, vit->second.path, home).empty())
+                    return true;
+            }
+            return false;
+        };
+        auto result = repair_one(task, policy, run, removalDone, dependentsOf, stillFound);
         if (!result.healed) {
             for (const auto* c : covered) {
                 out.failedEntries.emplace_back(c->target, c->version);
@@ -5635,6 +5620,25 @@ int cmd_doctor(EventStream& stream, bool fix, bool resetMetadata, bool dryRun, b
         Config::set_active_subos_override(*subos);
     }
 
+    // The home's runtime links (part 3 §4) made what the home has now: a
+    // runtime removed by another client, or links never made.
+    if (fix && !dryRun) {
+        if (auto moved = abi::refresh(Config::paths().homeDir, "self doctor --fix"); moved)
+            for (const auto& w : moved->what) log::println("runtime {}", w);
+    }
+
+    // Administrator steps recipes declared and nobody could answer (part 3
+    // §8.2): reported always, taken by --fix where somebody can be asked.
+    if (const auto waiting = admin_steps::pending(Config::paths().homeDir); !waiting.empty()) {
+        if (fix && !dryRun && !subos) {
+            (void)admin_steps::settle(Config::paths().homeDir, {}, false, stream);
+        } else {
+            log::println("{} step(s) wait for administrator rights:", waiting.size());
+            for (const auto& w : waiting) log::println("  {}: {}", w.why, admin_steps::command(w));
+            log::println("  take them: xlings self doctor --fix (at a terminal)");
+        }
+    }
+
     // `--fix` implies `--deep`. Deliberate and load-bearing: the repair must
     // be able to act on findings only the payload audit produces, and
     // self_doctor_depth_test asserts it ("--fix retains the historical deep
@@ -5949,7 +5953,7 @@ int cmd_doctor(EventStream& stream, bool fix, bool resetMetadata, bool dryRun, b
         repair_swept_(scan, client, run, /*dryRun=*/true, repair);
         repair_inactive_(scan, client, run, /*dryRun=*/true, repair);
         if (!alreadyAnchored) {
-            repair_other_subos_walk_(scan, client, /*dryRun=*/true, run,
+            repair_other_subos_walk_(scan, client, /*dryRun=*/true,
                                      repair);
         }
         render_(scan, repair, fix, dryRun, showOk, stream);
@@ -6020,7 +6024,7 @@ int cmd_doctor(EventStream& stream, bool fix, bool resetMetadata, bool dryRun, b
     // for why this has to be a subprocess per subos and why `--subos`
     // disarms it (alreadyAnchored, computed before the dry-run branch above).
     if (!alreadyAnchored) {
-        repair_other_subos_walk_(scan, client, /*dryRun=*/false, run, repair,
+        repair_other_subos_walk_(scan, client, /*dryRun=*/false, repair,
                                  announce);
     }
     refresh();

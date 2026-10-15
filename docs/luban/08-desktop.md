@@ -29,8 +29,8 @@ With no environment yet the window opens on quick start, in two groups:
 
 Each card says what it is; the line under the cards says what is in the chosen
 one, or why it cannot be made here — not published yet, not built for this
-machine's architecture, or a computer that cannot run Luban systems (macOS and
-Windows: they are Linux systems). A name follows the edition until you type
+machine's architecture, or a computer that cannot run Luban systems yet (what
+`luban status` says: the reason and the next step). A name follows the edition until you type
 your own; **More options** chooses sandbox or machine. One button makes it,
 showing each step, and goes in.
 
@@ -191,6 +191,6 @@ graph LR
 - A GPU: rendering is in software, the same on every host.
 - X11 programs in xdesk (Xwayland); they run in the labwc session.
 - The window on Linux needs X11 (Xwayland counts); a native Wayland window is
-  not supported yet. On macOS and Windows the window opens and says that this
-  computer cannot run Luban systems yet.
+  not supported yet. On macOS and Windows the window shows a system's console
+  and desktop, as a sandbox or as a machine, from the Luban host machine.
 - xdesk on aarch64.

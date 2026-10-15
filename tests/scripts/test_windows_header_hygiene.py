@@ -30,7 +30,7 @@ ROOT = Path(__file__).resolve().parents[2]
 # "ok (N modules)" while checking none of them: fewer files found reads
 # exactly like fewer violations. Roots that do not exist are skipped, so this
 # list can name trees before they are created.
-SRC_ROOTS = [ROOT / "src", ROOT / "modules", ROOT / "apps"]
+SRC_ROOTS = [ROOT / "src", ROOT / "modules", ROOT / "apps", ROOT / "luban"]
 
 INCLUDE = re.compile(r'^\s*#\s*include\s*<windows\.h>', re.IGNORECASE)
 DEFINE = re.compile(r'^\s*#\s*define\s+NOMINMAX\b')

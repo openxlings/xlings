@@ -1,0 +1,25 @@
+# Luban's service layer (Luban OS architecture design §5): environments and
+# machines as operations with structured results and events, reached by the
+# luban command and the Luban OS app alike. It drives xlings through one port
+# (the NDJSON interface and xlings's --json output; a terminal command where a
+# person is the point) and never parses text meant for a person.
+[package]
+namespace = "luban"
+name      = "luban-service"
+version   = "0.1.0"
+
+[targets.luban-service]
+kind = "lib"
+
+[dependencies]
+libs     = { path = "../../../modules/libs" }
+platform = { path = "../../../modules/platform" }
+runtime  = { path = "../../../modules/runtime" }
+subos    = { path = "../../../modules/subos" }
+image    = { path = "../../../modules/image" }
+carrier  = { path = "../../../modules/carrier" }
+openhal      = { path = "../../specs/openhal" }
+openhal-host = { path = "../../kits/openhal-host" }
+
+[build]
+include_dirs = ["../../../modules/libs/src/json"]

@@ -13,7 +13,7 @@ step "the plan" ok -- L upgrade hmu --dry-run
 grep -q 'up to date' <<<"$LAST_OUT" && skip "the index has one version of tiny"
 step "agent mode: nothing changes without -y" 2 -- L upgrade hmu --agent
 step "upgrade" ok -- L upgrade hmu -y
-step "it is the newest edition now" ok 'luban-tiny@2026' -- cat "$XLINGS_HOME/config/subos/hmu/instance.json"
+step "it is the newest edition now" ok 'luban-tiny@2026' -- L status hmu --json
 step "it still enters" ok ok -- L run hmu -- /bin/sh -c 'echo ok'
 step "rollback" ok -- X subos rollback hmu
 done_

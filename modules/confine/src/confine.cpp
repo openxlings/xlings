@@ -142,6 +142,10 @@ std::expected<sp::SandboxSpec, sp::Refusal> compile(const policy::Policy& pol, c
     if (!i.net.publish.empty() && !s.net_nat)
         unmet.push_back({"publish", "--publish needs net=nat (a private network to publish from)",
                          "--net nat", i.need("publish")});
+    // A Luban system is its own machine to its processes (part 3 §6.2): it
+    // has its own host name, as a neutral identity does.
+    if (!i.root.empty() && kernel && !i.id.neutral)
+        s.hostname = i.id.hostname.empty() ? i.instance : i.id.hostname;
     if (i.id.neutral) {
         if (kernel) s.hostname = i.id.hostname.empty() ? i.instance : i.id.hostname;
         else unmet.push_back({"identity", "the host name cannot be changed without namespaces", "",

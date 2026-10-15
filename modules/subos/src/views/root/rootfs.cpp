@@ -343,6 +343,7 @@ Plan plan(const Inputs& in) {
     // Fixed shape of a merged /usr; claimed first so nothing takes the names.
     claim("usr/lib64", "lib", "layout");
     claim("usr/sbin", "bin", "layout");
+    for (auto& [rel, target] : in.runtime) claim(std::string(kRuntimeDir) + "/" + rel, target, "runtime");
 
     for (auto& prog : in.programs) claim("usr/bin/" + prog.name, prog.target, "program");
     for (auto& lib : in.libraries) claim("usr/lib/" + lib.name, lib.target, "library");

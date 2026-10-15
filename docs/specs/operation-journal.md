@@ -27,11 +27,29 @@ Every line is a JSON object with `ts` (UTC, second resolution), `trace`, `proc`
 
 | `line` | Written | Fields |
 |---|---|---|
-| `op` | once, by the process that started the operation | `client`, `version`, `argv`, `platform`, `layout`, `actor` (`cli`, `agent`, `program`), `env` (names only) |
-| `child` | by a process that inherited the trace | the same fields |
+| `op` | once, by the process that started the operation | `client`, `version`, `argv`, `platform`, `layout`, `actor` (`cli`, `agent`, `program`), `principal`, `env` (names only) |
+| `child` | by a process that inherited the trace | the same fields, and `parent` |
 | `span` | when a phase begins and ends | `span`, `at` (`begin` / `end`), on `end` `ms` and, when it failed, `failed` |
 | `end` | when a process exits | `exit` |
 | other | an event a step records | its own fields |
+
+`principal` is who runs it, in openas's form (`luban/specs/openas`:
+`agent:<name>;via=person:<name>`), and `principal_source` how it is known:
+`given` (luban's `--as`, on the command line of whoever ran it), `inherited`
+(`XLINGS_ACTOR`, set by the process that started this one), or `observed`
+(`person` at a terminal, `agent` in agent mode, `program` otherwise). It is
+exported to everything the process starts, so a step is attributed to the
+actor of the operation, not to what it says of itself.
+
+How far that holds: on the host, an actor is as trustworthy as the process
+that set it -- a program running as you can set any `XLINGS_ACTOR` for what
+it starts. A process inside a Luban system cannot write this home's journal
+at all: the home is not inside the system (a system in its prefix domain
+sees only its own `/xlings`). So an agent run in a system (`luban run box --as
+agent:<name> -- <agent>`) is recorded here as what luban was told
+when it started it, whatever the agent does inside. `parent` is the
+`proc` of the process that started this one (`XLINGS_OPS_PARENT`), so the
+journal says which step caused which.
 
 Fields are only ever added. A reader skips lines it cannot parse and kinds it
 does not know.

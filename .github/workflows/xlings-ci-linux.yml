@@ -38,12 +38,30 @@ env:
   # Must contain the mcpp version pinned in .xlings.json (2026.10.5.3).
   XIM_PKGINDEX_REF: ebf1fbb3417ec513b923279044433887b3af8850
 
+# The shape of a round (tests/README.md, "Parallel runs"):
+#
+#   plan ─┬─ release ─────────────┬─ e2e, isolation-fix, host-matrix, arch-package, root,
+#         │  (the one release     │  plan-distro → distro → wsl-import
+#         │   build)              └─ (acceptance takes it when it is ready)
+#         ├─ build ─┬─ unit (i/n) ... tests/lanes.toml [unit]: n machines, each
+#         │         │                 building and running whole families of tests
+#         │         └─ acceptance ... checks, then the static gates on the release
+#         ├─ desktop-payloads ....... the app's and xdesk's release payloads
+#         └─ build-asan ─ asan (i/n)  main and `ci:asan`: [asan], instrumented
+#   report (every lane's runs, one requirement map)
+#
+# Built once, reused: `build` makes the development build every lane runs on,
+# from the last round's state (only what changed is rebuilt), and the lanes
+# take it as it is; a test shard builds only the families it runs. Nothing
+# waits for what it does not use: the release build is not behind the tests.
 jobs:
-  build-and-test:
+  # Seconds, no build: the repository's rules, and each lane's matrix from
+  # tests/lanes.toml. A broken rule stops the round before any machine builds.
+  plan:
     runs-on: ubuntu-24.04
     outputs:
-      release_ready: ${{ steps.candidate.outcome == 'success' }}
-
+      unit: ${{ steps.lanes.outputs.unit }}
+      asan: ${{ steps.lanes.outputs.asan }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -66,410 +84,53 @@ jobs:
           done
           exit $rc
 
-      # ── Phase 1: Configure Environment via xlings ─────────────────
-
-      - name: The runner's own tools (T0; nothing installed)
-        run: |
-          for t in curl git cc make jq tar xz python3; do command -v "$t" >/dev/null || { echo "::error::the runner image has no $t"; exit 1; }; done
-
-      - name: Install bootstrap xlings (pinned ${{ env.BOOTSTRAP_XLINGS_VERSION }})
-        env:
-          XLINGS_NON_INTERACTIVE: 1
-          XLINGS_VERSION: ${{ env.BOOTSTRAP_XLINGS_VERSION }}
-        run: |
-          # Retried, piped through a file, and asserted -- three fixes for one
-          # failure mode. `curl … | bash` reports the exit status of BASH, and
-          # bash fed an empty stdin exits 0, so a network reset installs
-          # nothing and the step goes GREEN. Measured on the 2026.9.4.1
-          # release: `curl: (35) Recv failure: Connection reset by peer` here,
-          # step reported success, and the run died two steps later with
-          # `xlings: command not found` (exit 127) pointing at the wrong
-          # thing entirely.
-          for attempt in 1 2 3; do
-            curl -fsSL --retry 3 --retry-delay 5 --connect-timeout 20 \
-              https://raw.githubusercontent.com/openxlings/xlings/main/tools/other/quick_install.sh \
-              -o /tmp/xlings-quick-install.sh && break
-            echo "bootstrap download failed (attempt $attempt/3); retrying"
-            sleep 10
-          done
-          test -s /tmp/xlings-quick-install.sh \
-            || { echo "::error::could not download quick_install.sh"; exit 1; }
-          bash /tmp/xlings-quick-install.sh
-          # The assertion that makes a silent no-op impossible: whatever the
-          # installer thought it did, the binary either exists here or it does
-          # not.
-          test -x "$HOME/.xlings/bin/xlings" \
-            || { echo "::error::bootstrap reported success but installed no xlings"; exit 1; }
-          echo "XLINGS_HOME=$HOME/.xlings"           >> "$GITHUB_ENV"
-          echo "$HOME/.xlings/subos/current/bin"     >> "$GITHUB_PATH"
-          echo "$HOME/.xlings/bin"                   >> "$GITHUB_PATH"
-
-      - name: Cache xlings package payloads
-        uses: actions/cache@v4
+      # Shards are weighed by measured durations (main's latest report), taken
+      # once here so every shard of the round divides the same way.
+      - name: Measured durations, from main's history
+        uses: actions/cache/restore@v4
         with:
-          path: ~/.xlings/data/xpkgs
-          key: xlings-deps-${{ runner.os }}-${{ hashFiles('.xlings.json') }}-${{ env.BOOTSTRAP_XLINGS_VERSION }}
-          restore-keys: |
-            xlings-deps-${{ runner.os }}-
+          path: target/xdev/history
+          key: xdev-history-v1-linux-${{ github.sha }}
+          restore-keys: xdev-history-v1-linux-
 
-      - name: Cache mcpp sandbox and project packages
-        id: mcpp-cache
-        uses: actions/cache@v4
+      - name: Attach them for the shards
+        if: hashFiles('target/xdev/history/timings.json') != ''
+        uses: actions/upload-artifact@v4
         with:
-          path: |
-            ~/.mcpp
-            !~/.mcpp/bmi
-            !~/.mcpp/build-cache
-            .mcpp
-            !.mcpp/bmi
-            !.mcpp/build-cache
-          # BMIs are NOT cached, and are deleted after every restore. That
-          # is the fix, and it took three prefix retirements to find.
-          #
-          # A restored BMI set never works. `import 'std' has CRC mismatch`
-          # follows, which reads like a compiler bug. What hid it is that the
-          # old guard wiped the BMIs on an INEXACT restore -- so retiring the
-          # key prefix forced an inexact restore, fired the guard, and produced
-          # one clean run. Each retirement therefore looked like a fix and was
-          # an accident; the next run got an exact hit, skipped the guard, and
-          # failed again. Read straight off two consecutive runs of THIS
-          # workflow: the one that passed shows "Drop stale BMIs" as `success`,
-          # the one that failed shows it `skipped`.
-          #
-          # So the wipe is unconditional now, and the BMI directories are
-          # excluded from the cache as well -- the exclusion is an optimisation
-          # (do not store bytes we delete on arrival), the unconditional wipe is
-          # the guarantee, and it cannot depend on exclude-pattern semantics.
-          #
-          # What the cache is FOR is `registry/data/xpkgs`: ~800 MB of payloads
-          # that are toolchain-independent and survive a round trip fine.
-          #
-          # The key still names the workflow that produced it. mcpp.toml
-          # declares both the dev toolchain (gcc@16.1.0) and the release target
-          # (gcc@15.1.0-musl), so a CI build and a release build hash the same
-          # -- sharing one key across workflows is wrong on its own terms even
-          # though it was not what caused this.
-          key: mcpp-v4-ci-linux-${{ runner.os }}-${{ hashFiles('mcpp.toml', '.xlings.json') }}-${{ env.BOOTSTRAP_XLINGS_VERSION }}
-          restore-keys: |
-            mcpp-v4-ci-linux-${{ runner.os }}-
-      # An inexact restore (the `restore-keys` fallback) brings BMIs built
-      # under a different dependency set. Mixing them with anything rebuilt
-      # here fails as `import 'std' has CRC mismatch` — which reads like a
-      # compiler bug and is a cache restored for the wrong inputs. Measured on
-      # PR #480, where `mcpplibs.xpkg` went 0.0.47 → 0.0.48: the fallback
-      # cache's tinyhttps/cmdline BMIs no longer matched the `std` the fresh
-      # xpkg build produced.
-      #
-      # Only the BMIs go. The payload store under registry/data/xpkgs is
-      # dependency-independent and is what makes the ~800 MB cache worth
-      # restoring at all.
-      # Evidence for task #56, gathered where the failure actually happens.
-      #
-      # Four hypotheses were refuted on a developer machine (2026-08-06): two
-      # toolchains sharing one BMI store; the tar round trip destroying
-      # metadata (the .gcm set survives byte-for-byte, mtimes included); a full
-      # project rebuild against restored BMIs; and prune_registry running after
-      # the restore. None reproduces it locally, so the next honest step is to
-      # record what CI has that a laptop does not, rather than guess a fifth
-      # hypothesis.
-      #
-      # What to look for: two entries that disagree on driver_identity or
-      # sysroot for the same cpp_standard. That would mean the restored set is
-      # internally inconsistent, which is the answer.
-      #
-      # continue-on-error on purpose: a diagnostic must never be the reason a
-      # release is blocked. Set XLINGS_KEEP_RESTORED_BMIS=1 on a throwaway
-      # branch to skip the wipe below and let the failure happen with this
-      # record in hand.
-      - name: Record the restored BMI set (diagnostic for #56)
-        shell: bash
-        continue-on-error: true
+          name: linux-shard-timings
+          path: target/xdev/history/timings.json
+
+      - name: Lanes (tests/lanes.toml)
+        id: lanes
         run: |
-          echo "cache-hit: ${{ steps.mcpp-cache.outputs.cache-hit }}"
-          for d in ~/.mcpp/bmi .mcpp/bmi ~/.mcpp/build-cache .mcpp/build-cache; do
-            if [ -d "$d" ]; then
-              echo "  $d: $(du -sh "$d" 2>/dev/null | cut -f1), $(find "$d" -name '*.gcm' 2>/dev/null | wc -l) .gcm"
-            else
-              echo "  $d: absent"
-            fi
-          done
-          echo "  --- build identity per BMI dir (first 40) ---"
-          find ~/.mcpp/bmi .mcpp/bmi -name std-module.json 2>/dev/null | head -40 |
-          while read -r f; do
-            printf '  %-18s %s %s\n' \
-              "$(basename "$(dirname "$f")")" \
-              "$(grep -o '"cpp_standard": *"[^"]*"' "$f" | cut -d'"' -f4)" \
-              "$(grep -o '"driver_identity": *"[^"]*"' "$f" | cut -d'"' -f4)"
-          done
-          echo "  --- distinct driver identities ---"
-          find ~/.mcpp/bmi .mcpp/bmi -name std-module.json 2>/dev/null |
-            xargs -r grep -ho '"driver_identity": *"[^"]*"' | sort -u
-
-      - name: Drop restored BMIs
-        if: env.XLINGS_KEEP_RESTORED_BMIS != '1'
-        shell: bash
-        run: |
-          rm -rf ~/.mcpp/bmi ~/.mcpp/build-cache .mcpp/bmi .mcpp/build-cache
-
-      - name: Prepare bootstrap package index
-        run: |
-          rm -rf "$XLINGS_HOME/data/xim-pkgindex"
-          bash tests/e2e/prepare_fixture_index.sh "$XLINGS_HOME/data/xim-pkgindex"
-
-      - name: Install build dependencies (mcpp)
-        run: |
-          cd "$GITHUB_WORKSPACE"
-          xlings config --mirror GLOBAL
-          # Refresh the index before resolving anything out of it.
-          #
-          # Without this the run resolves against whatever index snapshot the
-          # bootstrap shipped with, which is not the one this PR needs: a
-          # freshly published `mcpplibs.xpkg@0.0.50` reported as "not found"
-          # while older entries from the same index downloaded fine. The
-          # failure names the package, so it reads as an unpublished
-          # dependency rather than as an index nobody refreshed.
-          xlings update || true
-          xlings install -y
-
-          # Installing is not switching, and this cache makes the difference
-          # visible. `xlings install` lays the payload down; the shim keeps
-          # resolving whatever version was already active -- the client says so
-          # ("installed, but 'x' still resolves to ..."), and with ~/.mcpp
-          # restored from a cache that line is the ONLY sign that the mcpp
-          # about to run is the old one. Measured 2026-08-06: .xlings.json
-          # pinned 2026.8.6.1 while the run used the cached build, whose index
-          # snapshot predated the dependency this PR needs -- surfacing as
-          # `mcpplibs.xpkg@0.0.53 not found` against an index that demonstrably
-          # had it.
-          # The pin comes from .xlings.json at runtime, not a literal -- a
-          # literal here is a value that changes, and the next mcpp bump would
-          # leave every workflow switching to the previous one.
-          pin="$(python3 -c 'import json;print(json.load(open(".xlings.json"))["workspace"]["mcpp"])' 2>/dev/null || true)"
-          [ -n "$pin" ] && xlings use mcpp "$pin" || true
-
-          mcpp self version
-
-      - name: Reinitialize mcpp registry (GLOBAL)
-        run: |
-          # Drop the resolved indexes and mirror config so they are
-          # re-resolved against GLOBAL, but KEEP registry/data/xpkgs -- the
-          # downloaded and extracted package payloads.
-          #
-          # Those payloads are sha256-pinned by their recipe, so they are
-          # mirror-independent: keeping them cannot leak a CN artifact into a
-          # GLOBAL build. Wiping them made every run re-fetch every transitive
-          # source from its upstream host, so CI failed wholesale whenever one
-          # of those hosts was unreachable -- e.g. compat.bzip2 (a transitive
-          # dep of compat.libarchive, and absent from mcpp.lock, which only
-          # pins direct deps) fetched from sourceware.org. It also made the
-          # ~800 MB mcpp cache restored one step earlier almost worthless.
-          #
-          # The registry's subos stays too: it links into those payloads, and
-          # packages link into it (compat.libgbm's libgbm.so is a link to
-          # subos/default/lib) -- without it a warm cache links against nothing.
-          prune_registry() {
-            [ -d "$1" ] || return 0
-            find "$1" -mindepth 1 -maxdepth 1 ! -name data ! -name subos -exec rm -rf {} +
-            [ -d "$1/data" ] || return 0
-            find "$1/data" -mindepth 1 -maxdepth 1 ! -name xpkgs -exec rm -rf {} +
-          }
-          prune_registry "$HOME/.mcpp/registry"
-          prune_registry "$GITHUB_WORKSPACE/.mcpp/registry"
-          mcpp self config --mirror GLOBAL
-
-          # Force the index refresh, then ASSERT what landed.
-          #
-          # The prune above drops the resolved indexes, and mcpp's own
-          # re-fetch happily uses whatever it finds in the restored cache --
-          # so a freshly published dependency reads as "not found" against an
-          # index that demonstrably has it. Measured 2026-08-06:
-          # `mcpplibs.xpkg@0.0.53 not found`, while the index commit, the
-          # published artifact, the rolling pointer and releases/latest all
-          # carried the entry.
-          #
-          # `mcpp index update` is the refresh; `mcpp index status` prints the
-          # revision each index landed on, which is the one datum that makes a
-          # stale-index failure readable instead of surfacing two layers away
-          # as `<pkg>@<ver> not found`.
-          mcpp index update || true
-          mcpp index status || true
-          # PER PLATFORM, not a whole-file grep.
-          #
-          # A grep for `["0.0.53"]` passes on a file where the entry exists
-          # only under `xpm.linux` -- which is exactly the bug this assert was
-          # written to catch and did not: both bumps edited the linux section
-          # alone, linux CI went green, and macOS/Windows failed against a
-          # file that literally contains the string. Slice the section for
-          # THIS platform first.
-
-      - name: Prepare unit fixture index repo
-        run: |
-          bash tests/e2e/prepare_fixture_index.sh ../xim-pkgindex
-
-      # ── Phase 1.5: Unit Tests ────────────────────────────────────
-
-      # The capabilities this lane promises (tests/README.md). A test that
-      # needs one of them and finds it missing FAILS here instead of skipping:
-      # an isolation test that quietly skips on the one machine that runs it is
-      # F13 in the SubOS design. GitHub's ubuntu-24.04 image restricts
-      # unprivileged user namespaces through AppArmor; the lane lifts that for
-      # itself -- what a user does about it is `xlings self doctor --isolation`.
-      - name: Lane capabilities (user namespaces, bwrap)
-        run: |
-          # bwrap and pasta from the index (tools/ci/xlings_tools.sh), not apt.
-          bash tools/ci/xlings_tools.sh bwrap passt
-          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
-          echo "XDEV_LANE=linux-unit" >> "$GITHUB_ENV"
-          echo "XDEV_LANE_CAPS=linux,posix,pty,xlings-bin,userns,bwrap,sandbox,pasta,landlock,network" >> "$GITHUB_ENV"
-
-      - name: Build and run unit tests
-        run: |
-          # `mcpp build` can transiently fail with "dependency '...': index
-          # entry not found in local clone" when the cached package index is
-          # stale: mcpp triggers an index auto-refresh ON that failure, so the
-          # first attempt resolves against the stale clone and dies, but a
-          # second attempt (post-refresh) succeeds. Retry once to absorb the race.
-          mcpp build || {
-            echo "::warning::mcpp build failed (likely stale index entry); retrying after auto-refresh"
-            mcpp build
-          }
-          # luban, beside the xlings the e2e tests run (tests/e2e/test_luban.cpp
-          # finds bin/luban-tool/luban next to bin/xlings).
-          mcpp build -p luban-tool
-          # The Luban OS app (a window): built on every platform, its headless
-          # tests (SDL's offscreen driver) find it beside bin/xlings.
-          mcpp build -p luban-os
-          # xdesk (the compositor of Luban OS's desktops): wlroots headless and
-          # pixman, no GPU; its test runs it as luban-os's desktop.
-          mcpp build -p xdesk-app
-          # The binaries just built, by absolute name (tests run elsewhere): a member's lands in a target
-          # directory of its own configuration, which need not be luban-os's,
-          # and the dist builds below add more of each.
-          luban_os="$(find "$PWD/target" -path '*bin/luban-os/luban-os' -type f | head -1)"
-          xdesk="$(find "$PWD/target" -path '*bin/xdesk-app/xdesk' -type f | head -1)"
-          test -x "$luban_os" && test -x "$xdesk"
-          export LUBAN_OS_BIN="$luban_os" XDESK_BIN="$xdesk"
-          { echo "LUBAN_OS_BIN=$luban_os"; echo "XDESK_BIN=$xdesk"; } >> "$GITHUB_ENV"
-          "$xdesk" --probe
-          # Its release payload, as release.yml makes it (a glibc program, the
-          # system's loader, no RPATH, its NEEDED checked): a release must not
-          # be the first to find the packaging broken.
-          bash tools/ci/xlings_tools.sh patchelf
-          mcpp build -p luban-os --profile dist
-          bash tools/luban_os_release.sh
-          # xdesk's release payload, as release.yml makes it.
-          mcpp build -p xdesk-app --profile dist
-          bash tools/xdesk_release.sh
-          # xdev runs `mcpp test` and renders the report; the step summary is
-          # rendered once, by the report job, from every lane. Built static
-          # (musl) so the e2e and report jobs can run this same binary: a glibc
-          # dev build's loader lives in this runner's mcpp registry.
-          mcpp build -p xdev --target x86_64-linux-musl
-          # A member's binary lands under the root's target/ or the member's
-          # own, depending on the mcpp version.
-          xdev="$(find target apps/xdev -path '*musl*' -name xdev -type f -perm -111 2>/dev/null | head -1)"
-          [[ -n "$xdev" ]] || { echo "::error::mcpp build -p xdev produced no xdev"; find . -name 'xdev*' -not -path './.git/*' | head; exit 1; }
-          # linux_release.sh cleans the musl target; retain the static runner
-          # outside that tree for candidate acceptance and downstream lanes.
-          mkdir -p target/xdev/runner/bin
-          cp "$xdev" target/xdev/runner/bin/xdev
-          xdev="$GITHUB_WORKSPACE/target/xdev/runner/bin/xdev"
-          echo "XDEV=$xdev" >> "$GITHUB_ENV"
-          export XDEV_BIN="$xdev"
-          mkdir -p target/xdev/linux-xdev
-          printf '{"name":"linux-xdev","platform":"linux","run":"%s:%s","probes":{}}\n' "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" > target/xdev/linux-xdev/lane.json
-          XTEST_META_OUT="$GITHUB_WORKSPACE/target/xdev/linux-xdev/meta.ndjson" \
-          XTEST_RESULTS_OUT="$GITHUB_WORKSPACE/target/xdev/linux-xdev/cases.ndjson" \
-            mcpp test -p xdev
-          mcpp test --no-run --message-format json
-          "$xdev" test --no-build --out target/xdev/linux-unit
-          # Retain only the already-built candidate acceptance programs.
-          for test in e2e/test_domain_source e2e/test_domain_producer e2e/test_subos_perf e2e/test_home_perf unit/test_root_generation_perf; do
-            binary="$(find target -type f -path "*/bin/$test" | head -1)"
-            test -x "$binary"
-            destination="target/xdev/retained/bin/$test"
-            mkdir -p "$(dirname "$destination")"
-            cp -p "$binary" "$destination"
+          for lane in unit asan; do
+            echo "$lane=$(python3 tools/ci/lane_matrix.py "$lane")" | tee -a "$GITHUB_OUTPUT"
           done
 
-      # A separate step, `if: failure()`, and not an `|| { ... }` on one
-      # command.
-      #
-      # The diagnostics used to hang off `mcpp test || { ... }` with
-      # `mcpp build` running unguarded above it. The shell is `bash -e`, so a
-      # failing `mcpp build` aborted the step before the block was ever
-      # reached: the diagnostic existed, never ran, and the failure looked
-      # exactly the same as if it had. Measured 2026-08-06 -- a whole CI round
-      # spent adding index-content output that could not print.
-      - name: Diagnose a failed mcpp build
-        if: failure()
-        run: |
-          # What index does this runner actually hold? `mcpplibs.xpkg@<ver>
-          # not found` was diagnosed repeatedly from the outside -- index
-          # commit, published artifact, rolling pointer, releases/latest,
-          # publish lag, the mcpp version pin, install-vs-use, and the
-          # lockfile hash were each checked and each was correct. All of that
-          # is inference about a file only the runner can see.
-          for idx in "$HOME/.mcpp/registry/data/mcpplibs/pkgs/x/xpkg.lua" \
-                     "$GITHUB_WORKSPACE/.mcpp/registry/data/mcpplibs/pkgs/x/xpkg.lua"; do
-            if [ -f "$idx" ]; then
-              echo "--- $idx"
-              grep -oE '\["[0-9]+\.[0-9]+\.[0-9]+"\]' "$idx" | head -8
-            else
-              echo "--- $idx : ABSENT"
-            fi
-          done
-          for root in "$HOME/.mcpp/registry" "$GITHUB_WORKSPACE/.mcpp/registry"; do
-            [ -d "$root" ] || continue
-            echo "--- $root"
-            ls -1 "$root" 2>/dev/null | head -8
-            ls -1 "$root/data" 2>/dev/null | head -8
-            ls -1 "$root/index-snapshots" 2>/dev/null | head -8
-          done
-          mcpp --version 2>&1 | head -2 || true
-          mcpp self version 2>&1 | head -3 || true
-          xlings --version 2>&1 | head -2 || true
+  # The ONE release build of this commit on Linux x86_64, and nothing else:
+  # every lane that runs the release (e2e, distro, the host matrix, the
+  # Windows WSL 2 lane, acceptance) starts the moment it is attached.
+  release:
+    needs: plan
+    runs-on: ubuntu-24.04
+    outputs:
+      release_ready: ${{ steps.candidate.outcome == 'success' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - name: Multiplatform contract scripts
-        env:
-          XDEV_LANE: linux-contracts
-        run: |
-          "$XDEV" test --no-mcpp --suite contract-scripts --out target/xdev/linux-contracts
+      - name: Linux toolchain
+        uses: ./.github/actions/linux-toolchain
 
-      # openkal beside this toolchain's runtimes (design part 3 §4.3): glibc,
-      # and the static musl target the release uses.
-      - name: openkal coexistence (OPENKAL-COEXIST)
-        run: |
-          cd tools/openkal-coexistence
-          for target in "" "--target x86_64-linux-musl"; do
-            mcpp build $target
-            bin="$(find target -path '*/bin/openkal-coexistence' -type f -newer mcpp.toml | xargs ls -t | head -1)"
-            out="$("$bin")"
-            echo "$out"
-            grep -qx 'libstdc++ says: hello' <<<"$out"
-            grep -qx 'openkal says: hello' <<<"$out"
-            grep -q '^kal_version=' <<<"$out"
-          done
-
-      # The same repository lints as the first step, through xdev this time,
-      # so what they cover (LAYOUT-DEPS ...) is evidence in the requirement
-      # report and not only a green step.
-      - name: Repository lints (requirement evidence)
-        env:
-          XDEV_LANE: linux-lint
-        run: |
-          "$XDEV" test --no-mcpp --suite lint --out target/xdev/linux-lint
-
-      # ── Phase 2: Build via Release Script ───────────────────────
-      # The ONE release build of this commit on Linux x86_64. The e2e job
-      # below takes this artifact instead of building its own (it used to be a
-      # separate workflow with a second source build and a third release
-      # build of the same commit).
-
-      - name: Build (linux_release)
-        run: |
-          chmod +x ./tools/linux_release.sh
-          SKIP_NETWORK_VERIFY=1 ./tools/linux_release.sh
+      # The candidate and the static xdev the downstream lanes run, from the
+      # last round's release build when there is one (only what changed is
+      # rebuilt; a published release is built from nothing, release.yml).
+      - name: The release candidate
+        uses: ./.github/actions/linux-build
+        with:
+          profile: release
+          state: produce
+          attach: 'false'
 
       - name: Prepare release artifact
         run: |
@@ -493,15 +154,244 @@ jobs:
             build/release.tar.gz
             build/xlings-*-linux-x86_64.tar.gz
 
+      - name: Attach xdev
+        uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: xdev-linux-build
+          path: target/xdev/runner/bin/xdev
+
+      - name: Diagnose a failed mcpp build
+        if: failure()
+        run: bash tools/ci/diagnose_mcpp.sh
+
+  # The development build every test lane runs on, once per round: from the
+  # last round's state, only what changed since is rebuilt
+  # (.github/actions/linux-build); the lanes that need it take it as it is.
+  build:
+    needs: plan
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Linux toolchain
+        uses: ./.github/actions/linux-toolchain
+        with:
+          sandbox: 'false'
+
+      - name: The development build
+        uses: ./.github/actions/linux-build
+        with:
+          state: produce
+
+      - name: Diagnose a failed mcpp build
+        if: failure()
+        run: bash tools/ci/diagnose_mcpp.sh
+
+  # The Luban OS app's and xdesk's release payloads, as release.yml makes
+  # them (a glibc program, the system's loader, no RPATH, its NEEDED
+  # checked): a release must not be the first to find the packaging broken.
+  # Its own optimized build, beside the others.
+  desktop-payloads:
+    needs: plan
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Linux toolchain
+        uses: ./.github/actions/linux-toolchain
+        with:
+          sandbox: 'false'
+
+      - name: Luban OS and xdesk release payloads
+        run: |
+          bash tools/ci/xlings_tools.sh patchelf
+          mcpp build -p luban-os --profile dist
+          bash tools/luban_os_release.sh
+          mcpp build -p xdesk-app --profile dist
+          bash tools/xdesk_release.sh
+
+      - name: Diagnose a failed mcpp build
+        if: failure()
+        run: bash tools/ci/diagnose_mcpp.sh
+
+  # The same for the instrumented build, where the asan lane runs.
+  build-asan:
+    needs: plan
+    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:asan')
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Linux toolchain
+        uses: ./.github/actions/linux-toolchain
+        with:
+          mcpp-cache: mcpp-v4-ci-linux-asan-
+          sandbox: 'false'
+          room: 'true'
+
+      - name: The instrumented build
+        uses: ./.github/actions/linux-build
+        with:
+          profile: asan
+          state: produce
+
+      - name: Diagnose a failed mcpp build
+        if: failure()
+        run: bash tools/ci/diagnose_mcpp.sh
+
+  # The C++ tests, over tests/lanes.toml [unit].shards machines. Each takes
+  # the round's build, builds its share of the test binaries a family per
+  # mcpp call, and runs them [unit].jobs at a time.
+  unit:
+    needs: [plan, build]
+    name: unit (${{ matrix.shard }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(needs.plan.outputs.unit) }}
+    env:
+      # The capabilities this lane promises (tests/README.md): a test that
+      # needs one of them and finds it missing FAILS instead of skipping.
+      XDEV_LANE: linux-unit
+      XDEV_LANE_CAPS: linux,posix,pty,xlings-bin,userns,bwrap,sandbox,pasta,landlock,network
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Linux toolchain
+        uses: ./.github/actions/linux-toolchain
+
+      - name: The round's development build
+        uses: ./.github/actions/linux-build
+        with:
+          state: consume
+
+      - name: Measured durations, as the plan job took them
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: linux-shard-timings
+          path: ${{ runner.temp }}/timings
+
+      - name: Tests (shard ${{ matrix.shard }})
+        run: |
+          shard='${{ matrix.shard }}'
+          timings=()
+          [[ -f "$RUNNER_TEMP/timings/timings.json" ]] && timings=(--timings "$RUNNER_TEMP/timings/timings.json")
+          "$XDEV" test --lane-config unit --shard "$shard" "${timings[@]}" --out "target/xdev/linux-unit-${shard%%/*}"
+
+      - name: Attach the run
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: xdev-linux-unit-${{ strategy.job-index }}
+          path: target/xdev/
+          if-no-files-found: ignore
+
+      # The Luban OS window as its tests saw it (every view, three sizes,
+      # English and Chinese, a desktop and the Host key's menu): for people.
+      - name: Attach the Luban OS screenshots
+        uses: actions/upload-artifact@v4
+        if: always() && hashFiles('target/xtest-artifacts/luban-os/**') != ''
+        with:
+          name: luban-os-screenshots
+          path: target/xtest-artifacts/luban-os/
+
+      - name: Diagnose a failed mcpp build
+        if: failure()
+        run: bash tools/ci/diagnose_mcpp.sh
+
+  # What runs on a development build and needs no release (xdev's own tests,
+  # the contract scripts, openkal beside this toolchain, the lints as
+  # evidence), then the static gates on the release build, fetched as soon as
+  # the release job attaches it.
+  acceptance:
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Linux toolchain
+        uses: ./.github/actions/linux-toolchain
+
+      - name: The round's development build
+        uses: ./.github/actions/linux-build
+        with:
+          state: consume
+
+      - name: The static gates' programs
+        run: |
+          # Built now, run on the release build once it is attached.
+          for test in e2e/test_domain_source e2e/test_domain_producer e2e/test_subos_perf e2e/test_home_perf \
+                      unit/test_root_generation_perf e2e/test_luban; do
+            mcpp test --no-run "$test"
+          done
+
+      - name: xdev's own tests
+        run: |
+          mkdir -p target/xdev/linux-xdev
+          printf '{"name":"linux-xdev","platform":"linux","run":"%s:%s","probes":{}}\n' "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" > target/xdev/linux-xdev/lane.json
+          # XDEV_BIN: the CLI cases drive the xdev just built.
+          XDEV_BIN="$XDEV" \
+          XTEST_META_OUT="$GITHUB_WORKSPACE/target/xdev/linux-xdev/meta.ndjson" \
+          XTEST_RESULTS_OUT="$GITHUB_WORKSPACE/target/xdev/linux-xdev/cases.ndjson" \
+            mcpp test -p xdev
+
+      - name: Multiplatform contract scripts
+        env:
+          XDEV_LANE: linux-contracts
+        run: |
+          "$XDEV" test --no-mcpp --suite contract-scripts --out target/xdev/linux-contracts
+
+      # openkal beside this toolchain's runtimes (design part 3 §4.3): glibc,
+      # and the static musl target the release uses.
+      - name: openkal coexistence (OPENKAL-COEXIST)
+        run: |
+          cd tools/openkal-coexistence
+          for target in "" "--target x86_64-linux-musl"; do
+            mcpp build $target
+            bin="$(find target -path '*/bin/openkal-coexistence' -type f -newer mcpp.toml | xargs ls -t | head -1)"
+            out="$("$bin")"
+            echo "$out"
+            grep -qx 'libstdc++ says: hello' <<<"$out"
+            grep -qx 'openkal says: hello' <<<"$out"
+            grep -q '^kal_version=' <<<"$out"
+          done
+
+      # The same repository lints as the plan job, through xdev this time,
+      # so what they cover (LAYOUT-DEPS ...) is evidence in the requirement
+      # report and not only a green step.
+      - name: Repository lints (requirement evidence)
+        env:
+          XDEV_LANE: linux-lint
+        run: |
+          "$XDEV" test --no-mcpp --suite lint --out target/xdev/linux-lint
+
+      - name: The release build of this commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          bash tools/ci/await_artifact.sh xlings-linux-x86_64 release candidate
+          tar -xzf candidate/release.tar.gz -C candidate
+          candidate="$(find "$GITHUB_WORKSPACE/candidate" -path '*/bin/xlings' -type f | head -1)"
+          test -x "$candidate"
+          echo "XLINGS_BIN=$candidate" >> "$GITHUB_ENV"
+
       - name: Static domain lifecycle, checked system source and image export
         id: static_domain
         continue-on-error: true
         env:
           XDEV_LANE: linux-static-domain
         run: |
-          candidate="$(find "$GITHUB_WORKSPACE/build" -path '*/bin/xlings' -type f | head -1)"
-          test -x "$candidate"
-          export XLINGS_BIN="$candidate"
           status=0
           "$XDEV" test e2e/test_domain_source --no-build --require-metadata \
             --out target/xdev/linux-static-domain || status=$?
@@ -526,10 +416,11 @@ jobs:
         env:
           XDEV_LANE: linux-static-perf
         run: |
-          candidate="$(find "$GITHUB_WORKSPACE/build" -path '*/bin/xlings' -type f | head -1)"
-          test -x "$candidate"
-          export XLINGS_BIN="$candidate"
-          # Timing budgets are asserted here, where each case runs alone.
+          # Timing budgets are asserted here, where each case runs alone --
+          # and after what the steps before wrote has reached the disk: a
+          # build's writeback under a 5 ms budget is the runner measured, not
+          # xlings (median 5.14 ms once, right after a release payload build).
+          sync
           export XLINGS_PERF_BUDGETS=1
           status=0
           "$XDEV" test e2e/test_subos_perf --no-build --require-metadata \
@@ -555,54 +446,39 @@ jobs:
       # an exported system is imported and has what it carried. With the
       # release client: a development build cannot enter a root.
       - name: Luban OS first use, with the release client
+        id: first_use
         env:
           XDEV_LANE: linux-luban-os-first-use
           XDEV_LANE_CAPS: linux,posix,pty,xlings-bin,static-xlings,userns,bwrap,sandbox,network
-        if: always() && steps.candidate.outcome == 'success'
         run: |
-          candidate="$(find "$GITHUB_WORKSPACE/build" -path '*/bin/xlings' -type f | head -1)"
-          test -x "$candidate"
-          export XLINGS_BIN="$candidate"
-          # The window and xdesk the build step built (LUBAN_OS_BIN, XDESK_BIN).
-          test -x "$LUBAN_OS_BIN" || { echo "::error::no luban-os at '$LUBAN_OS_BIN'"; exit 1; }
-          test -x "$XDESK_BIN" || { echo "::error::no xdesk at '$XDESK_BIN'"; exit 1; }
           "$XDEV" test e2e/test_luban --no-build --require-metadata --out target/xdev/linux-luban-os-first-use
 
-      - name: Attach xdev and its runs
+      - name: Attach the runs
         uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: xdev-linux-build
-          path: |
-            ${{ env.XDEV }}
-            target/xdev/
+          name: xdev-linux-acceptance
+          path: target/xdev/
           if-no-files-found: ignore
 
-      # The Luban OS window as its tests saw it (every view, three sizes,
-      # English and Chinese, a desktop and the Host key's menu): for people.
-      - name: Attach the Luban OS screenshots
-        uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: luban-os-screenshots
-          path: target/xtest-artifacts/luban-os/
-          if-no-files-found: ignore
+      - name: Diagnose a failed mcpp build
+        if: failure()
+        run: bash tools/ci/diagnose_mcpp.sh
 
       - name: Require every static acceptance gate
         if: always()
         env:
-          CANDIDATE_OUTCOME: ${{ steps.candidate.outcome }}
           DOMAIN_OUTCOME: ${{ steps.static_domain.outcome }}
           PERF_OUTCOME: ${{ steps.static_perf.outcome }}
         run: |
-          for outcome in "$CANDIDATE_OUTCOME" "$DOMAIN_OUTCOME" "$PERF_OUTCOME"; do
+          for outcome in "$DOMAIN_OUTCOME" "$PERF_OUTCOME"; do
             [[ "$outcome" == success ]] || { echo "::error::static acceptance is incomplete or failed"; exit 1; }
           done
 
-  # The shell e2e suite, against the artifact built above.
+  # The shell e2e suite, against the release build.
   e2e:
-    needs: build-and-test
-    if: ${{ !cancelled() && needs.build-and-test.outputs.release_ready == 'true' }}
+    needs: release
+    if: ${{ !cancelled() && needs.release.outputs.release_ready == 'true' }}
     runs-on: ubuntu-24.04
     env:
       XDEV_LANE: linux-e2e
@@ -663,8 +539,8 @@ jobs:
   # /usr/lib/xlings/bwrap and an AppArmor profile with sudo, which is why it
   # has a runner of its own.
   isolation-fix:
-    needs: build-and-test
-    if: ${{ !cancelled() && needs.build-and-test.outputs.release_ready == 'true' }}
+    needs: release
+    if: ${{ !cancelled() && needs.release.outputs.release_ready == 'true' }}
     runs-on: ubuntu-24.04
     env:
       XDEV_LANE: linux-isolation-fix
@@ -711,21 +587,59 @@ jobs:
   # Fedora userland -- each as an ordinary user without sudo. Every leg:
   # nightly and on demand (xlings-ci-host-matrix.yml).
   host-matrix:
-    needs: build-and-test
-    if: ${{ !cancelled() && needs.build-and-test.outputs.release_ready == 'true' }}
+    needs: release
+    if: ${{ !cancelled() && needs.release.outputs.release_ready == 'true' }}
     uses: ./.github/workflows/xlings-ci-host-matrix.yml
     with:
       # The label `host-matrix-full` runs every x86_64 leg on this build.
       legs: ${{ contains(github.event.pull_request.labels.*.name, 'host-matrix-full') && 'full' || 'smoke' }}
       artifact: xlings-linux-x86_64
 
+  # xlings as the root user (design 2026-06-21-root-privilege-identity): the
+  # release build in a bare ubuntu:24.04 root container with no sudo, so the
+  # run exercises the root / sudo identity layer itself (P0-1: no sudo
+  # dependency; P0-2: sudo chown-back). It was a workflow of its own that
+  # built xlings and ran the unit suite a second time to get here.
+  root:
+    needs: release
+    if: ${{ !cancelled() && needs.release.outputs.release_ready == 'true' }}
+    runs-on: ubuntu-24.04
+    container:
+      image: ubuntu:24.04        # default user is root (uid 0); no sudo preinstalled
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Minimal deps for the e2e harness — deliberately NOT installing sudo,
+      # so the pure-root scenario proves xlings never depends on it.
+      - name: Install minimal deps (no sudo)
+        run: |
+          apt-get update -qq
+          apt-get install -y curl ca-certificates tar findutils perl git  # host-dep-ok: a bare container, prepared to install xlings
+          echo "sudo intentionally NOT installed:"; command -v sudo || echo "  (absent — good)"
+
+      - name: Fetch the release artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: xlings-linux-x86_64
+          path: build
+
+      - name: Confirm running as root
+        run: |
+          id
+          [ "$(id -u)" -eq 0 ] || { echo "expected uid 0"; exit 1; }
+
+      - name: "ROOT-01: root usability (pure root + simulated sudo)"
+        run: |
+          bash tests/e2e/root_usability_test.sh build/release.tar.gz
+
   # Deployment S as a distribution ships it (design part 2 §5): the AUR
   # recipe built from THIS build's release artifact, installed with pacman,
   # used by two users. Replaces xlings-ci-archlinux.yml, which ran only when
   # config/aur changed and built a 0.4.14 download.
   arch-package:
-    needs: build-and-test
-    if: ${{ !cancelled() && needs.build-and-test.outputs.release_ready == 'true' }}
+    needs: release
+    if: ${{ !cancelled() && needs.release.outputs.release_ready == 'true' }}
     runs-on: ubuntu-24.04
     container:
       image: archlinux:latest
@@ -768,8 +682,8 @@ jobs:
   # their own kernel -- against THIS build's release binary (static: an
   # exported image's xlings runs with no host under it).
   plan-distro:
-    needs: build-and-test
-    if: ${{ !cancelled() && needs.build-and-test.outputs.release_ready == 'true' }}
+    needs: release
+    if: ${{ !cancelled() && needs.release.outputs.release_ready == 'true' }}
     runs-on: ubuntu-24.04
     outputs:
       matrix: ${{ steps.plan.outputs.matrix }}
@@ -793,12 +707,12 @@ jobs:
           chmod +x "$xdev"
           weights=()
           if [[ -f target/xdev/history/timings.json ]]; then weights+=(--timings target/xdev/history/timings.json); fi
-          matrix="$("$xdev" ci plan --no-mcpp --suite distro --platform linux --lane main --shards 3 --require-metadata "${weights[@]}")"
+          matrix="$("$xdev" ci plan --no-mcpp --suite distro --platform linux --lane main --shards "$(python3 tools/ci/lane_matrix.py --count distro)" --require-metadata "${weights[@]}")"
           echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
 
   distro:
-    needs: [build-and-test, plan-distro]
-    if: ${{ !cancelled() && needs.build-and-test.outputs.release_ready == 'true' && needs.plan-distro.result == 'success' }}
+    needs: [release, plan-distro]
+    if: ${{ !cancelled() && needs.release.outputs.release_ready == 'true' && needs.plan-distro.result == 'success' }}
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.plan-distro.outputs.matrix) }}
@@ -925,7 +839,7 @@ jobs:
 
   # One report for the Linux lanes, in the step summary.
   report:
-    needs: [build-and-test, e2e, isolation-fix, arch-package, distro, wsl-import]
+    needs: [release, build, unit, acceptance, asan, e2e, isolation-fix, arch-package, distro, wsl-import]
     if: always()
     runs-on: ubuntu-24.04
     steps:
@@ -994,214 +908,77 @@ jobs:
           path: target/xdev/history
           key: xdev-history-v1-linux-${{ github.sha }}
 
-  unit-asan:
-    # Off the PR critical path (design §24.5): it is the slowest job (~27 min,
-    # most of it the instrumented build) and gates nothing a PR changes more
-    # often than main does. It runs on every push to main and release/**,
-    # and on a PR that carries the `ci:asan` label. A failure on main is a
-    # regression to revert or fix at once.
+  # The C++ tests instrumented (mcpp.toml `[profile.asan]`, issue #433: a
+  # use-after-free reached three releases undetected because nothing ran the
+  # tests instrumented), over tests/lanes.toml [asan].shards machines: the
+  # instrumented build is most of the time, and a shard builds only its
+  # families. Off the PR critical path: every push to main and release/**,
+  # and a PR labelled `ci:asan`. A HARD gate: a failure on main is a
+  # regression to revert or fix at once.
+  #
+  # Its own mcpp cache key prefix: BMIs compiled with
+  # `-fsanitize=address,undefined` are not interchangeable with the dev
+  # profile's (the "CRC mismatch" failure mode), so no restore can hand one
+  # profile's BMIs to the other.
+  asan:
+    needs: [plan, build-asan]
     if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:asan')
-    #
-    # Sanitizer profile for the unit suite (mcpp.toml `[profile.asan]`,
-    # issue #433: a use-after-free reached three releases undetected because
-    # nothing ever ran the tests instrumented). Measured locally 2026-09-12:
-    # `mcpp test --profile asan` is 54/54 green, build ~18 min -- so this is
-    # a HARD gate (no continue-on-error), not a diagnostic-only job.
-    #
-    # Steps mirror build-and-test's bootstrap/toolchain/cache/index sequence
-    # exactly, up to "Build and run unit tests" -- see that job for the
-    # reasoning behind each one (BMI wipe, registry prune, index refresh
-    # retry). The one thing that MUST differ is the mcpp cache key: BMIs are
-    # compiled with `-fsanitize=address,undefined` and are not interchangeable
-    # with the dev profile's BMI set (same "CRC mismatch" failure mode
-    # documented on that cache step) -- so this job's key carries a distinct
-    # "-asan-" segment that appears nowhere in build-and-test's key or
-    # restore-keys, and vice versa, so an inexact restore can never hand one
-    # profile's BMIs to the other.
+    name: asan (${{ matrix.shard }})
     runs-on: ubuntu-24.04
-
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(needs.plan.outputs.asan) }}
+    env:
+      XDEV_LANE: linux-asan
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: The runner's own tools (T0; nothing installed)
-        run: |
-          for t in curl git cc make jq tar xz python3; do command -v "$t" >/dev/null || { echo "::error::the runner image has no $t"; exit 1; }; done
-
-      # The instrumented build outgrew the runner's disk ("No space left on
-      # device", main from 2026-10-13): the image's SDKs this job never uses
-      # (.NET, Android, GHC, CodeQL) make room for it. Nothing is installed.
-      - name: Room for the instrumented build
-        run: |
-          df -h / | tail -1
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
-          df -h / | tail -1
-
-      - name: Install bootstrap xlings (pinned ${{ env.BOOTSTRAP_XLINGS_VERSION }})
-        env:
-          XLINGS_NON_INTERACTIVE: 1
-          XLINGS_VERSION: ${{ env.BOOTSTRAP_XLINGS_VERSION }}
-        run: |
-          for attempt in 1 2 3; do
-            curl -fsSL --retry 3 --retry-delay 5 --connect-timeout 20 \
-              https://raw.githubusercontent.com/openxlings/xlings/main/tools/other/quick_install.sh \
-              -o /tmp/xlings-quick-install.sh && break
-            echo "bootstrap download failed (attempt $attempt/3); retrying"
-            sleep 10
-          done
-          test -s /tmp/xlings-quick-install.sh \
-            || { echo "::error::could not download quick_install.sh"; exit 1; }
-          bash /tmp/xlings-quick-install.sh
-          test -x "$HOME/.xlings/bin/xlings" \
-            || { echo "::error::bootstrap reported success but installed no xlings"; exit 1; }
-          echo "XLINGS_HOME=$HOME/.xlings"           >> "$GITHUB_ENV"
-          echo "$HOME/.xlings/subos/current/bin"     >> "$GITHUB_PATH"
-          echo "$HOME/.xlings/bin"                   >> "$GITHUB_PATH"
-
-      - name: Cache xlings package payloads
-        uses: actions/cache@v4
+      - name: Linux toolchain
+        uses: ./.github/actions/linux-toolchain
         with:
-          path: ~/.xlings/data/xpkgs
-          key: xlings-deps-${{ runner.os }}-${{ hashFiles('.xlings.json') }}-${{ env.BOOTSTRAP_XLINGS_VERSION }}
-          restore-keys: |
-            xlings-deps-${{ runner.os }}-
+          mcpp-cache: mcpp-v4-ci-linux-asan-
+          sandbox: 'false'
+          room: 'true'
 
-      - name: Cache mcpp sandbox and project packages (asan profile)
-        id: mcpp-cache
-        uses: actions/cache@v4
+      - name: The round's instrumented build
+        uses: ./.github/actions/linux-build
         with:
-          path: |
-            ~/.mcpp
-            !~/.mcpp/bmi
-            !~/.mcpp/build-cache
-            .mcpp
-            !.mcpp/bmi
-            !.mcpp/build-cache
-          # "-asan-" is the whole point of this key: it cannot collide, by
-          # prefix or by restore-keys fallback, with build-and-test's
-          # "mcpp-v4-ci-linux-${{ runner.os }}-..." key. See the job comment.
-          key: mcpp-v4-ci-linux-asan-${{ runner.os }}-${{ hashFiles('mcpp.toml', '.xlings.json') }}-${{ env.BOOTSTRAP_XLINGS_VERSION }}
-          restore-keys: |
-            mcpp-v4-ci-linux-asan-${{ runner.os }}-
+          profile: asan
+          state: consume
 
-      # Verbatim from build-and-test's identically-named step -- the job
-      # comment above claims to mirror that job's sequence exactly, and a
-      # cache-class failure (an inexact restore mixing BMI sets) needs the
-      # same visibility here as it does there. `steps.mcpp-cache` resolves
-      # to THIS job's own cache step (same id, different job -- no
-      # collision), so no path/key literal needs to change.
-      - name: Record the restored BMI set (diagnostic for #56)
-        shell: bash
+      - name: Measured durations, as the plan job took them
         continue-on-error: true
-        run: |
-          echo "cache-hit: ${{ steps.mcpp-cache.outputs.cache-hit }}"
-          for d in ~/.mcpp/bmi .mcpp/bmi ~/.mcpp/build-cache .mcpp/build-cache; do
-            if [ -d "$d" ]; then
-              echo "  $d: $(du -sh "$d" 2>/dev/null | cut -f1), $(find "$d" -name '*.gcm' 2>/dev/null | wc -l) .gcm"
-            else
-              echo "  $d: absent"
-            fi
-          done
-          echo "  --- build identity per BMI dir (first 40) ---"
-          find ~/.mcpp/bmi .mcpp/bmi -name std-module.json 2>/dev/null | head -40 |
-          while read -r f; do
-            printf '  %-18s %s %s\n' \
-              "$(basename "$(dirname "$f")")" \
-              "$(grep -o '"cpp_standard": *"[^"]*"' "$f" | cut -d'"' -f4)" \
-              "$(grep -o '"driver_identity": *"[^"]*"' "$f" | cut -d'"' -f4)"
-          done
-          echo "  --- distinct driver identities ---"
-          find ~/.mcpp/bmi .mcpp/bmi -name std-module.json 2>/dev/null |
-            xargs -r grep -ho '"driver_identity": *"[^"]*"' | sort -u
+        uses: actions/download-artifact@v4
+        with:
+          name: linux-shard-timings
+          path: ${{ runner.temp }}/timings
 
-      - name: Drop restored BMIs
-        if: env.XLINGS_KEEP_RESTORED_BMIS != '1'
-        shell: bash
+      - name: Tests (asan, shard ${{ matrix.shard }})
         run: |
-          rm -rf ~/.mcpp/bmi ~/.mcpp/build-cache .mcpp/bmi .mcpp/build-cache
+          shard='${{ matrix.shard }}'
+          timings=()
+          [[ -f "$RUNNER_TEMP/timings/timings.json" ]] && timings=(--timings "$RUNNER_TEMP/timings/timings.json")
+          "$XDEV" test --lane-config asan --shard "$shard" "${timings[@]}" --out "target/xdev/linux-asan-${shard%%/*}"
 
-      - name: Prepare bootstrap package index
-        run: |
-          rm -rf "$XLINGS_HOME/data/xim-pkgindex"
-          bash tests/e2e/prepare_fixture_index.sh "$XLINGS_HOME/data/xim-pkgindex"
+      - name: Attach the run
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: xdev-linux-asan-${{ strategy.job-index }}
+          path: target/xdev/
+          if-no-files-found: ignore
 
-      - name: Install build dependencies (mcpp)
-        run: |
-          cd "$GITHUB_WORKSPACE"
-          xlings config --mirror GLOBAL
-          xlings update || true
-          xlings install -y
-          pin="$(python3 -c 'import json;print(json.load(open(".xlings.json"))["workspace"]["mcpp"])' 2>/dev/null || true)"
-          [ -n "$pin" ] && xlings use mcpp "$pin" || true
-          mcpp self version
-
-      - name: Reinitialize mcpp registry (GLOBAL)
-        run: |
-          # As build-and-test: the indexes and mirror config go; the payloads
-          # (data/xpkgs) and the registry's subos, which links into them and
-          # packages link into (compat.libgbm's libgbm.so is a link to
-          # subos/default/lib) -- without it a warm cache links against nothing.
-          prune_registry() {
-            [ -d "$1" ] || return 0
-            find "$1" -mindepth 1 -maxdepth 1 ! -name data ! -name subos -exec rm -rf {} +
-            [ -d "$1/data" ] || return 0
-            find "$1/data" -mindepth 1 -maxdepth 1 ! -name xpkgs -exec rm -rf {} +
-          }
-          prune_registry "$HOME/.mcpp/registry"
-          prune_registry "$GITHUB_WORKSPACE/.mcpp/registry"
-          mcpp self config --mirror GLOBAL
-          mcpp index update || true
-          mcpp index status || true
-
-      - name: Prepare unit fixture index repo
-        run: |
-          bash tests/e2e/prepare_fixture_index.sh ../xim-pkgindex
-
-      - name: Build and run unit tests (asan profile)
-        run: |
-          # No continue-on-error: measured green (54/54) locally before this
-          # job was added, so a red run here is a real regression, not noise
-          # to route around.
-          mcpp build --profile asan || {
-            echo "::warning::mcpp build --profile asan failed (likely stale index entry); retrying after auto-refresh"
-            mcpp build --profile asan
-          }
-          mcpp test --profile asan
-
-      # Verbatim from build-and-test's identically-named step. Same generic
-      # $HOME/.mcpp and $GITHUB_WORKSPACE/.mcpp paths as that job -- neither
-      # job's diagnostic references its cache key literal, only the
-      # runner-local registry directories, so nothing here needs to change
-      # for the asan profile.
       - name: Diagnose a failed mcpp build
         if: failure()
-        run: |
-          for idx in "$HOME/.mcpp/registry/data/mcpplibs/pkgs/x/xpkg.lua" \
-                     "$GITHUB_WORKSPACE/.mcpp/registry/data/mcpplibs/pkgs/x/xpkg.lua"; do
-            if [ -f "$idx" ]; then
-              echo "--- $idx"
-              grep -oE '\["[0-9]+\.[0-9]+\.[0-9]+"\]' "$idx" | head -8
-            else
-              echo "--- $idx : ABSENT"
-            fi
-          done
-          for root in "$HOME/.mcpp/registry" "$GITHUB_WORKSPACE/.mcpp/registry"; do
-            [ -d "$root" ] || continue
-            echo "--- $root"
-            ls -1 "$root" 2>/dev/null | head -8
-            ls -1 "$root/data" 2>/dev/null | head -8
-            ls -1 "$root/index-snapshots" 2>/dev/null | head -8
-          done
-          mcpp --version 2>&1 | head -2 || true
-          mcpp self version 2>&1 | head -3 || true
-          xlings --version 2>&1 | head -2 || true
+        run: bash tools/ci/diagnose_mcpp.sh
 
-      # E2E-00: a fresh mcpp home builds xlings for the musl target. It
-      # used to run on every PR in the e2e workflow; the PR build job and the
-      # release build above already prove the same build with the same mcpp,
-      # so it now runs where the instrumented build runs: on main.
+      # E2E-00: a fresh mcpp home builds xlings for the musl target. The PR
+      # build jobs and the release build prove the same build with the same
+      # mcpp, so it runs where the instrumented build runs: on main, once.
       - name: "E2E-00: mcpp builds xlings from source (fresh mcpp home)"
-        if: github.event_name == 'push'
+        if: github.event_name == 'push' && startsWith(matrix.shard, '1/')
         run: |
           bash tests/e2e/prepare_fixture_index.sh
           bash tests/e2e/mcpp_build_xlings_test.sh
@@ -1210,7 +987,7 @@ jobs:
         if: always()
         run: |
           if [ "${{ job.status }}" = "success" ]; then
-            echo "### unit-asan: PASS (mcpp test --profile asan)" >> "$GITHUB_STEP_SUMMARY"
+            echo "### asan ${{ matrix.shard }}: PASS" >> "$GITHUB_STEP_SUMMARY"
           else
-            echo "### unit-asan: FAIL (mcpp test --profile asan)" >> "$GITHUB_STEP_SUMMARY"
+            echo "### asan ${{ matrix.shard }}: FAIL" >> "$GITHUB_STEP_SUMMARY"
           fi

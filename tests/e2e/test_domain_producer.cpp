@@ -347,3 +347,151 @@ XTEST(DomainProducer, InstallsAtLogicalPrefixInsideANamespaceAndPreservesHostDat
     EXPECT_EQ(tk::read_file(hostSentinel), "host must remain intact");
 
 }
+
+// Each layer lists itself and what is below it (part 3 §3.2): the host counts
+// its Luban systems in one line, and a system does not list its siblings.
+XTEST(DomainProducer, AHostCountsItsSystemsAndASystemDoesNotListItsSiblings,
+      .area = "subos", .cost = tk::Cost::Medium,
+      .covers = {"LAYER-VISIBILITY"}, .requires_ = {"linux", "bwrap", "xlings-bin"},
+      .resources = {"sandbox"}, .proves = "isolation") {
+    if constexpr (!tk::is_linux) GTEST_SKIP() << "Linux namespaces";
+    if (const auto why = tk::probe("bwrap")) GTEST_SKIP() << *why;
+    const auto executable = xlings::elfread::read(tk::xlings_binary());
+    ASSERT_TRUE(executable);
+    if (!executable->interpreter.empty()) GTEST_SKIP() << "a domain root runs the static release candidate";
+    auto home = tk::Home::isolated("domain-layers");
+    const auto repo = home.root() / "index";
+    const auto primary = home.root() / "primary";
+    tk::write_file(primary / "xim-indexrepos.lua", "xim_indexrepos = {}\n");
+    fs::create_directories(primary / "pkgs");
+    tk::write_file(repo / "xim-indexrepos.lua", "xim_indexrepos = {}\n");
+    tk::write_file(repo / "pkgs/d/domain-base.lua", R"LUA(
+        package = { spec='1', name='domain-base', type='subos', archs={'x86_64','aarch64'},
+            xpm={linux={['1.0.0']={}}} }
+        import('xim.libxpkg.pkginfo')
+        function install()
+            local dir = pkginfo.install_dir()
+            os.mkdir(path.join(dir, 'bin'))
+            io.writefile(path.join(dir, '.xlings.json'), '{"workspace":{},"subos_kind":"rootfs"}')
+            return true
+        end
+    )LUA");
+    Json config{{"mirror", "GLOBAL"}, {"xim", {{"index-repo", primary.generic_string()}}},
+        {"index_repos", Json::array({{{"name", "xim"}, {"url", primary.generic_string()}, {"source", "git"}},
+                                    {{"name", "fixture"}, {"url", repo.generic_string()}, {"source", "git"}}})}};
+    tk::write_file(home.dir() / ".xlings.json", config.dump());
+    fs::create_directories(home.dir() / "bin");
+    fs::copy_file(tk::xlings_binary(), home.dir() / "bin/xlings");
+    ASSERT_EQ(home.xlings({"self", "init"}).exit_code, 0);
+    for (const auto* name : {"sys-a", "sys-b"}) {
+        auto made = home.xlings({"subos", "new", name, "--rootfs", "--domain", "/xlings", "--from", "fixture:domain-base@1.0.0"});
+        ASSERT_EQ(made.exit_code, 0) << made.transcript();
+    }
+    const auto listed = home.xlings({"subos", "list"});
+    ASSERT_EQ(listed.exit_code, 0) << listed.transcript();
+    EXPECT_EQ(listed.out.find("sys-a"), std::string::npos) << listed.transcript();
+    EXPECT_NE(listed.transcript().find("2 Luban systems: luban ls"), std::string::npos) << listed.transcript();
+    const auto everything = home.xlings({"subos", "list", "--all"});
+    EXPECT_NE(everything.out.find("sys-a"), std::string::npos) << everything.transcript();
+    EXPECT_NE(everything.out.find("sys-b"), std::string::npos) << everything.transcript();
+    const auto inside = home.xlings({"subos", "exec", "sys-a", "--", "/xlings/bin/xlings", "subos", "list"});
+    ASSERT_EQ(inside.exit_code, 0) << inside.transcript();
+    EXPECT_NE(inside.out.find("sys-a"), std::string::npos) << inside.transcript();
+    EXPECT_EQ(inside.out.find("sys-b"), std::string::npos) << "a sibling is listed inside: " << inside.transcript();
+}
+
+// One default runtime per environment (part 3 §4.4): two systems of one
+// domain, one on glibc 1.0 and one on 2.0, share the one xz both use --
+// before, the second was refused ("xz is linked against glibc 1.0, which
+// subos ... still uses"). Each carries its own runtime in its generation.
+XTEST(DomainProducer, TwoSystemsOnTwoRuntimesShareOnePayload,
+      .area = "subos", .cost = tk::Cost::Medium,
+      .covers = {"RUNTIME-SCOPE", "DOMAIN-LUBAN-SYSTEM"}, .requires_ = {"linux", "bwrap", "xlings-bin"},
+      .resources = {"sandbox"}, .proves = "isolation") {
+    if constexpr (!tk::is_linux) GTEST_SKIP() << "Linux namespaces";
+    if (const auto why = tk::probe("bwrap")) GTEST_SKIP() << *why;
+    const auto executable = xlings::elfread::read(tk::xlings_binary());
+    ASSERT_TRUE(executable);
+    if (!executable->interpreter.empty()) GTEST_SKIP() << "a domain root runs the static release candidate";
+    auto home = tk::Home::isolated("domain-runtimes");
+    const auto repo = home.root() / "index";
+    const auto primary = home.root() / "primary";
+    tk::write_file(primary / "xim-indexrepos.lua", "xim_indexrepos = {}\n");
+    fs::create_directories(primary / "pkgs");
+    tk::write_file(repo / "xim-indexrepos.lua", "xim_indexrepos = {}\n");
+    // A libc in name: a loader and a libc.so.6 per version.
+    tk::write_file(repo / "pkgs/g/glibc.lua", R"LUA(
+        package = { spec='1', name='glibc', type='package', archs={'x86_64','aarch64'},
+            xpm={linux={['1.0.0']={}, ['2.0.0']={}}},
+            exports={runtime={loader='lib64/ld-linux-x86-64.so.2', abi='linux-x86_64-glibc', libdirs={'lib64'}}} }
+        import('xim.libxpkg.pkginfo')
+        import('xim.libxpkg.xvm')
+        function install()
+            local lib = path.join(pkginfo.install_dir(), 'lib64')
+            os.mkdir(lib)
+            io.writefile(path.join(lib, 'ld-linux-x86-64.so.2'), 'loader ' .. pkginfo.version())
+            io.writefile(path.join(lib, 'libc.so.6'), 'libc ' .. pkginfo.version())
+            return true
+        end
+        function config()
+            -- As the real one does: its libraries are registered.
+            xvm.add('libc.so.6', {type = 'lib', bindir = path.join(pkginfo.install_dir(), 'lib64'),
+                                  filename = 'libc.so.6'})
+            return true
+        end
+    )LUA");
+    tk::write_file(repo / "pkgs/x/xz.lua", R"LUA(
+        package = { spec='1', name='xz', type='package', archs={'x86_64','aarch64'},
+            programs={'xz'}, xpm={linux={deps={runtime={'fixture:glibc'}}, ['5.8.3']={}}} }
+        import('xim.libxpkg.pkginfo')
+        import('xim.libxpkg.xvm')
+        function install()
+            os.mkdir(path.join(pkginfo.install_dir(), 'bin'))
+            io.writefile(path.join(pkginfo.install_dir(), 'bin', 'xz'), '#!/bin/sh\necho xz\n')
+            return true
+        end
+        function config()
+            xvm.add('xz', {bindir = path.join(pkginfo.install_dir(), 'bin')})
+            return true
+        end
+    )LUA");
+    for (const auto* v : {"1.0.0", "2.0.0"})
+        tk::write_file(repo / std::format("pkgs/s/system-{}.lua", v[0]), std::format(R"LUA(
+        package = {{ spec='1', name='system-{0}', type='subos', archs={{'x86_64','aarch64'}},
+            xpm={{linux={{['1.0.0']={{}}}}}} }}
+        import('xim.libxpkg.pkginfo')
+        function install()
+            local dir = pkginfo.install_dir()
+            os.mkdir(path.join(dir, 'bin'))
+            io.writefile(path.join(dir, '.xlings.json'),
+                '{{"workspace":{{}},"subos_kind":"rootfs","packages":["fixture:glibc@{1}","fixture:xz@5.8.3"]}}')
+            return true
+        end
+    )LUA", v[0], v));
+    Json config{{"mirror", "GLOBAL"}, {"xim", {{"index-repo", primary.generic_string()}}},
+        {"index_repos", Json::array({{{"name", "xim"}, {"url", primary.generic_string()}, {"source", "git"}},
+                                    {{"name", "fixture"}, {"url", repo.generic_string()}, {"source", "git"}}})}};
+    tk::write_file(home.dir() / ".xlings.json", config.dump());
+    fs::create_directories(home.dir() / "bin");
+    fs::copy_file(tk::xlings_binary(), home.dir() / "bin/xlings");
+    ASSERT_EQ(home.xlings({"self", "init"}).exit_code, 0);
+    for (const auto* v : {"1", "2"}) {
+        auto made = home.xlings({"subos", "new", std::format("sys-{}", v), "--rootfs", "--domain", "/xlings",
+                                 "--from", std::format("fixture:system-{}@1.0.0", v), "-y"});
+        ASSERT_EQ(made.exit_code, 0) << made.transcript();
+        EXPECT_EQ(made.transcript().find("still uses"), std::string::npos) << made.transcript();
+    }
+    const auto store = home.dir() / "domains/xlings/private";
+    std::size_t xz = 0;
+    for (auto& e : fs::directory_iterator(store / "data/xpkgs/fixture-x-xz")) xz += e.is_directory() ? 1 : 0;
+    EXPECT_EQ(xz, 1u) << "one xz for both";
+    for (const auto& [name, version] : {std::pair{"sys-1", "1.0.0"}, std::pair{"sys-2", "2.0.0"}}) {
+        const auto runtime = store / "subos" / name / "root/usr/lib/xlings-abi/linux-x86_64-glibc/libc.so.6";
+        EXPECT_EQ(fs::read_symlink(runtime).generic_string(),
+                  std::format("/xlings/data/xpkgs/fixture-x-glibc/{}/lib64/libc.so.6", version)) << name;
+    }
+    const auto record = Json::parse(tk::read_file(store / "data/xpkgs/fixture-x-xz/5.8.3/.xlings-resolution.json"));
+    ASSERT_EQ(record["deps"].size(), 1u) << record.dump(2);
+    EXPECT_EQ(record["deps"][0]["source"], "scope");
+    EXPECT_EQ(record["deps"][0]["libdirs"][0], "/xlings/abi/linux-x86_64-glibc");
+}
