@@ -559,6 +559,14 @@ double Config::probe_resource_server_latency_(const std::string& server) {
         return {"_", project_subos_dir_()};
     }
     auto name = utils::get_env_or_default("XLINGS_ACTIVE_SUBOS");
+    // Inside a Luban system "this subos" is the system itself, in a sandbox and
+    // a machine alike (design 2026-10-16 L §9): the root names itself with
+    // XLINGS_ROOT_INSTANCE, which a sandbox's session and a machine's init
+    // both carry. The home's own activeSubos is its owner's choice on the host
+    // -- `default` for a system made in the owner's prefix -- and a shim that
+    // read it said "vim is not installed in this subos (default)" in a
+    // machine whose generation had just placed vim.
+    if (name.empty()) name = utils::get_env_or_default("XLINGS_ROOT_INSTANCE");
     if (name.empty()) name = globalActiveSubos_;
     return {name, paths_.homeDir / "subos" / name};
 }

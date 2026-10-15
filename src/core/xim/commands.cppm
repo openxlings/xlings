@@ -36,6 +36,9 @@ enum class CatalogAccess { LocalOnly, InstallReady, CallerBuilds };
 
 // Shared IndexManager instance (lazy-initialized)
 PackageCatalog& get_catalog(CatalogAccess access = CatalogAccess::LocalOnly);
+// The catalog every index-reading command uses: synchronised once when it is
+// not loaded; nullptr after a structured error with a hint when it cannot be.
+PackageCatalog* ensure_catalog(EventStream& stream);
 
 // What version the index says a package is, without installing anything.
 //

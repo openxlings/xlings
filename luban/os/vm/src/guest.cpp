@@ -431,14 +431,24 @@ int guest_init(int, char*[]) {
         std::string name;
         std::getline(in, name);
         // The edition's placeholder is no name: the system's own is (part 3 §6.2).
-        if ((name.empty() || name == "luban") && params.contains("luban.name")) name = params.at("luban.name");
+        // It is written into /etc/hostname too: the environment's own init
+        // sets the name again from that file, and a placeholder left there
+        // turned `pcore` into `luban` a moment after the first prompt.
+        if ((name.empty() || name == "luban") && params.contains("luban.name")) {
+            name = params.at("luban.name");
+            std::ofstream("/etc/hostname", std::ios::trunc) << name << '\n';
+        }
         if (!name.empty()) (void)platform::set_hostname(name);
     }
     if (platform::fork_process() == 0) agent_();
     std::error_code ec;
     for (const auto* init : {"/sbin/init", "/usr/sbin/init", "/usr/bin/init", "/bin/init"}) {
         if (fs::symlink_status(init, ec).type() == fs::file_type::not_found) continue;
-        platform::exec_path({init}, {{"PATH", "/usr/sbin:/usr/bin:/sbin:/bin"}, {"TERM", "linux"}});
+        // Every process of the machine -- its services, its desktop session --
+        // knows which system it is (L §9), not only the agent's sessions.
+        std::map<std::string, std::string> initEnv{{"PATH", "/usr/sbin:/usr/bin:/sbin:/bin"}, {"TERM", "linux"}};
+        if (params.contains("luban.name")) initEnv["XLINGS_ROOT_INSTANCE"] = params.at("luban.name");
+        platform::exec_path({init}, initEnv);
     }
     console_("the environment has no init; a shell on the console instead");
     platform::exec_path({"/bin/sh"}, {{"PATH", "/usr/sbin:/usr/bin:/sbin:/bin"}});

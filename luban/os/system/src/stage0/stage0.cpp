@@ -239,7 +239,9 @@ int run(int argc, char* argv[]) {
                         rootfs::current(dir).value_or(0)));
         const std::map<std::string, std::string> env{
             {"PATH", "/usr/local/sbin:/usr/local/bin:/usr/bin:/bin"}, {"HOME", "/root"},
-            {"TERM", "linux"}, {"XLINGS_HOME", home.home.string()}};
+            {"TERM", "linux"}, {"XLINGS_HOME", home.home.string()},
+            // Which system this is, for every process the init starts (L §9).
+            {"XLINGS_ROOT_INSTANCE", candidate.subos}};
         const int error = platform::exec_path({(*init)->string()}, env);
         say(std::format("{} did not start: {}; trying the next entry", (*init)->string(),
                         platform::error_text(error)));

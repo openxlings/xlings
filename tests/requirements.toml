@@ -35,6 +35,10 @@ status = "required"
 text = "a pty with nothing typed exposes a program that waits for input"
 status = "required"
 
+[LUBAN-CURRENT-SYSTEM]
+text = "inside a Luban system, in a sandbox and a machine alike, the current subos is the system itself; an explicit XLINGS_ACTIVE_SUBOS still wins"
+status = "required"
+
 [LUBAN-EDITION-MIN-CLIENT]
 text = "an edition whose manifest names a min_client newer than this xlings is refused before anything is fetched, with xlings self update"
 status = "required"

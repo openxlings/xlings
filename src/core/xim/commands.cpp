@@ -209,6 +209,30 @@ PackageCatalog& get_catalog(CatalogAccess access) {
     return mgr;
 }
 
+// THE ONE ANSWER TO "IS THE INDEX HERE" (design 2026-10-16 L §7). Every
+// command that reads the index asks here: a catalog that is not loaded is
+// synchronised once, and one that still cannot be read is a structured error
+// with what to do -- never a bare log line (which interface mode suppresses,
+// #374) and never one command syncing while another only complains. A Luban
+// system's first `xlings list` used to answer "package index not available"
+// while its first `xlings install` fetched the index.
+PackageCatalog* ensure_catalog(EventStream& stream) {
+    auto& catalog = get_catalog(CatalogAccess::InstallReady);
+    if (catalog.is_loaded()) return &catalog;
+    log::info("package index not available, updating...");
+    sync_all_repos(true);
+    auto rebuilt = catalog.rebuild();
+    if (rebuilt && catalog.is_loaded()) return &catalog;
+    stream.emit(ErrorEvent{
+        .code = ErrorCode::NotFound,
+        .message = std::string("package index not available")
+            + (rebuilt ? std::string{} : ": " + rebuilt.error()),
+        .recoverable = true,
+        .hint = "run `xlings update`, or check index_repos in .xlings.json and the network or proxy",
+    });
+    return nullptr;
+}
+
 std::string detect_platform() {
     return std::string(xlings::platform::build_os());
 }
@@ -452,26 +476,9 @@ int install_(std::span<const std::string> targets, bool yes, bool noDeps,
     // downloading and extracting outside it -- is a real change to what two
     // concurrent installs may observe and is deliberately NOT done here; see
     // .agents/docs/2026-08-14-four-perf-and-output-defects-plan.md §2 (L2).
-    auto& catalog = get_catalog(CatalogAccess::InstallReady);
-    if (!catalog.is_loaded()) {
-        log::info("package index not available, updating...");
-        sync_all_repos(true);
-        auto rebuildResult = catalog.rebuild();
-        if (!rebuildResult || !catalog.is_loaded()) {
-            // #374: emit a structured error on the EventStream instead of a
-            // bare log::error (which interface mode's tui_mode suppresses) so
-            // programmatic consumers see WHY the exit is non-zero rather than
-            // a silent {"exitCode":1,"kind":"result"} with an empty stream.
-            stream.emit(ErrorEvent{
-                .code = ErrorCode::NotFound,
-                .message = std::string("package index not available")
-                    + (rebuildResult ? std::string{} : ": " + rebuildResult.error()),
-                .recoverable = true,
-                .hint = "run `xlings update`, or check index_repos in .xlings.json",
-            });
-            return 1;
-        }
-    }
+    auto* loaded = ensure_catalog(stream);
+    if (!loaded) return 1;
+    auto& catalog = *loaded;
 
     // #374: surface any index repos skipped during the best-effort catalog
     // build so a degraded multi-repo config is visible to interface consumers
@@ -2314,11 +2321,9 @@ int cmd_remove_older_than(const std::string& name, const std::string& threshold,
         return 1;
     }
     Config::reload_state();
-    auto& catalog = get_catalog();
-    if (!catalog.is_loaded()) {
-        log::error("package index not available");
-        return 1;
-    }
+    auto* loaded = ensure_catalog(stream);
+    if (!loaded) return 1;
+    auto& catalog = *loaded;
     const auto bareName = name.substr(name.rfind(':') + 1);
 
     // The candidates: every registered version strictly older than the bound.
@@ -2514,11 +2519,9 @@ int cmd_remove_impl_(const std::string& target, bool yes, EventStream& stream,
     }
     Config::reload_state();
 
-    auto& catalog = get_catalog();
-    if (!catalog.is_loaded()) {
-        log::error("package index not available");
-        return 1;
-    }
+    auto* loaded = ensure_catalog(stream);
+    if (!loaded) return 1;
+    auto& catalog = *loaded;
 
     auto stripVer = [](const std::string& s) {
         auto at = s.find('@');
@@ -2633,11 +2636,9 @@ ScopedSubosOverride::~ScopedSubosOverride() {
 }
 
 int cmd_search(const std::string& keyword, EventStream& stream) {
-    auto& catalog = get_catalog();
-    if (!catalog.is_loaded()) {
-        log::error("package index not available");
-        return 1;
-    }
+    auto* loaded = ensure_catalog(stream);
+    if (!loaded) return 1;
+    auto& catalog = *loaded;
 
     auto results = catalog.search(keyword, detect_platform());
     if (results.empty()) {
@@ -2660,11 +2661,9 @@ int cmd_search(const std::string& keyword, EventStream& stream) {
 }
 
 int cmd_list(const std::string& filter, EventStream& stream, bool all) {
-    auto& catalog = get_catalog();
-    if (!catalog.is_loaded()) {
-        log::error("package index not available");
-        return 1;
-    }
+    auto* loaded = ensure_catalog(stream);
+    if (!loaded) return 1;
+    auto& catalog = *loaded;
 
     const auto inventoryFilter = filter.empty()
         ? std::optional<std::string_view>{}
@@ -2795,11 +2794,9 @@ int cmd_list(const std::string& filter, EventStream& stream, bool all) {
 }
 
 int cmd_info(const std::string& target, EventStream& stream, bool allVersions) {
-    auto& catalog = get_catalog();
-    if (!catalog.is_loaded()) {
-        log::error("package index not available");
-        return 1;
-    }
+    auto* loaded = ensure_catalog(stream);
+    if (!loaded) return 1;
+    auto& catalog = *loaded;
 
     const auto infoPlatform = detect_platform();
     auto match = catalog.resolve_target(target, infoPlatform);
