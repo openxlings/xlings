@@ -164,7 +164,7 @@ jobs:
               sudo sysctl -q -w kernel.apparmor_restrict_unprivileged_userns=0 || true
               docker run --rm --security-opt seccomp=unconfined --security-opt apparmor=unconfined \
                 --security-opt systempaths=unconfined --cap-add SYS_ADMIN \
-                -v "$PWD:/w" -w /w "$IMAGE" sh -c "command -v bash >/dev/null || apk add -q bash; bash -c \"$SETUP && bash xlings/tests/host-matrix/run.sh --tarball /w/$tar --evidence /w/evidence ${idx[*]:+--index /w/index}\"" ;;
+                -v "$PWD:/w" -w /w "$IMAGE" sh -c "command -v bash >/dev/null || apk add -q bash; bash -c \"$SETUP && bash xlings/tests/host-matrix/run.sh --tarball /w/$tar --evidence /w/evidence ${idx[*]:+--index /w/index}\"" ;;  # host-dep-ok: a bare distribution image (alpine) has no bash to run the setup
             vm)
               # qemu from the index (tools/ci/xlings_tools.sh); the VM's seed is
               # served over its network and its disk is a snapshot: no
