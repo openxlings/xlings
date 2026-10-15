@@ -776,6 +776,9 @@ std::expected<void, std::string> lay_out(const fs::path& root, const fs::path& u
         return std::unexpected(std::format("{} is a directory, not a projection; it is left alone",
                                            usr.string()));
     }
+    // A linked /usr says what it presents itself; a record of a mount it is
+    // not (copied with a machine's /etc) would only mislead a reader.
+    if (form == UsrForm::Link) fs::remove(root / std::string(kUsrRecord), ec);
 
     for (auto [name, target] : {std::pair{"bin", "usr/bin"}, std::pair{"sbin", "usr/bin"},
                                 std::pair{"lib", "usr/lib"}, std::pair{"lib64", "usr/lib64"}}) {

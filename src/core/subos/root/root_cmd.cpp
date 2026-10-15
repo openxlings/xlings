@@ -1808,10 +1808,6 @@ int run_export_(int argc, char* argv[], EventStream& stream, const UsageError& u
     // directory is started by another init (WSL, a container) and keeps the
     // link (design 2026-10-16 L §6.2).
     const auto usrForm = (!tarball.empty() || !rootfs_dir.empty()) ? rf::UsrForm::Link : rf::UsrForm::Mount;
-    if (auto l = rf::lay_out(stage, rf::usr_of(home / "subos" / "default"), home, usrForm); !l) {
-        error_(stream, l.error(), {}, ErrorCode::Internal);
-        return 1;
-    }
     {
         const auto tree = subos_root::tree_of(home, name);
         // Machine state: /etc always (factory links become the files they
@@ -1827,6 +1823,12 @@ int run_export_(int argc, char* argv[], EventStream& stream, const UsageError& u
                     return 1;
                 }
             }
+        }
+        // After the machine's /etc: its record of what its /usr presents is
+        // this host's, and the image's is the image's own default.
+        if (auto l = rf::lay_out(stage, rf::usr_of(home / "subos" / "default"), home, usrForm); !l) {
+            error_(stream, l.error(), {}, ErrorCode::Internal);
+            return 1;
         }
         fs::create_directories(stage / "etc" / "xlings", ec);
         if (!check_io()) return 1;
