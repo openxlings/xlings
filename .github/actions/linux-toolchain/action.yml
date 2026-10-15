@@ -19,6 +19,9 @@ inputs:
   room:
     description: Remove the image's SDKs no job here uses (.NET, Android, GHC, CodeQL) first.
     default: 'false'
+  save:
+    description: Save the mcpp cache at the end (the job that makes what it holds); 'false' only restores.
+    default: 'true'
 runs:
   using: composite
   steps:
@@ -78,8 +81,13 @@ runs:
         restore-keys: |
           xlings-deps-${{ runner.os }}-
 
+    # Saved by the job that makes what it holds, under its own prefix: jobs
+    # sharing one key saved whichever finished first (the release job's, with
+    # none of the desktop's packages), and the build job downloaded and built
+    # them again every round. A lane only restores.
     - name: Cache mcpp sandbox and project packages
       id: mcpp-cache
+      if: inputs.save == 'true'
       uses: actions/cache@v4
       with:
         path: |
@@ -117,7 +125,22 @@ runs:
         # though it was not what caused this.
         key: ${{ inputs.mcpp-cache }}${{ runner.os }}-${{ hashFiles('mcpp.toml', '.xlings.json') }}-${{ env.BOOTSTRAP_XLINGS_VERSION }}
         restore-keys: |
-          mcpp-v4-ci-linux-${{ runner.os }}-
+          ${{ inputs.mcpp-cache }}${{ runner.os }}-
+    - name: Restore mcpp sandbox and project packages
+      id: mcpp-restore
+      if: inputs.save != 'true'
+      uses: actions/cache/restore@v4
+      with:
+        path: |
+          ~/.mcpp
+          !~/.mcpp/bmi
+          !~/.mcpp/build-cache
+          .mcpp
+          !.mcpp/bmi
+          !.mcpp/build-cache
+        key: ${{ inputs.mcpp-cache }}${{ runner.os }}-${{ hashFiles('mcpp.toml', '.xlings.json') }}-${{ env.BOOTSTRAP_XLINGS_VERSION }}
+        restore-keys: |
+          ${{ inputs.mcpp-cache }}${{ runner.os }}-
     # An inexact restore (the `restore-keys` fallback) brings BMIs built
     # under a different dependency set. Mixing them with anything rebuilt
     # here fails as `import 'std' has CRC mismatch` — which reads like a
@@ -152,7 +175,7 @@ runs:
       shell: bash
       run: |
         set +e
-        echo "cache-hit: ${{ steps.mcpp-cache.outputs.cache-hit }}"
+        echo "cache-hit: ${{ steps.mcpp-cache.outputs.cache-hit }}${{ steps.mcpp-restore.outputs.cache-hit }}"
         for d in ~/.mcpp/bmi .mcpp/bmi ~/.mcpp/build-cache .mcpp/build-cache; do
           if [ -d "$d" ]; then
             echo "  $d: $(du -sh "$d" 2>/dev/null | cut -f1), $(find "$d" -name '*.gcm' 2>/dev/null | wc -l) .gcm"
