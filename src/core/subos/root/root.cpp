@@ -277,6 +277,11 @@ refresh(const fs::path& home, std::string_view name, const fs::path& subos_dir,
         if (tree != "/") {
             if (auto laid = rf::lay_out(tree, rf::usr_of(subos_dir), home); !laid)
                 return failed(laid.error());
+        } else if (out.changed) {
+            // The running machine's /usr is the generation mounted: the new one
+            // is mounted over it, so what starts from now on sees it.
+            if (auto mounted = rf::mount_usr("/", subos_dir); !mounted)
+                return failed("its /usr: " + mounted.error());
         }
         const auto usr = rf::usr_of(subos_dir);
         auto etc = xlings::subos::root_etc::fill_machine_etc(tree / "etc", subos_dir);

@@ -231,9 +231,9 @@ std::expected<Environment, std::string> describe_(const Context& c, std::string_
         }
     }
     e.running = xlings::subos::session::find(view, name).has_value();
-    if (auto root = e.kind == "root" ? root_of(c.home, name) : std::nullopt) {
+    if (auto usr = e.kind == "root" ? usr_of(c.home, name) : std::nullopt) {
         std::error_code ec;
-        for (const auto& dir : {*root / "usr" / "local" / "share" / "wayland-sessions", *root / "usr" / "share" / "wayland-sessions"}) {
+        for (const auto& dir : {*usr / "local" / "share" / "wayland-sessions", *usr / "share" / "wayland-sessions"}) {
             std::vector<fs::path> entries;
             for (fs::directory_iterator it(xlings::subos::physical(at, dir), ec), end; !ec && it != end; it.increment(ec))
                 entries.push_back(it->path());

@@ -151,8 +151,31 @@ std::expected<std::vector<fs::path>, std::string> linked_targets(const fs::path&
 // machine, because the home is at the same path in all three). `home` is
 // the home's logical path; its directory is created as a mount point.
 // Existing files are never replaced, except a `usr` link pointing elsewhere.
+// How a root's /usr is: a mount point that the presentation mounts the
+// generation on (a sandbox, a machine, stage-0), or a link for an init that
+// mounts nothing (an exported tar, WSL).
+enum class UsrForm { Mount, Link };
+// The record of what a mounted /usr is the generation of (the link's target).
+inline constexpr std::string_view kUsrRecord = "etc/xlings/usr";
 std::expected<void, std::string> lay_out(const fs::path& root, const fs::path& usr_target,
-                                         const fs::path& home);
+                                         const fs::path& home, UsrForm form = UsrForm::Mount);
+// What /usr presents: the link's target, or the record of a mount point.
+std::optional<fs::path> usr_target_of(const fs::path& root);
+// Where a root's /usr can be read from here: the root's own /usr when it is
+// a link or mounted (a running root), else, for a tree on this host, its
+// instance's current generation (<instance>/root/usr).
+fs::path presented_usr(const fs::path& root);
+// An absolute path of the root (/usr/..., /bin/..., /lib/..., /etc/...) as it
+// can be read from here.
+fs::path in_root(const fs::path& root, const fs::path& absolute);
+// Mounts `subos`'s current generation on <root>/usr and its directories
+// inside it, shallowest first: what a machine's agent and stage-0 do before
+// the system's init, and what a switch on a running machine does again (a new
+// mount over the old: what runs keeps its files, what starts sees the new).
+std::expected<void, std::string> mount_usr(const fs::path& root, const fs::path& subos);
+// A generation's directories presented as bind mounts, {rel, target},
+// shallowest first; empty for a generation from before them.
+std::vector<std::pair<fs::path, fs::path>> mounts_of(const fs::path& generationDir);
 
 // The SubOS a root's /usr points at, read from the link: the host of a
 // machine in deployment R. nullopt when /usr is not a projection.

@@ -221,6 +221,10 @@ int run(int argc, char* argv[]) {
             say(laid.error());
             continue;
         }
+        if (auto mounted = rootfs::mount_usr("/", dir); !mounted) {
+            say(mounted.error());
+            continue;
+        }
         mark("lay_out");
         if (auto etc = xlings::subos::root_etc::fill_machine_etc("/etc", dir); !etc) recover("machine /etc: " + etc.error());
         if (auto users = xlings::subos::root_etc::apply_sysusers("/etc", rootfs::usr_of(dir)); !users) recover("machine /etc: " + users.error());

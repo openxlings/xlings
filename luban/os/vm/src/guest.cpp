@@ -4,6 +4,7 @@ import std;
 import xlings.libs.json;
 import xlings.platform;
 import xlings.subos.root_etc;
+import xlings.subos.rootfs;
 import luban.vm.protocol;
 import opensal.wlr;
 
@@ -416,8 +417,17 @@ int guest_init(int, char*[]) {
         if (!platform::move_mount(at, fs::path("/newroot") / fs::path(at).relative_path()))
             give_up_(std::format("cannot move {} into the environment", at));
     if (!platform::switch_root("/newroot")) give_up_("cannot make the environment /");
+    // Its /usr is the generation, mounted, not a link into the store (design
+    // 2026-10-16 L §6.2): a root from before is laid out so once, here.
+    if (!home.empty() && params.contains("luban.name")) {
+        const auto subos = home / "subos" / params.at("luban.name");
+        if (auto laid = xlings::subos::rootfs::lay_out("/", xlings::subos::rootfs::usr_of(subos), home); !laid)
+            console_("its /usr: " + laid.error());
+        else if (auto mounted = xlings::subos::rootfs::mount_usr("/", subos); !mounted)
+            console_("its /usr: " + mounted.error());
+    }
     // Its own default runtime is the home's runtime indirection here (part 3
-    // §4): what a payload bound through <home>/abi runs on.
+    // §4), read through the /usr just mounted: what a payload bound through <home>/abi runs on.
     if (std::error_code rec; fs::is_directory("/usr/lib/xlings-abi", rec) && fs::exists(home / "abi", rec)
         && !platform::bind_mount("/usr/lib/xlings-abi", home / "abi"))
         console_("cannot place its runtime at " + (home / "abi").string());

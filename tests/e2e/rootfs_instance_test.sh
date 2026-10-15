@@ -33,7 +33,10 @@ H="$RH"
 log "1. luban-tiny"
 rootfs_new tiny subos:luban-tiny "$RUNTIME_DIR/new-tiny.log" || fail "subos new --rootfs --from subos:luban-tiny"
 S="$H/subos/tiny"
-[[ "$(readlink "$S/rootfs/usr")" == "$S/root/usr" ]] || fail "rootfs/usr is $(readlink "$S/rootfs/usr")"
+# /usr is the mount point the presentation mounts the generation on (design
+# 2026-10-16 L §6.2); the generation it presents is recorded beside /etc.
+[[ -d "$S/rootfs/usr" && ! -L "$S/rootfs/usr" ]] || fail "rootfs/usr is not a directory"
+[[ "$(cat "$S/rootfs/etc/xlings/usr")" == "$S/root/usr" ]] || fail "rootfs/usr presents $(cat "$S/rootfs/etc/xlings/usr")"
 [[ "$(readlink "$S/root")" == root.gen/* ]] || fail "the pointer is $(readlink "$S/root")"
 for l in bin:usr/bin sbin:usr/bin lib:usr/lib lib64:usr/lib64; do
   [[ "$(readlink "$S/rootfs/${l%%:*}")" == "${l#*:}" ]] || fail "/${l%%:*} is not -> ${l#*:}"

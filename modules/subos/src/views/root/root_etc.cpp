@@ -219,7 +219,9 @@ std::string login_shell(const fs::path& root, std::string_view user) {
         }
         if (f.size() < 7 || f[0] != user || f[6].empty() || f[6].front() != '/') continue;
         std::error_code ec;
-        if (fs::symlink_status(root / fs::path(std::string(f[6])).relative_path(), ec).type() != fs::file_type::not_found)
+        // Through the root's /usr as it is presented: a tree's /usr is a mount
+        // point here, and a link from before named a path this host may not have.
+        if (fs::symlink_status(rootfs::in_root(root, fs::path(std::string(f[6]))), ec).type() != fs::file_type::not_found)
             return std::string(f[6]);
         break;  // named but not there (a package removed): the fallback below
     }

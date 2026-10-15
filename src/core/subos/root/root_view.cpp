@@ -45,6 +45,10 @@ class PrivateView final : public View {
     std::map<fs::path, platform::FileIdentity> sourceIdentities_;
     std::unique_ptr<store_closure::Inputs> identity_;
     std::vector<std::shared_ptr<PrivateView>> retained_;
+    // Bindings onto the root itself: its /usr and the generation's
+    // directories under it (design 2026-10-16 L §6.2). Their mount points are
+    // the root's and the generation's own, not prepared in a skeleton.
+    std::set<fs::path> rootDestinations_;
 
     bool skeleton_binding(const Binding& binding) const {
         const auto found = skeletons_.find(binding.destination);
@@ -104,6 +108,19 @@ class PrivateView final : public View {
         sourceIdentities_[destination] = *identity;
     }
 
+    void root_bind(fs::path source, const fs::path& destination) {
+        std::error_code ec;
+        if (fs::is_symlink(source, ec)) source = fs::canonical(source, ec);
+        if (ec || !fs::is_directory(fs::symlink_status(source, ec)))
+            throw std::runtime_error("root view source is not a directory: " + source.string());
+        const auto identity = platform::file_identity(source);
+        if (!identity)
+            throw std::runtime_error("cannot inspect root source file identity: " + source.string());
+        bindings_.push_back({source, destination});
+        sourceIdentities_[destination] = *identity;
+        rootDestinations_.insert(destination);
+    }
+
     void metadata(const fs::path& home, const fs::path& destination, const json& document) {
         const auto source = stage_ / "metadata" / std::to_string(bindings_.size());
         fs::create_directories(source.parent_path());
@@ -149,9 +166,24 @@ class PrivateView final : public View {
         try {
             candidate->build(*inputs, *closure);
             previous = fs::read_symlink(instance_ / "root");
+            // A new generation replaces /usr; what was mounted inside the old
+            // one goes with it and is mounted again inside the new one.
+            const auto source_of = [](const std::vector<Binding>& from, const fs::path& destination) {
+                const auto found = std::ranges::find(from, destination, &Binding::destination);
+                return found == from.end() ? fs::path{} : found->source;
+            };
+            const bool usrChanged = source_of(bindings_, "/usr") != source_of(candidate->bindings_, "/usr");
+            const auto under_usr = [](const fs::path& destination) {
+                return destination.native().starts_with("/usr/");
+            };
             for (const auto& next : candidate->bindings_) {
                 if (candidate->skeleton_binding(next))
                     continue;
+                if (usrChanged && candidate->rootDestinations_.contains(next.destination)
+                    && under_usr(next.destination)) {
+                    additions.push_back(next);
+                    continue;
+                }
                 const auto old =
                     std::ranges::find(bindings_, next.destination, &Binding::destination);
                 const auto priorIdentity = sourceIdentities_.find(next.destination);
@@ -159,16 +191,18 @@ class PrivateView final : public View {
                     priorIdentity != sourceIdentities_.end() &&
                     priorIdentity->second == candidate->sourceIdentities_.at(next.destination))
                     continue;
-                const auto home = guest_home(next.destination);
-                std::error_code ec;
-                const auto status = fs::symlink_status(next.source, ec);
-                if (ec)
-                    throw std::runtime_error("cannot inspect refreshed root source: " +
-                                             ec.message());
-                const auto hostTarget =
-                    skeletons_.at(home) / next.destination.lexically_relative(home);
-                if (!fs::exists(fs::symlink_status(hostTarget, ec)))
-                    mountpoint(home, next.destination, fs::is_directory(status));
+                if (!candidate->rootDestinations_.contains(next.destination)) {
+                    const auto home = guest_home(next.destination);
+                    std::error_code ec;
+                    const auto status = fs::symlink_status(next.source, ec);
+                    if (ec)
+                        throw std::runtime_error("cannot inspect refreshed root source: " +
+                                                 ec.message());
+                    const auto hostTarget =
+                        skeletons_.at(home) / next.destination.lexically_relative(home);
+                    if (!fs::exists(fs::symlink_status(hostTarget, ec)))
+                        mountpoint(home, next.destination, fs::is_directory(status));
+                }
                 auto replacement = next;
                 replacement.replace = old != bindings_.end();
                 additions.push_back(std::move(replacement));
@@ -176,8 +210,9 @@ class PrivateView final : public View {
             for (const auto& old : bindings_) {
                 if (skeleton_binding(old))
                     continue;
-                if (std::ranges::find(candidate->bindings_, old.destination,
-                                      &Binding::destination) == candidate->bindings_.end())
+                if ((usrChanged && rootDestinations_.contains(old.destination) && under_usr(old.destination))
+                    || std::ranges::find(candidate->bindings_, old.destination,
+                                         &Binding::destination) == candidate->bindings_.end())
                     removals.push_back(old.destination);
             }
             const auto deepestFirst = [](const fs::path& a, const fs::path& b) {
@@ -203,6 +238,7 @@ class PrivateView final : public View {
             }
             bindings_.swap(current);
             sourceIdentities_.swap(candidate->sourceIdentities_);
+            rootDestinations_.swap(candidate->rootDestinations_);
             for (auto& old : retained_)
                 old->close();
             retained_.clear();
@@ -355,6 +391,12 @@ class PrivateView final : public View {
         const auto pointer = fs::path("root.gen") / std::to_string(closure.generation);
         fs::create_directory_symlink(pointer, instance_ / "root");
         bind(guestHome, closure.generationUsr, guestInstance / pointer / "usr");
+        // The root's /usr is the generation, mounted (not a link into the
+        // store), and so is each of its directories (mounts.tsv): inside, a
+        // path is the path a person typed.
+        root_bind(closure.generationUsr, "/usr");
+        for (const auto& [rel, target] : subos::rootfs::mounts_of(closure.generationUsr.parent_path()))
+            root_bind(target, fs::path("/") / rel);
         if (inputs.scope != "default")
             fs::create_directory_symlink(inputs.scope, skeletons_.at(guestHome) / "subos/default");
         fs::create_directory_symlink(inputs.scope, skeletons_.at(guestHome) / "subos/current");

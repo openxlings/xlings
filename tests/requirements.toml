@@ -35,6 +35,14 @@ status = "required"
 text = "a pty with nothing typed exposes a program that waits for input"
 status = "required"
 
+[LUBAN-FHS-PATHS]
+text = "inside a Luban system every directory a person can cd into has its FHS path: /usr is the generation mounted, a generation's directories are mount points, an exported tar keeps the link"
+status = "required"
+
+[LUBAN-SHARE-PROJECTION]
+text = "a payload's share/ reaches /usr/share: directories many packages write into are merged file by file, one package's directory is claimed whole, and a link never has a link above or below it"
+status = "required"
+
 [LUBAN-CURRENT-SYSTEM]
 text = "inside a Luban system, in a sandbox and a machine alike, the current subos is the system itself; an explicit XLINGS_ACTIVE_SUBOS still wins"
 status = "required"

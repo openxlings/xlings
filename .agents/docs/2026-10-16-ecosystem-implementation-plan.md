@@ -32,10 +32,10 @@ C 依赖 X-E 的接口与 X 的发布。
 |---|---|---|---|---|
 | X-A1 | X | `platform::terminal_relay`；会话主命令即第一个加入者；加入会话改用它 | L §4 | 单元：raw/恢复、窗口大小、断开结束、字节透明；e2e：pty 中 `jobs`、fish |
 | X-A2 | X | broker：不加 `-y`、不设非交互、监视客户端、走中继 | L §4 | e2e：install 确认与 `n`；下载中 Ctrl-C |
-| X-A3 | X | 域内交互命令与 carrier guest 走中继 | L §4 | e2e：域内 upgrade 在终端 |
+| X-A3 | X | 域内交互命令保留 `--new-session`（L 修订 5），carrier guest 走中继 | L §4 | e2e：域内 upgrade 在终端 |
 | X-A4 | X | `domain_producer::run_relayed`；创建也转发事件 | L §5 | e2e：`luban new --json` 有 progress |
-| X-B1 | X | `/usr` 挂载点；generation 目录条目 `mounts.tsv`；换代 `MS_MOVE` | L §6.2 | 单元：generation 结构；e2e：`cd /usr/bin; pwd -P` |
-| X-B2 | X | session-init 能力保留与丢弃 | L §6.3 | e2e：用户进程 CapEff 为 0 |
+| X-B1 | X | `/usr` 挂载点；generation 目录条目 `mounts.tsv`；换代经根视图刷新 | L §6.2 | 单元：generation 结构；e2e：`cd /usr/bin; pwd -P` |
+| X-B2 | X | 不保留能力（L 修订 5），无代码 | L §6.3 | — |
 | X-B3 | X | payload `share` 投影；`XDG_DATA_DIRS` | L §6.4 | 单元：合并与冲突；e2e：desktop 有 applications |
 | X-C1 | X | `ensure_catalog`；建系统带入 index 快照 | L §7 | e2e：系统内 list/info/search |
 | X-C2 | X | 系统内普通用户的用户层 home | L §8 | e2e：普通用户 install 无需 root |

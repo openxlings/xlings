@@ -1051,9 +1051,26 @@ bool same_bytes_(const fs::path& a, const fs::path& b) {
     return true;
 }
 
+// What a directory of the image has mounted on it when the image runs
+// (design 2026-10-16 L §6.2): /usr the generation recorded for it, and a
+// generation's directory entry the directory its mounts.tsv names. Nothing
+// for any other path.
+std::optional<fs::path> mounted_at_(const fs::path& stage, const fs::path& inside) {
+    if (inside == "/usr") return rf::usr_target_of(stage);
+    for (auto generation = inside.parent_path(); generation.has_relative_path(); generation = generation.parent_path()) {
+        if (generation.parent_path().filename() != rf::kGenerations) continue;
+        const auto rel = inside.lexically_relative(generation);
+        for (const auto& [entry, target] : rf::mounts_of(stage / generation.relative_path()))
+            if (entry == rel) return target;
+        return std::nullopt;
+    }
+    return std::nullopt;
+}
+
 // A path of the image as the image sees it, resolved component by component
 // through the image's own links (an absolute link names a path of the
-// image, not of this machine) -- what the kernel does inside a chroot.
+// image, not of this machine) and its mounts -- what the kernel does inside
+// a chroot of the running image.
 fs::path inside_stage_(const fs::path& stage, const fs::path& inside, int& hops) {
     fs::path current = "/";
     std::error_code ec;
@@ -1066,6 +1083,10 @@ fs::path inside_stage_(const fs::path& stage, const fs::path& inside, int& hops)
             const auto target = fs::read_symlink(here, ec);
             if (ec) return next;
             current = inside_stage_(stage, (target.is_absolute() ? target : current / target).lexically_normal(), hops);
+        } else if (const auto mounted = fs::is_directory(here, ec) && fs::is_empty(here, ec) ? mounted_at_(stage, next)
+                                                                                            : std::nullopt;
+                   mounted && mounted->is_absolute() && ++hops < 40) {
+            current = inside_stage_(stage, mounted->lexically_normal(), hops);
         } else {
             current = next;
         }
@@ -1744,8 +1765,12 @@ int run_export_(int argc, char* argv[], EventStream& stream, const UsageError& u
     }
     ec.clear();
 
-    // The root around it.
-    if (auto l = rf::lay_out(stage, rf::usr_of(home / "subos" / "default"), home); !l) {
+    // The root around it. An image that boots through stage-0 (a drive, an
+    // ISO, a disk) has /usr as the mount point stage-0 mounts; a tarball or a
+    // directory is started by another init (WSL, a container) and keeps the
+    // link (design 2026-10-16 L §6.2).
+    const auto usrForm = (!tarball.empty() || !rootfs_dir.empty()) ? rf::UsrForm::Link : rf::UsrForm::Mount;
+    if (auto l = rf::lay_out(stage, rf::usr_of(home / "subos" / "default"), home, usrForm); !l) {
         error_(stream, l.error(), {}, ErrorCode::Internal);
         return 1;
     }

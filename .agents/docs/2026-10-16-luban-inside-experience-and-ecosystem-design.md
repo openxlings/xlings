@@ -1,11 +1,18 @@
 # Luban OS 进入之后与 Luban OS 应用：终端、路径、index、用户、自检、测试矩阵、应用的视觉与交互；aarch64；与 mcpp 的生态联动
 
-日期：2026-10-16　状态：修订 4，待 review　缘起：在 `hello-luban`（core）、`hello-luban-d`（desktop，machine）与 Luban OS 应用中的实测；
+日期：2026-10-16　状态：修订 5，实现中　缘起：在 `hello-luban`（core）、`hello-luban-d`（desktop，machine）与 Luban OS 应用中的实测；
 openxlings/xlings#652、#657、#672；mcpp 的设计
 `mcpp-community/mcpp:.agents/docs/2026-10-16-xlings-provider-port-and-shared-store-design.md`（下称 **mcpp 设计**）；
 probe PR #674 的六轮运行（38791353147、38793084640、38794275497、38798915957、38799653022、38801097759）。
 
 范围：xlings（含 luban 与 Luban OS 应用）一个 PR，xim-pkgindex 一个 PR，mcpp 一个 PR（mcpp 设计），按 §19 的顺序发布。不分阶段。
+
+**修订 5 的变化（实现中的修正）：**
+- §6.2 第 3 条与 §6.3：会话的根视图已由 supervisor 以 `root_mount::update` 在线刷新（持有命名空间描述符，在父命名空间中操作）。
+  `/usr` 与目录条目作为根视图的绑定参与同一刷新，session-init 不需要任何能力；D5 改为"不保留能力"，原安全代价随之消失。
+- §4.1 的域内交互命令不改：`--new-session` 是 `TIOCSTI` 防护的一部分，Ctrl-C 由外层随父进程退出处理。
+- §6.4 的规则按实现写定：认领互斥（一个链接之上与之下不再有链接）；`XDG_DATA_DIRS` 未设时各程序按规范取 `/usr/local/share:/usr/share`，不另设。
+- §6.2 第 1 条：`/usr` 的形态记录于根的 `etc/xlings/usr`；tar 与目录导出由其他 init 启动，保留链接形态。
 
 **修订 4 的变化（probe 第 4–6 轮）：**
 - 终端"字太小、横向间距太大"实测确认（A6）：在显示缩放 > 1 时，单元尺寸按缩放计算而字形按未缩放的字号绘制；缩放 2 时字形仍约 9–11 px 高，行距由 16 变为 30。
@@ -118,7 +125,7 @@ probe PR #674 的六轮运行（38791353147、38793084640、38794275497、387989
 | 会话主命令 | 继承调用者终端（`session.cpp:1152-1161`） |
 | 加入会话 | ✅ 沙箱内 pty（`session.cpp:1240-1262`、`:968-1000`） |
 | broker | `setsid`、强制 `-y`、`XLINGS_NON_INTERACTIVE=1`、不转发信号、不监视客户端 |
-| 域内交互命令 | `bwrap --new-session`（`domain_producer.cpp:225`） |
+| 域内交互命令 | `bwrap --new-session`（`domain_producer.cpp:225`）；保留（`TIOCSTI` 防护），不改 |
 | carrier guest | 各自 `new_session`（`luban/os/vm/src/guest.cpp:112,190,274`） |
 
 ### 4.2 设计
@@ -129,7 +136,7 @@ probe PR #674 的六轮运行（38791353147、38793084640、38794275497、387989
 - **调用端**：stdin 是终端时置 raw，双向转发；`SIGWINCH` 转为窗口大小；退出时恢复模式。
 - Ctrl-C/Z/\\ 作为字节进入 pty，由行规程向前台进程组发信号；调用端断开时，执行端向进程组发 `SIGHUP`，宽限后 `SIGKILL`。
 
-五条路径都改用它；会话主命令即"第一个加入者"。broker：不追加 `-y`、不设 `XLINGS_NON_INTERACTIVE`（交互时与宿主一样列出计划并确认；
+会话主命令、加入、broker 与 carrier guest 改用它；域内交互命令保留 `--new-session`（修订 5）。会话主命令即"第一个加入者"。broker：不追加 `-y`、不设 `XLINGS_NON_INTERACTIVE`（交互时与宿主一样列出计划并确认；
 非交互且无 `-y` 时拒绝并提示）；客户端连接全程监视。`TIOCSTI` 防护不变。
 
 ### 4.3 取消
@@ -152,15 +159,17 @@ probe PR #674 的六轮运行（38791353147、38793084640、38794275497、387989
 
 ### 6.2 `/usr` 与目录条目
 
-1. `/usr` 是挂载点：沙箱以 bwrap `--ro-bind <gen>/usr /usr`；machine 由 luban-init 在 exec init 前绑定；导出的 drive/iso 同 machine；`--rootfs` 导出物化为真实目录。
-2. generation 只对**文件**建符号链接；目录条目在 generation 中是空目录，记录于 `mounts.tsv`，呈现时逐条 `--ro-bind`（实测 ≤ 8 条，< 4 ms）。
-3. 换代：session-init 把新 generation 的 `usr` 及其目录挂载组装在暂存点，以 `mount(2)` 的 `MS_MOVE` 移到 `/usr`（不经 libmount），旧树延迟卸载：在线生效。
+1. `/usr` 是挂载点：根中为空目录，它呈现的 generation 记录于 `etc/xlings/usr`。沙箱的根视图把 `<gen>/usr` 绑定到 `/usr`；
+   machine 由 stage-0 或 guest agent 在启动 init 前绑定；drive 与 ISO 同 machine；tar 与 `--rootfs` 目录由其他 init（WSL、容器）启动，`/usr` 保留为链接。
+2. generation 只对**文件**建符号链接；目录条目在 generation 中是空目录，记录于 `mounts.tsv`，呈现时逐条绑定（实测 ≤ 8 条，< 4 ms）。
+   同一计划且同一形态复用当前代；所有权校验把 `mounts.tsv` 的条目视为空目录。
+3. 换代：沙箱中由 supervisor 的根视图刷新（`root_mount::update`）撤下旧的 `/usr` 绑定、加上新的，在线生效；machine 中在旧挂载之上叠加新的。
+4. 从宿主读根内的路径（init、登录 shell、会话、设置、镜像的内核）经 `rootfs::in_root` 与 `presented_usr`，与根内看到的一致。
 
-### 6.3 能力的保留与丢弃（O3b）
+### 6.3 能力
 
-bwrap 以 `--cap-add CAP_SYS_ADMIN --cap-add CAP_SETPCAP` 启动 session-init。session-init 在启动**任何**用户命令（主命令、加入、broker 回传）之前，
-在 fork 后的子进程中清空 bounding set、清 ambient、设 `SECBIT_NOROOT | SECBIT_NOROOT_LOCKED`，再 exec：用户进程即使在命名空间内是 uid 0 也没有能力。
-单元测试与 L0 检查断言用户进程 `CapEff` 为 0。
+session-init 与用户进程都不保留能力：`/usr` 的换挂由命名空间之外的 supervisor 完成（§6.2 第 3 条）。
+O3b 的实测（保留 `CAP_SYS_ADMIN` 需同时保留 `CAP_SETPCAP` 才能对子进程丢弃）因此不再需要。
 
 ### 6.4 payload 的 `share` 投影
 
@@ -168,10 +177,11 @@ bwrap 以 `--cap-add CAP_SYS_ADMIN --cap-add CAP_SETPCAP` 启动 session-init。
 
 | `share` 下 | 处理 |
 |---|---|
-| 多个包会写入同一目录的（`applications`、`icons/hicolor`、`fonts`、`man/man*`、`locale/*/LC_MESSAGES`、`wayland-sessions`、`xsessions`、`dbus-1/*`、`bash-completion/completions`、`fish/vendor_*`、`zsh/site-functions`、`pkgconfig`、`terminfo/*`） | generation 中为真实目录，逐文件链接合并；同名冲突按工作区顺序取第一个，写入这一代的清单 |
+| 多个包会写入同一目录的（`applications`、`icons`、`icons/hicolor/*`、`fonts/*`、`man`、`man/<节>`、`locale/<语言>/LC_MESSAGES`、`wayland-sessions`、`xsessions`、`dbus-1/*`、`bash-completion/completions`、`fish/vendor_*`、`zsh/site-functions`、`pkgconfig`、`terminfo/*`、`metainfo`、`mime/packages`、`glib-2.0/schemas`） | generation 中为真实目录，逐文件链接合并；同名冲突按工作区顺序取第一个，写入这一代的清单 |
 | 只属于一个包的目录（如 `vim`、`nvim`、`icons/<主题>`） | 目录条目，以绑定挂载呈现（§6.2） |
 
-session 的环境设 `XDG_DATA_DIRS=/usr/local/share:/usr/share`（不再为空）。
+认领互斥：已认领路径的祖先或后代再被认领时记为冲突，一个链接之上与之下不再有链接。sysroot 的 `share` 按同一规则参与。
+`XDG_DATA_DIRS` 未设时各程序按规范取 `/usr/local/share:/usr/share`，不另设。
 
 ## 7. 系统里的 index
 
@@ -480,9 +490,9 @@ libxpkg 的 loader 遍历 `pkgs/` 下任意子目录（`libxpkg/src/xpkg-loader-
 | D1 | 一个 `terminal_relay`；主命令即第一个加入者 |
 | D2 | broker 不强制 `-y`、不设非交互；客户端断开即结束被调用方 |
 | D3 | 域内命令一个 `run_relayed` 入口 |
-| D4 | `/usr` 是挂载点；目录条目绑定挂载；换代 `MS_MOVE` 在线生效 |
-| D5 | session-init 保留 `CAP_SYS_ADMIN` 与 `CAP_SETPCAP`，用户进程前清空能力并设 `SECBIT_NOROOT` |
-| D6 | payload 的 `share` 投影：多来源目录逐文件合并，单来源目录绑定挂载；`XDG_DATA_DIRS` 有值 |
+| D4 | `/usr` 是挂载点；目录条目绑定挂载；换代由根视图刷新在线生效 |
+| D5 | session-init 与用户进程不保留能力（修订 5） |
+| D6 | payload 的 `share` 投影：多来源目录逐文件合并，单来源目录绑定挂载；认领互斥 |
 | D7 | `ensure_catalog` 一个入口；建系统带入 index 快照 |
 | D8 | 系统里普通用户有自己的用户层 home；系统安装需 `sudo … --system` |
 | D9 | "当前系统"由根的 `/etc/xlings/root.json` 决定 |
@@ -521,7 +531,7 @@ O1–O4、O6、O7、O9–O12 已由 probe 关闭（§2）。
 | 测试的有效性 | 现有 luban-window 场景截到了空桌面与 `can't access tty` 却判为通过：只看"代码走到了"。P5 与 §13.8 把截图内容本身作为断言对象 |
 | 根因合并 | U12、U13、U14 与 U4 都来自"payload 的 `share` 不进系统"或"系统缺基础数据包"；以 §6.4 的投影规则加 §10 的数据包一次解决，不逐个补 |
 | 一致性 | U2、U5、U6、U18 与域内交互命令同属终端与 broker；D1、D2 一次解决 |
-| 安全 | 保留 `CAP_SYS_ADMIN` 是新的攻击面：只在 session-init 中，用户进程前以 bounding set 与 `SECBIT_NOROOT_LOCKED` 去除，并由 L0 断言；broker 恢复确认后，确认发生在宿主侧执行端，沙箱内进程无法代答；上游信任边界见 mcpp 设计 §8.2 |
+| 安全 | 修订 5 起不保留能力，`/usr` 的换挂在命名空间之外完成，攻击面不增加；broker 恢复确认后，确认发生在宿主侧执行端，沙箱内进程无法代答；上游信任边界见 mcpp 设计 §8.2 |
 | 用户与权限 | 修订 1 没有处理系统里的普通用户；§8 按已有的部署形态设计补上 |
 | 风格边界 | 像素风格只属于应用界面；终端内容与 guest 桌面原样呈现。§13.1、§13.7 写明边界，LA 的基准图分别归属，避免风格改动波及系统内容 |
 | 视觉与可读性 | 像素风格只用于图形与标题，正文与终端保持清晰；对比度、键盘可达、减少动效写入规则 |
