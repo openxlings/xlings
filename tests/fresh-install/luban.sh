@@ -181,8 +181,12 @@ suite_luban_machine() {
         # A person does what it says.
         capture "its hint" $hint -y
     fi
+    # The first entry boots it; leaving keeps it running (the default of
+    # "(b)ackground or (p)ower off?"), so the next entry joins it.
+    local booted="$OUT"
     session 120 'echo MACHINE-$(uname -r); exit' m
-    says "the machine came up" "m is up"
+    grep -qF "m is up" <<<"$booted$OUT" || fail "the machine came up: no 'm is up' in either entry"
+    ok "the machine came up"
     says "the welcome says it is a machine" "machine: its own kernel"
     says "and the prompt says so" "<luban>"
     says "its own kernel answers" "MACHINE-"

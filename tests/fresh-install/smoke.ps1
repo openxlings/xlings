@@ -291,7 +291,17 @@ function Invoke-SuiteLubanHost {
     Write-Host $status
     if ($status -notmatch 'ready') { Fail "luban status did not say whether this host is ready" }
     Write-Ok 'the host status answers'
-    Assert-Refuses 'a Luban system is not made here without WSL2' @('luban', 'new', 'box', '--edition', 'tiny')
+    # With WSL 2 (a runner may have it), a system is made in the Luban host
+    # machine and used; without it, refused with what to do.
+    if ($status -match 'sandbox\s+ready') {
+        Invoke-Step 'a Luban system in the Luban host machine' @('luban', 'new', 'box', '--edition', 'tiny', '-y')
+        $uname = (& luban run box -- uname -s 2>&1 | Out-String)
+        if ($LASTEXITCODE -ne 0 -or $uname -notmatch 'Linux') { Fail "a command did not run in the system: $uname" }
+        Write-Ok 'a command ran in it'
+        Invoke-Step 'removed' @('luban', 'rm', 'box', '-y')
+    } else {
+        Assert-Refuses 'a Luban system is not made here without WSL2' @('luban', 'new', 'box', '--edition', 'tiny')
+    }
     # The window: published for Windows from 2026.10.15.1 (part 4 §8.2) --
     # installed and answering; before that, refused (the latest a fresh
     # install meets decides which).
