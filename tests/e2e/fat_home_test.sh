@@ -25,5 +25,6 @@ out="$(env -u XLINGS_ACTIVE_SUBOS -u XLINGS_SUBOS_MODE -u XLINGS_BIN XLINGS_HOME
 echo "$out"
 [[ $rc -ne 0 ]] || fail "a home was made on a filesystem without symbolic links"
 grep -q "without symbolic links (vfat)" <<<"$out" || fail "the refusal does not name the filesystem"
+grep -qF "$home is on a filesystem" <<<"$out" || fail "the refusal does not name the home it refused"
 grep -q "XLINGS_HOME" <<<"$out" || fail "the refusal does not say what to do"
 echo "PASS: a home on FAT is refused at its making, naming the filesystem and what to do"

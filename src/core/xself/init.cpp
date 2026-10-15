@@ -459,7 +459,7 @@ bool ensure_home_layout(const fs::path& home_dir) {
         if (const auto caps = platform::fs_caps(home_dir); caps.measured && !caps.symlinks) {
             log::error("[xlings:self]: {} is on a filesystem without symbolic links ({}); a home needs them -- "
                        "set XLINGS_HOME to a directory on another filesystem",
-                       Config::display_path(home_dir), caps.type.empty() ? "unknown" : caps.type);
+                       home_dir.string(), caps.type.empty() ? "unknown" : caps.type);
             return false;
         }
     }
