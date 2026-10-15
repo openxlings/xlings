@@ -137,7 +137,7 @@ split in ways that combine:
 | jobs | tests running at once on one machine; a test's `.resources` keeps conflicting ones apart | `-j N` |
 | shard | one machine's share; it takes whole families, so it builds only what it runs | `--shard i/n` (`ci plan --shards n` prints the plan) |
 | reuse | one build feeding many machines: the development build is made once per round and taken by every test lane; the static release build by every system lane | `.github/actions/linux-build`, the release job |
-| cache | a round starts from the last round's build and rebuilds only what changed (`tools/ci/build_state.sh settle`: unchanged files and package payloads get one old time, changed ones the present) | the build job |
+| cache | a round starts from the last round's build and rebuilds only what changed (`tools/ci/build_state.sh settle`: unchanged files and package payloads get one old time, changed ones the present) -- the development, instrumented and release-candidate builds alike; a published release is built from nothing | `.github/actions/linux-build` |
 
 `tests/lanes.toml` holds CI's choice per lane (shards, jobs, the build's
 profile); `xdev test --lane-config unit --shard 2/4` runs one machine's share

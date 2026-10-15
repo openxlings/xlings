@@ -122,31 +122,15 @@ jobs:
       - name: Linux toolchain
         uses: ./.github/actions/linux-toolchain
 
-      # xdev runs the downstream lanes and renders the report. Built static
-      # (musl) so every job can run this same binary: a glibc dev build's
-      # loader lives in the building runner's mcpp registry. linux_release.sh
-      # cleans the musl target, so it is kept outside that tree.
-      - name: xdev, for the lanes that run the release
-        run: |
-          # `mcpp build` can transiently fail with "dependency '...': index
-          # entry not found in local clone" when the cached package index is
-          # stale: mcpp refreshes the index ON that failure, so a second
-          # attempt succeeds. Retry once to absorb the race.
-          mcpp build -p xdev --target x86_64-linux-musl || {
-            echo "::warning::mcpp build failed (likely stale index entry); retrying after auto-refresh"
-            mcpp build -p xdev --target x86_64-linux-musl
-          }
-          # A member's binary lands under the root's target/ or the member's
-          # own, depending on the mcpp version.
-          xdev="$(find target apps/xdev -path '*musl*' -name xdev -type f -perm -111 2>/dev/null | head -1)"
-          [[ -n "$xdev" ]] || { echo "::error::mcpp build -p xdev produced no xdev"; exit 1; }
-          mkdir -p target/xdev/runner/bin
-          cp "$xdev" target/xdev/runner/bin/xdev
-
-      - name: Build (linux_release)
-        run: |
-          chmod +x ./tools/linux_release.sh
-          SKIP_NETWORK_VERIFY=1 ./tools/linux_release.sh
+      # The candidate and the static xdev the downstream lanes run, from the
+      # last round's release build when there is one (only what changed is
+      # rebuilt; a published release is built from nothing, release.yml).
+      - name: The release candidate
+        uses: ./.github/actions/linux-build
+        with:
+          profile: release
+          state: produce
+          attach: 'false'
 
       - name: Prepare release artifact
         run: |

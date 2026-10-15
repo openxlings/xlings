@@ -12,11 +12,14 @@ name: Linux development build
 description: Build once per round, reuse across lanes and rounds.
 inputs:
   profile:
-    description: dev or asan (tools/ci/dev_build.sh)
+    description: dev, asan or release (tools/ci/dev_build.sh)
     default: dev
   state:
     description: produce (the build job) or consume (a lane)
     required: true
+  attach:
+    description: Attach the state for this round's lanes (a produced state no lane takes is only kept).
+    default: 'true'
 runs:
   using: composite
   steps:
@@ -74,7 +77,7 @@ runs:
         bash tools/ci/build_state.sh pack "$RUNNER_TEMP/build-state.tar.zst"
 
     - name: Attach the build for this round's lanes
-      if: inputs.state == 'produce'
+      if: inputs.state == 'produce' && inputs.attach == 'true'
       uses: actions/upload-artifact@v4
       with:
         name: linux-build-state-${{ inputs.profile }}

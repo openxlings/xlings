@@ -31,7 +31,7 @@ pack)
   for p in "${paths[@]}"; do [[ -e "$p" ]] && present+=("$(realpath -s "$p")"); done
   tar -P --zstd -cf "$out" \
     --exclude='target/*/*/bin/unit' --exclude='target/*/*/bin/e2e' \
-    --exclude='target/xdev' --exclude='target/xtest-artifacts' --exclude='target/*-musl' \
+    --exclude='target/xdev' --exclude='target/xtest-artifacts' \
     "${present[@]}"
   ls -lh "$out" | awk '{print "build state:", $5}'
   ;;
