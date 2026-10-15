@@ -3024,6 +3024,31 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& requested
                     dep.version = entry.at("version").get<std::string>();
                     dep.install_dir = entry.at("install_dir").get<std::string>();
                     dep.libdirs = entry.at("libdirs").get<std::vector<std::string>>();
+                    // Bound through the environment's runtime (part 3 §4): the
+                    // record names the system's <home>/abi; here it is this
+                    // home's, whichever runtime this home has. Not part of the
+                    // checked closure, as the closure's evidence says.
+                    if (entry.value("source", std::string{}) == "scope") {
+                        const auto provider = abi::provider_at(dep.name, dep.version, dep.install_dir);
+                        const auto family = provider ? abi::family_of(*provider) : std::nullopt;
+                        const auto tag = family ? family->tag
+                                       : std::format("linux-{}-glibc", platform::build_arch());
+                        const auto via = abi::dir(Config::paths().homeDir, tag);
+                        dep.source = "scope";
+                        dep.libdirs = {via.string()};
+                        mcpplibs::xpkg::DepExport exports;
+                        exports.libdirs = dep.libdirs;
+                        const auto matching = std::ranges::find_if(plan.nodes, [&](const auto& candidate) {
+                            return candidate.canonicalName == dep.name && candidate.version == dep.version;
+                        });
+                        if (matching != plan.nodes.end()) exports.abi = matching->exports.abi;
+                        if (family && provider)
+                            exports.loader = abi::loader_path(Config::paths().homeDir, tag, provider->loader).string();
+                        ctx.deps_exports[dep.spec] = std::move(exports);
+                        ctx.runtime_deps_list.push_back(dep.spec);
+                        ctx.resolved_deps[dep.spec] = std::move(dep);
+                        continue;
+                    }
                     dep.source = "system-layer-recorded";
                     std::error_code ec;
                     const auto actual = std::filesystem::canonical(dep.install_dir, ec);
