@@ -210,25 +210,30 @@ PackageCatalog& get_catalog(CatalogAccess access) {
 }
 
 // THE ONE ANSWER TO "IS THE INDEX HERE" (design 2026-10-16 L §7). Every
-// command that reads the index asks here: a catalog that is not loaded is
-// synchronised once, and one that still cannot be read is a structured error
-// with what to do -- never a bare log line (which interface mode suppresses,
-// #374) and never one command syncing while another only complains. A Luban
-// system's first `xlings list` used to answer "package index not available"
-// while its first `xlings install` fetched the index.
-PackageCatalog* ensure_catalog(EventStream& stream) {
-    auto& catalog = get_catalog(CatalogAccess::InstallReady);
+// command that reads the index asks here. An install synchronises a catalog
+// that is not loaded; a query answers from what is here and never fetches
+// (E2E-69: a cold home's list stays local and fast). One that cannot be read
+// is a structured error with what to do -- never a bare log line, which
+// interface mode suppresses (#374). A Luban system carries its owner's index
+// from its creation (domain_producer::prepare), so its first query has one.
+PackageCatalog* ensure_catalog(EventStream& stream, CatalogNeed need) {
+    auto& catalog = need == CatalogNeed::Synced ? get_catalog(CatalogAccess::InstallReady) : get_catalog();
     if (catalog.is_loaded()) return &catalog;
-    log::info("package index not available, updating...");
-    sync_all_repos(true);
-    auto rebuilt = catalog.rebuild();
-    if (rebuilt && catalog.is_loaded()) return &catalog;
+    std::string why;
+    if (need == CatalogNeed::Synced) {
+        log::info("package index not available, updating...");
+        sync_all_repos(true);
+        auto rebuilt = catalog.rebuild();
+        if (rebuilt && catalog.is_loaded()) return &catalog;
+        if (!rebuilt) why = ": " + rebuilt.error();
+    }
     stream.emit(ErrorEvent{
         .code = ErrorCode::NotFound,
-        .message = std::string("package index not available")
-            + (rebuilt ? std::string{} : ": " + rebuilt.error()),
+        .message = "package index not available" + why,
         .recoverable = true,
-        .hint = "run `xlings update`, or check index_repos in .xlings.json and the network or proxy",
+        .hint = need == CatalogNeed::Synced
+            ? "run `xlings update`, or check index_repos in .xlings.json and the network or proxy"
+            : "fetch it: xlings update",
     });
     return nullptr;
 }
@@ -476,7 +481,7 @@ int install_(std::span<const std::string> targets, bool yes, bool noDeps,
     // downloading and extracting outside it -- is a real change to what two
     // concurrent installs may observe and is deliberately NOT done here; see
     // .agents/docs/2026-08-14-four-perf-and-output-defects-plan.md §2 (L2).
-    auto* loaded = ensure_catalog(stream);
+    auto* loaded = ensure_catalog(stream, CatalogNeed::Synced);
     if (!loaded) return 1;
     auto& catalog = *loaded;
 
@@ -2321,7 +2326,7 @@ int cmd_remove_older_than(const std::string& name, const std::string& threshold,
         return 1;
     }
     Config::reload_state();
-    auto* loaded = ensure_catalog(stream);
+    auto* loaded = ensure_catalog(stream, CatalogNeed::Local);
     if (!loaded) return 1;
     auto& catalog = *loaded;
     const auto bareName = name.substr(name.rfind(':') + 1);
@@ -2519,7 +2524,7 @@ int cmd_remove_impl_(const std::string& target, bool yes, EventStream& stream,
     }
     Config::reload_state();
 
-    auto* loaded = ensure_catalog(stream);
+    auto* loaded = ensure_catalog(stream, CatalogNeed::Local);
     if (!loaded) return 1;
     auto& catalog = *loaded;
 
@@ -2636,7 +2641,7 @@ ScopedSubosOverride::~ScopedSubosOverride() {
 }
 
 int cmd_search(const std::string& keyword, EventStream& stream) {
-    auto* loaded = ensure_catalog(stream);
+    auto* loaded = ensure_catalog(stream, CatalogNeed::Local);
     if (!loaded) return 1;
     auto& catalog = *loaded;
 
@@ -2661,7 +2666,7 @@ int cmd_search(const std::string& keyword, EventStream& stream) {
 }
 
 int cmd_list(const std::string& filter, EventStream& stream, bool all) {
-    auto* loaded = ensure_catalog(stream);
+    auto* loaded = ensure_catalog(stream, CatalogNeed::Local);
     if (!loaded) return 1;
     auto& catalog = *loaded;
 
@@ -2794,7 +2799,7 @@ int cmd_list(const std::string& filter, EventStream& stream, bool all) {
 }
 
 int cmd_info(const std::string& target, EventStream& stream, bool allVersions) {
-    auto* loaded = ensure_catalog(stream);
+    auto* loaded = ensure_catalog(stream, CatalogNeed::Local);
     if (!loaded) return 1;
     auto& catalog = *loaded;
 

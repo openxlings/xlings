@@ -185,8 +185,9 @@ O3b 的实测（保留 `CAP_SYS_ADMIN` 需同时保留 `CAP_SETPCAP` 才能对�
 
 ## 7. 系统里的 index
 
-- `xim::ensure_catalog(stream, need)`：catalog 未加载则同步，失败发带 hint 的结构化错误；install、list、info、search、remove、update 全部经过它。
-- 建系统时带入所用 index 的快照（artifact 形式），系统里第一次需要时离线可用。
+- `xim::ensure_catalog(stream, need)` 是唯一入口：install（`Synced`）在 catalog 未加载时同步；查询（list、info、search、remove，`Local`）
+  只读本地、不联网（E2E-69 的冷 home 契约）；读不到时都发带 hint 的结构化错误。
+- 建系统时带入所有者的 index（`domain_producer::prepare` 在域内没有 index 时复制一次），系统里的第一次查询即有 index；`xlings update` 在系统里刷新它。
 
 ## 8. 系统里的用户与 home
 

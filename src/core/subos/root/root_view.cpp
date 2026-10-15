@@ -174,7 +174,7 @@ class PrivateView final : public View {
             };
             const bool usrChanged = source_of(bindings_, "/usr") != source_of(candidate->bindings_, "/usr");
             const auto under_usr = [](const fs::path& destination) {
-                return destination.native().starts_with("/usr/");
+                return destination.generic_string().starts_with("/usr/");
             };
             for (const auto& next : candidate->bindings_) {
                 if (candidate->skeleton_binding(next))

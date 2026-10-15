@@ -167,6 +167,31 @@ std::expected<void, std::string> follow_owner_config_(const Domain& domain) {
     return {};
 }
 
+// The owner's index, as a system is made (design 2026-10-16 L §7): a query
+// inside it answers from what is here and never fetches, so a system without
+// an index answered "package index not available" to its first `xlings list`.
+// Copied once, while the domain has none; `xlings update` there refreshes it.
+std::expected<void, std::string> carry_owner_index_(const Domain& domain) {
+    std::error_code ec;
+    if (fs::exists(domain.physicalHome / "data" / "xim-pkgindex", ec)) return {};
+    for (fs::directory_iterator it(domain.ownerHome / "data", ec), end; !ec && it != end; it.increment(ec)) {
+        const auto name = it->path().filename().string();
+        if (!name.starts_with("xim-pkgindex") && name != "xim-index-repos") continue;
+        if (!it->is_directory(ec) || it->is_symlink(ec)) continue;
+        const auto target = domain.physicalHome / "data" / name;
+        if (fs::exists(target, ec)) continue;
+        const auto staged = fs::path(target.string() + ".carry");
+        fs::remove_all(staged, ec);
+        fs::copy(it->path(), staged, fs::copy_options::recursive | fs::copy_options::copy_symlinks, ec);
+        if (!ec) fs::rename(staged, target, ec);
+        if (ec) {
+            fs::remove_all(staged, ec);
+            return std::unexpected(std::format("cannot carry the index {} into {}", name, domain.physicalHome.string()));
+        }
+    }
+    return {};
+}
+
 std::expected<void, std::string> prepare(const Domain& domain, const fs::path& entry) {
     if (!domain.privateHome) return std::unexpected("namespace producer requires an owner-private domain");
     if (auto reserved = prefix_domain::prepare_private(domain); !reserved) return reserved;
@@ -193,6 +218,7 @@ std::expected<void, std::string> prepare(const Domain& domain, const fs::path& e
         if (auto regular = regular_(configFile); !regular) return regular;
         if (auto synced = follow_owner_config_(domain); !synced) return synced;
     }
+    if (auto carried = carry_owner_index_(domain); !carried) return carried;
     return refresh_entry(domain, entry);
 }
 

@@ -7,8 +7,10 @@ require_isolation
 edition=tiny; X info subos:luban-nano >/dev/null 2>&1 && edition=nano
 step "luban new at a terminal finishes ($edition)" ok -- timeout 900 script -qec "$XLINGS_HOME/bin/luban new hmtt --edition $edition" /dev/null
 # What making it says reaches the terminal (L §5): the downloads and the
-# installs, as a share, under the "making" line.
-check "luban new shows its progress at a terminal" -- grep -Eq '[0-9]+%' <<<"$LAST_OUT"
+# installs, under the "making" line, rewritten in place -- with a share when
+# something is fetched (a host that fetched it all before fetches nothing).
+progressed() { local re=$'\r\e\\[K(\e\\[36m)?\xe2\x96\xb8'; [[ "$LAST_OUT" =~ $re|[0-9]+% ]]; }
+check "luban new shows its progress at a terminal" -- progressed
 step "luban new --json carries progress events" ok '"event":"(progress|data)"' -- L new hmtj --edition "$edition" --json
 # Inside, at a terminal: the prompt says where, and an install there (run by
 # the broker on this terminal) neither stops the session nor waits forever --
