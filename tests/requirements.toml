@@ -563,6 +563,9 @@ status = "required"
 text = "self doctor --isolation diagnoses; --fix installs the root-owned backend"
 status = "required"
 
+# The PERF budgets are for the machine they were set on (a hosted ubuntu-24.04
+# runner, 2026-10); a slower machine's budget moves with its direct baseline,
+# at most twice (tests/e2e/test_subos_perf.cpp, Samples::budget).
 [PERF-SHIM]
 text = "static shim dispatch inside a sandbox avoids the broker and adds less than 10 ms"
 status = "required"
