@@ -14,13 +14,13 @@ env:
 
 jobs:
   inside:
-    name: O1 O2 O3 (ubuntu-24.04, a core and a desktop system)
+    name: O3b O6 O7 (ubuntu-24.04, core and desktop; a machine)
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
       - name: probe
-        run: bash .github/probe/inside.sh
+        run: bash .github/probe/inside3.sh
       - uses: actions/upload-artifact@v4
         if: always()
         with:
