@@ -27,7 +27,7 @@ on:
       project:
         description: 'Project whose binaries to mirror'
         type: choice
-        options: [xlings, luban-os, mcpp]
+        options: [xlings, luban-os, xdesk, mcpp]
         default: xlings
 
 permissions:
