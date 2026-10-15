@@ -69,8 +69,16 @@ std::expected<void, std::string> publish_no_replace(const fs::path& from, const 
     std::error_code ec;
     const auto status = fs::symlink_status(from, ec);
     if (ec) return failed(ec);
+    if (status.type() == fs::file_type::symlink) {
+        // A link made again with the same target: making it refuses a name
+        // that is there, as the rename flag would. (A hard link to a symbolic
+        // link is the link on Linux but its target on macOS.)
+        fs::copy_symlink(from, to, ec);
+        if (ec) return failed(ec);
+        fs::remove(from, ec);
+        return {};
+    }
     if (status.type() != fs::file_type::directory && caps.hard_links) {
-        // A hard link names the link itself, not what a symbolic link points to.
         fs::create_hard_link(from, to, ec);
         if (ec) return failed(ec);
         fs::remove(from, ec);

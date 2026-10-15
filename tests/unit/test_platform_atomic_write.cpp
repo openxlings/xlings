@@ -101,8 +101,10 @@ XTEST(AtomicPublication, EveryStrategyPublishesAndNoneReplaces,
         ASSERT_TRUE(p::publish_no_replace(dir / "file-scratch", dir / "file", caps)) << label;
         EXPECT_FALSE(fs::exists(dir / "file-scratch")) << label;
         EXPECT_EQ(tk::read_file(dir / "file"), "bytes") << label;
-        if constexpr (tk::is_linux) {         // a symbolic link is published as itself
+        if constexpr (tk::is_posix) {         // a symbolic link is published as itself
             fs::create_symlink("/nowhere/target", dir / "link-scratch");
+            EXPECT_FALSE(p::publish_no_replace(dir / "link-scratch", dir / "taken", caps)) << label;
+            EXPECT_EQ(tk::read_file(dir / "taken"), "old") << label;
             ASSERT_TRUE(p::publish_no_replace(dir / "link-scratch", dir / "link", caps)) << label;
             EXPECT_EQ(fs::read_symlink(dir / "link"), "/nowhere/target") << label;
         }

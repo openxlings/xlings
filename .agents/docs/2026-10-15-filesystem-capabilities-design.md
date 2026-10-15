@@ -29,8 +29,9 @@ xlings 写 home 时依赖几个文件系统操作：
 - **`platform::fs_caps(dir)`**（`modules/platform/src/fs/fs_caps.cppm`）：每个文件系统、每个进程只测一次，按设备号缓存（Windows 按卷序列号）。做法是在 `dir` 里建一个临时目录，真的去做一次：不覆盖的改名、交换、硬链接、符号链接、只有大小写不同的名字，做完删除。文件系统类型也一并读出：Linux 用 statfs 的 magic，macOS 用 `f_fstypename`，Windows 用卷名。目录不可写时，结果是平台的原生答案（`measured = false`），并且不缓存。
 - **`platform::publish_no_replace(from, to, caps)`**：唯一的发布策略表。
   1. 有原生不覆盖改名：直接用；
-  2. 没有，但有硬链接：文件和符号链接以硬链接发布（名字已存在时，`link(2)` 同样原子地失败；在 Linux 上它链接的是链接本身），然后删除临时名；
-  3. 都没有，或者是目录：先确认目标名不存在，再改名过去。唯一的窗口是这期间有人在同一个名字上建了一个空目录；而这个名字属于调用方，它持有状态锁。
+  2. 符号链接：以同一目标重新建一个（`copy_symlink`；名字已存在时，`symlink(2)` 原子地失败），然后删除临时名。不用硬链接：macOS 的 `link(2)` 链接的是符号链接指向的文件；
+  3. 没有原生改名，但有硬链接：文件以硬链接发布（名字已存在时，`link(2)` 同样原子地失败），然后删除临时名；
+  4. 都没有，或者是目录：先确认目标名不存在，再改名过去。唯一的窗口是这期间有人在同一个名字上建了一个空目录；而这个名字属于调用方，它持有状态锁。
 
   `rename_no_replace(from, to)` 就是 `publish_no_replace(from, to, fs_caps(to 的目录))`。
 - **`exchange_paths`**：先问 `fs_caps`，没有交换能力就返回 false，交给调用方不覆盖的受控移动；只有真正的错误才是错误。
@@ -55,7 +56,7 @@ xlings 写 home 时依赖几个文件系统操作：
 
 ## 4. 验证
 
-- **单元**（任何文件系统上）：`AtomicPublication.EveryStrategyPublishesAndNoneReplaces` 通过给定能力，逐一驱动三种策略：文件、链接、目录、已占用的名字、空目录。`AtomicPublication.AFilesystemIsMeasuredWhereItIs` 实测本机的文件系统，并检查临时目录已清理。
+- **单元**（任何文件系统上）：`AtomicPublication.EveryStrategyPublishesAndNoneReplaces` 通过给定能力，逐一驱动每种策略：文件、链接、目录、已占用的名字、空目录。`AtomicPublication.AFilesystemIsMeasuredWhereItIs` 实测本机的文件系统，并检查临时目录已清理。
 - **真实文件系统**（`xlings-ci-linux.yml` 的 filesystems 车道）：
   - 在 runner 上导出 NFSv3 并挂载（`vers=3,nolock,local_lock=all`）。`nfs_home_test.sh` 先确认那里 `renameat2(RENAME_NOREPLACE)` 确实返回 EINVAL，再把 home 放上去：安装 linux-headers 和 glibc（就是 #809 里失败的两个），检查 `usr/include/asm`、`lib/Scrt1.o` 已就位、没有残留的临时条目、删除后条目消失，以及 `self doctor` 的说明。
   - 用 loop 挂载一个 vfat 镜像。`fat_home_test.sh` 检查在那里建 home 会被拒绝，并写明文件系统和怎么做。
