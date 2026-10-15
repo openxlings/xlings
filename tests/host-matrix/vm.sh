@@ -55,6 +55,11 @@ case "$distro" in
         image=Arch-Linux-x86_64-cloudimg.qcow2
         sums="$base/$image.SHA256"; sumtool=sha256sum
         prepare='sudo bash hm-in/suite/bare.sh' ;;
+    rocky-9)
+        base=https://dl.rockylinux.org/pub/rocky/9/images/x86_64
+        image=Rocky-9-GenericCloud-Base.latest.x86_64.qcow2
+        sums="$base/$image.CHECKSUM"; sumtool=sha256sum
+        prepare='sudo bash hm-in/suite/bare.sh' ;;
     *) echo "unknown distro: $distro" >&2; exit 2 ;;
 esac
 
