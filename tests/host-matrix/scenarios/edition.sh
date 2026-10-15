@@ -6,9 +6,20 @@ source "$(dirname "$0")/../lib.sh"
 has() { X info "subos:$1" >/dev/null 2>&1; }   # search echoes the query: not a test
 first=tiny; has luban-nano && first=nano
 if [[ -z "${HM_SETUP_DONE:-}" ]] && ! X self doctor --isolation >/dev/null 2>&1; then
-    step "agent mode: luban new asks nothing, exits 2 with the setup" 2 'self doctor --isolation --fix|luban setup' -- \
-        L new hmn --edition "$first" --agent
-    needs_setup "$LAST_OUT"
+    # Agent mode never waits. Either the host needs the one-time setup (exit 2,
+    # naming it), or what was missing was a package xlings installs itself (a
+    # bwrap with overlays) and the system is made: a distribution container
+    # whose kernel already allows user namespaces is the second case (U18).
+    agent_out="$(L new hma --edition "$first" --agent 2>&1)"; agent_rc=$?
+    if [[ $agent_rc -eq 2 ]] && grep -Eq 'self doctor --isolation --fix|luban setup' <<<"$agent_out"; then
+        record "agent mode: luban new asks nothing, exits 2 with the setup" true 2 "$agent_out"
+        needs_setup "$agent_out"
+    elif [[ $agent_rc -eq 0 ]]; then
+        record "agent mode: luban new asks nothing; this host needed no administrator" true 0 "$agent_out"
+        L rm hma -y >/dev/null 2>&1
+    else
+        record "agent mode: luban new asks nothing" false "$agent_rc" "$agent_out"; FAILED=1
+    fi
 fi
 require_isolation
 if has luban-nano; then
@@ -18,6 +29,7 @@ else
     record "skip: the index has no luban-nano yet" true 0 ""
 fi
 step "luban new hmt --edition tiny" ok -- L new hmt --edition tiny
+step "a name in use is said in luban's words, before anything is fetched" 2 'luban rm hmt' -- L new hmt --edition tiny
 step "tiny: a shell and Luban's os-release" ok 'ID=luban' -- L run hmt -- /bin/sh -c 'cat /usr/share/factory/etc/os-release /etc/os-release 2>/dev/null'
 step "tiny: luban runs inside" ok -- L run hmt -- /usr/bin/luban --version
 step "luban status" ok -- L status hmt

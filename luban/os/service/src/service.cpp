@@ -296,6 +296,12 @@ Outcome create(const Context& c, const NewOptions& o) {
         if (c.sink) c.sink(error("an environment needs a name", "luban new <name> --edition tiny"));
         return {.code = 2};
     }
+    // A name in use is said in luban's words before anything is fetched (U17).
+    if (describe(c, o.name)) {
+        if (c.sink) c.sink(error(std::format("'{}' already exists", o.name),
+                                 std::format("luban rm {}, or choose another name", o.name)));
+        return {.code = 2};
+    }
     auto args = new_argv_(o.name, edition_ref(o.edition), o.carrier);
     if (!o.proxy.empty()) args.insert(args.end(), {"--proxy", o.proxy});
     const int rc = step_(c, "make", std::format("making {} ({})", o.name, o.edition), args, false,

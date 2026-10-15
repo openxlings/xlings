@@ -378,8 +378,11 @@ std::expected<void, std::string> preflight_domain_at_creation_(std::string_view 
             return std::unexpected("invalid prefix-domain instance name");
         auto registry = xlings::home::read_json_for_update(home_dir_() / ".xlings.json");
         if (!registry) return std::unexpected(registry.error());
-        if (registry->contains("subos") && (!(*registry)["subos"].is_object() || (*registry)["subos"].contains(std::string(name))))
-            return std::unexpected("prefix-domain control registry is invalid or already claims this name");
+        if (registry->contains("subos") && !(*registry)["subos"].is_object())
+            return std::unexpected(std::format("{}: `subos` is not an object; xlings self doctor --fix",
+                                               (home_dir_() / ".xlings.json").string()));
+        if (registry->contains("subos") && (*registry)["subos"].contains(std::string(name)))
+            return std::unexpected(std::format("subos '{}' already exists", name));
         if (auto fresh = require_new_output_(HomeView{home_dir_()}.instance(name)); !fresh) return fresh;
         if (auto fresh = require_new_output_(HomeView{home_dir_()}.instance_file(name)); !fresh) return fresh;
         if (auto fresh = require_new_output_(HomeView{home_dir_()}.config_dir(name)); !fresh) return fresh;

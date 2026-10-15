@@ -413,8 +413,11 @@ std::expected<void, std::string> publish_scope(const Domain& domain, std::string
     if (auto committed = committed_(actual); !committed) return committed;
     auto registry = read_json_for_update(domain.ownerHome / ".xlings.json");
     if (!registry) return std::unexpected(registry.error());
-    if (registry->contains("subos") && (!(*registry)["subos"].is_object() || (*registry)["subos"].contains(std::string(name))))
-        return std::unexpected("prefix-domain control registry is invalid or already claims this name");
+    if (registry->contains("subos") && !(*registry)["subos"].is_object())
+        return std::unexpected(std::format("{}: `subos` is not an object; xlings self doctor --fix",
+                                           (domain.ownerHome / ".xlings.json").string()));
+    if (registry->contains("subos") && (*registry)["subos"].contains(std::string(name)))
+        return std::unexpected(std::format("subos '{}' already exists", name));
     if (auto dir = mkdir_(domain.ownerHome / "subos"); !dir) return dir;
     const auto control = domain.ownerHome / "subos" / name;
     std::error_code ec;

@@ -5,7 +5,7 @@
 # runner's kernel and AppArmor, so SELinux (Fedora), an unrestricted Debian
 # and Arch's newest kernel are only reachable this way.
 #
-#   tests/host-matrix/vm.sh <fedora|debian-12|arch> --tarball <f> --evidence <dir>
+#   tests/host-matrix/vm.sh <fedora|debian-12|arch|rocky-9> --tarball <f> --evidence <dir>
 #                           [--index <dir>] [--scenarios "a b"]
 #
 # Needs qemu-system-x86_64 (xim:qemu-system: tools/ci/xlings_tools.sh), python3
@@ -54,6 +54,11 @@ case "$distro" in
         base=https://geo.mirror.pkgbuild.com/images/latest
         image=Arch-Linux-x86_64-cloudimg.qcow2
         sums="$base/$image.SHA256"; sumtool=sha256sum
+        prepare='sudo bash hm-in/suite/bare.sh' ;;
+    rocky-9)
+        base=https://dl.rockylinux.org/pub/rocky/9/images/x86_64
+        image=Rocky-9-GenericCloud-Base.latest.x86_64.qcow2
+        sums="$base/$image.CHECKSUM"; sumtool=sha256sum
         prepare='sudo bash hm-in/suite/bare.sh' ;;
     *) echo "unknown distro: $distro" >&2; exit 2 ;;
 esac

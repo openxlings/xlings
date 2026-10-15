@@ -2062,6 +2062,25 @@ int run(int argc, char* argv[], EventStream& stream) {
             .hint = "usage: xlings subos <new|use|list|ls|remove|rm|info|i|stop|runtime> [name]",
         });
     };
+    // A name already taken is not a usage mistake: it says so, and what to do
+    // (U17: it used to read "control registry is invalid or already claims
+    // this name" followed by the usage line).
+    auto taken_or_usage = [&](std::string_view detail) {
+        if (detail.ends_with("already exists")) {
+            const auto first = detail.find('\'');
+            const auto last = detail.rfind('\'');
+            const auto taken = first != std::string_view::npos && last > first
+                ? std::string(detail.substr(first + 1, last - first - 1)) : std::string{};
+            stream.emit(ErrorEvent{
+                .code = ErrorCode::InvalidInput,
+                .message = std::string(detail),
+                .recoverable = true,
+                .hint = std::format("remove it first (xlings subos remove {}), or choose another name", taken),
+            });
+            return;
+        }
+        usageError(detail);
+    };
 
     // A SubOS on another carrier: its xlings answers there (part 3 §5).
     static const std::set<std::string, std::less<>> kNamed{
@@ -2347,7 +2366,7 @@ int run(int argc, char* argv[], EventStream& stream) {
                 }
                 domain = sourceDomain.logicalHome.string();
                 const auto fresh = preflight_domain_at_creation_(name, true, domain, {});
-                if (!fresh) { usageError(fresh.error()); return 1; }
+                if (!fresh) { taken_or_usage(fresh.error()); return 1; }
                 std::vector<std::string> arguments{"subos", "new"};
                 for (int i = 3; i < argc; ++i) {
                     if (std::string_view(argv[i]) == "--domain") { ++i; continue; }
@@ -2361,7 +2380,7 @@ int run(int argc, char* argv[], EventStream& stream) {
             }
         }
         const auto domain_ready = preflight_domain_at_creation_(name, rootfs, domain, fromSpec);
-        if (!domain_ready) { usageError(domain_ready.error()); return 1; }
+        if (!domain_ready) { taken_or_usage(domain_ready.error()); return 1; }
         if (!domain.empty()) {
             std::vector<std::string> producerArgs{"subos", "new"};
             for (int i = 3; i < argc; ++i) {
