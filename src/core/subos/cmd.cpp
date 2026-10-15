@@ -2023,6 +2023,54 @@ int declare_isolation_at_creation_(const std::string& name, std::optional<policy
     return 0;
 }
 
+
+// A command for a system in a prefix domain runs where the system lives
+// (part 3 §B), and what it says comes back (design 2026-10-16 L §5): at a
+// terminal it speaks there itself and asks there; asked through the
+// interface (luban, the window), it runs as `interface subos_command` and its
+// events are relayed. The one path for every routed command and for making a
+// system -- making one used to bypass it, and `luban new` showed one line for
+// minutes. `words` is the subos command without the leading `subos`.
+std::expected<int, std::string> run_domain_relayed_(const xlings::home::prefix_domain::Domain& domain,
+                                                   std::vector<std::string> words,
+                                                   std::optional<xlings::home::domain_producer::OutputBinding> output,
+                                                   bool yes, EventStream& stream, bool runtime) {
+    if (stream.interactive()) {
+        std::vector<std::string> args{"subos"};
+        args.insert(args.end(), words.begin(), words.end());
+        if (yes) args.push_back("-y");
+        return xlings::home::domain_producer::run(domain, args, output, runtime);
+    }
+    nlohmann::json call{{"argv", words}};
+    if (yes) call["yes"] = true;
+    const std::vector<std::string> args{"interface", "subos_command", "--args", call.dump()};
+    int answered = -1;
+    auto rc = xlings::home::domain_producer::run(domain, args, output, runtime,
+        [&](std::string_view text) {
+            auto j = nlohmann::json::parse(text, nullptr, false);
+            if (!j.is_object()) return;
+            const auto kind = j.value("kind", "");
+            if (kind == "result") answered = j.value("exitCode", 1);
+            else if (kind == "data")
+                stream.emit(DataEvent{j.value("dataKind", ""), j.value("payload", nlohmann::json()).dump()});
+            else if (kind == "progress")
+                stream.emit(ProgressEvent{j.value("phase", ""), j.value("percent", 0.0f), j.value("message", "")});
+            else if (kind == "log") {
+                const auto level = j.value("level", "info");
+                stream.emit(LogEvent{level == "warn" ? LogLevel::warn : level == "error" ? LogLevel::error
+                                     : level == "debug" ? LogLevel::debug : LogLevel::info,
+                                     j.value("message", "")});
+            } else if (kind == "error")
+                stream.emit(ErrorEvent{error_code_from_wire(j.value("code", "")), j.value("message", ""),
+                                       j.value("recoverable", false), j.value("hint", "")});
+            else if (kind == "prompt")
+                stream.emit(ErrorEvent{ErrorCode::InvalidInput, j.value("question", ""), true,
+                                       "answer it with -y"});
+        });
+    if (rc && answered >= 0) rc = answered;
+    return rc;
+}
+
 int run(int argc, char* argv[], EventStream& stream) {
     // Drop the options root publishes as valid on every command before any
     // subcommand's argv loop sees them. `subos new` and `subos use` end their
@@ -2143,41 +2191,7 @@ int run(int argc, char* argv[], EventStream& stream) {
                 words[i + 1] = (fs::path("/run/xlings-domain-output") / leaf).string() + (dir ? "/" : "");
                 break;
             }
-            std::expected<int, std::string> rc = 0;
-            if (stream.interactive()) {
-                std::vector<std::string> args{"subos"};
-                args.insert(args.end(), words.begin(), words.end());
-                if (yesGiven) args.push_back("-y");
-                rc = xlings::home::domain_producer::run((**scope).domain, args, output, true);
-            } else {
-                nlohmann::json call{{"argv", words}};
-                if (yesGiven) call["yes"] = true;
-                const std::vector<std::string> args{"interface", "subos_command", "--args", call.dump()};
-                int answered = -1;
-                rc = xlings::home::domain_producer::run((**scope).domain, args, output, true,
-                    [&](std::string_view text) {
-                        auto j = nlohmann::json::parse(text, nullptr, false);
-                        if (!j.is_object()) return;
-                        const auto kind = j.value("kind", "");
-                        if (kind == "result") answered = j.value("exitCode", 1);
-                        else if (kind == "data")
-                            stream.emit(DataEvent{j.value("dataKind", ""), j.value("payload", nlohmann::json()).dump()});
-                        else if (kind == "progress")
-                            stream.emit(ProgressEvent{j.value("phase", ""), j.value("percent", 0.0f), j.value("message", "")});
-                        else if (kind == "log") {
-                            const auto level = j.value("level", "info");
-                            stream.emit(LogEvent{level == "warn" ? LogLevel::warn : level == "error" ? LogLevel::error
-                                                 : level == "debug" ? LogLevel::debug : LogLevel::info,
-                                                 j.value("message", "")});
-                        } else if (kind == "error")
-                            stream.emit(ErrorEvent{error_code_from_wire(j.value("code", "")), j.value("message", ""),
-                                                   j.value("recoverable", false), j.value("hint", "")});
-                        else if (kind == "prompt")
-                            stream.emit(ErrorEvent{ErrorCode::InvalidInput, j.value("question", ""), true,
-                                                   "answer it with -y"});
-                    });
-                if (rc && answered >= 0) rc = answered;
-            }
+            auto rc = run_domain_relayed_((**scope).domain, words, output, yesGiven, stream);
             if (!rc) {
                 stream.emit(ErrorEvent{.code = ErrorCode::Internal, .message = rc.error(), .recoverable = true});
                 return 1;

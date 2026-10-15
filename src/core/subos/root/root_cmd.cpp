@@ -403,7 +403,10 @@ std::optional<int> produce_domain_at_creation_(const std::string& name, bool,
         error_(stream, prepared.error()); return 1;
     }
     const std::vector<std::string> initialize{"self", "init"};
-    auto init = xlings::home::domain_producer::run(*selected, initialize);
+    // Its own words are not the caller's: through the interface they would be
+    // text in a stream of events.
+    auto init = xlings::home::domain_producer::run(*selected, initialize, std::nullopt, false,
+                                                   [](std::string_view) {});
     // The namespace is judged by what it did, not by its exit code: a home
     // initialised inside has its default SubOS.
     std::error_code ec;
@@ -419,7 +422,12 @@ std::optional<int> produce_domain_at_creation_(const std::string& name, bool,
         error_(stream, init ? std::format("prefix-domain initialization failed (exit {}); private domain retained", *init) : init.error());
         return init ? *init : 1;
     }
-    auto produced = xlings::home::domain_producer::run(*selected, arguments);
+    // What making it says -- the downloads, the configuration, the progress --
+    // reaches the caller: at a terminal directly, through the interface as
+    // events (U1: `luban new` showed one line for minutes).
+    std::vector<std::string> words(arguments.begin(), arguments.end());
+    if (!words.empty() && words.front() == "subos") words.erase(words.begin());
+    auto produced = run_domain_relayed_(*selected, std::move(words), std::nullopt, false, stream, false);
     if (!produced || *produced != 0) {
         // Asked to build it there only if this host can (luban new): what the
         // private namespace could not make is made in this home's prefix, said

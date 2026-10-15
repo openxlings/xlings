@@ -162,6 +162,27 @@ public:
             if (!e.hint.empty()) std::println(std::cerr, "    {}", paint_(e.hint, 1));
             break;
         case K::Data:
+            // Downloads are the batch's state as data (protocol 1.3): drawn
+            // under the open phase as the bytes so far, the share of them and
+            // the file being fetched -- making a system spends most of its
+            // time here, and it used to show nothing.
+            if (tty_ && !open_.empty() && e.data_kind == "download_progress" && e.data.is_object()) {
+                double total = 0, done = 0;
+                std::string current;
+                for (const auto& f : e.data.value("files", Json::array())) {
+                    total += f.value("totalBytes", 0.0);
+                    done += f.value("downloadedBytes", 0.0);
+                    if (f.value("started", false) && !f.value("finished", false) && current.empty())
+                        current = f.value("name", std::string{});
+                }
+                std::string detail = std::format("{:.1f} MB", done / 1e6);
+                if (total > 0) detail += std::format(" / {:.1f} MB", total / 1e6);
+                if (!current.empty()) detail += "  " + current;
+                if (detail.size() > 60) detail = detail.substr(0, 57) + "...";
+                std::print("\r\033[K{} {}{}  {}", paint_("▸", 36), open_,
+                           total > 0 ? std::format("  {:3.0f}%", done / total * 100) : std::string{}, paint_(detail, 2));
+                std::cout.flush();
+            }
             break;
         }
     }

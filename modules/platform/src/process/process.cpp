@@ -482,6 +482,15 @@ std::optional<std::string> make_terminal_raw(int fd) {
     return std::string(reinterpret_cast<const char*>(&saved), sizeof(saved));
 }
 
+bool is_terminal(int fd) { return fd >= 0 && ::isatty(fd) == 1; }
+
+std::optional<std::string> terminal_state(int fd) {
+    if (!::isatty(fd)) return std::nullopt;
+    struct termios saved{};
+    if (::tcgetattr(fd, &saved) != 0) return std::nullopt;
+    return std::string(reinterpret_cast<const char*>(&saved), sizeof(saved));
+}
+
 void restore_terminal(int fd, const std::string& saved) {
     if (saved.size() != sizeof(struct termios)) return;
     struct termios t{};
@@ -978,6 +987,8 @@ bool read_exact(int, void*, std::size_t) { return false; }
 std::optional<std::array<int, 2>> open_pty(int) { return std::nullopt; }
 bool copy_window_size(int, int) { return false; }
 std::optional<std::string> make_terminal_raw(int) { return std::nullopt; }
+std::optional<std::string> terminal_state(int) { return std::nullopt; }
+bool is_terminal(int) { return false; }
 void restore_terminal(int, const std::string&) {}
 void relay_terminal(int, int, int) {}
 int open_null() { return -1; }

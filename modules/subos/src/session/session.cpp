@@ -182,6 +182,10 @@ struct BrokerClient {
     int fd { -1 };
     int pid { -1 };
     std::string program;
+    // The terminal relay of a command run on a terminal of its own; done when
+    // the command's side of it is closed.
+    std::shared_ptr<std::atomic<bool>> relay;
+    bool caller_gone { false };   // the client hung up: the command is ended, nobody hears its exit
 };
 
 struct Client {
@@ -513,7 +517,10 @@ int supervise(const HomeView& home, Launch& L, Info& info, int listen_fd, std::a
         if (ctl_open) pfds.push_back({ctl[0]});
         if (broker_fd >= 0) pfds.push_back({broker_fd});
         if (net_notify_fd >= 0) pfds.push_back({net_notify_fd});
-        for (auto& b : brokered) if (b.fd >= 0 && b.pid < 0) pfds.push_back({b.fd});
+        // A running brokered command's caller is watched too: its hang-up ends
+        // the command (Ctrl-C reaches the command through its terminal; a
+        // closed window or a killed client through this).
+        for (auto& b : brokered) if (b.fd >= 0 && !b.caller_gone) pfds.push_back({b.fd});
         for (auto& c : clients) if (c.fd >= 0) pfds.push_back({c.fd});
         platform::poll_fds(pfds, 200);
 
@@ -547,6 +554,11 @@ int supervise(const HomeView& home, Launch& L, Info& info, int listen_fd, std::a
             if (!st) continue;
             int code = platform::exit_code(*st);
             b.pid = 0;
+            if (b.relay) {
+                const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+                while (!b.relay->load() && std::chrono::steady_clock::now() < until)
+                    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            }
             std::string refreshError;
             if (code == 0 && L.refresh_root) {
                 try {
@@ -575,7 +587,7 @@ int supervise(const HomeView& home, Launch& L, Info& info, int listen_fd, std::a
             auto reply = recorded ? nlohmann::json{{"exit", code}}
                                   : nlohmann::json{{"exit", kExitSetup}, {"error", "E_AUDIT_WRITE: session ended"}};
             if (!refreshError.empty()) reply["error"] = refreshError;
-            send_msg(b.fd, reply);
+            if (!b.caller_gone) send_msg(b.fd, reply);
             drop(b.fd);
         }
         std::erase_if(brokered, [](const BrokerClient& b) { return b.fd < 0; });
@@ -634,6 +646,19 @@ int supervise(const HomeView& home, Launch& L, Info& info, int listen_fd, std::a
             }
             if (auto bit = std::ranges::find(brokered, p.fd, &BrokerClient::fd); bit != brokered.end()) {
                 auto m = recv_msg(bit->fd);
+                if (bit->pid > 0) {
+                    // Nothing more is expected from a caller whose command runs:
+                    // this is its hang-up. The command's group ends with it.
+                    if (!m) {
+                        bit->caller_gone = true;
+                        platform::send_signal_group(bit->pid, sig::hangup);
+                        audit({{"event", "broker-caller-gone"}, {"session", info.id}, {"program", bit->program}},
+                              observe::Kind::Perm);
+                    } else {
+                        platform::close_fds(m->fds);
+                    }
+                    continue;
+                }
                 if (!m) { drop(bit->fd); continue; }
                 std::vector<std::string> argv;
                 for (auto& a : m->json.value("argv", nlohmann::json::array()))
@@ -694,29 +719,60 @@ int supervise(const HomeView& home, Launch& L, Info& info, int listen_fd, std::a
                 }
                 auto full = L.broker_exe;
                 full.insert(full.end(), argv.begin(), argv.end());
-                if (std::ranges::find(full, std::string("-y")) == full.end()) full.push_back("-y");
+                // At a terminal the command asks as it would on the host -- the
+                // plan, then "Proceed?" -- and Ctrl-C ends it: it runs on a
+                // terminal made here, relayed to the caller's (design
+                // 2026-10-16 L §4). Without one it is non-interactive, and a
+                // command that would ask says which flag answers it. It used
+                // to be given `-y` and XLINGS_NON_INTERACTIVE either way.
+                const bool tty = m->json.value("tty", false);
+                std::optional<std::array<int, 2>> pty;
+                if (tty) pty = platform::open_pty(m->fds[0]);
+                auto env = L.broker_env;
+                env.erase("XLINGS_NON_INTERACTIVE");
                 const int bp = platform::fork_process();
                 if (bp == 0) {
                     platform::reset_signals();
-                    // A session of its own. The descriptors it is handed are
-                    // the caller's terminal, whose foreground is the caller's
-                    // job inside; in this (the owner's) session that terminal
-                    // is the controlling one, and the first change of its
-                    // modes stopped this group with SIGTTOU -- the supervisor
-                    // and `luban enter` with it.
+                    // A session of its own: on its own terminal when there is
+                    // one, never on the caller's (whose foreground is the
+                    // caller's job inside; changing its modes from this, the
+                    // owner's, session stopped the group with SIGTTOU).
                     platform::new_session();
                     // From the home: a directory that is a home ends the
                     // project search, so the session owner's cwd (a project,
                     // perhaps) never becomes the scope this runs in.
-                    if (auto h = L.broker_env.find("XLINGS_HOME"); h != L.broker_env.end()) {
+                    if (auto h = env.find("XLINGS_HOME"); h != env.end()) {
                         std::error_code cec;
                         fs::current_path(h->second, cec);
                     }
-                    platform::redirect_stdio(m->fds);
-                    (void)platform::exec_path(full, L.broker_env);
+                    if (pty) {
+                        platform::close_fd((*pty)[0]);
+                        const int slave[3] = {(*pty)[1], (*pty)[1], (*pty)[1]};
+                        platform::redirect_stdio(slave);
+                        (void)platform::take_controlling_terminal();
+                    } else {
+                        platform::redirect_stdio(m->fds);
+                    }
+                    (void)platform::exec_path(full, env);
                     platform::exit_now(kExitCannotRun);
                 }
-                platform::close_fds(m->fds);
+                if (pty) {
+                    platform::close_fd((*pty)[1]);
+                    if (bp > 0) {
+                        bit->relay = std::make_shared<std::atomic<bool>>(false);
+                        std::thread([master = (*pty)[0], fds = m->fds, done = bit->relay]() mutable {
+                            platform::relay_terminal(master, fds[0], fds[1]);
+                            platform::close_fd(master);
+                            platform::close_fds(fds);
+                            done->store(true);
+                        }).detach();
+                    } else {
+                        platform::close_fd((*pty)[0]);
+                        platform::close_fds(m->fds);
+                    }
+                } else {
+                    platform::close_fds(m->fds);
+                }
                 bit->pid = bp > 0 ? bp : 0;
                 bit->program = argv[0];
                 if (bp <= 0) {
@@ -928,7 +984,15 @@ int host(const HomeView& home, Launch L) {
                .started = observe::utc_now(), .backend = L.backend, .digest = L.digest,
                .ttl = L.ttl, .detached = L.detached };
 
-    if (!L.detached) return supervise(home, L, info, listen_fd, *ctl, -1);
+    if (!L.detached) {
+        // Whatever ends the session -- a killed sandbox included -- the
+        // caller's terminal is left as it was found: the main command runs
+        // with it raw (session_init).
+        const auto found = platform::terminal_state(0);
+        const int rc = supervise(home, L, info, listen_fd, *ctl, -1);
+        if (found) platform::restore_terminal(0, *found);
+        return rc;
+    }
 
     // Detached: a supervisor that outlives this command. Readiness comes back
     // on a pipe; EOF without it means the session never started.
@@ -1149,16 +1213,45 @@ int session_init(std::span<const std::string> args) {
     // the self-pipe until the next reap, rather than waiting for the TTL tick.
     const int signal_fd = platform::route_signals({sig::child}, {});
     if (signal_fd < 0) return kExitSetup;
+    // The main command at a terminal runs on a terminal made here, exactly as
+    // a joined interactive command does (design 2026-10-16 L §4): handed the
+    // caller's terminal it was in the caller's session, whose foreground
+    // group is not visible in this PID namespace -- sh said "can't access
+    // tty; job control turned off", bash could not set its process group and
+    // fish exited ("tcgetpgrp failed"). The caller's terminal is raw while
+    // the command runs; its bytes, Ctrl-C included, reach the command through
+    // the new terminal's line discipline, and its window size follows.
+    std::optional<std::array<int, 2>> main_pty;
+    std::optional<std::string> main_cooked;
+    std::shared_ptr<std::atomic<bool>> main_relay_done;
     if (!main_argv.empty()) {
+        if (platform::stdin_is_terminal()) main_pty = platform::open_pty(0);
         main_pid = platform::fork_process();
         if (main_pid == 0) {
             platform::close_fd(ctl);
             platform::reset_signals();
+            if (main_pty) {
+                platform::new_session();
+                platform::close_fd((*main_pty)[0]);
+                const int slave[3] = {(*main_pty)[1], (*main_pty)[1], (*main_pty)[1]};
+                platform::redirect_stdio(slave);
+                (void)platform::take_controlling_terminal();
+            }
             const int e = platform::exec_program(main_argv, platform::environment());
             std::println(std::cerr, "xlings: {}: {}", main_argv[0], platform::error_text(e));
             platform::exit_now(platform::is_not_found(e) ? kExitNotFound : kExitCannotRun);
         }
         if (main_pid < 0) return kExitSetup;
+        if (main_pty) {
+            platform::close_fd((*main_pty)[1]);
+            main_cooked = platform::make_terminal_raw(0);
+            main_relay_done = std::make_shared<std::atomic<bool>>(false);
+            std::thread([master = (*main_pty)[0], done = main_relay_done] {
+                platform::relay_terminal(master, 0, 1);
+                platform::close_fd(master);
+                done->store(true);
+            }).detach();
+        }
     }
 
     // While the main command owns the terminal, Ctrl-C is its business.
@@ -1183,6 +1276,14 @@ int session_init(std::span<const std::string> args) {
             if (w == main_pid) {
                 main_done = true;
                 main_status = st;
+                // Its last output first, then the caller's terminal as it was.
+                if (main_relay_done) {
+                    const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+                    while (!main_relay_done->load() && std::chrono::steady_clock::now() < until)
+                        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                }
+                if (main_cooked) platform::restore_terminal(0, *main_cooked);
+                main_cooked.reset();
             } else if (auto it = joined.find(w); it != joined.end()) {
                 // The command's last output reaches the caller's terminal
                 // before the caller hears that it ended -- not after its own
