@@ -181,11 +181,11 @@ std::expected<void, std::string> carry_owner_index_(const Domain& domain) {
         const auto target = domain.physicalHome / "data" / name;
         if (fs::exists(target, ec)) continue;
         const auto staged = fs::path(target.string() + ".carry");
-        fs::remove_all(staged, ec);
+        fs::remove_all(staged, ec);  // subos-remove-all-ok: this copy's own staging directory
         fs::copy(it->path(), staged, fs::copy_options::recursive | fs::copy_options::copy_symlinks, ec);
         if (!ec) fs::rename(staged, target, ec);
         if (ec) {
-            fs::remove_all(staged, ec);
+            fs::remove_all(staged, ec);  // subos-remove-all-ok: this copy's own staging directory
             return std::unexpected(std::format("cannot carry the index {} into {}", name, domain.physicalHome.string()));
         }
     }
