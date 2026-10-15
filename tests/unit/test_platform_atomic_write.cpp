@@ -93,11 +93,13 @@ XTEST(AtomicPublication, WithoutTheRenameFlagAFileOrALinkIsPublishedByLink,
     ASSERT_TRUE(p::link_no_replace(file, home.root() / "file"));
     EXPECT_FALSE(fs::exists(file));
     EXPECT_EQ(tk::read_file(home.root() / "file"), "bytes");
-    const auto link = home.root() / "link-scratch";
-    fs::create_symlink("/nowhere/target", link);
-    ASSERT_TRUE(p::link_no_replace(link, home.root() / "link"));
-    EXPECT_EQ(fs::read_symlink(home.root() / "link"), "/nowhere/target");
-    EXPECT_FALSE(fs::exists(fs::symlink_status(link)));
+    if constexpr (tk::is_linux) {   // Linux's link(2) never follows a symbolic link
+        const auto link = home.root() / "link-scratch";
+        fs::create_symlink("/nowhere/target", link);
+        ASSERT_TRUE(p::link_no_replace(link, home.root() / "link"));
+        EXPECT_EQ(fs::read_symlink(home.root() / "link"), "/nowhere/target");
+        EXPECT_FALSE(fs::exists(fs::symlink_status(link)));
+    }
     const auto directory = home.root() / "dir-scratch";
     fs::create_directories(directory);
     EXPECT_FALSE(p::link_no_replace(directory, home.root() / "dir"));

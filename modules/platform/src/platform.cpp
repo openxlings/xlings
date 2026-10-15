@@ -658,51 +658,44 @@ int run_shell(std::string_view command, bool interactive) {
 
 std::expected<void, std::string> link_no_replace(const std::filesystem::path& from,
                                                  const std::filesystem::path& to) {
-#if defined(_WIN32)
-        return std::unexpected("cannot publish " + to.string() + ": no link publication on Windows");
-#else
-        struct stat st {};
-        if (::lstat(from.c_str(), &st) != 0)
-            return std::unexpected("cannot publish " + to.string() + ": " +
-                                   std::error_code(errno, std::generic_category()).message());
-        if (S_ISDIR(st.st_mode))
+        namespace fs = std::filesystem;
+        std::error_code ec;
+        const auto status = fs::symlink_status(from, ec);
+        if (ec) return std::unexpected("cannot publish " + to.string() + ": " + ec.message());
+        if (status.type() == fs::file_type::directory)
             return std::unexpected("cannot publish " + to.string() + ": this filesystem cannot rename a directory "
                                    "without replacing what is there");
-        // link(2) names the link itself, not what a symbolic link points to.
-        if (::link(from.c_str(), to.c_str()) != 0)
-            return std::unexpected("cannot publish " + to.string() + ": " +
-                                   std::error_code(errno, std::generic_category()).message());
-        ::unlink(from.c_str());
+        // A hard link names the link itself, not what a symbolic link points to.
+        fs::create_hard_link(from, to, ec);
+        if (ec) return std::unexpected("cannot publish " + to.string() + ": " + ec.message());
+        fs::remove(from, ec);
         return {};
-#endif
     }
 
 std::expected<void, std::string> rename_no_replace(const std::filesystem::path& from,
                                                        const std::filesystem::path& to) {
         std::error_code error;
-#if defined(__linux__) || defined(__APPLE__)
 #if defined(__linux__)
         constexpr unsigned NO_REPLACE = 1;  // renameat2 RENAME_NOREPLACE
-        const bool renamed = ::syscall(SYS_renameat2, AT_FDCWD, from.c_str(), AT_FDCWD, to.c_str(), NO_REPLACE) == 0;
-#else
-        const bool renamed = ::renamex_np(from.c_str(), to.c_str(), RENAME_EXCL) == 0;
-#endif
-        if (!renamed) {
+        if (::syscall(SYS_renameat2, AT_FDCWD, from.c_str(), AT_FDCWD, to.c_str(), NO_REPLACE) != 0)
             error = std::error_code(errno, std::generic_category());
-            // A filesystem without the flag (NFSv3 answers EINVAL): a link is
-            // the same promise for anything but a directory -- it fails, at
-            // once, when the destination exists -- and the scratch name goes.
-            if (errno == EINVAL || errno == ENOSYS || errno == EOPNOTSUPP || errno == ENOTSUP) {
-                if (auto linked = link_no_replace(from, to); linked) error.clear();
-                else return linked;
-            }
-        }
+#elif defined(__APPLE__)
+        if (::renamex_np(from.c_str(), to.c_str(), RENAME_EXCL) != 0)
+            error = std::error_code(errno, std::generic_category());
 #elif defined(_WIN32)
         if (!::MoveFileExW(from.wstring().c_str(), to.wstring().c_str(), MOVEFILE_WRITE_THROUGH))
             error = std::error_code(static_cast<int>(::GetLastError()), std::system_category());
 #else
         return std::unexpected("atomic publication without replacement is unavailable on this platform");
 #endif
+        // A filesystem without the flag (NFSv3 answers EINVAL): a link is the
+        // same promise for anything but a directory -- it fails, at once, when
+        // the destination exists -- and the scratch name goes.
+        if constexpr (!is_windows) {
+            if (error == std::errc::invalid_argument || error == std::errc::function_not_supported
+                || error == std::errc::operation_not_supported || error == std::errc::not_supported)
+                return link_no_replace(from, to);
+        }
         if (error) return std::unexpected("cannot publish " + to.string() + ": " + error.message());
         return {};
     }
