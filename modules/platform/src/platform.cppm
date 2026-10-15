@@ -335,13 +335,12 @@ namespace platform {
     export std::optional<ChangeStamp> change_stamp(const std::filesystem::path& path);
 
     // Publish a same-filesystem scratch atomically, refusing every existing destination.
-    // A filesystem without the rename flag (NFSv3) publishes a file or a link by
-    // link(2), which refuses an existing destination just as atomically; never a
-    // copy or a check-then-rename, so a directory there is refused.
+    // A filesystem without the rename flag (NFSv3) publishes a file or a link as a
+    // hard link, which refuses an existing destination just as atomically, and a
+    // directory by rename(2) onto a name that is not there (never a copy).
     export std::expected<void, std::string> rename_no_replace(
         const std::filesystem::path& from, const std::filesystem::path& to);
-    // That fallback on its own: a file or a link published under a new name by
-    // link(2) (refused when the name exists), the scratch name removed.
+    // That fallback on its own (what a filesystem without the flag gets).
     export std::expected<void, std::string> link_no_replace(
         const std::filesystem::path& from, const std::filesystem::path& to);
 

@@ -77,10 +77,10 @@ TEST(PlatformAtomicWrite, PublicationWithoutReplacementPreservesEveryExistingDes
 }
 
 // Where the rename flag is missing (NFSv3 answers EINVAL; mcpp#809), a file
-// or a link is published by link(2): the same refusal of an existing name, the
-// scratch name gone, a symbolic link published as itself. A directory has no
-// such fallback and is refused, never moved over what is there.
-XTEST(AtomicPublication, WithoutTheRenameFlagAFileOrALinkIsPublishedByLink,
+// or a link is published as a hard link: the same refusal of an existing name,
+// the scratch name gone, a symbolic link published as itself. A directory is
+// renamed onto a name that is not there, never over what is.
+XTEST(AtomicPublication, WithoutTheRenameFlagEveryEntryIsStillPublishedWithoutReplacing,
       .area = "platform", .covers = {"ATOMIC-PUBLICATION"}, .requires_ = {"posix"}) {
     if constexpr (!tk::is_posix) GTEST_SKIP() << "link(2)";
     auto home = tk::Home::isolated("link-publication");
@@ -101,7 +101,15 @@ XTEST(AtomicPublication, WithoutTheRenameFlagAFileOrALinkIsPublishedByLink,
         EXPECT_FALSE(fs::exists(fs::symlink_status(link)));
     }
     const auto directory = home.root() / "dir-scratch";
-    fs::create_directories(directory);
-    EXPECT_FALSE(p::link_no_replace(directory, home.root() / "dir"));
-    EXPECT_TRUE(fs::is_directory(directory));
+    fs::create_directories(directory / "inside");
+    const auto full = home.root() / "full";
+    fs::create_directories(full / "kept");
+    EXPECT_FALSE(p::link_no_replace(directory, full));
+    EXPECT_TRUE(fs::is_directory(full / "kept"));
+    const auto empty = home.root() / "empty";
+    fs::create_directories(empty);
+    EXPECT_FALSE(p::link_no_replace(directory, empty)) << "an existing name, even an empty directory, is refused";
+    ASSERT_TRUE(p::link_no_replace(directory, home.root() / "dir"));
+    EXPECT_TRUE(fs::is_directory(home.root() / "dir/inside"));
+    EXPECT_FALSE(fs::exists(directory));
 }

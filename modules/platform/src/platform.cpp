@@ -662,9 +662,22 @@ std::expected<void, std::string> link_no_replace(const std::filesystem::path& fr
         std::error_code ec;
         const auto status = fs::symlink_status(from, ec);
         if (ec) return std::unexpected("cannot publish " + to.string() + ": " + ec.message());
-        if (status.type() == fs::file_type::directory)
-            return std::unexpected("cannot publish " + to.string() + ": this filesystem cannot rename a directory "
-                                   "without replacing what is there");
+        if (status.type() == fs::file_type::directory) {
+            // No link for a directory: renamed only onto a name that is not
+            // there. The one window -- an empty directory made at that name
+            // between the look and the rename -- is a caller's own name under
+            // its lock; anything else there (a file, a link, a directory with
+            // something in it) is refused by rename(2) itself or here.
+            const auto there = fs::symlink_status(to, ec);
+            if (ec && ec != std::errc::no_such_file_or_directory)
+                return std::unexpected("cannot publish " + to.string() + ": " + ec.message());
+            if (fs::exists(there))
+                return std::unexpected("cannot publish " + to.string() + ": " +
+                                       std::make_error_code(std::errc::file_exists).message());
+            fs::rename(from, to, ec);
+            if (ec) return std::unexpected("cannot publish " + to.string() + ": " + ec.message());
+            return {};
+        }
         // A hard link names the link itself, not what a symbolic link points to.
         fs::create_hard_link(from, to, ec);
         if (ec) return std::unexpected("cannot publish " + to.string() + ": " + ec.message());

@@ -40,7 +40,7 @@ env:
 
 # The shape of a round (tests/README.md, "Parallel runs"):
 #
-#   plan ─┬─ release ─────────────┬─ e2e, isolation-fix, host-matrix, arch-package, root,
+#   plan ─┬─ release ─────────────┬─ e2e, isolation-fix, host-matrix, arch-package, root, nfs,
 #         │  (the one release     │  plan-distro → distro → wsl-import
 #         │   build)              └─ (acceptance takes it when it is ready)
 #         ├─ build ─┬─ unit (i/n) ... tests/lanes.toml [unit]: n machines, each
@@ -642,6 +642,38 @@ jobs:
       - name: "ROOT-01: root usability (pure root + simulated sudo)"
         run: |
           bash tests/e2e/root_usability_test.sh build/release.tar.gz
+
+  # A home on NFSv3 (mcpp-community/mcpp#809): the filesystem has no
+  # renameat2 flags, and what a package places into a SubOS is still
+  # published, never over what is there.
+  nfs:
+    needs: release
+    if: ${{ !cancelled() && needs.release.outputs.release_ready == 'true' }}
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Fetch the release artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: xlings-linux-x86_64
+          path: build
+
+      - name: An NFSv3 export of this runner, mounted
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y nfs-kernel-server  # host-dep-ok: the runner's NFS server is the filesystem under test
+          sudo mkdir -p /srv/nfs /mnt/nfs
+          sudo chown "$(id -u):$(id -g)" /srv/nfs
+          echo "/srv/nfs 127.0.0.1(rw,sync,no_subtree_check,all_squash,anonuid=$(id -u),anongid=$(id -g))" | sudo tee /etc/exports
+          sudo exportfs -ra
+          sudo systemctl restart nfs-kernel-server
+          sudo mount -t nfs -o vers=3,nolock,local_lock=all 127.0.0.1:/srv/nfs /mnt/nfs
+          grep " /mnt/nfs " /proc/mounts
+
+      - name: "A home on it: install, place, remove"
+        run: bash tests/e2e/nfs_home_test.sh build/release.tar.gz /mnt/nfs
 
   # Deployment S as a distribution ships it (design part 2 §5): the AUR
   # recipe built from THIS build's release artifact, installed with pacman,
