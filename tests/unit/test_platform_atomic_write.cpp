@@ -1,8 +1,9 @@
 #include <gtest/gtest.h>
+import xlings.testkit;
+#include "xlings/xtest.hpp"
 
 import std;
 import xlings.platform;
-import xlings.testkit;
 
 namespace fs = std::filesystem;
 namespace tk = xlings::testkit;
@@ -73,4 +74,32 @@ TEST(PlatformAtomicWrite, PublicationWithoutReplacementPreservesEveryExistingDes
     ASSERT_TRUE(result) << result.error();
     EXPECT_FALSE(fs::exists(source));
     EXPECT_EQ(tk::read_file(published), "new artefact");
+}
+
+// Where the rename flag is missing (NFSv3 answers EINVAL; mcpp#809), a file
+// or a link is published by link(2): the same refusal of an existing name, the
+// scratch name gone, a symbolic link published as itself. A directory has no
+// such fallback and is refused, never moved over what is there.
+XTEST(AtomicPublication, WithoutTheRenameFlagAFileOrALinkIsPublishedByLink,
+      .area = "platform", .covers = {"ATOMIC-PUBLICATION"}, .requires_ = {"posix"}) {
+    if constexpr (!tk::is_posix) GTEST_SKIP() << "link(2)";
+    auto home = tk::Home::isolated("link-publication");
+    const auto file = home.root() / "file-scratch";
+    tk::write_file(file, "bytes");
+    const auto taken = home.root() / "taken";
+    tk::write_file(taken, "old");
+    EXPECT_FALSE(p::link_no_replace(file, taken));
+    EXPECT_EQ(tk::read_file(taken), "old");
+    ASSERT_TRUE(p::link_no_replace(file, home.root() / "file"));
+    EXPECT_FALSE(fs::exists(file));
+    EXPECT_EQ(tk::read_file(home.root() / "file"), "bytes");
+    const auto link = home.root() / "link-scratch";
+    fs::create_symlink("/nowhere/target", link);
+    ASSERT_TRUE(p::link_no_replace(link, home.root() / "link"));
+    EXPECT_EQ(fs::read_symlink(home.root() / "link"), "/nowhere/target");
+    EXPECT_FALSE(fs::exists(fs::symlink_status(link)));
+    const auto directory = home.root() / "dir-scratch";
+    fs::create_directories(directory);
+    EXPECT_FALSE(p::link_no_replace(directory, home.root() / "dir"));
+    EXPECT_TRUE(fs::is_directory(directory));
 }
