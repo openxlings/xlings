@@ -34,7 +34,10 @@ std::expected<Settings, std::string> read_settings(const fs::path& home, std::st
     // The edition's defaults first (its root carries them, so they follow an
     // upgrade); a file that cannot be read is no defaults, never an error here.
     if (const auto root = root_of(home, name)) {
-        const auto defaults = *root / "usr" / "share" / "luban" / "settings.json";
+        // Read where it is: a system in a prefix domain links its files by
+        // their paths there (/xlings/...), which this host does not have.
+        const auto at = xlings::subos::locate(xlings::subos::HomeView{home}, name);
+        const auto defaults = xlings::subos::physical(at, *root / "usr" / "share" / "luban" / "settings.json");
         std::error_code dec;
         if (fs::is_regular_file(defaults, dec)) {
             auto d = nlohmann::json::parse(xlings::platform::read_file_to_string(defaults.string()), nullptr, false);

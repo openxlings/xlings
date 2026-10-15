@@ -451,6 +451,19 @@ bool ensure_home_layout(const fs::path& home_dir) {
         }
     }
 
+    // What a home is made of needs symbolic links (its programs' shims, a
+    // SubOS's links): a filesystem without them (FAT, exFAT) is named with
+    // what to do, before anything half-works there. Windows' homes use
+    // junctions and copies instead.
+    if constexpr (!platform::is_windows) {
+        if (const auto caps = platform::fs_caps(home_dir); caps.measured && !caps.symlinks) {
+            log::error("[xlings:self]: {} is on a filesystem without symbolic links ({}); a home needs them -- "
+                       "set XLINGS_HOME to a directory on another filesystem",
+                       home_dir.string(), caps.type.empty() ? "unknown" : caps.type);
+            return false;
+        }
+    }
+
     auto current_link = home_dir / "subos" / "current";
     platform::create_directory_link(current_link, default_subos);
 

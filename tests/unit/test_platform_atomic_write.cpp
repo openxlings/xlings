@@ -1,8 +1,9 @@
 #include <gtest/gtest.h>
+import xlings.testkit;
+#include "xlings/xtest.hpp"
 
 import std;
 import xlings.platform;
-import xlings.testkit;
 
 namespace fs = std::filesystem;
 namespace tk = xlings::testkit;
@@ -73,4 +74,63 @@ TEST(PlatformAtomicWrite, PublicationWithoutReplacementPreservesEveryExistingDes
     ASSERT_TRUE(result) << result.error();
     EXPECT_FALSE(fs::exists(source));
     EXPECT_EQ(tk::read_file(published), "new artefact");
+}
+
+// Every filesystem a home may be on publishes without replacing (design
+// 2026-10-15-filesystem-capabilities): each strategy, chosen by what the
+// filesystem was measured to do, is driven here on this one by stating the
+// capabilities -- the NFSv3 lane proves the measurement on the real thing.
+XTEST(AtomicPublication, EveryStrategyPublishesAndNoneReplaces,
+      .area = "platform", .covers = {"ATOMIC-PUBLICATION"}) {
+    auto home = tk::Home::isolated("publication-strategies");
+    const auto root = home.root();
+    p::FsCaps noFlag;                         // NFSv3: no rename flags, hard links
+    noFlag.rename_no_replace = false;
+    noFlag.rename_exchange = false;
+    p::FsCaps noLinks = noFlag;               // and no hard links either
+    noLinks.hard_links = false;
+    for (const auto& [label, caps] : {std::pair{"native", p::FsCaps{}}, std::pair{"no-flag", noFlag},
+                                      std::pair{"no-links", noLinks}}) {
+        if (std::string_view(label) == "native" && !p::fs_caps(root).rename_no_replace) continue;
+        const auto dir = root / label;
+        fs::create_directories(dir);
+        tk::write_file(dir / "file-scratch", "bytes");
+        tk::write_file(dir / "taken", "old");
+        EXPECT_FALSE(p::publish_no_replace(dir / "file-scratch", dir / "taken", caps)) << label;
+        EXPECT_EQ(tk::read_file(dir / "taken"), "old") << label;
+        ASSERT_TRUE(p::publish_no_replace(dir / "file-scratch", dir / "file", caps)) << label;
+        EXPECT_FALSE(fs::exists(dir / "file-scratch")) << label;
+        EXPECT_EQ(tk::read_file(dir / "file"), "bytes") << label;
+        if constexpr (tk::is_posix) {         // a symbolic link is published as itself
+            fs::create_symlink("/nowhere/target", dir / "link-scratch");
+            EXPECT_FALSE(p::publish_no_replace(dir / "link-scratch", dir / "taken", caps)) << label;
+            EXPECT_EQ(tk::read_file(dir / "taken"), "old") << label;
+            ASSERT_TRUE(p::publish_no_replace(dir / "link-scratch", dir / "link", caps)) << label;
+            EXPECT_EQ(fs::read_symlink(dir / "link"), "/nowhere/target") << label;
+        }
+        fs::create_directories(dir / "dir-scratch/inside");
+        fs::create_directories(dir / "full/kept");
+        fs::create_directories(dir / "empty");
+        EXPECT_FALSE(p::publish_no_replace(dir / "dir-scratch", dir / "full", caps)) << label;
+        EXPECT_TRUE(fs::is_directory(dir / "full/kept")) << label;
+        EXPECT_FALSE(p::publish_no_replace(dir / "dir-scratch", dir / "empty", caps))
+            << label << ": an existing name, even an empty directory, is refused";
+        ASSERT_TRUE(p::publish_no_replace(dir / "dir-scratch", dir / "dir", caps)) << label;
+        EXPECT_TRUE(fs::is_directory(dir / "dir/inside")) << label;
+    }
+}
+
+// The measurement: what this test's own filesystem does, found by trying.
+XTEST(AtomicPublication, AFilesystemIsMeasuredWhereItIs,
+      .area = "platform", .covers = {"ATOMIC-PUBLICATION"}) {
+    auto home = tk::Home::isolated("fs-caps");
+    const auto caps = p::probe_fs_caps(home.root());
+    EXPECT_TRUE(caps.measured);
+    if constexpr (tk::is_posix) {
+        EXPECT_TRUE(caps.symlinks);
+        EXPECT_TRUE(caps.hard_links);
+    }
+    if constexpr (tk::is_linux) EXPECT_FALSE(caps.type.empty());
+    for (const auto& e : fs::directory_iterator(home.root()))
+        EXPECT_FALSE(e.path().filename().string().starts_with(".xlings-fsprobe-")) << "the probe left " << e.path();
 }

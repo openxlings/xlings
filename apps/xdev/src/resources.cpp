@@ -66,13 +66,32 @@ run(std::span<const Task> tasks, std::size_t jobs, const std::filesystem::path& 
             if (auto valid = normalize(name); !valid) return std::unexpected(valid.error());
     }
     std::vector<Result> results(tasks.size());
+    // `cpu` is the machine: a task that holds it (a timing a busy machine
+    // would falsify) runs after the others, alone.
+    std::vector<std::size_t> order, alone;
+    for (std::size_t index = 0; index < tasks.size(); ++index)
+        (std::ranges::any_of(tasks[index].resources, [](const std::string& r) {
+            return normalize(r).value_or("") == "cpu";
+        }) ? alone : order).push_back(index);
+    const auto shared = order.size();
+    order.insert(order.end(), alone.begin(), alone.end());
     std::atomic<std::size_t> next { 0 };
+    std::atomic<std::size_t> sharedLeft { shared };
+    std::mutex aloneLock;
     std::vector<std::jthread> workers;
     for (std::size_t worker = 0; worker < std::min(jobs, tasks.size()); ++worker) {
         workers.emplace_back([&] {
             for (;;) {
-                const auto index = next++;
-                if (index >= tasks.size()) return;
+                const auto at = next++;
+                if (at >= order.size()) return;
+                const auto index = order[at];
+                std::unique_lock<std::mutex> alone(aloneLock, std::defer_lock);
+                if (at >= shared) {
+                    // Alone: one at a time, once every other task has ended.
+                    alone.lock();
+                    while (sharedLeft.load() != 0) std::this_thread::sleep_for(std::chrono::milliseconds(20));
+                }
+                struct Done { std::atomic<std::size_t>* n; ~Done() { if (n) --*n; } } done{at < shared ? &sharedLeft : nullptr};
                 const auto started = std::chrono::steady_clock::now();
                 Result result{.id = tasks[index].id};
                 try {

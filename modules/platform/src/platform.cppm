@@ -18,6 +18,7 @@ export import :tcp;
 export import :network;
 export import :net_notify;
 export import :asset_paths;
+export import :fs_caps;
 export import :machine_etc;
 export import :domain_mount;
 // The kernel's isolation mechanisms: namespaces, Landlock, seccomp, beneath.
@@ -334,8 +335,9 @@ namespace platform {
     };
     export std::optional<ChangeStamp> change_stamp(const std::filesystem::path& path);
 
-    // Publish a same-filesystem scratch atomically, refusing every existing destination.
-    // No copy or check-then-rename fallback when the OS cannot enforce this.
+    // Publish a same-filesystem scratch atomically, refusing every existing
+    // destination, the way the destination's filesystem allows (fs_caps,
+    // publish_no_replace): never a copy, never over what is there.
     export std::expected<void, std::string> rename_no_replace(
         const std::filesystem::path& from, const std::filesystem::path& to);
 

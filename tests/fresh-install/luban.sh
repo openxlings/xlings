@@ -302,6 +302,18 @@ suite_luban_host() {
     OUT="$(luban status 2>&1)" || true
     printf '%s\n' "$OUT" | sed 's/^/      /'
     says "the host status answers" "ready"
-    refuses "a Luban system is not made here" luban new box --edition tiny
-    refuses "the window is not published for this platform" xlings install luban-os -y
+    # A hosted Mac has no nested virtualization: the Luban host machine cannot
+    # start, and `luban new` says so; with it, a system is made there.
+    if grep -qE "sandbox +ready" <<<"$OUT"; then
+        capture "a Luban system in the Luban host machine" luban new box --edition tiny -y
+        capture "a command in it" luban run box -- uname -s
+        says "it runs Linux" "Linux"
+        capture "removed" luban rm box -y
+    else
+        refuses "a Luban system is not made here" luban new box --edition tiny
+    fi
+    # The window is published for macOS from 2026.10.15.1 (part 4 §8.1).
+    capture "the window" xlings install luban-os -y
+    capture "it answers" luban-os --version
+    says "the Luban OS window is installed" "luban-os"
 }
