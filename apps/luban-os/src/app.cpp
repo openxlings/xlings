@@ -19,6 +19,7 @@ import luban.vm;
 import luban.desktop.host;
 import xdesk.term;
 import opensal.wlr;
+import tray;
 
 namespace luban::os {
 
@@ -202,6 +203,8 @@ struct Confirm {
     std::string title, body, yes;
     bool danger { false };
     std::function<void()> on_yes;
+    std::string alt;                 // a second way to answer yes, when there is one
+    std::function<void()> on_alt;
 };
 
 // The nano view: commands run one at a time, their output kept.
@@ -267,6 +270,15 @@ struct App {
     std::optional<Confirm> confirm;
     std::string notice;
     std::function<void()> later;       // done after the frame (what replaces what the frame drew)
+    // The status-area icon (design 2026-10-16 L §13.12).
+    std::unique_ptr<tray::Icon> tray;
+    std::string tray_error;            // why there is none here
+    std::string tray_said;             // what it shows now (it is told only changes)
+    std::chrono::steady_clock::time_point tray_checked;
+    bool hidden { false };             // the window is closed and the app is in the tray
+    std::vector<std::string> tray_injected;   // tests: chosen at the icon
+    bool job_told { true };            // the last job's end was said (a notification when unseen)
+    std::string job_subject;           // the system the last job made (its notification goes in)
     std::optional<std::chrono::steady_clock::time_point> notice_until;   // a notice over a system, until
     // Quick start
     char new_name[64] = {};
@@ -358,6 +370,8 @@ struct App {
         job = std::make_unique<Job>();
         job->title = std::move(title);
         job->cancel = std::make_shared<std::atomic<bool>>(false);
+        job_told = false;
+        job_subject.clear();
         auto* j = job.get();
         auto* w = window.get();
         service::Context c = ctx;
@@ -887,6 +901,7 @@ void make_(App& a) {
                     write_app_settings(app.home, app.settings);
                     app.open_run(name);
                 });
+    a.job_subject = name;
 }
 
 // The chosen edition's panel: what it is, its settings, making it. At
@@ -1336,7 +1351,7 @@ void close_dialog_(App& a) {
 void confirm_(App& a) {
     begin_overlay_("confirm");
     auto* dl = ImGui::GetWindowDrawList();
-    const ImVec2 size(std::min(px(520), ImGui::GetWindowWidth() - px(32)), px(220));
+    const ImVec2 size(std::min(px(a.confirm->alt.empty() ? 520 : 700), ImGui::GetWindowWidth() - px(32)), px(220));
     const ImVec2 at = overlay_(dl, size);
     const ImVec2 wo = ImGui::GetWindowPos();
     auto& c = *a.confirm;
@@ -1344,8 +1359,16 @@ void confirm_(App& a) {
                 c.danger ? th_().bad : th_().accent);
     imkit::text(dl, ImVec2(at.x + px(60), at.y + px(24)), c.title, th_().text, 20, true);
     paragraph_(dl, ImVec2(at.x + px(24), at.y + px(68)), c.body, size.x - px(48), th_().text_dim, 15);
-    bool yes = false, no = false;
-    ImGui::SetCursorPos(ImVec2(at.x - wo.x + size.x - px(24) - px(140) - px(12) - px(120), at.y - wo.y + size.y - px(60)));
+    bool yes = false, no = false, alt = false;
+    float bx = size.x - px(24) - px(140) - px(12) - px(120);
+    if (!c.alt.empty()) {
+        const float aw = std::max(px(140), imkit::text_size(c.alt).x + px(32));
+        bx -= aw + px(12);
+        ImGui::SetCursorPos(ImVec2(at.x - wo.x + size.x - px(24) - px(140) - px(12) - aw, at.y - wo.y + size.y - px(60)));
+        alt = imkit::button("confirm:alt", c.alt, ImVec2(aw / imkit::scale(), 40), imkit::Look::Danger);
+        mark_(a, "confirm:alt");
+    }
+    ImGui::SetCursorPos(ImVec2(at.x - wo.x + bx, at.y - wo.y + size.y - px(60)));
     no = imkit::button("confirm:no", tr("Cancel", "取消"), ImVec2(120, 40), imkit::Look::Ghost);
     mark_(a, "confirm:no");
     ImGui::SetCursorPos(ImVec2(at.x - wo.x + size.x - px(24) - px(140), at.y - wo.y + size.y - px(60)));
@@ -1356,7 +1379,8 @@ void confirm_(App& a) {
         if (k.name == "Escape") no = true;
         else if (k.name == "Enter") yes = true;
     }
-    if (yes) { auto act = std::move(c.on_yes); a.confirm.reset(); if (act) act(); }
+    if (alt) { auto act = std::move(c.on_alt); a.confirm.reset(); if (act) act(); }
+    else if (yes) { auto act = std::move(c.on_yes); a.confirm.reset(); if (act) act(); }
     else if (no) a.confirm.reset();
 }
 
@@ -2305,6 +2329,8 @@ Json state_(const App& a) {
     j["admin_page"] = a.admin_page;
     j["desktop_text"] = a.desktop_text;
     j["ended_why"] = a.ended_why;
+    j["tray"] = {{"backend", a.tray ? std::string(a.tray->backend()) : std::string{}}, {"error", a.tray_error},
+                 {"hidden", a.hidden}, {"said", a.tray_said}};
     j["scale"] = imkit::scale();
     j["unit"] = imkit::unit();
     if (a.window) j["fonts"] = a.window->font_dir().string();
@@ -2607,6 +2633,12 @@ void script_step_(App& a, Script& sc) {
         words >> w >> h;
         a.window->set_size(w, h);
         next();
+    } else if (cmd == "tray") {
+        // As if chosen at the status-area icon.
+        std::string what;
+        words >> what;
+        a.tray_injected.push_back(what);
+        next();
     } else if (cmd == "close") {
         a.window->inject_close();
         next();
@@ -2625,6 +2657,151 @@ void script_step_(App& a, Script& sc) {
         next();
     } else {
         fail("not a script command");
+    }
+}
+
+// ── the status-area icon (design 2026-10-16 L §13.12) ──────────────────
+
+// The systems running now: a machine, or a sandbox's session.
+std::vector<const service::Environment*> running_(const App& a) {
+    std::vector<const service::Environment*> out;
+    for (const auto& e : a.systems)
+        if (e.running || vm::running(a.home, e.name)) out.push_back(&e);
+    return out;
+}
+
+// The icon, made once it is wanted; where this desktop has none, why.
+bool ensure_tray_(App& a) {
+    if (a.tray) return true;
+    if (!a.tray_error.empty()) return false;
+    auto t = tray::Icon::create("luban-os", "Luban OS");
+    if (!t) { a.tray_error = t.error(); return false; }
+    a.tray = std::move(*t);
+    auto* w = a.window.get();
+    a.tray->on_wake([w] { w->wake(); });
+    a.tray_said.clear();
+    return true;
+}
+
+// What the icon shows: the systems that run, what is being done, a menu of both.
+void tray_update_(App& a) {
+    if (!a.tray) return;
+    const auto on = running_(a);
+    const bool busy = a.job && !a.job->done;
+    const bool failed = a.job && a.job->done && a.job->code != 0;
+    std::string body = on.empty() ? std::string(tr("Nothing running", "没有运行中的系统"))
+                                  : [&] { const auto n = on.size(); return std::vformat(tr("{} running", "{} 个系统运行中"), std::make_format_args(n)); }();
+    if (busy) {
+        std::lock_guard l(a.job->m);
+        body += " · " + a.job->title + (a.job->percent >= 0 ? std::format(" {:.0f} %", a.job->percent * 100) : std::string{});
+    }
+    tray::Status s{.title = "Luban OS", .body = body, .icons = art::tray_images(static_cast<int>(on.size()), busy, failed),
+                   .attention = failed};
+    for (const auto* e : on) {
+        const bool machine = vm::running(a.home, e->name).has_value();
+        tray::MenuItem item{.id = "sys:" + e->name, .label = std::format("{}  ({})", e->name, machine ? tr("machine", "机器") : tr("sandbox", "沙箱"))};
+        item.children.push_back({.id = "sys:" + e->name + ":open", .label = std::string(tr("Open", "打开"))});
+        if (machine) {
+            item.children.push_back({.id = "sys:" + e->name + ":console", .label = std::string(tr("Open its console", "打开控制台"))});
+            item.children.push_back({.id = "sys:" + e->name + ":off", .label = std::string(tr("Power off", "关机"))});
+        }
+        item.children.push_back({.id = "sys:" + e->name + ":manage", .label = std::string(tr("Manage", "管理"))});
+        s.menu.push_back(std::move(item));
+    }
+    if (!on.empty()) s.menu.push_back({.separator = true});
+    s.menu.push_back({.id = "new", .label = std::string(tr("New system…", "新建系统…"))});
+    s.menu.push_back({.id = "open", .label = std::string(tr("Open Luban OS", "打开 Luban OS"))});
+    s.menu.push_back({.id = "settings", .label = std::string(tr("Settings", "设置"))});
+    s.menu.push_back({.separator = true});
+    s.menu.push_back({.id = "quit", .label = std::string(tr("Quit", "退出"))});
+    // Told only what changed.
+    std::string said = body + (failed ? "!" : "");
+    for (const auto& m : s.menu) said += "|" + m.id;
+    if (said == a.tray_said) return;
+    a.tray_said = said;
+    a.tray->update(s);
+}
+
+void show_(App& a) {
+    a.hidden = false;
+    a.window->show();
+}
+
+// The window goes, the app stays: in the tray where there is one, else
+// minimized (design 2026-10-16 L §13.11-12).
+void to_background_(App& a) {
+    a.console.reset();
+    a.close_display();
+    a.view = View::Launcher;
+    a.refresh();
+    a.window->set_title("Luban OS");
+    a.window->clear_close_request();
+    if (ensure_tray_(a)) {
+        a.hidden = true;
+        a.window->hide();
+        tray_update_(a);
+        static bool told = false;
+        if (!std::exchange(told, true))
+            a.tray->notify("Luban OS", std::string(tr("Still here: your systems keep running. The tray icon opens it again.",
+                                                      "仍在运行：系统继续运行，点状态栏图标可再次打开。")), "open");
+    } else {
+        a.window->minimize();
+    }
+}
+
+// Leaving the app: with systems running, asked whether they go too.
+void quit_(App& a) {
+    const auto on = running_(a);
+    if (on.empty()) { a.quit = true; return; }
+    const auto count = on.size();
+    show_(a);
+    a.confirm = Confirm{std::string(tr("Quit Luban OS?", "退出 Luban OS？")),
+                        std::vformat(tr("{} systems are running. They can keep running without the window, or be powered off.",
+                                        "{} 个系统正在运行。可以让它们在没有窗口时继续运行，或全部关机。"), std::make_format_args(count)),
+                        std::string(tr("Keep them running", "保持运行")), false, [&a] { a.quit = true; },
+                        std::string(tr("Power off all", "全部关机")), [&a] {
+                            for (const auto* e : running_(a))
+                                if (vm::running(a.home, e->name)) (void)vm::stop(a.ctx, e->name);
+                            a.quit = true;
+                        }};
+}
+
+// What was chosen at the icon.
+void tray_take_(App& a) {
+    std::vector<std::string> chosen = std::exchange(a.tray_injected, {});
+    if (a.tray) {
+        a.tray->pump();
+        for (auto& t : a.tray->take()) chosen.push_back(std::move(t));
+    }
+    for (const auto& what : chosen) {
+        if (what == "activate" || what == "open" || what == "notification:open") {
+            show_(a);
+            const auto on = running_(a);
+            if (what == "activate" && on.size() == 1 && a.view == View::Launcher) a.enter(on.front()->name);
+        } else if (what == "new") { show_(a); a.view = View::QuickStart; }
+        else if (what == "settings") { show_(a); a.before_admin = a.view; a.view = View::Admin; a.admin_tab = "settings"; }
+        else if (what == "quit") quit_(a);
+        else if (what.starts_with("notification:made:")) { show_(a); a.enter(what.substr(18)); }
+        else if (what.starts_with("notification:")) show_(a);
+        else if (what.starts_with("sys:")) {
+            const auto rest = what.substr(4);
+            const auto colon = rest.rfind(':');
+            const auto name = rest.substr(0, colon), act = rest.substr(colon + 1);
+            if (act == "open") { show_(a); a.enter(name); }
+            else if (act == "console") { show_(a); a.current = name; a.open_console(name, true); }
+            else if (act == "manage") {
+                show_(a);
+                a.before_admin = a.view;
+                a.view = View::Admin;
+                a.admin_tab = "systems";
+                for (int i = 0; i < static_cast<int>(a.systems.size()); ++i)
+                    if (a.systems[static_cast<std::size_t>(i)].name == name) a.admin_selected = i;
+            } else if (act == "off") {
+                auto* w = a.window.get();
+                std::thread([ctx = a.ctx, name, w] { (void)vm::stop(ctx, name); w->wake(); }).detach();
+            }
+        }
+        a.tray_said.clear();
     }
 }
 
@@ -2763,13 +2940,31 @@ int run(int argc, char* argv[]) {
                     a.close_dialog = true;
                     a.close_choice = a.settings.close_choice;
                     a.close_remember = false;
-                } else {
-                    if (on_close == "poweroff") (void)vm::stop(a.ctx, a.current);
+                } else if (on_close == "poweroff") {
+                    (void)vm::stop(a.ctx, a.current);
                     break;
+                } else {
+                    to_background_(a);
                 }
+            } else if (a.settings.keep_in_tray || !running_(a).empty()) {
+                // Something still runs, or the app is to stay: the tray.
+                to_background_(a);
             } else {
                 break;
             }
+        }
+        if (a.settings.keep_in_tray && !a.tray && a.tray_error.empty()) ensure_tray_(a);
+        tray_take_(a);
+        if (a.tray && std::chrono::steady_clock::now() - a.tray_checked > std::chrono::seconds(2)) {
+            a.tray_checked = std::chrono::steady_clock::now();
+            if (a.hidden) a.refresh();
+            tray_update_(a);
+        }
+        // An operation that ended while nobody looked: said by the system.
+        if (a.job && a.job->done && !std::exchange(a.job_told, true) && (a.hidden || !a.window->focused()) && ensure_tray_(a)) {
+            std::lock_guard l(a.job->m);
+            a.tray->notify(a.job->title, a.job->code == 0 ? std::string(tr("Done.", "完成。")) : (a.job->errors.empty() ? std::string(tr("Failed.", "失败。")) : a.job->errors.front()),
+                           a.job->code == 0 && !a.job_subject.empty() ? "made:" + a.job_subject : "open");
         }
         if (!a.window->events().empty() || !a.window->keys().empty()) pending = 3;
         else if (pending > 0) --pending;

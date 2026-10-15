@@ -52,6 +52,7 @@ members = [
     "luban/specs/openas",
     "luban/kits/imkit",
     "luban/kits/openhal-host",
+    "luban/kits/tray",
     "luban/kits/opensal-wlr",
     "luban/kits/xdesk-base",
     "luban/kits/xdesk-compositor",
@@ -191,6 +192,7 @@ openas      = { path = "luban/specs/openas" }
 openhal-host = { path = "luban/kits/openhal-host" }
 opensal-wlr = { path = "luban/kits/opensal-wlr" }
 xdesk-base = { path = "luban/kits/xdesk-base" }
+tray       = { path = "luban/kits/tray" }
 
 [dev-dependencies.compat]
 gtest = "1.15.2"

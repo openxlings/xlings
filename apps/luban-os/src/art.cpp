@@ -5,6 +5,7 @@ module luban.os;
 
 import std;
 import imkit;
+import tray;
 
 namespace luban::os::art {
 
@@ -179,6 +180,30 @@ void badge(ImDrawList* dl, Badge b, std::string_view edition, ImVec2 at, float c
         default: return 0;
         }
     });
+}
+
+std::vector<tray::Image> tray_images(int running, bool busy, bool error) {
+    // The craftsman, and a mark in the corner: green running, yellow at
+    // work, red needing the person; nothing when nothing runs.
+    const std::uint32_t mark = error ? 0xffd94d5cu : busy ? 0xffffcd75u : running > 0 ? 0xff38b764u : 0;
+    auto colors = [](char c) -> std::uint32_t {
+        switch (c) {
+        case 'K': return 0xff1b1c26u; case 'W': return 0xfff4f4f4u; case 'Y': return 0xffffcd75u; case 'O': return 0xffef7d57u;
+        case 'B': return 0xffa0663fu; case 'b': return 0xff5c3a26u; case 'G': return 0xff94a3b8u; case 'S': return 0xff41a6f6u;
+        default: return 0;
+        }
+    };
+    std::vector<tray::Image> out;
+    for (const int size : {16, 22, 32, 44, 48}) {
+        auto img = tray::rasterize(std::span<const std::string_view>(kCraft0), colors, size);
+        if (mark) {
+            const int r = std::max(3, size / 4);
+            for (int y = size - r; y < size; ++y)
+                for (int x = size - r; x < size; ++x) img.argb[static_cast<std::size_t>(y) * size + x] = mark;
+        }
+        out.push_back(std::move(img));
+    }
+    return out;
 }
 
 imkit::Picture picture(std::string_view edition, int frame) {

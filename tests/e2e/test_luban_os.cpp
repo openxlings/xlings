@@ -996,3 +996,33 @@ screenshot {}
     EXPECT_NE(a.at(550, 15), (std::array<int, 3>{0x1b, 0x1e, 0x25})) << "no panel across the top";
     EXPECT_NE(read_ppm(closed).at(550, 400), kRed) << "the click did not reach the close button";
 }
+
+// The status-area icon's menu reaches every page, and closing the window
+// with the app kept leaves it running -- in the tray where the desktop has
+// one, minimized where it has none (design 2026-10-16 L §13.12).
+XTEST(LubanOs, TheTrayReachesEveryPageAndClosingKeepsTheApp, .area = "luban", .covers = {"LUBAN-OS-TRAY"},
+      .requires_ = {"linux", "xlings-bin"}) {
+    if (!app_binary()) GTEST_SKIP() << "no luban-os beside the xlings under test";
+    auto home = home_with_two("luban-os-tray");
+    tk::write_file(home.dir() / "config" / "luban-os.json", R"({"countdown":0,"keep_in_tray":true})");
+    const auto st = home.root() / "after-close.json";
+    auto r = run_script(home, std::format(R"(wait launcher
+tray new
+wait quick-start
+tray settings
+wait admin
+expect admin_tab settings
+tray open
+frames 2
+close
+frames 4
+expect view launcher
+state {}
+tray quit
+)", st.string()), {}, {{"DBUS_SESSION_BUS_ADDRESS", "unix:path=/nonexistent/bus"}});
+    ASSERT_EQ(r.exit_code, 0) << r.transcript();
+    const auto s = read_state(st);
+    // No bus here: no icon, said why, and the window was kept (minimized).
+    EXPECT_FALSE(s["tray"]["error"].get<std::string>().empty()) << s["tray"].dump();
+    EXPECT_FALSE(s["tray"]["hidden"].get<bool>());
+}

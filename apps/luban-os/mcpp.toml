@@ -26,6 +26,7 @@ opensal            = { path = "../../luban/specs/opensal" }
 xdesk-base = { path = "../../luban/kits/xdesk-base" }
 luban-desktop-host = { path = "../../luban/os/desktop" }
 imkit              = { path = "../../luban/kits/imkit" }
+tray               = { path = "../../luban/kits/tray" }
 opensal-wlr        = { path = "../../luban/kits/opensal-wlr" }
 
 [dependencies.compat]

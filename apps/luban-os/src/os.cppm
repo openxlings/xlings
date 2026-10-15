@@ -11,6 +11,7 @@ export module luban.os;
 import std;
 import xlings.libs.json;
 import imkit;
+import tray;
 import luban.service;
 import luban.vm;
 import xdesk.term;
@@ -216,6 +217,8 @@ Badge badge_of(std::string_view edition);
 // A badge (16 x 16 art pixels), `cell` window pixels each; `frame` animates it.
 void badge(ImDrawList* dl, Badge b, std::string_view edition, ImVec2 at, float cell, int frame = 0);
 imkit::Picture picture(std::string_view edition, int frame = 0);
+// The status-area icon at its sizes: `running` systems, at work, or needing the person.
+std::vector<tray::Image> tray_images(int running, bool busy, bool error);
 }  // namespace art
 
 // How a console is drawn (design 2026-10-16 L §13.7): one effective font size

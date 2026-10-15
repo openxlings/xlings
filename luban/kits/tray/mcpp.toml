@@ -1,0 +1,27 @@
+# tray: an application's icon in the system's status area, with its menu,
+# its tooltip and the system's notifications -- one interface, three
+# implementations:
+#
+#   Linux    StatusNotifierItem and DBusMenu (what KDE, XFCE, Cinnamon, the
+#            GNOME of Ubuntu, waybar and others show), spoken over D-Bus by
+#            tray.dbus itself: no GTK, no libdbus, a static build works.
+#            Notifications: org.freedesktop.Notifications.
+#   Windows  Shell_NotifyIcon: the notification area, a popup menu, balloons.
+#   macOS    SDL's tray (the menu bar); notifications through the system's
+#            own notification command.
+#
+# A kit: the standard library and its C libraries only
+# (tools/lint_layer_deps.sh); system headers under src/native/.
+[package]
+namespace = "tray"
+name      = "tray"
+version   = "0.1.0"
+
+[targets.tray]
+kind = "lib"
+
+[dependencies.compat]
+sdl3 = "3.4.2"
+
+[target.windows.build]
+ldflags = ["-lshell32", "-luser32", "-lgdi32"]

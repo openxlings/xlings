@@ -67,7 +67,9 @@ public:
     // The window shown, hidden (the app in the tray), brought to the front.
     void show();
     void hide();
+    void minimize();
     bool visible() const;
+    bool focused() const;
 
     // This frame's input that imgui did not take, in order.
     const std::vector<opensal::Event>& events() const { return events_; }

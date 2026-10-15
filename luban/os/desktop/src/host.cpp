@@ -416,6 +416,8 @@ double Window::density() const {
 }
 void Window::show() { SDL_ShowWindow(impl_->window); SDL_RaiseWindow(impl_->window); }
 void Window::hide() { SDL_HideWindow(impl_->window); }
+void Window::minimize() { SDL_MinimizeWindow(impl_->window); }
+bool Window::focused() const { return (SDL_GetWindowFlags(impl_->window) & SDL_WINDOW_INPUT_FOCUS) != 0; }
 bool Window::visible() const { return (SDL_GetWindowFlags(impl_->window) & SDL_WINDOW_HIDDEN) == 0; }
 std::pair<int, int> Window::size() const {
     int w = 0, h = 0;
