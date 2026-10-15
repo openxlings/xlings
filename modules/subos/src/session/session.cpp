@@ -9,6 +9,7 @@ import xlings.subos.home_view;
 import xlings.subos.policy;
 import xlings.subos.broker;
 import xlings.subos.network;
+import xlings.subos.root_check;
 
 // Every system call here is xlings.platform's (:process, :isolation): this
 // file is the session's logic -- who talks to whom, what is recorded, when a
@@ -1199,6 +1200,35 @@ int session_init(std::span<const std::string> args) {
             handoff.set_value({listener, listener < 0 ? platform::error_text(platform::last_error()) : std::string{}});
             helper.join();
             if (listener < 0 || !transferred) return kExitSetup;
+        }
+    }
+
+    // A Luban system, as it is entered: the fast self-check (design
+    // 2026-10-16 L §11). A critical failure is said with the way back and
+    // nothing starts; a terminal it has no description of is replaced by one
+    // it has.
+    if (rootView) {
+        const auto env = platform::environment();
+        const auto value = [&](const char* name) {
+            const auto it = env.find(name);
+            return it == env.end() ? std::string{} : it->second;
+        };
+        const auto report = root_check::check("/", root_check::Depth::Fast, {.term = value("TERM"), .run = false});
+        if (!report.ok()) {
+            for (const auto& item : report.items)
+                if (item.critical && !item.ok) std::println(std::cerr, "luban: {}: no -- {}", item.what, item.detail);
+            std::println(std::cerr, "luban: this generation is not usable; its previous one: luban rollback {}",
+                         value("XLINGS_ROOT_INSTANCE"));
+            return kExitSetup;
+        }
+        const auto terminfo = std::ranges::find(report.items, std::string("terminfo"), &root_check::Item::id);
+        if (terminfo != report.items.end() && !terminfo->ok) {
+            const auto fallback = root_check::check("/", root_check::Depth::Fast, {.term = "xterm-256color", .run = false});
+            const auto there = std::ranges::find(fallback.items, std::string("terminfo"), &root_check::Item::id);
+            if (there != fallback.items.end() && there->ok) {
+                std::println(std::cerr, "luban: no description of the terminal {} here; using xterm-256color", value("TERM"));
+                platform::set_env_variable("TERM", "xterm-256color");
+            }
         }
     }
 

@@ -11,7 +11,7 @@ import xlings.core.xvm.db;
 import xlings.core.xvm.errors;
 import xlings.core.xvm.owner;
 import xlings.core.version_order;
-import xlings.core.elfread;
+import xlings.libs.elfread;
 // For `project_contributions()` -- the one answer to "which project
 // declares this command". Implementation-unit import only; the xvm
 // interface stays free of xself.

@@ -17,12 +17,13 @@ import xlings.platform.stream;
 import xlings.core.profile;
 import xlings.core.xvm.types;
 import xlings.core.xvm.db;
-import xlings.core.elfread;
+import xlings.libs.elfread;
 import xlings.core.subos.root;
 import xlings.subos.home_view;
 import xlings.subos.policy_store;
 import xlings.subos.policy;
 import xlings.subos.rootfs;
+import xlings.subos.root_check;
 import xlings.subos.library_cache;
 import xlings.subos.roles;
 import xlings.subos.boot;
@@ -928,6 +929,43 @@ int run_rollback_(int argc, char* argv[], EventStream& stream, const UsageError&
         .fields = {{"event", "rollback"}, {"instance", name}, {"from", now ? *now : 0}, {"to", *to}}});
     log::info("'{}': root generation {} (was {})", name, *to, now ? std::to_string(*now) : "none");
     return 0;
+}
+
+// ── check ────────────────────────────────────────────────────────────
+
+// `subos __check [--fast] [--json]`: the self-check of the system this
+// process runs in (design 2026-10-16 L §11), reached by `luban status
+// --check` -- inside, or from the host through `subos exec`. Its exit is 1
+// when a critical item failed.
+int run_check_(int argc, char* argv[], EventStream& stream, const UsageError& usageError) {
+    bool json = false, fast = false;
+    for (int i = 3; i < argc; ++i) {
+        const std::string_view a = argv[i];
+        if (a == "--json") json = true;
+        else if (a == "--fast") fast = true;
+        else { usageError("unknown option for `luban status --check`: " + std::string(a)); return 2; }
+    }
+    const auto env = [](const char* name) { const char* v = std::getenv(name); return std::string(v ? v : ""); };
+    if (std::error_code ec; env("XLINGS_ROOT_INSTANCE").empty() && !fs::exists("/etc/xlings/usr", ec)) {
+        stream.emit(ErrorEvent{.code = ErrorCode::InvalidInput, .message = "this is not a Luban system",
+                               .recoverable = false, .hint = "from the host: luban status <name> --check"});
+        return 2;
+    }
+    namespace rc = xlings::subos::root_check;
+    const auto report = rc::check("/", fast ? rc::Depth::Fast : rc::Depth::Full,
+                                  {.term = env("TERM")});
+    if (json) {
+        std::println("{}", rc::to_json(report).dump());
+    } else {
+        for (const auto& item : report.items) {
+            const auto mark = item.ok ? "✓" : item.critical ? "✗" : "!";
+            std::println("{} {}{}", mark, item.what, item.ok || item.detail.empty() ? std::string{} : " -- " + item.detail);
+        }
+        std::println("{}", report.ok() ? std::format("usable ({} of {} passed)", report.items.size() - report.failed(),
+                                                     report.items.size())
+                                       : "not usable: a critical item failed");
+    }
+    return report.ok() ? 0 : 1;
 }
 
 // ── boot ─────────────────────────────────────────────────────────────

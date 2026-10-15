@@ -62,6 +62,32 @@ int step_(const Context& c, std::string phase_name, std::string text, std::span<
     return rc;
 }
 
+// The self-check (design 2026-10-16 L §11), asked inside the system by its
+// session's xlings: nullopt when it is usable, otherwise what failed. A
+// check that cannot be asked is said and does not hold anything up.
+std::optional<std::string> unusable_(const Context& c, std::string_view name, std::string_view phase_name,
+                                     const std::string& ready) {
+    if (c.sink) c.sink(phase(std::string(phase_name), "begin", std::format("checking {}", name)));
+    const auto report = c.port.json({"subos", "exec", std::string(name), "--", "/run/xlings/xlings", "subos", "__check", "--json"});
+    if (!report || !report->is_object() || !report->contains("ok")) {
+        if (c.sink) c.sink(phase(std::string(phase_name), "done", ready + " (not checked)"));
+        if (c.sink) c.sink(notice(std::format("its self-check did not answer: {}", report ? report->dump() : report.error()),
+                                  std::format("luban status {} --check", name)));
+        return std::nullopt;
+    }
+    std::string failed;
+    for (const auto& item : report->value("items", Json::array()))
+        if (item.value("critical", false) && !item.value("ok", true))
+            failed += (failed.empty() ? "" : "; ") + item.value("what", std::string{}) + ": " + item.value("detail", std::string{});
+    const bool ok = report->value("ok", false);
+    if (c.sink) c.sink(phase(std::string(phase_name), ok ? "done" : "failed",
+                             ok ? std::format("{} ({} checks, {} notes: luban status {} --check)", ready,
+                                              report->value("items", Json::array()).size(), report->value("failed", 0), name)
+                                : std::format("checking {}", name)));
+    if (ok) return std::nullopt;
+    return failed;
+}
+
 std::vector<std::string> argv_(std::initializer_list<std::string_view> words) {
     std::vector<std::string> out;
     for (auto w : words) out.emplace_back(w);
@@ -304,9 +330,18 @@ Outcome create(const Context& c, const NewOptions& o) {
     }
     auto args = new_argv_(o.name, edition_ref(o.edition), o.carrier);
     if (!o.proxy.empty()) args.insert(args.end(), {"--proxy", o.proxy});
+    // Ready is what the self-check says, not that making it finished.
+    const bool checked = xlings::platform::is_linux && o.carrier.empty();
     const int rc = step_(c, "make", std::format("making {} ({})", o.name, o.edition), args, false,
-                         std::format("{} is ready", o.name));
+                         o.name + (checked ? " is made" : " is ready"));
     if (rc != 0) return {.code = rc};
+    if (checked) {
+        if (const auto failed = unusable_(c, o.name, "check", std::format("{} is ready", o.name))) {
+            if (c.sink) c.sink(error(std::format("{} is made, and not usable: {}", o.name, *failed),
+                                     std::format("luban status {} --check", o.name)));
+            return {.code = 1};
+        }
+    }
     // Its login user (part 3 §6.1): in its passwd, its group and wheel, the
     // password's hash in its shadow, and the one `luban enter` logs in as.
     // A desktop is never root's: made from the window (no question asked
@@ -509,8 +544,19 @@ Outcome upgrade(const Context& c, std::string_view name, std::string_view to, bo
     xlings::observe::ops::Span span("upgrade");
     const int rc = c.port.subos(args, c.yes, watched);
     if (rc != 0) span.fail(std::format("exit {}", rc));
-    const auto done = rc == 0 && plan.value("up_to_date", false) ? std::format("{} is up to date", name) : text;
+    const bool upToDate = rc == 0 && plan.value("up_to_date", false);
+    const auto done = upToDate ? std::format("{} is up to date", name) : text;
     if (c.sink) c.sink(phase("upgrade", rc == 0 ? "done" : "failed", done));
+    // A new generation that is not usable is not kept (L §11): the previous
+    // one is current again.
+    if (rc == 0 && !dry_run && !upToDate && xlings::platform::is_linux) {
+        if (const auto failed = unusable_(c, name, "check", std::format("{} is upgraded", name))) {
+            step_(c, "rollback", std::format("going back to {}'s previous generation", name), argv_({"rollback", name}));
+            if (c.sink) c.sink(error(std::format("{}'s new generation is not usable ({}); it stays on the previous one",
+                                                 name, *failed), std::format("luban history {}", name)));
+            return {.code = 1, .value = plan};
+        }
+    }
     return {.code = rc, .value = plan};
 }
 

@@ -9,6 +9,7 @@ import xlings.subos.root_etc;
 import xlings.subos.rootfs;
 import xlings.subos.library_cache;
 import xlings.subos.home_view;
+import xlings.subos.root_check;
 
 namespace luban::stage0 {
 
@@ -229,6 +230,18 @@ int run(int argc, char* argv[]) {
         if (auto etc = xlings::subos::root_etc::fill_machine_etc("/etc", dir); !etc) recover("machine /etc: " + etc.error());
         if (auto users = xlings::subos::root_etc::apply_sysusers("/etc", rootfs::usr_of(dir)); !users) recover("machine /etc: " + users.error());
         mark("machine_etc");
+        // The fast self-check (design 2026-10-16 L §11): a generation that is
+        // not usable is not booted; the next entry is tried.
+        if (const auto report = xlings::subos::root_check::check("/", xlings::subos::root_check::Depth::Fast, {.run = false});
+            !report.ok()) {
+            std::string why;
+            for (const auto& item : report.items)
+                if (item.critical && !item.ok) why += (why.empty() ? "" : "; ") + item.what + ": " + item.detail;
+            say(std::format("'{}' is not usable ({}); trying the next entry", candidate.subos, why));
+            log_event(home, {{"event", "boot-skip"}, {"subos", candidate.subos}, {"why", why}});
+            continue;
+        }
+        mark("check");
         if (auto cache = library_cache::refresh("/", home, candidate.subos); !cache) recover(cache.error());
         mark("library_cache");
         const auto next = boot::record_boot(*config, candidate);

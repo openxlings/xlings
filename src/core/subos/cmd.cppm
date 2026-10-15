@@ -588,6 +588,7 @@ int run_upgrade_(int argc, char* argv[], EventStream& stream, const UsageError& 
 // src/core/subos/configure.cpp: a policy package, read and locked (installed when absent).
 std::expected<policy::Policy, std::pair<int, std::string>> select_policy_package_(const std::string& ref, bool upgrade);
 int run_boot_(int argc, char* argv[], EventStream& stream, const UsageError& usageError);
+int run_check_(int argc, char* argv[], EventStream& stream, const UsageError& usageError);
 int run_export_(int argc, char* argv[], EventStream& stream, const UsageError& usageError);
 int run_diff_(int argc, char* argv[], EventStream& stream, const UsageError& usageError);
 int run_pack_(int argc, char* argv[], EventStream& stream, const UsageError& usageError);

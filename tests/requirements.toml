@@ -43,6 +43,10 @@ status = "required"
 text = "a payload's share/ reaches /usr/share: directories many packages write into are merged file by file, one package's directory is claimed whole, and a link never has a link above or below it"
 status = "required"
 
+[LUBAN-SELF-CHECK]
+text = "a Luban system checks itself when made, upgraded, booted and entered, and on demand: a critical failure stops it (not ready, not switched, not booted, not entered) and the rest is reported"
+status = "required"
+
 [LUBAN-USER-LAYER]
 text = "inside a Luban system a regular user's xlings uses ~/.xlings with the system's home as the layer below it; a sandbox keeps the system's home (its broker installs there)"
 status = "required"

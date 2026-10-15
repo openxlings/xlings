@@ -60,7 +60,7 @@ Classified classify(std::span<const std::string> argv, std::string_view instance
             && std::ranges::find(argv, std::string("--fix")) == argv.end();
         if (!read) { c.route = Route::Owner; c.ops.push_back(op("instance_admin", "self")); }
     } else if (cmd == "subos") {
-        static const std::set<std::string> reads{"list", "ls", "info", "i", "status", "ps", "log"};
+        static const std::set<std::string> reads{"list", "ls", "info", "i", "status", "ps", "log", "__check"};
         const bool read = argv.size() < 2 || reads.contains(argv[1])
             || (argv[1] == "config" && argv.size() <= 3);
         if (!read) { c.route = Route::Owner; c.ops.push_back(op("policy_change", argv[1])); }

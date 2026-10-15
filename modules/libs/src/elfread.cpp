@@ -1,6 +1,6 @@
 // The two loader fields, read in this process instead of by forking patchelf.
 // See elfread.cppm for why this exists and what it must stay equivalent to.
-module xlings.core.elfread;
+module xlings.libs.elfread;
 
 import std;
 
@@ -26,6 +26,7 @@ constexpr std::uint32_t PT_DYNAMIC = 2;
 constexpr std::uint32_t PT_INTERP  = 3;
 
 constexpr std::uint64_t DT_NULL    = 0;
+constexpr std::uint64_t DT_NEEDED  = 1;
 constexpr std::uint64_t DT_STRTAB  = 5;
 constexpr std::uint64_t DT_RPATH   = 15;
 constexpr std::uint64_t DT_RUNPATH = 29;
@@ -254,6 +255,7 @@ std::optional<DynamicInfo> read(const std::filesystem::path& file) {
     std::optional<std::uint64_t> strtabVaddr;
     std::optional<std::uint64_t> rpathOffset;
     std::optional<std::uint64_t> runpathOffset;
+    std::vector<std::uint64_t> neededOffsets;
 
     for (std::size_t i = 0; i < dynCount; ++i) {
         const std::size_t base = i * dynEntSize;
@@ -267,6 +269,14 @@ std::optional<DynamicInfo> read(const std::filesystem::path& file) {
         if (tag == DT_STRTAB)  strtabVaddr   = val;
         if (tag == DT_RPATH)   rpathOffset   = val;
         if (tag == DT_RUNPATH) runpathOffset = val;
+        if (tag == DT_NEEDED)  neededOffsets.push_back(val);
+    }
+
+    if (strtabVaddr && !neededOffsets.empty()) {
+        if (const auto strtab = vaddr_to_offset(segments, *strtabVaddr))
+            for (const auto offset : neededOffsets)
+                if (auto name = view.string_at(*strtab + offset, kMaxStringField); !name.empty())
+                    info.needed.push_back(std::move(name));
     }
 
     // RUNPATH wins when both are present, and this is not a preference: it is

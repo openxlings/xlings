@@ -242,6 +242,12 @@ O3b 的实测（保留 `CAP_SYS_ADMIN` 需同时保留 `CAP_SETPCAP` 才能对�
 
 `init` 一词保留给 PID 1 的 luban-init；检查是 `status` 的选项，不新增命令。
 
+实现：检查引擎是 `xlings.subos.root_check`（`Fast` 与 `Full` 两级），由会话的 xlings 在系统内执行（`subos __check`，从宿主经 `subos exec`）。
+建成与升级跑 `Full`：建成失败报"made, and not usable"并以 1 退出；升级失败回到上一代（切换后检查、失败即回滚）。
+启动（stage-0）与进入（session-init）跑 `Fast`：关键项是 `/usr`、`/etc/passwd` 的 root、用户进程无能力；终端无 terminfo 时换为 `xterm-256color` 并说明。
+声明的检查放在 payload 的 `share/luban/checks.d/*.json`（`{"checks": [{"id", "what", "run", "critical", "timeout"}]}`），经 §6.4 的投影合并到
+`/usr/share/luban/checks.d`；未声明的包，取其一个程序以 `--version` 运行，判据是"能启动"（不是退出码 0）。
+
 ### 11.2 检查项
 
 - **系统级**（edition 的 `checks`）：generation 指针、`/usr` 挂载、passwd/group/shadow、`/etc/shells`、hostname、machine-id、时区、locale、CA 证书、

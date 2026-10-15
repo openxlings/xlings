@@ -39,7 +39,7 @@
 // same files and requires them to agree. That inverts the old risk -- the tool
 // used to be something the audit needed installed to work at all, and its
 // absence silently produced an empty scan.
-export module xlings.core.elfread;
+export module xlings.libs.elfread;
 
 import std;
 
@@ -61,6 +61,9 @@ struct DynamicInfo {
     // not apply to a dependency's own dependencies, DT_RPATH does), so reading
     // it and discarding it would be throwing away the interesting half.
     bool fromRunpath { false };
+
+    // DT_NEEDED, in order: the libraries the loader must find for it.
+    std::vector<std::string> needed;
 };
 
 // True when `file` begins with the ELF magic. The cheap gate: a payload is

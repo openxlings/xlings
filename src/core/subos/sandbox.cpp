@@ -24,7 +24,7 @@ import xlings.subos.session;
 import xlings.subos.rootfs;
 import xlings.core.abi;
 import xlings.subos.broker;
-import xlings.core.elfread;
+import xlings.libs.elfread;
 import xlings.core.confirm;
 import xlings.observe;
 import xlings.core.subos.ports;

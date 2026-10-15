@@ -4,7 +4,7 @@ import xlings.testkit;
 import std;
 import xlings.libs.json;
 import xlings.core.home.domain_producer;
-import xlings.core.elfread;
+import xlings.libs.elfread;
 import xlings.subos.home_view;
 import xlings.subos.manifest;
 

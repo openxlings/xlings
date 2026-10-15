@@ -5,6 +5,7 @@ import xlings.libs.json;
 import xlings.platform;
 import xlings.subos.root_etc;
 import xlings.subos.rootfs;
+import xlings.subos.root_check;
 import luban.vm.protocol;
 import opensal.wlr;
 
@@ -431,6 +432,10 @@ int guest_init(int, char*[]) {
     if (std::error_code rec; fs::is_directory("/usr/lib/xlings-abi", rec) && fs::exists(home / "abi", rec)
         && !platform::bind_mount("/usr/lib/xlings-abi", home / "abi"))
         console_("cannot place its runtime at " + (home / "abi").string());
+    // The fast self-check (design 2026-10-16 L §11), said on the console: the
+    // host chose this system, so it starts, and what is wrong is in the log.
+    for (const auto& item : xlings::subos::root_check::check("/", xlings::subos::root_check::Depth::Fast, {.run = false}).items)
+        if (item.critical && !item.ok) console_(std::format("not usable: {}: {}", item.what, item.detail));
     // The agent's sessions are ptys before the environment's own start mounts
     // anything (its rcS mounting devpts again is harmless: already mounted).
     if (!platform::mount_kernel_fs("devpts", "/dev/pts")) console_("cannot mount devpts: sessions will fail");

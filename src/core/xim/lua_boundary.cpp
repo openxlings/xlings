@@ -10,7 +10,7 @@ import xlings.platform.target;
 import xlings.core.config;
 import xlings.core.home;
 import xlings.core.home.layers;
-import xlings.core.elfread;
+import xlings.libs.elfread;
 import xlings.core.log;
 import xlings.observe;
 import xlings.core.xim.payload;

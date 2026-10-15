@@ -28,11 +28,11 @@ bool is_executable_entry(const fs::directory_entry& e) {
 // The directories under share/ that several packages write into (freedesktop
 // and the usual tools): a system's, merged file by file.
 bool is_shared_share_dir(std::string_view rel) {
-    static constexpr std::array<std::string_view, 20> exact{
+    static constexpr std::array<std::string_view, 22> exact{
         "applications", "icons", "icons/hicolor", "fonts", "man", "locale", "wayland-sessions",
         "xsessions", "dbus-1", "bash-completion", "bash-completion/completions", "fish",
         "zsh", "zsh/site-functions", "pkgconfig", "terminfo", "metainfo", "mime", "mime/packages",
-        "glib-2.0/schemas"};
+        "glib-2.0/schemas", "luban", "luban/checks.d"};
     if (std::ranges::find(exact, rel) != exact.end()) return true;
     const auto under = [&](std::string_view base) { return rel.starts_with(std::string(base) + "/"); };
     // Every level of hicolor and of fonts; a manual section; a language and its

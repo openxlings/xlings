@@ -9,8 +9,11 @@
 #   tinyhttps   HTTPS fetch, wrapping mcpplibs.tinyhttps. It reports the proxy
 #               it used through its return value: a library that logs has an
 #               opinion about where its caller's output goes.
+#   elfread     The loader's fields of an ELF (interpreter, search paths,
+#               DT_NEEDED) read from its headers: the payload audit and a
+#               Luban system's self-check both read them.
 #
-# One package, three module units: each is a leaf, none is big enough to be a
+# One package, four module units: each is a leaf, none is big enough to be a
 # package of its own, and they share one rule -- nothing here imports xlings.
 [package]
 namespace = "xlings"

@@ -698,6 +698,16 @@ int cmd_enter(const svc::Context& c, const Parsed& p, const Globals& g) {
 }
 
 int cmd_status(const svc::Context& c, const Parsed& p, const Globals& g, Renderer& r) {
+    // The self-check (design 2026-10-16 L §11): asked inside the system, by
+    // the xlings of its session -- from the host through `subos exec`.
+    if (p.flag("--check")) {
+        std::vector<std::string> check{"subos", "__check"};
+        if (g.json) check.push_back("--json");
+        if (p.words.empty()) return c.port.terminal(check);
+        std::vector<std::string> inside{"/run/xlings/xlings"};
+        inside.insert(inside.end(), check.begin(), check.end());
+        return svc::run_command(c, p.words[0], inside);
+    }
     if (p.words.empty()) return host_status(c, g);
     auto e = svc::describe(c, p.words[0]);
     if (!e) return usage(e.error(), g);
@@ -1107,7 +1117,8 @@ const spec::CommandSpec& tree() {
              .arguments = {{"name", "Which", true}, {"command", "The command and its arguments, after --", true, true}},
              .options = {{"--user <NAME>", "As this user (root, or one of its users)", false, Level::More}}, .effect = "reversible"},
             {.name = "ls", .description = "List the environments", .aliases = {"list"}, .effect = "read"},
-            {.name = "status", .description = "This host, or one environment", .arguments = {{"name", "Which"}}, .effect = "read"},
+            {.name = "status", .description = "This host, or one environment", .arguments = {{"name", "Which"}},
+             .options = {{"--check", "Check that it is usable: its /usr, /etc, runtime closure, and programs"}}, .effect = "read"},
             {.name = "config", .description = "Show or change an environment's settings",
              .arguments = {{"name", "Which", true}},
              .options = {{"--mode <MODE>", "sandbox or machine: how `luban enter` starts it"},

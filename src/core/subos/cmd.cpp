@@ -2780,6 +2780,7 @@ int run(int argc, char* argv[], EventStream& stream) {
     // implementation through the plumbing names (cli.cpp says where the
     // user-facing spellings went).
     if (sub == "__boot") return run_boot_(argc, argv, stream, usageError);
+    if (sub == "__check") return run_check_(argc, argv, stream, usageError);
     if (sub == "__export" || sub == "export") return run_export_(argc, argv, stream, usageError);
     if (sub == "diff") return run_diff_(argc, argv, stream, usageError);
     if (sub == "pack") return run_pack_(argc, argv, stream, usageError);
