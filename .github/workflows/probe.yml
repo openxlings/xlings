@@ -1,7 +1,8 @@
 # [temp][do not merge] Probe for
 # .agents/docs/2026-10-16-luban-inside-experience-and-ecosystem-design.md
-# (O1 vim and terminfo, O2 generation directory entries and bind cost,
-# O3 mount --move in a user namespace, O4 more host distributions).
+# Round 4: A6 (the console's font at display scales), O12 (trays), O9
+# (cursor themes), O10 (virtiofs), O11 (a machine's current subos).
+# Rounds 1-3 are kept in .github/probe/probe-round1-3.yml.txt.
 # Every script prints what it observes and never asserts.
 name: probe
 
@@ -11,103 +12,93 @@ on:
 
 env:
   XV: 2026.10.15.4
+  SDL: release-3.4.2
 
 jobs:
-  inside:
-    name: O3b O6 O7 (ubuntu-24.04, core and desktop; a machine)
+  font:
+    name: A6 console font at display scales
     runs-on: ubuntu-24.04
-    timeout-minutes: 120
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
       - name: probe
-        run: bash .github/probe/inside3.sh
+        run: bash .github/probe/font.sh
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: inside
-          path: ${{ runner.temp }}/p/logs
+          name: font-shots
+          path: ${{ runner.temp }}/p/shots
 
-  # O4: distributions as user spaces (containers), as the host matrix runs
-  # them, with the scenarios that make and enter a system.
-  container:
-    if: false
-    name: O4 ${{ matrix.image }} (${{ matrix.runner }})
-    runs-on: ${{ matrix.runner }}
-    timeout-minutes: 90
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - { runner: ubuntu-24.04, arch: x86_64, image: "rockylinux:9" }
-          - { runner: ubuntu-24.04, arch: x86_64, image: "almalinux:9" }
-          - { runner: ubuntu-24.04, arch: x86_64, image: "quay.io/centos/centos:stream10" }
-          - { runner: ubuntu-24.04, arch: x86_64, image: "amazonlinux:2023" }
-          - { runner: ubuntu-24.04, arch: x86_64, image: "alpine:3.20" }
-          - { runner: ubuntu-24.04, arch: x86_64, image: "debian:13" }
-          - { runner: ubuntu-24.04, arch: x86_64, image: "opensuse/leap:15.6" }
-          - { runner: ubuntu-24.04-arm, arch: aarch64, image: "debian:12" }
-          - { runner: ubuntu-24.04-arm, arch: aarch64, image: "fedora:latest" }
-          - { runner: ubuntu-24.04-arm, arch: aarch64, image: "alpine:3.20" }
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          path: xlings
-      - name: release
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          mkdir -p build
-          gh release download "v$XV" -R openxlings/xlings -p "xlings-$XV-linux-${{ matrix.arch }}.tar.gz" -O build/release.tar.gz
-      - name: run (container)
-        continue-on-error: true
-        env:
-          IMAGE: ${{ matrix.image }}
-        run: |
-          sudo sysctl -q -w kernel.apparmor_restrict_unprivileged_userns=0 || true
-          docker run --rm --security-opt seccomp=unconfined --security-opt apparmor=unconfined \
-            --security-opt systempaths=unconfined --cap-add SYS_ADMIN \
-            -v "$PWD:/w" -w /w "$IMAGE" sh -c 'command -v bash >/dev/null || apk add -q bash; bash -c "bash xlings/tests/host-matrix/bare.sh && bash xlings/tests/host-matrix/run.sh --tarball /w/build/release.tar.gz --evidence /w/evidence --scenarios \"install edition terminal\""'
-      - name: summary
-        if: always()
-        run: |
-          { echo "### ${{ matrix.image }} (${{ matrix.arch }})"; cat evidence/summary.md 2>/dev/null || echo "(no summary)"; } >> "$GITHUB_STEP_SUMMARY"
-          for f in evidence/*.ndjson; do [ -f "$f" ] || continue; echo "#### $f"; grep -E '"(fail|error)"' "$f" | head -5; done >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: o4-${{ strategy.job-index }}
-          path: evidence/
-          if-no-files-found: ignore
-
-  # O4: Rocky 9 as a kernel and SELinux host (KVM).
-  vm-rocky:
-    if: false
-    name: O4 rocky-9 (KVM)
+  misc:
+    name: O9 cursors, O10 virtiofs, O11 machine
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
-        with:
-          path: xlings
-      - name: release
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          mkdir -p build
-          gh release download "v$XV" -R openxlings/xlings -p "xlings-$XV-linux-x86_64.tar.gz" -O build/release.tar.gz
-      - name: run (vm)
-        continue-on-error: true
-        run: |
-          bash xlings/tools/ci/xlings_tools.sh qemu-system
-          sudo chmod 666 /dev/kvm
-          bash xlings/tests/host-matrix/vm.sh rocky-9 --tarball build/release.tar.gz --evidence evidence --scenarios "install edition terminal"
-      - name: summary
-        if: always()
-        run: |
-          { echo "### rocky-9 (KVM)"; cat evidence/summary.md 2>/dev/null || echo "(no summary)"; } >> "$GITHUB_STEP_SUMMARY"
+      - name: probe
+        run: bash .github/probe/misc.sh
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: o4-rocky-vm
-          path: evidence/
+          name: misc-logs
+          path: ${{ runner.temp }}/p/logs
+
+  # O12: SDL 3.4.2's own testtray on each platform.
+  tray:
+    name: O12 tray (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-15, ubuntu-24.04]
+    steps:
+      - name: build SDL's testtray
+        shell: bash
+        run: |
+          git clone -q --depth 1 -b "$SDL" https://github.com/libsdl-org/SDL.git sdl
+          cmake -S sdl -B build -DSDL_TESTS=ON -DSDL_INSTALL_TESTS=OFF -DCMAKE_BUILD_TYPE=Release > cmake.log 2>&1 || tail -30 cmake.log
+          cmake --build build --config Release --target testtray -j 4 > build.log 2>&1 || tail -30 build.log
+          find build -name 'testtray*' -type f | head
+      - name: run (Windows) and capture the screen
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $exe = (Get-ChildItem -Recurse build -Filter testtray.exe | Select-Object -First 1).FullName
+          Push-Location (Split-Path $exe); $p = Start-Process -FilePath $exe -PassThru; Pop-Location
+          Start-Sleep 6
+          Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+          $b = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+          $bmp = New-Object System.Drawing.Bitmap $b.Width, $b.Height
+          [System.Drawing.Graphics]::FromImage($bmp).CopyFromScreen($b.Location, [System.Drawing.Point]::Empty, $b.Size)
+          New-Item -ItemType Directory -Force shots | Out-Null; $bmp.Save("shots/windows.png")
+          "process alive: $(-not $p.HasExited)" | Tee-Object -Append $env:GITHUB_STEP_SUMMARY
+          Stop-Process $p -ErrorAction SilentlyContinue
+      - name: run (macOS) and capture the screen
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          exe="$(find build -name testtray -type f -perm -u+x | head -1)"
+          (cd "$(dirname "$exe")" && ./testtray > "$GITHUB_WORKSPACE/tray.log" 2>&1 &) ; sleep 6
+          mkdir -p shots; screencapture -x shots/macos.png
+          echo "process alive: $(pgrep -x testtray >/dev/null && echo yes || echo no)" >> "$GITHUB_STEP_SUMMARY"
+          tail -5 tray.log >> "$GITHUB_STEP_SUMMARY" || true
+      - name: run (Linux) without and with appindicator
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          sudo apt-get -qq update >/dev/null; sudo apt-get -qq install -y xvfb >/dev/null
+          Xvfb :99 >/dev/null 2>&1 & sleep 2; export DISPLAY=:99
+          exe="$(find build -name testtray -type f -perm -u+x | head -1)"
+          try() { (cd "$(dirname "$exe")" && SDL_LOGGING=all=debug timeout 6 ./testtray) > "tray-$1.log" 2>&1; echo "**$1** (exit $?)"; echo '```'; grep -iE 'tray|gtk|appindicator|error|could not|fail' "tray-$1.log" | head -10; echo '```'; }
+          { echo "ldd: $(ldd "$exe" | grep -iE 'gtk|appindicator|dbus' || echo none)"; try without; } >> "$GITHUB_STEP_SUMMARY"
+          sudo apt-get -qq install -y libgtk-3-0 libayatana-appindicator3-1 >/dev/null
+          try with-gtk-and-appindicator >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: tray-${{ matrix.os }}
+          path: |
+            shots/
+            tray*.log
           if-no-files-found: ignore

@@ -1,0 +1,113 @@
+# [temp][do not merge] Probe for
+# .agents/docs/2026-10-16-luban-inside-experience-and-ecosystem-design.md
+# (O1 vim and terminfo, O2 generation directory entries and bind cost,
+# O3 mount --move in a user namespace, O4 more host distributions).
+# Every script prints what it observes and never asserts.
+name: probe
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+env:
+  XV: 2026.10.15.4
+
+jobs:
+  inside:
+    name: O3b O6 O7 (ubuntu-24.04, core and desktop; a machine)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - name: probe
+        run: bash .github/probe/inside3.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: inside
+          path: ${{ runner.temp }}/p/logs
+
+  # O4: distributions as user spaces (containers), as the host matrix runs
+  # them, with the scenarios that make and enter a system.
+  container:
+    if: false
+    name: O4 ${{ matrix.image }} (${{ matrix.runner }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: ubuntu-24.04, arch: x86_64, image: "rockylinux:9" }
+          - { runner: ubuntu-24.04, arch: x86_64, image: "almalinux:9" }
+          - { runner: ubuntu-24.04, arch: x86_64, image: "quay.io/centos/centos:stream10" }
+          - { runner: ubuntu-24.04, arch: x86_64, image: "amazonlinux:2023" }
+          - { runner: ubuntu-24.04, arch: x86_64, image: "alpine:3.20" }
+          - { runner: ubuntu-24.04, arch: x86_64, image: "debian:13" }
+          - { runner: ubuntu-24.04, arch: x86_64, image: "opensuse/leap:15.6" }
+          - { runner: ubuntu-24.04-arm, arch: aarch64, image: "debian:12" }
+          - { runner: ubuntu-24.04-arm, arch: aarch64, image: "fedora:latest" }
+          - { runner: ubuntu-24.04-arm, arch: aarch64, image: "alpine:3.20" }
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: xlings
+      - name: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p build
+          gh release download "v$XV" -R openxlings/xlings -p "xlings-$XV-linux-${{ matrix.arch }}.tar.gz" -O build/release.tar.gz
+      - name: run (container)
+        continue-on-error: true
+        env:
+          IMAGE: ${{ matrix.image }}
+        run: |
+          sudo sysctl -q -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+          docker run --rm --security-opt seccomp=unconfined --security-opt apparmor=unconfined \
+            --security-opt systempaths=unconfined --cap-add SYS_ADMIN \
+            -v "$PWD:/w" -w /w "$IMAGE" sh -c 'command -v bash >/dev/null || apk add -q bash; bash -c "bash xlings/tests/host-matrix/bare.sh && bash xlings/tests/host-matrix/run.sh --tarball /w/build/release.tar.gz --evidence /w/evidence --scenarios \"install edition terminal\""'
+      - name: summary
+        if: always()
+        run: |
+          { echo "### ${{ matrix.image }} (${{ matrix.arch }})"; cat evidence/summary.md 2>/dev/null || echo "(no summary)"; } >> "$GITHUB_STEP_SUMMARY"
+          for f in evidence/*.ndjson; do [ -f "$f" ] || continue; echo "#### $f"; grep -E '"(fail|error)"' "$f" | head -5; done >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: o4-${{ strategy.job-index }}
+          path: evidence/
+          if-no-files-found: ignore
+
+  # O4: Rocky 9 as a kernel and SELinux host (KVM).
+  vm-rocky:
+    if: false
+    name: O4 rocky-9 (KVM)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: xlings
+      - name: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p build
+          gh release download "v$XV" -R openxlings/xlings -p "xlings-$XV-linux-x86_64.tar.gz" -O build/release.tar.gz
+      - name: run (vm)
+        continue-on-error: true
+        run: |
+          bash xlings/tools/ci/xlings_tools.sh qemu-system
+          sudo chmod 666 /dev/kvm
+          bash xlings/tests/host-matrix/vm.sh rocky-9 --tarball build/release.tar.gz --evidence evidence --scenarios "install edition terminal"
+      - name: summary
+        if: always()
+        run: |
+          { echo "### rocky-9 (KVM)"; cat evidence/summary.md 2>/dev/null || echo "(no summary)"; } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: o4-rocky-vm
+          path: evidence/
+          if-no-files-found: ignore
