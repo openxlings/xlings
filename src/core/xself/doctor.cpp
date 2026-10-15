@@ -5679,6 +5679,22 @@ int cmd_doctor(EventStream& stream, bool fix, bool resetMetadata, bool dryRun, b
             }
         }
         std::error_code ec;
+        // The home's filesystem, when it is not one that does everything
+        // natively: how xlings publishes there (design 2026-10-15-filesystem-capabilities).
+        if (const auto caps = platform::fs_caps(Config::paths().homeDir); caps.measured) {
+            std::vector<std::string> differs;
+            if (!caps.rename_no_replace)
+                differs.push_back(caps.hard_links ? "no atomic rename flags: entries are published as hard links"
+                                                  : "no atomic rename flags and no hard links: entries are renamed onto free names");
+            if (!caps.symlinks && !platform::is_windows) differs.push_back("no symbolic links");
+            if (!caps.case_sensitive && platform::is_linux) differs.push_back("names are not case-sensitive");
+            if (!differs.empty()) {
+                std::string what;
+                for (const auto& d : differs) what += (what.empty() ? "" : "; ") + d;
+                stream.emit(LogEvent{LogLevel::info, std::format("this home's filesystem: {} -- {}",
+                                                                  caps.type.empty() ? "unknown" : caps.type, what)});
+            }
+        }
         if (const auto cfg = home::system_config_path(); fs::is_regular_file(cfg, ec))
             stream.emit(LogEvent{LogLevel::info, std::format(
                 "system config: {} (defaults this home's .xlings.json overrides)", cfg.string())});

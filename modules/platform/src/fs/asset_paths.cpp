@@ -13,23 +13,20 @@ module;
 #endif
 module xlings.platform;
 import :asset_paths;
+import :fs_caps;
 import std;
 namespace xlings::platform {
 std::expected<bool, std::string> exchange_paths(const std::filesystem::path& first,
                                                 const std::filesystem::path& second) {
-#if defined(__linux__)
-    constexpr unsigned EXCHANGE { 2 };
-    if (::syscall(SYS_renameat2, AT_FDCWD, first.c_str(), AT_FDCWD, second.c_str(), EXCHANGE) == 0) return true;
-#elif defined(__APPLE__)
-    if (::renamex_np(first.c_str(), second.c_str(), RENAME_SWAP) == 0) return true;
-#else
-    return false;
-#endif
-#if defined(__linux__) || defined(__APPLE__)
-    if (errno == ENOSYS || errno == EINVAL || errno == EOPNOTSUPP) return false;
+    // Only where the filesystem has it (fs_caps); false: the caller's
+    // non-overwriting guarded moves.
+    if (!fs_caps(second.parent_path().empty() ? std::filesystem::path(".") : second.parent_path()).rename_exchange)
+        return false;
+    const int error = platform_impl::exchange_native(first, second);
+    if (error == 0) return true;
+    if (platform_impl::unsupported(error)) return false;
     return std::unexpected("cannot exchange " + first.string() + " with " + second.string() + ": " +
-        std::error_code(errno, std::generic_category()).message());
-#endif
+        std::error_code(error, is_windows ? std::system_category() : std::generic_category()).message());
 }
 
 namespace {

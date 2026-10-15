@@ -40,7 +40,7 @@ env:
 
 # The shape of a round (tests/README.md, "Parallel runs"):
 #
-#   plan ─┬─ release ─────────────┬─ e2e, isolation-fix, host-matrix, arch-package, root, nfs,
+#   plan ─┬─ release ─────────────┬─ e2e, isolation-fix, host-matrix, arch-package, root, filesystems,
 #         │  (the one release     │  plan-distro → distro → wsl-import
 #         │   build)              └─ (acceptance takes it when it is ready)
 #         ├─ build ─┬─ unit (i/n) ... tests/lanes.toml [unit]: n machines, each
@@ -643,10 +643,11 @@ jobs:
         run: |
           bash tests/e2e/root_usability_test.sh build/release.tar.gz
 
-  # A home on NFSv3 (mcpp-community/mcpp#809): the filesystem has no
-  # renameat2 flags, and what a package places into a SubOS is still
-  # published, never over what is there.
-  nfs:
+  # A home where people put one (design 2026-10-15-filesystem-capabilities):
+  # on NFSv3, without renameat2's flags (mcpp-community/mcpp#809), what a
+  # package places is still published and never over what is there; on FAT,
+  # without symbolic links, the home is refused at its making with what to do.
+  filesystems:
     needs: release
     if: ${{ !cancelled() && needs.release.outputs.release_ready == 'true' }}
     runs-on: ubuntu-24.04
@@ -660,20 +661,26 @@ jobs:
           name: xlings-linux-x86_64
           path: build
 
-      - name: An NFSv3 export of this runner, mounted
+      - name: An NFSv3 export of this runner and a FAT image, mounted
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y nfs-kernel-server  # host-dep-ok: the runner's NFS server is the filesystem under test
-          sudo mkdir -p /srv/nfs /mnt/nfs
+          sudo apt-get install -y nfs-kernel-server dosfstools  # host-dep-ok: the filesystems under test are the runner's
+          sudo mkdir -p /srv/nfs /mnt/nfs /mnt/fat
           sudo chown "$(id -u):$(id -g)" /srv/nfs
           echo "/srv/nfs 127.0.0.1(rw,sync,no_subtree_check,all_squash,anonuid=$(id -u),anongid=$(id -g))" | sudo tee /etc/exports
           sudo exportfs -ra
           sudo systemctl restart nfs-kernel-server
           sudo mount -t nfs -o vers=3,nolock,local_lock=all 127.0.0.1:/srv/nfs /mnt/nfs
-          grep " /mnt/nfs " /proc/mounts
+          truncate -s 64M "$RUNNER_TEMP/fat.img"
+          mkfs.vfat "$RUNNER_TEMP/fat.img"
+          sudo mount -o loop,uid="$(id -u)",gid="$(id -g)" "$RUNNER_TEMP/fat.img" /mnt/fat
+          grep -E " /mnt/(nfs|fat) " /proc/mounts
 
-      - name: "A home on it: install, place, remove"
+      - name: "NFSv3: install, place, remove"
         run: bash tests/e2e/nfs_home_test.sh build/release.tar.gz /mnt/nfs
+
+      - name: "FAT: refused at its making"
+        run: bash tests/e2e/fat_home_test.sh build/release.tar.gz /mnt/fat
 
   # Deployment S as a distribution ships it (design part 2 §5): the AUR
   # recipe built from THIS build's release artifact, installed with pacman,

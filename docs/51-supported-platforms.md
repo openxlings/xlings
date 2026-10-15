@@ -28,6 +28,17 @@ So a clean Linux machine needs `curl` (or a browser) to install xlings, and
 nothing else for any of its features. `xlings self doctor --isolation` shows what
 this machine gives and where each tool comes from.
 
+## Where a home can be
+
+xlings measures the filesystem a home is on, and writes there in the way that
+filesystem allows. It does not assume anything from the platform.
+
+| Filesystem | What changes |
+|---|---|
+| ext4, XFS, Btrfs, tmpfs, overlay, ZFS, APFS, NTFS, ReFS | nothing: everything is native |
+| NFSv3, some FUSE and SMB mounts (no atomic rename flags) | entries are published as hard links, and directories by a rename onto a free name. They are never placed over an existing entry. `xlings self doctor` says so |
+| FAT, exFAT (no symbolic links) | not a home: making one there is refused, naming the filesystem and what to do (`XLINGS_HOME` elsewhere) |
+
 ## Versions
 
 Releases are dated: `YYYY.M.D.N`, `N` from 1 (`.0` is reserved for a formal

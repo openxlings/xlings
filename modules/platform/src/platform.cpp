@@ -656,61 +656,9 @@ int run_shell(std::string_view command, bool interactive) {
         return content;
     }
 
-std::expected<void, std::string> link_no_replace(const std::filesystem::path& from,
-                                                 const std::filesystem::path& to) {
-        namespace fs = std::filesystem;
-        std::error_code ec;
-        const auto status = fs::symlink_status(from, ec);
-        if (ec) return std::unexpected("cannot publish " + to.string() + ": " + ec.message());
-        if (status.type() == fs::file_type::directory) {
-            // No link for a directory: renamed only onto a name that is not
-            // there. The one window -- an empty directory made at that name
-            // between the look and the rename -- is a caller's own name under
-            // its lock; anything else there (a file, a link, a directory with
-            // something in it) is refused by rename(2) itself or here.
-            const auto there = fs::symlink_status(to, ec);
-            if (ec && ec != std::errc::no_such_file_or_directory)
-                return std::unexpected("cannot publish " + to.string() + ": " + ec.message());
-            if (fs::exists(there))
-                return std::unexpected("cannot publish " + to.string() + ": " +
-                                       std::make_error_code(std::errc::file_exists).message());
-            fs::rename(from, to, ec);
-            if (ec) return std::unexpected("cannot publish " + to.string() + ": " + ec.message());
-            return {};
-        }
-        // A hard link names the link itself, not what a symbolic link points to.
-        fs::create_hard_link(from, to, ec);
-        if (ec) return std::unexpected("cannot publish " + to.string() + ": " + ec.message());
-        fs::remove(from, ec);
-        return {};
-    }
-
 std::expected<void, std::string> rename_no_replace(const std::filesystem::path& from,
                                                        const std::filesystem::path& to) {
-        std::error_code error;
-#if defined(__linux__)
-        constexpr unsigned NO_REPLACE = 1;  // renameat2 RENAME_NOREPLACE
-        if (::syscall(SYS_renameat2, AT_FDCWD, from.c_str(), AT_FDCWD, to.c_str(), NO_REPLACE) != 0)
-            error = std::error_code(errno, std::generic_category());
-#elif defined(__APPLE__)
-        if (::renamex_np(from.c_str(), to.c_str(), RENAME_EXCL) != 0)
-            error = std::error_code(errno, std::generic_category());
-#elif defined(_WIN32)
-        if (!::MoveFileExW(from.wstring().c_str(), to.wstring().c_str(), MOVEFILE_WRITE_THROUGH))
-            error = std::error_code(static_cast<int>(::GetLastError()), std::system_category());
-#else
-        return std::unexpected("atomic publication without replacement is unavailable on this platform");
-#endif
-        // A filesystem without the flag (NFSv3 answers EINVAL): a link is the
-        // same promise for anything but a directory -- it fails, at once, when
-        // the destination exists -- and the scratch name goes.
-        if constexpr (!is_windows) {
-            if (error == std::errc::invalid_argument || error == std::errc::function_not_supported
-                || error == std::errc::operation_not_supported || error == std::errc::not_supported)
-                return link_no_replace(from, to);
-        }
-        if (error) return std::unexpected("cannot publish " + to.string() + ": " + error.message());
-        return {};
+        return publish_no_replace(from, to, fs_caps(to.parent_path().empty() ? std::filesystem::path(".") : to.parent_path()));
     }
 
 std::filesystem::path read_symlink(const std::filesystem::path& path, std::error_code& error) {

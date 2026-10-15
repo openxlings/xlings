@@ -76,40 +76,59 @@ TEST(PlatformAtomicWrite, PublicationWithoutReplacementPreservesEveryExistingDes
     EXPECT_EQ(tk::read_file(published), "new artefact");
 }
 
-// Where the rename flag is missing (NFSv3 answers EINVAL; mcpp#809), a file
-// or a link is published as a hard link: the same refusal of an existing name,
-// the scratch name gone, a symbolic link published as itself. A directory is
-// renamed onto a name that is not there, never over what is.
-XTEST(AtomicPublication, WithoutTheRenameFlagEveryEntryIsStillPublishedWithoutReplacing,
-      .area = "platform", .covers = {"ATOMIC-PUBLICATION"}, .requires_ = {"posix"}) {
-    if constexpr (!tk::is_posix) GTEST_SKIP() << "link(2)";
-    auto home = tk::Home::isolated("link-publication");
-    const auto file = home.root() / "file-scratch";
-    tk::write_file(file, "bytes");
-    const auto taken = home.root() / "taken";
-    tk::write_file(taken, "old");
-    EXPECT_FALSE(p::link_no_replace(file, taken));
-    EXPECT_EQ(tk::read_file(taken), "old");
-    ASSERT_TRUE(p::link_no_replace(file, home.root() / "file"));
-    EXPECT_FALSE(fs::exists(file));
-    EXPECT_EQ(tk::read_file(home.root() / "file"), "bytes");
-    if constexpr (tk::is_linux) {   // Linux's link(2) never follows a symbolic link
-        const auto link = home.root() / "link-scratch";
-        fs::create_symlink("/nowhere/target", link);
-        ASSERT_TRUE(p::link_no_replace(link, home.root() / "link"));
-        EXPECT_EQ(fs::read_symlink(home.root() / "link"), "/nowhere/target");
-        EXPECT_FALSE(fs::exists(fs::symlink_status(link)));
+// Every filesystem a home may be on publishes without replacing (design
+// 2026-10-15-filesystem-capabilities): each strategy, chosen by what the
+// filesystem was measured to do, is driven here on this one by stating the
+// capabilities -- the NFSv3 lane proves the measurement on the real thing.
+XTEST(AtomicPublication, EveryStrategyPublishesAndNoneReplaces,
+      .area = "platform", .covers = {"ATOMIC-PUBLICATION"}) {
+    auto home = tk::Home::isolated("publication-strategies");
+    const auto root = home.root();
+    p::FsCaps noFlag;                         // NFSv3: no rename flags, hard links
+    noFlag.rename_no_replace = false;
+    noFlag.rename_exchange = false;
+    p::FsCaps noLinks = noFlag;               // and no hard links either
+    noLinks.hard_links = false;
+    for (const auto& [label, caps] : {std::pair{"native", p::FsCaps{}}, std::pair{"no-flag", noFlag},
+                                      std::pair{"no-links", noLinks}}) {
+        if (std::string_view(label) == "native" && !p::fs_caps(root).rename_no_replace) continue;
+        const auto dir = root / label;
+        fs::create_directories(dir);
+        tk::write_file(dir / "file-scratch", "bytes");
+        tk::write_file(dir / "taken", "old");
+        EXPECT_FALSE(p::publish_no_replace(dir / "file-scratch", dir / "taken", caps)) << label;
+        EXPECT_EQ(tk::read_file(dir / "taken"), "old") << label;
+        ASSERT_TRUE(p::publish_no_replace(dir / "file-scratch", dir / "file", caps)) << label;
+        EXPECT_FALSE(fs::exists(dir / "file-scratch")) << label;
+        EXPECT_EQ(tk::read_file(dir / "file"), "bytes") << label;
+        if constexpr (tk::is_linux) {         // a symbolic link is published as itself
+            fs::create_symlink("/nowhere/target", dir / "link-scratch");
+            ASSERT_TRUE(p::publish_no_replace(dir / "link-scratch", dir / "link", caps)) << label;
+            EXPECT_EQ(fs::read_symlink(dir / "link"), "/nowhere/target") << label;
+        }
+        fs::create_directories(dir / "dir-scratch/inside");
+        fs::create_directories(dir / "full/kept");
+        fs::create_directories(dir / "empty");
+        EXPECT_FALSE(p::publish_no_replace(dir / "dir-scratch", dir / "full", caps)) << label;
+        EXPECT_TRUE(fs::is_directory(dir / "full/kept")) << label;
+        EXPECT_FALSE(p::publish_no_replace(dir / "dir-scratch", dir / "empty", caps))
+            << label << ": an existing name, even an empty directory, is refused";
+        ASSERT_TRUE(p::publish_no_replace(dir / "dir-scratch", dir / "dir", caps)) << label;
+        EXPECT_TRUE(fs::is_directory(dir / "dir/inside")) << label;
     }
-    const auto directory = home.root() / "dir-scratch";
-    fs::create_directories(directory / "inside");
-    const auto full = home.root() / "full";
-    fs::create_directories(full / "kept");
-    EXPECT_FALSE(p::link_no_replace(directory, full));
-    EXPECT_TRUE(fs::is_directory(full / "kept"));
-    const auto empty = home.root() / "empty";
-    fs::create_directories(empty);
-    EXPECT_FALSE(p::link_no_replace(directory, empty)) << "an existing name, even an empty directory, is refused";
-    ASSERT_TRUE(p::link_no_replace(directory, home.root() / "dir"));
-    EXPECT_TRUE(fs::is_directory(home.root() / "dir/inside"));
-    EXPECT_FALSE(fs::exists(directory));
+}
+
+// The measurement: what this test's own filesystem does, found by trying.
+XTEST(AtomicPublication, AFilesystemIsMeasuredWhereItIs,
+      .area = "platform", .covers = {"ATOMIC-PUBLICATION"}) {
+    auto home = tk::Home::isolated("fs-caps");
+    const auto caps = p::probe_fs_caps(home.root());
+    EXPECT_TRUE(caps.measured);
+    if constexpr (tk::is_posix) {
+        EXPECT_TRUE(caps.symlinks);
+        EXPECT_TRUE(caps.hard_links);
+    }
+    if constexpr (tk::is_linux) EXPECT_FALSE(caps.type.empty());
+    for (const auto& e : fs::directory_iterator(home.root()))
+        EXPECT_FALSE(e.path().filename().string().starts_with(".xlings-fsprobe-")) << "the probe left " << e.path();
 }

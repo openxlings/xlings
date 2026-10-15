@@ -26,6 +26,16 @@ aarch64 镜像在虚拟机（`virt`）上启动；在 aarch64 真机上启动需
 所以一台干净的 Linux 机器只需要 `curl`（或浏览器）来安装 xlings，任何功能都不再需要别的。
 `xlings self doctor --isolation` 显示这台机器给了什么、每个工具来自哪里。
 
+## home 可以放在哪里
+
+xlings 会实测 home 所在的文件系统，并按那个文件系统允许的方式写入，不按平台去假设。
+
+| 文件系统 | 有什么不同 |
+|---|---|
+| ext4、XFS、Btrfs、tmpfs、overlay、ZFS、APFS、NTFS、ReFS | 没有：全部原生 |
+| NFSv3、部分 FUSE 与 SMB 挂载（没有原子 rename 标志） | 条目以硬链接发布，目录改名到一个空闲的名字；都不会覆盖已有的条目。`xlings self doctor` 会说明 |
+| FAT、exFAT（没有符号链接） | 不能作为 home：在那里建 home 会被拒绝，并写明文件系统和怎么做（把 `XLINGS_HOME` 设到别处） |
+
 ## 版本
 
 发布按日期编号：`YYYY.M.D.N`，`N` 从 1 开始（`.0` 保留给正式版本）。`luban` 与它旁边的 xlings 一起发布，版本相同。

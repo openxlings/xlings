@@ -18,6 +18,7 @@ export import :tcp;
 export import :network;
 export import :net_notify;
 export import :asset_paths;
+export import :fs_caps;
 export import :machine_etc;
 export import :domain_mount;
 // The kernel's isolation mechanisms: namespaces, Landlock, seccomp, beneath.
@@ -334,14 +335,10 @@ namespace platform {
     };
     export std::optional<ChangeStamp> change_stamp(const std::filesystem::path& path);
 
-    // Publish a same-filesystem scratch atomically, refusing every existing destination.
-    // A filesystem without the rename flag (NFSv3) publishes a file or a link as a
-    // hard link, which refuses an existing destination just as atomically, and a
-    // directory by rename(2) onto a name that is not there (never a copy).
+    // Publish a same-filesystem scratch atomically, refusing every existing
+    // destination, the way the destination's filesystem allows (fs_caps,
+    // publish_no_replace): never a copy, never over what is there.
     export std::expected<void, std::string> rename_no_replace(
-        const std::filesystem::path& from, const std::filesystem::path& to);
-    // That fallback on its own (what a filesystem without the flag gets).
-    export std::expected<void, std::string> link_no_replace(
         const std::filesystem::path& from, const std::filesystem::path& to);
 
     export void write_file_atomic(const std::string& filepath, const std::string& content);

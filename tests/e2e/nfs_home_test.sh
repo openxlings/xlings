@@ -35,6 +35,10 @@ pkg="$(find "$work" -maxdepth 1 -type d -name 'xlings-*-linux-*' | head -1)"
 run() { env -u XLINGS_ACTIVE_SUBOS -u XLINGS_SUBOS_MODE -u XLINGS_BIN XLINGS_HOME="$pkg" HOME="$work" "$pkg/bin/xlings" "$@"; }
 
 run self init >/dev/null
+doctor="$(run self doctor 2>&1 || true)"
+grep -q "this home's filesystem: nfs -- no atomic rename flags: entries are published as hard links" <<<"$doctor" \
+  || { echo "$doctor" | head -20; fail "self doctor does not say how this filesystem is written"; }
+log "self doctor names the filesystem and its strategy"
 run update >/dev/null 2>&1 || true
 out="$(run install -y xim:linux-headers xim:glibc 2>&1)" || { echo "$out"; fail "install on NFS"; }
 grep -q "cannot publish" <<<"$out" && { echo "$out"; fail "a publication was refused"; }
