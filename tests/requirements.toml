@@ -718,7 +718,7 @@ text = "subos export --tar is a root docker imports and runs"
 status = "required"
 
 [EXPORT-WSL]
-text = "subos export --tar imports with wsl --import (WSL1 on CI: reported, not blocking)"
+text = "subos export --tar imports with wsl --import, and the imported root is the edition (WSL 2 on CI; blocking)"
 status = "required"
 
 [EXPORT-DISK]
