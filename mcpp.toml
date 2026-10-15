@@ -50,6 +50,7 @@ members = [
     "luban/specs/opensal",
     "luban/specs/openhal",
     "luban/specs/openas",
+    "luban/kits/imkit",
     "luban/kits/openhal-host",
     "luban/kits/opensal-wlr",
     "luban/kits/xdesk-base",

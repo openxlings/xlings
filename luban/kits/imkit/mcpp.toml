@@ -1,0 +1,24 @@
+# imkit: a component library for Dear ImGui, reusable by any application that
+# draws with it (the Luban OS app first; xdesk's tools may follow).
+#
+#   imkit.imgui   Dear ImGui itself, as a module: imgui.h is read here only
+#                 (tools/lint_c_headers.sh), macros become functions
+#   imkit         the components: a theme (palette, fonts, pixel unit), the
+#                 interface's scale, pixel art drawn from text maps, bevelled
+#                 panels, buttons, option cards, checkboxes, switches, text
+#                 fields, tabs, segmented choices, progress bars, focus rings,
+#                 and named anchors for tests that click a control by name
+#
+# Nothing here knows an application: what it draws in (its colours, its art,
+# its fonts) is given to it. A kit: it imports the standard library and its
+# C library only (tools/lint_layer_deps.sh).
+[package]
+namespace = "imkit"
+name      = "imkit"
+version   = "0.1.0"
+
+[targets.imkit]
+kind = "lib"
+
+[dependencies.compat]
+imgui = "1.92.8-docking"

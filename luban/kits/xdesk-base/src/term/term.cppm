@@ -65,6 +65,14 @@ public:
     int mouse_mode() const { return mouse_mode_; }
     bool mouse_sgr() const { return mouse_sgr_; }
 
+    // The cursor's shape, as DECSCUSR set it.
+    enum class CursorShape { Block, Underline, Bar };
+    CursorShape cursor_shape() const { return cursor_shape_; }
+
+    // What the program asked to put on the clipboard (OSC 52), drained. Whether
+    // it reaches the host's clipboard is the embedder's grant to decide.
+    std::optional<std::string> take_clipboard() { return std::exchange(clipboard_, std::nullopt); }
+
     // Lines scrolled off the primary screen, oldest first (bounded).
     std::size_t scrollback() const { return history_.size(); }
     const std::vector<Cell>& history_line(std::size_t i) const { return history_[i]; }
@@ -109,6 +117,8 @@ private:
     bool mouse_sgr_ { false };
     std::string title_;
     std::string replies_;
+    CursorShape cursor_shape_ { CursorShape::Block };
+    std::optional<std::string> clipboard_;
 
     // The parser's state between feeds.
     enum class State { Ground, Escape, Csi, Osc, OscEscape, Charset } state_ { State::Ground };

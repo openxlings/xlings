@@ -331,17 +331,54 @@ void Screen::csi(char final, std::string_view raw, char prefix, char intermediat
         break;
     case 's': saved_ = {cx_, cy_, pen_}; break;
     case 'u': cx_ = saved_.cx; cy_ = saved_.cy; pen_ = saved_.pen; break;
-    case 't': case 'q': break;   // window ops, cursor style: nothing to do here
+    case 'q':
+        // DECSCUSR: 0-2 block, 3-4 underline, 5-6 bar (blinking or not).
+        if (intermediate == ' ') {
+            const int n = p_(p, 0, 0);
+            cursor_shape_ = n >= 5 ? CursorShape::Bar : n >= 3 ? CursorShape::Underline : CursorShape::Block;
+        }
+        break;
+    case 't': break;   // window ops: nothing to do here
     default: ++unhandled;
     }
     wrap_pending_ = false;
 }
 
+namespace {
+// RFC 4648 base64, what OSC 52 carries; nothing on a malformed one.
+std::optional<std::string> base64_(std::string_view in) {
+    std::string out;
+    std::uint32_t acc = 0;
+    int bits = 0;
+    for (const char c : in) {
+        int v;
+        if (c >= 'A' && c <= 'Z') v = c - 'A';
+        else if (c >= 'a' && c <= 'z') v = c - 'a' + 26;
+        else if (c >= '0' && c <= '9') v = c - '0' + 52;
+        else if (c == '+') v = 62;
+        else if (c == '/') v = 63;
+        else if (c == '=') break;
+        else return std::nullopt;
+        acc = (acc << 6) | static_cast<std::uint32_t>(v);
+        bits += 6;
+        if (bits >= 8) { bits -= 8; out += static_cast<char>((acc >> bits) & 0xff); }
+    }
+    return out;
+}
+}  // namespace
+
 void Screen::osc(std::string_view body) {
     const auto semi = body.find(';');
     const auto code = body.substr(0, semi);
     if ((code == "0" || code == "2") && semi != std::string_view::npos) title_ = std::string(body.substr(semi + 1));
-    else if (code != "1" && code != "7" && code != "8" && code != "133" && code != "52") ++unhandled;
+    else if (code == "52" && semi != std::string_view::npos) {
+        // OSC 52 ; <selection> ; <base64> -- a query ("?") is not answered:
+        // reading the host's clipboard is not a program's to ask for.
+        const auto rest = body.substr(semi + 1);
+        const auto second = rest.find(';');
+        if (second != std::string_view::npos && rest.substr(second + 1) != "?")
+            if (auto text = base64_(rest.substr(second + 1))) clipboard_ = std::move(*text);
+    } else if (code != "1" && code != "7" && code != "8" && code != "133") ++unhandled;
 }
 
 void Screen::esc(char c, char intermediate) {

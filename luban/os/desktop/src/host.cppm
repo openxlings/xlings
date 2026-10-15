@@ -16,6 +16,9 @@ struct Options {
     int width { 1100 };
     int height { 700 };
     bool hidden { false };          // tests: render without showing anything
+    // Tests: the interface's scale, as a display of that scale gives it
+    // (0: the display's own).
+    float scale { 0 };
 };
 
 // A key this window was given while imgui did not want it (a console, a
@@ -50,8 +53,21 @@ public:
     void text_input(bool on, int x = 0, int y = 0, int w = 1, int h = 1);
     std::string clipboard() const;
     void set_clipboard(const std::string& text);
+    // Device pixels per unit of the window's coordinates (2 on a Retina
+    // display; 1 where the window's coordinates are pixels already).
+    double pixel_density() const;
+    // How much larger than its nominal size the interface is drawn: the
+    // display's content scale (125 %, 150 %, 200 %). Every size the app
+    // writes goes through it once (ui::px), fonts included.
+    float ui_scale() const;
+    // The display's scale, what a remote surface is told (DensityChanged):
+    // pixel density times content scale.
     double density() const;
     std::pair<int, int> size() const;     // logical pixels
+    // The window shown, hidden (the app in the tray), brought to the front.
+    void show();
+    void hide();
+    bool visible() const;
 
     // This frame's input that imgui did not take, in order.
     const std::vector<opensal::Event>& events() const { return events_; }
@@ -76,11 +92,18 @@ public:
     void update(Texture& t, const opensal::Rect& rect, std::string_view rows);
     void destroy(Texture& t);
 
-    // The fonts: the interface's and the console's (both with CJK when the
-    // machine has a font for it).
+    // The fonts (design 2026-10-16 L §13.2): the interface's text, its
+    // titles (a pixel face), and the console's monospace in two weights --
+    // each with CJK merged in. From the fonts Luban OS ships (`luban-fonts`),
+    // else what this machine has.
     void* ui_font() const { return ui_font_; }
+    void* title_font() const { return title_font_; }
     void* mono_font() const { return mono_font_; }
+    void* mono_bold_font() const { return mono_bold_font_; }
+    // The console's default size, in nominal pixels (ui_scale applies).
     float mono_size() const { return mono_size_; }
+    // Where the shipped fonts were found (empty: this machine's were used).
+    const std::filesystem::path& font_dir() const { return font_dir_; }
 
     // Tests: what the window last drew, as BGRA rows.
     std::vector<std::uint8_t> read_pixels(int& width, int& height) const;
@@ -107,9 +130,16 @@ private:
     bool close_requested_ { false };
     std::vector<std::filesystem::path> dropped_;
     void* ui_font_ { nullptr };
+    void* title_font_ { nullptr };
     void* mono_font_ { nullptr };
-    float mono_size_ { 15.0f };
+    void* mono_bold_font_ { nullptr };
+    float mono_size_ { 16.0f };
+    std::filesystem::path font_dir_;
 };
+
+// The directory of the fonts Luban OS ships (`luban-fonts`): $LUBAN_OS_FONTS,
+// beside this program (../share/fonts/luban), the home's SubOS, its store.
+std::optional<std::filesystem::path> shipped_font_dir();
 
 // The fonts this machine has for an interface and for a console, by path.
 std::vector<std::string> ui_font_candidates();

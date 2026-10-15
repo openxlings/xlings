@@ -129,6 +129,10 @@ int run_session(const Session& s, int in, int out, const SessionOptions& o) {
     env["WLR_RENDERER"] = "pixman";
     env["WLR_HEADLESS_OUTPUTS"] = "1";
     env["WLR_LIBINPUT_NO_DEVICES"] = "1";
+    // The pointer is drawn by the compositor into the frames: it needs a
+    // cursor theme. Adwaita when the system has it and nobody chose one.
+    if (!env.contains("XCURSOR_THEME") && fs::is_directory("/usr/share/icons/Adwaita/cursors", ec)) env["XCURSOR_THEME"] = "Adwaita";
+    if (!env.contains("XCURSOR_SIZE")) env["XCURSOR_SIZE"] = "24";
     env.erase("WAYLAND_DISPLAY");
     env.erase("DISPLAY");
     // A session starts at home, as a login does (its terminals open there).

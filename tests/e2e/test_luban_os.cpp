@@ -196,7 +196,7 @@ click card:tiny
 expect edition tiny
 expect name tiny-1
 click more
-waitfor anchors.mode present 5
+waitfor anchors.proxy present 5
 frames 2
 screenshot {}
 click back
