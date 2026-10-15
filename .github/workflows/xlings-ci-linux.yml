@@ -45,7 +45,8 @@ env:
 #         │   build)              └─ (acceptance takes it when it is ready)
 #         ├─ build ─┬─ unit (i/n) ... tests/lanes.toml [unit]: n machines, each
 #         │         │                 building and running whole families of tests
-#         │         └─ acceptance ... checks, desktop payloads, the static gates
+#         │         └─ acceptance ... checks, then the static gates on the release
+#         ├─ desktop-payloads ....... the app's and xdesk's release payloads
 #         └─ build-asan ─ asan (i/n)  main and `ci:asan`: [asan], instrumented
 #   report (every lane's runs, one requirement map)
 #
@@ -204,6 +205,34 @@ jobs:
         if: failure()
         run: bash tools/ci/diagnose_mcpp.sh
 
+  # The Luban OS app's and xdesk's release payloads, as release.yml makes
+  # them (a glibc program, the system's loader, no RPATH, its NEEDED
+  # checked): a release must not be the first to find the packaging broken.
+  # Its own optimized build, beside the others.
+  desktop-payloads:
+    needs: plan
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Linux toolchain
+        uses: ./.github/actions/linux-toolchain
+        with:
+          sandbox: 'false'
+
+      - name: Luban OS and xdesk release payloads
+        run: |
+          bash tools/ci/xlings_tools.sh patchelf
+          mcpp build -p luban-os --profile dist
+          bash tools/luban_os_release.sh
+          mcpp build -p xdesk-app --profile dist
+          bash tools/xdesk_release.sh
+
+      - name: Diagnose a failed mcpp build
+        if: failure()
+        run: bash tools/ci/diagnose_mcpp.sh
+
   # The same for the instrumented build, where the asan lane runs.
   build-asan:
     needs: plan
@@ -295,8 +324,8 @@ jobs:
 
   # What runs on a development build and needs no release (xdev's own tests,
   # the contract scripts, openkal beside this toolchain, the lints as
-  # evidence, the desktop release payloads), then the static gates on the
-  # release build, fetched as soon as the release job attaches it.
+  # evidence), then the static gates on the release build, fetched as soon as
+  # the release job attaches it.
   acceptance:
     needs: build
     runs-on: ubuntu-24.04
@@ -362,17 +391,6 @@ jobs:
           XDEV_LANE: linux-lint
         run: |
           "$XDEV" test --no-mcpp --suite lint --out target/xdev/linux-lint
-
-      # The Luban OS app's and xdesk's release payloads, as release.yml makes
-      # them (a glibc program, the system's loader, no RPATH, its NEEDED
-      # checked): a release must not be the first to find the packaging broken.
-      - name: Luban OS and xdesk release payloads
-        run: |
-          bash tools/ci/xlings_tools.sh patchelf
-          mcpp build -p luban-os --profile dist
-          bash tools/luban_os_release.sh
-          mcpp build -p xdesk-app --profile dist
-          bash tools/xdesk_release.sh
 
       - name: The release build of this commit
         env:

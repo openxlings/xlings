@@ -151,7 +151,7 @@ $XDEV test --lane-config unit --shard 1/4 # what CI's first unit machine runs
 
 The Linux round (`xlings-ci-linux.yml`): `plan` (lints, the matrices) starts
 `release` (the one release build) and `build` (the development build); the
-`unit` shards and `acceptance` (checks, desktop payloads, then the static gates
+`unit` shards and `acceptance` (checks, then the static gates
 on the release build as soon as it is attached) take `build`'s, and on main the
 `asan` shards take `build-asan`'s; the system lanes start from the release
 build, and `report` reads every lane. A restored build that does not build is
