@@ -1066,9 +1066,7 @@ void configure_dependency_store_roots_(
     };
 
     append(selectedStore);
-    auto projectDataDir = Config::project_data_dir();
-    if (!projectDataDir.empty()) append(projectDataDir / "xpkgs");
-    append(Config::global_data_dir() / "xpkgs");
+    for (auto store : Config::stores()) append(std::move(store));
 }
 
 std::string pkgindex_root_for_(const std::filesystem::path& pkgFile, bool* outHasLibs) {
@@ -2582,6 +2580,58 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& requested
         }
     }
 
+    // Upstreams (design mcpp 2026-10-16 §14 X3): a payload of the same
+    // identity that is complete in a read-only upstream is published here as
+    // a link entry and configured here; nothing is downloaded and no hook
+    // runs in it. A link whose upstream let the payload go is removed -- only
+    // the link -- and the node installs as usual, at the same path.
+    {
+        namespace fs = std::filesystem;
+        const auto& upstreams = Config::upstreams();
+        const auto within = [](const fs::path& root, const fs::path& p) {
+            const auto rel = p.lexically_normal().lexically_relative(root.lexically_normal());
+            return !rel.empty() && *rel.begin() != "..";
+        };
+        const auto complete = [](const fs::path& dir, int revision) {
+            std::error_code ec;
+            return fs::is_directory(dir, ec) && payload_has_content(dir) && !stamped_incomplete(dir)
+                && stamped_revision(dir) != kRevisionUnrecorded && !payload_revision_verdict(dir, revision).stale
+                && classify_payload_platform(dir) != PayloadPlatform::Foreign;
+        };
+        for (auto& node : plan.nodes) {
+            if (node.isSystemPM || node.pkgType == 3 || !node.borrowedPayload.empty()) continue;
+            const auto local = node_payload_path(node, dataDir);
+            std::error_code ec;
+            if (const auto target = platform::dir_link_target(local)) {
+                if (!fs::exists(local, ec)) {
+                    log::info("{}@{}: its upstream payload is gone; installing it here", node.name, node.version);
+                    fs::remove(local, ec);
+                    node.alreadyInstalled = false;
+                } else if (std::ranges::any_of(upstreams, [&](const Upstream& u) { return within(u.store, *target); })) {
+                    node.upstreamPayload = *target;
+                    continue;
+                }
+            }
+            if (upstreams.empty() || fs::symlink_status(local, ec).type() != fs::file_type::not_found) continue;
+            for (const auto& u : upstreams) {
+                if (!u.namespaces.empty() && std::ranges::find(u.namespaces, node.namespaceName) == u.namespaces.end())
+                    continue;
+                const auto candidate = u.store / package_store_name(node.namespaceName, node.name) / node.version;
+                if (!complete(candidate, node.revision)) continue;
+                fs::create_directories(local.parent_path(), ec);
+                std::string why;
+                if (!platform::create_dir_link(candidate, local, why)) {
+                    log::debug("{}@{}: cannot link {} ({}); installing it here", node.name, node.version,
+                               candidate.string(), why);
+                    break;
+                }
+                node.upstreamPayload = candidate;
+                log::debug("{}@{}: from upstream {}", node.name, node.version, u.home.string());
+                break;
+            }
+        }
+    }
+
     // Phase 1: Collect download tasks for non-installed packages
     log::debug("installer: {} node(s) in plan, dataDir={}", plan.nodes.size(), dataDir.string());
     std::vector<DownloadTask> dlTasks;
@@ -2594,7 +2644,7 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& requested
     std::unordered_set<std::string> refusedNodes;
     for (auto& node : plan.nodes) {
         currentPlanKey = detail_::plan_key_(node);
-        if (node.alreadyInstalled || !node.borrowedPayload.empty()) continue;
+        if (node.alreadyInstalled || !node.borrowedPayload.empty() || !node.upstreamPayload.empty()) continue;
 
         const std::string hostArch =
             mcpplibs::xpkg::normalize_arch(detail_::detect_arch_());
@@ -2818,6 +2868,10 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& requested
         auto targetRoot = node.storeRoot.empty() ? (dataDir / "xpkgs") : node.storeRoot;
         ctx.install_dir = node_payload_path(node, dataDir);
         const bool borrowedPayload = !node.sourceHome.empty();
+        // Neither kind is this home's to write: no hook runs in it, nothing
+        // is recorded in it.
+        const bool linkedPayload = !node.upstreamPayload.empty();
+        const bool readOnlyPayload = borrowedPayload || linkedPayload;
         detail_::configure_xpkg_execution_artifact_paths_(
             ctx);
         detail_::configure_dependency_store_roots_(ctx, targetRoot);
@@ -3092,6 +3146,10 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& requested
                 node.canonicalName.empty() ? node.name : node.canonicalName,
                 node.version, hook));
         }
+        // A linked payload's config() runs as an installed payload's does on
+        // every reconfigure -- it registers, it does not write the payload --
+        // so it needs no sandbox of its own (one would make borrowing depend
+        // on user namespaces). A system-layer payload keeps its confinement.
         auto execResult = lua_boundary::create_executor(node.pkgFile, ctx, hookLogs, borrowedPayload);
         if (!execResult) {
             log::error("failed to create executor for {}: {}",
@@ -3160,7 +3218,7 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& requested
         // of the package index, destroying the index entry.
 
         // Ensure install_dir exists so hooks can mv/cp into it
-        if (!borrowedPayload) {
+        if (!readOnlyPayload) {
             std::error_code ec;
             std::filesystem::create_directories(ctx.install_dir, ec);
             // A genuine failure here (commonly EACCES on a root-owned
@@ -3192,7 +3250,7 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& requested
                       Config::display_path(ctx.install_dir));
         }
 
-        bool payloadInstalled = (node.alreadyInstalled || borrowedPayload) && !foreignPayload;
+        bool payloadInstalled = (node.alreadyInstalled || readOnlyPayload) && !foreignPayload;
 
         // Check if already installed via hook
         if (foreignPayload) {
@@ -3301,7 +3359,7 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& requested
         // Positive evidence only -- a stamp that predates the `registered`
         // field yields no verdict, so a home installed by an older client
         // does not start reinstalling itself. See install_state.cppm.
-        if (payloadInstalled && !foreignPayload && !borrowedPayload) {
+        if (payloadInstalled && !foreignPayload && !readOnlyPayload) {
             const auto state = installation_state(
                 ledgerIndex, node.namespaceName, node.name, node.version,
                 ctx.install_dir);
@@ -3326,7 +3384,7 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& requested
         // `replacement`, which removes the partial tree and puts the old one
         // back (PayloadReplacement, payload.cppm).
         std::optional<PayloadReplacement> replacement;
-        if (const auto revision = foreignPayload || borrowedPayload
+        if (const auto revision = foreignPayload || readOnlyPayload
                 ? RevisionVerdict{}
                 : payload_revision_verdict(ctx.install_dir, node.revision);
             revision.stale || (payloadInstalled && !node.rebindReason.empty())) {
@@ -3704,7 +3762,7 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& requested
             }
         }
 
-        if (!borrowedPayload && node.pkgType != 3 /* Config */
+        if (!readOnlyPayload && node.pkgType != 3 /* Config */
             && (!payloadInstalled || reconfig || node.migrateRecord)) {
             if (auto evidence = detail_::save_resolution_(node, ctx); !evidence) {
                 log::error("failed to record resolution for {}: {}", node.name, evidence.error());
@@ -3772,7 +3830,7 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& requested
                 // its failure is exactly "payload on disk, ledger empty" --
                 // the state that used to be indistinguishable from a
                 // package that legitimately registers nothing.
-                if (!borrowedPayload) {
+                if (!readOnlyPayload) {
                     write_payload_failure_marker(ctx.install_dir, node.version, configFailure);
                 }
                 if (onStatus) {
@@ -3794,7 +3852,7 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& requested
             onInstallRequests(pendingRequests);
         }
 
-        if (!borrowedPayload && node.pkgType != 3 /* Config */) {
+        if (!readOnlyPayload && node.pkgType != 3 /* Config */) {
             // TODO(config): same soft policy as the install stamp. A
             // config package with no author-created payload must not
             // become installed solely because xlings copied metadata into
@@ -3857,7 +3915,7 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& requested
             const auto registered = count_ledger_registrations(
                 Config::versions(), Config::paths().homeDir.string(),
                 node.namespaceName, node.name, node.version);
-            if (!borrowedPayload) {
+            if (!readOnlyPayload) {
                 write_payload_stamp(ctx.install_dir, node.version, registered,
                                     node.revision);
             }

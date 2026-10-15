@@ -325,6 +325,19 @@ int cmd_list(const std::string& filter, EventStream& stream, bool all = false);
 int cmd_info(const std::string& target, EventStream& stream,
              bool allVersions = false);
 
+// === payload status (design mcpp 2026-10-16 §14 X4) ===
+// What each target resolves to and what its payload is here, without
+// installing anything: payload_dir, the recipe's revision and the installed
+// one, origin (local | upstream | absent) and complete. One data event,
+// "payload_status".
+int cmd_payload_status(std::span<const std::string> targets, EventStream& stream);
+
+// === one index, into a directory (X1) ===
+// Syncs the configured index `name` into `dest` (its own dir when empty): a
+// caller that swaps a staged index into place asks for it here. Data event
+// "index_synced" {name, dir}.
+int cmd_sync_index(const std::string& name, const std::filesystem::path& dest, EventStream& stream);
+
 // === add-xpkg command ===
 int cmd_add_xpkg(const std::string& fileOrUrl, EventStream& stream);
 

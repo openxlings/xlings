@@ -43,6 +43,18 @@ status = "required"
 text = "a payload's share/ reaches /usr/share: directories many packages write into are merged file by file, one package's directory is claimed whole, and a link never has a link above or below it"
 status = "required"
 
+[XIM-INDEX-DIR-STORE]
+text = "an index_repos entry's dir and store place its data and the payloads it serves; payload_status says what a target is here without installing; sync_index syncs one index into a directory"
+status = "required"
+
+[XIM-UPSTREAM]
+text = "a home's upstreams lend payloads of the same identity as link entries (a junction on Windows), never written; removing one removes the link; a payload its upstream let go is installed in place"
+status = "required"
+
+[XIM-HANDSHAKE]
+text = "interface --version reports the version, protocol, capabilities, home layouts and features"
+status = "required"
+
 [LUBAN-SELF-CHECK]
 text = "a Luban system checks itself when made, upgraded, booted and entered, and on demand: a critical failure stops it (not ready, not switched, not booted, not entered) and the rest is reported"
 status = "required"

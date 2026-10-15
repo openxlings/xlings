@@ -377,6 +377,7 @@ std::vector<RepoIndexSpec> PackageCatalog::repo_specs_() {
             .dir = Config::repo_dir_for(repo, true),
             .scope = PackageScope::Project,
             .defaultNamespace = repo.name,
+            .store = repo.store.empty() ? std::filesystem::path{} : Config::store_for(repo, true),
         });
     }
     auto globalRepos = Config::global_index_repos();
@@ -401,6 +402,7 @@ std::vector<RepoIndexSpec> PackageCatalog::repo_specs_() {
             .scope = PackageScope::Global,
             .defaultNamespace = globalRepos[i].name,
             .subIndex = declaredSub,
+            .store = globalRepos[i].store.empty() ? std::filesystem::path{} : Config::store_for(globalRepos[i], false),
         });
     }
 
@@ -493,9 +495,9 @@ std::vector<PackageMatch> PackageCatalog::build_matches_(const RepoState& state,
         match.repoName = state.spec.name;
         match.pkgFile = entry->path;
         match.scope = state.spec.scope;
-        match.storeRoot = (state.spec.scope == PackageScope::Project
-            ? Config::project_data_dir()
-            : Config::global_data_dir()) / "xpkgs";
+        match.storeRoot = !state.spec.store.empty() ? state.spec.store
+            : (state.spec.scope == PackageScope::Project ? Config::project_data_dir()
+                                                         : Config::global_data_dir()) / "xpkgs";
         if (!version.empty()) {
             auto installDir = match.storeRoot
                 / package_store_name(match.namespaceName, match.name)
@@ -942,9 +944,9 @@ std::expected<PackageMatch, std::string> PackageCatalog::resolve_local_identity(
                 .scope = repo.spec.scope,
                 .subIndex = repo.spec.subIndex,
                 .index = &repo.index,
-                .storeRoot = (repo.spec.scope == PackageScope::Project
-                    ? Config::project_data_dir()
-                    : Config::global_data_dir()) / "xpkgs",
+                .storeRoot = !repo.spec.store.empty() ? repo.spec.store
+                    : (repo.spec.scope == PackageScope::Project ? Config::project_data_dir()
+                                                                : Config::global_data_dir()) / "xpkgs",
             });
         }
     };

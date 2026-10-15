@@ -614,7 +614,11 @@ launch(const subos::policy::Policy& declared, const fs::path& package,
             if (build)
                 rw(package);
             else if (readonly_payload) {
-                ro(context.install_dir);
+                // A link entry (an upstream's payload) is seen through its
+                // store; what it names is mounted at its own path.
+                std::error_code rec;
+                const auto real = fs::canonical(context.install_dir, rec);
+                ro(rec ? context.install_dir : real);
             } else if (!context.install_dir.empty()) {
                 w->payload = fs::absolute(context.install_dir).lexically_normal();
                 const auto parent = w->payload.parent_path();

@@ -105,6 +105,8 @@ namespace platform {
 
     export using platform_impl::is_root;
     export using platform_impl::can_write;
+    export using platform_impl::create_dir_link;
+    export using platform_impl::dir_link_target;
 
     // The real user behind a `sudo xlings ...` launch.
     export struct SudoInvoker {

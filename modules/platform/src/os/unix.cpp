@@ -224,6 +224,22 @@ bool can_write(const std::filesystem::path& p) {
         return ::access(p.c_str(), W_OK) == 0;
     }
 
+bool create_dir_link(const std::filesystem::path& target, const std::filesystem::path& link, std::string& error) {
+        std::error_code ec;
+        std::filesystem::create_directory_symlink(target, link, ec);
+        if (ec) error = ec.message();
+        return !ec;
+    }
+
+std::optional<std::filesystem::path> dir_link_target(const std::filesystem::path& p) {
+        std::error_code ec;
+        if (!std::filesystem::is_symlink(p, ec)) return std::nullopt;
+        auto target = std::filesystem::read_symlink(p, ec);
+        if (ec) return std::nullopt;
+        if (target.is_relative()) target = p.parent_path() / target;
+        return target.lexically_normal();
+    }
+
 void lchown_path_(const std::filesystem::path& p,
                              unsigned int uid, unsigned int gid) {
         ::lchown(p.c_str(), static_cast<uid_t>(uid), static_cast<gid_t>(gid));

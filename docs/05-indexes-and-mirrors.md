@@ -81,6 +81,19 @@ $ xlings index list
 What a publisher provides is in [31](31-hosting-an-index.md) and
 [specs/index-distribution](specs/index-distribution.md).
 
+### An index another program owns
+
+A program that keeps its own index (mcpp's `mcpplibs`) names where its data and
+payloads live, and xlings fetches and installs there:
+
+```json
+{ "name": "mcpplibs", "url": "...", "dir": "/home/u/.mcpp/indices/mcpplibs", "store": "/home/u/.mcpp/xpkgs" }
+```
+
+A home can also install from read-only **upstreams** -- another home whose
+payloads of the same identity are linked, never copied or written
+(`upstreams`, [specs/xlings-json](specs/xlings-json.md)).
+
 ### Pinning a snapshot
 
 ```bash

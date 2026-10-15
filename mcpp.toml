@@ -93,6 +93,9 @@ cxxflags = ["-DLIBARCHIVE_STATIC", "-DUNICODE", "-D_UNICODE"]
 # were made. An upgrade replaces the entry's file object, so a shim carries
 # THIS manifest only once it has been re-pointed (`replace_entry_binary`) or
 # hands off to the entry at startup (#615).
+# longPathAware (design mcpp 2026-10-16 §14 X6): with the system's
+# LongPathsEnabled, the wide file APIs take paths past MAX_PATH -- a store
+# under a deep home no longer fails at 260 characters.
 [resources]
 files = ["docs/res/xlings.rc"]
 # The .rc input scanner recognises the `MANIFEST` keyword but not the

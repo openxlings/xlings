@@ -103,6 +103,10 @@ struct PlanNode {
     std::filesystem::path storeRoot;
     // A checked system-layer choice, never a writable installation target.
     std::filesystem::path borrowedPayload;
+    // An upstream's payload this home publishes as a link entry at its own
+    // store path (design mcpp 2026-10-16 §14 X3): installed there, configured
+    // here, never written to.
+    std::filesystem::path upstreamPayload;
     std::filesystem::path sourceHome;
     std::string sourceScope;
     // Effective union of runtime + build deps (kept for legacy callers

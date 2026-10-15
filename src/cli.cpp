@@ -2736,7 +2736,17 @@ int run_guarded_(int argc, char* argv[]) {
         // `profile` brought in the read-only home, where the right next step
         // is a writable location, not a bug report. Telling a user their
         // read-only mount is our defect wastes their time and ours.
-        if (e.code() == std::errc::permission_denied
+        // A path past what the system accepts is said as that, not as a
+        // defect (design mcpp 2026-10-16 §14 X6): on Windows without
+        // LongPathsEnabled every path is limited to 259 characters.
+        const auto longest = std::max(e.path1().native().size(), e.path2().native().size());
+        if (e.code() == std::errc::filename_too_long || (platform::is_windows && longest >= 260)) {
+            log::error("  the path is too long ({} characters) for this system", longest);
+            log::error("  hint: {}", platform::is_windows
+                ? "enable long paths (HKLM\\SYSTEM\\CurrentControlSet\\Control\\FileSystem LongPathsEnabled = 1), "
+                  "or use a shorter XLINGS_HOME"
+                : "use a shorter XLINGS_HOME");
+        } else if (e.code() == std::errc::permission_denied
             || e.code() == std::errc::read_only_file_system) {
             log::error("  hint: this path is not writable — check the "
                        "permissions on it, or point XLINGS_HOME at a "

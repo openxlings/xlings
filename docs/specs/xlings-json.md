@@ -30,6 +30,7 @@ A project's `mirror`, `lang`, `uiMode`, `theme` and `tui` override the home's.
 | `versions` | `object` | the home's version database, keyed by **target name** (not necessarily a package name); see below |
 | `version` | `string` | the xlings version that made or last checked this home; written by a successful `self doctor --fix`, to tell whether records are in an older client's format |
 | `index_repos` | `array` | package index repositories, each with `name` and `url` |
+| `upstreams` | `array` | (2026.10.16.1+) read-only homes this one installs from by link; see below |
 | `xim` | `object` | where the default index itself comes from; see below |
 | `XLINGS_RES` | `object \| string \| array` | resource servers; see below |
 
@@ -168,6 +169,13 @@ The default index is always kept; user repositories are added to it.
 | `url` | `string` | a git remote or a local path (required; the fallback in artefact mode) |
 | `artifact` | `string \| object` | (0.4.68+) the artefact base: a GitHub / GitCode repository URL, a static HTTP directory, a local directory or `file://`; or a region object `{"GLOBAL": .., "CN": ..}`, which is **an ordered chain** tried in turn before git ([index distribution](index-distribution.md), §5) |
 | `source` | `string` | (0.4.68+) `auto` (default: artefact first, git as fallback) \| `artifact` (artefact only) \| `git` (git only) |
+| `dir` | `string` | (2026.10.16.1+) where the index's data lives instead of `data/<name>`; relative to the home (a project's: to the project) |
+| `store` | `string` | (2026.10.16.1+) where the payloads this index serves are installed instead of `data/xpkgs`; a directory **named `xpkgs`** (a payload's path is its identity, `<store>/<ns>-x-<name>/<version>`); any other name is ignored with a warning |
+
+`dir` and `store` let a program that owns an index (mcpp's `mcpplibs`, a team's
+private index) keep its data and payloads in its own home while xlings fetches
+and installs them. Listing, removal and the store audit read every declared
+store.
 
 #### Entries are peers; `name` decides three things
 
@@ -206,6 +214,36 @@ hatch for a self-hosted index with an official name.
 first", not "one of the two". An entry declaring several regional bases tries
 each in turn; git's turn comes only after the whole chain. `xlings index list`
 shows the order.
+
+### `upstreams` (2026.10.16.1+)
+
+```json
+"upstreams": [
+  { "home": "/xlings", "namespaces": ["xim"] },
+  { "home": "/var/lib/mcpp/registry", "store": "/var/lib/mcpp/xpkgs", "namespaces": ["mcpplibs"] }
+]
+```
+
+| Field | Type | Meaning |
+|---|---|---|
+| `home` | `string` | an absolute path to another home (required) |
+| `store` | `string` | its store, when that is not `<home>/data/xpkgs` |
+| `namespaces` | `array` | the namespaces taken from it; empty or absent: every one |
+
+When a node of an install is not in this home, the upstreams are asked in order.
+A payload of the **same identity** — namespace, name, version and the recipe's
+revision — that is **complete** there (it holds something, records no failure,
+carries a stamp of that revision, and is for this platform) is published at this
+home's own store path as a **link entry**: a symbolic link, a junction on
+Windows. Nothing is downloaded and no install hook runs; its `config()` runs
+here as for any installed payload, so its programs and links are this home's.
+
+- An upstream is never written to. Removing the package here removes the link.
+- A link whose upstream payload is gone is removed (only the link) and the node
+  is installed here, at the same path: what was built against that path keeps
+  working.
+- Whether a home is trusted as an upstream is the caller's decision (mcpp
+  accepts only homes of the current user or root).
 
 ### `xim`
 
