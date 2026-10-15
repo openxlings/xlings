@@ -8,6 +8,8 @@
 // pass, which is this codebase's recurring failure shape.
 
 #include <gtest/gtest.h>
+import xlings.testkit;
+#include "xlings/xtest.hpp"
 
 import std;
 import xlings.core.xself.repair;
@@ -106,7 +108,8 @@ TEST(SelfRepairLadder, BrokenPayloadStillTriesReRegisterFirst) {
 // "Already installed, configuration current" exits 0 and changes nothing.
 // Taken at its word, doctor reported the finding healed and met it again on
 // the next pass. The rung is judged by the finding, not by the exit code.
-TEST(SelfRepairLadder, AReRegisterThatLeavesTheFindingFallsThroughToReinstall) {
+XTEST(SelfRepairLadder, AReRegisterThatLeavesTheFindingFallsThroughToReinstall,
+      .area = "self", .covers = {"DOCTOR-LADDER"}) {
     FakeRunner f{.codes = {0, 0, 0}};
     int asked = 0;
     auto r = repair_one(task(), RepairPolicy{}, runner_of(f), nullptr, nullptr,
@@ -117,7 +120,8 @@ TEST(SelfRepairLadder, AReRegisterThatLeavesTheFindingFallsThroughToReinstall) {
     EXPECT_EQ(f.ran[0], "xlings install linux-headers@5.11.1 --reconfig -y");
 }
 
-TEST(SelfRepairLadder, AFindingThatOutlivesAReinstallBlamesTheCheck) {
+XTEST(SelfRepairLadder, AFindingThatOutlivesAReinstallBlamesTheCheck,
+      .area = "self", .covers = {"DOCTOR-LADDER"}) {
     FakeRunner f{.codes = {0, 0, 0}};
     auto r = repair_one(task(), RepairPolicy{}, runner_of(f), nullptr, nullptr, [] { return true; });
     EXPECT_FALSE(r.healed);

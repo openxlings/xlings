@@ -327,6 +327,8 @@ jobs:
         run: |
           mkdir -p target/xdev/linux-xdev
           printf '{"name":"linux-xdev","platform":"linux","run":"%s:%s","probes":{}}\n' "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" > target/xdev/linux-xdev/lane.json
+          # XDEV_BIN: the CLI cases drive the xdev just built.
+          XDEV_BIN="$XDEV" \
           XTEST_META_OUT="$GITHUB_WORKSPACE/target/xdev/linux-xdev/meta.ndjson" \
           XTEST_RESULTS_OUT="$GITHUB_WORKSPACE/target/xdev/linux-xdev/cases.ndjson" \
             mcpp test -p xdev
