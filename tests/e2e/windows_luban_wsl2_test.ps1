@@ -124,8 +124,11 @@ if (-not $machine.ready) {
 # Removed there; the host machine stays the home's.
 $rm = Run @('luban', 'rm', 'box', '-y')
 if ($rm.Code -ne 0) { Fail "luban rm box failed" }
-$after = Run @('luban', 'ls')
-if ($after.Out -match '\bbox\b') { Fail "box is still listed: $($after.Out)" }
+# By name, from the data: with nothing left, the text suggests `luban new box`.
+$after = Run @('luban', 'ls', '--json')
+$listed = (($after.Out -split "`r?`n" | Where-Object { $_.Trim() } | Select-Object -Last 1) | ConvertFrom-Json)
+$listed = if ($listed.PSObject.Properties.Name -contains 'result') { $listed.result } else { $listed }
+if ($listed.environments | Where-Object { $_.name -eq 'box' }) { Fail "box is still listed: $($after.Out)" }
 $distro = (& wsl.exe --list --quiet | Out-String) -split "`r?`n" | Where-Object { $_ -like 'xlings-*' } | Select-Object -First 1
 if ($distro) { & wsl.exe --unregister $distro | Out-Null }
 Write-Host "PASS: Luban OS on Windows -- status, a system in the Luban host machine, a command in it, removed; the machine as reported"
