@@ -453,7 +453,10 @@ jobs:
   luban-wsl2:
     needs: build-and-test
     runs-on: windows-2025
-    timeout-minutes: 90
+    # A green lane takes about 15 minutes. A hung `wsl --import` on the runner
+    # was not ended by its step's own bound (it held the job for 40 minutes):
+    # the job's bound is what ends it.
+    timeout-minutes: 40
     permissions:
       actions: read
       contents: read
