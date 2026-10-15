@@ -40,6 +40,12 @@ $caps = (Run @('luban', 'status', '--json')).Out | ConvertFrom-Json
 $sandbox = $caps.modes | Where-Object { $_.name -eq 'sandbox' }
 if (-not $sandbox.ready) { Fail "luban status --json: the sandbox is not ready" }
 if ($sandbox.traits.carrier -ne 'wsl2') { Fail "the sandbox does not run in the wsl2 carrier: $($sandbox | ConvertTo-Json -Compress)" }
+# Before the host machine has started, whether it has KVM is not known -- said,
+# never guessed; without the app there is no desktop, and the step says so.
+$machine0 = $caps.modes | Where-Object { $_.name -eq 'machine' }
+if ($machine0.ready -or $machine0.reason -notmatch 'not known') { Fail "machine before the host machine started: $($machine0 | ConvertTo-Json -Compress)" }
+$desktop0 = $caps.modes | Where-Object { $_.name -eq 'desktop' }
+if ($desktop0.ready -or $desktop0.route -ne 'xlings install luban-os') { Fail "desktop without the app: $($desktop0 | ConvertTo-Json -Compress)" }
 
 # What a failure here needs to be read: the same step through the xlings CLI
 # (its own diagnostics), this home's logs, and the host machine's.
@@ -66,6 +72,9 @@ $null = $desc.Out | ConvertFrom-Json
 $APP = if ($args.Count -ge 2) { $args[1] } else { '' }
 if ($APP -and (Test-Path $APP)) {
     Copy-Item $APP "$PKG_DIR\bin\luban-os.exe"
+    # With the app, a desktop can be shown.
+    $desktop1 = ((Run @('luban', 'status', '--json')).Out | ConvertFrom-Json).modes | Where-Object { $_.name -eq 'desktop' }
+    if (-not $desktop1.ready) { Fail "the app is installed and the desktop is not ready: $($desktop1 | ConvertTo-Json -Compress)" }
     $script = Join-Path $PKG_DIR 'app-script.txt'
     $state = Join-Path $PKG_DIR 'app-state.json'
     @(
@@ -92,6 +101,8 @@ $caps = (Run @('luban', 'status', '--json')).Out | ConvertFrom-Json
 $machine = $caps.modes | Where-Object { $_.name -eq 'machine' }
 if (-not $machine.ready) {
     if (-not $machine.reason -or -not $machine.route) { Fail "machine not ready, and it does not say why and what to do" }
+    # The host machine has started (box is in it): its answer is known now.
+    if ($machine.reason -match 'not known') { Fail "the host machine started and its KVM is still not known" }
     $m = Run @('luban', 'enter', 'box', '--mode', 'machine', '--temp')
     if ($m.Code -eq 0) { Fail "a machine started where the report said it cannot" }
     if ($m.Out -notmatch [regex]::Escape($machine.reason.Substring(0, [Math]::Min(30, $machine.reason.Length)))) {

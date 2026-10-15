@@ -154,7 +154,10 @@ bool kvm_usable() {
 fs::path luban_os_app(const fs::path& home) {
     std::error_code ec;
     const auto name = xlings::platform::is_windows ? "luban-os.exe" : "luban-os";
-    for (const auto& p : {xlings::platform::get_executable_path().parent_path() / name, home / "bin" / name})
+    // Beside luban (a release, a test home), or where `xlings install
+    // luban-os` puts it: a program of the home's active SubOS.
+    for (const auto& p : {xlings::platform::get_executable_path().parent_path() / name, home / "bin" / name,
+                          home / "subos" / "current" / "bin" / name})
         if (fs::exists(p, ec)) return p;
     return {};
 }

@@ -336,6 +336,10 @@ suite_luban_window() {
     ok "luban-os at $LUBAN_OS"
     # The one-time setup a restricted host asks for (docs/luban/07-host-support.md).
     run "luban setup" luban setup -y
+    # Installed where xlings puts programs, not beside luban: luban finds it.
+    STATUS="$(luban status 2>&1)" || true
+    grep -Eq 'desktop +ready' <<<"$STATUS" || fail "the window is installed and luban status says no desktop: $STATUS"
+    ok "luban status: a desktop can be shown"
 
     section "First use -- the quick start makes a system and its console runs what is typed"
     cat > "$shots/first.script" <<EOF

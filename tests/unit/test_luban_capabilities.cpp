@@ -107,3 +107,15 @@ XTEST(LubanCapabilities, WhatCouldNotBeAskedIsSaidAndTheJsonCarriesItAll, .area 
     EXPECT_EQ(j["devices"]["gpu"]["unreadable"], "no /sys here");
     EXPECT_EQ(j["devices"]["display"][0]["traits"]["resolution"], "3840x2160");
 }
+
+// `xlings install luban-os` puts the app among the home's programs (its active
+// SubOS), not beside luban: the report and `--display window` find it there.
+XTEST(LubanCapabilities, TheInstalledAppIsFoundWhereXlingsPutsIt, .area = "luban", .covers = {"PLATFORM-CAPS"}) {
+    auto home = xlings::testkit::Home::isolated("caps-app");
+    const auto name = xlings::testkit::is_windows ? "luban-os.exe" : "luban-os";
+    EXPECT_TRUE(svc::luban_os_app(home.dir()).empty());
+    const auto bin = home.dir() / "subos" / "current" / "bin";
+    std::filesystem::create_directories(bin);
+    std::ofstream(bin / name) << "app";
+    EXPECT_EQ(svc::luban_os_app(home.dir()), bin / name);
+}

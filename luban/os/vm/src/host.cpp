@@ -822,9 +822,8 @@ int enter_in_carrier_(const service::Context& c, std::string_view name, const En
     if (o.display == "window") {
         // The window reaches the machine through the host machine (the app's
         // relay); the app starts it when it is not running.
-        std::error_code ec;
-        const auto app = platform::get_executable_path().parent_path() / "luban-os.exe";
-        if (!fs::exists(app, ec)) {
+        const auto app = service::luban_os_app(c.home);
+        if (app.empty()) {
             say_(c, service::error("a machine's window is the Luban OS app's", "xlings install luban-os"));
             return 1;
         }
@@ -949,8 +948,8 @@ int enter(const service::Context& c, std::string_view name_or_image, const Enter
     if (fs::is_regular_file(name_or_image, ec)) return boot_image_(c, fs::absolute(name_or_image), o);
     const std::string name(name_or_image);
     if (o.display == "window") {
-        const auto app = platform::get_executable_path().parent_path() / "luban-os";
-        if (!fs::exists(app, ec)) {
+        const auto app = service::luban_os_app(c.home);
+        if (app.empty()) {
             say_(c, service::error("a machine's window is the Luban OS app's", "xlings install luban-os"));
             return 1;
         }

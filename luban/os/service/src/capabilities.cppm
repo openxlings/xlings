@@ -59,7 +59,8 @@ Json to_json(const Capabilities& c);
 // /dev/kvm exists and this process may open it (read and write).
 bool kvm_usable();
 
-// The Luban OS app beside this luban, or in the home's bin; empty if neither.
+// The Luban OS app: beside this luban, in the home's bin, or installed in its
+// active SubOS (`xlings install luban-os`); empty if none.
 fs::path luban_os_app(const fs::path& home);
 
 }  // namespace luban::service
