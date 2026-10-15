@@ -359,7 +359,9 @@ class PrivateView final : public View {
             fs::create_directory_symlink(inputs.scope, skeletons_.at(guestHome) / "subos/default");
         fs::create_directory_symlink(inputs.scope, skeletons_.at(guestHome) / "subos/current");
 
-        for (const auto name : {"usr", "lib", "bin", "share"}) {
+        // etc: what a package places into the system (ca-certificates' bundle,
+        // the files a recipe declares), which the root's /etc links name.
+        for (const auto name : {"usr", "lib", "bin", "share", "etc"}) {
             const auto source = inputs.instance / name;
             std::error_code ec;
             const auto status = fs::symlink_status(source, ec);
