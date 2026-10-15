@@ -736,8 +736,9 @@ int run_upgrade_(int argc, char* argv[], EventStream& stream, const UsageError& 
     }
 
     const bool same = top.first == now->ref;
-    // The plan as data too: a frontend (luban) renders it, the log lines
-    // below being the terminal's.
+    // The plan is data, rendered by the frontend (xlings' terminal, luban):
+    // a system in a prefix domain answers through a relay that carries
+    // events, so text printed here would never reach its terminal.
     {
         nlohmann::json data{{"name", name}, {"from", now->ref}, {"to", top.first}, {"dry_run", dry},
                             {"up_to_date", plan.empty() && same && !apply_policy}};
@@ -755,27 +756,7 @@ int run_upgrade_(int argc, char* argv[], EventStream& stream, const UsageError& 
                               {"loosened", loosened}};
         stream.emit(DataEvent{"subos_upgrade_plan", data.dump()});
     }
-    log::println("{}: {} -> {}", name, now->ref, top.first);
-    for (const auto& s : plan.upgrade)
-        log::println("  upgrade  {} {} -> {}", s.key, s.from.empty() ? "?" : s.from,
-                     subos::edition::split(s.to).second.empty() ? "newest" : subos::edition::split(s.to).second);
-    for (const auto& s : plan.add) log::println("  add      {}", s.to);
-    for (const auto& s : plan.kept)
-        log::println("  keep     {} {} (yours; the edition has {})", s.key, s.from, s.to);
-    for (const auto& k : plan.dropped) log::println("  keep     {} (the edition no longer has it; `xlings remove` drops it)", k);
-    if (!chain->policy.empty() && chain->policy != now->policy) {
-        if (apply_policy) log::println("  policy   {} -> {}", now->policy.empty() ? "(none)" : now->policy, chain->policy);
-        else {
-            std::string what;
-            for (const auto& l : loosened) what += (what.empty() ? "" : ", ") + l;
-            log::println("  policy   {} kept: {} allows more ({})", now->policy, chain->policy, what);
-            log::println("           to switch: xlings subos config {} --sandbox {}", name, chain->policy);
-        }
-    }
-    if (plan.empty() && same && !apply_policy) {
-        log::println("{} is up to date (as this home's index has it; `xlings update` refreshes the index)", name);
-        return 0;
-    }
+    if (plan.empty() && same && !apply_policy) return 0;
     if (dry) return 0;
     auto asked = confirm::ask(stream, "subos_upgrade", std::format("upgrade '{}'?", name), yes, "-y");
     if (asked.outcome == confirm::Outcome::Declined) return 0;
@@ -1513,6 +1494,10 @@ int run_export_(int argc, char* argv[], EventStream& stream, const UsageError& u
     const auto imagePath = [&](const fs::path& path) -> std::expected<fs::path, std::string> {
         const auto normalized = path.lexically_normal();
         if (!normalized.is_absolute()) return normalized;
+        // The environment's runtime (part 3 §4): bound through <home>/abi,
+        // which the image's home has too -- the runtime its root carries.
+        if (const auto abi = normalized.lexically_relative(home / "abi"); !abi.empty() && *abi.begin() != "..")
+            return (home / "abi" / abi).lexically_normal();
         for (const auto& mount : checkedClosure->mounts) {
             const auto slot = mount.source.lexically_relative(mount.home);
             std::vector<fs::path> sources{mount.source, mount.destination};
@@ -1595,6 +1580,10 @@ int run_export_(int argc, char* argv[], EventStream& stream, const UsageError& u
                     if (!mapped) { error_(stream, mapped.error()); return false; }
                     field = mapped->generic_string(); return true;
                 };
+                // Bound through the environment's runtime: whichever runtime
+                // the image's root carries answers it (its install_dir names
+                // the provider at install time, which may be another system's).
+                if (dependency.value("source", std::string{}) == "scope") continue;
                 if (!dependency.contains("install_dir") || !mapField(dependency["install_dir"])) return 1;
                 if (dependency.contains("libdirs")) {
                     if (!dependency["libdirs"].is_array()) { error_(stream, "invalid exported runtime libdirs"); return 1; }
@@ -1734,6 +1723,15 @@ int run_export_(int argc, char* argv[], EventStream& stream, const UsageError& u
             return 1;
         }
     }
+
+    // The image's <home>/abi is its root's runtime (what a session binds
+    // there: sandbox.cpp), so a payload bound through it runs.
+    if (const auto runtime = rf::usr_of(image_default).parent_path() / std::string(rf::kRuntimeDir);
+        fs::is_directory(runtime, ec)) {
+        fs::create_directory_symlink(runtime.lexically_relative(image_home), image_home / "abi", ec);
+        if (!check_io()) return 1;
+    }
+    ec.clear();
 
     // The root around it.
     if (auto l = rf::lay_out(stage, rf::usr_of(home / "subos" / "default"), home); !l) {

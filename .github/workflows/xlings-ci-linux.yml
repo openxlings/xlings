@@ -121,6 +121,9 @@ jobs:
 
       - name: Linux toolchain
         uses: ./.github/actions/linux-toolchain
+        with:
+          mcpp-cache: mcpp-v4-ci-linux-release-
+
 
       # The candidate and the static xdev the downstream lanes run, from the
       # last round's release build when there is one (only what changed is
@@ -203,6 +206,7 @@ jobs:
       - name: Linux toolchain
         uses: ./.github/actions/linux-toolchain
         with:
+          mcpp-cache: mcpp-v4-ci-linux-desktop-
           sandbox: 'false'
 
       - name: Luban OS and xdesk release payloads
@@ -265,6 +269,9 @@ jobs:
 
       - name: Linux toolchain
         uses: ./.github/actions/linux-toolchain
+        with:
+          save: 'false'
+
 
       - name: The round's development build
         uses: ./.github/actions/linux-build
@@ -322,6 +329,9 @@ jobs:
 
       - name: Linux toolchain
         uses: ./.github/actions/linux-toolchain
+        with:
+          save: 'false'
+
 
       - name: The round's development build
         uses: ./.github/actions/linux-build
@@ -938,6 +948,7 @@ jobs:
       - name: Linux toolchain
         uses: ./.github/actions/linux-toolchain
         with:
+          save: 'false'
           mcpp-cache: mcpp-v4-ci-linux-asan-
           sandbox: 'false'
           room: 'true'

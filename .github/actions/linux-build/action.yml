@@ -23,15 +23,16 @@ inputs:
 runs:
   using: composite
   steps:
-    # Taken once, before the build: what the build writes (mcpp.lock, not in
-    # the repository) must not make the saved key one no round looks for.
+    # Keyed by profile and commit only: what changed since the state's commit
+    # is rebuilt whatever it is (mcpp.toml included), so a release bump starts
+    # from the last state too. Saved by pushes (main, release/**); a pull
+    # request starts from its base's, and the cache keeps a few, not one per
+    # push of every branch.
     - name: The state's key
       id: key
       if: inputs.state == 'produce'
       shell: bash
-      env:
-        INPUTS: ${{ hashFiles('mcpp.toml', '.xlings.json') }}
-      run: echo "prefix=build-state-v1-${{ inputs.profile }}-$INPUTS-" >> "$GITHUB_OUTPUT"
+      run: echo "prefix=build-state-v2-${{ inputs.profile }}-" >> "$GITHUB_OUTPUT"
 
     - name: The last round's build
       if: inputs.state == 'produce'
@@ -86,7 +87,7 @@ runs:
         retention-days: 1
 
     - name: Keep the build for the next round
-      if: inputs.state == 'produce'
+      if: inputs.state == 'produce' && github.event_name == 'push'
       uses: actions/cache/save@v4
       with:
         path: ${{ runner.temp }}/build-state.tar.zst

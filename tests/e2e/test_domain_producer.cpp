@@ -398,6 +398,13 @@ XTEST(DomainProducer, AHostCountsItsSystemsAndASystemDoesNotListItsSiblings,
     ASSERT_EQ(inside.exit_code, 0) << inside.transcript();
     EXPECT_NE(inside.out.find("sys-a"), std::string::npos) << inside.transcript();
     EXPECT_EQ(inside.out.find("sys-b"), std::string::npos) << "a sibling is listed inside: " << inside.transcript();
+    // What a domain system answers comes back through the relay as events:
+    // upgrade's plan is one, so the terminal shows it (it once showed only
+    // "no renderer for 'subos_upgrade_plan'").
+    const auto upgrade = home.xlings({"subos", "upgrade", "sys-a", "--dry-run"});
+    ASSERT_EQ(upgrade.exit_code, 0) << upgrade.transcript();
+    EXPECT_NE(upgrade.out.find("sys-a is up to date"), std::string::npos) << upgrade.transcript();
+    EXPECT_EQ(upgrade.transcript().find("no renderer"), std::string::npos) << upgrade.transcript();
 }
 
 // One default runtime per environment (part 3 §4.4): two systems of one
@@ -494,4 +501,13 @@ XTEST(DomainProducer, TwoSystemsOnTwoRuntimesShareOnePayload,
     ASSERT_EQ(record["deps"].size(), 1u) << record.dump(2);
     EXPECT_EQ(record["deps"][0]["source"], "scope");
     EXPECT_EQ(record["deps"][0]["libdirs"][0], "/xlings/abi/linux-x86_64-glibc");
+    // Exported, a payload bound through the runtime keeps its binding: the
+    // image's <home>/abi is the runtime its root carries (2026.10.15.1
+    // refused: "/xlings/abi/...: export path is outside the checked payload closure").
+    const auto output = home.root() / "export";
+    auto exported = home.xlings({"subos", "export", "sys-2", "--rootfs", output.string()});
+    ASSERT_EQ(exported.exit_code, 0) << exported.transcript();
+    EXPECT_EQ(fs::read_symlink(output / "xlings/abi").generic_string(), "subos/default/root/usr/lib/xlings-abi");
+    EXPECT_EQ(fs::read_symlink(output / "xlings/subos/default/root/usr/lib/xlings-abi/linux-x86_64-glibc/libc.so.6").generic_string(),
+              "/xlings/data/xpkgs/fixture-x-glibc/2.0.0/lib64/libc.so.6");
 }
