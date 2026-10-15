@@ -62,8 +62,9 @@ Luban OS 2026.10.15.1 -- Linux 6.8.0 (x86_64), host
 | machine | its own kernel: KVM, or emulated (slow) without it | its own kernel (Virtualization.framework) | its own kernel on the host machine's KVM (Windows 11 gives WSL 2 nested virtualization) |
 | desktop | a Luban OS window | a Luban OS window | a Luban OS window |
 
-The Luban host machine is one small Linux machine per home -- itself a Luban
-system -- that the systems of a Mac or a PC run in; their files live on its
+The Luban host machine is one small Linux machine per home -- xlings and
+luban with a static busybox and bwrap, all from the package index -- that the
+systems of a Mac or a PC run in; their files live on its
 Linux file system, and a folder of this computer reaches one only when it is
 granted. Ready (a sandbox or a machine) exits 0, not ready 1, the same on
 every platform.

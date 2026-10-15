@@ -19,6 +19,9 @@
 # a <sha> that cannot be fetched makes every source new (a rebuild of the
 # project, on the state's dependency builds).
 set -euo pipefail
+# CI's: settle re-times the package payloads under ~/.mcpp and ~/.xlings, and
+# clear deletes mcpp's BMIs there -- a runner's, never a person's.
+[[ -n "${GITHUB_ACTIONS:-}" || "${1:-}" == pack ]] || { echo "build_state.sh runs in CI (GITHUB_ACTIONS)" >&2; exit 2; }
 cd "${GITHUB_WORKSPACE:-$(git rev-parse --show-toplevel)}"
 old=946684800   # 2000-01-01, older than anything built
 paths=(target .mcpp/bmi .mcpp/build-cache "$HOME/.mcpp/bmi" "$HOME/.mcpp/build-cache")

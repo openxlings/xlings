@@ -54,7 +54,7 @@ Luban OS 2026.10.15.1 -- Linux 6.8.0 (x86_64), host
 | machine | 自己的内核：KVM；没有时为模拟运行（慢） | 自己的内核（Virtualization.framework） | 自己的内核，用宿主机的 KVM（Windows 11 为 WSL 2 提供嵌套虚拟化） |
 | desktop | Luban OS 窗口 | Luban OS 窗口 | Luban OS 窗口 |
 
-Luban 宿主机是每个 home 一台的小型 Linux 机器——它本身就是一个 Luban 系统——Mac 或 PC 上的系统都运行在它里面；
+Luban 宿主机是每个 home 一台的小型 Linux 机器——xlings 和 luban，加上静态的 busybox 与 bwrap，都来自包索引——Mac 或 PC 上的系统都运行在它里面；
 系统的文件在它的 Linux 文件系统上，这台电脑的目录只有被授予时才进入某个系统。
 就绪（sandbox 或 machine 之一）退出码为 0，未就绪为 1，各平台一致。
 
