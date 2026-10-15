@@ -1859,14 +1859,14 @@ std::expected<void, std::string> detach_current_subos_(const std::string& target
     return publish_removal_state_(Config::versions(), std::move(active), std::move(installed));
 }
 
-bool apply_subos_env_ops_(const std::vector<mcpplibs::xpkg::XvmOp>& operations,
-                          const PlanNode& node) {
+std::expected<void, std::string> apply_subos_env_ops_(const std::vector<mcpplibs::xpkg::XvmOp>& operations,
+                                                      const PlanNode& node) {
     namespace mf = xlings::subos::manifest;
 
     std::vector<const mcpplibs::xpkg::XvmOp*> declarations;
     for (const auto& op : operations)
         if (op.op == "subos_env") declarations.push_back(&op);
-    if (declarations.empty()) return true;
+    if (declarations.empty()) return {};
 
     const auto canonical = node.canonicalName.empty()
         ? canonical_package_name(node.namespaceName, node.name)
@@ -1881,10 +1881,9 @@ bool apply_subos_env_ops_(const std::vector<mcpplibs::xpkg::XvmOp>& operations,
         // would discard a workspace we never managed to parse.
         std::error_code ec;
         if (std::filesystem::exists(docPath, ec)) {
-            log::error("[xim] {} is not readable JSON; refusing to record "
+            return std::unexpected(std::format("[xim] {} is not readable JSON; refusing to record "
                        "subos env declarations for {}@{}",
-                       docPath.string(), canonical, node.version);
-            return false;
+                       docPath.string(), canonical, node.version));
         }
         nlohmann::json fresh;
         fresh["workspace"] = nlohmann::json::object();
@@ -1984,17 +1983,15 @@ bool apply_subos_env_ops_(const std::vector<mcpplibs::xpkg::XvmOp>& operations,
     };
     for (const auto* op : declarations) {
         if (!mf::is_binding(op->binding)) {
-            log::error("[xim] {}@{} declared env '{}' with binding '{}' "
+            return std::unexpected(std::format("[xim] {}@{} declared env '{}' with binding '{}' "
                        "(expected <name>@<version>); nothing recorded",
-                       canonical, node.version, op->var, op->binding);
-            return false;
+                       canonical, node.version, op->var, op->binding));
         }
         const auto owner = mf::binding_name(op->binding);
         if (owner != node.name && owner != canonical) {
-            log::error("[xim] {}@{} declared env '{}' for '{}', which it does "
+            return std::unexpected(std::format("[xim] {}@{} declared env '{}' for '{}', which it does "
                        "not own; nothing recorded",
-                       canonical, node.version, op->var, op->binding);
-            return false;
+                       canonical, node.version, op->var, op->binding));
         }
         // B5 / B3: a declaration that can put our code into someone else's
         // process is a privileged operation, and install is the only moment a
@@ -2081,29 +2078,30 @@ bool apply_subos_env_ops_(const std::vector<mcpplibs::xpkg::XvmOp>& operations,
                   "installed version. To keep both active, use separate subos.");
     }
 
-    if (!changed) return true;
+    if (!changed) return {};
 
     if (auto findings = mf::validate_block(*doc); !findings.empty()) {
-        log::error("[xim] recording env declarations for {}@{} would leave an "
+        return std::unexpected(std::format("[xim] recording env declarations for {}@{} would leave an "
                    "invalid subos manifest: {}", canonical, node.version,
-                   mf::describe(findings.front().kind));
-        return false;
+                   mf::describe(findings.front().kind)));
     }
 
     try {
         platform::write_string_to_file(docPath.string(), doc->dump(2));
     } catch (const std::exception& e) {
-        log::error("[xim] failed to write {}: {}", docPath.string(), e.what());
-        return false;
+        return std::unexpected(std::format("[xim] failed to write {}: {}", docPath.string(), e.what()));
     }
     log::debug("[xim] recorded {} subos env declaration(s) for {}@{}",
                declarations.size(), canonical, node.version);
-    return true;
+    return {};
 }
 
-bool process_xvm_operations_(const PlanNode& node, const std::filesystem::path& dataDir,
-                             mcpplibs::xpkg::PackageExecutor& executor, bool useAfterInstall,
-                             const home::layers::BorrowPlan* borrowed) {
+// Every refusal carries its reason to the caller, which reports it as the
+// package's failure (InstallStatus.message): a reason only in the log is a
+// failure an interface client cannot show (#652).
+std::expected<void, std::string> process_xvm_operations_(const PlanNode& node, const std::filesystem::path& dataDir,
+                                                         mcpplibs::xpkg::PackageExecutor& executor, bool useAfterInstall,
+                                                         const home::layers::BorrowPlan* borrowed) {
     namespace mat = xvm::materialize;
     const auto xvmOps = executor.xvm_operations();
     const auto dbBefore = Config::versions();
@@ -2118,23 +2116,20 @@ bool process_xvm_operations_(const PlanNode& node, const std::filesystem::path& 
     auto registration =
         normalize_xpkg_registration_plan(node, xvmOps, versionNamespace, dataDir, useAfterInstall);
     if (!registration) {
-        log::error("xvm registration refused for {}@{}: {}", node.name, node.version,
-                   registration.error().message);
-        return false;
+        return std::unexpected(std::format("xvm registration refused for {}@{}: {}", node.name, node.version,
+                   registration.error().message));
     }
     const bool declarativeBorrow =
         borrowed && xvmOps.empty() && (node.pkgType == 1 || node.pkgType == 4);
     if (borrowed) {
         auto source = home::layers::read_source_snapshot(node.sourceHome, node.sourceScope);
         if (!source) {
-            log::error("{}", source.error());
-            return false;
+            return std::unexpected(std::format("{}", source.error()));
         }
         auto checked = home::layers::plan_borrow_package(
             *source, dbBefore, registration->batch.provider, node.version);
         if (!checked || !*checked || (**checked).requestedPayload != node.borrowedPayload) {
-            log::error("{}: the checked system release changed before configuration", node.name);
-            return false;
+            return std::unexpected(std::format("{}: the checked system release changed before configuration", node.name));
         }
         for (const auto& [target, imported] : borrowed->registrations) {
             const bool requested = borrowed->requestedMembers.contains(target);
@@ -2166,8 +2161,7 @@ bool process_xvm_operations_(const PlanNode& node, const std::filesystem::path& 
                                                       registration->batch.provider,
                                                       registration->batch.providerVersion);
         if (!selected) {
-            log::error("{}", xvm::render(xvm::describe(selected.error(), node.name), true));
-            return false;
+            return std::unexpected(std::format("{}", xvm::render(xvm::describe(selected.error(), node.name), true)));
         }
         removal = std::move(*selected);
     }
@@ -2180,20 +2174,21 @@ bool process_xvm_operations_(const PlanNode& node, const std::filesystem::path& 
                 xvm::render(xvm::describe(std::get<xvm::RemovalError>(metadata.error()), node.name),
                             true));
         else
-            log::error("{}",
+            return std::unexpected(std::format("{}",
                        xvm::render(xvm::describe(std::get<xvm::RegistrationError>(metadata.error()),
                                                  node.name),
-                                   true));
-        return false;
+                                   true)));
     }
     if (!node.sourceHome.empty()) {
         for (const auto& member : metadata->registered) {
             auto target = candidateDb.find(member.target);
             if (target == candidateDb.end())
-                return false;
+                return std::unexpected(std::format("{}: the borrowed registration {} vanished before configuration",
+                                                   node.name, member.target));
             auto version = target->second.versions.find(member.version);
             if (version == target->second.versions.end())
-                return false;
+                return std::unexpected(std::format("{}: the borrowed registration {}@{} vanished before configuration",
+                                                   node.name, member.target, member.version));
             version->second.sourceHome = node.sourceHome.string();
             version->second.sourceScope = node.sourceScope;
         }
@@ -2222,15 +2217,13 @@ bool process_xvm_operations_(const PlanNode& node, const std::filesystem::path& 
     };
     auto prepared = changes_for(scope, workspaceBefore, installedBefore, candidateWorkspace, candidateInstalled);
     if (!prepared) {
-        log::error("{}: sysroot update refused before metadata changed: {}", node.name,
-                   prepared.error());
-        return false;
+        return std::unexpected(std::format("{}: sysroot update refused before metadata changed: {}", node.name,
+                   prepared.error()));
     }
     std::vector<mat::Applied> applied;
     auto current = prepared->execute();
     if (!current) {
-        log::error("{}", current.error());
-        return false;
+        return std::unexpected(std::format("{}", current.error()));
     }
     applied.push_back(std::move(*current));
 
@@ -2247,23 +2240,20 @@ bool process_xvm_operations_(const PlanNode& node, const std::filesystem::path& 
             continue;
         auto workspace = load_workspace_file_checked_(root / ".xlings.json");
         if (!workspace) {
-            log::error("{}: unreadable workspace", name);
-            return false;
+            return std::unexpected(std::format("{}: unreadable workspace", name));
         }
         auto other = changes_for(root, workspace->active, workspace->installed, workspace->active, workspace->installed);
         if (!other) {
-            log::error("{}: {}", name, other.error());
-            return false;
+            return std::unexpected(std::format("{}: {}", name, other.error()));
         }
         auto changed = other->execute();
         if (!changed) {
-            log::error("{}: {}", name, changed.error());
-            return false;
+            return std::unexpected(std::format("{}: {}", name, changed.error()));
         }
         applied.push_back(std::move(*changed));
     }
-    if (!apply_subos_env_ops_(xvmOps, node))
-        return false;
+    if (auto declared = apply_subos_env_ops_(xvmOps, node); !declared)
+        return std::unexpected(declared.error());
 
     const auto versionPath = &Config::versions_mut() == &Config::global_versions()
                                  ? Config::paths().homeDir / ".xlings.json"
@@ -2273,8 +2263,7 @@ bool process_xvm_operations_(const PlanNode& node, const std::filesystem::path& 
     auto oldVersionDocument = home::read_json_for_update(versionPath);
     auto oldWorkspaceDocument = home::read_json_for_update(workspacePath);
     if (!oldVersionDocument || !oldWorkspaceDocument) {
-        log::error("cannot observe metadata before publishing {}", node.name);
-        return false;
+        return std::unexpected(std::format("cannot observe metadata before publishing {}", node.name));
     }
     auto restore = [&]() {
         Config::versions_mut() = dbBefore;
@@ -2307,15 +2296,13 @@ bool process_xvm_operations_(const PlanNode& node, const std::filesystem::path& 
         if (const auto sync = xself::sync_shim_tables(); !sync.root_error.empty())
             throw std::runtime_error(sync.root_error);
     } catch (const std::exception& error) {
-        log::error("{}: metadata publication failed: {}", node.name, error.what());
         restore();
         for (auto& changed : applied) {
             if (const auto rollback = changed.rollback(); !rollback)
                 log::error("derived rollback failed: {}", rollback.error());
         }
         if (const auto sync = xself::sync_shim_tables(); !sync.root_error.empty())
-            log::error("root rollback refresh failed: {}", sync.root_error);
-        return false;
+            return std::unexpected(std::format("root rollback refresh failed: {}", sync.root_error));
     }
     // One copy of the database and workspace for every effect: both are
     // returned by value, and per effect that was a copy of the whole home's
@@ -2344,14 +2331,12 @@ bool process_xvm_operations_(const PlanNode& node, const std::filesystem::path& 
                     log::error("derived rollback failed: {}", rollback.error());
             }
             if (const auto sync = xself::sync_shim_tables(); !sync.root_error.empty())
-                log::error("root rollback refresh failed: {}", sync.root_error);
-            return false;
+                return std::unexpected(std::format("root rollback refresh failed: {}", sync.root_error));
         }
     }
     for (auto& changed : applied) {
         if (const auto committed = changed.commit(); !committed) {
-            log::error("{}: derived backup cleanup failed: {}", node.name, committed.error());
-            return false;
+            return std::unexpected(std::format("{}: derived backup cleanup failed: {}", node.name, committed.error()));
         }
     }
     for (const auto& member : metadata->registered)
@@ -2360,13 +2345,16 @@ bool process_xvm_operations_(const PlanNode& node, const std::filesystem::path& 
                       member.version);
     for (const auto& member : metadata->detachedLegacy)
         log::warn("[xvm] detached legacy registration {}; run `xlings self doctor`", member.target);
-    return true;
+    return {};
 }
 
 bool run_config_hook_(const PlanNode& node, const std::filesystem::path& dataDir, mcpplibs::xpkg::PackageExecutor& executor, mcpplibs::xpkg::ExecutionContext& ctx, std::function<void(const InstallStatus&)> onStatus, bool useAfterInstall, std::string* failureMessage,
                       const home::layers::BorrowPlan* borrowed) {
-    if (!executor.has_hook(mcpplibs::xpkg::HookType::Config))
-        return process_xvm_operations_(node, dataDir, executor, useAfterInstall, borrowed);
+    if (!executor.has_hook(mcpplibs::xpkg::HookType::Config)) {
+        auto processed = process_xvm_operations_(node, dataDir, executor, useAfterInstall, borrowed);
+        if (!processed && failureMessage) *failureMessage = processed.error();
+        return processed.has_value();
+    }
     if (onStatus) {
         onStatus({ node.name, InstallPhase::Configuring, 0.8f, "" });
     }
@@ -2388,8 +2376,8 @@ bool run_config_hook_(const PlanNode& node, const std::filesystem::path& dataDir
         }
         return false;
     }
-    if (!process_xvm_operations_(node, dataDir, executor, useAfterInstall, borrowed)) {
-        if (failureMessage) *failureMessage = "config hook failed";
+    if (auto processed = process_xvm_operations_(node, dataDir, executor, useAfterInstall, borrowed); !processed) {
+        if (failureMessage) *failureMessage = processed.error();
         return false;
     }
     return true;

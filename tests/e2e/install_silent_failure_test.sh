@@ -22,6 +22,10 @@
 #       the exact failure mode mcpp tripped over
 #   S3: install_summary event must report failed=1 (sanity check on
 #       the existing instrumentation we're now propagating to exitCode)
+#   S5: a refusal after the install hook succeeded (here: an env
+#       declaration for a package it does not own, refused while the
+#       release is configured) reaches the interface WITH its reason --
+#       the message used to be empty (#652)
 #   S4: `self doctor --fix -y` against the same always-fails payload must
 #       exit non-zero and must NOT stamp `verifiedBy` — an IncompletePayload
 #       finding that survives the repair ladder is an outstanding failure,
@@ -82,6 +86,34 @@ function install()
     io.stderr:write("REPRO stderr\n")
     log.error("REPRO log.error")
     return false
+end
+LUA
+
+# S5's fixture: the install succeeds, then configuring the release is
+# refused -- it declares an environment variable for a package it does not
+# own. No config hook, so the refusal comes from the registration step
+# itself, the path that reported `[strayenv] failed: ` with no reason.
+mkdir -p "$LOCAL_INDEX_DIR/pkgs/s"
+cat > "$LOCAL_INDEX_DIR/pkgs/s/strayenv.lua" <<'LUA'
+package = {
+    spec = "1",
+    name = "strayenv",
+    description = "Test fixture: configuring the release is refused (#652)",
+    type = "package",
+    archs = {"x86_64", "aarch64"},
+    status = "stable",
+    xpm = {
+        linux   = { ["latest"] = { ref = "1.0.0" }, ["1.0.0"] = {} },
+        macosx  = { ["latest"] = { ref = "1.0.0" }, ["1.0.0"] = {} },
+        windows = { ["latest"] = { ref = "1.0.0" }, ["1.0.0"] = {} },
+    },
+}
+
+import("xim.libxpkg.subos")
+
+function install()
+    subos.env{ var = "STRAYENV_PROBE", op = "prepend", value = "${subosdir}/x", binding = "someoneelse@1.0.0" }
+    return true
 end
 LUA
 
@@ -281,5 +313,29 @@ print(json.loads(pathlib.Path('$HOME_DIR/.xlings.json').read_text()).get('verifi
 [[ -z "$s4_verified" ]] \
   || fail "S4: verifiedBy must not be written while an IncompletePayload finding survived the fix; got '$s4_verified'"
 log "  ✓ doctor --fix exited $rc_doctor and did not stamp verifiedBy"
+
+# ── S5: a refusal while configuring reaches the interface with its reason ──
+log "S5: interface install_packages strayenv → the error names why (#652)"
+set +e
+out_s5="$(RUN interface install_packages --args '{"targets":["strayenv"],"yes":true}' 2>/dev/null)"
+set -e
+printf '%s\n' "$out_s5" > "$RUNTIME_DIR/s5.stdout"
+python3 - "$RUNTIME_DIR/s5.stdout" <<'PY' || fail "S5: the failure's reason did not reach the interface
+$out_s5"
+import json, pathlib, sys
+events = [json.loads(l) for l in pathlib.Path(sys.argv[1]).read_text().splitlines() if l.strip()]
+texts = []
+for e in events:
+    if e.get("kind") == "error":
+        texts.append(e.get("message", ""))
+    if e.get("kind") == "data":
+        texts.append(json.dumps(e.get("payload", "")))
+joined = "\n".join(texts)
+if "does not own" not in joined or "STRAYENV_PROBE" not in joined:
+    print("no reason in:", joined[:2000]); sys.exit(1)
+if "failed: \"" in joined or joined.rstrip().endswith("failed:"):
+    print("an empty reason is still reported:", joined[:2000]); sys.exit(1)
+PY
+log "  ✓ the refusal's reason reaches the interface"
 
 log "PASS: cmd_install exit-code propagation regression covered"
