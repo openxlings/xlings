@@ -736,8 +736,9 @@ int run_upgrade_(int argc, char* argv[], EventStream& stream, const UsageError& 
     }
 
     const bool same = top.first == now->ref;
-    // The plan as data too: a frontend (luban) renders it, the log lines
-    // below being the terminal's.
+    // The plan is data, rendered by the frontend (xlings' terminal, luban):
+    // a system in a prefix domain answers through a relay that carries
+    // events, so text printed here would never reach its terminal.
     {
         nlohmann::json data{{"name", name}, {"from", now->ref}, {"to", top.first}, {"dry_run", dry},
                             {"up_to_date", plan.empty() && same && !apply_policy}};
@@ -755,27 +756,7 @@ int run_upgrade_(int argc, char* argv[], EventStream& stream, const UsageError& 
                               {"loosened", loosened}};
         stream.emit(DataEvent{"subos_upgrade_plan", data.dump()});
     }
-    log::println("{}: {} -> {}", name, now->ref, top.first);
-    for (const auto& s : plan.upgrade)
-        log::println("  upgrade  {} {} -> {}", s.key, s.from.empty() ? "?" : s.from,
-                     subos::edition::split(s.to).second.empty() ? "newest" : subos::edition::split(s.to).second);
-    for (const auto& s : plan.add) log::println("  add      {}", s.to);
-    for (const auto& s : plan.kept)
-        log::println("  keep     {} {} (yours; the edition has {})", s.key, s.from, s.to);
-    for (const auto& k : plan.dropped) log::println("  keep     {} (the edition no longer has it; `xlings remove` drops it)", k);
-    if (!chain->policy.empty() && chain->policy != now->policy) {
-        if (apply_policy) log::println("  policy   {} -> {}", now->policy.empty() ? "(none)" : now->policy, chain->policy);
-        else {
-            std::string what;
-            for (const auto& l : loosened) what += (what.empty() ? "" : ", ") + l;
-            log::println("  policy   {} kept: {} allows more ({})", now->policy, chain->policy, what);
-            log::println("           to switch: xlings subos config {} --sandbox {}", name, chain->policy);
-        }
-    }
-    if (plan.empty() && same && !apply_policy) {
-        log::println("{} is up to date (as this home's index has it; `xlings update` refreshes the index)", name);
-        return 0;
-    }
+    if (plan.empty() && same && !apply_policy) return 0;
     if (dry) return 0;
     auto asked = confirm::ask(stream, "subos_upgrade", std::format("upgrade '{}'?", name), yes, "-y");
     if (asked.outcome == confirm::Outcome::Declined) return 0;

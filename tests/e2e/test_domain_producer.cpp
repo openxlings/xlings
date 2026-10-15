@@ -398,6 +398,13 @@ XTEST(DomainProducer, AHostCountsItsSystemsAndASystemDoesNotListItsSiblings,
     ASSERT_EQ(inside.exit_code, 0) << inside.transcript();
     EXPECT_NE(inside.out.find("sys-a"), std::string::npos) << inside.transcript();
     EXPECT_EQ(inside.out.find("sys-b"), std::string::npos) << "a sibling is listed inside: " << inside.transcript();
+    // What a domain system answers comes back through the relay as events:
+    // upgrade's plan is one, so the terminal shows it (it once showed only
+    // "no renderer for 'subos_upgrade_plan'").
+    const auto upgrade = home.xlings({"subos", "upgrade", "sys-a", "--dry-run"});
+    ASSERT_EQ(upgrade.exit_code, 0) << upgrade.transcript();
+    EXPECT_NE(upgrade.out.find("sys-a is up to date"), std::string::npos) << upgrade.transcript();
+    EXPECT_EQ(upgrade.transcript().find("no renderer"), std::string::npos) << upgrade.transcript();
 }
 
 // One default runtime per environment (part 3 §4.4): two systems of one

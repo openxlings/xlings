@@ -196,6 +196,38 @@ int run_completion_(int argc, char* argv[], int first) {
 //
 // Anything NOT on this list and NOT rendered above is a screen the user never
 // sees. `subos new --from` shipped in exactly that state.
+// `subos upgrade`'s plan (root_cmd.cpp emits it; luban renders its own).
+void render_upgrade_plan_(const nlohmann::json& j) {
+    const auto name = j.value("name", "");
+    log::println("{}: {} -> {}", name, j.value("from", ""), j.value("to", ""));
+    for (const auto& r : j.value("upgrade", nlohmann::json::array()))
+        log::println("  upgrade  {} {} -> {}", r.value("key", ""), r.value("from", "").empty() ? "?" : r.value("from", ""),
+                     r.value("to", ""));
+    for (const auto& a : j.value("add", nlohmann::json::array()))
+        if (a.is_string()) log::println("  add      {}", a.get<std::string>());
+    for (const auto& k : j.value("keep", nlohmann::json::array())) {
+        if (k.value("dropped", false))
+            log::println("  keep     {} (the edition no longer has it; `xlings remove` drops it)", k.value("key", ""));
+        else
+            log::println("  keep     {} {} (yours; the edition has {})", k.value("key", ""), k.value("from", ""),
+                         k.value("edition", ""));
+    }
+    if (const auto p = j.find("policy"); p != j.end() && p->is_object()) {
+        const auto from = p->value("from", ""), to = p->value("to", "");
+        if (p->value("applied", false)) {
+            log::println("  policy   {} -> {}", from.empty() ? "(none)" : from, to);
+        } else {
+            std::string what;
+            for (const auto& l : p->value("loosened", nlohmann::json::array()))
+                if (l.is_string()) what += (what.empty() ? "" : ", ") + l.get<std::string>();
+            log::println("  policy   {} kept: {} allows more ({})", from, to, what);
+            log::println("           to switch: xlings subos config {} --sandbox {}", name, to);
+        }
+    }
+    if (j.value("up_to_date", false))
+        log::println("{} is up to date (as this home's index has it; `xlings update` refreshes the index)", name);
+}
+
 bool kind_is_interface_only_(std::string_view kind) {
     static constexpr std::string_view kCapabilityOnly[] = {
         "system_info", "index_versions", "subos_shims", "repo_list", "env",
@@ -516,6 +548,9 @@ void dispatch_data_event(const DataEvent& e) {
     }
     else if (e.kind == "subos_removed") {
         ui::print_subos_removed(json.value("name", ""));
+    }
+    else if (e.kind == "subos_upgrade_plan") {
+        render_upgrade_plan_(json);
     }
     else if (e.kind == "search_results") {
         std::vector<std::pair<std::string, std::string>> results;
