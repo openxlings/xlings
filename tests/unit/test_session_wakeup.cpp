@@ -116,8 +116,10 @@ XTEST(SessionMessages, PacketSizingPreservesBoundariesAndDescriptorsAndRejectsTr
     EXPECT_EQ(last->data, "last");
 }
 
+// Timed (woken well before init's 200 ms tick): run alone, on a machine not
+// busy with other tests (`cpu`).
 XTEST(SessionWakeup, AColdChildExitsWithoutWaitingForTheControlPollTick,
-      .area = "subos", .covers = {"SES-SUPERVISOR"}, .requires_ = {"linux"}) {
+      .area = "subos", .covers = {"SES-SUPERVISOR"}, .requires_ = {"linux"}, .resources = {"cpu"}) {
     if constexpr (!tk::is_linux) GTEST_SKIP() << "session-init is implemented on Linux";
     Init init{{"--", "/bin/sh", "-c", "/bin/sleep 0.025; exit 7"}};
     platform::PollFd watched{init.fd};
