@@ -99,6 +99,10 @@ void refresh_guest(const Endpoint& at, const fs::path& probe_file) {
 
 int guest_probe() {
     std::error_code ec;
+    // The image carries busybox and /bin/sh; its first probe links the rest of
+    // the applets where a Linux has them (/bin, /usr/bin, ...), once.
+    if (fs::is_regular_file("/bin/busybox", ec) && !fs::exists("/bin/ls", ec))
+        (void)platform::run_argv({"/bin/busybox", "--install", "-s"});
     bool kvm = false;
     if (fs::is_character_file("/dev/kvm", ec)) {
         std::fstream dev("/dev/kvm", std::ios::in | std::ios::out);

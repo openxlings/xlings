@@ -86,13 +86,19 @@ XTEST(CarrierWsl2, ASubosOnTheCarrierIsCreatedThereOnceUsedThereAndRemovedThere,
         {"XLINGS_WSL_EXE", fake_wsl().string()},
         {"FAKE_WSL_ROOT", wsl.string()},
         {"XLINGS_CARRIER_GUEST_XLINGS", tk::xlings_binary().string()},
+        // The guest's userland (a static busybox in a real image).
+        {"XLINGS_CARRIER_GUEST_BUSYBOX", (home.root() / "busybox").string()},
     };
+    tk::write_file(home.root() / "busybox", "#!/bin/sh\n");
     auto made = home.xlings({"subos", "new", "box", "--carrier", "wsl2"}, env);
     ASSERT_EQ(made.exit_code, 0) << made.transcript();
     const auto name = w2::distro_name(home.dir());
     const auto distro = wsl / "distros" / name;
     ASSERT_TRUE(fs::is_directory(distro / "xlings/subos/box")) << made.transcript();
     EXPECT_NE(read_or_empty(distro / "etc/wsl.conf").find("[interop]\nenabled = false"), std::string::npos);
+    // A shell there, for what a package's hooks run (sh -c, find, ln).
+    EXPECT_TRUE(fs::is_regular_file(distro / "bin/busybox"));
+    EXPECT_EQ(fs::read_symlink(distro / "bin/sh"), "busybox");
     // Here: only the name and where it runs.
     auto instance = nlohmann::json::parse(tk::read_file(home.dir() / "config/subos/box/instance.json"));
     EXPECT_EQ(instance["carrier"], "wsl2");
