@@ -30,6 +30,7 @@ jobs:
   # O4: distributions as user spaces (containers), as the host matrix runs
   # them, with the scenarios that make and enter a system.
   container:
+    if: false
     name: O4 ${{ matrix.image }} (${{ matrix.runner }})
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 90
@@ -80,6 +81,7 @@ jobs:
 
   # O4: Rocky 9 as a kernel and SELinux host (KVM).
   vm-rocky:
+    if: false
     name: O4 rocky-9 (KVM)
     runs-on: ubuntu-24.04
     timeout-minutes: 90

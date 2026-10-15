@@ -4,9 +4,9 @@
 # Ubuntu runner. Prints observations; never asserts.
 set -uo pipefail
 XV="${XV:-2026.10.15.4}"
+HERE="$(cd "$(dirname "$0")" && pwd)"
 T="$RUNNER_TEMP/p"; mkdir -p "$T/logs"; cd "$T"
 S="${GITHUB_STEP_SUMMARY:-/dev/null}"
-HERE="$(cd "$(dirname "$0")" && pwd)"
 say() { echo "$*"; echo "$*" >> "$S"; }
 block() {
     local title="$1"; shift; local out rc
@@ -48,6 +48,8 @@ rows = [l.rstrip("\n").split("\t") for l in open(os.path.join(g, "links.tsv")) i
 kinds = collections.Counter(); dirs = []
 for rel, target in rows[:]:
     t = target if os.path.isabs(target) else os.path.join(g, os.path.dirname(rel), target)
+    if t.startswith("/xlings/") and not os.path.exists(t):
+        t = os.path.expanduser("~/.xlings/domains/xlings/private") + t[len("/xlings"):]
     if os.path.isdir(t):
         kinds["dir"] += 1; dirs.append((rel, target))
     elif os.path.exists(t):
@@ -67,30 +69,27 @@ done
 say "### O2: bwrap start-up cost per bind"
 BW="$(command -v bwrap || ls "$HOME"/.xlings/data/xpkgs/xim-x-bwrap/*/bin/bwrap 2>/dev/null | head -1)"
 say "bwrap: $BW ($("$BW" --version 2>&1))"
-DIRS="$(cat "$RUNNER_TEMP"/dirs-pdesk.txt "$RUNNER_TEMP"/dirs-pcore.txt 2>/dev/null | sort -u)"
-block "bwrap time vs number of --ro-bind" python3 - "$BW" <<PY
+mkdir -p "$T/bench"; for i in $(seq 0 499); do mkdir -p "$T/bench/d$i"; done
+block "bwrap time vs number of --ro-bind" python3 - "$BW" "$T/bench" <<'PY'
 import subprocess, sys, time, statistics
-bw = sys.argv[1]
-dirs = [d for d in """$DIRS""".split("\n") if d]
-pool = (dirs * 20)[:1000] if dirs else []
-print("distinct directory targets:", len(dirs))
+bw, bench = sys.argv[1], sys.argv[2]
 base = [bw, "--unshare-user", "--unshare-pid", "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "--tmpfs", "/mnt"]
-for n in [0, 50, 100, 200, 400, 1000]:
-    if n > len(pool): break
+for n in [0, 10, 50, 100, 200, 500]:
     args = list(base)
-    for i, d in enumerate(pool[:n]):
-        args += ["--dir", f"/mnt/b{i}", "--ro-bind", d, f"/mnt/b{i}"]
+    for i in range(n):
+        args += ["--dir", f"/mnt/b{i}", "--ro-bind", f"{bench}/d{i}", f"/mnt/b{i}"]
     args += ["--", "/bin/true"]
     ts = []
     for _ in range(15):
         t0 = time.perf_counter(); r = subprocess.run(args, capture_output=True); ts.append((time.perf_counter() - t0) * 1000)
         if r.returncode: print("  n=%d failed: %s" % (n, r.stderr.decode()[:200])); break
-    print(f"  binds={n:5d}  median={statistics.median(ts):7.1f} ms  max={max(ts):7.1f} ms")
+    print(f"  binds={n:4d}  median={statistics.median(ts):7.1f} ms  max={max(ts):7.1f} ms")
 PY
 
 say "### O1: vim and terminfo"
 G="$(gen_of pcore)"
-VIM="$(readlink -f "$G/usr/bin/vim" 2>/dev/null)"
+block "what /usr/bin/vim is in the generation" bash -c "ls -la '$G/usr/bin/vim'; readlink -f '$G/usr/bin/vim'"
+VIM="$(ls -d "$HOME"/.xlings/data/xpkgs/xim-x-vim/*/bin/vim "$HOME"/.xlings/domains/xlings/private/data/xpkgs/xim-x-vim/*/bin/vim 2>/dev/null | head -1)"
 block "vim payload" bash -c "echo '$VIM'; file '$VIM'; '$VIM' --version | head -3; '$VIM' --version | grep -iE 'terminfo|tgetent|tlib' ; strings '$VIM' | grep -E '^/[a-z/]*terminfo' | sort -u | head"
 block "terminfo dirs present on the runner" bash -c "ls -d /etc/terminfo /lib/terminfo /usr/share/terminfo /usr/lib/terminfo 2>&1"
 printf 'hello\n' > "$T/t.txt"
@@ -111,34 +110,33 @@ cat > "$T/o3.sh" <<'SH'
 set -u
 T="$1"
 echo "caps: $(grep CapEff /proc/self/status)"
-cat /usr/bin/which-gen
-# 1. stack: bind the new generation directly over /usr
-if mount --bind "$T/genB/usr" /usr 2>&1; then echo "stack bind: ok -> $(cat /usr/bin/which-gen)"; else echo "stack bind: failed"; fi
-umount /usr 2>/dev/null && echo "unmount top: ok -> $(cat /usr/bin/which-gen)"
-# 2. stage + move
+echo "mounted: $(cat /mnt/usr/bin/which-gen)"
+if mount --bind "$T/genB/usr" /mnt/usr 2>&1; then echo "stack bind: ok -> $(cat /mnt/usr/bin/which-gen)"; umount /mnt/usr 2>&1 && echo "unmount top: ok -> $(cat /mnt/usr/bin/which-gen)"; else echo "stack bind: failed"; fi
 mkdir -p /mnt/stage
-if mount --bind "$T/genB/usr" /mnt/stage 2>&1 && mount --move /mnt/stage /usr 2>&1; then echo "stage+move: ok -> $(cat /usr/bin/which-gen)"; else echo "stage+move: failed"; fi
-# 3. read-only remount of the new one
-mount -o remount,bind,ro /usr 2>&1 && echo "remount ro: ok" || echo "remount ro: failed"
-# 4. lazy detach of what is underneath, then a reader keeps its file
-exec 9</usr/bin/which-gen
-umount -l /usr 2>&1 && echo "lazy umount: ok; held fd still reads: $(cat <&9); now /usr has: $(cat /usr/bin/which-gen 2>&1)"
-# 5. drop the capability for a child (what session-init would do before the shell)
+if mount --bind "$T/genB/usr" /mnt/stage 2>&1 && mount --move /mnt/stage /mnt/usr 2>&1; then echo "stage+move: ok -> $(cat /mnt/usr/bin/which-gen)"; else echo "stage+move: failed"; fi
+mount -o remount,bind,ro /mnt/usr 2>&1 && echo "remount ro: ok" || echo "remount ro: failed"
+exec 9</mnt/usr/bin/which-gen
+umount -l /mnt/usr 2>&1 && echo "lazy umount top: ok; held fd reads: $(cat <&9); /mnt/usr now: $(cat /mnt/usr/bin/which-gen 2>&1)"
 python3 - <<'PY'
 import ctypes, os
 libc = ctypes.CDLL(None, use_errno=True)
-PR_CAPBSET_DROP = 24
-for cap in range(0, 41):
-    libc.prctl(PR_CAPBSET_DROP, cap, 0, 0, 0)
+for cap in range(0, 41): libc.prctl(24, cap, 0, 0, 0)
+libc.prctl(47, 4, 0, 0, 0)  # PR_CAP_AMBIENT, CLEAR_ALL
 pid = os.fork()
 if pid == 0:
-    os.execvp("sh", ["sh", "-c", "grep -E 'CapEff|CapBnd' /proc/self/status; mount --bind /tmp /mnt 2>&1 || echo 'child mount: refused (expected)'"])
+    os.execvp("sh", ["sh", "-c", "grep -E 'CapEff|CapBnd' /proc/self/status; mount --bind /tmp /mnt/stage 2>&1 || echo 'child mount: refused'"])
 os.waitpid(pid, 0)
 PY
 SH
 block "O3 without --cap-add (as xlings starts bwrap today)" "$BW" --unshare-user --uid 0 --gid 0 --unshare-pid --ro-bind / / --dev /dev --proc /proc \
-    --tmpfs /mnt --bind "$T" "$T" --ro-bind "$T/genA/usr" /usr -- sh "$T/o3.sh" "$T"
+    --tmpfs /mnt --bind "$T" "$T" --dir /mnt/usr --ro-bind "$T/genA/usr" /mnt/usr -- sh "$T/o3.sh" "$T"
 block "O3 with --cap-add CAP_SYS_ADMIN" "$BW" --unshare-user --uid 0 --gid 0 --unshare-pid --cap-add CAP_SYS_ADMIN --ro-bind / / --dev /dev --proc /proc \
-    --tmpfs /mnt --bind "$T" "$T" --ro-bind "$T/genA/usr" /usr -- sh "$T/o3.sh" "$T"
-block "O3 /usr that came from the parent namespace (locked), with CAP_SYS_ADMIN" "$BW" --unshare-user --uid 0 --gid 0 --unshare-pid --cap-add CAP_SYS_ADMIN \
-    --bind / / --dev /dev --proc /proc --tmpfs /mnt -- sh -c "mount --bind $T/genB/usr /usr && echo 'stack over host /usr: ok' ; umount -l /usr && echo 'umount stacked: ok'; mkdir -p /mnt/s && mount --bind $T/genB/usr /mnt/s && mount --move /mnt/s /usr && echo 'move onto host /usr: ok' || echo 'move onto host /usr: failed'"
+    --tmpfs /mnt --bind "$T" "$T" --dir /mnt/usr --ro-bind "$T/genA/usr" /mnt/usr -- sh "$T/o3.sh" "$T"
+block "O3 a mount from the parent namespace (locked: /opt), with CAP_SYS_ADMIN" "$BW" --unshare-user --uid 0 --gid 0 --unshare-pid --cap-add CAP_SYS_ADMIN \
+    --bind / / --dev /dev --proc /proc --tmpfs /mnt -- /bin/sh -c "mkdir -p /mnt/s; mount --bind $T/genB/usr /opt && echo 'stack over a locked mount: ok' && /usr/bin/umount /opt && echo 'umount the stacked one: ok'; /usr/bin/umount -l / 2>&1 | head -1; mount --bind $T/genB/usr /mnt/s && mount --move /mnt/s /opt && echo 'move onto a locked mount: ok' || echo 'move onto a locked mount: failed'"
+
+say "### O6: a machine, and what /usr/bin/vim resolves to there"
+sudo chmod 666 /dev/kvm 2>/dev/null || true
+block "luban config pcore mode machine" timeout 300 "$HOME/.xlings/bin/luban" config pcore mode machine
+LINES_=60 block "luban run pcore (machine) -- vim --version; active subos" timeout 900 env XLINGS_NON_INTERACTIVE=1 "$HOME/.xlings/bin/luban" run pcore -y -- /bin/sh -c 'vim --version | head -2; echo "XLINGS_ACTIVE_SUBOS=$XLINGS_ACTIVE_SUBOS"; xlings subos list 2>&1 | head -5; id; xlings install -y xim:jq 2>&1 | tail -2'
+
