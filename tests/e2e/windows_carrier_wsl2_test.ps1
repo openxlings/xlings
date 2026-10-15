@@ -39,7 +39,7 @@ Write-Host "subos new --carrier wsl2 (exit $rc):`n$out"
 if ($wsl2 -and $rc -eq 0) {
     $info = (& xlings subos info carrierbox 2>&1 | Out-String)
     if ($LASTEXITCODE -ne 0) { Fail "subos info through the carrier failed: $info" }
-    $list = (& xlings subos list --json 2>&1 | Out-String)
+    $list = (& xlings interface list_subos 2>&1 | Out-String)
     if ($list -notmatch '"carrier":"wsl2"') { Fail "the carrier SubOS is not listed with its carrier: $list" }
     $distro = (& wsl.exe --list --quiet | Out-String) -split "`r?`n" | Where-Object { $_ -like 'xlings-*' } | Select-Object -First 1
     if (-not $distro) { Fail "no xlings carrier distribution registered" }
