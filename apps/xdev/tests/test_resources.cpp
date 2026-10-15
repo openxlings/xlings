@@ -97,3 +97,29 @@ XTEST(XdevResources, LeaseExcludesAnotherProcessAndReleasesForItsNextAttempt,
     EXPECT_EQ(released.exit_code, 0) << released.transcript();
     EXPECT_TRUE(std::filesystem::is_directory(directory)) << "persistent lock files are not removed";
 }
+
+// `cpu` is the whole machine: a timing test that holds it runs with nothing
+// else running, however many workers there are.
+XTEST(XdevResources, ACpuTaskRunsAloneAfterTheOthers,
+      .area = "testkit", .covers = {"CI-RESOURCE-LOCKS"}) {
+    auto home = tk::Home::isolated("resource-alone");
+    std::atomic<int> active { 0 };
+    std::atomic<bool> aloneSawOthers { false };
+    std::vector<resource::Task> tasks;
+    for (int index = 0; index < 6; ++index) {
+        const bool alone = index == 1 || index == 4;
+        tasks.push_back({.id = std::to_string(index), .resources = alone ? std::vector<std::string>{"cpu"}
+                                                                          : std::vector<std::string>{},
+            .run = [&, alone] {
+                if (++active != 1 && alone) aloneSawOthers = true;
+                std::this_thread::sleep_for(std::chrono::milliseconds(30));
+                if (alone && active.load() != 1) aloneSawOthers = true;
+                --active;
+                return 0;
+            }});
+    }
+    const auto results = resource::run(tasks, 4, home.root() / "locks");
+    ASSERT_TRUE(results);
+    for (const auto& result : *results) EXPECT_EQ(result.exit_code, 0) << result.error;
+    EXPECT_FALSE(aloneSawOthers.load()) << "a cpu task ran beside another";
+}
