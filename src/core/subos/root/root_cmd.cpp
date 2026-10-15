@@ -1494,6 +1494,10 @@ int run_export_(int argc, char* argv[], EventStream& stream, const UsageError& u
     const auto imagePath = [&](const fs::path& path) -> std::expected<fs::path, std::string> {
         const auto normalized = path.lexically_normal();
         if (!normalized.is_absolute()) return normalized;
+        // The environment's runtime (part 3 §4): bound through <home>/abi,
+        // which the image's home has too -- the runtime its root carries.
+        if (const auto abi = normalized.lexically_relative(home / "abi"); !abi.empty() && *abi.begin() != "..")
+            return (home / "abi" / abi).lexically_normal();
         for (const auto& mount : checkedClosure->mounts) {
             const auto slot = mount.source.lexically_relative(mount.home);
             std::vector<fs::path> sources{mount.source, mount.destination};
@@ -1576,6 +1580,10 @@ int run_export_(int argc, char* argv[], EventStream& stream, const UsageError& u
                     if (!mapped) { error_(stream, mapped.error()); return false; }
                     field = mapped->generic_string(); return true;
                 };
+                // Bound through the environment's runtime: whichever runtime
+                // the image's root carries answers it (its install_dir names
+                // the provider at install time, which may be another system's).
+                if (dependency.value("source", std::string{}) == "scope") continue;
                 if (!dependency.contains("install_dir") || !mapField(dependency["install_dir"])) return 1;
                 if (dependency.contains("libdirs")) {
                     if (!dependency["libdirs"].is_array()) { error_(stream, "invalid exported runtime libdirs"); return 1; }
@@ -1715,6 +1723,15 @@ int run_export_(int argc, char* argv[], EventStream& stream, const UsageError& u
             return 1;
         }
     }
+
+    // The image's <home>/abi is its root's runtime (what a session binds
+    // there: sandbox.cpp), so a payload bound through it runs.
+    if (const auto runtime = rf::usr_of(image_default).parent_path() / std::string(rf::kRuntimeDir);
+        fs::is_directory(runtime, ec)) {
+        fs::create_directory_symlink(runtime.lexically_relative(image_home), image_home / "abi", ec);
+        if (!check_io()) return 1;
+    }
+    ec.clear();
 
     // The root around it.
     if (auto l = rf::lay_out(stage, rf::usr_of(home / "subos" / "default"), home); !l) {
