@@ -60,20 +60,13 @@ struct Selected {
     std::vector<std::string> requires_;
     std::vector<std::string> resources;
     std::size_t shard { 1 };
-    std::string family;               // what one mcpp call builds with it (family())
+    std::string family;               // the mcpp pattern that builds it with its family, member-qualified
 };
 
 std::expected<std::vector<Selected>, std::string>
 select(std::span<const Test> tests, const Options& options,
        const std::set<std::string>& impacted = {});
 std::expected<std::pair<std::size_t, std::size_t>, std::string> parse_shard(std::string_view text);
-// The binaries one `mcpp test --no-run <prefix>` builds together: a test's
-// name up to the word after `test_` (`unit/test_subos_ns` -> `unit/test_subos_`),
-// member-qualified; a script, or a name without that shape, is its own family.
-// select() widens it to the shortest selected key the name contains (the way
-// mcpp's pattern matches); a shard takes whole families and builds each with
-// one call, its binaries in parallel.
-std::string family(const Test& test);
 // Input: mcpp test --list --message-format json, optionally augmented by
 // xdev's exported compiled registries. Invalid records are errors, not skips.
 std::expected<std::vector<Test>, std::string> discovery(std::string_view ndjson, const fs::path& root);

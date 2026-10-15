@@ -122,12 +122,6 @@ XTEST(XdevSelection, AShardTakesWholeFamiliesSoItBuildsEachInOneCall,
         {.id = "e2e/test_subos_x", .source = "tests/e2e/test_subos_x.cpp", .duration_ms = 4},
         {.id = "xdev:tests/test_cli", .source = "apps/xdev/tests/test_cli.cpp", .member = "xdev", .duration_ms = 1},
         {.id = "script:distro:0", .source = "tests/suites.toml", .script = true, .suite = "distro", .duration_ms = 3}};
-    EXPECT_EQ(sel::family(tests[0]), "unit/test_subos_");
-    EXPECT_EQ(sel::family(tests[3]), "unit/test_luban");
-    EXPECT_EQ(sel::family(tests[4]), "unit/test_luban_");
-    EXPECT_EQ(sel::family(tests[5]), "e2e/test_subos_");
-    EXPECT_EQ(sel::family(tests[6]), "xdev:tests/test_cli");
-    EXPECT_EQ(sel::family(tests[7]), "script:distro:0");
     sel::Options options{.platform = "linux", .shards = 3};
     std::map<std::string, std::size_t> shardOfFamily;
     std::set<std::string> seen;
@@ -141,6 +135,13 @@ XTEST(XdevSelection, AShardTakesWholeFamiliesSoItBuildsEachInOneCall,
             EXPECT_EQ(at->second, shard) << "a family is split across shards: " << test.test.id;
             if (test.test.id.starts_with("unit/test_luban"))
                 EXPECT_EQ(test.family, "unit/test_luban") << "the pattern that builds it builds test_luban_vm too";
+            if (test.test.id.starts_with("unit/test_subos_"))
+                EXPECT_TRUE(test.family.starts_with("unit/test_subos_")) << test.family;
+            if (test.test.script) EXPECT_EQ(test.family, test.test.id);
+            if (!test.test.member.empty()) EXPECT_TRUE(test.family.starts_with(test.test.member + ":")) << test.family;
+            const auto name = test.test.id.substr(test.test.member.empty() ? 0 : test.test.member.size() + 1);
+            const auto pattern = test.family.substr(test.test.member.empty() ? 0 : test.test.member.size() + 1);
+            EXPECT_TRUE(test.test.script || name.starts_with(pattern)) << "its family's pattern builds it: " << test.family;
         }
     }
     EXPECT_EQ(seen.size(), tests.size());

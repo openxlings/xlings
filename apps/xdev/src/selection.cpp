@@ -174,12 +174,34 @@ std::set<std::string> affected(const std::vector<Test>& tests, const std::vector
     return impacted;
 }
 
-std::string family(const Test& test) {
-    if (test.script) return test.id;
-    const auto start = test.id.find("test_", test.member.empty() ? 0 : test.member.size() + 1);
-    const auto word = start == test.id.npos ? test.id.npos : test.id.find('_', start + 5);
-    return word == test.id.npos ? test.id : test.id.substr(0, word + 1);
+namespace {
+
+std::string common_prefix(const std::vector<std::string>& names) {
+    std::string prefix = names.front();
+    for (const auto& name : names) {
+        std::size_t n = 0;
+        while (n < prefix.size() && n < name.size() && prefix[n] == name[n]) ++n;
+        prefix.resize(n);
+    }
+    return prefix;
 }
+
+// Families of at most `cap` binaries, each named by the longest prefix its
+// members share: the pattern that builds them in one mcpp call. A family too
+// big is split at the next character; one whose prefix is itself a test's
+// name stays whole (the pattern would build its extensions anyway).
+void split(std::vector<std::string> names, std::size_t cap, std::map<std::string, std::string>& familyOf) {
+    const auto prefix = common_prefix(names);
+    if (names.size() <= cap || std::ranges::find(names, prefix) != names.end()) {
+        for (const auto& name : names) familyOf[name] = prefix;
+        return;
+    }
+    std::map<char, std::vector<std::string>> next;
+    for (auto& name : names) next[name[prefix.size()]].push_back(std::move(name));
+    for (auto& [_, part] : next) split(std::move(part), cap, familyOf);
+}
+
+}  // namespace
 
 std::expected<std::pair<std::size_t, std::size_t>, std::string> parse_shard(std::string_view text) {
     const auto slash = text.find('/');
@@ -253,21 +275,32 @@ select(std::span<const Test> tests, const Options& options, const std::set<std::
         if (a.test.duration_ms != b.test.duration_ms) return a.test.duration_ms > b.test.duration_ms;
         return a.test.id < b.test.id;
     });
-    // A family takes in every test its key names, as mcpp's pattern does:
-    // `e2e/test_luban` also builds e2e/test_luban_os, so they share a shard.
-    std::set<std::string> keys;
-    for (const auto& test : selected) keys.insert(family(test.test));
-    for (auto& test : selected) {
-        test.family = family(test.test);
-        if (test.test.script) continue;
-        const auto prefix = test.test.member.empty() ? std::string{} : test.test.member + ":";
-        for (const auto& key : keys)
-            if (key.size() < test.family.size() && key.starts_with(prefix)
-                && test.test.id.substr(prefix.size()).contains(key.substr(prefix.size())))
-                test.family = key;
+    // Building costs more than running: a shard takes whole families, built
+    // a call each, and is weighed by its binaries as much as by their time.
+    std::map<std::string, std::vector<std::string>> byMember;
+    std::size_t binaries { 0 };
+    for (const auto& test : selected)
+        if (!test.test.script) {
+            byMember[test.test.member].push_back(test.test.id.substr(test.test.member.empty() ? 0 : test.test.member.size() + 1));
+            ++binaries;
+        }
+    const auto cap = std::max<std::size_t>(1, (binaries + 2 * options.shards - 1) / (2 * options.shards));
+    std::map<std::string, std::map<std::string, std::string>> familyOf;
+    for (auto& [member, names] : byMember) {
+        std::ranges::sort(names);
+        split(std::move(names), cap, familyOf[member]);
     }
+    constexpr long long build_ms = 10000;
     std::map<std::string, long long> families;
-    for (const auto& test : selected) families[test.family] += test.test.duration_ms;
+    for (auto& test : selected) {
+        if (test.test.script) test.family = test.test.id;
+        else {
+            const auto& member = test.test.member;
+            const auto pattern = familyOf[member].at(test.test.id.substr(member.empty() ? 0 : member.size() + 1));
+            test.family = member.empty() ? pattern : member + ":" + pattern;
+        }
+        families[test.family] += test.test.duration_ms + (test.test.script ? 0 : build_ms);
+    }
     std::vector<std::pair<std::string, long long>> heaviest(families.begin(), families.end());
     std::ranges::stable_sort(heaviest, std::greater{}, &std::pair<std::string, long long>::second);
     std::vector<long long> load(options.shards, 0);

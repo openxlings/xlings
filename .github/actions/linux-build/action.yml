@@ -1,0 +1,80 @@
+# The development build a Linux test lane runs on, built once per round and
+# profile and reused (tests/README.md, "Parallel runs"):
+#
+#   produce  the build job: from the last round's state when there is one (only
+#            what changed since is rebuilt), else from nothing; the result is
+#            attached for this round's lanes and kept for the next round
+#   consume  a lane (a job that needs the build job): this round's state
+#
+# A restored state that does not build is dropped and the build starts over:
+# reuse can make a round faster, never wrong.
+name: Linux development build
+description: Build once per round, reuse across lanes and rounds.
+inputs:
+  profile:
+    description: dev or asan (tools/ci/dev_build.sh)
+    default: dev
+  state:
+    description: produce (the build job) or consume (a lane)
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: The last round's build
+      if: inputs.state == 'produce'
+      uses: actions/cache/restore@v4
+      with:
+        path: ${{ runner.temp }}/build-state.tar.zst
+        key: build-state-v1-${{ inputs.profile }}-${{ hashFiles('mcpp.toml', 'mcpp.lock', '.xlings.json') }}-${{ github.sha }}
+        restore-keys: |
+          build-state-v1-${{ inputs.profile }}-${{ hashFiles('mcpp.toml', 'mcpp.lock', '.xlings.json') }}-
+
+    - name: This round's build, from the build job
+      if: inputs.state == 'consume'
+      uses: actions/download-artifact@v4
+      with:
+        name: linux-build-state-${{ inputs.profile }}
+        path: ${{ runner.temp }}
+
+    - name: Build
+      shell: bash
+      run: |
+        state="$RUNNER_TEMP/build-state.tar.zst"
+        restored=0
+        if [[ -f "$state" ]]; then
+          sha="$(bash tools/ci/build_state.sh unpack "$state")"
+          restored=1
+          if [[ "$sha" == "$(git rev-parse HEAD)" ]]; then bash tools/ci/build_state.sh settle
+          else bash tools/ci/build_state.sh settle "$sha"; fi
+        fi
+        started=$SECONDS
+        if ! bash tools/ci/dev_build.sh "${{ inputs.profile }}"; then
+          [[ "$restored" == 1 ]] || exit 1
+          echo "::warning::the restored build state did not build; building from nothing"
+          bash tools/ci/build_state.sh clear
+          bash tools/ci/dev_build.sh "${{ inputs.profile }}"
+        fi
+        echo "build: $(( SECONDS - started ))s (state restored: $restored)"
+
+    - name: Pack the build
+      if: inputs.state == 'produce'
+      shell: bash
+      run: |
+        rm -f "$RUNNER_TEMP/build-state.tar.zst"
+        bash tools/ci/build_state.sh pack "$RUNNER_TEMP/build-state.tar.zst"
+
+    - name: Attach the build for this round's lanes
+      if: inputs.state == 'produce'
+      uses: actions/upload-artifact@v4
+      with:
+        name: linux-build-state-${{ inputs.profile }}
+        path: ${{ runner.temp }}/build-state.tar.zst
+        compression-level: 0
+        retention-days: 1
+
+    - name: Keep the build for the next round
+      if: inputs.state == 'produce'
+      uses: actions/cache/save@v4
+      with:
+        path: ${{ runner.temp }}/build-state.tar.zst
+        key: build-state-v1-${{ inputs.profile }}-${{ hashFiles('mcpp.toml', 'mcpp.lock', '.xlings.json') }}-${{ github.sha }}

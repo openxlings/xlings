@@ -40,18 +40,19 @@ env:
 
 # The shape of a round (tests/README.md, "Parallel runs"):
 #
-#   plan ─┬─ release ──────────┬─ e2e, isolation-fix, host-matrix, arch-package,
-#         │  (the one release  │  plan-distro → distro → wsl-import
-#         │   build, ~15 min)  └─ (acceptance takes it when it is ready)
-#         ├─ unit (i/n) ......... tests/lanes.toml [unit]: n machines, each building
-#         │                       and running whole families of test binaries
-#         ├─ acceptance ......... the checks, the desktop payloads, then the static
-#         │                       gates on the release build as soon as it exists
-#         └─ asan (i/n) ......... main and `ci:asan`: [asan], instrumented
+#   plan ─┬─ release ─────────────┬─ e2e, isolation-fix, host-matrix, arch-package,
+#         │  (the one release     │  plan-distro → distro → wsl-import
+#         │   build)              └─ (acceptance takes it when it is ready)
+#         ├─ build ─┬─ unit (i/n) ... tests/lanes.toml [unit]: n machines, each
+#         │         │                 building and running whole families of tests
+#         │         └─ acceptance ... checks, desktop payloads, the static gates
+#         └─ build-asan ─ asan (i/n)  main and `ci:asan`: [asan], instrumented
 #   report (every lane's runs, one requirement map)
 #
-# Nothing waits for something it does not use: the release build is not behind
-# the unit tests, and a test shard builds only the families it runs.
+# Built once, reused: `build` makes the development build every lane runs on,
+# from the last round's state (only what changed is rebuilt), and the lanes
+# take it as it is; a test shard builds only the families it runs. Nothing
+# waits for what it does not use: the release build is not behind the tests.
 jobs:
   # Seconds, no build: the repository's rules, and each lane's matrix from
   # tests/lanes.toml. A broken rule stops the round before any machine builds.
@@ -163,11 +164,61 @@ jobs:
         if: failure()
         run: bash tools/ci/diagnose_mcpp.sh
 
-  # The C++ tests, over tests/lanes.toml [unit].shards machines. Each builds
-  # the library once, then its share of the test binaries a family per mcpp
-  # call, and runs them [unit].jobs at a time.
-  unit:
+  # The development build every test lane runs on, once per round: from the
+  # last round's state, only what changed since is rebuilt
+  # (.github/actions/linux-build); the lanes that need it take it as it is.
+  build:
     needs: plan
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Linux toolchain
+        uses: ./.github/actions/linux-toolchain
+        with:
+          sandbox: 'false'
+
+      - name: The development build
+        uses: ./.github/actions/linux-build
+        with:
+          state: produce
+
+      - name: Diagnose a failed mcpp build
+        if: failure()
+        run: bash tools/ci/diagnose_mcpp.sh
+
+  # The same for the instrumented build, where the asan lane runs.
+  build-asan:
+    needs: plan
+    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:asan')
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Linux toolchain
+        uses: ./.github/actions/linux-toolchain
+        with:
+          mcpp-cache: mcpp-v4-ci-linux-asan-
+          sandbox: 'false'
+          room: 'true'
+
+      - name: The instrumented build
+        uses: ./.github/actions/linux-build
+        with:
+          profile: asan
+          state: produce
+
+      - name: Diagnose a failed mcpp build
+        if: failure()
+        run: bash tools/ci/diagnose_mcpp.sh
+
+  # The C++ tests, over tests/lanes.toml [unit].shards machines. Each takes
+  # the round's build, builds its share of the test binaries a family per
+  # mcpp call, and runs them [unit].jobs at a time.
+  unit:
+    needs: [plan, build]
     name: unit (${{ matrix.shard }})
     runs-on: ubuntu-24.04
     strategy:
@@ -186,25 +237,10 @@ jobs:
       - name: Linux toolchain
         uses: ./.github/actions/linux-toolchain
 
-      - name: Build
-        run: |
-          mcpp build || {
-            echo "::warning::mcpp build failed (likely stale index entry); retrying after auto-refresh"
-            mcpp build
-          }
-          # luban, the Luban OS app and xdesk beside the xlings the tests run
-          # (tests/e2e/test_luban*.cpp, the app's headless tests under SDL's
-          # offscreen driver, xdesk as luban-os's desktop).
-          mcpp build -p luban-tool
-          mcpp build -p luban-os
-          mcpp build -p xdesk-app
-          mcpp build -p xdev
-          luban_os="$(find "$PWD/target" -path '*bin/luban-os/luban-os' -type f | head -1)"
-          xdesk="$(find "$PWD/target" -path '*bin/xdesk-app/xdesk' -type f | head -1)"
-          xdev="$(find "$PWD/target" -path '*bin/xdev/xdev' -type f | head -1)"
-          test -x "$luban_os" && test -x "$xdesk" && test -x "$xdev"
-          { echo "LUBAN_OS_BIN=$luban_os"; echo "XDESK_BIN=$xdesk"; echo "XDEV=$xdev"; } >> "$GITHUB_ENV"
-          "$xdesk" --probe
+      - name: The round's development build
+        uses: ./.github/actions/linux-build
+        with:
+          state: consume
 
       - name: Tests (shard ${{ matrix.shard }})
         run: |
@@ -237,7 +273,7 @@ jobs:
   # evidence, the desktop release payloads), then the static gates on the
   # release build, fetched as soon as the release job attaches it.
   acceptance:
-    needs: plan
+    needs: build
     runs-on: ubuntu-24.04
     permissions:
       actions: read
@@ -249,22 +285,14 @@ jobs:
       - name: Linux toolchain
         uses: ./.github/actions/linux-toolchain
 
-      - name: Build
+      - name: The round's development build
+        uses: ./.github/actions/linux-build
+        with:
+          state: consume
+
+      - name: The static gates' programs
         run: |
-          mcpp build || {
-            echo "::warning::mcpp build failed (likely stale index entry); retrying after auto-refresh"
-            mcpp build
-          }
-          mcpp build -p luban-tool
-          mcpp build -p luban-os
-          mcpp build -p xdesk-app
-          mcpp build -p xdev
-          luban_os="$(find "$PWD/target" -path '*bin/luban-os/luban-os' -type f | head -1)"
-          xdesk="$(find "$PWD/target" -path '*bin/xdesk-app/xdesk' -type f | head -1)"
-          xdev="$(find "$PWD/target" -path '*bin/xdev/xdev' -type f | head -1)"
-          test -x "$luban_os" && test -x "$xdesk" && test -x "$xdev"
-          { echo "LUBAN_OS_BIN=$luban_os"; echo "XDESK_BIN=$xdesk"; echo "XDEV=$xdev"; } >> "$GITHUB_ENV"
-          # The programs the static gates run, built now; run on the release.
+          # Built now, run on the release build once it is attached.
           for test in e2e/test_domain_source e2e/test_domain_producer e2e/test_subos_perf e2e/test_home_perf \
                       unit/test_root_generation_perf e2e/test_luban; do
             mcpp test --no-run "$test"
@@ -740,7 +768,7 @@ jobs:
 
   # One report for the Linux lanes, in the step summary.
   report:
-    needs: [release, unit, acceptance, asan, e2e, isolation-fix, arch-package, distro, wsl-import]
+    needs: [release, build, unit, acceptance, asan, e2e, isolation-fix, arch-package, distro, wsl-import]
     if: always()
     runs-on: ubuntu-24.04
     steps:
@@ -822,7 +850,7 @@ jobs:
   # profile's (the "CRC mismatch" failure mode), so no restore can hand one
   # profile's BMIs to the other.
   asan:
-    needs: plan
+    needs: [plan, build-asan]
     if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:asan')
     name: asan (${{ matrix.shard }})
     runs-on: ubuntu-24.04
@@ -843,16 +871,11 @@ jobs:
           sandbox: 'false'
           room: 'true'
 
-      - name: Build (asan profile)
-        run: |
-          mcpp build --profile asan || {
-            echo "::warning::mcpp build --profile asan failed (likely stale index entry); retrying after auto-refresh"
-            mcpp build --profile asan
-          }
-          mcpp build -p xdev
-          xdev="$(find "$PWD/target" -path '*bin/xdev/xdev' -type f | head -1)"
-          test -x "$xdev"
-          echo "XDEV=$xdev" >> "$GITHUB_ENV"
+      - name: The round's instrumented build
+        uses: ./.github/actions/linux-build
+        with:
+          profile: asan
+          state: consume
 
       - name: Tests (asan, shard ${{ matrix.shard }})
         run: |
