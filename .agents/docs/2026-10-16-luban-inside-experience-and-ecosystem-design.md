@@ -200,6 +200,11 @@ O3b 的实测（保留 `CAP_SYS_ADMIN` 需同时保留 `CAP_SETPCAP` 才能对�
 - 普通用户第一次运行 xlings 时自动建立用户层（`mode = user`，`XLINGS_SYSTEM_LAYER=/xlings`），说明一次。
 - 用户想装进系统：`sudo xlings install --system <pkg>`；系统里没有 `sudo` 的 edition（tiny）提示 `su`。
 - 今天的错误"`/xlings/.xlings.lock cannot be written`"改为：说明这是系统层、给出两种做法。
+- 判定（实现）：在系统内（`XLINGS_ROOT_INSTANCE` 或根的 `/etc/xlings/usr` 记录）、非 root、非沙箱、非 shim、系统 home 不可写时，
+  home 为 `~/.xlings`，`XLINGS_SYSTEM_LAYER` 为系统 home，子进程不再继承 `XLINGS_ROOT_INSTANCE`。沙箱内仍由 broker 装进系统。
+- `PATH`：系统的 `/etc/profile.d/xlings-user.sh` 与 `/etc/fish/conf.d/xlings-user.fish`（机器状态，只写一次）把
+  `~/.xlings/subos/current/bin` 放在系统程序之前。
+- 环境被 `sudo` 重置时，home 与当前系统由 `/etc/xlings/usr` 的记录得出（`<home>/subos/<名字>/root/usr`）。
 
 ## 9. "当前系统"的判定
 

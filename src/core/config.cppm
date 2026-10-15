@@ -128,6 +128,10 @@ public:
         // How homeDir was chosen; the rest of "what kind of home is this"
         // (mode, layout) is home_context().
         home::Source          homeSource = home::Source::Default;
+        // Inside a Luban system, a regular user's own home: homeDir is
+        // ~/.xlings and the system's home is the layer below it (design
+        // 2026-10-16 L §8).
+        std::filesystem::path systemLayer;
     };
 
     // Owner-anchored shim dispatch (0.4.48; see

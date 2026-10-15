@@ -305,6 +305,42 @@ fi
     return true;
 }
 
+std::expected<std::vector<std::string>, std::string> ensure_user_layer_scripts(const fs::path& etc) {
+    static constexpr std::string_view sh = R"SH(# A regular user's own packages (design 2026-10-16 L §8): xlings installs
+# them into ~/.xlings, the system's home being root's, and they are found
+# before the system's. Not in a sandbox, where the broker installs into the
+# system. Machine state: edit freely; an upgrade never rewrites it.
+if [ "$(id -u)" != 0 ] && [ -n "$HOME" ] && [ "$XLINGS_SUBOS_MODE" != sandbox ]; then
+    case ":$PATH:" in
+        *":$HOME/.xlings/subos/current/bin:"*) ;;
+        *) PATH="$HOME/.xlings/subos/current/bin:$PATH"; export PATH ;;
+    esac
+fi
+)SH";
+    static constexpr std::string_view fish = R"FISH(# A regular user's own packages (design 2026-10-16 L §8): xlings installs
+# them into ~/.xlings, the system's home being root's, and they are found
+# before the system's. Not in a sandbox, where the broker installs into the
+# system. Machine state: edit freely; an upgrade never rewrites it.
+if test (id -u) != 0; and set -q HOME; and test "$XLINGS_SUBOS_MODE" != sandbox
+    contains -- $HOME/.xlings/subos/current/bin $PATH; or set -gx PATH $HOME/.xlings/subos/current/bin $PATH
+end
+)FISH";
+    std::vector<std::string> written;
+    for (const auto& [rel, text] : {std::pair{fs::path("profile.d/xlings-user.sh"), sh},
+                                    std::pair{fs::path("fish/conf.d/xlings-user.fish"), fish}}) {
+        std::error_code ec;
+        const auto file = etc / rel;
+        if (fs::exists(fs::symlink_status(file, ec))) continue;
+        fs::create_directories(file.parent_path(), ec);
+        if (ec) return std::unexpected(std::format("cannot make {}: {}", file.parent_path().string(), ec.message()));
+        std::ofstream out(file, std::ios::trunc);
+        out << text;
+        if (!out) return std::unexpected("cannot write " + file.string());
+        written.push_back(rel.generic_string());
+    }
+    return written;
+}
+
 namespace {
 std::vector<std::vector<std::string>> table_(const fs::path& file) {
     std::vector<std::vector<std::string>> rows;

@@ -80,5 +80,9 @@ std::string prompt(std::string_view kind, std::string_view persist, std::string_
 // LUBAN_KIND and LUBAN_PERSIST, written when missing (machine state: an edit
 // stays). Returns whether it was written.
 std::expected<bool, std::string> ensure_prompt_script(const fs::path& etc);
+// A regular user's own packages before the system's (design 2026-10-16 L
+// §8): profile.d/xlings-user.sh and fish/conf.d/xlings-user.fish, written
+// once. The ones written, relative to etc.
+std::expected<std::vector<std::string>, std::string> ensure_user_layer_scripts(const fs::path& etc);
 
 }  // namespace xlings::subos::root_etc

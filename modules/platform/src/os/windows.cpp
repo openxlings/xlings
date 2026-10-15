@@ -266,6 +266,10 @@ bool is_root() {
         return false;
     }
 
+bool can_write(const std::filesystem::path&) {
+        return true;
+    }
+
 void lchown_path_(const std::filesystem::path&,
                              unsigned int, unsigned int) {
     }

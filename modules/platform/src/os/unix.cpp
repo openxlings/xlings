@@ -220,6 +220,10 @@ bool is_root() {
         return ::geteuid() == 0;
     }
 
+bool can_write(const std::filesystem::path& p) {
+        return ::access(p.c_str(), W_OK) == 0;
+    }
+
 void lchown_path_(const std::filesystem::path& p,
                              unsigned int uid, unsigned int gid) {
         ::lchown(p.c_str(), static_cast<uid_t>(uid), static_cast<gid_t>(gid));

@@ -19,6 +19,31 @@ namespace xlings {
 
 namespace {
 
+// What a Luban root records of the generation its /usr presents (design
+// 2026-10-16 L §6.2): <home>/subos/<name>/root/usr in /etc/xlings/usr. The
+// home and the system are read from it where no environment says them (a
+// `sudo` that reset the environment).
+struct RootRecord {
+    std::filesystem::path home;
+    std::string name;
+};
+std::optional<RootRecord> root_record_() {
+    if constexpr (!platform::is_linux) return std::nullopt;
+    std::ifstream in("/etc/xlings/usr");
+    std::string line;
+    if (!std::getline(in, line)) return std::nullopt;
+    while (!line.empty() && std::isspace(static_cast<unsigned char>(line.back()))) line.pop_back();
+    const auto usr = std::filesystem::path(line).lexically_normal();
+    if (!usr.is_absolute() || usr.filename() != "usr" || usr.parent_path().filename() != "root") return std::nullopt;
+    const auto instance = usr.parent_path().parent_path();
+    if (instance.parent_path().filename() != "subos" || instance.filename().empty()) return std::nullopt;
+    return RootRecord{instance.parent_path().parent_path(), instance.filename().string()};
+}
+
+bool inside_root_() {
+    return !utils::get_env_or_default("XLINGS_ROOT_INSTANCE").empty() || root_record_().has_value();
+}
+
 // Size and mtime of a file, or nothing when it cannot be stat'ed. Used to tell
 // whether the home config changed since this process last read it.
 std::optional<std::pair<std::uintmax_t, std::filesystem::file_time_type>>
@@ -566,7 +591,13 @@ double Config::probe_resource_server_latency_(const std::string& server) {
     // -- `default` for a system made in the owner's prefix -- and a shim that
     // read it said "vim is not installed in this subos (default)" in a
     // machine whose generation had just placed vim.
-    if (name.empty()) name = utils::get_env_or_default("XLINGS_ROOT_INSTANCE");
+    // A user's own home is not the system's: its subos is its own.
+    if (name.empty() && paths_.systemLayer.empty()) name = utils::get_env_or_default("XLINGS_ROOT_INSTANCE");
+    if (name.empty() && paths_.systemLayer.empty()) {
+        std::error_code ec;
+        if (auto record = root_record_(); record && std::filesystem::equivalent(record->home, paths_.homeDir, ec))
+            name = record->name;
+    }
     if (name.empty()) name = globalActiveSubos_;
     return {name, paths_.homeDir / "subos" / name};
 }
@@ -620,12 +651,41 @@ Config::Config() {
                 } catch (...) { isSelfContained = false; }
             }
         }
+        std::error_code rec;
         if (isSelfContained) {
             paths_.homeDir       = candidate;
             paths_.selfContained = true;
             paths_.homeSource    = home::Source::SelfContained;
+        } else if (auto record = root_record_(); record && fs::is_directory(record->home, rec)) {
+            paths_.homeDir = record->home;
         } else {
             paths_.homeDir = fs::path(platform::get_home_dir()) / ".xlings";
+        }
+    }
+    // Inside a Luban system its home is root's. A regular user's xlings has
+    // its own, ~/.xlings, with the system's as the layer below it
+    // (deployment R, SubOS design part 2 §5; design 2026-10-16 L §8): an
+    // install needs no root, and `sudo xlings install --system` installs for
+    // everyone. Not in a sandbox (the broker installs into the system there),
+    // and not for a shim, which runs what its owner home placed.
+    if (std::error_code lec; platform::is_linux && paths_.homeSource != home::Source::Anchored
+        && utils::get_env_or_default("XLINGS_SUBOS_MODE") != "sandbox" && inside_root_() && !platform::is_root()
+        && fs::is_directory(paths_.homeDir, lec) && !platform::can_write(paths_.homeDir)) {
+        const auto own = fs::path(platform::get_home_dir()) / ".xlings";
+        if (!fs::equivalent(own, paths_.homeDir, lec)) {
+            paths_.systemLayer = paths_.homeDir;
+            if (!fs::exists(own, lec))
+                log::info("installing into your own home {} -- the system's {} is root's; "
+                          "`sudo xlings install --system <pkg>` installs for everyone",
+                          own.string(), paths_.systemLayer.string());
+            paths_.homeDir = own;
+            paths_.homeSource = home::Source::Default;
+            if (utils::get_env_or_default("XLINGS_SYSTEM_LAYER").empty())
+                platform::set_env_variable("XLINGS_SYSTEM_LAYER", paths_.systemLayer.string());
+            // What it and the xlings it starts act on is this home, not the
+            // system's subos and runtime.
+            platform::set_env_variable("XLINGS_HOME", own.string());
+            platform::unset_env_variable("XLINGS_ROOT_INSTANCE");
         }
     }
 

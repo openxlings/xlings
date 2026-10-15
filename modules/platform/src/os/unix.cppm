@@ -145,6 +145,8 @@ namespace platform_impl {
     // .agents/docs/2026-06-21-root-privilege-identity-design.md.
 
     export bool is_root();
+    // Whether this process may write into p (its effective identity).
+    export bool can_write(const std::filesystem::path& p);
 
     // Single-path lchown (don't follow symlinks). Best-effort: ownership
     // restoration must never abort an otherwise-successful operation, so

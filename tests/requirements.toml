@@ -43,6 +43,10 @@ status = "required"
 text = "a payload's share/ reaches /usr/share: directories many packages write into are merged file by file, one package's directory is claimed whole, and a link never has a link above or below it"
 status = "required"
 
+[LUBAN-USER-LAYER]
+text = "inside a Luban system a regular user's xlings uses ~/.xlings with the system's home as the layer below it; a sandbox keeps the system's home (its broker installs there)"
+status = "required"
+
 [LUBAN-CURRENT-SYSTEM]
 text = "inside a Luban system, in a sandbox and a machine alike, the current subos is the system itself; an explicit XLINGS_ACTIVE_SUBOS still wins"
 status = "required"

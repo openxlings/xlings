@@ -104,6 +104,7 @@ namespace platform {
     // Design: .agents/docs/2026-06-21-root-privilege-identity-design.md
 
     export using platform_impl::is_root;
+    export using platform_impl::can_write;
 
     // The real user behind a `sudo xlings ...` launch.
     export struct SudoInvoker {
