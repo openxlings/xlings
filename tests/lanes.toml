@@ -1,0 +1,25 @@
+# How CI spends machines on the tests (tests/README.md, "Parallel runs").
+#
+# shards  machines the lane is split over; each takes whole families of test
+#         binaries (unit/test_subos_*, ...) and builds each family with one
+#         mcpp call, on the library it built once. The workflow's matrix.
+# jobs    tests run at once on one machine (0 = one per processor); a test's
+#         declared resources (`.resources = {"sandbox"}`) keep conflicting ones
+#         apart.
+# mcpp    what the build is given (a profile).
+#
+# `xdev test --lane-config <lane> --shard i/n` runs one machine's share;
+# `python3 tools/ci/lane_matrix.py <lane>` prints the workflow's matrix.
+
+[unit]
+shards = 4
+jobs = 4
+
+[asan]
+shards = 4
+jobs = 2
+mcpp = ["--profile", "asan"]
+
+# Root scenarios (the distro suite), planned from measured durations.
+[distro]
+shards = 3

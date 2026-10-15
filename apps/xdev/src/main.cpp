@@ -128,9 +128,32 @@ struct TestArgs {
     fs::path timings;
     fs::path write_discovery;
     std::size_t jobs { 1 };
+    bool jobs_given { false };
+    std::string lane_config;
     fs::path fixture_root;
     fs::path lock_directory;
 };
+
+// A lane of tests/lanes.toml: how many tests run at once on this machine
+// (`jobs`, 0 = one per processor) and what the build is given (`mcpp`).
+// The command line wins over the file; `shards` is the workflow's (its matrix).
+std::expected<void, std::string> apply_lane_config(TestArgs& a, const fs::path& root) {
+    const auto document = toml::parse_file(root / "tests/lanes.toml");
+    if (!document) return std::unexpected(document.error());
+    const auto lane = document->tables.find(a.lane_config);
+    if (lane == document->tables.end()) return std::unexpected("tests/lanes.toml has no lane " + a.lane_config);
+    if (const auto jobs = lane->second.find("jobs"); jobs != lane->second.end() && !a.jobs_given) {
+        const auto* count = std::get_if<long long>(&jobs->second.v);
+        if (!count || *count < 0 || *count > 1024) return std::unexpected(a.lane_config + ".jobs must be 0..1024");
+        a.jobs = *count == 0 ? std::max(1u, std::thread::hardware_concurrency()) : static_cast<std::size_t>(*count);
+        a.selecting = true;
+    }
+    if (const auto mcpp = lane->second.find("mcpp"); mcpp != lane->second.end()) {
+        if (!mcpp->second.list()) return std::unexpected(a.lane_config + ".mcpp must be a list of strings");
+        a.mcpp_args.insert(a.mcpp_args.begin(), mcpp->second.list()->begin(), mcpp->second.list()->end());
+    }
+    return {};
+}
 
 // A script states what it covers and what it needs in one header line, the
 // way an XTEST does in its metadata:
@@ -521,22 +544,52 @@ int cmd_test(const TestArgs& a) {
     if (a.mcpp && inventory) {
         std::vector<resource::Task> tasks;
         std::vector<fs::path> taskDirectories;
+        // What the selection runs, built a family at a time: one `mcpp test
+        // --no-run <family>` builds its binaries in parallel, on the library
+        // built once, where a call per binary builds them one after another.
+        // A family whose build fails is built a binary at a time, so a
+        // failure is the failing binary's.
+        struct Built { int exit_code; long long ms; std::string output; };
+        std::map<std::string, Built> built;
+        if (!a.no_build) {
+            const auto build = [&](const sel::Test& test, const std::string& pattern) {
+                std::vector<std::string> argv{"mcpp", "test", "--no-run", "--message-format", "json"};
+                const auto separator = std::ranges::find(a.mcpp_args, "--");
+                argv.insert(argv.end(), a.mcpp_args.begin(), separator);
+                if (!test.member.empty()) { argv.push_back("-p"); argv.push_back(test.member); }
+                argv.push_back(pattern);
+                const auto run = tk::run({.argv = std::move(argv), .env = tk::inherited_env(), .cwd = root,
+                    .timeout = std::chrono::minutes(30)});
+                return Built{run.exit_code, run.elapsed.count(), run.transcript()};
+            };
+            const auto name = [](const sel::Test& test) {
+                return test.id.substr(test.member.empty() ? 0 : test.member.size() + 1);
+            };
+            std::map<std::string, std::vector<const sel::Test*>> families;
+            for (const auto& test : selection)
+                if (!test.test.script) families[test.family].push_back(&test.test);
+            for (const auto& [family, members] : families) {
+                const auto& first = *members.front();
+                if (members.size() > 1) {
+                    auto whole = build(first, family.substr(first.member.empty() ? 0 : first.member.size() + 1));
+                    if (whole.exit_code == 0) {
+                        for (const auto* test : members) built[test->id] = whole;
+                        continue;
+                    }
+                }
+                for (const auto* test : members) built[test->id] = build(*test, name(*test));
+            }
+        }
         for (const auto& test : selection) {
             if (test.test.script) continue;
             std::string buildOutput;
             if (!a.no_build) {
-                std::vector<std::string> argv{"mcpp", "test", "--no-run", "--message-format", "json"};
-                const auto separator = std::ranges::find(a.mcpp_args, "--");
-                argv.insert(argv.end(), a.mcpp_args.begin(), separator);
-                if (!test.test.member.empty()) { argv.push_back("-p"); argv.push_back(test.test.member); }
-                argv.push_back(test.test.id.substr(test.test.member.empty() ? 0 : test.test.member.size() + 1));
-                const auto build = tk::run({.argv = std::move(argv), .env = tk::inherited_env(), .cwd = root,
-                    .timeout = std::chrono::minutes(30)});
-                buildOutput = build.transcript();
+                const auto& build = built.at(test.test.id);
+                buildOutput = build.output;
                 if (build.exit_code != 0) {
                     mcpp_rc = 1;
                     append_ndjson(out / "mcpp.ndjson", json{{"test", test.test.id}, {"status", "compile_failed"},
-                        {"duration_ms", build.elapsed.count()}, {"compile_output", buildOutput}});
+                        {"duration_ms", build.ms}, {"compile_output", buildOutput}});
                     continue;
                 }
             }
@@ -989,7 +1042,7 @@ int usage() {
     std::println(std::cerr,
         "usage: xdev <command>\n"
         "  test   [unit|e2e|perf|pattern] [--lane pr|main|nightly] [--shard i/n] [--changed BASE]\n"
-        "         [-j N] [--fixture DIR] [--lock-dir DIR] [--suite NAME]... [--no-mcpp|--no-build] [--out DIR] [--tarball FILE] [-- mcpp args]\n"
+        "         [-j N] [--lane-config NAME] [--fixture DIR] [--lock-dir DIR] [--suite NAME]... [--no-mcpp|--no-build] [--out DIR] [--tarball FILE] [-- mcpp args]\n"
         "  report [--in DIR]... [--summary] [--requirements FILE] [--fail-uncovered] [--fail-unverified]\n"
         "         [--trend PREVIOUS.json] [--write DIR] [--timings-out FILE]\n"
         "  ci plan [--lane pr|main|nightly] [--shards N] [--platform OS] [--changed BASE..HEAD]\n"
@@ -1035,10 +1088,12 @@ int main(int argc, char** argv) {
                 if (error != std::errc{} || end != count.data() + count.size() || a.jobs == 0 || a.jobs > 1024) {
                     std::println(std::cerr, "xdev: -j needs 1..1024 workers"); return 2;
                 }
+                a.jobs_given = true;
                 a.selecting = true;
             } else if (x == "--fixture" && i + 1 < args.size()) { a.fixture_root = args[++i]; a.selecting = true; }
             else if (x == "--lock-dir" && i + 1 < args.size()) { a.lock_directory = args[++i]; a.selecting = true; }
             else if (x == "--suite" && i + 1 < args.size()) a.suites.push_back(args[++i]);
+            else if (x == "--lane-config" && i + 1 < args.size()) a.lane_config = args[++i];
             else if (x == "--no-mcpp") a.mcpp = false;
             else if (x == "--no-build") { a.no_build = true; a.selecting = true; }
             else if (x == "--out" && i + 1 < args.size()) a.out = args[++i];
@@ -1050,6 +1105,12 @@ int main(int argc, char** argv) {
         if (a.pattern == "unit" || a.pattern == "e2e" || a.pattern == "perf") {
             a.selection.category = std::exchange(a.pattern, {});
             a.selecting = true;
+        }
+        if (!a.lane_config.empty()) {
+            if (auto applied = apply_lane_config(a, repo_root()); !applied) {
+                std::println(std::cerr, "xdev: {}", applied.error());
+                return 2;
+            }
         }
         return cmd_test(a);
     }

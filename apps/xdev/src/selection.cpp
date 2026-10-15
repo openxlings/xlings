@@ -174,6 +174,13 @@ std::set<std::string> affected(const std::vector<Test>& tests, const std::vector
     return impacted;
 }
 
+std::string family(const Test& test) {
+    if (test.script) return test.id;
+    const auto start = test.id.find("test_", test.member.empty() ? 0 : test.member.size() + 1);
+    const auto word = start == test.id.npos ? test.id.npos : test.id.find('_', start + 5);
+    return word == test.id.npos ? test.id : test.id.substr(0, word + 1);
+}
+
 std::expected<std::pair<std::size_t, std::size_t>, std::string> parse_shard(std::string_view text) {
     const auto slash = text.find('/');
     std::size_t index { 0 }, count { 0 };
@@ -246,12 +253,31 @@ select(std::span<const Test> tests, const Options& options, const std::set<std::
         if (a.test.duration_ms != b.test.duration_ms) return a.test.duration_ms > b.test.duration_ms;
         return a.test.id < b.test.id;
     });
-    std::vector<long long> load(options.shards, 0);
+    // A family takes in every test its key names, as mcpp's pattern does:
+    // `e2e/test_luban` also builds e2e/test_luban_os, so they share a shard.
+    std::set<std::string> keys;
+    for (const auto& test : selected) keys.insert(family(test.test));
     for (auto& test : selected) {
-        const auto least = std::ranges::min_element(load);
-        test.shard = static_cast<std::size_t>(least - load.begin()) + 1;
-        *least += test.test.duration_ms;
+        test.family = family(test.test);
+        if (test.test.script) continue;
+        const auto prefix = test.test.member.empty() ? std::string{} : test.test.member + ":";
+        for (const auto& key : keys)
+            if (key.size() < test.family.size() && key.starts_with(prefix)
+                && test.test.id.substr(prefix.size()).contains(key.substr(prefix.size())))
+                test.family = key;
     }
+    std::map<std::string, long long> families;
+    for (const auto& test : selected) families[test.family] += test.test.duration_ms;
+    std::vector<std::pair<std::string, long long>> heaviest(families.begin(), families.end());
+    std::ranges::stable_sort(heaviest, std::greater{}, &std::pair<std::string, long long>::second);
+    std::vector<long long> load(options.shards, 0);
+    std::map<std::string, std::size_t> shardOf;
+    for (const auto& [name, duration] : heaviest) {
+        const auto least = std::ranges::min_element(load);
+        shardOf[name] = static_cast<std::size_t>(least - load.begin()) + 1;
+        *least += duration;
+    }
+    for (auto& test : selected) test.shard = shardOf.at(test.family);
     if (options.shard != 0) std::erase_if(selected, [&](const Selected& test) { return test.shard != options.shard; });
     std::ranges::sort(selected, {}, [](const Selected& test) { return test.test.id; });
     return selected;
