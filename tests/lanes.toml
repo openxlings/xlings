@@ -11,8 +11,10 @@
 # `xdev test --lane-config <lane> --shard i/n` runs one machine's share;
 # `python3 tools/ci/lane_matrix.py <lane>` prints the workflow's matrix.
 
+# A shard costs half a minute to set up (the round's build is reused), so the
+# unit lane is cut fine; its families take most of a shard's time.
 [unit]
-shards = 4
+shards = 6
 jobs = 4
 
 [asan]

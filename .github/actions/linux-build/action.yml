@@ -20,14 +20,24 @@ inputs:
 runs:
   using: composite
   steps:
+    # Taken once, before the build: what the build writes (mcpp.lock, not in
+    # the repository) must not make the saved key one no round looks for.
+    - name: The state's key
+      id: key
+      if: inputs.state == 'produce'
+      shell: bash
+      env:
+        INPUTS: ${{ hashFiles('mcpp.toml', '.xlings.json') }}
+      run: echo "prefix=build-state-v1-${{ inputs.profile }}-$INPUTS-" >> "$GITHUB_OUTPUT"
+
     - name: The last round's build
       if: inputs.state == 'produce'
       uses: actions/cache/restore@v4
       with:
         path: ${{ runner.temp }}/build-state.tar.zst
-        key: build-state-v1-${{ inputs.profile }}-${{ hashFiles('mcpp.toml', 'mcpp.lock', '.xlings.json') }}-${{ github.sha }}
+        key: ${{ steps.key.outputs.prefix }}${{ github.sha }}
         restore-keys: |
-          build-state-v1-${{ inputs.profile }}-${{ hashFiles('mcpp.toml', 'mcpp.lock', '.xlings.json') }}-
+          ${{ steps.key.outputs.prefix }}
 
     - name: This round's build, from the build job
       if: inputs.state == 'consume'
@@ -77,4 +87,4 @@ runs:
       uses: actions/cache/save@v4
       with:
         path: ${{ runner.temp }}/build-state.tar.zst
-        key: build-state-v1-${{ inputs.profile }}-${{ hashFiles('mcpp.toml', 'mcpp.lock', '.xlings.json') }}-${{ github.sha }}
+        key: ${{ steps.key.outputs.prefix }}${{ github.sha }}

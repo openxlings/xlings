@@ -353,7 +353,7 @@ ORPHAN_EXEMPT=(
     "aarch64_compat_contract_test.sh"       # xlings-ci-aarch64.yml
     "bootstrap_home_test.sh"                # linux-e2e / macos / windows
     "mcpp_build_xlings_test.sh"             # xlings-ci-linux.yml (unit-asan, on push)
-    "root_usability_test.sh"                # xlings-ci-linux-root.yml
+    "root_usability_test.sh"                # xlings-ci-linux.yml (root, a root container)
     "isolation_doctor_fix_test.sh"          # xlings-ci-linux.yml (isolation-fix, uses sudo)
     "system_install_test.sh"                # xlings-ci-linux.yml (isolation-fix, uses sudo)
     "aur_package_test.sh"                   # xlings-ci-linux.yml (arch-package, root in archlinux)

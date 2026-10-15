@@ -41,9 +41,20 @@ $sandbox = $caps.modes | Where-Object { $_.name -eq 'sandbox' }
 if (-not $sandbox.ready) { Fail "luban status --json: the sandbox is not ready" }
 if ($sandbox.traits.carrier -ne 'wsl2') { Fail "the sandbox does not run in the wsl2 carrier: $($sandbox | ConvertTo-Json -Compress)" }
 
+# What a failure here needs to be read: the same step through the xlings CLI
+# (its own diagnostics), this home's logs, and the host machine's.
+function Show-Diagnostics([string]$name) {
+    Run @('xlings', 'subos', 'new', "$name-diag", '--from', 'subos:luban-tiny', '--carrier', 'wsl2', '-y', '-v') | Out-Null
+    Get-ChildItem "$PKG_DIR\logs" -Recurse -File -ErrorAction SilentlyContinue | ForEach-Object {
+        Write-Host "--- $($_.FullName)"; Get-Content $_.FullName -Tail 40
+    }
+    $d = (& wsl.exe --list --quiet | Out-String) -split "`r?`n" | Where-Object { $_ -like 'xlings-*' } | Select-Object -First 1
+    if ($d) { Run @('wsl.exe', '-d', $d, '-u', 'root', '--exec', '/bin/sh', '-c', 'tail -n 60 /xlings/logs/*.log /xlings/logs/*/*.log 2>/dev/null') | Out-Null }
+}
+
 # A system, made and used in the host machine.
 $made = Run @('luban', 'new', 'box', '--edition', 'tiny', '-y')
-if ($made.Code -ne 0) { Fail "luban new box --edition tiny failed" }
+if ($made.Code -ne 0) { Show-Diagnostics 'box'; Fail "luban new box --edition tiny failed" }
 $uname = Run @('luban', 'run', 'box', '--', 'uname', '-s')
 if ($uname.Code -ne 0 -or $uname.Out -notmatch 'Linux') { Fail "a command did not run in the system: $($uname.Out)" }
 $desc = Run @('luban', 'status', 'box', '--json')

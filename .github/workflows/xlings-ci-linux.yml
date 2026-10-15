@@ -40,7 +40,7 @@ env:
 
 # The shape of a round (tests/README.md, "Parallel runs"):
 #
-#   plan ─┬─ release ─────────────┬─ e2e, isolation-fix, host-matrix, arch-package,
+#   plan ─┬─ release ─────────────┬─ e2e, isolation-fix, host-matrix, arch-package, root,
 #         │  (the one release     │  plan-distro → distro → wsl-import
 #         │   build)              └─ (acceptance takes it when it is ready)
 #         ├─ build ─┬─ unit (i/n) ... tests/lanes.toml [unit]: n machines, each
@@ -82,6 +82,22 @@ jobs:
             echo "::group::$lint"; bash "$lint" || rc=1; echo "::endgroup::"
           done
           exit $rc
+
+      # Shards are weighed by measured durations (main's latest report), taken
+      # once here so every shard of the round divides the same way.
+      - name: Measured durations, from main's history
+        uses: actions/cache/restore@v4
+        with:
+          path: target/xdev/history
+          key: xdev-history-v1-linux-${{ github.sha }}
+          restore-keys: xdev-history-v1-linux-
+
+      - name: Attach them for the shards
+        if: hashFiles('target/xdev/history/timings.json') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-shard-timings
+          path: target/xdev/history/timings.json
 
       - name: Lanes (tests/lanes.toml)
         id: lanes
@@ -242,10 +258,19 @@ jobs:
         with:
           state: consume
 
+      - name: Measured durations, as the plan job took them
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: linux-shard-timings
+          path: ${{ runner.temp }}/timings
+
       - name: Tests (shard ${{ matrix.shard }})
         run: |
           shard='${{ matrix.shard }}'
-          "$XDEV" test --lane-config unit --shard "$shard" --out "target/xdev/linux-unit-${shard%%/*}"
+          timings=()
+          [[ -f "$RUNNER_TEMP/timings/timings.json" ]] && timings=(--timings "$RUNNER_TEMP/timings/timings.json")
+          "$XDEV" test --lane-config unit --shard "$shard" "${timings[@]}" --out "target/xdev/linux-unit-${shard%%/*}"
 
       - name: Attach the run
         uses: actions/upload-artifact@v4
@@ -562,6 +587,44 @@ jobs:
       legs: ${{ contains(github.event.pull_request.labels.*.name, 'host-matrix-full') && 'full' || 'smoke' }}
       artifact: xlings-linux-x86_64
 
+  # xlings as the root user (design 2026-06-21-root-privilege-identity): the
+  # release build in a bare ubuntu:24.04 root container with no sudo, so the
+  # run exercises the root / sudo identity layer itself (P0-1: no sudo
+  # dependency; P0-2: sudo chown-back). It was a workflow of its own that
+  # built xlings and ran the unit suite a second time to get here.
+  root:
+    needs: release
+    if: ${{ !cancelled() && needs.release.outputs.release_ready == 'true' }}
+    runs-on: ubuntu-24.04
+    container:
+      image: ubuntu:24.04        # default user is root (uid 0); no sudo preinstalled
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Minimal deps for the e2e harness — deliberately NOT installing sudo,
+      # so the pure-root scenario proves xlings never depends on it.
+      - name: Install minimal deps (no sudo)
+        run: |
+          apt-get update -qq
+          apt-get install -y curl ca-certificates tar findutils perl git  # host-dep-ok: a bare container, prepared to install xlings
+          echo "sudo intentionally NOT installed:"; command -v sudo || echo "  (absent — good)"
+
+      - name: Fetch the release artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: xlings-linux-x86_64
+          path: build
+
+      - name: Confirm running as root
+        run: |
+          id
+          [ "$(id -u)" -eq 0 ] || { echo "expected uid 0"; exit 1; }
+
+      - name: "ROOT-01: root usability (pure root + simulated sudo)"
+        run: |
+          bash tests/e2e/root_usability_test.sh build/release.tar.gz
+
   # Deployment S as a distribution ships it (design part 2 §5): the AUR
   # recipe built from THIS build's release artifact, installed with pacman,
   # used by two users. Replaces xlings-ci-archlinux.yml, which ran only when
@@ -877,10 +940,19 @@ jobs:
           profile: asan
           state: consume
 
+      - name: Measured durations, as the plan job took them
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: linux-shard-timings
+          path: ${{ runner.temp }}/timings
+
       - name: Tests (asan, shard ${{ matrix.shard }})
         run: |
           shard='${{ matrix.shard }}'
-          "$XDEV" test --lane-config asan --shard "$shard" --out "target/xdev/linux-asan-${shard%%/*}"
+          timings=()
+          [[ -f "$RUNNER_TEMP/timings/timings.json" ]] && timings=(--timings "$RUNNER_TEMP/timings/timings.json")
+          "$XDEV" test --lane-config asan --shard "$shard" "${timings[@]}" --out "target/xdev/linux-asan-${shard%%/*}"
 
       - name: Attach the run
         uses: actions/upload-artifact@v4
