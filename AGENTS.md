@@ -34,7 +34,9 @@ XLINGS_TEST_MIRROR=CN mcpp test [pattern]   # set the mirror when testing from C
 New tests are C++ (`modules/testkit`, `XTEST`, `Home::isolated`); every test
 `covers` a requirement ID in `tests/requirements.toml`. Tests use an isolated
 home and never touch the user's. Release builds: `tools/{linux,macos}_release.sh`,
-`tools/windows_release.ps1`.
+`tools/windows_release.ps1`. How CI splits the tests over machines (shards, workers,
+one build reused per round) is `tests/lanes.toml`; `xdev test -j N --shard i/n` does
+the same locally (`tests/README.md`).
 
 ## Rules the code is checked against
 

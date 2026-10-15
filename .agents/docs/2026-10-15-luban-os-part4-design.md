@@ -464,6 +464,28 @@ Luban 的每一条设计原则，同时也是一条可测性原则：
   这个决定只改 workflow，不改代码。
 - 每次运行把实测到的能力（WSL 版本、是否嵌套虚拟化、CPU）写进 lane 的 meta，便于发现环境变化。
 
+### 11.3.1 Linux 一轮的结构：并行、复用、缓存（实现时补充）
+
+旧的 Linux 一轮是串行的：一个 build-and-test job 先构建、编译 158 个测试程序（约 17 分钟）、运行（约 8 分钟），
+再做发行构建（约 9 分钟），之后所有系统车道才开始；unit-asan 另做一遍插桩构建（约 50 分钟，曾因磁盘耗尽中断）；
+xlings-ci-linux-root 又从源码构建一遍并把整个单元测试再跑一遍，只为给 root 容器一个发行包。
+
+现在（`xlings-ci-linux.yml`，`tests/lanes.toml`，`tests/README.md`「Parallel runs」）：
+
+- **plan**（秒级）：仓库规则，各车道的矩阵（`tests/lanes.toml`），main 上测得的时长（同一轮所有分片用同一份）。
+- **release** 只做唯一的发行构建，挂上即触发 e2e、distro、host-matrix、isolation-fix、arch-package、root 与
+  Windows 的 WSL 2 车道（约 8–13 分钟，原来约 50 分钟）。
+- **build** 一轮只做一次开发构建，打包（约 450 MB）给 unit 分片与 acceptance；下一轮从上一轮的状态开始，只重建变化的部分：
+  `tools/ci/build_state.sh settle` 按内容定时间（未变化的文件与包载荷给一个固定的旧时间，相对于状态所属提交变化的文件给现在），
+  ninja 因而只重建真正变化的东西。恢复的状态构建失败时丢弃重来：复用只会让一轮更快，不会让它出错。
+- **unit (i/n)**：每台机器取整组测试（按前缀分组、有上限，一组一次 mcpp 调用，组内并行编译），机器内 `jobs` 个测试同时运行，
+  资源声明（`.resources`）隔开冲突的测试。
+- **asan (i/n)**：同样的结构，用 build-asan 的插桩构建（main 与 `ci:asan`）。
+- **acceptance**：检查、桌面发行载荷，发行构建一挂上就跑静态门禁。
+
+实测（同一提交，冷缓存）：发行构建 8.5 分钟后系统车道开始；unit 分片约 15 分钟完成；开发构建状态的取用约 20 秒、构建零重建。
+xdev 的同一套机制在本机同样可用：`xdev test -j N`、`--shard i/n`、`--lane-config <lane>`。
+
 ### 11.4 需求编号
 
 在 `tests/requirements.toml` 新增：
