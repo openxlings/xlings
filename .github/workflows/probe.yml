@@ -1,5 +1,6 @@
 # [temp][do not merge] Probe for
 # .agents/docs/2026-10-16-luban-inside-experience-and-ecosystem-design.md
+# Round 5: tray on Windows (static) and Linux (X11 dev), O10 kernel, O11 machine.
 # Round 4: A6 (the console's font at display scales), O12 (trays), O9
 # (cursor themes), O10 (virtiofs), O11 (a machine's current subos).
 # Rounds 1-3 are kept in .github/probe/probe-round1-3.yml.txt.
@@ -16,6 +17,7 @@ env:
 
 jobs:
   font:
+    if: false
     name: A6 console font at display scales
     runs-on: ubuntu-24.04
     timeout-minutes: 40
@@ -30,7 +32,7 @@ jobs:
           path: ${{ runner.temp }}/p/shots
 
   misc:
-    name: O9 cursors, O10 virtiofs, O11 machine
+    name: O10 kernel virtio-fs, O11 machine
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     steps:
@@ -51,13 +53,14 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, macos-15, ubuntu-24.04]
+        os: [windows-latest, ubuntu-24.04]
     steps:
       - name: build SDL's testtray
         shell: bash
         run: |
+          if [ "$RUNNER_OS" = Linux ]; then sudo apt-get -qq update >/dev/null; sudo apt-get -qq install -y libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxi-dev libxfixes-dev libxss-dev >/dev/null; fi
           git clone -q --depth 1 -b "$SDL" https://github.com/libsdl-org/SDL.git sdl
-          cmake -S sdl -B build -DSDL_TESTS=ON -DSDL_INSTALL_TESTS=OFF -DCMAKE_BUILD_TYPE=Release > cmake.log 2>&1 || tail -30 cmake.log
+          cmake -S sdl -B build -DSDL_SHARED=OFF -DSDL_STATIC=ON -DSDL_TESTS=ON -DSDL_INSTALL_TESTS=OFF -DCMAKE_BUILD_TYPE=Release > cmake.log 2>&1 || tail -30 cmake.log
           cmake --build build --config Release --target testtray -j 4 > build.log 2>&1 || tail -30 build.log
           find build -name 'testtray*' -type f | head
       - name: run (Windows) and capture the screen

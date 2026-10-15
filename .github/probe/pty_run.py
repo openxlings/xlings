@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Run a command on a pty, type a script into it, and record every byte.
 
-    pty_run.py --out <file> [--cols 120 --rows 40] [--step "<wait-regex>|<text>"]... -- <argv...>
+    pty_run.py --out <file> [--cols 120 --rows 40] [--step "<wait-regex> ::: <text>"]... -- <argv...>
 
 Each step waits (up to --wait seconds) until the output so far matches the
 regex, then types the text (\\r and \\x1b escapes are honoured). Prints a
@@ -42,7 +42,7 @@ def pump(timeout):
 
 alive = True
 for step in a.step:
-    pat, _, text = step.partition("|")
+    pat, _, text = step.partition(" ::: ")
     text = text.encode().decode("unicode_escape").encode("latin-1")
     deadline = time.time() + a.wait
     start = len(buf)
