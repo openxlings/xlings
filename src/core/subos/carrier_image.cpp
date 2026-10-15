@@ -101,34 +101,45 @@ std::expected<fs::path, std::string> linux_kernel(const fs::path& home) {
     return std::unexpected("xim:linux-kernel-virt@" + match->version + " holds no vmlinuz");
 }
 
-// The guest's userland: one static busybox (xim:busybox for Linux on this
-// architecture, a bare ELF), fetched once per version into
-// carriers/busybox/<version>. A package's hooks run a shell and its tools
-// (`sh -c`, `find`, `ln`) in the guest as they do on any Linux; the guest's
-// first probe links its applets (carrier::guest_probe).
-std::expected<fs::path, std::string> linux_busybox(const fs::path& home) {
-    if (const char* named = std::getenv("XLINGS_CARRIER_GUEST_BUSYBOX"); named && *named) return fs::path(named);
+// A static program the guest's userland is made of (xim:<package> for Linux
+// on this architecture: a bare ELF or an archive holding it), fetched once per
+// version into carriers/<package>/<version>. `seam` names a file to use instead.
+std::expected<fs::path, std::string> guest_program_(const fs::path& home, const std::string& package,
+                                                    const std::string& program, const char* seam) {
+    if (const char* named = std::getenv(seam); named && *named) return fs::path(named);
     auto& catalog = xim::get_catalog(xim::CatalogAccess::InstallReady);
-    auto match = catalog.resolve_target("xim:busybox", "linux");
-    if (!match) return std::unexpected("the index has no xim:busybox for linux: " + match.error());
-    const auto cached = home / "carriers" / "busybox" / match->version / "busybox";
-    std::error_code ec;
-    if (fs::is_regular_file(cached, ec)) return cached;
+    auto match = catalog.resolve_target("xim:" + package, "linux");
+    if (!match) return std::unexpected("the index has no xim:" + package + " for linux: " + match.error());
+    const auto cache = home / "carriers" / package / match->version;
+    const auto find = [&]() -> std::optional<fs::path> {
+        std::error_code ec;
+        for (auto it = fs::recursive_directory_iterator(cache, ec); !ec && it != fs::recursive_directory_iterator(); it.increment(ec))
+            if (it->path().filename() == program && it->is_regular_file(ec)) return it->path();
+        return std::nullopt;
+    };
+    if (auto found = find()) return *found;
     auto pkg = catalog.load_package(*match);
     if (!pkg) return std::unexpected(pkg.error());
     const auto arch = std::string(platform::build_arch()) == "arm64" ? std::string("aarch64") : std::string(platform::build_arch());
-    auto resource = xim::detail_::resolve_download_resource_(pkg->xpm, "busybox", match->version, "linux", arch,
+    auto resource = xim::detail_::resolve_download_resource_(pkg->xpm, package, match->version, "linux", arch,
                                                              Config::mirror());
-    if (!resource) return std::unexpected("xim:busybox@" + match->version + " linux/" + arch + ": " + resource.error());
+    if (!resource) return std::unexpected("xim:" + package + "@" + match->version + " linux/" + arch + ": " + resource.error());
     const auto downloads = home / "carriers" / "downloads";
+    std::error_code ec;
     fs::create_directories(downloads, ec);
-    xim::DownloadTask task{.name = "busybox", .url = resource->url, .sha256 = resource->sha256, .destDir = downloads};
+    xim::DownloadTask task{.name = package, .url = resource->url, .sha256 = resource->sha256, .destDir = downloads};
     auto got = xim::download_one(task);
     if (!got.success) return std::unexpected("download failed: " + got.error);
-    fs::create_directories(cached.parent_path(), ec);
-    fs::copy_file(got.localFile, cached, fs::copy_options::overwrite_existing, ec);
-    if (ec) return std::unexpected(cached.string() + ": " + ec.message());
-    return cached;
+    fs::create_directories(cache, ec);
+    const auto file = got.localFile.filename().string();
+    if (file.ends_with(".tar.gz") || file.ends_with(".tgz") || file.ends_with(".tar.xz") || file.ends_with(".zip")) {
+        if (auto extracted = xim::extract_archive(got.localFile, cache); !extracted) return std::unexpected(extracted.error());
+    } else {
+        fs::copy_file(got.localFile, cache / program, fs::copy_options::overwrite_existing, ec);
+        if (ec) return std::unexpected((cache / program).string() + ": " + ec.message());
+    }
+    if (auto found = find()) return *found;
+    return std::unexpected("xim:" + package + "@" + match->version + " holds no " + program);
 }
 
 std::expected<fs::path, std::string> image(const subos::HomeView& home, std::span<const carrier::ImageFile> files) {
@@ -146,13 +157,22 @@ std::expected<fs::path, std::string> image(const subos::HomeView& home, std::spa
                            .directory = f.directory});
     }
     entries.push_back({.path = "xlings/bin/xlings", .from = *guest, .mode = 0755});
-    if (auto busybox = linux_busybox(home.home); busybox) {
+    // The guest's userland, as a Linux has it: a shell and its tools for a
+    // package's hooks (busybox; its applets are linked at the first probe:
+    // carrier::guest_probe), and bwrap for what a root's making runs inside
+    // one (its library cache). Both static, from the index.
+    if (auto busybox = guest_program_(home.home, "busybox", "busybox", "XLINGS_CARRIER_GUEST_BUSYBOX"); busybox) {
         entries.push_back({.path = "bin", .directory = true});
         entries.push_back({.path = "bin/busybox", .from = *busybox, .mode = 0755});
         entries.push_back({.path = "bin/sh", .link = "busybox"});
     } else {
         log::warn("the carrier's machine gets no shell ({}): a package whose hooks run one cannot be installed there",
                   busybox.error());
+    }
+    if (auto bwrap = guest_program_(home.home, "bwrap", "bwrap", "XLINGS_CARRIER_GUEST_BWRAP"); bwrap) {
+        entries.push_back({.path = "usr/bin/bwrap", .from = *bwrap, .mode = 0755});
+    } else {
+        log::warn("the carrier's machine gets no bwrap ({}): a Luban system cannot be made there", bwrap.error());
     }
     // luban beside it (the Linux release carries both): what runs a machine
     // there (part 4 §8.2). A guest without it still serves every SubOS.
