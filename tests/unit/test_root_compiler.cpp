@@ -28,7 +28,9 @@ XTEST(RootCompiler, LogicalLoaderIsSelectedOnlyForARegisteredDriverInsideItsOwnP
     rf::Inputs inputs;
     inputs.payloads = {payload};
     ASSERT_TRUE(rf::commit(scope, rf::plan(inputs), "compiler"));
-    ASSERT_TRUE(rf::lay_out(machine, rf::usr_of(scope), home.dir()));
+    // A root as a running one shows it from outside: its /usr the link to
+    // the generation (a mounted /usr is the same directory, from inside).
+    ASSERT_TRUE(rf::lay_out(machine, rf::usr_of(scope), home.dir(), rf::UsrForm::Link));
     ASSERT_TRUE(fs::is_regular_file(machine / fs::path(loader).relative_path()));
     xvm::VData driver;
     driver.bindingGroup = xvm::BindingGroupRef{.provider = "xim:gcc", .rootTarget = "xim-gnu-gcc"};

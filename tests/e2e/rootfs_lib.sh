@@ -135,3 +135,21 @@ print(predecessor)
 PY
     )" || fail "cannot prepare the official self-update recipe"
 }
+
+# The kernel a root holds, as this host reaches it (design 2026-10-16 L
+# §6.2): usr/lib/modules/<release> is a directory entry of the generation
+# (mounts.tsv), its target named as the root sees it -- a domain's home at
+# /xlings. Its vmlinuz, or nothing.
+root_kernel() {
+  local inst="$1" gen home entry target
+  gen="$(cd "$inst/root" && pwd -P)" || return 1
+  home="$(cd "$inst/../.." && pwd -P)"
+  if [[ -f "$gen/mounts.tsv" ]]; then
+    while IFS=$'\t' read -r entry target; do
+      case "$entry" in usr/lib/modules/*) ;; *) continue ;; esac
+      [[ -e "$target" ]] || target="$home/${target#/xlings/}"
+      if [[ -f "$target/vmlinuz" ]]; then echo "$target/vmlinuz"; return 0; fi
+    done < "$gen/mounts.tsv"
+  fi
+  ls "$gen"/usr/lib/modules/*/vmlinuz 2>/dev/null | head -1
+}

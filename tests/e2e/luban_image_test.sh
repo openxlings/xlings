@@ -132,7 +132,7 @@ if [[ "$arch" == x86_64 ]]; then
 log "luban export t p.iso --boot <profile>: the profile is installed into the root, its kernel and command line boot"
 # A boot profile (Luban OS design part 2 §2.4) from an index of this test's:
 # the kernel already in the root, and a command line of its own.
-release="$(basename "$(dirname "$(ls "$(sysdir t)"/root/usr/lib/modules/*/vmlinuz | head -1)")")"
+release="$(basename "$(dirname "$(root_kernel "$(sysdir t)")")")"
 FIX="$RUNTIME_DIR/fixture-index"
 mkdir -p "$FIX/pkgs/l"
 echo 'xim_indexrepos = {}' > "$FIX/xim-indexrepos.lua"

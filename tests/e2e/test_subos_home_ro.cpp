@@ -74,7 +74,7 @@ XTEST(SubosHomeReadOnly, ReadingWorksInsideAndWritesGoThroughTheBroker,
       .requires_ = {"linux", "xlings-bin", "sandbox"}, .resources = {"sandbox"}) {
     Box box;
     auto r = box.in("xlings --version && xlings subos list >/dev/null && echo READS-OK; "
-                    "xlings install not-installed-anywhere -y; echo remove=$?");
+                    "xlings remove not-installed-anywhere -y; echo remove=$?");
     EXPECT_NE(r.out.find("READS-OK"), std::string::npos) << r.transcript();
     // The broker ran it outside and brought back its exit code -- not a hang
     // on a lock file it could not write, not a refusal.

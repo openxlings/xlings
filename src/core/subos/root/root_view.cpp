@@ -395,8 +395,21 @@ class PrivateView final : public View {
         // store), and so is each of its directories (mounts.tsv): inside, a
         // path is the path a person typed.
         root_bind(closure.generationUsr, "/usr");
+        // An entry names its directory as the root sees it (the home at its
+        // logical place, /xlings in a domain): bound from where it is here.
+        const auto physical = [&](const fs::path& target) {
+            const auto under = [](const fs::path& base, const fs::path& p) -> std::optional<fs::path> {
+                const auto rel = p.lexically_normal().lexically_relative(base.lexically_normal());
+                if (rel.empty() || *rel.begin() == "..") return std::nullopt;
+                return rel;
+            };
+            for (const auto& m : closure.mounts)
+                if (auto rel = under(m.destination, target)) return *rel == "." ? m.source : m.source / *rel;
+            if (auto rel = under(guestInstance, target)) return *rel == "." ? inputs.instance : inputs.instance / *rel;
+            return target;
+        };
         for (const auto& [rel, target] : subos::rootfs::mounts_of(closure.generationUsr.parent_path()))
-            root_bind(target, fs::path("/") / rel);
+            root_bind(physical(target), fs::path("/") / rel);
         if (inputs.scope != "default")
             fs::create_directory_symlink(inputs.scope, skeletons_.at(guestHome) / "subos/default");
         fs::create_directory_symlink(inputs.scope, skeletons_.at(guestHome) / "subos/current");

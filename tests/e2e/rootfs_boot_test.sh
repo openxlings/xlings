@@ -36,7 +36,7 @@ rootfs_new tiny subos:luban-tiny "$RUNTIME_DIR/new.log" || fail "subos new --fro
 retry X install -y --subos tiny xim:linux-kernel >"$RUNTIME_DIR/kernel.log" 2>&1 \
   || { tail -20 "$RUNTIME_DIR/kernel.log"; fail "install the kernel into the root"; }
 S="$H/subos/tiny"
-KERNEL="$(ls "$S"/root/usr/lib/modules/*/vmlinuz | head -1)"
+KERNEL="$(root_kernel "$S")"
 [[ -f "$KERNEL" ]] || fail "the root has no kernel"
 
 log "the tree, in a bwrap instance"
