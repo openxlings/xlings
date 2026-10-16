@@ -17,12 +17,13 @@ import xlings.platform.stream;
 import xlings.core.profile;
 import xlings.core.xvm.types;
 import xlings.core.xvm.db;
-import xlings.core.elfread;
+import xlings.libs.elfread;
 import xlings.core.subos.root;
 import xlings.subos.home_view;
 import xlings.subos.policy_store;
 import xlings.subos.policy;
 import xlings.subos.rootfs;
+import xlings.subos.root_check;
 import xlings.subos.library_cache;
 import xlings.subos.roles;
 import xlings.subos.boot;
@@ -378,8 +379,11 @@ std::expected<void, std::string> preflight_domain_at_creation_(std::string_view 
             return std::unexpected("invalid prefix-domain instance name");
         auto registry = xlings::home::read_json_for_update(home_dir_() / ".xlings.json");
         if (!registry) return std::unexpected(registry.error());
-        if (registry->contains("subos") && (!(*registry)["subos"].is_object() || (*registry)["subos"].contains(std::string(name))))
-            return std::unexpected("prefix-domain control registry is invalid or already claims this name");
+        if (registry->contains("subos") && !(*registry)["subos"].is_object())
+            return std::unexpected(std::format("{}: `subos` is not an object; xlings self doctor --fix",
+                                               (home_dir_() / ".xlings.json").string()));
+        if (registry->contains("subos") && (*registry)["subos"].contains(std::string(name)))
+            return std::unexpected(std::format("subos '{}' already exists", name));
         if (auto fresh = require_new_output_(HomeView{home_dir_()}.instance(name)); !fresh) return fresh;
         if (auto fresh = require_new_output_(HomeView{home_dir_()}.instance_file(name)); !fresh) return fresh;
         if (auto fresh = require_new_output_(HomeView{home_dir_()}.config_dir(name)); !fresh) return fresh;
@@ -400,7 +404,10 @@ std::optional<int> produce_domain_at_creation_(const std::string& name, bool,
         error_(stream, prepared.error()); return 1;
     }
     const std::vector<std::string> initialize{"self", "init"};
-    auto init = xlings::home::domain_producer::run(*selected, initialize);
+    // Its own words are not the caller's: through the interface they would be
+    // text in a stream of events.
+    auto init = xlings::home::domain_producer::run(*selected, initialize, std::nullopt, false,
+                                                   [](std::string_view) {});
     // The namespace is judged by what it did, not by its exit code: a home
     // initialised inside has its default SubOS.
     std::error_code ec;
@@ -416,7 +423,12 @@ std::optional<int> produce_domain_at_creation_(const std::string& name, bool,
         error_(stream, init ? std::format("prefix-domain initialization failed (exit {}); private domain retained", *init) : init.error());
         return init ? *init : 1;
     }
-    auto produced = xlings::home::domain_producer::run(*selected, arguments);
+    // What making it says -- the downloads, the configuration, the progress --
+    // reaches the caller: at a terminal directly, through the interface as
+    // events (U1: `luban new` showed one line for minutes).
+    std::vector<std::string> words(arguments.begin(), arguments.end());
+    if (!words.empty() && words.front() == "subos") words.erase(words.begin());
+    auto produced = run_domain_relayed_(*selected, std::move(words), std::nullopt, false, stream, false);
     if (!produced || *produced != 0) {
         // Asked to build it there only if this host can (luban new): what the
         // private namespace could not make is made in this home's prefix, said
@@ -919,6 +931,43 @@ int run_rollback_(int argc, char* argv[], EventStream& stream, const UsageError&
     return 0;
 }
 
+// ── check ────────────────────────────────────────────────────────────
+
+// `subos __check [--fast] [--json]`: the self-check of the system this
+// process runs in (design 2026-10-16 L §11), reached by `luban status
+// --check` -- inside, or from the host through `subos exec`. Its exit is 1
+// when a critical item failed.
+int run_check_(int argc, char* argv[], EventStream& stream, const UsageError& usageError) {
+    bool json = false, fast = false;
+    for (int i = 3; i < argc; ++i) {
+        const std::string_view a = argv[i];
+        if (a == "--json") json = true;
+        else if (a == "--fast") fast = true;
+        else { usageError("unknown option for `luban status --check`: " + std::string(a)); return 2; }
+    }
+    const auto env = [](const char* name) { const char* v = std::getenv(name); return std::string(v ? v : ""); };
+    if (std::error_code ec; env("XLINGS_ROOT_INSTANCE").empty() && !fs::exists("/etc/xlings/usr", ec)) {
+        stream.emit(ErrorEvent{.code = ErrorCode::InvalidInput, .message = "this is not a Luban system",
+                               .recoverable = false, .hint = "from the host: luban status <name> --check"});
+        return 2;
+    }
+    namespace rc = xlings::subos::root_check;
+    const auto report = rc::check("/", fast ? rc::Depth::Fast : rc::Depth::Full,
+                                  {.term = env("TERM")});
+    if (json) {
+        std::println("{}", rc::to_json(report).dump());
+    } else {
+        for (const auto& item : report.items) {
+            const auto mark = item.ok ? "✓" : item.critical ? "✗" : "!";
+            std::println("{} {}{}", mark, item.what, item.ok || item.detail.empty() ? std::string{} : " -- " + item.detail);
+        }
+        std::println("{}", report.ok() ? std::format("usable ({} of {} passed)", report.items.size() - report.failed(),
+                                                     report.items.size())
+                                       : "not usable: a critical item failed");
+    }
+    return report.ok() ? 0 : 1;
+}
+
 // ── boot ─────────────────────────────────────────────────────────────
 
 int run_boot_(int argc, char* argv[], EventStream& stream, const UsageError& usageError) {
@@ -1040,9 +1089,26 @@ bool same_bytes_(const fs::path& a, const fs::path& b) {
     return true;
 }
 
+// What a directory of the image has mounted on it when the image runs
+// (design 2026-10-16 L §6.2): /usr the generation recorded for it, and a
+// generation's directory entry the directory its mounts.tsv names. Nothing
+// for any other path.
+std::optional<fs::path> mounted_at_(const fs::path& stage, const fs::path& inside) {
+    if (inside == "/usr") return rf::usr_target_of(stage);
+    for (auto generation = inside.parent_path(); generation.has_relative_path(); generation = generation.parent_path()) {
+        if (generation.parent_path().filename() != rf::kGenerations) continue;
+        const auto rel = inside.lexically_relative(generation);
+        for (const auto& [entry, target] : rf::mounts_of(stage / generation.relative_path()))
+            if (entry == rel) return target;
+        return std::nullopt;
+    }
+    return std::nullopt;
+}
+
 // A path of the image as the image sees it, resolved component by component
 // through the image's own links (an absolute link names a path of the
-// image, not of this machine) -- what the kernel does inside a chroot.
+// image, not of this machine) and its mounts -- what the kernel does inside
+// a chroot of the running image.
 fs::path inside_stage_(const fs::path& stage, const fs::path& inside, int& hops) {
     fs::path current = "/";
     std::error_code ec;
@@ -1055,6 +1121,10 @@ fs::path inside_stage_(const fs::path& stage, const fs::path& inside, int& hops)
             const auto target = fs::read_symlink(here, ec);
             if (ec) return next;
             current = inside_stage_(stage, (target.is_absolute() ? target : current / target).lexically_normal(), hops);
+        } else if (const auto mounted = fs::is_directory(here, ec) && fs::is_empty(here, ec) ? mounted_at_(stage, next)
+                                                                                            : std::nullopt;
+                   mounted && mounted->is_absolute() && ++hops < 40) {
+            current = inside_stage_(stage, mounted->lexically_normal(), hops);
         } else {
             current = next;
         }
@@ -1629,7 +1699,11 @@ int run_export_(int argc, char* argv[], EventStream& stream, const UsageError& u
             auto t = l.target.generic_string();
             if (t.starts_with(from + "/") || t == from) l.target = to + t.substr(from.size());
         }
-        if (auto c = rf::commit(image_default, plan, "export of " + name); !c) {
+        // A tarball or a directory is started by an init that mounts nothing:
+        // its directories are links (design 2026-10-16 L §6.2).
+        const bool linked = !tarball.empty() || !rootfs_dir.empty();
+        if (auto c = rf::commit(image_default, plan, "export of " + name,
+                                linked ? rf::Directories::Linked : rf::Directories::Mounted); !c) {
             error_(stream, c.error(), {}, ErrorCode::Internal);
             return 1;
         }
@@ -1733,11 +1807,11 @@ int run_export_(int argc, char* argv[], EventStream& stream, const UsageError& u
     }
     ec.clear();
 
-    // The root around it.
-    if (auto l = rf::lay_out(stage, rf::usr_of(home / "subos" / "default"), home); !l) {
-        error_(stream, l.error(), {}, ErrorCode::Internal);
-        return 1;
-    }
+    // The root around it. An image that boots through stage-0 (a drive, an
+    // ISO, a disk) has /usr as the mount point stage-0 mounts; a tarball or a
+    // directory is started by another init (WSL, a container) and keeps the
+    // link (design 2026-10-16 L §6.2).
+    const auto usrForm = (!tarball.empty() || !rootfs_dir.empty()) ? rf::UsrForm::Link : rf::UsrForm::Mount;
     {
         const auto tree = subos_root::tree_of(home, name);
         // Machine state: /etc always (factory links become the files they
@@ -1753,6 +1827,12 @@ int run_export_(int argc, char* argv[], EventStream& stream, const UsageError& u
                     return 1;
                 }
             }
+        }
+        // After the machine's /etc: its record of what its /usr presents is
+        // this host's, and the image's is the image's own default.
+        if (auto l = rf::lay_out(stage, rf::usr_of(home / "subos" / "default"), home, usrForm); !l) {
+            error_(stream, l.error(), {}, ErrorCode::Internal);
+            return 1;
         }
         fs::create_directories(stage / "etc" / "xlings", ec);
         if (!check_io()) return 1;

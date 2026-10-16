@@ -94,6 +94,9 @@ bool mount_kernel_fs(std::string_view type, const std::filesystem::path& target)
 bool mount_tmpfs(const std::filesystem::path& target, unsigned mode);
 bool remount_root_rw();
 bool is_pid1();
+// `dir` opened and left open across exec (no close-on-exec): the init that
+// replaces this process holds it, so the mount it is on stays in use.
+bool hold_across_exec(const std::filesystem::path& dir);
 
 // ── a Luban machine's first process (Luban OS architecture §8.1) ──────
 //

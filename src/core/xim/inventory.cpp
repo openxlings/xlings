@@ -499,16 +499,8 @@ std::set<TargetVersion> requested_pairs(
 }
 
 std::vector<std::filesystem::path> inventory_store_roots() {
-    std::vector<std::filesystem::path> roots;
-    if (Config::has_project_config()) {
-        const auto projectData = Config::project_data_dir();
-        if (!projectData.empty()) roots.push_back(projectData / "xpkgs");
-    }
-    const auto global = Config::global_data_dir() / "xpkgs";
-    if (std::ranges::find(roots, global) == roots.end()) {
-        roots.push_back(global);
-    }
-    return roots;
+    // The scope stores and every index's declared one (X2).
+    return Config::stores();
 }
 
 std::vector<InstalledPackageRecord> assemble_inventory(const xvm::VersionDB& db, std::span<const InventoryWorkspace> workspaces, std::span<const std::filesystem::path> storeRoots, MetadataLookup& metadata, std::string_view filter, CoordinateMatch match, InventoryTrace* trace, bool includePayloadOnly) {

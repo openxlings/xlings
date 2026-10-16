@@ -19,7 +19,7 @@
 #include <gtest/gtest.h>
 
 import std;
-import xlings.core.elfread;
+import xlings.libs.elfread;
 import xlings.platform;
 
 namespace er = xlings::elfread;
@@ -53,6 +53,7 @@ struct SyntheticOptions {
     std::optional<std::string> rpath;    // DT_RPATH
     std::optional<std::string> runpath;  // DT_RUNPATH
     bool omitStrtab { false };           // a .dynamic with no DT_STRTAB
+    std::vector<std::string> needed;     // DT_NEEDED, in order
 };
 
 // Writes a minimal but structurally valid ELF64 LE executable.
@@ -64,7 +65,7 @@ struct SyntheticOptions {
 std::filesystem::path write_synthetic(const std::filesystem::path& path,
                                       const SyntheticOptions& opt) {
     const bool wantInterp  = !opt.interp.empty();
-    const bool wantDynamic = opt.rpath || opt.runpath || opt.omitStrtab;
+    const bool wantDynamic = opt.rpath || opt.runpath || opt.omitStrtab || !opt.needed.empty();
 
     std::uint16_t phnum = 1;                       // PT_LOAD always
     if (wantInterp)  ++phnum;
@@ -96,6 +97,8 @@ std::filesystem::path write_synthetic(const std::filesystem::path& path,
     std::size_t runpathIdx = 0;
     if (opt.rpath)   rpathIdx   = appendString(*opt.rpath)   - strtabOff;
     if (opt.runpath) runpathIdx = appendString(*opt.runpath) - strtabOff;
+    std::vector<std::size_t> neededIdx;
+    for (const auto& n : opt.needed) neededIdx.push_back(appendString(n) - strtabOff);
 
     // .dynamic — 16 bytes per entry (tag, value), DT_NULL terminated.
     std::size_t dynOff = 0;
@@ -112,6 +115,7 @@ std::filesystem::path write_synthetic(const std::filesystem::path& path,
         }
         if (opt.rpath)   entry(15, rpathIdx);               // DT_RPATH
         if (opt.runpath) entry(29, runpathIdx);             // DT_RUNPATH
+        for (const auto idx : neededIdx) entry(1, idx);      // DT_NEEDED
         entry(0, 0);                                        // DT_NULL
         dynSize = body.size() - dynOff;
     }
@@ -302,6 +306,24 @@ TEST(ElfRead, DynamicWithoutStrtabYieldsNoPaths) {
     ASSERT_TRUE(info.has_value());
     EXPECT_FALSE(info->interpreter.empty());
     EXPECT_TRUE(info->searchPaths.empty());
+}
+
+// The libraries it names, in the order the loader loads them (a Luban
+// system's self-check resolves each, design 2026-10-16 L §11).
+TEST(ElfRead, NeededIsEveryLibraryInOrder) {
+    const auto dir = std::filesystem::temp_directory_path() / std::format("elfread-needed-{}", ::testing::UnitTest::GetInstance()->random_seed());
+    std::filesystem::create_directories(dir);
+    const auto file = write_synthetic(dir / "prog", {.interp = "/lib64/ld-linux-x86-64.so.2", .runpath = "$ORIGIN/../lib",
+                                                     .needed = {"libz.so.1", "libc.so.6"}});
+    const auto info = er::read(file);
+    ASSERT_TRUE(info);
+    EXPECT_EQ(info->needed, (std::vector<std::string>{"libz.so.1", "libc.so.6"}));
+    EXPECT_EQ(info->searchPaths, (std::vector<std::string>{"$ORIGIN/../lib"}));
+    const auto none = er::read(write_synthetic(dir / "static", {.interp = "/lib/ld-musl-x86_64.so.1"}));
+    ASSERT_TRUE(none);
+    EXPECT_TRUE(none->needed.empty());
+    std::error_code ec;
+    std::filesystem::remove_all(dir, ec);
 }
 
 // ── the oracle ───────────────────────────────────────────────────────

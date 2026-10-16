@@ -7,6 +7,8 @@ import xlings.libs.json;
 import xlings.core.log;
 import xlings.platform;
 import xlings.runtime;
+import xlings.core.home.prefix_domain;
+import xlings.core.home.domain_producer;
 import xlings.core.utils;
 import xlings.core.xself;
 import xlings.core.xim.commands;  // auto_install_backend_ needs cmd_install
@@ -554,6 +556,12 @@ std::expected<void, std::string> preflight_domain_at_creation_(std::string_view 
 std::optional<int> produce_domain_at_creation_(const std::string& name, bool rootfs,
     std::string_view domain, std::span<const std::string> arguments, EventStream& stream,
     bool* fellBack = nullptr);
+// A routed command, or the making of a system, where the system lives; its
+// events relayed when asked through the interface (design 2026-10-16 L §5).
+std::expected<int, std::string> run_domain_relayed_(const xlings::home::prefix_domain::Domain& domain,
+                                                   std::vector<std::string> words,
+                                                   std::optional<xlings::home::domain_producer::OutputBinding> output,
+                                                   bool yes, EventStream& stream, bool runtime = true);
 std::optional<int> run_domain_operation_(const std::string& name,
     std::span<const std::string> arguments, EventStream& stream);
 int declare_root_at_creation_(const std::string& name, bool rootfs, const std::string& from,
@@ -580,6 +588,7 @@ int run_upgrade_(int argc, char* argv[], EventStream& stream, const UsageError& 
 // src/core/subos/configure.cpp: a policy package, read and locked (installed when absent).
 std::expected<policy::Policy, std::pair<int, std::string>> select_policy_package_(const std::string& ref, bool upgrade);
 int run_boot_(int argc, char* argv[], EventStream& stream, const UsageError& usageError);
+int run_check_(int argc, char* argv[], EventStream& stream, const UsageError& usageError);
 int run_export_(int argc, char* argv[], EventStream& stream, const UsageError& usageError);
 int run_diff_(int argc, char* argv[], EventStream& stream, const UsageError& usageError);
 int run_pack_(int argc, char* argv[], EventStream& stream, const UsageError& usageError);

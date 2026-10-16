@@ -5,6 +5,7 @@ import xlings.platform;
 import xlings.libs.json;
 import xlings.libs.sha256;
 import xlings.subos.caps;
+import xlings.subos.rootfs;
 
 namespace xlings::subos::library_cache {
 namespace {
@@ -99,7 +100,10 @@ std::expected<bool, std::string> refresh(const fs::path& root, const HomeView& h
                                         std::span<const platform::root_mount::Binding> bindings) {
     try {
         std::error_code ec;
-        if (!fs::exists(root / "usr/bin/ldconfig", ec)) {
+        // A root's /usr is its generation's: on the host a mount point (the
+        // generation is mounted on it inside), read through the record.
+        const auto usr = root == "/" ? root / "usr" : rootfs::presented_usr(root);
+        if (!fs::exists(usr / "bin/ldconfig", ec)) {
             if (ec) return std::unexpected("cannot inspect ldconfig: " + ec.message());
             return false;
         }

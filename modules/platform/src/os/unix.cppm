@@ -145,6 +145,16 @@ namespace platform_impl {
     // .agents/docs/2026-06-21-root-privilege-identity-design.md.
 
     export bool is_root();
+    // Whether this process may write into p (its effective identity).
+    export bool can_write(const std::filesystem::path& p);
+
+    // A directory link: `link` names the directory `target` (a symlink here,
+    // a junction on Windows -- which needs no privilege). False with the
+    // reason when it could not be made.
+    export bool create_dir_link(const std::filesystem::path& target, const std::filesystem::path& link,
+                                std::string& error);
+    // What a directory link names (absolute), or nothing when `p` is not one.
+    export std::optional<std::filesystem::path> dir_link_target(const std::filesystem::path& p);
 
     // Single-path lchown (don't follow symlinks). Best-effort: ownership
     // restoration must never abort an otherwise-successful operation, so

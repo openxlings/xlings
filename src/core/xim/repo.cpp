@@ -744,6 +744,13 @@ bool sync_all_repos(bool force, RepoSyncProgress onProgress, BytesProgress onByt
                 && classify_index_entry(*repo) == IndexEntryKind::DeclaredSubIndex) {
                 continue;
             }
+            // An index whose data directory its client declared (mcpp
+            // 2026-10-16 §6, X1) is that client's to refresh once it is
+            // there: through sync_index into a staging directory the client
+            // judges before the copy in use is replaced. Fetched here only
+            // while it is not there yet.
+            if (std::error_code present; !repo->dir.empty()
+                && !fs::is_empty(Config::repo_dir_for(*repo, projectScope), present) && !present) continue;
             toSync.push_back(repo);
         }
 

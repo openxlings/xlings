@@ -1,0 +1,3 @@
+# The font set the baselines were recorded with (the luban-fonts package,
+# xim-pkgindex pkgs/luban/luban-fonts.lua): version, archive, sha256.
+2026.10.16 https://github.com/xlings-res/luban-fonts/releases/download/2026.10.16/luban-fonts-2026.10.16.tar.gz f12eb7c0e69926583e092862b35c47ce2c91e639c73b2ed063971e99ac222d3f

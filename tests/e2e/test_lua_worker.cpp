@@ -6,7 +6,7 @@ import std;
 import mcpplibs.xpkg.executor;
 import xlings.platform.worker;
 import xlings.core.xim.lua_protocol;
-import xlings.core.elfread;
+import xlings.libs.elfread;
 import xlings.libs.json;
 
 namespace tk = xlings::testkit;

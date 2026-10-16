@@ -33,7 +33,12 @@ namespace xlings::interface {
 // unpacked as `extract` progress events; an extraction that cannot write
 // carries E_PERMISSION or E_DISK_FULL by its errno; a node whose dependency
 // failed is reported failed for that reason and nothing of it runs.
-export constexpr const char* kProtocolVersion = "1.9";
+// 1.10 (2026.10.16.1, additive; design mcpp 2026-10-16 §14): `--version` is
+// the handshake -- this client's version, its capabilities, the home layouts
+// it writes and the features a client may rely on; `payload_status` and
+// `sync_index`; install_targets entries carry `complete` and `origin`;
+// index_repos entries take `dir` and `store`; a home takes `upstreams`.
+export constexpr const char* kProtocolVersion = "1.10";
 
 // Convert any Event variant to one NDJSON line (no trailing newline).
 // Returns "" for events not surfaced to wire (e.g. CompletedEvent — the

@@ -4,6 +4,8 @@ import std;
 import xlings.libs.json;
 import xlings.platform;
 import xlings.subos.root_etc;
+import xlings.subos.rootfs;
+import xlings.subos.root_check;
 import luban.vm.protocol;
 import opensal.wlr;
 
@@ -416,11 +418,24 @@ int guest_init(int, char*[]) {
         if (!platform::move_mount(at, fs::path("/newroot") / fs::path(at).relative_path()))
             give_up_(std::format("cannot move {} into the environment", at));
     if (!platform::switch_root("/newroot")) give_up_("cannot make the environment /");
+    // Its /usr is the generation, mounted, not a link into the store (design
+    // 2026-10-16 L §6.2): a root from before is laid out so once, here.
+    if (!home.empty() && params.contains("luban.name")) {
+        const auto subos = home / "subos" / params.at("luban.name");
+        if (auto laid = xlings::subos::rootfs::lay_out("/", xlings::subos::rootfs::usr_of(subos), home); !laid)
+            console_("its /usr: " + laid.error());
+        else if (auto mounted = xlings::subos::rootfs::mount_usr("/", subos); !mounted)
+            console_("its /usr: " + mounted.error());
+    }
     // Its own default runtime is the home's runtime indirection here (part 3
-    // §4): what a payload bound through <home>/abi runs on.
+    // §4), read through the /usr just mounted: what a payload bound through <home>/abi runs on.
     if (std::error_code rec; fs::is_directory("/usr/lib/xlings-abi", rec) && fs::exists(home / "abi", rec)
         && !platform::bind_mount("/usr/lib/xlings-abi", home / "abi"))
         console_("cannot place its runtime at " + (home / "abi").string());
+    // The fast self-check (design 2026-10-16 L §11), said on the console: the
+    // host chose this system, so it starts, and what is wrong is in the log.
+    for (const auto& item : xlings::subos::root_check::check("/", xlings::subos::root_check::Depth::Fast, {.run = false}).items)
+        if (item.critical && !item.ok) console_(std::format("not usable: {}: {}", item.what, item.detail));
     // The agent's sessions are ptys before the environment's own start mounts
     // anything (its rcS mounting devpts again is harmless: already mounted).
     if (!platform::mount_kernel_fs("devpts", "/dev/pts")) console_("cannot mount devpts: sessions will fail");
@@ -431,14 +446,24 @@ int guest_init(int, char*[]) {
         std::string name;
         std::getline(in, name);
         // The edition's placeholder is no name: the system's own is (part 3 §6.2).
-        if ((name.empty() || name == "luban") && params.contains("luban.name")) name = params.at("luban.name");
+        // It is written into /etc/hostname too: the environment's own init
+        // sets the name again from that file, and a placeholder left there
+        // turned `pcore` into `luban` a moment after the first prompt.
+        if ((name.empty() || name == "luban") && params.contains("luban.name")) {
+            name = params.at("luban.name");
+            std::ofstream("/etc/hostname", std::ios::trunc) << name << '\n';
+        }
         if (!name.empty()) (void)platform::set_hostname(name);
     }
     if (platform::fork_process() == 0) agent_();
     std::error_code ec;
     for (const auto* init : {"/sbin/init", "/usr/sbin/init", "/usr/bin/init", "/bin/init"}) {
         if (fs::symlink_status(init, ec).type() == fs::file_type::not_found) continue;
-        platform::exec_path({init}, {{"PATH", "/usr/sbin:/usr/bin:/sbin:/bin"}, {"TERM", "linux"}});
+        // Every process of the machine -- its services, its desktop session --
+        // knows which system it is (L §9), not only the agent's sessions.
+        std::map<std::string, std::string> initEnv{{"PATH", "/usr/sbin:/usr/bin:/sbin:/bin"}, {"TERM", "linux"}};
+        if (params.contains("luban.name")) initEnv["XLINGS_ROOT_INSTANCE"] = params.at("luban.name");
+        platform::exec_path({init}, initEnv);
     }
     console_("the environment has no init; a shell on the console instead");
     platform::exec_path({"/bin/sh"}, {{"PATH", "/usr/sbin:/usr/bin:/sbin:/bin"}});

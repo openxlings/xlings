@@ -25,6 +25,27 @@ bool is_executable_entry(const fs::directory_entry& e) {
                       != fs::perms::none;
 }
 
+// The directories under share/ that several packages write into (freedesktop
+// and the usual tools): a system's, merged file by file.
+bool is_shared_share_dir(std::string_view rel) {
+    static constexpr std::array<std::string_view, 23> exact{
+        "applications", "icons", "icons/hicolor", "fonts", "man", "locale", "wayland-sessions",
+        "xsessions", "dbus-1", "bash-completion", "bash-completion/completions", "fish",
+        "zsh", "zsh/site-functions", "pkgconfig", "terminfo", "metainfo", "mime", "mime/packages",
+        "glib-2.0/schemas", "luban", "luban/checks.d", "licenses"};
+    if (std::ranges::find(exact, rel) != exact.end()) return true;
+    const auto under = [&](std::string_view base) { return rel.starts_with(std::string(base) + "/"); };
+    // Every level of hicolor and of fonts; a manual section; a language and its
+    // LC_MESSAGES; dbus' service and policy directories; fish's vendor dirs;
+    // terminfo's first-letter directories.
+    if (under("icons/hicolor") || under("fonts") || under("terminfo")) return true;
+    if (under("man") && rel.substr(4).find('/') == std::string_view::npos) return true;
+    if (under("locale")) return std::ranges::count(rel, '/') <= 2;
+    if (under("dbus-1") && rel.substr(7).find('/') == std::string_view::npos) return true;
+    if (under("fish") && rel.substr(5).starts_with("vendor_")) return true;
+    return rel == "glib-2.0";
+}
+
 std::vector<fs::directory_entry> sorted_entries(const fs::path& dir) {
     std::vector<fs::directory_entry> out;
     std::error_code ec;
@@ -38,6 +59,22 @@ std::vector<fs::directory_entry> sorted_entries(const fs::path& dir) {
 std::string utc_now() {
     return std::format("{:%Y-%m-%dT%H:%M:%SZ}",
                        std::chrono::floor<std::chrono::seconds>(std::chrono::system_clock::now()));
+}
+
+// A link that names a directory is presented as a bind mount, not followed:
+// a symbolic link to a directory took `cd` out of the system's paths (into
+// the store), and `pwd` said so (design 2026-10-16 L §6.2). The layout's own
+// relative links (usr/lib64 -> lib, usr/sbin -> bin) stay links, and so do
+// the sources of a machine's state xlings reads from this host, where nothing
+// is mounted -- the factory /etc its /etc links name, the sysusers
+// declarations -- and every directory of a generation made for a root that
+// mounts nothing (an exported tarball, WSL).
+bool is_mount_entry(const Link& link, Directories form = Directories::Mounted) {
+    if (form == Directories::Linked) return false;
+    const auto under = [&](std::string_view dir) { return link.rel == dir || link.rel.starts_with(std::string(dir) + "/"); };
+    if (under("usr/share/factory") || under("usr/lib/sysusers.d")) return false;
+    std::error_code ec;
+    return link.target.is_absolute() && fs::is_directory(link.target, ec);
 }
 
 fs::path generation_dir(const fs::path& subos, int k) {
@@ -161,6 +198,19 @@ bool owned_generation(const fs::path& subos, int generation,
         return false;
     std::unordered_map<std::string, fs::path> links;
     std::unordered_set<std::string> directories{"usr"};
+    // A generation from 2026.10.16 has mounts.tsv: the records presented as
+    // bind mounts are empty directories here, not links.
+    std::unordered_set<std::string> mounted;
+    if (fs::is_regular_file(fs::symlink_status(dir / "mounts.tsv", ec)) && !ec) {
+        const auto mounts = read_checked_text(dir / "mounts.tsv");
+        if (!mounts) return false;
+        std::istringstream lines(*mounts);
+        for (std::string line; std::getline(lines, line);) {
+            const auto tab = line.find('\t');
+            if (tab == std::string::npos) return false;
+            mounted.insert(line.substr(0, tab));
+        }
+    }
     std::istringstream records(*contents);
     for (std::string line; std::getline(records, line);) {
         const auto tab = line.find('\t');
@@ -184,6 +234,14 @@ bool owned_generation(const fs::path& subos, int generation,
         if (!path.starts_with(prefix))
             return false;
         const auto rel = path.substr(prefix.size());
+        if (const auto link = links.find(rel); link != links.end() && mounted.contains(rel)) {
+            // A mount point: an empty directory, nothing in it.
+            it.disable_recursion_pending();
+            if (!fs::is_directory(it->symlink_status(ec)) || ec || !fs::is_empty(it->path(), ec) || ec)
+                return false;
+            ++seen;
+            continue;
+        }
         if (const auto link = links.find(rel); link != links.end()) {
             // read_symlink proves both the entry type and its exact target.
             // Do not follow it even if its directory-entry type changed.
@@ -202,7 +260,7 @@ bool owned_generation(const fs::path& subos, int generation,
             if (rel == "usr")
                 sawUsr = true;
         } else if (!fs::is_regular_file(status) ||
-                   (rel != "generation.json" && rel != "links.tsv")) {
+                   (rel != "generation.json" && rel != "links.tsv" && rel != "mounts.tsv")) {
             return false;
         }
     }
@@ -336,8 +394,40 @@ Plan plan(const Inputs& in) {
                 p.conflicts.push_back({rel, kept.from, from});
             return;
         }
+        // A link never has a link above or below it: a directory claimed whole
+        // and a file claimed inside it would make a generation that cannot be
+        // committed. The first claim keeps the name; the other is a conflict.
+        for (auto parent = fs::path(rel).parent_path(); !parent.empty(); parent = parent.parent_path()) {
+            if (auto above = claimed.find(parent.generic_string()); above != claimed.end()) {
+                p.conflicts.push_back({rel, p.links[above->second].from, from});
+                return;
+            }
+        }
+        const auto below = claimed.lower_bound(rel + "/");
+        if (below != claimed.end() && below->first.starts_with(rel + "/")) {
+            p.conflicts.push_back({rel, p.links[below->second].from, from});
+            return;
+        }
         claimed.emplace(rel, p.links.size());
         p.links.push_back({std::move(rel), std::move(target), std::move(from)});
+    };
+
+    // A package's share/ (design 2026-10-16 L §6.4). Where several packages
+    // write into one directory -- launcher entries, the hicolor icons, fonts,
+    // manuals, translations, completions, terminfo -- the directory is the
+    // system's and its files are linked one by one; any other directory
+    // belongs to one package and is claimed whole (presented as a bind mount).
+    // Before, nothing of a payload's share/ reached /usr/share: a desktop's
+    // launcher was empty and it had no cursor theme.
+    std::function<void(const fs::path&, const std::string&, const std::string&)> claim_share;
+    claim_share = [&](const fs::path& dir, const std::string& under, const std::string& from) {
+        for (auto& e : sorted_entries(dir)) {
+            const auto name = e.path().filename().string();
+            const auto rel = under.empty() ? name : under + "/" + name;
+            std::error_code ec;
+            if (e.is_directory(ec) && is_shared_share_dir(rel)) claim_share(e.path(), rel, from);
+            else claim("usr/share/" + rel, e.path(), from);
+        }
     };
 
     // Fixed shape of a merged /usr; claimed first so nothing takes the names.
@@ -367,14 +457,14 @@ Plan plan(const Inputs& in) {
                     claim("usr/lib/" + name, e.path(), who);
             }
         }
+        claim_share(payload / "share", {}, who);
     }
 
     if (!in.sysroot_lib.empty()) {
         for (auto& e : sorted_entries(in.sysroot_lib))
             claim("usr/lib/" + e.path().filename().string(), e.path(), "sysroot");
     }
-    for (auto& e : sorted_entries(in.sysroot_share))
-        claim("usr/share/" + e.path().filename().string(), e.path(), "sysroot");
+    claim_share(in.sysroot_share, {}, "sysroot");
     if (!in.sysroot_usr.empty()) {
         for (auto& e : sorted_entries(in.sysroot_usr)) {
             const auto name = e.path().filename().string();
@@ -383,8 +473,7 @@ Plan plan(const Inputs& in) {
                 for (auto& l : sorted_entries(e.path()))
                     claim("usr/lib/" + l.path().filename().string(), l.path(), "sysroot");
             } else if (name == "share" && e.is_directory(ec)) {
-                for (auto& shared : sorted_entries(e.path()))
-                    claim("usr/share/" + shared.path().filename().string(), shared.path(), "sysroot");
+                claim_share(e.path(), {}, "sysroot");
             } else if (name != "bin" && name != "sbin" && name != "lib64") {
                 claim("usr/" + name, e.path(), "sysroot");
             }
@@ -476,8 +565,7 @@ std::expected<void, std::string> switch_to(const fs::path& subos, int generation
     return {};
 }
 
-std::expected<int, std::string> commit(const fs::path& subos, const Plan& p,
-                                       std::string_view reason) {
+std::expected<int, std::string> commit(const fs::path& subos, const Plan& p, std::string_view reason, Directories form) {
     std::set<fs::path> names;
     for (const auto& link : p.links) {
         const fs::path rel = link.rel;
@@ -500,7 +588,13 @@ std::expected<int, std::string> commit(const fs::path& subos, const Plan& p,
         } else if (!owned_generation(subos, *now, &checkedRecords)) {
             checkedRecords.clear();
         }
-        if (!checkedRecords.empty() && checkedRecords == print) return *now;
+        // The same records in the same form: a generation from before mounts.tsv
+        // (or with other directories mounted) is made again, once.
+        std::string wanted;
+        for (const auto& link : p.links)
+            if (is_mount_entry(link, form)) wanted += link.rel + "\t" + link.target.generic_string() + "\n";
+        const auto had = read_checked_text(generation_dir(subos, *now) / "mounts.tsv").value_or(std::string{});
+        if (!checkedRecords.empty() && checkedRecords == print && wanted == had) return *now;
     }
     if (!gens.empty() && gens.back() == std::numeric_limits<int>::max())
         return std::unexpected("generation numbers are exhausted");
@@ -512,10 +606,17 @@ std::expected<int, std::string> commit(const fs::path& subos, const Plan& p,
     std::error_code ec;
     fs::create_directories(staging / "usr", ec);
     if (ec) return std::unexpected("cannot create generation: " + ec.message());
+    std::string mountRecords;
     for (const auto& link : p.links) {
         const auto at = staging / link.rel;
         fs::create_directories(at.parent_path(), ec);
         if (ec) return std::unexpected("cannot create projection directory: " + ec.message());
+        if (is_mount_entry(link, form)) {
+            fs::create_directory(at, ec);
+            if (ec) return std::unexpected(std::format("cannot make mount point {}: {}", link.rel, ec.message()));
+            mountRecords += link.rel + "\t" + link.target.generic_string() + "\n";
+            continue;
+        }
         fs::create_symlink(link.target, at, ec);
         if (ec) return std::unexpected(std::format("cannot link {}: {}", link.rel, ec.message()));
     }
@@ -523,6 +624,12 @@ std::expected<int, std::string> commit(const fs::path& subos, const Plan& p,
         std::ofstream records(staging / "links.tsv", std::ios::binary);
         records << print;
         records.close();
+        if (!mountRecords.empty()) {
+            std::ofstream mounts(staging / "mounts.tsv", std::ios::binary);
+            mounts << mountRecords;
+            mounts.close();
+            if (!mounts) return std::unexpected("cannot write generation mounts");
+        }
         nlohmann::json metadata{{"number", next}, {"created", utc_now()}, {"reason", std::string(reason)},
                                {"links", p.links.size()}, {"conflicts", conflicts_json(p.conflicts)}};
         std::ofstream manifest(staging / "generation.json");
@@ -539,7 +646,10 @@ std::expected<int, std::string> commit(const fs::path& subos, const Plan& p,
             directories.insert(parent);
         if (auto root = store::payload_root(link.target)) payloads.insert(*root);
     }
+    for (const auto& link : p.links)
+        if (is_mount_entry(link, form)) directories.insert(link.rel);
     sync_file(staging / "links.tsv");
+    if (!mountRecords.empty()) sync_file(staging / "mounts.tsv");
     sync_file(staging / "generation.json");
     std::vector<fs::path> deepest(directories.begin(), directories.end());
     std::ranges::sort(deepest, std::greater<>{}, [](const fs::path& d) {
@@ -566,6 +676,23 @@ std::expected<std::vector<fs::path>, std::string> linked_targets(const fs::path&
         if (tab == std::string::npos) return std::unexpected(file.string() + ": malformed record");
         out.emplace_back(line.substr(tab + 1));
     }
+    return out;
+}
+
+std::vector<std::pair<fs::path, fs::path>> mounts_of(const fs::path& generationDir) {
+    std::vector<std::pair<fs::path, fs::path>> out;
+    const auto text = read_checked_text(generationDir / "mounts.tsv");
+    if (!text) return out;
+    std::istringstream records(*text);
+    for (std::string line; std::getline(records, line);) {
+        const auto tab = line.find('\t');
+        if (tab == std::string::npos) continue;
+        const fs::path rel = line.substr(0, tab);
+        if (!safe_relative_link(rel)) continue;
+        out.emplace_back(rel, fs::path(line.substr(tab + 1)));
+    }
+    // Shallowest first: a mount is made before what is mounted inside it.
+    std::ranges::stable_sort(out, {}, [](const auto& m) { return std::ranges::distance(m.first.begin(), m.first.end()); });
     return out;
 }
 
@@ -605,14 +732,46 @@ std::vector<int> prune(const fs::path& subos, std::size_t keep, std::span<const 
 // ── a root tree ──────────────────────────────────────────────────────
 
 std::expected<void, std::string> lay_out(const fs::path& root, const fs::path& usr_target,
-                                         const fs::path& home) {
+                                         const fs::path& home, UsrForm form) {
     std::error_code ec;
     auto machine = platform::machine_etc::Directory::open(root, true);
     if (!machine) return std::unexpected(machine.error());
 
-    // /usr: replaced only when it names something else (a SubOS moved).
     const auto usr = root / "usr";
-    if (fs::is_symlink(usr, ec)) {
+    if (form == UsrForm::Mount) {
+        // /usr is a mount point (design 2026-10-16 L §6.2): whoever presents
+        // the root -- the sandbox, a machine's agent, stage-0 -- mounts the
+        // generation there. What it is the generation of is recorded beside
+        // the root's other xlings state; a /usr link from before is replaced.
+        if (fs::is_symlink(usr, ec)) {
+            fs::remove(usr, ec);
+            if (ec) return std::unexpected(std::format("cannot replace the link {}: {}", usr.string(), ec.message()));
+        }
+        // A /usr with content is a generation mounted there already when the
+        // root records one (stage-0 again after `boot --now`, a refresh of a
+        // running machine): what is mounted next goes over it.
+        const bool mounted = fs::is_regular_file(root / std::string(kUsrRecord), ec);
+        if (!fs::exists(fs::symlink_status(usr, ec))) {
+            fs::create_directory(usr, ec);
+            if (ec) return std::unexpected(std::format("cannot make {}: {}", usr.string(), ec.message()));
+        } else if (!fs::is_directory(fs::symlink_status(usr, ec)) || (!mounted && !fs::is_empty(usr, ec))) {
+            return std::unexpected(std::format("{} has content of its own; it is left alone", usr.string()));
+        }
+        auto etc = machine->ensure_directory("etc/xlings");
+        if (!etc) return std::unexpected(etc.error());
+        if (!*etc) return std::unexpected("root directory is blocked by a user file: " + (root / "etc/xlings").string());
+        try {
+            platform::write_file_atomic((root / std::string(kUsrRecord)).string(), usr_target.generic_string() + "\n");
+        } catch (const std::exception& error) {
+            return std::unexpected(std::format("cannot record {}: {}", (root / std::string(kUsrRecord)).string(), error.what()));
+        }
+    } else if (fs::is_directory(fs::symlink_status(usr, ec)) && fs::is_empty(usr, ec)) {
+        // A root laid out for mounting, exported for an init that does not
+        // mount (a tar, WSL): its /usr becomes the link again.
+        fs::remove(usr, ec);
+        fs::create_directory_symlink(usr_target, usr, ec);
+        if (ec) return std::unexpected(std::format("cannot link {}: {}", usr.string(), ec.message()));
+    } else if (fs::is_symlink(usr, ec)) {
         if (fs::read_symlink(usr, ec) != usr_target) {
             auto scratch = OwnedStage::create(root);
             if (!scratch) return std::unexpected(scratch.error());
@@ -624,10 +783,13 @@ std::expected<void, std::string> lay_out(const fs::path& root, const fs::path& u
     } else if (!fs::exists(usr, ec)) {
         fs::create_directory_symlink(usr_target, usr, ec);
         if (ec) return std::unexpected(std::format("cannot link {}: {}", usr.string(), ec.message()));
-    } else {
+    } else if (form == UsrForm::Link) {
         return std::unexpected(std::format("{} is a directory, not a projection; it is left alone",
                                            usr.string()));
     }
+    // A linked /usr says what it presents itself; a record of a mount it is
+    // not (copied with a machine's /etc) would only mislead a reader.
+    if (form == UsrForm::Link) fs::remove(root / std::string(kUsrRecord), ec);
 
     for (auto [name, target] : {std::pair{"bin", "usr/bin"}, std::pair{"sbin", "usr/bin"},
                                 std::pair{"lib", "usr/lib"}, std::pair{"lib64", "usr/lib64"}}) {
@@ -657,10 +819,61 @@ std::expected<void, std::string> lay_out(const fs::path& root, const fs::path& u
     return {};
 }
 
-std::optional<std::string> host_of(const fs::path& root, const fs::path& home) {
+std::optional<fs::path> usr_target_of(const fs::path& root) {
     std::error_code ec;
-    const auto target = fs::read_symlink(root / "usr", ec);
-    if (ec) return std::nullopt;
+    if (fs::is_symlink(root / "usr", ec)) {
+        auto target = fs::read_symlink(root / "usr", ec);
+        if (!ec) return target;
+    }
+    std::ifstream in(root / std::string(kUsrRecord));
+    std::string line;
+    if (in && std::getline(in, line) && !line.empty()) return fs::path(line);
+    return std::nullopt;
+}
+
+fs::path presented_usr(const fs::path& root) {
+    std::error_code ec;
+    const auto usr = root / "usr";
+    if (fs::is_symlink(usr, ec)) return usr;
+    if (fs::is_directory(usr, ec) && !fs::is_empty(usr, ec)) return usr;
+    if (root.filename() == kTree) return usr_of(root.parent_path());
+    return usr;
+}
+
+std::expected<void, std::string> mount_usr(const fs::path& root, const fs::path& subos) {
+    std::error_code ec;
+    const auto usr = root / "usr";
+    if (fs::is_symlink(usr, ec)) return {};   // a root laid out as a link: nothing to mount
+    const auto generation = fs::canonical(usr_of(subos), ec);
+    if (ec) return std::unexpected(std::format("{}: no current generation: {}", subos.string(), ec.message()));
+    if (!platform::bind_mount(generation, usr))
+        return std::unexpected(std::format("cannot mount {} on {}", generation.string(), usr.string()));
+    for (const auto& [rel, target] : mounts_of(generation.parent_path())) {
+        const auto source = fs::canonical(target, ec);
+        if (ec) return std::unexpected(std::format("{}: {}", target.string(), ec.message()));
+        if (!platform::bind_mount(source, root / rel))
+            return std::unexpected(std::format("cannot mount {} on {}", source.string(), (root / rel).string()));
+    }
+    return {};
+}
+
+fs::path in_root(const fs::path& root, const fs::path& absolute) {
+    const auto rel = absolute.relative_path();
+    if (rel.empty()) return root;
+    auto it = rel.begin();
+    const auto first = it->string();
+    fs::path rest;
+    for (++it; it != rel.end(); ++it) rest /= *it;
+    if (first == "usr") return presented_usr(root) / rest;
+    if (first == "bin" || first == "sbin") return presented_usr(root) / "bin" / rest;
+    if (first == "lib" || first == "lib64") return presented_usr(root) / first / rest;
+    return root / rel;
+}
+
+std::optional<std::string> host_of(const fs::path& root, const fs::path& home) {
+    const auto recorded = usr_target_of(root);
+    if (!recorded) return std::nullopt;
+    const auto target = *recorded;
     // <home>/subos/<name>/root/usr
     const auto rel = target.lexically_relative(home / "subos");
     auto it = rel.begin();
@@ -673,6 +886,16 @@ std::optional<std::string> host_of(const fs::path& root, const fs::path& home) {
 
 std::optional<int> running_projection(const fs::path& root, const fs::path& scope) {
     std::error_code ec;
+    if (!fs::is_symlink(root / "usr", ec)) {
+        // A mounted /usr: the generation it is, by identity (a bind mount is
+        // the same directory).
+        for (const int generation : generations(scope)) {
+            ec.clear();
+            if (fs::equivalent(root / "usr", generation_dir(scope, generation) / "usr", ec) && !ec)
+                return generation;
+        }
+        return std::nullopt;
+    }
     const auto target = platform::read_symlink(root / "usr", ec);
     if (ec || !target.is_absolute() || target.filename() != "usr") return std::nullopt;
     const auto parent = target.parent_path();

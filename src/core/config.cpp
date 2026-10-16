@@ -19,6 +19,31 @@ namespace xlings {
 
 namespace {
 
+// What a Luban root records of the generation its /usr presents (design
+// 2026-10-16 L §6.2): <home>/subos/<name>/root/usr in /etc/xlings/usr. The
+// home and the system are read from it where no environment says them (a
+// `sudo` that reset the environment).
+struct RootRecord {
+    std::filesystem::path home;
+    std::string name;
+};
+std::optional<RootRecord> root_record_() {
+    if constexpr (!platform::is_linux) return std::nullopt;
+    std::ifstream in("/etc/xlings/usr");
+    std::string line;
+    if (!std::getline(in, line)) return std::nullopt;
+    while (!line.empty() && std::isspace(static_cast<unsigned char>(line.back()))) line.pop_back();
+    const auto usr = std::filesystem::path(line).lexically_normal();
+    if (!usr.is_absolute() || usr.filename() != "usr" || usr.parent_path().filename() != "root") return std::nullopt;
+    const auto instance = usr.parent_path().parent_path();
+    if (instance.parent_path().filename() != "subos" || instance.filename().empty()) return std::nullopt;
+    return RootRecord{instance.parent_path().parent_path(), instance.filename().string()};
+}
+
+bool inside_root_() {
+    return !utils::get_env_or_default("XLINGS_ROOT_INSTANCE").empty() || root_record_().has_value();
+}
+
 // Size and mtime of a file, or nothing when it cannot be stat'ed. Used to tell
 // whether the home config changed since this process last read it.
 std::optional<std::pair<std::uintmax_t, std::filesystem::file_time_type>>
@@ -89,6 +114,25 @@ std::vector<ArtifactBase> parse_region_chain(const nlohmann::json& value,
     return chain;
 }
 
+std::vector<Upstream> parse_upstreams_json(const nlohmann::json& json) {
+    std::vector<Upstream> out;
+    const auto list = json.find("upstreams");
+    if (list == json.end() || !list->is_array()) return out;
+    for (const auto& entry : *list) {
+        if (!entry.is_object() || !entry.contains("home") || !entry["home"].is_string()) continue;
+        Upstream u;
+        u.home = entry["home"].get<std::string>();
+        if (u.home.empty() || !u.home.is_absolute()) continue;
+        if (entry.contains("store") && entry["store"].is_string()) u.store = entry["store"].get<std::string>();
+        if (u.store.empty()) u.store = u.home / "data" / "xpkgs";
+        if (entry.contains("namespaces") && entry["namespaces"].is_array())
+            for (const auto& ns : entry["namespaces"])
+                if (ns.is_string() && !ns.get<std::string>().empty()) u.namespaces.push_back(ns.get<std::string>());
+        out.push_back(std::move(u));
+    }
+    return out;
+}
+
 std::vector<IndexRepo> parse_index_repos_json(const nlohmann::json& json,
                                                      const std::string& mirror) {
     std::vector<IndexRepo> out;
@@ -107,6 +151,20 @@ std::vector<IndexRepo> parse_index_repos_json(const nlohmann::json& json,
         // and xlings should not have an opinion about its shape.
         if (it->contains("version") && (*it)["version"].is_string())
             repo.version = (*it)["version"].get<std::string>();
+        if (it->contains("dir") && (*it)["dir"].is_string())
+            repo.dir = (*it)["dir"].get<std::string>();
+        // A store is a directory named xpkgs: a payload's path is its
+        // identity (<store>/<ns>-x-<name>/<version>), and that is how every
+        // reader of a path recognises one. Any other name is not taken.
+        if (it->contains("store") && (*it)["store"].is_string()) {
+            const std::filesystem::path store = (*it)["store"].get<std::string>();
+            if (store.lexically_normal().filename() == "xpkgs"
+                || (store.lexically_normal().filename().empty() && store.lexically_normal().parent_path().filename() == "xpkgs"))
+                repo.store = store;
+            else
+                log::warn("index '{}': its store {} is not a directory named xpkgs; its payloads go to the home's store",
+                          repo.name, store.string());
+        }
         out.push_back(std::move(repo));
     }
     return out;
@@ -559,6 +617,20 @@ double Config::probe_resource_server_latency_(const std::string& server) {
         return {"_", project_subos_dir_()};
     }
     auto name = utils::get_env_or_default("XLINGS_ACTIVE_SUBOS");
+    // Inside a Luban system "this subos" is the system itself, in a sandbox and
+    // a machine alike (design 2026-10-16 L §9): the root names itself with
+    // XLINGS_ROOT_INSTANCE, which a sandbox's session and a machine's init
+    // both carry. The home's own activeSubos is its owner's choice on the host
+    // -- `default` for a system made in the owner's prefix -- and a shim that
+    // read it said "vim is not installed in this subos (default)" in a
+    // machine whose generation had just placed vim.
+    // A user's own home is not the system's: its subos is its own.
+    if (name.empty() && paths_.systemLayer.empty()) name = utils::get_env_or_default("XLINGS_ROOT_INSTANCE");
+    if (name.empty() && paths_.systemLayer.empty()) {
+        std::error_code ec;
+        if (auto record = root_record_(); record && std::filesystem::equivalent(record->home, paths_.homeDir, ec))
+            name = record->name;
+    }
     if (name.empty()) name = globalActiveSubos_;
     return {name, paths_.homeDir / "subos" / name};
 }
@@ -612,12 +684,41 @@ Config::Config() {
                 } catch (...) { isSelfContained = false; }
             }
         }
+        std::error_code rec;
         if (isSelfContained) {
             paths_.homeDir       = candidate;
             paths_.selfContained = true;
             paths_.homeSource    = home::Source::SelfContained;
+        } else if (auto record = root_record_(); record && fs::is_directory(record->home, rec)) {
+            paths_.homeDir = record->home;
         } else {
             paths_.homeDir = fs::path(platform::get_home_dir()) / ".xlings";
+        }
+    }
+    // Inside a Luban system its home is root's. A regular user's xlings has
+    // its own, ~/.xlings, with the system's as the layer below it
+    // (deployment R, SubOS design part 2 §5; design 2026-10-16 L §8): an
+    // install needs no root, and `sudo xlings install --system` installs for
+    // everyone. Not in a sandbox (the broker installs into the system there),
+    // and not for a shim, which runs what its owner home placed.
+    if (std::error_code lec; platform::is_linux && paths_.homeSource != home::Source::Anchored
+        && utils::get_env_or_default("XLINGS_SUBOS_MODE") != "sandbox" && inside_root_() && !platform::is_root()
+        && fs::is_directory(paths_.homeDir, lec) && !platform::can_write(paths_.homeDir)) {
+        const auto own = fs::path(platform::get_home_dir()) / ".xlings";
+        if (!fs::equivalent(own, paths_.homeDir, lec)) {
+            paths_.systemLayer = paths_.homeDir;
+            if (!fs::exists(own, lec))
+                log::info("installing into your own home {} -- the system's {} is root's; "
+                          "`sudo xlings install --system <pkg>` installs for everyone",
+                          own.string(), paths_.systemLayer.string());
+            paths_.homeDir = own;
+            paths_.homeSource = home::Source::Default;
+            if (utils::get_env_or_default("XLINGS_SYSTEM_LAYER").empty())
+                platform::set_env_variable("XLINGS_SYSTEM_LAYER", paths_.systemLayer.string());
+            // What it and the xlings it starts act on is this home, not the
+            // system's subos and runtime.
+            platform::set_env_variable("XLINGS_HOME", own.string());
+            platform::unset_env_variable("XLINGS_ROOT_INSTANCE");
         }
     }
 
@@ -918,6 +1019,7 @@ void Config::ensure_index_config_() {
     // (at construction), which the region lookup needs.
     defaultIndexRepoUrl_ = resolve_default_index_repo_(json, mirror_);
     globalIndexRepos_ = parse_index_repos_json(json, mirror_);
+    upstreams_ = parse_upstreams_json(json);
     load_resource_servers_from_json_(json, globalResourceServers_);
     globalIndexBases_ = resolve_index_base_(json, mirror_);
 
@@ -1254,9 +1356,43 @@ void Config::load_ui_prefs_from_json_(const nlohmann::json& json) {
 
 [[nodiscard]] std::filesystem::path Config::repo_dir_for(const IndexRepo& repo,
                                                             bool projectScope) {
+    if (!repo.dir.empty()) {
+        if (repo.dir.is_absolute()) return repo.dir.lexically_normal();
+        const auto base = projectScope ? project_dir() : paths().homeDir;
+        return (base / repo.dir).lexically_normal();
+    }
     auto root = projectScope ? project_data_dir() : global_data_dir();
     auto dirName = repo.name == DEFAULT_INDEX_REPO_NAME ? DEFAULT_INDEX_REPO_DIR : repo.name;
     return root / dirName;
+}
+
+[[nodiscard]] std::filesystem::path Config::store_for(const IndexRepo& repo, bool projectScope) {
+    if (!repo.store.empty()) {
+        if (repo.store.is_absolute()) return repo.store.lexically_normal();
+        const auto base = projectScope ? project_dir() : paths().homeDir;
+        return (base / repo.store).lexically_normal();
+    }
+    return (projectScope ? project_data_dir() : global_data_dir()) / "xpkgs";
+}
+
+[[nodiscard]] std::vector<std::filesystem::path> Config::stores() {
+    std::vector<std::filesystem::path> out;
+    const auto add = [&](std::filesystem::path p) {
+        if (!p.empty() && std::ranges::find(out, p) == out.end()) out.push_back(std::move(p));
+    };
+    if (has_project_config()) {
+        add(project_data_dir() / "xpkgs");
+        for (const auto& repo : project_index_repos()) add(store_for(repo, true));
+    }
+    add(global_data_dir() / "xpkgs");
+    for (const auto& repo : global_index_repos()) add(store_for(repo, false));
+    return out;
+}
+
+[[nodiscard]] const std::vector<Upstream>& Config::upstreams() {
+    auto& self = instance_();
+    self.ensure_index_config_();
+    return self.upstreams_;
 }
 
 [[nodiscard]] std::filesystem::path Config::resolve_repo_source(const IndexRepo& repo,

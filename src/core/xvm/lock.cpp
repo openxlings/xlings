@@ -157,7 +157,10 @@ std::expected<StateLock, std::string> acquire_state_lock(const std::filesystem::
                 "{} cannot be written{}", path.string(),
                 inside ? " -- inside a SubOS sandbox the xlings home is read-only; run this "
                          "outside it, or through the broker (`xlings install` does that)"
-                       : ": the home is read-only or not yours"));
+                       : !utils::get_env_or_default("XLINGS_ROOT_INSTANCE").empty()
+                           ? " -- this system's home is root's: `sudo xlings install --system <pkg>` installs "
+                             "for everyone; run as yourself, xlings installs into your own ~/.xlings"
+                           : ": the home is read-only or not yours"));
         }
     }
     std::string error;

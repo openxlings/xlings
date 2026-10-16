@@ -61,6 +61,20 @@ public:
     auto execute(Params params, EventStream& stream) -> Result override;
 };
 
+// What a target is here, without installing (design mcpp 2026-10-16 §14 X4).
+class PayloadStatus : public Capability {
+public:
+    auto spec() const -> CapabilitySpec override;
+    auto execute(Params params, EventStream& stream) -> Result override;
+};
+
+// One configured index, into a directory the caller names (X1).
+class SyncIndex : public Capability {
+public:
+    auto spec() const -> CapabilitySpec override;
+    auto execute(Params params, EventStream& stream) -> Result override;
+};
+
 class ListVersions : public Capability {
 public:
     auto spec() const -> CapabilitySpec override;

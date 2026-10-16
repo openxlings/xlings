@@ -124,6 +124,11 @@ bool copy_window_size(int from, int to);
 // Puts `fd`'s terminal in raw mode; the returned state restores it. nullopt
 // when `fd` is not a terminal.
 std::optional<std::string> make_terminal_raw(int fd);
+// Whether `fd` is a terminal.
+bool is_terminal(int fd);
+// The terminal's state as it is, for restore_terminal; nullopt when `fd` is
+// not a terminal.
+std::optional<std::string> terminal_state(int fd);
 void restore_terminal(int fd, const std::string& saved);
 // Copies `in` to the master side of a pseudo-terminal and its output to `out`
 // until the other side is closed, keeping the window size of `in` (a

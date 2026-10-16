@@ -24,7 +24,7 @@ import xlings.subos.session;
 import xlings.subos.rootfs;
 import xlings.core.abi;
 import xlings.subos.broker;
-import xlings.core.elfread;
+import xlings.libs.elfread;
 import xlings.core.confirm;
 import xlings.observe;
 import xlings.core.subos.ports;
@@ -711,6 +711,14 @@ int enter(const std::string& name, EventStream& stream, const EnterOptions& opts
     std::string edition;
     if (rootfs) {
         request.root = subos_root::tree_of(p.homeDir, name);
+        // A root laid out before /usr was a mount point is laid out once more
+        // (design 2026-10-16 L §6.2): the view mounts the generation there.
+        if (std::error_code uec; fs::is_symlink(request.root / "usr", uec)) {
+            if (auto laid = subos::rootfs::lay_out(request.root, subos::rootfs::usr_of(subos_dir), p.homeDir); !laid) {
+                stream.emit(ErrorEvent{.code = ErrorCode::InvalidInput, .message = laid.error(), .recoverable = false});
+                return kFail;
+            }
+        }
         if (!cmd.empty()) request.argv = {"/bin/sh", "-c", cmd};
         // The root's own login shell: its passwd answers (design §7), the
         // same answer the sandbox, a machine and a drive give.

@@ -543,6 +543,10 @@ bool remount_root_rw() {
 
 bool is_pid1() { return ::getpid() == 1; }
 
+bool hold_across_exec(const fs::path& dir) {
+    return ::open(dir.c_str(), O_RDONLY | O_DIRECTORY) >= 0;
+}
+
 bool mount_9p(std::string_view tag, const fs::path& target, bool read_only) {
     std::error_code ec;
     fs::create_directories(target, ec);
@@ -635,6 +639,7 @@ bool mount_kernel_fs(std::string_view, const fs::path&) { return false; }
 bool mount_tmpfs(const fs::path&, unsigned) { return false; }
 bool remount_root_rw() { return false; }
 bool is_pid1() { return false; }
+bool hold_across_exec(const fs::path&) { return false; }
 bool mount_9p(std::string_view, const fs::path&, bool) { return false; }
 bool mount_virtiofs(std::string_view, const fs::path&, bool) { return false; }
 bool move_mount(const fs::path&, const fs::path&) { return false; }

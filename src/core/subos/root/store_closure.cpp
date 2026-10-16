@@ -8,7 +8,7 @@ import xlings.core.home.domain_producer_source;
 import xlings.core.xvm.owner;
 import xlings.core.xvm.db;
 import xlings.core.xvm.bindings;
-import xlings.core.elfread;
+import xlings.libs.elfread;
 import xlings.subos.rootfs;
 
 namespace xlings::subos_root::store_closure {

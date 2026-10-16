@@ -6,6 +6,7 @@ module;
 #define NOMINMAX
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include <winioctl.h>
 #endif
 
 module xlings.platform;
@@ -34,10 +35,16 @@ std::string user_ui_language() {
     }
 
 std::filesystem::path get_executable_path() {
-        wchar_t buf[MAX_PATH];
-        DWORD n = ::GetModuleFileNameW(nullptr, buf, MAX_PATH);
-        if (n == 0) return {};
-        return std::filesystem::path(buf);
+        // A buffer that grows: an install under a long path (longPathAware)
+        // has a module name past MAX_PATH, which a fixed buffer truncates.
+        std::vector<wchar_t> buf(MAX_PATH);
+        for (;;) {
+            const DWORD n = ::GetModuleFileNameW(nullptr, buf.data(), static_cast<DWORD>(buf.size()));
+            if (n == 0) return {};
+            if (n < buf.size()) return std::filesystem::path(std::wstring(buf.data(), n));
+            if (buf.size() >= 32768) return {};
+            buf.resize(buf.size() * 2);
+        }
     }
 
 std::pair<int, std::string> run_command_capture(const std::string& cmd) {
@@ -264,6 +271,97 @@ std::optional<bool> query_terminal_is_light() {
 
 bool is_root() {
         return false;
+    }
+
+bool can_write(const std::filesystem::path&) {
+        return true;
+    }
+
+namespace {
+// A path the wide API takes at any length.
+std::wstring long_form_(const std::filesystem::path& p) {
+        auto w = std::filesystem::absolute(p).lexically_normal().wstring();
+        if (w.size() >= MAX_PATH - 12 && !w.starts_with(L"\\\\?\\")) {
+            if (w.starts_with(L"\\\\")) w = L"\\\\?\\UNC\\" + w.substr(2);
+            else w = L"\\\\?\\" + w;
+        }
+        return w;
+    }
+}  // namespace
+
+// A junction (a mount-point reparse point): what a directory link is on
+// Windows without the symlink privilege. The reparse data is the documented
+// MountPointReparseBuffer layout, written by hand (it lives in ntifs.h).
+bool create_dir_link(const std::filesystem::path& target, const std::filesystem::path& link, std::string& error) {
+        std::error_code ec;
+        std::filesystem::create_directory(link, ec);
+        if (ec) { error = ec.message(); return false; }
+        auto substitute = L"\\??\\" + std::filesystem::absolute(target).lexically_normal().wstring();
+        auto print = std::filesystem::absolute(target).lexically_normal().wstring();
+        while (substitute.size() > 7 && (substitute.back() == L'\\' || substitute.back() == L'/')) substitute.pop_back();
+        while (print.size() > 3 && (print.back() == L'\\' || print.back() == L'/')) print.pop_back();
+        const auto subBytes = static_cast<USHORT>(substitute.size() * sizeof(wchar_t));
+        const auto printBytes = static_cast<USHORT>(print.size() * sizeof(wchar_t));
+        const auto pathBytes = static_cast<USHORT>(subBytes + sizeof(wchar_t) + printBytes + sizeof(wchar_t));
+        std::vector<unsigned char> buf(8 + 8 + pathBytes, 0);
+        const auto put16 = [&](std::size_t at, USHORT v) { std::memcpy(buf.data() + at, &v, 2); };
+        const DWORD tag = IO_REPARSE_TAG_MOUNT_POINT;
+        std::memcpy(buf.data(), &tag, 4);
+        put16(4, static_cast<USHORT>(8 + pathBytes));                  // ReparseDataLength
+        put16(8, 0);                                                    // SubstituteNameOffset
+        put16(10, subBytes);                                            // SubstituteNameLength
+        put16(12, static_cast<USHORT>(subBytes + sizeof(wchar_t)));     // PrintNameOffset
+        put16(14, printBytes);                                          // PrintNameLength
+        std::memcpy(buf.data() + 16, substitute.data(), subBytes);
+        std::memcpy(buf.data() + 16 + subBytes + sizeof(wchar_t), print.data(), printBytes);
+        const HANDLE h = ::CreateFileW(long_form_(link).c_str(), GENERIC_WRITE, 0, nullptr, OPEN_EXISTING,
+                                       FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+        if (h == INVALID_HANDLE_VALUE) {
+            error = std::format("cannot open {} ({})", link.string(), ::GetLastError());
+            std::filesystem::remove(link, ec);
+            return false;
+        }
+        DWORD bytes = 0;
+        const BOOL ok = ::DeviceIoControl(h, FSCTL_SET_REPARSE_POINT, buf.data(), static_cast<DWORD>(buf.size()),
+                                          nullptr, 0, &bytes, nullptr);
+        const DWORD why = ::GetLastError();
+        ::CloseHandle(h);
+        if (!ok) {
+            error = std::format("cannot make a junction at {} ({})", link.string(), why);
+            std::filesystem::remove(link, ec);
+            return false;
+        }
+        return true;
+    }
+
+std::optional<std::filesystem::path> dir_link_target(const std::filesystem::path& p) {
+        const DWORD attributes = ::GetFileAttributesW(long_form_(p).c_str());
+        if (attributes == INVALID_FILE_ATTRIBUTES || !(attributes & FILE_ATTRIBUTE_REPARSE_POINT)) return std::nullopt;
+        const HANDLE h = ::CreateFileW(long_form_(p).c_str(), 0, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                                       nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
+                                       nullptr);
+        if (h == INVALID_HANDLE_VALUE) return std::nullopt;
+        std::vector<unsigned char> buf(16 * 1024);
+        DWORD bytes = 0;
+        const BOOL ok = ::DeviceIoControl(h, FSCTL_GET_REPARSE_POINT, nullptr, 0, buf.data(),
+                                          static_cast<DWORD>(buf.size()), &bytes, nullptr);
+        ::CloseHandle(h);
+        if (!ok || bytes < 16) return std::nullopt;
+        DWORD tag = 0;
+        std::memcpy(&tag, buf.data(), 4);
+        USHORT subOffset = 0, subLength = 0;
+        std::memcpy(&subOffset, buf.data() + 8, 2);
+        std::memcpy(&subLength, buf.data() + 10, 2);
+        std::size_t pathStart = 16;
+        if (tag == IO_REPARSE_TAG_SYMLINK) pathStart = 20;             // its Flags field
+        else if (tag != IO_REPARSE_TAG_MOUNT_POINT) return std::nullopt;
+        if (pathStart + subOffset + subLength > bytes) return std::nullopt;
+        std::wstring name(subLength / sizeof(wchar_t), L'\0');
+        std::memcpy(name.data(), buf.data() + pathStart + subOffset, subLength);
+        if (name.starts_with(L"\\??\\")) name = name.substr(4);
+        std::filesystem::path target(name);
+        if (target.is_relative()) target = p.parent_path() / target;
+        return target.lexically_normal();
     }
 
 void lchown_path_(const std::filesystem::path&,

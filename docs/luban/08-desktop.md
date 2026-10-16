@@ -52,6 +52,22 @@ exit code, instead of only "off".
 | the Host key | Ctrl+Alt pressed and released alone (Ctrl+Option on macOS): the menu — back to the list, manage, full screen, a new window, power off |
 | F2 or the gear | the management panel: every environment, its settings, what happened (`xlings self log`) |
 | closing it on a machine | asks each time: keep it running or power it off — or confirm and make that the environment's default (`luban config desk --on-close background`) |
+| a file dropped on a system | copied into its login user's `~/Downloads`, and the window says where (a `.luban` file is imported instead) |
+| Ctrl+= / Ctrl+- / Ctrl+0 | the console's font size, kept per system |
+| an operation under way | its phases as it goes; it can be stopped, and one that failed can be tried again |
+
+The app has an icon in the system's status area: StatusNotifierItem on Linux
+(KDE, GNOME with its AppIndicator extension, and most other desktops), the
+notification area on Windows, the menu bar on macOS. Its menu lists the
+running systems (open, its console, power off, manage), a new system, the
+window, the settings, and quit; its picture shows how many run and whether
+something is under way or failed. Closing the window with systems running
+keeps them running and the app in the status area; where there is no status
+area, the window is minimized instead. **Always in the tray** (Settings) keeps
+the icon with nothing running.
+
+The window follows the screen's scale. Its console draws box and block
+characters itself, so they join at any font size.
 
 ## xdesk
 

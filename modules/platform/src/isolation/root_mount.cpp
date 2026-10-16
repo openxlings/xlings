@@ -237,20 +237,39 @@ std::expected<void, std::string> update(std::span<const int, 3> target,
         return std::unexpected("invalid captured root directory");
     std::vector<Mount> additions, removals;
     std::set<std::string> destinations;
+    // An addition inside another one (a generation's directory inside the
+    // /usr that replaces the old one, design 2026-10-16 L §6.2) is mounted
+    // after it, on a mount point of the tree it brings: that tree, not the
+    // one presented now, is where the mount point is checked.
+    std::vector<std::pair<std::string, std::string>> parents;   // {destination, source} of the additions so far
     auto prepare = [&](const std::filesystem::path& source,
                        const std::filesystem::path& destination, bool removing,
                        bool replacing = false) -> std::expected<Mount, std::string> {
         if (!absolute_normal(destination) || (!removing && !absolute_normal(source)))
             return std::unexpected("root mount paths must be normalized absolute paths");
         const auto dst = destination.native();
-        if (!destinations.insert(dst).second)
+        if (!destinations.insert((removing ? "-" : "+") + dst).second)
             return std::unexpected("duplicate root mount destination: " + dst);
-        const int old = descriptors.own(open_beneath(target[2], dst));
+        int old = descriptors.own(open_beneath(target[2], dst));
+        if (old < 0 && errno == ENOENT && !removing && !replacing) {
+            // Not in the tree presented now: a mount point of the tree an
+            // earlier addition brings (the deepest that holds it).
+            std::string within;
+            std::size_t depth = 0;
+            for (const auto& [parent, parentSource] : parents)
+                if (dst.starts_with(parent + "/") && parent.size() >= depth) {
+                    within = parentSource + dst.substr(parent.size());
+                    depth = parent.size();
+                }
+            if (!within.empty()) old = descriptors.own(::open(within.c_str(), O_PATH | O_CLOEXEC | O_NOFOLLOW));
+            else errno = ENOENT;
+        }
         if (old < 0)
             return std::unexpected(error("open private root mountpoint " + dst));
         struct stat prior{};
         if (::fstat(old, &prior) < 0 || (!S_ISDIR(prior.st_mode) && !S_ISREG(prior.st_mode)))
             return std::unexpected("root mountpoint is not a regular file or directory: " + dst);
+        if (!removing) parents.emplace_back(dst, source.native());
         const int src =
             removing ? -1
                      : descriptors.own(::open(source.c_str(), O_PATH | O_CLOEXEC | O_NOFOLLOW));

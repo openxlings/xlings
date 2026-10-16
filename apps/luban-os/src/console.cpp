@@ -1,7 +1,7 @@
 module luban.os;
 
 import std;
-import luban.desktop.imgui;
+import imkit.imgui;
 import xlings.libs.json;
 import xlings.platform;
 import luban.vm;
@@ -30,7 +30,7 @@ std::uint32_t palette_(std::uint32_t i) {
     return (g << 16) | (g << 8) | g;
 }
 
-constexpr std::uint32_t kForeground = 0xd8dee9, kBackground = 0x13151a;
+constexpr std::uint32_t kForeground = 0xd8dee9, kBackground = 0x13151a;   // a terminal's own, not the app's palette
 
 std::uint32_t color_(const term::Color& c, bool fg) {
     switch (c.kind) {
@@ -207,57 +207,249 @@ void Console::resize(int rows, int cols) {
     else if (master_ >= 0) platform::set_terminal_size(master_, static_cast<unsigned short>(rows), static_cast<unsigned short>(cols));
 }
 
-std::pair<int, int> draw_console(Console& c, void* mono, float size, bool focused) {
-    auto* font = static_cast<ImFont*>(mono);
-    ImGui::PushFont(font, size);
-    const float cw = ImGui::CalcTextSize("M").x;
-    const float ch = ImGui::GetTextLineHeight();
-    const ImVec2 origin = ImGui::GetCursorScreenPos();
-    const ImVec2 avail = ImGui::GetContentRegionAvail();
-    const int cols = std::max(10, static_cast<int>(avail.x / cw));
-    const int rows = std::max(4, static_cast<int>(avail.y / ch));
-    auto* dl = ImGui::GetWindowDrawList();
-    dl->AddRectFilled(origin, ImVec2(origin.x + avail.x, origin.y + avail.y), rgb_(kBackground));
-    std::lock_guard l(c.lock());
-    auto& s = c.screen();
-    std::string text;
-    for (int r = 0; r < s.rows(); ++r) {
-        const float y = origin.y + r * ch;
-        for (int col = 0; col < s.cols(); ++col) {
-            const auto& cell = s.at(r, col);
-            if (cell.continuation) continue;
-            const bool inverse = cell.attrs & term::Inverse;
-            auto fg = color_(cell.fg, true), bg = color_(cell.bg, false);
-            if (inverse) std::swap(fg, bg);
-            const float x = origin.x + col * cw;
-            const int span = col + 1 < s.cols() && s.at(r, col + 1).continuation ? 2 : 1;
-            if (bg != kBackground) dl->AddRectFilled(ImVec2(x, y), ImVec2(x + cw * span, y + ch), rgb_(bg));
-            if (cell.ch != U' ' && !(cell.attrs & term::Hidden)) {
-                text.clear();
-                utf8_(text, cell.ch);
-                const float alpha = (cell.attrs & term::Faint) ? 0.6f : 1.0f;
-                // A wide character fills its two cells: drawn larger, centred in them.
-                const float glyphSize = span == 2 ? size * 1.2f : size;
-                float gx = x, gy = y;
-                if (span == 2) {
-                    const auto w = font->CalcTextSizeA(glyphSize, 1e9f, 0, text.data(), text.data() + text.size()).x;
-                    gx = x + (cw * 2 - w) / 2;
-                    gy = y - (glyphSize - size) * 0.6f;
-                }
-                dl->AddText(font, glyphSize, ImVec2(gx, gy), rgb_(fg, alpha), text.data(), text.data() + text.size());
-                if (cell.attrs & term::Bold) dl->AddText(font, glyphSize, ImVec2(gx + 0.6f, gy), rgb_(fg, alpha), text.data(), text.data() + text.size());
+namespace {
+
+// Box drawing and block elements (U+2500..U+259F), drawn as shapes on the
+// cell -- seamless from cell to cell, whatever the font has. Each line
+// character says, for its four arms (left, up, right, down), 0 none, 1 light,
+// 2 heavy, 3 double.
+struct Arms { std::uint8_t l, u, r, d; };
+std::optional<Arms> arms_(char32_t c) {
+    switch (c) {
+    case U'─': return Arms{1, 0, 1, 0}; case U'━': return Arms{2, 0, 2, 0};
+    case U'│': return Arms{0, 1, 0, 1}; case U'┃': return Arms{0, 2, 0, 2};
+    case U'┌': return Arms{0, 0, 1, 1}; case U'┐': return Arms{1, 0, 0, 1};
+    case U'└': return Arms{0, 1, 1, 0}; case U'┘': return Arms{1, 1, 0, 0};
+    case U'├': return Arms{0, 1, 1, 1}; case U'┤': return Arms{1, 1, 0, 1};
+    case U'┬': return Arms{1, 0, 1, 1}; case U'┴': return Arms{1, 1, 1, 0};
+    case U'┼': return Arms{1, 1, 1, 1};
+    case U'┏': return Arms{0, 0, 2, 2}; case U'┓': return Arms{2, 0, 0, 2};
+    case U'┗': return Arms{0, 2, 2, 0}; case U'┛': return Arms{2, 2, 0, 0};
+    case U'┣': return Arms{0, 2, 2, 2}; case U'┫': return Arms{2, 2, 0, 2};
+    case U'┳': return Arms{2, 0, 2, 2}; case U'┻': return Arms{2, 2, 2, 0};
+    case U'╋': return Arms{2, 2, 2, 2};
+    case U'═': return Arms{3, 0, 3, 0}; case U'║': return Arms{0, 3, 0, 3};
+    case U'╔': return Arms{0, 0, 3, 3}; case U'╗': return Arms{3, 0, 0, 3};
+    case U'╚': return Arms{0, 3, 3, 0}; case U'╝': return Arms{3, 3, 0, 0};
+    case U'╠': return Arms{0, 3, 3, 3}; case U'╣': return Arms{3, 3, 0, 3};
+    case U'╦': return Arms{3, 0, 3, 3}; case U'╩': return Arms{3, 3, 3, 0};
+    case U'╬': return Arms{3, 3, 3, 3};
+    case U'╭': return Arms{0, 0, 1, 1}; case U'╮': return Arms{1, 0, 0, 1};
+    case U'╰': return Arms{0, 1, 1, 0}; case U'╯': return Arms{1, 1, 0, 0};
+    case U'╴': return Arms{1, 0, 0, 0}; case U'╵': return Arms{0, 1, 0, 0};
+    case U'╶': return Arms{0, 0, 1, 0}; case U'╷': return Arms{0, 0, 0, 1};
+    default: return std::nullopt;
+    }
+}
+
+// True when it was drawn.
+bool draw_box_(ImDrawList* dl, char32_t c, float x, float y, float w, float h, ImU32 color) {
+    if (auto a = arms_(c)) {
+        const float t = std::max(1.0f, std::round(w / 8)), T = std::max(2.0f, std::round(w / 4));
+        const float cx = std::floor(x + w / 2), cy = std::floor(y + h / 2);
+        auto hline = [&](float x0, float x1, int kind) {
+            if (kind == 3) {
+                dl->AddRectFilled(ImVec2(x0, cy - t * 1.5f), ImVec2(x1, cy - t * 0.5f), color);
+                dl->AddRectFilled(ImVec2(x0, cy + t * 0.5f), ImVec2(x1, cy + t * 1.5f), color);
+            } else {
+                const float k = kind == 2 ? T : t;
+                dl->AddRectFilled(ImVec2(x0, cy - std::floor(k / 2)), ImVec2(x1, cy - std::floor(k / 2) + k), color);
             }
-            if (cell.attrs & term::Underline) dl->AddLine(ImVec2(x, y + ch - 2), ImVec2(x + cw * span, y + ch - 2), rgb_(fg));
+        };
+        auto vline = [&](float y0, float y1, int kind) {
+            if (kind == 3) {
+                dl->AddRectFilled(ImVec2(cx - t * 1.5f, y0), ImVec2(cx - t * 0.5f, y1), color);
+                dl->AddRectFilled(ImVec2(cx + t * 0.5f, y0), ImVec2(cx + t * 1.5f, y1), color);
+            } else {
+                const float k = kind == 2 ? T : t;
+                dl->AddRectFilled(ImVec2(cx - std::floor(k / 2), y0), ImVec2(cx - std::floor(k / 2) + k, y1), color);
+            }
+        };
+        // An arm reaches across the line it meets, no further: a corner is
+        // closed, nothing sticks out of it.
+        auto half = [&](int kind) { return kind == 3 ? t * 1.5f : std::floor((kind == 2 ? T : t) / 2); };
+        auto far = [&](int kind) { return kind == 3 ? t * 1.5f : (kind == 2 ? T : t) - std::floor((kind == 2 ? T : t) / 2); };
+        const int v = std::max(a->u, a->d), hk = std::max(a->l, a->r);
+        if (a->l) hline(x, cx + (a->r ? 0 : v ? far(v) : 0), a->l);
+        if (a->r) hline(cx - (a->l ? 0 : v ? half(v) : 0), x + w, a->r);
+        if (a->u) vline(y, cy + (a->d ? 0 : hk ? far(hk) : 0), a->u);
+        if (a->d) vline(cy - (a->u ? 0 : hk ? half(hk) : 0), y + h, a->d);
+        return true;
+    }
+    if (c >= U'▀' && c <= U'▟') {
+        auto box = [&](float x0, float y0, float x1, float y1, ImU32 col) {
+            dl->AddRectFilled(ImVec2(std::round(x + x0 * w), std::round(y + y0 * h)), ImVec2(std::round(x + x1 * w), std::round(y + y1 * h)), col);
+        };
+        const ImU32 shade25 = (color & 0x00ffffff) | (static_cast<ImU32>(((color >> 24) & 0xff) * 0.25f) << 24);
+        const ImU32 shade50 = (color & 0x00ffffff) | (static_cast<ImU32>(((color >> 24) & 0xff) * 0.5f) << 24);
+        const ImU32 shade75 = (color & 0x00ffffff) | (static_cast<ImU32>(((color >> 24) & 0xff) * 0.75f) << 24);
+        switch (c) {
+        case U'▀': box(0, 0, 1, 0.5f, color); return true;
+        case U'▁': box(0, 7 / 8.0f, 1, 1, color); return true;
+        case U'▂': box(0, 6 / 8.0f, 1, 1, color); return true;
+        case U'▃': box(0, 5 / 8.0f, 1, 1, color); return true;
+        case U'▄': box(0, 0.5f, 1, 1, color); return true;
+        case U'▅': box(0, 3 / 8.0f, 1, 1, color); return true;
+        case U'▆': box(0, 2 / 8.0f, 1, 1, color); return true;
+        case U'▇': box(0, 1 / 8.0f, 1, 1, color); return true;
+        case U'█': box(0, 0, 1, 1, color); return true;
+        case U'▉': box(0, 0, 7 / 8.0f, 1, color); return true;
+        case U'▊': box(0, 0, 6 / 8.0f, 1, color); return true;
+        case U'▋': box(0, 0, 5 / 8.0f, 1, color); return true;
+        case U'▌': box(0, 0, 0.5f, 1, color); return true;
+        case U'▍': box(0, 0, 3 / 8.0f, 1, color); return true;
+        case U'▎': box(0, 0, 2 / 8.0f, 1, color); return true;
+        case U'▏': box(0, 0, 1 / 8.0f, 1, color); return true;
+        case U'▐': box(0.5f, 0, 1, 1, color); return true;
+        case U'░': box(0, 0, 1, 1, shade25); return true;
+        case U'▒': box(0, 0, 1, 1, shade50); return true;
+        case U'▓': box(0, 0, 1, 1, shade75); return true;
+        case U'▔': box(0, 0, 1, 1 / 8.0f, color); return true;
+        case U'▕': box(7 / 8.0f, 0, 1, 1, color); return true;
+        case U'▖': box(0, 0.5f, 0.5f, 1, color); return true;
+        case U'▗': box(0.5f, 0.5f, 1, 1, color); return true;
+        case U'▘': box(0, 0, 0.5f, 0.5f, color); return true;
+        case U'▝': box(0.5f, 0, 1, 0.5f, color); return true;
+        case U'▙': box(0, 0, 0.5f, 1, color); box(0.5f, 0.5f, 1, 1, color); return true;
+        case U'▚': box(0, 0, 0.5f, 0.5f, color); box(0.5f, 0.5f, 1, 1, color); return true;
+        case U'▛': box(0, 0, 1, 0.5f, color); box(0, 0.5f, 0.5f, 1, color); return true;
+        case U'▜': box(0, 0, 1, 0.5f, color); box(0.5f, 0.5f, 1, 1, color); return true;
+        case U'▞': box(0.5f, 0, 1, 0.5f, color); box(0, 0.5f, 0.5f, 1, color); return true;
+        case U'▟': box(0.5f, 0, 1, 1, color); box(0, 0.5f, 0.5f, 1, color); return true;
+        default: return false;
         }
     }
-    if (s.cursor_visible() && c.alive()) {
+    return false;
+}
+
+// A line of what is shown: history when scrolled back, then the screen.
+const term::Cell* cell_at_(term::Screen& s, int scroll, int row, int col, int cols) {
+    const int history = static_cast<int>(s.scrollback());
+    const int line = history - scroll + row;   // in history + screen coordinates
+    if (line < history) {
+        if (line < 0) return nullptr;
+        const auto& l = s.history_line(static_cast<std::size_t>(line));
+        return col < static_cast<int>(l.size()) ? &l[static_cast<std::size_t>(col)] : nullptr;
+    }
+    const int r = line - history;
+    if (r >= s.rows() || col >= s.cols() || col >= cols) return nullptr;
+    return &s.at(r, col);
+}
+
+bool selected_(const std::optional<std::array<int, 4>>& sel, int row, int col) {
+    if (!sel) return false;
+    auto [r0, c0, r1, c1] = *sel;
+    if (std::pair(r1, c1) < std::pair(r0, c0)) { std::swap(r0, r1); std::swap(c0, c1); }
+    const auto here = std::pair(row, col);
+    return here >= std::pair(r0, c0) && here <= std::pair(r1, c1);
+}
+
+}  // namespace
+
+ConsoleGrid draw_console(Console& c, const ConsoleLook& look) {
+    auto* font = static_cast<ImFont*>(look.font);
+    auto* bold = static_cast<ImFont*>(look.bold ? look.bold : look.font);
+    // One effective size for measuring and drawing (A6): the nominal size at
+    // the window's scale, as the font is baked for it.
+    ImGui::PushFont(font, look.size);
+    const float px = ImGui::GetFontSize();
+    auto* baked = ImGui::GetFontBaked();
+    const float cw = std::max(1.0f, std::round(baked->GetCharAdvance(static_cast<unsigned short>('M'))));
+    const float ch = std::max(1.0f, std::round(px * 1.2f));
+    const float baseline = std::round((ch - px) / 2);
+    const ImVec2 region = ImGui::GetCursorScreenPos();
+    const ImVec2 avail = ImGui::GetContentRegionAvail();
+    auto* dl = ImGui::GetWindowDrawList();
+    dl->AddRectFilled(region, ImVec2(region.x + avail.x, region.y + avail.y), rgb_(kBackground));
+    const float pad = std::round(look.padding);
+    const ImVec2 origin(std::round(region.x + pad), std::round(region.y + pad));
+    const int cols = std::max(10, static_cast<int>((avail.x - pad * 2) / cw));
+    const int rows = std::max(4, static_cast<int>((avail.y - pad * 2) / ch));
+    std::lock_guard l(c.lock());
+    auto& s = c.screen();
+    const int scroll = std::clamp(look.scroll, 0, static_cast<int>(s.scrollback()));
+    std::string text;
+    for (int r = 0; r < std::min(rows, s.rows()); ++r) {
+        const float y = origin.y + r * ch;
+        for (int col = 0; col < std::min(cols, s.cols()); ++col) {
+            const auto* cell = cell_at_(s, scroll, r, col, cols);
+            if (!cell || cell->continuation) continue;
+            const bool inverse = (cell->attrs & term::Inverse) != selected_(look.selection, r, col);
+            auto fg = color_(cell->fg, true), bg = color_(cell->bg, false);
+            if (cell->attrs & term::Bold && cell->fg.kind == term::Color::Kind::Indexed && cell->fg.value < 8)
+                fg = palette_(cell->fg.value + 8);   // bold is bright, as terminals draw it
+            if (inverse) std::swap(fg, bg);
+            const float x = origin.x + col * cw;
+            const auto* next = cell_at_(s, scroll, r, col + 1, cols);
+            const int span = next && next->continuation ? 2 : 1;
+            if (bg != kBackground) dl->AddRectFilled(ImVec2(x, y), ImVec2(x + cw * span, y + ch), rgb_(bg));
+            if (cell->ch != U' ' && cell->ch != 0 && !(cell->attrs & term::Hidden)) {
+                const float alpha = (cell->attrs & term::Faint) ? 0.6f : 1.0f;
+                if (!draw_box_(dl, cell->ch, x, y, cw * span, ch, rgb_(fg, alpha))) {
+                    text.clear();
+                    utf8_(text, cell->ch);
+                    ImFont* f = (cell->attrs & term::Bold) ? bold : font;
+                    // A wide character is centred in its two cells, at the same size.
+                    float gx = x;
+                    if (span == 2) gx = x + std::round((cw * 2 - f->CalcTextSizeA(px, 1e9f, 0, text.data(), text.data() + text.size()).x) / 2);
+                    dl->AddText(f, px, ImVec2(gx, y + baseline), rgb_(fg, alpha), text.data(), text.data() + text.size());
+                    // No bold face here: the regular one, a pixel over, as terminals do.
+                    if ((cell->attrs & term::Bold) && bold == font)
+                        dl->AddText(f, px, ImVec2(gx + std::max(1.0f, std::round(px / 16)), y + baseline), rgb_(fg, alpha),
+                                    text.data(), text.data() + text.size());
+                }
+            }
+            if (cell->attrs & term::Underline)
+                dl->AddRectFilled(ImVec2(x, y + ch - std::max(1.0f, std::round(px / 14)) - 1), ImVec2(x + cw * span, y + ch - 1), rgb_(fg));
+            if (cell->attrs & term::Strike)
+                dl->AddRectFilled(ImVec2(x, std::round(y + ch / 2)), ImVec2(x + cw * span, std::round(y + ch / 2) + std::max(1.0f, std::round(px / 14))), rgb_(fg));
+        }
+    }
+    if (scroll == 0 && s.cursor_visible() && c.alive()) {
         const float x = origin.x + s.cursor_col() * cw, y = origin.y + s.cursor_row() * ch;
-        if (focused) dl->AddRectFilled(ImVec2(x, y), ImVec2(x + cw, y + ch), IM_COL32(216, 222, 233, 160));
-        else dl->AddRect(ImVec2(x, y), ImVec2(x + cw, y + ch), IM_COL32(216, 222, 233, 200));
+        const ImU32 cur = IM_COL32(216, 222, 233, look.focused ? 190 : 230);
+        const float thin = std::max(1.0f, std::round(px / 8));
+        switch (s.cursor_shape()) {
+        case term::Screen::CursorShape::Bar: dl->AddRectFilled(ImVec2(x, y), ImVec2(x + thin, y + ch), cur); break;
+        case term::Screen::CursorShape::Underline: dl->AddRectFilled(ImVec2(x, y + ch - thin), ImVec2(x + cw, y + ch), cur); break;
+        case term::Screen::CursorShape::Block:
+            if (look.focused) dl->AddRectFilled(ImVec2(x, y), ImVec2(x + cw, y + ch), IM_COL32(216, 222, 233, 150));
+            else dl->AddRect(ImVec2(x, y), ImVec2(x + cw, y + ch), cur, 0, 0, thin);
+            break;
+        }
+    }
+    if (scroll > 0) {
+        // Scrolled back: said, where the eye is.
+        const auto said = std::format(" {} / {} ", scroll, s.scrollback());
+        const ImVec2 ts = font->CalcTextSizeA(px, 1e9f, 0, said.data(), said.data() + said.size());
+        const ImVec2 a(origin.x + cols * cw - ts.x, origin.y);
+        dl->AddRectFilled(a, ImVec2(a.x + ts.x, a.y + ch), IM_COL32(65, 166, 246, 220));
+        dl->AddText(font, px, ImVec2(a.x, a.y + baseline), IM_COL32(13, 14, 23, 255), said.data(), said.data() + said.size());
     }
     ImGui::Dummy(avail);
     ImGui::PopFont();
-    return {rows, cols};
+    return {rows, cols, origin.x, origin.y, cw, ch};
+}
+
+std::string console_text(Console& c, int scroll, std::array<int, 4> selection) {
+    auto [r0, c0, r1, c1] = selection;
+    if (std::pair(r1, c1) < std::pair(r0, c0)) { std::swap(r0, r1); std::swap(c0, c1); }
+    std::lock_guard l(c.lock());
+    auto& s = c.screen();
+    std::string out;
+    for (int r = r0; r <= r1; ++r) {
+        std::string line;
+        const int from = r == r0 ? c0 : 0, to = r == r1 ? c1 : s.cols() - 1;
+        for (int col = from; col <= to; ++col) {
+            const auto* cell = cell_at_(s, std::clamp(scroll, 0, static_cast<int>(s.scrollback())), r, col, s.cols());
+            if (!cell || cell->continuation) continue;
+            utf8_(line, cell->ch ? cell->ch : U' ');
+        }
+        while (!line.empty() && line.back() == ' ') line.pop_back();
+        out += line;
+        if (r != r1) out += '\n';
+    }
+    return out;
 }
 
 }  // namespace luban::os

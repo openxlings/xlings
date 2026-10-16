@@ -1,13 +1,13 @@
-// luban.desktop.imgui: Dear ImGui as the Luban OS app draws with it, imgui.h
-// read here and in the host's own backends only. Every name the app uses is
-// on this list; one it starts to use is added here, not #included where it
-// is used (tools/lint_c_headers.sh). IM_COL32, a macro there, is a function.
+// imkit.imgui: Dear ImGui as an application draws with it, imgui.h read here
+// (and in a host's own backends) only. Every name an application uses is on
+// this list; one it starts to use is added here, not #included where it is
+// used (tools/lint_c_headers.sh). IM_COL32, a macro there, is a function.
 module;
 
 #include <imgui.h>
 #undef IM_COL32   // the function below takes its place
 
-export module luban.desktop.imgui;
+export module imkit.imgui;
 
 export using ::ImVec2;
 export using ::ImVec4;
@@ -17,6 +17,38 @@ export using ::ImTextureID;
 export using ::ImDrawList;
 export using ::ImGuiStyle;
 export using ::ImGuiViewport;
+export using ::ImFontBaked;
+export using ::ImGuiIO;
+export using ::ImGuiMouseButton_;
+export using ::ImGuiMouseButton_Left;
+export using ::ImGuiMouseCursor_Arrow;
+export using ::ImGuiMouseCursor_Hand;
+export using ::ImGuiMouseCursor_TextInput;
+export using ::ImGuiInputTextFlags_;
+export using ::ImGuiInputTextFlags_Password;
+export using ::ImGuiInputTextFlags_EnterReturnsTrue;
+export using ::ImGuiInputTextFlags_AutoSelectAll;
+export using ::ImGuiCol_FrameBg;
+export using ::ImGuiCol_WindowBg;
+export using ::ImGuiCol_ScrollbarBg;
+export using ::ImGuiCol_ScrollbarGrab;
+export using ::ImGuiCol_ScrollbarGrabHovered;
+export using ::ImGuiCol_ScrollbarGrabActive;
+export using ::ImGuiCol_ChildBg;
+export using ::ImGuiCol_PopupBg;
+export using ::ImGuiCol_Border;
+export using ::ImGuiCol_TextSelectedBg;
+export using ::ImGuiCol_NavCursor;
+export using ::ImGuiStyleVar_FramePadding;
+export using ::ImGuiStyleVar_FrameBorderSize;
+export using ::ImGuiStyleVar_FrameRounding;
+export using ::ImGuiStyleVar_ItemSpacing;
+export using ::ImGuiChildFlags_None;
+export using ::ImGuiWindowFlags_NoScrollbar;
+export using ::ImGuiWindowFlags_NoScrollWithMouse;
+export using ::ImGuiWindowFlags_NoBackground;
+export using ::ImGuiWindowFlags_NoNav;
+export using ::ImGuiWindowFlags_NoInputs;
 export using ::ImGuiInputTextCallback;
 export using ::ImGuiCol_;
 export using ::ImGuiKey;
@@ -128,4 +160,24 @@ using ::ImGui::PushTextWrapPos;
 using ::ImGui::PopTextWrapPos;
 using ::ImGui::BeginDisabled;
 using ::ImGui::EndDisabled;
+using ::ImGui::GetFontBaked;
+using ::ImGui::GetIO;
+using ::ImGui::IsItemActive;
+using ::ImGui::IsItemClicked;
+using ::ImGui::IsItemFocused;
+using ::ImGui::IsItemDeactivatedAfterEdit;
+using ::ImGui::IsMouseClicked;
+using ::ImGui::IsMouseDown;
+using ::ImGui::IsMouseReleased;
+using ::ImGui::IsMouseDoubleClicked;
+using ::ImGui::GetMousePos;
+using ::ImGui::IsWindowHovered;
+using ::ImGui::SetKeyboardFocusHere;
+using ::ImGui::SetScrollY;
+using ::ImGui::GetScrollX;
+using ::ImGui::GetWindowPos;
+using ::ImGui::GetCursorPos;
+using ::ImGui::IsRectVisible;
+using ::ImGui::GetForegroundDrawList;
+using ::ImGui::ColorConvertU32ToFloat4;
 }  // namespace ImGui

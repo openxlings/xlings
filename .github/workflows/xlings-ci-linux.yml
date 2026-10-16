@@ -278,6 +278,9 @@ jobs:
         with:
           state: consume
 
+      - name: The fonts Luban OS ships (its layout baselines')
+        run: bash tools/ci/luban_fonts.sh
+
       - name: Measured durations, as the plan job took them
         continue-on-error: true
         uses: actions/download-artifact@v4
@@ -337,6 +340,9 @@ jobs:
         uses: ./.github/actions/linux-build
         with:
           state: consume
+
+      - name: The fonts Luban OS ships (its layout baselines')
+        run: bash tools/ci/luban_fonts.sh
 
       - name: The static gates' programs
         run: |
@@ -826,44 +832,65 @@ jobs:
           if-no-files-found: ignore
 
   # EXPORT-WSL (design part 2 §13): the tarball a Linux build exported,
-  # imported by Windows. GitHub's Windows runners offer WSL1 only, through a
-  # third-party action; per the design's decision this lane REPORTS and does
-  # not block (a WSL1 failure says nothing about WSL2): a pass or a skip
-  # with the reason, in the same report as everything else.
+  # imported by Windows -- on WSL 2, which the hosted Windows runners have
+  # (#672: the WSL1 action this lane used answered 403 on every run, and the
+  # check it ran never read the root's os-release). Blocking: a failed import
+  # or run is red. WSL 2 that cannot be set up twice is the environment's,
+  # said by its own step, as in xlings-ci-windows.yml's luban-wsl2 lane.
   wsl-import:
     needs: distro
-    if: always()
-    runs-on: windows-2022
+    runs-on: windows-2025
+    timeout-minutes: 30
     steps:
       - name: Fetch the root tarball
         uses: actions/download-artifact@v4
-        continue-on-error: true
         with:
           name: luban-tiny-tar
           path: root
 
-      - name: WSL
+      - name: WSL 2 (the runner's environment)
         id: setup
         continue-on-error: true
-        uses: Vampire/setup-wsl@v5
+        timeout-minutes: 8
+        uses: Vampire/setup-wsl@v7
         with:
-          distribution: Alpine
-          wsl-version: 1
+          distribution: Alpine-3.22
+          wsl-version: 2
 
-      - name: wsl --import, run
-        id: run
+      - name: WSL 2 (the runner's environment, again)
+        id: setup_again
+        if: steps.setup.outcome != 'success'
         continue-on-error: true
+        timeout-minutes: 8
+        uses: Vampire/setup-wsl@v7
+        with:
+          distribution: Alpine-3.22
+          wsl-version: 2
+
+      - name: The runner's WSL 2 is there
+        if: steps.setup.outcome != 'success' && steps.setup_again.outcome != 'success'
         shell: pwsh
         run: |
+          Write-Host "::error::the runner's WSL 2 could not be set up twice (the environment, not xlings): see the two setup steps"
+          exit 1
+
+      # --exec: the command line goes to /bin/sh as argv, not through the
+      # distribution's default shell, which expanded $ID before the root's
+      # os-release was read.
+      - name: wsl --import, run
+        id: run
+        shell: pwsh
+        run: |
+          $env:WSL_UTF8 = '1'
           $tar = Get-ChildItem -Recurse root -Filter tiny.tar.gz | Select-Object -First 1
           if (-not $tar) { throw "no tarball from the distro job" }
           New-Item -ItemType Directory -Force C:\luban | Out-Null
-          wsl --import luban C:\luban $tar.FullName --version 1
+          wsl --import luban C:\luban $tar.FullName --version 2
           if ($LASTEXITCODE -ne 0) { throw "wsl --import failed" }
-          $out = wsl -d luban -- /bin/sh -c '. /etc/os-release; echo "os=$ID/$VARIANT_ID"; xlings --version'
+          $out = (wsl -d luban --exec /bin/sh -c '. /etc/os-release; echo "os=$ID/$VARIANT_ID"; xlings --version') -join "`n"
           $out
           if (-not ($out -match "os=luban/tiny")) { throw "not luban tiny: $out" }
-          if (-not ($out -match "^xlings ")) { throw "no xlings: $out" }
+          if (-not ($out -match "(?m)^xlings ")) { throw "no xlings: $out" }
 
       - name: Record
         if: always()
@@ -871,12 +898,12 @@ jobs:
         run: |
           $dir = "target/xdev/windows-wsl"
           New-Item -ItemType Directory -Force $dir | Out-Null
-          $name = "wsl: subos export --tar imports with wsl --import (WSL1)"
+          $name = "wsl: subos export --tar imports with wsl --import (WSL 2)"
           ('{"name":"windows-wsl","platform":"windows","run":"' + $env:GITHUB_RUN_ID + ':' + $env:GITHUB_RUN_ATTEMPT + '","probes":{}}') | Set-Content "$dir/lane.json"
           ('{"test":"' + $name + '","area":"scenario","covers":["EXPORT-WSL"],"requires":[],"proves":"flow"}') | Set-Content "$dir/meta.ndjson"
           if ("${{ steps.run.outcome }}" -eq "success") { $st = "pass"; $msg = "" }
-          elseif ("${{ steps.setup.outcome }}" -ne "success") { $st = "skip"; $msg = "WSL1 could not be set up on this runner" }
-          else { $st = "skip"; $msg = "best effort on WSL1 (design part 2 §17.1): the import or the run failed; see the job log" }
+          elseif ("${{ steps.setup.outcome }}" -ne "success" -and "${{ steps.setup_again.outcome }}" -ne "success") { $st = "fail"; $msg = "the runner's WSL 2 could not be set up (the environment)" }
+          else { $st = "fail"; $msg = "the import or the run failed; see the job log" }
           ('{"test":"' + $name + '","status":"' + $st + '","ms":0,"message":"' + $msg + '"}') | Set-Content "$dir/scripts.ndjson"
 
       - name: Attach the run
@@ -928,9 +955,8 @@ jobs:
           import json
           from pathlib import Path
           report = json.loads(Path('target/xdev/current-report/report.json').read_text())
-          # Windows quoting has its own mandatory Windows gate; WSL1 is the
-          # design's explicit best-effort lane and remains visible as such.
-          elsewhere = {'SUBOS-CMD-WIN-QUOTING', 'EXPORT-WSL'}
+          # Windows quoting has its own mandatory Windows gate.
+          elsewhere = {'SUBOS-CMD-WIN-QUOTING'}
           missing = [name for name, evidence in report['requirements'].items()
                      if name not in elsewhere and not evidence['passed_by']]
           assert not missing, f'required behavior lacks passing execution evidence: {missing}'
@@ -997,6 +1023,9 @@ jobs:
         with:
           profile: asan
           state: consume
+
+      - name: The fonts Luban OS ships (its layout baselines')
+        run: bash tools/ci/luban_fonts.sh
 
       - name: Measured durations, as the plan job took them
         continue-on-error: true

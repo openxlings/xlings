@@ -11,7 +11,7 @@ import xlings.core.home;
 namespace xlings {
 
 export struct Info {
-    static constexpr std::string_view VERSION = "2026.10.15.4";
+    static constexpr std::string_view VERSION = "2026.10.16.1";
     static constexpr std::string_view REPO = "https://github.com/openxlings/xlings";
 };
 
@@ -66,6 +66,13 @@ export struct IndexRepo {
     // contract this xlings satisfies. A pin is an override for reproducing a
     // state, so it bypasses the contract check but never the sha256 check.
     std::string version;
+    // Where this index's data lives and where the payloads it serves are
+    // installed (design mcpp 2026-10-16 §14 X1, X2): a client that owns an
+    // index (mcpp's mcpplibs, a team's) keeps both in its own home. Empty: the
+    // home's data dir and its store. Relative to the home (global) or the
+    // project (project scope).
+    std::filesystem::path dir;
+    std::filesystem::path store;
 
     // The preferred base -- what every "does this repo declare an artifact"
     // check and every identity derivation asks for. Empty when git-only.
@@ -94,6 +101,20 @@ export std::vector<ArtifactBase> parse_region_chain(const nlohmann::json& value,
 // source for this repo only.
 export std::vector<IndexRepo> parse_index_repos_json(const nlohmann::json& json,
                                                      const std::string& mirror);
+
+// A read-only home this one installs from by link (design mcpp 2026-10-16
+// §14 X3): a payload of the same identity (namespace, name, version,
+// revision) that is complete there is published here as a link entry -- a
+// symlink, a junction on Windows -- and configured here as usual. Never
+// written to. `namespaces` limits what is taken from it (empty: every one);
+// `store` is its store when that is not <home>/data/xpkgs.
+export struct Upstream {
+    std::filesystem::path home;
+    std::filesystem::path store;
+    std::vector<std::string> namespaces;
+};
+
+export std::vector<Upstream> parse_upstreams_json(const nlohmann::json& json);
 
 using MirrorServerMap = std::unordered_map<std::string, std::vector<std::string>>;
 
@@ -128,6 +149,10 @@ public:
         // How homeDir was chosen; the rest of "what kind of home is this"
         // (mode, layout) is home_context().
         home::Source          homeSource = home::Source::Default;
+        // Inside a Luban system, a regular user's own home: homeDir is
+        // ~/.xlings and the system's home is the layer below it (design
+        // 2026-10-16 L §8).
+        std::filesystem::path systemLayer;
     };
 
     // Owner-anchored shim dispatch (0.4.48; see
@@ -227,6 +252,7 @@ private:
     bool forceGlobalScope_ = false;
     std::filesystem::path projectDir_;      // directory containing project .xlings.json
     std::vector<IndexRepo> globalIndexRepos_;
+    std::vector<Upstream> upstreams_;
     std::vector<IndexRepo> projectIndexRepos_;
     MirrorServerMap globalResourceServers_;
     MirrorServerMap projectResourceServers_;
@@ -614,6 +640,17 @@ public:
 
     [[nodiscard]] static std::filesystem::path repo_dir_for(const IndexRepo& repo,
                                                             bool projectScope);
+
+    // The store the payloads an index serves are installed into: its
+    // declared `store`, else the scope's <data>/xpkgs.
+    [[nodiscard]] static std::filesystem::path store_for(const IndexRepo& repo, bool projectScope);
+
+    // Every store of this home and its project: the scope stores and every
+    // index's declared one, without duplicates.
+    [[nodiscard]] static std::vector<std::filesystem::path> stores();
+
+    // The home's read-only upstreams (`.xlings.json` `upstreams`).
+    [[nodiscard]] static const std::vector<Upstream>& upstreams();
 
     [[nodiscard]] static std::filesystem::path resolve_repo_source(const IndexRepo& repo,
                                                                    bool projectScope);

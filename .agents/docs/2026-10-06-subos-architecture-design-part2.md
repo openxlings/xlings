@@ -505,7 +505,7 @@ CI 车道（Part 1 §24.5 的架构，新增三条）：
 | **boot** | ubuntu runner + qemu（有 `/dev/kvm` 就用，否则 TCG） | `export --disk` + 内核包 → `qemu -kernel … init=/xlings/boot/init`，串口里断言标记；试启动与回退 |
 | isolation-fix（已有） | sudo | S、M |
 | arch（修复） | archlinux 容器，PR 触发 | AUR 包 |
-| windows（已有，加一步） | `wsl --import`（runner 只有 WSL1 时作为尽力项：只报告不阻塞，§17.1） | EXPORT-WSL |
+| windows（已有，加一步） | `wsl --import`（runner 只有 WSL1 时作为尽力项：只报告不阻塞，§17.1；2026-10-16 起托管 runner 有 WSL 2，改为 WSL 2 上阻塞，#672） | EXPORT-WSL |
 
 网络与确定性：基础包的 payload 用 actions/cache 按索引提交缓存；PR 车道不在测试里联网（Part 1 §24.5 的规则），
 索引固定在 fixture 的提交上（固定的是索引，不是 xlings 版本，不违反 "Never pin a released xlings version into CI"）。

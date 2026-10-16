@@ -220,7 +220,7 @@ std::expected<bool, std::string> refresh_cache(const fs::path& home, std::string
     if (tree == "/")
         return subos::library_cache::refresh(tree, {home}, name);
     std::error_code ec;
-    if (!fs::exists(tree / "usr/bin/ldconfig", ec)) {
+    if (!fs::exists(rf::presented_usr(tree) / "bin/ldconfig", ec)) {
         if (ec)
             return std::unexpected("cannot inspect root ldconfig: " + ec.message());
         return false;
@@ -277,6 +277,11 @@ refresh(const fs::path& home, std::string_view name, const fs::path& subos_dir,
         if (tree != "/") {
             if (auto laid = rf::lay_out(tree, rf::usr_of(subos_dir), home); !laid)
                 return failed(laid.error());
+        } else if (out.changed) {
+            // The running machine's /usr is the generation mounted: the new one
+            // is mounted over it, so what starts from now on sees it.
+            if (auto mounted = rf::mount_usr("/", subos_dir); !mounted)
+                return failed("its /usr: " + mounted.error());
         }
         const auto usr = rf::usr_of(subos_dir);
         auto etc = xlings::subos::root_etc::fill_machine_etc(tree / "etc", subos_dir);
@@ -288,6 +293,9 @@ refresh(const fs::path& home, std::string_view name, const fs::path& subos_dir,
         if (auto written = xlings::subos::root_etc::ensure_prompt_script(tree / "etc"); !written)
             return failed("machine /etc " + (tree / "etc").string() + ": " + written.error());
         else if (*written) out.etc_added.push_back("profile.d/luban.sh");
+        if (auto written = xlings::subos::root_etc::ensure_user_layer_scripts(tree / "etc"); !written)
+            return failed("machine /etc " + (tree / "etc").string() + ": " + written.error());
+        else out.etc_added.insert(out.etc_added.end(), written->begin(), written->end());
         if (auto cache = refresh_cache(home, name); !cache)
             return failed(cache.error());
     } catch (const std::exception& error) {

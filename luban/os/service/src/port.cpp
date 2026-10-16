@@ -20,8 +20,10 @@ std::array<int, 2> protocol_parts_(std::string_view v) {
 
 // Runs argv, handing each complete stdout line to `line`; stderr is kept for
 // a failure message.
-int lines_(const std::vector<std::string>& argv, const std::function<void(std::string_view)>& line, std::string* err) {
+int lines_(const std::vector<std::string>& argv, const std::function<void(std::string_view)>& line, std::string* err,
+           const std::shared_ptr<std::atomic<bool>>& cancel = {}) {
     std::string pending;
+    const std::function<bool()> cancelled = cancel ? std::function<bool()>([cancel] { return cancel->load(); }) : nullptr;
     const int rc = xlings::platform::stream::run(argv, [&](std::string_view channel, std::string_view bytes) {
         if (channel == "stderr") {
             if (err) err->append(bytes);
@@ -32,7 +34,7 @@ int lines_(const std::vector<std::string>& argv, const std::function<void(std::s
             line(std::string_view(pending).substr(0, nl));
             pending.erase(0, nl + 1);
         }
-    });
+    }, cancelled);
     if (!pending.empty()) line(pending);
     return rc;
 }
@@ -96,13 +98,23 @@ int Port::capability(std::string_view name, const nlohmann::json& args, const Si
                               if (data && j.value("kind", "") == "data") data->push_back(j);
                               if (auto e = event_of(j); e && sink) sink(*e);
                           },
-                          &err);
+                          &err, cancel_);
+    if (cancel_ && cancel_->load()) {
+        if (sink) sink(error("cancelled"));
+        return 130;
+    }
     if (result < 0) {
         if (sink) sink(error(std::format("xlings stopped before answering (exit {})", rc),
                              err.empty() ? std::string{} : err.substr(0, err.find('\n'))));
         return rc == 0 ? 1 : rc;
     }
     return result;
+}
+
+Port Port::cancellable(std::shared_ptr<std::atomic<bool>> flag) const {
+    Port p = *this;
+    p.cancel_ = std::move(flag);
+    return p;
 }
 
 int Port::subos(std::span<const std::string> argv, bool yes, const Sink& sink) const {

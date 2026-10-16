@@ -33,7 +33,10 @@ H="$RH"
 log "1. luban-tiny"
 rootfs_new tiny subos:luban-tiny "$RUNTIME_DIR/new-tiny.log" || fail "subos new --rootfs --from subos:luban-tiny"
 S="$H/subos/tiny"
-[[ "$(readlink "$S/rootfs/usr")" == "$S/root/usr" ]] || fail "rootfs/usr is $(readlink "$S/rootfs/usr")"
+# /usr is the mount point the presentation mounts the generation on (design
+# 2026-10-16 L §6.2); the generation it presents is recorded beside /etc.
+[[ -d "$S/rootfs/usr" && ! -L "$S/rootfs/usr" ]] || fail "rootfs/usr is not a directory"
+[[ "$(cat "$S/rootfs/etc/xlings/usr")" == "$S/root/usr" ]] || fail "rootfs/usr presents $(cat "$S/rootfs/etc/xlings/usr")"
 [[ "$(readlink "$S/root")" == root.gen/* ]] || fail "the pointer is $(readlink "$S/root")"
 for l in bin:usr/bin sbin:usr/bin lib:usr/lib lib64:usr/lib64; do
   [[ "$(readlink "$S/rootfs/${l%%:*}")" == "${l#*:}" ]] || fail "/${l%%:*} is not -> ${l#*:}"
@@ -43,7 +46,7 @@ sh_target="$(readlink "$S/root/usr/bin/sh")"
   || fail "/usr/bin/sh is not a direct link into busybox: $sh_target"
 # An edition does not carry a kernel (Luban design §A6): an image's comes with
 # its boot profile, installed when the image is made.
-[[ ! -e "$S/root/usr/lib/modules/6.8.0-71-generic/vmlinuz" ]] || fail "the edition put a kernel into the root"
+[[ -z "$(root_kernel "$S")" ]] || fail "the edition put a kernel into the root"
 grep -q '"profile": *"xim:luban-boot-generic@' "$H/config/subos/tiny/instance.json" \
   || fail "the edition's boot profile is not recorded"
 [[ -L "$S/rootfs/etc/inittab" && -x "$S/rootfs/etc/init.d/rcS" ]] || fail "factory /etc missing"
@@ -123,6 +126,9 @@ cat > "$C/rootfs/root/cache-main.c" <<'EOF'
 extern int cache_probe_641(void);
 int main(void) { printf("cache-probe=%d\n", cache_probe_641()); return cache_probe_641() == 641 ? 0 : 1; }
 EOF
+# The machine's own file in place of the factory's link (an edit of /etc
+# replaces the link; writing through it would change the factory copy).
+rm -f "$C/rootfs/etc/ld.so.conf"
 printf '/opt/cache-probe\n' > "$C/rootfs/etc/ld.so.conf"
 out="$(X subos exec core -- /bin/sh -ec '
     cd /root

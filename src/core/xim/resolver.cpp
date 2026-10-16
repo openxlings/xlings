@@ -11,7 +11,7 @@ import xlings.core.xim.compatibility;
 import xlings.core.log;
 import xlings.core.semver;
 import xlings.platform;
-import xlings.core.elfread;
+import xlings.libs.elfread;
 import xlings.core.profile;
 import xlings.core.xvm.db;
 import xlings.libs.json;

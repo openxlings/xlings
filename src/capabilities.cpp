@@ -41,6 +41,8 @@ capability::Registry build_registry() {
     reg.register_capability(std::make_unique<ListPackages>());
     reg.register_capability(std::make_unique<PackageInfo>());
     reg.register_capability(std::make_unique<ListVersions>());
+    reg.register_capability(std::make_unique<PayloadStatus>());
+    reg.register_capability(std::make_unique<SyncIndex>());
     reg.register_capability(std::make_unique<UseVersion>());
     reg.register_capability(std::make_unique<SystemStatus>());
     reg.register_capability(std::make_unique<ListIndexVersions>());
@@ -237,6 +239,41 @@ auto PackageInfo::spec() const -> CapabilitySpec {
 auto PackageInfo::execute(Params params, EventStream& stream) -> Result {
     auto json = nlohmann::json::parse(params, nullptr, false);
     return exit_result(xim::cmd_info(json.value("target", ""), stream));
+}
+
+auto PayloadStatus::spec() const -> CapabilitySpec {
+    return {
+        .name = "payload_status",
+        .description = "What each target resolves to and what its payload is here -- payload_dir, revision, origin "
+                       "(local | upstream | absent), complete -- without installing anything",
+        .inputSchema = R"JSON({"type":"object","properties":{"targets":{"type":"array","items":{"type":"string"},"description":"Targets, e.g. xim:gcc@16.1.0"}},"required":["targets"]})JSON",
+        .outputSchema = R"({"type":"object","properties":{"exitCode":{"type":"integer"}}})",
+        .destructive = false,
+    };
+}
+
+auto PayloadStatus::execute(Params params, EventStream& stream) -> Result {
+    auto json = nlohmann::json::parse(params, nullptr, false);
+    std::vector<std::string> targets;
+    if (json.is_object() && json.contains("targets") && json["targets"].is_array())
+        for (const auto& t : json["targets"]) if (t.is_string()) targets.push_back(t.get<std::string>());
+    return exit_result(xim::cmd_payload_status(targets, stream));
+}
+
+auto SyncIndex::spec() const -> CapabilitySpec {
+    return {
+        .name = "sync_index",
+        .description = "Sync one configured index into a directory (its own when dest is omitted): a caller "
+                       "checks a staged index before swapping it into place",
+        .inputSchema = R"JSON({"type":"object","properties":{"name":{"type":"string","description":"The index's name"},"dest":{"type":"string","description":"Directory to sync into"}},"required":["name"]})JSON",
+        .outputSchema = R"({"type":"object","properties":{"exitCode":{"type":"integer"}}})",
+        .destructive = true,
+    };
+}
+
+auto SyncIndex::execute(Params params, EventStream& stream) -> Result {
+    auto json = nlohmann::json::parse(params, nullptr, false);
+    return exit_result(xim::cmd_sync_index(json.value("name", ""), json.value("dest", ""), stream));
 }
 
 auto ListVersions::spec() const -> CapabilitySpec {

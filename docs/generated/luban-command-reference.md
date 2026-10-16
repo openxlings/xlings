@@ -41,6 +41,8 @@ List the environments
 
 This host, or one environment
 
+Options: `--check` — Check that it is usable: its /usr, /etc, runtime closure, and programs
+
 ## `luban config <name>` (more)
 
 Show or change an environment's settings

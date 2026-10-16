@@ -66,7 +66,7 @@ XTEST(SubosRootfs, AProjectionIsWhatADistributionWouldInstall,
     exe(coreutils / "bin" / "ls");
     const auto sysroot = t.dir / "subos" / "usr";
     fs::create_directories(sysroot / "include");
-    fs::create_directories(sysroot / "share" / "terminfo");
+    tk::write_file(sysroot / "share" / "terminfo" / "x" / "xterm", "entry");
     const auto shared = t.dir / "subos" / "share";
     fs::create_directories(shared / "glvnd" / "egl_vendor.d");
 
@@ -88,7 +88,9 @@ XTEST(SubosRootfs, AProjectionIsWhatADistributionWouldInstall,
     EXPECT_EQ(target_of(p, "usr/lib64"), fs::path("lib"));
     EXPECT_EQ(target_of(p, "usr/sbin"), fs::path("bin"));
     EXPECT_EQ(target_of(p, "usr/include"), sysroot / "include");
-    EXPECT_EQ(target_of(p, "usr/share/terminfo"), sysroot / "share/terminfo");
+    // terminfo is a directory many packages write into: merged file by file.
+    EXPECT_EQ(find(p, "usr/share/terminfo"), nullptr);
+    EXPECT_EQ(target_of(p, "usr/share/terminfo/x/xterm"), sysroot / "share/terminfo/x/xterm");
     EXPECT_EQ(target_of(p, "usr/share/glvnd"), shared / "glvnd");
     // busybox's ls lost to the registered one, and that is written down.
     auto c = std::ranges::find(p.conflicts, "usr/bin/ls", &rf::Conflict::rel);
@@ -220,7 +222,11 @@ XTEST(SubosRootfs, MachineStateIsFilledNeverOverwritten,
     const auto root = t.dir / "root";
     const auto home = fs::path("/xlings");
     ASSERT_TRUE(rf::lay_out(root, "/xlings/subos/box/root/usr", home).has_value());
-    EXPECT_EQ(fs::read_symlink(root / "usr"), fs::path("/xlings/subos/box/root/usr"));
+    // /usr is the mount point the presentation mounts the generation on; what
+    // it is the generation of is recorded (design 2026-10-16 L §6.2).
+    EXPECT_TRUE(fs::is_directory(fs::symlink_status(root / "usr")));
+    EXPECT_TRUE(fs::is_empty(root / "usr"));
+    EXPECT_EQ(rf::usr_target_of(root), fs::path("/xlings/subos/box/root/usr"));
     EXPECT_EQ(fs::read_symlink(root / "lib64"), fs::path("usr/lib64"));
     EXPECT_EQ(fs::read_symlink(root / "sbin"), fs::path("usr/bin"));
     EXPECT_TRUE(fs::is_directory(root / "xlings")) << "the home's mount point";
@@ -481,4 +487,136 @@ XTEST(SubosRootfs, RunningProjectionAcceptsAPinnedGenerationAndRejectsAnUnrelate
     fs::remove(machine / "usr");
     fs::create_directory(machine / "usr");
     EXPECT_FALSE(rf::running_projection(machine, scope));
+}
+
+XTEST(SubosRootfs, AShareDirectoryManyPackagesWriteIntoIsMergedFileByFile,
+      .area = "subos", .covers = {"LUBAN-SHARE-PROJECTION"}) {
+    if constexpr (!tk::is_posix) GTEST_SKIP() << "root projections are Linux";
+    Tmp t("share");
+    const auto foot = t.dir / "xpkgs" / "foot" / "1.0";
+    tk::write_file(foot / "share" / "applications" / "foot.desktop", "[Desktop Entry]");
+    tk::write_file(foot / "share" / "icons" / "hicolor" / "48x48" / "apps" / "foot.png", "png");
+    const auto nvim = t.dir / "xpkgs" / "nvim" / "1.0";
+    tk::write_file(nvim / "share" / "applications" / "nvim.desktop", "[Desktop Entry]");
+    tk::write_file(nvim / "share" / "nvim" / "runtime" / "syntax.vim", "vim");
+    const auto cursors = t.dir / "xpkgs" / "adwaita-cursors" / "1.0";
+    tk::write_file(cursors / "share" / "icons" / "Adwaita" / "cursors" / "left_ptr", "xcursor");
+    tk::write_file(cursors / "share" / "licenses" / "adwaita-cursors" / "COPYING", "lgpl");
+    tk::write_file(nvim / "share" / "licenses" / "nvim" / "LICENSE", "apache");
+    rf::Inputs in;
+    in.payloads = {foot, nvim, cursors};
+    const auto p = rf::plan(in);
+    EXPECT_EQ(target_of(p, "usr/share/applications/foot.desktop"), foot / "share/applications/foot.desktop");
+    EXPECT_EQ(target_of(p, "usr/share/applications/nvim.desktop"), nvim / "share/applications/nvim.desktop");
+    EXPECT_EQ(target_of(p, "usr/share/icons/hicolor/48x48/apps/foot.png"),
+              foot / "share/icons/hicolor/48x48/apps/foot.png");
+    EXPECT_EQ(find(p, "usr/share/applications"), nullptr) << "the launcher's directory is the system's";
+    EXPECT_EQ(target_of(p, "usr/share/nvim"), nvim / "share/nvim") << "one package's directory is claimed whole";
+    EXPECT_EQ(target_of(p, "usr/share/icons/Adwaita"), cursors / "share/icons/Adwaita") << "a theme is one package's";
+    EXPECT_EQ(target_of(p, "usr/share/licenses/nvim"), nvim / "share/licenses/nvim") << "every package's licenses";
+    EXPECT_EQ(target_of(p, "usr/share/licenses/adwaita-cursors"), cursors / "share/licenses/adwaita-cursors");
+    EXPECT_TRUE(p.conflicts.empty());
+}
+
+XTEST(SubosRootfs, ALinkNeverHasALinkAboveOrBelowIt, .area = "subos", .covers = {"LUBAN-SHARE-PROJECTION"}) {
+    if constexpr (!tk::is_posix) GTEST_SKIP() << "root projections are Linux";
+    Tmp t("nested");
+    const auto a = t.dir / "xpkgs" / "a" / "1.0";
+    tk::write_file(a / "share" / "doc" / "a" / "README", "a");
+    const auto sysroot = t.dir / "subos" / "share";
+    tk::write_file(sysroot / "doc" / "README", "sysroot");
+    rf::Inputs in;
+    in.payloads = {a};
+    in.sysroot_share = sysroot;
+    const auto p = rf::plan(in);
+    // The payload claimed usr/share/doc whole; the sysroot's doc is the conflict.
+    EXPECT_EQ(target_of(p, "usr/share/doc"), a / "share/doc");
+    EXPECT_NE(std::ranges::find(p.conflicts, "usr/share/doc", &rf::Conflict::rel), p.conflicts.end());
+}
+
+XTEST(SubosRootfs, ADirectoryOfAGenerationIsAMountPointNotALinkIntoTheStore,
+      .area = "subos", .covers = {"LUBAN-FHS-PATHS"}) {
+    if constexpr (!tk::is_posix) GTEST_SKIP() << "root projections are Linux";
+    Tmp t("mounts");
+    const auto subos = t.dir / "subos" / "box";
+    fs::create_directories(subos);
+    const auto include = t.dir / "sysroot" / "include";
+    tk::write_file(include / "stdio.h", "h");
+    exe(t.dir / "bin" / "sh");
+    const rf::Plan plan{{{"usr/bin/sh", t.dir / "bin" / "sh", "x"}, {"usr/include", include, "sysroot"}}, {}};
+    auto first = rf::commit(subos, plan, "mounts");
+    ASSERT_TRUE(first.has_value()) << first.error();
+    const auto gen = subos / "root.gen" / std::to_string(*first);
+    EXPECT_TRUE(fs::is_symlink(gen / "usr/bin/sh"));
+    EXPECT_TRUE(fs::is_directory(fs::symlink_status(gen / "usr/include")));
+    EXPECT_TRUE(fs::is_empty(gen / "usr/include"));
+    const auto mounts = rf::mounts_of(gen);
+    ASSERT_EQ(mounts.size(), 1u);
+    EXPECT_EQ(mounts[0].first, fs::path("usr/include"));
+    EXPECT_EQ(mounts[0].second, include);
+    EXPECT_TRUE(rf::validate_generation(subos, *first).has_value());
+    auto again = rf::commit(subos, plan, "mounts again");
+    ASSERT_TRUE(again.has_value()) << again.error();
+    EXPECT_EQ(*again, *first) << "the same records in the same form are the same generation";
+}
+
+XTEST(SubosRootfs, WhatTheHostReadsAndAnImageThatMountsNothingKeepTheirLinks,
+      .area = "subos", .covers = {"LUBAN-FHS-PATHS"}) {
+    if constexpr (!tk::is_posix) GTEST_SKIP() << "root projections are Linux";
+    Tmp t("linked");
+    const auto factory = t.dir / "template" / "share" / "factory";
+    tk::write_file(factory / "etc" / "inittab", "::sysinit:/etc/init.d/rcS\n");
+    const auto sysusers = t.dir / "template" / "lib" / "sysusers.d";
+    tk::write_file(sysusers / "luban.conf", "g users 100\n");
+    const auto include = t.dir / "sysroot" / "include";
+    tk::write_file(include / "stdio.h", "h");
+    const rf::Plan plan{{{"usr/share/factory", factory, "sysroot"}, {"usr/lib/sysusers.d", sysusers, "sysroot"},
+                         {"usr/include", include, "sysroot"}}, {}};
+    // The factory /etc and the sysusers declarations are read from this host,
+    // where nothing is mounted, and the /etc links name them: links.
+    const auto mounted = t.dir / "subos" / "box";
+    fs::create_directories(mounted);
+    auto m = rf::commit(mounted, plan, "mounted");
+    ASSERT_TRUE(m.has_value()) << m.error();
+    const auto gen = mounted / "root.gen" / std::to_string(*m);
+    EXPECT_TRUE(fs::is_symlink(gen / "usr/share/factory"));
+    EXPECT_TRUE(fs::exists(gen / "usr/share/factory/etc/inittab")) << "readable here";
+    EXPECT_TRUE(fs::is_symlink(gen / "usr/lib/sysusers.d"));
+    ASSERT_EQ(rf::mounts_of(gen).size(), 1u);
+    EXPECT_EQ(rf::mounts_of(gen)[0].first, fs::path("usr/include"));
+    // A tarball's root: an init that mounts nothing -- every directory a link.
+    const auto linked = t.dir / "subos" / "image";
+    fs::create_directories(linked);
+    auto l = rf::commit(linked, plan, "linked", rf::Directories::Linked);
+    ASSERT_TRUE(l.has_value()) << l.error();
+    const auto lgen = linked / "root.gen" / std::to_string(*l);
+    EXPECT_TRUE(fs::is_symlink(lgen / "usr/include"));
+    EXPECT_TRUE(rf::mounts_of(lgen).empty());
+    EXPECT_FALSE(fs::exists(lgen / "mounts.tsv"));
+    // The same plan in the other form is another generation, not the same one.
+    auto remounted = rf::commit(linked, plan, "mounted now");
+    ASSERT_TRUE(remounted.has_value()) << remounted.error();
+    EXPECT_NE(*remounted, *l);
+}
+
+XTEST(SubosRootfs, AnExportedRootKeepsTheLinkAndAPathOfTheRootIsReadThroughItsUsr,
+      .area = "subos", .covers = {"LUBAN-FHS-PATHS"}) {
+    if constexpr (!tk::is_posix) GTEST_SKIP() << "root trees are Linux";
+    Tmp t("forms");
+    const auto home = fs::path("/xlings");
+    const auto exported = t.dir / "export";
+    ASSERT_TRUE(rf::lay_out(exported, "/xlings/subos/box/root/usr", home, rf::UsrForm::Link).has_value());
+    EXPECT_EQ(fs::read_symlink(exported / "usr"), fs::path("/xlings/subos/box/root/usr"));
+    EXPECT_EQ(rf::host_of(exported, home), "box");
+    // A tree on this host: its /usr is read through its instance's generation.
+    const auto instance = t.dir / "subos" / "box";
+    const auto tree = instance / std::string(rf::kTree);
+    exe(t.dir / "bin" / "fish");
+    const rf::Plan plan{{{"usr/bin/fish", t.dir / "bin" / "fish", "x"}}, {}};
+    ASSERT_TRUE(rf::commit(instance, plan, "forms").has_value());
+    ASSERT_TRUE(rf::lay_out(tree, rf::usr_of(instance), home).has_value());
+    EXPECT_EQ(rf::presented_usr(tree), rf::usr_of(instance));
+    EXPECT_TRUE(fs::exists(rf::in_root(tree, "/usr/bin/fish")));
+    EXPECT_TRUE(fs::exists(rf::in_root(tree, "/bin/fish"))) << "merged /usr";
+    EXPECT_EQ(rf::in_root(tree, "/etc/passwd"), tree / "etc/passwd");
 }

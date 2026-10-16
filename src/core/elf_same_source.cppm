@@ -4,7 +4,7 @@ export module xlings.core.elf_same_source;
 
 import std;
 import xlings.platform;
-import xlings.core.elfread;
+import xlings.libs.elfread;
 import xlings.core.log;
 import xlings.core.version_order;
 
@@ -508,7 +508,7 @@ inline bool is_nested_store_root_(const std::filesystem::path& dir) {
 
 // Every ELF under DIR whose loader and libc come from different payloads.
 //
-// Reads the two fields in-process (see xlings.core.elfread), which is what
+// Reads the two fields in-process (see xlings.libs.elfread), which is what
 // makes this affordable to run over a whole store: the previous reader forked
 // `patchelf` twice per ELF through a shell and patchelf read each file in full,
 // so a single pass over a real 73 GB home moved 56.54 GB and took two minutes.

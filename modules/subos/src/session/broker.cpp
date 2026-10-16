@@ -60,7 +60,7 @@ Classified classify(std::span<const std::string> argv, std::string_view instance
             && std::ranges::find(argv, std::string("--fix")) == argv.end();
         if (!read) { c.route = Route::Owner; c.ops.push_back(op("instance_admin", "self")); }
     } else if (cmd == "subos") {
-        static const std::set<std::string> reads{"list", "ls", "info", "i", "status", "ps", "log"};
+        static const std::set<std::string> reads{"list", "ls", "info", "i", "status", "ps", "log", "__check"};
         const bool read = argv.size() < 2 || reads.contains(argv[1])
             || (argv[1] == "config" && argv.size() <= 3);
         if (!read) { c.route = Route::Owner; c.ops.push_back(op("policy_change", argv[1])); }
@@ -162,14 +162,23 @@ int forward(std::span<const std::string> argv, std::span<const int> stdio_in, bo
                      platform::error_text(platform::last_error()));
         return kExitPermission;
     }
-    nlohmann::json req{{"op", "run"}, {"argv", std::vector<std::string>(argv.begin(), argv.end())}};
     const int standard[3] = {0, 1, 2};
     const std::span<const int> stdio = stdio_in.size() == 3 ? stdio_in : std::span<const int>(standard);
+    // At a terminal the command runs on one of its own, relayed through this
+    // terminal: raw here, so every key -- Ctrl-C included -- reaches it.
+    const bool tty = platform::is_terminal(stdio[0]);
+    nlohmann::json req{{"op", "run"}, {"argv", std::vector<std::string>(argv.begin(), argv.end())}, {"tty", tty}};
     if (!platform::send_message(fd, req.dump(), stdio)) {
         platform::close_fd(fd);
         return kExitPermission;
     }
     int code = kExitPermission;
+    std::optional<std::string> cooked;
+    if (tty) cooked = platform::make_terminal_raw(stdio[0]);
+    struct Restore {
+        int fd; std::optional<std::string>& saved;
+        ~Restore() { if (saved) platform::restore_terminal(fd, *saved); }
+    } restore{stdio[0], cooked};
     while (auto m = platform::receive_message(fd, 1 << 16)) {
         platform::close_fds(m->fds);
         auto j = nlohmann::json::parse(m->data, nullptr, false);

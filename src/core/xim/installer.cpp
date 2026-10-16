@@ -1066,9 +1066,7 @@ void configure_dependency_store_roots_(
     };
 
     append(selectedStore);
-    auto projectDataDir = Config::project_data_dir();
-    if (!projectDataDir.empty()) append(projectDataDir / "xpkgs");
-    append(Config::global_data_dir() / "xpkgs");
+    for (auto store : Config::stores()) append(std::move(store));
 }
 
 std::string pkgindex_root_for_(const std::filesystem::path& pkgFile, bool* outHasLibs) {
@@ -1859,14 +1857,14 @@ std::expected<void, std::string> detach_current_subos_(const std::string& target
     return publish_removal_state_(Config::versions(), std::move(active), std::move(installed));
 }
 
-bool apply_subos_env_ops_(const std::vector<mcpplibs::xpkg::XvmOp>& operations,
-                          const PlanNode& node) {
+std::expected<void, std::string> apply_subos_env_ops_(const std::vector<mcpplibs::xpkg::XvmOp>& operations,
+                                                      const PlanNode& node) {
     namespace mf = xlings::subos::manifest;
 
     std::vector<const mcpplibs::xpkg::XvmOp*> declarations;
     for (const auto& op : operations)
         if (op.op == "subos_env") declarations.push_back(&op);
-    if (declarations.empty()) return true;
+    if (declarations.empty()) return {};
 
     const auto canonical = node.canonicalName.empty()
         ? canonical_package_name(node.namespaceName, node.name)
@@ -1881,10 +1879,9 @@ bool apply_subos_env_ops_(const std::vector<mcpplibs::xpkg::XvmOp>& operations,
         // would discard a workspace we never managed to parse.
         std::error_code ec;
         if (std::filesystem::exists(docPath, ec)) {
-            log::error("[xim] {} is not readable JSON; refusing to record "
+            return std::unexpected(std::format("[xim] {} is not readable JSON; refusing to record "
                        "subos env declarations for {}@{}",
-                       docPath.string(), canonical, node.version);
-            return false;
+                       docPath.string(), canonical, node.version));
         }
         nlohmann::json fresh;
         fresh["workspace"] = nlohmann::json::object();
@@ -1984,17 +1981,15 @@ bool apply_subos_env_ops_(const std::vector<mcpplibs::xpkg::XvmOp>& operations,
     };
     for (const auto* op : declarations) {
         if (!mf::is_binding(op->binding)) {
-            log::error("[xim] {}@{} declared env '{}' with binding '{}' "
+            return std::unexpected(std::format("[xim] {}@{} declared env '{}' with binding '{}' "
                        "(expected <name>@<version>); nothing recorded",
-                       canonical, node.version, op->var, op->binding);
-            return false;
+                       canonical, node.version, op->var, op->binding));
         }
         const auto owner = mf::binding_name(op->binding);
         if (owner != node.name && owner != canonical) {
-            log::error("[xim] {}@{} declared env '{}' for '{}', which it does "
+            return std::unexpected(std::format("[xim] {}@{} declared env '{}' for '{}', which it does "
                        "not own; nothing recorded",
-                       canonical, node.version, op->var, op->binding);
-            return false;
+                       canonical, node.version, op->var, op->binding));
         }
         // B5 / B3: a declaration that can put our code into someone else's
         // process is a privileged operation, and install is the only moment a
@@ -2081,29 +2076,30 @@ bool apply_subos_env_ops_(const std::vector<mcpplibs::xpkg::XvmOp>& operations,
                   "installed version. To keep both active, use separate subos.");
     }
 
-    if (!changed) return true;
+    if (!changed) return {};
 
     if (auto findings = mf::validate_block(*doc); !findings.empty()) {
-        log::error("[xim] recording env declarations for {}@{} would leave an "
+        return std::unexpected(std::format("[xim] recording env declarations for {}@{} would leave an "
                    "invalid subos manifest: {}", canonical, node.version,
-                   mf::describe(findings.front().kind));
-        return false;
+                   mf::describe(findings.front().kind)));
     }
 
     try {
         platform::write_string_to_file(docPath.string(), doc->dump(2));
     } catch (const std::exception& e) {
-        log::error("[xim] failed to write {}: {}", docPath.string(), e.what());
-        return false;
+        return std::unexpected(std::format("[xim] failed to write {}: {}", docPath.string(), e.what()));
     }
     log::debug("[xim] recorded {} subos env declaration(s) for {}@{}",
                declarations.size(), canonical, node.version);
-    return true;
+    return {};
 }
 
-bool process_xvm_operations_(const PlanNode& node, const std::filesystem::path& dataDir,
-                             mcpplibs::xpkg::PackageExecutor& executor, bool useAfterInstall,
-                             const home::layers::BorrowPlan* borrowed) {
+// Every refusal carries its reason to the caller, which reports it as the
+// package's failure (InstallStatus.message): a reason only in the log is a
+// failure an interface client cannot show (#652).
+std::expected<void, std::string> process_xvm_operations_(const PlanNode& node, const std::filesystem::path& dataDir,
+                                                         mcpplibs::xpkg::PackageExecutor& executor, bool useAfterInstall,
+                                                         const home::layers::BorrowPlan* borrowed) {
     namespace mat = xvm::materialize;
     const auto xvmOps = executor.xvm_operations();
     const auto dbBefore = Config::versions();
@@ -2118,23 +2114,20 @@ bool process_xvm_operations_(const PlanNode& node, const std::filesystem::path& 
     auto registration =
         normalize_xpkg_registration_plan(node, xvmOps, versionNamespace, dataDir, useAfterInstall);
     if (!registration) {
-        log::error("xvm registration refused for {}@{}: {}", node.name, node.version,
-                   registration.error().message);
-        return false;
+        return std::unexpected(std::format("xvm registration refused for {}@{}: {}", node.name, node.version,
+                   registration.error().message));
     }
     const bool declarativeBorrow =
         borrowed && xvmOps.empty() && (node.pkgType == 1 || node.pkgType == 4);
     if (borrowed) {
         auto source = home::layers::read_source_snapshot(node.sourceHome, node.sourceScope);
         if (!source) {
-            log::error("{}", source.error());
-            return false;
+            return std::unexpected(std::format("{}", source.error()));
         }
         auto checked = home::layers::plan_borrow_package(
             *source, dbBefore, registration->batch.provider, node.version);
         if (!checked || !*checked || (**checked).requestedPayload != node.borrowedPayload) {
-            log::error("{}: the checked system release changed before configuration", node.name);
-            return false;
+            return std::unexpected(std::format("{}: the checked system release changed before configuration", node.name));
         }
         for (const auto& [target, imported] : borrowed->registrations) {
             const bool requested = borrowed->requestedMembers.contains(target);
@@ -2166,8 +2159,7 @@ bool process_xvm_operations_(const PlanNode& node, const std::filesystem::path& 
                                                       registration->batch.provider,
                                                       registration->batch.providerVersion);
         if (!selected) {
-            log::error("{}", xvm::render(xvm::describe(selected.error(), node.name), true));
-            return false;
+            return std::unexpected(std::format("{}", xvm::render(xvm::describe(selected.error(), node.name), true)));
         }
         removal = std::move(*selected);
     }
@@ -2180,20 +2172,21 @@ bool process_xvm_operations_(const PlanNode& node, const std::filesystem::path& 
                 xvm::render(xvm::describe(std::get<xvm::RemovalError>(metadata.error()), node.name),
                             true));
         else
-            log::error("{}",
+            return std::unexpected(std::format("{}",
                        xvm::render(xvm::describe(std::get<xvm::RegistrationError>(metadata.error()),
                                                  node.name),
-                                   true));
-        return false;
+                                   true)));
     }
     if (!node.sourceHome.empty()) {
         for (const auto& member : metadata->registered) {
             auto target = candidateDb.find(member.target);
             if (target == candidateDb.end())
-                return false;
+                return std::unexpected(std::format("{}: the borrowed registration {} vanished before configuration",
+                                                   node.name, member.target));
             auto version = target->second.versions.find(member.version);
             if (version == target->second.versions.end())
-                return false;
+                return std::unexpected(std::format("{}: the borrowed registration {}@{} vanished before configuration",
+                                                   node.name, member.target, member.version));
             version->second.sourceHome = node.sourceHome.string();
             version->second.sourceScope = node.sourceScope;
         }
@@ -2222,15 +2215,13 @@ bool process_xvm_operations_(const PlanNode& node, const std::filesystem::path& 
     };
     auto prepared = changes_for(scope, workspaceBefore, installedBefore, candidateWorkspace, candidateInstalled);
     if (!prepared) {
-        log::error("{}: sysroot update refused before metadata changed: {}", node.name,
-                   prepared.error());
-        return false;
+        return std::unexpected(std::format("{}: sysroot update refused before metadata changed: {}", node.name,
+                   prepared.error()));
     }
     std::vector<mat::Applied> applied;
     auto current = prepared->execute();
     if (!current) {
-        log::error("{}", current.error());
-        return false;
+        return std::unexpected(std::format("{}", current.error()));
     }
     applied.push_back(std::move(*current));
 
@@ -2247,23 +2238,20 @@ bool process_xvm_operations_(const PlanNode& node, const std::filesystem::path& 
             continue;
         auto workspace = load_workspace_file_checked_(root / ".xlings.json");
         if (!workspace) {
-            log::error("{}: unreadable workspace", name);
-            return false;
+            return std::unexpected(std::format("{}: unreadable workspace", name));
         }
         auto other = changes_for(root, workspace->active, workspace->installed, workspace->active, workspace->installed);
         if (!other) {
-            log::error("{}: {}", name, other.error());
-            return false;
+            return std::unexpected(std::format("{}: {}", name, other.error()));
         }
         auto changed = other->execute();
         if (!changed) {
-            log::error("{}: {}", name, changed.error());
-            return false;
+            return std::unexpected(std::format("{}: {}", name, changed.error()));
         }
         applied.push_back(std::move(*changed));
     }
-    if (!apply_subos_env_ops_(xvmOps, node))
-        return false;
+    if (auto declared = apply_subos_env_ops_(xvmOps, node); !declared)
+        return std::unexpected(declared.error());
 
     const auto versionPath = &Config::versions_mut() == &Config::global_versions()
                                  ? Config::paths().homeDir / ".xlings.json"
@@ -2273,8 +2261,7 @@ bool process_xvm_operations_(const PlanNode& node, const std::filesystem::path& 
     auto oldVersionDocument = home::read_json_for_update(versionPath);
     auto oldWorkspaceDocument = home::read_json_for_update(workspacePath);
     if (!oldVersionDocument || !oldWorkspaceDocument) {
-        log::error("cannot observe metadata before publishing {}", node.name);
-        return false;
+        return std::unexpected(std::format("cannot observe metadata before publishing {}", node.name));
     }
     auto restore = [&]() {
         Config::versions_mut() = dbBefore;
@@ -2307,15 +2294,13 @@ bool process_xvm_operations_(const PlanNode& node, const std::filesystem::path& 
         if (const auto sync = xself::sync_shim_tables(); !sync.root_error.empty())
             throw std::runtime_error(sync.root_error);
     } catch (const std::exception& error) {
-        log::error("{}: metadata publication failed: {}", node.name, error.what());
         restore();
         for (auto& changed : applied) {
             if (const auto rollback = changed.rollback(); !rollback)
                 log::error("derived rollback failed: {}", rollback.error());
         }
         if (const auto sync = xself::sync_shim_tables(); !sync.root_error.empty())
-            log::error("root rollback refresh failed: {}", sync.root_error);
-        return false;
+            return std::unexpected(std::format("root rollback refresh failed: {}", sync.root_error));
     }
     // One copy of the database and workspace for every effect: both are
     // returned by value, and per effect that was a copy of the whole home's
@@ -2344,14 +2329,12 @@ bool process_xvm_operations_(const PlanNode& node, const std::filesystem::path& 
                     log::error("derived rollback failed: {}", rollback.error());
             }
             if (const auto sync = xself::sync_shim_tables(); !sync.root_error.empty())
-                log::error("root rollback refresh failed: {}", sync.root_error);
-            return false;
+                return std::unexpected(std::format("root rollback refresh failed: {}", sync.root_error));
         }
     }
     for (auto& changed : applied) {
         if (const auto committed = changed.commit(); !committed) {
-            log::error("{}: derived backup cleanup failed: {}", node.name, committed.error());
-            return false;
+            return std::unexpected(std::format("{}: derived backup cleanup failed: {}", node.name, committed.error()));
         }
     }
     for (const auto& member : metadata->registered)
@@ -2360,13 +2343,16 @@ bool process_xvm_operations_(const PlanNode& node, const std::filesystem::path& 
                       member.version);
     for (const auto& member : metadata->detachedLegacy)
         log::warn("[xvm] detached legacy registration {}; run `xlings self doctor`", member.target);
-    return true;
+    return {};
 }
 
 bool run_config_hook_(const PlanNode& node, const std::filesystem::path& dataDir, mcpplibs::xpkg::PackageExecutor& executor, mcpplibs::xpkg::ExecutionContext& ctx, std::function<void(const InstallStatus&)> onStatus, bool useAfterInstall, std::string* failureMessage,
                       const home::layers::BorrowPlan* borrowed) {
-    if (!executor.has_hook(mcpplibs::xpkg::HookType::Config))
-        return process_xvm_operations_(node, dataDir, executor, useAfterInstall, borrowed);
+    if (!executor.has_hook(mcpplibs::xpkg::HookType::Config)) {
+        auto processed = process_xvm_operations_(node, dataDir, executor, useAfterInstall, borrowed);
+        if (!processed && failureMessage) *failureMessage = processed.error();
+        return processed.has_value();
+    }
     if (onStatus) {
         onStatus({ node.name, InstallPhase::Configuring, 0.8f, "" });
     }
@@ -2388,8 +2374,8 @@ bool run_config_hook_(const PlanNode& node, const std::filesystem::path& dataDir
         }
         return false;
     }
-    if (!process_xvm_operations_(node, dataDir, executor, useAfterInstall, borrowed)) {
-        if (failureMessage) *failureMessage = "config hook failed";
+    if (auto processed = process_xvm_operations_(node, dataDir, executor, useAfterInstall, borrowed); !processed) {
+        if (failureMessage) *failureMessage = processed.error();
         return false;
     }
     return true;
@@ -2594,6 +2580,58 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& requested
         }
     }
 
+    // Upstreams (design mcpp 2026-10-16 §14 X3): a payload of the same
+    // identity that is complete in a read-only upstream is published here as
+    // a link entry and configured here; nothing is downloaded and no hook
+    // runs in it. A link whose upstream let the payload go is removed -- only
+    // the link -- and the node installs as usual, at the same path.
+    {
+        namespace fs = std::filesystem;
+        const auto& upstreams = Config::upstreams();
+        const auto within = [](const fs::path& root, const fs::path& p) {
+            const auto rel = p.lexically_normal().lexically_relative(root.lexically_normal());
+            return !rel.empty() && *rel.begin() != "..";
+        };
+        const auto complete = [](const fs::path& dir, int revision) {
+            std::error_code ec;
+            return fs::is_directory(dir, ec) && payload_has_content(dir) && !stamped_incomplete(dir)
+                && stamped_revision(dir) != kRevisionUnrecorded && !payload_revision_verdict(dir, revision).stale
+                && classify_payload_platform(dir) != PayloadPlatform::Foreign;
+        };
+        for (auto& node : plan.nodes) {
+            if (node.isSystemPM || node.pkgType == 3 || !node.borrowedPayload.empty()) continue;
+            const auto local = node_payload_path(node, dataDir);
+            std::error_code ec;
+            if (const auto target = platform::dir_link_target(local)) {
+                if (!fs::exists(local, ec)) {
+                    log::info("{}@{}: its upstream payload is gone; installing it here", node.name, node.version);
+                    fs::remove(local, ec);
+                    node.alreadyInstalled = false;
+                } else if (std::ranges::any_of(upstreams, [&](const Upstream& u) { return within(u.store, *target); })) {
+                    node.upstreamPayload = *target;
+                    continue;
+                }
+            }
+            if (upstreams.empty() || fs::symlink_status(local, ec).type() != fs::file_type::not_found) continue;
+            for (const auto& u : upstreams) {
+                if (!u.namespaces.empty() && std::ranges::find(u.namespaces, node.namespaceName) == u.namespaces.end())
+                    continue;
+                const auto candidate = u.store / package_store_name(node.namespaceName, node.name) / node.version;
+                if (!complete(candidate, node.revision)) continue;
+                fs::create_directories(local.parent_path(), ec);
+                std::string why;
+                if (!platform::create_dir_link(candidate, local, why)) {
+                    log::debug("{}@{}: cannot link {} ({}); installing it here", node.name, node.version,
+                               candidate.string(), why);
+                    break;
+                }
+                node.upstreamPayload = candidate;
+                log::debug("{}@{}: from upstream {}", node.name, node.version, u.home.string());
+                break;
+            }
+        }
+    }
+
     // Phase 1: Collect download tasks for non-installed packages
     log::debug("installer: {} node(s) in plan, dataDir={}", plan.nodes.size(), dataDir.string());
     std::vector<DownloadTask> dlTasks;
@@ -2606,7 +2644,7 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& requested
     std::unordered_set<std::string> refusedNodes;
     for (auto& node : plan.nodes) {
         currentPlanKey = detail_::plan_key_(node);
-        if (node.alreadyInstalled || !node.borrowedPayload.empty()) continue;
+        if (node.alreadyInstalled || !node.borrowedPayload.empty() || !node.upstreamPayload.empty()) continue;
 
         const std::string hostArch =
             mcpplibs::xpkg::normalize_arch(detail_::detect_arch_());
@@ -2830,6 +2868,10 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& requested
         auto targetRoot = node.storeRoot.empty() ? (dataDir / "xpkgs") : node.storeRoot;
         ctx.install_dir = node_payload_path(node, dataDir);
         const bool borrowedPayload = !node.sourceHome.empty();
+        // Neither kind is this home's to write: no hook runs in it, nothing
+        // is recorded in it.
+        const bool linkedPayload = !node.upstreamPayload.empty();
+        const bool readOnlyPayload = borrowedPayload || linkedPayload;
         detail_::configure_xpkg_execution_artifact_paths_(
             ctx);
         detail_::configure_dependency_store_roots_(ctx, targetRoot);
@@ -3104,6 +3146,10 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& requested
                 node.canonicalName.empty() ? node.name : node.canonicalName,
                 node.version, hook));
         }
+        // A linked payload's config() runs as an installed payload's does on
+        // every reconfigure -- it registers, it does not write the payload --
+        // so it needs no sandbox of its own (one would make borrowing depend
+        // on user namespaces). A system-layer payload keeps its confinement.
         auto execResult = lua_boundary::create_executor(node.pkgFile, ctx, hookLogs, borrowedPayload);
         if (!execResult) {
             log::error("failed to create executor for {}: {}",
@@ -3172,7 +3218,7 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& requested
         // of the package index, destroying the index entry.
 
         // Ensure install_dir exists so hooks can mv/cp into it
-        if (!borrowedPayload) {
+        if (!readOnlyPayload) {
             std::error_code ec;
             std::filesystem::create_directories(ctx.install_dir, ec);
             // A genuine failure here (commonly EACCES on a root-owned
@@ -3204,7 +3250,7 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& requested
                       Config::display_path(ctx.install_dir));
         }
 
-        bool payloadInstalled = (node.alreadyInstalled || borrowedPayload) && !foreignPayload;
+        bool payloadInstalled = (node.alreadyInstalled || readOnlyPayload) && !foreignPayload;
 
         // Check if already installed via hook
         if (foreignPayload) {
@@ -3313,7 +3359,7 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& requested
         // Positive evidence only -- a stamp that predates the `registered`
         // field yields no verdict, so a home installed by an older client
         // does not start reinstalling itself. See install_state.cppm.
-        if (payloadInstalled && !foreignPayload && !borrowedPayload) {
+        if (payloadInstalled && !foreignPayload && !readOnlyPayload) {
             const auto state = installation_state(
                 ledgerIndex, node.namespaceName, node.name, node.version,
                 ctx.install_dir);
@@ -3338,7 +3384,7 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& requested
         // `replacement`, which removes the partial tree and puts the old one
         // back (PayloadReplacement, payload.cppm).
         std::optional<PayloadReplacement> replacement;
-        if (const auto revision = foreignPayload || borrowedPayload
+        if (const auto revision = foreignPayload || readOnlyPayload
                 ? RevisionVerdict{}
                 : payload_revision_verdict(ctx.install_dir, node.revision);
             revision.stale || (payloadInstalled && !node.rebindReason.empty())) {
@@ -3716,7 +3762,7 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& requested
             }
         }
 
-        if (!borrowedPayload && node.pkgType != 3 /* Config */
+        if (!readOnlyPayload && node.pkgType != 3 /* Config */
             && (!payloadInstalled || reconfig || node.migrateRecord)) {
             if (auto evidence = detail_::save_resolution_(node, ctx); !evidence) {
                 log::error("failed to record resolution for {}: {}", node.name, evidence.error());
@@ -3784,7 +3830,7 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& requested
                 // its failure is exactly "payload on disk, ledger empty" --
                 // the state that used to be indistinguishable from a
                 // package that legitimately registers nothing.
-                if (!borrowedPayload) {
+                if (!readOnlyPayload) {
                     write_payload_failure_marker(ctx.install_dir, node.version, configFailure);
                 }
                 if (onStatus) {
@@ -3806,7 +3852,7 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& requested
             onInstallRequests(pendingRequests);
         }
 
-        if (!borrowedPayload && node.pkgType != 3 /* Config */) {
+        if (!readOnlyPayload && node.pkgType != 3 /* Config */) {
             // TODO(config): same soft policy as the install stamp. A
             // config package with no author-created payload must not
             // become installed solely because xlings copied metadata into
@@ -3869,7 +3915,7 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& requested
             const auto registered = count_ledger_registrations(
                 Config::versions(), Config::paths().homeDir.string(),
                 node.namespaceName, node.name, node.version);
-            if (!borrowedPayload) {
+            if (!readOnlyPayload) {
                 write_payload_stamp(ctx.install_dir, node.version, registered,
                                     node.revision);
             }

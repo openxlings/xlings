@@ -1,12 +1,12 @@
-# NDJSON Interface Protocol v1.8
+# NDJSON Interface Protocol v1.10
 
-> Status: in force; protocol 1.8 since xlings 2026.10.12.2. Implemented in
+> Status: in force; protocol 1.10 since xlings 2026.10.16.1. Implemented in
 > `src/interface.cpp`; `xlings interface --list` is the authoritative schema.
 
 ## 1. Overview
 
 `xlings interface` is the structured API for programs: IDE plugins, CI scripts
-and AI agents talk to xlings over standard IO. The protocol is **1.8**, over NDJSON
+and AI agents talk to xlings over standard IO. The protocol is **1.10**, over NDJSON
 (newline-delimited JSON).
 
 | Protocol | xlings | Change |
@@ -21,6 +21,7 @@ and AI agents talk to xlings over standard IO. The protocol is **1.8**, over NDJ
 | 1.7 | 2026.10.10.2 | added: `install_packages`'s `extract` progress event; `hook` events first after 10 s, then every 30 s (§6.1.2); an unpacking write failure is `E_DISK_FULL` or `E_PERMISSION` by cause; a node whose dependency failed reports that cause and runs no hook (§6.1.4) |
 | 1.8 | 2026.10.12.2 | added: `remove_package`'s `older_than` and `dry_run`, and the `remove_plan` of a bulk removal (§8.2); `remove_blocked`'s per-dependent `reason` (§8.1); a node whose dependency failed is an `install_skipped` data event, and one `error` per failed dependency names them all (§6.1.4) |
 | 1.9 | 2026.10.13.1 | added: `subos_command` -- any `xlings subos` subcommand with its log lines, progress, data and errors as events (what luban renders itself) |
+| 1.10 | 2026.10.16.1 | added: `--version` is the handshake (§3.1); `payload_status` and `sync_index` (§7.4); `install_targets` entries carry `complete` and `origin` (§6.3.1) |
 
 A minor version only adds: a 1.0 client reads 1.1 output unchanged. A client
 **probes for a capability** (for example, whether `install_targets` appears)
@@ -49,11 +50,20 @@ xlings interface [--version] [--list] [<capability> --args '<json>']
 xlings interface --version
 ```
 
-prints one line and exits:
+prints one line and exits -- the handshake a client checks before it uses this
+xlings (1.10+):
 
 ```json
-{"protocol_version":"1.8"}
+{"protocol_version":"1.10","version":"2026.10.16.1","capabilities":["search_packages","install_packages","..."],"home_layouts":[1,2],"features":["index_dir","index_store","upstreams","payload_status","sync_index","install_targets_complete"]}
 ```
+
+| Field | Meaning |
+|---|---|
+| `protocol_version` | this protocol's version |
+| `version` | the xlings version (1.10+) |
+| `capabilities` | every capability's name (1.10+) |
+| `home_layouts` | the home layouts this client reads and writes (1.10+) |
+| `features` | behaviour a client may rely on that is not a capability (1.10+): `index_dir` and `index_store` (the `index_repos` fields), `upstreams`, `payload_status`, `sync_index`, `install_targets_complete` |
 
 ### 3.2 The capabilities
 
@@ -64,7 +74,7 @@ xlings interface --list
 prints the capability list and exits:
 
 ```json
-{"protocol_version":"1.8","capabilities":[{"name":"install_packages","description":"...","destructive":true,"inputSchema":{},"outputSchema":{}}]}
+{"protocol_version":"1.10","capabilities":[{"name":"install_packages","description":"...","destructive":true,"inputSchema":{},"outputSchema":{}}]}
 ```
 
 ### 3.3 Running a capability
@@ -334,6 +344,8 @@ resolved ones still carry `namespace`, `name`, `version`.
 | revision | integer | the packaging revision the recipe declares for it |
 | status | string | `installed` (by this run) / `already_present` (its current payload was there) / `failed` |
 | payload_dir | string | the payload directory, absolute; empty when `failed` |
+| complete | bool | (1.10+) the payload is there, holds something, records no failure and is the recipe's revision: an install that reported success and left nothing is `false` |
+| origin | string | (1.10+) `local` / `upstream` (a link entry, [`.xlings.json` `upstreams`](xlings-json.md)) / `absent` |
 
 The three cases:
 
@@ -475,9 +487,29 @@ Sent after 5 s of silence: the process is alive.
 | `list_index_versions` | published index snapshots and the one in use | no |
 | `add_repo` | add or update an index repository | yes |
 | `remove_repo` | remove an index repository | yes |
+| `payload_status` | (1.10+) what each target resolves to and what its payload is here, without installing (§7.4) | no |
+| `sync_index` | (1.10+) sync one configured index into a directory (§7.4) | yes |
 
 Each capability's `inputSchema` / `outputSchema` comes from
 `xlings interface --list`; its `required` is enforced since 2026.9.20.1 (§3.3.1).
+
+### 7.4 `payload_status` and `sync_index` (1.10+)
+
+`payload_status {"targets": [...]}` resolves each target as `install_packages`
+would and reports one `payload_status` data event; nothing is installed and no
+index is fetched:
+
+```json
+{"kind":"data","dataKind":"payload_status","payload":{"targets":[{"request":"team:demo@1.0.0","namespace":"team","name":"demo","version":"1.0.0","revision":0,"payload_dir":"/home/u/.mcpp/xpkgs/team-x-demo/1.0.0","origin":"local","installed_revision":0,"complete":true}]}}
+```
+
+A target that does not resolve carries `request` and `error`. `installed_revision`
+is the revision the payload's stamp records (`null` when it has none).
+
+`sync_index {"name": "...", "dest": "..."}` syncs the configured index `name`
+into `dest` (its own directory when `dest` is absent) and reports
+`{"dataKind":"index_synced","payload":{"name":..,"dir":..}}`. A caller checks
+the staged copy and swaps it into place itself.
 
 ### 7.1 Capabilities that need the user's confirmation (2026.9.26.1+)
 

@@ -6,8 +6,8 @@
 # changing. Dynamically linked, like everything that opens a window: static
 # musl has no dlopen.
 #
-# The headers stay here: luban.desktop.imgui exports what the app draws with,
-# so the app imports ImGui instead of including it (tools/lint_c_headers.sh).
+# SDL's and Dear ImGui's headers are read here for the backends only; an
+# application draws with imkit.imgui (luban/kits/imkit).
 [package]
 namespace = "luban"
 name      = "luban-desktop-host"

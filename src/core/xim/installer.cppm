@@ -528,14 +528,17 @@ std::expected<void, std::string> detach_current_subos_(const std::string& target
 // runtime needs; letting it write a section owned by another name would make
 // uninstall unable to clean up (the owner's key is what removal keys on) and
 // would hand any recipe the ability to edit any other's environment.
-bool apply_subos_env_ops_(const std::vector<mcpplibs::xpkg::XvmOp>& operations,
-                          const PlanNode& node);
+// A refusal carries its reason (#652).
+std::expected<void, std::string> apply_subos_env_ops_(const std::vector<mcpplibs::xpkg::XvmOp>& operations,
+                                                      const PlanNode& node);
 
-bool process_xvm_operations_(const PlanNode& node,
-                             const std::filesystem::path& dataDir,
-                             mcpplibs::xpkg::PackageExecutor& executor,
-                             bool useAfterInstall,
-                             const home::layers::BorrowPlan* borrowed = nullptr);
+// The release's registration, its sysroot update and the metadata it
+// publishes; a refusal carries its reason to InstallStatus.message (#652).
+std::expected<void, std::string> process_xvm_operations_(const PlanNode& node,
+                                                         const std::filesystem::path& dataDir,
+                                                         mcpplibs::xpkg::PackageExecutor& executor,
+                                                         bool useAfterInstall,
+                                                         const home::layers::BorrowPlan* borrowed = nullptr);
 
 bool run_config_hook_(const PlanNode& node,
                       const std::filesystem::path& dataDir,

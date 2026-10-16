@@ -24,6 +24,9 @@ struct RepoIndexSpec {
     PackageScope scope { PackageScope::Global };
     std::string defaultNamespace;
     bool subIndex { false };  // sub-index repos: lower priority for bare-name resolution
+    // Where the payloads it serves are installed: its declared store, else
+    // empty for the scope's <data>/xpkgs.
+    std::filesystem::path store;
 };
 
 // A candidate that lost the bare-name namespace-priority tiebreak.

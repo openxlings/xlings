@@ -35,6 +35,50 @@ status = "required"
 text = "a pty with nothing typed exposes a program that waits for input"
 status = "required"
 
+[LUBAN-FHS-PATHS]
+text = "inside a Luban system every directory a person can cd into has its FHS path: /usr is the generation mounted, a generation's directories are mount points, an exported tar keeps the link"
+status = "required"
+
+[LUBAN-SHARE-PROJECTION]
+text = "a payload's share/ reaches /usr/share: directories many packages write into are merged file by file, one package's directory is claimed whole, and a link never has a link above or below it"
+status = "required"
+
+[XIM-INDEX-DIR-STORE]
+text = "an index_repos entry's dir and store place its data and the payloads it serves; payload_status says what a target is here without installing; sync_index syncs one index into a directory"
+status = "required"
+
+[XIM-UPSTREAM]
+text = "a home's upstreams lend payloads of the same identity as link entries (a junction on Windows), never written; removing one removes the link; a payload its upstream let go is installed in place"
+status = "required"
+
+[XIM-HANDSHAKE]
+text = "interface --version reports the version, protocol, capabilities, home layouts and features"
+status = "required"
+
+[LUBAN-OS-PERF]
+text = "the Luban OS app shows a choice the frame after it is made (no wait after input), its own work per frame stays within a few milliseconds (no disk read per frame), a frame fits its budget on a software renderer, and a still window waits instead of drawing"
+status = "required"
+
+[LUBAN-OS-VISUAL]
+text = "the Luban OS app's key pages are captured at three scales and in both languages, held to their reviewed layout baselines, and put on one contact sheet"
+status = "required"
+
+[LUBAN-OS-TRAY]
+text = "Luban OS has an icon in the system's status area -- StatusNotifierItem and DBusMenu on Linux, the notification area on Windows, the menu bar on macOS -- with its systems in its menu, and the system's notifications; what is chosen reaches the app"
+status = "required"
+
+[LUBAN-SELF-CHECK]
+text = "a Luban system checks itself when made, upgraded, booted and entered, and on demand: a critical failure stops it (not ready, not switched, not booted, not entered) and the rest is reported"
+status = "required"
+
+[LUBAN-USER-LAYER]
+text = "inside a Luban system a regular user's xlings uses ~/.xlings with the system's home as the layer below it; a sandbox keeps the system's home (its broker installs there)"
+status = "required"
+
+[LUBAN-CURRENT-SYSTEM]
+text = "inside a Luban system, in a sandbox and a machine alike, the current subos is the system itself; an explicit XLINGS_ACTIVE_SUBOS still wins"
+status = "required"
+
 [LUBAN-EDITION-MIN-CLIENT]
 text = "an edition whose manifest names a min_client newer than this xlings is refused before anything is fetched, with xlings self update"
 status = "required"
@@ -686,7 +730,7 @@ text = "subos export --tar is a root docker imports and runs"
 status = "required"
 
 [EXPORT-WSL]
-text = "subos export --tar imports with wsl --import (WSL1 on CI: reported, not blocking)"
+text = "subos export --tar imports with wsl --import, and the imported root is the edition (WSL 2 on CI; blocking)"
 status = "required"
 
 [EXPORT-DISK]

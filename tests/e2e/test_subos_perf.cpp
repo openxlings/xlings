@@ -7,7 +7,7 @@ import xlings.testkit;
 import std;
 import xlings.libs.json;
 import xlings.platform;
-import xlings.core.elfread;
+import xlings.libs.elfread;
 import xlings.subos.caps;
 import xlings.subos.ports;
 import xlings.subos.spec;

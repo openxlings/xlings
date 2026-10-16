@@ -21,6 +21,8 @@ import mcpplibs.xpkg.executor;
 import mcpplibs.xpkg.loader;
 import xlings.core.xim.catalog;
 import xlings.core.xim.payload;
+import xlings.core.xim.install_state;
+import xlings.core.xim.compatibility;
 import xlings.core.xim.inventory;
 import xlings.core.xim.repo;
 import xlings.core.xim.resolver;
@@ -209,6 +211,35 @@ PackageCatalog& get_catalog(CatalogAccess access) {
     return mgr;
 }
 
+// THE ONE ANSWER TO "IS THE INDEX HERE" (design 2026-10-16 L §7). Every
+// command that reads the index asks here. An install synchronises a catalog
+// that is not loaded; a query answers from what is here and never fetches
+// (E2E-69: a cold home's list stays local and fast). One that cannot be read
+// is a structured error with what to do -- never a bare log line, which
+// interface mode suppresses (#374). A Luban system carries its owner's index
+// from its creation (domain_producer::prepare), so its first query has one.
+PackageCatalog* ensure_catalog(EventStream& stream, CatalogNeed need) {
+    auto& catalog = need == CatalogNeed::Synced ? get_catalog(CatalogAccess::InstallReady) : get_catalog();
+    if (catalog.is_loaded()) return &catalog;
+    std::string why;
+    if (need == CatalogNeed::Synced) {
+        log::info("package index not available, updating...");
+        sync_all_repos(true);
+        auto rebuilt = catalog.rebuild();
+        if (rebuilt && catalog.is_loaded()) return &catalog;
+        if (!rebuilt) why = ": " + rebuilt.error();
+    }
+    stream.emit(ErrorEvent{
+        .code = ErrorCode::NotFound,
+        .message = "package index not available" + why,
+        .recoverable = true,
+        .hint = need == CatalogNeed::Synced
+            ? "run `xlings update`, or check index_repos in .xlings.json and the network or proxy"
+            : "fetch it: xlings update",
+    });
+    return nullptr;
+}
+
 std::string detect_platform() {
     return std::string(xlings::platform::build_os());
 }
@@ -324,6 +355,8 @@ struct InstallTargetReport_ {
     std::filesystem::path payloadDir;  // published unless failed
 };
 
+nlohmann::json payload_state_(const std::filesystem::path& dir, int recipeRevision);
+
 std::string install_targets_payload_(std::span<const InstallTargetReport_> targets) {
     nlohmann::json list = nlohmann::json::array();
     for (const auto& t : targets) {
@@ -333,7 +366,7 @@ std::string install_targets_payload_(std::span<const InstallTargetReport_> targe
             const auto absolute = std::filesystem::absolute(t.payloadDir, ec);
             payloadDir = (ec ? t.payloadDir : absolute).lexically_normal().string();
         }
-        list.push_back({
+        nlohmann::json row{
             {"request",     t.request},
             {"namespace",   t.namespaceName},
             {"name",        t.name},
@@ -341,7 +374,19 @@ std::string install_targets_payload_(std::span<const InstallTargetReport_> targe
             {"revision",    t.revision},
             {"status",      t.status},
             {"payload_dir", payloadDir},
-        });
+        };
+        // X4: whether what was reported is really there (an install that
+        // said success and left nothing -- mcpp#533 -- is not complete), and
+        // whether it is this home's or an upstream's.
+        if (!payloadDir.empty()) {
+            const auto state = payload_state_(payloadDir, t.revision);
+            row["complete"] = state["complete"];
+            row["origin"] = state["origin"];
+        } else {
+            row["complete"] = false;
+            row["origin"] = "absent";
+        }
+        list.push_back(std::move(row));
     }
     nlohmann::json payload;
     payload["targets"] = std::move(list);
@@ -452,26 +497,9 @@ int install_(std::span<const std::string> targets, bool yes, bool noDeps,
     // downloading and extracting outside it -- is a real change to what two
     // concurrent installs may observe and is deliberately NOT done here; see
     // .agents/docs/2026-08-14-four-perf-and-output-defects-plan.md §2 (L2).
-    auto& catalog = get_catalog(CatalogAccess::InstallReady);
-    if (!catalog.is_loaded()) {
-        log::info("package index not available, updating...");
-        sync_all_repos(true);
-        auto rebuildResult = catalog.rebuild();
-        if (!rebuildResult || !catalog.is_loaded()) {
-            // #374: emit a structured error on the EventStream instead of a
-            // bare log::error (which interface mode's tui_mode suppresses) so
-            // programmatic consumers see WHY the exit is non-zero rather than
-            // a silent {"exitCode":1,"kind":"result"} with an empty stream.
-            stream.emit(ErrorEvent{
-                .code = ErrorCode::NotFound,
-                .message = std::string("package index not available")
-                    + (rebuildResult ? std::string{} : ": " + rebuildResult.error()),
-                .recoverable = true,
-                .hint = "run `xlings update`, or check index_repos in .xlings.json",
-            });
-            return 1;
-        }
-    }
+    auto* loaded = ensure_catalog(stream, CatalogNeed::Synced);
+    if (!loaded) return 1;
+    auto& catalog = *loaded;
 
     // #374: surface any index repos skipped during the best-effort catalog
     // build so a degraded multi-repo config is visible to interface consumers
@@ -2314,11 +2342,9 @@ int cmd_remove_older_than(const std::string& name, const std::string& threshold,
         return 1;
     }
     Config::reload_state();
-    auto& catalog = get_catalog();
-    if (!catalog.is_loaded()) {
-        log::error("package index not available");
-        return 1;
-    }
+    auto* loaded = ensure_catalog(stream, CatalogNeed::Local);
+    if (!loaded) return 1;
+    auto& catalog = *loaded;
     const auto bareName = name.substr(name.rfind(':') + 1);
 
     // The candidates: every registered version strictly older than the bound.
@@ -2514,11 +2540,9 @@ int cmd_remove_impl_(const std::string& target, bool yes, EventStream& stream,
     }
     Config::reload_state();
 
-    auto& catalog = get_catalog();
-    if (!catalog.is_loaded()) {
-        log::error("package index not available");
-        return 1;
-    }
+    auto* loaded = ensure_catalog(stream, CatalogNeed::Local);
+    if (!loaded) return 1;
+    auto& catalog = *loaded;
 
     auto stripVer = [](const std::string& s) {
         auto at = s.find('@');
@@ -2633,11 +2657,9 @@ ScopedSubosOverride::~ScopedSubosOverride() {
 }
 
 int cmd_search(const std::string& keyword, EventStream& stream) {
-    auto& catalog = get_catalog();
-    if (!catalog.is_loaded()) {
-        log::error("package index not available");
-        return 1;
-    }
+    auto* loaded = ensure_catalog(stream, CatalogNeed::Local);
+    if (!loaded) return 1;
+    auto& catalog = *loaded;
 
     auto results = catalog.search(keyword, detect_platform());
     if (results.empty()) {
@@ -2660,11 +2682,9 @@ int cmd_search(const std::string& keyword, EventStream& stream) {
 }
 
 int cmd_list(const std::string& filter, EventStream& stream, bool all) {
-    auto& catalog = get_catalog();
-    if (!catalog.is_loaded()) {
-        log::error("package index not available");
-        return 1;
-    }
+    auto* loaded = ensure_catalog(stream, CatalogNeed::Local);
+    if (!loaded) return 1;
+    auto& catalog = *loaded;
 
     const auto inventoryFilter = filter.empty()
         ? std::optional<std::string_view>{}
@@ -2794,12 +2814,85 @@ int cmd_list(const std::string& filter, EventStream& stream, bool all) {
     return 0;
 }
 
-int cmd_info(const std::string& target, EventStream& stream, bool allVersions) {
-    auto& catalog = get_catalog();
-    if (!catalog.is_loaded()) {
-        log::error("package index not available");
+// A payload is complete when it is there, holds something, records no
+// failure, and is the recipe's revision of its version (a payload installed
+// before revisions were stamped answers to any).
+nlohmann::json payload_state_(const std::filesystem::path& dir, int recipeRevision) {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    const bool there = fs::is_directory(dir, ec);
+    const bool linked = platform::dir_link_target(dir).has_value();
+    const int installed = there ? stamped_revision(dir) : kRevisionUnrecorded;
+    const bool complete = there && payload_has_content(dir) && !stamped_incomplete(dir)
+        && !payload_revision_verdict(dir, recipeRevision).stale;
+    return {{"payload_dir", dir.lexically_normal().string()},
+            {"origin", !there ? "absent" : linked ? "upstream" : "local"},
+            {"installed_revision", installed == kRevisionUnrecorded ? nlohmann::json() : nlohmann::json(installed)},
+            {"complete", complete}};
+}
+
+int cmd_payload_status(std::span<const std::string> targets, EventStream& stream) {
+    auto* loaded = ensure_catalog(stream, CatalogNeed::Local);
+    if (!loaded) return 1;
+    auto& catalog = *loaded;
+    const auto platform = detect_platform();
+    nlohmann::json list = nlohmann::json::array();
+    int rc = 0;
+    for (const auto& target : targets) {
+        auto match = catalog.resolve_target(target, platform);
+        if (!match) {
+            list.push_back({{"request", target}, {"error", match.error()}});
+            rc = 1;
+            continue;
+        }
+        int revision = 0;
+        if (auto pkg = catalog.load_package(*match))
+            if (const auto* entry = find_entry(*pkg, platform, match->version)) revision = entry->revision;
+        const auto dir = match->storeRoot / package_store_name(match->namespaceName, match->name) / match->version;
+        auto row = payload_state_(dir, revision);
+        row["request"] = target;
+        row["namespace"] = match->namespaceName;
+        row["name"] = match->name;
+        row["version"] = match->version;
+        row["revision"] = revision;
+        list.push_back(std::move(row));
+    }
+    stream.emit(DataEvent{"payload_status", nlohmann::json{{"targets", std::move(list)}}.dump()});
+    return rc;
+}
+
+int cmd_sync_index(const std::string& name, const std::filesystem::path& dest, EventStream& stream) {
+    const IndexRepo* repo = nullptr;
+    bool projectScope = false;
+    if (Config::has_project_config())
+        for (const auto& r : Config::project_index_repos())
+            if (r.name == name) { repo = &r; projectScope = true; }
+    if (!repo)
+        for (const auto& r : Config::global_index_repos())
+            if (r.name == name) repo = &r;
+    if (!repo) {
+        stream.emit(ErrorEvent{.code = ErrorCode::NotFound, .message = "no index named '" + name + "' is configured",
+                               .recoverable = false, .hint = "xlings index list"});
         return 1;
     }
+    const auto dir = dest.empty() ? Config::repo_dir_for(*repo, projectScope) : dest;
+    std::string source = "auto";
+    if (const auto* e = std::getenv("XLINGS_INDEX_SOURCE"); e && *e) source = e;
+    std::error_code ec;
+    std::filesystem::create_directories(dir.parent_path(), ec);
+    if (!sync_one_repo(*repo, dir, source, Config::mirror(), projectScope, /*force=*/true, /*linkLocalSource=*/true)) {
+        stream.emit(ErrorEvent{.code = ErrorCode::Network, .message = "cannot sync the index '" + name + "'",
+                               .recoverable = true, .hint = "check the network or proxy, then try again"});
+        return 1;
+    }
+    stream.emit(DataEvent{"index_synced", nlohmann::json{{"name", name}, {"dir", dir.lexically_normal().string()}}.dump()});
+    return 0;
+}
+
+int cmd_info(const std::string& target, EventStream& stream, bool allVersions) {
+    auto* loaded = ensure_catalog(stream, CatalogNeed::Local);
+    if (!loaded) return 1;
+    auto& catalog = *loaded;
 
     const auto infoPlatform = detect_platform();
     auto match = catalog.resolve_target(target, infoPlatform);

@@ -9,8 +9,8 @@
 #   luban/kits/xdesk-compositor/src/native/    xdesk.native.wayland / .text (xkbcommon,
 #                                              pixman, FreeType, HarfBuzz, wlroots' missing two)
 #   luban/kits/*/src/native/                   a kit's binding to its platform (openhal-host)
-#   luban/os/desktop/src/                      SDL and Dear ImGui's backends, and
-#                                              luban.desktop.imgui (ImGui for the app)
+#                                              or C library (imkit.imgui: Dear ImGui)
+#   luban/os/desktop/src/                      SDL and Dear ImGui's backends
 #   luban/os/vm/src/native/                    a hypervisor's binding (Virtualization.framework)
 # Tests (any tests/ directory) include the test framework's headers.
 # (src/ and modules/: tools/lint_platform_headers.sh.)

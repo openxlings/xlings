@@ -4,7 +4,7 @@ import xlings.testkit;
 import std;
 import xlings.libs.json;
 import xlings.core.home.domain_producer;
-import xlings.core.elfread;
+import xlings.libs.elfread;
 import xlings.subos.home_view;
 import xlings.subos.manifest;
 
@@ -66,6 +66,9 @@ XTEST(DomainProducer, InstallsAtLogicalPrefixInsideANamespaceAndPreservesHostDat
     EXPECT_EQ(tk::read_file(privateHome / "data/xpkgs/fixture-x-domain-base/1.0.0/produced-prefix"),
               "/xlings/data/xpkgs/fixture-x-domain-base/1.0.0");
     EXPECT_EQ(tk::read_file(hostSentinel), "host must remain intact");
+    // A query inside answers from the index the system has (design
+    // 2026-10-16 L §7), and never fetches one.
+    EXPECT_TRUE(fs::is_directory(privateHome / "data/xim-pkgindex"));
     const auto outerBefore = Json::parse(before);
     const auto outerAfter = Json::parse(tk::read_file(home.dir() / ".xlings.json"));
     for (const auto* key : {"versions", "workspace", "configured", "activeSubos"})

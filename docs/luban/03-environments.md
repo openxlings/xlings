@@ -89,6 +89,35 @@ luban rm box                     # asks first, and says how much its home holds
 An environment's home is your data: only a removal you started and confirmed
 deletes it.
 
+## Checking it
+
+A system checks itself when it is made, upgraded, booted and entered, and when
+asked:
+
+```bash
+luban status box --check          # every check, and what failed
+luban status box --check --json   # {"ok": ..., "failed": [...], "items": [...]}
+```
+
+A check is critical or not. A critical failure stops what was under way: a new
+system is not ready, an upgrade is not switched to, a machine does not boot, an
+entry does not start, and each says which check failed. Any other failure is
+reported and the system is used. The checks are what any Linux userland needs
+-- `/usr` is the system's generation, every program in `/usr/bin` has its
+loader and finds the libraries it names, each package's programs start, its
+users, its login shell, its host name and machine id, a time zone, the
+certificate authorities, a UTF-8 locale, the terminal's description, and, for
+a desktop, its applications and a cursor theme -- and what the edition
+declares. An edition declares its own in `/usr/share/luban/checks.d/*.json`:
+
+```json
+{"checks": [{"id": "desk-session", "what": "its desktop session starts", "run": "xdesk --version", "critical": false, "timeout": 30}]}
+```
+
+`run` is a `/bin/sh -c` command inside the system; it passes when it exits 0
+within `timeout` seconds (120 by default). Entering runs the fast checks only,
+which read files and start no program.
+
 ## Using the clipboard
 
 The clipboard is not the display:

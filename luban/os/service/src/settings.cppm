@@ -38,5 +38,8 @@ std::vector<std::string_view> setting_values(std::string_view key);
 
 // The environment's root tree (`/` inside it), or nothing for a view.
 std::optional<fs::path> root_of(const fs::path& home, std::string_view name);
+// The /usr a system presents (its current generation), at its path on this
+// host: the root's /usr is a mount point there (design 2026-10-16 L §6.2).
+std::optional<fs::path> usr_of(const fs::path& home, std::string_view name);
 
 }  // namespace luban::service

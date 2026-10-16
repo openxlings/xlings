@@ -16,7 +16,7 @@ set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 tarball="" evidence="" index="" mirror="${HM_MIRROR:-GLOBAL}"
-scenarios="install doctor presets proxy clipboard edition agent upgrade terminal oldhome"
+scenarios="install doctor presets proxy clipboard edition agent upgrade terminal inside oldhome"
 user="${HM_USER:-hm}"
 while [[ $# -gt 0 ]]; do
     case "$1" in

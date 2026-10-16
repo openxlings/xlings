@@ -119,6 +119,10 @@ namespace platform_impl {
     // Windows has no euid/sudo concept; these stubs keep the
     // cross-platform identity API in platform.cppm compiling and inert.
     export bool is_root();
+    export bool can_write(const std::filesystem::path&);
+    export bool create_dir_link(const std::filesystem::path& target, const std::filesystem::path& link,
+                                std::string& error);
+    export std::optional<std::filesystem::path> dir_link_target(const std::filesystem::path& p);
     export void lchown_path_(const std::filesystem::path&,
                              unsigned int, unsigned int);
     export std::string home_for_user_(const std::string&);

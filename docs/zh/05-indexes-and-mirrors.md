@@ -76,6 +76,19 @@ $ xlings index list
 
 发布方需要提供什么，见 [31](31-hosting-an-index.md) 与 [specs/index-distribution](../specs/index-distribution.md)。
 
+### 由其他程序持有的索引
+
+自己维护索引的程序（mcpp 的 `mcpplibs`）指定索引数据与 payload 的位置，xlings 在那里拉取与安装：
+
+```json
+{ "name": "mcpplibs", "url": "...", "dir": "/home/u/.mcpp/indices/mcpplibs", "store": "/home/u/.mcpp/xpkgs" }
+```
+
+这类索引也由该程序刷新（`sync_index`），以便在替换正在使用的副本之前检查新副本；`xlings update` 只在它尚不存在时拉取。
+
+home 还可以从只读的**上游**安装：另一个 home 中身份一致的 payload 以链接条目发布，不复制、不写入
+（`upstreams`，见 [specs/xlings-json](../specs/xlings-json.md)）。
+
 ### 固定一个快照
 
 ```bash

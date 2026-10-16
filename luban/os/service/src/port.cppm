@@ -40,8 +40,14 @@ public:
     // `xlings <argv...>` on this terminal; its exit code.
     int terminal(std::vector<std::string> argv) const;
 
+    // This port, with a flag that ends what it runs when set (a person
+    // cancelling an operation from a window): the xlings it started is
+    // stopped, and the call returns 130.
+    Port cancellable(std::shared_ptr<std::atomic<bool>> flag) const;
+
 private:
     fs::path xlings_;
+    std::shared_ptr<std::atomic<bool>> cancel_;
 };
 
 // The xlings this luban drives: $LUBAN_XLINGS, next to this binary,

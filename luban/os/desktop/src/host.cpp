@@ -131,6 +131,31 @@ std::vector<std::string> mono_font_candidates() {
     return out;
 }
 
+std::optional<fs::path> shipped_font_dir() {
+    std::error_code ec;
+    const auto has = [&](const fs::path& d) { return fs::is_regular_file(d / "JetBrainsMono-Regular.ttf", ec); };
+    if (const char* f = std::getenv("LUBAN_OS_FONTS"); f && *f && has(f)) return fs::path(f);
+    std::vector<fs::path> candidates;
+    if (const char* exe = SDL_GetBasePath(); exe && *exe)
+        candidates.push_back(fs::path(reinterpret_cast<const char8_t*>(exe)) / ".." / "share" / "fonts" / "luban");
+    fs::path home;
+    if (const char* h = std::getenv("XLINGS_HOME"); h && *h) home = h;
+    else if (const char* u = std::getenv("HOME"); u && *u) home = fs::path(u) / ".xlings";
+    else if (const char* p = std::getenv("USERPROFILE"); p && *p) home = fs::path(p) / ".xlings";
+    if (!home.empty()) {
+        candidates.push_back(home / "subos" / "current" / "share" / "fonts" / "luban");
+        std::vector<fs::path> versions;
+        for (fs::directory_iterator it(home / "data" / "xpkgs" / "xim-x-luban-fonts", ec), end; !ec && it != end; it.increment(ec))
+            versions.push_back(it->path());
+        std::ranges::sort(versions, std::greater<>{});
+        for (const auto& v : versions) candidates.push_back(v / "share" / "fonts" / "luban");
+    }
+    candidates.push_back("/usr/share/fonts/luban");
+    for (const auto& c : candidates)
+        if (has(c)) return fs::weakly_canonical(c, ec);
+    return std::nullopt;
+}
+
 struct Window::Impl {
     SDL_Window* window { nullptr };
     SDL_Renderer* renderer { nullptr };
@@ -140,6 +165,7 @@ struct Window::Impl {
     SDL_Keymod injected_mods { SDL_KMOD_NONE };
     std::deque<std::string> injected_text;      // an SDL text event points at its text until it is taken
     bool imgui { false };                       // its context and backends are up (and to be shut down)
+    float scale_override { 0 };                 // tests: the interface's scale
     std::deque<std::string> injected_drops;     // likewise a drop event's file name
     std::mutex picking;                         // the file dialog answers on another thread
     std::optional<std::filesystem::path> picked;
@@ -179,28 +205,52 @@ std::expected<std::unique_ptr<Window>, std::string> Window::open(const Options& 
     io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
     io.IniFilename = nullptr;   // layouts are the app's to keep, not a file in the working directory
     style_();
-    const float scale = SDL_GetWindowDisplayScale(im.window) > 0 ? SDL_GetWindowDisplayScale(im.window) : 1.0f;
+    im.scale_override = o.scale;
+    const float scale = w->ui_scale();
     ImGui::GetStyle().ScaleAllSizes(scale);
     ImGui::GetStyle().FontScaleDpi = scale;
     ImGui_ImplSDL3_InitForSDLRenderer(im.window, im.renderer);
     ImGui_ImplSDLRenderer3_Init(im.renderer);
     im.imgui = true;
-    // Fonts: the interface's (CJK when there is one) and the console's
-    // monospace with the CJK font merged in for wide characters.
-    const auto ui = first_existing_(ui_font_candidates());
-    const auto mono = first_existing_(mono_font_candidates());
-    ImFont* uiFont = ui ? io.Fonts->AddFontFromFileTTF(ui->c_str(), 16.0f) : io.Fonts->AddFontDefault();
-    ImFont* monoFont = nullptr;
-    if (mono) {
-        monoFont = io.Fonts->AddFontFromFileTTF(mono->c_str(), w->mono_size_);
-        if (ui && monoFont) {
-            ImFontConfig merge;
-            merge.MergeMode = true;
-            io.Fonts->AddFontFromFileTTF(ui->c_str(), w->mono_size_, &merge);
-        }
+    // Fonts (design 2026-10-16 L §13.2, §13.7): the ones Luban OS ships,
+    // the same everywhere; else this machine's. Sizes are nominal: the
+    // atlas bakes each size it is asked for, at the window's scale.
+    const auto add = [&](const fs::path& file, ImFont* into = nullptr) -> ImFont* {
+        std::error_code ec;
+        if (!fs::is_regular_file(file, ec)) return nullptr;
+        ImFontConfig c;
+        c.MergeMode = into != nullptr;
+        c.DstFont = into;
+        return io.Fonts->AddFontFromFileTTF(file.string().c_str(), 16.0f, &c);
+    };
+    if (const auto dir = shipped_font_dir()) {
+        w->font_dir_ = *dir;
+        ImFont* ui = add(*dir / "Inter-Regular.ttf");
+        if (ui) add(*dir / "NotoSansSC-Regular.otf", ui);
+        ImFont* title = add(*dir / "fusion-pixel-12px-proportional-zh_hans.ttf");
+        ImFont* mono = add(*dir / "JetBrainsMono-Regular.ttf");
+        if (mono) add(*dir / "SarasaMonoSC-Regular.ttf", mono);
+        ImFont* bold = add(*dir / "JetBrainsMono-Bold.ttf");
+        if (bold) add(*dir / "SarasaMonoSC-Bold.ttf", bold);
+        w->ui_font_ = ui;
+        w->title_font_ = title ? title : ui;
+        w->mono_font_ = mono;
+        w->mono_bold_font_ = bold ? bold : mono;
     }
-    w->ui_font_ = uiFont;
-    w->mono_font_ = monoFont ? monoFont : uiFont;
+    if (!w->ui_font_ || !w->mono_font_) {
+        // This machine's: the interface's (CJK when there is one) and a
+        // monospace with that CJK font merged in for wide characters.
+        const auto ui = first_existing_(ui_font_candidates());
+        const auto mono = first_existing_(mono_font_candidates());
+        ImFont* uiFont = ui ? add(*ui) : nullptr;
+        if (!uiFont) uiFont = io.Fonts->AddFontDefault();
+        ImFont* monoFont = mono ? add(*mono) : nullptr;
+        if (monoFont && ui) add(*ui, monoFont);
+        if (!w->ui_font_) w->ui_font_ = uiFont;
+        if (!w->title_font_) w->title_font_ = w->ui_font_;
+        if (!w->mono_font_) w->mono_font_ = monoFont ? monoFont : uiFont;
+        if (!w->mono_bold_font_) w->mono_bold_font_ = w->mono_font_;
+    }
     return w;
 }
 
@@ -246,9 +296,13 @@ bool Window::begin_frame(int timeout_ms) {
             if (e.drop.data) dropped_.emplace_back(std::filesystem::path(reinterpret_cast<const char8_t*>(e.drop.data)));
             break;
         case SDL_EVENT_WINDOW_DISPLAY_SCALE_CHANGED: {
-            const float scale = SDL_GetWindowDisplayScale(im.window);
-            ImGui::GetStyle().FontScaleDpi = scale;
-            events_.push_back(opensal::DensityChanged{scale});
+            // The interface follows the display: sizes and fonts, once.
+            const float before = ImGui::GetStyle().FontScaleDpi, after = ui_scale();
+            if (before > 0 && std::abs(after - before) > 0.01f) {
+                ImGui::GetStyle().ScaleAllSizes(after / before);
+                ImGui::GetStyle().FontScaleDpi = after;
+            }
+            events_.push_back(opensal::DensityChanged{density()});
             break;
         }
         case SDL_EVENT_WINDOW_FOCUS_GAINED: events_.push_back(opensal::Focus{true}); break;
@@ -345,7 +399,26 @@ std::string Window::clipboard() const {
     return out;
 }
 void Window::set_clipboard(const std::string& text) { SDL_SetClipboardText(text.c_str()); }
-double Window::density() const { return SDL_GetWindowDisplayScale(impl_->window); }
+double Window::pixel_density() const {
+    const float d = SDL_GetWindowPixelDensity(impl_->window);
+    return d > 0 ? d : 1.0;
+}
+float Window::ui_scale() const {
+    if (impl_->scale_override > 0) return impl_->scale_override;
+    const float display = SDL_GetWindowDisplayScale(impl_->window), pixels = SDL_GetWindowPixelDensity(impl_->window);
+    if (display <= 0) return 1.0f;
+    return pixels > 0 ? display / pixels : display;
+}
+double Window::density() const {
+    if (impl_->scale_override > 0) return impl_->scale_override * pixel_density();
+    const float d = SDL_GetWindowDisplayScale(impl_->window);
+    return d > 0 ? d : 1.0;
+}
+void Window::show() { SDL_ShowWindow(impl_->window); SDL_RaiseWindow(impl_->window); }
+void Window::hide() { SDL_HideWindow(impl_->window); }
+void Window::minimize() { SDL_MinimizeWindow(impl_->window); }
+bool Window::focused() const { return (SDL_GetWindowFlags(impl_->window) & SDL_WINDOW_INPUT_FOCUS) != 0; }
+bool Window::visible() const { return (SDL_GetWindowFlags(impl_->window) & SDL_WINDOW_HIDDEN) == 0; }
 std::pair<int, int> Window::size() const {
     int w = 0, h = 0;
     SDL_GetWindowSize(impl_->window, &w, &h);

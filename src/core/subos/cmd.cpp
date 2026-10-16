@@ -2023,6 +2023,54 @@ int declare_isolation_at_creation_(const std::string& name, std::optional<policy
     return 0;
 }
 
+
+// A command for a system in a prefix domain runs where the system lives
+// (part 3 §B), and what it says comes back (design 2026-10-16 L §5): at a
+// terminal it speaks there itself and asks there; asked through the
+// interface (luban, the window), it runs as `interface subos_command` and its
+// events are relayed. The one path for every routed command and for making a
+// system -- making one used to bypass it, and `luban new` showed one line for
+// minutes. `words` is the subos command without the leading `subos`.
+std::expected<int, std::string> run_domain_relayed_(const xlings::home::prefix_domain::Domain& domain,
+                                                   std::vector<std::string> words,
+                                                   std::optional<xlings::home::domain_producer::OutputBinding> output,
+                                                   bool yes, EventStream& stream, bool runtime) {
+    if (stream.interactive()) {
+        std::vector<std::string> args{"subos"};
+        args.insert(args.end(), words.begin(), words.end());
+        if (yes) args.push_back("-y");
+        return xlings::home::domain_producer::run(domain, args, output, runtime);
+    }
+    nlohmann::json call{{"argv", words}};
+    if (yes) call["yes"] = true;
+    const std::vector<std::string> args{"interface", "subos_command", "--args", call.dump()};
+    int answered = -1;
+    auto rc = xlings::home::domain_producer::run(domain, args, output, runtime,
+        [&](std::string_view text) {
+            auto j = nlohmann::json::parse(text, nullptr, false);
+            if (!j.is_object()) return;
+            const auto kind = j.value("kind", "");
+            if (kind == "result") answered = j.value("exitCode", 1);
+            else if (kind == "data")
+                stream.emit(DataEvent{j.value("dataKind", ""), j.value("payload", nlohmann::json()).dump()});
+            else if (kind == "progress")
+                stream.emit(ProgressEvent{j.value("phase", ""), j.value("percent", 0.0f), j.value("message", "")});
+            else if (kind == "log") {
+                const auto level = j.value("level", "info");
+                stream.emit(LogEvent{level == "warn" ? LogLevel::warn : level == "error" ? LogLevel::error
+                                     : level == "debug" ? LogLevel::debug : LogLevel::info,
+                                     j.value("message", "")});
+            } else if (kind == "error")
+                stream.emit(ErrorEvent{error_code_from_wire(j.value("code", "")), j.value("message", ""),
+                                       j.value("recoverable", false), j.value("hint", "")});
+            else if (kind == "prompt")
+                stream.emit(ErrorEvent{ErrorCode::InvalidInput, j.value("question", ""), true,
+                                       "answer it with -y"});
+        });
+    if (rc && answered >= 0) rc = answered;
+    return rc;
+}
+
 int run(int argc, char* argv[], EventStream& stream) {
     // Drop the options root publishes as valid on every command before any
     // subcommand's argv loop sees them. `subos new` and `subos use` end their
@@ -2061,6 +2109,25 @@ int run(int argc, char* argv[], EventStream& stream) {
             .recoverable = false,
             .hint = "usage: xlings subos <new|use|list|ls|remove|rm|info|i|stop|runtime> [name]",
         });
+    };
+    // A name already taken is not a usage mistake: it says so, and what to do
+    // (U17: it used to read "control registry is invalid or already claims
+    // this name" followed by the usage line).
+    auto taken_or_usage = [&](std::string_view detail) {
+        if (detail.ends_with("already exists")) {
+            const auto first = detail.find('\'');
+            const auto last = detail.rfind('\'');
+            const auto taken = first != std::string_view::npos && last > first
+                ? std::string(detail.substr(first + 1, last - first - 1)) : std::string{};
+            stream.emit(ErrorEvent{
+                .code = ErrorCode::InvalidInput,
+                .message = std::string(detail),
+                .recoverable = true,
+                .hint = std::format("remove it first (xlings subos remove {}), or choose another name", taken),
+            });
+            return;
+        }
+        usageError(detail);
     };
 
     // A SubOS on another carrier: its xlings answers there (part 3 §5).
@@ -2124,41 +2191,7 @@ int run(int argc, char* argv[], EventStream& stream) {
                 words[i + 1] = (fs::path("/run/xlings-domain-output") / leaf).string() + (dir ? "/" : "");
                 break;
             }
-            std::expected<int, std::string> rc = 0;
-            if (stream.interactive()) {
-                std::vector<std::string> args{"subos"};
-                args.insert(args.end(), words.begin(), words.end());
-                if (yesGiven) args.push_back("-y");
-                rc = xlings::home::domain_producer::run((**scope).domain, args, output, true);
-            } else {
-                nlohmann::json call{{"argv", words}};
-                if (yesGiven) call["yes"] = true;
-                const std::vector<std::string> args{"interface", "subos_command", "--args", call.dump()};
-                int answered = -1;
-                rc = xlings::home::domain_producer::run((**scope).domain, args, output, true,
-                    [&](std::string_view text) {
-                        auto j = nlohmann::json::parse(text, nullptr, false);
-                        if (!j.is_object()) return;
-                        const auto kind = j.value("kind", "");
-                        if (kind == "result") answered = j.value("exitCode", 1);
-                        else if (kind == "data")
-                            stream.emit(DataEvent{j.value("dataKind", ""), j.value("payload", nlohmann::json()).dump()});
-                        else if (kind == "progress")
-                            stream.emit(ProgressEvent{j.value("phase", ""), j.value("percent", 0.0f), j.value("message", "")});
-                        else if (kind == "log") {
-                            const auto level = j.value("level", "info");
-                            stream.emit(LogEvent{level == "warn" ? LogLevel::warn : level == "error" ? LogLevel::error
-                                                 : level == "debug" ? LogLevel::debug : LogLevel::info,
-                                                 j.value("message", "")});
-                        } else if (kind == "error")
-                            stream.emit(ErrorEvent{error_code_from_wire(j.value("code", "")), j.value("message", ""),
-                                                   j.value("recoverable", false), j.value("hint", "")});
-                        else if (kind == "prompt")
-                            stream.emit(ErrorEvent{ErrorCode::InvalidInput, j.value("question", ""), true,
-                                                   "answer it with -y"});
-                    });
-                if (rc && answered >= 0) rc = answered;
-            }
+            auto rc = run_domain_relayed_((**scope).domain, words, output, yesGiven, stream);
             if (!rc) {
                 stream.emit(ErrorEvent{.code = ErrorCode::Internal, .message = rc.error(), .recoverable = true});
                 return 1;
@@ -2347,7 +2380,7 @@ int run(int argc, char* argv[], EventStream& stream) {
                 }
                 domain = sourceDomain.logicalHome.string();
                 const auto fresh = preflight_domain_at_creation_(name, true, domain, {});
-                if (!fresh) { usageError(fresh.error()); return 1; }
+                if (!fresh) { taken_or_usage(fresh.error()); return 1; }
                 std::vector<std::string> arguments{"subos", "new"};
                 for (int i = 3; i < argc; ++i) {
                     if (std::string_view(argv[i]) == "--domain") { ++i; continue; }
@@ -2361,7 +2394,7 @@ int run(int argc, char* argv[], EventStream& stream) {
             }
         }
         const auto domain_ready = preflight_domain_at_creation_(name, rootfs, domain, fromSpec);
-        if (!domain_ready) { usageError(domain_ready.error()); return 1; }
+        if (!domain_ready) { taken_or_usage(domain_ready.error()); return 1; }
         if (!domain.empty()) {
             std::vector<std::string> producerArgs{"subos", "new"};
             for (int i = 3; i < argc; ++i) {
@@ -2747,6 +2780,7 @@ int run(int argc, char* argv[], EventStream& stream) {
     // implementation through the plumbing names (cli.cpp says where the
     // user-facing spellings went).
     if (sub == "__boot") return run_boot_(argc, argv, stream, usageError);
+    if (sub == "__check") return run_check_(argc, argv, stream, usageError);
     if (sub == "__export" || sub == "export") return run_export_(argc, argv, stream, usageError);
     if (sub == "diff") return run_diff_(argc, argv, stream, usageError);
     if (sub == "pack") return run_pack_(argc, argv, stream, usageError);

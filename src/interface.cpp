@@ -15,6 +15,8 @@ import xlings.libs.json;
 import xlings.platform;
 import xlings.runtime;
 import xlings.core.xim.index;
+import xlings.core.config;
+import xlings.core.home;
 
 namespace xlings::interface {
 
@@ -131,7 +133,18 @@ int run(const mcpplibs::cmdline::ParsedArgs& args,
     platform::set_tui_mode(true);
 
     if (args.is_flag_set("version")) {
-        std::cout << nlohmann::json({{"protocol_version", kProtocolVersion}}).dump()
+        // The handshake (design mcpp 2026-10-16 §14 X5): what a client checks
+        // before it uses this xlings, read without running anything.
+        nlohmann::json names = nlohmann::json::array();
+        for (auto& s : registry.list_all()) names.push_back(s.name);
+        nlohmann::json layouts = nlohmann::json::array();
+        for (int l = 1; l <= home::kLayout; ++l) layouts.push_back(l);
+        std::cout << nlohmann::json({{"protocol_version", kProtocolVersion},
+                                     {"version", std::string(Info::VERSION)},
+                                     {"capabilities", std::move(names)},
+                                     {"home_layouts", std::move(layouts)},
+                                     {"features", {"index_dir", "index_store", "upstreams", "payload_status",
+                                                   "sync_index", "install_targets_complete"}}}).dump()
                   << "\n" << std::flush;
         return 0;
     }

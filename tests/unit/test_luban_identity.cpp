@@ -96,3 +96,18 @@ XTEST(LubanIdentity, TheWelcomeFitsSeventyTwoColumnsAndReadsWithoutColour, .area
     const auto zh = luban::service::welcome(e, "sandbox", false, {.zh = true, .color = false, .utf8 = true}, facts);
     EXPECT_NE(zh[2].find("系统"), std::string::npos) << zh[2];
 }
+
+XTEST(LubanIdentity, AUsersOwnPackagesComeBeforeTheSystems, .area = "luban", .covers = {"LUBAN-USER-LAYER"}) {
+    auto home = tk::Home::isolated("luban-user-layer");
+    const auto e = home.dir() / "etc";
+    auto first = etc::ensure_user_layer_scripts(e);
+    ASSERT_TRUE(first) << first.error();
+    EXPECT_EQ(*first, (std::vector<std::string>{"profile.d/xlings-user.sh", "fish/conf.d/xlings-user.fish"}));
+    EXPECT_NE(tk::read_file(e / "profile.d/xlings-user.sh").find("$HOME/.xlings/subos/current/bin"), std::string::npos);
+    EXPECT_NE(tk::read_file(e / "fish/conf.d/xlings-user.fish").find("$HOME/.xlings/subos/current/bin"), std::string::npos);
+    tk::write_file(e / "profile.d/xlings-user.sh", "# mine\n");
+    auto again = etc::ensure_user_layer_scripts(e);
+    ASSERT_TRUE(again);
+    EXPECT_TRUE(again->empty());
+    EXPECT_EQ(tk::read_file(e / "profile.d/xlings-user.sh"), "# mine\n") << "machine state: an edit stays";
+}

@@ -6,7 +6,7 @@ import std;
 import xlings.subos.library_cache;
 import xlings.subos.caps;
 import xlings.platform.root_mount;
-import xlings.core.elfread;
+import xlings.libs.elfread;
 
 namespace tk = xlings::testkit;
 namespace lc = xlings::subos::library_cache;

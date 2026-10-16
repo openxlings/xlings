@@ -9,6 +9,7 @@ import xlings.subos.root_etc;
 import xlings.subos.rootfs;
 import xlings.subos.library_cache;
 import xlings.subos.home_view;
+import xlings.subos.root_check;
 
 namespace luban::stage0 {
 
@@ -221,10 +222,26 @@ int run(int argc, char* argv[]) {
             say(laid.error());
             continue;
         }
+        if (auto mounted = rootfs::mount_usr("/", dir); !mounted) {
+            say(mounted.error());
+            continue;
+        }
         mark("lay_out");
         if (auto etc = xlings::subos::root_etc::fill_machine_etc("/etc", dir); !etc) recover("machine /etc: " + etc.error());
         if (auto users = xlings::subos::root_etc::apply_sysusers("/etc", rootfs::usr_of(dir)); !users) recover("machine /etc: " + users.error());
         mark("machine_etc");
+        // The fast self-check (design 2026-10-16 L §11): a generation that is
+        // not usable is not booted; the next entry is tried.
+        if (const auto report = xlings::subos::root_check::check("/", xlings::subos::root_check::Depth::Fast, {.run = false});
+            !report.ok()) {
+            std::string why;
+            for (const auto& item : report.items)
+                if (item.critical && !item.ok) why += (why.empty() ? "" : "; ") + item.what + ": " + item.detail;
+            say(std::format("'{}' is not usable ({}); trying the next entry", candidate.subos, why));
+            log_event(home, {{"event", "boot-skip"}, {"subos", candidate.subos}, {"why", why}});
+            continue;
+        }
+        mark("check");
         if (auto cache = library_cache::refresh("/", home, candidate.subos); !cache) recover(cache.error());
         mark("library_cache");
         const auto next = boot::record_boot(*config, candidate);
@@ -239,7 +256,16 @@ int run(int argc, char* argv[]) {
                         rootfs::current(dir).value_or(0)));
         const std::map<std::string, std::string> env{
             {"PATH", "/usr/local/sbin:/usr/local/bin:/usr/bin:/bin"}, {"HOME", "/root"},
-            {"TERM", "linux"}, {"XLINGS_HOME", home.home.string()}};
+            {"TERM", "linux"}, {"XLINGS_HOME", home.home.string()},
+            // Which system this is, for every process the init starts (L §9).
+            {"XLINGS_ROOT_INSTANCE", candidate.subos}};
+        // The generation's /usr stays in use while the machine's first
+        // process lives: an init that unmounts every filesystem before it
+        // re-execs stage-0 (busybox's `::shutdown:/bin/umount -a -r`, then
+        // `::restart:/usr/bin/luban-init` for `luban boot --now`) finds it
+        // busy, keeps it mounted read-only, and finds stage-0 there.
+        if (!platform::hold_across_exec("/usr"))
+            say(std::format("/usr: {} (continuing)", platform::error_text(platform::last_error())));
         const int error = platform::exec_path({(*init)->string()}, env);
         say(std::format("{} did not start: {}; trying the next entry", (*init)->string(),
                         platform::error_text(error)));

@@ -80,6 +80,26 @@ luban rm box                     # asks first, and says how much its home holds
 
 环境的 home 是你的数据：只有你发起并确认的删除才会删除它。
 
+## 检查
+
+系统在创建、升级、启动和进入时检查自身，也可以随时要求检查：
+
+```bash
+luban status box --check          # every check, and what failed
+luban status box --check --json   # {"ok": ..., "failed": [...], "items": [...]}
+```
+
+检查分关键与非关键。关键检查失败会中止正在进行的操作：新系统不就绪，升级不切换，机器不启动，进入不开始，并说明是哪一项失败。
+其余失败只报告，系统照常使用。检查项是任何 Linux 用户空间都需要的：`/usr` 是系统的这一代，`/usr/bin` 中每个程序都有其加载器、
+能找到它声明的库，每个包的程序都能启动，用户、登录 shell、主机名与 machine id、时区、证书机构、UTF-8 locale、终端描述，
+桌面系统还有应用列表和光标主题；再加上 edition 声明的检查。edition 在 `/usr/share/luban/checks.d/*.json` 中声明自己的检查：
+
+```json
+{"checks": [{"id": "desk-session", "what": "its desktop session starts", "run": "xdesk --version", "critical": false, "timeout": 30}]}
+```
+
+`run` 是在系统内执行的 `/bin/sh -c` 命令；在 `timeout` 秒（默认 120）内以 0 退出即通过。进入时只运行快速检查：只读文件，不启动程序。
+
 ## 使用剪贴板
 
 剪贴板不等于显示：

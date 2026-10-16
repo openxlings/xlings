@@ -36,7 +36,7 @@ rootfs_new tiny subos:luban-tiny "$RUNTIME_DIR/new.log" || fail "subos new --fro
 retry X install -y --subos tiny xim:linux-kernel >"$RUNTIME_DIR/kernel.log" 2>&1 \
   || { tail -20 "$RUNTIME_DIR/kernel.log"; fail "install the kernel into the root"; }
 S="$H/subos/tiny"
-KERNEL="$(ls "$S"/root/usr/lib/modules/*/vmlinuz | head -1)"
+KERNEL="$(root_kernel "$S")"
 [[ -f "$KERNEL" ]] || fail "the root has no kernel"
 
 log "the tree, in a bwrap instance"
@@ -115,7 +115,8 @@ tree_vm="$(sed -n 's/.*LUBAN-BOOT stage=0 .* tree=\([0-9a-f]*\).*/\1/p' <<<"$b1"
 log "boot 2: the trial, once; then --now back to default"
 b2="$(qemu_boot 2)"; echo "$b2" | sed 's/^/      | /'
 grep -q "LUBAN-BOOT stage=1 boot=trial:once" <<<"$b2" || fail "boot 2: the trial did not boot once"
-grep -q "LUBAN-BOOT stage=2 boot=default:once" <<<"$b2" || fail "boot 2: --now did not hand / to default"
+grep -q "LUBAN-BOOT stage=2 boot=default:once" <<<"$b2" \
+  || { tr -d '\r' < "$RUNTIME_DIR/boot-2.log" | tail -40; fail "boot 2: --now did not hand / to default"; }
 [[ "$(grep -c 'Linux version' "$RUNTIME_DIR/boot-2.log")" -le 1 ]] || fail "boot 2: --now restarted the kernel"
 
 log "boot 3: the trial was not made the default"
