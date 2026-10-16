@@ -82,6 +82,8 @@ struct Request {
     fs::path root;
     // Host facts the compiler must not read itself, so a test can pin them.
     std::function<bool(std::string_view)> host_exists;
+    // Where a host path resolves (its symlinks followed), likewise.
+    std::function<std::string(std::string_view)> host_resolve;
     std::vector<MountOp> root_mounts; // Owner-checked, private skeleton and exact RO leaves.
     Persist persist { Persist::All };     // a root's state after the session
     // Who logs in to a root (part 3 §6.1): its passwd's answer. root unless

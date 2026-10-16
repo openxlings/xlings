@@ -45,6 +45,13 @@ bool Intent::exists(std::string_view path) const {
     return fs::exists(fs::path(path), ec);
 }
 
+std::string Intent::resolve(std::string_view path) const {
+    if (host_resolve) return host_resolve(path);
+    std::error_code ec;
+    auto resolved = fs::canonical(fs::path(path), ec);
+    return ec ? std::string(path) : resolved.generic_string();
+}
+
 Intent lower(const policy::Policy& policy, const HomeView& home, const spec::Request& r) {
     Intent in;
     in.instance = r.instance;
@@ -81,6 +88,7 @@ Intent lower(const policy::Policy& policy, const HomeView& home, const spec::Req
     in.host_env = r.host_env;
     in.explicit_env = r.explicit_env;
     in.host_exists = r.host_exists;
+    in.host_resolve = r.host_resolve;
     in.needs = policy.needs;
     in.no_degrade = policy.no_degrade;
     for (const auto& m : policy.mounts) {

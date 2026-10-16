@@ -26,6 +26,7 @@ import xlings.subos.spec;
 import xlings.confine.provider;
 import xlings.confine;
 import xlings.subos.network;
+import xlings.subos.session;
 namespace xlings::xim::lua_boundary {
 namespace xpkg = mcpplibs::xpkg;
 namespace fs = std::filesystem;
@@ -418,7 +419,8 @@ struct Worker {
 std::expected<std::shared_ptr<Worker>, std::string>
 launch(const subos::policy::Policy& declared, const fs::path& package,
        const xpkg::ExecutionContext& context, bool build = false,
-       const std::vector<fs::path>& hook_logs = {}, bool readonly_payload = false) {
+       const std::vector<fs::path>& hook_logs = {}, bool readonly_payload = false,
+       bool layer_only = false) {
     try {
         const auto& paths = Config::paths();
         subos::HomeView home{paths.homeDir};
@@ -493,8 +495,23 @@ launch(const subos::policy::Policy& declared, const fs::path& package,
                                      .argv = command,
                                      .host_env = inherited,
                                      .cwd = w->scratch.string()};
+        // What the layer boundary (needs_layer_boundary, a borrowed payload)
+        // asks of the filesystem is a write fence: a recipe does not write the
+        // layer below this home or the payloads it borrows. Inside a Luban
+        // system nested user namespaces are forbidden and bwrap cannot start;
+        // there Landlock fences the writes, and the system's own pid namespace
+        // already separates the worker from the host's processes. On a host
+        // bwrap remains the only way, and a policy the user declared keeps
+        // what it declared.
+        const bool fence = platform::is_linux && layer_only && Config::inside_root() &&
+                           !(capabilities.bwrap && capabilities.bwrap->usable) &&
+                           capabilities.landlock_abi >= 1;
+        if (fence)
+            for (const auto dimension : {"fs", "pid"})
+                if (auto need = p.needs.find(dimension); need != p.needs.end())
+                    need->second = subos::policy::Need::Should;
         if (platform::is_linux)
-            request.preferred = subos::spec::Backend::Bwrap;
+            request.preferred = fence ? subos::spec::Backend::Landlock : subos::spec::Backend::Bwrap;
         auto compiled = xlings::confine::compile(p, home, capabilities, request);
         if (!compiled) {
             std::string reason = "Lua worker isolation unavailable";
@@ -503,10 +520,25 @@ launch(const subos::policy::Policy& declared, const fs::path& package,
             return std::unexpected(reason);
         }
         auto sandbox = std::move(*compiled);
-        if (sandbox.backend != subos::spec::Backend::Bwrap)
+        if (sandbox.backend != subos::spec::Backend::Bwrap &&
+            sandbox.backend != subos::spec::Backend::Landlock)
             for (const auto& path : hook_logs)
                 if (!path.empty())
                     w->hook_logs.insert(path.lexically_normal());
+        // An owned hook log: a regular file in <home>/logs/hooks, reached
+        // through no symlink, made before the worker starts.
+        const auto log_directory = home.home / "logs" / "hooks";
+        auto own_log = [&](const fs::path& path) -> std::expected<void, std::string> {
+            if (path.parent_path().lexically_normal() != log_directory.lexically_normal())
+                return std::unexpected("hook log is outside the owned hook log directory");
+            fs::create_directories(log_directory);
+            if (fs::canonical(log_directory) != fs::canonical(home.home) / "logs" / "hooks")
+                return std::unexpected("hook log directory traverses a symlink");
+            if (!platform::worker::prepare_log(path))
+                return std::unexpected("hook log is not a writable regular file: " + path.string());
+            w->hook_logs.insert(path.lexically_normal());
+            return {};
+        };
         if (sandbox.backend == subos::spec::Backend::Bwrap) {
             // No compiled instance mount is writable by default for a recipe.
             for (auto& mount : sandbox.mounts) {
@@ -645,23 +677,48 @@ launch(const subos::policy::Policy& declared, const fs::path& package,
                                           w->shadow_parent.generic_string(),
                                           w->payload.parent_path().generic_string()});
             }
-            const auto log_directory = home.home / "logs" / "hooks";
             for (const auto& path : hook_logs) {
                 if (path.empty())
                     continue;
-                if (path.parent_path().lexically_normal() != log_directory.lexically_normal())
-                    return std::unexpected("hook log is outside the owned hook log directory");
-                fs::create_directories(log_directory);
-                if (fs::canonical(log_directory) != fs::canonical(home.home) / "logs" / "hooks")
-                    return std::unexpected("hook log directory traverses a symlink");
-                if (!platform::worker::prepare_log(path))
-                    return std::unexpected("hook log is not a writable regular file: " +
-                                           path.string());
-                w->hook_logs.insert(path.lexically_normal());
+                if (auto owned = own_log(path); !owned)
+                    return std::unexpected(owned.error());
                 sandbox.mounts.push_back(
                     {subos::spec::MountKind::Bind, path.generic_string(), path.generic_string()});
             }
             command = xlings::confine::provider::bwrap_argv(sandbox);
+        } else if (sandbox.backend == subos::spec::Backend::Landlock) {
+            // The fence the worker puts up before it reads anything
+            // (worker_main): it writes its scratch, the devices, its hook
+            // logs and what it builds -- an index being built, or this
+            // install's payload directory (its parent, which a hook may
+            // replace it in; bwrap shows it a copy of that directory) --
+            // and nothing else: not the layer below, not a borrowed payload.
+            std::vector<fs::path> writable{w->scratch, "/dev"};
+            if (build) {
+                writable.push_back(package);
+            } else if (!readonly_payload && !context.install_dir.empty()) {
+                const auto parent = fs::absolute(context.install_dir).lexically_normal().parent_path();
+                fs::create_directories(parent);
+                writable.push_back(fs::canonical(parent));
+            }
+            for (const auto& path : hook_logs) {
+                if (path.empty())
+                    continue;
+                if (auto owned = own_log(path); !owned)
+                    return std::unexpected(owned.error());
+                writable.push_back(path);
+            }
+            for (const auto directory : {"home", "tmp"})
+                fs::create_directories(w->scratch / directory);
+            const auto private_home = (w->scratch / "home").generic_string();
+            sandbox.env["HOME"] = private_home;
+            sandbox.env["TMPDIR"] = (w->scratch / "tmp").generic_string();
+            sandbox.env["XDG_CONFIG_HOME"] = private_home + "/.config";
+            sandbox.env["XDG_DATA_HOME"] = private_home + "/.local/share";
+            sandbox.env["XDG_CACHE_HOME"] = private_home + "/.cache";
+            sandbox.env["XDG_STATE_HOME"] = private_home + "/.local/state";
+            sandbox.landlock_rw = std::move(writable);
+            log::debug("Lua worker: a Landlock write fence (inside a Luban system; pid: the system's)");
         } else {
             // compile() refused all Must dimensions; this is the documented advisory
             // platform path, still an external worker with no in-process fallback.
@@ -772,6 +829,7 @@ std::expected<xpkg::Package, std::string> metadata(const fs::path& package,
         return std::unexpected(layer_required.error());
     if (!*p && !*layer_required)
         return xpkg::load_package(package, context);
+    const bool layer_only = !*p;
     if (!*p)
         p->emplace(minimum_layer_policy());
     if (*layer_required) {
@@ -779,7 +837,7 @@ std::expected<xpkg::Package, std::string> metadata(const fs::path& package,
         (**p).needs["pid"] = subos::policy::Need::Must;
     }
     const auto absolute_package = fs::absolute(package);
-    auto w = launch(**p, absolute_package, {});
+    auto w = launch(**p, absolute_package, {}, false, {}, false, layer_only);
     if (!w)
         return std::unexpected(w.error());
     return xpkg::load_package(absolute_package, context,
@@ -811,6 +869,7 @@ std::expected<xpkg::PackageIndex, std::string> build_index(const fs::path& repo,
         return std::unexpected(layer_required.error());
     if (!*p && !*layer_required)
         return xpkg::build_index(repo, ns, output);
+    const bool layer_only = !*p;
     if (!*p)
         p->emplace(minimum_layer_policy());
     if (*layer_required) {
@@ -824,7 +883,7 @@ std::expected<xpkg::PackageIndex, std::string> build_index(const fs::path& repo,
     boundaries.index_build =
         [&](const fs::path& directory,
             const xpkg::BuildOutput& sink) -> std::expected<void, std::string> {
-        auto worker = launch(**p, directory, {}, true);
+        auto worker = launch(**p, directory, {}, true, {}, false, layer_only);
         if (!worker)
             return std::unexpected(worker.error());
         auto result = (*worker)->call({{"operation", "build_index"},
@@ -847,6 +906,7 @@ create_executor(const fs::path& package, xpkg::ExecutionContext& context,
         return std::unexpected(p.error());
     if (!*p && !readonly_payload)
         return xpkg::create_executor(package);
+    const bool layer_only = !*p;
     if (readonly_payload) {
         if (!*p)
             p->emplace(minimum_layer_policy());
@@ -854,7 +914,8 @@ create_executor(const fs::path& package, xpkg::ExecutionContext& context,
         (**p).needs["pid"] = subos::policy::Need::Must;
     }
     const auto absolute_package = fs::absolute(package);
-    auto worker = launch(**p, absolute_package, context, false, hook_logs, readonly_payload);
+    auto worker =
+        launch(**p, absolute_package, context, false, hook_logs, readonly_payload, layer_only);
     if (!worker)
         return std::unexpected(worker.error());
     if (!context.install_file.empty()) {
@@ -948,6 +1009,22 @@ int worker_main(int argc, char* argv[]) {
     if (!attached)
         return 125;
     auto channel = *attached;
+    // A Landlock worker (launch, inside a Luban system) fences its writes
+    // before it reads a request; a fence that cannot be put up ends it.
+    if (const auto env = platform::environment();
+        env.contains(std::string(subos::session::kLandlockRwEnv))) {
+        const auto rw = env.find(std::string(subos::session::kLandlockRwEnv));
+        std::vector<fs::path> paths;
+        std::istringstream in{rw->second};
+        for (std::string line; std::getline(in, line);)
+            if (!line.empty())
+                paths.emplace_back(line);
+        platform::unset_env_variable(std::string(subos::session::kLandlockRwEnv));
+        if (!platform::landlock::restrict_writes(paths, true)) {
+            platform::worker::close(channel);
+            return 125;
+        }
+    }
     if (argc == 5 && !platform::worker::install_trace(argv[4])) {
         platform::worker::close(channel);
         return 125;

@@ -3954,6 +3954,18 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& requested
         // aside, is no longer needed.
         if (replacement) replacement->commit();
 
+        // A runtime itself installed: the home's runtime links (<home>/abi)
+        // name what the home now has, as a removal moves them (cmd_remove).
+        // A toolchain bound through them starts, whether or not anything
+        // installed after it had a runtime dep. Inside a root they are its
+        // generation's, never switched from here.
+        if constexpr (platform::is_linux) {
+            const char* rootInstance = std::getenv("XLINGS_ROOT_INSTANCE");
+            if (abi::is_runtime(node.name) && !(rootInstance && *rootInstance))
+                if (auto refreshed = abi::refresh(Config::paths().homeDir, std::format("install {}", node.name)))
+                    for (const auto& w : refreshed->what) log::info("runtime {}", w);
+        }
+
         if (onStatus) {
             onStatus({ .name = node.name,
                        .phase = InstallPhase::Done,

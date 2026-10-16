@@ -607,6 +607,14 @@ status = "required"
 text = "self doctor --isolation diagnoses; --fix installs the root-owned backend"
 status = "required"
 
+[SANDBOX-HOST-USERLAND]
+text = "a sandbox presents the host's /bin, /sbin and /lib* where the host's resolve: a merged /usr's links into /usr, a non-merged host's own directories (Alpine, openSUSE Leap 15)"
+status = "required"
+
+[LAYER-BOUNDARY-IN-SYSTEM]
+text = "inside a Luban system, where bwrap cannot start, a home other than the system's builds its catalog and runs its hooks behind a Landlock write fence: the worker writes its scratch, its logs and what it installs, never the layer below or a borrowed payload; on a host without bwrap the boundary still refuses"
+status = "required"
+
 [ATOMIC-PUBLICATION]
 text = "an entry is published under its name atomically and never over an existing one; where the filesystem lacks the rename flag (NFSv3), a file or a link is published as a hard link with the same refusal, and a directory by rename onto a name that is not there; a home on NFSv3 installs packages whose configuration places files"
 status = "required"

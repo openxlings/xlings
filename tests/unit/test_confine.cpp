@@ -221,3 +221,43 @@ XTEST(Confine, AnInstanceSeesNoOtherInstanceOrItsConfig, .area = "subos", .cover
     EXPECT_TRUE(has(sp::MountKind::Tmpfs, "/h/config/subos")) << "other instances' policy, persona and record";
     EXPECT_TRUE(has(sp::MountKind::RoBind, "/h/config/subos/box")) << "its own config, read-only";
 }
+
+// The host's /bin, /sbin and /lib* as the host has them (fix plan 2026-10-16
+// D2): a merged-/usr host's links resolve into /usr; Alpine's /lib (ld-musl)
+// and openSUSE Leap 15's /lib64 (ld-linux) are directories of their own, and
+// binding /usr/lib over them left /bin/sh without its loader.
+XTEST(Confine, TheHostsProgramAndLibraryDirectoriesAreWhereTheHostsResolve,
+      .area = "subos", .covers = {"SANDBOX-HOST-USERLAND"}) {
+    const xlings::subos::HomeView home{"/h"};
+    auto mounts_on = [&](std::set<std::string_view> present, std::map<std::string_view, std::string> links) {
+        sp::Request r;
+        r.instance = "box";
+        r.instance_dir = "/h/subos/box";
+        r.user = "u";
+        r.argv = {"sh"};
+        r.host_exists = [present](std::string_view p) {
+            return (!p.starts_with("/lib") && !p.starts_with("/bin") && !p.starts_with("/sbin")) || present.contains(p);
+        };
+        r.host_resolve = [links](std::string_view p) {
+            auto it = links.find(p);
+            return it == links.end() ? std::string(p) : it->second;
+        };
+        auto s = cf::compile(xlings::subos::policy::legacy(), home, linux_host(true, false, 0), r);
+        EXPECT_TRUE(s);
+        std::map<std::string, std::string> top;
+        if (s)
+            for (const auto& m : s->mounts)
+                if (m.kind == sp::MountKind::RoBind && (m.dst.starts_with("/lib") || m.dst == "/bin" || m.dst == "/sbin"))
+                    top[m.dst] = m.src;
+        return top;
+    };
+    const auto merged = mounts_on({"/bin", "/sbin", "/lib", "/lib64"},
+                                  {{"/bin", "/usr/bin"}, {"/sbin", "/usr/sbin"}, {"/lib", "/usr/lib"},
+                                   {"/lib64", "/usr/lib64"}});
+    EXPECT_EQ(merged, (std::map<std::string, std::string>{
+                          {"/bin", "/usr/bin"}, {"/sbin", "/usr/sbin"}, {"/lib", "/usr/lib"}, {"/lib64", "/usr/lib64"}}));
+    const auto alpine = mounts_on({"/bin", "/sbin", "/lib"}, {});
+    EXPECT_EQ(alpine, (std::map<std::string, std::string>{{"/bin", "/bin"}, {"/sbin", "/sbin"}, {"/lib", "/lib"}}));
+    const auto leap = mounts_on({"/bin", "/sbin", "/lib", "/lib64"}, {});
+    EXPECT_EQ(leap.at("/lib64"), "/lib64") << "Leap 15's loader is in its own /lib64";
+}

@@ -145,7 +145,9 @@ std::vector<std::string> concrete_versions_(
 
 std::string select_version_(const xpkg::Package& pkg,
                             const std::string& platform,
-                            const std::string& versionHint) {
+                            const std::string& versionHint,
+                            std::string_view client,
+                            std::string* passedOver) {
     auto platformIt = pkg.xpm.entries.find(platform);
     if (platformIt == pkg.xpm.entries.end()) return {};
 
@@ -168,16 +170,38 @@ std::string select_version_(const xpkg::Package& pkg,
         return semver::select_best(concrete_versions_(versions), versionHint);
     }
 
-    // No hint: resolve "latest" ref or pick highest
+    // No hint: resolve "latest" ref or pick highest -- one this client can
+    // use. A version that needs a newer client (its min_client) is passed
+    // over for the newest one up to it that this client can use; with none,
+    // it stays, and the install says which client it needs.
+    if (client.empty()) client = Info::VERSION;
+    auto usable = [&](const std::string& version) {
+        auto it = versions.find(version);
+        return it == versions.end() || it->second.min_client.empty()
+            || semver::compare(client, it->second.min_client) >= 0;
+    };
+    auto available = concrete_versions_(versions);
+    semver::sort_desc(available);
+    auto chosen = [&](const std::string& newest) {
+        if (usable(newest)) return newest;
+        for (const auto& version : available)
+            if (semver::compare(version, newest) < 0 && usable(version)) {
+                if (passedOver)
+                    *passedOver = std::format("{}@{} needs xlings >= {}, this is {}; using {}@{} "
+                                              "(`xlings self update` reaches the newest)",
+                                              pkg.name, newest, versions.at(newest).min_client, client,
+                                              pkg.name, version);
+                return version;
+            }
+        return newest;
+    };
     auto latestIt = versions.find("latest");
     if (latestIt != versions.end() && !latestIt->second.ref.empty()) {
-        return latestIt->second.ref;
+        return chosen(latestIt->second.ref);
     }
 
-    auto available = concrete_versions_(versions);
     if (!available.empty()) {
-        semver::sort_desc(available);
-        return available[0];
+        return chosen(available[0]);
     }
     // If no numbered version found but "latest" exists (no ref), use it directly
     if (latestIt != versions.end()) {
@@ -482,8 +506,10 @@ std::vector<PackageMatch> PackageCatalog::build_matches_(const RepoState& state,
         auto pkg = state.index.load_package(*matched);
         if (!pkg) continue;
 
-        auto version = detail_::select_version_(*pkg, platform, parsed.version);
+        std::string passedOver;
+        auto version = detail_::select_version_(*pkg, platform, parsed.version, {}, &passedOver);
         if (version.empty() && !forSearch) continue;
+        if (!passedOver.empty() && !forSearch) log::info("{}", passedOver);
 
         PackageMatch match;
         match.query = parsed.raw;

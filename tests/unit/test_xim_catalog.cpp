@@ -1223,3 +1223,32 @@ TEST(XimSelectVersionAlias, ChainedAliasResolvesToItsConcreteEnd) {
     EXPECT_EQ(xlings::xim::detail_::select_version_(pkg, "linux", ">=8"),
               "8.0.1");
 }
+
+// Fix plan 2026-10-16 D4: a client older than an edition's min_client was
+// refused the latest edition and stopped there, though it could use the one
+// before (luban-fresh: `subos:luban-tiny needs xlings >= 2026.10.16.1, this
+// is 2026.10.15.4`). With no version named it takes the newest it can use.
+TEST(XimSelectVersionMinClient, NoHintPassesOverAVersionThisClientCannotUse) {
+    mcpplibs::xpkg::Package pkg;
+    pkg.name = "luban-tiny";
+    pkg.spec = "1";
+    mcpplibs::xpkg::PlatformResource latest, older, newest;
+    latest.ref = "2026.10.16.1";
+    newest.min_client = "2026.10.16.1";
+    older.min_client = "2026.10.11.1";
+    pkg.xpm.entries["linux"]["latest"] = latest;
+    pkg.xpm.entries["linux"]["2026.10.11.1"] = older;
+    pkg.xpm.entries["linux"]["2026.10.16.1"] = newest;
+    std::string why;
+    EXPECT_EQ(xlings::xim::detail_::select_version_(pkg, "linux", "", "2026.10.15.4", &why), "2026.10.11.1");
+    EXPECT_NE(why.find("needs xlings >= 2026.10.16.1"), std::string::npos) << why;
+    EXPECT_NE(why.find("xlings self update"), std::string::npos) << why;
+    why.clear();
+    EXPECT_EQ(xlings::xim::detail_::select_version_(pkg, "linux", "", "2026.10.16.2", &why), "2026.10.16.1");
+    EXPECT_TRUE(why.empty()) << why;
+    // A version named is that version: the install refuses it, saying why.
+    EXPECT_EQ(xlings::xim::detail_::select_version_(pkg, "linux", "2026.10.16.1", "2026.10.15.4"), "2026.10.16.1");
+    // Nothing this client can use: the newest stays, for the refusal to name.
+    pkg.xpm.entries["linux"]["2026.10.11.1"].min_client = "2026.10.16.1";
+    EXPECT_EQ(xlings::xim::detail_::select_version_(pkg, "linux", "", "2026.10.15.4"), "2026.10.16.1");
+}

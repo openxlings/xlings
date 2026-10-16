@@ -33,9 +33,45 @@ env:
   GIT_TERMINAL_PROMPT: '0'
 
 jobs:
+  # After a release, the suites wait for the published index to carry it:
+  # its bump is merged after the release, and a suite that ran before made
+  # systems from the previous luban-os (2026.10.16.1, luban-window).
+  index:
+    name: the published index carries the release
+    if: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 250
+    steps:
+      - name: Wait for xlings and luban-os latest to be the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName -q .tagName)"
+          version="${version#v}"
+          pointer=https://raw.githubusercontent.com/xlings-res/xim-index/main/xim-index-pointers.json
+          for _ in $(seq 120); do
+            commit="$(curl -fsSL "$pointer" | jq -r '.indexes.xim.source_commit' || true)"
+            carried=0
+            if [ -n "$commit" ] && [ "$commit" != null ]; then
+              carried=1
+              for f in pkgs/x/xlings.lua pkgs/luban/luban-os.lua; do
+                curl -fsSL "https://raw.githubusercontent.com/openxlings/xim-pkgindex/$commit/$f" \
+                  | grep -qF "[\"latest\"] = { ref = \"$version\" }" || carried=0
+              done
+            fi
+            if [ "$carried" = 1 ]; then echo "the published index ($commit) carries $version"; exit 0; fi
+            sleep 120
+          done
+          echo "the published index does not carry $version after four hours" >&2
+          exit 1
+
   luban:
     name: ${{ matrix.suite }} (${{ matrix.os }})
-    if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success' }}
+    needs: index
+    if: >-
+      ${{ !cancelled()
+          && (needs.index.result == 'success' || needs.index.result == 'skipped')
+          && (github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success') }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 120
     strategy:

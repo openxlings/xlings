@@ -31,6 +31,7 @@ Json pack(const xpkg::PlatformResource& v) {
     j["arch_alias"] = v.arch_alias;
     j["is_res"] = v.is_res;
     j["revision"] = v.revision;
+    j["min_client"] = v.min_client;
     j["archs"] = Json::object();
     for (const auto& [k, item] : v.archs)
         j["archs"][k] = pack(item);
@@ -46,6 +47,7 @@ xpkg::PlatformResource unpack_PlatformResource(const Json& j) {
     j.at("arch_alias").get_to(v.arch_alias);
     j.at("is_res").get_to(v.is_res);
     j.at("revision").get_to(v.revision);
+    j.at("min_client").get_to(v.min_client);
     for (auto it = j.at("archs").begin(); it != j.at("archs").end(); ++it)
         v.archs.emplace(it.key(), unpack_ArchResource(it.value()));
     return v;
