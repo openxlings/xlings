@@ -277,6 +277,32 @@ struct App {
     std::chrono::steady_clock::time_point tray_checked;
     bool hidden { false };             // the window is closed and the app is in the tray
     std::vector<std::string> tray_injected;   // tests: chosen at the icon
+    // What is read from disk is read at most once a second, never once a
+    // frame (design 2026-10-16 L §13.3): which systems run, what a
+    // management page shows.
+    std::map<std::string, bool> running_cache;
+    std::chrono::steady_clock::time_point running_at;
+    std::string page_cache_for;
+    std::chrono::steady_clock::time_point page_at;
+    std::vector<std::string> page_desktops;
+    ClipboardGrant page_grant;
+    std::vector<std::pair<std::string, std::string>> activity_rows;   // when, what
+    std::vector<std::string> activity_refs;
+    std::chrono::steady_clock::time_point activity_at;
+    bool close_temp { false };
+    bool refresh_after_frame { false };
+    // How the app keeps up (design 2026-10-16 L §13.3), for the tests that hold it to it.
+    struct Perf {
+        std::deque<double> frame_ms;                  // the last frames: input, layout, drawing, presenting
+        std::deque<double> present_ms;                // of which rendering and presenting
+        double input_to_next_frame_ms { 0 };          // the latest input until the frame that shows its effect
+        double input_to_next_frame_max { 0 };
+        int wait_after_input_ms { 0 };                // what the scheduler waits after input
+        int idle_wait_ms { 0 };                       // and when nothing happens (not drawing for nothing)
+        int frames { 0 };
+        std::optional<std::chrono::steady_clock::time_point> input_at;
+        int frames_since_input { 0 };
+    } perf;
     bool job_told { true };            // the last job's end was said (a notification when unseen)
     std::string job_subject;           // the system the last job made (its notification goes in)
     std::optional<std::chrono::steady_clock::time_point> notice_until;   // a notice over a system, until
@@ -561,6 +587,17 @@ struct App {
                   [](App& a) { a.view = View::Off; });
     }
 
+    bool is_running(const std::string& name) {
+        const auto now = std::chrono::steady_clock::now();
+        if (now - running_at > std::chrono::seconds(1)) {
+            running_cache.clear();
+            running_at = now;
+        }
+        auto it = running_cache.find(name);
+        if (it == running_cache.end()) it = running_cache.emplace(name, vm::running(home, name).has_value()).first;
+        return it->second;
+    }
+
     float console_size(const std::string& name) const {
         if (auto it = settings.console_sizes.find(name); it != settings.console_sizes.end()) return it->second;
         return settings.console_size;
@@ -743,7 +780,7 @@ void launcher_(App& a) {
                    chosen ? imkit::beat(2, 0.45) : 0);
         const float tx = mn.x + px(14) + 16 * cell + px(16);
         imkit::text(ldl, ImVec2(tx, mn.y + px(12)), imkit::fit(e.name, px(260), 18, true), th_().text, 18, true);
-        const bool running = e.running || vm::running(a.home, e.name).has_value();
+        const bool running = e.running || a.is_running(e.name);
         std::string second = edition_label_(e);
         if (edition == "nano") second += std::string(" · ") + std::string(tr("no shell · runs commands", "无 shell · 运行命令"));
         imkit::text(ldl, ImVec2(tx, mn.y + px(40)), imkit::fit(second, mx.x - tx - px(260), 14), th_().text_dim, 14);
@@ -1293,8 +1330,7 @@ void close_dialog_(App& a) {
     imkit::text(dl, ImVec2(at.x + px(24), at.y + px(20)), std::vformat(tr("Close {}", "关闭 {}"), std::make_format_args(a.current)),
                 th_().text, 22, true);
     const float cardW = (size.x - px(48) - px(16)) / 2;
-    const auto env = service::describe(a.ctx, a.current);
-    const bool temp = env && env->settings.persist == "none";
+    const bool temp = a.close_temp;
     struct Card { imkit::Icon icon; std::string_view te, tz, de, dz; };
     const std::array<Card, 2> cards{{
         {imkit::Icon::Moon, "Keep it running", "后台运行", "The system goes on; Luban OS stays in the tray.", "系统继续运行；Luban OS 留在状态栏。"},
@@ -1915,7 +1951,7 @@ void system_pages_(App& a, ImVec2 o, float x0, float y0, float width, float heig
     if (a.admin_selected >= static_cast<int>(a.systems.size())) return;
     auto& e = a.systems[static_cast<std::size_t>(a.admin_selected)];
     const auto edition = App::edition_name(e);
-    const bool on = vm::running(a.home, e.name).has_value() || e.running;
+    const bool on = a.is_running(e.name) || e.running;
     // Its head: badge, name, edition, state.
     const float cell = std::round(px(3));
     art::badge(dl, art::badge_of(edition), edition, ImVec2(o.x + x0, o.y + y0), cell, imkit::beat(2, 0.45));
@@ -2021,9 +2057,12 @@ void system_pages_(App& a, ImVec2 o, float x0, float y0, float width, float heig
                 if (r.y > y0 + height - px(40)) break;
             }
     } else if (a.admin_page == 2) {
+        // Applied now, the list read again after the frame: this page is
+        // still drawing from it.
         auto set = [&](const char* key, const std::string& value) {
             (void)service::configure(a.ctx, e.name, {{key, value}});
-            a.refresh();
+            a.refresh_after_frame = true;
+            a.page_cache_for.clear();
         };
         const std::vector<std::string> modes{"sandbox", "machine"}, keeps{"all", "home", "none"}, closes{"ask", "background", "poweroff"};
         auto index = [](const std::vector<std::string>& v, const std::string& now) {
@@ -2045,11 +2084,18 @@ void system_pages_(App& a, ImVec2 o, float x0, float y0, float width, float heig
                                                                          std::string(tr("power off", "关机"))}, k,
                              std::format("luban config {} --on-close {}", name, closes[static_cast<std::size_t>(k)])); c != k)
             set("on-close", closes[static_cast<std::size_t>(c)]);
+        if (a.page_cache_for != e.name || std::chrono::steady_clock::now() - a.page_at > std::chrono::seconds(2)) {
+            a.page_cache_for = e.name;
+            a.page_at = std::chrono::steady_clock::now();
+            a.page_desktops.clear();
+            if (const auto usr = service::usr_of(a.home, e.name))
+                for (const auto& sess : opensal::wlr::sessions({*usr / "share" / "wayland-sessions"})) a.page_desktops.push_back(sess.id);
+            a.page_grant = a.clipboard_grant(e.name);
+        }
         {
             // The desktop: the sessions its root declares, or none (its console).
             std::vector<std::string> ids{"", "none"};
-            if (const auto usr = service::usr_of(a.home, e.name))
-                for (const auto& s : opensal::wlr::sessions({*usr / "share" / "wayland-sessions"})) ids.push_back(s.id);
+            for (const auto& id : a.page_desktops) ids.push_back(id);
             if (ids.size() > 2) {
                 std::vector<std::string> words{std::string(tr("its own", "默认")), std::string(tr("none", "无"))};
                 for (std::size_t i = 2; i < ids.size(); ++i) words.push_back(ids[i]);
@@ -2069,8 +2115,7 @@ void system_pages_(App& a, ImVec2 o, float x0, float y0, float width, float heig
         }
         {
             // What may cross the clipboard: its grants.
-            const auto grant = a.clipboard_grant(e.name);
-            bool copy = grant.copy, paste = grant.paste;
+            bool copy = a.page_grant.copy, paste = a.page_grant.paste;
             r.label(tr("CLIPBOARD", "剪贴板"));
             ImGui::SetCursorPos(ImVec2(x0 + px(200), r.y + px(4)));
             if (imkit::toggle("setting:clipboard", tr("copy out of it", "从中复制出来"), copy))
@@ -2215,30 +2260,41 @@ void app_settings_(App& a, ImVec2 o, float x0, float y0, float width) {
 
 void activity_(App& a, ImVec2 o, float x0, float y0, float width) {
     auto* dl = ImGui::GetWindowDrawList();
-    std::vector<fs::path> files;
-    std::error_code ec;
-    for (fs::recursive_directory_iterator it(a.home / "logs" / "ops", ec), end; !ec && it != end; it.increment(ec))
-        if (it->path().extension() == ".ndjson") files.push_back(it->path());
-    std::ranges::sort(files, [](const auto& x, const auto& y) {
-        std::error_code e1, e2;
-        return fs::last_write_time(x, e1) > fs::last_write_time(y, e2);
-    });
+    // The operations' logs, read every few seconds, not every frame.
+    if (std::chrono::steady_clock::now() - a.activity_at > std::chrono::seconds(3)) {
+        a.activity_at = std::chrono::steady_clock::now();
+        a.activity_rows.clear();
+        a.activity_refs.clear();
+        std::vector<fs::path> files;
+        std::error_code ec;
+        for (fs::recursive_directory_iterator it(a.home / "logs" / "ops", ec), end; !ec && it != end; it.increment(ec))
+            if (it->path().extension() == ".ndjson") files.push_back(it->path());
+        std::ranges::sort(files, [](const auto& x, const auto& y) {
+            std::error_code e1, e2;
+            return fs::last_write_time(x, e1) > fs::last_write_time(y, e2);
+        });
+        for (std::size_t k = 0; k < std::min<std::size_t>(files.size(), 40); ++k) {
+            std::ifstream in(files[k]);
+            std::string first;
+            std::getline(in, first);
+            auto j = Json::parse(first, nullptr, false);
+            // "2026-10-12T20:12:09Z" as a person reads it: the date and the time, in UTC.
+            auto when = j.is_object() ? j.value("ts", std::string{}) : std::string{};
+            if (when.size() >= 16 && when[10] == 'T') when = when.substr(0, 10) + "  " + when.substr(11, 5) + " UTC";
+            std::string cmd = j.is_object() ? j.value("client", "") : "";
+            if (j.is_object()) for (const auto& w : j.value("argv", Json::array())) if (w.is_string()) cmd += " " + w.get<std::string>();
+            a.activity_rows.emplace_back(when, cmd);
+            a.activity_refs.push_back(std::format("xlings self log {}", files[k].stem().string().substr(0, 12)));
+        }
+    }
     float y = y0;
-    if (files.empty()) imkit::text(dl, ImVec2(o.x + x0, o.y + y), tr("Nothing done yet.", "还没有操作。"), th_().text_faint);
-    for (std::size_t k = 0; k < std::min<std::size_t>(files.size(), 40); ++k) {
-        std::ifstream in(files[k]);
-        std::string first;
-        std::getline(in, first);
-        auto j = Json::parse(first, nullptr, false);
-        // "2026-10-12T20:12:09Z" as a person reads it: the date and the time, in UTC.
-        auto when = j.is_object() ? j.value("ts", std::string{}) : std::string{};
-        if (when.size() >= 16 && when[10] == 'T') when = when.substr(0, 10) + "  " + when.substr(11, 5) + " UTC";
-        std::string cmd = j.is_object() ? j.value("client", "") : "";
-        if (j.is_object()) for (const auto& w : j.value("argv", Json::array())) cmd += " " + w.get<std::string>();
+    if (a.activity_rows.empty()) imkit::text(dl, ImVec2(o.x + x0, o.y + y), tr("Nothing done yet.", "还没有操作。"), th_().text_faint);
+    for (std::size_t k = 0; k < a.activity_rows.size(); ++k) {
+        const auto& [when, cmd] = a.activity_rows[k];
         if (k % 2 == 0) dl->AddRectFilled(ImVec2(o.x + x0, o.y + y), ImVec2(o.x + x0 + width, o.y + y + px(30)), th_().bg_deep);
         imkit::text(dl, ImVec2(o.x + x0 + px(8), o.y + y + px(6)), when, th_().text_dim, 13);
         imkit::text(dl, ImVec2(o.x + x0 + px(190), o.y + y + px(6)), imkit::fit(cmd, width - px(420), 13), th_().text, 13);
-        const auto ref = std::format("xlings self log {}", files[k].stem().string().substr(0, 12));
+        const auto& ref = a.activity_refs[k];
         imkit::text(dl, ImVec2(o.x + x0 + width - imkit::text_size(ref, 12).x - px(8), o.y + y + px(7)), ref, th_().text_faint, 12);
         y += px(30);
         if (y > ImGui::GetWindowHeight() - px(40)) break;
@@ -2329,6 +2385,24 @@ Json state_(const App& a) {
     j["admin_page"] = a.admin_page;
     j["desktop_text"] = a.desktop_text;
     j["ended_why"] = a.ended_why;
+    {
+        auto ms = std::vector<double>(a.perf.frame_ms.begin(), a.perf.frame_ms.end());
+        std::ranges::sort(ms);
+        auto at = [&](double q) { return ms.empty() ? 0.0 : ms[std::min(ms.size() - 1, static_cast<std::size_t>(q * ms.size()))]; };
+        j["perf"] = {{"frames", a.perf.frames}, {"frame_ms_p50", at(0.5)}, {"frame_ms_p95", at(0.95)},
+                     {"frame_ms_max", ms.empty() ? 0.0 : ms.back()}, {"input_to_next_frame_ms", a.perf.input_to_next_frame_ms},
+                     {"input_to_next_frame_ms_max", a.perf.input_to_next_frame_max}, {"wait_after_input_ms", a.perf.wait_after_input_ms},
+                     {"idle_wait_ms", a.perf.idle_wait_ms}};
+        auto pm = std::vector<double>(a.perf.present_ms.begin(), a.perf.present_ms.end());
+        std::ranges::sort(pm);
+        j["perf"]["present_ms_p50"] = pm.empty() ? 0.0 : pm[pm.size() / 2];
+        // What the app itself spends (its layout and drawing, not the renderer's).
+        std::vector<double> dm;
+        for (std::size_t k = 0; k < a.perf.frame_ms.size(); ++k) dm.push_back(a.perf.frame_ms[k] - a.perf.present_ms[k]);
+        std::ranges::sort(dm);
+        j["perf"]["draw_ms_p95"] = dm.empty() ? 0.0 : dm[std::min(dm.size() - 1, dm.size() * 95 / 100)];
+        j["perf"]["draw_ms_max"] = dm.empty() ? 0.0 : dm.back();
+    }
     j["tray"] = {{"backend", a.tray ? std::string(a.tray->backend()) : std::string{}}, {"error", a.tray_error},
                  {"hidden", a.hidden}, {"said", a.tray_said}};
     j["scale"] = imkit::scale();
@@ -2633,6 +2707,10 @@ void script_step_(App& a, Script& sc) {
         words >> w >> h;
         a.window->set_size(w, h);
         next();
+    } else if (cmd == "perf") {
+        // `perf reset`: what follows is measured alone.
+        a.perf = {};
+        next();
     } else if (cmd == "tray") {
         // As if chosen at the status-area icon.
         std::string what;
@@ -2666,7 +2744,7 @@ void script_step_(App& a, Script& sc) {
 std::vector<const service::Environment*> running_(const App& a) {
     std::vector<const service::Environment*> out;
     for (const auto& e : a.systems)
-        if (e.running || vm::running(a.home, e.name)) out.push_back(&e);
+        if (e.running || const_cast<App&>(a).is_running(e.name)) out.push_back(&e);
     return out;
 }
 
@@ -2698,7 +2776,7 @@ void tray_update_(App& a) {
     tray::Status s{.title = "Luban OS", .body = body, .icons = art::tray_images(static_cast<int>(on.size()), busy, failed),
                    .attention = failed};
     for (const auto* e : on) {
-        const bool machine = vm::running(a.home, e->name).has_value();
+        const bool machine = a.is_running(e->name);
         tray::MenuItem item{.id = "sys:" + e->name, .label = std::format("{}  ({})", e->name, machine ? tr("machine", "机器") : tr("sandbox", "沙箱"))};
         item.children.push_back({.id = "sys:" + e->name + ":open", .label = std::string(tr("Open", "打开"))});
         if (machine) {
@@ -2920,7 +2998,7 @@ int run(int argc, char* argv[]) {
     // input a few frames more, while something animates or runs at 60 fps;
     // only a still window waits long.
     int pending = 3;
-    bool animating = false;
+    double wake = -1;   // when the last frame's animations next change
     for (int frame = 0; (frames < 0 || frame < frames) && !a.quit; ++frame) {
         if (script && script->finished()) break;
         if (script && std::chrono::steady_clock::now() - started > std::chrono::minutes(10)) {
@@ -2928,7 +3006,16 @@ int run(int argc, char* argv[]) {
             break;
         }
         const bool busy = a.countdown_until || (a.job && !a.job->done) || a.resize_at || a.run.busy;
-        const int wait_ms = script ? 30 : frames >= 0 ? 0 : (pending > 0 || animating || busy) ? 16 : 1000;
+        // What the scheduler chooses (tests run their own beat, and are told this).
+        // Still: until the next step of an animation, at most a second.
+        int scheduled = (pending > 0 || busy || (wake >= 0 && wake < 0.016)) ? 16
+                        : wake < 0 ? 1000 : std::clamp(static_cast<int>(wake * 1000), 16, 1000);
+        if (a.notice_until)   // a notice over a system goes when its time is up
+            scheduled = std::clamp(static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                       *a.notice_until - std::chrono::steady_clock::now()).count()) + 1, 16, scheduled);
+        const int wait_ms = script ? 30 : frames >= 0 ? 0 : scheduled;
+        if (a.perf.input_at && a.perf.frames_since_input == 1) a.perf.wait_after_input_ms = scheduled;
+        if (pending == 0 && !busy) a.perf.idle_wait_ms = scheduled;
         if (!a.window->begin_frame(wait_ms) && !a.close_dialog) {
             // The window is to close: a running machine's on-close decides.
             // A sandbox's session ends with its window; only a machine has a choice.
@@ -2938,6 +3025,7 @@ int run(int argc, char* argv[]) {
                 const auto on_close = env ? env->settings.on_close : std::string("ask");
                 if (on_close == "ask") {
                     a.close_dialog = true;
+                    a.close_temp = env && env->settings.persist == "none";
                     a.close_choice = a.settings.close_choice;
                     a.close_remember = false;
                 } else if (on_close == "poweroff") {
@@ -2966,8 +3054,13 @@ int run(int argc, char* argv[]) {
             a.tray->notify(a.job->title, a.job->code == 0 ? std::string(tr("Done.", "完成。")) : (a.job->errors.empty() ? std::string(tr("Failed.", "失败。")) : a.job->errors.front()),
                            a.job->code == 0 && !a.job_subject.empty() ? "made:" + a.job_subject : "open");
         }
-        if (!a.window->events().empty() || !a.window->keys().empty()) pending = 3;
-        else if (pending > 0) --pending;
+        const auto frame_start = std::chrono::steady_clock::now();
+        const bool input = !a.window->events().empty() || !a.window->keys().empty();
+        if (input) {
+            pending = 3;
+            a.perf.input_at = frame_start;
+            a.perf.frames_since_input = 0;
+        } else if (pending > 0) --pending;
         imkit::begin_frame(a.window->ui_scale(), ImGui::GetTime(), a.settings.reduce_motion);
         // Any input cancels the countdown.
         if (a.countdown_until) {
@@ -3134,7 +3227,6 @@ int run(int argc, char* argv[]) {
                 const ImVec2 p(std::round(vp->Pos.x + (vp->Size.x - ts.x) / 2 - px(12)), std::round(vp->Pos.y + vp->Size.y - ts.y - px(28)));
                 imkit::panel(dl, p, ImVec2(p.x + ts.x + px(24), p.y + ts.y + px(12)), imkit::Bevel::Raised, imkit::theme().panel);
                 imkit::text(dl, ImVec2(p.x + px(12), p.y + px(6)), a.notice, imkit::theme().text, 14);
-                imkit::set_animating();
             } else {
                 a.notice_until.reset();
                 a.notice.clear();
@@ -3143,9 +3235,25 @@ int run(int argc, char* argv[]) {
         if (a.menu) host_menu_(a);
         if (a.close_dialog) close_dialog_(a);
         if (a.confirm) confirm_(a);
-        animating = imkit::animating();
+        wake = imkit::wake_in();
+        const auto drawn = std::chrono::steady_clock::now();
         a.window->end_frame();
+        {
+            // This frame's time; and, the frame after an input, how long until
+            // what the input did is on the screen (the input is taken in one
+            // frame and shown by the next).
+            const auto end = std::chrono::steady_clock::now();
+            a.perf.frame_ms.push_back(std::chrono::duration<double, std::milli>(end - frame_start).count());
+            a.perf.present_ms.push_back(std::chrono::duration<double, std::milli>(end - drawn).count());
+            if (a.perf.frame_ms.size() > 600) { a.perf.frame_ms.pop_front(); a.perf.present_ms.pop_front(); }
+            ++a.perf.frames;
+            if (a.perf.input_at && ++a.perf.frames_since_input == 2) {
+                a.perf.input_to_next_frame_ms = std::chrono::duration<double, std::milli>(end - *a.perf.input_at).count();
+                a.perf.input_to_next_frame_max = std::max(a.perf.input_to_next_frame_max, a.perf.input_to_next_frame_ms);
+            }
+        }
         if (auto later = std::exchange(a.later, nullptr)) later();
+        if (std::exchange(a.refresh_after_frame, false)) a.refresh();
         if (script) script_step_(a, *script);
     }
     if (a.dump_state) std::println("{}", dump_(a));

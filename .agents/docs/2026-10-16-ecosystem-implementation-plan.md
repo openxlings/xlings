@@ -52,8 +52,8 @@ C 依赖 X-E 的接口与 X 的发布。
 | X-G2 | X | #672 WSL 导入检查 | L §15 | Windows CI |
 | X-H1 | X | 主循环"有事就连续画"；`ui::px` | L §13.3 | LA：点击后下一帧；多缩放 |
 | X-H2 | X | 终端：一个有效字号、默认 16、缩放快捷键、整数网格、宽字符、粗体、程序化框线 | L §13.7 | LA：多缩放字形与行距 |
-| X-H3 | X | 像素控件库与资产；首页、新建、进度、运行命令、管理、设置、关闭对话框 | L §13.2–§13.6、§13.10、§13.11、§13.13 | LA：结构断言与基准图 |
-| X-H4 | X | 托盘：Windows/macOS 用 SDL；Linux 自实现 StatusNotifierItem 与 DBusMenu；通知 | L §13.12 | 单元（DBus 编解码）与 CI 抓屏 |
+| X-H3 | X | 像素控件库 `luban/kits/imkit`（通用）与资产；首页、新建、进度、运行命令、管理、设置、关闭对话框 | L §13.2–§13.6、§13.10、§13.11、§13.13 | LA：结构断言与基准图 |
+| X-H4 | X | 托盘 `luban/kits/tray`（通用）：Linux 自实现 StatusNotifierItem 与 DBusMenu；Windows Shell_NotifyIcon；macOS SDL；通知 | L §13.12 | 单元（DBus 编解码、私有总线上的宿主）|
 | X-H5 | X | 窗口契约：`Cursor` 接口、文件拖放（virtiofs）| L §13.9 | e2e |
 | X-I1 | X | `tests/host-matrix/pty.py`、`inside.sh`、腿扩展、需求登记 | L §12 | CI |
 | X-I2 | X | 文档与规范、CHANGELOG、版本号 | — | lint |

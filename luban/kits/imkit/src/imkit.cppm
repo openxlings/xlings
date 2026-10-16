@@ -58,6 +58,10 @@ int beat(int frames = 2, double period = 0.6, int phase = 0);
 // Animations are running: the caller keeps drawing frames.
 bool animating();
 void set_animating();
+// When this frame's stepped animations next change, in seconds (0: now, as
+// something runs continuously; -1: nothing animates). A caller that waits
+// until then draws only the frames that differ.
+double wake_in();
 
 // ── pixel art ─────────────────────────────────────────────────────────
 

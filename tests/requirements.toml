@@ -55,6 +55,14 @@ status = "required"
 text = "interface --version reports the version, protocol, capabilities, home layouts and features"
 status = "required"
 
+[LUBAN-OS-PERF]
+text = "the Luban OS app shows a choice the frame after it is made (no wait after input), its own work per frame stays within a few milliseconds (no disk read per frame), a frame fits its budget on a software renderer, and a still window waits instead of drawing"
+status = "required"
+
+[LUBAN-OS-VISUAL]
+text = "the Luban OS app's key pages are captured at three scales and in both languages, held to their reviewed layout baselines, and put on one contact sheet"
+status = "required"
+
 [LUBAN-OS-TRAY]
 text = "Luban OS has an icon in the system's status area -- StatusNotifierItem and DBusMenu on Linux, the notification area on Windows, the menu bar on macOS -- with its systems in its menu, and the system's notifications; what is chosen reaches the app"
 status = "required"

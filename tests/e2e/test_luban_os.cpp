@@ -1026,3 +1026,193 @@ tray quit
     EXPECT_FALSE(s["tray"]["error"].get<std::string>().empty()) << s["tray"].dump();
     EXPECT_FALSE(s["tray"]["hidden"].get<bool>());
 }
+
+// Visual verification (design 2026-10-16 L §13.8): the key pages at three
+// scales and in both languages -- every control on the screen, apart, whole
+// and big enough to hit; where each lies matches its baseline
+// (tests/luban-os/baseline, the layout reviewed and kept); and one contact
+// sheet of them all for a person (and the review) to look at. A baseline
+// that is not there yet is recorded into the artifacts, to be reviewed and
+// committed.
+namespace {
+// Several screenshots side by side, each scaled down to `cell` wide.
+void contact_sheet_(const std::vector<std::pair<std::string, fs::path>>& shots, const fs::path& out, int cell = 320) {
+    const int cols = 6;
+    std::vector<Image> images;
+    int cellH = 0;
+    for (const auto& [_, f] : shots) {
+        images.push_back(read_ppm(f));
+        cellH = std::max(cellH, images.back().height * cell / std::max(1, images.back().width));
+    }
+    const int rows = (static_cast<int>(images.size()) + cols - 1) / cols;
+    const int W = cols * (cell + 4), H = rows * (cellH + 4);
+    std::string rgb(static_cast<std::size_t>(W) * H * 3, '\x10');
+    for (std::size_t i = 0; i < images.size(); ++i) {
+        const auto& img = images[i];
+        const int ox = static_cast<int>(i % cols) * (cell + 4) + 2, oy = static_cast<int>(i / cols) * (cellH + 4) + 2;
+        const int h = img.height * cell / std::max(1, img.width);
+        for (int y = 0; y < h; ++y)
+            for (int x = 0; x < cell; ++x) {
+                const auto px = img.at(x * img.width / cell, y * img.height / std::max(1, h));
+                const auto k = (static_cast<std::size_t>(oy + y) * W + ox + x) * 3;
+                rgb[k] = static_cast<char>(px[0]); rgb[k + 1] = static_cast<char>(px[1]); rgb[k + 2] = static_cast<char>(px[2]);
+            }
+    }
+    std::ofstream(out, std::ios::binary) << std::format("P6\n{} {}\n255\n", W, H) << rgb;
+}
+}  // namespace
+
+XTEST(LubanOs, KeyPagesHoldTheirLayoutAtEveryScaleInBothLanguages, .area = "luban",
+      .covers = {"LUBAN-OS-LAYOUT", "LUBAN-OS-VISUAL"}, .requires_ = {"linux", "xlings-bin"}) {
+    if (!app_binary()) GTEST_SKIP() << "no luban-os beside the xlings under test";
+    auto home = home_with_two("luban-os-visual");
+    tk::write_file(home.dir() / "config" / "luban-os.json", R"({"countdown":0})");
+    const fs::path baseline_dir = fs::path(__FILE__).parent_path().parent_path() / "luban-os" / "baseline";
+    std::vector<std::pair<std::string, fs::path>> shots;
+    std::vector<std::string> recorded;
+    const std::vector<std::string> pages{"launcher", "quick-start", "quick-start-more", "admin", "app-settings"};
+    for (const auto* scale : {"1", "1.5", "2"}) {
+        for (const std::string lang : {"en", "zh"}) {
+            const auto tag = std::format("{}x-{}", scale, lang);
+            const auto dir = home.root() / tag;
+            fs::create_directories(dir);
+            // The same page at every scale: a window as large, in its points.
+            const int ww = static_cast<int>(1280 * std::stof(scale)), wh = static_cast<int>(800 * std::stof(scale));
+            auto r = run_script(home, std::format(R"(resize {1} {2}
+wait launcher
+frames 3
+state {0}/launcher.json
+screenshot {0}/launcher.ppm
+click new
+wait quick-start
+frames 3
+state {0}/quick-start.json
+screenshot {0}/quick-start.ppm
+click more
+frames 3
+state {0}/quick-start-more.json
+screenshot {0}/quick-start-more.ppm
+click back
+wait launcher
+click gear
+wait admin
+frames 3
+state {0}/admin.json
+screenshot {0}/admin.ppm
+click tab:settings
+frames 3
+state {0}/app-settings.json
+screenshot {0}/app-settings.ppm
+)", dir.string(), ww, wh), {"--scale", scale}, {{"LUBAN_OS_LANG", lang == "zh" ? "zh_CN.UTF-8" : "en_US.UTF-8"}});
+            ASSERT_EQ(r.exit_code, 0) << tag << "\n" << r.transcript();
+            for (const auto& page : pages) {
+                const auto s = read_state(dir / (page + ".json"));
+                shots.emplace_back(tag + " " + page, dir / (page + ".ppm"));
+                const float W = static_cast<float>(ww), H = static_cast<float>(wh);
+                std::vector<std::pair<std::string, std::array<float, 4>>> controls;
+                for (auto it = s["anchors"].begin(); it != s["anchors"].end(); ++it)
+                    controls.emplace_back(it.key(), std::array<float, 4>{it.value()[0].get<float>(), it.value()[1].get<float>(),
+                                                                         it.value()[2].get<float>(), it.value()[3].get<float>()});
+                ASSERT_FALSE(controls.empty()) << tag << " " << page;
+                for (const auto& [name, c] : controls) {
+                    EXPECT_GE(c[0], 0) << tag << " " << page << " " << name;
+                    EXPECT_GE(c[1], 0) << tag << " " << page << " " << name;
+                    EXPECT_LE(c[2], W) << tag << " " << page << " " << name << " runs off the window";
+                    EXPECT_LE(c[3], H) << tag << " " << page << " " << name << " runs off the window";
+                    EXPECT_GE(c[3] - c[1], 20) << tag << " " << page << " " << name << " is too small to hit";
+                }
+                for (std::size_t i = 0; i < controls.size(); ++i)
+                    for (std::size_t k = i + 1; k < controls.size(); ++k) {
+                        const auto& a = controls[i].second;
+                        const auto& b = controls[k].second;
+                        const bool apart = a[2] <= b[0] || b[2] <= a[0] || a[3] <= b[1] || b[3] <= a[1];
+                        EXPECT_TRUE(apart) << tag << " " << page << ": " << controls[i].first << " and " << controls[k].first << " overlap";
+                    }
+                // The baseline: the same controls, where they were (within
+                // what another machine's fonts move them).
+                const auto baseline = baseline_dir / std::format("{}-{}.json", page, tag);
+                Json layout = Json::object();
+                for (const auto& [name, c] : controls) layout[name] = Json::array({c[0], c[1], c[2], c[3]});
+                if (!fs::exists(baseline)) {
+                    tk::write_file(artifact("baseline") / baseline.filename(), layout.dump(1) + "\n");
+                    recorded.push_back(baseline.filename().string());
+                    continue;
+                }
+                const auto want = Json::parse(tk::read_file(baseline));
+                for (auto it = want.begin(); it != want.end(); ++it) {
+                    ASSERT_TRUE(layout.contains(it.key())) << tag << " " << page << ": " << it.key() << " is gone";
+                    for (int k = 0; k < 4; ++k) {
+                        const float was = it.value()[k].get<float>(), now = layout[it.key()][k].get<float>();
+                        EXPECT_NEAR(now, was, std::max(8.0f, (k % 2 ? H : W) * 0.03f))
+                            << tag << " " << page << ": " << it.key() << " moved (edge " << k << ")";
+                    }
+                }
+            }
+        }
+    }
+    contact_sheet_(shots, artifact("contact-sheet.ppm"));
+    if (!recorded.empty())
+        std::println(std::cerr, "luban-os: {} layout baselines recorded into {} (review, then commit to tests/luban-os/baseline)",
+                     recorded.size(), (tk::artifacts_dir() / "luban-os" / "baseline").string());
+}
+
+// Keeping up (design 2026-10-16 L §13.3): a choice shows the frame after it
+// is made -- the app does not sleep after input (it once waited a second,
+// and a card took 1-2 s to look chosen); what the app itself spends on a
+// frame is small, never a read of the disk per frame; and a still window
+// waits instead of drawing for nothing. The renderer here is SDL's software
+// one (a machine without a GPU), so the whole frame's budget is its.
+XTEST(LubanOs, AChoiceShowsTheNextFrameAndAStillWindowRests, .area = "luban", .covers = {"LUBAN-OS-PERF"},
+      .requires_ = {"linux", "xlings-bin"}) {
+    if (!app_binary()) GTEST_SKIP() << "no luban-os beside the xlings under test";
+    auto home = home_with_two("luban-os-perf");
+    tk::write_file(home.dir() / "config" / "luban-os.json", R"({"countdown":0})");
+    const auto st = home.root() / "perf.json", idle = home.root() / "idle.json";
+    auto r = run_script(home, std::format(R"(resize 1280 800
+wait launcher
+frames 3
+perf reset
+key Down
+expect selected 1
+key Down
+expect selected 2
+click new
+wait quick-start
+click card:nano
+expect edition nano
+click card:tiny
+expect edition tiny
+click card:core
+expect edition core
+click more
+waitfor anchors.proxy present 5
+click back
+wait launcher
+click gear
+wait admin
+click tab:activity
+expect admin_tab activity
+click tab:settings
+expect admin_tab settings
+click tab:systems
+click admin:beta
+expect admin_selected beta
+click page:settings
+expect admin_page 2
+state {}
+click admin:back
+wait launcher
+frames 6
+state {}
+)", st.string(), idle.string()));
+    ASSERT_EQ(r.exit_code, 0) << r.transcript();
+    const auto p = read_state(st)["perf"];
+    EXPECT_LE(p["wait_after_input_ms"].get<int>(), 16) << p.dump();
+    EXPECT_LE(p["draw_ms_p95"].get<double>(), 8.0) << "the app's own work per frame\n" << p.dump();
+    EXPECT_LE(p["draw_ms_max"].get<double>(), 60.0) << p.dump();
+    EXPECT_LE(p["frame_ms_p95"].get<double>(), 120.0) << "a frame, software renderer included\n" << p.dump();
+    EXPECT_LE(p["input_to_next_frame_ms_max"].get<double>(), 300.0) << "input until its effect is on screen\n" << p.dump();
+    EXPECT_GE(p["frames"].get<int>(), 20);
+    const auto q = read_state(idle)["perf"];
+    EXPECT_GE(q["idle_wait_ms"].get<int>(), 100) << "a still window rests\n" << q.dump();
+}

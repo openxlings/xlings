@@ -40,6 +40,7 @@ struct State {
     double time { 0 };
     bool reduce_motion { false };
     bool animating { false };
+    double due { 0 };            // when the next stepped animation changes (0: none)
     std::function<void(std::string_view, ImVec2, ImVec2)> sink;
 };
 State& st() {
@@ -147,6 +148,7 @@ void begin_frame(float scale, double time, bool reduce_motion) {
     st().time = time;
     st().reduce_motion = reduce_motion;
     st().animating = false;
+    st().due = 0;
 }
 float scale() { return st().scale; }
 double time() { return st().time; }
@@ -154,10 +156,25 @@ bool reduce_motion() { return st().reduce_motion; }
 float px(float nominal) { return std::round(nominal * st().scale); }
 float unit() { return static_cast<float>(st().theme.unit) * std::max(1.0f, std::round(st().scale)); }
 ImVec2 snap(ImVec2 p) { return ImVec2(std::round(p.x), std::round(p.y)); }
+namespace {
+// A stepped animation changes at the next multiple of `period`: drawn then,
+// not every frame in between.
+void due_(double period) {
+    const double next = (std::floor(st().time / period) + 1) * period;
+    if (st().due == 0 || next < st().due) st().due = next;
+}
+}  // namespace
+
 int beat(int frames, double period, int phase) {
     if (st().reduce_motion || frames <= 1) return 0;
-    st().animating = true;
+    due_(period);
     return (static_cast<int>(std::floor(st().time / period)) + phase) % frames;
+}
+
+double wake_in() {
+    if (st().animating) return 0;
+    if (st().due == 0) return -1;
+    return std::max(0.0, st().due - st().time);
 }
 bool animating() { return st().animating; }
 void set_animating() { if (!st().reduce_motion) st().animating = true; }
@@ -232,8 +249,9 @@ void focus_ring(ImDrawList* dl, ImVec2 a, ImVec2 b) {
     const float u = unit() * 2.0f / 3.0f;
     float alpha = 1.0f;
     if (!st().reduce_motion) {
-        alpha = 0.65f + 0.35f * static_cast<float>(0.5 + 0.5 * std::sin(st().time * 5.0));
-        st().animating = true;
+        const double step = std::floor(st().time * 10.0) / 10.0;   // ten steps a second
+        alpha = 0.65f + 0.35f * static_cast<float>(0.5 + 0.5 * std::sin(step * 5.0));
+        due_(0.1);
     }
     const ImU32 c = alpha_(st().theme.focus, alpha);
     a = snap(ImVec2(a.x - u * 2, a.y - u * 2));
@@ -571,7 +589,7 @@ void progress(ImDrawList* dl, ImVec2 a, ImVec2 b, double fraction) {
                               i == lit - 1 ? t.accent_hi : t.accent);
     } else {
         // Busy: four blocks running along.
-        st().animating = !st().reduce_motion;
+        if (!st().reduce_motion) due_(1.0 / 14.0);
         const int head = st().reduce_motion ? count / 2 : static_cast<int>(st().time * 14.0) % (count + 4);
         for (int i = head - 4; i < head; ++i)
             if (i >= 0 && i < count)
