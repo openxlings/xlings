@@ -278,6 +278,9 @@ jobs:
         with:
           state: consume
 
+      - name: The fonts Luban OS ships (its layout baselines')
+        run: bash tools/ci/luban_fonts.sh
+
       - name: Measured durations, as the plan job took them
         continue-on-error: true
         uses: actions/download-artifact@v4
@@ -337,6 +340,9 @@ jobs:
         uses: ./.github/actions/linux-build
         with:
           state: consume
+
+      - name: The fonts Luban OS ships (its layout baselines')
+        run: bash tools/ci/luban_fonts.sh
 
       - name: The static gates' programs
         run: |
@@ -1017,6 +1023,9 @@ jobs:
         with:
           profile: asan
           state: consume
+
+      - name: The fonts Luban OS ships (its layout baselines')
+        run: bash tools/ci/luban_fonts.sh
 
       - name: Measured durations, as the plan job took them
         continue-on-error: true

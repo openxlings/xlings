@@ -90,6 +90,9 @@ payloads live, and xlings fetches and installs there:
 { "name": "mcpplibs", "url": "...", "dir": "/home/u/.mcpp/indices/mcpplibs", "store": "/home/u/.mcpp/xpkgs" }
 ```
 
+That program also refreshes it (`sync_index`), so it can check a new copy
+before the one in use is replaced; `xlings update` fetches such an index only while it is absent.
+
 A home can also install from read-only **upstreams** -- another home whose
 payloads of the same identity are linked, never copied or written
 (`upstreams`, [specs/xlings-json](specs/xlings-json.md)).

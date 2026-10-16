@@ -175,7 +175,9 @@ The default index is always kept; user repositories are added to it.
 `dir` and `store` let a program that owns an index (mcpp's `mcpplibs`, a team's
 private index) keep its data and payloads in its own home while xlings fetches
 and installs them. Listing, removal and the store audit read every declared
-store.
+store. An index with a `dir` is refreshed by the program that declared it
+(`sync_index` into a staging directory, which that program checks before it
+replaces the copy in use); `xlings update` fetches it only while it is absent.
 
 #### Entries are peers; `name` decides three things
 

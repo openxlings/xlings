@@ -117,6 +117,17 @@ XTEST(IndexStore, AnIndexKeepsItsDataAndPayloadsWhereItsOwnerSays, .area = "xim"
                                      nlohmann::json{{"name", "team"}, {"dest", staged.generic_string()}}.dump()});
     EXPECT_EQ(data_event(synced, "index_synced")["name"], "team") << synced.transcript();
     EXPECT_TRUE(fs::exists(staged / "pkgs" / "d" / "demo.lua"));
+
+    // Once there, it is its owner's to refresh: `update` leaves it as it is
+    // (here a copy, not the link a local source is fetched as).
+    const auto owned = home.root() / "indices" / "team";
+    fs::remove(owned);
+    fs::copy(repo, owned, fs::copy_options::recursive);
+    write_pkg(repo, "other");
+    ASSERT_EQ(home.xlings({"update"}).exit_code, 0);
+    EXPECT_FALSE(fs::exists(home.root() / "indices" / "team" / "pkgs" / "o" / "other.lua"));
+    home.xlings({"interface", "sync_index", "--args", R"({"name":"team"})"});
+    EXPECT_TRUE(fs::exists(home.root() / "indices" / "team" / "pkgs" / "o" / "other.lua"));
 }
 
 XTEST(IndexStore, AnUpstreamPayloadIsLinkedNeverWrittenAndHealsWhenGone, .area = "xim",

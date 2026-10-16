@@ -134,6 +134,9 @@ tk::RunResult run_script(const tk::Home& home, std::string_view script, std::vec
     o.env["SDL_VIDEODRIVER"] = "offscreen";
     // The renderer a machine without a GPU has, here as in CI.
     o.env["SDL_RENDER_DRIVER"] = "software";
+    // The fonts Luban OS ships, where the lane has them
+    // (tools/ci/luban_fonts.sh); else the app draws with this machine's.
+    if (const char* f = std::getenv("LUBAN_OS_FONTS"); f && *f) o.env["LUBAN_OS_FONTS"] = f;
     for (auto& [k, v] : env) o.env[k] = v;
     o.timeout = timeout;
     return tk::run(o);
@@ -196,7 +199,7 @@ click card:tiny
 expect edition tiny
 expect name tiny-1
 click more
-waitfor anchors.proxy present 5
+waitfor anchors.persist:0 present 5
 frames 2
 screenshot {}
 click back
@@ -1070,6 +1073,7 @@ XTEST(LubanOs, KeyPagesHoldTheirLayoutAtEveryScaleInBothLanguages, .area = "luba
     const fs::path baseline_dir = fs::path(__FILE__).parent_path().parent_path() / "luban-os" / "baseline";
     std::vector<std::pair<std::string, fs::path>> shots;
     std::vector<std::string> recorded;
+    bool unchecked = false;
     const std::vector<std::string> pages{"launcher", "quick-start", "quick-start-more", "admin", "app-settings"};
     for (const auto* scale : {"1", "1.5", "2"}) {
         for (const std::string lang : {"en", "zh"}) {
@@ -1107,6 +1111,12 @@ screenshot {0}/app-settings.ppm
             ASSERT_EQ(r.exit_code, 0) << tag << "\n" << r.transcript();
             for (const auto& page : pages) {
                 const auto s = read_state(dir / (page + ".json"));
+                // The baselines are the shipped fonts' layout: with this
+                // machine's fonts a control is in the window, apart and large
+                // enough to hit, but not where the baseline has it.
+                const bool shipped = !s.value("fonts", std::string()).empty();
+                if (const char* f = std::getenv("LUBAN_OS_FONTS"); f && *f)
+                    ASSERT_TRUE(shipped) << tag << " " << page << ": LUBAN_OS_FONTS=" << f << " is not what the app drew with";
                 shots.emplace_back(tag + " " + page, dir / (page + ".ppm"));
                 const float W = static_cast<float>(ww), H = static_cast<float>(wh);
                 std::vector<std::pair<std::string, std::array<float, 4>>> controls;
@@ -1133,6 +1143,10 @@ screenshot {0}/app-settings.ppm
                 const auto baseline = baseline_dir / std::format("{}-{}.json", page, tag);
                 Json layout = Json::object();
                 for (const auto& [name, c] : controls) layout[name] = Json::array({c[0], c[1], c[2], c[3]});
+                if (!shipped) {
+                    unchecked = true;
+                    continue;
+                }
                 if (!fs::exists(baseline)) {
                     tk::write_file(artifact("baseline") / baseline.filename(), layout.dump(1) + "\n");
                     recorded.push_back(baseline.filename().string());
@@ -1159,6 +1173,9 @@ screenshot {0}/app-settings.ppm
     if (!recorded.empty())
         std::println(std::cerr, "luban-os: {} layout baselines recorded into {} (review, then commit to tests/luban-os/baseline)",
                      recorded.size(), (tk::artifacts_dir() / "luban-os" / "baseline").string());
+    if (unchecked)
+        std::println(std::cerr, "luban-os: drawn with this machine's fonts, held to no baseline "
+                                "(tools/ci/luban_fonts.sh fetches the shipped ones into LUBAN_OS_FONTS)");
 }
 
 // Keeping up (design 2026-10-16 L §13.3): a choice shows the frame after it

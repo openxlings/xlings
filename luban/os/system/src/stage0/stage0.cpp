@@ -259,6 +259,13 @@ int run(int argc, char* argv[]) {
             {"TERM", "linux"}, {"XLINGS_HOME", home.home.string()},
             // Which system this is, for every process the init starts (L §9).
             {"XLINGS_ROOT_INSTANCE", candidate.subos}};
+        // The generation's /usr stays in use while the machine's first
+        // process lives: an init that unmounts every filesystem before it
+        // re-execs stage-0 (busybox's `::shutdown:/bin/umount -a -r`, then
+        // `::restart:/usr/bin/luban-init` for `luban boot --now`) finds it
+        // busy, keeps it mounted read-only, and finds stage-0 there.
+        if (!platform::hold_across_exec("/usr"))
+            say(std::format("/usr: {} (continuing)", platform::error_text(platform::last_error())));
         const int error = platform::exec_path({(*init)->string()}, env);
         say(std::format("{} did not start: {}; trying the next entry", (*init)->string(),
                         platform::error_text(error)));

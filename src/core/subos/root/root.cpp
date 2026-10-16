@@ -220,7 +220,7 @@ std::expected<bool, std::string> refresh_cache(const fs::path& home, std::string
     if (tree == "/")
         return subos::library_cache::refresh(tree, {home}, name);
     std::error_code ec;
-    if (!fs::exists(tree / "usr/bin/ldconfig", ec)) {
+    if (!fs::exists(rf::presented_usr(tree) / "bin/ldconfig", ec)) {
         if (ec)
             return std::unexpected("cannot inspect root ldconfig: " + ec.message());
         return false;

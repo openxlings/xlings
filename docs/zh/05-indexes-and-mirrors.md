@@ -84,6 +84,8 @@ $ xlings index list
 { "name": "mcpplibs", "url": "...", "dir": "/home/u/.mcpp/indices/mcpplibs", "store": "/home/u/.mcpp/xpkgs" }
 ```
 
+这类索引也由该程序刷新（`sync_index`），以便在替换正在使用的副本之前检查新副本；`xlings update` 只在它尚不存在时拉取。
+
 home 还可以从只读的**上游**安装：另一个 home 中身份一致的 payload 以链接条目发布，不复制、不写入
 （`upstreams`，见 [specs/xlings-json](../specs/xlings-json.md)）。
 

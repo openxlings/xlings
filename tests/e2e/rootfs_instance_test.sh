@@ -126,6 +126,9 @@ cat > "$C/rootfs/root/cache-main.c" <<'EOF'
 extern int cache_probe_641(void);
 int main(void) { printf("cache-probe=%d\n", cache_probe_641()); return cache_probe_641() == 641 ? 0 : 1; }
 EOF
+# The machine's own file in place of the factory's link (an edit of /etc
+# replaces the link; writing through it would change the factory copy).
+rm -f "$C/rootfs/etc/ld.so.conf"
 printf '/opt/cache-probe\n' > "$C/rootfs/etc/ld.so.conf"
 out="$(X subos exec core -- /bin/sh -ec '
     cd /root
