@@ -59,6 +59,11 @@ A Luban system is its own userland: its xlings manages only it (`/xlings`
 inside), it shares no package files with your host's SubOS, and your user
 name appears nowhere in it. Its users are its own (below).
 
+A regular user installs without root. In a machine, their `xlings` uses their
+own `~/.xlings`, with the system's packages (`/xlings`) as the layer below: what
+the system has is used, what they install is theirs alone. In a sandbox, an
+install goes through the system's broker into the system itself.
+
 Installing software is still xlings: `xlings install <package>` — inside an
 environment it installs into that environment. `exit` leaves it.
 

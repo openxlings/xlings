@@ -18,7 +18,7 @@ export namespace luban::service {
 // Luban is released with the xlings it drives: the same date version
 // (YYYY.M.D.N), bumped with mcpp.toml and src/core/config.cppm.
 // tests/unit/test_luban_cli.cpp holds them equal.
-inline constexpr std::string_view kVersion = "2026.10.15.4";
+inline constexpr std::string_view kVersion = "2026.10.16.1";
 
 namespace fs = std::filesystem;
 

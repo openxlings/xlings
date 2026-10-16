@@ -62,6 +62,9 @@ luban config box --login root # and from now on
 
 密码只以哈希形式保存在系统自己的 `/etc/shadow` 里。要在里面以 root 操作，就以 root 进入：这个系统本来就归本机上的你所有。
 
+普通用户安装软件无需 root。在机器里，他们的 `xlings` 使用自己的 `~/.xlings`，系统的包（`/xlings`）是其下一层：
+系统已有的直接使用，自己安装的只属于自己。在沙箱里，安装经系统的 broker 装进系统本身。
+
 装软件仍然是 xlings：`xlings install <package>`——在环境里就装进那个环境。`exit` 离开。
 
 ## 3. 回退一步
