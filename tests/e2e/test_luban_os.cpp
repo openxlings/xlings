@@ -192,6 +192,7 @@ key Up
 expect selected 2
 key Return
 wait quick-start
+waitfor host.known true 60
 click card:nano
 expect edition nano
 expect name nano-1
@@ -1089,6 +1090,7 @@ state {0}/launcher.json
 screenshot {0}/launcher.ppm
 click new
 wait quick-start
+waitfor host.known true 60
 frames 3
 state {0}/quick-start.json
 screenshot {0}/quick-start.ppm
