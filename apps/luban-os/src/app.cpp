@@ -2418,7 +2418,14 @@ Json state_(const App& a) {
     {
         const bool can = can_run_(const_cast<App&>(a));
         std::lock_guard l(const_cast<App&>(a).available_m);
-        j["host"] = {{"known", a.caps.has_value()}, {"can_run", can}};
+        // And what the index said of every edition: the quick start reflows
+        // when that arrives.
+        bool editions = true;
+        for (const auto& e : kEditions) {
+            const auto it = a.available.find(std::string(e.name));
+            editions = editions && it != a.available.end() && it->second.known;
+        }
+        j["host"] = {{"known", a.caps.has_value()}, {"can_run", can}, {"editions_known", editions}};
         if (a.caps) j["host"]["report"] = service::to_json(*a.caps);
     }
     {

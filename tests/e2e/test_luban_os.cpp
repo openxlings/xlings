@@ -193,6 +193,7 @@ expect selected 2
 key Return
 wait quick-start
 waitfor host.known true 60
+waitfor host.editions_known true 60
 click card:nano
 expect edition nano
 expect name nano-1
@@ -320,6 +321,7 @@ screenshot {3}
 click row:new
 wait quick-start
 waitfor host.known true 60
+waitfor host.editions_known true 60
 frames 3
 state {2}/quick-start.json
 screenshot {4}
@@ -763,6 +765,7 @@ XTEST(LubanOs, AFirstTimeUserMakesASystemFromTheQuickStartAndUsesIt, .area = "lu
     const auto made = home.root() / "made.ppm", st = home.root() / "first.json";
     auto r = run_script(home, std::format(R"(wait quick-start
 waitfor host.known true 60
+waitfor host.editions_known true 60
 frames 2
 screenshot {}
 click card:tiny
@@ -1093,6 +1096,7 @@ screenshot {0}/launcher.ppm
 click new
 wait quick-start
 waitfor host.known true 60
+waitfor host.editions_known true 60
 frames 3
 state {0}/quick-start.json
 screenshot {0}/quick-start.ppm
@@ -1225,6 +1229,7 @@ expect selected 2
 click new
 wait quick-start
 waitfor host.known true 60
+waitfor host.editions_known true 60
 click card:nano
 expect edition nano
 click card:tiny
