@@ -116,16 +116,36 @@ XTEST(SessionMessages, PacketSizingPreservesBoundariesAndDescriptorsAndRejectsTr
     EXPECT_EQ(last->data, "last");
 }
 
-// Timed (woken well before init's 200 ms tick): run alone, on a machine not
-// busy with other tests (`cpu`).
+// Timed from the child's exit (its zombie), not from the start: woken well
+// before init's 200 ms tick however slowly init and the shell started (ASan,
+// a loaded runner). Run alone, on a machine not busy with other tests (`cpu`).
 XTEST(SessionWakeup, AColdChildExitsWithoutWaitingForTheControlPollTick,
       .area = "subos", .covers = {"SES-SUPERVISOR"}, .requires_ = {"linux"}, .resources = {"cpu"}) {
     if constexpr (!tk::is_linux) GTEST_SKIP() << "session-init is implemented on Linux";
     Init init{{"--", "/bin/sh", "-c", "/bin/sleep 0.025; exit 7"}};
+    const auto read = [](const std::string& path) {
+        std::ifstream in(path);
+        return std::string(std::istreambuf_iterator<char>(in), {});
+    };
+    const auto children = std::format("/proc/{0}/task/{0}/children", init.pid);
+    int child = 0;
+    for (int i = 0; i != 5000 && child == 0; ++i) {
+        std::istringstream(read(children)) >> child;
+        if (child == 0) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    ASSERT_GT(child, 0) << "session-init started no child";
+    // Its exit: a zombie until init reaps it, or already gone.
+    const auto stat = std::format("/proc/{}/stat", child);
+    for (int i = 0; i != 5000; ++i) {
+        const auto text = read(stat);
+        const auto close = text.rfind(')');
+        if (text.empty() || (close != std::string::npos && close + 2 < text.size() && text[close + 2] == 'Z')) break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
     platform::PollFd watched{init.fd};
-    // Keep the control peer open without sending traffic. The child exits
-    // after the first reap and must wake init instead of waiting its 200 ms tick.
-    ASSERT_GT(platform::poll_fds(std::span(&watched, 1), 150), 0);
+    // Keep the control peer open without sending traffic. The child's exit
+    // must wake init instead of waiting its 200 ms tick.
+    ASSERT_GT(platform::poll_fds(std::span(&watched, 1), 100), 0);
     EXPECT_TRUE(watched.closed);
     const auto status = platform::wait_process(init.pid, true);
     init.pid = -1;

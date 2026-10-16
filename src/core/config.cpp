@@ -212,6 +212,8 @@ std::vector<IndexRepo> Config::default_global_index_repos_(const std::string& mi
     return { IndexRepo{std::string(DEFAULT_INDEX_REPO_NAME), url} };
 }
 
+bool Config::inside_root() { return inside_root_(); }
+
 [[nodiscard]] std::string Config::declared_index_repo_url(std::string_view name) {
     if (name != DEFAULT_INDEX_REPO_NAME) return {};
     // Safe to reach the singleton here: every caller asks at sync time, long

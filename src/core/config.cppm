@@ -11,7 +11,7 @@ import xlings.core.home;
 namespace xlings {
 
 export struct Info {
-    static constexpr std::string_view VERSION = "2026.10.16.1";
+    static constexpr std::string_view VERSION = "2026.10.16.2";
     static constexpr std::string_view REPO = "https://github.com/openxlings/xlings";
 };
 
@@ -179,6 +179,11 @@ public:
     // declared by the default index's xim-indexrepos.lua, which lives in
     // xim::declared_sub_index_url because reading it needs the repo layer.
     [[nodiscard]] static std::string declared_index_repo_url(std::string_view name);
+
+    // This process runs inside a Luban system: its root instance is named by
+    // XLINGS_ROOT_INSTANCE, or recorded in /etc/xlings/usr (which a regular
+    // user's environment, without the variable, still has).
+    [[nodiscard]] static bool inside_root();
 
 private:
     static std::optional<std::filesystem::path>& home_override_();

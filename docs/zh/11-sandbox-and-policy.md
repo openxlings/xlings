@@ -180,6 +180,17 @@ xlings subos report dev --json        # per-session summary
 
 后端给不了的项：`dev` 下降级并说明原因；`private` 与 `locked` 下拒绝进入（125），逐项列出缺什么、怎么修。
 
+宿主视图（bwrap、proot）呈现 `/usr`，以及按宿主实际解析位置呈现的 `/bin`、`/sbin`、`/lib*`：usr-merge 的宿主上是指向
+`/usr` 的链接，非 usr-merge 的宿主上是它们自己的目录（Alpine 的 `/lib`、openSUSE Leap 15 的 `/lib64`）。
+
+### 叠加在系统 home 之上的 home 如何执行配方
+
+与下层系统 home（`/xlings` 或 `XLINGS_SYSTEM_LAYER`）共享 store 的 home，在 worker 中执行配方（index 构建、借来的 payload
+的配置），worker 不能写下层。能启动 bwrap 时由 bwrap 运行该 worker。Luban 系统内禁止嵌套 user namespace，bwrap 无法启动；
+此时 worker 在读取配方之前建立 Landlock 写入围栏（只有它的 scratch、设备、hook 日志与正在安装的 payload 可写），pid 由系统
+自身的命名空间与宿主隔开。宿主上没有 bwrap 时照旧拒绝，并给出修复命令。声明了 `upstreams` 的 home 通过上游借用（在自己
+store 中的链接条目），没有系统层。
+
 ### 一次性设置（Ubuntu 23.10 及以后）
 
 Ubuntu 用 AppArmor 限制非特权 user namespace；bwrap 会报 `setting up uid map: Permission denied`。不需要改 sysctl：

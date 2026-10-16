@@ -167,7 +167,7 @@ function Resolve-ReleaseCandidates {
             Name       = "GitCode xlings-res/xlings"
             Repo       = $RESOURCE_REPO
             ApiBase    = $GITCODE_API
-            WebBase    = $null
+            WebBase    = "https://gitcode.com"
             PreferVTag = $false
         }
     )
@@ -238,6 +238,39 @@ function Resolve-SourceCandidate {
             Url         = $assetUrl
             ChecksumUrl = "$assetUrl.sha256"
         }
+    }
+
+    # A version named needs no release metadata: its asset is at a known path.
+    # Asking the API for it spent the API's hourly limit (GitHub 403, GitCode
+    # 429 on shared runners); the first byte of the asset finds the tag and
+    # measures the source.
+    if ($RequestedVersion) {
+        $versionNum = Get-VersionNumber $RequestedVersion
+        $zipName = "xlings-$versionNum-windows-$PackageArch.zip"
+        $lastError = $null
+        foreach ($tag in (Get-TagCandidates -RequestedVersion $RequestedVersion -PreferVTag $Source.PreferVTag)) {
+            $assetUrl = "$($Source.WebBase)/$($Source.Repo)/releases/download/$tag/$zipName"
+            $timer = [System.Diagnostics.Stopwatch]::StartNew()
+            try {
+                Invoke-WebRequest -Uri $assetUrl -Headers @{ Range = "bytes=0-0" } -UseBasicParsing `
+                    -UserAgent "xlings-quick-install" -ErrorAction Stop | Out-Null
+                $timer.Stop()
+                return [pscustomobject]@{
+                    Source      = $Source.Name
+                    Tag         = $tag
+                    Version     = $versionNum
+                    VersionKey  = (Get-VersionSortKey $versionNum)
+                    ProbeMs     = [int]$timer.ElapsedMilliseconds
+                    ZipName     = $zipName
+                    Url         = $assetUrl
+                    ChecksumUrl = "$assetUrl.sha256"
+                }
+            } catch {
+                $timer.Stop()
+                $lastError = $_.Exception.Message
+            }
+        }
+        throw "release '$RequestedVersion' not found on $($Source.Name): $lastError"
     }
 
     $probe = Measure-ReleaseLatency -Source $Source -RequestedVersion $RequestedVersion

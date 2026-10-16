@@ -69,6 +69,9 @@ constexpr std::uint64_t kRefer = 1ull << 13;      // ABI 2: rename / link across
 constexpr std::uint64_t kTruncate = 1ull << 14;   // ABI 3
 
 struct RulesetAttr { std::uint64_t handled_access_fs; };
+// ABI 6: the same, with network rights (ABI 4, none handled here) and scopes.
+struct ScopedRulesetAttr { std::uint64_t handled_access_fs, handled_access_net, scoped; };
+constexpr std::uint64_t kScopeAbstractUnixSocket = 1ull << 0, kScopeSignal = 1ull << 1;
 struct [[gnu::packed]] PathBeneathAttr { std::uint64_t allowed_access; std::int32_t parent_fd; };
 
 }  // namespace
@@ -78,7 +81,7 @@ int abi() {
     return v < 0 ? 0 : static_cast<int>(v);
 }
 
-std::expected<void, std::string> restrict_writes(std::span<const fs::path> rw) {
+std::expected<void, std::string> restrict_writes(std::span<const fs::path> rw, bool scoped) {
     const int version = abi();
     if (version < 1) return std::unexpected("Landlock is not available on this kernel");
     std::uint64_t handled = kWriteAbi1;
@@ -86,7 +89,10 @@ std::expected<void, std::string> restrict_writes(std::span<const fs::path> rw) {
     if (version >= 3) handled |= kTruncate;
 
     RulesetAttr attr{ handled };
-    const int ruleset = static_cast<int>(::syscall(kCreateRuleset, &attr, sizeof attr, 0));
+    ScopedRulesetAttr scopedAttr{ handled, 0, kScopeAbstractUnixSocket | kScopeSignal };
+    const bool scope = scoped && version >= 6;
+    const int ruleset = static_cast<int>(scope ? ::syscall(kCreateRuleset, &scopedAttr, sizeof scopedAttr, 0)
+                                               : ::syscall(kCreateRuleset, &attr, sizeof attr, 0));
     if (ruleset < 0) return std::unexpected(std::format("landlock_create_ruleset: {}", std::strerror(errno)));
     for (const auto& p : rw) {
         const int fd = ::open(p.c_str(), O_PATH | O_CLOEXEC);
@@ -593,7 +599,7 @@ bool enter_private_network(unsigned, unsigned) { return false; }
 
 namespace landlock {
 int abi() { return 0; }
-std::expected<void, std::string> restrict_writes(std::span<const fs::path>) {
+std::expected<void, std::string> restrict_writes(std::span<const fs::path>, bool) {
     return std::unexpected("Landlock is Linux-only");
 }
 }  // namespace landlock

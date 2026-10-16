@@ -20,9 +20,12 @@ void host_userland(std::vector<sp::MountOp>& m, const in::Intent& i, sp::Storage
         if (i.exists(src)) m.push_back({MountKind::RoBind, src, dst});
     };
     try_ro("/usr", "/usr");
-    try_ro("/bin", "/bin");
-    try_ro("/usr/lib", "/lib");
-    try_ro("/usr/lib64", "/lib64");
+    // The top-level program and library directories as the host has them: a
+    // merged-/usr host's /lib is /usr/lib, Alpine's /lib (ld-musl) and
+    // openSUSE Leap 15's /lib64 (ld-linux) are directories of their own, and
+    // their programs name those loaders by these paths.
+    for (const auto* top : {"/bin", "/sbin", "/lib", "/lib32", "/lib64", "/libx32"})
+        if (i.exists(top)) m.push_back({MountKind::RoBind, i.resolve(top), top});
     try_ro("/etc/resolv.conf", "/etc/resolv.conf");
     try_ro("/etc/ld.so.cache", "/etc/ld.so.cache");
     try_ro("/etc/ssl", "/etc/ssl");

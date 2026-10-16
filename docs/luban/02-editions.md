@@ -29,7 +29,9 @@ anything is made.
 - `luban new box --edition core` takes the edition's `latest`; `subos:luban-core@2026.10.11.1`
   takes that version.
 - An edition that needs a newer client than yours says so (`min_client`) and
-  names the upgrade, instead of half-working.
+  names the upgrade, instead of half-working. With no version named, xlings
+  2026.10.16.2 and later take the newest edition they can use and say which
+  one was passed over; the index states each version's `min_client`.
 - An environment remembers which edition and version it came from, and what that
   brought; `luban upgrade` moves it to the newest ([03](03-environments.md)).
 

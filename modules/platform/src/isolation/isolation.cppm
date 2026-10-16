@@ -27,8 +27,11 @@ namespace landlock {
 // 0 when the kernel has no Landlock, or it is not in the LSM list.
 int abi();
 // From here on this process and its children may write only beneath `rw`
-// (paths that do not exist grant nothing). Sets no_new_privs.
-std::expected<void, std::string> restrict_writes(std::span<const std::filesystem::path> rw);
+// (paths that do not exist grant nothing). Sets no_new_privs. `scoped`
+// (ABI 6, Linux 6.12) also keeps it from signalling processes and reaching
+// abstract unix sockets outside the fence; a kernel without it fences writes.
+std::expected<void, std::string> restrict_writes(std::span<const std::filesystem::path> rw,
+                                                 bool scoped = false);
 }  // namespace landlock
 
 // ── seccomp ──────────────────────────────────────────────────────────

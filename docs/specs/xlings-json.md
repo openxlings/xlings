@@ -246,6 +246,13 @@ here as for any installed payload, so its programs and links are this home's.
   working.
 - Whether a home is trusted as an upstream is the caller's decision (mcpp
   accepts only homes of the current user or root).
+- A home that declares upstreams has no system layer (2026.10.16.2+): it
+  borrows through its upstreams alone, so every payload it uses has an entry
+  in its own store. Before, a home inside a Luban system also used `/xlings`
+  as its layer and found a payload there without an entry in its store.
+- The configuration of a borrowed payload runs where it cannot write the
+  payload (its owner's); a recipe judges such a payload by what it produces
+  here rather than rewriting it.
 
 ### `xim`
 

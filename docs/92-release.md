@@ -9,8 +9,8 @@ release workflow is green: two steps run outside it.
 
 `YYYY.M.D.N`, `N` from 1; `.0` is reserved for a formal release. The version is
 in three places that must agree — `mcpp.toml`, `src/core/config.cppm` and
-`luban/src/cli/cli.cppm` (`test_luban_cli` checks it): luban is released with the
-xlings beside it.
+`luban/os/service/src/service.cppm` (the Luban OS app's): luban and luban-os
+are released with the xlings beside them.
 
 ## Steps
 
@@ -23,6 +23,9 @@ xlings beside it.
 4. **The index**: `pkgs/x/xlings.lua` in xim-pkgindex gets the new version for
    every platform with its sha256, and `latest` points at it.
 5. CI runs on `main` again, and the published index artifact is rebuilt.
+   What tests the published experience waits for it: `xlings-ci-luban-fresh`,
+   started by the release, first waits until the published index's `xlings`
+   and `luban-os` `latest` are this version.
 6. The release is verified for real: a fresh install, the host matrix, the
    index's acceptance.
 

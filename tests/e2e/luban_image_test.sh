@@ -6,12 +6,13 @@
 # (virt), every image written in-process. Then the environment as a machine:
 # its only network is the proxy; then its desktop (xim:labwc-desktop) shown
 # to a client of the machine as the Luban OS window is, and typed into.
+# Inside it first: another home builds its catalog behind a write fence.
 #
 # The kernel: x86_64 installs xim:linux-kernel into the root (the generic
 # profile's); aarch64 exports with --boot virt. The firmware is
 # xim:edk2-firmware, installed into the test's home as a user would.
 #
-# xtest: covers=LUBAN-ISO,LUBAN-DRIVE,LUBAN-TRY,LUBAN-BOOT-PROFILE,LUBAN-ISO-UEFI,LUBAN-ISO-HYBRID,LUBAN-QCOW2,LUBAN-MACHINE-DESKTOP requires=linux,qemu,bwrap,network
+# xtest: covers=LUBAN-ISO,LUBAN-DRIVE,LUBAN-TRY,LUBAN-BOOT-PROFILE,LUBAN-ISO-UEFI,LUBAN-ISO-HYBRID,LUBAN-QCOW2,LUBAN-MACHINE-DESKTOP,LAYER-BOUNDARY-IN-SYSTEM requires=linux,qemu,bwrap,network
 set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/project_test_lib.sh"
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/rootfs_lib.sh"
@@ -54,6 +55,27 @@ until L new t --edition tiny >"$RUNTIME_DIR/new.log" 2>&1; do
   X subos remove -y t >/dev/null 2>&1 || true; sleep 5
 done
 grep -q "t is ready" "$RUNTIME_DIR/new.log" || fail "no creation report: $(tail -5 "$RUNTIME_DIR/new.log")"
+
+log "another home inside the system: its catalog behind a write fence"
+# Inside a system bwrap cannot start (no nested user namespaces); the layer
+# boundary that a home sharing the system's store needs is a Landlock write
+# fence there (LAYER-BOUNDARY-IN-SYSTEM). The catalog is built; a recipe's top
+# level writing outside its worker is refused.
+mkdir -p "$(sysdir t)/rootfs/root/fence-index/pkgs/f"
+cat > "$(sysdir t)/rootfs/root/fence-index/pkgs/f/fence.lua" <<'EOF'
+local f = io.open("/root/written-by-a-recipe", "w")
+if f then f:write("x"); f:close() end
+package = { spec = "1", name = "fence", description = "probe", type = "package", xpm = { linux = { ["1.0.0"] = {} } } }
+EOF
+out="$(L run t -- /bin/sh -c '
+    mkdir -p /root/nh && printf "{\"index_repos\":[{\"name\":\"xim\",\"url\":\"/root/fence-index\"}]}\n" > /root/nh/.xlings.json
+    XLINGS_HOME=/root/nh xlings update -v 2>&1 || exit 1
+    test -e /root/written-by-a-recipe && echo WRITTEN-BY-A-RECIPE
+    exit 0' 2>&1)" || fail "a home of its own inside the system: $out"
+grep -q 'Landlock write fence' <<<"$out" || fail "the catalog was not built behind the fence: $out"
+grep -q 'index updated' <<<"$out" || fail "the catalog of a home inside the system: $out"
+! grep -q WRITTEN-BY-A-RECIPE <<<"$out" || fail "a recipe wrote outside its worker: $out"
+
 arch="$(uname -m)"
 BOOT=()   # what export is told about the kernel
 if [[ "$arch" == x86_64 ]]; then

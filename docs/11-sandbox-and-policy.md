@@ -207,6 +207,24 @@ others warn.
 What a backend cannot give is degraded with a reason under `dev`, and refused
 (125) under `private` and `locked`, item by item with the fix.
 
+A view of the host (bwrap, proot) presents `/usr`, and `/bin`, `/sbin` and
+`/lib*` where the host's resolve: a merged `/usr`'s links into `/usr`, a
+non-merged host's own directories (Alpine's `/lib`, openSUSE Leap 15's `/lib64`).
+
+### Recipes of a home layered on a system home
+
+A home that shares the store of the system home below it (`/xlings`, or
+`XLINGS_SYSTEM_LAYER`) evaluates recipes -- its index build, the configuration
+of a payload it borrows -- in a worker that cannot write the layer below.
+bwrap runs that worker where it starts. Inside a Luban system nested user
+namespaces are forbidden and bwrap cannot start; there the worker puts up a
+Landlock write fence before it reads a recipe (its scratch, the devices, its
+hook logs and the payload being installed are writable, nothing else), and
+the system's own pid namespace separates it from the host. On a host without
+bwrap the boundary is refused, with the fix. A home that declares `upstreams`
+borrows through them -- link entries in its own store -- and has no system
+layer.
+
 ### The one-time setup (Ubuntu 23.10 and later)
 
 Ubuntu restricts unprivileged user namespaces with AppArmor; bwrap then fails with

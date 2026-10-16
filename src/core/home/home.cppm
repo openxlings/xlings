@@ -96,7 +96,8 @@ fs::path system_config_path();
 nlohmann::json read_system_config();
 
 // The system layer when one is installed: /xlings (%ProgramData%\xlings\home)
-// or XLINGS_SYSTEM_LAYER, with mode=multi or mode=root/layout=multi.
+// or XLINGS_SYSTEM_LAYER, with mode=multi or mode=root/layout=multi. A home
+// (XLINGS_HOME) that declares `upstreams` borrows through them and has none.
 std::optional<fs::path> system_layer();
 std::expected<std::optional<fs::path>, std::string> read_system_layer();
 // Whether this home publishes its store to readers outside its own scopes.

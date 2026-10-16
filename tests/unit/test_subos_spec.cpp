@@ -51,14 +51,21 @@ sp::Request request(V argv = {}) {
         .shell = "/bin/bash",
         .host_exists = [](std::string_view p) {
             return !p.starts_with("/dev/nvidia") && p != "/dev/dri" && p != "/dev/dxg"
-                && p != "/etc/pki";
+                && p != "/etc/pki" && p != "/lib32" && p != "/libx32";
+        },
+        // A merged /usr: /bin, /sbin and /lib* are links into it.
+        .host_resolve = [](std::string_view p) {
+            for (const auto* top : {"/bin", "/sbin", "/lib", "/lib64"})
+                if (p == top) return "/usr" + std::string(p);
+            return std::string(p);
         },
     };
 }
 
 const V kLegacyBinds{
     "--ro-bind", "/usr", "/usr",
-    "--ro-bind", "/bin", "/bin",
+    "--ro-bind", "/usr/bin", "/bin",
+    "--ro-bind", "/usr/sbin", "/sbin",
     "--ro-bind", "/usr/lib", "/lib",
     "--ro-bind", "/usr/lib64", "/lib64",
     "--ro-bind", "/etc/resolv.conf", "/etc/resolv.conf",
@@ -156,7 +163,7 @@ XTEST(SubosSpec, LegacyProotArgvIsUnchanged,
     EXPECT_EQ(spec->backend, sp::Backend::Proot);
     V expected{"/h/data/xpkgs/xim-x-proot/5.4.0/bin/proot", "-r", "/h/subos/box/sandbox-root",
                "--bind=/proc:/proc", "--bind=/sys:/sys", "--bind=/dev:/dev",
-               "--bind=/usr:/usr", "--bind=/bin:/bin", "--bind=/usr/lib:/lib",
+               "--bind=/usr:/usr", "--bind=/usr/bin:/bin", "--bind=/usr/sbin:/sbin", "--bind=/usr/lib:/lib",
                "--bind=/usr/lib64:/lib64", "--bind=/etc/resolv.conf:/etc/resolv.conf",
                "--bind=/etc/ld.so.cache:/etc/ld.so.cache", "--bind=/etc/ssl:/etc/ssl",
                "--bind=/etc/alternatives:/etc/alternatives", "--bind=/etc/localtime:/etc/localtime",

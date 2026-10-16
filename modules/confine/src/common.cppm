@@ -17,7 +17,8 @@ using xlings::subos::HomeView;
 std::string posix(const fs::path& p);
 
 // The host userland every POSIX sandbox needs read-only, and nothing else of
-// /etc: the loader cache, DNS, certificates, the zone file.
+// /etc: the loader cache, DNS, certificates, the zone file. /usr, and /bin,
+// /sbin, /lib* each where the host's resolves (a merged /usr or its own).
 void host_userland(std::vector<sp::MountOp>& m, const in::Intent& i, sp::Storage storage, bool host_time);
 
 // The instance's own files at the places a POSIX userland looks for them.

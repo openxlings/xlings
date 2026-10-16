@@ -303,3 +303,27 @@ XTEST(HomeLayers, UseMaterializesTheFullBorrowedClosureWithoutCopyingConfiguredS
                   ["workspace"]["layer-tool"]["active"], "fixture:0.1.0");
 
 }
+
+// Fix plan 2026-10-16 D8: mcpp's registry inside a Luban system declares
+// `upstreams` (/xlings) and was also layered on /xlings; its payloads were
+// then used in place, with no entry in the store mcpp looks in ("patchelf
+// missing: <registry>/data/xpkgs/..."). A home that declares upstreams
+// borrows through them alone.
+XTEST(HomeLayers, AHomeThatDeclaresUpstreamsHasNoSystemLayer, .area = "home",
+      .covers = {"HOME-LAYER-RESOLVE"}) {
+    auto isolated = tk::Home::isolated("upstream-not-layered");
+    Layer layer(isolated.root() / "system");
+    const auto registry = isolated.root() / "registry";
+    tk::write_file(registry / ".xlings.json", R"({"versions":{}})");
+    Env selected("XLINGS_SYSTEM_LAYER", layer.home.string());
+    Env home("XLINGS_HOME", registry.string());
+    auto declared = h::read_system_layer();
+    ASSERT_TRUE(declared);
+    ASSERT_TRUE(*declared) << "a home that declares nothing has the layer";
+    tk::write_file(registry / ".xlings.json",
+                   Json{{"versions", Json::object()},
+                        {"upstreams", Json::array({{{"home", layer.home.string()}, {"namespaces", {"xim"}}}})}}.dump());
+    declared = h::read_system_layer();
+    ASSERT_TRUE(declared);
+    EXPECT_FALSE(*declared) << "its upstreams are how it borrows";
+}

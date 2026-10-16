@@ -73,6 +73,7 @@ struct Intent {
     std::map<std::string, std::string> host_env;
     std::map<std::string, std::string> explicit_env;
     std::function<bool(std::string_view)> host_exists;
+    std::function<std::string(std::string_view)> host_resolve;
 
     // How hard a dimension is required: Must under --no-degrade, else the
     // policy's word, else Should.
@@ -82,6 +83,8 @@ struct Intent {
 
     // A host path exists (the request's seam, so goldens pin host facts).
     [[nodiscard]] bool exists(std::string_view path) const;
+    // Where it resolves, its symlinks followed (the same seam).
+    [[nodiscard]] std::string resolve(std::string_view path) const;
 };
 
 Intent lower(const policy::Policy& policy, const HomeView& home, const spec::Request& request);

@@ -143,10 +143,40 @@ std::expected<bool, std::string> shares_store(const fs::path& home) {
     return declared == "multi";
 }
 
+namespace {
+
+// Its .xlings.json has a non-empty `upstreams`. Read again only when the
+// file changed: an index build asks once per recipe.
+bool declares_upstreams(const fs::path& home) {
+    struct Seen { std::uintmax_t size; fs::file_time_type mtime; bool declared; };
+    static std::map<fs::path, Seen> known;
+    if (home.empty()) return false;
+    const auto file = home / ".xlings.json";
+    std::error_code sizeError, timeError;
+    const auto size = fs::file_size(file, sizeError);
+    const auto mtime = fs::last_write_time(file, timeError);
+    if (sizeError || timeError) return false;
+    if (auto it = known.find(home); it != known.end() && it->second.size == size && it->second.mtime == mtime)
+        return it->second.declared;
+    std::ifstream in(file);
+    auto config = nlohmann::json::parse(in, nullptr, false);
+    const bool declared = !config.is_discarded() && config.is_object() && config.contains("upstreams")
+                          && config["upstreams"].is_array() && !config["upstreams"].empty();
+    known[home] = {size, mtime, declared};
+    return declared;
+}
+
+}  // namespace
+
 std::expected<std::optional<fs::path>, std::string> read_system_layer() {
     auto source = domain_producer_source::read();
     if (!source) return std::unexpected(source.error());
     if (*source) return std::optional<fs::path>{(**source).recordedHome};
+    // A home that declares its upstreams borrows through them -- link entries
+    // in its own store (mcpp's registry: `[xlings] upstream = ["/xlings"]`).
+    // A system layer is for a home that declares nothing; using both put a
+    // borrowed payload where its declared consumer did not look.
+    if (declares_upstreams(env_or_empty("XLINGS_HOME"))) return std::optional<fs::path>{};
     fs::path layer = env_or_empty("XLINGS_SYSTEM_LAYER");
     if (layer.empty()) {
         if constexpr (platform::is_windows) layer = program_data() / "xlings" / "home";

@@ -108,6 +108,12 @@ sp::Request request_of(int storage, bool interactive, int grants, bool root, std
         r.root_mounts = {{sp::MountKind::RoBind, "/h/.xlings/data/xpkgs/xim-x-glibc/2.44", "/h/.xlings/data/xpkgs/xim-x-glibc/2.44"}};
     }
     r.host_exists = [](std::string_view p) { return p.find("missing") == std::string_view::npos; };
+    // A merged-/usr host: /bin, /sbin and /lib* are links into /usr.
+    r.host_resolve = [](std::string_view p) {
+        for (const auto* top : {"/bin", "/sbin", "/lib", "/lib32", "/lib64", "/libx32"})
+            if (p == top) return "/usr" + std::string(p);
+        return std::string(p);
+    };
     return r;
 }
 

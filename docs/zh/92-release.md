@@ -7,7 +7,7 @@ xlings 的一个版本怎样到达用户。release 工作流变绿并不代表�
 ## 版本号
 
 `YYYY.M.D.N`，`N` 从 1 开始；`.0` 保留给正式版本。版本号写在三处且必须一致——`mcpp.toml`、`src/core/config.cppm`
-和 `luban/src/cli/cli.cppm`（`test_luban_cli` 会检查）：luban 与它旁边的 xlings 一起发布。
+和 `luban/os/service/src/service.cppm`（Luban OS 应用的）：luban、luban-os 与它们旁边的 xlings 一起发布。
 
 ## 步骤
 
@@ -16,6 +16,8 @@ xlings 的一个版本怎样到达用户。release 工作流变绿并不代表�
 3. **中国大陆镜像**：从中国大陆的机器把资产推到 GitCode（`tools/mirror-latest.sh xlings`），每个都下载（GET，不是 HEAD）并核对 sha256。
 4. **索引**：xim-pkgindex 的 `pkgs/x/xlings.lua` 为每个平台写入新版本和 sha256，`latest` 指向它。
 5. `main` 上重新运行 CI，重新生成发布的索引 artifact。
+   测试已发布体验的作业等待它：release 触发的 `xlings-ci-luban-fresh` 先等待已发布索引中 `xlings` 与 `luban-os` 的 `latest`
+   等于本版本。
 6. 真实验证发布：全新安装、host matrix、索引的验收。
 
 ## CI 从不做的事

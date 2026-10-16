@@ -148,9 +148,15 @@ ParsedPackageTarget parse_package_target(std::string target);
 
 namespace detail_ {
 
+// The version a target resolves to. With none named: what "latest" names,
+// or -- when this client (`client`, empty: this xlings) is older than that
+// version's min_client -- the newest version up to it that the client can
+// use; `passedOver` then says which was passed over and why.
 std::string select_version_(const xpkg::Package& pkg,
                             const std::string& platform,
-                            const std::string& versionHint);
+                            const std::string& versionHint,
+                            std::string_view client = {},
+                            std::string* passedOver = nullptr);
 
 std::string make_canonical_name_(const std::string& namespaceName,
                                  const std::string& name);
