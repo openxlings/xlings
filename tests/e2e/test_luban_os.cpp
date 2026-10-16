@@ -1097,6 +1097,9 @@ frames 3
 state {0}/quick-start.json
 screenshot {0}/quick-start.ppm
 click more
+frames 3
+state {0}/after-more.json
+screenshot {0}/after-more.ppm
 waitfor quick_start.more true 5
 frames 3
 state {0}/quick-start-more.json
@@ -1113,6 +1116,13 @@ frames 3
 state {0}/app-settings.json
 screenshot {0}/app-settings.ppm
 )", dir.string(), ww, wh), {"--scale", scale}, {{"LUBAN_OS_LANG", lang == "zh" ? "zh_CN.UTF-8" : "en_US.UTF-8"}});
+            // What the run had drawn when it stopped, for the reader of a failure.
+            if (r.exit_code != 0)
+                for (const auto& e : fs::directory_iterator(dir)) {
+                    std::error_code ec;
+                    fs::create_directories(artifact("layout") / tag, ec);
+                    fs::copy_file(e.path(), artifact("layout") / tag / e.path().filename(), fs::copy_options::overwrite_existing, ec);
+                }
             ASSERT_EQ(r.exit_code, 0) << tag << "\n" << r.transcript();
             for (const auto& page : pages) {
                 const auto s = read_state(dir / (page + ".json"));
