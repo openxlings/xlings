@@ -210,9 +210,12 @@ class PrivateView final : public View {
             for (const auto& old : bindings_) {
                 if (skeleton_binding(old))
                     continue;
-                if ((usrChanged && rootDestinations_.contains(old.destination) && under_usr(old.destination))
-                    || std::ranges::find(candidate->bindings_, old.destination,
-                                         &Binding::destination) == candidate->bindings_.end())
+                // Inside a /usr that is replaced: they go with it (its
+                // retirement detaches the whole old tree).
+                if (usrChanged && rootDestinations_.contains(old.destination) && under_usr(old.destination))
+                    continue;
+                if (std::ranges::find(candidate->bindings_, old.destination, &Binding::destination)
+                    == candidate->bindings_.end())
                     removals.push_back(old.destination);
             }
             const auto deepestFirst = [](const fs::path& a, const fs::path& b) {
@@ -460,6 +463,16 @@ class PrivateView final : public View {
                 continue;
             bind(guestHome, source, guestHome / source.lexically_relative(physicalHome));
         }
+        // The home's package index, read-only: inside, every query has it
+        // (design 2026-10-16 L §7); an install goes through the broker, which
+        // syncs it here.
+        for (fs::directory_iterator it(physicalHome / "data", ec), end; !ec && it != end; it.increment(ec)) {
+            const auto name = it->path().filename().string();
+            if (!name.starts_with("xim-pkgindex") && name != "xim-index-repos") continue;
+            if (std::error_code dec; !it->is_directory(dec) || it->is_symlink(dec)) continue;
+            bind(guestHome, it->path(), guestHome / "data" / name);
+        }
+        ec.clear();
     }
 };
 } // namespace

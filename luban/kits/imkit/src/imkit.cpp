@@ -42,6 +42,7 @@ struct State {
     bool animating { false };
     double due { 0 };            // when the next stepped animation changes (0: none)
     std::function<void(std::string_view, ImVec2, ImVec2)> sink;
+    std::function<void(std::string_view)> clipped;
 };
 State& st() {
     static State s;
@@ -599,7 +600,10 @@ void progress(ImDrawList* dl, ImVec2 a, ImVec2 b, double fraction) {
 
 // ── anchors ───────────────────────────────────────────────────────────
 
-void on_anchor(std::function<void(std::string_view, ImVec2, ImVec2)> sink) { st().sink = std::move(sink); }
+void on_anchor(std::function<void(std::string_view, ImVec2, ImVec2)> sink, std::function<void(std::string_view)> clipped) {
+    st().sink = std::move(sink);
+    st().clipped = std::move(clipped);
+}
 void anchor(std::string_view name) {
     if (!st().sink) return;
     // Only what can be seen whole: a control scrolled partly out of its list
@@ -607,8 +611,11 @@ void anchor(std::string_view name) {
     const ImVec2 mn = ImGui::GetItemRectMin(), mx = ImGui::GetItemRectMax();
     auto* dl = ImGui::GetWindowDrawList();
     const ImVec2 cmin = dl->GetClipRectMin(), cmax = dl->GetClipRectMax();
-    if (mn.x < cmin.x - 0.5f || mn.y < cmin.y - 0.5f || mx.x > cmax.x + 0.5f || mx.y > cmax.y + 0.5f) return;
-    if (mx.y - mn.y < 1 || mx.x - mn.x < 1) return;
+    if (mn.x < cmin.x - 0.5f || mn.y < cmin.y - 0.5f || mx.x > cmax.x + 0.5f || mx.y > cmax.y + 0.5f || mx.y - mn.y < 1
+        || mx.x - mn.x < 1) {
+        if (st().clipped) st().clipped(name);
+        return;
+    }
     st().sink(name, mn, mx);
 }
 

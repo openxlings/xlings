@@ -501,6 +501,8 @@ XTEST(SubosRootfs, AShareDirectoryManyPackagesWriteIntoIsMergedFileByFile,
     tk::write_file(nvim / "share" / "nvim" / "runtime" / "syntax.vim", "vim");
     const auto cursors = t.dir / "xpkgs" / "adwaita-cursors" / "1.0";
     tk::write_file(cursors / "share" / "icons" / "Adwaita" / "cursors" / "left_ptr", "xcursor");
+    tk::write_file(cursors / "share" / "licenses" / "adwaita-cursors" / "COPYING", "lgpl");
+    tk::write_file(nvim / "share" / "licenses" / "nvim" / "LICENSE", "apache");
     rf::Inputs in;
     in.payloads = {foot, nvim, cursors};
     const auto p = rf::plan(in);
@@ -511,6 +513,8 @@ XTEST(SubosRootfs, AShareDirectoryManyPackagesWriteIntoIsMergedFileByFile,
     EXPECT_EQ(find(p, "usr/share/applications"), nullptr) << "the launcher's directory is the system's";
     EXPECT_EQ(target_of(p, "usr/share/nvim"), nvim / "share/nvim") << "one package's directory is claimed whole";
     EXPECT_EQ(target_of(p, "usr/share/icons/Adwaita"), cursors / "share/icons/Adwaita") << "a theme is one package's";
+    EXPECT_EQ(target_of(p, "usr/share/licenses/nvim"), nvim / "share/licenses/nvim") << "every package's licenses";
+    EXPECT_EQ(target_of(p, "usr/share/licenses/adwaita-cursors"), cursors / "share/licenses/adwaita-cursors");
     EXPECT_TRUE(p.conflicts.empty());
 }
 
@@ -554,6 +558,45 @@ XTEST(SubosRootfs, ADirectoryOfAGenerationIsAMountPointNotALinkIntoTheStore,
     auto again = rf::commit(subos, plan, "mounts again");
     ASSERT_TRUE(again.has_value()) << again.error();
     EXPECT_EQ(*again, *first) << "the same records in the same form are the same generation";
+}
+
+XTEST(SubosRootfs, WhatTheHostReadsAndAnImageThatMountsNothingKeepTheirLinks,
+      .area = "subos", .covers = {"LUBAN-FHS-PATHS"}) {
+    if constexpr (!tk::is_posix) GTEST_SKIP() << "root projections are Linux";
+    Tmp t("linked");
+    const auto factory = t.dir / "template" / "share" / "factory";
+    tk::write_file(factory / "etc" / "inittab", "::sysinit:/etc/init.d/rcS\n");
+    const auto sysusers = t.dir / "template" / "lib" / "sysusers.d";
+    tk::write_file(sysusers / "luban.conf", "g users 100\n");
+    const auto include = t.dir / "sysroot" / "include";
+    tk::write_file(include / "stdio.h", "h");
+    const rf::Plan plan{{{"usr/share/factory", factory, "sysroot"}, {"usr/lib/sysusers.d", sysusers, "sysroot"},
+                         {"usr/include", include, "sysroot"}}, {}};
+    // The factory /etc and the sysusers declarations are read from this host,
+    // where nothing is mounted, and the /etc links name them: links.
+    const auto mounted = t.dir / "subos" / "box";
+    fs::create_directories(mounted);
+    auto m = rf::commit(mounted, plan, "mounted");
+    ASSERT_TRUE(m.has_value()) << m.error();
+    const auto gen = mounted / "root.gen" / std::to_string(*m);
+    EXPECT_TRUE(fs::is_symlink(gen / "usr/share/factory"));
+    EXPECT_TRUE(fs::exists(gen / "usr/share/factory/etc/inittab")) << "readable here";
+    EXPECT_TRUE(fs::is_symlink(gen / "usr/lib/sysusers.d"));
+    ASSERT_EQ(rf::mounts_of(gen).size(), 1u);
+    EXPECT_EQ(rf::mounts_of(gen)[0].first, fs::path("usr/include"));
+    // A tarball's root: an init that mounts nothing -- every directory a link.
+    const auto linked = t.dir / "subos" / "image";
+    fs::create_directories(linked);
+    auto l = rf::commit(linked, plan, "linked", rf::Directories::Linked);
+    ASSERT_TRUE(l.has_value()) << l.error();
+    const auto lgen = linked / "root.gen" / std::to_string(*l);
+    EXPECT_TRUE(fs::is_symlink(lgen / "usr/include"));
+    EXPECT_TRUE(rf::mounts_of(lgen).empty());
+    EXPECT_FALSE(fs::exists(lgen / "mounts.tsv"));
+    // The same plan in the other form is another generation, not the same one.
+    auto remounted = rf::commit(linked, plan, "mounted now");
+    ASSERT_TRUE(remounted.has_value()) << remounted.error();
+    EXPECT_NE(*remounted, *l);
 }
 
 XTEST(SubosRootfs, AnExportedRootKeepsTheLinkAndAPathOfTheRootIsReadThroughItsUsr,

@@ -1699,7 +1699,11 @@ int run_export_(int argc, char* argv[], EventStream& stream, const UsageError& u
             auto t = l.target.generic_string();
             if (t.starts_with(from + "/") || t == from) l.target = to + t.substr(from.size());
         }
-        if (auto c = rf::commit(image_default, plan, "export of " + name); !c) {
+        // A tarball or a directory is started by an init that mounts nothing:
+        // its directories are links (design 2026-10-16 L §6.2).
+        const bool linked = !tarball.empty() || !rootfs_dir.empty();
+        if (auto c = rf::commit(image_default, plan, "export of " + name,
+                                linked ? rf::Directories::Linked : rf::Directories::Mounted); !c) {
             error_(stream, c.error(), {}, ErrorCode::Internal);
             return 1;
         }

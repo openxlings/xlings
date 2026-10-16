@@ -355,6 +355,7 @@ struct App {
     // so a script clicks "the gear", not a coordinate.
     std::map<std::string, std::array<float, 4>> anchors;
     std::map<std::string, std::array<float, 4>> anchors_before;   // the frame before
+    std::set<std::string> clipped;                                // drawn, not whole (scrolled partly out)
 
     // The home's order (design 2026-10-16 L §13.4): the three opened most
     // recently, then every other by name.
@@ -2465,6 +2466,8 @@ Json state_(const App& a) {
     }
     j["anchors"] = Json::object();
     for (const auto& [k, r] : a.anchors) j["anchors"][k] = Json::array({r[0], r[1], r[2], r[3]});
+    j["clipped"] = Json::array();
+    for (const auto& k : a.clipped) j["clipped"].push_back(k);
     return j;
 }
 
@@ -2968,7 +2971,8 @@ int run(int argc, char* argv[]) {
         style.ScrollbarSize = std::round(8 * a.window->ui_scale());
         style.ScrollbarRounding = 0;
     }
-    imkit::on_anchor([&a](std::string_view name, ImVec2 mn, ImVec2 mx) { a.anchors[std::string(name)] = {mn.x, mn.y, mx.x, mx.y}; });
+    imkit::on_anchor([&a](std::string_view name, ImVec2 mn, ImVec2 mx) { a.anchors[std::string(name)] = {mn.x, mn.y, mx.x, mx.y}; },
+                     [&a](std::string_view name) { a.clipped.emplace(name); });
     if (auto refused = a.ctx.port.handshake()) a.notice = *refused;
     a.refresh();
     if (!console_exec.empty()) {
@@ -3207,6 +3211,7 @@ int run(int argc, char* argv[]) {
         }
         a.anchors_before = std::move(a.anchors);
         a.anchors.clear();
+        a.clipped.clear();
         switch (a.view) {
         case View::Launcher: launcher_(a); break;
         case View::QuickStart: quick_start_(a); break;

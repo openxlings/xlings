@@ -9,7 +9,7 @@ step "luban new at a terminal finishes ($edition)" ok -- timeout 900 script -qec
 # What making it says reaches the terminal (L §5): the downloads and the
 # installs, under the "making" line, rewritten in place -- with a share when
 # something is fetched (a host that fetched it all before fetches nothing).
-progressed() { local re=$'\r\e\\[K(\e\\[36m)?\xe2\x96\xb8'; [[ "$LAST_OUT" =~ $re|[0-9]+% ]]; }
+progressed() { local re=$'\r\e\\[K(\e\\[[0-9;]*m)?(\xe2\x96\xb8|\xe2\x9c\x93)'; [[ "$LAST_OUT" =~ $re|[0-9]+% ]]; }
 check "luban new shows its progress at a terminal" -- progressed
 step "luban new --json carries progress events" ok '"event":"(progress|data)"' -- L new hmtj --edition "$edition" --json
 # Inside, at a terminal: the prompt says where, and an install there (run by

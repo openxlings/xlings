@@ -138,8 +138,11 @@ void progress(ImDrawList* dl, ImVec2 a, ImVec2 b, double fraction);
 
 // ── anchors ───────────────────────────────────────────────────────────
 
-// Where each named component was drawn this frame, given to `sink`.
-void on_anchor(std::function<void(std::string_view, ImVec2, ImVec2)> sink);
+// Where each named component was drawn this frame, given to `sink`; one that
+// is drawn but not whole (scrolled partly out of its list) is given to
+// `clipped`, by name only.
+void on_anchor(std::function<void(std::string_view, ImVec2, ImVec2)> sink,
+               std::function<void(std::string_view)> clipped = {});
 // The last ImGui item, named.
 void anchor(std::string_view name);
 

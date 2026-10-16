@@ -28,11 +28,11 @@ bool is_executable_entry(const fs::directory_entry& e) {
 // The directories under share/ that several packages write into (freedesktop
 // and the usual tools): a system's, merged file by file.
 bool is_shared_share_dir(std::string_view rel) {
-    static constexpr std::array<std::string_view, 22> exact{
+    static constexpr std::array<std::string_view, 23> exact{
         "applications", "icons", "icons/hicolor", "fonts", "man", "locale", "wayland-sessions",
         "xsessions", "dbus-1", "bash-completion", "bash-completion/completions", "fish",
         "zsh", "zsh/site-functions", "pkgconfig", "terminfo", "metainfo", "mime", "mime/packages",
-        "glib-2.0/schemas", "luban", "luban/checks.d"};
+        "glib-2.0/schemas", "luban", "luban/checks.d", "licenses"};
     if (std::ranges::find(exact, rel) != exact.end()) return true;
     const auto under = [&](std::string_view base) { return rel.starts_with(std::string(base) + "/"); };
     // Every level of hicolor and of fonts; a manual section; a language and its
@@ -64,8 +64,15 @@ std::string utc_now() {
 // A link that names a directory is presented as a bind mount, not followed:
 // a symbolic link to a directory took `cd` out of the system's paths (into
 // the store), and `pwd` said so (design 2026-10-16 L §6.2). The layout's own
-// relative links (usr/lib64 -> lib, usr/sbin -> bin) stay links.
-bool is_mount_entry(const Link& link) {
+// relative links (usr/lib64 -> lib, usr/sbin -> bin) stay links, and so do
+// the sources of a machine's state xlings reads from this host, where nothing
+// is mounted -- the factory /etc its /etc links name, the sysusers
+// declarations -- and every directory of a generation made for a root that
+// mounts nothing (an exported tarball, WSL).
+bool is_mount_entry(const Link& link, Directories form = Directories::Mounted) {
+    if (form == Directories::Linked) return false;
+    const auto under = [&](std::string_view dir) { return link.rel == dir || link.rel.starts_with(std::string(dir) + "/"); };
+    if (under("usr/share/factory") || under("usr/lib/sysusers.d")) return false;
     std::error_code ec;
     return link.target.is_absolute() && fs::is_directory(link.target, ec);
 }
@@ -558,8 +565,7 @@ std::expected<void, std::string> switch_to(const fs::path& subos, int generation
     return {};
 }
 
-std::expected<int, std::string> commit(const fs::path& subos, const Plan& p,
-                                       std::string_view reason) {
+std::expected<int, std::string> commit(const fs::path& subos, const Plan& p, std::string_view reason, Directories form) {
     std::set<fs::path> names;
     for (const auto& link : p.links) {
         const fs::path rel = link.rel;
@@ -583,11 +589,12 @@ std::expected<int, std::string> commit(const fs::path& subos, const Plan& p,
             checkedRecords.clear();
         }
         // The same records in the same form: a generation from before mounts.tsv
-        // is made again, once, so that its directories are mounts too.
-        const bool wantsMounts = std::ranges::any_of(p.links, is_mount_entry);
-        std::error_code mec;
-        const bool hasMounts = fs::exists(generation_dir(subos, *now) / "mounts.tsv", mec);
-        if (!checkedRecords.empty() && checkedRecords == print && wantsMounts == hasMounts) return *now;
+        // (or with other directories mounted) is made again, once.
+        std::string wanted;
+        for (const auto& link : p.links)
+            if (is_mount_entry(link, form)) wanted += link.rel + "\t" + link.target.generic_string() + "\n";
+        const auto had = read_checked_text(generation_dir(subos, *now) / "mounts.tsv").value_or(std::string{});
+        if (!checkedRecords.empty() && checkedRecords == print && wanted == had) return *now;
     }
     if (!gens.empty() && gens.back() == std::numeric_limits<int>::max())
         return std::unexpected("generation numbers are exhausted");
@@ -604,7 +611,7 @@ std::expected<int, std::string> commit(const fs::path& subos, const Plan& p,
         const auto at = staging / link.rel;
         fs::create_directories(at.parent_path(), ec);
         if (ec) return std::unexpected("cannot create projection directory: " + ec.message());
-        if (is_mount_entry(link)) {
+        if (is_mount_entry(link, form)) {
             fs::create_directory(at, ec);
             if (ec) return std::unexpected(std::format("cannot make mount point {}: {}", link.rel, ec.message()));
             mountRecords += link.rel + "\t" + link.target.generic_string() + "\n";
@@ -640,7 +647,7 @@ std::expected<int, std::string> commit(const fs::path& subos, const Plan& p,
         if (auto root = store::payload_root(link.target)) payloads.insert(*root);
     }
     for (const auto& link : p.links)
-        if (is_mount_entry(link)) directories.insert(link.rel);
+        if (is_mount_entry(link, form)) directories.insert(link.rel);
     sync_file(staging / "links.tsv");
     if (!mountRecords.empty()) sync_file(staging / "mounts.tsv");
     sync_file(staging / "generation.json");
@@ -740,10 +747,14 @@ std::expected<void, std::string> lay_out(const fs::path& root, const fs::path& u
             fs::remove(usr, ec);
             if (ec) return std::unexpected(std::format("cannot replace the link {}: {}", usr.string(), ec.message()));
         }
+        // A /usr with content is a generation mounted there already when the
+        // root records one (stage-0 again after `boot --now`, a refresh of a
+        // running machine): what is mounted next goes over it.
+        const bool mounted = fs::is_regular_file(root / std::string(kUsrRecord), ec);
         if (!fs::exists(fs::symlink_status(usr, ec))) {
             fs::create_directory(usr, ec);
             if (ec) return std::unexpected(std::format("cannot make {}: {}", usr.string(), ec.message()));
-        } else if (!fs::is_directory(fs::symlink_status(usr, ec)) || !fs::is_empty(usr, ec)) {
+        } else if (!fs::is_directory(fs::symlink_status(usr, ec)) || (!mounted && !fs::is_empty(usr, ec))) {
             return std::unexpected(std::format("{} has content of its own; it is left alone", usr.string()));
         }
         auto etc = machine->ensure_directory("etc/xlings");

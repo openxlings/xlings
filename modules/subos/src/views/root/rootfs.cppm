@@ -106,8 +106,12 @@ std::optional<GenerationInfo> info(const fs::path& subos, int generation);
 // the referenced immutable directory for its whole read; independent lookups
 // through the changing pointer do not form a snapshot. A plan identical to the current
 // generation's writes nothing and returns the current number.
+// Its directories: mount entries (mounts.tsv, design 2026-10-16 L §6.2) for
+// a root that mounts its /usr, links for one that mounts nothing (an
+// exported tarball or directory).
+enum class Directories { Mounted, Linked };
 std::expected<int, std::string> commit(const fs::path& subos, const Plan& plan,
-                                       std::string_view reason);
+                                       std::string_view reason, Directories form = Directories::Mounted);
 // Whether a switch waits for the pointer to reach stable storage. Every
 // caller in the product switches durably (ROOT-GEN-DURABLE); Deferred exists
 // so the performance lane can time the CHECK apart from the disk's flush

@@ -1139,7 +1139,12 @@ screenshot {0}/app-settings.ppm
                     continue;
                 }
                 const auto want = Json::parse(tk::read_file(baseline));
+                const auto clipped = s.value("clipped", Json::array());
                 for (auto it = want.begin(); it != want.end(); ++it) {
+                    // Another machine's fonts can make a page taller than the
+                    // window: a control then scrolled partly out is there, a
+                    // scroll away -- not gone, and not where it was.
+                    if (!layout.contains(it.key()) && std::ranges::find(clipped, Json(it.key())) != clipped.end()) continue;
                     ASSERT_TRUE(layout.contains(it.key())) << tag << " " << page << ": " << it.key() << " is gone";
                     for (int k = 0; k < 4; ++k) {
                         const float was = it.value()[k].get<float>(), now = layout[it.key()][k].get<float>();

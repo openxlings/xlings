@@ -197,6 +197,19 @@ void check_namespace_updates(bool locked) {
     EXPECT_EQ(session.read(point / "data").at("content"), "replacement payload");
     EXPECT_EQ(session.read(metadataPoint).at("content"),
               "replacement metadata at the same source path");
+    // A new tree with a directory of its own mounted inside it (a generation
+    // that replaces /usr, its entries inside: design 2026-10-16 L §6.2): the
+    // inner mount point is the new tree's, absent from the one presented.
+    const auto next = home.root() / "next-generation";
+    fs::create_directories(next / "entry");
+    const auto entry = home.root() / "entry-payload";
+    tk::write_file(entry / "data", "an entry of the new tree");
+    ASSERT_FALSE(fs::exists(replacement / "entry"));
+    const std::vector<rm::Binding> generation{{next, point, true}, {entry, point / "entry"}};
+    const auto switched = rm::update(session.target, generation, {});
+    ASSERT_TRUE(switched) << switched.error();
+    EXPECT_EQ(session.read(point / "entry" / "data").at("content"), "an entry of the new tree");
+    EXPECT_FALSE(session.read(point / "data").at("exists").get<bool>()) << "the old tree went with its replacement";
     const std::array<fs::path, 2> removed{point, metadataPoint};
     ASSERT_TRUE(rm::update(session.target, {}, removed));
     EXPECT_FALSE(session.read(point / "data").at("exists").get<bool>());
