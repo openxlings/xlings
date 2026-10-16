@@ -319,6 +319,7 @@ state {2}/launcher.json
 screenshot {3}
 click row:new
 wait quick-start
+waitfor host.known true 60
 frames 3
 state {2}/quick-start.json
 screenshot {4}
@@ -761,6 +762,7 @@ XTEST(LubanOs, AFirstTimeUserMakesASystemFromTheQuickStartAndUsesIt, .area = "lu
     ASSERT_EQ(home.xlings({"self", "init"}).exit_code, 0);
     const auto made = home.root() / "made.ppm", st = home.root() / "first.json";
     auto r = run_script(home, std::format(R"(wait quick-start
+waitfor host.known true 60
 frames 2
 screenshot {}
 click card:tiny
@@ -1212,6 +1214,7 @@ key Down
 expect selected 2
 click new
 wait quick-start
+waitfor host.known true 60
 click card:nano
 expect edition nano
 click card:tiny
