@@ -1254,7 +1254,7 @@ expect admin_page 2
 state {}
 click admin:back
 wait launcher
-frames 6
+frames 30
 state {}
 )", st.string(), idle.string()));
     ASSERT_EQ(r.exit_code, 0) << r.transcript();

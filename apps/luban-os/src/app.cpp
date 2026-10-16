@@ -3027,7 +3027,10 @@ int run(int argc, char* argv[]) {
                                        *a.notice_until - std::chrono::steady_clock::now()).count()) + 1, 16, scheduled);
         const int wait_ms = script ? 30 : frames >= 0 ? 0 : scheduled;
         if (a.perf.input_at && a.perf.frames_since_input == 1) a.perf.wait_after_input_ms = scheduled;
-        if (pending == 0 && !busy) a.perf.idle_wait_ms = scheduled;
+        // The longest a still window waits since the last input: a stepped
+        // animation (a badge's beat) makes the wait before its next step
+        // short, the one after it long; resting is the long one.
+        if (pending == 0 && !busy) a.perf.idle_wait_ms = std::max(a.perf.idle_wait_ms, scheduled);
         if (!a.window->begin_frame(wait_ms) && !a.close_dialog) {
             // The window is to close: a running machine's on-close decides.
             // A sandbox's session ends with its window; only a machine has a choice.
@@ -3072,6 +3075,7 @@ int run(int argc, char* argv[]) {
             pending = 3;
             a.perf.input_at = frame_start;
             a.perf.frames_since_input = 0;
+            a.perf.idle_wait_ms = 0;
         } else if (pending > 0) --pending;
         imkit::begin_frame(a.window->ui_scale(), ImGui::GetTime(), a.settings.reduce_motion);
         // Any input cancels the countdown.
