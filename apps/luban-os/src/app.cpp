@@ -2408,8 +2408,9 @@ Json state_(const App& a) {
                  {"hidden", a.hidden}, {"said", a.tray_said}};
     j["scale"] = imkit::scale();
     j["unit"] = imkit::unit();
+    j["display"] = Json::array({ImGui::GetIO().DisplaySize.x, ImGui::GetIO().DisplaySize.y});
     if (a.window) j["fonts"] = a.window->font_dir().string();
-    if (a.view == View::QuickStart) j["quick_start"] = {{"said", a.quick_said}, {"can_make", a.quick_can_make}};
+    if (a.view == View::QuickStart) j["quick_start"] = {{"said", a.quick_said}, {"can_make", a.quick_can_make}, {"more", a.more}};
     if (a.import)
         j["import"] = {{"file", a.import->file.string()}, {"error", a.import->error}, {"edition", a.import->edition},
                        {"packages", a.import->packages}, {"wider", a.import->wider}, {"name", std::string(a.import->name)},

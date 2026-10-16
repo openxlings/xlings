@@ -1093,6 +1093,7 @@ frames 3
 state {0}/quick-start.json
 screenshot {0}/quick-start.ppm
 click more
+waitfor quick_start.more true 5
 frames 3
 state {0}/quick-start-more.json
 screenshot {0}/quick-start-more.ppm
@@ -1111,6 +1112,8 @@ screenshot {0}/app-settings.ppm
             ASSERT_EQ(r.exit_code, 0) << tag << "\n" << r.transcript();
             for (const auto& page : pages) {
                 const auto s = read_state(dir / (page + ".json"));
+                // What the page was, beside the run's other evidence.
+                tk::write_file(artifact("layout") / std::format("{}-{}.json", page, tag), s.dump(1) + "\n");
                 // The baselines are the shipped fonts' layout: with this
                 // machine's fonts a control is in the window, apart and large
                 // enough to hit, but not where the baseline has it.
@@ -1159,7 +1162,8 @@ screenshot {0}/app-settings.ppm
                     // window: a control then scrolled partly out is there, a
                     // scroll away -- not gone, and not where it was.
                     if (!layout.contains(it.key()) && std::ranges::find(clipped, Json(it.key())) != clipped.end()) continue;
-                    ASSERT_TRUE(layout.contains(it.key())) << tag << " " << page << ": " << it.key() << " is gone";
+                    EXPECT_TRUE(layout.contains(it.key())) << tag << " " << page << ": " << it.key() << " is gone";
+                    if (!layout.contains(it.key())) continue;
                     for (int k = 0; k < 4; ++k) {
                         const float was = it.value()[k].get<float>(), now = layout[it.key()][k].get<float>();
                         EXPECT_NEAR(now, was, std::max(8.0f, (k % 2 ? H : W) * 0.03f))
@@ -1169,6 +1173,12 @@ screenshot {0}/app-settings.ppm
             }
         }
     }
+    // The pages of a failed run, whole, beside their states.
+    if (::testing::Test::HasFailure())
+        for (const auto& [name, file] : shots) {
+            std::error_code ec;
+            fs::copy_file(file, artifact("layout") / (name + ".ppm"), fs::copy_options::overwrite_existing, ec);
+        }
     contact_sheet_(shots, artifact("contact-sheet.ppm"));
     if (!recorded.empty())
         std::println(std::cerr, "luban-os: {} layout baselines recorded into {} (review, then commit to tests/luban-os/baseline)",
