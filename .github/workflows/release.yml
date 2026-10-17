@@ -896,12 +896,20 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
+      # luban as its own payload (xim:luban): bin/luban of each xlings
+      # archive, before the sidecars so it gets its own.
+      - name: luban's payloads (luban_release)
+        run: bash tools/luban_release.sh artifacts artifacts/luban
       - name: Generate source-bound sidecars
         run: bash tools/gen_release_sidecars.sh artifacts sidecars
       - uses: actions/upload-artifact@v4
         with:
           name: xlings-release-sidecars
           path: sidecars/*.sha256
+      - uses: actions/upload-artifact@v4
+        with:
+          name: luban
+          path: artifacts/luban/luban-*
 
   candidate-linux-x86_64:
     needs: [prepare-candidates]
@@ -996,6 +1004,10 @@ jobs:
             artifacts/xlings-linux-aarch64/xlings-*-linux-aarch64.tar.gz
             artifacts/xlings-macosx-arm64/xlings-*-macosx-arm64.tar.gz
             artifacts/xlings-windows-x86_64/xlings-*-windows-x86_64.zip
+            artifacts/luban/luban-*-linux-x86_64.tar.gz
+            artifacts/luban/luban-*-linux-aarch64.tar.gz
+            artifacts/luban/luban-*-macosx-arm64.tar.gz
+            artifacts/luban/luban-*-windows-x86_64.zip
             artifacts/xlings-release-sidecars/*.sha256
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -1133,7 +1145,9 @@ jobs:
           # their GitHub release, which only this job can create.
           rc=0
           bash tools/mirror_xlings_res.sh "${{ steps.version.outputs.version }}" || rc=1
-          # The Luban OS app and xdesk beside it (xlings-res/luban-os, xdesk).
+          # luban, the Luban OS app and xdesk beside it (xlings-res/luban,
+          # luban-os, xdesk).
+          bash tools/mirror_res.sh luban "${{ steps.version.outputs.version }}" || rc=1
           bash tools/mirror_res.sh luban-os "${{ steps.version.outputs.version }}" || rc=1
           bash tools/mirror_res.sh xdesk "${{ steps.version.outputs.version }}" || rc=1
           exit $rc

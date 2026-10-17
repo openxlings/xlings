@@ -39,6 +39,15 @@ $XlingsHome = Join-Path $env:USERPROFILE '.xlings'
 
 # ── Phase 0: bootstrap ────────────────────────────────────────────────
 
+function Use-NewTerminalEnvironment {
+    $machine = [Environment]::GetEnvironmentVariable('Path', 'Machine')
+    $user = [Environment]::GetEnvironmentVariable('Path', 'User')
+    $env:PATH = (@($machine, $user) | Where-Object { $_ }) -join ';'
+    $env:XLINGS_HOME = [Environment]::GetEnvironmentVariable('XLINGS_HOME', 'User')
+    Write-Log "PATH (machine + user): $env:PATH"
+    Write-Log "XLINGS_HOME (user): $env:XLINGS_HOME"
+}
+
 function Invoke-Bootstrap {
     Write-Section 'Bootstrap - quick_install on a cold machine'
 
@@ -65,12 +74,15 @@ function Invoke-Bootstrap {
         Fail "quick_install left no xlings shim at $shim - the published release is unusable"
     }
 
-    # The installer writes profile hooks, but this process started before they
-    # existed; put the same directories on PATH by hand.
-    $env:PATH = "$XlingsHome\subos\current\bin;$XlingsHome\bin;$env:PATH"
+    # The environment a new terminal gets: the machine's and the user's PATH
+    # and XLINGS_HOME as the installer left them in the registry -- what cmd,
+    # Git Bash and a PowerShell that runs no profile have. Nothing added by
+    # hand, so a command reachable only through the profile hook is not
+    # reachable here either.
+    Use-NewTerminalEnvironment
 
     if (-not (Get-Command xlings -ErrorAction SilentlyContinue)) {
-        Fail 'xlings is not on PATH after quick_install'
+        Fail 'xlings is not on the PATH a new terminal gets after quick_install'
     }
     Write-Ok "xlings $(Get-ToolVersion xlings) installed at $XlingsHome"
 
@@ -108,6 +120,11 @@ function Invoke-IndexOverlay {
 
     Remove-Item -Recurse -Force (Join-Path $dst 'pkgs')
     Copy-Item -Recurse -Force (Join-Path $tmp 'idx\pkgs') (Join-Path $dst 'pkgs')
+    # The catalog is the published index's, keyed on its version: kept, it
+    # does not know a package the branch adds, and the miss refreshes the
+    # index -- replacing these pkgs/ with the published ones again. Rebuilt
+    # (smoke.sh's overlay_index does the same).
+    Remove-Item -Force -ErrorAction SilentlyContinue (Join-Path $dst '.xlings-index-cache.json')
     Write-Ok "pkgs/ replaced from xim-pkgindex@$ref"
 }
 
@@ -280,6 +297,21 @@ function Assert-Refuses {
 }
 
 function Invoke-SuiteLubanHost {
+    # luban is a package (xim:luban): installed, its command is in the routing
+    # table -- subos\current\bin, the directory the installer put on the
+    # user's PATH -- not only in <home>\bin, which only the profile adds.
+    Write-Section 'luban: installed as a package, on the PATH of a new terminal'
+    Invoke-Step 'install luban' @('xlings', 'install', 'luban', '-y')
+    $luban = Get-Command luban -ErrorAction SilentlyContinue
+    if (-not $luban) { Fail 'luban is not on the PATH a new terminal gets after xlings install luban' }
+    $want = Join-Path $XlingsHome 'subos\current\bin\luban.exe'
+    if ($luban.Source -ne $want) { Fail "luban resolves to $($luban.Source), not the routing table's $want" }
+    Write-Ok "luban at $($luban.Source)"
+    $lv = Get-ToolVersion luban
+    $xv = Get-ToolVersion xlings
+    if ($lv -ne $xv) { Fail "luban ${lv} beside xlings ${xv}: xim:luban's latest is not the release's" }
+    Write-Ok "luban $lv, the version of xlings"
+
     Write-Section 'luban on Windows: what this computer can do'
     Invoke-Step 'version' @('luban', '--version')
     $overview = (& luban 2>&1 | Out-String)

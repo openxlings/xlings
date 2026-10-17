@@ -16,12 +16,14 @@ are released with the xlings beside them.
 
 1. The change is merged (squash) to `main`.
 2. The release workflow builds Linux (x86_64, aarch64), macOS and Windows,
-   and publishes the GitHub release with a `.sha256` per asset.
+   and publishes the GitHub release with a `.sha256` per asset; luban is also
+   its own asset (`luban-<version>-<platform>`, `bin/luban` of each xlings archive).
 3. **The China mirror**: the assets are pushed to GitCode from a machine in
-   China (`tools/mirror-latest.sh xlings`), and each is verified by downloading
+   China (`tools/mirror-latest.sh xlings`, then `luban`, `luban-os`, `xdesk`), and each is verified by downloading
    it (GET, not HEAD) and comparing its sha256.
 4. **The index**: `pkgs/x/xlings.lua` in xim-pkgindex gets the new version for
-   every platform with its sha256, and `latest` points at it.
+   every platform with its sha256, and `latest` points at it; so do
+   `pkgs/luban/luban.lua`, `luban-os.lua` and `xdesk.lua`.
 5. CI runs on `main` again, and the published index artifact is rebuilt.
    What tests the published experience waits for it: `xlings-ci-luban-fresh`,
    started by the release, first waits until the published index's `xlings`
