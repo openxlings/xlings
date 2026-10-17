@@ -324,6 +324,12 @@ TESTS=(
     # load once overwrote it (PR #639 second review, F3).
     "E2E-131|index_base_precedence_test.sh||"
     "E2E-132|completion_test.sh||"
+    # Protocol 1.11 (mcpp design 2026-10-17): payload_status reports integrity
+    # and currency apart (complete / current / usable against the recipe's
+    # floor); a replacement is not refused by another package's dangling
+    # record, which it deactivates and reports as scope_repaired. C2 and S2
+    # fail on 2026.10.16.2.
+    "E2E-133|payload_currency_scope_repair_test.sh||"
 )
 
 # ── orphan check: a test that runs NOWHERE looks exactly like one that passes ──

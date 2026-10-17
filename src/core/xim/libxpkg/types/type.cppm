@@ -142,6 +142,11 @@ struct PlanNode {
     // The recipe's packaging revision for this version (`revision` on the
     // version entry, 0 when it states none). Recorded in the payload stamp.
     int revision { 0 };
+    // The oldest installed revision the recipe still calls usable (`floor`
+    // on the version entry, 0 when it states none). Reported to clients; the
+    // plan itself replaces any payload that is not current (an install is a
+    // provisioning act, and its closure follows the index).
+    int floor { 0 };
     // Non-empty when a payload of this version is on disk but stale: the
     // resolver's `payload_revision_verdict`, phrased for the plan.
     std::string staleReason;

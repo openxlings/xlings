@@ -193,21 +193,27 @@ SubosMetadataRepair plan_subos_metadata_repair(
         const VersionDB& db,
         const std::vector<SubosRef>& others);
 
+// The same plan for ONE scope's maps: the subos a command runs in, or a
+// candidate state a transaction is about to publish.
+//
+// A metadata transaction normalizes its candidate with this before it
+// computes a projection (mcpp design 2026-10-17 X2). A reference into nothing
+// is garbage whoever left it, and the transaction that happens to read it
+// first is never the one that broke it: measured on a user's home, `c++`
+// active at gcc's 16.1.0 with no registration made every replacement of llvm
+// refuse with "installed asset registration missing", forever, while doctor
+// already named the entry. One function, so doctor's repair and the
+// transaction's normalization cannot drift (X3).
+SubosMetadataRepair::Entry plan_scope_reference_repair(
+        const VersionDB& db,
+        const Workspace& active,
+        const WorkspaceInstalled& installed);
+
 // Apply one subos's share of the plan to its own workspace maps.
 // Returns how many references were dropped.
 std::size_t apply_subos_metadata_repair(
         SubosWorkspace& workspace,
         const SubosMetadataRepair::Entry& entry);
-
-// Targets whose ACTIVE version this subos no longer has registered.
-//
-// The current-subos twin of `xvm-subos-active-missing`, and the one INV-1 case
-// `--fix` never had an answer for. Same remedy for the same reason: an active
-// pointer into nothing cannot dispatch, and choosing a replacement would be
-// choosing for the user.
-std::vector<std::string> plan_unregistered_active_deactivation(
-        const VersionDB& db,
-        const Workspace& workspace);
 
 struct DeactivationPlan {
     // Targets to drop from the active workspace, and the release each

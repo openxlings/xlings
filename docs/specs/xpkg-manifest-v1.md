@@ -68,6 +68,7 @@ optional fields:
 | `sha256` | string / nil | the checksum; nil means not yet computed |
 | `ref` | string | refers to another version (an alias), e.g. `latest` → a real version |
 | `revision` | integer | the packaging revision, a non-negative integer, 0 when absent; §5.1.1 |
+| `floor` | integer | the oldest installed revision still usable, `0 ≤ floor ≤ revision`, 0 when absent; §5.1.2 |
 
 ```lua
 ["latest"] = { ref = "20.1.7" },
@@ -108,6 +109,23 @@ that version and says why, e.g.
   owning process is written in `<data>/stale/`. If the process is killed, a later
   `install` handles the leftover once that process no longer exists: moved back
   when the original path is missing or empty, deleted otherwise.
+
+#### 5.1.2 The usable floor (xlings 2026.10.17.1, libxpkg 0.0.65)
+
+`revision` says what a new install gets. Whether a payload installed at an older
+revision may still be used is a separate fact, stated by `floor`: a payload is
+*usable* when it is complete and its recorded revision is at least the entry's
+`floor` (a payload without a record is usable). Absent, `floor` is 0 and every
+installed revision stays usable; a value above `revision` reads as `revision`.
+The recipe raises it only when the new revision fixes something every installed
+payload has.
+
+xlings reports both facts in `payload_status` and `install_targets`
+(`current`: the recorded revision equals `revision`; `usable`), and its own
+`install` replaces a payload that is not current, as in §5.1.1: an install is
+the explicit request for the recipe's current packaging, and the dependencies it
+plans follow the same rule because the new payload was written against them. A
+client that only uses a payload keeps it while it is usable (mcpp's builds).
 
 ```lua
 ["2.44.3"] = {

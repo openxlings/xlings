@@ -144,7 +144,8 @@ int run(const mcpplibs::cmdline::ParsedArgs& args,
                                      {"capabilities", std::move(names)},
                                      {"home_layouts", std::move(layouts)},
                                      {"features", {"index_dir", "index_store", "upstreams", "payload_status",
-                                                   "sync_index", "install_targets_complete"}}}).dump()
+                                                   "sync_index", "install_targets_complete",
+                                                   "payload_currency", "binding_state"}}}).dump()
                   << "\n" << std::flush;
         return 0;
     }

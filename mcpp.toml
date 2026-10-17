@@ -67,7 +67,7 @@ members = [
 
 [package]
 name = "xlings"
-version = "2026.10.16.2"
+version = "2026.10.17.1"
 description = "Universal package management infrastructure tool with SubOS isolation"
 license = "Apache-2.0"
 repo = "https://github.com/openxlings/xlings"
@@ -176,7 +176,7 @@ ftxui      = "6.1.9"
 libarchive = "3.8.7"
 
 [dependencies.mcpplibs]
-xpkg = { git = "https://github.com/openxlings/libxpkg.git", rev = "083f2716f8e265181222e7474a73a3df3a052786" }
+xpkg = { git = "https://github.com/openxlings/libxpkg.git", rev = "8cb2954aa99fbc6a48763c56d8a1d28f1bf6fb5c" }
 cmdline = "0.0.2"
 capi.lua = "0.0.3"
 

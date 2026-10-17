@@ -44,6 +44,20 @@ export namespace xlings::xim {
 // Linux, where nothing is patched.
 bool patchelf_reachable();
 
+// A reference into nothing that a metadata transaction of this process
+// dropped from the scope it published (mcpp design 2026-10-17 X2): an active
+// version, or an installed[] entry, whose registration the version database
+// does not have. Recorded only once the transaction committed.
+struct ScopeRepair {
+    std::string target;
+    std::string version;
+    bool wasActive { false };   // the target is now inactive
+};
+
+// Every repair recorded so far, and none after: the command that reports
+// them drains the list (`install_packages` emits `scope_repaired`).
+std::vector<ScopeRepair> take_scope_repairs();
+
 enum class XpkgRegistrationErrorKind {
     InvalidVersion,
     InvalidBinding,

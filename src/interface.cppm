@@ -38,7 +38,14 @@ namespace xlings::interface {
 // it writes and the features a client may rely on; `payload_status` and
 // `sync_index`; install_targets entries carry `complete` and `origin`;
 // index_repos entries take `dir` and `store`; a home takes `upstreams`.
-export constexpr const char* kProtocolVersion = "1.10";
+// 1.11 (2026.10.17.1, additive in fields, one meaning narrowed; mcpp design
+// 2026-10-17 D1/X3): `payload_status` and install_targets entries report
+// `complete` as integrity only, beside `installed_revision`, `floor`,
+// `usable` and `current` (feature `payload_currency`); 1.10 folded a stale
+// revision into `complete`. `install_packages` reports dangling scope
+// references it dropped as `scope_repaired`; `system_status` reports the
+// binding state's findings as `binding_state` (feature `binding_state`).
+export constexpr const char* kProtocolVersion = "1.11";
 
 // Convert any Event variant to one NDJSON line (no trailing newline).
 // Returns "" for events not surfaced to wire (e.g. CompletedEvent — the

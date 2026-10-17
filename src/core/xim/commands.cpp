@@ -351,11 +351,12 @@ struct InstallTargetReport_ {
     std::string name;
     std::string version;
     int revision { 0 };
+    int floor { 0 };
     std::string status { "failed" };   // installed | already_present | failed
     std::filesystem::path payloadDir;  // published unless failed
 };
 
-nlohmann::json payload_state_(const std::filesystem::path& dir, int recipeRevision);
+nlohmann::json payload_state_(const std::filesystem::path& dir, int recipeRevision, int floor);
 
 std::string install_targets_payload_(std::span<const InstallTargetReport_> targets) {
     nlohmann::json list = nlohmann::json::array();
@@ -377,15 +378,11 @@ std::string install_targets_payload_(std::span<const InstallTargetReport_> targe
         };
         // X4: whether what was reported is really there (an install that
         // said success and left nothing -- mcpp#533 -- is not complete), and
-        // whether it is this home's or an upstream's.
-        if (!payloadDir.empty()) {
-            const auto state = payload_state_(payloadDir, t.revision);
-            row["complete"] = state["complete"];
-            row["origin"] = state["origin"];
-        } else {
-            row["complete"] = false;
-            row["origin"] = "absent";
-        }
+        // whether it is this home's or an upstream's. 1.11: the payload's
+        // currency beside it, the same fields `payload_status` reports.
+        const auto state = payload_state_(payloadDir, t.revision, t.floor);
+        for (const char* key : {"complete", "origin", "installed_revision", "floor", "usable", "current"})
+            row[key] = state[key];
         list.push_back(std::move(row));
     }
     nlohmann::json payload;
@@ -397,6 +394,19 @@ int install_(std::span<const std::string> targets, bool yes, bool noDeps,
              EventStream& stream, bool forceGlobal, CancellationToken* cancel,
              bool dryRun, bool useAfterInstall, bool reconfig,
              std::vector<InstallTargetReport_>* report);
+
+// The dangling scope references this command's metadata transactions dropped
+// (X2), as one `scope_repaired` event (protocol 1.11): a client shows what
+// changed in the home it manages, not only the package it asked for.
+void emit_scope_repairs_(EventStream& stream) {
+    auto repairs = take_scope_repairs();
+    if (repairs.empty()) return;
+    nlohmann::json list = nlohmann::json::array();
+    for (const auto& r : repairs)
+        list.push_back({{"target", r.target}, {"version", r.version},
+                        {"action", r.wasActive ? "deactivated" : "dropped"}});
+    stream.emit(DataEvent{"scope_repaired", nlohmann::json{{"repairs", std::move(list)}}.dump()});
+}
 
 namespace {
 // A plumbing step (a template of a `subos new --from`) says nothing per node:
@@ -446,6 +456,7 @@ int cmd_install(std::span<const std::string> targets, bool yes, bool noDeps, Eve
     }
     const auto emit_report = [&] {
         if (dryRun) return;
+        emit_scope_repairs_(stream);
         stream.emit(DataEvent{"install_targets", install_targets_payload_(report)});
     };
     int rc = 0;
@@ -960,6 +971,7 @@ int install_(std::span<const std::string> targets, bool yes, bool noDeps,
             auto& entry = (*report)[i];
             if (const auto* node = plan_node_of(match)) {
                 entry.revision = node->revision;
+                entry.floor = node->floor;
                 const auto storeRoot = node->storeRoot.empty()
                     ? Config::paths().dataDir / "xpkgs" : node->storeRoot;
                 entry.payloadDir = storeRoot
@@ -2504,6 +2516,7 @@ int cmd_remove_impl_(const std::string& target, bool yes, EventStream& stream,
 int cmd_remove(const std::string& target, bool yes, EventStream& stream,
                bool force, bool all, std::optional<std::string> subosScope) {
     const int rc = cmd_remove_impl_(target, yes, stream, force, all, std::move(subosScope));
+    emit_scope_repairs_(stream);
     // A runtime removed: the home's runtime moves to what it still has
     // (part 3 §4), so nothing bound through <home>/abi names a payload gone.
     auto bare = target.substr(0, target.find('@'));
@@ -2814,21 +2827,36 @@ int cmd_list(const std::string& filter, EventStream& stream, bool all) {
     return 0;
 }
 
-// A payload is complete when it is there, holds something, records no
-// failure, and is the recipe's revision of its version (a payload installed
-// before revisions were stamped answers to any).
-nlohmann::json payload_state_(const std::filesystem::path& dir, int recipeRevision) {
+// What a payload is, in two independent facts (protocol 1.11; mcpp design
+// 2026-10-17 D1):
+//
+//   complete  it is there, holds something and records no failure -- its
+//             integrity, nothing else;
+//   current   its recorded revision is the recipe's (a payload installed
+//             before revisions were stamped answers to any);
+//
+// and the verdict a client acts on: `usable` = complete, and recorded at or
+// above the recipe's `floor` (unrecorded counts as usable). 1.10 folded
+// `current` into `complete`, so a client could not tell an old payload from
+// a broken one and replaced llvm, gcc and glibc on a user's next build for
+// revisions that changed nothing they used.
+nlohmann::json payload_state_(const std::filesystem::path& dir, int recipeRevision, int floor) {
     namespace fs = std::filesystem;
     std::error_code ec;
-    const bool there = fs::is_directory(dir, ec);
-    const bool linked = platform::dir_link_target(dir).has_value();
+    const bool there = !dir.empty() && fs::is_directory(dir, ec);
+    const bool linked = there && platform::dir_link_target(dir).has_value();
     const int installed = there ? stamped_revision(dir) : kRevisionUnrecorded;
-    const bool complete = there && payload_has_content(dir) && !stamped_incomplete(dir)
-        && !payload_revision_verdict(dir, recipeRevision).stale;
-    return {{"payload_dir", dir.lexically_normal().string()},
+    const bool complete = there && payload_has_content(dir) && !stamped_incomplete(dir);
+    const bool current = complete && !payload_revision_verdict(dir, recipeRevision).stale;
+    const int bound = std::clamp(floor, 0, std::max(recipeRevision, 0));
+    const bool usable = complete && (installed == kRevisionUnrecorded || installed >= bound);
+    return {{"payload_dir", dir.empty() ? std::string{} : dir.lexically_normal().string()},
             {"origin", !there ? "absent" : linked ? "upstream" : "local"},
             {"installed_revision", installed == kRevisionUnrecorded ? nlohmann::json() : nlohmann::json(installed)},
-            {"complete", complete}};
+            {"floor", bound},
+            {"complete", complete},
+            {"usable", usable},
+            {"current", current}};
 }
 
 int cmd_payload_status(std::span<const std::string> targets, EventStream& stream) {
@@ -2846,10 +2874,14 @@ int cmd_payload_status(std::span<const std::string> targets, EventStream& stream
             continue;
         }
         int revision = 0;
+        int floor = 0;
         if (auto pkg = catalog.load_package(*match))
-            if (const auto* entry = find_entry(*pkg, platform, match->version)) revision = entry->revision;
+            if (const auto* entry = find_entry(*pkg, platform, match->version)) {
+                revision = entry->revision;
+                floor = entry->floor;
+            }
         const auto dir = match->storeRoot / package_store_name(match->namespaceName, match->name) / match->version;
-        auto row = payload_state_(dir, revision);
+        auto row = payload_state_(dir, revision, floor);
         row["request"] = target;
         row["namespace"] = match->namespaceName;
         row["name"] = match->name;

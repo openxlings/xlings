@@ -65,8 +65,9 @@ xlings config --remove-xpkg hello
 - **钩子**：`install()` 把文件放进 `pkginfo.install_dir()`；`config()` 注册程序（`xvm.add`）、库和环境；
   `uninstall()` 撤销 `config()`。没有 `install()` 的包得到归档里原样的条目。
 - **依赖**按平台声明（`deps = { runtime = {…}, build = {…} }`）。不带命名空间的名字指同一索引里的同名包。
-- 版本上的 **`revision`**：已发布版本的 payload 或 `config()` 的效果变了就提升它——这是每个已安装副本都会响应的唯一信号。
+- 版本上的 **`revision`**：已发布版本的 payload 或 `config()` 的效果变了就提升它——这是安装该版本时（在任何一个 scope）唯一会响应的信号。
 - 已发布版本的资源不可变：新的 payload 用新的资产名，并提升 revision。
+- 版本上的 **`floor`**：新 revision 修复的是每个已装副本都有的缺陷时，把 `floor` 提到这个 revision，使用它的程序才会替换旧副本；否则不写，旧副本继续可用，`xlings install` 时才换成新打包。
 - payload 里没有硬链接（Android 和 FAT 拒绝 `link(2)`）。
 - **运行时属于环境。** 依赖 `glibc`（或 `musl`、`gcc-runtime`）的包，经 `<home>/abi/<家族>` 绑定到它所在环境的运行时，
   而不是安装时那一份 glibc：一个 payload 服务所有环境，环境换运行时也不改写它。不带版本的运行时依赖，由环境已有的运行时满足。

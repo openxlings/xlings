@@ -406,6 +406,52 @@ TEST(XvmInspect, ReportsAnActiveVersionThatIsNotRegistered) {
     EXPECT_TRUE(has_code_(findings, "xvm-active-version-missing"));
 }
 
+// A target is a program name, not a package: the hint must not send the user
+// to `xlings install c++`, which installs nothing they meant.
+TEST(XvmInspect, TheUnregisteredActiveHintDoesNotTreatTheTargetAsAPackage) {
+    xlings::xvm::VersionDB db;
+    inspect_group_(db, "pkgindex:llvm", "23.1.3", {{"c++", "23.1.3"}});
+
+    const auto findings =
+        xlings::xvm::inspect_binding_state(db, {{"c++", "16.1.0"}});
+
+    const auto missing = std::ranges::find_if(findings, [](const auto& f) {
+        return f.code == "xvm-active-version-missing";
+    });
+    ASSERT_NE(missing, findings.end());
+    EXPECT_EQ(missing->hint.find("xlings install c++"), std::string::npos) << missing->hint;
+    EXPECT_NE(missing->hint.find("xlings self doctor --fix"), std::string::npos) << missing->hint;
+}
+
+// The user's home (mcpp design 2026-10-17): gcc's `c++@16.1.0` active and in
+// installed[], its registration gone, llvm's `c++@23.1.3` registered. The
+// scope repair -- doctor's and every metadata transaction's -- drops exactly
+// the two references into nothing and leaves everything registered alone.
+TEST(XvmInspect, ScopeReferenceRepairDropsOnlyWhatHasNoRegistration) {
+    xlings::xvm::VersionDB db;
+    inspect_group_(db, "pkgindex:llvm", "23.1.3", {{"c++", "23.1.3"}, {"clang", "23.1.3"}});
+
+    const xlings::xvm::Workspace active{{"c++", "16.1.0"}, {"clang", "23.1.3"}};
+    const xlings::xvm::WorkspaceInstalled installed{
+        {"c++", {"23.1.3", "16.1.0"}}, {"clang", {"23.1.3"}}};
+    const auto plan = xlings::xvm::plan_scope_reference_repair(db, active, installed);
+
+    EXPECT_EQ(plan.deactivate, std::vector<std::string>{"c++"});
+    ASSERT_EQ(plan.dropInstalled.size(), 1u);
+    EXPECT_EQ(plan.dropInstalled[0], std::make_pair(std::string("c++"), std::string("16.1.0")));
+
+    xlings::xvm::SubosWorkspace scope{.active = active, .installed = installed};
+    EXPECT_EQ(xlings::xvm::apply_subos_metadata_repair(scope, plan), 2u);
+    EXPECT_FALSE(scope.active.contains("c++"));
+    EXPECT_EQ(scope.active.at("clang"), "23.1.3");
+    EXPECT_EQ(scope.installed.at("c++"), std::vector<std::string>{"23.1.3"});
+
+    // A coherent scope plans nothing: the normalization is free where nothing
+    // is wrong.
+    EXPECT_TRUE(xlings::xvm::plan_scope_reference_repair(db, scope.active, scope.installed)
+                    .deactivate.empty());
+}
+
 TEST(XvmInspect, ABrokenReleaseIsReportedOncePerRelease) {
     xlings::xvm::VersionDB db;
     inspect_group_(db, "pkgindex:gcc", "15.1.0",

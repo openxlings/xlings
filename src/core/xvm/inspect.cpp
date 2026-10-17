@@ -111,9 +111,13 @@ std::vector<BindingFinding> inspect_binding_state(
             .summary = "the active version is not registered",
             .target = target,
             .version = version,
+            // Not `xlings install <target>`: a target is a program name
+            // (`c++`), not a package, and the registration that would name
+            // its package is the thing that is missing.
             .hint = std::format(
-                "run `xlings install {}` to restore it, or `xlings use {} "
-                "<other-version>`", target, target),
+                "run `xlings self doctor --fix` to deactivate it, or `xlings use {} "
+                "<other-version>`; reinstalling the package that provides {}@{} "
+                "registers it again", target, target, version),
         });
     }
 
@@ -358,9 +362,9 @@ std::vector<BindingFinding> inspect_subos_references(
                 .target = target,
                 .version = version,
                 .hint = std::format(
-                    "run `xlings subos use {}` then `xlings install {}` to "
-                    "restore it, or `xlings use {} <other-version>` there",
-                    other.subos, display_coordinate(target, version), target),
+                    "run `xlings self doctor --fix` to deactivate it there, or "
+                    "`xlings subos use {}` then `xlings use {} <other-version>`",
+                    other.subos, target),
             });
         }
         for (const auto& [target, versions] : other.installed) {
@@ -480,6 +484,15 @@ SubosMetadataRepair plan_subos_metadata_repair(
     return plan;
 }
 
+SubosMetadataRepair::Entry plan_scope_reference_repair(
+        const VersionDB& db,
+        const Workspace& active,
+        const WorkspaceInstalled& installed) {
+    auto plan = plan_subos_metadata_repair(
+        db, {SubosRef{.subos = {}, .active = active, .installed = installed}});
+    return plan.entries.empty() ? SubosMetadataRepair::Entry{} : std::move(plan.entries.front());
+}
+
 std::size_t apply_subos_metadata_repair(
         SubosWorkspace& workspace,
         const SubosMetadataRepair::Entry& entry) {
@@ -496,19 +509,6 @@ std::size_t apply_subos_metadata_repair(
         if (it->second.empty()) workspace.installed.erase(it);
     }
     return dropped;
-}
-
-std::vector<std::string> plan_unregistered_active_deactivation(
-        const VersionDB& db,
-        const Workspace& workspace) {
-    std::vector<std::string> targets;
-    for (const auto& [target, version] : workspace) {
-        if (version.empty()) continue;
-        auto it = db.find(target);
-        if (it != db.end() && it->second.versions.contains(version)) continue;
-        targets.push_back(target);
-    }
-    return targets;
 }
 
 DeactivationPlan plan_incoherent_deactivation(const VersionDB& db,

@@ -101,6 +101,16 @@ xlings install chatgpt --reconfig   # configure the whole closure again
 以下情况会自动重新配置：在另一个 SubOS 里第一次安装；配方提升了 `revision`；在本环境 `remove` 后再装回来。
 环境被弄坏时用 `--reconfig` 或 `xlings self doctor --fix` 修复。
 
+### 同一版本的新打包
+
+上游版本不变、配方安装的内容变了时，配方提高该版本的 `revision`。`xlings install` 这个版本时，载荷连同计划中的依赖
+一起替换为新打包；替换失败时原载荷保留。没有任何操作会在用户背后替换载荷：只使用这个包的程序（`xlings interface
+payload_status`、mcpp 的构建）在载荷*可用*时继续用它。可用指载荷完整，且修订号不低于版本项的 `floor`；只有新修订
+修复了所有已装载荷都有的缺陷时，配方才提高 `floor`。
+
+每次安装都从引用全部可解析的环境开始：注册已不存在的 active 版本或 `installed[]` 条目（手工编辑或中断的删除留下）
+会被移除，安装会说明这一点。以前它会让之后每一个注册同名命令的包的安装都失败。
+
 ### 示意图
 
 ```mermaid

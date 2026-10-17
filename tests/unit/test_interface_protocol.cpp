@@ -197,7 +197,13 @@ TEST(InterfaceProtocol, VersionFlagPrintsProtocolVersion) {
     auto j = nlohmann::json::parse(out, nullptr, false);
     ASSERT_FALSE(j.is_discarded()) << "non-JSON output: " << out;
     ASSERT_TRUE(j.contains("protocol_version"));
-    EXPECT_EQ(j["protocol_version"].get<std::string>(), "1.10");
+    EXPECT_EQ(j["protocol_version"].get<std::string>(), "1.11");
+    // 1.11: a client that relies on the currency fields or the binding-state
+    // summary checks for them here before it uses this xlings.
+    ASSERT_TRUE(j.contains("features"));
+    const auto& features = j["features"];
+    for (const char* feature : {"payload_currency", "binding_state"})
+        EXPECT_NE(std::ranges::find(features, nlohmann::json(feature)), features.end()) << feature;
     std::filesystem::remove_all(home);
 }
 
