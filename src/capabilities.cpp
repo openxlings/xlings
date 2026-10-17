@@ -11,6 +11,8 @@ import xlings.core.xim.commands;
 import xlings.core.xim.index_cmd;
 import xlings.core.xim.repo;
 import xlings.core.xvm.commands;
+import xlings.core.xvm.inspect;
+import xlings.core.profile;
 import xlings.core.config;
 import xlings.core.home_config;
 import xlings.core.home.domain_producer;
@@ -337,6 +339,36 @@ auto SystemStatus::execute(Params params, EventStream& stream) -> Result {
     payload["title"] = "xlings status";
     payload["fields"] = std::move(fields);
     stream.emit(DataEvent{"system_info", payload.dump()});
+
+    // The binding state as `self doctor` reads it, for a client that manages
+    // this home and reports on it without running doctor (feature
+    // `binding_state`, protocol 1.11; mcpp design 2026-10-17 X3). Read-only,
+    // and the same inspectors doctor renders.
+    nlohmann::json findings = nlohmann::json::array();
+    const auto add = [&](const xvm::BindingFinding& f, std::string_view subos) {
+        findings.push_back({{"code", f.code}, {"severity", f.severity == xvm::BindingSeverity::Broken ? "broken" : "notice"},
+                            {"subos", subos}, {"target", f.target}, {"version", f.version},
+                            {"summary", f.summary}, {"hint", f.hint}});
+    };
+    const auto db = Config::versions();
+    const auto active = Config::effective_workspace();
+    for (const auto& f : xvm::inspect_binding_state(db, active)) add(f, p.activeSubos);
+    for (const auto& [target, version] :
+         xvm::plan_scope_reference_repair(db, active, Config::workspace_installed()).dropInstalled)
+        add({.code = "xvm-installed-version-missing", .summary = "an installed[] entry is not registered",
+             .target = target, .version = version,
+             .hint = "run `xlings self doctor --fix` to drop it",
+             .severity = xvm::BindingSeverity::Notice}, p.activeSubos);
+    std::error_code cec;
+    const auto here = std::filesystem::weakly_canonical(p.subosDir, cec);
+    for (const auto& snapshot : profile::load_subos_snapshots(p.homeDir)) {
+        std::error_code sec;
+        if (std::filesystem::weakly_canonical(snapshot.dir, sec) == here) continue;
+        const xvm::SubosRef other{.subos = snapshot.name, .active = snapshot.workspace.active,
+                                  .installed = snapshot.workspace.installed};
+        for (const auto& f : xvm::inspect_subos_references(db, {other})) add(f, snapshot.name);
+    }
+    stream.emit(DataEvent{"binding_state", nlohmann::json{{"findings", std::move(findings)}}.dump()});
     return exit_result(0);
 }
 

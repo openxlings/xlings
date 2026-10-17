@@ -79,7 +79,7 @@ work.
 | an edition (SubOS template) | `min_client` | refuses before anything is fetched, with `xlings self update` |
 | an index snapshot | the [index version contract](index-version-contract.md) | is routed to a snapshot it can read |
 | the NDJSON interface | `protocol_version`, additions only within 1.x ([interface](interface-ndjson-v1.md)) | sees fields it ignores; a client probes capabilities, never versions |
-| a recipe | `revision` per version ([xpkg manifest](xpkg-manifest-v1.md)) | — a changed revision reconfigures every scope on its next install |
+| a recipe | `revision` and `floor` per version ([xpkg manifest](xpkg-manifest-v1.md)) | — a changed revision reconfigures every scope on its next install; an installed payload at or above `floor` stays usable (2026.10.17.1) |
 | the version records | `data/versions.json` stamped against the home config | falls back to the home config's field (the source every client writes) |
 | the runtime indirection (2026.10.15) | `<home>/abi` -> `abi.gen/<n>`, `abi.json`, the record's `source: "scope"` | a payload bound through it runs on any client (its loader is an ordinary path); an older client rebinds such a package by path when it reinstalls it, which is still correct for that home |
 | a Luban system in the system domain (2026.10.15) | its control record's `prefix_domain` | an older `luban` lists it without its edition; `xlings subos` routes it through the domain as before |

@@ -116,6 +116,23 @@ It configures again on its own when the package is first installed in another
 SubOS, when the recipe raised its `revision`, and after a `remove` here. A
 damaged environment is repaired with `--reconfig` or `xlings self doctor --fix`.
 
+### A newer packaging of the same version
+
+A recipe raises a version's `revision` when what it installs changes and the
+upstream version does not. `xlings install` of that version replaces the payload
+with the new packaging, together with the dependencies its plan names; a failed
+replacement leaves the previous payload in place. Nothing replaces a payload
+behind the user's back: a program that only uses the package (`xlings
+interface payload_status`, mcpp's builds) keeps the installed payload while it is
+*usable* — complete, and at or above the version entry's `floor`, which the
+recipe raises only when the new revision fixes something every installed payload
+has.
+
+Every install starts from an environment whose references resolve: an active
+version or an `installed[]` entry whose registration is gone (left by a hand
+edit or an interrupted removal) is dropped, and the install says so. It used to
+refuse every later install of a package that registers the same command.
+
 ### Picture
 
 ```mermaid

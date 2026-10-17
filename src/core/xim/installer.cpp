@@ -40,6 +40,7 @@ import xlings.core.xvm.registration;
 import xlings.core.xvm.materialize;
 import xlings.core.xvm.switch_plan;
 import xlings.core.xvm.errors;
+import xlings.core.xvm.inspect;
 import xlings.subos.manifest;
 import xlings.core.profile;
 import xlings.core.xvm.commands;
@@ -53,6 +54,41 @@ namespace xlings::xim {
 namespace {
 void normalize_scope_metadata(xvm::Workspace& active, xvm::WorkspaceInstalled& installed);
 
+std::vector<ScopeRepair> gScopeRepairs;
+
+// X2: a candidate scope without its references into nothing, through the
+// function doctor's repair uses (xvm::plan_scope_reference_repair). What it
+// dropped is returned for the caller to publish once its transaction commits:
+// a repair reported for a transaction that then rolled back did not happen.
+std::vector<ScopeRepair> drop_dangling_references_(const xvm::VersionDB& db, xvm::Workspace& active,
+                                                   xvm::WorkspaceInstalled& installed) {
+    const auto plan = xvm::plan_scope_reference_repair(db, active, installed);
+    std::vector<ScopeRepair> dropped;
+    for (const auto& target : plan.deactivate)
+        dropped.push_back({.target = target, .version = active.at(target), .wasActive = true});
+    for (const auto& [target, version] : plan.dropInstalled)
+        dropped.push_back({.target = target, .version = version, .wasActive = false});
+    if (dropped.empty()) return dropped;
+    xvm::SubosWorkspace scope{.active = std::move(active), .installed = std::move(installed)};
+    xvm::apply_subos_metadata_repair(scope, plan);
+    active = std::move(scope.active);
+    installed = std::move(scope.installed);
+    return dropped;
+}
+
+void publish_scope_repairs_(std::vector<ScopeRepair> dropped) {
+    for (auto& repair : dropped) {
+        if (repair.wasActive)
+            log::warn("[xvm] {} was active at a version with no registration; deactivated "
+                      "(`xlings use {} <version>` selects one)",
+                      xvm::display_coordinate(repair.target, repair.version), repair.target);
+        else
+            log::info("[xvm] dropped {} from this subos: it has no registration",
+                      xvm::display_coordinate(repair.target, repair.version));
+        gScopeRepairs.push_back(std::move(repair));
+    }
+}
+
 std::filesystem::path node_payload_path(const PlanNode& node,
                                         const std::filesystem::path& dataDir) {
     if (!node.borrowedPayload.empty()) {
@@ -61,6 +97,10 @@ std::filesystem::path node_payload_path(const PlanNode& node,
     return (node.storeRoot.empty() ? dataDir / "xpkgs" : node.storeRoot) /
            package_store_name(node.namespaceName, node.name) / node.version;
 }
+}
+
+std::vector<ScopeRepair> take_scope_repairs() {
+    return std::exchange(gScopeRepairs, {});
 }
 
 XpkgSpecSupport xpkg_spec_support(std::string_view spec) {
@@ -1779,6 +1819,7 @@ publish_removal_state_(xvm::VersionDB candidateDb, xvm::Workspace candidateWorks
                        xvm::WorkspaceInstalled candidateInstalled,
                        const std::vector<mcpplibs::xpkg::XvmOp>& operations = {}) {
     normalize_scope_metadata(candidateWorkspace, candidateInstalled);
+    auto repaired = drop_dangling_references_(candidateDb, candidateWorkspace, candidateInstalled);
     namespace mat = xvm::materialize;
     const auto beforeDb = Config::versions();
     const auto beforeWorkspace = Config::workspace();
@@ -1846,6 +1887,7 @@ publish_removal_state_(xvm::VersionDB candidateDb, xvm::Workspace candidateWorks
     if (!committed) return committed;
     for (const auto& removed : removals)
         xvm::prune_empty_asset_dirs(removed, root);
+    publish_scope_repairs_(std::move(repaired));
     return {};
 }
 
@@ -2108,6 +2150,10 @@ std::expected<void, std::string> process_xvm_operations_(const PlanNode& node, c
     auto candidateDb = dbBefore;
     auto candidateWorkspace = workspaceBefore;
     auto candidateInstalled = installedBefore;
+    // First, before this package's registration reads the scope: the
+    // transaction starts from a scope whose every reference resolves, so the
+    // only thing that can refuse it is this package's own change (P4).
+    auto repaired = drop_dangling_references_(dbBefore, candidateWorkspace, candidateInstalled);
     const auto scope = Config::xvm_artifact_subos_dir();
     const auto homeDir = Config::paths().homeDir.string();
     const auto versionNamespace = effective_version_namespace_(candidateDb, node, dataDir);
@@ -2194,6 +2240,17 @@ std::expected<void, std::string> process_xvm_operations_(const PlanNode& node, c
     attach_legacy_header_dir(candidateDb, node.name,
                              xvm::make_ns_version(versionNamespace, node.version),
                              metadata->effects);
+    // What this package's own registration restored is not a repair: gcc's
+    // reinstall registers `c++@16.1.0` again, and the scope ends where it
+    // began. Only what stays dropped is reported.
+    std::erase_if(repaired, [&](const ScopeRepair& r) {
+        if (r.wasActive) {
+            const auto it = candidateWorkspace.find(r.target);
+            return it != candidateWorkspace.end() && it->second == r.version;
+        }
+        const auto it = candidateInstalled.find(r.target);
+        return it != candidateInstalled.end() && std::ranges::find(it->second, r.version) != it->second.end();
+    });
     xvm::Workspace selectedFiles;
     for (const auto& member : metadata->registered) {
         const auto active = candidateWorkspace.find(member.target);
@@ -2240,7 +2297,12 @@ std::expected<void, std::string> process_xvm_operations_(const PlanNode& node, c
         if (!workspace) {
             return std::unexpected(std::format("{}: unreadable workspace", name));
         }
-        auto other = changes_for(root, workspace->active, workspace->installed, workspace->active, workspace->installed);
+        // That subos's own dangling references are its own problem, reported
+        // by doctor there; they do not refuse this package's projection.
+        auto otherActive = workspace->active;
+        auto otherInstalled = workspace->installed;
+        (void)drop_dangling_references_(dbBefore, otherActive, otherInstalled);
+        auto other = changes_for(root, otherActive, otherInstalled, otherActive, otherInstalled);
         if (!other) {
             return std::unexpected(std::format("{}: {}", name, other.error()));
         }
@@ -2337,6 +2399,7 @@ std::expected<void, std::string> process_xvm_operations_(const PlanNode& node, c
             return std::unexpected(std::format("{}: derived backup cleanup failed: {}", node.name, committed.error()));
         }
     }
+    publish_scope_repairs_(std::move(repaired));
     for (const auto& member : metadata->registered)
         if (member.adoptedLegacy)
             log::warn("[xvm] adopted a pre-ownership registration: {}@{}", member.target,

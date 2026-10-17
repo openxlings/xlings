@@ -73,9 +73,14 @@ xlings config --remove-xpkg hello
 - **Dependencies** are declared per platform (`deps = { runtime = {…}, build = {…} }`).
   A bare name means the package of that name in the same index.
 - **`revision`** on a version: raise it when the payload or what `config()` does
-  changes for a published version — it is the one signal every installed copy acts on.
+  changes for a published version — it is the one signal an install of that version
+  acts on, here and in every other scope.
 - A published version's resource is immutable: a new payload gets a new asset
   name and a raised revision.
+- **`floor`** on a version: when the new revision fixes something every installed
+  copy has, raise `floor` to it, and programs that use the package replace older
+  copies; otherwise leave it out, older copies stay usable, and `xlings install`
+  brings the new packaging.
 - A payload has no hard links (Android and FAT refuse `link(2)`).
 - **The runtime is the environment's.** A package that depends on `glibc` (or
   `musl`, or `gcc-runtime`) is bound to its environment's runtime through

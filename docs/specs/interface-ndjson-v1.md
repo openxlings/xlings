@@ -1,12 +1,12 @@
-# NDJSON Interface Protocol v1.10
+# NDJSON Interface Protocol v1.11
 
-> Status: in force; protocol 1.10 since xlings 2026.10.16.1. Implemented in
+> Status: in force; protocol 1.11 since xlings 2026.10.17.1. Implemented in
 > `src/interface.cpp`; `xlings interface --list` is the authoritative schema.
 
 ## 1. Overview
 
 `xlings interface` is the structured API for programs: IDE plugins, CI scripts
-and AI agents talk to xlings over standard IO. The protocol is **1.10**, over NDJSON
+and AI agents talk to xlings over standard IO. The protocol is **1.11**, over NDJSON
 (newline-delimited JSON).
 
 | Protocol | xlings | Change |
@@ -22,8 +22,13 @@ and AI agents talk to xlings over standard IO. The protocol is **1.10**, over ND
 | 1.8 | 2026.10.12.2 | added: `remove_package`'s `older_than` and `dry_run`, and the `remove_plan` of a bulk removal (§8.2); `remove_blocked`'s per-dependent `reason` (§8.1); a node whose dependency failed is an `install_skipped` data event, and one `error` per failed dependency names them all (§6.1.4) |
 | 1.9 | 2026.10.13.1 | added: `subos_command` -- any `xlings subos` subcommand with its log lines, progress, data and errors as events (what luban renders itself) |
 | 1.10 | 2026.10.16.1 | added: `--version` is the handshake (§3.1); `payload_status` and `sync_index` (§7.4); `install_targets` entries carry `complete` and `origin` (§6.3.1) |
+| 1.11 | 2026.10.17.1 | `complete` means integrity only; added beside it: `installed_revision`, `floor`, `usable`, `current` (feature `payload_currency`, §6.3.1, §7.4); the `scope_repaired` data event (§6.3.1); `system_status`'s `binding_state` data event (feature `binding_state`, §7.5) |
 
-A minor version only adds: a 1.0 client reads 1.1 output unchanged. A client
+A minor version only adds: a 1.0 client reads 1.1 output unchanged. 1.11 is the
+one exception in meaning, not in shape: 1.10's `complete` also required the
+recipe's current revision, and 1.11's does not (that fact is `current`). A
+client reading `complete` as "usable" without checking the feature sees an old
+revision as usable, which is what 1.11 states with `usable`. A client
 **probes for a capability** (for example, whether `install_targets` appears)
 rather than comparing version numbers.
 
@@ -54,7 +59,7 @@ prints one line and exits -- the handshake a client checks before it uses this
 xlings (1.10+):
 
 ```json
-{"protocol_version":"1.10","version":"2026.10.16.1","capabilities":["search_packages","install_packages","..."],"home_layouts":[1,2],"features":["index_dir","index_store","upstreams","payload_status","sync_index","install_targets_complete"]}
+{"protocol_version":"1.11","version":"2026.10.17.1","capabilities":["search_packages","install_packages","..."],"home_layouts":[1,2],"features":["index_dir","index_store","upstreams","payload_status","sync_index","install_targets_complete","payload_currency","binding_state"]}
 ```
 
 | Field | Meaning |
@@ -63,7 +68,7 @@ xlings (1.10+):
 | `version` | the xlings version (1.10+) |
 | `capabilities` | every capability's name (1.10+) |
 | `home_layouts` | the home layouts this client reads and writes (1.10+) |
-| `features` | behaviour a client may rely on that is not a capability (1.10+): `index_dir` and `index_store` (the `index_repos` fields), `upstreams`, `payload_status`, `sync_index`, `install_targets_complete` |
+| `features` | behaviour a client may rely on that is not a capability (1.10+): `index_dir` and `index_store` (the `index_repos` fields), `upstreams`, `payload_status`, `sync_index`, `install_targets_complete`; 1.11+: `payload_currency`, `binding_state` |
 
 ### 3.2 The capabilities
 
@@ -344,8 +349,29 @@ resolved ones still carry `namespace`, `name`, `version`.
 | revision | integer | the packaging revision the recipe declares for it |
 | status | string | `installed` (by this run) / `already_present` (its current payload was there) / `failed` |
 | payload_dir | string | the payload directory, absolute; empty when `failed` |
-| complete | bool | (1.10+) the payload is there, holds something, records no failure and is the recipe's revision: an install that reported success and left nothing is `false` |
+| complete | bool | (1.10+) the payload is there, holds something and records no failure: an install that reported success and left nothing is `false`. 1.10 also required the recipe's revision; 1.11 reports that as `current` |
 | origin | string | (1.10+) `local` / `upstream` (a link entry, [`.xlings.json` `upstreams`](xlings-json.md)) / `absent` |
+| installed_revision | integer \| null | (1.11+) the revision the payload's stamp records; `null` when it has none |
+| floor | integer | (1.11+) the oldest installed revision the recipe still calls usable (the version entry's `floor`, 0 when it states none) |
+| usable | bool | (1.11+) `complete`, and `installed_revision` is at least `floor` (or `null`) |
+| current | bool | (1.11+) `complete`, and `installed_revision` is the recipe's `revision` (or `null`) |
+
+**`scope_repaired`** (1.11+): the references into nothing that this command's
+metadata transactions dropped from the subos they published, emitted before
+`install_targets` (and by `remove_package`) when there are any. Every
+transaction normalizes the subos it is about to publish with the same function
+as `xlings self doctor --fix`: an active version or an `installed[]` entry whose
+registration the version database lacks is dropped, so another package's
+dangling record no longer refuses this transaction. An active target is
+deactivated, not re-pointed; registering a version of it afterwards follows the
+usual rule for a target with nothing active.
+
+```json
+{"kind":"data","dataKind":"scope_repaired","payload":{"repairs":[{"target":"c++","version":"16.1.0","action":"deactivated"}]}}
+```
+
+`action` is `deactivated` (it was the active version) or `dropped` (an
+`installed[]` entry).
 
 The three cases:
 
@@ -471,7 +497,7 @@ Sent after 5 s of silence: the process is alive.
 | `package_info` | a package's details | no |
 | `list_installed_versions` | list installed versions | no |
 | `use_version` | switch the active version | yes |
-| `system_status` | system status | no |
+| `system_status` | system status; 1.11+ also the binding state (§7.5) | no |
 | `list_subos` | list SubOSes | no |
 | `list_subos_shims` | the active SubOS's shims | no |
 | `create_subos` | create a SubOS | yes |
@@ -503,13 +529,34 @@ index is fetched:
 {"kind":"data","dataKind":"payload_status","payload":{"targets":[{"request":"team:demo@1.0.0","namespace":"team","name":"demo","version":"1.0.0","revision":0,"payload_dir":"/home/u/.mcpp/xpkgs/team-x-demo/1.0.0","origin":"local","installed_revision":0,"complete":true}]}}
 ```
 
-A target that does not resolve carries `request` and `error`. `installed_revision`
-is the revision the payload's stamp records (`null` when it has none).
+A target that does not resolve carries `request` and `error`. The other fields
+are those of an `install_targets` entry (§6.3.1): `complete` is integrity only,
+`current` compares the recorded revision with the recipe's, and `usable` compares
+it with the recipe's `floor`. A client that only uses a payload acts on `usable`;
+one that provisions it acts on `current` (1.11+):
+
+```json
+{"kind":"data","dataKind":"payload_status","payload":{"targets":[{"request":"xim:llvm@23.1.3","namespace":"xim","name":"llvm","version":"23.1.3","revision":1,"payload_dir":"/home/u/.mcpp/registry/data/xpkgs/xim-x-llvm/23.1.3","origin":"local","installed_revision":0,"floor":0,"complete":true,"usable":true,"current":false}]}}
+```
 
 `sync_index {"name": "...", "dest": "..."}` syncs the configured index `name`
 into `dest` (its own directory when `dest` is absent) and reports
 `{"dataKind":"index_synced","payload":{"name":..,"dir":..}}`. A caller checks
 the staged copy and swaps it into place itself.
+
+### 7.5 `system_status`'s `binding_state` (1.11+)
+
+After its `system_info` event, `system_status` emits the binding state as
+`xlings self doctor` reads it, so a client that manages a home reports on it
+without running doctor. Read-only.
+
+```json
+{"kind":"data","dataKind":"binding_state","payload":{"findings":[{"code":"xvm-active-version-missing","severity":"broken","subos":"default","target":"c++","version":"16.1.0","summary":"the active version is not registered","hint":"run `xlings self doctor --fix` to deactivate it, ..."}]}}
+```
+
+`severity` is `broken` (a command will refuse, or already did the wrong thing)
+or `notice`. `subos` names the subos whose workspace holds the reference; the
+version database is shared by every subos of the home.
 
 ### 7.1 Capabilities that need the user's confirmation (2026.9.26.1+)
 

@@ -3541,29 +3541,39 @@ void repair_state_(RepairReport& out) {
         }
     }
 
+    // This subos's references into nothing: an active version, or an
+    // installed[] entry, the shared database has no registration for. The
+    // same function every metadata transaction normalizes its candidate with
+    // (xvm::plan_scope_reference_repair, mcpp design 2026-10-17 X2/X3), so
+    // what --fix drops here is exactly what an install would have dropped.
     db = Config::versions();
     auto ws = Config::effective_workspace();
-    if (auto stale = xvm::plan_unregistered_active_deactivation(db, ws);
-        !stale.empty()) {
+    if (auto stale = xvm::plan_scope_reference_repair(db, ws, Config::workspace_installed());
+        !stale.deactivate.empty() || !stale.dropInstalled.empty()) {
         auto lock = xvm::acquire_state_lock(Config::paths().homeDir);
         if (!lock) {
             note(glyph::mark(glyph::failed, "binding state"), std::format(
-                "cannot deactivate unregistered versions: {}", lock.error()));
+                "cannot drop references to unregistered versions: {}", lock.error()));
         } else {
             Config::reload_state();
-            auto& mutableWs = Config::workspace_mut();
-            std::size_t dropped = 0;
-            for (const auto& target : stale) {
-                const auto it = mutableWs.find(target);
-                if (it == mutableWs.end()) continue;
+            const auto replanned = xvm::plan_scope_reference_repair(
+                Config::versions(), Config::workspace(), Config::workspace_installed());
+            for (const auto& target : replanned.deactivate)
                 note(glyph::mark(glyph::bullet, "deactivated"), std::format(
                     "{} was active at a version that is not registered — run "
                     "`xlings use {} <version>` to select one",
-                    xvm::display_coordinate(target, it->second), target));
-                mutableWs.erase(it);
-                ++dropped;
+                    xvm::display_coordinate(target, Config::workspace().at(target)), target));
+            for (const auto& [target, version] : replanned.dropInstalled)
+                note(glyph::mark(glyph::bullet, "dropped"), std::format(
+                    "{} from this subos: it is not registered",
+                    xvm::display_coordinate(target, version)));
+            xvm::SubosWorkspace scope{.active = Config::workspace(),
+                                      .installed = Config::workspace_installed()};
+            if (xvm::apply_subos_metadata_repair(scope, replanned) > 0) {
+                Config::workspace_mut() = std::move(scope.active);
+                Config::workspace_installed_mut() = std::move(scope.installed);
+                Config::save_workspace();
             }
-            if (dropped > 0) Config::save_workspace();
         }
     }
 

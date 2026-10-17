@@ -404,7 +404,10 @@ resolve(PackageCatalog& catalog, std::span<const std::string> targets, const std
             // like a foreign or an incomplete one, so its artifact is
             // downloaded and the installer replaces it (#620). Same verdict
             // function as the installer's check.
-            if (entry) node.revision = entry->revision;
+            if (entry) {
+                node.revision = entry->revision;
+                node.floor = entry->floor;
+            }
             if (node.alreadyInstalled) {
                 const auto verdict =
                     payload_revision_verdict(payloadDir, node.revision);
