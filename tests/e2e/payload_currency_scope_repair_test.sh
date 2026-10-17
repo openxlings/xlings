@@ -276,4 +276,27 @@ if not any(x["code"] == "xvm-legacy-edge-dangling" for x in findings):
 ' "$FINDINGS" || fail "S3: binding_state"
 log "  ok"
 
+# ── S4: the owner's own reinstall restores the record ───────────────
+# gcc's reinstall registers `c++@16.1.0` again: the scope ends where it began,
+# so nothing is reported as repaired.
+log "S4: a reinstall of the record's owner reports no repair"
+python3 - "$HOME_DIR" <<'PY' || fail "S4: fixture"
+import json, os, sys
+wsf = os.path.join(sys.argv[1], "subos", "default", ".xlings.json")
+doc = json.load(open(wsf)); ws = doc["workspace"]
+entry = ws.get("sharedtool")
+if isinstance(entry, dict): entry["active"] = "1.0"
+else: ws["sharedtool"] = "1.0"
+json.dump(doc, open(wsf, "w"), indent=2)
+PY
+write_owner ownera 1.0 'revision = 1'
+OUT="$(RUN interface install_packages --args '{"targets":["ownera@1.0"],"yes":true}' 2>/dev/null)" \
+  || fail "S4: the owner's reinstall failed:
+$OUT"
+if grep -q '"dataKind":"scope_repaired"' <<<"$OUT"; then
+  fail "S4: a record the reinstall restored is reported as repaired:
+$OUT"
+fi
+log "  ok"
+
 log "PASS: payload currency and scope repair"

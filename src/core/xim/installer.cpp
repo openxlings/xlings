@@ -2240,6 +2240,17 @@ std::expected<void, std::string> process_xvm_operations_(const PlanNode& node, c
     attach_legacy_header_dir(candidateDb, node.name,
                              xvm::make_ns_version(versionNamespace, node.version),
                              metadata->effects);
+    // What this package's own registration restored is not a repair: gcc's
+    // reinstall registers `c++@16.1.0` again, and the scope ends where it
+    // began. Only what stays dropped is reported.
+    std::erase_if(repaired, [&](const ScopeRepair& r) {
+        if (r.wasActive) {
+            const auto it = candidateWorkspace.find(r.target);
+            return it != candidateWorkspace.end() && it->second == r.version;
+        }
+        const auto it = candidateInstalled.find(r.target);
+        return it != candidateInstalled.end() && std::ranges::find(it->second, r.version) != it->second.end();
+    });
     xvm::Workspace selectedFiles;
     for (const auto& member : metadata->registered) {
         const auto active = candidateWorkspace.find(member.target);
