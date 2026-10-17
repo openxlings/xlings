@@ -35,14 +35,15 @@ env:
 jobs:
   # After a release, the suites wait for the published index to carry it:
   # its bump is merged after the release, and a suite that ran before made
-  # systems from the previous luban-os (2026.10.16.1, luban-window).
+  # systems from the previous luban-os (2026.10.16.1, luban-window), or met
+  # the previous luban (luban-host asserts it is the release's).
   index:
     name: the published index carries the release
     if: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 250
     steps:
-      - name: Wait for xlings and luban-os latest to be the release
+      - name: Wait for xlings, luban and luban-os latest to be the release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -54,7 +55,7 @@ jobs:
             carried=0
             if [ -n "$commit" ] && [ "$commit" != null ]; then
               carried=1
-              for f in pkgs/x/xlings.lua pkgs/luban/luban-os.lua; do
+              for f in pkgs/x/xlings.lua pkgs/luban/luban.lua pkgs/luban/luban-os.lua; do
                 curl -fsSL "https://raw.githubusercontent.com/openxlings/xim-pkgindex/$commit/$f" \
                   | grep -qF "[\"latest\"] = { ref = \"$version\" }" || carried=0
               done

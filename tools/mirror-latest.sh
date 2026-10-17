@@ -38,16 +38,16 @@
 # skipped (not failed) when neither is present — GitHub assets are already
 # published by release CI; this run only fixes the GitCode side.
 #
-# Usage: tools/mirror-latest.sh [project]     # project: xlings (default) | luban-os | xdesk | mcpp
+# Usage: tools/mirror-latest.sh [project]     # project: xlings (default) | luban | luban-os | xdesk | mcpp
 set -euo pipefail
 
 PROJ="${1:-xlings}"
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 case "$PROJ" in
-  xlings|luban-os|xdesk) SRC_REPO="openxlings/xlings" ;;
+  xlings|luban|luban-os|xdesk) SRC_REPO="openxlings/xlings" ;;
   mcpp)   SRC_REPO="mcpp-community/mcpp" ;;
-  *) echo "[mirror-latest] unknown project '$PROJ' (expected xlings|luban-os|xdesk|mcpp)" >&2; exit 2 ;;
+  *) echo "[mirror-latest] unknown project '$PROJ' (expected xlings|luban|luban-os|xdesk|mcpp)" >&2; exit 2 ;;
 esac
 
 # GitCode token from the standard gtc config when not already in the env.
