@@ -120,6 +120,11 @@ function Invoke-IndexOverlay {
 
     Remove-Item -Recurse -Force (Join-Path $dst 'pkgs')
     Copy-Item -Recurse -Force (Join-Path $tmp 'idx\pkgs') (Join-Path $dst 'pkgs')
+    # The catalog is the published index's, keyed on its version: kept, it
+    # does not know a package the branch adds, and the miss refreshes the
+    # index -- replacing these pkgs/ with the published ones again. Rebuilt
+    # (smoke.sh's overlay_index does the same).
+    Remove-Item -Force -ErrorAction SilentlyContinue (Join-Path $dst '.xlings-index-cache.json')
     Write-Ok "pkgs/ replaced from xim-pkgindex@$ref"
 }
 
