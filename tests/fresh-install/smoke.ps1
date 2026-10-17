@@ -304,7 +304,7 @@ function Invoke-SuiteLubanHost {
     Write-Ok "luban at $($luban.Source)"
     $lv = Get-ToolVersion luban
     $xv = Get-ToolVersion xlings
-    if ($lv -ne $xv) { Fail "luban $lv beside xlings $xv: xim:luban's latest is not the release's" }
+    if ($lv -ne $xv) { Fail "luban ${lv} beside xlings ${xv}: xim:luban's latest is not the release's" }
     Write-Ok "luban $lv, the version of xlings"
 
     Write-Section 'luban on Windows: what this computer can do'
