@@ -95,11 +95,21 @@ function Get-VersionFrom {
 }
 
 # Get-ToolVersion — the version <Tool> reports, or fail with its raw output.
+#
+# xlings' own <Tool> on the PATH: a machine-wide one (the runner image's
+# LLVM, ninja) comes first on a new terminal's PATH -- the machine's PATH
+# precedes the user's, where quick_install puts xlings -- and is not what
+# xlings installed or switched. Said when it is so.
 function Get-ToolVersion {
     param([string]$Tool)
-    if (-not (Get-Command $Tool -ErrorAction SilentlyContinue)) { Fail "'$Tool' is not on PATH" }
+    $all = @(Get-Command $Tool -All -CommandType Application -ErrorAction SilentlyContinue)
+    if ($all.Count -eq 0) { Fail "'$Tool' is not on PATH" }
+    $home_ = if ($env:XLINGS_HOME) { $env:XLINGS_HOME } else { $XlingsHome }
+    $ours = $all | Where-Object { $home_ -and $_.Source.StartsWith($home_, [StringComparison]::OrdinalIgnoreCase) } | Select-Object -First 1
+    if (-not $ours) { Fail "'$Tool' on PATH is not xlings' ($($all[0].Source))" }
+    if ($ours.Source -ne $all[0].Source) { Write-Log "  (${Tool}: the machine's $($all[0].Source) comes first; xlings' is $($ours.Source))" }
     $global:LASTEXITCODE = 0
-    $out = (& $Tool --version 2>&1 | Out-String)
+    $out = (& $ours.Source --version 2>&1 | Out-String)
     if ($LASTEXITCODE -ne 0) { Fail "'$Tool --version' exited ${LASTEXITCODE}:`n$out" }
     $ver = Get-VersionFrom $out
     if (-not $ver) { Fail "'$Tool --version' printed no version number:`n$out" }
