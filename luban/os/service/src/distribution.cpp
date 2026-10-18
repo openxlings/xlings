@@ -103,6 +103,8 @@ std::vector<Json> official_in_(const Port& port, std::string_view keyword, std::
 }  // namespace
 
 std::optional<std::string> official_system(const Port& port, std::string_view short_name) {
+    // The package's own name of a published edition (luban-core) names it too.
+    if (short_name.starts_with("luban-")) short_name.remove_prefix(6);
     const auto at = short_name.find('@');
     const auto name = std::string(short_name.substr(0, at));
     const auto version = at == std::string_view::npos ? std::string_view{} : short_name.substr(at);

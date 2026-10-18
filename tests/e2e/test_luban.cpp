@@ -677,6 +677,9 @@ XTEST(Luban, AnyIndexsSystemAndComponentsAreMadeByXpkg,
     // An official short name: a name in the luban: namespace.
     auto base = luban(home, {"new", "plain", "--edition", "base"});
     EXPECT_EQ(base.exit_code, 0) << base.transcript();
+    // And its published package's name, as luban took it before (luban-base).
+    auto named = luban(home, {"new", "plain2", "--edition", "luban-base", "--dry-run"});
+    EXPECT_EQ(named.exit_code, 0) << named.transcript();
 }
 
 // A published name, frozen, moves to the official edition that replaces it
