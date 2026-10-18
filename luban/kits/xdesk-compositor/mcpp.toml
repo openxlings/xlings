@@ -11,7 +11,7 @@
 #                     xkbcommon, pixman; text: FreeType, HarfBuzz) -- the rest
 #                     imports them (tools/lint_c_headers.sh)
 #
-# The layout engine it arranges windows with is xdesk.layout (xdesk-base).
+# The layout engine it arranges windows with is xdesk.layout (xdesk-layout).
 # Like every xdesk package it imports nothing of xlings or Luban.
 [package]
 namespace = "xdesk"
@@ -22,7 +22,8 @@ version   = "0.1.0"
 kind = "lib"
 
 [dependencies]
-xdesk-base = { path = "../xdesk-base" }
+xdesk-base   = { path = "../xdesk-base" }
+xdesk-layout = { path = "../xdesk-layout" }
 opensal    = { path = "../../specs/opensal" }
 
 [dependencies.wlroots]

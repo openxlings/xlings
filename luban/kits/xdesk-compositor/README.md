@@ -10,4 +10,4 @@ the C graphics libraries:
 | `xdesk.shell` | the shell: bars, launcher, notifications |
 | `xdesk.native.wayland`, `xdesk.native.text` | the binding modules: the C headers are read there only |
 
-Depends on: `opensal`, `xdesk-base`.
+Depends on: `opensal`, `xdesk-base`, `xdesk-layout`.

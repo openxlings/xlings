@@ -33,7 +33,7 @@ reference one another; implementations connect them.
 
 - `opensal-wlr` -- a wlroots compositor's output as an opensal surface.
 - `openhal-host` -- openhal's provider on Linux, macOS and Windows.
-- `xdesk-base`, `xdesk-compositor` -- the xdesk desktop components.
+- `xdesk-base`, `xdesk-layout`, `xdesk-compositor` -- the xdesk desktop components (`xdesk-layout`: where windows go, pure logic).
 
 ## os/
 

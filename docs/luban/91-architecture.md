@@ -15,7 +15,7 @@ small on purpose.
 | `luban/specs/openhal` | devices: which GPUs, displays, audio endpoints and input devices a machine has |
 | `luban/specs/openas` | actors and what they do: the actor and its delegation, effect classes, the envelope of a run |
 | `luban/kits/openhal-host` | openhal's source on Linux, macOS and Windows |
-| `luban/kits/opensal-wlr`, `xdesk-base`, `xdesk-compositor` | a wlroots compositor as an opensal surface; the xdesk desktop |
+| `luban/kits/opensal-wlr`, `xdesk-base`, `xdesk-layout`, `xdesk-compositor` | a wlroots compositor as an opensal surface; the xdesk desktop |
 | `luban/os/system` | stage-0 (the first process), boot entries, a machine's `/etc`, archives |
 | `luban/os/service` | environments and machines as operations with events; what this computer can do (`luban status`) |
 | `luban/os/vm` | machines: supervisor, terminal relay, guest sessions, hypervisors |
