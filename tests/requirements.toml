@@ -1226,3 +1226,45 @@ status = "required"
 [CARRIER-GUEST-CURRENT]
 text = "a carrier's machine (WSL 2, a Mac's host machine) that reports another release is brought to the client's once per release (xlings self update there), never on every command"
 status = "required"
+
+# ── Luban OS distribution (design 2026-10-18) ──────────────────────
+
+[LUBAN-DIST-XPKG]
+text = "luban new takes any system and any components by --xpkg (repeatable, any index): it finds what each is (a system, a desktop, a package) from the fields and conventions it already has, says the right way when one is given where the other belongs, asks once for a third party's (with what it does beyond Luban), records the answer, and in agent mode fails with --yes"
+status = "planned"
+
+[LUBAN-DIST-LINEAGE]
+text = "a system says what it is in one way everywhere: its name and version, then the Luban edition it is built on (`myos 2026.11.1 (Luban desktop)`), its direct parent with its source, and its os-release (ID_LIKE=luban, LUBAN_BASE)"
+status = "planned"
+
+[LUBAN-NAMESPACE]
+text = "a namespace an index reserves is taken from that index only (another index's recipe in it is refused, naming the index and the file); luban's short names are the names in the luban: namespace, none listed in its code; replaces is honoured within one index"
+status = "planned"
+
+[LUBAN-CAPS]
+text = "luban, the Luban OS app, a machine's agent, a system and a component declare what they provide and need as named capabilities with integer levels (luban/specs/opencaps); a need is met by a provision at that level or above, an unknown name is not met and is said so, and a mismatch names which side is too old and its update"
+status = "planned"
+
+[LUBAN-DESKTOP-KDE-ADAPTER]
+text = "a KDE session is shown through opensal by an adapter for KWin: its picture from a virtual monitor the window's size, input injected, the pointer drawn by the host, the clipboard shared, a resize followed"
+status = "planned"
+
+[LUBAN-SESSION-PEERS]
+text = "terminals entering one environment are peers: any of them leaves at once, and Ctrl-C reaches only its own program"
+status = "planned"
+
+[LUBAN-DESKTOP-SWITCH]
+text = "several desktops live in one system: luban config --desktop changes the default, luban enter --desktop opens another once, the Luban OS app's bar lists them; one desktop's defaults and autostart never reach another, and removing the one in use falls back to the console and says so"
+status = "planned"
+
+[LUBAN-DESKTOP-CLASSIC]
+text = "labwc, LXQt and KDE open in a machine and in a sandbox and can be used: drawn, a pointer, a terminal that shows the program it runs"
+status = "planned"
+
+[LUBAN-APP-WINDOW]
+text = "luban run --display window shows one graphical program of a system as its own window on the host, titled as the program"
+status = "planned"
+
+[LUBAN-PACKAGE-FORM]
+text = "a package that changes form under its name (a bundle becoming a composite of atomic packages, or back) upgrades a system without changing its settings or sessions"
+status = "planned"
