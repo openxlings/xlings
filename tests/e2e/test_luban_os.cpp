@@ -291,8 +291,8 @@ sleep 300
     EXPECT_FLOAT_EQ(d[2] - d[0], 320.0f);
     EXPECT_EQ(img.at(static_cast<int>(d[0]) + 20, static_cast<int>(d[1]) + 20), (std::array<int, 3>{0xC0, 0x80, 0x40}));
     const auto sent = tk::read_file(log);
-    EXPECT_NE(sent.find("H 399 1100 700 1 1"), std::string::npos)
-        << "the window's interfaces (surface, pointer, keyboard, mode, text, clipboard), size, density and pacing, first\n" << sent;
+    EXPECT_NE(sent.find("H 911 1100 700 1 1"), std::string::npos)
+        << "the window's interfaces (surface, pointer, keyboard, mode, text, clipboard, shell), size, density and pacing, first\n" << sent;
     // Pacing: once it has shown the frame, it says so (the next may come).
     EXPECT_NE(sent.find("E presented"), std::string::npos) << sent;
     // The click, in the desktop's own pixels (its middle), down and up.
@@ -305,6 +305,71 @@ sleep 300
     EXPECT_NE(sent.find("E resize 900 600"), std::string::npos) << "the window's new size\n" << sent;
     // Leaving it ends its stream.
     EXPECT_NE(sent.find("eof"), std::string::npos) << sent;
+}
+
+// A desktop without a shell of its own asks the window to be it (design
+// 2026-10-18 §7, T1): its applications and windows on the window's bar, an
+// application started and a window brought forward by a click.
+XTEST(LubanOs, TheWindowIsTheShellOfADesktopWithoutOne, .area = "luban",
+      .covers = {"LUBAN-DESKTOP-SHELL"}, .requires_ = {"linux", "xlings-bin"}) {
+    if (!app_binary()) GTEST_SKIP() << "no luban-os beside the xlings under test";
+    auto home = tk::Home::isolated("luban-os-shell");
+    ASSERT_EQ(home.xlings({"self", "init"}).exit_code, 0);
+    const auto fake = home.root() / "desktop.py", log = home.root() / "desktop.log";
+    tk::write_file(fake, R"(import struct, sys
+log = open(sys.argv[1], "w", buffering=1)
+W, H = 320, 200
+out = sys.stdout.buffer
+def send(kind, payload):
+    out.write(kind.encode() + struct.pack(">I", len(payload)) + payload)
+    out.flush()
+send("h", b"%d" % (15 | 512))       # surface pointer keyboard mode, and shell
+inp = sys.stdin.buffer
+told = False
+while True:
+    head = inp.read(5)
+    if len(head) < 5:
+        break
+    body = inp.read(struct.unpack(">I", head[1:])[0])
+    log.write("%s %s\n" % (chr(head[0]), body.decode(errors="replace")))
+    if chr(head[0]) == "H" and not told:
+        told = True
+        send("s", b"%d %d" % (W, H))
+        send("f", b"0 0 %d %d %d\n" % (W, H, W * 4) + bytes([0x40, 0x80, 0xC0, 0xFF]) * (W * H))
+        send("a", "foot\tFoot\norg.example.Editor\tEditor\n".encode())
+        send("w", "7\t1\t0\tfoot\t~ shell\n9\t0\t1\teditor\tnotes.txt\n".encode())
+log.write("eof\n")
+)");
+    const auto st = home.root() / "shell.json";
+    auto r = run_script(home, std::format(R"(wait desktop
+waitfor desktop.shell.windows.1.title notes.txt 30
+frames 2
+click shell:apps
+frames 2
+expect desktop.shell.open true
+screenshot {}
+click app:org.example.Editor
+frames 2
+expect desktop.shell.open false
+click window:9
+frames 2
+state {}
+key Ctrl+Alt
+waitfor menu true
+click menu:back-to-the-list
+wait launcher
+sleep 300
+)", artifact("desktop-shell.bmp").string(), st.string()),
+                        {"--desktop-exec", "python3", fake.string(), log.string()});
+    ASSERT_EQ(r.exit_code, 0) << r.transcript();
+    const auto shell = read_state(st)["desktop"]["shell"];
+    EXPECT_EQ(shell["apps"], Json::array({"foot", "org.example.Editor"}));
+    EXPECT_EQ(shell["windows"][0]["focused"], true);
+    const auto sent = tk::read_file(log);
+    EXPECT_NE(sent.find("E launch org.example.Editor"), std::string::npos) << sent;
+    EXPECT_NE(sent.find("E activate 9"), std::string::npos) << sent;
+    // The bar is the window's: the click on it is not the desktop's.
+    EXPECT_EQ(sent.find("E button"), std::string::npos) << sent;
 }
 
 // A pointer moving over a desktop is sent on, and the window is not drawn

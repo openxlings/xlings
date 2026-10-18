@@ -1254,8 +1254,8 @@ text = "a desktop without a shell of its own (its session file's X-Luban-Shell=n
 status = "required"
 
 [LUBAN-SESSION-PEERS]
-text = "terminals entering one environment are peers: any of them leaves at once, and Ctrl-C reaches only its own program"
-status = "planned"
+text = "terminals entering one environment are peers: the first starts its session in the background and joins it as later ones do, any of them leaves at once, Ctrl-C reaches only its own program, and the session ends a moment after the last; a session keeping only /home (or nothing) is joined by an entry keeping as much"
+status = "required"
 
 [LUBAN-DESKTOP-SWITCH]
 text = "several desktops live in one system: luban config --desktop changes the default, luban enter --desktop opens another once, the Luban OS app's bar lists them; one desktop's defaults and autostart never reach another, and removing the one in use falls back to the console and says so"

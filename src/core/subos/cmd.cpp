@@ -535,10 +535,12 @@ int use_spawn_shell(const std::string& name, EventStream& stream, bool sandbox, 
                                    .recoverable = false});
             return 2;
         }
-        if (session::find(home_view(), name)) {
+        // A running session keeping as much is joined; one keeping more is not this.
+        if (auto live = session::find(home_view(), name); live && live->persist != persisted) {
             stream.emit(ErrorEvent{.code = ErrorCode::InvalidInput,
-                                   .message = std::format("'{}' has a running session, which keeps what it writes; "
-                                                          "`xlings subos stop {}` first", name, name),
+                                   .message = std::format("'{}' has a running session, which keeps {}; "
+                                                          "`xlings subos stop {}` first", name,
+                                                          live->persist == "all" ? "what it writes" : "only " + live->persist, name),
                                    .recoverable = true});
             return 2;
         }
@@ -570,11 +572,25 @@ int use_spawn_shell(const std::string& name, EventStream& stream, bool sandbox, 
         if (auto rc = use_detail_::validate_subos_(name, stream); rc != 0) return rc;
         use_detail_::apply_subos_env_(name);
         warn_sandbox_without_gpu_(name, gpu, stream);
+        // Terminals are peers (Luban 2026-10-18 design §12, E4): an
+        // interactive entry starts the session in the background and joins
+        // it as every later terminal does -- any of them leaves at once, and
+        // Ctrl-C reaches only its own program (each has a terminal of the
+        // session's). The session ends a moment after its last terminal.
+        bool started = false;
+        if (!platform::is_windows && cmd.empty() && platform::stdin_is_terminal() && !session::find(home_view(), name)) {
+            auto rc = sandbox::enter(name, stream, sandbox::EnterOptions{
+                .backend = sandbox_backend, .gpu = gpu, .env = declared_env_(name), .ttl = session::kPeerIdleSeconds,
+                .detached = true, .announce = false, .preset = preset, .overrides = overrides, .persist = persisted});
+            if (rc != 0) return rc;
+            started = true;
+        }
         // A `--cmd` run is a script: its standard output is the command's alone
         // (a stream a program reads, as the Luban OS window reads a desktop's).
         return sandbox::enter(name, stream, sandbox::EnterOptions{
             .backend = sandbox_backend, .gpu = gpu, .cmd = cmd, .env = declared_env_(name),
-            .announce = cmd.empty(), .preset = preset, .overrides = overrides, .persist = persisted });
+            .announce = cmd.empty(), .preset = preset, .overrides = overrides, .persist = persisted,
+            .started_for_this = started });
     }
     warn_storage_dormant_on_shell_(name);
 

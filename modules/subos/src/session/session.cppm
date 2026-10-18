@@ -47,7 +47,14 @@ struct Info {
     std::string digest;             // of the compiled spec: a join with a different spec is refused
     int ttl { 0 };                  // idle seconds after the last command; 0 = until stop
     bool detached { false };        // started by `subos start`
+    // What a root keeps of it (all | home | none): a join that asks for the same joins.
+    std::string persist { "all" };
 };
+
+// Idle seconds a session started for terminals (`subos use`, interactive)
+// lives after its last one leaves: every terminal joins it as a peer, any of
+// them leaves at once (Luban 2026-10-18 design §12).
+inline constexpr int kPeerIdleSeconds = 3;
 
 nlohmann::json to_json(const Info& i);
 Info info_from_json(const nlohmann::json& j);
@@ -73,6 +80,7 @@ struct Launch {
     std::string default_cwd;                     // inside
     int ttl { 0 };
     bool detached { false };
+    std::string persist { "all" };
     // Attached only: end the session after this long and return 124.
     std::optional<std::chrono::milliseconds> timeout;
     // net=nat: pasta's argv without its target. The backend then starts in a

@@ -353,7 +353,7 @@ bool shell_bar_(App& a, Display& d, ImVec2 at, float width, float height) {
     // The list above the bar, in the session's order (by name).
     const auto apps = d.applications();
     const float row = px(34), list_w = std::min(px(320), width - px(12));
-    const float list_h = std::min(row * static_cast<float>(std::max<std::size_t>(1, apps.size())) + px(12), at.y - wo.y - px(12));
+    const float list_h = std::min(row * static_cast<float>(std::max<std::size_t>(1, apps.size())) + px(24), at.y - wo.y - px(12));
     const ImVec2 top(at.x + px(6), at.y - list_h - px(4));
     ImGui::SetCursorScreenPos(top);
     ImGui::PushStyleColor(ImGuiCol_ChildBg, th_().panel_lo);
@@ -361,7 +361,7 @@ bool shell_bar_(App& a, Display& d, ImVec2 at, float width, float height) {
     if (apps.empty()) ImGui::TextUnformatted(tr("Nothing it can start yet", "还没有可启动的应用").data());
     for (const auto& app : apps) {
         const std::string id = "app:" + app.id;
-        if (imkit::button(id, imkit::fit(app.name, list_w - px(32), 14), ImVec2((list_w - px(24)) / imkit::scale(), (row - px(4)) / imkit::scale()),
+        if (imkit::button(id, imkit::fit(app.name, list_w - px(40), 14), ImVec2((list_w - px(32)) / imkit::scale(), (row - px(6)) / imkit::scale()),
                           imkit::Look::Ghost)) {
             d.send(opensal::Launch{app.id});
             a.shell_apps = false;
@@ -485,9 +485,17 @@ void desktop_view_(App& a) {
                 } else if (std::holds_alternative<opensal::ClipboardText>(e)) {
                     paste();    // the host's clipboard changed
                 } else if (std::holds_alternative<opensal::PointerButton>(e) || std::holds_alternative<opensal::Wheel>(e)) {
-                    // The shell's bar and list are the window's; a button let go there still reaches it.
+                    // The shell's bar and list are the window's; a button pressed on
+                    // the desktop is let go there wherever the pointer is.
                     const auto* b = std::get_if<opensal::PointerButton>(&e);
-                    if (!on_shell || (b && !b->down)) d.send(e);
+                    const auto bit = b ? 1u << static_cast<std::uint32_t>(b->button) : 0u;
+                    if (b && !b->down && (a.desktop_buttons & bit)) {
+                        a.desktop_buttons &= ~bit;
+                        d.send(e);
+                    } else if (!on_shell) {
+                        if (b && b->down) a.desktop_buttons |= bit;
+                        if (!b || b->down) d.send(e);
+                    }
                 }
             }
         }

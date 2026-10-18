@@ -60,6 +60,8 @@ xlings subos stop dev
 
 `xlings subos use dev --sandbox --keep` 也会启动会话：shell 退出后保留，直到 `subos stop`。从另一个终端加入的命令
 有自己的终端：作业控制、Ctrl-C 以及窗口尺寸都跟随调用方。
+进入同一实例的终端（`subos use dev --sandbox`，不带 `--cmd`）彼此对等：第一个在后台启动会话并像其他终端一样加入，
+任何一个都能立即离开，Ctrl-C 只到达它自己的程序，最后一个离开几秒后会话结束。
 
 沙箱里的服务可以用 `--publish` 从外面访问：
 

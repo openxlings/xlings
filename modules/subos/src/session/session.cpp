@@ -21,7 +21,7 @@ namespace sig = platform::sig;
 nlohmann::json to_json(const Info& i) {
     return {{"instance", i.instance}, {"id", i.id}, {"supervisor_pid", i.supervisor_pid},
             {"sandbox_pid", i.sandbox_pid}, {"started", i.started}, {"backend", i.backend},
-            {"digest", i.digest}, {"ttl", i.ttl}, {"detached", i.detached}};
+            {"digest", i.digest}, {"ttl", i.ttl}, {"detached", i.detached}, {"persist", i.persist}};
 }
 
 Info info_from_json(const nlohmann::json& j) {
@@ -35,6 +35,7 @@ Info info_from_json(const nlohmann::json& j) {
     i.digest = j.value("digest", "");
     i.ttl = j.value("ttl", 0);
     i.detached = j.value("detached", false);
+    i.persist = j.value("persist", std::string("all"));
     return i;
 }
 
@@ -976,7 +977,7 @@ int host(const HomeView& home, Launch L) {
 
     Info info{ .instance = L.instance, .id = new_id(), .supervisor_pid = platform::get_pid(),
                .started = observe::utc_now(), .backend = L.backend, .digest = L.digest,
-               .ttl = L.ttl, .detached = L.detached };
+               .ttl = L.ttl, .detached = L.detached, .persist = L.persist.empty() ? std::string("all") : L.persist };
 
     if (!L.detached) {
         // Whatever ends the session -- a killed sandbox included -- the

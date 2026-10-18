@@ -194,6 +194,8 @@ ClipboardGrant App::clipboard_grant(const std::string& name) const {
 void App::close_display() {
     shown_desktop.clear();
     desktop_text = false;
+    desktop_buttons = 0;
+    shell_apps = false;
     sent_density = 1;
     paste_on_open = true;
     pasted.clear();

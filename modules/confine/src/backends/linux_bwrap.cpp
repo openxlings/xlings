@@ -82,12 +82,14 @@ void namespaces_processes(const in::Intent& i, sp::SandboxSpec& s) {
     s.unshare_ipc = true;
     s.unshare_uts = true;      // hostname changes stay inside
     s.die_with_parent = true;  // nothing outlives the session's owner
-    // TIOCSTI from inside would type into the user's shell (F8). A
-    // non-interactive run gets a new session (no controlling terminal); an
-    // interactive one keeps its terminal for job control and gets the
-    // seccomp filter instead.
-    if (i.interactive) s.block_tiocsti = true;
-    else s.new_session = true;
+    // TIOCSTI from inside would type into the user's shell (F8): a new
+    // session (no controlling terminal) and the seccomp filter, interactive
+    // or not. An interactive command has a terminal the session makes for it
+    // (session_init), so it keeps job control; and a terminal entering the
+    // environment is one more peer of the same session, whatever came first
+    // (Luban 2026-10-18 design §12).
+    s.new_session = true;
+    s.block_tiocsti = true;
 }
 
 }  // namespace

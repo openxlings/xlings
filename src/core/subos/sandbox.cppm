@@ -184,6 +184,9 @@ export struct EnterOptions {
     // `--persist home|none`: a root's state through a memory overlay, gone
     // when the session ends (Luban OS architecture §10.1).
     std::string persist { "all" };
+    // This terminal started the session it joins (a peer like any other):
+    // not said to have joined someone's.
+    bool started_for_this { false };
 };
 
 export int enter(const std::string& name, EventStream& stream, const EnterOptions& options);

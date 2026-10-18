@@ -369,6 +369,7 @@ struct App {
     opensal::Size desktop_size;        // what the window shows it at
     bool desktop_text { false };       // the desktop takes text (its caret is set)
     bool shell_apps { false };         // the shell's list of applications is open
+    std::uint32_t desktop_buttons { 0 };   // pointer buttons pressed on the desktop (1 << Button)
     double sent_density { 1 };         // the density the desktop was told
     std::string ended_why;             // a failed session's last lines (the off screen shows them)
     int ended_code { 0 };

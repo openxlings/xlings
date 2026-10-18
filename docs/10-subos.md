@@ -66,6 +66,10 @@ xlings subos stop dev
 `xlings subos use dev --sandbox --keep` also starts one; it outlives the shell
 until `subos stop`. A command that joins from another terminal gets a terminal
 of its own: job control, Ctrl-C, and the window size follow the caller's.
+Terminals entering one instance (`subos use dev --sandbox`, no `--cmd`) are
+peers: the first starts the session in the background and joins it as the
+others do, any of them leaves at once, Ctrl-C reaches only its own program, and
+the session ends a few seconds after the last one leaves.
 
 A service in the sandbox is reachable from outside with `--publish`:
 
