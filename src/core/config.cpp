@@ -181,6 +181,15 @@ void Config::override_home(const std::filesystem::path& home) {
     home_override_() = home;
 }
 
+namespace {
+bool& reads_only_() {
+    static bool v = false;
+    return v;
+}
+}  // namespace
+
+void Config::command_reads_only(bool readsOnly) { reads_only_() = readsOnly; }
+
 std::optional<std::filesystem::path>& Config::home_override_() {
     static std::optional<std::filesystem::path> v;
     return v;
@@ -707,12 +716,23 @@ Config::Config() {
         && utils::get_env_or_default("XLINGS_SUBOS_MODE") != "sandbox" && inside_root_() && !platform::is_root()
         && fs::is_directory(paths_.homeDir, lec) && !platform::can_write(paths_.homeDir)) {
         const auto own = fs::path(platform::get_home_dir()) / ".xlings";
-        if (!fs::equivalent(own, paths_.homeDir, lec)) {
+        // A command that only reads, by a user with no home of their own yet,
+        // reads the system's as it is: no ~/.xlings made, nothing said.
+        if (!fs::equivalent(own, paths_.homeDir, lec) && !(reads_only_() && !fs::exists(own, lec))) {
             paths_.systemLayer = paths_.homeDir;
-            if (!fs::exists(own, lec))
-                log::info("installing into your own home {} -- the system's {} is root's; "
-                          "`sudo xlings install --system <pkg>` installs for everyone",
-                          own.string(), paths_.systemLayer.string());
+            // Said once, when a home of one's own is first made. Installing for
+            // every user is root's, which in a Luban system is reached from the
+            // host (no sudo here; administrator rights have one door).
+            if (!fs::exists(own, lec)) {
+                std::string system = "<system>";
+                if (std::ifstream in("/etc/hostname"); in) {
+                    std::string line;
+                    if (std::getline(in, line) && !line.empty()) system = line;
+                }
+                log::info("installing into your own home {} -- the system's {} is root's; to install for "
+                          "every user, on the host: luban run {} --user root -- xlings install --system <pkg>",
+                          own.string(), paths_.systemLayer.string(), system);
+            }
             paths_.homeDir = own;
             paths_.homeSource = home::Source::Default;
             if (utils::get_env_or_default("XLINGS_SYSTEM_LAYER").empty())

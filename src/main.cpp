@@ -170,6 +170,9 @@ int main(int argc, char* argv[]) {
             if (auto home = xlings::xvm::resolve_dispatch_home(program_name, argv[0])) {
                 xlings::Config::override_home(*home);
             }
+        } else {
+            std::vector<std::string_view> words(argv + 1, argv + argc);
+            xlings::Config::command_reads_only(xlings::home::is_read_only_command(words));
         }
 
         auto& p = xlings::Config::paths();

@@ -162,6 +162,12 @@ public:
     // Has no effect once the singleton is constructed.
     static void override_home(const std::filesystem::path& home);
 
+    // The command only reads (home::is_read_only_command): said by main.cpp
+    // before the first Config use. Inside a Luban system, a user who has no
+    // home of their own yet then reads the system's -- nothing is created,
+    // nothing announced (design 2026-10-19 §19, F18).
+    static void command_reads_only(bool readsOnly);
+
     // Public because they ARE the public contract of repo_dir_for(): the
     // default index is the entry named DEFAULT_INDEX_REPO_NAME, and it lives in
     // DEFAULT_INDEX_REPO_DIR rather than in a directory named after itself.

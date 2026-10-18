@@ -1329,7 +1329,7 @@ status = "planned"
 
 [SUBOS-FROM-NO-SILENT-INSTALLED]
 text = "subos new --from without a version stops when the index cannot be read, and says so when it uses an installed version the index does not list"
-status = "planned"
+status = "required"
 
 [SUBOS-DOMAIN-RELAYED]
 text = "a command routed into a prefix domain and asked through the interface brings back its data, progress and errors as events (luban history of a domain's system)"
@@ -1341,7 +1341,7 @@ status = "planned"
 
 [SUBOS-READONLY-USER]
 text = "inside a system, a user's read-only xlings commands neither switch home nor print the notice; the first write says it once, without sudo"
-status = "planned"
+status = "required"
 
 [LUBAN-UPGRADE-REVERSIBLE]
 text = "an upgrade is never forced and is undone by rollback: a frozen name to luban:, and a relayout through its archive (rollback --to relayout)"

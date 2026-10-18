@@ -537,9 +537,10 @@ Outcome create(const Context& c, const NewOptions& o, const NewPreview* given) {
     std::string passed_over;
     Context making = c;
     making.sink = [&](const Event& e) {
-        if (e.kind == Event::Kind::Data && e.data_kind == "passed_over") {
+        if (e.kind == Event::Kind::Data && (e.data_kind == "passed_over" || e.data_kind == "installed_only")) {
             const auto d = e.data.is_string() ? nlohmann::json::parse(e.data.get<std::string>(), nullptr, false) : e.data;
-            if (d.is_object()) passed_over = d.value("message", std::string{});
+            if (d.is_object() && e.data_kind == "passed_over") passed_over = d.value("message", std::string{});
+            else if (d.is_object() && c.sink) c.sink(notice(d.value("message", std::string{}), "xlings update"));
             return;
         }
         if (c.sink) c.sink(e);

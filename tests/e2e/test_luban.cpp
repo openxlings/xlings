@@ -542,6 +542,30 @@ XTEST(Luban, ARootsLoginShellIsTheBestItHasOnceMade,
     EXPECT_EQ(shell("plain", "root"), "/bin/sh");
 }
 
+// A template named without a version is the index's; when the index has no
+// such package and one is installed, that one is used and said -- never
+// silently (design 2026-10-19 §9.2).
+XTEST(Luban, ATemplateOnlyInstalledIsUsedAndSaid,
+      .area = "luban", .cost = tk::Cost::Medium, .covers = {"SUBOS-FROM-NO-SILENT-INSTALLED"}, .requires_ = {"linux", "xlings-bin"}) {
+    if constexpr (!tk::is_linux) GTEST_SKIP() << "a Luban root is a Linux root";
+    const auto bin = luban_binary();
+    if (!bin) GTEST_SKIP() << "no luban beside the xlings under test";
+    auto home = luban_home("luban-installed-only", *bin);
+    ASSERT_EQ(home.xlings({"install", "fixture:my-os@1.0.0", "-y"}).exit_code, 0);
+    fs::remove(home.root() / "index/pkgs/m/my-os.lua");
+    ASSERT_EQ(home.xlings({"update"}).exit_code, 0);
+    const auto made = home.xlings({"interface", "subos_command", "--args",
+                                   R"({"argv":["new","box","--rootfs","--from","fixture:my-os"],"yes":true})"});
+    ASSERT_EQ(made.exit_code, 0) << made.transcript();
+    int said = 0;
+    for (const auto& j : made.json_lines())
+        if (j.value("kind", "") == "data" && j.value("dataKind", "") == "installed_only") {
+            ++said;
+            EXPECT_EQ(j["payload"].value("version", ""), "1.0.0") << j.dump();
+        }
+    EXPECT_EQ(said, 1) << "said once, though the base is resolved twice\n" << made.out;
+}
+
 // What is not an edition is said in luban's words before xlings is asked
 // (E14); an older edition than the index's newest, chosen because the newest
 // needs a newer xlings, is said with the update (E8, B22).
