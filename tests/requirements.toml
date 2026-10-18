@@ -56,7 +56,7 @@ text = "interface --version reports the version, protocol, capabilities, home la
 status = "required"
 
 [LUBAN-OS-PERF]
-text = "the Luban OS app shows a choice the frame after it is made (no wait after input), its own work per frame stays within a few milliseconds (no disk read per frame), a frame fits its budget on a software renderer, and a still window waits instead of drawing"
+text = "the Luban OS app shows a choice the frame after it is made (no wait after input), its own work per frame stays within a few milliseconds (no disk read per frame), a frame fits its budget on a software renderer, and a still window waits instead of drawing; a pointer moving over a still desktop draws nothing, without a GPU a desktop is shown at most 30 times a second, and the renderer is recorded and, software when nobody asked, said with its remedy"
 status = "required"
 
 [LUBAN-OS-VISUAL]

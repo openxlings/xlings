@@ -300,12 +300,19 @@ struct App {
         int wait_after_input_ms { 0 };                // what the scheduler waits after input
         int idle_wait_ms { 0 };                       // and when nothing happens (not drawing for nothing)
         int frames { 0 };
+        int presented { 0 };                          // of which drawn and shown (the rest changed nothing)
+        std::string renderer;                         // SDL's: "software" is no GPU
         std::optional<std::chrono::steady_clock::time_point> input_at;
         int frames_since_input { 0 };
     } perf;
     bool job_told { true };            // the last job's end was said (a notification when unseen)
     std::string job_subject;           // the system the last job made (its notification goes in)
     std::optional<std::chrono::steady_clock::time_point> notice_until;   // a notice over a system, until
+    bool desktop_changed { true };     // this frame's desktop picture differs from the last one shown
+    // The desktop's pacing: when it was last told a frame was shown, and when
+    // it is to be told next (software rendering: at most 30 a second).
+    std::chrono::steady_clock::time_point presented_at;
+    std::optional<std::chrono::steady_clock::time_point> present_due;
     // Quick start
     char new_name[64] = {};
     char new_proxy[256] = {};
@@ -1799,17 +1806,28 @@ void desktop_view_(App& a) {
     auto& d = *a.display;
     std::vector<Display::Update> updates;
     const auto size = d.take(updates);
+    a.desktop_changed = !updates.empty();
     if (size.width && size.height
         && (a.texture.width != static_cast<int>(size.width) || a.texture.height != static_cast<int>(size.height))) {
         if (a.texture.handle) a.window->destroy(a.texture);
         a.texture = a.window->texture(static_cast<int>(size.width), static_cast<int>(size.height));
+        a.desktop_changed = true;
     }
     for (const auto& u : updates)
         if (a.texture.handle && u.rect.x + u.rect.width <= static_cast<std::uint32_t>(a.texture.width)
             && u.rect.y + u.rect.height <= static_cast<std::uint32_t>(a.texture.height))
             a.window->update(a.texture, u.rect, u.rows);
-    // Pacing: what it sent is shown with this frame; it may draw the next.
-    if (!updates.empty()) d.send(opensal::FramePresented{});
+    // Pacing: what it sent is shown with this frame; it may draw the next --
+    // without a GPU at most 30 times a second (the main loop says it when due).
+    if (!updates.empty()) {
+        const auto now = std::chrono::steady_clock::now();
+        if (a.perf.renderer == "software" && now - a.presented_at < std::chrono::milliseconds(33))
+            a.present_due = a.presented_at + std::chrono::milliseconds(33);
+        else {
+            d.send(opensal::FramePresented{});
+            a.presented_at = now;
+        }
+    }
     const ImVec2 origin = ImGui::GetCursorScreenPos();
     const ImVec2 avail = ImGui::GetContentRegionAvail();
     if (a.texture.handle) {
@@ -2395,7 +2413,8 @@ Json state_(const App& a) {
         auto ms = std::vector<double>(a.perf.frame_ms.begin(), a.perf.frame_ms.end());
         std::ranges::sort(ms);
         auto at = [&](double q) { return ms.empty() ? 0.0 : ms[std::min(ms.size() - 1, static_cast<std::size_t>(q * ms.size()))]; };
-        j["perf"] = {{"frames", a.perf.frames}, {"frame_ms_p50", at(0.5)}, {"frame_ms_p95", at(0.95)},
+        j["perf"] = {{"frames", a.perf.frames}, {"presented", a.perf.presented}, {"renderer", a.perf.renderer},
+                     {"frame_ms_p50", at(0.5)}, {"frame_ms_p95", at(0.95)},
                      {"frame_ms_max", ms.empty() ? 0.0 : ms.back()}, {"input_to_next_frame_ms", a.perf.input_to_next_frame_ms},
                      {"input_to_next_frame_ms_max", a.perf.input_to_next_frame_max}, {"wait_after_input_ms", a.perf.wait_after_input_ms},
                      {"idle_wait_ms", a.perf.idle_wait_ms}};
@@ -2725,7 +2744,7 @@ void script_step_(App& a, Script& sc) {
         next();
     } else if (cmd == "perf") {
         // `perf reset`: what follows is measured alone.
-        a.perf = {};
+        a.perf = {.renderer = a.perf.renderer};
         next();
     } else if (cmd == "tray") {
         // As if chosen at the status-area icon.
@@ -2969,6 +2988,19 @@ int run(int argc, char* argv[]) {
     }
     a.window = std::move(*window);
     a.window->set_title("Luban OS");
+    // What draws it. SDL falls back to its software renderer without a word
+    // when no GPU is reached (E13: luban-os installed without the graphics
+    // stack took half a core for a moving pointer): said, with the remedy,
+    // unless software was asked for.
+    a.perf.renderer = a.window->renderer();
+    if (const char* asked = std::getenv("SDL_RENDER_DRIVER");
+        a.perf.renderer == "software" && (!asked || std::string_view(asked) != "software")) {
+        a.notice = platform::is_linux
+            ? std::string(tr("Drawing without the GPU (no graphics stack reached): xlings install graphics, then start Luban OS from its menu entry or `luban-os`",
+                             "未用到 GPU 绘制（没有接入图形栈）：xlings install graphics，然后从菜单项或 `luban-os` 启动 Luban OS"))
+            : std::string(tr("Drawing without the GPU", "未用到 GPU 绘制"));
+        std::println(std::cerr, "luban-os: the renderer is SDL's software one (no GPU reached)");
+    }
     // The app's look: its theme on imkit, its background behind every page.
     imkit::set_theme(art::theme(a.window->ui_font(), a.window->title_font()));
     {
@@ -3030,6 +3062,12 @@ int run(int argc, char* argv[]) {
         if (a.notice_until)   // a notice over a system goes when its time is up
             scheduled = std::clamp(static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(
                                        *a.notice_until - std::chrono::steady_clock::now()).count()) + 1, 16, scheduled);
+        // Without a GPU every frame is the CPU's: what animates runs at 30 a
+        // second (the frame after an input still comes at once).
+        if (a.perf.renderer == "software" && pending == 0) scheduled = std::max(scheduled, 33);
+        if (a.present_due)   // a desktop is to be told its frame was shown
+            scheduled = std::clamp(static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                       *a.present_due - std::chrono::steady_clock::now()).count()) + 1, 1, scheduled);
         const int wait_ms = script ? 30 : frames >= 0 ? 0 : scheduled;
         if (a.perf.input_at && a.perf.frames_since_input == 1) a.perf.wait_after_input_ms = scheduled;
         // The longest a still window waits since the last input: a stepped
@@ -3075,8 +3113,20 @@ int run(int argc, char* argv[]) {
                            a.job->code == 0 && !a.job_subject.empty() ? "made:" + a.job_subject : "open");
         }
         const auto frame_start = std::chrono::steady_clock::now();
+        if (a.present_due && frame_start >= *a.present_due) {
+            a.present_due.reset();
+            if (a.display) a.display->send(opensal::FramePresented{});
+            a.presented_at = frame_start;
+        }
         const bool input = !a.window->events().empty() || !a.window->keys().empty();
-        if (input) {
+        // Over a desktop the pointer moving changes nothing here: it is sent
+        // on, and what it changes there comes back as a frame (E13: every
+        // move redrew the whole window).
+        const bool over_desktop = a.view == View::Desktop && !a.menu && !a.close_dialog && !a.confirm;
+        const bool only_motion = input && a.window->keys().empty()
+            && std::ranges::all_of(a.window->events(), [](const auto& e) { return std::holds_alternative<opensal::PointerMotion>(e); });
+        const auto view_before = a.view;
+        if (input && !(over_desktop && only_motion)) {
             pending = 3;
             a.perf.input_at = frame_start;
             a.perf.frames_since_input = 0;
@@ -3259,7 +3309,12 @@ int run(int argc, char* argv[]) {
         if (a.confirm) confirm_(a);
         wake = imkit::wake_in();
         const auto drawn = std::chrono::steady_clock::now();
-        a.window->end_frame();
+        // A desktop frame that shows what the last one showed is not drawn
+        // again: no new picture, no input but the pointer's, nothing over it.
+        const bool still = over_desktop && a.view == View::Desktop && view_before == View::Desktop && !a.desktop_changed
+                           && (!input || only_motion) && !a.notice_until && !a.resize_at && a.perf.presented > 0;
+        a.window->end_frame(!still);
+        if (!still) ++a.perf.presented;
         {
             // This frame's time; and, the frame after an input, how long until
             // what the input did is on the screen (the input is taken in one

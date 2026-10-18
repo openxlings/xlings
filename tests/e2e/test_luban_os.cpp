@@ -137,7 +137,10 @@ tk::RunResult run_script(const tk::Home& home, std::string_view script, std::vec
     // The fonts Luban OS ships, where the lane has them
     // (tools/ci/luban_fonts.sh); else the app draws with this machine's.
     if (const char* f = std::getenv("LUBAN_OS_FONTS"); f && *f) o.env["LUBAN_OS_FONTS"] = f;
-    for (auto& [k, v] : env) o.env[k] = v;
+    for (auto& [k, v] : env) {
+        if (v.empty()) o.env.erase(k);   // unset
+        else o.env[k] = v;
+    }
     o.timeout = timeout;
     return tk::run(o);
 }
@@ -302,6 +305,108 @@ sleep 300
     EXPECT_NE(sent.find("E resize 900 600"), std::string::npos) << "the window's new size\n" << sent;
     // Leaving it ends its stream.
     EXPECT_NE(sent.find("eof"), std::string::npos) << sent;
+}
+
+// A pointer moving over a desktop is sent on, and the window is not drawn
+// again until the desktop sends a new picture (design 2026-10-18 §13.2, E13:
+// every move redrew the whole window, half a core without a GPU).
+XTEST(LubanOs, APointerMovingOverAStillDesktopDrawsNothing, .area = "luban",
+      .covers = {"LUBAN-OS-PERF"}, .requires_ = {"linux", "xlings-bin"}) {
+    if (!app_binary()) GTEST_SKIP() << "no luban-os beside the xlings under test";
+    auto home = tk::Home::isolated("luban-os-still-desktop");
+    ASSERT_EQ(home.xlings({"self", "init"}).exit_code, 0);
+    // One picture, then nothing: what it is sent, counted.
+    const auto fake = home.root() / "desktop.py", log = home.root() / "desktop.log";
+    tk::write_file(fake, R"(import struct, sys
+log = open(sys.argv[1], "w", buffering=1)
+W, H = 320, 200
+out = sys.stdout.buffer
+def send(kind, payload):
+    out.write(kind.encode() + struct.pack(">I", len(payload)) + payload)
+    out.flush()
+send("h", b"15")
+send("s", b"%d %d" % (W, H))
+send("f", b"0 0 %d %d %d\n" % (W, H, W * 4) + bytes([0x40, 0x80, 0xC0, 0xFF]) * (W * H))
+inp = sys.stdin.buffer
+while True:
+    head = inp.read(5)
+    if len(head) < 5:
+        break
+    body = inp.read(struct.unpack(">I", head[1:])[0])
+    log.write("%s %s\n" % (chr(head[0]), body.decode(errors="replace")))
+)");
+    std::string moves;
+    for (int i = 0; i < 60; ++i) moves += std::format("move {} {}\nframes 1\n", 400 + i * 3, 300 + i);
+    const auto st = home.root() / "still.json";
+    auto r = run_script(home, std::format("wait desktop\nwaitfor desktop.texture.0 320\nframes 3\nperf reset\n{}state {}\n",
+                                          moves, st.string()),
+                        {"--desktop-exec", "python3", fake.string(), log.string()});
+    ASSERT_EQ(r.exit_code, 0) << r.transcript();
+    const auto p = read_state(st)["perf"];
+    EXPECT_GE(p["frames"].get<int>(), 60) << p.dump();
+    EXPECT_LE(p["presented"].get<int>(), 3) << "sixty moves over a still picture\n" << p.dump();
+    EXPECT_EQ(p["renderer"], "software") << "asked for (SDL_RENDER_DRIVER)";
+    const auto sent = tk::read_file(log);
+    EXPECT_NE(sent.find("E motion"), std::string::npos) << "the moves reach the desktop\n" << sent;
+}
+
+// Without a GPU a desktop that draws as fast as it may is shown at most 30
+// times a second: its frames are paced by when it is told the last was shown.
+XTEST(LubanOs, WithoutAGpuADesktopIsShownThirtyTimesASecond, .area = "luban",
+      .covers = {"LUBAN-OS-PERF"}, .requires_ = {"linux", "xlings-bin"}) {
+    if (!app_binary()) GTEST_SKIP() << "no luban-os beside the xlings under test";
+    auto home = tk::Home::isolated("luban-os-thirty");
+    ASSERT_EQ(home.xlings({"self", "init"}).exit_code, 0);
+    // A new picture each time it is told the last one was shown.
+    const auto fake = home.root() / "desktop.py";
+    tk::write_file(fake, R"(import struct, sys
+W, H = 64, 64
+out = sys.stdout.buffer
+n = 0
+def send(kind, payload):
+    out.write(kind.encode() + struct.pack(">I", len(payload)) + payload)
+    out.flush()
+def frame():
+    global n
+    n += 1
+    send("f", b"0 0 %d %d %d\n" % (W, H, W * 4) + bytes([n % 256, 0x80, 0xC0, 0xFF]) * (W * H))
+send("h", b"15")
+send("s", b"%d %d" % (W, H))
+frame()
+inp = sys.stdin.buffer
+while True:
+    head = inp.read(5)
+    if len(head) < 5:
+        break
+    body = inp.read(struct.unpack(">I", head[1:])[0])
+    if body.startswith(b"presented"):
+        frame()
+)");
+    const auto st = home.root() / "thirty.json";
+    auto r = run_script(home, std::format("wait desktop\nwaitfor desktop.texture.0 64\nperf reset\nsleep 2000\nstate {}\n", st.string()),
+                        {"--desktop-exec", "python3", fake.string()});
+    ASSERT_EQ(r.exit_code, 0) << r.transcript();
+    const auto p = read_state(st)["perf"];
+    EXPECT_GE(p["presented"].get<int>(), 20) << "it keeps showing new pictures\n" << p.dump();
+    EXPECT_LE(p["presented"].get<int>(), 70) << "two seconds, at most 30 a second\n" << p.dump();
+}
+
+// SDL's software renderer when nobody asked for it is said, with the remedy
+// (E13): on a Linux host it is a luban-os that does not reach the graphics
+// stack.
+XTEST(LubanOs, DrawingWithoutTheGpuIsSaid, .area = "luban", .covers = {"LUBAN-OS-PERF"}, .requires_ = {"linux", "xlings-bin"}) {
+    if (!app_binary()) GTEST_SKIP() << "no luban-os beside the xlings under test";
+    auto home = tk::Home::isolated("luban-os-renderer");
+    ASSERT_EQ(home.xlings({"self", "init"}).exit_code, 0);
+    const auto st = home.root() / "renderer.json";
+    auto r = run_script(home, std::format("frames 3\nstate {}\n", st.string()), {}, {{"SDL_RENDER_DRIVER", ""}});
+    ASSERT_EQ(r.exit_code, 0) << r.transcript();
+    const auto s = read_state(st);
+    const auto renderer = s["perf"]["renderer"].get<std::string>();
+    EXPECT_FALSE(renderer.empty()) << s["perf"].dump();
+    const auto notice = s.value("notice", std::string{});
+    if (renderer == "software") EXPECT_NE(notice.find("xlings install graphics"), std::string::npos) << notice;
+    else EXPECT_EQ(notice.find("GPU"), std::string::npos) << renderer << ": " << notice;
 }
 
 XTEST(LubanOs, EveryControlIsOnScreenApartAndBigEnoughAtEverySizeInBothLanguages, .area = "luban",
