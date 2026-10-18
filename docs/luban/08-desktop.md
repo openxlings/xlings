@@ -31,8 +31,14 @@ Each card says what it is; the line under the cards says what is in the chosen
 one, or why it cannot be made here — not published yet, not built for this
 machine's architecture, or a computer that cannot run Luban systems yet (what
 `luban status` says: the reason and the next step). A name follows the edition until you type
-your own; **More options** chooses sandbox or machine. One button makes it,
-showing each step, and goes in.
+your own; **More options** chooses sandbox or machine, and the desktop it is
+made with: its own, or one the indexes offer (packages in the `luban-desktop`
+category). One button makes it, showing each step, and goes in.
+
+Under the cards, **More** lists what else the indexes offer: an official
+system the window has no card for, and the systems of indexes you added, each
+with the index it comes from. A system (or desktop) from another index is
+agreed to before it is made — Luban does not check what it does.
 
 **Import** a system someone exported (`luban export box box.luban`) from the
 quick start's link, the list's last row, or by dropping the `.luban` file on the
@@ -156,6 +162,14 @@ luban config desk --desktop none            # its console instead
 
 Without a setting, the edition's session is started (the first the root
 declares, when it names none).
+
+A session can leave its shell to the window: `X-Luban-Shell=none` (Luban's
+`compositor` desktop is labwc without a panel). The window then shows a bar
+under the desktop: **Applications** lists what the session can start (the
+`share/applications` entries of its data directories, yours included; one
+with `Terminal=true` opens in the default terminal), and a button for each of
+its windows brings that one forward. `X-Luban-Shell=own` (or no key) leaves the
+desktop alone.
 
 ## What a desktop edition is ready with
 

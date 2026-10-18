@@ -26,7 +26,11 @@ luban enter desk --display window
 
 每张卡片写着它是什么；卡片下的一行说明选中的那个里面有什么，或者为什么这里不能创建——尚未发布、没有本机架构的版本，
 或者这台电脑暂时还不能运行 Luban 系统（`luban status` 给出的原因与下一步）。名字跟随 edition，直到你自己输入；
-**更多选项**选择沙箱或机器。一个按钮创建并进入，每一步都显示出来。
+**更多选项**选择沙箱或机器，以及用哪个桌面创建：它自带的，或 index 提供的（`luban-desktop` 类别的包）。
+一个按钮创建并进入，每一步都显示出来。
+
+卡片下方的**更多**列出 index 里的其他系统：窗口没有卡片的官方系统，以及你添加的 index 里的系统，都标明来自哪个 index。
+来自其他 index 的系统（或桌面）先经你同意才创建——Luban 不检查它做什么。
 
 **导入**别人导出的系统（`luban export box box.luban`）：快速开始里的链接、列表的最后一行，或者把 `.luban` 文件拖进窗口。
 预览显示它的 edition、软件包与隔离方式，并用平常的话列出它比新系统多能做的事（剪贴板授权、挂载宿主目录、没有隔离预设）；
@@ -128,6 +132,10 @@ luban config desk --desktop none            # its console instead
 ```
 
 没有设置时，启动 edition 指定的会话（edition 没有指定时，启动根里声明的第一个）。
+
+会话可以把外壳交给窗口：`X-Luban-Shell=none`（Luban 的 `compositor` 桌面就是不带面板的 labwc）。这时窗口在桌面下方显示一条栏：
+**应用**列出会话里能启动的程序（会话数据目录下的 `share/applications`，包括你自己的；`Terminal=true` 的在默认终端里打开），
+每个窗口一个按钮，点击即前置。`X-Luban-Shell=own`（或不写）则不打扰桌面。
 
 ## 桌面 edition 里有什么
 

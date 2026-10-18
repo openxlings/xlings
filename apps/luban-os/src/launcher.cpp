@@ -169,10 +169,19 @@ void ask_availability_(App& a) {
             app->caps = std::move(caps);
         }
         if (!stop.stop_requested() && app->window) app->window->wake();
+        // What the indexes offer: systems and desktops, one search each. Which
+        // package each short name is (luban:<name>, or a published
+        // subos:luban-<name>) comes with it.
+        auto offers = service::quick_start_offers(ctx.port);
+        std::map<std::string, std::string> refs;
+        for (const auto& o : offers.systems)
+            if (o.official) refs[o.name] = o.ref;
+        {
+            std::lock_guard l(app->available_m);
+            app->offers = std::move(offers);
+        }
+        if (!stop.stop_requested() && app->window) app->window->wake();
         const std::string arch(platform::build_arch());
-        // Which package each short name is (luban:<name>, or a published
-        // subos:luban-<name>): one search for all of them.
-        const auto refs = service::official_system_refs(ctx.port);
         for (const auto& e : kEditions) {
             if (stop.stop_requested()) return;   // the window is closing
             Availability v{.known = true, .arch = arch};
@@ -224,12 +233,59 @@ std::string unavailable_(App& a, const Edition& e) {
     return {};
 }
 
+// What the indexes offer of a system (by its ref) or a desktop (by its place), once they have answered.
+std::optional<service::Offer> offered_system_(App& a, std::string_view ref) {
+    std::lock_guard l(a.available_m);
+    if (!a.offers) return std::nullopt;
+    auto it = std::ranges::find(a.offers->systems, ref, &service::Offer::ref);
+    if (it == a.offers->systems.end()) return std::nullopt;
+    return *it;
+}
+std::optional<service::Offer> offered_desktop_(App& a, int k) {
+    std::lock_guard l(a.available_m);
+    if (!a.offers || k < 0 || k >= static_cast<int>(a.offers->desktops.size())) return std::nullopt;
+    return a.offers->desktops[static_cast<std::size_t>(k)];
+}
+// An official edition's description as its index says it (the cards' own words otherwise).
+std::string index_description_(App& a, std::string_view edition) {
+    std::lock_guard l(a.available_m);
+    if (!a.offers) return {};
+    for (const auto& o : a.offers->systems)
+        if (o.official && o.name == edition) return o.description;
+    return {};
+}
+
 // Makes the system the quick start describes, then goes in.
-void make_(App& a) {
+void make_(App& a, bool agreed) {
     const auto& chosen = kEditions[static_cast<std::size_t>(a.new_edition)];
-    service::NewOptions o{.name = a.new_name, .edition = std::string(chosen.name), .proxy = a.new_proxy, .user = a.new_user};
+    const auto offer = a.new_offer.empty() ? std::nullopt : offered_system_(a, a.new_offer);
+    service::NewOptions o{.name = a.new_name, .edition = std::string(chosen.name), .proxy = a.new_proxy, .user = a.new_user,
+                          .agreed = agreed};
+    if (offer) {
+        // An official one by its short name; anyone else's by its coordinate.
+        o.edition = offer->official ? offer->name : std::string{};
+        if (!offer->official) o.xpkgs.push_back(offer->ref);
+    }
+    // A desktop chosen: Luban's by its name (made with it, its default), another's installed.
+    const auto desktop = offered_desktop_(a, a.new_desktop);
+    if (desktop) {
+        if (desktop->official) o.settings.emplace_back("desktop", desktop->name);
+        else o.xpkgs.push_back(desktop->ref);
+    }
+    const bool third_party = (offer && !offer->official) || (desktop && !desktop->official);
+    if (third_party && !agreed) {
+        // A third party's part is agreed to first (design §4.5): what it is and where it comes from.
+        std::string what;
+        for (const auto& r : o.xpkgs) what += (what.empty() ? "" : ", ") + r;
+        a.confirm = Confirm{std::string(tr("Not from Luban", "不是 Luban 官方的")),
+                            std::vformat(tr("{} comes from an index you added, not from Luban. Luban does not check what it does.",
+                                            "{} 来自你添加的 index，不是 Luban 官方的；Luban 不检查它做什么。"),
+                                         std::make_format_args(what)),
+                            std::string(tr("Make it", "创建")), false, [&a] { make_(a, true); }};
+        return;
+    }
     if (a.new_password[0]) o.password_hash = xlings::sha512::crypt(a.new_password, xlings::sha512::random_salt());
-    const bool machine = a.new_mode == 1, goes_in = chosen.goes_in;
+    const bool machine = a.new_mode == 1, goes_in = offer ? true : chosen.goes_in;
     static constexpr std::array<std::string_view, 3> kPersist{"all", "home", "none"};
     const std::string persist(kPersist[static_cast<std::size_t>(std::clamp(a.new_persist, 0, 2))]);
     const std::string name = o.name;
@@ -261,6 +317,16 @@ float new_panel_(App& a, float x, float y, float w, float min_h) {
     auto* dl = ImGui::GetWindowDrawList();
     const ImVec2 o(ImGui::GetWindowPos().x - ImGui::GetScrollX(), ImGui::GetWindowPos().y - ImGui::GetScrollY());
     const auto& chosen = kEditions[static_cast<std::size_t>(a.new_edition)];
+    // A system from the indexes is said in its index's words, with where it comes from.
+    const auto offer = a.new_offer.empty() ? std::nullopt : offered_system_(a, a.new_offer);
+    const std::string badge_name = offer ? offer->ref : std::string(chosen.name);
+    const std::string title = offer ? offer->name : std::string(tr(chosen.title_en, chosen.title_zh));
+    std::string sub = std::format("{} · {}", chosen.size, chosen.contents);
+    if (offer) sub = offer->official ? std::string(tr("Luban's", "Luban 官方")) : std::vformat(tr("from {}", "来自 {}"), std::make_format_args(offer->index));
+    else if (chosen.desktop) {
+        // What its desktop is, as the index says it (E15): not this window's guess.
+        if (auto d = index_description_(a, chosen.name); !d.empty()) sub = std::format("{} · {}", chosen.size, d);
+    }
     const float pad = px(18), fw = w - pad * 2;
     float cy = y + px(16);
     const float start = y;
@@ -268,19 +334,19 @@ float new_panel_(App& a, float x, float y, float w, float min_h) {
     const float h = std::max(min_h, a.panel_h);
     imkit::panel(dl, ImVec2(o.x + x, o.y + y), ImVec2(o.x + x + w, o.y + y + h), imkit::Bevel::Raised, th_().panel_lo);
     const float cx = x + pad;
-    art::badge(dl, art::badge_of(chosen.name), chosen.name, ImVec2(o.x + cx, o.y + cy), std::round(px(3)), imkit::beat(2, 0.45));
-    imkit::text(dl, ImVec2(o.x + cx + px(60), o.y + cy + px(2)), imkit::fit(tr(chosen.title_en, chosen.title_zh), fw - px(60), 22, true),
-                th_().text, 22, true);
-    imkit::text(dl, ImVec2(o.x + cx + px(60), o.y + cy + px(30)), imkit::fit(std::format("{} · {}", chosen.size, chosen.contents), fw - px(60), 13),
-                th_().text_faint, 13);
+    art::badge(dl, art::badge_of(badge_name), badge_name, ImVec2(o.x + cx, o.y + cy), std::round(px(3)), imkit::beat(2, 0.45));
+    imkit::text(dl, ImVec2(o.x + cx + px(60), o.y + cy + px(2)), imkit::fit(title, fw - px(60), 22, true), th_().text, 22, true);
+    imkit::text(dl, ImVec2(o.x + cx + px(60), o.y + cy + px(30)), imkit::fit(sub, fw - px(60), 13), th_().text_faint, 13);
     cy += px(62);
-    const auto why_not = unavailable_(a, chosen);
-    a.quick_said = why_not.empty() ? std::string(tr(chosen.detail_en, chosen.detail_zh)) : why_not;
+    const auto why_not = offer ? cannot_run_(a) : unavailable_(a, chosen);
+    const std::string detail = offer ? offer->description : std::string(tr(chosen.detail_en, chosen.detail_zh));
+    a.quick_said = why_not.empty() ? detail : why_not;
     a.quick_can_make = why_not.empty();
     cy += paragraph_(dl, ImVec2(o.x + cx, o.y + cy), a.quick_said, fw, why_not.empty() ? th_().text_dim : th_().warn, 14) + px(12);
     // The name follows the edition until the person types one of their own.
     if (a.new_name[0] == 0 || a.auto_name == a.new_name) {
-        const auto base = std::string(chosen.name);
+        auto base = offer ? offer->name : std::string(chosen.name);
+        if (const auto colon = base.find(':'); colon != std::string::npos) base = base.substr(colon + 1);
         for (int k = 1; k < 100; ++k) {
             const auto candidate = std::format("{}-{}", base, k);
             if (std::ranges::none_of(a.systems, [&](const auto& s2) { return s2.name == candidate; })) {
@@ -330,9 +396,37 @@ float new_panel_(App& a, float x, float y, float w, float min_h) {
                           ImGuiInputTextFlags_Password, tr("password", "密码"));
         mark_(a, "password");
         cy += px(48);
+        // The desktop it is made with: its own, or one the indexes offer
+        // (luban-desktop), as many to a row as fit.
+        std::vector<service::Offer> desktops;
+        {
+            std::lock_guard l(a.available_m);
+            if (a.offers) desktops = a.offers->desktops;
+        }
+        if (!desktops.empty()) {
+            label(tr("DESKTOP", "桌面"));
+            float dx = 0;
+            auto choice = [&](int k, const std::string& name, const std::string& id) {
+                const float bw = std::min(fw, imkit::text_size(name, 14).x + px(28));
+                if (dx > 0 && dx + bw > fw) { dx = 0; cy += px(40); }
+                ImGui::SetCursorPos(ImVec2(cx + dx, cy));
+                if (imkit::button(id, name, ImVec2(bw / imkit::scale(), 32), a.new_desktop == k ? imkit::Look::Primary : imkit::Look::Ghost))
+                    a.new_desktop = k;
+                mark_(a, id);
+                dx += bw + px(6);
+            };
+            choice(-1, std::string(tr("its own", "自带的")), "desktop:own");
+            for (int k = 0; k < static_cast<int>(desktops.size()); ++k) {
+                const auto& d = desktops[static_cast<std::size_t>(k)];
+                choice(k, d.official ? d.name : d.ref, "desktop:" + d.ref);
+            }
+            cy += px(40);
+            if (const auto d = offered_desktop_(a, a.new_desktop); d && !d->description.empty())
+                cy += paragraph_(dl, ImVec2(o.x + cx, o.y + cy), d->description, fw, th_().text_faint, 13) + px(8);
+        }
     }
     ImGui::SetCursorPos(ImVec2(cx, cy + px(4)));
-    const auto make_label = chosen.goes_in ? tr("Create and go in", "创建并进入") : tr("Create", "创建");
+    const auto make_label = offer || chosen.goes_in ? tr("Create and go in", "创建并进入") : tr("Create", "创建");
     if (imkit::button("make", make_label, ImVec2(fwn, 44), imkit::Look::Primary, why_not.empty() && a.new_name[0], false, imkit::Icon::Run))
         make_(a);
     mark_(a, "make");
@@ -357,7 +451,7 @@ void quick_start_(App& a) {
     if (page_bar_(a, tr("New system", "新建系统"), !a.systems.empty())) a.view = View::Launcher;
     // A mode chosen for the edition, until the person chooses: a desktop runs
     // as a machine (its own kernel, its own display), a console in a sandbox.
-    if (a.new_mode_for != a.new_edition) {
+    if (a.new_mode_for != a.new_edition && a.new_offer.empty()) {
         a.new_mode = kEditions[static_cast<std::size_t>(a.new_edition)].desktop ? 1 : 0;
         a.new_mode_for = a.new_edition;
     }
@@ -395,16 +489,45 @@ void quick_start_(App& a) {
             if (e.desktop != (group == 1)) continue;
             if (col == perRow) { col = 0; y += cardH + gap; }
             ImGui::SetCursorPos(ImVec2(col * (cardW + gap), y));
-            const bool on = a.new_edition == static_cast<int>(i);
+            const bool on = a.new_offer.empty() && a.new_edition == static_cast<int>(i);
             // One that cannot be made here is still chosen to read why.
             const bool usable = unavailable_(a, e).empty();
             const auto desc = usable ? std::format("{}\n{} · {}", tr(e.about_en, e.about_zh), e.size, e.contents)
                                      : std::format("{}\n{}", tr(e.about_en, e.about_zh), tr("Not available here", "这里不可用"));
             if (imkit::option_card("card:" + std::string(e.name), art::picture(e.name, on ? imkit::beat(2, 0.45) : 0),
                                    tr(e.title_en, e.title_zh), desc, on, ImVec2(cardW / imkit::scale(), cardH / imkit::scale()),
-                                   on && a.keyboard, true))
+                                   on && a.keyboard, true)) {
                 a.new_edition = static_cast<int>(i);
+                a.new_offer.clear();
+            }
             mark_(a, "card:" + std::string(e.name));
+            ++col;
+        }
+        y += cardH + px(22);
+    }
+    // The rest the indexes offer: an official system this window has no card
+    // for, and every one from an index someone added -- said where it comes from.
+    std::vector<service::Offer> more;
+    {
+        std::lock_guard l(a.available_m);
+        if (a.offers)
+            for (const auto& o : a.offers->systems)
+                if (!o.official || std::ranges::none_of(kEditions, [&](const Edition& e) { return e.name == o.name; })) more.push_back(o);
+    }
+    if (!more.empty()) {
+        imkit::text(cdl, ImVec2(co.x, co.y + y), tr("MORE · from the indexes", "更多 · 来自 index"), th_().text_faint, 13, true);
+        y += px(26);
+        int col = 0;
+        for (const auto& o : more) {
+            if (col == perRow) { col = 0; y += cardH + gap; }
+            ImGui::SetCursorPos(ImVec2(col * (cardW + gap), y));
+            const bool on = a.new_offer == o.ref;
+            const auto from = o.official ? std::string(tr("Luban's", "Luban 官方")) : std::vformat(tr("from {}", "来自 {}"), std::make_format_args(o.index));
+            if (imkit::option_card("card:" + o.ref, art::picture(o.ref, on ? imkit::beat(2, 0.45) : 0), o.name,
+                                   std::format("{}\n{}", o.description, from), on,
+                                   ImVec2(cardW / imkit::scale(), cardH / imkit::scale()), on && a.keyboard, true))
+                a.new_offer = o.ref;
+            mark_(a, "card:" + o.ref);
             ++col;
         }
         y += cardH + px(22);

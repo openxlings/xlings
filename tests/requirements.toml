@@ -1120,7 +1120,7 @@ text = "a first-time user, with nothing yet, makes a system from the Luban OS qu
 status = "required"
 
 [LUBAN-OS-QUICK-START]
-text = "the Luban OS quick start shows two groups -- consoles to shape (nano, tiny, core) and desktops ready to use (classic, the xdesk canvas) -- each with what it is, its standing (base, stable, preview, explore) and what is in it; whether it can be made here comes from the index (published, built for this machine's architecture) and, on a computer that cannot run Luban systems, is said before anything is tried; nano says it has no shell and is made without going in"
+text = "the Luban OS quick start shows two groups -- consoles to shape (nano, tiny, core) and desktops ready to use (classic, the xdesk canvas) -- each with what it is, its standing (base, stable, preview, explore) and what is in it; whether it can be made here comes from the index (published, built for this machine's architecture) and, on a computer that cannot run Luban systems, is said before anything is tried; nano says it has no shell and is made without going in; what else the indexes offer is read from them (design 2026-10-18 §6.4): an official system it has no card for and another index's (said where it comes from) under More, a desktop edition's line in its index's words, the desktop it is made with from the luban-desktop packages, and a third party's part agreed to before it is made"
 status = "required"
 
 [LUBAN-OS-IMPORT]

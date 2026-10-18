@@ -132,6 +132,41 @@ std::map<std::string, std::string> official_system_refs(const Port& port) {
     return out;
 }
 
+QuickStartOffers quick_start_offers(const Port& port) {
+    QuickStartOffers out;
+    auto in = [&](std::string_view category) {
+        std::vector<Json> data, found;
+        port.capability("search_packages", Json{{"keyword", ""}, {"category", std::string(category)}}, nullptr, &data);
+        for (const auto& d : data)
+            if (d.value("dataKind", "") == "packages")
+                for (const auto& p : payload_(d))
+                    if (p.is_object()) found.push_back(p);
+        return found;
+    };
+    auto offer = [](const Json& p) {
+        const auto ns = p.value("namespace", std::string{}), name = p.value("name", std::string{});
+        Offer o{.ref = ns + ":" + name, .name = name, .description = p.value("description", std::string{}),
+                .index = p.value("index", std::string{})};
+        o.official = o.index == kOfficialIndex && (ns == "luban" || (ns == "subos" && name.starts_with("luban-")));
+        if (o.official) o.name = short_of_(ns, name);
+        return o;
+    };
+    // Systems: an official short name once (luban: before a frozen subos:luban-*).
+    for (const auto& p : in("distribution")) {
+        auto o = offer(p);
+        auto same = std::ranges::find_if(out.systems, [&](const Offer& x) { return x.official && o.official && x.name == o.name; });
+        if (same == out.systems.end()) out.systems.push_back(std::move(o));
+        else if (o.ref.starts_with("luban:")) *same = std::move(o);
+    }
+    for (const auto& p : in("luban-desktop")) out.desktops.push_back(offer(p));
+    // The official first, then by name.
+    for (auto* list : {&out.systems, &out.desktops})
+        std::ranges::stable_sort(*list, [](const Offer& x, const Offer& y) {
+            return std::tie(y.official, x.name) < std::tie(x.official, y.name);
+        });
+    return out;
+}
+
 std::vector<std::string> official_systems(const Port& port) {
     std::vector<Json> data;
     port.capability("search_packages", Json{{"keyword", ""}, {"category", "distribution"}}, nullptr, &data);

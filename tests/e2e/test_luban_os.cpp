@@ -1000,6 +1000,74 @@ expect edition tiny
         EXPECT_TRUE(s["anchors"].contains(card)) << card;
 }
 
+// What the quick start offers besides its cards comes from the indexes
+// (design 2026-10-18 §6.4): systems and desktops by category, another
+// index's said where it comes from and agreed to before it is made.
+XTEST(LubanOs, TheQuickStartOffersWhatTheIndexesHave, .area = "luban",
+      .covers = {"LUBAN-OS-QUICK-START"}, .requires_ = {"xlings-bin"}) {
+    if (!app_binary()) GTEST_SKIP() << "no luban-os beside the xlings under test";
+    auto home = tk::Home::isolated("luban-os-offers");
+    const auto primary = home.root() / "primary", other = home.root() / "other";
+    auto recipe = [](std::string_view ns, std::string_view name, std::string_view type, std::string_view categories,
+                     std::string_view description) {
+        return std::format(R"LUA(
+package = {{ spec = '1', name = '{}', namespace = '{}', description = '{}', type = '{}',
+            categories = {{ {} }}, archs = {{'x86_64', 'aarch64'}},
+            xpm = {{ linux = {{ ['1.0.0'] = {{}} }}, macosx = {{ ['1.0.0'] = {{}} }}, windows = {{ ['1.0.0'] = {{}} }} }} }}
+)LUA", name, ns, description, type, categories);
+    };
+    tk::write_file(primary / "xim-indexrepos.lua", "xim_indexrepos = {}\n");
+    tk::write_file(primary / "pkgs/luban/core.lua", recipe("luban", "core", "subos", "'distribution'", "the console"));
+    tk::write_file(primary / "pkgs/luban/desktop.lua",
+                   recipe("luban", "desktop", "subos", "'distribution'", "core and the xdesk classic desktop"));
+    tk::write_file(primary / "pkgs/luban/studio.lua", recipe("luban", "studio", "subos", "'distribution'", "a newer edition"));
+    tk::write_file(primary / "pkgs/luban/labwc.lua", recipe("luban", "labwc", "package", "'luban-desktop'", "labwc and a panel"));
+    tk::write_file(other / "xim-indexrepos.lua", "xim_indexrepos = {}\n");
+    tk::write_file(other / "pkgs/m/myos.lua", recipe("other", "myos", "subos", "'distribution'", "a system of someone else"));
+    const Json config{
+        {"mirror", "GLOBAL"},
+        {"xim", {{"index-repo", primary.generic_string()}}},
+        {"index_repos", Json::array({{{"name", "xim"}, {"url", primary.generic_string()}, {"source", "git"}},
+                                     {{"name", "other"}, {"url", other.generic_string()}, {"source", "git"}}})}};
+    tk::write_file(home.dir() / ".xlings.json", config.dump());
+    ASSERT_EQ(home.xlings({"self", "init"}).exit_code, 0);
+    const auto offered = home.root() / "offered.json", desktop = home.root() / "desktop.json", agree = home.root() / "agree.json";
+    auto r = run_script(home, std::format(R"(wait quick-start
+resize 1100 1100
+waitfor quick_start.offers present 60
+click card:desktop
+frames 2
+state {0}
+click card:other:myos
+expect name myos-1
+click more
+frames 2
+click desktop:luban:labwc
+frames 2
+state {1}
+click make
+frames 2
+state {2}
+)", offered.string(), desktop.string(), agree.string()), {}, {{"LUBAN_OS_LANG", "en_US.UTF-8"}});
+    ASSERT_EQ(r.exit_code, 0) << r.transcript();
+    const auto st = read_state(offered);
+    const auto offers = st["quick_start"]["offers"];
+    EXPECT_EQ(offers["systems"], Json::array({"luban:core", "luban:desktop", "luban:studio", "other:myos"})) << offers.dump();
+    EXPECT_EQ(offers["desktops"], Json::array({"luban:labwc"}));
+    // Cards for what the window has none of: an official one, and another index's.
+    EXPECT_TRUE(st["anchors"].contains("card:luban:studio"));
+    EXPECT_TRUE(st["anchors"].contains("card:other:myos"));
+    EXPECT_FALSE(st["anchors"].contains("card:luban:core")) << "core has its own card";
+    const auto chosen = read_state(desktop);
+    EXPECT_EQ(chosen["quick_start"]["offer"], "other:myos");
+    EXPECT_EQ(chosen["quick_start"]["desktop"], 0);
+    if (chosen["quick_start"]["can_make"].get<bool>()) {
+        EXPECT_EQ(chosen["quick_start"]["said"], "a system of someone else");
+        // Another index's system is agreed to before anything is made.
+        EXPECT_EQ(read_state(agree)["confirm"], "Not from Luban");
+    }
+}
+
 XTEST(LubanOs, AnArchiveIsPreviewedBeforeItIsImportedAndWhatItMayDoIsAgreedTo, .area = "luban",
       .covers = {"LUBAN-OS-IMPORT"}, .requires_ = {"xlings-bin"}) {
     if (!app_binary()) GTEST_SKIP() << "no luban-os beside the xlings under test";

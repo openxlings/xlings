@@ -103,6 +103,7 @@ constexpr Rows kCraft1{
 std::uint32_t base_(std::string_view edition) {
     auto name = edition;
     if (name.starts_with("subos:luban-")) name.remove_prefix(12);
+    else if (name.starts_with("luban:")) name.remove_prefix(6);
     if (const auto at = name.find('@'); at != std::string_view::npos) name = name.substr(0, at);
     if (name == "nano") return 0xa7f070;
     if (name == "tiny") return 0x38b764;

@@ -435,12 +435,15 @@ struct App {
     std::mutex available_m;            // before the job: it is joined while this still exists
     std::map<std::string, Availability> available;     // by edition, from the index
     std::optional<service::Capabilities> caps;         // what this computer can do (luban status), once asked
+    std::optional<service::QuickStartOffers> offers;   // what the indexes offer (design 2026-10-18 §6.4), once asked
     std::unique_ptr<std::jthread> availability_job;
     std::optional<ImportPreview> import;
     std::string quick_said;            // the quick start's line about the chosen edition
     bool quick_can_make { true };
     std::string auto_name;             // what the name field was given, until the person types
     int new_edition { 3 };             // core
+    std::string new_offer;             // a system from the indexes' (its ref), chosen over new_edition
+    int new_desktop { -1 };            // the desktop it is made with (offers->desktops); -1: its own
     int new_mode { 0 };                // 0 sandbox, 1 machine
     int new_mode_for { -1 };           // the edition the mode was defaulted for
     int new_persist { 0 };             // all, home, none
@@ -587,7 +590,7 @@ void ask_availability_(App& a);
 bool can_run_(App& a);
 std::string cannot_run_(App& a);
 std::string unavailable_(App& a, const Edition& e);
-void make_(App& a);
+void make_(App& a, bool agreed = false);
 float new_panel_(App& a, float x, float y, float w, float min_h);
 void quick_start_(App& a);
 void import_view_(App& a);

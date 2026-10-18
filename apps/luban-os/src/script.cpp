@@ -74,7 +74,17 @@ Json state_(const App& a) {
     j["unit"] = imkit::unit();
     j["display"] = Json::array({ImGui::GetIO().DisplaySize.x, ImGui::GetIO().DisplaySize.y});
     if (a.window) j["fonts"] = a.window->font_dir().string();
-    if (a.view == View::QuickStart) j["quick_start"] = {{"said", a.quick_said}, {"can_make", a.quick_can_make}, {"more", a.more}};
+    if (a.view == View::QuickStart) {
+        j["quick_start"] = {{"said", a.quick_said}, {"can_make", a.quick_can_make}, {"more", a.more}, {"offer", a.new_offer},
+                            {"desktop", a.new_desktop}};
+        std::lock_guard l(const_cast<App&>(a).available_m);
+        if (a.offers) {
+            Json systems = Json::array(), desktops = Json::array();
+            for (const auto& o : a.offers->systems) systems.push_back(o.ref);
+            for (const auto& o : a.offers->desktops) desktops.push_back(o.ref);
+            j["quick_start"]["offers"] = {{"systems", systems}, {"desktops", desktops}};
+        }
+    }
     if (a.import)
         j["import"] = {{"file", a.import->file.string()}, {"error", a.import->error}, {"edition", a.import->edition},
                        {"packages", a.import->packages}, {"wider", a.import->wider}, {"name", std::string(a.import->name)},

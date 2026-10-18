@@ -166,6 +166,22 @@ std::map<std::string, std::string> official_system_refs(const Port& port);
 // The official systems the index offers (their short names), for a message.
 std::vector<std::string> official_systems(const Port& port);
 
+// What a quick start offers, read from the indexes (design 2026-10-18 §6.4):
+// the systems (category distribution) and the desktops (luban-desktop), the
+// official first -- an official system by its short name -- and every other
+// with the index it comes from.
+struct Offer {
+    std::string ref;            // ns:name
+    std::string name;           // the short name of an official one
+    std::string description;
+    std::string index;
+    bool official { false };
+};
+struct QuickStartOffers {
+    std::vector<Offer> systems, desktops;
+};
+QuickStartOffers quick_start_offers(const Port& port);
+
 // One layer of a system's lineage: a template and its manifest as written.
 struct Layer {
     std::string ref;                    // ns:name@version
