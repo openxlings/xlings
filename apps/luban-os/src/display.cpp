@@ -19,11 +19,9 @@ constexpr std::uint32_t kDisplayChannel = 2;
 }  // namespace
 
 std::optional<std::string> desktop_session(const service::Environment& e) {
-    const auto& setting = e.settings.desktop;
-    if (setting == "none" || e.desktops.empty()) return std::nullopt;
-    if (setting.empty()) return e.desktops.front();
-    if (std::ranges::find(e.desktops, setting) != e.desktops.end()) return setting;
-    return std::nullopt;
+    const auto plan = service::enter_plan(e);
+    if (plan.target != "desktop") return std::nullopt;
+    return plan.session;
 }
 
 std::unique_ptr<Display> Display::machine(const fs::path& home, const std::string& name, const std::string& session,

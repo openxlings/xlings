@@ -341,6 +341,20 @@ void preset_login_shell_(const Context& c, std::string_view name) {
 
 }  // namespace
 
+EnterPlan enter_plan(const Environment& e) {
+    const auto& setting = e.settings.desktop;
+    if (setting == "none" || (setting.empty() && e.desktops.empty())) return {};
+    if (setting.empty()) return {.target = "desktop", .session = e.desktops.front()};
+    if (std::ranges::find(e.desktops, setting) != e.desktops.end()) return {.target = "desktop", .session = setting};
+    std::string have;
+    for (const auto& d : e.desktops) have += (have.empty() ? "" : ", ") + d;
+    return {.why = have.empty()
+                ? std::format("its desktop {} is not in it: xlings install <the desktop> --subos {}, or luban config {} --desktop none",
+                              setting, e.name, e.name)
+                : std::format("its desktop {} is not in it (it has {}): luban config {} --desktop <one of them>",
+                              setting, have, e.name)};
+}
+
 bool needs_user(std::string_view edition) {
     return edition == "desktop" || edition.starts_with("desktop-") || edition.find("luban-desktop") != std::string_view::npos;
 }

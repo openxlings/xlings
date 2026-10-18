@@ -465,6 +465,8 @@ struct App {
     // setting is not `none`), else its console.
     void open_machine(const std::string& name) {
         auto env = service::describe(ctx, name);
+        // A desktop set and not there is said over the console (E20).
+        if (env) if (const auto plan = service::enter_plan(*env); !plan.why.empty()) notice = plan.why;
         if (auto session = env ? desktop_session(*env) : std::nullopt) {
             std::string error;
             const auto [w, h] = window->size();
@@ -547,6 +549,7 @@ struct App {
         // session, bridged, on two pipes instead of a channel.
         if (!machine) {
             const auto luban = luban_binary(name);
+            if (env) if (const auto plan = service::enter_plan(*env); !plan.why.empty()) notice = plan.why;
             if (auto session = env ? desktop_session(*env) : std::nullopt; session && !luban.empty()) {
                 const auto [ww, wh] = window->size();
                 desktop_size = device_size_(ww, wh);
@@ -578,6 +581,9 @@ struct App {
         console_scroll = 0;
         selection.reset();
         view = View::Console;
+        // Why it is the console and not the desktop, said over it for a while
+        // (E7: the reason was cleared as the console opened).
+        if (!notice.empty()) notice_until = std::chrono::steady_clock::now() + std::chrono::seconds(10);
         window->set_title(title_for(name));
         window->text_input(true);
     }
@@ -1910,7 +1916,6 @@ void desktop_view_(App& a) {
         } else if (machine) {
             a.notice = why;
             a.open_console(a.current, true);
-            if (a.console) a.notice.clear();
         } else {
             // A sandbox's desktop that ended is the end of that session.
             a.notice = why;
@@ -2088,9 +2093,9 @@ void system_pages_(App& a, ImVec2 o, float x0, float y0, float width, float heig
         if (a.page_cache_for != e.name || std::chrono::steady_clock::now() - a.page_at > std::chrono::seconds(2)) {
             a.page_cache_for = e.name;
             a.page_at = std::chrono::steady_clock::now();
-            a.page_desktops.clear();
-            if (const auto usr = service::usr_of(a.home, e.name))
-                for (const auto& sess : opensal::wlr::sessions({*usr / "share" / "wayland-sessions"})) a.page_desktops.push_back(sess.id);
+            // The service's answer (read where the root's links lead), not a
+            // walk of the root from here (E11: a root's /usr is a mount point).
+            a.page_desktops = e.desktops;
             a.page_grant = a.clipboard_grant(e.name);
         }
         {
@@ -2898,7 +2903,7 @@ void tray_take_(App& a) {
 // its login user's ~/Downloads -- the system's tree, which a sandbox shows and
 // a machine shares (virtiofs) -- and said. Where it went, or why not.
 std::string drop_into_(App& a, const fs::path& file) {
-    const auto root = service::root_of(a.home, a.current);
+    const auto root = service::root_of(a.home, a.current);   // env-read-ok: a write into its home, a directory here (not its /usr)
     if (!root) return std::string(tr("this system has no tree of its own to put files in", "这个系统没有可以放文件的目录树"));
     const auto user = xlings::subos::root_etc::login_user(*root / "etc");
     const auto who = xlings::subos::root_etc::find_user(*root / "etc", user);

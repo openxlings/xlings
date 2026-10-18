@@ -69,3 +69,50 @@ XTEST(XdeskApps, TheMoreSpecificDirectoryWinsAndSearchRanksTheName, .area = "lub
     std::error_code ec;
     fs::remove_all(root, ec);
 }
+
+// An entry reached through a link has the id of its name where it is, not of
+// where the link points (E9: the launcher said `xlings-data-xpkgs-...-foot`).
+XTEST(XdeskApps, AnEntryThroughALinkKeepsItsOwnId, .area = "luban", .covers = {"XDESK-APPS"}) {
+    const auto root = fs::temp_directory_path() / std::format("xdesk-link-{}", std::random_device{}());
+    const auto store = root / "store" / "foot" / "share" / "applications", sys = root / "sys" / "applications";
+    fs::create_directories(store);
+    fs::create_directories(sys);
+    std::ofstream(store / "foot.desktop") << "[Desktop Entry]\nName=Foot\nExec=foot\n";
+    fs::create_symlink(store / "foot.desktop", sys / "foot.desktop");
+    const auto found = apps::scan({sys});
+    ASSERT_EQ(found.size(), 1u);
+    EXPECT_EQ(found[0].id, "foot");
+    std::error_code ec;
+    fs::remove_all(root, ec);
+}
+
+// The default terminal (design 2026-10-18 §6.3, E21): from xdg-terminals.list,
+// else the first entry; a Terminal=true application runs in it titled and
+// identified as itself, as the terminal's X-TerminalArg* keys say.
+XTEST(XdeskApps, AnApplicationRunsInTheDefaultTerminalUnderItsOwnName, .area = "luban", .covers = {"XDESK-APPS"}) {
+    const auto root = fs::temp_directory_path() / std::format("xdesk-term-{}", std::random_device{}());
+    const auto data = root / "share", config = root / "config";
+    fs::create_directories(data / "xdg-terminals");
+    fs::create_directories(config);
+    std::ofstream(data / "xdg-terminals" / "foot.desktop")
+        << "[Desktop Entry]\nName=Terminal\nExec=foot\nX-TerminalArgExec=\nX-TerminalArgTitle=--title=\nX-TerminalArgAppId=--app-id=\n";
+    std::ofstream(data / "xdg-terminals" / "xterm.desktop") << "[Desktop Entry]\nName=XTerm\nExec=xterm\n";
+    const std::map<std::string, std::string> env{{"HOME", (root / "home").string()}, {"XDG_DATA_DIRS", data.string()},
+                                                 {"XDG_CONFIG_DIRS", config.string()}};
+    // No list: the first entry (by name).
+    auto t = apps::default_terminal(env);
+    ASSERT_TRUE(t);
+    EXPECT_EQ(apps::in_terminal(*t, {"nvim", "a b"}, "Neovim", "nvim"),
+              (std::vector<std::string>{"foot", "--title=Neovim", "--app-id=nvim", "nvim", "a b"}));
+    EXPECT_EQ(apps::in_terminal(*t, {}), (std::vector<std::string>{"foot"}));
+    // A list names another; one that declares nothing takes -e and no title.
+    std::ofstream(config / "xdg-terminals.list") << "# mine\nmissing.desktop\nxterm.desktop\n";
+    t = apps::default_terminal(env);
+    ASSERT_TRUE(t);
+    EXPECT_EQ(apps::in_terminal(*t, {"htop"}, "Htop", "htop"), (std::vector<std::string>{"xterm", "-e", "htop"}));
+    // None declared: none.
+    EXPECT_FALSE(apps::default_terminal({{"HOME", "/nonexistent"}, {"XDG_DATA_DIRS", (root / "none").string()},
+                                         {"XDG_CONFIG_DIRS", (root / "none").string()}}));
+    std::error_code ec;
+    fs::remove_all(root, ec);
+}

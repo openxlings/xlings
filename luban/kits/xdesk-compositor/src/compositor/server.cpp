@@ -499,14 +499,27 @@ struct Server {
         wlr_scene_node_set_enabled(&launcher_node->node, true);
     }
 
+    // A terminal with `command` in it (none: a shell), its window titled and
+    // identified as the application -- not as the terminal (E21). The one the
+    // settings name, else the system's default terminal; foot when there is
+    // none declared (what this desktop shipped with).
+    std::vector<std::string> terminal_argv(const std::vector<std::string>& command, std::string_view title = {},
+                                           std::string_view app_id = {}) {
+        if (!o.terminal.empty()) {
+            auto argv = o.terminal;
+            argv.insert(argv.end(), command.begin(), command.end());
+            return argv;
+        }
+        static const apps::Terminal foot{{"foot"}, std::string{}, std::string{"--title="}, std::string{"--app-id="}};
+        const auto t = apps::default_terminal(os::environment());
+        if (!t) log("no default terminal (share/xdg-terminals): foot");
+        return apps::in_terminal(t ? *t : foot, command, title, app_id);
+    }
+
     void start_app(const apps::App& app) {
         auto argv = apps::argv(app.exec);
         if (argv.empty()) return;
-        if (app.terminal) {
-            auto in_terminal = o.terminal;
-            in_terminal.insert(in_terminal.end(), argv.begin(), argv.end());
-            argv = std::move(in_terminal);
-        }
+        if (app.terminal) argv = terminal_argv(argv, app.name, app.id);
         launch(argv);
     }
 
@@ -716,7 +729,7 @@ struct Server {
                 return true;
             };
             switch (sym) {
-                case key::Return: launch(o.terminal); return true;
+                case key::Return: launch(terminal_argv({})); return true;
                 case key::space: case key::d:
                     if (launcher.is_open()) { launcher.close(); draw_launcher(); }
                     else open_launcher();

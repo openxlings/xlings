@@ -42,4 +42,20 @@ std::vector<const App*> search(const std::vector<App>& apps, std::string_view qu
 // ...) removed, %% a percent sign.
 std::vector<std::string> argv(std::string_view exec);
 
+// The default terminal, as the proposed freedesktop convention declares it
+// (xdg-terminal-exec): share/xdg-terminals/<id>.desktop in the data dirs,
+// chosen by the first id an xdg-terminals.list names (the desktop's own
+// <desktop>-xdg-terminals.list first, from $XDG_CURRENT_DESKTOP), else the
+// first entry there. Its X-TerminalArg* keys say how it takes a command, a
+// title and an application id.
+struct Terminal {
+    std::vector<std::string> exec;   // Exec=, as argv
+    std::optional<std::string> arg_exec, arg_title, arg_app_id;   // absent: not declared
+};
+std::optional<Terminal> default_terminal(const std::map<std::string, std::string>& env);
+// argv running `command` in `t`, its window titled `title` and identified as
+// `app_id` where the terminal can take them (nothing given: just the terminal).
+std::vector<std::string> in_terminal(const Terminal& t, const std::vector<std::string>& command,
+                                     std::string_view title = {}, std::string_view app_id = {});
+
 }  // namespace xdesk::apps

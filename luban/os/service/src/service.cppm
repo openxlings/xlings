@@ -60,6 +60,16 @@ struct Environment {
     std::vector<std::string> desktops;
 };
 
+// What going into a system shows first (design 2026-10-18 §8): its desktop or
+// its console, and when a desktop was wanted and cannot be, why -- said, never
+// silent (E20). The Luban OS app, `luban enter` and `luban status` read it.
+struct EnterPlan {
+    std::string target { "console" };   // console | desktop
+    std::string session;                // the desktop's session, when target is desktop
+    std::string why;                    // a desktop wanted and not there; empty otherwise
+};
+EnterPlan enter_plan(const Environment& e);
+
 // What a console says first, before its prompt (part 3 §7.3): two columns,
 // no frame (a wide character misaligns a right border), at most 72 columns,
 // ASCII when the locale is not UTF-8, colour only where it is known to work
