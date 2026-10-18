@@ -111,7 +111,7 @@ package = {{ spec = '1', name = '{}', namespace = 'luban', description = 'the {}
     ASSERT_TRUE(described.is_object()) << info.out;
     EXPECT_EQ(described["namespace"], "luban");
     EXPECT_EQ(described["type"], "subos");
-    EXPECT_EQ(described["index"], xlings::Config::DEFAULT_INDEX_REPO_NAME);
+    EXPECT_EQ(described["index"], std::string(xlings::Config::DEFAULT_INDEX_REPO_NAME));
     EXPECT_EQ(described["categories"], nlohmann::json::array({"subos"}));
     EXPECT_EQ(described["version"], "1.0.0");
 }
