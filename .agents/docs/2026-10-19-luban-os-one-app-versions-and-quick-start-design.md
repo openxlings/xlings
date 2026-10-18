@@ -52,6 +52,7 @@ xim-pkgindex（`luban:cursors`、桌面组件的依赖与 `extensions`、xpackag
 15. **文档**：README 的 Quick Start 分 xlings 与 Luban OS（`xlings install luban luban-os` 后创建并进入）；Luban OS 的 quick start 同步（§24）。
 16. **任务与依赖**：L1、R1–R9、X1–X30 与依赖图、六个阶段（§25）。
 17. **其余**：官方桌面都有光标主题（§13）；busybox 误报、三击测试、工匠动画（§14）；系统里只读的 xlings 命令不提示、不提 sudo（§19）。
+18. **系统里的网络与用户 home**（评审追加，§27）：网络策略在 sandbox、machine、直接引导里同一个含义（默认"和宿主一样"）；machine 由内核 DHCP 建网、宿主回环上的代理映射到 NAT 网关；用户自己的 home 从系统的 index 快照与配置开始、第一次写入确认一次、已有同版本不重复装；fish 的提示符标识。
 
 ## 1. 实测与定因
 
@@ -1051,7 +1052,8 @@ CI：延时与指针、键盘、排布的 e2e 在 `linux-luban-os-first-use`；�
 | X26 | `test`：交互延时与反馈的用例与 CI；断网 lane；`tests/lanes.toml` | X4、X22、X23、X24、X17、X18 |
 | X27 | `docs`：README 与 README.zh 的 Quick Start 分 xlings 与 Luban OS；`docs/luban/01-quick-start.md` 与中文版；`docs/91-architecture.md`；`08-desktop.md`；各包 README；`upgrade-and-compatibility.md`；`docs/generated/` | 以上全部 |
 | X28 | `test(fresh)`：`tests/fresh-install/` 按新输出更新（发布后由 P1 验证） | X12、X24 |
-| X29 | 全量回归：三平台 CI、aarch64 在分支上全部通过；fresh 套件在分支上按派发跑通 | X1–X28、R1–R5、R7、R8 |
+| X29 | 全量回归：三平台 CI、aarch64 在分支上全部通过；fresh 套件在分支上按派发跑通 | X1–X28、X31–X35、R1–R5、R7、R8、R10 |
+| X31–X35 | 系统里的网络、代理、用户 home、提示符（§27.8） | 见 §27.8 |
 | X30 | release 2026.10.19.1：`mcpp.toml`、`src/core/config.cppm`、`luban/os/service/src/service.cppm` 一起改；发布、镜像（`tools/mirror-latest.sh`，GET 验证） | X29 |
 
 ### 25.2 依赖图
@@ -1151,3 +1153,107 @@ graph LR
 - 新建页卡片的大小与内容不再写死（§20）。
 - cmake 不拆（上游没有只含命令行的官方包）；xmake 在 aarch64 上暂不带（§20）。
 - 包与目录的划分规则与本轮的变化（§21）；README 与 quick start 的安装步骤（§24）；任务与依赖图（§25）。
+
+## 27. 系统里的网络、代理、用户自己的 home 与提示符（评审追加）
+
+缘起：实施中在 `desktop-4`（machine，KVM）里以普通用户 `lubanoser` 执行 `xlings install nvim` / `xlings update` 全部失败；同一宿主上的 sandbox 系统 `aabb`
+执行 `xlings update` 正常；`mcpp self config` 停在 "Initialize mcpp sandbox layout (one-time)"；`aabb` 的 fish 提示符前没有 `[luban]`。
+
+### 27.1 实测与定因
+
+| 编号 | 现象 | 定因 | 依据 |
+|---|---|---|---|
+| F23 | machine 里 `xlings update` 全部 `Connection failed`，GitHub 与 GitCode 的延迟都是 -1；sandbox 系统正常 | **machine 的网络没有建立**，与镜像无关。Linux 上的 machine 是 qemu 的 user 网络（NAT），内核命令行**没有** `ip=dhcp`（Mac 的 vz 有，`hostvm.cpp:193`），客体完全依赖系统自己的 `rcS` 在后台运行 `udhcpc -n -t 3`：三次没拿到租约就放弃、不再重试；早于租约的程序没有网络；拿到后由脚本写 `/etc/resolv.conf`——写进的是与宿主共享的系统树（用户数据），若它是指向 `/run` 的链接则写不进。第三方发行版没有这份 `rcS` 时什么都没有。**待确认**哪一环断了（§27.10 的命令），但设计不依赖于此：网络由 Luban 自己建立 | `luban/os/vm/src/host.cpp:296`（`-append` 无 `ip=`）、`guest.cpp`（只设主机名，不碰网络）、`xim-pkgindex/libs/luban.lua` 的 `rcS` 与 `udhcpc` 脚本 |
+| F24 | 宿主上常见的代理（`127.0.0.1:7890`）在 machine 里不可用 | 客体的 `127.0.0.1` 是它自己；qemu 的 NAT 里宿主的回环地址是 `10.0.2.2`。宿主的代理变量也没有带进 machine 的会话与桌面（只有 `proxy` 策略时设了 `socks5h://10.0.2.100:1080`） | `host.cpp:118-138` |
+| F25 | 普通用户第一次写入时从网络同步全部 index（本地实测 302 秒，到 300 秒预算才结束）；没有网络时同一个失败（git 自举）在一次运行里报 5 遍 | 用户自己的 `~/.xlings` 是空的 home，`self init`/第一次安装按全新 home 同步 index；而系统的 `/xlings` 已经有 index 与配置（镜像） | 本地复现（`XLINGS_ROOT_INSTANCE` + 只读的系统 home）；用户贴出的输出 |
+| F26 | fish 是登录 shell 时提示符前没有 `[luban]`/`<luban>` | 标识只写在 `/etc/profile.d/luban.sh` 的 `PS1`，fish 不读 `PS1`；10.18.1 起登录 shell 是系统里最好的 shell（E1、E2：有 fish 就是 fish），于是丢失 | `modules/subos/src/views/root/root_etc.cpp:281` |
+| F27 | `luban enter desktop-4 --display terminal` 的提示符是 `lubanoser@luban`（窗口里是 `desktop-4`） | **待确认**：客体 init 只在 `/etc/hostname` 为空或 `luban` 时写入系统名；agent 的会话早于 `rcS` 的 `hostname -F`，或 factory `/etc` 在之后被复制 | `guest.cpp:450-463`；`luban.lua` 的 factory `hostname` |
+| F28 | `mcpp self config` 停在 "Initialize mcpp sandbox layout (one-time)"，没有任何输出 | 它运行 `xlings self init`，后者在没有网络时同步 index，最长 300 秒，期间不说话（§4.4 的反馈规则没有覆盖 `self init`） | 用户贴出的输出；F25 的本地复现 |
+
+### 27.2 原则：网络是一种策略，在每种运行方式里同一个含义
+
+`luban config X --net host|proxy|none`（已有）的含义不随系统运行在哪里而变：
+
+| 策略 | 含义 | sandbox（共享宿主内核） | machine（在宿主上：Linux qemu、Mac vz、Windows WSL 2） | 直接装在机器上（导出的镜像引导） |
+|---|---|---|---|---|
+| `host`（默认） | **和宿主一样**：宿主能到的地方它能到，用宿主的 DNS 与宿主的代理 | 共享网络命名空间；宿主的 `resolv.conf`；宿主的代理变量 | NAT；地址由**内核** `ip=dhcp` 配置（不依赖系统里有没有 DHCP 客户端）；DNS 来自租约（`/proc/net/pnp`），挂到 `/etc/resolv.conf`，不写系统树；宿主的代理按 §27.3 映射 | 没有宿主：系统自己的网络（`rcS` 的 DHCP），代理只来自系统自己的设置 |
+| `proxy <URL>` | 只能经这个代理 | 已有 | 已有（`restrict=on` + 转发） | 系统自己的设置 |
+| `none` | 没有网络 | 已有 | 已有 | — |
+
+- 人看到的是同一句话：`luban status X` 与进入时的横幅加一行 `network  like the host · proxy http://10.0.2.2:7890 (the host's 127.0.0.1:7890)`；
+  machine 与 sandbox 只差括号里的"怎么做到的"。
+
+### 27.3 代理：从哪来、怎么到系统里
+
+- **来源**（启动或进入时读一次）：执行 `luban enter/run` 的环境、或 Luban OS 窗口所在桌面会话的 `HTTPS_PROXY`/`HTTP_PROXY`/`ALL_PROXY`/`NO_PROXY`（大小写都读）。宿主没有代理就没有。
+- **映射**（只对 machine）：主机部分是 `127.0.0.1`、`localhost`、`::1` 时换成宿主在 NAT 里的地址——qemu 为 `10.0.2.2`，vz 为网关地址，WSL 2 的镜像网络不变；其余原样。
+  `NO_PROXY` 加上 NAT 网段。映射是纯函数，单元测试覆盖。
+- **到哪去**：写进本次启动的 `/run/luban/network.env`（machine 的 `/run` 是本次启动的 tmpfs，宿主的设置从不写进系统树），agent 把它放进每个会话与 init 的环境，
+  `profile.d/luban.sh`、fish 的 `conf.d/luban.fish` 在登录 shell 里读它（`su -`、桌面里新开的终端也有）。
+- **宿主的代理变了**：下次启动生效；`luban status X` 在不一致时写出"运行中用的是旧的代理，重启后生效"。
+- sandbox：进入时的环境已有宿主的变量，不需要映射；同样显示在 `network` 行。
+
+### 27.4 网络自检与失败的说法
+
+- 自检（`root_check`，machine 与直接引导时）加一项**非致命**的 `network`：有地址、有默认路由、能解析一个名字；`luban status X --check` 与引导时的控制台都显示。
+- xlings 在系统里第一次遇到网络失败（连接失败、解析失败）时只说一次，并给出下一步：在 machine 里写"this machine has no network: on the host, luban status <name> --check"；
+  在 sandbox 里写宿主的网络与代理。同一个失败在一次运行里**只报一次**（F25 里 git 自举的 5 遍：失败的自举记下，不再进入同一条路）。
+- `self init` 与 `update` 适用 §4.4：2 秒内说正在做哪一步、之后每 10 秒一句、等网络有超时并说清在等谁（F28；mcpp 转发子进程的输出时人就能看到）。
+
+### 27.5 系统里普通用户自己的 home
+
+| 情况 | 行为 |
+|---|---|
+| 只读命令（`--version`、`list`、`info`、`search` …） | 读系统的 home，不建 `~/.xlings`、不说话（§19，X5 已做） |
+| 第一次写入，在终端 | 一次确认：`install nvim for you only, into ~/.xlings? the system's packages stay available [Y/n]`；回答后建 home 并继续；以后不再问。`-y` 不问；agent 模式没有 `-y` 时失败并给出带 `-y` 的完整命令 |
+| 新 home 的起点 | **复制系统 home 的 index 快照与配置**（mirror、lang、`index_repos`），不联网；之后用户的 `xlings update` 更新自己的那份。与 §9.3"系统复制宿主的快照"同一个函数 |
+| 要装的包，系统里已有同一版本 | 不重复安装：`nvim 0.11.4 is installed for every user already`，退出码 0（与 apt、brew 的"已安装"一致） |
+| 指明另一个版本 | 装进自己的 home，说一次"它在你的 PATH 里排在系统的前面" |
+| 给所有用户装 | 宿主上 `luban run <system> --user root -- xlings install --system <pkg>`（X5 已改提示；不提 sudo） |
+| 网络不通 | §27.4：一句话与下一步，不重复 |
+
+### 27.6 提示符与主机名
+
+- fish：新增 `/etc/fish/conf.d/luban.fish`，包一层 `fish_prompt`，标识与颜色与 `luban.sh` 相同（`[luban]` sandbox、`<luban>` machine、`:temp`/`:home`）；
+  与 `luban.sh` 一样是"机器状态"文件：不存在时建，存在时不覆盖；已有系统在下一次进入或升级时得到它。bash 仍由 `luban.sh` 的 `PS1`。
+- 主机名（F27）：系统名由 Luban 决定一次——客体 init 把 `luban.name` 写成主机名并在 `/run` 记下；`rcS` 的 `hostname -F` 保留，但 factory 的 `/etc/hostname` 不再是 `luban`
+  而是空（由 Luban 填写）；`luban config X --hostname` 是本人改名的唯一入口。实施前按 §27.10 的命令确认原因。
+
+### 27.7 测试与需求
+
+| ID | 内容 | 测试 |
+|---|---|---|
+| `LUBAN-MACHINE-NETWORK` | machine 有地址、默认路由、DNS（来自租约，不写系统树），与系统里有没有 DHCP 客户端无关；`network` 自检项 | luban-machine 的 fresh 套件（KVM lane）：进入后 `getent hosts gitcode.com` 与一次 HTTPS 下载；没有 `udhcpc` 的系统同样有网络 |
+| `LUBAN-NETWORK-PROXY` | 宿主代理的来源、映射（回环 → NAT 网关）、`/run/luban/network.env`、会话与 init 的环境、`network` 一行的显示 | 映射的单元测试；machine 套件里用宿主回环上的一个测试代理确认请求经过它 |
+| `SUBOS-USER-HOME-SEED` | 用户 home 从系统 home 的快照与配置开始、不联网；第一次写入确认一次；系统已有同版本时不重复安装；网络失败只说一次 | e2e（只读的系统 home + `XLINGS_ROOT_INSTANCE`，同 X5 的测试；断网） |
+| `LUBAN-PROMPT-MARK` | sh、bash、fish 的登录 shell 都显示标识；已有系统进入后得到 `luban.fish` | `root_etc` 单元测试；fresh 套件 |
+
+### 27.8 任务（并入 §25）
+
+| ID | 任务 | 依赖 |
+|---|---|---|
+| X31 | `fix(vm)`：Linux machine 内核 `ip=dhcp`；客体 init 把 `/proc/net/pnp` 挂到 `/etc/resolv.conf`（不写系统树）；`rcS` 的 `udhcpc` 留作没有内核 DHCP 时的后备 | — |
+| X32 | `feat(luban)`：宿主代理的来源与映射、`/run/luban/network.env`、会话与 init 的环境、`network` 一行（status、横幅） | X31 |
+| X33 | `feat(subos)`：`network` 自检项；系统里网络失败只说一次并给出下一步；`self init`/`update` 的心跳 | X31、X26 的心跳机制 |
+| X34 | `feat(xlings)`：用户 home 从系统 home 的快照与配置开始；第一次写入确认一次；系统已有同版本不重复安装 | X4（快照复制函数）、X5 |
+| X35 | `fix(subos)`：fish 的提示符标识；主机名由 Luban 决定（确认 F27 后） | — |
+| R10 | `fix(luban)`：factory `/etc/hostname` 为空；`rcS` 不再写 `resolv.conf` 进系统树（内核 DHCP 时） | X31、X35 |
+
+阶段：X31、X35 在第 1 阶段；X32、X34、R10 在第 2 阶段；X33 在第 3 阶段；全部在 X29 之前。
+
+### 27.9 平台
+
+| | Linux（qemu） | macOS（vz） | Windows（WSL 2） |
+|---|---|---|---|
+| 地址 | 内核 `ip=dhcp`（本节新增） | 内核 `ip=dhcp`（已有） | WSL 2 自己的网络 |
+| DNS | `/proc/net/pnp` | 同左（已有） | WSL 2 生成的 `resolv.conf` |
+| 宿主回环代理映射到 | `10.0.2.2` | NAT 网关 | 镜像网络模式下不变；NAT 模式下为宿主地址 |
+
+### 27.10 确认用的命令（F23、F27）
+
+在 `desktop-4` 里（`luban enter desktop-4 --display terminal`）：
+```
+ip addr; ip route; ls -l /etc/resolv.conf; cat /etc/resolv.conf; cat /proc/net/pnp 2>/dev/null
+ps -ef | grep -c udhcpc; getent hosts gitcode.com; hostname; cat /etc/hostname
+```
+宿主上：`env | grep -i _proxy`。
