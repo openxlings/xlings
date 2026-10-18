@@ -139,3 +139,30 @@ XTEST(OpensalWire, FramesAndEventsCrossTheBoundaryWhole, .area = "luban", .cover
     EXPECT_FALSE(wire::decode_frame("1 1 2 2 8\nshort")) << "rows shorter than the rectangle";
     EXPECT_FALSE(wire::decode_event("key 1 x 0 0"));
 }
+
+XTEST(OpensalWire, AShellsListsAndRequestsCrossWhole, .area = "luban", .covers = {"LUBAN-DESKTOP-WIRE", "LUBAN-DESKTOP-SHELL"}) {
+    // Windows and applications, each list whole; a tab or a line break in a
+    // name does not cut it.
+    const std::vector<opensal::Window> windows{{.id = 7, .app_id = "foot", .title = "~/src\tbuild", .focused = true},
+                                               {.id = 9, .app_id = "", .title = "", .minimized = true}};
+    auto back = wire::decode_windows(wire::encode_windows(windows));
+    ASSERT_TRUE(back);
+    ASSERT_EQ(back->size(), 2u);
+    EXPECT_EQ((*back)[0].title, "~/src build");
+    EXPECT_TRUE((*back)[0].focused);
+    EXPECT_TRUE((*back)[1].minimized);
+    EXPECT_EQ((*back)[1].id, 9u);
+    EXPECT_TRUE(wire::decode_windows("")->empty()) << "no windows is a list too";
+    EXPECT_FALSE(wire::decode_windows("7\t1\tfoot\n")) << "a short line";
+    const std::vector<opensal::Application> apps{{"foot", "Foot 终端"}, {"org.example.Editor", "Editor"}};
+    EXPECT_EQ(*wire::decode_applications(wire::encode_applications(apps)), apps);
+    EXPECT_FALSE(wire::decode_applications("\tnameless id\n"));
+    // What the provider asks of its consumer.
+    auto launch = wire::decode_event(wire::encode_event(opensal::Launch{"org.example.Editor"}));
+    ASSERT_TRUE(launch);
+    EXPECT_EQ(std::get<opensal::Launch>(*launch).app, "org.example.Editor");
+    auto activate = wire::decode_event(wire::encode_event(opensal::Activate{9}));
+    ASSERT_TRUE(activate);
+    EXPECT_EQ(std::get<opensal::Activate>(*activate).window, 9u);
+    EXPECT_FALSE(wire::decode_event("activate x"));
+}

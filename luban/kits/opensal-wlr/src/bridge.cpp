@@ -48,7 +48,15 @@ constexpr std::uint16_t head_mode = 3, head_finished = 9;
 constexpr std::uint16_t config_enable_head = 0, config_apply = 2, config_destroy = 4;
 constexpr std::uint16_t config_succeeded = 0, config_failed = 1, config_cancelled = 2;
 constexpr std::uint16_t config_head_set_custom_mode = 1;
+// zwlr_foreign_toplevel_manager_v1 and a toplevel's handle
+constexpr std::uint16_t toplevels_toplevel = 0;
+constexpr std::uint16_t toplevel_title = 0, toplevel_app_id = 1, toplevel_state = 4, toplevel_done = 5,
+                        toplevel_closed = 6;
+constexpr std::uint16_t toplevel_unset_minimized = 3, toplevel_activate = 4, toplevel_destroy = 7;
 }  // namespace op
+
+// A toplevel's states (zwlr_foreign_toplevel_handle_v1.state).
+constexpr std::uint32_t kStateMinimized = 1, kStateActivated = 2;
 
 constexpr std::uint32_t kShmArgb = 0, kShmXrgb = 1;
 
@@ -76,6 +84,9 @@ private:
     void copy_();
     void frame_ready_();
     void resize_(opensal::Size want);
+    void shell_(const opensal::Event& e);
+    void tell_windows_();
+    void tell_applications_();
     bool send_(std::string_view bytes) { return os::write_all(o_.out, bytes); }
 
     const Options& o_;
@@ -120,6 +131,17 @@ private:
     std::uint32_t mods_ { 0 };
     std::set<std::uint32_t> held_;
     bool provider_gone_ { false };
+
+    // Shell: the compositor's windows (by handle), told when they change, and
+    // the programs started for the provider (reaped as they end).
+    std::uint32_t toplevels_ { 0 };
+    opensal::Interfaces provided_ { 0 };
+    std::map<std::uint32_t, opensal::Window> windows_;
+    bool windows_changed_ { false };
+    std::vector<Application> apps_;
+    bool apps_told_ { false };
+    std::chrono::steady_clock::time_point apps_read_ {};
+    std::vector<int> launched_;
 };
 
 std::uint32_t Bridge::bind_(std::string_view iface, std::uint32_t max_version, std::uint32_t& version) {
@@ -201,6 +223,33 @@ void Bridge::handle_(const wl::Event& e) {
             capturing_ = false;
             offer_.reset();
             retry_at_ = std::chrono::steady_clock::now() + std::chrono::milliseconds(200);
+            break;
+        default: break;
+        }
+        return;
+    }
+    if (toplevels_ && e.object == toplevels_) {
+        if (e.opcode == op::toplevels_toplevel) {
+            const auto handle = r.u();
+            if (r.ok()) windows_[handle] = opensal::Window{.id = handle};
+        }
+        return;
+    }
+    if (auto w = windows_.find(e.object); w != windows_.end()) {
+        switch (e.opcode) {
+        case op::toplevel_title: w->second.title = r.str(); break;
+        case op::toplevel_app_id: w->second.app_id = r.str(); break;
+        case op::toplevel_state: {
+            const auto states = r.words();
+            w->second.focused = std::ranges::contains(states, kStateActivated);
+            w->second.minimized = std::ranges::contains(states, kStateMinimized);
+            break;
+        }
+        case op::toplevel_done: windows_changed_ = true; break;
+        case op::toplevel_closed:
+            c_.send(e.object, op::toplevel_destroy, wl::Args{});
+            windows_.erase(w);
+            windows_changed_ = true;
             break;
         default: break;
         }
@@ -376,6 +425,54 @@ void Bridge::input_(const opensal::Event& ev) {
     }
 }
 
+// The provider as this session's shell: a program started in the session
+// (its own process group, its output nowhere), a window brought forward.
+void Bridge::shell_(const opensal::Event& ev) {
+    if (!opensal::has(provided_, opensal::Interface::Shell)) return;
+    if (const auto* l = std::get_if<opensal::Launch>(&ev)) {
+        const auto app = std::ranges::find(apps_, l->app, &Application::id);
+        if (app == apps_.end()) { log_(std::format("no application '{}' to start", l->app)); return; }
+        // In a terminal: the default one, by the xdg convention (xdg-terminal-exec).
+        auto argv = app->argv;
+        if (app->terminal) argv.insert(argv.begin(), "xdg-terminal-exec");
+        const auto home = o_.env.find("HOME");
+        const int pid = os::spawn({.argv = argv, .env = o_.env,
+                                   .cwd = home != o_.env.end() ? fs::path(home->second) : fs::path{}});
+        if (pid < 0) log_(std::format("could not start {} ({})", app->id, argv[0]));
+        else launched_.push_back(pid);
+    } else if (const auto* a = std::get_if<opensal::Activate>(&ev)) {
+        const auto w = windows_.find(a->window);
+        if (w == windows_.end() || !seat_) return;
+        if (w->second.minimized) c_.send(w->first, op::toplevel_unset_minimized, wl::Args{});
+        c_.send(w->first, op::toplevel_activate, wl::Args{}.u(seat_));
+    }
+}
+
+void Bridge::tell_windows_() {
+    windows_changed_ = false;
+    if (!opensal::has(provided_, opensal::Interface::Shell)) return;
+    std::vector<opensal::Window> all;
+    for (const auto& [handle, w] : windows_) all.push_back(w);
+    if (!send_(opensal::wire::encode('w', opensal::wire::encode_windows(all)))) provider_gone_ = true;
+}
+
+// What it can start: read again every few seconds (something installed
+// while it runs), told when it changed.
+void Bridge::tell_applications_() {
+    apps_read_ = std::chrono::steady_clock::now();
+    auto now = applications(application_dirs(o_.env));
+    const auto same = [](const Application& a, const Application& b) {
+        return a.id == b.id && a.name == b.name && a.argv == b.argv && a.terminal == b.terminal;
+    };
+    if (apps_told_ && std::ranges::equal(now, apps_, same)) return;
+    apps_ = std::move(now);
+    if (!opensal::has(provided_, opensal::Interface::Shell)) return;
+    std::vector<opensal::Application> listed;
+    for (const auto& a : apps_) listed.push_back({a.id, a.name});
+    apps_told_ = send_(opensal::wire::encode('a', opensal::wire::encode_applications(listed)));
+    if (!apps_told_) provider_gone_ = true;
+}
+
 bool Bridge::provider_(std::string_view bytes) {
     decoder_.feed(bytes);
     for (;;) {
@@ -388,8 +485,15 @@ bool Bridge::provider_(std::string_view bytes) {
             std::istringstream in(msg.payload);
             std::uint32_t bits = 0, w = 0, h = 0;
             if (in >> bits >> w >> h) resize_({w, h});
+            provided_ = bits;
+            windows_changed_ = true;
+            apps_told_ = false;
+            if (o_.shell) tell_applications_();
         } else if (msg.kind == 'E') {
-            if (auto e = opensal::wire::decode_event(msg.payload)) input_(*e);
+            if (auto e = opensal::wire::decode_event(msg.payload)) {
+                if (std::holds_alternative<opensal::Launch>(*e) || std::holds_alternative<opensal::Activate>(*e)) shell_(*e);
+                else input_(*e);
+            }
         }
     }
 }
@@ -407,6 +511,7 @@ int Bridge::run() {
     std::uint32_t vptr_version = 0;
     vptr_manager_ = bind_("zwlr_virtual_pointer_manager_v1", 2, vptr_version);
     outman_ = bind_("zwlr_output_manager_v1", 2, v);
+    if (o_.shell) toplevels_ = bind_("zwlr_foreign_toplevel_manager_v1", 3, v);
     if (!shm_ || !output_ || !screencopy_) {
         log_("the compositor has no screencopy (zwlr_screencopy_manager_v1) or no output: not a desktop opensal-wlr can show");
         return 1;
@@ -434,6 +539,11 @@ int Bridge::run() {
     opensal::Interfaces wanted = I::Surface | I::Mode;
     if (vkbd_) wanted |= static_cast<opensal::Interfaces>(I::Keyboard);
     if (vptr_) wanted |= static_cast<opensal::Interfaces>(I::Pointer);
+    if (o_.shell) {
+        // Launching needs nothing of the compositor; listing its windows does.
+        wanted |= static_cast<opensal::Interfaces>(I::Shell);
+        if (!toplevels_) log_("the compositor does not list its windows (zwlr_foreign_toplevel_manager_v1): the shell starts programs only");
+    }
     if (!send_(opensal::wire::encode('h', std::to_string(wanted)))) return 0;
 
     const auto period = std::chrono::milliseconds(1000 / std::max(1, o_.max_fps));
@@ -456,6 +566,9 @@ int Bridge::run() {
             if (!events) { log_("the compositor closed its socket"); return 1; }
             for (const auto& e : *events) handle_(e);
         }
+        if (windows_changed_) tell_windows_();
+        if (o_.shell && apps_told_ && std::chrono::steady_clock::now() - apps_read_ > std::chrono::seconds(5)) tell_applications_();
+        std::erase_if(launched_, [](int pid) { return os::exited(pid).has_value(); });
     }
     return 0;
 }

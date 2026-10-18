@@ -320,6 +320,62 @@ std::string type_desktop_(Display& d, std::string_view input) {
     return std::string(input.substr(k));
 }
 
+// A desktop without a shell of its own (`X-Luban-Shell=none`; design
+// 2026-10-18 §7, T1): the window's bar under it is its shell -- the
+// applications its session lists, to start, and its windows, to bring
+// forward. True while the pointer is the bar's (or its list's), not the desktop's.
+bool shell_bar_(App& a, Display& d, ImVec2 at, float width, float height) {
+    auto* dl = ImGui::GetWindowDrawList();
+    const ImVec2 wo = ImGui::GetWindowPos();
+    dl->AddRectFilled(at, ImVec2(at.x + width, at.y + height), th_().bg_deep);
+    dl->AddRectFilled(at, ImVec2(at.x + width, at.y + imkit::unit() / 3), th_().line);
+    const float button_h = (height - px(8)) / imkit::scale();
+    ImGui::SetCursorPos(ImVec2(at.x - wo.x + px(6), at.y - wo.y + px(4)));
+    if (imkit::button("shell:apps", tr("Applications", "应用"), ImVec2(120, button_h), a.shell_apps ? imkit::Look::Primary : imkit::Look::Normal))
+        a.shell_apps = !a.shell_apps;
+    mark_(a, "shell:apps");
+    // Its windows, the focused one raised; as many as fit.
+    const auto windows = d.windows();
+    float x = px(6) + px(128);
+    const float each = std::clamp((width - x - px(6)) / std::max<std::size_t>(1, windows.size()), px(80), px(220));
+    for (const auto& w : windows) {
+        if (x + each > width) break;
+        ImGui::SetCursorPos(ImVec2(at.x - wo.x + x, at.y - wo.y + px(4)));
+        const std::string id = std::format("window:{}", w.id);
+        const auto label = imkit::fit(w.title.empty() ? w.app_id : w.title, each - px(16), 13);
+        if (imkit::button(id, label, ImVec2((each - px(4)) / imkit::scale(), button_h), w.focused ? imkit::Look::Primary : imkit::Look::Ghost))
+            d.send(opensal::Activate{w.id});
+        mark_(a, id);
+        x += each;
+    }
+    bool over = ImGui::IsMouseHoveringRect(at, ImVec2(at.x + width, at.y + height));
+    if (!a.shell_apps) return over;
+    // The list above the bar, in the session's order (by name).
+    const auto apps = d.applications();
+    const float row = px(34), list_w = std::min(px(320), width - px(12));
+    const float list_h = std::min(row * static_cast<float>(std::max<std::size_t>(1, apps.size())) + px(12), at.y - wo.y - px(12));
+    const ImVec2 top(at.x + px(6), at.y - list_h - px(4));
+    ImGui::SetCursorScreenPos(top);
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, th_().panel_lo);
+    ImGui::BeginChild("shell:list", ImVec2(list_w, list_h), ImGuiChildFlags_Borders);
+    if (apps.empty()) ImGui::TextUnformatted(tr("Nothing it can start yet", "还没有可启动的应用").data());
+    for (const auto& app : apps) {
+        const std::string id = "app:" + app.id;
+        if (imkit::button(id, imkit::fit(app.name, list_w - px(32), 14), ImVec2((list_w - px(24)) / imkit::scale(), (row - px(4)) / imkit::scale()),
+                          imkit::Look::Ghost)) {
+            d.send(opensal::Launch{app.id});
+            a.shell_apps = false;
+        }
+        mark_(a, id);
+    }
+    ImGui::EndChild();
+    ImGui::PopStyleColor();
+    over = over || ImGui::IsMouseHoveringRect(top, ImVec2(top.x + list_w, top.y + list_h));
+    // A click anywhere else closes it.
+    if (!over && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) a.shell_apps = false;
+    return over;
+}
+
 // A machine's desktop: its surface drawn whole (1:1 when it fits), and the
 // window's input given to it -- the pointer in the surface's pixels.
 void desktop_view_(App& a) {
@@ -353,7 +409,10 @@ void desktop_view_(App& a) {
         }
     }
     const ImVec2 origin = ImGui::GetCursorScreenPos();
-    const ImVec2 avail = ImGui::GetContentRegionAvail();
+    ImVec2 avail = ImGui::GetContentRegionAvail();
+    const float shell_h = d.shell() ? std::round(px(40)) : 0.0f;
+    avail.y -= shell_h;
+    bool on_shell = false;
     if (a.texture.handle) {
         // Its device pixels at the screen's pixel density (1:1), smaller when it does not fit.
         const float density = static_cast<float>(a.pixel_density());
@@ -380,6 +439,7 @@ void desktop_view_(App& a) {
         // smaller than the window -- the host's arrow shows (design
         // 2026-10-16 L §13.9).
         if (ImGui::IsItemHovered()) ImGui::SetMouseCursor(ImGuiMouseCursor_None);
+        if (shell_h > 0) on_shell = shell_bar_(a, d, ImVec2(origin.x, origin.y + avail.y), avail.x, shell_h);
         // Its caret: the host's input method writes there (in window pixels).
         if (auto t = d.take_text_input()) {
             int on = 0, x = 0, y = 0, w = 1, h = 1;
@@ -425,7 +485,9 @@ void desktop_view_(App& a) {
                 } else if (std::holds_alternative<opensal::ClipboardText>(e)) {
                     paste();    // the host's clipboard changed
                 } else if (std::holds_alternative<opensal::PointerButton>(e) || std::holds_alternative<opensal::Wheel>(e)) {
-                    d.send(e);
+                    // The shell's bar and list are the window's; a button let go there still reaches it.
+                    const auto* b = std::get_if<opensal::PointerButton>(&e);
+                    if (!on_shell || (b && !b->down)) d.send(e);
                 }
             }
         }

@@ -1249,6 +1249,10 @@ status = "required"
 text = "a KDE session is shown through opensal by an adapter for KWin: its picture from a virtual monitor the window's size, input injected, the pointer drawn by the host, the clipboard shared, a resize followed"
 status = "planned"
 
+[LUBAN-DESKTOP-SHELL]
+text = "a desktop without a shell of its own (its session file's X-Luban-Shell=none) is given the Luban OS window's, through opensal Shell: the applications its session lists (share/applications in its XDG data dirs, field codes dropped, Terminal=true in the default terminal) and its windows (wlr foreign-toplevel), listed whole as they change; the window starts one by its id and brings one forward; a session with its own shell is not given one"
+status = "required"
+
 [LUBAN-SESSION-PEERS]
 text = "terminals entering one environment are peers: any of them leaves at once, and Ctrl-C reaches only its own program"
 status = "planned"

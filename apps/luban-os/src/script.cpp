@@ -128,6 +128,13 @@ Json state_(const App& a) {
     if (a.display) {
         j["desktop"] = {{"texture", Json::array({a.texture.width, a.texture.height})},
                         {"asked", Json::array({a.desktop_size.width, a.desktop_size.height})}};
+        if (a.display && a.display->shell()) {
+            Json apps = Json::array(), windows = Json::array();
+            for (const auto& app : a.display->applications()) apps.push_back(app.id);
+            for (const auto& w : a.display->windows())
+                windows.push_back({{"id", w.id}, {"app_id", w.app_id}, {"title", w.title}, {"focused", w.focused}});
+            j["desktop"]["shell"] = {{"apps", apps}, {"windows", windows}, {"open", a.shell_apps}};
+        }
     }
     if (a.job) {
         std::lock_guard l(a.job->m);

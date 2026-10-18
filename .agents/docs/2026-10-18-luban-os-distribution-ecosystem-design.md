@@ -399,7 +399,11 @@ xlings 返回的错误由 luban 翻译；不转贴 `xlings subos` 的用法（E1
 | T4 KDE | 完整桌面 | 组件 | 完整体验 | `--desktop kde` |
 | Luban 自有 | xdesk 经典 / 画布 | 组件 | 默认 | `--desktop xdesk-classic` |
 
-- 外壳由会话文件的 `X-Luban-Shell` 声明：`none` 时 Luban OS 窗口提供启动器与窗口列表，`own` 时不打扰。应用列表由服务层读系统的 `share/applications`（§10）。
+- 外壳由会话文件的 `X-Luban-Shell` 声明：`none` 时 Luban OS 窗口提供启动器与窗口列表，`own` 时不打扰。
+  实现为 opensal 0.2 的 `Shell` 接口（`luban/specs/opensal/SPEC.md` §5.4）：会话侧（opensal-wlr 的 bridge）在会话里读应用列表
+  （会话的 XDG 数据目录下的 `share/applications`，含用户自己的）与窗口（wlr foreign-toplevel），整表告知窗口；窗口回以"按 ID 启动"
+  与"前置某窗口"，由会话侧以会话的环境启动（`Terminal=true` 经 `xdg-terminal-exec`）。放在会话侧而非服务层：沙箱与机器同一条路
+  （机器不必经载体再问一次），看到的正是会话里能启动的。
 - T0 不新增命令：`luban run` 已有，`--display window` 已是 `luban enter` 的选项，扩到 `run`。
 - T0、T1 里 guest 不跑任何外壳程序，资源最省、门槛最低。
 

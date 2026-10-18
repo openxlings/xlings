@@ -23,6 +23,7 @@ public:
     Args& i(std::int32_t v);
     Args& fixed(double v);
     Args& str(std::string_view s);
+    Args& words(std::span<const std::uint32_t> v);   // an array of 32-bit values
     Args& fd(int descriptor);              // carried beside the bytes
     const std::string& bytes() const { return bytes_; }
     const std::vector<int>& fds() const { return fds_; }
@@ -48,6 +49,7 @@ public:
     std::int32_t i();
     double fixed();
     std::string str();
+    std::vector<std::uint32_t> words();    // an array of 32-bit values
     bool ok() const { return ok_; }
 private:
     std::string_view body_;

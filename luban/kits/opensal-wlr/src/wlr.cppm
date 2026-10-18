@@ -11,12 +11,16 @@
 //   pointer   zwlr_virtual_pointer_manager_v1 (absolute, on the output)
 //   size      zwlr_output_manager_v1 (a custom mode at the window's size;
 //             without it the provider is told the size it is drawn at)
+//   shell     zwlr_foreign_toplevel_manager_v1 (the windows, listed and
+//             brought forward) and programs started with the session's
+//             environment -- for a session without a shell of its own
 //
 // A desktop session is what freedesktop already declares:
 // share/wayland-sessions/<id>.desktop, `Exec=` the compositor, and one key
 // of opensal's -- `X-Opensal-Interfaces=` the interfaces it uses. A session
 // that speaks opensal.wire itself (xdesk) says `X-Opensal-Native=true`: it is
-// given the stream, and nothing is bridged.
+// given the stream, and nothing is bridged. A session whose shell is the
+// window's (`X-Luban-Shell=none`, Luban's desktop convention) uses `shell`.
 export module opensal.wlr;
 
 import std;
@@ -44,6 +48,21 @@ opensal::Interfaces parse_interfaces(std::string_view names);
 // /usr/local/share and /usr/share.
 std::vector<fs::path> session_dirs(const std::map<std::string, std::string>& env);
 std::vector<Session> sessions(const std::vector<fs::path>& dirs);
+
+// An application its session lists (share/applications/<id>.desktop), for a
+// shell that is the provider's: what it shows and what starting it runs.
+struct Application {
+    std::string id;
+    std::string name;
+    std::vector<std::string> argv;  // Exec, its field codes dropped
+    bool terminal { false };        // Terminal=true: run in the default terminal
+};
+std::optional<Application> parse_application(std::string_view text, std::string id);
+// Exec's words (the desktop entry specification's quoting), field codes dropped.
+std::vector<std::string> exec_argv(std::string_view exec);
+// $XDG_DATA_HOME's (or ~/.local/share's), then as session_dirs, each /applications.
+std::vector<fs::path> application_dirs(const std::map<std::string, std::string>& env);
+std::vector<Application> applications(const std::vector<fs::path>& dirs);
 std::optional<Session> find_session(std::string_view id, const std::vector<fs::path>& dirs);
 
 // The virtual keyboard's keymap: evdev keycodes, the US layout, compiled by
@@ -64,6 +83,10 @@ struct Options {
     std::function<bool()> alive;    // whether the compositor still runs
     int max_fps { 30 };
     std::function<void(std::string_view)> log;
+    // Shell, when the session has none of its own: what a launched program
+    // is started with (the session's, WAYLAND_DISPLAY its compositor).
+    bool shell { false };
+    std::map<std::string, std::string> env;
 };
 
 // Bridges until the provider or the compositor goes away: 0 when the

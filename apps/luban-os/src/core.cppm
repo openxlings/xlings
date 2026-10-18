@@ -169,6 +169,11 @@ public:
     std::optional<std::string> take_text_input();
     std::optional<std::string> take_clipboard();
     const ClipboardGrant& clipboard_grant() const { return clip_; }
+    // A desktop without a shell of its own asks the window to be it
+    // (opensal Shell): its applications to start and its windows to bring forward.
+    bool shell() const { return shell_; }
+    std::vector<opensal::Application> applications() const { std::lock_guard l(m_); return applications_; }
+    std::vector<opensal::Window> windows() const { std::lock_guard l(m_); return windows_; }
 
     struct Update { opensal::Rect rect; std::string rows; };
     // The surface's size (0 until the first frame) and the rectangles since the last call.
@@ -199,6 +204,9 @@ private:
     opensal::Size size_;
     ClipboardGrant clip_;
     std::optional<std::string> text_input_, clipboard_;
+    std::atomic<bool> shell_ { false };
+    std::vector<opensal::Application> applications_;
+    std::vector<opensal::Window> windows_;
     std::vector<Update> updates_;
     std::string error_;
     opensal::wire::Decoder decoder_;
@@ -360,6 +368,7 @@ struct App {
     host::Window::Texture texture;
     opensal::Size desktop_size;        // what the window shows it at
     bool desktop_text { false };       // the desktop takes text (its caret is set)
+    bool shell_apps { false };         // the shell's list of applications is open
     double sent_density { 1 };         // the density the desktop was told
     std::string ended_why;             // a failed session's last lines (the off screen shows them)
     int ended_code { 0 };
