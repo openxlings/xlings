@@ -250,11 +250,7 @@ std::string console_text(Console& c, int scroll, std::array<int, 4> selection);
 // ── the window's state ──────────────────────────────────────────────────
 
 
-fs::path home_dir_() {
-    if (const char* h = std::getenv("XLINGS_HOME"); h && *h) return h;
-    if (const char* u = std::getenv("HOME"); u && *u) return fs::path(u) / ".xlings";
-    return ".xlings";
-}
+fs::path home_dir_();
 
 enum class View { Launcher, QuickStart, Job, Console, Off, Admin, Desktop, Import, Run };
 
@@ -295,10 +291,7 @@ constexpr std::array<Edition, 7> kEditions{{
      "同样的环境，桌面是 xdesk 的画布：平移、缩放、一眼看全。供探索。", "~1.2 GB", "xdesk · foot · nvim · node", true},
 }};
 
-int edition_index_(std::string_view name) {
-    for (std::size_t i = 0; i < kEditions.size(); ++i) if (kEditions[i].name == name) return static_cast<int>(i);
-    return 3;   // core
-}
+int edition_index_(std::string_view name);
 
 // What the index said of an edition (asked once, in the background).
 struct Availability {
@@ -343,17 +336,7 @@ struct RunView {
 };
 
 // A character onto UTF-8 text.
-void append_utf8_(std::string& out, char32_t ch) {
-    if (ch < 0x80) out += static_cast<char>(ch);
-    else if (ch < 0x800) { out += static_cast<char>(0xC0 | (ch >> 6)); out += static_cast<char>(0x80 | (ch & 0x3F)); }
-    else if (ch < 0x10000) {
-        out += static_cast<char>(0xE0 | (ch >> 12)); out += static_cast<char>(0x80 | ((ch >> 6) & 0x3F));
-        out += static_cast<char>(0x80 | (ch & 0x3F));
-    } else {
-        out += static_cast<char>(0xF0 | (ch >> 18)); out += static_cast<char>(0x80 | ((ch >> 12) & 0x3F));
-        out += static_cast<char>(0x80 | ((ch >> 6) & 0x3F)); out += static_cast<char>(0x80 | (ch & 0x3F));
-    }
-}
+void append_utf8_(std::string& out, char32_t ch);
 
 struct App {
     fs::path home = home_dir_();
@@ -488,265 +471,58 @@ struct App {
 
     // The home's order (design 2026-10-16 L §13.4): the three opened most
     // recently, then every other by name.
-    void refresh() {
-        auto l = service::list(ctx);
-        if (!l) { list_error = l.error(); systems.clear(); recent = 0; return; }
-        list_error.clear();
-        auto all = std::move(*l);
-        std::vector<service::Environment> used;
-        for (const auto& e : all)
-            if (auto it = settings.last_used.find(e.name); it != settings.last_used.end() && !it->second.empty()) used.push_back(e);
-        std::ranges::stable_sort(used, [&](const auto& a, const auto& b) { return settings.last_used[a.name] > settings.last_used[b.name]; });
-        if (used.size() > 3) used.resize(3);
-        std::vector<service::Environment> rest;
-        for (auto& e : all)
-            if (std::ranges::none_of(used, [&](const auto& u) { return u.name == e.name; })) rest.push_back(std::move(e));
-        std::ranges::sort(rest, {}, &service::Environment::name);
-        recent = static_cast<int>(used.size());
-        systems = std::move(used);
-        systems.insert(systems.end(), std::make_move_iterator(rest.begin()), std::make_move_iterator(rest.end()));
-        selected = std::clamp(selected, 0, std::max(0, static_cast<int>(systems.size()) + 1));
-    }
+    void refresh();
 
     // What the countdown goes into: the default system, else the one opened last, else the first.
-    std::string countdown_target() const {
-        if (systems.empty()) return {};
-        if (!settings.default_system.empty()
-            && std::ranges::any_of(systems, [&](const auto& s) { return s.name == settings.default_system; }))
-            return settings.default_system;
-        return systems.front().name;
-    }
+    std::string countdown_target() const;
 
-    std::string title_for(std::string_view what) const {
-        return std::format("{} — Luban OS · Ctrl+Alt {}", what,
-                           window->keyboard_grabbed() ? tr("releases the keyboard", "释放键盘") : tr("menu", "菜单"));
-    }
+    std::string title_for(std::string_view what) const;
 
-    void start_job(std::string title, std::function<void(Job&, service::Context)> body, std::function<void(App&)> then) {
-        job = std::make_unique<Job>();
-        job->title = std::move(title);
-        job->cancel = std::make_shared<std::atomic<bool>>(false);
-        job_told = false;
-        job_subject.clear();
-        auto* j = job.get();
-        auto* w = window.get();
-        service::Context c = ctx;
-        c.port = c.port.cancellable(job->cancel);
-        c.sink = [j, w](const service::Event& e) { j->take(e); w->wake(); };
-        c.yes = true;
-        after_job = then;
-        job->retry = [this, title = job->title, body, then] { start_job(title, body, then); };
-        job->worker = std::thread([j, w, c, body = std::move(body)] {
-            body(*j, c);
-            j->done = true;
-            w->wake();
-        });
-        view = View::Job;
-    }
+    void start_job(std::string title, std::function<void(Job&, service::Context)> body, std::function<void(App&)> then);
 
     // The edition of a system, as a name ("core").
-    static std::string edition_name(const service::Environment& e) {
-        auto label = e.edition;
-        if (label.starts_with("subos:luban-")) label = label.substr(12);
-        if (const auto at = label.find('@'); at != std::string::npos) label = label.substr(0, at);
-        return label;
-    }
+    static std::string edition_name(const service::Environment& e);
 
-    void enter(const std::string& name) {
-        countdown_until.reset();
-        settings.last_used[name] = xlings::observe::utc_now();
-        write_app_settings(home, settings);
-        current = name;
-        auto env = service::describe(ctx, name);
-        // nano has nothing to log into: its commands (design 2026-10-16 L §13.6).
-        if (env && edition_name(*env) == "nano" && !vm::running(home, name)) {
-            open_run(name);
-            return;
-        }
-        const auto mode = vm::running(home, name) ? std::string("machine") : env ? env->settings.mode : std::string("sandbox");
-        if (mode == "machine") {
-            start_job(std::format("{} {}", tr("Starting", "启动"), name),
-                      [name](Job& j, service::Context c) { j.code = vm::start(c, name, {}); },
-                      [name](App& a) {
-                          if (a.job->code != 0) return;
-                          a.open_machine(name);
-                      });
-        } else {
-            open_console(name, false);
-        }
-    }
+    void enter(const std::string& name);
 
-    void open_run(const std::string& name) {
-        current = name;
-        {
-            std::lock_guard l(run.m);
-            run.lines.clear();
-            run.lines.push_back({std::vformat(tr("{} has no shell: each line here is one command, run in it (luban run {} -- …).",
-                                                 "{} 没有 shell：这里每一行是在其中运行的一条命令（luban run {} -- …）。"),
-                                              std::make_format_args(name, name))});
-        }
-        view = View::Run;
-        window->set_title(std::format("{} — Luban OS", name));
-        window->text_input(true);
-    }
+    void open_run(const std::string& name);
 
     // A machine shows its desktop when its root declares one (and its
     // setting is not `none`), else its console.
-    void open_machine(const std::string& name) {
-        auto env = service::describe(ctx, name);
-        // A desktop set and not there is said over the console (E20).
-        if (env) if (const auto plan = service::enter_plan(*env); !plan.why.empty()) notice = plan.why;
-        if (auto session = env ? desktop_session(*env) : std::nullopt) {
-            std::string error;
-            const auto [w, h] = window->size();
-            desktop_size = device_size_(w, h);
-            auto* win = window.get();
-            display = Display::machine(home, name, *session, desktop_size, clipboard_grant(name), [win] { win->wake(); }, error);
-            if (display) {
-                view = View::Desktop;
-                window->set_title(title_for(name));
-                window->text_input(false);
-                return;
-            }
-            notice = error;
-        }
-        open_console(name, true);
-    }
+    void open_machine(const std::string& name);
 
     // The screen's density, as a remote desktop is told it; tests set it (--density).
     double density_override { 0 };
-    double density() const {
-        if (density_override > 0) return density_override;
-        const double d = window ? window->density() : 1.0;
-        return d > 0 ? d : 1.0;
-    }
+    double density() const;
     // Device pixels per unit of the window's coordinates.
-    double pixel_density() const {
-        if (density_override > 0) return density_override;
-        return window ? window->pixel_density() : 1.0;
-    }
+    double pixel_density() const;
 
     // A desktop's size for a window of w x h: in its device pixels, so that
     // what the desktop draws is as sharp as the screen.
-    opensal::Size device_size_(int w, int h) const {
-        const double d = pixel_density();
-        return {static_cast<std::uint32_t>(std::lround(w * d)), static_cast<std::uint32_t>(std::lround(h * d))};
-    }
+    opensal::Size device_size_(int w, int h) const;
 
     // What the environment lets cross the clipboard: its grants; an
     // environment without a policy file is as open as it always was, and a
     // policy that cannot be read lets nothing cross.
-    ClipboardGrant clipboard_grant(const std::string& name) const {
-        auto p = xlings::subos::policy_store::read(xlings::subos::HomeView{home}, name);
-        if (!p) return {};
-        if (!*p) return {.copy = true, .paste = true};
-        return {.copy = (*p)->grants.contains("clipboard"), .paste = (*p)->grants.contains("clipboard-paste")};
-    }
+    ClipboardGrant clipboard_grant(const std::string& name) const;
 
-    void close_display() {
-        desktop_text = false;
-        sent_density = 1;
-        paste_on_open = true;
-        pasted.clear();
-        display.reset();
-        if (texture.handle) window->destroy(texture);
-        texture = {};
-    }
+    void close_display();
 
     // The luban a sandbox runs for its desktop, as the sandbox sees it. A
     // system in a prefix domain sees its own home (/xlings), not this one:
     // the luban its domain carries. Elsewhere, the one beside this app, else
     // the home's.
-    fs::path luban_binary(const std::string& name) const {
-        std::error_code ec;
-        if (std::ifstream in(xlings::subos::HomeView{home}.instance_file(name)); in) {
-            const auto doc = nlohmann::json::parse(in, nullptr, false);
-            if (doc.is_object() && doc.value("carrier", std::string("local")) != "local") return fs::path("/xlings/bin/luban");
-        }
-        if (const auto at = xlings::subos::locate(xlings::subos::HomeView{home}, name); at.domain)
-            return fs::is_regular_file(at.home.home / "bin" / "luban", ec) ? at.logical / "bin" / "luban" : fs::path{};
-        for (const auto& p : {platform::get_executable_path().parent_path() / "luban", home / "bin" / "luban"})
-            if (fs::is_regular_file(p, ec)) return p;
-        return {};
-    }
+    fs::path luban_binary(const std::string& name) const;
 
-    void open_console(const std::string& name, bool machine) {
-        std::string error;
-        auto* w = window.get();
-        auto env = service::describe(ctx, name);
-        // A sandbox shows its desktop the same way a machine does: the
-        // session, bridged, on two pipes instead of a channel.
-        if (!machine) {
-            const auto luban = luban_binary(name);
-            if (env) if (const auto plan = service::enter_plan(*env); !plan.why.empty()) notice = plan.why;
-            if (auto session = env ? desktop_session(*env) : std::nullopt; session && !luban.empty()) {
-                const auto [ww, wh] = window->size();
-                desktop_size = device_size_(ww, wh);
-                display = Display::sandbox(ctx.port.xlings(), luban, home, name, *session, env ? env->settings.persist : "all",
-                                           desktop_size, clipboard_grant(name), [w] { w->wake(); }, error);
-                if (display) {
-                    view = View::Desktop;
-                    window->set_title(title_for(name));
-                    window->text_input(false);
-                    return;
-                }
-                notice = error;
-            }
-        }
-        // The welcome a console says first, the same as `luban enter`'s.
-        std::string greeting;
-        if (env)
-            for (const auto& line : service::welcome(*env, machine ? "machine" : "sandbox", false,
-                                                     {.zh = tr("en", "zh") == "zh", .color = true, .utf8 = true}))
-                greeting += line + "\r\n";
-        console = machine ? Console::machine(home, name, [w] { w->wake(); }, error, greeting)
-                          : Console::sandbox(ctx.port.xlings(), home, name, env ? env->settings.persist : "all", [w] { w->wake(); },
-                                             error, greeting);
-        if (!console) {
-            notice = error;
-            view = View::Launcher;
-            return;
-        }
-        console_scroll = 0;
-        selection.reset();
-        view = View::Console;
-        // Why it is the console and not the desktop, said over it for a while
-        // (E7: the reason was cleared as the console opened).
-        if (!notice.empty()) notice_until = std::chrono::steady_clock::now() + std::chrono::seconds(10);
-        window->set_title(title_for(name));
-        window->text_input(true);
-    }
+    void open_console(const std::string& name, bool machine);
 
-    void power_off(const std::string& name) {
-        start_job(std::format("{} {}", tr("Powering off", "关闭"), name),
-                  [name](Job& j, service::Context c) { j.code = vm::stop(c, name).code; },
-                  [](App& a) { a.view = View::Off; });
-    }
+    void power_off(const std::string& name);
 
-    bool is_running(const std::string& name) {
-        const auto now = std::chrono::steady_clock::now();
-        if (now - running_at > std::chrono::seconds(1)) {
-            running_cache.clear();
-            running_at = now;
-        }
-        auto it = running_cache.find(name);
-        if (it == running_cache.end()) it = running_cache.emplace(name, vm::running(home, name).has_value()).first;
-        return it->second;
-    }
+    bool is_running(const std::string& name);
 
-    float console_size(const std::string& name) const {
-        if (auto it = settings.console_sizes.find(name); it != settings.console_sizes.end()) return it->second;
-        return settings.console_size;
-    }
+    float console_size(const std::string& name) const;
 
-    void back_home() {
-        menu = false;
-        console.reset();
-        close_display();
-        view = View::Launcher;
-        refresh();
-        window->set_title("Luban OS");
-    }
+    void back_home();
 };
 
 using imkit::px;
