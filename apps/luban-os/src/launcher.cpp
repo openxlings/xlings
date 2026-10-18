@@ -185,8 +185,8 @@ void ask_availability_(App& a) {
         for (const auto& e : kEditions) {
             if (stop.stop_requested()) return;   // the window is closing
             Availability v{.known = true, .arch = arch};
-            const auto it = refs.find(std::string(e.name));
-            if (auto got = service::edition_availability(ctx, it != refs.end() ? it->second : "luban:" + std::string(e.name))) {
+            const auto it = refs.find(std::string(e.edition()));
+            if (auto got = service::edition_availability(ctx, it != refs.end() ? it->second : "luban:" + std::string(e.edition()))) {
                 v.listed = got->listed;
                 v.here = !got->listed || got->archs.empty() || std::ranges::find(got->archs, arch) != got->archs.end();
             }   // the index could not be asked: offered, and making it says why
@@ -259,8 +259,9 @@ std::string index_description_(App& a, std::string_view edition) {
 void make_(App& a, bool agreed) {
     const auto& chosen = kEditions[static_cast<std::size_t>(a.new_edition)];
     const auto offer = a.new_offer.empty() ? std::nullopt : offered_system_(a, a.new_offer);
-    service::NewOptions o{.name = a.new_name, .edition = std::string(chosen.name), .proxy = a.new_proxy, .user = a.new_user,
+    service::NewOptions o{.name = a.new_name, .edition = std::string(chosen.edition()), .proxy = a.new_proxy, .user = a.new_user,
                           .agreed = agreed};
+    if (!offer && !chosen.session.empty()) o.settings.emplace_back("desktop", std::string(chosen.session));
     if (offer) {
         // An official one by its short name; anyone else's by its coordinate.
         o.edition = offer->official ? offer->name : std::string{};

@@ -274,6 +274,11 @@ struct Edition {
     std::string_view size;                  // about what it downloads
     std::string_view contents;              // its first few programs
     bool goes_in;                           // there is something to log into
+    // Made as another edition with its desktop chosen (design 2026-10-18
+    // §6.1: desktop-xdesk is frozen, the desktop edition on xdesk's canvas).
+    std::string_view makes {};
+    std::string_view session {};
+    std::string_view edition() const { return makes.empty() ? name : makes; }
 };
 
 constexpr std::array<Edition, 7> kEditions{{
@@ -294,10 +299,11 @@ constexpr std::array<Edition, 7> kEditions{{
      "core 的一切，加上 node、python 与编程 agent，默认在私有网络中。", "~700 MB", "core · node · python · agents", true},
     {"desktop", true, "Classic desktop", "经典桌面", "Windows side by side, a panel", "窗口并排、面板",
      "Everything of core, a desktop, and the tools people reach for: terminals, editors, node, python, agents.",
-     "core 的一切、一个桌面，以及常用的工具：终端、编辑器、node、python、agents。", "~1.2 GB", "labwc · foot · nvim · node", true},
+     "core 的一切、一个桌面，以及常用的工具：终端、编辑器、node、python、agents。", "~1.2 GB", "xdesk · foot · nvim · node", true},
     {"desktop-xdesk", true, "xdesk canvas", "xdesk 画布", "An infinite canvas for windows", "放窗口的无限画布",
      "The same environment on xdesk's canvas: pan, zoom, see everything at once. To explore.",
-     "同样的环境，桌面是 xdesk 的画布：平移、缩放、一眼看全。供探索。", "~1.2 GB", "xdesk · foot · nvim · node", true},
+     "同样的环境，桌面是 xdesk 的画布：平移、缩放、一眼看全。供探索。", "~1.2 GB", "xdesk · foot · nvim · node", true,
+     "desktop", "xdesk-canvas"},
 }};
 
 int edition_index_(std::string_view name);
