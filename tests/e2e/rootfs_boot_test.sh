@@ -47,7 +47,7 @@ cat > "$S/rootfs/etc/rc.local" <<'EOF'
 # The scenario's driver: what this boot is, then the next step.
 state=$(cat /root/.stage 2>/dev/null || echo 0)
 boot=$(luban boot 2>/dev/null | sed -n 's/^this boot \([^ ]*\) via \([^ ,]*\).*/\1:\2/p')
-tree=$(cd /usr && for f in bin/* lib/*; do printf "%s %s\n" "$f" "$(readlink "$f")"; done \
+tree=$(cd /usr && for f in bin/* lib/*; do if [ -d "$f" ]; then printf "%s dir\n" "$f"; else printf "%s %s\n" "$f" "$(readlink "$f")"; fi; done \
        | sed -E "s|/subos/[^/]+/|/subos/*/|g" | md5sum | cut -d' ' -f1)
 elapsed=$(grep '"event":"boot"' "$XLINGS_HOME/logs/boot.ndjson" | tail -1 | sed -n 's/.*"stage0_elapsed_us":\([0-9][0-9]*\).*/\1/p')
 phases=$(grep '"event":"boot"' "$XLINGS_HOME/logs/boot.ndjson" | tail -1 | sed -n 's/.*"stage0_phases_us":\({[^}]*}\).*/\1/p')

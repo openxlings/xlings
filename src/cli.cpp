@@ -239,6 +239,10 @@ bool kind_is_interface_only_(std::string_view kind) {
         "install_targets",
         // `subos __boot` with no name prints the entries itself (for luban).
         "subos_boot",
+        // What a search found, as data (design 2026-10-18 §5.3); the terminal
+        // shows the list. What `subos new --dry-run` read, said as lines too.
+        // Why an older version was taken, logged where it was chosen.
+        "packages", "subos_plan", "passed_over",
     };
     return std::ranges::contains(kCapabilityOnly, kind)
         || std::ranges::contains(kWireDuplicate, kind);
