@@ -123,6 +123,7 @@ private:
     // The parser's state between feeds.
     enum class State { Ground, Escape, Csi, Osc, OscEscape, Charset } state_ { State::Ground };
     std::string seq_;
+    bool osc_ { true };            // the string being read is an OSC (not a DCS, APC or PM)
     char intermediate_ { 0 };
     std::uint32_t utf8_ { 0 };
     int utf8_left_ { 0 };

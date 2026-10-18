@@ -77,6 +77,31 @@ XTEST(LubanTerm, AWideCharacterTakesTwoColumnsAndAResizeKeepsTheCursorsLine, .ar
     EXPECT_EQ(term::width(U'́'), 0);
 }
 
+XTEST(LubanTerm, AMarkedSequenceIsNotThePlainOneOfTheSameFinal, .area = "luban", .covers = {"LUBAN-TERM"}) {
+    // What fish 4.8.1 writes when it starts (recorded from a pty), after a
+    // welcome: its first `CSI ? u` asks for the kitty keyboard flags and was
+    // taken for `CSI u`, restoring the cursor to the top over the welcome.
+    term::Screen s(6, 40);
+    s.feed("welcome 1\r\nwelcome 2\r\n");
+    s.feed("\x1b[?u\x1b[>0q\x1b]11;?\x1b\\\x1b[?1049h\x1bP+q696e646e\x1b\\\x1b[?1049l\x1b[0c");
+    s.feed("Welcome to fish\r\n\x1b[6n\x1b[0c\x1b[?2004h\x1b[>4;1m> ");
+    EXPECT_EQ(row(s, 0), "welcome 1");
+    EXPECT_EQ(row(s, 1), "welcome 2");
+    EXPECT_EQ(row(s, 2), "Welcome to fish");
+    EXPECT_EQ(row(s, 3), ">");
+    EXPECT_EQ(s.unhandled, 0u);
+    // Asked of a marked sequence, the marked answer; the plain ones as before.
+    (void)s.take_replies();
+    s.feed("\x1b[?6n");
+    EXPECT_EQ(s.take_replies(), "\x1b[?4;3R");
+    s.feed("\x1b[2;5H\x1b[s\x1b[1;1H\x1b[u");
+    EXPECT_EQ(s.cursor_row(), 1) << "CSI s / CSI u still save and restore";
+    EXPECT_EQ(s.cursor_col(), 4);
+    s.feed("\x1b[>1u\x1b[<u\x1b[=1;1u");
+    EXPECT_EQ(s.cursor_row(), 1) << "the kitty keyboard push, pop and set move nothing";
+    EXPECT_EQ(s.unhandled, 0u);
+}
+
 XTEST(LubanTerm, KeysAreSentAsXtermSendsThem, .area = "luban", .covers = {"LUBAN-TERM"}) {
     EXPECT_EQ(term::encode_key("Up", 0, false), "\x1b[A");
     EXPECT_EQ(term::encode_key("Up", 0, true), "\x1bOA");
