@@ -132,6 +132,10 @@ Json pack(const xpkg::Package& v) {
     j["archs"] = v.archs;
     j["xvm_enable"] = v.xvm_enable;
     j["xpm"] = pack(v.xpm);
+    j["status"] = static_cast<int>(v.status);
+    j["type"] = static_cast<int>(v.type);
+    j["extensions"] = v.extensions;
+    j["warnings"] = v.warnings;
     return j;
 }
 xpkg::Package unpack_Package(const Json& j) {
@@ -152,6 +156,13 @@ xpkg::Package unpack_Package(const Json& j) {
     j.at("archs").get_to(v.archs);
     j.at("xvm_enable").get_to(v.xvm_enable);
     v.xpm = unpack_PlatformMatrix(j.at("xpm"));
+    // What crossed the boundary later than the rest: read when there. Before,
+    // a recipe read in the worker came back with no status (every package
+    // "dev") and no type.
+    if (j.contains("status")) v.status = static_cast<xpkg::PackageStatus>(j.at("status").get<int>());
+    if (j.contains("type")) v.type = static_cast<xpkg::PackageType>(j.at("type").get<int>());
+    if (j.contains("extensions")) j.at("extensions").get_to(v.extensions);
+    if (j.contains("warnings")) j.at("warnings").get_to(v.warnings);
     return v;
 }
 Json pack(const xpkg::DepExport& v) {

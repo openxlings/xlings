@@ -418,6 +418,20 @@ void emit_scope_repairs_(EventStream& stream) {
 }
 
 namespace {
+
+// A recipe's status as the spec spells it.
+std::string_view status_name_(mcpplibs::xpkg::PackageStatus s) {
+    return s == mcpplibs::xpkg::PackageStatus::Stable       ? "stable"
+         : s == mcpplibs::xpkg::PackageStatus::Deprecated ? "deprecated" : "dev";
+}
+
+// A recipe's `extensions` as JSON (the loader keeps it as text), or null when
+// it has none or the text is not an object.
+nlohmann::json extensions_json_(const mcpplibs::xpkg::Package& pkg) {
+    if (pkg.extensions.empty()) return {};
+    auto j = nlohmann::json::parse(pkg.extensions, nullptr, false);
+    return j.is_object() ? j : nlohmann::json{};
+}
 // A plumbing step (a template of a `subos new --from`) says nothing per node:
 // the edition is named once by the command that asked for it.
 bool gNodeLinesQuiet = false;
@@ -2703,9 +2717,15 @@ int cmd_search(const std::string& keyword, EventStream& stream, const std::strin
             continue;
         std::string desc = pkg ? pkg->description : "";
         itemsJson.push_back({match.canonicalName, desc});
-        packages.push_back({{"package", match.canonicalName}, {"namespace", match.namespaceName}, {"name", match.name},
+        nlohmann::json item{{"package", match.canonicalName}, {"namespace", match.namespaceName}, {"name", match.name},
                             {"version", match.version}, {"index", match.repoName}, {"description", desc},
-                            {"categories", pkg ? nlohmann::json(pkg->categories) : nlohmann::json::array()}});
+                            {"categories", pkg ? nlohmann::json(pkg->categories) : nlohmann::json::array()}};
+        if (pkg) {
+            item["status"] = status_name_(pkg->status);
+            if (auto ext = extensions_json_(*pkg); !ext.empty()) item["extensions"] = std::move(ext);
+        }
+        if (!match.passedOver.empty()) item["passed_over"] = match.passedOver;
+        packages.push_back(std::move(item));
     }
     if (itemsJson.empty()) {
         if (category.empty()) log::println("no packages found matching '{}'", keyword);
@@ -3261,6 +3281,18 @@ int cmd_info(const std::string& target, EventStream& stream, bool allVersions, c
             {"status", pkg->status == mcpplibs::xpkg::PackageStatus::Stable       ? "stable"
                        : pkg->status == mcpplibs::xpkg::PackageStatus::Deprecated ? "deprecated" : "dev"}};
         if (!match->passedOver.empty()) infoPayload["package"]["passed_over"] = match->passedOver;
+        // Namespaced data for other programs (xpkg spec, "extensions"):
+        // handed on as the recipe wrote it, never read here.
+        if (auto ext = extensions_json_(*pkg); !ext.empty()) infoPayload["package"]["extensions"] = std::move(ext);
+    }
+    // -v: which programs a recipe speaks to, and what its loader dropped.
+    if (log::get_level() == log::Level::Debug) {
+        if (auto ext = extensions_json_(*pkg); !ext.empty()) {
+            std::string names;
+            for (auto it = ext.begin(); it != ext.end(); ++it) names += (names.empty() ? "" : " ") + it.key();
+            addField(fieldsJson, "extensions", names);
+        }
+        for (const auto& w : pkg->warnings) addField(fieldsJson, "loader", w);
     }
     infoPayload["fields"] = std::move(fieldsJson);
     infoPayload["extra_fields"] = std::move(extraJson);

@@ -41,6 +41,43 @@ The libxpkg loader runs the file in a sandbox; xmake-style calls such as
 | `maintainers` | string[] | maintainers |
 | `authors` | string[] | authors |
 | `programs` | string[] | the executable names the package provides |
+| `extensions` | table | namespaced data for other programs (§3.1) |
+
+### 3.1 Extensions (xlings 2026.10.19.1, libxpkg 0.0.66)
+
+`extensions` holds data for programs other than xlings, one table per program,
+keyed by a **namespace** that names the program that reads it -- the meaning of
+X.509's certificate extensions and glTF's `extensions`. libxpkg and xlings keep
+it and hand it on unchanged; they never read it. A program ignores the
+namespaces it does not know.
+
+```lua
+extensions = {
+    luban = {
+        tier = 2,
+        title = { en = "labwc", zh = "labwc" },
+        highlights = { "foot", "labwc" },
+    },
+},
+```
+
+| Rule | |
+|---|---|
+| Namespace | lowercase letters, digits and `-`; registered in the table below (the program, and the document that defines its keys). An unregistered one is kept like any other; the official index's checks accept only registered ones |
+| Values | strings, numbers, booleans, arrays and tables, nested. A function or userdata, a number that is not finite, a non-string key outside an array, or a table nested deeper than 16 is dropped when the recipe is loaded, with a loader warning |
+| Size | at most 4 KiB as JSON; over that the whole `extensions` is dropped with a warning -- never cut, so half of it is never read as all of it |
+| Revision | package-level metadata, like `description`: it changes nothing that is installed, so changing it raises no `revision` |
+| Not for xlings | a field xlings must understand belongs in this specification, not in `extensions` |
+
+Where it is handed on: `package_info`'s `package.extensions` and each of
+`search_packages`' `packages[].extensions`, as a JSON object
+(`interface-ndjson-v1.md`). `xlings info -v` names its namespaces and what the
+loader dropped. A client before 2026.10.19.1 (libxpkg before 0.0.66) reads
+the known fields by name and ignores `extensions`.
+
+| Namespace | Read by | Keys defined in |
+|---|---|---|
+| `luban` | luban, the Luban OS app | xim-pkgindex `docs/12-luban-packages.md` (`tier`, `gpu`, `title`, `summary`, `size`, `highlights`) |
 
 ## 4. Package types (`type`)
 

@@ -559,6 +559,39 @@ without running doctor. Read-only.
 or `notice`. `subos` names the subos whose workspace holds the reference; the
 version database is shared by every subos of the home.
 
+### 7.6 What a package is: `package_info` and `search_packages` (2026.10.19.1)
+
+`package_info`'s `info_panel` carries `package`, and `search_packages` carries
+`packages[]` (as data `packages`), with the same facts for each package:
+
+| Field | |
+|---|---|
+| `package`, `namespace`, `name`, `version`, `index` | its coordinate and the index it resolves in |
+| `description`, `categories` | the recipe's |
+| `status` | `"dev"`, `"stable"` or `"deprecated"`: the recipe's (before 2026.10.19.1 a recipe read in the worker reported `"dev"`) |
+| `extensions` | the recipe's `extensions`, as written: an object keyed by namespace (`xpkg-manifest-v1.md` §3.1). Absent when it has none |
+| `passed_over` | the newest version was passed over because it needs a newer xlings, and why |
+
+A client checks the handshake's feature `package_extensions` before it reads
+`extensions` or trusts `status` from a search.
+
+```json
+{"kind":"data","dataKind":"packages","payload":[{"package":"luban:labwc","namespace":"luban","name":"labwc","version":"0.20.0-r2","index":"xim","description":"...","categories":["luban-desktop"],"status":"stable","extensions":{"luban":{"tier":2}}}]}
+```
+
+### 7.7 What `subos new --from` chose (2026.10.19.1)
+
+Named without a version, a template is the index's newest that this xlings can
+use. Two data events say when it is not simply that, each once per command:
+
+- `passed_over` `{"package", "version", "message"}`: a newer version needs a
+  newer xlings (since 2026.10.16.2);
+- `installed_only` `{"package", "version", "message"}`: the index has no such
+  package and the version installed here is used (feature `installed_only`).
+
+When the index cannot be read at all, nothing is chosen: an `error` names
+`xlings update`, or naming a version.
+
 ### 7.1 Capabilities that need the user's confirmation (2026.9.26.1+)
 
 A SubOS's home is user data; deleted, it cannot be recovered. These two
@@ -730,3 +763,14 @@ and a `cancel` on the control channel ends the call with `E_CANCELLED` and 130.
 {"kind":"data","dataKind":"subos_exec_output","payload":{"stream":"stderr","encoding":"base64","data":"/w=="}}
 {"kind":"result","exitCode":0}
 ```
+
+### 10.1 A system in a prefix domain (2026.10.19.1)
+
+A command for a system that lives in a private prefix domain runs there. Asked
+through the interface (`subos_command`), it runs in the domain as
+`interface subos_command` too and its events -- `data`, `progress`, `log`,
+`error` -- come back as this call's (feature `domain_relayed`). Before,
+`rollback --list`, `config`, `status`, `ps`, `stop` and the other routed
+commands printed their answer on a stdout no reader of NDJSON saw: `luban
+history` of such a system was empty. Commands that hand the terminal to a
+program (`exec`, `use`, `start`, `log`) are not relayed.

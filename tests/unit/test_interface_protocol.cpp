@@ -203,7 +203,11 @@ TEST(InterfaceProtocol, VersionFlagPrintsProtocolVersion) {
     ASSERT_TRUE(j.contains("features"));
     const auto& features = j["features"];
     // 1.12: a reader of index namespaces and of a system's plan, the same.
-    for (const char* feature : {"payload_currency", "binding_state", "reserved_namespaces", "subos_plan"})
+    // 2026.10.19.1: a recipe's extensions and status handed on; a domain's
+    // routed command answering in events; a template used only because it is
+    // installed, said.
+    for (const char* feature : {"payload_currency", "binding_state", "reserved_namespaces", "subos_plan",
+                                "package_extensions", "domain_relayed", "installed_only"})
         EXPECT_NE(std::ranges::find(features, nlohmann::json(feature)), features.end()) << feature;
     std::filesystem::remove_all(home);
 }

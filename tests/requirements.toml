@@ -1357,7 +1357,7 @@ status = "planned"
 
 [XPKG-EXTENSIONS]
 text = "a recipe's extensions are kept and handed on unchanged (package_info, search), within their type and size rules"
-status = "planned"
+status = "required"
 
 [LUBAN-CORE-TOOLS]
 text = "core has cmake, yazi and procps-ng (and xmake on x86_64), each starting, and ps is procps-ng's"

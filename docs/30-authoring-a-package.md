@@ -99,6 +99,11 @@ xlings config --remove-xpkg hello
   ```
 
   The index's static check refuses a hook that runs `sudo` unmarked.
+- **`extensions`** carries data for another program, keyed by that program's
+  registered namespace (`extensions = { luban = { tier = 2 } }`): xlings hands it
+  on as written and never reads it, and changing it raises no `revision`. When
+  xlings itself must understand a field, propose it for the specification
+  instead (`docs/specs/xpkg-manifest-v1.md` §3.1).
 
 ## Publishing
 
