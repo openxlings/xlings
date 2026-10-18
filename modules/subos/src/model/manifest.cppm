@@ -691,6 +691,7 @@ inline bool never_loads_code(std::string_view var) {
         || var == "SSL_CERT_FILE"   || var == "SSL_CERT_DIR"
         || var == "GIT_SSL_CAINFO"  || var == "CURL_CA_BUNDLE"
         || var == "LOCPATH"         || var == "TZDIR"
+        || var == "XKB_CONFIG_ROOT"   // keyboard descriptions, parsed as text
         || var == "PATH";  // R6/AD-1's business, not this guard's
 }
 

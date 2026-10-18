@@ -371,10 +371,11 @@ std::expected<void, std::string> IndexManager::load_or_rebuild(const std::string
     auto result = rebuild();
     if (!result) return result;
 
-    // Save cache (best effort)
+    // Save cache (best effort: a system reads its host's index read-only,
+    // and rebuilding is all a missing cache costs -- not a warning).
     if (!cache_detail_::save_index_cache(
             index_, cacheFile, repoHeadHash, defaultNamespace_)) {
-        log::warn("failed to save index cache for {}", repoDir_.string());
+        log::debug("index cache for {} not saved", repoDir_.string());
     }
 
     return {};

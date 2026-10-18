@@ -236,3 +236,14 @@ TEST(ClosureCheckTag, NonElfAndBigEndianDecline) {
     EXPECT_EQ(cc::path_tag_of(bef), cc::PathTag::None);
     fs::remove_all(dir);
 }
+
+// ── rules A and E: glibc's ───────────────────────────────────────────
+
+// A bundle's musl loader is not a glibc to measure against the host's, and
+// musl searches a program's path for everything beneath it, either tag.
+TEST(ClosureCheckLoader, MuslLoadersAreOutsideTheGlibcRules) {
+    EXPECT_TRUE(cc::glibc_loader("/x/data/xpkgs/xim-x-glibc/2.44.3/lib64/ld-linux-x86-64.so.2"));
+    EXPECT_TRUE(cc::glibc_loader("/x/data/xpkgs/xim-x-glibc/2.44.3/lib/ld-linux-aarch64.so.1"));
+    EXPECT_FALSE(cc::glibc_loader("/x/data/xpkgs/luban-x-lxqt/2.4.0-r3/libexec/lxqt/lib/ld-musl-x86_64.so.1"));
+    EXPECT_FALSE(cc::glibc_loader("/x/data/xpkgs/xim-x-musl/1.2.5/lib/ld-musl-aarch64.so.1"));
+}
