@@ -607,13 +607,23 @@ see got ESC[<2;6;3M
 )", {"--console-exec", "python3", prog.string()}, {{"LUBAN_OS_LANG", "en_US.UTF-8"}});
     EXPECT_EQ(taken.exit_code, 0) << taken.transcript();
 
+    // Clicks count on one cell (xterm's rule): the line is three clicks on a
+    // cell of its own, not a third after the word's two -- five quick clicks
+    // on one cell are the line's three and the next word's two, and whether
+    // the machine is quick enough to make them one run is not the test's to
+    // decide (design 2026-10-19 F12).
     const auto words = home.root() / "words.json", line = home.root() / "line.json", menu = home.root() / "menu.json";
+    const auto five = home.root() / "five.json";
     auto selected = run_script(home, std::format(R"(wait console
 see ready
 cell 0 9 double
 frames 2
 state {}
-cell 0 9 triple
+cell 0 2 triple
+frames 2
+state {}
+cell 0 23 double
+cell 0 23 triple
 frames 2
 state {}
 cell 3 0 middle
@@ -621,12 +631,13 @@ see alpha beta-gamma.txt delta
 cell 3 2 right
 frames 3
 state {}
-)", words.string(), line.string(), menu.string()),
+)", words.string(), line.string(), five.string(), menu.string()),
                                {"--console-exec", "/bin/sh", "-c", R"(printf 'alpha beta-gamma.txt delta\nready\n'; exec cat)"},
                                {{"LUBAN_OS_LANG", "en_US.UTF-8"}});
     ASSERT_EQ(selected.exit_code, 0) << selected.transcript();
     EXPECT_EQ(read_state(words)["clipboard"], "beta-gamma.txt") << "two clicks: the word";
     EXPECT_EQ(read_state(line)["clipboard"], "alpha beta-gamma.txt delta") << "three: the line";
+    EXPECT_EQ(read_state(five)["clipboard"], "delta") << "five on one cell, quickly: the line's three, then the word's two";
     const auto anchors = read_state(menu)["anchors"];
     EXPECT_TRUE(anchors.contains("console:copy") && anchors.contains("console:paste")) << anchors.dump();
 }
