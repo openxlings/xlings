@@ -9,7 +9,9 @@
 
 ```bash
 luban new box                           # Luban Core, the default: shells, editors, git, compilers
-luban new small --edition tiny          # or an edition: nano, tiny, core, desktop, desktop-xdesk, agent-workspace, or ns:name
+luban new small --edition tiny          # 或其他 edition：nano、tiny、tiny-musl、core、agent-workspace、desktop
+luban new desk --edition desktop --desktop lxqt   # 一个桌面：xdesk（自带）、labwc、compositor、lxqt、kde
+luban new mine --xpkg myindex:myos      # 任何 index 的系统（02）
 ```
 
 一条就够。你会看到 `▸ making box (core)`、下载过程，然后是 `✓ box is ready`、它是什么（`box  core@… · N packages ·

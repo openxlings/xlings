@@ -64,7 +64,7 @@ Windows 上是通知区域，macOS 上是菜单栏。它的菜单列出运行中
 桌面 edition 启动 **xdesk**：为这个窗口做的桌面，合成器与外壳在一个程序里（wlroots，软件渲染），直接与窗口通信——
 不经桥、不截屏。它有两种配置：
 
-| | `xdesk-classic`（`desktop`） | `xdesk-canvas`（`desktop-xdesk`） |
+| | `xdesk-classic`（`desktop` edition 的） | `xdesk-canvas`（`--desktop xdesk-canvas`） |
 |---|---|---|
 | 窗口 | 并排；一两个平分屏幕，更多时横向滚动，焦点窗口始终可见 | 放在哪里就在哪里，画布可平移、缩放 |
 | 外壳 | 顶部面板：应用、工作区、焦点窗口的标题、时钟 | 底部药丸：应用、工作区、缩放、全览 |
@@ -111,9 +111,34 @@ repeat_delay = 500
 
 读不懂的一行会写进日志并跳过；桌面照常启动。
 
-## 桌面会话
+## 桌面
 
-桌面是环境按 freedesktop 的方式声明的会话：`share/wayland-sessions/` 下的一个文件，加上 opensal 的键。
+桌面是把会话——`share/wayland-sessions/` 里的一个文件——带进系统的包；一个系统里可以有多个。Luban 自己的位于 `luban:` 命名空间
+（`categories` 含 `luban-desktop` 的包），从最轻到最全：
+
+| 桌面 | 会话 | 是什么 |
+|---|---|---|
+| `luban:compositor` | `compositor` | 只有窗口、没有桌面：labwc，Luban OS 窗口作它的外壳（见下） |
+| `luban:labwc` | `labwc` | labwc 加面板、启动器、背景——轻量 |
+| `luban:lxqt` | `lxqt` | labwc 上的 LXQt：面板、桌面与文件管理器、设置——传统桌面 |
+| `luban:kde` | `kde` | KDE Plasma，嵌套在 labwc 中（preview）——完整桌面 |
+| `luban:xdesk` | `xdesk-classic`、`xdesk-canvas` | Luban 自己的：窗口并排，或在无限画布上 |
+
+每个桌面的终端都是默认终端（`luban:foot`），经 `xdg-terminal-exec` 找到；X11 程序运行在 `luban:xwayland` 上。LXQt 与 KDE
+共用一份 Qt（`luban:qt-runtime`），只装一次。
+
+```bash
+luban new desk --edition desktop --desktop lxqt   # 创建时带上 LXQt，并启动它
+luban enter desk --desktop kde                    # 这一次用另一个桌面（需已安装）
+luban config desk --desktop xdesk-canvas          # 启动哪个会话
+luban config desk --desktop none                  # 改为控制台
+luban config desk --enter console                 # 进入时先看到什么
+```
+
+没有设置时启动 edition 指定的会话（edition 没有指定时，启动根里声明的第一个）。窗口的 Host 键菜单列出系统的桌面与控制台：
+切换只换会话，不重启机器。改名后的桌面仍认旧名（`labwc-desktop` 即 `labwc`）。
+
+会话文件说明它怎样显示：
 
 ```ini
 [Desktop Entry]
@@ -121,22 +146,18 @@ Name=xdesk (classic)
 Exec=xdesk --profile classic
 X-Opensal-Native=true
 X-Opensal-Interfaces=surface pointer keyboard mode
+X-Luban-Shell=own
 ```
 
-`X-Opensal-Native=true` 表示这个程序自己与窗口通信（xdesk）；其他合成器经 opensal-wlr 显示（见下文）。桌面 edition 还带有
-`labwc-desktop`——labwc 加面板、启动器、终端、Xwayland 与字体——作为另一个会话。
+| 键 | |
+|---|---|
+| `X-Opensal-Native=true` | 程序自己与窗口通信（xdesk）；其他合成器经 opensal-wlr 显示（见下） |
+| `X-Luban-Shell` | `own`：桌面有自己的外壳；`none`：Luban OS 窗口作它的外壳 |
+| `X-Luban-App-Exec` | 怎样单独运行一个程序（`luban run --display window`，见下） |
+| `X-Luban-Aliases` | 它以前的名字 |
 
-```bash
-luban config desk --desktop xdesk-canvas    # which session it starts
-luban config desk --desktop labwc-desktop
-luban config desk --desktop none            # its console instead
-```
-
-没有设置时，启动 edition 指定的会话（edition 没有指定时，启动根里声明的第一个）。
-
-会话可以把外壳交给窗口：`X-Luban-Shell=none`（Luban 的 `compositor` 桌面就是不带面板的 labwc）。这时窗口在桌面下方显示一条栏：
-**应用**列出会话里能启动的程序（会话数据目录下的 `share/applications`，包括你自己的；`Terminal=true` 的在默认终端里打开），
-每个窗口一个按钮，点击即前置。`X-Luban-Shell=own`（或不写）则不打扰桌面。
+把外壳交给窗口的会话（`X-Luban-Shell=none`，Luban 的 `compositor`）在桌面下方有一条栏：**应用**列出会话里能启动的程序
+（会话数据目录下的 `share/applications`，包括你自己的；`Terminal=true` 的在默认终端里打开），每个窗口一个按钮，点击即前置。
 
 ## 单个程序一个窗口
 
@@ -150,10 +171,10 @@ luban run desk --display window -- gimp
 
 ## 桌面 edition 里有什么
 
-`desktop` 与 `desktop-xdesk` 是 core 加一个桌面，以及常用工具：node、python（带 uv）、bun、ripgrep、fd、fzf、jq、tmux、htop，
-还有 agent：claude、codex、pi、opencode（x86_64 上还有 dsh）。git 默认分支是 `main`；xlings 使用 CN 镜像时，npm、pip、uv、bun
-也使用离你近的源（你自己设置的优先）。里面没有任何凭据。在 aarch64 上，桌面 edition 在 xdesk 发布到那里之前启动 labwc，
-画布 edition 会说明还没有那个架构的版本。
+`desktop` 是 core 加一个桌面，以及常用工具，按工具集组织：`luban:tools-cli`（ripgrep、fd、fzf、jq、tmux、htop）、
+`luban:tools-dev`（node、带 uv 的 python、bun）与 `luban:tools-agent`（claude、codex、pi、opencode；x86_64 上还有 dsh）。
+git 默认分支是 `main`；xlings 使用 CN 镜像时，npm、pip、uv、bun 也使用离你近的源（你自己设置的优先）。里面没有任何凭据。
+在 aarch64 上，桌面 edition 在 xdesk 发布到那里之前启动 labwc。
 
 ## 自己的桌面
 
@@ -162,9 +183,13 @@ virtual keyboard 与 virtual pointer（输入）、output management（窗口的
 它是 luban 的一部分，随会话启动。
 
 ```bash
-xlings install --subos box xdesk            # or labwc-desktop
-luban config box --desktop xdesk-classic
+xlings install --subos box luban:labwc      # 任何桌面包，Luban 的或其他 index 的
+luban config box --desktop labwc
 ```
+
+自己的桌面就是一个放置会话并遵循同样约定的包（默认配置在它自己的 `etc/xdg`、默认终端、`share/luban/checks.d` 里的自检）；
+`categories` 列出 `luban-desktop`，选择桌面时就会提供它。Luban 的桌面就是示例：index 的
+[Luban 的包](https://github.com/openxlings/xim-pkgindex/blob/main/docs/zh/12-luban-packages.md)一章说明它们怎样构建。
 
 ## 如何运行
 

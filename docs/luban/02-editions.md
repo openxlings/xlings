@@ -1,83 +1,123 @@
-# Editions
+# Editions and distributions
 
 **English** | [简体中文](../zh/luban/02-editions.md)
 
-An edition is a template for an environment: the packages it brings, the policy
-it is made under, how it boots. Editions are packages of the index
-(`type = "subos"`, namespace `subos`).
+A Luban system is made from a **system package** of an index: a template for a
+root (the packages it brings, the policy it is made under, how it boots, what
+it presets). Luban's own are its **editions**; anyone's are distributions
+based on Luban. Desktops and other components are packages that go into a
+system. Everything is an xpkg (`type = "subos"` for a system).
 
 ## The official editions
 
-| Edition | `luban new box …` | What it adds | x86_64 | aarch64 |
+Luban's editions are in the `luban:` namespace of the official index; a short
+name in luban is a name there (`--edition core` is `luban:core`).
+
+| Edition | What it adds | Presets | x86_64 | aarch64 |
 |---|---|---|---|---|
-| `luban-nano` | `nano` | xlings and luban — nothing else, not even a shell | yes | yes |
-| `luban-tiny` | `tiny` | BusyBox, glibc, CA certificates, BusyBox init | yes | yes |
-| `luban-tiny-musl` | `luban-tiny-musl` | tiny with musl instead of glibc | yes | yes |
-| `luban-core` | `core` (the default) | bash, fish, vim, nvim, git, gh, mcpp, ninja, coreutils, gcc, binutils, make, openssl | yes | yes |
-| `luban-agent-workspace` | `agent-workspace` | core, an agent (claude), and the `agent-private` policy | yes | yes |
-| `luban-desktop` | `desktop` | core, the xdesk classic desktop and the tools people reach for (node, python, uv, bun, ripgrep, fd, fzf, jq, tmux, htop, claude, codex, pi, opencode); run as a machine ([The desktop](08-desktop.md)) | yes | yes (labwc) |
-| `luban-desktop-xdesk` | `desktop-xdesk` | the same on the xdesk canvas (to explore) | yes | not yet |
+| `nano` | xlings and luban — nothing else, not even a shell | console | yes | yes |
+| `tiny` | BusyBox, glibc, CA certificates, BusyBox init | console, `/bin/sh` | yes | yes |
+| `tiny-musl` | tiny with musl instead of glibc | console, `/bin/sh` | yes | yes |
+| `core` (the default) | bash, fish, vim, nvim, git, gh, mcpp, ninja, coreutils, gcc, binutils, make, openssl | console, fish | yes | yes |
+| `agent-workspace` | core, the development and agent tool sets, the `agent-private` policy | console, fish | yes | yes |
+| `desktop` | core, the xdesk desktop (labwc on aarch64), foot, Xwayland, the cli, development and agent tool sets | machine, desktop `xdesk-classic`, fish | yes | yes |
 
 Each starts `from` the one below it (`core` from `tiny`, `tiny` from `nano`);
 an edition built for another architecture than this machine's is refused before
-anything is made.
+anything is made. A desktop is not an edition: an edition presets one, and
+`--desktop` chooses another ([The desktop](08-desktop.md)).
+
+The editions published before 2026.10.18.1 (`subos:luban-core`,
+`subos:luban-desktop-xdesk`, …) are frozen: kept, resolved, never updated. Each
+`luban:` edition says which it replaces, and `luban upgrade` moves a system made
+from one to its successor, keeping what it showed (a desktop-xdesk system keeps
+the canvas).
+
+## Any index's system: `--xpkg`
+
+```bash
+luban new box                                   # luban:core
+luban new box --edition desktop --desktop lxqt  # Luban's desktop edition, with LXQt
+luban new box --xpkg myindex:myos               # a distribution from an index you added
+luban new box --xpkg myindex:myos --xpkg luban:kde --xpkg xim:htop   # and components into it
+```
+
+Before anything is made, luban reads the system's chain (`xlings subos new
+--dry-run`): what it is, what it is based on, what it presets, what it needs.
+A system or component from another index than the official one is shown with
+where it comes from and is agreed to once (`--yes` agrees; an agent must pass it);
+the agreement is kept per package and version.
+
+```
+ MyOS 1.0.0                                   from myindex
+ Based on     Luban core 2026.10.18.1         official
+ It will be   sandbox · login shell /usr/bin/fish · 12 packages
+```
+
+A system whose chain reaches no official edition is refused ("not built on
+Luban"); one that needs what this luban lacks says what (`luban.requires`,
+below) instead of half-working.
 
 ## Versions
 
-- An edition is versioned by the date it was published (`2026.10.11.2`), and a
+- An edition is versioned by the date it was published (`2026.10.18.1`), and a
   published version's output never changes.
-- `luban new box --edition core` takes the edition's `latest`; `subos:luban-core@2026.10.11.1`
-  takes that version.
+- `luban new box --edition core` takes the edition's `latest`;
+  `--xpkg luban:core@2026.10.18.1` takes that version.
 - An edition that needs a newer client than yours says so (`min_client`) and
-  names the upgrade, instead of half-working. With no version named, xlings
-  2026.10.16.2 and later take the newest edition they can use and say which
-  one was passed over; the index states each version's `min_client`.
-- An environment remembers which edition and version it came from, and what that
-  brought; `luban upgrade` moves it to the newest ([03](03-environments.md)).
+  names the upgrade, instead of half-working; with no version named, the newest
+  this client can use is taken and the one passed over is said.
+- A system remembers what it was made from — every layer of its chain and the
+  index of each — and `luban upgrade` moves it to the newest ([03](03-environments.md)).
 
 ## What is pinned
 
-The edition's packages are pinned to exact versions, so an environment made
-today and one made next month from the same version are the same. The agent of
-`agent-workspace` is the exception: it changes weekly, so the newest at creation
-is installed and recorded, and `luban upgrade` moves it.
+An edition's packages are pinned to exact versions, so a system made today and
+one made next month from the same version are the same. The agents of the agent
+tool set are the exception: they change weekly, so the newest at creation is
+installed and recorded, and `luban upgrade` moves them.
 
-## An edition of your own
+## A distribution of your own
 
-An edition is a manifest:
+A system package is a manifest; a distribution based on Luban starts `from` an
+official edition:
 
 ```json
-{ "subos_kind": "rootfs", "from": "subos:luban-nano",
+{ "subos_kind": "rootfs", "from": "luban:core@2026.10.18.1",
   "abi": { "kernel": "linux", "libc": "gnu" },
-  "packages": [ "xim:glibc@2.44.3", "xim:busybox@1.35.0" ],
-  "boot": { "init": "/sbin/init", "profile": "xim:luban-boot-generic" } }
+  "packages": [ "xim:htop@3.5.3", "luban:lxqt@2.4.0-r2" ],
+  "luban": { "os": { "name": "MyOS", "version": "1.0.0" },
+             "settings": { "desktop": "lxqt", "enter": "desktop" },
+             "requires": [ "root-layout>=2" ] } }
 ```
 
 | Key | |
 |---|---|
-| `subos_kind` | `rootfs`: an environment that is a root |
-| `from` | the edition below it |
-| `abi` | the kernel and the libc it needs (an architecture-neutral edition names no machine) |
+| `subos_kind` | `rootfs`: a system that is a root |
+| `from` | the system below it (an official edition, for a distribution based on Luban) |
+| `abi` | the kernel and the libc it needs (an architecture-neutral system names no machine) |
 | `packages` | what it brings, pinned |
 | `policy` | the policy it is made under (`xim:agent-private@…`) |
 | `boot` | its init, and the boot profile an image of it uses |
 | `min_client` | the oldest xlings that understands it |
+| `replaces` | the package it succeeds (honoured within one index) |
+| `luban.os` | how it names itself: `luban status` says "MyOS 1.0.0 (Luban core)", and its `/etc/os-release` is its own |
+| `luban.settings` | what it presets for `luban config` (`mode`, `enter`, `desktop`, `login_shell`, `persist`, `on_close`): below what the person sets |
+| `luban.requires` | capabilities it needs of whoever reads or runs it, by name and level ([opencaps](https://github.com/openxlings/xlings/tree/main/luban/specs/opencaps)): an unknown name is unmet |
 
-Two files of the root say how it runs, and neither is code:
+The root's `usr/share/luban/settings.json` holds the same presets for an older
+luban, and `share/wayland-sessions/<id>.desktop` the desktop sessions its
+packages bring ([The desktop](08-desktop.md)).
 
-- `usr/share/luban/settings.json` — the edition's defaults for `luban config`
-  (`mode`, `persist`, `desktop`, `on_close`); what a user sets wins, and they
-  follow an upgrade. The desktop edition's is `{ "mode": "machine", "desktop": "xdesk-classic" }`.
-- `share/wayland-sessions/<id>.desktop` — a desktop session, from a package
-  ([The desktop](08-desktop.md)).
-
-Make an environment from it, adjust it, and publish it:
+Make a system from it, adjust it, and publish it in your index:
 
 ```bash
-xlings subos new mydistro --rootfs --from subos:luban-nano
-xlings subos pack mydistro --as myns:mydistro@2026.10.12.1
+xlings subos new mydistro --rootfs --from luban:core
+xlings subos pack mydistro --as myns:mydistro@2026.10.18.1
 ```
 
-Then anyone with your index can `luban new box --edition myns:mydistro` and export it.
-The index's [Luban packages](https://github.com/openxlings/xim-pkgindex/blob/main/docs/12-luban-packages.md)
-chapter covers editions, policies and boot profiles as recipes.
+Then anyone with your index can `luban new box --xpkg myns:mydistro`. The
+official index reserves `luban`, `xim`, `subos` and `config`: a package in them
+from another index is refused. The index's
+[Luban packages](https://github.com/openxlings/xim-pkgindex/blob/main/docs/12-luban-packages.md)
+chapter covers editions, desktop components, policies and boot profiles as recipes.
