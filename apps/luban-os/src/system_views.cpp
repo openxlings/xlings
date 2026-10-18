@@ -1,0 +1,469 @@
+// A system shown: its console, a system without a shell (run), its desktop.
+module luban.os;
+
+import std;
+import xlings.libs.json;
+import imkit;
+import tray;
+import luban.service;
+import luban.vm;
+import xdesk.term;
+import opensal;
+import opensal.wire;
+import xlings.subos.home_view;
+import xlings.subos.located;
+import xlings.subos.policy_store;
+import xlings.subos.policy;
+import xlings.subos.root_etc;
+import luban.service.archive;
+import xlings.libs.sha512;
+import xlings.observe;
+import xlings.platform;
+import xlings.platform.target;
+import luban.desktop.host;
+import opensal.wlr;
+import :core;
+
+namespace luban::os {
+
+void console_view_(App& a) {
+    begin_full_("console");
+    if (!a.console) { ImGui::End(); return; }
+    const float bar = system_bar_(a, a.console->is_machine() ? tr("machine", "机器") : tr("sandbox", "沙箱"));
+    // Keys the program gets: text from the input method; named keys and
+    // control chords as xterm sends them. The size keys are the window's.
+    if (!a.menu && !a.close_dialog) {
+        bool app_cursor, bracketed;
+        int mouse = 0;
+        {
+            std::lock_guard l(a.console->lock());
+            app_cursor = a.console->screen().application_cursor();
+            bracketed = a.console->screen().bracketed_paste();
+            mouse = a.console->screen().mouse_mode();
+        }
+        for (const auto& e : a.window->events())
+            if (auto* t = std::get_if<opensal::TextCommit>(&e)) { a.console->write(t->text); a.console_scroll = 0; a.selection.reset(); }
+        for (const auto& k : a.window->keys()) {
+            const auto mods = k.key.mods;
+            const bool ctrl = mods & opensal::Ctrl, shift = mods & opensal::Shift;
+            if (ctrl && !shift && (k.name == "=" || k.name == "+" || k.name == "-" || k.name == "0")) {
+                float size = a.console_size(a.current);
+                size = k.name == "0" ? a.settings.console_size : std::clamp(size + (k.name == "-" ? -1.0f : 1.0f), 8.0f, 40.0f);
+                a.settings.console_sizes[a.current] = size;
+                write_app_settings(a.home, a.settings);
+                continue;
+            }
+            if (ctrl && shift && (k.name == "V" || k.name == "v")) {
+                a.console->write(term::encode_paste(a.window->clipboard(), bracketed));
+                continue;
+            }
+            if (ctrl && shift && (k.name == "C" || k.name == "c")) {
+                if (a.selection) a.window->set_clipboard(console_text(*a.console, a.console_scroll, *a.selection));
+                continue;
+            }
+            if (shift && (k.name == "PageUp" || k.name == "PageDown")) {
+                a.console_scroll = std::max(0, a.console_scroll + (k.name == "PageUp" ? 1 : -1) * std::max(1, a.grid.rows - 1));
+                continue;
+            }
+            const bool printable = k.name.size() == 1;
+            if (printable && !(mods & (opensal::Ctrl | opensal::Alt))) continue;   // came as text
+            a.console->write(term::encode_key(k.name, mods & (opensal::Shift | opensal::Ctrl | opensal::Alt), app_cursor));
+            a.console_scroll = 0;
+        }
+        // The wheel scrolls back (when the program does not take the mouse);
+        // a drag selects, and what is selected is copied when it ends.
+        if (ImGui::IsWindowHovered() && mouse == 0) {
+            const float wheel = ImGui::GetIO().MouseWheel;
+            if (wheel != 0) a.console_scroll = std::max(0, a.console_scroll + static_cast<int>(wheel * 3));
+            const auto m = ImGui::GetMousePos();
+            const int col = static_cast<int>((m.x - a.grid.x) / a.grid.cell_w), row = static_cast<int>((m.y - a.grid.y) / a.grid.cell_h);
+            const bool inside = row >= 0 && col >= 0 && row < a.grid.rows && col < a.grid.cols;
+            if (ImGui::IsMouseClicked(ImGuiMouseButton_Left) && inside) { a.selecting = true; a.selection = std::array<int, 4>{row, col, row, col}; }
+            else if (a.selecting && ImGui::IsMouseDown(ImGuiMouseButton_Left) && a.selection)
+                (*a.selection)[2] = std::clamp(row, 0, a.grid.rows - 1), (*a.selection)[3] = std::clamp(col, 0, a.grid.cols - 1);
+            if (a.selecting && ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
+                a.selecting = false;
+                if (a.selection && ((*a.selection)[0] != (*a.selection)[2] || (*a.selection)[1] != (*a.selection)[3]))
+                    a.window->set_clipboard(console_text(*a.console, a.console_scroll, *a.selection));
+                else a.selection.reset();
+            }
+        }
+        // What the program put on the clipboard (OSC 52), when it may.
+        std::optional<std::string> wanted;
+        {
+            std::lock_guard l(a.console->lock());
+            wanted = a.console->screen().take_clipboard();
+        }
+        if (wanted && a.clipboard_grant(a.current).copy) a.window->set_clipboard(*wanted);
+    }
+    ImGui::SetCursorPos(ImVec2(0, bar));
+    a.grid = draw_console(*a.console, {.font = a.window->mono_font(), .bold = a.window->mono_bold_font(),
+                                       .size = a.console_size(a.current), .padding = imkit::unit(),
+                                       .focused = !a.menu, .scroll = a.console_scroll, .selection = a.selection});
+    mark_(a, "console");
+    a.console->resize(a.grid.rows, a.grid.cols);
+    ImGui::End();
+    if (!a.console->alive()) {
+        const bool machine = a.console->is_machine();
+        // A session that failed says why on the way out: its last lines are
+        // the reason shown, not a blank "off".
+        a.ended_why.clear();
+        if (a.console->exit_code() != 0) {
+            std::lock_guard l(a.console->lock());
+            auto& screen = a.console->screen();
+            std::vector<std::string> lines;
+            for (int row = 0; row < screen.rows(); ++row) {
+                std::string line;
+                for (int col = 0; col < screen.cols(); ++col) {
+                    const auto& cell = screen.at(row, col);
+                    if (cell.continuation) continue;
+                    append_utf8_(line, cell.ch ? cell.ch : U' ');
+                }
+                while (!line.empty() && line.back() == ' ') line.pop_back();
+                if (!line.empty()) lines.push_back(line);
+            }
+            if (lines.size() > 6) lines.erase(lines.begin(), lines.end() - 6);
+            for (const auto& l2 : lines) a.ended_why += l2 + "\n";
+            a.ended_code = a.console->exit_code();
+        }
+        a.console.reset();
+        if (machine && vm::running(a.home, a.current)) {
+            a.notice = std::vformat(tr("{} keeps running", "{} 仍在运行"), std::make_format_args(a.current));
+            a.back_home();
+        } else {
+            a.view = View::Off;
+        }
+        a.window->set_title("Luban OS");
+    }
+}
+
+// nano's view: one line a command, run in it, its output kept.
+void run_view_(App& a) {
+    begin_full_("run");
+    auto* dl = ImGui::GetWindowDrawList();
+    const ImVec2 o = ImGui::GetWindowPos();
+    const float W = ImGui::GetWindowWidth(), H = ImGui::GetWindowHeight();
+    const float bar = system_bar_(a, tr("commands", "命令"));
+    const float inputH = px(56);
+    // The output.
+    ImGui::SetCursorPos(ImVec2(0, bar));
+    dl->AddRectFilled(ImVec2(o.x, o.y + bar), ImVec2(o.x + W, o.y + H), IM_COL32(19, 21, 26, 255));
+    ImGui::SetCursorPos(ImVec2(imkit::unit(), bar + imkit::unit()));
+    ImGui::BeginChild("output", ImVec2(W - imkit::unit() * 2, H - bar - inputH - imkit::unit() * 2), ImGuiChildFlags_None,
+                      ImGuiWindowFlags_NoBackground);
+    {
+        std::lock_guard l(a.run.m);
+        auto* odl = ImGui::GetWindowDrawList();
+        auto* mono = static_cast<ImFont*>(a.window->mono_font());
+        const float size = a.console_size(a.current) * imkit::scale();
+        const float lh = std::round(size * 1.25f);
+        for (const auto& line : a.run.lines) {
+            const ImU32 c = line.command ? IM_COL32(115, 239, 247, 255) : line.error ? IM_COL32(239, 125, 87, 255) : IM_COL32(216, 222, 233, 255);
+            std::string_view rest = line.text;
+            for (;;) {
+                const auto nl = rest.find('\n');
+                const auto part = rest.substr(0, nl);
+                odl->AddText(mono, size, ImGui::GetCursorScreenPos(), c, part.data(), part.data() + part.size());
+                ImGui::Dummy(ImVec2(0, lh));
+                if (nl == std::string_view::npos) break;
+                rest.remove_prefix(nl + 1);
+            }
+        }
+        if (a.run.scroll_down) { ImGui::SetScrollHereY(1.0f); a.run.scroll_down = false; }
+    }
+    ImGui::EndChild();
+    mark_(a, "run:output");
+    // The line to type into.
+    const float y = H - inputH + px(8);
+    ImGui::SetCursorPos(ImVec2(imkit::unit(), y));
+    const bool busy = a.run.busy;
+    imkit::text(dl, ImVec2(o.x + imkit::unit(), o.y + y + px(10)), busy ? "…" : ">", th_().accent_hi, 16);
+    ImGui::SetCursorPos(ImVec2(imkit::unit() + px(20), y));
+    if (!ImGui::GetIO().WantTextInput && !a.menu) ImGui::SetKeyboardFocusHere();
+    const bool entered = imkit::text_field("run:input", a.run.input, sizeof a.run.input, (W - imkit::unit() * 2 - px(20)) / imkit::scale(),
+                                           ImGuiInputTextFlags_EnterReturnsTrue,
+                                           tr("a command, e.g. xlings list (Esc: back to the list)", "一条命令，例如 xlings list（Esc：回到列表）"));
+    mark_(a, "run:input");
+    ImGui::End();
+    for (const auto& k : a.window->keys()) {
+        if (k.name == "Escape") { a.back_home(); return; }
+        if ((k.name == "Up" || k.name == "Down") && !a.run.history.empty()) {
+            const int n = static_cast<int>(a.run.history.size());
+            a.run.history_at = k.name == "Up" ? (a.run.history_at < 0 ? n - 1 : std::max(0, a.run.history_at - 1))
+                                              : (a.run.history_at < 0 ? -1 : a.run.history_at + 1 >= n ? -1 : a.run.history_at + 1);
+            const auto& text = a.run.history_at < 0 ? std::string{} : a.run.history[static_cast<std::size_t>(a.run.history_at)];
+            std::snprintf(a.run.input, sizeof a.run.input, "%s", text.c_str());
+        }
+    }
+    if (entered && !busy && a.run.input[0]) {
+        const std::string line = a.run.input;
+        a.run.input[0] = 0;
+        a.run.history.push_back(line);
+        a.run.history_at = -1;
+        auto argv = platform::split_plain_words(line);
+        std::lock_guard l(a.run.m);
+        a.run.lines.push_back({"> " + line, true});
+        a.run.scroll_down = true;
+        if (!argv || argv->empty()) {
+            a.run.lines.push_back({std::string(tr("Plain words only: there is no shell here to read quotes, pipes or $.",
+                                                  "只能是普通的词：这里没有 shell 来解释引号、管道或 $。")), false, true});
+            return;
+        }
+        a.run.busy = true;
+        auto* app = &a;
+        auto* w = a.window.get();
+        a.run.worker = std::make_unique<std::jthread>([app, w, argv = *argv, name = a.current, port = a.ctx.port] {
+            std::string pending_err;
+            const int rc = port.capability("subos_exec", Json{{"name", name}, {"argv", argv}}, [&](const service::Event& e) {
+                if (e.kind == service::Event::Kind::Data && e.data_kind == "subos_exec_output" && e.data.is_object()) {
+                    auto text = e.data.value("data", std::string{});
+                    if (e.data.value("encoding", std::string{}) == "base64") text = "(binary output)";
+                    const bool err = e.data.value("stream", std::string{}) == "stderr";
+                    std::lock_guard l(app->run.m);
+                    while (!text.empty() && text.back() == '\n') text.pop_back();
+                    if (!text.empty()) app->run.lines.push_back({text, false, err});
+                    app->run.scroll_down = true;
+                } else if (e.kind == service::Event::Kind::Error) {
+                    std::lock_guard l(app->run.m);
+                    app->run.lines.push_back({e.hint.empty() ? e.text : e.text + " -- " + e.hint, false, true});
+                }
+                w->wake();
+            });
+            {
+                std::lock_guard l(app->run.m);
+                if (rc != 0) app->run.lines.push_back({std::format("(exit {})", rc), false, true});
+                app->run.scroll_down = true;
+            }
+            app->run.busy = false;
+            w->wake();
+        });
+    }
+}
+
+// Reads an archive for its preview: what it is and what it may do.
+ImportPreview preview_import_(const fs::path& file, const std::vector<std::string>& taken) {
+    ImportPreview p;
+    p.file = file;
+    auto manifest = luban::service::archive::read(file);
+    if (!manifest) { p.error = manifest.error(); return p; }
+    const auto& m = *manifest;
+    if (m.contains("edition") && m["edition"].is_object()) p.edition = m["edition"].value("ref", "");
+    if (m.contains("packages") && m["packages"].is_object()) p.packages = m["packages"].size();
+    if (m.contains("policy") && m["policy"].is_object()) {
+        if (auto pol = xlings::subos::policy::from_json(m["policy"])) {
+            p.preset = std::string(xlings::subos::policy::to_string(pol->preset));
+            if (pol->preset == xlings::subos::policy::Preset::Legacy)
+                p.wider.push_back(std::string(tr("no isolation preset (as an environment made before policies)",
+                                                 "没有隔离预设（如同策略出现之前的环境）")));
+            // A grant as what it lets the system do.
+            static constexpr std::array<std::array<std::string_view, 3>, 6> kGrants{{
+                {"clipboard", "can copy to this computer's clipboard", "可以复制到这台电脑的剪贴板"},
+                {"clipboard-paste", "can read this computer's clipboard", "可以读取这台电脑的剪贴板"},
+                {"display", "can show windows on this computer's screen", "可以在这台电脑的屏幕上显示窗口"},
+                {"audio", "can play and record sound", "可以播放和录制声音"},
+                {"gpu", "can use this computer's graphics card", "可以使用这台电脑的显卡"},
+                {"ssh-agent", "can use your SSH keys", "可以使用你的 SSH 密钥"},
+            }};
+            for (const auto& g : pol->grants) {
+                const auto known = std::ranges::find_if(kGrants, [&](const auto& k) { return k[0] == g; });
+                p.wider.push_back(known != kGrants.end() ? std::string(tr((*known)[1], (*known)[2]))
+                                                         : std::vformat(tr("granted: {}", "授权：{}"), std::make_format_args(g)));
+            }
+            for (const auto& mnt : pol->mounts)
+                p.wider.push_back(std::format("{} {} ({})", tr("mounts the host's", "挂载宿主的"), mnt.src, mnt.rw ? "rw" : "ro"));
+        } else {
+            p.wider.push_back(std::vformat(tr("a policy this version cannot read: {}", "本版本读不懂的策略：{}"),
+                                           std::make_format_args(pol.error())));
+        }
+    }
+    // A name: the file's, made unique.
+    std::string base = file.stem().string();
+    std::ranges::replace_if(base, [](char c) { return !std::isalnum(static_cast<unsigned char>(c)) && c != '-' && c != '_'; }, '-');
+    if (base.empty()) base = "imported";
+    std::string name = base;
+    for (int k = 2; std::ranges::find(taken, name) != taken.end() && k < 100; ++k) name = std::format("{}-{}", base, k);
+    std::snprintf(p.name, sizeof p.name, "%s", name.c_str());
+    return p;
+}
+
+// Tests: sends `input` up to its next chord (or all of it) to the desktop as
+// key presses; returns what is left.
+std::string type_desktop_(Display& d, std::string_view input) {
+    auto press = [&](std::uint32_t sym, std::uint32_t mods) {
+        d.send(opensal::Key{true, sym, mods});
+        d.send(opensal::Key{false, sym, mods});
+    };
+    static constexpr std::array<std::pair<std::string_view, std::uint32_t>, 6> names{{
+        {"Return", 0xff0d}, {"Tab", 0xff09}, {"Escape", 0xff1b}, {"BackSpace", 0xff08}, {"Up", 0xff52}, {"Down", 0xff54}}};
+    std::size_t k = 0;
+    if (input.starts_with('{')) {
+        const auto end = input.find('}');
+        if (end == std::string_view::npos) return {};
+        auto chord = input.substr(1, end - 1);
+        std::uint32_t mods = 0;
+        std::vector<std::uint32_t> held;
+        for (auto [name, bit, sym] : {std::tuple{"Alt+", opensal::Alt, 0xffe9u}, {"Ctrl+", opensal::Ctrl, 0xffe3u},
+                                      {"Shift+", opensal::Shift, 0xffe1u}, {"Super+", opensal::Super, 0xffebu}})
+            if (chord.starts_with(name)) { mods |= bit; held.push_back(sym); chord.remove_prefix(std::string_view(name).size()); }
+        for (auto sym : held) d.send(opensal::Key{true, sym, mods});
+        std::uint32_t key = chord.size() == 1 ? static_cast<unsigned char>(chord[0]) : 0;
+        for (const auto& [n, sym] : names) if (chord == n) key = sym;
+        if (key) press(key, mods);
+        for (auto sym : held) d.send(opensal::Key{false, sym, 0});
+        return std::string(input.substr(end + 1));
+    }
+    for (; k < input.size() && input[k] != '{'; ++k) {
+        if (input[k] == '\\' && k + 1 < input.size() && input[k + 1] == 'n') { press(0xff0d, 0); ++k; continue; }
+        const auto c = static_cast<unsigned char>(input[k]);
+        press(c, std::isupper(c) ? opensal::Shift : 0);
+    }
+    return std::string(input.substr(k));
+}
+
+// A machine's desktop: its surface drawn whole (1:1 when it fits), and the
+// window's input given to it -- the pointer in the surface's pixels.
+void desktop_view_(App& a) {
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
+    begin_full_("desktop");
+    ImGui::PopStyleVar();
+    if (!a.display) { ImGui::End(); return; }
+    auto& d = *a.display;
+    std::vector<Display::Update> updates;
+    const auto size = d.take(updates);
+    a.desktop_changed = !updates.empty();
+    if (size.width && size.height
+        && (a.texture.width != static_cast<int>(size.width) || a.texture.height != static_cast<int>(size.height))) {
+        if (a.texture.handle) a.window->destroy(a.texture);
+        a.texture = a.window->texture(static_cast<int>(size.width), static_cast<int>(size.height));
+        a.desktop_changed = true;
+    }
+    for (const auto& u : updates)
+        if (a.texture.handle && u.rect.x + u.rect.width <= static_cast<std::uint32_t>(a.texture.width)
+            && u.rect.y + u.rect.height <= static_cast<std::uint32_t>(a.texture.height))
+            a.window->update(a.texture, u.rect, u.rows);
+    // Pacing: what it sent is shown with this frame; it may draw the next --
+    // without a GPU at most 30 times a second (the main loop says it when due).
+    if (!updates.empty()) {
+        const auto now = std::chrono::steady_clock::now();
+        if (a.perf.renderer == "software" && now - a.presented_at < std::chrono::milliseconds(33))
+            a.present_due = a.presented_at + std::chrono::milliseconds(33);
+        else {
+            d.send(opensal::FramePresented{});
+            a.presented_at = now;
+        }
+    }
+    const ImVec2 origin = ImGui::GetCursorScreenPos();
+    const ImVec2 avail = ImGui::GetContentRegionAvail();
+    if (a.texture.handle) {
+        // Its device pixels at the screen's pixel density (1:1), smaller when it does not fit.
+        const float density = static_cast<float>(a.pixel_density());
+        const float scale = std::min({1.0f / density, avail.x / a.texture.width, avail.y / a.texture.height});
+        const ImVec2 shown(a.texture.width * scale, a.texture.height * scale);
+        const ImVec2 at(std::round(origin.x + (avail.x - shown.x) / 2), std::round(origin.y + (avail.y - shown.y) / 2));
+        ImGui::SetCursorScreenPos(at);
+        ImGui::Dummy(shown);
+        // Drawn in tiles: SDL's software renderer (no GPU, as in a VM) draws
+        // nothing of one triangle much bigger than about 1000x700.
+        const auto id = static_cast<ImTextureID>(reinterpret_cast<std::uintptr_t>(a.texture.handle));
+        constexpr int kTile = 512;
+        for (int ty = 0; ty < a.texture.height; ty += kTile)
+            for (int tx = 0; tx < a.texture.width; tx += kTile) {
+                const int tw = std::min(kTile, a.texture.width - tx), th = std::min(kTile, a.texture.height - ty);
+                const ImVec2 p0(at.x + tx * scale, at.y + ty * scale), p1(at.x + (tx + tw) * scale, at.y + (ty + th) * scale);
+                const ImVec2 uv0(static_cast<float>(tx) / a.texture.width, static_cast<float>(ty) / a.texture.height);
+                const ImVec2 uv1(static_cast<float>(tx + tw) / a.texture.width, static_cast<float>(ty + th) / a.texture.height);
+                ImGui::GetWindowDrawList()->AddImage(id, p0, p1, uv0, uv1);
+            }
+        mark_(a, "desktop");
+        // Over its picture the guest's own pointer is drawn into the frames
+        // (the compositor's theme); elsewhere -- the bars around a picture
+        // smaller than the window -- the host's arrow shows (design
+        // 2026-10-16 L §13.9).
+        if (ImGui::IsItemHovered()) ImGui::SetMouseCursor(ImGuiMouseCursor_None);
+        // Its caret: the host's input method writes there (in window pixels).
+        if (auto t = d.take_text_input()) {
+            int on = 0, x = 0, y = 0, w = 1, h = 1;
+            std::istringstream in(*t);
+            in >> on >> x >> y >> w >> h;
+            a.desktop_text = on == 1;
+            if (a.desktop_text)
+                a.window->text_input(true, static_cast<int>(at.x + x * scale), static_cast<int>(at.y + y * scale),
+                                     std::max(1, static_cast<int>(w * scale)), std::max(1, static_cast<int>(h * scale)));
+            else a.window->text_input(false);
+        }
+        // What it copied is the host's clipboard (it is not pasted back).
+        if (auto c = d.take_clipboard()) {
+            a.window->set_clipboard(*c);
+            a.pasted = *c;
+        }
+        // The host's clipboard into it, when it is granted: as it opens,
+        // whenever it changes, and whenever the window comes back to it.
+        auto paste = [&] {
+            if (!d.clipboard_grant().paste) return;
+            auto text = a.window->clipboard();
+            if (text.empty() || text == a.pasted) return;
+            a.pasted = text;
+            d.send(opensal::ClipboardText{std::move(text)});
+        };
+        if (std::exchange(a.paste_on_open, false)) paste();
+        if (!a.menu && !a.close_dialog) {
+            for (const auto& e : a.window->events()) {
+                if (const auto* m = std::get_if<opensal::PointerMotion>(&e)) {
+                    d.send(opensal::PointerMotion{(m->x - at.x) / scale, (m->y - at.y) / scale});
+                } else if (const auto* k = std::get_if<opensal::Key>(&e)) {
+                    // While it takes text, a character is the input method's
+                    // to give (as text), not a key's.
+                    const bool chord = k->mods & (opensal::Ctrl | opensal::Alt | opensal::Super);
+                    const bool character = (k->keysym >= 0x20 && k->keysym <= 0x7e) || (k->keysym >= 0xa0 && k->keysym <= 0xff)
+                                           || k->keysym >= 0x01000000;
+                    if (!(a.desktop_text && character && !chord)) d.send(e);
+                } else if (std::holds_alternative<opensal::TextCommit>(e) || std::holds_alternative<opensal::Preedit>(e)) {
+                    if (a.desktop_text) d.send(e);
+                } else if (const auto* f = std::get_if<opensal::Focus>(&e)) {
+                    d.send(e);
+                    if (f->in) paste();
+                } else if (std::holds_alternative<opensal::ClipboardText>(e)) {
+                    paste();    // the host's clipboard changed
+                } else if (std::holds_alternative<opensal::PointerButton>(e) || std::holds_alternative<opensal::Wheel>(e)) {
+                    d.send(e);
+                }
+            }
+        }
+    } else {
+        auto* dl = ImGui::GetWindowDrawList();
+        const float cell = std::round(px(4));
+        art::badge(dl, art::Badge::Craftsman, "", ImVec2(origin.x + (avail.x - 16 * cell) / 2, origin.y + avail.y * 0.32f), cell,
+                   imkit::beat(2, 0.3));
+        centred_(dl, avail.y * 0.32f + 16 * cell + px(20),
+                 std::vformat(tr("Starting the desktop of {}…", "正在启动 {} 的桌面…"), std::make_format_args(a.current)), th_().text_dim, 16);
+    }
+    // The window's size is the desktop's, once it has held still a moment.
+    // The screen's scale, said once and whenever it changes (a screen with
+    // another scale); the size it wants, in device pixels.
+    if (const double density = a.density(); std::abs(density - a.sent_density) > 0.01) {
+        d.send(opensal::DensityChanged{density});
+        a.sent_density = density;
+    }
+    const opensal::Size want = a.device_size_(static_cast<int>(avail.x), static_cast<int>(avail.y));
+    if (want != a.desktop_size) { a.desktop_size = want; a.resize_at = std::chrono::steady_clock::now() + std::chrono::milliseconds(300); }
+    if (a.resize_at && std::chrono::steady_clock::now() >= *a.resize_at) { d.send(opensal::Resized{want}); a.resize_at.reset(); }
+    ImGui::End();
+    if (!d.alive()) {
+        // A desktop that could not start (or ended) leaves the machine's console.
+        const auto why = d.error();
+        const bool machine = d.is_machine();
+        a.close_display();
+        if (machine && !vm::running(a.home, a.current)) {
+            a.view = View::Off;
+        } else if (machine) {
+            a.notice = why;
+            a.open_console(a.current, true);
+        } else {
+            // A sandbox's desktop that ended is the end of that session.
+            a.notice = why;
+            a.back_home();
+        }
+    }
+}
+
+}  // namespace luban::os

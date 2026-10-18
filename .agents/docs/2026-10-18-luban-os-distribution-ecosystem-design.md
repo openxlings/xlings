@@ -692,6 +692,7 @@ guest（machine）没有 GPU：wlroots 用 pixman 渲染（桥接与工厂测试
 | C3 `fix(luban-os,xdesk)` | 设置页经服务层；应用 ID；失败原因保留；终端应用的标题与 ID；终端不写死 | B5–B7、B20 |
 | C4 `perf(luban-os)` | 渲染后端与提示；新帧才画；30 帧上限；空闲不画；CPU 测试 | B17 |
 | C5 `fix(luban)` | `--edition` 只收官方；角色不符的提示与翻译；转达 `passedOver` | B8、B22 |
+| C5a `refactor(luban-os)` | `app.cpp`（3345 行）按职责拆为 `app.cpp`（主循环、托盘）、`common.cpp`（文字、设置、页框与浮层）、`launcher.cpp`（列表、快速开始、导入、作业）、`system_views.cpp`（控制台、运行、桌面）、`admin.cpp`（管理面板）、`script.cpp`（状态与测试脚本），共享的状态与声明在分区 `luban.os:core`；单个文件不超过 2000 行。§1 的行号指 2026.10.17.1 的单文件 | — |
 | — 可切分点 — | | |
 | C6 `feat(xim)` | 保留命名空间；`replaces`；`info --json`、`search --category --json` | §4.2、§15.1 |
 | C7 `feat(subos)` | `subos new --dry-run --json`；实例记录补每层 index 与根布局级别；系统内投影 `lib/<子目录>` 与 `libexec/`，整包私有树整体认领 | §5.3、§9、§4.6 |

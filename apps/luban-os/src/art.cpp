@@ -6,6 +6,7 @@ module luban.os;
 import std;
 import imkit;
 import tray;
+import :core;
 
 namespace luban::os::art {
 

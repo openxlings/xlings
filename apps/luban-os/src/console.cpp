@@ -6,6 +6,7 @@ import xlings.libs.json;
 import xlings.platform;
 import luban.vm;
 import xdesk.term;
+import :core;
 
 namespace luban::os {
 

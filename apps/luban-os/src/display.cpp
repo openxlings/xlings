@@ -10,6 +10,7 @@ import opensal.wire;
 import luban.service;
 import luban.vm;
 import opensal.wlr;
+import :core;
 
 namespace luban::os {
 
