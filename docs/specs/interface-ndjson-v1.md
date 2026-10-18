@@ -1,12 +1,12 @@
-# NDJSON Interface Protocol v1.11
+# NDJSON Interface Protocol v1.12
 
-> Status: in force; protocol 1.11 since xlings 2026.10.17.1. Implemented in
+> Status: in force; protocol 1.12 since xlings 2026.10.18.1. Implemented in
 > `src/interface.cpp`; `xlings interface --list` is the authoritative schema.
 
 ## 1. Overview
 
 `xlings interface` is the structured API for programs: IDE plugins, CI scripts
-and AI agents talk to xlings over standard IO. The protocol is **1.11**, over NDJSON
+and AI agents talk to xlings over standard IO. The protocol is **1.12**, over NDJSON
 (newline-delimited JSON).
 
 | Protocol | xlings | Change |
@@ -23,6 +23,7 @@ and AI agents talk to xlings over standard IO. The protocol is **1.11**, over ND
 | 1.9 | 2026.10.13.1 | added: `subos_command` -- any `xlings subos` subcommand with its log lines, progress, data and errors as events (what luban renders itself) |
 | 1.10 | 2026.10.16.1 | added: `--version` is the handshake (§3.1); `payload_status` and `sync_index` (§7.4); `install_targets` entries carry `complete` and `origin` (§6.3.1) |
 | 1.11 | 2026.10.17.1 | `complete` means integrity only; added beside it: `installed_revision`, `floor`, `usable`, `current` (feature `payload_currency`, §6.3.1, §7.4); the `scope_repaired` data event (§6.3.1); `system_status`'s `binding_state` data event (feature `binding_state`, §7.5) |
+| 1.12 | 2026.10.18.1 | added: `search_packages`' `category` argument, and `namespace`, `index`, `categories` on its `packages` entries; `package_info`'s `package` object; an index's reserved namespaces kept to it (feature `reserved_namespaces`); `subos_command` `new --dry-run`'s `subos_plan` data event (feature `subos_plan`) |
 
 A minor version only adds: a 1.0 client reads 1.1 output unchanged. 1.11 is the
 one exception in meaning, not in shape: 1.10's `complete` also required the
@@ -59,7 +60,7 @@ prints one line and exits -- the handshake a client checks before it uses this
 xlings (1.10+):
 
 ```json
-{"protocol_version":"1.11","version":"2026.10.17.1","capabilities":["search_packages","install_packages","..."],"home_layouts":[1,2],"features":["index_dir","index_store","upstreams","payload_status","sync_index","install_targets_complete","payload_currency","binding_state"]}
+{"protocol_version":"1.12","version":"2026.10.18.1","capabilities":["search_packages","install_packages","..."],"home_layouts":[1,2],"features":["index_dir","index_store","upstreams","payload_status","sync_index","install_targets_complete","payload_currency","binding_state","reserved_namespaces","subos_plan"]}
 ```
 
 | Field | Meaning |
@@ -68,7 +69,7 @@ xlings (1.10+):
 | `version` | the xlings version (1.10+) |
 | `capabilities` | every capability's name (1.10+) |
 | `home_layouts` | the home layouts this client reads and writes (1.10+) |
-| `features` | behaviour a client may rely on that is not a capability (1.10+): `index_dir` and `index_store` (the `index_repos` fields), `upstreams`, `payload_status`, `sync_index`, `install_targets_complete`; 1.11+: `payload_currency`, `binding_state` |
+| `features` | behaviour a client may rely on that is not a capability (1.10+): `index_dir` and `index_store` (the `index_repos` fields), `upstreams`, `payload_status`, `sync_index`, `install_targets_complete`; 1.11+: `payload_currency`, `binding_state`; 1.12+: `reserved_namespaces`, `subos_plan` |
 
 ### 3.2 The capabilities
 
@@ -488,7 +489,7 @@ Sent after 5 s of silence: the process is alive.
 
 | Name | Does | Destructive |
 |---|---|---|
-| `search_packages` | fuzzy search by keyword | no |
+| `search_packages` | fuzzy search by keyword, or by a recipe's category (1.12+: `category`) | no |
 | `install_packages` | install one or more packages | yes |
 | `plan_install` | an install dry-run | no |
 | `remove_package` | remove a package | yes |
