@@ -115,3 +115,38 @@ package = {{ spec = '1', name = '{}', namespace = 'luban', description = 'the {}
     EXPECT_EQ(described["categories"], nlohmann::json::array({"subos"}));
     EXPECT_EQ(described["version"], "1.0.0");
 }
+
+// A package of a namespace other than the default is kept under a version key
+// that names the namespace ("luban:1.0.0"); removing it by its name, or its
+// bare one, removes that package (it once asked for luban:luban:tool).
+XTEST(IndexNamespaces, APackageOfAnotherNamespaceIsRemovedByItsName, .area = "xim",
+      .covers = {"LUBAN-NAMESPACE"}, .requires_ = {"xlings-bin"}) {
+    auto home = tk::Home::isolated("index-namespace-remove");
+    const auto primary = home.root() / "primary";
+    tk::write_file(primary / "xim-indexrepos.lua", "xim_indexrepos = {}\n");
+    tk::write_file(primary / "pkgs/luban/tool.lua", R"LUA(
+package = { spec = '1', name = 'tool', namespace = 'luban', description = 'a tool', type = 'package',
+            archs = {'x86_64', 'aarch64'},
+            xpm = { linux = { ['1.0.0'] = {} }, macosx = { ['1.0.0'] = {} }, windows = { ['1.0.0'] = {} } } }
+import('xim.libxpkg.pkginfo')
+import('xim.libxpkg.xvm')
+function install() os.mkdir(pkginfo.install_dir()); return true end
+function config() xvm.add('tool'); return true end
+function uninstall() xvm.remove('tool'); return true end
+)LUA");
+    const nlohmann::json config{
+        {"mirror", "GLOBAL"},
+        {"xim", {{"index-repo", primary.generic_string()}}},
+        {"index_repos", nlohmann::json::array(
+            {{{"name", std::string(xlings::Config::DEFAULT_INDEX_REPO_NAME)}, {"url", primary.generic_string()}, {"source", "git"}}})}};
+    tk::write_file(home.dir() / ".xlings.json", config.dump());
+    ASSERT_EQ(home.xlings({"self", "init"}).exit_code, 0);
+    for (const auto* name : {"luban:tool", "tool"}) {
+        auto installed = home.xlings({"install", "luban:tool", "-y"});
+        ASSERT_EQ(installed.exit_code, 0) << installed.transcript();
+        auto removed = home.xlings({"remove", name, "-y"});
+        EXPECT_EQ(removed.exit_code, 0) << name << "\n" << removed.transcript();
+        EXPECT_EQ(removed.transcript().find("luban:luban"), std::string::npos) << removed.transcript();
+    }
+}
+

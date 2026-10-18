@@ -2217,6 +2217,15 @@ int cmd_remove_in_scope_(const std::string& target, bool yes,
     // index must not block a removal the version DB alone can already do
     // (openxlings/xlings#578).
     std::vector<std::string> resolveTargets;
+    // A version as the database keys it ("luban:2026.10.18.1" for a package
+    // of another namespace than the default) names the package's namespace,
+    // not the version's: the target takes the namespace, the version the rest.
+    auto targetAt = [&](const std::string& key) {
+        auto [ns, ver] = xvm::parse_ns_version(key);
+        if (ns.empty()) return target + "@" + key;
+        const bool named = target.find(':') != std::string::npos;
+        return (named ? target : ns + ":" + target) + "@" + ver;
+    };
     if (target.find('@') != std::string::npos) {
         resolveTargets = { target };
     } else {
@@ -2239,7 +2248,7 @@ int cmd_remove_in_scope_(const std::string& target, bool yes,
                 resolveTargets = { target };
             } else {
                 for (const auto& v : versions) {
-                    resolveTargets.push_back(target + "@" + v);
+                    resolveTargets.push_back(targetAt(v));
                 }
             }
         } else {
@@ -2328,7 +2337,7 @@ int cmd_remove_in_scope_(const std::string& target, bool yes,
                     }
                 }
             }
-            resolveTargets = { active.empty() ? target : (target + "@" + active) };
+            resolveTargets = { active.empty() ? target : targetAt(active) };
         }
     }
 
