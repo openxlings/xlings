@@ -759,6 +759,9 @@ K5–K7 已发布 ──► C17 ──► C18
   第一个 `ESC[?u` 被 `term.cpp:333` 的 `case 'u'` 当作恢复光标。
 - 修法验证：`CSI s` / `CSI u` 仅在无前缀、无中间字节时生效后，fish 4.8.1 的输出接在欢迎信息之后（实验改动，已撤回）。
 - E18：以工具视图 SubOS 在应用控制台中运行，只出现 `[xlings] … env var(s)`，未出现 `▸ entering subos`；根 SubOS 的路径本机无法运行（不能嵌套命名空间）。
+- E18 原因（读代码确认）：根 SubOS 若在私有前缀域里，`subos use` 经 `domain_producer::run` 在 bwrap `--clearenv` 下由域内的 xlings 执行，
+  转发的环境变量白名单里没有 `XLINGS_ENTER_QUIET`，域内 xlings 照常打印。修法：白名单加入它（`domain_producer.cpp`），测试见
+  `test_domain_producer`（`LUBAN-ENTER-QUIET`）。
 
 ### 19.2 E12：labwc 菜单（本机隔离 home）
 

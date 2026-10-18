@@ -1257,6 +1257,10 @@ status = "planned"
 text = "a desktop without a shell of its own (its session file's X-Luban-Shell=none) is given the Luban OS window's, through opensal Shell: the applications its session lists (share/applications in its XDG data dirs, field codes dropped, Terminal=true in the default terminal) and its windows (wlr foreign-toplevel), listed whole as they change; the window starts one by its id and brings one forward; a session with its own shell is not given one"
 status = "required"
 
+[LUBAN-ENTER-QUIET]
+text = "a frontend that greets for itself (luban's welcome) asks xlings for no entering line with XLINGS_ENTER_QUIET=1, and a root entered through its private prefix domain is asked the same"
+status = "required"
+
 [LUBAN-SESSION-PEERS]
 text = "terminals entering one environment are peers: the first starts its session in the background and joins it as later ones do, any of them leaves at once, Ctrl-C reaches only its own program, and the session ends a moment after the last; a session keeping only /home (or nothing) is joined by an entry keeping as much"
 status = "required"
