@@ -205,6 +205,7 @@ int run(int argc, char* argv[]) {
         const std::string_view arg = argv[i];
         if (arg == "--attach" && i + 1 < argc) a.attach = argv[++i];
         else if (arg == "--desktop" && i + 1 < argc) a.once_desktop = argv[++i];
+        else if (arg == "--app" && i + 1 < argc) a.once_app = argv[++i];
         else if (arg == "--headless") {
             o.hidden = true;
             platform::set_env_variable("SDL_VIDEODRIVER", "offscreen");
@@ -229,7 +230,7 @@ int run(int argc, char* argv[]) {
         }
         else if (arg == "--version") { std::println("luban-os {}", service::kVersion); return 0; }
         else if (arg == "--help" || arg == "-h") {
-            std::println("luban-os [--attach <name>]   Luban OS: the systems of this home, in a window");
+            std::println("luban-os [--attach <name> [--desktop <session> | --app <command>]]   Luban OS: the systems of this home, in a window");
             return 0;
         }
     }
@@ -596,7 +597,7 @@ int run(int argc, char* argv[]) {
         std::println(std::cerr, "luban-os script: {}", script->failure);
         return 3;
     }
-    return 0;
+    return a.exit_code;
 }
 
 }  // namespace luban::os

@@ -38,6 +38,9 @@ struct Session {
     opensal::Interfaces interfaces { 0 };
     bool native { false };          // speaks opensal.wire on its stdin/stdout
     fs::path file;
+    // X-Luban-App-Exec: how it runs one application alone, ending with it
+    // (its command appended as one word; `luban run --display window`).
+    std::string app_exec;
 };
 
 // A session file's [Desktop Entry]; nullopt when it declares no Exec (or is hidden).
@@ -64,6 +67,11 @@ std::vector<std::string> exec_argv(std::string_view exec);
 std::vector<fs::path> application_dirs(const std::map<std::string, std::string>& env);
 std::vector<Application> applications(const std::vector<fs::path>& dirs);
 std::optional<Session> find_session(std::string_view id, const std::vector<fs::path>& dirs);
+// "app:<command>": that command alone, run by the first session that can run
+// one application (X-Luban-App-Exec), with no shell of the window's; any
+// other id: find_session's.
+inline constexpr std::string_view kAppSession = "app:";
+std::optional<Session> resolve_session(std::string_view id, const std::vector<fs::path>& dirs);
 
 // The virtual keyboard's keymap: evdev keycodes, the US layout, compiled by
 // the compositor from its own xkeyboard-config.

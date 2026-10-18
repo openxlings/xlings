@@ -399,7 +399,7 @@ XTEST(Luban, ANewEnvironmentFromATemplateIsListedAndDescribed,
 }
 
 XTEST(Luban, AnAgentIsNeverAskedAndAPersonIsToldTheNearestCommand,
-      .area = "luban", .covers = {"LUBAN-CLI-E2E", "UX-AGENT-NO-PROMPT", "LUBAN-CLI-SUGGEST"},
+      .area = "luban", .covers = {"LUBAN-CLI-E2E", "UX-AGENT-NO-PROMPT", "LUBAN-CLI-SUGGEST", "LUBAN-APP-WINDOW"},
       .requires_ = {"linux", "xlings-bin"}) {
     if constexpr (!tk::is_linux) GTEST_SKIP() << "a Luban root is a Linux root";
     const auto bin = luban_binary();
@@ -420,6 +420,12 @@ XTEST(Luban, AnAgentIsNeverAskedAndAPersonIsToldTheNearestCommand,
     EXPECT_NE(typo.err.find("did you mean `luban enter`"), std::string::npos) << typo.transcript();
     auto typoJson = luban(home, {"--json", "entr"});
     EXPECT_EQ(Json::parse(typoJson.out)["suggestions"][0], "enter") << typoJson.out;
+    // A program runs here or alone in a window; nothing else, and as whom is the terminal's to say.
+    auto display = luban(home, {"run", "box", "--display", "screen", "--", "true"});
+    EXPECT_EQ(display.exit_code, 2) << display.transcript();
+    EXPECT_NE(display.err.find("--display terminal|window"), std::string::npos) << display.transcript();
+    auto as = luban(home, {"run", "box", "--display", "window", "--user", "root", "--", "true"});
+    EXPECT_EQ(as.exit_code, 2) << as.transcript();
 
     auto removed = luban(home, {"rm", "box", "-y"});
     EXPECT_EQ(removed.exit_code, 0) << removed.transcript();

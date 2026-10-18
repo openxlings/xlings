@@ -137,6 +137,16 @@ luban config desk --desktop none            # its console instead
 **应用**列出会话里能启动的程序（会话数据目录下的 `share/applications`，包括你自己的；`Terminal=true` 的在默认终端里打开），
 每个窗口一个按钮，点击即前置。`X-Luban-Shell=own`（或不写）则不打扰桌面。
 
+## 单个程序一个窗口
+
+```bash
+luban run desk --display window -- gimp
+```
+
+单独运行系统里的一个图形程序，作为一个独立窗口，标题就是程序名；程序结束，窗口随之关闭。由声明了运行方式的会话来跑
+（`X-Luban-App-Exec=`，命令作为一个词接在后面）：Luban 的 `compositor` 桌面就是（`labwc -S`）。没有这样的会话的系统会说明——
+`xlings install luban:compositor --subos desk`。
+
 ## 桌面 edition 里有什么
 
 `desktop` 与 `desktop-xdesk` 是 core 加一个桌面，以及常用工具：node、python（带 uv）、bun、ripgrep、fd、fzf、jq、tmux、htop，

@@ -142,11 +142,14 @@ std::expected<Session, std::string> desktop_(const Json& display, std::map<std::
     const auto dirs = wlr::session_dirs(env);
     const auto id = display.value("session", std::string{});
     std::optional<wlr::Session> session;
-    if (!id.empty()) session = wlr::find_session(id, dirs);
+    if (!id.empty()) session = wlr::resolve_session(id, dirs);
     else if (auto all = wlr::sessions(dirs); !all.empty()) session = all.front();
     if (!session)
         return std::unexpected(id.empty() ? std::string("this environment declares no desktop session (share/wayland-sessions)")
-                                          : std::format("this environment has no desktop session {}", id));
+                               : id.starts_with(wlr::kAppSession)
+                                   ? std::string("nothing here runs one application in a window (luban:compositor does: "
+                                                 "xlings install luban:compositor in it)")
+                                   : std::format("this environment has no desktop session {}", id));
     auto to = platform::make_pipe(), from = platform::make_pipe();
     if (!to || !from) return std::unexpected("no pipe for the desktop");
     wlr::SessionOptions o;

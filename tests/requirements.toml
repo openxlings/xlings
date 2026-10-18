@@ -1266,8 +1266,8 @@ text = "labwc, LXQt and KDE open in a machine and in a sandbox and can be used: 
 status = "planned"
 
 [LUBAN-APP-WINDOW]
-text = "luban run --display window shows one graphical program of a system as its own window on the host, titled as the program"
-status = "planned"
+text = "luban run --display window shows one graphical program of a system as its own window on the host, titled as the program: run alone by the first session that says how (X-Luban-App-Exec, luban:compositor's labwc -S), without the window's shell, the window gone when the program ends; --display takes terminal (the default) or window, and a system with nothing to run it says what to install"
+status = "required"
 
 [LUBAN-PACKAGE-FORM]
 text = "a package that changes form under its name (a bundle becoming a composite of atomic packages, or back) upgrades a system without changing its settings or sessions"

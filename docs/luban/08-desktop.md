@@ -171,6 +171,18 @@ with `Terminal=true` opens in the default terminal), and a button for each of
 its windows brings that one forward. `X-Luban-Shell=own` (or no key) leaves the
 desktop alone.
 
+## One program in a window
+
+```bash
+luban run desk --display window -- gimp
+```
+
+runs one graphical program of a system alone, in a window of its own titled
+by the program; the window goes when the program ends. It is run by a session
+that says how (`X-Luban-App-Exec=`, the command appended as one word):
+Luban's `compositor` desktop does (`labwc -S`). A system without one says so —
+`xlings install luban:compositor --subos desk`.
+
 ## What a desktop edition is ready with
 
 `desktop` and `desktop-xdesk` are core and a desktop, and the tools people

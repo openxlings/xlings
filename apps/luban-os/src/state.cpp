@@ -57,6 +57,11 @@ std::string App::countdown_target() const {
 }
 
 std::string App::title_for(std::string_view what) const {
+    // A program alone in the window is its title.
+    if (!once_app.empty()) {
+        const auto first = once_app.substr(0, once_app.find(' '));
+        return std::format("{} — {}", fs::path(first).filename().string(), what);
+    }
     return std::format("{} — Luban OS · Ctrl+Alt {}", what,
                        window->keyboard_grabbed() ? tr("releases the keyboard", "释放键盘") : tr("menu", "菜单"));
 }
@@ -159,6 +164,7 @@ void App::open_machine(const std::string& name) {
         }
         notice = error;
     }
+    if (!once_app.empty()) { app_failed_(notice.empty() ? std::string("it cannot be described") : notice); return; }
     open_console(name, true);
 }
 
@@ -232,6 +238,7 @@ void App::open_console(const std::string& name, bool machine) {
             }
             notice = error;
         }
+        if (!once_app.empty()) { app_failed_(error.empty() ? std::string("it has no luban to run it with") : error); return; }
     }
     // The welcome a console says first, the same as `luban enter`'s.
     std::string greeting;
@@ -255,6 +262,13 @@ void App::open_console(const std::string& name, bool machine) {
     if (!notice.empty()) notice_until = std::chrono::steady_clock::now() + std::chrono::seconds(10);
     window->set_title(title_for(name));
     window->text_input(true);
+}
+
+// A program alone in the window that could not be shown: said where it was asked, and the window goes.
+void App::app_failed_(const std::string& why) {
+    std::println(std::cerr, "luban-os: {} could not be shown: {}", once_app, why);
+    exit_code = 1;
+    quit = true;
 }
 
 void App::power_off(const std::string& name) {
@@ -314,6 +328,7 @@ void append_utf8_(std::string& out, char32_t ch) {
 }
 
 std::optional<std::string> App::session_now(const service::Environment& e) const {
+    if (!once_app.empty()) return "app:" + once_app;
     if (once_console) return std::nullopt;
     if (!once_desktop.empty() && std::ranges::find(e.desktops, once_desktop) != e.desktops.end()) return once_desktop;
     return desktop_session(e);

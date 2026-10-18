@@ -461,6 +461,9 @@ struct App {
     // console instead of its desktop (design 2026-10-18 §3): its settings stay.
     std::string once_desktop;
     bool once_console { false };
+    // One program alone in this window, the window its (`luban run
+    // --display window`, design 2026-10-18 §7 T0): it closes when the program ends.
+    std::string once_app;
     std::vector<std::string> menu_desktops;   // the current system's, read when the menu opens
     std::string shown_desktop;                // the session on screen (empty: none)
     // The session to show for `e` now: this once's, else its plan's.
@@ -469,6 +472,7 @@ struct App {
     std::string input;                 // tests: typed into the console (or desktop) once it shows something
     std::optional<std::chrono::steady_clock::time_point> input_at;
     bool quit { false };
+    int exit_code { 0 };               // the app's, when it quits
     // The console: scrolled back, a selection being made.
     int console_scroll { 0 };
     std::optional<std::array<int, 4>> selection;
@@ -537,6 +541,7 @@ struct App {
     void open_console(const std::string& name, bool machine);
 
     void power_off(const std::string& name);
+    void app_failed_(const std::string& why);
 
     bool is_running(const std::string& name);
 

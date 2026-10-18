@@ -131,6 +131,31 @@ XTEST(LubanWlr, ASessionsApplicationsAreItsDesktopEntries, .area = "luban", .cov
     }
 }
 
+XTEST(LubanWlr, OneApplicationAloneIsRunByASessionThatSaysHow, .area = "luban", .covers = {"LUBAN-APP-WINDOW"}) {
+    // `luban run --display window` (T0): the command, one word, given to the
+    // first session that runs one application alone; no shell of the window's.
+    const auto root = temp_dir_("luban-wlr-app");
+    fs::create_directories(root / "wayland-sessions");
+    std::ofstream(root / "wayland-sessions" / "a-xdesk.desktop")
+        << "[Desktop Entry]\nExec=xdesk\nX-Opensal-Native=true\nX-Luban-App-Exec=xdesk --app\n";
+    std::ofstream(root / "wayland-sessions" / "b-plain.desktop") << "[Desktop Entry]\nExec=labwc\n";
+    std::ofstream(root / "wayland-sessions" / "compositor.desktop")
+        << "[Desktop Entry]\nExec=luban-compositor\nX-Luban-Shell=none\nX-Luban-App-Exec=luban-compositor -S\n"
+           "X-Opensal-Interfaces=surface pointer keyboard mode\n";
+    const std::vector<fs::path> dirs{root / "wayland-sessions"};
+    auto app = wlr::resolve_session("app:/usr/bin/gimp --new 'a b'", dirs);
+    ASSERT_TRUE(app);
+    EXPECT_EQ(app->exec, R"(luban-compositor -S '/usr/bin/gimp --new '\''a b'\''')");
+    EXPECT_EQ(app->name, "gimp") << "the window is titled by the program";
+    EXPECT_FALSE(opensal::has(app->interfaces, opensal::Interface::Shell));
+    EXPECT_EQ(wlr::resolve_session("compositor", dirs)->exec, "luban-compositor") << "a session by its id, as before";
+    EXPECT_FALSE(wlr::resolve_session("app:", dirs));
+    std::filesystem::remove(root / "wayland-sessions" / "compositor.desktop");
+    EXPECT_FALSE(wlr::resolve_session("app:gimp", dirs)) << "nothing here runs one application";
+    std::error_code ec;
+    fs::remove_all(root, ec);
+}
+
 XTEST(LubanWlr, AKeysymIsTheEvdevKeyThatTypesIt, .area = "luban", .covers = {"LUBAN-DESKTOP-WLR"}) {
     EXPECT_EQ(opensal::keys::evdev_key('a')->code, 30u);
     EXPECT_FALSE(opensal::keys::evdev_key('a')->shift);

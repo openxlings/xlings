@@ -38,6 +38,7 @@ std::optional<Session> parse_session(std::string_view text, std::string id) {
         else if (key == "X-Opensal-Interfaces") s.interfaces = parse_interfaces(value);
         else if (key == "X-Opensal-Native") s.native = value == "true";
         else if (key == "X-Luban-Shell") shell_less = value == "none";
+        else if (key == "X-Luban-App-Exec") s.app_exec = value;
         else if ((key == "Hidden" || key == "NoDisplay") && value == "true") hidden = true;
     }
     if (s.exec.empty() || hidden) return std::nullopt;
@@ -207,6 +208,25 @@ std::vector<Session> sessions(const std::vector<fs::path>& dirs) {
 std::optional<Session> find_session(std::string_view id, const std::vector<fs::path>& dirs) {
     for (auto& s : sessions(dirs))
         if (s.id == id) return s;
+    return std::nullopt;
+}
+
+std::optional<Session> resolve_session(std::string_view id, const std::vector<fs::path>& dirs) {
+    if (!id.starts_with(kAppSession)) return find_session(id, dirs);
+    const auto command = id.substr(kAppSession.size());
+    if (command.empty()) return std::nullopt;
+    for (auto s : sessions(dirs)) {
+        if (s.app_exec.empty() || s.native) continue;
+        std::string quoted = "'";
+        for (char c : command) quoted += c == '\'' ? std::string("'\\''") : std::string(1, c);
+        quoted += "'";
+        s.exec = s.app_exec + " " + quoted;
+        s.interfaces &= ~static_cast<opensal::Interfaces>(opensal::Interface::Shell);
+        const auto words = exec_argv(command);
+        s.name = words.empty() ? std::string(command) : fs::path(words[0]).filename().string();
+        s.id = std::string(id);
+        return s;
+    }
     return std::nullopt;
 }
 

@@ -31,7 +31,7 @@ Options: `--mode <MODE>` — sandbox (this machine's kernel) or machine (its own
 
 Run one command in an environment
 
-Options: `--user <NAME>` — As this user (root, or one of its users)
+Options: `--user <NAME>` — As this user (root, or one of its users); `--display <DISPLAY>` — terminal (here) or window: a graphical program alone in a window of its own
 
 ## `luban ls` (common)
 

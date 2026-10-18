@@ -511,6 +511,12 @@ void desktop_view_(App& a) {
     if (a.resize_at && std::chrono::steady_clock::now() >= *a.resize_at) { d.send(opensal::Resized{want}); a.resize_at.reset(); }
     ImGui::End();
     if (!d.alive()) {
+        // A program alone in the window: the window was its, and goes with it.
+        if (!a.once_app.empty()) {
+            if (const auto why = d.error(); !why.empty()) a.app_failed_(why);
+            a.quit = true;
+            return;
+        }
         // A desktop that could not start (or ended) leaves the machine's console.
         const auto why = d.error();
         const bool machine = d.is_machine();

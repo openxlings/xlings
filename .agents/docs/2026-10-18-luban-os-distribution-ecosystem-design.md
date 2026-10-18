@@ -376,7 +376,7 @@ xlings 返回的错误由 luban 翻译；不转贴 `xlings subos` 的用法（E1
 ### 6.3 桌面组件的约定
 
 1. **会话**：`share/wayland-sessions/<id>.desktop`。附加键：`X-Luban-Shell=own|none`（外壳由组件提供，还是由 Luban OS 窗口提供，§7）、
-   `X-Luban-Aliases=<旧名>`（§15.3）。
+   `X-Luban-Aliases=<旧名>`（§15.3）、`X-Luban-App-Exec=<命令前缀>`（能单独运行一个程序、程序结束即结束：命令作为一个词接在其后，§7 T0）。
 2. **默认配置**：包内 `etc/xdg`，只经自己的会话脚本以 `XDG_CONFIG_DIRS` 交给程序；用户的 `~/.config` 优先。程序读不对时（E12）由会话脚本绕开并注明。
 3. **终端**：不写死，按 xdg 默认终端约定（`xdg-terminal-exec`，`share/xdg-terminals/`）找；以 `Terminal=true` 启动应用时把应用名与 ID 交给终端（E21）。
 4. **资源**：光标主题、字体、应用入口（`share/applications`，按 L §6.4 投影）。
@@ -392,7 +392,7 @@ xlings 返回的错误由 luban 翻译；不转贴 `xlings subos` 的用法（E1
 
 | 等级 | 内容 | 外壳 | 场景 | 入口 |
 |---|---|---|---|---|
-| T0 单应用窗口 | 系统里的一个图形程序，作为宿主上单独的窗口（guest 内以 cage 只跑它），窗口标题即应用 | 宿主 | 只想用某个 GUI 程序（类似 WSLg） | `luban run X --display window -- firefox` |
+| T0 单应用窗口 | 系统里的一个图形程序，作为宿主上单独的窗口（guest 内由声明了 `X-Luban-App-Exec` 的会话只跑它：`luban:compositor` 即 `labwc -S`，程序结束合成器即结束；不另引入 cage），窗口标题即应用 | 宿主 | 只想用某个 GUI 程序（类似 WSLg） | `luban run X --display window -- firefox` |
 | T1 仅合成器 | labwc，无面板 | **Luban OS 窗口的系统栏**：从系统的应用列表启动、列出窗口、剪贴板 | 多窗口但不要桌面 | `--desktop compositor` |
 | T2 最简桌面 | labwc + 面板 + 启动器 | 组件 | 轻量 | `--desktop labwc` |
 | T3 LXQt | 加文件管理、设置、托盘 | 组件 | 传统桌面 | `--desktop lxqt` |
@@ -404,7 +404,9 @@ xlings 返回的错误由 luban 翻译；不转贴 `xlings subos` 的用法（E1
   （会话的 XDG 数据目录下的 `share/applications`，含用户自己的）与窗口（wlr foreign-toplevel），整表告知窗口；窗口回以"按 ID 启动"
   与"前置某窗口"，由会话侧以会话的环境启动（`Terminal=true` 经 `xdg-terminal-exec`）。放在会话侧而非服务层：沙箱与机器同一条路
   （机器不必经载体再问一次），看到的正是会话里能启动的。
-- T0 不新增命令：`luban run` 已有，`--display window` 已是 `luban enter` 的选项，扩到 `run`。
+- T0 不新增命令：`luban run` 已有，`--display window` 已是 `luban enter` 的选项，扩到 `run`。会话名 `app:<命令>` 经现有通路
+  （机器的显示通道、沙箱的 `luban __desktop`）到达会话侧，由 opensal-wlr 的 `resolve_session` 交给第一个声明了 `X-Luban-App-Exec` 的会话；
+  没有这样的会话时说要装什么（`luban:compositor`）。
 - T0、T1 里 guest 不跑任何外壳程序，资源最省、门槛最低。
 
 ## 8. 进入：`enter` 与 `desktop`
