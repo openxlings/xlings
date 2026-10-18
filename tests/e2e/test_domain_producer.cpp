@@ -366,7 +366,7 @@ XTEST(DomainProducer, InstallsAtLogicalPrefixInsideANamespaceAndPreservesHostDat
 // its Luban systems in one line, and a system does not list its siblings.
 XTEST(DomainProducer, AHostCountsItsSystemsAndASystemDoesNotListItsSiblings,
       .area = "subos", .cost = tk::Cost::Medium,
-      .covers = {"LAYER-VISIBILITY"}, .requires_ = {"linux", "bwrap", "xlings-bin"},
+      .covers = {"LAYER-VISIBILITY", "SUBOS-DOMAIN-RELAYED"}, .requires_ = {"linux", "bwrap", "xlings-bin"},
       .resources = {"sandbox"}, .proves = "isolation") {
     if constexpr (!tk::is_linux) GTEST_SKIP() << "Linux namespaces";
     if (const auto why = tk::probe("bwrap")) GTEST_SKIP() << *why;
@@ -419,6 +419,22 @@ XTEST(DomainProducer, AHostCountsItsSystemsAndASystemDoesNotListItsSiblings,
     ASSERT_EQ(upgrade.exit_code, 0) << upgrade.transcript();
     EXPECT_NE(upgrade.out.find("sys-a is up to date"), std::string::npos) << upgrade.transcript();
     EXPECT_EQ(upgrade.transcript().find("no renderer"), std::string::npos) << upgrade.transcript();
+    // Asked through the interface (luban, the window), a routed command's
+    // data comes back as events too: `luban history` of a domain's system was
+    // empty, the list printed on a stdout nobody read (design 2026-10-19 F13).
+    const auto history = home.xlings({"interface", "subos_command", "--args",
+                                      R"({"argv":["rollback","sys-a","--list"]})"});
+    ASSERT_EQ(history.exit_code, 0) << history.transcript();
+    bool listed_generations = false;
+    for (const auto& j : history.json_lines()) {
+        if (j.is_object() && j.value("kind", "") == "data" && j.value("dataKind", "") == "subos_generations")
+            listed_generations = j["payload"].is_array() && !j["payload"].empty();
+    }
+    EXPECT_TRUE(listed_generations) << history.transcript();
+    const auto missing = home.xlings({"interface", "subos_command", "--args",
+                                      R"({"argv":["rollback","sys-a","--to","99"]})"});
+    EXPECT_NE(missing.out.find(R"("kind":"error")"), std::string::npos)
+        << "an error inside the domain is an event outside: " << missing.transcript();
 }
 
 // One default runtime per environment (part 3 §4.4): two systems of one

@@ -885,12 +885,19 @@ Outcome rollback(const Context& c, std::string_view name, std::string_view to) {
 Outcome history(const Context& c, std::string_view name) {
     if (!exists_(c, name)) return missing_(c, name);
     Json rows = Json::array();
-    std::vector<Json> data;
+    bool answered = false;
     const Sink keep = [&](const Event& e) {
-        if (e.kind == Event::Kind::Data && e.data_kind == "subos_generations") rows = e.data;
+        if (e.kind == Event::Kind::Data && e.data_kind == "subos_generations") rows = e.data, answered = true;
         else if (e.kind == Event::Kind::Error && c.sink) c.sink(e);
     };
-    const int rc = c.port.subos(argv_({"rollback", name, "--list"}), false, keep);
+    int rc = c.port.subos(argv_({"rollback", name, "--list"}), false, keep);
+    // "Could not read" is never "none": an answer without the list (an
+    // xlings that printed it instead, design 2026-10-19 F13) is said.
+    if (rc == 0 && !answered) {
+        if (c.sink) c.sink(error(std::format("could not read the generations of {}: xlings answered without them", name),
+                                 std::format("xlings subos rollback {} --list", name)));
+        rc = 1;
+    }
     return {.code = rc, .value = {{"generations", rows}}};
 }
 

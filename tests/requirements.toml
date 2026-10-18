@@ -1280,3 +1280,89 @@ status = "required"
 [LUBAN-PACKAGE-FORM]
 text = "a package that changes form under its name (a bundle becoming a composite of atomic packages, or back) upgrades a system without changing its settings or sessions"
 status = "planned"
+
+# ── Luban OS: one tray, pointer and keyboard, arrangements, versions (design 2026-10-19 §23) ──
+
+[LUBAN-OS-TRAY-PROCESS]
+text = "one tray process per home (luban-os __tray, no display), each window its own process; liveness is a lock, never a pid; every behaviour of the tray before it (icon states, tooltip, menu, notifications, quit confirmation, no status bar, keep_in_tray, a hidden window finishing its job) holds"
+status = "planned"
+
+[LUBAN-OS-LATENCY]
+text = "the interactions of design 2026-10-19 §4.1 stay within their budgets (p95 on the luban-os lane), and a step that may take over 2 s says its first line within 2 s and something at least every 10 s"
+status = "planned"
+
+[LUBAN-OS-POINTER]
+text = "the host draws the pointer with the system's cursor (no frame when it moves): a shape name ('c') and an image ('C') from the desktop, the Luban theme, drawn into the frame only when the host does not take Cursor, the pointer lock released with the keyboard's chord, and an old xdesk session shown the default arrow"
+status = "planned"
+
+[LUBAN-OS-KEYBOARD]
+text = "entering a desktop grabs the keyboard; Ctrl+Alt+K toggles it; Ctrl+Alt alone opens the menu; the setting is honoured; an input method with nothing composed never swallows a non-character key"
+status = "planned"
+
+[XDESK-ARRANGEMENTS]
+text = "xdesk's space x arrangement: tiling, stacking and canvas (with tiled groups on it) per workspace, switched reversibly (back to the same layout), Super+m's chooser, splitting a column"
+status = "planned"
+
+[XDESK-DRAG-SNAP]
+text = "dragging a window previews exactly where it lands in each arrangement, offers sizes when it rests on a target, gaps resize what is either side, and the maximize button offers layouts"
+status = "planned"
+
+[XDESK-WINDOW-MENU]
+text = "a window's title-bar menu (maximize, float, always on top, on every workspace, to a workspace, app rules, close); on top stays above and on a canvas in view; rules are kept and applied; windows are named by their application"
+status = "planned"
+
+[LUBAN-OS-WINDOW-TITLE]
+text = "the Luban OS window's title is `Luban OS (<system>)` when it shows a system and `Luban OS` otherwise, in every view"
+status = "planned"
+
+[LUBAN-VERSIONS]
+text = "luban status says the versions of xlings, luban, luban-os (installed and running) and the index in one line, opens it with the next step when they disagree, and --json has versions with mismatches[].next"
+status = "planned"
+
+[LUBAN-EDITION-PINNED]
+text = "the version shown before a system is made is the version made (luban new, the quick start, --dry-run --json), and a newer one passed over is said"
+status = "planned"
+
+[LUBAN-LS-SEARCH]
+text = "luban ls without arguments is unchanged and takes a name pattern; luban search lists what the index offers (distributions, desktops) as the quick start groups it"
+status = "planned"
+
+[SUBOS-FROM-NO-SILENT-INSTALLED]
+text = "subos new --from without a version stops when the index cannot be read, and says so when it uses an installed version the index does not list"
+status = "planned"
+
+[SUBOS-DOMAIN-RELAYED]
+text = "a command routed into a prefix domain and asked through the interface brings back its data, progress and errors as events (luban history of a domain's system)"
+status = "required"
+
+[SUBOS-INDEX-SNAPSHOT]
+text = "a new system's home starts from a copy of the host's index snapshot; an export carries it; an import uses no network; with no network a system is made, imported and entered from what is here"
+status = "planned"
+
+[SUBOS-READONLY-USER]
+text = "inside a system, a user's read-only xlings commands neither switch home nor print the notice; the first write says it once, without sudo"
+status = "planned"
+
+[LUBAN-UPGRADE-REVERSIBLE]
+text = "an upgrade is never forced and is undone by rollback: a frozen name to luban:, and a relayout through its archive (rollback --to relayout)"
+status = "planned"
+
+[LUBAN-OS-QUICK-START-DESKTOPS]
+text = "the quick start's four groups, with source, status, tier (unrated last), an index it cannot read said, the panel scrolling with Create in view, and six stages"
+status = "planned"
+
+[LUBAN-OS-APP-CAPABILITIES]
+text = "luban-os __capabilities answers without a display; an app that cannot be asked is not taken as compatible"
+status = "planned"
+
+[XPKG-EXTENSIONS]
+text = "a recipe's extensions are kept and handed on unchanged (package_info, search), within their type and size rules"
+status = "planned"
+
+[LUBAN-CORE-TOOLS]
+text = "core has cmake, yazi and procps-ng (and xmake on x86_64), each starting, and ps is procps-ng's"
+status = "planned"
+
+[I18N-DOMAINS]
+text = "catalogues register by domain; English is complete in each; no key without English; arguments agree; the fallback chain and pick(); no tr(en, zh) in luban-os"
+status = "planned"
