@@ -742,7 +742,10 @@ K5–K7 已发布 ──► C17 ──► C18
 ## 18. 待定
 
 1. 何时把 Qt 与 KDE 框架原子化（Arch 快照导入）：出现系统外单独使用、或安全更新频率要求时；届时先实测长 RPATH 的启动时间。
-2. KDE：(a) 嵌套先验证打包与会话，(b) 原生适配器的帧率、CPU 与 (a) 对比；路径重定位是否需要重建 KF6 的少数包。K7 与 C16 的第一步。
+2. KDE：(a) 嵌套已验证（§19.8），`luban:kde` 以 (a) 作 preview 发布；(b) 原生适配器（C16）移到下一轮：它要一个绑定
+   libpipewire 的新 kit（C 头文件只在绑定模块）、为 musl 构建的 guest 程序随 KDE 整包发布、`fake_input` / EIS 的输入层，以及与 (a)
+   的帧率、CPU 对比；(a) 不改宿主一侧，(b) 完成后替换会话脚本里的嵌套即可，名字与约定不变。路径重定位不需要重建 KF6：
+   系统内的 FHS 投影让编进二进制的 `/usr` 路径直接成立。
 3. 两项定制构建（pixman 版 wlroots、无 glamor 的 Xwayland）在 Alpine 的 APKBUILD 上的改动量；不可行时接受变大，如实写在卡片上。
 4. 确认记录是否按 index 的信任级别区分（例如本地 index 免确认）。
 5. （已定）能力词汇作为 `luban/specs/opencaps` 标准化（§9）。
@@ -840,3 +843,18 @@ K5–K7 已发布 ──► C17 ──► C18
   `createVirtualMonitorStream(name, size, dpr)`、`createOutputStream`、`createWorkspaceStream`。
 - `server/org.kde.krdpserver.desktop.cmake`：`X-KDE-Wayland-Interfaces=org_kde_kwin_fake_input,zkde_screencast_unstable_v1`。
 - luban 不钉 edition 版本（`edition_ref`，v2026.10.15.4 与 v2026.10.17.1 相同）；`passedOver` 说明自 v2026.10.16.2 起（`src/core/xim/catalog.cpp`）。
+
+### 19.8 Qt 桌面的整包（本机与 CI，2026-10-18）
+
+- **程序不经加载器运行**：以 `ld-musl --library-path … <程序>` 运行 Qt 程序时，`/proc/self/exe` 是加载器；LXQt 的面板因此
+  不加载主题（透明、无图标）。同一个 Alpine 自带的 `lxqt-panel` 经加载器运行同样复现，直接运行正常。做法：程序保留解释器，
+  配方的 `config()` 在安装处把解释器与库路径（自己的、运行时的）写进程序（`elfpatch.set_interpreter` / `set_rpath`）；
+  musl 解析依赖时沿 `needed_by` 一直查到主程序的 RUNPATH，插件 dlopen 的库因此也找得到。库与插件不写解释器、不带搜索路径。
+- **系统里的根检查**：整包的库不得带解释器（labwc 的 `libcap.so.2` 带着，被根拒绝），也不得带构建时的搜索路径（Alpine 的
+  `libLLVM` 带 `/usr/lib/llvm22`）。工厂统一清掉（`no-interp.py`、`strip-rpath.sh`），labwc、Qt 运行时、LXQt 因此出 r2。
+- **LXQt**：`labwc -S lxqt-session`（与上游 lxqt-wayland-session 相同）；LXQt 的默认配置在 `share/`，会话把数据目录加进配置目录；
+  `dbus-update-activation-environment` 缺失时 `lxqt-session` 停在对话框；桌面文件夹按上游创建。整包 156 MB（运行时 361 MB 另计）。
+- **KDE**：Plasma 6.6 在无头 labwc（pixman）中嵌套运行，全屏规则让 KWin 窗口占满输出；在不含 KDE 的 Debian 根里，以系统内的
+  投影方式（`bin`、`libexec`、`lib/<目录>`、`share` 进 `/usr`）运行，画面与 Alpine 原生一致。Alpine 的 Plasma 依赖拉进大量包
+  （WebEngine、LLVM 21、Qt 5、gstreamer、samba 等），整包约 1.4 GB 落盘，故为 preview、可选。
+- 本机的 proot 下 D-Bus 认证失败（凭据传递），会话测试改用 bwrap 的用户命名空间；CI 的容器为真实 root，不受影响。
