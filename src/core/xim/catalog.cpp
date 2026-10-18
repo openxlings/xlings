@@ -11,6 +11,8 @@ import xlings.core.xim.repo;
 import xlings.core.xim.libxpkg.types.type;
 import xlings.core.semver;
 import xlings.platform.target;
+import xlings.platform;
+import xlings.libs.json;
 
 namespace xlings::xim {
 
@@ -625,6 +627,26 @@ std::expected<void, std::string> PackageCatalog::rebuild(bool forceRebuild) {
         }
     }
 
+    // A namespace an index reserves is taken from that index only: the first
+    // to reserve it (the official index comes first) owns it, and a package
+    // another index publishes in it is refused, named with its recipe. Generic:
+    // xlings knows no namespace by name; the index says which are its own.
+    refused_.clear();
+    std::map<std::string, std::string> owner;   // namespace -> the index reserving it
+    for (auto* repos : {&globalRepos_, &projectRepos_})
+        for (const auto& r : *repos)
+            for (const auto& ns : reserved_namespaces(r.spec.dir)) owner.try_emplace(ns, r.spec.name);
+    for (auto* repos : {&globalRepos_, &projectRepos_})
+        for (auto& r : *repos)
+            for (const auto& [ns, by] : owner) {
+                if (by == r.spec.name) continue;
+                for (auto& [package, recipe] : r.index.drop_namespace(ns)) {
+                    log::warn("{} ({}) is not taken: the namespace '{}' is index '{}''s own", package,
+                              recipe.string(), ns, by);
+                    refused_.push_back({package, r.spec.name, recipe, by});
+                }
+            }
+
     loaded_ = !projectRepos_.empty() || !globalRepos_.empty();
     if (!loaded_) {
         return std::unexpected(loadWarnings_.empty()
@@ -637,6 +659,19 @@ std::expected<void, std::string> PackageCatalog::rebuild(bool forceRebuild) {
 bool PackageCatalog::is_loaded() const { return loaded_; }
 
 const std::vector<RepoLoadWarning>& PackageCatalog::load_warnings() const { return loadWarnings_; }
+const std::vector<RefusedPackage>& PackageCatalog::refused() const { return refused_; }
+
+std::vector<std::string> reserved_namespaces(const std::filesystem::path& indexDir) {
+    std::vector<std::string> out;
+    const auto file = indexDir / "index-compat.json";
+    std::error_code ec;
+    if (!std::filesystem::is_regular_file(file, ec)) return out;
+    const auto j = nlohmann::json::parse(platform::read_file_to_string(file.string()), nullptr, false);
+    if (!j.is_object() || !j.contains("namespaces") || !j["namespaces"].is_object()) return out;
+    for (const auto& ns : j["namespaces"].value("reserved", nlohmann::json::array()))
+        if (ns.is_string() && !ns.get<std::string>().empty()) out.push_back(ns.get<std::string>());
+    return out;
+}
 
 std::vector<PackageMatch> PackageCatalog::prefer_project_scope_(std::vector<PackageMatch> matches) {
     return detail_::prefer_project_scope_(std::move(matches));

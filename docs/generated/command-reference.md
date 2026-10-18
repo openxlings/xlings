@@ -28,9 +28,11 @@ Options: `-g, --global` — Use global scope; `--force` — Remove even if packa
 
 Update package index or package
 
-## `xlings search <keyword>`
+## `xlings search [keyword]`
 
 Search for packages
+
+Options: `--category <NAME>` — Only packages in this category (luban-desktop: the desktops)
 
 ## `xlings list [filter]`
 

@@ -109,6 +109,9 @@ public:
     // Merge another index (for sub-repos)
     void merge(xpkg::PackageIndex other, const std::string& ns = "");
 
+    // Take out every entry in namespace `ns`: (canonical name, recipe) of each.
+    std::vector<std::pair<std::string, std::filesystem::path>> drop_namespace(std::string_view ns);
+
     // Get all entry names (sorted)
     std::vector<std::string> all_names() const;
 

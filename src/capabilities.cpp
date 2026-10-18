@@ -78,7 +78,7 @@ auto SearchPackages::spec() const -> CapabilitySpec {
     return {
         .name = "search_packages",
         .description = "Search available packages by keyword (fuzzy match). Use plain name without version or namespace (e.g. gc matches gcc, musl-gcc)",
-        .inputSchema = R"JSON({"type":"object","properties":{"keyword":{"type":"string","description":"Keyword for fuzzy matching package names, e.g. gc, nod, rust"}},"required":["keyword"]})JSON",
+        .inputSchema = R"JSON({"type":"object","properties":{"keyword":{"type":"string","description":"Keyword for fuzzy matching package names, e.g. gc, nod, rust"},"category":{"type":"string","description":"Only packages whose recipe lists this category, e.g. luban-desktop (the keyword may then be empty)"}}})JSON",
         .outputSchema = R"({"type":"object","properties":{"exitCode":{"type":"integer"}}})",
         .destructive = false,
     };
@@ -87,7 +87,7 @@ auto SearchPackages::spec() const -> CapabilitySpec {
 auto SearchPackages::execute(Params params, EventStream& stream) -> Result {
     auto json = nlohmann::json::parse(params, nullptr, false);
     auto keyword = json.value("keyword", "");
-    return exit_result(xim::cmd_search(keyword, stream));
+    return exit_result(xim::cmd_search(keyword, stream, json.value("category", "")));
 }
 
 namespace {

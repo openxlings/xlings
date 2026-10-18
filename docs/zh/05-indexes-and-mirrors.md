@@ -121,12 +121,17 @@ xlings install gcc@14.2.0          # the official index: no namespace needed
 
 配方里不带命名空间的依赖，指的是**配方所在索引**里的同名包；只有该索引没有这个名字时才按全局规则查找。
 
+索引可以**保留**自己的命名空间（`index-compat.json`：`{"namespaces": {"reserved": ["xim", "luban"]}}`）：
+别的索引在这些命名空间里发布的包不被采用，xlings 会指出那个索引的配方。官方索引保留 `xim`、`luban`、`subos`、`config`；
+你自己的命名空间也可以这样保留。
+
 ## 命令
 
 | 命令 | 作用 |
 |---|---|
 | `xlings update` | 刷新所有索引 |
 | `xlings search <pkg>` | 跨索引搜索 |
+| `xlings search --category <c>` | 某个分类下的包（`luban-desktop`：桌面） |
 | `xlings info <pkg>` | 包的版本、平台、来源 |
 | `xlings why <pkg>` | 依赖为什么解析到这个版本 |
 | `xlings install <ns>:<pkg>@<ver>` | 安装指定索引的包 |

@@ -1239,7 +1239,7 @@ status = "planned"
 
 [LUBAN-NAMESPACE]
 text = "a namespace an index reserves is taken from that index only (another index's recipe in it is refused, naming the index and the file); luban's short names are the names in the luban: namespace, none listed in its code; replaces is honoured within one index"
-status = "planned"
+status = "required"
 
 [LUBAN-CAPS]
 text = "luban, the Luban OS app, a machine's agent, a system and a component declare what they provide and need as named capabilities with integer levels (luban/specs/opencaps); a need is met by a provision at that level or above, an unknown name is not met and is said so, and a mismatch names which side is too old and its update"

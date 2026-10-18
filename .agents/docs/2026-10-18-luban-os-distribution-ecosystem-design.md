@@ -301,7 +301,8 @@ luban new box --xpkg awesome:myos --xpkg scode:hypr --desktop hypr     # L2：�
 xlings 提供两项通用能力（不认识 Luban；新选项按 AGENTS.md 更新命令定义、`docs/generated/` 与测试）：
 - `xlings subos new <name> --from <坐标> --dry-run --json`：安装模板包（很小），沿 `from` 解析整条链，输出每层的坐标、index、清单原文（含 `luban`）、
   合并后的包与策略；不建实例。
-- `xlings info <pkg> --json`：版本、大小、`categories`、描述；`xlings search --category <c> --json`。
+- 包的结构化描述走 xlings 已有的接口通道（luban 本就经它调用）：`xlings interface package_info` 的结果带 `package` 对象（命名空间、所在 index、类型、
+  `categories`、版本、`passed_over`）；`search_packages` 与 `xlings search` 接受 `category`（结果另有 `packages` 数据）。不另加 `--json` 选项。
 
 luban 的顺序：坐标解析 → 角色（§4.1）→ 链到达官方 edition → 能力满足（§9）→（第三方）确认。任一不满足即停，说明原因与下一步。
 传入的是组件却当系统用时：
@@ -605,7 +606,7 @@ guest（machine）没有 GPU：wlroots 用 pixman 渲染（桥接与工厂测试
 ### 15.1 命名空间迁移
 
 - 旧名字（`subos:luban-*`、`xim:labwc-desktop`）**冻结**：已发布版本保留、照常解析（旧清单的 `from`、已建环境的记录都引用它们）；新版本只发在 `luban:`。
-- 新包声明 `replaces = "subos:luban-core"`；xlings 的 `subos upgrade` 据此从旧名字过渡（通用机制）。**只认同一 index 内的 `replaces`**，社区包不能接替官方包。
+- 新包在清单（`.xlings.json`）中声明 `"replaces": "subos:luban-core"`（xlings 按键读清单，libxpkg 的包模型不变）；xlings 的 `subos upgrade` 据此从旧名字过渡（通用机制）。**只认同一 index 内的 `replaces`**，社区包不能接替官方包。
 - 旧 luban 的 `--edition core` 仍解析到冻结的 `subos:luban-core`，能用、不再更新；新 luban 解析到 `luban:core`。
 - 旧 xlings 不认识保留命名空间：照常解析 `luban:`（命名空间是通用的），只是不做保留检查。
 

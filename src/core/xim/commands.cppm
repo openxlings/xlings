@@ -307,7 +307,8 @@ int cmd_remove(const std::string& target, bool yes, EventStream& stream,
                bool force, bool all, std::optional<std::string> subosScope);
 
 // === search command ===
-int cmd_search(const std::string& keyword, EventStream& stream);
+// `category`: only packages whose recipe lists it (an empty keyword: all of them).
+int cmd_search(const std::string& keyword, EventStream& stream, const std::string& category = {});
 
 // === list command ===
 //

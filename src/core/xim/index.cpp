@@ -435,6 +435,29 @@ void IndexManager::merge(xpkg::PackageIndex other, const std::string& ns) {
     index_ = xpkg::merge(std::move(index_), other, ns);
 }
 
+std::vector<std::pair<std::string, std::filesystem::path>> IndexManager::drop_namespace(std::string_view ns) {
+    std::vector<std::pair<std::string, std::filesystem::path>> dropped;
+    std::set<std::string> keys;
+    for (const auto& [key, entry] : index_.entries)
+        if (entry.identity.namespaceName == ns) {
+            keys.insert(key);
+            dropped.emplace_back(entry.canonicalName, entry.path);
+        }
+    if (keys.empty()) return dropped;
+    for (const auto& key : keys) index_.entries.erase(key);
+    auto prune = [&](std::unordered_map<std::string, std::vector<std::string>>& lists) {
+        for (auto it = lists.begin(); it != lists.end();) {
+            std::erase_if(it->second, [&](const std::string& k) { return keys.contains(k); });
+            it = it->second.empty() ? lists.erase(it) : std::next(it);
+        }
+    };
+    prune(index_.identityEntries);
+    prune(index_.shortNames);
+    std::ranges::sort(dropped);
+    std::ranges::unique(dropped);
+    return dropped;
+}
+
 std::vector<std::string> IndexManager::all_names() const {
     std::vector<std::string> names;
     names.reserve(index_.entries.size());
