@@ -38,7 +38,6 @@ members = [
     "modules/home",
     "modules/ui",
     "modules/cli",
-    "modules/store",
     "modules/subos",
     "modules/confine",
     "modules/carrier",
@@ -166,7 +165,6 @@ platform = { path = "modules/platform" }
 home     = { path = "modules/home" }
 ui       = { path = "modules/ui" }
 cli      = { path = "modules/cli" }
-store    = { path = "modules/store" }
 subos    = { path = "modules/subos" }
 confine  = { path = "modules/confine" }
 carrier  = { path = "modules/carrier" }

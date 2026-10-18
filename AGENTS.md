@@ -9,7 +9,7 @@ Design records live in `.agents/docs/` (the current architecture:
 ## Layout and layers
 
 ```
-modules/   shared libraries (libs, runtime, platform, home, ui, cli, store, subos, confine, carrier, image, testkit)
+modules/   shared libraries (libs, runtime, platform, home, ui, cli, subos, confine, carrier, image, testkit)
 luban/     specs/ (opensal, openhal, openas), kits/ (their implementations, xdesk) -- independent
            projects kept here -- and os/ (Luban OS: stage-0, service, vm, the luban command, its app)
 apps/      binaries a user runs (luban, gui, xdev)

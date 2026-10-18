@@ -13,7 +13,7 @@ modules/            linked into xlings, one per responsibility
   platform/         the OS boundary: every system header and call
   ui/               theme, i18n
   cli/              the command model: one declared tree, help by level, completion
-  store/            what keeps a payload alive: GC roots, the retained ledger
+  home/             the home: its format (layout, steps) and its payload store (GC roots, the retained ledger)
   subos/            the SubOS core: model, policy, intent, sandbox, views, session
   confine/          sandbox implementations (bwrap, proot, landlock, home redirect)
   carrier/          where a SubOS runs: local, wsl2, vz

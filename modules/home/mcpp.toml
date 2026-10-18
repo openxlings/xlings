@@ -1,15 +1,29 @@
-# The home's format, as its own package (Luban OS architecture design §4).
+# The home: its format and the payload store kept in it, as one package
+# (Luban OS architecture design §4; SubOS design part 3 §7.1; design
+# 2026-10-19 §21: two small units of one responsibility, the home's layout
+# and what is kept in it).
 #
-# What a home's layout version means, which client understands which, the
-# ordered steps that bring an older home to this client's layout, and the
-# classes a problem found in a home falls into. It knows the marker file and
-# nothing of Config: a step that needs more is registered by the frontend that
-# has it, and the runner here only orders, isolates and records them.
+# xlings.home.format -- what a home's layout version means, which client
+# understands which, the ordered steps that bring an older home to this
+# client's layout, and the classes a problem found in a home falls into. It
+# knows the marker file and nothing of Config: a step that needs more is
+# registered by the frontend that has it, and the runner here only orders,
+# isolates and records them. The layout version is the marker's integer
+# `layout`, because released clients from 2026.10.9.1 on decide whether they
+# may write a home by it. Only a change an older client would undo by writing
+# raises it; an additive one (new files and keys an older client ignores)
+# does not.
 #
-# The layout version is the marker's integer `layout`, because released
-# clients from 2026.10.9.1 on decide whether they may write a home by it. Only
-# a change an older client would undo by writing raises it; an additive one
-# (new files and keys an older client ignores) does not.
+# xlings.store -- what keeps a payload in <home>/data/xpkgs alive. A
+# workspace that has it installed is one holder; a retained root generation
+# that links into it is another -- rolling back to that generation must find
+# every link's target. It states the second kind and remembers what was
+# removed from every workspace but is still held that way (the retained
+# ledger), so the payload is deleted when the last generation holding it is
+# pruned, and not before. It knows paths and records, not workspaces or
+# generations: the caller says which roots exist, and an unreadable root is
+# reported as a holder, never as absent -- "could not read" is not "empty"
+# (AGENTS.md).
 [package]
 namespace = "xlings"
 name      = "home"
