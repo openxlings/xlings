@@ -26,6 +26,118 @@ import :core;
 
 namespace luban::os {
 
+// The console's pointer (design 2026-10-18 §12, E16). A program that takes
+// the mouse (mouse_mode) is sent its buttons, wheel and motion as xterm
+// does; with Shift held, or a program that does not, it is the window's: a
+// drag selects (copied when it ends), two clicks a word, three a line, the
+// middle button pastes the last selection, the right one opens Copy / Paste,
+// and the wheel scrolls back.
+void console_mouse_(App& a, int mouse, bool sgr) {
+    if (!ImGui::IsWindowHovered() && !a.selecting && a.mouse_held < 0) return;
+    const auto m = ImGui::GetMousePos();
+    const int col = static_cast<int>(std::floor((m.x - a.grid.x) / a.grid.cell_w));
+    const int row = static_cast<int>(std::floor((m.y - a.grid.y) / a.grid.cell_h));
+    const bool inside = row >= 0 && col >= 0 && row < a.grid.rows && col < a.grid.cols;
+    const int r = std::clamp(row, 0, std::max(0, a.grid.rows - 1)), c = std::clamp(col, 0, std::max(0, a.grid.cols - 1));
+    const auto& io = ImGui::GetIO();
+    std::uint32_t mods = 0;
+    if (io.KeyShift) mods |= opensal::Shift;
+    if (io.KeyCtrl) mods |= opensal::Ctrl;
+    if (io.KeyAlt) mods |= opensal::Alt;
+    // The program's, unless Shift says the window's.
+    if (mouse != 0 && !io.KeyShift && !a.selecting && !a.console_menu) {
+        using term::MouseEvent;
+        constexpr std::array<int, 3> buttons{ImGuiMouseButton_Left, ImGuiMouseButton_Middle, ImGuiMouseButton_Right};
+        for (int b = 0; b < 3; ++b) {
+            if (ImGui::IsMouseClicked(buttons[static_cast<std::size_t>(b)]) && inside) {
+                a.console->write(term::encode_mouse(MouseEvent::Press, b, r, c, mods, sgr));
+                a.mouse_held = b;
+                a.mouse_cell = {r, c};
+            }
+            if (ImGui::IsMouseReleased(buttons[static_cast<std::size_t>(b)]) && a.mouse_held == b) {
+                a.console->write(term::encode_mouse(MouseEvent::Release, b, r, c, mods, sgr));
+                a.mouse_held = -1;
+            }
+        }
+        // Motion: with a button held (1002), or any (1003); once a cell.
+        if (std::pair(r, c) != a.mouse_cell && (mouse == 1003 || (mouse == 1002 && a.mouse_held >= 0)) && (inside || a.mouse_held >= 0)) {
+            a.console->write(term::encode_mouse(MouseEvent::Motion, a.mouse_held, r, c, mods, sgr));
+            a.mouse_cell = {r, c};
+        }
+        if (inside && io.MouseWheel != 0) {
+            const auto ev = io.MouseWheel > 0 ? MouseEvent::WheelUp : MouseEvent::WheelDown;
+            for (int k = 0; k < std::min(3, static_cast<int>(std::ceil(std::abs(io.MouseWheel)))); ++k)
+                a.console->write(term::encode_mouse(ev, 0, r, c, mods, sgr));
+        }
+        return;
+    }
+    if (io.MouseWheel != 0 && ImGui::IsWindowHovered()) a.console_scroll = std::max(0, a.console_scroll + static_cast<int>(io.MouseWheel * 3));
+    auto copy = [&] {
+        if (!a.selection) return;
+        a.primary = console_text(*a.console, a.console_scroll, *a.selection);
+        a.window->set_clipboard(a.primary);
+    };
+    if (ImGui::IsMouseClicked(ImGuiMouseButton_Left) && inside && !a.console_menu) {
+        // Clicks on one cell in quick succession: a word, then its line.
+        const auto now = std::chrono::steady_clock::now();
+        a.clicks = now - a.clicked_at < std::chrono::milliseconds(400) && a.clicked_cell == std::pair(r, c) ? a.clicks + 1 : 1;
+        a.clicked_at = now;
+        a.clicked_cell = {r, c};
+        if (a.clicks == 2) { a.selection = console_word(*a.console, a.console_scroll, r, c); copy(); }
+        else if (a.clicks >= 3) { a.selection = std::array<int, 4>{r, 0, r, a.grid.cols - 1}; copy(); a.clicks = 0; }
+        else { a.selecting = true; a.selection = std::array<int, 4>{r, c, r, c}; }
+    } else if (a.selecting && ImGui::IsMouseDown(ImGuiMouseButton_Left) && a.selection) {
+        (*a.selection)[2] = r, (*a.selection)[3] = c;
+    }
+    if (a.selecting && ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
+        a.selecting = false;
+        if (a.selection && ((*a.selection)[0] != (*a.selection)[2] || (*a.selection)[1] != (*a.selection)[3])) copy();
+        else a.selection.reset();
+    }
+    if (ImGui::IsMouseClicked(ImGuiMouseButton_Middle) && inside) {
+        const auto text = a.primary.empty() ? a.window->clipboard() : a.primary;
+        bool bracketed;
+        {
+            std::lock_guard l(a.console->lock());
+            bracketed = a.console->screen().bracketed_paste();
+        }
+        a.console->write(term::encode_paste(text, bracketed));
+        a.console_scroll = 0;
+    }
+    if (ImGui::IsMouseClicked(ImGuiMouseButton_Right) && inside) a.console_menu = m;
+}
+
+// The right button's menu over the console: Copy (what is selected), Paste.
+void console_menu_(App& a) {
+    if (!a.console_menu) return;
+    const ImVec2 at = *a.console_menu;
+    const ImVec2 wo = ImGui::GetWindowPos();
+    auto* dl = ImGui::GetWindowDrawList();
+    const float w = px(140), h = px(84);
+    imkit::panel(dl, at, ImVec2(at.x + w, at.y + h), imkit::Bevel::Raised, th_().panel_lo);
+    bool done = false;
+    ImGui::SetCursorPos(ImVec2(at.x - wo.x + px(6), at.y - wo.y + px(6)));
+    if (imkit::button("console:copy", tr("Copy", "复制"), ImVec2((w - px(12)) / imkit::scale(), 32), imkit::Look::Ghost, a.selection.has_value())) {
+        if (a.selection) a.window->set_clipboard(console_text(*a.console, a.console_scroll, *a.selection));
+        done = true;
+    }
+    mark_(a, "console:copy");
+    ImGui::SetCursorPos(ImVec2(at.x - wo.x + px(6), at.y - wo.y + px(44)));
+    if (imkit::button("console:paste", tr("Paste", "粘贴"), ImVec2((w - px(12)) / imkit::scale(), 32), imkit::Look::Ghost)) {
+        bool bracketed;
+        {
+            std::lock_guard l(a.console->lock());
+            bracketed = a.console->screen().bracketed_paste();
+        }
+        a.console->write(term::encode_paste(a.window->clipboard(), bracketed));
+        a.console_scroll = 0;
+        done = true;
+    }
+    mark_(a, "console:paste");
+    const bool over = ImGui::IsMouseHoveringRect(at, ImVec2(at.x + w, at.y + h));
+    if (done || (!over && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) || ImGui::IsKeyPressed(ImGuiKey_Escape)) a.console_menu.reset();
+}
+
 void console_view_(App& a) {
     begin_full_("console");
     if (!a.console) { ImGui::End(); return; }
@@ -33,13 +145,14 @@ void console_view_(App& a) {
     // Keys the program gets: text from the input method; named keys and
     // control chords as xterm sends them. The size keys are the window's.
     if (!a.menu && !a.close_dialog) {
-        bool app_cursor, bracketed;
+        bool app_cursor, bracketed, sgr;
         int mouse = 0;
         {
             std::lock_guard l(a.console->lock());
             app_cursor = a.console->screen().application_cursor();
             bracketed = a.console->screen().bracketed_paste();
             mouse = a.console->screen().mouse_mode();
+            sgr = a.console->screen().mouse_sgr();
         }
         for (const auto& e : a.window->events())
             if (auto* t = std::get_if<opensal::TextCommit>(&e)) { a.console->write(t->text); a.console_scroll = 0; a.selection.reset(); }
@@ -70,24 +183,7 @@ void console_view_(App& a) {
             a.console->write(term::encode_key(k.name, mods & (opensal::Shift | opensal::Ctrl | opensal::Alt), app_cursor));
             a.console_scroll = 0;
         }
-        // The wheel scrolls back (when the program does not take the mouse);
-        // a drag selects, and what is selected is copied when it ends.
-        if (ImGui::IsWindowHovered() && mouse == 0) {
-            const float wheel = ImGui::GetIO().MouseWheel;
-            if (wheel != 0) a.console_scroll = std::max(0, a.console_scroll + static_cast<int>(wheel * 3));
-            const auto m = ImGui::GetMousePos();
-            const int col = static_cast<int>((m.x - a.grid.x) / a.grid.cell_w), row = static_cast<int>((m.y - a.grid.y) / a.grid.cell_h);
-            const bool inside = row >= 0 && col >= 0 && row < a.grid.rows && col < a.grid.cols;
-            if (ImGui::IsMouseClicked(ImGuiMouseButton_Left) && inside) { a.selecting = true; a.selection = std::array<int, 4>{row, col, row, col}; }
-            else if (a.selecting && ImGui::IsMouseDown(ImGuiMouseButton_Left) && a.selection)
-                (*a.selection)[2] = std::clamp(row, 0, a.grid.rows - 1), (*a.selection)[3] = std::clamp(col, 0, a.grid.cols - 1);
-            if (a.selecting && ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
-                a.selecting = false;
-                if (a.selection && ((*a.selection)[0] != (*a.selection)[2] || (*a.selection)[1] != (*a.selection)[3]))
-                    a.window->set_clipboard(console_text(*a.console, a.console_scroll, *a.selection));
-                else a.selection.reset();
-            }
-        }
+        console_mouse_(a, mouse, sgr);
         // What the program put on the clipboard (OSC 52), when it may.
         std::optional<std::string> wanted;
         {
@@ -101,6 +197,7 @@ void console_view_(App& a) {
                                        .size = a.console_size(a.current), .padding = imkit::unit(),
                                        .focused = !a.menu, .scroll = a.console_scroll, .selection = a.selection});
     mark_(a, "console");
+    console_menu_(a);
     a.console->resize(a.grid.rows, a.grid.cols);
     ImGui::End();
     if (!a.console->alive()) {

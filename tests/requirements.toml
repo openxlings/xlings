@@ -1063,6 +1063,10 @@ status = "required"
 text = "the Luban OS window's console is a terminal whose screen follows what shells and full-screen programs write (cursor motion, erase, scroll regions, the alternate screen, SGR in three colour depths, wide characters, bracketed paste, the title), answers what a shell asks, keeps history, and sends keys as xterm does"
 status = "required"
 
+[LUBAN-CONSOLE-MOUSE]
+text = "the console's pointer: a program that takes the mouse is sent its buttons, wheel and motion as xterm does (SGR when it asked, else X10); with Shift, or for a program that does not, a drag selects and copies, two clicks a word, three a line, the middle button pastes the last selection, the right one opens Copy and Paste, and the wheel scrolls back"
+status = "required"
+
 [LUBAN-DESKTOP-WIRE]
 text = "opensal.wire carries a surface across an address space: damaged rectangles of pixels and every opensal event, whole whatever the cut of the stream, refusing what is not the protocol"
 status = "required"

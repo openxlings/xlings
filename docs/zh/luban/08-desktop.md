@@ -49,6 +49,7 @@ luban enter desk --display window
 | 关闭机器的窗口 | 每次都会问：继续运行还是关机——或者确认并设为这个环境的默认（`luban config desk --on-close background`） |
 | 拖到系统上的文件 | 复制到它登录用户的 `~/Downloads`，窗口说明放在哪里（`.luban` 文件则是导入） |
 | Ctrl+= / Ctrl+- / Ctrl+0 | 控制台字号，按系统分别保存 |
+| 控制台上的鼠标 | 接管鼠标的程序（vim、htop、tmux）收到鼠标；否则——或按住 Shift——拖动选择并复制，双击选词，三击选行，中键粘贴上次选中的内容，右键打开复制 / 粘贴，滚轮回看 |
 | 进行中的操作 | 逐步显示各阶段；可以中止，失败的可以重试 |
 
 应用在系统状态栏中有一个图标：Linux 上是 StatusNotifierItem（KDE、装有 AppIndicator 扩展的 GNOME，以及大多数其他桌面），

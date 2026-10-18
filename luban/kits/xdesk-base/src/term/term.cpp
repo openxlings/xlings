@@ -541,4 +541,26 @@ std::string encode_paste(std::string_view text, bool bracketed) {
     return out;
 }
 
+std::string encode_mouse(MouseEvent event, int button, int row, int col, std::uint32_t mods, bool sgr) {
+    int code = 0;
+    switch (event) {
+    case MouseEvent::WheelUp: code = 64; break;
+    case MouseEvent::WheelDown: code = 65; break;
+    case MouseEvent::Motion: code = 32 + (button < 0 ? 3 : button); break;
+    case MouseEvent::Release: code = sgr ? button : 3; break;   // X10 does not say which
+    case MouseEvent::Press: code = button; break;
+    }
+    // Shift 4, Meta 8, Control 16 (opensal: Shift 1, Ctrl 2, Alt 4).
+    if (mods & 1) code += 4;
+    if (mods & 4) code += 8;
+    if (mods & 2) code += 16;
+    if (sgr) return std::format("\x1b[<{};{};{}{}", code, col + 1, row + 1, event == MouseEvent::Release ? 'm' : 'M');
+    if (col > 222 || row > 222) return {};
+    std::string out = "\x1b[M";
+    out += static_cast<char>(32 + code);
+    out += static_cast<char>(33 + col);
+    out += static_cast<char>(33 + row);
+    return out;
+}
+
 }  // namespace xdesk::term

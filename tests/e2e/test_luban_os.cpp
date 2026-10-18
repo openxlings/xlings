@@ -579,6 +579,58 @@ state {}
     EXPECT_TRUE(red) << "no red in the first line";
 }
 
+// The console's pointer (design 2026-10-18 §12, E16): a program that takes
+// the mouse is sent it; otherwise it selects -- a word, a line -- and the
+// middle button pastes what was selected, the right one has Copy and Paste.
+XTEST(LubanOs, TheConsolesPointerIsTheProgramsOrSelects, .area = "luban",
+      .covers = {"LUBAN-CONSOLE-MOUSE"}, .requires_ = {"linux", "xlings-bin"}) {
+    if (!app_binary()) GTEST_SKIP() << "no luban-os beside the xlings under test";
+    auto home = tk::Home::isolated("luban-os-console-mouse");
+    ASSERT_EQ(home.xlings({"self", "init"}).exit_code, 0);
+    // A program that asks for the mouse (buttons, SGR) and says what it gets.
+    const auto prog = home.root() / "mouse.py";
+    tk::write_file(prog, R"(import os, sys, tty
+tty.setraw(0)
+os.write(1, b"\033[?1000h\033[?1006hready\r\n")
+while True:
+    got = os.read(0, 64)
+    if not got: break
+    os.write(1, b"got " + got.replace(b"\033", b"ESC") + b"\r\n")
+)");
+    auto taken = run_script(home, R"(wait console
+see ready
+cell 2 5
+see got ESC[<0;6;3M
+see got ESC[<0;6;3m
+cell 2 5 right
+see got ESC[<2;6;3M
+)", {"--console-exec", "python3", prog.string()}, {{"LUBAN_OS_LANG", "en_US.UTF-8"}});
+    EXPECT_EQ(taken.exit_code, 0) << taken.transcript();
+
+    const auto words = home.root() / "words.json", line = home.root() / "line.json", menu = home.root() / "menu.json";
+    auto selected = run_script(home, std::format(R"(wait console
+see ready
+cell 0 9 double
+frames 2
+state {}
+cell 0 9 triple
+frames 2
+state {}
+cell 3 0 middle
+see alpha beta-gamma.txt delta
+cell 3 2 right
+frames 3
+state {}
+)", words.string(), line.string(), menu.string()),
+                               {"--console-exec", "/bin/sh", "-c", R"(printf 'alpha beta-gamma.txt delta\nready\n'; exec cat)"},
+                               {{"LUBAN_OS_LANG", "en_US.UTF-8"}});
+    ASSERT_EQ(selected.exit_code, 0) << selected.transcript();
+    EXPECT_EQ(read_state(words)["clipboard"], "beta-gamma.txt") << "two clicks: the word";
+    EXPECT_EQ(read_state(line)["clipboard"], "alpha beta-gamma.txt delta") << "three: the line";
+    const auto anchors = read_state(menu)["anchors"];
+    EXPECT_TRUE(anchors.contains("console:copy") && anchors.contains("console:paste")) << anchors.dump();
+}
+
 // xdesk (apps/xdesk), built beside the app; XDESK_BIN names another.
 std::optional<fs::path> xdesk_binary() {
     if (const char* forced = std::getenv("XDESK_BIN"); forced && *forced) return fs::path(forced);

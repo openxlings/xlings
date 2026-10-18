@@ -254,6 +254,7 @@ struct ConsoleGrid {
 ConsoleGrid draw_console(Console& c, const ConsoleLook& look);
 // The text of a selection (cells, inclusive), lines joined with \n.
 std::string console_text(Console& c, int scroll, std::array<int, 4> selection);
+std::array<int, 4> console_word(Console& c, int scroll, int row, int col);
 
 // ── the window's state ──────────────────────────────────────────────────
 
@@ -478,6 +479,17 @@ struct App {
     int console_scroll { 0 };
     std::optional<std::array<int, 4>> selection;
     bool selecting { false };
+    // The console's pointer (design 2026-10-18 §12, E16): the cell last
+    // reported to a program that takes the mouse and the button held there;
+    // clicks counted for a word (two) or a line (three); what was selected
+    // last, which a middle click pastes; the right button's menu.
+    std::pair<int, int> mouse_cell { -1, -1 };
+    int mouse_held { -1 };
+    int clicks { 0 };
+    std::chrono::steady_clock::time_point clicked_at;
+    std::pair<int, int> clicked_cell { -1, -1 };
+    std::string primary;
+    std::optional<ImVec2> console_menu;
     ConsoleGrid grid;
     // The nano view.
     RunView run;
@@ -567,6 +579,8 @@ using imkit::px;
 //   commit <text>                   as the input method commits it
 //   drop <file>                     dropped on the window
 //   clipboard <text>                the host's clipboard
+//   cell <row> <col> [left|middle|right|double|triple]
+//                                   a click on the console's cell
 //   expect <path> <value>           (path: dotted, into the state; a string
 //                                    compares as it is, anything else as JSON;
 //                                    `present` / `absent` ask whether it is there)

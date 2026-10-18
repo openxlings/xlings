@@ -60,6 +60,7 @@ exit code, instead of only "off".
 | closing it on a machine | asks each time: keep it running or power it off — or confirm and make that the environment's default (`luban config desk --on-close background`) |
 | a file dropped on a system | copied into its login user's `~/Downloads`, and the window says where (a `.luban` file is imported instead) |
 | Ctrl+= / Ctrl+- / Ctrl+0 | the console's font size, kept per system |
+| the pointer on a console | a program that takes the mouse (vim, htop, tmux) gets it; otherwise — or with Shift held — a drag selects and copies, two clicks a word, three a line, the middle button pastes the last selection, the right one opens Copy / Paste, the wheel scrolls back |
 | an operation under way | its phases as it goes; it can be stopped, and one that failed can be tried again |
 
 The app has an icon in the system's status area: StatusNotifierItem on Linux

@@ -112,6 +112,22 @@ XTEST(LubanTerm, KeysAreSentAsXtermSendsThem, .area = "luban", .covers = {"LUBAN
     EXPECT_EQ(term::encode_paste("ls", true), "\x1b[200~ls\x1b[201~");
 }
 
+XTEST(LubanTerm, AMouseReportIsXtermsInBothEncodings, .area = "luban", .covers = {"LUBAN-CONSOLE-MOUSE"}) {
+    using term::MouseEvent;
+    // SGR: the button, 1-based column and row, M pressed and m let go.
+    EXPECT_EQ(term::encode_mouse(MouseEvent::Press, 0, 2, 5, 0, true), "\x1b[<0;6;3M");
+    EXPECT_EQ(term::encode_mouse(MouseEvent::Release, 2, 2, 5, 0, true), "\x1b[<2;6;3m");
+    EXPECT_EQ(term::encode_mouse(MouseEvent::Motion, 0, 0, 0, 0, true), "\x1b[<32;1;1M");
+    EXPECT_EQ(term::encode_mouse(MouseEvent::Motion, -1, 0, 0, 0, true), "\x1b[<35;1;1M") << "moving, no button";
+    EXPECT_EQ(term::encode_mouse(MouseEvent::WheelUp, 0, 0, 0, 0, true), "\x1b[<64;1;1M");
+    // Modifiers: Shift 4, Meta 8, Control 16.
+    EXPECT_EQ(term::encode_mouse(MouseEvent::Press, 1, 0, 0, opensal::Ctrl | opensal::Shift, true), "\x1b[<21;1;1M");
+    // X10: 32 + each, a release without its button; nothing past column 222.
+    EXPECT_EQ(term::encode_mouse(MouseEvent::Press, 0, 2, 5, 0, false), "\x1b[M &#");
+    EXPECT_EQ(term::encode_mouse(MouseEvent::Release, 0, 2, 5, 0, false), "\x1b[M#&#");
+    EXPECT_EQ(term::encode_mouse(MouseEvent::Press, 0, 0, 300, 0, false), "");
+}
+
 XTEST(OpensalWire, FramesAndEventsCrossTheBoundaryWhole, .area = "luban", .covers = {"LUBAN-DESKTOP-WIRE"}) {
     std::vector<std::byte> px(4 * 4 * 4);
     for (std::size_t i = 0; i < px.size(); ++i) px[i] = std::byte(i);

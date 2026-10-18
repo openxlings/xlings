@@ -453,4 +453,24 @@ std::string console_text(Console& c, int scroll, std::array<int, 4> selection) {
     return out;
 }
 
+// The word at (row, col) as a selection: letters, digits and what a path or
+// an address is made of; a single cell where there is none.
+std::array<int, 4> console_word(Console& c, int scroll, int row, int col) {
+    std::lock_guard l(c.lock());
+    auto& s = c.screen();
+    const int sb = std::clamp(scroll, 0, static_cast<int>(s.scrollback()));
+    auto word = [&](int at) {
+        const auto* cell = cell_at_(s, sb, row, at, s.cols());
+        if (!cell) return false;
+        const char32_t ch = cell->ch;
+        return ch > 0x7f || (ch < 0x80 && (std::isalnum(static_cast<int>(ch)) || std::u32string_view(U"-_./~:@%+=#").find(ch) != std::u32string_view::npos));
+    };
+    if (!word(col)) return {row, col, row, col};
+    int from = col, to = col;
+    while (from > 0 && word(from - 1)) --from;
+    while (to + 1 < s.cols() && word(to + 1)) ++to;
+    return {row, from, row, to};
+}
+
 }  // namespace luban::os
+

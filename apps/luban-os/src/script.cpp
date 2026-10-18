@@ -360,6 +360,21 @@ void script_step_(App& a, Script& sc) {
             sc.pending.push_back([x, y](App& app) { app.window->inject_button(x, y, 1, false); });
         }
         next();
+    } else if (cmd == "cell") {
+        int row = 0, col = 0;
+        std::string how = "left";
+        words >> row >> col >> how;
+        if (!a.console || a.grid.cell_w <= 0) { if (!waiting(10)) fail("no console"); return; }
+        const float x = a.grid.x + (static_cast<float>(col) + 0.5f) * a.grid.cell_w;
+        const float y = a.grid.y + (static_cast<float>(row) + 0.5f) * a.grid.cell_h;
+        const int button = how == "middle" ? 2 : how == "right" ? 3 : 1;
+        const int times = how == "double" ? 2 : how == "triple" ? 3 : 1;
+        sc.pending.push_back([x, y](App& app) { app.window->inject_pointer(x, y); });
+        for (int k = 0; k < times; ++k) {
+            sc.pending.push_back([x, y, button](App& app) { app.window->inject_button(x, y, button, true); });
+            sc.pending.push_back([x, y, button](App& app) { app.window->inject_button(x, y, button, false); });
+        }
+        next();
     } else if (cmd == "frames") {
         int n = 1;
         words >> n;
