@@ -1,4 +1,4 @@
-# opensal Specification, version 0.1
+# opensal Specification, version 0.2
 
 ## 1. Scope
 
@@ -11,7 +11,7 @@ It does not define how a surface is acquired.
 2.1 A provider provides each interface whole or not at all.
 
 2.2 `Surface` is the core interface; `Pointer`, `Keyboard`, `Mode`, `Density`,
-`Capture`, `Cursor`, `Text` and `Clipboard` are optional.
+`Capture`, `Cursor`, `Text`, `Clipboard` and `Shell` are optional.
 
 2.3 A consumer learns which interfaces it has by asking (the provided set),
 never by trying an operation.
@@ -42,6 +42,13 @@ shown what it was sent, and the consumer sends the next frame only after it.
 
 5.3 Cursor shapes are named by their CSS names.
 
+5.4 `Shell`: the provider is the shell of a consumer that has none of its
+own. The consumer tells it its applications (an id and a name) and its
+windows (an id, the application's id, the title, focused and minimized),
+each list whole, whenever it changes; the provider gives back launch (an
+application by its id, started by the consumer as it declares) and activate
+(a window to bring forward).
+
 ## 6. The wire
 
 6.1 One byte stream; each message is a kind (1 byte), a length (4 bytes, big
@@ -56,6 +63,9 @@ frame is bounded by its rectangle.
 6.4 The consumer opens with hello (the interfaces it wants); the provider
 answers with hello (the interfaces it provides, its size, its density, and
 whether it paces).
+
+6.5 A version adds interfaces and messages; it changes none. 0.2 added
+`Shell`.
 
 ## 7. Conformance
 

@@ -12,7 +12,9 @@ Each step says what you should see.
 
 ```bash
 luban new box                           # Luban Core, the default: shells, editors, git, compilers
-luban new small --edition tiny          # or an edition: nano, tiny, core, desktop, desktop-xdesk, agent-workspace, or ns:name
+luban new small --edition tiny          # or an edition: nano, tiny, tiny-musl, core, agent-workspace, desktop
+luban new desk --edition desktop --desktop lxqt   # a desktop: xdesk (its own), labwc, compositor, lxqt, kde
+luban new mine --xpkg myindex:myos      # any index's system (02)
 ```
 
 One is enough. You see `▸ making box (core)`, the download, then `✓ box is

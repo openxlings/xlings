@@ -26,6 +26,7 @@ enum class Interface : std::uint32_t {
     Cursor    = 1u << 6,   // the pointer's shape, by name
     Text      = 1u << 7,   // text the host's input method composed, and its preedit
     Clipboard = 1u << 8,   // the host's clipboard
+    Shell     = 1u << 9,   // the host lists the consumer's windows and starts its programs (0.2)
 };
 using Interfaces = std::uint32_t;
 constexpr Interfaces operator|(Interface a, Interface b) { return static_cast<Interfaces>(a) | static_cast<Interfaces>(b); }
@@ -66,9 +67,27 @@ struct Focus { bool in { true }; };
 struct CloseRequested {};
 struct ClipboardText { std::string text; };
 struct FramePresented {};   // pacing: the last frame is on screen, the next may be drawn
+// Shell: an application the consumer listed, to start; a window to bring forward.
+struct Launch { std::string app; };
+struct Activate { std::uint32_t window { 0 }; };
 
 using Event = std::variant<Resized, DensityChanged, Key, TextCommit, Preedit, PointerMotion, PointerButton, Wheel,
-                           Focus, CloseRequested, ClipboardText, FramePresented>;
+                           Focus, CloseRequested, ClipboardText, FramePresented, Launch, Activate>;
+
+// Shell: an application of the consumer's session and a window, as the consumer tells them.
+struct Application {
+    std::string id;       // its desktop entry's, without .desktop
+    std::string name;
+    bool operator==(const Application&) const = default;
+};
+struct Window {
+    std::uint32_t id { 0 };
+    std::string app_id;
+    std::string title;
+    bool focused { false };
+    bool minimized { false };
+    bool operator==(const Window&) const = default;
+};
 
 // The pointer shapes `Cursor` names (CSS names, which every toolkit maps).
 inline constexpr std::array<std::string_view, 8> kCursors{"default", "text", "pointer", "grab", "move",

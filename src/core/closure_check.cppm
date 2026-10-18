@@ -230,6 +230,14 @@ inline std::set<std::string> payload_sonames(const fs::path& payloadDir) {
     return out;
 }
 
+// Rules A and E are glibc's: a musl loader (a bundle's own, beside its
+// libraries) is neither the glibc rule A measures nor a loader rule E's tag
+// misleads -- musl searches a program's path for everything beneath it,
+// either tag.
+inline bool glibc_loader(std::string_view interp) {
+    return !fs::path(interp).filename().string().starts_with("ld-musl-");
+}
+
 // ── the scan ────────────────────────────────────────────────────────────
 
 // `hostGlibc` comes from the subos manifest (recorded at creation); empty
@@ -289,8 +297,10 @@ inline Report scan_payload(const fs::path& payloadDir,
         if (interpPayload.empty()) continue;      // host-anchored: by design
         rep.formXElves++;
 
+        const bool musl = !glibc_loader(interp);
+
         // rule A -- once per payload; the first form-X ELF names it.
-        if (!rep.floor && !hostGlibc.empty()) {
+        if (!musl && !rep.floor && !hostGlibc.empty()) {
             const auto ours = fs::path(interpPayload).filename().string();
             if (version_order::compare(ours, std::string(hostGlibc)) < 0) {
                 rep.floor = VersionFloor{
@@ -308,7 +318,7 @@ inline Report scan_payload(const fs::path& payloadDir,
         // transitive tag on a LIBRARY is measured harmful, because
         // transitivity runs downward too and the library's path then enters
         // every lookup beneath it (xim-pkgindex#593).
-        if (!rep.nonTransitive
+        if (!musl && !rep.nonTransitive
             && path_tag_of(path) == PathTag::Runpath) {
             const auto rp = run_lines(std::format("--print-rpath \"{}\"", path));
             rep.nonTransitive = NonTransitiveTag{

@@ -132,12 +132,21 @@ bool confirmed_or_refused_(EventStream& stream, std::string id,
     }, stream.prompt(std::move(req)));
 }
 
+std::optional<std::string> index_repo_of(std::string_view package, CatalogAccess access) {
+    auto& catalog = get_catalog(access);
+    if (!catalog.is_loaded()) return std::nullopt;
+    auto match = catalog.resolve_target(std::string(package), detect_platform());
+    if (!match) return std::nullopt;
+    return match->repoName;
+}
+
 std::optional<std::string> index_version_of(std::string_view package,
-                                            CatalogAccess access) {
+                                            CatalogAccess access, std::string* passedOver) {
     auto& catalog = get_catalog(access);
     if (!catalog.is_loaded()) return std::nullopt;
     auto match = catalog.resolve_target(std::string(package), detect_platform());
     if (!match || match->version.empty()) return std::nullopt;
+    if (passedOver) *passedOver = match->passedOver;
     return match->version;
 }
 
@@ -2208,6 +2217,15 @@ int cmd_remove_in_scope_(const std::string& target, bool yes,
     // index must not block a removal the version DB alone can already do
     // (openxlings/xlings#578).
     std::vector<std::string> resolveTargets;
+    // A version as the database keys it ("luban:2026.10.18.1" for a package
+    // of another namespace than the default) names the package's namespace,
+    // not the version's: the target takes the namespace, the version the rest.
+    auto targetAt = [&](const std::string& key) {
+        auto [ns, ver] = xvm::parse_ns_version(key);
+        if (ns.empty()) return target + "@" + key;
+        const bool named = target.find(':') != std::string::npos;
+        return (named ? target : ns + ":" + target) + "@" + ver;
+    };
     if (target.find('@') != std::string::npos) {
         resolveTargets = { target };
     } else {
@@ -2230,7 +2248,7 @@ int cmd_remove_in_scope_(const std::string& target, bool yes,
                 resolveTargets = { target };
             } else {
                 for (const auto& v : versions) {
-                    resolveTargets.push_back(target + "@" + v);
+                    resolveTargets.push_back(targetAt(v));
                 }
             }
         } else {
@@ -2319,7 +2337,7 @@ int cmd_remove_in_scope_(const std::string& target, bool yes,
                     }
                 }
             }
-            resolveTargets = { active.empty() ? target : (target + "@" + active) };
+            resolveTargets = { active.empty() ? target : targetAt(active) };
         }
     }
 
@@ -2669,23 +2687,32 @@ ScopedSubosOverride::~ScopedSubosOverride() {
     }
 }
 
-int cmd_search(const std::string& keyword, EventStream& stream) {
+int cmd_search(const std::string& keyword, EventStream& stream, const std::string& category) {
     auto* loaded = ensure_catalog(stream, CatalogNeed::Local);
     if (!loaded) return 1;
     auto& catalog = *loaded;
 
     auto results = catalog.search(keyword, detect_platform());
-    if (results.empty()) {
-        log::println("no packages found matching '{}'", keyword);
-        return 0;
-    }
-
     nlohmann::json itemsJson = nlohmann::json::array();
+    // What a program reads (Luban's quick start: the desktops to offer): the
+    // same matches with what each is, beside the list a person reads.
+    nlohmann::json packages = nlohmann::json::array();
     for (auto& match : results) {
         auto pkg = catalog.load_package(match);
+        if (!category.empty() && (!pkg || std::ranges::find(pkg->categories, category) == pkg->categories.end()))
+            continue;
         std::string desc = pkg ? pkg->description : "";
         itemsJson.push_back({match.canonicalName, desc});
+        packages.push_back({{"package", match.canonicalName}, {"namespace", match.namespaceName}, {"name", match.name},
+                            {"version", match.version}, {"index", match.repoName}, {"description", desc},
+                            {"categories", pkg ? nlohmann::json(pkg->categories) : nlohmann::json::array()}});
     }
+    if (itemsJson.empty()) {
+        if (category.empty()) log::println("no packages found matching '{}'", keyword);
+        else log::println("no packages in category '{}'{}", category, keyword.empty() ? "" : " matching '" + keyword + "'");
+        return 0;
+    }
+    stream.emit(DataEvent{"packages", packages.dump()});
     nlohmann::json searchPayload;
     searchPayload["title"] = std::string(i18n::tr("Search results:"));
     searchPayload["items"] = std::move(itemsJson);
@@ -2921,12 +2948,12 @@ int cmd_sync_index(const std::string& name, const std::filesystem::path& dest, E
     return 0;
 }
 
-int cmd_info(const std::string& target, EventStream& stream, bool allVersions) {
+int cmd_info(const std::string& target, EventStream& stream, bool allVersions, const std::string& forPlatform) {
     auto* loaded = ensure_catalog(stream, CatalogNeed::Local);
     if (!loaded) return 1;
     auto& catalog = *loaded;
 
-    const auto infoPlatform = detect_platform();
+    const auto infoPlatform = forPlatform.empty() ? detect_platform() : forPlatform;
     auto match = catalog.resolve_target(target, infoPlatform);
     if (!match) {
         // The same name, two answers.
@@ -2979,7 +3006,7 @@ int cmd_info(const std::string& target, EventStream& stream, bool allVersions) {
                     [&](EventStream::NobodyToAsk&&) {},
                 }, stream.prompt(std::move(pick)));
                 if (early >= 0) return early;
-                if (chosen) return cmd_info(*chosen, stream, allVersions);
+                if (chosen) return cmd_info(*chosen, stream, allVersions, forPlatform);
             }
             diag::emit({
                 .code    = "xim.ambiguous_target",
@@ -3046,7 +3073,7 @@ int cmd_info(const std::string& target, EventStream& stream, bool allVersions) {
         addField(fieldsJson, "archs", archStr);
     }
 
-    auto platform = detect_platform();
+    auto platform = infoPlatform;
     auto platformIt = pkg->xpm.entries.find(platform);
     if (platformIt != pkg->xpm.entries.end()) {
         // Concrete versions and aliases used to share one comma-joined
@@ -3220,6 +3247,21 @@ int cmd_info(const std::string& target, EventStream& stream, bool allVersions) {
 
     nlohmann::json infoPayload;
     infoPayload["title"] = match->canonicalName;
+    // What a program reads (luban: what a coordinate is before it is used),
+    // the same facts as the rows, as data.
+    {
+        using Type = mcpplibs::xpkg::PackageType;
+        const auto type = pkg->type == Type::Subos ? "subos" : pkg->type == Type::Script ? "script"
+                        : pkg->type == Type::Template ? "template" : pkg->type == Type::Config ? "config" : "package";
+        infoPayload["package"] = {
+            {"package", match->canonicalName}, {"namespace", match->namespaceName}, {"name", match->name},
+            {"version", match->version}, {"index", match->repoName}, {"description", pkg->description},
+            {"type", type},
+            {"categories", pkg->categories}, {"keywords", pkg->keywords}, {"archs", pkg->archs},
+            {"status", pkg->status == mcpplibs::xpkg::PackageStatus::Stable       ? "stable"
+                       : pkg->status == mcpplibs::xpkg::PackageStatus::Deprecated ? "deprecated" : "dev"}};
+        if (!match->passedOver.empty()) infoPayload["package"]["passed_over"] = match->passedOver;
+    }
     infoPayload["fields"] = std::move(fieldsJson);
     infoPayload["extra_fields"] = std::move(extraJson);
     stream.emit(DataEvent{"info_panel", infoPayload.dump()});

@@ -989,10 +989,10 @@ int enter(const std::string& name, EventStream& stream, const EnterOptions& opts
             payload["joined"] = live->id;
             if (opts.announce) stream.emit(DataEvent{"subos_entering", payload.dump()});
             std::fflush(nullptr);
-            if (request.interactive && cmd.empty())
+            if (request.interactive && cmd.empty() && !opts.started_for_this)
                 log::info("joined the running session of '{}'", name);
             auto r = session::join(home, name, session::ExecRequest{
-                .argv = sb.argv, .env = request.host_env, .tty = request.interactive });
+                .argv = sb.argv, .env = request.host_env, .tty = request.interactive, .shell = request.shell });
             if (!r.phase.empty() && r.phase == "setup")
                 log::error("{}", r.error);
             return r.exit_code;
@@ -1085,6 +1085,7 @@ int enter(const std::string& name, EventStream& stream, const EnterOptions& opts
             .default_cwd = sb.cwd.string(),
             .ttl = opts.ttl,
             .detached = opts.detached,
+            .persist = opts.persist,
             .timeout = opts.timeout,
             .pasta = sb.net_nat ? xlings::confine::provider::pasta_args(sb) : std::vector<std::string>{},
             .proxy_url = sb.net_proxy ? sb.proxy_url : std::string{},

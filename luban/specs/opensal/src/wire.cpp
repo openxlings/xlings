@@ -95,6 +95,8 @@ std::string encode_event(const Event& e) {
         else if constexpr (std::is_same_v<T, Focus>) return std::format("focus {}", v.in ? 1 : 0);
         else if constexpr (std::is_same_v<T, CloseRequested>) return "close";
         else if constexpr (std::is_same_v<T, ClipboardText>) return "clipboard " + v.text;
+        else if constexpr (std::is_same_v<T, Launch>) return "launch " + v.app;
+        else if constexpr (std::is_same_v<T, Activate>) return std::format("activate {}", v.window);
         else return "presented";
     }, e);
 }
@@ -149,8 +151,84 @@ std::optional<Event> decode_event(std::string_view p) {
         return ClipboardText{std::string(rest)};
     } else if (name == "presented") {
         return FramePresented{};
+    } else if (name == "launch" && !rest.empty()) {
+        return Launch{std::string(rest)};
+    } else if (name == "activate" && w.size() == 1) {
+        Activate a;
+        if (num_(w[0], a.window)) return a;
     }
     return std::nullopt;
+}
+
+namespace {
+
+std::string clean_(std::string s) {
+    for (auto& c : s)
+        if (c == '\t' || c == '\n') c = ' ';
+    return s;
+}
+
+// Each line's N tab-separated fields (the last takes the rest); nullopt when one is short.
+template <std::size_t N>
+std::optional<std::vector<std::array<std::string_view, N>>> lines_(std::string_view p) {
+    std::vector<std::array<std::string_view, N>> out;
+    while (!p.empty()) {
+        const auto nl = p.find('\n');
+        auto line = p.substr(0, nl);
+        p = nl == std::string_view::npos ? std::string_view{} : p.substr(nl + 1);
+        std::array<std::string_view, N> f;
+        for (std::size_t k = 0; k + 1 < N; ++k) {
+            const auto tab = line.find('\t');
+            if (tab == std::string_view::npos) return std::nullopt;
+            f[k] = line.substr(0, tab);
+            line.remove_prefix(tab + 1);
+        }
+        f[N - 1] = line;
+        out.push_back(f);
+    }
+    return out;
+}
+
+}  // namespace
+
+std::string encode_applications(std::span<const Application> apps) {
+    std::string out;
+    for (const auto& a : apps) out += std::format("{}\t{}\n", clean_(a.id), clean_(a.name));
+    return out;
+}
+
+std::optional<std::vector<Application>> decode_applications(std::string_view p) {
+    auto lines = lines_<2>(p);
+    if (!lines) return std::nullopt;
+    std::vector<Application> out;
+    for (const auto& f : *lines) {
+        if (f[0].empty()) return std::nullopt;
+        out.push_back({std::string(f[0]), std::string(f[1])});
+    }
+    return out;
+}
+
+std::string encode_windows(std::span<const Window> windows) {
+    std::string out;
+    for (const auto& w : windows)
+        out += std::format("{}\t{}\t{}\t{}\t{}\n", w.id, w.focused ? 1 : 0, w.minimized ? 1 : 0, clean_(w.app_id), clean_(w.title));
+    return out;
+}
+
+std::optional<std::vector<Window>> decode_windows(std::string_view p) {
+    auto lines = lines_<5>(p);
+    if (!lines) return std::nullopt;
+    std::vector<Window> out;
+    for (const auto& f : *lines) {
+        Window w;
+        if (!num_(f[0], w.id) || (f[1] != "0" && f[1] != "1") || (f[2] != "0" && f[2] != "1")) return std::nullopt;
+        w.focused = f[1] == "1";
+        w.minimized = f[2] == "1";
+        w.app_id = f[3];
+        w.title = f[4];
+        out.push_back(std::move(w));
+    }
+    return out;
 }
 
 std::expected<std::optional<Message>, std::string> Decoder::next() {

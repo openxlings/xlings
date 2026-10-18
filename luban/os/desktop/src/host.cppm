@@ -38,7 +38,12 @@ public:
     // Waits until something is to be drawn (at most `timeout_ms`), takes the
     // events, starts an imgui frame. False when the window is to close.
     bool begin_frame(int timeout_ms);
-    void end_frame();
+    // The frame laid out is drawn and shown; `present` false lays it out only
+    // (nothing on the screen changed: no work for the renderer).
+    void end_frame(bool present = true);
+    // The renderer SDL chose: "opengl", "opengles2", "vulkan", "metal",
+    // "direct3d11"... or "software" (no GPU reached).
+    std::string renderer() const;
 
     // Thread-safe: something outside changed; draw a frame.
     void wake();

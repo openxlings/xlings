@@ -77,6 +77,31 @@ XTEST(LubanTerm, AWideCharacterTakesTwoColumnsAndAResizeKeepsTheCursorsLine, .ar
     EXPECT_EQ(term::width(U'́'), 0);
 }
 
+XTEST(LubanTerm, AMarkedSequenceIsNotThePlainOneOfTheSameFinal, .area = "luban", .covers = {"LUBAN-TERM"}) {
+    // What fish 4.8.1 writes when it starts (recorded from a pty), after a
+    // welcome: its first `CSI ? u` asks for the kitty keyboard flags and was
+    // taken for `CSI u`, restoring the cursor to the top over the welcome.
+    term::Screen s(6, 40);
+    s.feed("welcome 1\r\nwelcome 2\r\n");
+    s.feed("\x1b[?u\x1b[>0q\x1b]11;?\x1b\\\x1b[?1049h\x1bP+q696e646e\x1b\\\x1b[?1049l\x1b[0c");
+    s.feed("Welcome to fish\r\n\x1b[6n\x1b[0c\x1b[?2004h\x1b[>4;1m> ");
+    EXPECT_EQ(row(s, 0), "welcome 1");
+    EXPECT_EQ(row(s, 1), "welcome 2");
+    EXPECT_EQ(row(s, 2), "Welcome to fish");
+    EXPECT_EQ(row(s, 3), ">");
+    EXPECT_EQ(s.unhandled, 0u);
+    // Asked of a marked sequence, the marked answer; the plain ones as before.
+    (void)s.take_replies();
+    s.feed("\x1b[?6n");
+    EXPECT_EQ(s.take_replies(), "\x1b[?4;3R");
+    s.feed("\x1b[2;5H\x1b[s\x1b[1;1H\x1b[u");
+    EXPECT_EQ(s.cursor_row(), 1) << "CSI s / CSI u still save and restore";
+    EXPECT_EQ(s.cursor_col(), 4);
+    s.feed("\x1b[>1u\x1b[<u\x1b[=1;1u");
+    EXPECT_EQ(s.cursor_row(), 1) << "the kitty keyboard push, pop and set move nothing";
+    EXPECT_EQ(s.unhandled, 0u);
+}
+
 XTEST(LubanTerm, KeysAreSentAsXtermSendsThem, .area = "luban", .covers = {"LUBAN-TERM"}) {
     EXPECT_EQ(term::encode_key("Up", 0, false), "\x1b[A");
     EXPECT_EQ(term::encode_key("Up", 0, true), "\x1bOA");
@@ -85,6 +110,22 @@ XTEST(LubanTerm, KeysAreSentAsXtermSendsThem, .area = "luban", .covers = {"LUBAN
     EXPECT_EQ(term::encode_key("F5", 0, false), "\x1b[15~");
     EXPECT_EQ(term::encode_key("Backspace", 0, false), "\x7f");
     EXPECT_EQ(term::encode_paste("ls", true), "\x1b[200~ls\x1b[201~");
+}
+
+XTEST(LubanTerm, AMouseReportIsXtermsInBothEncodings, .area = "luban", .covers = {"LUBAN-CONSOLE-MOUSE"}) {
+    using term::MouseEvent;
+    // SGR: the button, 1-based column and row, M pressed and m let go.
+    EXPECT_EQ(term::encode_mouse(MouseEvent::Press, 0, 2, 5, 0, true), "\x1b[<0;6;3M");
+    EXPECT_EQ(term::encode_mouse(MouseEvent::Release, 2, 2, 5, 0, true), "\x1b[<2;6;3m");
+    EXPECT_EQ(term::encode_mouse(MouseEvent::Motion, 0, 0, 0, 0, true), "\x1b[<32;1;1M");
+    EXPECT_EQ(term::encode_mouse(MouseEvent::Motion, -1, 0, 0, 0, true), "\x1b[<35;1;1M") << "moving, no button";
+    EXPECT_EQ(term::encode_mouse(MouseEvent::WheelUp, 0, 0, 0, 0, true), "\x1b[<64;1;1M");
+    // Modifiers: Shift 4, Meta 8, Control 16.
+    EXPECT_EQ(term::encode_mouse(MouseEvent::Press, 1, 0, 0, opensal::Ctrl | opensal::Shift, true), "\x1b[<21;1;1M");
+    // X10: 32 + each, a release without its button; nothing past column 222.
+    EXPECT_EQ(term::encode_mouse(MouseEvent::Press, 0, 2, 5, 0, false), "\x1b[M &#");
+    EXPECT_EQ(term::encode_mouse(MouseEvent::Release, 0, 2, 5, 0, false), "\x1b[M#&#");
+    EXPECT_EQ(term::encode_mouse(MouseEvent::Press, 0, 0, 300, 0, false), "");
 }
 
 XTEST(OpensalWire, FramesAndEventsCrossTheBoundaryWhole, .area = "luban", .covers = {"LUBAN-DESKTOP-WIRE"}) {
@@ -113,4 +154,31 @@ XTEST(OpensalWire, FramesAndEventsCrossTheBoundaryWhole, .area = "luban", .cover
     EXPECT_EQ(std::get<opensal::TextCommit>(*wire::decode_event((*m3)->payload)).text, "中文 text");
     EXPECT_FALSE(wire::decode_frame("1 1 2 2 8\nshort")) << "rows shorter than the rectangle";
     EXPECT_FALSE(wire::decode_event("key 1 x 0 0"));
+}
+
+XTEST(OpensalWire, AShellsListsAndRequestsCrossWhole, .area = "luban", .covers = {"LUBAN-DESKTOP-WIRE", "LUBAN-DESKTOP-SHELL"}) {
+    // Windows and applications, each list whole; a tab or a line break in a
+    // name does not cut it.
+    const std::vector<opensal::Window> windows{{.id = 7, .app_id = "foot", .title = "~/src\tbuild", .focused = true},
+                                               {.id = 9, .app_id = "", .title = "", .minimized = true}};
+    auto back = wire::decode_windows(wire::encode_windows(windows));
+    ASSERT_TRUE(back);
+    ASSERT_EQ(back->size(), 2u);
+    EXPECT_EQ((*back)[0].title, "~/src build");
+    EXPECT_TRUE((*back)[0].focused);
+    EXPECT_TRUE((*back)[1].minimized);
+    EXPECT_EQ((*back)[1].id, 9u);
+    EXPECT_TRUE(wire::decode_windows("")->empty()) << "no windows is a list too";
+    EXPECT_FALSE(wire::decode_windows("7\t1\tfoot\n")) << "a short line";
+    const std::vector<opensal::Application> apps{{"foot", "Foot 终端"}, {"org.example.Editor", "Editor"}};
+    EXPECT_EQ(*wire::decode_applications(wire::encode_applications(apps)), apps);
+    EXPECT_FALSE(wire::decode_applications("\tnameless id\n"));
+    // What the provider asks of its consumer.
+    auto launch = wire::decode_event(wire::encode_event(opensal::Launch{"org.example.Editor"}));
+    ASSERT_TRUE(launch);
+    EXPECT_EQ(std::get<opensal::Launch>(*launch).app, "org.example.Editor");
+    auto activate = wire::decode_event(wire::encode_event(opensal::Activate{9}));
+    ASSERT_TRUE(activate);
+    EXPECT_EQ(std::get<opensal::Activate>(*activate).window, 9u);
+    EXPECT_FALSE(wire::decode_event("activate x"));
 }

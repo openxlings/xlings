@@ -28,9 +28,11 @@ Options: `-g, --global` — Use global scope; `--force` — Remove even if packa
 
 Update package index or package
 
-## `xlings search <keyword>`
+## `xlings search [keyword]`
 
 Search for packages
+
+Options: `--category <NAME>` — Only packages in this category (luban-desktop: the desktops)
 
 ## `xlings list [filter]`
 
@@ -68,7 +70,7 @@ Manage SubOS environments
 
 Create a SubOS
 
-Options: `--sandbox [PRESET]` — Declare its isolation once: dev (default), private or locked; `--storage <MODE>` — shared, tmpfs or image; `--image-size <SIZE>` — Image size; `--from <SOURCE>` — Fork source; `--runtime <SPEC>` — Runtime binding, e.g. glibc@2.44; `--rootfs` — Make it a root: entered, exported or booted as /; `--proxy <URL>` — Its network goes only through this SOCKS5h proxy, from the first entry; `--domain <HOME>` — Build a rootfs at this logical home prefix in an owned namespace; `--domain-if-possible <HOME>` — As --domain where this host can build in a private namespace; otherwise in this home's prefix, said once; `--carrier <NAME>` — Where it runs: local, wsl2 (Windows) or vz (macOS); default chosen by what it is; `--abi <ABI>` — native (this machine's programs) or linux
+Options: `--sandbox [PRESET]` — Declare its isolation once: dev (default), private or locked; `--storage <MODE>` — shared, tmpfs or image; `--image-size <SIZE>` — Image size; `--from <SOURCE>` — Fork source; `--runtime <SPEC>` — Runtime binding, e.g. glibc@2.44; `--rootfs` — Make it a root: entered, exported or booted as /; `--proxy <URL>` — Its network goes only through this SOCKS5h proxy, from the first entry; `--domain <HOME>` — Build a rootfs at this logical home prefix in an owned namespace; `--domain-if-possible <HOME>` — As --domain where this host can build in a private namespace; otherwise in this home's prefix, said once; `--carrier <NAME>` — Where it runs: local, wsl2 (Windows) or vz (macOS); default chosen by what it is; `--abi <ABI>` — native (this machine's programs) or linux; `--dry-run` — With --from: what it would be made of (each layer, its index, its manifest), nothing made
 
 ## `xlings subos use [name]`
 
@@ -164,7 +166,7 @@ Options: `--kind <KIND>` — Only this kind (ops, lifecycle, perm, exec, net, fs
 
 Move a SubOS made from an edition to its newest version (your packages stay yours)
 
-Options: `--to <VERSION>` — This version of the edition; `--dry-run` — Show the plan only
+Options: `--to <VERSION>` — This version of the edition, or the package that replaces it (ns:name[@version]); `--dry-run` — Show the plan only
 
 ## `xlings subos rollback <name>`
 

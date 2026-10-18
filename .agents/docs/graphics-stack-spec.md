@@ -99,6 +99,9 @@ NVIDIA 的 EGL interposer 被这样打标签后 `eglInitialize` 直接失败(xim
 
 > form-X 可执行文件带 DT_RUNPATH → 报出,并说明代价。
 
+只看 glibc 的加载器:由 bundle 自带 musl 加载器(`ld-musl-*`)运行的程序不在 rule A/E 之内——
+musl 不是 rule A 比较的 glibc,且 musl 对两种标签都沿 needed_by 向上查找(`closurecheck::glibc_loader`)。
+
 warn-only(与 rule A/D 一致)。标签由**原生解析 ELF dynamic section** 读取,因为没有
 命令可用:`patchelf --print-rpath` 打印"存在的那个"的值却不说是哪个,`readelf` 不保证
 载荷里有。

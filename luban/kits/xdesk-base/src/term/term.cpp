@@ -260,6 +260,36 @@ void Screen::set_mode(int mode, bool on, bool priv) {
 void Screen::csi(char final, std::string_view raw, char prefix, char intermediate) {
     const auto p = params_(raw);
     const int n = p_(p, 0, 1);
+    // A sequence is its prefix, intermediate and final together: `CSI ? u` (a
+    // program asking for the kitty keyboard flags, the first thing fish 4.8
+    // writes) is not `CSI u` (restore the cursor). The marked ones are
+    // handled here; the rest below are plain sequences only.
+    if (prefix != 0 || intermediate != 0) {
+        if (prefix == '?' && intermediate == 0 && (final == 'h' || final == 'l')) {
+            for (int m : p) if (m >= 0) set_mode(m, final == 'h', true);
+        } else if (prefix == '?' && intermediate == 0 && (final == 'J' || final == 'K')) {
+            csi(final, raw, 0, 0);   // DECSED, DECSEL: no protected cells here, so an erase
+            return;
+        } else if (prefix == '?' && intermediate == 0 && final == 'n' && p_(p, 0, 0) == 6) {
+            replies_ += std::format("\x1b[?{};{}R", cy_ + 1, std::min(cx_, cols_ - 1) + 1);
+        } else if (prefix == '>' && intermediate == 0 && final == 'c') {
+            replies_ += "\x1b[>0;10;0c";
+        } else if (prefix == 0 && intermediate == ' ' && final == 'q') {
+            // DECSCUSR: 0-2 block, 3-4 underline, 5-6 bar (blinking or not).
+            const int k = p_(p, 0, 0);
+            cursor_shape_ = k >= 5 ? CursorShape::Bar : k >= 3 ? CursorShape::Underline : CursorShape::Block;
+        } else if ((final == 'u' && prefix != 0)                       // kitty keyboard: query, push, pop, set
+                   || (final == 'q' && prefix == '>')                   // XTVERSION
+                   || (final == 'm' && prefix == '>')                   // xterm modifyOtherKeys
+                   || (final == 'p' && intermediate == '$')) {          // DECRQM
+            // Not answered: a program that asks and hears nothing assumes
+            // a terminal without the feature, which is what this one is.
+        } else {
+            ++unhandled;
+        }
+        wrap_pending_ = false;
+        return;
+    }
     switch (final) {
     case 'A': cy_ = std::max(cy_ < top_ ? 0 : top_, cy_ - n); break;
     case 'B': case 'e': cy_ = std::min(cy_ > bottom_ ? rows_ - 1 : bottom_, cy_ + n); break;
@@ -315,29 +345,17 @@ void Screen::csi(char final, std::string_view raw, char prefix, char intermediat
         cx_ = 0;
         cy_ = 0;
         break;
-    case 'm':
-        if (prefix == 0 && intermediate == 0) sgr(p);
-        break;
+    case 'm': sgr(p); break;
     case 'h': case 'l':
-        for (int m : p) if (m >= 0) set_mode(m, final == 'h', prefix == '?');
+        for (int m : p) if (m >= 0) set_mode(m, final == 'h', false);
         break;
     case 'n':
         if (p_(p, 0, 0) == 6) replies_ += std::format("\x1b[{};{}R", cy_ + 1, std::min(cx_, cols_ - 1) + 1);
         else if (p_(p, 0, 0) == 5) replies_ += "\x1b[0n";
         break;
-    case 'c':
-        if (prefix == '>') replies_ += "\x1b[>0;10;0c";
-        else if (prefix == 0) replies_ += "\x1b[?62;22c";
-        break;
+    case 'c': replies_ += "\x1b[?62;22c"; break;
     case 's': saved_ = {cx_, cy_, pen_}; break;
     case 'u': cx_ = saved_.cx; cy_ = saved_.cy; pen_ = saved_.pen; break;
-    case 'q':
-        // DECSCUSR: 0-2 block, 3-4 underline, 5-6 bar (blinking or not).
-        if (intermediate == ' ') {
-            const int n = p_(p, 0, 0);
-            cursor_shape_ = n >= 5 ? CursorShape::Bar : n >= 3 ? CursorShape::Underline : CursorShape::Block;
-        }
-        break;
     case 't': break;   // window ops: nothing to do here
     default: ++unhandled;
     }
@@ -378,6 +396,9 @@ void Screen::osc(std::string_view body) {
         const auto second = rest.find(';');
         if (second != std::string_view::npos && rest.substr(second + 1) != "?")
             if (auto text = base64_(rest.substr(second + 1))) clipboard_ = std::move(*text);
+    } else if ((code == "10" || code == "11" || code == "12") && body.ends_with(";?")) {
+        // A program asking the colours (fish, to choose a theme): unanswered,
+        // as a terminal that does not say; it keeps its defaults.
     } else if (code != "1" && code != "7" && code != "8" && code != "133") ++unhandled;
 }
 
@@ -421,8 +442,9 @@ void Screen::feed(std::string_view bytes) {
             break;
         case State::Escape:
             if (b == '[') { state_ = State::Csi; seq_.clear(); }
-            else if (b == ']') { state_ = State::Osc; seq_.clear(); }
-            else if (b == 'P' || b == '_' || b == '^') { state_ = State::Osc; seq_.clear(); }   // DCS / APC / PM: swallowed like OSC
+            else if (b == ']') { state_ = State::Osc; seq_.clear(); osc_ = true; }
+            // DCS / APC / PM: read like OSC and dropped (an XTGETTCAP query goes unanswered).
+            else if (b == 'P' || b == '_' || b == '^') { state_ = State::Osc; seq_.clear(); osc_ = false; }
             else if (b >= 0x20 && b <= 0x2F) { intermediate_ = static_cast<char>(b); state_ = State::Charset; }
             else { esc(static_cast<char>(b), 0); state_ = State::Ground; }
             break;
@@ -450,13 +472,13 @@ void Screen::feed(std::string_view bytes) {
             }
             break;
         case State::Osc:
-            if (b == 0x07) { osc(seq_); state_ = State::Ground; }
+            if (b == 0x07) { if (osc_) osc(seq_); state_ = State::Ground; }
             else if (b == 0x1B) state_ = State::OscEscape;
             else if (seq_.size() < 4096) seq_ += static_cast<char>(b);
             break;
         case State::OscEscape:
-            if (b == '\\') { osc(seq_); state_ = State::Ground; }
-            else { osc(seq_); state_ = State::Escape; }
+            if (osc_) osc(seq_);
+            state_ = b == '\\' ? State::Ground : State::Escape;
             break;
         }
     }
@@ -516,6 +538,28 @@ std::string encode_paste(std::string_view text, bool bracketed) {
     std::string out = "\x1b[200~";
     for (char c : text) if (c != '\x1b') out += c;   // nothing inside closes the bracket
     out += "\x1b[201~";
+    return out;
+}
+
+std::string encode_mouse(MouseEvent event, int button, int row, int col, std::uint32_t mods, bool sgr) {
+    int code = 0;
+    switch (event) {
+    case MouseEvent::WheelUp: code = 64; break;
+    case MouseEvent::WheelDown: code = 65; break;
+    case MouseEvent::Motion: code = 32 + (button < 0 ? 3 : button); break;
+    case MouseEvent::Release: code = sgr ? button : 3; break;   // X10 does not say which
+    case MouseEvent::Press: code = button; break;
+    }
+    // Shift 4, Meta 8, Control 16 (opensal: Shift 1, Ctrl 2, Alt 4).
+    if (mods & 1) code += 4;
+    if (mods & 4) code += 8;
+    if (mods & 2) code += 16;
+    if (sgr) return std::format("\x1b[<{};{};{}{}", code, col + 1, row + 1, event == MouseEvent::Release ? 'm' : 'M');
+    if (col > 222 || row > 222) return {};
+    std::string out = "\x1b[M";
+    out += static_cast<char>(32 + code);
+    out += static_cast<char>(33 + col);
+    out += static_cast<char>(33 + row);
     return out;
 }
 

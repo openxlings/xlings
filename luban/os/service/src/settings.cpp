@@ -17,6 +17,7 @@ const std::map<std::string_view, std::vector<std::string_view>, std::less<>>& al
         {"persist", {"all", "home", "none"}},
         {"desktop", {}},
         {"on-close", {"ask", "background", "poweroff"}},
+        {"enter", {"console", "desktop"}},
     };
     return value;
 }
@@ -31,6 +32,32 @@ fs::path settings_file(const fs::path& home, std::string_view name) {
 
 std::expected<Settings, std::string> read_settings(const fs::path& home, std::string_view name) {
     Settings s;
+    auto take = [&](const nlohmann::json& d) {
+        if (!d.is_object()) return;
+        for (const auto& [key, values] : allowed_()) {
+            const auto k = json_key_(key);
+            if (!d.contains(k) || !d[k].is_string()) continue;
+            const auto v = d[k].get<std::string>();
+            if (!values.empty() && std::ranges::find(values, v) == values.end()) continue;
+            if (k == "mode") s.mode = v;
+            else if (k == "persist") s.persist = v;
+            else if (k == "desktop") s.desktop = v;
+            else if (k == "on_close") s.on_close = v;
+            else if (k == "enter") s.enter = v;
+        }
+    };
+    // Lowest: what its system package's manifest declares (luban.settings,
+    // design 2026-10-18 §4.3) -- a community system's preset.
+    {
+        const auto at = xlings::subos::locate(xlings::subos::HomeView{home}, name);
+        const auto manifest = at.home.instance(name) / ".xlings.json";
+        std::error_code mec;
+        if (fs::is_regular_file(manifest, mec)) {
+            auto m = nlohmann::json::parse(xlings::platform::read_file_to_string(manifest.string()), nullptr, false);
+            if (m.is_object() && m.contains("luban") && m["luban"].is_object())
+                take(m["luban"].value("settings", nlohmann::json::object()));
+        }
+    }
     // The edition's defaults first (its root carries them, so they follow an
     // upgrade); a file that cannot be read is no defaults, never an error here.
     if (const auto usr = usr_of(home, name)) {
@@ -40,19 +67,7 @@ std::expected<Settings, std::string> read_settings(const fs::path& home, std::st
         const auto defaults = xlings::subos::physical(at, *usr / "share" / "luban" / "settings.json");
         std::error_code dec;
         if (fs::is_regular_file(defaults, dec)) {
-            auto d = nlohmann::json::parse(xlings::platform::read_file_to_string(defaults.string()), nullptr, false);
-            if (d.is_object()) {
-                for (const auto& [key, values] : allowed_()) {
-                    const auto k = json_key_(key);
-                    if (!d.contains(k) || !d[k].is_string()) continue;
-                    const auto v = d[k].get<std::string>();
-                    if (!values.empty() && std::ranges::find(values, v) == values.end()) continue;
-                    if (k == "mode") s.mode = v;
-                    else if (k == "persist") s.persist = v;
-                    else if (k == "desktop") s.desktop = v;
-                    else if (k == "on_close") s.on_close = v;
-                }
-            }
+            take(nlohmann::json::parse(xlings::platform::read_file_to_string(defaults.string()), nullptr, false));
         }
     }
     const auto file = settings_file(home, name);
@@ -67,6 +82,7 @@ std::expected<Settings, std::string> read_settings(const fs::path& home, std::st
     s.persist = j.value("persist", s.persist);
     s.desktop = j.value("desktop", s.desktop);
     s.on_close = j.value("on_close", s.on_close);
+    s.enter = j.value("enter", s.enter);
     return s;
 }
 

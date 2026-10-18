@@ -165,6 +165,12 @@ std::expected<void, std::string> lay_out(const fs::path& root, const fs::path& u
                                          const fs::path& home, UsrForm form = UsrForm::Mount);
 // What /usr presents: the link's target, or the record of a mount point.
 std::optional<fs::path> usr_target_of(const fs::path& root);
+// The layout of a root tree, by what it is (design 2026-10-18 §9): 1 -- its
+// /usr a link to the generation (made before 2026.10.16.1); 2 -- a mount point
+// with its record (kUsrRecord). A reader that knows a lower one reads a root of
+// this one wrongly (E6: an older Luban OS app saw an empty /usr). 0: not a root.
+inline constexpr int kLayout = 2;
+int layout_of(const fs::path& root);
 // Where a root's /usr can be read from here: the root's own /usr when it is
 // a link or mounted (a running root), else, for a tree on this host, its
 // instance's current generation (<instance>/root/usr).

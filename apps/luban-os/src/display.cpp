@@ -10,6 +10,7 @@ import opensal.wire;
 import luban.service;
 import luban.vm;
 import opensal.wlr;
+import :core;
 
 namespace luban::os {
 
@@ -19,11 +20,9 @@ constexpr std::uint32_t kDisplayChannel = 2;
 }  // namespace
 
 std::optional<std::string> desktop_session(const service::Environment& e) {
-    const auto& setting = e.settings.desktop;
-    if (setting == "none" || e.desktops.empty()) return std::nullopt;
-    if (setting.empty()) return e.desktops.front();
-    if (std::ranges::find(e.desktops, setting) != e.desktops.end()) return setting;
-    return std::nullopt;
+    const auto plan = service::enter_plan(e);
+    if (plan.target != "desktop") return std::nullopt;
+    return plan.session;
 }
 
 std::unique_ptr<Display> Display::machine(const fs::path& home, const std::string& name, const std::string& session,
@@ -202,9 +201,13 @@ void Display::provider_(std::string_view bytes) {
         if (msg.kind == 'h') {
             // What this window provides: the surface, its size, input, the
             // host's input method, and the clipboard as far as it is granted.
+            // The shell, too, for a desktop without its own (it asks for it).
             using I = opensal::Interface;
-            auto provided = I::Surface | I::Mode | I::Pointer | I::Keyboard | I::Text;
+            auto provided = I::Surface | I::Mode | I::Pointer | I::Keyboard | I::Text | I::Shell;
             if (clip_.copy || clip_.paste) provided = provided | I::Clipboard;
+            opensal::Interfaces wanted = 0;
+            std::from_chars(msg.payload.data(), msg.payload.data() + msg.payload.size(), wanted);
+            shell_ = opensal::has(wanted, I::Shell);
             opensal::Size s;
             double density = 1;
             { std::lock_guard l(m_); s = wanted_; density = density_; }
@@ -225,6 +228,18 @@ void Display::provider_(std::string_view bytes) {
             if (clip_.copy) {
                 std::lock_guard l(m_);
                 clipboard_ = msg.payload;
+                changed = true;
+            }
+        } else if (msg.kind == 'a') {
+            if (auto apps = opensal::wire::decode_applications(msg.payload)) {
+                std::lock_guard l(m_);
+                applications_ = std::move(*apps);
+                changed = true;
+            }
+        } else if (msg.kind == 'w') {
+            if (auto windows = opensal::wire::decode_windows(msg.payload)) {
+                std::lock_guard l(m_);
+                windows_ = std::move(*windows);
                 changed = true;
             }
         } else if (msg.kind == 'f') {

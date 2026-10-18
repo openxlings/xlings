@@ -371,10 +371,11 @@ std::expected<void, std::string> IndexManager::load_or_rebuild(const std::string
     auto result = rebuild();
     if (!result) return result;
 
-    // Save cache (best effort)
+    // Save cache (best effort: a system reads its host's index read-only,
+    // and rebuilding is all a missing cache costs -- not a warning).
     if (!cache_detail_::save_index_cache(
             index_, cacheFile, repoHeadHash, defaultNamespace_)) {
-        log::warn("failed to save index cache for {}", repoDir_.string());
+        log::debug("index cache for {} not saved", repoDir_.string());
     }
 
     return {};
@@ -433,6 +434,29 @@ void IndexManager::mark_installed(const std::string& name, bool installed) {
 
 void IndexManager::merge(xpkg::PackageIndex other, const std::string& ns) {
     index_ = xpkg::merge(std::move(index_), other, ns);
+}
+
+std::vector<std::pair<std::string, std::filesystem::path>> IndexManager::drop_namespace(std::string_view ns) {
+    std::vector<std::pair<std::string, std::filesystem::path>> dropped;
+    std::set<std::string> keys;
+    for (const auto& [key, entry] : index_.entries)
+        if (entry.identity.namespaceName == ns) {
+            keys.insert(key);
+            dropped.emplace_back(entry.canonicalName, entry.path);
+        }
+    if (keys.empty()) return dropped;
+    for (const auto& key : keys) index_.entries.erase(key);
+    auto prune = [&](std::unordered_map<std::string, std::vector<std::string>>& lists) {
+        for (auto it = lists.begin(); it != lists.end();) {
+            std::erase_if(it->second, [&](const std::string& k) { return keys.contains(k); });
+            it = it->second.empty() ? lists.erase(it) : std::next(it);
+        }
+    };
+    prune(index_.identityEntries);
+    prune(index_.shortNames);
+    std::ranges::sort(dropped);
+    std::ranges::unique(dropped);
+    return dropped;
 }
 
 std::vector<std::string> IndexManager::all_names() const {

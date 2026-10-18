@@ -47,7 +47,14 @@ struct Info {
     std::string digest;             // of the compiled spec: a join with a different spec is refused
     int ttl { 0 };                  // idle seconds after the last command; 0 = until stop
     bool detached { false };        // started by `subos start`
+    // What a root keeps of it (all | home | none): a join that asks for the same joins.
+    std::string persist { "all" };
 };
+
+// Idle seconds a session started for terminals (`subos use`, interactive)
+// lives after its last one leaves: every terminal joins it as a peer, any of
+// them leaves at once (Luban 2026-10-18 design §12).
+inline constexpr int kPeerIdleSeconds = 3;
 
 nlohmann::json to_json(const Info& i);
 Info info_from_json(const nlohmann::json& j);
@@ -73,6 +80,7 @@ struct Launch {
     std::string default_cwd;                     // inside
     int ttl { 0 };
     bool detached { false };
+    std::string persist { "all" };
     // Attached only: end the session after this long and return 124.
     std::optional<std::chrono::milliseconds> timeout;
     // net=nat: pasta's argv without its target. The backend then starts in a
@@ -126,6 +134,9 @@ struct ExecRequest {
     std::string cwd;                             // empty = the session's default
     std::optional<std::chrono::milliseconds> timeout;
     bool tty { false };
+    // The login shell as the root's passwd says now, the joined command's
+    // SHELL: the session's own is the one it started with.
+    std::string shell;
 };
 
 struct ExecResult {
@@ -137,6 +148,12 @@ struct ExecResult {
 // Run a command in the live session of `instance`, with this process's
 // stdin/stdout/stderr.
 ExecResult join(const HomeView& home, std::string_view instance, const ExecRequest& request);
+
+// A joined command's environment: the session's own, what the request
+// passed that the policy lets in (`pass`: names, `PREFIX*`), and SHELL as
+// the request names it now -- a login shell changed while the session ran.
+std::map<std::string, std::string> joined_env(const std::map<std::string, std::string>& session_env,
+                                              const nlohmann::json& request, const std::vector<std::string>& pass);
 
 // Ask a live session to end (SIGTERM to its sandbox through the supervisor).
 bool stop(const HomeView& home, std::string_view instance);

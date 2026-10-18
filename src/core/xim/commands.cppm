@@ -75,9 +75,15 @@ PackageCatalog* ensure_catalog(EventStream& stream, CatalogNeed need);
 // The distinction exists because "the index cannot answer" means two very
 // different things on a fresh home and on a working one, and only the first
 // is worth a network round trip.
+// The index a package resolves in (its repo's name: "xim", a community
+// index's), nullopt when the index cannot answer.
+std::optional<std::string> index_repo_of(std::string_view package,
+                                         CatalogAccess access = CatalogAccess::LocalOnly);
+
 std::optional<std::string> index_version_of(
     std::string_view package,
-    CatalogAccess access = CatalogAccess::LocalOnly);
+    CatalogAccess access = CatalogAccess::LocalOnly,
+    std::string* passedOver = nullptr);   // why it is not the newest (a newer client needed), if so
 
 // The ABI a runtime package says it provides, e.g. "linux-x86_64-glibc".
 //
@@ -306,7 +312,8 @@ int cmd_remove(const std::string& target, bool yes, EventStream& stream,
                bool force, bool all, std::optional<std::string> subosScope);
 
 // === search command ===
-int cmd_search(const std::string& keyword, EventStream& stream);
+// `category`: only packages whose recipe lists it (an empty keyword: all of them).
+int cmd_search(const std::string& keyword, EventStream& stream, const std::string& category = {});
 
 // === list command ===
 //
@@ -322,8 +329,10 @@ int cmd_search(const std::string& keyword, EventStream& stream);
 int cmd_list(const std::string& filter, EventStream& stream, bool all = false);
 
 // === info command ===
+// `platform`: whose build is described (empty: this machine's) -- Luban
+// asks about a Linux system from a PC or a Mac, made in a carrier's machine.
 int cmd_info(const std::string& target, EventStream& stream,
-             bool allVersions = false);
+             bool allVersions = false, const std::string& platform = {});
 
 // === payload status (design mcpp 2026-10-16 §14 X4) ===
 // What each target resolves to and what its payload is here, without

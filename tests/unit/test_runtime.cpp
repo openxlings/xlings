@@ -990,8 +990,9 @@ TEST(Capabilities, SearchSpecSchema) {
     auto s = cap->spec();
     EXPECT_EQ(s.name, "search_packages");
     auto schema = nlohmann::json::parse(s.inputSchema);
-    EXPECT_TRUE(schema.contains("required"));
-    EXPECT_EQ(schema["required"][0], "keyword");
+    // A keyword, or a category (luban-desktop) with none (design 2026-10-18 §5.3).
+    EXPECT_TRUE(schema["properties"].contains("keyword"));
+    EXPECT_TRUE(schema["properties"].contains("category"));
 }
 
 // ═══════════════════════════════════════════════════════════════

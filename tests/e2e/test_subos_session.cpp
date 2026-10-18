@@ -203,3 +203,78 @@ XTEST(SubosSession, TermAndHupEndTheSessionAndCtrlCIsTheCommands,
         EXPECT_TRUE(wait_for([&] { return !box.running(); })) << sig << ": the session survived";
     }
 }
+
+// Terminals entering one environment are peers (Luban 2026-10-18 design §12,
+// E4): the one that came first leaves at once while another is in, and
+// Ctrl-C on one reaches only its own program.
+XTEST(SubosSession, TerminalsInOneEnvironmentArePeers,
+      .area = "subos", .cost = tk::Cost::Medium, .covers = {"LUBAN-SESSION-PEERS", "SES-JOIN"},
+      .requires_ = {"linux", "xlings-bin", "sandbox", "pty"}, .resources = {"sandbox"}) {
+    Box box;
+    // Two terminals, typed into as a person would (python's pty: a real
+    // controlling terminal for each).
+    const std::string driver = R"PY(
+import os, pty, sys, time, select
+xlings = sys.argv[1]
+def start():
+    pid, fd = pty.fork()
+    if pid == 0:
+        os.execv(xlings, [xlings, "subos", "use", "box", "--sandbox"])
+    return pid, fd
+def read_until(fd, marker, limit=30):
+    seen, end = b"", time.time() + limit
+    while time.time() < end:
+        r, _, _ = select.select([fd], [], [], 0.2)
+        if r:
+            try: chunk = os.read(fd, 4096)
+            except OSError: break
+            if not chunk: break
+            seen += chunk
+            if marker.encode() in seen: return True
+    return False
+def say(fd, text): os.write(fd, text.encode())
+# In, once its shell answers (what is typed while the client asks the
+# terminal its colours is the client's to read): asked again until then.
+def enter_and_say(fd, line, marker):
+    for _ in range(10):
+        say(fd, line)
+        if read_until(fd, marker, 3): return True
+    return False
+a, fa = start()
+print("a-in", enter_and_say(fa, "echo A-$((40+2))\n", "A-42"))
+say(fa, "sleep 300\n")
+b, fb = start()
+print("b-in", enter_and_say(fb, "echo B-$((40+2))\n", "B-42"))
+say(fa, "\x03")                      # Ctrl-C on A: its sleep, nothing of B's
+time.sleep(1)
+say(fb, "echo B-$((50+5))\n")
+print("b-alive", read_until(fb, "B-55"))
+say(fa, "echo A-$((50+5))\n")
+print("a-alive", read_until(fa, "A-55"))
+t = time.time()
+say(fa, "exit\n")                    # A leaves while B is in
+_, status = os.waitpid(a, 0)
+print("a-left", round(time.time() - t, 1), os.waitstatus_to_exitcode(status))
+say(fb, "echo B-$((60+6))\n")
+print("b-still", read_until(fb, "B-66"))
+say(fb, "exit\n")
+_, status = os.waitpid(b, 0)
+print("b-left", os.waitstatus_to_exitcode(status))
+)PY";
+    tk::RunOptions o;
+    o.argv = {"python3", "-c", driver, tk::xlings_binary().string()};
+    o.env = box.home.env();
+    o.env["SHELL"] = "/bin/sh";
+    o.timeout = std::chrono::seconds(150);
+    auto r = tk::run(o);
+    ASSERT_EQ(r.exit_code, 0) << r.transcript();
+    for (const auto* line : {"a-in True", "b-in True", "b-alive True", "a-alive True", "b-still True", "b-left 0"})
+        EXPECT_NE(r.out.find(line), std::string::npos) << line << "\n" << r.transcript();
+    // A left at once (not when B did).
+    const auto at = r.out.find("a-left ");
+    ASSERT_NE(at, std::string::npos) << r.transcript();
+    EXPECT_LT(std::stod(r.out.substr(at + 7)), 5.0) << r.transcript();
+    // The session ends a moment after its last terminal.
+    EXPECT_TRUE(wait_for([&] { return !box.running(); })) << "the session outlived its terminals";
+}
+

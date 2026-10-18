@@ -108,8 +108,10 @@ std::vector<App> scan(const std::vector<fs::path>& from, std::string_view lang) 
              it != fs::recursive_directory_iterator(); it.increment(ec)) {
             if (ec) break;
             if (it->path().extension() != ".desktop") continue;
-            // Desktop file ids: the path under applications/, '/' as '-'.
-            auto rel = fs::relative(it->path(), dir, ec).generic_string();   // '/' on every system
+            // Desktop file ids: the path under applications/, '/' as '-'. By
+            // name: the entries are links into the packages, and following
+            // them made an id of the package's path.
+            auto rel = it->path().lexically_relative(dir).generic_string();   // '/' on every system
             rel = rel.substr(0, rel.size() - std::string_view(".desktop").size());
             std::ranges::replace(rel, '/', '-');
             if (by_id.contains(rel)) continue;
@@ -175,4 +177,103 @@ std::vector<std::string> argv(std::string_view exec) {
     return out;
 }
 
+namespace {
+
+std::vector<fs::path> split_dirs_(const std::string& list) {
+    std::vector<fs::path> out;
+    for (std::size_t at = 0; at <= list.size();) {
+        const auto colon = list.find(':', at);
+        const auto part = list.substr(at, colon == std::string::npos ? std::string::npos : colon - at);
+        if (!part.empty()) out.emplace_back(part);
+        if (colon == std::string::npos) break;
+        at = colon + 1;
+    }
+    return out;
+}
+
+std::optional<Terminal> read_terminal_(const fs::path& file) {
+    std::ifstream in(file, std::ios::binary);
+    if (!in) return std::nullopt;
+    Terminal t;
+    bool in_entry = false;
+    for (std::string raw; std::getline(in, raw);) {
+        const auto line = trim_(raw);
+        if (line.empty() || line.front() == '#') continue;
+        if (line.front() == '[') { in_entry = line == "[Desktop Entry]"; continue; }
+        const auto eq = line.find('=');
+        if (!in_entry || eq == std::string_view::npos) continue;
+        const auto key = trim_(line.substr(0, eq));
+        const auto value = std::string(trim_(line.substr(eq + 1)));
+        if (key == "Exec") t.exec = argv(value);
+        else if (key == "X-TerminalArgExec") t.arg_exec = value;
+        else if (key == "X-TerminalArgTitle") t.arg_title = value;
+        else if (key == "X-TerminalArgAppId") t.arg_app_id = value;
+    }
+    if (t.exec.empty()) return std::nullopt;
+    return t;
+}
+
+}  // namespace
+
+std::optional<Terminal> default_terminal(const std::map<std::string, std::string>& env) {
+    auto get = [&](const char* k) { const auto it = env.find(k); return it == env.end() ? std::string{} : it->second; };
+    const auto home = get("HOME");
+    std::vector<fs::path> config, data;
+    if (const auto c = get("XDG_CONFIG_HOME"); !c.empty()) config.emplace_back(c);
+    else if (!home.empty()) config.push_back(fs::path(home) / ".config");
+    const auto config_dirs = get("XDG_CONFIG_DIRS");
+    for (auto& d : split_dirs_(config_dirs.empty() ? "/etc/xdg" : config_dirs)) config.push_back(d);
+    if (const auto d = get("XDG_DATA_HOME"); !d.empty()) data.emplace_back(d);
+    else if (!home.empty()) data.push_back(fs::path(home) / ".local" / "share");
+    const auto data_dirs = get("XDG_DATA_DIRS");
+    for (auto& d : split_dirs_(data_dirs.empty() ? "/usr/local/share:/usr/share" : data_dirs)) data.push_back(d);
+    auto entry = [&](std::string_view id) -> std::optional<Terminal> {
+        for (const auto& d : data)
+            if (auto t = read_terminal_(d / "xdg-terminals" / std::string(id))) return t;
+        return std::nullopt;
+    };
+    std::vector<std::string> desktops;
+    for (auto& d : split_dirs_(lower_(get("XDG_CURRENT_DESKTOP")))) desktops.push_back(d.string());
+    for (const auto& c : config) {
+        std::vector<fs::path> lists;
+        for (const auto& d : desktops) lists.push_back(c / (d + "-xdg-terminals.list"));
+        lists.push_back(c / "xdg-terminals.list");
+        for (const auto& list : lists) {
+            std::ifstream in(list);
+            for (std::string raw; std::getline(in, raw);) {
+                const auto id = trim_(raw);
+                if (id.empty() || id.front() == '#' || id.front() == '-') continue;
+                if (auto t = entry(id)) return t;
+            }
+        }
+    }
+    std::error_code ec;
+    for (const auto& d : data) {
+        std::vector<fs::path> found;
+        for (fs::directory_iterator it(d / "xdg-terminals", ec), end; !ec && it != end; it.increment(ec))
+            if (it->path().extension() == ".desktop") found.push_back(it->path());
+        std::ranges::sort(found);
+        for (const auto& f : found)
+            if (auto t = read_terminal_(f)) return t;
+        ec.clear();
+    }
+    return std::nullopt;
+}
+
+std::vector<std::string> in_terminal(const Terminal& t, const std::vector<std::string>& command,
+                                     std::string_view title, std::string_view app_id) {
+    auto out = t.exec;
+    if (!title.empty() && t.arg_title) out.push_back(*t.arg_title + std::string(title));
+    if (!app_id.empty() && t.arg_app_id) out.push_back(*t.arg_app_id + std::string(app_id));
+    if (!command.empty()) {
+        // The convention's default is -e; a terminal declaring an empty one
+        // takes the command as its own arguments (foot).
+        const auto exec_arg = t.arg_exec.value_or("-e");
+        if (!exec_arg.empty()) out.push_back(exec_arg);
+        out.insert(out.end(), command.begin(), command.end());
+    }
+    return out;
+}
+
 }  // namespace xdesk::apps
+

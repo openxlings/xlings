@@ -50,6 +50,7 @@ members = [
     "luban/specs/opensal",
     "luban/specs/openhal",
     "luban/specs/openas",
+    "luban/specs/opencaps",
     "luban/kits/imkit",
     "luban/kits/openhal-host",
     "luban/kits/tray",
@@ -67,7 +68,7 @@ members = [
 
 [package]
 name = "xlings"
-version = "2026.10.17.1"
+version = "2026.10.18.1"
 description = "Universal package management infrastructure tool with SubOS isolation"
 license = "Apache-2.0"
 repo = "https://github.com/openxlings/xlings"
@@ -189,6 +190,7 @@ luban-cli    = { path = "luban/os/cli" }
 opensal     = { path = "luban/specs/opensal" }
 openhal     = { path = "luban/specs/openhal" }
 openas      = { path = "luban/specs/openas" }
+opencaps    = { path = "luban/specs/opencaps" }
 openhal-host = { path = "luban/kits/openhal-host" }
 opensal-wlr = { path = "luban/kits/opensal-wlr" }
 xdesk-base = { path = "luban/kits/xdesk-base" }

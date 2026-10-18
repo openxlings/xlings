@@ -78,7 +78,7 @@ auto SearchPackages::spec() const -> CapabilitySpec {
     return {
         .name = "search_packages",
         .description = "Search available packages by keyword (fuzzy match). Use plain name without version or namespace (e.g. gc matches gcc, musl-gcc)",
-        .inputSchema = R"JSON({"type":"object","properties":{"keyword":{"type":"string","description":"Keyword for fuzzy matching package names, e.g. gc, nod, rust"}},"required":["keyword"]})JSON",
+        .inputSchema = R"JSON({"type":"object","properties":{"keyword":{"type":"string","description":"Keyword for fuzzy matching package names, e.g. gc, nod, rust"},"category":{"type":"string","description":"Only packages whose recipe lists this category, e.g. luban-desktop (the keyword may then be empty)"}}})JSON",
         .outputSchema = R"({"type":"object","properties":{"exitCode":{"type":"integer"}}})",
         .destructive = false,
     };
@@ -87,7 +87,7 @@ auto SearchPackages::spec() const -> CapabilitySpec {
 auto SearchPackages::execute(Params params, EventStream& stream) -> Result {
     auto json = nlohmann::json::parse(params, nullptr, false);
     auto keyword = json.value("keyword", "");
-    return exit_result(xim::cmd_search(keyword, stream));
+    return exit_result(xim::cmd_search(keyword, stream, json.value("category", "")));
 }
 
 namespace {
@@ -232,7 +232,7 @@ auto PackageInfo::spec() const -> CapabilitySpec {
     return {
         .name = "package_info",
         .description = "Get detailed package info: versions, install status, metadata. Use namespace:name format (e.g. xim:gcc)",
-        .inputSchema = R"JSON({"type":"object","properties":{"target":{"type":"string","description":"Package in namespace:name format, e.g. xim:gcc"}},"required":["target"]})JSON",
+        .inputSchema = R"JSON({"type":"object","properties":{"target":{"type":"string","description":"Package in namespace:name format, e.g. xim:gcc"},"platform":{"type":"string","description":"Whose build is described: linux, macosx, windows (default: this machine's)"}},"required":["target"]})JSON",
         .outputSchema = R"({"type":"object","properties":{"exitCode":{"type":"integer"}}})",
         .destructive = false,
     };
@@ -240,7 +240,7 @@ auto PackageInfo::spec() const -> CapabilitySpec {
 
 auto PackageInfo::execute(Params params, EventStream& stream) -> Result {
     auto json = nlohmann::json::parse(params, nullptr, false);
-    return exit_result(xim::cmd_info(json.value("target", ""), stream));
+    return exit_result(xim::cmd_info(json.value("target", ""), stream, false, json.value("platform", "")));
 }
 
 auto PayloadStatus::spec() const -> CapabilitySpec {

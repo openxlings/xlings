@@ -127,13 +127,18 @@ XTEST(SubosSpec, LegacyInteractiveShellGetsDashIOnlyOnATerminal,
     auto spec = xlings::confine::compile(pol::legacy(), kHome, linux_caps(), r);
     ASSERT_TRUE(spec.has_value());
     EXPECT_EQ(spec->argv, (V{"/bin/bash", "-i"}));
-    // A terminal keeps its job control: no new session, the seccomp filter instead.
-    EXPECT_FALSE(spec->new_session);
+    // Interactive or not, the same sandbox (a terminal joins it as a peer):
+    // a new session and the seccomp filter; job control is the terminal the
+    // session makes for the command.
+    EXPECT_TRUE(spec->new_session);
     EXPECT_TRUE(spec->block_tiocsti);
     auto a = pv::bwrap_argv(*spec, 7);
     EXPECT_NE(std::ranges::search(a, V{"--seccomp", "7"}).begin(), a.end());
     r.interactive = false;
-    EXPECT_EQ(xlings::confine::compile(pol::legacy(), kHome, linux_caps(), r)->argv, (V{"/bin/bash"}));
+    auto script = xlings::confine::compile(pol::legacy(), kHome, linux_caps(), r);
+    EXPECT_EQ(script->argv, (V{"/bin/bash"}));
+    EXPECT_TRUE(script->new_session);
+    EXPECT_TRUE(script->block_tiocsti);
 }
 
 XTEST(SubosSpec, LegacyTmpfsAndImageStorage,

@@ -1,0 +1,12 @@
+# opencaps: what the parts of a system provide and need, by name and level --
+# a program, its agent, a system, a component -- so that parts released apart
+# can tell whether they work together before they try. A specification: the
+# registry of names, their parsing and comparison, and a conformance check; it
+# depends on nothing but the standard library.
+[package]
+namespace = "opencaps"
+name      = "opencaps"
+version   = "0.1.0"
+
+[targets.opencaps]
+kind = "lib"

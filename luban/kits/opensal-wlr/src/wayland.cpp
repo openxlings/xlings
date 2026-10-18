@@ -34,6 +34,11 @@ Args& Args::str(std::string_view s) {
     while (bytes_.size() % 4) bytes_.push_back('\0');
     return *this;
 }
+Args& Args::words(std::span<const std::uint32_t> v) {
+    word_(bytes_, static_cast<std::uint32_t>(v.size() * 4));
+    for (auto w : v) word_(bytes_, w);
+    return *this;
+}
 Args& Args::fd(int descriptor) { fds_.push_back(descriptor); return *this; }
 
 std::string message(std::uint32_t object, std::uint16_t opcode, const Args& a) {
@@ -61,6 +66,17 @@ std::string Reader::str() {
     std::string s(body_.substr(at_, n - 1));
     at_ += padded;
     return s;
+}
+
+std::vector<std::uint32_t> Reader::words() {
+    const auto n = u();
+    if (!ok_) return {};
+    const std::size_t padded = (n + 3) & ~std::size_t{3};
+    if (at_ + padded > body_.size()) { ok_ = false; return {}; }
+    std::vector<std::uint32_t> out(n / 4);
+    std::memcpy(out.data(), body_.data() + at_, out.size() * 4);
+    at_ += padded;
+    return out;
 }
 
 std::expected<std::optional<Event>, std::string> Decoder::next() {

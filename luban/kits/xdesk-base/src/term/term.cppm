@@ -123,6 +123,7 @@ private:
     // The parser's state between feeds.
     enum class State { Ground, Escape, Csi, Osc, OscEscape, Charset } state_ { State::Ground };
     std::string seq_;
+    bool osc_ { true };            // the string being read is an OSC (not a DCS, APC or PM)
     char intermediate_ { 0 };
     std::uint32_t utf8_ { 0 };
     int utf8_left_ { 0 };
@@ -136,5 +137,14 @@ std::string encode_key(std::string_view key, std::uint32_t mods, bool applicatio
 // What a paste sends: the text, inside the bracketed-paste markers when the
 // program asked for them.
 std::string encode_paste(std::string_view text, bool bracketed);
+
+// A mouse report, xterm's, for a program that asked for them (mouse_mode):
+// a button pressed or let go, the pointer moved (with the button held, or
+// none), the wheel -- at a cell (0-based), with the opensal modifier bits.
+// SGR (1006) when the program asked for it, else X10's bytes (cells past 222
+// are not reported there).
+enum class MouseEvent { Press, Release, Motion, WheelUp, WheelDown };
+// `button`: 0 left, 1 middle, 2 right, -1 none (motion without a button).
+std::string encode_mouse(MouseEvent event, int button, int row, int col, std::uint32_t mods, bool sgr);
 
 }  // namespace xdesk::term

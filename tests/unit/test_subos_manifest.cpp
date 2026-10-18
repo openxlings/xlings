@@ -861,6 +861,7 @@ TEST(SubosPrivilegedEnv, DataVariablesAreNotPrivileged) {
     EXPECT_FALSE(m::is_privileged_env("XDG_DATA_DIRS", "${pkgdir}/share"));
     EXPECT_FALSE(m::is_privileged_env("MANPATH", "${pkgdir}/share/man"));
     EXPECT_FALSE(m::is_privileged_env("PKG_CONFIG_PATH", "${pkgdir}/lib/pkgconfig"));
+    EXPECT_FALSE(m::is_privileged_env("XKB_CONFIG_ROOT", "${subosdir}/share/X11/xkb"));
 }
 
 // The same hazard in its other spelling. The subos sysroot is a VIEW onto our

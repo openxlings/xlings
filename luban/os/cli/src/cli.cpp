@@ -542,11 +542,10 @@ int host_status(const svc::Context& c, const Globals& g) {
     return ready ? 0 : 1;
 }
 
+// What a system is called (design 2026-10-18 §4.5): its distribution's name.
 std::string edition_label_(const svc::Environment& e) {
     if (e.edition.empty()) return e.kind;
-    auto label = e.edition;
-    if (label.starts_with("subos:luban-")) label = label.substr(12);
-    return label;
+    return svc::display_name(svc::lineage_of(e));
 }
 
 int overview(const svc::Context& c, const Globals& g) {
@@ -596,30 +595,104 @@ std::optional<std::string> image_of_(std::string_view arg) {
     return std::nullopt;
 }
 
-int cmd_new(const svc::Context& c, const Parsed& p, const Globals& g, Renderer& r) {
-    if (p.words.size() == 2 && !p.option("--edition")) {
-        // The order before 2026.10.13.1, `luban new <name> <edition>`.
-        const auto& e = p.words[1];
-        const bool edition = e.find(':') != std::string::npos || e.starts_with("luban-")
-            || std::ranges::find(svc::official_editions(), std::string_view(e.substr(0, e.find('@'))))
-                   != svc::official_editions().end();
-        if (edition)
-            return usage(std::format("the edition is an option: `luban new {} --edition {}`", p.words[0], e), g);
+// What a system would be (design 2026-10-18 §5.4): what it is, what it is
+// built on, what it will be like, and what it does beyond Luban -- one screen,
+// at most 80 columns, what needs attention marked first.
+void print_preview_(const svc::NewPreview& v, const svc::NewOptions& o, Renderer& r, bool asking) {
+    const auto& l = v.lineage;
+    auto source = [](const svc::Layer& layer) {
+        return layer.official() ? std::string("official") : std::format("community · {}", layer.index);
+    };
+    const auto& top = l.layers.front();
+    std::println(" {:<52}{}", r.paint(svc::display_name(l), 1), source(top));
+    std::println("");
+    if (const auto* base = l.base(); base && base != &top)
+        std::println(" {:<12} {:<38} {}", "Luban OS", std::format("{} {}", base->name(), base->version()), r.paint("official", 2));
+    if (const auto* parent = l.parent(); parent && parent != l.base())
+        std::println(" {:<12} {:<38} {}", "Based on", std::format("{} {}", parent->name(), parent->version()), source(*parent));
+    std::println("");
+    std::println(" It will be");
+    const auto settings = l.luban("settings");
+    std::string like = settings.value("mode", std::string("sandbox"));
+    for (const auto& [k, val] : o.settings) if (k == "mode") like = val;
+    std::string desktop = settings.value("desktop", std::string{});
+    for (const auto& [k, val] : o.settings) if (k == "desktop") desktop = val;
+    if (!desktop.empty() && desktop != "none") like += std::format(" · desktop {}", desktop);
+    if (const auto shell = settings.value("login_shell", std::string{}); !shell.empty()) like += " · login shell " + shell;
+    std::println("   {}", like);
+    std::println("   {} packages", l.packages.size());
+    if (!v.beyond.empty()) {
+        std::println("");
+        std::println(" More than Luban {}", l.base() ? l.base()->name() : std::string("(none)"));
+        for (const auto& b : v.beyond)
+            std::println(" {} {:<9}{:<44} {}", b.attention ? r.paint("!", 33) : std::string(" "), b.what, b.text, b.from);
     }
-    if (p.words.size() != 1) return usage("`luban new <name> [--edition E]`: one name", g);
-    svc::NewOptions o{.name = p.words[0], .edition = p.option("--edition").value_or("core")};
+    if (!v.extras.empty()) {
+        std::println("");
+        std::println(" Also installs");
+        for (const auto& e : v.extras)
+            std::println("   {:<36} {:<9} {}", e.ref(), e.role(), e.official() ? std::string("official") : "community · " + e.index);
+    }
+    std::println("");
+    if (asking) {
+        std::string again = std::format("luban new {}", o.name);
+        if (!o.edition.empty()) again += " --edition " + o.edition;
+        for (const auto& x : o.xpkgs) again += " --xpkg " + x;
+        std::println("   details  {} --dry-run", again);
+    }
+}
+
+int cmd_new(const svc::Context& c, const Parsed& p, const Globals& g, Renderer& r) {
+    if (p.words.size() == 2 && !p.option("--edition") && !p.option("--xpkg"))
+        // The order before 2026.10.13.1, `luban new <name> <edition>`.
+        return usage(std::format("the system is an option: `luban new {} --edition {}` (an official one) "
+                                 "or `--xpkg {}` (any index)", p.words[0], p.words[1], p.words[1]), g);
+    if (p.words.size() != 1) return usage("`luban new <name> [--edition E] [--xpkg COORD]...`: one name", g);
+    svc::NewOptions o{.name = p.words[0], .edition = p.option("--edition").value_or("")};
+    // --xpkg, as many as given; the settings luban config takes, in order.
+    static constexpr std::array<std::string_view, 11> kSettings{"--desktop", "--enter", "--mode", "--persist", "--shell",
+                                                                "--login", "--on-close", "--policy", "--tz", "--allow", "--runtime"};
+    for (const auto& [k, v] : p.options) {
+        if (k == "--xpkg") o.xpkgs.push_back(v);
+        else if (std::ranges::find(kSettings, k) != kSettings.end()) o.settings.emplace_back(k.substr(2), v);
+    }
+    // What it would be, before anything is made (design 2026-10-18 §5.3).
+    auto preview = svc::preview_new(c, o);
+    if (!preview) return preview.error();
+    if (p.flag("--dry-run")) {
+        if (g.json) { r.value(preview->value()); return 0; }
+        print_preview_(*preview, o, r, false);
+        return 0;
+    }
+    // A third party's part, shown once and agreed to (design §5.4).
+    if (preview->needs_confirmation() && !g.yes) {
+        if (!can_ask_(g))
+            return usage(std::format("{} is not Luban's own: agree with --yes (`luban new {} ... --dry-run` shows what it does)",
+                                     svc::display_name(preview->lineage), o.name), g);
+        print_preview_(*preview, o, r, true);
+        std::print(" Make {} from it? [y/N] ", o.name);
+        std::string answer;
+        std::getline(std::cin, answer);
+        answer = trim_(answer);
+        if (answer != "y" && answer != "Y" && answer != "yes") {
+            r.say("  nothing was made");
+            return 1;
+        }
+    }
+    o.agreed = preview->needs_confirmation();
     if (auto x = p.option("--proxy")) o.proxy = *x;
     // Its login user (part 3 §6.1): asked for once, before the download,
     // when a desktop needs one or --user names it; -y takes the defaults;
     // agent mode asks nothing and names the flags.
     if (auto x = p.option("--user")) o.user = *x;
-    if (o.user.empty() && svc::needs_user(o.edition)) {
+    const auto shown = svc::display_name(preview->lineage);
+    if (o.user.empty() && svc::needs_user(*preview)) {
         if (g.yes) o.user = std::string(svc::kDefaultUser);
         else if (!can_ask_(g))
-            return usage(std::format("a {} needs a user to log in as: --user <name> (and --password-file <file> or --no-password), or -y for {}",
-                                     o.edition, svc::kDefaultUser), g);
+            return usage(std::format("{} needs a user to log in as: --user <name> (and --password-file <file> or --no-password), or -y for {}",
+                                     shown, svc::kDefaultUser), g);
         else {
-            std::print("▸ {} needs a user to log in as\n  user name [{}]: ", o.edition, svc::kDefaultUser);
+            std::print("▸ {} needs a user to log in as\n  user name [{}]: ", shown, svc::kDefaultUser);
             std::string answer;
             std::getline(std::cin, answer);
             answer = trim_(answer);
@@ -647,11 +720,12 @@ int cmd_new(const svc::Context& c, const Parsed& p, const Globals& g, Renderer& 
     }
     if (auto x = p.option("--carrier")) o.carrier = *x;
     else o.carrier = default_carrier();
-    auto out = svc::create(c, o);
+    auto out = svc::create(c, o, &*preview);
     r.value(out.value);
     if (!out.ok()) return out.code;
-    std::string facts = out.value.value("edition", std::string{});
-    if (facts.starts_with("subos:luban-")) facts = facts.substr(12);
+    // `box  myos 2026.11.1 (Luban desktop) · desktop lxqt · 36 packages · generation 41` (design §4.5).
+    std::string facts = out.value.value("distribution", shown);
+    if (out.value.contains("desktop")) facts += std::format(" · desktop {}", out.value.value("desktop", std::string{}));
     if (out.value.contains("packages")) facts += std::format(" · {} packages", out.value.value("packages", 0));
     if (out.value.contains("generation") && out.value["generation"].is_number())
         facts += std::format(" · generation {}", out.value["generation"].get<int>());
@@ -666,6 +740,33 @@ int cmd_new(const svc::Context& c, const Parsed& p, const Globals& g, Renderer& 
     return 0;
 }
 
+// `luban run <name> [--display window] -- <command...>` (design 2026-10-18 §7,
+// T0): here, or a graphical program alone in a window of its own -- the
+// Luban OS app's, titled by the program, gone when it ends.
+int cmd_run(const svc::Context& c, const Parsed& p, const Globals& g) {
+    if (p.words.size() != 1 || p.after.empty()) return usage("`luban run <name> [--display window] -- <command...>`", g);
+    const auto display = p.option("--display").value_or("terminal");
+    if (display != "terminal" && display != "window") return usage("--display terminal|window", g);
+    if (display == "terminal") return svc::run_command(c, p.words[0], p.after, p.option("--user").value_or(""));
+    if (p.option("--user")) return usage("--user is the terminal's: a window runs as the system's login user", g);
+    const auto app = svc::luban_os_app(c.home);
+    if (app.empty()) {
+        if (c.sink) c.sink(svc::error("a program's window is the Luban OS app's", "xlings install luban-os"));
+        return 1;
+    }
+    // One word for the session: each argument quoted for the shell that runs it.
+    std::string command;
+    for (const auto& w : p.after) {
+        const bool plain = !w.empty() && std::ranges::all_of(w, [](char ch) {
+            return std::isalnum(static_cast<unsigned char>(ch)) || std::string_view("-_./=:,@+%").find(ch) != std::string_view::npos;
+        });
+        std::string q = "'";
+        for (char ch : w) q += ch == '\'' ? std::string("'\\''") : std::string(1, ch);
+        command += (command.empty() ? "" : " ") + (plain ? w : q + "'");
+    }
+    return xlings::platform::run_argv({app.string(), "--attach", p.words[0], "--app", command});
+}
+
 int cmd_enter(const svc::Context& c, const Parsed& p, const Globals& g) {
     if (p.words.size() != 1) return usage("`luban enter <name|image> [--mode sandbox|machine] [--temp]`", g);
     const auto& target = p.words[0];
@@ -673,6 +774,12 @@ int cmd_enter(const svc::Context& c, const Parsed& p, const Globals& g) {
     if (auto d = p.option("--display")) {
         if (*d != "terminal" && *d != "window") return usage("--display terminal|window", g);
         o.display = *d;
+    }
+    // Its desktop this once (design 2026-10-18 §3): shown in a window.
+    const auto once = p.option("--desktop");
+    if (once) {
+        if (o.display == "terminal") return usage("--desktop is shown in a window: drop --display terminal", g);
+        o.display = "window";
     }
     if (image_of_(target)) {
         o.temp = true;
@@ -688,12 +795,35 @@ int cmd_enter(const svc::Context& c, const Parsed& p, const Globals& g) {
                                       std::format("luban run {} -- <command>", target)));
         return 1;
     }
+    // Not told how (design 2026-10-18 §8, E5): what its plan says it shows
+    // first -- its desktop in a window where there is a display to show one,
+    // its console here otherwise, and why.
+    if (o.display.empty()) {
+        if (auto e = svc::describe(c, target); e && svc::enter_plan(*e).target == "desktop") {
+            const bool shown = !xlings::platform::is_linux || std::getenv("WAYLAND_DISPLAY") || std::getenv("DISPLAY");
+            if (shown && !svc::luban_os_app(c.home).empty()) o.display = "window";
+            else if (c.sink)
+                c.sink(svc::notice(std::format("{} shows its desktop in a window; {} -- its console here", target,
+                                               shown ? "the Luban OS app is not installed (xlings install luban-os)"
+                                                     : "this terminal has no display")));
+        }
+    }
+    if (o.display == "window") {
+        // The window is the Luban OS app's, sandbox or machine alike.
+        const auto app = svc::luban_os_app(c.home);
+        if (app.empty()) {
+            if (c.sink) c.sink(svc::error("a system's window is the Luban OS app's", "xlings install luban-os"));
+            return 1;
+        }
+        std::vector<std::string> argv{app.string(), "--attach", target};
+        if (once) argv.insert(argv.end(), {"--desktop", *once});
+        return xlings::platform::run_argv(argv);
+    }
     // A machine that is running is entered as the machine it is.
     const auto mode = p.option("--mode").value_or(vm::running(c.home, target) ? std::string("machine") : settings->mode);
     if (mode != "sandbox" && mode != "machine") return usage("--mode sandbox|machine", g);
     if (auto u = p.option("--user")) o.user = *u;
     if (mode == "machine") return vm::enter(c, target, o);
-    if (o.display == "window") return usage("a sandboxed environment's programs use this desktop; a window is a machine's: --mode machine", g);
     return svc::enter_sandbox(c, target, o.temp, o.user);
 }
 
@@ -715,14 +845,49 @@ int cmd_status(const svc::Context& c, const Parsed& p, const Globals& g, Rendere
            {"running", e->running}, {"mode", e->settings.mode}, {"persist", e->settings.persist},
            {"shell", e->shell}, {"carrier", e->carrier}, {"desktops", e->desktops}};
     if (e->generation) j["generation"] = *e->generation;
+    // What it needs of this luban (design 2026-10-18 §9): its root's layout, its manifest's requires.
+    const auto unmet = svc::unmet_needs(*e, svc::luban_provides());
+    // System / desktop / enter (design 2026-10-18 §3, §4.5).
+    const auto lineage = svc::lineage_of(*e);
+    const auto plan = svc::enter_plan(*e);
+    if (!lineage.layers.empty()) {
+        j["distribution"] = svc::display_name(lineage);
+        if (const auto* b = lineage.base()) j["luban_base"] = std::format("{} {}", b->name(), b->version());
+        if (const auto* parent = lineage.parent()) j["parent"] = parent->ref;
+        j["lineage"] = Json::array();
+        for (const auto& l : lineage.layers) j["lineage"].push_back({{"ref", l.ref}, {"index", l.index}, {"official", l.official()}});
+    }
+    j["desktop"] = plan.target == "desktop" ? Json(plan.session) : Json();
+    j["enter"] = plan.target;
+    if (!plan.why.empty()) j["why"] = plan.why;
+    j["layout"] = e->layout;
+    j["needs"] = e->needs;
+    j["unmet"] = Json::array();
+    for (const auto& v : unmet) j["unmet"].push_back(v.why());
     if (g.json) { r.value(j); return 0; }
     std::println("{}  {}{}", e->name, edition_label_(*e), e->running ? "  (running)" : "");
+    if (!lineage.layers.empty()) {
+        std::string from;
+        if (const auto* parent = lineage.parent(); parent && parent != lineage.base())
+            from = std::format("   on {}{}", parent->ref, parent->official() ? "" : " (" + parent->index + ")");
+        std::println("  system    {}{}", svc::display_name(lineage), from);
+    }
+    {
+        std::string others;
+        for (const auto& d : e->desktops)
+            if (d != plan.session) others += (others.empty() ? "" : ", ") + d;
+        std::println("  desktop   {}{}", plan.target == "desktop" ? plan.session : (e->desktops.empty() ? "none" : "none (console)"),
+                     others.empty() ? std::string{} : "   also: " + others);
+        if (!plan.why.empty()) std::println("  {} {}", r.paint("!", 33), plan.why);
+    }
+    std::println("  enter     {} · {}", plan.target, e->settings.mode);
     std::println("  kind      {}{}", e->kind, e->generation ? std::format(", generation {}", *e->generation) : "");
     std::println("  packages  {}", e->packages);
     std::println("  starts    as a {}{}", e->settings.mode, e->settings.persist == "all" ? "" : std::format(", keeping {}", e->settings.persist == "home" ? "only /home" : "nothing"));
     if (!e->shell.empty()) std::println("  shell     {}", e->shell);
     if (e->carrier != "local") std::println("  carrier   {}", e->carrier);
     std::println("  isolation luban config {}", e->name);
+    for (const auto& v : unmet) std::println("  {} {}: this luban is older than it -- xlings update luban", r.paint("!", 33), v.why());
     return 0;
 }
 
@@ -1101,7 +1266,20 @@ const spec::CommandSpec& tree() {
         .children = {
             {.name = "new", .description = "Make an environment",
              .arguments = {{"name", "Its name", true}},
-             .options = {{"--edition <EDITION>", "nano, tiny, core (default), desktop, desktop-xdesk, agent-workspace, or ns:name[@version]"},
+             .options = {{"--edition <EDITION>", "An official system by its short name: core (default), desktop, tiny, nano, ..."},
+                         {"--xpkg <COORD>", "Any package, from any index: a system (one), desktops, packages; repeat it", false, Level::More},
+                         {"--desktop <SESSION>", "Its desktop (an official one is installed when it has none)"},
+                         {"--enter <WHAT>", "console or desktop: what going in shows first", false, Level::More},
+                         {"--mode <MODE>", "sandbox or machine", false, Level::More},
+                         {"--persist <WHAT>", "all, home or none", false, Level::More},
+                         {"--shell <SHELL>", "Its login shell", false, Level::More},
+                         {"--login <NAME>", "Who luban enter logs in as", false, Level::Expert},
+                         {"--on-close <WHAT>", "ask, background or poweroff", false, Level::Expert},
+                         {"--policy <PRESET>", "dev, private, locked, or ns:name", false, Level::Expert},
+                         {"--tz <ZONE>", "utc, proxy, or Area/City", false, Level::Expert},
+                         {"--allow <GRANT>", "Grant a capability (clipboard, gpu, audio, ...)", false, Level::Expert},
+                         {"--runtime <LIBC@VERSION>", "Its default runtime", false, Level::Expert},
+                         {"--dry-run", "What it would be made of, and nothing made", false, Level::More},
                          {"--user <NAME>", "Its login user (a desktop needs one; default lubanoser)"},
                          {"--password-file <FILE>", "Its user's password, the file's first line", false, Level::More},
                          {"--no-password", "Its user logs in without a password", false, Level::More},
@@ -1112,10 +1290,13 @@ const spec::CommandSpec& tree() {
              .options = {{"--mode <MODE>", "sandbox (this machine's kernel) or machine (its own); default: its setting"},
                          {"--temp", "Nothing it writes stays"},
                          {"--user <NAME>", "Log in as this user this once (root, or one of its users)", false, Level::More},
-                         {"--display <DISPLAY>", "terminal or window; default: its desktop decides", false, Level::More}}, .effect = "reversible"},
+                         {"--display <DISPLAY>", "terminal or window; default: its desktop decides", false, Level::More},
+                         {"--desktop <SESSION>", "This desktop, this once, in a window", false, Level::More}}, .effect = "reversible"},
             {.name = "run", .description = "Run one command in an environment",
              .arguments = {{"name", "Which", true}, {"command", "The command and its arguments, after --", true, true}},
-             .options = {{"--user <NAME>", "As this user (root, or one of its users)", false, Level::More}}, .effect = "reversible"},
+             .options = {{"--user <NAME>", "As this user (root, or one of its users)", false, Level::More},
+                         {"--display <DISPLAY>", "terminal (here) or window: a graphical program alone in a window of its own", false,
+                          Level::More}}, .effect = "reversible"},
             {.name = "ls", .description = "List the environments", .aliases = {"list"}, .effect = "read"},
             {.name = "status", .description = "This host, or one environment", .arguments = {{"name", "Which"}},
              .options = {{"--check", "Check that it is usable: its /usr, /etc, runtime closure, and programs"}}, .effect = "read"},
@@ -1128,6 +1309,7 @@ const spec::CommandSpec& tree() {
                          {"--runtime <LIBC@VERSION>", "Its default runtime (glibc@2.44.3): a new generation runs on it", false, Level::More},
                          {"--desktop <SESSION>", "The desktop it starts, or none"},
                          {"--on-close <WHAT>", "ask, background or poweroff: closing its window"},
+                         {"--enter <WHAT>", "console or desktop: what going in shows first"},
                          {"--policy <PRESET>", "dev, private, locked, or ns:name"},
                          {"--proxy <URL>", "Its only network is this SOCKS5h proxy; off for none"},
                          {"--tz <ZONE>", "utc, proxy, or Area/City"},
@@ -1321,10 +1503,12 @@ int desktop_(const std::vector<std::string>& rest) {
     const auto dirs = wlr::session_dirs(env);
     std::optional<wlr::Session> session;
     if (id == "-") { if (auto all = wlr::sessions(dirs); !all.empty()) session = all.front(); }
-    else session = wlr::find_session(id, dirs);
+    else session = wlr::resolve_session(id, dirs);
     if (!session) {
         log(id == "-" ? std::string("no desktop session is declared here (share/wayland-sessions)")
-                      : std::format("no desktop session {} here", id));
+            : id.starts_with(wlr::kAppSession) ? std::string("nothing here runs one application in a window (luban:compositor does: "
+                                                             "xlings install luban:compositor in it)")
+                                               : std::format("no desktop session {} here", id));
         return 127;
     }
     wlr::SessionOptions o;
@@ -1424,10 +1608,7 @@ int run(int argc, char* argv[]) {
             if (auto refused = c.port.handshake()) return usage(*refused, g);
         if (p.command == "new") return cmd_new(c, p, g, render);
         if (p.command == "enter") return cmd_enter(c, p, g);
-        if (p.command == "run") {
-            if (p.words.empty() || p.after.empty()) return usage("`luban run <name> -- <command...>`", g);
-            return svc::run_command(c, p.words[0], p.after, p.option("--user").value_or(""));
-        }
+        if (p.command == "run") return cmd_run(c, p, g);
         if (p.command == "ls") return overview(c, g);
         if (p.command == "status") return cmd_status(c, p, g, render);
         if (p.command == "config") return cmd_config(c, p, g, render);

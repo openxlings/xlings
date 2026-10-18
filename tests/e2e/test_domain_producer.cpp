@@ -3,6 +3,7 @@ import xlings.testkit;
 #include "xlings/xtest.hpp"
 import std;
 import xlings.libs.json;
+import xlings.platform;
 import xlings.core.home.domain_producer;
 import xlings.libs.elfread;
 import xlings.subos.home_view;
@@ -14,7 +15,7 @@ using Json = nlohmann::json;
 
 XTEST(DomainProducer, InstallsAtLogicalPrefixInsideANamespaceAndPreservesHostData,
       .area = "subos", .cost = tk::Cost::Medium,
-      .covers = {"DOM-BUILD-INSIDE", "DOM-LAYOUTS"}, .requires_ = {"linux", "bwrap", "xlings-bin"},
+      .covers = {"DOM-BUILD-INSIDE", "DOM-LAYOUTS", "LUBAN-ENTER-QUIET"}, .requires_ = {"linux", "bwrap", "xlings-bin"},
       .resources = {"sandbox"}, .proves = "isolation") {
     if constexpr (!tk::is_linux) GTEST_SKIP() << "Linux namespaces";
     if (const auto why = tk::probe("bwrap")) GTEST_SKIP() << *why;
@@ -101,6 +102,16 @@ XTEST(DomainProducer, InstallsAtLogicalPrefixInsideANamespaceAndPreservesHostDat
         (**scope).domain, backendArguments, std::nullopt,
         backendSource ? &*backendSource : nullptr, true);
     ASSERT_TRUE(backendCommand) << backendCommand.error();
+    {
+        // What the owner's side was run with reaches the root's command
+        // (E18: luban's own greeting asks for no line of xlings').
+        xlings::platform::set_env_variable("XLINGS_ENTER_QUIET", "1");
+        auto quiet = xlings::home::domain_producer::command((**scope).domain, backendArguments, std::nullopt,
+                                                             backendSource ? &*backendSource : nullptr, true);
+        xlings::platform::unset_env_variable("XLINGS_ENTER_QUIET");
+        ASSERT_TRUE(quiet) << quiet.error();
+        EXPECT_NE(std::ranges::search(*quiet, std::vector<std::string>{"--setenv", "XLINGS_ENTER_QUIET", "1"}).begin(), quiet->end());
+    }
     auto backendDiagnosis = tk::run({.argv = *backendCommand, .env = home.env(), .cwd = home.root()});
     ASSERT_EQ(backendDiagnosis.exit_code, 0) << backendDiagnosis.transcript();
     const auto backendReport = Json::parse(backendDiagnosis.out);

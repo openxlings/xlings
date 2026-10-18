@@ -19,6 +19,10 @@ export namespace xlings::subos::edition {
 struct Record {
     std::string ref;                                         // ns:name@version
     std::vector<std::string> chain;                          // the `from` refs below it
+    // The index each was resolved in (design 2026-10-18 §4.4): `index` the
+    // top's, `chain_index` beside `chain`. Empty for a record from before.
+    std::string index;
+    std::vector<std::string> chain_index;
     std::map<std::string, std::string, std::less<>> packages;  // ns:name -> version ("" = not found)
     std::string policy;                                      // ns:name@version, or empty
 };

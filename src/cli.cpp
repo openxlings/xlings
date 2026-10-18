@@ -239,6 +239,10 @@ bool kind_is_interface_only_(std::string_view kind) {
         "install_targets",
         // `subos __boot` with no name prints the entries itself (for luban).
         "subos_boot",
+        // What a search found, as data (design 2026-10-18 §5.3); the terminal
+        // shows the list. What `subos new --dry-run` read, said as lines too.
+        // Why an older version was taken, logged where it was chosen.
+        "packages", "subos_plan", "passed_over",
     };
     return std::ranges::contains(kCapabilityOnly, kind)
         || std::ranges::contains(kWireDuplicate, kind);
@@ -2522,10 +2526,16 @@ int dispatch_(int argc, char* argv[]) {
         // search
         .subcommand("search")
             .description("Search for packages")
-            .arg("keyword").required().help("Search keyword")
+            .option(cmdline::Option("category").takes_value().value_name("NAME").help("Only packages in this category (luban-desktop: the desktops)"))
+            .arg("keyword").help("Search keyword")
             .action(wrap_rc([&stream](const cmdline::ParsedArgs& args) -> int {
                 apply_global_opts_(args);
-                return xim::cmd_search(std::string(args.positional(0)), stream);
+                const auto category = args.value("category").value_or("");
+                if (args.positional(0).empty() && category.empty()) {
+                    log::error("xlings search <keyword>, or --category <name>");
+                    return 2;
+                }
+                return xim::cmd_search(std::string(args.positional(0)), stream, std::string(category));
             }))
 
         // list

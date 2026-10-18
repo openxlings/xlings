@@ -31,8 +31,14 @@ Each card says what it is; the line under the cards says what is in the chosen
 one, or why it cannot be made here — not published yet, not built for this
 machine's architecture, or a computer that cannot run Luban systems yet (what
 `luban status` says: the reason and the next step). A name follows the edition until you type
-your own; **More options** chooses sandbox or machine. One button makes it,
-showing each step, and goes in.
+your own; **More options** chooses sandbox or machine, and the desktop it is
+made with: its own, or one the indexes offer (packages in the `luban-desktop`
+category). One button makes it, showing each step, and goes in.
+
+Under the cards, **More** lists what else the indexes offer: an official
+system the window has no card for, and the systems of indexes you added, each
+with the index it comes from. A system (or desktop) from another index is
+agreed to before it is made — Luban does not check what it does.
 
 **Import** a system someone exported (`luban export box box.luban`) from the
 quick start's link, the list's last row, or by dropping the `.luban` file on the
@@ -54,6 +60,7 @@ exit code, instead of only "off".
 | closing it on a machine | asks each time: keep it running or power it off — or confirm and make that the environment's default (`luban config desk --on-close background`) |
 | a file dropped on a system | copied into its login user's `~/Downloads`, and the window says where (a `.luban` file is imported instead) |
 | Ctrl+= / Ctrl+- / Ctrl+0 | the console's font size, kept per system |
+| the pointer on a console | a program that takes the mouse (vim, htop, tmux) gets it; otherwise — or with Shift held — a drag selects and copies, two clicks a word, three a line, the middle button pastes the last selection, the right one opens Copy / Paste, the wheel scrolls back |
 | an operation under way | its phases as it goes; it can be stopped, and one that failed can be tried again |
 
 The app has an icon in the system's status area: StatusNotifierItem on Linux
@@ -76,7 +83,7 @@ compositor and its shell in one program (wlroots, rendering in software), which
 speaks to the window directly — no bridge, no screen capture. It has two
 profiles:
 
-| | `xdesk-classic` (`desktop`) | `xdesk-canvas` (`desktop-xdesk`) |
+| | `xdesk-classic` (the `desktop` edition's) | `xdesk-canvas` (`--desktop xdesk-canvas`) |
 |---|---|---|
 | windows | side by side; one or two share the screen, more scroll with the focused one in view | where you put them, on a canvas that pans and zooms |
 | the shell | a panel across the top: applications, workspaces, the focused window's title, a clock | a pill at the bottom: applications, workspaces, the zoom, the overview |
@@ -132,8 +139,37 @@ A line it cannot read is logged and skipped; the desktop still starts.
 
 ## Desktops
 
-A desktop is a session the environment declares the freedesktop way: a file in
-`share/wayland-sessions/`, with keys of opensal's.
+A desktop is a package that brings a session — a file in
+`share/wayland-sessions/` — into a system; several can live in one system.
+Luban's own are in the `luban:` namespace (packages listing `luban-desktop` in
+their categories), from the lightest to the fullest:
+
+| Desktop | Session | What it is |
+|---|---|---|
+| `luban:compositor` | `compositor` | windows without a desktop: labwc, the Luban OS window is its shell (below) |
+| `luban:labwc` | `labwc` | labwc with a panel, a launcher, a background — light |
+| `luban:lxqt` | `lxqt` | LXQt on labwc: a panel, a desktop and file manager, settings — traditional |
+| `luban:kde` | `kde` | KDE Plasma, nested in labwc (preview) — the complete desktop |
+| `luban:xdesk` | `xdesk-classic`, `xdesk-canvas` | Luban's own: windows side by side, or on an infinite canvas |
+
+The terminal of each is the default one (`luban:foot`), found through
+`xdg-terminal-exec`; X11 programs run on `luban:xwayland`. LXQt and KDE share
+one Qt (`luban:qt-runtime`), installed once.
+
+```bash
+luban new desk --edition desktop --desktop lxqt   # made with LXQt, and starting it
+luban enter desk --desktop kde                    # another desktop, this once (installed already)
+luban config desk --desktop xdesk-canvas          # which session it starts
+luban config desk --desktop none                  # its console instead
+luban config desk --enter console                 # what going in shows first
+```
+
+Without a setting, the edition's session is started (the first the root
+declares, when it names none). The window's Host-key menu lists the system's
+desktops and its console: switching changes the session, not the machine. A
+desktop renamed keeps answering to its old name (`labwc-desktop` is `labwc`).
+
+A session file says how it is shown:
 
 ```ini
 [Desktop Entry]
@@ -141,31 +177,43 @@ Name=xdesk (classic)
 Exec=xdesk --profile classic
 X-Opensal-Native=true
 X-Opensal-Interfaces=surface pointer keyboard mode
+X-Luban-Shell=own
 ```
 
-`X-Opensal-Native=true` says the program speaks to the window itself (xdesk);
-any other compositor is shown through opensal-wlr (below). The desktop
-editions also bring `labwc-desktop` — labwc with a panel, a launcher, a
-terminal, Xwayland and fonts — as another session.
+| Key | |
+|---|---|
+| `X-Opensal-Native=true` | the program speaks to the window itself (xdesk); any other compositor is shown through opensal-wlr (below) |
+| `X-Luban-Shell` | `own`: the desktop has its shell; `none`: the Luban OS window is its shell |
+| `X-Luban-App-Exec` | how it runs one program alone (`luban run --display window`, below) |
+| `X-Luban-Aliases` | the names it answered to before |
+
+A session that leaves its shell to the window (`X-Luban-Shell=none`, Luban's
+`compositor`) gets a bar under the desktop: **Applications** lists what the
+session can start (the `share/applications` entries of its data directories,
+yours included; one with `Terminal=true` opens in the default terminal), and a
+button for each of its windows brings that one forward.
+
+## One program in a window
 
 ```bash
-luban config desk --desktop xdesk-canvas    # which session it starts
-luban config desk --desktop labwc-desktop
-luban config desk --desktop none            # its console instead
+luban run desk --display window -- gimp
 ```
 
-Without a setting, the edition's session is started (the first the root
-declares, when it names none).
+runs one graphical program of a system alone, in a window of its own titled
+by the program; the window goes when the program ends. It is run by a session
+that says how (`X-Luban-App-Exec=`, the command appended as one word):
+Luban's `compositor` desktop does (`labwc -S`). A system without one says so —
+`xlings install luban:compositor --subos desk`.
 
 ## What a desktop edition is ready with
 
-`desktop` and `desktop-xdesk` are core and a desktop, and the tools people
-reach for: node, python (with uv), bun, ripgrep, fd, fzf, jq, tmux, htop, and
-the agents claude, codex, pi and opencode (dsh on x86_64). git defaults to
-`main`; npm, pip, uv and bun use registries near you when xlings uses its CN
-mirror (whatever you set yourself wins). No credentials are in it. On aarch64
-the desktop edition starts labwc until xdesk is released there, and the canvas
-edition says it is not built for it.
+`desktop` is core and a desktop, and the tools people reach for, as tool
+sets: `luban:tools-cli` (ripgrep, fd, fzf, jq, tmux, htop), `luban:tools-dev`
+(node, python with uv, bun) and `luban:tools-agent` (claude, codex, pi,
+opencode; dsh on x86_64). git defaults to `main`; npm, pip, uv and bun use
+registries near you when xlings uses its CN mirror (whatever you set yourself
+wins). No credentials are in it. On aarch64 the desktop edition starts labwc
+until xdesk is released there.
 
 ## Your own desktop
 
@@ -176,9 +224,16 @@ management (the window's size). The bridge between them, opensal-wlr, speaks
 only those standard protocols; it is part of luban and starts with the session.
 
 ```bash
-xlings install --subos box xdesk            # or labwc-desktop
-luban config box --desktop xdesk-classic
+xlings install --subos box luban:labwc      # any desktop package, Luban's or another index's
+luban config box --desktop labwc
 ```
+
+A desktop of your own is a package that places its session and follows the
+same conventions (its defaults in its own `etc/xdg`, the default terminal, its
+checks in `share/luban/checks.d`); listing `luban-desktop` in its categories
+offers it where a desktop is chosen. Luban's are the examples: the index's
+[Luban packages](https://github.com/openxlings/xim-pkgindex/blob/main/docs/12-luban-packages.md)
+chapter says how they are built.
 
 ## How it runs
 

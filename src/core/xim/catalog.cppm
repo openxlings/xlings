@@ -46,6 +46,9 @@ struct PackageMatch {
     std::string rawName;
     std::string name;
     std::string version;
+    // Why `version` is not the newest: that one needs a newer client (its
+    // min_client). Empty when it is the newest, or one was asked for.
+    std::string passedOver;
     std::string namespaceName;
     std::string canonicalName;
     std::string repoName;
@@ -82,6 +85,19 @@ struct RepoLoadWarning {
     std::filesystem::path dir;
     std::string error;
 };
+
+// A package an index publishes in a namespace another index reserves for
+// itself (index-compat.json: namespaces.reserved): not taken.
+struct RefusedPackage {
+    std::string package;          // its canonical name
+    std::string repo;             // the index that has it
+    std::filesystem::path recipe;
+    std::string owner;            // the index that reserves the namespace
+};
+
+// The namespaces an index tree reserves for itself (index-compat.json:
+// {"namespaces": {"reserved": [...]}}); none when it says nothing.
+std::vector<std::string> reserved_namespaces(const std::filesystem::path& indexDir);
 
 std::string canonical_package_name(std::string_view namespaceName, std::string_view name);
 
@@ -276,6 +292,7 @@ class PackageCatalog {
     std::vector<RepoState> projectRepos_;
     std::vector<RepoState> globalRepos_;
     std::vector<RepoLoadWarning> loadWarnings_;
+    std::vector<RefusedPackage> refused_;
     // Recipe -> parsed package, for the lifetime of the process. See
     // load_package() for why.
     std::unordered_map<std::string, xpkg::Package> packageCache_;
@@ -332,6 +349,8 @@ public:
     // multi-repo config is visible to interface consumers (mcpp), not
     // silently swallowed.
     const std::vector<RepoLoadWarning>& load_warnings() const;
+    // What was not taken because its namespace is another index's.
+    const std::vector<RefusedPackage>& refused() const;
 
     // When project and global have the same package, keep only project-scoped match
     static std::vector<PackageMatch> prefer_project_scope_(std::vector<PackageMatch> matches);

@@ -36,7 +36,7 @@ text = "a pty with nothing typed exposes a program that waits for input"
 status = "required"
 
 [LUBAN-FHS-PATHS]
-text = "inside a Luban system every directory a person can cd into has its FHS path: /usr is the generation mounted, a generation's directories are mount points, an exported tar keeps the link"
+text = "inside a Luban system every directory a person can cd into has its FHS path: /usr is the generation mounted, a generation's directories are mount points, an exported tar keeps the link; a package's lib/<dir> and libexec/ reach /usr/lib/<dir> and /usr/libexec (a name one package has, whole; a name several have, merged; a clash reported)"
 status = "required"
 
 [LUBAN-SHARE-PROJECTION]
@@ -56,7 +56,7 @@ text = "interface --version reports the version, protocol, capabilities, home la
 status = "required"
 
 [LUBAN-OS-PERF]
-text = "the Luban OS app shows a choice the frame after it is made (no wait after input), its own work per frame stays within a few milliseconds (no disk read per frame), a frame fits its budget on a software renderer, and a still window waits instead of drawing"
+text = "the Luban OS app shows a choice the frame after it is made (no wait after input), its own work per frame stays within a few milliseconds (no disk read per frame), a frame fits its budget on a software renderer, and a still window waits instead of drawing; a pointer moving over a still desktop draws nothing, without a GPU a desktop is shown at most 30 times a second, and the renderer is recorded and, software when nobody asked, said with its remedy"
 status = "required"
 
 [LUBAN-OS-VISUAL]
@@ -80,7 +80,7 @@ text = "inside a Luban system, in a sandbox and a machine alike, the current sub
 status = "required"
 
 [LUBAN-EDITION-MIN-CLIENT]
-text = "an edition whose manifest names a min_client newer than this xlings is refused before anything is fetched, with xlings self update"
+text = "an edition whose manifest names a min_client newer than this xlings is refused before anything is fetched, with xlings self update; one passed over for an older version this xlings can use is said by luban new, with xlings self update, and recorded in its result"
 status = "required"
 
 [LUBAN-EDITION-RECORD]
@@ -770,7 +770,7 @@ text = "luban-desktop: a GL program compiled inside renders a frame offscreen, e
 status = "required"
 
 [LUBAN-FROM-CHAIN]
-text = "an xpkg's from chain merges workspaces, the upper one winning"
+text = "an xpkg's from chain merges workspaces, the upper one winning; subos new --dry-run says each layer (its index, its manifest as written) and the packages merged, making nothing; an instance records the index of each layer"
 status = "required"
 
 [ROOT-LDCACHE]
@@ -1036,7 +1036,7 @@ text = "an environment's persist setting decides what a session keeps of a root'
 status = "required"
 
 [LUBAN-SETTINGS]
-text = "an environment's machine settings (mode, persist, desktop, on-close) are checked values in its machine.json; every key another luban wrote survives a change, and a file that cannot be read is an error, never the defaults"
+text = "an environment's machine settings (mode, persist, desktop, on-close, enter) are checked values in its machine.json, over its edition's (usr/share/luban/settings.json) and its manifest's (luban.settings); luban new takes the same ones as luban config; every key another luban wrote survives a change, and a file that cannot be read is an error, never the defaults"
 status = "required"
 
 [LUBAN-ARCHIVE]
@@ -1048,7 +1048,7 @@ text = "luban's default output is one line per phase, the conclusion and the nex
 status = "required"
 
 [LUBAN-SHELL]
-text = "an environment's login shell is its passwd's: a root made now gets the best shell its /usr has (fish, bash, else sh), luban config --shell changes it, a shell the root lacks is refused with the install that brings it, and every way in reads the same answer"
+text = "an environment's login shell is its passwd's: a root made now gets the best shell its /usr has once its packages are in (fish, bash, else sh), or the one its edition names (login_shell) when it has it, and its login user the same; luban config --shell changes it, a shell the root lacks is refused with the install that brings it, and every way in reads the same answer -- a terminal joining a running session included"
 status = "required"
 
 [SUBOS-INSTANCES-APART]
@@ -1061,6 +1061,10 @@ status = "required"
 
 [LUBAN-TERM]
 text = "the Luban OS window's console is a terminal whose screen follows what shells and full-screen programs write (cursor motion, erase, scroll regions, the alternate screen, SGR in three colour depths, wide characters, bracketed paste, the title), answers what a shell asks, keeps history, and sends keys as xterm does"
+status = "required"
+
+[LUBAN-CONSOLE-MOUSE]
+text = "the console's pointer: a program that takes the mouse is sent its buttons, wheel and motion as xterm does (SGR when it asked, else X10); with Shift, or for a program that does not, a drag selects and copies, two clicks a word, three a line, the middle button pastes the last selection, the right one opens Copy and Paste, and the wheel scrolls back"
 status = "required"
 
 [LUBAN-DESKTOP-WIRE]
@@ -1120,7 +1124,7 @@ text = "a first-time user, with nothing yet, makes a system from the Luban OS qu
 status = "required"
 
 [LUBAN-OS-QUICK-START]
-text = "the Luban OS quick start shows two groups -- consoles to shape (nano, tiny, core) and desktops ready to use (classic, the xdesk canvas) -- each with what it is, its standing (base, stable, preview, explore) and what is in it; whether it can be made here comes from the index (published, built for this machine's architecture) and, on a computer that cannot run Luban systems, is said before anything is tried; nano says it has no shell and is made without going in"
+text = "the Luban OS quick start shows two groups -- consoles to shape (nano, tiny, core) and desktops ready to use (classic, the xdesk canvas) -- each with what it is, its standing (base, stable, preview, explore) and what is in it; whether it can be made here comes from the index (published, built for this machine's architecture) and, on a computer that cannot run Luban systems, is said before anything is tried; nano says it has no shell and is made without going in; what else the indexes offer is read from them (design 2026-10-18 §6.4): an official system it has no card for and another index's (said where it comes from) under More, a desktop edition's line in its index's words, the desktop it is made with from the luban-desktop packages, and a third party's part agreed to before it is made"
 status = "required"
 
 [LUBAN-OS-IMPORT]
@@ -1226,3 +1230,53 @@ status = "required"
 [CARRIER-GUEST-CURRENT]
 text = "a carrier's machine (WSL 2, a Mac's host machine) that reports another release is brought to the client's once per release (xlings self update there), never on every command"
 status = "required"
+
+# ── Luban OS distribution (design 2026-10-18) ──────────────────────
+
+[LUBAN-DIST-XPKG]
+text = "luban new takes any system and any components by --xpkg (repeatable, any index): it finds what each is (a system, a desktop, a package) from the fields and conventions it already has, says the right way when one is given where the other belongs, asks once for a third party's (with what it does beyond Luban), records the answer, and in agent mode fails with --yes"
+status = "required"
+
+[LUBAN-DIST-LINEAGE]
+text = "a system says what it is in one way everywhere: its name and version, then the Luban edition it is built on (`myos 2026.11.1 (Luban desktop)`), its direct parent with its source, and its os-release (ID_LIKE=luban, LUBAN_BASE)"
+status = "required"
+
+[LUBAN-NAMESPACE]
+text = "a namespace an index reserves is taken from that index only (another index's recipe in it is refused, naming the index and the file); luban's short names are the names in the luban: namespace, none listed in its code; replaces is honoured within one index"
+status = "required"
+
+[LUBAN-CAPS]
+text = "luban, the Luban OS app, a machine's agent, a system and a component declare what they provide and need as named capabilities with integer levels (luban/specs/opencaps); a need is met by a provision at that level or above, an unknown name is not met and is said so, and a mismatch names which side is too old and its update"
+status = "required"
+
+[LUBAN-DESKTOP-KDE-ADAPTER]
+text = "a KDE session is shown through opensal by an adapter for KWin: its picture from a virtual monitor the window's size, input injected, the pointer drawn by the host, the clipboard shared, a resize followed"
+status = "planned"
+
+[LUBAN-DESKTOP-SHELL]
+text = "a desktop without a shell of its own (its session file's X-Luban-Shell=none) is given the Luban OS window's, through opensal Shell: the applications its session lists (share/applications in its XDG data dirs, field codes dropped, Terminal=true in the default terminal) and its windows (wlr foreign-toplevel), listed whole as they change; the window starts one by its id and brings one forward; a session with its own shell is not given one"
+status = "required"
+
+[LUBAN-ENTER-QUIET]
+text = "a frontend that greets for itself (luban's welcome) asks xlings for no entering line with XLINGS_ENTER_QUIET=1, and a root entered through its private prefix domain is asked the same"
+status = "required"
+
+[LUBAN-SESSION-PEERS]
+text = "terminals entering one environment are peers: the first starts its session in the background and joins it as later ones do, any of them leaves at once, Ctrl-C reaches only its own program, and the session ends a moment after the last; a session keeping only /home (or nothing) is joined by an entry keeping as much"
+status = "required"
+
+[LUBAN-DESKTOP-SWITCH]
+text = "several desktops live in one system: luban config --desktop changes the default, luban enter --desktop opens another once, the Luban OS app's bar lists them; one desktop's defaults and autostart never reach another, and removing the one in use falls back to the console and says so"
+status = "required"
+
+[LUBAN-DESKTOP-CLASSIC]
+text = "labwc, LXQt and KDE open in a machine and in a sandbox and can be used: drawn, a pointer, a terminal that shows the program it runs"
+status = "planned"
+
+[LUBAN-APP-WINDOW]
+text = "luban run --display window shows one graphical program of a system as its own window on the host, titled as the program: run alone by the first session that says how (X-Luban-App-Exec, luban:compositor's labwc -S), without the window's shell, the window gone when the program ends; --display takes terminal (the default) or window, and a system with nothing to run it says what to install"
+status = "required"
+
+[LUBAN-PACKAGE-FORM]
+text = "a package that changes form under its name (a bundle becoming a composite of atomic packages, or back) upgrades a system without changing its settings or sessions"
+status = "planned"

@@ -16,6 +16,9 @@
 //     's'  size       what it draws at: before its first     "<w> <h>"
 //                     frame and whenever it changes (it may not be the
 //                     provider's: a compositor that cannot follow it)
+//     'a'  apps       Shell: all of them, whenever they      (see encode_applications)
+//                     change
+//     'w'  windows    Shell: all of them, likewise           (see encode_windows)
 //   provider -> consumer
 //     'H'  hello      provided interfaces, size, density,    "<bits> <w> <h> <scale> [<paced>]"
 //                     and whether it paces (1: it says FramePresented once
@@ -49,6 +52,14 @@ std::optional<std::pair<FrameHeader, std::string_view>> decode_frame(std::string
 
 std::string encode_event(const Event& e);
 std::optional<Event> decode_event(std::string_view payload);
+
+// One line a window: "<id>\t<focused 0|1>\t<minimized 0|1>\t<app id>\t<title>"
+// (a tab or a line break in a name is a space).
+std::string encode_windows(std::span<const Window> windows);
+std::optional<std::vector<Window>> decode_windows(std::string_view payload);
+// One line an application: "<id>\t<name>".
+std::string encode_applications(std::span<const Application> apps);
+std::optional<std::vector<Application>> decode_applications(std::string_view payload);
 
 class Decoder {
 public:

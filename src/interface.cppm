@@ -45,7 +45,14 @@ namespace xlings::interface {
 // revision into `complete`. `install_packages` reports dangling scope
 // references it dropped as `scope_repaired`; `system_status` reports the
 // binding state's findings as `binding_state` (feature `binding_state`).
-export constexpr const char* kProtocolVersion = "1.11";
+// 1.12 (2026.10.18.1, additive; Luban design 2026-10-18 §5.3): `search_packages`
+// takes `category` (the keyword may then be empty) and its `packages` entries
+// carry `namespace`, `index` and `categories`; `package_info` carries a
+// `package` object (namespace, name, version, index, type, categories); an
+// index's reserved namespaces are kept to it (feature `reserved_namespaces`);
+// `subos_command` with `new --dry-run` sends the plan as a `subos_plan` data
+// event (feature `subos_plan`).
+export constexpr const char* kProtocolVersion = "1.12";
 
 // Convert any Event variant to one NDJSON line (no trailing newline).
 // Returns "" for events not surfaced to wire (e.g. CompletedEvent — the

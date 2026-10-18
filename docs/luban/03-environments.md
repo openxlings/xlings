@@ -131,4 +131,6 @@ The clipboard is not the display:
 
 A command that joins a running environment from another terminal (`luban enter`,
 `luban run`) gets its own terminal: job control, signals, and the window size
-follow yours.
+follow yours. Terminals in one environment are peers: whichever came first can
+leave while the others stay, Ctrl-C in one reaches only its own program, and
+the environment's session ends a few seconds after the last terminal leaves.

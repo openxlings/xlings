@@ -22,7 +22,7 @@ std::string_view trim_(std::string_view s) {
 std::optional<Session> parse_session(std::string_view text, std::string id) {
     Session s;
     s.id = std::move(id);
-    bool in_entry = false, hidden = false;
+    bool in_entry = false, hidden = false, shell_less = false;
     while (!text.empty()) {
         const auto nl = text.find('\n');
         const auto line = trim_(text.substr(0, nl));
@@ -37,20 +37,23 @@ std::optional<Session> parse_session(std::string_view text, std::string id) {
         else if (key == "Exec") s.exec = value;
         else if (key == "X-Opensal-Interfaces") s.interfaces = parse_interfaces(value);
         else if (key == "X-Opensal-Native") s.native = value == "true";
+        else if (key == "X-Luban-Shell") shell_less = value == "none";
+        else if (key == "X-Luban-App-Exec") s.app_exec = value;
         else if ((key == "Hidden" || key == "NoDisplay") && value == "true") hidden = true;
     }
     if (s.exec.empty() || hidden) return std::nullopt;
+    if (shell_less) s.interfaces = s.interfaces | opensal::Interface::Shell;
     if (s.name.empty()) s.name = s.id;
     return s;
 }
 
 opensal::Interfaces parse_interfaces(std::string_view names) {
-    static constexpr std::array<std::pair<std::string_view, opensal::Interface>, 9> known{{
+    static constexpr std::array<std::pair<std::string_view, opensal::Interface>, 10> known{{
         {"surface", opensal::Interface::Surface}, {"pointer", opensal::Interface::Pointer},
         {"keyboard", opensal::Interface::Keyboard}, {"mode", opensal::Interface::Mode},
         {"density", opensal::Interface::Density}, {"capture", opensal::Interface::Capture},
         {"cursor", opensal::Interface::Cursor}, {"text", opensal::Interface::Text},
-        {"clipboard", opensal::Interface::Clipboard}}};
+        {"clipboard", opensal::Interface::Clipboard}, {"shell", opensal::Interface::Shell}}};
     opensal::Interfaces out = 0;
     std::size_t at = 0;
     while (at < names.size()) {
@@ -64,10 +67,14 @@ opensal::Interfaces parse_interfaces(std::string_view names) {
     return out;
 }
 
-std::vector<fs::path> session_dirs(const std::map<std::string, std::string>& env) {
-    std::vector<fs::path> out;
+namespace {
+
+// <dir>/<sub> for each of $XDG_DATA_DIRS, then /usr/local/share and /usr/share
+// (`always`; else only when it names none, as the base directory specification says).
+void data_dirs_(const std::map<std::string, std::string>& env, std::string_view sub, std::vector<fs::path>& out, bool always) {
+    const auto before = out.size();
     auto add = [&](fs::path p) {
-        p /= "wayland-sessions";
+        p /= sub;
         if (std::ranges::find(out, p) == out.end()) out.push_back(std::move(p));
     };
     if (auto it = env.find("XDG_DATA_DIRS"); it != env.end()) {
@@ -79,13 +86,15 @@ std::vector<fs::path> session_dirs(const std::map<std::string, std::string>& env
             dirs.remove_prefix(c + 1);
         }
     }
+    if (!always && out.size() > before) return;
     add("/usr/local/share");
     add("/usr/share");
-    return out;
 }
 
-std::vector<Session> sessions(const std::vector<fs::path>& dirs) {
-    std::vector<Session> out;
+// Each .desktop file in `dirs` once (the first directory's wins), parsed.
+template <typename T, typename Parse>
+std::vector<T> entries_(const std::vector<fs::path>& dirs, Parse parse) {
+    std::vector<T> out;
     std::set<std::string> seen;
     for (const auto& dir : dirs) {
         std::error_code ec;
@@ -95,21 +104,129 @@ std::vector<Session> sessions(const std::vector<fs::path>& dirs) {
         std::ranges::sort(files);
         for (const auto& f : files) {
             const auto id = f.stem().string();
-            if (!seen.insert(id).second) continue;   // the more specific directory's wins
+            if (!seen.insert(id).second) continue;
             std::ifstream in(f);
             std::string text((std::istreambuf_iterator<char>(in)), {});
-            if (auto s = parse_session(text, id)) {
-                s->file = f;
-                out.push_back(std::move(*s));
-            }
+            if (auto e = parse(text, id, f)) out.push_back(std::move(*e));
         }
     }
     return out;
 }
 
+// A [Desktop Entry]'s keys (unlocalized), each as it is written.
+std::map<std::string, std::string, std::less<>> entry_keys_(std::string_view text) {
+    std::map<std::string, std::string, std::less<>> out;
+    bool in_entry = false;
+    while (!text.empty()) {
+        const auto nl = text.find('\n');
+        const auto line = trim_(text.substr(0, nl));
+        text = nl == std::string_view::npos ? std::string_view{} : text.substr(nl + 1);
+        if (line.empty() || line.front() == '#') continue;
+        if (line.front() == '[') { in_entry = line == "[Desktop Entry]"; continue; }
+        const auto eq = line.find('=');
+        if (!in_entry || eq == std::string_view::npos) continue;
+        out.try_emplace(std::string(trim_(line.substr(0, eq))), trim_(line.substr(eq + 1)));
+    }
+    return out;
+}
+
+}  // namespace
+
+std::vector<fs::path> session_dirs(const std::map<std::string, std::string>& env) {
+    std::vector<fs::path> out;
+    data_dirs_(env, "wayland-sessions", out, true);
+    return out;
+}
+
+std::vector<fs::path> application_dirs(const std::map<std::string, std::string>& env) {
+    std::vector<fs::path> out;
+    if (auto it = env.find("XDG_DATA_HOME"); it != env.end() && it->second.starts_with('/'))
+        out.push_back(fs::path(it->second) / "applications");
+    else if (auto home = env.find("HOME"); home != env.end() && home->second.starts_with('/'))
+        out.push_back(fs::path(home->second) / ".local/share/applications");
+    data_dirs_(env, "applications", out, false);
+    return out;
+}
+
+std::vector<std::string> exec_argv(std::string_view exec) {
+    std::vector<std::string> out;
+    std::string word;
+    bool in_word = false, quoted = false;
+    for (std::size_t k = 0; k < exec.size(); ++k) {
+        const char c = exec[k];
+        if (quoted) {
+            if (c == '"') quoted = false;
+            else if (c == '\\' && k + 1 < exec.size()) word.push_back(exec[++k]);
+            else word.push_back(c);
+        } else if (c == '"') {
+            quoted = in_word = true;
+        } else if (c == ' ' || c == '\t') {
+            if (in_word) out.push_back(std::exchange(word, {}));
+            in_word = false;
+        } else if (c == '%' && k + 1 < exec.size()) {
+            // A field code: %% is a percent, any other is dropped (nothing is opened).
+            if (exec[++k] == '%') { word.push_back('%'); in_word = true; }
+        } else {
+            word.push_back(c);
+            in_word = true;
+        }
+    }
+    if (in_word) out.push_back(std::move(word));
+    return out;
+}
+
+std::optional<Application> parse_application(std::string_view text, std::string id) {
+    const auto keys = entry_keys_(text);
+    auto key = [&](std::string_view k) {
+        auto it = keys.find(k);
+        return it == keys.end() ? std::string_view{} : std::string_view(it->second);
+    };
+    if (key("Type") != "Application" || key("NoDisplay") == "true" || key("Hidden") == "true") return std::nullopt;
+    Application a{.id = std::move(id), .name = std::string(key("Name")), .argv = exec_argv(key("Exec")),
+                  .terminal = key("Terminal") == "true"};
+    if (a.argv.empty()) return std::nullopt;
+    if (a.name.empty()) a.name = a.id;
+    return a;
+}
+
+std::vector<Application> applications(const std::vector<fs::path>& dirs) {
+    auto out = entries_<Application>(dirs, [](std::string_view text, const std::string& id, const fs::path&) {
+        return parse_application(text, id);
+    });
+    std::ranges::sort(out, {}, &Application::name);
+    return out;
+}
+
+std::vector<Session> sessions(const std::vector<fs::path>& dirs) {
+    return entries_<Session>(dirs, [](std::string_view text, const std::string& id, const fs::path& f) {
+        auto s = parse_session(text, id);
+        if (s) s->file = f;
+        return s;
+    });
+}
+
 std::optional<Session> find_session(std::string_view id, const std::vector<fs::path>& dirs) {
     for (auto& s : sessions(dirs))
         if (s.id == id) return s;
+    return std::nullopt;
+}
+
+std::optional<Session> resolve_session(std::string_view id, const std::vector<fs::path>& dirs) {
+    if (!id.starts_with(kAppSession)) return find_session(id, dirs);
+    const auto command = id.substr(kAppSession.size());
+    if (command.empty()) return std::nullopt;
+    for (auto s : sessions(dirs)) {
+        if (s.app_exec.empty() || s.native) continue;
+        std::string quoted = "'";
+        for (char c : command) quoted += c == '\'' ? std::string("'\\''") : std::string(1, c);
+        quoted += "'";
+        s.exec = s.app_exec + " " + quoted;
+        s.interfaces &= ~static_cast<opensal::Interfaces>(opensal::Interface::Shell);
+        const auto words = exec_argv(command);
+        s.name = words.empty() ? std::string(command) : fs::path(words[0]).filename().string();
+        s.id = std::string(id);
+        return s;
+    }
     return std::nullopt;
 }
 
@@ -159,7 +276,13 @@ int run_session(const Session& s, int in, int out, const SessionOptions& o) {
         if (!socket) std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
     int code = 1;
-    if (socket) code = bridge({.in = in, .out = out, .socket = *socket, .alive = alive});
+    if (socket) {
+        // What it starts as the session's shell joins the compositor.
+        auto launched = env;
+        launched["WAYLAND_DISPLAY"] = socket->filename().string();
+        code = bridge({.in = in, .out = out, .socket = *socket, .alive = alive,
+                       .shell = opensal::has(s.interfaces, opensal::Interface::Shell), .env = std::move(launched)});
+    }
     if (alive()) {
         os::terminate(pid);
         for (int i = 0; i < 30 && alive(); ++i) std::this_thread::sleep_for(std::chrono::milliseconds(100));

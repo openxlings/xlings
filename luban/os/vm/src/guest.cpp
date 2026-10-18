@@ -142,11 +142,14 @@ std::expected<Session, std::string> desktop_(const Json& display, std::map<std::
     const auto dirs = wlr::session_dirs(env);
     const auto id = display.value("session", std::string{});
     std::optional<wlr::Session> session;
-    if (!id.empty()) session = wlr::find_session(id, dirs);
+    if (!id.empty()) session = wlr::resolve_session(id, dirs);
     else if (auto all = wlr::sessions(dirs); !all.empty()) session = all.front();
     if (!session)
         return std::unexpected(id.empty() ? std::string("this environment declares no desktop session (share/wayland-sessions)")
-                                          : std::format("this environment has no desktop session {}", id));
+                               : id.starts_with(wlr::kAppSession)
+                                   ? std::string("nothing here runs one application in a window (luban:compositor does: "
+                                                 "xlings install luban:compositor in it)")
+                                   : std::format("this environment has no desktop session {}", id));
     auto to = platform::make_pipe(), from = platform::make_pipe();
     if (!to || !from) return std::unexpected("no pipe for the desktop");
     wlr::SessionOptions o;
@@ -201,9 +204,13 @@ std::expected<Session, std::string> desktop_(const Json& display, std::map<std::
     serve_(port, port, init, true);
 }
 
+// What the agent says when it is up (design 2026-10-18 §9): that it is one,
+// and what it provides (opencaps names: luban/specs/opencaps/SPEC.md).
+Json hello_() { return Json{{"agent", 1}, {"provides", Json{{"agent-display", 1}}}}; }
+
 // The agent's loop on its port: sessions, commands, a desktop, power off.
 [[noreturn]] void serve_(int port, int out, bool init, bool machine) {
-    (void)platform::write_all(out, proto::encode_json('H', 0, Json{{"agent", 1}}));
+    (void)platform::write_all(out, proto::encode_json('H', 0, hello_()));
     std::map<std::uint32_t, Session> sessions;
     std::vector<int> ended;     // closed by the host, not yet reaped
     proto::Decoder d;
@@ -230,7 +237,7 @@ std::expected<Session, std::string> desktop_(const Json& display, std::map<std::
                 if (!*f) break;
                 const auto& frame = **f;
                 if (frame.type == 'Q') {
-                    (void)platform::write_all(out, proto::encode_json('H', 0, Json{{"agent", 1}}));
+                    (void)platform::write_all(out, proto::encode_json('H', 0, hello_()));
                 } else if (frame.type == 'O') {
                     auto open = Json::parse(frame.payload, nullptr, false);
                     if (!open.is_object()) open = Json::object();

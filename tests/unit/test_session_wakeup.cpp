@@ -181,3 +181,22 @@ XTEST(SessionWakeup, JoinedChildrenReportCompletionSignalsAndExecFailureImmediat
     EXPECT_TRUE(failure->contains("error"));
     EXPECT_FALSE(failure->contains("started"));
 }
+
+// A joined command's SHELL is the one the joiner names now (design
+// 2026-10-18 §11, E3): not the session's (the shell it started with), and
+// not the host's, which the policy may let through but is not the root's.
+XTEST(SessionJoin, AJoinedCommandsShellIsTheOneNamedNow, .area = "subos", .covers = {"SES-JOIN", "LUBAN-SHELL"}) {
+    const std::map<std::string, std::string> session_env{{"SHELL", "/bin/sh"}, {"HOME", "/root"}};
+    const std::vector<std::string> pass{"SHELL", "TERM", "LC_*"};
+    const Json request{{"env", {{"SHELL", "/usr/bin/zsh"}, {"TERM", "xterm"}, {"LC_ALL", "C"}, {"SECRET", "x"}}},
+                       {"shell", "/usr/bin/fish"}};
+    const auto env = session::joined_env(session_env, request, pass);
+    EXPECT_EQ(env.at("SHELL"), "/usr/bin/fish");
+    EXPECT_EQ(env.at("TERM"), "xterm");
+    EXPECT_EQ(env.at("LC_ALL"), "C");
+    EXPECT_FALSE(env.contains("SECRET")) << "what the policy does not let in";
+    EXPECT_EQ(env.at("HOME"), "/root");
+    // A request that names none (an older client): the policy's answer.
+    EXPECT_EQ(session::joined_env(session_env, Json{{"env", {{"SHELL", "/usr/bin/zsh"}}}}, pass).at("SHELL"), "/usr/bin/zsh");
+    EXPECT_EQ(session::joined_env(session_env, Json::object(), pass).at("SHELL"), "/bin/sh");
+}

@@ -39,9 +39,13 @@ XTEST(LubanIdentity, AUserIsMadeInTheSystemsOwnEtc, .area = "luban", .covers = {
     ASSERT_TRUE(etc::set_login_user(tree / "etc", "alice"));
     EXPECT_EQ(etc::login_user(tree / "etc"), "alice");
     EXPECT_FALSE(etc::set_login_user(tree / "etc", "nobody-here"));
-    EXPECT_TRUE(luban::service::needs_user("desktop"));
-    EXPECT_TRUE(luban::service::needs_user("subos:luban-desktop@2026.10.13.1"));
-    EXPECT_FALSE(luban::service::needs_user("core"));
+    // A desktop's system is never root's: what it is built on decides.
+    luban::service::NewPreview desktop{.lineage = {.layers = {{"subos:luban-desktop@2026.10.13.1", "xim", {}}}}};
+    EXPECT_TRUE(luban::service::needs_user(desktop));
+    luban::service::NewPreview on_desktop{.lineage = {.layers = {{"awesome:myos@1", "awesome", {}}, {"luban:desktop@2026.10.19.1", "xim", {}}}}};
+    EXPECT_TRUE(luban::service::needs_user(on_desktop));
+    luban::service::NewPreview core{.lineage = {.layers = {{"luban:core@2026.10.19.1", "xim", {}}}}};
+    EXPECT_FALSE(luban::service::needs_user(core));
 }
 
 XTEST(LubanIdentity, ASystemIsNamedByItsNameAndMarkedInThePrompt, .area = "luban", .covers = {"ID-HOSTNAME", "ID-PROMPT"}) {

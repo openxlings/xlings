@@ -132,12 +132,19 @@ xlings install gcc@14.2.0          # the official index: no namespace needed
 A bare dependency inside a recipe means the package of that name **in the
 index the recipe came from**; only a name that index lacks falls through.
 
+An index may **reserve** its namespaces (`index-compat.json`:
+`{"namespaces": {"reserved": ["xim", "luban"]}}`): a package another index
+publishes in one of them is not taken, and xlings names that index's recipe.
+The official index reserves `xim`, `luban`, `subos` and `config`; a namespace of
+your own is yours the same way.
+
 ## Commands
 
 | Command | What |
 |---|---|
 | `xlings update` | refresh every index |
 | `xlings search <pkg>` | search every index |
+| `xlings search --category <c>` | the packages a category lists (`luban-desktop`: the desktops) |
 | `xlings info <pkg>` | a package's versions, platforms, source |
 | `xlings why <pkg>` | why a dependency resolved to the version it did |
 | `xlings install <ns>:<pkg>@<ver>` | a package of a given index |

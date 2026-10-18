@@ -103,6 +103,59 @@ XTEST(LubanWlr, ASessionIsAFreedesktopSessionFile, .area = "luban", .covers = {"
     fs::remove_all(root, ec);
 }
 
+XTEST(LubanWlr, ASessionsApplicationsAreItsDesktopEntries, .area = "luban", .covers = {"LUBAN-DESKTOP-SHELL"}) {
+    // A session without a shell of its own uses the window's.
+    using I = opensal::Interface;
+    auto bare = wlr::parse_session("[Desktop Entry]\nExec=labwc\nX-Luban-Shell=none\nX-Opensal-Interfaces=surface\n", "compositor");
+    ASSERT_TRUE(bare);
+    EXPECT_EQ(bare->interfaces, I::Surface | I::Shell);
+    auto own = wlr::parse_session("[Desktop Entry]\nExec=labwc\nX-Luban-Shell=own\n", "labwc");
+    ASSERT_TRUE(own);
+    EXPECT_FALSE(opensal::has(own->interfaces, I::Shell));
+    // Exec's words: quoted ones whole, field codes dropped, %% a percent.
+    EXPECT_EQ(wlr::exec_argv(R"(foot --title "a \"b\" c" %U 100%%)"),
+              (std::vector<std::string>{"foot", "--title", "a \"b\" c", "100%"}));
+    auto app = wlr::parse_application("[Desktop Entry]\nType=Application\nName=Htop\nExec=htop\nTerminal=true\n", "htop");
+    ASSERT_TRUE(app);
+    EXPECT_TRUE(app->terminal);
+    EXPECT_EQ(app->argv, std::vector<std::string>{"htop"});
+    EXPECT_FALSE(wlr::parse_application("[Desktop Entry]\nType=Application\nExec=x\nNoDisplay=true\n", "x"));
+    EXPECT_FALSE(wlr::parse_application("[Desktop Entry]\nType=Link\nExec=x\n", "x"));
+    // The user's own first, then the session's data dirs.
+    if constexpr (!platform::is_windows) {
+        const auto dirs = wlr::application_dirs({{"HOME", "/home/u"}, {"XDG_DATA_DIRS", "/opt/share"}});
+        ASSERT_GE(dirs.size(), 2u);
+        EXPECT_EQ(dirs[0], fs::path("/home/u/.local/share/applications"));
+        EXPECT_EQ(dirs[1], fs::path("/opt/share/applications"));
+        EXPECT_EQ(dirs.size(), 2u) << "the data dirs it names, without the defaults";
+    }
+}
+
+XTEST(LubanWlr, OneApplicationAloneIsRunByASessionThatSaysHow, .area = "luban", .covers = {"LUBAN-APP-WINDOW"}) {
+    // `luban run --display window` (T0): the command, one word, given to the
+    // first session that runs one application alone; no shell of the window's.
+    const auto root = temp_dir_("luban-wlr-app");
+    fs::create_directories(root / "wayland-sessions");
+    std::ofstream(root / "wayland-sessions" / "a-xdesk.desktop")
+        << "[Desktop Entry]\nExec=xdesk\nX-Opensal-Native=true\nX-Luban-App-Exec=xdesk --app\n";
+    std::ofstream(root / "wayland-sessions" / "b-plain.desktop") << "[Desktop Entry]\nExec=labwc\n";
+    std::ofstream(root / "wayland-sessions" / "compositor.desktop")
+        << "[Desktop Entry]\nExec=luban-compositor\nX-Luban-Shell=none\nX-Luban-App-Exec=luban-compositor -S\n"
+           "X-Opensal-Interfaces=surface pointer keyboard mode\n";
+    const std::vector<fs::path> dirs{root / "wayland-sessions"};
+    auto app = wlr::resolve_session("app:/usr/bin/gimp --new 'a b'", dirs);
+    ASSERT_TRUE(app);
+    EXPECT_EQ(app->exec, R"(luban-compositor -S '/usr/bin/gimp --new '\''a b'\''')");
+    EXPECT_EQ(app->name, "gimp") << "the window is titled by the program";
+    EXPECT_FALSE(opensal::has(app->interfaces, opensal::Interface::Shell));
+    EXPECT_EQ(wlr::resolve_session("compositor", dirs)->exec, "luban-compositor") << "a session by its id, as before";
+    EXPECT_FALSE(wlr::resolve_session("app:", dirs));
+    std::filesystem::remove(root / "wayland-sessions" / "compositor.desktop");
+    EXPECT_FALSE(wlr::resolve_session("app:gimp", dirs)) << "nothing here runs one application";
+    std::error_code ec;
+    fs::remove_all(root, ec);
+}
+
 XTEST(LubanWlr, AKeysymIsTheEvdevKeyThatTypesIt, .area = "luban", .covers = {"LUBAN-DESKTOP-WLR"}) {
     EXPECT_EQ(opensal::keys::evdev_key('a')->code, 30u);
     EXPECT_FALSE(opensal::keys::evdev_key('a')->shift);
@@ -141,6 +194,10 @@ struct Compositor {
     int pool_fd { -1 };
     std::uint32_t buffer { 0 };
     int frames { 0 };
+    // Its windows, listed (wlr foreign-toplevel) when `toplevels`: one, minimized.
+    bool toplevels { false };
+    static constexpr std::uint32_t kWindow = 0xff000001;
+    std::vector<std::uint32_t> activated, unminimized;
 
     // The bridge may be gone (the end of a test): no SIGPIPE, nothing asserted.
     void send(std::uint32_t object, std::uint16_t opcode, const wl::Args& a) {
@@ -200,6 +257,7 @@ struct Compositor {
                 {1, "wl_shm", 1}, {2, "wl_seat", 7}, {3, "wl_output", 4}, {4, "zwlr_screencopy_manager_v1", 3},
                 {5, "zwp_virtual_keyboard_manager_v1", 1}, {6, "zwlr_virtual_pointer_manager_v1", 2}}};
             for (const auto& [name, i, v] : globals) send(registry, 0, wl::Args{}.u(name).str(i).u(v));
+            if (toplevels) send(registry, 0, wl::Args{}.u(7).str("zwlr_foreign_toplevel_manager_v1").u(3));
         } else if (iface == "wl_display" && e.opcode == 0) {     // sync
             const auto cb = r.u();
             send(cb, 0, wl::Args{}.u(1));
@@ -211,6 +269,15 @@ struct Compositor {
             const auto id = r.u();
             objects[id] = name;
             if (name == "wl_output") send(id, 1, wl::Args{}.u(1).i(W).i(H).i(60000));
+            if (name == "zwlr_foreign_toplevel_manager_v1") {
+                objects[kWindow] = "zwlr_foreign_toplevel_handle_v1";
+                send(id, 0, wl::Args{}.u(kWindow));                              // toplevel
+                send(kWindow, 0, wl::Args{}.str("~ shell"));                      // title
+                send(kWindow, 1, wl::Args{}.str("foot"));                         // app_id
+                const std::array<std::uint32_t, 1> minimized{1};
+                send(kWindow, 4, wl::Args{}.words(minimized));                    // state
+                send(kWindow, 5, wl::Args{});                                     // done
+            }
         } else if (iface == "zwlr_screencopy_manager_v1" && e.opcode == 0) {   // capture_output
             const auto frame = r.u();
             objects[frame] = "zwlr_screencopy_frame_v1";
@@ -261,6 +328,10 @@ struct Compositor {
             r.u();
             r.u();
             objects[r.u()] = "zwlr_virtual_pointer_v1";
+        } else if (iface == "zwlr_foreign_toplevel_handle_v1" && e.opcode == 4) {  // activate
+            activated.push_back(e.object);
+        } else if (iface == "zwlr_foreign_toplevel_handle_v1" && e.opcode == 3) {  // unset_minimized
+            unminimized.push_back(e.object);
         } else if (iface == "zwlr_virtual_pointer_v1" && e.opcode == 1) {          // motion_absolute
             r.u();
             const auto x = r.u(), y = r.u();
@@ -379,6 +450,75 @@ XTEST(LubanWlr, TheBridgeShowsTheCompositorsOutputAndGivesItTheInput, .area = "l
     std::vector<int> rest{c.fd, listener, (*to_bridge)[0], (*from_bridge)[0], (*from_bridge)[1]};
     platform::close_fds(rest);
     std::error_code ec;
+    fs::remove_all(dir, ec);
+}
+
+XTEST(LubanWlr, TheWindowIsTheShellOfASessionWithoutOne, .area = "luban", .covers = {"LUBAN-DESKTOP-SHELL"}) {
+    if constexpr (!platform::is_linux) GTEST_SKIP() << "wl_shm needs memfd (Linux)";
+    const auto dir = temp_dir_("luban-wlr-shell");
+    const auto socket = dir / "wayland-0";
+    const int listener = platform::unix_listen_stream(socket);
+    ASSERT_GE(listener, 0);
+    // Its applications: one plain, one in a terminal (the default terminal a
+    // script that says what it was asked to run).
+    fs::create_directories(dir / "share" / "applications");
+    fs::create_directories(dir / "bin");
+    std::ofstream(dir / "share" / "applications" / "marker.desktop")
+        << "[Desktop Entry]\nType=Application\nName=Marker\nExec=touch " << (dir / "marked").string() << " %F\n";
+    std::ofstream(dir / "share" / "applications" / "top.desktop")
+        << "[Desktop Entry]\nType=Application\nName=Top\nExec=top -d 1\nTerminal=true\n";
+    std::ofstream(dir / "bin" / "xdg-terminal-exec") << "#!/bin/sh\necho \"$@\" > " << (dir / "terminal").string() << "\n";
+    fs::permissions(dir / "bin" / "xdg-terminal-exec", fs::perms::owner_all);
+    const std::map<std::string, std::string> env{{"PATH", (dir / "bin").string() + ":/usr/bin:/bin"}, {"HOME", dir.string()},
+                                                 {"XDG_DATA_DIRS", (dir / "share").string()}};
+    auto to_bridge = platform::make_pipe(), from_bridge = platform::make_pipe();
+    ASSERT_TRUE(to_bridge && from_bridge);
+    std::vector<std::string> log;
+    std::atomic<int> code { -1 };
+    std::thread bridge([&] {
+        code = wlr::bridge({.in = (*to_bridge)[0], .out = (*from_bridge)[1], .socket = socket, .max_fps = 100,
+                            .log = [&](std::string_view s) { log.emplace_back(s); }, .shell = true, .env = env});
+    });
+    Compositor c;
+    c.toplevels = true;
+    c.fd = platform::unix_accept(listener);
+    ASSERT_GE(c.fd, 0);
+    Provider p{(*from_bridge)[0], (*to_bridge)[1]};
+    using I = opensal::Interface;
+    ASSERT_TRUE(p.until([&] { return p.count('h') >= 1; }, c));
+    EXPECT_TRUE(opensal::has(std::stoul(p.got[0].payload), I::Shell)) << "it asks the window to be its shell";
+    ASSERT_TRUE(platform::write_all(p.out, wire::encode('H', std::format("{} 64 32 1 1", I::Surface | I::Shell))));
+    ASSERT_TRUE(p.until([&] { return p.count('a') >= 1 && p.count('w') >= 1; }, c)) << "its lists, once the window is its shell";
+    auto apps = wire::decode_applications(std::ranges::find(p.got, 'a', &wire::Message::kind)->payload);
+    ASSERT_TRUE(apps);
+    EXPECT_EQ(*apps, (std::vector<opensal::Application>{{"marker", "Marker"}, {"top", "Top"}}));
+    auto windows = wire::decode_windows(std::ranges::find_last(p.got, 'w', &wire::Message::kind).begin()->payload);
+    ASSERT_TRUE(windows);
+    ASSERT_EQ(windows->size(), 1u);
+    EXPECT_EQ((*windows)[0].title, "~ shell");
+    EXPECT_EQ((*windows)[0].app_id, "foot");
+    EXPECT_TRUE((*windows)[0].minimized);
+    // Started by its id, with the session's environment; a terminal's through the default terminal.
+    auto event = [&](const opensal::Event& e) { ASSERT_TRUE(platform::write_all(p.out, wire::encode('E', wire::encode_event(e)))); };
+    event(opensal::Launch{"marker"});
+    event(opensal::Launch{"top"});
+    event(opensal::Activate{(*windows)[0].id});
+    std::error_code ec;
+    ASSERT_TRUE(p.until([&] { return fs::exists(dir / "marked", ec) && fs::exists(dir / "terminal", ec) && !c.activated.empty(); }, c));
+    std::ifstream said(dir / "terminal");
+    std::string line;
+    std::getline(said, line);
+    EXPECT_EQ(line, "top -d 1");
+    EXPECT_EQ(c.unminimized, std::vector<std::uint32_t>{Compositor::kWindow}) << "a minimized window is shown again";
+    EXPECT_EQ(c.activated, std::vector<std::uint32_t>{Compositor::kWindow});
+    std::vector<int> close{p.out};
+    platform::close_fds(close);
+    const auto end = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (code == -1 && std::chrono::steady_clock::now() < end) c.pump(10);
+    bridge.join();
+    EXPECT_EQ(code, 0);
+    std::vector<int> rest{c.fd, listener, (*to_bridge)[0], (*from_bridge)[0], (*from_bridge)[1]};
+    platform::close_fds(rest);
     fs::remove_all(dir, ec);
 }
 

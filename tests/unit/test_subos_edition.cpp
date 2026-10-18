@@ -39,6 +39,16 @@ XTEST(SubosEdition, TheRecordRoundTripsAndAnInstanceWithoutOneHasNone, .area = "
     EXPECT_EQ(back->packages, r.packages);
     EXPECT_EQ(back->policy, r.policy);
     EXPECT_FALSE(ed::read(nlohmann::json{{"kind", "rootfs"}}));
+    // The index of each layer (design 2026-10-18 §4.4); a record from before has none.
+    auto indexed = r;
+    indexed.index = "awesome";
+    indexed.chain_index = std::vector<std::string>(r.chain.size(), "xim");
+    const auto read_back = ed::read(nlohmann::json{{"edition", ed::to_json(indexed)}});
+    ASSERT_TRUE(read_back);
+    EXPECT_EQ(read_back->index, "awesome");
+    EXPECT_EQ(read_back->chain_index, indexed.chain_index);
+    EXPECT_TRUE(back->index.empty());
+    EXPECT_FALSE(ed::to_json(r).contains("index")) << "nothing written for nothing known";
     EXPECT_EQ(ed::split("xim:gcc@16.1.0"), (std::pair<std::string, std::string>{"xim:gcc", "16.1.0"}));
     EXPECT_EQ(ed::split("xim:claude"), (std::pair<std::string, std::string>{"xim:claude", ""}));
 }

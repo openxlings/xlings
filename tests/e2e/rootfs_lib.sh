@@ -42,7 +42,9 @@ X() {
 # taken out (an exported instance is its image's `default`). Every
 # presentation of the same declaration must print the same lines.
 #   $1: a command prefix that runs `sh -c` inside the root
-tree_lines_script='cd /usr && for f in bin/* lib/*; do printf "%s %s\n" "$f" "$(readlink "$f")"; done | sed -E "s|/subos/[^/]+/|/subos/*/|g"'
+# A directory of /usr/lib is one whatever presents it: a mount point in an
+# instance and a machine, a link in an exported tar (LUBAN-FHS-PATHS).
+tree_lines_script='cd /usr && for f in bin/* lib/*; do if [ -d "$f" ]; then printf "%s dir\n" "$f"; else printf "%s %s\n" "$f" "$(readlink "$f")"; fi; done | sed -E "s|/subos/[^/]+/|/subos/*/|g"'
 
 # Retry what talks to the network: a mirror's bad minute is not the code's.
 retry() {

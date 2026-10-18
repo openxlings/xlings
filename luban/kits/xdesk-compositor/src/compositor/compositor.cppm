@@ -15,7 +15,9 @@ struct Options {
     int out { 1 };                               // and to it
     opensal::Size size { 1280, 800 };            // until the provider says
     std::string profile { "classic" };
-    std::vector<std::string> terminal { "foot" };              // Super/Alt+Return
+    // Super/Alt+Return, and what runs a Terminal=true application. Empty: the
+    // default terminal (share/xdg-terminals, xdesk.apps::default_terminal).
+    std::vector<std::string> terminal;
     std::vector<std::vector<std::string>> autostart;           // started once the socket is up
     int gap { 8 };                               // between windows and the edges
     int workspaces { 4 };

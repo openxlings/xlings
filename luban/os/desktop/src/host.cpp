@@ -364,13 +364,19 @@ bool Window::begin_frame(int timeout_ms) {
     return !close_requested_;
 }
 
-void Window::end_frame() {
+void Window::end_frame(bool present) {
     ImGui::Render();
+    if (!present) return;
     auto* r = impl_->renderer;
     SDL_SetRenderDrawColorFloat(r, 0.075f, 0.082f, 0.098f, 1.0f);
     SDL_RenderClear(r);
     ImGui_ImplSDLRenderer3_RenderDrawData(ImGui::GetDrawData(), r);
     SDL_RenderPresent(r);
+}
+
+std::string Window::renderer() const {
+    const char* name = impl_->renderer ? SDL_GetRendererName(impl_->renderer) : nullptr;
+    return name ? name : "";
 }
 
 void Window::set_title(const std::string& title) { SDL_SetWindowTitle(impl_->window, title.c_str()); }
