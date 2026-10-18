@@ -65,7 +65,9 @@ suite_luban_console() {
     capture "ls" luban ls
     for e in nano tiny core; do says "ls lists e-$e" "e-$e"; done
     capture "status" luban status e-tiny
-    says "status names the edition" "tiny@"
+    # "Luban tiny 2026.10.18.1" from 2026.10.18.1; "tiny@<version>" before.
+    grep -qE "Luban tiny [0-9]|tiny@" <<<"$OUT" || fail "status names the edition: expected 'Luban tiny <version>' in the output above"
+    ok "status names the edition"
 
     section "nano: xlings and luban, and no shell to go into"
     capture "nano's xlings" luban run e-nano -- /usr/bin/xlings --version
