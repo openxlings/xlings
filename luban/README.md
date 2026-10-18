@@ -27,6 +27,7 @@ reference one another; implementations connect them.
 - `opensal` -- a surface: given pixels, gives back events; `opensal.wire` carries one across an address space.
 - `openhal` -- devices: which GPUs, displays, audio endpoints and input devices a machine has.
 - `openas` -- actors (people, agents, programs, services), what they did and what they may do: the envelope, the actor, the effect classes.
+- `opencaps` -- what the parts of a system provide and need, by name and level, so that parts released apart can tell whether they work together.
 
 ## kits/
 

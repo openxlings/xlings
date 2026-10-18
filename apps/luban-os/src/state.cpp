@@ -91,6 +91,18 @@ std::string App::edition_name(const service::Environment& e) {
 }
 
 void App::enter(const std::string& name) {
+    // What it needs of the window that shows it (design 2026-10-18 §9, B14):
+    // a system laid out in a way this app does not read is not opened wrongly
+    // (E6: an older app saw an empty /usr and showed only the console).
+    if (auto env = service::describe(ctx, name)) {
+        if (const auto bad = service::unmet_needs(*env, service::luban_provides()); !bad.empty()) {
+            const auto why = bad.front().why();
+            notice = std::vformat(tr("This Luban OS app is older than {} ({}): xlings update luban-os",
+                                     "这个 Luban OS 应用比 {} 旧（{}）：xlings update luban-os"),
+                                  std::make_format_args(name, why));
+            return;
+        }
+    }
     countdown_until.reset();
     settings.last_used[name] = xlings::observe::utc_now();
     write_app_settings(home, settings);

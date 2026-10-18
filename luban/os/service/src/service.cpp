@@ -2,6 +2,7 @@ module luban.service;
 
 import std;
 import xlings.libs.json;
+import opencaps;
 import xlings.platform;
 import xlings.observe;
 import xlings.subos.home_view;
@@ -270,6 +271,11 @@ std::expected<Environment, std::string> describe_(const Context& c, std::string_
                     e.desktops.push_back(entry.stem().string());
         }
     }
+    if (e.kind == "root")
+        if (auto root = root_of(c.home, name)) e.layout = xlings::subos::rootfs::layout_of(*root);
+    if (auto luban = workspace.find("luban"); luban != workspace.end() && luban->is_object())
+        for (const auto& need : luban->value("requires", nlohmann::json::array()))
+            if (need.is_string()) e.needs.push_back(need.get<std::string>());
     auto settings = read_settings(c.home, name);
     if (!settings) return std::unexpected(settings.error());
     e.settings = *settings;
@@ -340,6 +346,21 @@ void preset_login_shell_(const Context& c, std::string_view name) {
 }
 
 }  // namespace
+
+opencaps::Provides luban_provides() {
+    return {{"root-layout", xlings::subos::rootfs::kLayout}, {"luban-manifest", 1}};
+}
+
+std::vector<opencaps::Verdict> unmet_needs(const Environment& e, const opencaps::Provides& reader) {
+    std::vector<opencaps::Need> needs;
+    if (e.layout > 0) needs.push_back({"root-layout", e.layout});
+    for (const auto& text : e.needs) {
+        if (auto n = opencaps::parse_need(text)) needs.push_back(*n);
+        // A need this side cannot read is a need of something newer: unmet, by its text.
+        else needs.push_back({text, 1});
+    }
+    return opencaps::unmet(needs, reader);
+}
 
 EnterPlan enter_plan(const Environment& e) {
     const auto& setting = e.settings.desktop;

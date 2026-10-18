@@ -106,6 +106,10 @@ function install()
     return true
 end
 )LUA");
+    // A system from the future: its manifest needs what no luban has yet.
+    tk::write_file(repo / "pkgs/f/future-os.lua", template_recipe("future-os",
+        Json{{"subos_kind", "rootfs"}, {"packages", {"fixture:hello@1.0.0"}}, {"workspace", Json::object()},
+             {"luban", {{"requires", {"root-layout>=2", "warp-drive>=1"}}}}}));
     // An agent workspace in miniature: a template that declares its policy.
     tk::write_file(repo / "pkgs/a/agent-ws.lua", template_recipe("agent-ws",
         Json{{"subos_kind", "rootfs"}, {"packages", {"fixture:hello@1.0.0"}}, {"policy", "fixture:agent-test@1.0.0"},
@@ -498,6 +502,34 @@ XTEST(Luban, NewSaysWhatItCannotMakeAndWhyItMadeAnOlderOne,
     auto text = luban(home, {"new", "box2", "--edition", "fixture:next-os"});
     ASSERT_EQ(text.exit_code, 0) << text.transcript();
     EXPECT_NE(text.transcript().find("needs xlings >= 9999.1.1.1"), std::string::npos) << text.transcript();
+}
+
+// What a system needs of the luban that runs it (design 2026-10-18 §9,
+// opencaps): its root's layout and its manifest's requires; what this luban
+// does not have is said, with the update.
+XTEST(Luban, WhatASystemNeedsThatThisLubanLacksIsSaid,
+      .area = "luban", .cost = tk::Cost::Medium, .covers = {"LUBAN-CAPS"}, .requires_ = {"linux", "xlings-bin"}) {
+    if constexpr (!tk::is_linux) GTEST_SKIP() << "a Luban root is a Linux root";
+    const auto bin = luban_binary();
+    if (!bin) GTEST_SKIP() << "no luban beside the xlings under test";
+    auto home = luban_home("luban-caps-needs", *bin);
+    ASSERT_EQ(luban(home, {"new", "box", "--edition", "fixture:future-os@1.0.0"}).exit_code, 0);
+    auto st = luban(home, {"--json", "status", "box"});
+    ASSERT_EQ(st.exit_code, 0) << st.transcript();
+    Json j;
+    std::istringstream in(st.out);
+    for (std::string line; std::getline(in, line);)
+        if (auto d = Json::parse(line, nullptr, false); d.is_object() && d.contains("result")) j = d["result"];
+    ASSERT_TRUE(j.is_object()) << st.out;
+    EXPECT_EQ(j["layout"], 2) << j.dump();
+    EXPECT_EQ(j["needs"], Json::array({"root-layout>=2", "warp-drive>=1"}));
+    ASSERT_EQ(j["unmet"].size(), 1u) << j.dump();
+    EXPECT_NE(j["unmet"][0].get<std::string>().find("warp-drive"), std::string::npos) << j.dump();
+    auto text = luban(home, {"status", "box"});
+    EXPECT_NE(text.out.find("xlings update luban"), std::string::npos) << text.transcript();
+    // One that needs nothing it lacks says nothing of it.
+    ASSERT_EQ(luban(home, {"new", "plain", "--edition", "fixture:my-os@1.0.0"}).exit_code, 0);
+    EXPECT_EQ(luban(home, {"status", "plain"}).out.find("xlings update luban"), std::string::npos);
 }
 
 XTEST(Luban, AnExportedEnvironmentIsImportedWithItsStateAndANewPersona,

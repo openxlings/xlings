@@ -12,6 +12,7 @@ export import luban.service.settings;
 export import luban.service.capabilities;
 import std;
 import xlings.libs.json;
+import opencaps;
 
 export namespace luban::service {
 
@@ -58,7 +59,18 @@ struct Environment {
     // The desktop sessions its root declares (share/wayland-sessions/<id>.desktop),
     // read where the root's links lead -- or from the luban of its carrier's machine.
     std::vector<std::string> desktops;
+    // Its root's layout (xlings.subos.rootfs::layout_of; 0: not a root here),
+    // and what its manifest's `luban.requires` names (opencaps needs).
+    int layout { 0 };
+    std::vector<std::string> needs;
 };
+
+// What this luban provides (design 2026-10-18 §9; luban/specs/opencaps): the
+// root layout it reads, the manifest fields it knows.
+opencaps::Provides luban_provides();
+// What `e` needs of whoever reads or runs it -- its root's layout, its
+// manifest's requires -- against `reader`: the unmet ones, each with why.
+std::vector<opencaps::Verdict> unmet_needs(const Environment& e, const opencaps::Provides& reader);
 
 // What going into a system shows first (design 2026-10-18 §8): its desktop or
 // its console, and when a desktop was wanted and cannot be, why -- said, never

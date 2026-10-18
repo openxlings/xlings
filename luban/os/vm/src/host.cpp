@@ -1054,6 +1054,7 @@ void bridge_(const fs::path& home, std::string_view name, int agent, int listen,
     std::map<std::uint32_t, std::pair<int, std::uint32_t>> owners;   // global -> (client fd, local)
     std::uint32_t next = 1;
     bool up = false;
+    std::string hello;   // what the agent said it is and provides (its 'H'), passed on as said
     proto::Decoder from_agent;
     std::array<char, 65536> buf{};
     auto powering_off = std::optional<std::chrono::steady_clock::time_point>{};
@@ -1082,6 +1083,7 @@ void bridge_(const fs::path& home, std::string_view name, int agent, int listen,
                 const auto& frame = **f;
                 if (frame.type == 'H') {
                     up = true;
+                    hello = frame.payload;
                     for (auto& cl : clients) (void)platform::write_all(cl.fd, proto::encode('H', 0, frame.payload));
                     continue;
                 }
@@ -1117,7 +1119,7 @@ void bridge_(const fs::path& home, std::string_view name, int agent, int listen,
                 if (!f || !*f) break;
                 auto& frame = **f;
                 if (frame.type == 'Q') {
-                    if (up) (void)platform::write_all(cl.fd, proto::encode('H', 0));
+                    if (up) (void)platform::write_all(cl.fd, proto::encode('H', 0, hello));
                     continue;
                 }
                 if (frame.type == 'P') {

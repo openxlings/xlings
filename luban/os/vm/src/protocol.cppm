@@ -5,7 +5,8 @@
 //
 //   [type: 1 byte][channel: 4 bytes, big endian][length: 4 bytes][payload]
 //
-//   H  hello       guest -> host, channel 0: the agent is up ({"agent": 1})
+//   H  hello       guest -> host, channel 0: the agent is up ({"agent": 1, "provides": {"agent-display": 1}};
+//                  an older agent says no provides), passed on to each client as said
 //   O  open        host -> guest: a session ({"rows","cols","term","env":{}},
 //                  and "argv" for a command instead of the login shell), or a
 //                  desktop ({"display":{"session","width","height"}}): then

@@ -201,9 +201,13 @@ std::expected<Session, std::string> desktop_(const Json& display, std::map<std::
     serve_(port, port, init, true);
 }
 
+// What the agent says when it is up (design 2026-10-18 §9): that it is one,
+// and what it provides (opencaps names: luban/specs/opencaps/SPEC.md).
+Json hello_() { return Json{{"agent", 1}, {"provides", Json{{"agent-display", 1}}}}; }
+
 // The agent's loop on its port: sessions, commands, a desktop, power off.
 [[noreturn]] void serve_(int port, int out, bool init, bool machine) {
-    (void)platform::write_all(out, proto::encode_json('H', 0, Json{{"agent", 1}}));
+    (void)platform::write_all(out, proto::encode_json('H', 0, hello_()));
     std::map<std::uint32_t, Session> sessions;
     std::vector<int> ended;     // closed by the host, not yet reaped
     proto::Decoder d;
@@ -230,7 +234,7 @@ std::expected<Session, std::string> desktop_(const Json& display, std::map<std::
                 if (!*f) break;
                 const auto& frame = **f;
                 if (frame.type == 'Q') {
-                    (void)platform::write_all(out, proto::encode_json('H', 0, Json{{"agent", 1}}));
+                    (void)platform::write_all(out, proto::encode_json('H', 0, hello_()));
                 } else if (frame.type == 'O') {
                     auto open = Json::parse(frame.payload, nullptr, false);
                     if (!open.is_object()) open = Json::object();

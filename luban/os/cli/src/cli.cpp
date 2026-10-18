@@ -715,6 +715,12 @@ int cmd_status(const svc::Context& c, const Parsed& p, const Globals& g, Rendere
            {"running", e->running}, {"mode", e->settings.mode}, {"persist", e->settings.persist},
            {"shell", e->shell}, {"carrier", e->carrier}, {"desktops", e->desktops}};
     if (e->generation) j["generation"] = *e->generation;
+    // What it needs of this luban (design 2026-10-18 §9): its root's layout, its manifest's requires.
+    const auto unmet = svc::unmet_needs(*e, svc::luban_provides());
+    j["layout"] = e->layout;
+    j["needs"] = e->needs;
+    j["unmet"] = Json::array();
+    for (const auto& v : unmet) j["unmet"].push_back(v.why());
     if (g.json) { r.value(j); return 0; }
     std::println("{}  {}{}", e->name, edition_label_(*e), e->running ? "  (running)" : "");
     std::println("  kind      {}{}", e->kind, e->generation ? std::format(", generation {}", *e->generation) : "");
@@ -723,6 +729,7 @@ int cmd_status(const svc::Context& c, const Parsed& p, const Globals& g, Rendere
     if (!e->shell.empty()) std::println("  shell     {}", e->shell);
     if (e->carrier != "local") std::println("  carrier   {}", e->carrier);
     std::println("  isolation luban config {}", e->name);
+    for (const auto& v : unmet) std::println("  {} {}: this luban is older than it -- xlings update luban", r.paint("!", 33), v.why());
     return 0;
 }
 

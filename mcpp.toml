@@ -50,6 +50,7 @@ members = [
     "luban/specs/opensal",
     "luban/specs/openhal",
     "luban/specs/openas",
+    "luban/specs/opencaps",
     "luban/kits/imkit",
     "luban/kits/openhal-host",
     "luban/kits/tray",
@@ -189,6 +190,7 @@ luban-cli    = { path = "luban/os/cli" }
 opensal     = { path = "luban/specs/opensal" }
 openhal     = { path = "luban/specs/openhal" }
 openas      = { path = "luban/specs/openas" }
+opencaps    = { path = "luban/specs/opencaps" }
 openhal-host = { path = "luban/kits/openhal-host" }
 opensal-wlr = { path = "luban/kits/opensal-wlr" }
 xdesk-base = { path = "luban/kits/xdesk-base" }

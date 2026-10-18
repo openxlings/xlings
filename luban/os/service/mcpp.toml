@@ -19,6 +19,7 @@ subos    = { path = "../../../modules/subos" }
 image    = { path = "../../../modules/image" }
 carrier  = { path = "../../../modules/carrier" }
 openhal      = { path = "../../specs/openhal" }
+opencaps     = { path = "../../specs/opencaps" }
 openhal-host = { path = "../../kits/openhal-host" }
 
 [build]
