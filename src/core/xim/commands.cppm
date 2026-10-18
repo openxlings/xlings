@@ -75,6 +75,11 @@ PackageCatalog* ensure_catalog(EventStream& stream, CatalogNeed need);
 // The distinction exists because "the index cannot answer" means two very
 // different things on a fresh home and on a working one, and only the first
 // is worth a network round trip.
+// The index a package resolves in (its repo's name: "xim", a community
+// index's), nullopt when the index cannot answer.
+std::optional<std::string> index_repo_of(std::string_view package,
+                                         CatalogAccess access = CatalogAccess::LocalOnly);
+
 std::optional<std::string> index_version_of(
     std::string_view package,
     CatalogAccess access = CatalogAccess::LocalOnly,

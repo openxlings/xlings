@@ -24,6 +24,9 @@ std::optional<Record> read(const nlohmann::json& instance) {
         for (auto e = p->begin(); e != p->end(); ++e)
             r.packages[e.key()] = e.value().is_string() ? e.value().get<std::string>() : std::string();
     r.policy = it->value("policy", std::string());
+    r.index = it->value("index", std::string());
+    if (auto c = it->find("chain_index"); c != it->end() && c->is_array())
+        for (const auto& v : *c) r.chain_index.push_back(v.is_string() ? v.get<std::string>() : std::string());
     return r;
 }
 
@@ -32,6 +35,8 @@ nlohmann::json to_json(const Record& r) {
     for (const auto& [k, v] : r.packages) packages[k] = v.empty() ? nlohmann::json(nullptr) : nlohmann::json(v);
     nlohmann::json j{{"ref", r.ref}, {"chain", r.chain}, {"packages", packages}};
     if (!r.policy.empty()) j["policy"] = r.policy;
+    if (!r.index.empty()) j["index"] = r.index;
+    if (!r.chain_index.empty()) j["chain_index"] = r.chain_index;
     return j;
 }
 

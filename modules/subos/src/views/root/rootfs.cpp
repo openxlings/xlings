@@ -28,11 +28,13 @@ bool is_executable_entry(const fs::directory_entry& e) {
 // The directories under share/ that several packages write into (freedesktop
 // and the usual tools): a system's, merged file by file.
 bool is_shared_share_dir(std::string_view rel) {
-    static constexpr std::array<std::string_view, 23> exact{
+    static constexpr std::array<std::string_view, 26> exact{
         "applications", "icons", "icons/hicolor", "fonts", "man", "locale", "wayland-sessions",
         "xsessions", "dbus-1", "bash-completion", "bash-completion/completions", "fish",
         "zsh", "zsh/site-functions", "pkgconfig", "terminfo", "metainfo", "mime", "mime/packages",
-        "glib-2.0/schemas", "luban", "luban/checks.d", "licenses"};
+        "glib-2.0/schemas", "luban", "luban/checks.d", "licenses",
+        // the default terminal (xdg-terminal-exec), and desktop portals
+        "xdg-terminals", "xdg-desktop-portal", "xdg-desktop-portal/portals"};
     if (std::ranges::find(exact, rel) != exact.end()) return true;
     const auto under = [&](std::string_view base) { return rel.starts_with(std::string(base) + "/"); };
     // Every level of hicolor and of fonts; a manual section; a language and its
@@ -430,6 +432,26 @@ Plan plan(const Inputs& in) {
         }
     };
 
+    // Trees several packages may write into (a package's lib/<dir>, its
+    // libexec/; design 2026-10-18 §4.6): a name only one package has is
+    // claimed whole -- a bundle's libexec/<name>/ is its own -- and a name
+    // several have is merged one level down, the same way, so files meet only
+    // where they must (and a clash is a conflict, reported). Upstream programs
+    // that name /usr/lib/<dir> or /usr/libexec find them in a system.
+    std::function<void(const std::string&, const std::vector<std::pair<fs::path, std::string>>&)> claim_tree;
+    claim_tree = [&](const std::string& under, const std::vector<std::pair<fs::path, std::string>>& dirs) {
+        std::map<std::string, std::vector<std::pair<fs::path, std::string>>> by_name;
+        for (const auto& [dir, from] : dirs)
+            for (auto& e : sorted_entries(dir)) by_name[e.path().filename().string()].emplace_back(e.path(), from);
+        for (const auto& [name, have] : by_name) {
+            std::error_code ec;
+            const bool all_dirs = std::ranges::all_of(have, [&](const auto& h) {
+                return fs::is_directory(h.first, ec) && !fs::is_symlink(h.first, ec); });
+            if (have.size() > 1 && all_dirs) claim_tree(under + "/" + name, have);
+            else for (const auto& [path, from] : have) claim(under + "/" + name, path, from);
+        }
+    };
+
     // Fixed shape of a merged /usr; claimed first so nothing takes the names.
     claim("usr/lib64", "lib", "layout");
     claim("usr/sbin", "bin", "layout");
@@ -478,6 +500,28 @@ Plan plan(const Inputs& in) {
                 claim("usr/" + name, e.path(), "sysroot");
             }
         }
+    }
+    // After the sysroot, whose names it keeps.
+    {
+        std::vector<std::pair<fs::path, std::string>> lib_dirs, libexec;
+        for (auto& payload : in.payloads) {
+            const auto who = payload.generic_string();
+            for (auto& e : sorted_entries(payload / "lib")) {
+                std::error_code ec;
+                if (e.is_directory(ec) && !e.is_symlink(ec) && e.path().filename() != "modules")
+                    lib_dirs.emplace_back(e.path(), who);
+            }
+            std::error_code ec;
+            if (fs::is_directory(payload / "libexec", ec)) libexec.emplace_back(payload / "libexec", who);
+        }
+        // lib/<dir>: each a tree under usr/lib (the libraries at lib/ itself are above).
+        std::map<std::string, std::vector<std::pair<fs::path, std::string>>> by_dir;
+        for (const auto& [dir, who] : lib_dirs) by_dir[dir.filename().string()].emplace_back(dir, who);
+        for (const auto& [name, have] : by_dir) {
+            if (have.size() == 1) claim("usr/lib/" + name, have.front().first, have.front().second);
+            else claim_tree("usr/lib/" + name, have);
+        }
+        claim_tree("usr/libexec", libexec);
     }
     return p;
 }
@@ -817,6 +861,14 @@ std::expected<void, std::string> lay_out(const fs::path& root, const fs::path& u
         if (!*directory) return std::unexpected("system home mount point is blocked by a user file: " + home.string());
     }
     return {};
+}
+
+int layout_of(const fs::path& root) {
+    std::error_code ec;
+    const auto usr = fs::symlink_status(root / "usr", ec);
+    if (ec || !fs::exists(usr)) return 0;
+    if (fs::is_symlink(usr)) return 1;
+    return fs::is_directory(usr) ? kLayout : 0;
 }
 
 std::optional<fs::path> usr_target_of(const fs::path& root) {

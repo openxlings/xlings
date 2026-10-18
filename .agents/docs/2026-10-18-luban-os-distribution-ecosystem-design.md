@@ -436,8 +436,8 @@ xlings 返回的错误由 luban 翻译；不转贴 `xlings subos` 的用法（E1
   谁提供、哪个版本引入；模块提供解析（`root-layout>=2`）与比较。
 - 规则：名字不复用；级别只升不降；每升一级写明新增了什么；新增能力或级别只需在登记表加一行并实现提供方。
 - **不认识的能力名**按"不满足"处理并说明（"这个 luban 不认识能力 X：`xlings update luban`"）——"太新"由此有了明确的答复。
-- xlings 不 import 它（`src` 不 import `luban`）：xlings 只记录自己的事实（根布局的整数），由 luban 映射到 `root-layout`。根布局级别今后由 xlings 建
-generation 时记入实例记录（10.16.1 之前为 1，之后为 2）；无记录按事实推断。应用读到更高的级别：停下，"应用太旧：`xlings update luban-os`"。
+- xlings 不 import 它（`src` 不 import `luban`）：xlings 只记录自己的事实（根布局的整数），由 luban 映射到 `root-layout`。根布局级别由根本身的事实读出
+（`xlings.subos.rootfs::layout_of`：`/usr` 是链接为 1，即 10.16.1 之前；是挂载点为 2），不另存记录——记录可能与树不一致，树不会。应用读到更高的级别：停下，"应用太旧：`xlings update luban-os`"。
 
 | 时机 | 内容 | 不满足时 |
 |---|---|---|
@@ -696,7 +696,7 @@ guest（machine）没有 GPU：wlroots 用 pixman 渲染（桥接与工厂测试
 | C5a `refactor(luban-os)` | `app.cpp`（3345 行）按职责拆为 `app.cpp`（主循环、托盘）、`common.cpp`（文字、设置、页框与浮层）、`launcher.cpp`（列表、快速开始、导入、作业）、`system_views.cpp`（控制台、运行、桌面）、`admin.cpp`（管理面板）、`script.cpp`（状态与测试脚本），共享的状态与声明在分区 `luban.os:core`；单个文件不超过 2000 行。§1 的行号指 2026.10.17.1 的单文件 | — |
 | — 可切分点 — | | |
 | C6 `feat(xim)` | 保留命名空间；`replaces`；`info --json`、`search --category --json` | §4.2、§15.1 |
-| C7 `feat(subos)` | `subos new --dry-run --json`；实例记录补每层 index 与根布局级别；系统内投影 `lib/<子目录>` 与 `libexec/`，整包私有树整体认领 | §5.3、§9、§4.6 |
+| C7 `feat(subos)` | `subos new --dry-run`（数据事件 `subos_plan`）；实例记录补每层 index；根布局级别由树读出；系统内投影 `lib/<子目录>` 与 `libexec/`，整包私有树整体认领 | §5.3、§9、§4.6 |
 | C8 `feat(luban)` | `--xpkg`（可重复）、角色、校验、确认与记录、谱系显示、os-release；短名来自 `luban:`；`luban new` 接受全部设置项；`--desktop` 的便利规则；系统 / 桌面 / 进入方式三行显示 | §3–§5、B21 |
 | C9 `feat(luban)` | `enter` 与 `EnterPlan`；切换桌面（`luban enter --desktop`、应用系统栏）；升级时预设默认值变化的处理；会话别名 | B4、§3、§15 |
 | C10 `feat(luban)` | 能力契约；`luban/specs/opencaps` | B14 |

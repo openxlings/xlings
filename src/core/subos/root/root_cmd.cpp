@@ -104,6 +104,7 @@ struct Declared {
     // The edition layer (Luban design part 2 §3.2): the templates below the
     // top one, as their `from` named them, and the policy the chain declares.
     std::vector<std::string> chain;
+    std::vector<std::string> chain_index;   // the index each was resolved in
     std::string policy;
 };
 
@@ -163,6 +164,7 @@ std::optional<Declared> declared_by_template_(const fs::path& instance, EventStr
                 fs::copy(it->path(), at, fs::copy_options::copy_symlinks, sec);
         }
         d.chain.push_back(from);
+        d.chain_index.push_back(xim::index_repo_of(from).value_or(""));
         chain.push_back(read_json_(dir / ".xlings.json"));
         from = chain.back().value("from", std::string());
     }
@@ -425,6 +427,9 @@ int declare_root_at_creation_(const std::string& name, bool rootfs, const std::s
         const auto file = HomeView{home}.instance_file(name);
         auto j = read_json_(file);
         j["edition"] = {{"ref", ref}, {"chain", declared->chain}, {"packages", packages}};
+        // Where each layer came from (design 2026-10-18 §4.4): its index.
+        if (const auto index = xim::index_repo_of(from); index) j["edition"]["index"] = *index;
+        j["edition"]["chain_index"] = declared->chain_index;
         if (!declared->policy.empty()) j["edition"]["policy"] = declared->policy;
         j.erase("making");
         if (auto written = write_json_(file, j); !written) {

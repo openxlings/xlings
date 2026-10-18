@@ -1173,6 +1173,7 @@ int run(int argc, char* argv[], EventStream& stream) {
         // --proxy <URL> (Luban design §C3): its network goes only through
         // this SOCKS5h proxy, from the first time it is entered.
         std::string proxy;
+        bool dryRun = false;                    // --dry-run: what --from would make, nothing made
         std::vector<std::string> forwardArgs;   // what the carrier's xlings is asked
         for (int i = 3; i < argc; ++i) {
             std::string a = argv[i];
@@ -1199,6 +1200,7 @@ int run(int argc, char* argv[], EventStream& stream) {
             if (a.starts_with("--carrier=")) { requestedCarrier = a.substr(10); forward.keep = false; continue; }
             if (a.starts_with("--abi=")) { abi = a.substr(6); forward.keep = false; continue; }
             if (a == "--rootfs") { rootfs = true; continue; }
+            if (a == "--dry-run") { dryRun = true; continue; }
             if (a == "--domain" || a == "--domain-if-possible") {
                 if (i + 1 >= argc || !domain.empty()) { usageError(std::string(a) + " expects one absolute home path"); return 1; }
                 domainIfPossible = a == "--domain-if-possible";
@@ -1262,6 +1264,13 @@ int run(int argc, char* argv[], EventStream& stream) {
         if (name.empty()) {
             usageError("missing <name> for: xlings subos new");
             return 1;
+        }
+        if (dryRun) {
+            if (fromSpec.find_first_of(":@") == std::string::npos) {
+                usageError("--dry-run reads a template: --from <namespace:name[@version]>");
+                return 1;
+            }
+            return plan_from_(fromSpec, stream);
         }
         if (abi != "native" && abi != "linux") { usageError("--abi expects native or linux"); return 1; }
         const auto platformName = std::string(caps::platform_name());

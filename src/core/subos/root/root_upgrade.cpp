@@ -101,6 +101,34 @@ std::optional<Chain> chain_of_(const std::string& ref, EventStream& stream) {
     return c;
 }
 
+}  // namespace
+
+// `subos new <name> --from <ref> --dry-run` (design 2026-10-18 §5.3): what a
+// system made from `ref` would be -- each layer of its `from` chain with the
+// index it resolves in and its manifest as written (a `luban` object
+// included), the packages merged, the policy -- read from the templates (small
+// xpkgs, installed when missing), nothing made. A program reads it as data
+// (`subos_plan`); a person reads the layers.
+int plan_from_(const std::string& ref, EventStream& stream) {
+    auto chain = chain_of_(ref, stream);
+    if (!chain) return 1;
+    nlohmann::json layers = nlohmann::json::array();
+    for (const auto& [resolved, dir] : chain->templates)
+        layers.push_back({{"ref", resolved}, {"index", xim::index_repo_of(resolved).value_or("")},
+                          {"manifest", read_json_(dir / ".xlings.json")}});
+    nlohmann::json plan{{"layers", layers}, {"packages", chain->packages}};
+    if (!chain->policy.empty()) plan["policy"] = chain->policy;
+    stream.emit(DataEvent{"subos_plan", plan.dump()});
+    for (const auto& l : layers)
+        log::info("{}{}", l.value("ref", std::string{}),
+                  l.value("index", std::string{}).empty() ? std::string{} : "  (" + l.value("index", std::string{}) + ")");
+    log::info("{} package(s){}; nothing was made", chain->packages.size(),
+              chain->policy.empty() ? std::string{} : ", policy " + chain->policy);
+    return 0;
+}
+
+namespace {
+
 std::vector<std::string> configured_keys_(const fs::path& home, const std::string& name) {
     std::vector<std::string> out;
     const auto configured = read_json_(HomeView{home}.instance(name) / ".xlings.json")
@@ -255,7 +283,11 @@ int run_upgrade_(int argc, char* argv[], EventStream& stream, const UsageError& 
     // The record: what the edition brought now, as installed.
     subos::edition::Record next{.ref = top.first, .chain = {}, .packages = {},
                                 .policy = apply_policy || now->policy.empty() ? chain->policy : now->policy};
-    for (std::size_t i = 1; i < chain->templates.size(); ++i) next.chain.push_back(chain->templates[i].first);
+    for (std::size_t i = 1; i < chain->templates.size(); ++i) {
+        next.chain.push_back(chain->templates[i].first);
+        next.chain_index.push_back(xim::index_repo_of(chain->templates[i].first).value_or(""));
+    }
+    next.index = xim::index_repo_of(top.first).value_or(now->index);
     const auto configured = configured_keys_(home, name);
     for (const auto& spec : chain->packages) {
         const auto k = subos::edition::split(spec).first;

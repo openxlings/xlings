@@ -518,6 +518,48 @@ XTEST(SubosRootfs, AShareDirectoryManyPackagesWriteIntoIsMergedFileByFile,
     EXPECT_TRUE(p.conflicts.empty());
 }
 
+// A package's lib/<dir> and libexec/ (design 2026-10-18 §4.6): a name only one
+// package has is claimed whole -- a bundle's libexec/<name>/ is its own -- and
+// a name several have is merged one level down; a file two packages both have
+// is a conflict, reported. Upstream programs that name /usr/lib/qt6/plugins or
+// /usr/libexec find them.
+XTEST(SubosRootfs, ALibDirectoryAndLibexecReachTheirFhsPaths,
+      .area = "subos", .covers = {"LUBAN-FHS-PATHS"}) {
+    if constexpr (!tk::is_posix) GTEST_SKIP() << "root projections are Linux";
+    Tmp t("libexec");
+    const auto qtbase = t.dir / "xpkgs" / "qt-base" / "6.0";
+    tk::write_file(qtbase / "lib" / "libQt6Core.so.6", "elf");
+    tk::write_file(qtbase / "lib" / "qt6" / "plugins" / "platforms" / "libqwayland.so", "elf");
+    tk::write_file(qtbase / "lib" / "pkgconfig" / "Qt6Core.pc", "pc");
+    const auto qtsvg = t.dir / "xpkgs" / "qt-svg" / "6.0";
+    tk::write_file(qtsvg / "lib" / "qt6" / "plugins" / "imageformats" / "libqsvg.so", "elf");
+    tk::write_file(qtsvg / "lib" / "pkgconfig" / "Qt6Svg.pc", "pc");
+    const auto labwc = t.dir / "xpkgs" / "labwc" / "0.20";
+    tk::write_file(labwc / "libexec" / "labwc" / "bin" / "labwc", "elf");
+    const auto foot = t.dir / "xpkgs" / "foot" / "1.27";
+    tk::write_file(foot / "libexec" / "foot" / "bin" / "foot", "elf");
+    tk::write_file(foot / "libexec" / "helper", "sh");
+    const auto other = t.dir / "xpkgs" / "other" / "1.0";
+    tk::write_file(other / "libexec" / "helper", "sh");
+    tk::write_file(other / "lib" / "modules" / "6.12-virt" / "vmlinuz", "kernel");
+    rf::Inputs in;
+    in.payloads = {qtbase, qtsvg, labwc, foot, other};
+    const auto p = rf::plan(in);
+    EXPECT_EQ(target_of(p, "usr/lib/libQt6Core.so.6"), qtbase / "lib/libQt6Core.so.6");
+    EXPECT_EQ(target_of(p, "usr/lib/qt6/plugins/platforms"), qtbase / "lib/qt6/plugins/platforms")
+        << "two packages' qt6/plugins: merged, each category one package's";
+    EXPECT_EQ(target_of(p, "usr/lib/qt6/plugins/imageformats"), qtsvg / "lib/qt6/plugins/imageformats");
+    EXPECT_EQ(find(p, "usr/lib/qt6"), nullptr) << "a directory two packages write into is the system's";
+    EXPECT_EQ(target_of(p, "usr/lib/pkgconfig/Qt6Core.pc"), qtbase / "lib/pkgconfig/Qt6Core.pc");
+    EXPECT_EQ(target_of(p, "usr/lib/pkgconfig/Qt6Svg.pc"), qtsvg / "lib/pkgconfig/Qt6Svg.pc");
+    EXPECT_EQ(target_of(p, "usr/libexec/labwc"), labwc / "libexec/labwc") << "a bundle's own tree, whole";
+    EXPECT_EQ(target_of(p, "usr/libexec/foot"), foot / "libexec/foot");
+    EXPECT_EQ(target_of(p, "usr/lib/modules/6.12-virt"), other / "lib/modules/6.12-virt") << "as before";
+    // Two packages' libexec/helper: the first kept, the other reported.
+    EXPECT_EQ(target_of(p, "usr/libexec/helper"), foot / "libexec/helper");
+    EXPECT_NE(std::ranges::find(p.conflicts, "usr/libexec/helper", &rf::Conflict::rel), p.conflicts.end());
+}
+
 XTEST(SubosRootfs, ALinkNeverHasALinkAboveOrBelowIt, .area = "subos", .covers = {"LUBAN-SHARE-PROJECTION"}) {
     if constexpr (!tk::is_posix) GTEST_SKIP() << "root projections are Linux";
     Tmp t("nested");
@@ -619,4 +661,20 @@ XTEST(SubosRootfs, AnExportedRootKeepsTheLinkAndAPathOfTheRootIsReadThroughItsUs
     EXPECT_TRUE(fs::exists(rf::in_root(tree, "/usr/bin/fish")));
     EXPECT_TRUE(fs::exists(rf::in_root(tree, "/bin/fish"))) << "merged /usr";
     EXPECT_EQ(rf::in_root(tree, "/etc/passwd"), tree / "etc/passwd");
+}
+
+// A root's layout, read off the tree (design 2026-10-18 §9): /usr a link is the
+// layout before 2026.10.16.1 (1), a mount point the one after (2).
+XTEST(SubosRootfs, ARootsLayoutIsWhatItsTreeIs, .area = "subos", .covers = {"LUBAN-CAPS"}) {
+    if constexpr (!tk::is_posix) GTEST_SKIP() << "root projections are Linux";
+    Tmp t("layout");
+    EXPECT_EQ(rf::layout_of(t.dir / "none"), 0);
+    const auto old = t.dir / "old";
+    fs::create_directories(old);
+    fs::create_symlink(t.dir / "gen", old / "usr");
+    EXPECT_EQ(rf::layout_of(old), 1);
+    const auto now = t.dir / "now";
+    fs::create_directories(now / "usr");
+    EXPECT_EQ(rf::layout_of(now), rf::kLayout);
+    EXPECT_EQ(rf::kLayout, 2);
 }

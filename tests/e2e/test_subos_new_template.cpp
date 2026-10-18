@@ -537,3 +537,39 @@ end
     EXPECT_EQ(instance["edition"]["ref"], "fixture:t-rerun@1.0.0") << instance.dump();
     EXPECT_EQ(instance["edition"]["packages"]["fixture:onbase-a"], "1.0.0") << instance.dump();
 }
+
+// What a template would make, read and not made (design 2026-10-18 §5.3):
+// each layer of its chain with its index and its manifest as written, the
+// packages merged, as data and as lines; nothing in the home changes.
+XTEST(SubosNewTemplate, ADryRunSaysWhatTheChainIsAndMakesNothing,
+      .area = "subos", .cost = tk::Cost::Medium, .covers = {"LUBAN-FROM-CHAIN"},
+      .requires_ = {"linux", "xlings-bin"}) {
+    auto home = fixture_home("subos-dry-run", [](const fs::path& repo) {
+        tk::write_file(repo / "pkgs/t/t-luban.lua", template_recipe("t-luban",
+            Json{{"subos_kind", "rootfs"}, {"from", "fixture:t-top@1.0.0"}, {"packages", Json::array()},
+                 {"workspace", Json::object()},
+                 {"luban", {{"settings", {{"desktop", "lxqt"}}}, {"requires", {"root-layout>=2"}}}}}));
+    });
+    auto plan = home.xlings({"interface", "subos_command", "--args",
+                             R"({"argv":["new","box","--from","fixture:t-luban@1.0.0","--dry-run"]})"});
+    ASSERT_EQ(plan.exit_code, 0) << plan.transcript();
+    Json data;
+    std::istringstream in(plan.out);
+    for (std::string line; std::getline(in, line);) {
+        auto j = Json::parse(line, nullptr, false);
+        if (j.is_object() && j.value("dataKind", "") == "subos_plan")
+            data = j["payload"].is_string() ? Json::parse(j["payload"].get<std::string>()) : j["payload"];
+    }
+    ASSERT_TRUE(data.is_object()) << plan.out;
+    ASSERT_EQ(data["layers"].size(), 3u) << data.dump();
+    EXPECT_EQ(data["layers"][0]["ref"], "fixture:t-luban@1.0.0");
+    EXPECT_EQ(data["layers"][0]["index"], "fixture");
+    EXPECT_EQ(data["layers"][0]["manifest"]["luban"]["settings"]["desktop"], "lxqt") << "the manifest as written";
+    EXPECT_EQ(data["layers"][2]["ref"], "fixture:t-base@1.0.0");
+    EXPECT_EQ(data["packages"], Json::array({"fixture:hello@1.0.0"}));
+    EXPECT_FALSE(fs::exists(home.dir() / "subos/box")) << "nothing was made";
+    auto text = home.xlings({"subos", "new", "box", "--from", "fixture:t-luban@1.0.0", "--dry-run"});
+    EXPECT_EQ(text.exit_code, 0) << text.transcript();
+    EXPECT_NE(text.transcript().find("fixture:t-top@1.0.0"), std::string::npos) << text.transcript();
+    EXPECT_NE(home.xlings({"subos", "new", "box", "--dry-run"}).exit_code, 0) << "nothing to read";
+}

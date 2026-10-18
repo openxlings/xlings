@@ -132,6 +132,14 @@ bool confirmed_or_refused_(EventStream& stream, std::string id,
     }, stream.prompt(std::move(req)));
 }
 
+std::optional<std::string> index_repo_of(std::string_view package, CatalogAccess access) {
+    auto& catalog = get_catalog(access);
+    if (!catalog.is_loaded()) return std::nullopt;
+    auto match = catalog.resolve_target(std::string(package), detect_platform());
+    if (!match) return std::nullopt;
+    return match->repoName;
+}
+
 std::optional<std::string> index_version_of(std::string_view package,
                                             CatalogAccess access, std::string* passedOver) {
     auto& catalog = get_catalog(access);

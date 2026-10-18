@@ -491,6 +491,10 @@ XTEST(Luban, NewSaysWhatItCannotMakeAndWhyItMadeAnOlderOne,
     EXPECT_NE(older.out.find("next-os@2.0.0 needs xlings >= 9999.1.1.1"), std::string::npos) << older.out;
     EXPECT_NE(older.out.find("xlings self update"), std::string::npos) << older.out;
     EXPECT_NE(older.out.find("\"passed_over\""), std::string::npos) << "in the result\n" << older.out;
+    // Where it came from is recorded with it (design 2026-10-18 §4.4).
+    const auto record = Json::parse(tk::read_file(home.dir() / "config/subos/box/instance.json"), nullptr, false);
+    ASSERT_TRUE(record.is_object());
+    EXPECT_EQ(record["edition"].value("index", std::string{}), "fixture") << record.dump();
     auto text = luban(home, {"new", "box2", "--edition", "fixture:next-os"});
     ASSERT_EQ(text.exit_code, 0) << text.transcript();
     EXPECT_NE(text.transcript().find("needs xlings >= 9999.1.1.1"), std::string::npos) << text.transcript();

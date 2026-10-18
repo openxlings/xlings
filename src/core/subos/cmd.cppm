@@ -551,6 +551,8 @@ bool role_allows_at_(const fs::path& home, roles::Op op, const std::string& name
 // A subos-type xpkg's payload (its template), installed when missing; empty
 // after emitting why it could not be.
 fs::path resolve_base_package_(const std::string& spec, EventStream& stream);
+// `subos new --dry-run` (root/root_upgrade.cpp): a template's chain, read, nothing made.
+int plan_from_(const std::string& ref, EventStream& stream);
 // Shared by the making of a SubOS (create.cpp) and the other commands (cmd.cpp).
 nlohmann::json read_config_json_(const fs::path& path);
 void write_config_json_(const fs::path& path, const nlohmann::json& json);

@@ -36,7 +36,7 @@ text = "a pty with nothing typed exposes a program that waits for input"
 status = "required"
 
 [LUBAN-FHS-PATHS]
-text = "inside a Luban system every directory a person can cd into has its FHS path: /usr is the generation mounted, a generation's directories are mount points, an exported tar keeps the link"
+text = "inside a Luban system every directory a person can cd into has its FHS path: /usr is the generation mounted, a generation's directories are mount points, an exported tar keeps the link; a package's lib/<dir> and libexec/ reach /usr/lib/<dir> and /usr/libexec (a name one package has, whole; a name several have, merged; a clash reported)"
 status = "required"
 
 [LUBAN-SHARE-PROJECTION]
@@ -770,7 +770,7 @@ text = "luban-desktop: a GL program compiled inside renders a frame offscreen, e
 status = "required"
 
 [LUBAN-FROM-CHAIN]
-text = "an xpkg's from chain merges workspaces, the upper one winning"
+text = "an xpkg's from chain merges workspaces, the upper one winning; subos new --dry-run says each layer (its index, its manifest as written) and the packages merged, making nothing; an instance records the index of each layer"
 status = "required"
 
 [ROOT-LDCACHE]
