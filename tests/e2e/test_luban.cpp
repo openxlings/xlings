@@ -42,7 +42,8 @@ end
 
 // A home with a fixture index (one template that declares a root and one
 // package), xlings and luban in its bin/, and a bwrap of its own that says yes.
-tk::Home luban_home(std::string_view name, const fs::path& luban) {
+tk::Home luban_home(std::string_view name, const fs::path& luban,
+                    const std::function<void(const fs::path& primary, const fs::path& repo)>& more = {}) {
     auto home = tk::Home::isolated(name);
     const auto primary = home.root() / "primary";
     const auto repo = home.root() / "index";
@@ -172,6 +173,7 @@ function install()
     return true
 end
 )LUA");
+    if (more) more(primary, repo);
     Json config{{"mirror", "GLOBAL"}, {"xim", {{"index-repo", primary.generic_string()}}},
         {"index_repos", Json::array({{{"name", "xim"}, {"url", primary.generic_string()}, {"source", "git"}},
                                     {{"name", "fixture"}, {"url", repo.generic_string()}, {"source", "git"}}})}};
@@ -194,6 +196,9 @@ end
     return home;
 }
 
+// The desktop a system's settings resolve to, as luban config says it.
+std::string svc_settings_desktop(const tk::Home& home, std::string_view name);
+
 tk::RunResult luban(const tk::Home& home, std::vector<std::string> args, bool pty = false) {
     tk::RunOptions o;
     o.argv = {(home.dir() / "bin/luban").string()};
@@ -205,6 +210,15 @@ tk::RunResult luban(const tk::Home& home, std::vector<std::string> args, bool pt
     o.pty = pty;
     o.timeout = std::chrono::seconds(90);
     return tk::run(o);
+}
+
+std::string svc_settings_desktop(const tk::Home& home, std::string_view name) {
+    auto shown = luban(home, {"--json", "config", std::string(name)});
+    std::istringstream in(shown.out);
+    for (std::string line; std::getline(in, line);)
+        if (auto d = Json::parse(line, nullptr, false); d.is_object() && d.contains("result"))
+            return d["result"].value("desktop", std::string{});
+    return {};
 }
 
 }  // namespace
@@ -625,6 +639,11 @@ XTEST(Luban, AnyIndexsSystemAndComponentsAreMadeByXpkg,
     EXPECT_NE(release.find("ID=myos"), std::string::npos) << release;
     EXPECT_NE(release.find("ID_LIKE=luban"), std::string::npos) << release;
     EXPECT_TRUE(fs::exists(home.dir() / "config/luban/confirmed.json")) << "the answer is kept";
+    // What it is, on three lines: the system, the desktop, the way in (design §3).
+    auto status = luban(home, {"status", "box"});
+    EXPECT_NE(status.out.find("system    MyOS 1.0.0 (Luban base)"), std::string::npos) << status.out;
+    EXPECT_NE(status.out.find("desktop   hyper"), std::string::npos) << status.out;
+    EXPECT_NE(status.out.find("enter     desktop · machine"), std::string::npos) << status.out;
     // Kept: the same again is not asked.
     auto again = luban(home, {"new", "box2", "--xpkg", "fixture:myos@1.0.0", "--xpkg", "fixture:hyper"});
     EXPECT_EQ(again.exit_code, 0) << again.transcript();
@@ -652,6 +671,52 @@ XTEST(Luban, AnyIndexsSystemAndComponentsAreMadeByXpkg,
     // An official short name: a name in the luban: namespace.
     auto base = luban(home, {"new", "plain", "--edition", "base"});
     EXPECT_EQ(base.exit_code, 0) << base.transcript();
+}
+
+// A published name, frozen, moves to the official edition that replaces it
+// (design 2026-10-18 §15.1), and what it showed stays what it shows (§15.2).
+XTEST(Luban, AFrozenEditionMovesToItsSuccessorKeepingWhatItShows,
+      .area = "luban", .cost = tk::Cost::Medium, .covers = {"LUBAN-NAMESPACE", "LUBAN-DESKTOP-SWITCH"},
+      .requires_ = {"linux", "xlings-bin"}) {
+    if constexpr (!tk::is_linux) GTEST_SKIP() << "a Luban root is a Linux root";
+    const auto bin = luban_binary();
+    if (!bin) GTEST_SKIP() << "no luban beside the xlings under test";
+    auto edition = [](std::string_view ns, std::string_view name, const Json& manifest) {
+        return std::format(R"LUA(
+package = {{ spec = '1', name = '{}', namespace = '{}', type = 'subos', categories = {{'subos', 'distribution'}},
+            archs = {{'x86_64', 'aarch64'}}, xpm = {{ linux = {{ ['1.0.0'] = {{}} }} }} }}
+import('xim.libxpkg.pkginfo')
+function install()
+    local dir = pkginfo.install_dir()
+    os.mkdir(dir)
+    io.writefile(path.join(dir, '.xlings.json'), {})
+    return true
+end
+)LUA", name, ns, Json(manifest.dump()).dump());
+    };
+    auto home = luban_home("luban-successor", *bin, [&](const fs::path& primary, const fs::path&) {
+        tk::write_file(primary / "pkgs/luban/luban-canvas.lua", edition("subos", "luban-canvas",
+            Json{{"subos_kind", "rootfs"}, {"from", "luban:base@1.0.0"}, {"packages", Json::array()}, {"workspace", Json::object()},
+                 {"luban", {{"settings", {{"desktop", "xdesk-canvas"}}}}}}));
+        tk::write_file(primary / "pkgs/luban/next.lua", edition("luban", "next",
+            Json{{"subos_kind", "rootfs"}, {"from", "luban:base@1.0.0"}, {"packages", Json::array()}, {"workspace", Json::object()},
+                 {"replaces", "subos:luban-canvas"}, {"luban", {{"settings", {{"desktop", "xdesk-classic"}}}}}}));
+    });
+    auto made = luban(home, {"new", "box", "--edition", "canvas"});
+    ASSERT_EQ(made.exit_code, 0) << made.transcript();
+    EXPECT_EQ(svc_settings_desktop(home, "box"), "xdesk-canvas");
+    auto up = luban(home, {"upgrade", "box", "-y"});
+    ASSERT_EQ(up.exit_code, 0) << up.transcript();
+    EXPECT_NE(up.transcript().find("which replaces it"), std::string::npos) << up.transcript();
+    EXPECT_NE(up.transcript().find("keeps desktop xdesk-canvas"), std::string::npos) << up.transcript();
+    const auto record = Json::parse(tk::read_file(home.dir() / "config/subos/box/instance.json"), nullptr, false);
+    EXPECT_EQ(record["edition"].value("ref", std::string{}), "luban:next@1.0.0") << record.dump();
+    const auto settings = Json::parse(tk::read_file(home.dir() / "config/subos/box/machine.json"), nullptr, false);
+    EXPECT_EQ(settings.value("desktop", std::string{}), "xdesk-canvas") << "what it showed, kept";
+    // xlings honours a replacement within one index only.
+    auto foreign = home.xlings({"subos", "upgrade", "box", "--to", "fixture:my-os@1.0.0", "-y"});
+    EXPECT_NE(foreign.exit_code, 0) << foreign.transcript();
+    EXPECT_NE(foreign.transcript().find("does not replace"), std::string::npos) << foreign.transcript();
 }
 
 XTEST(Luban, AnExportedEnvironmentIsImportedWithItsStateAndANewPersona,

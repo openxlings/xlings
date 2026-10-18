@@ -542,11 +542,10 @@ int host_status(const svc::Context& c, const Globals& g) {
     return ready ? 0 : 1;
 }
 
+// What a system is called (design 2026-10-18 §4.5): its distribution's name.
 std::string edition_label_(const svc::Environment& e) {
     if (e.edition.empty()) return e.kind;
-    auto label = e.edition;
-    if (label.starts_with("subos:luban-")) label = label.substr(12);
-    return label;
+    return svc::display_name(svc::lineage_of(e));
 }
 
 int overview(const svc::Context& c, const Globals& g) {
@@ -749,6 +748,12 @@ int cmd_enter(const svc::Context& c, const Parsed& p, const Globals& g) {
         if (*d != "terminal" && *d != "window") return usage("--display terminal|window", g);
         o.display = *d;
     }
+    // Its desktop this once (design 2026-10-18 §3): shown in a window.
+    const auto once = p.option("--desktop");
+    if (once) {
+        if (o.display == "terminal") return usage("--desktop is shown in a window: drop --display terminal", g);
+        o.display = "window";
+    }
     if (image_of_(target)) {
         o.temp = true;
         return vm::enter(c, target, o);
@@ -763,12 +768,35 @@ int cmd_enter(const svc::Context& c, const Parsed& p, const Globals& g) {
                                       std::format("luban run {} -- <command>", target)));
         return 1;
     }
+    // Not told how (design 2026-10-18 §8, E5): what its plan says it shows
+    // first -- its desktop in a window where there is a display to show one,
+    // its console here otherwise, and why.
+    if (o.display.empty()) {
+        if (auto e = svc::describe(c, target); e && svc::enter_plan(*e).target == "desktop") {
+            const bool shown = !xlings::platform::is_linux || std::getenv("WAYLAND_DISPLAY") || std::getenv("DISPLAY");
+            if (shown && !svc::luban_os_app(c.home).empty()) o.display = "window";
+            else if (c.sink)
+                c.sink(svc::notice(std::format("{} shows its desktop in a window; {} -- its console here", target,
+                                               shown ? "the Luban OS app is not installed (xlings install luban-os)"
+                                                     : "this terminal has no display")));
+        }
+    }
+    if (o.display == "window") {
+        // The window is the Luban OS app's, sandbox or machine alike.
+        const auto app = svc::luban_os_app(c.home);
+        if (app.empty()) {
+            if (c.sink) c.sink(svc::error("a system's window is the Luban OS app's", "xlings install luban-os"));
+            return 1;
+        }
+        std::vector<std::string> argv{app.string(), "--attach", target};
+        if (once) argv.insert(argv.end(), {"--desktop", *once});
+        return xlings::platform::run_argv(argv);
+    }
     // A machine that is running is entered as the machine it is.
     const auto mode = p.option("--mode").value_or(vm::running(c.home, target) ? std::string("machine") : settings->mode);
     if (mode != "sandbox" && mode != "machine") return usage("--mode sandbox|machine", g);
     if (auto u = p.option("--user")) o.user = *u;
     if (mode == "machine") return vm::enter(c, target, o);
-    if (o.display == "window") return usage("a sandboxed environment's programs use this desktop; a window is a machine's: --mode machine", g);
     return svc::enter_sandbox(c, target, o.temp, o.user);
 }
 
@@ -792,12 +820,40 @@ int cmd_status(const svc::Context& c, const Parsed& p, const Globals& g, Rendere
     if (e->generation) j["generation"] = *e->generation;
     // What it needs of this luban (design 2026-10-18 §9): its root's layout, its manifest's requires.
     const auto unmet = svc::unmet_needs(*e, svc::luban_provides());
+    // System / desktop / enter (design 2026-10-18 §3, §4.5).
+    const auto lineage = svc::lineage_of(*e);
+    const auto plan = svc::enter_plan(*e);
+    if (!lineage.layers.empty()) {
+        j["distribution"] = svc::display_name(lineage);
+        if (const auto* b = lineage.base()) j["luban_base"] = std::format("{} {}", b->name(), b->version());
+        if (const auto* parent = lineage.parent()) j["parent"] = parent->ref;
+        j["lineage"] = Json::array();
+        for (const auto& l : lineage.layers) j["lineage"].push_back({{"ref", l.ref}, {"index", l.index}, {"official", l.official()}});
+    }
+    j["desktop"] = plan.target == "desktop" ? Json(plan.session) : Json();
+    j["enter"] = plan.target;
+    if (!plan.why.empty()) j["why"] = plan.why;
     j["layout"] = e->layout;
     j["needs"] = e->needs;
     j["unmet"] = Json::array();
     for (const auto& v : unmet) j["unmet"].push_back(v.why());
     if (g.json) { r.value(j); return 0; }
     std::println("{}  {}{}", e->name, edition_label_(*e), e->running ? "  (running)" : "");
+    if (!lineage.layers.empty()) {
+        std::string from;
+        if (const auto* parent = lineage.parent(); parent && parent != lineage.base())
+            from = std::format("   on {}{}", parent->ref, parent->official() ? "" : " (" + parent->index + ")");
+        std::println("  system    {}{}", svc::display_name(lineage), from);
+    }
+    {
+        std::string others;
+        for (const auto& d : e->desktops)
+            if (d != plan.session) others += (others.empty() ? "" : ", ") + d;
+        std::println("  desktop   {}{}", plan.target == "desktop" ? plan.session : (e->desktops.empty() ? "none" : "none (console)"),
+                     others.empty() ? std::string{} : "   also: " + others);
+        if (!plan.why.empty()) std::println("  {} {}", r.paint("!", 33), plan.why);
+    }
+    std::println("  enter     {} · {}", plan.target, e->settings.mode);
     std::println("  kind      {}{}", e->kind, e->generation ? std::format(", generation {}", *e->generation) : "");
     std::println("  packages  {}", e->packages);
     std::println("  starts    as a {}{}", e->settings.mode, e->settings.persist == "all" ? "" : std::format(", keeping {}", e->settings.persist == "home" ? "only /home" : "nothing"));
@@ -1207,7 +1263,8 @@ const spec::CommandSpec& tree() {
              .options = {{"--mode <MODE>", "sandbox (this machine's kernel) or machine (its own); default: its setting"},
                          {"--temp", "Nothing it writes stays"},
                          {"--user <NAME>", "Log in as this user this once (root, or one of its users)", false, Level::More},
-                         {"--display <DISPLAY>", "terminal or window; default: its desktop decides", false, Level::More}}, .effect = "reversible"},
+                         {"--display <DISPLAY>", "terminal or window; default: its desktop decides", false, Level::More},
+                         {"--desktop <SESSION>", "This desktop, this once, in a window", false, Level::More}}, .effect = "reversible"},
             {.name = "run", .description = "Run one command in an environment",
              .arguments = {{"name", "Which", true}, {"command", "The command and its arguments, after --", true, true}},
              .options = {{"--user <NAME>", "As this user (root, or one of its users)", false, Level::More}}, .effect = "reversible"},

@@ -204,6 +204,7 @@ int run(int argc, char* argv[]) {
     for (int i = 1; i < argc; ++i) {
         const std::string_view arg = argv[i];
         if (arg == "--attach" && i + 1 < argc) a.attach = argv[++i];
+        else if (arg == "--desktop" && i + 1 < argc) a.once_desktop = argv[++i];
         else if (arg == "--headless") {
             o.hidden = true;
             platform::set_env_variable("SDL_VIDEODRIVER", "offscreen");
@@ -396,6 +397,10 @@ int run(int argc, char* argv[]) {
         }
         if (a.window->host_key() && (a.view == View::Console || a.view == View::Off || a.view == View::Desktop || a.view == View::Run))
             a.menu = !a.menu, a.menu_focus = 0;
+        // The menu lists the system's desktops: read when it opens, not each frame.
+        if (a.menu && a.menu_desktops.empty())
+            if (auto env = service::describe(a.ctx, a.current)) a.menu_desktops = env->desktops;
+        if (!a.menu) a.menu_desktops.clear();
         const bool overlay = a.menu || a.close_dialog || a.confirm;
         const bool typing = ImGui::GetIO().WantTextInput;
         for (const auto& k : a.window->keys())

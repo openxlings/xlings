@@ -228,9 +228,13 @@ std::expected<Environment, std::string> describe_(const Context& c, std::string_
     std::set<std::string> packages;
     if (auto record = xlings::subos::edition::read(instance)) {
         e.edition = record->ref;
+        e.chain = record->chain;
+        e.edition_index = record->index;
+        e.chain_index = record->chain_index;
         for (const auto& [pkg, _] : record->packages) packages.insert(xlings::subos::edition::split(pkg).first);
     }
     const auto workspace = read_json_(view.instance(name) / ".xlings.json");
+    e.manifest = workspace;
     // The packages it was given (its file's `packages`), not the names they
     // register (a glibc alone registers dozens).
     if (auto declared = workspace.find("packages"); declared != workspace.end() && declared->is_array())
@@ -254,9 +258,24 @@ std::expected<Environment, std::string> describe_(const Context& c, std::string_
                 entries.push_back(it->path());
             ec.clear();
             std::ranges::sort(entries);
-            for (const auto& entry : entries)
-                if (entry.extension() == ".desktop" && std::ranges::find(e.desktops, entry.stem().string()) == e.desktops.end())
-                    e.desktops.push_back(entry.stem().string());
+            for (const auto& entry : entries) {
+                if (entry.extension() != ".desktop" || std::ranges::find(e.desktops, entry.stem().string()) != e.desktops.end())
+                    continue;
+                e.desktops.push_back(entry.stem().string());
+                std::ifstream in(entry);
+                for (std::string line; std::getline(in, line);)
+                    if (line.starts_with("X-Luban-Aliases=")) {
+                        std::string_view rest(line);
+                        rest.remove_prefix(16);
+                        for (std::size_t at = 0; at <= rest.size();) {
+                            const auto semi = rest.find_first_of(";,", at);
+                            auto alias = std::string(rest.substr(at, semi == std::string_view::npos ? std::string_view::npos : semi - at));
+                            if (!alias.empty()) e.aliases.try_emplace(alias, entry.stem().string());
+                            if (semi == std::string_view::npos) break;
+                            at = semi + 1;
+                        }
+                    }
+            }
         }
     }
     if (e.kind == "root")
@@ -361,6 +380,9 @@ EnterPlan enter_plan(const Environment& e) {
     if (setting == "none" || (setting.empty() && e.desktops.empty())) return {};
     if (setting.empty()) return {.target = "desktop", .session = e.desktops.front()};
     if (std::ranges::find(e.desktops, setting) != e.desktops.end()) return {.target = "desktop", .session = setting};
+    // A session renamed answers to its old name (labwc-desktop is labwc now).
+    if (const auto renamed = e.aliases.find(setting); renamed != e.aliases.end())
+        return {.target = "desktop", .session = renamed->second};
     std::string have;
     for (const auto& d : e.desktops) have += (have.empty() ? "" : ", ") + d;
     return {.why = have.empty()
@@ -750,6 +772,25 @@ int relayout_(const Context& c, std::string_view name) {
 
 }  // namespace
 
+namespace {
+
+// The official edition whose manifest says it replaces `ref`'s package.
+std::optional<std::string> successor_(const Context& c, std::string_view name, std::string_view ref) {
+    const auto old = std::string(ref.substr(0, ref.find('@')));
+    for (const auto& [short_name, candidate] : official_system_refs(c.port)) {
+        if (!candidate.starts_with("luban:")) continue;
+        auto lineage = plan_system(c.port, name, candidate);
+        if (!lineage || lineage->layers.empty()) continue;
+        const auto replaces = lineage->layers.front().manifest.value("replaces", Json());
+        if ((replaces.is_string() && replaces.get<std::string>() == old)
+            || (replaces.is_array() && std::ranges::find(replaces, Json(old)) != replaces.end()))
+            return candidate;
+    }
+    return std::nullopt;
+}
+
+}  // namespace
+
 Outcome upgrade(const Context& c, std::string_view name, std::string_view to, bool dry_run) {
     if (!exists_(c, name)) return missing_(c, name);
     if (old_layout_(c, name)) {
@@ -764,8 +805,20 @@ Outcome upgrade(const Context& c, std::string_view name, std::string_view to, bo
             return {.code = rc};
         }
     }
+    // What it shows and how it runs now, where the person did not choose:
+    // kept when its new edition's defaults differ (design 2026-10-18 §15.2).
+    const auto before = read_settings(c.home, name);
     auto args = argv_({"upgrade", name});
-    if (!to.empty()) args.insert(args.end(), {"--to", std::string(to)});
+    std::string target(to);
+    // A published name that is frozen (subos:luban-*) moves to the official
+    // edition that says it replaces it (design §15.1): luban asks the index.
+    if (target.empty())
+        if (const auto e = describe(c, name); e && e->edition.starts_with("subos:luban-"))
+            if (auto next = successor_(c, name, e->edition)) {
+                if (c.sink) c.sink(notice(std::format("{} moves from {} to {}, which replaces it", name, e->edition, *next)));
+                target = *next;
+            }
+    if (!target.empty()) args.insert(args.end(), {"--to", target});
     if (dry_run) args.push_back("--dry-run");
     // The plan comes back as data (subos_upgrade_plan); the rest goes on.
     Json plan = Json::object();
@@ -792,6 +845,19 @@ Outcome upgrade(const Context& c, std::string_view name, std::string_view to, bo
             return {.code = 1, .value = plan};
         }
     }
+    if (rc == 0 && !dry_run && !upToDate && before)
+        if (const auto after = read_settings(c.home, name)) {
+            const std::array<std::tuple<std::string_view, std::string_view, std::string, std::string>, 3> keys{{
+                {"desktop", "desktop", before->desktop, after->desktop},
+                {"enter", "enter", before->enter, after->enter},
+                {"mode", "mode", before->mode, after->mode}}};
+            for (const auto& [key, json_key, was, now] : keys) {
+                if (was == now || was.empty() || before->document.contains(std::string(json_key))) continue;
+                if (auto kept = set_setting(c.home, name, key, was); kept && c.sink)
+                    c.sink(notice(std::format("{} keeps {} {} (its new edition's default is {}): luban config {} --{} {}",
+                                              name, key, was, now.empty() ? "none" : now, name, key, now.empty() ? "none" : now)));
+            }
+        }
     return {.code = rc, .value = plan};
 }
 

@@ -120,7 +120,7 @@ const CommandSpec& root() {
                      {"-f, --follow", "Keep printing new events"},
                      {"--json", "One JSON object per event"}}, {}},
                 {"upgrade", "Move a SubOS made from an edition to its newest version (your packages stay yours)", {}, {{"name", "SubOS name", true}},
-                    {{"--to <VERSION>", "This version of the edition"}, {"--dry-run", "Show the plan only"}}, {}},
+                    {{"--to <VERSION>", "This version of the edition, or the package that replaces it (ns:name[@version])"}, {"--dry-run", "Show the plan only"}}, {}},
                 {"rollback", "Move a root SubOS back to an earlier generation", {}, {{"name", "SubOS name", true}},
                     {{"--to <N>", "This generation (default: the one before)"}, {"--list", "List the generations"}}, {}},
                 {"export", "Export a root SubOS as a directory or a tarball (an image a machine boots: luban export)", {}, {{"name", "SubOS name", true}},

@@ -166,7 +166,7 @@ Options: `--kind <KIND>` — Only this kind (ops, lifecycle, perm, exec, net, fs
 
 Move a SubOS made from an edition to its newest version (your packages stay yours)
 
-Options: `--to <VERSION>` — This version of the edition; `--dry-run` — Show the plan only
+Options: `--to <VERSION>` — This version of the edition, or the package that replaces it (ns:name[@version]); `--dry-run` — Show the plan only
 
 ## `xlings subos rollback <name>`
 

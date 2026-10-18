@@ -39,6 +39,13 @@ std::string short_of_(std::string_view ns, std::string_view name) {
     return std::string(name);
 }
 
+// A manifest's `luban` object (an empty one when it has none, or is no object).
+Json luban_of_(const Json& manifest) {
+    if (!manifest.is_object()) return Json::object();
+    const auto l = manifest.find("luban");
+    return l != manifest.end() && l->is_object() ? *l : Json::object();
+}
+
 std::string lower_(std::string s) {
     for (auto& ch : s) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
     return s;
@@ -149,7 +156,7 @@ bool Layer::official() const {
 }
 
 std::string Layer::name() const {
-    if (auto os = manifest.value("luban", Json::object()).value("os", Json::object()); os.contains("name") && os["name"].is_string())
+    if (auto os = luban_of_(manifest).value("os", Json::object()); os.is_object() && os.contains("name") && os["name"].is_string())
         return os["name"].get<std::string>();
     const auto [ns, name, _] = split_ref_(ref);
     return official() ? short_of_(ns, name) : name;
@@ -168,8 +175,8 @@ const Layer* Lineage::parent() const { return layers.size() > 1 ? &layers[1] : n
 nlohmann::json Lineage::luban(std::string_view key) const {
     Json merged = Json::object();
     for (auto it = layers.rbegin(); it != layers.rend(); ++it) {   // bottom first; the upper one wins
-        const auto l = it->manifest.value("luban", Json::object());
-        if (!l.is_object() || !l.contains(key)) continue;
+        const auto l = luban_of_(it->manifest);
+        if (!l.contains(key)) continue;
         if (l[key].is_object()) for (auto e = l[key].begin(); e != l[key].end(); ++e) merged[e.key()] = e.value();
         else merged = l[key];
     }
@@ -179,7 +186,7 @@ nlohmann::json Lineage::luban(std::string_view key) const {
 std::vector<std::string> Lineage::needs() const {
     std::vector<std::string> out;
     for (const auto& l : layers)
-        for (const auto& n : l.manifest.value("luban", Json::object()).value("requires", Json::array()))
+        for (const auto& n : luban_of_(l.manifest).value("requires", Json::array()))
             if (n.is_string() && std::ranges::find(out, n.get<std::string>()) == out.end()) out.push_back(n.get<std::string>());
     return out;
 }
@@ -204,6 +211,21 @@ std::expected<Lineage, std::string> plan_system(const Port& port, std::string_vi
     });
     if (rc != 0 || !planned)
         return std::unexpected(error.empty() ? std::format("{} could not be read (exit {})", ref, rc) : error);
+    return l;
+}
+
+Lineage lineage_of(const Environment& e) {
+    Lineage l;
+    if (e.edition.empty()) return l;
+    // A record from before the indexes were kept: a published Luban name is official.
+    auto index_of = [](const std::string& ref, const std::string& recorded) {
+        if (!recorded.empty()) return recorded;
+        return ref.starts_with("luban:") || ref.starts_with("subos:luban-") ? std::string(kOfficialIndex) : std::string{};
+    };
+    l.layers.push_back({e.edition, index_of(e.edition, e.edition_index), e.manifest});
+    for (std::size_t i = 0; i < e.chain.size(); ++i)
+        l.layers.push_back({e.chain[i], index_of(e.chain[i], i < e.chain_index.size() ? e.chain_index[i] : std::string{}),
+                            Json::object()});
     return l;
 }
 
@@ -234,9 +256,10 @@ std::vector<Beyond> beyond_luban(const Lineage& l) {
     std::vector<Beyond> out;
     for (const auto& layer : l.layers) {
         if (layer.official()) continue;
+        if (!layer.manifest.is_object()) continue;
         if (auto p = layer.manifest.find("policy"); p != layer.manifest.end() && p->is_string())
             out.push_back({"policy", std::format("its isolation is {}", p->get<std::string>()), layer.ref, true});
-        if (const auto s = layer.manifest.value("luban", Json::object()).value("settings", Json::object()); !s.empty()) {
+        if (const auto s = luban_of_(layer.manifest).value("settings", Json::object()); s.is_object() && !s.empty()) {
             std::string text;
             for (auto e = s.begin(); e != s.end(); ++e)
                 text += (text.empty() ? "" : ", ") + e.key() + " " + (e.value().is_string() ? e.value().get<std::string>() : e.value().dump());

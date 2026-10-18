@@ -445,6 +445,14 @@ struct App {
     std::string history_for;
     std::optional<Json> upgrade_plan;
     std::string attach;                // --attach
+    // A desktop opened this once (--desktop, the Host key's menu), or the
+    // console instead of its desktop (design 2026-10-18 §3): its settings stay.
+    std::string once_desktop;
+    bool once_console { false };
+    std::vector<std::string> menu_desktops;   // the current system's, read when the menu opens
+    std::string shown_desktop;                // the session on screen (empty: none)
+    // The session to show for `e` now: this once's, else its plan's.
+    std::optional<std::string> session_now(const service::Environment& e) const;
     bool dump_state { false };
     std::string input;                 // tests: typed into the console (or desktop) once it shows something
     std::optional<std::chrono::steady_clock::time_point> input_at;

@@ -146,3 +146,21 @@ XTEST(LubanEnterPlan, ADesktopSetAndNotThereIsTheConsoleWithWhy, .area = "luban"
     EXPECT_NE(plan.why.find("labwc, xdesk-classic"), std::string::npos) << plan.why;
     EXPECT_NE(plan.why.find("luban config box --desktop"), std::string::npos) << plan.why;
 }
+
+// A system set to its console enters it whatever desktops it has; a session
+// renamed answers to its old name (design 2026-10-18 §8, §15.3).
+XTEST(LubanEnterPlan, TheConsoleWhenSetAndARenamedSessionByItsOldName, .area = "luban", .covers = {"LUBAN-SETTINGS", "LUBAN-DESKTOP-SWITCH"}) {
+    luban::service::Environment e;
+    e.name = "box";
+    e.desktops = {"labwc"};
+    e.settings.enter = "console";
+    EXPECT_EQ(luban::service::enter_plan(e).target, "console");
+    EXPECT_TRUE(luban::service::enter_plan(e).why.empty());
+    e.settings.enter = "desktop";
+    e.settings.desktop = "labwc-desktop";
+    EXPECT_EQ(luban::service::enter_plan(e).target, "console") << "an old name nothing answers to";
+    e.aliases["labwc-desktop"] = "labwc";
+    const auto plan = luban::service::enter_plan(e);
+    EXPECT_EQ(plan.target, "desktop");
+    EXPECT_EQ(plan.session, "labwc");
+}

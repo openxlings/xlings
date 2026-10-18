@@ -1255,7 +1255,7 @@ status = "planned"
 
 [LUBAN-DESKTOP-SWITCH]
 text = "several desktops live in one system: luban config --desktop changes the default, luban enter --desktop opens another once, the Luban OS app's bar lists them; one desktop's defaults and autostart never reach another, and removing the one in use falls back to the console and says so"
-status = "planned"
+status = "required"
 
 [LUBAN-DESKTOP-CLASSIC]
 text = "labwc, LXQt and KDE open in a machine and in a sandbox and can be used: drawn, a pointer, a terminal that shows the program it runs"

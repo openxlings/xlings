@@ -60,6 +60,15 @@ struct Environment {
     // and what its manifest's `luban.requires` names (opencaps needs).
     int layout { 0 };
     std::vector<std::string> needs;
+    // Old names its sessions still answer to (X-Luban-Aliases; design
+    // 2026-10-18 §15.3): labwc-desktop -> labwc.
+    std::map<std::string, std::string> aliases;
+    // Where it comes from, as its record says (design §4.4): the layers below
+    // its edition and the index of each; its manifest as its template wrote it.
+    std::vector<std::string> chain;
+    std::string edition_index;
+    std::vector<std::string> chain_index;
+    nlohmann::json manifest = nlohmann::json::object();
 };
 
 // What this luban provides (design 2026-10-18 §9; luban/specs/opencaps): the
@@ -187,6 +196,10 @@ struct Lineage {
 };
 std::expected<Lineage, std::string> plan_system(const Port& port, std::string_view name, std::string_view ref);
 
+// A made system's lineage, from its record (no index asked): its own manifest
+// for its top layer; a record from before the indexes were kept takes a
+// published Luban name as official.
+Lineage lineage_of(const Environment& e);
 // "myos 2026.11.1 (Luban desktop)"; an official edition is "Luban desktop 2026.10.19.1".
 std::string display_name(const Lineage& l);
 // The os-release of a system that names itself (luban.os), written over the

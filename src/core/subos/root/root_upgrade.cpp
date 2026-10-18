@@ -149,7 +149,7 @@ int run_upgrade_(int argc, char* argv[], EventStream& stream, const UsageError& 
         else if (!a.empty() && a[0] != '-' && name.empty()) name = a;
         else { usageError("unknown option for `xlings subos upgrade`: " + a); return 1; }
     }
-    if (name.empty()) { usageError("usage: xlings subos upgrade <name> [--to <version>] [--dry-run] [-y]"); return 1; }
+    if (name.empty()) { usageError("usage: xlings subos upgrade <name> [--to <version>|<ns:name[@version]>] [--dry-run] [-y]"); return 1; }
     if (!exists_(name)) { error_(stream, "no SubOS named '" + name + "'"); return 1; }
     if (!role_allows_(roles::Op::Packages, name, stream)) return 1;
     const auto home = home_dir_();
@@ -164,12 +164,32 @@ int run_upgrade_(int argc, char* argv[], EventStream& stream, const UsageError& 
         return 1;
     }
     const auto [key, version] = subos::edition::split(now->ref);
-    // The newest of the edition, or the version asked for. The index is
-    // whatever this home has: `xlings update` refreshes it.
-    const auto target = to.empty() ? key : key + "@" + to;
+    // The newest of the edition, or the version asked for -- or another
+    // package that replaces it (`--to ns:name[@version]`; design 2026-10-18
+    // §15.1). The index is whatever this home has: `xlings update` refreshes it.
+    const bool successor = to.find(':') != std::string::npos;
+    const auto target = to.empty() ? key : successor ? to : key + "@" + to;
     const auto chain = chain_of_(target, stream);
     if (!chain) return 1;
     const auto& top = chain->templates.front();
+    if (successor && subos::edition::split(to).first != key) {
+        // Only a package that says it replaces this one, in the same index: a
+        // package elsewhere cannot take another's systems over.
+        const auto manifest = read_json_(top.second / ".xlings.json");
+        bool named = false;
+        if (const auto r = manifest.find("replaces"); r != manifest.end()) {
+            if (r->is_string()) named = r->get<std::string>() == key;
+            else if (r->is_array()) named = std::ranges::any_of(*r, [&](const auto& v) { return v.is_string() && v.template get<std::string>() == key; });
+        }
+        const auto old_index = xim::index_repo_of(key), new_index = xim::index_repo_of(to);
+        if (!named || !old_index || old_index != new_index) {
+            error_(stream, !named ? std::format("{} does not replace {}: its manifest names no `replaces` of it", top.first, key)
+                                  : std::format("{} replaces {} from another index: a replacement is honoured within one index",
+                                                top.first, key),
+                   std::format("xlings subos upgrade {} (its own newest)", name));
+            return 1;
+        }
+    }
     if (auto refused = root_abi_refusal_(read_json_(top.second / ".xlings.json"))) {
         error_(stream, std::format("{} cannot run here: {}", top.first, *refused));
         return 1;
@@ -259,10 +279,16 @@ int run_upgrade_(int argc, char* argv[], EventStream& stream, const UsageError& 
     {
         auto manifest = read_json_(dir / ".xlings.json");
         const auto next = read_json_(top.second / ".xlings.json");
-        for (const auto* k : {"subos_kind", "from", "packages", "abi", "boot", "policy", "min_client"}) {
+        for (const auto* k : {"subos_kind", "from", "packages", "abi", "boot", "policy", "min_client", "replaces"}) {
             if (next.contains(k)) manifest[k] = next[k];
             else manifest.erase(k);
         }
+        // Whatever else the template declares (a `luban` object, a
+        // distribution's own), as it writes it: xlings keeps what it does not
+        // read. What is the instance's own is not the template's to replace.
+        for (auto it = next.begin(); it != next.end(); ++it)
+            if (it.key() != "workspace" && it.key() != "subos_info" && it.key() != "configured")
+                manifest[it.key()] = it.value();
         if (auto w = write_json_(dir / ".xlings.json", manifest); !w) { error_(stream, w.error(), {}, ErrorCode::Internal); return 1; }
     }
     std::vector<std::string> specs;

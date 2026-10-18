@@ -144,13 +144,14 @@ void App::open_machine(const std::string& name) {
     auto env = service::describe(ctx, name);
     // A desktop set and not there is said over the console (E20).
     if (env) if (const auto plan = service::enter_plan(*env); !plan.why.empty()) notice = plan.why;
-    if (auto session = env ? desktop_session(*env) : std::nullopt) {
+    if (auto session = env ? session_now(*env) : std::nullopt) {
         std::string error;
         const auto [w, h] = window->size();
         desktop_size = device_size_(w, h);
         auto* win = window.get();
         display = Display::machine(home, name, *session, desktop_size, clipboard_grant(name), [win] { win->wake(); }, error);
         if (display) {
+            shown_desktop = *session;
             view = View::Desktop;
             window->set_title(title_for(name));
             window->text_input(false);
@@ -185,6 +186,7 @@ ClipboardGrant App::clipboard_grant(const std::string& name) const {
 }
 
 void App::close_display() {
+    shown_desktop.clear();
     desktop_text = false;
     sent_density = 1;
     paste_on_open = true;
@@ -216,12 +218,13 @@ void App::open_console(const std::string& name, bool machine) {
     if (!machine) {
         const auto luban = luban_binary(name);
         if (env) if (const auto plan = service::enter_plan(*env); !plan.why.empty()) notice = plan.why;
-        if (auto session = env ? desktop_session(*env) : std::nullopt; session && !luban.empty()) {
+        if (auto session = env ? session_now(*env) : std::nullopt; session && !luban.empty()) {
             const auto [ww, wh] = window->size();
             desktop_size = device_size_(ww, wh);
             display = Display::sandbox(ctx.port.xlings(), luban, home, name, *session, env ? env->settings.persist : "all",
                                        desktop_size, clipboard_grant(name), [w] { w->wake(); }, error);
             if (display) {
+                shown_desktop = *session;
                 view = View::Desktop;
                 window->set_title(title_for(name));
                 window->text_input(false);
@@ -277,6 +280,8 @@ float App::console_size(const std::string& name) const {
 }
 
 void App::back_home() {
+    once_desktop.clear();
+    once_console = false;
     menu = false;
     console.reset();
     close_display();
@@ -306,6 +311,12 @@ void append_utf8_(std::string& out, char32_t ch) {
         out += static_cast<char>(0xF0 | (ch >> 18)); out += static_cast<char>(0x80 | ((ch >> 12) & 0x3F));
         out += static_cast<char>(0x80 | ((ch >> 6) & 0x3F)); out += static_cast<char>(0x80 | (ch & 0x3F));
     }
+}
+
+std::optional<std::string> App::session_now(const service::Environment& e) const {
+    if (once_console) return std::nullopt;
+    if (!once_desktop.empty() && std::ranges::find(e.desktops, once_desktop) != e.desktops.end()) return once_desktop;
+    return desktop_session(e);
 }
 
 }  // namespace luban::os

@@ -25,7 +25,7 @@ Options: `--edition <EDITION>` — An official system by its short name: core (d
 
 Go into an environment, or boot an image
 
-Options: `--mode <MODE>` — sandbox (this machine's kernel) or machine (its own); default: its setting; `--temp` — Nothing it writes stays; `--user <NAME>` — Log in as this user this once (root, or one of its users); `--display <DISPLAY>` — terminal or window; default: its desktop decides
+Options: `--mode <MODE>` — sandbox (this machine's kernel) or machine (its own); default: its setting; `--temp` — Nothing it writes stays; `--user <NAME>` — Log in as this user this once (root, or one of its users); `--display <DISPLAY>` — terminal or window; default: its desktop decides; `--desktop <SESSION>` — This desktop, this once, in a window
 
 ## `luban run <name> <command>...` (common)
 

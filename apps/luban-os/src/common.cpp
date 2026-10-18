@@ -361,6 +361,16 @@ void host_menu_(App& a) {
                              a.window->fullscreen() ? "menu:leave-full-screen" : "menu:full-screen"},
                             {"New window", "新窗口", "menu:new-window"}};
     const bool machine = (a.console && a.console->is_machine()) || (a.display && a.display->is_machine());
+    // Its desktops and its console, to switch to (design 2026-10-18 §3): the
+    // session changes, the machine does not restart.
+    std::vector<std::string> labels;   // owns the words of the desktop items
+    labels.reserve(a.menu_desktops.size() + 1);
+    for (const auto& d : a.menu_desktops) {
+        if (a.view == View::Desktop && a.shown_desktop == d) continue;   // the one on screen
+        labels.push_back(std::vformat(tr("Desktop: {}", "桌面：{}"), std::make_format_args(d)));
+        items.push_back({labels.back(), labels.back(), "menu:desktop:" + d});
+    }
+    if (a.view == View::Desktop) items.push_back({"Console", "控制台", "menu:console"});
     if (machine) items.push_back({"Power off", "关机", "menu:power-off"});
     items.push_back({"Close this menu", "关闭菜单", "menu:close-this-menu"});
     const ImVec2 size(px(340), px(64) + static_cast<float>(items.size()) * px(48));
@@ -391,6 +401,14 @@ void host_menu_(App& a) {
     else if (picked == "menu:new-window") {
         const auto self = platform::get_executable_path();
         (void)platform::spawn_detached({self.string(), "--attach", a.current}, a.home / "logs" / "luban-os.log");
+    } else if (picked.starts_with("menu:desktop:") || picked == "menu:console") {
+        a.once_console = picked == "menu:console";
+        a.once_desktop = a.once_console ? std::string{} : picked.substr(13);
+        const bool was_machine = machine;
+        a.console.reset();
+        a.close_display();
+        if (was_machine) a.open_machine(a.current);
+        else a.open_console(a.current, false);
     } else if (picked == "menu:power-off") {
         a.console.reset();
         a.close_display();
