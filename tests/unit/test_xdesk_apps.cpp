@@ -7,6 +7,8 @@ import xlings.testkit;
 import std;
 import xdesk.apps;
 
+namespace tk = xlings::testkit;
+
 namespace apps = xdesk::apps;
 namespace fs = std::filesystem;
 
@@ -90,6 +92,9 @@ XTEST(XdeskApps, AnEntryThroughALinkKeepsItsOwnId, .area = "luban", .covers = {"
 // else the first entry; a Terminal=true application runs in it titled and
 // identified as itself, as the terminal's X-TerminalArg* keys say.
 XTEST(XdeskApps, AnApplicationRunsInTheDefaultTerminalUnderItsOwnName, .area = "luban", .covers = {"XDESK-APPS"}) {
+    // XDG directory lists are ':'-separated: a Linux desktop's (a Windows
+    // path has a ':' of its own).
+    if constexpr (tk::is_windows) GTEST_SKIP() << "XDG lists of Windows paths";
     const auto root = fs::temp_directory_path() / std::format("xdesk-term-{}", std::random_device{}());
     const auto data = root / "share", config = root / "config";
     fs::create_directories(data / "xdg-terminals");
