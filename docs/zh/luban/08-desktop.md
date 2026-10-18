@@ -128,11 +128,11 @@ repeat_delay = 500
 共用一份 Qt（`luban:qt-runtime`），只装一次。
 
 ```bash
-luban new desk --edition desktop --desktop lxqt   # 创建时带上 LXQt，并启动它
-luban enter desk --desktop kde                    # 这一次用另一个桌面（需已安装）
-luban config desk --desktop xdesk-canvas          # 启动哪个会话
-luban config desk --desktop none                  # 改为控制台
-luban config desk --enter console                 # 进入时先看到什么
+luban new desk --edition desktop --desktop lxqt   # made with LXQt, and starting it
+luban enter desk --desktop kde                    # another desktop, this once (installed already)
+luban config desk --desktop xdesk-canvas          # which session it starts
+luban config desk --desktop none                  # its console instead
+luban config desk --enter console                 # what going in shows first
 ```
 
 没有设置时启动 edition 指定的会话（edition 没有指定时，启动根里声明的第一个）。窗口的 Host 键菜单列出系统的桌面与控制台：
@@ -183,7 +183,7 @@ virtual keyboard 与 virtual pointer（输入）、output management（窗口的
 它是 luban 的一部分，随会话启动。
 
 ```bash
-xlings install --subos box luban:labwc      # 任何桌面包，Luban 的或其他 index 的
+xlings install --subos box luban:labwc      # any desktop package, Luban's or another index's
 luban config box --desktop labwc
 ```
 

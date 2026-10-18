@@ -493,6 +493,7 @@ struct App {
     int mouse_held { -1 };
     int clicks { 0 };
     std::chrono::steady_clock::time_point clicked_at;
+    int clicked_frame = -10;
     std::pair<int, int> clicked_cell { -1, -1 };
     std::string primary;
     std::optional<ImVec2> console_menu;

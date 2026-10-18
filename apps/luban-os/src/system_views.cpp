@@ -78,10 +78,15 @@ void console_mouse_(App& a, int mouse, bool sgr) {
         a.window->set_clipboard(a.primary);
     };
     if (ImGui::IsMouseClicked(ImGuiMouseButton_Left) && inside && !a.console_menu) {
-        // Clicks on one cell in quick succession: a word, then its line.
+        // Clicks on one cell in quick succession: a word, then its line. A
+        // click a frame or two after the last came as quickly, however long
+        // the frames took (a busy machine's queued input).
         const auto now = std::chrono::steady_clock::now();
-        a.clicks = now - a.clicked_at < std::chrono::milliseconds(400) && a.clicked_cell == std::pair(r, c) ? a.clicks + 1 : 1;
+        const int frame = ImGui::GetFrameCount();
+        const bool quick = now - a.clicked_at < std::chrono::milliseconds(400) || frame - a.clicked_frame <= 2;
+        a.clicks = quick && a.clicked_cell == std::pair(r, c) ? a.clicks + 1 : 1;
         a.clicked_at = now;
+        a.clicked_frame = frame;
         a.clicked_cell = {r, c};
         if (a.clicks == 2) { a.selection = console_word(*a.console, a.console_scroll, r, c); copy(); }
         else if (a.clicks >= 3) { a.selection = std::array<int, 4>{r, 0, r, a.grid.cols - 1}; copy(); a.clicks = 0; }

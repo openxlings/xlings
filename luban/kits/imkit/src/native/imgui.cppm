@@ -156,6 +156,7 @@ using ::ImGui::TextDisabled;
 using ::ImGui::TextUnformatted;
 using ::ImGui::GetFont;
 using ::ImGui::GetFontSize;
+using ::ImGui::GetFrameCount;
 using ::ImGui::GetCursorPosY;
 using ::ImGui::PushTextWrapPos;
 using ::ImGui::PopTextWrapPos;

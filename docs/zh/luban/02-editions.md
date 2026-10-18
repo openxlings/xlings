@@ -29,18 +29,18 @@ Luban 的 edition 位于官方 index 的 `luban:` 命名空间；luban 中的短
 
 ```bash
 luban new box                                   # luban:core
-luban new box --edition desktop --desktop lxqt  # Luban 的桌面 edition，配 LXQt
-luban new box --xpkg myindex:myos               # 你添加的 index 里的发行版
-luban new box --xpkg myindex:myos --xpkg luban:kde --xpkg xim:htop   # 以及装进去的组件
+luban new box --edition desktop --desktop lxqt  # Luban's desktop edition, with LXQt
+luban new box --xpkg myindex:myos               # a distribution from an index you added
+luban new box --xpkg myindex:myos --xpkg luban:kde --xpkg xim:htop   # and components into it
 ```
 
 创建之前，luban 先读系统的链（`xlings subos new --dry-run`）：它是什么、基于什么、预设什么、需要什么。
 来自官方以外 index 的系统或组件会标明来源，并经同意一次（`--yes` 即同意；agent 必须传它）；同意按包与版本记住。
 
 ```
- MyOS 1.0.0                                   来自 myindex
- 基于         Luban core 2026.10.18.1         官方
- 将会是       沙箱 · 登录 shell /usr/bin/fish · 12 个包
+ MyOS 1.0.0                                   from myindex
+ Based on     Luban core 2026.10.18.1         official
+ It will be   sandbox · login shell /usr/bin/fish · 12 packages
 ```
 
 链上没有任何官方 edition 的系统被拒绝（"不是基于 Luban 的"）；需要本 luban 不具备的能力的系统会说明缺什么
