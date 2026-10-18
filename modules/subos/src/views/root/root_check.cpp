@@ -102,15 +102,7 @@ Ran run_(const std::vector<std::string>& argv, std::chrono::seconds limit) {
     return ran;
 }
 
-// What a loader says when a program cannot start: glibc, musl, the kernel.
-bool loader_failed_(const Ran& r) {
-    if (r.timed_out) return false;
-    if (r.code == 126 || r.code == 127 || r.code > 128) return true;
-    for (const auto* said : {"error while loading shared libraries", "Error loading shared library",
-                             "Error relocating", "cannot execute binary file", "Exec format error"})
-        if (r.output.find(said) != std::string::npos) return true;
-    return false;
-}
+bool loader_failed_(const Ran& r) { return !started(r.code, r.timed_out, r.output); }
 
 std::string tail_(std::string_view text, std::size_t keep = 200) {
     std::string s(text.size() > keep ? text.substr(text.size() - keep) : text);
@@ -441,6 +433,21 @@ nlohmann::json to_json(const Report& report) {
         items.push_back(std::move(j));
     }
     return {{"ok", report.ok()}, {"failed", report.failed()}, {"items", std::move(items)}};
+}
+
+
+// What a loader says when a program cannot start: glibc, musl, the kernel.
+// BusyBox called by the name of an applet it was not built with answers
+// "applet not found" and 127: it ran, which is all this asks (design
+// 2026-10-19 F10).
+bool started(int code, bool timed_out, std::string_view output) {
+    if (timed_out) return true;
+    if (output.find("applet not found") != std::string_view::npos) return true;
+    if (code == 126 || code == 127 || code > 128) return false;
+    for (const auto* said : {"error while loading shared libraries", "Error loading shared library",
+                             "Error relocating", "cannot execute binary file", "Exec format error"})
+        if (output.find(said) != std::string_view::npos) return false;
+    return true;
 }
 
 }  // namespace xlings::subos::root_check
