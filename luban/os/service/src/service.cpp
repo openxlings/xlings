@@ -455,11 +455,21 @@ std::expected<NewPreview, int> preview_new(const Context& c, const NewOptions& o
                         std::format("a desktop or a package goes into a system: luban new {} --edition core --xpkg <it>", o.name), 2);
         }
     }
-    auto lineage = plan_system(c.port, o.name, p.system);
-    if (!lineage) return fail(lineage.error(), {}, 1);
-    p.lineage = std::move(*lineage);
-    // Built on Luban (design §4.4): its chain reaches an official edition.
-    if (!p.lineage.base())
+    if (!o.carrier.empty()) {
+        // Made in a carrier's machine (a PC's WSL, a Mac's vz): its chain is
+        // read there, by the xlings that makes it (a recipe for Linux has no
+        // build for this host); here, what was asked and where it comes from.
+        auto top = describe_coordinate(c.port, p.system);
+        if (!top) return fail(top.error(), {}, 1);
+        p.lineage.layers.push_back({.ref = top->ref(), .index = top->index});
+    } else {
+        auto lineage = plan_system(c.port, o.name, p.system);
+        if (!lineage) return fail(lineage.error(), {}, 1);
+        p.lineage = std::move(*lineage);
+    }
+    // Built on Luban (design §4.4): its chain reaches an official edition
+    // (read here; a carrier's xlings reads it where it makes it).
+    if (o.carrier.empty() && !p.lineage.base())
         return fail(std::format("{} is not built on a Luban edition: its `from` chain reaches none", p.system),
                     "a Luban system's chain ends on an official edition (luban:core, luban:desktop, ...)", 1);
     // What its manifests need of this luban (design §9).
