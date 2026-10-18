@@ -989,7 +989,12 @@ CI：延时与指针、键盘、排布的 e2e 在 `linux-luban-os-first-use`；�
 
 ## 25. 实施拆分与依赖
 
-每个仓库一个 PR（libxpkg、xlings、xim-pkgindex），commit 作为检查点；每个 commit 能构建并通过它涉及的测试。以草稿 PR 推送，每到一个阶段跑一次完整 CI。
+每个仓库一个 PR（libxpkg、xlings、xim-pkgindex），commit 作为检查点；每个 commit 能构建并通过它涉及的测试（本地跑相关的单元与 e2e）。
+
+**CI 的节奏**（评审补充，避免 CI 拖慢进度）：
+- 完整 CI 只在**每个阶段结束**（§25.3）与**大节点**（资源发布、全量回归 X29、发布 X30）各跑一次；不为每个 commit 跑完整 CI。
+- commit 之间只在本地验证它涉及的部分（构建、相关测试、lint）。
+- 等 CI 时不空等：并行做不依赖这次 CI 结果的任务（下一阶段可以先做的、文档、资源构建）；CI 失败时修复落在对应的 commit 或紧随其后的 `fix` commit。
 
 ### 25.1 任务
 
