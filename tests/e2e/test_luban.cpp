@@ -94,6 +94,18 @@ function install()
     return true
 end
 )LUA");
+    // Two versions of a system, the newest needing a client from the future.
+    tk::write_file(repo / "pkgs/n/next-os.lua", R"LUA(
+package = { spec = '1', name = 'next-os', type = 'subos', archs = {'x86_64', 'aarch64'},
+            xpm = { linux = { ['latest'] = { ref = '2.0.0' }, ['1.0.0'] = {}, ['2.0.0'] = { min_client = '9999.1.1.1' } } } }
+import('xim.libxpkg.pkginfo')
+function install()
+    local dir = pkginfo.install_dir()
+    os.mkdir(dir)
+    io.writefile(path.join(dir, '.xlings.json'), '{"subos_kind":"rootfs","packages":["fixture:hello@1.0.0"],"workspace":{}}')
+    return true
+end
+)LUA");
     // An agent workspace in miniature: a template that declares its policy.
     tk::write_file(repo / "pkgs/a/agent-ws.lua", template_recipe("agent-ws",
         Json{{"subos_kind", "rootfs"}, {"packages", {"fixture:hello@1.0.0"}}, {"policy", "fixture:agent-test@1.0.0"},
@@ -458,6 +470,30 @@ XTEST(Luban, ARootsLoginShellIsTheBestItHasOnceMade,
     // Nothing to choose from: sh stays.
     ASSERT_EQ(luban(home, {"new", "plain", "--edition", "fixture:my-os@1.0.0"}).exit_code, 0);
     EXPECT_EQ(shell("plain", "root"), "/bin/sh");
+}
+
+// What is not an edition is said in luban's words before xlings is asked
+// (E14); an older edition than the index's newest, chosen because the newest
+// needs a newer xlings, is said with the update (E8, B22).
+XTEST(Luban, NewSaysWhatItCannotMakeAndWhyItMadeAnOlderOne,
+      .area = "luban", .cost = tk::Cost::Medium, .covers = {"LUBAN-EDITION-MIN-CLIENT"}, .requires_ = {"linux", "xlings-bin"}) {
+    if constexpr (!tk::is_linux) GTEST_SKIP() << "a Luban root is a Linux root";
+    const auto bin = luban_binary();
+    if (!bin) GTEST_SKIP() << "no luban beside the xlings under test";
+    auto home = luban_home("luban-new-edition", *bin);
+    auto unknown = luban(home, {"new", "box", "--edition", "labwc-desktop"});
+    EXPECT_EQ(unknown.exit_code, 2) << unknown.transcript();
+    EXPECT_NE(unknown.err.find("no edition 'labwc-desktop'"), std::string::npos) << unknown.transcript();
+    EXPECT_EQ(unknown.transcript().find("subos new"), std::string::npos) << "xlings's usage\n" << unknown.transcript();
+    EXPECT_FALSE(fs::exists(home.dir() / "subos/box")) << "nothing was made";
+    auto older = luban(home, {"--json", "new", "box", "--edition", "fixture:next-os"});
+    ASSERT_EQ(older.exit_code, 0) << older.transcript();
+    EXPECT_NE(older.out.find("next-os@2.0.0 needs xlings >= 9999.1.1.1"), std::string::npos) << older.out;
+    EXPECT_NE(older.out.find("xlings self update"), std::string::npos) << older.out;
+    EXPECT_NE(older.out.find("\"passed_over\""), std::string::npos) << "in the result\n" << older.out;
+    auto text = luban(home, {"new", "box2", "--edition", "fixture:next-os"});
+    ASSERT_EQ(text.exit_code, 0) << text.transcript();
+    EXPECT_NE(text.transcript().find("needs xlings >= 9999.1.1.1"), std::string::npos) << text.transcript();
 }
 
 XTEST(Luban, AnExportedEnvironmentIsImportedWithItsStateAndANewPersona,

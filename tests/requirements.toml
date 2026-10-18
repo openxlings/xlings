@@ -80,7 +80,7 @@ text = "inside a Luban system, in a sandbox and a machine alike, the current sub
 status = "required"
 
 [LUBAN-EDITION-MIN-CLIENT]
-text = "an edition whose manifest names a min_client newer than this xlings is refused before anything is fetched, with xlings self update"
+text = "an edition whose manifest names a min_client newer than this xlings is refused before anything is fetched, with xlings self update; one passed over for an older version this xlings can use is said by luban new, with xlings self update, and recorded in its result"
 status = "required"
 
 [LUBAN-EDITION-RECORD]

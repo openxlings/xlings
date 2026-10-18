@@ -516,6 +516,7 @@ std::vector<PackageMatch> PackageCatalog::build_matches_(const RepoState& state,
         match.rawName = *matched;
         match.name = entry->identity.name;
         match.version = version;
+        match.passedOver = passedOver;
         match.namespaceName = entry->identity.namespaceName;
         match.canonicalName = entry->canonicalName;
         match.repoName = state.spec.name;

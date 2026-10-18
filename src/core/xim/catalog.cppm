@@ -46,6 +46,9 @@ struct PackageMatch {
     std::string rawName;
     std::string name;
     std::string version;
+    // Why `version` is not the newest: that one needs a newer client (its
+    // min_client). Empty when it is the newest, or one was asked for.
+    std::string passedOver;
     std::string namespaceName;
     std::string canonicalName;
     std::string repoName;

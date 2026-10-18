@@ -364,6 +364,19 @@ Outcome create(const Context& c, const NewOptions& o) {
         if (c.sink) c.sink(error("an environment needs a name", "luban new <name> --edition tiny"));
         return {.code = 2};
     }
+    // An edition is an official short name (or, until --xpkg, a coordinate):
+    // anything else is said here, in luban's words, before xlings is asked
+    // (E14: `--edition labwc-desktop` reached `xlings subos new` and its usage).
+    if (const auto name = std::string_view(o.edition).substr(0, o.edition.find('@'));
+        o.edition.find(':') == std::string::npos && !name.starts_with("luban-")
+        && std::ranges::find(official_editions(), name) == official_editions().end()) {
+        std::string known;
+        for (const auto e : official_editions()) known += (known.empty() ? "" : ", ") + std::string(e);
+        if (c.sink) c.sink(error(std::format("no edition '{}' (the editions: {})", name, known),
+                                 std::format("a desktop or a package goes into a system: luban new {} --edition core, "
+                                             "then xlings install {} --subos {}", o.name, name, o.name)));
+        return {.code = 2};
+    }
     // A name in use is said in luban's words before anything is fetched (U17).
     if (describe(c, o.name)) {
         if (c.sink) c.sink(error(std::format("'{}' already exists", o.name),
@@ -374,8 +387,21 @@ Outcome create(const Context& c, const NewOptions& o) {
     if (!o.proxy.empty()) args.insert(args.end(), {"--proxy", o.proxy});
     // Ready is what the self-check says, not that making it finished.
     const bool checked = xlings::platform::is_linux && o.carrier.empty();
-    const int rc = step_(c, "make", std::format("making {} ({})", o.name, o.edition), args, false,
+    // An older version of the edition than the index's newest, because that
+    // one needs a newer xlings: said, with the update (E8, B22).
+    std::string passed_over;
+    Context making = c;
+    making.sink = [&](const Event& e) {
+        if (e.kind == Event::Kind::Data && e.data_kind == "passed_over") {
+            const auto d = e.data.is_string() ? nlohmann::json::parse(e.data.get<std::string>(), nullptr, false) : e.data;
+            if (d.is_object()) passed_over = d.value("message", std::string{});
+            return;
+        }
+        if (c.sink) c.sink(e);
+    };
+    const int rc = step_(making, "make", std::format("making {} ({})", o.name, o.edition), args, false,
                          o.name + (checked ? " is made" : " is ready"));
+    if (!passed_over.empty() && c.sink) c.sink(notice(passed_over, "xlings self update"));
     if (rc != 0) return {.code = rc};
     if (checked) {
         if (const auto failed = unusable_(c, o.name, "check", std::format("{} is ready", o.name))) {
@@ -415,9 +441,11 @@ Outcome create(const Context& c, const NewOptions& o) {
     }
     auto e = describe(c, o.name);
     if (!e) return {.code = 0};
-    return {.code = 0, .value = {{"name", e->name}, {"edition", e->edition}, {"packages", e->packages},
-                                 {"user", user.empty() ? std::string("root") : user},
-                                 {"generation", e->generation ? Json(*e->generation) : Json()}, {"shell", e->shell}}};
+    Json value{{"name", e->name}, {"edition", e->edition}, {"packages", e->packages},
+               {"user", user.empty() ? std::string("root") : user},
+               {"generation", e->generation ? Json(*e->generation) : Json()}, {"shell", e->shell}};
+    if (!passed_over.empty()) value["passed_over"] = passed_over;
+    return {.code = 0, .value = std::move(value)};
 }
 
 Outcome configure(const Context& c, std::string_view name, const std::vector<std::pair<std::string, std::string>>& changes) {

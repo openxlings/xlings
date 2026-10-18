@@ -133,11 +133,12 @@ bool confirmed_or_refused_(EventStream& stream, std::string id,
 }
 
 std::optional<std::string> index_version_of(std::string_view package,
-                                            CatalogAccess access) {
+                                            CatalogAccess access, std::string* passedOver) {
     auto& catalog = get_catalog(access);
     if (!catalog.is_loaded()) return std::nullopt;
     auto match = catalog.resolve_target(std::string(package), detect_platform());
     if (!match || match->version.empty()) return std::nullopt;
+    if (passedOver) *passedOver = match->passedOver;
     return match->version;
 }
 

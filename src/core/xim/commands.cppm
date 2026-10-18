@@ -77,7 +77,8 @@ PackageCatalog* ensure_catalog(EventStream& stream, CatalogNeed need);
 // is worth a network round trip.
 std::optional<std::string> index_version_of(
     std::string_view package,
-    CatalogAccess access = CatalogAccess::LocalOnly);
+    CatalogAccess access = CatalogAccess::LocalOnly,
+    std::string* passedOver = nullptr);   // why it is not the newest (a newer client needed), if so
 
 // The ABI a runtime package says it provides, e.g. "linux-x86_64-glibc".
 //

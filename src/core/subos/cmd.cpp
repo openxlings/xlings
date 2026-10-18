@@ -937,8 +937,15 @@ fs::path resolve_base_package_(const std::string& fromSpec, EventStream& stream)
     auto ref = new_from_detail_::parse_pkg_spec_(fromSpec);
     // No version: the index's (its `latest`), not whichever is installed --
     // an edition installed once would otherwise be the newest forever.
-    if (ref.ver.empty())
-        if (auto v = xim::index_version_of(fromSpec, xim::CatalogAccess::LocalOnly)) ref.ver = *v;
+    if (ref.ver.empty()) {
+        std::string passedOver;
+        if (auto v = xim::index_version_of(fromSpec, xim::CatalogAccess::LocalOnly, &passedOver)) ref.ver = *v;
+        // An older version because the newest needs a newer xlings: said as
+        // data too, for whoever asked for it (luban new says it; E8).
+        if (!passedOver.empty())
+            stream.emit(DataEvent{"passed_over", nlohmann::json{{"package", fromSpec}, {"version", ref.ver},
+                                                               {"message", passedOver}}.dump()});
+    }
     auto baseDir = new_from_detail_::locate_base_pkg_(ref);
 
     if (!baseDir.empty()) {
