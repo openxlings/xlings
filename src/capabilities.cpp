@@ -232,7 +232,7 @@ auto PackageInfo::spec() const -> CapabilitySpec {
     return {
         .name = "package_info",
         .description = "Get detailed package info: versions, install status, metadata. Use namespace:name format (e.g. xim:gcc)",
-        .inputSchema = R"JSON({"type":"object","properties":{"target":{"type":"string","description":"Package in namespace:name format, e.g. xim:gcc"}},"required":["target"]})JSON",
+        .inputSchema = R"JSON({"type":"object","properties":{"target":{"type":"string","description":"Package in namespace:name format, e.g. xim:gcc"},"platform":{"type":"string","description":"Whose build is described: linux, macosx, windows (default: this machine's)"}},"required":["target"]})JSON",
         .outputSchema = R"({"type":"object","properties":{"exitCode":{"type":"integer"}}})",
         .destructive = false,
     };
@@ -240,7 +240,7 @@ auto PackageInfo::spec() const -> CapabilitySpec {
 
 auto PackageInfo::execute(Params params, EventStream& stream) -> Result {
     auto json = nlohmann::json::parse(params, nullptr, false);
-    return exit_result(xim::cmd_info(json.value("target", ""), stream));
+    return exit_result(xim::cmd_info(json.value("target", ""), stream, false, json.value("platform", "")));
 }
 
 auto PayloadStatus::spec() const -> CapabilitySpec {

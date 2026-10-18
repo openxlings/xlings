@@ -23,7 +23,7 @@ and AI agents talk to xlings over standard IO. The protocol is **1.12**, over ND
 | 1.9 | 2026.10.13.1 | added: `subos_command` -- any `xlings subos` subcommand with its log lines, progress, data and errors as events (what luban renders itself) |
 | 1.10 | 2026.10.16.1 | added: `--version` is the handshake (§3.1); `payload_status` and `sync_index` (§7.4); `install_targets` entries carry `complete` and `origin` (§6.3.1) |
 | 1.11 | 2026.10.17.1 | `complete` means integrity only; added beside it: `installed_revision`, `floor`, `usable`, `current` (feature `payload_currency`, §6.3.1, §7.4); the `scope_repaired` data event (§6.3.1); `system_status`'s `binding_state` data event (feature `binding_state`, §7.5) |
-| 1.12 | 2026.10.18.1 | added: `search_packages`' `category` argument, and `namespace`, `index`, `categories` on its `packages` entries; `package_info`'s `package` object; an index's reserved namespaces kept to it (feature `reserved_namespaces`); `subos_command` `new --dry-run`'s `subos_plan` data event (feature `subos_plan`) |
+| 1.12 | 2026.10.18.1 | added: `search_packages`' `category` argument, and `namespace`, `index`, `categories` on its `packages` entries; `package_info`'s `package` object and `platform` argument (whose build is described); an index's reserved namespaces kept to it (feature `reserved_namespaces`); `subos_command` `new --dry-run`'s `subos_plan` data event (feature `subos_plan`) |
 
 A minor version only adds: a 1.0 client reads 1.1 output unchanged. 1.11 is the
 one exception in meaning, not in shape: 1.10's `complete` also required the

@@ -122,7 +122,8 @@ std::expected<EditionAvailability, std::string> edition_availability(const Conte
     // Its short name is a name in the luban: namespace (or a published subos:luban-* one).
     const auto target = edition.find(':') != std::string_view::npos
         ? std::string(edition) : official_system(c.port, edition).value_or(std::format("luban:{}", edition));
-    const int rc = c.port.capability("package_info", Json{{"target", target}},
+    // Linux's build: an edition is one, wherever luban runs.
+    const int rc = c.port.capability("package_info", Json{{"target", target}, {"platform", "linux"}},
                                      [&](const Event& e) {
                                          if (e.kind != Event::Kind::Error) return;
                                          not_found = not_found || e.code == "E_NOT_FOUND";

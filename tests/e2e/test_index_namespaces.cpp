@@ -78,6 +78,10 @@ package = {{ spec = '1', name = '{}', namespace = 'luban', description = 'the {}
     tk::write_file(primary / "pkgs/luban/kde.lua", with("kde", "package", "'luban-desktop'"));
     tk::write_file(primary / "pkgs/luban/foot.lua", with("foot", "package", "'terminal'"));
     tk::write_file(primary / "pkgs/luban/core.lua", with("core", "subos", "'subos'"));
+    tk::write_file(primary / "pkgs/luban/tiny.lua", R"LUA(
+package = { spec = '1', name = 'tiny', namespace = 'luban', description = 'the tiny', type = 'subos',
+            categories = { 'subos' }, xpm = { linux = { ['2.0.0'] = {} } } }
+)LUA");
     const nlohmann::json config{
         {"mirror", "GLOBAL"},
         {"xim", {{"index-repo", primary.generic_string()}}},
@@ -114,6 +118,15 @@ package = {{ spec = '1', name = '{}', namespace = 'luban', description = 'the {}
     EXPECT_EQ(described["index"], std::string(xlings::Config::DEFAULT_INDEX_REPO_NAME));
     EXPECT_EQ(described["categories"], nlohmann::json::array({"subos"}));
     EXPECT_EQ(described["version"], "1.0.0");
+
+    // Another platform's build, described from any host (luban on a PC or a
+    // Mac asks about a Linux system its carrier makes).
+    auto linux_build = home.xlings({"interface", "package_info", "--args", R"({"target":"luban:tiny","platform":"linux"})"});
+    EXPECT_EQ(linux_build.exit_code, 0) << linux_build.transcript();
+    EXPECT_NE(linux_build.out.find("\"version\":\"2.0.0\""), std::string::npos) << linux_build.out;
+    auto windows_build = home.xlings({"interface", "package_info", "--args", R"({"target":"luban:tiny","platform":"windows"})"});
+    EXPECT_NE(windows_build.exit_code, 0) << windows_build.transcript();
+    EXPECT_NE(windows_build.out.find("no build for windows"), std::string::npos) << windows_build.out;
 }
 
 // A package of a namespace other than the default is kept under a version key

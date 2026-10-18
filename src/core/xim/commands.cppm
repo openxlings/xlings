@@ -329,8 +329,10 @@ int cmd_search(const std::string& keyword, EventStream& stream, const std::strin
 int cmd_list(const std::string& filter, EventStream& stream, bool all = false);
 
 // === info command ===
+// `platform`: whose build is described (empty: this machine's) -- Luban
+// asks about a Linux system from a PC or a Mac, made in a carrier's machine.
 int cmd_info(const std::string& target, EventStream& stream,
-             bool allVersions = false);
+             bool allVersions = false, const std::string& platform = {});
 
 // === payload status (design mcpp 2026-10-16 §14 X4) ===
 // What each target resolves to and what its payload is here, without

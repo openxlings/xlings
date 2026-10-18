@@ -2948,12 +2948,12 @@ int cmd_sync_index(const std::string& name, const std::filesystem::path& dest, E
     return 0;
 }
 
-int cmd_info(const std::string& target, EventStream& stream, bool allVersions) {
+int cmd_info(const std::string& target, EventStream& stream, bool allVersions, const std::string& forPlatform) {
     auto* loaded = ensure_catalog(stream, CatalogNeed::Local);
     if (!loaded) return 1;
     auto& catalog = *loaded;
 
-    const auto infoPlatform = detect_platform();
+    const auto infoPlatform = forPlatform.empty() ? detect_platform() : forPlatform;
     auto match = catalog.resolve_target(target, infoPlatform);
     if (!match) {
         // The same name, two answers.
@@ -3006,7 +3006,7 @@ int cmd_info(const std::string& target, EventStream& stream, bool allVersions) {
                     [&](EventStream::NobodyToAsk&&) {},
                 }, stream.prompt(std::move(pick)));
                 if (early >= 0) return early;
-                if (chosen) return cmd_info(*chosen, stream, allVersions);
+                if (chosen) return cmd_info(*chosen, stream, allVersions, forPlatform);
             }
             diag::emit({
                 .code    = "xim.ambiguous_target",
@@ -3073,7 +3073,7 @@ int cmd_info(const std::string& target, EventStream& stream, bool allVersions) {
         addField(fieldsJson, "archs", archStr);
     }
 
-    auto platform = detect_platform();
+    auto platform = infoPlatform;
     auto platformIt = pkg->xpm.entries.find(platform);
     if (platformIt != pkg->xpm.entries.end()) {
         // Concrete versions and aliases used to share one comma-joined

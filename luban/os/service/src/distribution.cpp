@@ -62,7 +62,9 @@ std::string Coordinate::role() const {
 std::expected<Coordinate, std::string> describe_coordinate(const Port& port, std::string_view coord) {
     std::vector<Json> data;
     std::string error;
-    port.capability("package_info", Json{{"target", std::string(coord)}},
+    // A Luban system and what goes into it are Linux's, wherever luban runs
+    // (a PC's or a Mac's is made in its carrier's machine).
+    port.capability("package_info", Json{{"target", std::string(coord)}, {"platform", "linux"}},
                     [&](const Event& e) { if (e.kind == Event::Kind::Error && error.empty()) error = e.text; }, &data);
     for (const auto& d : data) {
         if (d.value("dataKind", "") != "info_panel") continue;
