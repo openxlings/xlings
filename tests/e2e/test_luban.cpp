@@ -59,6 +59,41 @@ end
 )LUA");
     tk::write_file(repo / "pkgs/m/my-os.lua", template_recipe("my-os",
         Json{{"subos_kind", "rootfs"}, {"packages", {"fixture:hello@1.0.0"}}, {"workspace", Json::object()}}));
+    // Shells a root gets while it is made (LUBAN-SHELL): fish and bash, from a
+    // package the template installs -- after the root's first layout.
+    tk::write_file(repo / "pkgs/f/fish.lua", R"LUA(
+package = { spec = '1', name = 'fish', archs = {'x86_64', 'aarch64'}, xpm = { linux = { ['1.0.0'] = {} } } }
+import('xim.libxpkg.pkginfo')
+import('xim.libxpkg.xvm')
+function install()
+    local dir = pkginfo.install_dir()
+    os.mkdir(path.join(dir, 'bin'))
+    io.writefile(path.join(dir, 'bin', 'fish'), '#!/bin/sh\necho fish\n')
+    io.writefile(path.join(dir, 'bin', 'bash'), '#!/bin/sh\necho bash\n')
+    return true
+end
+function config()
+    local bindir = path.join(pkginfo.install_dir(), 'bin')
+    xvm.add('fish', { bindir = bindir })
+    xvm.add('bash', { bindir = bindir, binding = 'fish@' .. pkginfo.version() })
+    return true
+end
+)LUA");
+    tk::write_file(repo / "pkgs/s/shell-os.lua", template_recipe("shell-os",
+        Json{{"subos_kind", "rootfs"}, {"packages", {"fixture:hello@1.0.0", "fixture:fish@1.0.0"}}, {"workspace", Json::object()}}));
+    // The same, its edition naming bash (usr/share/luban/settings.json).
+    tk::write_file(repo / "pkgs/b/bash-os.lua", R"LUA(
+package = { spec = '1', name = 'bash-os', type = 'subos', archs = {'x86_64', 'aarch64'},
+            xpm = { linux = { ['1.0.0'] = {} } } }
+import('xim.libxpkg.pkginfo')
+function install()
+    local dir = pkginfo.install_dir()
+    os.mkdir(path.join(dir, 'usr', 'share', 'luban'))
+    io.writefile(path.join(dir, '.xlings.json'), '{"subos_kind":"rootfs","packages":["fixture:hello@1.0.0","fixture:fish@1.0.0"],"workspace":{}}')
+    io.writefile(path.join(dir, 'usr', 'share', 'luban', 'settings.json'), '{"login_shell":"/usr/bin/bash"}')
+    return true
+end
+)LUA");
     // An agent workspace in miniature: a template that declares its policy.
     tk::write_file(repo / "pkgs/a/agent-ws.lua", template_recipe("agent-ws",
         Json{{"subos_kind", "rootfs"}, {"packages", {"fixture:hello@1.0.0"}}, {"policy", "fixture:agent-test@1.0.0"},
@@ -395,6 +430,34 @@ XTEST(Luban, AnEnvironmentsSettingsAreItsAndItsShellIsItsPasswds,
     auto noFish = luban(home, {"config", "box", "--shell", "fish"});
     EXPECT_NE(noFish.exit_code, 0);
     EXPECT_NE(noFish.err.find("xlings install fish --subos box"), std::string::npos) << noFish.transcript();
+}
+
+// The login shell is the best the finished root has, and its edition's when
+// it names one (design 2026-10-18 §11, E1, E2): the root's first layout runs
+// before the packages, when only /bin/sh is there. Its user copies root's.
+XTEST(Luban, ARootsLoginShellIsTheBestItHasOnceMade,
+      .area = "luban", .cost = tk::Cost::Medium, .covers = {"LUBAN-SHELL"}, .requires_ = {"linux", "xlings-bin"}) {
+    if constexpr (!tk::is_linux) GTEST_SKIP() << "a Luban root is a Linux root";
+    const auto bin = luban_binary();
+    if (!bin) GTEST_SKIP() << "no luban beside the xlings under test";
+    auto home = luban_home("luban-shell", *bin);
+    // A user's shell in a system's passwd (the last field of its line).
+    const auto shell = [&](std::string_view name, std::string_view user) {
+        std::istringstream in(tk::read_file(home.dir() / "subos" / name / "rootfs/etc/passwd"));
+        for (std::string line; std::getline(in, line);)
+            if (line.starts_with(std::string(user) + ":")) return line.substr(line.rfind(':') + 1);
+        return std::string("(no user)");
+    };
+    auto made = luban(home, {"new", "fishy", "--edition", "fixture:shell-os@1.0.0", "--user", "alice", "--no-password"});
+    ASSERT_EQ(made.exit_code, 0) << made.transcript();
+    EXPECT_EQ(shell("fishy", "root"), "/usr/bin/fish");
+    EXPECT_EQ(shell("fishy", "alice"), "/usr/bin/fish") << "its user copies root's shell";
+    auto named = luban(home, {"new", "bashy", "--edition", "fixture:bash-os@1.0.0"});
+    ASSERT_EQ(named.exit_code, 0) << named.transcript();
+    EXPECT_EQ(shell("bashy", "root"), "/usr/bin/bash") << "the edition's own choice";
+    // Nothing to choose from: sh stays.
+    ASSERT_EQ(luban(home, {"new", "plain", "--edition", "fixture:my-os@1.0.0"}).exit_code, 0);
+    EXPECT_EQ(shell("plain", "root"), "/bin/sh");
 }
 
 XTEST(Luban, AnExportedEnvironmentIsImportedWithItsStateAndANewPersona,

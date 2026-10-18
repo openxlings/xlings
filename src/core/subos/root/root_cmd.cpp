@@ -23,6 +23,7 @@ import xlings.subos.home_view;
 import xlings.subos.policy_store;
 import xlings.subos.policy;
 import xlings.subos.rootfs;
+import xlings.subos.root_etc;
 import xlings.subos.root_check;
 import xlings.subos.library_cache;
 import xlings.subos.roles;
@@ -610,6 +611,17 @@ int declare_root_at_creation_(const std::string& name, bool rootfs, const std::s
         return 1;
     }
     const auto usr = rf::usr_of(HomeView{home}.instance(name));
+    // Its login shell is the best its /usr has with everything in it
+    // (LUBAN-SHELL): the layout's first refresh chose one before the
+    // packages, from a /usr with only /bin/sh. A shell someone chose since
+    // (anything but /bin/sh) stays.
+    if (const auto tree = subos_root::tree_of(home, name); tree != "/") {
+        const auto best = xlings::subos::root_etc::best_shell(usr);
+        if (best != "/bin/sh" && xlings::subos::root_etc::login_shell(tree) == "/bin/sh") {
+            if (auto set = xlings::subos::root_etc::set_login_shell(tree / "etc", "root", best); !set)
+                log::warn("'{}' keeps /bin/sh as its login shell: {}", name, set.error());
+        }
+    }
     std::error_code ec;
     log::info("'{}' is a root: generation {}; `xlings subos use {}` enters it as `/`", name,
               r && *r ? (*r)->generation : 0, name);

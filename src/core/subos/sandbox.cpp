@@ -992,7 +992,7 @@ int enter(const std::string& name, EventStream& stream, const EnterOptions& opts
             if (request.interactive && cmd.empty())
                 log::info("joined the running session of '{}'", name);
             auto r = session::join(home, name, session::ExecRequest{
-                .argv = sb.argv, .env = request.host_env, .tty = request.interactive });
+                .argv = sb.argv, .env = request.host_env, .tty = request.interactive, .shell = request.shell });
             if (!r.phase.empty() && r.phase == "setup")
                 log::error("{}", r.error);
             return r.exit_code;

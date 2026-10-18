@@ -313,6 +313,34 @@ std::expected<std::vector<Environment>, std::string> list(const Context& c) {
     return out;
 }
 
+namespace {
+
+// An edition's declared login shell, set when the root has it; said, and
+// left to the root's best, when it does not.
+void preset_login_shell_(const Context& c, std::string_view name) {
+    const auto usr = usr_of(c.home, name);
+    const auto root = root_of(c.home, name);
+    if (!usr || !root) return;
+    const auto at = xlings::subos::locate(xlings::subos::HomeView{c.home}, name);
+    const auto file = xlings::subos::physical(at, *usr / "share" / "luban" / "settings.json");
+    std::error_code ec;
+    if (!fs::is_regular_file(file, ec)) return;
+    const auto d = nlohmann::json::parse(xlings::platform::read_file_to_string(file.string()), nullptr, false);
+    if (!d.is_object() || !d.contains("login_shell") || !d["login_shell"].is_string()) return;
+    const auto shell = d["login_shell"].get<std::string>();
+    if (shell == xlings::subos::root_etc::login_shell(*root)) return;
+    if (!root_has_(c, name, shell)) {
+        if (c.sink) c.sink(notice(std::format("its edition names {} as the login shell, which {} does not have",
+                                              shell, name),
+                                  std::format("xlings install {} --subos {}", fs::path(shell).filename().string(), name)));
+        return;
+    }
+    if (auto set = xlings::subos::root_etc::set_login_shell(*root / "etc", "root", shell); !set && c.sink)
+        c.sink(notice(set.error()));
+}
+
+}  // namespace
+
 bool needs_user(std::string_view edition) {
     return edition == "desktop" || edition.starts_with("desktop-") || edition.find("luban-desktop") != std::string_view::npos;
 }
@@ -342,6 +370,10 @@ Outcome create(const Context& c, const NewOptions& o) {
             return {.code = 1};
         }
     }
+    // The login shell its edition declares (usr/share/luban/settings.json,
+    // login_shell), before its user copies root's: what xlings chose is the
+    // best the root has, and the edition may name another it has.
+    preset_login_shell_(c, o.name);
     // Its login user (part 3 §6.1): in its passwd, its group and wheel, the
     // password's hash in its shadow, and the one `luban enter` logs in as.
     // A desktop is never root's: made from the window (no question asked
@@ -403,6 +435,10 @@ Outcome configure(const Context& c, std::string_view name, const std::vector<std
                 if (c.sink) c.sink(error(set.error()));
                 return {.code = 1};
             }
+            if (const auto e = describe(c, name); e && e->running && c.sink)
+                c.sink(notice(std::format("{} is running: a terminal that enters it now starts {}; one already "
+                                          "in it keeps its shell (luban stop {} to restart everything)",
+                                          name, shell, name)));
         } else if (key == "login") {
             // Who `luban enter` logs in as: root, or one of its users.
             const auto root = root_of(c.home, name);

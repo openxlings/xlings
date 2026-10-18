@@ -126,6 +126,9 @@ struct ExecRequest {
     std::string cwd;                             // empty = the session's default
     std::optional<std::chrono::milliseconds> timeout;
     bool tty { false };
+    // The login shell as the root's passwd says now, the joined command's
+    // SHELL: the session's own is the one it started with.
+    std::string shell;
 };
 
 struct ExecResult {
@@ -137,6 +140,12 @@ struct ExecResult {
 // Run a command in the live session of `instance`, with this process's
 // stdin/stdout/stderr.
 ExecResult join(const HomeView& home, std::string_view instance, const ExecRequest& request);
+
+// A joined command's environment: the session's own, what the request
+// passed that the policy lets in (`pass`: names, `PREFIX*`), and SHELL as
+// the request names it now -- a login shell changed while the session ran.
+std::map<std::string, std::string> joined_env(const std::map<std::string, std::string>& session_env,
+                                              const nlohmann::json& request, const std::vector<std::string>& pass);
 
 // Ask a live session to end (SIGTERM to its sandbox through the supervisor).
 bool stop(const HomeView& home, std::string_view instance);

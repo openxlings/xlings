@@ -859,14 +859,7 @@ int supervise(const HomeView& home, Launch& L, Info& info, int listen_fd, std::a
                     platform::close_fds(m->fds);
                     continue;
                 }
-                // The joined command's environment: the session's own, plus
-                // what the caller passed that the policy lets in.
-                auto env = L.exec_env;
-                const auto req_env = m->json.value("env", nlohmann::json::object());
-                for (auto e = req_env.begin(); e != req_env.end(); ++e) {
-                    if (e.value().is_string() && env_allowed(e.key(), L.env_pass))
-                        env[e.key()] = e.value().get<std::string>();
-                }
+                auto env = joined_env(L.exec_env, m->json, L.env_pass);
                 std::string cwd = m->json.value("cwd", "");
                 if (cwd.empty()) cwd = L.default_cwd;
                 auto id = next_id++;
@@ -1031,6 +1024,18 @@ int host(const HomeView& home, Launch L) {
 
 // ── joining ──────────────────────────────────────────────────────────
 
+std::map<std::string, std::string> joined_env(const std::map<std::string, std::string>& session_env,
+                                              const nlohmann::json& request, const std::vector<std::string>& pass) {
+    auto env = session_env;
+    const auto asked = request.value("env", nlohmann::json::object());
+    for (auto e = asked.begin(); e != asked.end(); ++e)
+        if (e.value().is_string() && env_allowed(e.key(), pass)) env[e.key()] = e.value().get<std::string>();
+    // The joiner read the root's passwd now; the session's SHELL is the one
+    // it started with, and the host's is not the root's.
+    if (const auto shell = request.value("shell", std::string{}); shell.starts_with('/')) env["SHELL"] = shell;
+    return env;
+}
+
 ExecResult join(const HomeView& home, std::string_view instance, const ExecRequest& r) {
     if constexpr (!kSessions)
         return {kExitSetup, "setup", "sessions are not implemented on this platform yet"};
@@ -1049,6 +1054,7 @@ ExecResult join(const HomeView& home, std::string_view instance, const ExecReque
     } restore{cooked};
     nlohmann::json req{{"op", "exec"}, {"argv", r.argv}, {"env", r.env}, {"cwd", r.cwd},
                        {"tty", r.tty}};
+    if (!r.shell.empty()) req["shell"] = r.shell;
     if (r.timeout) req["timeout_ms"] = r.timeout->count();
     const int stdio[3] = {0, 1, 2};
     if (!send_msg(fd, req, stdio)) {
