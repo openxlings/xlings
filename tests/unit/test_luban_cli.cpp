@@ -38,11 +38,25 @@ XTEST(LubanCli, ACommandLineIsItsWordsItsOptionsAndWhatFollowsTheDoubleDash, .ar
 }
 
 XTEST(LubanCli, EditionsAndFormatsAreNamedTheUsersWay, .area = "luban", .covers = {"LUBAN-CLI-MAP"}) {
-    EXPECT_EQ(svc::edition_ref("tiny"), "subos:luban-tiny");
-    EXPECT_EQ(svc::edition_ref("tiny@2026.10.20.1"), "subos:luban-tiny@2026.10.20.1");
-    EXPECT_EQ(svc::edition_ref("desktop"), "subos:luban-desktop");
-    EXPECT_EQ(svc::edition_ref("luban-x"), "subos:luban-x");
-    EXPECT_EQ(svc::edition_ref("acme:my-os"), "acme:my-os");
+    // A system is named by its layers (design 2026-10-18 §4.5): an official
+    // edition as Luban's, a community one with the edition it is built on.
+    svc::Lineage official{.layers = {{"luban:desktop@2026.10.19.1", "xim", {}}}};
+    EXPECT_EQ(svc::display_name(official), "Luban desktop 2026.10.19.1");
+    EXPECT_TRUE(svc::os_release(official).empty()) << "an official edition keeps its own";
+    svc::Lineage frozen{.layers = {{"subos:luban-core@2026.10.16.2", "xim", {}}}};
+    EXPECT_EQ(svc::display_name(frozen), "Luban core 2026.10.16.2") << "the published names are Luban's too";
+    svc::Lineage mine{.layers = {{"awesome:myos@2026.11.1", "awesome", {{"luban", {{"os", {{"name", "MyOS"}}}}}}},
+                                 {"scode:campus-base@1.4", "scode", {}},
+                                 {"luban:desktop@2026.10.19.1", "xim", {}}}};
+    EXPECT_EQ(svc::display_name(mine), "MyOS 2026.11.1 (Luban desktop)");
+    EXPECT_EQ(mine.base()->ref, "luban:desktop@2026.10.19.1");
+    EXPECT_EQ(mine.parent()->ref, "scode:campus-base@1.4");
+    const auto release = svc::os_release(mine);
+    EXPECT_NE(release.find("ID=myos"), std::string::npos) << release;
+    EXPECT_NE(release.find("ID_LIKE=luban"), std::string::npos) << release;
+    EXPECT_NE(release.find("LUBAN_BASE=\"desktop 2026.10.19.1\""), std::string::npos) << release;
+    EXPECT_FALSE((svc::Layer{"xim:luban-core@1", "xim", {}}.official())) << "only the luban: namespace (and subos:luban-*)";
+    EXPECT_FALSE((svc::Layer{"luban:core@1", "awesome", {}}.official())) << "only from the official index";
     EXPECT_EQ(svc::export_format("box.iso"), "iso");
     EXPECT_EQ(svc::export_format("box.img"), "img");
     EXPECT_EQ(svc::export_format("box.qcow2"), "qcow2");

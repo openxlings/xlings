@@ -959,6 +959,7 @@ XTEST(LubanOs, TheQuickStartSaysWhatEachSystemIsAndWhatThisComputerCanMake, .are
 expect edition core
 expect name core-1
 waitfor quick_start.can_make {0} 30
+waitfor host.editions_known true 60
 frames 2
 state {1}
 screenshot {3}

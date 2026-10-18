@@ -30,9 +30,6 @@ struct Context {
     bool yes { false };       // the user already confirmed what this asks
 };
 
-// `core` -> `subos:luban-core`; a full reference (`ns:name[@v]`) as given.
-std::string edition_ref(std::string_view edition);
-std::span<const std::string_view> official_editions();
 
 // What the index says of an edition: whether it is there, its status, the
 // architectures it is built for, its description and latest version.
@@ -115,20 +112,153 @@ bool chinese_locale();
 std::expected<std::vector<Environment>, std::string> list(const Context& c);
 std::expected<Environment, std::string> describe(const Context& c, std::string_view name);
 
+}  // namespace luban::service
+
+// What a Luban system is made of and where it comes from (design 2026-10-18
+// §4, §5): everything is an xpkg. A coordinate is a system (`type = "subos"`),
+// a desktop (`categories` lists luban-desktop; its session file is the
+// convention), or a package; a system's lineage is its `from` chain, each
+// layer read from the index it resolves in; the official short names are the
+// names in the `luban:` namespace of the official index. What a third party's
+// system or component does beyond Luban is shown once and its answer kept.
+export namespace luban::service {
+
+
+
+// The index Luban's official packages come from: xlings's default one.
+inline constexpr std::string_view kOfficialIndex = "xim";
+
+// A coordinate as the index describes it (xlings interface package_info).
+struct Coordinate {
+    std::string given;                  // as typed
+    std::string package;                // ns:name
+    std::string ns, name, version;
+    std::string index;                  // the repository it resolves in
+    std::string type;                   // subos | package | script | ...
+    std::string description;
+    std::vector<std::string> categories;
+    std::string passed_over;            // why `version` is not the newest
+    // What it is to Luban (design §4.1): system | desktop | package.
+    std::string role() const;
+    bool official() const { return index == kOfficialIndex; }
+    std::string ref() const { return version.empty() ? package : package + "@" + version; }
+};
+// Not in any index: the index's answer, as an error.
+std::expected<Coordinate, std::string> describe_coordinate(const Port& port, std::string_view coord);
+
+// An official system's short name (`desktop`): luban:<name> when the index
+// has it, else the published subos:luban-<name> (frozen, still resolved);
+// nullopt when neither is a system.
+std::optional<std::string> official_system(const Port& port, std::string_view short_name);
+// The official desktop of that name (luban:<name>, categories luban-desktop).
+std::optional<std::string> official_desktop(const Port& port, std::string_view name);
+// Every official system's short name and the ref it resolves to, in one search.
+std::map<std::string, std::string> official_system_refs(const Port& port);
+// The official systems the index offers (their short names), for a message.
+std::vector<std::string> official_systems(const Port& port);
+
+// One layer of a system's lineage: a template and its manifest as written.
+struct Layer {
+    std::string ref;                    // ns:name@version
+    std::string index;
+    nlohmann::json manifest = nlohmann::json::object();
+    // An official Luban edition: the official index, the luban: namespace
+    // (or a published subos:luban-* one).
+    bool official() const;
+    // How it calls itself: the manifest's luban.os.name, else its package name.
+    std::string name() const;
+    std::string version() const;
+};
+
+// A system's lineage (design §4.4): its layers, top first, as
+// `xlings subos new --dry-run` read them.
+struct Lineage {
+    std::vector<Layer> layers;
+    std::vector<std::string> packages;  // merged, as declared
+    std::string policy;
+    // The Luban OS base: the first official edition from the top.
+    const Layer* base() const;
+    // The layer it is made from directly (the second), if any.
+    const Layer* parent() const;
+    // Its manifest's luban object merged down the chain, the upper layer winning per key.
+    nlohmann::json luban(std::string_view key) const;
+    // What every layer's luban.requires names.
+    std::vector<std::string> needs() const;
+};
+std::expected<Lineage, std::string> plan_system(const Port& port, std::string_view name, std::string_view ref);
+
+// "myos 2026.11.1 (Luban desktop)"; an official edition is "Luban desktop 2026.10.19.1".
+std::string display_name(const Lineage& l);
+// The os-release of a system that names itself (luban.os), written over the
+// edition's: NAME, ID, ID_LIKE=luban, VERSION_ID, LUBAN_BASE. Empty for an
+// official edition (its own stays).
+std::string os_release(const Lineage& l);
+
+// What a third party's system or components do beyond Luban, as a
+// confirmation shows it (design §5.4): one line each, the layer or
+// coordinate that brings it named.
+struct Beyond {
+    std::string what;                   // "policy", "settings", "admin", ...
+    std::string text;
+    std::string from;                   // the layer or coordinate
+    bool attention { false };           // shown first, marked
+};
+std::vector<Beyond> beyond_luban(const Lineage& l);
+// The identity of what is confirmed: the refs of the third-party layers and
+// coordinates, and what they do beyond Luban. A change asks again.
+std::string confirmation_key(const Lineage& l, std::span<const Coordinate> extra);
+
+// <home>/config/luban/confirmed.json. Absent: nothing confirmed; unreadable:
+// an error naming the file (never "not confirmed").
+std::expected<bool, std::string> is_confirmed(const fs::path& home, std::string_view key);
+std::expected<void, std::string> record_confirmed(const fs::path& home, std::string_view key, std::string_view label);
+
+
 struct NewOptions {
     std::string name;
-    std::string edition { "core" };
+    // The system (design 2026-10-18 §5.1): an official short name (`edition`:
+    // a name in the luban: namespace), or a system coordinate among `xpkgs`
+    // (any index); neither is core. `xpkgs` also takes desktops and packages,
+    // installed into it once it is made.
+    std::string edition;
+    std::vector<std::string> xpkgs;
+    // What `luban config` takes, applied once it is made (desktop, mode,
+    // persist, shell, login, on-close, policy, tz, allow, ...).
+    std::vector<std::pair<std::string, std::string>> settings;
     std::string proxy;
     std::string carrier;
     // Its login user (part 3 §6.1), made after it is: a name, and the
     // password's crypt hash ("" = logs in without one). Empty: root.
     std::string user;
     std::string password_hash;
+    // A third party's part was shown and agreed to (the caller asked).
+    bool agreed { false };
 };
-// An edition that cannot be used as root: a desktop (its browsers refuse it).
-bool needs_user(std::string_view edition);
+
+// What `luban new` would make, before anything is (design 2026-10-18 §5.3):
+// the system's lineage read from its templates, what was given besides it,
+// and whether a third party's part is to be confirmed.
+struct NewPreview {
+    std::string system;                     // the ref xlings makes it from
+    Lineage lineage;
+    std::vector<Coordinate> extras;         // desktops and packages given with --xpkg
+    std::vector<Beyond> beyond;             // what its third-party layers do beyond Luban
+    std::string confirm_key;                // empty: everything is official
+    bool confirmed { false };               // confirmed before (config/luban/confirmed.json)
+    bool needs_confirmation() const { return !confirm_key.empty() && !confirmed; }
+    // What it is as data: distribution, luban_base, parent, lineage[], extras[].
+    nlohmann::json value() const;
+};
+// Checks, in order: what each coordinate is; one system; the chain reaches an
+// official edition; what its manifests need of this luban. A failure is said
+// through the sink with its next step, and is the error's exit code.
+std::expected<NewPreview, int> preview_new(const Context& c, const NewOptions& o);
+// A system that cannot be used as root: a desktop (its browsers refuse it).
+bool needs_user(const NewPreview& p);
 inline constexpr std::string_view kDefaultUser = "lubanoser";
-Outcome create(const Context& c, const NewOptions& o);
+// Makes it. A third party's part not confirmed before is made only with
+// Context::yes (the caller asked, or was told to); otherwise code 2, with how.
+Outcome create(const Context& c, const NewOptions& o, const NewPreview* preview = nullptr);
 
 // Changes, in the order given: machine settings (mode, persist, desktop,
 // on-close), the login shell, and xlings's isolation settings (policy, proxy,

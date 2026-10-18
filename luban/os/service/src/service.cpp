@@ -114,16 +114,15 @@ const std::set<std::string, std::less<>>& isolation_keys_() {
 
 }  // namespace
 
-std::span<const std::string_view> official_editions() {
-    static constexpr std::array<std::string_view, 7> value{"nano", "tiny", "tiny-musl", "core", "desktop", "desktop-xdesk", "agent-workspace"};
-    return value;
-}
 
 std::expected<EditionAvailability, std::string> edition_availability(const Context& c, std::string_view edition) {
     std::vector<Json> data;
     std::string error;
     bool not_found = false;
-    const int rc = c.port.capability("package_info", Json{{"target", edition_ref(edition)}},
+    // Its short name is a name in the luban: namespace (or a published subos:luban-* one).
+    const auto target = edition.find(':') != std::string_view::npos
+        ? std::string(edition) : official_system(c.port, edition).value_or(std::format("luban:{}", edition));
+    const int rc = c.port.capability("package_info", Json{{"target", target}},
                                      [&](const Event& e) {
                                          if (e.kind != Event::Kind::Error) return;
                                          not_found = not_found || e.code == "E_NOT_FOUND";
@@ -152,17 +151,6 @@ std::expected<EditionAvailability, std::string> edition_availability(const Conte
     return out;
 }
 
-std::string edition_ref(std::string_view edition) {
-    if (edition.empty()) return "subos:luban-core";
-    if (edition.find(':') != std::string_view::npos) return std::string(edition);
-    const auto at = edition.find('@');
-    const auto name = edition.substr(0, at);
-    const auto version = at == std::string_view::npos ? std::string_view{} : edition.substr(at);
-    if (std::ranges::find(official_editions(), name) != official_editions().end())
-        return std::format("subos:luban-{}{}", name, version);
-    if (name.starts_with("luban-")) return std::format("subos:{}{}", name, version);
-    return std::string(edition);
-}
 
 // A system on a carrier lives in that carrier's machine: what it is comes
 // from the luban there, through the same interface (part 4 §7.4) -- the
@@ -323,17 +311,19 @@ namespace {
 
 // An edition's declared login shell, set when the root has it; said, and
 // left to the root's best, when it does not.
-void preset_login_shell_(const Context& c, std::string_view name) {
+void preset_login_shell_(const Context& c, std::string_view name, std::string shell = {}) {
     const auto usr = usr_of(c.home, name);
     const auto root = root_of(c.home, name);
     if (!usr || !root) return;
-    const auto at = xlings::subos::locate(xlings::subos::HomeView{c.home}, name);
-    const auto file = xlings::subos::physical(at, *usr / "share" / "luban" / "settings.json");
-    std::error_code ec;
-    if (!fs::is_regular_file(file, ec)) return;
-    const auto d = nlohmann::json::parse(xlings::platform::read_file_to_string(file.string()), nullptr, false);
-    if (!d.is_object() || !d.contains("login_shell") || !d["login_shell"].is_string()) return;
-    const auto shell = d["login_shell"].get<std::string>();
+    if (shell.empty()) {
+        const auto at = xlings::subos::locate(xlings::subos::HomeView{c.home}, name);
+        const auto file = xlings::subos::physical(at, *usr / "share" / "luban" / "settings.json");
+        std::error_code ec;
+        if (!fs::is_regular_file(file, ec)) return;
+        const auto d = nlohmann::json::parse(xlings::platform::read_file_to_string(file.string()), nullptr, false);
+        if (!d.is_object() || !d.contains("login_shell") || !d["login_shell"].is_string()) return;
+        shell = d["login_shell"].get<std::string>();
+    }
     if (shell == xlings::subos::root_etc::login_shell(*root)) return;
     if (!root_has_(c, name, shell)) {
         if (c.sink) c.sink(notice(std::format("its edition names {} as the login shell, which {} does not have",
@@ -364,6 +354,10 @@ std::vector<opencaps::Verdict> unmet_needs(const Environment& e, const opencaps:
 
 EnterPlan enter_plan(const Environment& e) {
     const auto& setting = e.settings.desktop;
+    // What going in shows first (design 2026-10-18 §8): a system set to its
+    // console enters it whatever desktops it has; not set, the rule before --
+    // its desktop when it has one.
+    if (e.settings.enter == "console") return {};
     if (setting == "none" || (setting.empty() && e.desktops.empty())) return {};
     if (setting.empty()) return {.target = "desktop", .session = e.desktops.front()};
     if (std::ranges::find(e.desktops, setting) != e.desktops.end()) return {.target = "desktop", .session = setting};
@@ -376,26 +370,98 @@ EnterPlan enter_plan(const Environment& e) {
                               setting, have, e.name)};
 }
 
-bool needs_user(std::string_view edition) {
-    return edition == "desktop" || edition.starts_with("desktop-") || edition.find("luban-desktop") != std::string_view::npos;
+bool needs_user(const NewPreview& p) {
+    const auto* base = p.lineage.base();
+    return base && (base->name() == "desktop" || base->name().starts_with("desktop-"));
 }
 
-Outcome create(const Context& c, const NewOptions& o) {
+Json NewPreview::value() const {
+    Json lineage_json = Json::array();
+    for (const auto& l : lineage.layers)
+        lineage_json.push_back({{"ref", l.ref}, {"index", l.index}, {"official", l.official()}, {"name", l.name()},
+                                {"version", l.version()}});
+    Json v{{"system", system}, {"distribution", display_name(lineage)}, {"lineage", lineage_json}};
+    if (const auto* b = lineage.base()) v["luban_base"] = std::format("{} {}", b->name(), b->version());
+    if (const auto* p = lineage.parent()) v["parent"] = p->ref;
+    Json more = Json::array();
+    for (const auto& e : extras) more.push_back({{"package", e.ref()}, {"role", e.role()}, {"index", e.index}});
+    v["extras"] = more;
+    Json beyond_json = Json::array();
+    for (const auto& b : beyond) beyond_json.push_back({{"what", b.what}, {"text", b.text}, {"from", b.from}});
+    v["beyond"] = beyond_json;
+    v["needs_confirmation"] = needs_confirmation();
+    return v;
+}
+
+std::expected<NewPreview, int> preview_new(const Context& c, const NewOptions& o) {
+    auto fail = [&](std::string text, std::string hint, int code) -> std::expected<NewPreview, int> {
+        if (c.sink) c.sink(error(std::move(text), std::move(hint)));
+        return std::unexpected(code);
+    };
+    NewPreview p;
+    std::vector<Coordinate> systems;
+    for (const auto& given : o.xpkgs) {
+        auto coord = describe_coordinate(c.port, given);
+        if (!coord) return fail(coord.error(), std::format("xlings search {}", given.substr(0, given.find('@'))), 1);
+        (coord->role() == "system" ? systems : p.extras).push_back(*coord);
+    }
+    if (systems.size() > 1)
+        return fail(std::format("{} and {} are both systems: --xpkg takes one system", systems[0].given, systems[1].given),
+                    std::format("luban new {} --xpkg {}", o.name, systems[0].given), 2);
+    if (!o.edition.empty() && !systems.empty())
+        return fail(std::format("{} is a system, and so is --edition {}: one system", systems[0].given, o.edition),
+                    std::format("luban new {} --xpkg {}", o.name, systems[0].given), 2);
+    if (o.edition.find(':') != std::string::npos)
+        return fail(std::format("--edition takes an official short name; {} is a coordinate", o.edition),
+                    std::format("luban new {} --xpkg {}", o.name, o.edition), 2);
+    if (!systems.empty()) {
+        // As given: an unversioned coordinate is resolved by xlings, which
+        // says when it took an older version than the newest (B22).
+        p.system = systems.front().given;
+    } else {
+        const auto edition = o.edition.empty() ? std::string("core") : o.edition;
+        if (auto ref = official_system(c.port, edition)) p.system = *ref;
+        else {
+            // A desktop given as a system: the right way to have it (design §5.3).
+            const auto short_name = edition.substr(0, edition.find('@'));
+            if (official_desktop(c.port, short_name))
+                return fail(std::format("{} is a desktop, not a system", short_name),
+                            std::format("luban new {} --edition core --desktop {}", o.name, short_name), 2);
+            std::string known;
+            for (const auto& e : official_systems(c.port)) known += (known.empty() ? "" : ", ") + e;
+            return fail(std::format("no edition '{}'{}", short_name, known.empty() ? std::string{} : " (the editions: " + known + ")"),
+                        std::format("a desktop or a package goes into a system: luban new {} --edition core --xpkg <it>", o.name), 2);
+        }
+    }
+    auto lineage = plan_system(c.port, o.name, p.system);
+    if (!lineage) return fail(lineage.error(), {}, 1);
+    p.lineage = std::move(*lineage);
+    // Built on Luban (design §4.4): its chain reaches an official edition.
+    if (!p.lineage.base())
+        return fail(std::format("{} is not built on a Luban edition: its `from` chain reaches none", p.system),
+                    "a Luban system's chain ends on an official edition (luban:core, luban:desktop, ...)", 1);
+    // What its manifests need of this luban (design §9).
+    std::vector<opencaps::Need> needs;
+    for (const auto& text : p.lineage.needs()) {
+        if (auto n = opencaps::parse_need(text)) needs.push_back(*n);
+        else needs.push_back({text, 1});
+    }
+    if (const auto bad = opencaps::unmet(needs, luban_provides()); !bad.empty())
+        return fail(std::format("{} needs what this luban does not have: {}", p.system, bad.front().why()),
+                    "xlings update luban", 1);
+    p.beyond = beyond_luban(p.lineage);
+    p.confirm_key = confirmation_key(p.lineage, p.extras);
+    if (!p.confirm_key.empty()) {
+        auto done = is_confirmed(c.home, p.confirm_key);
+        if (!done) return fail(done.error(), {}, 1);
+        p.confirmed = *done;
+    }
+    return p;
+}
+
+Outcome create(const Context& c, const NewOptions& o, const NewPreview* given) {
     if (o.name.empty()) {
         if (c.sink) c.sink(error("an environment needs a name", "luban new <name> --edition tiny"));
-        return {.code = 2};
-    }
-    // An edition is an official short name (or, until --xpkg, a coordinate):
-    // anything else is said here, in luban's words, before xlings is asked
-    // (E14: `--edition labwc-desktop` reached `xlings subos new` and its usage).
-    if (const auto name = std::string_view(o.edition).substr(0, o.edition.find('@'));
-        o.edition.find(':') == std::string::npos && !name.starts_with("luban-")
-        && std::ranges::find(official_editions(), name) == official_editions().end()) {
-        std::string known;
-        for (const auto e : official_editions()) known += (known.empty() ? "" : ", ") + std::string(e);
-        if (c.sink) c.sink(error(std::format("no edition '{}' (the editions: {})", name, known),
-                                 std::format("a desktop or a package goes into a system: luban new {} --edition core, "
-                                             "then xlings install {} --subos {}", o.name, name, o.name)));
         return {.code = 2};
     }
     // A name in use is said in luban's words before anything is fetched (U17).
@@ -404,7 +470,29 @@ Outcome create(const Context& c, const NewOptions& o) {
                                  std::format("luban rm {}, or choose another name", o.name)));
         return {.code = 2};
     }
-    auto args = new_argv_(o.name, edition_ref(o.edition), o.carrier);
+    // What it would be, checked before anything is made (design §5.3): an
+    // edition that is not one is said here, never by xlings (E14).
+    std::optional<NewPreview> made_preview;
+    if (!given) {
+        auto p = preview_new(c, o);
+        if (!p) return {.code = p.error()};
+        made_preview = std::move(*p);
+    }
+    const NewPreview& preview = given ? *given : *made_preview;
+    // A third party's part, never confirmed: only when the caller asked (design §5.4).
+    if (preview.needs_confirmation()) {
+        if (!c.yes && !o.agreed) {
+            if (c.sink) c.sink(error(std::format("{} is not Luban's own: what it does is to be agreed to first",
+                                                 display_name(preview.lineage)),
+                                     std::format("luban new {} ... at a terminal shows it; --yes agrees", o.name)));
+            return {.code = 2};
+        }
+        if (auto r = record_confirmed(c.home, preview.confirm_key, display_name(preview.lineage)); !r) {
+            if (c.sink) c.sink(error(r.error()));
+            return {.code = 1};
+        }
+    }
+    auto args = new_argv_(o.name, preview.system, o.carrier);
     if (!o.proxy.empty()) args.insert(args.end(), {"--proxy", o.proxy});
     // Ready is what the self-check says, not that making it finished.
     const bool checked = xlings::platform::is_linux && o.carrier.empty();
@@ -420,10 +508,29 @@ Outcome create(const Context& c, const NewOptions& o) {
         }
         if (c.sink) c.sink(e);
     };
-    const int rc = step_(making, "make", std::format("making {} ({})", o.name, o.edition), args, false,
+    const auto shown = display_name(preview.lineage);
+    const int rc = step_(making, "make", std::format("making {} ({})", o.name, shown), args, false,
                          o.name + (checked ? " is made" : " is ready"));
     if (!passed_over.empty() && c.sink) c.sink(notice(passed_over, "xlings self update"));
     if (rc != 0) return {.code = rc};
+    // A system that names itself says so in its os-release (design §4.5).
+    if (const auto release = os_release(preview.lineage); !release.empty())
+        if (auto root = root_of(c.home, o.name)) {
+            std::error_code ec;
+            fs::remove(*root / "etc" / "os-release", ec);
+            xlings::platform::write_file_atomic((*root / "etc" / "os-release").string(), release);
+        }
+    // What was given besides the system: its desktops and packages (design §5.1).
+    for (const auto& extra : preview.extras) {
+        if (c.sink) c.sink(phase("install", "begin", std::format("installing {}", extra.ref())));
+        const int irc = c.port.terminal({"install", extra.ref(), "--subos", o.name, "-y", "--agent"});
+        if (c.sink) c.sink(phase("install", irc == 0 ? "done" : "failed", std::format("installing {}", extra.ref())));
+        if (irc != 0) {
+            if (c.sink) c.sink(error(std::format("{} is made; {} was not installed into it", o.name, extra.ref()),
+                                     std::format("xlings install {} --subos {}", extra.ref(), o.name)));
+            return {.code = irc};
+        }
+    }
     if (checked) {
         if (const auto failed = unusable_(c, o.name, "check", std::format("{} is ready", o.name))) {
             if (c.sink) c.sink(error(std::format("{} is made, and not usable: {}", o.name, *failed),
@@ -431,15 +538,14 @@ Outcome create(const Context& c, const NewOptions& o) {
             return {.code = 1};
         }
     }
-    // The login shell its edition declares (usr/share/luban/settings.json,
-    // login_shell), before its user copies root's: what xlings chose is the
-    // best the root has, and the edition may name another it has.
-    preset_login_shell_(c, o.name);
+    // The login shell its edition declares (its manifest's luban.settings, or
+    // usr/share/luban/settings.json), before its user copies root's.
+    preset_login_shell_(c, o.name, preview.lineage.luban("settings").value("login_shell", std::string{}));
     // Its login user (part 3 §6.1): in its passwd, its group and wheel, the
     // password's hash in its shadow, and the one `luban enter` logs in as.
     // A desktop is never root's: made from the window (no question asked
     // there), it gets the default user, without a password.
-    const auto user = o.user.empty() && needs_user(o.edition) ? std::string(kDefaultUser) : o.user;
+    const auto user = o.user.empty() && needs_user(preview) ? std::string(kDefaultUser) : o.user;
     if (!user.empty()) {
         const auto root = root_of(c.home, o.name);
         if (!root) {
@@ -460,11 +566,41 @@ Outcome create(const Context& c, const NewOptions& o) {
         if (c.sink) c.sink(notice(std::format("{} logs in as {}{}", o.name, user,
                                               o.password_hash.empty() ? " (no password)" : "")));
     }
+    // The desktop asked for (--desktop), when it does not have it: the
+    // official one of that name, installed -- the one thing luban new
+    // installs unasked, and says (design §5.1).
+    std::string desktop;
+    for (const auto& [k, v] : o.settings) if (k == "desktop") desktop = v;
+    if (!desktop.empty() && desktop != "none") {
+        auto e = describe(c, o.name);
+        if (e && std::ranges::find(e->desktops, desktop) == e->desktops.end()) {
+            auto found = official_desktop(c.port, desktop);
+            std::expected<Coordinate, std::string> official = std::unexpected(std::string{});
+            if (found) official = describe_coordinate(c.port, *found);
+            if (!official) {
+                if (c.sink) c.sink(error(std::format("{} has no desktop {}, and Luban has none of that name", o.name, desktop),
+                                         std::format("xlings install <its package> --subos {}", o.name)));
+                return {.code = 1};
+            }
+            if (c.sink) c.sink(phase("install", "begin", std::format("installing {} (its desktop)", official->ref())));
+            const int drc = c.port.terminal({"install", official->ref(), "--subos", o.name, "-y", "--agent"});
+            if (c.sink) c.sink(phase("install", drc == 0 ? "done" : "failed", std::format("installing {} (its desktop)", official->ref())));
+            if (drc != 0) return {.code = drc};
+            if (c.sink) c.sink(notice(std::format("{} has {} as its desktop ({})", o.name, desktop, official->ref())));
+        }
+    }
+    // What luban config takes, given now (design §5.1): the same function.
+    if (!o.settings.empty())
+        if (auto set = configure(c, o.name, o.settings); !set.ok()) return {.code = set.code};
     auto e = describe(c, o.name);
     if (!e) return {.code = 0};
-    Json value{{"name", e->name}, {"edition", e->edition}, {"packages", e->packages},
-               {"user", user.empty() ? std::string("root") : user},
-               {"generation", e->generation ? Json(*e->generation) : Json()}, {"shell", e->shell}};
+    Json value = preview.value();
+    value.update(Json{{"name", e->name}, {"edition", e->edition}, {"packages", e->packages},
+                      {"user", user.empty() ? std::string("root") : user},
+                      {"generation", e->generation ? Json(*e->generation) : Json()}, {"shell", e->shell},
+                      {"desktops", e->desktops}});
+    const auto plan = enter_plan(*e);
+    if (plan.target == "desktop") value["desktop"] = plan.session;
     if (!passed_over.empty()) value["passed_over"] = passed_over;
     return {.code = 0, .value = std::move(value)};
 }
@@ -473,7 +609,7 @@ Outcome configure(const Context& c, std::string_view name, const std::vector<std
     if (!exists_(c, name)) return missing_(c, name);
     std::vector<std::string> isolation;
     for (const auto& [key, value] : changes) {
-        if (key == "mode" || key == "persist" || key == "desktop" || key == "on-close") {
+        if (key == "mode" || key == "persist" || key == "desktop" || key == "on-close" || key == "enter") {
             auto s = set_setting(c.home, name, key, value);
             if (!s) {
                 if (c.sink) c.sink(error(s.error()));

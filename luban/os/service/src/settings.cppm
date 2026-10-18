@@ -18,6 +18,7 @@ struct Settings {
     std::string persist { "all" };       // all | home | none
     std::string desktop;                 // a session name; empty: the edition's (or none)
     std::string on_close { "ask" };      // ask | background | poweroff
+    std::string enter;                   // console | desktop: what going in shows first; empty: its desktop if it has one
     nlohmann::json document = nlohmann::json::object();   // everything as read
 };
 

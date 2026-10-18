@@ -170,10 +170,14 @@ void ask_availability_(App& a) {
         }
         if (!stop.stop_requested() && app->window) app->window->wake();
         const std::string arch(platform::build_arch());
+        // Which package each short name is (luban:<name>, or a published
+        // subos:luban-<name>): one search for all of them.
+        const auto refs = service::official_system_refs(ctx.port);
         for (const auto& e : kEditions) {
             if (stop.stop_requested()) return;   // the window is closing
             Availability v{.known = true, .arch = arch};
-            if (auto got = service::edition_availability(ctx, e.name)) {
+            const auto it = refs.find(std::string(e.name));
+            if (auto got = service::edition_availability(ctx, it != refs.end() ? it->second : "luban:" + std::string(e.name))) {
                 v.listed = got->listed;
                 v.here = !got->listed || got->archs.empty() || std::ranges::find(got->archs, arch) != got->archs.end();
             }   // the index could not be asked: offered, and making it says why

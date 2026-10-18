@@ -1036,7 +1036,7 @@ text = "an environment's persist setting decides what a session keeps of a root'
 status = "required"
 
 [LUBAN-SETTINGS]
-text = "an environment's machine settings (mode, persist, desktop, on-close) are checked values in its machine.json; every key another luban wrote survives a change, and a file that cannot be read is an error, never the defaults"
+text = "an environment's machine settings (mode, persist, desktop, on-close, enter) are checked values in its machine.json, over its edition's (usr/share/luban/settings.json) and its manifest's (luban.settings); luban new takes the same ones as luban config; every key another luban wrote survives a change, and a file that cannot be read is an error, never the defaults"
 status = "required"
 
 [LUBAN-ARCHIVE]
@@ -1231,11 +1231,11 @@ status = "required"
 
 [LUBAN-DIST-XPKG]
 text = "luban new takes any system and any components by --xpkg (repeatable, any index): it finds what each is (a system, a desktop, a package) from the fields and conventions it already has, says the right way when one is given where the other belongs, asks once for a third party's (with what it does beyond Luban), records the answer, and in agent mode fails with --yes"
-status = "planned"
+status = "required"
 
 [LUBAN-DIST-LINEAGE]
 text = "a system says what it is in one way everywhere: its name and version, then the Luban edition it is built on (`myos 2026.11.1 (Luban desktop)`), its direct parent with its source, and its os-release (ID_LIKE=luban, LUBAN_BASE)"
-status = "planned"
+status = "required"
 
 [LUBAN-NAMESPACE]
 text = "a namespace an index reserves is taken from that index only (another index's recipe in it is refused, naming the index and the file); luban's short names are the names in the luban: namespace, none listed in its code; replaces is honoured within one index"
