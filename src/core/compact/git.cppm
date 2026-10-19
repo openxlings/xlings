@@ -157,6 +157,9 @@ inline bool target_is_git_bootstrap_() {
 }
 
 inline bool bootstrap_git_() {
+    // No network: installing git needs it too (design 2026-10-19 F25: the
+    // same failure five times, a child xlings each).
+    if (!env_or_empty_("XLINGS_NET_UNREACHABLE").empty()) return false;
     if (env_flag_("XLINGS_COMPACT_GIT_BOOTSTRAP")) {
         log::error("git is required, but Git bootstrap is already active");
         return false;

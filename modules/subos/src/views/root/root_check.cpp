@@ -418,6 +418,26 @@ Report check(const fs::path& root, Depth depth, const Options& o) {
     auto [loader, libraries] = closure_(usrBin);
     r.items.push_back(std::move(loader));
     r.items.push_back(std::move(libraries));
+    // Its network (design 2026-10-19 §27.4): a default route and a name
+    // server. Not critical -- a system works offline -- but said, so "the
+    // index could not be fetched" inside a machine has an answer.
+    {
+        bool route = false, nameserver = false;
+        std::ifstream routes("/proc/net/route");
+        std::string line;
+        std::getline(routes, line);   // the header
+        while (!route && std::getline(routes, line)) {
+            std::istringstream fields(line);
+            std::string iface, destination;
+            fields >> iface >> destination;
+            route = destination == "00000000";
+        }
+        std::ifstream resolv("/etc/resolv.conf");
+        while (!nameserver && std::getline(resolv, line)) nameserver = line.starts_with("nameserver");
+        const bool ok = route && nameserver;
+        r.items.push_back(item_("network", "it has a network: a default route and a name server", false, ok,
+                                ok ? std::string{} : !route ? "no default route" : "no name server in /etc/resolv.conf"));
+    }
     std::set<std::string> declaredIds;
     for (auto& i : declared_(root, o, declaredIds)) r.items.push_back(std::move(i));
     if (o.run)

@@ -105,3 +105,31 @@ function config() xvm.add('hello', { bindir = path.join(pkginfo.install_dir(), '
     EXPECT_NE(again.out.find("installed for every user already"), std::string::npos) << again.transcript();
     EXPECT_FALSE(fs::exists(user / ".xlings/data/xpkgs/xim-x-hello")) << "a second copy for one user";
 }
+
+// No network inside a system: the index cannot be fetched, said once with
+// where to look -- the host, for a Luban system -- and quickly: no clone, no
+// git bootstrapped to clone with (design 2026-10-19 §27.4, F25: the same
+// failure five times over minutes).
+XTEST(SystemUserHome, NoNetworkIsSaidOnceWithWhereToLook,
+      .area = "subos", .covers = {"LUBAN-MACHINE-NETWORK"}, .requires_ = {"linux", "xlings-bin"}) {
+    if constexpr (!tk::is_linux) GTEST_SKIP() << "a Luban system is Linux";
+    if (std::system("unshare -rn true >/dev/null 2>&1") != 0) GTEST_SKIP() << "no unprivileged network namespace here";
+    auto home = tk::Home::isolated("system-no-network");
+    // The official index, remote, and none of it here: as a fresh home is.
+    tk::write_file(home.dir() / ".xlings.json", R"({"mirror": "GLOBAL"})");
+    std::error_code ec;
+    fs::remove_all(home.dir() / "data/xim-pkgindex", ec);
+    tk::RunOptions o;
+    o.argv = {"unshare", "-rn", tk::xlings_binary().string(), "install", "nvim", "-y"};
+    o.env = home.env();
+    o.env["XLINGS_ROOT_INSTANCE"] = "box";
+    o.timeout = std::chrono::seconds(60);
+    const auto r = tk::run(o);
+    EXPECT_NE(r.exit_code, 0);
+    const auto said = r.transcript();
+    EXPECT_NE(said.find("no network"), std::string::npos) << said;
+    EXPECT_NE(said.find("luban status box --check"), std::string::npos) << "the host is where to look\n" << said;
+    EXPECT_EQ(said.find("git is not available"), std::string::npos) << said;
+    EXPECT_EQ(said.find("no network"), said.rfind("no network")) << "said once\n" << said;
+    EXPECT_LT(r.elapsed, std::chrono::seconds(20));
+}

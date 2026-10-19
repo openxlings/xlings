@@ -212,7 +212,9 @@ PackageCatalog& get_catalog(CatalogAccess access) {
             if (sync_all_repos(true)) {
                 result = mgr.rebuild(true);
             }
-            if (result.has_value() && !result->has_value()) {
+            // Without a network the caller says it once, with where to look.
+            const char* down = std::getenv("XLINGS_NET_UNREACHABLE");
+            if (result.has_value() && !result->has_value() && !(down && *down)) {
                 log::error("failed to build catalog: {}", result->error());
                 log::info("try running: xlings update");
             }
@@ -233,12 +235,28 @@ PackageCatalog* ensure_catalog(EventStream& stream, CatalogNeed need) {
     auto& catalog = need == CatalogNeed::Synced ? get_catalog(CatalogAccess::InstallReady) : get_catalog();
     if (catalog.is_loaded()) return &catalog;
     std::string why;
-    if (need == CatalogNeed::Synced) {
+    const char* down = std::getenv("XLINGS_NET_UNREACHABLE");
+    const bool offline = down && *down;
+    if (need == CatalogNeed::Synced && !offline) {
         log::info("package index not available, updating...");
         sync_all_repos(true);
         auto rebuilt = catalog.rebuild();
         if (rebuilt && catalog.is_loaded()) return &catalog;
         if (!rebuilt) why = ": " + rebuilt.error();
+    }
+    // No network, said once, with where to look (design 2026-10-19 §27.4): in
+    // a Luban machine its network is the host's to check.
+    if (offline) {
+        const char* system = std::getenv("XLINGS_ROOT_INSTANCE");
+        stream.emit(ErrorEvent{
+            .code = ErrorCode::NotFound,
+            .message = std::format("the package index could not be fetched: no network ({})", down),
+            .recoverable = true,
+            .hint = system && *system
+                ? std::format("on the host: luban status {} --check (its network and proxy)", system)
+                : "check the network or the proxy (HTTPS_PROXY), or another mirror: xlings config --mirror CN",
+        });
+        return nullptr;
     }
     stream.emit(ErrorEvent{
         .code = ErrorCode::NotFound,
