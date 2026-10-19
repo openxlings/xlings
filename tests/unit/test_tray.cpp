@@ -92,6 +92,18 @@ dbus::Transport transport_(int fd) {
             }};
 }
 
+std::filesystem::path on_path_(std::string_view name) {
+    const char* path = std::getenv("PATH");
+    for (std::string_view rest = path ? path : ""; !rest.empty();) {
+        const auto colon = rest.find(':');
+        const auto dir = rest.substr(0, colon);
+        rest = colon == std::string_view::npos ? std::string_view{} : rest.substr(colon + 1);
+        std::error_code ec;
+        if (const auto p = std::filesystem::path(dir) / name; !dir.empty() && std::filesystem::exists(p, ec)) return p;
+    }
+    return {};
+}
+
 // A session bus of the test's own.
 struct Bus {
     pid_t pid { -1 };
@@ -159,16 +171,20 @@ XTEST(Tray, AHostSeesTheIconAndItsMenuAndWhatIsChosenComesBack, .area = "luban",
     auto icon = tray::Icon::create("luban-os", "Luban OS");
     ASSERT_TRUE(icon) << icon.error();
     EXPECT_EQ((*icon)->backend(), "status-notifier");
-    {
-        std::unique_lock l(m);
-        ASSERT_TRUE(cv.wait_for(l, std::chrono::seconds(5), [&] { return !registered.empty(); }));
-    }
+    // Registered with its first picture and menu, not before: a host reads
+    // the menu as the icon registers.
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    { std::lock_guard l(m); EXPECT_TRUE(registered.empty()) << "registered before it had a menu"; }
     const std::array<std::string_view, 2> pic{"XX", "XX"};
     tray::Status status{.title = "Luban OS", .body = "2 systems running",
                         .icons = {tray::rasterize(pic, [](char) { return 0xff38b764u; }, 22)},
                         .menu = {{.id = "sys:box", .label = "box", .children = {{.id = "sys:box:open", .label = "Open"}}},
                                  {.separator = true}, {.id = "quit", .label = "Quit"}}};
     (*icon)->update(status);
+    {
+        std::unique_lock l(m);
+        ASSERT_TRUE(cv.wait_for(l, std::chrono::seconds(5), [&] { return !registered.empty(); }));
+    }
     // What a host asks of it, from another connection (a host is a client).
     const int fd2 = connect_(*where);
     dbus::Connection viewer(transport_(fd2));
@@ -186,6 +202,38 @@ XTEST(Tray, AHostSeesTheIconAndItsMenuAndWhatIsChosenComesBack, .area = "luban",
     ASSERT_TRUE(pixmap) << pixmap.error();
     ASSERT_EQ(pixmap->body[0].items()[0].items().size(), 1u);
     EXPECT_EQ(pixmap->body[0].items()[0].items()[0].items()[0].integer(), 22);
+    // GLib's own reading of it -- the one GNOME's AppIndicator extension makes
+    // (G20: the extension's menu stayed empty): the menu as it asks for it,
+    // a submenu by its parent, the properties of the ids it asks.
+    if (const auto gdbus = on_path_("gdbus"); !gdbus.empty()) {
+        auto gcall = [&](std::vector<std::string> args) {
+            tk::RunOptions o;
+            o.argv = {gdbus.string(), "call", "--address", bus.address, "--dest", item};
+            o.argv.insert(o.argv.end(), args.begin(), args.end());
+            for (const char* k : {"PATH", "HOME", "XLINGS_HOME", "XLINGS_ACTIVE_SUBOS", "LD_LIBRARY_PATH"})
+                if (const char* v = std::getenv(k)) o.env[k] = v;
+            o.timeout = std::chrono::seconds(10);
+            return tk::run(o);
+        };
+        auto all = gcall({"--object-path", "/MenuBar", "--method", "com.canonical.dbusmenu.GetLayout", "--", "0", "-1",
+                          "['type', 'children-display']"});
+        EXPECT_EQ(all.exit_code, 0) << all.transcript();
+        EXPECT_NE(all.out.find("'Quit'"), std::string::npos) << all.out;
+        EXPECT_NE(all.out.find("(0, {'children-display': <'submenu'>}"), std::string::npos) << all.out;
+        auto sub = gcall({"--object-path", "/MenuBar", "--method", "com.canonical.dbusmenu.GetLayout", "--", "1", "1", "[]"});
+        EXPECT_EQ(sub.exit_code, 0) << sub.transcript();
+        EXPECT_NE(sub.out.find("'Open'"), std::string::npos) << sub.out;
+        EXPECT_EQ(sub.out.find("'Quit'"), std::string::npos) << "a submenu is its own items\n" << sub.out;
+        auto props = gcall({"--object-path", "/MenuBar", "--method", "com.canonical.dbusmenu.GetGroupProperties", "[0, 4]", "[]"});
+        EXPECT_EQ(props.exit_code, 0) << props.transcript();
+        EXPECT_NE(props.out.find("(4, {'label': <'Quit'>"), std::string::npos) << props.out;
+        EXPECT_EQ(props.out.find("'box'"), std::string::npos) << "only the ids asked for\n" << props.out;
+        auto ping = gcall({"--object-path", "/StatusNotifierItem", "--method", "org.freedesktop.DBus.Peer.Ping"});
+        EXPECT_EQ(ping.exit_code, 0) << ping.transcript();
+        auto menu = gcall({"--object-path", "/StatusNotifierItem", "--method", "org.freedesktop.DBus.Properties.Get",
+                           "org.kde.StatusNotifierItem", "Menu"});
+        EXPECT_NE(menu.out.find("objectpath '/MenuBar'"), std::string::npos) << menu.transcript();
+    }
     auto layout = viewer.call({.type = dbus::Type::Call, .path = "/MenuBar", .interface = "com.canonical.dbusmenu", .member = "GetLayout",
                                .destination = item, .body = {V::i32(0), V::i32(-1), V::array("s", {})}});
     ASSERT_TRUE(layout) << layout.error();

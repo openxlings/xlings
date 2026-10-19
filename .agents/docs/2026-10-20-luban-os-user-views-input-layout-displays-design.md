@@ -66,6 +66,8 @@ xlings（`src/core`、`modules/subos`、`modules/confine`：系统里的用户�
 | G17 | fish 不能补全 | 系统给用户写的 `fish/conf.d/xlings-user.fish` 只加 PATH，没有 xlings profile 里的 `__complete` 钩子，也没有 luban 的 | `modules/subos/src/views/root/root_etc.cpp:363-385` |
 | G18 | 带桌面的系统里没有 sudo | index 里没有 sudo 包；edition 不带 | `xim-pkgindex/pkgs/s/`；L §8 的用户层模型不需要它 |
 | G19 | core 的自检：`xmake starts -- exit 255` | 把所有大于 128 的退出码当信号；255 是 xmake 自己的 -1（以 root 运行被拒） | 已修：#685 |
+| G20 | 托盘（2026.10.19.2，Ubuntu 24.04 GNOME）：右键没有菜单、单击也没有，只有双击能打开窗口；没有办法退出，只能 kill，100% 复现 | GNOME 的 AppIndicator 扩展：单击在菜单有项时打开菜单、双击才 `Activate`，所以扩展手里的菜单是空的或它的菜单客户端失败；托盘的 D-Bus 回答用 GLib 自己的解码（`gdbus`）逐项核对过都正确，定因要看 GNOME 的日志（§3.1） | `luban/kits/tray/src/native/linux.cpp`；扩展的 `indicatorStatusIcon.js`、`dbusMenu.js` |
+| G21 | 托盘进程常驻 CPU 约 4% | 主循环每 100 ms 醒一次，总线线程也每 100 ms 轮询一次；每秒读一次各系统的状态 | `apps/luban-os/src/tray/tray.cpp`、`linux.cpp` |
 
 ## 2. 原则
 
@@ -84,6 +86,17 @@ xlings（`src/core`、`modules/subos`、`modules/confine`：系统里的用户�
   超出时先截明细、再截标题，末尾加 `…`；留出最后一列（有的终端写满即折行）。
 - 不是终端时照旧每个阶段一行。
 - 测试：在 40 列的伪终端里运行 `luban new`，断言屏幕上始终只有一行 `▸`。
+
+### 3.1 托盘（G20、G21）
+
+- **菜单**：按 GNOME 日志里扩展说出的原因修；同时把已知的脆弱处一并去掉：根节点总带 `children-display`（菜单为空时也带），
+  `GetLayout` 按请求的 `parentId` 回答子树，`GetGroupProperties` 只回答请求的编号，实现 `org.freedesktop.DBus.Peer`；
+  菜单第一次被读之前就有内容（先 `update` 再注册）。
+- **退出不依赖菜单**：`luban-os --quit`（与托盘菜单的"退出"同一条路：有窗口时由窗口确认，没有时直接结束托盘，系统照常运行）；
+  中键（`SecondaryActivate`）打开窗口里的同一个菜单；窗口的主机菜单里也有"退出 Luban OS"。
+- **CPU**：主循环在套接字与总线上阻塞等待（托盘图标的事件经一个本地 socket 对唤醒主循环），不再定时醒；各系统的状态
+  按变化（窗口告诉托盘）加上每 5 秒一次兜底读取。静止时托盘的 CPU 接近 0（测试：10 秒内 CPU 时间 < 50 ms）。
+- **测试**：托盘的测试在有 `gdbus` 时用 GLib 自己的解码读图标、菜单（带属性过滤）与分组属性；`luban-os --quit` 结束托盘。
 
 ## 4. 系统里的 xlings：一份存储、每个用户一个视图
 
@@ -566,7 +579,7 @@ Luban 的键位按需求与交互设计来定，不照搬某个系统：
 
 | # | 检查点 | 依赖 | 仓库 |
 |---|---|---|---|
-| C1 | 进度行按终端宽度（§3） | — | xlings |
+| C1 | 进度行按终端宽度（§3）；托盘的菜单、退出与 CPU（§3.1） | — | xlings |
 | C2 | 键盘锁定以回答为准、重试、反馈（§5） | — | xlings |
 | C3 | 平铺：xdg tiled、间隔、宽度规则、纵向（§7.1–7.4） | — | xlings |
 | C4 | 交互共同规则、拖放预览、宽度选择（§6、§7.5–7.6） | C3 | xlings |

@@ -1073,6 +1073,47 @@ state {}
     EXPECT_FALSE(fs::exists(proc)) << "the tray outlived what it was for";
 }
 
+// A tray kept with nothing running (design 2026-10-20 §3.1, G20, G21): still
+// it does next to nothing, and `luban-os --quit` ends it -- not only its menu.
+XTEST(LubanOs, AKeptTrayIsStillAndQuitEndsIt, .area = "luban", .covers = {"LUBAN-OS-TRAY-PROCESS"},
+      .requires_ = {"linux", "xlings-bin"}, .resources = {"cpu"}) {
+    if (!app_binary()) GTEST_SKIP() << "no luban-os beside the xlings under test";
+    auto home = home_with_two("luban-os-tray-quit");
+    tk::write_file(home.dir() / "config" / "luban-os.json", R"({"countdown":0,"keep_in_tray":true})");
+    const auto state = home.root() / "state.json";
+    auto r = run_script(home, std::format(R"(wait launcher
+tray open
+frames 3
+state {}
+)", state.string()));
+    ASSERT_EQ(r.exit_code, 0) << r.transcript();
+    const int pid = read_state(state)["tray"]["pid"].get<int>();
+    ASSERT_GT(pid, 0);
+    const auto proc = fs::path("/proc") / std::to_string(pid);
+    auto cpu_ticks = [&] {
+        std::istringstream in(tk::read_file(proc / "stat"));
+        std::string field;
+        long long ticks = 0;
+        for (int k = 1; k <= 15 && in >> field; ++k)
+            if (k == 14 || k == 15) ticks += std::stoll(field);
+        return ticks;
+    };
+    std::this_thread::sleep_for(std::chrono::seconds(1));
+    ASSERT_TRUE(fs::exists(proc)) << "kept: the tray stays with no window";
+    const auto before = cpu_ticks();
+    std::this_thread::sleep_for(std::chrono::seconds(5));
+    EXPECT_LE(cpu_ticks() - before, 10) << "a still tray took more than 100 ms of CPU in 5 s";
+    tk::RunOptions o;
+    o.argv = {app_binary()->string(), "--quit"};
+    o.env = home.env();
+    const auto quit = tk::run(o);
+    EXPECT_EQ(quit.exit_code, 0) << quit.transcript();
+    for (int k = 0; k < 50 && fs::exists(proc); ++k) std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    EXPECT_FALSE(fs::exists(proc)) << "luban-os --quit left the tray";
+    const auto again = tk::run(o);
+    EXPECT_NE(again.out.find("not running"), std::string::npos) << again.transcript();
+}
+
 // Visual verification (design 2026-10-16 L §13.8): the key pages at three
 // scales and in both languages -- every control on the screen, apart, whole
 // and big enough to hit; where each lies matches its baseline

@@ -45,7 +45,9 @@ struct Tray {
     std::chrono::steady_clock::time_point last_read {}, idle_since = std::chrono::steady_clock::now();
     // Once a second when reading is cheap (a few files); where it asks a
     // carrier's guest (WSL 2), five times what the read took.
-    std::chrono::milliseconds read_every { 1000 };
+    // Windows say when something changed; this is the fallback for a system
+    // started from the command line.
+    std::chrono::milliseconds read_every { 5000 };
     std::vector<std::pair<std::string, bool>> running;   // name, a machine
     bool keep { false };                // the icon kept with nothing running (keep_in_tray)
     Client* asking { nullptr };         // the window a choice came from
@@ -83,7 +85,7 @@ struct Tray {
             const bool machine = vm::running(home, e.name).has_value();
             if (e.running || machine) running.emplace_back(e.name, machine);
         }
-        read_every = std::max(std::chrono::milliseconds(1000), took() * 5);
+        read_every = std::max(std::chrono::milliseconds(5000), took() * 5);
     }
 
     // The icon: the systems that run, what the windows are doing, a menu of both.
@@ -237,9 +239,21 @@ int run_tray(int argc, char* argv[]) {
     if (!listener) { t.log("cannot listen: " + listener.error()); return 1; }
     host::open_events_only();
     set_language(read_app_settings(t.home).language);
+    // The icon's events wake the loop through a line of its own to the
+    // listener (G21: it woke ten times a second to look).
+    auto waker = platform::LocalStream::connect(t.dir / "tray.sock", 1s);
+    platform::LocalStream woken;
+    if (waker)
+        if (auto s = listener->accept(1s); s && *s) woken = std::move(**s);
+    std::mutex waker_m;
     if (auto icon = tray::Icon::create("luban-os", "Luban OS")) {
         t.icon = std::move(*icon);
         t.backend = std::string(t.icon->backend());
+        if (waker && woken.is_open())
+            t.icon->on_wake([&] {
+                std::lock_guard l(waker_m);
+                (void)waker->send_all("w", 100ms);
+            });
     } else {
         // No status area here: said, and the tray stays for the windows to agree among.
         t.error = icon.error();
@@ -250,15 +264,23 @@ int run_tray(int argc, char* argv[]) {
     t.read_running();
     t.show();
     while (true) {
-        std::vector<std::intptr_t> handles{listener->native()};
+        std::vector<std::intptr_t> handles{listener->native(), woken.is_open() ? woken.native() : listener->native()};
         for (const auto& c : t.clients) handles.push_back(c->stream.native());
-        const auto ready = platform::wait_readable(handles, 100ms);
+        // macOS's menu bar is this thread's to pump; elsewhere the icon wakes the loop.
+        const bool pumped = platform::is_macos || !woken.is_open();
+        const auto until_read = std::chrono::duration_cast<std::chrono::milliseconds>(t.read_every - (std::chrono::steady_clock::now() - t.last_read));
+        const auto ready = platform::wait_readable(handles, pumped ? 100ms : std::clamp(until_read, 10ms, 1000ms));
         for (const auto i : ready) {
+            if (i == 1) {
+                std::array<char, 256> drain{};
+                (void)woken.poll_receive(drain, 0ms);
+                continue;
+            }
             if (i == 0) {
                 if (auto s = listener->accept(0ms); s && *s) t.clients.push_back(std::make_unique<Client>(Client{.stream = std::move(**s)}));
                 continue;
             }
-            auto& c = *t.clients[i - 1];
+            auto& c = *t.clients[i - 2];
             std::array<char, 4096> chunk{};
             auto n = c.stream.poll_receive(chunk, 0ms);
             if (!n || (*n && **n == 0)) { c.stream.close(); continue; }
@@ -302,6 +324,7 @@ int run_tray(int argc, char* argv[]) {
             }
         }
     }
+    if (t.icon) t.icon->on_wake({});
     listener->close();
     host::close_events_only();
     return 0;

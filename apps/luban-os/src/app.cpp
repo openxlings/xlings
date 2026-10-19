@@ -215,6 +215,20 @@ int run(int argc, char* argv[]) {
         std::println("{}", service::app_capabilities_json(service::kVersion, provides, {}).dump());
         return 0;
     }
+    // Quit from anywhere (design 2026-10-20 §3.1, G20): the tray and every
+    // window of this home end; the systems keep running. Not the icon's menu's
+    // to be the only way.
+    if (argc >= 2 && std::string_view(argv[1]) == "--quit") {
+        const auto home = home_dir_();
+        auto link = platform::LocalStream::connect(tray_dir(home) / "tray.sock", std::chrono::milliseconds(500));
+        if (!link) { std::println("luban-os: not running (no tray for {})", home.string()); return 0; }
+        if (!link->send_all(nlohmann::json{{"quit-all", nlohmann::json::object()}}.dump() + "\n", std::chrono::seconds(2))) {
+            std::println(std::cerr, "luban-os: the tray did not take the request");
+            return 1;
+        }
+        std::println("luban-os: the tray and its windows are closing; running systems keep running (luban ls)");
+        return 0;
+    }
     App a;
     host::Options o;
     int frames = -1;
@@ -261,6 +275,7 @@ int run(int argc, char* argv[]) {
         else if (arg == "--version") { std::println("luban-os {}", service::kVersion); return 0; }
         else if (arg == "--help" || arg == "-h") {
             std::println("luban-os [--attach <name> [--desktop <session> | --app <command>]]   Luban OS: the systems of this home, in a window");
+            std::println("luban-os --quit   the tray and every window of this home end (the systems keep running)");
             return 0;
         }
     }

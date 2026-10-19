@@ -11,6 +11,7 @@ module;
 #include <poll.h>
 #include <sys/socket.h>
 #include <sys/un.h>
+#include <fcntl.h>
 #include <unistd.h>
 #endif
 
@@ -51,7 +52,9 @@ int connect_(const std::string& where, std::string& why) {
     return fd;
 }
 
-Transport transport_(int fd) {
+// `wake`: the read end of a pipe the application writes to when it changed
+// something -- the bus thread waits on both (G21: it looked ten times a second).
+Transport transport_(int fd, int wake) {
     return {
         .write = [fd](std::string_view bytes) {
             while (!bytes.empty()) {
@@ -62,11 +65,16 @@ Transport transport_(int fd) {
             }
             return true;
         },
-        .read = [fd](int timeout_ms) -> std::optional<std::string> {
-            pollfd p{fd, POLLIN, 0};
-            const int r = ::poll(&p, 1, timeout_ms);
+        .read = [fd, wake](int timeout_ms) -> std::optional<std::string> {
+            pollfd p[2] = {{fd, POLLIN, 0}, {wake, POLLIN, 0}};
+            const int r = ::poll(p, wake >= 0 ? 2 : 1, timeout_ms);
             if (r == 0 || (r < 0 && errno == EINTR)) return std::string{};
-            if (r < 0 || (p.revents & (POLLERR | POLLNVAL))) return std::nullopt;
+            if (r < 0 || (p[0].revents & (POLLERR | POLLNVAL))) return std::nullopt;
+            if (wake >= 0 && (p[1].revents & POLLIN)) {
+                char drain[64];
+                (void)::read(wake, drain, sizeof drain);
+            }
+            if (!(p[0].revents & (POLLIN | POLLHUP))) return std::string{};
             char buf[65536];
             const auto n = ::recv(fd, buf, sizeof buf, 0);
             if (n <= 0) return std::nullopt;
@@ -129,13 +137,17 @@ constexpr std::string_view kIntrospectMenu = R"XML(<!DOCTYPE node PUBLIC "-//fre
 
 class Sni final : public Icon {
 public:
-    Sni(int fd, std::string app_id, std::string title) : fd_(fd), bus_(transport_(fd)), app_id_(std::move(app_id)) {
+    Sni(int fd, std::array<int, 2> wake, std::string app_id, std::string title)
+        : fd_(fd), wake_fds_(wake), bus_(transport_(fd, wake[0])), app_id_(std::move(app_id)) {
         status_.title = std::move(title);
     }
     ~Sni() override {
         stop_ = true;
+        poke_();
         if (thread_.joinable()) thread_.join();
         if (fd_ >= 0) ::close(fd_);
+        for (const int w : wake_fds_)
+            if (w >= 0) ::close(w);
     }
 
     std::expected<void, std::string> start() {
@@ -150,7 +162,14 @@ public:
                                  "type='signal',interface='org.freedesktop.Notifications'"})
             (void)bus_.call({.type = Type::Call, .path = "/org/freedesktop/DBus", .interface = "org.freedesktop.DBus",
                              .member = "AddMatch", .destination = "org.freedesktop.DBus", .body = {Value::str(rule)}});
-        if (auto r = register_(); !r) return r;
+        // A watcher is there; the icon registers once it has its first
+        // picture and menu (a host reads the menu as it registers, and an
+        // empty one may be all it ever shows).
+        auto has = bus_.call({.type = Type::Call, .path = "/org/freedesktop/DBus", .interface = "org.freedesktop.DBus",
+                              .member = "NameHasOwner", .destination = "org.freedesktop.DBus",
+                              .body = {Value::str("org.kde.StatusNotifierWatcher")}});
+        if (!has) return std::unexpected("the session bus: " + has.error());
+        if (has->body.empty() || !has->body[0].truth()) return std::unexpected("no StatusNotifierWatcher on this desktop");
         thread_ = std::thread([this] { loop_(); });
         return {};
     }
@@ -160,6 +179,7 @@ public:
         status_ = s;
         if (status_.title.empty()) status_.title = app_id_;
         changed_ = true;
+        poke_();
     }
     std::vector<std::string> take() override {
         std::lock_guard l(m_);
@@ -168,12 +188,17 @@ public:
     void notify(const std::string& title, const std::string& body, const std::string& id) override {
         std::lock_guard l(m_);
         notices_.push_back({title, body, id});
+        poke_();
     }
     void on_wake(std::function<void()> wake) override { std::lock_guard l(m_); wake_ = std::move(wake); }
     std::string_view backend() const override { return "status-notifier"; }
 
 private:
     struct Notice { std::string title, body, id; };
+
+    void poke_() {
+        if (wake_fds_[1] >= 0) (void)::write(wake_fds_[1], "w", 1);
+    }
 
     std::expected<void, std::string> register_() {
         auto r = bus_.call({.type = Type::Call, .path = "/StatusNotifierWatcher", .interface = "org.kde.StatusNotifierWatcher",
@@ -200,7 +225,8 @@ private:
             number_(i.children, flat);
         }
     }
-    Value node_(int id, const MenuItem* item, const std::vector<MenuItem>& children, int& next, int depth) {
+    // An item's properties, as dbusmenu names them.
+    static std::vector<Value> props_of_(const MenuItem* item, bool submenu) {
         std::vector<Value> props;
         if (item) {
             if (item->separator) props.push_back(prop_("type", Value::str("separator")));
@@ -208,17 +234,25 @@ private:
             props.push_back(prop_("enabled", Value::boolean(item->enabled)));
             props.push_back(prop_("visible", Value::boolean(true)));
         }
-        if (!children.empty()) props.push_back(prop_("children-display", Value::str("submenu")));
-        std::vector<Value> kids;
-        for (const auto& c : children) {
-            const int cid = next++;
-            kids.push_back(Value::variant(node_(cid, &c, c.children, next, depth + 1)));
-        }
-        return Value::structure({Value::i32(id), Value::array("{sv}", std::move(props)), Value::array("v", std::move(kids))});
+        // The root is a submenu even while it is empty (a host reads it so).
+        if (submenu) props.push_back(prop_("children-display", Value::str("submenu")));
+        return props;
     }
-    Value layout_() {
-        int next = 1;
-        return node_(0, nullptr, status_.menu, next, -1);
+    // `item` (nullptr: the root, 0) and what is under it to `depth` levels
+    // (-1: all), numbered as number_ numbers the whole menu.
+    Value node_(int id, const MenuItem* item, int depth) {
+        const auto& children = item ? item->children : status_.menu;
+        std::vector<Value> kids;
+        if (depth != 0) {
+            std::vector<const MenuItem*> flat;
+            number_(status_.menu, flat);
+            for (const auto& c : children) {
+                const auto at = std::ranges::find(flat, &c);
+                kids.push_back(Value::variant(node_(static_cast<int>(at - flat.begin()) + 1, &c, depth < 0 ? -1 : depth - 1)));
+            }
+        }
+        return Value::structure({Value::i32(id), Value::array("{sv}", props_of_(item, !item || !children.empty())),
+                                 Value::array("v", std::move(kids))});
     }
     const MenuItem* item_by_id_(int id) {
         std::vector<const MenuItem*> flat;
@@ -243,7 +277,14 @@ private:
     std::vector<std::string> serve_(const Message& m) {
         std::vector<std::string> chosen;
         std::lock_guard l(m_);
-        if (m.interface == "org.freedesktop.DBus.Introspectable") {
+        if (m.interface == "org.freedesktop.DBus.Peer") {
+            if (m.member == "Ping") bus_.reply(m, {});
+            else if (m.member == "GetMachineId") {
+                std::string id;
+                std::ifstream("/etc/machine-id") >> id;
+                bus_.reply(m, {Value::str(id)});
+            } else bus_.error(m, "org.freedesktop.DBus.Error.UnknownMethod", m.member);
+        } else if (m.interface == "org.freedesktop.DBus.Introspectable") {
             bus_.reply(m, {Value::str(std::string(m.path == kMenuPath ? kIntrospectMenu : kIntrospectItem))});
         } else if (m.interface == "org.freedesktop.DBus.Properties") {
             const auto iface = m.body.empty() ? std::string{} : m.body[0].text();
@@ -261,7 +302,11 @@ private:
             if (m.member == "Activate" || m.member == "SecondaryActivate") chosen.push_back("activate");
         } else if (m.interface == kMenu || (m.interface.empty() && m.path == kMenuPath)) {
             if (m.member == "GetLayout") {
-                bus_.reply(m, {Value::u32(revision_), layout_()});
+                const int parent = m.body.empty() ? 0 : static_cast<int>(m.body[0].integer());
+                const int depth = m.body.size() < 2 ? -1 : static_cast<int>(m.body[1].integer());
+                const auto* item = item_by_id_(parent);
+                if (parent != 0 && !item) bus_.error(m, "org.freedesktop.DBus.Error.InvalidArgs", std::format("no item {}", parent));
+                else bus_.reply(m, {Value::u32(revision_), node_(parent, item, depth)});
             } else if (m.member == "Event" && m.body.size() >= 2) {
                 bus_.reply(m, {});
                 if (m.body[1].text() == "clicked")
@@ -279,16 +324,19 @@ private:
             } else if (m.member == "AboutToShowGroup") {
                 bus_.reply(m, {Value::array("i", {}), Value::array("i", {})});
             } else if (m.member == "GetGroupProperties") {
+                // The ids asked for (none: every one), the root included.
                 std::vector<Value> out;
                 std::vector<const MenuItem*> flat;
                 number_(status_.menu, flat);
-                for (std::size_t k = 0; k < flat.size(); ++k) {
-                    std::vector<Value> props;
-                    if (flat[k]->separator) props.push_back(prop_("type", Value::str("separator")));
-                    else props.push_back(prop_("label", Value::str(flat[k]->label)));
-                    props.push_back(prop_("enabled", Value::boolean(flat[k]->enabled)));
-                    if (!flat[k]->children.empty()) props.push_back(prop_("children-display", Value::str("submenu")));
-                    out.push_back(Value::structure({Value::i32(static_cast<std::int32_t>(k + 1)), Value::array("{sv}", std::move(props))}));
+                std::vector<int> ids;
+                if (!m.body.empty())
+                    for (const auto& v : m.body[0].items()) ids.push_back(static_cast<int>(v.integer()));
+                if (ids.empty())
+                    for (int k = 0; k <= static_cast<int>(flat.size()); ++k) ids.push_back(k);
+                for (const int id : ids) {
+                    const auto* item = item_by_id_(id);
+                    if (id != 0 && !item) continue;
+                    out.push_back(Value::structure({Value::i32(id), Value::array("{sv}", props_of_(item, !item || !item->children.empty()))}));
                 }
                 bus_.reply(m, {Value::array("(ia{sv})", std::move(out))});
             } else if (m.member == "GetProperty") {
@@ -313,6 +361,11 @@ private:
                 notices = std::exchange(notices_, {});
                 if (changed) ++revision_;
             }
+            if (changed && !registered_) {
+                // Registered with its first picture and menu (start()).
+                // No watcher now: registered when one comes (NameOwnerChanged).
+                registered_ = register_().has_value();
+            }
             if (changed) {
                 bus_.signal(std::string(kItemPath), std::string(kItem), "NewIcon", {});
                 bus_.signal(std::string(kItemPath), std::string(kItem), "NewToolTip", {});
@@ -330,7 +383,7 @@ private:
                                                         Value::array("{sv}", {}), Value::i32(-1)}});
                 pending_notify_[serial] = n.id;
             }
-            auto msg = bus_.next(100);
+            auto msg = bus_.next(1000);
             if (!msg) continue;
             if (msg->type == Type::Return) {
                 // A notification's number, for its click.
@@ -346,6 +399,7 @@ private:
                         took_("notification:" + it->second);
                 } else if (msg->member == "NameOwnerChanged" && msg->body.size() >= 3 && !msg->body[2].text().empty()) {
                     // A watcher came (back): this icon is shown again.
+                    registered_ = true;
                     bus_.send({.type = Type::Call, .flags = kNoReplyExpected, .path = "/StatusNotifierWatcher",
                                .interface = "org.kde.StatusNotifierWatcher", .member = "RegisterStatusNotifierItem",
                                .destination = "org.kde.StatusNotifierWatcher", .body = {Value::str(well_known_)}});
@@ -358,6 +412,7 @@ private:
     }
 
     int fd_;
+    std::array<int, 2> wake_fds_ { -1, -1 };
     Connection bus_;
     std::string app_id_, well_known_;
     std::thread thread_;
@@ -365,6 +420,7 @@ private:
     std::mutex m_;
     Status status_;
     bool changed_ { false };
+    bool registered_ { false };
     std::uint32_t revision_ { 1 };
     std::vector<std::string> taken_;
     std::vector<Notice> notices_;
@@ -387,7 +443,9 @@ std::expected<std::unique_ptr<Icon>, std::string> create(std::string app_id, std
     std::string why;
     const int fd = connect_(*where, why);
     if (fd < 0) return std::unexpected("the session bus at " + *where + ": " + why);
-    auto icon = std::make_unique<Sni>(fd, std::move(app_id), std::move(title));
+    std::array<int, 2> wake { -1, -1 };
+    if (::pipe2(wake.data(), O_CLOEXEC | O_NONBLOCK) != 0) wake = {-1, -1};
+    auto icon = std::make_unique<Sni>(fd, wake, std::move(app_id), std::move(title));
     if (auto started = icon->start(); !started) return std::unexpected(started.error());
     return icon;
 }
