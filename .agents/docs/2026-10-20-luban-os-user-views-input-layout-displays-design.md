@@ -140,7 +140,8 @@ xlings（`src/core`、`modules/subos`、`modules/confine`：系统里的用户�
   ```
 
   确认后经 `xlings.subos.elevation` 以 sudo 运行一个只写存储的子命令（`__store-add <包>@<版本>`，plumbing，不在帮助与补全里），
-  完成后在用户视图里记下选择；记录写进 elevation 日志。
+  完成后在用户视图里记下选择；记录写进 elevation 日志。`__store-add` 不改变系统已有的默认版本（安装从不擅自切换）；
+  系统里原本没有的名字第一次加入时成为系统里可用的版本。
 - agent 模式与没有终端：不问，失败并给出确切命令（`sudo xlings install node@22`），退出码与错误码见 §4.12。
 - 回答记住：问过一次后，同一会话不再重复说明。
 
@@ -157,8 +158,9 @@ xlings（`src/core`、`modules/subos`、`modules/confine`：系统里的用户�
   - `Defaults secure_path` 含 xlings 的程序目录（`sudo xlings` 能找到）。
   - `Defaults env_keep += "http_proxy https_proxy all_proxy no_proxy HTTP_PROXY HTTPS_PROXY ALL_PROXY NO_PROXY LANG"`
     （否则 network.env 的代理在 sudo 下丢失）。
-- **setuid 要真生效**：先验证 machine 的根文件系统没有 nosuid、安装与投影保留 setuid 位；若是 nosuid，`/usr/bin/sudo` 由 luban 在生成
-  generation 时写成真实文件（4755），不用符号链接。这是 C6 的第一步。
+- **setuid 要真生效**（C6 第一步的验证结果）：machine 的根树是 9p 共享（`security_model=none`），文件显示宿主用户的属主，sudo 拒绝
+  非 root 属主的程序与规则。做法：machine 的 init 在每次启动时把 sudo 程序（4755）、`/etc/sudoers` 与 `sudoers.d` 复制到本次启动的
+  `/run`，改为 root 属主，绑定挂载回原位；`/usr/bin/sudo` 若不是 sudo 程序本身（经 shim）则不绑定并说明。payload 由 recipe 设 4755。
 - sandbox 模式：user namespace 里 setuid 不起作用；写存储照旧经系统的 broker；自检不检查 sudo。
 - agent-workspace 的 `agent-private` 策略：不给 agent 用 sudo（策略禁止 setuid 执行，或不把 agent 加入 wheel）。
 
