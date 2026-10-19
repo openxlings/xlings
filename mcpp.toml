@@ -56,13 +56,13 @@ members = [
     "luban/kits/openhal-host",
     "luban/kits/tray",
     "luban/kits/opensal-wlr",
-    "luban/kits/xdesk-base",
-    "luban/kits/xdesk-layout",
-    "luban/kits/xdesk-compositor",
-    "luban/os/desktop",
+    "luban/xdesk/base",
+    "luban/xdesk/layout",
+    "luban/xdesk/compositor",
+    "luban/os/window",
     "apps/luban",
     "apps/luban-os",
-    "apps/xdesk",
+    "luban/xdesk/app",
     "modules/testkit",
     "apps/gui",
     "apps/xdev",
@@ -196,8 +196,8 @@ openas      = { path = "luban/specs/openas" }
 opencaps    = { path = "luban/specs/opencaps" }
 openhal-host = { path = "luban/kits/openhal-host" }
 opensal-wlr = { path = "luban/kits/opensal-wlr" }
-xdesk-base = { path = "luban/kits/xdesk-base" }
-xdesk-layout = { path = "luban/kits/xdesk-layout" }
+xdesk-base = { path = "luban/xdesk/base" }
+xdesk-layout = { path = "luban/xdesk/layout" }
 tray       = { path = "luban/kits/tray" }
 
 [dev-dependencies.compat]

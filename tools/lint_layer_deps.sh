@@ -60,9 +60,9 @@ while read -r where module; do
   case "$module" in luban|luban.*) report "${where%%:*}" "src/ imports $module ($where): xlings never links Luban; move what both need to modules/" ;; esac
 done < <(imports src)
 
-# luban/ holds three kinds of package (Luban OS part 4 §4): specs/ and kits/
-# are independent projects kept here until they move to their own
-# repositories, os/ is Luban OS itself.
+# luban/ holds four kinds of package (Luban OS part 4 §4; design 2026-10-19
+# §28): specs/, kits/ and xdesk/ are independent projects kept here until they
+# move to their own repositories, os/ is Luban OS itself.
 #
 #   luban/specs/<name>  a specification: the standard library and its own
 #                       modules (<name>, <name>.*). Specifications never import
@@ -70,6 +70,7 @@ done < <(imports src)
 #   luban/kits/<name>   an implementation or a reusable component: the standard
 #                       library, specifications, other kits and their C
 #                       libraries -- never xlings or Luban.
+#   luban/xdesk/<part>  the xdesk desktop: as a kit -- never xlings or Luban.
 #   luban/os/service    the OS depends on no presentation: not the Luban OS
 #                       app's library (luban.desktop.*), not the desktop (xdesk.*).
 spec_roots=""
@@ -85,7 +86,8 @@ if [ -d luban/specs ]; then
   done
 fi
 is_spec() { local m="${1%%.*}" r; for r in $spec_roots; do [ "$m" = "$r" ] && return 0; done; return 1; }
-if [ -d luban/kits ]; then
+for project in luban/kits luban/xdesk; do
+  [ -d "$project" ] || continue
   while read -r where module; do
     [ -z "${module:-}" ] && continue
     case "$module" in
@@ -95,10 +97,10 @@ if [ -d luban/kits ]; then
     esac
     is_spec "$module" && continue
     case "$module" in
-      xlings|xlings.*|luban|luban.*) report "${where%%:*}" "luban/kits imports $module ($where): a kit is reusable on its own -- the standard library, specifications, other kits and their C libraries, never xlings or Luban" ;;
+      xlings|xlings.*|luban|luban.*) report "${where%%:*}" "$project imports $module ($where): it is reusable on its own -- the standard library, specifications, kits and their C libraries, never xlings or Luban" ;;
     esac
-  done < <(imports luban/kits)
-fi
+  done < <(imports "$project")
+done
 if [ -d luban/os/service ]; then
   while read -r where module; do
     case "${module:-}" in
@@ -111,4 +113,4 @@ if [ "$bad" -gt 0 ]; then
   echo "layer dependency lint: FAIL ($bad import(s) across a boundary)"
   exit 1
 fi
-echo "layer dependency lint: PASS (luban -> modules, modules -/-> luban, src; src -/-> luban; specs -> std and themselves; kits -/-> xlings, luban; the OS service -/-> presentation)"
+echo "layer dependency lint: PASS (luban -> modules, modules -/-> luban, src; src -/-> luban; specs -> std and themselves; kits, xdesk -/-> xlings, luban; the OS service -/-> presentation)"

@@ -663,7 +663,7 @@ XTEST(LubanOs, ItSaysWhatItCanDoWithoutADisplay, .area = "luban",
     EXPECT_LT(r.elapsed, std::chrono::seconds(3)) << "it opened nothing";
 }
 
-// xdesk (apps/xdesk), built beside the app; XDESK_BIN names another.
+// xdesk (luban/xdesk/app), built beside the app; XDESK_BIN names another.
 std::optional<fs::path> xdesk_binary() {
     if (const char* forced = std::getenv("XDESK_BIN"); forced && *forced) return fs::path(forced);
     const auto app = app_binary();

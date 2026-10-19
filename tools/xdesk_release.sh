@@ -70,9 +70,9 @@ for f in "$out/bin/xdesk" "$out"/libexec/lib/*; do
 done
 readelf -l "$out/bin/xdesk" | grep -q "interpreter: $loader" || fail "the loader is not $loader"
 
-cp "$project"/apps/xdesk/share/wayland-sessions/*.desktop "$out/share/wayland-sessions/"
+cp "$project"/luban/xdesk/app/share/wayland-sessions/*.desktop "$out/share/wayland-sessions/"
 # The profiles' defaults (xdesk.config reads them from $XDG_DATA_DIRS/xdesk).
-cp "$project"/apps/xdesk/share/xdesk/*.ini "$out/share/xdesk/"
+cp "$project"/luban/xdesk/app/share/xdesk/*.ini "$out/share/xdesk/"
 
 # Fonts of its own, so it has text in any root (a root's share/fonts is the
 # root's): DejaVu Sans and WenQuanYi Zen Hei, from the published labwc-desktop
@@ -88,7 +88,7 @@ mkdir -p "$out/share/xdesk/fonts"
 tar -xzf "$cache" -C "$out/share/xdesk/fonts" --strip-components=4 \
   labwc-desktop-0.7.2-r1-linux-x86_64/share/fonts/dejavu/DejaVuSans.ttf \
   labwc-desktop-0.7.2-r1-linux-x86_64/share/fonts/wqy-zenhei/wqy-zenhei.ttc || fail "no fonts in the tree"
-printf 'xdesk %s (openxlings/xlings, apps/xdesk): the Luban OS desktop compositor and shell; glibc, loader %s, no RPATH; %s in libexec/lib -- an xlings install patches it onto the index'"'"'s glibc and gcc-runtime\nfonts (share/xdesk/fonts): DejaVu Sans (Bitstream Vera / DejaVu licence) and WenQuanYi Zen Hei (GPL-2.0 with the font exception), from xlings-res/labwc-desktop 0.7.2-r1 (sha256 %s)\n' \
+printf 'xdesk %s (openxlings/xlings, luban/xdesk): the Luban OS desktop compositor and shell; glibc, loader %s, no RPATH; %s in libexec/lib -- an xlings install patches it onto the index'"'"'s glibc and gcc-runtime\nfonts (share/xdesk/fonts): DejaVu Sans (Bitstream Vera / DejaVu licence) and WenQuanYi Zen Hei (GPL-2.0 with the font exception), from xlings-res/labwc-desktop 0.7.2-r1 (sha256 %s)\n' \
   "$version" "$loader" "$private" "$fonts_sha" > "$out/README.provenance"
 
 file="$project/build/$name.tar.gz"

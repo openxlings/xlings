@@ -897,10 +897,10 @@ core 2026.10.19.1 在现有的包之外加入 cmake、xmake、yazi 与 procps-ng
 |---|---|---|
 | 新包 `modules/i18n` | `xlings.i18n`（对外接口）、`:locale`（语言解析与回退链）、`:catalogue`（按域注册与查找、完整性检查）、`:data`（`pick`：数据里的多语言表）、`:glossary`（术语表接口）；单元测试 | 从 `modules/ui` 抽出，xlings、luban、Luban OS 共用（§7） |
 | `modules/ui` | 只剩主题与 xlings 自己的 catalogue | 机制与内容分开 |
-| 新包 `luban/kits/xdesk-layout` | `xdesk.layout`（对外）、`:model`（工作区、组、浮动层）、`:tile`、`:stack`、`:canvas`、`:drag`（放置目标与预览）、`:transition`（可逆切换）、`:rules`（应用规则）；单元测试 | 纯逻辑、任何合成器可用；本轮重写并显著变大（§17）；从 `xdesk-base` 移出 |
+| 新包 `luban/xdesk/layout` | `xdesk.layout`（对外）、`:model`（工作区、组、浮动层）、`:tile`、`:stack`、`:canvas`、`:drag`（放置目标与预览）、`:transition`（可逆切换）、`:rules`（应用规则）；单元测试 | 纯逻辑、任何合成器可用；本轮重写并显著变大（§17）；从 `xdesk-base` 移出 |
 | 新包 `luban/os/compat` | `luban.compat`：`:pointer`、`:processes`、`:editions` | cli、service、app 都用；集中旧版本兼容，lint 守住（§15.3） |
 | `apps/luban-os/src/` 分子目录 | `tray/`（托盘进程与协议）、`pointer/`、`keyboard/`、`views/`（启动器、新建页、管理、系统视图、任务）、`i18n/`（catalogue）、`art/`、`script/`（测试脚本） | 现在 5335 行全部平铺；托盘与 i18n 迁移后会更多 |
-| `luban/kits/xdesk-compositor/src/` 拆分 | `server.cpp` 按职责拆成 `input/`、`render/`、`pointer/`、`shell/`（面板、启动器、切换浮层、标题栏菜单、速查） | 现在约 1300 行，本轮会超过 2k 行 |
+| `luban/xdesk/compositor/src/` 拆分 | `server.cpp` 按职责拆成 `input/`、`render/`、`pointer/`、`shell/`（面板、启动器、切换浮层、标题栏菜单、速查） | 现在约 1300 行，本轮会超过 2k 行 |
 | 合并 `modules/home` 与 `modules/store` | 一个包 `modules/home`，两个模块单元，模块名不变（`xlings.home.*`、`xlings.store`），import 不用改 | 各只有一个文件、不到 200 行，职责都是 home 的布局与存放 |
 | 保留 | `modules/cli`（466 行，xlings 与 luban 共用的命令定义：两个前端的共同契约）；`apps/luban`、`apps/xdesk`（程序入口本来就薄） | 写进各自的 README |
 
@@ -1288,9 +1288,9 @@ luban/
 - `luban/xdesk/` 与 `specs/`、`kits/` 一样是独立项目：不 import `xlings.*`、`luban.*`（`tools/lint_layer_deps.sh` 按目录检查），可以整棵子树移出。
 - 顶层 `apps/` 只放宿主上的程序；在系统里运行的程序进 `luban/`（独立项目在自己的目录里，其余在 `luban/apps/`）。
 
-### 28.4 待定（评审）
+### 28.4 已定（评审）
 
-- xdesk 的程序放 `luban/xdesk/app`（**推荐**：xdesk 一棵子树，可整体移出）还是 `luban/apps/xdesk`（`luban/apps/` 现在就有成员，但 xdesk 分在两处）。
+- xdesk 的程序放 `luban/xdesk/app`：xdesk 是一棵子树，可整体移出。`luban/apps/` 的规则现在写下，第一个成员到来时建目录。
 
 ### 28.5 任务
 

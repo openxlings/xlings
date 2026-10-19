@@ -18,8 +18,10 @@ modules/            linked into xlings, one per responsibility
   subos/            the SubOS core: model, policy, intent, sandbox, views, session
   confine/          sandbox implementations (bwrap, proot, landlock, home redirect)
   carrier/          where a SubOS runs: local, wsl2, vz
-luban/              the OS model and its tool: boot, stage0, machine, cli, image
-apps/luban/         the luban binary (and stage-0 when started as luban-init)
+luban/              Luban OS: specs/ (contracts), kits/ (reusable components), xdesk/ (the desktop:
+                    base, layout, compositor, app), apps/ (programs in a system), os/ (system, service,
+                    vm, cli, compat, window)
+apps/               programs on the host: luban (and stage-0 as luban-init), luban-os, gui, xdev
 src/                the frontend: cli, interface, core (config, xim, xvm, xself, subos)
 ```
 

@@ -22,8 +22,8 @@ version   = "0.1.0"
 kind = "lib"
 
 [dependencies]
-xdesk-base   = { path = "../xdesk-base" }
-xdesk-layout = { path = "../xdesk-layout" }
+xdesk-base   = { path = "../base" }
+xdesk-layout = { path = "../layout" }
 opensal    = { path = "../../specs/opensal" }
 
 [dependencies.wlroots]

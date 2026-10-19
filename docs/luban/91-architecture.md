@@ -15,12 +15,14 @@ small on purpose.
 | `luban/specs/openhal` | devices: which GPUs, displays, audio endpoints and input devices a machine has |
 | `luban/specs/openas` | actors and what they do: the actor and its delegation, effect classes, the envelope of a run |
 | `luban/kits/openhal-host` | openhal's source on Linux, macOS and Windows |
-| `luban/kits/opensal-wlr`, `xdesk-base`, `xdesk-layout`, `xdesk-compositor` | a wlroots compositor as an opensal surface; the xdesk desktop |
+| `luban/kits/opensal-wlr`, `imkit`, `tray` | a wlroots compositor as an opensal surface; widgets; a status-area icon |
+| `luban/xdesk/{base,layout,compositor,app}` | the xdesk desktop: its libraries and its program |
 | `luban/os/system` | stage-0 (the first process), boot entries, a machine's `/etc`, archives |
 | `luban/os/service` | environments and machines as operations with events; what this computer can do (`luban status`) |
 | `luban/os/vm` | machines: supervisor, terminal relay, guest sessions, hypervisors |
 | `luban/os/cli` | the `luban` command: one declared tree; each command's effect; `luban interface` for programs |
-| `luban/os/desktop` | the Luban OS app's window (SDL3) and Dear ImGui |
+| `luban/os/window` | the Luban OS app's window (SDL3) and Dear ImGui |
+| `luban/os/compat` | what is kept only for a released older part, with when it goes |
 | `modules/image` | images, in-process: GPT, FAT, ISO 9660 with El Torito, qcow2 |
 | `apps/luban` | the binary: luban, or stage-0 when started as `luban-init` |
 | `src/core/subos/root` | the xlings side of a root: projection, generations, rollback, export |

@@ -14,12 +14,14 @@
 | `luban/specs/openhal` | 设备：一台机器有哪些 GPU、显示器、音频端点和输入设备 |
 | `luban/specs/openas` | 主体与它们做的事：主体与委托、效果类别、一次运行的信封 |
 | `luban/kits/openhal-host` | openhal 在 Linux、macOS、Windows 上的设备源 |
-| `luban/kits/opensal-wlr`、`xdesk-base`、`xdesk-layout`、`xdesk-compositor` | 把 wlroots 合成器接成 opensal 表面；xdesk 桌面 |
+| `luban/kits/opensal-wlr`、`imkit`、`tray` | 把 wlroots 合成器接成 opensal 表面；控件；状态栏图标 |
+| `luban/xdesk/{base,layout,compositor,app}` | xdesk 桌面：它的库与它的程序 |
 | `luban/os/system` | stage-0（第一个进程）、启动项、机器的 `/etc`、归档 |
 | `luban/os/service` | 环境与机器的操作与事件；这台电脑能做什么（`luban status`） |
 | `luban/os/vm` | 机器：supervisor、终端中继、guest 会话、hypervisor |
 | `luban/os/cli` | `luban` 命令：一棵声明式命令树；每个命令的效果类别；给程序用的 `luban interface` |
-| `luban/os/desktop` | Luban OS 应用的窗口（SDL3）与 Dear ImGui |
+| `luban/os/window` | Luban OS 应用的窗口（SDL3）与 Dear ImGui |
+| `luban/os/compat` | 只为已发布的旧版本保留的东西，各自写明何时删除 |
 | `modules/image` | 进程内写出的镜像：GPT、FAT、带 El Torito 的 ISO 9660、qcow2 |
 | `apps/luban` | 二进制：luban，或以 `luban-init` 启动时的 stage-0 |
 | `src/core/subos/root` | 根的 xlings 一侧：投影、代、回滚、导出 |
