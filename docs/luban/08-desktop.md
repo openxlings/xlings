@@ -118,7 +118,7 @@ columns.
 
 | | |
 |---|---|
-| **Tile** | windows in columns side by side; one or two share the screen, more scroll with the focused one in view; a column can hold several, one above another |
+| **Tile** | windows in columns side by side, 4 pixels apart; the columns share the screen equally until each would be narrower than 480, then they scroll with the focused one in view; columns given widths that add up to less than the screen widen in proportion to fill it; a column can hold several, one above another; a workspace can run its columns downwards instead (`flow = vertical`, for a portrait screen). A tiled window is told so and takes its size exactly (a terminal no longer rounds itself short) |
 | **Stack** | windows where you put them, overlapping, kept on the screen; maximized, or snapped to a half or a quarter |
 | **Canvas** | windows on a plane that pans and zooms; put one against another's edge and they become a tiled group, moved and zoomed as one |
 
@@ -185,7 +185,10 @@ each later one winning key by key.
 [desktop]
 terminal = foot
 autostart = foot
-gap = 8
+inner_gap = 4          # between windows (gap of before is read as this)
+outer_gap = 0          # between windows and the screen's edges
+min_column_width = 480 # tiled columns share the screen until narrower than this, then scroll
+flow = horizontal      # tiled columns side by side; vertical: one under another
 workspaces = 4
 
 [theme]

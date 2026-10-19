@@ -9,7 +9,7 @@ namespace xdesk::layout {
 using detail::overlaps;
 
 Rect Layout::stack_rect_(const Window& w, Rect area) const {
-    const double g = o_.gap;
+    const double g = o_.inner_gap;
     if (w.snapped) {
         // -1 the left (top) half, 0 all of it, 1 the right (bottom) half.
         auto span = [&](int part, double from, double size) -> std::pair<double, double> {
@@ -33,8 +33,8 @@ Rect Layout::stack_rect_(const Window& w, Rect area) const {
 // In the middle, as big as it asked (or fits); down and right of one that
 // is exactly there already, so each shows.
 void Layout::stack_place_new_(Space& s, Window& w, Rect area) {
-    const double width = std::min(w.preferred.width, area.width - 4 * o_.gap);
-    const double height = std::min(w.preferred.height, area.height - 4 * o_.gap);
+    const double width = std::min(w.preferred.width, area.width - 4 * o_.inner_gap);
+    const double height = std::min(w.preferred.height, area.height - 4 * o_.inner_gap);
     Rect r { area.x + (area.width - width) / 2, area.y + (area.height - height) / 2, width, height };
     for (int tries = 0; tries < 16; ++tries) {
         const bool taken = std::ranges::any_of(s.windows, [&](const Window& o) {
@@ -45,8 +45,8 @@ void Layout::stack_place_new_(Space& s, Window& w, Rect area) {
         r.x += 32;
         r.y += 32;
         if (r.x + r.width > area.x + area.width || r.y + r.height > area.y + area.height) {
-            r.x = area.x + 2 * o_.gap;
-            r.y = area.y + 2 * o_.gap;
+            r.x = area.x + 2 * o_.inner_gap;
+            r.y = area.y + 2 * o_.inner_gap;
         }
     }
     w.stacked = r;

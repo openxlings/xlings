@@ -158,12 +158,14 @@ std::optional<std::size_t> Layout::gap_at(double sx, double sy) const {
 void Layout::drag_gap(std::size_t column, double dx) {
     auto& s = space_();
     if (s.mode != Mode::tile || column + 1 >= s.columns.size()) return;
-    const double total = std::max(1.0, area_().width - o_.gap);
-    const auto n = s.columns.size();
-    auto width_of = [&](const Column& c) { return c.width > 0 ? c.width : (n <= 2 ? 1.0 / static_cast<double>(n) : 0.5); };
+    const double total = std::max(1.0, tile_length_(s) - 2 * o_.outer_gap + o_.inner_gap);
+    const double fa = tile_fraction_(s, column), fb = tile_fraction_(s, column + 1), df = dx / total;
+    // Every column keeps the width it has now; these two trade.
+    std::vector<double> now;
+    for (std::size_t i = 0; i < s.columns.size(); ++i) now.push_back(tile_fraction_(s, i));
+    for (std::size_t i = 0; i < s.columns.size(); ++i) s.columns[i].width = now[i];
     auto& a = s.columns[column];
     auto& b = s.columns[column + 1];
-    const double fa = width_of(a), fb = width_of(b), df = dx / total;
     const double na = std::clamp(fa + df, 0.1, fa + fb - 0.1);
     a.width = na;
     b.width = fa + fb - na;
@@ -210,7 +212,7 @@ void Layout::arrange_as(Pattern p, const std::vector<Id>& windows) {
     }
     if (s.mode == Mode::stack) {
         // Halves and quarters by snapping; the rest by their frames.
-        const double g = o_.gap;
+        const double g = o_.inner_gap;
         auto frame = [&](double x0, double x1, double y0, double y1) {
             return Rect{area.x + g + x0 * (area.width - g), area.y + g + y0 * (area.height - g), (x1 - x0) * (area.width - g) - g,
                         (y1 - y0) * (area.height - g) - g};

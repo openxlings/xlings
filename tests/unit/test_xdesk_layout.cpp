@@ -25,31 +25,39 @@ const layout::Placement& of(const std::vector<layout::Placement>& ps, layout::Id
 
 }  // namespace
 
-XTEST(XdeskLayout, OneOrTwoWindowsShareTheOutputMoreScrollWithTheFocus, .area = "luban", .covers = {"XDESK-LAYOUT"}) {
-    Layout l({.mode = Mode::tile, .gap = 10});
+XTEST(XdeskLayout, ColumnsShareTheOutputUntilTooNarrowThenScrollWithTheFocus, .area = "luban", .covers = {"XDESK-LAYOUT", "XDESK-TILE-SIZES"}) {
+    Layout l({.mode = Mode::tile, .inner_gap = 10, .outer_gap = 10, .min_column_width = 300});
     l.add(1, {600, 400});
     auto ps = l.arrange(kOutput);
     ASSERT_EQ(ps.size(), 1u);
     EXPECT_EQ(ps[0].rect, (Rect{10, 10, 1180, 780}));          // all of it, inside the gaps
+    EXPECT_TRUE(ps[0].tiled) << "the client is told it is tiled (it draws to the size given)";
     l.add(2, {600, 400});
     ps = l.arrange(kOutput);
     EXPECT_EQ(of(ps, 1).rect, (Rect{10, 10, 585, 780}));       // halves, side by side
     EXPECT_EQ(of(ps, 2).rect, (Rect{605, 10, 585, 780}));
     EXPECT_TRUE(of(ps, 2).focused);                            // the new one has the focus
-    // A third: halves still, the strip scrolled so the focused one shows whole.
+    // A third: thirds -- every window on the screen (G5: one was off it).
     l.add(3, {600, 400});
     ps = l.arrange(kOutput);
-    EXPECT_EQ(of(ps, 3).rect.width, 585);
-    EXPECT_GE(of(ps, 3).rect.x, 0);
-    EXPECT_LE(of(ps, 3).rect.x + of(ps, 3).rect.width, kOutput.width);
-    EXPECT_FALSE(of(ps, 1).visible);
+    for (const auto id : {1u, 2u, 3u}) {
+        EXPECT_NEAR(of(ps, id).rect.width, (1180 - 20) / 3.0, 1e-6) << id;
+        EXPECT_TRUE(of(ps, id).visible) << id;
+    }
+    // A fourth would be narrower than 300: each is 300 and the strip scrolls,
+    // the focused one shown whole.
+    l.add(4, {600, 400});
+    ps = l.arrange(kOutput);
+    EXPECT_NEAR(of(ps, 4).rect.width, 300, 1e-6);
+    EXPECT_GE(of(ps, 4).rect.x, 0);
+    EXPECT_LE(of(ps, 4).rect.x + of(ps, 4).rect.width, kOutput.width);
+    l.remove(4);
     // Back to the first: it is shown again.
     l.move_focus(Direction::left);
     l.move_focus(Direction::left);
     EXPECT_EQ(l.focused(), 1u);
     ps = l.arrange(kOutput);
     EXPECT_EQ(of(ps, 1).rect.x, 10);
-    EXPECT_FALSE(of(ps, 3).visible);
     // A new window opens beside the focused one, not at the end.
     l.add(4, {600, 400});
     ps = l.arrange(kOutput);
@@ -59,21 +67,67 @@ XTEST(XdeskLayout, OneOrTwoWindowsShareTheOutputMoreScrollWithTheFocus, .area = 
     EXPECT_EQ(l.focused(), 2u);
 }
 
-XTEST(XdeskLayout, AColumnsWidthCyclesAndColumnsSwap, .area = "luban", .covers = {"XDESK-LAYOUT"}) {
-    Layout l({.mode = Mode::tile, .gap = 10});
+XTEST(XdeskLayout, ColumnsGivenWidthsFillTheOutputInProportionAndScrollPastIt, .area = "luban",
+      .covers = {"XDESK-LAYOUT", "XDESK-TILE-SIZES"}) {
+    Layout l({.mode = Mode::tile, .inner_gap = 4, .outer_gap = 0});
     l.add(1, {600, 400});
-    l.cycle_width();                                            // the whole -> a third
+    l.cycle_width();                                            // one column fills whatever its width says
     auto ps = l.arrange(kOutput);
-    EXPECT_NEAR(ps[0].rect.width, (1200 - 10) / 3.0 - 10, 1e-6);
-    EXPECT_NEAR(ps[0].rect.x, (1200 - ps[0].rect.width) / 2, 1e-6);   // a narrow strip is centred
+    EXPECT_EQ(ps[0].rect, (Rect{0, 0, 1200, 800}));
     l.add(2, {600, 400});
     l.move(Direction::left);
     ps = l.arrange(kOutput);
-    EXPECT_LT(of(ps, 2).rect.x, of(ps, 1).rect.x);
+    EXPECT_LT(of(ps, 2).rect.x, of(ps, 1).rect.x);              // columns swap
+    // A third and a third, less than the screen: still filled, in
+    // proportion (G5: blanks at the sides).
+    l.focus(2);
+    l.cycle_width();                                            // 2/3 (what it has) -> the whole
+    l.cycle_width();                                            // -> 1/3
+    ps = l.arrange(kOutput);
+    EXPECT_NEAR(of(ps, 2).rect.width + of(ps, 1).rect.width + 4, 1200, 1e-6);
+    EXPECT_NEAR(of(ps, 2).rect.width, of(ps, 1).rect.width, 1e-6);
+    EXPECT_EQ(of(ps, 2).rect.x, 0);
+    // Wider than the screen in all: it scrolls, the focused column in view.
+    l.focus(1);
+    l.cycle_width();                                            // 1/2 as shown -> 2/3
+    l.cycle_width();                                            // -> the whole
+    ps = l.arrange(kOutput);
+    EXPECT_NEAR(of(ps, 1).rect.width, 1200, 1e-6);
+    ps = l.arrange(kOutput);
+    EXPECT_GE(of(ps, 1).rect.x, 0);
+    EXPECT_LE(of(ps, 1).rect.x + of(ps, 1).rect.width, kOutput.width + 1e-6);
+    // The gaps: 4 between windows, none at the edges.
+    l.even_widths();
+    ps = l.arrange(kOutput);
+    EXPECT_EQ(of(ps, 2).rect.x, 0);
+    EXPECT_NEAR(of(ps, 1).rect.x - (of(ps, 2).rect.x + of(ps, 2).rect.width), 4, 1e-6);
+    EXPECT_EQ(of(ps, 1).rect.height, 800);
+}
+
+XTEST(XdeskLayout, AVerticalFlowStacksColumnsAsRowsAndScrollsDown, .area = "luban", .covers = {"XDESK-TILE-SIZES"}) {
+    Layout l({.mode = Mode::tile, .inner_gap = 4, .outer_gap = 0, .min_column_width = 300, .flow = layout::Flow::vertical});
+    constexpr layout::Size portrait { 800, 1200 };
+    for (layout::Id id = 1; id <= 3; ++id) l.add(id, {600, 400});
+    auto ps = l.arrange(portrait);
+    for (const auto id : {1u, 2u, 3u}) {
+        EXPECT_EQ(of(ps, id).rect.width, 800) << id;
+        EXPECT_NEAR(of(ps, id).rect.height, (1200 - 8) / 3.0, 1e-6) << id;
+    }
+    EXPECT_LT(of(ps, 1).rect.y, of(ps, 2).rect.y);
+    // Directions turn with it: down is the next row.
+    l.focus(1);
+    l.move_focus(Direction::down);
+    EXPECT_EQ(l.focused(), 2u);
+    l.add(4, {600, 400});
+    l.add(5, {600, 400});
+    ps = l.arrange(portrait);
+    EXPECT_NEAR(of(ps, 5).rect.height, 300, 1e-6);              // five would be too short: they scroll
+    EXPECT_LE(of(ps, 5).rect.y + of(ps, 5).rect.height, 1200 + 1e-6);
+    EXPECT_EQ(l.flow(), layout::Flow::vertical);
 }
 
 XTEST(XdeskLayout, AFloatingWindowIsCentredAboveAndStaysWhereItIsPut, .area = "luban", .covers = {"XDESK-LAYOUT"}) {
-    Layout l({.mode = Mode::tile, .gap = 10});
+    Layout l({.mode = Mode::tile, .inner_gap = 10, .outer_gap = 10});
     l.add(1, {600, 400});
     l.add(2, {400, 300}, true);
     auto ps = l.arrange(kOutput);
@@ -94,7 +148,7 @@ XTEST(XdeskLayout, AFloatingWindowIsCentredAboveAndStaysWhereItIsPut, .area = "l
 }
 
 XTEST(XdeskLayout, TheCanvasPlacesBesideAndPansAndZoomsAroundAPoint, .area = "luban", .covers = {"XDESK-LAYOUT"}) {
-    Layout l({.mode = Mode::canvas, .gap = 10});
+    Layout l({.mode = Mode::canvas, .inner_gap = 10, .outer_gap = 10});
     l.add(1, {600, 400});
     auto ps = l.arrange(kOutput);
     EXPECT_EQ(ps[0].rect, (Rect{300, 200, 600, 400}));          // the middle of the view
@@ -123,7 +177,7 @@ XTEST(XdeskLayout, TheCanvasPlacesBesideAndPansAndZoomsAroundAPoint, .area = "lu
 }
 
 XTEST(XdeskLayout, TheOverviewFitsEveryWindowAndLeavingItIsBackWhereItWas, .area = "luban", .covers = {"XDESK-LAYOUT"}) {
-    Layout l({.mode = Mode::canvas, .gap = 10});
+    Layout l({.mode = Mode::canvas, .inner_gap = 10, .outer_gap = 10});
     for (layout::Id id = 1; id <= 5; ++id) l.add(id, {800, 600});
     l.pan(-123, 45);
     const auto before = of(l.arrange(kOutput), 2).rect;
@@ -151,7 +205,7 @@ XTEST(XdeskLayout, TheOverviewFitsEveryWindowAndLeavingItIsBackWhereItWas, .area
 }
 
 XTEST(XdeskLayout, EachWorkspaceIsALayoutOfItsOwn, .area = "luban", .covers = {"XDESK-LAYOUT"}) {
-    Layout l({.mode = Mode::tile, .gap = 10, .workspaces = 3});
+    Layout l({.mode = Mode::tile, .inner_gap = 10, .outer_gap = 10, .workspaces = 3});
     l.add(1, {600, 400});
     l.add(2, {600, 400});
     l.send_to(2, 1);
@@ -192,7 +246,7 @@ XTEST(XdeskLayout, ASpringArrivesWithoutOvershootingAndBendsToANewTarget, .area 
 // ── space x arrangement (design 2026-10-19 §17) ──────────────────────
 
 XTEST(XdeskLayout, AColumnHoldsWindowsOneAboveAnotherAndGivesThemBack, .area = "luban", .covers = {"XDESK-LAYOUT", "XDESK-ARRANGEMENTS"}) {
-    Layout l({.mode = Mode::tile, .gap = 10});
+    Layout l({.mode = Mode::tile, .inner_gap = 10, .outer_gap = 10});
     for (layout::Id id = 1; id <= 3; ++id) l.add(id, {600, 400});
     l.join();                                                   // Super+[: 3 into 2's column
     auto ps = l.arrange(kOutput);
@@ -229,7 +283,7 @@ XTEST(XdeskLayout, AColumnHoldsWindowsOneAboveAnotherAndGivesThemBack, .area = "
 }
 
 XTEST(XdeskLayout, SwitchingArrangementsComesBackToTheSameLayout, .area = "luban", .covers = {"XDESK-LAYOUT", "XDESK-ARRANGEMENTS"}) {
-    Layout l({.mode = Mode::tile, .gap = 10});
+    Layout l({.mode = Mode::tile, .inner_gap = 10, .outer_gap = 10});
     for (layout::Id id = 1; id <= 3; ++id) l.add(id, {600, 400});
     l.join();
     const auto tiled = l.arrange(kOutput);
@@ -270,7 +324,7 @@ XTEST(XdeskLayout, SwitchingArrangementsComesBackToTheSameLayout, .area = "luban
 }
 
 XTEST(XdeskLayout, StackedWindowsOverlapOnTheOutputAndSnapToHalvesAndQuarters, .area = "luban", .covers = {"XDESK-ARRANGEMENTS"}) {
-    Layout l({.mode = Mode::stack, .gap = 10});
+    Layout l({.mode = Mode::stack, .inner_gap = 10, .outer_gap = 10});
     l.add(1, {600, 400});
     l.add(2, {600, 400});
     auto ps = l.arrange(kOutput);
@@ -305,7 +359,7 @@ XTEST(XdeskLayout, StackedWindowsOverlapOnTheOutputAndSnapToHalvesAndQuarters, .
 }
 
 XTEST(XdeskLayout, OnTheCanvasWindowsMakeTiledGroupsThatMoveAsOne, .area = "luban", .covers = {"XDESK-ARRANGEMENTS"}) {
-    Layout l({.mode = Mode::canvas, .gap = 10});
+    Layout l({.mode = Mode::canvas, .inner_gap = 10, .outer_gap = 10});
     l.add(1, {600, 400});
     l.add(2, {500, 300});
     l.arrange(kOutput);
@@ -346,7 +400,7 @@ XTEST(XdeskLayout, OnTheCanvasWindowsMakeTiledGroupsThatMoveAsOne, .area = "luba
 }
 
 XTEST(XdeskLayout, EachWorkspaceKeepsItsOwnArrangement, .area = "luban", .covers = {"XDESK-ARRANGEMENTS"}) {
-    Layout l({.mode = Mode::tile, .gap = 10, .workspaces = 2});
+    Layout l({.mode = Mode::tile, .inner_gap = 10, .outer_gap = 10, .workspaces = 2});
     l.add(1, {600, 400});
     l.arrange(kOutput);
     l.set_mode(Mode::stack);
@@ -365,7 +419,7 @@ XTEST(XdeskLayout, EachWorkspaceKeepsItsOwnArrangement, .area = "luban", .covers
 }
 
 XTEST(XdeskLayout, AlwaysOnTopIsAboveEverythingAndOnEveryWorkspaceGoesAlong, .area = "luban", .covers = {"XDESK-WINDOW-MENU"}) {
-    Layout l({.mode = Mode::tile, .gap = 10, .workspaces = 2});
+    Layout l({.mode = Mode::tile, .inner_gap = 10, .outer_gap = 10, .workspaces = 2});
     l.add(1, {600, 400});
     l.add(2, {400, 300}, true);
     l.add(3, {300, 200});
@@ -400,7 +454,7 @@ XTEST(XdeskLayout, AlwaysOnTopIsAboveEverythingAndOnEveryWorkspaceGoesAlong, .ar
 // Dragging (design 2026-10-19 §17.9): where it lands is read off the
 // arrangement, and the preview is that very drop.
 XTEST(XdeskLayout, ADraggedWindowsPreviewIsWhereItLands, .area = "luban", .covers = {"XDESK-DRAG-SNAP"}) {
-    Layout l({.mode = Mode::tile, .gap = 10});
+    Layout l({.mode = Mode::tile, .inner_gap = 10, .outer_gap = 10});
     for (layout::Id id = 1; id <= 2; ++id) l.add(id, {600, 400});
     auto ps = l.arrange(kOutput);
     const auto two = of(ps, 2).rect;
@@ -445,7 +499,7 @@ XTEST(XdeskLayout, ADraggedWindowsPreviewIsWhereItLands, .area = "luban", .cover
 }
 
 XTEST(XdeskLayout, StackedEdgesSnapAndCanvasEdgesGroup, .area = "luban", .covers = {"XDESK-DRAG-SNAP"}) {
-    Layout s({.mode = Mode::stack, .gap = 10});
+    Layout s({.mode = Mode::stack, .inner_gap = 10, .outer_gap = 10});
     s.add(1, {600, 400});
     s.arrange(kOutput);
     auto d = s.drop_at(1, 3, 400);
@@ -457,7 +511,7 @@ XTEST(XdeskLayout, StackedEdgesSnapAndCanvasEdgesGroup, .area = "luban", .covers
     EXPECT_EQ(s.drop_at(1, 600, 3).snap_x, 0) << "the top: the whole";
     EXPECT_EQ(s.drop_at(1, 600, 400).kind, layout::Drop::Kind::free);
 
-    Layout c({.mode = Mode::canvas, .gap = 10});
+    Layout c({.mode = Mode::canvas, .inner_gap = 10, .outer_gap = 10});
     c.add(1, {600, 400});
     c.add(2, {500, 300});
     auto ps = c.arrange(kOutput);
@@ -474,7 +528,7 @@ XTEST(XdeskLayout, StackedEdgesSnapAndCanvasEdgesGroup, .area = "luban", .covers
 }
 
 XTEST(XdeskLayout, TheMaximizeButtonsLayoutsLayOutTheRecentWindows, .area = "luban", .covers = {"XDESK-DRAG-SNAP"}) {
-    Layout l({.mode = Mode::tile, .gap = 10});
+    Layout l({.mode = Mode::tile, .inner_gap = 10, .outer_gap = 10});
     for (layout::Id id = 1; id <= 3; ++id) l.add(id, {600, 400});
     l.arrange(kOutput);
     l.arrange_as(layout::Pattern::one_and_two, {3, 2, 1});
@@ -484,7 +538,7 @@ XTEST(XdeskLayout, TheMaximizeButtonsLayoutsLayOutTheRecentWindows, .area = "lub
     l.arrange_as(layout::Pattern::two_thirds, {3, 2});
     ps = l.arrange(kOutput);
     EXPECT_GT(of(ps, 3).rect.width, of(ps, 2).rect.width);
-    Layout s({.mode = Mode::stack, .gap = 10});
+    Layout s({.mode = Mode::stack, .inner_gap = 10, .outer_gap = 10});
     s.add(1, {600, 400});
     s.add(2, {600, 400});
     s.arrange(kOutput);

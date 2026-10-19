@@ -1119,6 +1119,10 @@ status = "required"
 text = "xdesk is a wlroots compositor that speaks opensal.wire itself (a session file's X-Opensal-Native=true: it is given the stream, nothing is bridged): headless and software-rendered, no GPU; it shows its desktop at the size the window asks, takes the window's keys and pointer, opens a terminal (Alt+Return), arranges and decorates windows itself, and ends when the stream does; to a window that paces (its hello says so) it sends the next frame only once the last is shown (a second at most), so a slow channel does not pile frames up"
 status = "required"
 
+[XDESK-TILE-SIZES]
+text = "xdesk's tiled columns tell their clients they are tiled (they draw to the size given; what a client draws short of it shows the frame), sit inner_gap apart and outer_gap from the edges (gap of before is the inner one), share the output equally until each would be narrower than min_column_width and then scroll with the focused column in view, fill the output in proportion when the widths they were given add up to less, and run sideways or, a workspace set vertical, downwards with the directions turned"
+status = "required"
+
 [XDESK-LAYOUT]
 text = "xdesk.layout places windows without drawing anything: tile (one or two windows share the output, more scroll with the focused one in view, a new one beside the focus, widths through thirds, halves and the whole), floating (centred above, where it is put), the canvas (beside the focus, panned, zoomed around a point up to 1, an overview that fits every window, left back exactly where the view was, or into a chosen window), a layout per workspace; motion by a critically damped spring"
 status = "required"

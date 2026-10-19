@@ -25,6 +25,13 @@ namespace shell = xdesk::shell;
 namespace apps = xdesk::apps;
 namespace fs = std::filesystem;
 
+namespace {
+// The backdrop's colour: an idle title's, so a short client reads as its frame.
+std::array<float, 4> backdrop_colour_(const shell::Theme& t) {
+    return {t.title_idle.r / 255.0f, t.title_idle.g / 255.0f, t.title_idle.b / 255.0f, 1.0f};
+}
+}  // namespace
+
 View* Server::view_of(layout::Id id) {
     for (auto& v : views) if (v.id == id) return &v;
     return nullptr;
@@ -66,7 +73,18 @@ void Server::arrange(bool instant) {
         // The client is asked for its size at zoom 1 (the canvas scales it).
         const int cw = std::max(1, static_cast<int>(std::lround(p->rect.width / zoom)));
         const int ch = std::max(1, static_cast<int>(std::lround(p->rect.height / zoom)) - kTitle);
-        if (v.toplevel->base->initialized) wlr_xdg_toplevel_set_size(v.toplevel, cw, ch);
+        if (v.toplevel->base->initialized) {
+            wlr_xdg_toplevel_set_size(v.toplevel, cw, ch);
+            // Tiled (design 2026-10-20 §7.1): the client takes the size as
+            // given -- foot, told nothing, rounds down to its cells.
+            wlr_xdg_toplevel_set_tiled(v.toplevel, p->tiled || p->maximized ? kAllEdges : 0);
+            wlr_xdg_toplevel_set_maximized(v.toplevel, p->maximized);
+        }
+        if (v.backdrop) {
+            wlr_scene_rect_set_size(v.backdrop, std::max(1, static_cast<int>(std::lround(p->rect.width))),
+                                    std::max(1, static_cast<int>(std::lround(p->rect.height)) - title));
+            wlr_scene_node_set_position(&v.backdrop->node, 0, title);
+        }
         // The first place is taken at once; after that the frame glides.
         v.x.target = p->rect.x;
         v.y.target = p->rect.y;
@@ -145,6 +163,10 @@ void Server::add_view(wlr_xdg_toplevel* toplevel) {
     v.frame = wlr_scene_tree_create(window_layer);
     wlr_scene_node_set_enabled(&v.frame->node, false);
     v.title = wlr_scene_buffer_create(v.frame, nullptr);
+    {
+        const auto c = backdrop_colour_(theme);
+        v.backdrop = wlr_scene_rect_create(v.frame, 1, 1, c.data());
+    }
     v.content = wlr_scene_xdg_surface_create(v.frame, toplevel->base);
     wlr_scene_node_set_position(&v.content->node, 0, kTitle);
     v.content->node.data = &v;

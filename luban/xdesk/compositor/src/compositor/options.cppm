@@ -16,7 +16,10 @@ struct Options {
     // default terminal (share/xdg-terminals, xdesk.apps::default_terminal).
     std::vector<std::string> terminal;
     std::vector<std::vector<std::string>> autostart;           // started once the socket is up
-    int gap { 8 };                               // between windows and the edges
+    int inner_gap { 4 };                         // between windows (design 2026-10-20 §7.2)
+    int outer_gap { 0 };                         // between them and the output's edges
+    int min_column_width { 480 };                // tiled columns scroll below it (§7.3)
+    std::string flow { "horizontal" };           // tiled columns side by side, or "vertical"
     int workspaces { 4 };
     std::optional<std::uint32_t> accent;         // 0xrrggbb: the theme's, when absent
     std::optional<std::uint32_t> background;

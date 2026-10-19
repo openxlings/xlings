@@ -80,6 +80,8 @@ fs::path colour_client(const tk::Home& home) {
 #   --copy  then its own selection: TEXT
 #   --cursor  its own pointer over it: 8x8 in its colour, hotspot (3, 4)
 #   --app-id  its application id
+#   --cells WxH  draws to whole cells of WxH pixels unless told it is tiled,
+#           maximized or fullscreen -- as a terminal does (foot)
 import os, socket, struct, sys, mmap, tempfile, array
 colour = int(sys.argv[1], 16)
 opts = dict(zip(sys.argv[2::2], sys.argv[3::2]))
@@ -131,7 +133,8 @@ def bind(iface, ver):
     name, have = globals_[iface]; i = new()
     send(registry, 0, struct.pack("<I", name) + string(iface) + struct.pack("<II", min(ver, have), i))
     return i
-compositor, shm, wm = bind("wl_compositor", 4), bind("wl_shm", 1), bind("xdg_wm_base", 1)
+cells = tuple(int(v) for v in opts["--cells"].split("x")) if "--cells" in opts else None
+compositor, shm, wm = bind("wl_compositor", 4), bind("wl_shm", 1), bind("xdg_wm_base", 2 if cells else 1)
 surface = new(); send(compositor, 0, struct.pack("<I", surface))
 xdg_surface = new(); send(wm, 2, struct.pack("<II", xdg_surface, surface))
 toplevel = new(); send(xdg_surface, 1, struct.pack("<I", toplevel))
@@ -167,6 +170,10 @@ def draw(w, h, on=None):
 for obj, op, body in it:
     if obj == toplevel and op == 0:
         w, h = struct.unpack("<ii", body[:8]); size = (w or 400, h or 300)
+        n, = struct.unpack("<I", body[8:12])
+        states = struct.unpack("<%dI" % (n // 4), body[12:12 + n])
+        if cells and not any(st in (1, 2, 5, 6, 7, 8) for st in states):
+            size = (max(cells[0], size[0] - size[0] % cells[0]), max(cells[1], size[1] - size[1] % cells[1]))
     elif obj == toplevel and op == 1:
         break                                                # close
     elif obj == xdg_surface and op == 0:
@@ -259,6 +266,42 @@ screenshot {}
     const auto b = read_ppm(left);
     EXPECT_EQ(b.at(275, 400), kRed);
     EXPECT_EQ(b.at(825, 400), kGreen);
+}
+
+// A client that draws to whole cells (foot) is told it is tiled and takes
+// the size given (design 2026-10-20 §7.1, G4): side by side, two such windows
+// are the gap apart -- 4 pixels -- with nothing of their own between.
+XTEST(LubanOs, XdeskTiledClientsTakeTheirSizeAndSitTheGapApart, .area = "luban",
+      .covers = {"XDESK-TILE-SIZES"}, .requires_ = {"linux", "xlings-bin"}) {
+    if (!app_binary()) GTEST_SKIP() << "no luban-os beside the xlings under test";
+    if (!xdesk_binary()) GTEST_SKIP() << "no xdesk beside luban-os (mcpp build -p xdesk-app)";
+    auto home = tk::Home::isolated("luban-os-xdesk-cells");
+    ASSERT_EQ(home.xlings({"self", "init"}).exit_code, 0);
+    const auto runtime = home.root() / "run";
+    fs::create_directories(runtime);
+    fs::permissions(runtime, fs::perms::owner_all, fs::perm_options::replace);
+    const auto client = colour_client(home).string();
+    const auto two = home.root() / "two.ppm";
+    auto r = run_script(home, std::format(R"(wait desktop
+waitfor desktop.texture.0 1100
+sleep 2500
+screenshot {}
+)", two.string()),
+                        {"--desktop-exec", xdesk_binary()->string(), "--profile", "classic",
+                         "--autostart", std::format("python3 {} c04040 --cells 9x19", client),
+                         "--autostart", std::format("sh -c 'sleep 0.6; exec python3 {} 40c040 --cells 9x19'", client)},
+                        {{"XDG_RUNTIME_DIR", runtime.string()}});
+    ASSERT_EQ(r.exit_code, 0) << r.transcript();
+    const auto img = read_ppm(two);
+    const int y = 400;
+    int red_end = -1, green_start = -1;
+    for (int x = 0; x < img.width; ++x) {
+        if (img.at(x, y) == kRed) red_end = x;
+        if (img.at(x, y) == kGreen && green_start < 0) green_start = x;
+    }
+    ASSERT_GE(red_end, 0) << "no red window at row " << y;
+    ASSERT_GT(green_start, red_end) << "no green window right of it";
+    EXPECT_EQ(green_start - red_end - 1, 4) << "between them only the gap (a short client left its own strip)";
 }
 
 XTEST(LubanOs, XdeskCanvasShowsEveryWindowInItsOverviewAndAClickGoesIn, .area = "luban",

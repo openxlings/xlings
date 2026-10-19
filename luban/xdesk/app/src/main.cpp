@@ -63,7 +63,11 @@ int main(int argc, char* argv[]) {
     }
     if (o.autostart.empty())
         for (const auto& a : settings.all("desktop", "autostart")) o.autostart.push_back({"/bin/sh", "-c", "exec " + a});
-    o.gap = settings.get_int("desktop", "gap", o.gap);
+    // `gap` of before is the gap between windows.
+    o.inner_gap = settings.get_int("desktop", "inner_gap", settings.get_int("desktop", "gap", o.inner_gap));
+    o.outer_gap = settings.get_int("desktop", "outer_gap", o.outer_gap);
+    o.min_column_width = settings.get_int("desktop", "min_column_width", o.min_column_width);
+    o.flow = settings.get("desktop", "flow", o.flow);
     o.workspaces = settings.get_int("desktop", "workspaces", o.workspaces);
     if (const auto c = settings.colour("theme", "accent", 0x1000000); c != 0x1000000) o.accent = c;
     if (const auto c = settings.colour("theme", "background", 0x1000000); c != 0x1000000) o.background = c;

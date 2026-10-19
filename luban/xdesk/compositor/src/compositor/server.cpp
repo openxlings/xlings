@@ -28,7 +28,11 @@ namespace fs = std::filesystem;
 Server::Server(const Options& opts)
     : o(opts), size(opts.size),
       lay({.mode = opts.profile == "canvas" ? layout::Mode::canvas : layout::Mode::tile,
-           .gap = static_cast<double>(std::clamp(opts.gap, 0, 64)), .workspaces = std::clamp(opts.workspaces, 1, 9)}),
+           .inner_gap = static_cast<double>(std::clamp(opts.inner_gap, 0, 64)),
+           .outer_gap = static_cast<double>(std::clamp(opts.outer_gap, 0, 64)),
+           .min_column_width = static_cast<double>(std::clamp(opts.min_column_width, 120, 4096)),
+           .flow = layout::flow_named(opts.flow).value_or(layout::Flow::horizontal),
+           .workspaces = std::clamp(opts.workspaces, 1, 9)}),
       theme(shell::theme(opts.profile)) {
     if (opts.accent) theme.accent = theme.selected = draw::Color::rgb(*opts.accent);
     if (opts.background) theme.background = draw::Color::rgb(*opts.background);

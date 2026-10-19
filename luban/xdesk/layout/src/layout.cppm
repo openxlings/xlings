@@ -50,6 +50,12 @@ struct Insets {
 
 enum class Mode { tile, canvas, stack };
 enum class Direction { left, right, up, down };
+// Which way a tiled workspace's columns run (design 2026-10-20 §7.4):
+// side by side scrolling sideways, or one under another scrolling down (a
+// portrait screen) -- the same rules turned.
+enum class Flow { horizontal, vertical };
+std::string_view name(Flow f);
+std::optional<Flow> flow_named(std::string_view name);
 
 // Super+m's order: tile, stack, canvas.
 Mode next(Mode m);
@@ -83,7 +89,15 @@ enum class Pattern { halves, two_thirds, one_and_two, thirds };
 
 struct Options {
     Mode mode { Mode::tile };   // a workspace's preset until it is given one
-    double gap { 8 };
+    // Between windows, and between them and the output's edges (logical
+    // pixels; design 2026-10-20 §7.2). A setting of before, `gap`, is read
+    // as the inner one.
+    double inner_gap { 4 };
+    double outer_gap { 0 };
+    // Tiled columns share the output equally until each would be narrower
+    // than this; then each is this wide and the strip scrolls (§7.3).
+    double min_column_width { 480 };
+    Flow flow { Flow::horizontal };
     int workspaces { 4 };
 };
 
@@ -97,6 +111,10 @@ struct Placement {
     bool floating { false };
     bool maximized { false };   // stack: the whole output
     bool pinned { false };      // always on top
+    // Laid out by the arrangement, every edge against another or the output
+    // (tile; a maximized stacked window): the client is told so, and draws
+    // to the size given rather than rounding to its own cells.
+    bool tiled { false };
     bool operator==(const Placement&) const = default;
 };
 
@@ -112,6 +130,12 @@ public:
     Mode mode() const;
     void set_mode(Mode m);
     Mode mode_of(int workspace) const;
+    // The shown workspace's flow (tile): which way its columns run.
+    Flow flow() const;
+    void set_flow(Flow f);
+    const Options& options() const { return o_; }
+    // Gaps and the narrowest column, live (the settings' layout page).
+    void set_spacing(double inner_gap, double outer_gap, double min_column_width);
     // A workspace's preset before anything is on it (a session's state read back).
     void preset(int workspace, Mode m);
 
@@ -246,6 +270,7 @@ private:
     };
     struct Space {
         Mode mode { Mode::tile };
+        Flow flow { Flow::horizontal };
         std::array<bool, 3> shown {};   // each preset has an arrangement of its own
         std::vector<Window> windows;    // in the order they came
         std::optional<Id> focus;
@@ -283,6 +308,13 @@ private:
     static void insert_column_(std::vector<Column>& cols, Id id, std::optional<Id> after);
     static void erase_(std::vector<Column>& cols, Id id);
     static std::vector<double> heights_(const Column& c, double total, double gap);
+    // Each column's width along the flow, in pixels, for `length` of output
+    // (§7.3); and the share of it a column has, as Column::width counts it.
+    std::vector<double> tile_widths_(const Space& s, double length) const;
+    double tile_fraction_(const Space& s, std::size_t column) const;
+    double tile_length_(const Space& s) const;
+    // A direction as the tiled columns see it: turned for a vertical flow.
+    static Direction turned_(const Space& s, Direction d);
     void tile_move_(Space& s, Direction d);
     void tile_join_(Space& s);
     void tile_split_(Space& s);

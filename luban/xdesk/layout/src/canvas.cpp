@@ -23,7 +23,7 @@ void Layout::refit_group_(Group& g) {
         if (c.width <= 0) c.width = g.columns.size() == 1 && g.world.width > 0 ? g.world.width : 400;
         width += c.width;
     }
-    width += o_.gap * static_cast<double>(g.columns.empty() ? 0 : g.columns.size() - 1);
+    width += o_.inner_gap * static_cast<double>(g.columns.empty() ? 0 : g.columns.size() - 1);
     g.world.width = width;
 }
 
@@ -32,13 +32,13 @@ std::vector<std::pair<Id, Rect>> Layout::group_rects_(const Group& g) const {
     double x = g.world.x;
     for (const auto& c : g.columns) {
         const double width = g.columns.size() == 1 ? g.world.width : c.width;
-        const auto hs = heights_(c, g.world.height, o_.gap);
+        const auto hs = heights_(c, g.world.height, o_.inner_gap);
         double y = g.world.y;
         for (std::size_t k = 0; k < c.cells.size(); ++k) {
             out.push_back({c.cells[k].id, Rect{x, y, width, hs[k]}});
-            y += hs[k] + o_.gap;
+            y += hs[k] + o_.inner_gap;
         }
-        x += width + o_.gap;
+        x += width + o_.inner_gap;
     }
     return out;
 }
@@ -61,11 +61,11 @@ void Layout::place_group_(Space& s, Group& g) {
     Rect r { s.cx + (area.width / s.zoom - width) / 2, s.cy + (area.height / s.zoom - height) / 2, width, height };
     if (w->beside)
         if (const auto* anchor = window_(*w->beside); anchor && !anchor->floating)
-            if (const auto a = world_rect_(s, anchor->id)) r = {a->x + a->width + 3 * o_.gap, a->y, width, height};
+            if (const auto a = world_rect_(s, anchor->id)) r = {a->x + a->width + 3 * o_.inner_gap, a->y, width, height};
     for (int tries = 0; tries < 64; ++tries) {
         const auto hit = std::ranges::find_if(s.groups, [&](const Group& o) { return &o != &g && o.placed && overlaps(o.world, r); });
         if (hit == s.groups.end()) break;
-        r.x = hit->world.x + hit->world.width + 3 * o_.gap;
+        r.x = hit->world.x + hit->world.width + 3 * o_.inner_gap;
     }
     g.world = r;
     g.columns.front().width = r.width;
@@ -95,7 +95,7 @@ void Layout::group_with(Id id, Id target, Direction side) {
         const auto where = at.column + (side == Direction::right ? 1 : 0);
         g->columns.insert(g->columns.begin() + static_cast<std::ptrdiff_t>(where), Column{.cells = {{.id = id}}, .width = width});
         // The target stays where it is: a column on its left grows the group leftwards.
-        if (side == Direction::left) g->world.x -= width + o_.gap;
+        if (side == Direction::left) g->world.x -= width + o_.inner_gap;
     } else {
         auto& col = g->columns[at.column];
         const auto where = at.cell + (side == Direction::down ? 1 : 0);
@@ -138,13 +138,13 @@ void Layout::canvas_split_(Space& s) {
     erase_(g->columns, id);
     refit_group_(*g);
     // A free window beside the group it left.
-    Rect at { g->world.x + g->world.width + 3 * o_.gap, r->y, r->width, r->height };
+    Rect at { g->world.x + g->world.width + 3 * o_.inner_gap, r->y, r->width, r->height };
     s.groups.push_back({.world = at, .placed = true, .columns = {{.cells = {{.id = id}}, .width = r->width}}});
     auto& mine = s.groups.back();
     for (int tries = 0; tries < 64; ++tries) {
         const auto hit = std::ranges::find_if(s.groups, [&](const Group& o) { return &o != &mine && o.placed && overlaps(o.world, mine.world); });
         if (hit == s.groups.end()) break;
-        mine.world.x = hit->world.x + hit->world.width + 3 * o_.gap;
+        mine.world.x = hit->world.x + hit->world.width + 3 * o_.inner_gap;
     }
     reveal_(s, id);
 }
@@ -221,7 +221,7 @@ void Layout::fit_(Space& s, Rect area) {
         box = Rect{x0, y0, x1 - x0, y1 - y0};
     }
     if (!box) return;
-    const double margin = 4 * o_.gap;
+    const double margin = 4 * o_.inner_gap;
     s.zoom = std::clamp(std::min(area.width / (box->width + 2 * margin), area.height / (box->height + 2 * margin)), kMinZoom, 1.0);
     s.cx = box->x + box->width / 2 - area.width / 2 / s.zoom;
     s.cy = box->y + box->height / 2 - area.height / 2 / s.zoom;
@@ -236,7 +236,7 @@ void Layout::reveal_(Space& s, Id id) {
     const auto r = world_rect_(s, id);
     if (!r) return;
     const Rect area = area_();
-    const double vw = area.width / s.zoom, vh = area.height / s.zoom, m = 2 * o_.gap;
+    const double vw = area.width / s.zoom, vh = area.height / s.zoom, m = 2 * o_.inner_gap;
     if (r->x - m < s.cx || r->width + 2 * m > vw) s.cx = r->x - m;
     else if (r->x + r->width + m > s.cx + vw) s.cx = r->x + r->width + m - vw;
     if (r->y - m < s.cy || r->height + 2 * m > vh) s.cy = r->y - m;

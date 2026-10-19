@@ -58,6 +58,7 @@ struct Hook {
 
 inline constexpr int kTitle = shell::kTitleHeight;  // a window's title bar, in pixels
 inline constexpr std::uint32_t kARGB8888 = 0x34325241;  // DRM_FORMAT_ARGB8888 ('AR24')
+inline constexpr std::uint32_t kAllEdges = 15;          // WLR_EDGE_TOP | BOTTOM | LEFT | RIGHT
 
 // A picture xdesk drew, as a buffer wlroots shows (read in place).
 struct ImageBuffer {
@@ -105,6 +106,9 @@ struct View {
     wlr_scene_buffer* title { nullptr };
     std::string drawn;                          // what the title bar shows: title, width, focus, hover
     wlr_scene_tree* content { nullptr };
+    // Under the content, the frame's size: a client that draws smaller than
+    // it was given (to its own cells) shows this, not the desktop (G4).
+    wlr_scene_rect* backdrop { nullptr };
     bool mapped { false };
     bool laid { false };                        // in the layout
     bool placed { false };                      // shown somewhere already (then it glides)
