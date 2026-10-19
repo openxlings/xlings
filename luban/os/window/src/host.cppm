@@ -166,6 +166,14 @@ private:
     std::filesystem::path font_dir_;
 };
 
+// A process with no window that still answers the system's events: the
+// Luban OS tray (design 2026-10-19 §3.7). On macOS the status area is the
+// main thread's -- SDL's event loop, the app kept out of the Dock; elsewhere
+// it has a thread of its own and these do nothing.
+bool open_events_only();
+void wait_events(int timeout_ms);
+void close_events_only();
+
 // The directory of the fonts Luban OS ships (`luban-fonts`): $LUBAN_OS_FONTS,
 // beside this program (../share/fonts/luban), the home's SubOS, its store.
 std::optional<std::filesystem::path> shipped_font_dir();

@@ -96,6 +96,7 @@ constexpr xlings::i18n::Entry kWords[] = {
     { "luban.os.app.new_system", "新建系统…" },
     { "luban.os.app.no_file_dialog_here_drop", "这里没有文件对话框（{}）：请把 .luban 文件拖进窗口。" },
     { "luban.os.app.nothing_running", "没有运行中的系统" },
+    { "luban.os.app.old_luban_os_running", "还有一个旧版本的 Luban OS 在运行（状态栏里另一个图标）：从它的菜单退出。" },
     { "luban.os.app.open", "打开" },
     { "luban.os.app.open_console", "打开控制台" },
     { "luban.os.app.open_luban_os", "打开 Luban OS" },

@@ -156,6 +156,26 @@ std::optional<fs::path> shipped_font_dir() {
     return std::nullopt;
 }
 
+bool open_events_only() {
+    if (std::string_view(SDL_GetPlatform()) != "macOS") return true;
+    SDL_SetHint(SDL_HINT_MAC_BACKGROUND_APP, "1");
+    return SDL_Init(SDL_INIT_VIDEO);
+}
+
+void wait_events(int timeout_ms) {
+    if (std::string_view(SDL_GetPlatform()) != "macOS") {
+        std::this_thread::sleep_for(std::chrono::milliseconds(timeout_ms));
+        return;
+    }
+    SDL_Event e;
+    if (SDL_WaitEventTimeout(&e, timeout_ms))
+        while (SDL_PollEvent(&e)) {}
+}
+
+void close_events_only() {
+    if (std::string_view(SDL_GetPlatform()) == "macOS") SDL_Quit();
+}
+
 struct Window::Impl {
     SDL_Window* window { nullptr };
     SDL_Renderer* renderer { nullptr };

@@ -287,6 +287,41 @@ std::array<int, 4> console_word(Console& c, int scroll, int row, int col);
 
 fs::path home_dir_();
 
+// ── the tray process (design 2026-10-19 §3) ──────────────────────────────
+// One per home, `luban-os __tray`: the status-area icon, its menu, the
+// notifications; every window its own process, speaking to it over
+// <home>/run/luban-os/tray.sock in lines of JSON. tray.lock makes it one;
+// each window holds windows/<pid>.lock while it lives (never a pid alone).
+inline constexpr int kTrayProtocol = 1;
+fs::path tray_dir(const fs::path& home);
+int run_tray(int argc, char* argv[]);
+
+// A window's line to the tray (tray/link.cpp): connects -- starting the tray
+// when nobody holds tray.lock -- says who it is, keeps what it last said of
+// itself (register, job) to say again after a reconnect, and hands what the
+// tray asks to the window, waking it.
+class TrayLink {
+public:
+    TrayLink(fs::path home, std::function<void()> wake);
+    ~TrayLink();
+    TrayLink(const TrayLink&) = delete;
+    TrayLink& operator=(const TrayLink&) = delete;
+    // A message; `register` and `job` are kept and said again after a reconnect.
+    void send(const nlohmann::json& message);
+    // What the tray said since the last call.
+    std::vector<nlohmann::json> take();
+    // The tray's own word on itself (its pid, its icon's backend, why it has
+    // no icon), once connected; waits up to `wait` for it.
+    std::optional<nlohmann::json> status(std::chrono::milliseconds wait = std::chrono::milliseconds(0));
+    // Why there is no tray: it kept ending (with where its log is).
+    std::string trouble() const;
+
+private:
+    struct State;
+    std::shared_ptr<State> s_;
+    std::jthread io_;
+};
+
 enum class View { Launcher, QuickStart, Job, Console, Off, Admin, Desktop, Import, Run };
 
 // The editions one can make, in two groups. What each is ships with Luban;
@@ -410,9 +445,13 @@ struct App {
     std::optional<Confirm> confirm;
     std::string notice;
     std::function<void()> later;       // done after the frame (what replaces what the frame drew)
-    // The status-area icon (design 2026-10-16 L §13.12).
-    std::unique_ptr<tray::Icon> tray;
+    // The status-area icon, in the tray process (design 2026-10-19 §3):
+    // this window's line to it, once it is wanted.
+    std::unique_ptr<TrayLink> tray;
     std::string tray_error;            // why there is none here
+    std::string tray_backend;
+    int tray_pid { 0 };
+    platform::FileLock alive;          // windows/<pid>.lock: held while this window lives
     std::string tray_said;             // what it shows now (it is told only changes)
     std::chrono::steady_clock::time_point tray_checked;
     bool hidden { false };             // the window is closed and the app is in the tray

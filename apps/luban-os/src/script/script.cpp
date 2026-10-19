@@ -68,8 +68,8 @@ Json state_(const App& a) {
         j["perf"]["draw_ms_p95"] = dm.empty() ? 0.0 : dm[std::min(dm.size() - 1, dm.size() * 95 / 100)];
         j["perf"]["draw_ms_max"] = dm.empty() ? 0.0 : dm.back();
     }
-    j["tray"] = {{"backend", a.tray ? std::string(a.tray->backend()) : std::string{}}, {"error", a.tray_error},
-                 {"hidden", a.hidden}, {"said", a.tray_said}};
+    j["tray"] = {{"backend", a.tray_backend}, {"error", a.tray_error}, {"hidden", a.hidden}, {"said", a.tray_said},
+                 {"pid", a.tray_pid}};
     j["scale"] = imkit::scale();
     j["unit"] = imkit::unit();
     j["display"] = Json::array({ImGui::GetIO().DisplaySize.x, ImGui::GetIO().DisplaySize.y});

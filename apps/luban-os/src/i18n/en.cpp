@@ -98,6 +98,7 @@ constexpr xlings::i18n::Entry kWords[] = {
     { "luban.os.app.new_system", "New system…" },
     { "luban.os.app.no_file_dialog_here_drop", "No file dialog here ({}): drop the .luban file on the window instead." },
     { "luban.os.app.nothing_running", "Nothing running" },
+    { "luban.os.app.old_luban_os_running", "An older Luban OS is still running (another icon in the status area): quit it from its menu." },
     { "luban.os.app.open", "Open" },
     { "luban.os.app.open_console", "Open its console" },
     { "luban.os.app.open_luban_os", "Open Luban OS" },

@@ -1285,7 +1285,7 @@ status = "planned"
 
 [LUBAN-OS-TRAY-PROCESS]
 text = "one tray process per home (luban-os __tray, no display), each window its own process; liveness is a lock, never a pid; every behaviour of the tray before it (icon states, tooltip, menu, notifications, quit confirmation, no status bar, keep_in_tray, a hidden window finishing its job) holds"
-status = "planned"
+status = "required"
 
 [LUBAN-OS-LATENCY]
 text = "the interactions of design 2026-10-19 §4.1 stay within their budgets (p95 on the luban-os lane), and a step that may take over 2 s says its first line within 2 s and something at least every 10 s"

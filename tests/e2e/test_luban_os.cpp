@@ -1638,6 +1638,50 @@ tray quit
     EXPECT_FALSE(s["tray"]["hidden"].get<bool>());
 }
 
+// One tray process for a home, however many windows (design 2026-10-19 §3):
+// each window finds it -- the first starts it -- and it ends when no window
+// needs it and nothing runs.
+XTEST(LubanOs, EveryWindowOfAHomeSharesOneTrayThatEndsWhenNothingNeedsIt, .area = "luban",
+      .covers = {"LUBAN-OS-TRAY-PROCESS", "LUBAN-OS-TRAY"}, .requires_ = {"linux", "xlings-bin"}) {
+    if (!app_binary()) GTEST_SKIP() << "no luban-os beside the xlings under test";
+    auto home = home_with_two("luban-os-one-tray");
+    tk::write_file(home.dir() / "config" / "luban-os.json", R"({"countdown":0})");
+    std::array<fs::path, 2> states{home.root() / "a.json", home.root() / "b.json"};
+    std::array<tk::RunResult, 2> runs;
+    std::array<std::thread, 2> windows;
+    for (std::size_t k = 0; k < 2; ++k)
+        windows[k] = std::thread([&, k] {
+            // Each its own script file: the two run at once.
+            const auto file = home.root() / std::format("script-{}.txt", k);
+            tk::write_file(file, std::format(R"(wait launcher
+tray new
+wait quick-start
+sleep 1500
+state {}
+)", states[k].string()));
+            tk::RunOptions o;
+            o.argv = {app_binary()->string(), "--headless", "--script", file.string()};
+            o.env = home.env();
+            o.env["LUBAN_XLINGS"] = tk::xlings_binary().string();
+            o.env["SDL_VIDEODRIVER"] = "offscreen";
+            o.env["SDL_RENDER_DRIVER"] = "software";
+            o.env["DBUS_SESSION_BUS_ADDRESS"] = "unix:path=/nonexistent/bus";
+            o.timeout = std::chrono::seconds(120);
+            runs[k] = tk::run(o);
+        });
+    for (auto& w : windows) w.join();
+    for (const auto& r : runs) ASSERT_EQ(r.exit_code, 0) << r.transcript();
+    const auto a = read_state(states[0])["tray"], b = read_state(states[1])["tray"];
+    // The menu's "new" reached each window through the tray, and it was one tray.
+    EXPECT_GT(a["pid"].get<int>(), 0) << a.dump();
+    EXPECT_EQ(a["pid"], b["pid"]) << a.dump() << b.dump();
+    EXPECT_FALSE(a["error"].get<std::string>().empty()) << "no status area here: said";
+    // No window left, nothing running, the icon not kept: the tray ends.
+    const auto proc = fs::path("/proc") / std::to_string(a["pid"].get<int>());
+    for (int k = 0; k < 100 && fs::exists(proc); ++k) std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    EXPECT_FALSE(fs::exists(proc)) << "the tray outlived what it was for";
+}
+
 // Visual verification (design 2026-10-16 L §13.8): the key pages at three
 // scales and in both languages -- every control on the screen, apart, whole
 // and big enough to hit; where each lies matches its baseline
