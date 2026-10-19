@@ -1,6 +1,7 @@
 import std;
 
 import xlings.cli;
+import xlings.ui.i18n;
 import xlings.core.xim.lua_boundary;
 import xlings.core.config;
 import xlings.core.log;
@@ -21,6 +22,8 @@ import xlings.core.xself.compat;
 
 
 int main(int argc, char* argv[]) {
+    // xlings' words, before anything can ask for one (design 2026-10-19 §7).
+    xlings::ui::register_catalogues();
     // `xlings __carrier-env K=V ... -- <args>`: a carrier's launcher carries
     // no variables and its guest has no env(1) (design part 3 §5.1). Set
     // them and go on as `xlings <args>`.

@@ -36,6 +36,7 @@ members = [
     "modules/runtime",
     "modules/platform",
     "modules/home",
+    "modules/i18n",
     "modules/ui",
     "modules/cli",
     "modules/subos",
@@ -164,6 +165,7 @@ libs     = { path = "modules/libs" }
 runtime  = { path = "modules/runtime" }
 platform = { path = "modules/platform" }
 home     = { path = "modules/home" }
+i18n     = { path = "modules/i18n" }
 ui       = { path = "modules/ui" }
 cli      = { path = "modules/cli" }
 subos    = { path = "modules/subos" }

@@ -1,0 +1,23 @@
+# i18n: how a program's words reach a person in their language -- the
+# mechanism, shared by xlings, luban and the Luban OS app (design 2026-10-19
+# §7). Each program keeps its own words (catalogues) and registers them here
+# by domain, in its main: nothing depends on the order static objects start.
+#
+#   xlings.i18n          the interface: tr(key), trf(key, args...), the
+#                        language, catalogues by domain, pick(), the glossary
+#   xlings.i18n:locale   language tags: normalising them and their BCP 47
+#                        fallback chain (zh-CN -> zh -> en)
+#
+# Catalogues are compile-time tables; English is each domain's complete base
+# and every other language states only what it translates. The module name is
+# the one xlings always used, so its importers did not change.
+[package]
+namespace = "xlings"
+name      = "i18n"
+version   = "0.1.0"
+
+[targets.i18n]
+kind = "lib"
+
+[dependencies]
+platform = { path = "../platform" }   # the system's language

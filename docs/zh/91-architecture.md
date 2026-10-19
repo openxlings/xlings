@@ -11,7 +11,8 @@ modules/            linked into xlings, one per responsibility
   libs/             json, sha256, tinyhttps -- nothing of xlings
   runtime/          cancellation, guard (confirmation tokens), observe (audit, redaction)
   platform/         the OS boundary: every system header and call
-  ui/               theme, i18n
+  i18n/             the i18n mechanism: tr, the language, catalogues by domain, pick, the glossary
+  ui/               theme, xlings' catalogues
   cli/              the command model: one declared tree, help by level, completion
   home/             the home: its format (layout, steps) and its payload store (GC roots, the retained ledger)
   subos/            the SubOS core: model, policy, intent, sandbox, views, session
