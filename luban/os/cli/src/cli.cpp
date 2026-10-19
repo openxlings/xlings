@@ -496,15 +496,28 @@ int host_status(const svc::Context& c, const Globals& g) {
     const auto* sandbox = caps.mode("sandbox");
     const auto* machine = caps.mode("machine");
     const bool ready = (sandbox && sandbox->ready) || (machine && machine->ready);
+    const auto versions = svc::versions(c);
     if (g.json) {
         auto out = svc::to_json(caps);
         out["place"] = to_string(where());
         out["ready"] = sandbox && sandbox->ready;
         out["isolation"] = caps.isolation;
+        out["versions"] = svc::to_json(versions);
         std::println("{}", out.dump());
         return ready ? 0 : 1;
     }
     std::println("Luban OS {} -- {} ({}), {}", svc::kVersion, caps.os, caps.arch, to_string(where()));
+    // The parts' versions in one line; where they disagree, each with what to
+    // do (design 2026-10-19 §11).
+    {
+        std::string line = std::format("xlings {} · luban {}", versions.xlings.empty() ? "?" : versions.xlings, versions.luban);
+        if (!versions.app.empty()) line += std::format(" · luban-os {}", versions.app);
+        if (!versions.index.empty()) line += std::format(" · index {}", versions.index);
+        std::println("  {:<9}{}", "versions", line);
+        for (const auto& m : versions.mismatches) std::println("  {:<9}  {} -- {}", "", m.why, m.next);
+        if (g.verbose && !versions.looked)
+            std::println("  {:<9}  (this system's processes cannot be listed: older Luban OS windows are not looked for)", "");
+    }
     for (const auto& m : caps.modes) {
         if (m.ready) {
             std::println("  {:<9}ready      {}", m.name, m.how);
@@ -549,8 +562,11 @@ std::string edition_label_(const svc::Environment& e) {
     return svc::display_name(svc::lineage_of(e));
 }
 
-int overview(const svc::Context& c, const Globals& g) {
+int overview(const svc::Context& c, const Globals& g, std::string_view pattern = {}) {
     auto envs = svc::list(c);
+    // A name pattern (design 2026-10-19 §6): `luban ls a`. Without one, the
+    // output is what it always was.
+    if (envs && !pattern.empty()) std::erase_if(*envs, [&](const svc::Environment& e) { return !name_matches(e.name, pattern); });
     if (g.json) {
         Json list = Json::array();
         // What each is (the fields of `status <name> --json`): a host that asks
@@ -577,6 +593,10 @@ int overview(const svc::Context& c, const Globals& g) {
     if (!envs) {
         std::println("  environments: could not be listed ({})", envs.error());
         return 1;
+    }
+    if (envs->empty() && !pattern.empty()) {
+        std::println("  no environment matches '{}': luban ls lists them all", pattern);
+        return 0;
     }
     if (envs->empty()) {
         std::println("  no environments yet\n\n  start   luban new box");
@@ -1298,7 +1318,12 @@ const spec::CommandSpec& tree() {
              .options = {{"--user <NAME>", "As this user (root, or one of its users)", false, Level::More},
                          {"--display <DISPLAY>", "terminal (here) or window: a graphical program alone in a window of its own", false,
                           Level::More}}, .effect = "reversible"},
-            {.name = "ls", .description = "List the environments", .aliases = {"list"}, .effect = "read"},
+            {.name = "ls", .description = "List the environments, or those whose name matches", .aliases = {"list"},
+             .arguments = {{"pattern", "A name or part of one"}}, .effect = "read"},
+            {.name = "search", .description = "What the index offers: systems to make, desktops to give one",
+             .arguments = {{"keyword", "Part of a name, title or description"}},
+             .options = {{"--distributions", "Only the systems that can be made"},
+                         {"--desktops", "Only the desktops a system can have"}}, .effect = "read"},
             {.name = "status", .description = "This host, or one environment", .arguments = {{"name", "Which"}},
              .options = {{"--check", "Check that it is usable: its /usr, /etc, runtime closure, and programs"}}, .effect = "read"},
             {.name = "config", .description = "Show or change an environment's settings",
@@ -1610,7 +1635,16 @@ int run(int argc, char* argv[]) {
         if (p.command == "new") return cmd_new(c, p, g, render);
         if (p.command == "enter") return cmd_enter(c, p, g);
         if (p.command == "run") return cmd_run(c, p, g);
-        if (p.command == "ls") return overview(c, g);
+        if (p.command == "ls") {
+            if (p.words.size() > 1) return usage("`luban ls [<pattern>]`", g);
+            return overview(c, g, p.words.empty() ? std::string_view{} : std::string_view(p.words[0]));
+        }
+        if (p.command == "search") {
+            if (p.words.size() > 1) return usage("`luban search [<keyword>] [--distributions | --desktops]`", g);
+            if (p.flag("--distributions") && p.flag("--desktops")) return usage("--distributions or --desktops, not both", g);
+            return search(c, p.words.empty() ? std::string_view{} : std::string_view(p.words[0]),
+                          p.flag("--distributions") ? "distributions" : p.flag("--desktops") ? "desktops" : "", g.json, g.verbose);
+        }
         if (p.command == "status") return cmd_status(c, p, g, render);
         if (p.command == "config") return cmd_config(c, p, g, render);
         if (p.command == "stop") {

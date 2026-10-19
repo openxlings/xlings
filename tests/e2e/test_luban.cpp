@@ -869,6 +869,111 @@ XTEST(Luban, AnArchiveIsImportedWithoutTheNetworkFromWhatItCarries,
         << "its package came from the archive";
 }
 
+// What is here and what the index offers (design 2026-10-19 §6): `luban ls`
+// with a name pattern (without one, as it always was), and `luban search`,
+// grouped and ordered as the quick start shows them -- desktops by tier, the
+// unrated last, a community one said so.
+XTEST(Luban, LsTakesANamePatternAndSearchListsWhatTheIndexOffers,
+      .area = "luban", .cost = tk::Cost::Medium, .covers = {"LUBAN-LS-SEARCH"}, .requires_ = {"linux", "xlings-bin"}) {
+    if constexpr (!tk::is_linux) GTEST_SKIP() << "a Luban root is a Linux root";
+    const auto bin = luban_binary();
+    if (!bin) GTEST_SKIP() << "no luban beside the xlings under test";
+    auto home = luban_home("luban-ls-search", *bin, [](const fs::path& primary, const fs::path& repo) {
+        const auto desktop = [](std::string_view name, std::string_view ns, std::string_view ext) {
+            return std::format(R"LUA(
+package = {{ spec = '1', name = '{}', namespace = '{}', description = 'a desktop', type = 'package', status = 'stable',
+            categories = {{'luban-desktop'}}, archs = {{'x86_64', 'aarch64'}}, {}
+            xpm = {{ linux = {{ ['1.0.0'] = {{}} }} }} }}
+)LUA", name, ns, ext);
+        };
+        tk::write_file(primary / "pkgs/luban/heavy.lua", desktop("heavy", "luban", "extensions = { luban = { tier = 4, gpu = 'better', title = { en = 'Heavy' } } },"));
+        tk::write_file(primary / "pkgs/luban/light.lua", desktop("light", "luban", "extensions = { luban = { tier = 1, title = { en = 'Light' } } },"));
+        tk::write_file(repo / "pkgs/w/wild.lua", desktop("wild", "fixture", "extensions = { luban = { tier = 9 } },"));
+    });
+    ASSERT_EQ(luban(home, {"new", "box", "--xpkg", "fixture:my-os@1.0.0", "-y"}).exit_code, 0);
+    ASSERT_EQ(luban(home, {"new", "work", "--xpkg", "fixture:my-os@1.0.0", "-y"}).exit_code, 0);
+    const auto all = luban(home, {"--json", "ls"});
+    ASSERT_EQ(all.exit_code, 0) << all.transcript();
+    const auto listed = Json::parse(all.out, nullptr, false);
+    ASSERT_TRUE(listed.is_object() && listed.contains("place") && listed["environments"].size() == 2) << all.out;
+    const auto some = luban(home, {"--json", "ls", "wk"});
+    ASSERT_EQ(some.exit_code, 0) << some.transcript();
+    const auto picked = Json::parse(some.out, nullptr, false);
+    ASSERT_EQ(picked["environments"].size(), 1u) << some.out;
+    EXPECT_EQ(picked["environments"][0]["name"], "work") << "w..k, in order";
+
+    const auto found = luban(home, {"--json", "search", "--desktops"});
+    ASSERT_EQ(found.exit_code, 0) << found.transcript();
+    const auto groups = Json::parse(found.out, nullptr, false);
+    ASSERT_TRUE(groups.is_object() && groups["groups"].size() == 1) << found.out;
+    // By tier, the unrated after (the fixture's own desktops are unrated too).
+    std::vector<std::string> order;
+    std::map<std::string, Json> by_ref;
+    for (const auto& d : groups["groups"][0]["items"]) {
+        order.push_back(d.value("ref", ""));
+        by_ref[d.value("ref", "")] = d;
+    }
+    const auto at = [&](std::string_view ref) { return std::ranges::find(order, ref) - order.begin(); };
+    ASSERT_EQ(at("luban:light"), 0) << found.out;
+    ASSERT_EQ(at("luban:heavy"), 1) << found.out;
+    EXPECT_LT(at("fixture:wild"), static_cast<long>(order.size())) << found.out;
+    EXPECT_EQ(by_ref["luban:heavy"].value("gpu", ""), "better");
+    EXPECT_EQ(by_ref["fixture:wild"].value("source", ""), "community");
+    EXPECT_FALSE(by_ref["fixture:wild"].contains("tier")) << "a tier out of range is not taken";
+    EXPECT_EQ(by_ref["fixture:wild"]["ignored"][0], "tier 9");
+    const auto text = luban(home, {"search", "heavy"});
+    EXPECT_NE(text.out.find("T4"), std::string::npos) << text.out;
+    EXPECT_NE(text.out.find("GPU better"), std::string::npos) << text.out;
+}
+
+// The parts' versions in one place (design 2026-10-19 §11), and what to do
+// where they disagree: an app too old to say what it can do.
+XTEST(Luban, StatusSaysThePartsVersionsAndWhatToDoWhenTheyDisagree,
+      .area = "luban", .cost = tk::Cost::Medium, .covers = {"LUBAN-VERSIONS"}, .requires_ = {"linux", "xlings-bin"}) {
+    if constexpr (!tk::is_linux) GTEST_SKIP() << "a Luban root is a Linux root";
+    const auto bin = luban_binary();
+    if (!bin) GTEST_SKIP() << "no luban beside the xlings under test";
+    auto home = luban_home("luban-versions", *bin);
+    const auto plain = luban(home, {"status"});
+    EXPECT_NE(plain.out.find("versions"), std::string::npos) << plain.out;
+    EXPECT_NE(plain.out.find("xlings "), std::string::npos) << plain.out;
+    const auto app = home.dir() / "bin/luban-os";
+    tk::write_file(app, "#!/bin/sh\necho 'luban-os 2026.10.17.1'\n");
+    fs::permissions(app, fs::perms::owner_all, fs::perm_options::add);
+    const auto status = luban(home, {"--json", "status"});
+    const auto j = Json::parse(status.out, nullptr, false);
+    ASSERT_TRUE(j.is_object() && j.contains("versions")) << status.out;
+    const auto& v = j["versions"];
+    EXPECT_FALSE(v.value("xlings", "").empty()) << v.dump();
+    EXPECT_FALSE(v.value("luban", "").empty()) << v.dump();
+    bool told = false;
+    for (const auto& m : v["mismatches"])
+        told = told || (m.value("what", "") == "luban-os" && m.value("next", "") == "xlings update luban-os");
+    EXPECT_TRUE(told) << v.dump();
+    const auto text = luban(home, {"status"});
+    EXPECT_NE(text.out.find("xlings update luban-os"), std::string::npos) << text.out;
+}
+
+// What is shown before a system is made is what is made (design 2026-10-19
+// §9.1): the plan's version is named to xlings, not resolved again.
+XTEST(Luban, TheVersionShownIsTheVersionMade,
+      .area = "luban", .cost = tk::Cost::Medium, .covers = {"LUBAN-EDITION-PINNED"}, .requires_ = {"linux", "xlings-bin"}) {
+    if constexpr (!tk::is_linux) GTEST_SKIP() << "a Luban root is a Linux root";
+    const auto bin = luban_binary();
+    if (!bin) GTEST_SKIP() << "no luban beside the xlings under test";
+    auto home = luban_home("luban-pinned", *bin);
+    const auto dry = luban(home, {"--json", "new", "box", "--xpkg", "fixture:next-os", "--dry-run"});
+    ASSERT_EQ(dry.exit_code, 0) << dry.transcript();
+    std::string shown;
+    for (const auto& j : dry.json_lines())
+        if (j.contains("result") && j["result"].is_object()) shown = j["result"].value("system", "");
+    ASSERT_FALSE(shown.empty()) << dry.out;
+    ASSERT_EQ(luban(home, {"new", "box", "--xpkg", "fixture:next-os", "-y"}).exit_code, 0);
+    const auto record = Json::parse(tk::read_file(home.dir() / "config/subos/box/instance.json"), nullptr, false);
+    EXPECT_EQ(record["edition"].value("ref", std::string{}), shown) << record.dump();
+    EXPECT_NE(shown.find('@'), std::string::npos) << "a version, not a name to resolve again: " << shown;
+}
+
 XTEST(Luban, BootSaysWhatThisBootWas,
       .area = "luban", .cost = tk::Cost::Fast, .covers = {"LUBAN-BOOT-ENTRIES"}, .requires_ = {"linux", "xlings-bin"}) {
     if constexpr (!tk::is_linux) GTEST_SKIP() << "boot entries are a Linux machine's";

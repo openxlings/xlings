@@ -2767,6 +2767,8 @@ int cmd_search(const std::string& keyword, EventStream& stream, const std::strin
                             {"categories", pkg ? nlohmann::json(pkg->categories) : nlohmann::json::array()}};
         if (pkg) {
             item["status"] = status_name_(pkg->status);
+            item["archs"] = pkg->archs;
+            item["keywords"] = pkg->keywords;
             if (auto ext = extensions_json_(*pkg); !ext.empty()) item["extensions"] = std::move(ext);
         }
         if (!match.passedOver.empty()) item["passed_over"] = match.passedOver;

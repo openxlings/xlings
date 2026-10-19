@@ -567,7 +567,7 @@ version database is shared by every subos of the home.
 | Field | |
 |---|---|
 | `package`, `namespace`, `name`, `version`, `index` | its coordinate and the index it resolves in |
-| `description`, `categories` | the recipe's |
+| `description`, `categories`, `keywords`, `archs` | the recipe's (`archs` and `keywords` in search results) |
 | `status` | `"dev"`, `"stable"` or `"deprecated"`: the recipe's (before 2026.10.19.1 a recipe read in the worker reported `"dev"`) |
 | `extensions` | the recipe's `extensions`, as written: an object keyed by namespace (`xpkg-manifest-v1.md` §3.1). Absent when it has none |
 | `passed_over` | the newest version was passed over because it needs a newer xlings, and why |

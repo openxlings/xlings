@@ -95,6 +95,22 @@ nlohmann::json app_capabilities_json(std::string_view version, const opencaps::P
 // system needs and this luban provides what it needs. Otherwise the error, with
 // the update that fixes it.
 std::expected<fs::path, Event> window_app(const Context& c, std::string_view system);
+
+// The parts' versions in one place (design 2026-10-19 §11): xlings and its
+// protocol, this luban, the Luban OS app installed and the ones running, the
+// index snapshot -- and where they disagree, what to do. `luban status` says
+// it in one line; the app's About reads the same.
+struct Versions {
+    std::string xlings, protocol, luban, app, index;
+    std::string unread;                         // what could not be asked
+    struct Running { int pid { 0 }; std::string exe; bool registered { false }; };
+    std::vector<Running> running;               // luban-os processes of this user
+    bool looked { false };                      // the processes could be listed here
+    struct Mismatch { std::string what, why, next; };
+    std::vector<Mismatch> mismatches;
+};
+Versions versions(const Context& c);
+nlohmann::json to_json(const Versions& v);
 // What `e` needs of whoever reads or runs it -- its root's layout, its
 // manifest's requires -- against `reader`: the unmet ones, each with why.
 std::vector<opencaps::Verdict> unmet_needs(const Environment& e, const opencaps::Provides& reader);
@@ -197,11 +213,32 @@ struct Offer {
     std::string description;
     std::string index;
     bool official { false };
+    // What else the index says of it (design 2026-10-19 §5.3, §5.4): the
+    // version a new system gets, the recipe's status, where it comes from
+    // (official | community | local), and what its `extensions.luban` says --
+    // tier 1-4, a GPU note, a title and summary per language, its highlights
+    // and size; values out of range are not taken, and named in `ignored`.
+    std::string version;
+    std::string passed_over;
+    std::string status;         // stable | dev | deprecated
+    std::string source;
+    std::optional<int> tier;
+    std::string gpu;            // better | needed | ""
+    std::map<std::string, std::string> title, summary;
+    std::vector<std::string> highlights;
+    std::optional<std::uint64_t> size;
+    std::vector<std::string> keywords;
+    std::vector<std::string> ignored;
+    // Whether it can be made on this machine (its architectures); why not.
+    bool available { true };
+    std::string reason;
 };
 struct QuickStartOffers {
     std::vector<Offer> systems, desktops;
 };
 QuickStartOffers quick_start_offers(const Port& port);
+// An offer as `luban search --json` and the quick start state say it.
+nlohmann::json offer_json(const Offer& o);
 
 // One layer of a system's lineage: a template and its manifest as written.
 struct Layer {
@@ -222,6 +259,9 @@ struct Lineage {
     std::vector<Layer> layers;
     std::vector<std::string> packages;  // merged, as declared
     std::string policy;
+    // Why its top is not the newest version (a newer needs a newer xlings):
+    // said when it is made, as the plan resolved it (design 2026-10-19 §9.1).
+    std::string passed_over;
     // The Luban OS base: the first official edition from the top.
     const Layer* base() const;
     // The layer it is made from directly (the second), if any.

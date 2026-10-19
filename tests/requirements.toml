@@ -1317,15 +1317,15 @@ status = "planned"
 
 [LUBAN-VERSIONS]
 text = "luban status says the versions of xlings, luban, luban-os (installed and running) and the index in one line, opens it with the next step when they disagree, and --json has versions with mismatches[].next"
-status = "planned"
+status = "required"
 
 [LUBAN-EDITION-PINNED]
 text = "the version shown before a system is made is the version made (luban new, the quick start, --dry-run --json), and a newer one passed over is said"
-status = "planned"
+status = "required"
 
 [LUBAN-LS-SEARCH]
 text = "luban ls without arguments is unchanged and takes a name pattern; luban search lists what the index offers (distributions, desktops) as the quick start groups it"
-status = "planned"
+status = "required"
 
 [SUBOS-FROM-NO-SILENT-INSTALLED]
 text = "subos new --from without a version stops when the index cannot be read, and says so when it uses an installed version the index does not list"

@@ -33,9 +33,15 @@ Run one command in an environment
 
 Options: `--user <NAME>` — As this user (root, or one of its users); `--display <DISPLAY>` — terminal (here) or window: a graphical program alone in a window of its own
 
-## `luban ls` (common)
+## `luban ls [pattern]` (common)
 
-List the environments
+List the environments, or those whose name matches
+
+## `luban search [keyword]` (common)
+
+What the index offers: systems to make, desktops to give one
+
+Options: `--distributions` — Only the systems that can be made; `--desktops` — Only the desktops a system can have
 
 ## `luban status [name]` (common)
 

@@ -406,6 +406,7 @@ Json NewPreview::value() const {
         lineage_json.push_back({{"ref", l.ref}, {"index", l.index}, {"official", l.official()}, {"name", l.name()},
                                 {"version", l.version()}});
     Json v{{"system", system}, {"distribution", display_name(lineage)}, {"lineage", lineage_json}};
+    if (!lineage.passed_over.empty()) v["passed_over"] = lineage.passed_over;
     if (const auto* b = lineage.base()) v["luban_base"] = std::format("{} {}", b->name(), b->version());
     if (const auto* p = lineage.parent()) v["parent"] = p->ref;
     Json more = Json::array();
@@ -472,6 +473,14 @@ std::expected<NewPreview, int> preview_new(const Context& c, const NewOptions& o
         auto lineage = plan_system(c.port, o.name, p.system);
         if (!lineage) return fail(lineage.error(), {}, 1);
         p.lineage = std::move(*lineage);
+        // What is shown is what is made (design 2026-10-19 §9.1): the version
+        // the plan resolved, named to xlings -- not resolved a second time.
+        if (!p.lineage.layers.empty()) {
+            const auto& top = p.lineage.layers.front().ref;
+            if (const auto at = top.rfind('@'); at != std::string::npos && p.system.find('@') == std::string::npos
+                && top.substr(0, at) == p.system)
+                p.system = top;
+        }
     }
     // Built on Luban (design §4.4): its chain reaches an official edition
     // (read here; a carrier's xlings reads it where it makes it).
@@ -550,6 +559,9 @@ Outcome create(const Context& c, const NewOptions& o, const NewPreview* given) {
     const auto shown = display_name(preview.lineage);
     const int rc = step_(making, "make", std::format("making {} ({})", o.name, shown), args, false,
                          o.name + (checked ? " is made" : " is ready"));
+    // Pinned to the plan's version, xlings resolves nothing again: why it is
+    // not the newest is the plan's to say.
+    if (passed_over.empty()) passed_over = preview.lineage.passed_over;
     if (!passed_over.empty() && c.sink) c.sink(notice(passed_over, "xlings self update"));
     if (rc != 0) return {.code = rc};
     // A system that names itself says so in its os-release (design §4.5).
