@@ -8,6 +8,7 @@ import xlings.platform;
 import opensal;
 import opensal.wire;
 import openhal.audio;
+import luban.desktop.host;
 import luban.service;
 import luban.vm;
 import luban.compat;
