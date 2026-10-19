@@ -52,6 +52,7 @@ import xlings.platform;
 import xlings.platform.target;
 import xlings.libs.tinyhttps;
 import xlings.core.xvm.db;
+import xlings.core.xvm.owner;
 import xlings.core.xvm.lock;
 import xlings.core.xvm.commands;
 import xlings.core.xvm.shim;
@@ -2935,7 +2936,32 @@ int cmd_list(const std::string& filter, EventStream& stream, bool all) {
         }
     }
 
-    if (installed.empty()) {
+    // A user's view lists what the system provides too, marked (design
+    // 2026-10-20 §4.3): every package the system uses that the view has not
+    // chosen otherwise -- the packages behind the system's active programs.
+    std::vector<std::pair<std::string, std::string>> systemRows;   // package@version, its description
+    std::set<std::string> systemProvided;                           // packages the system's programs come from
+    if (const auto& paths = Config::paths(); !paths.systemLayer.empty())
+        if (auto physical = home::domain_producer_source::persisted_home(paths.systemLayer))
+            if (auto system = home::layers::read_source_snapshot(*physical)) {
+                std::set<std::string> seen;
+                for (const auto& m : installed) seen.insert(m.canonicalName);
+                const auto& own = Config::effective_workspace();
+                for (const auto& [target, key] : system->workspace.active) {
+                    if (own.contains(target)) continue;
+                    const auto owner = xvm::recorded_owner(system->versions, target, key);
+                    if (!owner) continue;
+                    const auto canonical = owner->canonical();
+                    const auto name = canonical.substr(0, canonical.rfind('@'));
+                    systemProvided.insert(name);
+                    if (!filter.empty() && name.find(filter) == std::string::npos) continue;
+                    if (!seen.insert(name).second) continue;
+                    systemRows.emplace_back(canonical, std::string{});
+                }
+                std::ranges::sort(systemRows);
+            }
+
+    if (installed.empty() && systemRows.empty()) {
         if (all) {
             log::println("no installed packages found");
         } else {
@@ -3018,9 +3044,15 @@ int cmd_list(const std::string& filter, EventStream& stream, bool all) {
             status += status.empty() ? "" : " \u00b7 ";
             status += "in " + where;
         }
+        // The view sees the system's store: a package it has not chosen
+        // itself is the system's (its programs are not in the view's own scope).
+        if (systemProvided.contains(match.canonicalName)
+            && std::ranges::none_of(match.programs, [&](std::string_view program) { return ws.contains(std::string(program)); }))
+            status = match.degradedReason.empty() ? std::string("system") : status + " \u00b7 system";
         listItems.push_back({match.canonicalName + "@" + match.version,
                              desc, status});
     }
+    for (const auto& [coordinate, desc] : systemRows) listItems.push_back({coordinate, desc, "system"});
     nlohmann::json listPayload;
     listPayload["title"] = std::string(all
         ? i18n::tr("Installed packages (all subos):")
@@ -3028,7 +3060,8 @@ int cmd_list(const std::string& filter, EventStream& stream, bool all) {
     listPayload["items"] = std::move(listItems);
     listPayload["numbered"] = true;
     stream.emit(DataEvent{"styled_list", listPayload.dump()});
-    log::println("total: {} installed", installed.size());
+    if (systemRows.empty()) log::println("total: {} installed", installed.size());
+    else log::println("total: {} installed, {} of them the system's", installed.size() + systemRows.size(), systemRows.size());
     return 0;
 }
 

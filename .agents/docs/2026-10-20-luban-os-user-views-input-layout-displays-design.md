@@ -197,7 +197,8 @@ root_etc 给所有用户写补全钩子：`fish/conf.d/xlings-complete.fish`、`
 
 ### 4.12 接口
 
-- 新错误码 `E_NEEDS_ROOT`（附确切命令），`list`/`info` 的条目加 `origin`（`user`、`system`、`project`）。
+- 新错误码 `E_NEEDS_ROOT`（提示里是确切的 sudo 命令）；`list` 里系统提供的行状态为 `system`（payload 状态里已有的 `origin`
+  说的是 payload 的来处，不再复用这个词）。
 - 协议 1.15（只增加）；`--version` 的握手加 feature `user_views`、`needs_root`。发布前按记忆核对 main 上的版本与协议号是否已被占用。
 
 ### 4.13 实现：建立在 L §8 已有的借用之上

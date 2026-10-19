@@ -100,6 +100,11 @@ XTEST(UserView, AUsersViewReadsTheSystemsStoreAndAsksOnceForWhatItLacks, .area =
     EXPECT_FALSE(fs::exists(home.dir() / "data/xpkgs/xim-x-fixture-tool")) << "nothing installed in the view";
     EXPECT_FALSE(fs::exists(home.dir() / "data/xim-pkgindex")) << "the view has no index of its own";
 
+    // The system's packages are in the user's list, marked.
+    r = home.xlings({"list"}, inSystem);
+    EXPECT_NE(r.out.find("xim:fixture-tool@1.0.0"), std::string::npos) << r.transcript();
+    EXPECT_NE(r.out.find("system"), std::string::npos) << r.transcript();
+
     // Its versions are the user's to see and choose (G15).
     r = home.xlings({"use", "fixture-tool"}, inSystem);
     EXPECT_NE(r.transcript().find("1.0.0"), std::string::npos) << r.transcript();
