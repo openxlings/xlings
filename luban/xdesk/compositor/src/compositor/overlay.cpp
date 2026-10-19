@@ -71,10 +71,18 @@ void Server::load_person() {
         if (saved) lay.preset(w, *saved);
         else if (session) lay.preset(w, *session);
     }
+    if (state.hinted && state.keys_seen < 2) {
+        // Someone who knew the keys before (design 2026-10-20 §12.2): what changed, once.
+        show_hint(tr_(zh, "New keys: Super+F maximizes (float: Super+Shift+Space)  ·  Super+P on top  ·  Alt+Tab the windows  ·  Super+/ all of them",
+                      "新的键位：Super+F 最大化（浮动：Super+Shift+Space）  ·  Super+P 置顶  ·  Alt+Tab 切换窗口  ·  Super+/ 查看全部"), 12000);
+        state.keys_seen = 2;
+        save_state();
+    }
     if (!state.hinted) {
         show_hint(tr_(zh, "Super: apps  ·  Super+Tab: switch  ·  Super+Enter: a terminal  ·  Super+M: arrangements  ·  Super+/: every key, and changing them",
                       "Super：应用  ·  Super+Tab：切换  ·  Super+Enter：终端  ·  Super+M：排布  ·  Super+/：全部快捷键，以及修改"), 10000);
         state.hinted = true;
+        state.keys_seen = 2;
         save_state();
     }
 }

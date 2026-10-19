@@ -232,6 +232,7 @@ std::expected<State, std::string> read_state(const std::map<std::string, std::st
             for (const auto& x : *list) s.arrangements.push_back(x.string_or(""));
     if (const auto* l = doc.get("last")) s.last = l->string_or("");
     if (const auto* h = doc.get("hinted")) s.hinted = h->bool_or(false);
+    if (const auto* k = doc.get("keys_seen")) s.keys_seen = static_cast<int>(k->number_or(0));
     if (const auto* r = doc.get("rules"))
         if (const auto* o = std::get_if<Json::Object>(&r->v))
             for (const auto& [app, rule] : *o) {
@@ -258,6 +259,7 @@ std::expected<void, std::string> write_state(const std::map<std::string, std::st
     doc.set("arrangements", Json{arr});
     doc.set("last", Json{s.last});
     doc.set("hinted", Json{s.hinted});
+    doc.set("keys_seen", Json{static_cast<double>(s.keys_seen)});
     Json rules{Json::Object{}};
     for (const auto& [app, r] : s.rules) {
         Json one{Json::Object{}};

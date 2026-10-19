@@ -42,6 +42,7 @@ struct State {
     std::string last;                           // the arrangement last chosen: where the xdesk session starts
     std::map<std::string, Rule> rules;          // by application id
     bool hinted { false };                      // the first session's word on the keys was said
+    int keys_seen { 0 };                        // the version of the keys last told (2: design 2026-10-20 §12.2)
     bool operator==(const State&) const = default;
 };
 
