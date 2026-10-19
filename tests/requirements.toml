@@ -1366,3 +1366,21 @@ status = "planned"
 [I18N-DOMAINS]
 text = "catalogues register by domain; English is complete in each; no key without English; arguments agree; the fallback chain and pick(); no tr(en, zh) in luban-os"
 status = "planned"
+
+# ── a system's network, a user's own home, the prompt (design 2026-10-19 §27) ──
+
+[LUBAN-MACHINE-NETWORK]
+text = "a machine has an address, a route and name servers from the kernel's lease (not written into its tree) and the system's name, whatever its init does; a non-fatal network item in the self-check"
+status = "required"
+
+[LUBAN-NETWORK-PROXY]
+text = "the host's proxy reaches a machine: read from the environment that starts it, a loopback address mapped to the host's NAT address, in /run/luban/network.env, in every session and the desktop; the network line of luban status and the banner says it"
+status = "planned"
+
+[SUBOS-USER-HOME-SEED]
+text = "a system user's own home starts from the system home's index snapshot and settings without the network; the first write asks once at a terminal; a package the system already has at that version is not installed again; a network failure is said once with the next step"
+status = "planned"
+
+[LUBAN-PROMPT-MARK]
+text = "every login shell (sh, bash, fish) shows the [luban]/<luban> mark; a system made before gets the fish script on its next entry"
+status = "planned"

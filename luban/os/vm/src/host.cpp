@@ -294,7 +294,12 @@ int start_impl_(const service::Context& c, std::string_view name, const EnterOpt
     else if (!arch.cpu.empty()) q.insert(q.end(), {"-cpu", std::string(arch.cpu)});
     const std::string console = arch.name == "aarch64" ? "ttyAMA0" : "ttyS0";
     q.insert(q.end(), {"-kernel", kernel->string(), "-initrd", initrd->string(), "-append",
-                       std::format("console={} quiet panic=-1 luban.home={} luban.name={} luban.userhome={}", console, home, name, userhome ? 1 : 0),
+                       std::format("console={} quiet panic=-1 luban.home={} luban.name={} luban.userhome={}{}", console, home, name,
+                                   userhome ? 1 : 0,
+                                   // Its network is the kernel's own DHCP on the NAT, and its
+                                   // name the system's (design 2026-10-19 §27.2): nothing in
+                                   // the system has to bring either up, whatever its init is.
+                                   net.args.size() == 2 && net.args[1] != "none" ? std::format(" ip=::::{}::dhcp", name) : std::string{}),
                        "-display", "none", "-no-reboot",
                        "-serial", std::format("file:{}", (log_dir(c.home, name) / "console.log").string()),
                        "-virtfs", std::format("local,path={},mount_tag=root,security_model=none,id=root", share.string()),

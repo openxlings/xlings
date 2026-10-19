@@ -12,7 +12,7 @@
 # profile's); aarch64 exports with --boot virt. The firmware is
 # xim:edk2-firmware, installed into the test's home as a user would.
 #
-# xtest: covers=LUBAN-ISO,LUBAN-DRIVE,LUBAN-TRY,LUBAN-BOOT-PROFILE,LUBAN-ISO-UEFI,LUBAN-ISO-HYBRID,LUBAN-QCOW2,LUBAN-MACHINE-DESKTOP,LAYER-BOUNDARY-IN-SYSTEM requires=linux,qemu,bwrap,network
+# xtest: covers=LUBAN-ISO,LUBAN-DRIVE,LUBAN-TRY,LUBAN-BOOT-PROFILE,LUBAN-ISO-UEFI,LUBAN-ISO-HYBRID,LUBAN-QCOW2,LUBAN-MACHINE-DESKTOP,LAYER-BOUNDARY-IN-SYSTEM,LUBAN-MACHINE-NETWORK requires=linux,qemu,bwrap,network
 set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/project_test_lib.sh"
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/rootfs_lib.sh"
@@ -243,12 +243,19 @@ L config t --proxy socks5h://127.0.0.1:9 >/dev/null 2>&1 || fail "config --proxy
 # The machine's own logs are kept with the test's, whatever happens next.
 keep_machine_logs() { for f in "$H"/logs/machines/t/*.log; do [[ -f "$f" ]] && cp "$f" "$RUNTIME_DIR/machine-$(basename "$f")"; done; true; }
 trap keep_machine_logs EXIT
-machine="$( { (sleep 120; printf 'echo MACHINE-$(uname -r) > /root/machine.txt; cat /root/machine.txt; exit\n'; sleep 10) 2>/dev/null || true; } \
+machine="$( { (sleep 120; printf 'echo MACHINE-$(uname -r) > /root/machine.txt; cat /root/machine.txt; echo HOST-$(hostname); echo NS-$(grep -c nameserver /etc/resolv.conf); exit\n'; sleep 10) 2>/dev/null || true; } \
   | timeout 600 script -qfec "env XLINGS_HOME=$H DISPLAY= WAYLAND_DISPLAY= $H/bin/luban enter t --mode machine --temp" /dev/null 2>&1 | tr -d '\r' || true)"
 printf '%s\n' "$machine" > "$RUNTIME_DIR/machine-session.log"
 grep -q "t is up" <<<"$machine" || fail "machine: did not come up: $(tail -20 <<<"$machine"; tail -20 "$H"/logs/machines/t/console.log 2>/dev/null)"
 grep -q "only its proxy" <<<"$machine" || fail "machine: its network is not only the proxy: $(grep -a starting <<<"$machine")"
 grep -q "MACHINE-" <<<"$machine" || fail "machine: the session ran nothing: $(tail -20 <<<"$machine")"
+# Its network is the kernel's lease and its name the system's, whatever its
+# init does (design 2026-10-19 §27.2): name servers from the lease, never
+# written into its tree.
+grep -q "HOST-t" <<<"$machine" || fail "machine: its name is not the system's: $(grep -a HOST- <<<"$machine")"
+grep -qE "NS-[1-9]" <<<"$machine" || fail "machine: no name server from its lease: $(grep -a NS- <<<"$machine"; tail -20 "$H"/logs/machines/t/console.log 2>/dev/null)"
+[[ ! -s "$(sysdir t)/rootfs/etc/resolv.conf" ]] || ! grep -q "10.0.2" "$(sysdir t)/rootfs/etc/resolv.conf" \
+  || fail "machine: the lease's name servers were written into its tree"
 [[ ! -e "$(sysdir t)/rootfs/root/machine.txt" ]] || fail "machine --temp: what it wrote stayed"
 [[ ! -e "$H/run/machines/t/scratch" ]] || fail "machine --temp: its copy stayed"
 log "the desktop: labwc-desktop in t, its session bridged by opensal-wlr to a client of the machine, as the Luban OS window is"

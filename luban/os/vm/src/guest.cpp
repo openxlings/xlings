@@ -379,6 +379,34 @@ Json hello_() { return Json{{"agent", 1}, {"provides", Json{{"agent-display", 1}
     agent_(true);
 }
 
+
+// The name servers of the kernel's lease (/proc/net/pnp: "nameserver a.b.c.d"
+// lines), in /run/luban/resolv.conf, bound over /etc/resolv.conf. A link
+// there (a distribution's /run/systemd/... one) is left alone.
+void resolv_from_lease_() {
+    std::ifstream pnp("/proc/net/pnp");
+    std::string text, line;
+    while (std::getline(pnp, line))
+        if (line.starts_with("nameserver") || line.starts_with("domain") || line.starts_with("search")) text += line + "\n";
+    if (text.find("nameserver") == std::string::npos) return;
+    std::error_code ec;
+    fs::create_directories("/run/luban", ec);
+    {
+        std::ofstream out("/run/luban/resolv.conf", std::ios::trunc);
+        out << text;
+        if (!out) { console_("cannot write /run/luban/resolv.conf"); return; }
+    }
+    const auto at = fs::symlink_status("/etc/resolv.conf", ec);
+    if (at.type() == fs::file_type::symlink) {
+        console_("/etc/resolv.conf is a link: the lease's name servers are in /run/luban/resolv.conf");
+        return;
+    }
+    if (at.type() == fs::file_type::not_found) std::ofstream("/etc/resolv.conf");   // a mount point
+    if (!platform::bind_mount("/run/luban/resolv.conf", "/etc/resolv.conf"))
+        console_("cannot place the lease's name servers at /etc/resolv.conf");
+}
+
+
 }  // namespace
 
 void serve_agent(int fd) { serve_(fd, fd, false, true); }
@@ -446,6 +474,13 @@ int guest_init(int, char*[]) {
     // The agent's sessions are ptys before the environment's own start mounts
     // anything (its rcS mounting devpts again is harmless: already mounted).
     if (!platform::mount_kernel_fs("devpts", "/dev/pts")) console_("cannot mount devpts: sessions will fail");
+
+    // Its name servers: the kernel's lease (ip=dhcp, /proc/net/pnp), in this
+    // boot's /run and bound over /etc/resolv.conf -- the host's NAT answers
+    // them -- never written into the system's tree (design 2026-10-19 §27.2).
+    // Without a lease (no network) nothing is bound and the system's own
+    // stays.
+    resolv_from_lease_();
 
     // Its name: the machine's own /etc/hostname, else the environment's.
     {
