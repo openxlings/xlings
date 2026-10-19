@@ -59,6 +59,12 @@ int search(const svc::Context& c, std::string_view keyword, std::string_view gro
         {"desktops", "desktops", "give one to a system: luban new <name> --desktop <it>, or luban config <name> --desktop <it>",
          &offers.desktops},
     }};
+    // Could not read is never nothing offered: said, with its fix.
+    if (!offers.error.empty()) {
+        if (json) std::println("{}", Json{{"error", offers.error}, {"next", "xlings update"}}.dump());
+        else std::println(std::cerr, "luban: could not read the index ({})\n  next: xlings update", offers.error);
+        return 1;
+    }
     if (json) {
         Json out = Json::array();
         for (const auto& g : groups) {

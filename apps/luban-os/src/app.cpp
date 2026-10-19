@@ -481,28 +481,7 @@ int run(int argc, char* argv[]) {
                     a.countdown_until.reset();
                 }
         }
-        if (a.view == View::QuickStart && !overlay && !typing) {
-            for (const auto& k : a.window->keys()) {
-                const auto& cur = kEditions[static_cast<std::size_t>(a.new_edition)];
-                auto in_group = [&](bool desktop) {
-                    std::vector<int> v;
-                    for (std::size_t i = 0; i < kEditions.size(); ++i) if (kEditions[i].desktop == desktop) v.push_back(static_cast<int>(i));
-                    return v;
-                };
-                const auto group = in_group(cur.desktop);
-                const auto at = std::ranges::find(group, a.new_edition) - group.begin();
-                if (k.name == "Right" || k.name == "Left") {
-                    const auto n = static_cast<long>(group.size());
-                    a.new_edition = group[static_cast<std::size_t>((at + (k.name == "Right" ? 1 : n - 1)) % n)];
-                    a.keyboard = true;
-                } else if (k.name == "Down" || k.name == "Up") {
-                    const auto other = in_group(!cur.desktop);
-                    a.new_edition = other[static_cast<std::size_t>(std::min<long>(at, static_cast<long>(other.size()) - 1))];
-                    a.keyboard = true;
-                } else if (k.name == "Enter" && a.quick_can_make && a.new_name[0]) make_(a);
-                else if (k.name == "Escape" && !a.systems.empty()) a.view = View::Launcher;
-            }
-        }
+        if (a.view == View::QuickStart && !overlay && !typing) quick_keys_(a);
         if (a.view == View::Admin && !overlay && !typing)
             for (const auto& k : a.window->keys())
                 if (k.name == "Escape") { a.view = a.display ? View::Desktop : a.console ? View::Console : View::Launcher; a.refresh(); }

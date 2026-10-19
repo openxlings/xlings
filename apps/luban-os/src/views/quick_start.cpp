@@ -4,6 +4,7 @@ module luban.os;
 
 import std;
 import xlings.libs.json;
+import xlings.i18n;
 import imkit;
 import tray;
 import luban.service;
@@ -125,25 +126,146 @@ std::string index_description_(App& a, std::string_view edition) {
     return {};
 }
 
+// ── the cards ────────────────────────────────────────────────────────
+
+namespace {
+
+// The bases a traditional desktop is made on (design 2026-10-19 §5.2).
+constexpr std::array<std::string_view, 3> kBases{"tiny", "core", "desktop"};
+
+// A data text in this language (a recipe's extensions.luban title, summary).
+std::string pick_(const std::map<std::string, std::string>& texts, std::string_view otherwise) {
+    const std::map<std::string, std::string, std::less<>> t(texts.begin(), texts.end());
+    auto out = xlings::i18n::pick(t);
+    return out.empty() ? std::string(otherwise) : out;
+}
+
+std::string source_of_(const service::Offer& o) {
+    if (o.source == "official" || (o.source.empty() && o.official)) return std::string(tr("luban.os.quick.official"));
+    const auto ns = o.ref.substr(0, o.ref.find(':'));
+    return std::format("{} · {}", tr(o.source == "local" ? "luban.os.quick.local" : "luban.os.quick.community"), ns);
+}
+
+// The line of chips under a desktop's summary: how much it brings, where it
+// comes from, how settled it is, what it wants of the GPU, its version.
+std::string chips_(const service::Offer& o) {
+    std::string out = o.tier ? std::format("T{}", *o.tier) : std::string(tr("luban.os.quick.not_rated"));
+    out += " · " + source_of_(o);
+    out += std::format(" · {}", tr(o.status == "dev" ? "luban.os.quick.preview" : "luban.os.quick.stable"));
+    if (o.gpu == "better") out += std::format(" · {}", tr("luban.os.quick.gpu_better"));
+    if (o.gpu == "needed") out += std::format(" · {}", tr("luban.os.quick.gpu_needed"));
+    if (!o.version.empty()) out += " · " + o.version;
+    return out;
+}
+
+// The term a card's title is, when the glossary explains it.
+std::optional<std::string_view> explained_(std::string_view title) {
+    for (const auto& t : xlings::i18n::glossary("luban.os"))
+        if (title.find(t.term) != std::string_view::npos) return xlings::i18n::explain(t.term);
+    return std::nullopt;
+}
+
+}  // namespace
+
+std::vector<QuickGroup> quick_groups_(App& a) {
+    std::vector<QuickGroup> out{{.key = "console"}, {.key = "xdesk"}, {.key = "desktops"}, {.key = "more"}};
+    for (std::size_t i = 0; i < kEditions.size(); ++i)
+        out[kEditions[i].desktop ? 1 : 0].cards.push_back({.kind = QuickCard::Kind::Edition, .edition = static_cast<int>(i),
+                                                            .id = "card:" + std::string(kEditions[i].name)});
+    std::lock_guard l(a.available_m);
+    if (a.offers) {
+        // Every desktop of the luban-desktop category but xdesk (its group is above), by tier.
+        for (const auto& d : a.offers->desktops)
+            if (!(d.official && d.name == "xdesk")) out[2].cards.push_back({.kind = QuickCard::Kind::Desktop, .offer = d, .id = "card:" + d.ref});
+        // The systems this window has no card for: the official new ones first, then by name.
+        for (const auto& o : a.offers->systems)
+            if (!o.official || std::ranges::none_of(kEditions, [&](const Edition& e) { return e.name == o.name; }))
+                out[3].cards.push_back({.kind = QuickCard::Kind::System, .offer = o, .id = "card:" + o.ref});
+    }
+    return out;
+}
+
+std::string chosen_card_(const App& a) {
+    if (!a.new_trad.empty()) return "card:" + a.new_trad;
+    if (!a.new_offer.empty()) return "card:" + a.new_offer;
+    return "card:" + std::string(kEditions[static_cast<std::size_t>(a.new_edition)].name);
+}
+
+void choose_card_(App& a, const QuickCard& c) {
+    a.new_trad.clear();
+    a.new_offer.clear();
+    if (c.kind == QuickCard::Kind::Edition) a.new_edition = c.edition;
+    else if (c.kind == QuickCard::Kind::Desktop) a.new_trad = c.offer.ref;
+    else a.new_offer = c.offer.ref;
+}
+
+// ←→ in a group, ↑↓ between groups, Enter makes it, Escape goes back.
+void quick_keys_(App& a) {
+    const auto groups = quick_groups_(a);
+    const auto id = chosen_card_(a);
+    std::size_t g = 0, k = 0;
+    for (std::size_t i = 0; i < groups.size(); ++i)
+        for (std::size_t j = 0; j < groups[i].cards.size(); ++j)
+            if (groups[i].cards[j].id == id) g = i, k = j;
+    for (const auto& key : a.window->keys()) {
+        if (key.name == "Right" || key.name == "Left") {
+            const auto n = groups[g].cards.size();
+            if (n == 0) continue;
+            k = (k + (key.name == "Right" ? 1 : n - 1)) % n;
+            choose_card_(a, groups[g].cards[k]);
+            a.keyboard = true;
+        } else if (key.name == "Down" || key.name == "Up") {
+            // The next group that has cards, at the same place (or its last).
+            for (std::size_t step = 1; step < groups.size(); ++step) {
+                const auto h = key.name == "Down" ? (g + step) % groups.size() : (g + groups.size() - step) % groups.size();
+                if (groups[h].cards.empty()) continue;
+                g = h;
+                k = std::min(k, groups[h].cards.size() - 1);
+                choose_card_(a, groups[g].cards[k]);
+                a.keyboard = true;
+                break;
+            }
+        } else if (key.name == "Enter" && a.quick_can_make && a.new_name[0]) {
+            make_(a);
+        } else if (key.name == "Escape" && !a.systems.empty()) {
+            a.view = View::Launcher;
+        }
+    }
+}
+
 // Makes the system the quick start describes, then goes in.
 void make_(App& a, bool agreed) {
     const auto& chosen = kEditions[static_cast<std::size_t>(a.new_edition)];
     const auto offer = a.new_offer.empty() ? std::nullopt : offered_system_(a, a.new_offer);
+    std::optional<service::Offer> trad;
+    if (!a.new_trad.empty()) {
+        std::lock_guard l(a.available_m);
+        if (a.offers)
+            if (auto it = std::ranges::find(a.offers->desktops, a.new_trad, &service::Offer::ref); it != a.offers->desktops.end()) trad = *it;
+    }
     service::NewOptions o{.name = a.new_name, .edition = std::string(chosen.edition()), .proxy = a.new_proxy, .user = a.new_user,
                           .agreed = agreed};
-    if (!offer && !chosen.session.empty()) o.settings.emplace_back("desktop", std::string(chosen.session));
-    if (offer) {
-        // An official one by its short name; anyone else's by its coordinate.
-        o.edition = offer->official ? offer->name : std::string{};
-        if (!offer->official) o.xpkgs.push_back(offer->ref);
+    if (trad) {
+        // A traditional desktop on its base (design 2026-10-19 §5.2): the
+        // same as `luban new --edition <base> --desktop <it>`, entered as a desktop.
+        o.edition = std::string(kBases[static_cast<std::size_t>(std::clamp(a.new_base, 0, 2))]);
+        if (trad->official) o.settings.emplace_back("desktop", trad->name);
+        else o.xpkgs.push_back(trad->ref);
+        o.settings.emplace_back("enter", "desktop");
+    } else {
+        if (!offer && !chosen.session.empty()) o.settings.emplace_back("desktop", std::string(chosen.session));
+        if (offer) {
+            // An official one by its short name; anyone else's by its coordinate.
+            o.edition = offer->official ? offer->name : std::string{};
+            if (!offer->official) o.xpkgs.push_back(offer->ref);
+        }
+        // A desktop chosen: Luban's by its name (made with it, its default), another's installed.
+        if (const auto desktop = offered_desktop_(a, a.new_desktop)) {
+            if (desktop->official) o.settings.emplace_back("desktop", desktop->name);
+            else o.xpkgs.push_back(desktop->ref);
+        }
     }
-    // A desktop chosen: Luban's by its name (made with it, its default), another's installed.
-    const auto desktop = offered_desktop_(a, a.new_desktop);
-    if (desktop) {
-        if (desktop->official) o.settings.emplace_back("desktop", desktop->name);
-        else o.xpkgs.push_back(desktop->ref);
-    }
-    const bool third_party = (offer && !offer->official) || (desktop && !desktop->official);
+    const bool third_party = !o.xpkgs.empty();
     if (third_party && !agreed) {
         // A third party's part is agreed to first (design §4.5): what it is and where it comes from.
         std::string what;
@@ -155,7 +277,7 @@ void make_(App& a, bool agreed) {
         return;
     }
     if (a.new_password[0]) o.password_hash = xlings::sha512::crypt(a.new_password, xlings::sha512::random_salt());
-    const bool machine = a.new_mode == 1, goes_in = offer ? true : chosen.goes_in;
+    const bool machine = a.new_mode == 1, goes_in = offer || trad ? true : chosen.goes_in;
     static constexpr std::array<std::string_view, 3> kPersist{"all", "home", "none"};
     const std::string persist(kPersist[static_cast<std::size_t>(std::clamp(a.new_persist, 0, 2))]);
     const std::string name = o.name;
@@ -181,44 +303,66 @@ void make_(App& a, bool agreed) {
     a.job_subject = name;
 }
 
-// The chosen edition's panel: what it is, its settings, making it. At
-// (x, y) in the current window, `w` wide; returns its height.
-float new_panel_(App& a, float x, float y, float w, float min_h) {
+// The chosen card's panel, what it is and its settings (`panel_body_`), and
+// making it (`panel_actions_`): at (x, y) in the current window, `w` wide;
+// each returns its height.
+float panel_body_(App& a, float x, float y, float w) {
     auto* dl = ImGui::GetWindowDrawList();
     const ImVec2 o(ImGui::GetWindowPos().x - ImGui::GetScrollX(), ImGui::GetWindowPos().y - ImGui::GetScrollY());
     const auto& chosen = kEditions[static_cast<std::size_t>(a.new_edition)];
     // A system from the indexes is said in its index's words, with where it comes from.
     const auto offer = a.new_offer.empty() ? std::nullopt : offered_system_(a, a.new_offer);
-    const std::string badge_name = offer ? offer->ref : std::string(chosen.name);
-    const std::string title = offer ? offer->name : std::string(tr(chosen.title));
-    std::string sub = std::format("{} · {}", chosen.size, chosen.contents);
-    if (offer) sub = offer->official ? std::string(tr("luban.os.quick.luban_s")) : std::vformat(tr("luban.os.quick.from"), std::make_format_args(offer->index));
-    else if (chosen.desktop) {
-        // What its desktop is, as the index says it (E15): not this window's guess.
-        if (auto d = index_description_(a, chosen.name); !d.empty()) sub = std::format("{} · {}", chosen.size, d);
+    std::optional<service::Offer> trad;
+    {
+        std::lock_guard l(a.available_m);
+        if (a.offers && !a.new_trad.empty())
+            if (auto it = std::ranges::find(a.offers->desktops, a.new_trad, &service::Offer::ref); it != a.offers->desktops.end()) trad = *it;
     }
+    const auto base = std::string(kBases[static_cast<std::size_t>(std::clamp(a.new_base, 0, 2))]);
+    // The version made is the version shown (design 2026-10-19 §5.6, §9.1).
+    const auto system_offer = offer ? offer : offered_system_(a, "luban:" + (trad ? base : std::string(chosen.edition())));
+    const std::string badge_name = trad ? std::string("desktop") : offer ? offer->ref : std::string(chosen.name);
+    std::string title = offer ? offer->name : std::string(tr(chosen.title));
+    std::vector<std::string> subs{std::format("{} · {}", chosen.size, chosen.contents)};
+    if (trad) {
+        title = pick_(trad->title, trad->name);
+        subs = {std::vformat(tr("luban.os.quick.system_line"), std::make_format_args(base, system_offer ? system_offer->version : std::string("-"))),
+                std::vformat(tr("luban.os.quick.desktop_line"), std::make_format_args(title, trad->version))};
+    } else if (offer) {
+        subs = {offer->official ? std::string(tr("luban.os.quick.luban_s")) : std::vformat(tr("luban.os.quick.from"), std::make_format_args(offer->index))};
+    } else if (chosen.desktop) {
+        // What its desktop is, as the index says it (E15): not this window's guess.
+        if (auto d = index_description_(a, chosen.name); !d.empty()) subs = {std::format("{} · {}", chosen.size, d)};
+    }
+    if (!trad && system_offer && !system_offer->version.empty()) subs.front() = system_offer->version + " · " + subs.front();
+    if (system_offer && !system_offer->passed_over.empty()) subs.push_back(system_offer->passed_over);
     const float pad = px(18), fw = w - pad * 2;
     float cy = y + px(16);
     const float start = y;
-    // The face first (drawn under everything), sized once its content is known: last frame's height.
-    const float h = std::max(min_h, a.panel_h);
-    imkit::panel(dl, ImVec2(o.x + x, o.y + y), ImVec2(o.x + x + w, o.y + y + h), imkit::Bevel::Raised, th_().panel_lo);
     const float cx = x + pad;
     art::badge(dl, art::badge_of(badge_name), badge_name, ImVec2(o.x + cx, o.y + cy), std::round(px(3)), imkit::beat(2, 0.45));
     imkit::text(dl, ImVec2(o.x + cx + px(60), o.y + cy + px(2)), imkit::fit(title, fw - px(60), 22, true), th_().text, 22, true);
-    imkit::text(dl, ImVec2(o.x + cx + px(60), o.y + cy + px(30)), imkit::fit(sub, fw - px(60), 13), th_().text_faint, 13);
-    cy += px(62);
-    const auto why_not = offer ? cannot_run_(a) : unavailable_(a, chosen);
-    const std::string detail = offer ? offer->description : std::string(tr(chosen.detail));
+    float sy = cy + px(30);
+    for (const auto& line : subs) {
+        imkit::text(dl, ImVec2(o.x + cx + px(60), o.y + sy), imkit::fit(line, fw - px(60), 13), th_().text_faint, 13);
+        sy += px(18);
+    }
+    cy = std::max(cy + px(62), sy + px(8));
+    std::string why_not = offer ? cannot_run_(a) : unavailable_(a, chosen);
+    if (trad) {
+        why_not = cannot_run_(a);
+        if (why_not.empty() && !trad->available) why_not = trad->reason;
+    }
+    const std::string detail = trad ? pick_(trad->summary, trad->description) : offer ? offer->description : std::string(tr(chosen.detail));
     a.quick_said = why_not.empty() ? detail : why_not;
     a.quick_can_make = why_not.empty();
     cy += paragraph_(dl, ImVec2(o.x + cx, o.y + cy), a.quick_said, fw, why_not.empty() ? th_().text_dim : th_().warn, 14) + px(12);
-    // The name follows the edition until the person types one of their own.
+    // The name follows the card until the person types one of their own.
     if (a.new_name[0] == 0 || a.auto_name == a.new_name) {
-        auto base = offer ? offer->name : std::string(chosen.name);
-        if (const auto colon = base.find(':'); colon != std::string::npos) base = base.substr(colon + 1);
+        auto stem = trad ? trad->name : offer ? offer->name : std::string(chosen.name);
+        if (const auto colon = stem.find(':'); colon != std::string::npos) stem = stem.substr(colon + 1);
         for (int k = 1; k < 100; ++k) {
-            const auto candidate = std::format("{}-{}", base, k);
+            const auto candidate = std::format("{}-{}", stem, k);
             if (std::ranges::none_of(a.systems, [&](const auto& s2) { return s2.name == candidate; })) {
                 std::snprintf(a.new_name, sizeof a.new_name, "%s", candidate.c_str());
                 a.auto_name = candidate;
@@ -246,6 +390,13 @@ float new_panel_(App& a, float x, float y, float w, float min_h) {
     mark_(a, "more");
     cy += px(36);
     if (a.more) {
+        if (trad) {
+            // What the desktop is made on: tiny, core (the default), or desktop.
+            label(tr("luban.os.quick.base"));
+            ImGui::SetCursorPos(ImVec2(cx, cy));
+            a.new_base = imkit::segmented("base", {"tiny", "core", "desktop"}, a.new_base, fwn, {"base:tiny", "base:core", "base:desktop"});
+            cy += px(46);
+        }
         label(tr("luban.os.admin.keeps_2"));
         ImGui::SetCursorPos(ImVec2(cx, cy));
         a.new_persist = imkit::segmented("persist", {std::string(tr("luban.os.admin.all")), std::string(tr("luban.os.admin.home")),
@@ -266,10 +417,11 @@ float new_panel_(App& a, float x, float y, float w, float min_h) {
                           ImGuiInputTextFlags_Password, tr("luban.os.quick.password"));
         mark_(a, "password");
         cy += px(48);
-        // The desktop it is made with: its own, or one the indexes offer
-        // (luban-desktop), as many to a row as fit.
+        // The desktop a console or xdesk card is made with: its own, or one
+        // the indexes offer (luban-desktop), as many to a row as fit. A
+        // traditional desktop's card is that choice already.
         std::vector<service::Offer> desktops;
-        {
+        if (!trad) {
             std::lock_guard l(a.available_m);
             if (a.offers) desktops = a.offers->desktops;
         }
@@ -295,9 +447,19 @@ float new_panel_(App& a, float x, float y, float w, float min_h) {
                 cy += paragraph_(dl, ImVec2(o.x + cx, o.y + cy), d->description, fw, th_().text_faint, 13) + px(8);
         }
     }
-    ImGui::SetCursorPos(ImVec2(cx, cy + px(4)));
-    const auto make_label = offer || chosen.goes_in ? tr("luban.os.quick.create_go") : tr("luban.os.quick.create");
-    if (imkit::button("make", make_label, ImVec2(fwn, 44), imkit::Look::Primary, why_not.empty() && a.new_name[0], false, imkit::Icon::Run))
+    return cy - start;
+}
+
+float panel_actions_(App& a, float x, float y, float w) {
+    auto* dl = ImGui::GetWindowDrawList();
+    const ImVec2 o(ImGui::GetWindowPos().x - ImGui::GetScrollX(), ImGui::GetWindowPos().y - ImGui::GetScrollY());
+    const float pad = px(18), fw = w - pad * 2, fwn = fw / imkit::scale(), cx = x + pad;
+    float cy = y + px(4);
+    const auto& chosen = kEditions[static_cast<std::size_t>(a.new_edition)];
+    const bool goes_in = !a.new_offer.empty() || !a.new_trad.empty() || chosen.goes_in;
+    ImGui::SetCursorPos(ImVec2(cx, cy));
+    if (imkit::button("make", goes_in ? tr("luban.os.quick.create_go") : tr("luban.os.quick.create"), ImVec2(fwn, 44), imkit::Look::Primary,
+                      a.quick_can_make && a.new_name[0], false, imkit::Icon::Run))
         make_(a);
     mark_(a, "make");
     cy += px(58);
@@ -308,7 +470,19 @@ float new_panel_(App& a, float x, float y, float w, float min_h) {
     mark_(a, "import");
     cy += px(44);
     if (!a.notice.empty()) cy += paragraph_(dl, ImVec2(o.x + cx, o.y + cy), a.notice, fw, th_().warn, 13) + px(6);
-    a.panel_h = cy - start + px(8);
+    return cy - y;
+}
+
+// The panel in one column (a narrow window): its face, its body, its actions.
+float new_panel_(App& a, float x, float y, float w, float min_h) {
+    auto* dl = ImGui::GetWindowDrawList();
+    const ImVec2 o(ImGui::GetWindowPos().x - ImGui::GetScrollX(), ImGui::GetWindowPos().y - ImGui::GetScrollY());
+    // The face first (drawn under everything), sized once its content is known: last frame's height.
+    const float h = std::max(min_h, a.panel_h);
+    imkit::panel(dl, ImVec2(o.x + x, o.y + y), ImVec2(o.x + x + w, o.y + y + h), imkit::Bevel::Raised, th_().panel_lo);
+    float cy = y + panel_body_(a, x, y, w);
+    cy += panel_actions_(a, x, cy, w);
+    a.panel_h = cy - y + px(8);
     return std::max(min_h, a.panel_h);
 }
 
@@ -319,11 +493,13 @@ void quick_start_(App& a) {
     const ImVec2 o = ImGui::GetWindowPos();
     const float W = ImGui::GetWindowWidth(), H = ImGui::GetWindowHeight();
     if (page_bar_(a, tr("luban.os.admin.new_system"), !a.systems.empty())) a.view = View::Launcher;
-    // A mode chosen for the edition, until the person chooses: a desktop runs
-    // as a machine (its own kernel, its own display), a console in a sandbox.
-    if (a.new_mode_for != a.new_edition && a.new_offer.empty()) {
-        a.new_mode = kEditions[static_cast<std::size_t>(a.new_edition)].desktop ? 1 : 0;
-        a.new_mode_for = a.new_edition;
+    const auto groups = quick_groups_(a);
+    const auto chosen_id = chosen_card_(a);
+    // A mode chosen for the card, until the person chooses: a desktop runs as
+    // a machine (its own kernel, its own display), a console in a sandbox.
+    if (a.new_mode_for != chosen_id) {
+        a.new_mode = !a.new_trad.empty() || (a.new_offer.empty() && kEditions[static_cast<std::size_t>(a.new_edition)].desktop) ? 1 : 0;
+        a.new_mode_for = chosen_id;
     }
     const float margin = px(24), gap = px(12);
     float top = px(80);
@@ -338,7 +514,8 @@ void quick_start_(App& a) {
     const float panelW = side ? std::clamp(W * 0.32f, px(300), px(380)) : W - margin * 2;
     const float cardsW = side ? W - margin * 3 - panelW : W - margin * 2;
     const float minCard = px(168);
-    const float inner = cardsW - ImGui::GetStyle().ScrollbarSize - px(4);   // a scrollbar may take the right edge
+    const float indent = px(12);                                            // room for the xdesk group's bar
+    const float inner = cardsW - ImGui::GetStyle().ScrollbarSize - px(4) - indent;   // a scrollbar may take the right edge
     const int perRow = std::max(1, static_cast<int>((inner + gap) / (minCard + gap)));
     const float cardW = std::floor(std::min(px(230), (inner - gap * (perRow - 1)) / perRow));
     const float cardH = px(156);
@@ -347,68 +524,106 @@ void quick_start_(App& a) {
                       ImGuiWindowFlags_NoBackground);
     auto* cdl = ImGui::GetWindowDrawList();
     const ImVec2 co(ImGui::GetWindowPos().x, ImGui::GetWindowPos().y - ImGui::GetScrollY());
-    float y = px(6);
-    for (int group = 0; group < 2; ++group) {
-        imkit::text(cdl, ImVec2(co.x, co.y + y),
-                    group == 0 ? tr("luban.os.quick.console_small_yours_shape") : tr("luban.os.quick.desktop_ready_use"),
-                    th_().text_faint, 13, true);
-        y += px(26);
-        int col = 0;
-        for (std::size_t i = 0; i < kEditions.size(); ++i) {
-            const auto& e = kEditions[i];
-            if (e.desktop != (group == 1)) continue;
-            if (col == perRow) { col = 0; y += cardH + gap; }
-            ImGui::SetCursorPos(ImVec2(col * (cardW + gap), y));
-            const bool on = a.new_offer.empty() && a.new_edition == static_cast<int>(i);
-            // One that cannot be made here is still chosen to read why.
-            const bool usable = unavailable_(a, e).empty();
-            const auto desc = usable ? std::format("{}\n{} · {}", tr(e.about), e.size, e.contents)
-                                     : std::format("{}\n{}", tr(e.about), tr("luban.os.quick.not_available_here"));
-            if (imkit::option_card("card:" + std::string(e.name), art::picture(e.name, on ? imkit::beat(2, 0.45) : 0),
-                                   tr(e.title), desc, on, ImVec2(cardW / imkit::scale(), cardH / imkit::scale()),
-                                   on && a.keyboard, true)) {
-                a.new_edition = static_cast<int>(i);
-                a.new_offer.clear();
-            }
-            mark_(a, "card:" + std::string(e.name));
-            ++col;
-        }
-        y += cardH + px(22);
-    }
-    // The rest the indexes offer: an official system this window has no card
-    // for, and every one from an index someone added -- said where it comes from.
-    std::vector<service::Offer> more;
+    std::optional<std::string> index_error, reading;
     {
         std::lock_guard l(a.available_m);
-        if (a.offers)
-            for (const auto& o : a.offers->systems)
-                if (!o.official || std::ranges::none_of(kEditions, [&](const Edition& e) { return e.name == o.name; })) more.push_back(o);
+        if (!a.offers) reading = std::string(tr("luban.os.quick.reading_index"));
+        else if (!a.offers->error.empty()) index_error = std::vformat(tr("luban.os.quick.index_unreadable"), std::make_format_args(a.offers->error));
     }
-    if (!more.empty()) {
-        imkit::text(cdl, ImVec2(co.x, co.y + y), tr("luban.os.quick.more_indexes"), th_().text_faint, 13, true);
+    float y = px(6);
+    for (const auto& g : groups) {
+        // More systems only when there are some; the traditional desktops
+        // say the index is being read, or could not be (never an empty group).
+        if (g.key == "more" && g.cards.empty()) continue;
+        if (g.key == "desktops" && g.cards.empty() && !reading && !index_error) continue;
+        const float x0 = indent;
+        const std::string_view head = g.key == "console" ? tr("luban.os.quick.console_small_yours_shape")
+                                      : g.key == "xdesk" ? tr("luban.os.quick.group.xdesk")
+                                      : g.key == "desktops" ? tr("luban.os.quick.group.desktops") : tr("luban.os.quick.group.more");
+        imkit::text(cdl, ImVec2(co.x + x0, co.y + y), head, th_().text_faint, 13, true);
+        if (g.key == "desktops") {
+            const auto scale = std::string(tr("luban.os.quick.light_to_full"));
+            imkit::text(cdl, ImVec2(co.x + x0 + inner - imkit::text_size(scale, 12).x, co.y + y + px(1)), scale, th_().text_faint, 12);
+        }
+        const float group_top = y;
         y += px(26);
+        if (g.key == "desktops" && g.cards.empty()) {
+            imkit::text(cdl, ImVec2(co.x + x0, co.y + y), index_error ? *index_error : *reading, index_error ? th_().warn : th_().text_dim, 14);
+            y += px(40);
+            continue;
+        }
         int col = 0;
-        for (const auto& o : more) {
+        for (const auto& c : g.cards) {
             if (col == perRow) { col = 0; y += cardH + gap; }
-            ImGui::SetCursorPos(ImVec2(col * (cardW + gap), y));
-            const bool on = a.new_offer == o.ref;
-            const auto from = o.official ? std::string(tr("luban.os.quick.luban_s")) : std::vformat(tr("luban.os.quick.from"), std::make_format_args(o.index));
-            if (imkit::option_card("card:" + o.ref, art::picture(o.ref, on ? imkit::beat(2, 0.45) : 0), o.name,
-                                   std::format("{}\n{}", o.description, from), on,
+            ImGui::SetCursorPos(ImVec2(x0 + col * (cardW + gap), y));
+            const bool on = c.id == chosen_id;
+            std::string title, desc, art_name;
+            bool usable = true;
+            if (c.kind == QuickCard::Kind::Edition) {
+                const auto& e = kEditions[static_cast<std::size_t>(c.edition)];
+                // One that cannot be made here is still chosen to read why.
+                usable = unavailable_(a, e).empty();
+                title = std::string(tr(e.title));
+                art_name = std::string(e.name);
+                desc = usable ? std::format("{}\n{} · {}", tr(e.about), e.size, e.contents)
+                              : std::format("{}\n{}", tr(e.about), tr("luban.os.quick.not_available_here"));
+            } else if (c.kind == QuickCard::Kind::Desktop) {
+                title = pick_(c.offer.title, c.offer.name);
+                art_name = "desktop";
+                desc = std::format("{}\n{}", pick_(c.offer.summary, c.offer.description), c.offer.available ? chips_(c.offer) : c.offer.reason);
+            } else {
+                title = c.offer.name;
+                art_name = c.offer.ref;
+                desc = std::format("{}\n{}", c.offer.description, source_of_(c.offer));
+            }
+            if (imkit::option_card(c.id, art::picture(art_name, on ? imkit::beat(2, 0.45) : 0), title, desc, on,
                                    ImVec2(cardW / imkit::scale(), cardH / imkit::scale()), on && a.keyboard, true))
-                a.new_offer = o.ref;
-            mark_(a, "card:" + o.ref);
+                choose_card_(a, c);
+            // A technical name explained (design 2026-10-19 §5.4, §7.5).
+            if (ImGui::IsItemHovered())
+                if (const auto why = explained_(title)) ImGui::SetTooltip("%.*s", static_cast<int>(why->size()), why->data());
+            if (c.kind == QuickCard::Kind::Desktop && c.offer.tier) {
+                // How much it brings: four marks beside its picture, the tier's filled.
+                const ImVec2 r0 = ImGui::GetItemRectMin();
+                const float s = std::round(px(6)), sp = std::round(px(3));
+                for (int k = 0; k < 4; ++k) {
+                    const ImVec2 p0(r0.x + px(52) + k * (s + sp), r0.y + px(22));
+                    cdl->AddRectFilled(p0, ImVec2(p0.x + s, p0.y + s * 1.6f), k < *c.offer.tier ? th_().accent : th_().bg_deep);
+                }
+            }
+            mark_(a, c.id);
             ++col;
         }
-        y += cardH + px(22);
+        y += cardH;
+        if (g.key == "xdesk") {
+            // Luban's own desktop: its colour down the group, its name beside the title.
+            cdl->AddRectFilled(ImVec2(co.x, co.y + group_top), ImVec2(co.x + std::round(px(4)), co.y + y), art::edition_color("desktop-xdesk"));
+            const char* mark = "xdesk";
+            imkit::text(cdl, ImVec2(co.x + x0 + inner - imkit::text_size(mark, 12, true).x, co.y + group_top + px(1)), mark,
+                        art::edition_color("desktop-xdesk", 1), 12, true);
+        }
+        y += px(22);
     }
     if (!side) {
-        new_panel_(a, 0, y, panelW, 0);
+        new_panel_(a, indent, y, panelW - indent, 0);
         ImGui::SetCursorPos(ImVec2(0, y + a.panel_h + px(16)));
         ImGui::Dummy(ImVec2(1, 1));
     }
     ImGui::EndChild();
-    if (side) new_panel_(a, margin * 2 + cardsW, top + px(6), panelW, H - top - px(28));
+    if (side) {
+        // The panel beside: its settings scroll, making it stays at its foot
+        // (design 2026-10-19 §5.5).
+        const float px0 = margin * 2 + cardsW, py0 = top + px(6), ph = H - top - px(28);
+        imkit::panel(dl, ImVec2(o.x + px0, o.y + py0), ImVec2(o.x + px0 + panelW, o.y + py0 + ph), imkit::Bevel::Raised, th_().panel_lo);
+        const float actions = a.panel_actions_h > 0 ? a.panel_actions_h : px(110);
+        ImGui::SetCursorPos(ImVec2(px0, py0));
+        ImGui::BeginChild("panel", ImVec2(panelW, std::max(px(120), ph - actions)), ImGuiChildFlags_None, ImGuiWindowFlags_NoBackground);
+        const float body = panel_body_(a, 0, 0, panelW);
+        ImGui::SetCursorPos(ImVec2(0, body));
+        ImGui::Dummy(ImVec2(1, 1));
+        ImGui::EndChild();
+        a.panel_actions_h = panel_actions_(a, px0, py0 + std::max(px(120), ph - actions), panelW);
+    }
     ImGui::End();
 }
 

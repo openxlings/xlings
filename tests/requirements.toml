@@ -1349,7 +1349,7 @@ status = "required"
 
 [LUBAN-OS-QUICK-START-DESKTOPS]
 text = "the quick start's four groups, with source, status, tier (unrated last), an index it cannot read said, the panel scrolling with Create in view, and six stages"
-status = "planned"
+status = "required"
 
 [LUBAN-OS-APP-CAPABILITIES]
 text = "luban-os __capabilities answers without a display; an app that cannot be asked is not taken as compatible"

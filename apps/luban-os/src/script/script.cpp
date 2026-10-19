@@ -76,7 +76,16 @@ Json state_(const App& a) {
     if (a.window) j["fonts"] = a.window->font_dir().string();
     if (a.view == View::QuickStart) {
         j["quick_start"] = {{"said", a.quick_said}, {"can_make", a.quick_can_make}, {"more", a.more}, {"offer", a.new_offer},
-                            {"desktop", a.new_desktop}};
+                            {"desktop", a.new_desktop}, {"card", chosen_card_(a)}, {"traditional", a.new_trad},
+                            {"base", std::string(std::array<std::string_view, 3>{"tiny", "core", "desktop"}[static_cast<std::size_t>(std::clamp(a.new_base, 0, 2))])}};
+        // The groups as shown, each its cards (design 2026-10-19 §5.1).
+        Json groups = Json::array();
+        for (const auto& g : quick_groups_(const_cast<App&>(a))) {
+            Json cards = Json::array();
+            for (const auto& c : g.cards) cards.push_back(c.id);
+            groups.push_back({{"key", g.key}, {"cards", cards}});
+        }
+        j["quick_start"]["groups"] = groups;
         std::lock_guard l(const_cast<App&>(a).available_m);
         if (a.offers) {
             Json systems = Json::array(), desktops = Json::array();

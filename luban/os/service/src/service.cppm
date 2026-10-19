@@ -235,6 +235,8 @@ struct Offer {
 };
 struct QuickStartOffers {
     std::vector<Offer> systems, desktops;
+    // The index could not be read: what it said (never shown as nothing offered).
+    std::string error;
 };
 QuickStartOffers quick_start_offers(const Port& port);
 // An offer as `luban search --json` and the quick start state say it.

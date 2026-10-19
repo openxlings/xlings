@@ -225,7 +225,15 @@ QuickStartOffers quick_start_offers(const Port& port) {
     QuickStartOffers out;
     auto in = [&](std::string_view category) {
         std::vector<Json> data, found;
-        port.capability("search_packages", Json{{"keyword", ""}, {"category", std::string(category)}}, nullptr, &data);
+        const int code = port.capability("search_packages", Json{{"keyword", ""}, {"category", std::string(category)}}, nullptr, &data);
+        if (code != 0 && out.error.empty()) {
+            out.error = "the index could not be read";
+            for (const auto& d : data)
+                if (d.value("kind", "") == "error" || d.contains("message")) {
+                    out.error = d.value("message", out.error);
+                    break;
+                }
+        }
         for (const auto& d : data)
             if (d.value("dataKind", "") == "packages")
                 for (const auto& p : payload_(d))

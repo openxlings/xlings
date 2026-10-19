@@ -469,11 +469,14 @@ struct App {
     std::string auto_name;             // what the name field was given, until the person types
     int new_edition { 3 };             // core
     std::string new_offer;             // a system from the indexes' (its ref), chosen over new_edition
+    std::string new_trad;              // a traditional desktop (its ref), made on kBases[new_base]
+    int new_base { 1 };                // tiny, core, desktop
     int new_desktop { -1 };            // the desktop it is made with (offers->desktops); -1: its own
     int new_mode { 0 };                // 0 sandbox, 1 machine
-    int new_mode_for { -1 };           // the edition the mode was defaulted for
+    std::string new_mode_for;          // the card the mode was defaulted for
     int new_persist { 0 };             // all, home, none
     float panel_h { 0 };               // the quick start's panel, as tall as it was last drawn
+    float panel_actions_h { 0 };       // its foot (making it), likewise
     bool more { false };
     // Admin
     int admin_selected { 0 };
@@ -637,7 +640,26 @@ std::string cannot_run_(App& a);
 std::string unavailable_(App& a, const Edition& e);
 void make_(App& a, bool agreed = false);
 float new_panel_(App& a, float x, float y, float w, float min_h);
+float panel_body_(App& a, float x, float y, float w);
+float panel_actions_(App& a, float x, float y, float w);
 void quick_start_(App& a);
+// The quick start's cards in their groups (design 2026-10-19 §5.1):
+// console, xdesk, desktops (traditional), more (systems from the indexes).
+struct QuickCard {
+    enum class Kind { Edition, Desktop, System };
+    Kind kind { Kind::Edition };
+    int edition { -1 };                 // kEditions
+    service::Offer offer;               // a desktop or a system the index offers
+    std::string id;                     // "card:<edition>" / "card:<ref>"
+};
+struct QuickGroup {
+    std::string key;
+    std::vector<QuickCard> cards;
+};
+std::vector<QuickGroup> quick_groups_(App& a);
+std::string chosen_card_(const App& a);
+void choose_card_(App& a, const QuickCard& c);
+void quick_keys_(App& a);
 void import_view_(App& a);
 int stage_of_(const Job& j);
 void job_(App& a);

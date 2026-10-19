@@ -1415,6 +1415,87 @@ state {2}
     }
 }
 
+XTEST(LubanOs, TheQuickStartGroupsDesktopsByWhatTheyBring, .area = "luban",
+      .covers = {"LUBAN-OS-QUICK-START", "LUBAN-OS-QUICK-START-DESKTOPS"}, .requires_ = {"xlings-bin"}) {
+    if (!app_binary()) GTEST_SKIP() << "no luban-os beside the xlings under test";
+    auto home = tk::Home::isolated("luban-os-desktop-groups");
+    const auto primary = home.root() / "primary", other = home.root() / "other";
+    // A recipe as the index has it: its status, and what extensions.luban says.
+    auto recipe = [](std::string_view ns, std::string_view name, std::string_view type, std::string_view categories,
+                     std::string_view status, std::string_view luban) {
+        return std::format(R"LUA(
+package = {{ spec = '1', name = '{}', namespace = '{}', description = 'the {} recipe', type = '{}', status = '{}',
+            categories = {{ {} }}, archs = {{'x86_64', 'aarch64'}}, extensions = {{ luban = {{ {} }} }},
+            xpm = {{ linux = {{ ['1.0.0'] = {{}} }}, macosx = {{ ['1.0.0'] = {{}} }}, windows = {{ ['1.0.0'] = {{}} }} }} }}
+)LUA", name, ns, name, type, status, categories, luban);
+    };
+    tk::write_file(primary / "xim-indexrepos.lua", "xim_indexrepos = {}\n");
+    tk::write_file(primary / "pkgs/luban/core.lua", recipe("luban", "core", "subos", "'distribution'", "stable", ""));
+    tk::write_file(primary / "pkgs/luban/xdesk.lua", recipe("luban", "xdesk", "package", "'luban-desktop'", "stable", ""));
+    tk::write_file(primary / "pkgs/luban/lxqt.lua",
+                   recipe("luban", "lxqt", "package", "'luban-desktop'", "stable", "tier = 3, title = { en = 'LXQt', zh = 'LXQt' }"));
+    tk::write_file(primary / "pkgs/luban/labwc.lua",
+                   recipe("luban", "labwc", "package", "'luban-desktop'", "stable", "tier = 2, summary = { en = 'a light panel', zh = '轻量面板' }"));
+    tk::write_file(primary / "pkgs/luban/compositor.lua",
+                   recipe("luban", "compositor", "package", "'luban-desktop'", "dev", "tier = 1, gpu = 'better', title = { en = 'Compositor' }"));
+    tk::write_file(primary / "pkgs/luban/old.lua", recipe("luban", "old", "package", "'luban-desktop'", "deprecated", "tier = 2"));
+    tk::write_file(other / "xim-indexrepos.lua", "xim_indexrepos = {}\n");
+    tk::write_file(other / "pkgs/f/fancy.lua", recipe("other", "fancy", "package", "'luban-desktop'", "stable", ""));
+    const Json config{
+        {"mirror", "GLOBAL"},
+        {"xim", {{"index-repo", primary.generic_string()}}},
+        {"index_repos", Json::array({{{"name", "xim"}, {"url", primary.generic_string()}, {"source", "git"}},
+                                     {{"name", "other"}, {"url", other.generic_string()}, {"source", "git"}}})}};
+    tk::write_file(home.dir() / ".xlings.json", config.dump());
+    ASSERT_EQ(home.xlings({"self", "init"}).exit_code, 0);
+    const auto groups = home.root() / "groups.json", lxqt = home.root() / "lxqt.json", keys = home.root() / "keys.json";
+    const auto small = home.root() / "small.json";
+    auto r = run_script(home, std::format(R"(wait quick-start
+resize 1300 1000
+waitfor quick_start.offers present 60
+frames 2
+state {0}
+screenshot {4}
+click card:luban:lxqt
+frames 2
+state {1}
+key Left
+frames 2
+key Down
+frames 2
+state {2}
+click card:luban:labwc
+click more
+resize 1000 560
+frames 4
+state {3}
+)", groups.string(), lxqt.string(), keys.string(), small.string(), artifact("quick-start-groups.bmp").string()), {},
+                        {{"LUBAN_OS_LANG", "en_US.UTF-8"}});
+    ASSERT_EQ(r.exit_code, 0) << r.transcript();
+    // Four groups: consoles, xdesk, the traditional desktops by tier (the
+    // unrated last, xdesk not among them, the deprecated not at all), more.
+    const auto qs = read_state(groups)["quick_start"];
+    std::map<std::string, Json> by;
+    for (const auto& g : qs["groups"]) by[g["key"].get<std::string>()] = g["cards"];
+    EXPECT_EQ(by["xdesk"], Json::array({"card:desktop", "card:desktop-xdesk"}));
+    EXPECT_EQ(by["desktops"], Json::array({"card:luban:compositor", "card:luban:labwc", "card:luban:lxqt", "card:other:fancy"}));
+    EXPECT_TRUE(by["console"].size() >= 5u);
+    // A traditional desktop chosen: made on core as a machine, named after it.
+    const auto t = read_state(lxqt);
+    EXPECT_EQ(t["quick_start"]["traditional"], "luban:lxqt");
+    EXPECT_EQ(t["quick_start"]["base"], "core");
+    EXPECT_EQ(t["mode"], "machine");
+    EXPECT_EQ(t["name"], "lxqt-1");
+    // Left in its group, Down to the next group that has cards.
+    // (no more systems here: from the second desktop, round to the second console)
+    EXPECT_EQ(read_state(keys)["quick_start"]["card"], "card:tiny");
+    // A short window with every option open: making it stays on the screen.
+    const auto sm = read_state(small);
+    const auto make = sm["anchors"]["make"];
+    ASSERT_TRUE(make.is_array()) << sm["anchors"].dump();
+    EXPECT_LE(make[3].get<double>(), 560.0) << make.dump();
+}
+
 XTEST(LubanOs, AnArchiveIsPreviewedBeforeItIsImportedAndWhatItMayDoIsAgreedTo, .area = "luban",
       .covers = {"LUBAN-OS-IMPORT"}, .requires_ = {"xlings-bin"}) {
     if (!app_binary()) GTEST_SKIP() << "no luban-os beside the xlings under test";

@@ -234,9 +234,11 @@ void import_view_(App& a) {
 
 // The stages of making a system, as a person reads them, and which one the
 // events are in.
-constexpr std::array<std::string_view, 5> kStages{{
-    "luban.os.quick.stage.resolve", "luban.os.quick.stage.download", "luban.os.quick.stage.unpack",
-    "luban.os.quick.stage.configure", "luban.os.quick.stage.check"}};
+// Six steps (design 2026-10-19 §5.7): preparing (the plan, what is agreed
+// to, the system's own home), then the payload's four, then done.
+constexpr std::array<std::string_view, 6> kStages{{
+    "luban.os.quick.stage.prepare", "luban.os.quick.stage.download", "luban.os.quick.stage.unpack",
+    "luban.os.quick.stage.configure", "luban.os.quick.stage.check", "luban.os.quick.stage.done"}};
 int stage_of_(const Job& j) {
     const auto& s = j.stage;
     if (s == "check") return 4;
@@ -263,9 +265,9 @@ void job_(App& a) {
     centred_(dl, y, j.title, th_().text, 26, true);
     y += px(44);
     // Its stages, the one it is in lit.
-    const int at = j.done && j.code == 0 ? 5 : stage_of_(j);
-    const float chipW = std::floor((width - px(8) * 4) / 5);
-    for (int k = 0; k < 5; ++k) {
+    const int at = j.done && j.code == 0 ? 6 : stage_of_(j);
+    const float chipW = std::floor((width - px(8) * 5) / 6);
+    for (int k = 0; k < 6; ++k) {
         const ImVec2 c0(o.x + x + k * (chipW + px(8)), o.y + y), c1(c0.x + chipW, c0.y + px(30));
         const bool done = k < at, now = k == at && !failed;
         imkit::panel(dl, c0, c1, now ? imkit::Bevel::Raised : imkit::Bevel::Flat,
