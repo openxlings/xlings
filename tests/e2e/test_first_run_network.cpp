@@ -111,3 +111,26 @@ XTEST(FirstRunNetwork, OnlyIncreasingBytesRenewTheIdleBudget, .area = "cli",
     xlings::tinyhttps::TransferBudget disabled(0, 0);
     EXPECT_FALSE(disabled.expired(100000));
 }
+
+XTEST(FirstRunNetwork, EveryCandidateAttemptIsReportedBeforeTransfer, .area = "cli",
+      .covers = {"NET-SOCKET-CAPS"}) {
+    auto home = tk::Home::isolated("network-source-attempt");
+    xlings::tinyhttps::DownloadOptions opts;
+    opts.destFile = home.root() / "downloaded.bin";
+    opts.urls = {"https://first.invalid/file", "https://second.invalid/file"};
+    opts.retryCount = 0;
+    std::vector<std::string> attempts;
+    opts.onUrlAttempt = [&](std::string_view url) { attempts.emplace_back(url); };
+    opts.transferOverride = [&](const std::string& url, const std::filesystem::path& file) {
+        EXPECT_FALSE(attempts.empty());
+        EXPECT_EQ(attempts.back(), url);
+        if (url == opts.urls.front()) return xlings::tinyhttps::DownloadFileResult{
+            .success = false, .error = "HTTP 404", .failure = xlings::tinyhttps::FailureKind::Source};
+        tk::write_file(file, "payload");
+        return xlings::tinyhttps::DownloadFileResult{.success = true, .bytesWritten = 7};
+    };
+    const auto result = xlings::tinyhttps::download_file(opts);
+    ASSERT_TRUE(result.success) << result.error;
+    EXPECT_EQ(attempts, opts.urls);
+    EXPECT_EQ(result.sourceUrl, opts.urls.back());
+}
