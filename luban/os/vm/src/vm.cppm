@@ -118,6 +118,9 @@ int guest_init(int argc, char* argv[]);
 
 // The machine's directories.
 fs::path run_dir(const fs::path& home, std::string_view name);
+
+// A running machine's environment: what it was started with (its state), else nothing.
+std::optional<std::map<std::string, std::string>> started_env(const fs::path& home, std::string_view name);
 fs::path log_dir(const fs::path& home, std::string_view name);
 
 // A machine's sound (design §9.4): with the audio grant and a host

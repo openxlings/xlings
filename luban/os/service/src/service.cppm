@@ -146,6 +146,20 @@ struct WelcomeFacts {
     std::string user_home { "/root" };
     std::string network;
 };
+// The host's proxy, as a machine reaches it (design 2026-10-19 §27.3): the
+// proxy variables of the environment that starts it (either case), a
+// loopback host (127.0.0.1, localhost, ::1) made the host's address on the
+// machine's NAT (`gateway`), and NO_PROXY with the NAT's network (`nat`)
+// added. Nothing when the host has no proxy.
+std::string map_proxy_url(std::string_view url, std::string_view gateway);
+std::map<std::string, std::string> host_proxy_env(const std::map<std::string, std::string>& host, std::string_view gateway,
+                                                  std::string_view nat);
+// How a system's network is said (luban status, the banner): "like the host",
+// the proxy it uses and, mapped, the host's it stands for.
+std::string network_line(const std::map<std::string, std::string>& host, const std::map<std::string, std::string>& inside);
+// The QEMU NAT's host address and network.
+inline constexpr std::string_view kQemuGateway = "10.0.2.2", kQemuNat = "10.0.2.0/24";
+
 // `mode` is how this session runs (sandbox or machine).
 std::vector<std::string> welcome(const Environment& e, std::string_view mode, bool temp,
                                  const WelcomeStyle& style, const WelcomeFacts& facts = {});

@@ -23,6 +23,7 @@ namespace luban::cli {
 
 namespace spec = xlings::cli::spec;
 namespace svc = luban::service;
+namespace vm = luban::vm;
 using spec::Level;
 namespace fs = std::filesystem;
 using Json = nlohmann::json;
@@ -885,7 +886,28 @@ int cmd_status(const svc::Context& c, const Parsed& p, const Globals& g, Rendere
     j["needs"] = e->needs;
     j["unmet"] = Json::array();
     for (const auto& v : unmet) j["unmet"].push_back(v.why());
-    const auto notes = svc::notes(c, *e);
+    auto notes = svc::notes(c, *e);
+    // Its network in one line, the same whatever it runs as (design 2026-10-19
+    // §27.2): like the host -- the host's proxy, as a machine reaches it --
+    // only its proxy, or none.
+    std::string network = "like the host";
+    if (auto iso = c.port.json({"subos", "config", e->name, "--json"}); iso && iso->is_object()) {
+        const auto in = iso->value("isolation", Json::object());
+        const auto net = in.value("net", std::string("host"));
+        if (net == "none") network = "none";
+        else if (net == "proxy") network = "only its proxy " + in.value("proxy", std::string{});
+        else {
+            const auto host = xlings::platform::environment();
+            const bool machine = e->settings.mode == "machine";
+            network = svc::network_line(host, machine ? svc::host_proxy_env(host, svc::kQemuGateway, svc::kQemuNat) : host);
+            // Running with what it was started with: a changed host proxy is the next start's.
+            if (const auto started = machine ? vm::started_env(c.home, e->name) : std::nullopt)
+                if (const auto was = svc::network_line(host, *started); was != network)
+                    notes.push_back(svc::Note{std::format("it runs with the proxy it started with ({}); the host's now is the next start's", was),
+                                              {std::format("luban stop {0} && luban enter {0}", e->name)}});
+        }
+    }
+    j["network"] = network;
     j["notes"] = Json::array();
     for (const auto& n : notes) j["notes"].push_back({{"text", n.text}, {"next", n.next}});
     if (g.json) { r.value(j); return 0; }
@@ -910,6 +932,7 @@ int cmd_status(const svc::Context& c, const Parsed& p, const Globals& g, Rendere
     std::println("  starts    as a {}{}", e->settings.mode, e->settings.persist == "all" ? "" : std::format(", keeping {}", e->settings.persist == "home" ? "only /home" : "nothing"));
     if (!e->shell.empty()) std::println("  shell     {}", e->shell);
     if (e->carrier != "local") std::println("  carrier   {}", e->carrier);
+    std::println("  network   {}", network);
     std::println("  isolation luban config {}", e->name);
     for (const auto& v : unmet) std::println("  {} {}: this luban is older than it -- xlings update luban", r.paint("!", 33), v.why());
     // What may be done, never forced (design 2026-10-19 §12.2).

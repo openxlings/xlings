@@ -509,6 +509,25 @@ int guest_init(int, char*[]) {
         }
         if (!name.empty()) (void)platform::set_hostname(name);
     }
+    // The host's proxy for this boot (design 2026-10-19 §27.3): what the host
+    // left under the home, in this boot's /run for login shells, and in the
+    // environment of its init (its services, its desktop session).
+    std::map<std::string, std::string> network_env;
+    if (!home.empty() && params.contains("luban.name")) {
+        std::ifstream in(home / "run" / "machines" / params.at("luban.name") / "network.env");
+        std::string text, line;
+        while (std::getline(in, line)) {
+            const auto eq = line.find('=');
+            if (eq == std::string::npos || eq == 0) continue;
+            network_env[line.substr(0, eq)] = line.substr(eq + 1);
+            text += line + "\n";
+        }
+        if (!text.empty()) {
+            std::error_code mk;
+            fs::create_directories("/run/luban", mk);
+            std::ofstream("/run/luban/network.env", std::ios::trunc) << text;
+        }
+    }
     if (platform::fork_process() == 0) agent_();
     std::error_code ec;
     for (const auto* init : {"/sbin/init", "/usr/sbin/init", "/usr/bin/init", "/bin/init"}) {
@@ -517,6 +536,7 @@ int guest_init(int, char*[]) {
         // knows which system it is (L §9), not only the agent's sessions.
         std::map<std::string, std::string> initEnv{{"PATH", "/usr/sbin:/usr/bin:/sbin:/bin"}, {"TERM", "linux"}};
         if (params.contains("luban.name")) initEnv["XLINGS_ROOT_INSTANCE"] = params.at("luban.name");
+        initEnv.insert(network_env.begin(), network_env.end());
         platform::exec_path({init}, initEnv);
     }
     console_("the environment has no init; a shell on the console instead");

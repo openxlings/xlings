@@ -133,6 +133,12 @@ Network network_(const service::Context& c, std::string_view name) {
         for (const auto* k : {"ALL_PROXY", "all_proxy", "HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"})
             n.env[k] = "socks5h://10.0.2.100:1080";
         n.summary = "only its proxy";
+    } else {
+        // Like the host: the host's proxy, its loopback the host's NAT address
+        // (design 2026-10-19 §27.3).
+        const auto host = platform::environment();
+        n.env = service::host_proxy_env(host, service::kQemuGateway, service::kQemuNat);
+        if (!n.env.empty()) n.summary += " · " + service::network_line(host, n.env).substr(std::string_view("like the host · ").size());
     }
     // Sound (design §9.4): with the audio grant, the guest's Pulse clients
     // reach this host's PipeWire / PulseAudio socket through a forwarded port.
@@ -285,6 +291,20 @@ int start_impl_(const service::Context& c, std::string_view name, const EnterOpt
         userhome = persist == "home";
     }
     const auto net = network_(c, name);
+    // What its init and its login shells read for this boot (/run/luban/network.env,
+    // design 2026-10-19 §27.3): under the home it mounts, never in its tree.
+    {
+        const auto file = dir / "network.env";
+        fs::remove(file, ec);
+        ec.clear();
+        std::string text;
+        for (const auto& [k, v] : net.env)
+            if (!k.starts_with("PULSE")) text += std::format("{}={}\n", k, v);
+        if (!text.empty()) {
+            platform::write_file_atomic(file.string(), text);
+            fs::permissions(file, fs::perms::owner_read | fs::perms::owner_write, ec);
+        }
+    }
     const bool kvm = kvm_();
     const auto memory = o.memory.empty() ? std::string("2048") : o.memory;
     std::vector<std::string> q{qemu->bin.string()};
@@ -373,6 +393,8 @@ service::WelcomeFacts machine_facts_(const service::Context& c, std::string_view
     try { mb = std::stoi(state.value("memory", std::string("2048"))); } catch (...) {}
     f.machine = std::format("{} · 2 CPU · {}", state.value("accel", "kvm") == "kvm" ? "KVM" : "emulated",
                             mb % 1024 == 0 ? std::format("{} GiB", mb / 1024) : std::format("{} MiB", mb));
+    // Its network as it was started (design 2026-10-19 §27.2).
+    if (const auto started = started_env(c.home, name)) f.network = service::network_line(platform::environment(), *started);
     return f;
 }
 
@@ -632,6 +654,15 @@ int start(const service::Context& c, std::string_view name, const EnterOptions& 
 
 nlohmann::json session_env(const fs::path& home, std::string_view name) {
     return read_json_(state_file_(home, name)).value("env", Json::object());
+}
+
+std::optional<std::map<std::string, std::string>> started_env(const fs::path& home, std::string_view name) {
+    if (!running(home, name)) return std::nullopt;
+    std::map<std::string, std::string> out;
+    const auto env = session_env(home, name);
+    for (auto it = env.begin(); it != env.end(); ++it)
+        if (it.value().is_string()) out[it.key()] = it.value().get<std::string>();
+    return out;
 }
 
 std::expected<Client, std::string> Client::connect(const fs::path& home, std::string_view name) {

@@ -8,6 +8,7 @@ import std;
 import xlings.libs.json;
 import xlings.image;
 import luban.vm;
+import luban.service;
 import luban.vm.protocol;
 
 namespace tk = xlings::testkit;
@@ -79,4 +80,26 @@ XTEST(LubanVm, SoundIsTheHostsPulseSocketThroughAForwardedPort, .area = "luban",
     EXPECT_NE(s->guestfwd.find("__pipe-unix " + socket.string()), std::string::npos) << s->guestfwd;
     EXPECT_EQ(s->pulse_server, "tcp:10.0.2.101:4713");
     EXPECT_FALSE(luban::vm::sound_forward(true, socket, "/opt/a,b/luban")) << "qemu cannot run a path with a comma";
+}
+
+// The host's proxy as a machine reaches it (design 2026-10-19 §27.3): the
+// host's loopback is the NAT's gateway inside; NO_PROXY gets the NAT.
+XTEST(LubanVm, TheHostsProxyIsMappedForAMachine, .area = "luban", .covers = {"LUBAN-NETWORK-PROXY"}) {
+    using luban::service::map_proxy_url;
+    EXPECT_EQ(map_proxy_url("http://127.0.0.1:7890", "10.0.2.2"), "http://10.0.2.2:7890");
+    EXPECT_EQ(map_proxy_url("socks5h://localhost:1080", "10.0.2.2"), "socks5h://10.0.2.2:1080");
+    EXPECT_EQ(map_proxy_url("http://user:pa:ss@127.0.0.1:3128/", "10.0.2.2"), "http://user:pa:ss@10.0.2.2:3128/");
+    EXPECT_EQ(map_proxy_url("http://[::1]:8080", "10.0.2.2"), "http://10.0.2.2:8080");
+    EXPECT_EQ(map_proxy_url("http://proxy.example:3128", "10.0.2.2"), "http://proxy.example:3128") << "a proxy elsewhere stays";
+    EXPECT_EQ(map_proxy_url("http://127.5.0.1:80", "10.0.2.2"), "http://10.0.2.2:80");
+    // The variables of either case; both cases inside.
+    const std::map<std::string, std::string> host{{"https_proxy", "http://127.0.0.1:7890"}, {"NO_PROXY", "corp.example"}};
+    const auto in = luban::service::host_proxy_env(host, luban::service::kQemuGateway, luban::service::kQemuNat);
+    EXPECT_EQ(in.at("HTTPS_PROXY"), "http://10.0.2.2:7890");
+    EXPECT_EQ(in.at("https_proxy"), "http://10.0.2.2:7890");
+    EXPECT_EQ(in.at("NO_PROXY"), "corp.example,10.0.2.0/24,localhost,127.0.0.1");
+    EXPECT_TRUE(luban::service::host_proxy_env({}, "10.0.2.2", "10.0.2.0/24").empty()) << "no proxy on the host: none inside";
+    // As it is said.
+    EXPECT_EQ(luban::service::network_line(host, in), "like the host · proxy http://10.0.2.2:7890 (the host's http://127.0.0.1:7890)");
+    EXPECT_EQ(luban::service::network_line({}, {}), "like the host");
 }

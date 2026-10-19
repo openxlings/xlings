@@ -1375,7 +1375,7 @@ status = "required"
 
 [LUBAN-NETWORK-PROXY]
 text = "the host's proxy reaches a machine: read from the environment that starts it, a loopback address mapped to the host's NAT address, in /run/luban/network.env, in every session and the desktop; the network line of luban status and the banner says it"
-status = "planned"
+status = "required"
 
 [SUBOS-USER-HOME-SEED]
 text = "a system user's own home starts from the system home's index snapshot and settings without the network; the first write asks once at a terminal; a package the system already has at that version is not installed again; a network failure is said once with the next step"

@@ -1398,6 +1398,11 @@ int enter_sandbox(const Context& c, std::string_view name, bool temp, std::strin
     if (auto e = describe(c, name)) {
         WelcomeFacts facts;
         if (const auto release = xlings::platform::kernel_release(); !release.empty()) facts.kernel = "Linux " + release;
+        // Its network, as luban status says it (design 2026-10-19 §27.2): a sandbox's is the host's.
+        {
+            const auto host = xlings::platform::environment();
+            facts.network = network_line(host, host);
+        }
         if (const auto root = root_of(c.home, name)) {
             const auto who = user.empty() ? xlings::subos::root_etc::login_user(*root / "etc") : std::string(user);
             if (const auto u = xlings::subos::root_etc::find_user(*root / "etc", who)) {

@@ -626,7 +626,7 @@ XTEST(Luban, NewSaysWhatItCannotMakeAndWhyItMadeAnOlderOne,
 // opencaps): its root's layout and its manifest's requires; what this luban
 // does not have is said, with the update.
 XTEST(Luban, WhatASystemNeedsThatThisLubanLacksIsSaid,
-      .area = "luban", .cost = tk::Cost::Medium, .covers = {"LUBAN-CAPS"}, .requires_ = {"linux", "xlings-bin"}) {
+      .area = "luban", .cost = tk::Cost::Medium, .covers = {"LUBAN-CAPS", "LUBAN-NETWORK-PROXY"}, .requires_ = {"linux", "xlings-bin"}) {
     if constexpr (!tk::is_linux) GTEST_SKIP() << "a Luban root is a Linux root";
     const auto bin = luban_binary();
     if (!bin) GTEST_SKIP() << "no luban beside the xlings under test";
@@ -654,7 +654,19 @@ XTEST(Luban, WhatASystemNeedsThatThisLubanLacksIsSaid,
     EXPECT_NE(text.out.find("xlings update luban"), std::string::npos) << text.transcript();
     // One that needs nothing it lacks says nothing of it.
     ASSERT_EQ(luban(home, {"new", "plain", "--xpkg", "fixture:my-os@1.0.0", "-y"}).exit_code, 0);
-    EXPECT_EQ(luban(home, {"status", "plain"}).out.find("xlings update luban"), std::string::npos);
+    const auto plain = luban(home, {"status", "plain"});
+    EXPECT_EQ(plain.out.find("xlings update luban"), std::string::npos);
+    // Its network in one line (design 2026-10-19 §27.2): like the host; as a
+    // machine, the host's proxy on its loopback is the NAT's gateway inside.
+    EXPECT_NE(plain.out.find("network   like the host"), std::string::npos) << plain.out;
+    ASSERT_EQ(luban(home, {"config", "plain", "--mode", "machine"}).exit_code, 0);
+    tk::RunOptions o;
+    o.argv = {(home.dir() / "bin/luban").string(), "status", "plain"};
+    o.env = home.env();
+    o.env["XLINGS_TOOLS_SEARCH"] = "home";
+    o.env["HTTPS_PROXY"] = "http://127.0.0.1:7890";
+    const auto proxied = tk::run(o);
+    EXPECT_NE(proxied.out.find("proxy http://10.0.2.2:7890 (the host's http://127.0.0.1:7890)"), std::string::npos) << proxied.out;
 }
 
 // Any system and any components by --xpkg (design 2026-10-18 §5): what each

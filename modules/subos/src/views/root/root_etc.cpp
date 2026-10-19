@@ -324,9 +324,29 @@ if set -q LUBAN_KIND; and status is-interactive
     end
 end
 )FISH";
+    // The host's proxy for this boot (design 2026-10-19 §27.3): a machine's
+    // start leaves it in /run; every login shell takes it (su -, a new terminal).
+    static constexpr std::string_view net_sh = R"SH(# The host's proxy for this boot (Luban OS): a machine's start writes it in
+# /run/luban/network.env; every login shell takes it. Machine state: edit freely.
+if [ -r /run/luban/network.env ]; then
+    while IFS='=' read -r __k __v; do [ -n "$__k" ] && export "$__k=$__v"; done < /run/luban/network.env
+    unset __k __v
+fi
+)SH";
+    static constexpr std::string_view net_fish = R"FISH(# The host's proxy for this boot (Luban OS): a machine's start writes it in
+# /run/luban/network.env; every login shell takes it. Machine state: edit freely.
+if test -r /run/luban/network.env
+    for line in (cat /run/luban/network.env)
+        set -l kv (string split -m 1 = -- $line)
+        test (count $kv) -eq 2; and set -gx $kv[1] $kv[2]
+    end
+end
+)FISH";
     std::vector<std::string> written;
     for (const auto& [rel, text] : {std::pair{fs::path("profile.d/luban.sh"), sh},
-                                    std::pair{fs::path("fish/conf.d/luban.fish"), fish}}) {
+                                    std::pair{fs::path("fish/conf.d/luban.fish"), fish},
+                                    std::pair{fs::path("profile.d/luban-network.sh"), net_sh},
+                                    std::pair{fs::path("fish/conf.d/luban-network.fish"), net_fish}}) {
         std::error_code ec;
         const auto file = etc / rel;
         if (fs::exists(fs::symlink_status(file, ec))) continue;

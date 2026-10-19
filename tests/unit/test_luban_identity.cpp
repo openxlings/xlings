@@ -65,7 +65,11 @@ XTEST(LubanIdentity, ASystemIsNamedByItsNameAndMarkedInThePrompt, .area = "luban
 
     auto first = etc::ensure_prompt_script(e);
     ASSERT_TRUE(first);
-    EXPECT_EQ(*first, (std::vector<std::string>{"profile.d/luban.sh", "fish/conf.d/luban.fish"}));
+    EXPECT_EQ(*first, (std::vector<std::string>{"profile.d/luban.sh", "fish/conf.d/luban.fish", "profile.d/luban-network.sh",
+                                                "fish/conf.d/luban-network.fish"}));
+    // The host's proxy for this boot, in every login shell (design 2026-10-19 §27.3).
+    EXPECT_NE(tk::read_file(e / "profile.d/luban-network.sh").find("/run/luban/network.env"), std::string::npos);
+    EXPECT_NE(tk::read_file(e / "fish/conf.d/luban-network.fish").find("set -gx"), std::string::npos);
     const auto fish = tk::read_file(e / "fish/conf.d/luban.fish");
     EXPECT_NE(fish.find("function fish_prompt"), std::string::npos) << "fish reads no PS1 (F26)";
     EXPECT_NE(fish.find("<luban$keep>"), std::string::npos);
