@@ -63,6 +63,7 @@ Result download(std::string_view url, const std::filesystem::path& destination,
     int code = 0;
     if (!(status >> version >> code) || (version != "HTTP/1.1" && version != "HTTP/1.0"))
         return fail(Failure::Source, "invalid HTTP status");
+    result.httpStatus = code;
     if (code != 200) return fail(Failure::Source, std::format("HTTP {}: loopback source refused the payload", code));
     while (std::getline(headers, line)) {
         if (!line.empty() && line.back() == '\r') line.pop_back();

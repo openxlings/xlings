@@ -5,6 +5,20 @@ import mcpplibs.tinyhttps;
 
 export namespace xlings::tinyhttps {
 
+// Consumer-owned deadlines also bound DNS, redirects and process startup.
+// These are socket caps, shared with the actual downloader's proxy/TLS client.
+int bounded_timeout_seconds(int configured, std::string_view overrideValue);
+struct ProbeResult {
+    std::string host;
+    std::string status;
+    int httpStatus = 0;
+    double elapsedSeconds = 0;
+    bool proxy = false;
+    bool reachable = false;
+};
+ProbeResult probe_url(std::string_view url, int socketTimeoutMs = 2000,
+    std::function<ProbeResult(std::string_view, int)> loopback = {});
+
 // ── Public types ─────────────────────────────────────────────────────
 
 // Whose fault a failed download was. Callers act on this, never on the
@@ -48,6 +62,7 @@ struct DownloadOptions {
     int retryCount        { 3 };
     int connectTimeoutSec { 30 };
     int maxTimeSec        { 600 };
+    int totalTimeoutSec   { 0 }; // zero keeps the historical no-total-bound policy
     // Stall watchdog (0.4.49; see
     // .agents/docs/2026-06-04-github-asset-adaptive-mirror.md):
     // abort an attempt whose windowed average speed stays below
@@ -58,6 +73,7 @@ struct DownloadOptions {
     int lowSpeedTimeSec    { 15 };
     std::function<void(double total, double now)> onProgress;
     std::function<bool()> isCancelled;      // returns true to abort download
+    std::function<void(std::string_view)> onUrlAttempt; // before every candidate attempt
     // Per-URL attempt failure hook: called once per failed attempt with the
     // attempted URL and its error string ("stalled: ..." for watchdog
     // aborts). Used by the downloader to penalize degraded hosts.
@@ -80,6 +96,16 @@ struct DownloadOptions {
     std::function<DownloadFileResult(const std::string& url,
                                      const std::filesystem::path& destFile)>
         transferOverride;
+};
+
+// Cumulative byte progress, not protocol output, renews the idle budget.
+class TransferBudget {
+public:
+    TransferBudget(double idleSeconds, double totalSeconds);
+    void progress(double elapsedSeconds, double bytes);
+    bool expired(double elapsedSeconds) const;
+private:
+    double idle_, total_, lastProgress_ = 0, bytes_ = 0;
 };
 
 // Windowed-average stall detector (curl --speed-limit/--speed-time style).
@@ -194,7 +220,8 @@ DownloadFileResult download_once(
     int lowSpeedLimitBytes,
     int lowSpeedTimeSec,
     std::function<void(double, double)> onProgress,
-    std::function<bool()> isCancelled = nullptr
+    std::function<bool()> isCancelled = nullptr,
+    int totalTimeoutSec = 0
 );
 
 } // namespace detail_

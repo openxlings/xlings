@@ -8,6 +8,7 @@ struct Result {
     std::int64_t written { 0 };
     std::optional<std::int64_t> expected;
     Failure failure { Failure::None };
+    int httpStatus { 0 };
 };
 // Plain HTTP is restricted to the numeric IPv4 loopback literal. No DNS,
 // proxy, redirects or chunked body; HTTPS remains the external transport.

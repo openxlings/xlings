@@ -52,7 +52,9 @@ namespace xlings::interface {
 // index's reserved namespaces are kept to it (feature `reserved_namespaces`);
 // `subos_command` with `new --dry-run` sends the plan as a `subos_plan` data
 // event (feature `subos_plan`).
-export constexpr const char* kProtocolVersion = "1.12";
+// 1.13: network_endpoints and probe_url are read-only diagnostics. Consumers
+// own the shared process deadline; download_socket_budgets caps the transport.
+export constexpr const char* kProtocolVersion = "1.13";
 
 // Convert any Event variant to one NDJSON line (no trailing newline).
 // Returns "" for events not surfaced to wire (e.g. CompletedEvent — the

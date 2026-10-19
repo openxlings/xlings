@@ -145,6 +145,14 @@ std::optional<ArtifactSource> artifact_source_from_base(const std::string& base,
 // alternate (#598).
 std::optional<ArtifactSource> artifact_source_for(const IndexRepo& repo);
 
+struct ProbeEndpoint {
+    std::string region;
+    std::string url;
+};
+// The same discovery addresses as the fetcher, without latency probes or a
+// fetch. A null source names the configured official resource servers.
+std::vector<ProbeEndpoint> probe_endpoints(const IndexRepo* repo = nullptr);
+
 // Select the manifest for `key`: exact match; else, for CUSTOM sources only
 // (soleEntryFallback), the sole entry — a single-index pointer need not repeat
 // the consumer's configured repo name (mcpp publishes key "mcpp", consumers

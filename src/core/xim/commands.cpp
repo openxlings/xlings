@@ -1173,7 +1173,9 @@ int install_(std::span<const std::string> targets, bool yes, bool noDeps,
                 {"downloadedBytes", p.downloadedBytes},
                 {"started", p.started},
                 {"finished", p.finished},
-                {"success", p.success}
+                {"success", p.success},
+                {"sourceHost", p.sourceHost},
+                {"sourceAttempt", p.sourceAttempt}
             });
         }
         nlohmann::json payload;

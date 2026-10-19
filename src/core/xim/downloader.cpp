@@ -395,7 +395,7 @@ DownloadResult git_clone_one(const DownloadTask& task) {
     return result;
 }
 
-DownloadResult download_one(const DownloadTask& task, std::function<void(double total, double now)> onProgress, CancellationToken* cancel, const DownloadTestHooks_* testHooks) {
+DownloadResult download_one(const DownloadTask& task, std::function<void(double total, double now)> onProgress, CancellationToken* cancel, const DownloadTestHooks_* testHooks, std::function<void(std::string_view)> onSource) {
     namespace fs = std::filesystem;
 
     DownloadResult result;
@@ -633,6 +633,7 @@ DownloadResult download_one(const DownloadTask& task, std::function<void(double 
         opts.connectTimeoutSec = 30;
         opts.maxTimeSec = 600;
         opts.onProgress = onProgress;
+        opts.onUrlAttempt = onSource;
         if (testHooks) opts.transferOverride = testHooks->transferOverride;
         if (cancel) {
             opts.isCancelled = [cancel] { return cancel->is_paused() || cancel->is_cancelled(); };
@@ -851,7 +852,7 @@ download_all(std::span<const DownloadTask> tasks, const DownloaderConfig& config
             for (auto const& p : progState)
                 key += std::format("{}:{}:{}{}{};", p.totalBytes, p.downloadedBytes,
                                    p.started ? 1 : 0, p.finished ? 1 : 0,
-                                   p.success ? 1 : 0);
+                                   p.success ? 1 : 0) + std::format("{}:{};", p.sourceHost, p.sourceAttempt);
             return key + (sizesReady.load() ? "r" : "");
         };
         std::string lastKey;
@@ -916,7 +917,16 @@ download_all(std::span<const DownloadTask> tasks, const DownloaderConfig& config
                 progState[i].downloadedBytes = now;
             };
 
-            auto result = download_one(tasks[i], taskProgress, cancel);
+            auto source = [&](std::string_view url) {
+                auto host = url.substr(url.find("://") == std::string_view::npos ? 0 : url.find("://") + 3);
+                host = host.substr(0, host.find_first_of("/?#"));
+                if (auto at = host.rfind('@'); at != std::string_view::npos) host.remove_prefix(at + 1);
+                std::lock_guard lock(mutex);
+                progState[i].sourceHost = std::string(host);
+                ++progState[i].sourceAttempt;
+                progState[i].downloadedBytes = 0;
+            };
+            auto result = download_one(tasks[i], taskProgress, cancel, nullptr, source);
 
             {
                 std::lock_guard lock(mutex);

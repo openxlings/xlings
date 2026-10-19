@@ -35,14 +35,22 @@ xlings self doctor --isolation --json
 ## NDJSON 接口
 
 `xlings interface` 是一个基于 stdin 和 stdout 的稳定协议：每行一个 JSON 对象，每行写出即刷新。
-版本 **1.7**；完整约定见 [specs/interface-ndjson-v1](../specs/interface-ndjson-v1.md)。
+版本 **1.13**；完整约定见 [specs/interface-ndjson-v1](../specs/interface-ndjson-v1.md)。
 
 ```bash
-xlings interface --version     # {"protocol_version":"1.8"}
+xlings interface --version     # {"protocol_version":"1.13"}
 xlings interface --list        # every capability, with its JSON Schema
 xlings interface install_packages --args '{"targets":["gcc@16.1.0"],"yes":true}'
 xlings interface install_packages --args-file ./args.json
 ```
+
+### Network diagnosis
+
+`network_endpoints` 在本地发现已配置的远程索引资源。
+`probe_url` 使用下载器的传输层检查一个资源，并返回脱敏后的结构化结果。
+两者均不初始化 home 或安装工具。客户端负责包含端点发现与 DNS 的总截止时间；
+`socket_timeout_ms` 仅限制 socket 操作。完整字段与边界见
+[协议](../specs/interface-ndjson-v1.md#network-diagnosis-113)。
 
 ### 事件（stdout）
 

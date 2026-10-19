@@ -143,7 +143,8 @@ DownloadResult git_clone_one(const DownloadTask& task);
 DownloadResult download_one(const DownloadTask& task,
                             std::function<void(double total, double now)> onProgress = nullptr,
                             CancellationToken* cancel = nullptr,
-                            const DownloadTestHooks_* testHooks = nullptr);
+                            const DownloadTestHooks_* testHooks = nullptr,
+                            std::function<void(std::string_view)> onSource = {});
 
 // Per-task progress state, shared between download threads and the TUI refresh thread
 struct TaskProgress {
@@ -153,6 +154,8 @@ struct TaskProgress {
     bool started  { false };
     bool finished { false };
     bool success  { false };
+    std::string sourceHost;
+    int sourceAttempt = 0;
 };
 
 // Where the state of a batch of downloads is sent (protocol 1.3).
