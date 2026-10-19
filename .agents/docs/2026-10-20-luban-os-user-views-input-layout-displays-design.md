@@ -675,7 +675,61 @@ Luban 的键位按需求与交互设计来定，不照搬某个系统：
 | 兼容 | 改了意思的已发布键 | §12.2 的对照列、发布说明、首次卡片；旧 `keys.json` 的自定义按动作名保留 |
 | 测试 | 新机制是否都有可失败的测试 | §16 逐项；性能有基线与预算；文档生成有一致性检查 |
 
-## 20. 安卓版
+## 20. 桌面 edition 的第二轮实测（G22–G33）
+
+用户在 2026.10.19.2 的 LXQt、KDE 与 xdesk 系统里的实测：
+
+| 编号 | 现象 | 定因与做法 |
+|---|---|---|
+| G22 | 建桌面系统时每个阶段的进度都从 0 到 100% | 进度按阶段各自计算。改为**整个操作一个 0–100%**：各阶段按预估权重（准备 2、下载 55、解压 18、配置 15、启动与初始化 7、自检 3）占一段，阶段内的进度映射到它那一段；阶段名照旧写在旁边。命令行与窗口同一份计算（服务给出 `overall`） |
+| G23 | 配置完成后"自检"显示 0% 与"准备"，等约 1 分钟才进桌面，像是退回了开头 | 自检要在系统里跑，machine 先要启动；启动的进度与文字沿用了"准备"。加一个阶段**"启动与初始化"**（在自检之前）：显示启动的进展（内核、网络（NAT）、服务、会话），文字来自 machine 的启动日志；整体进度继续往前走，不回退 |
+| G24 | LXQt 桌面右键"打开终端"：`failed to execute child process "qterminal"`（应用菜单里打开没问题） | pcmanfm-qt 的终端设置默认是 qterminal，系统里没有。luban:lxqt 带上 qterminal（LXQt 自己的终端，有右键菜单），并把 pcmanfm-qt 与 LXQt 的终端设置都指向它 |
+| G25 | LXQt 桌面上的"计算机"打开显示不支持 | `computer:///` 要 gvfs。默认桌面图标去掉"计算机"，留"主目录""回收站" |
+| G26 | 面板右下角"Drop application icons here"两行显示不完整 | 是 quicklaunch 插件的空白提示。默认 quicklaunch 放上常用应用（终端、文件管理器、浏览器），不再是空的 |
+| G27 | foot 与 qterminal 里复制粘贴不行（konsole 可以） | 终端的复制是 Ctrl+Shift+C/V（Ctrl+C 是中断）；foot 没有右键菜单。LXQt 用 qterminal（有右键菜单）；foot 的默认配置写明 Ctrl+Shift+C/V 并在快捷键文档里说明；同时核对 opensal-wlr 在桌面内与宿主之间的剪贴板（wlr-data-control），补测试 |
+| G28 | LXQt 很卡；KDE 稍好但也不流畅 | 没有 GPU：labwc 与其中的应用都是软件渲染，经 opensal-wlr 截屏传给窗口。做法：§13 的窗口端优化（整块复制、遮挡停帧）对所有桌面生效；opensal-wlr 只传变化的区域（screencopy 的 damage）；machine 默认 vCPU 与内存按宿主调高；有 GPU 时的路径同 §13.2 第 5 条 |
+| G29 | KDE 里不显示鼠标指针（能点击）；新建文件夹后一直显示文字光标"\|" | 嵌套的 KWin 设置的指针形状没有传到窗口：opensal-wlr 的指针会话只在进入时取一次形状。做法：opensal-wlr 跟随 labwc 的指针形状变化（光标表面的提交与 `cursor-shape` 请求）每次都转交；没有指针会话时把指针画进画面；补一个嵌套合成器改变指针形状的测试 |
+| G30 | KDE 的 camera indicator 显示 `main.qml: pipewire.monitor is not installed` | 隐私指示器小部件需要 kpipewire 的 QML 模块。没有摄像头时默认面板不放它；音频方案（§20.1）带上 PipeWire 后，luban:kde 再带 kpipewire |
+| G31 | 有图形界面的系统应当默认带浏览器 | 见 §20.2：所有带桌面的 edition 默认 Falkon |
+| G32 | 桌面系统应当有声音 | 见 §20.1：openhal 的 audio |
+| G33 | LXQt、KDE 进入后是 root | 只有 desktop edition 被认为"需要用户"；core 加 `--desktop lxqt` 也是桌面。做法：带任何桌面（edition 的、`--desktop`、`--xpkg` 里的桌面包）的系统都建默认用户 `lubanoser`，密码同 §4.5（不设则默认 `lubanoser`） |
+
+### 20.1 声音：openhal 的 audio
+
+- **分层**：openhal 加一个 `Audio` 能力（spec 只定数据：PCM 流的格式、开关、音量、延迟），宿主一侧的实现与平台相关，系统一侧的服务与平台无关。
+- **宿主**：Luban OS 的托盘进程用 SDL3 的音频（Linux：PipeWire / PulseAudio / ALSA；macOS：Core Audio；Windows：WASAPI，均由 SDL 选择），
+  播放与录音都经它；系统不再直接连宿主的 PipeWire（现在的做法只在 Linux 宿主上可用）。
+- **系统**：带桌面的 edition 带 PipeWire（加 wireplumber 与 pipewire-pulse），默认输出是一个 `luban` sink：PCM 写进一个 unix socket，
+  luban 的 agent 经 machine 的通道（sandbox 经管道）转给宿主；麦克风反向。系统里的应用只看到普通的 PipeWire / Pulse。
+- **授权**：沿用现有的 `audio` 授权（`luban config <系统> --allow audio`）；录音单独授权（`microphone`）。
+- **测试**：系统里播放一段已知波形，宿主的假音频设备收到同样的样本；没有授权时不传。
+
+### 20.2 默认浏览器
+
+| 候选 | 引擎与依赖 | 评价 |
+|---|---|---|
+| Falkon | QtWebEngine（Chromium），Qt | KDE 的项目，LXQt 推荐；与 Qt 桌面共用 qt-runtime，现代网页兼容好 |
+| Epiphany | WebKitGTK，GTK4 + libadwaita | GNOME 的；依赖一整套 GTK |
+| NetSurf | 自己的引擎 | 最轻，但几乎不支持现代 JavaScript，日常网页打不开 |
+| Luakit、surf | WebKitGTK，GTK3 | 键盘为主的极简浏览器，不适合作默认 |
+| Firefox | Gecko | 各发行版最常见的默认，但最重 |
+
+结论：所有带桌面的 edition 默认 **Falkon**（LXQt、KDE 与之同为 Qt；xdesk、labwc 的系统随 Falkon 带上 qt-runtime）——
+轻于 Firefox、现代网页可用、符合 Qt 桌面社区的习惯；一个浏览器在所有桌面上一致。Firefox 留作 `xlings install firefox` 的选择。
+没有 GPU 时 Falkon 用软件合成（QtWebEngine 的 `--disable-gpu`），由它的启动器设置。
+
+### 20.3 实施
+
+| # | 检查点 | 仓库 |
+|---|---|---|
+| C13 | 进度：整体 0–100%、"启动与初始化"阶段（G22、G23） | xlings |
+| C14 | 默认用户：带桌面即建 `lubanoser`（G33） | xlings |
+| C15 | LXQt 与 KDE 的配置：qterminal、桌面图标、quicklaunch、相机指示器、foot 的复制说明（G24–G27、G30） | xim-pkgindex（luban:lxqt、luban:kde、luban:foot 新版本） |
+| C16 | opensal-wlr：指针形状跟随、只传变化区域、剪贴板（G28、G29） | xlings |
+| C17 | 浏览器：luban:falkon，各桌面 edition 带上（G31） | xim-pkgindex |
+| C18 | 声音：openhal audio、宿主 SDL 音频、系统的 PipeWire 与 `luban` sink（G32） | xlings；xim-pkgindex |
+
+## 21. 安卓版
 
 见 `2026-10-20-luban-os-android-preliminary.md`：`import std`、imgui 已在本地对 Android 验证；中间层三处（mcpp 的 API level、
 compat.sdl3 的 Android 分支、platform 的 Android 分支）；有 root 用 chroot、无 root 用 proot；自己发布 APK。未来再做。
