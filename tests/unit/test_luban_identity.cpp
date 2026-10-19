@@ -46,6 +46,11 @@ XTEST(LubanIdentity, AUserIsMadeInTheSystemsOwnEtc, .area = "luban", .covers = {
     EXPECT_TRUE(luban::service::needs_user(on_desktop));
     luban::service::NewPreview core{.lineage = {.layers = {{"luban:core@2026.10.19.1", "xim", {}}}}};
     EXPECT_FALSE(luban::service::needs_user(core));
+    // Any desktop is a desktop (design 2026-10-20 G33): core with --desktop lxqt, or a desktop package given.
+    luban::service::NewOptions with_lxqt{.settings = {{"desktop", "lxqt"}}};
+    EXPECT_TRUE(luban::service::needs_user(core, &with_lxqt));
+    luban::service::NewOptions console{.settings = {{"desktop", "none"}}};
+    EXPECT_FALSE(luban::service::needs_user(core, &console));
 }
 
 XTEST(LubanIdentity, ASystemIsNamedByItsNameAndMarkedInThePrompt, .area = "luban", .covers = {"ID-HOSTNAME", "ID-PROMPT", "LUBAN-PROMPT-MARK"}) {

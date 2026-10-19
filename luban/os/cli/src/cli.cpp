@@ -768,7 +768,7 @@ int cmd_new(const svc::Context& c, const Parsed& p, const Globals& g, Renderer& 
     // agent mode asks nothing and names the flags.
     if (auto x = p.option("--user")) o.user = *x;
     const auto shown = svc::display_name(preview->lineage);
-    if (o.user.empty() && svc::needs_user(*preview)) {
+    if (o.user.empty() && svc::needs_user(*preview, &o)) {
         if (g.yes) o.user = std::string(svc::kDefaultUser);
         else if (!can_ask_(g))
             return usage(std::format("{} needs a user to log in as: --user <name> (and --password-file <file> or --no-password), or -y for {}",

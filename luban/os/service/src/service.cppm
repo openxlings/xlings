@@ -369,8 +369,9 @@ struct NewPreview {
 // official edition; what its manifests need of this luban. A failure is said
 // through the sink with its next step, and is the error's exit code.
 std::expected<NewPreview, int> preview_new(const Context& c, const NewOptions& o);
-// A system that cannot be used as root: a desktop (its browsers refuse it).
-bool needs_user(const NewPreview& p);
+// A system that cannot be used as root: one with a desktop -- its edition's,
+// one given with --xpkg, or asked for with --desktop (its browsers refuse root).
+bool needs_user(const NewPreview& p, const NewOptions* o = nullptr);
 inline constexpr std::string_view kDefaultUser = "lubanoser";
 // A user's password when the one who made the system gave none (design
 // 2026-10-20 §4.5): local to the system (its ssh takes no passwords), and

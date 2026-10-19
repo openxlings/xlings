@@ -397,9 +397,16 @@ EnterPlan enter_plan(const Environment& e) {
                               setting, have, e.name)};
 }
 
-bool needs_user(const NewPreview& p) {
+bool needs_user(const NewPreview& p, const NewOptions* o) {
     const auto* base = p.lineage.base();
-    return base && (base->name() == "desktop" || base->name().starts_with("desktop-"));
+    if (base && (base->name() == "desktop" || base->name().starts_with("desktop-"))) return true;
+    // Any desktop, not only the desktop edition's (design 2026-10-20 G33): a
+    // desktop given with --xpkg, or asked for with --desktop.
+    if (std::ranges::any_of(p.extras, [](const Coordinate& e) { return e.role() == "desktop"; })) return true;
+    if (o)
+        for (const auto& [k, v] : o->settings)
+            if (k == "desktop" && !v.empty() && v != "none") return true;
+    return false;
 }
 
 Json NewPreview::value() const {
@@ -598,7 +605,7 @@ Outcome create(const Context& c, const NewOptions& o, const NewPreview* given) {
     // password's hash in its shadow, and the one `luban enter` logs in as.
     // A desktop is never root's: made from the window (no question asked
     // there), it gets the default user, without a password.
-    const auto user = o.user.empty() && needs_user(preview) ? std::string(kDefaultUser) : o.user;
+    const auto user = o.user.empty() && needs_user(preview, &o) ? std::string(kDefaultUser) : o.user;
     if (!user.empty()) {
         const auto root = root_of(c.home, o.name);
         if (!root) {
