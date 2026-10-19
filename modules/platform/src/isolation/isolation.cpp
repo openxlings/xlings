@@ -587,6 +587,10 @@ bool switch_root(const fs::path& newroot) {
 
 bool set_hostname(std::string_view name) { return ::sethostname(name.data(), name.size()) == 0; }
 
+bool own_by_root(const fs::path& path, unsigned mode) {
+    return ::lchown(path.c_str(), 0, 0) == 0 && ::chmod(path.c_str(), static_cast<mode_t>(mode)) == 0;
+}
+
 void power_off() {
     ::sync();
     ::reboot(RB_POWER_OFF);
@@ -651,6 +655,7 @@ bool mount_virtiofs(std::string_view, const fs::path&, bool) { return false; }
 bool move_mount(const fs::path&, const fs::path&) { return false; }
 bool bind_mount(const fs::path&, const fs::path&) { return false; }
 bool switch_root(const fs::path&) { return false; }
+bool own_by_root(const fs::path&, unsigned) { return false; }
 void power_off() { std::exit(0); }
 bool set_hostname(std::string_view) { return false; }
 

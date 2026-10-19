@@ -220,7 +220,7 @@ constexpr xlings::i18n::Entry kWords[] = {
     { "luban.os.quick.off", "{} 已关机" },
     { "luban.os.quick.own", "自带的" },
     { "luban.os.quick.packages", "软件包" },
-    { "luban.os.quick.password", "密码" },
+    { "luban.os.quick.password", "密码（空：lubanoser）" },
     { "luban.os.quick.proxy_socks5h_optional", "代理（SOCKS5h，可选）" },
     { "luban.os.quick.recent", "最近" },
     { "luban.os.quick.s_then_any_key_stops", "{} 秒后进入 {} · 按任意键取消" },

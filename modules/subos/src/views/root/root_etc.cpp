@@ -419,6 +419,43 @@ end
     return written;
 }
 
+std::expected<std::vector<std::string>, std::string> ensure_sudoers(const fs::path& etc, std::string_view nopasswd) {
+    static constexpr std::string_view base = R"(# sudo's rules (Luban OS): root, and the files in /etc/sudoers.d.
+# Machine state: edit with visudo; an upgrade never rewrites it.
+root ALL=(ALL:ALL) ALL
+@includedir /etc/sudoers.d
+)";
+    static constexpr std::string_view luban = R"(# Who may act as root (Luban OS, design 2026-10-20 §4.5): the wheel group,
+# with its own password, asked again after 15 minutes -- as on Ubuntu, Fedora
+# and Debian. xlings is on the path sudo gives; the host's proxy is kept.
+# Machine state: edit with visudo; an upgrade never rewrites it.
+Defaults secure_path="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/xlings/subos/current/bin:/xlings/bin"
+Defaults env_keep += "http_proxy https_proxy all_proxy no_proxy HTTP_PROXY HTTPS_PROXY ALL_PROXY NO_PROXY LANG"
+Defaults timestamp_timeout=15
+%wheel ALL=(ALL:ALL) ALL
+)";
+    std::vector<std::pair<fs::path, std::string>> files{{"sudoers", std::string(base)}, {"sudoers.d/luban", std::string(luban)}};
+    if (!nopasswd.empty())
+        files.push_back({fs::path("sudoers.d") / std::format("luban-{}", nopasswd),
+                         std::format("# {} chose to log in without a password: its sudo asks nothing (luban new --no-password).\n"
+                                     "{} ALL=(ALL:ALL) NOPASSWD: ALL\n", nopasswd, nopasswd)});
+    std::vector<std::string> written;
+    for (const auto& [rel, text] : files) {
+        std::error_code ec;
+        const auto file = etc / rel;
+        if (fs::exists(fs::symlink_status(file, ec))) continue;
+        fs::create_directories(file.parent_path(), ec);
+        if (ec) return std::unexpected(std::format("cannot make {}: {}", file.parent_path().string(), ec.message()));
+        std::ofstream out(file, std::ios::trunc);
+        out << text;
+        out.close();
+        if (!out) return std::unexpected("cannot write " + file.string());
+        fs::permissions(file, fs::perms::owner_read | fs::perms::group_read, fs::perm_options::replace, ec);
+        written.push_back(rel.generic_string());
+    }
+    return written;
+}
+
 namespace {
 std::vector<std::vector<std::string>> table_(const fs::path& file) {
     std::vector<std::vector<std::string>> rows;

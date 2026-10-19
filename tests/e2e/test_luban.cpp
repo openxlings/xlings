@@ -593,6 +593,37 @@ XTEST(Luban, ARootsLoginShellIsTheBestItHasOnceMade,
     EXPECT_EQ(shell("plain", "root"), "/bin/sh");
 }
 
+// A system's user and sudo (design 2026-10-20 §4.5): given no password, the
+// default one, said, and said again by status until changed; --no-password is
+// a choice -- no password, and a sudo that asks nothing. sudo's rules are the
+// system's: the wheel group, 15 minutes, xlings on its path, the proxy kept.
+XTEST(Luban, AUserGivenNoPasswordHasTheDefaultOneAndNoPasswordIsAChoice,
+      .area = "luban", .cost = tk::Cost::Medium, .covers = {"LUBAN-SUDO"}, .requires_ = {"linux", "xlings-bin"}) {
+    if constexpr (!tk::is_linux) GTEST_SKIP() << "a Luban root is a Linux root";
+    const auto bin = luban_binary();
+    if (!bin) GTEST_SKIP() << "no luban beside the xlings under test";
+    auto home = luban_home("luban-sudo", *bin);
+    const auto etc = [&](std::string_view name) { return home.dir() / "subos" / name / "rootfs/etc"; };
+    auto made = luban(home, {"new", "box", "--xpkg", "fixture:shell-os@1.0.0", "--user", "alice", "-y"});
+    ASSERT_EQ(made.exit_code, 0) << made.transcript();
+    EXPECT_NE(made.transcript().find("password lubanoser (the default) -- passwd changes it"), std::string::npos) << made.transcript();
+    const auto rules = tk::read_file(etc("box") / "sudoers.d/luban");
+    for (const auto* line : {"%wheel ALL=(ALL:ALL) ALL", "timestamp_timeout=15", "/xlings/bin", "HTTPS_PROXY"})
+        EXPECT_NE(rules.find(line), std::string::npos) << line << "\n" << rules;
+    EXPECT_NE(tk::read_file(etc("box") / "sudoers").find("@includedir /etc/sudoers.d"), std::string::npos);
+    EXPECT_FALSE(fs::exists(etc("box") / "sudoers.d/luban-alice")) << "a password: sudo asks for it";
+    auto status = luban(home, {"status", "box"});
+    EXPECT_NE(status.out.find("alice's password is still the default"), std::string::npos) << status.transcript();
+    EXPECT_NE(status.out.find("luban run box --user alice -- passwd"), std::string::npos) << status.transcript();
+    // No password, chosen: none, and sudo asks nothing.
+    auto open = luban(home, {"new", "open", "--xpkg", "fixture:shell-os@1.0.0", "--user", "bob", "--no-password", "-y"});
+    ASSERT_EQ(open.exit_code, 0) << open.transcript();
+    EXPECT_NE(open.transcript().find("without a password; its sudo asks nothing"), std::string::npos) << open.transcript();
+    EXPECT_NE(tk::read_file(etc("open") / "sudoers.d/luban-bob").find("bob ALL=(ALL:ALL) NOPASSWD: ALL"), std::string::npos);
+    EXPECT_NE(tk::read_file(etc("open") / "shadow").find("bob::"), std::string::npos) << tk::read_file(etc("open") / "shadow");
+    EXPECT_EQ(luban(home, {"status", "open"}).out.find("still the default"), std::string::npos);
+}
+
 // A template named without a version is the index's; when the index has no
 // such package and one is installed, that one is used and said -- never
 // silently (design 2026-10-19 §9.2).

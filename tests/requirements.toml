@@ -87,6 +87,10 @@ status = "required"
 text = "every user of a Luban system has tab completion for xlings and luban in bash and fish (profile.d/xlings-complete.sh, fish/conf.d/xlings-complete.fish), each program answering `<program> __complete <words>` from its own command tree"
 status = "required"
 
+[LUBAN-SUDO]
+text = "a Luban system's user given no password has the default one (lubanoser), said when it is made and by luban status until changed; --no-password is a choice: no password and a sudo that asks nothing; sudo's rules (sudoers, sudoers.d/luban) are the wheel group with its password, asked again after 15 minutes, a secure_path with xlings and the proxy variables kept; a machine's sudo program and rules are made root's at boot"
+status = "required"
+
 [LUBAN-USER-VIEW]
 text = "inside a Luban system a regular user's xlings is a view of the system's store: it reads the system's index and packages without copying them, never fetches an index or runs a recipe of its own, says what the system already provides instead of installing it, sees the system's versions in use and list, adds a version the store lacks once through the elevation door (sudo xlings __store-add), and with nobody to ask fails with E_NEEDS_ROOT and the exact sudo command"
 status = "required"

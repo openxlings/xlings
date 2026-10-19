@@ -383,6 +383,32 @@ Json hello_() { return Json{{"agent", 1}, {"provides", Json{{"agent-display", 1}
 // The name servers of the kernel's lease (/proc/net/pnp: "nameserver a.b.c.d"
 // lines), in /run/luban/resolv.conf, bound over /etc/resolv.conf. A link
 // there (a distribution's /run/systemd/... one) is left alone.
+void root_owned_sudo_() {
+    std::error_code ec;
+    if (!fs::exists("/usr/bin/sudo", ec)) return;
+    const fs::path dir = "/run/luban/root";
+    fs::create_directories(dir, ec);
+    const auto place = [&](const fs::path& from, const fs::path& copy, unsigned mode) {
+        std::error_code e;
+        fs::copy(fs::canonical(from, e), copy, fs::copy_options::overwrite_existing | fs::copy_options::recursive, e);
+        if (e) return console_(std::format("sudo: cannot copy {}: {}", from.string(), e.message()));
+        if (fs::is_directory(copy, e)) {
+            for (const auto& f : fs::recursive_directory_iterator(copy, e)) (void)platform::own_by_root(f.path(), 0440);
+            (void)platform::own_by_root(copy, 0750);
+        } else if (!platform::own_by_root(copy, mode)) {
+            return console_(std::format("sudo: cannot make {} root's", from.string()));
+        }
+        if (!platform::bind_mount(copy, from)) console_(std::format("sudo: cannot place {}", from.string()));
+    };
+    // Only sudo itself: a program reached through a shim is not bound over
+    // (that would replace the shim's program).
+    if (std::error_code e; fs::canonical("/usr/bin/sudo", e).filename() != "sudo")
+        return console_("sudo: /usr/bin/sudo is not the sudo program; left as it is");
+    place("/usr/bin/sudo", dir / "sudo", 04755);
+    if (fs::exists("/etc/sudoers", ec)) place("/etc/sudoers", dir / "sudoers", 0440);
+    if (fs::is_directory("/etc/sudoers.d", ec)) place("/etc/sudoers.d", dir / "sudoers.d", 0750);
+}
+
 void resolv_from_lease_() {
     std::ifstream pnp("/proc/net/pnp");
     std::string text, line;
@@ -474,6 +500,11 @@ int guest_init(int, char*[]) {
     // The agent's sessions are ptys before the environment's own start mounts
     // anything (its rcS mounting devpts again is harmless: already mounted).
     if (!platform::mount_kernel_fs("devpts", "/dev/pts")) console_("cannot mount devpts: sessions will fail");
+
+    // sudo is root's (design 2026-10-20 §4.5): its program root-owned and
+    // setuid, its rules root-owned -- a share shows the host's owner, which
+    // sudo refuses. This boot's copies, on its /run, bound over them.
+    root_owned_sudo_();
 
     // Its name servers: the kernel's lease (ip=dhcp, /proc/net/pnp), in this
     // boot's /run and bound over /etc/resolv.conf -- the host's NAT answers

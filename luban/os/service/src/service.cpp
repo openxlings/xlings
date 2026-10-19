@@ -15,6 +15,7 @@ import xlings.subos.edition;
 import xlings.subos.policy;
 import xlings.subos.policy_store;
 import xlings.subos.root_etc;
+import xlings.libs.sha512;
 import xlings.subos.rootfs;
 import xlings.subos.session;
 import luban.service.archive;
@@ -605,8 +606,12 @@ Outcome create(const Context& c, const NewOptions& o, const NewPreview* given) {
             return {.code = 1};
         }
         const auto rootUser = xlings::subos::root_etc::find_user(*root / "etc", "root");
+        // No password given and none chosen: the default one, said.
+        const bool defaulted = o.password_hash.empty() && !o.no_password;
+        const auto hash = defaulted ? xlings::sha512::crypt(std::string(kDefaultPassword), xlings::sha512::random_salt())
+                                    : o.password_hash;
         auto made = xlings::subos::root_etc::add_user(*root, user, rootUser ? rootUser->shell : std::string("/bin/sh"),
-                                                      o.password_hash, xlings::platform::user_ids().uid);
+                                                      hash, xlings::platform::user_ids().uid);
         if (!made) {
             if (c.sink) c.sink(error(made.error()));
             return {.code = 1};
@@ -615,8 +620,18 @@ Outcome create(const Context& c, const NewOptions& o, const NewPreview* given) {
             if (c.sink) c.sink(error(login.error()));
             return {.code = 1};
         }
-        if (c.sink) c.sink(notice(std::format("{} logs in as {}{}", o.name, user,
-                                              o.password_hash.empty() ? " (no password)" : "")));
+        // Its sudo: with the user's password, or asking nothing for one who
+        // chose no password (design 2026-10-20 §4.5).
+        if (auto sudoers = xlings::subos::root_etc::ensure_sudoers(*root / "etc", o.no_password ? std::string_view(user) : std::string_view{});
+            !sudoers) {
+            if (c.sink) c.sink(error(sudoers.error()));
+            return {.code = 1};
+        }
+        if (c.sink)
+            c.sink(notice(defaulted ? std::format("{} logs in as {}, password {} (the default) -- passwd changes it", o.name, user,
+                                                  kDefaultPassword)
+                          : o.no_password ? std::format("{} logs in as {} without a password; its sudo asks nothing", o.name, user)
+                                          : std::format("{} logs in as {}", o.name, user)));
     }
     // The desktop asked for (--desktop), when it does not have it: the
     // official one of that name, installed -- the one thing luban new
@@ -1423,6 +1438,21 @@ int run_command(const Context& c, std::string_view name, std::span<const std::st
     args.push_back("--");
     args.insert(args.end(), argv.begin(), argv.end());
     return c.port.terminal(args);
+}
+
+bool default_password_in_use(const fs::path& root, std::string_view user) {
+    std::ifstream in(root / "etc" / "shadow");
+    for (std::string line; std::getline(in, line);) {
+        if (!line.starts_with(std::string(user) + ":")) continue;
+        const auto from = user.size() + 1, to = line.find(':', from);
+        const auto hash = line.substr(from, to == std::string::npos ? std::string::npos : to - from);
+        // $6$<salt>$<digest>: the default password under the same salt.
+        if (!hash.starts_with("$6$")) return false;
+        const auto salt_end = hash.find('$', 3);
+        if (salt_end == std::string::npos) return false;
+        return xlings::sha512::crypt(std::string(kDefaultPassword), hash.substr(3, salt_end - 3)) == hash;
+    }
+    return false;
 }
 
 }  // namespace luban::service

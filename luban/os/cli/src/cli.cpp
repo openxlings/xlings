@@ -791,7 +791,8 @@ int cmd_new(const svc::Context& c, const Parsed& p, const Globals& g, Renderer& 
             std::getline(in, password);
         } else if (!p.flag("--no-password") && !g.yes && can_ask_(g)) {
             for (;;) {
-                const auto first = read_hidden_("  password (empty: none, log in without one): ");
+                // Empty: the default one, said once it is made (design 2026-10-20 §4.5).
+                const auto first = read_hidden_(std::format("  password (empty: {}, the default): ", svc::kDefaultPassword));
                 if (first.empty()) break;
                 if (read_hidden_("  again: ") == first) { password = first; break; }
                 std::println("  the two did not match; again");
@@ -799,6 +800,7 @@ int cmd_new(const svc::Context& c, const Parsed& p, const Globals& g, Renderer& 
         }
         if (!password.empty()) o.password_hash = xlings::sha512::crypt(password, xlings::sha512::random_salt());
         std::ranges::fill(password, '\0');
+        o.no_password = p.flag("--no-password");
     }
     if (auto x = p.option("--carrier")) o.carrier = *x;
     else o.carrier = default_carrier();
@@ -947,6 +949,13 @@ int cmd_status(const svc::Context& c, const Parsed& p, const Globals& g, Rendere
     j["unmet"] = Json::array();
     for (const auto& v : unmet) j["unmet"].push_back(v.why());
     auto notes = svc::notes(c, *e);
+    // Its user still on the default password, said until changed (design 2026-10-20 §4.5).
+    if (const auto root = svc::root_of(c.home, e->name)) {
+        const auto user = xlings::subos::root_etc::login_user(*root / "etc");
+        if (user != "root" && svc::default_password_in_use(*root, user))
+            notes.push_back(svc::Note{std::format("{}'s password is still the default ({})", user, svc::kDefaultPassword),
+                                      {std::format("luban run {} --user {} -- passwd", e->name, user)}});
+    }
     // Its network in one line, the same whatever it runs as (design 2026-10-19
     // §27.2): like the host -- the host's proxy, as a machine reaches it --
     // only its proxy, or none.
@@ -1406,7 +1415,7 @@ const spec::CommandSpec& tree() {
                          {"--dry-run", "What it would be made of, and nothing made", false, Level::More},
                          {"--user <NAME>", "Its login user (a desktop needs one; default lubanoser)"},
                          {"--password-file <FILE>", "Its user's password, the file's first line", false, Level::More},
-                         {"--no-password", "Its user logs in without a password", false, Level::More},
+                         {"--no-password", "Its user logs in without a password, and its sudo asks nothing (otherwise: the default password lubanoser)", false, Level::More},
                          {"--proxy <URL>", "Its network goes only through this SOCKS5h proxy", false, Level::More},
                          {"--carrier <CARRIER>", "Where it runs: local, wsl2, vz", false, Level::Expert}}, .effect = "reversible"},
             {.name = "enter", .description = "Go into an environment, or boot an image",

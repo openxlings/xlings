@@ -226,7 +226,7 @@ constexpr xlings::i18n::Entry kWords[] = {
     { "luban.os.quick.off", "{} is off" },
     { "luban.os.quick.own", "its own" },
     { "luban.os.quick.packages", "PACKAGES" },
-    { "luban.os.quick.password", "password" },
+    { "luban.os.quick.password", "password (empty: lubanoser)" },
     { "luban.os.quick.proxy_socks5h_optional", "PROXY (SOCKS5h, optional)" },
     { "luban.os.quick.recent", "RECENT" },
     { "luban.os.quick.s_then_any_key_stops", "{} s, then {} · any key stops it" },

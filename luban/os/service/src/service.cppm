@@ -343,6 +343,10 @@ struct NewOptions {
     // password's crypt hash ("" = logs in without one). Empty: root.
     std::string user;
     std::string password_hash;
+    // No password, chosen (--no-password): it logs in without one and its
+    // sudo asks nothing. Otherwise a user given none has the default one,
+    // kDefaultPassword, said (design 2026-10-20 §4.5).
+    bool no_password { false };
     // A third party's part was shown and agreed to (the caller asked).
     bool agreed { false };
 };
@@ -368,6 +372,12 @@ std::expected<NewPreview, int> preview_new(const Context& c, const NewOptions& o
 // A system that cannot be used as root: a desktop (its browsers refuse it).
 bool needs_user(const NewPreview& p);
 inline constexpr std::string_view kDefaultUser = "lubanoser";
+// A user's password when the one who made the system gave none (design
+// 2026-10-20 §4.5): local to the system (its ssh takes no passwords), and
+// `luban status` says so until it is changed.
+inline constexpr std::string_view kDefaultPassword = "lubanoser";
+// Whether `user` of the root at `root` still has the default password.
+bool default_password_in_use(const fs::path& root, std::string_view user);
 // Makes it. A third party's part not confirmed before is made only with
 // Context::yes (the caller asked, or was told to); otherwise code 2, with how.
 Outcome create(const Context& c, const NewOptions& o, const NewPreview* preview = nullptr);
