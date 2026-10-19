@@ -591,6 +591,9 @@ desktop-3 has no cursor theme
 - **三击测试（F12）**：三击改在同一行的另一格（`cell 0 2 triple`）；另加一个用例写明"同一格 400 ms 内连点 5 下是单词"。
 - **工匠（F9）**：重画两帧并加一帧水平的锤子：锤头完整在 16×16 内、四边有描边，三帧里锤柄都从手里连续伸出、绕手转动；`rows_` 按 0、2、1、2 循环；
   托盘图标同步；`LUBAN-OS-VISUAL` 的基线更新。
+- **应用图标（评审追加）**：`apps/luban-os/share/luban-os.svg` 换成像素风的工匠——与应用里拿锤子的像素人同一个形象，作为 Luban OS 过渡期的 logo。
+  由同一份文本网格（`art.cpp` 的工匠，举锤那一帧）生成（`tools/luban_os_icon.py` 写出每格一个方块、`shape-rendering="crispEdges"` 的 SVG），
+  一份源；应用里改了工匠，图标随之重新生成，一条测试比对两者一致。桌面条目、托盘与发布包里用的都是它。
 
 ## 15. 指针：跨平台统一
 
@@ -1048,7 +1051,7 @@ CI：延时与指针、键盘、排布的 e2e 在 `linux-luban-os-first-use`；�
 | X22 | `feat(luban-os)`：托盘进程与协议、生命周期、升级、过渡，不退化清单的测试 | X11、X20、X21 |
 | X23 | `feat(luban-os)`：宿主画指针（Luban 主题、`'c'`/`'C'`、旧 xdesk 的默认箭头、指针锁定）、键盘锁定（Ctrl+Alt+K）、输入法规则、窗口标题 | X15、X20、X22、R1 |
 | X24 | `feat(luban-os)`：新建页（四组、来源、T 级、版本、可滚动面板、六格阶段、卡片读 `extensions.luban`） | X12、X14 |
-| X25 | `feat(luban-os)`：工匠动画与视觉基线 | X14 |
+| X25 | `feat(luban-os)`：工匠动画与视觉基线；应用图标 `luban-os.svg` 换成像素工匠（由同一份网格生成，过渡期 logo） | X14 |
 | X26 | `test`：交互延时与反馈的用例与 CI；断网 lane；`tests/lanes.toml` | X4、X22、X23、X24、X17、X18 |
 | X27 | `docs`：README 与 README.zh 的 Quick Start 分 xlings 与 Luban OS；`docs/luban/01-quick-start.md` 与中文版；`docs/91-architecture.md`；`08-desktop.md`；各包 README；`upgrade-and-compatibility.md`；`docs/generated/` | 以上全部 |
 | X28 | `test(fresh)`：`tests/fresh-install/` 按新输出更新（发布后由 P1 验证） | X12、X24 |
