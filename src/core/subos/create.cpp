@@ -680,7 +680,16 @@ fs::path resolve_base_package_(const std::string& fromSpec, EventStream& stream)
     // an edition installed once would otherwise be the newest forever.
     if (ref.ver.empty()) {
         std::string passedOver;
-        if (auto v = xim::index_version_of(fromSpec, xim::CatalogAccess::LocalOnly, &passedOver)) ref.ver = *v;
+        auto v = xim::index_version_of(fromSpec, xim::CatalogAccess::LocalOnly, &passedOver);
+        // No index here yet -- a fresh home, a carrier's own -- is fetched, as
+        // an install would; one that cannot be had says why (with its hint).
+        bool read = xim::get_catalog(xim::CatalogAccess::LocalOnly).is_loaded();
+        if (!v && !read) {
+            if (!xim::ensure_catalog(stream, xim::CatalogNeed::Synced)) return {};
+            read = true;
+            v = xim::index_version_of(fromSpec, xim::CatalogAccess::InstallReady, &passedOver);
+        }
+        if (v) ref.ver = *v;
         // An older version because the newest needs a newer xlings: said as
         // data too, for whoever asked for it (luban new says it; E8).
         if (!passedOver.empty() && said_once_("passed_over:" + fromSpec))
@@ -688,7 +697,7 @@ fs::path resolve_base_package_(const std::string& fromSpec, EventStream& stream)
                                                                {"message", passedOver}}.dump()});
         // The index could not be read: never whichever version is installed,
         // silently (design 2026-10-19 §9.2) -- "could not read" is not "none".
-        if (ref.ver.empty() && !xim::get_catalog(xim::CatalogAccess::LocalOnly).is_loaded()) {
+        if (ref.ver.empty() && !read) {
             stream.emit(ErrorEvent{.code = ErrorCode::NotFound,
                 .message = std::format("the package index could not be read, so which version of {} to use is not known", fromSpec),
                 .recoverable = true, .hint = "xlings update, or name a version: " + fromSpec + "@<version>"});

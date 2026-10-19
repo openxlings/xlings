@@ -566,6 +566,24 @@ XTEST(Luban, ATemplateOnlyInstalledIsUsedAndSaid,
     EXPECT_EQ(said, 1) << "said once, though the base is resolved twice\n" << made.out;
 }
 
+// A home with no index fetched yet (a fresh one, a carrier's own) gets it
+// before deciding which version to make: not "could not be read", not
+// whichever is installed (design 2026-10-19 §9.2; the luban-wsl2 lane).
+XTEST(Luban, AHomeWithoutItsIndexYetFetchesItBeforeChoosingAVersion,
+      .area = "luban", .cost = tk::Cost::Medium, .covers = {"SUBOS-FROM-NO-SILENT-INSTALLED"}, .requires_ = {"linux", "xlings-bin"}) {
+    if constexpr (!tk::is_linux) GTEST_SKIP() << "a Luban root is a Linux root";
+    const auto bin = luban_binary();
+    if (!bin) GTEST_SKIP() << "no luban beside the xlings under test";
+    auto home = luban_home("luban-index-fetched", *bin);
+    std::error_code ec;
+    for (const auto* gone : {"data/xim-pkgindex", "data/xim-index-repos", "data/fixture"}) fs::remove_all(home.dir() / gone, ec);
+    const auto made = home.xlings({"interface", "subos_command", "--args",
+                                   R"({"argv":["new","box","--rootfs","--from","fixture:my-os"],"yes":true})"});
+    ASSERT_EQ(made.exit_code, 0) << made.transcript();
+    EXPECT_EQ(made.out.find("could not be read"), std::string::npos) << made.out;
+    EXPECT_TRUE(fs::is_directory(home.dir() / "subos/box"));
+}
+
 // A window for a system is opened only through an app that says what it can
 // do (design 2026-10-19 §10.3): one too old to be asked is not taken as
 // compatible -- refused with the update, before anything starts.
