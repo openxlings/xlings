@@ -197,13 +197,13 @@ TEST(InterfaceProtocol, VersionFlagPrintsProtocolVersion) {
     auto j = nlohmann::json::parse(out, nullptr, false);
     ASSERT_FALSE(j.is_discarded()) << "non-JSON output: " << out;
     ASSERT_TRUE(j.contains("protocol_version"));
-    EXPECT_EQ(j["protocol_version"].get<std::string>(), "1.12");
+    EXPECT_EQ(j["protocol_version"].get<std::string>(), "1.13");
     // 1.11: a client that relies on the currency fields or the binding-state
     // summary checks for them here before it uses this xlings.
     ASSERT_TRUE(j.contains("features"));
     const auto& features = j["features"];
     // 1.12: a reader of index namespaces and of a system's plan, the same.
-    // 2026.10.19.1: a recipe's extensions and status handed on; a domain's
+    // 1.13: a recipe's extensions and status handed on; a domain's
     // routed command answering in events; a template used only because it is
     // installed, said.
     for (const char* feature : {"payload_currency", "binding_state", "reserved_namespaces", "subos_plan",
