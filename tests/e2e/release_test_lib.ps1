@@ -107,14 +107,14 @@ function Get-DefaultD2xVersion {
     return '0.1.1'
 }
 
-function Write-FixtureReleaseConfig($pkgDir) {
+function Write-FixtureReleaseConfig($pkgDir, $indexUrl = $FIXTURE_INDEX_DIR) {
     $config = @{
         version     = '0.4.0'
         mirror      = 'GLOBAL'
         activeSubos = 'default'
         subos       = @{ default = @{ dir = '' } }
         index_repos = @(
-            @{ name = 'xim'; url = $FIXTURE_INDEX_DIR }
+            @{ name = 'xim'; url = $indexUrl }
         )
     }
     $config | ConvertTo-Json -Depth 10 | Set-Content (Join-Path $pkgDir '.xlings.json') -Encoding UTF8

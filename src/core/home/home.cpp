@@ -289,6 +289,10 @@ bool is_read_only_command(std::span<const std::string_view> argv) {
         "-h", "--help", "help", "-v", "--version", "version",
         "list", "ls", "info", "i", "search", "agent"};
     if (std::ranges::find(reads, first) != reads.end()) return true;
+    if (first == "interface" && argv.size() > 1)
+        return argv[1] == "--version" || argv[1] == "--list"
+            || argv[1] == "network_endpoints" || argv[1] == "probe_url"
+            || argv[1] == "system_status" || argv[1] == "payload_status";
     if (first == "subos" || first == "self") {
         if (argv.size() < 2) return first == "subos";
         const auto sub = argv[1];

@@ -3,6 +3,7 @@ module xlings.capabilities;
 import std;
 import xlings.platform;
 import xlings.platform.stream;
+import xlings.platform.loopback_http;
 import xlings.runtime.event;
 import xlings.runtime.event_stream;
 import xlings.runtime.capability;
@@ -10,6 +11,8 @@ import xlings.libs.json;
 import xlings.core.xim.commands;
 import xlings.core.xim.index_cmd;
 import xlings.core.xim.repo;
+import xlings.core.xim.indexfetch;
+import xlings.libs.tinyhttps;
 import xlings.core.xvm.commands;
 import xlings.core.xvm.inspect;
 import xlings.core.profile;
@@ -28,6 +31,33 @@ import xlings.core.subos.ports;
 
 namespace xlings::capabilities {
 
+namespace {
+tinyhttps::ProbeResult probe_loopback(std::string_view url, int socketTimeoutMs) {
+    namespace http = platform::loopback_http;
+    tinyhttps::ProbeResult result;
+    const auto start = std::chrono::steady_clock::now();
+    const auto deadline = start + std::chrono::milliseconds(std::clamp(socketTimeoutMs, 1, 3000));
+    std::error_code ec;
+    auto file = std::filesystem::temp_directory_path(ec);
+    if (ec) { result.status = "local"; return result; }
+    file /= std::format("xlings-network-{}-{}", start.time_since_epoch().count(), std::random_device{}());
+    bool limited = false;
+    const auto wire = http::download(url, file,
+        std::chrono::seconds(std::max(1, (socketTimeoutMs + 999) / 1000)),
+        [&](double total, double bytes) { limited = bytes >= 65536; },
+        [&] { return limited || std::chrono::steady_clock::now() >= deadline; });
+    std::filesystem::remove(file, ec);
+    result.httpStatus = wire.httpStatus;
+    result.elapsedSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+    result.reachable = wire.success || (limited && wire.httpStatus == 200);
+    result.status = result.reachable ? "reachable"
+                  : std::chrono::steady_clock::now() >= deadline ? "timeout"
+                  : wire.failure == http::Failure::Source ? "http"
+                  : wire.failure == http::Failure::Local ? "local" : "connect";
+    return result;
+}
+}
+
 Result exit_result(int code) {
     return nlohmann::json({{"exitCode", code}}).dump();
 }
@@ -45,6 +75,8 @@ capability::Registry build_registry() {
     reg.register_capability(std::make_unique<ListVersions>());
     reg.register_capability(std::make_unique<PayloadStatus>());
     reg.register_capability(std::make_unique<SyncIndex>());
+    reg.register_capability(std::make_unique<NetworkEndpoints>());
+    reg.register_capability(std::make_unique<ProbeUrl>());
     reg.register_capability(std::make_unique<UseVersion>());
     reg.register_capability(std::make_unique<SystemStatus>());
     reg.register_capability(std::make_unique<ListIndexVersions>());
@@ -276,6 +308,58 @@ auto SyncIndex::spec() const -> CapabilitySpec {
 auto SyncIndex::execute(Params params, EventStream& stream) -> Result {
     auto json = nlohmann::json::parse(params, nullptr, false);
     return exit_result(xim::cmd_sync_index(json.value("name", ""), json.value("dest", ""), stream));
+}
+
+auto NetworkEndpoints::spec() const -> CapabilitySpec {
+    return {.name = "network_endpoints",
+            .description = "Configured index discovery endpoints, without any network requests or installation",
+            .inputSchema = R"({"type":"object","properties":{}})",
+            .outputSchema = R"({"type":"object"})", .destructive = false};
+}
+
+auto NetworkEndpoints::execute(Params, EventStream& stream) -> Result {
+    auto rows = nlohmann::json::array();
+    std::set<std::string> seen;
+    for (const auto& repo : Config::index_repos()) {
+        if (Config::is_local_repo_source(repo, false)) continue;
+        if (repo.source != "git" && xim::artifact_is_declared_for(repo, false)) {
+            auto endpoints = xim::probe_endpoints(repo.artifactBases.empty() ? nullptr : &repo);
+            for (const auto& endpoint : endpoints)
+                if (seen.insert(endpoint.url).second)
+                    rows.push_back({{"resource", repo.name}, {"region", endpoint.region}, {"url", endpoint.url}});
+        } else if (repo.url.starts_with("https://")) {
+            auto url = repo.url;
+            while (url.ends_with('/')) url.pop_back();
+            url += "/info/refs?service=git-upload-pack";
+            if (seen.insert(url).second)
+                rows.push_back({{"resource", repo.name}, {"region", "configured"}, {"url", url}});
+        }
+    }
+    stream.emit(DataEvent{"network_endpoints", nlohmann::json{{"endpoints", std::move(rows)}}.dump()});
+    return exit_result(0);
+}
+
+auto ProbeUrl::spec() const -> CapabilitySpec {
+    return {.name = "probe_url",
+            .description = "Small GET through the download transport; caller owns the total process deadline",
+            .inputSchema = R"({"type":"object","properties":{"url":{"type":"string"},"socket_timeout_ms":{"type":"integer"}},"required":["url"]})",
+            .outputSchema = R"({"type":"object"})", .destructive = false};
+}
+
+auto ProbeUrl::execute(Params params, EventStream& stream) -> Result {
+    const auto args = nlohmann::json::parse(params, nullptr, false);
+    if (!args.is_object() || !args.contains("url") || !args["url"].is_string()) return exit_result(2);
+    int socketTimeout = 2000;
+    if (args.contains("socket_timeout_ms")) {
+        const auto& timeout = args["socket_timeout_ms"];
+        if (!timeout.is_number_integer() || timeout < 1 || timeout > 3000) return exit_result(2);
+        socketTimeout = timeout.get<int>();
+    }
+    const auto result = tinyhttps::probe_url(args.value("url", ""), socketTimeout, probe_loopback);
+    stream.emit(DataEvent{"network_probe", nlohmann::json{
+        {"host", result.host}, {"status", result.status}, {"http_status", result.httpStatus},
+        {"elapsed_seconds", result.elapsedSeconds}, {"proxy", result.proxy}, {"reachable", result.reachable}}.dump()});
+    return exit_result(0);
 }
 
 auto ListVersions::spec() const -> CapabilitySpec {

@@ -19,6 +19,18 @@
 
 # ── testkit (T1) ────────────────────────────────────────────────────
 
+[NET-SOCKET-CAPS]
+text = "consumer socket caps shorten download connection and read waits without expanding smaller caller budgets"
+status = "required"
+
+[NET-ENDPOINTS]
+text = "network endpoint discovery preserves configured resource mirrors without fetching an index or installing packages"
+status = "required"
+
+[NET-PROBE]
+text = "a resource GET probe uses download proxy and TLS settings and reports status without credential-bearing URLs"
+status = "required"
+
 [TK-RUN]
 text = "the runner reports exit code, stdout and stderr"
 status = "required"

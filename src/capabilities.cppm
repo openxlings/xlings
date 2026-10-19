@@ -75,6 +75,17 @@ public:
     auto execute(Params params, EventStream& stream) -> Result override;
 };
 
+class NetworkEndpoints : public Capability {
+public:
+    auto spec() const -> CapabilitySpec override;
+    auto execute(Params params, EventStream& stream) -> Result override;
+};
+class ProbeUrl : public Capability {
+public:
+    auto spec() const -> CapabilitySpec override;
+    auto execute(Params params, EventStream& stream) -> Result override;
+};
+
 class ListVersions : public Capability {
 public:
     auto spec() const -> CapabilitySpec override;
