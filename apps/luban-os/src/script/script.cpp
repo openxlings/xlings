@@ -329,7 +329,8 @@ void script_step_(App& a, Script& sc) {
         });
         next();
     } else if (cmd == "refuse-grabs") {
-        // The host refuses the next n keyboard grabs (X11 while it holds the keyboard).
+        // The host refuses the next n keyboard grabs (X11 while it holds the
+        // keyboard); 0: no longer.
         int times = 0;
         words >> times;
         a.window->refuse_grabs(times);

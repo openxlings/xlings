@@ -512,11 +512,13 @@ int run(int argc, char* argv[]) {
             const bool grab = in_desktop && a.keyboard_wanted && !a.focus_out;
             const auto held = a.window->grab_keyboard(grab);
             if (held != a.keyboard_shown) {
-                // Said as it changes: the title while held, a moment at the top
-                // when Ctrl+Alt+K or the host changed it -- not a focus change.
+                // Said as it changes: the title while held; a moment at the top
+                // when the person asked (Ctrl+Alt+K, the menu) or the host let
+                // it go -- not on entering, nor on a focus change (a still
+                // desktop draws nothing).
                 using G = host::Window::Grab;
                 const bool refused = held == G::HeldByAnother || held == G::NotShown || held == G::Refused;
-                if (held == G::Held || (held == G::Released && a.keyboard_shown == G::Held && !a.focus_out)
+                if ((held == G::Held && a.keyboard_told) || (held == G::Released && a.keyboard_shown == G::Held && !a.focus_out)
                     || (refused && a.keyboard_told)) {
                     const std::string why(tr(held == G::NotShown        ? "luban.os.app.keyboard_not_shown"
                                              : held == G::HeldByAnother ? "luban.os.app.keyboard_host_holds"
@@ -525,7 +527,7 @@ int run(int argc, char* argv[]) {
                             : held == G::Released ? std::string(tr("luban.os.app.keyboard_let_go"))
                                                   : std::vformat(tr("luban.os.app.keyboard_refused"), std::make_format_args(why)));
                 }
-                if (held == G::Held || refused) a.keyboard_told = false;
+                if (!refused) a.keyboard_told = false;   // a refusal is tried again: its success is said too
                 a.keyboard_shown = held;
                 if (in_desktop) a.window->set_title(a.title_for(a.current));
             }

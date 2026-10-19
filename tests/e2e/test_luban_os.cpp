@@ -248,10 +248,11 @@ frames 3
 state {}
 key Ctrl+Alt+K
 frames 3
-refuse-grabs 1
+refuse-grabs 1000
 key Ctrl+Alt+K
 frames 3
 state {}
+refuse-grabs 0
 sleep 700
 frames 3
 state {}
