@@ -130,6 +130,7 @@ int run(const mcpplibs::cmdline::ParsedArgs& args,
                EventStream& stream, int tui_listener,
                capability::Registry& registry) {
     stream.set_enabled(tui_listener, false);
+    stream.set_structured(true);
     platform::set_tui_mode(true);
 
     if (args.is_flag_set("version")) {

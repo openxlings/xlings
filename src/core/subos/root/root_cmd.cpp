@@ -308,16 +308,17 @@ std::optional<int> run_domain_operation_(const std::string& name,
             .recoverable = false, .hint = "outside the sandbox: " + decision.owner_command });
         return 13;
     }
-    // Nobody at a terminal (luban, the window, an agent through the
-    // interface): the command's data, progress and errors come back as
-    // events, through the one relayed path. Printed on an inherited stdout,
-    // they reached a caller that reads only NDJSON as nothing at all --
-    // `luban history` of a domain's system was empty, its errors unseen
-    // (design 2026-10-19 F13). The commands that hand the terminal to a
-    // program (exec, use, start, a followed log) keep it.
+    // Asked through the interface (luban, the window, an agent): the
+    // command's data, progress and errors come back as events, through the
+    // one relayed path. Printed on an inherited stdout, they reached a caller
+    // that reads only NDJSON as nothing at all -- `luban history` of a
+    // domain's system was empty, its errors unseen (design 2026-10-19 F13).
+    // A person or a pipe reading what is printed keeps the inherited stdout
+    // (`subos config <n> --json` read by luban's Port::json), and so do the
+    // commands that hand the terminal to a program (exec, use, start, log).
     const bool handsOverStdio = arguments.size() >= 2
         && (arguments[1] == "exec" || arguments[1] == "use" || arguments[1] == "start" || arguments[1] == "log");
-    if (!stream.interactive() && !arguments.empty() && arguments[0] == "subos" && !handsOverStdio) {
+    if (stream.structured() && !arguments.empty() && arguments[0] == "subos" && !handsOverStdio) {
         auto relayed = run_domain_relayed_((**scope).domain,
                                            std::vector<std::string>(arguments.begin() + 1, arguments.end()),
                                            std::nullopt, false, stream, true);

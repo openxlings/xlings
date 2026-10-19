@@ -431,6 +431,11 @@ XTEST(DomainProducer, AHostCountsItsSystemsAndASystemDoesNotListItsSiblings,
             listed_generations = j["payload"].is_array() && !j["payload"].empty();
     }
     EXPECT_TRUE(listed_generations) << history.transcript();
+    // Read from a pipe, not through the interface (luban's Port::json): what
+    // the command prints still comes back as it printed it.
+    const auto piped = home.xlings({"subos", "config", "sys-a", "--json"});
+    ASSERT_EQ(piped.exit_code, 0) << piped.transcript();
+    EXPECT_TRUE(Json::parse(piped.out, nullptr, false).is_object()) << "a pipe reads the JSON it asked for: " << piped.out;
     const auto missing = home.xlings({"interface", "subos_command", "--args",
                                       R"({"argv":["rollback","sys-a","--to","99"]})"});
     EXPECT_NE(missing.out.find(R"("kind":"error")"), std::string::npos)

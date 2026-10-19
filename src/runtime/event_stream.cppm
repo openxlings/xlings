@@ -31,6 +31,7 @@ private:
 
     bool interactive_ { true };   // selection tier
     bool canConfirm_  { true };   // confirmation tier
+    bool structured_  { false };  // a program reads the events (xlings interface)
 
 public:
     EventStream() = default;
@@ -74,6 +75,12 @@ public:
 
     [[nodiscard]] auto interactive() const -> bool;     // can select (blocking tier)
     [[nodiscard]] auto can_confirm() const -> bool;
+
+    // Whether a program reads this stream's events as data (`xlings
+    // interface`), rather than a person or a pipe reading what is printed:
+    // what a command routed elsewhere answers must then come back as events.
+    void set_structured(bool on) { structured_ = on; }
+    [[nodiscard]] bool structured() const { return structured_; }
 
     // Prompt with optional cancellation and timeout support.
     //
