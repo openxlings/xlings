@@ -608,11 +608,14 @@ see got ESC[<2;6;3M
     EXPECT_EQ(taken.exit_code, 0) << taken.transcript();
 
     const auto words = home.root() / "words.json", line = home.root() / "line.json", menu = home.root() / "menu.json";
+    // Separate the double-click and triple-click gestures. Within 400 ms the
+    // app correctly counts them as five consecutive clicks, ending on a word.
     auto selected = run_script(home, std::format(R"(wait console
 see ready
 cell 0 9 double
 frames 2
 state {}
+sleep 500
 cell 0 9 triple
 frames 2
 state {}
