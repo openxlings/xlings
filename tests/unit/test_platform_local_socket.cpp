@@ -23,6 +23,15 @@ fs::path short_dir(std::string_view name) {
     return dir;
 }
 
+// Whether a socket file is there: by its directory's listing (Windows'
+// AF_UNIX socket is a reparse point that stat cannot open).
+bool present(const fs::path& path) {
+    std::error_code ec;
+    for (fs::directory_iterator it(path.parent_path(), ec), end; !ec && it != end; it.increment(ec))
+        if (it->path().filename() == path.filename()) return true;
+    return false;
+}
+
 std::string read_line(platform::LocalStream& s) {
     std::string got;
     std::array<char, 256> buf{};
@@ -42,7 +51,7 @@ XTEST(PlatformLocalSocket, TwoEndsTalkAndAClosedEndIsSeen, .area = "platform", .
     const auto path = dir / "t.sock";
     auto listener = platform::LocalListener::listen(path);
     ASSERT_TRUE(listener.has_value()) << listener.error();
-    EXPECT_TRUE(fs::exists(path));
+    EXPECT_TRUE(present(path));
     if constexpr (tk::is_posix) {
         const auto perms = fs::status(path).permissions();
         EXPECT_EQ(perms & (fs::perms::group_all | fs::perms::others_all), fs::perms::none) << "owner-only";
@@ -71,7 +80,7 @@ XTEST(PlatformLocalSocket, TwoEndsTalkAndAClosedEndIsSeen, .area = "platform", .
     EXPECT_EQ(**ended, 0u) << "the other end closed";
 
     listener->close();
-    EXPECT_FALSE(fs::exists(path)) << "the socket file goes with its listener";
+    EXPECT_FALSE(present(path)) << "the socket file goes with its listener";
     EXPECT_FALSE(platform::LocalStream::connect(path, 200ms).has_value());
     fs::remove_all(dir);
 }

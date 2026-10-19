@@ -369,9 +369,13 @@ void script_step_(App& a, Script& sc) {
         const float y = a.grid.y + (static_cast<float>(row) + 0.5f) * a.grid.cell_h;
         const int button = how == "middle" ? 2 : how == "right" ? 3 : 1;
         const int times = how == "double" ? 2 : how == "triple" ? 3 : 1;
-        sc.pending.push_back([x, y](App& app) { app.window->inject_pointer(x, y); });
+        // The move goes with the first press: clicks on one cell from two
+        // commands are as close as clicks from one (a frame apart each).
         for (int k = 0; k < times; ++k) {
-            sc.pending.push_back([x, y, button](App& app) { app.window->inject_button(x, y, button, true); });
+            sc.pending.push_back([x, y, button, k](App& app) {
+                if (k == 0) app.window->inject_pointer(x, y);
+                app.window->inject_button(x, y, button, true);
+            });
             sc.pending.push_back([x, y, button](App& app) { app.window->inject_button(x, y, button, false); });
         }
         next();
