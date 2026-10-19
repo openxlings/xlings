@@ -225,6 +225,7 @@ constexpr xlings::i18n::Entry kWords[] = {
     { "luban.os.quick.recent", "最近" },
     { "luban.os.quick.s_then_any_key_stops", "{} 秒后进入 {} · 按任意键取消" },
     { "luban.os.quick.showing_names_esc_shows_all", "名字含“{}”的系统 · Esc 显示全部" },
+    { "luban.os.quick.stage.start", "启动与初始化" },
     { "luban.os.quick.stage.check", "自检" },
     { "luban.os.quick.stage.configure", "配置" },
     { "luban.os.quick.stage.download", "下载" },

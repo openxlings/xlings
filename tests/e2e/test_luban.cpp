@@ -456,7 +456,7 @@ XTEST(Luban, AWorkspaceIsPrivateWhenItIsMadeNotAfter,
 // line for what was made, how to go in, and none of the steps' own lines --
 // those are -v's.
 XTEST(Luban, NewSaysWhatItMadeAndHowToGoInAndNotItsSteps,
-      .area = "luban", .cost = tk::Cost::Medium, .covers = {"LUBAN-OUTPUT"}, .requires_ = {"linux", "xlings-bin"}) {
+      .area = "luban", .cost = tk::Cost::Medium, .covers = {"LUBAN-OUTPUT", "LUBAN-PROGRESS"}, .requires_ = {"linux", "xlings-bin"}) {
     if constexpr (!tk::is_linux) GTEST_SKIP() << "a Luban root is a Linux root";
     const auto bin = luban_binary();
     if (!bin) GTEST_SKIP() << "no luban beside the xlings under test";
@@ -481,13 +481,22 @@ XTEST(Luban, NewSaysWhatItMadeAndHowToGoInAndNotItsSteps,
     auto json = luban(home, {"--json", "new", "box3", "--xpkg", "fixture:my-os@1.0.0", "-y"});
     ASSERT_EQ(json.exit_code, 0) << json.transcript();
     bool result = false;
+    double overall = 0;
+    int measured = 0;
     std::istringstream in(json.out);
     for (std::string line; std::getline(in, line);) {
         auto j = Json::parse(line, nullptr, false);
         ASSERT_TRUE(j.is_object()) << "not an event: " << line;
         result = result || j.contains("result");
+        // One progress for the whole of it, never going back (design 2026-10-20 G22).
+        if (j.contains("overall")) {
+            EXPECT_GE(j["overall"].get<double>(), overall) << line;
+            overall = j["overall"].get<double>();
+            ++measured;
+        }
     }
     EXPECT_TRUE(result) << json.out;
+    EXPECT_GT(measured, 0) << "no event carried the whole progress\n" << json.out;
 }
 
 // The running phase's line is rewritten in place with `\r`; a line wider

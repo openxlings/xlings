@@ -77,8 +77,9 @@ struct Job {
     std::vector<std::string> log;
     std::string current;
     double percent { -1 };
+    double overall { -1 };          // the whole operation's progress, when it has one (never back)
     std::atomic<bool> done { false };
-    std::string stage;              // the last progress phase (download, extract, configure, check)
+    std::string stage;              // the stage it is in (prepare .. check), or the last progress phase
     std::shared_ptr<std::atomic<bool>> cancel;   // set: what runs is stopped
     std::function<void()> retry;    // the same operation again
     int code { 0 };

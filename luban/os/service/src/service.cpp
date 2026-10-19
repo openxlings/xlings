@@ -515,7 +515,15 @@ std::expected<NewPreview, int> preview_new(const Context& c, const NewOptions& o
     return p;
 }
 
-Outcome create(const Context& c, const NewOptions& o, const NewPreview* given) {
+Outcome create(const Context& given_context, const NewOptions& o, const NewPreview* given) {
+    // Every event in the one progress of the whole operation (design 2026-10-20 G22).
+    Context c = given_context;
+    if (given_context.sink)
+        c.sink = [sink = given_context.sink, overall = std::make_shared<Overall>()](const Event& e) {
+            Event x = e;
+            overall->take(x);
+            sink(x);
+        };
     if (o.name.empty()) {
         if (c.sink) c.sink(error("an environment needs a name", "luban new <name> --edition tiny"));
         return {.code = 2};
@@ -591,6 +599,30 @@ Outcome create(const Context& c, const NewOptions& o, const NewPreview* given) {
             return {.code = irc};
         }
     }
+    // The desktop asked for (--desktop), when it does not have it -- before
+    // the check, which then checks it too (and the stages run in order) -- the
+    // official one of that name, installed -- the one thing luban new
+    // installs unasked, and says (design §5.1).
+    std::string desktop;
+    for (const auto& [k, v] : o.settings) if (k == "desktop") desktop = v;
+    if (!desktop.empty() && desktop != "none") {
+        auto e = describe(c, o.name);
+        if (e && std::ranges::find(e->desktops, desktop) == e->desktops.end()) {
+            auto found = official_desktop(c.port, desktop);
+            std::expected<Coordinate, std::string> official = std::unexpected(std::string{});
+            if (found) official = describe_coordinate(c.port, *found);
+            if (!official) {
+                if (c.sink) c.sink(error(std::format("{} has no desktop {}, and Luban has none of that name", o.name, desktop),
+                                         std::format("xlings install <its package> --subos {}", o.name)));
+                return {.code = 1};
+            }
+            if (c.sink) c.sink(phase("install", "begin", std::format("installing {} (its desktop)", official->ref())));
+            const int drc = c.port.terminal({"install", official->ref(), "--subos", o.name, "-y", "--agent"});
+            if (c.sink) c.sink(phase("install", drc == 0 ? "done" : "failed", std::format("installing {} (its desktop)", official->ref())));
+            if (drc != 0) return {.code = drc};
+            if (c.sink) c.sink(notice(std::format("{} has {} as its desktop ({})", o.name, desktop, official->ref())));
+        }
+    }
     if (checked) {
         if (const auto failed = unusable_(c, o.name, "check", std::format("{} is ready", o.name))) {
             if (c.sink) c.sink(error(std::format("{} is made, and not usable: {}", o.name, *failed),
@@ -639,29 +671,6 @@ Outcome create(const Context& c, const NewOptions& o, const NewPreview* given) {
                                                   kDefaultPassword)
                           : o.no_password ? std::format("{} logs in as {} without a password; its sudo asks nothing", o.name, user)
                                           : std::format("{} logs in as {}", o.name, user)));
-    }
-    // The desktop asked for (--desktop), when it does not have it: the
-    // official one of that name, installed -- the one thing luban new
-    // installs unasked, and says (design §5.1).
-    std::string desktop;
-    for (const auto& [k, v] : o.settings) if (k == "desktop") desktop = v;
-    if (!desktop.empty() && desktop != "none") {
-        auto e = describe(c, o.name);
-        if (e && std::ranges::find(e->desktops, desktop) == e->desktops.end()) {
-            auto found = official_desktop(c.port, desktop);
-            std::expected<Coordinate, std::string> official = std::unexpected(std::string{});
-            if (found) official = describe_coordinate(c.port, *found);
-            if (!official) {
-                if (c.sink) c.sink(error(std::format("{} has no desktop {}, and Luban has none of that name", o.name, desktop),
-                                         std::format("xlings install <its package> --subos {}", o.name)));
-                return {.code = 1};
-            }
-            if (c.sink) c.sink(phase("install", "begin", std::format("installing {} (its desktop)", official->ref())));
-            const int drc = c.port.terminal({"install", official->ref(), "--subos", o.name, "-y", "--agent"});
-            if (c.sink) c.sink(phase("install", drc == 0 ? "done" : "failed", std::format("installing {} (its desktop)", official->ref())));
-            if (drc != 0) return {.code = drc};
-            if (c.sink) c.sink(notice(std::format("{} has {} as its desktop ({})", o.name, desktop, official->ref())));
-        }
     }
     // What luban config takes, given now (design §5.1): the same function.
     if (!o.settings.empty())

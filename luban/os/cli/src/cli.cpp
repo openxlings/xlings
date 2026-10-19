@@ -170,6 +170,7 @@ public:
             if (!e.hint.empty()) j["hint"] = e.hint;
             if (!e.level.empty()) j["level"] = e.level;
             if (e.percent >= 0) j["percent"] = e.percent;
+            if (e.overall >= 0) j["overall"] = e.overall, j["stage"] = e.stage;
             if (!e.data_kind.empty()) { j["data_kind"] = e.data_kind; j["data"] = e.data; }
             std::println("{}", j.dump());
             return;
@@ -190,8 +191,11 @@ public:
             }
             break;
         case K::Progress:
-            if (tty_ && !open_.empty())
-                live_(e.percent >= 0 ? std::format("  {:3.0f}%", e.percent * 100) : std::string{}, e.text);
+            // The whole operation's progress when it has one (design 2026-10-20 G22).
+            if (tty_ && !open_.empty()) {
+                const double pct = e.overall >= 0 ? e.overall : e.percent;
+                live_(pct >= 0 ? std::format("  {:3.0f}%", pct * 100) : std::string{}, e.text);
+            }
             break;
         case K::Log:
             if (e.level == "warn") above_(std::format("{} {}", paint_("!", 33), e.text));
@@ -224,7 +228,8 @@ public:
                 std::string detail = std::format("{:.1f} MB", done / 1e6);
                 if (total > 0) detail += std::format(" / {:.1f} MB", total / 1e6);
                 if (!current.empty()) detail += "  " + current;
-                live_(total > 0 ? std::format("  {:3.0f}%", done / total * 100) : std::string{}, detail);
+                const double pct = e.overall >= 0 ? e.overall : total > 0 ? done / total : -1;
+                live_(pct >= 0 ? std::format("  {:3.0f}%", pct * 100) : std::string{}, detail);
             }
             break;
         }

@@ -1071,6 +1071,10 @@ status = "required"
 text = "luban's default output is one line per phase, the conclusion and the next step in luban's own commands; a step's own lines are -v's; --json is one event per line and the result"
 status = "required"
 
+[LUBAN-PROGRESS]
+text = "making a system is one progress from 0 to 100 % over its stages (prepare, download, unpack, configure, start, check), never going back: an install after it is made stays in the stage reached, and a machine starting is a stage of its own with its console's latest line; the luban command and the window show the same (events carry overall and stage)"
+status = "required"
+
 [LUBAN-PROGRESS-WIDTH]
 text = "on a terminal the running phase's line is cut to the terminal's width less one column (the detail first, then the phase, the cut marked with an ellipsis), so rewriting it in place never wraps and never adds a line"
 status = "required"

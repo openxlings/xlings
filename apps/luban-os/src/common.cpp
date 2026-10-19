@@ -70,6 +70,12 @@ void write_app_settings(const fs::path& home, const AppSettings& s) {
 void Job::take(const service::Event& e) {
     std::lock_guard l(m);
     using K = service::Event::Kind;
+    // The operation's one progress, when it has one (design 2026-10-20 G22):
+    // the bar and the stage follow it and never go back.
+    if (e.overall >= 0) {
+        overall = std::max(overall, e.overall);
+        if (!e.stage.empty()) stage = e.stage;
+    }
     switch (e.kind) {
     case K::Phase: {
         auto it = std::ranges::find(phases, e.phase, &Phase::name);
@@ -77,13 +83,13 @@ void Job::take(const service::Event& e) {
         else { it->state = e.state; if (!e.text.empty()) it->text = e.text; }
         current = e.text;
         if (e.state == "begin") percent = -1;
-        if (!e.phase.empty()) stage = e.phase;
+        if (!e.phase.empty() && e.overall < 0) stage = e.phase;
         break;
     }
     case K::Progress:
         if (e.percent >= 0) percent = e.percent;
         if (!e.text.empty()) current = e.text;
-        if (!e.phase.empty()) stage = e.phase;
+        if (!e.phase.empty() && e.overall < 0) stage = e.phase;
         log.push_back(e.text);
         break;
     case K::Log: log.push_back(e.text); break;
@@ -100,7 +106,10 @@ void Job::take(const service::Event& e) {
                 total += f.value("totalBytes", 0.0);
                 done_bytes += f.value("downloadedBytes", 0.0);
             }
-            if (total > 0) { percent = done_bytes / total; stage = "download"; }
+            if (total > 0) {
+                percent = done_bytes / total;
+                if (e.overall < 0) stage = "download";
+            }
         }
         break;
     }

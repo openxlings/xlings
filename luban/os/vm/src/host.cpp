@@ -347,10 +347,27 @@ int start_impl_(const service::Context& c, std::string_view name, const EnterOpt
         say_(c, service::error("the machine's supervisor could not be started"));
         return 1;
     }
-    // Up when its agent answers through the supervisor.
+    // Up when its agent answers through the supervisor. Meanwhile, how far it
+    // is (design 2026-10-20 G23): the time against its last boot's (or a
+    // first guess), and the last line its console printed.
     const auto deadline = started + std::chrono::seconds(kvm ? 90 : 300);
+    const auto timing = log_dir(c.home, name) / "boot-ms";
+    double expected_ms = kvm ? 20000 : 90000;
+    if (std::ifstream in(timing); in) in >> expected_ms;
+    expected_ms = std::clamp(expected_ms, 2000.0, 300000.0);
+    auto said_at = started;
     while (std::chrono::steady_clock::now() < deadline) {
         if (!platform::process_alive(*pid)) break;
+        if (const auto now = std::chrono::steady_clock::now(); now - said_at >= std::chrono::milliseconds(800)) {
+            said_at = now;
+            const double spent = std::chrono::duration<double, std::milli>(now - started).count();
+            auto line = tail_(log_dir(c.home, name) / "console.log", 1);
+            while (!line.empty() && (line.front() == '\n' || line.front() == ' ')) line.erase(line.begin());
+            while (!line.empty() && (line.back() == '\n' || line.back() == '\r')) line.pop_back();
+            if (line.size() > 120) line = line.substr(0, 117) + "...";
+            say_(c, service::Event{.kind = service::Event::Kind::Progress, .phase = "boot",
+                                   .text = line.empty() ? text : line, .percent = std::min(0.95, spent / expected_ms)});
+        }
         const int fd = connect_client_(c.home, name);
         if (fd >= 0) {
             proto::Decoder d;
@@ -361,6 +378,7 @@ int start_impl_(const service::Context& c, std::string_view name, const EnterOpt
             if (hello) {
                 const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started).count();
                 say_(c, service::phase("boot", "done", std::format("{} is up ({:.1f} s)", name, ms / 1000.0)));
+                std::ofstream(timing, std::ios::trunc) << ms;
                 return 0;
             }
         }

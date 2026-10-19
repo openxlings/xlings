@@ -231,6 +231,7 @@ constexpr xlings::i18n::Entry kWords[] = {
     { "luban.os.quick.recent", "RECENT" },
     { "luban.os.quick.s_then_any_key_stops", "{} s, then {} · any key stops it" },
     { "luban.os.quick.showing_names_esc_shows_all", "Showing names with “{}” · Esc shows all" },
+    { "luban.os.quick.stage.start", "Start" },
     { "luban.os.quick.stage.check", "Check" },
     { "luban.os.quick.stage.configure", "Configure" },
     { "luban.os.quick.stage.download", "Download" },
