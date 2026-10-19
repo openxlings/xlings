@@ -43,8 +43,11 @@ bool chinese(const std::map<std::string, std::string>& env);
 // Every picture is drawn for a density (`scale` device pixels to a logical
 // one), its size and areas given in logical pixels.
 inline constexpr int kTitleHeight = 26;
+// Its top corners are round (design 2026-10-20 §14.3), the desktop showing
+// past them; `rounded` false for a window that fills the screen.
 draw::Image title_bar(draw::Fonts* fonts, const Theme& t, std::string_view title, int width, bool active, bool close_hover,
-                      double scale = 1, bool maximize_hover = false);
+                      double scale = 1, bool maximize_hover = false, bool rounded = true);
+inline constexpr double kTitleRadius = 8;
 // Its close button and its maximize button (left of it), in the bar's pixels.
 draw::Rect close_button(int width);
 draw::Rect maximize_button(int width);

@@ -56,7 +56,7 @@ Rect close_button(int width) { return {static_cast<double>(width - kTitleHeight)
 Rect maximize_button(int width) { return {static_cast<double>(width - 2 * kTitleHeight), 0, kTitleHeight, kTitleHeight}; }
 
 draw::Image title_bar(draw::Fonts* fonts, const Theme& t, std::string_view title, int width, bool active, bool close_hover,
-                      double scale, bool maximize_hover) {
+                      double scale, bool maximize_hover, bool rounded) {
     draw::Image img = device_image_(std::max(1, width), kTitleHeight, scale);
     draw::Canvas c(img, scale);
     c.clear(active ? t.title_active : t.title_idle);
@@ -78,6 +78,25 @@ draw::Image title_bar(draw::Fonts* fonts, const Theme& t, std::string_view title
     if (fonts) {
         const double baseline = (kTitleHeight + fonts->ascent() - fonts->descent()) / 2;
         c.text(*fonts, title, 10, std::round(baseline), active ? t.title_text : t.title_text_idle, max.x - 16);
+    }
+    if (rounded) {
+        // The top corners cut round, smoothly: each pixel there keeps as
+        // much of itself as the circle covers (premultiplied: all of it scales).
+        const double r = kTitleRadius * scale;
+        const int n = static_cast<int>(std::ceil(r));
+        for (int y = 0; y < std::min(n, img.height()); ++y)
+            for (int x = 0; x < std::min(n, img.width()); ++x) {
+                const double dx = r - (x + 0.5), dy = r - (y + 0.5);
+                const double cover = std::clamp(r - std::sqrt(dx * dx + dy * dy) + 0.5, 0.0, 1.0);
+                if (cover >= 1) continue;
+                for (const int px : {x, img.width() - 1 - x}) {
+                    auto& v = img.data()[static_cast<std::size_t>(y) * static_cast<std::size_t>(img.width()) + static_cast<std::size_t>(px)];
+                    std::uint32_t out = 0;
+                    for (int ch = 0; ch < 4; ++ch)
+                        out |= static_cast<std::uint32_t>(std::lround(((v >> (8 * ch)) & 0xff) * cover)) << (8 * ch);
+                    v = out;
+                }
+            }
     }
     return img;
 }

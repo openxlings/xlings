@@ -79,7 +79,9 @@ void Server::apply(const std::vector<layout::Placement>& ps, bool instant, layou
         const int title = static_cast<int>(std::lround(bar * zoom));
         wlr_scene_node_set_enabled(&v.title->node, bar > 0);
         if (bar > 0) {
-            draw_title(v, static_cast<int>(std::lround(p->rect.width / zoom)), p->focused);
+            // Square where it fills the screen: maximized, or a tiled one as wide as it.
+            const bool fills = p->maximized || (p->tiled && lay.options().outer_gap == 0 && p->rect.width >= logical_w() - 1);
+            draw_title(v, static_cast<int>(std::lround(p->rect.width / zoom)), p->focused, !fills);
             wlr_scene_buffer_set_dest_size(v.title, std::max(1, static_cast<int>(std::lround(p->rect.width))), title);
         }
         wlr_scene_node_set_position(&v.content->node, 0, title);

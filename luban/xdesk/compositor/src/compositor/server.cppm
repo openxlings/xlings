@@ -414,7 +414,7 @@ struct Server {
     View* view_at(double x, double y);
     bool on_title(const View& v, double y) const;
 
-    void draw_title(View& v, int width, bool active);
+    void draw_title(View& v, int width, bool active, bool rounded = true);
 
     void draw_shell();
 

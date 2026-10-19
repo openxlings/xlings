@@ -172,6 +172,24 @@ int beat(int frames, double period, int phase) {
     return (static_cast<int>(std::floor(st().time / period)) + phase) % frames;
 }
 
+int beats(std::span<const double> durations, double speed) {
+    if (st().reduce_motion || durations.size() <= 1 || speed <= 0) return 0;
+    double cycle = 0;
+    for (const double d : durations) cycle += d / speed;
+    if (cycle <= 0) return 0;
+    const double into = std::fmod(st().time, cycle);
+    double at = st().time - into;
+    for (std::size_t k = 0; k < durations.size(); ++k) {
+        at += durations[k] / speed;
+        if (st().time < at) {
+            // Drawn again when this frame ends.
+            if (st().due == 0 || at < st().due) st().due = at;
+            return static_cast<int>(k);
+        }
+    }
+    return 0;
+}
+
 double wake_in() {
     if (st().animating) return 0;
     if (st().due == 0) return -1;

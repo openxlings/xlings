@@ -35,7 +35,7 @@ void launcher_(App& a) {
     // The bar: the craftsman and the name; the gear and "new" at the right.
     dl->AddRectFilled(o, ImVec2(o.x + W, o.y + px(72)), th_().bg_deep);
     art::badge(dl, art::Badge::Craftsman, "", ImVec2(o.x + px(20), o.y + px(12)), std::max(1.0f, std::round(px(3))),
-               imkit::beat(4, 0.25));
+               art::craft_frame());
     imkit::text(dl, ImVec2(o.x + px(76), o.y + px(22)), "Luban OS", th_().text, 26, true);
     ImGui::SetCursorPos(ImVec2(W - px(20) - px(48), px(16)));
     if (imkit::button("gear", "", ImVec2(48, 40), imkit::Look::Ghost, true, false, imkit::Icon::Gear)) {
@@ -114,7 +114,7 @@ void launcher_(App& a) {
         ImGui::Dummy(ImVec2(0, px(40)));
         const ImVec2 at = ImGui::GetCursorScreenPos();
         const float cell = std::round(px(5));
-        art::badge(ldl, art::Badge::Craftsman, "", ImVec2(at.x + (rowW - 16 * cell) / 2, at.y), cell, imkit::beat(4, 0.25));
+        art::badge(ldl, art::Badge::Craftsman, "", ImVec2(at.x + (rowW - 16 * cell) / 2, at.y), cell, art::craft_frame());
         ImGui::Dummy(ImVec2(0, 16 * cell + px(16)));
     }
     if (n == 0 && !a.systems.empty()) group(tr("luban.os.quick.nothing_matches"));
@@ -263,7 +263,7 @@ void job_(App& a) {
     const bool failed = j.done && j.code != 0;
     // The craftsman at work, or standing when it failed.
     const float cell = std::round(px(5));
-    art::badge(dl, art::Badge::Craftsman, "", ImVec2(o.x + (W - 16 * cell) / 2, o.y + y), cell, failed ? 0 : imkit::beat(4, 0.15));
+    art::badge(dl, art::Badge::Craftsman, "", ImVec2(o.x + (W - 16 * cell) / 2, o.y + y), cell, failed ? 0 : art::craft_frame(1.6));
     y += 16 * cell + px(16);
     centred_(dl, y, j.title, th_().text, 26, true);
     y += px(44);

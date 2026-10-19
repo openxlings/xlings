@@ -27,13 +27,13 @@ namespace apps = xdesk::apps;
 namespace fs = std::filesystem;
 
 // A window's title bar, drawn again only when what it shows changed.
-void Server::draw_title(View& v, int width, bool active) {
+void Server::draw_title(View& v, int width, bool active, bool rounded) {
     const std::string title = name_of(v);
     const bool hover = close_hover == v.id, max = max_hover == v.id;
-    auto key = std::format("{}\x1f{}\x1f{}\x1f{}\x1f{}\x1f{}", title, width, active, hover, scale, max);
+    auto key = std::format("{}\x1f{}\x1f{}\x1f{}\x1f{}\x1f{}\x1f{}", title, width, active, hover, scale, max, rounded);
     if (key == v.drawn) return;
     v.drawn = std::move(key);
-    show(v.title, shell::title_bar(ui(), theme, title, width, active, hover, scale, max));
+    show(v.title, shell::title_bar(ui(), theme, title, width, active, hover, scale, max, rounded));
 }
 
 // The panel and (canvas) the grid, drawn again only when they changed.
