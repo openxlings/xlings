@@ -6,6 +6,7 @@ module luban.os;
 import std;
 import luban.compat;
 import xlings.libs.json;
+import xlings.i18n;
 import imkit;
 import tray;
 import luban.service;
