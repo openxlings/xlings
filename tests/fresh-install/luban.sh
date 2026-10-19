@@ -86,6 +86,12 @@ suite_luban_console() {
     says "what is typed runs" "IN-42"
     capture "kept" luban run e-tiny -- cat /root/kept
     says "a session keeps what it wrote" "IN-42"
+    # With no network (a network namespace of its own): entered from what is
+    # here (design 2026-10-19 §9.3).
+    if unshare -rn true 2>/dev/null; then
+        capture "no network" unshare -rn luban run e-tiny -- /bin/sh -c 'echo offline-$((6*7))'
+        says "entered with no network" "offline-42"
+    fi
 
     section "tiny, keeping nothing: --temp"
     session 20 'echo GONE > /root/gone; cat /root/gone; exit' e-tiny --temp

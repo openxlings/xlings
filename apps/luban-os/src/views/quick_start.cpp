@@ -33,16 +33,10 @@ void ask_availability_(App& a) {
     if (a.availability_job) return;
     auto* app = &a;
     a.availability_job = std::make_unique<std::jthread>([app, ctx = a.ctx](std::stop_token stop) {
-        // What this computer can do: the same report `luban status` gives.
-        {
-            auto caps = service::capabilities(service::gather(ctx.home, ctx.port));
-            std::lock_guard l(app->available_m);
-            app->caps = std::move(caps);
-        }
-        if (!stop.stop_requested() && app->window) app->window->wake();
-        // What the indexes offer: systems and desktops, one search each. Which
-        // package each short name is (luban:<name>, or a published
-        // subos:luban-<name>) comes with it.
+        // What the indexes offer first -- what the page waits on (design
+        // 2026-10-19 §4.1: within a second): systems and desktops, one search
+        // each. Which package each short name is (luban:<name>, or a
+        // published subos:luban-<name>) comes with it.
         auto offers = service::quick_start_offers(ctx.port);
         std::map<std::string, std::string> refs;
         for (const auto& o : offers.systems)
@@ -50,6 +44,13 @@ void ask_availability_(App& a) {
         {
             std::lock_guard l(app->available_m);
             app->offers = std::move(offers);
+        }
+        if (!stop.stop_requested() && app->window) app->window->wake();
+        // What this computer can do: the same report `luban status` gives.
+        {
+            auto caps = service::capabilities(service::gather(ctx.home, ctx.port));
+            std::lock_guard l(app->available_m);
+            app->caps = std::move(caps);
         }
         if (!stop.stop_requested() && app->window) app->window->wake();
         const std::string arch(platform::build_arch());
@@ -527,6 +528,10 @@ void quick_start_(App& a) {
     std::optional<std::string> index_error, reading;
     {
         std::lock_guard l(a.available_m);
+        // What the index offers, shown: how long since the quick start opened (design 2026-10-19 §4.1).
+        if (a.offers && a.quick_opened_at && !a.latency.contains("quick-start-index"))
+            a.latency["quick-start-index"].push_back(
+                std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - *a.quick_opened_at).count());
         if (!a.offers) reading = std::string(tr("luban.os.quick.reading_index"));
         else if (!a.offers->error.empty()) index_error = std::vformat(tr("luban.os.quick.index_unreadable"), std::make_format_args(a.offers->error));
     }

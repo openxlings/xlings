@@ -484,6 +484,12 @@ struct App {
         std::optional<std::chrono::steady_clock::time_point> input_at;
         int frames_since_input { 0 };
     } perf;
+    // Interactions measured (design 2026-10-19 §4.2): what each took, in ms;
+    // a pending one is closed by the next frame shown (what it started, on the screen).
+    std::map<std::string, std::vector<double>> latency;
+    std::map<std::string, std::chrono::steady_clock::time_point> latency_pending;
+    std::optional<std::chrono::steady_clock::time_point> tray_chose_at, quick_opened_at;
+    std::optional<View> view_drawn;    // the view the last frame drew
     bool job_told { true };            // the last job's end was said (a notification when unseen)
     std::string job_subject;           // the system the last job made (its notification goes in)
     std::optional<std::chrono::steady_clock::time_point> notice_until;   // a notice over a system, until

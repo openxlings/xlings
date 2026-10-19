@@ -117,6 +117,8 @@ Json state_(const App& a) {
             j["available"][name] = v.known ? (!v.listed ? "unlisted" : !v.here ? "not-here" : "yes") : "checking";
     }
     j["clipboard"] = a.window ? a.window->clipboard() : std::string{};
+    j["latency"] = Json::object();
+    for (const auto& [what, ms] : a.latency) j["latency"][what] = ms;
     if (a.window)
         j["window"] = {{"title", a.window->title()}, {"keyboard_grabbed", a.window->keyboard_grabbed()},
                        {"pointer_locked", a.window->pointer_locked()}};

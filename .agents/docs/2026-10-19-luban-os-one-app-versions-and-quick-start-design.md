@@ -256,7 +256,10 @@ C 的窗口登记与协议，以后做 B 时可以直接当注册表与内部消
 
 ### 4.3 CI
 
-- 新增 `tests/e2e/test_luban_os_latency.cpp`，`covers = {"LUBAN-OS-LATENCY"}`，在跑 luban-os 测试的 Linux lane（`linux-luban-os-first-use`）上运行。
+- 新增 `tests/e2e/test_luban_os_latency.cpp`，`covers = {"LUBAN-OS-LATENCY"}`，在跑 luban-os 测试的 Linux lane 上运行（实施：unit lane 的 e2e 家族里，与 `test_luban_os` 同处）。
+  实施时的取舍：窗口与托盘的打点放在同一个进程能测的地方——托盘唤起以"窗口发出选择 → 显示结果的那一帧"测（含托盘转发的往返，偏大即偏严）；
+  新建页的 index 内容因此改为先读 index、后做能力自检，两类搜索并行（实测本地约 0.5 s）。
+- 断网的用例不另开 lane：在有用户命名空间的 lane 上用 `unshare -rn` 跑（unit lane 的 e2e：导入、建系统；fresh 套件用发布客户端：进入），见 `tests/lanes.toml`。
 - 每项超过预算即失败，失败信息写出实测值、预算与那一次的两份 dump（artefacts）。
 - 每次的实测值进 `xdev report` 的趋势（已有 "Timing trends"），比中位数变慢超过 50% 时在报告里标出，即使没超预算。
 - Windows 与 macOS：托盘与窗口的通信是新代码（Windows 的 socket 尤其是），在它们的 runner 上跑通信与托盘的功能用例，以及"唤起已有窗口""托盘反映变化"两项延时（无 GPU 渲染时的帧时间不在这两项里）。

@@ -879,6 +879,13 @@ XTEST(Luban, AnArchiveIsImportedWithoutTheNetworkFromWhatItCarries,
     EXPECT_TRUE(fs::is_directory(home.dir() / "data/xpkgs/fixture-x-hello/1.0.0")
                 || !fs::is_empty(home.dir() / "domains", ec))
         << "its package came from the archive";
+    // Still no network: another made from what is here now (design 2026-10-19
+    // §9.3 -- the no-network cases run in a network namespace; entering one,
+    // which needs the release client, is the fresh suite's).
+    tk::RunOptions n = o;
+    n.argv = {"unshare", "-rn", (home.dir() / "bin/luban").string(), "new", "box2", "--xpkg", "fixture:my-os@1.0.0", "-y"};
+    const auto made = tk::run(n);
+    EXPECT_EQ(made.exit_code, 0) << made.transcript();
 }
 
 // What is here and what the index offers (design 2026-10-19 §6): `luban ls`

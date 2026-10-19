@@ -48,7 +48,9 @@ bool ensure_tray_(App& a) {
         a.tray_said.clear();
     }
     if (a.tray_pid == 0 && a.tray_error.empty()) {
+        const auto asked = std::chrono::steady_clock::now();
         if (const auto st = a.tray->status(std::chrono::milliseconds(3000))) {
+            a.latency["tray-ready"].push_back(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - asked).count());
             a.tray_pid = st->value("pid", 0);
             a.tray_error = st->value("error", std::string{});
             a.tray_backend = st->value("backend", std::string{});
@@ -142,6 +144,7 @@ void tray_take_(App& a) {
     for (auto& what : std::exchange(a.tray_injected, {})) {
         ensure_tray_(a);
         if (a.tray) a.tray->send({{"choose", what}});
+        a.tray_chose_at = std::chrono::steady_clock::now();
     }
     if (!a.tray) return;
     for (const auto& m : a.tray->take()) {
@@ -150,6 +153,8 @@ void tray_take_(App& a) {
         if (!m.contains("raise")) continue;
         const auto& r = m["raise"];
         const auto view = r.value("view", std::string{"launcher"}), name = r.value("system", std::string{});
+        // Chosen at the icon (or as if): until the frame that shows it.
+        if (a.tray_chose_at) a.latency_pending["tray-raise"] = *std::exchange(a.tray_chose_at, std::nullopt);
         show_(a);
         if (view == "launcher") {
             const auto on = running_(a);
@@ -603,6 +608,12 @@ int run(int argc, char* argv[]) {
         a.anchors_before = std::move(a.anchors);
         a.anchors.clear();
         a.clipped.clear();
+        // The quick start opened: until its first frame; its index's word, until it shows.
+        if (a.view == View::QuickStart && a.view_drawn != View::QuickStart) {
+            a.latency_pending["quick-start"] = frame_start;
+            if (!a.quick_opened_at) a.quick_opened_at = frame_start;
+        }
+        a.view_drawn = a.view;
         switch (a.view) {
         case View::Launcher: launcher_(a); break;
         case View::QuickStart: quick_start_(a); break;
@@ -638,7 +649,12 @@ int run(int argc, char* argv[]) {
         const bool still = over_desktop && a.view == View::Desktop && view_before == View::Desktop && !a.desktop_changed
                            && (!input || only_motion) && !a.notice_until && !a.resize_at && a.perf.presented > 0;
         a.window->end_frame(!still);
-        if (!still) ++a.perf.presented;
+        if (!still) {
+            ++a.perf.presented;
+            const auto shown = std::chrono::steady_clock::now();
+            for (const auto& [what, since] : std::exchange(a.latency_pending, {}))
+                a.latency[what].push_back(std::chrono::duration<double, std::milli>(shown - since).count());
+        }
         {
             // This frame's time; and, the frame after an input, how long until
             // what the input did is on the screen (the input is taken in one

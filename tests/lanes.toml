@@ -22,6 +22,12 @@ shards = 4
 jobs = 2
 mcpp = ["--profile", "asan"]
 
+# Where the cases with no network and the latency budgets run (design
+# 2026-10-19 §4.3, §9.3, §23): no lane of their own. A no-network case runs in
+# a network namespace of its own (unshare -rn) wherever the lane has user
+# namespaces -- this lane's e2e families, and the fresh suites with the
+# release client; e2e/test_luban_os_latency runs where the Luban OS app does.
+
 # Root scenarios (the distro suite), planned from measured durations.
 [distro]
 shards = 3

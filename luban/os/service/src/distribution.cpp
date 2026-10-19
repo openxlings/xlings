@@ -223,23 +223,35 @@ Json offer_json(const Offer& o) {
 
 QuickStartOffers quick_start_offers(const Port& port) {
     QuickStartOffers out;
-    auto in = [&](std::string_view category) {
-        std::vector<Json> data, found;
-        const int code = port.capability("search_packages", Json{{"keyword", ""}, {"category", std::string(category)}}, nullptr, &data);
-        if (code != 0 && out.error.empty()) {
-            out.error = "the index could not be read";
+    // One search a category, both at once (each is an xlings call; the quick
+    // start waits on them, design 2026-10-19 §4.1).
+    struct Found { std::vector<Json> packages; std::string error; };
+    auto search = [&port](std::string category) {
+        Found f;
+        std::vector<Json> data;
+        const int code = port.capability("search_packages", Json{{"keyword", ""}, {"category", category}}, nullptr, &data);
+        if (code != 0) {
+            f.error = "the index could not be read";
             for (const auto& d : data)
                 if (d.value("kind", "") == "error" || d.contains("message")) {
-                    out.error = d.value("message", out.error);
+                    f.error = d.value("message", f.error);
                     break;
                 }
         }
         for (const auto& d : data)
             if (d.value("dataKind", "") == "packages")
                 for (const auto& p : payload_(d))
-                    if (p.is_object()) found.push_back(p);
-        return found;
+                    if (p.is_object()) f.packages.push_back(p);
+        return f;
     };
+    auto systems_found = std::async(std::launch::async, search, std::string("distribution"));
+    auto desktops_found = std::async(std::launch::async, search, std::string("luban-desktop"));
+    std::map<std::string, Found, std::less<>> results;
+    results.emplace("distribution", systems_found.get());
+    results.emplace("luban-desktop", desktops_found.get());
+    for (const auto& [category, f] : results)
+        if (!f.error.empty() && out.error.empty()) out.error = f.error;
+    auto in = [&](std::string_view category) { return results.find(category)->second.packages; };
     auto offer = [](const Json& p) {
         const auto ns = p.value("namespace", std::string{}), name = p.value("name", std::string{});
         Offer o{.ref = ns + ":" + name, .name = name, .description = p.value("description", std::string{}),
