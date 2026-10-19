@@ -53,6 +53,8 @@ xlings interface install_packages --args-file ./args.json
 `network_endpoints` discovers configured remote index resources locally.
 `probe_url` checks one resource using the downloader's transport and returns a
 sanitized structured result. Neither initializes the home nor installs tools.
+Feature `read_only_queries` also guarantees that status queries and the
+interface handshake leave the selected home unchanged.
 The client owns the total deadline, including endpoint discovery and DNS;
 `socket_timeout_ms` only bounds socket operations. The full fields and limits
 are in [the protocol](specs/interface-ndjson-v1.md#network-diagnosis-113).

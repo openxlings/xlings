@@ -204,7 +204,7 @@ TEST(InterfaceProtocol, VersionFlagPrintsProtocolVersion) {
     const auto& features = j["features"];
     // 1.12: a reader of index namespaces and of a system's plan, the same.
     for (const char* feature : {"payload_currency", "binding_state", "reserved_namespaces", "subos_plan",
-                               "network_diagnostics", "download_socket_budgets"})
+                               "network_diagnostics", "download_socket_budgets", "read_only_queries"})
         EXPECT_NE(std::ranges::find(features, nlohmann::json(feature)), features.end()) << feature;
     std::filesystem::remove_all(home);
 }

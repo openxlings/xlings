@@ -150,7 +150,7 @@ XTEST(FirstRunNetwork, DiagnosticCapabilitiesLeaveTheHomeUnchanged, .area = "cli
         return files;
     };
     const auto before = snapshot();
-    for (const auto* capability : {"network_endpoints", "probe_url", "system_status", "payload_status"}) {
+    for (const auto* capability : {"--version", "--list", "network_endpoints", "probe_url", "system_status", "payload_status"}) {
         const auto args = std::string_view(capability) == "probe_url"
             ? R"({"url":"http://127.0.0.1:9/missing","socket_timeout_ms":100})"
             : std::string_view(capability) == "payload_status" ? R"({"targets":[]})" : "{}";

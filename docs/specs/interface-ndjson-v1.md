@@ -24,8 +24,7 @@ and AI agents talk to xlings over standard IO. The protocol is **1.13**, over ND
 | 1.10 | 2026.10.16.1 | added: `--version` is the handshake (§3.1); `payload_status` and `sync_index` (§7.4); `install_targets` entries carry `complete` and `origin` (§6.3.1) |
 | 1.11 | 2026.10.17.1 | `complete` means integrity only; added beside it: `installed_revision`, `floor`, `usable`, `current` (feature `payload_currency`, §6.3.1, §7.4); the `scope_repaired` data event (§6.3.1); `system_status`'s `binding_state` data event (feature `binding_state`, §7.5) |
 | 1.12 | 2026.10.18.1 | added: `search_packages`' `category` argument, and `namespace`, `index`, `categories` on its `packages` entries; `package_info`'s `package` object and `platform` argument (whose build is described); an index's reserved namespaces kept to it (feature `reserved_namespaces`); `subos_command` `new --dry-run`'s `subos_plan` data event (feature `subos_plan`) |
-
-| 1.13 | 2026.10.19.1 | added: read-only `network_endpoints` and bounded `probe_url`; feature `network_diagnostics`; shortening connect/read budgets via environment (feature `download_socket_budgets`) |
+| 1.13 | 2026.10.19.1 | added: read-only `network_endpoints` and bounded `probe_url`; features `network_diagnostics` / `read_only_queries`; shortening connect/read budgets via environment (feature `download_socket_budgets`) |
 
 A minor version only adds: a 1.0 client reads 1.1 output unchanged. 1.11 is the
 one exception in meaning, not in shape: 1.10's `complete` also required the
@@ -62,7 +61,7 @@ prints one line and exits -- the handshake a client checks before it uses this
 xlings (1.10+):
 
 ```json
-{"protocol_version":"1.13","version":"2026.10.19.1","capabilities":["search_packages","install_packages","..."],"home_layouts":[1,2],"features":["index_dir","index_store","upstreams","payload_status","sync_index","install_targets_complete","payload_currency","binding_state","reserved_namespaces","subos_plan","network_diagnostics","download_socket_budgets"]}
+{"protocol_version":"1.13","version":"2026.10.19.1","capabilities":["search_packages","install_packages","..."],"home_layouts":[1,2],"features":["index_dir","index_store","upstreams","payload_status","sync_index","install_targets_complete","payload_currency","binding_state","reserved_namespaces","subos_plan","network_diagnostics","download_socket_budgets","read_only_queries"]}
 ```
 
 | Field | Meaning |
@@ -734,6 +733,12 @@ and a `cancel` on the control channel ends the call with `E_CANCELLED` and 130.
 ```
 
 ## Network diagnosis (1.13+)
+
+Feature `read_only_queries` guarantees that `interface --version`, `--list`,
+`network_endpoints`, `probe_url`, `system_status` and `payload_status` do not
+initialize, adopt, upgrade or journal into the selected home. A client that
+must preserve an older home probes the handshake in an isolated temporary
+home first and skips these queries when the feature is absent.
 
 `network_endpoints` accepts `{}` and emits `dataKind: network_endpoints` with
 `payload.endpoints`: entries have `resource`, `region` and `url`. Discovery uses

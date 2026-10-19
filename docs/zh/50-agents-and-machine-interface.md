@@ -48,7 +48,8 @@ xlings interface install_packages --args-file ./args.json
 
 `network_endpoints` 在本地发现已配置的远程索引资源。
 `probe_url` 使用下载器的传输层检查一个资源，并返回脱敏后的结构化结果。
-两者均不初始化 home 或安装工具。客户端负责包含端点发现与 DNS 的总截止时间；
+两者均不初始化 home 或安装工具。`read_only_queries` 能力也保证状态查询与
+接口握手不改变选定的 home。客户端负责包含端点发现与 DNS 的总截止时间；
 `socket_timeout_ms` 仅限制 socket 操作。完整字段与边界见
 [协议](../specs/interface-ndjson-v1.md#network-diagnosis-113)。
 
