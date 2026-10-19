@@ -193,6 +193,13 @@ struct Compositor {
     std::string keymap;
     int pool_fd { -1 };
     std::uint32_t buffer { 0 };
+    std::map<std::uint32_t, int> pools;              // pool -> its memory
+    std::map<std::uint32_t, std::uint32_t> buffers;  // buffer -> its pool
+    std::vector<int> overlays;                       // each capture_output's overlay_cursor
+    // Its pointer captured apart (ext-image-copy-capture's cursor session)
+    // when `cursor`: a 4x4 image, its hotspot (2, 3).
+    bool cursor { false };
+    std::uint32_t cursor_buffer { 0 };
     int frames { 0 };
     // Its windows, listed (wlr foreign-toplevel) when `toplevels`: one, minimized.
     bool toplevels { false };
@@ -258,6 +265,10 @@ struct Compositor {
                 {5, "zwp_virtual_keyboard_manager_v1", 1}, {6, "zwlr_virtual_pointer_manager_v1", 2}}};
             for (const auto& [name, i, v] : globals) send(registry, 0, wl::Args{}.u(name).str(i).u(v));
             if (toplevels) send(registry, 0, wl::Args{}.u(7).str("zwlr_foreign_toplevel_manager_v1").u(3));
+            if (cursor) {
+                send(registry, 0, wl::Args{}.u(8).str("ext_output_image_capture_source_manager_v1").u(1));
+                send(registry, 0, wl::Args{}.u(9).str("ext_image_copy_capture_manager_v1").u(1));
+            }
         } else if (iface == "wl_display" && e.opcode == 0) {     // sync
             const auto cb = r.u();
             send(cb, 0, wl::Args{}.u(1));
@@ -280,16 +291,50 @@ struct Compositor {
             }
         } else if (iface == "zwlr_screencopy_manager_v1" && e.opcode == 0) {   // capture_output
             const auto frame = r.u();
+            overlays.push_back(r.i());
             objects[frame] = "zwlr_screencopy_frame_v1";
             send(frame, 0, wl::Args{}.u(1).u(W).u(H).u(Stride));   // xrgb8888
             send(frame, 6, wl::Args{});                            // buffer_done
         } else if (iface == "wl_shm" && e.opcode == 0) {          // create_pool
-            objects[r.u()] = "wl_shm_pool";
-            pool_fd = take_fd();
+            const auto pool = r.u();
+            objects[pool] = "wl_shm_pool";
+            pools[pool] = take_fd();
         } else if (iface == "wl_shm_pool" && e.opcode == 0) {     // create_buffer
-            buffer = r.u();
-            objects[buffer] = "wl_buffer";
+            const auto b = r.u();
+            objects[b] = "wl_buffer";
+            buffers[b] = e.object;
+        } else if (iface == "wl_seat" && e.opcode == 0) {         // get_pointer
+            objects[r.u()] = "wl_pointer";
+        } else if (iface == "ext_output_image_capture_source_manager_v1" && e.opcode == 0) {
+            objects[r.u()] = "ext_image_capture_source_v1";
+        } else if (iface == "ext_image_copy_capture_manager_v1" && e.opcode == 1) {    // create_pointer_cursor_session
+            const auto session = r.u();
+            const auto source = r.u(), pointer = r.u();
+            EXPECT_EQ(objects[source], "ext_image_capture_source_v1");
+            EXPECT_EQ(objects[pointer], "wl_pointer");
+            objects[session] = "ext_image_copy_capture_cursor_session_v1";
+            send(session, 0, wl::Args{});                          // enter
+            send(session, 3, wl::Args{}.i(2).i(3));                // hotspot
+        } else if (iface == "ext_image_copy_capture_cursor_session_v1" && e.opcode == 1) {   // get_capture_session
+            const auto session = r.u();
+            objects[session] = "ext_image_copy_capture_session_v1";
+            send(session, 0, wl::Args{}.u(4).u(4));                // buffer_size
+            send(session, 1, wl::Args{}.u(0));                     // shm_format: argb8888
+            send(session, 4, wl::Args{});                          // done
+        } else if (iface == "ext_image_copy_capture_session_v1" && e.opcode == 0) {    // create_frame
+            objects[r.u()] = "ext_image_copy_capture_frame_v1";
+        } else if (iface == "ext_image_copy_capture_frame_v1" && e.opcode == 1) {      // attach_buffer
+            cursor_buffer = r.u();
+        } else if (iface == "ext_image_copy_capture_frame_v1" && e.opcode == 3 && cursor_buffer) {   // capture
+            // Once: a second capture waits for the image to change, which it does not.
+            auto* p = static_cast<std::uint8_t*>(::mmap(nullptr, 64, PROT_READ | PROT_WRITE, MAP_SHARED, pools[buffers[cursor_buffer]], 0));
+            ASSERT_NE(p, MAP_FAILED);
+            for (int i = 0; i < 64; ++i) p[i] = static_cast<std::uint8_t>(i);
+            ::munmap(p, 64);
+            cursor_buffer = 0;
+            send(e.object, 3, wl::Args{});                         // ready
         } else if (iface == "zwlr_screencopy_frame_v1" && (e.opcode == 0 || e.opcode == 2)) {   // copy
+            pool_fd = pools[buffers[r.u()]];
             // The pattern: each pixel's blue is its column, green its row; the
             // fourth byte left 0, as XRGB allows.
             auto* p = static_cast<std::uint8_t*>(::mmap(nullptr, Stride * H, PROT_READ | PROT_WRITE, MAP_SHARED, pool_fd, 0));
@@ -441,6 +486,55 @@ XTEST(LubanWlr, TheBridgeShowsTheCompositorsOutputAndGivesItTheInput, .area = "l
     EXPECT_EQ(c.mods.back(), 0u);
     EXPECT_EQ(c.motions.back(), (std::pair<std::uint32_t, std::uint32_t>{10, 20}));
     // The provider closing the stream ends it.
+    std::vector<int> close{p.out};
+    platform::close_fds(close);
+    const auto end = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (code == -1 && std::chrono::steady_clock::now() < end) c.pump(10);
+    bridge.join();
+    EXPECT_EQ(code, 0);
+    std::vector<int> rest{c.fd, listener, (*to_bridge)[0], (*from_bridge)[0], (*from_bridge)[1]};
+    platform::close_fds(rest);
+    std::error_code ec;
+    fs::remove_all(dir, ec);
+}
+
+XTEST(LubanWlr, ACompositorsPointerCapturedApartIsTheWindowsToDraw, .area = "luban",
+      .covers = {"LUBAN-DESKTOP-WLR", "LUBAN-OS-POINTER"}) {
+    if constexpr (!platform::is_linux) GTEST_SKIP() << "wl_shm needs memfd (Linux)";
+    // A compositor that captures its pointer apart: the bridge asks the
+    // window to draw it, sends its image ('C'), and captures frames without it.
+    const auto dir = temp_dir_("luban-wlr-cursor");
+    const auto socket = dir / "wayland-0";
+    const int listener = platform::unix_listen_stream(socket);
+    ASSERT_GE(listener, 0);
+    auto to_bridge = platform::make_pipe(), from_bridge = platform::make_pipe();
+    ASSERT_TRUE(to_bridge && from_bridge);
+    std::atomic<int> code { -1 };
+    std::thread bridge([&] {
+        code = wlr::bridge({.in = (*to_bridge)[0], .out = (*from_bridge)[1], .socket = socket, .max_fps = 100});
+    });
+    Compositor c;
+    c.cursor = true;
+    c.fd = platform::unix_accept(listener);
+    ASSERT_GE(c.fd, 0);
+    Provider p{(*from_bridge)[0], (*to_bridge)[1]};
+    ASSERT_TRUE(p.until([&] { return p.count('f') >= 1; }, c));
+    using I = opensal::Interface;
+    ASSERT_EQ(p.got[0].kind, 'h');
+    const auto wanted = static_cast<opensal::Interfaces>(std::stoul(p.got[0].payload));
+    EXPECT_TRUE(opensal::has(wanted, I::Cursor) && opensal::has(wanted, I::CursorImage));
+    EXPECT_EQ(c.overlays.front(), 1) << "the pointer in the frames until the window says it draws it";
+    // The window draws pointers, images too.
+    const auto provided = I::Surface | I::Mode | I::Pointer | I::Keyboard | I::Cursor | I::CursorImage;
+    ASSERT_TRUE(platform::write_all(p.out, wire::encode('H', std::format("{} 64 32 1 0", provided))));
+    ASSERT_TRUE(p.until([&] { return p.count('C') >= 1 && p.count('f') >= 3; }, c));
+    const auto image = wire::decode_cursor_image(std::ranges::find(p.got, 'C', &wire::Message::kind)->payload);
+    ASSERT_TRUE(image);
+    EXPECT_EQ(image->size, (opensal::Size{4, 4}));
+    EXPECT_EQ(image->hotspot_x, 2u);
+    EXPECT_EQ(image->hotspot_y, 3u);
+    EXPECT_EQ(static_cast<unsigned char>(image->bytes[5]), 5);
+    EXPECT_EQ(c.overlays.back(), 0) << "frames without the pointer once the window draws it";
     std::vector<int> close{p.out};
     platform::close_fds(close);
     const auto end = std::chrono::steady_clock::now() + std::chrono::seconds(5);

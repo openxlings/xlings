@@ -28,7 +28,8 @@ constexpr std::uint16_t callback_done = 0;
 constexpr std::uint16_t shm_create_pool = 0;
 constexpr std::uint16_t pool_create_buffer = 0, pool_destroy = 1;
 constexpr std::uint16_t buffer_destroy = 0;
-// wl_output
+// wl_seat, wl_output
+constexpr std::uint16_t seat_get_pointer = 0;
 constexpr std::uint16_t output_mode = 1;
 // zwlr_screencopy_manager_v1, zwlr_screencopy_frame_v1
 constexpr std::uint16_t screencopy_capture_output = 0;
@@ -53,6 +54,16 @@ constexpr std::uint16_t toplevels_toplevel = 0;
 constexpr std::uint16_t toplevel_title = 0, toplevel_app_id = 1, toplevel_state = 4, toplevel_done = 5,
                         toplevel_closed = 6;
 constexpr std::uint16_t toplevel_unset_minimized = 3, toplevel_activate = 4, toplevel_destroy = 7;
+// ext_output_image_capture_source_manager_v1, ext_image_copy_capture_manager_v1,
+// its cursor session, a capture session and its frames
+constexpr std::uint16_t sources_create_source = 0;
+constexpr std::uint16_t copy_create_pointer_cursor_session = 1;
+constexpr std::uint16_t cursor_get_capture_session = 1;
+constexpr std::uint16_t cursor_leave = 1, cursor_hotspot = 3;
+constexpr std::uint16_t session_create_frame = 0;
+constexpr std::uint16_t session_buffer_size = 0, session_shm_format = 1, session_done = 4, session_stopped = 5;
+constexpr std::uint16_t capture_destroy = 0, capture_attach_buffer = 1, capture_damage_buffer = 2, capture_capture = 3;
+constexpr std::uint16_t capture_ready = 3, capture_failed = 4;
 }  // namespace op
 
 // A toplevel's states (zwlr_foreign_toplevel_handle_v1.state).
@@ -83,6 +94,10 @@ private:
     void capture_();
     void copy_();
     void frame_ready_();
+    void cursor_start_();
+    void cursor_stop_();
+    void capture_cursor_();
+    void cursor_ready_();
     void resize_(opensal::Size want);
     void shell_(const opensal::Event& e);
     void tell_windows_();
@@ -142,6 +157,21 @@ private:
     bool apps_told_ { false };
     std::chrono::steady_clock::time_point apps_read_ {};
     std::vector<int> launched_;
+
+    // The session's pointer apart from its frames (design 2026-10-19 §15.2):
+    // when the compositor captures it on its own (ext-image-copy-capture's
+    // cursor session) and the provider draws it (CursorImage), each image the
+    // compositor's pointer takes goes as 'C' and the frames are captured
+    // without it; otherwise it is drawn into them, as before.
+    std::uint32_t sources_ { 0 }, copy_capture_ { 0 };
+    std::uint32_t cursor_session_ { 0 }, cursor_capture_ { 0 }, cursor_frame_ { 0 };
+    bool host_cursor_ { false };
+    opensal::CursorImage cursor_;
+    bool cursor_argb_ { false };
+    os::SharedMemory cursor_mem_;
+    std::uint32_t cursor_pool_ { 0 }, cursor_buffer_ { 0 };
+    opensal::Size cursor_buffer_size_;
+    std::string cursor_sent_;
 };
 
 std::uint32_t Bridge::bind_(std::string_view iface, std::uint32_t max_version, std::uint32_t& version) {
@@ -228,6 +258,41 @@ void Bridge::handle_(const wl::Event& e) {
         }
         return;
     }
+    if (cursor_session_ && e.object == cursor_session_) {
+        if (e.opcode == op::cursor_hotspot) {
+            const auto x = r.i(), y = r.i();
+            cursor_.hotspot_x = static_cast<std::uint32_t>(std::max(0, x));
+            cursor_.hotspot_y = static_cast<std::uint32_t>(std::max(0, y));
+            if (!cursor_.bytes.empty()) cursor_ready_();
+        } else if (e.opcode == op::cursor_leave) {
+            if (send_(opensal::wire::encode('c', "none"))) cursor_sent_ = "none";
+        }
+        return;
+    }
+    if (cursor_capture_ && e.object == cursor_capture_) {
+        switch (e.opcode) {
+        case op::session_buffer_size: cursor_.size.width = r.u(); cursor_.size.height = r.u(); break;
+        case op::session_shm_format: if (r.u() == kShmArgb) cursor_argb_ = true; break;
+        case op::session_done: if (!cursor_frame_) capture_cursor_(); break;
+        case op::session_stopped: cursor_stop_(); break;
+        default: break;
+        }
+        return;
+    }
+    if (cursor_frame_ && e.object == cursor_frame_) {
+        if (e.opcode == op::capture_ready) {
+            cursor_.bytes.assign(reinterpret_cast<const char*>(cursor_mem_.data), std::size_t{cursor_.size.width} * cursor_.size.height * 4);
+            c_.send(cursor_frame_, op::capture_destroy, wl::Args{});
+            cursor_frame_ = 0;
+            cursor_ready_();
+            capture_cursor_();
+        } else if (e.opcode == op::capture_failed) {
+            // Its size changed (a new `done` follows) or it stopped (`stopped`).
+            c_.send(cursor_frame_, op::capture_destroy, wl::Args{});
+            cursor_frame_ = 0;
+        }
+        return;
+    }
     if (toplevels_ && e.object == toplevels_) {
         if (e.opcode == op::toplevels_toplevel) {
             const auto handle = r.u();
@@ -303,7 +368,69 @@ void Bridge::capture_() {
     capturing_ = true;
     damage_.clear();
     offer_.reset();
-    c_.send(screencopy_, op::screencopy_capture_output, wl::Args{}.u(frame_).i(1).u(output_));
+    // The pointer in the frame unless the provider draws it.
+    c_.send(screencopy_, op::screencopy_capture_output, wl::Args{}.u(frame_).i(host_cursor_ ? 0 : 1).u(output_));
+}
+
+void Bridge::cursor_start_() {
+    host_cursor_ = true;
+    first_ = true;   // the next frame whole: the pointer drawn in the last goes
+    const auto pointer = c_.new_id();
+    c_.send(seat_, op::seat_get_pointer, wl::Args{}.u(pointer));
+    const auto source = c_.new_id();
+    c_.send(sources_, op::sources_create_source, wl::Args{}.u(source).u(output_));
+    cursor_session_ = c_.new_id();
+    c_.send(copy_capture_, op::copy_create_pointer_cursor_session, wl::Args{}.u(cursor_session_).u(source).u(pointer));
+    cursor_capture_ = c_.new_id();
+    c_.send(cursor_session_, op::cursor_get_capture_session, wl::Args{}.u(cursor_capture_));
+}
+
+// The compositor stopped showing it apart: into the frames again, and the
+// provider draws none.
+void Bridge::cursor_stop_() {
+    host_cursor_ = false;
+    first_ = true;
+    cursor_capture_ = 0;
+    cursor_frame_ = 0;
+    if (send_(opensal::wire::encode('c', "none"))) cursor_sent_ = "none";
+}
+
+void Bridge::capture_cursor_() {
+    const auto w = cursor_.size.width, h = cursor_.size.height;
+    if (!cursor_capture_ || !cursor_argb_ || w == 0 || h == 0 || w > opensal::kMaxCursorSide || h > opensal::kMaxCursorSide) return;
+    const std::size_t bytes = std::size_t{w} * h * 4;
+    if (!cursor_buffer_ || cursor_buffer_size_ != cursor_.size) {
+        if (cursor_buffer_) c_.send(cursor_buffer_, op::buffer_destroy, wl::Args{});
+        if (cursor_pool_) c_.send(cursor_pool_, op::pool_destroy, wl::Args{});
+        os::release(cursor_mem_);
+        auto m = os::shared_memory(bytes);
+        if (!m) { log_("no shared memory for the pointer"); return; }
+        cursor_mem_ = *m;
+        cursor_pool_ = c_.new_id();
+        c_.send(shm_, op::shm_create_pool, wl::Args{}.u(cursor_pool_).fd(cursor_mem_.fd).i(std::int32_t(bytes)));
+        cursor_buffer_ = c_.new_id();
+        c_.send(cursor_pool_, op::pool_create_buffer, wl::Args{}.u(cursor_buffer_).i(0).i(std::int32_t(w)).i(std::int32_t(h))
+                                                         .i(std::int32_t(w * 4)).u(kShmArgb));
+        cursor_buffer_size_ = cursor_.size;
+    }
+    // Answered when the pointer's image changes.
+    cursor_frame_ = c_.new_id();
+    c_.send(cursor_capture_, op::session_create_frame, wl::Args{}.u(cursor_frame_));
+    c_.send(cursor_frame_, op::capture_attach_buffer, wl::Args{}.u(cursor_buffer_));
+    c_.send(cursor_frame_, op::capture_damage_buffer, wl::Args{}.i(0).i(0).i(std::int32_t(w)).i(std::int32_t(h)));
+    c_.send(cursor_frame_, op::capture_capture, wl::Args{});
+}
+
+// The image (ARGB is opensal's premultiplied BGRA as bytes), said when it changed.
+void Bridge::cursor_ready_() {
+    if (cursor_.bytes.size() != std::size_t{cursor_.size.width} * cursor_.size.height * 4) return;
+    auto image = cursor_;
+    image.hotspot_x = std::min(image.hotspot_x, image.size.width - 1);
+    image.hotspot_y = std::min(image.hotspot_y, image.size.height - 1);
+    auto message = opensal::wire::encode_cursor_image(image);
+    if (message == cursor_sent_) return;
+    if (!send_(message)) { provider_gone_ = true; return; }
+    cursor_sent_ = std::move(message);
 }
 
 void Bridge::copy_() {
@@ -486,6 +613,9 @@ bool Bridge::provider_(std::string_view bytes) {
             std::uint32_t bits = 0, w = 0, h = 0;
             if (in >> bits >> w >> h) resize_({w, h});
             provided_ = bits;
+            if (!host_cursor_ && !cursor_session_ && opensal::has(provided_, opensal::Interface::CursorImage) && sources_
+                && copy_capture_ && seat_)
+                cursor_start_();
             windows_changed_ = true;
             apps_told_ = false;
             if (o_.shell) tell_applications_();
@@ -512,6 +642,8 @@ int Bridge::run() {
     vptr_manager_ = bind_("zwlr_virtual_pointer_manager_v1", 2, vptr_version);
     outman_ = bind_("zwlr_output_manager_v1", 2, v);
     if (o_.shell) toplevels_ = bind_("zwlr_foreign_toplevel_manager_v1", 3, v);
+    sources_ = bind_("ext_output_image_capture_source_manager_v1", 1, v);
+    copy_capture_ = bind_("ext_image_copy_capture_manager_v1", 1, v);
     if (!shm_ || !output_ || !screencopy_) {
         log_("the compositor has no screencopy (zwlr_screencopy_manager_v1) or no output: not a desktop opensal-wlr can show");
         return 1;
@@ -539,6 +671,8 @@ int Bridge::run() {
     opensal::Interfaces wanted = I::Surface | I::Mode;
     if (vkbd_) wanted |= static_cast<opensal::Interfaces>(I::Keyboard);
     if (vptr_) wanted |= static_cast<opensal::Interfaces>(I::Pointer);
+    // The pointer apart from the frames: the provider draws it.
+    if (sources_ && copy_capture_ && seat_) wanted |= I::Cursor | I::CursorImage;
     if (o_.shell) {
         // Launching needs nothing of the compositor; listing its windows does.
         wanted |= static_cast<opensal::Interfaces>(I::Shell);
