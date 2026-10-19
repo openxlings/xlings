@@ -4,6 +4,7 @@
 module luban.os;
 
 import std;
+import luban.compat;
 import imkit;
 import tray;
 import :core;
@@ -102,8 +103,8 @@ constexpr Rows kCraft1{
 
 std::uint32_t base_(std::string_view edition) {
     auto name = edition;
-    if (name.starts_with("subos:luban-")) name.remove_prefix(12);
-    else if (name.starts_with("luban:")) name.remove_prefix(6);
+    name = luban::compat::without_frozen_prefix(name);
+    if (name.starts_with("luban:")) name.remove_prefix(6);
     if (const auto at = name.find('@'); at != std::string_view::npos) name = name.substr(0, at);
     if (name == "nano") return 0xa7f070;
     if (name == "tiny") return 0x38b764;
@@ -147,7 +148,7 @@ ImU32 edition_color(std::string_view edition, int shade) {
 
 Badge badge_of(std::string_view edition) {
     auto name = edition;
-    if (name.starts_with("subos:luban-")) name.remove_prefix(12);
+    name = luban::compat::without_frozen_prefix(name);
     if (const auto at = name.find('@'); at != std::string_view::npos) name = name.substr(0, at);
     if (name == "nano") return Badge::Nano;
     if (name == "tiny") return Badge::Tiny;

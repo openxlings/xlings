@@ -3,6 +3,7 @@
 module luban.service;
 
 import std;
+import luban.compat;
 import xlings.libs.json;
 import xlings.libs.sha256;
 import xlings.platform;
@@ -114,7 +115,7 @@ std::optional<std::string> official_system(const Port& port, std::string_view sh
     for (const auto& p : official_in_(port, name, "distribution")) {
         const auto ns = p.value("namespace", std::string{}), n = p.value("name", std::string{});
         if (ns == "luban" && n == name) return std::format("luban:{}{}", name, version);
-        if (ns == "subos" && n == "luban-" + name) frozen = std::format("subos:luban-{}{}", name, version);
+        if (luban::compat::frozen_package(ns, n, name)) frozen = luban::compat::frozen_ref(name, version);
     }
     return frozen;
 }
@@ -259,7 +260,7 @@ Lineage lineage_of(const Environment& e) {
     // A record from before the indexes were kept: a published Luban name is official.
     auto index_of = [](const std::string& ref, const std::string& recorded) {
         if (!recorded.empty()) return recorded;
-        return ref.starts_with("luban:") || ref.starts_with("subos:luban-") ? std::string(kOfficialIndex) : std::string{};
+        return ref.starts_with("luban:") || luban::compat::frozen_edition(ref) ? std::string(kOfficialIndex) : std::string{};
     };
     l.layers.push_back({e.edition, index_of(e.edition, e.edition_index), e.manifest});
     for (std::size_t i = 0; i < e.chain.size(); ++i)

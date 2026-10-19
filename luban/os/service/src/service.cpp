@@ -1,6 +1,7 @@
 module luban.service;
 
 import std;
+import luban.compat;
 import xlings.libs.json;
 import opencaps;
 import xlings.platform;
@@ -828,7 +829,7 @@ Outcome upgrade(const Context& c, std::string_view name, std::string_view to, bo
     // A published name that is frozen (subos:luban-*) moves to the official
     // edition that says it replaces it (design §15.1): luban asks the index.
     if (target.empty())
-        if (const auto e = describe(c, name); e && e->edition.starts_with("subos:luban-"))
+        if (const auto e = describe(c, name); e && luban::compat::frozen_edition(e->edition))
             if (auto next = successor_(c, name, e->edition)) {
                 if (c.sink) c.sink(notice(std::format("{} moves from {} to {}, which replaces it", name, e->edition, *next)));
                 target = *next;
@@ -1152,7 +1153,7 @@ std::vector<std::string> welcome(const Environment& e, std::string_view mode, bo
         return style.color ? std::format("\x1b[{}m{}\x1b[0m", code, text) : text;
     };
     std::string edition = e.edition;
-    if (edition.starts_with("subos:luban-")) edition = edition.substr(12);
+    edition = std::string(luban::compat::without_frozen_prefix(edition));
     if (const auto at = edition.find('@'); at != std::string::npos) edition[at] = ' ';
     const auto persist = temp ? std::string("none") : e.settings.persist;
     const auto mark = kind_mark(mode, persist);

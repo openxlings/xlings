@@ -1,0 +1,23 @@
+# luban/os/compat: every judgement and path that exists only for a released
+# older version of a Luban part, in one place, so each can be removed when it
+# is no longer needed (design 2026-10-19 §15.3). Nothing else in luban/ or
+# apps/ branches on an old version (tools/lint_compat.sh).
+#
+#   luban.compat             the entries: what each serves, since when, and
+#                            when it goes
+#   luban.compat:editions    frozen edition names (subos:luban-*) and their
+#                            successors in the luban: namespace
+#   luban.compat:pointer     an xdesk of 2026.10.18.1 or before: it neither
+#                            asks for the host's pointer nor draws one
+#   luban.compat:processes   Luban OS windows of 2026.10.18.1 or before: they
+#                            do not register with the tray (Linux)
+[package]
+namespace = "luban"
+name      = "luban-compat"
+version   = "0.1.0"
+
+[targets.luban-compat]
+kind = "lib"
+
+[dependencies]
+platform = { path = "../../../modules/platform" }   # a user's processes

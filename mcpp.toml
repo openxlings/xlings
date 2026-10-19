@@ -44,6 +44,7 @@ members = [
     "modules/carrier",
     "modules/image",
     "luban/os/system",
+    "luban/os/compat",
     "luban/os/service",
     "luban/os/vm",
     "luban/os/cli",
@@ -188,6 +189,7 @@ testkit = { path = "modules/testkit" }
 # binary itself never links them.
 luban-system = { path = "luban/os/system" }
 luban-cli    = { path = "luban/os/cli" }
+luban-compat = { path = "luban/os/compat" }
 opensal     = { path = "luban/specs/opensal" }
 openhal     = { path = "luban/specs/openhal" }
 openas      = { path = "luban/specs/openas" }

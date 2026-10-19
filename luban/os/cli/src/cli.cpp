@@ -1,6 +1,7 @@
 module luban.cli;
 
 import std;
+import luban.compat;
 import xlings.subos.root_etc;
 import xlings.libs.sha512;
 import xlings.cli.model;
@@ -34,7 +35,7 @@ namespace {
 // way to everything xlings can do starts from here.
 const std::map<std::string, std::string, std::less<>>& equivalents() {
     static const std::map<std::string, std::string, std::less<>> value{
-        {"new", "xlings subos new <name> --from subos:luban-<edition>"},
+        {"new", "xlings subos new <name> --from luban:<edition>"},
         {"enter", "xlings subos use <name> [--persist home|none]"},
         {"run", "xlings subos exec <name> -- <command...>"},
         {"ls", "xlings subos list"},
@@ -942,7 +943,7 @@ int cmd_upgrade(const svc::Context& c, const Parsed& p, const Globals& g, Render
     if (!out.ok() || g.json || out.value.value("up_to_date", true)) return out.code;
     // What moves: the edition, its packages, its policy.
     const auto& v = out.value;
-    const auto label = [](const std::string& ref) { return ref.starts_with("subos:luban-") ? ref.substr(12) : ref; };
+    const auto label = [](const std::string& ref) { return std::string(luban::compat::without_frozen_prefix(ref)); };
     r.say(std::format("  edition  {} -> {}", label(v.value("from", "")), label(v.value("to", ""))));
     for (const auto& row : v.value("upgrade", Json::array()))
         r.say(std::format("  upgrade  {} {} -> {}", row.value("key", ""), row.value("from", "?"), row.value("to", "")));

@@ -10,6 +10,7 @@ version   = "0.1.0"
 kind = "lib"
 
 [dependencies]
+luban-compat = { path = "../compat" }
 libs     = { path = "../../../modules/libs" }
 platform = { path = "../../../modules/platform" }
 runtime  = { path = "../../../modules/runtime" }

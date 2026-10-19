@@ -32,6 +32,7 @@ commands = [
   "bash tools/lint_platform_headers.sh",
   "bash tools/lint_platform_branches.sh",
   "bash tools/lint_layer_deps.sh",
+  "bash tools/lint_compat.sh",
   "bash tools/lint_tool_resolve.sh",
   "bash tools/lint_host_deps.sh",
   "bash tools/lint_tools_provenance.sh",

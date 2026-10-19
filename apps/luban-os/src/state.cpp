@@ -4,6 +4,7 @@
 module luban.os;
 
 import std;
+import luban.compat;
 import xlings.libs.json;
 import imkit;
 import tray;
@@ -90,7 +91,7 @@ void App::start_job(std::string title, std::function<void(Job&, service::Context
 
 std::string App::edition_name(const service::Environment& e) {
     auto label = e.edition;
-    if (label.starts_with("subos:luban-")) label = label.substr(12);
+    label = std::string(luban::compat::without_frozen_prefix(label));
     if (const auto at = label.find('@'); at != std::string::npos) label = label.substr(0, at);
     return label;
 }

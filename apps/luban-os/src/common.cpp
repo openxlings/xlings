@@ -4,6 +4,7 @@
 module luban.os;
 
 import std;
+import luban.compat;
 import xlings.libs.json;
 import imkit;
 import tray;
@@ -212,7 +213,7 @@ std::string edition_label_(const service::Environment& e) {
     // An environment with no edition is a view of this host (its packages, no root of its own).
     if (e.edition.empty()) return std::string(e.kind == "view" ? tr("host view", "宿主视图") : tr("root", "根环境"));
     auto label = e.edition;
-    if (label.starts_with("subos:luban-")) label = label.substr(12);
+    label = std::string(luban::compat::without_frozen_prefix(label));
     return label;   // with its version
 }
 

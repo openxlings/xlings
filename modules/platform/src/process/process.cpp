@@ -669,6 +669,33 @@ bool set_terminal_size(int fd, unsigned short rows, unsigned short cols) {
 
 bool process_alive(int pid) { return pid > 0 && (::kill(pid, 0) == 0 || errno == EPERM); }
 
+bool can_list_processes() {
+    std::error_code ec;
+    return std::filesystem::is_directory("/proc/self", ec);
+}
+
+std::vector<OwnProcess> own_processes() {
+    std::vector<OwnProcess> out;
+    if (!can_list_processes()) return out;
+    const auto uid = ::getuid();
+    std::error_code ec;
+    for (std::filesystem::directory_iterator it("/proc", ec), end; !ec && it != end; it.increment(ec)) {
+        const auto name = it->path().filename().string();
+        if (name.empty() || !std::ranges::all_of(name, [](char c) { return c >= '0' && c <= '9'; })) continue;
+        struct stat st {};
+        if (::stat(it->path().c_str(), &st) != 0 || st.st_uid != uid) continue;
+        OwnProcess p;
+        p.pid = std::stoi(name);
+        std::error_code lec;
+        p.exe = std::filesystem::read_symlink(it->path() / "exe", lec);
+        std::ifstream in(it->path() / "cmdline", std::ios::binary);
+        std::string arg;
+        while (std::getline(in, arg, '\0')) p.argv.push_back(arg);
+        out.push_back(std::move(p));
+    }
+    return out;
+}
+
 std::optional<int> spawn_detached(const std::vector<std::string>& argv, const std::filesystem::path& log) {
     if (argv.empty()) return std::nullopt;
     int report[2];
@@ -1005,6 +1032,8 @@ int open_device(const std::filesystem::path&) { return -1; }
 std::optional<std::pair<unsigned short, unsigned short>> terminal_size(int) { return std::nullopt; }
 bool set_terminal_size(int, unsigned short, unsigned short) { return false; }
 bool process_alive(int) { return false; }
+bool can_list_processes() { return false; }
+std::vector<OwnProcess> own_processes() { return {}; }
 int current_pid() { return static_cast<int>(::GetCurrentProcessId()); }
 std::optional<int> spawn_detached(const std::vector<std::string>&, const std::filesystem::path&) { return std::nullopt; }
 int unix_accept(int) { return -1; }
