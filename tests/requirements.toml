@@ -1059,6 +1059,10 @@ status = "required"
 text = "luban's default output is one line per phase, the conclusion and the next step in luban's own commands; a step's own lines are -v's; --json is one event per line and the result"
 status = "required"
 
+[LUBAN-PROGRESS-WIDTH]
+text = "on a terminal the running phase's line is cut to the terminal's width less one column (the detail first, then the phase, the cut marked with an ellipsis), so rewriting it in place never wraps and never adds a line"
+status = "required"
+
 [LUBAN-SHELL]
 text = "an environment's login shell is its passwd's: a root made now gets the best shell its /usr has once its packages are in (fish, bash, else sh), or the one its edition names (login_shell) when it has it, and its login user the same; luban config --shell changes it, a shell the root lacks is refused with the install that brings it, and every way in reads the same answer -- a terminal joining a running session included"
 status = "required"

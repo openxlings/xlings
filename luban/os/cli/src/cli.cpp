@@ -81,6 +81,54 @@ fs::path home_dir_() {
     return ".xlings";
 }
 
+// ── Display width (the progress line, design 2026-10-20 §3) ──────────
+//
+// Columns a code point takes on a terminal: 2 for the East Asian wide and
+// full-width ranges and emoji, 0 for combining marks, 1 otherwise.
+int columns_of_(char32_t c) {
+    if ((c >= 0x0300 && c <= 0x036F) || (c >= 0x200B && c <= 0x200F) || (c >= 0xFE00 && c <= 0xFE0F)) return 0;
+    if ((c >= 0x1100 && c <= 0x115F) || (c >= 0x2E80 && c <= 0x303E) || (c >= 0x3041 && c <= 0x33FF)
+        || (c >= 0x3400 && c <= 0x4DBF) || (c >= 0x4E00 && c <= 0x9FFF) || (c >= 0xA000 && c <= 0xA4CF)
+        || (c >= 0xAC00 && c <= 0xD7A3) || (c >= 0xF900 && c <= 0xFAFF) || (c >= 0xFE30 && c <= 0xFE4F)
+        || (c >= 0xFF00 && c <= 0xFF60) || (c >= 0xFFE0 && c <= 0xFFE6) || (c >= 0x1F300 && c <= 0x1FAFF)
+        || (c >= 0x20000 && c <= 0x3FFFD))
+        return 2;
+    return 1;
+}
+
+// The next code point of `s` from `i` (advanced); a stray byte is one column.
+char32_t next_code_point_(std::string_view s, std::size_t& i) {
+    const auto b = static_cast<unsigned char>(s[i]);
+    const std::size_t n = b < 0x80 ? 1 : (b >> 5) == 0x6 ? 2 : (b >> 4) == 0xE ? 3 : (b >> 3) == 0x1E ? 4 : 1;
+    if (n == 1 || i + n > s.size()) return ++i, b;
+    char32_t c = b & (0x7F >> n);
+    for (std::size_t k = 1; k < n; ++k) c = (c << 6) | (static_cast<unsigned char>(s[i + k]) & 0x3F);
+    i += n;
+    return c;
+}
+
+int display_width_(std::string_view s) {
+    int w = 0;
+    for (std::size_t i = 0; i < s.size();) w += columns_of_(next_code_point_(s, i));
+    return w;
+}
+
+// `s` cut to at most `cols` columns, the cut marked with `…`.
+std::string fit_(std::string_view s, int cols) {
+    if (cols <= 0) return {};
+    if (display_width_(s) <= cols) return std::string(s);
+    std::string out;
+    int w = 0;
+    for (std::size_t i = 0; i < s.size();) {
+        const auto from = i;
+        const int c = columns_of_(next_code_point_(s, i));
+        if (w + c > cols - 1) break;
+        w += c;
+        out.append(s.substr(from, i - from));
+    }
+    return out + "…";
+}
+
 std::string human_size_(std::uintmax_t bytes) {
     const char* units[] = {"B", "KB", "MB", "GB", "TB"};
     double v = static_cast<double>(bytes);
@@ -131,7 +179,7 @@ public:
             if (e.state == "begin") {
                 close_();
                 open_ = e.text;
-                if (tty_) std::print("{} {}", paint_("▸", 36), open_), std::cout.flush();
+                if (tty_) live_({}, {});
                 else if (!g_.quiet) std::println("▸ {}", open_);
             } else {
                 const bool ok = e.state == "done";
@@ -142,13 +190,8 @@ public:
             }
             break;
         case K::Progress:
-            if (tty_ && !open_.empty()) {
-                std::string detail = e.text;
-                if (detail.size() > 60) detail = detail.substr(0, 57) + "...";
-                std::print("\r\033[K{} {}{}  {}", paint_("▸", 36), open_,
-                           e.percent >= 0 ? std::format("  {:3.0f}%", e.percent * 100) : std::string{}, paint_(detail, 2));
-                std::cout.flush();
-            }
+            if (tty_ && !open_.empty())
+                live_(e.percent >= 0 ? std::format("  {:3.0f}%", e.percent * 100) : std::string{}, e.text);
             break;
         case K::Log:
             if (e.level == "warn") above_(std::format("{} {}", paint_("!", 33), e.text));
@@ -181,10 +224,7 @@ public:
                 std::string detail = std::format("{:.1f} MB", done / 1e6);
                 if (total > 0) detail += std::format(" / {:.1f} MB", total / 1e6);
                 if (!current.empty()) detail += "  " + current;
-                if (detail.size() > 60) detail = detail.substr(0, 57) + "...";
-                std::print("\r\033[K{} {}{}  {}", paint_("▸", 36), open_,
-                           total > 0 ? std::format("  {:3.0f}%", done / total * 100) : std::string{}, paint_(detail, 2));
-                std::cout.flush();
+                live_(total > 0 ? std::format("  {:3.0f}%", done / total * 100) : std::string{}, detail);
             }
             break;
         }
@@ -223,11 +263,30 @@ private:
     // A line above the running phase.
     void above_(std::string_view line) {
         if (tty_ && !open_.empty()) {
-            std::print("\r\033[K{}\n{} {}", line, paint_("▸", 36), open_);
-            std::cout.flush();
+            std::print("\r\033[K{}\n", line);
+            live_({}, {});
         } else {
             std::println("{}", line);
         }
+    }
+    // The running phase's line, rewritten in place: `▸ <phase><percent>  <detail>`
+    // cut to the terminal's width less one column (some terminals wrap on
+    // writing the last), the detail first, then the phase. A line that wraps
+    // is one `\r` can no longer return over, and every refresh added a line.
+    void live_(const std::string& percent, std::string_view detail) {
+        const auto size = xlings::platform::terminal_size(1);
+        const int cols = (size && size->second > 0 ? size->second : 80) - 1;
+        const int head = 2 + display_width_(open_) + display_width_(percent);
+        std::string line;
+        if (head <= cols) {
+            line = std::format("{} {}{}", paint_("▸", 36), open_, percent);
+            if (const int room = cols - head - 2; !detail.empty() && room >= 4)
+                line += "  " + paint_(fit_(detail, room), 2);
+        } else {
+            line = std::format("{} {}", paint_("▸", 36), fit_(open_, cols - 2));
+        }
+        std::print("\r\033[K{}", line);
+        std::cout.flush();
     }
     void close_() {
         if (tty_ && !open_.empty()) {

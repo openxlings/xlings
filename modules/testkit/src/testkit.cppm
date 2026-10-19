@@ -118,6 +118,8 @@ struct RunOptions {
     // changes the terminal's modes there is stopped by the kernel; the run
     // then ends with kStoppedByTerminal. POSIX only.
     bool pty_background { false };
+    // With pty: the terminal's columns (0 = the kernel's default, none).
+    unsigned short pty_columns { 0 };
 };
 
 // The exit code of a pty_background run whose program the kernel stopped

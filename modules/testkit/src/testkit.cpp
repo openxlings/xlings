@@ -427,6 +427,12 @@ RunResult run(const RunOptions& o) {
             int slave = ::open(slave_name.c_str(), O_RDWR);
             if (slave < 0) ::_exit(126);
             ::ioctl(slave, TIOCSCTTY, 0);
+            if (o.pty_columns > 0) {
+                struct winsize ws{};
+                ws.ws_row = 24;
+                ws.ws_col = o.pty_columns;
+                ::ioctl(slave, TIOCSWINSZ, &ws);
+            }
             ::dup2(slave, 0); ::dup2(slave, 1); ::dup2(slave, 2);
             if (slave > 2) ::close(slave);
             if (o.pty_background) {

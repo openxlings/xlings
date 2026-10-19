@@ -490,6 +490,57 @@ XTEST(Luban, NewSaysWhatItMadeAndHowToGoInAndNotItsSteps,
     EXPECT_TRUE(result) << json.out;
 }
 
+// The running phase's line is rewritten in place with `\r`; a line wider
+// than the terminal wraps, `\r` returns only to the wrapped part, and every
+// refresh added a line (2026.10.19.2, an 80-column terminal).
+XTEST(Luban, TheRunningPhaseLineFitsTheTerminal,
+      .area = "luban", .cost = tk::Cost::Medium, .covers = {"LUBAN-PROGRESS-WIDTH"},
+      .requires_ = {"linux", "xlings-bin", "pty"}) {
+    if constexpr (!tk::is_linux) GTEST_SKIP() << "a Luban root is a Linux root";
+    const auto bin = luban_binary();
+    if (!bin) GTEST_SKIP() << "no luban beside the xlings under test";
+    auto home = luban_home("luban-progress-width", *bin);
+    tk::RunOptions o;
+    o.argv = {(home.dir() / "bin/luban").string(), "new", "box-with-a-rather-long-name", "--xpkg",
+              "fixture:my-os@1.0.0", "-y"};
+    o.env = home.env();
+    o.env["XLINGS_TOOLS_SEARCH"] = "home";
+    o.env.erase("XLINGS_SUBOS_MODE");
+    o.env.erase("XLINGS_ACTIVE_SUBOS");
+    o.pty = true;
+    o.pty_columns = 30;
+    o.timeout = std::chrono::seconds(90);
+    const auto made = tk::run(o);
+    ASSERT_EQ(made.exit_code, 0) << made.transcript();
+    // Each piece the terminal draws between two `\r` / `\n`, its escapes
+    // removed; one holding `▸` is the running phase's line.
+    int running = 0;
+    std::string piece;
+    auto check = [&] {
+        std::string plain;
+        for (std::size_t i = 0; i < piece.size(); ++i) {
+            if (piece[i] == '\033') {
+                while (i < piece.size() && !std::isalpha(static_cast<unsigned char>(piece[i]))) ++i;
+                continue;
+            }
+            plain += piece[i];
+        }
+        piece.clear();
+        if (plain.find("▸") == std::string::npos) return;
+        ++running;
+        int cols = 0;
+        for (unsigned char c : plain) cols += (c & 0xC0) != 0x80;
+        EXPECT_LE(cols, 29) << "wider than the terminal less one: " << plain;
+    };
+    for (char c : made.out) {
+        if (c == '\r' || c == '\n') check();
+        else piece += c;
+    }
+    check();
+    EXPECT_GT(running, 0) << made.out;
+    EXPECT_NE(made.out.find("…"), std::string::npos) << "the cut is marked\n" << made.out;
+}
+
 XTEST(Luban, AnEnvironmentsSettingsAreItsAndItsShellIsItsPasswds,
       .area = "luban", .cost = tk::Cost::Medium, .covers = {"LUBAN-SETTINGS", "LUBAN-SHELL"}, .requires_ = {"linux", "xlings-bin"}) {
     if constexpr (!tk::is_linux) GTEST_SKIP() << "a Luban root is a Linux root";
