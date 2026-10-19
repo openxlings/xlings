@@ -44,4 +44,12 @@ std::vector<fs::path> files(std::string_view profile, const std::map<std::string
 // Every file there, read in order and merged.
 Settings load(std::string_view profile, const std::map<std::string, std::string>& env);
 
+// The person's own file of a profile (the last of `files`), and a key set
+// in it -- the line replaced where it is, else added to its section (made
+// when there is none); the rest of the file, comments too, as it was. What
+// the settings window changes (design 2026-10-20 §11.4).
+fs::path person_file(std::string_view profile, const std::map<std::string, std::string>& env);
+std::expected<void, std::string> set_value(std::string_view profile, const std::map<std::string, std::string>& env,
+                                           std::string_view section, std::string_view key, std::string_view value);
+
 }  // namespace xdesk::config

@@ -1155,6 +1155,14 @@ status = "required"
 text = "a second Luban OS window on a running desktop is another display of it (opensal Displays): it mirrors the first -- the same frames at the first's size, its own size not the desktop's, its shape kept, said in its title -- its input is the desktop's; when the first window closes the desktop goes on (xdesk) and the next window is the primary at its own size; a bridged desktop (labwc, KDE, LXQt) ends with its first window"
 status = "required"
 
+[XDESK-KEYS]
+text = "xdesk's keys are the Luban set (design 2026-10-20 §12.2: the Super layer, Alt+Tab, Alt+F4, Ctrl+Alt+T; Super+F maximizes, Super+Shift+F full screen, Super+1-9 workspaces) or Luban without hjkl; a key is changed at the keys page (Super+/: search, Enter then the chord, Delete back to the set's; one taken from another action is said) or with `xdesk msg keys`, kept in keys.json; Super held a second shows the keys used most; docs/generated/xdesk-keys.md is generated from the table"
+status = "required"
+
+[XDESK-SETTINGS]
+text = "xdesk's settings (Super+I, the launcher, `xdesk msg settings PAGE`) has pages for the displays, the layout (this workspace's arrangement, flow, gaps, the narrowest column, the canvas's minimap and snap), the appearance (accent, background, reduce motion), the keys and about (the system, xdesk, kernel, renderer, displays, CPU, memory, the files, the projects; copied as text); a change takes effect at once and is kept in the person's settings file; the launcher finds its pages and every action, with its keys"
+status = "required"
+
 [XDESK-PERF]
 text = "xdesk keeps within its CPU budgets on the software renderer: the overview toggled ten times costs at most 2 s of CPU (xdesk and the window together, beyond a still session of the same length); a still desktop sends no frames"
 status = "required"

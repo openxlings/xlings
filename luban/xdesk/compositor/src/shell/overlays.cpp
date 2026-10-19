@@ -277,4 +277,122 @@ Picture hint(draw::Fonts* ui, const Theme& t, std::string_view text, int width, 
     return p;
 }
 
+Picture settings(draw::Fonts* ui, draw::Fonts* big, const Theme& t, const SettingsView& v, int width, int height, bool zh,
+                 double scale) {
+    Picture p;
+    p.image = image_(width, height, scale);
+    draw::Canvas c(p.image, scale);
+    c.fill({0, 0, double(width), double(height)}, t.overlay);
+    const double cw = std::min(940.0, width - 40.0), ch = std::min(660.0, height - 40.0);
+    const Rect card { std::round((width - cw) / 2), std::round((height - ch) / 2), cw, ch };
+    c.fill(card, t.card, t.radius + 6);
+    c.frame(card, Color::rgb(0x3a4050), 1, t.radius + 6);
+    // The pages.
+    const double side = 190;
+    c.fill({card.x, card.y, side, card.height}, Color::rgb(0x191c23), t.radius + 6);
+    double y = card.y + 18;
+    if (ui) c.text(*ui, tr_(zh, "Settings", "设置"), card.x + 20, std::round(y + 14), t.muted);
+    y += 34;
+    for (std::size_t k = 0; k < v.pages.size(); ++k) {
+        const Rect r { card.x + 10, y, side - 20, 34 };
+        if (k == v.page) c.fill(r, t.selected, 8);
+        if (ui) c.text(*ui, v.pages[k], r.x + 12, std::round(r.y + 22), k == v.page ? t.text : t.muted, r.width - 20);
+        p.areas.push_back({.rect = r, .target = Target::page, .index = static_cast<int>(k)});
+        y += 38;
+    }
+    // The page.
+    const double x0 = card.x + side + 28, x1 = card.x + card.width - 28;
+    double top = card.y + 22;
+    if (big) c.text(*big, v.title, x0, std::round(top + 20), t.text, x1 - x0);
+    else if (ui) c.text(*ui, v.title, x0, std::round(top + 16), t.text, x1 - x0);
+    top += 44;
+    const double bottom = card.y + card.height - 40, row_h = 38;
+    const auto capacity = static_cast<std::size_t>(std::max(1.0, std::floor((bottom - top) / row_h)));
+    std::size_t first = 0;
+    if (v.selected && *v.selected >= capacity) first = *v.selected - capacity + 1;
+    if (v.rows.size() > capacity && first + capacity > v.rows.size()) first = v.rows.size() - capacity;
+    y = top;
+    for (std::size_t k = first; k < v.rows.size() && k < first + capacity; ++k) {
+        const auto& r = v.rows[k];
+        const Rect line { x0 - 10, y, x1 - x0 + 20, row_h - 4 };
+        const bool lit = v.selected == k;
+        const double base = std::round(y + 23);
+        using K = SettingsRow::Kind;
+        if (lit && r.kind != K::heading) c.fill(line, v.capturing ? t.accent : t.selected, 8);
+        const Color text = lit && v.capturing ? Color::rgb(0x0f1115) : t.text;
+        switch (r.kind) {
+            case K::heading:
+                if (ui) c.text(*ui, r.label, x0, std::round(y + 27), t.muted);
+                break;
+            case K::text: {
+                if (!ui) break;
+                const double lw = r.value.empty() ? x1 - x0 : std::min(ui->width(r.label), (x1 - x0) * 0.45);
+                c.text(*ui, r.label, x0, base, text, lw);
+                if (!r.value.empty()) {
+                    const double vw = std::min(ui->width(r.value), x1 - x0 - lw - 24);
+                    c.text(*ui, r.value, x1 - vw, base, t.muted, vw);
+                }
+                break;
+            }
+            case K::toggle: {
+                if (ui) c.text(*ui, r.label, x0, base, text, x1 - x0 - 70);
+                const Rect sw { x1 - 40, y + 8, 40, 20 };
+                c.fill(sw, r.on ? t.accent : Color::rgb(0x3a4050), 10);
+                c.fill({r.on ? sw.x + 22 : sw.x + 2, sw.y + 2, 16, 16}, Color::rgb(0xf0f2f5), 8);
+                break;
+            }
+            case K::choice: {
+                double cx = x1;
+                std::vector<Rect> chips(r.choices.size());
+                for (std::size_t j = r.choices.size(); j-- > 0;) {
+                    const double w = (ui ? ui->width(r.choices[j]) : 30) + 22;
+                    cx -= w;
+                    chips[j] = {cx, y + 5, w, row_h - 14};
+                    cx -= 6;
+                }
+                if (ui) c.text(*ui, r.label, x0, base, text, std::max(40.0, cx - x0 - 12));
+                for (std::size_t j = 0; j < chips.size(); ++j) {
+                    const bool on = j == r.chosen;
+                    c.fill(chips[j], on ? t.accent : Color::rgb(0x2a2f3a), 7);
+                    if (ui) c.text(*ui, r.choices[j], chips[j].x + 11, base, on ? Color::rgb(0x0f1115) : t.muted);
+                    p.areas.push_back({.rect = chips[j], .target = Target::choice, .index = static_cast<int>(k * 64 + j)});
+                }
+                break;
+            }
+            case K::keys: {
+                if (!ui) break;
+                const auto keys = lit && v.capturing ? std::string(tr_(zh, "Press the keys…", "按下新的组合键…")) : r.value;
+                const double kw = std::min(ui->width(keys), (x1 - x0) * 0.5);
+                c.text(*ui, r.label, x0 + (r.changed ? 12 : 0), base, text, x1 - x0 - kw - 30);
+                if (r.changed) c.fill({x0, y + 15, 6, 6}, t.accent, 3);
+                c.text(*ui, keys, x1 - kw, base, lit && v.capturing ? text : t.muted, kw);
+                break;
+            }
+            case K::button: {
+                const double w = (ui ? ui->width(r.label) : 60) + 28;
+                c.fill({x0, y + 4, w, row_h - 12}, lit ? t.accent : Color::rgb(0x2a2f3a), 8);
+                if (ui) c.text(*ui, r.label, x0 + 14, base, lit ? Color::rgb(0x0f1115) : t.text);
+                if (ui && !r.value.empty()) c.text(*ui, r.value, x0 + w + 14, base, t.muted, x1 - x0 - w - 14);
+                break;
+            }
+            case K::search: {
+                const Rect field { x0, y + 3, x1 - x0, row_h - 10 };
+                c.fill(field, Color::rgb(0x14161c), 8);
+                c.frame(field, lit ? t.accent : Color::rgb(0x3a4050), 1, 8);
+                if (ui) c.text(*ui, r.value.empty() ? r.label : r.value, field.x + 12, base, r.value.empty() ? t.muted : t.text,
+                               field.width - 24);
+                break;
+            }
+        }
+        if (r.kind != K::heading) p.areas.push_back({.rect = line, .target = Target::item, .index = static_cast<int>(k)});
+        y += row_h;
+    }
+    if (v.rows.size() > capacity && ui) {
+        const auto more = std::format("{}–{} / {}", first + 1, std::min(v.rows.size(), first + capacity), v.rows.size());
+        c.text(*ui, more, x1 - ui->width(more), std::round(card.y + 44), Color::rgb(0x5c6370));
+    }
+    if (ui) c.text(*ui, v.hint, x0, std::round(card.y + card.height - 16), Color::rgb(0x5c6370), x1 - x0);
+    return p;
+}
+
 }  // namespace xdesk::shell

@@ -66,6 +66,7 @@ void Server::key(const opensal::Key& k) {
         wlr_keyboard_notify_key(&keyboard, &ev);
         const xkb_keysym_t* syms = nullptr;
         const xkb_keysym_t sym = xkb_state_key_get_syms(keyboard.xkb_state, code + 8, &syms) > 0 ? syms[0] : 0;
+        pressed_code = code;
         const bool super_key = sym == key::Super_L || sym == key::Super_R;
         // Alt with Shift is Meta in the usual keymaps.
         const bool alt_key = sym == key::Alt_L || sym == key::Alt_R || sym == key::Meta_L || sym == key::Meta_R;
@@ -74,17 +75,21 @@ void Server::key(const opensal::Key& k) {
         // Alt let go: the window Alt+Tab holds; Super pressed and let go
         // alone opens the apps (design 2026-10-19 §16.3).
         if (!down && modifier) {
-            if (super_key && (overlay == Overlay::chooser || overlay == Overlay::switcher)) close_overlay(true);
-            else if (alt_key && overlay == Overlay::spread) close_overlay(true);
+            if (super_key && overlay == Overlay::sheet) close_overlay(false);   // the keys held on: gone, nothing opened
+            else if (super_key && (overlay == Overlay::chooser || overlay == Overlay::switcher)) close_overlay(true);
+            else if (alt_key && overlay == Overlay::spread && !spread_stays) close_overlay(true);
             else if (super_key && super_alone && overlay == Overlay::none) act(Action::apps);
         }
-        if (down) super_alone = super_key;
+        if (down) {
+            super_alone = super_key;
+            // Held a second alone: the keys used most (design 2026-10-20 §12.4).
+            if (super_key && hold_timer) wl_event_source_timer_update(hold_timer, 1000);
+        }
         // Dragged onto a new column: 1-4 is its width (evdev 2-5).
         if (down && code >= 2 && code <= 5 && drag_width(0, static_cast<int>(code) - 1)) return;
         // An overlay takes the keys (a modifier still reaches the windows: they track it).
         if (!modifier && overlay != Overlay::none) {
-            overlay_key(sym, down);
-            return;
+            if (overlay_key(sym, down)) return;
         }
         if (down && shortcut(code)) return;
         if (launcher.is_open()) {

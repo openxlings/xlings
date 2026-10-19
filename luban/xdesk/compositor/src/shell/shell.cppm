@@ -62,7 +62,7 @@ struct PanelState {
     bool zh { false };
 };
 
-enum class Target { none, launcher, workspace, overview, item };
+enum class Target { none, launcher, workspace, overview, item, page, choice };
 struct Area {
     draw::Rect rect;                // output pixels
     Target target { Target::none };
@@ -180,6 +180,33 @@ struct MinimapPicture {
 };
 MinimapPicture minimap(const Theme& t, const std::vector<draw::Rect>& boxes, draw::Rect view, draw::Rect bounds, int width,
                        int height, double scale = 1);
+// The settings (design 2026-10-20 §11.4): its pages down the left, the
+// chosen one's rows on the right -- a heading, a line of text, a switch, a
+// choice among a few, an action's keys, a button, a search field -- one row
+// lit (the keys' focus; `capturing`: a key being given to it), and what the
+// keys do at the bottom. Areas: a page (Target::page, its index), a row
+// (Target::item, its index), a row's choice (Target::choice, row * 64 + choice).
+struct SettingsRow {
+    enum class Kind { heading, text, toggle, choice, keys, button, search };
+    Kind kind { Kind::text };
+    std::string label;
+    std::string value;              // text: beside it; keys: the chords; search: what is typed
+    std::vector<std::string> choices;
+    std::size_t chosen { 0 };
+    bool on { false };
+    bool changed { false };         // keys: not the set's own
+};
+struct SettingsView {
+    std::vector<std::string> pages;
+    std::size_t page { 0 };
+    std::string title;
+    std::vector<SettingsRow> rows;
+    std::optional<std::size_t> selected;
+    bool capturing { false };
+    std::string hint;
+};
+Picture settings(draw::Fonts* ui, draw::Fonts* big, const Theme& t, const SettingsView& v, int width, int height, bool zh,
+                 double scale = 1);
 // A line said for a while at the bottom (the first time: what the keys are).
 Picture hint(draw::Fonts* ui, const Theme& t, std::string_view text, int width, int height, double scale = 1);
 

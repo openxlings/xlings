@@ -80,7 +80,7 @@ void Server::drag_motion() {
         if (const auto p = placement_of(dragged)) {
             layout::Rect r { cursor->x - drag_dx, cursor->y - drag_dy, p->width, p->height };
             layout::Snap sn{.rect = r};
-            if (!shift && o.snap) sn = lay.snap(dragged, r);
+            if (!shift && snap_on) sn = lay.snap(dragged, r);
             lay.place(dragged, sn.rect);
             show_guides(sn);
         }

@@ -156,6 +156,9 @@ struct Popup {
     Hook commit, destroy;
 };
 
+// The settings' pages (design 2026-10-20 §11.4).
+enum class SettingsPage { displays, layout, appearance, keys, about };
+
 // What a held button is doing.
 enum class Drag { none, pan, move, gap, row_gap, resize };
 
@@ -270,7 +273,7 @@ struct Server {
     // arrangements and the applications are held with Super and chosen on
     // its release, the windows (spread) with Alt; the keys' sheet and a
     // window's menu stay until a key or a click.
-    enum class Overlay { none, chooser, switcher, spread, sheet, menu, layouts };
+    enum class Overlay { none, chooser, switcher, spread, sheet, menu, layouts, settings };
     Overlay overlay { Overlay::none };
     std::size_t overlay_at { 0 };
     std::vector<layout::Mode> chooser_modes;
@@ -285,14 +288,45 @@ struct Server {
     bool switcher_open { false };
     std::size_t switcher_window { 0 };
     // Alt+Tab (§10.2): the workspace's windows, the most recent first; shown
-    // only once Alt is held past a quick press.
+    // only once Alt is held past a quick press. Super+O's stays until one is chosen.
     std::vector<layout::Id> spread_ids;
     bool spread_shown { false };
+    bool spread_stays { false };
     // What the overview shows now: each window's place, and its scale.
     std::vector<std::pair<layout::Id, layout::Rect>> spread_rects;
     std::map<layout::Id, double> spread_zoom;
     wl_event_source* switch_timer { nullptr };   // the quick press, the second held on an application
+    wl_event_source* hold_timer { nullptr };     // Super held alone a second: the keys used most
     std::map<std::string, draw::Image> icons;    // an application's icon as the switcher draws it (empty: none)
+    // The settings (design 2026-10-20 §11.4): a page, its rows and what each
+    // does (act(0): the row's own action; act(-1 / +1): the choice before /
+    // after), the row lit, a key being given to it, what is searched.
+    SettingsPage settings_page { SettingsPage::displays };
+    struct SettingsItem {
+        shell::SettingsRow row;
+        std::function<void(int)> act;
+        std::string action;                      // a keys row: its action's name
+    };
+    std::vector<SettingsItem> settings_items;
+    std::size_t settings_row { 0 };
+    bool settings_capture { false };
+    std::string settings_search;
+    std::map<std::string, std::vector<std::string>> key_overrides;   // keys.json, as the person keeps it
+    std::uint32_t pressed_code { 0 };            // the evdev code of the key being handled
+    bool reduce_motion { false };                // windows go at once, not by springs
+    bool minimap_on { true }, snap_on { true };
+    // The control socket (design 2026-10-20 §12.3): `xdesk msg`, scripts, agents.
+    fs::path control_path;
+    int control_listener { -1 };
+    wl_event_source* control_source { nullptr };
+    struct Control {
+        Server* server { nullptr };
+        int fd { -1 };
+        wl_event_source* source { nullptr };
+        std::string buffer;
+        bool gone { false };
+    };
+    std::list<Control> controls;
     layout::Id menu_for { 0 };
     std::vector<std::string> menu_actions;       // by the menu's item
     shell::Picture overlay_picture;
@@ -472,11 +506,27 @@ struct Server {
     std::string name_of(View& v);
     std::string app_icon(const std::string& id);
 
+    // settings.cpp
+    void open_settings(SettingsPage page);
+    void settings_rows();
+    void draw_settings();
+    bool settings_key(xkb_keysym_t s);
+    bool settings_click(double x, double y);
+    void setting(std::string_view section, std::string_view key, std::string value);
+    void save_keys();
+    std::string rebind(const std::string& action, const Chord& c);
+    // control.cpp
+    void control_start();
+    void control_accept();
+    std::string control(std::string_view request);
+    void set_accent(std::uint32_t rgb);
+    std::string system_info();
+
     // switchers.cpp
     std::string app_of(View& v) const;
     std::vector<layout::Id> recent_windows();
     void open_switcher(bool back);
-    void open_spread(bool back);
+    void open_spread(bool back, bool stays = false);
     void other_app_window(bool back);
     void switch_timer_fired();
     void show_spread(const std::vector<layout::Id>& ids, layout::Rect area, layout::Id chosen);

@@ -37,6 +37,9 @@ Server::Server(const Options& opts)
     if (opts.accent) theme.accent = theme.selected = draw::Color::rgb(*opts.accent);
     if (opts.background) theme.background = draw::Color::rgb(*opts.background);
     pill = opts.profile == "canvas";
+    minimap_on = opts.minimap;
+    snap_on = opts.snap;
+    reduce_motion = opts.reduce_motion;
 }
 
 // ── start ────────────────────────────────────────────────────────
@@ -175,6 +178,7 @@ bool Server::start_() {
     if (!name) { log("no Wayland socket (XDG_RUNTIME_DIR?)"); return false; }
     socket = name;
     log("listening on " + socket);
+    control_start();
 
     // The first window, on the standard streams; the others at the displays socket.
     add_link(o.in, o.out);
@@ -212,6 +216,13 @@ bool Server::start_() {
         if (self->max_hover && self->overlay == Overlay::none && self->drag == Drag::none) self->open_layouts(self->max_hover);
         return 0;
     }, this);
+    hold_timer = wl_event_loop_add_timer(loop, [](void* data) -> int {
+        auto* self = static_cast<Server*>(data);
+        if (self->super_alone && self->overlay == Overlay::none && !self->launcher.is_open()
+            && self->held(wlr_keyboard_modifier::WLR_MODIFIER_LOGO))
+            self->open_sheet();
+        return 0;
+    }, this);
     switch_timer = wl_event_loop_add_timer(loop, [](void* data) -> int {
         static_cast<Server*>(data)->switch_timer_fired();
         return 0;
@@ -238,6 +249,16 @@ Server::~Server() {
     for (auto& l : links)
         if (l.source) wl_event_source_remove(l.source);
     if (displays_source) wl_event_source_remove(displays_source);
+    for (auto& c : controls) {
+        if (c.source) wl_event_source_remove(c.source);
+        os::close(c.fd);
+    }
+    if (control_source) wl_event_source_remove(control_source);
+    if (control_listener >= 0) {
+        os::close(control_listener);
+        std::error_code ec;
+        fs::remove(control_path, ec);
+    }
     if (displays_listener >= 0) {
         os::close(displays_listener);
         std::error_code ec;
@@ -249,6 +270,7 @@ Server::~Server() {
     if (hint_timer) wl_event_source_remove(hint_timer);
     if (max_timer) wl_event_source_remove(max_timer);
     if (switch_timer) wl_event_source_remove(switch_timer);
+    if (hold_timer) wl_event_source_remove(hold_timer);
     for (int pid : children) os::terminate(pid);
     new_toplevel.disconnect(); new_popup.disconnect(); new_decoration.disconnect(); frame.disconnect();
     request_cursor.disconnect(); request_selection.disconnect(); set_selection.disconnect(); new_text_input.disconnect();

@@ -35,7 +35,7 @@ built="$(dirname "$binary")/.."
 name="xdesk-$version-linux-$arch"
 out="$project/build/$name"
 rm -rf "$out"
-mkdir -p "$out/bin" "$out/libexec/lib" "$out/share/wayland-sessions" "$out/share/xdesk"
+mkdir -p "$out/bin" "$out/libexec/lib" "$out/share/wayland-sessions" "$out/share/xdesk" "$out/share/applications"
 cp "$binary" "$out/bin/xdesk"
 chmod 755 "$out/bin/xdesk"
 case "$arch" in
@@ -71,6 +71,7 @@ done
 readelf -l "$out/bin/xdesk" | grep -q "interpreter: $loader" || fail "the loader is not $loader"
 
 cp "$project"/luban/xdesk/app/share/wayland-sessions/*.desktop "$out/share/wayland-sessions/"
+cp "$project"/luban/xdesk/app/share/applications/*.desktop "$out/share/applications/"
 # The profiles' defaults (xdesk.config reads them from $XDG_DATA_DIRS/xdesk).
 cp "$project"/luban/xdesk/app/share/xdesk/*.ini "$out/share/xdesk/"
 

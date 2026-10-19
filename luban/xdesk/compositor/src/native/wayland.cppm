@@ -43,6 +43,8 @@ export using ::xkb_state_key_get_utf8;
 export using ::xkb_keysym_to_lower;
 export using ::xkb_keysym_from_name;
 export using ::xkb_keysym_get_name;
+export using ::xkb_keysym_to_utf32;
+export using ::xkb_keysym_to_utf8;
 export using ::xkb_keysym_flags;
 export using ::XKB_KEYSYM_CASE_INSENSITIVE;
 export using ::XKB_CONTEXT_NO_FLAGS;
@@ -62,7 +64,7 @@ export using ::wlr_xdg_decoration_manager_v1_create;
 export namespace xdesk::native::key {
 inline constexpr xkb_keysym_t Return = XKB_KEY_Return, KP_Enter = XKB_KEY_KP_Enter, Escape = XKB_KEY_Escape,
                               BackSpace = XKB_KEY_BackSpace, Tab = XKB_KEY_Tab, ISO_Left_Tab = XKB_KEY_ISO_Left_Tab,
-                              space = XKB_KEY_space, grave = XKB_KEY_grave,
+                              space = XKB_KEY_space, grave = XKB_KEY_grave, Delete = XKB_KEY_Delete,
                               Left = XKB_KEY_Left, Right = XKB_KEY_Right, Up = XKB_KEY_Up, Down = XKB_KEY_Down,
                               a = XKB_KEY_a, d = XKB_KEY_d, f = XKB_KEY_f, h = XKB_KEY_h, j = XKB_KEY_j, k = XKB_KEY_k,
                               l = XKB_KEY_l, m = XKB_KEY_m, o = XKB_KEY_o, q = XKB_KEY_q, r = XKB_KEY_r,

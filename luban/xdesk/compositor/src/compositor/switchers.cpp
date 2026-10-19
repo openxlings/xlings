@@ -243,7 +243,7 @@ bool Server::switcher_key(xkb_keysym_t s) {
 
 // ── Alt+Tab ──────────────────────────────────────────────────────────
 
-void Server::open_spread(bool back) {
+void Server::open_spread(bool back, bool stays) {
     if (overlay == Overlay::spread) {
         if (!spread_ids.empty()) overlay_at = (overlay_at + (back ? spread_ids.size() - 1 : 1)) % spread_ids.size();
         spread_shown = true;
@@ -254,8 +254,16 @@ void Server::open_spread(bool back) {
     spread_ids = recent_windows();
     if (spread_ids.empty()) return;
     const auto n = spread_ids.size();
-    overlay_at = n > 1 ? (back ? n - 1 : 1) : 0;
     overlay = Overlay::spread;
+    spread_stays = stays;
+    if (stays) {
+        // Super+O: every window at once, the focused one chosen, until one is.
+        overlay_at = 0;
+        spread_shown = true;
+        draw_overlay();
+        return;
+    }
+    overlay_at = n > 1 ? (back ? n - 1 : 1) : 0;
     // Shown once Alt is held: a quick press is the previous window, at once.
     spread_shown = false;
     wl_event_source_timer_update(switch_timer, kQuickMs);

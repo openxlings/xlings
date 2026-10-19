@@ -288,6 +288,7 @@ void Layout::add(Id id, Size preferred, bool floating) {
 }
 
 void Layout::remove(Id id) {
+    fullscreen_.erase(id);
     if (std::erase_if(sticky_, [&](const Window& w) { return w.id == id; }) > 0) {
         if (space_().focus == id) space_().focus.reset();
         return;
@@ -499,6 +500,19 @@ void Layout::toggle_maximized(Id id) {
     }
 }
 
+void Layout::toggle_fullscreen(Id id) { set_fullscreen(id, !fullscreen(id)); }
+
+void Layout::set_fullscreen(Id id, bool on) {
+    if (!window_(id)) return;
+    if (!on) { fullscreen_.erase(id); return; }
+    // One on a workspace: another there leaves it.
+    const auto ws = workspace_of(id);
+    std::erase_if(fullscreen_, [&](Id other) { return workspace_of(other) == ws; });
+    fullscreen_.insert(id);
+}
+
+bool Layout::fullscreen(Id id) const { return fullscreen_.contains(id); }
+
 bool Layout::maximized(Id id) const {
     const auto* w = window_(id);
     if (!w || w->floating) return false;
@@ -677,6 +691,17 @@ std::vector<Placement> Layout::arrange(Size output, Insets reserved) {
                 out.push_back({.id = w.id, .rect = w.free, .visible = overlaps(w.free, area), .focused = s.focus == w.id,
                                .floating = true, .pinned = w.pinned});
             }
+    }
+    // Full screen: the whole output, last (above everything).
+    std::erase_if(fullscreen_, [&](Id id) { return !window_(id); });
+    if (auto it = std::ranges::find_if(out, [&](const Placement& p) { return fullscreen_.contains(p.id); }); it != out.end()) {
+        auto p = *it;
+        out.erase(it);
+        p.rect = {0, 0, output.width, output.height};
+        p.visible = true;
+        p.fullscreen = true;
+        p.tiled = true;
+        out.push_back(p);
     }
     last_ = out;
     last_space_ = shown_;

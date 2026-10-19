@@ -115,6 +115,8 @@ struct Placement {
     // (tile; a maximized stacked window): the client is told so, and draws
     // to the size given rather than rounding to its own cells.
     bool tiled { false };
+    // The whole output, above everything, no title bar (design 2026-10-20 §12.2).
+    bool fullscreen { false };
     bool operator==(const Placement&) const = default;
 };
 
@@ -201,6 +203,11 @@ public:
     // whole width, and back to the width it had.
     void toggle_maximized(Id id);
     bool maximized(Id id) const;
+    // Full screen: the whole output (what is reserved for a panel too), over
+    // everything on its workspace; one at a time on a workspace.
+    void toggle_fullscreen(Id id);
+    void set_fullscreen(Id id, bool on);
+    bool fullscreen(Id id) const;
     // A floating, stacked or canvas window's frame was moved or resized by
     // hand (screen pixels). In a canvas group the group moves with it.
     void place(Id id, Rect screen);
@@ -376,6 +383,7 @@ private:
     std::vector<Placement> last_;
     int last_space_ { -1 };
     std::vector<Window> sticky_;    // on every workspace: floating, screen pixels
+    std::set<Id> fullscreen_;
 };
 
 // The overview's picture of windows (design 2026-10-20 §10.3) -- Alt+Tab,

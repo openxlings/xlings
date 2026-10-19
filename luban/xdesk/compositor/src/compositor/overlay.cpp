@@ -46,8 +46,11 @@ std::string_view mode_label_(layout::Mode m, bool zh) {
 
 void Server::load_person() {
     const auto env = os::environment();
-    if (auto k = config::read_keys(env)) keys.load(*k);
-    else {
+    if (auto k = config::read_keys(env)) {
+        key_overrides = *k;
+        key_overrides.erase("set");
+        keys.load(*k);
+    } else {
         log("keys: " + k.error() + " (the desktop's own keys are used)");
         keys.load({});
     }
@@ -69,7 +72,8 @@ void Server::load_person() {
         else if (session) lay.preset(w, *session);
     }
     if (!state.hinted) {
-        show_hint(tr_(zh, "Super+m: tile, stack, canvas  ·  Super+/: the keys", "Super+m 切换排布  ·  Super+/ 查看快捷键"), 8000);
+        show_hint(tr_(zh, "Super: apps  ·  Super+Tab: switch  ·  Super+Enter: a terminal  ·  Super+M: arrangements  ·  Super+/: every key, and changing them",
+                      "Super：应用  ·  Super+Tab：切换  ·  Super+Enter：终端  ·  Super+M：排布  ·  Super+/：全部快捷键，以及修改"), 10000);
         state.hinted = true;
         save_state();
     }
@@ -149,7 +153,7 @@ void Server::act(Action a) {
             return;
         case Action::terminal: launch(terminal_argv({})); return;
         case Action::close: if (focused()) wlr_xdg_toplevel_send_close(focused()->toplevel); return;
-        case Action::keys: open_sheet(); return;
+        case Action::keys: open_settings(SettingsPage::keys); return;
         case Action::focus_left: return way(layout::Direction::left, false);
         case Action::focus_right: return way(layout::Direction::right, false);
         case Action::focus_up: return way(layout::Direction::up, false);
@@ -176,30 +180,59 @@ void Server::act(Action a) {
             arrange();
             return;
         }
+        case Action::maximize:
+            // Maximized and back, in every arrangement (design 2026-10-20 §12.2).
+            if (const auto f = lay.focused()) { lay.toggle_maximized(*f); arrange(); }
+            return;
+        case Action::fullscreen:
+            if (const auto f = lay.focused()) { lay.toggle_fullscreen(*f); arrange(); }
+            return;
         case Action::toggle_float:
-            // Stacked: the whole output and back; else floating and back.
-            if (const auto f = lay.focused()) {
-                if (lay.mode() == layout::Mode::stack && !lay.floating(*f)) lay.toggle_maximized(*f);
-                else lay.toggle_floating(*f);
-                arrange();
-            }
+            if (const auto f = lay.focused()) { lay.toggle_floating(*f); arrange(); }
             return;
         case Action::pin: if (const auto f = lay.focused()) { lay.toggle_pinned(*f); arrange(); } return;
+        case Action::sticky: if (const auto f = lay.focused()) { lay.toggle_sticky(*f); arrange(); } return;
+        case Action::settings: open_settings(SettingsPage::displays); return;
         case Action::arrangements: open_chooser(); return;
         case Action::switch_apps: open_switcher(held(wlr_keyboard_modifier::WLR_MODIFIER_SHIFT)); return;
         case Action::app_windows: other_app_window(held(wlr_keyboard_modifier::WLR_MODIFIER_SHIFT)); return;
         case Action::windows: open_spread(held(wlr_keyboard_modifier::WLR_MODIFIER_SHIFT)); return;
-        case Action::overview: lay.overview(!lay.in_overview()); arrange(); return;
-        case Action::show1: case Action::show2: case Action::show3: case Action::show4:
-            lay.show(static_cast<int>(a) - static_cast<int>(Action::show1));
+        case Action::overview:
+            // The canvas: its own overview (the view zoomed out); else the
+            // windows spread until one is chosen (design 2026-10-20 §10.3).
+            if (canvas()) { lay.overview(!lay.in_overview()); arrange(); }
+            else open_spread(false, true);
+            return;
+        case Action::show1: case Action::show2: case Action::show3: case Action::show4: case Action::show5:
+        case Action::show6: case Action::show7: case Action::show8: case Action::show9: {
+            const int n = static_cast<int>(a) - static_cast<int>(Action::show1);
+            if (n >= lay.workspaces()) return;
+            lay.show(n);
             arrange();
             follow_focus();
             return;
-        case Action::send1: case Action::send2: case Action::send3: case Action::send4:
-            if (const auto f = lay.focused()) lay.send_to(*f, static_cast<int>(a) - static_cast<int>(Action::send1));
+        }
+        case Action::send1: case Action::send2: case Action::send3: case Action::send4: case Action::send5:
+        case Action::send6: case Action::send7: case Action::send8: case Action::send9: {
+            const int n = static_cast<int>(a) - static_cast<int>(Action::send1);
+            if (n >= lay.workspaces()) return;
+            if (const auto f = lay.focused()) lay.send_to(*f, n);
             arrange();
             follow_focus();
             return;
+        }
+        case Action::workspace_prev: case Action::workspace_next: case Action::carry_prev: case Action::carry_next: {
+            const bool back = a == Action::workspace_prev || a == Action::carry_prev;
+            const int n = std::clamp(lay.workspace() + (back ? -1 : 1), 0, lay.workspaces() - 1);
+            if (n == lay.workspace()) return;
+            const auto f = lay.focused();
+            if ((a == Action::carry_prev || a == Action::carry_next) && f) lay.send_to(*f, n);
+            lay.show(n);
+            if ((a == Action::carry_prev || a == Action::carry_next) && f) lay.focus(*f);
+            arrange();
+            follow_focus();
+            return;
+        }
     }
 }
 
@@ -266,20 +299,21 @@ void Server::draw_overlay() {
             break;
         }
         case Overlay::switcher: draw_switcher(); return;
+        case Overlay::settings: draw_settings(); return;
         case Overlay::spread: draw_spread(); return;
         case Overlay::sheet: {
-            // Only what means something in this arrangement (design 2026-10-19 §16.3).
+            // Super held a second (design 2026-10-20 §12.4): the keys used
+            // most, the first chord of each; the rest are Super+/'s.
             std::vector<shell::SheetRow> rows;
-            const auto m = lay.mode();
-            for (const auto& a : actions()) {
-                if ((m == layout::Mode::tile && !a.tile) || (m == layout::Mode::stack && !a.stack) || (m == layout::Mode::canvas && !a.canvas))
-                    continue;
-                std::string chords;
-                for (const auto& c : keys.chords(a.action)) chords += (chords.empty() ? "" : " / ") + chord_text(c);
-                if (!chords.empty()) rows.push_back({chords, std::string(zh ? a.zh : a.en)});
+            rows.push_back({"Super", std::string(tr_(zh, "Applications", "应用"))});
+            for (const auto a : {Action::switch_apps, Action::windows, Action::terminal, Action::maximize, Action::close,
+                                 Action::arrangements, Action::settings, Action::keys}) {
+                const auto chords = keys.chords(a);
+                const auto* info = &*std::ranges::find(actions(), a, &ActionInfo::action);
+                if (!chords.empty()) rows.push_back({chord_text(chords.front()), std::string(zh ? info->zh : info->en)});
             }
-            const auto title = std::format("{} · {}", tr_(zh, "Keys", "快捷键"), mode_label_(m, zh));
-            overlay_picture = shell::sheet(ui(), big_font ? &*big_font : nullptr, theme, title, rows, w, h, zh, scale);
+            overlay_picture = shell::sheet(ui(), big_font ? &*big_font : nullptr, theme, tr_(zh, "The keys used most", "最常用的键"), rows,
+                                           w, h, zh, scale);
             break;
         }
         case Overlay::menu: {
@@ -381,6 +415,15 @@ void Server::menu_choose(std::size_t item) {
 bool Server::overlay_key(xkb_keysym_t sym, bool down) {
     if (overlay == Overlay::none) return false;
     if (!down) return true;
+    // The settings take every key (a key being given, text being typed).
+    if (overlay == Overlay::settings) {
+        if (sym == key::Escape && !settings_capture) {
+            if (!settings_search.empty()) { settings_search.clear(); draw_overlay(); }
+            else close_overlay(false);
+            return true;
+        }
+        return settings_key(sym);
+    }
     const auto s = xkb_keysym_to_lower(sym);
     if (s == key::Escape) { close_overlay(false); return true; }
     switch (overlay) {
@@ -390,11 +433,12 @@ bool Server::overlay_key(xkb_keysym_t sym, bool down) {
             else if (s == key::Return || s == key::KP_Enter) close_overlay(true);
             return true;
         case Overlay::switcher: return switcher_key(s);
+        case Overlay::settings: return true;
         case Overlay::spread: return spread_key(s);
         case Overlay::sheet:
-            // Any key closes it (a modifier alone does not).
-            if (s != key::Super_L && s != key::Super_R && s != key::Alt_L && s != key::Alt_R) close_overlay(false);
-            return true;
+            // A key: it goes (and the key does what it does: input.cpp).
+            close_overlay(false);
+            return false;
         case Overlay::menu: case Overlay::layouts:
             return true;
         case Overlay::none: return false;
@@ -405,6 +449,7 @@ bool Server::overlay_key(xkb_keysym_t sym, bool down) {
 bool Server::overlay_click(double x, double y) {
     if (overlay == Overlay::none) return false;
     if (overlay == Overlay::switcher || overlay == Overlay::spread) return switched_click(x, y);
+    if (overlay == Overlay::settings) return settings_click(x, y);
     // Hit areas are in output pixels.
     std::optional<shell::Area> hit;
     for (const auto& a : overlay_picture.areas)

@@ -867,3 +867,114 @@ state {}
     EXPECT_NE(p["desktop"]["texture"][0], 1100) << p.dump();
     EXPECT_EQ(p["window"]["title"].get<std::string>().find("mirroring"), std::string::npos) << p["window"]["title"];
 }
+
+// The keys the documents list are the desktop's own table (design
+// 2026-10-20 §12.4): generated, so they are what the desktop does.
+// XDESK_KEYS_WRITE=1 writes them again.
+XTEST(LubanOs, XdesksKeysDocumentIsItsOwnTable, .area = "luban", .covers = {"XDESK-KEYS"}, .requires_ = {"linux", "xlings-bin"}) {
+    if (!xdesk_binary()) GTEST_SKIP() << "no xdesk beside luban-os (mcpp build -p xdesk-app)";
+    for (const auto zh : {false, true}) {
+        tk::RunOptions o;
+        o.argv = {xdesk_binary()->string(), "--keys-markdown", zh ? "zh" : "en"};
+        const auto r = tk::run(o);
+        ASSERT_EQ(r.exit_code, 0) << r.transcript();
+        const auto doc = zh ? std::string("# xdesk 的快捷键\n\n<!-- 由 `xdesk --keys-markdown zh` 生成，请勿手改。键位测试在 XDESK_KEYS_WRITE=1 时重写它。 -->\n\n")
+                            : std::string("# xdesk's keys\n\n<!-- Generated from `xdesk --keys-markdown en`; do not edit by hand. The keys test rewrites it with XDESK_KEYS_WRITE=1. -->\n\n");
+        const auto file = fs::current_path() / "docs" / "generated" / (zh ? "xdesk-keys.zh.md" : "xdesk-keys.md");
+        if (const char* w = std::getenv("XDESK_KEYS_WRITE"); w && std::string_view(w) == "1") tk::write_file(file, doc + r.out);
+        EXPECT_EQ(tk::read_file(file), doc + r.out) << file << " is not the desktop's table: XDESK_KEYS_WRITE=1 writes it again";
+    }
+}
+
+// The settings and the control socket (design 2026-10-20 §11.4, §12.3,
+// §12.4): a key given to an action at the keys page, or by `xdesk msg`,
+// is what the desktop answers to and what keys.json keeps; a page's choice
+// takes effect at once.
+XTEST(LubanOs, XdesksSettingsAndControlSocketChangeWhatItDoes, .area = "luban", .covers = {"XDESK-KEYS", "XDESK-SETTINGS"},
+      .requires_ = {"linux", "xlings-bin"}) {
+    if (!app_binary()) GTEST_SKIP() << "no luban-os beside the xlings under test";
+    if (!xdesk_binary()) GTEST_SKIP() << "no xdesk beside luban-os (mcpp build -p xdesk-app)";
+    auto home = tk::Home::isolated("luban-os-xdesk-settings");
+    ASSERT_EQ(home.xlings({"self", "init"}).exit_code, 0);
+    const auto runtime = home.root() / "run";
+    const auto settings = home.root() / "settings.ppm", maximized = home.root() / "maximized.ppm";
+    auto session = std::async(std::launch::async, [&] {
+        return xdesk_with(home, "classic", std::format(R"(wait desktop
+waitfor desktop.texture.0 1100
+sleep 6000
+key Super+Shift+m
+sleep 1000
+screenshot {}
+key Super+Shift+m
+sleep 600
+key Super+i
+sleep 800
+screenshot {}
+screenshot {}
+key Tab
+key Right
+sleep 600
+key Escape
+key Super+/
+type maxim
+key Down
+key Down
+key Down
+key Return
+key Super+Shift+x
+sleep 600
+key Escape
+sleep 400
+)", maximized.string(), settings.string(), artifact("xdesk-settings.bmp").string()));
+    });
+    // The control socket, as `xdesk msg` uses it.
+    fs::path control;
+    for (int k = 0; k < 100 && control.empty(); ++k) {
+        std::error_code ec;
+        for (const auto& e : fs::directory_iterator(runtime, ec))
+            if (e.path().filename().string().starts_with("xdesk-") && e.path().extension() == ".sock") control = e.path();
+        if (control.empty()) std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+    ASSERT_FALSE(control.empty()) << "no control socket in " << runtime;
+    const auto display = control.stem().string().substr(6);
+    auto msg = [&](std::vector<std::string> args) {
+        tk::RunOptions o;
+        o.argv = {xdesk_binary()->string(), "msg"};
+        o.argv.insert(o.argv.end(), args.begin(), args.end());
+        o.env = {{"XDG_RUNTIME_DIR", runtime.string()}, {"WAYLAND_DISPLAY", display}};
+        return tk::run(o);
+    };
+    std::this_thread::sleep_for(std::chrono::seconds(2));
+    const auto bound = msg({"keys", "bind", "maximize", "Super+Shift+m"});
+    EXPECT_EQ(bound.exit_code, 0) << bound.transcript();
+    const auto bad = msg({"keys", "bind", "nothing", "Super+Shift+m"});
+    EXPECT_NE(bad.exit_code, 0);
+    EXPECT_NE(bad.out.find("no action 'nothing'"), std::string::npos) << bad.out;
+    const auto list = msg({"keys", "list"});
+    ASSERT_EQ(list.exit_code, 0) << list.transcript();
+    const auto listed = Json::parse(list.out, nullptr, false);
+    ASSERT_TRUE(listed.is_object()) << list.out;
+    bool found = false;
+    for (const auto& a : listed["actions"])
+        if (a["action"] == "maximize") {
+            found = true;
+            EXPECT_EQ(a["keys"], Json::array({"Super+Shift+M"})) << a.dump();
+            EXPECT_TRUE(a["changed"].get<bool>());
+        }
+    EXPECT_TRUE(found) << list.out;
+    const auto r = session.get();
+    ASSERT_EQ(r.exit_code, 0) << r.transcript();
+    // Super+Shift+M, as bound: blue (focused) over the whole width.
+    const auto m = read_ppm(maximized);
+    EXPECT_EQ(m.at(100, 400), kBlue);
+    EXPECT_EQ(m.at(1000, 400), kBlue);
+    // The settings over the desktop.
+    const auto s = read_ppm(settings);
+    EXPECT_NE(s.at(550, 400), kBlue) << "a card over the windows";
+    // The layout page's first choice: this workspace stacked, kept.
+    const auto state = Json::parse(tk::read_file(home.root() / ".config" / "xdesk" / "state.json"));
+    EXPECT_EQ(state["arrangements"][0], "stack") << state.dump();
+    // The keys page: maximize given Super+Shift+X, kept in keys.json.
+    const auto keys = Json::parse(tk::read_file(home.root() / ".config" / "xdesk" / "keys.json"));
+    EXPECT_EQ(keys["maximize"], Json::array({"Super+Shift+x"})) << keys.dump();
+}

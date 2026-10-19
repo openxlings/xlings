@@ -508,6 +508,28 @@ Luban 的键位按需求与交互设计来定，不照搬某个系统：
 启动器同时能搜**动作**（"最大化""画布""工作区 3""锁定大小"……）：结果旁写它的快捷键，回车即执行。搜一次就学会一个键；
 不记得键的人也能用全部功能。动作、快捷键页、按住提示、文档用同一张动作表。
 
+### 12.6 实现（C9、C9b）
+
+- **设置是一张覆盖层**，不是布局里的窗口：与 Super+m、Alt+Tab 同一套（xdesk.shell 画、合成器路由键与点击），模态、Esc 关闭。
+  理由：窗口形态要么是内置视图（`View` 处处假定有 `wlr_xdg_toplevel`），要么是另一个 Wayland 客户端进程（要补键盘映射、输入法、
+  缩放）；覆盖层零新依赖、与其他浮层行为一致。以后需要"设置开着同时用桌面"时再做成客户端（`xdesk msg` 已是它要的接口）。
+- 页：显示器（每个窗口一行与说明）、布局（本工作区排布、列方向、内外间隔、最窄列、画布小地图与吸附）、外观（强调色 6 种、背景 4 种、
+  减少动态）、快捷键、关于（`/etc/os-release`、运行方式、xdesk 版本取自安装包的 `README.provenance`、内核、用户、渲染器、显示器、
+  CPU、内存、文件位置、开源项目；"复制"经剪贴板授权发到宿主）。修改立即生效：间隔与列宽走 `Layout::set_spacing`，方向
+  `set_flow`，排布 `set_mode` 并记进 state.json；其余写个人设置文件（`config::set_value` 只改那一行，注释保留）。
+- **键位**（§12.2 落地）：Super+F 最大化（三种排布一致）、Super+Shift+F 全屏（布局新增 `fullscreen`：整块输出、无标题栏、面板隐藏；
+  客户端请求全屏也照办）、Super+Shift+Space 浮动、Super+P / Super+Shift+P 置顶 / 所有工作区、Alt+F4、Super+1…9（面板固定显示
+  1–4，5–9 有窗口或当前时出现）、Super+Ctrl+← →（及 PageUp/PageDown，加 Shift 带窗口）、Super+I 设置、Super+/ 快捷键页、
+  Super+O 在平铺与层叠里是常驻的空间总览（选中焦点窗口，直到选一个或 Esc）。去掉 Super+D。
+- **套**：`luban`、`luban-no-hjkl`；`keys.json` 存 `"set"` 与改过的动作（旧文件照读）。
+- **快捷键页**：搜索框（输入即过滤，英中说明、动作名、键都可搜）、套的选择、"全部恢复"、按分组的每个动作；回车进入录入，按下的组合
+  （单独的修饰键不算）即生效，原属别的动作的从那里移走并提示；Delete 恢复该项。
+- **按住 Super 一秒**浮出最常用的 9 个键；首次进入底部一行说最先要会的五个。
+- **启动器**：设置的每页与每个动作都是条目（只在输入后出现），旁边写它的键；`xdesk-settings.desktop` 给其他启动器。
+- **控制 socket**：`$XDG_RUNTIME_DIR/xdesk-<WAYLAND_DISPLAY>.sock`，一行一个 JSON；`xdesk msg keys list|bind|unbind|set`、
+  `xdesk msg settings <页>`。
+- **生成的键位表**：`xdesk --keys-markdown en|zh` → `docs/generated/xdesk-keys{,.zh}.md`，e2e 测试比对（`XDESK_KEYS_WRITE=1` 重写）。
+
 ## 13. 性能：渲染、传输与内存
 
 ### 13.1 定因（Super+O 连按时风扇起来）

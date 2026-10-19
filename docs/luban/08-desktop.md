@@ -133,23 +133,50 @@ columns.
 
 | Keys (with Super) | Tile | Stack | Canvas |
 |---|---|---|---|
-| Super alone, Space or D | the applications | the same | the same |
+| Super alone, or Space | the applications — and the settings' pages and every action, by name, with its keys | the same | the same |
 | ←→ ↑↓ (or H J K L) | the next column / in the column | the nearest window that way | the same |
 | Shift+←→ ↑↓ | move to the next column / up and down in it | halves, quarters, the whole, back | move by a quarter of the view |
 | [ / ] | into the column on the left / out to a column of its own | — | into the group beside / out of it |
 | R / Shift+R | the column's width (⅓, ½, ⅔, all) / the window's height in it (equal, ⅔, ⅓) | — | the same in a group |
 | - / = | narrower / wider | smaller / larger | zoom out / in |
-| F | float, or put back | the whole screen, and back | float, or put back |
-| Shift+T | always on top | the same | the same, and fixed in the view |
+| F / Shift+F | maximize, and back / full screen (no panel, no title bar), and back | the same | the same |
+| Shift+Space | float, or put back | the same | the same |
+| P / Shift+P | always on top / on every workspace | the same | the same, and fixed in the view |
 | M | tile, stack, canvas (held) | the same | the same |
 | Tab / Shift+Tab | the applications, the most recent first (held: Tab for the next; ↓, or a second on one, spreads its windows; let go to go there) | the same | the same |
 | ` (above Tab) / Shift+` | the application's other window / the one before | the same | the same |
-| O | — | — | the overview; a click goes in to a window |
-| 1 … 4 / Shift+1 … 4 | a workspace / send the window there | the same | the same |
-| Return, or Ctrl+Alt+T / Q / / | a terminal / close the window / these keys | the same | the same |
+| O | every window where it is, until one is chosen | the same | the overview; a click goes in to a window |
+| 1 … 9 / Shift+1 … 9 | a workspace / send the window there (the panel shows 1–4, and 5–9 while used) | the same | the same |
+| Ctrl+← → or PageUp / PageDown (with Shift: the window too) | the workspace before or after | the same | the same |
+| Return, or Ctrl+Alt+T / Q, or Alt+F4 | a terminal / close the window | the same | the same |
+| I / / | the settings / its keys page | the same | the same |
 
-**Super+/** shows these keys, only those that mean something in the
-arrangement you are in. The first time, a line at the bottom says so.
+Every key, as the desktop has it, is in [the generated table](../generated/xdesk-keys.md).
+**Super+/** opens the settings at their keys page: every action by group,
+searched as you type; Enter on one, then the new chord, gives it that chord
+(one another action had is taken from it, and said so); Delete puts it back.
+The keys come as a set — Luban, or Luban without hjkl, for those whose
+applications want those letters — and what you change is kept in
+`~/.config/xdesk/keys.json`. Hold Super a second for the keys used most. The
+first time, a line at the bottom says the five to start with.
+
+**Super+I** opens the settings: the displays (each window showing the
+desktop, below), the layout (this workspace's arrangement, which way columns
+run, the gaps, the narrowest column, the canvas's minimap and snapping), the
+appearance (the accent, the background, *reduce motion*), the keys, and
+*About* — the system, xdesk, the kernel, the renderer, the displays, CPU and
+memory, the files it keeps, the projects it is made of, and *Copy* for a
+report. A change takes effect at once and is kept in your settings file
+(`~/.config/xdesk/<profile>.ini`). The launcher finds each page by name, and
+so does any launcher through `xdesk-settings.desktop`. Scripts and agents
+use the same through `xdesk msg` (in the desktop):
+
+```bash
+xdesk msg keys list                        # every action, its keys (JSON)
+xdesk msg keys bind maximize Super+Shift+m # and back: xdesk msg keys unbind maximize
+xdesk msg keys set luban-no-hjkl
+xdesk msg settings keys                    # the settings, at that page
+```
 
 **Alt+Tab** shows every window of the workspace where it is to the others,
 scaled to fit the screen (a long tiled row folded into rows), the chosen one
@@ -235,11 +262,18 @@ inner_gap = 4          # between windows (gap of before is read as this)
 outer_gap = 0          # between windows and the screen's edges
 min_column_width = 480 # tiled columns share the screen until narrower than this, then scroll
 flow = horizontal      # tiled columns side by side; vertical: one under another
-workspaces = 4
+workspaces = 9         # 1-4 always on the panel, 5-9 while used
+
+[canvas]
+minimap = on
+snap = on
 
 [theme]
 accent = #5e9cff
 background = #1b1e25
+
+[appearance]
+reduce_motion = off    # on: windows go at once, without gliding
 
 [keyboard]
 layout = us        # another xkb layout needs xkeyboard-config

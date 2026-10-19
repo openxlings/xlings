@@ -93,22 +93,40 @@ luban enter desk --display window
 
 | 按键（按住 Super） | 平铺 | 层叠 | 画布 |
 |---|---|---|---|
-| 单按 Super、Space 或 D | 应用 | 同 | 同 |
+| 单按 Super，或 Space | 应用——也能按名字找到设置的各页与每个操作，旁边写着它的键 | 同 | 同 |
 | ←→ ↑↓（或 H J K L） | 相邻的列 / 列内 | 那个方向最近的窗口 | 同 |
 | Shift+←→ ↑↓ | 移到相邻列 / 列内上下 | 半屏、四分之一屏、全屏、还原 | 移动四分之一视野 |
 | [ / ] | 并进左边一列 / 拆出成单独一列 | — | 并进旁边的组 / 拆出 |
 | R / Shift+R | 列宽（⅓、½、⅔、全宽）/ 列内高度（平分、⅔、⅓） | — | 组内同平铺 |
 | - / = | 变窄 / 变宽 | 缩小 / 放大 | 缩小 / 放大视野 |
-| F | 浮动，或放回 | 全屏，或还原 | 浮动，或放回 |
-| Shift+T | 置顶 | 同 | 同，并固定在视野里 |
+| F / Shift+F | 最大化，再按还原 / 全屏（没有面板与标题栏），再按退出 | 同 | 同 |
+| Shift+Space | 浮动，或放回 | 同 | 同 |
+| P / Shift+P | 置顶 / 在所有工作区显示 | 同 | 同，并固定在视野里 |
 | M | 平铺、层叠、画布（按住） | 同 | 同 |
 | Tab / Shift+Tab | 应用，最近用的在前（按住：Tab 下一个；↓ 或在一个上停一秒，展开它的窗口；松开即切过去） | 同 | 同 |
 | `（Tab 上方）/ Shift+` | 同一应用的另一个窗口 / 上一个 | 同 | 同 |
-| O | — | — | 全览；点击一个窗口进入 |
-| 1 … 4 / Shift+1 … 4 | 切换工作区 / 把窗口送过去 | 同 | 同 |
-| Return 或 Ctrl+Alt+T / Q / / | 终端 / 关闭窗口 / 这张按键表 | 同 | 同 |
+| O | 按位置显示全部窗口，直到选中一个 | 同 | 全览；点击一个窗口进入 |
+| 1 … 9 / Shift+1 … 9 | 切换工作区 / 把窗口送过去（面板显示 1–4，5–9 用到时出现） | 同 | 同 |
+| Ctrl+← → 或 PageUp / PageDown（加 Shift：带着窗口） | 上一个、下一个工作区 | 同 | 同 |
+| Return 或 Ctrl+Alt+T / Q 或 Alt+F4 | 终端 / 关闭窗口 | 同 | 同 |
+| I / / | 设置 / 设置的快捷键页 | 同 | 同 |
 
-**Super+/** 显示这些按键，只列出当前排布下有意义的。第一次进入时底部会有一行提示。
+全部按键见[生成的键位表](../../generated/xdesk-keys.zh.md)，与桌面的行为一致。**Super+/** 打开设置的快捷键页：按分组列出每个操作，
+输入即查找；在一项上按回车再按新的组合键即改为它（原属于别的操作的会从那里移走，并说明），Delete 恢复。键位按套提供——Luban，
+以及不用 hjkl 的 Luban（给需要这几个字母的应用）——你改的保存在 `~/.config/xdesk/keys.json`。按住 Super 一秒浮出最常用的键；
+第一次进入时底部一行说明最先要会的五个。
+
+**Super+I** 打开设置：显示器（显示这个桌面的每个窗口，见下）、布局（这个工作区的排布、列的方向、间隔、最窄的列、画布的小地图与吸附）、
+外观（强调色、背景、减少动态）、快捷键，以及"关于"——系统、xdesk、内核、渲染器、显示器、CPU 与内存、它保存的文件、构成它的开源项目，
+以及报告问题用的"复制"。修改立即生效，保存在你的设置文件（`~/.config/xdesk/<profile>.ini`）。启动器能按名字找到每一页，
+其他启动器经 `xdesk-settings.desktop` 也能。脚本与 agent 经 `xdesk msg`（在桌面里）做同样的事：
+
+```bash
+xdesk msg keys list                        # every action, its keys (JSON)
+xdesk msg keys bind maximize Super+Shift+m # and back: xdesk msg keys unbind maximize
+xdesk msg keys set luban-no-hjkl
+xdesk msg settings keys                    # the settings, at that page
+```
 
 **Alt+Tab** 按真实的相对位置显示工作区的全部窗口，缩小到放得下（很长的平铺一排折成多行），选中的放大、其余变暗：
 Tab 按最近使用的顺序（Shift 反向），方向键按位置，鼠标指到哪个就是哪个；松开 Alt 切过去，Esc 不变。
@@ -166,11 +184,18 @@ inner_gap = 4          # between windows (gap of before is read as this)
 outer_gap = 0          # between windows and the screen's edges
 min_column_width = 480 # tiled columns share the screen until narrower than this, then scroll
 flow = horizontal      # tiled columns side by side; vertical: one under another
-workspaces = 4
+workspaces = 9         # 1-4 always on the panel, 5-9 while used
+
+[canvas]
+minimap = on
+snap = on
 
 [theme]
 accent = #5e9cff
 background = #1b1e25
+
+[appearance]
+reduce_motion = off    # on: windows go at once, without gliding
 
 [keyboard]
 layout = us        # another xkb layout needs xkeyboard-config

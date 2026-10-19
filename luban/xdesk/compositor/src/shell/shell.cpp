@@ -94,6 +94,12 @@ Picture panel(draw::Fonts* fonts, const Theme& t, const PanelState& s, int outpu
               double scale) {
     Picture p;
     const double text_w = fonts ? fonts->width(tr_(s.zh, "Apps", "应用")) : 30.0;
+    // The first four always; the rest while they hold windows or are shown.
+    auto listed = [&](int n) {
+        return n < 4 || n == s.workspace || (n < static_cast<int>(s.occupied.size()) && s.occupied[static_cast<std::size_t>(n)]);
+    };
+    int count = 0;
+    for (int n = 0; n < s.workspaces; ++n) count += listed(n) ? 1 : 0;
     if (!canvas) {
         // Classic: a bar across the top -- applications and workspaces on the
         // left, the focused window's title in the middle, the clock right.
@@ -108,6 +114,7 @@ Picture panel(draw::Fonts* fonts, const Theme& t, const PanelState& s, int outpu
         p.areas.push_back({apps, Target::launcher});
         x += apps.width + 10;
         for (int n = 0; n < s.workspaces; ++n) {
+            if (!listed(n)) continue;
             const Rect r { x, 5, 22, kPanelHeight - 10.0 };
             const bool here = n == s.workspace;
             if (here) c.fill(r, t.accent, 5);
@@ -135,7 +142,7 @@ Picture panel(draw::Fonts* fonts, const Theme& t, const PanelState& s, int outpu
     const std::string zoom = std::format("{}%", static_cast<int>(std::lround(s.zoom * 100)));
     const auto overview = tr_(s.zh, s.overview ? "Back" : "Overview", s.overview ? "返回" : "全览");
     const double zoom_w = fonts ? fonts->width(zoom) : 30, overview_w = fonts ? fonts->width(overview) : 50;
-    const double width = 8 + (text_w + 24) + 10 + s.workspaces * 26.0 + 10 + zoom_w + 16 + (overview_w + 24) + 8;
+    const double width = 8 + (text_w + 24) + 10 + count * 26.0 + 10 + zoom_w + 16 + (overview_w + 24) + 8;
     const int height = 40;
     p.image = device_image_(std::ceil(width), height, scale);
     p.x = std::round((output_width - width) / 2);
@@ -153,6 +160,7 @@ Picture panel(draw::Fonts* fonts, const Theme& t, const PanelState& s, int outpu
     };
     button(tr_(s.zh, "Apps", "应用"), text_w + 24, Target::launcher, false);
     for (int n = 0; n < s.workspaces; ++n) {
+        if (!listed(n)) continue;
         const bool here = n == s.workspace;
         const bool used = n < static_cast<int>(s.occupied.size()) && s.occupied[static_cast<std::size_t>(n)];
         const Rect dot { x + 7, height / 2.0 - 6, 12, 12 };
@@ -208,6 +216,9 @@ void Launcher::close() {
 
 void Launcher::search_() {
     results_ = apps::search(all_, query_);
+    // The desktop's own entries (its settings, its actions: ids "xdesk:")
+    // are found by name, not listed before anything is typed.
+    if (query_.empty()) std::erase_if(results_, [](const apps::App* a) { return a->id.starts_with("xdesk:"); });
     selected_ = 0;
 }
 
@@ -265,7 +276,7 @@ Picture Launcher::draw(draw::Fonts* ui, draw::Fonts* big, const Theme& t, int wi
     if (big) {
         const double baseline = std::round(by + (field_h + big->ascent() - big->descent()) / 2);
         if (query_.empty()) {
-            c.text(*big, tr_(zh, "Type to search applications", "输入以搜索应用"), bx + 20, baseline, t.muted, box_w - 40);
+            c.text(*big, tr_(zh, "Type to search applications, settings, actions", "输入以搜索应用、设置、操作"), bx + 20, baseline, t.muted, box_w - 40);
         } else {
             const double w = c.text(*big, query_, bx + 20, baseline, t.text, box_w - 48);
             c.fill({bx + 22 + w, baseline - big->ascent() + 2, 2, big->ascent() + big->descent() - 2}, t.accent);
@@ -287,7 +298,8 @@ Picture Launcher::draw(draw::Fonts* ui, draw::Fonts* big, const Theme& t, int wi
             const auto& detail = !app->generic.empty() ? app->generic : app->comment;
             if (!detail.empty())
                 c.text(*ui, detail, r.x + 14 + name_w + 12, std::round(r.y + 19), t.muted, r.width - name_w - 40);
-            c.text(*ui, app->id, r.x + 14, std::round(r.y + 36), Color::rgb(0x5c6370), r.width - 28);
+            if (!app->id.starts_with("xdesk:")) c.text(*ui, app->id, r.x + 14, std::round(r.y + 36), Color::rgb(0x5c6370), r.width - 28);
+            else c.text(*ui, tr_(zh, "the desktop", "桌面"), r.x + 14, std::round(r.y + 36), Color::rgb(0x5c6370), r.width - 28);
         }
         y += row_h;
     }

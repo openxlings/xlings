@@ -669,3 +669,22 @@ XTEST(XdeskLayout, TheOverviewKeepsWhereWindowsAreAndFoldsALongStrip, .area = "l
         for (std::size_t b = 0; b < a; ++b) EXPECT_FALSE(overlap_(folded[a], folded[b])) << a << " " << b;
     EXPECT_TRUE(xdesk::layout::spread({}, area).empty());
 }
+
+// Full screen (design 2026-10-20 §12.2): the whole output, the panel's
+// part too, above everything on its workspace; one there at a time.
+XTEST(XdeskLayout, AFullScreenWindowTakesTheWholeOutputAboveTheRest, .area = "luban", .covers = {"XDESK-LAYOUT"}) {
+    xdesk::layout::Layout l;
+    l.add(1, {400, 300});
+    l.add(2, {400, 300});
+    l.toggle_fullscreen(1);
+    auto ps = l.arrange(kOutput, {.top = 30});
+    ASSERT_FALSE(ps.empty());
+    EXPECT_EQ(ps.back().id, 1u) << "above the rest";
+    EXPECT_TRUE(ps.back().fullscreen);
+    EXPECT_EQ(ps.back().rect, (xdesk::layout::Rect{0, 0, kOutput.width, kOutput.height})) << "the panel's part too";
+    l.toggle_fullscreen(2);
+    EXPECT_FALSE(l.fullscreen(1)) << "one on a workspace";
+    l.remove(2);
+    ps = l.arrange(kOutput, {.top = 30});
+    for (const auto& p : ps) EXPECT_FALSE(p.fullscreen);
+}
