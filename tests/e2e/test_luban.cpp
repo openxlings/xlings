@@ -820,6 +820,55 @@ XTEST(Luban, AnExportedEnvironmentIsImportedWithItsStateAndANewPersona,
     EXPECT_EQ(Json::parse(tk::read_file(home.dir() / "config/subos/copy/machine.json"))["persist"], "home");
 }
 
+// An archive carries what its system runs on -- its payloads and the index
+// naming them -- and is imported with no network, no index and none of its
+// payloads at hand (design 2026-10-19 §9.3: a .luban shared to another
+// machine, offline).
+XTEST(Luban, AnArchiveIsImportedWithoutTheNetworkFromWhatItCarries,
+      .area = "luban", .cost = tk::Cost::Medium, .covers = {"SUBOS-INDEX-SNAPSHOT", "LUBAN-ARCHIVE"},
+      .requires_ = {"linux", "xlings-bin"}) {
+    if constexpr (!tk::is_linux) GTEST_SKIP() << "a Luban root is a Linux root";
+    const auto bin = luban_binary();
+    if (!bin) GTEST_SKIP() << "no luban beside the xlings under test";
+    if (std::system("unshare -rn true >/dev/null 2>&1") != 0) GTEST_SKIP() << "no unprivileged network namespace here";
+    auto home = luban_home("luban-archive-offline", *bin);
+    ASSERT_EQ(luban(home, {"new", "box", "--xpkg", "fixture:my-os@1.0.0", "-y"}).exit_code, 0);
+    tk::write_file(home.dir() / "subos/box/rootfs/root/notes.txt", "mine\n");
+    const auto file = home.root() / "box.luban";
+    const auto exported = luban(home, {"export", "box", file.string()});
+    ASSERT_EQ(exported.exit_code, 0) << exported.transcript();
+    // What it says it carries.
+    std::string carried;
+    {
+        std::ifstream in(file, std::ios::binary);
+        carried.assign(std::istreambuf_iterator<char>(in), {});
+    }
+    EXPECT_NE(carried.find("payloads/fixture-x-hello/1.0.0"), std::string::npos);
+    EXPECT_NE(carried.find("payloads/fixture-x-my-os/1.0.0"), std::string::npos) << "the edition it was made from";
+    EXPECT_NE(carried.find("index/"), std::string::npos);
+    // Elsewhere: none of it here, and no network.
+    ASSERT_EQ(luban(home, {"rm", "box", "-y"}).exit_code, 0);
+    std::error_code ec;
+    for (const auto* gone : {"data/xpkgs/fixture-x-hello", "data/xpkgs/fixture-x-my-os", "data/xim-pkgindex", "data/xim-index-repos",
+                             "data/fixture"})
+        fs::remove_all(home.dir() / gone, ec);
+    for (const auto* gone : {"index", "primary"}) fs::remove_all(home.root() / gone, ec);
+    for (const auto& d : fs::directory_iterator(home.dir() / "domains", ec)) fs::remove_all(d.path() / "private/data/xpkgs", ec);
+    tk::RunOptions o;
+    o.argv = {"unshare", "-rn", (home.dir() / "bin/luban").string(), "import", file.string()};
+    o.env = home.env();
+    o.env["XLINGS_TOOLS_SEARCH"] = "home";
+    o.env.erase("XLINGS_SUBOS_MODE");
+    o.env.erase("XLINGS_ACTIVE_SUBOS");
+    o.timeout = std::chrono::seconds(120);
+    const auto imported = tk::run(o);
+    ASSERT_EQ(imported.exit_code, 0) << imported.transcript();
+    EXPECT_EQ(tk::read_file(home.dir() / "subos/box/rootfs/root/notes.txt"), "mine\n");
+    EXPECT_TRUE(fs::is_directory(home.dir() / "data/xpkgs/fixture-x-hello/1.0.0")
+                || !fs::is_empty(home.dir() / "domains", ec))
+        << "its package came from the archive";
+}
+
 XTEST(Luban, BootSaysWhatThisBootWas,
       .area = "luban", .cost = tk::Cost::Fast, .covers = {"LUBAN-BOOT-ENTRIES"}, .requires_ = {"linux", "xlings-bin"}) {
     if constexpr (!tk::is_linux) GTEST_SKIP() << "boot entries are a Linux machine's";

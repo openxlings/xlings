@@ -7,8 +7,15 @@
 //   state/...       the root's own state -- /etc, /root, /home, /var, /opt,
 //                   /srv as they are (links stay links)
 //
+//   payloads/...    the payloads it runs on, <package dir>/<version>/ as a
+//                   store keeps them, and
+//   index/...       the index snapshot that names them (xim-pkgindex,
+//                   xim-index-repos): made again where it is imported without
+//                   the network (design 2026-10-19 §9.3; additive -- an older
+//                   luban skips them and fetches from the index as before)
+//
 // and never the persona (a host name and machine id are made anew where it is
-// imported) nor the payloads (the index supplies them again, by version).
+// imported).
 export module luban.service.archive;
 
 import std;
@@ -33,12 +40,24 @@ struct Entry {
     unsigned mode { 0644 };
 };
 
-// Writes `manifest` and every entry under `root`'s state dirs into `file`
-// (which must not exist). A link to a path in `home` (this host's xlings
-// home: what the environment's configuration made there) is not state --
-// the importing side makes its own -- and is left out.
+// A directory carried besides the state, under `prefix` ("payloads/xim-x-gcc/16.1.0").
+struct Tree {
+    std::string prefix;
+    fs::path dir;
+};
+
+// Writes `manifest`, every entry under `root`'s state dirs and the `trees`
+// into `file` (which must not exist). A link to a path in `home` (this host's
+// xlings home: what the environment's configuration made there) is not state
+// -- the importing side makes its own -- and is left out.
+
 std::expected<std::size_t, std::string> write(const fs::path& file, const nlohmann::json& manifest,
-                                              const fs::path& root, const fs::path& home = {});
+                                              const fs::path& root, const fs::path& home = {},
+                                              std::span<const Tree> trees = {});
+
+// Places the entries of `file` under `prefix` ("payloads", "index") into
+// `into`, as they are (links stay links). How many.
+std::expected<std::size_t, std::string> extract_tree(const fs::path& file, std::string_view prefix, const fs::path& into);
 
 // Reads an archive: its manifest, and its state entries handed to `entry`
 // in order. A path that would leave the destination is an error.

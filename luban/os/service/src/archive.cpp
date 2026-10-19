@@ -97,8 +97,49 @@ std::span<const std::string_view> state_dirs() {
     return value;
 }
 
+namespace {
+
+// Every entry under `base`, named `prefix`/<relative path>.
+std::expected<std::size_t, std::string> put_tree_(std::ostream& out, const fs::path& base, const std::string& prefix,
+                                                  const std::string& home_prefix, bool skip_vcs = false) {
+    std::error_code ec;
+    std::size_t count = 0;
+    put_(out, prefix + "/", '5', {}, 0755);
+    for (fs::recursive_directory_iterator it(base, fs::directory_options::none, ec), end; !ec && it != end;
+         it.increment(ec)) {
+        // Lexically: fs::relative resolves a link first, naming the entry by
+        // where it points (outside the root, for a store link).
+        if (skip_vcs && it->path().filename() == ".git") {   // an index checkout's history is not its snapshot
+            it.disable_recursion_pending();
+            continue;
+        }
+        const auto rel = prefix + "/" + it->path().lexically_relative(base).generic_string();
+        const auto st = it->symlink_status(ec);
+        const unsigned mode = static_cast<unsigned>(st.permissions()) & 07777;
+        if (fs::is_symlink(st)) {
+            const auto target = fs::read_symlink(it->path(), ec).generic_string();
+            it.disable_recursion_pending();
+            if (!home_prefix.empty() && target.starts_with(home_prefix)) continue;
+            put_(out, rel, '2', {}, 0777, target);
+        } else if (fs::is_directory(st)) {
+            put_(out, rel + "/", '5', {}, mode);
+        } else if (fs::is_regular_file(st)) {
+            std::ifstream in(it->path(), std::ios::binary);
+            std::string data((std::istreambuf_iterator<char>(in)), {});
+            put_(out, rel, '0', data, mode);
+        } else {
+            continue;   // sockets, fifos, devices are not carried
+        }
+        ++count;
+    }
+    if (ec) return std::unexpected(std::format("cannot read {}: {}", base.string(), ec.message()));
+    return count;
+}
+
+}  // namespace
+
 std::expected<std::size_t, std::string> write(const fs::path& file, const nlohmann::json& manifest, const fs::path& root,
-                                              const fs::path& home) {
+                                              const fs::path& home, std::span<const Tree> trees) {
     const auto home_prefix = home.empty() ? std::string{} : (home.lexically_normal() / "").generic_string();
     std::error_code ec;
     if (fs::exists(file, ec)) return std::unexpected(file.string() + " exists; name a new file");
@@ -111,31 +152,15 @@ std::expected<std::size_t, std::string> write(const fs::path& file, const nlohma
     for (const auto dir : state_dirs()) {
         const auto base = root / dir;
         if (!fs::is_directory(base, ec) || fs::is_symlink(base, ec)) continue;
-        put_(out, "state/" + std::string(dir) + "/", '5', {}, 0755);
-        for (fs::recursive_directory_iterator it(base, fs::directory_options::none, ec), end; !ec && it != end;
-             it.increment(ec)) {
-            // Lexically: fs::relative resolves a link first, naming the
-            // entry by where it points (outside the root, for a store link).
-            const auto rel = "state/" + it->path().lexically_relative(root).generic_string();
-            const auto st = it->symlink_status(ec);
-            const unsigned mode = static_cast<unsigned>(st.permissions()) & 07777;
-            if (fs::is_symlink(st)) {
-                const auto target = fs::read_symlink(it->path(), ec).generic_string();
-                it.disable_recursion_pending();
-                if (!home_prefix.empty() && target.starts_with(home_prefix)) continue;
-                put_(out, rel, '2', {}, 0777, target);
-            } else if (fs::is_directory(st)) {
-                put_(out, rel + "/", '5', {}, mode);
-            } else if (fs::is_regular_file(st)) {
-                std::ifstream in(it->path(), std::ios::binary);
-                std::string data((std::istreambuf_iterator<char>(in)), {});
-                put_(out, rel, '0', data, mode);
-            } else {
-                continue;   // sockets, fifos, devices are not state
-            }
-            ++count;
-        }
-        if (ec) return std::unexpected(std::format("cannot read {}: {}", base.string(), ec.message()));
+        auto n = put_tree_(out, base, "state/" + std::string(dir), home_prefix);
+        if (!n) return std::unexpected(n.error());
+        count += *n;
+    }
+    for (const auto& t : trees) {
+        if (!fs::is_directory(t.dir, ec)) continue;
+        auto n = put_tree_(out, t.dir, t.prefix, {}, t.prefix.starts_with("index/"));
+        if (!n) return std::unexpected(n.error());
+        count += *n;
     }
     static const std::array<char, kBlock * 2> end{};
     out.write(end.data(), end.size());
@@ -146,7 +171,62 @@ std::expected<std::size_t, std::string> write(const fs::path& file, const nlohma
     return count;
 }
 
+namespace {
+
+std::expected<nlohmann::json, std::string> read_(const fs::path& file, std::string_view prefix,
+                                                 const std::function<void(const Entry&)>& entry);
+
+// Places what `read_` hands over under `into`.
+std::expected<std::size_t, std::string> extract_(const fs::path& file, std::string_view prefix, const fs::path& into) {
+    std::size_t count = 0;
+    std::string failure;
+    auto m = read_(file, prefix, [&](const Entry& e) {
+        if (!failure.empty()) return;
+        std::error_code ec;
+        const auto at = into / fs::path(e.path);
+        fs::create_directories(at.parent_path(), ec);
+        if (e.type == Entry::Type::Dir) {
+            if (fs::is_symlink(at, ec)) fs::remove(at, ec);
+            fs::create_directories(at, ec);
+        } else {
+            if (fs::is_directory(at, ec) && !fs::is_symlink(at, ec)) fs::remove_all(at, ec);
+            else fs::remove(at, ec);
+            ec.clear();
+            if (e.type == Entry::Type::Symlink) fs::create_symlink(e.target, at, ec);
+            else {
+                std::ofstream out(at, std::ios::binary | std::ios::trunc);
+                out << e.content;
+                out.close();
+                if (!out) ec = std::make_error_code(std::errc::io_error);
+                fs::permissions(at, static_cast<fs::perms>(e.mode & 07777), ec);
+            }
+        }
+        if (ec) failure = std::format("{}: {}", at.string(), ec.message());
+        else ++count;
+    });
+    if (!m) return std::unexpected(m.error());
+    if (!failure.empty()) return std::unexpected(failure);
+    return count;
+}
+
+}  // namespace
+
 std::expected<nlohmann::json, std::string> read(const fs::path& file, const std::function<void(const Entry&)>& entry) {
+    return read_(file, "state", entry);
+}
+
+std::expected<std::size_t, std::string> extract_state(const fs::path& file, const fs::path& root) {
+    return extract_(file, "state", root);
+}
+
+std::expected<std::size_t, std::string> extract_tree(const fs::path& file, std::string_view prefix, const fs::path& into) {
+    return extract_(file, prefix, into);
+}
+
+namespace {
+
+std::expected<nlohmann::json, std::string> read_(const fs::path& file, std::string_view prefix,
+                                                 const std::function<void(const Entry&)>& entry) {
     std::ifstream in(file, std::ios::binary);
     if (!in) return std::unexpected("cannot read " + file.string());
     std::optional<nlohmann::json> manifest;
@@ -188,8 +268,9 @@ std::expected<nlohmann::json, std::string> read(const fs::path& file, const std:
             manifest = j;
             continue;
         }
-        if (!name.starts_with("state/")) continue;
-        auto rel = name.substr(6);
+        const auto lead = std::string(prefix) + "/";
+        if (!name.starts_with(lead)) continue;
+        auto rel = name.substr(lead.size());
         while (!rel.empty() && rel.back() == '/') rel.pop_back();
         if (rel.empty()) continue;
         if (!safe_(rel)) return std::unexpected(std::format("{}: '{}' leaves the environment", file.string(), name));
@@ -206,36 +287,6 @@ std::expected<nlohmann::json, std::string> read(const fs::path& file, const std:
     return *manifest;
 }
 
-std::expected<std::size_t, std::string> extract_state(const fs::path& file, const fs::path& root) {
-    std::size_t count = 0;
-    std::string failure;
-    auto m = read(file, [&](const Entry& e) {
-        if (!failure.empty()) return;
-        std::error_code ec;
-        const auto at = root / fs::path(e.path);
-        fs::create_directories(at.parent_path(), ec);
-        if (e.type == Entry::Type::Dir) {
-            if (fs::is_symlink(at, ec)) fs::remove(at, ec);
-            fs::create_directories(at, ec);
-        } else {
-            if (fs::is_directory(at, ec) && !fs::is_symlink(at, ec)) fs::remove_all(at, ec);
-            else fs::remove(at, ec);
-            ec.clear();
-            if (e.type == Entry::Type::Symlink) fs::create_symlink(e.target, at, ec);
-            else {
-                std::ofstream out(at, std::ios::binary | std::ios::trunc);
-                out << e.content;
-                out.close();
-                if (!out) ec = std::make_error_code(std::errc::io_error);
-                fs::permissions(at, static_cast<fs::perms>(e.mode & 07777), ec);
-            }
-        }
-        if (ec) failure = std::format("{}: {}", at.string(), ec.message());
-        else ++count;
-    });
-    if (!m) return std::unexpected(m.error());
-    if (!failure.empty()) return std::unexpected(failure);
-    return count;
-}
+}  // namespace
 
 }  // namespace luban::service::archive

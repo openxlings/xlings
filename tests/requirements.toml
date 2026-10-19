@@ -1337,7 +1337,7 @@ status = "required"
 
 [SUBOS-INDEX-SNAPSHOT]
 text = "a new system's home starts from a copy of the host's index snapshot; an export carries it; an import uses no network; with no network a system is made, imported and entered from what is here"
-status = "planned"
+status = "required"
 
 [SUBOS-READONLY-USER]
 text = "inside a system, a user's read-only xlings commands neither switch home nor print the notice; the first write says it once, without sudo"

@@ -235,10 +235,41 @@ std::optional<int> produce_domain_at_creation_(const std::string& name, bool,
         error_(stream, prepared.error()); return 1;
     }
     const std::vector<std::string> initialize{"self", "init"};
-    // Its own words are not the caller's: through the interface they would be
-    // text in a stream of events.
+    // Its own words are not the caller's (through the interface they would be
+    // text in a stream of events), but what it is doing is: each line a step
+    // of preparing the system's own home, and while it is quiet a word every
+    // ten seconds -- never a silence a person takes for a hang (design
+    // 2026-10-19 §4.4, F14).
+    std::mutex said;
+    const auto say = [&](std::string message) {
+        std::lock_guard lock(said);
+        stream.emit(ProgressEvent{"prepare", 0.0f, std::move(message)});
+    };
+    say(std::format("preparing {}'s own home", name));
+    const auto began = std::chrono::steady_clock::now();
+    std::atomic<std::chrono::steady_clock::rep> lastWord{began.time_since_epoch().count()};
+    std::jthread heartbeat([&](std::stop_token stop) {
+        while (!stop.stop_requested()) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(250));
+            const auto now = std::chrono::steady_clock::now();
+            if (now.time_since_epoch().count() - lastWord.load() < std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+                    std::chrono::seconds(10)).count())
+                continue;
+            lastWord = now.time_since_epoch().count();
+            say(std::format("still preparing {}'s own home ({} s)", name,
+                            std::chrono::duration_cast<std::chrono::seconds>(now - began).count()));
+        }
+    });
     auto init = xlings::home::domain_producer::run(*selected, initialize, std::nullopt, false,
-                                                   [](std::string_view) {});
+                                                   [&](std::string_view line) {
+                                                       std::string text(line);
+                                                       while (!text.empty() && (text.back() == '\n' || text.back() == '\r')) text.pop_back();
+                                                       if (text.empty()) return;
+                                                       lastWord = std::chrono::steady_clock::now().time_since_epoch().count();
+                                                       say(std::format("preparing {}'s own home: {}", name, text));
+                                                   });
+    heartbeat.request_stop();
+    heartbeat.join();
     // The namespace is judged by what it did, not by its exit code: a home
     // initialised inside has its default SubOS.
     std::error_code ec;

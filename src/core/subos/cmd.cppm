@@ -590,6 +590,12 @@ std::expected<int, std::string> run_domain_relayed_(const xlings::home::prefix_d
                                                    std::vector<std::string> words,
                                                    std::optional<xlings::home::domain_producer::OutputBinding> output,
                                                    bool yes, EventStream& stream, bool runtime = true);
+// What `subos new --offline-from <dir>` carries -- payloads/<package dir>/
+// <version>/ and index/<index>/ (as a home keeps them under data/), what `luban import`
+// unpacks from an archive -- placed in `home` where it lacks them, before
+// anything is fetched (design 2026-10-19 §9.3). How many were placed.
+std::expected<std::size_t, std::string> seed_offline_(const fs::path& dir, const fs::path& home);
+
 std::optional<int> run_domain_operation_(const std::string& name,
     std::span<const std::string> arguments, EventStream& stream);
 int declare_root_at_creation_(const std::string& name, bool rootfs, const std::string& from,
