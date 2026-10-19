@@ -43,7 +43,7 @@ The libxpkg loader runs the file in a sandbox; xmake-style calls such as
 | `programs` | string[] | the executable names the package provides |
 | `extensions` | table | namespaced data for other programs (§3.1) |
 
-### 3.1 Extensions (xlings 2026.10.19.1, libxpkg 0.0.66)
+### 3.1 Extensions (xlings 2026.10.19.2, libxpkg 0.0.66)
 
 `extensions` holds data for programs other than xlings, one table per program,
 keyed by a **namespace** that names the program that reads it -- the meaning of
@@ -72,7 +72,7 @@ extensions = {
 Where it is handed on: `package_info`'s `package.extensions` and each of
 `search_packages`' `packages[].extensions`, as a JSON object
 (`interface-ndjson-v1.md`). `xlings info -v` names its namespaces and what the
-loader dropped. A client before 2026.10.19.1 (libxpkg before 0.0.66) reads
+loader dropped. A client before 2026.10.19.2 (libxpkg before 0.0.66) reads
 the known fields by name and ignores `extensions`.
 
 | Namespace | Read by | Keys defined in |

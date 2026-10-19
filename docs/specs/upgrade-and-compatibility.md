@@ -119,8 +119,8 @@ behaviour (`tests/unit/test_luban_compat.cpp`) and goes with it:
 | Entry | Serves | Since | Removed when |
 |---|---|---|---|
 | `frozen_edition_names` | systems made from `subos:luban-*` (Luban 2026.10.17.1 and before) | 2026.10.18.1 | no official index lists a `subos:luban-*` edition (design 2026-10-18 §15.1) |
-| `legacy_xdesk_pointer` | xdesk 2026.10.18.1 and before: its hello has no `Cursor` and it draws no pointer; the host shows its own default arrow over it | 2026.10.19.1 | no official index offers such a desktop and `luban status` finds none here |
-| `unregistered_luban_os` | Luban OS 2026.10.18.1 and before: a tray icon per window, nothing registered; a newer window names them (Linux) and leaves them to be quit from their own icon | 2026.10.19.1 | the next `.0` release |
+| `legacy_xdesk_pointer` | xdesk 2026.10.19.1 and before: its hello has no `Cursor` and it draws no pointer; the host shows its own default arrow over it | 2026.10.19.2 | no official index offers such a desktop and `luban status` finds none here |
+| `unregistered_luban_os` | Luban OS 2026.10.19.1 and before: a tray icon per window, nothing registered; a newer window names them (Linux) and leaves them to be quit from their own icon | 2026.10.19.2 | the next `.0` release |
 
 ## 4. Releases
 

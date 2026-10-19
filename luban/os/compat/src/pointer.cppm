@@ -1,4 +1,4 @@
-// An xdesk of 2026.10.18.1 or before (design 2026-10-19 §15.2, F15): it does
+// An xdesk of 2026.10.19.1 or before (design 2026-10-19 §15.2, F15): it does
 // not ask for the host's pointer (no Cursor in its hello) and cannot draw one
 // either (wlroots' headless backend took its pointer for a hardware plane).
 // The host recognises it by the session it started and shows its own default

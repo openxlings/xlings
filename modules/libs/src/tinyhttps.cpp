@@ -5,6 +5,25 @@ import mcpplibs.tinyhttps;
 
 namespace xlings::tinyhttps {
 
+int bounded_timeout_seconds(int configured, std::string_view overrideValue) {
+    int cap = 0;
+    const auto [end, ec] = std::from_chars(overrideValue.data(),
+        overrideValue.data() + overrideValue.size(), cap);
+    if (ec != std::errc{} || end != overrideValue.data() + overrideValue.size()
+        || cap <= 0 || cap > 86400) return configured;
+    return std::min(configured, cap);
+}
+
+TransferBudget::TransferBudget(double idleSeconds, double totalSeconds)
+    : idle_(idleSeconds), total_(totalSeconds) {}
+void TransferBudget::progress(double elapsedSeconds, double bytes) {
+    if (bytes > bytes_) { bytes_ = bytes; lastProgress_ = elapsedSeconds; }
+}
+bool TransferBudget::expired(double elapsedSeconds) const {
+    return (idle_ > 0 && elapsedSeconds - lastProgress_ >= idle_)
+        || (total_ > 0 && elapsedSeconds >= total_);
+}
+
 namespace detail_ {
 
 // Which proxy the most recent client was built with, or empty.
@@ -78,6 +97,10 @@ auto make_client(int connectTimeoutSec, int readTimeoutSec, std::string_view url
     mcpplibs::tinyhttps::HttpClientConfig cfg;
     cfg.connectTimeoutMs = connectTimeoutSec * 1000;
     cfg.readTimeoutMs = readTimeoutSec * 1000;
+    if (auto cap = std::getenv("XLINGS_DOWNLOAD_CONNECT_TIMEOUT"); cap && *cap)
+        cfg.connectTimeoutMs = bounded_timeout_seconds(connectTimeoutSec, cap) * 1000;
+    if (auto cap = std::getenv("XLINGS_DOWNLOAD_IDLE_TIMEOUT"); cap && *cap)
+        cfg.readTimeoutMs = bounded_timeout_seconds(readTimeoutSec, cap) * 1000;
     cfg.verifySsl = true;
     cfg.keepAlive = false;
     cfg.maxRedirects = 10;
@@ -168,7 +191,7 @@ bool space_check_enabled_() {
     return !(v == "off" || v == "0");
 }
 
-DownloadFileResult download_once(const std::string& url, const std::filesystem::path& dest, int connectSec, int maxSec, int lowSpeedLimitBytes, int lowSpeedTimeSec, std::function<void(double, double)> onProgress, std::function<bool()> isCancelled) {
+DownloadFileResult download_once(const std::string& url, const std::filesystem::path& dest, int connectSec, int maxSec, int lowSpeedLimitBytes, int lowSpeedTimeSec, std::function<void(double, double)> onProgress, std::function<bool()> isCancelled, int totalTimeoutSec) {
     StallDetector detector(lowSpeedLimitBytes, lowSpeedTimeSec);
 
     // With the watchdog enabled, lower the per-read socket timeout so a
@@ -182,6 +205,12 @@ DownloadFileResult download_once(const std::string& url, const std::filesystem::
 
     bool stalled = false;
     auto t0 = std::chrono::steady_clock::now();
+    int idleSec = 0;
+    if (auto value = std::getenv("XLINGS_DOWNLOAD_IDLE_TIMEOUT"); value && *value)
+        idleSec = bounded_timeout_seconds(readSec, value);
+    TransferBudget budget(idleSec, totalTimeoutSec);
+    bool budgetExpired = false;
+    auto elapsed = [&] { return std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count(); };
 
     // Asked once, at the first figure the server gives: a disk that cannot
     // hold the body stops the transfer before it is spent, instead of after.
@@ -190,8 +219,9 @@ DownloadFileResult download_once(const std::string& url, const std::filesystem::
     std::int64_t needed = 0;
 
     mcpplibs::tinyhttps::DownloadProgressFn progress;
-    if (onProgress || detector.enabled() || !spaceChecked) {
+    if (onProgress || detector.enabled() || !spaceChecked || idleSec > 0 || totalTimeoutSec > 0) {
         progress = [&](std::int64_t total, std::int64_t downloaded) {
+            budget.progress(elapsed(), static_cast<double>(downloaded));
             if (!spaceChecked && total > 0) {
                 spaceChecked = true;
                 needed = total - downloaded;
@@ -212,9 +242,10 @@ DownloadFileResult download_once(const std::string& url, const std::filesystem::
     }
 
     std::function<bool()> cancel;
-    if (isCancelled || detector.enabled() || !spaceChecked) {
+    if (isCancelled || detector.enabled() || !spaceChecked || idleSec > 0 || totalTimeoutSec > 0) {
         cancel = [&]() -> bool {
-            if (stalled || shortBy > 0) return true;
+            budgetExpired = budget.expired(elapsed());
+            if (stalled || shortBy > 0 || budgetExpired) return true;
             return isCancelled && isCancelled();
         };
     }
@@ -235,6 +266,8 @@ DownloadFileResult download_once(const std::string& url, const std::filesystem::
             .failure = FailureKind::Local,
         };
     }
+    if (budgetExpired) return {.success = false, .error = "transfer budget expired",
+                               .failure = FailureKind::Transfer};
     if (result.ok() && !stalled) {
         return {
             .success = true,
@@ -283,6 +316,59 @@ DownloadFileResult download_once(const std::string& url, const std::filesystem::
 
 std::string resolve_proxy(std::string_view url) {
     return detail_::env_proxy_for_(url);
+}
+
+ProbeResult probe_url(std::string_view url, int socketTimeoutMs,
+                     std::function<ProbeResult(std::string_view, int)> loopback) {
+    ProbeResult probe;
+    auto authority = url.substr(url.find("://") == std::string_view::npos ? 0 : url.find("://") + 3);
+    authority = authority.substr(0, authority.find_first_of("/?#"));
+    const auto credentials = authority.rfind('@');
+    if (credentials != std::string_view::npos) authority.remove_prefix(credentials + 1);
+    probe.host = std::string(authority);
+    if (credentials != std::string_view::npos) { probe.status = "unsupported_credentials"; return probe; }
+    if (loopback && url.starts_with("http://127.0.0.1:")) {
+        auto result = loopback(url, socketTimeoutMs);
+        result.host = probe.host;
+        return result;
+    }
+    if (!url.starts_with("https://")) { probe.status = "unsupported_transport"; return probe; }
+    probe.proxy = !resolve_proxy(url).empty();
+    const auto start = std::chrono::steady_clock::now();
+    std::error_code ec;
+    const auto temporary = std::filesystem::temp_directory_path(ec);
+    if (ec) { probe.status = "local"; return probe; }
+    const auto file = temporary / std::format("xlings-network-{}-{}",
+        start.time_since_epoch().count(), std::random_device{}());
+    global_init();
+    auto client = detail_::make_client(3, 3, url);
+    const int timeout = std::clamp(socketTimeoutMs, 1, 3000);
+    client.config().connectTimeoutMs = std::min(client.config().connectTimeoutMs, timeout);
+    client.config().readTimeoutMs = std::min(client.config().readTimeoutMs, timeout);
+    client.config().maxRedirects = 5;
+    bool limited = false;
+    const auto deadline = start + std::chrono::milliseconds(timeout);
+    auto result = client.download_to_file(std::string(url), file,
+        [&](std::int64_t total, std::int64_t bytes) {
+            limited = bytes >= 65536;
+        }, [&] { return limited || std::chrono::steady_clock::now() >= deadline; });
+    std::filesystem::remove(file, ec);
+    probe.httpStatus = result.statusCode;
+    probe.elapsedSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+    probe.reachable = result.statusCode >= 200 && result.statusCode < 300
+                   && (result.error.empty() || limited);
+    if (probe.reachable) probe.status = limited ? "reachable_limited" : "reachable";
+    else if (std::chrono::steady_clock::now() >= deadline) probe.status = "timeout";
+    else if (result.statusCode >= 400) probe.status = "http";
+    else {
+        auto error = result.error;
+        std::ranges::transform(error, error.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        probe.status = error.contains("tls") || error.contains("ssl") || error.contains("certificate") ? "tls"
+                     : error.contains("resolve") || error.contains("dns") ? "dns"
+                     : error.contains("proxy") || error.contains("tunnel") ? "proxy"
+                     : error.contains("connect") ? "connect" : "transfer";
+    }
+    return probe;
 }
 
 void global_init() {
@@ -350,6 +436,7 @@ DownloadFileResult download_file(const DownloadOptions& opts) {
                         .failure = FailureKind::Cancelled};
             }
             anyLive = true;
+            if (opts.onUrlAttempt) opts.onUrlAttempt(url);
             auto r = opts.transferOverride
                 ? opts.transferOverride(url, opts.destFile)
                 : opts.loopbackHttp && url.starts_with("http://127.0.0.1:")
@@ -357,7 +444,7 @@ DownloadFileResult download_file(const DownloadOptions& opts) {
                 : detail_::download_once(url, opts.destFile,
                       opts.connectTimeoutSec, opts.maxTimeSec,
                       lowSpeedBytes, lowSpeedSecs,
-                      opts.onProgress, opts.isCancelled);
+                      opts.onProgress, opts.isCancelled, opts.totalTimeoutSec);
             if (r.success) {
                 // What the file holds is checked against what the transfer
                 // reported BEFORE its content is judged: a file the disk cut

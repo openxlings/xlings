@@ -54,8 +54,8 @@ is behind.
 | `agent-display` | 1 | A machine's agent opens a desktop session on a display channel and bridges it (opensal.wire) | a machine's agent | | Luban 2026.10.13 |
 | `desktop-cursor` | 1 | A system has a default cursor theme (`/usr/share/icons/default`) | a system | `luban:cursors` | Luban 2026.10.16.1 |
 | `host-gpu` | 1 | The window that shows a system draws on the host's GPU | the Luban OS app | | Luban 2026.10.19 |
-| `app-capabilities` | 1 | The app answers `luban-os __capabilities --json` (version, provides, needs) before it opens a display | the Luban OS app | | Luban 2026.10.19.1 |
-| `tray-protocol` | 1 | One tray process per home; its windows register, report jobs and are raised over its socket (NDJSON) | the Luban OS tray and its windows | | Luban 2026.10.19.1 |
+| `app-capabilities` | 1 | The app answers `luban-os __capabilities --json` (version, provides, needs) before it opens a display | the Luban OS app | | Luban 2026.10.19.2 |
+| `tray-protocol` | 1 | One tray process per home; its windows register, report jobs and are raised over its socket (NDJSON) | the Luban OS tray and its windows | | Luban 2026.10.19.2 |
 
 **Package**: for a capability a system has, the package that brings it to a
 system that lacks it -- what a reader offers besides upgrading the whole

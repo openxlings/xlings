@@ -1,12 +1,12 @@
-# NDJSON Interface Protocol v1.12
+# NDJSON Interface Protocol v1.14
 
-> Status: in force; protocol 1.12 since xlings 2026.10.18.1. Implemented in
+> Status: in force; protocol 1.14 since xlings 2026.10.19.2. Implemented in
 > `src/interface.cpp`; `xlings interface --list` is the authoritative schema.
 
 ## 1. Overview
 
 `xlings interface` is the structured API for programs: IDE plugins, CI scripts
-and AI agents talk to xlings over standard IO. The protocol is **1.12**, over NDJSON
+and AI agents talk to xlings over standard IO. The protocol is **1.14**, over NDJSON
 (newline-delimited JSON).
 
 | Protocol | xlings | Change |
@@ -24,6 +24,8 @@ and AI agents talk to xlings over standard IO. The protocol is **1.12**, over ND
 | 1.10 | 2026.10.16.1 | added: `--version` is the handshake (§3.1); `payload_status` and `sync_index` (§7.4); `install_targets` entries carry `complete` and `origin` (§6.3.1) |
 | 1.11 | 2026.10.17.1 | `complete` means integrity only; added beside it: `installed_revision`, `floor`, `usable`, `current` (feature `payload_currency`, §6.3.1, §7.4); the `scope_repaired` data event (§6.3.1); `system_status`'s `binding_state` data event (feature `binding_state`, §7.5) |
 | 1.12 | 2026.10.18.1 | added: `search_packages`' `category` argument, and `namespace`, `index`, `categories` on its `packages` entries; `package_info`'s `package` object and `platform` argument (whose build is described); an index's reserved namespaces kept to it (feature `reserved_namespaces`); `subos_command` `new --dry-run`'s `subos_plan` data event (feature `subos_plan`) |
+| 1.13 | 2026.10.19.1 | added: read-only `network_endpoints` and bounded `probe_url`; features `network_diagnostics` / `read_only_queries`; shortening connect/read budgets via environment (feature `download_socket_budgets`) |
+| 1.14 | 2026.10.19.2 | added: `package_info` and `search_packages` carry a package's `extensions`, `status` and `archs` (feature `package_extensions`, §7.6); `subos new --from` using a version only installed says so (feature `installed_only`, §7.7); a command routed into a prefix domain answers in events (feature `domain_relayed`, §10.1) |
 
 A minor version only adds: a 1.0 client reads 1.1 output unchanged. 1.11 is the
 one exception in meaning, not in shape: 1.10's `complete` also required the
@@ -60,7 +62,7 @@ prints one line and exits -- the handshake a client checks before it uses this
 xlings (1.10+):
 
 ```json
-{"protocol_version":"1.12","version":"2026.10.18.1","capabilities":["search_packages","install_packages","..."],"home_layouts":[1,2],"features":["index_dir","index_store","upstreams","payload_status","sync_index","install_targets_complete","payload_currency","binding_state","reserved_namespaces","subos_plan"]}
+{"protocol_version":"1.14","version":"2026.10.19.2","capabilities":["search_packages","install_packages","..."],"home_layouts":[1,2],"features":["index_dir","index_store","upstreams","payload_status","sync_index","install_targets_complete","payload_currency","binding_state","reserved_namespaces","subos_plan","network_diagnostics","download_socket_budgets","read_only_queries","package_extensions","domain_relayed","installed_only"]}
 ```
 
 | Field | Meaning |
@@ -69,7 +71,7 @@ xlings (1.10+):
 | `version` | the xlings version (1.10+) |
 | `capabilities` | every capability's name (1.10+) |
 | `home_layouts` | the home layouts this client reads and writes (1.10+) |
-| `features` | behaviour a client may rely on that is not a capability (1.10+): `index_dir` and `index_store` (the `index_repos` fields), `upstreams`, `payload_status`, `sync_index`, `install_targets_complete`; 1.11+: `payload_currency`, `binding_state`; 1.12+: `reserved_namespaces`, `subos_plan` |
+| `features` | behaviour a client may rely on that is not a capability (1.10+): `index_dir` and `index_store` (the `index_repos` fields), `upstreams`, `payload_status`, `sync_index`, `install_targets_complete`; 1.11+: `payload_currency`, `binding_state`; 1.12+: `reserved_namespaces`, `subos_plan`; 1.13+: `network_diagnostics`, `download_socket_budgets` |
 
 ### 3.2 The capabilities
 
@@ -559,7 +561,7 @@ without running doctor. Read-only.
 or `notice`. `subos` names the subos whose workspace holds the reference; the
 version database is shared by every subos of the home.
 
-### 7.6 What a package is: `package_info` and `search_packages` (2026.10.19.1)
+### 7.6 What a package is: `package_info` and `search_packages` (2026.10.19.2)
 
 `package_info`'s `info_panel` carries `package`, and `search_packages` carries
 `packages[]` (as data `packages`), with the same facts for each package:
@@ -568,7 +570,7 @@ version database is shared by every subos of the home.
 |---|---|
 | `package`, `namespace`, `name`, `version`, `index` | its coordinate and the index it resolves in |
 | `description`, `categories`, `keywords`, `archs` | the recipe's (`archs` and `keywords` in search results) |
-| `status` | `"dev"`, `"stable"` or `"deprecated"`: the recipe's (before 2026.10.19.1 a recipe read in the worker reported `"dev"`) |
+| `status` | `"dev"`, `"stable"` or `"deprecated"`: the recipe's (before 2026.10.19.2 a recipe read in the worker reported `"dev"`) |
 | `extensions` | the recipe's `extensions`, as written: an object keyed by namespace (`xpkg-manifest-v1.md` §3.1). Absent when it has none |
 | `passed_over` | the newest version was passed over because it needs a newer xlings, and why |
 
@@ -579,7 +581,7 @@ A client checks the handshake's feature `package_extensions` before it reads
 {"kind":"data","dataKind":"packages","payload":[{"package":"luban:labwc","namespace":"luban","name":"labwc","version":"0.20.0-r2","index":"xim","description":"...","categories":["luban-desktop"],"status":"stable","extensions":{"luban":{"tier":2}}}]}
 ```
 
-### 7.7 What `subos new --from` chose (2026.10.19.1)
+### 7.7 What `subos new --from` chose (2026.10.19.2)
 
 Named without a version, a template is the index's newest that this xlings can
 use. Two data events say when it is not simply that, each once per command:
@@ -764,7 +766,7 @@ and a `cancel` on the control channel ends the call with `E_CANCELLED` and 130.
 {"kind":"result","exitCode":0}
 ```
 
-### 10.1 A system in a prefix domain (2026.10.19.1)
+### 10.1 A system in a prefix domain (2026.10.19.2)
 
 A command for a system that lives in a private prefix domain runs there. Asked
 through the interface (`subos_command`), it runs in the domain as
@@ -774,3 +776,50 @@ through the interface (`subos_command`), it runs in the domain as
 commands printed their answer on a stdout no reader of NDJSON saw: `luban
 history` of such a system was empty. Commands that hand the terminal to a
 program (`exec`, `use`, `start`, `log`) are not relayed.
+
+## Network diagnosis (1.13+)
+
+Feature `read_only_queries` guarantees that `interface --version`, `--list`,
+`network_endpoints`, `probe_url`, `system_status` and `payload_status` do not
+initialize, adopt, upgrade or journal into the selected home. A client that
+must preserve an older home probes the handshake in an isolated temporary
+home first and skips these queries when the feature is absent.
+
+`network_endpoints` accepts `{}` and emits `dataKind: network_endpoints` with
+`payload.endpoints`: entries have `resource`, `region` and `url`. Discovery uses
+the same artifact-pointer/Git-source resolver and declared region bases as index
+fetching. It does not choose a mirror by latency, clone an index or install tools.
+Local index sources produce no endpoint. Custom and project sources are retained.
+
+`probe_url` accepts a required string `url` and optional integer
+`socket_timeout_ms` (default 2000, accepted range 1–3000). It emits
+`dataKind: network_probe` with `host`, `status`, `http_status`, `elapsed_seconds`,
+`proxy` and `reachable`. A diagnosed network failure still returns exit 0; malformed
+arguments return 2. `status` distinguishes `reachable`, `reachable_limited`, `timeout`,
+`http`, `tls`, `dns`, `proxy`, `connect`, `transfer`, `local`,
+`unsupported_transport` and `unsupported_credentials` where the transport can
+identify the cause. The result never includes proxy credentials, URL userinfo,
+paths or query strings. A successful bounded read of the resource is required;
+a host accepting a TCP connection is insufficient.
+
+The probe uses the downloader's HTTPS client, proxy environment and TLS checking.
+Numeric loopback HTTP uses the downloader's loopback transport for local fixtures;
+other plain HTTP is reported as unsupported. Body reads stop at 64 KiB. The socket
+budget is not a total DNS/redirect deadline: clients own a wall-clock deadline
+and stop the child when it expires. Clients needing several probes share one
+budget across discovery and all children. A probe never selects or disables a
+source on its own.
+
+`XLINGS_DOWNLOAD_CONNECT_TIMEOUT` and `XLINGS_DOWNLOAD_IDLE_TIMEOUT` are positive
+integer seconds, at most 86400. They shorten the caller's existing connect/read
+socket budgets; they never increase them. Empty or invalid values preserve the
+caller's defaults. Heartbeats on the interface are independent of socket reads
+and cannot renew a download's read budget. A socket budget does not bound an
+entire index refresh or installation; a client retains its total process deadline.
+
+Install `download_progress.payload.files` entries additionally carry `sourceHost`
+(authority without credentials, path or query) and `sourceAttempt` (1-based
+candidate attempt, zero before a transfer). A mirror retry resets its byte count.
+A source change itself emits progress even before any body byte arrives.
+Index resources use a 120-second total transfer budget per attempt, independent
+of byte progress. Package downloads retain the caller's total process budget.

@@ -918,14 +918,27 @@ jobs:
     needs: [release, build, unit, acceptance, asan, e2e, isolation-fix, arch-package, distro, wsl-import]
     if: always()
     runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      actions: read
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Select the latest artifact for each lane
+        id: lane-artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api --paginate --slurp \
+            "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/artifacts?per_page=100" \
+            | python3 tools/ci/select_run_artifacts.py xdev-linux- > "$RUNNER_TEMP/lane-artifact-ids"
+          echo "ids=$(cat "$RUNNER_TEMP/lane-artifact-ids")" >> "$GITHUB_OUTPUT"
+
       - name: Fetch the runs
         uses: actions/download-artifact@v4
         with:
-          pattern: xdev-linux-*
+          artifact-ids: ${{ steps.lane-artifacts.outputs.ids }}
           path: runs
 
       - name: Restore main-branch execution history

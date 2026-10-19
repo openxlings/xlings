@@ -450,7 +450,7 @@ desktops   give one to a system: luban new <name> --desktop <it>, or luban confi
 
 ### 8.4 规范与记录
 
-- `xlings/docs/specs/xpkg-manifest-v1.md`：§3 字段表加 `extensions`；新增一节"Extensions (xlings 2026.10.19.1, libxpkg 0.0.66)"：语义、规则、登记表、示例。
+- `xlings/docs/specs/xpkg-manifest-v1.md`：§3 字段表加 `extensions`；新增一节"Extensions (xlings 2026.10.19.2, libxpkg 0.0.66)"：语义、规则、登记表、示例。
 - `xim-pkgindex/docs/specs/xpackage-v2.md`：同一字段与规则（V2 是 V1 的超集，只写新增）；`xpackage-v2-changelog.md` 记一条
   （日期、字段、需要的客户端版本、旧客户端的行为）；`xpackage-template.lua` 加一段注释示例。
 - `xim-pkgindex/docs/12-luban-packages.md` 与中文版：`luban` 命名空间的键（§5.4），每个键的类型、取值、没有时的行为。
@@ -533,12 +533,12 @@ luban 和 luban-os 之间**没有包依赖**，也不加：luban 不需要窗口
 ## 11. 一处可查：`luban status` 的版本
 
 ```
-versions   xlings 2026.10.19.1 · luban 2026.10.19.1 · luban-os 2026.10.19.1 · index c779f51
+versions   xlings 2026.10.19.2 · luban 2026.10.19.2 · luban-os 2026.10.19.2 · index c779f51
 ```
 不一致时展开，并给出下一步：
 ```
-versions   xlings 2026.10.19.1 · luban 2026.10.19.1 · index c779f51
-  luban-os 2026.10.19.1 installed; 2026.10.17.1 is running (its own tray icon) -- quit it from that icon's menu
+versions   xlings 2026.10.19.2 · luban 2026.10.19.2 · index c779f51
+  luban-os 2026.10.19.2 installed; 2026.10.17.1 is running (its own tray icon) -- quit it from that icon's menu
 ```
 - `-v` 与 `--json` 有完整的 `versions`：各方版本与协议；托盘进程与每个窗口进程（pid、版本、是否已登记）；各方的 `provides`；`mismatches[]`（`what`、`why`、`next`）。
 - 运行中的进程读 §3.2 的登记；Linux 上另扫描未登记的旧进程；macOS 与 Windows 只列已登记的，并在 `-v` 里写明。
@@ -992,7 +992,7 @@ CI：延时与指针、键盘、排布的 e2e 在 `linux-luban-os-first-use`；�
 - `docs/specs/upgrade-and-compatibility.md`：Compatibility 一节列出 `luban.compat` 的条目与删除条件。
 - xim-pkgindex `docs/12-luban-packages.md` 与中文版：core 的包列表、"上层系统的包覆盖下层的同名程序"、`extensions.luban.size`/`highlights`。
 - 架构：§21 的目录树、包表与规则写进 `docs/91-architecture.md` 与中文版；每个新包的 README。
-- release notes（2026.10.19.1）：旧的 Luban OS 进程要从它自己的托盘图标退出一次；xdesk 新增排布与快捷键。
+- release notes（2026.10.19.2）：旧的 Luban OS 进程要从它自己的托盘图标退出一次；xdesk 新增排布与快捷键。
 
 ## 25. 实施拆分与依赖
 
@@ -1020,10 +1020,10 @@ CI：延时与指针、键盘、排布的 e2e 在 `linux-luban-os-first-use`；�
 | R3 | `xim:yazi`：补 linux-aarch64 条目并镜像 | — |
 | R4 | `luban:labwc`、`luban:xdesk` 依赖 `luban:cursors`，bump `revision` | R1 |
 | R5 | core 2026.10.19.1：加 `xim:cmake`、`xim:yazi`、`xim:procps-ng`；`xim:xmake` 只在 x86_64（aarch64 暂不带，文档写明）；自检；描述 | R2、R3 |
-| R6 | desktop 2026.10.19.1：默认 `xdesk` 会话、`luban:cursors` 取代 `adwaita-cursors`；agent-workspace 跟随 core（edition 引用新发布的 `luban:xdesk@2026.10.19.1`，所以在发布之后合入） | R4、R5、X30 |
+| R6 | desktop 2026.10.19.1：默认 `xdesk` 会话、`luban:cursors` 取代 `adwaita-cursors`；agent-workspace 跟随 core（edition 引用新发布的 `luban:xdesk@2026.10.19.2`，所以在发布之后合入） | R4、R5、X30 |
 | R7 | 官方桌面组件与 edition 写 `extensions.luban`（`tier`、`gpu`、`title`、`summary`、`size`、`highlights`）；静态检查 | L1 |
 | R8 | 规范与文档：`xpackage-v2.md`、变更记录、模板、`12-luban-packages.md` 与中文版（含"上层包覆盖下层同名程序"、core 的包列表） | L1 |
-| R9 | 发布后：xlings、luban、luban-os、xdesk 的 `latest` 提到 2026.10.19.1；发布输出夹具 | X30、R6 |
+| R9 | 发布后：xlings、luban、luban-os、xdesk 的 `latest` 提到 2026.10.19.2；发布输出夹具 | X30、R6 |
 | P1 | 发布后验证：index 发布约 5 分钟后（CDN），main 的 fresh 全套（luban-fresh、fresh-install）按 `latest` 跑通；新家与从 2026.10.18.1 升级的真实验证 | R9 |
 
 **xlings**（commit 顺序即编号）
@@ -1060,7 +1060,7 @@ CI：延时与指针、键盘、排布的 e2e 在 `linux-luban-os-first-use`；�
 | X28 | `test(fresh)`：`tests/fresh-install/` 按新输出更新（发布后由 P1 验证） | X12、X24 |
 | X29 | 全量回归：三平台 CI、aarch64 在分支上全部通过；fresh 套件在分支上按派发跑通 | X1–X28、X31–X35、R1–R5、R7、R8、R10 |
 | X31–X35 | 系统里的网络、代理、用户 home、提示符（§27.8） | 见 §27.8 |
-| X30 | release 2026.10.19.1：`mcpp.toml`、`src/core/config.cppm`、`luban/os/service/src/service.cppm` 一起改；发布、镜像（`tools/mirror-latest.sh`，GET 验证） | X29 |
+| X30 | release 2026.10.19.2（2026.10.19.1 已由 #684 的网络诊断先发布，本 PR 顺延一号；协议随之为 1.14）：`mcpp.toml`、`src/core/config.cppm`、`luban/os/service/src/service.cppm` 一起改；发布、镜像（`tools/mirror-latest.sh`，GET 验证） | X29 |
 
 ### 25.2 依赖图
 

@@ -7,9 +7,9 @@
 #                            when it goes
 #   luban.compat:editions    frozen edition names (subos:luban-*) and their
 #                            successors in the luban: namespace
-#   luban.compat:pointer     an xdesk of 2026.10.18.1 or before: it neither
+#   luban.compat:pointer     an xdesk of 2026.10.19.1 or before: it neither
 #                            asks for the host's pointer nor draws one
-#   luban.compat:processes   Luban OS windows of 2026.10.18.1 or before: they
+#   luban.compat:processes   Luban OS windows of 2026.10.19.1 or before: they
 #                            do not register with the tray (Linux)
 [package]
 namespace = "luban"

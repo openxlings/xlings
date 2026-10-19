@@ -70,6 +70,11 @@ XTEST(HomeContext, AHigherLayoutAllowsOnlyReadOnlyCommands,
     EXPECT_TRUE(ro({"subos", "list"}));
     EXPECT_TRUE(ro({"subos", "status", "x"}));
     EXPECT_TRUE(ro({"self", "doctor"}));
+    EXPECT_TRUE(ro({"interface", "network_endpoints", "--args", "{}"}));
+    EXPECT_TRUE(ro({"interface", "probe_url", "--args", "{}"}));
+    EXPECT_TRUE(ro({"interface", "system_status", "--args", "{}"}));
+    EXPECT_TRUE(ro({"interface", "payload_status", "--args", "{}"}));
+    EXPECT_FALSE(ro({"interface", "install_packages", "--args", "{}"}));
     EXPECT_FALSE(ro({"self", "doctor", "--fix"}));
     EXPECT_FALSE(ro({"install", "gcc"}));
     EXPECT_FALSE(ro({"subos", "new", "x"}));

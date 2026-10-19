@@ -222,19 +222,24 @@ int main(int argc, char* argv[]) {
         xlings::capture_ambient_home_env();
         xlings::platform::set_env_variable("XLINGS_HOME", p.homeDir.string());
 
+        const std::vector<std::string_view> commandWords(argv + 1, argv + argc);
+        const bool readOnlyInterface = is_cli && !commandWords.empty()
+            && commandWords[0] == "interface" && xlings::home::is_read_only_command(commandWords);
+
         // COMPAT(0.4.17 → permanent self-heal): if the user updated xlings via
         // `xlings update xlings` (which only flips the xvm pointer; it doesn't
         // call ensure_home_layout), the on-disk shell profiles will be stale.
         // Have the new binary auto-upgrade them on its first run. Cheap on the
         // unchanged path (one read + version compare per profile file).
-        xlings::xself::compat::v0_4_17::auto_upgrade_profiles_if_stale(p.homeDir);
+        if (!readOnlyInterface)
+            xlings::xself::compat::v0_4_17::auto_upgrade_profiles_if_stale(p.homeDir);
 
         // A home that predates `.xlings-home` gains it on the first command of
         // a version that knows it (home_identity). A command, not a tool shim:
         // running `gcc` should not write into the home. One stat on the
         // ordinary path; a read-only home stays as it is and keeps being
         // recognised by its layout.
-        if (is_cli) xlings::home_identity::adopt_legacy_home(p.homeDir);
+        if (is_cli && !readOnlyInterface) xlings::home_identity::adopt_legacy_home(p.homeDir);
 
         // What kind of home this is (xlings.core.home). A home a NEWER client
         // moved to a layout this one does not know is read, never written:
@@ -261,7 +266,7 @@ int main(int argc, char* argv[]) {
                     rc = 1;
                     refused = true;
                 }
-            } else if (xlings::home_identity::has_marker(p.homeDir)
+            } else if (!readOnlyInterface && xlings::home_identity::has_marker(p.homeDir)
                        && (!ctx.modeDeclared || ctx.layout < xlings::home::kLayout)) {
                 (void)xlings::home::declare(
                     p.homeDir,

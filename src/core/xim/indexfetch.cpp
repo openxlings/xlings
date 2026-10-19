@@ -77,6 +77,8 @@ std::string download_candidates_(std::vector<std::string> urls,
         opts.retryCount = 1;        // breadth over depth; don't hammer a 404
         if (connectSec > 0) opts.connectTimeoutSec = connectSec;
         if (maxSec > 0)     opts.maxTimeSec        = maxSec;
+        // Bound small index resources even if a peer sends a slow trickle.
+        opts.totalTimeoutSec = 120;
         opts.onUrlAttemptFailed = [](const std::string& url, const std::string& e) {
             // Demote a host that stalled / served bad bytes / timed out / gave no
             // response so later fetches this session skip it. Do NOT penalize on
@@ -420,6 +422,35 @@ std::optional<ArtifactSource> artifact_source_for(const IndexRepo& repo) {
         if (artifact_source_from_base(ab.url, repo.name)) src->altBases.push_back(ab.url);
     }
     return src;
+}
+
+std::vector<ProbeEndpoint> probe_endpoints(const IndexRepo* repo) {
+    std::vector<ProbeEndpoint> endpoints;
+    auto append = [&](std::string region, const std::string& base, const std::string& key) {
+        auto source = artifact_source_from_base(base, key);
+        if (!source || source->localDir) return;
+        for (auto& url : index_pointer_urls(detail_::pointer_file_of_(*source), region, &*source)) {
+            if (std::ranges::none_of(endpoints, [&](const ProbeEndpoint& e) { return e.url == url; }))
+                endpoints.push_back({region, std::move(url)});
+        }
+    };
+    if (repo) {
+        for (auto& base : repo->artifactBases) append(base.region, base.url, repo->name);
+    } else {
+        const auto override = detail_::resolve_base_();
+        if (!override.entries.empty()) {
+            for (const auto& entry : override.entries)
+                if (!entry.local)
+                    endpoints.push_back({"configured", entry.base + "/" + detail_::index_repo_name_() + "-pointers.json"});
+            return endpoints;
+        }
+        // These accessors read configuration only. resource_server(), singular,
+        // performs an adaptive probe and is intentionally not called here.
+        for (const auto* region : {"GLOBAL", "CN"})
+            for (auto& server : Config::resource_servers(region))
+                append(region, server + "/" + detail_::index_repo_name_(), "xim");
+    }
+    return endpoints;
 }
 
 const IndexManifest* select_manifest(const std::map<std::string, IndexManifest>& pointers,

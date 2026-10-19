@@ -1,4 +1,4 @@
-// Luban OS windows of 2026.10.18.1 or before (design 2026-10-19 §3.6): each
+// Luban OS windows of 2026.10.19.1 or before (design 2026-10-19 §3.6): each
 // window process kept a tray icon of its own and registered nowhere. A newer
 // window finds them among the user's processes (Linux) and says so; it never
 // ends them -- they are the person's to quit from their own icon.
