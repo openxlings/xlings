@@ -40,6 +40,8 @@ import xlings.core.diag;
 import xlings.core.xvm.errors;
 import xlings.core.config;
 import xlings.core.home;
+import xlings.core.home.layers;
+import xlings.core.home.domain_producer_source;
 import xlings.core.profile;
 import xlings.runtime;
 import xlings.libs.json;
@@ -860,6 +862,31 @@ int install_(std::span<const std::string> targets, bool yes, bool noDeps,
             entry.version = match->version;
         }
         requestedMatches.push_back(*match);
+    }
+
+    // Inside a Luban system, what the system already has at that version is
+    // every user's: not installed again for one of them (design 2026-10-19
+    // §27.5). Only when everything asked is the system's; otherwise the
+    // install borrows the system's payloads as before.
+    if (const auto& paths = Config::paths(); !paths.systemLayer.empty() && !requestedMatches.empty()) {
+        std::error_code ec;
+        if (!std::filesystem::equivalent(paths.systemLayer, paths.homeDir, ec))
+            if (auto physical = home::domain_producer_source::persisted_home(paths.systemLayer))
+                if (auto system = home::layers::read_source_snapshot(*physical)) {
+                    const auto first = static_cast<std::size_t>(injectedRelocationTool);
+                    bool all = first < requestedMatches.size();
+                    for (std::size_t i = first; all && i < requestedMatches.size(); ++i) {
+                        const auto it = system->workspace.active.find(requestedMatches[i].name);
+                        all = it != system->workspace.active.end()
+                              && xvm::version_key_matches(requestedMatches[i].version, it->second);
+                    }
+                    if (all) {
+                        for (std::size_t i = first; i < requestedMatches.size(); ++i)
+                            log::println("{}@{} is installed for every user already (the system's)",
+                                         requestedMatches[i].canonicalName, requestedMatches[i].version);
+                        return 0;
+                    }
+                }
     }
 
     // Resolve dependencies

@@ -190,6 +190,45 @@ bool& reads_only_() {
 
 void Config::command_reads_only(bool readsOnly) { reads_only_() = readsOnly; }
 
+std::expected<void, std::string> Config::start_own_home() {
+    namespace fs = std::filesystem;
+    const auto& p = paths();
+    if (p.systemLayer.empty()) return {};
+    std::error_code ec;
+    fs::create_directories(p.homeDir / "data", ec);
+    if (ec) return std::unexpected(std::format("cannot make {}: {}", p.homeDir.string(), ec.message()));
+    auto system = nlohmann::json::parse(platform::read_file_to_string((p.systemLayer / ".xlings.json").string()), nullptr, false);
+    if (!system.is_object()) system = nlohmann::json::object();
+    std::set<std::string> indexes{"xim-pkgindex", "xim-index-repos"};
+    if (auto repos = system.find("index_repos"); repos != system.end() && repos->is_array())
+        for (const auto& r : *repos)
+            if (r.is_object() && !r.value("name", "").empty() && r.value("name", "") != "xim") indexes.insert(r.value("name", ""));
+    for (const auto& index : indexes) {
+        const auto from = p.systemLayer / "data" / index, to = p.homeDir / "data" / index;
+        if (!fs::is_directory(from, ec) || fs::exists(to, ec)) continue;
+        const auto staged = fs::path(to.string() + ".start");
+        fs::remove_all(staged, ec);
+        fs::copy(from, staged, fs::copy_options::recursive | fs::copy_options::copy_symlinks, ec);
+        if (!ec) fs::rename(staged, to, ec);
+        if (ec) {
+            fs::remove_all(staged, ec);
+            return std::unexpected(std::format("cannot start {} from the system's index {}", p.homeDir.string(), from.string()));
+        }
+    }
+    const auto file = p.homeDir / ".xlings.json";
+    if (!fs::exists(file, ec)) {
+        auto own = nlohmann::json::object();
+        for (const auto* key : {"mirror", "lang", "index_repos", "resource_servers", "xim"})
+            if (system.contains(key)) own[key] = system[key];
+        try {
+            platform::write_file_atomic(file.string(), own.dump(2) + "\n");
+        } catch (const std::exception& e) {
+            return std::unexpected(std::format("cannot write {}: {}", file.string(), e.what()));
+        }
+    }
+    return {};
+}
+
 std::optional<std::filesystem::path>& Config::home_override_() {
     static std::optional<std::filesystem::path> v;
     return v;
@@ -720,19 +759,9 @@ Config::Config() {
         // reads the system's as it is: no ~/.xlings made, nothing said.
         if (!fs::equivalent(own, paths_.homeDir, lec) && !(reads_only_() && !fs::exists(own, lec))) {
             paths_.systemLayer = paths_.homeDir;
-            // Said once, when a home of one's own is first made. Installing for
-            // every user is root's, which in a Luban system is reached from the
-            // host (no sudo here; administrator rights have one door).
-            if (!fs::exists(own, lec)) {
-                std::string system = "<system>";
-                if (std::ifstream in("/etc/hostname"); in) {
-                    std::string line;
-                    if (std::getline(in, line) && !line.empty()) system = line;
-                }
-                log::info("installing into your own home {} -- the system's {} is root's; to install for "
-                          "every user, on the host: luban run {} --user root -- xlings install --system <pkg>",
-                          own.string(), paths_.systemLayer.string(), system);
-            }
+            // A home of one's own made now: main asks once, starts it from
+            // the system's and says how to install for every user.
+            if (!fs::exists(own, lec)) paths_.ownHomeNew = true;
             paths_.homeDir = own;
             paths_.homeSource = home::Source::Default;
             if (utils::get_env_or_default("XLINGS_SYSTEM_LAYER").empty())

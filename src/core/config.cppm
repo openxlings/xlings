@@ -153,6 +153,10 @@ public:
         // ~/.xlings and the system's home is the layer below it (design
         // 2026-10-16 L §8).
         std::filesystem::path systemLayer;
+        // Inside a Luban system: this command is the first write of a user
+        // who has no home of their own yet -- main asks once and starts it
+        // from the system's (design 2026-10-19 §27.5).
+        bool ownHomeNew { false };
     };
 
     // Owner-anchored shim dispatch (0.4.48; see
@@ -167,6 +171,13 @@ public:
     // home of their own yet then reads the system's -- nothing is created,
     // nothing announced (design 2026-10-19 §19, F18).
     static void command_reads_only(bool readsOnly);
+
+    // A system user's own home, started from the system's (`paths().
+    // systemLayer`): its index snapshot and the settings that say where
+    // packages come from (mirror, lang, index_repos, resource_servers) -- so
+    // the first install needs no network for the index (design 2026-10-19
+    // §27.5, F25). Nothing is replaced that is there.
+    static std::expected<void, std::string> start_own_home();
 
     // Public because they ARE the public contract of repo_dir_for(): the
     // default index is the entry named DEFAULT_INDEX_REPO_NAME, and it lives in

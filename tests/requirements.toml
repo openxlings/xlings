@@ -1379,7 +1379,7 @@ status = "planned"
 
 [SUBOS-USER-HOME-SEED]
 text = "a system user's own home starts from the system home's index snapshot and settings without the network; the first write asks once at a terminal; a package the system already has at that version is not installed again; a network failure is said once with the next step"
-status = "planned"
+status = "required"
 
 [LUBAN-PROMPT-MARK]
 text = "every login shell (sh, bash, fish) shows the [luban]/<luban> mark; a system made before gets the fish script on its next entry"
