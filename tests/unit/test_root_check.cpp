@@ -104,5 +104,7 @@ XTEST(RootCheck, AProgramThatAnsweredStarted, .area = "luban", .covers = {"LUBAN
     EXPECT_FALSE(rc::started(127, false, "sh: foo: not found"));
     EXPECT_FALSE(rc::started(1, false, "foo: error while loading shared libraries: libx.so.1"));
     EXPECT_FALSE(rc::started(139, false, ""));
+    EXPECT_TRUE(rc::started(255, false, "error: Running xmake as root is extremely dangerous"))
+        << "a program's own -1 is not a signal: it ran";
     EXPECT_TRUE(rc::started(-1, true, "")) << "still running when the limit came: it started";
 }

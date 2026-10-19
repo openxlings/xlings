@@ -459,11 +459,12 @@ nlohmann::json to_json(const Report& report) {
 // What a loader says when a program cannot start: glibc, musl, the kernel.
 // BusyBox called by the name of an applet it was not built with answers
 // "applet not found" and 127: it ran, which is all this asks (design
-// 2026-10-19 F10).
+// 2026-10-19 F10). A signal is 128 + its number (64 at most); 255 is a
+// program's own -1 -- xmake's, refusing root without XMAKE_ROOT=y.
 bool started(int code, bool timed_out, std::string_view output) {
     if (timed_out) return true;
     if (output.find("applet not found") != std::string_view::npos) return true;
-    if (code == 126 || code == 127 || code > 128) return false;
+    if (code == 126 || code == 127 || (code > 128 && code <= 128 + 64)) return false;
     for (const auto* said : {"error while loading shared libraries", "Error loading shared library",
                              "Error relocating", "cannot execute binary file", "Exec format error"})
         if (output.find(said) != std::string_view::npos) return false;
