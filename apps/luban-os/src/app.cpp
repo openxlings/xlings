@@ -56,8 +56,8 @@ void tray_update_(App& a) {
     const auto on = running_(a);
     const bool busy = a.job && !a.job->done;
     const bool failed = a.job && a.job->done && a.job->code != 0;
-    std::string body = on.empty() ? std::string(tr("Nothing running", "没有运行中的系统"))
-                                  : [&] { const auto n = on.size(); return std::vformat(tr("{} running", "{} 个系统运行中"), std::make_format_args(n)); }();
+    std::string body = on.empty() ? std::string(tr("luban.os.app.nothing_running"))
+                                  : [&] { const auto n = on.size(); return std::vformat(tr("luban.os.app.running"), std::make_format_args(n)); }();
     if (busy) {
         std::lock_guard l(a.job->m);
         body += " · " + a.job->title + (a.job->percent >= 0 ? std::format(" {:.0f} %", a.job->percent * 100) : std::string{});
@@ -66,21 +66,21 @@ void tray_update_(App& a) {
                    .attention = failed};
     for (const auto* e : on) {
         const bool machine = a.is_running(e->name);
-        tray::MenuItem item{.id = "sys:" + e->name, .label = std::format("{}  ({})", e->name, machine ? tr("machine", "机器") : tr("sandbox", "沙箱"))};
-        item.children.push_back({.id = "sys:" + e->name + ":open", .label = std::string(tr("Open", "打开"))});
+        tray::MenuItem item{.id = "sys:" + e->name, .label = std::format("{}  ({})", e->name, machine ? tr("luban.os.app.machine") : tr("luban.os.app.sandbox"))};
+        item.children.push_back({.id = "sys:" + e->name + ":open", .label = std::string(tr("luban.os.app.open"))});
         if (machine) {
-            item.children.push_back({.id = "sys:" + e->name + ":console", .label = std::string(tr("Open its console", "打开控制台"))});
-            item.children.push_back({.id = "sys:" + e->name + ":off", .label = std::string(tr("Power off", "关机"))});
+            item.children.push_back({.id = "sys:" + e->name + ":console", .label = std::string(tr("luban.os.app.open_console"))});
+            item.children.push_back({.id = "sys:" + e->name + ":off", .label = std::string(tr("luban.os.app.power_off"))});
         }
-        item.children.push_back({.id = "sys:" + e->name + ":manage", .label = std::string(tr("Manage", "管理"))});
+        item.children.push_back({.id = "sys:" + e->name + ":manage", .label = std::string(tr("luban.os.app.manage"))});
         s.menu.push_back(std::move(item));
     }
     if (!on.empty()) s.menu.push_back({.separator = true});
-    s.menu.push_back({.id = "new", .label = std::string(tr("New system…", "新建系统…"))});
-    s.menu.push_back({.id = "open", .label = std::string(tr("Open Luban OS", "打开 Luban OS"))});
-    s.menu.push_back({.id = "settings", .label = std::string(tr("Settings", "设置"))});
+    s.menu.push_back({.id = "new", .label = std::string(tr("luban.os.app.new_system"))});
+    s.menu.push_back({.id = "open", .label = std::string(tr("luban.os.app.open_luban_os"))});
+    s.menu.push_back({.id = "settings", .label = std::string(tr("luban.os.app.settings"))});
     s.menu.push_back({.separator = true});
-    s.menu.push_back({.id = "quit", .label = std::string(tr("Quit", "退出"))});
+    s.menu.push_back({.id = "quit", .label = std::string(tr("luban.os.app.quit"))});
     // Told only what changed.
     std::string said = body + (failed ? "!" : "");
     for (const auto& m : s.menu) said += "|" + m.id;
@@ -109,8 +109,7 @@ void to_background_(App& a) {
         tray_update_(a);
         static bool told = false;
         if (!std::exchange(told, true))
-            a.tray->notify("Luban OS", std::string(tr("Still here: your systems keep running. The tray icon opens it again.",
-                                                      "仍在运行：系统继续运行，点状态栏图标可再次打开。")), "open");
+            a.tray->notify("Luban OS", std::string(tr("luban.os.app.still_here_your_systems_keep")), "open");
     } else {
         a.window->minimize();
     }
@@ -122,11 +121,10 @@ void quit_(App& a) {
     if (on.empty()) { a.quit = true; return; }
     const auto count = on.size();
     show_(a);
-    a.confirm = Confirm{std::string(tr("Quit Luban OS?", "退出 Luban OS？")),
-                        std::vformat(tr("{} systems are running. They can keep running without the window, or be powered off.",
-                                        "{} 个系统正在运行。可以让它们在没有窗口时继续运行，或全部关机。"), std::make_format_args(count)),
-                        std::string(tr("Keep them running", "保持运行")), false, [&a] { a.quit = true; },
-                        std::string(tr("Power off all", "全部关机")), [&a] {
+    a.confirm = Confirm{std::string(tr("luban.os.app.quit_luban_os")),
+                        std::vformat(tr("luban.os.app.systems_are_running_they_can"), std::make_format_args(count)),
+                        std::string(tr("luban.os.app.keep_them_running")), false, [&a] { a.quit = true; },
+                        std::string(tr("luban.os.app.power_off_all")), [&a] {
                             for (const auto* e : running_(a))
                                 if (vm::running(a.home, e->name)) (void)vm::stop(a.ctx, e->name);
                             a.quit = true;
@@ -177,7 +175,7 @@ void tray_take_(App& a) {
 // a machine shares (virtiofs) -- and said. Where it went, or why not.
 std::string drop_into_(App& a, const fs::path& file) {
     const auto root = service::root_of(a.home, a.current);   // env-read-ok: a write into its home, a directory here (not its /usr)
-    if (!root) return std::string(tr("this system has no tree of its own to put files in", "这个系统没有可以放文件的目录树"));
+    if (!root) return std::string(tr("luban.os.app.system_has_no_tree_own"));
     const auto user = xlings::subos::root_etc::login_user(*root / "etc");
     const auto who = xlings::subos::root_etc::find_user(*root / "etc", user);
     const fs::path inside = who && !who->home.empty() ? fs::path(who->home) : fs::path("/root");
@@ -190,13 +188,14 @@ std::string drop_into_(App& a, const fs::path& file) {
     fs::copy(file, target, fs::copy_options::recursive, ec);
     if (ec) return std::format("{}: {}", file.filename().string(), ec.message());
     const auto shown = file.filename().string(), where = (inside / "Downloads").generic_string();
-    return std::vformat(tr("{} is in {} (~/Downloads)", "{} 已放到 {}（~/Downloads）"), std::make_format_args(shown, where));
+    return std::vformat(tr("luban.os.app.downloads"), std::make_format_args(shown, where));
 }
 
 int run(int argc, char* argv[]) {
     // What this app can do, for whoever is about to rely on it (design
     // 2026-10-19 §10.2): answered before anything opens a display or reads
     // the home, so it works over SSH and in CI.
+    register_words();
     if (argc >= 2 && std::string_view(argv[1]) == "__capabilities") {
         auto provides = service::luban_provides();
         provides["host-gpu"] = 1;
@@ -260,9 +259,8 @@ int run(int argc, char* argv[]) {
     if (const char* asked = std::getenv("SDL_RENDER_DRIVER");
         a.perf.renderer == "software" && (!asked || std::string_view(asked) != "software")) {
         a.notice = platform::is_linux
-            ? std::string(tr("Drawing without the GPU (no graphics stack reached): xlings install graphics, then start Luban OS from its menu entry or `luban-os`",
-                             "未用到 GPU 绘制（没有接入图形栈）：xlings install graphics，然后从菜单项或 `luban-os` 启动 Luban OS"))
-            : std::string(tr("Drawing without the GPU", "未用到 GPU 绘制"));
+            ? std::string(tr("luban.os.app.drawing_without_gpu_no_graphics"))
+            : std::string(tr("luban.os.app.drawing_without_gpu"));
         std::println(std::cerr, "luban-os: the renderer is SDL's software one (no GPU reached)");
     }
     // The app's look: its theme on imkit, its background behind every page.
@@ -373,7 +371,7 @@ int run(int argc, char* argv[]) {
         // An operation that ended while nobody looked: said by the system.
         if (a.job && a.job->done && !std::exchange(a.job_told, true) && (a.hidden || !a.window->focused()) && ensure_tray_(a)) {
             std::lock_guard l(a.job->m);
-            a.tray->notify(a.job->title, a.job->code == 0 ? std::string(tr("Done.", "完成。")) : (a.job->errors.empty() ? std::string(tr("Failed.", "失败。")) : a.job->errors.front()),
+            a.tray->notify(a.job->title, a.job->code == 0 ? std::string(tr("luban.os.app.done")) : (a.job->errors.empty() ? std::string(tr("luban.os.app.failed")) : a.job->errors.front()),
                            a.job->code == 0 && !a.job_subject.empty() ? "made:" + a.job_subject : "open");
         }
         const auto frame_start = std::chrono::steady_clock::now();
@@ -432,11 +430,10 @@ int run(int argc, char* argv[]) {
                     else a.enter(a.systems[static_cast<std::size_t>(shown[static_cast<std::size_t>(a.selected)])].name);
                 } else if (k.name == "Delete" && a.selected < static_cast<int>(shown.size())) {
                     const auto name = a.systems[static_cast<std::size_t>(shown[static_cast<std::size_t>(a.selected)])].name;
-                    a.confirm = Confirm{std::vformat(tr("Remove {}?", "删除 {}？"), std::make_format_args(name)),
-                                        std::string(tr("Its home and every file in it are deleted. This cannot be undone.",
-                                                       "它的 home 以及其中所有文件都会被删除，无法撤销。")),
-                                        std::string(tr("Remove", "删除")), true, [&a, name] {
-                                            a.start_job(std::format("{} {}", tr("Removing", "删除"), name),
+                    a.confirm = Confirm{std::vformat(tr("luban.os.app.remove"), std::make_format_args(name)),
+                                        std::string(tr("luban.os.app.home_every_file_are_deleted")),
+                                        std::string(tr("luban.os.app.remove_2")), true, [&a, name] {
+                                            a.start_job(std::format("{} {}", tr("luban.os.app.removing"), name),
                                                         [name](Job& j, service::Context c) { j.code = service::remove(c, name).code; },
                                                         [](App& app) { app.refresh(); app.view = View::Launcher; });
                                         }};
@@ -447,7 +444,7 @@ int run(int argc, char* argv[]) {
                     if ((static_cast<unsigned char>(a.filter.empty() ? 0 : a.filter.back()) & 0x80) && !a.filter.empty()) a.filter.pop_back();
                     a.selected = 0;
                 } else if (ctrl && (k.name == "o" || k.name == "O"))
-                    a.window->pick_file(std::string(tr("Import a Luban system", "导入 Luban 系统")), "Luban", "luban");
+                    a.window->pick_file(std::string(tr("luban.os.app.import_luban_system")), "Luban", "luban");
             }
             // Typed on the home: the names shown.
             for (const auto& e : a.window->events())
@@ -519,8 +516,7 @@ int run(int argc, char* argv[]) {
         {
             std::optional<fs::path> file = a.window->picked();
             if (const auto why = a.window->pick_error(); !why.empty())
-                a.notice = std::vformat(tr("No file dialog here ({}): drop the .luban file on the window instead.",
-                                           "这里没有文件对话框（{}）：请把 .luban 文件拖进窗口。"), std::make_format_args(why));
+                a.notice = std::vformat(tr("luban.os.app.no_file_dialog_here_drop"), std::make_format_args(why));
             if (file && file->empty()) file.reset();   // the dialog was cancelled
             const bool in_system = a.view == View::Console || a.view == View::Desktop || a.view == View::Run;
             for (const auto& d : a.window->dropped()) {

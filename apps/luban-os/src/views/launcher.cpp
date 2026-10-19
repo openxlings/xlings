@@ -44,7 +44,7 @@ void launcher_(App& a) {
     }
     mark_(a, "gear");
     ImGui::SetCursorPos(ImVec2(W - px(20) - px(48) - px(12) - px(150), px(16)));
-    if (imkit::button("new", tr("New system", "新建系统"), ImVec2(150, 40), imkit::Look::Primary, true, false, imkit::Icon::Plus))
+    if (imkit::button("new", tr("luban.os.admin.new_system"), ImVec2(150, 40), imkit::Look::Primary, true, false, imkit::Icon::Plus))
         a.view = View::QuickStart;
     mark_(a, "new");
 
@@ -55,7 +55,7 @@ void launcher_(App& a) {
     const auto shown = shown_(a);
     if (!a.filter.empty()) {
         imkit::text(dl, ImVec2(o.x + x0, o.y + top - px(4)),
-                    std::vformat(tr("Showing names with “{}” · Esc shows all", "名字含“{}”的系统 · Esc 显示全部"),
+                    std::vformat(tr("luban.os.quick.showing_names_esc_shows_all"),
                                  std::make_format_args(a.filter)),
                     th_().warn, 14);
     }
@@ -72,8 +72,8 @@ void launcher_(App& a) {
     const int n = static_cast<int>(shown.size());
     for (int k = 0; k < n; ++k) {
         const int i = shown[static_cast<std::size_t>(k)];
-        if (a.filter.empty() && k == 0 && a.recent > 0) group(tr("RECENT", "最近"));
-        if (a.filter.empty() && i == a.recent) group(tr("ALL SYSTEMS", "全部系统"));
+        if (a.filter.empty() && k == 0 && a.recent > 0) group(tr("luban.os.quick.recent"));
+        if (a.filter.empty() && i == a.recent) group(tr("luban.os.quick.all_systems"));
         const auto& e = a.systems[static_cast<std::size_t>(i)];
         const bool chosen = a.selected == k;
         if (imkit::list_row("row:" + e.name, ImVec2(rowW, rowH), chosen, chosen && a.keyboard)) {
@@ -92,7 +92,7 @@ void launcher_(App& a) {
         imkit::text(ldl, ImVec2(tx, mn.y + px(12)), imkit::fit(e.name, px(260), 18, true), th_().text, 18, true);
         const bool running = e.running || a.is_running(e.name);
         std::string second = edition_label_(e);
-        if (edition == "nano") second += std::string(" · ") + std::string(tr("no shell · runs commands", "无 shell · 运行命令"));
+        if (edition == "nano") second += std::string(" · ") + std::string(tr("luban.os.quick.no_shell_runs_commands"));
         imkit::text(ldl, ImVec2(tx, mn.y + px(40)), imkit::fit(second, mx.x - tx - px(260), 14), th_().text_dim, 14);
         // The right side: its mode, whether it runs, when it was last opened.
         float rx = mx.x - px(16);
@@ -102,8 +102,8 @@ void launcher_(App& a) {
             rx -= ts.x;
             imkit::text(ldl, ImVec2(rx, mn.y + px(40)), when, th_().text_faint, 13);
         }
-        const std::string mode = e.settings.mode == "machine" ? std::string(tr("machine", "机器")) : std::string(tr("sandbox", "沙箱"));
-        const std::string state = running ? std::string(tr("running", "运行中")) : std::string(tr("stopped", "已停止"));
+        const std::string mode = e.settings.mode == "machine" ? std::string(tr("luban.os.app.machine")) : std::string(tr("luban.os.app.sandbox"));
+        const std::string state = running ? std::string(tr("luban.os.admin.running")) : std::string(tr("luban.os.admin.stopped"));
         const auto sw = imkit::text_size(state, 13).x + px(12), mw = imkit::text_size(mode, 13).x + px(12);
         chip_(ldl, ImVec2(mx.x - px(16) - sw, mn.y + px(12)), state, running ? th_().ink : th_().text_dim,
               running ? th_().good : th_().panel_lo);
@@ -117,7 +117,7 @@ void launcher_(App& a) {
         art::badge(ldl, art::Badge::Craftsman, "", ImVec2(at.x + (rowW - 16 * cell) / 2, at.y), cell, imkit::beat(2, 0.5));
         ImGui::Dummy(ImVec2(0, 16 * cell + px(16)));
     }
-    if (n == 0 && !a.systems.empty()) group(tr("NOTHING MATCHES", "没有匹配的系统"));
+    if (n == 0 && !a.systems.empty()) group(tr("luban.os.quick.nothing_matches"));
     else ImGui::Dummy(ImVec2(0, px(10)));
     {
         const bool chosen = a.selected == n;
@@ -127,16 +127,16 @@ void launcher_(App& a) {
         const auto mn = ImGui::GetItemRectMin();
         const float cell = std::max(1.0f, std::round(px(2)));
         imkit::icon(ldl, imkit::Icon::Plus, ImVec2(mn.x + px(20), mn.y + px(26) - 6 * cell), cell, th_().accent);
-        imkit::text(ldl, ImVec2(mn.x + px(52), mn.y + px(16)), tr("New system", "新建系统"), th_().text, 16);
+        imkit::text(ldl, ImVec2(mn.x + px(52), mn.y + px(16)), tr("luban.os.admin.new_system"), th_().text, 16);
     }
     {
         if (imkit::list_row("row:import", ImVec2(rowW, 52), false, false))
-            a.window->pick_file(std::string(tr("Import a Luban system", "导入 Luban 系统")), "Luban", "luban");
+            a.window->pick_file(std::string(tr("luban.os.app.import_luban_system")), "Luban", "luban");
         mark_(a, "row:import");
         const auto mn = ImGui::GetItemRectMin();
         const float cell = std::max(1.0f, std::round(px(2)));
         imkit::icon(ldl, imkit::Icon::Import, ImVec2(mn.x + px(20), mn.y + px(26) - 6 * cell), cell, th_().text_dim);
-        imkit::text(ldl, ImVec2(mn.x + px(52), mn.y + px(16)), tr("Import from a file (.luban)…", "从文件导入（.luban）…"),
+        imkit::text(ldl, ImVec2(mn.x + px(52), mn.y + px(16)), tr("luban.os.quick.import_file_luban"),
                     th_().text_dim, 16);
     }
     a.follow = false;
@@ -146,14 +146,13 @@ void launcher_(App& a) {
     if (a.countdown_until && !a.systems.empty()) {
         const auto left = std::chrono::duration_cast<std::chrono::seconds>(*a.countdown_until - std::chrono::steady_clock::now()).count() + 1;
         const auto target = a.countdown_target();
-        centred_(dl, y, std::vformat(tr("{} s, then {} · any key stops it", "{} 秒后进入 {} · 按任意键取消"),
+        centred_(dl, y, std::vformat(tr("luban.os.quick.s_then_any_key_stops"),
                                      std::make_format_args(left, target)), th_().accent_hi, 15);
         y += px(22);
     }
     if (!a.notice.empty()) { centred_(dl, y, a.notice, th_().warn, 14); y += px(20); }
     if (!a.list_error.empty()) centred_(dl, y, a.list_error, th_().bad, 14);
-    centred_(dl, H - px(26), tr("↑ ↓ choose · Enter go in · type to find · Del remove · F2 manage",
-                                "↑ ↓ 选择 · Enter 进入 · 直接输入查找 · Del 删除 · F2 管理"), th_().text_faint, 13);
+    centred_(dl, H - px(26), tr("luban.os.quick.choose_enter_go_type_find"), th_().text_faint, 13);
     ImGui::End();
 }
 
@@ -213,11 +212,11 @@ bool can_run_(App& a) {
 std::string cannot_run_(App& a) {
     if (can_run_(a)) return {};
     std::lock_guard l(a.available_m);
-    std::string out(tr("This computer cannot run Luban systems yet: ", "这台电脑还不能运行 Luban 系统："));
+    std::string out(tr("luban.os.quick.computer_cannot_run_luban_systems"));
     const auto* s = a.caps ? a.caps->mode("sandbox") : nullptr;
-    if (!s) return out + std::string(tr("they are Linux systems and need a way to run one here.", "它们是 Linux 系统，这里还没有运行它们的方式。"));
+    if (!s) return out + std::string(tr("luban.os.quick.they_are_linux_systems_need"));
     out += s->reason;
-    if (!s->route.empty()) out += std::string(tr(" -- do it: ", "——处理：")) + s->route;
+    if (!s->route.empty()) out += std::string(tr("luban.os.quick.do")) + s->route;
     return out;
 }
 
@@ -227,9 +226,9 @@ std::string unavailable_(App& a, const Edition& e) {
     std::lock_guard l(a.available_m);
     const auto it = a.available.find(std::string(e.name));
     if (it == a.available.end() || !it->second.known) return {};
-    if (!it->second.listed) return std::string(tr("Not published yet.", "尚未发布。"));
+    if (!it->second.listed) return std::string(tr("luban.os.quick.not_published_yet"));
     if (!it->second.here)
-        return std::vformat(tr("Not built for {} yet.", "尚未提供 {} 版本。"), std::make_format_args(it->second.arch));
+        return std::vformat(tr("luban.os.quick.not_built_yet"), std::make_format_args(it->second.arch));
     return {};
 }
 
@@ -278,11 +277,10 @@ void make_(App& a, bool agreed) {
         // A third party's part is agreed to first (design §4.5): what it is and where it comes from.
         std::string what;
         for (const auto& r : o.xpkgs) what += (what.empty() ? "" : ", ") + r;
-        a.confirm = Confirm{std::string(tr("Not from Luban", "不是 Luban 官方的")),
-                            std::vformat(tr("{} comes from an index you added, not from Luban. Luban does not check what it does.",
-                                            "{} 来自你添加的 index，不是 Luban 官方的；Luban 不检查它做什么。"),
+        a.confirm = Confirm{std::string(tr("luban.os.quick.not_luban")),
+                            std::vformat(tr("luban.os.quick.comes_index_you_added_not"),
                                          std::make_format_args(what)),
-                            std::string(tr("Make it", "创建")), false, [&a] { make_(a, true); }};
+                            std::string(tr("luban.os.quick.make")), false, [&a] { make_(a, true); }};
         return;
     }
     if (a.new_password[0]) o.password_hash = xlings::sha512::crypt(a.new_password, xlings::sha512::random_salt());
@@ -290,7 +288,7 @@ void make_(App& a, bool agreed) {
     static constexpr std::array<std::string_view, 3> kPersist{"all", "home", "none"};
     const std::string persist(kPersist[static_cast<std::size_t>(std::clamp(a.new_persist, 0, 2))]);
     const std::string name = o.name;
-    a.start_job(std::format("{} {}", tr("Making", "创建"), name),
+    a.start_job(std::format("{} {}", tr("luban.os.quick.making"), name),
                 [o, machine, persist](Job& j, service::Context c) {
                     auto out = service::create(c, o);
                     j.code = out.code;
@@ -321,9 +319,9 @@ float new_panel_(App& a, float x, float y, float w, float min_h) {
     // A system from the indexes is said in its index's words, with where it comes from.
     const auto offer = a.new_offer.empty() ? std::nullopt : offered_system_(a, a.new_offer);
     const std::string badge_name = offer ? offer->ref : std::string(chosen.name);
-    const std::string title = offer ? offer->name : std::string(tr(chosen.title_en, chosen.title_zh));
+    const std::string title = offer ? offer->name : std::string(tr(chosen.title));
     std::string sub = std::format("{} · {}", chosen.size, chosen.contents);
-    if (offer) sub = offer->official ? std::string(tr("Luban's", "Luban 官方")) : std::vformat(tr("from {}", "来自 {}"), std::make_format_args(offer->index));
+    if (offer) sub = offer->official ? std::string(tr("luban.os.quick.luban_s")) : std::vformat(tr("luban.os.quick.from"), std::make_format_args(offer->index));
     else if (chosen.desktop) {
         // What its desktop is, as the index says it (E15): not this window's guess.
         if (auto d = index_description_(a, chosen.name); !d.empty()) sub = std::format("{} · {}", chosen.size, d);
@@ -340,7 +338,7 @@ float new_panel_(App& a, float x, float y, float w, float min_h) {
     imkit::text(dl, ImVec2(o.x + cx + px(60), o.y + cy + px(30)), imkit::fit(sub, fw - px(60), 13), th_().text_faint, 13);
     cy += px(62);
     const auto why_not = offer ? cannot_run_(a) : unavailable_(a, chosen);
-    const std::string detail = offer ? offer->description : std::string(tr(chosen.detail_en, chosen.detail_zh));
+    const std::string detail = offer ? offer->description : std::string(tr(chosen.detail));
     a.quick_said = why_not.empty() ? detail : why_not;
     a.quick_can_make = why_not.empty();
     cy += paragraph_(dl, ImVec2(o.x + cx, o.y + cy), a.quick_said, fw, why_not.empty() ? th_().text_dim : th_().warn, 14) + px(12);
@@ -362,39 +360,39 @@ float new_panel_(App& a, float x, float y, float w, float min_h) {
         cy += px(20);
     };
     const float fwn = fw / imkit::scale();
-    label(tr("NAME", "名字"));
+    label(tr("luban.os.quick.name"));
     ImGui::SetCursorPos(ImVec2(cx, cy));
     imkit::text_field("name", a.new_name, sizeof a.new_name, fwn);
     mark_(a, "name");
     cy += px(48);
-    label(tr("RUNS AS", "运行方式"));
+    label(tr("luban.os.admin.runs"));
     ImGui::SetCursorPos(ImVec2(cx, cy));
-    a.new_mode = imkit::segmented("mode", {std::string(tr("sandbox", "沙箱")), std::string(tr("machine", "机器"))}, a.new_mode, fwn,
+    a.new_mode = imkit::segmented("mode", {std::string(tr("luban.os.app.sandbox")), std::string(tr("luban.os.app.machine"))}, a.new_mode, fwn,
                                   {"mode:sandbox", "mode:machine"});
     cy += px(46);
     ImGui::SetCursorPos(ImVec2(cx, cy));
-    imkit::toggle("more", tr("More options", "更多选项"), a.more);
+    imkit::toggle("more", tr("luban.os.quick.more_options"), a.more);
     mark_(a, "more");
     cy += px(36);
     if (a.more) {
-        label(tr("KEEPS", "保留修改"));
+        label(tr("luban.os.admin.keeps_2"));
         ImGui::SetCursorPos(ImVec2(cx, cy));
-        a.new_persist = imkit::segmented("persist", {std::string(tr("all", "全部")), std::string(tr("/home", "仅 /home")),
-                                                     std::string(tr("nothing", "不保留"))},
+        a.new_persist = imkit::segmented("persist", {std::string(tr("luban.os.admin.all")), std::string(tr("luban.os.admin.home")),
+                                                     std::string(tr("luban.os.admin.nothing"))},
                                          a.new_persist, fwn);
         cy += px(46);
-        label(tr("PROXY (SOCKS5h, optional)", "代理（SOCKS5h，可选）"));
+        label(tr("luban.os.quick.proxy_socks5h_optional"));
         ImGui::SetCursorPos(ImVec2(cx, cy));
         imkit::text_field("proxy", a.new_proxy, sizeof a.new_proxy, fwn, 0, "socks5h://127.0.0.1:1080");
         mark_(a, "proxy");
         cy += px(48);
-        label(tr("LOGS IN AS (optional)", "登录用户（可选）"));
+        label(tr("luban.os.quick.logs_optional"));
         ImGui::SetCursorPos(ImVec2(cx, cy));
         imkit::text_field("user", a.new_user, sizeof a.new_user, (fw / 2 - px(6)) / imkit::scale(), 0, "root");
         mark_(a, "user");
         ImGui::SetCursorPos(ImVec2(cx + fw / 2 + px(6), cy));
         imkit::text_field("password", a.new_password, sizeof a.new_password, (fw / 2 - px(6)) / imkit::scale(),
-                          ImGuiInputTextFlags_Password, tr("password", "密码"));
+                          ImGuiInputTextFlags_Password, tr("luban.os.quick.password"));
         mark_(a, "password");
         cy += px(48);
         // The desktop it is made with: its own, or one the indexes offer
@@ -405,7 +403,7 @@ float new_panel_(App& a, float x, float y, float w, float min_h) {
             if (a.offers) desktops = a.offers->desktops;
         }
         if (!desktops.empty()) {
-            label(tr("DESKTOP", "桌面"));
+            label(tr("luban.os.admin.desktop"));
             float dx = 0;
             auto choice = [&](int k, const std::string& name, const std::string& id) {
                 const float bw = std::min(fw, imkit::text_size(name, 14).x + px(28));
@@ -416,7 +414,7 @@ float new_panel_(App& a, float x, float y, float w, float min_h) {
                 mark_(a, id);
                 dx += bw + px(6);
             };
-            choice(-1, std::string(tr("its own", "自带的")), "desktop:own");
+            choice(-1, std::string(tr("luban.os.quick.own")), "desktop:own");
             for (int k = 0; k < static_cast<int>(desktops.size()); ++k) {
                 const auto& d = desktops[static_cast<std::size_t>(k)];
                 choice(k, d.official ? d.name : d.ref, "desktop:" + d.ref);
@@ -427,15 +425,15 @@ float new_panel_(App& a, float x, float y, float w, float min_h) {
         }
     }
     ImGui::SetCursorPos(ImVec2(cx, cy + px(4)));
-    const auto make_label = offer || chosen.goes_in ? tr("Create and go in", "创建并进入") : tr("Create", "创建");
+    const auto make_label = offer || chosen.goes_in ? tr("luban.os.quick.create_go") : tr("luban.os.quick.create");
     if (imkit::button("make", make_label, ImVec2(fwn, 44), imkit::Look::Primary, why_not.empty() && a.new_name[0], false, imkit::Icon::Run))
         make_(a);
     mark_(a, "make");
     cy += px(58);
     ImGui::SetCursorPos(ImVec2(cx, cy));
-    if (imkit::button("import", tr("Import from a file (.luban)…", "从文件导入（.luban）…"), ImVec2(fwn, 36),
+    if (imkit::button("import", tr("luban.os.quick.import_file_luban"), ImVec2(fwn, 36),
                       imkit::Look::Ghost, true, false, imkit::Icon::Import))
-        a.window->pick_file(std::string(tr("Import a Luban system", "导入 Luban 系统")), "Luban", "luban");
+        a.window->pick_file(std::string(tr("luban.os.app.import_luban_system")), "Luban", "luban");
     mark_(a, "import");
     cy += px(44);
     if (!a.notice.empty()) cy += paragraph_(dl, ImVec2(o.x + cx, o.y + cy), a.notice, fw, th_().warn, 13) + px(6);
@@ -449,7 +447,7 @@ void quick_start_(App& a) {
     auto* dl = ImGui::GetWindowDrawList();
     const ImVec2 o = ImGui::GetWindowPos();
     const float W = ImGui::GetWindowWidth(), H = ImGui::GetWindowHeight();
-    if (page_bar_(a, tr("New system", "新建系统"), !a.systems.empty())) a.view = View::Launcher;
+    if (page_bar_(a, tr("luban.os.admin.new_system"), !a.systems.empty())) a.view = View::Launcher;
     // A mode chosen for the edition, until the person chooses: a desktop runs
     // as a machine (its own kernel, its own display), a console in a sandbox.
     if (a.new_mode_for != a.new_edition && a.new_offer.empty()) {
@@ -481,7 +479,7 @@ void quick_start_(App& a) {
     float y = px(6);
     for (int group = 0; group < 2; ++group) {
         imkit::text(cdl, ImVec2(co.x, co.y + y),
-                    group == 0 ? tr("CONSOLE · small, yours to shape", "控制台 · 精简，自己定制") : tr("DESKTOP · ready to use", "桌面 · 开箱即用"),
+                    group == 0 ? tr("luban.os.quick.console_small_yours_shape") : tr("luban.os.quick.desktop_ready_use"),
                     th_().text_faint, 13, true);
         y += px(26);
         int col = 0;
@@ -493,10 +491,10 @@ void quick_start_(App& a) {
             const bool on = a.new_offer.empty() && a.new_edition == static_cast<int>(i);
             // One that cannot be made here is still chosen to read why.
             const bool usable = unavailable_(a, e).empty();
-            const auto desc = usable ? std::format("{}\n{} · {}", tr(e.about_en, e.about_zh), e.size, e.contents)
-                                     : std::format("{}\n{}", tr(e.about_en, e.about_zh), tr("Not available here", "这里不可用"));
+            const auto desc = usable ? std::format("{}\n{} · {}", tr(e.about), e.size, e.contents)
+                                     : std::format("{}\n{}", tr(e.about), tr("luban.os.quick.not_available_here"));
             if (imkit::option_card("card:" + std::string(e.name), art::picture(e.name, on ? imkit::beat(2, 0.45) : 0),
-                                   tr(e.title_en, e.title_zh), desc, on, ImVec2(cardW / imkit::scale(), cardH / imkit::scale()),
+                                   tr(e.title), desc, on, ImVec2(cardW / imkit::scale(), cardH / imkit::scale()),
                                    on && a.keyboard, true)) {
                 a.new_edition = static_cast<int>(i);
                 a.new_offer.clear();
@@ -516,14 +514,14 @@ void quick_start_(App& a) {
                 if (!o.official || std::ranges::none_of(kEditions, [&](const Edition& e) { return e.name == o.name; })) more.push_back(o);
     }
     if (!more.empty()) {
-        imkit::text(cdl, ImVec2(co.x, co.y + y), tr("MORE · from the indexes", "更多 · 来自 index"), th_().text_faint, 13, true);
+        imkit::text(cdl, ImVec2(co.x, co.y + y), tr("luban.os.quick.more_indexes"), th_().text_faint, 13, true);
         y += px(26);
         int col = 0;
         for (const auto& o : more) {
             if (col == perRow) { col = 0; y += cardH + gap; }
             ImGui::SetCursorPos(ImVec2(col * (cardW + gap), y));
             const bool on = a.new_offer == o.ref;
-            const auto from = o.official ? std::string(tr("Luban's", "Luban 官方")) : std::vformat(tr("from {}", "来自 {}"), std::make_format_args(o.index));
+            const auto from = o.official ? std::string(tr("luban.os.quick.luban_s")) : std::vformat(tr("luban.os.quick.from"), std::make_format_args(o.index));
             if (imkit::option_card("card:" + o.ref, art::picture(o.ref, on ? imkit::beat(2, 0.45) : 0), o.name,
                                    std::format("{}\n{}", o.description, from), on,
                                    ImVec2(cardW / imkit::scale(), cardH / imkit::scale()), on && a.keyboard, true))
@@ -550,13 +548,13 @@ void import_view_(App& a) {
     const ImVec2 o = ImGui::GetWindowPos();
     const float W = ImGui::GetWindowWidth();
     const auto file_name = p.file.filename().string();
-    if (page_bar_(a, std::vformat(tr("Import {}", "导入 {}"), std::make_format_args(file_name)), false)) {}
+    if (page_bar_(a, std::vformat(tr("luban.os.quick.import"), std::make_format_args(file_name)), false)) {}
     const float width = std::min(px(620), W - px(48)), x = std::round((W - width) / 2);
     float y = px(96);
     imkit::panel(dl, ImVec2(o.x + x - px(16), o.y + y - px(12)), ImVec2(o.x + x + width + px(16), o.y + ImGui::GetWindowHeight() - px(24)),
                  imkit::Bevel::Raised, th_().panel_lo);
     if (!p.error.empty()) {
-        y += paragraph_(dl, ImVec2(o.x + x, o.y + y), std::vformat(tr("It cannot be read: {}", "无法读取：{}"), std::make_format_args(p.error)),
+        y += paragraph_(dl, ImVec2(o.x + x, o.y + y), std::vformat(tr("luban.os.quick.cannot_read"), std::make_format_args(p.error)),
                         width, th_().bad) + px(16);
     } else {
         auto row = [&](std::string_view k, const std::string& v) {
@@ -564,26 +562,26 @@ void import_view_(App& a) {
             imkit::text(dl, ImVec2(o.x + x + px(140), o.y + y), imkit::fit(v, width - px(140)), th_().text);
             y += px(28);
         };
-        row(tr("EDITION", "EDITION"), p.edition.empty() ? std::string("—") : p.edition);
-        row(tr("PACKAGES", "软件包"), std::to_string(p.packages));
-        row(tr("ISOLATION", "隔离"), p.preset.empty() ? std::string(tr("the default", "默认")) : p.preset);
+        row(tr("luban.os.admin.edition"), p.edition.empty() ? std::string("—") : p.edition);
+        row(tr("luban.os.quick.packages"), std::to_string(p.packages));
+        row(tr("luban.os.quick.isolation"), p.preset.empty() ? std::string(tr("luban.os.quick.default")) : p.preset);
         if (!p.wider.empty()) {
             // More than a new environment may do: said before, agreed to.
             y += px(8);
             imkit::icon(dl, imkit::Icon::Warn, ImVec2(o.x + x, o.y + y), std::round(px(1.5f)), th_().warn);
-            imkit::text(dl, ImVec2(o.x + x + px(26), o.y + y), tr("It may do more than a new system:", "它能做的比新系统更多："), th_().warn);
+            imkit::text(dl, ImVec2(o.x + x + px(26), o.y + y), tr("luban.os.quick.may_do_more_than_new"), th_().warn);
             y += px(26);
             for (const auto& w : p.wider) {
                 imkit::text(dl, ImVec2(o.x + x + px(16), o.y + y), imkit::fit("· " + w, width - px(16), 14), th_().text_dim, 14);
                 y += px(22);
             }
             ImGui::SetCursorPos(ImVec2(x, y + px(4)));
-            imkit::checkbox("import:confirm", tr("I know; import it as it is", "我知道了，按原样导入"), p.confirmed);
+            imkit::checkbox("import:confirm", tr("luban.os.quick.i_know_import"), p.confirmed);
             mark_(a, "import:confirm");
             y += px(40);
         }
         y += px(8);
-        imkit::text(dl, ImVec2(o.x + x, o.y + y), tr("NAME", "名字"), th_().text_dim, 13, true);
+        imkit::text(dl, ImVec2(o.x + x, o.y + y), tr("luban.os.quick.name"), th_().text_dim, 13, true);
         y += px(20);
         ImGui::SetCursorPos(ImVec2(x, y));
         imkit::text_field("import:name", p.name, sizeof p.name, width / imkit::scale());
@@ -591,7 +589,7 @@ void import_view_(App& a) {
         y += px(56);
         if (const auto why = cannot_run_(a); !why.empty()) y += paragraph_(dl, ImVec2(o.x + x, o.y + y), why, width, th_().warn, 14) + px(8);
         ImGui::SetCursorPos(ImVec2(x, y));
-        const bool go = imkit::button("import:go", tr("Import and go in", "导入并进入"), ImVec2(width / imkit::scale(), 44),
+        const bool go = imkit::button("import:go", tr("luban.os.quick.import_go"), ImVec2(width / imkit::scale(), 44),
                                       imkit::Look::Primary, (p.wider.empty() || p.confirmed) && can_run_(a));
         mark_(a, "import:go");
         y += px(56);
@@ -599,7 +597,7 @@ void import_view_(App& a) {
             const std::string name = p.name;
             const fs::path file = p.file;
             a.import.reset();
-            a.start_job(std::format("{} {}", tr("Importing", "导入"), name),
+            a.start_job(std::format("{} {}", tr("luban.os.quick.importing"), name),
                         [name, file](Job& j, service::Context c) { j.code = service::import_environment(c, file, name).code; },
                         [name](App& app) {
                             if (app.job->code != 0) return;
@@ -611,7 +609,7 @@ void import_view_(App& a) {
         }
     }
     ImGui::SetCursorPos(ImVec2(x, y));
-    if (imkit::button("import:cancel", tr("Cancel", "取消"), ImVec2(width / imkit::scale(), 36), imkit::Look::Ghost)) {
+    if (imkit::button("import:cancel", tr("luban.os.common.cancel"), ImVec2(width / imkit::scale(), 36), imkit::Look::Ghost)) {
         a.import.reset();
         a.view = a.systems.empty() ? View::QuickStart : View::Launcher;
     }
@@ -621,8 +619,9 @@ void import_view_(App& a) {
 
 // The stages of making a system, as a person reads them, and which one the
 // events are in.
-constexpr std::array<std::pair<std::string_view, std::string_view>, 5> kStages{{
-    {"Resolve", "解析"}, {"Download", "下载"}, {"Unpack", "解压"}, {"Configure", "配置"}, {"Check", "自检"}}};
+constexpr std::array<std::string_view, 5> kStages{{
+    "luban.os.quick.stage.resolve", "luban.os.quick.stage.download", "luban.os.quick.stage.unpack",
+    "luban.os.quick.stage.configure", "luban.os.quick.stage.check"}};
 int stage_of_(const Job& j) {
     const auto& s = j.stage;
     if (s == "check") return 4;
@@ -656,7 +655,7 @@ void job_(App& a) {
         const bool done = k < at, now = k == at && !failed;
         imkit::panel(dl, c0, c1, now ? imkit::Bevel::Raised : imkit::Bevel::Flat,
                      done ? imkit::theme().accent_lo : now ? imkit::theme().panel : imkit::theme().bg_deep);
-        const std::string label(tr(kStages[static_cast<std::size_t>(k)].first, kStages[static_cast<std::size_t>(k)].second));
+        const std::string label(tr(kStages[static_cast<std::size_t>(k)]));
         const auto ts = imkit::text_size(label, 13);
         imkit::text(dl, ImVec2(c0.x + (chipW - ts.x) / 2, c0.y + (px(30) - ts.y) / 2), label,
                     done || now ? th_().text : th_().text_faint, 13);
@@ -675,15 +674,15 @@ void job_(App& a) {
     y += px(8);
     ImGui::SetCursorPos(ImVec2(x, y));
     if (!j.done) {
-        if (imkit::button("job:cancel", tr("Cancel", "取消"), ImVec2(140, 38), imkit::Look::Normal, j.cancel && !j.cancel->load(),
+        if (imkit::button("job:cancel", tr("luban.os.common.cancel"), ImVec2(140, 38), imkit::Look::Normal, j.cancel && !j.cancel->load(),
                           false, imkit::Icon::Cross))
             if (j.cancel) j.cancel->store(true);
         mark_(a, "job:cancel");
     } else if (failed) {
-        bool retry = imkit::button("job:retry", tr("Try again", "重试"), ImVec2(140, 38), imkit::Look::Primary);
+        bool retry = imkit::button("job:retry", tr("luban.os.quick.try_again"), ImVec2(140, 38), imkit::Look::Primary);
         mark_(a, "job:retry");
         ImGui::SetCursorPos(ImVec2(x + px(152), y));
-        bool back = imkit::button("job:back", tr("Back to the list", "返回列表"), ImVec2(180, 38), imkit::Look::Ghost);
+        bool back = imkit::button("job:back", tr("luban.os.quick.back_list"), ImVec2(180, 38), imkit::Look::Ghost);
         mark_(a, "job:back");
         if (back) a.view = View::Launcher;
         if (retry && j.retry) a.later = j.retry;   // after the frame: it replaces this job
@@ -715,13 +714,13 @@ void off_(App& a) {
     auto* dl = ImGui::GetWindowDrawList();
     const float H = ImGui::GetWindowHeight();
     float y = H * 0.3f;
-    centred_(dl, y, std::vformat(tr("{} is off", "{} 已关机"), std::make_format_args(a.current)), th_().text, 26, true);
+    centred_(dl, y, std::vformat(tr("luban.os.quick.off"), std::make_format_args(a.current)), th_().text, 26, true);
     y += px(40);
-    centred_(dl, y, tr("Enter starts it again · Esc goes back to the list", "Enter 重新启动 · Esc 返回列表"), th_().text_dim, 15);
+    centred_(dl, y, tr("luban.os.quick.enter_starts_again_esc_goes"), th_().text_dim, 15);
     if (!a.ended_why.empty()) {
         // Why: what the session said last, as it said it.
         y += px(40);
-        centred_(dl, y, std::vformat(tr("It stopped (exit {}). It said:", "它停止了（退出码 {}）。最后的输出："), std::make_format_args(a.ended_code)),
+        centred_(dl, y, std::vformat(tr("luban.os.quick.stopped_exit_said"), std::make_format_args(a.ended_code)),
                  th_().warn, 14);
         y += px(26);
         const float width = std::min(px(720), ImGui::GetWindowWidth() - px(80));

@@ -16,6 +16,7 @@ kind = "bin"
 main = "src/main.cpp"
 
 [dependencies]
+i18n               = { path = "../../modules/i18n" }
 luban-compat = { path = "../../luban/os/compat" }
 libs               = { path = "../../modules/libs" }
 platform           = { path = "../../modules/platform" }

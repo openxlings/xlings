@@ -122,13 +122,13 @@ void console_menu_(App& a) {
     imkit::panel(dl, at, ImVec2(at.x + w, at.y + h), imkit::Bevel::Raised, th_().panel_lo);
     bool done = false;
     ImGui::SetCursorPos(ImVec2(at.x - wo.x + px(6), at.y - wo.y + px(6)));
-    if (imkit::button("console:copy", tr("Copy", "复制"), ImVec2((w - px(12)) / imkit::scale(), 32), imkit::Look::Ghost, a.selection.has_value())) {
+    if (imkit::button("console:copy", tr("luban.os.system.copy"), ImVec2((w - px(12)) / imkit::scale(), 32), imkit::Look::Ghost, a.selection.has_value())) {
         if (a.selection) a.window->set_clipboard(console_text(*a.console, a.console_scroll, *a.selection));
         done = true;
     }
     mark_(a, "console:copy");
     ImGui::SetCursorPos(ImVec2(at.x - wo.x + px(6), at.y - wo.y + px(44)));
-    if (imkit::button("console:paste", tr("Paste", "粘贴"), ImVec2((w - px(12)) / imkit::scale(), 32), imkit::Look::Ghost)) {
+    if (imkit::button("console:paste", tr("luban.os.system.paste"), ImVec2((w - px(12)) / imkit::scale(), 32), imkit::Look::Ghost)) {
         bool bracketed;
         {
             std::lock_guard l(a.console->lock());
@@ -146,7 +146,7 @@ void console_menu_(App& a) {
 void console_view_(App& a) {
     begin_full_("console");
     if (!a.console) { ImGui::End(); return; }
-    const float bar = system_bar_(a, a.console->is_machine() ? tr("machine", "机器") : tr("sandbox", "沙箱"));
+    const float bar = system_bar_(a, a.console->is_machine() ? tr("luban.os.app.machine") : tr("luban.os.app.sandbox"));
     // Keys the program gets: text from the input method; named keys and
     // control chords as xterm sends them. The size keys are the window's.
     if (!a.menu && !a.close_dialog) {
@@ -230,7 +230,7 @@ void console_view_(App& a) {
         }
         a.console.reset();
         if (machine && vm::running(a.home, a.current)) {
-            a.notice = std::vformat(tr("{} keeps running", "{} 仍在运行"), std::make_format_args(a.current));
+            a.notice = std::vformat(tr("luban.os.system.keeps_running"), std::make_format_args(a.current));
             a.back_home();
         } else {
             a.view = View::Off;
@@ -245,7 +245,7 @@ void run_view_(App& a) {
     auto* dl = ImGui::GetWindowDrawList();
     const ImVec2 o = ImGui::GetWindowPos();
     const float W = ImGui::GetWindowWidth(), H = ImGui::GetWindowHeight();
-    const float bar = system_bar_(a, tr("commands", "命令"));
+    const float bar = system_bar_(a, tr("luban.os.system.commands"));
     const float inputH = px(56);
     // The output.
     ImGui::SetCursorPos(ImVec2(0, bar));
@@ -284,7 +284,7 @@ void run_view_(App& a) {
     if (!ImGui::GetIO().WantTextInput && !a.menu) ImGui::SetKeyboardFocusHere();
     const bool entered = imkit::text_field("run:input", a.run.input, sizeof a.run.input, (W - imkit::unit() * 2 - px(20)) / imkit::scale(),
                                            ImGuiInputTextFlags_EnterReturnsTrue,
-                                           tr("a command, e.g. xlings list (Esc: back to the list)", "一条命令，例如 xlings list（Esc：回到列表）"));
+                                           tr("luban.os.system.command_e_g_xlings_list"));
     mark_(a, "run:input");
     ImGui::End();
     for (const auto& k : a.window->keys()) {
@@ -307,8 +307,7 @@ void run_view_(App& a) {
         a.run.lines.push_back({"> " + line, true});
         a.run.scroll_down = true;
         if (!argv || argv->empty()) {
-            a.run.lines.push_back({std::string(tr("Plain words only: there is no shell here to read quotes, pipes or $.",
-                                                  "只能是普通的词：这里没有 shell 来解释引号、管道或 $。")), false, true});
+            a.run.lines.push_back({std::string(tr("luban.os.system.plain_words_only_there_no")), false, true});
             return;
         }
         a.run.busy = true;
@@ -355,26 +354,25 @@ ImportPreview preview_import_(const fs::path& file, const std::vector<std::strin
         if (auto pol = xlings::subos::policy::from_json(m["policy"])) {
             p.preset = std::string(xlings::subos::policy::to_string(pol->preset));
             if (pol->preset == xlings::subos::policy::Preset::Legacy)
-                p.wider.push_back(std::string(tr("no isolation preset (as an environment made before policies)",
-                                                 "没有隔离预设（如同策略出现之前的环境）")));
+                p.wider.push_back(std::string(tr("luban.os.system.no_isolation_preset_environment_made")));
             // A grant as what it lets the system do.
-            static constexpr std::array<std::array<std::string_view, 3>, 6> kGrants{{
-                {"clipboard", "can copy to this computer's clipboard", "可以复制到这台电脑的剪贴板"},
-                {"clipboard-paste", "can read this computer's clipboard", "可以读取这台电脑的剪贴板"},
-                {"display", "can show windows on this computer's screen", "可以在这台电脑的屏幕上显示窗口"},
-                {"audio", "can play and record sound", "可以播放和录制声音"},
-                {"gpu", "can use this computer's graphics card", "可以使用这台电脑的显卡"},
-                {"ssh-agent", "can use your SSH keys", "可以使用你的 SSH 密钥"},
+            static constexpr std::array<std::array<std::string_view, 2>, 6> kGrants{{
+                {"clipboard", "luban.os.system.grant.clipboard"},
+                {"clipboard-paste", "luban.os.system.grant.clipboard_paste"},
+                {"display", "luban.os.system.grant.display"},
+                {"audio", "luban.os.system.grant.audio"},
+                {"gpu", "luban.os.system.grant.gpu"},
+                {"ssh-agent", "luban.os.system.grant.ssh_agent"},
             }};
             for (const auto& g : pol->grants) {
                 const auto known = std::ranges::find_if(kGrants, [&](const auto& k) { return k[0] == g; });
-                p.wider.push_back(known != kGrants.end() ? std::string(tr((*known)[1], (*known)[2]))
-                                                         : std::vformat(tr("granted: {}", "授权：{}"), std::make_format_args(g)));
+                p.wider.push_back(known != kGrants.end() ? std::string(tr((*known)[1]))
+                                                         : std::vformat(tr("luban.os.system.granted"), std::make_format_args(g)));
             }
             for (const auto& mnt : pol->mounts)
-                p.wider.push_back(std::format("{} {} ({})", tr("mounts the host's", "挂载宿主的"), mnt.src, mnt.rw ? "rw" : "ro"));
+                p.wider.push_back(std::format("{} {} ({})", tr("luban.os.system.mounts_host_s"), mnt.src, mnt.rw ? "rw" : "ro"));
         } else {
-            p.wider.push_back(std::vformat(tr("a policy this version cannot read: {}", "本版本读不懂的策略：{}"),
+            p.wider.push_back(std::vformat(tr("luban.os.system.policy_version_cannot_read"),
                                            std::make_format_args(pol.error())));
         }
     }
@@ -433,7 +431,7 @@ bool shell_bar_(App& a, Display& d, ImVec2 at, float width, float height) {
     dl->AddRectFilled(at, ImVec2(at.x + width, at.y + imkit::unit() / 3), th_().line);
     const float button_h = (height - px(8)) / imkit::scale();
     ImGui::SetCursorPos(ImVec2(at.x - wo.x + px(6), at.y - wo.y + px(4)));
-    if (imkit::button("shell:apps", tr("Applications", "应用"), ImVec2(120, button_h), a.shell_apps ? imkit::Look::Primary : imkit::Look::Normal))
+    if (imkit::button("shell:apps", tr("luban.os.system.applications"), ImVec2(120, button_h), a.shell_apps ? imkit::Look::Primary : imkit::Look::Normal))
         a.shell_apps = !a.shell_apps;
     mark_(a, "shell:apps");
     // Its windows, the focused one raised; as many as fit.
@@ -460,7 +458,7 @@ bool shell_bar_(App& a, Display& d, ImVec2 at, float width, float height) {
     ImGui::SetCursorScreenPos(top);
     ImGui::PushStyleColor(ImGuiCol_ChildBg, th_().panel_lo);
     ImGui::BeginChild("shell:list", ImVec2(list_w, list_h), ImGuiChildFlags_Borders);
-    if (apps.empty()) ImGui::TextUnformatted(tr("Nothing it can start yet", "还没有可启动的应用").data());
+    if (apps.empty()) ImGui::TextUnformatted(tr("luban.os.system.nothing_can_start_yet").data());
     for (const auto& app : apps) {
         const std::string id = "app:" + app.id;
         if (imkit::button(id, imkit::fit(app.name, list_w - px(40), 14), ImVec2((list_w - px(32)) / imkit::scale(), (row - px(6)) / imkit::scale()),
@@ -607,7 +605,7 @@ void desktop_view_(App& a) {
         art::badge(dl, art::Badge::Craftsman, "", ImVec2(origin.x + (avail.x - 16 * cell) / 2, origin.y + avail.y * 0.32f), cell,
                    imkit::beat(2, 0.3));
         centred_(dl, avail.y * 0.32f + 16 * cell + px(20),
-                 std::vformat(tr("Starting the desktop of {}…", "正在启动 {} 的桌面…"), std::make_format_args(a.current)), th_().text_dim, 16);
+                 std::vformat(tr("luban.os.system.starting_desktop"), std::make_format_args(a.current)), th_().text_dim, 16);
     }
     // The window's size is the desktop's, once it has held still a moment.
     // The screen's scale, said once and whenever it changes (a screen with

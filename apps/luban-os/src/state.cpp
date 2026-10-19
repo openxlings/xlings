@@ -64,7 +64,7 @@ std::string App::title_for(std::string_view what) const {
         return std::format("{} — {}", fs::path(first).filename().string(), what);
     }
     return std::format("{} — Luban OS · Ctrl+Alt {}", what,
-                       window->keyboard_grabbed() ? tr("releases the keyboard", "释放键盘") : tr("menu", "菜单"));
+                       window->keyboard_grabbed() ? tr("luban.os.state.releases_keyboard") : tr("luban.os.state.menu"));
 }
 
 void App::start_job(std::string title, std::function<void(Job&, service::Context)> body, std::function<void(App&)> then) {
@@ -103,8 +103,7 @@ void App::enter(const std::string& name) {
     if (auto env = service::describe(ctx, name)) {
         if (const auto bad = service::unmet_needs(*env, service::luban_provides()); !bad.empty()) {
             const auto why = bad.front().why();
-            notice = std::vformat(tr("This Luban OS app is older than {} ({}): xlings update luban-os",
-                                     "这个 Luban OS 应用比 {} 旧（{}）：xlings update luban-os"),
+            notice = std::vformat(tr("luban.os.state.luban_os_app_older_than"),
                                   std::make_format_args(name, why));
             return;
         }
@@ -121,7 +120,7 @@ void App::enter(const std::string& name) {
     }
     const auto mode = vm::running(home, name) ? std::string("machine") : env ? env->settings.mode : std::string("sandbox");
     if (mode == "machine") {
-        start_job(std::format("{} {}", tr("Starting", "启动"), name),
+        start_job(std::format("{} {}", tr("luban.os.state.starting"), name),
                   [name](Job& j, service::Context c) { j.code = vm::start(c, name, {}); },
                   [name](App& a) {
                       if (a.job->code != 0) return;
@@ -137,8 +136,7 @@ void App::open_run(const std::string& name) {
     {
         std::lock_guard l(run.m);
         run.lines.clear();
-        run.lines.push_back({std::vformat(tr("{} has no shell: each line here is one command, run in it (luban run {} -- …).",
-                                             "{} 没有 shell：这里每一行是在其中运行的一条命令（luban run {} -- …）。"),
+        run.lines.push_back({std::vformat(tr("luban.os.state.has_no_shell_each_line"),
                                           std::make_format_args(name, name))});
     }
     view = View::Run;
@@ -247,7 +245,7 @@ void App::open_console(const std::string& name, bool machine) {
     std::string greeting;
     if (env)
         for (const auto& line : service::welcome(*env, machine ? "machine" : "sandbox", false,
-                                                 {.zh = tr("en", "zh") == "zh", .color = true, .utf8 = true}))
+                                                 {.zh = xlings::i18n::language() == "zh", .color = true, .utf8 = true}))
             greeting += line + "\r\n";
     console = machine ? Console::machine(home, name, [w] { w->wake(); }, error, greeting)
                       : Console::sandbox(ctx.port.xlings(), home, name, env ? env->settings.persist : "all", [w] { w->wake(); },
@@ -275,7 +273,7 @@ void App::app_failed_(const std::string& why) {
 }
 
 void App::power_off(const std::string& name) {
-    start_job(std::format("{} {}", tr("Powering off", "关闭"), name),
+    start_job(std::format("{} {}", tr("luban.os.state.powering_off"), name),
               [name](Job& j, service::Context c) { j.code = vm::stop(c, name).code; },
               [](App& a) { a.view = View::Off; });
 }

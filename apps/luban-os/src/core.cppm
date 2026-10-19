@@ -5,6 +5,7 @@ export module luban.os:core;
 
 import std;
 import xlings.libs.json;
+import xlings.i18n;
 import imkit;
 import tray;
 import luban.service;
@@ -35,11 +36,16 @@ namespace platform = xlings::platform;
 namespace host = luban::desktop::host;
 using Json = nlohmann::json;
 
-// The words of the interface, English or Chinese: the app's language
-// setting, else LUBAN_OS_LANG and the locale.
-std::string_view tr(std::string_view en, std::string_view zh);
+// The words of the interface, by key (apps/luban-os/src/i18n, the domain
+// `luban.os`), through the shared mechanism (xlings.i18n): the app's
+// language setting, else LUBAN_OS_LANG and the system's.
+inline std::string_view tr(std::string_view key) { return xlings::i18n::tr(key); }
 // "auto", "en" or "zh".
 void set_language(std::string_view lang);
+// The app's words and glossary, registered first thing in run().
+void register_words();
+std::span<const xlings::i18n::Entry> words_en();
+std::span<const xlings::i18n::Entry> words_zh();
 
 // What the app keeps of its own (<home>/config/luban-os.json): the default
 // system, the countdown, when each was last used, how it looks and where it
@@ -268,9 +274,9 @@ enum class View { Launcher, QuickStart, Job, Console, Off, Admin, Desktop, Impor
 struct Edition {
     std::string_view name;                  // `luban new --edition`
     bool desktop;                           // the desktop group
-    std::string_view title_en, title_zh;
-    std::string_view about_en, about_zh;    // one line
-    std::string_view detail_en, detail_zh;  // what is in it, and for whom
+    // Its words, by key (apps/luban-os/src/i18n): its title, one line about
+    // it, and what is in it and for whom.
+    std::string_view title, about, detail;
     std::string_view size;                  // about what it downloads
     std::string_view contents;              // its first few programs
     bool goes_in;                           // there is something to log into
@@ -282,28 +288,13 @@ struct Edition {
 };
 
 constexpr std::array<Edition, 7> kEditions{{
-    {"nano", false, "nano", "nano", "No shell: commands only", "没有 shell：只运行命令",
-     "The base an edition of your own is built on: xlings and luban, nothing to log into.",
-     "自己定制 edition 的基础：只有 xlings 与 luban，没有可以登录的界面。", "~15 MB", "xlings · luban", false},
-    {"tiny", false, "tiny", "tiny", "A shell and the basic tools", "shell 与基础工具",
-     "BusyBox and xlings: small and quick to make; add what you need with xlings install.",
-     "BusyBox 与 xlings：小，创建快；需要什么用 xlings install 添加。", "~25 MB", "busybox · xlings · luban", true},
-    {"tiny-musl", false, "tiny-musl", "tiny-musl", "tiny, on musl", "基于 musl 的 tiny",
-     "tiny with musl as its C library: for building and testing static, musl-linked programs.",
-     "以 musl 为 C 库的 tiny：构建与测试 musl 静态程序。", "~25 MB", "busybox · musl · xlings", true},
-    {"core", false, "core", "core", "A console to develop in", "开发用的控制台",
-     "glibc, fish and bash, gcc, git, curl and mcpp: a console for development.",
-     "glibc、fish 与 bash、gcc、git、curl 与 mcpp：做开发的控制台。", "~400 MB", "fish · gcc · git · mcpp", true},
-    {"agent-workspace", false, "agent workspace", "agent 工作区", "A console for coding agents", "给编程 agent 的控制台",
-     "Everything of core, with node, python and the coding agents, in a private network by default.",
-     "core 的一切，加上 node、python 与编程 agent，默认在私有网络中。", "~700 MB", "core · node · python · agents", true},
-    {"desktop", true, "Classic desktop", "经典桌面", "Windows side by side, a panel", "窗口并排、面板",
-     "Everything of core, a desktop, and the tools people reach for: terminals, editors, node, python, agents.",
-     "core 的一切、一个桌面，以及常用的工具：终端、编辑器、node、python、agents。", "~1.2 GB", "xdesk · foot · nvim · node", true},
-    {"desktop-xdesk", true, "xdesk canvas", "xdesk 画布", "An infinite canvas for windows", "放窗口的无限画布",
-     "The same environment on xdesk's canvas: pan, zoom, see everything at once. To explore.",
-     "同样的环境，桌面是 xdesk 的画布：平移、缩放、一眼看全。供探索。", "~1.2 GB", "xdesk · foot · nvim · node", true,
-     "desktop", "xdesk-canvas"},
+    {"nano", false, "luban.os.edition.nano.title", "luban.os.edition.nano.about", "luban.os.edition.nano.detail", "~15 MB", "xlings · luban", false},
+    {"tiny", false, "luban.os.edition.tiny.title", "luban.os.edition.tiny.about", "luban.os.edition.tiny.detail", "~25 MB", "busybox · xlings · luban", true},
+    {"tiny-musl", false, "luban.os.edition.tiny_musl.title", "luban.os.edition.tiny_musl.about", "luban.os.edition.tiny_musl.detail", "~25 MB", "busybox · musl · xlings", true},
+    {"core", false, "luban.os.edition.core.title", "luban.os.edition.core.about", "luban.os.edition.core.detail", "~400 MB", "fish · gcc · git · mcpp", true},
+    {"agent-workspace", false, "luban.os.edition.agent_workspace.title", "luban.os.edition.agent_workspace.about", "luban.os.edition.agent_workspace.detail", "~700 MB", "core · node · python · agents", true},
+    {"desktop", true, "luban.os.edition.desktop.title", "luban.os.edition.desktop.about", "luban.os.edition.desktop.detail", "~1.2 GB", "xdesk · foot · nvim · node", true},
+    {"desktop-xdesk", true, "luban.os.edition.desktop_xdesk.title", "luban.os.edition.desktop_xdesk.about", "luban.os.edition.desktop_xdesk.detail", "~1.2 GB", "xdesk · foot · nvim · node", true, "desktop", "xdesk-canvas"},
 }};
 
 int edition_index_(std::string_view name);
