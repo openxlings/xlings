@@ -603,7 +603,7 @@ void desktop_view_(App& a) {
         auto* dl = ImGui::GetWindowDrawList();
         const float cell = std::round(px(4));
         art::badge(dl, art::Badge::Craftsman, "", ImVec2(origin.x + (avail.x - 16 * cell) / 2, origin.y + avail.y * 0.32f), cell,
-                   imkit::beat(2, 0.3));
+                   imkit::beat(4, 0.15));
         centred_(dl, avail.y * 0.32f + 16 * cell + px(20),
                  std::vformat(tr("luban.os.system.starting_desktop"), std::make_format_args(a.current)), th_().text_dim, 16);
     }

@@ -91,15 +91,21 @@ constexpr Rows kUnknown0{
     "................", "................", "...KKKKKKKKKK...", "..KBBBBBBBBBBK..", "..KbBBBBBBBBbK..", "..KBbBBBBBBbBK..",
     "..KBBbBBBBbBBK..", "..KBBBbBBbBBBK..", "..KBBBBbbBBBBK..", "..KBBBbBBbBBBK..", "..KBBbBBBBbBBK..", "..KBbBBBBBBbBK..",
     "..KbBBBBBBBBbK..", "..KKKKKKKKKKKK..", "................", "................"};
-// The craftsman: the builder of Luban, with his hammer up and down.
+// The craftsman: the builder of Luban, his hammer turning about his fist --
+// raised, level, struck (design 2026-10-19 §14). The raised one is also the
+// app's icon (share/luban-os.svg, tools/luban_os_icon.py).
 constexpr Rows kCraft0{
-    "................", "......KKKK......", ".....KOOOOK..KKK", ".....KYYYYK.KGGG", ".....KYKYKK..KbK", "......KYYK....Kb",
-    ".....KSSSSK...Kb", "....KSSSSSSKKKbK", "....KSKSSKSKYYK.", "....KYKSSK.KK...", "......KSSK......", "......KBBK......",
-    ".....KBKKBK.....", ".....KBK.KBK....", "....KKK...KKK...", "................"};
+    "................", "..KKKK..........", ".KOOOOK.........", ".KYYYYK.KKKKK...", ".KYKYKK.KWGGK...", "..KYYK..KKKKK...",
+    ".KSSSSK..KbK....", "KSSSSSSKKKbK....", "KSKSSKSSKYYK....", "KYKSSKKKKKK.....", "..KSSK..........", "..KBBK..........",
+    ".KBKKBK.........", ".KBK.KBK........", "KKK...KKK.......", "................"};
 constexpr Rows kCraft1{
-    "................", "......KKKK......", ".....KOOOOK.....", ".....KYYYYK.....", ".....KYKYKK.....", "......KYYK......",
-    ".....KSSSSK.....", "....KSSSSSSKKK..", "....KSKSSKSKYYKb", "....KYKSSK.KKKbb", "......KSSK...KbK", "......KBBK..KGGG",
-    ".....KBKKBK..KKK", ".....KBK.KBK....", "....KKK...KKK...", "................"};
+    "................", "..KKKK..........", ".KOOOOK.........", ".KYYYYK.........", ".KYKYKK.........", "..KYYK..........",
+    ".KSSSSK.........", "KSSSSSSKKKK.....", "KSKSSKSSKYYK....", "KYKSSKKKKKKbK...", "..KSSK.....KbKK.", "..KBBK......KWGK",
+    ".KBKKBK.....KGgK", ".KBK.KBK.....KK.", "KKK...KKK.......", "................"};
+constexpr Rows kCraft2{
+    "................", "..KKKK..........", ".KOOOOK.........", ".KYYYYK.........", ".KYKYKK.........", "..KYYK..........",
+    ".KSSSSK......KKK", "KSSSSSSKKKKK.KWK", "KSKSSKSSKYYbbKGK", "KYKSSKKKKKKK.KgK", "..KSSK.......KKK", "..KBBK..........",
+    ".KBKKBK.........", ".KBK.KBK........", "KKK...KKK.......", "................"};
 
 std::uint32_t base_(std::string_view edition) {
     auto name = edition;
@@ -127,7 +133,10 @@ const Rows* rows_(Badge b, int frame) {
     case Badge::Desktop: return f ? &kDesktop1 : &kDesktop0;
     case Badge::DesktopXdesk: return f ? &kXdesk1 : &kXdesk0;
     case Badge::Unknown: return &kUnknown0;
-    case Badge::Craftsman: return f ? &kCraft1 : &kCraft0;
+    case Badge::Craftsman: {
+        static constexpr std::array<const Rows*, 4> swing{&kCraft0, &kCraft2, &kCraft1, &kCraft2};
+        return swing[static_cast<std::size_t>(frame % 4)];
+    }
     }
     return &kUnknown0;
 }
