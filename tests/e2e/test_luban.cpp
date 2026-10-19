@@ -823,8 +823,9 @@ XTEST(Luban, AnyIndexsSystemAndComponentsAreMadeByXpkg,
     EXPECT_NE(status.out.find("system    MyOS 1.0.0 (Luban base)"), std::string::npos) << status.out;
     EXPECT_NE(status.out.find("desktop   hyper"), std::string::npos) << status.out;
     EXPECT_NE(status.out.find("enter     desktop · machine"), std::string::npos) << status.out;
-    // Kept: the same again is not asked.
-    auto again = luban(home, {"new", "box2", "--xpkg", "fixture:myos@1.0.0", "--xpkg", "fixture:hyper"});
+    // Kept: the same again is not asked (its user given: a desktop's system has one).
+    auto again = luban(home, {"new", "box2", "--xpkg", "fixture:myos@1.0.0", "--xpkg", "fixture:hyper", "--user", "alice",
+                              "--no-password"});
     EXPECT_EQ(again.exit_code, 0) << again.transcript();
     // The official desktop --desktop names, brought and said.
     auto fancy = luban(home, {"new", "box3", "--xpkg", "fixture:my-os@1.0.0", "--desktop", "fancy", "-y"});
