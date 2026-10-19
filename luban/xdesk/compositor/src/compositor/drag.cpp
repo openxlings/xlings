@@ -71,8 +71,19 @@ void Server::drag_motion() {
     drag_x = cursor->x;
     drag_y = cursor->y;
     pointer_shape("grabbing");
+    (void)dx;
+    (void)dy;
+    const bool shift = held(wlr_keyboard_modifier::WLR_MODIFIER_SHIFT);
     if (drag_live) {
-        if (const auto p = placement_of(dragged)) lay.place(dragged, {p->x + dx, p->y + dy, p->width, p->height});
+        // Where the pointer carries it, snapped to the others' edges within
+        // 16 pixels (Shift: not) -- the lines it snapped to drawn (design 2026-10-20 §9.4).
+        if (const auto p = placement_of(dragged)) {
+            layout::Rect r { cursor->x - drag_dx, cursor->y - drag_dy, p->width, p->height };
+            layout::Snap sn{.rect = r};
+            if (!shift && o.snap) sn = lay.snap(dragged, r);
+            lay.place(dragged, sn.rect);
+            show_guides(sn);
+        }
         arrange(true);
     } else {
         // The frame follows the pointer.
@@ -81,9 +92,19 @@ void Server::drag_motion() {
         v->moving = false;
         wlr_scene_node_set_position(&v->frame->node, static_cast<int>(std::lround(v->x.value)), static_cast<int>(std::lround(v->y.value)));
     }
-    // A floating window, a group moved whole: they land where they are.
-    if (lay.floating(dragged) || (canvas() && drag_live)) { hide_drop(); return; }
-    const auto d = drop_with_hysteresis(held(wlr_keyboard_modifier::WLR_MODIFIER_SHIFT));
+    // A floating window, a stacked one: they land where they are.
+    if (lay.floating(dragged) || (drag_live && !canvas())) { hide_drop(); return; }
+    // The canvas: against another window's edge it joins its group, that
+    // edge lit (Shift: not).
+    if (canvas()) {
+        const auto d = shift ? layout::Drop{.kind = layout::Drop::Kind::free} : lay.drop_at(dragged, cursor->x, cursor->y);
+        if (!(d == drop)) {
+            drop = d;
+            show_group_edge();
+        }
+        return;
+    }
+    const auto d = drop_with_hysteresis(shift);
     if (!(d == drop)) {
         drop = d;
         show_drop();
@@ -141,6 +162,39 @@ bool Server::drag_width(int step, int digit) {
 void Server::hide_drop() {
     wlr_scene_node_set_enabled(&drop_box->node, false);
     wlr_scene_node_set_enabled(&sizes_node->node, false);
+    wlr_scene_node_set_enabled(&guide_x->node, false);
+    wlr_scene_node_set_enabled(&guide_y->node, false);
+}
+
+void Server::show_guides(const layout::Snap& sn) {
+    wlr_scene_node_set_enabled(&guide_x->node, sn.guide_x.has_value());
+    wlr_scene_node_set_enabled(&guide_y->node, sn.guide_y.has_value());
+    if (sn.guide_x) {
+        wlr_scene_rect_set_size(guide_x, 1, logical_h());
+        wlr_scene_node_set_position(&guide_x->node, static_cast<int>(std::lround(*sn.guide_x)), 0);
+    }
+    if (sn.guide_y) {
+        wlr_scene_rect_set_size(guide_y, logical_w(), 1);
+        wlr_scene_node_set_position(&guide_y->node, 0, static_cast<int>(std::lround(*sn.guide_y)));
+    }
+}
+
+// The edge of the window it would join, lit.
+void Server::show_group_edge() {
+    using K = layout::Drop::Kind;
+    const auto t = drop.kind == K::left || drop.kind == K::right || drop.kind == K::above || drop.kind == K::below
+                       ? placement_of(drop.target) : std::nullopt;
+    if (!t) { wlr_scene_node_set_enabled(&drop_box->node, false); return; }
+    constexpr double kBar = 6;
+    layout::Rect bar = *t;
+    if (drop.kind == K::left) bar.width = kBar;
+    else if (drop.kind == K::right) bar = {t->x + t->width - kBar, t->y, kBar, t->height};
+    else if (drop.kind == K::above) bar.height = kBar;
+    else bar = {t->x, t->y + t->height - kBar, t->width, kBar};
+    wlr_scene_rect_set_size(drop_box, std::max(1, static_cast<int>(std::lround(bar.width))), std::max(1, static_cast<int>(std::lround(bar.height))));
+    wlr_scene_node_set_position(&drop_box->node, static_cast<int>(std::lround(bar.x)), static_cast<int>(std::lround(bar.y)));
+    wlr_scene_node_set_enabled(&drop_box->node, true);
+    wlr_scene_node_raise_to_top(&drop_box->node);
 }
 
 void Server::drag_end() {
@@ -148,7 +202,9 @@ void Server::drag_end() {
     hide_drop();
     if (v) {
         set_opacity(*v, 1.0f);
-        if (!lay.floating(dragged) && !(canvas() && drag_live) && drop.kind != layout::Drop::Kind::none) {
+        // A canvas window let go where it is, unless against another's edge (a group).
+        const bool canvas_free = canvas() && drag_live && drop.kind == layout::Drop::Kind::free;
+        if (!lay.floating(dragged) && !canvas_free && drop.kind != layout::Drop::Kind::none) {
             const auto p = placement_of(dragged);
             const layout::Rect here { v->x.value, v->y.value, p ? p->width : 0, p ? p->height : 0 };
             lay.drop(dragged, drop, drop_width);

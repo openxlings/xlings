@@ -1127,6 +1127,10 @@ status = "required"
 text = "an xdesk window is resized the same way in every arrangement where it can be: a stacked, floating or canvas window by its borders and corners or with Super and the right button anywhere, keeping the size the client allows, and by the client asking (request_resize) as its own frame is dragged; tiled windows by the gaps between columns and between the windows of a column"
 status = "required"
 
+[XDESK-CANVAS]
+text = "on xdesk's canvas the zoom is a view, not a mode: from half up windows take the pointer as at 100 % (its coordinates scaled), below it a click selects a window and keeps the view and two go in (Super+0 too); only Super and the wheel (and Super+= / Super+-) zoom, the wheel elsewhere pans; a moved window snaps to others' edges within 16 pixels with the lines drawn and joins a group against an edge (Shift: neither); a new window takes the free place nearest the focused one, in view when there is one, never zooming; a minimap shows the whole and the view and takes a click"
+status = "required"
+
 [XDESK-LAYOUT]
 text = "xdesk.layout places windows without drawing anything: tile (one or two windows share the output, more scroll with the focused one in view, a new one beside the focus, widths through thirds, halves and the whole), floating (centred above, where it is put), the canvas (beside the focus, panned, zoomed around a point up to 1, an overview that fits every window, left back exactly where the view was, or into a chosen window), a layout per workspace; motion by a critically damped spring"
 status = "required"

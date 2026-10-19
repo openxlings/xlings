@@ -175,9 +175,19 @@ a workspace, and the application's rules — always floating, always on this
 workspace, remember its size and place — kept for next time. A window's title
 bar says its application's name (from its desktop entry), then its own title.
 
-On the canvas, drag the background (or a window with Super) to pan; the wheel
-on the background (or anywhere with Super) zooms around the pointer, so what is
-under it stays put. The overview leaves you exactly where you were.
+On the canvas the zoom is only where you look from: at half size or more the
+windows work as at 100 % (a click goes to the window and the view stays);
+smaller, they are pictures — a click selects one, two clicks (or Super+0) go
+in to it at 100 %. Only Super with the wheel, or Super+= and Super+-, zoom
+(around the pointer, so what is under it stays put); the wheel on the
+background pans (Shift: sideways), and so does dragging it or the middle
+button. A window moved near another lines up with its edge (within 16 pixels,
+the line shown); against its edge it joins its group, the edge lit; Shift
+while moving does neither. A new window goes to the free place nearest the
+focused one, in view if there is one — the view pans to it, it never zooms.
+When the canvas holds more than the view, a minimap at the bottom right shows
+it all and where you are; click it to go there (`[canvas] minimap = off`, and
+`snap = off` for the edges). The overview leaves you exactly where you were.
 
 The input method of the host types into the desktop's windows (what it
 composes is shown there), and the clipboard is shared — each way as far as

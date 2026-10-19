@@ -76,7 +76,8 @@ fs::path colour_client(const tk::Home& home) {
     tk::write_file(file, R"PY(# A Wayland client in one colour: xdg-shell over the plain wire, its pixels
 # in shared memory. Closes when asked. argv: RRGGBB [--log FILE] [--copy TEXT] [--cursor 1]
 #   --log   text-input-v3 on: what is committed, and the selection it is
-#           offered, written to FILE ("commit <text>", "paste <text>")
+#           offered, written to FILE ("commit <text>", "paste <text>"); and
+#           the pointer's presses ("button <code> at <x> <y>", its coordinates)
 #   --copy  then its own selection: TEXT
 #   --cursor  its own pointer over it: 8x8 in its colour, hotspot (3, 4)
 #   --app-id  its application id
@@ -142,8 +143,9 @@ send(toplevel, 2, string(sys.argv[1]))                      # set_title
 if "--app-id" in opts: send(toplevel, 3, string(opts["--app-id"]))   # set_app_id
 keyboard = text = device = source = pointer = cursor_surface = None
 seat = bind("wl_seat", 5) if log or cursor else None
-if cursor:
+if cursor or log:
     pointer = new(); send(seat, 0, struct.pack("<I", pointer))              # get_pointer
+if cursor:
     cursor_surface = new(); send(compositor, 0, struct.pack("<I", cursor_surface))
 if log:
     keyboard = new(); send(seat, 1, struct.pack("<I", keyboard))            # get_keyboard
@@ -152,7 +154,7 @@ if log:
     manager = bind("wl_data_device_manager", 3)
     device = new(); send(manager, 1, struct.pack("<II", device, seat))     # get_data_device
 send(surface, 6)                                             # commit
-size = (0, 0); drawn = None; offers = {}; pasted = False; enter_serial = 0
+size = (0, 0); drawn = None; offers = {}; pasted = False; enter_serial = 0; last_motion = (0, 0)
 def draw(w, h, on=None):
     on = on or surface
     stride = w * 4
@@ -181,10 +183,19 @@ for obj, op, body in it:
         if size != drawn: draw(*size); drawn = size
     elif obj == wm and op == 0:
         send(wm, 3, body[:4])                                # pong
-    elif obj == pointer and op == 0:                         # enter: its own pointer
+    elif obj == pointer and op == 0 and cursor:              # enter: its own pointer
         serial, = struct.unpack("<I", body[:4])
         send(pointer, 0, struct.pack("<IIii", serial, cursor_surface, 3, 4))   # set_cursor
         draw(8, 8, cursor_surface)
+    elif obj == pointer and op == 0 and log:                 # enter: where, in its own coordinates
+        x, y = struct.unpack("<ii", body[8:16])
+        last_motion = (x / 256.0, y / 256.0)
+    elif obj == pointer and op == 2 and log:                 # motion: where, in its own coordinates
+        x, y = struct.unpack("<ii", body[4:12])
+        last_motion = (x / 256.0, y / 256.0)
+    elif obj == pointer and op == 3 and log:                 # button
+        _, _, b, state = struct.unpack("<IIII", body[:16])
+        if state == 1: log.write("button %d at %.0f %.0f\n" % (b, *last_motion))
     elif obj == keyboard and op == 0:
         os.close(fds.pop(0))                                 # the keymap: not needed
     elif obj == keyboard and op == 1:
@@ -342,6 +353,48 @@ screenshot {}
     EXPECT_EQ(d[2], c[2]) << "the right edge stayed";
 }
 
+// The canvas's zoom is a view (design 2026-10-20 §9.1, G11): at 91 % a
+// click reaches the window, in its own coordinates, and the view stays.
+XTEST(LubanOs, XdeskCanvasZoomedWindowsTakeClicksAndTheViewStays, .area = "luban",
+      .covers = {"XDESK-CANVAS"}, .requires_ = {"linux", "xlings-bin"}) {
+    if (!app_binary()) GTEST_SKIP() << "no luban-os beside the xlings under test";
+    if (!xdesk_binary()) GTEST_SKIP() << "no xdesk beside luban-os (mcpp build -p xdesk-app)";
+    auto home = tk::Home::isolated("luban-os-xdesk-canvas-zoom");
+    ASSERT_EQ(home.xlings({"self", "init"}).exit_code, 0);
+    const auto runtime = home.root() / "run";
+    fs::create_directories(runtime);
+    fs::permissions(runtime, fs::perms::owner_all, fs::perm_options::replace);
+    const auto client = colour_client(home).string();
+    const auto log = home.root() / "client.log", zoomed = home.root() / "zoomed.ppm", after = home.root() / "after.ppm";
+    tk::write_file(log, "");
+    auto r = run_script(home, std::format(R"(wait desktop
+waitfor desktop.texture.0 1100
+sleep 2500
+key Super+-
+sleep 800
+screenshot {}
+click 550 400
+sleep 800
+screenshot {}
+)", zoomed.string(), after.string()),
+                        {"--desktop-exec", xdesk_binary()->string(), "--profile", "canvas",
+                         "--autostart", std::format("python3 {} c04040 --log {}", client, log.string())},
+                        {{"XDG_RUNTIME_DIR", runtime.string()}});
+    ASSERT_EQ(r.exit_code, 0) << r.transcript();
+    const auto a = box_of(read_ppm(zoomed), kRed), b = box_of(read_ppm(after), kRed);
+    ASSERT_GE(a[0], 0) << "no red window";
+    EXPECT_EQ(a, b) << "a click changes nothing of the view";
+    const auto said = tk::read_file(log);
+    EXPECT_NE(said.find("button 272"), std::string::npos) << "the window got the click\n" << said;
+    // In its own coordinates: the point clicked, unzoomed (1 / 0.909).
+    std::istringstream in(said.substr(said.find("button 272")));
+    std::string word;
+    int code = 0;
+    double x = 0, y = 0;
+    in >> word >> code >> word >> x >> y;
+    EXPECT_NEAR(x, (550 - a[0]) * 1.1, 6) << said;
+}
+
 // A client that draws to whole cells (foot) is told it is tiled and takes
 // the size given (design 2026-10-20 §7.1, G4): side by side, two such windows
 // are the gap apart -- 4 pixels -- with nothing of their own between.
@@ -378,13 +431,13 @@ screenshot {}
     EXPECT_EQ(green_start - red_end - 1, 4) << "between them only the gap (a short client left its own strip)";
 }
 
-XTEST(LubanOs, XdeskCanvasShowsEveryWindowInItsOverviewAndAClickGoesIn, .area = "luban",
-      .covers = {"XDESK-COMPOSITOR", "XDESK-LAYOUT"}, .requires_ = {"linux", "xlings-bin"}) {
+XTEST(LubanOs, XdeskCanvasShowsEveryWindowInItsOverviewAClickSelectsTwiceGoesIn, .area = "luban",
+      .covers = {"XDESK-COMPOSITOR", "XDESK-LAYOUT", "XDESK-CANVAS"}, .requires_ = {"linux", "xlings-bin"}) {
     if (!app_binary()) GTEST_SKIP() << "no luban-os beside the xlings under test";
     if (!xdesk_binary()) GTEST_SKIP() << "no xdesk beside luban-os (mcpp build -p xdesk-app)";
     auto home = tk::Home::isolated("luban-os-xdesk-canvas");
     ASSERT_EQ(home.xlings({"self", "init"}).exit_code, 0);
-    const auto all = home.root() / "overview.ppm", in = home.root() / "in.ppm";
+    const auto all = home.root() / "overview.ppm", once = home.root() / "once.ppm", in = home.root() / "in.ppm";
     auto r = xdesk_with(home, "canvas", std::format(R"(wait desktop
 waitfor desktop.texture.0 1100
 sleep 3000
@@ -395,7 +448,11 @@ screenshot {}
 click desktop
 sleep 1000
 screenshot {}
-)", all.string(), artifact("xdesk-canvas-overview.bmp").string(), in.string()));
+click desktop
+click desktop
+sleep 1000
+screenshot {}
+)", all.string(), artifact("xdesk-canvas-overview.bmp").string(), once.string(), in.string()));
     ASSERT_EQ(r.exit_code, 0) << r.transcript();
     // Zoomed out: the three side by side, the middle one in the middle.
     const auto a = read_ppm(all);
@@ -403,7 +460,10 @@ screenshot {}
     for (int x = 0; x < 1100; x += 10) seen.insert(a.at(x, 350));
     EXPECT_TRUE(seen.contains(kRed) && seen.contains(kGreen) && seen.contains(kBlue));
     EXPECT_EQ(a.at(550, 350), kGreen);
-    // A click on it: back to 1, it in the middle of the view.
+    // One click selects it: the view stays (design 2026-10-20 §9.1, G11).
+    EXPECT_NE(read_ppm(once).at(150, 350), kGreen) << "a click does not zoom in";
+    EXPECT_EQ(read_ppm(once).at(550, 350), kGreen);
+    // Twice: back to 1, it in the middle of the view.
     const auto b = read_ppm(in);
     EXPECT_EQ(b.at(550, 350), kGreen);
     EXPECT_EQ(b.at(150, 350), kGreen) << "still zoomed out (it is as wide as it was made)";

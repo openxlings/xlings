@@ -68,6 +68,15 @@ bool Server::start_() {
     const float bg[4] = {theme.background.r / 255.0f, theme.background.g / 255.0f, theme.background.b / 255.0f, 1.0f};
     background = wlr_scene_rect_create(background_layer, static_cast<int>(size.width), static_cast<int>(size.height), bg);
     canvas_dots = wlr_scene_buffer_create(background_layer, nullptr);   // shown on a canvas workspace
+    minimap_node = wlr_scene_buffer_create(shell_layer, nullptr);
+    wlr_scene_node_set_enabled(&minimap_node->node, false);
+    {
+        const float c[4] = {theme.accent.r / 255.0f * 0.8f, theme.accent.g / 255.0f * 0.8f, theme.accent.b / 255.0f * 0.8f, 0.8f};
+        guide_x = wlr_scene_rect_create(overlay_layer, 1, 1, c);
+        guide_y = wlr_scene_rect_create(overlay_layer, 1, 1, c);
+        wlr_scene_node_set_enabled(&guide_x->node, false);
+        wlr_scene_node_set_enabled(&guide_y->node, false);
+    }
     panel_node = wlr_scene_buffer_create(shell_layer, nullptr);
     launcher_node = wlr_scene_buffer_create(overlay_layer, nullptr);
     wlr_scene_node_set_enabled(&launcher_node->node, false);

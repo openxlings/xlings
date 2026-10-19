@@ -172,6 +172,11 @@ struct Server {
     wlr_scene_tree* overlay_layer { nullptr };  // the launcher
     wlr_scene_rect* background { nullptr };
     wlr_scene_buffer* canvas_dots { nullptr };  // canvas: the grid over the background
+    wlr_scene_buffer* minimap_node { nullptr }; // canvas: the minimap (design 2026-10-20 §9.6)
+    shell::MinimapPicture minimap_shown;
+    std::string minimap_drawn;
+    wlr_scene_rect* guide_x { nullptr };        // the lines a moved window snapped to
+    wlr_scene_rect* guide_y { nullptr };
     wlr_scene_buffer* panel_node { nullptr };
     wlr_scene_buffer* launcher_node { nullptr };
     wlr_output* output { nullptr };
@@ -367,8 +372,10 @@ struct Server {
 
     void key(const opensal::Key& k);
 
-    // Pointer input goes to windows only at zoom 1 (zoomed out, a click picks one).
-    bool live() const { return lay.zoom() == 1; }
+    // The canvas's zoom is a view, not a mode (design 2026-10-20 §9.1): at
+    // half or more windows take the pointer as at 100 %; below it they are
+    // pictures -- a click selects one, twice goes in.
+    bool live() const { return lay.zoom() >= 0.5; }
 
     void pointer_moved();
 
@@ -387,6 +394,8 @@ struct Server {
     void drag_motion();
     layout::Drop drop_with_hysteresis(bool shift) const;
     bool drag_width(int step, int digit);
+    void show_guides(const layout::Snap& sn);
+    void show_group_edge();
     void drag_end();
     void show_drop();
     void hide_drop();

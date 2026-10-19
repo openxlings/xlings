@@ -17,6 +17,10 @@ namespace {
 
 constexpr layout::Size kOutput { 1200, 800 };
 
+bool overlap_(const Rect& a, const Rect& b) {
+    return a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height;
+}
+
 const layout::Placement& of(const std::vector<layout::Placement>& ps, layout::Id id) {
     for (const auto& p : ps)
         if (p.id == id) return p;
@@ -596,4 +600,39 @@ XTEST(XdeskLayout, ATiledStripScrolledByHandStaysUntilTheFocusMoves, .area = "lu
     l.focus(3);
     ps = l.arrange(kOutput);
     EXPECT_TRUE(of(ps, 3).visible);
+}
+
+// The canvas (design 2026-10-20 §9): a new window in the free place nearest
+// the focused one, in view; a moved frame snaps to an edge; the minimap.
+XTEST(XdeskLayout, OnTheCanvasANewWindowTakesTheNearestFreePlaceAndFramesSnap, .area = "luban", .covers = {"XDESK-CANVAS"}) {
+    Layout l({.mode = Mode::canvas, .inner_gap = 4, .outer_gap = 0});
+    l.add(1, {400, 300});
+    auto ps = l.arrange(kOutput);
+    const auto first = of(ps, 1).rect;
+    l.add(2, {400, 300});
+    ps = l.arrange(kOutput);
+    const auto second = of(ps, 2).rect, now = of(ps, 1).rect;
+    (void)first;
+    EXPECT_FALSE(overlap_(now, second));
+    EXPECT_GE(second.x, 0);
+    EXPECT_LE(second.x + second.width, kOutput.width) << "in view (the view panned to it)";
+    EXPECT_NEAR(second.x, now.x + now.width + 12, 1e-6) << "beside the focused one";
+    EXPECT_EQ(l.zoom(), 1.0) << "a new window never zooms the view";
+    // A third: beside isn't in view any more -- below, or the other side.
+    l.add(3, {400, 300});
+    ps = l.arrange(kOutput);
+    for (const auto id : {1u, 2u}) EXPECT_FALSE(overlap_(of(ps, 3).rect, of(ps, id).rect)) << id;
+    // A frame moved to within 16 pixels of another's edge sits against it
+    // (where the window is now: the view may have panned for the third).
+    const auto two = of(ps, 2).rect;
+    const auto sn = l.snap(3, {two.x + 7, two.y + two.height + 10, 400, 300});
+    EXPECT_EQ(sn.rect.x, two.x);
+    EXPECT_NEAR(sn.rect.y, two.y + two.height + 4, 1e-6);
+    EXPECT_TRUE(sn.guide_x && sn.guide_y);
+    const auto far = l.snap(3, {two.x + 40, two.y + two.height + 60, 400, 300});
+    EXPECT_FALSE(far.guide_x || far.guide_y) << "out of reach: where it was put";
+    const auto m = l.minimap();
+    EXPECT_EQ(m.boxes.size(), 3u);
+    l.look_at(5000, 5000);
+    EXPECT_NEAR(l.camera().first, 5000 - kOutput.width / 2, 1e-6);
 }

@@ -59,6 +59,28 @@ void Server::draw_shell() {
         panel_picture.image = {};
     }
     wlr_scene_node_set_enabled(&canvas_dots->node, canvas());
+    // The minimap, while the canvas holds more than fits in the view.
+    {
+        const auto m = lay.minimap();
+        const bool shown = canvas() && o.minimap && !lay.in_overview() && !m.boxes.empty()
+                           && (m.bounds.width > m.view.width + 1 || m.bounds.height > m.view.height + 1);
+        wlr_scene_node_set_enabled(&minimap_node->node, shown);
+        if (!shown) minimap_shown = {};
+        if (shown) {
+            std::string key = std::format("{} {} {} {} {}x{}@{}", m.view.x, m.view.y, m.view.width, m.boxes.size(), size.width, size.height, scale);
+            for (const auto& b : m.boxes) key += std::format(" {} {} {} {}", b.x, b.y, b.width, b.height);
+            if (key != minimap_drawn) {
+                minimap_drawn = std::move(key);
+                std::vector<draw::Rect> boxes;
+                for (const auto& b : m.boxes) boxes.push_back({b.x, b.y, b.width, b.height});
+                minimap_shown = shell::minimap(theme, boxes, {m.view.x, m.view.y, m.view.width, m.view.height},
+                                               {m.bounds.x, m.bounds.y, m.bounds.width, m.bounds.height}, logical_w(), logical_h(), scale);
+                wlr_scene_node_set_position(&minimap_node->node, static_cast<int>(minimap_shown.picture.x), static_cast<int>(minimap_shown.picture.y));
+                show(minimap_node, std::move(minimap_shown.picture.image), scale);
+                minimap_shown.picture.image = {};
+            }
+        }
+    }
     if (canvas()) {
         const auto [cx, cy] = lay.camera();
         auto dots = std::format("{} {} {} {}x{}@{}", cx, cy, lay.zoom(), size.width, size.height, scale);

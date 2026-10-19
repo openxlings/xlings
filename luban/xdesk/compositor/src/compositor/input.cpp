@@ -161,6 +161,8 @@ void Server::pointer_moved() {
         wlr_seat_pointer_clear_focus(seat);
         return;
     }
+    // Zoomed, the surface is drawn smaller: its own coordinates are larger.
+    if (const double z = lay.zoom(); z != 1) sx /= z, sy /= z;
     wlr_seat_pointer_notify_enter(seat, surface, sx, sy);
     wlr_seat_pointer_notify_motion(seat, now_ms(), sx, sy);
 }
@@ -269,9 +271,27 @@ void Server::button(const opensal::PointerButton& b) {
     // resizes; the background or the middle button pans; a click focuses.
     if (b.down) {
         View* v = view_at(cursor->x, cursor->y);
-        if (!live()) {
-            // Zoomed out: a click goes in to the window under it.
-            if (v) { lay.center(v->id); arrange(); focus(v); }
+        // The minimap: the view goes where it is clicked.
+        if (minimap_shown.per_pixel > 0 && !minimap_shown.picture.areas.empty() && b.button == opensal::Button::Left
+            && shell::hit(minimap_shown.picture, cursor->x, cursor->y)) {
+            lay.look_at(minimap_shown.origin_x + (cursor->x - minimap_shown.picture.x) * minimap_shown.per_pixel,
+                        minimap_shown.origin_y + (cursor->y - minimap_shown.picture.y) * minimap_shown.per_pixel);
+            arrange();
+            return;
+        }
+        if (!live() && v && b.button == opensal::Button::Left && !held(wlr_keyboard_modifier::WLR_MODIFIER_LOGO)) {
+            // Zoomed far out, windows are pictures (design 2026-10-20 §9.1):
+            // a click selects one -- the view stays -- and a second goes in.
+            const auto now = std::chrono::steady_clock::now();
+            if (title_pressed_id == v->id && now - title_pressed < std::chrono::milliseconds(400)) {
+                title_pressed_id = 0;
+                lay.center(v->id);
+            } else {
+                title_pressed_id = v->id;
+                title_pressed = now;
+            }
+            focus(v);
+            arrange();
             return;
         }
         const bool super = held(wlr_keyboard_modifier::WLR_MODIFIER_LOGO);
@@ -323,12 +343,18 @@ void Server::wheel(const opensal::Wheel& w) {
     if (w.dy != 0 && drag_width(w.dy > 0 ? 1 : -1, 0)) return;
     const bool super = held(wlr_keyboard_modifier::WLR_MODIFIER_LOGO);
     const bool over_window = view_at(cursor->x, cursor->y) != nullptr;
-    if (lay.mode() == layout::Mode::canvas && (super || !over_window || !live())) {
-        // The canvas: the wheel on its background (or with Super, anywhere)
-        // zooms around the pointer, so the point under it stays put; a
-        // sideways scroll pans.
+    if (lay.mode() == layout::Mode::canvas && super) {
+        // The canvas zooms only when asked (design 2026-10-20 §9.2): Super
+        // and the wheel, around the pointer, so the point under it stays put.
         if (w.dy != 0) lay.zoom_at(w.dy > 0 ? 1.1 : 1 / 1.1, cursor->x, cursor->y);
-        if (w.dx != 0) lay.pan(-w.dx * 40, 0);
+        arrange();
+        return;
+    }
+    if (lay.mode() == layout::Mode::canvas && (!over_window || !live())) {
+        // On its background (or over pictures): the wheel pans -- up and
+        // down, Shift or a sideways wheel left and right.
+        if (held(wlr_keyboard_modifier::WLR_MODIFIER_SHIFT)) lay.pan(w.dy * 60, 0);
+        else lay.pan(-w.dx * 60, w.dy * 60);
         arrange();
         return;
     }

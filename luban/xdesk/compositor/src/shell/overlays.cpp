@@ -183,6 +183,30 @@ Picture layouts(const Theme& t, double x, double y, int width, int height, doubl
     return p;
 }
 
+MinimapPicture minimap(const Theme& t, const std::vector<draw::Rect>& boxes, draw::Rect view, draw::Rect bounds, int width,
+                       int height, double scale) {
+    MinimapPicture m;
+    auto& p = m.picture;
+    const double w = 180, h = 120, pad = 8;
+    p.x = width - w - 12;
+    p.y = height - h - 12;
+    p.image = image_(w, h, scale);
+    draw::Canvas c(p.image, scale);
+    c.fill({0, 0, w, h}, Color::rgb(0x11141a, 0xd8), 6);
+    c.frame({0, 0, w, h}, Color::rgb(0x3a4050), 1, 6);
+    // The whole, fitted with its proportions kept.
+    const double k = std::max(bounds.width / (w - 2 * pad), bounds.height / (h - 2 * pad));
+    const double ox = pad + ((w - 2 * pad) - bounds.width / k) / 2, oy = pad + ((h - 2 * pad) - bounds.height / k) / 2;
+    auto map = [&](draw::Rect r) { return draw::Rect{ox + (r.x - bounds.x) / k, oy + (r.y - bounds.y) / k, std::max(1.0, r.width / k), std::max(1.0, r.height / k)}; };
+    for (const auto& b : boxes) c.fill(map(b), t.title_active, 1);
+    c.frame(map(view), t.accent, 1, 0);
+    m.per_pixel = k;
+    m.origin_x = bounds.x - ox * k;
+    m.origin_y = bounds.y - oy * k;
+    p.areas.push_back({.rect = {p.x, p.y, w, h}, .target = Target::item, .index = 0});
+    return m;
+}
+
 Picture hint(draw::Fonts* ui, const Theme& t, std::string_view text, int width, int height, double scale) {
     Picture p;
     const double w = ui ? std::min(width - 40.0, ui->width(text) + 40) : 300, h = 36;

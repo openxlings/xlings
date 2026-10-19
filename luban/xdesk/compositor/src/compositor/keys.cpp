@@ -27,6 +27,7 @@ const std::vector<ActionInfo>& actions() {
         {Action::height, "height", "Height in the column: equal, 2/3, 1/3", "列内高度：平分、2/3、1/3", {"Super+Shift+r"}, true, false, true},
         {Action::smaller, "smaller", "Narrower (canvas: zoom out)", "变窄（画布：缩小）", {"Super+minus"}},
         {Action::larger, "larger", "Wider (canvas: zoom in)", "变宽（画布：放大）", {"Super+equal", "Super+Shift+plus"}},
+        {Action::even, "even", "Equal widths (canvas: 100 %, the focused window in the middle)", "平分（画布：回到 100% 并居中）", {"Super+0"}},
         {Action::toggle_float, "float", "Float, or put back (stacked: the whole, back)", "浮动 / 放回（层叠：最大化 / 还原）", {"Super+f"}},
         {Action::pin, "pin", "Always on top", "置顶", {"Super+Shift+t"}},
         {Action::arrangements, "arrangements", "Tile, stack, canvas", "平铺、层叠、画布", {"Super+m"}},

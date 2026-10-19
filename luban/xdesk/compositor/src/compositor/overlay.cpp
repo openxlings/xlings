@@ -151,6 +151,12 @@ void Server::act(Action a) {
         case Action::join: lay.join(); arrange(); follow_focus(); return;
         case Action::split: lay.split(); arrange(); follow_focus(); return;
         case Action::width: lay.cycle_width(); arrange(); return;
+        case Action::even:
+            // The canvas: in to the focused window (design 2026-10-20 §9.1).
+            if (canvas()) { if (const auto f = lay.focused()) lay.center(*f); }
+            else lay.even_widths();
+            arrange();
+            return;
         case Action::height: lay.cycle_height(); arrange(); return;
         case Action::smaller: case Action::larger: {
             const bool in = a == Action::larger;

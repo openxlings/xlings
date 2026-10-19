@@ -156,6 +156,15 @@ Picture sizes(draw::Fonts* ui, const Theme& t, const std::vector<std::string>& l
 // The maximize button's layouts (§17.10), small pictures of them below
 // (x, y): halves, 2/3 and 1/3, one and two, thirds; areas by index.
 Picture layouts(const Theme& t, double x, double y, int width, int height, double scale = 1);
+// The canvas in small at the bottom right (design 2026-10-20 §9.6): every
+// group's frame, the view as an outline; one area, the whole map, whose
+// point clicked is `to_world`'s.
+struct MinimapPicture {
+    Picture picture;
+    double origin_x { 0 }, origin_y { 0 }, per_pixel { 1 };   // world = origin + pixel * per_pixel
+};
+MinimapPicture minimap(const Theme& t, const std::vector<draw::Rect>& boxes, draw::Rect view, draw::Rect bounds, int width,
+                       int height, double scale = 1);
 // A line said for a while at the bottom (the first time: what the keys are).
 Picture hint(draw::Fonts* ui, const Theme& t, std::string_view text, int width, int height, double scale = 1);
 

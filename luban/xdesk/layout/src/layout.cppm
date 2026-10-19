@@ -118,6 +118,22 @@ struct Placement {
     bool operator==(const Placement&) const = default;
 };
 
+// A frame moved near others (canvas, stack; design 2026-10-20 §9.4): its
+// edges in line with theirs, or a gap from them, within reach; the lines it
+// snapped to, to be drawn.
+struct Snap {
+    Rect rect;
+    std::optional<double> guide_x, guide_y;
+};
+
+// The canvas in small (§9.6): every group's frame and the view, in world
+// coordinates, and what holds them all.
+struct Minimap {
+    std::vector<Rect> boxes;
+    Rect view;
+    Rect bounds;
+};
+
 class Layout {
 public:
     explicit Layout(Options o = {});
@@ -240,6 +256,10 @@ public:
     void overview(bool on);
     bool in_overview() const;
     void center(Id id);
+    // The view's middle at a world point (the minimap clicked).
+    void look_at(double wx, double wy);
+    Snap snap(Id id, Rect screen, double reach = 16) const;
+    Minimap minimap() const;
 
     // Where everything of the shown workspace is, for this output.
     std::vector<Placement> arrange(Size output, Insets reserved = {});
