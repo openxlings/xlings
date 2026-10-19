@@ -194,9 +194,11 @@ XTEST(FirstRunNetwork, AVerifiedCacheHitStartsNoMetadataConnection, .area = "cli
     } environment;
     const auto proxyUrl = std::format("http://127.0.0.1:{}", listener->port());
     environment.set("HTTPS_PROXY", proxyUrl);
-    environment.set("https_proxy", proxyUrl);
     environment.set("NO_PROXY", "");
-    environment.set("no_proxy", "");
+    if constexpr (!xlings::platform::is_windows) {
+        environment.set("https_proxy", proxyUrl);
+        environment.set("no_proxy", "");
+    }
     // Positive control: the metadata client really reaches this proxy.
     EXPECT_EQ(xlings::tinyhttps::query_content_length("https://resource.invalid/payload.bin", 1), -1);
     ASSERT_GT(connections.load(), 0);
