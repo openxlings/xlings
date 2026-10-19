@@ -104,6 +104,15 @@ window still open is the old one until it is opened again.
 The window follows the screen's scale. Its console draws box and block
 characters itself, so they join at any font size.
 
+A second window on a desktop that is already shown (the menu's *New window*,
+then the same system) is another display of it: it mirrors the first — the
+same picture at the first window's size, whatever its own, its shape kept as
+you resize it; its title says `display 2 (mirroring display 1)`. Keys and the
+pointer in either window are the desktop's. When the first window closes, an
+xdesk desktop goes on in the others, and the next one is the primary: the
+desktop takes its size. A bridged desktop (labwc, KDE, LXQt) ends with its
+first window.
+
 ## xdesk
 
 The desktop editions start **xdesk**, a desktop made for this window: a

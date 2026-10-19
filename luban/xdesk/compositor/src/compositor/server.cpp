@@ -176,19 +176,17 @@ bool Server::start_() {
     socket = name;
     log("listening on " + socket);
 
-    input_source = wl_event_loop_add_fd(loop, o.in, static_cast<std::uint32_t>(WL_EVENT_READABLE_),
-                                        [](int, std::uint32_t mask, void* data) -> int {
-                                            auto* self = static_cast<Server*>(data);
-                                            std::array<char, 65536> buf{};
-                                            auto n = os::read_some(self->o.in, buf);
-                                            if (!n || *n == 0 || (mask & static_cast<std::uint32_t>(WL_EVENT_HANGUP_))) {
-                                                self->stop = true;
-                                                return 0;
-                                            }
-                                            self->provider(std::string_view(buf.data(), *n));
-                                            return 0;
-                                        },
-                                        this);
+    // The first window, on the standard streams; the others at the displays socket.
+    add_link(o.in, o.out);
+    if (!o.displays.empty()) {
+        displays_listener = os::listen_unix(o.displays);
+        if (displays_listener < 0) log("no displays socket at " + o.displays.string() + " (one window only)");
+        else displays_source = wl_event_loop_add_fd(loop, displays_listener, static_cast<std::uint32_t>(WL_EVENT_READABLE_),
+                                                    [](int, std::uint32_t, void* data) -> int {
+                                                        static_cast<Server*>(data)->accept_display();
+                                                        return 0;
+                                                    }, this);
+    }
     tick = wl_event_loop_add_timer(loop, [](void* data) -> int { static_cast<Server*>(data)->step(); return 0; }, this);
     // The panel's clock, looked at every few seconds.
     clock = wl_event_loop_add_timer(loop, [](void* data) -> int {
@@ -200,7 +198,7 @@ bool Server::start_() {
     wl_event_source_timer_update(clock, 5000);
     pace_timer = wl_event_loop_add_timer(loop, [](void* data) -> int {
         auto* self = static_cast<Server*>(data);
-        self->in_flight.reset();
+        for (auto& l : self->links) l.in_flight.reset();
         wlr_output_schedule_frame(self->output);
         return 0;
     }, this);
@@ -221,9 +219,7 @@ bool Server::start_() {
     // The person's keys and state; each workspace's arrangement as they left it.
     load_person();
     draw_shell();
-    using I = opensal::Interface;
-    send(opensal::wire::encode('h', std::to_string(I::Surface | I::Mode | I::Keyboard | I::Pointer | I::Text | I::Clipboard
-                                                   | I::Cursor | I::CursorImage)));
+    send(hello());
     for (const auto& a : o.autostart) launch(a);
     return true;
 }
@@ -239,7 +235,14 @@ int Server::run_() {
 }
 
 Server::~Server() {
-    if (input_source) wl_event_source_remove(input_source);
+    for (auto& l : links)
+        if (l.source) wl_event_source_remove(l.source);
+    if (displays_source) wl_event_source_remove(displays_source);
+    if (displays_listener >= 0) {
+        os::close(displays_listener);
+        std::error_code ec;
+        fs::remove(o.displays, ec);
+    }
     if (tick) wl_event_source_remove(tick);
     if (clock) wl_event_source_remove(clock);
     if (pace_timer) wl_event_source_remove(pace_timer);

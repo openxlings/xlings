@@ -1151,6 +1151,10 @@ status = "required"
 text = "xdesk has two switchers: Super+Tab by application (the most recent first, a window count, its windows spread below after a second or Down; let Super go: chosen), Super+` among the focused application's windows, and Alt+Tab, the windows of the workspace where they are to one another, fitted on the output (a long strip folded into rows), the selected one larger and the rest dimmed; Tab goes by recency, arrows by place, a quick Alt+Tab goes to the previous window without showing anything; Escape leaves things as they were"
 status = "required"
 
+[LUBAN-DISPLAYS]
+text = "a second Luban OS window on a running desktop is another display of it (opensal Displays): it mirrors the first -- the same frames at the first's size, its own size not the desktop's, its shape kept, said in its title -- its input is the desktop's; when the first window closes the desktop goes on (xdesk) and the next window is the primary at its own size; a bridged desktop (labwc, KDE, LXQt) ends with its first window"
+status = "required"
+
 [XDESK-PERF]
 text = "xdesk keeps within its CPU budgets on the software renderer: the overview toggled ten times costs at most 2 s of CPU (xdesk and the window together, beyond a still session of the same length); a still desktop sends no frames"
 status = "required"

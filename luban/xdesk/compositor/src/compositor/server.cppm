@@ -159,6 +159,26 @@ struct Popup {
 // What a held button is doing.
 enum class Drag { none, pan, move, gap, row_gap, resize };
 
+// A window showing the desktop (design 2026-10-20 §11): the first -- the
+// standard input and output -- is the primary, whose size and density the
+// output's are; one that comes to the displays socket mirrors it: the same
+// frames, its input the desktop's too.
+struct Link {
+    Server* server { nullptr };
+    int in { -1 }, out { -1 };
+    wl_event_source* source { nullptr };
+    opensal::wire::Decoder decoder;
+    opensal::Interfaces provided { 0 };            // what it gives (its hello)
+    bool hello { false };
+    bool paced { false };                          // it says when a frame is shown
+    std::optional<std::chrono::steady_clock::time_point> in_flight;   // a frame sent, not yet shown
+    bool hidden { false };                         // it cannot be seen: it is sent nothing
+    bool whole { true };                           // the next frame it gets is all of the output
+    opensal::Size told;                            // the size it was last said ('s')
+    std::uint32_t number { 1 };
+    bool gone { false };
+};
+
 struct Server {
     const Options& o;
     wl_display* display { nullptr };
@@ -195,17 +215,15 @@ struct Server {
     std::list<Popup> popups;
     std::vector<int> children;
     opensal::Size size;                          // the output, in device pixels
-    opensal::Size told;
     double scale { 1 };                          // device pixels to a logical one (the window's density)
     bool stop { false };
     std::chrono::steady_clock::time_point start { std::chrono::steady_clock::now() };
     std::chrono::steady_clock::time_point last_tick { start };
-    opensal::wire::Decoder decoder;
     std::string frame_buf;                       // a frame message, its allocation kept (design 2026-10-20 §13.2)
-    bool hidden { false };                       // the window cannot be seen: nothing is drawn
-    bool send_whole { false };                   // the next frame is all of the output (seen again)
+    std::list<Link> links;                       // the windows showing it; front: the primary
+    int displays_listener { -1 };
+    wl_event_source* displays_source { nullptr };
     Hook new_toplevel, new_popup, new_decoration, frame, request_cursor, request_selection;
-    wl_event_source* input_source { nullptr };
     wl_event_source* tick { nullptr };
     wl_event_source* clock { nullptr };
     wl_event_source* pace_timer { nullptr };
@@ -219,9 +237,7 @@ struct Server {
     shell::Launcher launcher;
     layout::Id close_hover { 0 };
     std::vector<layout::Placement> placements;   // the last arrangement
-    opensal::Interfaces provided { 0 };            // what the window gives (its hello)
-    bool paced { false };                          // the window says when a frame is shown
-    std::optional<std::chrono::steady_clock::time_point> in_flight;   // a frame sent, not yet shown
+    opensal::Interfaces provided { 0 };            // what the primary gives (its hello)
     std::list<TextInput> text_inputs;
     wlr_text_input_manager_v3* text_input_manager { nullptr };
     std::string caret_sent;                        // the last 't' sent
@@ -320,9 +336,13 @@ struct Server {
             std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count());
     }
     void log(std::string_view s) const { if (o.log) o.log(s); }
+    // To every window showing it (a frame goes by render()).
     bool send(std::string_view bytes) {
-        if (!os::write_all(o.out, bytes)) { stop = true; return false; }
-        return true;
+        bool ok = true;
+        for (auto& l : links)
+            if (!l.gone && !os::write_all(l.out, bytes)) { l.gone = true; ok = false; }
+        if (!ok) wl_event_loop_add_idle(loop, [](void* data) { static_cast<Server*>(data)->drop_gone(); }, this);
+        return ok;
     }
 
     explicit Server(const Options& opts);
@@ -478,9 +498,17 @@ struct Server {
 
     void wheel(const opensal::Wheel& w);
 
-    void input(const opensal::Event& ev);
+    void input(Link& from, const opensal::Event& ev);
 
-    void provider(std::string_view bytes);
+    void provider(Link& l, std::string_view bytes);
+
+    // displays.cpp
+    std::string hello() const;
+    Link& add_link(int in, int out);
+    void accept_display();
+    void drop_gone();
+    void tell_roles();
+    Link* primary() { return links.empty() ? nullptr : &links.front(); }
 
     void resize(opensal::Size want);
 

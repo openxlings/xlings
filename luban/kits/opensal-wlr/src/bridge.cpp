@@ -75,6 +75,20 @@ constexpr std::uint32_t kFailureUnknown = 0;
 
 struct Global { std::uint32_t name { 0 }; std::uint32_t version { 0 }; };
 
+// Another window of this desktop (design 2026-10-20 §11): it mirrors the
+// first -- the same frames, its input the desktop's (its size is its own
+// business). A bridged desktop ends with its first window.
+struct Mirror {
+    int fd { -1 };
+    opensal::wire::Decoder decoder;
+    opensal::Interfaces provided { 0 };
+    bool hello { false };
+    bool whole { true };            // the next frame it gets is all of it
+    opensal::Size told;
+    std::uint32_t number { 2 };
+    bool gone { false };
+};
+
 class Bridge {
 public:
     Bridge(const Options& o, wl::Connection c) : o_(o), c_(std::move(c)), start_(std::chrono::steady_clock::now()) {}
@@ -105,6 +119,15 @@ private:
     void tell_windows_();
     void tell_applications_();
     bool send_(std::string_view bytes) { return os::write_all(o_.out, bytes); }
+    // To the first window and the mirrors (what is not a frame); whether the first took it.
+    bool tell_(std::string_view bytes) {
+        for (auto& m : mirrors_)
+            if (m.hello && !m.gone && !os::write_all(m.fd, bytes)) m.gone = true;
+        return send_(bytes);
+    }
+    void accept_mirror_();
+    bool mirror_(Mirror& m, std::string_view bytes);
+    void tell_roles_();
 
     const Options& o_;
     wl::Connection c_;
@@ -174,6 +197,10 @@ private:
     std::uint32_t cursor_pool_ { 0 }, cursor_buffer_ { 0 };
     opensal::Size cursor_buffer_size_;
     std::string cursor_sent_;
+
+    // The other windows (displays), at o_.displays.
+    int displays_ { -1 };
+    std::list<Mirror> mirrors_;
 };
 
 std::uint32_t Bridge::bind_(std::string_view iface, std::uint32_t max_version, std::uint32_t& version) {
@@ -267,7 +294,7 @@ void Bridge::handle_(const wl::Event& e) {
             cursor_.hotspot_y = static_cast<std::uint32_t>(std::max(0, y));
             if (!cursor_.bytes.empty()) cursor_ready_();
         } else if (e.opcode == op::cursor_leave) {
-            if (send_(opensal::wire::encode('c', "none"))) cursor_sent_ = "none";
+            if (tell_(opensal::wire::encode('c', "none"))) cursor_sent_ = "none";
         } else if (e.opcode == op::cursor_enter) {
             // Back over the output: its image again, unchanged as it may be
             // (an image is captured only when it changes; design 2026-10-20
@@ -404,7 +431,7 @@ void Bridge::cursor_stop_() {
     first_ = true;
     cursor_capture_ = 0;
     cursor_frame_ = 0;
-    if (send_(opensal::wire::encode('c', "none"))) cursor_sent_ = "none";
+    if (tell_(opensal::wire::encode('c', "none"))) cursor_sent_ = "none";
 }
 
 void Bridge::capture_cursor_() {
@@ -441,7 +468,7 @@ void Bridge::cursor_ready_() {
     image.hotspot_y = std::min(image.hotspot_y, image.size.height - 1);
     auto message = opensal::wire::encode_cursor_image(image);
     if (message == cursor_sent_) return;
-    if (!send_(message)) { provider_gone_ = true; return; }
+    if (!tell_(message)) { provider_gone_ = true; return; }
     cursor_sent_ = std::move(message);
 }
 
@@ -501,6 +528,20 @@ void Bridge::frame_ready_() {
         const opensal::Pixels surface{f.size, f.stride, std::span<const std::byte>(px, shm_mem_.size)};
         if (!send_(opensal::wire::encode_frame(surface, d))) { provider_gone_ = true; break; }
     }
+    // The mirrors: the same picture (all of it to one that has not had it).
+    const opensal::Pixels surface{f.size, f.stride, std::span<const std::byte>(px, shm_mem_.size)};
+    bool resized = false;
+    for (auto& m : mirrors_) {
+        if (!m.hello || m.gone) continue;
+        if (m.told != f.size) {
+            m.gone = !os::write_all(m.fd, opensal::wire::encode('s', std::format("{} {}", f.size.width, f.size.height)));
+            m.told = f.size;
+            resized = true;
+        }
+        for (const auto& d : std::exchange(m.whole, false) ? std::vector{whole} : rects)
+            if (!m.gone && !os::write_all(m.fd, opensal::wire::encode_frame(surface, d))) m.gone = true;
+    }
+    if (resized) tell_roles_();
     first_ = false;
     c_.send(frame_, op::frame_destroy, wl::Args{});
     frame_ = 0;
@@ -592,7 +633,7 @@ void Bridge::tell_windows_() {
     if (!opensal::has(provided_, opensal::Interface::Shell)) return;
     std::vector<opensal::Window> all;
     for (const auto& [handle, w] : windows_) all.push_back(w);
-    if (!send_(opensal::wire::encode('w', opensal::wire::encode_windows(all)))) provider_gone_ = true;
+    if (!tell_(opensal::wire::encode('w', opensal::wire::encode_windows(all)))) provider_gone_ = true;
 }
 
 // What it can start: read again every few seconds (something installed
@@ -608,8 +649,66 @@ void Bridge::tell_applications_() {
     if (!opensal::has(provided_, opensal::Interface::Shell)) return;
     std::vector<opensal::Application> listed;
     for (const auto& a : apps_) listed.push_back({a.id, a.name});
-    apps_told_ = send_(opensal::wire::encode('a', opensal::wire::encode_applications(listed)));
+    apps_told_ = tell_(opensal::wire::encode('a', opensal::wire::encode_applications(listed)));
     if (!apps_told_) provider_gone_ = true;
+}
+
+void Bridge::accept_mirror_() {
+    const int fd = os::accept(displays_);
+    if (fd < 0) return;
+    std::uint32_t n = 2;
+    while (std::ranges::any_of(mirrors_, [&](const Mirror& m) { return m.number == n; })) ++n;
+    auto& m = mirrors_.emplace_back();
+    m.fd = fd;
+    m.number = n;
+    log_(std::format("display {} joined (a mirror of display 1)", n));
+    using I = opensal::Interface;
+    opensal::Interfaces wanted = I::Surface | I::Mode;
+    if (vkbd_) wanted |= static_cast<opensal::Interfaces>(I::Keyboard);
+    if (vptr_) wanted |= static_cast<opensal::Interfaces>(I::Pointer);
+    if (host_cursor_ || cursor_session_) wanted |= I::Cursor | I::CursorImage;
+    if (o_.shell) wanted |= static_cast<opensal::Interfaces>(I::Shell);
+    if (!os::write_all(fd, opensal::wire::encode('h', std::to_string(wanted)))) m.gone = true;
+}
+
+// A mirror's stream: its hello (then what it is told, and what the others
+// have), and its input -- the desktop's, but its size, which is its own.
+bool Bridge::mirror_(Mirror& m, std::string_view bytes) {
+    m.decoder.feed(bytes);
+    for (;;) {
+        auto next = m.decoder.next();
+        if (!next) return false;
+        if (!*next) return true;
+        const auto& msg = **next;
+        if (msg.kind == 'H') {
+            std::istringstream in(msg.payload);
+            in >> m.provided;
+            m.hello = true;
+            m.whole = true;
+            tell_roles_();
+            if (!cursor_sent_.empty())
+                (void)os::write_all(m.fd, cursor_sent_ == "none" ? opensal::wire::encode('c', "none") : cursor_sent_);
+            windows_changed_ = true;
+            apps_told_ = false;
+            if (o_.shell) tell_applications_();
+        } else if (msg.kind == 'E') {
+            auto e = opensal::wire::decode_event(msg.payload);
+            if (!e || std::holds_alternative<opensal::Resized>(*e) || std::holds_alternative<opensal::DensityChanged>(*e)) continue;
+            if (std::holds_alternative<opensal::Launch>(*e) || std::holds_alternative<opensal::Activate>(*e)) shell_(*e);
+            else input_(*e);
+        }
+    }
+}
+
+// Each window what it is ('d', to those that take it).
+void Bridge::tell_roles_() {
+    if (opensal::has(provided_, opensal::Interface::Displays) && !mirrors_.empty())
+        (void)send_(opensal::wire::encode('d', opensal::wire::encode_display({.number = 1})));
+    for (auto& m : mirrors_) {
+        if (!m.hello || m.gone || !opensal::has(m.provided, opensal::Interface::Displays) || told_.width == 0) continue;
+        const opensal::DisplayRole r{.number = m.number, .kind = opensal::DisplayRole::Kind::mirror, .of = 1, .size = told_};
+        if (!os::write_all(m.fd, opensal::wire::encode('d', opensal::wire::encode_display(r)))) m.gone = true;
+    }
 }
 
 bool Bridge::provider_(std::string_view bytes) {
@@ -631,6 +730,7 @@ bool Bridge::provider_(std::string_view bytes) {
             windows_changed_ = true;
             apps_told_ = false;
             if (o_.shell) tell_applications_();
+            tell_roles_();
         } else if (msg.kind == 'E') {
             if (auto e = opensal::wire::decode_event(msg.payload)) {
                 if (std::holds_alternative<opensal::Launch>(*e) || std::holds_alternative<opensal::Activate>(*e)) shell_(*e);
@@ -694,14 +794,43 @@ int Bridge::run() {
 
     const auto period = std::chrono::milliseconds(1000 / std::max(1, o_.max_fps));
     std::array<char, 65536> buf{};
+    if (!o_.displays.empty()) {
+        displays_ = os::listen_unix(o_.displays);
+        if (displays_ < 0) log_("no displays socket at " + o_.displays.string() + " (one window only)");
+    }
+    struct Closer {
+        Bridge& b;
+        ~Closer() {
+            for (auto& m : b.mirrors_) os::close(m.fd);
+            if (b.displays_ >= 0) {
+                os::close(b.displays_);
+                std::error_code ec;
+                fs::remove(b.o_.displays, ec);
+            }
+        }
+    } closer{*this};
     while (!provider_gone_) {
         if (o_.alive && !o_.alive()) { log_("the compositor ended"); return 1; }
         const auto now = std::chrono::steady_clock::now();
         if (!capturing_ && now >= last_frame_ + period && now >= retry_at_) capture_();
-        std::array<os::PollFd, 2> p{{{.fd = o_.in}, {.fd = c_.fd()}}};
+        std::vector<os::PollFd> p{{.fd = o_.in}, {.fd = c_.fd()}};
+        if (displays_ >= 0) p.push_back({.fd = displays_});
+        for (const auto& m : mirrors_) p.push_back({.fd = m.fd});
         const auto wait = capturing_ ? 500 : static_cast<int>(std::max<std::int64_t>(1,
             std::chrono::duration_cast<std::chrono::milliseconds>(last_frame_ + period - now).count()));
         os::poll(p, std::min(wait, 500));
+        std::size_t at = 2;
+        if (displays_ >= 0 && (p[at++].readable)) accept_mirror_();
+        for (auto& m : mirrors_) {
+            if (at >= p.size()) break;
+            const auto& q = p[at++];
+            if (!q.readable && !q.closed) continue;
+            auto n = os::read_some(m.fd, buf);
+            if (!n || *n == 0 || !mirror_(m, std::string_view(buf.data(), *n))) m.gone = true;
+        }
+        for (auto it = mirrors_.begin(); it != mirrors_.end();)
+            if (it->gone) { log_(std::format("display {} left", it->number)); os::close(it->fd); it = mirrors_.erase(it); }
+            else ++it;
         if (p[0].readable || p[0].closed) {
             auto n = os::read_some(o_.in, buf);
             if (!n || *n == 0) return 0;

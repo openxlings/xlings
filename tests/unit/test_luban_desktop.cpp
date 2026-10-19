@@ -183,6 +183,18 @@ XTEST(OpensalWire, AShellsListsAndRequestsCrossWhole, .area = "luban", .covers =
     EXPECT_FALSE(wire::decode_event("activate x"));
 }
 
+// A display's role (opensal 0.4 Displays; design 2026-10-20 §11).
+XTEST(OpensalWire, ADisplaysRoleCrossesWhole, .area = "luban", .covers = {"LUBAN-DESKTOP-WIRE", "LUBAN-DISPLAYS"}) {
+    const opensal::DisplayRole mirror{.number = 2, .kind = opensal::DisplayRole::Kind::mirror, .of = 1, .size = {1600, 900}};
+    EXPECT_EQ(wire::encode_display(mirror), "2 mirror 1 1600 900");
+    EXPECT_EQ(wire::decode_display("2 mirror 1 1600 900"), mirror);
+    EXPECT_EQ(wire::decode_display("1 primary"), opensal::DisplayRole{});
+    EXPECT_FALSE(wire::decode_display("0 primary")) << "displays count from 1";
+    EXPECT_FALSE(wire::decode_display("2 mirror 1 0 900")) << "a mirror of nothing";
+    EXPECT_FALSE(wire::decode_display("2 extend")) << "not a role of this version";
+    EXPECT_TRUE(opensal::has(static_cast<opensal::Interfaces>(opensal::Interface::Displays), opensal::Interface::Displays));
+}
+
 XTEST(OpensalWire, APointerImageAndALockCrossWhole, .area = "luban", .covers = {"LUBAN-DESKTOP-WIRE", "LUBAN-OS-POINTER"}) {
     opensal::CursorImage c{.size = {2, 3}, .hotspot_x = 1, .hotspot_y = 2, .bytes = std::string(2 * 3 * 4, '\x7f')};
     wire::Decoder d;

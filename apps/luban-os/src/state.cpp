@@ -67,8 +67,16 @@ std::string App::title_for(std::string_view what) const {
         return std::format("{} — {}{}", fs::path(first).filename().string(), what, held);
     }
     // One title for a system in every view (design 2026-10-19 §18.3, F17):
-    // `Luban OS (<system>)`; the keys are said in the bar at the top.
-    return std::format("Luban OS ({}){}", what, held);
+    // `Luban OS (<system>)`; the keys are said in the bar at the top. A
+    // window that is not the desktop's first display says which it is (§11).
+    std::string shown;
+    if (const auto r = display && view == View::Desktop ? display->role() : std::nullopt) {
+        if (r->kind == opensal::DisplayRole::Kind::mirror)
+            shown = std::vformat(tr("luban.os.app.display_mirror_title"), std::make_format_args(r->number, r->of));
+        else if (r->number > 1)
+            shown = std::vformat(tr("luban.os.app.display_title"), std::make_format_args(r->number));
+    }
+    return std::format("Luban OS ({}){}{}", what, shown, held);
 }
 
 void App::start_job(std::string title, std::function<void(Job&, service::Context)> body, std::function<void(App&)> then) {

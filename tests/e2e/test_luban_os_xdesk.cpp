@@ -793,3 +793,77 @@ screenshot {}
     EXPECT_EQ(d.at(275, 400), kRed);
     EXPECT_EQ(d.at(825, 400), kGreen);
 }
+
+// A second window on a running desktop is another display of it (design
+// 2026-10-20 §11): it mirrors the first -- the same picture at the first's
+// size, whatever its own, said in its title -- its input is the desktop's;
+// when the first goes the desktop goes on, this window the primary.
+XTEST(LubanOs, ASecondWindowMirrorsTheDesktopAndGoesOnWhenTheFirstCloses, .area = "luban",
+      .covers = {"LUBAN-DISPLAYS"}, .requires_ = {"linux", "xlings-bin"}) {
+    if (!app_binary()) GTEST_SKIP() << "no luban-os beside the xlings under test";
+    if (!xdesk_binary()) GTEST_SKIP() << "no xdesk beside luban-os (mcpp build -p xdesk-app)";
+    auto first = tk::Home::isolated("luban-os-display-1");
+    auto second = tk::Home::isolated("luban-os-display-2");
+    ASSERT_EQ(first.xlings({"self", "init"}).exit_code, 0);
+    ASSERT_EQ(second.xlings({"self", "init"}).exit_code, 0);
+    const auto runtime = first.root() / "run";
+    fs::create_directories(runtime);
+    fs::permissions(runtime, fs::perms::owner_all, fs::perm_options::replace);
+    const auto socket = runtime / "displays.sock";
+    // What run_session does for a second window: its stream joined to the socket.
+    const auto relay = second.root() / "relay.py";
+    tk::write_file(relay, R"PY(import os, select, socket, sys
+s = socket.socket(socket.AF_UNIX); s.connect(sys.argv[1])
+while True:
+    r, _, _ = select.select([0, s], [], [])
+    for f in r:
+        data = os.read(0, 65536) if f == 0 else s.recv(65536)
+        if not data: sys.exit(0)
+        if f == 0: s.sendall(data)
+        else: os.write(1, data)
+)PY");
+    const auto client = colour_client(first).string();
+    auto one = std::async(std::launch::async, [&] {
+        return run_script(first, R"(wait desktop
+waitfor desktop.texture.0 1100
+sleep 7000
+)", {"--desktop-exec", xdesk_binary()->string(), "--profile", "classic", "--autostart", std::format("python3 {} c04040", client)},
+                          {{"XDG_RUNTIME_DIR", runtime.string()}, {"OPENSAL_DISPLAYS", socket.string()}});
+    });
+    for (int k = 0; k < 100 && !fs::exists(socket); ++k) std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    ASSERT_TRUE(fs::exists(socket)) << "xdesk listens for other displays";
+    std::this_thread::sleep_for(std::chrono::seconds(2));
+    const auto mirror = second.root() / "mirror.json", shot = second.root() / "mirror.ppm", primary = second.root() / "primary.json";
+    auto two = run_script(second, std::format(R"(wait desktop
+waitfor desktop.texture.0 1100
+sleep 1000
+resize 800 500
+sleep 800
+state {}
+screenshot {}
+screenshot {}
+keydown Super
+key m
+keyup Super
+sleep 6000
+resize 900 600
+sleep 1500
+state {}
+)", mirror.string(), shot.string(), artifact("xdesk-mirror.bmp").string(), primary.string()),
+                          {"--desktop-exec", "python3", relay.string(), socket.string()});
+    const auto r1 = one.get();
+    ASSERT_EQ(two.exit_code, 0) << two.transcript();
+    ASSERT_EQ(r1.exit_code, 0) << r1.transcript();
+    // A mirror: the first window's picture (its red window), at its size, not this one's.
+    const auto m = Json::parse(tk::read_file(mirror));
+    EXPECT_EQ(m["desktop"]["texture"][0], 1100) << m.dump();
+    EXPECT_NE(m["window"]["title"].get<std::string>().find("mirroring display 1"), std::string::npos) << m["window"]["title"];
+    EXPECT_GE(box_of(read_ppm(shot), kRed)[0], 0) << "the desktop's window, shown in the second";
+    // Its keys are the desktop's: Super+m there arranged the workspace.
+    const auto state = Json::parse(tk::read_file(first.root() / ".config" / "xdesk" / "state.json"));
+    EXPECT_EQ(state["arrangements"][0], "stack") << state.dump();
+    // The first closed: the desktop went on, this window its primary at its own size.
+    const auto p = Json::parse(tk::read_file(primary));
+    EXPECT_NE(p["desktop"]["texture"][0], 1100) << p.dump();
+    EXPECT_EQ(p["window"]["title"].get<std::string>().find("mirroring"), std::string::npos) << p["window"]["title"];
+}

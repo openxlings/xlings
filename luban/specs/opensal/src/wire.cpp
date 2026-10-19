@@ -274,4 +274,21 @@ std::expected<std::optional<Message>, std::string> Decoder::next() {
     return std::optional<Message>{std::move(m)};
 }
 
+std::string encode_display(const DisplayRole& r) {
+    if (r.kind == DisplayRole::Kind::mirror) return std::format("{} mirror {} {} {}", r.number, r.of, r.size.width, r.size.height);
+    return std::format("{} primary", r.number);
+}
+
+std::optional<DisplayRole> decode_display(std::string_view payload) {
+    std::istringstream in{std::string(payload)};
+    DisplayRole r;
+    std::string kind;
+    if (!(in >> r.number >> kind) || r.number == 0) return std::nullopt;
+    if (kind == "primary") return r;
+    if (kind != "mirror") return std::nullopt;
+    r.kind = DisplayRole::Kind::mirror;
+    if (!(in >> r.of >> r.size.width >> r.size.height) || r.of == 0 || r.size.width == 0 || r.size.height == 0) return std::nullopt;
+    return r;
+}
+
 }  // namespace opensal::wire

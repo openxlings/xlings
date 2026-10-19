@@ -73,6 +73,8 @@ int main(int argc, char* argv[]) {
     o.workspaces = settings.get_int("desktop", "workspaces", o.workspaces);
     if (const auto c = settings.colour("theme", "accent", 0x1000000); c != 0x1000000) o.accent = c;
     if (const auto c = settings.colour("theme", "background", 0x1000000); c != 0x1000000) o.background = c;
+    // Other windows of this desktop connect here (opensal-wlr's run_session says where).
+    if (const auto env = xdesk::os::environment(); env.contains("OPENSAL_DISPLAYS")) o.displays = env.at("OPENSAL_DISPLAYS");
     o.keyboard_layout = settings.get("keyboard", "layout", o.keyboard_layout);
     o.repeat_rate = settings.get_int("keyboard", "repeat_rate", o.repeat_rate);
     o.repeat_delay = settings.get_int("keyboard", "repeat_delay", o.repeat_delay);

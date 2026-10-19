@@ -90,6 +90,8 @@ constexpr xlings::i18n::Entry kWords[] = {
     { "luban.os.app.keyboard_not_shown", "窗口未显示" },
     { "luban.os.app.keyboard_host_refused", "被拒绝" },
     { "luban.os.app.keyboard_held_title", " · 键盘已锁定（Ctrl+Alt+K 释放）" },
+    { "luban.os.app.display_mirror_title", " · 显示器 {}（镜像显示器 {}）" },
+    { "luban.os.app.display_title", " · 显示器 {}" },
     { "luban.os.app.done", "完成。" },
     { "luban.os.app.downloads", "{} 已放到 {}（~/Downloads）" },
     { "luban.os.app.drawing_without_gpu", "未用到 GPU 绘制" },

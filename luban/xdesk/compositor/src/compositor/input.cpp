@@ -385,7 +385,8 @@ void Server::wheel(const opensal::Wheel& w) {
     axis(wl_pointer_axis::WL_POINTER_AXIS_HORIZONTAL_SCROLL, w.dx);
 }
 
-void Server::input(const opensal::Event& ev) {
+void Server::input(Link& from, const opensal::Event& ev) {
+    const bool primary_link = &from == primary();
     if (const auto* k = std::get_if<opensal::Key>(&ev)) {
         key(*k);
     } else if (const auto* m = std::get_if<opensal::PointerMotion>(&ev)) {
@@ -399,9 +400,10 @@ void Server::input(const opensal::Event& ev) {
         wheel(*w);
         wlr_seat_pointer_notify_frame(seat);
     } else if (const auto* r = std::get_if<opensal::Resized>(&ev)) {
-        resize(r->size);
+        // The primary's size is the output's; a mirror's is its own business.
+        if (primary_link) resize(r->size);
     } else if (const auto* d = std::get_if<opensal::DensityChanged>(&ev)) {
-        set_scale(d->scale);
+        if (primary_link) set_scale(d->scale);
     } else if (const auto* t = std::get_if<opensal::TextCommit>(&ev)) {
         if (launcher.is_open()) { launcher.type(t->text); draw_launcher(); }
         else text_commit(t->text);
@@ -412,14 +414,14 @@ void Server::input(const opensal::Event& ev) {
     } else if (const auto* sh = std::get_if<opensal::Shown>(&ev)) {
         // Not seen: nothing drawn, and the clients' frames wait (design
         // 2026-10-20 §13.2). Seen again: all of it at once.
-        hidden = !sh->shown;
-        if (!hidden) {
-            send_whole = true;
+        from.hidden = !sh->shown;
+        if (!from.hidden) {
+            from.whole = true;
             wlr_output_schedule_frame(output);
         }
     } else if (std::holds_alternative<opensal::FramePresented>(ev)) {
         // Shown: what changed meanwhile goes now.
-        in_flight.reset();
+        from.in_flight.reset();
         wlr_output_schedule_frame(output);
     } else if (const auto* f = std::get_if<opensal::Focus>(&ev)) {
         // Focus left the window: nothing it holds stays pressed here.
@@ -434,11 +436,16 @@ void Server::input(const opensal::Event& ev) {
     }
 }
 
-void Server::provider(std::string_view bytes) {
-    decoder.feed(bytes);
+void Server::provider(Link& l, std::string_view bytes) {
+    l.decoder.feed(bytes);
     for (;;) {
-        auto m = decoder.next();
-        if (!m) { log("the provider's stream is not opensal.wire"); stop = true; return; }
+        auto m = l.decoder.next();
+        if (!m) {
+            log(std::format("display {}: its stream is not opensal.wire", l.number));
+            l.gone = true;
+            drop_gone();
+            return;
+        }
         if (!*m) return;
         const auto& msg = **m;
         if (msg.kind == 'H') {
@@ -447,14 +454,21 @@ void Server::provider(std::string_view bytes) {
             double density = 1;
             int pacing = 0;
             if (in >> bits >> w >> h) {
-                if (in >> density >> pacing) paced = pacing == 1;
-                provided = bits;
-                pointer_mode();
-                resize({w, h});
-                if (density > 0) set_scale(density);
+                if (in >> density >> pacing) l.paced = pacing == 1;
+                l.provided = bits;
+                l.hello = true;
+                l.whole = true;
+                if (&l == primary()) {
+                    provided = bits;
+                    pointer_mode();
+                    resize({w, h});
+                    if (density > 0) set_scale(density);
+                }
+                tell_roles();
+                wlr_output_schedule_frame(output);
             }
         } else if (msg.kind == 'E') {
-            if (auto e = opensal::wire::decode_event(msg.payload)) input(*e);
+            if (auto e = opensal::wire::decode_event(msg.payload)) input(l, *e);
         }
     }
 }

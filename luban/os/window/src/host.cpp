@@ -706,6 +706,25 @@ void Window::set_size(int width, int height) {
     SDL_SyncWindow(impl_->window);
 }
 
+void Window::keep_shape(int width, int height) {
+    if (width <= 0 || height <= 0) return;
+    auto* win = impl_->window;
+    const double density = std::max(0.5, pixel_density());
+    double w = width / density, h = height / density;
+    SDL_Rect usable{};
+    if (SDL_GetDisplayUsableBounds(SDL_GetDisplayForWindow(win), &usable) && usable.w > 0 && usable.h > 0) {
+        const double k = std::min({1.0, usable.w * 0.95 / w, usable.h * 0.95 / h});
+        w *= k;
+        h *= k;
+    }
+    if (!(SDL_GetWindowFlags(win) & (SDL_WINDOW_MAXIMIZED | SDL_WINDOW_FULLSCREEN)))
+        SDL_SetWindowSize(win, static_cast<int>(std::lround(w)), static_cast<int>(std::lround(h)));
+    const float aspect = static_cast<float>(width) / static_cast<float>(height);
+    SDL_SetWindowAspectRatio(win, aspect, aspect);
+}
+
+void Window::free_shape() { SDL_SetWindowAspectRatio(impl_->window, 0.0f, 0.0f); }
+
 std::string Window::title() const {
     const char* t = SDL_GetWindowTitle(impl_->window);
     return t ? t : "";

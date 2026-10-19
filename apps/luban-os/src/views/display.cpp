@@ -188,7 +188,14 @@ std::unique_ptr<Display> Display::process(const std::vector<std::string>& argv, 
                 }
             }
         }
-        if (auto st = platform::wait_process(self->pid_, true); st && platform::exit_code(*st) != 0) {
+        // Its end. Closed by this window, a desktop that other windows still
+        // show (design 2026-10-20 §11) goes on: it is waited for a moment, then left.
+        std::optional<platform::ExitStatus> st;
+        if (!self->stop_) st = platform::wait_process(self->pid_, true);
+        else
+            for (int k = 0; k < 60 && !(st = platform::wait_process(self->pid_, false)); ++k)
+                std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        if (st && platform::exit_code(*st) != 0) {
             std::lock_guard l(self->m_);
             if (self->error_.empty()) self->error_ = std::format("the desktop ended ({})", platform::exit_code(*st));
         }
@@ -236,7 +243,7 @@ void Display::provider_(std::string_view bytes) {
             // The shell, too, for a desktop without its own (it asks for it).
             using I = opensal::Interface;
             auto provided = I::Surface | I::Mode | I::Pointer | I::Keyboard | I::Text | I::Shell | I::Cursor | I::CursorImage
-                            | I::PointerLock;
+                            | I::PointerLock | I::Displays;
             if (clip_.copy || clip_.paste) provided = provided | I::Clipboard;
             opensal::Interfaces wanted = 0;
             std::from_chars(msg.payload.data(), msg.payload.data() + msg.payload.size(), wanted);
@@ -265,6 +272,24 @@ void Display::provider_(std::string_view bytes) {
                 pointer_.shape = "custom";
                 pointer_.image = std::move(*image);
                 changed = true;
+            }
+        } else if (msg.kind == 'd') {
+            if (auto r = opensal::wire::decode_display(msg.payload)) {
+                std::optional<opensal::Size> resend;
+                double density = 1;
+                {
+                    std::lock_guard l(m_);
+                    // Made the primary: the desktop takes this window's size again.
+                    if (role_ && role_->kind == opensal::DisplayRole::Kind::mirror && r->kind == opensal::DisplayRole::Kind::primary)
+                        resend = wanted_, density = density_;
+                    role_changed_ = role_ != *r;
+                    role_ = *r;
+                    changed = changed || role_changed_;
+                }
+                if (resend) {
+                    send_(opensal::wire::encode('E', opensal::wire::encode_event(opensal::DensityChanged{density})));
+                    send_(opensal::wire::encode('E', opensal::wire::encode_event(opensal::Resized{*resend})));
+                }
             }
         } else if (msg.kind == 'l') {
             std::lock_guard l(m_);
@@ -317,6 +342,11 @@ void Display::provider_(std::string_view bytes) {
 
 void Display::send(const opensal::Event& e) {
     if (!alive_) return;
+    bool mirror = false;
+    {
+        std::lock_guard l(m_);
+        mirror = role_ && role_->kind == opensal::DisplayRole::Kind::mirror;
+    }
     if (const auto* r = std::get_if<opensal::Resized>(&e)) {
         std::lock_guard l(m_);
         wanted_ = r->size;
@@ -326,6 +356,8 @@ void Display::send(const opensal::Event& e) {
         std::lock_guard l(m_);
         density_ = d->scale;
     }
+    // A mirror's size is its own: the desktop is the primary's.
+    if (mirror && (std::holds_alternative<opensal::Resized>(e) || std::holds_alternative<opensal::DensityChanged>(e))) return;
     send_(opensal::wire::encode('E', opensal::wire::encode_event(e)));
 }
 
@@ -337,6 +369,12 @@ std::optional<std::string> Display::take_text_input() {
 std::optional<std::string> Display::take_clipboard() {
     std::lock_guard l(m_);
     return std::exchange(clipboard_, std::nullopt);
+}
+
+std::optional<opensal::DisplayRole> Display::take_role() {
+    std::lock_guard l(m_);
+    if (!std::exchange(role_changed_, false)) return std::nullopt;
+    return role_;
 }
 
 std::optional<bool> Display::take_pointer_lock() {

@@ -1,4 +1,4 @@
-# opensal Specification, version 0.3
+# opensal Specification, version 0.4
 
 ## 1. Scope
 
@@ -11,8 +11,8 @@ It does not define how a surface is acquired.
 2.1 A provider provides each interface whole or not at all.
 
 2.2 `Surface` is the core interface; `Pointer`, `Keyboard`, `Mode`, `Density`,
-`Capture`, `Cursor`, `CursorImage`, `PointerLock`, `Text`, `Clipboard` and
-`Shell` are optional.
+`Capture`, `Cursor`, `CursorImage`, `PointerLock`, `Text`, `Clipboard`,
+`Shell` and `Displays` are optional.
 
 2.3 A consumer learns which interfaces it has by asking (the provided set),
 never by trying an operation.
@@ -36,8 +36,10 @@ alpha, `stride` bytes per row.
 
 5.1 A surface gives back: resized, density changed, key (X11 keysym values
 and modifier bits), text commit, preedit, pointer motion, pointer button,
-wheel, focus, close requested, clipboard text, frame presented, and -- while
-the pointer is locked -- relative pointer motion.
+wheel, focus, close requested, clipboard text, frame presented, shown (whether
+it can be seen at all: a consumer draws nothing while it cannot, and all of it
+again when it can), and -- while the pointer is locked -- relative pointer
+motion.
 
 5.2 Frame presented is pacing: a provider that paces says it once it has
 shown what it was sent, and the consumer sends the next frame only after it.
@@ -68,6 +70,15 @@ each list whole, whenever it changes; the provider gives back launch (an
 application by its id, started by the consumer as it declares) and activate
 (a window to bring forward).
 
+5.5 `Displays`: a consumer may be shown by several providers at once, each
+a display numbered from 1 in the order it came; the first is the primary. It
+tells each what it is (`'d'`): the primary, whose size is the consumer's, or a
+mirror of another display, with that display's size. A mirror shows the same
+frames, sizes itself to them and keeps their shape, and says no size of its
+own; its input is the consumer's as the primary's is. When the primary goes,
+the next display is told it is the primary. A provider without `Displays` is
+only ever a primary.
+
 ## 6. The wire
 
 6.1 One byte stream; each message is a kind (1 byte), a length (4 bytes, big
@@ -85,7 +96,8 @@ whether it paces).
 
 6.5 A version adds interfaces and messages; it changes none. 0.2 added
 `Shell`; 0.3 added `CursorImage` (`'C'`), `PointerLock` (`'l'`, relative
-motion) and the cursor names from grabbing on.
+motion) and the cursor names from grabbing on; 0.4 added shown and
+`Displays` (`'d'`).
 
 ## 7. Conformance
 

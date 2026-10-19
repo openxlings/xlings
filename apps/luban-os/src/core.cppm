@@ -197,6 +197,10 @@ public:
     // It asked to hold the pointer (opensal PointerLock: a game) or let it
     // go: what it said since the last call.
     std::optional<bool> take_pointer_lock();
+    // What this window is to the desktop (opensal Displays; design 2026-10-20
+    // §11): said when it changed. A mirror says no size of its own.
+    std::optional<opensal::DisplayRole> take_role();
+    std::optional<opensal::DisplayRole> role() const { std::lock_guard l(m_); return role_; }
 
     struct Update { opensal::Rect rect; std::string rows; };
     // The surface's size (0 until the first frame) and the rectangles since the last call.
@@ -216,6 +220,8 @@ private:
     std::string name_;
     std::string session_;             // the desktop session it started (empty: unknown)
     Pointer pointer_;
+    std::optional<opensal::DisplayRole> role_;
+    bool role_changed_ { false };
     mutable std::mutex m_;
     bool send_(std::string_view wire_bytes);
     std::optional<vm::Client> client_;

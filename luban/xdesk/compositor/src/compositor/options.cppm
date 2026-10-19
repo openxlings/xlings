@@ -10,6 +10,9 @@ export namespace xdesk::compositor {
 struct Options {
     int in { 0 };                                // opensal.wire from the provider
     int out { 1 };                               // and to it
+    // Where other windows of the desktop connect, each a display mirroring
+    // the first (design 2026-10-20 §11; OPENSAL_DISPLAYS). Empty: none.
+    std::filesystem::path displays;
     opensal::Size size { 1280, 800 };            // until the provider says
     std::string profile { "classic" };
     // Super/Alt+Return, and what runs a Terminal=true application. Empty: the

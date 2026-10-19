@@ -92,6 +92,8 @@ constexpr xlings::i18n::Entry kWords[] = {
     { "luban.os.app.keyboard_not_shown", "the window is not shown" },
     { "luban.os.app.keyboard_host_refused", "refused" },
     { "luban.os.app.keyboard_held_title", " · keyboard held (Ctrl+Alt+K lets it go)" },
+    { "luban.os.app.display_mirror_title", " · display {} (mirroring display {})" },
+    { "luban.os.app.display_title", " · display {}" },
     { "luban.os.app.done", "Done." },
     { "luban.os.app.downloads", "{} is in {} (~/Downloads)" },
     { "luban.os.app.drawing_without_gpu", "Drawing without the GPU" },

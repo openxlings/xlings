@@ -159,6 +159,12 @@ public:
     void inject_shown(bool shown);
     void inject_drop(const std::filesystem::path& file);
     void set_size(int width, int height);
+    // A mirror (design 2026-10-20 §11.2): sized to show `width` x `height`
+    // device pixels one to one (the same shape, smaller, where the screen's
+    // usable area is smaller; a maximized or full-screen window stays), and
+    // that shape kept as it is resized. free_shape: any shape again.
+    void keep_shape(int width, int height);
+    void free_shape();
     std::string title() const;
 
 private:

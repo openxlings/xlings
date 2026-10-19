@@ -485,6 +485,12 @@ void desktop_view_(App& a) {
     ImGui::PopStyleVar();
     if (!a.display) { ImGui::End(); return; }
     auto& d = *a.display;
+    // A mirror keeps the source's shape; the primary any (design 2026-10-20 §11.2).
+    if (const auto r = d.take_role()) {
+        if (r->kind == opensal::DisplayRole::Kind::mirror) a.window->keep_shape(static_cast<int>(r->size.width), static_cast<int>(r->size.height));
+        else a.window->free_shape();
+        a.window->set_title(a.title_for(a.current));
+    }
     std::vector<Display::Update> updates;
     const auto size = d.take(updates);
     a.desktop_changed = !updates.empty();
