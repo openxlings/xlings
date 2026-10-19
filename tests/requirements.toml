@@ -1365,7 +1365,7 @@ status = "planned"
 
 [I18N-DOMAINS]
 text = "catalogues register by domain; English is complete in each; no key without English; arguments agree; the fallback chain and pick(); no tr(en, zh) in luban-os"
-status = "planned"
+status = "required"
 
 # ── a system's network, a user's own home, the prompt (design 2026-10-19 §27) ──
 

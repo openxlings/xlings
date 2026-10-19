@@ -13,6 +13,7 @@ kind = "lib"
 
 [dependencies]
 luban-compat = { path = "../compat" }
+i18n     = { path = "../../../modules/i18n" }
 libs     = { path = "../../../modules/libs" }
 platform = { path = "../../../modules/platform" }
 runtime  = { path = "../../../modules/runtime" }

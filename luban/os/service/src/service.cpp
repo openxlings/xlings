@@ -1,6 +1,7 @@
 module luban.service;
 
 import std;
+import xlings.i18n;
 import luban.compat;
 import xlings.libs.json;
 import opencaps;
@@ -989,7 +990,7 @@ std::vector<Note> notes(const Context& c, const Environment& e) {
     if (const auto kept = relayout_archive(c.home, e.name)) {
         std::error_code ec;
         const auto mb = fs::file_size(*kept, ec) / (1024 * 1024);
-        out.push_back({std::format("keeps what it was before its move into its own userland ({} MB)", mb),
+        out.push_back({xlings::i18n::trf("luban.notes.relayout", mb),
                        {std::format("luban rollback {} --to relayout", e.name)}});
     }
     // A desktop with no cursor theme (a system from before the theme came
@@ -1002,7 +1003,7 @@ std::vector<Note> notes(const Context& c, const Environment& e) {
                 std::string package = "luban:cursors";
                 for (const auto& l : opencaps::registry())
                     if (l.name == "desktop-cursor" && !l.package.empty()) package = std::string(l.package);
-                out.push_back({std::format("its desktop has no cursor theme"),
+                out.push_back({std::string(xlings::i18n::tr("luban.notes.no_cursor_theme")),
                                {std::format("luban run {} -- xlings install {}", e.name, package),
                                 std::format("luban upgrade {} --dry-run", e.name)}});
             }

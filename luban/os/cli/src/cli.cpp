@@ -6,6 +6,7 @@ import xlings.subos.root_etc;
 import xlings.libs.sha512;
 import xlings.cli.model;
 import xlings.libs.json;
+import xlings.i18n;
 import xlings.observe;
 import xlings.platform;
 import xlings.platform.stream;
@@ -514,10 +515,10 @@ int host_status(const svc::Context& c, const Globals& g) {
         std::string line = std::format("xlings {} · luban {}", versions.xlings.empty() ? "?" : versions.xlings, versions.luban);
         if (!versions.app.empty()) line += std::format(" · luban-os {}", versions.app);
         if (!versions.index.empty()) line += std::format(" · index {}", versions.index);
-        std::println("  {:<9}{}", "versions", line);
+        std::println("  {:<9}{}", xlings::i18n::tr("luban.status.versions"), line);
         for (const auto& m : versions.mismatches) std::println("  {:<9}  {} -- {}", "", m.why, m.next);
         if (g.verbose && !versions.looked)
-            std::println("  {:<9}  (this system's processes cannot be listed: older Luban OS windows are not looked for)", "");
+            std::println("  {:<9}  {}", "", xlings::i18n::tr("luban.status.unlisted"));
     }
     for (const auto& m : caps.modes) {
         if (m.ready) {
@@ -596,7 +597,7 @@ int overview(const svc::Context& c, const Globals& g, std::string_view pattern =
         return 1;
     }
     if (envs->empty() && !pattern.empty()) {
-        std::println("  no environment matches '{}': luban ls lists them all", pattern);
+        std::println("  {}", xlings::i18n::trf("luban.ls.no_match", pattern));
         return 0;
     }
     if (envs->empty()) {
@@ -903,7 +904,7 @@ int cmd_status(const svc::Context& c, const Parsed& p, const Globals& g, Rendere
             // Running with what it was started with: a changed host proxy is the next start's.
             if (const auto started = machine ? vm::started_env(c.home, e->name) : std::nullopt)
                 if (const auto was = svc::network_line(host, *started); was != network)
-                    notes.push_back(svc::Note{std::format("it runs with the proxy it started with ({}); the host's now is the next start's", was),
+                    notes.push_back(svc::Note{xlings::i18n::trf("luban.status.proxy_changed", was),
                                               {std::format("luban stop {0} && luban enter {0}", e->name)}});
         }
     }
@@ -932,7 +933,7 @@ int cmd_status(const svc::Context& c, const Parsed& p, const Globals& g, Rendere
     std::println("  starts    as a {}{}", e->settings.mode, e->settings.persist == "all" ? "" : std::format(", keeping {}", e->settings.persist == "home" ? "only /home" : "nothing"));
     if (!e->shell.empty()) std::println("  shell     {}", e->shell);
     if (e->carrier != "local") std::println("  carrier   {}", e->carrier);
-    std::println("  network   {}", network);
+    std::println("  {:<9} {}", xlings::i18n::tr("luban.status.network"), network);
     std::println("  isolation luban config {}", e->name);
     for (const auto& v : unmet) std::println("  {} {}: this luban is older than it -- xlings update luban", r.paint("!", 33), v.why());
     // What may be done, never forced (design 2026-10-19 §12.2).
@@ -1590,6 +1591,8 @@ int desktop_(const std::vector<std::string>& rest) {
 }
 
 int run(int argc, char* argv[]) {
+    // Its words, before anything is said (design 2026-10-19 §7).
+    svc::register_words();
     std::vector<std::string> args(argv + 1, argv + argc);
     Globals g;
     std::vector<std::string> rest;

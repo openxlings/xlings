@@ -392,7 +392,7 @@ desktops   give one to a system: luban new <name> --desktop <it>, or luban confi
 |---|---|---|
 | 机制 | `modules/i18n`（新包，模块名沿用 `xlings.i18n`，17 个使用者不用改 import） | 语言解析（设置、覆盖用的环境变量、系统语言）；BCP 47 回退链（`zh-CN` → `zh` → `en`）；按**域**注册的 catalogue；`tr(key)`、`trf(key, args...)`；来自数据的多语言表 `pick(json)`（同一条回退链）；术语表接口；完整性检查 |
 | xlings 的文字 | 留在 `modules/ui/src/i18n/`（它们是 xlings 前端的文字），作为域 `xlings` 注册 | 现有 catalogue，不变 |
-| luban 的文字 | `luban/os/cli/src/i18n/`，域 `luban` | 本轮把 CLI 接上机制；CLI 默认仍为英文（§7.4） |
+| luban 的文字 | `luban/os/service/src/i18n/words.cpp`，域 `luban`（实施时定：service 的提示（notes）与 CLI 共用，luban 与 Luban OS 启动时注册） | 本轮把 CLI 接上机制；CLI 默认仍为英文（§7.4）；`tools/lint_i18n.sh` 检查 `luban/os` 里说的每个 key 都在英文表里 |
 | Luban OS 的文字 | `apps/luban-os/src/i18n/{en,zh}.cppm`，域 `luban.os` | 214 处与 `kEditions` 的成对字段全部迁入 |
 
 - `modules/ui` 只剩主题与 xlings 的 catalogue，依赖 `modules/i18n`。分层不变：`luban/` 与 `apps/` 可以 import `modules/`（`tools/lint_layer_deps.sh`）。

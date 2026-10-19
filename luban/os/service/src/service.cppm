@@ -11,6 +11,7 @@ export import luban.service.port;
 export import luban.service.settings;
 export import luban.service.capabilities;
 import std;
+import xlings.i18n;
 import xlings.libs.json;
 import opencaps;
 
@@ -159,6 +160,11 @@ std::map<std::string, std::string> host_proxy_env(const std::map<std::string, st
 std::string network_line(const std::map<std::string, std::string>& host, const std::map<std::string, std::string>& inside);
 // The QEMU NAT's host address and network.
 inline constexpr std::string_view kQemuGateway = "10.0.2.2", kQemuNat = "10.0.2.0/24";
+
+// luban's words (i18n/words.cpp): the domain "luban", registered by the
+// programs that say them (luban, Luban OS) before anything is said.
+void register_words();
+std::span<const xlings::i18n::Entry> words_en();
 
 // `mode` is how this session runs (sandbox or machine).
 std::vector<std::string> welcome(const Environment& e, std::string_view mode, bool temp,
