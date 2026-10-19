@@ -345,6 +345,7 @@ void Layout::focus(Id id) {
     if (!s) return;
     s->focus = id;
     if (const auto at = find_(s->columns, id)) s->columns[at->column].active = at->cell;
+    s->scrolled = false;   // the focus moved: it is shown again
     if (auto* g = group_(*s, id))
         if (const auto at = find_(g->columns, id)) g->columns[at->column].active = at->cell;
     if (const auto* w = window_(id); w && !w->floating) {

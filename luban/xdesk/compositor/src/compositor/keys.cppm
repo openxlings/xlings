@@ -19,13 +19,13 @@ enum class Action {
     show1, show2, show3, show4, send1, send2, send3, send4,
 };
 
-// A chord: Super (or Alt, where the host keeps Super), Ctrl, Shift, and a
-// key -- a keysym, or a digit by its place on the keyboard (Shift changes
-// what a digit types).
+// A chord: Super, Alt, Ctrl, Shift, and a key -- a keysym, or a digit by
+// its place on the keyboard (Shift changes what a digit types).
 struct Chord {
     bool super { false }, ctrl { false }, shift { false };
     xkb_keysym_t sym { 0 };
     int digit { 0 };
+    bool alt { false };
     bool operator==(const Chord&) const = default;
 };
 

@@ -197,14 +197,6 @@ bool Server::start_() {
         wlr_scene_node_set_enabled(&self->hint_node->node, false);
         return 0;
     }, this);
-    drop_timer = wl_event_loop_add_timer(loop, [](void* data) -> int {
-        auto* self = static_cast<Server*>(data);
-        if (self->drag == Drag::move && self->drop.kind == layout::Drop::Kind::column) {
-            self->sizes_shown = true;
-            self->show_drop();
-        }
-        return 0;
-    }, this);
     max_timer = wl_event_loop_add_timer(loop, [](void* data) -> int {
         auto* self = static_cast<Server*>(data);
         if (self->max_hover && self->overlay == Overlay::none && self->drag == Drag::none) self->open_layouts(self->max_hover);
@@ -236,7 +228,6 @@ Server::~Server() {
     if (clock) wl_event_source_remove(clock);
     if (pace_timer) wl_event_source_remove(pace_timer);
     if (hint_timer) wl_event_source_remove(hint_timer);
-    if (drop_timer) wl_event_source_remove(drop_timer);
     if (max_timer) wl_event_source_remove(max_timer);
     for (int pid : children) os::terminate(pid);
     new_toplevel.disconnect(); new_popup.disconnect(); new_decoration.disconnect(); frame.disconnect();

@@ -547,3 +547,53 @@ XTEST(XdeskLayout, TheMaximizeButtonsLayoutsLayOutTheRecentWindows, .area = "lub
     EXPECT_EQ(of(ps, 2).rect.x, 10);
     EXPECT_GT(of(ps, 1).rect.x, 590);
 }
+
+// Dragging in tile (design 2026-10-20 §7.5): the zones of a window, the
+// others where the drop leaves them, and a hand's scroll kept.
+XTEST(XdeskLayout, ADragsZonesAreQuartersAndThirdsAndThePreviewIsEveryWindow, .area = "luban", .covers = {"XDESK-DRAG-SNAP"}) {
+    Layout l({.mode = Mode::tile, .inner_gap = 4, .outer_gap = 0});
+    l.add(1, {600, 400});
+    l.add(2, {600, 400});
+    auto ps = l.arrange(kOutput);
+    const auto g = of(ps, 2).rect;   // the right half
+    using K = layout::Drop::Kind;
+    auto at = [&](double fx, double fy) { return l.drop_at(1, g.x + fx * g.width, g.y + fy * g.height).kind; };
+    EXPECT_EQ(at(0.5, 0.1), K::above);
+    EXPECT_EQ(at(0.5, 0.9), K::below);
+    EXPECT_EQ(at(0.5, 0.5), K::swap);
+    EXPECT_EQ(at(0.2, 0.5), K::column);
+    EXPECT_EQ(at(0.8, 0.5), K::column);
+    // The preview is every window: green below red's place, the whole width.
+    const auto all = l.preview_all(1, l.drop_at(1, g.x + g.width / 2, g.y + 10), 0);
+    EXPECT_EQ(of(all, 2).rect.width, 1200);
+    EXPECT_GT(of(all, 2).rect.y, of(all, 1).rect.y);
+    EXPECT_EQ(of(l.arrange(kOutput), 2).rect, g) << "a preview changes nothing";
+}
+
+XTEST(XdeskLayout, TheGapBetweenTwoWindowsOfAColumnResizesThem, .area = "luban", .covers = {"XDESK-RESIZE"}) {
+    Layout l({.mode = Mode::tile, .inner_gap = 4, .outer_gap = 0});
+    l.add(1, {600, 400});
+    l.add(2, {600, 400});
+    l.join();                                   // 2 under 1, one column
+    auto ps = l.arrange(kOutput);
+    const auto top = of(ps, 1).rect;
+    const auto gap = l.row_gap_at(top.x + 100, top.y + top.height + 2);
+    ASSERT_TRUE(gap);
+    l.drag_row_gap(gap->first, gap->second, 100);
+    ps = l.arrange(kOutput);
+    EXPECT_NEAR(of(ps, 1).rect.height, top.height + 100, 1);
+    EXPECT_NEAR(of(ps, 1).rect.height + of(ps, 2).rect.height + 4, 800, 1e-6);
+}
+
+XTEST(XdeskLayout, ATiledStripScrolledByHandStaysUntilTheFocusMoves, .area = "luban", .covers = {"XDESK-LAYOUT"}) {
+    Layout l({.mode = Mode::tile, .inner_gap = 0, .outer_gap = 0, .min_column_width = 600});
+    for (layout::Id id = 1; id <= 3; ++id) l.add(id, {600, 400});
+    auto ps = l.arrange(kOutput);
+    ASSERT_FALSE(of(ps, 1).visible);            // the focused third shown, the first off the screen
+    l.pan(600, 0);
+    ps = l.arrange(kOutput);
+    EXPECT_TRUE(of(ps, 1).visible) << "a hand's scroll is kept";
+    l.focus(3);
+    ps = l.arrange(kOutput);
+    EXPECT_TRUE(of(ps, 3).visible);
+}

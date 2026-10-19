@@ -54,7 +54,8 @@ std::optional<Chord> parse_chord(std::string_view text) {
         std::string lower(part);
         for (auto& ch : lower) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
         if (!rest.empty()) {
-            if (lower == "super" || lower == "alt" || lower == "logo" || lower == "mod4") c.super = true;
+            if (lower == "super" || lower == "logo" || lower == "mod4") c.super = true;
+            else if (lower == "alt" || lower == "mod1") c.alt = true;
             else if (lower == "ctrl" || lower == "control") c.ctrl = true;
             else if (lower == "shift") c.shift = true;
             else return std::nullopt;
@@ -74,6 +75,7 @@ std::string chord_text(const Chord& c) {
     std::string out;
     if (c.super) out += "Super+";
     if (c.ctrl) out += "Ctrl+";
+    if (c.alt) out += "Alt+";
     if (c.shift) out += "Shift+";
     if (c.digit) return out + std::to_string(c.digit);
     std::array<char, 64> name{};
@@ -112,7 +114,7 @@ void Bindings::load(const std::map<std::string, std::vector<std::string>>& overr
 
 std::optional<Action> Bindings::match(const Chord& pressed) const {
     for (const auto& [action, c] : table_) {
-        if (c.super != pressed.super || c.ctrl != pressed.ctrl) continue;
+        if (c.super != pressed.super || c.ctrl != pressed.ctrl || c.alt != pressed.alt) continue;
         if (c.digit) {
             if (c.digit == pressed.digit && c.shift == pressed.shift) return action;
             continue;

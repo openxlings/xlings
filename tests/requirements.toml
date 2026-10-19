@@ -1123,6 +1123,10 @@ status = "required"
 text = "xdesk's tiled columns tell their clients they are tiled (they draw to the size given; what a client draws short of it shows the frame), sit inner_gap apart and outer_gap from the edges (gap of before is the inner one), share the output equally until each would be narrower than min_column_width and then scroll with the focused column in view, fill the output in proportion when the widths they were given add up to less, and run sideways or, a workspace set vertical, downwards with the directions turned"
 status = "required"
 
+[XDESK-RESIZE]
+text = "an xdesk window is resized the same way in every arrangement where it can be: a stacked, floating or canvas window by its borders and corners or with Super and the right button anywhere, keeping the size the client allows, and by the client asking (request_resize) as its own frame is dragged; tiled windows by the gaps between columns and between the windows of a column"
+status = "required"
+
 [XDESK-LAYOUT]
 text = "xdesk.layout places windows without drawing anything: tile (one or two windows share the output, more scroll with the focused one in view, a new one beside the focus, widths through thirds, halves and the whole), floating (centred above, where it is put), the canvas (beside the focus, panned, zoomed around a point up to 1, an overview that fits every window, left back exactly where the view was, or into a chosen window), a layout per workspace; motion by a critically damped spring"
 status = "required"

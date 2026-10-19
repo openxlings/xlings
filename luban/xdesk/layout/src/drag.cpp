@@ -23,16 +23,23 @@ Drop Layout::drop_at(Id dragged, double sx, double sy, bool shift) const {
     for (auto it = last_.rbegin(); it != last_.rend(); ++it)
         if (it->id != dragged && !it->floating && it->visible && it->rect.contains(sx, sy)) { over = *it; break; }
     if (s.mode == Mode::tile) {
-        if (sx < area.x + kEdge) return {.kind = Drop::Kind::column, .column = 0};
-        if (sx > area.x + area.width - kEdge) return {.kind = Drop::Kind::column, .column = s.columns.size()};
+        // Along the flow and across it (a vertical flow is the same turned).
+        const bool vertical = s.flow == Flow::vertical;
+        const double a = vertical ? sy - area.y : sx - area.x, length = vertical ? area.height : area.width;
+        if (a < kEdge) return {.kind = Drop::Kind::column, .column = 0};
+        if (a > length - kEdge) return {.kind = Drop::Kind::column, .column = s.columns.size()};
         if (!over) return {.kind = Drop::Kind::column, .column = s.columns.size()};
         const auto at = find_(s.columns, over->id);
         const double fx = (sx - over->rect.x) / std::max(1.0, over->rect.width), fy = (sy - over->rect.y) / std::max(1.0, over->rect.height);
-        if (fx > 1.0 / 3 && fx < 2.0 / 3 && fy > 1.0 / 3 && fy < 2.0 / 3) return {.kind = Drop::Kind::swap, .target = over->id};
-        if (fy <= 1.0 / 3) return {.kind = Drop::Kind::above, .target = over->id};
-        if (fy >= 2.0 / 3) return {.kind = Drop::Kind::below, .target = over->id};
+        const double f_along = vertical ? fy : fx, f_across = vertical ? fx : fy;
+        // design 2026-10-20 §7.5: the first and last quarter across it -- in
+        // its column before or after it; its middle third -- in its place;
+        // else a column of its own before or after it.
+        if (f_across <= 0.25) return {.kind = Drop::Kind::above, .target = over->id};
+        if (f_across >= 0.75) return {.kind = Drop::Kind::below, .target = over->id};
+        if (f_along > 1.0 / 3 && f_along < 2.0 / 3) return {.kind = Drop::Kind::swap, .target = over->id};
         const std::size_t c = at ? at->column : s.columns.size();
-        return {.kind = Drop::Kind::column, .column = fx < 0.5 ? c : c + 1};
+        return {.kind = Drop::Kind::column, .column = f_along < 0.5 ? c : c + 1};
     }
     if (s.mode == Mode::stack) {
         const bool left = sx < area.x + kEdge, right = sx > area.x + area.width - kEdge;
@@ -126,6 +133,12 @@ void Layout::drop(Id dragged, const Drop& d, double width) {
     focus(dragged);
 }
 
+std::vector<Placement> Layout::preview_all(Id dragged, const Drop& d, double width) const {
+    auto copy = *this;
+    copy.drop(dragged, d, width);
+    return copy.arrange(output_, reserved_);
+}
+
 std::optional<Rect> Layout::preview(Id dragged, const Drop& d, double width) const {
     if (d.kind == Drop::Kind::none || d.kind == Drop::Kind::free || d.kind == Drop::Kind::floating) return std::nullopt;
     // The drop, made on a copy: where it would be is where it goes.
@@ -169,6 +182,43 @@ void Layout::drag_gap(std::size_t column, double dx) {
     const double na = std::clamp(fa + df, 0.1, fa + fb - 0.1);
     a.width = na;
     b.width = fa + fb - na;
+}
+
+std::optional<std::pair<std::size_t, std::size_t>> Layout::row_gap_at(double sx, double sy) const {
+    const auto& s = space_();
+    if (s.mode != Mode::tile) return std::nullopt;
+    auto rect_of = [&](Id id) -> std::optional<Rect> {
+        for (const auto& p : last_)
+            if (p.id == id) return p.rect;
+        return std::nullopt;
+    };
+    const bool vertical = s.flow == Flow::vertical;
+    for (std::size_t c = 0; c < s.columns.size(); ++c)
+        for (std::size_t k = 0; k + 1 < s.columns[c].cells.size(); ++k) {
+            const auto a = rect_of(s.columns[c].cells[k].id), b = rect_of(s.columns[c].cells[k + 1].id);
+            if (!a || !b) continue;
+            if (!vertical && sx >= a->x && sx < a->x + a->width && sy >= a->y + a->height - 3 && sy <= b->y + 3) return std::pair{c, k};
+            if (vertical && sy >= a->y && sy < a->y + a->height && sx >= a->x + a->width - 3 && sx <= b->x + 3) return std::pair{c, k};
+        }
+    return std::nullopt;
+}
+
+void Layout::drag_row_gap(std::size_t column, std::size_t cell, double dy) {
+    auto& s = space_();
+    if (s.mode != Mode::tile || column >= s.columns.size()) return;
+    auto& col = s.columns[column];
+    if (cell + 1 >= col.cells.size()) return;
+    const Rect area = area_();
+    const double across = (s.flow == Flow::vertical ? area.width : area.height) - 2 * o_.outer_gap;
+    const auto hs = heights_(col, across, o_.inner_gap);
+    double total = 0;
+    for (const double h : hs) total += h;
+    // Every cell keeps the share it has; these two trade.
+    for (std::size_t k = 0; k < col.cells.size(); ++k) col.cells[k].share = hs[k] / std::max(1.0, total);
+    const double pair = col.cells[cell].share + col.cells[cell + 1].share, d = dy / std::max(1.0, total);
+    const double above = std::clamp(col.cells[cell].share + d, 0.08, pair - 0.08);
+    col.cells[cell].share = above;
+    col.cells[cell + 1].share = pair - above;
 }
 
 void Layout::even_widths() {

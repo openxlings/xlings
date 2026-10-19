@@ -203,11 +203,19 @@ public:
     // 0: as it would be); the drop.
     Drop drop_at(Id dragged, double sx, double sy, bool shift = false) const;
     std::optional<Rect> preview(Id dragged, const Drop& d, double width = 0) const;
+    // Every window as the drop would leave them (design 2026-10-20 §7.5):
+    // the others move there while it is dragged -- what is seen is the result.
+    std::vector<Placement> preview_all(Id dragged, const Drop& d, double width = 0) const;
     void drop(Id dragged, const Drop& d, double width = 0);
     // The gap a pointer is on between two columns (tile): the one left of it.
     std::optional<std::size_t> gap_at(double sx, double sy) const;
     // Dragged by `dx` pixels: the column left of it wider, the right one narrower.
     void drag_gap(std::size_t column, double dx);
+    // The gap a pointer is on between two windows of one column (tile): the
+    // column and the cell above it (design 2026-10-20 §8). Dragged by `dy`
+    // pixels: the one above taller, the one below shorter.
+    std::optional<std::pair<std::size_t, std::size_t>> row_gap_at(double sx, double sy) const;
+    void drag_row_gap(std::size_t column, std::size_t cell, double dy);
     // A gap clicked twice: every column an equal part again.
     void even_widths();
     // `windows`, the first the one asked for, laid out as `p`: columns in
@@ -277,6 +285,7 @@ private:
         // tile
         std::vector<Column> columns;
         double scroll { 0 };            // strip x at the output's left
+        bool scrolled { false };        // by hand: kept until the focus moves
         // stack, back to front
         std::vector<Id> order;
         // canvas

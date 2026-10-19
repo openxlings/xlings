@@ -114,7 +114,7 @@ struct View {
     bool placed { false };                      // shown somewhere already (then it glides)
     bool moving { false };                      // its frame is on its way (springs)
     layout::Spring x, y;
-    Hook map, unmap, commit, destroy, request_maximize, request_fullscreen, set_title;
+    Hook map, unmap, commit, destroy, request_maximize, request_fullscreen, set_title, request_move, request_resize;
 };
 
 // A client's text-input-v3 object, and what it says.
@@ -154,7 +154,7 @@ struct Popup {
 };
 
 // What a held button is doing.
-enum class Drag { none, pan, move, gap };
+enum class Drag { none, pan, move, gap, row_gap, resize };
 
 struct Server {
     const Options& o;
@@ -261,12 +261,15 @@ struct Server {
     double drag_dx { 0 }, drag_dy { 0 };         // the pointer from the frame's corner
     layout::Drop drop;
     double drop_width { 0 };                     // a size chosen for a new column (0: as it comes)
-    bool sizes_shown { false };
     shell::Picture sizes_picture;
     wlr_scene_rect* drop_box { nullptr };
-    wlr_scene_buffer* sizes_node { nullptr };
-    wl_event_source* drop_timer { nullptr };
+    wlr_scene_buffer* sizes_node { nullptr };    // the new column's width, said in its box
     std::size_t gap_column { 0 };
+    std::pair<std::size_t, std::size_t> row_gap {};   // a column's gap between two of its windows
+    std::uint32_t resize_edges { 0 };
+    layout::Rect resize_from;
+    layout::Id title_pressed_id { 0 };           // a title bar pressed, for a second press on it
+    std::chrono::steady_clock::time_point title_pressed {};
     std::chrono::steady_clock::time_point gap_pressed {};
     layout::Id max_hover { 0 };                  // the window whose maximize button the pointer is on
     wl_event_source* max_timer { nullptr };
@@ -319,6 +322,13 @@ struct Server {
     void follow_focus();
 
     void arrange(bool instant = false);
+    // `ps` shown: sizes now, positions by springs (`skip`: a window the
+    // pointer carries).
+    void apply(const std::vector<layout::Placement>& ps, bool instant, layout::Id skip = 0);
+    // The window drawn at a point, where it is now (gliding included), its
+    // title bar or its content (design 2026-10-20 §6).
+    View* view_at(double x, double y);
+    bool on_title(const View& v, double y) const;
 
     void draw_title(View& v, int width, bool active);
 
@@ -375,11 +385,19 @@ struct Server {
     // drag.cpp
     void drag_start(View* v, bool live);
     void drag_motion();
+    layout::Drop drop_with_hysteresis(bool shift) const;
+    bool drag_width(int step, int digit);
     void drag_end();
     void show_drop();
     void hide_drop();
     void set_opacity(View& v, float opacity);
-    layout::Id maximize_under_pointer() const;
+    layout::Id maximize_under_pointer();
+    // Super with the right button, a border, or the client asking: its size
+    // follows the pointer (edges as wlr_edges; 0: the corner nearest the pointer).
+    bool resize_start(View* v, std::uint32_t edges = 0);
+    void resize_motion();
+    std::uint32_t edges_at(const View& v) const;
+    static std::string_view resize_shape(std::uint32_t edges);
     void open_layouts(layout::Id id);
 
     // overlay.cpp
@@ -402,7 +420,7 @@ struct Server {
 
     std::optional<layout::Rect> placement_of(layout::Id id) const;
 
-    layout::Id close_under_pointer() const;
+    layout::Id close_under_pointer();
 
     void button(const opensal::PointerButton& b);
 

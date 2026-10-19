@@ -153,7 +153,11 @@ void Layout::canvas_split_(Space& s) {
 
 void Layout::pan(double dx, double dy) {
     auto& s = space_();
-    if (s.mode == Mode::tile) { s.scroll -= dx; return; }
+    if (s.mode == Mode::tile) {
+        s.scroll -= s.flow == Flow::vertical ? dy : dx;
+        s.scrolled = true;
+        return;
+    }
     if (s.mode != Mode::canvas) return;
     s.cx -= dx / s.zoom;
     s.cy -= dy / s.zoom;

@@ -252,8 +252,8 @@ waitfor desktop.texture.0 1100
 sleep 3000
 screenshot {}
 screenshot {}
-key Alt+Left
-key Alt+Left
+key Super+Left
+key Super+Left
 sleep 1000
 screenshot {}
 )", three.string(), artifact("xdesk-classic-three.bmp").string(), left.string()));
@@ -266,6 +266,80 @@ screenshot {}
     const auto b = read_ppm(left);
     EXPECT_EQ(b.at(275, 400), kRed);
     EXPECT_EQ(b.at(825, 400), kGreen);
+}
+
+// Where a colour is on a picture: its bounding box (x0, y0, x1, y1), -1s for none.
+std::array<int, 4> box_of(const Image& img, const std::array<int, 3>& colour) {
+    std::array<int, 4> b{-1, -1, -1, -1};
+    for (int y = 0; y < img.height; ++y)
+        for (int x = 0; x < img.width; ++x)
+            if (img.at(x, y) == colour) {
+                if (b[0] < 0 || x < b[0]) b[0] = x;
+                if (b[1] < 0 || y < b[1]) b[1] = y;
+                b[2] = std::max(b[2], x);
+                b[3] = std::max(b[3], y);
+            }
+    return b;
+}
+
+// A stacked window is resized by Super with the right button anywhere, and
+// by its border (design 2026-10-20 §8, G10: it could not be).
+XTEST(LubanOs, XdeskStackedWindowsResizeBySuperRightDragAndByTheirBorders, .area = "luban",
+      .covers = {"XDESK-RESIZE"}, .requires_ = {"linux", "xlings-bin"}) {
+    if (!app_binary()) GTEST_SKIP() << "no luban-os beside the xlings under test";
+    if (!xdesk_binary()) GTEST_SKIP() << "no xdesk beside luban-os (mcpp build -p xdesk-app)";
+    auto home = tk::Home::isolated("luban-os-xdesk-resize");
+    ASSERT_EQ(home.xlings({"self", "init"}).exit_code, 0);
+    const auto runtime = home.root() / "run";
+    fs::create_directories(runtime);
+    fs::permissions(runtime, fs::perms::owner_all, fs::perm_options::replace);
+    tk::write_file(home.root() / ".config" / "xdesk" / "state.json", R"({"arrangements":["stack"]})");
+    const auto client = colour_client(home).string();
+    const auto before = home.root() / "before.ppm", corner = home.root() / "corner.ppm", border = home.root() / "border.ppm";
+    auto r = run_script(home, std::format(R"(wait desktop
+waitfor desktop.texture.0 1100
+sleep 2500
+screenshot {}
+keydown Super
+press 600 400 right
+move 650 410
+move 700 420
+release 700 420 right
+keyup Super
+sleep 800
+screenshot {}
+)", before.string(), corner.string()),
+                        {"--desktop-exec", xdesk_binary()->string(), "--profile", "xdesk",
+                         "--autostart", std::format("python3 {} c04040", client)},
+                        {{"XDG_RUNTIME_DIR", runtime.string()}});
+    ASSERT_EQ(r.exit_code, 0) << r.transcript();
+    const auto a = box_of(read_ppm(before), kRed), b = box_of(read_ppm(corner), kRed);
+    ASSERT_GE(a[0], 0) << "no red window";
+    // Pressed right of and below its middle: the bottom-right corner follows.
+    EXPECT_EQ(b[0], a[0]);
+    EXPECT_EQ(b[1], a[1]);
+    EXPECT_NEAR(b[2] - a[2], 100, 2);
+    EXPECT_NEAR(b[3] - a[3], 20, 2);
+    // Its left border, dragged 80 to the left: 80 wider, the right edge kept.
+    r = run_script(home, std::format(R"(wait desktop
+waitfor desktop.texture.0 1100
+sleep 2500
+screenshot {}
+press {} {}
+move {} {}
+move {} {}
+release {} {}
+sleep 800
+screenshot {}
+)", before.string(), a[0] + 2, (a[1] + a[3]) / 2, a[0] - 40, (a[1] + a[3]) / 2, a[0] - 78, (a[1] + a[3]) / 2, a[0] - 78,
+                                          (a[1] + a[3]) / 2, border.string()),
+                   {"--desktop-exec", xdesk_binary()->string(), "--profile", "xdesk",
+                    "--autostart", std::format("python3 {} c04040", client)},
+                   {{"XDG_RUNTIME_DIR", runtime.string()}});
+    ASSERT_EQ(r.exit_code, 0) << r.transcript();
+    const auto c = box_of(read_ppm(before), kRed), d = box_of(read_ppm(border), kRed);
+    EXPECT_NEAR(c[0] - d[0], 80, 2) << "the left border followed the pointer";
+    EXPECT_EQ(d[2], c[2]) << "the right edge stayed";
 }
 
 // A client that draws to whole cells (foot) is told it is tiled and takes
@@ -314,7 +388,7 @@ XTEST(LubanOs, XdeskCanvasShowsEveryWindowInItsOverviewAndAClickGoesIn, .area = 
     auto r = xdesk_with(home, "canvas", std::format(R"(wait desktop
 waitfor desktop.texture.0 1100
 sleep 3000
-key Alt+o
+key Super+o
 sleep 1000
 screenshot {}
 screenshot {}
@@ -350,19 +424,19 @@ XTEST(LubanOs, XdeskSwitchesArrangementsAndComesBackToTheSameLayout, .area = "lu
     auto r = xdesk_with(home, "classic", std::format(R"(wait desktop
 waitfor desktop.texture.0 1100
 sleep 3000
-key Alt+[
+key Super+[
 sleep 1000
 screenshot {}
-key Alt+m
+key Super+m
 sleep 500
-key Alt+f
+key Super+f
 sleep 1000
 screenshot {}
-key Alt+f
+key Super+f
 sleep 500
-key Alt+m
+key Super+m
 sleep 500
-key Alt+m
+key Super+m
 sleep 1000
 screenshot {}
 screenshot {}
@@ -475,13 +549,13 @@ XTEST(LubanOs, XdeskChoosesArrangementsHeldWithSuperAndKeepsThem, .area = "luban
     auto r = session(std::format(R"(wait desktop
 waitfor desktop.texture.0 1100
 sleep 2500
-keydown Alt
+keydown Super
 key m
 sleep 800
 screenshot {}
 screenshot {}
 key m
-keyup Alt
+keyup Super
 sleep 800
 )", held.string(), artifact("xdesk-chooser.bmp").string()));
     ASSERT_EQ(r.exit_code, 0) << r.transcript();
@@ -492,7 +566,7 @@ sleep 800
     r = session(R"(wait desktop
 waitfor desktop.texture.0 1100
 sleep 1500
-key Alt+m
+key Super+m
 sleep 800
 )");
     ASSERT_EQ(r.exit_code, 0) << r.transcript();
@@ -502,7 +576,7 @@ sleep 800
     r = session(R"(wait desktop
 waitfor desktop.texture.0 1100
 sleep 1500
-key Alt+m
+key Super+m
 sleep 800
 )");
     ASSERT_EQ(r.exit_code, 0) << r.transcript();
@@ -549,7 +623,7 @@ screenshot {}
 waitfor desktop.texture.0 1100
 sleep 2500
 screenshot {}
-key Alt+2
+key Super+2
 sleep 1000
 screenshot {}
 )", one.string(), two.string()),
@@ -595,6 +669,8 @@ screenshot {}
     ASSERT_EQ(r.exit_code, 0) << r.transcript();
     // While dragged: green's top half shows where red would go (the accent over green).
     EXPECT_NE(read_ppm(during).at(1000, 250), kGreen) << "a preview over the top of green";
+    // And green already where the drop leaves it: the whole width, below (design 2026-10-20 §7.5, G6).
+    EXPECT_EQ(read_ppm(during).at(300, 600), kGreen) << "the others move to where the drop leaves them";
     // Let go: one column, red above green.
     const auto a = read_ppm(after);
     EXPECT_EQ(a.at(550, 200), kRed);
@@ -619,7 +695,7 @@ XTEST(LubanOs, XdeskLauncherStartsWhatIsTypedAndThePanelSwitchesWorkspaces, .are
     auto r = run_script(home, std::format(R"(wait desktop
 waitfor desktop.texture.0 1100
 sleep 500
-key Alt+space
+key Super+space
 sleep 300
 type gree
 sleep 300

@@ -122,7 +122,7 @@ columns.
 | **Stack** | windows where you put them, overlapping, kept on the screen; maximized, or snapped to a half or a quarter |
 | **Canvas** | windows on a plane that pans and zooms; put one against another's edge and they become a tiled group, moved and zoomed as one |
 
-| Keys (Super, or Alt where the host keeps Super) | Tile | Stack | Canvas |
+| Keys (with Super) | Tile | Stack | Canvas |
 |---|---|---|---|
 | Super alone, Space or D | the applications | the same | the same |
 | ←→ ↑↓ (or H J K L) | the next column / in the column | the nearest window that way | the same |
@@ -141,16 +141,33 @@ columns.
 **Super+/** shows these keys, only those that mean something in the
 arrangement you are in. The first time, a line at the bottom says so.
 
-Drag a window by its title (or anywhere with Super held): it follows the
-pointer, see-through, and a box shows where it will land — in a column, above
-or below another window, in its place, at the screen's edge (a new first or
-last column; stacked: a half, a quarter, the whole), against another window on
-the canvas (a group). Rest on a new column for a moment and its widths are
-offered (⅓, ½, ⅔, all); let go and it glides there. Shift while dragging: it
-floats where you let go. Drag the gap between two columns to resize both;
-click it twice to make them equal. Rest on the title bar's maximize button for
-the layouts it offers — halves, ⅔ and ⅓, one and two, thirds — of this window
-and the ones used before it; click it to maximize.
+The same gestures in every arrangement:
+
+| | |
+|---|---|
+| drag the title bar, or anywhere with Super held | move the window |
+| Super with the right button, or a border or corner (stacked, floating, canvas) | resize it |
+| drag the background, or the middle button anywhere | pan (tile: scroll the columns; canvas: move the view) |
+| click | focus |
+| click the title bar twice | maximize, and back |
+
+Alt alone is the applications' (Alt+click is theirs); xdesk's chords are on
+Super, and only Alt+Tab, Alt+F4 and Ctrl+Alt+T besides.
+
+A window dragged follows the pointer, see-through; the other windows move to
+where the drop would leave them, and a box shows where it lands — so what you
+see is what you get. Over another window: its first or last quarter puts it
+above or below it in its column, its middle third in its place, the rest a new
+column before or after it; the screen's edge a new first or last column
+(stacked: a half, a quarter, the whole); on the canvas, another window's edge a
+group. A zone holds until the pointer is 12 pixels into the next one. A new
+column's width is said in its box: the wheel or 1–4 picks ⅓, ½, ⅔ or all.
+Shift while dragging: it floats where you let go. Drag the gap between two
+columns, or between two windows of a column, to resize both; click a column
+gap twice to make them equal. A window that draws its own frame is moved and
+resized by it. Rest on the title bar's maximize button for the layouts it
+offers — halves, ⅔ and ⅓, one and two, thirds — of this window and the ones
+used before it; click it to maximize.
 
 The title bar's other button (or its right-click) opens the window's menu:
 maximize or restore, float or put back, always on top, on every workspace, to

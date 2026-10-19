@@ -61,11 +61,16 @@ void Server::follow_focus() {
 // (at once when `instant`: a window dragged follows the pointer).
 void Server::arrange(bool instant) {
     placements = lay.arrange(output_size(), reserved());
+    apply(placements, instant);
+}
+
+void Server::apply(const std::vector<layout::Placement>& ps, bool instant, layout::Id skip) {
     const double zoom = lay.zoom();
     for (auto& v : views) {
-        const auto p = std::ranges::find(placements, v.id, &layout::Placement::id);
-        wlr_scene_node_set_enabled(&v.frame->node, v.mapped && p != placements.end());
-        if (p == placements.end()) continue;
+        if (v.id == skip) continue;
+        const auto p = std::ranges::find(ps, v.id, &layout::Placement::id);
+        wlr_scene_node_set_enabled(&v.frame->node, v.mapped && p != ps.end());
+        if (p == ps.end()) continue;
         const int title = static_cast<int>(std::lround(kTitle * zoom));
         draw_title(v, static_cast<int>(std::lround(p->rect.width / zoom)), p->focused);
         wlr_scene_buffer_set_dest_size(v.title, std::max(1, static_cast<int>(std::lround(p->rect.width))), title);
@@ -94,12 +99,29 @@ void Server::arrange(bool instant) {
         wlr_scene_node_set_position(&v.frame->node, static_cast<int>(std::lround(v.x.value)), static_cast<int>(std::lround(v.y.value)));
     }
     // Stacking as the layout orders them: stacked ones back to front, then
-    // floating ones, then those always on top.
-    for (const auto& p : placements)
-        if (View* v = view_of(p.id)) wlr_scene_node_raise_to_top(&v->frame->node);
+    // floating ones, then those always on top (one carried by the pointer above all).
+    for (const auto& p : ps)
+        if (View* v = view_of(p.id); v && v->id != skip) wlr_scene_node_raise_to_top(&v->frame->node);
+    if (View* carried = skip ? view_of(skip) : nullptr) wlr_scene_node_raise_to_top(&carried->frame->node);
     zoom_surfaces(zoom);
     animate();
     draw_shell();
+}
+
+View* Server::view_at(double x, double y) {
+    double sx = 0, sy = 0;
+    wlr_scene_node* node = wlr_scene_node_at(&window_layer->node, x, y, &sx, &sy);
+    // Up to the window's frame: a child of the window layer.
+    while (node && node->parent && node->parent != window_layer) node = &node->parent->node;
+    if (!node) return nullptr;
+    for (auto& v : views)
+        if (v.mapped && &v.frame->node == node) return &v;
+    return nullptr;
+}
+
+bool Server::on_title(const View& v, double y) const {
+    // Its title bar is drawn at the canvas's zoom.
+    return y - v.frame->node.y < kTitle * lay.zoom();
 }
 
 // The canvas's zoom on each window's surfaces (a surface's own commit
@@ -214,12 +236,23 @@ void Server::add_view(wlr_xdg_toplevel* toplevel) {
     v.request_fullscreen.connect(&toplevel->events.request_fullscreen, [self](void*) {
         if (self->toplevel->base->initialized) wlr_xdg_surface_schedule_configure(self->toplevel->base);
     });
+    // A client that draws its own frame asks to be moved or resized with the
+    // button it holds (design 2026-10-20 §8).
+    v.request_move.connect(&toplevel->events.request_move, [this, self](void*) {
+        if (drag == Drag::none && self->mapped && live())
+            drag_start(self, lay.floating(self->id) || lay.mode() != layout::Mode::tile);
+    });
+    v.request_resize.connect(&toplevel->events.request_resize, [this, self](void* d) {
+        const auto* ev = static_cast<wlr_xdg_toplevel_resize_event*>(d);
+        if (drag == Drag::none && self->mapped && live()) resize_start(self, ev->edges);
+    });
     v.destroy.connect(&toplevel->events.destroy, [this, self](void*) {
         if (self->laid) lay.remove(self->id);
         for (auto it = views.begin(); it != views.end(); ++it)
             if (&*it == self) {
                 it->map.disconnect(); it->unmap.disconnect(); it->commit.disconnect(); it->destroy.disconnect();
                 it->request_maximize.disconnect(); it->request_fullscreen.disconnect(); it->set_title.disconnect();
+                it->request_move.disconnect(); it->request_resize.disconnect();
                 wlr_scene_node_destroy(&it->frame->node);
                 views.erase(it);
                 break;

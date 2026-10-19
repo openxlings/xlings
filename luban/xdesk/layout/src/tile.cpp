@@ -178,7 +178,7 @@ std::vector<Placement> Layout::tile_(Space& s, Rect area) {
     if (strip <= along + 0.5) {
         scroll = 0;
     } else {
-        if (focused) {
+        if (focused && !s.scrolled) {
             const auto i = focused->column;
             if (xs[i] - go < scroll) scroll = xs[i] - go;
             else if (xs[i] + ws[i] + go > scroll + along) scroll = xs[i] + ws[i] + go - along;

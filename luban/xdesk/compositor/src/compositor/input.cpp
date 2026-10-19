@@ -30,12 +30,15 @@ bool Server::held(wlr_keyboard_modifier m) {
     return wlr_keyboard_get_modifiers(&keyboard) & static_cast<std::uint32_t>(m);
 }
 
-// A chord the desktop keeps for itself: Super, or Alt where the host
-// keeps Super -- what the key table says (keys.json over the desktop's own).
+// A chord the desktop keeps for itself -- what the key table says
+// (keys.json over the desktop's own). Super's layer, and the few Alt chords
+// it lists (Alt+Tab, Alt+F4, Ctrl+Alt+T): Alt alone is the applications'
+// (design 2026-10-20 §6, §12.1).
 bool Server::shortcut(std::uint32_t code) {
-    const bool super = held(wlr_keyboard_modifier::WLR_MODIFIER_LOGO) || held(wlr_keyboard_modifier::WLR_MODIFIER_ALT);
-    if (!super) return false;
-    Chord pressed{.super = super, .ctrl = held(wlr_keyboard_modifier::WLR_MODIFIER_CTRL), .shift = held(wlr_keyboard_modifier::WLR_MODIFIER_SHIFT)};
+    const bool super = held(wlr_keyboard_modifier::WLR_MODIFIER_LOGO), alt = held(wlr_keyboard_modifier::WLR_MODIFIER_ALT);
+    if (!super && !alt) return false;
+    Chord pressed{.super = super, .ctrl = held(wlr_keyboard_modifier::WLR_MODIFIER_CTRL), .shift = held(wlr_keyboard_modifier::WLR_MODIFIER_SHIFT),
+                  .alt = alt};
     // A digit by its place (Shift changes what it types): evdev 2-10 are 1-9.
     if (code >= 2 && code <= 10) pressed.digit = static_cast<int>(code) - 1;
     const xkb_keysym_t* syms = nullptr;
@@ -71,6 +74,8 @@ void Server::key(const opensal::Key& k) {
             else if (super_key && super_alone && overlay == Overlay::none) act(Action::apps);
         }
         if (down) super_alone = super_key;
+        // Dragged onto a new column: 1-4 is its width (evdev 2-5).
+        if (down && code >= 2 && code <= 5 && drag_width(0, static_cast<int>(code) - 1)) return;
         // An overlay takes the keys (a modifier still reaches the windows: they track it).
         if (!modifier && overlay != Overlay::none) {
             overlay_key(sym, down);
@@ -95,6 +100,7 @@ void Server::key(const opensal::Key& k) {
 
 void Server::pointer_moved() {
     if (drag == Drag::move) { drag_motion(); return; }
+    if (drag == Drag::resize) { resize_motion(); return; }
     if (drag != Drag::none) {
         const double dx = cursor->x - drag_x, dy = cursor->y - drag_y;
         drag_x = cursor->x;
@@ -102,9 +108,14 @@ void Server::pointer_moved() {
         if (drag == Drag::pan) {
             pointer_shape("grabbing");
             lay.pan(dx, dy);
+        } else if (drag == Drag::row_gap) {
+            const bool vertical = lay.flow() == layout::Flow::vertical;
+            pointer_shape(vertical ? "ew-resize" : "ns-resize");
+            lay.drag_row_gap(row_gap.first, row_gap.second, vertical ? dx : dy);
         } else {
-            pointer_shape("ew-resize");
-            lay.drag_gap(gap_column, dx);
+            const bool vertical = lay.flow() == layout::Flow::vertical;
+            pointer_shape(vertical ? "ns-resize" : "ew-resize");
+            lay.drag_gap(gap_column, vertical ? dy : dx);
         }
         arrange(true);
         return;
@@ -121,10 +132,23 @@ void Server::pointer_moved() {
     }
     // A gap between columns: its pointer; dragged, it resizes what is either side.
     if (live() && overlay == Overlay::none && lay.gap_at(cursor->x, cursor->y)) {
-        pointer_shape("ew-resize");
+        pointer_shape(lay.flow() == layout::Flow::vertical ? "ns-resize" : "ew-resize");
         wlr_seat_pointer_clear_focus(seat);
         return;
     }
+    if (live() && overlay == Overlay::none && lay.row_gap_at(cursor->x, cursor->y)) {
+        pointer_shape(lay.flow() == layout::Flow::vertical ? "ew-resize" : "ns-resize");
+        wlr_seat_pointer_clear_focus(seat);
+        return;
+    }
+    // A stacked, floating or canvas window's border: its size (design 2026-10-20 §8).
+    if (overlay == Overlay::none)
+        if (View* v = view_at(cursor->x, cursor->y))
+            if (const auto e = edges_at(*v)) {
+                pointer_shape(resize_shape(e));
+                wlr_seat_pointer_clear_focus(seat);
+                return;
+            }
     double sx = 0, sy = 0;
     wlr_surface* surface = nullptr;
     if (live()) {
@@ -147,16 +171,15 @@ std::optional<layout::Rect> Server::placement_of(layout::Id id) const {
     return std::nullopt;
 }
 
-// The window whose close button is under the pointer (at zoom 1).
-layout::Id Server::close_under_pointer() const {
+// The window whose close button is under the pointer (at zoom 1), where it is drawn.
+layout::Id Server::close_under_pointer() {
     if (!live()) return 0;
-    const auto id = lay.at(cursor->x, cursor->y);
-    if (!id) return 0;
-    const auto r = placement_of(*id);
+    View* v = view_at(cursor->x, cursor->y);
+    const auto r = v ? placement_of(v->id) : std::nullopt;
     if (!r) return 0;
     const auto b = shell::close_button(static_cast<int>(r->width));
-    const double x = cursor->x - r->x, y = cursor->y - r->y;
-    return x >= b.x && x < b.x + b.width && y >= b.y && y < b.y + b.height ? *id : 0;
+    const double x = cursor->x - v->frame->node.x, y = cursor->y - v->frame->node.y;
+    return x >= b.x && x < b.x + b.width && y >= b.y && y < b.y + b.height ? v->id : 0;
 }
 
 void Server::button(const opensal::PointerButton& b) {
@@ -202,6 +225,22 @@ void Server::button(const opensal::PointerButton& b) {
         }
         return;
     }
+    // A border: dragged, the window's size.
+    if (overlay == Overlay::none && b.button == opensal::Button::Left && b.down)
+        if (View* v = view_at(cursor->x, cursor->y))
+            if (const auto e = edges_at(*v)) {
+                resize_start(v, e);
+                return;
+            }
+    // Between two windows of a column: dragged, their heights.
+    if (overlay == Overlay::none && live() && b.button == opensal::Button::Left && b.down)
+        if (const auto row = lay.row_gap_at(cursor->x, cursor->y)) {
+            drag = Drag::row_gap;
+            row_gap = *row;
+            drag_x = cursor->x;
+            drag_y = cursor->y;
+            return;
+        }
     // A gap between columns: dragged to resize, clicked twice to even them out.
     if (overlay == Overlay::none && live() && b.button == opensal::Button::Left)
         if (const auto gap = lay.gap_at(cursor->x, cursor->y)) {
@@ -225,34 +264,51 @@ void Server::button(const opensal::PointerButton& b) {
         if (b.down) overlay_click(cursor->x, cursor->y);
         return;
     }
-    const auto hit = lay.at(cursor->x, cursor->y);
+    // One set of gestures in every arrangement (design 2026-10-20 §6): the
+    // title bar, or Super anywhere, moves; Super with the right button
+    // resizes; the background or the middle button pans; a click focuses.
     if (b.down) {
-        View* v = hit ? view_of(*hit) : nullptr;
+        View* v = view_at(cursor->x, cursor->y);
         if (!live()) {
             // Zoomed out: a click goes in to the window under it.
             if (v) { lay.center(v->id); arrange(); focus(v); }
             return;
         }
-        const bool super = held(wlr_keyboard_modifier::WLR_MODIFIER_LOGO) || held(wlr_keyboard_modifier::WLR_MODIFIER_ALT);
-        const bool on_title = v && cursor->y - v->frame->node.y < kTitle;
+        const bool super = held(wlr_keyboard_modifier::WLR_MODIFIER_LOGO);
+        const bool title = v && on_title(*v, cursor->y);
         // The title bar's other button: the window's menu (design 2026-10-19 §18.1).
-        if (on_title && b.button == opensal::Button::Right) {
+        if (title && b.button == opensal::Button::Right && !super) {
             focus(v);
             open_menu(v, cursor->x, cursor->y);
             return;
         }
-        if (lay.mode() == layout::Mode::canvas && (!v || (super && !on_title))) {
-            // The canvas: dragging its background -- or a window, with Super -- pans.
+        // Twice on a title bar: maximized, or back.
+        if (title && b.button == opensal::Button::Left && !super) {
+            const auto now = std::chrono::steady_clock::now();
+            if (title_pressed_id == v->id && now - title_pressed < std::chrono::milliseconds(400)) {
+                title_pressed_id = 0;
+                lay.toggle_maximized(v->id);
+                arrange();
+                focus(v);
+                return;
+            }
+            title_pressed_id = v->id;
+            title_pressed = now;
+        }
+        if (b.button == opensal::Button::Middle || (!v && b.button == opensal::Button::Left)) {
             drag = Drag::pan;
             drag_x = cursor->x;
             drag_y = cursor->y;
             return;
         }
-        if (v && (super || on_title) && b.button == opensal::Button::Left) {
+        if (v && super && b.button == opensal::Button::Right) {
+            if (resize_start(v)) return;
+        }
+        if (v && (super || title) && b.button == opensal::Button::Left) {
             // A window moved by its title (or anywhere with Super held): it
             // follows the pointer, where it would land shown under it. A
-            // floating or stacked one, or a canvas group with Super, moves itself.
-            drag_start(v, lay.floating(v->id) || lay.mode() == layout::Mode::stack || (lay.mode() == layout::Mode::canvas && super));
+            // floating or stacked one, or a canvas group, moves itself.
+            drag_start(v, lay.floating(v->id) || lay.mode() == layout::Mode::stack || lay.mode() == layout::Mode::canvas);
             return;
         }
         if (v) { focus(v); arrange(); }
@@ -263,8 +319,10 @@ void Server::button(const opensal::PointerButton& b) {
 }
 
 void Server::wheel(const opensal::Wheel& w) {
-    const bool super = held(wlr_keyboard_modifier::WLR_MODIFIER_LOGO) || held(wlr_keyboard_modifier::WLR_MODIFIER_ALT);
-    const bool over_window = lay.at(cursor->x, cursor->y).has_value();
+    // Dragged onto a new column: the wheel is its width.
+    if (w.dy != 0 && drag_width(w.dy > 0 ? 1 : -1, 0)) return;
+    const bool super = held(wlr_keyboard_modifier::WLR_MODIFIER_LOGO);
+    const bool over_window = view_at(cursor->x, cursor->y) != nullptr;
     if (lay.mode() == layout::Mode::canvas && (super || !over_window || !live())) {
         // The canvas: the wheel on its background (or with Super, anywhere)
         // zooms around the pointer, so the point under it stays put; a
@@ -275,7 +333,7 @@ void Server::wheel(const opensal::Wheel& w) {
         return;
     }
     if (lay.mode() == layout::Mode::tile && super) {
-        lay.pan(w.dy * 60, 0);
+        lay.pan(w.dy * 60, w.dy * 60);
         arrange();
         return;
     }
