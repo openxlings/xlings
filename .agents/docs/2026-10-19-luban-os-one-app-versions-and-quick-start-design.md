@@ -1257,3 +1257,43 @@ ip addr; ip route; ls -l /etc/resolv.conf; cat /etc/resolv.conf; cat /proc/net/p
 ps -ef | grep -c udhcpc; getent hosts gitcode.com; hostname; cat /etc/hostname
 ```
 宿主上：`env | grep -i _proxy`。
+
+## 28. `luban/` 的目录树（评审追加）
+
+### 28.1 现状的问题
+
+1. **`src/` 下重复一层**：`xdesk-layout/src/layout/`、`os/system/src/stage0/` 只有一个模块，多出来的一层目录不表达任何东西；
+   多模块的包（`xdesk-base/src/{apps,config,os,term}`、`xdesk-compositor/src/{compositor,draw,shell,native}`）一个模块一个子目录是对的。
+2. **`kits/` 混了两类东西**：可复用、不认识 Luban 的组件（`opensal-wlr`、`openhal-host`、`imkit`、`tray`），和一个产品——xdesk 桌面——的几个部分
+   （`xdesk-base`、`xdesk-layout`、`xdesk-compositor`）；而 xdesk 的程序在顶层 `apps/xdesk`，可它从不在宿主上运行，只在 Luban 系统里运行。
+3. **`os/desktop` 名不副实**：它是 Luban OS 应用在宿主上的窗口库（SDL、ImGui），名字容易与 xdesk 混淆。
+
+### 28.2 目录树
+
+```
+apps/                 在宿主上运行的程序：luban（也是 luban-init）、luban-os、gui、xdev
+luban/
+  specs/              规范：opensal、openhal、openas、opencaps
+  kits/               可复用、不认识 Luban 的实现：opensal-wlr、openhal-host、imkit、tray
+  xdesk/              xdesk 桌面，一个独立的项目
+    base/ layout/ compositor/ app/      app 即 `xdesk` 程序（由 apps/xdesk 移来）
+  apps/               在 Luban 系统里运行、本身不是独立项目的程序（规则现在写下；第一个成员到来时建目录）
+  os/                 Luban OS 本身：system、service、vm、cli、compat、window（由 desktop 改名）
+```
+
+### 28.3 规则
+
+- 只有一个模块的包，文件直接放在 `src/`；多个模块的包，一个模块一个子目录；`native/` 仍是 C 绑定的目录。
+- 包名、模块名不变（`xdesk-base`、`xdesk.layout`），import 不改；只改路径、lint、文档，**只移动、不改行为**的单独 commit。
+- `luban/xdesk/` 与 `specs/`、`kits/` 一样是独立项目：不 import `xlings.*`、`luban.*`（`tools/lint_layer_deps.sh` 按目录检查），可以整棵子树移出。
+- 顶层 `apps/` 只放宿主上的程序；在系统里运行的程序进 `luban/`（独立项目在自己的目录里，其余在 `luban/apps/`）。
+
+### 28.4 待定（评审）
+
+- xdesk 的程序放 `luban/xdesk/app`（**推荐**：xdesk 一棵子树，可整体移出）还是 `luban/apps/xdesk`（`luban/apps/` 现在就有成员，但 xdesk 分在两处）。
+
+### 28.5 任务
+
+| ID | 任务 | 依赖 |
+|---|---|---|
+| X36 | `refactor`：单模块包去掉 `src/` 下重复的一层；`luban/xdesk/{base,layout,compositor,app}`；`os/desktop` → `os/window`；lint 的路径与规则；`luban/README.md`、`docs/91-architecture.md`、`docs/luban/91-architecture.md` 与中文版、AGENTS.md 的目录树（只移动） | X8 |
