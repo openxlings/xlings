@@ -21,6 +21,27 @@ namespace luban::vm {
 
 namespace {
 
+// A machine's size, from its host's (design 2026-10-20 G28): a desktop draws
+// with the CPU (llvmpipe, pixman), and 2 GB and 2 processors made LXQt and
+// KDE slow. Half the host's processors (2 to 8), a quarter of its memory
+// (2 to 8 GB); `luban config <n> --memory` still sets it.
+std::string default_memory_mb_() {
+    std::ifstream in("/proc/meminfo");
+    std::string key;
+    long long kb = 0;
+    while (in >> key >> kb) {
+        if (key == "MemTotal:") break;
+        in.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
+        kb = 0;
+    }
+    const long long quarter = kb / 1024 / 4;
+    return std::to_string(std::clamp<long long>(quarter, 2048, 8192));
+}
+std::string default_cpus_() {
+    const unsigned n = std::thread::hardware_concurrency();
+    return std::to_string(std::clamp(n / 2, 2u, 8u));
+}
+
 using Json = nlohmann::json;
 namespace platform = xlings::platform;
 namespace proto = luban::vm::protocol;
@@ -306,10 +327,10 @@ int start_impl_(const service::Context& c, std::string_view name, const EnterOpt
         }
     }
     const bool kvm = kvm_();
-    const auto memory = o.memory.empty() ? std::string("2048") : o.memory;
+    const auto memory = o.memory.empty() ? default_memory_mb_() : o.memory;
     std::vector<std::string> q{qemu->bin.string()};
     if (!arch.machine.empty()) q.insert(q.end(), {"-M", std::string(arch.machine)});
-    q.insert(q.end(), {"-m", memory, "-smp", "2"});
+    q.insert(q.end(), {"-m", memory, "-smp", default_cpus_()});
     if (kvm) q.insert(q.end(), {"-enable-kvm", "-cpu", "host"});
     else if (!arch.cpu.empty()) q.insert(q.end(), {"-cpu", std::string(arch.cpu)});
     const std::string console = arch.name == "aarch64" ? "ttyAMA0" : "ttyS0";
@@ -519,7 +540,7 @@ int boot_image_(const service::Context& c, const fs::path& image, const EnterOpt
     const auto console = dir / "console.sock";
     std::vector<std::string> q{qemu->bin.string()};
     if (!arch.machine.empty()) q.insert(q.end(), {"-M", std::string(arch.machine)});
-    q.insert(q.end(), {"-m", o.memory.empty() ? std::string("2048") : o.memory, "-smp", "2"});
+    q.insert(q.end(), {"-m", o.memory.empty() ? default_memory_mb_() : o.memory, "-smp", default_cpus_()});
     if (kvm_()) q.insert(q.end(), {"-enable-kvm", "-cpu", "host"});
     else if (!arch.cpu.empty()) q.insert(q.end(), {"-cpu", std::string(arch.cpu)});
     if (arch.firmware_required) q.insert(q.end(), {"-bios", firmware->string()});

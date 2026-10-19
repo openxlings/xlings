@@ -200,6 +200,7 @@ struct Compositor {
     // when `cursor`: a 4x4 image, its hotspot (2, 3).
     bool cursor { false };
     std::uint32_t cursor_buffer { 0 };
+    std::uint32_t cursor_session { 0 };
     int frames { 0 };
     // Its windows, listed (wlr foreign-toplevel) when `toplevels`: one, minimized.
     bool toplevels { false };
@@ -313,6 +314,7 @@ struct Compositor {
             EXPECT_EQ(objects[source], "ext_image_capture_source_v1");
             EXPECT_EQ(objects[pointer], "wl_pointer");
             objects[session] = "ext_image_copy_capture_cursor_session_v1";
+            cursor_session = session;
             send(session, 0, wl::Args{});                          // enter
             send(session, 3, wl::Args{}.i(2).i(3));                // hotspot
         } else if (iface == "ext_image_copy_capture_cursor_session_v1" && e.opcode == 1) {   // get_capture_session
@@ -535,6 +537,16 @@ XTEST(LubanWlr, ACompositorsPointerCapturedApartIsTheWindowsToDraw, .area = "lub
     EXPECT_EQ(image->hotspot_y, 3u);
     EXPECT_EQ(static_cast<unsigned char>(image->bytes[5]), 5);
     EXPECT_EQ(c.overlays.back(), 0) << "frames without the pointer once the window draws it";
+    // The pointer leaves the output and comes back, its image unchanged: the
+    // window draws none, then the same image again (design 2026-10-20 G29: a
+    // nested KWin's pointer stayed hidden after leaving once).
+    const auto images = p.count('C');
+    c.send(c.cursor_session, 1, wl::Args{});                       // leave
+    ASSERT_TRUE(p.until([&] {
+        return std::ranges::any_of(p.got, [](const wire::Message& m) { return m.kind == 'c' && m.payload == "none"; });
+    }, c));
+    c.send(c.cursor_session, 0, wl::Args{});                       // enter
+    EXPECT_TRUE(p.until([&] { return p.count('C') > images; }, c)) << "the image again after it came back";
     std::vector<int> close{p.out};
     platform::close_fds(close);
     const auto end = std::chrono::steady_clock::now() + std::chrono::seconds(5);

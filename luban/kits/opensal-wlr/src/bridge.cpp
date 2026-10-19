@@ -59,7 +59,7 @@ constexpr std::uint16_t toplevel_unset_minimized = 3, toplevel_activate = 4, top
 constexpr std::uint16_t sources_create_source = 0;
 constexpr std::uint16_t copy_create_pointer_cursor_session = 1;
 constexpr std::uint16_t cursor_get_capture_session = 1;
-constexpr std::uint16_t cursor_leave = 1, cursor_hotspot = 3;
+constexpr std::uint16_t cursor_enter = 0, cursor_leave = 1, cursor_hotspot = 3;
 constexpr std::uint16_t session_create_frame = 0;
 constexpr std::uint16_t session_buffer_size = 0, session_shm_format = 1, session_done = 4, session_stopped = 5;
 constexpr std::uint16_t capture_destroy = 0, capture_attach_buffer = 1, capture_damage_buffer = 2, capture_capture = 3;
@@ -70,6 +70,8 @@ constexpr std::uint16_t capture_ready = 3, capture_failed = 4;
 constexpr std::uint32_t kStateMinimized = 1, kStateActivated = 2;
 
 constexpr std::uint32_t kShmArgb = 0, kShmXrgb = 1;
+// ext_image_copy_capture_frame_v1.failed: unknown, buffer_constraints, stopped.
+constexpr std::uint32_t kFailureUnknown = 0;
 
 struct Global { std::uint32_t name { 0 }; std::uint32_t version { 0 }; };
 
@@ -266,6 +268,11 @@ void Bridge::handle_(const wl::Event& e) {
             if (!cursor_.bytes.empty()) cursor_ready_();
         } else if (e.opcode == op::cursor_leave) {
             if (send_(opensal::wire::encode('c', "none"))) cursor_sent_ = "none";
+        } else if (e.opcode == op::cursor_enter) {
+            // Back over the output: its image again, unchanged as it may be
+            // (an image is captured only when it changes; design 2026-10-20
+            // G29: a nested KWin's pointer stayed hidden after it left once).
+            if (!cursor_.bytes.empty()) cursor_ready_();
         }
         return;
     }
@@ -287,9 +294,14 @@ void Bridge::handle_(const wl::Event& e) {
             cursor_ready_();
             capture_cursor_();
         } else if (e.opcode == op::capture_failed) {
-            // Its size changed (a new `done` follows) or it stopped (`stopped`).
+            // Its size changed (buffer constraints: a new `done` follows), it
+            // stopped (`stopped` follows), or it failed otherwise -- then the
+            // next image is asked for at once: a pointer whose capture is not
+            // asked again keeps the image it had (G29: a stuck text cursor).
+            const auto reason = r.u();
             c_.send(cursor_frame_, op::capture_destroy, wl::Args{});
             cursor_frame_ = 0;
+            if (reason == kFailureUnknown) capture_cursor_();
         }
         return;
     }
