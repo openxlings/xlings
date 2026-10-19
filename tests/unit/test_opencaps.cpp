@@ -54,6 +54,12 @@ XTEST(Opencaps, WhatAPartProvidesIsRegistered, .area = "luban", .covers = {"LUBA
     }
     for (const auto& [name, ls] : levels) EXPECT_EQ(*ls.rbegin(), static_cast<int>(ls.size())) << name;
     EXPECT_TRUE(opencaps::conformance::check({{"root-layout", 2}, {"host-gpu", 1}}).ok());
+    // A system's capability names the package that brings it (design 2026-10-19 §12.2).
+    const auto cursor = std::ranges::find(opencaps::registry(), std::string_view("desktop-cursor"), &opencaps::Level::name);
+    ASSERT_NE(cursor, opencaps::registry().end());
+    EXPECT_EQ(cursor->package, "luban:cursors");
+    EXPECT_EQ(opencaps::known_level("tray-protocol"), 1);
+    EXPECT_EQ(opencaps::known_level("app-capabilities"), 1);
     const auto bad = opencaps::conformance::check({{"root-layout", 3}, {"made-up", 1}});
     EXPECT_EQ(bad.failed.size(), 2u);
 }

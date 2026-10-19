@@ -81,6 +81,32 @@ std::optional<std::pair<FrameHeader, std::string_view>> decode_frame(std::string
     return std::pair{h, rows};
 }
 
+std::string encode_cursor_image(const CursorImage& c) {
+    std::string payload = std::format("{} {} {} {} {}\n", c.size.width, c.size.height, c.hotspot_x, c.hotspot_y,
+                                      c.size.width * 4);
+    payload.append(c.bytes);
+    return encode('C', payload);
+}
+
+std::optional<CursorImage> decode_cursor_image(std::string_view payload) {
+    const auto nl = payload.find('\n');
+    if (nl == std::string_view::npos) return std::nullopt;
+    const auto w = words_(payload.substr(0, nl));
+    if (w.size() != 5) return std::nullopt;
+    CursorImage c;
+    std::uint32_t stride = 0;
+    if (!num_(w[0], c.size.width) || !num_(w[1], c.size.height) || !num_(w[2], c.hotspot_x) || !num_(w[3], c.hotspot_y)
+        || !num_(w[4], stride))
+        return std::nullopt;
+    if (c.size.width == 0 || c.size.height == 0 || c.size.width > kMaxCursorSide || c.size.height > kMaxCursorSide
+        || c.hotspot_x >= c.size.width || c.hotspot_y >= c.size.height || stride != c.size.width * 4)
+        return std::nullopt;
+    const auto rows = payload.substr(nl + 1);
+    if (rows.size() != std::size_t(stride) * c.size.height) return std::nullopt;
+    c.bytes = std::string(rows);
+    return c;
+}
+
 std::string encode_event(const Event& e) {
     return std::visit([](const auto& v) -> std::string {
         using T = std::decay_t<decltype(v)>;
@@ -97,6 +123,7 @@ std::string encode_event(const Event& e) {
         else if constexpr (std::is_same_v<T, ClipboardText>) return "clipboard " + v.text;
         else if constexpr (std::is_same_v<T, Launch>) return "launch " + v.app;
         else if constexpr (std::is_same_v<T, Activate>) return std::format("activate {}", v.window);
+        else if constexpr (std::is_same_v<T, PointerRelative>) return std::format("relative {} {}", v.dx, v.dy);
         else return "presented";
     }, e);
 }
@@ -156,6 +183,9 @@ std::optional<Event> decode_event(std::string_view p) {
     } else if (name == "activate" && w.size() == 1) {
         Activate a;
         if (num_(w[0], a.window)) return a;
+    } else if (name == "relative" && w.size() == 2) {
+        PointerRelative r;
+        if (num_(w[0], r.dx) && num_(w[1], r.dy)) return r;
     }
     return std::nullopt;
 }

@@ -6,13 +6,17 @@ namespace opencaps {
 
 namespace {
 
-constexpr std::array<Level, 6> kRegistry{{
+constexpr std::array<Level, 8> kRegistry{{
     {"root-layout", 1, "a root's /usr is a link to its generation", "a system; luban, the Luban OS app"},
     {"root-layout", 2, "/usr is a mount point, its generation recorded in etc/xlings/usr", "a system; luban, the Luban OS app"},
     {"luban-manifest", 1, "a system package's manifest carries a luban object (settings, os, requires)", "luban"},
     {"agent-display", 1, "a machine's agent opens a desktop on a display channel and bridges it", "a machine's agent"},
-    {"desktop-cursor", 1, "a default cursor theme (/usr/share/icons/default)", "a system"},
+    {"desktop-cursor", 1, "a default cursor theme (/usr/share/icons/default)", "a system", "luban:cursors"},
     {"host-gpu", 1, "the window showing a system draws on the host's GPU", "the Luban OS app"},
+    {"app-capabilities", 1, "the app answers `__capabilities --json` (version, provides, needs) without a display",
+     "the Luban OS app"},
+    {"tray-protocol", 1, "one tray process per home; windows register, report jobs and are raised over its socket",
+     "the Luban OS tray and its windows"},
 }};
 
 std::string_view trim_(std::string_view s) {

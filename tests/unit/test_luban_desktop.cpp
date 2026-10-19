@@ -182,3 +182,27 @@ XTEST(OpensalWire, AShellsListsAndRequestsCrossWhole, .area = "luban", .covers =
     EXPECT_EQ(std::get<opensal::Activate>(*activate).window, 9u);
     EXPECT_FALSE(wire::decode_event("activate x"));
 }
+
+XTEST(OpensalWire, APointerImageAndALockCrossWhole, .area = "luban", .covers = {"LUBAN-DESKTOP-WIRE", "LUBAN-OS-POINTER"}) {
+    opensal::CursorImage c{.size = {2, 3}, .hotspot_x = 1, .hotspot_y = 2, .bytes = std::string(2 * 3 * 4, '\x7f')};
+    wire::Decoder d;
+    d.feed(wire::encode_cursor_image(c));
+    auto m = d.next();
+    ASSERT_TRUE(m && *m);
+    EXPECT_EQ((*m)->kind, 'C');
+    auto back = wire::decode_cursor_image((*m)->payload);
+    ASSERT_TRUE(back);
+    EXPECT_EQ(back->size, c.size);
+    EXPECT_EQ(back->hotspot_y, 2u);
+    EXPECT_EQ(back->bytes, c.bytes);
+    EXPECT_FALSE(wire::decode_cursor_image("2 3 2 0 8\n" + c.bytes)) << "the hotspot outside the image";
+    EXPECT_FALSE(wire::decode_cursor_image(std::format("300 1 0 0 1200\n{}", std::string(1200, 'x')))) << "too wide";
+    EXPECT_FALSE(wire::decode_cursor_image("2 3 1 2 8\nshort")) << "rows shorter than the image";
+    auto rel = wire::decode_event(wire::encode_event(opensal::PointerRelative{-3.5, 2}));
+    ASSERT_TRUE(rel);
+    EXPECT_EQ(std::get<opensal::PointerRelative>(*rel).dx, -3.5);
+    // Every name the theme draws, and none twice.
+    std::set<std::string_view> names(opensal::kCursors.begin(), opensal::kCursors.end());
+    EXPECT_EQ(names.size(), opensal::kCursors.size());
+    EXPECT_TRUE(names.contains("nwse-resize") && names.contains("none"));
+}

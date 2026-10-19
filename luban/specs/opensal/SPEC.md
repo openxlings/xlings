@@ -1,4 +1,4 @@
-# opensal Specification, version 0.2
+# opensal Specification, version 0.3
 
 ## 1. Scope
 
@@ -11,7 +11,8 @@ It does not define how a surface is acquired.
 2.1 A provider provides each interface whole or not at all.
 
 2.2 `Surface` is the core interface; `Pointer`, `Keyboard`, `Mode`, `Density`,
-`Capture`, `Cursor`, `Text`, `Clipboard` and `Shell` are optional.
+`Capture`, `Cursor`, `CursorImage`, `PointerLock`, `Text`, `Clipboard` and
+`Shell` are optional.
 
 2.3 A consumer learns which interfaces it has by asking (the provided set),
 never by trying an operation.
@@ -35,12 +36,27 @@ alpha, `stride` bytes per row.
 
 5.1 A surface gives back: resized, density changed, key (X11 keysym values
 and modifier bits), text commit, preedit, pointer motion, pointer button,
-wheel, focus, close requested, clipboard text, frame presented.
+wheel, focus, close requested, clipboard text, frame presented, and -- while
+the pointer is locked -- relative pointer motion.
 
 5.2 Frame presented is pacing: a provider that paces says it once it has
 shown what it was sent, and the consumer sends the next frame only after it.
 
-5.3 Cursor shapes are named by their CSS names.
+5.3 Cursor shapes are named by their CSS names (`kCursors`: default, text,
+pointer, grab, grabbing, move, ew-resize, ns-resize, nwse-resize, nesw-resize,
+crosshair, wait, progress, not-allowed, help, none).
+
+5.3.1 Who draws the pointer: a consumer that wants `Cursor` draws no pointer
+into its frames; it names the shape (`'c'`) or, with `CursorImage`, sends one
+(`'C'`: an image of at most 256 by 256 pixels and its hotspot), and the
+provider draws it where the pointer is, with its own system's pointer, so a
+moving pointer costs no frame. A consumer that does not want `Cursor` draws
+its own. Exactly one pointer is ever shown.
+
+5.3.2 `PointerLock`: the consumer asks (`'l'` 1) for the pointer to be held;
+the provider hides it, keeps it in place, gives relative motion instead of
+pointer motion, and releases it on its own chord or when the consumer asks
+(`'l'` 0) or focus leaves.
 
 5.4 `Shell`: the provider is the shell of a consumer that has none of its
 own. The consumer tells it its applications (an id and a name) and its
@@ -65,7 +81,8 @@ answers with hello (the interfaces it provides, its size, its density, and
 whether it paces).
 
 6.5 A version adds interfaces and messages; it changes none. 0.2 added
-`Shell`.
+`Shell`; 0.3 added `CursorImage` (`'C'`), `PointerLock` (`'l'`, relative
+motion) and the cursor names from grabbing on.
 
 ## 7. Conformance
 

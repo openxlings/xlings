@@ -27,6 +27,13 @@ enum class Interface : std::uint32_t {
     Text      = 1u << 7,   // text the host's input method composed, and its preedit
     Clipboard = 1u << 8,   // the host's clipboard
     Shell     = 1u << 9,   // the host lists the consumer's windows and starts its programs (0.2)
+    // Cursor at level 2: an image the consumer sends, drawn by the provider
+    // like a named shape (0.3). A consumer that wants Cursor draws no pointer
+    // into its frames: the provider draws it, where the pointer is.
+    CursorImage = 1u << 10,
+    // The pointer held in place, its movement given as relative motion: a
+    // game, a 3D program (0.3). The provider releases it on its own chord.
+    PointerLock = 1u << 11,
 };
 using Interfaces = std::uint32_t;
 constexpr Interfaces operator|(Interface a, Interface b) { return static_cast<Interfaces>(a) | static_cast<Interfaces>(b); }
@@ -61,6 +68,8 @@ struct Key {
 struct TextCommit { std::string text; };
 struct Preedit { std::string text; std::int32_t cursor { -1 }; };
 struct PointerMotion { double x { 0 }, y { 0 }; };
+// PointerLock: how far the pointer moved while it is held (device pixels).
+struct PointerRelative { double dx { 0 }, dy { 0 }; };
 struct PointerButton { Button button { Button::Left }; bool down { true }; std::uint32_t mods { 0 }; };
 struct Wheel { double dx { 0 }, dy { 0 }; };
 struct Focus { bool in { true }; };
@@ -72,7 +81,7 @@ struct Launch { std::string app; };
 struct Activate { std::uint32_t window { 0 }; };
 
 using Event = std::variant<Resized, DensityChanged, Key, TextCommit, Preedit, PointerMotion, PointerButton, Wheel,
-                           Focus, CloseRequested, ClipboardText, FramePresented, Launch, Activate>;
+                           Focus, CloseRequested, ClipboardText, FramePresented, Launch, Activate, PointerRelative>;
 
 // Shell: an application of the consumer's session and a window, as the consumer tells them.
 struct Application {
@@ -90,7 +99,18 @@ struct Window {
 };
 
 // The pointer shapes `Cursor` names (CSS names, which every toolkit maps).
-inline constexpr std::array<std::string_view, 8> kCursors{"default", "text", "pointer", "grab", "move",
-                                                          "ew-resize", "ns-resize", "none"};
+// The Luban pointer theme (luban:cursors) draws every one but "none".
+inline constexpr std::array<std::string_view, 16> kCursors{
+    "default", "text", "pointer", "grab", "grabbing", "move", "ew-resize", "ns-resize", "nwse-resize",
+    "nesw-resize", "crosshair", "wait", "progress", "not-allowed", "help", "none"};
+
+// CursorImage: a pointer the consumer drew (pixels as a frame's, premultiplied
+// BGRA), its hotspot inside it. At most kMaxCursorSide on a side.
+inline constexpr std::uint32_t kMaxCursorSide = 256;
+struct CursorImage {
+    Size size;
+    std::uint32_t hotspot_x { 0 }, hotspot_y { 0 };
+    std::string bytes;            // size.width * 4 per row
+};
 
 }  // namespace opensal

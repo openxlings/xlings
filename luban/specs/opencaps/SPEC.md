@@ -46,14 +46,20 @@ is behind.
 
 ## 5. The registry
 
-| Name | Level | What it adds | Provided by | Since |
-|---|---|---|---|---|
-| `root-layout` | 1 | A system's root has `/usr` as a link to its generation | a system (its tree); a reader of roots (luban, the Luban OS app) | Luban 2026.10.11 |
-| `root-layout` | 2 | `/usr` is a mount point, the generation mounted on it and recorded in `etc/xlings/usr` | as level 1 | Luban 2026.10.16.1 |
-| `luban-manifest` | 1 | A system package's manifest carries a `luban` object: `settings`, `os`, `requires` | luban | Luban 2026.10.19 |
-| `agent-display` | 1 | A machine's agent opens a desktop session on a display channel and bridges it (opensal.wire) | a machine's agent | Luban 2026.10.13 |
-| `desktop-cursor` | 1 | A system has a default cursor theme (`/usr/share/icons/default`) | a system | Luban 2026.10.16.1 |
-| `host-gpu` | 1 | The window that shows a system draws on the host's GPU | the Luban OS app | Luban 2026.10.19 |
+| Name | Level | What it adds | Provided by | Package | Since |
+|---|---|---|---|---|---|
+| `root-layout` | 1 | A system's root has `/usr` as a link to its generation | a system (its tree); a reader of roots (luban, the Luban OS app) | | Luban 2026.10.11 |
+| `root-layout` | 2 | `/usr` is a mount point, the generation mounted on it and recorded in `etc/xlings/usr` | as level 1 | | Luban 2026.10.16.1 |
+| `luban-manifest` | 1 | A system package's manifest carries a `luban` object: `settings`, `os`, `requires` | luban | | Luban 2026.10.19 |
+| `agent-display` | 1 | A machine's agent opens a desktop session on a display channel and bridges it (opensal.wire) | a machine's agent | | Luban 2026.10.13 |
+| `desktop-cursor` | 1 | A system has a default cursor theme (`/usr/share/icons/default`) | a system | `luban:cursors` | Luban 2026.10.16.1 |
+| `host-gpu` | 1 | The window that shows a system draws on the host's GPU | the Luban OS app | | Luban 2026.10.19 |
+| `app-capabilities` | 1 | The app answers `luban-os __capabilities --json` (version, provides, needs) before it opens a display | the Luban OS app | | Luban 2026.10.19.1 |
+| `tray-protocol` | 1 | One tray process per home; its windows register, report jobs and are raised over its socket (NDJSON) | the Luban OS tray and its windows | | Luban 2026.10.19.1 |
+
+**Package**: for a capability a system has, the package that brings it to a
+system that lacks it -- what a reader offers besides upgrading the whole
+system (design 2026-10-19 §12.2).
 
 A new capability, or a new level of one, is a row here and a provider that
 provides it; nothing else changes.
