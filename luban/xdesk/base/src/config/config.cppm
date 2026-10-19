@@ -8,6 +8,7 @@
 // may repeat (autostart). What a file gets wrong is said, by line, and
 // skipped -- a typo never keeps the desktop from starting.
 export module xdesk.config;
+export import :state;
 
 import std;
 

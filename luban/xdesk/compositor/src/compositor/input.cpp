@@ -31,86 +31,24 @@ bool Server::held(wlr_keyboard_modifier m) {
 }
 
 // A chord the desktop keeps for itself: Super, or Alt where the host
-// keeps Super (docs/luban/08-desktop.md lists them).
+// keeps Super -- what the key table says (keys.json over the desktop's own).
 bool Server::shortcut(std::uint32_t code) {
-    const bool super = held(wlr_keyboard_modifier::WLR_MODIFIER_LOGO);
-    const bool alt = held(wlr_keyboard_modifier::WLR_MODIFIER_ALT);
-    const bool shift = held(wlr_keyboard_modifier::WLR_MODIFIER_SHIFT);
-    if (!super && !alt) return false;
-    // Workspaces by the digit keys' codes (Shift changes their symbols).
-    if (code >= 2 && code <= 5) {
-        const int n = static_cast<int>(code) - 2;
-        if (shift) { if (const auto f = lay.focused()) lay.send_to(*f, n); }
-        else lay.show(n);
-        arrange();
-        follow_focus();
-        return true;
-    }
+    const bool super = held(wlr_keyboard_modifier::WLR_MODIFIER_LOGO) || held(wlr_keyboard_modifier::WLR_MODIFIER_ALT);
+    if (!super) return false;
+    Chord pressed{.super = super, .ctrl = held(wlr_keyboard_modifier::WLR_MODIFIER_CTRL), .shift = held(wlr_keyboard_modifier::WLR_MODIFIER_SHIFT)};
+    // A digit by its place (Shift changes what it types): evdev 2-10 are 1-9.
+    if (code >= 2 && code <= 10) pressed.digit = static_cast<int>(code) - 1;
     const xkb_keysym_t* syms = nullptr;
     const int n = xkb_state_key_get_syms(keyboard.xkb_state, code + 8, &syms);
-    for (int k = 0; k < n; ++k) {
-        const auto sym = xkb_keysym_to_lower(syms[k]);
-        auto way = [&](layout::Direction d) {
-            if (shift) lay.move(d); else lay.move_focus(d);
-            arrange();
-            follow_focus();
-            return true;
-        };
-        switch (sym) {
-            case key::Return: launch(terminal_argv({})); return true;
-            case key::space: case key::d:
-                if (launcher.is_open()) { launcher.close(); draw_launcher(); }
-                else open_launcher();
-                return true;
-            case key::q: if (focused()) wlr_xdg_toplevel_send_close(focused()->toplevel); return true;
-            case key::Left: case key::h: return way(layout::Direction::left);
-            case key::Right: case key::l: return way(layout::Direction::right);
-            case key::Up: case key::k: return way(layout::Direction::up);
-            case key::Down: case key::j: return way(layout::Direction::down);
-            case key::f:
-                // Stacked: the whole output and back; else floating and back.
-                if (const auto f = lay.focused()) {
-                    if (lay.mode() == layout::Mode::stack && !lay.floating(*f)) lay.toggle_maximized(*f);
-                    else lay.toggle_floating(*f);
-                    arrange();
-                }
-                return true;
-            case key::r:
-                if (shift) lay.cycle_height(); else lay.cycle_width();
-                arrange();
-                return true;
-            case key::m:
-                // The next arrangement for this workspace (design 2026-10-19 §17.3).
-                lay.set_mode(layout::next(lay.mode()));
-                arrange();
-                draw_shell();
-                follow_focus();
-                return true;
-            case key::bracketleft: lay.join(); arrange(); follow_focus(); return true;
-            case key::bracketright: lay.split(); arrange(); follow_focus(); return true;
-            case key::minus: case key::equal: case key::plus: {
-                const bool in = sym != key::minus;
-                // The canvas: the view; else the focused column or window.
-                if (canvas()) lay.zoom_at(in ? 1.1 : 1 / 1.1, logical_w() / 2.0, logical_h() / 2.0);
-                else lay.resize(in ? 0.05 : -0.05);
-                arrange();
-                return true;
-            }
-            case key::o: lay.overview(!lay.in_overview()); arrange(); return true;
-            case key::Tab:
-                if (!alt) break;
-                // The least recently focused window to the front.
-                for (auto it = views.rbegin(); it != views.rend(); ++it)
-                    if (it->mapped && &*it != focused() && lay.workspace_of(it->id) == lay.workspace()) {
-                        focus(&*it);
-                        arrange();
-                        return true;
-                    }
-                return true;
-            default: break;
-        }
+    if (n > 0) pressed.sym = xkb_keysym_to_lower(syms[0]);
+    auto found = keys.match(pressed);
+    if (!found && pressed.digit) {
+        pressed.digit = 0;
+        found = keys.match(pressed);
     }
-    return false;
+    if (!found) return false;
+    act(*found);
+    return true;
 }
 
 void Server::key(const opensal::Key& k) {
@@ -122,6 +60,22 @@ void Server::key(const opensal::Key& k) {
                                   .state = down ? wl_keyboard_key_state::WL_KEYBOARD_KEY_STATE_PRESSED
                                                 : wl_keyboard_key_state::WL_KEYBOARD_KEY_STATE_RELEASED};
         wlr_keyboard_notify_key(&keyboard, &ev);
+        const xkb_keysym_t* syms = nullptr;
+        const xkb_keysym_t sym = xkb_state_key_get_syms(keyboard.xkb_state, code + 8, &syms) > 0 ? syms[0] : 0;
+        const bool super_key = sym == key::Super_L || sym == key::Super_R;
+        const bool modifier = super_key || sym == key::Alt_L || sym == key::Alt_R;
+        // Super let go: what the chooser or the switcher holds is chosen; Super
+        // pressed and let go alone opens the apps (design 2026-10-19 §16.3).
+        if (!down && modifier) {
+            if (overlay == Overlay::chooser || overlay == Overlay::switcher) close_overlay(true);
+            else if (super_key && super_alone && overlay == Overlay::none) act(Action::apps);
+        }
+        if (down) super_alone = super_key;
+        // An overlay takes the keys (a modifier still reaches the windows: they track it).
+        if (!modifier && overlay != Overlay::none) {
+            overlay_key(sym, down);
+            return;
+        }
         if (down && shortcut(code)) return;
         if (launcher.is_open()) {
             if (down) launcher_key(code);
@@ -223,6 +177,11 @@ void Server::button(const opensal::PointerButton& b) {
             if (View* v = view_of(id)) wlr_xdg_toplevel_send_close(v->toplevel);
         return;
     }
+    // An overlay is the pointer's while it is up: a click chooses, or closes it.
+    if (overlay != Overlay::none) {
+        if (b.down) overlay_click(cursor->x, cursor->y);
+        return;
+    }
     const auto hit = lay.at(cursor->x, cursor->y);
     if (b.down) {
         View* v = hit ? view_of(*hit) : nullptr;
@@ -233,6 +192,12 @@ void Server::button(const opensal::PointerButton& b) {
         }
         const bool super = held(wlr_keyboard_modifier::WLR_MODIFIER_LOGO) || held(wlr_keyboard_modifier::WLR_MODIFIER_ALT);
         const bool on_title = v && cursor->y - v->frame->node.y < kTitle;
+        // The title bar's other button: the window's menu (design 2026-10-19 §18.1).
+        if (on_title && b.button == opensal::Button::Right) {
+            focus(v);
+            open_menu(v, cursor->x, cursor->y);
+            return;
+        }
         if (lay.mode() == layout::Mode::canvas && (super || !v)) {
             // The canvas: dragging its background -- or anywhere, with Super -- pans.
             drag = Drag::pan;

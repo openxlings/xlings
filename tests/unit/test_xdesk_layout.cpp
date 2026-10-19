@@ -363,3 +363,36 @@ XTEST(XdeskLayout, EachWorkspaceKeepsItsOwnArrangement, .area = "luban", .covers
     EXPECT_EQ(ps.size(), 2u);
     EXPECT_LE(of(ps, 2).rect.width, 1200);
 }
+
+XTEST(XdeskLayout, AlwaysOnTopIsAboveEverythingAndOnEveryWorkspaceGoesAlong, .area = "luban", .covers = {"XDESK-WINDOW-MENU"}) {
+    Layout l({.mode = Mode::tile, .gap = 10, .workspaces = 2});
+    l.add(1, {600, 400});
+    l.add(2, {400, 300}, true);
+    l.add(3, {300, 200});
+    l.arrange(kOutput);
+    // Always on top: floating, drawn last -- above another floating window.
+    l.toggle_pinned(3);
+    EXPECT_TRUE(l.pinned(3));
+    EXPECT_TRUE(l.floating(3));
+    auto ps = l.arrange(kOutput);
+    EXPECT_EQ(ps.back().id, 3u);
+    EXPECT_TRUE(ps.back().pinned);
+    // On every workspace: shown on the other one too, where it was.
+    l.toggle_sticky(2);
+    const auto where = of(l.arrange(kOutput), 2).rect;
+    l.show(1);
+    ps = l.arrange(kOutput);
+    EXPECT_EQ(of(ps, 2).rect, where);
+    EXPECT_EQ(l.workspace_of(2), 1);
+    EXPECT_FALSE(std::ranges::contains(ps, layout::Id{1}, &layout::Placement::id));
+    // Back to one workspace: the one shown.
+    l.toggle_sticky(2);
+    l.show(0);
+    EXPECT_FALSE(std::ranges::contains(l.arrange(kOutput), layout::Id{2}, &layout::Placement::id));
+    // A session's arrangement given to an empty workspace before anything is on it.
+    l.preset(1, Mode::canvas);
+    EXPECT_EQ(l.mode_of(1), Mode::tile) << "a workspace with windows keeps its own";
+    Layout fresh({.mode = Mode::tile, .workspaces = 2});
+    fresh.preset(1, Mode::canvas);
+    EXPECT_EQ(fresh.mode_of(1), Mode::canvas);
+}

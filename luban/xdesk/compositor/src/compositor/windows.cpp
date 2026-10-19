@@ -75,10 +75,10 @@ void Server::arrange(bool instant) {
         v.moving = v.x.value != v.x.target || v.y.value != v.y.target;
         wlr_scene_node_set_position(&v.frame->node, static_cast<int>(std::lround(v.x.value)), static_cast<int>(std::lround(v.y.value)));
     }
-    // Stacking: floating windows above the rest.
+    // Stacking as the layout orders them: stacked ones back to front, then
+    // floating ones, then those always on top.
     for (const auto& p : placements)
-        if (p.floating)
-            if (View* v = view_of(p.id)) wlr_scene_node_raise_to_top(&v->frame->node);
+        if (View* v = view_of(p.id)) wlr_scene_node_raise_to_top(&v->frame->node);
     zoom_surfaces(zoom);
     animate();
     draw_shell();
@@ -167,6 +167,8 @@ void Server::add_view(wlr_xdg_toplevel* toplevel) {
             const double w = std::max(g.width, 1), h = std::max(g.height, 1) + kTitle;
             lay.place(self->id, {(size.width - w) / 2, (size.height - h) / 2, w, h});
         }
+        // The application's rules (always floating, a workspace, its size and place).
+        apply_rules(*self);
         lay.focus(self->id);
         arrange();
         focus(self);

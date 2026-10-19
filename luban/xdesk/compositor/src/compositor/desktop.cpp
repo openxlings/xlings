@@ -27,8 +27,7 @@ namespace fs = std::filesystem;
 
 // A window's title bar, drawn again only when what it shows changed.
 void Server::draw_title(View& v, int width, bool active) {
-    const char* t = v.toplevel->title;
-    const std::string title = t ? t : (v.toplevel->app_id ? v.toplevel->app_id : "");
+    const std::string title = name_of(v);
     const bool hover = close_hover == v.id;
     auto key = std::format("{}\x1f{}\x1f{}\x1f{}\x1f{}", title, width, active, hover, scale);
     if (key == v.drawn) return;

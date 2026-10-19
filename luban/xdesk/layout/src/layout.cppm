@@ -71,6 +71,7 @@ struct Placement {
     bool focused { false };
     bool floating { false };
     bool maximized { false };   // stack: the whole output
+    bool pinned { false };      // always on top
     bool operator==(const Placement&) const = default;
 };
 
@@ -86,6 +87,8 @@ public:
     Mode mode() const;
     void set_mode(Mode m);
     Mode mode_of(int workspace) const;
+    // A workspace's preset before anything is on it (a session's state read back).
+    void preset(int workspace, Mode m);
 
     // A new window, on the shown workspace and focused: in tile, a column
     // right of the focused one; on the canvas, beside the focused window (or
@@ -122,7 +125,15 @@ public:
 
     void toggle_floating(Id id);
     bool floating(Id id) const;
-    // Stack: the whole output, and back where it was.
+    // Always on top (design 2026-10-19 §18.2): floating, above every other
+    // window; on the canvas it stays where it is in the view as the view moves.
+    void toggle_pinned(Id id);
+    bool pinned(Id id) const;
+    // On every workspace: it floats where it is and goes along when another is shown.
+    void toggle_sticky(Id id);
+    bool sticky(Id id) const;
+    // Stack: the whole output, and back where it was; tile: its column the
+    // whole width, and back to the width it had.
     void toggle_maximized(Id id);
     bool maximized(Id id) const;
     // A floating, stacked or canvas window's frame was moved or resized by
@@ -174,6 +185,7 @@ private:
         bool stack_placed { false };
         bool snapped { false };     // to a part of the output:
         int snap_x { 0 }, snap_y { 0 };   // -1 left/top half, 0 all, 1 right/bottom half
+        bool pinned { false };      // always on top (floating)
     };
     struct Cell {
         Id id { 0 };
@@ -182,6 +194,7 @@ private:
     struct Column {
         std::vector<Cell> cells;
         double width { 0 };     // tile: a fraction of the output (0: by how many there are); a group: world pixels
+        double restore { 0 };   // tile: the width before it was the whole
         std::size_t active { 0 };   // the cell focus returns to
     };
     struct Group {              // canvas: a free window is a group of one
@@ -259,6 +272,7 @@ private:
     Insets reserved_;
     std::vector<Placement> last_;
     int last_space_ { -1 };
+    std::vector<Window> sticky_;    // on every workspace: floating, screen pixels
 };
 
 // A value that follows its target as a critically damped spring: it never

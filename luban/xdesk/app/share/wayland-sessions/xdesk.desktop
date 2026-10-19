@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=xdesk
+Comment=Tile, stack or a canvas for each workspace (Super+m), as you left it; a panel and a launcher
+Exec=xdesk --profile xdesk
+X-Opensal-Native=true
+X-Opensal-Interfaces=surface pointer keyboard mode

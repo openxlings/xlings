@@ -49,6 +49,8 @@ Layout::Window* Layout::window_(Id id) {
     for (auto& s : spaces_)
         for (auto& w : s.windows)
             if (w.id == id) return &w;
+    for (auto& w : sticky_)
+        if (w.id == id) return &w;
     return nullptr;
 }
 
@@ -64,6 +66,42 @@ Layout::Space* Layout::space_of_(Id id) {
 Rect Layout::area_() const { return inset(output_, reserved_); }
 
 bool Layout::contains(Id id) const { return window_(id) != nullptr; }
+
+void Layout::toggle_pinned(Id id) {
+    auto* w = window_(id);
+    if (!w) return;
+    if (w->pinned) { w->pinned = false; return; }
+    if (!w->floating) toggle_floating(id);
+    if (auto* now = window_(id)) now->pinned = true;
+}
+
+bool Layout::pinned(Id id) const {
+    const auto* w = window_(id);
+    return w && w->pinned;
+}
+
+void Layout::toggle_sticky(Id id) {
+    if (auto it = std::ranges::find(sticky_, id, &Window::id); it != sticky_.end()) {
+        // Back to the workspace shown, floating where it is.
+        auto w = *it;
+        sticky_.erase(it);
+        space_().windows.push_back(w);
+        space_().focus = id;
+        return;
+    }
+    auto* s = space_of_(id);
+    if (!s) return;
+    if (!floating(id)) toggle_floating(id);
+    auto* w = window_(id);
+    if (!w) return;
+    auto copy = *w;
+    std::erase_if(s->windows, [&](const Window& x) { return x.id == id; });
+    if (s->focus == id) s->focus = s->windows.empty() ? std::nullopt : std::optional(s->windows.back().id);
+    sticky_.push_back(copy);
+    space_().focus = id;
+}
+
+bool Layout::sticky(Id id) const { return std::ranges::contains(sticky_, id, &Window::id); }
 bool Layout::floating(Id id) const {
     const auto* w = window_(id);
     return w && w->floating;
@@ -73,6 +111,8 @@ std::optional<int> Layout::workspace_of(Id id) const {
     for (std::size_t i = 0; i < spaces_.size(); ++i)
         for (const auto& w : spaces_[i].windows)
             if (w.id == id) return static_cast<int>(i);
+    // On every workspace: on the one shown.
+    if (sticky(id)) return shown_;
     return std::nullopt;
 }
 
@@ -83,6 +123,13 @@ Mode Layout::mode() const { return space_().mode; }
 Mode Layout::mode_of(int workspace) const {
     if (workspace < 0 || workspace >= workspaces()) return o_.mode;
     return spaces_[static_cast<std::size_t>(workspace)].mode;
+}
+
+void Layout::preset(int workspace, Mode m) {
+    if (workspace < 0 || workspace >= workspaces()) return;
+    auto& s = spaces_[static_cast<std::size_t>(workspace)];
+    if (!s.windows.empty()) return;
+    s.mode = m;
 }
 
 void Layout::set_mode(Mode m) {
@@ -224,6 +271,10 @@ void Layout::add(Id id, Size preferred, bool floating) {
 }
 
 void Layout::remove(Id id) {
+    if (std::erase_if(sticky_, [&](const Window& w) { return w.id == id; }) > 0) {
+        if (space_().focus == id) space_().focus.reset();
+        return;
+    }
     auto* s = space_of_(id);
     if (!s) return;
     // The focus goes to a neighbour: in the column, else the next column (tile).
@@ -272,6 +323,7 @@ std::vector<Id> Layout::group_of(Id id) const {
 // ── focus and moving ─────────────────────────────────────────────────
 
 void Layout::focus(Id id) {
+    if (sticky(id)) { space_().focus = id; return; }
     auto* s = space_of_(id);
     if (!s) return;
     s->focus = id;
@@ -411,6 +463,15 @@ void Layout::toggle_floating(Id id) {
 void Layout::toggle_maximized(Id id) {
     auto* w = window_(id);
     if (!w || w->floating) return;
+    if (auto* s = space_of_(id); s && s->mode == Mode::tile) {
+        if (const auto at = find_(s->columns, id)) {
+            auto& col = s->columns[at->column];
+            if (col.width >= 1.0) col.width = col.restore;
+            else { col.restore = col.width; col.width = 1.0; }
+            reveal_(*s, id);
+        }
+        return;
+    }
     if (w->snapped && w->snap_x == 0 && w->snap_y == 0) {
         w->snapped = false;
     } else {
@@ -421,10 +482,21 @@ void Layout::toggle_maximized(Id id) {
 
 bool Layout::maximized(Id id) const {
     const auto* w = window_(id);
-    return w && !w->floating && w->snapped && w->snap_x == 0 && w->snap_y == 0;
+    if (!w || w->floating) return false;
+    auto* self = const_cast<Layout*>(this);
+    if (auto* s = self->space_of_(id); s && s->mode == Mode::tile) {
+        const auto at = find_(s->columns, id);
+        return at && s->columns[at->column].width >= 1.0;
+    }
+    return w->snapped && w->snap_x == 0 && w->snap_y == 0;
 }
 
 void Layout::place(Id id, Rect screen) {
+    if (auto it = std::ranges::find(sticky_, id, &Window::id); it != sticky_.end()) {
+        it->free = screen;
+        it->placed = true;
+        return;
+    }
     auto* s = space_of_(id);
     auto* w = window_(id);
     if (!s || !w) return;
@@ -578,11 +650,16 @@ std::vector<Placement> Layout::arrange(Size output, Insets reserved) {
         case Mode::stack: out = stack_(s, area); break;
         case Mode::canvas: out = canvas_(s, area); break;
     }
-    // Floating windows above.
-    for (auto& w : s.windows) {
-        if (!w.floating) continue;
-        if (!w.placed) place_new_float_(w);
-        out.push_back({.id = w.id, .rect = w.free, .visible = overlaps(w.free, area), .focused = s.focus == w.id, .floating = true});
+    // Floating windows above, then those on every workspace, then those
+    // always on top (design 2026-10-19 §18.2).
+    for (const bool top : {false, true}) {
+        for (auto* list : {&s.windows, &sticky_})
+            for (auto& w : *list) {
+                if (!w.floating || w.pinned != top) continue;
+                if (!w.placed) place_new_float_(w);
+                out.push_back({.id = w.id, .rect = w.free, .visible = overlaps(w.free, area), .focused = s.focus == w.id,
+                               .floating = true, .pinned = w.pinned});
+            }
     }
     last_ = out;
     last_space_ = shown_;

@@ -325,6 +325,14 @@ void script_step_(App& a, Script& sc) {
             for (auto it = keys.rbegin(); it != keys.rend(); ++it) app.window->inject_key(*it, false);
         });
         next();
+    } else if (cmd == "keydown" || cmd == "keyup") {
+        // A key held down, or let go: what is pressed meanwhile is pressed with it.
+        std::string k;
+        words >> k;
+        if (k.size() > 1) k[0] = static_cast<char>(std::toupper(static_cast<unsigned char>(k[0])));
+        const bool down = cmd == "keydown";
+        sc.pending.push_back([k, down](App& app) { app.window->inject_key(k, down); });
+        next();
     } else if (cmd == "drop") {
         // A file dropped on the window, as a file manager drops it.
         std::string file;
@@ -371,10 +379,14 @@ void script_step_(App& a, Script& sc) {
             x = (it->second[0] + it->second[2]) / 2;
             y = (it->second[1] + it->second[3]) / 2;
         }
+        // `click <x> <y> right`: the other button.
+        std::string which;
+        words >> which;
+        const int button = which == "right" ? 3 : which == "middle" ? 2 : 1;
         sc.pending.push_back([x, y](App& app) { app.window->inject_pointer(x, y); });
         if (cmd == "click") {
-            sc.pending.push_back([x, y](App& app) { app.window->inject_button(x, y, 1, true); });
-            sc.pending.push_back([x, y](App& app) { app.window->inject_button(x, y, 1, false); });
+            sc.pending.push_back([x, y, button](App& app) { app.window->inject_button(x, y, button, true); });
+            sc.pending.push_back([x, y, button](App& app) { app.window->inject_button(x, y, button, false); });
         }
         next();
     } else if (cmd == "cell") {

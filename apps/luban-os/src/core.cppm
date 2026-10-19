@@ -639,6 +639,7 @@ using imkit::px;
 //   key <Key>[+<Key>...]            held in order, released in reverse
 //   type <text>                     click <anchor> | click <x> <y>
 //   move <x> <y>                    frames <n>        sleep <ms>
+//   click <x> <y> [right|middle]    keydown <Key>     keyup <Key>
 //   resize <w> <h>                  close             quit
 //   screenshot <file>               state <file>
 //   see [<n>s] <text>               until the text is shown (a console's lines,

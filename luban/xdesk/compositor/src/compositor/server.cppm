@@ -2,7 +2,9 @@
 // one structure whose parts are defined by area (design 2026-10-19 §21):
 // server.cpp (start, the loop, the provider's stream), windows.cpp (views,
 // popups, the layout's arrangement and its springs), input.cpp (keys,
-// pointer, wheel, shortcuts), pointer.cpp (the pointer's shape, drawn by
+// pointer, wheel, shortcuts), keys.cpp (the actions and their chords),
+// overlay.cpp (the chooser, the switcher, the keys' sheet, a window's menu,
+// the person's state and rules), pointer.cpp (the pointer's shape, drawn by
 // the host or into the frames), text.cpp (text input and the clipboard),
 // output.cpp (size, density, fonts, frames), desktop.cpp (title bars, the
 // panel, the launcher, starting programs). Internal to xdesk.compositor.
@@ -17,10 +19,12 @@ import xdesk.layout;
 import xdesk.draw;
 import xdesk.shell;
 import xdesk.apps;
+import xdesk.config;
 import wlroots;
 import xdesk.native.wayland;
 import freedesktop.wayland.server;
 import :options;
+import :keys;
 
 namespace xdesk::compositor {
 
@@ -223,6 +227,30 @@ struct Server {
     std::int32_t cursor_hx { 0 }, cursor_hy { 0 };
     Hook cursor_commit, cursor_gone, request_shape;
     bool software_cursor { false };              // drawn into the frames (the window does not draw it)
+    // The keys and what the person keeps (design 2026-10-19 §16.4, §17.12):
+    // keys.json over the desktop's own; state.json -- each workspace's
+    // arrangement, the applications' rules. One that cannot be read is
+    // said and not written over.
+    Bindings keys;
+    config::State state;
+    bool state_broken { false };
+    bool super_alone { false };                  // Super down and nothing else since: its release opens the apps
+    // One overlay at a time (design 2026-10-19 §16.3, §17.5, §18.1): the
+    // arrangements and the windows are held with Super and chosen on its
+    // release; the keys' sheet and a window's menu stay until a key or a click.
+    enum class Overlay { none, chooser, switcher, sheet, menu };
+    Overlay overlay { Overlay::none };
+    std::size_t overlay_at { 0 };
+    std::vector<layout::Mode> chooser_modes;
+    std::vector<layout::Id> switcher_ids;
+    layout::Id menu_for { 0 };
+    std::vector<std::string> menu_actions;       // by the menu's item
+    shell::Picture overlay_picture;
+    wlr_scene_buffer* overlay_node { nullptr };
+    wlr_scene_buffer* hint_node { nullptr };
+    wl_event_source* hint_timer { nullptr };
+    std::map<std::string, std::string> app_names;   // app id -> its name (desktop entries)
+    std::chrono::steady_clock::time_point app_names_read {};
 
     // The shown workspace's arrangement (the panel's look is the profile's).
     bool canvas() const { return lay.mode() == layout::Mode::canvas; }
@@ -322,6 +350,24 @@ struct Server {
     void send_pointer_image();
     // The window said what it takes: draw the pointer here or leave it to it.
     void pointer_mode();
+
+    // overlay.cpp
+    void load_person();
+    void save_state();
+    void remember_arrangement();
+    void apply_rules(View& v);
+    void act(Action a);
+    void open_chooser();
+    void open_switcher();
+    void open_sheet();
+    void open_menu(View* v, double x, double y);
+    void menu_choose(std::size_t item);
+    void draw_overlay();
+    void close_overlay(bool apply);
+    bool overlay_key(xkb_keysym_t sym, bool down);
+    bool overlay_click(double x, double y);
+    void show_hint(std::string_view text, int ms);
+    std::string name_of(View& v);
 
     std::optional<layout::Rect> placement_of(layout::Id id) const;
 

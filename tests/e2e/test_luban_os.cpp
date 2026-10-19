@@ -801,6 +801,7 @@ fs::path colour_client(const tk::Home& home) {
 #           offered, written to FILE ("commit <text>", "paste <text>")
 #   --copy  then its own selection: TEXT
 #   --cursor  its own pointer over it: 8x8 in its colour, hotspot (3, 4)
+#   --app-id  its application id
 import os, socket, struct, sys, mmap, tempfile, array
 colour = int(sys.argv[1], 16)
 opts = dict(zip(sys.argv[2::2], sys.argv[3::2]))
@@ -857,6 +858,7 @@ surface = new(); send(compositor, 0, struct.pack("<I", surface))
 xdg_surface = new(); send(wm, 2, struct.pack("<II", xdg_surface, surface))
 toplevel = new(); send(xdg_surface, 1, struct.pack("<I", toplevel))
 send(toplevel, 2, string(sys.argv[1]))                      # set_title
+if "--app-id" in opts: send(toplevel, 3, string(opts["--app-id"]))   # set_app_id
 keyboard = text = device = source = pointer = cursor_surface = None
 seat = bind("wl_seat", 5) if log or cursor else None
 if cursor:
@@ -1124,6 +1126,118 @@ XTEST(LubanOs, AWindowThatDrawsNoPointerGetsXdesksInItsFrames, .area = "luban",
     const auto r = tk::run(o);
     ASSERT_EQ(r.exit_code, 0) << r.transcript();
     EXPECT_EQ(read_ppm(shot).at(203, 153), (std::array<int, 3>{0x00, 0xff, 0x00})) << "the pointer, drawn where it is";
+}
+
+// Super+m held: the arrangements as cards, the next one lit; m again for the
+// one after; Super let go chooses it -- and the session after starts as it
+// was left (design 2026-10-19 §17.5, §17.12). A state.json that cannot be read
+// is said and never written over.
+XTEST(LubanOs, XdeskChoosesArrangementsHeldWithSuperAndKeepsThem, .area = "luban",
+      .covers = {"XDESK-ARRANGEMENTS", "XDESK-COMPOSITOR"}, .requires_ = {"linux", "xlings-bin"}) {
+    if (!app_binary()) GTEST_SKIP() << "no luban-os beside the xlings under test";
+    if (!xdesk_binary()) GTEST_SKIP() << "no xdesk beside luban-os (mcpp build -p xdesk-app)";
+    auto home = tk::Home::isolated("luban-os-xdesk-chooser");
+    ASSERT_EQ(home.xlings({"self", "init"}).exit_code, 0);
+    const auto runtime = home.root() / "run";
+    fs::create_directories(runtime);
+    fs::permissions(runtime, fs::perms::owner_all, fs::perm_options::replace);
+    const auto client = colour_client(home).string();
+    auto session = [&](std::string_view script) {
+        return run_script(home, script,
+                          {"--desktop-exec", xdesk_binary()->string(), "--profile", "xdesk", "--autostart",
+                           std::format("python3 {} c04040", client)},
+                          {{"XDG_RUNTIME_DIR", runtime.string()}});
+    };
+    const auto state = home.root() / ".config" / "xdesk" / "state.json";
+    auto arrangement = [&] { return Json::parse(tk::read_file(state))["arrangements"][0].get<std::string>(); };
+    const auto held = home.root() / "held.ppm";
+    auto r = session(std::format(R"(wait desktop
+waitfor desktop.texture.0 1100
+sleep 2500
+keydown Alt
+key m
+sleep 800
+screenshot {}
+screenshot {}
+key m
+keyup Alt
+sleep 800
+)", held.string(), artifact("xdesk-chooser.bmp").string()));
+    ASSERT_EQ(r.exit_code, 0) << r.transcript();
+    EXPECT_NE(read_ppm(held).at(550, 380), kRed) << "the chooser over the desktop while Super is held";
+    EXPECT_EQ(arrangement(), "canvas") << "tile, then stack, then canvas: chosen on letting Super go";
+    EXPECT_EQ(Json::parse(tk::read_file(state))["last"], "canvas");
+    // The next session starts as it was left: the next one from canvas is tile.
+    r = session(R"(wait desktop
+waitfor desktop.texture.0 1100
+sleep 1500
+key Alt+m
+sleep 800
+)");
+    ASSERT_EQ(r.exit_code, 0) << r.transcript();
+    EXPECT_EQ(arrangement(), "tile");
+    // Unreadable: started as new, and the file is the person's still.
+    tk::write_file(state, "{\"arrangements\": [");
+    r = session(R"(wait desktop
+waitfor desktop.texture.0 1100
+sleep 1500
+key Alt+m
+sleep 800
+)");
+    ASSERT_EQ(r.exit_code, 0) << r.transcript();
+    EXPECT_EQ(tk::read_file(state), "{\"arrangements\": [");
+}
+
+// A window's title bar, the other button: its menu (design 2026-10-19 §18.1).
+XTEST(LubanOs, XdeskTitleBarMenuActsOnItsWindow, .area = "luban",
+      .covers = {"XDESK-WINDOW-MENU", "XDESK-COMPOSITOR"}, .requires_ = {"linux", "xlings-bin"}) {
+    if (!app_binary()) GTEST_SKIP() << "no luban-os beside the xlings under test";
+    if (!xdesk_binary()) GTEST_SKIP() << "no xdesk beside luban-os (mcpp build -p xdesk-app)";
+    auto home = tk::Home::isolated("luban-os-xdesk-menu");
+    ASSERT_EQ(home.xlings({"self", "init"}).exit_code, 0);
+    const auto runtime = home.root() / "run";
+    fs::create_directories(runtime);
+    fs::permissions(runtime, fs::perms::owner_all, fs::perm_options::replace);
+    const auto client = colour_client(home).string();
+    const auto menu = home.root() / "menu.ppm", closed = home.root() / "closed.ppm";
+    // One window, its title bar under the panel; the menu's last item closes it
+    // (4 items, a line, 4 workspaces, a line, Close: rows of 30, lines of 9).
+    auto r = run_script(home, std::format(R"(wait desktop
+waitfor desktop.texture.0 1100
+sleep 2500
+click 300 50 right
+sleep 600
+screenshot {}
+screenshot {}
+click 420 331
+sleep 1200
+screenshot {}
+)", menu.string(), artifact("xdesk-window-menu.bmp").string(), closed.string()),
+                        {"--desktop-exec", xdesk_binary()->string(), "--profile", "classic", "--autostart",
+                         std::format("python3 {} c04040", client)},
+                        {{"XDG_RUNTIME_DIR", runtime.string()}});
+    ASSERT_EQ(r.exit_code, 0) << r.transcript();
+    EXPECT_NE(read_ppm(menu).at(420, 120), kRed) << "the menu where the button was pressed";
+    EXPECT_NE(read_ppm(closed).at(550, 400), kRed) << "Close closed it";
+
+    // An application's rule (kept in state.json): it opens on workspace 2.
+    tk::write_file(home.root() / ".config" / "xdesk" / "state.json",
+                   R"({"rules": {"luban-test-red": {"workspace": 2}}, "hinted": true})");
+    const auto one = home.root() / "one.ppm", two = home.root() / "two.ppm";
+    r = run_script(home, std::format(R"(wait desktop
+waitfor desktop.texture.0 1100
+sleep 2500
+screenshot {}
+key Alt+2
+sleep 1000
+screenshot {}
+)", one.string(), two.string()),
+                   {"--desktop-exec", xdesk_binary()->string(), "--profile", "classic", "--autostart",
+                    std::format("python3 {} c04040 --app-id luban-test-red", client)},
+                   {{"XDG_RUNTIME_DIR", runtime.string()}});
+    ASSERT_EQ(r.exit_code, 0) << r.transcript();
+    EXPECT_NE(read_ppm(one).at(550, 400), kRed) << "not on the first workspace";
+    EXPECT_EQ(read_ppm(two).at(550, 400), kRed) << "on the second, as its rule says";
 }
 
 XTEST(LubanOs, XdeskLauncherStartsWhatIsTypedAndThePanelSwitchesWorkspaces, .area = "luban",

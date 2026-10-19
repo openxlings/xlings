@@ -43,13 +43,15 @@ int main(int argc, char* argv[]) {
             }
             o.size = {w, h};
         } else {
-            std::println(std::cerr, "usage: xdesk [--profile classic|canvas] [--size WxH] [--terminal CMD] [--autostart CMD]...\n"
+            std::println(std::cerr, "usage: xdesk [--profile xdesk|classic|canvas] [--size WxH] [--terminal CMD] [--autostart CMD]...\n"
                                     "       xdesk --probe | --keymap LAYOUT");
             return 2;
         }
     }
-    if (o.profile != "classic" && o.profile != "canvas") {
-        std::println(std::cerr, "xdesk: no profile '{}' (classic, canvas)", o.profile);
+    // xdesk: each workspace as it was left (tile the first time); classic and
+    // canvas: what a workspace not yet set starts as (design 2026-10-19 §17.12).
+    if (o.profile != "xdesk" && o.profile != "classic" && o.profile != "canvas") {
+        std::println(std::cerr, "xdesk: no profile '{}' (xdesk, classic, canvas)", o.profile);
         return 2;
     }
     // The profile's settings (a config: package's, then the person's own);

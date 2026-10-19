@@ -67,6 +67,10 @@ bool Server::start_() {
     panel_node = wlr_scene_buffer_create(shell_layer, nullptr);
     launcher_node = wlr_scene_buffer_create(overlay_layer, nullptr);
     wlr_scene_node_set_enabled(&launcher_node->node, false);
+    overlay_node = wlr_scene_buffer_create(overlay_layer, nullptr);
+    wlr_scene_node_set_enabled(&overlay_node->node, false);
+    hint_node = wlr_scene_buffer_create(overlay_layer, nullptr);
+    wlr_scene_node_set_enabled(&hint_node->node, false);
     zh = shell::chinese(os::environment());
     open_fonts();
 
@@ -176,6 +180,13 @@ bool Server::start_() {
         wlr_output_schedule_frame(self->output);
         return 0;
     }, this);
+    hint_timer = wl_event_loop_add_timer(loop, [](void* data) -> int {
+        auto* self = static_cast<Server*>(data);
+        wlr_scene_node_set_enabled(&self->hint_node->node, false);
+        return 0;
+    }, this);
+    // The person's keys and state; each workspace's arrangement as they left it.
+    load_person();
     draw_shell();
     using I = opensal::Interface;
     send(opensal::wire::encode('h', std::to_string(I::Surface | I::Mode | I::Keyboard | I::Pointer | I::Text | I::Clipboard
@@ -199,6 +210,7 @@ Server::~Server() {
     if (tick) wl_event_source_remove(tick);
     if (clock) wl_event_source_remove(clock);
     if (pace_timer) wl_event_source_remove(pace_timer);
+    if (hint_timer) wl_event_source_remove(hint_timer);
     for (int pid : children) os::terminate(pid);
     new_toplevel.disconnect(); new_popup.disconnect(); new_decoration.disconnect(); frame.disconnect();
     request_cursor.disconnect(); request_selection.disconnect(); set_selection.disconnect(); new_text_input.disconnect();

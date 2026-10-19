@@ -41,6 +41,10 @@ export using ::xkb_keymap_unref;
 export using ::xkb_state_key_get_syms;
 export using ::xkb_state_key_get_utf8;
 export using ::xkb_keysym_to_lower;
+export using ::xkb_keysym_from_name;
+export using ::xkb_keysym_get_name;
+export using ::xkb_keysym_flags;
+export using ::XKB_KEYSYM_CASE_INSENSITIVE;
 export using ::XKB_CONTEXT_NO_FLAGS;
 export using ::XKB_KEYMAP_FORMAT_TEXT_V1;
 export using ::XKB_KEYMAP_COMPILE_NO_FLAGS;
@@ -62,5 +66,7 @@ inline constexpr xkb_keysym_t Return = XKB_KEY_Return, KP_Enter = XKB_KEY_KP_Ent
                               a = XKB_KEY_a, d = XKB_KEY_d, f = XKB_KEY_f, h = XKB_KEY_h, j = XKB_KEY_j, k = XKB_KEY_k,
                               l = XKB_KEY_l, m = XKB_KEY_m, o = XKB_KEY_o, q = XKB_KEY_q, r = XKB_KEY_r,
                               minus = XKB_KEY_minus, equal = XKB_KEY_equal, plus = XKB_KEY_plus,
-                              bracketleft = XKB_KEY_bracketleft, bracketright = XKB_KEY_bracketright;
+                              bracketleft = XKB_KEY_bracketleft, bracketright = XKB_KEY_bracketright, slash = XKB_KEY_slash,
+                              Super_L = XKB_KEY_Super_L, Super_R = XKB_KEY_Super_R, Alt_L = XKB_KEY_Alt_L, Alt_R = XKB_KEY_Alt_R,
+                              NoSymbol = XKB_KEY_NoSymbol;
 }

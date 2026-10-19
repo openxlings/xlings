@@ -61,7 +61,7 @@ struct PanelState {
     bool zh { false };
 };
 
-enum class Target { none, launcher, workspace, overview };
+enum class Target { none, launcher, workspace, overview, item };
 struct Area {
     draw::Rect rect;                // output pixels
     Target target { Target::none };
@@ -113,5 +113,42 @@ private:
     std::vector<const apps::App*> results_;
     std::vector<draw::Rect> rows_;      // where the shown results were drawn
 };
+
+// ── overlays (design 2026-10-19 §16.3, §17.5, §18.1) ────────────────
+
+// A window in a picture of an arrangement: its frame, where it would be.
+struct Thumb {
+    draw::Rect rect;                // output pixels
+    std::string title;
+    bool focused { false };
+};
+struct ChooserCard {
+    std::string label;              // "Tile", "平铺"...
+    std::vector<Thumb> windows;     // the shown workspace, laid out so
+};
+// Super+m: the arrangements as cards, each the workspace laid out that way
+// (what choosing it gives), `selected` lit. Its areas are the cards (item).
+Picture chooser(draw::Fonts* ui, const Theme& t, const std::vector<ChooserCard>& cards, std::size_t selected, int width, int height,
+                bool zh, double scale = 1);
+// Super+Tab: the windows, the most recent first; areas are the rows.
+Picture switcher(draw::Fonts* ui, const Theme& t, const std::vector<std::string>& names, std::size_t selected, int width, int height,
+                 bool zh, double scale = 1);
+// Super+/: the keys that mean something here, a line each.
+struct SheetRow {
+    std::string keys;
+    std::string what;
+};
+Picture sheet(draw::Fonts* ui, draw::Fonts* big, const Theme& t, std::string_view title, const std::vector<SheetRow>& rows, int width,
+              int height, bool zh, double scale = 1);
+// A window's menu at (x, y): its items (areas, by index); a separator has no area.
+struct MenuEntry {
+    std::string label;
+    bool checked { false };
+    bool separator { false };
+};
+Picture menu(draw::Fonts* ui, const Theme& t, const std::vector<MenuEntry>& items, double x, double y, int width, int height,
+             double scale = 1);
+// A line said for a while at the bottom (the first time: what the keys are).
+Picture hint(draw::Fonts* ui, const Theme& t, std::string_view text, int width, int height, double scale = 1);
 
 }  // namespace xdesk::shell
