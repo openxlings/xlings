@@ -66,6 +66,16 @@ constexpr std::uint16_t capture_destroy = 0, capture_attach_buffer = 1, capture_
 constexpr std::uint16_t capture_ready = 3, capture_failed = 4;
 }  // namespace op
 
+// wlr-data-control (the clipboard, design 2026-10-20 §20 G27).
+namespace dc {
+constexpr std::uint16_t manager_create_source = 0, manager_get_device = 1;
+constexpr std::uint16_t device_set_selection = 0, device_data_offer = 0, device_selection = 1, device_finished = 2;
+constexpr std::uint16_t source_offer = 0, source_destroy = 1, source_send = 0, source_cancelled = 1;
+constexpr std::uint16_t offer_receive = 0, offer_destroy = 1, offer_offer = 0;
+// What the bridge's own selection also offers: one coming back is not read.
+constexpr std::string_view kOwn = "application/x-opensal-wlr";
+}  // namespace dc
+
 // A toplevel's states (zwlr_foreign_toplevel_handle_v1.state).
 constexpr std::uint32_t kStateMinimized = 1, kStateActivated = 2;
 
@@ -198,6 +208,16 @@ private:
     opensal::Size cursor_buffer_size_;
     std::string cursor_sent_;
 
+    // The clipboard: the desktop's selection to the window, the window's to
+    // the desktop (wlr-data-control); a selection being read.
+    std::uint32_t dc_manager_ { 0 }, dc_device_ { 0 }, dc_source_ { 0 };
+    std::map<std::uint32_t, std::vector<std::string>> offers_;
+    std::string selection_set_, selection_told_;
+    int reading_ { -1 };
+    std::string read_;
+    void selection_(std::uint32_t offer);
+    void set_selection_(const std::string& text);
+
     // The other windows (displays), at o_.displays.
     int displays_ { -1 };
     std::list<Mirror> mirrors_;
@@ -237,6 +257,29 @@ void Bridge::handle_(const wl::Event& e) {
     // The callback's id is the server's to delete and ours to use again: it
     // is the sync only until it is done.
     if (sync_ && e.object == sync_ && e.opcode == op::callback_done) { synced_ = true; sync_ = 0; return; }
+    if (dc_device_ && e.object == dc_device_) {
+        if (e.opcode == dc::device_data_offer) offers_[r.u()] = {};
+        else if (e.opcode == dc::device_selection) selection_(r.u());
+        else if (e.opcode == dc::device_finished) dc_device_ = 0;
+        return;
+    }
+    if (auto it = offers_.find(e.object); it != offers_.end()) {
+        if (e.opcode == dc::offer_offer) it->second.push_back(r.str());
+        return;
+    }
+    if (dc_source_ && e.object == dc_source_) {
+        if (e.opcode == dc::source_send) {
+            (void)r.str();
+            if (const int fd = c_.take_fd(); fd >= 0) {
+                (void)os::write_all(fd, selection_set_);
+                os::close(fd);
+            }
+        } else if (e.opcode == dc::source_cancelled) {
+            c_.send(dc_source_, dc::source_destroy, wl::Args{});
+            dc_source_ = 0;
+        }
+        return;
+    }
     if (e.object == registry_) {
         if (e.opcode == op::registry_global) {
             const auto name = r.u();
@@ -562,6 +605,10 @@ void Bridge::modifiers_() {
 }
 
 void Bridge::input_(const opensal::Event& ev) {
+    if (const auto* clip = std::get_if<opensal::ClipboardText>(&ev)) {
+        set_selection_(clip->text);
+        return;
+    }
     if (const auto* k = std::get_if<opensal::Key>(&ev)) {
         if (k->repeat) return;                  // the compositor repeats a held key itself
         auto stroke = evdev_key(k->keysym);
@@ -653,6 +700,44 @@ void Bridge::tell_applications_() {
     if (!apps_told_) provider_gone_ = true;
 }
 
+// The desktop's selection, read when it is text and not this bridge's own
+// (its end: the main loop, reading_), then told the window ('b').
+void Bridge::selection_(std::uint32_t offer) {
+    // The offers before it are done with.
+    for (auto it = offers_.begin(); it != offers_.end();) {
+        if (it->first == offer) { ++it; continue; }
+        c_.send(it->first, dc::offer_destroy, wl::Args{});
+        it = offers_.erase(it);
+    }
+    if (!offer || !offers_.contains(offer)) return;
+    const auto& mimes = offers_[offer];
+    if (std::ranges::find(mimes, dc::kOwn) != mimes.end()) return;
+    std::string mime;
+    for (const auto* want : {"text/plain;charset=utf-8", "UTF8_STRING", "text/plain", "TEXT", "STRING"})
+        if (std::ranges::find(mimes, std::string_view(want)) != mimes.end()) { mime = want; break; }
+    if (mime.empty()) return;
+    auto ends = os::pipe();
+    if (!ends) return;
+    if (reading_ >= 0) os::close(reading_);
+    c_.send(offer, dc::offer_receive, wl::Args{}.str(mime).fd((*ends)[1]));
+    os::close((*ends)[1]);
+    reading_ = (*ends)[0];
+    read_.clear();
+}
+
+// The window's clipboard, the desktop's selection (offered as text).
+void Bridge::set_selection_(const std::string& text) {
+    if (!dc_manager_ || !dc_device_ || text == selection_set_ || text == selection_told_) return;
+    if (dc_source_) c_.send(dc_source_, dc::source_destroy, wl::Args{});
+    dc_source_ = c_.new_id();
+    c_.send(dc_manager_, dc::manager_create_source, wl::Args{}.u(dc_source_));
+    for (const auto* mime : {"text/plain;charset=utf-8", "UTF8_STRING", "text/plain", "TEXT", "STRING"})
+        c_.send(dc_source_, dc::source_offer, wl::Args{}.str(mime));
+    c_.send(dc_source_, dc::source_offer, wl::Args{}.str(dc::kOwn));
+    c_.send(dc_device_, dc::device_set_selection, wl::Args{}.u(dc_source_));
+    selection_set_ = text;
+}
+
 void Bridge::accept_mirror_() {
     const int fd = os::accept(displays_);
     if (fd < 0) return;
@@ -666,6 +751,7 @@ void Bridge::accept_mirror_() {
     opensal::Interfaces wanted = I::Surface | I::Mode;
     if (vkbd_) wanted |= static_cast<opensal::Interfaces>(I::Keyboard);
     if (vptr_) wanted |= static_cast<opensal::Interfaces>(I::Pointer);
+    if (dc_device_) wanted |= static_cast<opensal::Interfaces>(I::Clipboard);
     if (host_cursor_ || cursor_session_) wanted |= I::Cursor | I::CursorImage;
     if (o_.shell) wanted |= static_cast<opensal::Interfaces>(I::Shell);
     if (!os::write_all(fd, opensal::wire::encode('h', std::to_string(wanted)))) m.gone = true;
@@ -753,6 +839,7 @@ int Bridge::run() {
     std::uint32_t vptr_version = 0;
     vptr_manager_ = bind_("zwlr_virtual_pointer_manager_v1", 2, vptr_version);
     outman_ = bind_("zwlr_output_manager_v1", 2, v);
+    dc_manager_ = bind_("zwlr_data_control_manager_v1", 2, v);
     if (o_.shell) toplevels_ = bind_("zwlr_foreign_toplevel_manager_v1", 3, v);
     sources_ = bind_("ext_output_image_capture_source_manager_v1", 1, v);
     copy_capture_ = bind_("ext_image_copy_capture_manager_v1", 1, v);
@@ -778,11 +865,16 @@ int Bridge::run() {
         if (vptr_version >= 2) c_.send(vptr_manager_, op::vptr_manager_create_with_output, wl::Args{}.u(seat_).u(output_).u(vptr_));
         else c_.send(vptr_manager_, op::vptr_manager_create, wl::Args{}.u(seat_).u(vptr_));
     }
+    if (dc_manager_ && seat_) {
+        dc_device_ = c_.new_id();
+        c_.send(dc_manager_, dc::manager_get_device, wl::Args{}.u(dc_device_).u(seat_));
+    }
     if (!roundtrip_()) return 1;
     using I = opensal::Interface;
     opensal::Interfaces wanted = I::Surface | I::Mode;
     if (vkbd_) wanted |= static_cast<opensal::Interfaces>(I::Keyboard);
     if (vptr_) wanted |= static_cast<opensal::Interfaces>(I::Pointer);
+    if (dc_device_) wanted |= static_cast<opensal::Interfaces>(I::Clipboard);
     // The pointer apart from the frames: the provider draws it.
     if (sources_ && copy_capture_ && seat_) wanted |= I::Cursor | I::CursorImage;
     if (o_.shell) {
@@ -813,13 +905,26 @@ int Bridge::run() {
         if (o_.alive && !o_.alive()) { log_("the compositor ended"); return 1; }
         const auto now = std::chrono::steady_clock::now();
         if (!capturing_ && now >= last_frame_ + period && now >= retry_at_) capture_();
-        std::vector<os::PollFd> p{{.fd = o_.in}, {.fd = c_.fd()}};
+        std::vector<os::PollFd> p{{.fd = o_.in}, {.fd = c_.fd()}, {.fd = reading_}};
         if (displays_ >= 0) p.push_back({.fd = displays_});
         for (const auto& m : mirrors_) p.push_back({.fd = m.fd});
         const auto wait = capturing_ ? 500 : static_cast<int>(std::max<std::int64_t>(1,
             std::chrono::duration_cast<std::chrono::milliseconds>(last_frame_ + period - now).count()));
         os::poll(p, std::min(wait, 500));
-        std::size_t at = 2;
+        // The desktop's selection, as it comes; told when it has all come.
+        if (reading_ >= 0 && (p[2].readable || p[2].closed)) {
+            const auto n = os::read_some(reading_, buf);
+            if (n && *n > 0 && read_.size() < (1u << 20)) read_.append(buf.data(), *n);
+            else {
+                os::close(reading_);
+                reading_ = -1;
+                if (!read_.empty() && read_ != selection_set_ && read_ != selection_told_) {
+                    selection_told_ = read_;
+                    if (!tell_(opensal::wire::encode('b', read_))) provider_gone_ = true;
+                }
+            }
+        }
+        std::size_t at = 3;
         if (displays_ >= 0 && (p[at++].readable)) accept_mirror_();
         for (auto& m : mirrors_) {
             if (at >= p.size()) break;

@@ -73,7 +73,8 @@ class Connection {
 public:
     static std::expected<Connection, std::string> connect(const std::filesystem::path& socket);
     Connection(Connection&& o) noexcept
-        : fd_(std::exchange(o.fd_, -1)), next_id_(o.next_id_), free_(std::move(o.free_)), decoder_(std::move(o.decoder_)) {}
+        : fd_(std::exchange(o.fd_, -1)), next_id_(o.next_id_), free_(std::move(o.free_)), decoder_(std::move(o.decoder_)),
+          fds_(std::move(o.fds_)) {}
     Connection& operator=(Connection&&) = delete;
     ~Connection();
 
@@ -83,6 +84,10 @@ public:
     // here); nullopt once the server is gone or sent what is not Wayland.
     std::optional<std::vector<Event>> poll(int timeout_ms);
     int fd() const { return fd_; }
+    // A descriptor the server sent beside its events, in order (an event
+    // with an fd argument -- a data source asked to send -- takes the next);
+    // -1 when none came.
+    int take_fd();
 
 private:
     explicit Connection(int fd) : fd_(fd) {}
@@ -90,6 +95,7 @@ private:
     std::uint32_t next_id_ { 2 };
     std::vector<std::uint32_t> free_;
     Decoder decoder_;
+    std::deque<int> fds_;
 };
 
 // The socket a client connects to: $WAYLAND_DISPLAY under `runtime_dir`

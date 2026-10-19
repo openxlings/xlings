@@ -248,7 +248,10 @@ The input method of the host types into the desktop's windows (what it
 composes is shown there), and the clipboard is shared — each way as far as
 the environment's grants allow: `clipboard` (copying out of it) and
 `clipboard-paste` (pasting into it); an environment made before policies
-shares both. The pointer is the window's to draw (above); for a window that
+shares both. The same holds in a labwc, LXQt or KDE desktop (through
+wlr-data-control). In a terminal — foot, qterminal, Konsole — copy is
+Ctrl+Shift+C and paste Ctrl+Shift+V: Ctrl+C there interrupts the program;
+qterminal and Konsole also have both on their right-click menu. The pointer is the window's to draw (above); for a window that
 does not draw one (an older Luban OS), xdesk draws it into the picture.
 
 ### Sessions and settings

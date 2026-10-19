@@ -34,6 +34,9 @@ std::optional<std::array<int, 2>> pipe();
 int connect_unix(const fs::path& path);
 // `data` and the descriptors beside it, in one message (SCM_RIGHTS).
 bool send_with_fds(int sock, std::string_view data, std::span<const int> fds);
+// What is there, and the descriptors that came beside it (appended to `fds`,
+// close-on-exec): 0 at the end, nullopt on an error.
+std::optional<std::size_t> recv_with_fds(int sock, std::span<char> buf, std::vector<int>& fds);
 // Listens for byte-stream connections at `path` (owner-only); -1 on failure.
 int listen_unix(const fs::path& path);
 int accept(int listener);

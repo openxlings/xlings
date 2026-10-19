@@ -99,6 +99,14 @@ std::expected<Connection, std::string> Connection::connect(const fs::path& socke
 
 Connection::~Connection() {
     os::close(fd_);
+    for (const int f : fds_) os::close(f);
+}
+
+int Connection::take_fd() {
+    if (fds_.empty()) return -1;
+    const int f = fds_.front();
+    fds_.pop_front();
+    return f;
 }
 
 std::uint32_t Connection::new_id() {
@@ -122,7 +130,9 @@ std::optional<std::vector<Event>> Connection::poll(int timeout_ms) {
     std::vector<Event> out;
     if (!p[0].readable && !p[0].closed) return out;
     std::array<char, 65536> buf{};
-    auto n = os::read_some(fd_, buf);
+    std::vector<int> fds;
+    auto n = os::recv_with_fds(fd_, buf, fds);
+    for (const int f : fds) fds_.push_back(f);
     if (!n || *n == 0) return std::nullopt;
     decoder_.feed(std::string_view(buf.data(), *n));
     for (;;) {

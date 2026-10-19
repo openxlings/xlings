@@ -167,7 +167,8 @@ Super+Tab 的应用显示图标（图标主题里的 PNG），没有就显示首
 关掉；`snap = off` 关掉对齐）。离开全览回到进入之前的位置。
 
 宿主的输入法可以在桌面的窗口里打字（组合中的文字显示在那里），剪贴板双向共享——各自受环境授权约束：`clipboard`（从里面复制出来）
-与 `clipboard-paste`（粘贴进去）；策略出现之前创建的环境两者都共享。指针由窗口来画（见上文）；对不画指针的窗口（旧版 Luban OS），xdesk 把它画进画面。
+与 `clipboard-paste`（粘贴进去）；策略出现之前创建的环境两者都共享。labwc、LXQt、KDE 桌面里也一样（经 wlr-data-control）。
+在终端里——foot、qterminal、Konsole——复制是 Ctrl+Shift+C、粘贴是 Ctrl+Shift+V：那里的 Ctrl+C 是中断程序；qterminal 与 Konsole 的右键菜单里也有这两项。指针由窗口来画（见上文）；对不画指针的窗口（旧版 Luban OS），xdesk 把它画进画面。
 
 ### 会话与设置
 
