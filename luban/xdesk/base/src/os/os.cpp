@@ -114,8 +114,13 @@ std::optional<std::size_t> recv_with_fds(int sock, std::span<char> buf, std::vec
     std::array<char, CMSG_SPACE(sizeof(int) * 16)> control{};
     msg.msg_control = control.data();
     msg.msg_controllen = control.size();
+#if defined(MSG_CMSG_CLOEXEC)
+    constexpr int flags = MSG_CMSG_CLOEXEC;
+#else
+    constexpr int flags = 0;        // macOS: each one is made close-on-exec below
+#endif
     ssize_t n;
-    do { n = ::recvmsg(sock, &msg, MSG_CMSG_CLOEXEC); } while (n < 0 && errno == EINTR);
+    do { n = ::recvmsg(sock, &msg, flags); } while (n < 0 && errno == EINTR);
     if (n < 0) return std::nullopt;
     for (cmsghdr* cm = CMSG_FIRSTHDR(&msg); cm; cm = CMSG_NXTHDR(&msg, cm)) {
         if (cm->cmsg_level != SOL_SOCKET || cm->cmsg_type != SCM_RIGHTS) continue;
@@ -123,6 +128,7 @@ std::optional<std::size_t> recv_with_fds(int sock, std::span<char> buf, std::vec
         for (std::size_t k = 0; k < count; ++k) {
             int fd = -1;
             std::memcpy(&fd, CMSG_DATA(cm) + k * sizeof(int), sizeof(int));
+            if constexpr (flags == 0) cloexec_(fd);
             fds.push_back(fd);
         }
     }
