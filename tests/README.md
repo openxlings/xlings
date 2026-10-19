@@ -49,7 +49,7 @@ XTEST(SubosExec, ExitCodeIsTheCommands,
 
 A GUI is tested in two halves.
 
-**Automated, headless** (`tests/e2e/test_luban_os.cpp`). The app renders for
+**Automated, headless** (`tests/e2e/test_luban_os.cpp`, xdesk in `test_luban_os_xdesk.cpp`). The app renders for
 real under SDL's offscreen driver, and `luban-os --script <file>` drives it
 between frames with input injected as SDL delivers a person's:
 
