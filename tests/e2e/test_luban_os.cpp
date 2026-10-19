@@ -235,6 +235,7 @@ while True:
     log.write("%s %s\n" % (chr(head[0]), body.decode(errors="replace")))
 )", I::Surface | I::Mode | I::Pointer | I::Keyboard | I::PointerLock));
     const auto held = home.root() / "held.json", gone = home.root() / "gone.json", again = home.root() / "again.json";
+    const auto refused = home.root() / "refused.json", retried = home.root() / "retried.json";
     auto r = run_script(home, std::format(R"(wait desktop
 waitfor desktop.texture.0 320
 frames 3
@@ -245,16 +246,34 @@ state {}
 key Ctrl+Alt+K
 frames 3
 state {}
-)", held.string(), gone.string(), again.string()),
+key Ctrl+Alt+K
+frames 3
+refuse-grabs 1
+key Ctrl+Alt+K
+frames 3
+state {}
+sleep 700
+frames 3
+state {}
+)", held.string(), gone.string(), again.string(), refused.string(), retried.string()),
                         {"--desktop-exec", "python3", fake.string(), log.string()});
     ASSERT_EQ(r.exit_code, 0) << r.transcript();
     const auto a = read_state(held)["window"], b = read_state(gone)["window"], c = read_state(again)["window"];
-    EXPECT_EQ(a["title"], "Luban OS (desktop)") << "the system it shows, in the title";
+    EXPECT_EQ(a["title"], "Luban OS (desktop) · keyboard held (Ctrl+Alt+K lets it go)") << "the system it shows, in the title";
     EXPECT_TRUE(a["keyboard_grabbed"].get<bool>()) << "a desktop entered holds the keyboard";
     EXPECT_FALSE(b["keyboard_grabbed"].get<bool>()) << "Ctrl+Alt+K lets it go";
+    EXPECT_EQ(b["title"], "Luban OS (desktop)") << "let go, the title says nothing of it";
+    EXPECT_EQ(b["toast"], "Keyboard: let go") << "and the change is said at the top";
     EXPECT_FALSE(b["pointer_locked"].get<bool>()) << "and the pointer the desktop held";
     EXPECT_TRUE(c["keyboard_grabbed"].get<bool>()) << "and holds it again";
     EXPECT_FALSE(c["pointer_locked"].get<bool>()) << "the pointer only when the desktop asks again";
+    // The host refusing (design 2026-10-20 §5, G8): not held, said, asked again.
+    const auto e = read_state(refused)["window"], f = read_state(retried)["window"];
+    EXPECT_TRUE(e["keyboard_wanted"].get<bool>()) << e.dump();
+    EXPECT_FALSE(e["keyboard_grabbed"].get<bool>()) << "a refusal is not held\n" << e.dump();
+    EXPECT_NE(e["toast"].get<std::string>().find("did not let it be held"), std::string::npos) << e.dump();
+    EXPECT_EQ(e["title"], "Luban OS (desktop)") << e.dump();
+    EXPECT_TRUE(f["keyboard_grabbed"].get<bool>()) << "held on the next try\n" << f.dump();
     // The chord is the window's: the desktop never sees its K.
     const auto sent = tk::read_file(log);
     EXPECT_EQ(sent.find(std::format("E key 1 {} ", static_cast<int>('k'))), std::string::npos) << sent;

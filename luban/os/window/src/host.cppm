@@ -51,8 +51,15 @@ public:
     void set_title(const std::string& title);
     void set_fullscreen(bool on);
     bool fullscreen() const;
-    // While on, every key -- the host's chords too -- is the window's.
-    void grab_keyboard(bool on);
+    // While held, every key -- the host's chords too -- is the window's.
+    // Held is the host's answer (design 2026-10-20 §5): X11 refuses while
+    // another program holds the keyboard (its menu, its switcher) or the
+    // window is not shown, and SDL does not read that answer. Asked again
+    // while not held, it tries again on a focus change and at most every
+    // 500 ms; `why` says what the host answered when it refused.
+    enum class Grab { Released, Held, HeldByAnother, NotShown, Refused };
+    Grab grab_keyboard(bool on);
+    Grab keyboard_grab() const;
     bool keyboard_grabbed() const;
     // While on, the pointer stays in the window and its motion is relative
     // (opensal PointerRelative): a game's, a 3D program's.
@@ -136,6 +143,9 @@ public:
     // take it the way they take a person's. A key by name ("Down", "Return",
     // "Escape", "F2", "Ctrl", "Alt", "Shift", "Super", or one character).
     bool inject_key(std::string_view name, bool down);
+    // Tests: the host refuses the next `times` grabs (as X11 does while it
+    // holds the keyboard).
+    void refuse_grabs(int times);
     void inject_text(std::string_view text);
     void inject_pointer(float x, float y);
     void inject_button(float x, float y, int button, bool down);

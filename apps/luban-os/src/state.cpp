@@ -60,13 +60,15 @@ std::string App::countdown_target() const {
 
 std::string App::title_for(std::string_view what) const {
     // A program alone in the window is its title.
+    // Held, the keyboard is said there too, and how to let it go (design 2026-10-20 §5.2).
+    const std::string held = window && window->keyboard_grabbed() ? std::string(tr("luban.os.app.keyboard_held_title")) : std::string{};
     if (!once_app.empty()) {
         const auto first = once_app.substr(0, once_app.find(' '));
-        return std::format("{} — {}", fs::path(first).filename().string(), what);
+        return std::format("{} — {}{}", fs::path(first).filename().string(), what, held);
     }
     // One title for a system in every view (design 2026-10-19 §18.3, F17):
     // `Luban OS (<system>)`; the keys are said in the bar at the top.
-    return std::format("Luban OS ({})", what);
+    return std::format("Luban OS ({}){}", what, held);
 }
 
 void App::start_job(std::string title, std::function<void(Job&, service::Context)> body, std::function<void(App&)> then) {

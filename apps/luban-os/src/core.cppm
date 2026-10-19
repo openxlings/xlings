@@ -435,6 +435,14 @@ struct App {
     // §16.1): wanted from the setting as it is entered, Ctrl+Alt+K flips it;
     // held only while the window has the focus.
     bool keyboard_wanted { false };
+    host::Window::Grab keyboard_shown { host::Window::Grab::Released };   // what the title and the toast said
+    bool keyboard_told { false };          // Ctrl+Alt+K or the menu asked: its answer is said
+    std::string toast_text;                // a moment's word at the top
+    std::optional<std::chrono::steady_clock::time_point> toast_until;
+    void toast(std::string text) {
+        toast_text = std::move(text);
+        toast_until = std::chrono::steady_clock::now() + std::chrono::milliseconds(1500);
+    }
     bool was_in_desktop { false };
     bool focus_out { false };
     bool pointer_lock_asked { false };

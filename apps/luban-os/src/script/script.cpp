@@ -121,6 +121,7 @@ Json state_(const App& a) {
     for (const auto& [what, ms] : a.latency) j["latency"][what] = ms;
     if (a.window)
         j["window"] = {{"title", a.window->title()}, {"keyboard_grabbed", a.window->keyboard_grabbed()},
+                       {"keyboard_wanted", a.keyboard_wanted}, {"toast", a.toast_until ? a.toast_text : std::string{}},
                        {"pointer_locked", a.window->pointer_locked()}};
     j["admin_selected"] = a.admin_selected < static_cast<int>(a.systems.size()) ? a.systems[static_cast<std::size_t>(a.admin_selected)].name : std::string{};
     if (a.console) {
@@ -326,6 +327,12 @@ void script_step_(App& a, Script& sc) {
         sc.pending.push_back([keys](App& app) {
             for (auto it = keys.rbegin(); it != keys.rend(); ++it) app.window->inject_key(*it, false);
         });
+        next();
+    } else if (cmd == "refuse-grabs") {
+        // The host refuses the next n keyboard grabs (X11 while it holds the keyboard).
+        int times = 0;
+        words >> times;
+        a.window->refuse_grabs(times);
         next();
     } else if (cmd == "press" || cmd == "release") {
         // The button held down where the pointer goes, and let go: a drag.

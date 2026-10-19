@@ -354,7 +354,9 @@ void host_menu_(App& a) {
     if (a.view == View::Desktop) {
         items.push_back({std::string(tr("luban.os.common.menu.console")), "menu:console"});
         // The keyboard held or let go: the same as Ctrl+Alt+K.
-        items.push_back({std::string(tr(a.keyboard_wanted ? "luban.os.common.menu.release_keyboard" : "luban.os.common.menu.hold_keyboard")),
+        items.push_back({std::string(tr(a.window->keyboard_grabbed() ? "luban.os.common.menu.release_keyboard"
+                                        : a.keyboard_wanted              ? "luban.os.common.menu.keyboard_not_held"
+                                                                         : "luban.os.common.menu.hold_keyboard")),
                          "menu:keyboard"});
     }
     if (machine) items.push_back({std::string(tr("luban.os.common.close.power_off")), "menu:power-off"});
@@ -386,6 +388,7 @@ void host_menu_(App& a) {
     else if (picked == "menu:full-screen" || picked == "menu:leave-full-screen") a.window->set_fullscreen(!a.window->fullscreen());
     else if (picked == "menu:keyboard") {
         a.keyboard_wanted = !a.keyboard_wanted;
+        a.keyboard_told = true;
         if (!a.keyboard_wanted) a.pointer_lock_asked = false;
     }
     else if (picked == "menu:new-window") {
