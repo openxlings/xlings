@@ -54,4 +54,5 @@ graph TD
 - [91 —— 架构](91-architecture.md) —— 给开发者：它是怎样构建的
 
 全部 luban 命令和参数：[生成的参考](../../generated/luban-command-reference.md)。
+xdesk 桌面的全部按键：[生成的键位表](../../generated/xdesk-keys.zh.md)。
 编写 edition：索引的 [Luban 包](https://github.com/openxlings/xim-pkgindex/blob/main/docs/zh/12-luban-packages.md)。

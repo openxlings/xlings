@@ -64,4 +64,5 @@ computer can run, and why not ([07](07-host-support.md)).
 - [91 — Architecture](91-architecture.md) — for developers: how it is built
 
 Every luban command and option: [the generated reference](../generated/luban-command-reference.md).
+Every key of the xdesk desktop: [the generated table](../generated/xdesk-keys.md).
 Writing an edition: the index's [Luban packages](https://github.com/openxlings/xim-pkgindex/blob/main/docs/12-luban-packages.md).
