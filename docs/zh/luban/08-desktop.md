@@ -151,10 +151,10 @@ xdesk 读取 `<会话>.ini`（`xdesk.ini`、`classic.ini`、`canvas.ini`）：�
 [desktop]
 terminal = foot
 autostart = foot
-inner_gap = 4          # 窗口之间（以前的 gap 读作它）
-outer_gap = 0          # 窗口与屏幕边缘之间
-min_column_width = 480 # 平铺的列平分屏幕，窄于它时开始滚动
-flow = horizontal      # 平铺的列左右排；vertical：上下排
+inner_gap = 4          # between windows (gap of before is read as this)
+outer_gap = 0          # between windows and the screen's edges
+min_column_width = 480 # tiled columns share the screen until narrower than this, then scroll
+flow = horizontal      # tiled columns side by side; vertical: one under another
 workspaces = 4
 
 [theme]
