@@ -2124,14 +2124,17 @@ int cmd_remove_resolved_(const std::string& target,
     }
 
     std::vector<std::string> pinnedBy;
+    if (result->detachedOnly)
+        for (const auto& user : views_choosing(result->target, result->version)) pinnedBy.push_back(user + "'s own choice");
     if (result->detachedOnly) {
         std::vector<std::string> unreadable;
-        pinnedBy = xlings::profile::find_subos_pinning_version(
+        auto pinning = xlings::profile::find_subos_pinning_version(
             Config::paths().homeDir,
             result->target.empty() ? displayName : result->target,
             result->version.empty() ? displayVersion : result->version,
             &unreadable);
-        std::erase(pinnedBy, subos);
+        std::erase(pinning, subos);
+        pinnedBy.insert(pinnedBy.end(), pinning.begin(), pinning.end());
         // An unreadable subos is exactly why the payload may have been kept
         // (is_version_referenced_anywhere_ treats it the same way) --
         // report it alongside the subos this scan could actually confirm,

@@ -131,15 +131,25 @@ XTEST(UserView, AUsersViewReadsTheSystemsStoreAndAsksOnceForWhatItLacks, .area =
     EXPECT_TRUE(fs::exists(system / "data/xpkgs/xim-x-fixture-data/1.0.0")) << r.transcript();
     EXPECT_FALSE(fs::exists(home.dir() / "data/xpkgs/xim-x-fixture-data/1.0.0")) << "borrowed, not copied";
 
-    // Choosing the system's version is the view's own choice; removing it
-    // takes back the choice only: the store keeps the package.
-    r = home.xlings({"use", "fixture-tool", "1.0.0"}, inSystem);
-    EXPECT_EQ(r.exit_code, 0) << r.transcript();
-    r = home.xlings({"remove", "fixture-tool", "-y"}, inSystem);
-    EXPECT_EQ(r.exit_code, 0) << r.transcript();
-    EXPECT_TRUE(fs::exists(system / "data/xpkgs/xim-x-fixture-tool/1.0.0/bin")) << "the store is root's";
     // The system's own is root's to remove, for everyone: said.
     r = home.xlings({"remove", "fixture-tool", "-y"}, inSystem);
     EXPECT_NE(r.transcript().find("sudo xlings remove fixture-tool"), std::string::npos) << r.transcript();
-    EXPECT_TRUE(fs::exists(system / "data/xpkgs/xim-x-fixture-tool/1.0.0/bin"));
+
+    // Choosing the system's version is the view's own choice: root removing
+    // it keeps the payload while a user has chosen it, and says who (§4.7).
+    r = home.xlings({"use", "fixture-tool", "1.0.0"}, inSystem);
+    EXPECT_EQ(r.exit_code, 0) << r.transcript();
+    const auto passwd = home.root() / "passwd";
+    tk::write_file(passwd, std::format("root:x:0:0::/root:/bin/sh\nalice:x:1000:1000::{}:/bin/sh\n", home.root().string()));
+    guard.set(true);
+    r = home.xlings({"remove", "fixture-tool", "-y"}, {{"XLINGS_HOME", system.string()}, {"XLINGS_ETC_PASSWD", passwd.string()}});
+    guard.set(false);
+    EXPECT_EQ(r.exit_code, 0) << r.transcript();
+    EXPECT_NE(r.transcript().find("alice"), std::string::npos) << r.transcript();
+    EXPECT_TRUE(fs::exists(system / "data/xpkgs/xim-x-fixture-tool/1.0.0/bin")) << "a user's choice keeps it";
+
+    // Removing in the view takes back the choice only: the store keeps it.
+    r = home.xlings({"remove", "fixture-tool", "-y"}, inSystem);
+    EXPECT_EQ(r.exit_code, 0) << r.transcript();
+    EXPECT_TRUE(fs::exists(system / "data/xpkgs/xim-x-fixture-tool/1.0.0/bin")) << "the store is root's";
 }

@@ -1654,6 +1654,56 @@ std::vector<std::filesystem::path> workspace_config_paths_for_scope_(PackageScop
     return paths;
 }
 
+bool is_version_referenced_anywhere_(PackageScope scope, const std::string& target, const std::string& version, const std::filesystem::path& excludePath, bool force);
+
+}  // namespace detail_
+
+std::vector<std::string> views_choosing(const std::string& target, const std::string& version) {
+    namespace fs = std::filesystem;
+    std::vector<std::string> users;
+    const auto& paths = Config::paths();
+    if (!paths.systemLayer.empty()) return users;   // a view itself has no views
+    std::error_code ec;
+    const auto self = fs::weakly_canonical(paths.homeDir, ec);
+    const char* override_ = std::getenv("XLINGS_ETC_PASSWD");
+    std::ifstream passwd(override_ && *override_ ? override_ : "/etc/passwd");
+    for (std::string line; std::getline(passwd, line);) {
+        std::vector<std::string> f;
+        for (std::string_view rest = line;;) {
+            const auto colon = rest.find(':');
+            f.emplace_back(rest.substr(0, colon));
+            if (colon == std::string_view::npos) break;
+            rest.remove_prefix(colon + 1);
+        }
+        if (f.size() < 6 || f[5].empty()) continue;
+        const auto view = fs::path(f[5]) / ".xlings";
+        if (fs::equivalent(view, self, ec)) continue;
+        // Another user's file, unreadable or absent for most: nothing chosen.
+        nlohmann::json config;
+        try {
+            if (!fs::is_regular_file(view / ".xlings.json", ec)) continue;
+            config = nlohmann::json::parse(platform::read_file_to_string((view / ".xlings.json").string()), nullptr, false);
+        } catch (...) {
+            continue;
+        }
+        if (!config.is_object()) continue;
+        const auto entry = config.value("versions", nlohmann::json::object()).value(target, nlohmann::json::object())
+                               .value("versions", nlohmann::json::object());
+        bool chosen = false;
+        for (auto it = entry.begin(); it != entry.end(); ++it) {
+            const auto& key = it.key();
+            const auto& data = it.value();
+            if (!data.is_object() || !xvm::version_key_matches(version, key)) continue;
+            const auto layer = data.value("layer", nlohmann::json::object()).value("home", std::string{});
+            if (!layer.empty() && fs::weakly_canonical(layer, ec) == self) chosen = true;
+        }
+        if (chosen) users.push_back(f[0]);
+    }
+    return users;
+}
+
+namespace detail_ {
+
 bool is_version_referenced_anywhere_(PackageScope scope, const std::string& target, const std::string& version, const std::filesystem::path& excludePath, bool force) {
     std::error_code ec;
     auto excludeCanonical = excludePath.empty() ? std::filesystem::path{} : std::filesystem::weakly_canonical(excludePath, ec);
@@ -4241,11 +4291,16 @@ std::expected<Installer::UninstallOutcome, std::string> Installer::uninstall(con
             auto source = home::layers::read_source_snapshot(data.sourceHome, data.sourceScope);
             if (!source)
                 return std::unexpected(source.error());
+            // Taking back a borrowed choice deletes nothing (the payload is
+            // the layer's): it needs no proof that the layer still offers the
+            // release -- root may have let it go meanwhile (design 2026-10-20
+            // §4.7), and the user's own choice must still be removable.
             auto proof = home::layers::plan_borrow_package(
                 *source, versionDb, executingProvider, executingProviderVersion);
             if (!proof || !*proof || (**proof).requestedPayload != physical->root)
-                return std::unexpected(proof ? "borrowed payload source no longer matches its evidence"
-                                             : proof.error());
+                log::debug("{}@{}: its layer no longer offers it as borrowed ({}); taking back the choice only",
+                           executingProvider, executingProviderVersion,
+                           proof ? "the payload changed" : proof.error());
             installDir = physical->root;
             detachTarget = registeredTarget;
             detachVersion = key;
@@ -4314,6 +4369,9 @@ std::expected<Installer::UninstallOutcome, std::string> Installer::uninstall(con
             detachVersion,
             currentWorkspacePath,
             force));
+    // A user's view that chose it keeps the payload (design 2026-10-20 §4.7).
+    if (!stillReferenced && !detachVersion.empty() && !views_choosing(detachTarget, detachVersion).empty())
+        stillReferenced = true;
 
     // The `configured` record (#632) describes a binding in THIS scope, so it
     // goes with the binding on both paths below: a later install here must
