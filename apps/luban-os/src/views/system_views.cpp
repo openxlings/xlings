@@ -534,11 +534,14 @@ void desktop_view_(App& a) {
                 ImGui::GetWindowDrawList()->AddImage(id, p0, p1, uv0, uv1);
             }
         mark_(a, "desktop");
-        // Over its picture the guest's own pointer is drawn into the frames
-        // (the compositor's theme); elsewhere -- the bars around a picture
-        // smaller than the window -- the host's arrow shows (design
-        // 2026-10-16 L §13.9).
-        if (ImGui::IsItemHovered()) ImGui::SetMouseCursor(ImGuiMouseCursor_None);
+        // Over its picture the pointer is the desktop's: drawn by the host
+        // as it says (design 2026-10-19 §15), or none where it draws its own
+        // into the frames; elsewhere -- the bars around a picture smaller
+        // than the window -- the interface's.
+        if (ImGui::IsItemHovered()) {
+            const auto p = d.pointer();
+            a.window->surface_pointer(p.shape, p.image ? &*p.image : nullptr);
+        }
         if (shell_h > 0) on_shell = shell_bar_(a, d, ImVec2(origin.x, origin.y + avail.y), avail.x, shell_h);
         // Its caret: the host's input method writes there (in window pixels).
         if (auto t = d.take_text_input()) {

@@ -57,6 +57,7 @@ struct AppSettings {
     std::map<std::string, std::string> last_used;   // name -> ISO time
     std::string language { "auto" };                // auto | en | zh
     bool reduce_motion { false };
+    bool lock_keyboard { true };                    // a desktop entered holds the keyboard (Ctrl+Alt+K lets it go)
     float console_size { 16 };                      // the console's default font size (nominal)
     std::map<std::string, float> console_sizes;     // per system, Ctrl+= / Ctrl+- / Ctrl+0
     bool minimize_to_tray { true };
@@ -160,7 +161,8 @@ public:
     // sandbox runs; tests run a desktop of their own the same way).
     static std::unique_ptr<Display> process(const std::vector<std::string>& argv, std::map<std::string, std::string> env,
                                             const fs::path& log, const std::string& name, opensal::Size size,
-                                            ClipboardGrant clip, std::function<void()> wake, std::string& error);
+                                            ClipboardGrant clip, std::function<void()> wake, std::string& error,
+                                            const std::string& session = {});
     ~Display();
     void send(const opensal::Event& e);
     bool alive() const { return alive_; }
@@ -181,6 +183,20 @@ public:
     std::vector<opensal::Application> applications() const { std::lock_guard l(m_); return applications_; }
     std::vector<opensal::Window> windows() const { std::lock_guard l(m_); return windows_; }
 
+    // The pointer over its picture (design 2026-10-19 §15): what it says
+    // ('c' a shape, 'C' an image) when it asked for Cursor; else the host's
+    // arrow for an xdesk that cannot draw one (luban.compat), or none -- it
+    // draws its own into the frames.
+    struct Pointer {
+        std::string shape { "none" };                 // kCursors, or "custom" with `image`
+        std::optional<opensal::CursorImage> image;
+        bool host_arrow { false };
+    };
+    Pointer pointer() const { std::lock_guard l(m_); return pointer_; }
+    // It asked to hold the pointer (opensal PointerLock: a game) or let it
+    // go: what it said since the last call.
+    std::optional<bool> take_pointer_lock();
+
     struct Update { opensal::Rect rect; std::string rows; };
     // The surface's size (0 until the first frame) and the rectangles since the last call.
     opensal::Size take(std::vector<Update>& out);
@@ -191,11 +207,14 @@ private:
     // machine agent), opened by `open`.
     static std::unique_ptr<Display> over_(vm::Client client, const std::string& name, bool machine, opensal::Size size,
                                           ClipboardGrant clip, std::function<void()> wake, std::string& error,
-                                          const std::function<bool(vm::Client&)>& open, const fs::path& log);
+                                          const std::function<bool(vm::Client&)>& open, const fs::path& log,
+                                          const std::string& session);
     bool machine_ { false };
     fs::path log_;                    // a relayed desktop's standard error
     void provider_(std::string_view bytes);
     std::string name_;
+    std::string session_;             // the desktop session it started (empty: unknown)
+    Pointer pointer_;
     mutable std::mutex m_;
     bool send_(std::string_view wire_bytes);
     std::optional<vm::Client> client_;
@@ -210,6 +229,7 @@ private:
     opensal::Size size_;
     ClipboardGrant clip_;
     std::optional<std::string> text_input_, clipboard_;
+    std::optional<bool> pointer_lock_;
     std::atomic<bool> shell_ { false };
     std::vector<opensal::Application> applications_;
     std::vector<opensal::Window> windows_;
@@ -376,6 +396,13 @@ struct App {
     std::optional<std::chrono::steady_clock::time_point> resize_at;
     std::string current;               // the system on screen
     bool menu { false };               // the Host key's menu
+    // The keyboard and the pointer held for a desktop (design 2026-10-19
+    // §16.1): wanted from the setting as it is entered, Ctrl+Alt+K flips it;
+    // held only while the window has the focus.
+    bool keyboard_wanted { false };
+    bool was_in_desktop { false };
+    bool focus_out { false };
+    bool pointer_lock_asked { false };
     int menu_focus { 0 };
     bool close_dialog { false };
     int close_choice { 0 };            // 0 background, 1 power off

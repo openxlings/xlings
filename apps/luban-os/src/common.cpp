@@ -44,6 +44,7 @@ AppSettings read_app_settings(const fs::path& home) {
     s.language = j.value("language", std::string("auto"));
     if (s.language != "en" && s.language != "zh") s.language = "auto";
     s.reduce_motion = j.value("reduce_motion", false);
+    s.lock_keyboard = j.value("lock_keyboard", true);
     s.console_size = std::clamp(j.value("console_size", 16.0f), 8.0f, 40.0f);
     if (auto c = j.find("console_sizes"); c != j.end() && c->is_object())
         for (auto it = c->begin(); it != c->end(); ++it)
@@ -56,7 +57,7 @@ AppSettings read_app_settings(const fs::path& home) {
 
 void write_app_settings(const fs::path& home, const AppSettings& s) {
     Json j{{"default_system", s.default_system}, {"countdown", s.countdown}, {"last_used", Json::object()},
-           {"language", s.language}, {"reduce_motion", s.reduce_motion}, {"console_size", s.console_size},
+           {"language", s.language}, {"reduce_motion", s.reduce_motion}, {"lock_keyboard", s.lock_keyboard}, {"console_size", s.console_size},
            {"console_sizes", Json::object()}, {"minimize_to_tray", s.minimize_to_tray}, {"keep_in_tray", s.keep_in_tray},
            {"close_choice", s.close_choice}};
     for (const auto& [k, v] : s.last_used) j["last_used"][k] = v;
@@ -350,7 +351,12 @@ void host_menu_(App& a) {
         labels.push_back(std::vformat(tr("luban.os.common.desktop"), std::make_format_args(d)));
         items.push_back({labels.back(), "menu:desktop:" + d});
     }
-    if (a.view == View::Desktop) items.push_back({std::string(tr("luban.os.common.menu.console")), "menu:console"});
+    if (a.view == View::Desktop) {
+        items.push_back({std::string(tr("luban.os.common.menu.console")), "menu:console"});
+        // The keyboard held or let go: the same as Ctrl+Alt+K.
+        items.push_back({std::string(tr(a.keyboard_wanted ? "luban.os.common.menu.release_keyboard" : "luban.os.common.menu.hold_keyboard")),
+                         "menu:keyboard"});
+    }
     if (machine) items.push_back({std::string(tr("luban.os.common.close.power_off")), "menu:power-off"});
     items.push_back({std::string(tr("luban.os.common.menu.close")), "menu:close-this-menu"});
     const ImVec2 size(px(340), px(64) + static_cast<float>(items.size()) * px(48));
@@ -378,6 +384,10 @@ void host_menu_(App& a) {
     if (picked == "menu:back-to-the-list") a.back_home();
     else if (picked == "menu:manage") { a.before_admin = a.view; a.view = View::Admin; }
     else if (picked == "menu:full-screen" || picked == "menu:leave-full-screen") a.window->set_fullscreen(!a.window->fullscreen());
+    else if (picked == "menu:keyboard") {
+        a.keyboard_wanted = !a.keyboard_wanted;
+        if (!a.keyboard_wanted) a.pointer_lock_asked = false;
+    }
     else if (picked == "menu:new-window") {
         const auto self = platform::get_executable_path();
         (void)platform::spawn_detached({self.string(), "--attach", a.current}, a.home / "logs" / "luban-os.log");
@@ -410,8 +420,7 @@ float system_bar_(App& a, std::string_view mode) {
     imkit::text(dl, ImVec2(o.x + px(8) + 16 * cell + px(8), o.y + px(6)), a.current, th_().text, 14, true);
     const float nx = o.x + px(8) + 16 * cell + px(16) + imkit::text_size(a.current, 14, true).x;
     chip_(dl, ImVec2(nx, o.y + px(5)), mode, th_().text, art::edition_color(edition, -1));
-    const std::string hint(a.window->keyboard_grabbed() ? tr("luban.os.common.ctrl_alt_releases_keyboard")
-                                                          : tr("luban.os.common.ctrl_alt_menu_ctrl_ctrl"));
+    const std::string hint(tr("luban.os.common.ctrl_alt_menu_ctrl_ctrl"));
     const auto ts = imkit::text_size(hint, 13);
     imkit::text(dl, ImVec2(o.x + W - ts.x - px(12), o.y + px(7)), hint, th_().text_faint, 13);
     return H;

@@ -7,6 +7,7 @@ import xlings.testkit;
 import std;
 import xlings.libs.json;
 import xlings.platform;
+import opensal;
 
 namespace tk = xlings::testkit;
 namespace platform = xlings::platform;
@@ -291,8 +292,12 @@ sleep 300
     EXPECT_FLOAT_EQ(d[2] - d[0], 320.0f);
     EXPECT_EQ(img.at(static_cast<int>(d[0]) + 20, static_cast<int>(d[1]) + 20), (std::array<int, 3>{0xC0, 0x80, 0x40}));
     const auto sent = tk::read_file(log);
-    EXPECT_NE(sent.find("H 911 1100 700 1 1"), std::string::npos)
-        << "the window's interfaces (surface, pointer, keyboard, mode, text, clipboard, shell), size, density and pacing, first\n" << sent;
+    using I = opensal::Interface;
+    const auto provided = I::Surface | I::Pointer | I::Keyboard | I::Mode | I::Text | I::Clipboard | I::Shell | I::Cursor | I::CursorImage
+                          | I::PointerLock;
+    EXPECT_NE(sent.find(std::format("H {} 1100 700 1 1", provided)), std::string::npos)
+        << "the window's interfaces (surface, pointer, keyboard, mode, text, clipboard, shell, the pointer's shapes, images and lock), "
+           "size, density and pacing, first\n" << sent;
     // Pacing: once it has shown the frame, it says so (the next may come).
     EXPECT_NE(sent.find("E presented"), std::string::npos) << sent;
     // The click, in the desktop's own pixels (its middle), down and up.
@@ -310,6 +315,77 @@ sleep 300
 // A desktop without a shell of its own asks the window to be it (design
 // 2026-10-18 §7, T1): its applications and windows on the window's bar, an
 // application started and a window brought forward by a click.
+XTEST(LubanOs, ADesktopHoldsTheKeyboardAndCtrlAltKLetsItGo, .area = "luban",
+      .covers = {"LUBAN-OS-KEYBOARD", "LUBAN-OS-WINDOW-TITLE", "LUBAN-OS-POINTER"}, .requires_ = {"linux", "xlings-bin"}) {
+    if (!app_binary()) GTEST_SKIP() << "no luban-os beside the xlings under test";
+    auto home = tk::Home::isolated("luban-os-keyboard");
+    ASSERT_EQ(home.xlings({"self", "init"}).exit_code, 0);
+    // A desktop that asks to hold the pointer (a game would), and logs what it gets.
+    const auto fake = home.root() / "desktop.py", log = home.root() / "desktop.log";
+    using I = opensal::Interface;
+    tk::write_file(fake, std::format(R"(import struct, sys
+log = open(sys.argv[1], "w", buffering=1)
+W, H = 320, 200
+out = sys.stdout.buffer
+def send(kind, payload):
+    out.write(kind.encode() + struct.pack(">I", len(payload)) + payload)
+    out.flush()
+send("h", b"{}")
+send("s", b"%d %d" % (W, H))
+send("f", b"0 0 %d %d %d\n" % (W, H, W * 4) + bytes([0x40, 0x80, 0xC0, 0xFF]) * (W * H))
+send("l", b"1")
+inp = sys.stdin.buffer
+while True:
+    head = inp.read(5)
+    if len(head) < 5:
+        break
+    body = inp.read(struct.unpack(">I", head[1:])[0])
+    log.write("%s %s\n" % (chr(head[0]), body.decode(errors="replace")))
+)", I::Surface | I::Mode | I::Pointer | I::Keyboard | I::PointerLock));
+    const auto held = home.root() / "held.json", gone = home.root() / "gone.json", again = home.root() / "again.json";
+    auto r = run_script(home, std::format(R"(wait desktop
+waitfor desktop.texture.0 320
+frames 3
+state {}
+key Ctrl+Alt+K
+frames 3
+state {}
+key Ctrl+Alt+K
+frames 3
+state {}
+)", held.string(), gone.string(), again.string()),
+                        {"--desktop-exec", "python3", fake.string(), log.string()});
+    ASSERT_EQ(r.exit_code, 0) << r.transcript();
+    const auto a = read_state(held)["window"], b = read_state(gone)["window"], c = read_state(again)["window"];
+    EXPECT_EQ(a["title"], "Luban OS (desktop)") << "the system it shows, in the title";
+    EXPECT_TRUE(a["keyboard_grabbed"].get<bool>()) << "a desktop entered holds the keyboard";
+    EXPECT_FALSE(b["keyboard_grabbed"].get<bool>()) << "Ctrl+Alt+K lets it go";
+    EXPECT_FALSE(b["pointer_locked"].get<bool>()) << "and the pointer the desktop held";
+    EXPECT_TRUE(c["keyboard_grabbed"].get<bool>()) << "and holds it again";
+    EXPECT_FALSE(c["pointer_locked"].get<bool>()) << "the pointer only when the desktop asks again";
+    // The chord is the window's: the desktop never sees its K.
+    const auto sent = tk::read_file(log);
+    EXPECT_EQ(sent.find(std::format("E key 1 {} ", static_cast<int>('k'))), std::string::npos) << sent;
+
+    // Set not to hold it: a desktop entered leaves the keyboard alone. And an
+    // xdesk of before that does not ask for the pointer (it cannot draw one)
+    // is given the host's arrow over its picture (luban.compat).
+    tk::write_file(home.dir() / "config" / "luban-os.json", R"({"lock_keyboard": false})");
+    const auto unheld = home.root() / "unheld.json";
+    r = run_script(home, std::format(R"(wait desktop
+waitfor desktop.texture.0 320
+move 550 350
+frames 3
+state {}
+)", unheld.string()),
+                   {"--desktop-session", "xdesk-classic", "--desktop-exec", "python3", fake.string(), log.string()});
+    ASSERT_EQ(r.exit_code, 0) << r.transcript();
+    const auto d = read_state(unheld);
+    EXPECT_FALSE(d["window"]["keyboard_grabbed"].get<bool>()) << "the setting is honoured";
+    EXPECT_TRUE(d["pointer"]["host_arrow"].get<bool>()) << d["pointer"].dump();
+    EXPECT_EQ(d["pointer"]["shape"], "default") << d["pointer"].dump();
+}
+
 XTEST(LubanOs, TheWindowIsTheShellOfADesktopWithoutOne, .area = "luban",
       .covers = {"LUBAN-DESKTOP-SHELL"}, .requires_ = {"linux", "xlings-bin"}) {
     if (!app_binary()) GTEST_SKIP() << "no luban-os beside the xlings under test";
@@ -720,15 +796,17 @@ state {}
 fs::path colour_client(const tk::Home& home) {
     const auto file = home.root() / "client.py";
     tk::write_file(file, R"PY(# A Wayland client in one colour: xdg-shell over the plain wire, its pixels
-# in shared memory. Closes when asked. argv: RRGGBB [--log FILE] [--copy TEXT]
+# in shared memory. Closes when asked. argv: RRGGBB [--log FILE] [--copy TEXT] [--cursor 1]
 #   --log   text-input-v3 on: what is committed, and the selection it is
 #           offered, written to FILE ("commit <text>", "paste <text>")
 #   --copy  then its own selection: TEXT
+#   --cursor  its own pointer over it: 8x8 in its colour, hotspot (3, 4)
 import os, socket, struct, sys, mmap, tempfile, array
 colour = int(sys.argv[1], 16)
 opts = dict(zip(sys.argv[2::2], sys.argv[3::2]))
 log = open(opts["--log"], "a", buffering=1) if "--log" in opts else None
 copy = opts.get("--copy")
+cursor = "--cursor" in opts
 sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
 sock.connect(os.path.join(os.environ["XDG_RUNTIME_DIR"], os.environ["WAYLAND_DISPLAY"]))
 next_id = [2]
@@ -779,9 +857,12 @@ surface = new(); send(compositor, 0, struct.pack("<I", surface))
 xdg_surface = new(); send(wm, 2, struct.pack("<II", xdg_surface, surface))
 toplevel = new(); send(xdg_surface, 1, struct.pack("<I", toplevel))
 send(toplevel, 2, string(sys.argv[1]))                      # set_title
-keyboard = text = device = source = None
+keyboard = text = device = source = pointer = cursor_surface = None
+seat = bind("wl_seat", 5) if log or cursor else None
+if cursor:
+    pointer = new(); send(seat, 0, struct.pack("<I", pointer))              # get_pointer
+    cursor_surface = new(); send(compositor, 0, struct.pack("<I", cursor_surface))
 if log:
-    seat = bind("wl_seat", 5)
     keyboard = new(); send(seat, 1, struct.pack("<I", keyboard))            # get_keyboard
     inputs = bind("zwp_text_input_manager_v3", 1)                         # ids in the order they are sent
     text = new(); send(inputs, 1, struct.pack("<II", text, seat))
@@ -789,7 +870,8 @@ if log:
     device = new(); send(manager, 1, struct.pack("<II", device, seat))     # get_data_device
 send(surface, 6)                                             # commit
 size = (0, 0); drawn = None; offers = {}; pasted = False; enter_serial = 0
-def draw(w, h):
+def draw(w, h, on=None):
+    on = on or surface
     stride = w * 4
     f = tempfile.TemporaryFile()          # unlinked: memory the compositor maps
     fd = f.fileno()
@@ -799,9 +881,9 @@ def draw(w, h):
     pool = new(); send(shm, 0, struct.pack("<Ii", pool, stride * h), [fd])
     buffer = new(); send(pool, 0, struct.pack("<IiiiiI", buffer, 0, w, h, stride, 1))
     f.close()
-    send(surface, 1, struct.pack("<Iii", buffer, 0, 0))     # attach
-    send(surface, 2, struct.pack("<iiii", 0, 0, w, h))      # damage
-    send(surface, 6)
+    send(on, 1, struct.pack("<Iii", buffer, 0, 0))          # attach
+    send(on, 2, struct.pack("<iiii", 0, 0, w, h))           # damage
+    send(on, 6)
 for obj, op, body in it:
     if obj == toplevel and op == 0:
         w, h = struct.unpack("<ii", body[:8]); size = (w or 400, h or 300)
@@ -812,6 +894,10 @@ for obj, op, body in it:
         if size != drawn: draw(*size); drawn = size
     elif obj == wm and op == 0:
         send(wm, 3, body[:4])                                # pong
+    elif obj == pointer and op == 0:                         # enter: its own pointer
+        serial, = struct.unpack("<I", body[:4])
+        send(pointer, 0, struct.pack("<IIii", serial, cursor_surface, 3, 4))   # set_cursor
+        draw(8, 8, cursor_surface)
     elif obj == keyboard and op == 0:
         os.close(fds.pop(0))                                 # the keymap: not needed
     elif obj == keyboard and op == 1:
@@ -969,6 +1055,75 @@ screenshot {}
     EXPECT_EQ(c.at(275, 400), kRed);
     EXPECT_EQ(c.at(825, 250), kGreen);
     EXPECT_EQ(c.at(825, 600), kBlue);
+}
+
+XTEST(LubanOs, TheHostDrawsTheDesktopsPointerAsItSaysIt, .area = "luban",
+      .covers = {"LUBAN-OS-POINTER", "XDESK-COMPOSITOR"}, .requires_ = {"linux", "xlings-bin"}) {
+    if (!app_binary()) GTEST_SKIP() << "no luban-os beside the xlings under test";
+    if (!xdesk_binary()) GTEST_SKIP() << "no xdesk beside luban-os (mcpp build -p xdesk-app)";
+    auto home = tk::Home::isolated("luban-os-pointer");
+    ASSERT_EQ(home.xlings({"self", "init"}).exit_code, 0);
+    const auto runtime = home.root() / "run";
+    fs::create_directories(runtime);
+    fs::permissions(runtime, fs::perms::owner_all, fs::perm_options::replace);
+    const auto client = colour_client(home).string();
+    const auto panel = home.root() / "panel.json", over = home.root() / "over.json", back = home.root() / "back.json";
+    // Over xdesk's own panel: a shape by name; over a window that draws its
+    // own pointer: that image; off the window again: the shape. The host
+    // draws each (no frame in between) and nothing is drawn into the frames.
+    auto r = run_script(home, std::format(R"(wait desktop
+waitfor desktop.texture.0 1100
+sleep 2500
+move 550 8
+sleep 800
+state {}
+move 550 400
+sleep 1000
+state {}
+move 550 8
+sleep 800
+state {}
+)", panel.string(), over.string(), back.string()),
+                        {"--desktop-session", "xdesk", "--desktop-exec", xdesk_binary()->string(), "--profile", "classic",
+                         "--autostart", std::format("python3 {} c04040 --cursor 1", client)},
+                        {{"XDG_RUNTIME_DIR", runtime.string()}});
+    ASSERT_EQ(r.exit_code, 0) << r.transcript();
+    const auto a = read_state(panel)["pointer"], b = read_state(over)["pointer"], c = read_state(back)["pointer"];
+    EXPECT_EQ(a["said"], "default") << a.dump();
+    EXPECT_EQ(a["shape"], "default") << a.dump();
+    EXPECT_FALSE(a["host_arrow"].get<bool>()) << "an xdesk that asks draws no arrow of the host's own";
+    EXPECT_EQ(b["shape"], "custom") << b.dump();
+    EXPECT_EQ(b["size"], Json::array({8, 8})) << b.dump();
+    EXPECT_EQ(c["shape"], "default") << c.dump();
+}
+
+XTEST(LubanOs, AWindowThatDrawsNoPointerGetsXdesksInItsFrames, .area = "luban",
+      .covers = {"LUBAN-OS-POINTER", "XDESK-COMPOSITOR"}, .requires_ = {"linux", "xlings-bin"}) {
+    if (!xdesk_binary()) GTEST_SKIP() << "no xdesk beside luban-os (mcpp build -p xdesk-app)";
+    auto home = tk::Home::isolated("luban-os-xdesk-soft-pointer");
+    // A pointer theme of one shape: an 8x8 green square, its hotspot the corner.
+    const auto icons = home.root() / "icons";
+    fs::create_directories(icons / "default" / "cursors");
+    std::string xcur = "Xcur";
+    auto u32 = [&](std::uint32_t v) { for (int k = 0; k < 4; ++k) xcur.push_back(static_cast<char>(v >> (8 * k) & 0xff)); };
+    for (const std::uint32_t v : {16u, 0x10000u, 1u, 0xfffd0002u, 24u, 28u, 36u, 0xfffd0002u, 24u, 1u, 8u, 8u, 0u, 0u, 0u}) u32(v);
+    for (int k = 0; k < 64; ++k) u32(0xff00ff00u);
+    tk::write_file(icons / "default" / "cursors" / "default", xcur);
+    const auto runtime = home.root() / "run";
+    fs::create_directories(runtime);
+    fs::permissions(runtime, fs::perms::owner_all, fs::perm_options::replace);
+    // A window that does not draw pointers (an older Luban OS): xdesk draws
+    // it into the frames, where the pointer is.
+    const auto shot = home.root() / "soft.ppm";
+    tk::RunOptions o;
+    o.argv = {"python3", (fs::path(__FILE__).parent_path() / "luban_desktop_client.py").string(), "--exec", "{move:200,150}",
+              shot.string(), "--", xdesk_binary()->string(), "--profile", "classic"};
+    o.env = home.env();
+    o.env["XDG_RUNTIME_DIR"] = runtime.string();
+    o.env["XCURSOR_PATH"] = icons.string();
+    const auto r = tk::run(o);
+    ASSERT_EQ(r.exit_code, 0) << r.transcript();
+    EXPECT_EQ(read_ppm(shot).at(203, 153), (std::array<int, 3>{0x00, 0xff, 0x00})) << "the pointer, drawn where it is";
 }
 
 XTEST(LubanOs, XdeskLauncherStartsWhatIsTypedAndThePanelSwitchesWorkspaces, .area = "luban",

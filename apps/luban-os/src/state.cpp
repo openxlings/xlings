@@ -63,8 +63,9 @@ std::string App::title_for(std::string_view what) const {
         const auto first = once_app.substr(0, once_app.find(' '));
         return std::format("{} — {}", fs::path(first).filename().string(), what);
     }
-    return std::format("{} — Luban OS · Ctrl+Alt {}", what,
-                       window->keyboard_grabbed() ? tr("luban.os.state.releases_keyboard") : tr("luban.os.state.menu"));
+    // One title for a system in every view (design 2026-10-19 §18.3, F17):
+    // `Luban OS (<system>)`; the keys are said in the bar at the top.
+    return std::format("Luban OS ({})", what);
 }
 
 void App::start_job(std::string title, std::function<void(Job&, service::Context)> body, std::function<void(App&)> then) {
@@ -140,7 +141,7 @@ void App::open_run(const std::string& name) {
                                           std::make_format_args(name, name))});
     }
     view = View::Run;
-    window->set_title(std::format("{} — Luban OS", name));
+    window->set_title(title_for(name));
     window->text_input(true);
 }
 

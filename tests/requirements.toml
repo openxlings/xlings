@@ -1293,11 +1293,11 @@ status = "planned"
 
 [LUBAN-OS-POINTER]
 text = "the host draws the pointer with the system's cursor (no frame when it moves): a shape name ('c') and an image ('C') from the desktop, the Luban theme, drawn into the frame only when the host does not take Cursor, the pointer lock released with the keyboard's chord, and an old xdesk session shown the default arrow"
-status = "planned"
+status = "required"
 
 [LUBAN-OS-KEYBOARD]
 text = "entering a desktop grabs the keyboard; Ctrl+Alt+K toggles it; Ctrl+Alt alone opens the menu; the setting is honoured; an input method with nothing composed never swallows a non-character key"
-status = "planned"
+status = "required"
 
 [XDESK-ARRANGEMENTS]
 text = "xdesk's space x arrangement: tiling, stacking and canvas (with tiled groups on it) per workspace, switched reversibly (back to the same layout), Super+m's chooser, splitting a column"
@@ -1313,7 +1313,7 @@ status = "planned"
 
 [LUBAN-OS-WINDOW-TITLE]
 text = "the Luban OS window's title is `Luban OS (<system>)` when it shows a system and `Luban OS` otherwise, in every view"
-status = "planned"
+status = "required"
 
 [LUBAN-VERSIONS]
 text = "luban status says the versions of xlings, luban, luban-os (installed and running) and the index in one line, opens it with the next step when they disagree, and --json has versions with mismatches[].next"

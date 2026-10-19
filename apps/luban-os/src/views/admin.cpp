@@ -343,6 +343,8 @@ void app_settings_(App& a, ImVec2 o, float x0, float y0, float width) {
     };
     r.label(tr("luban.os.admin.motion"));
     toggle("app:reduce-motion", tr("luban.os.admin.reduce_motion"), a.settings.reduce_motion);
+    r.label(tr("luban.os.admin.keyboard"));
+    toggle("app:lock-keyboard", tr("luban.os.admin.lock_keyboard"), a.settings.lock_keyboard);
     r.label(tr("luban.os.admin.tray"));
     toggle("app:minimize-to-tray", tr("luban.os.admin.minimize_tray"), a.settings.minimize_to_tray);
     toggle("app:keep-in-tray", tr("luban.os.admin.always_tray"), a.settings.keep_in_tray);

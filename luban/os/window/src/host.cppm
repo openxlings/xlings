@@ -54,6 +54,10 @@ public:
     // While on, every key -- the host's chords too -- is the window's.
     void grab_keyboard(bool on);
     bool keyboard_grabbed() const;
+    // While on, the pointer stays in the window and its motion is relative
+    // (opensal PointerRelative): a game's, a 3D program's.
+    void lock_pointer(bool on);
+    bool pointer_locked() const;
     // The host's input method composes text for a field at `caret` (window pixels).
     void text_input(bool on, int x = 0, int y = 0, int w = 1, int h = 1);
     std::string clipboard() const;
@@ -81,6 +85,8 @@ public:
     const std::vector<KeyPress>& keys() const { return keys_; }
     // The Host key (Ctrl+Alt, or Ctrl+Option on macOS) pressed and released alone.
     bool host_key() const { return host_key_; }
+    // Ctrl+Alt+K this frame: hold the keyboard or let it go (the content never sees it).
+    bool lock_key() const { return lock_key_; }
     bool close_requested() const { return close_requested_; }
     // Files dropped onto the window this frame.
     const std::vector<std::filesystem::path>& dropped() const { return dropped_; }
@@ -112,6 +118,17 @@ public:
     // Where the shipped fonts were found (empty: this machine's were used).
     const std::filesystem::path& font_dir() const { return font_dir_; }
 
+    // The pointer while it is over a remote surface (design 2026-10-19 §15),
+    // said each frame it is: a shape by name (opensal kCursors) drawn from
+    // the Luban pointer theme (luban:cursors; the system's own where it is
+    // not found), "none", or `image` -- one the surface drew. A frame that
+    // does not say it hands the pointer back to the interface (imgui's
+    // shapes). The system's cursor objects are made once a shape.
+    void surface_pointer(std::string_view shape, const opensal::CursorImage* image = nullptr);
+    // What it shows now: a shape's name, "custom", "none", or "ui".
+    std::string pointer_shown() const;
+    std::pair<int, int> pointer_image_size() const;
+
     // Tests: what the window last drew, as BGRA rows.
     std::vector<std::uint8_t> read_pixels(int& width, int& height) const;
 
@@ -131,9 +148,14 @@ private:
     Window() = default;
     struct Impl;
     std::unique_ptr<Impl> impl_;
+    struct Pointer;                                     // pointer.cpp
+    std::unique_ptr<Pointer, void (*)(Pointer*)> pointer_ { nullptr, nullptr };
+    void pointer_frame_();
+    void release_pointer_();
     std::vector<opensal::Event> events_;
     std::vector<KeyPress> keys_;
     bool host_key_ { false };
+    bool lock_key_ { false };
     bool close_requested_ { false };
     std::vector<std::filesystem::path> dropped_;
     void* ui_font_ { nullptr };

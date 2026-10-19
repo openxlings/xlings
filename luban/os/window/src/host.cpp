@@ -161,6 +161,7 @@ struct Window::Impl {
     SDL_Renderer* renderer { nullptr };
     std::uint32_t wake_event { 0 };
     bool ctrl_down { false }, alt_down { false }, chord_spoiled { false }, chord_armed { false };
+    bool lock_k_held { false };                 // Ctrl+Alt+K's K, kept from the content until it is let go
     bool grabbed { false };
     SDL_Keymod injected_mods { SDL_KMOD_NONE };
     std::deque<std::string> injected_text;      // an SDL text event points at its text until it is taken
@@ -255,6 +256,7 @@ std::expected<std::unique_ptr<Window>, std::string> Window::open(const Options& 
 }
 
 Window::~Window() {
+    pointer_.reset();   // its cursors before SDL goes
     if (!impl_) return;
     // Only what was set up: a window that could not open says why, it does not abort.
     if (impl_->imgui) {
@@ -278,6 +280,7 @@ bool Window::begin_frame(int timeout_ms) {
     keys_.clear();
     dropped_.clear();
     host_key_ = false;
+    lock_key_ = false;
     auto& im = *impl_;
     SDL_Event e;
     bool got = SDL_WaitEventTimeout(&e, timeout_ms);
@@ -311,6 +314,14 @@ bool Window::begin_frame(int timeout_ms) {
         case SDL_EVENT_KEY_UP: {
             const bool down = e.type == SDL_EVENT_KEY_DOWN;
             const auto k = e.key.key;
+            // Ctrl+Alt+K: the keyboard (and the pointer) held or let go --
+            // the window's, never the content's.
+            if (k == SDLK_K && (down ? im.ctrl_down && im.alt_down : im.lock_k_held)) {
+                if (down && !e.key.repeat) lock_key_ = true;
+                im.lock_k_held = down;
+                im.chord_spoiled = true;
+                break;
+            }
             // The Host key: Ctrl and Alt down together, released with nothing
             // else pressed meanwhile.
             if (is_ctrl_(k)) im.ctrl_down = down;
@@ -342,7 +353,9 @@ bool Window::begin_frame(int timeout_ms) {
             events_.push_back(opensal::Preedit{e.edit.text ? e.edit.text : "", e.edit.start});
             break;
         case SDL_EVENT_MOUSE_MOTION:
-            events_.push_back(opensal::PointerMotion{e.motion.x, e.motion.y});
+            // Held (pointer lock): how far it moved, not where it is.
+            if (SDL_GetWindowRelativeMouseMode(im.window)) events_.push_back(opensal::PointerRelative{e.motion.xrel, e.motion.yrel});
+            else events_.push_back(opensal::PointerMotion{e.motion.x, e.motion.y});
             break;
         case SDL_EVENT_MOUSE_BUTTON_DOWN:
         case SDL_EVENT_MOUSE_BUTTON_UP:
@@ -365,6 +378,7 @@ bool Window::begin_frame(int timeout_ms) {
 }
 
 void Window::end_frame(bool present) {
+    pointer_frame_();
     ImGui::Render();
     if (!present) return;
     auto* r = impl_->renderer;
@@ -387,6 +401,8 @@ void Window::grab_keyboard(bool on) {
     impl_->grabbed = on;
 }
 bool Window::keyboard_grabbed() const { return impl_->grabbed; }
+void Window::lock_pointer(bool on) { SDL_SetWindowRelativeMouseMode(impl_->window, on); }
+bool Window::pointer_locked() const { return SDL_GetWindowRelativeMouseMode(impl_->window); }
 
 void Window::text_input(bool on, int x, int y, int w, int h) {
     if (on) {

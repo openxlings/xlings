@@ -9,6 +9,7 @@ import opensal;
 import opensal.wire;
 import luban.service;
 import luban.vm;
+import luban.compat;
 import opensal.wlr;
 import :core;
 
@@ -31,14 +32,16 @@ std::unique_ptr<Display> Display::machine(const fs::path& home, const std::strin
     if (!client) { error = client.error(); return nullptr; }
     return over_(std::move(*client), name, true, size, clip, std::move(wake), error,
                  [session, size](vm::Client& cl) { return cl.open_display(kDisplayChannel, session, int(size.width), int(size.height)); },
-                 {});
+                 {}, session);
 }
 
 std::unique_ptr<Display> Display::over_(vm::Client client, const std::string& name, bool machine, opensal::Size size,
                                         ClipboardGrant clip, std::function<void()> wake, std::string& error,
-                                        const std::function<bool(vm::Client&)>& open, const fs::path& log) {
+                                        const std::function<bool(vm::Client&)>& open, const fs::path& log,
+                                        const std::string& session) {
     std::unique_ptr<Display> d(new Display());
     d->name_ = name;
+    d->session_ = session;
     d->machine_ = machine;
     d->log_ = log;
     d->wake_ = std::move(wake);
@@ -91,7 +94,7 @@ std::unique_ptr<Display> Display::sandbox(const fs::path& xlings, const fs::path
                                                       session.empty() ? "-" : session, size.width, size.height)});
         return over_(std::move(*agent), name, false, size, clip, std::move(wake), error,
                      [argv](vm::Client& cl) { return cl.open_command(kDisplayChannel, argv, 0, 0, nlohmann::json::object(), true); },
-                     home / "logs" / "luban-os.log");
+                     home / "logs" / "luban-os.log", session);
     }
     auto env = xlings::platform::environment();
     env["XLINGS_HOME"] = home.string();
@@ -107,12 +110,13 @@ std::unique_ptr<Display> Display::sandbox(const fs::path& xlings, const fs::path
     if (!persist.empty() && persist != "all") argv.insert(argv.end(), {"--persist", persist});
     argv.insert(argv.end(), {"--cmd", std::format("exec {} __desktop {} --size {}x{}", quoted(luban.string()),
                                                   quoted(session.empty() ? "-" : session), size.width, size.height)});
-    return process(argv, std::move(env), home / "logs" / "luban-os.log", name, size, clip, std::move(wake), error);
+    return process(argv, std::move(env), home / "logs" / "luban-os.log", name, size, clip, std::move(wake), error, session);
 }
 
 std::unique_ptr<Display> Display::process(const std::vector<std::string>& argv, std::map<std::string, std::string> env,
                                           const fs::path& log_file, const std::string& name, opensal::Size size,
-                                          ClipboardGrant clip, std::function<void()> wake, std::string& error) {
+                                          ClipboardGrant clip, std::function<void()> wake, std::string& error,
+                                          const std::string& session) {
     namespace platform = xlings::platform;
     auto to = platform::make_pipe(), from = platform::make_pipe();
     if (!to || !from) { error = "no pipe for the desktop"; return nullptr; }
@@ -138,6 +142,7 @@ std::unique_ptr<Display> Display::process(const std::vector<std::string>& argv, 
     }
     std::unique_ptr<Display> d(new Display());
     d->name_ = name;
+    d->session_ = session;
     d->wake_ = std::move(wake);
     d->wanted_ = size;
     d->clip_ = clip;
@@ -203,15 +208,41 @@ void Display::provider_(std::string_view bytes) {
             // host's input method, and the clipboard as far as it is granted.
             // The shell, too, for a desktop without its own (it asks for it).
             using I = opensal::Interface;
-            auto provided = I::Surface | I::Mode | I::Pointer | I::Keyboard | I::Text | I::Shell;
+            auto provided = I::Surface | I::Mode | I::Pointer | I::Keyboard | I::Text | I::Shell | I::Cursor | I::CursorImage
+                            | I::PointerLock;
             if (clip_.copy || clip_.paste) provided = provided | I::Clipboard;
             opensal::Interfaces wanted = 0;
             std::from_chars(msg.payload.data(), msg.payload.data() + msg.payload.size(), wanted);
             shell_ = opensal::has(wanted, I::Shell);
+            {
+                // Who draws the pointer: it, when it asked; else the host's
+                // arrow for an old xdesk, or nothing (it is in the frames).
+                std::lock_guard l(m_);
+                const bool asked = opensal::has(wanted, I::Cursor);
+                pointer_ = {};
+                pointer_.host_arrow = luban::compat::legacy_xdesk_pointer(session_, asked);
+                pointer_.shape = asked || pointer_.host_arrow ? "default" : "none";
+            }
             opensal::Size s;
             double density = 1;
             { std::lock_guard l(m_); s = wanted_; density = density_; }
             send_(opensal::wire::encode('H', std::format("{} {} {} {} 1", provided, s.width, s.height, density)));
+        } else if (msg.kind == 'c') {
+            std::lock_guard l(m_);
+            pointer_.shape = msg.payload == "none" ? std::string("none") : std::string(opensal::cursor_named(msg.payload));
+            pointer_.image.reset();
+            changed = true;
+        } else if (msg.kind == 'C') {
+            if (auto image = opensal::wire::decode_cursor_image(msg.payload)) {
+                std::lock_guard l(m_);
+                pointer_.shape = "custom";
+                pointer_.image = std::move(*image);
+                changed = true;
+            }
+        } else if (msg.kind == 'l') {
+            std::lock_guard l(m_);
+            pointer_lock_ = msg.payload == "1";
+            changed = true;
         } else if (msg.kind == 's') {
             std::istringstream in(msg.payload);
             opensal::Size s;
@@ -279,6 +310,11 @@ std::optional<std::string> Display::take_text_input() {
 std::optional<std::string> Display::take_clipboard() {
     std::lock_guard l(m_);
     return std::exchange(clipboard_, std::nullopt);
+}
+
+std::optional<bool> Display::take_pointer_lock() {
+    std::lock_guard l(m_);
+    return std::exchange(pointer_lock_, std::nullopt);
 }
 
 opensal::Size Display::take(std::vector<Update>& out) {

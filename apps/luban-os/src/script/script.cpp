@@ -108,6 +108,9 @@ Json state_(const App& a) {
             j["available"][name] = v.known ? (!v.listed ? "unlisted" : !v.here ? "not-here" : "yes") : "checking";
     }
     j["clipboard"] = a.window ? a.window->clipboard() : std::string{};
+    if (a.window)
+        j["window"] = {{"title", a.window->title()}, {"keyboard_grabbed", a.window->keyboard_grabbed()},
+                       {"pointer_locked", a.window->pointer_locked()}};
     j["admin_selected"] = a.admin_selected < static_cast<int>(a.systems.size()) ? a.systems[static_cast<std::size_t>(a.admin_selected)].name : std::string{};
     if (a.console) {
         // What a console shows, as text: its lines, trailing blanks dropped.
@@ -138,6 +141,11 @@ Json state_(const App& a) {
     if (a.display) {
         j["desktop"] = {{"texture", Json::array({a.texture.width, a.texture.height})},
                         {"asked", Json::array({a.desktop_size.width, a.desktop_size.height})}};
+        // The pointer: what the desktop says, and what the window shows now.
+        const auto p = a.display->pointer();
+        const auto [iw, ih] = a.window->pointer_image_size();
+        j["pointer"] = {{"said", p.shape}, {"shape", a.window->pointer_shown()}, {"custom", p.image.has_value()},
+                        {"size", Json::array({iw, ih})}, {"host_arrow", p.host_arrow}};
         if (a.display && a.display->shell()) {
             Json apps = Json::array(), windows = Json::array();
             for (const auto& app : a.display->applications()) apps.push_back(app.id);

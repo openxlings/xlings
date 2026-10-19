@@ -2,8 +2,9 @@
 // Cursor draws it with the system's pointer, so it follows the hand with no
 // frame in between -- xdesk says which shape ('c') or sends a client's own
 // image ('C') and draws none into its frames. A window that does not (an
-// older Luban OS) gets it drawn into the frames: the headless output has no
-// hardware cursor, so wlroots draws whatever image the cursor has.
+// older Luban OS) gets it drawn into the frames: software cursors, locked on
+// (the headless output would take the pointer for a hardware plane no frame
+// shows).
 module xdesk.compositor;
 
 import std;
@@ -75,6 +76,10 @@ void Server::send_pointer_image() {
 
 void Server::pointer_mode() {
     pointer_sent.clear();
+    if (output && software_cursor == host_pointer()) {
+        software_cursor = !host_pointer();
+        wlr_output_lock_software_cursors(output, software_cursor);
+    }
     if (host_pointer()) {
         // The window draws it: nothing in the frames, and it is told the shape now.
         wlr_cursor_unset_image(cursor);

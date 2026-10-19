@@ -209,6 +209,7 @@ int run(int argc, char* argv[]) {
     std::string screenshot;
     std::optional<Script> script;
     std::vector<std::string> desktop_exec;   // tests: a desktop from any program speaking opensal.wire
+    std::string desktop_session_name;        // tests: the session it stands for
     std::vector<std::string> console_exec;   // tests: a console of any program, on a pseudo-terminal
     for (int i = 1; i < argc; ++i) {
         const std::string_view arg = argv[i];
@@ -229,6 +230,7 @@ int run(int argc, char* argv[]) {
             script = read_script_(argv[++i]);
             if (!script) { std::println(std::cerr, "luban-os: cannot read the script {}", argv[i]); return 2; }
         }
+        else if (arg == "--desktop-session" && i + 1 < argc) desktop_session_name = argv[++i];
         else if (arg == "--desktop-exec" && i + 1 < argc) { desktop_exec.assign(argv + i + 1, argv + argc); break; }
         else if (arg == "--console-exec" && i + 1 < argc) { console_exec.assign(argv + i + 1, argv + argc); break; }
         else if (arg == "--view" && i + 1 < argc) {
@@ -297,9 +299,11 @@ int run(int argc, char* argv[]) {
         auto* win = a.window.get();
         a.current = "desktop";
         a.display = Display::process(desktop_exec, platform::environment(), a.home / "logs" / "luban-os.log", a.current,
-                                     a.desktop_size, {.copy = true, .paste = true}, [win] { win->wake(); }, error);
+                                     a.desktop_size, {.copy = true, .paste = true}, [win] { win->wake(); }, error,
+                                     desktop_session_name);
         if (!a.display) { std::println(std::cerr, "luban-os: {}", error); return 1; }
         a.view = View::Desktop;
+        a.window->set_title(a.title_for(a.current));
     } else if (!a.attach.empty()) a.enter(a.attach);
     else if (a.view == View::Admin || a.view == View::QuickStart) {}
     else if (a.systems.empty()) a.view = View::QuickStart;
@@ -406,6 +410,29 @@ int run(int argc, char* argv[]) {
         }
         if (a.window->host_key() && (a.view == View::Console || a.view == View::Off || a.view == View::Desktop || a.view == View::Run))
             a.menu = !a.menu, a.menu_focus = 0;
+        // The keyboard (design 2026-10-19 §16.1): held while a desktop is
+        // shown and the window has the focus -- every key its, the host's
+        // chords too -- as the setting says when it is entered; Ctrl+Alt+K
+        // holds it or lets it go, the pointer too when the desktop held it.
+        {
+            for (const auto& e : a.window->events())
+                if (const auto* f = std::get_if<opensal::Focus>(&e)) a.focus_out = !f->in;
+            const bool in_desktop = a.view == View::Desktop && a.display && a.display->alive();
+            if (in_desktop && !a.was_in_desktop) a.keyboard_wanted = a.settings.lock_keyboard;
+            a.was_in_desktop = in_desktop;
+            if (in_desktop) {
+                if (const auto asked = a.display->take_pointer_lock()) a.pointer_lock_asked = *asked;
+                if (a.window->lock_key()) {
+                    const bool release = a.window->keyboard_grabbed() || a.window->pointer_locked();
+                    a.keyboard_wanted = !release;
+                    if (release) a.pointer_lock_asked = false;
+                }
+            }
+            const bool grab = in_desktop && a.keyboard_wanted && !a.focus_out;
+            if (grab != a.window->keyboard_grabbed()) a.window->grab_keyboard(grab);
+            const bool lock = in_desktop && a.pointer_lock_asked && !a.focus_out;
+            if (lock != a.window->pointer_locked()) a.window->lock_pointer(lock);
+        }
         // The menu lists the system's desktops: read when it opens, not each frame.
         if (a.menu && a.menu_desktops.empty())
             if (auto env = service::describe(a.ctx, a.current)) a.menu_desktops = env->desktops;

@@ -222,6 +222,7 @@ struct Server {
     wlr_surface* cursor_surface { nullptr };     // a client's own pointer image
     std::int32_t cursor_hx { 0 }, cursor_hy { 0 };
     Hook cursor_commit, cursor_gone, request_shape;
+    bool software_cursor { false };              // drawn into the frames (the window does not draw it)
 
     // The shown workspace's arrangement (the panel's look is the profile's).
     bool canvas() const { return lay.mode() == layout::Mode::canvas; }
