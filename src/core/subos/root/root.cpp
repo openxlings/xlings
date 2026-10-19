@@ -292,7 +292,7 @@ refresh(const fs::path& home, std::string_view name, const fs::path& subos_dir,
         out.users_added = std::move(*users);
         if (auto written = xlings::subos::root_etc::ensure_prompt_script(tree / "etc"); !written)
             return failed("machine /etc " + (tree / "etc").string() + ": " + written.error());
-        else if (*written) out.etc_added.push_back("profile.d/luban.sh");
+        else out.etc_added.insert(out.etc_added.end(), written->begin(), written->end());
         if (auto written = xlings::subos::root_etc::ensure_user_layer_scripts(tree / "etc"); !written)
             return failed("machine /etc " + (tree / "etc").string() + ": " + written.error());
         else out.etc_added.insert(out.etc_added.end(), written->begin(), written->end());

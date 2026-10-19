@@ -48,7 +48,7 @@ XTEST(LubanIdentity, AUserIsMadeInTheSystemsOwnEtc, .area = "luban", .covers = {
     EXPECT_FALSE(luban::service::needs_user(core));
 }
 
-XTEST(LubanIdentity, ASystemIsNamedByItsNameAndMarkedInThePrompt, .area = "luban", .covers = {"ID-HOSTNAME", "ID-PROMPT"}) {
+XTEST(LubanIdentity, ASystemIsNamedByItsNameAndMarkedInThePrompt, .area = "luban", .covers = {"ID-HOSTNAME", "ID-PROMPT", "LUBAN-PROMPT-MARK"}) {
     auto home = tk::Home::isolated("luban-name");
     const auto e = home.dir() / "etc";
     EXPECT_EQ(etc::hostname(e, "box"), "box") << "no /etc/hostname";
@@ -63,11 +63,16 @@ XTEST(LubanIdentity, ASystemIsNamedByItsNameAndMarkedInThePrompt, .area = "luban
     const auto painted = etc::prompt("machine", "all", "xterm-256color", false);
     EXPECT_NE(painted.find("\\[\\033[35m\\]<luban>\\[\\033[0m\\]"), std::string::npos) << painted;
 
-    ASSERT_TRUE(etc::ensure_prompt_script(e));
+    auto first = etc::ensure_prompt_script(e);
+    ASSERT_TRUE(first);
+    EXPECT_EQ(*first, (std::vector<std::string>{"profile.d/luban.sh", "fish/conf.d/luban.fish"}));
+    const auto fish = tk::read_file(e / "fish/conf.d/luban.fish");
+    EXPECT_NE(fish.find("function fish_prompt"), std::string::npos) << "fish reads no PS1 (F26)";
+    EXPECT_NE(fish.find("<luban$keep>"), std::string::npos);
     tk::write_file(e / "profile.d/luban.sh", "# mine\n");
     auto again = etc::ensure_prompt_script(e);
     ASSERT_TRUE(again);
-    EXPECT_FALSE(*again);
+    EXPECT_TRUE(again->empty());
     EXPECT_EQ(tk::read_file(e / "profile.d/luban.sh"), "# mine\n") << "machine state: an edit stays";
 }
 

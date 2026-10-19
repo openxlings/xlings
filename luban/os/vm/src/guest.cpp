@@ -481,6 +481,9 @@ int guest_init(int, char*[]) {
     // Without a lease (no network) nothing is bound and the system's own
     // stays.
     resolv_from_lease_();
+    // The prompt's mark for every login shell, for a system made before a
+    // shell's script existed (written when missing; design 2026-10-19 F26).
+    (void)xlings::subos::root_etc::ensure_prompt_script("/etc");
 
     // Its name: the machine's own /etc/hostname, else the environment's.
     {

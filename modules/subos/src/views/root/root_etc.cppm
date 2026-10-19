@@ -76,10 +76,11 @@ std::string hostname(const fs::path& etc, std::string_view name);
 // when `no_color`. A PS1 sh, bash and busybox read.
 std::string prompt(std::string_view kind, std::string_view persist, std::string_view term, bool no_color);
 
-// The same, for a login shell and after `su -`: etc/profile.d/luban.sh, from
-// LUBAN_KIND and LUBAN_PERSIST, written when missing (machine state: an edit
-// stays). Returns whether it was written.
-std::expected<bool, std::string> ensure_prompt_script(const fs::path& etc);
+// The same, for a login shell and after `su -`: etc/profile.d/luban.sh (sh,
+// bash) and etc/fish/conf.d/luban.fish (fish, which reads no PS1), from
+// LUBAN_KIND and LUBAN_PERSIST, each written when missing (machine state: an
+// edit stays). Returns what was written, relative to `etc`.
+std::expected<std::vector<std::string>, std::string> ensure_prompt_script(const fs::path& etc);
 // A regular user's own packages before the system's (design 2026-10-16 L
 // §8): profile.d/xlings-user.sh and fish/conf.d/xlings-user.fish, written
 // once. The ones written, relative to etc.

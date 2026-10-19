@@ -1383,4 +1383,4 @@ status = "planned"
 
 [LUBAN-PROMPT-MARK]
 text = "every login shell (sh, bash, fish) shows the [luban]/<luban> mark; a system made before gets the fish script on its next entry"
-status = "planned"
+status = "required"
