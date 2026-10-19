@@ -808,27 +808,14 @@ download_all(std::span<const DownloadTask> tasks, const DownloaderConfig& config
     }
     nameWidth += 2; // padding
 
-    // Background HEAD requests to pre-fetch Content-Length for byte-weighted progress.
-    // Runs in parallel with downloads — does not block startup.
-    std::jthread headThread([&]() {
-        std::vector<std::jthread> headWorkers;
-        headWorkers.reserve(tasks.size());
-        for (std::size_t i = 0; i < tasks.size(); ++i) {
-            if (is_git_url(tasks[i].url)) continue;
-            headWorkers.emplace_back([&, i]() {
-                auto len = tinyhttps::query_content_length(tasks[i].url);
-                if (len > 0) {
-                    std::lock_guard lock(mutex);
-                    // Only set if download hasn't already reported a size
-                    if (progState[i].totalBytes <= 0.0)
-                        progState[i].totalBytes = static_cast<double>(len);
-                }
-            });
-        }
-        // jthread destructors join all HEAD workers
-        headWorkers.clear();
-        sizesReady.store(true);
-    });
+    // Sizes come from the transfers themselves. Background HEAD requests
+    // duplicated traffic even for verified cache hits, and their joins could
+    // hold a completed download batch behind a stalled metadata request.
+    auto update_sizes_ready = [&] {
+        sizesReady.store(std::ranges::all_of(progState, [](const auto& p) {
+            return p.totalBytes > 0 || p.finished;
+        }));
+    };
 
     // Progress thread: sends the batch's state to the sink (protocol 1.3).
     //
@@ -915,6 +902,7 @@ download_all(std::span<const DownloadTask> tasks, const DownloaderConfig& config
                 std::lock_guard lock(mutex);
                 progState[i].totalBytes = total;
                 progState[i].downloadedBytes = now;
+                update_sizes_ready();
             };
 
             auto source = [&](std::string_view url) {
@@ -932,6 +920,7 @@ download_all(std::span<const DownloadTask> tasks, const DownloaderConfig& config
                 std::lock_guard lock(mutex);
                 progState[i].finished = true;
                 progState[i].success = result.success;
+                update_sizes_ready();
                 results[i] = std::move(result);
                 --activeCount;
             }

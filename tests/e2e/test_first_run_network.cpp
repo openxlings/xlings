@@ -6,6 +6,10 @@ import xlings.testkit.fixture;
 import std;
 import xlings.libs.json;
 import xlings.libs.tinyhttps;
+import xlings.libs.sha256;
+import xlings.core.xim.downloader;
+import xlings.core.xim.libxpkg.types.type;
+import xlings.platform;
 
 namespace tk = xlings::testkit;
 
@@ -133,4 +137,83 @@ XTEST(FirstRunNetwork, EveryCandidateAttemptIsReportedBeforeTransfer, .area = "c
     ASSERT_TRUE(result.success) << result.error;
     EXPECT_EQ(attempts, opts.urls);
     EXPECT_EQ(result.sourceUrl, opts.urls.back());
+}
+
+XTEST(FirstRunNetwork, DiagnosticCapabilitiesLeaveTheHomeUnchanged, .area = "cli",
+      .covers = {"NET-ENDPOINTS", "NET-PROBE"}, .requires_ = {"xlings-bin"}) {
+    auto home = tk::Home::isolated("network-readonly");
+    auto snapshot = [&] {
+        std::map<std::filesystem::path, std::string> files;
+        for (const auto& entry : std::filesystem::recursive_directory_iterator(home.dir()))
+            files.emplace(entry.path().lexically_relative(home.dir()),
+                entry.is_regular_file() ? tk::read_file(entry.path()) : "<directory>");
+        return files;
+    };
+    const auto before = snapshot();
+    for (const auto* capability : {"network_endpoints", "probe_url", "system_status", "payload_status"}) {
+        const auto args = std::string_view(capability) == "probe_url"
+            ? R"({"url":"http://127.0.0.1:9/missing","socket_timeout_ms":100})"
+            : std::string_view(capability) == "payload_status" ? R"({"targets":[]})" : "{}";
+        const auto result = home.xlings({"interface", capability, "--args", args}, {},
+                                       std::chrono::seconds(5));
+        if (std::string_view(capability) == "payload_status") {
+            // A cold home has no catalog to resolve even a status request.
+            // Its local refusal must still leave that home untouched.
+            ASSERT_EQ(result.exit_code, 1) << result.transcript();
+            EXPECT_NE(result.out.find("E_NOT_FOUND"), std::string::npos) << result.transcript();
+        } else {
+            ASSERT_EQ(result.exit_code, 0) << capability << result.transcript();
+        }
+        EXPECT_EQ(snapshot(), before) << "a diagnostic initialized, migrated or logged into the home";
+    }
+}
+
+XTEST(FirstRunNetwork, AVerifiedCacheHitStartsNoMetadataConnection, .area = "cli",
+      .covers = {"NET-SOCKET-CAPS"}) {
+    auto home = tk::Home::isolated("network-cache-reuse");
+    auto listener = xlings::platform::LoopbackListener::open();
+    ASSERT_TRUE(listener) << listener.error();
+    std::atomic<int> connections{0};
+    std::jthread proxy([&](std::stop_token stop) {
+        while (!stop.stop_requested()) {
+            auto accepted = listener->accept(std::chrono::milliseconds(20));
+            if (!accepted) return;
+            if (*accepted) ++connections; // close immediately; no external network
+        }
+    });
+    struct Environment {
+        std::map<std::string, std::string> saved;
+        void set(std::string name, std::string value) {
+            const auto* old = std::getenv(name.c_str());
+            saved.emplace(name, old ? old : "");
+            xlings::platform::set_env_variable(name, value);
+        }
+        ~Environment() {
+            for (const auto& [key, value] : saved) xlings::platform::set_env_variable(key, value);
+        }
+    } environment;
+    const auto proxyUrl = std::format("http://127.0.0.1:{}", listener->port());
+    environment.set("HTTPS_PROXY", proxyUrl);
+    environment.set("https_proxy", proxyUrl);
+    environment.set("NO_PROXY", "");
+    environment.set("no_proxy", "");
+    // Positive control: the metadata client really reaches this proxy.
+    EXPECT_EQ(xlings::tinyhttps::query_content_length("https://resource.invalid/payload.bin", 1), -1);
+    ASSERT_GT(connections.load(), 0);
+    connections.store(0);
+    const auto cache = home.root() / "cache";
+    tk::write_file(cache / "payload.bin", "payload");
+    const auto digest = xlings::sha256::hex_file(cache / "payload.bin");
+    ASSERT_TRUE(digest);
+    xlings::xim::DownloadTask task;
+    task.name = "cached";
+    task.url = "https://resource.invalid/payload.bin";
+    task.destDir = cache;
+    task.sha256 = *digest;
+    const std::array tasks{task};
+    const auto result = xlings::xim::download_all(tasks, {}, nullptr, nullptr);
+    ASSERT_EQ(result.size(), 1u);
+    EXPECT_TRUE(result[0].success) << result[0].error;
+    EXPECT_EQ(tk::read_file(cache / "payload.bin"), "payload");
+    EXPECT_EQ(connections.load(), 0) << "a verified local cache hit made an unnecessary HEAD request";
 }
