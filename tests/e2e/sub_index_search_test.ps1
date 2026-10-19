@@ -11,10 +11,12 @@ $ErrorActionPreference = 'Stop'
 
 $ARCHIVE_PATH = if ($args.Count -ge 1) { $args[0] } else { Join-Path $ROOT_DIR 'build\release.zip' }
 $ARCHIVE_PATH = Require-ReleaseArchive $ARCHIVE_PATH
-Require-FixtureIndex
 
 $PKG_DIR = Expand-ReleaseArchive $ARCHIVE_PATH 'sub_index_search'
-Write-FixtureReleaseConfig $PKG_DIR
+# This test follows current published recipes and cross-index dependencies.
+# Keep the bootstrap fixture pinned for the tests that need it; a live d2x
+# recipe can require a dependency newer than that fixture's snapshot.
+Write-FixtureReleaseConfig $PKG_DIR 'https://github.com/openxlings/xim-pkgindex.git'
 
 $env:XLINGS_HOME = $PKG_DIR
 $env:Path = "$PKG_DIR\bin;$(Get-MinimalSystemPath)"
