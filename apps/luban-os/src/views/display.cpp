@@ -161,6 +161,33 @@ std::unique_ptr<Display> Display::process(const std::vector<std::string>& argv, 
             self->provider_(std::string_view(buf.data(), *n));
             if (!self->alive_) break;
         }
+        // Closed (stop_): the desktop ends at its input's end -- unless it is
+        // writing a frame nobody reads, which it finishes first. What it
+        // writes is drained until it ends; one that does not end in 3 s is
+        // ended (its session: it and what it started).
+        if (self->stop_) {
+            const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+            bool ended = false;
+            while (std::chrono::steady_clock::now() < deadline) {
+                std::array<platform::PollFd, 1> p{{{.fd = self->from_}}};
+                platform::poll_fds(p, 100);
+                if (!p[0].readable && !p[0].closed) continue;
+                auto n = platform::read_some(self->from_, buf);
+                if (!n || *n == 0) { ended = true; break; }
+            }
+            if (!ended) {
+                (void)platform::send_signal_group(self->pid_, platform::sig::terminate);
+                std::optional<platform::ExitStatus> st;
+                for (int k = 0; k < 20 && !(st = platform::wait_process(self->pid_, false)); ++k)
+                    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+                if (!st) (void)platform::send_signal_group(self->pid_, platform::sig::kill);
+                else {
+                    self->alive_ = false;
+                    if (self->wake_) self->wake_();
+                    return;
+                }
+            }
+        }
         if (auto st = platform::wait_process(self->pid_, true); st && platform::exit_code(*st) != 0) {
             std::lock_guard l(self->m_);
             if (self->error_.empty()) self->error_ = std::format("the desktop ended ({})", platform::exit_code(*st));

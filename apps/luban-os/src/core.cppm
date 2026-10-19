@@ -488,6 +488,7 @@ struct App {
         int idle_wait_ms { 0 };                       // and when nothing happens (not drawing for nothing)
         int frames { 0 };
         int presented { 0 };                          // of which drawn and shown (the rest changed nothing)
+        int desktop_frames { 0 };                     // a desktop's frames received (rectangles)
         std::string renderer;                         // SDL's: "software" is no GPU
         std::optional<std::chrono::steady_clock::time_point> input_at;
         int frames_since_input { 0 };

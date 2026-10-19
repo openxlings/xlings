@@ -54,6 +54,7 @@ Json state_(const App& a) {
         std::ranges::sort(ms);
         auto at = [&](double q) { return ms.empty() ? 0.0 : ms[std::min(ms.size() - 1, static_cast<std::size_t>(q * ms.size()))]; };
         j["perf"] = {{"frames", a.perf.frames}, {"presented", a.perf.presented}, {"renderer", a.perf.renderer},
+                     {"desktop_frames", a.perf.desktop_frames},
                      {"frame_ms_p50", at(0.5)}, {"frame_ms_p95", at(0.95)},
                      {"frame_ms_max", ms.empty() ? 0.0 : ms.back()}, {"input_to_next_frame_ms", a.perf.input_to_next_frame_ms},
                      {"input_to_next_frame_ms_max", a.perf.input_to_next_frame_max}, {"wait_after_input_ms", a.perf.wait_after_input_ms},
@@ -455,6 +456,9 @@ void script_step_(App& a, Script& sc) {
         next();
     } else if (cmd == "close") {
         a.window->inject_close();
+        next();
+    } else if (cmd == "minimize" || cmd == "restore") {
+        a.window->inject_shown(cmd == "restore");
         next();
     } else if (cmd == "quit") {
         a.quit = true;

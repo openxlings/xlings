@@ -76,12 +76,16 @@ struct Focus { bool in { true }; };
 struct CloseRequested {};
 struct ClipboardText { std::string text; };
 struct FramePresented {};   // pacing: the last frame is on screen, the next may be drawn
+// The window can be seen, or not (minimized, hidden, covered): a consumer
+// draws nothing while it cannot (design 2026-10-20 §13.2), and all of it again
+// when it can. An older consumer skips it.
+struct Shown { bool shown { true }; };
 // Shell: an application the consumer listed, to start; a window to bring forward.
 struct Launch { std::string app; };
 struct Activate { std::uint32_t window { 0 }; };
 
 using Event = std::variant<Resized, DensityChanged, Key, TextCommit, Preedit, PointerMotion, PointerButton, Wheel,
-                           Focus, CloseRequested, ClipboardText, FramePresented, Launch, Activate, PointerRelative>;
+                           Focus, CloseRequested, ClipboardText, FramePresented, Launch, Activate, PointerRelative, Shown>;
 
 // Shell: an application of the consumer's session and a window, as the consumer tells them.
 struct Application {

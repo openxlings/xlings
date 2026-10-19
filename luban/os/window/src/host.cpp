@@ -185,6 +185,7 @@ struct Window::Impl {
     Window::Grab grab { Window::Grab::Released };
     struct Backdrop { void* texture { nullptr }; float x { 0 }, y { 0 }, w { 0 }, h { 0 }; int tw { 0 }, th { 0 }; };
     std::optional<Backdrop> backdrop;           // this frame's picture under the interface
+    bool shown { true };                        // the window can be seen (minimized, hidden, covered: not)
     std::chrono::steady_clock::time_point grab_tried {};
     bool grab_again { true };                   // a focus change: try at once
     int grabs_refused { 0 };                    // tests
@@ -338,6 +339,17 @@ bool Window::begin_frame(int timeout_ms) {
             events_.push_back(opensal::DensityChanged{density()});
             break;
         }
+        // Seen or not (design 2026-10-20 §13.2): a desktop draws nothing while not.
+        case SDL_EVENT_WINDOW_MINIMIZED:
+        case SDL_EVENT_WINDOW_HIDDEN:
+        case SDL_EVENT_WINDOW_OCCLUDED:
+            if (std::exchange(im.shown, false)) events_.push_back(opensal::Shown{false});
+            break;
+        case SDL_EVENT_WINDOW_RESTORED:
+        case SDL_EVENT_WINDOW_SHOWN:
+        case SDL_EVENT_WINDOW_EXPOSED:
+            if (!std::exchange(im.shown, true)) events_.push_back(opensal::Shown{true});
+            break;
         case SDL_EVENT_WINDOW_FOCUS_GAINED: events_.push_back(opensal::Focus{true}); im.grab_again = true; break;
         case SDL_EVENT_WINDOW_FOCUS_LOST:
             events_.push_back(opensal::Focus{false});
@@ -678,6 +690,13 @@ std::string Window::pick_error() {
 void Window::inject_close() {
     SDL_Event e{};
     e.type = SDL_EVENT_WINDOW_CLOSE_REQUESTED;
+    e.window.windowID = SDL_GetWindowID(impl_->window);
+    SDL_PushEvent(&e);
+}
+
+void Window::inject_shown(bool shown) {
+    SDL_Event e{};
+    e.type = shown ? SDL_EVENT_WINDOW_RESTORED : SDL_EVENT_WINDOW_MINIMIZED;
     e.window.windowID = SDL_GetWindowID(impl_->window);
     SDL_PushEvent(&e);
 }

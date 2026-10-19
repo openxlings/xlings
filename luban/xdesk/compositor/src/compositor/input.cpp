@@ -397,6 +397,14 @@ void Server::input(const opensal::Event& ev) {
         preedit(*p);
     } else if (const auto* c = std::get_if<opensal::ClipboardText>(&ev)) {
         host_clipboard(c->text);
+    } else if (const auto* sh = std::get_if<opensal::Shown>(&ev)) {
+        // Not seen: nothing drawn, and the clients' frames wait (design
+        // 2026-10-20 §13.2). Seen again: all of it at once.
+        hidden = !sh->shown;
+        if (!hidden) {
+            send_whole = true;
+            wlr_output_schedule_frame(output);
+        }
     } else if (std::holds_alternative<opensal::FramePresented>(ev)) {
         // Shown: what changed meanwhile goes now.
         in_flight.reset();

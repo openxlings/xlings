@@ -82,6 +82,8 @@ void Server::open_fonts() {
 // A window that paces is sent the next frame once it has shown the last
 // (a second at most: a frame it lost does not stop the desktop).
 void Server::render() {
+    // Not seen: no frame, and no frame done -- the clients' animations wait too.
+    if (hidden) return;
     if (paced && in_flight && std::chrono::steady_clock::now() - *in_flight < std::chrono::seconds(1)) {
         wl_event_source_timer_update(pace_timer, 1000);   // held: sent anyway if no word comes
         return;
@@ -105,7 +107,8 @@ void Server::render() {
             told = s;
         }
         std::vector<opensal::Rect> rects;
-        const bool whole = !(st.committed & static_cast<std::uint32_t>(wlr_output_state_field::WLR_OUTPUT_STATE_DAMAGE));
+        const bool whole = std::exchange(send_whole, false)
+                           || !(st.committed & static_cast<std::uint32_t>(wlr_output_state_field::WLR_OUTPUT_STATE_DAMAGE));
         if (!whole) {
             int n = 0;
             const pixman_box32_t* boxes = pixman_region32_rectangles(&st.damage, &n);

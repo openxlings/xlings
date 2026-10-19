@@ -199,6 +199,8 @@ struct Server {
     std::chrono::steady_clock::time_point last_tick { start };
     opensal::wire::Decoder decoder;
     std::string frame_buf;                       // a frame message, its allocation kept (design 2026-10-20 §13.2)
+    bool hidden { false };                       // the window cannot be seen: nothing is drawn
+    bool send_whole { false };                   // the next frame is all of the output (seen again)
     Hook new_toplevel, new_popup, new_decoration, frame, request_cursor, request_selection;
     wl_event_source* input_source { nullptr };
     wl_event_source* tick { nullptr };

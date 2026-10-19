@@ -155,6 +155,8 @@ public:
     void inject_pointer(float x, float y);
     void inject_button(float x, float y, int button, bool down);
     void inject_close();
+    // Tests: minimized and restored, as the host's window manager says it.
+    void inject_shown(bool shown);
     void inject_drop(const std::filesystem::path& file);
     void set_size(int width, int height);
     std::string title() const;

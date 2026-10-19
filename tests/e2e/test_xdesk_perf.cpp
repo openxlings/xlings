@@ -92,3 +92,37 @@ XTEST(XdeskPerf, TheOverviewTenTimesStaysWithinItsCpuBudget, .area = "luban", .c
     EXPECT_LE(overview, 2.0) << "the overview ten times took " << overview << " s of CPU (budget 2 s)";
     EXPECT_LE(a.cpu, 6.0) << "a still session of 7 s took " << a.cpu << " s of CPU";
 }
+
+// A still desktop draws nothing, and a minimized window is sent nothing --
+// however much changes meanwhile; restored, all of it at once (design
+// 2026-10-20 §13.2, §13.3).
+XTEST(XdeskPerf, AStillDesktopSendsNoFramesAndAHiddenWindowNone, .area = "luban", .cost = tk::Cost::Medium,
+      .covers = {"XDESK-PERF"}, .requires_ = {"linux", "xlings-bin"}) {
+    if (!app_binary()) GTEST_SKIP() << "no luban-os beside the xlings under test";
+    if (!xdesk_binary()) GTEST_SKIP() << "no xdesk beside luban-os (mcpp build -p xdesk-app)";
+    auto home = tk::Home::isolated("xdesk-perf-still");
+    ASSERT_EQ(home.xlings({"self", "init"}).exit_code, 0);
+    const auto a = home.root() / "a.json", b = home.root() / "b.json", c = home.root() / "c.json", d = home.root() / "d.json";
+    // After the first session's hint has gone (8 s): then nothing changes.
+    auto r = xdesk_with(home, "canvas", std::format(R"(wait desktop
+waitfor desktop.texture.0 1100
+sleep 9000
+state {}
+sleep 2000
+state {}
+minimize
+sleep 300
+state {}
+key Super+o
+sleep 1500
+state {}
+restore
+sleep 1500
+state {}
+)", a.string(), b.string(), c.string(), d.string(), (home.root() / "e.json").string()));
+    ASSERT_EQ(r.exit_code, 0) << r.transcript();
+    const auto frames = [](const fs::path& f) { return read_state(f)["perf"]["desktop_frames"].get<int>(); };
+    EXPECT_EQ(frames(b), frames(a)) << "a still desktop sent frames";
+    EXPECT_EQ(frames(d), frames(c)) << "a minimized window was sent frames (the overview opened meanwhile)";
+    EXPECT_GT(frames(home.root() / "e.json"), frames(d)) << "restored: the desktop as it is now";
+}

@@ -488,6 +488,7 @@ void desktop_view_(App& a) {
     std::vector<Display::Update> updates;
     const auto size = d.take(updates);
     a.desktop_changed = !updates.empty();
+    a.perf.desktop_frames += static_cast<int>(updates.size());
     if (size.width && size.height
         && (a.texture.width != static_cast<int>(size.width) || a.texture.height != static_cast<int>(size.height))) {
         if (a.texture.handle) a.window->destroy(a.texture);
@@ -562,6 +563,9 @@ void desktop_view_(App& a) {
             d.send(opensal::ClipboardText{std::move(text)});
         };
         if (std::exchange(a.paste_on_open, false)) paste();
+        // Whether it can be seen, whatever is over it (it draws nothing while not).
+        for (const auto& e : a.window->events())
+            if (std::holds_alternative<opensal::Shown>(e)) d.send(e);
         if (!a.menu && !a.close_dialog) {
             for (const auto& e : a.window->events()) {
                 if (const auto* m = std::get_if<opensal::PointerMotion>(&e)) {

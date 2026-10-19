@@ -124,6 +124,7 @@ std::string encode_event(const Event& e) {
         else if constexpr (std::is_same_v<T, Launch>) return "launch " + v.app;
         else if constexpr (std::is_same_v<T, Activate>) return std::format("activate {}", v.window);
         else if constexpr (std::is_same_v<T, PointerRelative>) return std::format("relative {} {}", v.dx, v.dy);
+        else if constexpr (std::is_same_v<T, Shown>) return std::format("shown {}", v.shown ? 1 : 0);
         else return "presented";
     }, e);
 }
@@ -186,6 +187,8 @@ std::optional<Event> decode_event(std::string_view p) {
     } else if (name == "relative" && w.size() == 2) {
         PointerRelative r;
         if (num_(w[0], r.dx) && num_(w[1], r.dy)) return r;
+    } else if (name == "shown" && w.size() == 1) {
+        return Shown{w[0] == "1"};
     }
     return std::nullopt;
 }
