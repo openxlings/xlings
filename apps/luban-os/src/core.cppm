@@ -640,6 +640,7 @@ using imkit::px;
 //   type <text>                     click <anchor> | click <x> <y>
 //   move <x> <y>                    frames <n>        sleep <ms>
 //   click <x> <y> [right|middle]    keydown <Key>     keyup <Key>
+//   press <x> <y>                   release <x> <y>   (a drag between them)
 //   resize <w> <h>                  close             quit
 //   screenshot <file>               state <file>
 //   see [<n>s] <text>               until the text is shown (a console's lines,

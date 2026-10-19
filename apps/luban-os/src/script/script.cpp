@@ -325,6 +325,14 @@ void script_step_(App& a, Script& sc) {
             for (auto it = keys.rbegin(); it != keys.rend(); ++it) app.window->inject_key(*it, false);
         });
         next();
+    } else if (cmd == "press" || cmd == "release") {
+        // The button held down where the pointer goes, and let go: a drag.
+        float x = 0, y = 0;
+        words >> x >> y;
+        const bool down = cmd == "press";
+        sc.pending.push_back([x, y](App& app) { app.window->inject_pointer(x, y); });
+        sc.pending.push_back([x, y, down](App& app) { app.window->inject_button(x, y, 1, down); });
+        next();
     } else if (cmd == "keydown" || cmd == "keyup") {
         // A key held down, or let go: what is pressed meanwhile is pressed with it.
         std::string k;

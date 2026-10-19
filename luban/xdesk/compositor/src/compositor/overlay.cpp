@@ -310,6 +310,9 @@ void Server::draw_overlay() {
             overlay_picture = shell::menu(ui(), theme, items, overlay_picture.x, overlay_picture.y, w, h, scale);
             break;
         }
+        case Overlay::layouts:
+            overlay_picture = shell::layouts(theme, overlay_picture.x, overlay_picture.y, w, h, scale);
+            break;
         case Overlay::none: break;
     }
     wlr_scene_node_set_position(&overlay_node->node, static_cast<int>(overlay_picture.x), static_cast<int>(overlay_picture.y));
@@ -393,7 +396,7 @@ bool Server::overlay_key(xkb_keysym_t sym, bool down) {
             // Any key closes it (a modifier alone does not).
             if (s != key::Super_L && s != key::Super_R && s != key::Alt_L && s != key::Alt_R) close_overlay(false);
             return true;
-        case Overlay::menu:
+        case Overlay::menu: case Overlay::layouts:
             return true;
         case Overlay::none: return false;
     }
@@ -412,6 +415,17 @@ bool Server::overlay_click(double x, double y) {
         case Overlay::chooser: overlay_at = k; close_overlay(true); break;
         case Overlay::switcher: overlay_at = k; close_overlay(true); break;
         case Overlay::menu: menu_choose(k); break;
+        case Overlay::layouts: {
+            // The window and the ones used most recently on its workspace (design 2026-10-19 §17.10).
+            close_overlay(false);
+            std::vector<layout::Id> ids{layouts_for};
+            for (const auto& v : views)
+                if (v.mapped && v.id != layouts_for && lay.workspace_of(v.id) == lay.workspace() && !lay.floating(v.id)) ids.push_back(v.id);
+            lay.arrange_as(static_cast<layout::Pattern>(std::min<std::size_t>(k, 3)), ids);
+            arrange();
+            follow_focus();
+            break;
+        }
         default: close_overlay(false);
     }
     return true;

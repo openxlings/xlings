@@ -2,7 +2,8 @@
 // one structure whose parts are defined by area (design 2026-10-19 §21):
 // server.cpp (start, the loop, the provider's stream), windows.cpp (views,
 // popups, the layout's arrangement and its springs), input.cpp (keys,
-// pointer, wheel, shortcuts), keys.cpp (the actions and their chords),
+// pointer, wheel, shortcuts), drag.cpp (a window dragged, a gap resized, the
+// maximize button's layouts), keys.cpp (the actions and their chords),
 // overlay.cpp (the chooser, the switcher, the keys' sheet, a window's menu,
 // the person's state and rules), pointer.cpp (the pointer's shape, drawn by
 // the host or into the frames), text.cpp (text input and the clipboard),
@@ -149,7 +150,7 @@ struct Popup {
 };
 
 // What a held button is doing.
-enum class Drag { none, pan, move };
+enum class Drag { none, pan, move, gap };
 
 struct Server {
     const Options& o;
@@ -238,7 +239,7 @@ struct Server {
     // One overlay at a time (design 2026-10-19 §16.3, §17.5, §18.1): the
     // arrangements and the windows are held with Super and chosen on its
     // release; the keys' sheet and a window's menu stay until a key or a click.
-    enum class Overlay { none, chooser, switcher, sheet, menu };
+    enum class Overlay { none, chooser, switcher, sheet, menu, layouts };
     Overlay overlay { Overlay::none };
     std::size_t overlay_at { 0 };
     std::vector<layout::Mode> chooser_modes;
@@ -250,6 +251,22 @@ struct Server {
     wlr_scene_buffer* hint_node { nullptr };
     wl_event_source* hint_timer { nullptr };
     std::map<std::string, std::string> app_names;   // app id -> its name (desktop entries)
+    // A window dragged (design 2026-10-19 §17.9): it follows the pointer and
+    // a preview shows where it lands -- the drop made on a copy of the layout.
+    bool drag_live { false };                    // the window itself moves (floating, stacked, a group with Super)
+    double drag_dx { 0 }, drag_dy { 0 };         // the pointer from the frame's corner
+    layout::Drop drop;
+    double drop_width { 0 };                     // a size chosen for a new column (0: as it comes)
+    bool sizes_shown { false };
+    shell::Picture sizes_picture;
+    wlr_scene_rect* drop_box { nullptr };
+    wlr_scene_buffer* sizes_node { nullptr };
+    wl_event_source* drop_timer { nullptr };
+    std::size_t gap_column { 0 };
+    std::chrono::steady_clock::time_point gap_pressed {};
+    layout::Id max_hover { 0 };                  // the window whose maximize button the pointer is on
+    wl_event_source* max_timer { nullptr };
+    layout::Id layouts_for { 0 };
     std::chrono::steady_clock::time_point app_names_read {};
 
     // The shown workspace's arrangement (the panel's look is the profile's).
@@ -350,6 +367,16 @@ struct Server {
     void send_pointer_image();
     // The window said what it takes: draw the pointer here or leave it to it.
     void pointer_mode();
+
+    // drag.cpp
+    void drag_start(View* v, bool live);
+    void drag_motion();
+    void drag_end();
+    void show_drop();
+    void hide_drop();
+    void set_opacity(View& v, float opacity);
+    layout::Id maximize_under_pointer() const;
+    void open_layouts(layout::Id id);
 
     // overlay.cpp
     void load_person();

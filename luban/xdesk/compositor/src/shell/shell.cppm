@@ -44,9 +44,10 @@ bool chinese(const std::map<std::string, std::string>& env);
 // one), its size and areas given in logical pixels.
 inline constexpr int kTitleHeight = 26;
 draw::Image title_bar(draw::Fonts* fonts, const Theme& t, std::string_view title, int width, bool active, bool close_hover,
-                      double scale = 1);
-// Its close button, in the bar's pixels.
+                      double scale = 1, bool maximize_hover = false);
+// Its close button and its maximize button (left of it), in the bar's pixels.
 draw::Rect close_button(int width);
+draw::Rect maximize_button(int width);
 
 // ── the panel ────────────────────────────────────────────────────────
 
@@ -148,6 +149,13 @@ struct MenuEntry {
 };
 Picture menu(draw::Fonts* ui, const Theme& t, const std::vector<MenuEntry>& items, double x, double y, int width, int height,
              double scale = 1);
+// Sizes offered for a window dropped as a column (design 2026-10-19 §17.9):
+// chips at (x, y), `selected` lit (none: npos); areas by index.
+Picture sizes(draw::Fonts* ui, const Theme& t, const std::vector<std::string>& labels, std::size_t selected, double x, double y,
+              int width, int height, double scale = 1);
+// The maximize button's layouts (§17.10), small pictures of them below
+// (x, y): halves, 2/3 and 1/3, one and two, thirds; areas by index.
+Picture layouts(const Theme& t, double x, double y, int width, int height, double scale = 1);
 // A line said for a while at the bottom (the first time: what the keys are).
 Picture hint(draw::Fonts* ui, const Theme& t, std::string_view text, int width, int height, double scale = 1);
 

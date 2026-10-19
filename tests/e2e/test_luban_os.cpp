@@ -1240,6 +1240,46 @@ screenshot {}
     EXPECT_EQ(read_ppm(two).at(550, 400), kRed) << "on the second, as its rule says";
 }
 
+// A window dragged by its title (design 2026-10-19 §17.9): a preview where it
+// would land, and there it goes when let go -- red over the top of green is
+// red above green in green's column.
+XTEST(LubanOs, XdeskDraggedWindowLandsWhereItsPreviewWas, .area = "luban",
+      .covers = {"XDESK-DRAG-SNAP", "XDESK-COMPOSITOR"}, .requires_ = {"linux", "xlings-bin"}) {
+    if (!app_binary()) GTEST_SKIP() << "no luban-os beside the xlings under test";
+    if (!xdesk_binary()) GTEST_SKIP() << "no xdesk beside luban-os (mcpp build -p xdesk-app)";
+    auto home = tk::Home::isolated("luban-os-xdesk-drag");
+    ASSERT_EQ(home.xlings({"self", "init"}).exit_code, 0);
+    const auto runtime = home.root() / "run";
+    fs::create_directories(runtime);
+    fs::permissions(runtime, fs::perms::owner_all, fs::perm_options::replace);
+    const auto client = colour_client(home).string();
+    const auto during = home.root() / "during.ppm", after = home.root() / "after.ppm";
+    auto r = run_script(home, std::format(R"(wait desktop
+waitfor desktop.texture.0 1100
+sleep 2500
+press 200 50
+move 400 120
+move 820 150
+sleep 600
+screenshot {}
+screenshot {}
+release 820 150
+sleep 1200
+screenshot {}
+)", during.string(), artifact("xdesk-drag-preview.bmp").string(), after.string()),
+                        {"--desktop-exec", xdesk_binary()->string(), "--profile", "classic",
+                         "--autostart", std::format("python3 {} c04040", client),
+                         "--autostart", std::format("sh -c 'sleep 0.6; exec python3 {} 40c040'", client)},
+                        {{"XDG_RUNTIME_DIR", runtime.string()}});
+    ASSERT_EQ(r.exit_code, 0) << r.transcript();
+    // While dragged: green's top half shows where red would go (the accent over green).
+    EXPECT_NE(read_ppm(during).at(1000, 250), kGreen) << "a preview over the top of green";
+    // Let go: one column, red above green.
+    const auto a = read_ppm(after);
+    EXPECT_EQ(a.at(550, 200), kRed);
+    EXPECT_EQ(a.at(550, 600), kGreen);
+}
+
 XTEST(LubanOs, XdeskLauncherStartsWhatIsTypedAndThePanelSwitchesWorkspaces, .area = "luban",
       .covers = {"XDESK-COMPOSITOR", "XDESK-SHELL", "XDESK-APPS"}, .requires_ = {"linux", "xlings-bin"}) {
     if (!app_binary()) GTEST_SKIP() << "no luban-os beside the xlings under test";

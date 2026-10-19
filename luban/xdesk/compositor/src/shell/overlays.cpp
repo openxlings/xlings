@@ -137,6 +137,52 @@ Picture menu(draw::Fonts* ui, const Theme& t, const std::vector<MenuEntry>& item
     return p;
 }
 
+Picture sizes(draw::Fonts* ui, const Theme& t, const std::vector<std::string>& labels, std::size_t selected, double x, double y,
+              int width, int height, double scale) {
+    Picture p;
+    const double chip = 54, h = 34, gap = 6, w = labels.size() * chip + (labels.size() + 1) * gap;
+    p.x = std::clamp(x - w / 2, 4.0, std::max(4.0, width - w - 4));
+    p.y = std::clamp(y, 4.0, std::max(4.0, height - h - 4));
+    p.image = image_(w, h, scale);
+    draw::Canvas c(p.image, scale);
+    c.fill({0, 0, w, h}, t.card, h / 2);
+    c.frame({0, 0, w, h}, t.accent, 1, h / 2);
+    for (std::size_t k = 0; k < labels.size(); ++k) {
+        const Rect r { gap + double(k) * (chip + gap), 4, chip, h - 8 };
+        if (k == selected) c.fill(r, t.accent, (h - 8) / 2);
+        if (ui) c.text(*ui, labels[k], r.x + (chip - ui->width(labels[k])) / 2, std::round(r.y + 18), t.text, chip);
+        p.areas.push_back({.rect = {p.x + r.x, p.y + r.y, r.width, r.height}, .target = Target::item, .index = static_cast<int>(k)});
+    }
+    return p;
+}
+
+Picture layouts(const Theme& t, double x, double y, int width, int height, double scale) {
+    Picture p;
+    const double cell = 54, ch = 38, gap = 8, w = 4 * cell + 5 * gap, h = ch + 2 * gap;
+    p.x = std::clamp(x - w + 20, 4.0, std::max(4.0, width - w - 4));
+    p.y = std::clamp(y, 4.0, std::max(4.0, height - h - 4));
+    p.image = image_(w, h, scale);
+    draw::Canvas c(p.image, scale);
+    c.fill({0, 0, w, h}, t.card, t.radius);
+    c.frame({0, 0, w, h}, Color::rgb(0x3a4050), 1, t.radius);
+    // Each layout's picture: its parts as blocks.
+    const std::array<std::vector<std::array<double, 4>>, 4> shapes{{
+        {{0, 0, 0.5, 1}, {0.5, 0, 0.5, 1}},
+        {{0, 0, 2.0 / 3, 1}, {2.0 / 3, 0, 1.0 / 3, 1}},
+        {{0, 0, 0.5, 1}, {0.5, 0, 0.5, 0.5}, {0.5, 0.5, 0.5, 0.5}},
+        {{0, 0, 1.0 / 3, 1}, {1.0 / 3, 0, 1.0 / 3, 1}, {2.0 / 3, 0, 1.0 / 3, 1}},
+    }};
+    for (std::size_t k = 0; k < shapes.size(); ++k) {
+        const Rect r { gap + double(k) * (cell + gap), gap, cell, ch };
+        c.fill(r, t.background, 4);
+        for (const auto& s : shapes[k])
+            c.fill({r.x + 2 + s[0] * (r.width - 4), r.y + 2 + s[1] * (r.height - 4), s[2] * (r.width - 4) - 2, s[3] * (r.height - 4) - 2},
+                   k == 0 ? t.accent : t.title_active, 2);
+        p.areas.push_back({.rect = {p.x + r.x, p.y + r.y, r.width, r.height}, .target = Target::item, .index = static_cast<int>(k)});
+    }
+    return p;
+}
+
 Picture hint(draw::Fonts* ui, const Theme& t, std::string_view text, int width, int height, double scale) {
     Picture p;
     const double w = ui ? std::min(width - 40.0, ui->width(text) + 40) : 300, h = 36;

@@ -396,3 +396,100 @@ XTEST(XdeskLayout, AlwaysOnTopIsAboveEverythingAndOnEveryWorkspaceGoesAlong, .ar
     fresh.preset(1, Mode::canvas);
     EXPECT_EQ(fresh.mode_of(1), Mode::canvas);
 }
+
+// Dragging (design 2026-10-19 §17.9): where it lands is read off the
+// arrangement, and the preview is that very drop.
+XTEST(XdeskLayout, ADraggedWindowsPreviewIsWhereItLands, .area = "luban", .covers = {"XDESK-DRAG-SNAP"}) {
+    Layout l({.mode = Mode::tile, .gap = 10});
+    for (layout::Id id = 1; id <= 2; ++id) l.add(id, {600, 400});
+    auto ps = l.arrange(kOutput);
+    const auto two = of(ps, 2).rect;
+    // Window 1 dragged over the top third of 2: into 2's column, above it.
+    auto d = l.drop_at(1, two.x + two.width / 2, two.y + 30);
+    EXPECT_EQ(d.kind, layout::Drop::Kind::above);
+    const auto seen = l.preview(1, d);
+    ASSERT_TRUE(seen);
+    l.drop(1, d);
+    ps = l.arrange(kOutput);
+    EXPECT_EQ(of(ps, 1).rect, *seen) << "the preview is where it went";
+    EXPECT_EQ(l.group_of(1), (std::vector<layout::Id>{1, 2}));
+    // At the screen's left edge: a column of its own, first; with a size chosen.
+    d = l.drop_at(1, 5, 400);
+    EXPECT_EQ(d.kind, layout::Drop::Kind::column);
+    EXPECT_EQ(d.column, 0u);
+    const auto narrow = l.preview(1, d, 1.0 / 3);
+    l.drop(1, d, 1.0 / 3);
+    ps = l.arrange(kOutput);
+    EXPECT_EQ(of(ps, 1).rect, *narrow);
+    EXPECT_LT(of(ps, 1).rect.x, of(ps, 2).rect.x);
+    EXPECT_NEAR(of(ps, 1).rect.width, (1200 - 10) / 3.0 - 10, 1e-6);
+    // The middle of another: they change places.
+    const auto mid = of(ps, 2).rect;
+    d = l.drop_at(1, mid.x + mid.width / 2, mid.y + mid.height / 2);
+    EXPECT_EQ(d.kind, layout::Drop::Kind::swap);
+    l.drop(1, d);
+    ps = l.arrange(kOutput);
+    EXPECT_GT(of(ps, 1).rect.x, of(ps, 2).rect.x);
+    // The gap between them: dragged, one wider and the other narrower; twice, equal again.
+    const auto gap = l.gap_at(of(ps, 2).rect.x + of(ps, 2).rect.width + 5, 300);
+    ASSERT_TRUE(gap);
+    const double before = of(ps, 2).rect.width;
+    l.drag_gap(*gap, 100);
+    ps = l.arrange(kOutput);
+    EXPECT_NEAR(of(ps, 2).rect.width, before + 100, 1.5);
+    l.even_widths();
+    ps = l.arrange(kOutput);
+    EXPECT_EQ(of(ps, 1).rect.width, of(ps, 2).rect.width);
+    // Shift: floating.
+    EXPECT_EQ(l.drop_at(1, 600, 400, true).kind, layout::Drop::Kind::floating);
+}
+
+XTEST(XdeskLayout, StackedEdgesSnapAndCanvasEdgesGroup, .area = "luban", .covers = {"XDESK-DRAG-SNAP"}) {
+    Layout s({.mode = Mode::stack, .gap = 10});
+    s.add(1, {600, 400});
+    s.arrange(kOutput);
+    auto d = s.drop_at(1, 3, 400);
+    EXPECT_EQ(d.kind, layout::Drop::Kind::snap);
+    EXPECT_EQ(d.snap_x, -1);
+    EXPECT_EQ(*s.preview(1, d), (Rect{10, 10, 585, 780})) << "the left half";
+    d = s.drop_at(1, 1197, 3);
+    EXPECT_EQ(std::pair(d.snap_x, d.snap_y), std::pair(1, -1)) << "a corner: its quarter";
+    EXPECT_EQ(s.drop_at(1, 600, 3).snap_x, 0) << "the top: the whole";
+    EXPECT_EQ(s.drop_at(1, 600, 400).kind, layout::Drop::Kind::free);
+
+    Layout c({.mode = Mode::canvas, .gap = 10});
+    c.add(1, {600, 400});
+    c.add(2, {500, 300});
+    auto ps = c.arrange(kOutput);
+    const auto r1 = of(ps, 1).rect;
+    d = c.drop_at(2, r1.x + r1.width - 10, r1.y + r1.height / 2);
+    EXPECT_EQ(d.kind, layout::Drop::Kind::right);
+    const auto seen = c.preview(2, d);
+    c.drop(2, d);
+    EXPECT_EQ(of(c.arrange(kOutput), 2).rect, *seen);
+    EXPECT_EQ(c.group_of(1), (std::vector<layout::Id>{1, 2}));
+    // Let go in the open: out of the group.
+    c.drop(2, {.kind = layout::Drop::Kind::free});
+    EXPECT_EQ(c.group_of(1), (std::vector<layout::Id>{1}));
+}
+
+XTEST(XdeskLayout, TheMaximizeButtonsLayoutsLayOutTheRecentWindows, .area = "luban", .covers = {"XDESK-DRAG-SNAP"}) {
+    Layout l({.mode = Mode::tile, .gap = 10});
+    for (layout::Id id = 1; id <= 3; ++id) l.add(id, {600, 400});
+    l.arrange(kOutput);
+    l.arrange_as(layout::Pattern::one_and_two, {3, 2, 1});
+    auto ps = l.arrange(kOutput);
+    EXPECT_EQ(l.group_of(2), (std::vector<layout::Id>{2, 1}));
+    EXPECT_LT(of(ps, 3).rect.x, of(ps, 2).rect.x);
+    l.arrange_as(layout::Pattern::two_thirds, {3, 2});
+    ps = l.arrange(kOutput);
+    EXPECT_GT(of(ps, 3).rect.width, of(ps, 2).rect.width);
+    Layout s({.mode = Mode::stack, .gap = 10});
+    s.add(1, {600, 400});
+    s.add(2, {600, 400});
+    s.arrange(kOutput);
+    s.arrange_as(layout::Pattern::halves, {2, 1});
+    ps = s.arrange(kOutput);
+    EXPECT_EQ(of(ps, 2).rect.x, 10);
+    EXPECT_GT(of(ps, 1).rect.x, 590);
+}

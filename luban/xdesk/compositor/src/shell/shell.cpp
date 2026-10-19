@@ -53,9 +53,10 @@ bool chinese(const std::map<std::string, std::string>& env) {
 // ── title bars ───────────────────────────────────────────────────────
 
 Rect close_button(int width) { return {static_cast<double>(width - kTitleHeight), 0, kTitleHeight, kTitleHeight}; }
+Rect maximize_button(int width) { return {static_cast<double>(width - 2 * kTitleHeight), 0, kTitleHeight, kTitleHeight}; }
 
 draw::Image title_bar(draw::Fonts* fonts, const Theme& t, std::string_view title, int width, bool active, bool close_hover,
-                      double scale) {
+                      double scale, bool maximize_hover) {
     draw::Image img = device_image_(std::max(1, width), kTitleHeight, scale);
     draw::Canvas c(img, scale);
     c.clear(active ? t.title_active : t.title_idle);
@@ -69,9 +70,14 @@ draw::Image title_bar(draw::Fonts* fonts, const Theme& t, std::string_view title
         c.fill({cx + k - 0.75, cy + k - 0.75, 1.5, 1.5}, mark);
         c.fill({cx + k - 0.75, cy - k - 0.75, 1.5, 1.5}, mark);
     }
+    // The maximize button: a square's outline; its layouts when the pointer rests on it.
+    const Rect max = maximize_button(width);
+    if (maximize_hover) c.fill(max, t.selected);
+    const Color box = maximize_hover ? Color::rgb(0xffffff) : (active ? t.title_text : t.title_text_idle);
+    c.frame({max.x + max.width / 2 - 5, max.height / 2 - 5, 10, 10}, box, 1.5);
     if (fonts) {
         const double baseline = (kTitleHeight + fonts->ascent() - fonts->descent()) / 2;
-        c.text(*fonts, title, 10, std::round(baseline), active ? t.title_text : t.title_text_idle, close.x - 16);
+        c.text(*fonts, title, 10, std::round(baseline), active ? t.title_text : t.title_text_idle, max.x - 16);
     }
     return img;
 }

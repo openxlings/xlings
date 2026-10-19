@@ -28,11 +28,11 @@ namespace fs = std::filesystem;
 // A window's title bar, drawn again only when what it shows changed.
 void Server::draw_title(View& v, int width, bool active) {
     const std::string title = name_of(v);
-    const bool hover = close_hover == v.id;
-    auto key = std::format("{}\x1f{}\x1f{}\x1f{}\x1f{}", title, width, active, hover, scale);
+    const bool hover = close_hover == v.id, max = max_hover == v.id;
+    auto key = std::format("{}\x1f{}\x1f{}\x1f{}\x1f{}\x1f{}", title, width, active, hover, scale, max);
     if (key == v.drawn) return;
     v.drawn = std::move(key);
-    show(v.title, shell::title_bar(ui(), theme, title, width, active, hover, scale));
+    show(v.title, shell::title_bar(ui(), theme, title, width, active, hover, scale, max));
 }
 
 // The panel and (canvas) the grid, drawn again only when they changed.

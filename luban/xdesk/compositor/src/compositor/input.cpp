@@ -94,15 +94,17 @@ void Server::key(const opensal::Key& k) {
 }
 
 void Server::pointer_moved() {
+    if (drag == Drag::move) { drag_motion(); return; }
     if (drag != Drag::none) {
         const double dx = cursor->x - drag_x, dy = cursor->y - drag_y;
         drag_x = cursor->x;
         drag_y = cursor->y;
-        pointer_shape("grabbing");
         if (drag == Drag::pan) {
+            pointer_shape("grabbing");
             lay.pan(dx, dy);
-        } else if (const auto p = placement_of(dragged)) {
-            lay.place(dragged, {p->x + dx, p->y + dy, p->width, p->height});
+        } else {
+            pointer_shape("ew-resize");
+            lay.drag_gap(gap_column, dx);
         }
         arrange(true);
         return;
@@ -110,6 +112,18 @@ void Server::pointer_moved() {
     if (const auto hover = close_under_pointer(); hover != close_hover) {
         close_hover = hover;
         arrange();
+    }
+    // The maximize button: rested on, its layouts.
+    if (const auto m = maximize_under_pointer(); m != max_hover) {
+        max_hover = m;
+        arrange();
+        if (m && max_timer) wl_event_source_timer_update(max_timer, 450);
+    }
+    // A gap between columns: its pointer; dragged, it resizes what is either side.
+    if (live() && overlay == Overlay::none && lay.gap_at(cursor->x, cursor->y)) {
+        pointer_shape("ew-resize");
+        wlr_seat_pointer_clear_focus(seat);
+        return;
     }
     double sx = 0, sy = 0;
     wlr_surface* surface = nullptr;
@@ -147,7 +161,9 @@ layout::Id Server::close_under_pointer() const {
 
 void Server::button(const opensal::PointerButton& b) {
     if (!b.down && drag != Drag::none) {
-        // Let go: the window under the pointer says its pointer again.
+        // Let go: a window lands where its preview was; the window under the
+        // pointer says its pointer again.
+        if (drag == Drag::move) drag_end();
         drag = Drag::none;
         wlr_seat_pointer_clear_focus(seat);
         pointer_moved();
@@ -171,12 +187,37 @@ void Server::button(const opensal::PointerButton& b) {
         }
         return;
     }
-    // A title bar's close button.
+    // A title bar's close button; its maximize button.
     if (const auto id = close_under_pointer()) {
         if (b.down)
             if (View* v = view_of(id)) wlr_xdg_toplevel_send_close(v->toplevel);
         return;
     }
+    if (const auto id = maximize_under_pointer(); id && overlay == Overlay::none) {
+        if (b.down) {
+            lay.toggle_maximized(id);
+            arrange();
+        }
+        return;
+    }
+    // A gap between columns: dragged to resize, clicked twice to even them out.
+    if (overlay == Overlay::none && live() && b.button == opensal::Button::Left)
+        if (const auto gap = lay.gap_at(cursor->x, cursor->y)) {
+            if (b.down) {
+                const auto now = std::chrono::steady_clock::now();
+                if (now - gap_pressed < std::chrono::milliseconds(400) && gap_column == *gap) {
+                    lay.even_widths();
+                    arrange();
+                } else {
+                    drag = Drag::gap;
+                    gap_column = *gap;
+                    drag_x = cursor->x;
+                    drag_y = cursor->y;
+                }
+                gap_pressed = now;
+            }
+            return;
+        }
     // An overlay is the pointer's while it is up: a click chooses, or closes it.
     if (overlay != Overlay::none) {
         if (b.down) overlay_click(cursor->x, cursor->y);
@@ -198,20 +239,18 @@ void Server::button(const opensal::PointerButton& b) {
             open_menu(v, cursor->x, cursor->y);
             return;
         }
-        if (lay.mode() == layout::Mode::canvas && (super || !v)) {
-            // The canvas: dragging its background -- or anywhere, with Super -- pans.
+        if (lay.mode() == layout::Mode::canvas && (!v || (super && !on_title))) {
+            // The canvas: dragging its background -- or a window, with Super -- pans.
             drag = Drag::pan;
             drag_x = cursor->x;
             drag_y = cursor->y;
             return;
         }
-        if (v && (super || on_title) && (lay.floating(v->id) || lay.mode() != layout::Mode::tile)) {
-            // A window moved by its title (or anywhere with Super held).
-            focus(v);
-            drag = Drag::move;
-            dragged = v->id;
-            drag_x = cursor->x;
-            drag_y = cursor->y;
+        if (v && (super || on_title) && b.button == opensal::Button::Left) {
+            // A window moved by its title (or anywhere with Super held): it
+            // follows the pointer, where it would land shown under it. A
+            // floating or stacked one, or a canvas group with Super, moves itself.
+            drag_start(v, lay.floating(v->id) || lay.mode() == layout::Mode::stack || (lay.mode() == layout::Mode::canvas && super));
             return;
         }
         if (v) { focus(v); arrange(); }

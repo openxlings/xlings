@@ -56,6 +56,31 @@ Mode next(Mode m);
 std::string_view name(Mode m);
 std::optional<Mode> mode_named(std::string_view name);
 
+// Where a window dragged would land (design 2026-10-19 §17.9): what the
+// pointer is over says it, and the preview is that drop made -- the same
+// function -- so it is where the window goes.
+struct Drop {
+    enum class Kind {
+        none,
+        column,         // tile: a column of its own at `column`
+        above, below,   // tile: in `target`'s column, above or below it; canvas: in its group's
+        swap,           // tile: in `target`'s place, and it in the dragged one's
+        left, right,    // canvas: a column of `target`'s group beside it
+        snap,           // stack: a half, a quarter, the whole (snap_x, snap_y)
+        free,           // stack, canvas: where it is put
+        floating,       // above the arrangement, where it is put (Shift)
+    };
+    Kind kind { Kind::none };
+    Id target { 0 };
+    std::size_t column { 0 };
+    int snap_x { 0 }, snap_y { 0 };
+    bool operator==(const Drop&) const = default;
+};
+
+// The maximize button's layouts (design 2026-10-19 §17.10): the window and
+// the ones used most recently, laid out so.
+enum class Pattern { halves, two_thirds, one_and_two, thirds };
+
 struct Options {
     Mode mode { Mode::tile };   // a workspace's preset until it is given one
     double gap { 8 };
@@ -147,6 +172,23 @@ public:
     // Super+- / Super+=: the focused column's width (tile, a group) or the
     // window's size (stack) by `step` of the output's width.
     void resize(double step);
+
+    // Dragging a window (design 2026-10-19 §17.9): where it would land with
+    // the pointer at (sx, sy) -- Shift held: floating; the preview of that,
+    // the frame it gets (`width` a size chosen for a new column, a fraction;
+    // 0: as it would be); the drop.
+    Drop drop_at(Id dragged, double sx, double sy, bool shift = false) const;
+    std::optional<Rect> preview(Id dragged, const Drop& d, double width = 0) const;
+    void drop(Id dragged, const Drop& d, double width = 0);
+    // The gap a pointer is on between two columns (tile): the one left of it.
+    std::optional<std::size_t> gap_at(double sx, double sy) const;
+    // Dragged by `dx` pixels: the column left of it wider, the right one narrower.
+    void drag_gap(std::size_t column, double dx);
+    // A gap clicked twice: every column an equal part again.
+    void even_widths();
+    // `windows`, the first the one asked for, laid out as `p`: columns in
+    // tile, halves and quarters stacked, a group on the canvas.
+    void arrange_as(Pattern p, const std::vector<Id>& windows);
 
     int workspace() const { return shown_; }
     int workspaces() const { return static_cast<int>(spaces_.size()); }

@@ -1305,7 +1305,7 @@ status = "required"
 
 [XDESK-DRAG-SNAP]
 text = "dragging a window previews exactly where it lands in each arrangement, offers sizes when it rests on a target, gaps resize what is either side, and the maximize button offers layouts"
-status = "planned"
+status = "required"
 
 [XDESK-WINDOW-MENU]
 text = "a window's title-bar menu (maximize, float, always on top, on every workspace, to a workspace, app rules, close); on top stays above and on a canvas in view; rules are kept and applied; windows are named by their application"
