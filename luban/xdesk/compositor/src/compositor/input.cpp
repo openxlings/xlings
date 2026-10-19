@@ -67,8 +67,35 @@ bool Server::shortcut(std::uint32_t code) {
             case key::Right: case key::l: return way(layout::Direction::right);
             case key::Up: case key::k: return way(layout::Direction::up);
             case key::Down: case key::j: return way(layout::Direction::down);
-            case key::f: if (const auto f = lay.focused()) { lay.toggle_floating(*f); arrange(); } return true;
-            case key::r: lay.cycle_width(); arrange(); return true;
+            case key::f:
+                // Stacked: the whole output and back; else floating and back.
+                if (const auto f = lay.focused()) {
+                    if (lay.mode() == layout::Mode::stack && !lay.floating(*f)) lay.toggle_maximized(*f);
+                    else lay.toggle_floating(*f);
+                    arrange();
+                }
+                return true;
+            case key::r:
+                if (shift) lay.cycle_height(); else lay.cycle_width();
+                arrange();
+                return true;
+            case key::m:
+                // The next arrangement for this workspace (design 2026-10-19 §17.3).
+                lay.set_mode(layout::next(lay.mode()));
+                arrange();
+                draw_shell();
+                follow_focus();
+                return true;
+            case key::bracketleft: lay.join(); arrange(); follow_focus(); return true;
+            case key::bracketright: lay.split(); arrange(); follow_focus(); return true;
+            case key::minus: case key::equal: case key::plus: {
+                const bool in = sym != key::minus;
+                // The canvas: the view; else the focused column or window.
+                if (canvas()) lay.zoom_at(in ? 1.1 : 1 / 1.1, logical_w() / 2.0, logical_h() / 2.0);
+                else lay.resize(in ? 0.05 : -0.05);
+                arrange();
+                return true;
+            }
             case key::o: lay.overview(!lay.in_overview()); arrange(); return true;
             case key::Tab:
                 if (!alt) break;
@@ -117,6 +144,7 @@ void Server::pointer_moved() {
         const double dx = cursor->x - drag_x, dy = cursor->y - drag_y;
         drag_x = cursor->x;
         drag_y = cursor->y;
+        pointer_shape("grabbing");
         if (drag == Drag::pan) {
             lay.pan(dx, dy);
         } else if (const auto p = placement_of(dragged)) {
@@ -137,7 +165,7 @@ void Server::pointer_moved() {
             if (auto* sb = wlr_scene_surface_try_from_buffer(wlr_scene_buffer_from_node(node))) surface = sb->surface;
     }
     if (!surface) {
-        wlr_cursor_set_xcursor(cursor, cursors, "default");
+        pointer_shape("default");
         wlr_seat_pointer_clear_focus(seat);
         return;
     }
@@ -164,7 +192,13 @@ layout::Id Server::close_under_pointer() const {
 }
 
 void Server::button(const opensal::PointerButton& b) {
-    if (!b.down && drag != Drag::none) { drag = Drag::none; return; }
+    if (!b.down && drag != Drag::none) {
+        // Let go: the window under the pointer says its pointer again.
+        drag = Drag::none;
+        wlr_seat_pointer_clear_focus(seat);
+        pointer_moved();
+        return;
+    }
     // The launcher: a row starts it, anywhere else closes it.
     if (launcher.is_open()) {
         if (b.down) {
@@ -206,7 +240,7 @@ void Server::button(const opensal::PointerButton& b) {
             drag_y = cursor->y;
             return;
         }
-        if (v && (super || on_title) && (lay.floating(v->id) || lay.mode() == layout::Mode::canvas)) {
+        if (v && (super || on_title) && (lay.floating(v->id) || lay.mode() != layout::Mode::tile)) {
             // A window moved by its title (or anywhere with Super held).
             focus(v);
             drag = Drag::move;
@@ -305,6 +339,7 @@ void Server::provider(std::string_view bytes) {
             if (in >> bits >> w >> h) {
                 if (in >> density >> pacing) paced = pacing == 1;
                 provided = bits;
+                pointer_mode();
                 resize({w, h});
                 if (density > 0) set_scale(density);
             }

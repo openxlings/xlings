@@ -213,20 +213,28 @@ std::optional<Terminal> read_terminal_(const fs::path& file) {
     return t;
 }
 
+// The XDG data directories, the person's first.
+std::vector<fs::path> data_dirs_(const std::map<std::string, std::string>& env) {
+    auto get = [&](const char* k) { const auto it = env.find(k); return it == env.end() ? std::string{} : it->second; };
+    std::vector<fs::path> data;
+    if (const auto d = get("XDG_DATA_HOME"); !d.empty()) data.emplace_back(d);
+    else if (const auto home = get("HOME"); !home.empty()) data.push_back(fs::path(home) / ".local" / "share");
+    const auto dirs = get("XDG_DATA_DIRS");
+    for (auto& d : split_dirs_(dirs.empty() ? "/usr/local/share:/usr/share" : dirs)) data.push_back(d);
+    return data;
+}
+
 }  // namespace
 
 std::optional<Terminal> default_terminal(const std::map<std::string, std::string>& env) {
     auto get = [&](const char* k) { const auto it = env.find(k); return it == env.end() ? std::string{} : it->second; };
     const auto home = get("HOME");
-    std::vector<fs::path> config, data;
+    std::vector<fs::path> config;
     if (const auto c = get("XDG_CONFIG_HOME"); !c.empty()) config.emplace_back(c);
     else if (!home.empty()) config.push_back(fs::path(home) / ".config");
     const auto config_dirs = get("XDG_CONFIG_DIRS");
     for (auto& d : split_dirs_(config_dirs.empty() ? "/etc/xdg" : config_dirs)) config.push_back(d);
-    if (const auto d = get("XDG_DATA_HOME"); !d.empty()) data.emplace_back(d);
-    else if (!home.empty()) data.push_back(fs::path(home) / ".local" / "share");
-    const auto data_dirs = get("XDG_DATA_DIRS");
-    for (auto& d : split_dirs_(data_dirs.empty() ? "/usr/local/share:/usr/share" : data_dirs)) data.push_back(d);
+    const auto data = data_dirs_(env);
     auto entry = [&](std::string_view id) -> std::optional<Terminal> {
         for (const auto& d : data)
             if (auto t = read_terminal_(d / "xdg-terminals" / std::string(id))) return t;
@@ -258,6 +266,29 @@ std::optional<Terminal> default_terminal(const std::map<std::string, std::string
         ec.clear();
     }
     return std::nullopt;
+}
+
+Terminal configured_terminal(const std::map<std::string, std::string>& env, std::vector<std::string> exec) {
+    Terminal out { .exec = std::move(exec), .arg_exec = std::string{} };
+    if (out.exec.empty()) return out;
+    const auto program = fs::path(out.exec.front()).filename().string();
+    std::error_code ec;
+    for (const auto& d : data_dirs_(env)) {
+        std::vector<fs::path> found;
+        for (fs::directory_iterator it(d / "xdg-terminals", ec), end; !ec && it != end; it.increment(ec))
+            if (it->path().extension() == ".desktop") found.push_back(it->path());
+        ec.clear();
+        std::ranges::sort(found);
+        for (const auto& f : found) {
+            const auto t = read_terminal_(f);
+            if (!t || (fs::path(t->exec.front()).filename().string() != program && f.stem().string() != program)) continue;
+            out.arg_exec = t->arg_exec;
+            out.arg_title = t->arg_title;
+            out.arg_app_id = t->arg_app_id;
+            return out;
+        }
+    }
+    return out;
 }
 
 std::vector<std::string> in_terminal(const Terminal& t, const std::vector<std::string>& command,

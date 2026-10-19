@@ -115,6 +115,15 @@ XTEST(XdeskApps, AnApplicationRunsInTheDefaultTerminalUnderItsOwnName, .area = "
     t = apps::default_terminal(env);
     ASSERT_TRUE(t);
     EXPECT_EQ(apps::in_terminal(*t, {"htop"}, "Htop", "htop"), (std::vector<std::string>{"xterm", "-e", "htop"}));
+    // A configured terminal takes the title and the id as its entry says
+    // (found by program name), its own arguments kept; an unknown one only
+    // takes the command (F19: `terminal = foot` gave nvim no title).
+    EXPECT_EQ(apps::in_terminal(apps::configured_terminal(env, {"foot", "--config=/etc/foot.ini"}), {"nvim"}, "Neovim", "nvim"),
+              (std::vector<std::string>{"foot", "--config=/etc/foot.ini", "--title=Neovim", "--app-id=nvim", "nvim"}));
+    EXPECT_EQ(apps::in_terminal(apps::configured_terminal(env, {"/usr/bin/xterm"}), {"htop"}, "Htop", "htop"),
+              (std::vector<std::string>{"/usr/bin/xterm", "-e", "htop"}));
+    EXPECT_EQ(apps::in_terminal(apps::configured_terminal(env, {"kitty"}), {"htop"}, "Htop", "htop"),
+              (std::vector<std::string>{"kitty", "htop"}));
     // None declared: none.
     EXPECT_FALSE(apps::default_terminal({{"HOME", "/nonexistent"}, {"XDG_DATA_DIRS", (root / "none").string()},
                                          {"XDG_CONFIG_DIRS", (root / "none").string()}}));

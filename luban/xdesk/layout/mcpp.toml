@@ -2,8 +2,10 @@
 # Wayland, so every arrangement and every operation is a unit test (design
 # 2026-10-19 §17, §21):
 #
-#   xdesk.layout  workspaces, tiling (scrolling columns), floating, the canvas
-#                 (pan, zoom, overview), focus moves and springs
+#   xdesk.layout  workspaces, each with its arrangement -- tile (scrolling
+#                 columns), stack (overlapping, snapped), canvas (pan, zoom,
+#                 overview, tiled groups) -- switched reversibly; floating,
+#                 focus moves and springs
 #
 # Any compositor can use it; xdesk-compositor does. Like every xdesk package
 # it imports nothing of xlings or Luban (tools/lint_layer_deps.sh).

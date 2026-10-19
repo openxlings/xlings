@@ -54,11 +54,12 @@ void Server::draw_shell() {
                            lay.mode() == layout::Mode::canvas, size.width, size.height, scale);
     if (key != panel_drawn) {
         panel_drawn = std::move(key);
-        panel_picture = shell::panel(ui(), theme, st, logical_w(), logical_h(), canvas(), scale);
+        panel_picture = shell::panel(ui(), theme, st, logical_w(), logical_h(), pill, scale);
         wlr_scene_node_set_position(&panel_node->node, static_cast<int>(panel_picture.x), static_cast<int>(panel_picture.y));
         show(panel_node, std::move(panel_picture.image), scale);
         panel_picture.image = {};
     }
+    wlr_scene_node_set_enabled(&canvas_dots->node, canvas());
     if (canvas()) {
         const auto [cx, cy] = lay.camera();
         auto dots = std::format("{} {} {} {}x{}@{}", cx, cy, lay.zoom(), size.width, size.height, scale);
@@ -104,11 +105,8 @@ void Server::draw_launcher() {
 // none declared (what this desktop shipped with).
 std::vector<std::string> Server::terminal_argv(const std::vector<std::string>& command, std::string_view title,
                                        std::string_view app_id) {
-    if (!o.terminal.empty()) {
-        auto argv = o.terminal;
-        argv.insert(argv.end(), command.begin(), command.end());
-        return argv;
-    }
+    // A configured terminal takes the title and the id as its entry says (F19).
+    if (!o.terminal.empty()) return apps::in_terminal(apps::configured_terminal(os::environment(), o.terminal), command, title, app_id);
     static const apps::Terminal foot{{"foot"}, std::string{}, std::string{"--title="}, std::string{"--app-id="}};
     const auto t = apps::default_terminal(os::environment());
     if (!t) log("no default terminal (share/xdg-terminals): foot");

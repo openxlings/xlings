@@ -928,6 +928,49 @@ screenshot {}
     EXPECT_NE(a.at(150, 350), kGreen) << "the overview did not zoom out";
 }
 
+XTEST(LubanOs, XdeskSwitchesArrangementsAndComesBackToTheSameLayout, .area = "luban",
+      .covers = {"XDESK-COMPOSITOR", "XDESK-ARRANGEMENTS"}, .requires_ = {"linux", "xlings-bin"}) {
+    if (!app_binary()) GTEST_SKIP() << "no luban-os beside the xlings under test";
+    if (!xdesk_binary()) GTEST_SKIP() << "no xdesk beside luban-os (mcpp build -p xdesk-app)";
+    auto home = tk::Home::isolated("luban-os-xdesk-arrangements");
+    ASSERT_EQ(home.xlings({"self", "init"}).exit_code, 0);
+    const auto split = home.root() / "split.ppm", whole = home.root() / "whole.ppm", back = home.root() / "back.ppm";
+    // Tiled: blue joins green's column (Super+[); stacked (Super+m): blue the
+    // whole output (Super+f), then free again; on to the canvas and back to
+    // tiling: the columns as they were.
+    auto r = xdesk_with(home, "classic", std::format(R"(wait desktop
+waitfor desktop.texture.0 1100
+sleep 3000
+key Alt+[
+sleep 1000
+screenshot {}
+key Alt+m
+sleep 500
+key Alt+f
+sleep 1000
+screenshot {}
+key Alt+f
+sleep 500
+key Alt+m
+sleep 500
+key Alt+m
+sleep 1000
+screenshot {}
+screenshot {}
+)", split.string(), whole.string(), back.string(), artifact("xdesk-arrangements-back.bmp").string()));
+    ASSERT_EQ(r.exit_code, 0) << r.transcript();
+    // Two columns: red, then green above blue.
+    const auto a = read_ppm(split);
+    EXPECT_EQ(a.at(275, 400), kRed);
+    EXPECT_EQ(a.at(825, 250), kGreen);
+    EXPECT_EQ(a.at(825, 600), kBlue);
+    EXPECT_EQ(read_ppm(whole).at(275, 400), kBlue) << "stacked, Super+f is the whole output";
+    const auto c = read_ppm(back);
+    EXPECT_EQ(c.at(275, 400), kRed);
+    EXPECT_EQ(c.at(825, 250), kGreen);
+    EXPECT_EQ(c.at(825, 600), kBlue);
+}
+
 XTEST(LubanOs, XdeskLauncherStartsWhatIsTypedAndThePanelSwitchesWorkspaces, .area = "luban",
       .covers = {"XDESK-COMPOSITOR", "XDESK-SHELL", "XDESK-APPS"}, .requires_ = {"linux", "xlings-bin"}) {
     if (!app_binary()) GTEST_SKIP() << "no luban-os beside the xlings under test";

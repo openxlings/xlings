@@ -2,14 +2,19 @@
 // logic, no drawing and no Wayland, so any compositor can use it and a test
 // can check every arrangement.
 //
-// Two modes, one model:
-//   tile    windows in columns side by side; one or two fill the output, more
-//           scroll horizontally, the focused one always in view (what the
-//           classic profile shows)
-//   canvas  windows where they were put on an unbounded plane, seen through a
-//           camera that pans and zooms (what the canvas profile shows)
-// Either way a window may float (above, where it was put), and every
-// workspace is a layout of its own. What it answers is where each window of
+// Two dimensions (design 2026-10-19 §17.2): the space -- the screen, bounded,
+// or a canvas, an unbounded plane seen through a camera that pans and zooms --
+// and how windows share it, tiled or stacked. Three presets of them:
+//   tile    the screen, one tiled group: windows in columns side by side
+//           (a column may hold several, one above another); one or two fill
+//           the output, more scroll horizontally, the focused one in view
+//   stack   the screen, windows free: overlapping, kept on the output,
+//           maximized or snapped to halves and quarters
+//   canvas  the plane: windows where they were put, and tiled groups on it
+//           (two or more windows in columns, moved and zoomed as one)
+// Each workspace has its own preset and every preset its own arrangement, so
+// going tile -> canvas -> tile comes back to the same columns. Any window may
+// float (above, where it was put). What it answers is where each window of
 // the shown workspace is on the screen; how it gets there over time is a
 // Spring's.
 export module xdesk.layout;
@@ -43,11 +48,16 @@ struct Insets {
     double left { 0 };
 };
 
-enum class Mode { tile, canvas };
+enum class Mode { tile, canvas, stack };
 enum class Direction { left, right, up, down };
 
+// Super+m's order: tile, stack, canvas.
+Mode next(Mode m);
+std::string_view name(Mode m);
+std::optional<Mode> mode_named(std::string_view name);
+
 struct Options {
-    Mode mode { Mode::tile };
+    Mode mode { Mode::tile };   // a workspace's preset until it is given one
     double gap { 8 };
     int workspaces { 4 };
 };
@@ -60,37 +70,72 @@ struct Placement {
     bool visible { true };      // on the output at all
     bool focused { false };
     bool floating { false };
+    bool maximized { false };   // stack: the whole output
+    bool operator==(const Placement&) const = default;
 };
 
 class Layout {
 public:
     explicit Layout(Options o = {});
 
-    Mode mode() const { return o_.mode; }
-    void set_mode(Mode m) { o_.mode = m; }
+    // The shown workspace's preset. Switching keeps what the one left had;
+    // a preset shown for the first time starts from what is on the screen
+    // (tile -> canvas: the columns become one tiled group; canvas -> tile:
+    // left to right, a column each, a group's columns kept; to stack: where
+    // each window is).
+    Mode mode() const;
+    void set_mode(Mode m);
+    Mode mode_of(int workspace) const;
 
     // A new window, on the shown workspace and focused: in tile, a column
-    // right of the focused one; in canvas, beside the focused window (or in
-    // the middle of the view). `preferred` is the size it asked for (frame).
+    // right of the focused one; on the canvas, beside the focused window (or
+    // in the middle of the view); stacked, in the middle, above the rest.
+    // `preferred` is the size it asked for (frame).
     void add(Id id, Size preferred, bool floating = false);
     void remove(Id id);
     bool contains(Id id) const;
 
     void focus(Id id);
     std::optional<Id> focused() const;
-    // The window that way from the focused one (tile: the next column;
-    // canvas: the nearest whose centre is that way).
+    // The window that way from the focused one (tile: the next column, or
+    // the next in the column up and down; stack and canvas: the nearest
+    // whose centre is that way).
     void move_focus(Direction d);
-    // The focused window that way: tile swaps columns; canvas moves it by a
+    // The focused window that way. Tile: alone in its column, the columns
+    // swap; sharing one, it leaves for a column of its own on that side; up
+    // and down, it swaps with its neighbour in the column. Stack: halves,
+    // quarters, the whole output and back. Canvas: its group moves by a
     // quarter of the output.
     void move(Direction d);
+    // Super+[: the focused window joins the column (tile) or the group
+    // (canvas) to its left. Super+]: it leaves for a column of its own
+    // (tile) or a free window beside its group (canvas).
+    void join();
+    void split();
+    // Canvas: `id` joins `target`'s group on that side of it (left/right: a
+    // column of its own; up/down: in the target's column). A free target
+    // becomes a group with it.
+    void group_with(Id id, Id target, Direction side);
+    // The windows of the focused window's group, itself included (canvas;
+    // tile: the column's).
+    std::vector<Id> group_of(Id id) const;
+
     void toggle_floating(Id id);
     bool floating(Id id) const;
-    // A floating or canvas window's frame was moved or resized by hand
-    // (screen pixels).
+    // Stack: the whole output, and back where it was.
+    void toggle_maximized(Id id);
+    bool maximized(Id id) const;
+    // A floating, stacked or canvas window's frame was moved or resized by
+    // hand (screen pixels). In a canvas group the group moves with it.
     void place(Id id, Rect screen);
-    // Tile: the focused column's width through 1/3, 1/2, 2/3 and the whole.
+    // Tile (and a canvas group): the focused column's width through 1/3,
+    // 1/2, 2/3 and the whole; its height in a shared column through an equal
+    // part, 2/3 and 1/3.
     void cycle_width();
+    void cycle_height();
+    // Super+- / Super+=: the focused column's width (tile, a group) or the
+    // window's size (stack) by `step` of the output's width.
+    void resize(double step);
 
     int workspace() const { return shown_; }
     int workspaces() const { return static_cast<int>(spaces_.size()); }
@@ -105,7 +150,7 @@ public:
     void pan(double dx, double dy);
     void zoom_at(double factor, double sx, double sy);
     double zoom() const;
-    // The world point at the view's top-left (canvas; 0 in tile).
+    // The world point at the view's top-left (canvas; 0 otherwise).
     std::pair<double, double> camera() const;
     void overview(bool on);
     bool in_overview() const;
@@ -121,23 +166,49 @@ private:
         Id id { 0 };
         Size preferred;
         bool floating { false };
-        Rect free;              // floating: screen; canvas: world
-        bool placed { false };  // `free` is set (by the first arrangement after it came)
+        Rect free;                  // floating: screen
+        bool placed { false };      // `free` is set
         std::optional<Id> beside;   // canvas: the window focused when it came
+        // stack
+        Rect stacked;               // screen, while not snapped
+        bool stack_placed { false };
+        bool snapped { false };     // to a part of the output:
+        int snap_x { 0 }, snap_y { 0 };   // -1 left/top half, 0 all, 1 right/bottom half
+    };
+    struct Cell {
+        Id id { 0 };
+        double share { 0 };     // of the column's height; 0: an equal part of what is left
     };
     struct Column {
-        Id id { 0 };
-        double fraction { 0 };  // 0: by how many there are
+        std::vector<Cell> cells;
+        double width { 0 };     // tile: a fraction of the output (0: by how many there are); a group: world pixels
+        std::size_t active { 0 };   // the cell focus returns to
+    };
+    struct Group {              // canvas: a free window is a group of one
+        Rect world;
+        bool placed { false };
+        std::vector<Column> columns;
     };
     struct Space {
+        Mode mode { Mode::tile };
+        std::array<bool, 3> shown {};   // each preset has an arrangement of its own
         std::vector<Window> windows;    // in the order they came
-        std::vector<Column> columns;    // tile, left to right
         std::optional<Id> focus;
-        double scroll { 0 };            // tile: strip x at the output's left
-        double cx { 0 }, cy { 0 };      // canvas: world point at the view's top-left
+        // tile
+        std::vector<Column> columns;
+        double scroll { 0 };            // strip x at the output's left
+        // stack, back to front
+        std::vector<Id> order;
+        // canvas
+        std::vector<Group> groups;
+        double cx { 0 }, cy { 0 };      // world point at the view's top-left
         double zoom { 1 };
         bool overview { false };
         double saved_zoom { 1 }, saved_cx { 0 }, saved_cy { 0 };   // the view before the overview
+    };
+    struct Spot {               // where a window is in a list of columns
+        std::size_t column { 0 };
+        std::size_t cell { 0 };
     };
 
     Space& space_() { return spaces_[static_cast<std::size_t>(shown_)]; }
@@ -145,10 +216,40 @@ private:
     Window* window_(Id id);
     const Window* window_(Id id) const;
     Space* space_of_(Id id);
-    void place_new_(Space& s, Window& w);
+    Rect area_() const;
+
+    // Membership of every arrangement of a space (layout.cpp).
+    void enter_(Space& s, Window& w, std::optional<Id> after);
+    void leave_(Space& s, Id id);
+    void convert_(Space& s, Mode to);
+
+    // tile.cpp
+    static std::optional<Spot> find_(const std::vector<Column>& cols, Id id);
+    static void insert_column_(std::vector<Column>& cols, Id id, std::optional<Id> after);
+    static void erase_(std::vector<Column>& cols, Id id);
+    static std::vector<double> heights_(const Column& c, double total, double gap);
+    void tile_move_(Space& s, Direction d);
+    void tile_join_(Space& s);
+    void tile_split_(Space& s);
+    std::vector<Placement> tile_(Space& s, Rect area);
+
+    // stack.cpp
+    Rect stack_rect_(const Window& w, Rect area) const;
+    void stack_place_new_(Space& s, Window& w, Rect area);
+    void stack_move_(Window& w, Direction d);
+    std::vector<Placement> stack_(Space& s, Rect area);
+
+    // canvas.cpp
+    Group* group_(Space& s, Id id);
+    std::vector<std::pair<Id, Rect>> group_rects_(const Group& g) const;
+    std::optional<Rect> world_rect_(Space& s, Id id);
+    void place_group_(Space& s, Group& g);
+    void place_new_float_(Window& w);
+    void refit_group_(Group& g);
+    void canvas_join_(Space& s);
+    void canvas_split_(Space& s);
     void reveal_(Space& s, Id id);
     void fit_(Space& s, Rect area);
-    std::vector<Placement> tile_(Space& s, Rect area);
     std::vector<Placement> canvas_(Space& s, Rect area);
 
     Options o_;
@@ -157,6 +258,7 @@ private:
     Size output_ { 1280, 800 };
     Insets reserved_;
     std::vector<Placement> last_;
+    int last_space_ { -1 };
 };
 
 // A value that follows its target as a critically damped spring: it never
@@ -172,3 +274,40 @@ struct Spring {
 };
 
 }  // namespace xdesk::layout
+
+// Shared by the module's own units, not exported.
+namespace xdesk::layout::detail {
+
+inline constexpr double kMinZoom = 0.1;
+
+inline bool overlaps(const Rect& a, const Rect& b) {
+    return a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height;
+}
+
+inline Rect inset(Size output, Insets r) {
+    return {r.left, r.top, std::max(0.0, output.width - r.left - r.right), std::max(0.0, output.height - r.top - r.bottom)};
+}
+
+// The nearest of `rs` whose centre is that way from `from`'s, straight ahead
+// counting more than off to the side.
+inline std::optional<Id> nearest(Rect from, const std::vector<std::pair<Id, Rect>>& rs, Direction d) {
+    const double fx = from.x + from.width / 2, fy = from.y + from.height / 2;
+    std::optional<Id> best;
+    double best_score = std::numeric_limits<double>::infinity();
+    for (const auto& [id, r] : rs) {
+        const double dx = r.x + r.width / 2 - fx, dy = r.y + r.height / 2 - fy;
+        double ahead = 0, side = 0;
+        switch (d) {
+            case Direction::right: ahead = dx; side = dy; break;
+            case Direction::left: ahead = -dx; side = dy; break;
+            case Direction::down: ahead = dy; side = dx; break;
+            case Direction::up: ahead = -dy; side = dx; break;
+        }
+        if (ahead <= 0) continue;
+        const double score = ahead + 2 * std::abs(side);
+        if (score < best_score) { best_score = score; best = id; }
+    }
+    return best;
+}
+
+}  // namespace xdesk::layout::detail

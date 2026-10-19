@@ -2,7 +2,8 @@
 // one structure whose parts are defined by area (design 2026-10-19 §21):
 // server.cpp (start, the loop, the provider's stream), windows.cpp (views,
 // popups, the layout's arrangement and its springs), input.cpp (keys,
-// pointer, wheel, shortcuts), text.cpp (text input and the clipboard),
+// pointer, wheel, shortcuts), pointer.cpp (the pointer's shape, drawn by
+// the host or into the frames), text.cpp (text input and the clipboard),
 // output.cpp (size, density, fonts, frames), desktop.cpp (title bars, the
 // panel, the launcher, starting programs). Internal to xdesk.compositor.
 module xdesk.compositor:server;
@@ -189,6 +190,7 @@ struct Server {
     wl_event_source* clock { nullptr };
     wl_event_source* pace_timer { nullptr };
     shell::Theme theme;
+    bool pill { false };                         // the canvas profile's look: a pill at the bottom, no top panel
     bool zh { false };
     std::optional<draw::Fonts> ui_font, big_font;
     shell::Picture panel_picture;
@@ -211,10 +213,20 @@ struct Server {
     Drag drag { Drag::none };
     layout::Id dragged { 0 };
     double drag_x { 0 }, drag_y { 0 };           // where the pointer was
+    // The pointer (design 2026-10-19 §15): when the window takes Cursor it
+    // draws the pointer -- a shape by name ('c'), a client's own image ('C')
+    // -- and none is drawn into the frames; otherwise wlroots draws it there.
+    wlr_cursor_shape_manager_v1* shapes { nullptr };
+    std::string shape { "default" };             // the shape now (kCursors)
+    std::string pointer_sent;                    // what the last 'c' or 'C' said
+    wlr_surface* cursor_surface { nullptr };     // a client's own pointer image
+    std::int32_t cursor_hx { 0 }, cursor_hy { 0 };
+    Hook cursor_commit, cursor_gone, request_shape;
 
+    // The shown workspace's arrangement (the panel's look is the profile's).
     bool canvas() const { return lay.mode() == layout::Mode::canvas; }
     draw::Fonts* ui() { return ui_font ? &*ui_font : nullptr; }
-    layout::Insets reserved() const { return canvas() ? layout::Insets{} : layout::Insets{.top = shell::kPanelHeight}; }
+    layout::Insets reserved() const { return pill ? layout::Insets{} : layout::Insets{.top = shell::kPanelHeight}; }
     // The output in logical pixels: what windows and the shell are laid out in.
     layout::Size output_size() const { return {size.width / scale, size.height / scale}; }
     int logical_w() const { return static_cast<int>(std::lround(size.width / scale)); }
@@ -299,6 +311,16 @@ struct Server {
     bool live() const { return lay.zoom() == 1; }
 
     void pointer_moved();
+
+    bool host_pointer() const { return opensal::has(provided, opensal::Interface::Cursor); }
+    // The desktop's own shape (a CSS name): over its background, its title
+    // bars, a window being moved.
+    void pointer_shape(std::string_view css);
+    // A client's: by name (cursor-shape-v1), or an image of its own.
+    void client_pointer(wlr_surface* surface, std::int32_t hx, std::int32_t hy);
+    void send_pointer_image();
+    // The window said what it takes: draw the pointer here or leave it to it.
+    void pointer_mode();
 
     std::optional<layout::Rect> placement_of(layout::Id id) const;
 

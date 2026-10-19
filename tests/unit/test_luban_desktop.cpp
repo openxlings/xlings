@@ -205,4 +205,12 @@ XTEST(OpensalWire, APointerImageAndALockCrossWhole, .area = "luban", .covers = {
     std::set<std::string_view> names(opensal::kCursors.begin(), opensal::kCursors.end());
     EXPECT_EQ(names.size(), opensal::kCursors.size());
     EXPECT_TRUE(names.contains("nwse-resize") && names.contains("none"));
+    // Any name a client says is one the theme draws.
+    static_assert(opensal::cursor_named("text") == "text");
+    static_assert(opensal::cursor_named("col-resize") == "ew-resize");
+    static_assert(opensal::cursor_named("se-resize") == "nwse-resize");
+    static_assert(opensal::cursor_named("left_ptr") == "default");
+    static_assert(opensal::cursor_named("zoom-in") == "default");
+    for (const auto n : {"e-resize", "all-scroll", "no-drop", "hand2", "watch", "context-menu"})
+        EXPECT_TRUE(names.contains(opensal::cursor_named(n))) << n;
 }

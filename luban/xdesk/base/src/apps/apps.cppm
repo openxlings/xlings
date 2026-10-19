@@ -53,6 +53,10 @@ struct Terminal {
     std::optional<std::string> arg_exec, arg_title, arg_app_id;   // absent: not declared
 };
 std::optional<Terminal> default_terminal(const std::map<std::string, std::string>& env);
+// A terminal configured by its Exec= line: how it takes a command, a title
+// and an id from its share/xdg-terminals entry, matched by program name; one
+// with no entry there only takes the command after what was configured.
+Terminal configured_terminal(const std::map<std::string, std::string>& env, std::vector<std::string> exec);
 // argv running `command` in `t`, its window titled `title` and identified as
 // `app_id` where the terminal can take them (nothing given: just the terminal).
 std::vector<std::string> in_terminal(const Terminal& t, const std::vector<std::string>& command,

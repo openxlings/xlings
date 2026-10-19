@@ -104,6 +104,26 @@ inline constexpr std::array<std::string_view, 16> kCursors{
     "default", "text", "pointer", "grab", "grabbing", "move", "ew-resize", "ns-resize", "nwse-resize",
     "nesw-resize", "crosshair", "wait", "progress", "not-allowed", "help", "none"};
 
+// The kCursors shape drawn for a CSS cursor name (what cursor-shape-v1 and
+// the toolkits say) or an X cursor name: itself when it is one of kCursors,
+// its nearest otherwise ("col-resize" is "ew-resize"), "default" for the rest.
+constexpr std::string_view cursor_named(std::string_view name) {
+    for (const auto c : kCursors)
+        if (c == name) return c;
+    struct Alias { std::string_view from, to; };
+    constexpr std::array<Alias, 27> kAliases{{
+        {"e-resize", "ew-resize"}, {"w-resize", "ew-resize"}, {"col-resize", "ew-resize"}, {"sb_h_double_arrow", "ew-resize"},
+        {"n-resize", "ns-resize"}, {"s-resize", "ns-resize"}, {"row-resize", "ns-resize"}, {"sb_v_double_arrow", "ns-resize"},
+        {"ne-resize", "nesw-resize"}, {"sw-resize", "nesw-resize"}, {"nw-resize", "nwse-resize"}, {"se-resize", "nwse-resize"},
+        {"all-scroll", "move"}, {"all-resize", "move"}, {"fleur", "move"}, {"no-drop", "not-allowed"},
+        {"crossed_circle", "not-allowed"}, {"vertical-text", "text"}, {"xterm", "text"}, {"cell", "crosshair"},
+        {"hand1", "pointer"}, {"hand2", "pointer"}, {"watch", "wait"}, {"left_ptr_watch", "progress"},
+        {"question_arrow", "help"}, {"left_ptr", "default"}, {"dnd-move", "grabbing"}}};
+    for (const auto& a : kAliases)
+        if (a.from == name) return a.to;
+    return "default";
+}
+
 // CursorImage: a pointer the consumer drew (pixels as a frame's, premultiplied
 // BGRA), its hotspot inside it. At most kMaxCursorSide on a side.
 inline constexpr std::uint32_t kMaxCursorSide = 256;

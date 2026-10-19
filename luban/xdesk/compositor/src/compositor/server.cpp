@@ -32,6 +32,7 @@ Server::Server(const Options& opts)
       theme(shell::theme(opts.profile)) {
     if (opts.accent) theme.accent = theme.selected = draw::Color::rgb(*opts.accent);
     if (opts.background) theme.background = draw::Color::rgb(*opts.background);
+    pill = opts.profile == "canvas";
 }
 
 // ── start ────────────────────────────────────────────────────────
@@ -62,7 +63,7 @@ bool Server::start_() {
     overlay_layer = wlr_scene_tree_create(&scene->tree);
     const float bg[4] = {theme.background.r / 255.0f, theme.background.g / 255.0f, theme.background.b / 255.0f, 1.0f};
     background = wlr_scene_rect_create(background_layer, static_cast<int>(size.width), static_cast<int>(size.height), bg);
-    if (canvas()) canvas_dots = wlr_scene_buffer_create(background_layer, nullptr);
+    canvas_dots = wlr_scene_buffer_create(background_layer, nullptr);   // shown on a canvas workspace
     panel_node = wlr_scene_buffer_create(shell_layer, nullptr);
     launcher_node = wlr_scene_buffer_create(overlay_layer, nullptr);
     wlr_scene_node_set_enabled(&launcher_node->node, false);
@@ -89,8 +90,17 @@ bool Server::start_() {
                                     | static_cast<std::uint32_t>(wl_seat_capability::WL_SEAT_CAPABILITY_KEYBOARD));
     request_cursor.connect(&seat->events.request_set_cursor, [this](void* d) {
         auto* ev = static_cast<wlr_seat_pointer_request_set_cursor_event*>(d);
-        if (seat->pointer_state.focused_client == ev->seat_client)
-            wlr_cursor_set_surface(cursor, ev->surface, ev->hotspot_x, ev->hotspot_y);
+        if (seat->pointer_state.focused_client == ev->seat_client) client_pointer(ev->surface, ev->hotspot_x, ev->hotspot_y);
+    });
+    // A client that names its pointer's shape (GTK 4, Qt 6, foot...).
+    shapes = wlr_cursor_shape_manager_v1_create(display, 1);
+    request_shape.connect(&shapes->events.request_set_shape, [this](void* d) {
+        auto* ev = static_cast<wlr_cursor_shape_manager_v1_request_set_shape_event*>(d);
+        if (seat->pointer_state.focused_client != ev->seat_client) return;
+        cursor_commit.disconnect();
+        cursor_gone.disconnect();
+        cursor_surface = nullptr;
+        pointer_shape(opensal::cursor_named(wlr_cursor_shape_v1_name(ev->shape)));
     });
     request_selection.connect(&seat->events.request_set_selection, [this](void* d) {
         auto* ev = static_cast<wlr_seat_request_set_selection_event*>(d);
@@ -168,7 +178,8 @@ bool Server::start_() {
     }, this);
     draw_shell();
     using I = opensal::Interface;
-    send(opensal::wire::encode('h', std::to_string(I::Surface | I::Mode | I::Keyboard | I::Pointer | I::Text | I::Clipboard)));
+    send(opensal::wire::encode('h', std::to_string(I::Surface | I::Mode | I::Keyboard | I::Pointer | I::Text | I::Clipboard
+                                                   | I::Cursor | I::CursorImage)));
     for (const auto& a : o.autostart) launch(a);
     return true;
 }
@@ -191,6 +202,7 @@ Server::~Server() {
     for (int pid : children) os::terminate(pid);
     new_toplevel.disconnect(); new_popup.disconnect(); new_decoration.disconnect(); frame.disconnect();
     request_cursor.disconnect(); request_selection.disconnect(); set_selection.disconnect(); new_text_input.disconnect();
+    request_shape.disconnect(); cursor_commit.disconnect(); cursor_gone.disconnect();
     if (reading) { wl_event_source_remove(reading->source); os::close(reading->fd); }
     for (auto& t : text_inputs) { t.enable.disconnect(); t.commit.disconnect(); t.disable.disconnect(); t.destroy.disconnect(); }
     text_inputs.clear();
