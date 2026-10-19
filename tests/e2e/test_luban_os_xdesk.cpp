@@ -915,12 +915,16 @@ key Tab
 key Right
 sleep 600
 key Escape
+sleep 300
 key Super+/
+sleep 400
 type maxim
+sleep 300
 key Down
 key Down
 key Down
 key Return
+sleep 300
 key Super+Shift+x
 sleep 600
 key Escape

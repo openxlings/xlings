@@ -753,6 +753,7 @@ XTEST(LubanWlr, ANativeSessionIsGivenTheStream, .area = "luban", .covers = {"LUB
     fs::remove_all(dir, ec);
 }
 
+#if !defined(_WIN32)   // the fake compositor is POSIX's (above)
 // The clipboard between a bridged desktop and the window (design 2026-10-20
 // §20 G27, wlr-data-control): text the desktop selects is the window's
 // ('b'), the window's is the desktop's selection -- and a selection that
@@ -819,3 +820,4 @@ XTEST(LubanWlr, TheDesktopsClipboardAndTheWindowsAreOne, .area = "luban", .cover
     std::error_code ec;
     fs::remove_all(dir, ec);
 }
+#endif  // !defined(_WIN32)
