@@ -55,6 +55,9 @@ suite_luban_console() {
     says "an empty home names the first command" "luban new"
     capture "luban setup" luban setup -y
     ok "the one-time setup is one step"
+    capture "luban search" luban search
+    says "the index's distributions" "distributions"
+    says "and its desktops" "desktops"
 
     local e
     for e in nano tiny core; do
@@ -104,6 +107,7 @@ suite_luban_console() {
     capture "config" luban config e-tiny --persist home
     capture "status" luban status e-tiny
     says "status says what it keeps" "only /home"
+    says "and its network, in one line" "like the host"
     session 20 'echo H > /home/h; echo R > /root/r; exit' e-tiny
     capture "home kept" luban run e-tiny -- cat /home/h
     refuses "the rest is not" luban run e-tiny -- cat /root/r
