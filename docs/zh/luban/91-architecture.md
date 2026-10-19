@@ -24,6 +24,7 @@
 | `luban/os/compat` | 只为已发布的旧版本保留的东西，各自写明何时删除 |
 | `modules/image` | 进程内写出的镜像：GPT、FAT、带 El Torito 的 ISO 9660、qcow2 |
 | `apps/luban` | 二进制：luban，或以 `luban-init` 启动时的 stage-0 |
+| `apps/luban-os` | Luban OS 应用：它的窗口，以及托盘（`luban-os __tray`） |
 | `src/core/subos/root` | 根的 xlings 一侧：投影、代、回滚、导出 |
 
 规范只引用标准库和它自己；kit 从不引用 xlings 或 Luban；OS 服务不引用任何呈现层；`luban/` 里的任何东西都不引用
@@ -42,6 +43,14 @@ xlings 前端（stage-0 路径上的东西不能读 Config）。`tools/lint_laye
 3. 由 `luban.image` 在进程内写出镜像：驱动器是带 EFI 系统分区（FAT，在这里写出）和按 PARTUUID 挂载的 ext4 根的 GPT；
    ISO 是带 El Torito 启动项（机器有 BIOS 时有 BIOS 项，UEFI 项总有）和混合 GPT 的 ISO 9660，其 EFI 系统分区就是 El Torito 镜像。
 4. x86_64 上 `limine bios-install` 让它能从驱动器以 BIOS 启动。
+
+## 应用的进程
+
+每个 Luban OS 窗口是一个独立的进程；另有一个 `luban-os __tray` 为所有窗口持有状态栏图标，除此之外什么都不画。每个 home 一个托盘：
+持有 `<home>/run/luban-os/tray.lock` 的就是它。窗口经 `tray.sock`（本地 stream socket，只有属主能连；Windows 上是 AF_UNIX）与它通信，
+每行一条 JSON：窗口说明自己是谁、在显示什么（`hello`、`register`），在做什么（`job`），要告诉人什么（`notify`）；托盘请一个窗口带着某个视图到前面
+（`raise`）、询问是否退出（`confirm-quit`）、结束（`close`）。存活靠锁判断——每个窗口持有 `windows/<pid>.lock`——从不只靠 pid。
+找不到托盘的窗口会启动一个，锁保证只有一个。没有窗口、没有运行中的系统、也没有*常驻状态栏*时托盘退出；装上更新版本后它立刻换成新版本。
 
 ## 版本
 

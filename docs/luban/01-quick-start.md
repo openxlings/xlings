@@ -2,11 +2,23 @@
 
 **English** | [简体中文](../zh/luban/01-quick-start.md)
 
-`luban` is installed with xlings, at the same version; on the host, in every
-Luban environment and on every Luban machine it is the same program. This page
-is one path through it: an environment, work in it, go back a step, an agent's
-workspace, an upgrade, the environment as a machine, a desktop, and cleaning up.
+`luban` is a package of its own: `xlings install luban` (the window:
+`xlings install luban-os`). Its version follows xlings' releases; `xlings update
+luban` updates it. On the host, in every Luban environment and on every Luban
+machine it is the same program. This page is one path through it: installing,
+an environment, work in it, go back a step, an agent's workspace, an upgrade,
+the environment as a machine, a desktop, using it offline, and cleaning up.
 Each step says what you should see.
+
+## 0. Install
+
+```bash
+xlings install luban luban-os    # the luban command and the Luban OS window
+luban status                     # this host: what it can run, and the parts' versions
+```
+
+`luban status` says in one line which versions of xlings, luban, Luban OS and
+the index you have; where they disagree, each with what to do.
 
 ## 1. An environment
 
@@ -15,6 +27,7 @@ luban new box                           # Luban Core, the default: shells, edito
 luban new small --edition tiny          # or an edition: nano, tiny, tiny-musl, core, agent-workspace, desktop
 luban new desk --edition desktop --desktop lxqt   # a desktop: xdesk (its own), labwc, compositor, lxqt, kde
 luban new mine --xpkg myindex:myos      # any index's system (02)
+luban search                            # what the index offers: distributions, desktops by what they bring
 ```
 
 One is enough. You see `▸ making box (core)`, the download, then `✓ box is
@@ -115,7 +128,14 @@ luban upgrade box             # one new generation; rollback undoes it
 ```
 
 `--dry-run` moves nothing: it says `box is up to date`, or lists what would
-move and names `luban upgrade box`.
+move and names `luban upgrade box`. Nothing is upgraded for you: a system
+stays as it was made until you upgrade it, and `luban status box` says when an
+upgrade has something for it. An upgrade that moves a system into its own
+userland keeps what it was before; going back to that is one command:
+
+```bash
+luban rollback box --to relayout -y   # the system as it was before its move
+```
 
 ## 6. Run it as a machine
 
@@ -134,13 +154,25 @@ then `p` powers it off. `luban stop box` powers it off from anywhere.
 ## 7. A desktop
 
 ```bash
-luban new desk --edition desktop         # labwc, a panel, a launcher, a terminal
+luban new desk --edition desktop         # xdesk: tile, stack or a canvas, a panel, a launcher, a terminal
 xlings install luban-os                  # the Luban OS window
 luban enter desk --display window
 ```
 
-The window shows the desktop at its own size; the Host key (Ctrl+Alt alone)
-opens its menu. See [The desktop and the Luban OS window](08-desktop.md).
+The window shows the desktop at its own size and holds the keyboard while it
+does: Ctrl+Alt+K lets it go (and takes it back); the Host key (Ctrl+Alt alone)
+opens its menu. Super+m changes how the windows are arranged, Super+/ lists the
+keys. See [The desktop and the Luban OS window](08-desktop.md).
+
+## Offline
+
+A system's home starts from a copy of your host's index, so it reads the index
+without the network. An exported system carries what it runs on:
+
+```bash
+luban export box box.luban      # the system, its packages and its index
+luban import box.luban          # elsewhere: made again with no network
+```
 
 ## 8. A boot drive (optional)
 
@@ -180,6 +212,7 @@ the command exits 2 and names this setup.
 ```bash
 luban                         # one screen: where you are, the environments, what next
 luban ls                      # the environments
+luban ls b                    # those whose name matches
 luban help --all              # every command
 luban <command> --help        # one command, and the xlings command it is
 ```

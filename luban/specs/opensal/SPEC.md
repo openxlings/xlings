@@ -44,7 +44,10 @@ shown what it was sent, and the consumer sends the next frame only after it.
 
 5.3 Cursor shapes are named by their CSS names (`kCursors`: default, text,
 pointer, grab, grabbing, move, ew-resize, ns-resize, nwse-resize, nesw-resize,
-crosshair, wait, progress, not-allowed, help, none).
+crosshair, wait, progress, not-allowed, help, none). A name a toolkit or a
+compositor says (cursor-shape-v1's, an X cursor name) is the shape drawn for
+it: `opensal::cursor_named` (`col-resize` is `ew-resize`; one with no
+counterpart is `default`).
 
 5.3.1 Who draws the pointer: a consumer that wants `Cursor` draws no pointer
 into its frames; it names the shape (`'c'`) or, with `CursorImage`, sends one

@@ -61,6 +61,14 @@ luban upgrade box --to 2026.10.11.2
 
 一次升级是新的一代，所以可以回滚。
 
+不会替你升级：系统保持创建时的样子，有可升级的内容、或它的桌面缺少新 edition 带来的东西时，`luban status box` 会说
+（并给出两条路：只给它装那一个包，或者升级）。把较旧的系统迁到它自己的用户态的升级会保留迁移前的样子（它的归档，
+`luban history box` 与 `luban status box` 都会写出）；回到那里只要一条命令，先确认：
+
+```bash
+luban rollback box --to relayout -y   # the system as it was before its move
+```
+
 ## 代与回滚
 
 ```bash
@@ -71,6 +79,36 @@ luban rollback box --to 3
 
 环境的包每变动一次就是一代；回滚只移动指针，不碰数据。每一代也记下了它的包，所以回退后再次进入，环境仍停在回退到的那一代
 （2026.10.13.2 之前产生的一代没有这份记录：它的文件会回来，而下一次进入会按现有的包重建——回滚时会说明这一点）。
+
+## 网络
+
+`luban status box` 用一行说出它的网络，无论它怎样运行都是同一个意思：`like the host`——宿主的 DNS 与宿主的代理
+（启动它的环境里的 `HTTPS_PROXY`、`HTTP_PROXY`、`ALL_PROXY`、`NO_PROXY`）——`only its proxy`（`luban config box --proxy …`）
+或 `none`（`--net none`）。
+
+机器在自己的 NAT 上：地址与 DNS 来自内核的 DHCP，不依赖系统；宿主回环上的代理（`127.0.0.1:7890`）在里面是宿主在这个 NAT 上的地址
+（`10.0.2.2:7890`）：`network  like the host · proxy http://10.0.2.2:7890 (the host's http://127.0.0.1:7890)`。它写在本次启动的
+`/run/luban/network.env` 里，每个会话与每个登录 shell 都有，从不写进系统。宿主的代理变了，下次启动生效；`luban status` 会说明。
+
+## 离线使用
+
+系统自己的 home 从宿主的 index 拷贝开始：它装什么都能不联网地从中读到，在里面 `xlings update` 更新的是它自己的那份。
+导出的系统带着它的包与这份 index，因此不联网也能重新建出来：
+
+```bash
+luban export box box.luban
+luban import box.luban
+```
+
+## 普通用户自己的包
+
+在系统里，普通用户原样读取系统的包——`xlings list`、`search`、`--version` 不问任何问题。第一次安装时问一次是否只为自己安装、
+装进 `~/.xlings`（`-y` 即同意）；他的 home 从系统的 index 与设置开始，不联网。系统里已有同一版本的包不会重复安装。
+要给系统的所有用户安装，从宿主以 root 安装：
+
+```bash
+luban run box --user root -- xlings install --system nvim
+```
 
 ## 删除
 

@@ -20,31 +20,52 @@ countdown (10 seconds; any key or click stops it).
 
 ## The first time: quick start
 
-With no environment yet the window opens on quick start, in two groups:
+With no environment yet the window opens on quick start (**New system** later),
+in four groups:
 
 | | |
 |---|---|
-| **Console** — small, yours to shape | `nano` (xlings and luban only: the base an edition of your own is built on; it has no shell, so it is made without going in), `tiny` (a shell and the basic tools), `core` (a console to develop in, chosen by default) |
-| **Desktop** — ready to use | `Classic desktop` (preview, recommended: windows side by side, a panel, a launcher) and `xdesk canvas` (to explore: windows on an infinite canvas) |
+| **Console** — small, yours to shape | `nano` (xlings and luban only: the base an edition of your own is built on; it has no shell, so it is made without going in), `tiny` (a shell and the basic tools), `tiny-musl`, `core` (a console to develop in, chosen by default), `agent workspace` |
+| **xdesk** — Luban's own desktop | `xdesk classic` and `xdesk canvas · explore`: the desktop made for this window (below) |
+| **Traditional desktops** — light → full | every desktop of the `luban-desktop` category but xdesk, by what it brings: Compositor (T1, windows only, the Luban OS window its shell), labwc (T2), LXQt (T3), KDE Plasma (T4); one without a tier last |
+| **More systems** | an official system the window has no card for, and the systems of indexes you added |
 
-Each card says what it is; the line under the cards says what is in the chosen
-one, or why it cannot be made here — not published yet, not built for this
-machine's architecture, or a computer that cannot run Luban systems yet (what
-`luban status` says: the reason and the next step). A name follows the edition until you type
-your own; **More options** chooses sandbox or machine, and the desktop it is
-made with: its own, or one the indexes offer (packages in the `luban-desktop`
-category). One button makes it, showing each step, and goes in.
+A traditional desktop's card says how much it brings (four marks, `T1`–`T4`,
+or *not rated*), where it comes from (*official*, *community · its index*,
+*local*), how settled it is (*stable*, *preview*; a deprecated one is not
+offered), what it wants of the GPU (*GPU better*, *GPU needed*) and its
+version. Hover a name (Compositor, Wayland, a tier) for what it means. Choosing
+one makes the same system as `luban new <name> --edition core --desktop <it>`:
+**More options** changes its base (`tiny`, `core`, `desktop`), and it runs as a
+machine and enters its desktop unless you choose otherwise. The panel says the
+two versions it is made of (`System core 2026.10.19.1`, `Desktop LXQt 2.4.0`) —
+the version shown is the version made; a newer one this xlings is too old for
+is said beside it.
 
-Under the cards, **More** lists what else the indexes offer: an official
-system the window has no card for, and the systems of indexes you added, each
-with the index it comes from. A system (or desktop) from another index is
-agreed to before it is made — Luban does not check what it does.
+←→ moves within a group, ↑↓ between groups, Enter makes it. While the index is
+read the group says *Reading the index…*; an index that cannot be read is said
+with what to do (`xlings update`), never shown as an empty group.
+
+Each card says what it is; the panel says what is in the chosen one, or why it
+cannot be made here — not published yet, not built for this machine's
+architecture, or a computer that cannot run Luban systems yet (what `luban
+status` says: the reason and the next step). A name follows the card until you
+type your own. **More options** also chooses sandbox or machine and, for a
+console or xdesk, the desktop it is made with. The panel scrolls; **Create**
+stays at its foot. Making it shows six steps — prepare, download, unpack,
+configure, check, done — each one's current line as it goes, then goes in. A
+system (or desktop) from another index is agreed to before it is made — Luban
+does not check what it does.
+
+The same as text: `luban search` (distributions, desktops by tier), `luban ls
+<pattern>` (the systems here whose name matches).
 
 **Import** a system someone exported (`luban export box box.luban`) from the
 quick start's link, the list's last row, or by dropping the `.luban` file on the
 window. The preview shows its edition, packages and isolation, and lists in
 plain words what it may do beyond a new system (a clipboard grant, a host
-mount, no isolation preset); that is agreed to before it is imported.
+mount, no isolation preset); that is agreed to before it is imported. It is
+made from what the file carries: no network needed.
 
 When a session ends with a failure, the window says what it said last and its
 exit code, instead of only "off".
@@ -54,8 +75,10 @@ exit code, instead of only "off".
 | | |
 |---|---|
 | a list | the environments, the default first, then by when each was used last; then a new one, and one from a file |
-| the system | its console, or its desktop: the window is its screen |
-| the Host key | Ctrl+Alt pressed and released alone (Ctrl+Option on macOS): the menu — back to the list, manage, full screen, a new window, power off |
+| the system | its console, or its desktop: the window is its screen, titled `Luban OS (<system>)` |
+| the keyboard | a desktop holds it while the window has the focus: every key is the desktop's, the host's own chords too. **Ctrl+Alt+K** lets it go and takes it back (also in the menu); Settings → *Hold the keyboard in a desktop* turns it off. Holding it costs Emacs' `C-M-k` while it is held |
+| the pointer | drawn by this computer, so it follows the hand with no delay: the shape the desktop asks for (a text field's I-beam, a link's hand, an edge's arrows), in the Luban pointer theme — the same on every system — or an image a program drew. A game that holds the pointer gets it until Ctrl+Alt+K |
+| the Host key | Ctrl+Alt pressed and released alone (Ctrl+Option on macOS): the menu — back to the list, manage, full screen, a new window, the keyboard, power off |
 | F2 or the gear | the management panel: every environment, its settings, what happened (`xlings self log`) |
 | closing it on a machine | asks each time: keep it running or power it off — or confirm and make that the environment's default (`luban config desk --on-close background`) |
 | a file dropped on a system | copied into its login user's `~/Downloads`, and the window says where (a `.luban` file is imported instead) |
@@ -63,15 +86,20 @@ exit code, instead of only "off".
 | the pointer on a console | a program that takes the mouse (vim, htop, tmux) gets it; otherwise — or with Shift held — a drag selects and copies, two clicks a word, three a line, the middle button pastes the last selection, the right one opens Copy / Paste, the wheel scrolls back |
 | an operation under way | its phases as it goes; it can be stopped, and one that failed can be tried again |
 
-The app has an icon in the system's status area: StatusNotifierItem on Linux
-(KDE, GNOME with its AppIndicator extension, and most other desktops), the
-notification area on Windows, the menu bar on macOS. Its menu lists the
-running systems (open, its console, power off, manage), a new system, the
-window, the settings, and quit; its picture shows how many run and whether
-something is under way or failed. Closing the window with systems running
-keeps them running and the app in the status area; where there is no status
-area, the window is minimized instead. **Always in the tray** (Settings) keeps
-the icon with nothing running.
+Every window is a process of its own; one more process, `luban-os __tray`,
+holds the app's icon in the system's status area for all of them:
+StatusNotifierItem on Linux (KDE, GNOME with its AppIndicator extension, and
+most other desktops), the notification area on Windows, the menu bar on macOS.
+Its menu lists the running systems (open, its console, power off, manage), a
+new system, the window, the settings, and quit; it brings forward a window that
+shows what was chosen, or opens one. Its picture shows how many run and whether
+something is under way or failed. Closing a window ends it — the machines keep
+running and the icon stays — unless it is making something: then it hides,
+finishes, and says so. Quit asks once (keep the systems running, or power them
+all off) and ends every window. Where there is no status area, a closed window
+is minimized instead. **Always in the tray** (Settings) keeps the icon with
+nothing running. A newer Luban OS installed takes over the icon by itself; a
+window still open is the old one until it is opened again.
 
 The window follows the screen's scale. Its console draws box and block
 characters itself, so they join at any font size.
@@ -80,43 +108,78 @@ characters itself, so they join at any font size.
 
 The desktop editions start **xdesk**, a desktop made for this window: a
 compositor and its shell in one program (wlroots, rendering in software), which
-speaks to the window directly — no bridge, no screen capture. It has two
-profiles:
+speaks to the window directly — no bridge, no screen capture.
 
-| | `xdesk-classic` (the `desktop` edition's) | `xdesk-canvas` (`--desktop xdesk-canvas`) |
-|---|---|---|
-| windows | side by side; one or two share the screen, more scroll with the focused one in view | where you put them, on a canvas that pans and zooms |
-| the shell | a panel across the top: applications, workspaces, the focused window's title, a clock | a pill at the bottom: applications, workspaces, the zoom, the overview |
+Each workspace arranges its windows one of three ways, and **Super+m** changes
+it: hold Super, press m — three cards show the workspace laid out each way, m
+again for the next, let Super go to take it, Esc to keep it as it was. Each way
+remembers its own layout, so tile → canvas → tile comes back to the same
+columns.
 
-| Keys (Super, or Alt where the host keeps Super) | |
+| | |
 |---|---|
-| Return | a terminal (foot) |
-| Space or D | the launcher: type to search the installed applications, Enter starts one |
-| Q | close the focused window |
-| arrows or H J K L | focus that way; with Shift, move the window that way |
-| 1 … 4 | a workspace; with Shift, send the window there |
-| F | float or tile the focused window |
-| R | classic: the column's width (a third, a half, two thirds, all) |
-| O | canvas: the overview (everything at once); a click goes in to a window |
-| Tab | Alt+Tab: the window used before |
+| **Tile** | windows in columns side by side; one or two share the screen, more scroll with the focused one in view; a column can hold several, one above another |
+| **Stack** | windows where you put them, overlapping, kept on the screen; maximized, or snapped to a half or a quarter |
+| **Canvas** | windows on a plane that pans and zooms; put one against another's edge and they become a tiled group, moved and zoomed as one |
 
-On the canvas, drag the background (or anywhere with Super) to pan; the wheel
+| Keys (Super, or Alt where the host keeps Super) | Tile | Stack | Canvas |
+|---|---|---|---|
+| Super alone, Space or D | the applications | the same | the same |
+| ←→ ↑↓ (or H J K L) | the next column / in the column | the nearest window that way | the same |
+| Shift+←→ ↑↓ | move to the next column / up and down in it | halves, quarters, the whole, back | move by a quarter of the view |
+| [ / ] | into the column on the left / out to a column of its own | — | into the group beside / out of it |
+| R / Shift+R | the column's width (⅓, ½, ⅔, all) / the window's height in it (equal, ⅔, ⅓) | — | the same in a group |
+| - / = | narrower / wider | smaller / larger | zoom out / in |
+| F | float, or put back | the whole screen, and back | float, or put back |
+| Shift+T | always on top | the same | the same, and fixed in the view |
+| M | tile, stack, canvas (held) | the same | the same |
+| Tab | the windows (held: Tab for the next, let go to go there) | the same | the same |
+| O | — | — | the overview; a click goes in to a window |
+| 1 … 4 / Shift+1 … 4 | a workspace / send the window there | the same | the same |
+| Return, or Ctrl+Alt+T / Q / / | a terminal / close the window / these keys | the same | the same |
+
+**Super+/** shows these keys, only those that mean something in the
+arrangement you are in. The first time, a line at the bottom says so.
+
+Drag a window by its title (or anywhere with Super held): it follows the
+pointer, see-through, and a box shows where it will land — in a column, above
+or below another window, in its place, at the screen's edge (a new first or
+last column; stacked: a half, a quarter, the whole), against another window on
+the canvas (a group). Rest on a new column for a moment and its widths are
+offered (⅓, ½, ⅔, all); let go and it glides there. Shift while dragging: it
+floats where you let go. Drag the gap between two columns to resize both;
+click it twice to make them equal. Rest on the title bar's maximize button for
+the layouts it offers — halves, ⅔ and ⅓, one and two, thirds — of this window
+and the ones used before it; click it to maximize.
+
+The title bar's other button (or its right-click) opens the window's menu:
+maximize or restore, float or put back, always on top, on every workspace, to
+a workspace, and the application's rules — always floating, always on this
+workspace, remember its size and place — kept for next time. A window's title
+bar says its application's name (from its desktop entry), then its own title.
+
+On the canvas, drag the background (or a window with Super) to pan; the wheel
 on the background (or anywhere with Super) zooms around the pointer, so what is
-under it stays put. The overview leaves you exactly where you were; a click in
-it goes in to that window. A window moves by its title bar, and title bars
-have a close button.
+under it stays put. The overview leaves you exactly where you were.
 
 The input method of the host types into the desktop's windows (what it
 composes is shown there), and the clipboard is shared — each way as far as
 the environment's grants allow: `clipboard` (copying out of it) and
 `clipboard-paste` (pasting into it); an environment made before policies
-shares both.
+shares both. The pointer is the window's to draw (above); for a window that
+does not draw one (an older Luban OS), xdesk draws it into the picture.
 
-### Settings
+### Sessions and settings
 
-xdesk reads `<profile>.ini` (`classic.ini`, `canvas.ini`): its own defaults,
-then a system's `/etc/xdg/xdesk/`, then yours in `~/.config/xdesk/`, each later
-one winning key by key.
+| Session | |
+|---|---|
+| `xdesk` (the `desktop` edition's) | each workspace as you left it; tile the first time |
+| `xdesk-classic` | a workspace not yet set starts tiled; a panel across the top |
+| `xdesk-canvas` | a workspace not yet set starts as a canvas; a pill at the bottom with the zoom and the overview |
+
+xdesk reads `<session>.ini` (`xdesk.ini`, `classic.ini`, `canvas.ini`): its own
+defaults, then a system's `/etc/xdg/xdesk/`, then yours in `~/.config/xdesk/`,
+each later one winning key by key.
 
 ```ini
 [desktop]
@@ -135,7 +198,17 @@ repeat_rate = 30
 repeat_delay = 500
 ```
 
+With no `terminal` the system's default terminal is used (its
+`share/xdg-terminals` entry); either way an application that runs in a terminal
+opens with its own title and identity (`foot --title=Neovim --app-id=nvim nvim`).
 A line it cannot read is logged and skipped; the desktop still starts.
+
+What you set is yours, in `~/.config/xdesk/`: `state.json` keeps each
+workspace's arrangement and the applications' rules, `keys.json` the keys you
+rebind — an action's chords (`{"terminal": ["Super+Return", "Ctrl+Alt+t"]}`);
+the action names are those Super+/ lists. An upgrade never rewrites them; one
+that cannot be read is said, the desktop starts as new, and the file is left as
+it is.
 
 ## Desktops
 
@@ -150,10 +223,12 @@ their categories), from the lightest to the fullest:
 | `luban:labwc` | `labwc` | labwc with a panel, a launcher, a background — light |
 | `luban:lxqt` | `lxqt` | LXQt on labwc: a panel, a desktop and file manager, settings — traditional |
 | `luban:kde` | `kde` | KDE Plasma, nested in labwc (preview) — the complete desktop |
-| `luban:xdesk` | `xdesk-classic`, `xdesk-canvas` | Luban's own: windows side by side, or on an infinite canvas |
+| `luban:xdesk` | `xdesk`, `xdesk-classic`, `xdesk-canvas` | Luban's own: each workspace tiled, stacked or a canvas (above) |
 
 The terminal of each is the default one (`luban:foot`), found through
-`xdg-terminal-exec`; X11 programs run on `luban:xwayland`. LXQt and KDE share
+`xdg-terminal-exec`; X11 programs run on `luban:xwayland`. Every one brings the
+Luban pointer theme (`luban:cursors`), the one the window draws on this
+computer: the same pointer in the system as outside it. LXQt and KDE share
 one Qt (`luban:qt-runtime`), installed once.
 
 ```bash
@@ -253,6 +328,10 @@ graph LR
 - The window asks for its own size; the desktop follows it. It sends the next
   picture only once the window has shown the last, so a slow channel does not
   pile pictures up.
+- The pointer is this computer's to draw: xdesk says which shape or image;
+  opensal-wlr passes on another compositor's own when that compositor can show
+  it apart from the picture (ext-image-copy-capture's cursor session, wlroots
+  0.19 and later), and leaves it in the picture otherwise.
 - Sound: with the `audio` grant a machine's Pulse clients reach this host's
   PipeWire or PulseAudio ([Environments](03-environments.md)).
 - A machine keeps the log of its sessions in its own `/var/log/luban/desktop.log`.

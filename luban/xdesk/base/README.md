@@ -8,6 +8,6 @@ system, each usable on its own:
 | `xdesk.os` | the few system calls xdesk and opensal-wlr make: descriptors, poll, a socket that carries descriptors, shared memory, starting a program (POSIX; the system headers are here only) |
 | `xdesk.term` | a terminal's screen from the bytes a program writes, and the keys it is sent |
 | `xdesk.apps` | the applications on the system (desktop entries): found, searched, started |
-| `xdesk.config` | a desktop's settings: a profile's defaults and a person's own (INI under the XDG config directories) |
+| `xdesk.config` | a desktop's settings: a profile's defaults and a person's own (INI under the XDG config directories); what a person keeps between sessions -- `state.json` (each workspace's arrangement, the applications' rules) and `keys.json` -- in JSON read and written here |
 
 Where windows go is `xdesk-layout`; what draws or serves Wayland is `xdesk-compositor`.
