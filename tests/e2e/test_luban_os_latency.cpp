@@ -1,6 +1,7 @@
 // How fast Luban OS answers (design 2026-10-19 §4): each interaction against
 // its budget, the p95 of several -- the first (cold) one kept apart -- on the
-// lane that runs the app (software rendering, no GPU). A miss says what was
+// lane that runs the app (software rendering, no GPU), alone on its machine
+// (`cpu`: the other tests' load is not the app's). A miss says what was
 // measured and the budget; the state dump is kept with the artefacts.
 #include <gtest/gtest.h>
 import xlings.testkit;
@@ -53,7 +54,7 @@ package = {{ spec = '1', name = '{}', namespace = 'luban', description = 'the {}
 }  // namespace
 
 XTEST(LubanOsLatency, InteractionsStayWithinTheirBudgets, .area = "luban", .cost = tk::Cost::Medium,
-      .covers = {"LUBAN-OS-LATENCY"}, .requires_ = {"linux", "xlings-bin"}) {
+      .covers = {"LUBAN-OS-LATENCY"}, .requires_ = {"linux", "xlings-bin"}, .resources = {"cpu"}) {
     const auto app = beside_xlings_({"luban-os"});
     if (!app) GTEST_SKIP() << "no luban-os beside the xlings under test";
     auto home = tk::Home::isolated("luban-os-latency");

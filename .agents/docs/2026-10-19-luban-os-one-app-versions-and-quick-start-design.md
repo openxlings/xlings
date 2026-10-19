@@ -256,7 +256,7 @@ C 的窗口登记与协议，以后做 B 时可以直接当注册表与内部消
 
 ### 4.3 CI
 
-- 新增 `tests/e2e/test_luban_os_latency.cpp`，`covers = {"LUBAN-OS-LATENCY"}`，在跑 luban-os 测试的 Linux lane 上运行（实施：unit lane 的 e2e 家族里，与 `test_luban_os` 同处）。
+- 新增 `tests/e2e/test_luban_os_latency.cpp`，`covers = {"LUBAN-OS-LATENCY"}`，在跑 luban-os 测试的 Linux lane 上运行（实施：unit lane 的 e2e 家族里，与 `test_luban_os` 同处；持有 `cpu` 资源，在本机其他测试结束后单独运行——首轮 CI 与其他测试并行时帧时间是本地的 3–4 倍，测到的是负载而不是应用）。
   实施时的取舍：窗口与托盘的打点放在同一个进程能测的地方——托盘唤起以"窗口发出选择 → 显示结果的那一帧"测（含托盘转发的往返，偏大即偏严）；
   新建页的 index 内容因此改为先读 index、后做能力自检，两类搜索并行（实测本地约 0.5 s）。
 - 断网的用例不另开 lane：在有用户命名空间的 lane 上用 `unshare -rn` 跑（unit lane 的 e2e：导入、建系统；fresh 套件用发布客户端：进入），见 `tests/lanes.toml`。
