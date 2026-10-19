@@ -974,6 +974,40 @@ XTEST(Luban, TheVersionShownIsTheVersionMade,
     EXPECT_NE(shown.find('@'), std::string::npos) << "a version, not a name to resolve again: " << shown;
 }
 
+// A move into its own userland keeps what the system was before it, and the
+// way back (design 2026-10-19 §12.4): history names it first, rollback
+// --to relayout asks for -y, then makes the system again from it -- its files
+// as they were -- and the archive goes only with a confirmed removal.
+XTEST(Luban, WhatASystemWasBeforeItsMoveIsKeptAndItsWayBack,
+      .area = "luban", .cost = tk::Cost::Medium, .covers = {"LUBAN-UPGRADE-REVERSIBLE"}, .requires_ = {"linux", "xlings-bin"}) {
+    if constexpr (!tk::is_linux) GTEST_SKIP() << "a Luban root is a Linux root";
+    const auto bin = luban_binary();
+    if (!bin) GTEST_SKIP() << "no luban beside the xlings under test";
+    auto home = luban_home("luban-relayout-back", *bin);
+    ASSERT_EQ(luban(home, {"new", "box", "--xpkg", "fixture:my-os@1.0.0", "-y"}).exit_code, 0);
+    const auto root = home.dir() / "subos/box/rootfs";
+    tk::write_file(root / "root/before.txt", "before\n");
+    // What a move keeps, where it keeps it.
+    const auto kept = home.dir() / "state/luban/relayout/box.luban";
+    fs::create_directories(kept.parent_path());
+    ASSERT_EQ(luban(home, {"export", "box", kept.string()}).exit_code, 0);
+    tk::write_file(root / "root/before.txt", "changed since\n");
+    const auto history = luban(home, {"history", "box"});
+    EXPECT_NE(history.out.find("before its move"), std::string::npos) << history.out;
+    EXPECT_NE(history.out.find("luban rollback box --to relayout"), std::string::npos) << history.out;
+    const auto status = luban(home, {"--json", "status", "box"});
+    EXPECT_NE(status.out.find("luban rollback box --to relayout"), std::string::npos) << "in its notes\n" << status.out;
+    const auto asked = luban(home, {"rollback", "box", "--to", "relayout"});
+    EXPECT_EQ(asked.exit_code, 2) << asked.transcript();
+    EXPECT_NE(asked.err.find("luban rollback box --to relayout -y"), std::string::npos) << asked.transcript();
+    const auto back = luban(home, {"rollback", "box", "--to", "relayout", "-y"});
+    ASSERT_EQ(back.exit_code, 0) << back.transcript();
+    EXPECT_EQ(tk::read_file(home.dir() / "subos/box/rootfs/root/before.txt"), "before\n");
+    EXPECT_TRUE(fs::exists(kept)) << "still the way back";
+    ASSERT_EQ(luban(home, {"rm", "box", "-y"}).exit_code, 0);
+    EXPECT_FALSE(fs::exists(kept)) << "it goes with the system";
+}
+
 XTEST(Luban, BootSaysWhatThisBootWas,
       .area = "luban", .cost = tk::Cost::Fast, .covers = {"LUBAN-BOOT-ENTRIES"}, .requires_ = {"linux", "xlings-bin"}) {
     if constexpr (!tk::is_linux) GTEST_SKIP() << "boot entries are a Linux machine's";

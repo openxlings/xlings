@@ -73,7 +73,7 @@ Options: `--to <VERSION>` — This version of the edition; `--dry-run` — Show 
 
 Go back a generation
 
-Options: `--to <N>` — This generation
+Options: `--to <N>` — This generation, or `relayout`: what it was before its move into its own userland
 
 ## `luban export <name> <file>` (more)
 

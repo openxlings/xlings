@@ -762,6 +762,8 @@ bool old_layout_(const Context& c, std::string_view name) {
         && !xlings::subos::locate(HomeView{c.home}, name).domain;
 }
 
+Outcome remove_(const Context& c, std::string_view name, bool with_archive);
+
 int relayout_(const Context& c, std::string_view name) {
     if (const auto e = describe(c, name); e && e->running) {
         if (c.sink) c.sink(error(std::format("{} is running; it moves to its own userland when stopped", name),
@@ -776,7 +778,7 @@ int relayout_(const Context& c, std::string_view name) {
     if (c.sink) c.sink(phase("relayout", "begin", text));
     const auto quiet = Context{.home = c.home, .port = c.port, .sink = c.sink, .yes = true};
     if (export_environment(quiet, {.name = std::string(name), .file = keep, .format = "luban"}).code != 0
-        || remove(quiet, name).code != 0) {
+        || remove_(quiet, name, false).code != 0) {
         if (c.sink) c.sink(phase("relayout", "failed", text));
         return 1;
     }
@@ -788,7 +790,9 @@ int relayout_(const Context& c, std::string_view name) {
         }
         return made.code;
     }
-    fs::remove(keep, ec);
+    // Kept: what it was before the move, its way back (luban rollback <name>
+    // --to relayout), until the system itself is removed.
+    if (c.sink) c.sink(notice(std::format("what {} was before the move is kept: luban rollback {} --to relayout", name, name)));
     if (!xlings::subos::locate(HomeView{c.home}, name).domain) {
         // Made again in this home's prefix: this host cannot build the domain.
         std::ofstream(stays_here_(c, name)) << "this host could not build the system domain\n";
@@ -892,6 +896,39 @@ Outcome upgrade(const Context& c, std::string_view name, std::string_view to, bo
 
 Outcome rollback(const Context& c, std::string_view name, std::string_view to) {
     if (!exists_(c, name)) return missing_(c, name);
+    // Back to before its move into its own userland (design 2026-10-19
+    // §12.4): made again from the archive the move kept, in this home's
+    // prefix, as it was. Its generations from before the move are not in the
+    // archive and do not come back.
+    if (to == "relayout") {
+        const auto kept = relayout_archive(c.home, name);
+        if (!kept) {
+            if (c.sink) c.sink(error(std::format("{} has no archive from before a move", name), std::format("luban history {}", name)));
+            return {.code = 1};
+        }
+        if (!c.yes) {
+            if (c.sink) c.sink(error(std::format("{} goes back to what it was before its move: what changed since is gone, and so "
+                                                 "are its generations since", name),
+                                     std::format("luban rollback {} --to relayout -y", name)));
+            return {.code = 2};
+        }
+        const auto staged = fs::path(kept->string() + ".back");
+        std::error_code ec;
+        fs::rename(*kept, staged, ec);   // the removal below would take it
+        if (ec) {
+            if (c.sink) c.sink(error(std::format("cannot set aside {}: {}", kept->string(), ec.message())));
+            return {.code = 1};
+        }
+        const auto yes = Context{.home = c.home, .port = c.port, .sink = c.sink, .yes = true};
+        if (const auto removed = remove_(yes, name, false); removed.code != 0) {
+            fs::rename(staged, *kept, ec);
+            return removed;
+        }
+        const auto made = import_environment(yes, staged, std::string(name), true);
+        fs::rename(staged, *kept, ec);
+        if (made.code == 0) std::ofstream(stays_here_(c, name)) << "rolled back to before its move\n";
+        return made;
+    }
     auto args = argv_({"rollback", name});
     if (!to.empty()) args.insert(args.end(), {"--to", std::string(to)});
     return {.code = step_(c, "rollback", std::format("going back a generation of {}", name), args)};
@@ -916,7 +953,13 @@ Outcome history(const Context& c, std::string_view name) {
     return {.code = rc, .value = {{"generations", rows}}};
 }
 
-Outcome remove(const Context& c, std::string_view name) {
+Outcome remove(const Context& c, std::string_view name) { return remove_(c, name, true); }
+
+namespace {
+
+// `with_archive`: a person's removal takes the archive from before a move
+// with it; a move's own removal (it makes the system again) keeps it.
+Outcome remove_(const Context& c, std::string_view name, bool with_archive) {
     if (!exists_(c, name)) return missing_(c, name);
     if (!c.yes) {
         if (c.sink) c.sink(error(std::format("removing {} deletes its home and every file in it", name),
@@ -927,8 +970,44 @@ Outcome remove(const Context& c, std::string_view name) {
     if (rc == 0) {
         std::error_code ec;
         fs::remove(settings_file(c.home, name), ec);
+        if (with_archive)
+            if (const auto kept = relayout_archive(c.home, name)) fs::remove(*kept, ec);
     }
     return {.code = rc};
+}
+
+}  // namespace
+
+std::optional<fs::path> relayout_archive(const fs::path& home, std::string_view name) {
+    const auto file = home / "state" / "luban" / "relayout" / std::format("{}.luban", name);
+    std::error_code ec;
+    return fs::is_regular_file(file, ec) ? std::optional<fs::path>(file) : std::nullopt;
+}
+
+std::vector<Note> notes(const Context& c, const Environment& e) {
+    std::vector<Note> out;
+    if (const auto kept = relayout_archive(c.home, e.name)) {
+        std::error_code ec;
+        const auto mb = fs::file_size(*kept, ec) / (1024 * 1024);
+        out.push_back({std::format("keeps what it was before its move into its own userland ({} MB)", mb),
+                       {std::format("luban rollback {} --to relayout", e.name)}});
+    }
+    // A desktop with no cursor theme (a system from before the theme came
+    // with every desktop): the package that brings it, or the upgrade that
+    // does -- neither forced (design 2026-10-19 §12.2).
+    if (!e.desktops.empty())
+        if (const auto root = root_of(c.home, e.name)) {
+            std::error_code ec;
+            if (!fs::exists(*root / "usr/share/icons/default/index.theme", ec)) {
+                std::string package = "luban:cursors";
+                for (const auto& l : opencaps::registry())
+                    if (l.name == "desktop-cursor" && !l.package.empty()) package = std::string(l.package);
+                out.push_back({std::format("its desktop has no cursor theme"),
+                               {std::format("luban run {} -- xlings install {}", e.name, package),
+                                std::format("luban upgrade {} --dry-run", e.name)}});
+            }
+        }
+    return out;
 }
 
 Outcome stop(const Context& c, std::string_view name) {
@@ -1087,7 +1166,7 @@ Outcome export_environment(const Context& c, const ExportOptions& o) {
     return {.code = rc, .value = {{"file", o.file.string()}, {"format", format}}};
 }
 
-Outcome import_environment(const Context& c, const fs::path& file, std::string name) {
+Outcome import_environment(const Context& c, const fs::path& file, std::string name, bool here) {
     auto manifest = archive::read(file);
     if (!manifest) {
         if (c.sink) c.sink(error(manifest.error()));
@@ -1120,6 +1199,8 @@ Outcome import_environment(const Context& c, const fs::path& file, std::string n
     // is made before anything is fetched (design 2026-10-19 §9.3): an
     // archive is imported without the network.
     auto args = new_argv_(name, edition, {});
+    // Here: in this home's prefix, not its own userland (a rollback to before a move).
+    if (here) std::erase_if(args, [](const std::string& a) { return a == "--domain-if-possible" || a == "/xlings"; });
     fs::path carried;
     if (auto carries = manifest->find("carries"); carries != manifest->end() && carries->is_object()) {
         carried = c.home / "tmp" / std::format("import-{}-{}", name, xlings::platform::current_pid());

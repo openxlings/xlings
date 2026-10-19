@@ -885,6 +885,9 @@ int cmd_status(const svc::Context& c, const Parsed& p, const Globals& g, Rendere
     j["needs"] = e->needs;
     j["unmet"] = Json::array();
     for (const auto& v : unmet) j["unmet"].push_back(v.why());
+    const auto notes = svc::notes(c, *e);
+    j["notes"] = Json::array();
+    for (const auto& n : notes) j["notes"].push_back({{"text", n.text}, {"next", n.next}});
     if (g.json) { r.value(j); return 0; }
     std::println("{}  {}{}", e->name, edition_label_(*e), e->running ? "  (running)" : "");
     if (!lineage.layers.empty()) {
@@ -909,6 +912,11 @@ int cmd_status(const svc::Context& c, const Parsed& p, const Globals& g, Rendere
     if (e->carrier != "local") std::println("  carrier   {}", e->carrier);
     std::println("  isolation luban config {}", e->name);
     for (const auto& v : unmet) std::println("  {} {}: this luban is older than it -- xlings update luban", r.paint("!", 33), v.why());
+    // What may be done, never forced (design 2026-10-19 §12.2).
+    for (const auto& n : notes) {
+        std::println("  {} {}", r.paint("·", 36), n.text);
+        for (const auto& next : n.next) std::println("      {}", next);
+    }
     return 0;
 }
 
@@ -948,7 +956,19 @@ int cmd_history(const svc::Context& c, const Parsed& p, const Globals& g, Render
     if (name.empty()) return usage("`luban history <name>`: which environment?", g);
     auto out = svc::history(c, name);
     if (!out.ok()) return out.code;
+    // Before its move into its own userland, when that was kept (design
+    // 2026-10-19 §12.4): the first line, its way back.
+    const auto kept = svc::relayout_archive(c.home, name);
+    if (kept) {
+        std::error_code ec;
+        out.value["relayout"] = {{"file", kept->string()}, {"size", fs::file_size(*kept, ec)}};
+    }
     if (g.json) { r.value(out.value); return 0; }
+    if (kept) {
+        std::error_code ec;
+        std::println("  before its move into its own userland (an archive, {} MB): luban rollback {} --to relayout",
+                     fs::file_size(*kept, ec) / (1024 * 1024), name);
+    }
     for (const auto& row : out.value["generations"])
         std::println("{} {:>3}  {}  {}", row.value("current", false) ? "*" : " ", row.value("generation", 0),
                      row.value("created", ""), row.value("reason", ""));
@@ -1355,7 +1375,8 @@ const spec::CommandSpec& tree() {
              .options = {{"--to <VERSION>", "This version of the edition"}, {"--dry-run", "Show the plan only"}},
              .level = Level::More, .effect = "reversible"},
             {.name = "rollback", .description = "Go back a generation", .arguments = {{"name", "Which"}},
-             .options = {{"--to <N>", "This generation"}}, .level = Level::More, .effect = "reversible"},
+             .options = {{"--to <N>", "This generation, or `relayout`: what it was before its move into its own userland"}},
+             .level = Level::More, .effect = "reversible"},
             {.name = "export", .description = "Write it out: .iso, .img, .qcow2, .tar(.zst), .luban, or a directory",
              .arguments = {{"name", "Which", true}, {"file", "Where; the format follows the name", true}},
              .options = {{"--format <FORMAT>", "iso, img, qcow2, tar, luban or dir, whatever the name says"},

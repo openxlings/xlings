@@ -264,6 +264,11 @@ suite_luban_lived_in() {
     says "what it had is there" "kept"
     capture "its home is its own" luban run old -- /bin/sh -c 'echo "XH=$XLINGS_HOME"; ls /home'
     says "xlings there is its own" "XH=/xlings"
+    capture "the way back is kept" luban history old
+    says "history names it" "before its move"
+    capture "back to before the move" luban rollback old --to relayout -y
+    capture "its file is there" luban run old -- cat /root/kept
+    says "what it had is there" "kept"
 
     section "programs in a system have what their recipes registered"
     capture "vim and git into it" xlings install -y --subos l-core xim:vim xim:git

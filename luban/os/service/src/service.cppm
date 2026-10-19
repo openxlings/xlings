@@ -375,7 +375,21 @@ struct ExportOptions {
     std::string boot;
 };
 Outcome export_environment(const Context& c, const ExportOptions& o);
-Outcome import_environment(const Context& c, const fs::path& file, std::string name);
+Outcome import_environment(const Context& c, const fs::path& file, std::string name, bool here = false);
+
+// What was kept when a system moved into its own userland (design 2026-10-19
+// §12.4): <home>/state/luban/relayout/<name>.luban, its files as they were.
+// Removed only with the system, by a confirmed `luban rm`.
+std::optional<fs::path> relayout_archive(const fs::path& home, std::string_view name);
+
+// What a person may want to know of a system, each with what to do (design
+// 2026-10-19 §12.2): an archive from before its move, a desktop with no
+// cursor theme (the two ways: the package that brings it, or the upgrade).
+struct Note {
+    std::string text;
+    std::vector<std::string> next;
+};
+std::vector<Note> notes(const Context& c, const Environment& e);
 
 // On this terminal: the environment's shell (`temp`: nothing it writes stays),
 // or one command.
