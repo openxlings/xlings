@@ -52,7 +52,14 @@ namespace xlings::interface {
 // index's reserved namespaces are kept to it (feature `reserved_namespaces`);
 // `subos_command` with `new --dry-run` sends the plan as a `subos_plan` data
 // event (feature `subos_plan`).
-export constexpr const char* kProtocolVersion = "1.12";
+// 1.13 (2026.10.19.1, additive; Luban design 2026-10-19 §8, F13, §9.2):
+// `package_info` and `search_packages` carry a package's `extensions` (its
+// recipe's, as written), `status` and `archs` (feature `package_extensions`);
+// a command routed into a prefix domain brings back its data, progress and
+// errors as events (feature `domain_relayed`); `subos new --from` without a
+// version that uses one only installed says so as an `installed_only` data
+// event (feature `installed_only`).
+export constexpr const char* kProtocolVersion = "1.13";
 
 // Convert any Event variant to one NDJSON line (no trailing newline).
 // Returns "" for events not surfaced to wire (e.g. CompletedEvent — the
