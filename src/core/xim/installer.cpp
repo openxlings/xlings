@@ -2748,7 +2748,7 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& requested
     // A user's view never installs a package itself (design 2026-10-20
     // §4.13 V2): everything is borrowed from the system's store, which the
     // command filled first. What is left would run a recipe here.
-    if (systemSnapshot) {
+    if (systemSnapshot && !Config::paths().systemLayer.empty()) {
         std::string left;
         for (const auto& node : plan.nodes)
             if (!node.isSystemPM && node.pkgType != 3 && node.borrowedPayload.empty() && node.upstreamPayload.empty()

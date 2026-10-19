@@ -628,7 +628,9 @@ int install_(std::span<const std::string> targets, bool yes, bool noDeps,
             return t == "patchelf" || t.ends_with(":patchelf") || t.starts_with("patchelf@")
                 || t.find(":patchelf@") != std::string::npos;
         });
-        if (!dryRun && !targetVec.empty() && !patchelf_reachable()) {
+        // A view installs nothing itself (the store's payloads are relocated
+        // already; root's store-add brings what it needs).
+        if (!dryRun && !targetVec.empty() && Config::paths().systemLayer.empty() && !patchelf_reachable()) {
             if (asked == targetVec.end()) {
                 log::info("payloads are relocated with patchelf and this host has none: "
                           "installing xim:patchelf first");
