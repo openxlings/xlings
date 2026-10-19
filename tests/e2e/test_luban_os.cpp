@@ -642,6 +642,27 @@ state {}
     EXPECT_TRUE(anchors.contains("console:copy") && anchors.contains("console:paste")) << anchors.dump();
 }
 
+// What the app can do, asked before anything relies on it (design
+// 2026-10-19 §10.2): answered with no display at all (SSH, CI), at once, in
+// JSON; the `--version` after the question is for an app that predates it.
+XTEST(LubanOs, ItSaysWhatItCanDoWithoutADisplay, .area = "luban",
+      .covers = {"LUBAN-OS-APP-CAPABILITIES"}, .requires_ = {"xlings-bin"}) {
+    if (!app_binary()) GTEST_SKIP() << "no luban-os beside the xlings under test";
+    tk::RunOptions o;
+    o.argv = {app_binary()->string(), "__capabilities", "--json", "--version"};
+    o.env = {{"PATH", "/usr/bin:/bin"}};   // no DISPLAY, no WAYLAND_DISPLAY, no SDL driver
+    o.timeout = std::chrono::seconds(10);
+    const auto r = tk::run(o);
+    ASSERT_EQ(r.exit_code, 0) << r.transcript();
+    const auto j = Json::parse(r.out, nullptr, false);
+    ASSERT_TRUE(j.is_object()) << r.out;
+    EXPECT_FALSE(j.value("version", "").empty());
+    EXPECT_EQ(j["provides"].value("app-capabilities", 0), 1) << j.dump();
+    EXPECT_GE(j["provides"].value("root-layout", 0), 2) << j.dump();
+    EXPECT_TRUE(j["needs"].is_array());
+    EXPECT_LT(r.elapsed, std::chrono::seconds(3)) << "it opened nothing";
+}
+
 // xdesk (apps/xdesk), built beside the app; XDESK_BIN names another.
 std::optional<fs::path> xdesk_binary() {
     if (const char* forced = std::getenv("XDESK_BIN"); forced && *forced) return fs::path(forced);

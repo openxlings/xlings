@@ -74,6 +74,27 @@ struct Environment {
 // What this luban provides (design 2026-10-18 §9; luban/specs/opencaps): the
 // root layout it reads, the manifest fields it knows.
 opencaps::Provides luban_provides();
+
+// What the Luban OS app says of itself (design 2026-10-19 §10.2): `<app>
+// __capabilities --json`, asked with a five-second limit, kept by the app
+// file's path and time in <home>/run/luban-os/capabilities.json. An app that
+// cannot be asked -- too old to know the question, slow, or not answering in
+// JSON -- is an error saying so, never taken as compatible.
+struct AppCapabilities {
+    std::string version;
+    std::map<std::string, int> provides;     // capability -> level
+    std::vector<std::string> needs;          // opencaps needs, as written
+};
+std::expected<AppCapabilities, std::string> app_capabilities(const fs::path& home, const fs::path& app);
+// The app's own answer (what luban-os prints for `__capabilities --json`).
+nlohmann::json app_capabilities_json(std::string_view version, const opencaps::Provides& provides,
+                                     std::span<const std::string> needs);
+
+// The Luban OS app to show `system` in a window, checked first (design
+// 2026-10-19 §10.3): it is installed, it can be asked, it provides what the
+// system needs and this luban provides what it needs. Otherwise the error, with
+// the update that fixes it.
+std::expected<fs::path, Event> window_app(const Context& c, std::string_view system);
 // What `e` needs of whoever reads or runs it -- its root's layout, its
 // manifest's requires -- against `reader`: the unmet ones, each with why.
 std::vector<opencaps::Verdict> unmet_needs(const Environment& e, const opencaps::Provides& reader);

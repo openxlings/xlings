@@ -750,9 +750,9 @@ int cmd_run(const svc::Context& c, const Parsed& p, const Globals& g) {
     if (display != "terminal" && display != "window") return usage("--display terminal|window", g);
     if (display == "terminal") return svc::run_command(c, p.words[0], p.after, p.option("--user").value_or(""));
     if (p.option("--user")) return usage("--user is the terminal's: a window runs as the system's login user", g);
-    const auto app = svc::luban_os_app(c.home);
-    if (app.empty()) {
-        if (c.sink) c.sink(svc::error("a program's window is the Luban OS app's", "xlings install luban-os"));
+    const auto app = svc::window_app(c, p.words[0]);
+    if (!app) {
+        if (c.sink) c.sink(app.error());
         return 1;
     }
     // One word for the session: each argument quoted for the shell that runs it.
@@ -765,7 +765,7 @@ int cmd_run(const svc::Context& c, const Parsed& p, const Globals& g) {
         for (char ch : w) q += ch == '\'' ? std::string("'\\''") : std::string(1, ch);
         command += (command.empty() ? "" : " ") + (plain ? w : q + "'");
     }
-    return xlings::platform::run_argv({app.string(), "--attach", p.words[0], "--app", command});
+    return xlings::platform::run_argv({app->string(), "--attach", p.words[0], "--app", command});
 }
 
 int cmd_enter(const svc::Context& c, const Parsed& p, const Globals& g) {
@@ -811,12 +811,12 @@ int cmd_enter(const svc::Context& c, const Parsed& p, const Globals& g) {
     }
     if (o.display == "window") {
         // The window is the Luban OS app's, sandbox or machine alike.
-        const auto app = svc::luban_os_app(c.home);
-        if (app.empty()) {
-            if (c.sink) c.sink(svc::error("a system's window is the Luban OS app's", "xlings install luban-os"));
+        const auto app = svc::window_app(c, target);
+        if (!app) {
+            if (c.sink) c.sink(app.error());
             return 1;
         }
-        std::vector<std::string> argv{app.string(), "--attach", target};
+        std::vector<std::string> argv{app->string(), "--attach", target};
         if (once) argv.insert(argv.end(), {"--desktop", *once});
         return xlings::platform::run_argv(argv);
     }

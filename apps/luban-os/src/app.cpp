@@ -194,6 +194,16 @@ std::string drop_into_(App& a, const fs::path& file) {
 }
 
 int run(int argc, char* argv[]) {
+    // What this app can do, for whoever is about to rely on it (design
+    // 2026-10-19 §10.2): answered before anything opens a display or reads
+    // the home, so it works over SSH and in CI.
+    if (argc >= 2 && std::string_view(argv[1]) == "__capabilities") {
+        auto provides = service::luban_provides();
+        provides["host-gpu"] = 1;
+        provides["app-capabilities"] = 1;
+        std::println("{}", service::app_capabilities_json(service::kVersion, provides, {}).dump());
+        return 0;
+    }
     App a;
     host::Options o;
     int frames = -1;

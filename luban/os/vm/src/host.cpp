@@ -827,12 +827,12 @@ int enter_in_carrier_(const service::Context& c, std::string_view name, const En
     if (o.display == "window") {
         // The window reaches the machine through the host machine (the app's
         // relay); the app starts it when it is not running.
-        const auto app = service::luban_os_app(c.home);
-        if (app.empty()) {
-            say_(c, service::error("a machine's window is the Luban OS app's", "xlings install luban-os"));
+        const auto app = service::window_app(c, name);
+        if (!app) {
+            say_(c, app.error());
             return 1;
         }
-        return platform::run_argv({app.string(), "--attach", std::string(name)});
+        return platform::run_argv({app->string(), "--attach", std::string(name)});
     }
     std::vector<std::string> argv = at->launcher;
     argv.insert(argv.end(), {"/xlings/bin/luban", "enter", std::string(name), "--mode", "machine"});
@@ -953,12 +953,12 @@ int enter(const service::Context& c, std::string_view name_or_image, const Enter
     if (fs::is_regular_file(name_or_image, ec)) return boot_image_(c, fs::absolute(name_or_image), o);
     const std::string name(name_or_image);
     if (o.display == "window") {
-        const auto app = service::luban_os_app(c.home);
-        if (app.empty()) {
-            say_(c, service::error("a machine's window is the Luban OS app's", "xlings install luban-os"));
+        const auto app = service::window_app(c, name);
+        if (!app) {
+            say_(c, app.error());
             return 1;
         }
-        return platform::run_argv({app.string(), "--attach", name});
+        return platform::run_argv({app->string(), "--attach", name});
     }
     if (!running(c.home, name)) {
         if (const int rc = platform::is_macos ? start_vz_(c, name, o) : start_impl_(c, name, o); rc != 0) return rc;

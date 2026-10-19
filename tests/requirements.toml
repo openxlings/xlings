@@ -1353,7 +1353,7 @@ status = "planned"
 
 [LUBAN-OS-APP-CAPABILITIES]
 text = "luban-os __capabilities answers without a display; an app that cannot be asked is not taken as compatible"
-status = "planned"
+status = "required"
 
 [XPKG-EXTENSIONS]
 text = "a recipe's extensions are kept and handed on unchanged (package_info, search), within their type and size rules"

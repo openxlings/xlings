@@ -566,6 +566,34 @@ XTEST(Luban, ATemplateOnlyInstalledIsUsedAndSaid,
     EXPECT_EQ(said, 1) << "said once, though the base is resolved twice\n" << made.out;
 }
 
+// A window for a system is opened only through an app that says what it can
+// do (design 2026-10-19 §10.3): one too old to be asked is not taken as
+// compatible -- refused with the update, before anything starts.
+XTEST(Luban, AWindowIsOpenedOnlyThroughAnAppThatSaysWhatItCanDo,
+      .area = "luban", .cost = tk::Cost::Medium, .covers = {"LUBAN-OS-APP-CAPABILITIES", "LUBAN-CAPS"}, .requires_ = {"linux", "xlings-bin"}) {
+    if constexpr (!tk::is_linux) GTEST_SKIP() << "a Luban root is a Linux root";
+    const auto bin = luban_binary();
+    if (!bin) GTEST_SKIP() << "no luban beside the xlings under test";
+    auto home = luban_home("luban-window-app", *bin);
+    ASSERT_EQ(luban(home, {"new", "box", "--xpkg", "fixture:my-os@1.0.0", "-y"}).exit_code, 0);
+    // An app of 2026.10.18.1: no __capabilities; its --version answers.
+    const auto app = home.dir() / "bin/luban-os";
+    tk::write_file(app, "#!/bin/sh\nfor a in \"$@\"; do [ \"$a\" = --version ] && { echo 'luban-os 2026.10.18.1'; exit 0; }; done\n"
+                        "touch \"$0.opened\"; sleep 30\n");
+    fs::permissions(app, fs::perms::owner_all, fs::perm_options::add);
+    const auto refused = luban(home, {"run", "box", "--display", "window", "--", "true"});
+    EXPECT_EQ(refused.exit_code, 1) << refused.transcript();
+    EXPECT_NE(refused.err.find("cannot say what it can do"), std::string::npos) << refused.transcript();
+    EXPECT_NE(refused.err.find("xlings update luban-os"), std::string::npos) << refused.transcript();
+    EXPECT_FALSE(fs::exists(home.dir() / "bin/luban-os.opened")) << "nothing was opened";
+    // An app that answers, and provides what the system needs, is used.
+    tk::write_file(app, "#!/bin/sh\n[ \"$1\" = __capabilities ] && { echo '{\"version\":\"9\",\"provides\":{\"root-layout\":9},\"needs\":[]}'; exit 0; }\n"
+                        "touch \"$0.opened\"\n");
+    const auto opened = luban(home, {"run", "box", "--display", "window", "--", "true"});
+    EXPECT_EQ(opened.exit_code, 0) << opened.transcript();
+    EXPECT_TRUE(fs::exists(home.dir() / "bin/luban-os.opened"));
+}
+
 // What is not an edition is said in luban's words before xlings is asked
 // (E14); an older edition than the index's newest, chosen because the newest
 // needs a newer xlings, is said with the update (E8, B22).
