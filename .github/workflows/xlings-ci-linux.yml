@@ -36,7 +36,7 @@ env:
   # either honoured everywhere or removed.
   BOOTSTRAP_XLINGS_VERSION: v2026.8.27.5
   # Must contain the mcpp version pinned in .xlings.json (2026.10.5.3).
-  XIM_PKGINDEX_REF: ebf1fbb3417ec513b923279044433887b3af8850
+  XIM_PKGINDEX_REF: 81c46155bbcd66826ee590319b35d3b054e37c61
 
 # The shape of a round (tests/README.md, "Parallel runs"):
 #
