@@ -110,12 +110,20 @@ XTEST(LubanIdentity, TheWelcomeFitsSeventyTwoColumnsAndReadsWithoutColour, .area
     EXPECT_NE(zh[2].find("系统"), std::string::npos) << zh[2];
 }
 
-XTEST(LubanIdentity, AUsersOwnPackagesComeBeforeTheSystems, .area = "luban", .covers = {"LUBAN-USER-LAYER"}) {
+XTEST(LubanIdentity, AUsersOwnPackagesComeBeforeTheSystemsAndEveryUserHasCompletion, .area = "luban",
+      .covers = {"LUBAN-USER-LAYER", "LUBAN-COMPLETION"}) {
     auto home = tk::Home::isolated("luban-user-layer");
     const auto e = home.dir() / "etc";
     auto first = etc::ensure_user_layer_scripts(e);
     ASSERT_TRUE(first) << first.error();
-    EXPECT_EQ(*first, (std::vector<std::string>{"profile.d/xlings-user.sh", "fish/conf.d/xlings-user.fish"}));
+    EXPECT_EQ(*first, (std::vector<std::string>{"profile.d/xlings-user.sh", "fish/conf.d/xlings-user.fish",
+                                                "profile.d/xlings-complete.sh", "fish/conf.d/xlings-complete.fish"}));
+    // Tab completion for every user, fish included (G17): xlings and luban.
+    for (const auto* file : {"profile.d/xlings-complete.sh", "fish/conf.d/xlings-complete.fish"}) {
+        const auto text = tk::read_file(e / file);
+        EXPECT_NE(text.find("__complete"), std::string::npos) << file;
+        EXPECT_NE(text.find("luban"), std::string::npos) << file;
+    }
     EXPECT_NE(tk::read_file(e / "profile.d/xlings-user.sh").find("$HOME/.xlings/subos/current/bin"), std::string::npos);
     EXPECT_NE(tk::read_file(e / "fish/conf.d/xlings-user.fish").find("$HOME/.xlings/subos/current/bin"), std::string::npos);
     tk::write_file(e / "profile.d/xlings-user.sh", "# mine\n");

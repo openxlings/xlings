@@ -200,6 +200,25 @@ root_etc 给所有用户写补全钩子：`fish/conf.d/xlings-complete.fish`、`
 - 新错误码 `E_NEEDS_ROOT`（附确切命令），`list`/`info` 的条目加 `origin`（`user`、`system`、`project`）。
 - 协议 1.15（只增加）；`--version` 的握手加 feature `user_views`、`needs_root`。发布前按记忆核对 main 上的版本与协议号是否已被占用。
 
+### 4.13 实现：建立在 L §8 已有的借用之上
+
+调研发现 L §8 的用户 home 已经有"视图"的大半：系统层（`/xlings`）的快照、按包借用系统的 payload（`home::layers::plan_borrow`、
+`plan_borrow_package`）、借用的登记与在用户自己 subos 里的物化（头文件、库）。所以不另起一套，而是把用户 home 收窄成视图：
+
+| 任务 | 内容 | 依赖 |
+|---|---|---|
+| V1 | 视图的 index 与存储就是系统的：`Config::global_data_dir()` 在视图里指向系统层的 `data`（目录、仓库、`xpkgs`）；`start_own_home` 不再复制 index；视图里的 `update` 需要 root | — |
+| V2 | `install`：不带版本且系统已有 → 说"已由系统提供"，不装；存储里没有 → 经 elevation 运行 `sudo xlings __store-add <包>@<版本>`（root 只写存储、不改系统默认）；之后照常安装，所有节点都借用；仍有要在视图里装的节点时报错（视图里从不跑 recipe） | V1 |
+| V3 | `use`、`list`、`info` 看得见系统层并标出来源（G15） | V1 |
+| V4 | `remove` 在视图里只撤销自己的选择与借用的登记，从不删除存储 | V1 |
+| V5 | root 删除或清理时读各用户 home 的借用登记，不删正在被选择的版本，并说出是谁 | V2 |
+| V6 | 提权的问法（G16）与 agent 模式的 `E_NEEDS_ROOT` | V2 |
+| V7 | 本地错误不重试（G13）：目录构建的失败按原因分；只有 index 缺失或损坏才重新同步 | — |
+| V8 | Landlock 的写入白名单（G12）：worker 的私有目录、recipe 与 hook 日志、本 home 的存储 | — |
+| V9 | 补全钩子写给所有用户（G17） | — |
+| V10 | 接口 1.15 | V2、V3、V6 |
+| V11 | sudo：`xim:sudo`、core 的新版本、sudoers、默认密码、`--no-password`、setuid 验证 | 跨仓库 |
+
 ## 5. 键盘锁定（G8）
 
 ### 5.1 修法

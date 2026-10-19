@@ -2695,6 +2695,19 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& requested
         }
     }
 
+    // A user's view never installs a package itself (design 2026-10-20
+    // §4.13 V2): everything is borrowed from the system's store, which the
+    // command filled first. What is left would run a recipe here.
+    if (systemSnapshot) {
+        std::string left;
+        for (const auto& node : plan.nodes)
+            if (!node.isSystemPM && node.pkgType != 3 && node.borrowedPayload.empty() && node.upstreamPayload.empty()
+                && !node.alreadyInstalled)
+                left += (left.empty() ? "" : " ") + (node.canonicalName.empty() ? node.name : node.canonicalName) + "@" + node.version;
+        if (!left.empty())
+            return std::unexpected("not in the system's store: " + left + " -- sudo xlings install " + left);
+    }
+
     // Phase 1: Collect download tasks for non-installed packages
     log::debug("installer: {} node(s) in plan, dataDir={}", plan.nodes.size(), dataDir.string());
     std::vector<DownloadTask> dlTasks;

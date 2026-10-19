@@ -56,6 +56,7 @@ export enum class ErrorCode {
     Permission,     // E_PERMISSION     — fs / config write denied
     Cancelled,      // E_CANCELLED      — caller sent cancel via stdin
     Internal,       // E_INTERNAL       — uncaught exception or invariant bug
+    NeedsRoot,      // E_NEEDS_ROOT     — needs the administrator, and nobody can be asked (1.15)
 };
 
 export constexpr std::string_view to_wire_string(ErrorCode c) {
@@ -67,6 +68,7 @@ export constexpr std::string_view to_wire_string(ErrorCode c) {
         case ErrorCode::Permission:   return "E_PERMISSION";
         case ErrorCode::Cancelled:    return "E_CANCELLED";
         case ErrorCode::Internal:     return "E_INTERNAL";
+        case ErrorCode::NeedsRoot:    return "E_NEEDS_ROOT";
     }
     return "E_INTERNAL";
 }
@@ -86,6 +88,7 @@ export constexpr ErrorCode error_code_from_wire(std::string_view s) {
     if (s == "E_DISK_FULL")     return ErrorCode::DiskFull;
     if (s == "E_PERMISSION")    return ErrorCode::Permission;
     if (s == "E_CANCELLED")     return ErrorCode::Cancelled;
+    if (s == "E_NEEDS_ROOT")    return ErrorCode::NeedsRoot;
     return ErrorCode::Internal;
 }
 

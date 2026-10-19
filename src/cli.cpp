@@ -1739,6 +1739,24 @@ int dispatch_(int argc, char* argv[]) {
             continue;
         }
         if (token == "__complete") return run_completion_(argc, argv, i);
+        // A user's view adding to the system's store, as the administrator
+        // (design 2026-10-20 §4.4): an install that the elevation door ran;
+        // it activates nothing another version already holds (install never
+        // switches unasked). Plumbing: in no help, no completion.
+        if (token == "__store-add") {
+            // Run where the store can be written: the administrator's, the
+            // view's own process never (it is the layer above).
+            if (!Config::paths().systemLayer.empty() || !platform::can_write(Config::paths().homeDir)) {
+                log::error("__store-add writes the system's store: the administrator's (sudo)");
+                return 77;
+            }
+            std::vector<std::string> words{argv[0], "install", "-y"};
+            for (int k = i + 1; k < argc; ++k) words.emplace_back(argv[k]);
+            std::vector<char*> forwarded;
+            for (auto& w : words) forwarded.push_back(w.data());
+            forwarded.push_back(nullptr);
+            return dispatch_(static_cast<int>(words.size()), forwarded.data());
+        }
         break;
     }
     if (argc == 2

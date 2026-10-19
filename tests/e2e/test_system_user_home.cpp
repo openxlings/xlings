@@ -1,8 +1,8 @@
-// A user's xlings inside a Luban system (design 2026-10-19 §19, F18): the
-// system's home is root's, a user's installs go to their own ~/.xlings. A
-// command that only reads makes nothing and says nothing; the first write
-// makes the user's home and says once how to install for every user -- from
-// the host, never with sudo.
+// A user's xlings inside a Luban system (design 2026-10-19 §19, F18;
+// 2026-10-20 §4): the system's home is root's, a user's ~/.xlings is a view of
+// it. A command that only reads makes nothing and says nothing; the first
+// write makes the view -- its own settings, the system's index read in place
+// -- and asks nothing: making it installs nothing.
 #include <gtest/gtest.h>
 import xlings.testkit;
 #include "xlings/xtest.hpp"
@@ -15,7 +15,7 @@ namespace tk = xlings::testkit;
 namespace fs = std::filesystem;
 using Json = nlohmann::json;
 
-XTEST(SystemUserHome, AReadOnlyCommandMakesNothingTheFirstWriteSaysHowOnce,
+XTEST(SystemUserHome, AReadOnlyCommandMakesNothingTheFirstWriteMakesTheView,
       .area = "subos", .covers = {"SUBOS-READONLY-USER", "SUBOS-USER-HOME-SEED"}, .requires_ = {"linux", "xlings-bin"}) {
     if constexpr (!tk::is_linux) GTEST_SKIP() << "a Luban system is Linux";
     if (xlings::platform::is_root()) GTEST_SKIP() << "root writes the system's home itself";
@@ -43,30 +43,22 @@ XTEST(SystemUserHome, AReadOnlyCommandMakesNothingTheFirstWriteSaysHowOnce,
         EXPECT_EQ(r.transcript().find("sudo"), std::string::npos) << r.transcript();
         EXPECT_FALSE(fs::exists(user / ".xlings")) << "a read made a home: " << args[0];
     }
-    // An agent is told the flag that says so; nothing is made.
+    // The first write -- an agent's too -- makes the view without a question:
+    // the system's mirror, the system's index read where it is (no copy).
     auto agentEnv = inside;
     agentEnv["XLINGS_AGENT_MODE"] = "1";
-    const auto agent = home.xlings({"config", "--lang", "en"}, agentEnv);
-    EXPECT_EQ(agent.exit_code, 2) << agent.transcript();
-    EXPECT_NE(agent.err.find("-y"), std::string::npos) << agent.transcript();
-    EXPECT_FALSE(fs::exists(user / ".xlings")) << "an agent's refused write made a home";
-    const auto first = home.xlings({"config", "--lang", "en"}, inside);
-    EXPECT_NE(first.transcript().find("your own home"), std::string::npos) << first.transcript();
-    EXPECT_NE(first.transcript().find("luban run"), std::string::npos) << first.transcript();
-    EXPECT_NE(first.transcript().find("--user root -- xlings install --system"), std::string::npos) << first.transcript();
-    EXPECT_EQ(first.transcript().find("sudo"), std::string::npos) << first.transcript();
+    const auto first = home.xlings({"config", "--lang", "en"}, agentEnv);
+    EXPECT_EQ(first.exit_code, 0) << first.transcript();
+    EXPECT_EQ(first.transcript().find("[Y/n]"), std::string::npos) << first.transcript();
     EXPECT_TRUE(fs::exists(user / ".xlings"));
-    // Started from the system's: its index snapshot and its mirror, no network.
-    EXPECT_EQ(tk::read_file(user / ".xlings/data/xim-pkgindex/.xlings-index-version"), "snapshot-1\n");
+    EXPECT_FALSE(fs::exists(user / ".xlings/data/xim-pkgindex")) << "an index of its own";
     EXPECT_EQ(Json::parse(tk::read_file(user / ".xlings/.xlings.json"), nullptr, false).value("mirror", ""), "CN");
-    const auto again = home.xlings({"--version"}, inside);
-    EXPECT_EQ(again.transcript().find("your own home"), std::string::npos) << "said once\n" << again.transcript();
     fs::permissions(home.dir(), fs::perms::owner_all, fs::perm_options::add);
 }
 
-// What the system has at that version is every user's: a user asking for it
-// is told so, and nothing is installed into their own home (design
-// 2026-10-19 §27.5).
+// What the system has is every user's: a user asking for it is told so, and
+// nothing is installed into their own home (design 2026-10-19 §27.5;
+// 2026-10-20 §4.3).
 XTEST(SystemUserHome, WhatTheSystemHasIsNotInstalledAgainForAUser,
       .area = "subos", .covers = {"SUBOS-USER-HOME-SEED"}, .requires_ = {"linux", "xlings-bin"}) {
     if constexpr (!tk::is_linux) GTEST_SKIP() << "a Luban system is Linux";
@@ -102,7 +94,7 @@ function config() xvm.add('hello', { bindir = path.join(pkginfo.install_dir(), '
     const auto again = home.xlings({"install", "hello@1.0.0", "-y"}, inside);
     fs::permissions(home.dir(), fs::perms::owner_all, fs::perm_options::add);
     EXPECT_EQ(again.exit_code, 0) << again.transcript();
-    EXPECT_NE(again.out.find("installed for every user already"), std::string::npos) << again.transcript();
+    EXPECT_NE(again.out.find("hello 1.0.0 is provided by the system"), std::string::npos) << again.transcript();
     EXPECT_FALSE(fs::exists(user / ".xlings/data/xpkgs/xim-x-hello")) << "a second copy for one user";
 }
 

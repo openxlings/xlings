@@ -1671,6 +1671,27 @@ int run(int argc, char* argv[]) {
     // A carrier's guest is brought to this release (luban and xlings are released together).
     xlings::carrier::set_client_version(std::string(kVersion));
 
+    // Tab completion (design 2026-10-20 §4.8, G17): the words before the
+    // cursor in, the candidates from the command tree out -- the systems'
+    // names for the arguments that take one. fish passes the program name.
+    if (!rest.empty() && rest.front() == "__complete") {
+        std::vector<std::string> words(rest.begin() + 1, rest.end());
+        if (!words.empty() && (words.front() == "luban" || words.front() == "luban.exe")) words.erase(words.begin());
+        const auto systems = [](const xlings::cli::completion::Request& r) {
+            std::vector<xlings::cli::completion::Candidate> out;
+            if (r.argument.empty()) return out;
+            std::error_code ec;
+            for (const auto& e : std::filesystem::directory_iterator(home_dir_() / "subos", ec))
+                if (e.is_directory(ec) && e.path().filename() != "current" && !e.path().filename().string().starts_with("."))
+                    out.push_back({e.path().filename().string(), {}});
+            return out;
+        };
+        for (const auto& c : xlings::cli::completion::complete_in(tree(), words, systems)) {
+            if (c.description.empty()) std::println("{}", c.value);
+            else std::println("{}\t{}", c.value, c.description);
+        }
+        return 0;
+    }
     // Plumbing first: what qemu, the drive writer and the docs tools run.
     if (!rest.empty() && rest.front() == "__write" && rest.size() == 3) return raw_write_(rest[1], rest[2]);
     if (!rest.empty() && rest.front() == "__pipe" && rest.size() == 3) return pipe_(rest[1], rest[2]);

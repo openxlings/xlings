@@ -394,6 +394,13 @@ resolve_local_coordinate(const PackageCatalog& catalog,
 
 namespace xlings::xim {
 
+bool PackageCatalog::index_trees_present() {
+    const auto specs = repo_specs_();
+    if (specs.empty()) return false;
+    std::error_code ec;
+    return std::ranges::all_of(specs, [&](const RepoIndexSpec& s) { return std::filesystem::is_directory(s.dir / "pkgs", ec); });
+}
+
 std::vector<RepoIndexSpec> PackageCatalog::repo_specs_() {
     std::vector<RepoIndexSpec> specs;
     for (auto& repo : Config::project_index_repos()) {

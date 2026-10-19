@@ -380,9 +380,32 @@ if test (id -u) != 0; and set -q HOME; and test "$XLINGS_SUBOS_MODE" != sandbox
     contains -- $HOME/.xlings/subos/current/bin $PATH; or set -gx PATH $HOME/.xlings/subos/current/bin $PATH
 end
 )FISH";
+    // Tab completion for every user (design 2026-10-20 §4.8, G17): xlings and
+    // luban answer from their own command trees.
+    static constexpr std::string_view complete_sh = R"SH(# Tab completion for xlings and luban, every user (Luban OS): each program
+# answers from its own command tree (`<program> __complete <words>`).
+# Machine state: edit freely; an upgrade never rewrites it.
+if [ -n "${BASH_VERSION-}" ] && command -v complete >/dev/null 2>&1; then
+    _luban_os_complete() {
+        local IFS=$'
+'
+        COMPREPLY=($(compgen -W "$("${COMP_WORDS[0]}" __complete "${COMP_WORDS[@]:1:COMP_CWORD}" 2>/dev/null | cut -f1)" -- "${COMP_WORDS[COMP_CWORD]}"))
+    }
+    complete -o default -F _luban_os_complete xlings luban
+fi
+)SH";
+    static constexpr std::string_view complete_fish = R"FISH(# Tab completion for xlings and luban, every user (Luban OS): each program
+# answers from its own command tree (`<program> __complete <words>`).
+# Machine state: edit freely; an upgrade never rewrites it.
+for program in xlings luban
+    complete -c $program -f -a "($program __complete (commandline -opc) (commandline -ct) 2>/dev/null)"
+end
+)FISH";
     std::vector<std::string> written;
     for (const auto& [rel, text] : {std::pair{fs::path("profile.d/xlings-user.sh"), sh},
-                                    std::pair{fs::path("fish/conf.d/xlings-user.fish"), fish}}) {
+                                    std::pair{fs::path("fish/conf.d/xlings-user.fish"), fish},
+                                    std::pair{fs::path("profile.d/xlings-complete.sh"), complete_sh},
+                                    std::pair{fs::path("fish/conf.d/xlings-complete.fish"), complete_fish}}) {
         std::error_code ec;
         const auto file = etc / rel;
         if (fs::exists(fs::symlink_status(file, ec))) continue;

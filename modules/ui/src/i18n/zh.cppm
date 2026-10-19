@@ -38,6 +38,7 @@ inline constexpr Entry kEntries[] = {
     { "Installed packages (all subos):",             "已安装的软件包(全部子系统):" },
     { "Installed packages (current subos):",         "已安装的软件包(当前子系统):" },
     { "versions (all subos)",                        "的版本(全部子系统)" },
+    { "versions (the system's)",                      "的版本(系统的)" },
     { "versions (current subos)",                    "的版本(当前子系统)" },
     { "Multiple matches found. Select a package:",   "匹配到多个,选择一个软件包:" },
     { "Proceed with installation?",                  "确认安装?" },

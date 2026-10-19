@@ -5,6 +5,7 @@ import xlings.core.config;
 import xlings.core.home;
 import xlings.home.format;
 import xlings.core.home.layers;
+import xlings.core.home.domain_producer_source;
 import xlings.core.log;
 import xlings.core.diag;
 import xlings.core.version_order;
@@ -799,6 +800,27 @@ std::expected<VersionCandidates, int>
 collect_version_candidates_(const std::string& target, bool all) {
     auto db = Config::versions();
 
+    // A user's view sees the system's store too (design 2026-10-20 §4.3,
+    // G15): its versions are candidates, marked; the system's choice is what
+    // the view has until it chooses.
+    std::optional<home::layers::Snapshot> system;
+    if (const auto& p = Config::paths(); !p.systemLayer.empty())
+        if (auto physical = home::domain_producer_source::persisted_home(p.systemLayer))
+            if (auto snap = home::layers::read_source_snapshot(*physical); snap && has_target(snap->versions, target))
+                system = std::move(*snap);
+    if (system && !has_target(db, target)) {
+        VersionCandidates out;
+        for (const auto& v : get_all_versions(system->versions, target)) {
+            out.versions.push_back(v);
+            out.system.insert(v);
+        }
+        version_order::sort_desc(out.versions);
+        if (const auto it = system->workspace.active.find(target); it != system->workspace.active.end()) out.systemActive = it->second;
+        out.active = out.systemActive;
+        out.title = target + " " + std::string(i18n::tr("versions (the system's)"));
+        return out;
+    }
+
     if (!has_target(db, target)) {
         diag::emit({
             .code    = "xvm.unknown_target",
@@ -823,6 +845,15 @@ collect_version_candidates_(const std::string& target, bool all) {
     }
 
     out.versions = filter_to_subos_installed_(target, global_all);
+    if (system) {
+        for (const auto& v : get_all_versions(system->versions, target))
+            if (std::ranges::find(out.versions, v) == out.versions.end()) {
+                out.versions.push_back(v);
+                out.system.insert(v);
+            }
+        if (const auto it = system->workspace.active.find(target); it != system->workspace.active.end()) out.systemActive = it->second;
+        if (out.active.empty()) out.active = out.systemActive;
+    }
     // Newest first, like every other candidate list. `get_all_versions` walks
     // a std::map, so without this the picker offers 0.0.100 above 0.0.24 and
     // the panel does too.
@@ -874,6 +905,8 @@ void emit_version_panel_(const std::string& target,
         // one whose rows are payload paths — the ~20 columns the prefix costs
         // are exactly what pushed it past the terminal.
         if (vdata && !vdata->path.empty()) path_info = Config::display_path(vdata->path);
+        // Where it comes from in a view: the system's store, the system's choice.
+        if (candidates.system.contains(ver)) path_info = ver == candidates.systemActive ? "(system, in use)" : "(system)";
         bool highlight = (ver == candidates.active);
         fieldsJson.push_back({{"label", ver}, {"value", path_info}, {"highlight", highlight}});
     }

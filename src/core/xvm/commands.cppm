@@ -191,6 +191,10 @@ struct VersionCandidates {
     std::vector<std::string> versions;
     std::string active;   // empty when nothing is active in this subos
     std::string title;
+    // A user's view (design 2026-10-20 §4.3): the versions the system's store
+    // has, and the one the system uses (what the view inherits).
+    std::set<std::string> system;
+    std::string systemActive;
 };
 
 // Errors are reported here (they already carry a next command) and returned

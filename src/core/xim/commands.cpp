@@ -35,6 +35,8 @@ import xlings.core.xim.overlay;
 // manifest reader living in xim, and this repo has paid for "the same decision
 // derived in two places" often enough to not add another.
 import xlings.subos.manifest;
+import xlings.subos.elevation;
+import xlings.subos.home_view;
 import xlings.core.log;
 import xlings.core.diag;
 import xlings.core.xvm.errors;
@@ -196,9 +198,19 @@ PackageCatalog& get_catalog(CatalogAccess access) {
         // stayed absent and `install scode:...` failed with "not found" until
         // the user ran `xlings update`. Force a one-time sync when the
         // sub-index marker JSON is missing (cheap: skipped on every later run).
-        bool subIndexesNeverSynced = !sub_indexes_initialized();
+        // A user's view in a system reads the system's index and never
+        // fetches one (design 2026-10-20 §4.13 V1): root keeps it.
+        const bool view = !Config::paths().systemLayer.empty();
+        bool subIndexesNeverSynced = !view && !sub_indexes_initialized();
         const bool buildFailed = result.has_value() && !result->has_value();
-        if (buildFailed || subIndexesNeverSynced) {
+        // Here and unreadable is a local failure: said once, with its
+        // reason; fetching again cannot help (§4.9, G13).
+        const bool local = buildFailed && (view || PackageCatalog::index_trees_present());
+        if (local) {
+            log::error("the package index is here but could not be read: {}", result->error());
+            log::info("{}", view ? "it is the system's: `sudo xlings self doctor` checks it"
+                                 : "`xlings self doctor` checks it; `xlings update` fetches it again");
+        } else if (buildFailed || subIndexesNeverSynced) {
             if (buildFailed) {
                 // Self-heal: a broken/absent index tree (interrupted fetch on
                 // an older xlings, wiped cache) is repairable — resync and
@@ -237,7 +249,18 @@ PackageCatalog* ensure_catalog(EventStream& stream, CatalogNeed need) {
     std::string why;
     const char* down = std::getenv("XLINGS_NET_UNREACHABLE");
     const bool offline = down && *down;
-    if (need == CatalogNeed::Synced && !offline) {
+    // A view's index is the system's: root fetches it (design 2026-10-20 §4.13 V1).
+    if (!Config::paths().systemLayer.empty()) {
+        stream.emit(ErrorEvent{
+            .code = ErrorCode::NotFound,
+            .message = std::format("the system's package index is not available ({})",
+                                   Config::paths().systemLayer.string()),
+            .recoverable = true,
+            .hint = "the system's administrator fetches it: sudo xlings update",
+        });
+        return nullptr;
+    }
+    if (need == CatalogNeed::Synced && !offline && !PackageCatalog::index_trees_present()) {
         log::info("package index not available, updating...");
         sync_all_repos(true);
         auto rebuilt = catalog.rebuild();
@@ -255,6 +278,16 @@ PackageCatalog* ensure_catalog(EventStream& stream, CatalogNeed need) {
             .hint = system && *system
                 ? std::format("on the host: luban status {} --check (its network and proxy)", system)
                 : "check the network or the proxy (HTTPS_PROXY), or another mirror: xlings config --mirror CN",
+        });
+        return nullptr;
+    }
+    // Here and unreadable is local: the network is not mentioned (G13).
+    if (PackageCatalog::index_trees_present()) {
+        stream.emit(ErrorEvent{
+            .code = ErrorCode::NotFound,
+            .message = "the package index is here but could not be read" + why,
+            .recoverable = true,
+            .hint = "`xlings self doctor` checks it; `xlings update` fetches it again",
         });
         return nullptr;
     }
@@ -724,7 +757,7 @@ int install_(std::span<const std::string> targets, bool yes, bool noDeps,
         // — including explicit-namespace targets like `scode:linux-headers` —
         // works without a manual `xlings update`. Debounced by a per-call guard
         // + a process-wide cooldown; ambiguous errors are not "missing".
-        if (!match && !refreshedForMissing
+        if (!match && !refreshedForMissing && Config::paths().systemLayer.empty()
                 && !match.error().contains("ambiguous")
                 && index_refresh_cooldown_elapsed()) {
             refreshedForMissing = true;
@@ -882,29 +915,90 @@ int install_(std::span<const std::string> targets, bool yes, bool noDeps,
         requestedMatches.push_back(*match);
     }
 
-    // Inside a Luban system, what the system already has at that version is
-    // every user's: not installed again for one of them (design 2026-10-19
-    // §27.5). Only when everything asked is the system's; otherwise the
-    // install borrows the system's payloads as before.
-    if (const auto& paths = Config::paths(); !paths.systemLayer.empty() && !requestedMatches.empty()) {
+    // Inside a Luban system a user's home is a view of the system's store
+    // (design 2026-10-20 §4.3, §4.13 V2): what the system provides is not
+    // installed again -- a bare name the system has is the system's, said;
+    // a version the store lacks is added to it once, as the administrator,
+    // through the one door; then the install borrows from the store, and
+    // nothing runs in the view.
+    if (const auto& paths = Config::paths(); !paths.systemLayer.empty() && !requestedMatches.empty() && !dryRun) {
         std::error_code ec;
-        if (!std::filesystem::equivalent(paths.systemLayer, paths.homeDir, ec))
-            if (auto physical = home::domain_producer_source::persisted_home(paths.systemLayer))
-                if (auto system = home::layers::read_source_snapshot(*physical)) {
-                    const auto first = static_cast<std::size_t>(injectedRelocationTool);
-                    bool all = first < requestedMatches.size();
-                    for (std::size_t i = first; all && i < requestedMatches.size(); ++i) {
-                        const auto it = system->workspace.active.find(requestedMatches[i].name);
-                        all = it != system->workspace.active.end()
-                              && xvm::version_key_matches(requestedMatches[i].version, it->second);
+        if (!std::filesystem::equivalent(paths.systemLayer, paths.homeDir, ec)) {
+            auto physical = home::domain_producer_source::persisted_home(paths.systemLayer);
+            auto system = physical ? home::layers::read_source_snapshot(*physical)
+                                   : std::expected<home::layers::Snapshot, std::string>(std::unexpected(physical.error()));
+            if (!system) {
+                stream.emit(ErrorEvent{.code = ErrorCode::NotFound,
+                                       .message = "the system's store could not be read: " + system.error(),
+                                       .recoverable = true,
+                                       .hint = "sudo xlings self doctor"});
+                return 1;
+            }
+            const auto first = static_cast<std::size_t>(injectedRelocationTool);
+            std::vector<std::size_t> provided;
+            std::vector<std::string> missing;
+            for (std::size_t i = first; i < requestedMatches.size(); ++i) {
+                auto& m = requestedMatches[i];
+                const std::size_t asked_at = i - first;
+                const bool versioned = asked_at < targets.size() && targets[asked_at].find('@') != std::string::npos;
+                if (const auto it = system->workspace.active.find(m.name); it != system->workspace.active.end()
+                    && (!versioned || xvm::version_key_matches(m.version, it->second))) {
+                    // The system's own: a bare name takes the version it has.
+                    if (!versioned) {
+                        auto v = it->second;
+                        if (const auto colon = v.rfind(':'); colon != std::string::npos) v = v.substr(colon + 1);
+                        m.version = v;
+                        targetVec[i] = m.canonicalName + "@" + v;
                     }
-                    if (all) {
-                        for (std::size_t i = first; i < requestedMatches.size(); ++i)
-                            log::println("{}@{} is installed for every user already (the system's)",
-                                         requestedMatches[i].canonicalName, requestedMatches[i].version);
-                        return 0;
-                    }
+                    provided.push_back(i);
+                    continue;
                 }
+                const auto payload = system->sourceHome / "data" / "xpkgs" / package_store_name(m.namespaceName, m.name) / m.version;
+                if (!(std::filesystem::is_directory(payload, ec) && payload_has_content(payload) && !stamped_incomplete(payload)))
+                    missing.push_back(m.canonicalName + "@" + m.version);
+            }
+            if (provided.size() == requestedMatches.size() - first) {
+                for (const auto i : provided)
+                    log::println("{} {} is provided by the system -- another version: xlings install {}@<version>",
+                                 requestedMatches[i].name, requestedMatches[i].version, requestedMatches[i].name);
+                return 0;
+            }
+            if (!missing.empty()) {
+                std::string list;
+                for (const auto& m : missing) list += (list.empty() ? "" : " ") + m;
+                const auto command = "sudo xlings install " + list;
+                subos::HomeView view{paths.homeDir};
+                // An agent is never elevated (it is told the command); nobody
+                // at a terminal is, unless sudo needs no question.
+                const char* agentMode = std::getenv("XLINGS_AGENT_MODE");
+                const bool agent = agentMode && std::string_view(agentMode) == "1";
+                if (agent || (!subos::elevation::can_ask() && !platform::elevation_needs_no_question())) {
+                    stream.emit(ErrorEvent{.code = ErrorCode::NeedsRoot,
+                                           .message = list + " goes into the system's store, which needs the administrator",
+                                           .recoverable = true,
+                                           .hint = "run: " + command + "; then this again"});
+                    return 1;
+                }
+                // One line saying what, one question (G16).
+                if (!yes) {
+                    log::println("{} goes into the system's store (needs the administrator)", list);
+                    int rc = 0;
+                    if (!confirmed_or_refused_(stream, "confirm_store_add", "continue with sudo?", "y",
+                                               "add " + list + " to the system's store", WhenNobodyCanAnswer::Proceed, &rc))
+                        return rc;
+                }
+                std::vector<std::string> argv{platform::get_executable_path().string(), "__store-add"};
+                argv.insert(argv.end(), missing.begin(), missing.end());
+                const int rc = subos::elevation::run(view, argv, "adding " + list + " to the system's store");
+                if (rc != 0) {
+                    stream.emit(ErrorEvent{.code = rc == subos::elevation::kNobodyToAsk ? ErrorCode::NeedsRoot : ErrorCode::Permission,
+                                           .message = std::format("adding {} to the system's store did not finish (exit {})", list, rc),
+                                           .recoverable = true,
+                                           .hint = "run: " + command});
+                    return 1;
+                }
+            }
+        }
     }
 
     // Resolve dependencies
@@ -2245,6 +2339,21 @@ int cmd_remove_in_scope_(const std::string& target, bool yes,
                               "uninstall; running it",
                               selected->canonicalName, selected->version);
                 } else {
+                    // A user's view: what the system provides is root's to
+                    // remove, for everyone (design 2026-10-20 §4.3).
+                    if (const auto& paths = Config::paths(); !paths.systemLayer.empty())
+                        if (auto physical = home::domain_producer_source::persisted_home(paths.systemLayer))
+                            if (auto system = home::layers::read_source_snapshot(*physical);
+                                system && system->workspace.active.contains(bareName)) {
+                                diag::emit({
+                                    .level   = diag::Level::Warn,
+                                    .code    = "xim.remove_system",
+                                    .summary = std::format("{} is the system's: you have no choice of your own to take back",
+                                                           bareName),
+                                    .actions = { { "remove it for every user", std::format("sudo xlings remove {}", bareName) } },
+                                });
+                                return 0;
+                            }
                     // Genuinely absent. Here the "remove what isn't there is
                     // success" convention is right (S4 of
                     // remove_multi_version_test.sh asserts exit 0 and no

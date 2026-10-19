@@ -179,44 +179,12 @@ int main(int argc, char* argv[]) {
         }
 
         auto& p = xlings::Config::paths();
-        // Inside a Luban system, a user's first write makes a home of their
-        // own: asked once at a terminal, started from the system's, said how
-        // to install for every user (design 2026-10-19 §27.5).
-        if (is_cli && p.ownHomeNew) {
-            bool yes = false, agent = false;
-            if (const char* v = std::getenv("XLINGS_AGENT_MODE"); v && std::string_view(v) == "1") agent = true;
-            for (int i = 1; i < argc; ++i) {
-                const std::string_view a = argv[i];
-                yes = yes || a == "-y" || a == "--yes";
-                agent = agent || a == "--agent";
-            }
-            const auto own = p.homeDir.string();
-            if (!yes && agent) {
-                std::println(std::cerr, "[xlings] this installs for you only, into a home of your own ({}); "
-                                        "say so with -y: xlings{} -y", own,
-                             [&] { std::string s; for (int i = 1; i < argc; ++i) s += std::string(" ") + argv[i]; return s; }());
-                return 2;
-            }
-            if (!yes && xlings::platform::stdin_is_terminal()) {
-                std::print(std::cerr, "[xlings] install for you only, into {}? The system's packages stay available [Y/n] ", own);
-                std::string answer;
-                std::getline(std::cin, answer);
-                if (!answer.empty() && (answer[0] == 'n' || answer[0] == 'N')) {
-                    std::println(std::cerr, "[xlings] nothing done");
-                    return 0;
-                }
-            }
-            if (auto started = xlings::Config::start_own_home(); !started)
-                xlings::log::warn("{}", started.error());
-            std::string system = "<system>";
-            if (std::ifstream in("/etc/hostname"); in) {
-                std::string line;
-                if (std::getline(in, line) && !line.empty()) system = line;
-            }
-            xlings::log::info("installing into your own home {} -- the system's {} is root's; to install for every user, "
-                              "on the host: luban run {} --user root -- xlings install --system <pkg>",
-                              own, p.systemLayer.string(), system);
-        }
+        // Inside a Luban system, a user's first write makes their view of the
+        // system's store (design 2026-10-20 §4.6): their own choices, shims
+        // and logs -- no index, no store, so nothing to ask about. What needs
+        // the administrator asks when it does (install, update).
+        if (is_cli && p.ownHomeNew)
+            if (auto started = xlings::Config::start_own_home(); !started) xlings::log::warn("{}", started.error());
         // BEFORE the export below, which is the only chance to see what the caller
         // actually passed. See config.cppm's ambient_home_env.
         xlings::capture_ambient_home_env();
