@@ -678,7 +678,7 @@ struct Script {
 
 // ── what one file calls in another ──────────────────────────────────────
 
-void begin_full_(const char* id);
+void begin_full_(const char* id, bool transparent = false);
 void mark_(App& a, std::string name);
 const imkit::Theme& th_();
 void centred_(ImDrawList* dl, float y, std::string_view s, ImU32 color, float size = 0, bool title = false);

@@ -183,6 +183,8 @@ struct Window::Impl {
     bool ctrl_down { false }, alt_down { false }, chord_spoiled { false }, chord_armed { false };
     bool lock_k_held { false };                 // Ctrl+Alt+K's K, kept from the content until it is let go
     Window::Grab grab { Window::Grab::Released };
+    struct Backdrop { void* texture { nullptr }; float x { 0 }, y { 0 }, w { 0 }, h { 0 }; int tw { 0 }, th { 0 }; };
+    std::optional<Backdrop> backdrop;           // this frame's picture under the interface
     std::chrono::steady_clock::time_point grab_tried {};
     bool grab_again { true };                   // a focus change: try at once
     int grabs_refused { 0 };                    // tests
@@ -309,6 +311,7 @@ bool Window::begin_frame(int timeout_ms) {
     host_key_ = false;
     lock_key_ = false;
     auto& im = *impl_;
+    im.backdrop.reset();
     SDL_Event e;
     bool got = SDL_WaitEventTimeout(&e, timeout_ms);
     while (got) {
@@ -417,6 +420,18 @@ void Window::end_frame(bool present) {
     auto* r = impl_->renderer;
     SDL_SetRenderDrawColorFloat(r, 0.075f, 0.082f, 0.098f, 1.0f);
     SDL_RenderClear(r);
+    if (const auto& b = impl_->backdrop; b && b->texture) {
+        // In the renderer's pixels: the interface's coordinates times its framebuffer scale.
+        const auto scale = ImGui::GetIO().DisplayFramebufferScale;
+        float sx = 1, sy = 1;
+        SDL_GetRenderScale(r, &sx, &sy);
+        const SDL_FRect dst{b->x * scale.x / sx, b->y * scale.y / sy, b->w * scale.x / sx, b->h * scale.y / sy};
+        auto* t = static_cast<SDL_Texture*>(b->texture);
+        const bool exact = std::abs(dst.w - static_cast<float>(b->tw)) < 0.5f && std::abs(dst.h - static_cast<float>(b->th)) < 0.5f;
+        SDL_SetTextureScaleMode(t, exact ? SDL_SCALEMODE_NEAREST : SDL_SCALEMODE_LINEAR);
+        SDL_SetTextureBlendMode(t, SDL_BLENDMODE_NONE);
+        SDL_RenderTexture(r, t, nullptr, &dst);
+    }
     ImGui_ImplSDLRenderer3_RenderDrawData(ImGui::GetDrawData(), r);
     SDL_RenderPresent(r);
 }
@@ -527,6 +542,10 @@ void Window::update(Texture& t, const opensal::Rect& r, std::string_view rows) {
     if (!t.handle) return;
     SDL_Rect rect{r.x, r.y, static_cast<int>(r.width), static_cast<int>(r.height)};
     SDL_UpdateTexture(static_cast<SDL_Texture*>(t.handle), &rect, rows.data(), static_cast<int>(r.width) * 4);
+}
+
+void Window::backdrop(const Texture& t, float x, float y, float w, float h) {
+    impl_->backdrop = Impl::Backdrop{t.handle, x, y, w, h, t.width, t.height};
 }
 
 void Window::destroy(Texture& t) {

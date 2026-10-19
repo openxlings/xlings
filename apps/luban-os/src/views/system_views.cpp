@@ -480,7 +480,8 @@ bool shell_bar_(App& a, Display& d, ImVec2 at, float width, float height) {
 // window's input given to it -- the pointer in the surface's pixels.
 void desktop_view_(App& a) {
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
-    begin_full_("desktop");
+    // No background of its own: the desktop's picture is under it (backdrop).
+    begin_full_("desktop", true);
     ImGui::PopStyleVar();
     if (!a.display) { ImGui::End(); return; }
     auto& d = *a.display;
@@ -521,18 +522,10 @@ void desktop_view_(App& a) {
         const ImVec2 at(std::round(origin.x + (avail.x - shown.x) / 2), std::round(origin.y + (avail.y - shown.y) / 2));
         ImGui::SetCursorScreenPos(at);
         ImGui::Dummy(shown);
-        // Drawn in tiles: SDL's software renderer (no GPU, as in a VM) draws
-        // nothing of one triangle much bigger than about 1000x700.
-        const auto id = static_cast<ImTextureID>(reinterpret_cast<std::uintptr_t>(a.texture.handle));
-        constexpr int kTile = 512;
-        for (int ty = 0; ty < a.texture.height; ty += kTile)
-            for (int tx = 0; tx < a.texture.width; tx += kTile) {
-                const int tw = std::min(kTile, a.texture.width - tx), th = std::min(kTile, a.texture.height - ty);
-                const ImVec2 p0(at.x + tx * scale, at.y + ty * scale), p1(at.x + (tx + tw) * scale, at.y + (ty + th) * scale);
-                const ImVec2 uv0(static_cast<float>(tx) / a.texture.width, static_cast<float>(ty) / a.texture.height);
-                const ImVec2 uv1(static_cast<float>(tx + tw) / a.texture.width, static_cast<float>(ty + th) / a.texture.height);
-                ImGui::GetWindowDrawList()->AddImage(id, p0, p1, uv0, uv1);
-            }
+        // Under the interface, copied as one rectangle (design 2026-10-20
+        // §13.2): imgui's textured triangles were most of the window's work
+        // on a frame, and on the software renderer most of its CPU.
+        a.window->backdrop(a.texture, at.x, at.y, shown.x, shown.y);
         mark_(a, "desktop");
         // Over its picture the pointer is the desktop's: drawn by the host
         // as it says (design 2026-10-19 §15), or none where it draws its own

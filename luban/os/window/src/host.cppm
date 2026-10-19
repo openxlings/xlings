@@ -109,6 +109,11 @@ public:
     // A texture for a remote surface's pixels (BGRA), drawn with imgui's Image.
     struct Texture { void* handle { nullptr }; int width { 0 }; int height { 0 }; };
     Texture texture(int width, int height);
+    // This frame's picture under the interface, at (x, y) sized w x h in
+    // the interface's coordinates: copied as one rectangle, not drawn as
+    // triangles (a desktop's frame; design 2026-10-20 §13.2: the software
+    // renderer's triangles cost the window most of a frame).
+    void backdrop(const Texture& t, float x, float y, float w, float h);
     void update(Texture& t, const opensal::Rect& rect, std::string_view rows);
     void destroy(Texture& t);
 

@@ -115,18 +115,26 @@ void Server::render() {
         }
         if (whole || rects.size() > 8) rects = {opensal::Rect{0, 0, s.width, s.height}};
         const auto* px = static_cast<const std::uint8_t*>(data);
+        // ARGB with an opaque background (start_): the rows are sent as they
+        // are, in one message built in a buffer kept from frame to frame.
+        const bool opaque = format == kARGB8888;
         for (const auto& r : rects) {
             if (r.width == 0 || r.height == 0) continue;
-            std::string payload = std::format("{} {} {} {} {}\n", r.x, r.y, r.width, r.height, r.width * 4);
-            const auto at = payload.size();
-            payload.resize(at + std::size_t(r.width) * r.height * 4);
+            const auto head = std::format("{} {} {} {} {}\n", r.x, r.y, r.width, r.height, r.width * 4);
+            const std::size_t row = std::size_t(r.width) * 4, size = head.size() + row * r.height;
+            frame_buf.resize(5 + size);
+            frame_buf[0] = 'f';
+            for (int k = 0; k < 4; ++k) frame_buf[1 + k] = static_cast<char>((size >> (8 * (3 - k))) & 0xff);
+            std::memcpy(frame_buf.data() + 5, head.data(), head.size());
+            auto* out = frame_buf.data() + 5 + head.size();
             for (std::uint32_t y = 0; y < r.height; ++y) {
-                auto* dst = payload.data() + at + std::size_t(y) * r.width * 4;
-                std::memcpy(dst, px + (std::size_t(r.y) + y) * stride + std::size_t(r.x) * 4, std::size_t(r.width) * 4);
-                // XRGB's fourth byte is undefined; opensal's pixels are opaque there.
-                for (std::uint32_t x = 0; x < r.width; ++x) dst[x * 4 + 3] = static_cast<char>(0xff);
+                auto* dst = out + std::size_t(y) * row;
+                std::memcpy(dst, px + (std::size_t(r.y) + y) * stride + std::size_t(r.x) * 4, row);
+                // An XRGB buffer's fourth byte is undefined; opensal's pixels are opaque there.
+                if (!opaque)
+                    for (std::uint32_t x = 0; x < r.width; ++x) dst[x * 4 + 3] = static_cast<char>(0xff);
             }
-            if (!send(opensal::wire::encode('f', payload))) break;
+            if (!send(frame_buf)) break;
             in_flight = std::chrono::steady_clock::now();
         }
         wlr_buffer_end_data_ptr_access(st.buffer);

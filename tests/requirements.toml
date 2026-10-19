@@ -1143,6 +1143,10 @@ status = "required"
 text = "on xdesk's canvas the zoom is a view, not a mode: from half up windows take the pointer as at 100 % (its coordinates scaled), below it a click selects a window and keeps the view and two go in (Super+0 too); only Super and the wheel (and Super+= / Super+-) zoom, the wheel elsewhere pans; a moved window snaps to others' edges within 16 pixels with the lines drawn and joins a group against an edge (Shift: neither); a new window takes the free place nearest the focused one, in view when there is one, never zooming; a minimap shows the whole and the view and takes a click"
 status = "required"
 
+[XDESK-PERF]
+text = "xdesk keeps within its CPU budgets on the software renderer: the overview toggled ten times costs at most 2 s of CPU (xdesk and the window together, beyond a still session of the same length); a still desktop sends no frames"
+status = "required"
+
 [XDESK-LAYOUT]
 text = "xdesk.layout places windows without drawing anything: tile (one or two windows share the output, more scroll with the focused one in view, a new one beside the focus, widths through thirds, halves and the whole), floating (centred above, where it is put), the canvas (beside the focus, panned, zoomed around a point up to 1, an overview that fits every window, left back exactly where the view was, or into a chosen window), a layout per workspace; motion by a critically damped spring"
 status = "required"

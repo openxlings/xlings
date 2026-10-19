@@ -161,6 +161,9 @@ bool Server::start_() {
     wlr_output_state on;
     wlr_output_state_init(&on);
     wlr_output_state_set_enabled(&on, true);
+    // ARGB with an opaque background: every pixel sent is opaque as it is
+    // rendered (design 2026-10-20 §13.2: no pass over the pixels to say so).
+    wlr_output_state_set_render_format(&on, kARGB8888);
     wlr_output_commit_state(output, &on);
     wlr_output_state_finish(&on);
     wlr_output_layout_output* lo = wlr_output_layout_add_auto(outputs, output);

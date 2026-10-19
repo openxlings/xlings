@@ -111,14 +111,14 @@ void Job::take(const service::Event& e) {
 
 using imkit::px;
 
-void begin_full_(const char* id) {
+void begin_full_(const char* id, bool transparent) {
     const auto* vp = ImGui::GetMainViewport();
     ImGui::SetNextWindowPos(vp->WorkPos);
     ImGui::SetNextWindowSize(vp->WorkSize);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
     ImGui::Begin(id, nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings
                                   | ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoScrollbar
-                                  | ImGuiWindowFlags_NoScrollWithMouse);
+                                  | ImGuiWindowFlags_NoScrollWithMouse | (transparent ? ImGuiWindowFlags_NoBackground : 0));
     ImGui::PopStyleVar();
 }
 
