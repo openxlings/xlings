@@ -15,13 +15,15 @@ struct Speaker::Impl {
     SDL_AudioStream* stream { nullptr };
     std::size_t limit { 0 };            // bytes: half a second
     std::size_t frame { 4 };
-    double gain { 1.0 };
 };
+
+bool Speaker::prepare() {
+    return (SDL_WasInit(SDL_INIT_AUDIO) & SDL_INIT_AUDIO) || SDL_InitSubSystem(SDL_INIT_AUDIO);
+}
 
 std::expected<std::unique_ptr<Speaker>, std::string> Speaker::open(std::uint32_t rate, std::uint32_t channels) {
     if (rate == 0 || channels == 0) return std::unexpected(std::string("no format to play"));
-    if (!(SDL_WasInit(SDL_INIT_AUDIO) & SDL_INIT_AUDIO) && !SDL_InitSubSystem(SDL_INIT_AUDIO))
-        return std::unexpected(std::format("no sound here: {}", SDL_GetError()));
+    if (!(SDL_WasInit(SDL_INIT_AUDIO) & SDL_INIT_AUDIO)) return std::unexpected(std::string("no sound here (SDL's audio was not started)"));
     const SDL_AudioSpec spec{.format = SDL_AUDIO_S16LE, .channels = static_cast<int>(channels), .freq = static_cast<int>(rate)};
     auto* stream = SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &spec, nullptr, nullptr);
     if (!stream) return std::unexpected(std::format("no sound output here: {}", SDL_GetError()));

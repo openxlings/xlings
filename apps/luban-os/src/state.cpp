@@ -165,7 +165,9 @@ void App::open_machine(const std::string& name) {
         const auto [w, h] = window->size();
         desktop_size = device_size_(w, h);
         auto* win = window.get();
-        display = Display::machine(home, name, *session, desktop_size, clipboard_grant(name), sound_grant(name), [win] { win->wake(); }, error);
+        // Its sound is played here: SDL's audio is started on this, the main, thread.
+        const bool sound = sound_grant(name) && host::Speaker::prepare();
+        display = Display::machine(home, name, *session, desktop_size, clipboard_grant(name), sound, [win] { win->wake(); }, error);
         if (display) {
             shown_desktop = *session;
             view = View::Desktop;

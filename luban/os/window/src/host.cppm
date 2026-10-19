@@ -212,6 +212,9 @@ std::vector<std::string> mono_font_candidates();
 // up rather than lag). Safe from any thread.
 class Speaker {
 public:
+    // SDL's audio started, on the main thread (where SDL wants it): before
+    // open, which any thread may then call. Whether there is sound here.
+    static bool prepare();
     static std::expected<std::unique_ptr<Speaker>, std::string> open(std::uint32_t rate, std::uint32_t channels);
     ~Speaker();
     // Signed 16-bit little-endian frames, interleaved.

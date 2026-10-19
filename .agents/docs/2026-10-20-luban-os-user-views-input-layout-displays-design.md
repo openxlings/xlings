@@ -804,6 +804,22 @@ Luban 的键位按需求与交互设计来定，不照搬某个系统：
 | C17 | 浏览器：luban:falkon，各桌面 edition 带上（G31） | xim-pkgindex |
 | C18 | 声音：openhal audio、宿主 SDL 音频、系统的 PipeWire 与 `luban` sink（G32） | xlings；xim-pkgindex |
 
+## 22. 2026.10.20.1 的实施状态
+
+| 检查点 | 状态 |
+|---|---|
+| C1 进度行、C2 键盘锁定、托盘（G20、G21） | 完成 |
+| C3–C5b 平铺、拖放、调整大小、画布、性能（C7a） | 完成 |
+| C6 系统里的 xlings（视图、sudo、补全） | 完成 |
+| C7 两个切换器与总览组件 | 完成（§10.4 实现说明） |
+| C8 多显示器 | 镜像完成（§11.7）；**扩展模式（C8b）留到下一版**：每块屏一个输出、各自的布局与工作区、跨屏、排列画布、wlr-output-management、桥接会话的主屏接管 |
+| C9、C9b 设置与快捷键 | 完成（§12.6）；设置是覆盖层，不是窗口 |
+| C10 美术 | 完成（§14.4） |
+| C11 文档 | 08-desktop（中英）、生成的键位表、03-environments；设计记录 |
+| C13–C17 第二轮实测 | 完成：进度、默认用户、LXQt r4、KDE r2、Falkon、桥接会话的剪贴板（wlr-data-control） |
+| C18 声音 | 机器的声音输出完成（§20.1 实现）；麦克风、托盘在没有窗口时播放留到下一版 |
+| GPU 优先（§13.2 第 5 条） | **留到下一版**：要 index 里有 Mesa、mcpp 里的 wlroots 带 GLES2 渲染器；软件渲染的预算（§13.3）已达标 |
+
 ## 21. 安卓版
 
 见 `2026-10-20-luban-os-android-preliminary.md`：`import std`、imgui 已在本地对 Android 验证；中间层三处（mcpp 的 API level、

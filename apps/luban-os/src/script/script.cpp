@@ -454,6 +454,7 @@ void script_step_(App& a, Script& sc) {
         const std::string bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
         openhal::audio::Decoder d;
         d.feed(bytes);
+        if (!host::Speaker::prepare()) { fail("no sound here"); return; }
         std::unique_ptr<host::Speaker> speaker;
         for (auto m = d.next(); m && *m; m = d.next()) {
             if (const auto* o = std::get_if<openhal::audio::Open>(&**m)) {
