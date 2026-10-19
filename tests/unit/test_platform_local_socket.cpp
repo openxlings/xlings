@@ -115,3 +115,24 @@ XTEST(PlatformLocalSocket, ALockIsHeldByOneAndFreedWithIt, .area = "platform", .
     other.release();
     fs::remove_all(dir);
 }
+
+// A program started apart (design 2026-10-19 §3.2: a window starts the tray):
+// it runs on its own, its output in the log, on every platform.
+XTEST(PlatformLocalSocket, AProgramStartedApartRunsWithItsOutputLogged, .area = "platform", .covers = {"LUBAN-OS-TRAY-PROCESS"}) {
+    const auto dir = short_dir("spawn");
+    const auto log = dir / "out.log";
+    const std::vector<std::string> argv = tk::is_windows ? std::vector<std::string>{"cmd.exe", "/c", "echo started-apart"}
+                                                         : std::vector<std::string>{"/bin/sh", "-c", "echo started-apart"};
+    const auto pid = platform::spawn_detached(argv, log);
+    ASSERT_TRUE(pid.has_value());
+    EXPECT_GT(*pid, 0);
+    std::string got;
+    for (int k = 0; k < 100 && got.find("started-apart") == std::string::npos; ++k) {
+        std::this_thread::sleep_for(50ms);
+        std::ifstream in(log);
+        got.assign(std::istreambuf_iterator<char>(in), {});
+    }
+    EXPECT_NE(got.find("started-apart"), std::string::npos) << got;
+    std::error_code ec;
+    fs::remove_all(dir, ec);
+}

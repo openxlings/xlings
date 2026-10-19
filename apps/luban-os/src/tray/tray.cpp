@@ -43,6 +43,9 @@ struct Tray {
     bool told_background { false };     // "still here": once
     bool quitting { false };
     std::chrono::steady_clock::time_point last_read {}, idle_since = std::chrono::steady_clock::now();
+    // Once a second when reading is cheap (a few files); where it asks a
+    // carrier's guest (WSL 2), five times what the read took.
+    std::chrono::milliseconds read_every { 1000 };
     std::vector<std::pair<std::string, bool>> running;   // name, a machine
     bool keep { false };                // the icon kept with nothing running (keep_in_tray)
     Client* asking { nullptr };         // the window a choice came from
@@ -54,17 +57,24 @@ struct Tray {
 
     void tell(Client& c, const Json& m) { (void)c.stream.send_all(m.dump() + "\n", 500ms); }
 
+    mutable std::string written;        // tray.json as it is on disk (written when it changes)
     void write_state() const {
         Json windows = Json::array();
         for (const auto& c : clients) windows.push_back({{"pid", c->hello.value("pid", 0)}, {"register", c->reg}});
         const Json j{{"pid", platform::current_pid()}, {"version", std::string(service::kVersion)}, {"error", error},
                      {"backend", backend}, {"said", said}, {"windows", windows}};
-        platform::write_file_atomic((dir / "tray.json").string(), j.dump(2));
+        auto text = j.dump(2);
+        if (text == written) return;
+        platform::write_file_atomic((dir / "tray.json").string(), text);
+        written = std::move(text);
     }
 
     // Which systems run: read at most once a second (a few files).
     void read_running() {
         last_read = std::chrono::steady_clock::now();
+        const auto took = [this] {
+            return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - last_read);
+        };
         keep = read_app_settings(home).keep_in_tray;
         running.clear();
         auto l = service::list(ctx);
@@ -73,6 +83,7 @@ struct Tray {
             const bool machine = vm::running(home, e.name).has_value();
             if (e.running || machine) running.emplace_back(e.name, machine);
         }
+        read_every = std::max(std::chrono::milliseconds(1000), took() * 5);
     }
 
     // The icon: the systems that run, what the windows are doing, a menu of both.
@@ -268,7 +279,7 @@ int run_tray(int argc, char* argv[]) {
             for (const auto& chosen : t.icon->take()) t.route(chosen);
         }
         const auto now = std::chrono::steady_clock::now();
-        if (now - t.last_read >= 1s) {
+        if (now - t.last_read >= t.read_every) {
             t.read_running();
             t.show();
         }

@@ -160,6 +160,8 @@ layout::Id Server::close_under_pointer() const {
 }
 
 void Server::button(const opensal::PointerButton& b) {
+    // Super with a click (a drag, a pan) is not Super alone: its release opens nothing.
+    if (b.down) super_alone = false;
     if (!b.down && drag != Drag::none) {
         // Let go: a window lands where its preview was; the window under the
         // pointer says its pointer again.
