@@ -43,7 +43,8 @@ bool Server::shortcut(std::uint32_t code) {
     if (code >= 2 && code <= 10) pressed.digit = static_cast<int>(code) - 1;
     const xkb_keysym_t* syms = nullptr;
     const int n = xkb_state_key_get_syms(keyboard.xkb_state, code + 8, &syms);
-    if (n > 0) pressed.sym = xkb_keysym_to_lower(syms[0]);
+    // Shift turns Tab into ISO_Left_Tab: the chord is still Shift+Tab.
+    if (n > 0) pressed.sym = syms[0] == key::ISO_Left_Tab ? key::Tab : xkb_keysym_to_lower(syms[0]);
     auto found = keys.match(pressed);
     if (!found && pressed.digit) {
         pressed.digit = 0;
@@ -66,11 +67,15 @@ void Server::key(const opensal::Key& k) {
         const xkb_keysym_t* syms = nullptr;
         const xkb_keysym_t sym = xkb_state_key_get_syms(keyboard.xkb_state, code + 8, &syms) > 0 ? syms[0] : 0;
         const bool super_key = sym == key::Super_L || sym == key::Super_R;
-        const bool modifier = super_key || sym == key::Alt_L || sym == key::Alt_R;
-        // Super let go: what the chooser or the switcher holds is chosen; Super
-        // pressed and let go alone opens the apps (design 2026-10-19 §16.3).
+        // Alt with Shift is Meta in the usual keymaps.
+        const bool alt_key = sym == key::Alt_L || sym == key::Alt_R || sym == key::Meta_L || sym == key::Meta_R;
+        const bool modifier = super_key || alt_key;
+        // Super let go: what the chooser or the applications hold is chosen,
+        // Alt let go: the window Alt+Tab holds; Super pressed and let go
+        // alone opens the apps (design 2026-10-19 §16.3).
         if (!down && modifier) {
-            if (overlay == Overlay::chooser || overlay == Overlay::switcher) close_overlay(true);
+            if (super_key && (overlay == Overlay::chooser || overlay == Overlay::switcher)) close_overlay(true);
+            else if (alt_key && overlay == Overlay::spread) close_overlay(true);
             else if (super_key && super_alone && overlay == Overlay::none) act(Action::apps);
         }
         if (down) super_alone = super_key;
@@ -120,6 +125,13 @@ void Server::pointer_moved() {
         arrange(true);
         return;
     }
+    // The switchers: the pointer chooses among what they show.
+    if (overlay == Overlay::spread || overlay == Overlay::switcher) {
+        switched_hover(cursor->x, cursor->y);
+        pointer_shape("default");
+        wlr_seat_pointer_clear_focus(seat);
+        return;
+    }
     if (const auto hover = close_under_pointer(); hover != close_hover) {
         close_hover = hover;
         arrange();
@@ -162,7 +174,7 @@ void Server::pointer_moved() {
         return;
     }
     // Zoomed, the surface is drawn smaller: its own coordinates are larger.
-    if (const double z = lay.zoom(); z != 1) sx /= z, sy /= z;
+    if (const View* v = view_at(cursor->x, cursor->y); v && v->zoom != 1) sx /= v->zoom, sy /= v->zoom;
     wlr_seat_pointer_notify_enter(seat, surface, sx, sy);
     wlr_seat_pointer_notify_motion(seat, now_ms(), sx, sy);
 }

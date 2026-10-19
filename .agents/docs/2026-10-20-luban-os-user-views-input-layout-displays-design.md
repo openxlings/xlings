@@ -340,7 +340,16 @@ Xvfb 加一个窗口管理器：锁定后 Alt+Tab 交给 xdesk；宿主持有锁
 
 ### 10.4 快捷键
 
-apps = Super+Tab、windows = Alt+Tab、app-windows = Super+`，加 Shift 反向；键位总表见 §12.2。
+`switch-apps` = Super+Tab、`windows` = Alt+Tab、`app-windows` = Super+`，加 Shift 反向；键位总表见 §12.2。
+`keys.json` 的动作名：启动器沿用 `apps`（2026.10.19.2 起就是它），`windows` 仍是"按窗口切换"，只是键从 Super+Tab 改到 Alt+Tab，
+所以旧的改键文件意思不变。
+
+实现（C7）：总览组件是 `xdesk.layout` 的纯函数 `spread(窗口矩形, 区域)`——保留相对位置、只缩小、一条带超过 2 个区域宽时
+按最接近区域比例的行数折行；Alt+Tab、Super+Tab 展开的应用窗口、Super+m 的卡片都用它。显示时移动的是窗口本身
+（场景节点的位置加每个窗口自己的缩放，客户端尺寸不变、内容实时），选中的放大 1.2 倍（放不下就不放大）、其余透明度 0.6、
+背景变暗；关闭时弹簧动画回到原位。Alt+Tab 按下 150 ms 后才显示，在此之前松开 Alt 直接切到上一个窗口。
+Super+Tab 的图标：桌面项的 `Icon=`，按图标主题规范找 PNG（hicolor、breeze、Adwaita、Papirus，目标尺寸及以上优先，
+再 pixmaps），libpng 解码（`xdesk.native.png`），按应用缓存；找不到用首字母色块（按应用 id 固定取 8 种颜色之一）。
 
 ## 11. 多显示器与显示设置
 

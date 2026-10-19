@@ -378,6 +378,14 @@ private:
     std::vector<Window> sticky_;    // on every workspace: floating, screen pixels
 };
 
+// The overview's picture of windows (design 2026-10-20 §10.3) -- Alt+Tab,
+// the arrangements' cards and an application's windows all show windows so:
+// where they are to one another, the whole scaled down to fit `area` (never
+// up) and centred in it. A strip more than about two areas wide (a long
+// tiled row) is folded into rows, the whole nearer the area's shape. The
+// rects in `windows`' order.
+std::vector<Rect> spread(const std::vector<Rect>& windows, Rect area, double gap = 24);
+
 // A value that follows its target as a critically damped spring: it never
 // overshoots and has no fixed duration -- a new target mid-way just bends
 // the motion. The compositor moves windows' frames with them.

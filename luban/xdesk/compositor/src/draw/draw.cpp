@@ -2,6 +2,7 @@ module xdesk.draw;
 
 import std;
 import xdesk.native.text;
+import xdesk.native.png;
 
 namespace xdesk::draw {
 
@@ -120,6 +121,61 @@ void Canvas::image(const Image& src, double x, double y) {
             dst = over_(src.data()[static_cast<std::size_t>(sy) * static_cast<std::size_t>(src.width()) + static_cast<std::size_t>(sx)], dst);
         }
     }
+}
+
+// ── images from files ────────────────────────────────────────────────
+
+std::expected<Image, std::string> read_png(const fs::path& file) {
+    png_image img{};
+    img.version = xdesk::native::png::version;
+    if (!png_image_begin_read_from_file(&img, file.string().c_str())) {
+        std::string why = img.message;
+        png_image_free(&img);
+        return std::unexpected(why);
+    }
+    img.format = xdesk::native::png::format_bgra;
+    if (img.width == 0 || img.height == 0 || img.width > 4096 || img.height > 4096) {
+        png_image_free(&img);
+        return std::unexpected(std::format("{}x{} is not an icon's size", img.width, img.height));
+    }
+    Image out(static_cast<int>(img.width), static_cast<int>(img.height));
+    // BGRA bytes are ARGB words on a little-endian machine (what xdesk runs on).
+    if (!png_image_finish_read(&img, nullptr, out.data(), 0, nullptr)) {
+        std::string why = img.message;
+        png_image_free(&img);
+        return std::unexpected(why);
+    }
+    for (int k = 0; k < out.width() * out.height(); ++k) {
+        auto& p = out.data()[k];
+        const std::uint32_t a = p >> 24;
+        auto mul = [a](std::uint32_t c) { return (c * a + 127) / 255; };
+        p = (a << 24) | (mul((p >> 16) & 0xff) << 16) | (mul((p >> 8) & 0xff) << 8) | mul(p & 0xff);
+    }
+    return out;
+}
+
+Image scaled(const Image& src, int width, int height) {
+    if (src.empty() || width <= 0 || height <= 0) return {};
+    Image out(width, height);
+    const double fx = double(src.width()) / width, fy = double(src.height()) / height;
+    for (int y = 0; y < height; ++y)
+        for (int x = 0; x < width; ++x) {
+            // The source pixels this one covers (at least one), averaged.
+            const int x0 = static_cast<int>(x * fx), x1 = std::max(x0 + 1, static_cast<int>((x + 1) * fx));
+            const int y0 = static_cast<int>(y * fy), y1 = std::max(y0 + 1, static_cast<int>((y + 1) * fy));
+            std::array<std::uint64_t, 4> sum{};
+            int n = 0;
+            for (int sy = y0; sy < std::min(y1, src.height()); ++sy)
+                for (int sx = x0; sx < std::min(x1, src.width()); ++sx) {
+                    const auto p = src.data()[static_cast<std::size_t>(sy) * static_cast<std::size_t>(src.width()) + static_cast<std::size_t>(sx)];
+                    for (int c = 0; c < 4; ++c) sum[static_cast<std::size_t>(c)] += (p >> (8 * c)) & 0xff;
+                    ++n;
+                }
+            std::uint32_t p = 0;
+            for (int c = 0; c < 4; ++c) p |= static_cast<std::uint32_t>(sum[static_cast<std::size_t>(c)] / std::max(1, n)) << (8 * c);
+            out.data()[static_cast<std::size_t>(y) * static_cast<std::size_t>(width) + static_cast<std::size_t>(x)] = p;
+        }
+    return out;
 }
 
 // ── text ─────────────────────────────────────────────────────────────

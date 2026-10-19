@@ -65,12 +65,15 @@ void Server::arrange(bool instant) {
 }
 
 void Server::apply(const std::vector<layout::Placement>& ps, bool instant, layout::Id skip) {
-    const double zoom = lay.zoom();
     for (auto& v : views) {
         if (v.id == skip) continue;
         const auto p = std::ranges::find(ps, v.id, &layout::Placement::id);
         wlr_scene_node_set_enabled(&v.frame->node, v.mapped && p != ps.end());
         if (p == ps.end()) continue;
+        // The canvas's zoom, and the overview's scale of it (switchers.cpp).
+        const auto spread = spread_zoom.find(v.id);
+        const double zoom = lay.zoom() * (spread != spread_zoom.end() ? spread->second : 1);
+        v.zoom = zoom;
         const int title = static_cast<int>(std::lround(kTitle * zoom));
         draw_title(v, static_cast<int>(std::lround(p->rect.width / zoom)), p->focused);
         wlr_scene_buffer_set_dest_size(v.title, std::max(1, static_cast<int>(std::lround(p->rect.width))), title);
@@ -103,7 +106,7 @@ void Server::apply(const std::vector<layout::Placement>& ps, bool instant, layou
     for (const auto& p : ps)
         if (View* v = view_of(p.id); v && v->id != skip) wlr_scene_node_raise_to_top(&v->frame->node);
     if (View* carried = skip ? view_of(skip) : nullptr) wlr_scene_node_raise_to_top(&carried->frame->node);
-    zoom_surfaces(zoom);
+    zoom_surfaces();
     animate();
     draw_shell();
 }
@@ -120,15 +123,16 @@ View* Server::view_at(double x, double y) {
 }
 
 bool Server::on_title(const View& v, double y) const {
-    // Its title bar is drawn at the canvas's zoom.
-    return y - v.frame->node.y < kTitle * lay.zoom();
+    // Its title bar is drawn at its zoom.
+    return y - v.frame->node.y < kTitle * v.zoom;
 }
 
-// The canvas's zoom on each window's surfaces (a surface's own commit
-// sets its size back, so this runs before each frame while zoomed).
-void Server::zoom_surfaces(double zoom) {
-    if (zoom == 1 && zoom_shown == 1) return;
+// Each window's zoom on its surfaces (a surface's own commit sets its size
+// back, so this runs before each frame while one is zoomed).
+void Server::zoom_surfaces() {
     for (auto& v : views) {
+        if (v.zoom == 1 && v.zoom_shown == 1) continue;
+        double zoom = v.zoom;
         wlr_scene_node_for_each_buffer(&v.content->node, [](wlr_scene_buffer* b, int, int, void* data) {
             const double z = *static_cast<double*>(data);
             auto* s = wlr_scene_surface_try_from_buffer(b);
@@ -137,8 +141,8 @@ void Server::zoom_surfaces(double zoom) {
             else wlr_scene_buffer_set_dest_size(b, std::max(1, static_cast<int>(s->surface->current.width * z)),
                                                 std::max(1, static_cast<int>(s->surface->current.height * z)));
         }, &zoom);
+        v.zoom_shown = zoom;
     }
-    zoom_shown = zoom;
 }
 
 // Frames on their way: a step per tick until every spring has settled.

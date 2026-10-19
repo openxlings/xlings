@@ -131,9 +131,24 @@ struct ChooserCard {
 // (what choosing it gives), `selected` lit. Its areas are the cards (item).
 Picture chooser(draw::Fonts* ui, const Theme& t, const std::vector<ChooserCard>& cards, std::size_t selected, int width, int height,
                 bool zh, double scale = 1);
-// Super+Tab: the windows, the most recent first; areas are the rows.
-Picture switcher(draw::Fonts* ui, const Theme& t, const std::vector<std::string>& names, std::size_t selected, int width, int height,
-                 bool zh, double scale = 1);
+// Super+Tab (design 2026-10-20 §10.1): the applications in a row, the most
+// recent first -- each its icon (or its initial on a colour of its own), its
+// name, how many windows it has -- `selected` lit, what the keys do under
+// them; near the top of the output, its windows spread below once `open`.
+// Areas are the tiles (item, by index), in output pixels.
+struct AppTile {
+    std::string name;
+    std::string key;                // the colour of an initial is the key's
+    const draw::Image* icon { nullptr };   // drawn at kAppIcon (logical), or none
+    int windows { 1 };
+};
+inline constexpr int kAppIcon = 48;
+Picture app_switcher(draw::Fonts* ui, const Theme& t, const std::vector<AppTile>& apps, std::size_t selected, bool open, int width,
+                     int height, bool zh, double scale = 1);
+// Alt+Tab's word on the chosen window (§10.2): a ring around `rect` and its
+// name under it (above, at the bottom of the output). The picture is just those.
+Picture spread_label(draw::Fonts* ui, const Theme& t, draw::Rect rect, std::string_view name, int width, int height,
+                     double scale = 1);
 // Super+/: the keys that mean something here, a line each.
 struct SheetRow {
     std::string keys;

@@ -664,3 +664,132 @@ screenshot {}
     EXPECT_NE(a.at(550, 15), (std::array<int, 3>{0x1b, 0x1e, 0x25})) << "no panel across the top";
     EXPECT_NE(read_ppm(closed).at(550, 400), kRed) << "the click did not reach the close button";
 }
+
+namespace {
+// A window of a colour on the picture, dimmed or not: a good part of it
+// with its hue's channel well above the others (not a ring or a tile of the accent).
+bool tinted_(const Image& img, int channel) {
+    int n = 0;
+    for (int y = 0; y < img.height; y += 4)
+        for (int x = 0; x < img.width; x += 4) {
+            const auto c = img.at(x, y);
+            const int other = std::max(c[(channel + 1) % 3], c[(channel + 2) % 3]);
+            if (c[channel] > other + 60) ++n;
+        }
+    return n > 1500;
+}
+}  // namespace
+
+// Alt+Tab (design 2026-10-20 §10.2): a quick press is the previous window,
+// nothing shown; held, every window of the workspace where it is to the
+// others, fitted, the chosen one as it is and the rest dimmed; Tab by
+// recency, and letting Alt go focuses it, the windows back in their places.
+XTEST(LubanOs, XdeskAltTabGoesBackQuicklyAndHeldShowsEveryWindowWhereItIs, .area = "luban",
+      .covers = {"XDESK-SWITCHERS"}, .requires_ = {"linux", "xlings-bin"}) {
+    if (!app_binary()) GTEST_SKIP() << "no luban-os beside the xlings under test";
+    if (!xdesk_binary()) GTEST_SKIP() << "no xdesk beside luban-os (mcpp build -p xdesk-app)";
+    auto home = tk::Home::isolated("luban-os-xdesk-alt-tab");
+    ASSERT_EQ(home.xlings({"self", "init"}).exit_code, 0);
+    const auto quick = home.root() / "quick.ppm", spread = home.root() / "spread.ppm", chosen = home.root() / "chosen.ppm";
+    auto r = xdesk_with(home, "classic", std::format(R"(wait desktop
+waitfor desktop.texture.0 1100
+sleep 3000
+key Alt+Tab
+sleep 600
+key Super+Left
+sleep 1000
+screenshot {}
+keydown Alt
+key Tab
+sleep 1000
+screenshot {}
+screenshot {}
+key Tab
+keyup Alt
+sleep 1200
+screenshot {}
+)", quick.string(), spread.string(), artifact("xdesk-alt-tab.bmp").string(), chosen.string()));
+    ASSERT_EQ(r.exit_code, 0) << r.transcript();
+    // Blue was focused; Alt+Tab went to green, and left of green is red.
+    const auto a = read_ppm(quick);
+    EXPECT_EQ(a.at(275, 400), kRed);
+    EXPECT_EQ(a.at(825, 400), kGreen);
+    // Held: green (the one before red) as it is, smaller than its column;
+    // red and blue there too, dimmed.
+    const auto b = read_ppm(spread);
+    const auto g = box_of(b, kGreen);
+    ASSERT_GE(g[0], 0) << "the chosen window is shown as it is";
+    EXPECT_LT(g[2] - g[0], 540) << "fitted: smaller than its column";
+    EXPECT_TRUE(tinted_(b, 0)) << "red shown";
+    EXPECT_TRUE(tinted_(b, 2)) << "blue shown";
+    EXPECT_EQ(box_of(b, kRed)[0], -1) << "the others dimmed";
+    // Tab: blue; Alt let go: blue focused, the strip scrolled to it.
+    const auto c = read_ppm(chosen);
+    EXPECT_EQ(c.at(275, 400), kGreen);
+    EXPECT_EQ(c.at(825, 400), kBlue);
+}
+
+// Super+Tab by application (design 2026-10-20 §10.1): a press goes to the
+// application used before, its most recent window; Super+` to the
+// application's other window; held on one, its windows are spread below,
+// the others not shown, and an arrow chooses among them.
+XTEST(LubanOs, XdeskSuperTabGoesByApplicationAndSpreadsItsWindows, .area = "luban",
+      .covers = {"XDESK-SWITCHERS"}, .requires_ = {"linux", "xlings-bin"}) {
+    if (!app_binary()) GTEST_SKIP() << "no luban-os beside the xlings under test";
+    if (!xdesk_binary()) GTEST_SKIP() << "no xdesk beside luban-os (mcpp build -p xdesk-app)";
+    auto home = tk::Home::isolated("luban-os-xdesk-super-tab");
+    ASSERT_EQ(home.xlings({"self", "init"}).exit_code, 0);
+    const auto runtime = home.root() / "run";
+    fs::create_directories(runtime);
+    fs::permissions(runtime, fs::perms::owner_all, fs::perm_options::replace);
+    const auto client = colour_client(home).string();
+    const auto byapp = home.root() / "byapp.ppm", other = home.root() / "other.ppm", open = home.root() / "open.ppm",
+               chosen = home.root() / "chosen.ppm";
+    // Red and green are one application's, blue another's.
+    auto r = run_script(home, std::format(R"(wait desktop
+waitfor desktop.texture.0 1100
+sleep 3000
+key Super+Tab
+sleep 600
+key Super+Left
+sleep 1000
+screenshot {}
+key Super+`
+sleep 400
+key Super+Right
+sleep 1000
+screenshot {}
+keydown Super
+key Tab
+sleep 1800
+screenshot {}
+screenshot {}
+key Left
+keyup Super
+sleep 1200
+screenshot {}
+)", byapp.string(), other.string(), open.string(), artifact("xdesk-super-tab.bmp").string(), chosen.string()),
+                        {"--desktop-exec", xdesk_binary()->string(), "--profile", "classic",
+                         "--autostart", std::format("python3 {} c04040 --app-id term", client),
+                         "--autostart", std::format("sh -c 'sleep 0.6; exec python3 {} 40c040 --app-id term'", client),
+                         "--autostart", std::format("sh -c 'sleep 1.2; exec python3 {} 4040c0 --app-id files'", client)},
+                        {{"XDG_RUNTIME_DIR", runtime.string()}});
+    ASSERT_EQ(r.exit_code, 0) << r.transcript();
+    // From blue (files) to term's most recent, green; left of it, red.
+    const auto a = read_ppm(byapp);
+    EXPECT_EQ(a.at(275, 400), kRed);
+    EXPECT_EQ(a.at(825, 400), kGreen);
+    // Super+`: from red to term's other window, green; right of it, blue.
+    const auto b = read_ppm(other);
+    EXPECT_EQ(b.at(275, 400), kGreen);
+    EXPECT_EQ(b.at(825, 400), kBlue);
+    // Held on term: green and red spread below the row, blue not shown.
+    const auto c = read_ppm(open);
+    EXPECT_GE(box_of(c, kGreen)[0], 0) << "term's most recent window, as it is";
+    EXPECT_TRUE(tinted_(c, 0)) << "term's other window";
+    EXPECT_FALSE(tinted_(c, 2)) << "files' window is not shown";
+    // Left: red, chosen on letting Super go.
+    const auto d = read_ppm(chosen);
+    EXPECT_EQ(d.at(275, 400), kRed);
+    EXPECT_EQ(d.at(825, 400), kGreen);
+}

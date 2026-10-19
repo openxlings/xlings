@@ -214,6 +214,10 @@ bool Server::start_() {
         if (self->max_hover && self->overlay == Overlay::none && self->drag == Drag::none) self->open_layouts(self->max_hover);
         return 0;
     }, this);
+    switch_timer = wl_event_loop_add_timer(loop, [](void* data) -> int {
+        static_cast<Server*>(data)->switch_timer_fired();
+        return 0;
+    }, this);
     // The person's keys and state; each workspace's arrangement as they left it.
     load_person();
     draw_shell();
@@ -241,6 +245,7 @@ Server::~Server() {
     if (pace_timer) wl_event_source_remove(pace_timer);
     if (hint_timer) wl_event_source_remove(hint_timer);
     if (max_timer) wl_event_source_remove(max_timer);
+    if (switch_timer) wl_event_source_remove(switch_timer);
     for (int pid : children) os::terminate(pid);
     new_toplevel.disconnect(); new_popup.disconnect(); new_decoration.disconnect(); frame.disconnect();
     request_cursor.disconnect(); request_selection.disconnect(); set_selection.disconnect(); new_text_input.disconnect();

@@ -31,7 +31,11 @@ const std::vector<ActionInfo>& actions() {
         {Action::toggle_float, "float", "Float, or put back (stacked: the whole, back)", "浮动 / 放回（层叠：最大化 / 还原）", {"Super+f"}},
         {Action::pin, "pin", "Always on top", "置顶", {"Super+Shift+t"}},
         {Action::arrangements, "arrangements", "Tile, stack, canvas", "平铺、层叠、画布", {"Super+m"}},
-        {Action::windows, "windows", "The windows", "切换窗口", {"Super+Tab"}},
+        // The two switchers (design 2026-10-20 §10): by application, and the
+        // windows where they are; Shift goes back.
+        {Action::switch_apps, "switch-apps", "Applications, the most recent first", "按应用切换", {"Super+Tab", "Super+Shift+Tab"}},
+        {Action::app_windows, "app-windows", "The application's other windows", "同一应用的窗口间切换", {"Super+grave", "Super+Shift+grave"}},
+        {Action::windows, "windows", "The windows, where they are", "按窗口切换（空间总览）", {"Alt+Tab", "Alt+Shift+Tab"}},
         {Action::overview, "overview", "Overview", "总览", {"Super+o"}, false, false, true},
         {Action::show1, "workspace-1", "Workspace 1", "工作区 1", {"Super+1"}},
         {Action::show2, "workspace-2", "Workspace 2", "工作区 2", {"Super+2"}},
@@ -64,7 +68,7 @@ std::optional<Chord> parse_chord(std::string_view text) {
         }
         if (part.size() == 1 && part[0] >= '1' && part[0] <= '9') { c.digit = part[0] - '0'; continue; }
         const std::string name(part == "/" ? "slash" : part == "[" ? "bracketleft" : part == "]" ? "bracketright"
-                               : part == "-" ? "minus" : part == "=" ? "equal" : std::string(part));
+                               : part == "-" ? "minus" : part == "=" ? "equal" : part == "`" ? "grave" : std::string(part));
         c.sym = xkb_keysym_to_lower(xkb_keysym_from_name(name.c_str(), XKB_KEYSYM_CASE_INSENSITIVE));
         if (c.sym == xdesk::native::key::NoSymbol) return std::nullopt;
     }
@@ -87,6 +91,7 @@ std::string chord_text(const Chord& c) {
     else if (n == "bracketright") n = "]";
     else if (n == "minus") n = "-";
     else if (n == "equal") n = "=";
+    else if (n == "grave") n = "`";
     else if (n == "Return") n = "Enter";
     else if (n.size() == 1) n[0] = static_cast<char>(std::toupper(static_cast<unsigned char>(n[0])));
     return out + n;

@@ -1,5 +1,5 @@
-// The shell's overlays (shell.cppm): the arrangement chooser, the window
-// switcher, the keys' sheet, a window's menu, a hint -- pictures and the
+// The shell's overlays (shell.cppm): the arrangement chooser, the
+// switchers' pictures (Super+Tab's applications, Alt+Tab's label), the keys' sheet, a window's menu, a hint -- pictures and the
 // areas a click finds in them.
 module xdesk.shell;
 
@@ -53,28 +53,85 @@ Picture chooser(draw::Fonts* ui, const Theme& t, const std::vector<ChooserCard>&
     return p;
 }
 
-Picture switcher(draw::Fonts* ui, const Theme& t, const std::vector<std::string>& names, std::size_t selected, int width, int height,
-                 bool zh, double scale) {
+Picture app_switcher(draw::Fonts* ui, const Theme& t, const std::vector<AppTile>& apps, std::size_t selected, bool open, int width,
+                     int height, bool zh, double scale) {
     Picture p;
-    p.image = image_(width, height, scale);
+    const double n = std::max<double>(1, double(apps.size()));
+    const auto hint = open ? tr_(zh, "Tab: the next  ·  ← →: its windows  ·  let Super go: this one  ·  Esc: as it was",
+                                 "Tab：下一个  ·  ← →：它的窗口  ·  松开 Super：就这个  ·  Esc：不变")
+                           : tr_(zh, "Tab: the next  ·  ↓: its windows  ·  let Super go: this one  ·  Esc: as it was",
+                                 "Tab：下一个  ·  ↓：它的窗口  ·  松开 Super：就这个  ·  Esc：不变");
+    // Tiles as wide as fit, at most 112 (names cut to them); the row as wide
+    // as what the keys do, centred in it.
+    const double tile = std::clamp((width - 80.0 - 24) / n, 64.0, 112.0), th = kAppIcon + 52;
+    const double bw = std::min(double(width), std::max(tile * n + 24, (ui ? ui->width(hint) : 0) + 32)), bh = th + 24 + 26;
+    const double left = std::round((bw - tile * n) / 2);
+    p.x = std::round(std::max(0.0, (width - bw) / 2));
+    p.y = std::round(height * 0.08);
+    p.image = image_(bw, bh, scale);
     draw::Canvas c(p.image, scale);
-    c.fill({0, 0, double(width), double(height)}, t.overlay);
-    const double row = 40, bw = std::min(520.0, width - 40.0), bh = std::max<double>(1, double(names.size())) * row + 46;
-    const double bx = std::round((width - bw) / 2), by = std::round(std::max(20.0, (height - bh) / 2));
-    c.fill({bx, by, bw, bh}, t.card, t.radius + 4);
-    c.frame({bx, by, bw, bh}, Color::rgb(0x3a4050), 1, t.radius + 4);
-    double y = by + 8;
-    if (names.empty() && ui) c.text(*ui, tr_(zh, "No windows", "没有窗口"), bx + 20, std::round(y + 25), t.muted);
-    for (std::size_t k = 0; k < names.size(); ++k) {
-        const Rect r { bx + 8, y, bw - 16, row };
-        if (k == selected) c.fill(r, t.selected, 8);
-        if (ui) c.text(*ui, names[k], r.x + 14, std::round(r.y + 25), t.text, r.width - 28);
-        p.areas.push_back({.rect = r, .target = Target::item, .index = static_cast<int>(k)});
-        y += row;
+    c.fill({0, 0, bw, bh}, t.card, t.radius + 4);
+    c.frame({0, 0, bw, bh}, Color::rgb(0x3a4050), 1, t.radius + 4);
+    if (apps.empty() && ui) c.text(*ui, tr_(zh, "No windows", "没有窗口"), 20, 40, t.muted);
+    for (std::size_t k = 0; k < apps.size(); ++k) {
+        const auto& a = apps[k];
+        const Rect r { left + double(k) * tile, 12, tile, th };
+        if (k == selected) c.fill({r.x + 2, r.y, r.width - 4, r.height}, t.selected, t.radius);
+        const double ix = std::round(r.x + (tile - kAppIcon) / 2), iy = r.y + 10;
+        if (a.icon && !a.icon->empty()) c.image(*a.icon, ix, iy);
+        else {
+            // No icon: its initial, on a colour its id always gets.
+            static constexpr std::array<std::uint32_t, 8> kColours { 0x3b6ea5, 0x8a5aa8, 0x3f8f6b, 0xa8673b,
+                                                                     0x9a4a5a, 0x4a7f8f, 0x6f7a3b, 0x5a5fa8 };
+            const Color bg = Color::rgb(kColours[std::hash<std::string>{}(a.key) % kColours.size()]);
+            c.fill({ix, iy, double(kAppIcon), double(kAppIcon)}, bg, 12);
+            if (ui && !a.name.empty()) {
+                std::size_t len = 1;
+                while (len < a.name.size() && (static_cast<unsigned char>(a.name[len]) & 0xc0) == 0x80) ++len;
+                auto initial = a.name.substr(0, len);
+                if (len == 1) initial[0] = static_cast<char>(std::toupper(static_cast<unsigned char>(initial[0])));
+                c.text(*ui, initial, std::round(ix + (kAppIcon - ui->width(initial)) / 2), std::round(iy + kAppIcon / 2.0 + 5), t.text);
+            }
+        }
+        if (a.windows > 1) {
+            // How many windows it has, on its icon's corner.
+            const auto count = std::to_string(a.windows);
+            const double cw = std::max(18.0, (ui ? ui->width(count) : 8) + 10);
+            const Rect badge { ix + kAppIcon - cw + 6, iy - 6, cw, 18 };
+            c.fill(badge, t.accent, 9);
+            if (ui) c.text(*ui, count, std::round(badge.x + (cw - ui->width(count)) / 2), std::round(badge.y + 13), Color::rgb(0xffffff));
+        }
+        if (ui) {
+            const double tw = std::min(ui->width(a.name), tile - 12);
+            c.text(*ui, a.name, std::round(r.x + (tile - tw) / 2), std::round(iy + kAppIcon + 24), k == selected ? t.text : t.muted, tile - 12);
+        }
+        p.areas.push_back({.rect = {p.x + r.x, p.y + r.y, r.width, r.height}, .target = Target::item, .index = static_cast<int>(k)});
     }
-    if (ui)
-        c.text(*ui, tr_(zh, "Tab: the next  ·  let Super go: this one  ·  Esc: as it was", "Tab：下一个  ·  松开 Super：就这个  ·  Esc：不变"),
-               bx + 20, std::round(by + bh - 12), Color::rgb(0x5c6370), bw - 40);
+    if (ui) c.text(*ui, hint, 16, std::round(bh - 12), Color::rgb(0x5c6370), bw - 32);
+    return p;
+}
+
+Picture spread_label(draw::Fonts* ui, const Theme& t, draw::Rect rect, std::string_view name, int width, int height, double scale) {
+    Picture p;
+    const double ring = 4, label_h = 28;
+    const double lw = std::min(std::max(rect.width, (ui ? ui->width(name) : 0) + 28), double(width));
+    const bool below = rect.y + rect.height + ring + 8 + label_h <= height;
+    const double x0 = std::max(0.0, std::min(rect.x - ring, rect.x + (rect.width - lw) / 2));
+    const double x1 = std::min(double(width), std::max(rect.x + rect.width + ring, rect.x + (rect.width + lw) / 2));
+    const double y0 = std::max(0.0, below ? rect.y - ring : rect.y - ring - 8 - label_h);
+    const double y1 = below ? rect.y + rect.height + ring + 8 + label_h : rect.y + rect.height + ring;
+    p.x = std::floor(x0);
+    p.y = std::floor(y0);
+    p.image = image_(x1 - p.x + 1, y1 - p.y + 1, scale);
+    draw::Canvas c(p.image, scale);
+    c.frame({rect.x - ring - p.x, rect.y - ring - p.y, rect.width + 2 * ring, rect.height + 2 * ring}, t.accent, 3, t.radius + 2);
+    if (ui) {
+        const double tw = std::min(ui->width(name), lw - 28);
+        const Rect pill { std::round(rect.x + (rect.width - tw) / 2 - 14 - p.x),
+                          below ? rect.y + rect.height + ring + 8 - p.y : rect.y - ring - 8 - label_h - p.y, tw + 28, label_h };
+        c.fill(pill, t.card, label_h / 2);
+        c.text(*ui, name, pill.x + 14, std::round(pill.y + 19), t.text, tw);
+    }
     return p;
 }
 

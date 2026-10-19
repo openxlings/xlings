@@ -1,7 +1,7 @@
 // The person's desktop (server.cppm; design 2026-10-19 §16-§18): their keys
 // and state, the applications' rules, what each action does, and the
-// overlays -- the arrangements (Super+m), the windows (Super+Tab), the keys
-// (Super+/), a window's menu.
+// overlays -- the arrangements (Super+m), the keys (Super+/), a window's
+// menu; the switchers are switchers.cpp's.
 module xdesk.compositor;
 
 import std;
@@ -115,13 +115,23 @@ std::string Server::name_of(View& v) {
         for (const char* k : {"LC_ALL", "LC_MESSAGES", "LANG"})
             if (env.contains(k) && !env.at(k).empty()) { lang = env.at(k); break; }
         app_names.clear();
-        for (const auto& a : apps::scan(apps::dirs(env), lang)) app_names[a.id] = a.name;
+        app_icons.clear();
+        for (const auto& a : apps::scan(apps::dirs(env), lang)) {
+            app_names[a.id] = a.name;
+            app_icons[a.id] = a.icon;
+        }
         it = app_names.find(id);
     }
     const std::string name = it != app_names.end() ? it->second : std::string{};
     if (name.empty()) return title.empty() ? id : title;
     if (title.empty() || title == name) return name;
     return name + "  —  " + title;
+}
+
+// Its desktop entry's Icon= (read with the names, name_of).
+std::string Server::app_icon(const std::string& id) {
+    const auto it = app_icons.find(id);
+    return it != app_icons.end() ? it->second : std::string{};
 }
 
 // ── what each action does ────────────────────────────────────────────
@@ -176,7 +186,9 @@ void Server::act(Action a) {
             return;
         case Action::pin: if (const auto f = lay.focused()) { lay.toggle_pinned(*f); arrange(); } return;
         case Action::arrangements: open_chooser(); return;
-        case Action::windows: open_switcher(); return;
+        case Action::switch_apps: open_switcher(held(wlr_keyboard_modifier::WLR_MODIFIER_SHIFT)); return;
+        case Action::app_windows: other_app_window(held(wlr_keyboard_modifier::WLR_MODIFIER_SHIFT)); return;
+        case Action::windows: open_spread(held(wlr_keyboard_modifier::WLR_MODIFIER_SHIFT)); return;
         case Action::overview: lay.overview(!lay.in_overview()); arrange(); return;
         case Action::show1: case Action::show2: case Action::show3: case Action::show4:
             lay.show(static_cast<int>(a) - static_cast<int>(Action::show1));
@@ -204,22 +216,6 @@ void Server::open_chooser() {
     const auto next = layout::next(lay.mode());
     overlay_at = static_cast<std::size_t>(std::ranges::find(chooser_modes, next) - chooser_modes.begin());
     overlay = Overlay::chooser;
-    draw_overlay();
-}
-
-void Server::open_switcher() {
-    if (overlay == Overlay::switcher) {
-        if (!switcher_ids.empty()) overlay_at = (overlay_at + 1) % switcher_ids.size();
-        draw_overlay();
-        return;
-    }
-    close_overlay(false);
-    switcher_ids.clear();
-    // The most recently focused first (the views' order).
-    for (const auto& v : views)
-        if (v.mapped && lay.workspace_of(v.id) == lay.workspace()) switcher_ids.push_back(v.id);
-    overlay_at = switcher_ids.size() > 1 ? 1 : 0;
-    overlay = Overlay::switcher;
     draw_overlay();
 }
 
@@ -253,24 +249,24 @@ void Server::draw_overlay() {
                 // The workspace laid out this way: the same function, a copy of it.
                 auto copy = lay;
                 copy.set_mode(m);
+                // Every window of it, the ones off the output too: the overview's picture.
                 shell::ChooserCard card{.label = std::string(mode_label_(m, zh))};
-                for (const auto& p : copy.arrange(output_size(), reserved())) {
-                    View* v = view_of(p.id);
-                    card.windows.push_back({.rect = {p.rect.x, p.rect.y, p.rect.width, p.rect.height}, .title = v ? name_of(*v) : "",
-                                            .focused = p.focused});
+                const auto ps = copy.arrange(output_size(), reserved());
+                std::vector<layout::Rect> rects;
+                for (const auto& p : ps) rects.push_back(p.rect);
+                const auto fitted = layout::spread(rects, {0, 0, double(w), double(h)});
+                for (std::size_t k = 0; k < ps.size(); ++k) {
+                    View* v = view_of(ps[k].id);
+                    const auto& r = fitted[k];
+                    card.windows.push_back({.rect = {r.x, r.y, r.width, r.height}, .title = v ? name_of(*v) : "", .focused = ps[k].focused});
                 }
                 cards.push_back(std::move(card));
             }
             overlay_picture = shell::chooser(ui(), theme, cards, overlay_at, w, h, zh, scale);
             break;
         }
-        case Overlay::switcher: {
-            std::vector<std::string> names;
-            for (const auto id : switcher_ids)
-                if (View* v = view_of(id)) names.push_back(name_of(*v));
-            overlay_picture = shell::switcher(ui(), theme, names, overlay_at, w, h, zh, scale);
-            break;
-        }
+        case Overlay::switcher: draw_switcher(); return;
+        case Overlay::spread: draw_spread(); return;
         case Overlay::sheet: {
             // Only what means something in this arrangement (design 2026-10-19 §16.3).
             std::vector<shell::SheetRow> rows;
@@ -331,6 +327,14 @@ void Server::close_overlay(bool apply) {
     const auto was = overlay;
     overlay = Overlay::none;
     wlr_scene_node_set_enabled(&overlay_node->node, false);
+    if (was == Overlay::switcher || was == Overlay::spread) {
+        // The windows back where they are, or the one chosen first.
+        if (apply) choose_switched(was);
+        end_spread();
+        arrange();
+        follow_focus();
+        return;
+    }
     if (!apply) return;
     if (was == Overlay::chooser && overlay_at < chooser_modes.size()) {
         lay.set_mode(chooser_modes[overlay_at]);
@@ -338,12 +342,6 @@ void Server::close_overlay(bool apply) {
         arrange();
         draw_shell();
         follow_focus();
-    } else if (was == Overlay::switcher && overlay_at < switcher_ids.size()) {
-        if (View* v = view_of(switcher_ids[overlay_at])) {
-            lay.focus(v->id);
-            focus(v);
-            arrange();
-        }
     }
 }
 
@@ -391,13 +389,8 @@ bool Server::overlay_key(xkb_keysym_t sym, bool down) {
             else if (s == key::Left) { overlay_at = (overlay_at + chooser_modes.size() - 1) % chooser_modes.size(); draw_overlay(); }
             else if (s == key::Return || s == key::KP_Enter) close_overlay(true);
             return true;
-        case Overlay::switcher:
-            if (s == key::Tab || s == key::Down || s == key::Right) open_switcher();
-            else if ((s == key::Up || s == key::Left) && !switcher_ids.empty()) {
-                overlay_at = (overlay_at + switcher_ids.size() - 1) % switcher_ids.size();
-                draw_overlay();
-            } else if (s == key::Return || s == key::KP_Enter) close_overlay(true);
-            return true;
+        case Overlay::switcher: return switcher_key(s);
+        case Overlay::spread: return spread_key(s);
         case Overlay::sheet:
             // Any key closes it (a modifier alone does not).
             if (s != key::Super_L && s != key::Super_R && s != key::Alt_L && s != key::Alt_R) close_overlay(false);
@@ -411,6 +404,7 @@ bool Server::overlay_key(xkb_keysym_t sym, bool down) {
 
 bool Server::overlay_click(double x, double y) {
     if (overlay == Overlay::none) return false;
+    if (overlay == Overlay::switcher || overlay == Overlay::spread) return switched_click(x, y);
     // Hit areas are in output pixels.
     std::optional<shell::Area> hit;
     for (const auto& a : overlay_picture.areas)
@@ -419,7 +413,6 @@ bool Server::overlay_click(double x, double y) {
     const auto k = static_cast<std::size_t>(hit->index);
     switch (overlay) {
         case Overlay::chooser: overlay_at = k; close_overlay(true); break;
-        case Overlay::switcher: overlay_at = k; close_overlay(true); break;
         case Overlay::menu: menu_choose(k); break;
         case Overlay::layouts: {
             // The window and the ones used most recently on its workspace (design 2026-10-19 §17.10).

@@ -53,6 +53,7 @@ void Server::set_scale(double want) {
     if (wlr_output_commit_state(output, &st)) {
         scale = want;
         open_fonts();
+        icons.clear();
         for (auto& v : views) v.drawn.clear();
         panel_drawn.clear();
         dots_drawn.clear();
@@ -90,7 +91,7 @@ void Server::render() {
     }
     wlr_output_state st;
     wlr_output_state_init(&st);
-    if (zoom_shown != 1) zoom_surfaces(zoom_shown);
+    zoom_surfaces();
     if (!wlr_scene_output_build_state(scene_output, &st, nullptr) || !st.buffer) {
         wlr_output_state_finish(&st);
         return;

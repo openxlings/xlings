@@ -133,13 +133,23 @@ columns.
 | F | float, or put back | the whole screen, and back | float, or put back |
 | Shift+T | always on top | the same | the same, and fixed in the view |
 | M | tile, stack, canvas (held) | the same | the same |
-| Tab | the windows (held: Tab for the next, let go to go there) | the same | the same |
+| Tab / Shift+Tab | the applications, the most recent first (held: Tab for the next; ↓, or a second on one, spreads its windows; let go to go there) | the same | the same |
+| ` (above Tab) / Shift+` | the application's other window / the one before | the same | the same |
 | O | — | — | the overview; a click goes in to a window |
 | 1 … 4 / Shift+1 … 4 | a workspace / send the window there | the same | the same |
 | Return, or Ctrl+Alt+T / Q / / | a terminal / close the window / these keys | the same | the same |
 
 **Super+/** shows these keys, only those that mean something in the
 arrangement you are in. The first time, a line at the bottom says so.
+
+**Alt+Tab** shows every window of the workspace where it is to the others,
+scaled to fit the screen (a long tiled row folded into rows), the chosen one
+larger and the rest dimmed: Tab goes by how recently you used them (Shift:
+back), the arrows by place, the pointer by pointing; let Alt go to go there,
+Esc to stay. A quick Alt+Tab goes straight to the window used before, showing
+nothing. Alt+Tab is xdesk's while the window holds the keyboard (Ctrl+Alt+K),
+the host's otherwise. Super+Tab's applications show their icons (a PNG in the
+icon themes) or their initial.
 
 The same gestures in every arrangement:
 

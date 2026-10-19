@@ -130,3 +130,21 @@ XTEST(XdeskApps, AnApplicationRunsInTheDefaultTerminalUnderItsOwnName, .area = "
     std::error_code ec;
     fs::remove_all(root, ec);
 }
+
+// The switcher's icons (design 2026-10-20 §10.1): Icon= found as the icon
+// theme specification finds a PNG -- the size asked for or the next larger,
+// hicolor before the others, pixmaps last; an SVG-only icon is none.
+XTEST(XdeskApps, AnIconIsThePngNearestTheSizeInTheThemes, .area = "luban", .covers = {"XDESK-SWITCHERS"}) {
+    auto home = tk::Home::isolated("xdesk-icons");
+    const auto share = home.root() / "share";
+    for (const auto& f : {"icons/hicolor/32x32/apps/foot.png", "icons/hicolor/64x64/apps/foot.png", "icons/hicolor/256x256/apps/foot.png",
+                          "icons/breeze/48x48/apps/foot.png", "icons/hicolor/scalable/apps/vector.svg", "pixmaps/old.png"})
+        tk::write_file(share / f, "png");
+    const std::map<std::string, std::string> env{{"XDG_DATA_HOME", (home.root() / "nothing").string()}, {"XDG_DATA_DIRS", share.string()}};
+    EXPECT_EQ(apps::icon_file(env, "foot", 48), share / "icons/hicolor/64x64/apps/foot.png") << "the next larger, in hicolor";
+    EXPECT_EQ(apps::icon_file(env, "foot", 512), share / "icons/hicolor/256x256/apps/foot.png") << "the largest there is";
+    EXPECT_EQ(apps::icon_file(env, "old", 48), share / "pixmaps/old.png");
+    EXPECT_FALSE(apps::icon_file(env, "vector", 48)) << "no PNG";
+    EXPECT_EQ(apps::icon_file(env, (share / "pixmaps/old.png").string(), 48), share / "pixmaps/old.png") << "a path as it is";
+    EXPECT_FALSE(apps::icon_file(env, "", 48));
+}

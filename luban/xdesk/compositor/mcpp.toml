@@ -8,7 +8,8 @@
 #   xdesk.shell       the desktop around the windows: panel, launcher,
 #                     notifications, canvas navigation
 #   xdesk.native.*    the C libraries' headers, read only here (wayland:
-#                     xkbcommon, pixman; text: FreeType, HarfBuzz) -- the rest
+#                     xkbcommon, pixman; text: FreeType, HarfBuzz; png:
+#                     libpng, an application's icon) -- the rest
 #                     imports them (tools/lint_c_headers.sh)
 #
 # The layout engine it arranges windows with is xdesk.layout (xdesk-layout).
@@ -40,3 +41,5 @@ pixman   = "0.46.4"
 # xdesk.draw's text: stable releases (libraries no user meets).
 freetype = "2.13.3"
 harfbuzz = "14.3.0"
+# The switcher's icons (PNG; design 2026-10-20 §10.1).
+libpng   = "1.6.43"

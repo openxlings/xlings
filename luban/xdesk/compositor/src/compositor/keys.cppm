@@ -15,7 +15,7 @@ enum class Action {
     focus_left, focus_right, focus_up, focus_down,
     move_left, move_right, move_up, move_down,
     join, split, width, height, smaller, larger, even,
-    toggle_float, pin, arrangements, windows, overview,
+    toggle_float, pin, arrangements, switch_apps, app_windows, windows, overview,
     show1, show2, show3, show4, send1, send2, send3, send4,
 };
 

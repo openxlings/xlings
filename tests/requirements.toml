@@ -1147,6 +1147,10 @@ status = "required"
 text = "on xdesk's canvas the zoom is a view, not a mode: from half up windows take the pointer as at 100 % (its coordinates scaled), below it a click selects a window and keeps the view and two go in (Super+0 too); only Super and the wheel (and Super+= / Super+-) zoom, the wheel elsewhere pans; a moved window snaps to others' edges within 16 pixels with the lines drawn and joins a group against an edge (Shift: neither); a new window takes the free place nearest the focused one, in view when there is one, never zooming; a minimap shows the whole and the view and takes a click"
 status = "required"
 
+[XDESK-SWITCHERS]
+text = "xdesk has two switchers: Super+Tab by application (the most recent first, a window count, its windows spread below after a second or Down; let Super go: chosen), Super+` among the focused application's windows, and Alt+Tab, the windows of the workspace where they are to one another, fitted on the output (a long strip folded into rows), the selected one larger and the rest dimmed; Tab goes by recency, arrows by place, a quick Alt+Tab goes to the previous window without showing anything; Escape leaves things as they were"
+status = "required"
+
 [XDESK-PERF]
 text = "xdesk keeps within its CPU budgets on the software renderer: the overview toggled ten times costs at most 2 s of CPU (xdesk and the window together, beyond a still session of the same length); a still desktop sends no frames"
 status = "required"

@@ -51,6 +51,12 @@ private:
     std::vector<std::uint32_t> pixels_;
 };
 
+// A PNG file as an Image (premultiplied); what went wrong, said.
+std::expected<Image, std::string> read_png(const fs::path& file);
+// `src` at `width` x `height`: each pixel the average of what it covers
+// (an icon made smaller stays smooth).
+Image scaled(const Image& src, int width, int height);
+
 // Faces at one pixel size, the first the main one. At a density (`scale`,
 // device pixels per logical one) glyphs are rendered for the device, and
 // every measure is given in logical pixels.

@@ -4,8 +4,9 @@
 // popups, the layout's arrangement and its springs), input.cpp (keys,
 // pointer, wheel, shortcuts), drag.cpp (a window dragged, a gap resized, the
 // maximize button's layouts), keys.cpp (the actions and their chords),
-// overlay.cpp (the chooser, the switcher, the keys' sheet, a window's menu,
-// the person's state and rules), pointer.cpp (the pointer's shape, drawn by
+// overlay.cpp (the chooser, the keys' sheet, a window's menu, the person's
+// state and rules), switchers.cpp (Super+Tab, Super+`, Alt+Tab and the
+// overview's picture of windows they share), pointer.cpp (the pointer's shape, drawn by
 // the host or into the frames), text.cpp (text input and the clipboard),
 // output.cpp (size, density, fonts, frames), desktop.cpp (title bars, the
 // panel, the launcher, starting programs). Internal to xdesk.compositor.
@@ -114,6 +115,8 @@ struct View {
     bool placed { false };                      // shown somewhere already (then it glides)
     bool moving { false };                      // its frame is on its way (springs)
     layout::Spring x, y;
+    double zoom { 1 };                          // its surfaces' scale: the canvas's, and the overview's
+    double zoom_shown { 1 };                    // what they were last scaled to
     Hook map, unmap, commit, destroy, request_maximize, request_fullscreen, set_title, request_move, request_resize;
 };
 
@@ -226,7 +229,6 @@ struct Server {
     Hook new_text_input, set_selection;
     layout::Layout lay;
     layout::Id next_id { 1 };
-    double zoom_shown { 1 };                     // the zoom the windows were last scaled to
     Drag drag { Drag::none };
     layout::Id dragged { 0 };
     double drag_x { 0 }, drag_y { 0 };           // where the pointer was
@@ -249,13 +251,32 @@ struct Server {
     bool state_broken { false };
     bool super_alone { false };                  // Super down and nothing else since: its release opens the apps
     // One overlay at a time (design 2026-10-19 §16.3, §17.5, §18.1): the
-    // arrangements and the windows are held with Super and chosen on its
-    // release; the keys' sheet and a window's menu stay until a key or a click.
-    enum class Overlay { none, chooser, switcher, sheet, menu, layouts };
+    // arrangements and the applications are held with Super and chosen on
+    // its release, the windows (spread) with Alt; the keys' sheet and a
+    // window's menu stay until a key or a click.
+    enum class Overlay { none, chooser, switcher, spread, sheet, menu, layouts };
     Overlay overlay { Overlay::none };
     std::size_t overlay_at { 0 };
     std::vector<layout::Mode> chooser_modes;
-    std::vector<layout::Id> switcher_ids;
+    // Super+Tab (design 2026-10-20 §10.1): the applications, the most recent
+    // first, each with its windows the most recent first; its windows spread
+    // below once one is held on (`switcher_open`), `switcher_window` of them chosen.
+    struct AppGroup {
+        std::string key;                         // its app id (a window without one: its title)
+        std::vector<layout::Id> windows;
+    };
+    std::vector<AppGroup> switcher_apps;
+    bool switcher_open { false };
+    std::size_t switcher_window { 0 };
+    // Alt+Tab (§10.2): the workspace's windows, the most recent first; shown
+    // only once Alt is held past a quick press.
+    std::vector<layout::Id> spread_ids;
+    bool spread_shown { false };
+    // What the overview shows now: each window's place, and its scale.
+    std::vector<std::pair<layout::Id, layout::Rect>> spread_rects;
+    std::map<layout::Id, double> spread_zoom;
+    wl_event_source* switch_timer { nullptr };   // the quick press, the second held on an application
+    std::map<std::string, draw::Image> icons;    // an application's icon as the switcher draws it (empty: none)
     layout::Id menu_for { 0 };
     std::vector<std::string> menu_actions;       // by the menu's item
     shell::Picture overlay_picture;
@@ -263,6 +284,7 @@ struct Server {
     wlr_scene_buffer* hint_node { nullptr };
     wl_event_source* hint_timer { nullptr };
     std::map<std::string, std::string> app_names;   // app id -> its name (desktop entries)
+    std::map<std::string, std::string> app_icons;   // app id -> its Icon=
     // A window dragged (design 2026-10-19 §17.9): it follows the pointer and
     // a preview shows where it lands -- the drop made on a copy of the layout.
     bool drag_live { false };                    // the window itself moves (floating, stacked, a group with Super)
@@ -355,7 +377,7 @@ struct Server {
 
     void launcher_key(std::uint32_t code);
 
-    void zoom_surfaces(double zoom);
+    void zoom_surfaces();
 
     void animate();
 
@@ -419,7 +441,6 @@ struct Server {
     void apply_rules(View& v);
     void act(Action a);
     void open_chooser();
-    void open_switcher();
     void open_sheet();
     void open_menu(View* v, double x, double y);
     void menu_choose(std::size_t item);
@@ -429,6 +450,25 @@ struct Server {
     bool overlay_click(double x, double y);
     void show_hint(std::string_view text, int ms);
     std::string name_of(View& v);
+    std::string app_icon(const std::string& id);
+
+    // switchers.cpp
+    std::string app_of(View& v) const;
+    std::vector<layout::Id> recent_windows();
+    void open_switcher(bool back);
+    void open_spread(bool back);
+    void other_app_window(bool back);
+    void switch_timer_fired();
+    void show_spread(const std::vector<layout::Id>& ids, layout::Rect area, layout::Id chosen);
+    void end_spread();
+    void draw_switcher();
+    void draw_spread();
+    void choose_switched(Overlay was);
+    bool switcher_key(xkb_keysym_t s);
+    bool spread_key(xkb_keysym_t s);
+    bool switched_click(double x, double y);
+    void switched_hover(double x, double y);
+    const draw::Image* icon_of(const std::string& app);
 
     std::optional<layout::Rect> placement_of(layout::Id id) const;
 

@@ -636,3 +636,36 @@ XTEST(XdeskLayout, OnTheCanvasANewWindowTakesTheNearestFreePlaceAndFramesSnap, .
     l.look_at(5000, 5000);
     EXPECT_NEAR(l.camera().first, 5000 - kOutput.width / 2, 1e-6);
 }
+
+// The overview's picture (design 2026-10-20 §10.3): windows where they are
+// to one another, fitted and never enlarged; a long strip folded into rows.
+XTEST(XdeskLayout, TheOverviewKeepsWhereWindowsAreAndFoldsALongStrip, .area = "luban", .covers = {"XDESK-SWITCHERS"}) {
+    using xdesk::layout::Rect;
+    const Rect area{0, 0, 1000, 600};
+    // Two that fit: as they are, centred.
+    const auto small = xdesk::layout::spread({{0, 0, 200, 100}, {300, 0, 200, 100}}, area);
+    ASSERT_EQ(small.size(), 2u);
+    EXPECT_EQ(small[0].width, 200) << "never enlarged";
+    EXPECT_NEAR(small[0].x, 250, 1e-9);
+    EXPECT_NEAR(small[1].x - small[0].x, 300, 1e-9) << "where they are to one another";
+    // A window off to the right comes in: everything scaled to fit.
+    const auto off = xdesk::layout::spread({{0, 0, 1000, 600}, {1200, 0, 800, 600}}, area);
+    EXPECT_LE(off[1].x + off[1].width, area.width + 1e-9);
+    EXPECT_NEAR(off[0].width / 1000, off[1].width / 800, 1e-9) << "one scale for all";
+    EXPECT_LT(off[0].x + off[0].width, off[1].x) << "the gap between them kept";
+    // Eight full-height columns, eight screens wide: folded into rows, each
+    // window bigger than the strip scaled as one row would make it.
+    std::vector<Rect> strip;
+    for (int k = 0; k < 8; ++k) strip.push_back({k * 1000.0, 0, 1000, 600});
+    const auto folded = xdesk::layout::spread(strip, area);
+    ASSERT_EQ(folded.size(), 8u);
+    EXPECT_GT(folded[0].width, 1000.0 * area.width / 8000 * 1.5);
+    EXPECT_GT(folded[7].y, folded[0].y) << "a later column on a lower row";
+    for (const auto& r : folded) {
+        EXPECT_GE(r.x, -1e-9);
+        EXPECT_LE(r.y + r.height, area.height + 1e-9);
+    }
+    for (std::size_t a = 0; a < folded.size(); ++a)
+        for (std::size_t b = 0; b < a; ++b) EXPECT_FALSE(overlap_(folded[a], folded[b])) << a << " " << b;
+    EXPECT_TRUE(xdesk::layout::spread({}, area).empty());
+}
