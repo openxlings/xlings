@@ -557,6 +557,18 @@ FileLock& FileLock::operator=(FileLock&& other) noexcept {
 
 FileLock::~FileLock() { release(); }
 
+bool FileLock::try_acquire(const std::filesystem::path& path, std::string& error) {
+    release();
+    error.clear();
+    handle_ = ::CreateFileW(path.wstring().c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr, OPEN_ALWAYS,
+                            FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (handle_ != INVALID_HANDLE_VALUE) return true;
+    const auto code = ::GetLastError();
+    if (code != ERROR_SHARING_VIOLATION && code != ERROR_LOCK_VIOLATION)
+        error = std::format("failed to lock {}: Windows error {}", path.string(), code);
+    return false;
+}
+
 bool FileLock::acquire(const std::filesystem::path& path,
                      std::chrono::milliseconds timeout,
                      const std::function<bool()>& cancelled,

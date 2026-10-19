@@ -37,6 +37,11 @@ namespace platform_impl {
                      const std::function<void(std::chrono::milliseconds)>&
                          onWait = {});
 
+        // The lock now or not at all (design 2026-10-19 §3.2: a process is
+        // alive while it holds its lock). False with `error` empty when
+        // another holds it; with `error` set when the lock cannot be taken.
+        bool try_acquire(const std::filesystem::path& path, std::string& error);
+
         void release();
 
     private:
