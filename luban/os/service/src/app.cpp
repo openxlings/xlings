@@ -17,7 +17,7 @@ using Clock = std::chrono::steady_clock;
 std::string stamp_(const fs::path& app) {
     std::error_code ec;
     const auto t = fs::last_write_time(app, ec);
-    return ec ? std::string{} : std::to_string(t.time_since_epoch().count());
+    return ec ? std::string{} : std::to_string(static_cast<long long>(t.time_since_epoch().count()));
 }
 
 std::expected<AppCapabilities, std::string> parse_(const nlohmann::json& j) {

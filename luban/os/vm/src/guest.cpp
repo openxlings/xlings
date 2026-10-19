@@ -496,7 +496,16 @@ int guest_init(int, char*[]) {
         // turned `pcore` into `luban` a moment after the first prompt.
         if ((name.empty() || name == "luban") && params.contains("luban.name")) {
             name = params.at("luban.name");
-            std::ofstream("/etc/hostname", std::ios::trunc) << name << '\n';
+            // The placeholder is a link into the read-only factory /etc: a
+            // write through it fails, and the system's own init later named
+            // the machine `luban` from it (design 2026-10-19 F27). Its own
+            // file instead, with its name.
+            std::error_code ec;
+            if (fs::is_symlink(fs::symlink_status("/etc/hostname", ec))) fs::remove("/etc/hostname", ec);
+            std::ofstream out("/etc/hostname", std::ios::trunc);
+            out << name << '\n';
+            out.close();
+            if (!out) console_("cannot write /etc/hostname: its name is the kernel's only");
         }
         if (!name.empty()) (void)platform::set_hostname(name);
     }
