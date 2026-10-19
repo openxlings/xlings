@@ -119,18 +119,42 @@ luban export box box.luban
 luban import box.luban
 ```
 
-## A regular user's own packages
+## Users, sudo and packages
 
-Inside a system a regular user reads the system's packages as they are --
-`xlings list`, `search`, `--version` ask nothing. The first install asks once
-whether to install for them alone, into `~/.xlings` (`-y` answers yes); their
-home starts from the system's index and settings, with no network. A package
-the system already has at that version is not installed twice. For every user
-of the system, install it as root, from the host:
+A system's user is made with it (`--user`, or the default `lubanoser` for a
+desktop). Given no password, it has the default one, `lubanoser`: `luban new`
+says so, and `luban status` keeps saying so until `passwd` changes it.
+`--no-password` is a choice: no password at all, and a `sudo` that asks
+nothing. Otherwise `sudo` works as on Ubuntu or Fedora: the user is in
+`wheel`, sudo asks for their password and not again for 15 minutes, finds
+`xlings`, and keeps the host's proxy (`/etc/sudoers.d/luban`; edit with
+`visudo`). The core, desktop and agent-workspace editions carry `sudo`; a
+sandbox needs none (its writes go through the system's broker).
 
 ```bash
-luban run box --user root -- xlings install --system nvim
+luban new box --user alice                  # asks for a password; empty: lubanoser
+luban new box --user alice --no-password    # no password, a sudo that asks nothing
+luban run box --user alice -- passwd        # change it
 ```
+
+Inside a system there is one store of packages, the system's (`/xlings`).
+A user's `~/.xlings` is a view of it: their own choices of versions, their
+shims and logs -- no index, no packages of their own. What they do not
+choose themselves is the system's choice. `xlings list`, `info` and `use`
+show the system's packages too, marked `system`.
+
+| As a user | What happens |
+|---|---|
+| `xlings install codex` (the system has it) | nothing to install: "codex 2.1 is provided by the system" |
+| `xlings use node 22` (in the store) | your choice; nobody else's changes |
+| `xlings install node@22` (not in the store) | one line, one question: it goes into the system's store with `sudo`, then it is your choice |
+| `xlings remove node` | your choice goes; the store keeps it (root removes it for everyone) |
+| `sudo xlings ...` | the system's own: its default for every user, and its store |
+
+With nobody to answer (an agent, a script) nothing is asked: the command
+fails with `E_NEEDS_ROOT` and says the exact `sudo xlings install ...` to run.
+Root removing a version a user has chosen keeps it, and says whose choice
+keeps it.
 
 ## Removing
 
