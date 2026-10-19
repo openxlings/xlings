@@ -177,6 +177,10 @@ std::optional<std::size_t> read_some(int fd, std::span<char> buf);
 bool write_all(int fd, std::string_view data);
 // Read-write, no controlling terminal taken (a device, a fifo).
 int open_device(const std::filesystem::path& path);
+// A named pipe at `path` (POSIX mkfifo; one already there is kept): what a
+// sound server writes PCM into and luban reads (design 2026-10-20 §20.1).
+// False where there are none (Windows).
+bool make_fifo(const std::filesystem::path& path, unsigned mode);
 // The window size of terminal `fd` (rows, columns); nullopt for a non-terminal.
 std::optional<std::pair<unsigned short, unsigned short>> terminal_size(int fd);
 bool set_terminal_size(int fd, unsigned short rows, unsigned short cols);

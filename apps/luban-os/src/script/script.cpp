@@ -11,6 +11,7 @@ import luban.vm;
 import xdesk.term;
 import opensal;
 import opensal.wire;
+import openhal.audio;
 import xlings.subos.home_view;
 import xlings.subos.located;
 import xlings.subos.policy_store;
@@ -443,6 +444,28 @@ void script_step_(App& a, Script& sc) {
         int w = 0, h = 0;
         words >> w >> h;
         a.window->set_size(w, h);
+        next();
+    } else if (cmd == "play") {
+        // An openhal audio stream from a file, played as a system's sound is
+        // (host::Speaker), to its end (design 2026-10-20 §20.1).
+        std::string file;
+        words >> file;
+        std::ifstream in(file, std::ios::binary);
+        const std::string bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        openhal::audio::Decoder d;
+        d.feed(bytes);
+        std::unique_ptr<host::Speaker> speaker;
+        for (auto m = d.next(); m && *m; m = d.next()) {
+            if (const auto* o = std::get_if<openhal::audio::Open>(&**m)) {
+                auto sp = host::Speaker::open(o->format.rate, o->format.channels);
+                if (!sp) { fail(sp.error()); return; }
+                speaker = std::move(*sp);
+            } else if (const auto* p = std::get_if<openhal::audio::Samples>(&**m)) {
+                if (speaker) speaker->play(p->bytes);
+            }
+        }
+        for (int k = 0; k < 100 && speaker && speaker->queued() > 0; ++k) std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
         next();
     } else if (cmd == "perf") {
         // `perf reset`: what follows is measured alone.

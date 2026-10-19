@@ -8,6 +8,7 @@ import xlings.testkit;
 import std;
 import opensal;
 import opensal.wire;
+import openhal.audio;
 import xdesk.term;
 
 namespace term = xdesk::term;
@@ -193,6 +194,31 @@ XTEST(OpensalWire, ADisplaysRoleCrossesWhole, .area = "luban", .covers = {"LUBAN
     EXPECT_FALSE(wire::decode_display("2 mirror 1 0 900")) << "a mirror of nothing";
     EXPECT_FALSE(wire::decode_display("2 extend")) << "not a role of this version";
     EXPECT_TRUE(opensal::has(static_cast<opensal::Interfaces>(opensal::Interface::Displays), opensal::Interface::Displays));
+}
+
+// openhal 0.2 audio (design 2026-10-20 §20.1): a stream's values cross a
+// boundary whole; what is not one is said, a kind not known is skipped.
+XTEST(OpenhalAudio, AStreamsMessagesCrossWhole, .area = "luban", .covers = {"LUBAN-SOUND"}) {
+    namespace audio = openhal::audio;
+    const std::vector<audio::Message> sent{
+        audio::Open{.stream = 3, .direction = audio::Direction::output, .format = {44100, 2}, .endpoint = "hdmi-1"},
+        audio::Samples{.stream = 3, .bytes = std::string("\x01\x00\xff\x7f\x00\x80\x10\x00", 8)},
+        audio::Volume{.stream = 3, .level = 0.5, .muted = true},
+        audio::Close{.stream = 3},
+        audio::Ended{.stream = 3, .why = "no output here"}};
+    std::string wire;
+    for (const auto& m : sent) wire += audio::encode(m);
+    wire += audio::frame('z', "a kind of a later version");
+    audio::Decoder d;
+    // In pieces, as a pipe gives them.
+    for (std::size_t at = 0; at < wire.size(); at += 7) d.feed(std::string_view(wire).substr(at, 7));
+    std::vector<audio::Message> got;
+    for (auto m = d.next(); m && *m; m = d.next()) got.push_back(**m);
+    EXPECT_EQ(got, sent);
+    audio::Decoder bad;
+    bad.feed(audio::frame('o', "1 sideways 48000 2"));
+    EXPECT_FALSE(bad.next()) << "an open that is not one is said";
+    EXPECT_EQ((audio::Format{48000, 2}.frame_bytes()), 4u);
 }
 
 XTEST(OpensalWire, APointerImageAndALockCrossWhole, .area = "luban", .covers = {"LUBAN-DESKTOP-WIRE", "LUBAN-OS-POINTER"}) {

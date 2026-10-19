@@ -7,6 +7,7 @@ import xlings.libs.json;
 import xlings.platform;
 import opensal;
 import opensal.wire;
+import openhal.audio;
 import luban.service;
 import luban.vm;
 import luban.compat;
@@ -16,8 +17,9 @@ import :core;
 namespace luban::os {
 
 namespace {
-// The channel a window's desktop uses (its console is 1).
+// The channel a window's desktop uses (its console is 1), and its sound.
 constexpr std::uint32_t kDisplayChannel = 2;
+constexpr std::uint32_t kSoundChannel = 3;
 }  // namespace
 
 std::optional<std::string> desktop_session(const service::Environment& e) {
@@ -27,11 +29,18 @@ std::optional<std::string> desktop_session(const service::Environment& e) {
 }
 
 std::unique_ptr<Display> Display::machine(const fs::path& home, const std::string& name, const std::string& session,
-                                          opensal::Size size, ClipboardGrant clip, std::function<void()> wake, std::string& error) {
+                                          opensal::Size size, ClipboardGrant clip, bool sound, std::function<void()> wake,
+                                          std::string& error) {
     auto client = vm::Client::connect(home, name);
     if (!client) { error = client.error(); return nullptr; }
+    // Its sound, granted (design 2026-10-20 §20.1): the system's `luban`
+    // sink, relayed by `luban __audio` there, played here.
     return over_(std::move(*client), name, true, size, clip, std::move(wake), error,
-                 [session, size](vm::Client& cl) { return cl.open_display(kDisplayChannel, session, int(size.width), int(size.height)); },
+                 [session, size, sound](vm::Client& cl) {
+                     if (!cl.open_display(kDisplayChannel, session, int(size.width), int(size.height))) return false;
+                     if (sound) (void)cl.open_command(kSoundChannel, {"luban", "__audio"}, 0, 0, nlohmann::json::object(), true);
+                     return true;
+                 },
                  {}, session);
 }
 
@@ -58,6 +67,10 @@ std::unique_ptr<Display> Display::over_(vm::Client client, const std::string& na
             auto frames = self->client_->poll(100);
             if (!frames) break;
             for (auto& [type, body] : *frames) {
+                if (body.first == kSoundChannel) {
+                    if (type == 'D') self->sound_(body.second);
+                    continue;
+                }
                 if (body.first != kDisplayChannel) continue;
                 if (type == 'D') self->provider_(body.second);
                 else if (type == 'E' && !self->log_.empty()) {
@@ -207,7 +220,10 @@ std::unique_ptr<Display> Display::process(const std::vector<std::string>& argv, 
 
 Display::~Display() {
     stop_ = true;
-    if (client_ && alive_) client_->close(kDisplayChannel);
+    if (client_ && alive_) {
+        client_->close(kSoundChannel);
+        client_->close(kDisplayChannel);
+    }
     if (to_ >= 0) {
         // The stream's end stops the bridge, and it its compositor.
         std::vector<int> fds{to_};
@@ -222,6 +238,29 @@ bool Display::send_(std::string_view wire_bytes) {
     if (client_) return client_->send(kDisplayChannel, wire_bytes);
     std::lock_guard l(sending_);
     return to_ >= 0 && xlings::platform::write_all(to_, wire_bytes);
+}
+
+// The system's sound (openhal.audio): its stream played on this computer's
+// output; one that cannot be is said once in the log and left.
+void Display::sound_(std::string_view bytes) {
+    namespace audio = openhal::audio;
+    sound_decoder_.feed(bytes);
+    for (;;) {
+        auto m = sound_decoder_.next();
+        if (!m || !*m) return;
+        if (const auto* o = std::get_if<audio::Open>(&**m)) {
+            if (o->direction != audio::Direction::output) continue;
+            auto s = host::Speaker::open(o->format.rate, o->format.channels);
+            if (s) speaker_ = std::move(*s);
+            else if (!log_.empty()) std::ofstream(log_, std::ios::app) << "sound: " << s.error() << "\n";
+        } else if (const auto* p = std::get_if<audio::Samples>(&**m)) {
+            if (speaker_) speaker_->play(p->bytes);
+        } else if (const auto* v = std::get_if<audio::Volume>(&**m)) {
+            if (speaker_) speaker_->volume(v->level, v->muted);
+        } else {
+            speaker_.reset();
+        }
+    }
 }
 
 void Display::provider_(std::string_view bytes) {

@@ -761,6 +761,24 @@ Luban 的键位按需求与交互设计来定，不照搬某个系统：
 - **授权**：沿用现有的 `audio` 授权（`luban config <系统> --allow audio`）；录音单独授权（`microphone`）。
 - **测试**：系统里播放一段已知波形，宿主的假音频设备收到同样的样本；没有授权时不传。
 
+**实现（C18，第一步：机器的声音输出）**：
+
+- openhal 0.2：`openhal.audio`（Open、Samples、Volume、Close、Ended；kind + 长度 + payload），SPEC §5。
+- 系统一侧：`luban:audio`（Alpine 3.24 的 PipeWire 1.6.8、WirePlumber 0.5.15、pipewire-pulse，按 Alpine 的 /usr 布局放
+  `lib/pipewire-0.3`、`lib/spa-0.2`、`lib/wireplumber-0.5`、`share/pipewire`；私有库与 musl loader 在 libexec/audio）；
+  `luban` sink 是 `module-pipe-tunnel`，写进 `/tmp/luban-audio.pcm`（48 kHz 双声道 S16LE），优先级最高即默认输出；
+  `bin/luban-audio` 为一个会话启动三者。构建时在 Debian 里播放一段噪声，确认默认输出是 luban、管道里收到数据。
+- 启动：`opensal-wlr` 的 `run_session`（所有桌面——xdesk、labwc、LXQt、KDE——都由它启动）在 PATH 里有 `luban-audio`
+  时随会话启动它，会话结束时连同它的进程组一起结束；会话已有宿主的声音服务（沙箱的 `audio` 授权给了 `PULSE_SERVER`）时不启动。
+  一个系统的 /etc 不投影包的 etc，所以不用 XDG autostart。
+- 转发：`luban __audio [FIFO]` 读管道（读写方式打开，声音服务重启时不断），按整帧发 openhal 流到标准输出；machine 里由 agent
+  在声音通道（3）上以登录用户运行（agent 把 `luban` 换成它自己的程序），窗口（`Display`）收到后经 `host::Speaker`
+  （SDL3 音频：Linux 的 PipeWire/PulseAudio/ALSA，macOS 的 Core Audio，Windows 的 WASAPI）播放；落后超过半秒丢弃旧的。
+- 授权：带桌面建出的系统授予 `audio`；窗口只在有这个授权（或系统没有策略文件）时打开声音通道。
+- 沙箱：保持现有的直连（`audio` 授权传 `PULSE_SERVER`），延迟最低。
+- 测试：openhal 流的往返；`luban __audio` 把管道里的已知波形原样发出；窗口的扬声器经 SDL 的 disk 驱动写出同样的样本。
+- 以后：麦克风（`microphone` 授权、input 方向）、KDE 带 kpipewire 后放回相机指示器、托盘进程在没有窗口时继续播放。
+
 ### 20.2 默认浏览器
 
 | 候选 | 引擎与依赖 | 评价 |

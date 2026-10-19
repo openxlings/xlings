@@ -6,6 +6,8 @@ import xlings.testkit;
 #include "xlings/xtest.hpp"
 import std;
 import xlings.libs.json;
+import xlings.platform;
+import openhal.audio;
 
 namespace tk = xlings::testkit;
 namespace fs = std::filesystem;
@@ -1314,4 +1316,46 @@ XTEST(Luban, TheHostStatusIsWhatThisComputerCanMake,
         EXPECT_TRUE(r.out.find("Luban host machine") != std::string::npos || r.out.find("do it:") != std::string::npos)
             << r.transcript();
     }
+}
+
+// A system's sound to the window (design 2026-10-20 §20.1): what its sound
+// server writes into the `luban` sink's named pipe comes out as an openhal
+// audio stream -- 48 kHz stereo, whole frames, the same samples.
+XTEST(Luban, ASystemsSoundLeavesItAsAnOpenhalStream, .area = "luban", .covers = {"LUBAN-SOUND"}, .requires_ = {"linux", "xlings-bin"}) {
+    const auto bin = luban_binary();
+    if (!bin) GTEST_SKIP() << "no luban beside the xlings under test";
+    auto home = tk::Home::isolated("luban-sound");
+    const auto fifo = home.root() / "sink.pcm";
+    ASSERT_TRUE(xlings::platform::make_fifo(fifo, 0600));
+    const int fd = xlings::platform::open_device(fifo);
+    ASSERT_GE(fd, 0);
+    // A known wave: 1200 frames of a ramp, 4800 bytes.
+    std::string wave;
+    for (int k = 0; k < 1200; ++k)
+        for (int ch = 0; ch < 2; ++ch) {
+            const auto v = static_cast<std::uint16_t>(k * 37 + ch * 1000);
+            wave += static_cast<char>(v & 0xff);
+            wave += static_cast<char>(v >> 8);
+        }
+    ASSERT_TRUE(xlings::platform::write_all(fd, wave));
+    tk::RunOptions o;
+    o.argv = {bin->string(), "__audio", fifo.string()};
+    o.env = home.env();
+    o.timeout = std::chrono::seconds(20);
+    const auto r = tk::run(o);
+    std::vector<int> fds{fd};
+    xlings::platform::close_fds(fds);
+    EXPECT_EQ(r.exit_code, 0) << r.transcript();
+    openhal::audio::Decoder d;
+    d.feed(r.out);
+    std::optional<openhal::audio::Open> opened;
+    std::string samples;
+    for (auto m = d.next(); m && *m; m = d.next()) {
+        if (const auto* op = std::get_if<openhal::audio::Open>(&**m)) opened = *op;
+        if (const auto* s = std::get_if<openhal::audio::Samples>(&**m)) samples += s->bytes;
+    }
+    ASSERT_TRUE(opened);
+    EXPECT_EQ(opened->format, (openhal::audio::Format{48000, 2}));
+    EXPECT_EQ(opened->direction, openhal::audio::Direction::output);
+    EXPECT_EQ(samples, wave);
 }

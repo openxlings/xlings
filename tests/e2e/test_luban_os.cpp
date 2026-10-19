@@ -8,6 +8,7 @@ import std;
 import xlings.libs.json;
 import xlings.platform;
 import opensal;
+import openhal.audio;
 
 namespace tk = xlings::testkit;
 namespace platform = xlings::platform;
@@ -186,10 +187,10 @@ sleep 300
     const auto sent = tk::read_file(log);
     using I = opensal::Interface;
     const auto provided = I::Surface | I::Pointer | I::Keyboard | I::Mode | I::Text | I::Clipboard | I::Shell | I::Cursor | I::CursorImage
-                          | I::PointerLock;
+                          | I::PointerLock | I::Displays;
     EXPECT_NE(sent.find(std::format("H {} 1100 700 1 1", provided)), std::string::npos)
-        << "the window's interfaces (surface, pointer, keyboard, mode, text, clipboard, shell, the pointer's shapes, images and lock), "
-           "size, density and pacing, first\n" << sent;
+        << "the window's interfaces (surface, pointer, keyboard, mode, text, clipboard, shell, the pointer's shapes, images and lock, "
+           "one of several displays), size, density and pacing, first\n" << sent;
     // Pacing: once it has shown the frame, it says so (the next may come).
     EXPECT_NE(sent.find("E presented"), std::string::npos) << sent;
     // The click, in the desktop's own pixels (its middle), down and up.
@@ -1348,4 +1349,29 @@ state {}
     EXPECT_GE(p["frames"].get<int>(), 20);
     const auto q = read_state(idle)["perf"];
     EXPECT_GE(q["idle_wait_ms"].get<int>(), 100) << "a still window rests\n" << q.dump();
+}
+
+// A system's sound plays on this computer (design 2026-10-20 §20.1): its
+// openhal stream through the window's speaker -- SDL's, here its disk
+// driver, a file -- the same samples.
+XTEST(LubanOs, ASystemsSoundPlaysOnThisComputer, .area = "luban", .covers = {"LUBAN-SOUND"}, .requires_ = {"linux", "xlings-bin"}) {
+    if (!app_binary()) GTEST_SKIP() << "no luban-os beside the xlings under test";
+    auto home = tk::Home::isolated("luban-os-sound");
+    ASSERT_EQ(home.xlings({"self", "init"}).exit_code, 0);
+    std::string wave;
+    for (int k = 0; k < 4800; ++k)
+        for (int ch = 0; ch < 2; ++ch) {
+            const auto v = static_cast<std::uint16_t>((k * 53 + ch * 777) & 0x7fff);
+            wave += static_cast<char>(v & 0xff);
+            wave += static_cast<char>(v >> 8);
+        }
+    namespace audio = openhal::audio;
+    const auto stream = home.root() / "stream.oha";
+    tk::write_file(stream, audio::encode(audio::Open{.stream = 1, .format = {48000, 2}}) + audio::encode(audio::Samples{.stream = 1, .bytes = wave}));
+    const auto played = home.root() / "played.raw";
+    const auto r = run_script(home, std::format("play {}\n", stream.string()), {},
+                              {{"SDL_AUDIO_DRIVER", "disk"}, {"SDL_AUDIO_DISK_OUTPUT_FILE", played.string()}, {"SDL_AUDIO_DISK_TIMESCALE", "4"}});
+    ASSERT_EQ(r.exit_code, 0) << r.transcript();
+    const auto out = tk::read_file(played);
+    EXPECT_NE(out.find(wave.substr(0, 4096)), std::string::npos) << "the samples are what was played (" << out.size() << " bytes)";
 }

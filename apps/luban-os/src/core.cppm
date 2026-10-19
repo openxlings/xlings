@@ -13,6 +13,7 @@ import luban.vm;
 import xdesk.term;
 import opensal;
 import opensal.wire;
+import openhal.audio;
 import xlings.subos.home_view;
 import xlings.subos.located;
 import xlings.subos.policy_store;
@@ -151,8 +152,10 @@ struct ClipboardGrant {
 
 class Display {
 public:
+    // `sound`: the system's sound played here (its `audio` grant; design 2026-10-20 §20.1).
     static std::unique_ptr<Display> machine(const fs::path& home, const std::string& name, const std::string& session,
-                                            opensal::Size size, ClipboardGrant clip, std::function<void()> wake, std::string& error);
+                                            opensal::Size size, ClipboardGrant clip, bool sound, std::function<void()> wake,
+                                            std::string& error);
     // In a sandbox: `xlings subos use <name> --cmd 'luban __desktop <session>'`,
     // opensal.wire on its standard input and output.
     static std::unique_ptr<Display> sandbox(const fs::path& xlings, const fs::path& luban, const fs::path& home,
@@ -217,6 +220,9 @@ private:
     bool machine_ { false };
     fs::path log_;                    // a relayed desktop's standard error
     void provider_(std::string_view bytes);
+    void sound_(std::string_view bytes);
+    openhal::audio::Decoder sound_decoder_;
+    std::unique_ptr<host::Speaker> speaker_;
     std::string name_;
     std::string session_;             // the desktop session it started (empty: unknown)
     Pointer pointer_;
@@ -634,6 +640,7 @@ struct App {
     // environment without a policy file is as open as it always was, and a
     // policy that cannot be read lets nothing cross.
     ClipboardGrant clipboard_grant(const std::string& name) const;
+    bool sound_grant(const std::string& name) const;
 
     void close_display();
 

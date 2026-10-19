@@ -289,6 +289,23 @@ int run_session(const Session& s, int in, int out, const SessionOptions& o) {
     if (s.native) env["OPENSAL_DISPLAYS"] = displays.string();
     // A session starts at home, as a login does (its terminals open there).
     const int log = o.log.empty() ? -1 : os::open_append(o.log);
+    // Its sound (xlings design 2026-10-20 §20.1): a system with luban:audio
+    // runs it for the session -- unless the session already has the host's
+    // sound server (a sandbox granted it: PULSE_SERVER).
+    int sound = -1;
+    if (!env.contains("PULSE_SERVER") && env.contains("PATH")) {
+        for (const auto& dir : std::views::split(env.at("PATH"), ':')) {
+            const fs::path starter = fs::path(std::string_view(dir.begin(), dir.end())) / "luban-audio";
+            if (std::error_code e; !fs::is_regular_file(starter, e)) continue;
+            sound = os::spawn({.argv = {starter.string()}, .env = env, .stdio = {-1, log, log}});
+            break;
+        }
+    }
+    struct SoundStop {
+        int pid;
+        // It and what it started (its own process group).
+        ~SoundStop() { if (pid > 0) { os::terminate(-pid); (void)os::wait(pid); } }
+    } sound_stop{sound};
     const int pid = os::spawn({.argv = {"/bin/sh", "-c", "exec " + s.exec}, .env = env,
                                .cwd = env.contains("HOME") ? fs::path(env.at("HOME")) : fs::path{},
                                .stdio = {s.native ? in : -1, s.native ? out : log, log}});
@@ -317,6 +334,7 @@ int run_session(const Session& s, int in, int out, const SessionOptions& o) {
                 }
                 std::this_thread::sleep_for(std::chrono::milliseconds(50));
             }
+            sound_stop.pid = -1;   // the sound stays with the desktop that goes on
             return 0;
         }
     }

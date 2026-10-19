@@ -17,6 +17,7 @@ import luban.vm;
 import opensal.wlr;
 import opensal;
 import openhal;
+import openhal.audio;
 import openas;
 import xlings.carrier;
 
@@ -1663,6 +1664,53 @@ int desktop_(const std::vector<std::string>& rest) {
     return wlr::run_session(*session, 0, 1, o);
 }
 
+// `luban __audio [FIFO]`: a system's sound, out to the window that shows it
+// (design 2026-10-20 §20.1): the PCM its sound server writes into FIFO
+// (luban:audio's `luban` sink: /tmp/luban-audio.pcm, 48 kHz stereo, signed
+// 16-bit), as openhal.audio on standard output -- one output stream. Ends
+// when its standard input does (the window went).
+int audio_(const std::vector<std::string>& rest) {
+    namespace platform = xlings::platform;
+    namespace audio = openhal::audio;
+    const std::filesystem::path fifo = rest.size() > 1 ? rest[1] : "/tmp/luban-audio.pcm";
+    if (!platform::make_fifo(fifo, 0666)) {
+        std::println(std::cerr, "luban __audio: no named pipe at {}", fifo.string());
+        return 1;
+    }
+    // Read and write: no end of it while the sound server comes and goes.
+    const int fd = platform::open_device(fifo);
+    if (fd < 0) {
+        std::println(std::cerr, "luban __audio: cannot open {}", fifo.string());
+        return 1;
+    }
+    const audio::Format format{};
+    if (!platform::write_all(1, audio::encode(audio::Open{.stream = 1, .format = format}))) return 0;
+    std::array<char, 9600> buf{};      // 50 ms
+    std::string carry;                  // a frame cut short, until the rest comes
+    for (;;) {
+        std::array<platform::PollFd, 2> p{{{.fd = 0}, {.fd = fd}}};
+        platform::poll_fds(p, 1000);
+        // What the server wrote first, then whether the window is still there.
+        if (p[1].readable) {
+            if (auto n = platform::read_some(fd, buf); n && *n > 0) {
+                carry.append(buf.data(), *n);
+                const auto whole = carry.size() - carry.size() % format.frame_bytes();
+                if (whole > 0) {
+                    if (!platform::write_all(1, audio::encode(audio::Samples{.stream = 1, .bytes = carry.substr(0, whole)}))) break;
+                    carry.erase(0, whole);
+                }
+            }
+        }
+        if (p[0].closed || p[0].readable) {
+            auto n = platform::read_some(0, buf);
+            if (!n || *n == 0) break;
+        }
+    }
+    std::vector<int> fds{fd};
+    platform::close_fds(fds);
+    return 0;
+}
+
 int run(int argc, char* argv[]) {
     // Its words, before anything is said (design 2026-10-19 §7).
     svc::register_words();
@@ -1714,6 +1762,7 @@ int run(int argc, char* argv[]) {
     if (!rest.empty() && rest.front() == "__agent-stdio") vm::serve_stdio();
     if (!rest.empty() && rest.front() == "__pipe-unix" && rest.size() == 2) return pipe_unix_(rest[1]);
     if (!rest.empty() && rest.front() == "__desktop") return desktop_(rest);
+    if (!rest.empty() && rest.front() == "__audio") return audio_(rest);
     if (!rest.empty() && (rest.front() == "--version" || rest.front() == "-V")) {
         std::println("luban {}", kVersion);
         return 0;

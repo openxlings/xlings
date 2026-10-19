@@ -113,6 +113,15 @@ xdesk desktop goes on in the others, and the next one is the primary: the
 desktop takes its size. A bridged desktop (labwc, KDE, LXQt) ends with its
 first window.
 
+A machine's sound plays on this computer. Its desktop starts a sound server
+with the session (luban:audio: PipeWire, and its Pulse server for programs
+that speak Pulse), whose default output, `luban`, the window plays through
+this computer's own (PipeWire, PulseAudio or ALSA; Core Audio; WASAPI). That
+is the system's `audio` grant: a system made with a desktop has it, and
+`luban config box --disallow audio` takes it back. A sandbox's programs use
+this computer's sound server directly, with the same grant. The microphone
+is not carried yet.
+
 ## xdesk
 
 The desktop editions start **xdesk**, a desktop made for this window: a

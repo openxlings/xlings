@@ -77,6 +77,10 @@ luban enter desk --display window
 都给桌面。第一个窗口关闭后，xdesk 桌面在其余窗口里继续，下一个成为主屏：桌面采用它的大小。桥接的桌面（labwc、KDE、LXQt）
 随第一个窗口结束。
 
+机器的声音在这台电脑上播放。它的桌面随会话启动一个声音服务（luban:audio：PipeWire，以及给说 Pulse 的程序用的 Pulse 服务），
+默认输出 `luban` 由窗口经这台电脑自己的声音系统（PipeWire、PulseAudio 或 ALSA；Core Audio；WASAPI）播放。这就是系统的 `audio` 授权：
+带桌面建出的系统有它，`luban config box --disallow audio` 收回。沙箱里的程序在同一授权下直接用这台电脑的声音服务。麦克风还不经过这里。
+
 ## xdesk
 
 桌面 edition 启动 **xdesk**：为这个窗口做的桌面，合成器与外壳在一个程序里（wlroots，软件渲染），直接与窗口通信——

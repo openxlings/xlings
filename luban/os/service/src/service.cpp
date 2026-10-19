@@ -672,6 +672,13 @@ Outcome create(const Context& given_context, const NewOptions& o, const NewPrevi
                           : o.no_password ? std::format("{} logs in as {} without a password; its sudo asks nothing", o.name, user)
                                           : std::format("{} logs in as {}", o.name, user)));
     }
+    // A desktop has its sound (design 2026-10-20 §20.1): played on this
+    // computer, as the `audio` grant allows -- given here, withdrawn with
+    // `luban config <system> --disallow audio`.
+    if (needs_user(preview, &o)) {
+        if (auto granted = configure(c, o.name, {{"allow", "audio"}}); !granted.ok() && c.sink)
+            c.sink(notice(std::format("{}'s sound is not played here (luban config {} --allow audio)", o.name, o.name)));
+    }
     // What luban config takes, given now (design §5.1): the same function.
     if (!o.settings.empty())
         if (auto set = configure(c, o.name, o.settings); !set.ok()) return {.code = set.code};

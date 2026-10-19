@@ -205,4 +205,25 @@ std::optional<std::filesystem::path> shipped_font_dir();
 std::vector<std::string> ui_font_candidates();
 std::vector<std::string> mono_font_candidates();
 
+// A system's sound on this computer (design 2026-10-20 §20.1): an openhal
+// audio output stream played by SDL -- PipeWire, PulseAudio or ALSA on
+// Linux, Core Audio on macOS, WASAPI on Windows -- on the default output.
+// Samples are queued; more than half a second behind, the oldest go (it keeps
+// up rather than lag). Safe from any thread.
+class Speaker {
+public:
+    static std::expected<std::unique_ptr<Speaker>, std::string> open(std::uint32_t rate, std::uint32_t channels);
+    ~Speaker();
+    // Signed 16-bit little-endian frames, interleaved.
+    void play(std::string_view samples);
+    void volume(double level, bool muted);
+    // Bytes waiting to be played.
+    std::size_t queued() const;
+
+private:
+    Speaker() = default;
+    struct Impl;
+    std::unique_ptr<Impl> impl_;
+};
+
 }  // namespace luban::desktop::host

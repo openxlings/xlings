@@ -165,7 +165,7 @@ void App::open_machine(const std::string& name) {
         const auto [w, h] = window->size();
         desktop_size = device_size_(w, h);
         auto* win = window.get();
-        display = Display::machine(home, name, *session, desktop_size, clipboard_grant(name), [win] { win->wake(); }, error);
+        display = Display::machine(home, name, *session, desktop_size, clipboard_grant(name), sound_grant(name), [win] { win->wake(); }, error);
         if (display) {
             shown_desktop = *session;
             view = View::Desktop;
@@ -200,6 +200,14 @@ ClipboardGrant App::clipboard_grant(const std::string& name) const {
     if (!p) return {};
     if (!*p) return {.copy = true, .paste = true};
     return {.copy = (*p)->grants.contains("clipboard"), .paste = (*p)->grants.contains("clipboard-paste")};
+}
+
+// Its sound out to this computer (design 2026-10-20 §20.1): the `audio`
+// grant; a system from before policies has it.
+bool App::sound_grant(const std::string& name) const {
+    auto p = xlings::subos::policy_store::read(xlings::subos::HomeView{home}, name);
+    if (!p) return false;
+    return !*p || (*p)->grants.contains("audio");
 }
 
 void App::close_display() {

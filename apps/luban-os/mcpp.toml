@@ -25,6 +25,7 @@ subos              = { path = "../../modules/subos" }
 luban-service      = { path = "../../luban/os/service" }
 luban-vm           = { path = "../../luban/os/vm" }
 opensal            = { path = "../../luban/specs/opensal" }
+openhal            = { path = "../../luban/specs/openhal" }
 xdesk-base = { path = "../../luban/xdesk/base" }
 luban-desktop-host = { path = "../../luban/os/window" }
 imkit              = { path = "../../luban/kits/imkit" }
