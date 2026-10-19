@@ -4,6 +4,7 @@
 module luban.os;
 
 import std;
+import luban.compat;
 import xlings.libs.json;
 import imkit;
 import tray;
@@ -28,28 +29,6 @@ import :core;
 
 namespace luban::os {
 
-namespace {
-std::string& language_() {
-    static std::string lang = "auto";
-    return lang;
-}
-}  // namespace
-
-void set_language(std::string_view lang) { language_() = std::string(lang); }
-
-std::string_view tr(std::string_view en, std::string_view zh) {
-    static const bool locale_chinese = [] {
-        for (const auto* v : {"LUBAN_OS_LANG", "LC_ALL", "LC_MESSAGES", "LANG"})
-            if (const char* l = std::getenv(v); l && *l) return std::string_view(l).starts_with("zh");
-        return false;
-    }();
-    // LUBAN_OS_LANG (tests, a person's override) wins over the setting.
-    static const bool forced = [] { const char* l = std::getenv("LUBAN_OS_LANG"); return l && *l; }();
-    const auto& lang = language_();
-    const bool chinese = forced || lang == "auto" ? locale_chinese : lang == "zh";
-    return chinese ? zh : en;
-}
-
 AppSettings read_app_settings(const fs::path& home) {
     AppSettings s;
     std::error_code ec;
@@ -65,6 +44,7 @@ AppSettings read_app_settings(const fs::path& home) {
     s.language = j.value("language", std::string("auto"));
     if (s.language != "en" && s.language != "zh") s.language = "auto";
     s.reduce_motion = j.value("reduce_motion", false);
+    s.lock_keyboard = j.value("lock_keyboard", true);
     s.console_size = std::clamp(j.value("console_size", 16.0f), 8.0f, 40.0f);
     if (auto c = j.find("console_sizes"); c != j.end() && c->is_object())
         for (auto it = c->begin(); it != c->end(); ++it)
@@ -77,7 +57,7 @@ AppSettings read_app_settings(const fs::path& home) {
 
 void write_app_settings(const fs::path& home, const AppSettings& s) {
     Json j{{"default_system", s.default_system}, {"countdown", s.countdown}, {"last_used", Json::object()},
-           {"language", s.language}, {"reduce_motion", s.reduce_motion}, {"console_size", s.console_size},
+           {"language", s.language}, {"reduce_motion", s.reduce_motion}, {"lock_keyboard", s.lock_keyboard}, {"console_size", s.console_size},
            {"console_sizes", Json::object()}, {"minimize_to_tray", s.minimize_to_tray}, {"keep_in_tray", s.keep_in_tray},
            {"close_choice", s.close_choice}};
     for (const auto& [k, v] : s.last_used) j["last_used"][k] = v;
@@ -181,7 +161,7 @@ bool page_bar_(App& a, std::string_view title, bool back, std::string_view back_
     bool clicked = false;
     if (back) {
         ImGui::SetCursorPos(ImVec2(x, px(14)));
-        clicked = imkit::button(back_id, tr("Back", "返回"), ImVec2(96, 36), imkit::Look::Ghost, true, false, imkit::Icon::Back);
+        clicked = imkit::button(back_id, tr("luban.os.common.back"), ImVec2(96, 36), imkit::Look::Ghost, true, false, imkit::Icon::Back);
         mark_(a, std::string(back_id));
         x += px(112);
     }
@@ -200,19 +180,19 @@ std::string ago_(const std::string& iso) {
     const auto then = std::chrono::sys_days(std::chrono::year(t.tm_year + 1900) / (t.tm_mon + 1) / t.tm_mday)
                       + std::chrono::hours(t.tm_hour) + std::chrono::minutes(t.tm_min) + std::chrono::seconds(t.tm_sec);
     const auto secs = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now() - then).count();
-    if (secs < 60) return std::string(tr("just now", "刚刚"));
+    if (secs < 60) return std::string(tr("luban.os.common.just_now"));
     const auto mins = secs / 60, hours = secs / 3600;
-    if (secs < 3600) return std::vformat(tr("{} min ago", "{} 分钟前"), std::make_format_args(mins));
-    if (secs < 86400) return std::vformat(tr("{} h ago", "{} 小时前"), std::make_format_args(hours));
+    if (secs < 3600) return std::vformat(tr("luban.os.common.min_ago"), std::make_format_args(mins));
+    if (secs < 86400) return std::vformat(tr("luban.os.common.h_ago"), std::make_format_args(hours));
     const auto days = secs / 86400;
-    return std::vformat(tr("{} d ago", "{} 天前"), std::make_format_args(days));
+    return std::vformat(tr("luban.os.common.d_ago"), std::make_format_args(days));
 }
 
 std::string edition_label_(const service::Environment& e) {
     // An environment with no edition is a view of this host (its packages, no root of its own).
-    if (e.edition.empty()) return std::string(e.kind == "view" ? tr("host view", "宿主视图") : tr("root", "根环境"));
+    if (e.edition.empty()) return std::string(e.kind == "view" ? tr("luban.os.common.host_view") : tr("luban.os.common.root"));
     auto label = e.edition;
-    if (label.starts_with("subos:luban-")) label = label.substr(12);
+    label = std::string(luban::compat::without_frozen_prefix(label));
     return label;   // with its version
 }
 
@@ -258,15 +238,15 @@ void close_dialog_(App& a) {
     const ImVec2 size(std::min(px(640), ImGui::GetWindowWidth() - px(32)), px(360));
     const ImVec2 at = overlay_(dl, size);
     const ImVec2 wo = ImGui::GetWindowPos();
-    imkit::text(dl, ImVec2(at.x + px(24), at.y + px(20)), std::vformat(tr("Close {}", "关闭 {}"), std::make_format_args(a.current)),
+    imkit::text(dl, ImVec2(at.x + px(24), at.y + px(20)), std::vformat(tr("luban.os.common.close"), std::make_format_args(a.current)),
                 th_().text, 22, true);
     const float cardW = (size.x - px(48) - px(16)) / 2;
     const bool temp = a.close_temp;
-    struct Card { imkit::Icon icon; std::string_view te, tz, de, dz; };
+    struct Card { imkit::Icon icon; std::string_view title, detail; };
     const std::array<Card, 2> cards{{
-        {imkit::Icon::Moon, "Keep it running", "后台运行", "The system goes on; Luban OS stays in the tray.", "系统继续运行；Luban OS 留在状态栏。"},
-        {imkit::Icon::Power, "Power off", "关机", temp ? "Stop the system. What it wrote goes." : "Stop the system.",
-         temp ? "停止系统。修改将丢弃。" : "停止系统。"},
+        {imkit::Icon::Moon, "luban.os.common.close.keep", "luban.os.common.close.keep_detail"},
+        {imkit::Icon::Power, "luban.os.common.close.power_off",
+         temp ? "luban.os.common.close.power_off_detail_temp" : "luban.os.common.close.power_off_detail"},
     }};
     for (int k = 0; k < 2; ++k) {
         const auto& c = cards[static_cast<std::size_t>(k)];
@@ -274,23 +254,23 @@ void close_dialog_(App& a) {
         const imkit::Picture pic{imkit::kIconSize, [icon = c.icon, k, &a](ImDrawList* d, ImVec2 p, float cl) {
             imkit::icon(d, icon, p, cl * 1.5f, a.close_choice == k ? th_().accent_hi : th_().text_dim);
         }};
-        if (imkit::option_card(k == 0 ? "close:background" : "close:poweroff", pic, tr(c.te, c.tz), tr(c.de, c.dz), a.close_choice == k,
+        if (imkit::option_card(k == 0 ? "close:background" : "close:poweroff", pic, tr(c.title), tr(c.detail), a.close_choice == k,
                                ImVec2(cardW / imkit::scale(), 170), a.keyboard && a.close_choice == k))
             a.close_choice = k;
         mark_(a, k == 0 ? "close:background" : "close:poweroff");
     }
     ImGui::SetCursorPos(ImVec2(at.x - wo.x + px(24), at.y - wo.y + px(252)));
-    imkit::checkbox("close:remember", tr("Remember my choice", "记住我的选择"), a.close_remember);
+    imkit::checkbox("close:remember", tr("luban.os.common.remember_my_choice"), a.close_remember);
     mark_(a, "close:remember");
     bool decided = false;
     ImGui::SetCursorPos(ImVec2(at.x - wo.x + size.x - px(24) - px(120) - px(12) - px(120), at.y - wo.y + size.y - px(64)));
-    if (imkit::button("close:cancel", tr("Cancel", "取消"), ImVec2(120, 40), imkit::Look::Ghost)) {
+    if (imkit::button("close:cancel", tr("luban.os.common.cancel"), ImVec2(120, 40), imkit::Look::Ghost)) {
         a.close_dialog = false;
         a.window->clear_close_request();
     }
     mark_(a, "close:cancel");
     ImGui::SetCursorPos(ImVec2(at.x - wo.x + size.x - px(24) - px(120), at.y - wo.y + size.y - px(64)));
-    if (imkit::button("close:confirm", tr("OK", "确定"), ImVec2(120, 40), imkit::Look::Primary)) decided = true;
+    if (imkit::button("close:confirm", tr("luban.os.common.ok"), ImVec2(120, 40), imkit::Look::Primary)) decided = true;
     mark_(a, "close:confirm");
     ImGui::End();
     for (const auto& k : a.window->keys()) {
@@ -336,7 +316,7 @@ void confirm_(App& a) {
         mark_(a, "confirm:alt");
     }
     ImGui::SetCursorPos(ImVec2(at.x - wo.x + bx, at.y - wo.y + size.y - px(60)));
-    no = imkit::button("confirm:no", tr("Cancel", "取消"), ImVec2(120, 40), imkit::Look::Ghost);
+    no = imkit::button("confirm:no", tr("luban.os.common.cancel"), ImVec2(120, 40), imkit::Look::Ghost);
     mark_(a, "confirm:no");
     ImGui::SetCursorPos(ImVec2(at.x - wo.x + size.x - px(24) - px(140), at.y - wo.y + size.y - px(60)));
     yes = imkit::button("confirm:yes", c.yes, ImVec2(140, 40), c.danger ? imkit::Look::Danger : imkit::Look::Primary);
@@ -355,11 +335,12 @@ void confirm_(App& a) {
 void host_menu_(App& a) {
     begin_overlay_("host");
     auto* dl = ImGui::GetWindowDrawList();
-    struct Item { std::string_view en, zh; std::string id; };
-    std::vector<Item> items{{"Back to the list", "回到列表", "menu:back-to-the-list"}, {"Manage", "管理", "menu:manage"},
-                            {a.window->fullscreen() ? "Leave full screen" : "Full screen", a.window->fullscreen() ? "退出全屏" : "全屏",
+    struct Item { std::string label; std::string id; };
+    std::vector<Item> items{{std::string(tr("luban.os.common.menu.back")), "menu:back-to-the-list"},
+                            {std::string(tr("luban.os.common.menu.manage")), "menu:manage"},
+                            {std::string(tr(a.window->fullscreen() ? "luban.os.common.menu.leave_full_screen" : "luban.os.common.menu.full_screen")),
                              a.window->fullscreen() ? "menu:leave-full-screen" : "menu:full-screen"},
-                            {"New window", "新窗口", "menu:new-window"}};
+                            {std::string(tr("luban.os.common.menu.new_window")), "menu:new-window"}};
     const bool machine = (a.console && a.console->is_machine()) || (a.display && a.display->is_machine());
     // Its desktops and its console, to switch to (design 2026-10-18 §3): the
     // session changes, the machine does not restart.
@@ -367,12 +348,17 @@ void host_menu_(App& a) {
     labels.reserve(a.menu_desktops.size() + 1);
     for (const auto& d : a.menu_desktops) {
         if (a.view == View::Desktop && a.shown_desktop == d) continue;   // the one on screen
-        labels.push_back(std::vformat(tr("Desktop: {}", "桌面：{}"), std::make_format_args(d)));
-        items.push_back({labels.back(), labels.back(), "menu:desktop:" + d});
+        labels.push_back(std::vformat(tr("luban.os.common.desktop"), std::make_format_args(d)));
+        items.push_back({labels.back(), "menu:desktop:" + d});
     }
-    if (a.view == View::Desktop) items.push_back({"Console", "控制台", "menu:console"});
-    if (machine) items.push_back({"Power off", "关机", "menu:power-off"});
-    items.push_back({"Close this menu", "关闭菜单", "menu:close-this-menu"});
+    if (a.view == View::Desktop) {
+        items.push_back({std::string(tr("luban.os.common.menu.console")), "menu:console"});
+        // The keyboard held or let go: the same as Ctrl+Alt+K.
+        items.push_back({std::string(tr(a.keyboard_wanted ? "luban.os.common.menu.release_keyboard" : "luban.os.common.menu.hold_keyboard")),
+                         "menu:keyboard"});
+    }
+    if (machine) items.push_back({std::string(tr("luban.os.common.close.power_off")), "menu:power-off"});
+    items.push_back({std::string(tr("luban.os.common.menu.close")), "menu:close-this-menu"});
     const ImVec2 size(px(340), px(64) + static_cast<float>(items.size()) * px(48));
     const ImVec2 at = overlay_(dl, size);
     const ImVec2 wo = ImGui::GetWindowPos();
@@ -381,7 +367,7 @@ void host_menu_(App& a) {
     a.menu_focus = std::clamp(a.menu_focus, 0, static_cast<int>(items.size()) - 1);
     for (std::size_t k = 0; k < items.size(); ++k) {
         ImGui::SetCursorPos(ImVec2(at.x - wo.x + px(16), at.y - wo.y + px(56) + k * px(48)));
-        if (imkit::button(items[k].id, tr(items[k].en, items[k].zh), ImVec2((size.x - px(32)) / imkit::scale(), 40),
+        if (imkit::button(items[k].id, items[k].label, ImVec2((size.x - px(32)) / imkit::scale(), 40),
                           imkit::Look::Ghost, true, a.keyboard && a.menu_focus == static_cast<int>(k)))
             picked = items[k].id;
         mark_(a, items[k].id);
@@ -398,6 +384,10 @@ void host_menu_(App& a) {
     if (picked == "menu:back-to-the-list") a.back_home();
     else if (picked == "menu:manage") { a.before_admin = a.view; a.view = View::Admin; }
     else if (picked == "menu:full-screen" || picked == "menu:leave-full-screen") a.window->set_fullscreen(!a.window->fullscreen());
+    else if (picked == "menu:keyboard") {
+        a.keyboard_wanted = !a.keyboard_wanted;
+        if (!a.keyboard_wanted) a.pointer_lock_asked = false;
+    }
     else if (picked == "menu:new-window") {
         const auto self = platform::get_executable_path();
         (void)platform::spawn_detached({self.string(), "--attach", a.current}, a.home / "logs" / "luban-os.log");
@@ -430,8 +420,7 @@ float system_bar_(App& a, std::string_view mode) {
     imkit::text(dl, ImVec2(o.x + px(8) + 16 * cell + px(8), o.y + px(6)), a.current, th_().text, 14, true);
     const float nx = o.x + px(8) + 16 * cell + px(16) + imkit::text_size(a.current, 14, true).x;
     chip_(dl, ImVec2(nx, o.y + px(5)), mode, th_().text, art::edition_color(edition, -1));
-    const std::string hint(a.window->keyboard_grabbed() ? tr("Ctrl+Alt releases the keyboard", "Ctrl+Alt 释放键盘")
-                                                          : tr("Ctrl+Alt: menu · Ctrl+= / Ctrl+- size", "Ctrl+Alt：菜单 · Ctrl+= / Ctrl+- 字号"));
+    const std::string hint(tr("luban.os.common.ctrl_alt_menu_ctrl_ctrl"));
     const auto ts = imkit::text_size(hint, 13);
     imkit::text(dl, ImVec2(o.x + W - ts.x - px(12), o.y + px(7)), hint, th_().text_faint, 13);
     return H;

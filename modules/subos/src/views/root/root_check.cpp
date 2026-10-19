@@ -102,15 +102,7 @@ Ran run_(const std::vector<std::string>& argv, std::chrono::seconds limit) {
     return ran;
 }
 
-// What a loader says when a program cannot start: glibc, musl, the kernel.
-bool loader_failed_(const Ran& r) {
-    if (r.timed_out) return false;
-    if (r.code == 126 || r.code == 127 || r.code > 128) return true;
-    for (const auto* said : {"error while loading shared libraries", "Error loading shared library",
-                             "Error relocating", "cannot execute binary file", "Exec format error"})
-        if (r.output.find(said) != std::string::npos) return true;
-    return false;
-}
+bool loader_failed_(const Ran& r) { return !started(r.code, r.timed_out, r.output); }
 
 std::string tail_(std::string_view text, std::size_t keep = 200) {
     std::string s(text.size() > keep ? text.substr(text.size() - keep) : text);
@@ -426,6 +418,26 @@ Report check(const fs::path& root, Depth depth, const Options& o) {
     auto [loader, libraries] = closure_(usrBin);
     r.items.push_back(std::move(loader));
     r.items.push_back(std::move(libraries));
+    // Its network (design 2026-10-19 §27.4): a default route and a name
+    // server. Not critical -- a system works offline -- but said, so "the
+    // index could not be fetched" inside a machine has an answer.
+    {
+        bool route = false, nameserver = false;
+        std::ifstream routes("/proc/net/route");
+        std::string line;
+        std::getline(routes, line);   // the header
+        while (!route && std::getline(routes, line)) {
+            std::istringstream fields(line);
+            std::string iface, destination;
+            fields >> iface >> destination;
+            route = destination == "00000000";
+        }
+        std::ifstream resolv("/etc/resolv.conf");
+        while (!nameserver && std::getline(resolv, line)) nameserver = line.starts_with("nameserver");
+        const bool ok = route && nameserver;
+        r.items.push_back(item_("network", "it has a network: a default route and a name server", false, ok,
+                                ok ? std::string{} : !route ? "no default route" : "no name server in /etc/resolv.conf"));
+    }
     std::set<std::string> declaredIds;
     for (auto& i : declared_(root, o, declaredIds)) r.items.push_back(std::move(i));
     if (o.run)
@@ -441,6 +453,21 @@ nlohmann::json to_json(const Report& report) {
         items.push_back(std::move(j));
     }
     return {{"ok", report.ok()}, {"failed", report.failed()}, {"items", std::move(items)}};
+}
+
+
+// What a loader says when a program cannot start: glibc, musl, the kernel.
+// BusyBox called by the name of an applet it was not built with answers
+// "applet not found" and 127: it ran, which is all this asks (design
+// 2026-10-19 F10).
+bool started(int code, bool timed_out, std::string_view output) {
+    if (timed_out) return true;
+    if (output.find("applet not found") != std::string_view::npos) return true;
+    if (code == 126 || code == 127 || code > 128) return false;
+    for (const auto* said : {"error while loading shared libraries", "Error loading shared library",
+                             "Error relocating", "cannot execute binary file", "Exec format error"})
+        if (output.find(said) != std::string_view::npos) return false;
+    return true;
 }
 
 }  // namespace xlings::subos::root_check

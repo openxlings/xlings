@@ -542,6 +542,76 @@ XTEST(Luban, ARootsLoginShellIsTheBestItHasOnceMade,
     EXPECT_EQ(shell("plain", "root"), "/bin/sh");
 }
 
+// A template named without a version is the index's; when the index has no
+// such package and one is installed, that one is used and said -- never
+// silently (design 2026-10-19 §9.2).
+XTEST(Luban, ATemplateOnlyInstalledIsUsedAndSaid,
+      .area = "luban", .cost = tk::Cost::Medium, .covers = {"SUBOS-FROM-NO-SILENT-INSTALLED"}, .requires_ = {"linux", "xlings-bin"}) {
+    if constexpr (!tk::is_linux) GTEST_SKIP() << "a Luban root is a Linux root";
+    const auto bin = luban_binary();
+    if (!bin) GTEST_SKIP() << "no luban beside the xlings under test";
+    auto home = luban_home("luban-installed-only", *bin);
+    ASSERT_EQ(home.xlings({"install", "fixture:my-os@1.0.0", "-y"}).exit_code, 0);
+    fs::remove(home.root() / "index/pkgs/m/my-os.lua");
+    ASSERT_EQ(home.xlings({"update"}).exit_code, 0);
+    const auto made = home.xlings({"interface", "subos_command", "--args",
+                                   R"({"argv":["new","box","--rootfs","--from","fixture:my-os"],"yes":true})"});
+    ASSERT_EQ(made.exit_code, 0) << made.transcript();
+    int said = 0;
+    for (const auto& j : made.json_lines())
+        if (j.value("kind", "") == "data" && j.value("dataKind", "") == "installed_only") {
+            ++said;
+            EXPECT_EQ(j["payload"].value("version", ""), "1.0.0") << j.dump();
+        }
+    EXPECT_EQ(said, 1) << "said once, though the base is resolved twice\n" << made.out;
+}
+
+// A home with no index fetched yet (a fresh one, a carrier's own) gets it
+// before deciding which version to make: not "could not be read", not
+// whichever is installed (design 2026-10-19 §9.2; the luban-wsl2 lane).
+XTEST(Luban, AHomeWithoutItsIndexYetFetchesItBeforeChoosingAVersion,
+      .area = "luban", .cost = tk::Cost::Medium, .covers = {"SUBOS-FROM-NO-SILENT-INSTALLED"}, .requires_ = {"linux", "xlings-bin"}) {
+    if constexpr (!tk::is_linux) GTEST_SKIP() << "a Luban root is a Linux root";
+    const auto bin = luban_binary();
+    if (!bin) GTEST_SKIP() << "no luban beside the xlings under test";
+    auto home = luban_home("luban-index-fetched", *bin);
+    std::error_code ec;
+    for (const auto* gone : {"data/xim-pkgindex", "data/xim-index-repos", "data/fixture"}) fs::remove_all(home.dir() / gone, ec);
+    const auto made = home.xlings({"interface", "subos_command", "--args",
+                                   R"({"argv":["new","box","--rootfs","--from","fixture:my-os"],"yes":true})"});
+    ASSERT_EQ(made.exit_code, 0) << made.transcript();
+    EXPECT_EQ(made.out.find("could not be read"), std::string::npos) << made.out;
+    EXPECT_TRUE(fs::is_directory(home.dir() / "subos/box"));
+}
+
+// A window for a system is opened only through an app that says what it can
+// do (design 2026-10-19 §10.3): one too old to be asked is not taken as
+// compatible -- refused with the update, before anything starts.
+XTEST(Luban, AWindowIsOpenedOnlyThroughAnAppThatSaysWhatItCanDo,
+      .area = "luban", .cost = tk::Cost::Medium, .covers = {"LUBAN-OS-APP-CAPABILITIES", "LUBAN-CAPS"}, .requires_ = {"linux", "xlings-bin"}) {
+    if constexpr (!tk::is_linux) GTEST_SKIP() << "a Luban root is a Linux root";
+    const auto bin = luban_binary();
+    if (!bin) GTEST_SKIP() << "no luban beside the xlings under test";
+    auto home = luban_home("luban-window-app", *bin);
+    ASSERT_EQ(luban(home, {"new", "box", "--xpkg", "fixture:my-os@1.0.0", "-y"}).exit_code, 0);
+    // An app of 2026.10.18.1: no __capabilities; its --version answers.
+    const auto app = home.dir() / "bin/luban-os";
+    tk::write_file(app, "#!/bin/sh\nfor a in \"$@\"; do [ \"$a\" = --version ] && { echo 'luban-os 2026.10.18.1'; exit 0; }; done\n"
+                        "touch \"$0.opened\"; sleep 30\n");
+    fs::permissions(app, fs::perms::owner_all, fs::perm_options::add);
+    const auto refused = luban(home, {"run", "box", "--display", "window", "--", "true"});
+    EXPECT_EQ(refused.exit_code, 1) << refused.transcript();
+    EXPECT_NE(refused.err.find("cannot say what it can do"), std::string::npos) << refused.transcript();
+    EXPECT_NE(refused.err.find("xlings update luban-os"), std::string::npos) << refused.transcript();
+    EXPECT_FALSE(fs::exists(home.dir() / "bin/luban-os.opened")) << "nothing was opened";
+    // An app that answers, and provides what the system needs, is used.
+    tk::write_file(app, "#!/bin/sh\n[ \"$1\" = __capabilities ] && { echo '{\"version\":\"9\",\"provides\":{\"root-layout\":9},\"needs\":[]}'; exit 0; }\n"
+                        "touch \"$0.opened\"\n");
+    const auto opened = luban(home, {"run", "box", "--display", "window", "--", "true"});
+    EXPECT_EQ(opened.exit_code, 0) << opened.transcript();
+    EXPECT_TRUE(fs::exists(home.dir() / "bin/luban-os.opened"));
+}
+
 // What is not an edition is said in luban's words before xlings is asked
 // (E14); an older edition than the index's newest, chosen because the newest
 // needs a newer xlings, is said with the update (E8, B22).
@@ -574,7 +644,7 @@ XTEST(Luban, NewSaysWhatItCannotMakeAndWhyItMadeAnOlderOne,
 // opencaps): its root's layout and its manifest's requires; what this luban
 // does not have is said, with the update.
 XTEST(Luban, WhatASystemNeedsThatThisLubanLacksIsSaid,
-      .area = "luban", .cost = tk::Cost::Medium, .covers = {"LUBAN-CAPS"}, .requires_ = {"linux", "xlings-bin"}) {
+      .area = "luban", .cost = tk::Cost::Medium, .covers = {"LUBAN-CAPS", "LUBAN-NETWORK-PROXY"}, .requires_ = {"linux", "xlings-bin"}) {
     if constexpr (!tk::is_linux) GTEST_SKIP() << "a Luban root is a Linux root";
     const auto bin = luban_binary();
     if (!bin) GTEST_SKIP() << "no luban beside the xlings under test";
@@ -602,7 +672,19 @@ XTEST(Luban, WhatASystemNeedsThatThisLubanLacksIsSaid,
     EXPECT_NE(text.out.find("xlings update luban"), std::string::npos) << text.transcript();
     // One that needs nothing it lacks says nothing of it.
     ASSERT_EQ(luban(home, {"new", "plain", "--xpkg", "fixture:my-os@1.0.0", "-y"}).exit_code, 0);
-    EXPECT_EQ(luban(home, {"status", "plain"}).out.find("xlings update luban"), std::string::npos);
+    const auto plain = luban(home, {"status", "plain"});
+    EXPECT_EQ(plain.out.find("xlings update luban"), std::string::npos);
+    // Its network in one line (design 2026-10-19 §27.2): like the host; as a
+    // machine, the host's proxy on its loopback is the NAT's gateway inside.
+    EXPECT_NE(plain.out.find("network   like the host"), std::string::npos) << plain.out;
+    ASSERT_EQ(luban(home, {"config", "plain", "--mode", "machine"}).exit_code, 0);
+    tk::RunOptions o;
+    o.argv = {(home.dir() / "bin/luban").string(), "status", "plain"};
+    o.env = home.env();
+    o.env["XLINGS_TOOLS_SEARCH"] = "home";
+    o.env["HTTPS_PROXY"] = "http://127.0.0.1:7890";
+    const auto proxied = tk::run(o);
+    EXPECT_NE(proxied.out.find("proxy http://10.0.2.2:7890 (the host's http://127.0.0.1:7890)"), std::string::npos) << proxied.out;
 }
 
 // Any system and any components by --xpkg (design 2026-10-18 §5): what each
@@ -766,6 +848,201 @@ XTEST(Luban, AnExportedEnvironmentIsImportedWithItsStateAndANewPersona,
                         != std::string::npos) << "the copy points at the original's files";
     EXPECT_EQ(fs::read_symlink(home.dir() / "subos/copy/rootfs/etc/localtime"), "/usr/share/zoneinfo/UTC");
     EXPECT_EQ(Json::parse(tk::read_file(home.dir() / "config/subos/copy/machine.json"))["persist"], "home");
+}
+
+// An archive carries what its system runs on -- its payloads and the index
+// naming them -- and is imported with no network, no index and none of its
+// payloads at hand (design 2026-10-19 §9.3: a .luban shared to another
+// machine, offline).
+XTEST(Luban, AnArchiveIsImportedWithoutTheNetworkFromWhatItCarries,
+      .area = "luban", .cost = tk::Cost::Medium, .covers = {"SUBOS-INDEX-SNAPSHOT", "LUBAN-ARCHIVE"},
+      .requires_ = {"linux", "xlings-bin"}) {
+    if constexpr (!tk::is_linux) GTEST_SKIP() << "a Luban root is a Linux root";
+    const auto bin = luban_binary();
+    if (!bin) GTEST_SKIP() << "no luban beside the xlings under test";
+    if (std::system("unshare -rn true >/dev/null 2>&1") != 0) GTEST_SKIP() << "no unprivileged network namespace here";
+    auto home = luban_home("luban-archive-offline", *bin);
+    ASSERT_EQ(luban(home, {"new", "box", "--xpkg", "fixture:my-os@1.0.0", "-y"}).exit_code, 0);
+    tk::write_file(home.dir() / "subos/box/rootfs/root/notes.txt", "mine\n");
+    const auto file = home.root() / "box.luban";
+    const auto exported = luban(home, {"export", "box", file.string()});
+    ASSERT_EQ(exported.exit_code, 0) << exported.transcript();
+    // What it says it carries.
+    std::string carried;
+    {
+        std::ifstream in(file, std::ios::binary);
+        carried.assign(std::istreambuf_iterator<char>(in), {});
+    }
+    EXPECT_NE(carried.find("payloads/fixture-x-hello/1.0.0"), std::string::npos);
+    EXPECT_NE(carried.find("payloads/fixture-x-my-os/1.0.0"), std::string::npos) << "the edition it was made from";
+    EXPECT_NE(carried.find("index/"), std::string::npos);
+    // Elsewhere: none of it here, and no network.
+    ASSERT_EQ(luban(home, {"rm", "box", "-y"}).exit_code, 0);
+    std::error_code ec;
+    for (const auto* gone : {"data/xpkgs/fixture-x-hello", "data/xpkgs/fixture-x-my-os", "data/xim-pkgindex", "data/xim-index-repos",
+                             "data/fixture"})
+        fs::remove_all(home.dir() / gone, ec);
+    for (const auto* gone : {"index", "primary"}) fs::remove_all(home.root() / gone, ec);
+    for (const auto& d : fs::directory_iterator(home.dir() / "domains", ec)) fs::remove_all(d.path() / "private/data/xpkgs", ec);
+    tk::RunOptions o;
+    o.argv = {"unshare", "-rn", (home.dir() / "bin/luban").string(), "import", file.string()};
+    o.env = home.env();
+    o.env["XLINGS_TOOLS_SEARCH"] = "home";
+    o.env.erase("XLINGS_SUBOS_MODE");
+    o.env.erase("XLINGS_ACTIVE_SUBOS");
+    o.timeout = std::chrono::seconds(120);
+    const auto imported = tk::run(o);
+    ASSERT_EQ(imported.exit_code, 0) << imported.transcript();
+    EXPECT_EQ(tk::read_file(home.dir() / "subos/box/rootfs/root/notes.txt"), "mine\n");
+    EXPECT_TRUE(fs::is_directory(home.dir() / "data/xpkgs/fixture-x-hello/1.0.0")
+                || !fs::is_empty(home.dir() / "domains", ec))
+        << "its package came from the archive";
+    // Still no network: another made from what is here now (design 2026-10-19
+    // §9.3 -- the no-network cases run in a network namespace; entering one,
+    // which needs the release client, is the fresh suite's).
+    tk::RunOptions n = o;
+    n.argv = {"unshare", "-rn", (home.dir() / "bin/luban").string(), "new", "box2", "--xpkg", "fixture:my-os@1.0.0", "-y"};
+    const auto made = tk::run(n);
+    EXPECT_EQ(made.exit_code, 0) << made.transcript();
+}
+
+// What is here and what the index offers (design 2026-10-19 §6): `luban ls`
+// with a name pattern (without one, as it always was), and `luban search`,
+// grouped and ordered as the quick start shows them -- desktops by tier, the
+// unrated last, a community one said so.
+XTEST(Luban, LsTakesANamePatternAndSearchListsWhatTheIndexOffers,
+      .area = "luban", .cost = tk::Cost::Medium, .covers = {"LUBAN-LS-SEARCH"}, .requires_ = {"linux", "xlings-bin"}) {
+    if constexpr (!tk::is_linux) GTEST_SKIP() << "a Luban root is a Linux root";
+    const auto bin = luban_binary();
+    if (!bin) GTEST_SKIP() << "no luban beside the xlings under test";
+    auto home = luban_home("luban-ls-search", *bin, [](const fs::path& primary, const fs::path& repo) {
+        const auto desktop = [](std::string_view name, std::string_view ns, std::string_view ext) {
+            return std::format(R"LUA(
+package = {{ spec = '1', name = '{}', namespace = '{}', description = 'a desktop', type = 'package', status = 'stable',
+            categories = {{'luban-desktop'}}, archs = {{'x86_64', 'aarch64'}}, {}
+            xpm = {{ linux = {{ ['1.0.0'] = {{}} }} }} }}
+)LUA", name, ns, ext);
+        };
+        tk::write_file(primary / "pkgs/luban/heavy.lua", desktop("heavy", "luban", "extensions = { luban = { tier = 4, gpu = 'better', title = { en = 'Heavy' } } },"));
+        tk::write_file(primary / "pkgs/luban/light.lua", desktop("light", "luban", "extensions = { luban = { tier = 1, title = { en = 'Light' } } },"));
+        tk::write_file(repo / "pkgs/w/wild.lua", desktop("wild", "fixture", "extensions = { luban = { tier = 9 } },"));
+    });
+    ASSERT_EQ(luban(home, {"new", "box", "--xpkg", "fixture:my-os@1.0.0", "-y"}).exit_code, 0);
+    ASSERT_EQ(luban(home, {"new", "work", "--xpkg", "fixture:my-os@1.0.0", "-y"}).exit_code, 0);
+    const auto all = luban(home, {"--json", "ls"});
+    ASSERT_EQ(all.exit_code, 0) << all.transcript();
+    const auto listed = Json::parse(all.out, nullptr, false);
+    ASSERT_TRUE(listed.is_object() && listed.contains("place") && listed["environments"].size() == 2) << all.out;
+    const auto some = luban(home, {"--json", "ls", "wk"});
+    ASSERT_EQ(some.exit_code, 0) << some.transcript();
+    const auto picked = Json::parse(some.out, nullptr, false);
+    ASSERT_EQ(picked["environments"].size(), 1u) << some.out;
+    EXPECT_EQ(picked["environments"][0]["name"], "work") << "w..k, in order";
+
+    const auto found = luban(home, {"--json", "search", "--desktops"});
+    ASSERT_EQ(found.exit_code, 0) << found.transcript();
+    const auto groups = Json::parse(found.out, nullptr, false);
+    ASSERT_TRUE(groups.is_object() && groups["groups"].size() == 1) << found.out;
+    // By tier, the unrated after (the fixture's own desktops are unrated too).
+    std::vector<std::string> order;
+    std::map<std::string, Json> by_ref;
+    for (const auto& d : groups["groups"][0]["items"]) {
+        order.push_back(d.value("ref", ""));
+        by_ref[d.value("ref", "")] = d;
+    }
+    const auto at = [&](std::string_view ref) { return std::ranges::find(order, ref) - order.begin(); };
+    ASSERT_EQ(at("luban:light"), 0) << found.out;
+    ASSERT_EQ(at("luban:heavy"), 1) << found.out;
+    EXPECT_LT(at("fixture:wild"), static_cast<long>(order.size())) << found.out;
+    EXPECT_EQ(by_ref["luban:heavy"].value("gpu", ""), "better");
+    EXPECT_EQ(by_ref["fixture:wild"].value("source", ""), "community");
+    EXPECT_FALSE(by_ref["fixture:wild"].contains("tier")) << "a tier out of range is not taken";
+    EXPECT_EQ(by_ref["fixture:wild"]["ignored"][0], "tier 9");
+    const auto text = luban(home, {"search", "heavy"});
+    EXPECT_NE(text.out.find("T4"), std::string::npos) << text.out;
+    EXPECT_NE(text.out.find("GPU better"), std::string::npos) << text.out;
+}
+
+// The parts' versions in one place (design 2026-10-19 §11), and what to do
+// where they disagree: an app too old to say what it can do.
+XTEST(Luban, StatusSaysThePartsVersionsAndWhatToDoWhenTheyDisagree,
+      .area = "luban", .cost = tk::Cost::Medium, .covers = {"LUBAN-VERSIONS"}, .requires_ = {"linux", "xlings-bin"}) {
+    if constexpr (!tk::is_linux) GTEST_SKIP() << "a Luban root is a Linux root";
+    const auto bin = luban_binary();
+    if (!bin) GTEST_SKIP() << "no luban beside the xlings under test";
+    auto home = luban_home("luban-versions", *bin);
+    const auto plain = luban(home, {"status"});
+    EXPECT_NE(plain.out.find("versions"), std::string::npos) << plain.out;
+    EXPECT_NE(plain.out.find("xlings "), std::string::npos) << plain.out;
+    const auto app = home.dir() / "bin/luban-os";
+    tk::write_file(app, "#!/bin/sh\necho 'luban-os 2026.10.17.1'\n");
+    fs::permissions(app, fs::perms::owner_all, fs::perm_options::add);
+    const auto status = luban(home, {"--json", "status"});
+    const auto j = Json::parse(status.out, nullptr, false);
+    ASSERT_TRUE(j.is_object() && j.contains("versions")) << status.out;
+    const auto& v = j["versions"];
+    EXPECT_FALSE(v.value("xlings", "").empty()) << v.dump();
+    EXPECT_FALSE(v.value("luban", "").empty()) << v.dump();
+    bool told = false;
+    for (const auto& m : v["mismatches"])
+        told = told || (m.value("what", "") == "luban-os" && m.value("next", "") == "xlings update luban-os");
+    EXPECT_TRUE(told) << v.dump();
+    const auto text = luban(home, {"status"});
+    EXPECT_NE(text.out.find("xlings update luban-os"), std::string::npos) << text.out;
+}
+
+// What is shown before a system is made is what is made (design 2026-10-19
+// §9.1): the plan's version is named to xlings, not resolved again.
+XTEST(Luban, TheVersionShownIsTheVersionMade,
+      .area = "luban", .cost = tk::Cost::Medium, .covers = {"LUBAN-EDITION-PINNED"}, .requires_ = {"linux", "xlings-bin"}) {
+    if constexpr (!tk::is_linux) GTEST_SKIP() << "a Luban root is a Linux root";
+    const auto bin = luban_binary();
+    if (!bin) GTEST_SKIP() << "no luban beside the xlings under test";
+    auto home = luban_home("luban-pinned", *bin);
+    const auto dry = luban(home, {"--json", "new", "box", "--xpkg", "fixture:next-os", "--dry-run"});
+    ASSERT_EQ(dry.exit_code, 0) << dry.transcript();
+    std::string shown;
+    for (const auto& j : dry.json_lines())
+        if (j.contains("result") && j["result"].is_object()) shown = j["result"].value("system", "");
+    ASSERT_FALSE(shown.empty()) << dry.out;
+    ASSERT_EQ(luban(home, {"new", "box", "--xpkg", "fixture:next-os", "-y"}).exit_code, 0);
+    const auto record = Json::parse(tk::read_file(home.dir() / "config/subos/box/instance.json"), nullptr, false);
+    EXPECT_EQ(record["edition"].value("ref", std::string{}), shown) << record.dump();
+    EXPECT_NE(shown.find('@'), std::string::npos) << "a version, not a name to resolve again: " << shown;
+}
+
+// A move into its own userland keeps what the system was before it, and the
+// way back (design 2026-10-19 §12.4): history names it first, rollback
+// --to relayout asks for -y, then makes the system again from it -- its files
+// as they were -- and the archive goes only with a confirmed removal.
+XTEST(Luban, WhatASystemWasBeforeItsMoveIsKeptAndItsWayBack,
+      .area = "luban", .cost = tk::Cost::Medium, .covers = {"LUBAN-UPGRADE-REVERSIBLE"}, .requires_ = {"linux", "xlings-bin"}) {
+    if constexpr (!tk::is_linux) GTEST_SKIP() << "a Luban root is a Linux root";
+    const auto bin = luban_binary();
+    if (!bin) GTEST_SKIP() << "no luban beside the xlings under test";
+    auto home = luban_home("luban-relayout-back", *bin);
+    ASSERT_EQ(luban(home, {"new", "box", "--xpkg", "fixture:my-os@1.0.0", "-y"}).exit_code, 0);
+    const auto root = home.dir() / "subos/box/rootfs";
+    tk::write_file(root / "root/before.txt", "before\n");
+    // What a move keeps, where it keeps it.
+    const auto kept = home.dir() / "state/luban/relayout/box.luban";
+    fs::create_directories(kept.parent_path());
+    ASSERT_EQ(luban(home, {"export", "box", kept.string()}).exit_code, 0);
+    tk::write_file(root / "root/before.txt", "changed since\n");
+    const auto history = luban(home, {"history", "box"});
+    EXPECT_NE(history.out.find("before its move"), std::string::npos) << history.out;
+    EXPECT_NE(history.out.find("luban rollback box --to relayout"), std::string::npos) << history.out;
+    const auto status = luban(home, {"--json", "status", "box"});
+    EXPECT_NE(status.out.find("luban rollback box --to relayout"), std::string::npos) << "in its notes\n" << status.out;
+    const auto asked = luban(home, {"rollback", "box", "--to", "relayout"});
+    EXPECT_EQ(asked.exit_code, 2) << asked.transcript();
+    EXPECT_NE(asked.err.find("luban rollback box --to relayout -y"), std::string::npos) << asked.transcript();
+    const auto back = luban(home, {"rollback", "box", "--to", "relayout", "-y"});
+    ASSERT_EQ(back.exit_code, 0) << back.transcript();
+    EXPECT_EQ(tk::read_file(home.dir() / "subos/box/rootfs/root/before.txt"), "before\n");
+    EXPECT_TRUE(fs::exists(kept)) << "still the way back";
+    ASSERT_EQ(luban(home, {"rm", "box", "-y"}).exit_code, 0);
+    EXPECT_FALSE(fs::exists(kept)) << "it goes with the system";
 }
 
 XTEST(Luban, BootSaysWhatThisBootWas,

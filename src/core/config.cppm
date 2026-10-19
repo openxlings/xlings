@@ -11,7 +11,7 @@ import xlings.core.home;
 namespace xlings {
 
 export struct Info {
-    static constexpr std::string_view VERSION = "2026.10.19.1";
+    static constexpr std::string_view VERSION = "2026.10.19.2";
     static constexpr std::string_view REPO = "https://github.com/openxlings/xlings";
 };
 
@@ -153,6 +153,10 @@ public:
         // ~/.xlings and the system's home is the layer below it (design
         // 2026-10-16 L §8).
         std::filesystem::path systemLayer;
+        // Inside a Luban system: this command is the first write of a user
+        // who has no home of their own yet -- main asks once and starts it
+        // from the system's (design 2026-10-19 §27.5).
+        bool ownHomeNew { false };
     };
 
     // Owner-anchored shim dispatch (0.4.48; see
@@ -161,6 +165,19 @@ public:
     // invocations only — the xlings CLI keeps the env-first resolution.
     // Has no effect once the singleton is constructed.
     static void override_home(const std::filesystem::path& home);
+
+    // The command only reads (home::is_read_only_command): said by main.cpp
+    // before the first Config use. Inside a Luban system, a user who has no
+    // home of their own yet then reads the system's -- nothing is created,
+    // nothing announced (design 2026-10-19 §19, F18).
+    static void command_reads_only(bool readsOnly);
+
+    // A system user's own home, started from the system's (`paths().
+    // systemLayer`): its index snapshot and the settings that say where
+    // packages come from (mirror, lang, index_repos, resource_servers) -- so
+    // the first install needs no network for the index (design 2026-10-19
+    // §27.5, F25). Nothing is replaced that is there.
+    static std::expected<void, std::string> start_own_home();
 
     // Public because they ARE the public contract of repo_dir_for(): the
     // default index is the entry named DEFAULT_INDEX_REPO_NAME, and it lives in

@@ -40,6 +40,8 @@ import xlings.core.diag;
 import xlings.core.xvm.errors;
 import xlings.core.config;
 import xlings.core.home;
+import xlings.core.home.layers;
+import xlings.core.home.domain_producer_source;
 import xlings.core.profile;
 import xlings.runtime;
 import xlings.libs.json;
@@ -210,7 +212,9 @@ PackageCatalog& get_catalog(CatalogAccess access) {
             if (sync_all_repos(true)) {
                 result = mgr.rebuild(true);
             }
-            if (result.has_value() && !result->has_value()) {
+            // Without a network the caller says it once, with where to look.
+            const char* down = std::getenv("XLINGS_NET_UNREACHABLE");
+            if (result.has_value() && !result->has_value() && !(down && *down)) {
                 log::error("failed to build catalog: {}", result->error());
                 log::info("try running: xlings update");
             }
@@ -231,12 +235,28 @@ PackageCatalog* ensure_catalog(EventStream& stream, CatalogNeed need) {
     auto& catalog = need == CatalogNeed::Synced ? get_catalog(CatalogAccess::InstallReady) : get_catalog();
     if (catalog.is_loaded()) return &catalog;
     std::string why;
-    if (need == CatalogNeed::Synced) {
+    const char* down = std::getenv("XLINGS_NET_UNREACHABLE");
+    const bool offline = down && *down;
+    if (need == CatalogNeed::Synced && !offline) {
         log::info("package index not available, updating...");
         sync_all_repos(true);
         auto rebuilt = catalog.rebuild();
         if (rebuilt && catalog.is_loaded()) return &catalog;
         if (!rebuilt) why = ": " + rebuilt.error();
+    }
+    // No network, said once, with where to look (design 2026-10-19 §27.4): in
+    // a Luban machine its network is the host's to check.
+    if (offline) {
+        const char* system = std::getenv("XLINGS_ROOT_INSTANCE");
+        stream.emit(ErrorEvent{
+            .code = ErrorCode::NotFound,
+            .message = std::format("the package index could not be fetched: no network ({})", down),
+            .recoverable = true,
+            .hint = system && *system
+                ? std::format("on the host: luban status {} --check (its network and proxy)", system)
+                : "check the network or the proxy (HTTPS_PROXY), or another mirror: xlings config --mirror CN",
+        });
+        return nullptr;
     }
     stream.emit(ErrorEvent{
         .code = ErrorCode::NotFound,
@@ -418,6 +438,20 @@ void emit_scope_repairs_(EventStream& stream) {
 }
 
 namespace {
+
+// A recipe's status as the spec spells it.
+std::string_view status_name_(mcpplibs::xpkg::PackageStatus s) {
+    return s == mcpplibs::xpkg::PackageStatus::Stable       ? "stable"
+         : s == mcpplibs::xpkg::PackageStatus::Deprecated ? "deprecated" : "dev";
+}
+
+// A recipe's `extensions` as JSON (the loader keeps it as text), or null when
+// it has none or the text is not an object.
+nlohmann::json extensions_json_(const mcpplibs::xpkg::Package& pkg) {
+    if (pkg.extensions.empty()) return {};
+    auto j = nlohmann::json::parse(pkg.extensions, nullptr, false);
+    return j.is_object() ? j : nlohmann::json{};
+}
 // A plumbing step (a template of a `subos new --from`) says nothing per node:
 // the edition is named once by the command that asked for it.
 bool gNodeLinesQuiet = false;
@@ -846,6 +880,31 @@ int install_(std::span<const std::string> targets, bool yes, bool noDeps,
             entry.version = match->version;
         }
         requestedMatches.push_back(*match);
+    }
+
+    // Inside a Luban system, what the system already has at that version is
+    // every user's: not installed again for one of them (design 2026-10-19
+    // §27.5). Only when everything asked is the system's; otherwise the
+    // install borrows the system's payloads as before.
+    if (const auto& paths = Config::paths(); !paths.systemLayer.empty() && !requestedMatches.empty()) {
+        std::error_code ec;
+        if (!std::filesystem::equivalent(paths.systemLayer, paths.homeDir, ec))
+            if (auto physical = home::domain_producer_source::persisted_home(paths.systemLayer))
+                if (auto system = home::layers::read_source_snapshot(*physical)) {
+                    const auto first = static_cast<std::size_t>(injectedRelocationTool);
+                    bool all = first < requestedMatches.size();
+                    for (std::size_t i = first; all && i < requestedMatches.size(); ++i) {
+                        const auto it = system->workspace.active.find(requestedMatches[i].name);
+                        all = it != system->workspace.active.end()
+                              && xvm::version_key_matches(requestedMatches[i].version, it->second);
+                    }
+                    if (all) {
+                        for (std::size_t i = first; i < requestedMatches.size(); ++i)
+                            log::println("{}@{} is installed for every user already (the system's)",
+                                         requestedMatches[i].canonicalName, requestedMatches[i].version);
+                        return 0;
+                    }
+                }
     }
 
     // Resolve dependencies
@@ -2705,9 +2764,17 @@ int cmd_search(const std::string& keyword, EventStream& stream, const std::strin
             continue;
         std::string desc = pkg ? pkg->description : "";
         itemsJson.push_back({match.canonicalName, desc});
-        packages.push_back({{"package", match.canonicalName}, {"namespace", match.namespaceName}, {"name", match.name},
+        nlohmann::json item{{"package", match.canonicalName}, {"namespace", match.namespaceName}, {"name", match.name},
                             {"version", match.version}, {"index", match.repoName}, {"description", desc},
-                            {"categories", pkg ? nlohmann::json(pkg->categories) : nlohmann::json::array()}});
+                            {"categories", pkg ? nlohmann::json(pkg->categories) : nlohmann::json::array()}};
+        if (pkg) {
+            item["status"] = status_name_(pkg->status);
+            item["archs"] = pkg->archs;
+            item["keywords"] = pkg->keywords;
+            if (auto ext = extensions_json_(*pkg); !ext.empty()) item["extensions"] = std::move(ext);
+        }
+        if (!match.passedOver.empty()) item["passed_over"] = match.passedOver;
+        packages.push_back(std::move(item));
     }
     if (itemsJson.empty()) {
         if (category.empty()) log::println("no packages found matching '{}'", keyword);
@@ -3263,6 +3330,18 @@ int cmd_info(const std::string& target, EventStream& stream, bool allVersions, c
             {"status", pkg->status == mcpplibs::xpkg::PackageStatus::Stable       ? "stable"
                        : pkg->status == mcpplibs::xpkg::PackageStatus::Deprecated ? "deprecated" : "dev"}};
         if (!match->passedOver.empty()) infoPayload["package"]["passed_over"] = match->passedOver;
+        // Namespaced data for other programs (xpkg spec, "extensions"):
+        // handed on as the recipe wrote it, never read here.
+        if (auto ext = extensions_json_(*pkg); !ext.empty()) infoPayload["package"]["extensions"] = std::move(ext);
+    }
+    // -v: which programs a recipe speaks to, and what its loader dropped.
+    if (log::get_level() == log::Level::Debug) {
+        if (auto ext = extensions_json_(*pkg); !ext.empty()) {
+            std::string names;
+            for (auto it = ext.begin(); it != ext.end(); ++it) names += (names.empty() ? "" : " ") + it.key();
+            addField(fieldsJson, "extensions", names);
+        }
+        for (const auto& w : pkg->warnings) addField(fieldsJson, "loader", w);
     }
     infoPayload["fields"] = std::move(fieldsJson);
     infoPayload["extra_fields"] = std::move(extraJson);

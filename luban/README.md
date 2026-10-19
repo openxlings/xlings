@@ -1,14 +1,20 @@
 # luban/
 
-Luban OS: its components and services, and the specifications and reusable
-components it is built from. Three kinds of package live here, one directory
-each; every package is its own `mcpp.toml`.
+Luban OS: its components and services, and the specifications, reusable
+components and desktop it is built from. Each kind of package has its own
+directory; every package is its own `mcpp.toml` (design 2026-10-19 §28).
 
 | Directory | What | May import | Moves out |
 |---|---|---|---|
 | `specs/` | Specifications: a contract, its declarations, its conformance check (`README.md`, `SPEC.md`, `src/`, `conformance/`) | the standard library and itself; never another specification | with its second implementer, or a user outside this repository |
 | `kits/` | Implementations of specifications and reusable components | the standard library, specifications, other kits, their C libraries; never `xlings.*` or `luban.*` | with a user outside this repository |
-| `os/` | Luban OS itself: stage-0, the service, machines, the `luban` command, the Luban OS app's library | `modules/`, specifications, kits | stays |
+| `xdesk/` | The xdesk desktop, one project: its libraries and its program (`base/`, `layout/`, `compositor/`, `app/`) | as a kit | as a whole |
+| `apps/` | Programs that run inside a Luban system and are not a project of their own (made with its first member) | `modules/`, specifications, kits | stays |
+| `os/` | Luban OS itself: stage-0, the service, machines, the `luban` command, the Luban OS app's window, compatibility | `modules/`, specifications, kits | stays |
+
+Programs that run on the host are in the top-level `apps/` (luban, luban-os,
+gui, xdev). A package with one module keeps its files in `src/`; one with
+several has a directory per module (`native/` for C bindings).
 
 `specs/` and `kits/` are kept as independent projects: their names do not say
 Luban, their comments and documents do not point into this repository, their
@@ -33,7 +39,15 @@ reference one another; implementations connect them.
 
 - `opensal-wlr` -- a wlroots compositor's output as an opensal surface.
 - `openhal-host` -- openhal's provider on Linux, macOS and Windows.
-- `xdesk-base`, `xdesk-compositor` -- the xdesk desktop components.
+- `imkit` -- immediate-mode widgets over Dear ImGui.
+- `tray` -- a status-area icon and its menu (StatusNotifierItem, the macOS menu bar, the Windows notification area).
+
+## xdesk/
+
+- `base` (xdesk-base) -- the system calls, a terminal's screen, applications, settings.
+- `layout` (xdesk-layout) -- where windows go: pure logic.
+- `compositor` (xdesk-compositor) -- the Wayland compositor whose output is an opensal surface, its drawing and shell.
+- `app` (xdesk-app) -- the `xdesk` program a Luban system's desktop session runs.
 
 ## os/
 
@@ -41,4 +55,5 @@ reference one another; implementations connect them.
 - `service` -- environments and machines: their life, their events, what this computer can do.
 - `vm` -- the machine runtime: supervisor, terminal relay, guest sessions, hypervisor backends.
 - `cli` -- the `luban` command.
-- `desktop` -- the Luban OS app's window (SDL3 as opensal's host provider) and Dear ImGui.
+- `window` -- the Luban OS app's window (SDL3 as opensal's host provider) and Dear ImGui.
+- `compat` -- what is kept only for a released older part, each with when it goes.

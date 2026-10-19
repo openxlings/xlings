@@ -35,6 +35,10 @@ struct Level {
     int level;
     std::string_view adds;
     std::string_view provider;
+    // The package that brings it to a system that lacks it (a system's
+    // capabilities): what to install instead of upgrading the whole system.
+    // Empty when it is not a package's to bring.
+    std::string_view package {};
 };
 std::span<const Level> registry();
 // The highest registered level of `name`; 0 when the name is not registered.

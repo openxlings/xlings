@@ -10,11 +10,13 @@ version   = "0.1.0"
 kind = "lib"
 
 [dependencies]
+luban-compat = { path = "../compat" }
 libs     = { path = "../../../modules/libs" }
 platform = { path = "../../../modules/platform" }
 runtime  = { path = "../../../modules/runtime" }
 subos    = { path = "../../../modules/subos" }
 cli      = { path = "../../../modules/cli" }
+i18n     = { path = "../../../modules/i18n" }
 image    = { path = "../../../modules/image" }
 carrier  = { path = "../../../modules/carrier" }
 luban-service = { path = "../service" }

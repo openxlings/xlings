@@ -25,6 +25,8 @@ it like an OS of its own — on Linux, macOS and Windows.
 
 ## Quick Start
 
+### xlings
+
 ```bash
 # Linux / macOS
 curl -fsSL https://raw.githubusercontent.com/openxlings/xlings/main/tools/other/quick_install.sh | bash
@@ -44,6 +46,18 @@ xlings list                            # what is installed
 
 Using an AI agent? Tell it to run `xlings agent usage` — a complete guide
 written for agents ships with xlings.
+
+### Luban OS
+
+`luban` (the command) and Luban OS (the window) are packages of their own:
+install them, then make a system and go in.
+
+```bash
+xlings install luban luban-os    # the luban command and the Luban OS window
+luban new box                    # a Linux system, no root needed (Luban Core)
+luban enter box                  # its shell; exit to leave
+luban-os                         # or open the Luban OS window
+```
 
 ## What it does
 
@@ -107,8 +121,9 @@ generation, exported as images, shown in the Luban OS window with their desktop.
 [Quick start](docs/luban/01-quick-start.md) · [The desktop](docs/luban/08-desktop.md)
 
 ```bash
-luban new box       # a Linux system, no root needed (Luban Core: shells, editors, git, compilers)
-luban enter box     # its shell; exit to leave
+xlings install luban  # the luban command (luban-os: the window)
+luban new box         # a Linux system, no root needed (Luban Core: shells, editors, git, compilers)
+luban enter box       # its shell; exit to leave
 ```
 Smaller or desktop editions (`--edition tiny`, `--edition desktop`), the same
 system as a machine with its own kernel (`--mode machine`), bootable images

@@ -10,7 +10,9 @@
 //   consumer -> provider
 //     'h'  hello      wanted interfaces                      "<bits>"
 //     'f'  frame      a damaged rectangle of pixels          "x y w h stride\n" + bytes
-//     'c'  cursor     a shape by name                        "<name>"
+//     'c'  cursor     a shape by name (kCursors)             "<name>"
+//     'C'  cursor     CursorImage: an image and its hotspot  "w h hx hy stride\n" + bytes
+//     'l'  lock       PointerLock: hold the pointer or not   "1" | "0"
 //     't'  text input on/off and the caret                   "1 x y w h" | "0"
 //     'b'  clipboard  the consumer's selection, offered      <utf-8>
 //     's'  size       what it draws at: before its first     "<w> <h>"
@@ -49,6 +51,10 @@ struct FrameHeader { Rect rect; std::uint32_t stride { 0 }; };
 std::string encode_frame(const Pixels& surface, Rect damage);
 // The rectangle and its rows, packed (stride = width * 4).
 std::optional<std::pair<FrameHeader, std::string_view>> decode_frame(std::string_view payload);
+
+// 'C': a cursor image, bounded by kMaxCursorSide; nullopt when malformed.
+std::string encode_cursor_image(const CursorImage& c);
+std::optional<CursorImage> decode_cursor_image(std::string_view payload);
 
 std::string encode_event(const Event& e);
 std::optional<Event> decode_event(std::string_view payload);

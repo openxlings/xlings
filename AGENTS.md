@@ -9,17 +9,19 @@ Design records live in `.agents/docs/` (the current architecture:
 ## Layout and layers
 
 ```
-modules/   shared libraries (libs, runtime, platform, home, ui, cli, store, subos, confine, carrier, image, testkit)
-luban/     specs/ (opensal, openhal, openas), kits/ (their implementations, xdesk) -- independent
-           projects kept here -- and os/ (Luban OS: stage-0, service, vm, the luban command, its app)
-apps/      binaries a user runs (luban, gui, xdev)
+modules/   shared libraries (libs, runtime, platform, home, i18n, ui, cli, subos, confine, carrier, image, testkit)
+luban/     specs/ (opensal, openhal, openas, opencaps), kits/ (their implementations, reusable
+           components), xdesk/ (the desktop: base, layout, compositor, app) -- independent projects
+           kept here -- apps/ (programs inside a system) and os/ (Luban OS: stage-0, service, vm,
+           the luban command, compat, the app's window)
+apps/      programs on the host (luban, luban-os, gui, xdev)
 src/       the xlings frontend and core still being moved into modules/
 tests/     unit/ and e2e/ (C++, XTEST + testkit), legacy e2e/*.sh, requirements.toml
 ```
 
 Imports go downward only (`tools/lint_layer_deps.sh`): `luban/` -> `modules/`;
 `modules/` never imports `luban.*` or `src/`; `src/` never imports `luban.*`. In `luban/`:
-a spec imports only the standard library and itself; a kit never imports `xlings.*` or
+a spec imports only the standard library and itself; a kit (and xdesk) never imports `xlings.*` or
 `luban.*`; `os/service` imports no presentation (`luban/README.md`).
 What xlings and Luban both read (boot.json, a root's /etc, image formats) is a module.
 

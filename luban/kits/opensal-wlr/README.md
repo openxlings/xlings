@@ -12,6 +12,13 @@ file) asks the window to be it (opensal `Shell`): the bridge tells it the
 applications the session lists and its windows (foreign-toplevel), and
 starts an application or brings a window forward when it asks.
 
+A compositor that captures its pointer apart (ext-image-copy-capture's
+cursor session, wlroots 0.19 and later) has it drawn by the window: the
+bridge asks for opensal `Cursor` and `CursorImage`, sends each image the
+pointer takes (`'C'`) and captures the frames without it, so the pointer
+follows the hand with no frame in between. Without that protocol, or a window
+that does not draw pointers, the pointer is in the frames as before.
+
 It speaks the Wayland wire itself, so a static program can carry it without
 libwayland.
 

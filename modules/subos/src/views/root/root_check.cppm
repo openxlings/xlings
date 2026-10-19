@@ -51,6 +51,10 @@ inline constexpr std::string_view kDeclaredDir = "usr/share/luban/checks.d";
 
 Report check(const fs::path& root, Depth depth, const Options& options = {});
 
+// Whether a program asked for its version started at all (its loader, its
+// libraries), from its exit and what it said -- not whether it answered 0.
+bool started(int code, bool timed_out, std::string_view output);
+
 nlohmann::json to_json(const Report& report);
 
 }  // namespace xlings::subos::root_check

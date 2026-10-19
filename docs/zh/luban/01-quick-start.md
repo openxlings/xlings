@@ -2,8 +2,18 @@
 
 [English](../../luban/01-quick-start.md) | **简体中文**
 
-`luban` 随 xlings 一起安装，版本相同；在宿主上、在每个 Luban 环境里、在每台 Luban 机器上都是同一个程序。本页是一条
-完整的路线：一个环境、在里面工作、回退一步、agent 的工作区、升级、把环境当作机器运行、桌面、清理。每一步都写明你应该看到什么。
+`luban` 是一个独立的包：`xlings install luban`（窗口：`xlings install luban-os`）。它的版本随 xlings 的发布，
+`xlings update luban` 更新它。在宿主上、在每个 Luban 环境里、在每台 Luban 机器上都是同一个程序。本页是一条
+完整的路线：安装、一个环境、在里面工作、回退一步、agent 的工作区、升级、把环境当作机器运行、桌面、离线使用、清理。每一步都写明你应该看到什么。
+
+## 0. 安装
+
+```bash
+xlings install luban luban-os    # the luban command and the Luban OS window
+luban status                     # this host: what it can run, and the parts' versions
+```
+
+`luban status` 用一行说出 xlings、luban、Luban OS 与 index 各是什么版本；不一致时逐项写出该怎么做。
 
 ## 1. 一个环境
 
@@ -12,6 +22,7 @@ luban new box                           # Luban Core, the default: shells, edito
 luban new small --edition tiny          # or an edition: nano, tiny, tiny-musl, core, agent-workspace, desktop
 luban new desk --edition desktop --desktop lxqt   # a desktop: xdesk (its own), labwc, compositor, lxqt, kde
 luban new mine --xpkg myindex:myos      # any index's system (02)
+luban search                            # what the index offers: distributions, desktops by what they bring
 ```
 
 一条就够。你会看到 `▸ making box (core)`、下载过程，然后是 `✓ box is ready`、它是什么（`box  core@… · N packages ·
@@ -96,7 +107,13 @@ luban upgrade box --dry-run   # the plan: the edition, packages added, upgraded 
 luban upgrade box             # one new generation; rollback undoes it
 ```
 
-`--dry-run` 什么也不改：它说 `box is up to date`，或者列出会改变的内容，并给出 `luban upgrade box`。
+`--dry-run` 什么也不改：它说 `box is up to date`，或者列出会改变的内容，并给出 `luban upgrade box`。不会替你升级：
+系统保持创建时的样子，直到你升级它；有可升级的内容时 `luban status box` 会说。把系统迁到它自己的用户态的升级会保留迁移前的样子，
+回到那里只要一条命令：
+
+```bash
+luban rollback box --to relayout -y   # the system as it was before its move
+```
 
 ## 6. 把它当作机器运行
 
@@ -113,12 +130,22 @@ luban config box --mode machine          # from now on, luban enter starts it th
 ## 7. 桌面
 
 ```bash
-luban new desk --edition desktop         # labwc, a panel, a launcher, a terminal
+luban new desk --edition desktop         # xdesk: tile, stack or a canvas, a panel, a launcher, a terminal
 xlings install luban-os                  # the Luban OS window
 luban enter desk --display window
 ```
 
-窗口按自己的大小显示桌面；Host 键（单独按 Ctrl+Alt）打开它的菜单。见[桌面与 Luban OS 窗口](08-desktop.md)。
+窗口按自己的大小显示桌面，并在显示时锁定键盘：Ctrl+Alt+K 释放（再按一次锁定）；Host 键（单独按 Ctrl+Alt）打开它的菜单。
+Super+m 切换窗口的排布，Super+/ 列出快捷键。见[桌面与 Luban OS 窗口](08-desktop.md)。
+
+## 离线使用
+
+系统自己的 home 从宿主的 index 拷贝开始，不联网也能读 index。导出的系统带着它运行所需的一切：
+
+```bash
+luban export box box.luban      # the system, its packages and its index
+luban import box.luban          # elsewhere: made again with no network
+```
 
 ## 8. 启动盘（可选）
 
@@ -153,6 +180,7 @@ luban setup                   # the same setup, whenever you like
 ```bash
 luban                         # one screen: where you are, the environments, what next
 luban ls                      # the environments
+luban ls b                    # those whose name matches
 luban help --all              # every command
 luban <command> --help        # one command, and the xlings command it is
 ```

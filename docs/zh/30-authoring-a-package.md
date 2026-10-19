@@ -81,6 +81,9 @@ xlings config --remove-xpkg hello
   ```
 
   索引的静态检查会拒绝未标注就运行 `sudo` 的 hook。
+- **`extensions`** 给另一个程序的数据，按那个程序登记的命名空间分开（`extensions = { luban = { tier = 2 } }`）：
+  xlings 原样带出、从不解读，改它不需要提升 `revision`。xlings 自己需要理解的字段，应提进规范，而不是放进 `extensions`
+  （`docs/specs/xpkg-manifest-v1.md` §3.1）。
 
 ## 发布
 

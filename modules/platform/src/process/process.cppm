@@ -182,6 +182,16 @@ std::optional<std::pair<unsigned short, unsigned short>> terminal_size(int fd);
 bool set_terminal_size(int fd, unsigned short rows, unsigned short cols);
 // Whether a process of this id exists (kill(pid, 0)).
 bool process_alive(int pid);
+// This user's processes, from /proc where there is one (Linux); empty where
+// there is none (macOS, Windows): a reader says it could not look.
+struct OwnProcess {
+    int pid { 0 };
+    std::filesystem::path exe;      // what it runs; empty when unreadable
+    std::vector<std::string> argv;
+};
+std::vector<OwnProcess> own_processes();
+// Whether own_processes() can see this system's processes.
+bool can_list_processes();
 // This process's id.
 int current_pid();
 // `argv` in a session of its own that outlives this process (double fork),

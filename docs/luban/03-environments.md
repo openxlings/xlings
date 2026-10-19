@@ -64,7 +64,19 @@ An environment knows what its edition brought. An upgrade:
   current one; otherwise it keeps the current policy and lists what would have
   been loosened — switching is your explicit `luban config box --policy …`.
 
-An upgrade is one new generation, so it can be rolled back.
+An upgrade is one new generation, so it can be rolled back. Nothing is
+upgraded for you: a system stays as it was made, and `luban status box` says
+when an upgrade has something for it, or when its desktop lacks something a
+newer edition brings (with both ways: install that one package into it, or
+upgrade).
+
+An upgrade that moves an older system into its own userland keeps what it was
+before (its archive, named by `luban history box` and `luban status box`);
+going back to that is one command, asked first:
+
+```bash
+luban rollback box --to relayout -y   # the system as it was before its move
+```
 
 ## Generations and rollback
 
@@ -79,6 +91,46 @@ pointer and touches no data. A generation records its packages too, so the
 environment stays at the one you went back to when it is entered again (one
 made before 2026.10.13.2 has no record: its files come back, and the next entry
 rebuilds them from the packages it has now -- the rollback says so).
+
+## Its network
+
+`luban status box` says it in one line, the same whatever it runs as: `like the
+host` -- the host's DNS and its proxy (`HTTPS_PROXY`, `HTTP_PROXY`,
+`ALL_PROXY`, `NO_PROXY`, of the environment that starts it) -- `only its proxy`
+(`luban config box --proxy …`) or `none` (`--net none`).
+
+A machine is on its own NAT: its address and name servers come from the
+kernel's DHCP, not from the system, and a host proxy on loopback
+(`127.0.0.1:7890`) is the host's address on that NAT inside
+(`10.0.2.2:7890`): `network  like the host · proxy http://10.0.2.2:7890 (the
+host's http://127.0.0.1:7890)`. It is in `/run/luban/network.env` for that
+boot, in every session and every login shell, and never written into the
+system. A host proxy that changed is the next start's; `luban status` says so.
+
+## Offline
+
+A system's home starts from a copy of the host's index: what it installs is
+read from it without the network, and `xlings update` inside updates its own
+copy. An exported system carries its packages and that index, so it is made
+again with no network:
+
+```bash
+luban export box box.luban
+luban import box.luban
+```
+
+## A regular user's own packages
+
+Inside a system a regular user reads the system's packages as they are --
+`xlings list`, `search`, `--version` ask nothing. The first install asks once
+whether to install for them alone, into `~/.xlings` (`-y` answers yes); their
+home starts from the system's index and settings, with no network. A package
+the system already has at that version is not installed twice. For every user
+of the system, install it as root, from the host:
+
+```bash
+luban run box --user root -- xlings install --system nvim
+```
 
 ## Removing
 

@@ -25,6 +25,8 @@
 
 ## 快速开始
 
+### xlings
+
 ```bash
 # Linux / macOS
 curl -fsSL https://raw.githubusercontent.com/openxlings/xlings/main/tools/other/quick_install.sh | bash
@@ -43,6 +45,17 @@ xlings list                            # 已安装的包
 ```
 
 用 AI Agent？让它运行 `xlings agent usage` —— xlings 自带一份写给 Agent 的完整使用指南。
+
+### Luban OS
+
+`luban`（命令）与 Luban OS（窗口）是各自独立的包：先安装，再创建一个系统并进入。
+
+```bash
+xlings install luban luban-os    # the luban command and the Luban OS window
+luban new box                    # a Linux system, no root needed (Luban Core)
+luban enter box                  # its shell; exit to leave
+luban-os                         # or open the Luban OS window
+```
 
 ## 能做什么
 
@@ -104,8 +117,9 @@ xlings self doctor --fix
 [快速开始](docs/zh/luban/01-quick-start.md) · [桌面](docs/zh/luban/08-desktop.md)
 
 ```bash
-luban new box       # a Linux system, no root needed (Luban Core: shells, editors, git, compilers)
-luban enter box     # its shell; exit to leave
+xlings install luban  # the luban command (luban-os: the window)
+luban new box         # a Linux system, no root needed (Luban Core: shells, editors, git, compilers)
+luban enter box       # its shell; exit to leave
 ```
 更小的或带桌面的 edition（`--edition tiny`、`--edition desktop`）、用自己的内核把同一个系统作为机器启动
 （`--mode machine`）、可启动镜像（`luban export`）、Luban OS 窗口、macOS 与 Windows：[快速开始](docs/zh/luban/01-quick-start.md)。

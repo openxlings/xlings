@@ -1,12 +1,12 @@
-# NDJSON Interface Protocol v1.13
+# NDJSON Interface Protocol v1.14
 
-> Status: in force; protocol 1.13 since xlings 2026.10.19.1. Implemented in
+> Status: in force; protocol 1.14 since xlings 2026.10.19.2. Implemented in
 > `src/interface.cpp`; `xlings interface --list` is the authoritative schema.
 
 ## 1. Overview
 
 `xlings interface` is the structured API for programs: IDE plugins, CI scripts
-and AI agents talk to xlings over standard IO. The protocol is **1.13**, over NDJSON
+and AI agents talk to xlings over standard IO. The protocol is **1.14**, over NDJSON
 (newline-delimited JSON).
 
 | Protocol | xlings | Change |
@@ -25,6 +25,7 @@ and AI agents talk to xlings over standard IO. The protocol is **1.13**, over ND
 | 1.11 | 2026.10.17.1 | `complete` means integrity only; added beside it: `installed_revision`, `floor`, `usable`, `current` (feature `payload_currency`, §6.3.1, §7.4); the `scope_repaired` data event (§6.3.1); `system_status`'s `binding_state` data event (feature `binding_state`, §7.5) |
 | 1.12 | 2026.10.18.1 | added: `search_packages`' `category` argument, and `namespace`, `index`, `categories` on its `packages` entries; `package_info`'s `package` object and `platform` argument (whose build is described); an index's reserved namespaces kept to it (feature `reserved_namespaces`); `subos_command` `new --dry-run`'s `subos_plan` data event (feature `subos_plan`) |
 | 1.13 | 2026.10.19.1 | added: read-only `network_endpoints` and bounded `probe_url`; features `network_diagnostics` / `read_only_queries`; shortening connect/read budgets via environment (feature `download_socket_budgets`) |
+| 1.14 | 2026.10.19.2 | added: `package_info` and `search_packages` carry a package's `extensions`, `status` and `archs` (feature `package_extensions`, §7.6); `subos new --from` using a version only installed says so (feature `installed_only`, §7.7); a command routed into a prefix domain answers in events (feature `domain_relayed`, §10.1) |
 
 A minor version only adds: a 1.0 client reads 1.1 output unchanged. 1.11 is the
 one exception in meaning, not in shape: 1.10's `complete` also required the
@@ -61,7 +62,7 @@ prints one line and exits -- the handshake a client checks before it uses this
 xlings (1.10+):
 
 ```json
-{"protocol_version":"1.13","version":"2026.10.19.1","capabilities":["search_packages","install_packages","..."],"home_layouts":[1,2],"features":["index_dir","index_store","upstreams","payload_status","sync_index","install_targets_complete","payload_currency","binding_state","reserved_namespaces","subos_plan","network_diagnostics","download_socket_budgets","read_only_queries"]}
+{"protocol_version":"1.14","version":"2026.10.19.2","capabilities":["search_packages","install_packages","..."],"home_layouts":[1,2],"features":["index_dir","index_store","upstreams","payload_status","sync_index","install_targets_complete","payload_currency","binding_state","reserved_namespaces","subos_plan","network_diagnostics","download_socket_budgets","read_only_queries","package_extensions","domain_relayed","installed_only"]}
 ```
 
 | Field | Meaning |
@@ -560,6 +561,39 @@ without running doctor. Read-only.
 or `notice`. `subos` names the subos whose workspace holds the reference; the
 version database is shared by every subos of the home.
 
+### 7.6 What a package is: `package_info` and `search_packages` (2026.10.19.2)
+
+`package_info`'s `info_panel` carries `package`, and `search_packages` carries
+`packages[]` (as data `packages`), with the same facts for each package:
+
+| Field | |
+|---|---|
+| `package`, `namespace`, `name`, `version`, `index` | its coordinate and the index it resolves in |
+| `description`, `categories`, `keywords`, `archs` | the recipe's (`archs` and `keywords` in search results) |
+| `status` | `"dev"`, `"stable"` or `"deprecated"`: the recipe's (before 2026.10.19.2 a recipe read in the worker reported `"dev"`) |
+| `extensions` | the recipe's `extensions`, as written: an object keyed by namespace (`xpkg-manifest-v1.md` §3.1). Absent when it has none |
+| `passed_over` | the newest version was passed over because it needs a newer xlings, and why |
+
+A client checks the handshake's feature `package_extensions` before it reads
+`extensions` or trusts `status` from a search.
+
+```json
+{"kind":"data","dataKind":"packages","payload":[{"package":"luban:labwc","namespace":"luban","name":"labwc","version":"0.20.0-r2","index":"xim","description":"...","categories":["luban-desktop"],"status":"stable","extensions":{"luban":{"tier":2}}}]}
+```
+
+### 7.7 What `subos new --from` chose (2026.10.19.2)
+
+Named without a version, a template is the index's newest that this xlings can
+use. Two data events say when it is not simply that, each once per command:
+
+- `passed_over` `{"package", "version", "message"}`: a newer version needs a
+  newer xlings (since 2026.10.16.2);
+- `installed_only` `{"package", "version", "message"}`: the index has no such
+  package and the version installed here is used (feature `installed_only`).
+
+When the index cannot be read at all, nothing is chosen: an `error` names
+`xlings update`, or naming a version.
+
 ### 7.1 Capabilities that need the user's confirmation (2026.9.26.1+)
 
 A SubOS's home is user data; deleted, it cannot be recovered. These two
@@ -731,6 +765,17 @@ and a `cancel` on the control channel ends the call with `E_CANCELLED` and 130.
 {"kind":"data","dataKind":"subos_exec_output","payload":{"stream":"stderr","encoding":"base64","data":"/w=="}}
 {"kind":"result","exitCode":0}
 ```
+
+### 10.1 A system in a prefix domain (2026.10.19.2)
+
+A command for a system that lives in a private prefix domain runs there. Asked
+through the interface (`subos_command`), it runs in the domain as
+`interface subos_command` too and its events -- `data`, `progress`, `log`,
+`error` -- come back as this call's (feature `domain_relayed`). Before,
+`rollback --list`, `config`, `status`, `ps`, `stop` and the other routed
+commands printed their answer on a stdout no reader of NDJSON saw: `luban
+history` of such a system was empty. Commands that hand the terminal to a
+program (`exec`, `use`, `start`, `log`) are not relayed.
 
 ## Network diagnosis (1.13+)
 

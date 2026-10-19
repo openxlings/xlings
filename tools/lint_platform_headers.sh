@@ -20,7 +20,7 @@ pattern='#[[:space:]]*include[[:space:]]*<(unistd|fcntl|poll|sched|signal|csigna
 # (luban/os/vm/src/native/).
 hits="$(grep -rnE "$pattern" src modules apps luban --include='*.cpp' --include='*.cppm' \
         | grep -v '^modules/platform/' | grep -v '^modules/testkit/' \
-        | grep -v '^luban/kits/xdesk-base/src/os/' \
+        | grep -v '^luban/xdesk/base/src/os/' \
         | grep -vE '^luban/kits/[^/]+/src/native/' \
         | grep -v '^luban/os/vm/src/native/' || true)"
 if [[ -n "$hits" ]]; then

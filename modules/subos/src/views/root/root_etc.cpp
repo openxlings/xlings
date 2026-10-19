@@ -278,8 +278,8 @@ std::string prompt(std::string_view kind, std::string_view persist, std::string_
     return std::format(R"(\[\033[{}m\]{}\[\033[0m\] \u@\h:\w\$ )", colour, mark);
 }
 
-std::expected<bool, std::string> ensure_prompt_script(const fs::path& etc) {
-    static constexpr std::string_view script = R"SH(# Where you are, in the prompt (Luban OS part 3 7.2): [luban] a system that
+std::expected<std::vector<std::string>, std::string> ensure_prompt_script(const fs::path& etc) {
+    static constexpr std::string_view sh = R"SH(# Where you are, in the prompt (Luban OS part 3 7.2): [luban] a system that
 # shares the host's kernel, <luban> one with its own, :temp / :home when it
 # keeps less than everything. Machine state: edit freely; an upgrade never
 # rewrites it.
@@ -294,15 +294,70 @@ if [ -n "$LUBAN_KIND" ]; then
     unset __lk __lc __lm __lp
 fi
 )SH";
-    std::error_code ec;
-    const auto file = etc / "profile.d" / "luban.sh";
-    if (fs::exists(fs::symlink_status(file, ec))) return false;
-    fs::create_directories(file.parent_path(), ec);
-    if (ec) return std::unexpected(std::format("cannot make {}: {}", file.parent_path().string(), ec.message()));
-    std::ofstream out(file, std::ios::trunc);
-    out << script;
-    if (!out) return std::unexpected("cannot write " + file.string());
-    return true;
+    // fish reads no PS1 (design 2026-10-19 F26): the same mark, around the
+    // prompt it has.
+    static constexpr std::string_view fish = R"FISH(# Where you are, in the prompt (Luban OS part 3 7.2): [luban] a system that
+# shares the host's kernel, <luban> one with its own, :temp / :home when it
+# keeps less than everything. Machine state: edit freely; an upgrade never
+# rewrites it.
+if set -q LUBAN_KIND; and status is-interactive
+    functions -q _luban_prompt; or functions -c fish_prompt _luban_prompt
+    function fish_prompt
+        set -l keep
+        set -l colour 36
+        switch "$LUBAN_PERSIST"
+            case none
+                set keep :temp; set colour 31
+            case home
+                set keep :home; set colour 33
+            case '*'
+                test "$LUBAN_KIND" = machine; and set colour 35
+        end
+        set -l mark "[luban$keep]"
+        test "$LUBAN_KIND" = machine; and set mark "<luban$keep>"
+        if test -z "$NO_COLOR"; and test "$LUBAN_COLOR" != 0
+            printf '\e[%sm%s\e[0m ' $colour $mark
+        else
+            printf '%s ' $mark
+        end
+        _luban_prompt
+    end
+end
+)FISH";
+    // The host's proxy for this boot (design 2026-10-19 §27.3): a machine's
+    // start leaves it in /run; every login shell takes it (su -, a new terminal).
+    static constexpr std::string_view net_sh = R"SH(# The host's proxy for this boot (Luban OS): a machine's start writes it in
+# /run/luban/network.env; every login shell takes it. Machine state: edit freely.
+if [ -r /run/luban/network.env ]; then
+    while IFS='=' read -r __k __v; do [ -n "$__k" ] && export "$__k=$__v"; done < /run/luban/network.env
+    unset __k __v
+fi
+)SH";
+    static constexpr std::string_view net_fish = R"FISH(# The host's proxy for this boot (Luban OS): a machine's start writes it in
+# /run/luban/network.env; every login shell takes it. Machine state: edit freely.
+if test -r /run/luban/network.env
+    for line in (cat /run/luban/network.env)
+        set -l kv (string split -m 1 = -- $line)
+        test (count $kv) -eq 2; and set -gx $kv[1] $kv[2]
+    end
+end
+)FISH";
+    std::vector<std::string> written;
+    for (const auto& [rel, text] : {std::pair{fs::path("profile.d/luban.sh"), sh},
+                                    std::pair{fs::path("fish/conf.d/luban.fish"), fish},
+                                    std::pair{fs::path("profile.d/luban-network.sh"), net_sh},
+                                    std::pair{fs::path("fish/conf.d/luban-network.fish"), net_fish}}) {
+        std::error_code ec;
+        const auto file = etc / rel;
+        if (fs::exists(fs::symlink_status(file, ec))) continue;
+        fs::create_directories(file.parent_path(), ec);
+        if (ec) return std::unexpected(std::format("cannot make {}: {}", file.parent_path().string(), ec.message()));
+        std::ofstream out(file, std::ios::trunc);
+        out << text;
+        if (!out) return std::unexpected("cannot write " + file.string());
+        written.push_back(rel.generic_string());
+    }
+    return written;
 }
 
 std::expected<std::vector<std::string>, std::string> ensure_user_layer_scripts(const fs::path& etc) {

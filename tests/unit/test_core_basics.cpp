@@ -14,6 +14,7 @@
 
 import std;
 import xlings.i18n;
+import xlings.ui.i18n;
 import xlings.core.log;
 import xlings.core.utils;
 import xlings.ui;
@@ -125,6 +126,12 @@ std::optional<std::filesystem::path> find_fixture_repo(std::string_view name) {
 // i18n tests
 // ============================================================
 
+// xlings registers its catalogues in main; a test does it itself.
+struct XlingsCatalogues : ::testing::Environment {
+    void SetUp() override { xlings::ui::register_catalogues(); }
+};
+[[maybe_unused]] const auto* const kXlingsCatalogues = ::testing::AddGlobalTestEnvironment(new XlingsCatalogues);
+
 TEST(I18nTest, SetAndGetLanguageEn) {
     xlings::i18n::set_language("en");
     EXPECT_EQ(xlings::i18n::language(), "en");
@@ -188,6 +195,41 @@ TEST(I18nTest, UnknownKeyRendersAsItselfNotAsBlank) {
     // failure mode this whole release is about.
     xlings::i18n::set_language("en");
     EXPECT_EQ(xlings::i18n::tr("nobody.defined.this"), "nobody.defined.this");
+}
+
+TEST(I18nTest, TheFallbackChainEndsInEnglish) {
+    using xlings::i18n::fallback_chain;
+    EXPECT_EQ(fallback_chain("zh_CN.UTF-8"), (std::vector<std::string>{"zh-CN", "zh", "en"}));
+    EXPECT_EQ(fallback_chain("en-GB"), (std::vector<std::string>{"en-GB", "en"}));
+    EXPECT_EQ(fallback_chain("auto"), (std::vector<std::string>{"en"}));
+    EXPECT_EQ(xlings::i18n::normalize("C"), "en");
+    // A region no catalogue has is served by its language.
+    xlings::i18n::set_language("zh-TW");
+    EXPECT_EQ(xlings::i18n::language(), "zh");
+}
+
+TEST(I18nTest, DomainsKeepTheirOwnWordsAndAreChecked) {
+    using xlings::i18n::Entry;
+    static constexpr Entry en[] = {{"test.dom.hello", "hello {}"}, {"test.dom.bye", "bye"}};
+    static constexpr Entry zh[] = {{"test.dom.hello", "你好 {}"}, {"test.dom.orphan", "孤儿"}};
+    xlings::i18n::register_catalogue("test.dom", "en", en);
+    xlings::i18n::register_catalogue("test.dom", "zh", zh);
+    xlings::i18n::set_language("zh");
+    EXPECT_EQ(xlings::i18n::trf("test.dom.hello", 1), "你好 1");
+    EXPECT_EQ(xlings::i18n::tr("test.dom.bye"), "bye") << "per key, to English";
+    const auto problems = xlings::i18n::check("test.dom");
+    ASSERT_EQ(problems.size(), 1u);
+    EXPECT_NE(problems[0].find("test.dom.orphan"), std::string::npos);
+    EXPECT_TRUE(xlings::i18n::check("xlings").empty()) << xlings::i18n::check("xlings").front();
+}
+
+TEST(I18nTest, PickReadsDataAlongTheChain) {
+    xlings::i18n::set_language("zh");
+    EXPECT_EQ(xlings::i18n::pick({{"en", "Compositor"}, {"zh", "合成器"}}), "合成器");
+    EXPECT_EQ(xlings::i18n::pick({{"en", "Compositor"}}), "Compositor");
+    EXPECT_EQ(xlings::i18n::pick({}), "");
+    xlings::i18n::set_language("en");
+    EXPECT_EQ(xlings::i18n::pick({{"zh-CN", "只有中文"}}), "只有中文") << "any, rather than nothing";
 }
 
 TEST(I18nTest, TranslateFormat) {

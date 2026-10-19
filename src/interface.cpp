@@ -130,6 +130,7 @@ int run(const mcpplibs::cmdline::ParsedArgs& args,
                EventStream& stream, int tui_listener,
                capability::Registry& registry) {
     stream.set_enabled(tui_listener, false);
+    stream.set_structured(true);
     platform::set_tui_mode(true);
 
     if (args.is_flag_set("version")) {
@@ -146,7 +147,8 @@ int run(const mcpplibs::cmdline::ParsedArgs& args,
                                      {"features", {"index_dir", "index_store", "upstreams", "payload_status",
                                                    "sync_index", "install_targets_complete",
                                                    "payload_currency", "binding_state", "reserved_namespaces",
-                                                   "subos_plan", "network_diagnostics", "download_socket_budgets", "read_only_queries"}}}).dump()
+                                                   "subos_plan", "network_diagnostics", "download_socket_budgets", "read_only_queries",
+                                                   "package_extensions", "domain_relayed", "installed_only"}}}).dump()
                   << "\n" << std::flush;
         return 0;
     }

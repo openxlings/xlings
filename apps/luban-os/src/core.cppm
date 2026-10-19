@@ -5,6 +5,7 @@ export module luban.os:core;
 
 import std;
 import xlings.libs.json;
+import xlings.i18n;
 import imkit;
 import tray;
 import luban.service;
@@ -35,11 +36,16 @@ namespace platform = xlings::platform;
 namespace host = luban::desktop::host;
 using Json = nlohmann::json;
 
-// The words of the interface, English or Chinese: the app's language
-// setting, else LUBAN_OS_LANG and the locale.
-std::string_view tr(std::string_view en, std::string_view zh);
+// The words of the interface, by key (apps/luban-os/src/i18n, the domain
+// `luban.os`), through the shared mechanism (xlings.i18n): the app's
+// language setting, else LUBAN_OS_LANG and the system's.
+inline std::string_view tr(std::string_view key) { return xlings::i18n::tr(key); }
 // "auto", "en" or "zh".
 void set_language(std::string_view lang);
+// The app's words and glossary, registered first thing in run().
+void register_words();
+std::span<const xlings::i18n::Entry> words_en();
+std::span<const xlings::i18n::Entry> words_zh();
 
 // What the app keeps of its own (<home>/config/luban-os.json): the default
 // system, the countdown, when each was last used, how it looks and where it
@@ -51,6 +57,7 @@ struct AppSettings {
     std::map<std::string, std::string> last_used;   // name -> ISO time
     std::string language { "auto" };                // auto | en | zh
     bool reduce_motion { false };
+    bool lock_keyboard { true };                    // a desktop entered holds the keyboard (Ctrl+Alt+K lets it go)
     float console_size { 16 };                      // the console's default font size (nominal)
     std::map<std::string, float> console_sizes;     // per system, Ctrl+= / Ctrl+- / Ctrl+0
     bool minimize_to_tray { true };
@@ -154,7 +161,8 @@ public:
     // sandbox runs; tests run a desktop of their own the same way).
     static std::unique_ptr<Display> process(const std::vector<std::string>& argv, std::map<std::string, std::string> env,
                                             const fs::path& log, const std::string& name, opensal::Size size,
-                                            ClipboardGrant clip, std::function<void()> wake, std::string& error);
+                                            ClipboardGrant clip, std::function<void()> wake, std::string& error,
+                                            const std::string& session = {});
     ~Display();
     void send(const opensal::Event& e);
     bool alive() const { return alive_; }
@@ -175,6 +183,20 @@ public:
     std::vector<opensal::Application> applications() const { std::lock_guard l(m_); return applications_; }
     std::vector<opensal::Window> windows() const { std::lock_guard l(m_); return windows_; }
 
+    // The pointer over its picture (design 2026-10-19 §15): what it says
+    // ('c' a shape, 'C' an image) when it asked for Cursor; else the host's
+    // arrow for an xdesk that cannot draw one (luban.compat), or none -- it
+    // draws its own into the frames.
+    struct Pointer {
+        std::string shape { "none" };                 // kCursors, or "custom" with `image`
+        std::optional<opensal::CursorImage> image;
+        bool host_arrow { false };
+    };
+    Pointer pointer() const { std::lock_guard l(m_); return pointer_; }
+    // It asked to hold the pointer (opensal PointerLock: a game) or let it
+    // go: what it said since the last call.
+    std::optional<bool> take_pointer_lock();
+
     struct Update { opensal::Rect rect; std::string rows; };
     // The surface's size (0 until the first frame) and the rectangles since the last call.
     opensal::Size take(std::vector<Update>& out);
@@ -185,11 +207,14 @@ private:
     // machine agent), opened by `open`.
     static std::unique_ptr<Display> over_(vm::Client client, const std::string& name, bool machine, opensal::Size size,
                                           ClipboardGrant clip, std::function<void()> wake, std::string& error,
-                                          const std::function<bool(vm::Client&)>& open, const fs::path& log);
+                                          const std::function<bool(vm::Client&)>& open, const fs::path& log,
+                                          const std::string& session);
     bool machine_ { false };
     fs::path log_;                    // a relayed desktop's standard error
     void provider_(std::string_view bytes);
     std::string name_;
+    std::string session_;             // the desktop session it started (empty: unknown)
+    Pointer pointer_;
     mutable std::mutex m_;
     bool send_(std::string_view wire_bytes);
     std::optional<vm::Client> client_;
@@ -204,6 +229,7 @@ private:
     opensal::Size size_;
     ClipboardGrant clip_;
     std::optional<std::string> text_input_, clipboard_;
+    std::optional<bool> pointer_lock_;
     std::atomic<bool> shell_ { false };
     std::vector<opensal::Application> applications_;
     std::vector<opensal::Window> windows_;
@@ -261,6 +287,41 @@ std::array<int, 4> console_word(Console& c, int scroll, int row, int col);
 
 fs::path home_dir_();
 
+// ── the tray process (design 2026-10-19 §3) ──────────────────────────────
+// One per home, `luban-os __tray`: the status-area icon, its menu, the
+// notifications; every window its own process, speaking to it over
+// <home>/run/luban-os/tray.sock in lines of JSON. tray.lock makes it one;
+// each window holds windows/<pid>.lock while it lives (never a pid alone).
+inline constexpr int kTrayProtocol = 1;
+fs::path tray_dir(const fs::path& home);
+int run_tray(int argc, char* argv[]);
+
+// A window's line to the tray (tray/link.cpp): connects -- starting the tray
+// when nobody holds tray.lock -- says who it is, keeps what it last said of
+// itself (register, job) to say again after a reconnect, and hands what the
+// tray asks to the window, waking it.
+class TrayLink {
+public:
+    TrayLink(fs::path home, std::function<void()> wake);
+    ~TrayLink();
+    TrayLink(const TrayLink&) = delete;
+    TrayLink& operator=(const TrayLink&) = delete;
+    // A message; `register` and `job` are kept and said again after a reconnect.
+    void send(const nlohmann::json& message);
+    // What the tray said since the last call.
+    std::vector<nlohmann::json> take();
+    // The tray's own word on itself (its pid, its icon's backend, why it has
+    // no icon), once connected; waits up to `wait` for it.
+    std::optional<nlohmann::json> status(std::chrono::milliseconds wait = std::chrono::milliseconds(0));
+    // Why there is no tray: it kept ending (with where its log is).
+    std::string trouble() const;
+
+private:
+    struct State;
+    std::shared_ptr<State> s_;
+    std::jthread io_;
+};
+
 enum class View { Launcher, QuickStart, Job, Console, Off, Admin, Desktop, Import, Run };
 
 // The editions one can make, in two groups. What each is ships with Luban;
@@ -268,9 +329,9 @@ enum class View { Launcher, QuickStart, Job, Console, Off, Admin, Desktop, Impor
 struct Edition {
     std::string_view name;                  // `luban new --edition`
     bool desktop;                           // the desktop group
-    std::string_view title_en, title_zh;
-    std::string_view about_en, about_zh;    // one line
-    std::string_view detail_en, detail_zh;  // what is in it, and for whom
+    // Its words, by key (apps/luban-os/src/i18n): its title, one line about
+    // it, and what is in it and for whom.
+    std::string_view title, about, detail;
     std::string_view size;                  // about what it downloads
     std::string_view contents;              // its first few programs
     bool goes_in;                           // there is something to log into
@@ -282,28 +343,13 @@ struct Edition {
 };
 
 constexpr std::array<Edition, 7> kEditions{{
-    {"nano", false, "nano", "nano", "No shell: commands only", "没有 shell：只运行命令",
-     "The base an edition of your own is built on: xlings and luban, nothing to log into.",
-     "自己定制 edition 的基础：只有 xlings 与 luban，没有可以登录的界面。", "~15 MB", "xlings · luban", false},
-    {"tiny", false, "tiny", "tiny", "A shell and the basic tools", "shell 与基础工具",
-     "BusyBox and xlings: small and quick to make; add what you need with xlings install.",
-     "BusyBox 与 xlings：小，创建快；需要什么用 xlings install 添加。", "~25 MB", "busybox · xlings · luban", true},
-    {"tiny-musl", false, "tiny-musl", "tiny-musl", "tiny, on musl", "基于 musl 的 tiny",
-     "tiny with musl as its C library: for building and testing static, musl-linked programs.",
-     "以 musl 为 C 库的 tiny：构建与测试 musl 静态程序。", "~25 MB", "busybox · musl · xlings", true},
-    {"core", false, "core", "core", "A console to develop in", "开发用的控制台",
-     "glibc, fish and bash, gcc, git, curl and mcpp: a console for development.",
-     "glibc、fish 与 bash、gcc、git、curl 与 mcpp：做开发的控制台。", "~400 MB", "fish · gcc · git · mcpp", true},
-    {"agent-workspace", false, "agent workspace", "agent 工作区", "A console for coding agents", "给编程 agent 的控制台",
-     "Everything of core, with node, python and the coding agents, in a private network by default.",
-     "core 的一切，加上 node、python 与编程 agent，默认在私有网络中。", "~700 MB", "core · node · python · agents", true},
-    {"desktop", true, "Classic desktop", "经典桌面", "Windows side by side, a panel", "窗口并排、面板",
-     "Everything of core, a desktop, and the tools people reach for: terminals, editors, node, python, agents.",
-     "core 的一切、一个桌面，以及常用的工具：终端、编辑器、node、python、agents。", "~1.2 GB", "xdesk · foot · nvim · node", true},
-    {"desktop-xdesk", true, "xdesk canvas", "xdesk 画布", "An infinite canvas for windows", "放窗口的无限画布",
-     "The same environment on xdesk's canvas: pan, zoom, see everything at once. To explore.",
-     "同样的环境，桌面是 xdesk 的画布：平移、缩放、一眼看全。供探索。", "~1.2 GB", "xdesk · foot · nvim · node", true,
-     "desktop", "xdesk-canvas"},
+    {"nano", false, "luban.os.edition.nano.title", "luban.os.edition.nano.about", "luban.os.edition.nano.detail", "~15 MB", "xlings · luban", false},
+    {"tiny", false, "luban.os.edition.tiny.title", "luban.os.edition.tiny.about", "luban.os.edition.tiny.detail", "~25 MB", "busybox · xlings · luban", true},
+    {"tiny-musl", false, "luban.os.edition.tiny_musl.title", "luban.os.edition.tiny_musl.about", "luban.os.edition.tiny_musl.detail", "~25 MB", "busybox · musl · xlings", true},
+    {"core", false, "luban.os.edition.core.title", "luban.os.edition.core.about", "luban.os.edition.core.detail", "~400 MB", "fish · gcc · git · mcpp", true},
+    {"agent-workspace", false, "luban.os.edition.agent_workspace.title", "luban.os.edition.agent_workspace.about", "luban.os.edition.agent_workspace.detail", "~700 MB", "core · node · python · agents", true},
+    {"desktop", true, "luban.os.edition.desktop.title", "luban.os.edition.desktop.about", "luban.os.edition.desktop.detail", "~1.2 GB", "xdesk · foot · nvim · node", true},
+    {"desktop-xdesk", true, "luban.os.edition.desktop_xdesk.title", "luban.os.edition.desktop_xdesk.about", "luban.os.edition.desktop_xdesk.detail", "~1.2 GB", "xdesk · foot · nvim · node", true, "desktop", "xdesk-canvas"},
 }};
 
 int edition_index_(std::string_view name);
@@ -385,6 +431,13 @@ struct App {
     std::optional<std::chrono::steady_clock::time_point> resize_at;
     std::string current;               // the system on screen
     bool menu { false };               // the Host key's menu
+    // The keyboard and the pointer held for a desktop (design 2026-10-19
+    // §16.1): wanted from the setting as it is entered, Ctrl+Alt+K flips it;
+    // held only while the window has the focus.
+    bool keyboard_wanted { false };
+    bool was_in_desktop { false };
+    bool focus_out { false };
+    bool pointer_lock_asked { false };
     int menu_focus { 0 };
     bool close_dialog { false };
     int close_choice { 0 };            // 0 background, 1 power off
@@ -392,9 +445,13 @@ struct App {
     std::optional<Confirm> confirm;
     std::string notice;
     std::function<void()> later;       // done after the frame (what replaces what the frame drew)
-    // The status-area icon (design 2026-10-16 L §13.12).
-    std::unique_ptr<tray::Icon> tray;
+    // The status-area icon, in the tray process (design 2026-10-19 §3):
+    // this window's line to it, once it is wanted.
+    std::unique_ptr<TrayLink> tray;
     std::string tray_error;            // why there is none here
+    std::string tray_backend;
+    int tray_pid { 0 };
+    platform::FileLock alive;          // windows/<pid>.lock: held while this window lives
     std::string tray_said;             // what it shows now (it is told only changes)
     std::chrono::steady_clock::time_point tray_checked;
     bool hidden { false };             // the window is closed and the app is in the tray
@@ -427,6 +484,12 @@ struct App {
         std::optional<std::chrono::steady_clock::time_point> input_at;
         int frames_since_input { 0 };
     } perf;
+    // Interactions measured (design 2026-10-19 §4.2): what each took, in ms;
+    // a pending one is closed by the next frame shown (what it started, on the screen).
+    std::map<std::string, std::vector<double>> latency;
+    std::map<std::string, std::chrono::steady_clock::time_point> latency_pending;
+    std::optional<std::chrono::steady_clock::time_point> tray_chose_at, quick_opened_at;
+    std::optional<View> view_drawn;    // the view the last frame drew
     bool job_told { true };            // the last job's end was said (a notification when unseen)
     std::string job_subject;           // the system the last job made (its notification goes in)
     std::optional<std::chrono::steady_clock::time_point> notice_until;   // a notice over a system, until
@@ -451,11 +514,14 @@ struct App {
     std::string auto_name;             // what the name field was given, until the person types
     int new_edition { 3 };             // core
     std::string new_offer;             // a system from the indexes' (its ref), chosen over new_edition
+    std::string new_trad;              // a traditional desktop (its ref), made on kBases[new_base]
+    int new_base { 1 };                // tiny, core, desktop
     int new_desktop { -1 };            // the desktop it is made with (offers->desktops); -1: its own
     int new_mode { 0 };                // 0 sandbox, 1 machine
-    int new_mode_for { -1 };           // the edition the mode was defaulted for
+    std::string new_mode_for;          // the card the mode was defaulted for
     int new_persist { 0 };             // all, home, none
     float panel_h { 0 };               // the quick start's panel, as tall as it was last drawn
+    float panel_actions_h { 0 };       // its foot (making it), likewise
     bool more { false };
     // Admin
     int admin_selected { 0 };
@@ -579,6 +645,8 @@ using imkit::px;
 //   key <Key>[+<Key>...]            held in order, released in reverse
 //   type <text>                     click <anchor> | click <x> <y>
 //   move <x> <y>                    frames <n>        sleep <ms>
+//   click <x> <y> [right|middle]    keydown <Key>     keyup <Key>
+//   press <x> <y>                   release <x> <y>   (a drag between them)
 //   resize <w> <h>                  close             quit
 //   screenshot <file>               state <file>
 //   see [<n>s] <text>               until the text is shown (a console's lines,
@@ -619,7 +687,26 @@ std::string cannot_run_(App& a);
 std::string unavailable_(App& a, const Edition& e);
 void make_(App& a, bool agreed = false);
 float new_panel_(App& a, float x, float y, float w, float min_h);
+float panel_body_(App& a, float x, float y, float w);
+float panel_actions_(App& a, float x, float y, float w);
 void quick_start_(App& a);
+// The quick start's cards in their groups (design 2026-10-19 §5.1):
+// console, xdesk, desktops (traditional), more (systems from the indexes).
+struct QuickCard {
+    enum class Kind { Edition, Desktop, System };
+    Kind kind { Kind::Edition };
+    int edition { -1 };                 // kEditions
+    service::Offer offer;               // a desktop or a system the index offers
+    std::string id;                     // "card:<edition>" / "card:<ref>"
+};
+struct QuickGroup {
+    std::string key;
+    std::vector<QuickCard> cards;
+};
+std::vector<QuickGroup> quick_groups_(App& a);
+std::string chosen_card_(const App& a);
+void choose_card_(App& a, const QuickCard& c);
+void quick_keys_(App& a);
 void import_view_(App& a);
 int stage_of_(const Job& j);
 void job_(App& a);

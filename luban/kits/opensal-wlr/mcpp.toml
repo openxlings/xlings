@@ -16,4 +16,4 @@ kind = "lib"
 
 [dependencies]
 opensal  = { path = "../../specs/opensal" }
-xdesk-base = { path = "../xdesk-base" }
+xdesk-base = { path = "../../xdesk/base" }

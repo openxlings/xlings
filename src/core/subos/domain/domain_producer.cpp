@@ -171,19 +171,47 @@ std::expected<void, std::string> follow_owner_config_(const Domain& domain) {
 // inside it answers from what is here and never fetches, so a system without
 // an index answered "package index not available" to its first `xlings list`.
 // Copied once, while the domain has none; `xlings update` there refreshes it.
+// The index snapshot a domain resolves with is the owner's, as it is now
+// (design 2026-10-19 §9.3): what luban chose a version from on the host is
+// what the domain resolves it in. Copied the first time, and again whenever
+// an index's version marker differs from the owner's -- never fetched there.
+std::string index_marker_(const fs::path& dir) {
+    std::ifstream in(dir / ".xlings-index-version");
+    std::string line;
+    std::getline(in, line);
+    return line;
+}
+
 std::expected<void, std::string> carry_owner_index_(const Domain& domain) {
     std::error_code ec;
-    if (fs::exists(domain.physicalHome / "data" / "xim-pkgindex", ec)) return {};
     for (fs::directory_iterator it(domain.ownerHome / "data", ec), end; !ec && it != end; it.increment(ec)) {
         const auto name = it->path().filename().string();
         if (!name.starts_with("xim-pkgindex") && name != "xim-index-repos") continue;
         if (!it->is_directory(ec) || it->is_symlink(ec)) continue;
         const auto target = domain.physicalHome / "data" / name;
-        if (fs::exists(target, ec)) continue;
+        const bool there = fs::exists(target, ec);
+        if (there) {
+            // Sub-indexes keep their markers one level down.
+            bool same = index_marker_(it->path()) == index_marker_(target);
+            if (name == "xim-index-repos")
+                for (fs::directory_iterator sub(it->path(), ec), send; same && !ec && sub != send; sub.increment(ec))
+                    if (sub->is_directory(ec))
+                        same = index_marker_(sub->path()) == index_marker_(target / sub->path().filename());
+            if (same) continue;
+        }
         const auto staged = fs::path(target.string() + ".carry");
         fs::remove_all(staged, ec);  // subos-remove-all-ok: this copy's own staging directory
         fs::copy(it->path(), staged, fs::copy_options::recursive | fs::copy_options::copy_symlinks, ec);
-        if (!ec) fs::rename(staged, target, ec);
+        if (!ec && there) {
+            const auto old = fs::path(target.string() + ".old");
+            fs::remove_all(old, ec);  // subos-remove-all-ok: the replaced copy of the owner's index
+            fs::rename(target, old, ec);
+            if (!ec) fs::rename(staged, target, ec);
+            std::error_code rec;
+            fs::remove_all(old, rec);  // subos-remove-all-ok: the replaced copy of the owner's index
+        } else if (!ec) {
+            fs::rename(staged, target, ec);
+        }
         if (ec) {
             fs::remove_all(staged, ec);  // subos-remove-all-ok: this copy's own staging directory
             return std::unexpected(std::format("cannot carry the index {} into {}", name, domain.physicalHome.string()));

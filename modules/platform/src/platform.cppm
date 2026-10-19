@@ -15,6 +15,7 @@ export import :unix;
 // Processes, signals, descriptors and local sockets (a supervisor's needs).
 export import :process;
 export import :tcp;
+export import :local_socket;
 export import :network;
 export import :net_notify;
 export import :asset_paths;

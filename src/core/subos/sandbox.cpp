@@ -749,6 +749,10 @@ int enter(const std::string& name, EventStream& stream, const EnterOptions& opts
         // `bash-5.2#`); a login shell and `su -` read the root's
         // profile.d/luban.sh, from LUBAN_KIND and LUBAN_PERSIST.
         const auto persist = opts.persist.empty() ? std::string("all") : opts.persist;
+        // A system made before a shell's script existed gets it now (written
+        // when missing; design 2026-10-19 F26).
+        if (auto written = subos::root_etc::ensure_prompt_script(request.root / "etc"); !written)
+            log::debug("the prompt's scripts: {}", written.error());
         request.explicit_env.try_emplace("LUBAN_KIND", "sandbox");
         request.explicit_env.try_emplace("LUBAN_PERSIST", persist);
         if (cmd.empty() && opts.argv.empty()) {

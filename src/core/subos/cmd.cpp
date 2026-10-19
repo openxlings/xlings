@@ -2,6 +2,7 @@ module xlings.core.subos;
 
 import xlings.subos.roles;
 import xlings.core.subos.root;
+import xlings.core.home.prefix_domain;
 import std;
 import xlings.core.config;
 import xlings.core.home_config;
@@ -1170,6 +1171,7 @@ int run(int argc, char* argv[], EventStream& stream) {
         // (auto-installs the base xpkg if missing); bare name is treated
         // as a local subos to fork from.
         std::string fromSpec;
+        fs::path offlineFrom;
         // --runtime <binding>: what this subos's binaries are built against
         // ("glibc@2.39"). Creation-time, because changing it later would
         // invalidate every payload already installed. Absent → the built-in
@@ -1217,6 +1219,13 @@ int run(int argc, char* argv[], EventStream& stream) {
             if (a.starts_with("--abi=")) { abi = a.substr(6); forward.keep = false; continue; }
             if (a == "--rootfs") { rootfs = true; continue; }
             if (a == "--dry-run") { dryRun = true; continue; }
+            // What an archive carried (luban import): payloads and an index,
+            // placed where this system is made before anything is fetched.
+            if (a == "--offline-from" && i + 1 < argc) {
+                offlineFrom = fs::absolute(argv[++i]);
+                forward.keep = false;
+                continue;
+            }
             if (a == "--domain" || a == "--domain-if-possible") {
                 if (i + 1 >= argc || !domain.empty()) { usageError(std::string(a) + " expects one absolute home path"); return 1; }
                 domainIfPossible = a == "--domain-if-possible";
@@ -1366,10 +1375,18 @@ int run(int argc, char* argv[], EventStream& stream) {
         if (!domain.empty()) {
             std::vector<std::string> producerArgs{"subos", "new"};
             for (int i = 3; i < argc; ++i) {
-                if (std::string_view(argv[i]) == "--domain" || std::string_view(argv[i]) == "--domain-if-possible") { ++i; continue; }
+                if (std::string_view(argv[i]) == "--domain" || std::string_view(argv[i]) == "--domain-if-possible"
+                    || std::string_view(argv[i]) == "--offline-from") { ++i; continue; }
                 producerArgs.emplace_back(argv[i]);
             }
             bool fellBack = false;
+            if (!offlineFrom.empty())
+                if (auto selected = xlings::home::prefix_domain::resolve(Config::paths().homeDir, fs::path(domain));
+                    selected && selected->privateHome)
+                    if (auto seeded = seed_offline_(offlineFrom, selected->physicalHome); !seeded) {
+                        stream.emit(ErrorEvent{.code = ErrorCode::Internal, .message = seeded.error(), .recoverable = true});
+                        return 1;
+                    }
             if (auto result = produce_domain_at_creation_(name, rootfs, domain, producerArgs, stream,
                                                           domainIfPossible ? &fellBack : nullptr))
                 return *result;
@@ -1377,6 +1394,11 @@ int run(int argc, char* argv[], EventStream& stream) {
             // prefix instead, as before, said once (--domain-if-possible).
             if (fellBack) domain.clear();
         }
+        if (!offlineFrom.empty() && domain.empty())
+            if (auto seeded = seed_offline_(offlineFrom, Config::paths().homeDir); !seeded) {
+                stream.emit(ErrorEvent{.code = ErrorCode::Internal, .message = seeded.error(), .recoverable = true});
+                return 1;
+            }
         // The same command again, for an environment a failure left
         // unfinished: it finishes it -- the edition's packages that are not
         // there yet, then its record. Only the edition it was made from; any

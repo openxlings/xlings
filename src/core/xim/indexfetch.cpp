@@ -636,8 +636,16 @@ const std::map<std::string, IndexManifest>& load_index_pointers(std::string_view
     const std::size_t attempts = urls.size() + (forced ? forced->entries.size() : 0);
     auto err = detail_::obtain_file(filename, std::move(urls), tmp, {}, forced);
     if (!err.empty()) {
-        log::warn("[index] pointer fetch failed ({} source{} tried): {}",
-                  attempts, attempts == 1 ? "" : "s", err);
+        // No network at all, not a missing file: remembered for this process
+        // and the xlings it starts, so nothing else tries the network again
+        // and the failure is said once, by whoever needed the index (design
+        // 2026-10-19 §27.4, F25).
+        const bool down = err.find("Connection failed") != std::string::npos || err.find("resolve") != std::string::npos
+                          || err.find("timed out") != std::string::npos
+                          || err.find("Network is unreachable") != std::string::npos;
+        if (down) platform::set_env_variable("XLINGS_NET_UNREACHABLE", err.substr(0, 200));
+        if (down) log::debug("[index] pointer fetch failed ({} source{} tried): {}", attempts, attempts == 1 ? "" : "s", err);
+        else log::warn("[index] pointer fetch failed ({} source{} tried): {}", attempts, attempts == 1 ? "" : "s", err);
         return cache;
     }
     std::string text;

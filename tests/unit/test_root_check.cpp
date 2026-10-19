@@ -96,3 +96,13 @@ XTEST(RootCheck, TheCommandAnswersOnlyInsideASystem, .area = "luban", .covers = 
     ASSERT_TRUE(json.contains("items")) << inside.transcript();
     EXPECT_EQ(inside.exit_code, json["ok"].get<bool>() ? 0 : 1);
 }
+
+XTEST(RootCheck, AProgramThatAnsweredStarted, .area = "luban", .covers = {"LUBAN-SELF-CHECK"}) {
+    EXPECT_TRUE(rc::started(0, false, "bash 5.2"));
+    EXPECT_TRUE(rc::started(1, false, "unknown option --version")) << "no --version is not a failure to start";
+    EXPECT_TRUE(rc::started(127, false, "lsattr: applet not found")) << "BusyBox ran: an applet it was not built with";
+    EXPECT_FALSE(rc::started(127, false, "sh: foo: not found"));
+    EXPECT_FALSE(rc::started(1, false, "foo: error while loading shared libraries: libx.so.1"));
+    EXPECT_FALSE(rc::started(139, false, ""));
+    EXPECT_TRUE(rc::started(-1, true, "")) << "still running when the limit came: it started";
+}

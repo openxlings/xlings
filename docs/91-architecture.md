@@ -13,14 +13,17 @@ modules/            linked into xlings, one per responsibility
   libs/             json, sha256, tinyhttps -- nothing of xlings
   runtime/          cancellation, guard (confirmation tokens), observe (audit, redaction)
   platform/         the OS boundary: every system header and call
-  ui/               theme, i18n
+  i18n/             the i18n mechanism: tr, the language, catalogues by domain, pick, the glossary
+  ui/               theme, xlings' catalogues
   cli/              the command model: one declared tree, help by level, completion
-  store/            what keeps a payload alive: GC roots, the retained ledger
+  home/             the home: its format (layout, steps) and its payload store (GC roots, the retained ledger)
   subos/            the SubOS core: model, policy, intent, sandbox, views, session
   confine/          sandbox implementations (bwrap, proot, landlock, home redirect)
   carrier/          where a SubOS runs: local, wsl2, vz
-luban/              the OS model and its tool: boot, stage0, machine, cli, image
-apps/luban/         the luban binary (and stage-0 when started as luban-init)
+luban/              Luban OS: specs/ (contracts), kits/ (reusable components), xdesk/ (the desktop:
+                    base, layout, compositor, app), apps/ (programs in a system), os/ (system, service,
+                    vm, cli, compat, window)
+apps/               programs on the host: luban (and stage-0 as luban-init), luban-os, gui, xdev
 src/                the frontend: cli, interface, core (config, xim, xvm, xself, subos)
 ```
 

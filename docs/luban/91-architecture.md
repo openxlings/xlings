@@ -15,14 +15,17 @@ small on purpose.
 | `luban/specs/openhal` | devices: which GPUs, displays, audio endpoints and input devices a machine has |
 | `luban/specs/openas` | actors and what they do: the actor and its delegation, effect classes, the envelope of a run |
 | `luban/kits/openhal-host` | openhal's source on Linux, macOS and Windows |
-| `luban/kits/opensal-wlr`, `xdesk-base`, `xdesk-compositor` | a wlroots compositor as an opensal surface; the xdesk desktop |
+| `luban/kits/opensal-wlr`, `imkit`, `tray` | a wlroots compositor as an opensal surface; widgets; a status-area icon |
+| `luban/xdesk/{base,layout,compositor,app}` | the xdesk desktop: its libraries and its program |
 | `luban/os/system` | stage-0 (the first process), boot entries, a machine's `/etc`, archives |
 | `luban/os/service` | environments and machines as operations with events; what this computer can do (`luban status`) |
 | `luban/os/vm` | machines: supervisor, terminal relay, guest sessions, hypervisors |
 | `luban/os/cli` | the `luban` command: one declared tree; each command's effect; `luban interface` for programs |
-| `luban/os/desktop` | the Luban OS app's window (SDL3) and Dear ImGui |
+| `luban/os/window` | the Luban OS app's window (SDL3) and Dear ImGui |
+| `luban/os/compat` | what is kept only for a released older part, with when it goes |
 | `modules/image` | images, in-process: GPT, FAT, ISO 9660 with El Torito, qcow2 |
 | `apps/luban` | the binary: luban, or stage-0 when started as `luban-init` |
+| `apps/luban-os` | the Luban OS app: its windows, and its tray (`luban-os __tray`) |
 | `src/core/subos/root` | the xlings side of a root: projection, generations, rollback, export |
 
 A specification imports only the standard library and itself; a kit never
@@ -51,6 +54,21 @@ Config). `tools/lint_layer_deps.sh` checks each rule.
    ISO 9660 with El Torito entries (BIOS where the machine has one, UEFI always)
    and a hybrid GPT whose EFI system partition is the El Torito image.
 4. On x86_64, `limine bios-install` makes it boot on BIOS from a drive.
+
+## The app's processes
+
+Every Luban OS window is a process of its own; one more, `luban-os __tray`,
+holds the status-area icon for all of them and draws nothing else. The tray is
+one per home: whoever holds `<home>/run/luban-os/tray.lock` is it. Windows
+reach it over `tray.sock` (a local stream socket, owner-only; on Windows an
+AF_UNIX one), in lines of JSON: a window says who it is and what it shows
+(`hello`, `register`), what it is doing (`job`), what to tell the person
+(`notify`); the tray asks a window to come forward on a view (`raise`), to ask
+whether to quit (`confirm-quit`), to end (`close`). Liveness is a lock -- each
+window holds `windows/<pid>.lock` -- never a pid. A window that finds no tray
+starts one; the lock keeps it to one. The tray ends when no window, no running
+system and no *Always in the tray* need it, and becomes a newer app as soon as
+one is installed.
 
 ## Versions
 

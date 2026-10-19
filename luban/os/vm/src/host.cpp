@@ -133,6 +133,12 @@ Network network_(const service::Context& c, std::string_view name) {
         for (const auto* k : {"ALL_PROXY", "all_proxy", "HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"})
             n.env[k] = "socks5h://10.0.2.100:1080";
         n.summary = "only its proxy";
+    } else {
+        // Like the host: the host's proxy, its loopback the host's NAT address
+        // (design 2026-10-19 §27.3).
+        const auto host = platform::environment();
+        n.env = service::host_proxy_env(host, service::kQemuGateway, service::kQemuNat);
+        if (!n.env.empty()) n.summary += " · " + service::network_line(host, n.env).substr(std::string_view("like the host · ").size());
     }
     // Sound (design §9.4): with the audio grant, the guest's Pulse clients
     // reach this host's PipeWire / PulseAudio socket through a forwarded port.
@@ -285,6 +291,20 @@ int start_impl_(const service::Context& c, std::string_view name, const EnterOpt
         userhome = persist == "home";
     }
     const auto net = network_(c, name);
+    // What its init and its login shells read for this boot (/run/luban/network.env,
+    // design 2026-10-19 §27.3): under the home it mounts, never in its tree.
+    {
+        const auto file = dir / "network.env";
+        fs::remove(file, ec);
+        ec.clear();
+        std::string text;
+        for (const auto& [k, v] : net.env)
+            if (!k.starts_with("PULSE")) text += std::format("{}={}\n", k, v);
+        if (!text.empty()) {
+            platform::write_file_atomic(file.string(), text);
+            fs::permissions(file, fs::perms::owner_read | fs::perms::owner_write, ec);
+        }
+    }
     const bool kvm = kvm_();
     const auto memory = o.memory.empty() ? std::string("2048") : o.memory;
     std::vector<std::string> q{qemu->bin.string()};
@@ -294,7 +314,12 @@ int start_impl_(const service::Context& c, std::string_view name, const EnterOpt
     else if (!arch.cpu.empty()) q.insert(q.end(), {"-cpu", std::string(arch.cpu)});
     const std::string console = arch.name == "aarch64" ? "ttyAMA0" : "ttyS0";
     q.insert(q.end(), {"-kernel", kernel->string(), "-initrd", initrd->string(), "-append",
-                       std::format("console={} quiet panic=-1 luban.home={} luban.name={} luban.userhome={}", console, home, name, userhome ? 1 : 0),
+                       std::format("console={} quiet panic=-1 luban.home={} luban.name={} luban.userhome={}{}", console, home, name,
+                                   userhome ? 1 : 0,
+                                   // Its network is the kernel's own DHCP on the NAT, and its
+                                   // name the system's (design 2026-10-19 §27.2): nothing in
+                                   // the system has to bring either up, whatever its init is.
+                                   net.args.size() == 2 && net.args[1] != "none" ? std::format(" ip=::::{}::dhcp", name) : std::string{}),
                        "-display", "none", "-no-reboot",
                        "-serial", std::format("file:{}", (log_dir(c.home, name) / "console.log").string()),
                        "-virtfs", std::format("local,path={},mount_tag=root,security_model=none,id=root", share.string()),
@@ -368,6 +393,8 @@ service::WelcomeFacts machine_facts_(const service::Context& c, std::string_view
     try { mb = std::stoi(state.value("memory", std::string("2048"))); } catch (...) {}
     f.machine = std::format("{} · 2 CPU · {}", state.value("accel", "kvm") == "kvm" ? "KVM" : "emulated",
                             mb % 1024 == 0 ? std::format("{} GiB", mb / 1024) : std::format("{} MiB", mb));
+    // Its network as it was started (design 2026-10-19 §27.2).
+    if (const auto started = started_env(c.home, name)) f.network = service::network_line(platform::environment(), *started);
     return f;
 }
 
@@ -629,6 +656,15 @@ nlohmann::json session_env(const fs::path& home, std::string_view name) {
     return read_json_(state_file_(home, name)).value("env", Json::object());
 }
 
+std::optional<std::map<std::string, std::string>> started_env(const fs::path& home, std::string_view name) {
+    if (!running(home, name)) return std::nullopt;
+    std::map<std::string, std::string> out;
+    const auto env = session_env(home, name);
+    for (auto it = env.begin(); it != env.end(); ++it)
+        if (it.value().is_string()) out[it.key()] = it.value().get<std::string>();
+    return out;
+}
+
 std::expected<Client, std::string> Client::connect(const fs::path& home, std::string_view name) {
     if constexpr (platform::is_windows) {
         const auto* carrier = xlings::carrier::find("wsl2");
@@ -822,12 +858,12 @@ int enter_in_carrier_(const service::Context& c, std::string_view name, const En
     if (o.display == "window") {
         // The window reaches the machine through the host machine (the app's
         // relay); the app starts it when it is not running.
-        const auto app = service::luban_os_app(c.home);
-        if (app.empty()) {
-            say_(c, service::error("a machine's window is the Luban OS app's", "xlings install luban-os"));
+        const auto app = service::window_app(c, name);
+        if (!app) {
+            say_(c, app.error());
             return 1;
         }
-        return platform::run_argv({app.string(), "--attach", std::string(name)});
+        return platform::run_argv({app->string(), "--attach", std::string(name)});
     }
     std::vector<std::string> argv = at->launcher;
     argv.insert(argv.end(), {"/xlings/bin/luban", "enter", std::string(name), "--mode", "machine"});
@@ -948,12 +984,12 @@ int enter(const service::Context& c, std::string_view name_or_image, const Enter
     if (fs::is_regular_file(name_or_image, ec)) return boot_image_(c, fs::absolute(name_or_image), o);
     const std::string name(name_or_image);
     if (o.display == "window") {
-        const auto app = service::luban_os_app(c.home);
-        if (app.empty()) {
-            say_(c, service::error("a machine's window is the Luban OS app's", "xlings install luban-os"));
+        const auto app = service::window_app(c, name);
+        if (!app) {
+            say_(c, app.error());
             return 1;
         }
-        return platform::run_argv({app.string(), "--attach", name});
+        return platform::run_argv({app->string(), "--attach", name});
     }
     if (!running(c.home, name)) {
         if (const int rc = platform::is_macos ? start_vz_(c, name, o) : start_impl_(c, name, o); rc != 0) return rc;

@@ -4,12 +4,13 @@
 #           only, so the frontends and core/log can all depend on it without
 #           a cycle. It owns `Rgb` and `Background`; whether the terminal can
 #           take colour at all is core/palette's question.
-#   i18n    message catalogues, built in: nobody authors a translation table,
-#           so embedding it removes a delivery chain and every way it fails
-#           (themes, which users do copy and edit, stay files). `en` is the
-#           complete base; every other language states only what it changes.
-#           Adding a language is adding a file under src/i18n/. "auto"
-#           resolves through platform's system-language probe.
+#   i18n    xlings' message catalogues, built in: nobody authors a translation
+#           table, so embedding it removes a delivery chain and every way it
+#           fails (themes, which users do copy and edit, stay files). `en` is
+#           the complete base; every other language states only what it
+#           changes. Adding a language is adding a file under src/i18n/ and a
+#           line in xlings.ui.i18n, which registers them with the mechanism
+#           (modules/i18n) as the domain "xlings".
 [package]
 namespace = "xlings"
 name      = "ui"
@@ -20,6 +21,7 @@ kind = "lib"
 
 [dependencies]
 platform = { path = "../platform" }
+i18n     = { path = "../i18n" }
 
 [build]
 include_dirs = ["../libs/src/json"]

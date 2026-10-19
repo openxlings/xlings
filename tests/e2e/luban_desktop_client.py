@@ -9,10 +9,10 @@ opensal-wlr the consumer (the pixels).
     luban_desktop_client.py --exec <keys> <out.ppm> -- <command...>
 
 <keys> is typed once the desktop has drawn: characters, \\n for Return,
-{Alt+Return}-style chords. With --exec the desktop is a command whose standard
-input and output are opensal.wire (a sandbox's `luban __desktop`), as the
-window runs it. Prints what it saw as one JSON line; exits 1 when the desktop
-never drew."""
+{Alt+Return}-style chords, {move:X,Y} the pointer there. With --exec the
+desktop is a command whose standard input and output are opensal.wire (a
+sandbox's `luban __desktop`), as the window runs it. Prints what it saw as one
+JSON line; exits 1 when the desktop never drew."""
 import json
 import os
 import socket
@@ -125,7 +125,13 @@ def type_keys(text):
     mods_of = {"Alt": (4, 0xffe9), "Ctrl": (2, 0xffe3), "Shift": (1, 0xffe1), "Super": (8, 0xffeb)}
     i = 0
     while i < len(text):
-        if text[i] == "{":
+        if text.startswith("{move:", i):
+            j = text.index("}", i)
+            x, y = text[i + 6:j].split(",")
+            wire("E", "motion %s %s" % (x, y))
+            pump(1.5)
+            i = j + 1
+        elif text[i] == "{":
             j = text.index("}", i)
             *mods, name = text[i + 1:j].split("+")
             bits = sum(mods_of[m][0] for m in mods)

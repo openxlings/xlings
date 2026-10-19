@@ -379,6 +379,34 @@ Json hello_() { return Json{{"agent", 1}, {"provides", Json{{"agent-display", 1}
     agent_(true);
 }
 
+
+// The name servers of the kernel's lease (/proc/net/pnp: "nameserver a.b.c.d"
+// lines), in /run/luban/resolv.conf, bound over /etc/resolv.conf. A link
+// there (a distribution's /run/systemd/... one) is left alone.
+void resolv_from_lease_() {
+    std::ifstream pnp("/proc/net/pnp");
+    std::string text, line;
+    while (std::getline(pnp, line))
+        if (line.starts_with("nameserver") || line.starts_with("domain") || line.starts_with("search")) text += line + "\n";
+    if (text.find("nameserver") == std::string::npos) return;
+    std::error_code ec;
+    fs::create_directories("/run/luban", ec);
+    {
+        std::ofstream out("/run/luban/resolv.conf", std::ios::trunc);
+        out << text;
+        if (!out) { console_("cannot write /run/luban/resolv.conf"); return; }
+    }
+    const auto at = fs::symlink_status("/etc/resolv.conf", ec);
+    if (at.type() == fs::file_type::symlink) {
+        console_("/etc/resolv.conf is a link: the lease's name servers are in /run/luban/resolv.conf");
+        return;
+    }
+    if (at.type() == fs::file_type::not_found) std::ofstream("/etc/resolv.conf");   // a mount point
+    if (!platform::bind_mount("/run/luban/resolv.conf", "/etc/resolv.conf"))
+        console_("cannot place the lease's name servers at /etc/resolv.conf");
+}
+
+
 }  // namespace
 
 void serve_agent(int fd) { serve_(fd, fd, false, true); }
@@ -447,6 +475,16 @@ int guest_init(int, char*[]) {
     // anything (its rcS mounting devpts again is harmless: already mounted).
     if (!platform::mount_kernel_fs("devpts", "/dev/pts")) console_("cannot mount devpts: sessions will fail");
 
+    // Its name servers: the kernel's lease (ip=dhcp, /proc/net/pnp), in this
+    // boot's /run and bound over /etc/resolv.conf -- the host's NAT answers
+    // them -- never written into the system's tree (design 2026-10-19 §27.2).
+    // Without a lease (no network) nothing is bound and the system's own
+    // stays.
+    resolv_from_lease_();
+    // The prompt's mark for every login shell, for a system made before a
+    // shell's script existed (written when missing; design 2026-10-19 F26).
+    (void)xlings::subos::root_etc::ensure_prompt_script("/etc");
+
     // Its name: the machine's own /etc/hostname, else the environment's.
     {
         std::ifstream in("/etc/hostname");
@@ -458,9 +496,37 @@ int guest_init(int, char*[]) {
         // turned `pcore` into `luban` a moment after the first prompt.
         if ((name.empty() || name == "luban") && params.contains("luban.name")) {
             name = params.at("luban.name");
-            std::ofstream("/etc/hostname", std::ios::trunc) << name << '\n';
+            // The placeholder is a link into the read-only factory /etc: a
+            // write through it fails, and the system's own init later named
+            // the machine `luban` from it (design 2026-10-19 F27). Its own
+            // file instead, with its name.
+            std::error_code ec;
+            if (fs::is_symlink(fs::symlink_status("/etc/hostname", ec))) fs::remove("/etc/hostname", ec);
+            std::ofstream out("/etc/hostname", std::ios::trunc);
+            out << name << '\n';
+            out.close();
+            if (!out) console_("cannot write /etc/hostname: its name is the kernel's only");
         }
         if (!name.empty()) (void)platform::set_hostname(name);
+    }
+    // The host's proxy for this boot (design 2026-10-19 §27.3): what the host
+    // left under the home, in this boot's /run for login shells, and in the
+    // environment of its init (its services, its desktop session).
+    std::map<std::string, std::string> network_env;
+    if (!home.empty() && params.contains("luban.name")) {
+        std::ifstream in(home / "run" / "machines" / params.at("luban.name") / "network.env");
+        std::string text, line;
+        while (std::getline(in, line)) {
+            const auto eq = line.find('=');
+            if (eq == std::string::npos || eq == 0) continue;
+            network_env[line.substr(0, eq)] = line.substr(eq + 1);
+            text += line + "\n";
+        }
+        if (!text.empty()) {
+            std::error_code mk;
+            fs::create_directories("/run/luban", mk);
+            std::ofstream("/run/luban/network.env", std::ios::trunc) << text;
+        }
     }
     if (platform::fork_process() == 0) agent_();
     std::error_code ec;
@@ -470,6 +536,7 @@ int guest_init(int, char*[]) {
         // knows which system it is (L §9), not only the agent's sessions.
         std::map<std::string, std::string> initEnv{{"PATH", "/usr/sbin:/usr/bin:/sbin:/bin"}, {"TERM", "linux"}};
         if (params.contains("luban.name")) initEnv["XLINGS_ROOT_INSTANCE"] = params.at("luban.name");
+        initEnv.insert(network_env.begin(), network_env.end());
         platform::exec_path({init}, initEnv);
     }
     console_("the environment has no init; a shell on the console instead");

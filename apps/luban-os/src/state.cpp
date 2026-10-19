@@ -4,7 +4,9 @@
 module luban.os;
 
 import std;
+import luban.compat;
 import xlings.libs.json;
+import xlings.i18n;
 import imkit;
 import tray;
 import luban.service;
@@ -62,8 +64,9 @@ std::string App::title_for(std::string_view what) const {
         const auto first = once_app.substr(0, once_app.find(' '));
         return std::format("{} — {}", fs::path(first).filename().string(), what);
     }
-    return std::format("{} — Luban OS · Ctrl+Alt {}", what,
-                       window->keyboard_grabbed() ? tr("releases the keyboard", "释放键盘") : tr("menu", "菜单"));
+    // One title for a system in every view (design 2026-10-19 §18.3, F17):
+    // `Luban OS (<system>)`; the keys are said in the bar at the top.
+    return std::format("Luban OS ({})", what);
 }
 
 void App::start_job(std::string title, std::function<void(Job&, service::Context)> body, std::function<void(App&)> then) {
@@ -90,7 +93,7 @@ void App::start_job(std::string title, std::function<void(Job&, service::Context
 
 std::string App::edition_name(const service::Environment& e) {
     auto label = e.edition;
-    if (label.starts_with("subos:luban-")) label = label.substr(12);
+    label = std::string(luban::compat::without_frozen_prefix(label));
     if (const auto at = label.find('@'); at != std::string::npos) label = label.substr(0, at);
     return label;
 }
@@ -102,8 +105,7 @@ void App::enter(const std::string& name) {
     if (auto env = service::describe(ctx, name)) {
         if (const auto bad = service::unmet_needs(*env, service::luban_provides()); !bad.empty()) {
             const auto why = bad.front().why();
-            notice = std::vformat(tr("This Luban OS app is older than {} ({}): xlings update luban-os",
-                                     "这个 Luban OS 应用比 {} 旧（{}）：xlings update luban-os"),
+            notice = std::vformat(tr("luban.os.state.luban_os_app_older_than"),
                                   std::make_format_args(name, why));
             return;
         }
@@ -120,7 +122,7 @@ void App::enter(const std::string& name) {
     }
     const auto mode = vm::running(home, name) ? std::string("machine") : env ? env->settings.mode : std::string("sandbox");
     if (mode == "machine") {
-        start_job(std::format("{} {}", tr("Starting", "启动"), name),
+        start_job(std::format("{} {}", tr("luban.os.state.starting"), name),
                   [name](Job& j, service::Context c) { j.code = vm::start(c, name, {}); },
                   [name](App& a) {
                       if (a.job->code != 0) return;
@@ -136,12 +138,11 @@ void App::open_run(const std::string& name) {
     {
         std::lock_guard l(run.m);
         run.lines.clear();
-        run.lines.push_back({std::vformat(tr("{} has no shell: each line here is one command, run in it (luban run {} -- …).",
-                                             "{} 没有 shell：这里每一行是在其中运行的一条命令（luban run {} -- …）。"),
+        run.lines.push_back({std::vformat(tr("luban.os.state.has_no_shell_each_line"),
                                           std::make_format_args(name, name))});
     }
     view = View::Run;
-    window->set_title(std::format("{} — Luban OS", name));
+    window->set_title(title_for(name));
     window->text_input(true);
 }
 
@@ -246,7 +247,7 @@ void App::open_console(const std::string& name, bool machine) {
     std::string greeting;
     if (env)
         for (const auto& line : service::welcome(*env, machine ? "machine" : "sandbox", false,
-                                                 {.zh = tr("en", "zh") == "zh", .color = true, .utf8 = true}))
+                                                 {.zh = xlings::i18n::language() == "zh", .color = true, .utf8 = true}))
             greeting += line + "\r\n";
     console = machine ? Console::machine(home, name, [w] { w->wake(); }, error, greeting)
                       : Console::sandbox(ctx.port.xlings(), home, name, env ? env->settings.persist : "all", [w] { w->wake(); },
@@ -274,7 +275,7 @@ void App::app_failed_(const std::string& why) {
 }
 
 void App::power_off(const std::string& name) {
-    start_job(std::format("{} {}", tr("Powering off", "关闭"), name),
+    start_job(std::format("{} {}", tr("luban.os.state.powering_off"), name),
               [name](Job& j, service::Context c) { j.code = vm::stop(c, name).code; },
               [](App& a) { a.view = View::Off; });
 }

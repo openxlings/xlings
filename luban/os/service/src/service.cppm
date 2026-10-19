@@ -11,6 +11,7 @@ export import luban.service.port;
 export import luban.service.settings;
 export import luban.service.capabilities;
 import std;
+import xlings.i18n;
 import xlings.libs.json;
 import opencaps;
 
@@ -19,7 +20,7 @@ export namespace luban::service {
 // Luban is released with the xlings it drives: the same date version
 // (YYYY.M.D.N), bumped with mcpp.toml and src/core/config.cppm.
 // tests/unit/test_luban_cli.cpp holds them equal.
-inline constexpr std::string_view kVersion = "2026.10.19.1";
+inline constexpr std::string_view kVersion = "2026.10.19.2";
 
 namespace fs = std::filesystem;
 
@@ -74,6 +75,43 @@ struct Environment {
 // What this luban provides (design 2026-10-18 §9; luban/specs/opencaps): the
 // root layout it reads, the manifest fields it knows.
 opencaps::Provides luban_provides();
+
+// What the Luban OS app says of itself (design 2026-10-19 §10.2): `<app>
+// __capabilities --json`, asked with a five-second limit, kept by the app
+// file's path and time in <home>/run/luban-os/capabilities.json. An app that
+// cannot be asked -- too old to know the question, slow, or not answering in
+// JSON -- is an error saying so, never taken as compatible.
+struct AppCapabilities {
+    std::string version;
+    std::map<std::string, int> provides;     // capability -> level
+    std::vector<std::string> needs;          // opencaps needs, as written
+};
+std::expected<AppCapabilities, std::string> app_capabilities(const fs::path& home, const fs::path& app);
+// The app's own answer (what luban-os prints for `__capabilities --json`).
+nlohmann::json app_capabilities_json(std::string_view version, const opencaps::Provides& provides,
+                                     std::span<const std::string> needs);
+
+// The Luban OS app to show `system` in a window, checked first (design
+// 2026-10-19 §10.3): it is installed, it can be asked, it provides what the
+// system needs and this luban provides what it needs. Otherwise the error, with
+// the update that fixes it.
+std::expected<fs::path, Event> window_app(const Context& c, std::string_view system);
+
+// The parts' versions in one place (design 2026-10-19 §11): xlings and its
+// protocol, this luban, the Luban OS app installed and the ones running, the
+// index snapshot -- and where they disagree, what to do. `luban status` says
+// it in one line; the app's About reads the same.
+struct Versions {
+    std::string xlings, protocol, luban, app, index;
+    std::string unread;                         // what could not be asked
+    struct Running { int pid { 0 }; std::string exe; bool registered { false }; };
+    std::vector<Running> running;               // luban-os processes of this user
+    bool looked { false };                      // the processes could be listed here
+    struct Mismatch { std::string what, why, next; };
+    std::vector<Mismatch> mismatches;
+};
+Versions versions(const Context& c);
+nlohmann::json to_json(const Versions& v);
 // What `e` needs of whoever reads or runs it -- its root's layout, its
 // manifest's requires -- against `reader`: the unmet ones, each with why.
 std::vector<opencaps::Verdict> unmet_needs(const Environment& e, const opencaps::Provides& reader);
@@ -109,6 +147,25 @@ struct WelcomeFacts {
     std::string user_home { "/root" };
     std::string network;
 };
+// The host's proxy, as a machine reaches it (design 2026-10-19 §27.3): the
+// proxy variables of the environment that starts it (either case), a
+// loopback host (127.0.0.1, localhost, ::1) made the host's address on the
+// machine's NAT (`gateway`), and NO_PROXY with the NAT's network (`nat`)
+// added. Nothing when the host has no proxy.
+std::string map_proxy_url(std::string_view url, std::string_view gateway);
+std::map<std::string, std::string> host_proxy_env(const std::map<std::string, std::string>& host, std::string_view gateway,
+                                                  std::string_view nat);
+// How a system's network is said (luban status, the banner): "like the host",
+// the proxy it uses and, mapped, the host's it stands for.
+std::string network_line(const std::map<std::string, std::string>& host, const std::map<std::string, std::string>& inside);
+// The QEMU NAT's host address and network.
+inline constexpr std::string_view kQemuGateway = "10.0.2.2", kQemuNat = "10.0.2.0/24";
+
+// luban's words (i18n/words.cpp): the domain "luban", registered by the
+// programs that say them (luban, Luban OS) before anything is said.
+void register_words();
+std::span<const xlings::i18n::Entry> words_en();
+
 // `mode` is how this session runs (sandbox or machine).
 std::vector<std::string> welcome(const Environment& e, std::string_view mode, bool temp,
                                  const WelcomeStyle& style, const WelcomeFacts& facts = {});
@@ -176,11 +233,34 @@ struct Offer {
     std::string description;
     std::string index;
     bool official { false };
+    // What else the index says of it (design 2026-10-19 §5.3, §5.4): the
+    // version a new system gets, the recipe's status, where it comes from
+    // (official | community | local), and what its `extensions.luban` says --
+    // tier 1-4, a GPU note, a title and summary per language, its highlights
+    // and size; values out of range are not taken, and named in `ignored`.
+    std::string version;
+    std::string passed_over;
+    std::string status;         // stable | dev | deprecated
+    std::string source;
+    std::optional<int> tier;
+    std::string gpu;            // better | needed | ""
+    std::map<std::string, std::string> title, summary;
+    std::vector<std::string> highlights;
+    std::optional<std::uint64_t> size;
+    std::vector<std::string> keywords;
+    std::vector<std::string> ignored;
+    // Whether it can be made on this machine (its architectures); why not.
+    bool available { true };
+    std::string reason;
 };
 struct QuickStartOffers {
     std::vector<Offer> systems, desktops;
+    // The index could not be read: what it said (never shown as nothing offered).
+    std::string error;
 };
 QuickStartOffers quick_start_offers(const Port& port);
+// An offer as `luban search --json` and the quick start state say it.
+nlohmann::json offer_json(const Offer& o);
 
 // One layer of a system's lineage: a template and its manifest as written.
 struct Layer {
@@ -201,6 +281,9 @@ struct Lineage {
     std::vector<Layer> layers;
     std::vector<std::string> packages;  // merged, as declared
     std::string policy;
+    // Why its top is not the newest version (a newer needs a newer xlings):
+    // said when it is made, as the plan resolved it (design 2026-10-19 §9.1).
+    std::string passed_over;
     // The Luban OS base: the first official edition from the top.
     const Layer* base() const;
     // The layer it is made from directly (the second), if any.
@@ -314,7 +397,21 @@ struct ExportOptions {
     std::string boot;
 };
 Outcome export_environment(const Context& c, const ExportOptions& o);
-Outcome import_environment(const Context& c, const fs::path& file, std::string name);
+Outcome import_environment(const Context& c, const fs::path& file, std::string name, bool here = false);
+
+// What was kept when a system moved into its own userland (design 2026-10-19
+// §12.4): <home>/state/luban/relayout/<name>.luban, its files as they were.
+// Removed only with the system, by a confirmed `luban rm`.
+std::optional<fs::path> relayout_archive(const fs::path& home, std::string_view name);
+
+// What a person may want to know of a system, each with what to do (design
+// 2026-10-19 §12.2): an archive from before its move, a desktop with no
+// cursor theme (the two ways: the package that brings it, or the upgrade).
+struct Note {
+    std::string text;
+    std::vector<std::string> next;
+};
+std::vector<Note> notes(const Context& c, const Environment& e);
 
 // On this terminal: the environment's shell (`temp`: nothing it writes stays),
 // or one command.

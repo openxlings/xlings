@@ -55,6 +55,9 @@ suite_luban_console() {
     says "an empty home names the first command" "luban new"
     capture "luban setup" luban setup -y
     ok "the one-time setup is one step"
+    capture "luban search" luban search
+    says "the index's distributions" "distributions"
+    says "and its desktops" "desktops"
 
     local e
     for e in nano tiny core; do
@@ -86,6 +89,12 @@ suite_luban_console() {
     says "what is typed runs" "IN-42"
     capture "kept" luban run e-tiny -- cat /root/kept
     says "a session keeps what it wrote" "IN-42"
+    # With no network (a network namespace of its own): entered from what is
+    # here (design 2026-10-19 §9.3).
+    if unshare -rn true 2>/dev/null; then
+        capture "no network" unshare -rn luban run e-tiny -- /bin/sh -c 'echo offline-$((6*7))'
+        says "entered with no network" "offline-42"
+    fi
 
     section "tiny, keeping nothing: --temp"
     session 20 'echo GONE > /root/gone; cat /root/gone; exit' e-tiny --temp
@@ -98,6 +107,7 @@ suite_luban_console() {
     capture "config" luban config e-tiny --persist home
     capture "status" luban status e-tiny
     says "status says what it keeps" "only /home"
+    says "and its network, in one line" "like the host"
     session 20 'echo H > /home/h; echo R > /root/r; exit' e-tiny
     capture "home kept" luban run e-tiny -- cat /home/h
     refuses "the rest is not" luban run e-tiny -- cat /root/r
@@ -264,6 +274,11 @@ suite_luban_lived_in() {
     says "what it had is there" "kept"
     capture "its home is its own" luban run old -- /bin/sh -c 'echo "XH=$XLINGS_HOME"; ls /home'
     says "xlings there is its own" "XH=/xlings"
+    capture "the way back is kept" luban history old
+    says "history names it" "before its move"
+    capture "back to before the move" luban rollback old --to relayout -y
+    capture "its file is there" luban run old -- cat /root/kept
+    says "what it had is there" "kept"
 
     section "programs in a system have what their recipes registered"
     capture "vim and git into it" xlings install -y --subos l-core xim:vim xim:git

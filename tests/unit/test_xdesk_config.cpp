@@ -50,3 +50,40 @@ XTEST(XdeskConfig, APersonsOwnFileWinsKeyByKeyOverTheProfiles, .area = "luban", 
     std::error_code ec;
     fs::remove_all(root, ec);
 }
+
+// state.json and keys.json (design 2026-10-19 §16.4, §17.12): the person's,
+// read and written whole; one that cannot be read is said and left as it is.
+XTEST(XdeskConfig, ThePersonsStateAndKeysAreKeptAndABrokenOneIsSaid, .area = "luban", .covers = {"XDESK-CONFIG", "XDESK-ARRANGEMENTS"}) {
+    const auto root = fs::temp_directory_path() / std::format("xdesk-state-{}", std::random_device{}());
+    const std::map<std::string, std::string> env{{"XDG_CONFIG_HOME", root.string()}};
+    // Nothing there: the defaults.
+    auto s = config::read_state(env);
+    ASSERT_TRUE(s);
+    EXPECT_EQ(*s, config::State{});
+    // Written and read back the same.
+    config::State st{.arrangements = {"tile", "", "canvas"}, .last = "canvas",
+                     .rules = {{"foot", {.floating = true, .workspace = 2, .rect = std::array{10, 20, 640, 480}}}}};
+    ASSERT_TRUE(config::write_state(env, st));
+    s = config::read_state(env);
+    ASSERT_TRUE(s) << s.error();
+    EXPECT_EQ(*s, st);
+    // Broken: why, with the file -- and the file is not touched.
+    std::ofstream(config::state_file(env)) << "{\"arrangements\": [\"tile\",";
+    s = config::read_state(env);
+    ASSERT_FALSE(s);
+    EXPECT_NE(s.error().find("state.json"), std::string::npos) << s.error();
+    // keys.json: an action's chords, one or many.
+    std::ofstream(config::keys_file(env)) << R"({"terminal": ["Super+Return", "Ctrl+Alt+t"], "close": "Super+w"})";
+    auto k = config::read_keys(env);
+    ASSERT_TRUE(k) << k.error();
+    EXPECT_EQ((*k)["terminal"], (std::vector<std::string>{"Super+Return", "Ctrl+Alt+t"}));
+    EXPECT_EQ((*k)["close"], (std::vector<std::string>{"Super+w"}));
+    // The JSON itself: escapes and numbers round-trip.
+    auto j = config::Json::parse(R"({"a": "x\"yé", "n": [1, 2.5, true, null]})");
+    ASSERT_TRUE(j);
+    EXPECT_EQ(j->get("a")->string_or(""), "x\"y\xc3\xa9");
+    EXPECT_EQ(config::Json::parse(j->dump())->dump(), j->dump());
+    EXPECT_FALSE(config::Json::parse("{\"a\": }"));
+    std::error_code ec;
+    fs::remove_all(root, ec);
+}

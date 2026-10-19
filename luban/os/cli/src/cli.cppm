@@ -69,3 +69,13 @@ std::expected<std::vector<std::string>, std::string> argv_of(const openas::Verb&
 int run(int argc, char* argv[]);
 
 }  // namespace luban::cli
+
+namespace luban::cli {
+// `luban search [<keyword>] [--distributions | --desktops]` (design 2026-10-19
+// §6): what the index offers, grouped as the Luban OS quick start groups it
+// (search.cpp).
+int search(const luban::service::Context& c, std::string_view keyword, std::string_view group, bool json, bool verbose);
+// Whether a name answers a pattern: it holds the pattern, or the pattern's
+// letters in order (`luban ls dk` finds desktop-4).
+bool name_matches(std::string_view name, std::string_view pattern);
+}  // namespace luban::cli

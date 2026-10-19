@@ -1,10 +1,12 @@
 module luban.cli;
 
 import std;
+import luban.compat;
 import xlings.subos.root_etc;
 import xlings.libs.sha512;
 import xlings.cli.model;
 import xlings.libs.json;
+import xlings.i18n;
 import xlings.observe;
 import xlings.platform;
 import xlings.platform.stream;
@@ -22,6 +24,7 @@ namespace luban::cli {
 
 namespace spec = xlings::cli::spec;
 namespace svc = luban::service;
+namespace vm = luban::vm;
 using spec::Level;
 namespace fs = std::filesystem;
 using Json = nlohmann::json;
@@ -34,7 +37,7 @@ namespace {
 // way to everything xlings can do starts from here.
 const std::map<std::string, std::string, std::less<>>& equivalents() {
     static const std::map<std::string, std::string, std::less<>> value{
-        {"new", "xlings subos new <name> --from subos:luban-<edition>"},
+        {"new", "xlings subos new <name> --from luban:<edition>"},
         {"enter", "xlings subos use <name> [--persist home|none]"},
         {"run", "xlings subos exec <name> -- <command...>"},
         {"ls", "xlings subos list"},
@@ -495,15 +498,28 @@ int host_status(const svc::Context& c, const Globals& g) {
     const auto* sandbox = caps.mode("sandbox");
     const auto* machine = caps.mode("machine");
     const bool ready = (sandbox && sandbox->ready) || (machine && machine->ready);
+    const auto versions = svc::versions(c);
     if (g.json) {
         auto out = svc::to_json(caps);
         out["place"] = to_string(where());
         out["ready"] = sandbox && sandbox->ready;
         out["isolation"] = caps.isolation;
+        out["versions"] = svc::to_json(versions);
         std::println("{}", out.dump());
         return ready ? 0 : 1;
     }
     std::println("Luban OS {} -- {} ({}), {}", svc::kVersion, caps.os, caps.arch, to_string(where()));
+    // The parts' versions in one line; where they disagree, each with what to
+    // do (design 2026-10-19 §11).
+    {
+        std::string line = std::format("xlings {} · luban {}", versions.xlings.empty() ? "?" : versions.xlings, versions.luban);
+        if (!versions.app.empty()) line += std::format(" · luban-os {}", versions.app);
+        if (!versions.index.empty()) line += std::format(" · index {}", versions.index);
+        std::println("  {:<9}{}", xlings::i18n::tr("luban.status.versions"), line);
+        for (const auto& m : versions.mismatches) std::println("  {:<9}  {} -- {}", "", m.why, m.next);
+        if (g.verbose && !versions.looked)
+            std::println("  {:<9}  {}", "", xlings::i18n::tr("luban.status.unlisted"));
+    }
     for (const auto& m : caps.modes) {
         if (m.ready) {
             std::println("  {:<9}ready      {}", m.name, m.how);
@@ -548,8 +564,11 @@ std::string edition_label_(const svc::Environment& e) {
     return svc::display_name(svc::lineage_of(e));
 }
 
-int overview(const svc::Context& c, const Globals& g) {
+int overview(const svc::Context& c, const Globals& g, std::string_view pattern = {}) {
     auto envs = svc::list(c);
+    // A name pattern (design 2026-10-19 §6): `luban ls a`. Without one, the
+    // output is what it always was.
+    if (envs && !pattern.empty()) std::erase_if(*envs, [&](const svc::Environment& e) { return !name_matches(e.name, pattern); });
     if (g.json) {
         Json list = Json::array();
         // What each is (the fields of `status <name> --json`): a host that asks
@@ -576,6 +595,10 @@ int overview(const svc::Context& c, const Globals& g) {
     if (!envs) {
         std::println("  environments: could not be listed ({})", envs.error());
         return 1;
+    }
+    if (envs->empty() && !pattern.empty()) {
+        std::println("  {}", xlings::i18n::trf("luban.ls.no_match", pattern));
+        return 0;
     }
     if (envs->empty()) {
         std::println("  no environments yet\n\n  start   luban new box");
@@ -749,9 +772,9 @@ int cmd_run(const svc::Context& c, const Parsed& p, const Globals& g) {
     if (display != "terminal" && display != "window") return usage("--display terminal|window", g);
     if (display == "terminal") return svc::run_command(c, p.words[0], p.after, p.option("--user").value_or(""));
     if (p.option("--user")) return usage("--user is the terminal's: a window runs as the system's login user", g);
-    const auto app = svc::luban_os_app(c.home);
-    if (app.empty()) {
-        if (c.sink) c.sink(svc::error("a program's window is the Luban OS app's", "xlings install luban-os"));
+    const auto app = svc::window_app(c, p.words[0]);
+    if (!app) {
+        if (c.sink) c.sink(app.error());
         return 1;
     }
     // One word for the session: each argument quoted for the shell that runs it.
@@ -764,7 +787,7 @@ int cmd_run(const svc::Context& c, const Parsed& p, const Globals& g) {
         for (char ch : w) q += ch == '\'' ? std::string("'\\''") : std::string(1, ch);
         command += (command.empty() ? "" : " ") + (plain ? w : q + "'");
     }
-    return xlings::platform::run_argv({app.string(), "--attach", p.words[0], "--app", command});
+    return xlings::platform::run_argv({app->string(), "--attach", p.words[0], "--app", command});
 }
 
 int cmd_enter(const svc::Context& c, const Parsed& p, const Globals& g) {
@@ -810,12 +833,12 @@ int cmd_enter(const svc::Context& c, const Parsed& p, const Globals& g) {
     }
     if (o.display == "window") {
         // The window is the Luban OS app's, sandbox or machine alike.
-        const auto app = svc::luban_os_app(c.home);
-        if (app.empty()) {
-            if (c.sink) c.sink(svc::error("a system's window is the Luban OS app's", "xlings install luban-os"));
+        const auto app = svc::window_app(c, target);
+        if (!app) {
+            if (c.sink) c.sink(app.error());
             return 1;
         }
-        std::vector<std::string> argv{app.string(), "--attach", target};
+        std::vector<std::string> argv{app->string(), "--attach", target};
         if (once) argv.insert(argv.end(), {"--desktop", *once});
         return xlings::platform::run_argv(argv);
     }
@@ -864,6 +887,30 @@ int cmd_status(const svc::Context& c, const Parsed& p, const Globals& g, Rendere
     j["needs"] = e->needs;
     j["unmet"] = Json::array();
     for (const auto& v : unmet) j["unmet"].push_back(v.why());
+    auto notes = svc::notes(c, *e);
+    // Its network in one line, the same whatever it runs as (design 2026-10-19
+    // §27.2): like the host -- the host's proxy, as a machine reaches it --
+    // only its proxy, or none.
+    std::string network = "like the host";
+    if (auto iso = c.port.json({"subos", "config", e->name, "--json"}); iso && iso->is_object()) {
+        const auto in = iso->value("isolation", Json::object());
+        const auto net = in.value("net", std::string("host"));
+        if (net == "none") network = "none";
+        else if (net == "proxy") network = "only its proxy " + in.value("proxy", std::string{});
+        else {
+            const auto host = xlings::platform::environment();
+            const bool machine = e->settings.mode == "machine";
+            network = svc::network_line(host, machine ? svc::host_proxy_env(host, svc::kQemuGateway, svc::kQemuNat) : host);
+            // Running with what it was started with: a changed host proxy is the next start's.
+            if (const auto started = machine ? vm::started_env(c.home, e->name) : std::nullopt)
+                if (const auto was = svc::network_line(host, *started); was != network)
+                    notes.push_back(svc::Note{xlings::i18n::trf("luban.status.proxy_changed", was),
+                                              {std::format("luban stop {0} && luban enter {0}", e->name)}});
+        }
+    }
+    j["network"] = network;
+    j["notes"] = Json::array();
+    for (const auto& n : notes) j["notes"].push_back({{"text", n.text}, {"next", n.next}});
     if (g.json) { r.value(j); return 0; }
     std::println("{}  {}{}", e->name, edition_label_(*e), e->running ? "  (running)" : "");
     if (!lineage.layers.empty()) {
@@ -886,8 +933,14 @@ int cmd_status(const svc::Context& c, const Parsed& p, const Globals& g, Rendere
     std::println("  starts    as a {}{}", e->settings.mode, e->settings.persist == "all" ? "" : std::format(", keeping {}", e->settings.persist == "home" ? "only /home" : "nothing"));
     if (!e->shell.empty()) std::println("  shell     {}", e->shell);
     if (e->carrier != "local") std::println("  carrier   {}", e->carrier);
+    std::println("  {:<9} {}", xlings::i18n::tr("luban.status.network"), network);
     std::println("  isolation luban config {}", e->name);
     for (const auto& v : unmet) std::println("  {} {}: this luban is older than it -- xlings update luban", r.paint("!", 33), v.why());
+    // What may be done, never forced (design 2026-10-19 §12.2).
+    for (const auto& n : notes) {
+        std::println("  {} {}", r.paint("·", 36), n.text);
+        for (const auto& next : n.next) std::println("      {}", next);
+    }
     return 0;
 }
 
@@ -927,7 +980,19 @@ int cmd_history(const svc::Context& c, const Parsed& p, const Globals& g, Render
     if (name.empty()) return usage("`luban history <name>`: which environment?", g);
     auto out = svc::history(c, name);
     if (!out.ok()) return out.code;
+    // Before its move into its own userland, when that was kept (design
+    // 2026-10-19 §12.4): the first line, its way back.
+    const auto kept = svc::relayout_archive(c.home, name);
+    if (kept) {
+        std::error_code ec;
+        out.value["relayout"] = {{"file", kept->string()}, {"size", fs::file_size(*kept, ec)}};
+    }
     if (g.json) { r.value(out.value); return 0; }
+    if (kept) {
+        std::error_code ec;
+        std::println("  before its move into its own userland (an archive, {} MB): luban rollback {} --to relayout",
+                     fs::file_size(*kept, ec) / (1024 * 1024), name);
+    }
     for (const auto& row : out.value["generations"])
         std::println("{} {:>3}  {}  {}", row.value("current", false) ? "*" : " ", row.value("generation", 0),
                      row.value("created", ""), row.value("reason", ""));
@@ -942,7 +1007,7 @@ int cmd_upgrade(const svc::Context& c, const Parsed& p, const Globals& g, Render
     if (!out.ok() || g.json || out.value.value("up_to_date", true)) return out.code;
     // What moves: the edition, its packages, its policy.
     const auto& v = out.value;
-    const auto label = [](const std::string& ref) { return ref.starts_with("subos:luban-") ? ref.substr(12) : ref; };
+    const auto label = [](const std::string& ref) { return std::string(luban::compat::without_frozen_prefix(ref)); };
     r.say(std::format("  edition  {} -> {}", label(v.value("from", "")), label(v.value("to", ""))));
     for (const auto& row : v.value("upgrade", Json::array()))
         r.say(std::format("  upgrade  {} {} -> {}", row.value("key", ""), row.value("from", "?"), row.value("to", "")));
@@ -1297,7 +1362,12 @@ const spec::CommandSpec& tree() {
              .options = {{"--user <NAME>", "As this user (root, or one of its users)", false, Level::More},
                          {"--display <DISPLAY>", "terminal (here) or window: a graphical program alone in a window of its own", false,
                           Level::More}}, .effect = "reversible"},
-            {.name = "ls", .description = "List the environments", .aliases = {"list"}, .effect = "read"},
+            {.name = "ls", .description = "List the environments, or those whose name matches", .aliases = {"list"},
+             .arguments = {{"pattern", "A name or part of one"}}, .effect = "read"},
+            {.name = "search", .description = "What the index offers: systems to make, desktops to give one",
+             .arguments = {{"keyword", "Part of a name, title or description"}},
+             .options = {{"--distributions", "Only the systems that can be made"},
+                         {"--desktops", "Only the desktops a system can have"}}, .effect = "read"},
             {.name = "status", .description = "This host, or one environment", .arguments = {{"name", "Which"}},
              .options = {{"--check", "Check that it is usable: its /usr, /etc, runtime closure, and programs"}}, .effect = "read"},
             {.name = "config", .description = "Show or change an environment's settings",
@@ -1329,7 +1399,8 @@ const spec::CommandSpec& tree() {
              .options = {{"--to <VERSION>", "This version of the edition"}, {"--dry-run", "Show the plan only"}},
              .level = Level::More, .effect = "reversible"},
             {.name = "rollback", .description = "Go back a generation", .arguments = {{"name", "Which"}},
-             .options = {{"--to <N>", "This generation"}}, .level = Level::More, .effect = "reversible"},
+             .options = {{"--to <N>", "This generation, or `relayout`: what it was before its move into its own userland"}},
+             .level = Level::More, .effect = "reversible"},
             {.name = "export", .description = "Write it out: .iso, .img, .qcow2, .tar(.zst), .luban, or a directory",
              .arguments = {{"name", "Which", true}, {"file", "Where; the format follows the name", true}},
              .options = {{"--format <FORMAT>", "iso, img, qcow2, tar, luban or dir, whatever the name says"},
@@ -1520,6 +1591,8 @@ int desktop_(const std::vector<std::string>& rest) {
 }
 
 int run(int argc, char* argv[]) {
+    // Its words, before anything is said (design 2026-10-19 §7).
+    svc::register_words();
     std::vector<std::string> args(argv + 1, argv + argc);
     Globals g;
     std::vector<std::string> rest;
@@ -1609,7 +1682,16 @@ int run(int argc, char* argv[]) {
         if (p.command == "new") return cmd_new(c, p, g, render);
         if (p.command == "enter") return cmd_enter(c, p, g);
         if (p.command == "run") return cmd_run(c, p, g);
-        if (p.command == "ls") return overview(c, g);
+        if (p.command == "ls") {
+            if (p.words.size() > 1) return usage("`luban ls [<pattern>]`", g);
+            return overview(c, g, p.words.empty() ? std::string_view{} : std::string_view(p.words[0]));
+        }
+        if (p.command == "search") {
+            if (p.words.size() > 1) return usage("`luban search [<keyword>] [--distributions | --desktops]`", g);
+            if (p.flag("--distributions") && p.flag("--desktops")) return usage("--distributions or --desktops, not both", g);
+            return search(c, p.words.empty() ? std::string_view{} : std::string_view(p.words[0]),
+                          p.flag("--distributions") ? "distributions" : p.flag("--desktops") ? "desktops" : "", g.json, g.verbose);
+        }
         if (p.command == "status") return cmd_status(c, p, g, render);
         if (p.command == "config") return cmd_config(c, p, g, render);
         if (p.command == "stop") {

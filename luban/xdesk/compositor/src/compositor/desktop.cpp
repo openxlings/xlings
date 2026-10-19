@@ -1,0 +1,156 @@
+// The desktop around the windows: title bars, the panel, the launcher, starting programs (server.cppm).
+module xdesk.compositor;
+
+import std;
+import opensal;
+import opensal.wire;
+import opensal.keys;
+import xdesk.os;
+import xdesk.layout;
+import xdesk.draw;
+import xdesk.shell;
+import xdesk.apps;
+import wlroots;
+import xdesk.native.wayland;
+import freedesktop.wayland.server;
+import :server;
+
+namespace xdesk::compositor {
+
+namespace os = xdesk::os;
+namespace layout = xdesk::layout;
+namespace key = xdesk::native::key;
+namespace draw = xdesk::draw;
+namespace shell = xdesk::shell;
+namespace apps = xdesk::apps;
+namespace fs = std::filesystem;
+
+// A window's title bar, drawn again only when what it shows changed.
+void Server::draw_title(View& v, int width, bool active) {
+    const std::string title = name_of(v);
+    const bool hover = close_hover == v.id, max = max_hover == v.id;
+    auto key = std::format("{}\x1f{}\x1f{}\x1f{}\x1f{}\x1f{}", title, width, active, hover, scale, max);
+    if (key == v.drawn) return;
+    v.drawn = std::move(key);
+    show(v.title, shell::title_bar(ui(), theme, title, width, active, hover, scale, max));
+}
+
+// The panel and (canvas) the grid, drawn again only when they changed.
+void Server::draw_shell() {
+    shell::PanelState st;
+    st.workspace = lay.workspace();
+    st.workspaces = lay.workspaces();
+    st.occupied.assign(static_cast<std::size_t>(st.workspaces), false);
+    for (const auto& v : views)
+        if (v.mapped)
+            if (const auto w = lay.workspace_of(v.id)) st.occupied[static_cast<std::size_t>(*w)] = true;
+    if (View* f = focused(); f && lay.workspace_of(f->id) == lay.workspace() && f->toplevel->title) st.title = f->toplevel->title;
+    st.clock = clock_text();
+    st.zoom = lay.zoom();
+    st.overview = lay.in_overview();
+    st.zh = zh;
+    auto key = std::format("{} {} {} {} {} {} {} {}x{}@{}", st.workspace, st.occupied, st.title, st.clock, st.zoom, st.overview,
+                           lay.mode() == layout::Mode::canvas, size.width, size.height, scale);
+    if (key != panel_drawn) {
+        panel_drawn = std::move(key);
+        panel_picture = shell::panel(ui(), theme, st, logical_w(), logical_h(), pill, scale);
+        wlr_scene_node_set_position(&panel_node->node, static_cast<int>(panel_picture.x), static_cast<int>(panel_picture.y));
+        show(panel_node, std::move(panel_picture.image), scale);
+        panel_picture.image = {};
+    }
+    wlr_scene_node_set_enabled(&canvas_dots->node, canvas());
+    if (canvas()) {
+        const auto [cx, cy] = lay.camera();
+        auto dots = std::format("{} {} {} {}x{}@{}", cx, cy, lay.zoom(), size.width, size.height, scale);
+        if (dots != dots_drawn) {
+            dots_drawn = std::move(dots);
+            show(canvas_dots, shell::canvas_background(theme, logical_w(), logical_h(), cx, cy, lay.zoom(), scale), scale);
+        }
+    }
+}
+
+std::string Server::clock_text() {
+    const auto now = std::chrono::floor<std::chrono::seconds>(std::chrono::system_clock::now());
+    try {
+        return std::format("{:%H:%M}", std::chrono::zoned_time{std::chrono::current_zone(), now});
+    } catch (...) {
+        return std::format("{:%H:%M}", now);    // no time zone database: UTC
+    }
+}
+
+// ── the launcher ─────────────────────────────────────────────────
+void Server::open_launcher() {
+    auto env = os::environment();
+    std::string lang;
+    for (const char* k : {"LC_ALL", "LC_MESSAGES", "LANG"})
+        if (env.contains(k) && !env.at(k).empty()) { lang = env.at(k); break; }
+    launcher.open(apps::scan(apps::dirs(env), lang));
+    draw_launcher();
+}
+
+void Server::draw_launcher() {
+    if (!launcher.is_open()) {
+        wlr_scene_node_set_enabled(&launcher_node->node, false);
+        return;
+    }
+    auto pic = launcher.draw(ui(), big_font ? &*big_font : nullptr, theme, logical_w(), logical_h(), zh, scale);
+    show(launcher_node, std::move(pic.image), scale);
+    wlr_scene_node_set_enabled(&launcher_node->node, true);
+}
+
+// A terminal with `command` in it (none: a shell), its window titled and
+// identified as the application -- not as the terminal (E21). The one the
+// settings name, else the system's default terminal; foot when there is
+// none declared (what this desktop shipped with).
+std::vector<std::string> Server::terminal_argv(const std::vector<std::string>& command, std::string_view title,
+                                       std::string_view app_id) {
+    // A configured terminal takes the title and the id as its entry says (F19).
+    if (!o.terminal.empty()) return apps::in_terminal(apps::configured_terminal(os::environment(), o.terminal), command, title, app_id);
+    static const apps::Terminal foot{{"foot"}, std::string{}, std::string{"--title="}, std::string{"--app-id="}};
+    const auto t = apps::default_terminal(os::environment());
+    if (!t) log("no default terminal (share/xdg-terminals): foot");
+    return apps::in_terminal(t ? *t : foot, command, title, app_id);
+}
+
+void Server::start_app(const apps::App& app) {
+    auto argv = apps::argv(app.exec);
+    if (argv.empty()) return;
+    if (app.terminal) argv = terminal_argv(argv, app.name, app.id);
+    launch(argv);
+}
+
+// A key while the launcher is open: it is the launcher's.
+void Server::launcher_key(std::uint32_t code) {
+    const xkb_keysym_t* syms = nullptr;
+    const int n = xkb_state_key_get_syms(keyboard.xkb_state, code + 8, &syms);
+    const xkb_keysym_t sym = n > 0 ? syms[0] : 0;
+    if (sym == key::Escape) launcher.close();
+    else if (sym == key::Return || sym == key::KP_Enter) { if (auto app = launcher.choose()) start_app(*app); }
+    else if (sym == key::Up) launcher.move(-1);
+    else if (sym == key::Down || sym == key::Tab) launcher.move(1);
+    else if (sym == key::BackSpace) launcher.backspace();
+    else {
+        std::array<char, 16> utf8{};
+        const int len = xkb_state_key_get_utf8(keyboard.xkb_state, code + 8, utf8.data(), utf8.size());
+        if (len > 0 && static_cast<unsigned char>(utf8[0]) >= 0x20 && utf8[0] != 0x7f) launcher.type(std::string_view(utf8.data(), static_cast<std::size_t>(len)));
+    }
+    draw_launcher();
+}
+
+// ── programs ─────────────────────────────────────────────────────
+void Server::launch(const std::vector<std::string>& argv) {
+    if (argv.empty()) return;
+    auto env = os::environment();
+    env["WAYLAND_DISPLAY"] = socket;
+    env["XDG_SESSION_TYPE"] = "wayland";
+    env["GDK_BACKEND"] = "wayland";
+    env["QT_QPA_PLATFORM"] = "wayland";
+    env["MOZ_ENABLE_WAYLAND"] = "1";
+    env.erase("DISPLAY");
+    const fs::path home = env.contains("HOME") ? fs::path(env.at("HOME")) : fs::path{};
+    const int pid = os::spawn({.argv = argv, .env = env, .cwd = home});
+    if (pid > 0) children.push_back(pid);
+    else log("cannot start " + argv[0]);
+}
+
+}  // namespace xdesk::compositor

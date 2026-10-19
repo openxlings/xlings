@@ -1,0 +1,23 @@
+# xdesk-base: the parts of xdesk that need nothing but C++ and the operating
+# system, each usable on its own:
+#
+#   xdesk.os      the few system calls xdesk and opensal-wlr make: descriptors,
+#                 poll, a socket that carries descriptors, shared memory,
+#                 starting a program (POSIX; the system headers are here only)
+#   xdesk.term    a terminal's screen from the bytes a program writes, and the
+#                 keys it is sent (the Luban OS window's console uses it)
+#   xdesk.apps    the applications on the system (desktop entries): found,
+#                 searched, started -- a launcher's model
+#   xdesk.config  a desktop's settings: a profile's defaults and a person's
+#                 own (INI under the XDG config directories)
+#
+# Where windows go is xdesk-layout. What draws or serves Wayland -- and so
+# needs the C graphics libraries -- is xdesk-compositor. Neither imports anything of xlings or Luban
+# (tools/lint_layer_deps.sh).
+[package]
+namespace = "xdesk"
+name      = "xdesk-base"
+version   = "0.1.0"
+
+[targets.xdesk-base]
+kind = "lib"

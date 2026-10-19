@@ -669,6 +669,33 @@ bool set_terminal_size(int fd, unsigned short rows, unsigned short cols) {
 
 bool process_alive(int pid) { return pid > 0 && (::kill(pid, 0) == 0 || errno == EPERM); }
 
+bool can_list_processes() {
+    std::error_code ec;
+    return std::filesystem::is_directory("/proc/self", ec);
+}
+
+std::vector<OwnProcess> own_processes() {
+    std::vector<OwnProcess> out;
+    if (!can_list_processes()) return out;
+    const auto uid = ::getuid();
+    std::error_code ec;
+    for (std::filesystem::directory_iterator it("/proc", ec), end; !ec && it != end; it.increment(ec)) {
+        const auto name = it->path().filename().string();
+        if (name.empty() || !std::ranges::all_of(name, [](char c) { return c >= '0' && c <= '9'; })) continue;
+        struct stat st {};
+        if (::stat(it->path().c_str(), &st) != 0 || st.st_uid != uid) continue;
+        OwnProcess p;
+        p.pid = std::stoi(name);
+        std::error_code lec;
+        p.exe = std::filesystem::read_symlink(it->path() / "exe", lec);
+        std::ifstream in(it->path() / "cmdline", std::ios::binary);
+        std::string arg;
+        while (std::getline(in, arg, '\0')) p.argv.push_back(arg);
+        out.push_back(std::move(p));
+    }
+    return out;
+}
+
 std::optional<int> spawn_detached(const std::vector<std::string>& argv, const std::filesystem::path& log) {
     if (argv.empty()) return std::nullopt;
     int report[2];
@@ -1005,8 +1032,60 @@ int open_device(const std::filesystem::path&) { return -1; }
 std::optional<std::pair<unsigned short, unsigned short>> terminal_size(int) { return std::nullopt; }
 bool set_terminal_size(int, unsigned short, unsigned short) { return false; }
 bool process_alive(int) { return false; }
+bool can_list_processes() { return false; }
+std::vector<OwnProcess> own_processes() { return {}; }
 int current_pid() { return static_cast<int>(::GetCurrentProcessId()); }
-std::optional<int> spawn_detached(const std::vector<std::string>&, const std::filesystem::path&) { return std::nullopt; }
+// `argv` with no console and no tie to this process (design 2026-10-19 §3.7:
+// the Luban OS tray, started by a window): standard input the null device,
+// output and errors appended to `log`. Out of this process's job when that is
+// allowed, so it outlives it.
+std::optional<int> spawn_detached(const std::vector<std::string>& argv, const std::filesystem::path& log) {
+    if (argv.empty()) return std::nullopt;
+    std::wstring line;
+    for (const auto& a : argv) {
+        if (!line.empty()) line += L' ';
+        const auto w = std::filesystem::path(a).wstring();
+        const bool quote = w.empty() || w.find_first_of(L" \t\"") != std::wstring::npos;
+        if (!quote) { line += w; continue; }
+        line += L'"';
+        std::size_t slashes = 0;
+        for (wchar_t c : w) {
+            if (c == L'\\') { ++slashes; continue; }
+            if (c == L'"') line.append(slashes * 2 + 1, L'\\');
+            else line.append(slashes, L'\\');
+            slashes = 0;
+            line += c;
+        }
+        line.append(slashes * 2, L'\\');
+        line += L'"';
+    }
+    SECURITY_ATTRIBUTES inherit{sizeof(SECURITY_ATTRIBUTES), nullptr, TRUE};
+    HANDLE out = INVALID_HANDLE_VALUE;
+    if (!log.empty()) {
+        std::error_code ec;
+        std::filesystem::create_directories(log.parent_path(), ec);
+        out = ::CreateFileW(log.c_str(), FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE, &inherit, OPEN_ALWAYS,
+                            FILE_ATTRIBUTE_NORMAL, nullptr);
+    }
+    HANDLE in = ::CreateFileW(L"NUL", GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, &inherit, OPEN_EXISTING, 0, nullptr);
+    STARTUPINFOW startup{};
+    startup.cb = sizeof(startup);
+    startup.dwFlags = STARTF_USESTDHANDLES;
+    startup.hStdInput = in;
+    startup.hStdOutput = out;
+    startup.hStdError = out;
+    PROCESS_INFORMATION process{};
+    const DWORD flags = DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW;
+    BOOL ok = ::CreateProcessW(nullptr, line.data(), nullptr, nullptr, TRUE, flags | CREATE_BREAKAWAY_FROM_JOB, nullptr, nullptr,
+                               &startup, &process);
+    if (!ok) ok = ::CreateProcessW(nullptr, line.data(), nullptr, nullptr, TRUE, flags, nullptr, nullptr, &startup, &process);
+    if (in != INVALID_HANDLE_VALUE) ::CloseHandle(in);
+    if (out != INVALID_HANDLE_VALUE) ::CloseHandle(out);
+    if (!ok) return std::nullopt;
+    ::CloseHandle(process.hThread);
+    ::CloseHandle(process.hProcess);
+    return static_cast<int>(process.dwProcessId);
+}
 int unix_accept(int) { return -1; }
 std::optional<std::array<int, 2>> unix_pair() { return std::nullopt; }
 std::optional<std::array<int, 2>> unix_stream_pair() { return std::nullopt; }

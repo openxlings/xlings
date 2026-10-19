@@ -613,8 +613,11 @@ bool sync_one_repo(const IndexRepo& repo,
                        "fallback is disabled (source=artifact): {}", repo.name, ferr);
             return false;
         }
-        log::warn("[index] '{}' artifact fetch failed ({}); falling back to its "
-                  "git/local source", repo.name, ferr);
+        if (const char* down = std::getenv("XLINGS_NET_UNREACHABLE"); down && *down)
+            log::debug("[index] '{}' artifact fetch failed ({}): no network", repo.name, ferr);
+        else
+            log::warn("[index] '{}' artifact fetch failed ({}); falling back to its "
+                      "git/local source", repo.name, ferr);
     }
 
     if (mode == "artifact") {
@@ -634,6 +637,12 @@ bool sync_one_repo(const IndexRepo& repo,
     }
 
     auto url = detail_::sync_repo_url_(repo.url, mirror);
+    // The network is not there (the pointer could not be reached): a clone
+    // would fail the same way, and bootstrap git to do it first.
+    if (const char* down = std::getenv("XLINGS_NET_UNREACHABLE"); down && *down && url.find("://") != std::string::npos) {
+        log::debug("index repo '{}' not cloned: no network ({})", repo.name, down);
+        return false;
+    }
     if (!sync_repo(repoDir, url, force)) {
         log::warn("index repo '{}' skipped: sync failed ({})", repo.name, url);
         return false;

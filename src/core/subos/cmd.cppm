@@ -399,15 +399,20 @@ inline std::vector<manifest::Resolved> subos_env_for_(const std::string& name) {
 // To stderr, always -- the `--shell` path's stdout is eval'd by the caller's
 // shell, and this is a report, not code. Without it the user pipes an opaque
 // blob into `eval` and cannot tell which package changed what.
+//
+// `summary`: the count line. Running a program in a subos (luban run, subos
+// exec) says it only with -v -- its output is the program's (design
+// 2026-10-19 F21); a variable that could not be set is said either way.
 inline void report_injected_env_(const std::string& subosName,
-                                 const std::vector<manifest::Resolved>& vars) {
+                                 const std::vector<manifest::Resolved>& vars, bool summary = true) {
     if (vars.empty()) return;
     std::set<std::string> providers;
     for (const auto& v : vars)
         providers.insert(v.providers.begin(), v.providers.end());
 
-    std::println(std::cerr, "[xlings] subos {}: {} env var(s) from {} package(s)",
-                 subosName, vars.size(), providers.size());
+    if (summary)
+        std::println(std::cerr, "[xlings] subos {}: {} env var(s) from {} package(s)",
+                     subosName, vars.size(), providers.size());
     for (const auto& v : vars) {
         if (v.unresolved) {
             std::println(std::cerr, "[xlings]   {} — unresolved path, skipped "
@@ -435,7 +440,7 @@ inline void report_injected_env_(const std::string& subosName,
 // prepend means.
 inline void apply_subos_env_(const std::string& name) {
     const auto envVars = subos_env_for_(name);
-    report_injected_env_(name, envVars);
+    report_injected_env_(name, envVars, log::get_level() == log::Level::Debug);
     for (const auto& v : envVars) {
         if (v.unresolved) continue;
         const auto existing = utils::get_env_or_default(v.var);
@@ -585,6 +590,12 @@ std::expected<int, std::string> run_domain_relayed_(const xlings::home::prefix_d
                                                    std::vector<std::string> words,
                                                    std::optional<xlings::home::domain_producer::OutputBinding> output,
                                                    bool yes, EventStream& stream, bool runtime = true);
+// What `subos new --offline-from <dir>` carries -- payloads/<package dir>/
+// <version>/ and index/<index>/ (as a home keeps them under data/), what `luban import`
+// unpacks from an archive -- placed in `home` where it lacks them, before
+// anything is fetched (design 2026-10-19 §9.3). How many were placed.
+std::expected<std::size_t, std::string> seed_offline_(const fs::path& dir, const fs::path& home);
+
 std::optional<int> run_domain_operation_(const std::string& name,
     std::span<const std::string> arguments, EventStream& stream);
 int declare_root_at_creation_(const std::string& name, bool rootfs, const std::string& from,

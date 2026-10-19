@@ -36,14 +36,15 @@ members = [
     "modules/runtime",
     "modules/platform",
     "modules/home",
+    "modules/i18n",
     "modules/ui",
     "modules/cli",
-    "modules/store",
     "modules/subos",
     "modules/confine",
     "modules/carrier",
     "modules/image",
     "luban/os/system",
+    "luban/os/compat",
     "luban/os/service",
     "luban/os/vm",
     "luban/os/cli",
@@ -55,12 +56,13 @@ members = [
     "luban/kits/openhal-host",
     "luban/kits/tray",
     "luban/kits/opensal-wlr",
-    "luban/kits/xdesk-base",
-    "luban/kits/xdesk-compositor",
-    "luban/os/desktop",
+    "luban/xdesk/base",
+    "luban/xdesk/layout",
+    "luban/xdesk/compositor",
+    "luban/os/window",
     "apps/luban",
     "apps/luban-os",
-    "apps/xdesk",
+    "luban/xdesk/app",
     "modules/testkit",
     "apps/gui",
     "apps/xdev",
@@ -68,7 +70,7 @@ members = [
 
 [package]
 name = "xlings"
-version = "2026.10.19.1"
+version = "2026.10.19.2"
 description = "Universal package management infrastructure tool with SubOS isolation"
 license = "Apache-2.0"
 repo = "https://github.com/openxlings/xlings"
@@ -164,9 +166,9 @@ libs     = { path = "modules/libs" }
 runtime  = { path = "modules/runtime" }
 platform = { path = "modules/platform" }
 home     = { path = "modules/home" }
+i18n     = { path = "modules/i18n" }
 ui       = { path = "modules/ui" }
 cli      = { path = "modules/cli" }
-store    = { path = "modules/store" }
 subos    = { path = "modules/subos" }
 confine  = { path = "modules/confine" }
 carrier  = { path = "modules/carrier" }
@@ -177,7 +179,7 @@ ftxui      = "6.1.9"
 libarchive = "3.8.7"
 
 [dependencies.mcpplibs]
-xpkg = { git = "https://github.com/openxlings/libxpkg.git", rev = "a3735563b9f8e58d82e8f0819b2eb2d54ff4b366" }
+xpkg = { git = "https://github.com/openxlings/libxpkg.git", rev = "5523780abfedf1e1e06d8b42a077fd76a70f284e" }
 cmdline = "0.0.2"
 capi.lua = "0.0.3"
 
@@ -187,13 +189,15 @@ testkit = { path = "modules/testkit" }
 # binary itself never links them.
 luban-system = { path = "luban/os/system" }
 luban-cli    = { path = "luban/os/cli" }
+luban-compat = { path = "luban/os/compat" }
 opensal     = { path = "luban/specs/opensal" }
 openhal     = { path = "luban/specs/openhal" }
 openas      = { path = "luban/specs/openas" }
 opencaps    = { path = "luban/specs/opencaps" }
 openhal-host = { path = "luban/kits/openhal-host" }
 opensal-wlr = { path = "luban/kits/opensal-wlr" }
-xdesk-base = { path = "luban/kits/xdesk-base" }
+xdesk-base = { path = "luban/xdesk/base" }
+xdesk-layout = { path = "luban/xdesk/layout" }
 tray       = { path = "luban/kits/tray" }
 
 [dev-dependencies.compat]

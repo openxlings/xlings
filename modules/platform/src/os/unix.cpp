@@ -297,6 +297,21 @@ FileLock& FileLock::operator=(FileLock&& other) noexcept {
 
 FileLock::~FileLock() { release(); }
 
+bool FileLock::try_acquire(const std::filesystem::path& path, std::string& error) {
+    release();
+    error.clear();
+    fd_ = ::open(path.c_str(), O_CREAT | O_RDWR | O_CLOEXEC, 0600);
+    if (fd_ < 0) {
+        error = std::format("failed to open lock {}: {}", path.string(), std::strerror(errno));
+        return false;
+    }
+    if (::flock(fd_, LOCK_EX | LOCK_NB) == 0) return true;
+    if (errno != EWOULDBLOCK && errno != EAGAIN)
+        error = std::format("failed to lock {}: {}", path.string(), std::strerror(errno));
+    release();
+    return false;
+}
+
 bool FileLock::acquire(const std::filesystem::path& path,
                      std::chrono::milliseconds timeout,
                      const std::function<bool()>& cancelled,

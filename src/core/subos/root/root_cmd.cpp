@@ -235,10 +235,41 @@ std::optional<int> produce_domain_at_creation_(const std::string& name, bool,
         error_(stream, prepared.error()); return 1;
     }
     const std::vector<std::string> initialize{"self", "init"};
-    // Its own words are not the caller's: through the interface they would be
-    // text in a stream of events.
+    // Its own words are not the caller's (through the interface they would be
+    // text in a stream of events), but what it is doing is: each line a step
+    // of preparing the system's own home, and while it is quiet a word every
+    // ten seconds -- never a silence a person takes for a hang (design
+    // 2026-10-19 §4.4, F14).
+    std::mutex said;
+    const auto say = [&](std::string message) {
+        std::lock_guard lock(said);
+        stream.emit(ProgressEvent{"prepare", 0.0f, std::move(message)});
+    };
+    say(std::format("preparing {}'s own home", name));
+    const auto began = std::chrono::steady_clock::now();
+    std::atomic<std::chrono::steady_clock::rep> lastWord{began.time_since_epoch().count()};
+    std::jthread heartbeat([&](std::stop_token stop) {
+        while (!stop.stop_requested()) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(250));
+            const auto now = std::chrono::steady_clock::now();
+            if (now.time_since_epoch().count() - lastWord.load() < std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+                    std::chrono::seconds(10)).count())
+                continue;
+            lastWord = now.time_since_epoch().count();
+            say(std::format("still preparing {}'s own home ({} s)", name,
+                            std::chrono::duration_cast<std::chrono::seconds>(now - began).count()));
+        }
+    });
     auto init = xlings::home::domain_producer::run(*selected, initialize, std::nullopt, false,
-                                                   [](std::string_view) {});
+                                                   [&](std::string_view line) {
+                                                       std::string text(line);
+                                                       while (!text.empty() && (text.back() == '\n' || text.back() == '\r')) text.pop_back();
+                                                       if (text.empty()) return;
+                                                       lastWord = std::chrono::steady_clock::now().time_since_epoch().count();
+                                                       say(std::format("preparing {}'s own home: {}", name, text));
+                                                   });
+    heartbeat.request_stop();
+    heartbeat.join();
     // The namespace is judged by what it did, not by its exit code: a home
     // initialised inside has its default SubOS.
     std::error_code ec;
@@ -307,6 +338,23 @@ std::optional<int> run_domain_operation_(const std::string& name,
         stream.emit(ErrorEvent{ .code = ErrorCode::Permission, .message = "E_PERMISSION: " + decision.reason,
             .recoverable = false, .hint = "outside the sandbox: " + decision.owner_command });
         return 13;
+    }
+    // Asked through the interface (luban, the window, an agent): the
+    // command's data, progress and errors come back as events, through the
+    // one relayed path. Printed on an inherited stdout, they reached a caller
+    // that reads only NDJSON as nothing at all -- `luban history` of a
+    // domain's system was empty, its errors unseen (design 2026-10-19 F13).
+    // A person or a pipe reading what is printed keeps the inherited stdout
+    // (`subos config <n> --json` read by luban's Port::json), and so do the
+    // commands that hand the terminal to a program (exec, use, start, log).
+    const bool handsOverStdio = arguments.size() >= 2
+        && (arguments[1] == "exec" || arguments[1] == "use" || arguments[1] == "start" || arguments[1] == "log");
+    if (stream.structured() && !arguments.empty() && arguments[0] == "subos" && !handsOverStdio) {
+        auto relayed = run_domain_relayed_((**scope).domain,
+                                           std::vector<std::string>(arguments.begin() + 1, arguments.end()),
+                                           std::nullopt, false, stream, true);
+        if (!relayed) { error_(stream, relayed.error()); return 1; }
+        return *relayed;
     }
     auto result = xlings::home::domain_producer::run((**scope).domain, arguments, std::nullopt, true);
     if (!result) { error_(stream, result.error()); return 1; }

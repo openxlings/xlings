@@ -665,6 +665,13 @@ fs::path locate_base_pkg_(const PkgRef& ref) {
 
 }
 
+// A making resolves its base more than once (the lineage, then the top): what
+// it says about the choice is said once.
+bool said_once_(std::string key) {
+    static std::set<std::string> said;
+    return said.insert(std::move(key)).second;
+}
+
 fs::path resolve_base_package_(const std::string& fromSpec, EventStream& stream) {
     auto& p = Config::paths();
     // ── pkg-spec path: locate or install the base xpkg ────────────
@@ -673,14 +680,38 @@ fs::path resolve_base_package_(const std::string& fromSpec, EventStream& stream)
     // an edition installed once would otherwise be the newest forever.
     if (ref.ver.empty()) {
         std::string passedOver;
-        if (auto v = xim::index_version_of(fromSpec, xim::CatalogAccess::LocalOnly, &passedOver)) ref.ver = *v;
+        auto v = xim::index_version_of(fromSpec, xim::CatalogAccess::LocalOnly, &passedOver);
+        // No index here yet -- a fresh home, a carrier's own -- is fetched, as
+        // an install would; one that cannot be had says why (with its hint).
+        bool read = xim::get_catalog(xim::CatalogAccess::LocalOnly).is_loaded();
+        if (!v && !read) {
+            if (!xim::ensure_catalog(stream, xim::CatalogNeed::Synced)) return {};
+            read = true;
+            v = xim::index_version_of(fromSpec, xim::CatalogAccess::InstallReady, &passedOver);
+        }
+        if (v) ref.ver = *v;
         // An older version because the newest needs a newer xlings: said as
         // data too, for whoever asked for it (luban new says it; E8).
-        if (!passedOver.empty())
+        if (!passedOver.empty() && said_once_("passed_over:" + fromSpec))
             stream.emit(DataEvent{"passed_over", nlohmann::json{{"package", fromSpec}, {"version", ref.ver},
                                                                {"message", passedOver}}.dump()});
+        // The index could not be read: never whichever version is installed,
+        // silently (design 2026-10-19 §9.2) -- "could not read" is not "none".
+        if (ref.ver.empty() && !read) {
+            stream.emit(ErrorEvent{.code = ErrorCode::NotFound,
+                .message = std::format("the package index could not be read, so which version of {} to use is not known", fromSpec),
+                .recoverable = true, .hint = "xlings update, or name a version: " + fromSpec + "@<version>"});
+            return {};
+        }
     }
     auto baseDir = new_from_detail_::locate_base_pkg_(ref);
+    // The index has no such package and one is installed: that one, said
+    // (the same shape as passed_over, for whoever asked).
+    if (ref.ver.empty() && !baseDir.empty() && said_once_("installed_only:" + fromSpec)) {
+        const auto version = baseDir.filename().string();
+        stream.emit(DataEvent{"installed_only", nlohmann::json{{"package", fromSpec}, {"version", version},
+            {"message", std::format("{} is not in the index; using version {} installed here", fromSpec, version)}}.dump()});
+    }
 
     if (!baseDir.empty()) {
         auto borrowed = xlings::home::domain_producer_source::borrowed_mount(baseDir);

@@ -1,6 +1,8 @@
 module luban.service;
 
 import std;
+import xlings.i18n;
+import luban.compat;
 import xlings.libs.json;
 import opencaps;
 import xlings.platform;
@@ -16,6 +18,7 @@ import xlings.subos.root_etc;
 import xlings.subos.rootfs;
 import xlings.subos.session;
 import luban.service.archive;
+import xlings.store;
 
 namespace luban::service {
 
@@ -404,6 +407,7 @@ Json NewPreview::value() const {
         lineage_json.push_back({{"ref", l.ref}, {"index", l.index}, {"official", l.official()}, {"name", l.name()},
                                 {"version", l.version()}});
     Json v{{"system", system}, {"distribution", display_name(lineage)}, {"lineage", lineage_json}};
+    if (!lineage.passed_over.empty()) v["passed_over"] = lineage.passed_over;
     if (const auto* b = lineage.base()) v["luban_base"] = std::format("{} {}", b->name(), b->version());
     if (const auto* p = lineage.parent()) v["parent"] = p->ref;
     Json more = Json::array();
@@ -470,6 +474,14 @@ std::expected<NewPreview, int> preview_new(const Context& c, const NewOptions& o
         auto lineage = plan_system(c.port, o.name, p.system);
         if (!lineage) return fail(lineage.error(), {}, 1);
         p.lineage = std::move(*lineage);
+        // What is shown is what is made (design 2026-10-19 §9.1): the version
+        // the plan resolved, named to xlings -- not resolved a second time.
+        if (!p.lineage.layers.empty()) {
+            const auto& top = p.lineage.layers.front().ref;
+            if (const auto at = top.rfind('@'); at != std::string::npos && p.system.find('@') == std::string::npos
+                && top.substr(0, at) == p.system)
+                p.system = top;
+        }
     }
     // Built on Luban (design §4.4): its chain reaches an official edition
     // (read here; a carrier's xlings reads it where it makes it).
@@ -537,9 +549,10 @@ Outcome create(const Context& c, const NewOptions& o, const NewPreview* given) {
     std::string passed_over;
     Context making = c;
     making.sink = [&](const Event& e) {
-        if (e.kind == Event::Kind::Data && e.data_kind == "passed_over") {
+        if (e.kind == Event::Kind::Data && (e.data_kind == "passed_over" || e.data_kind == "installed_only")) {
             const auto d = e.data.is_string() ? nlohmann::json::parse(e.data.get<std::string>(), nullptr, false) : e.data;
-            if (d.is_object()) passed_over = d.value("message", std::string{});
+            if (d.is_object() && e.data_kind == "passed_over") passed_over = d.value("message", std::string{});
+            else if (d.is_object() && c.sink) c.sink(notice(d.value("message", std::string{}), "xlings update"));
             return;
         }
         if (c.sink) c.sink(e);
@@ -547,6 +560,9 @@ Outcome create(const Context& c, const NewOptions& o, const NewPreview* given) {
     const auto shown = display_name(preview.lineage);
     const int rc = step_(making, "make", std::format("making {} ({})", o.name, shown), args, false,
                          o.name + (checked ? " is made" : " is ready"));
+    // Pinned to the plan's version, xlings resolves nothing again: why it is
+    // not the newest is the plan's to say.
+    if (passed_over.empty()) passed_over = preview.lineage.passed_over;
     if (!passed_over.empty() && c.sink) c.sink(notice(passed_over, "xlings self update"));
     if (rc != 0) return {.code = rc};
     // A system that names itself says so in its os-release (design §4.5).
@@ -747,6 +763,8 @@ bool old_layout_(const Context& c, std::string_view name) {
         && !xlings::subos::locate(HomeView{c.home}, name).domain;
 }
 
+Outcome remove_(const Context& c, std::string_view name, bool with_archive);
+
 int relayout_(const Context& c, std::string_view name) {
     if (const auto e = describe(c, name); e && e->running) {
         if (c.sink) c.sink(error(std::format("{} is running; it moves to its own userland when stopped", name),
@@ -761,7 +779,7 @@ int relayout_(const Context& c, std::string_view name) {
     if (c.sink) c.sink(phase("relayout", "begin", text));
     const auto quiet = Context{.home = c.home, .port = c.port, .sink = c.sink, .yes = true};
     if (export_environment(quiet, {.name = std::string(name), .file = keep, .format = "luban"}).code != 0
-        || remove(quiet, name).code != 0) {
+        || remove_(quiet, name, false).code != 0) {
         if (c.sink) c.sink(phase("relayout", "failed", text));
         return 1;
     }
@@ -773,7 +791,9 @@ int relayout_(const Context& c, std::string_view name) {
         }
         return made.code;
     }
-    fs::remove(keep, ec);
+    // Kept: what it was before the move, its way back (luban rollback <name>
+    // --to relayout), until the system itself is removed.
+    if (c.sink) c.sink(notice(std::format("what {} was before the move is kept: luban rollback {} --to relayout", name, name)));
     if (!xlings::subos::locate(HomeView{c.home}, name).domain) {
         // Made again in this home's prefix: this host cannot build the domain.
         std::ofstream(stays_here_(c, name)) << "this host could not build the system domain\n";
@@ -827,7 +847,7 @@ Outcome upgrade(const Context& c, std::string_view name, std::string_view to, bo
     // A published name that is frozen (subos:luban-*) moves to the official
     // edition that says it replaces it (design §15.1): luban asks the index.
     if (target.empty())
-        if (const auto e = describe(c, name); e && e->edition.starts_with("subos:luban-"))
+        if (const auto e = describe(c, name); e && luban::compat::frozen_edition(e->edition))
             if (auto next = successor_(c, name, e->edition)) {
                 if (c.sink) c.sink(notice(std::format("{} moves from {} to {}, which replaces it", name, e->edition, *next)));
                 target = *next;
@@ -877,6 +897,39 @@ Outcome upgrade(const Context& c, std::string_view name, std::string_view to, bo
 
 Outcome rollback(const Context& c, std::string_view name, std::string_view to) {
     if (!exists_(c, name)) return missing_(c, name);
+    // Back to before its move into its own userland (design 2026-10-19
+    // §12.4): made again from the archive the move kept, in this home's
+    // prefix, as it was. Its generations from before the move are not in the
+    // archive and do not come back.
+    if (to == "relayout") {
+        const auto kept = relayout_archive(c.home, name);
+        if (!kept) {
+            if (c.sink) c.sink(error(std::format("{} has no archive from before a move", name), std::format("luban history {}", name)));
+            return {.code = 1};
+        }
+        if (!c.yes) {
+            if (c.sink) c.sink(error(std::format("{} goes back to what it was before its move: what changed since is gone, and so "
+                                                 "are its generations since", name),
+                                     std::format("luban rollback {} --to relayout -y", name)));
+            return {.code = 2};
+        }
+        const auto staged = fs::path(kept->string() + ".back");
+        std::error_code ec;
+        fs::rename(*kept, staged, ec);   // the removal below would take it
+        if (ec) {
+            if (c.sink) c.sink(error(std::format("cannot set aside {}: {}", kept->string(), ec.message())));
+            return {.code = 1};
+        }
+        const auto yes = Context{.home = c.home, .port = c.port, .sink = c.sink, .yes = true};
+        if (const auto removed = remove_(yes, name, false); removed.code != 0) {
+            fs::rename(staged, *kept, ec);
+            return removed;
+        }
+        const auto made = import_environment(yes, staged, std::string(name), true);
+        fs::rename(staged, *kept, ec);
+        if (made.code == 0) std::ofstream(stays_here_(c, name)) << "rolled back to before its move\n";
+        return made;
+    }
     auto args = argv_({"rollback", name});
     if (!to.empty()) args.insert(args.end(), {"--to", std::string(to)});
     return {.code = step_(c, "rollback", std::format("going back a generation of {}", name), args)};
@@ -885,16 +938,29 @@ Outcome rollback(const Context& c, std::string_view name, std::string_view to) {
 Outcome history(const Context& c, std::string_view name) {
     if (!exists_(c, name)) return missing_(c, name);
     Json rows = Json::array();
-    std::vector<Json> data;
+    bool answered = false;
     const Sink keep = [&](const Event& e) {
-        if (e.kind == Event::Kind::Data && e.data_kind == "subos_generations") rows = e.data;
+        if (e.kind == Event::Kind::Data && e.data_kind == "subos_generations") rows = e.data, answered = true;
         else if (e.kind == Event::Kind::Error && c.sink) c.sink(e);
     };
-    const int rc = c.port.subos(argv_({"rollback", name, "--list"}), false, keep);
+    int rc = c.port.subos(argv_({"rollback", name, "--list"}), false, keep);
+    // "Could not read" is never "none": an answer without the list (an
+    // xlings that printed it instead, design 2026-10-19 F13) is said.
+    if (rc == 0 && !answered) {
+        if (c.sink) c.sink(error(std::format("could not read the generations of {}: xlings answered without them", name),
+                                 std::format("xlings subos rollback {} --list", name)));
+        rc = 1;
+    }
     return {.code = rc, .value = {{"generations", rows}}};
 }
 
-Outcome remove(const Context& c, std::string_view name) {
+Outcome remove(const Context& c, std::string_view name) { return remove_(c, name, true); }
+
+namespace {
+
+// `with_archive`: a person's removal takes the archive from before a move
+// with it; a move's own removal (it makes the system again) keeps it.
+Outcome remove_(const Context& c, std::string_view name, bool with_archive) {
     if (!exists_(c, name)) return missing_(c, name);
     if (!c.yes) {
         if (c.sink) c.sink(error(std::format("removing {} deletes its home and every file in it", name),
@@ -905,8 +971,44 @@ Outcome remove(const Context& c, std::string_view name) {
     if (rc == 0) {
         std::error_code ec;
         fs::remove(settings_file(c.home, name), ec);
+        if (with_archive)
+            if (const auto kept = relayout_archive(c.home, name)) fs::remove(*kept, ec);
     }
     return {.code = rc};
+}
+
+}  // namespace
+
+std::optional<fs::path> relayout_archive(const fs::path& home, std::string_view name) {
+    const auto file = home / "state" / "luban" / "relayout" / std::format("{}.luban", name);
+    std::error_code ec;
+    return fs::is_regular_file(file, ec) ? std::optional<fs::path>(file) : std::nullopt;
+}
+
+std::vector<Note> notes(const Context& c, const Environment& e) {
+    std::vector<Note> out;
+    if (const auto kept = relayout_archive(c.home, e.name)) {
+        std::error_code ec;
+        const auto mb = fs::file_size(*kept, ec) / (1024 * 1024);
+        out.push_back({xlings::i18n::trf("luban.notes.relayout", mb),
+                       {std::format("luban rollback {} --to relayout", e.name)}});
+    }
+    // A desktop with no cursor theme (a system from before the theme came
+    // with every desktop): the package that brings it, or the upgrade that
+    // does -- neither forced (design 2026-10-19 §12.2).
+    if (!e.desktops.empty())
+        if (const auto root = root_of(c.home, e.name)) {
+            std::error_code ec;
+            if (!fs::exists(*root / "usr/share/icons/default/index.theme", ec)) {
+                std::string package = "luban:cursors";
+                for (const auto& l : opencaps::registry())
+                    if (l.name == "desktop-cursor" && !l.package.empty()) package = std::string(l.package);
+                out.push_back({std::string(xlings::i18n::tr("luban.notes.no_cursor_theme")),
+                               {std::format("luban run {} -- xlings install {}", e.name, package),
+                                std::format("luban upgrade {} --dry-run", e.name)}});
+            }
+        }
+    return out;
 }
 
 Outcome stop(const Context& c, std::string_view name) {
@@ -925,6 +1027,66 @@ Outcome boot(const Context& c, std::span<const std::string> args) {
     const int rc = c.port.subos(argv, false, keep);
     return {.code = rc, .value = entries.is_object() ? entries : Json::object()};
 }
+
+namespace {
+
+// What a system runs on, for an archive made again without the network
+// (design 2026-10-19 §9.3): every payload its generation links into and the
+// editions it was made from, as <package dir>/<version> of the store -- and
+// the index snapshot of the home it lives in.
+std::vector<archive::Tree> carried_(const xlings::subos::Located& at, std::string_view name, const Json& instance) {
+    std::map<std::string, fs::path> payloads;
+    const auto add = [&](const fs::path& root) {
+        std::error_code ec;
+        if (!fs::is_directory(root, ec)) return;
+        payloads.emplace((root.parent_path().filename() / root.filename()).generic_string(), root);
+    };
+    std::error_code ec;
+    const auto usr = xlings::subos::rootfs::usr_of(at.home.instance(name));
+    for (fs::recursive_directory_iterator it(usr, fs::directory_options::skip_permission_denied, ec), end; !ec && it != end;
+         it.increment(ec)) {
+        if (!it->is_symlink(ec)) continue;
+        auto target = fs::read_symlink(it->path(), ec);
+        if (ec) { ec.clear(); continue; }
+        if (target.is_relative()) target = (it->path().parent_path() / target).lexically_normal();
+        if (auto root = xlings::store::payload_root(xlings::subos::physical(at, target))) add(*root);
+    }
+    // The editions it was made from, and the packages its templates declared
+    // (a package with no program or library has no link in the generation).
+    std::vector<std::string> refs;
+    if (auto record = xlings::subos::edition::read(instance)) {
+        refs = record->chain;
+        refs.push_back(record->ref);
+    }
+    if (const auto declared = read_json_(at.home.instance(name) / ".xlings.json").value("packages", Json::array());
+        declared.is_array())
+        for (const auto& p : declared)
+            if (p.is_string()) refs.push_back(p.get<std::string>());
+    {
+        for (const auto& ref : refs) {
+            const auto colon = ref.find(':'), at_ = ref.rfind('@');
+            if (colon == std::string::npos || at_ == std::string::npos || at_ < colon) continue;
+            add(at.home.home / "data" / "xpkgs" / std::format("{}-x-{}", ref.substr(0, colon), ref.substr(colon + 1, at_ - colon - 1))
+                / ref.substr(at_ + 1));
+        }
+    }
+    std::vector<archive::Tree> trees;
+    for (const auto& [key, dir] : payloads) trees.push_back({"payloads/" + key, dir});
+    // The indexes: the default, its sub-indexes, and each one the home names
+    // (index_repos keeps its data under its own name).
+    std::set<std::string> indexes{"xim-pkgindex", "xim-index-repos"};
+    if (const auto repos = read_json_(at.home.home / ".xlings.json").value("index_repos", Json::array()); repos.is_array())
+        for (const auto& r : repos)
+            if (r.is_object() && r.value("name", "") != "xim" && !r.value("name", "").empty()) indexes.insert(r.value("name", ""));
+    // An index kept as a link to a checkout (a local index) is carried as
+    // its content.
+    for (const auto& index : indexes)
+        if (fs::is_directory(at.home.home / "data" / index, ec))
+            trees.push_back({"index/" + index, fs::canonical(at.home.home / "data" / index, ec)});
+    return trees;
+}
+
+}  // namespace
 
 std::string export_format(std::string_view file) {
     const auto ends = [&](std::string_view s) { return file.ends_with(s); };
@@ -971,7 +1133,15 @@ Outcome export_environment(const Context& c, const ExportOptions& o) {
         if (auto pol = xlings::subos::policy_store::read(view, o.name); pol && pol->has_value())
             manifest["policy"] = xlings::subos::policy::to_json(**pol);
         if (auto s = read_settings(c.home, o.name)) manifest["settings"] = s->document;
-        auto written = archive::write(o.file, manifest, *root, at.logical);
+        // What it runs on and the index naming it: made again offline.
+        const auto trees = carried_(at, o.name, instance);
+        Json carries{{"payloads", Json::array()}, {"index", false}};
+        for (const auto& t : trees) {
+            if (t.prefix.starts_with("payloads/")) carries["payloads"].push_back(t.prefix.substr(9));
+            else carries["index"] = true;
+        }
+        manifest["carries"] = carries;
+        auto written = archive::write(o.file, manifest, *root, at.logical, trees);
         if (!written) {
             if (c.sink) {
                 c.sink(error(written.error()));
@@ -997,7 +1167,7 @@ Outcome export_environment(const Context& c, const ExportOptions& o) {
     return {.code = rc, .value = {{"file", o.file.string()}, {"format", format}}};
 }
 
-Outcome import_environment(const Context& c, const fs::path& file, std::string name) {
+Outcome import_environment(const Context& c, const fs::path& file, std::string name, bool here) {
     auto manifest = archive::read(file);
     if (!manifest) {
         if (c.sink) c.sink(error(manifest.error()));
@@ -1026,9 +1196,33 @@ Outcome import_environment(const Context& c, const fs::path& file, std::string n
         }
         wanted = *parsed;
     }
-    if (const int rc = step_(c, "make", std::format("making {} ({})", name, edition), new_argv_(name, edition, {}));
-        rc != 0)
-        return {.code = rc};
+    // What it carries -- its payloads, the index naming them -- is where it
+    // is made before anything is fetched (design 2026-10-19 §9.3): an
+    // archive is imported without the network.
+    auto args = new_argv_(name, edition, {});
+    // Here: in this home's prefix, not its own userland (a rollback to before a move).
+    if (here) std::erase_if(args, [](const std::string& a) { return a == "--domain-if-possible" || a == "/xlings"; });
+    fs::path carried;
+    if (auto carries = manifest->find("carries"); carries != manifest->end() && carries->is_object()) {
+        carried = c.home / "tmp" / std::format("import-{}-{}", name, xlings::platform::current_pid());
+        std::error_code ec;
+        fs::remove_all(carried, ec);
+        auto payloads = archive::extract_tree(file, "payloads", carried / "payloads");
+        auto index = payloads ? archive::extract_tree(file, "index", carried / "index") : payloads;
+        if (!payloads || !index) {
+            if (c.sink) c.sink(error(std::format("{}: what it carries cannot be unpacked: {}", file.string(),
+                                                 (!payloads ? payloads : index).error())));
+            fs::remove_all(carried, ec);
+            return {.code = 1};
+        }
+        args.insert(args.end(), {"--offline-from", carried.string()});
+    }
+    const int made = step_(c, "make", std::format("making {} ({})", name, edition), args);
+    if (!carried.empty()) {
+        std::error_code ec;
+        fs::remove_all(carried, ec);
+    }
+    if (made != 0) return {.code = made};
     const HomeView view = xlings::subos::locate(HomeView{c.home}, name).home;
     if (wanted) {
         auto now = xlings::subos::policy_store::read(view, name);
@@ -1144,7 +1338,7 @@ std::vector<std::string> welcome(const Environment& e, std::string_view mode, bo
         return style.color ? std::format("\x1b[{}m{}\x1b[0m", code, text) : text;
     };
     std::string edition = e.edition;
-    if (edition.starts_with("subos:luban-")) edition = edition.substr(12);
+    edition = std::string(luban::compat::without_frozen_prefix(edition));
     if (const auto at = edition.find('@'); at != std::string::npos) edition[at] = ' ';
     const auto persist = temp ? std::string("none") : e.settings.persist;
     const auto mark = kind_mark(mode, persist);
@@ -1205,6 +1399,11 @@ int enter_sandbox(const Context& c, std::string_view name, bool temp, std::strin
     if (auto e = describe(c, name)) {
         WelcomeFacts facts;
         if (const auto release = xlings::platform::kernel_release(); !release.empty()) facts.kernel = "Linux " + release;
+        // Its network, as luban status says it (design 2026-10-19 §27.2): a sandbox's is the host's.
+        {
+            const auto host = xlings::platform::environment();
+            facts.network = network_line(host, host);
+        }
         if (const auto root = root_of(c.home, name)) {
             const auto who = user.empty() ? xlings::subos::root_etc::login_user(*root / "etc") : std::string(user);
             if (const auto u = xlings::subos::root_etc::find_user(*root / "etc", who)) {

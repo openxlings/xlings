@@ -1,0 +1,428 @@
+// The compositor's server: the state of one session and what it does, as
+// one structure whose parts are defined by area (design 2026-10-19 §21):
+// server.cpp (start, the loop, the provider's stream), windows.cpp (views,
+// popups, the layout's arrangement and its springs), input.cpp (keys,
+// pointer, wheel, shortcuts), drag.cpp (a window dragged, a gap resized, the
+// maximize button's layouts), keys.cpp (the actions and their chords),
+// overlay.cpp (the chooser, the switcher, the keys' sheet, a window's menu,
+// the person's state and rules), pointer.cpp (the pointer's shape, drawn by
+// the host or into the frames), text.cpp (text input and the clipboard),
+// output.cpp (size, density, fonts, frames), desktop.cpp (title bars, the
+// panel, the launcher, starting programs). Internal to xdesk.compositor.
+module xdesk.compositor:server;
+
+import std;
+import opensal;
+import opensal.wire;
+import opensal.keys;
+import xdesk.os;
+import xdesk.layout;
+import xdesk.draw;
+import xdesk.shell;
+import xdesk.apps;
+import xdesk.config;
+import wlroots;
+import xdesk.native.wayland;
+import freedesktop.wayland.server;
+import :options;
+import :keys;
+
+namespace xdesk::compositor {
+
+namespace os = xdesk::os;
+namespace layout = xdesk::layout;
+namespace key = xdesk::native::key;
+namespace draw = xdesk::draw;
+namespace shell = xdesk::shell;
+namespace apps = xdesk::apps;
+namespace fs = std::filesystem;
+
+// A wl_listener that calls a function: the C++ side of wl_signal.
+struct Hook {
+    wl_listener listener {};
+    std::function<void(void*)> fn;
+    static void notify(wl_listener* l, void* data) {
+        // `listener` is the first member: the Hook is where it is.
+        reinterpret_cast<Hook*>(l)->fn(data);
+    }
+    void connect(wl_signal* signal, std::function<void(void*)> f) {
+        fn = std::move(f);
+        listener.notify = &Hook::notify;
+        wl_signal_add(signal, &listener);
+    }
+    void disconnect() {
+        if (fn) { wl_list_remove(&listener.link); fn = nullptr; }
+    }
+    ~Hook() { disconnect(); }
+};
+
+inline constexpr int kTitle = shell::kTitleHeight;  // a window's title bar, in pixels
+inline constexpr std::uint32_t kARGB8888 = 0x34325241;  // DRM_FORMAT_ARGB8888 ('AR24')
+
+// A picture xdesk drew, as a buffer wlroots shows (read in place).
+struct ImageBuffer {
+    wlr_buffer base;                // first: the wlr_buffer is the ImageBuffer
+    draw::Image image;
+};
+
+inline const wlr_buffer_impl kImageBuffer {
+    .destroy = [](wlr_buffer* b) { delete reinterpret_cast<ImageBuffer*>(b); },
+    .get_dmabuf = nullptr,
+    .get_shm = nullptr,
+    .begin_data_ptr_access = [](wlr_buffer* b, std::uint32_t flags, void** data, std::uint32_t* format, std::size_t* stride) -> bool {
+        if (flags & static_cast<std::uint32_t>(wlr_buffer_data_ptr_access_flag::WLR_BUFFER_DATA_PTR_ACCESS_WRITE)) return false;
+        auto* ib = reinterpret_cast<ImageBuffer*>(b);
+        *data = ib->image.data();
+        *format = kARGB8888;
+        *stride = static_cast<std::size_t>(ib->image.stride());
+        return true;
+    },
+    .end_data_ptr_access = [](wlr_buffer*) {},
+};
+
+// Shows `img` in `node` (the node keeps the buffer; nobody else does); an
+// image drawn at a density is shown at its logical size.
+inline void show(wlr_scene_buffer* node, draw::Image img, double scale = 1) {
+    if (!node || img.empty()) return;
+    if (scale != 1)
+        wlr_scene_buffer_set_dest_size(node, std::max(1, static_cast<int>(std::lround(img.width() / scale))),
+                                       std::max(1, static_cast<int>(std::lround(img.height() / scale))));
+    auto* ib = new ImageBuffer{};
+    ib->image = std::move(img);
+    wlr_buffer_init(&ib->base, &kImageBuffer, ib->image.width(), ib->image.height());
+    wlr_scene_buffer_set_buffer(node, &ib->base);
+    wlr_buffer_drop(&ib->base);
+}
+inline constexpr layout::Size kPreferred { 900, 600 };   // a new window's frame, until it says
+
+struct Server;
+
+struct View {
+    Server* server { nullptr };
+    layout::Id id { 0 };
+    wlr_xdg_toplevel* toplevel { nullptr };
+    wlr_scene_tree* frame { nullptr };          // the decoration and the content
+    wlr_scene_buffer* title { nullptr };
+    std::string drawn;                          // what the title bar shows: title, width, focus, hover
+    wlr_scene_tree* content { nullptr };
+    bool mapped { false };
+    bool laid { false };                        // in the layout
+    bool placed { false };                      // shown somewhere already (then it glides)
+    bool moving { false };                      // its frame is on its way (springs)
+    layout::Spring x, y;
+    Hook map, unmap, commit, destroy, request_maximize, request_fullscreen, set_title;
+};
+
+// A client's text-input-v3 object, and what it says.
+struct TextInput {
+    wlr_text_input_v3* input { nullptr };
+    Hook enable, commit, disable, destroy;
+};
+
+// The window's clipboard text, offered to the clients as their selection.
+struct HostSelection {
+    wlr_data_source base;           // first: the wlr_data_source is the HostSelection
+    std::string text;
+};
+
+inline const wlr_data_source_impl kHostSelection {
+    .send = [](wlr_data_source* s, const char*, std::int32_t fd) {
+        (void)os::write_all(fd, reinterpret_cast<HostSelection*>(s)->text);
+        os::close(fd);
+    },
+    .accept = nullptr,
+    .destroy = [](wlr_data_source* s) { delete reinterpret_cast<HostSelection*>(s); },
+    .dnd_drop = nullptr,
+    .dnd_finish = nullptr,
+    .dnd_action = nullptr,
+};
+
+// A client's selection being read, to give to the window.
+struct SelectionRead {
+    int fd { -1 };
+    wl_event_source* source { nullptr };
+    std::string text;
+};
+
+struct Popup {
+    wlr_xdg_popup* popup { nullptr };
+    Hook commit, destroy;
+};
+
+// What a held button is doing.
+enum class Drag { none, pan, move, gap };
+
+struct Server {
+    const Options& o;
+    wl_display* display { nullptr };
+    wl_event_loop* loop { nullptr };
+    wlr_backend* backend { nullptr };
+    wlr_renderer* renderer { nullptr };
+    wlr_allocator* allocator { nullptr };
+    wlr_scene* scene { nullptr };
+    wlr_scene_output_layout* scene_layout { nullptr };
+    wlr_output_layout* outputs { nullptr };
+    wlr_scene_tree* background_layer { nullptr };
+    wlr_scene_tree* window_layer { nullptr };
+    wlr_scene_tree* shell_layer { nullptr };    // the panel
+    wlr_scene_tree* overlay_layer { nullptr };  // the launcher
+    wlr_scene_rect* background { nullptr };
+    wlr_scene_buffer* canvas_dots { nullptr };  // canvas: the grid over the background
+    wlr_scene_buffer* panel_node { nullptr };
+    wlr_scene_buffer* launcher_node { nullptr };
+    wlr_output* output { nullptr };
+    wlr_scene_output* scene_output { nullptr };
+    wlr_xdg_shell* xdg_shell { nullptr };
+    wlr_cursor* cursor { nullptr };
+    wlr_xcursor_manager* cursors { nullptr };
+    wlr_seat* seat { nullptr };
+    wlr_keyboard keyboard {};
+    xkb_context* xkb { nullptr };
+    std::string socket;
+    std::list<View> views;                       // front: focused most recently
+    std::list<Popup> popups;
+    std::vector<int> children;
+    opensal::Size size;                          // the output, in device pixels
+    opensal::Size told;
+    double scale { 1 };                          // device pixels to a logical one (the window's density)
+    bool stop { false };
+    std::chrono::steady_clock::time_point start { std::chrono::steady_clock::now() };
+    std::chrono::steady_clock::time_point last_tick { start };
+    opensal::wire::Decoder decoder;
+    Hook new_toplevel, new_popup, new_decoration, frame, request_cursor, request_selection;
+    wl_event_source* input_source { nullptr };
+    wl_event_source* tick { nullptr };
+    wl_event_source* clock { nullptr };
+    wl_event_source* pace_timer { nullptr };
+    shell::Theme theme;
+    bool pill { false };                         // the canvas profile's look: a pill at the bottom, no top panel
+    bool zh { false };
+    std::optional<draw::Fonts> ui_font, big_font;
+    shell::Picture panel_picture;
+    std::string panel_drawn;
+    std::string dots_drawn;
+    shell::Launcher launcher;
+    layout::Id close_hover { 0 };
+    std::vector<layout::Placement> placements;   // the last arrangement
+    opensal::Interfaces provided { 0 };            // what the window gives (its hello)
+    bool paced { false };                          // the window says when a frame is shown
+    std::optional<std::chrono::steady_clock::time_point> in_flight;   // a frame sent, not yet shown
+    std::list<TextInput> text_inputs;
+    wlr_text_input_manager_v3* text_input_manager { nullptr };
+    std::string caret_sent;                        // the last 't' sent
+    std::unique_ptr<SelectionRead> reading;
+    Hook new_text_input, set_selection;
+    layout::Layout lay;
+    layout::Id next_id { 1 };
+    double zoom_shown { 1 };                     // the zoom the windows were last scaled to
+    Drag drag { Drag::none };
+    layout::Id dragged { 0 };
+    double drag_x { 0 }, drag_y { 0 };           // where the pointer was
+    // The pointer (design 2026-10-19 §15): when the window takes Cursor it
+    // draws the pointer -- a shape by name ('c'), a client's own image ('C')
+    // -- and none is drawn into the frames; otherwise wlroots draws it there.
+    wlr_cursor_shape_manager_v1* shapes { nullptr };
+    std::string shape { "default" };             // the shape now (kCursors)
+    std::string pointer_sent;                    // what the last 'c' or 'C' said
+    wlr_surface* cursor_surface { nullptr };     // a client's own pointer image
+    std::int32_t cursor_hx { 0 }, cursor_hy { 0 };
+    Hook cursor_commit, cursor_gone, request_shape;
+    bool software_cursor { false };              // drawn into the frames (the window does not draw it)
+    // The keys and what the person keeps (design 2026-10-19 §16.4, §17.12):
+    // keys.json over the desktop's own; state.json -- each workspace's
+    // arrangement, the applications' rules. One that cannot be read is
+    // said and not written over.
+    Bindings keys;
+    config::State state;
+    bool state_broken { false };
+    bool super_alone { false };                  // Super down and nothing else since: its release opens the apps
+    // One overlay at a time (design 2026-10-19 §16.3, §17.5, §18.1): the
+    // arrangements and the windows are held with Super and chosen on its
+    // release; the keys' sheet and a window's menu stay until a key or a click.
+    enum class Overlay { none, chooser, switcher, sheet, menu, layouts };
+    Overlay overlay { Overlay::none };
+    std::size_t overlay_at { 0 };
+    std::vector<layout::Mode> chooser_modes;
+    std::vector<layout::Id> switcher_ids;
+    layout::Id menu_for { 0 };
+    std::vector<std::string> menu_actions;       // by the menu's item
+    shell::Picture overlay_picture;
+    wlr_scene_buffer* overlay_node { nullptr };
+    wlr_scene_buffer* hint_node { nullptr };
+    wl_event_source* hint_timer { nullptr };
+    std::map<std::string, std::string> app_names;   // app id -> its name (desktop entries)
+    // A window dragged (design 2026-10-19 §17.9): it follows the pointer and
+    // a preview shows where it lands -- the drop made on a copy of the layout.
+    bool drag_live { false };                    // the window itself moves (floating, stacked, a group with Super)
+    double drag_dx { 0 }, drag_dy { 0 };         // the pointer from the frame's corner
+    layout::Drop drop;
+    double drop_width { 0 };                     // a size chosen for a new column (0: as it comes)
+    bool sizes_shown { false };
+    shell::Picture sizes_picture;
+    wlr_scene_rect* drop_box { nullptr };
+    wlr_scene_buffer* sizes_node { nullptr };
+    wl_event_source* drop_timer { nullptr };
+    std::size_t gap_column { 0 };
+    std::chrono::steady_clock::time_point gap_pressed {};
+    layout::Id max_hover { 0 };                  // the window whose maximize button the pointer is on
+    wl_event_source* max_timer { nullptr };
+    layout::Id layouts_for { 0 };
+    std::chrono::steady_clock::time_point app_names_read {};
+
+    // The shown workspace's arrangement (the panel's look is the profile's).
+    bool canvas() const { return lay.mode() == layout::Mode::canvas; }
+    draw::Fonts* ui() { return ui_font ? &*ui_font : nullptr; }
+    layout::Insets reserved() const { return pill ? layout::Insets{} : layout::Insets{.top = shell::kPanelHeight}; }
+    // The output in logical pixels: what windows and the shell are laid out in.
+    layout::Size output_size() const { return {size.width / scale, size.height / scale}; }
+    int logical_w() const { return static_cast<int>(std::lround(size.width / scale)); }
+    int logical_h() const { return static_cast<int>(std::lround(size.height / scale)); }
+
+    std::uint32_t now_ms() const {
+        return static_cast<std::uint32_t>(
+            std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count());
+    }
+    void log(std::string_view s) const { if (o.log) o.log(s); }
+    bool send(std::string_view bytes) {
+        if (!os::write_all(o.out, bytes)) { stop = true; return false; }
+        return true;
+    }
+
+    explicit Server(const Options& opts);
+
+    View* view_of(layout::Id id);
+
+    View* focused() { return views.empty() || !views.front().mapped ? nullptr : &views.front(); }
+
+    void focus(View* v);
+
+    void text_focus(wlr_surface* surface);
+
+    wlr_text_input_v3* active_text();
+
+    void caret();
+
+    void add_text_input(wlr_text_input_v3* input);
+
+    void text_commit(const std::string& text);
+
+    void preedit(const opensal::Preedit& p);
+
+    void host_clipboard(std::string text);
+
+    void selection_changed();
+
+    void follow_focus();
+
+    void arrange(bool instant = false);
+
+    void draw_title(View& v, int width, bool active);
+
+    void draw_shell();
+
+    static std::string clock_text();
+
+    void open_launcher();
+
+    void draw_launcher();
+
+    std::vector<std::string> terminal_argv(const std::vector<std::string>& command, std::string_view title = {},
+                                           std::string_view app_id = {});
+
+    void start_app(const apps::App& app);
+
+    void launcher_key(std::uint32_t code);
+
+    void zoom_surfaces(double zoom);
+
+    void animate();
+
+    void step();
+
+    void lay_out(View& v);
+
+    void add_view(wlr_xdg_toplevel* toplevel);
+
+    void add_popup(wlr_xdg_popup* popup);
+
+    void launch(const std::vector<std::string>& argv);
+
+    bool held(wlr_keyboard_modifier m);
+
+    bool shortcut(std::uint32_t code);
+
+    void key(const opensal::Key& k);
+
+    // Pointer input goes to windows only at zoom 1 (zoomed out, a click picks one).
+    bool live() const { return lay.zoom() == 1; }
+
+    void pointer_moved();
+
+    bool host_pointer() const { return opensal::has(provided, opensal::Interface::Cursor); }
+    // The desktop's own shape (a CSS name): over its background, its title
+    // bars, a window being moved.
+    void pointer_shape(std::string_view css);
+    // A client's: by name (cursor-shape-v1), or an image of its own.
+    void client_pointer(wlr_surface* surface, std::int32_t hx, std::int32_t hy);
+    void send_pointer_image();
+    // The window said what it takes: draw the pointer here or leave it to it.
+    void pointer_mode();
+
+    // drag.cpp
+    void drag_start(View* v, bool live);
+    void drag_motion();
+    void drag_end();
+    void show_drop();
+    void hide_drop();
+    void set_opacity(View& v, float opacity);
+    layout::Id maximize_under_pointer() const;
+    void open_layouts(layout::Id id);
+
+    // overlay.cpp
+    void load_person();
+    void save_state();
+    void remember_arrangement();
+    void apply_rules(View& v);
+    void act(Action a);
+    void open_chooser();
+    void open_switcher();
+    void open_sheet();
+    void open_menu(View* v, double x, double y);
+    void menu_choose(std::size_t item);
+    void draw_overlay();
+    void close_overlay(bool apply);
+    bool overlay_key(xkb_keysym_t sym, bool down);
+    bool overlay_click(double x, double y);
+    void show_hint(std::string_view text, int ms);
+    std::string name_of(View& v);
+
+    std::optional<layout::Rect> placement_of(layout::Id id) const;
+
+    layout::Id close_under_pointer() const;
+
+    void button(const opensal::PointerButton& b);
+
+    void wheel(const opensal::Wheel& w);
+
+    void input(const opensal::Event& ev);
+
+    void provider(std::string_view bytes);
+
+    void resize(opensal::Size want);
+
+    void set_scale(double want);
+
+    void open_fonts();
+
+    void render();
+
+    bool start_();
+
+    static constexpr std::uint32_t WL_EVENT_READABLE_ = 0x01, WL_EVENT_HANGUP_ = 0x04;
+
+    int run_();
+
+    ~Server();
+};
+
+}  // namespace xdesk::compositor
