@@ -113,10 +113,11 @@ int main(int argc, char* argv[]) {
     o.outer_gap = settings.get_int("desktop", "outer_gap", o.outer_gap);
     o.min_column_width = settings.get_int("desktop", "min_column_width", o.min_column_width);
     o.flow = settings.get("desktop", "flow", o.flow);
-    o.minimap = settings.get("canvas", "minimap", "on") != "off";
-    o.snap = settings.get("canvas", "snap", "on") != "off";
+    // [wuxian] (design 2026-10-20 WuXian §3.16); [canvas] of before is read too.
+    o.minimap = settings.get("wuxian", "minimap", settings.get("canvas", "minimap", "on")) != "off";
+    o.snap = settings.get("wuxian", "snap", settings.get("canvas", "snap", "on")) != "off";
     o.reduce_motion = settings.get("appearance", "reduce_motion", "off") == "on";
-    o.workspaces = settings.get_int("desktop", "workspaces", o.workspaces);
+    o.rule = settings.get("desktop", "rule", o.rule);
     if (const auto c = settings.colour("theme", "accent", 0x1000000); c != 0x1000000) o.accent = c;
     if (const auto c = settings.colour("theme", "background", 0x1000000); c != 0x1000000) o.background = c;
     // Other windows of this desktop connect here (opensal-wlr's run_session says where).

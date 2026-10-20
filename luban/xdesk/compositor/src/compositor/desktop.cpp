@@ -39,19 +39,21 @@ void Server::draw_title(View& v, int width, bool active, bool rounded) {
 // The panel and (canvas) the grid, drawn again only when they changed.
 void Server::draw_shell() {
     shell::PanelState st;
-    st.workspace = lay.workspace();
-    st.workspaces = lay.workspaces();
+    // The panel's workspaces by number (index n is workspace n + 1).
+    const auto ids = lay.workspaces();
+    st.workspace = lay.current() - 1;
+    st.workspaces = std::max(4, ids.empty() ? 1 : ids.back());
     st.occupied.assign(static_cast<std::size_t>(st.workspaces), false);
     for (const auto& v : views)
         if (v.mapped)
-            if (const auto w = lay.workspace_of(v.id)) st.occupied[static_cast<std::size_t>(*w)] = true;
-    if (View* f = focused(); f && lay.workspace_of(f->id) == lay.workspace() && f->toplevel->title) st.title = f->toplevel->title;
+            if (const auto w = lay.workspace_of(v.id); w && *w >= 1 && *w <= st.workspaces) st.occupied[static_cast<std::size_t>(*w - 1)] = true;
+    if (View* f = focused(); f && lay.workspace_of(f->id) == lay.current() && f->toplevel->title) st.title = f->toplevel->title;
     st.clock = clock_text();
     st.zoom = lay.zoom();
-    st.overview = lay.in_overview();
+    st.overview = wuxian();
     st.zh = zh;
-    auto key = std::format("{} {} {} {} {} {} {} {}x{}@{}", st.workspace, st.occupied, st.title, st.clock, st.zoom, st.overview,
-                           lay.mode() == layout::Mode::canvas, size.width, size.height, scale);
+    auto key = std::format("{} {} {} {} {} {} {}x{}@{}", st.workspace, st.occupied, st.title, st.clock, st.zoom, st.overview,
+                           size.width, size.height, scale);
     // A window full screen: no panel (nothing of it to click either).
     const bool full = std::ranges::any_of(placements, &layout::Placement::fullscreen);
     wlr_scene_node_set_enabled(&panel_node->node, !full);
@@ -65,11 +67,11 @@ void Server::draw_shell() {
         show(panel_node, std::move(panel_picture.image), scale);
         panel_picture.image = {};
     }
-    wlr_scene_node_set_enabled(&canvas_dots->node, canvas());
-    // The minimap, while the canvas holds more than fits in the view.
+    wlr_scene_node_set_enabled(&wuxian_dots->node, wuxian());
+    // The minimap, while the plane holds more than fits in the view.
     {
         const auto m = lay.minimap();
-        const bool shown = canvas() && minimap_on && !lay.in_overview() && !m.boxes.empty()
+        const bool shown = wuxian() && minimap_on && !m.boxes.empty()
                            && (m.bounds.width > m.view.width + 1 || m.bounds.height > m.view.height + 1);
         wlr_scene_node_set_enabled(&minimap_node->node, shown);
         if (!shown) minimap_shown = {};
@@ -88,12 +90,12 @@ void Server::draw_shell() {
             }
         }
     }
-    if (canvas()) {
-        const auto [cx, cy] = lay.camera();
-        auto dots = std::format("{} {} {} {}x{}@{}", cx, cy, lay.zoom(), size.width, size.height, scale);
+    if (wuxian()) {
+        const auto cam = lay.camera();
+        auto dots = std::format("{} {} {} {}x{}@{}", cam.at.x, cam.at.y, cam.zoom, size.width, size.height, scale);
         if (dots != dots_drawn) {
             dots_drawn = std::move(dots);
-            show(canvas_dots, shell::canvas_background(theme, logical_w(), logical_h(), cx, cy, lay.zoom(), scale), scale);
+            show(wuxian_dots, shell::canvas_background(theme, logical_w(), logical_h(), cam.at.x, cam.at.y, cam.zoom, scale), scale);
         }
     }
 }
@@ -119,7 +121,7 @@ void Server::open_launcher() {
     // its actions, each with its keys -- searched once, learnt.
     struct Page { std::string_view id, en, zh, words; };
     for (const auto& p : {Page{"displays", "Settings: displays", "设置：显示器", "monitor screen resolution mirror 分辨率 镜像 屏幕"},
-                          Page{"layout", "Settings: layout", "设置：布局", "tile stack canvas gap column 平铺 层叠 画布 间隔 列"},
+                          Page{"layout", "Settings: layout", "设置：布局", "tile stack wuxian canvas workspace gap column 平铺 层叠 无限画布 工作区 间隔 列"},
                           Page{"appearance", "Settings: appearance", "设置：外观", "accent colour background motion 颜色 背景 动画"},
                           Page{"keys", "Settings: keys", "设置：快捷键", "shortcut keyboard keys 按键 快捷键 键位"},
                           Page{"about", "Settings: about", "设置：关于", "version system about information 版本 系统 信息"}})

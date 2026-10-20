@@ -509,3 +509,19 @@ status = "required"
 [WUXIAN-STATE]
 text = "wuxian.json version 1 reads back as written (the implementation's layout untouched, unknown fields ignored, unknown flags kept); another version or a malformed file is said, never an empty state; validate names every broken rule"
 status = "required"
+
+[WUXIAN-WORKSPACES]
+text = "workspaces are numbered regions of WuXian: made with the smallest free number right of the others, or by going to a number (removed again when left as made); removed with their windows free on the plane where they were; the last one stays; a rule, colour, flow and scale each"
+status = "required"
+
+[WUXIAN-VIEWS]
+text = "the workspace view shows the current workspace 1:1 whatever its scale; the WuXian view shows every workspace scaled and the free windows, through a camera that pans, zooms and frames; a new window there goes to the workspace at the view's centre or the plane; back to the workspace view, the focused workspace is current; the locked camera shows the workspace as the workspace view does"
+status = "required"
+
+[WUXIAN-DRAG]
+text = "a drag is read off the arrangement as it was picked up: its own place is no drop, another window's zones swap, split or make a column, edges and gaps make a column; nothing moves until it is let go; the preview gives its kept place, the target, the half, the line and the frame it gets; in the WuXian view it goes to the top-most workspace under the pointer by its rule, or onto the plane"
+status = "required"
+
+[WUXIAN-CONFORMANCE]
+text = "xdesk.layout passes every case of openwx.conformance"
+status = "required"

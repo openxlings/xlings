@@ -1,5 +1,5 @@
 // Tiling (layout.cppm): columns side by side, windows one above another in a
-// column. The same columns make a tiled group on the canvas (canvas.cpp).
+// column; in the WuXian view the whole strip, unscrolled (wuxian.cpp).
 module xdesk.layout;
 
 import std;
@@ -135,7 +135,7 @@ std::vector<double> Layout::tile_widths_(const Space& s, double length) const {
 }
 
 Direction Layout::turned_(const Space& s, Direction d) {
-    if (s.flow != Flow::vertical) return d;
+    if (s.meta.flow != Flow::vertical) return d;
     switch (d) {
         case Direction::up: return Direction::left;
         case Direction::down: return Direction::right;
@@ -147,7 +147,7 @@ Direction Layout::turned_(const Space& s, Direction d) {
 
 double Layout::tile_length_(const Space& s) const {
     const Rect area = area_();
-    return s.flow == Flow::vertical ? area.height : area.width;
+    return s.meta.flow == Flow::vertical ? area.height : area.width;
 }
 
 double Layout::tile_fraction_(const Space& s, std::size_t column) const {
@@ -157,9 +157,9 @@ double Layout::tile_fraction_(const Space& s, std::size_t column) const {
     return (ws[column] + o_.inner_gap) / std::max(1.0, length - 2 * o_.outer_gap + o_.inner_gap);
 }
 
-std::vector<Placement> Layout::tile_(Space& s, Rect area) {
+std::vector<Placement> Layout::tile_(Space& s, Rect area, bool whole, double* length) {
     std::vector<Placement> out;
-    const bool vertical = s.flow == Flow::vertical;
+    const bool vertical = s.meta.flow == Flow::vertical;
     const double gi = o_.inner_gap, go = o_.outer_gap;
     // Along the flow (`along`) and across it, as if it ran sideways.
     const double along = vertical ? area.height : area.width, across = vertical ? area.width : area.height;
@@ -172,10 +172,13 @@ std::vector<Placement> Layout::tile_(Space& s, Rect area) {
         x += w + gi;
     }
     const double strip = n == 0 ? 0 : x - gi + go;
+    if (length) *length = std::max(along, strip);
     // The focused column in view.
     const auto focused = s.focus ? find_(s.columns, *s.focus) : std::nullopt;
     double scroll = s.scroll;
-    if (strip <= along + 0.5) {
+    if (whole) {
+        scroll = 0;
+    } else if (strip <= along + 0.5) {
         scroll = 0;
     } else {
         if (focused && !s.scrolled) {
@@ -185,7 +188,7 @@ std::vector<Placement> Layout::tile_(Space& s, Rect area) {
         }
         scroll = std::clamp(scroll, 0.0, strip - along);
     }
-    s.scroll = scroll;
+    if (!whole) s.scroll = scroll;
     const double height = std::max(1.0, across - 2 * go);
     for (std::size_t i = 0; i < n; ++i) {
         const auto& col = s.columns[i];
@@ -195,7 +198,8 @@ std::vector<Placement> Layout::tile_(Space& s, Rect area) {
             const double a = xs[i] - scroll;
             const Rect r = vertical ? Rect{area.x + y, area.y + a, hs[k], ws[i]} : Rect{area.x + a, area.y + y, ws[i], hs[k]};
             const Id id = col.cells[k].id;
-            out.push_back({.id = id, .rect = r, .visible = overlaps(r, area), .focused = s.focus == id, .tiled = true});
+            out.push_back({.id = id, .rect = r, .visible = overlaps(r, area), .focused = s.focus == id, .tiled = true,
+                           .workspace = s.meta.id});
             y += hs[k] + gi;
         }
     }

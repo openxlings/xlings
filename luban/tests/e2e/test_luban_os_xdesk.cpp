@@ -97,7 +97,7 @@ XTEST(LubanOs, XdeskStackedWindowsResizeBySuperRightDragAndByTheirBorders, .area
     const auto runtime = home.root() / "run";
     fs::create_directories(runtime);
     fs::permissions(runtime, fs::perms::owner_all, fs::perm_options::replace);
-    tk::write_file(home.root() / ".config" / "xdesk" / "state.json", R"({"arrangements":["stack"]})");
+    tk::write_file(home.root() / ".config" / "xdesk" / "wuxian.json", R"({"wuxian": 1, "workspaces": [{"id": 1, "rule": "stack"}]})");
     const auto client = colour_client(home).string();
     const auto before = home.root() / "before.ppm", corner = home.root() / "corner.ppm", border = home.root() / "border.ppm";
     auto r = run_script(home, std::format(R"(wait desktop
@@ -146,10 +146,11 @@ screenshot {}
     EXPECT_EQ(d[2], c[2]) << "the right edge stayed";
 }
 
-// The canvas's zoom is a view (design 2026-10-20 §9.1, G11): at 91 % a
-// click reaches the window, in its own coordinates, and the view stays.
+// The WuXian view's zoom is a view (design 2026-10-20 §9.1, G11; WuXian
+// §3.2): zoomed out to 77 % a click reaches the window, in its own
+// coordinates, and the view stays. The canvas session of before starts there.
 XTEST(LubanOs, XdeskCanvasZoomedWindowsTakeClicksAndTheViewStays, .area = "luban",
-      .covers = {"XDESK-CANVAS"}, .requires_ = {"linux", "xlings-bin"}) {
+      .covers = {"XDESK-CANVAS", "WUXIAN-VIEWS"}, .requires_ = {"linux", "xlings-bin"}) {
     if (!app_binary()) GTEST_SKIP() << "no luban-os beside the xlings under test";
     if (!xdesk_binary()) GTEST_SKIP() << "no xdesk beside luban-os (mcpp build -p xdesk-app)";
     auto home = tk::Home::isolated("luban-os-xdesk-canvas-zoom");
@@ -158,7 +159,8 @@ XTEST(LubanOs, XdeskCanvasZoomedWindowsTakeClicksAndTheViewStays, .area = "luban
     fs::create_directories(runtime);
     fs::permissions(runtime, fs::perms::owner_all, fs::perm_options::replace);
     const auto client = colour_client(home).string();
-    const auto log = home.root() / "client.log", zoomed = home.root() / "zoomed.ppm", after = home.root() / "after.ppm";
+    const auto log = home.root() / "client.log", zoomed = home.root() / "zoomed.ppm", after = home.root() / "after.ppm",
+               whole = home.root() / "whole.ppm";
     tk::write_file(log, "");
     auto r = run_script(home, std::format(R"(wait desktop
 waitfor desktop.texture.0 1100
@@ -169,23 +171,30 @@ screenshot {}
 click 550 400
 sleep 800
 screenshot {}
-)", zoomed.string(), after.string()),
+key Super+o
+sleep 1500
+screenshot {}
+)", zoomed.string(), after.string(), whole.string()),
                         {"--desktop-exec", xdesk_binary()->string(), "--profile", "canvas",
                          "--autostart", std::format("python3 {} c04040 --log {}", client, log.string())},
                         {{"XDG_RUNTIME_DIR", runtime.string()}});
     ASSERT_EQ(r.exit_code, 0) << r.transcript();
-    const auto a = box_of(read_ppm(zoomed), kRed), b = box_of(read_ppm(after), kRed);
+    const auto a = box_of(read_ppm(zoomed), kRed), b = box_of(read_ppm(after), kRed), w = box_of(read_ppm(whole), kRed);
     ASSERT_GE(a[0], 0) << "no red window";
+    ASSERT_GE(w[0], 0) << "no red window in the workspace view";
     EXPECT_EQ(a, b) << "a click changes nothing of the view";
+    const double zoom = double(a[2] - a[0]) / double(w[2] - w[0]);
+    EXPECT_LT(zoom, 0.95) << "the WuXian view shows the workspace smaller";
+    EXPECT_GE(zoom, 0.5) << "and its windows still take the pointer";
     const auto said = tk::read_file(log);
     EXPECT_NE(said.find("button 272"), std::string::npos) << "the window got the click\n" << said;
-    // In its own coordinates: the point clicked, unzoomed (1 / 0.909).
+    // In its own coordinates: the point clicked, unzoomed.
     std::istringstream in(said.substr(said.find("button 272")));
     std::string word;
     int code = 0;
     double x = 0, y = 0;
     in >> word >> code >> word >> x >> y;
-    EXPECT_NEAR(x, (550 - a[0]) * 1.1, 6) << said;
+    EXPECT_NEAR(x, (550 - a[0]) / zoom, 6) << said;
 }
 
 // A client that draws to whole cells (foot) is told it is tiled and takes
@@ -224,19 +233,29 @@ screenshot {}
     EXPECT_EQ(green_start - red_end - 1, 4) << "between them only the gap (a short client left its own strip)";
 }
 
+// Super+O (design 2026-10-20 WuXian §3.2): the WuXian view -- the workspace
+// smaller on the plane, its three windows in it; zoomed out below half,
+// windows are pictures: a click selects one and the view stays, twice goes
+// in at 100 %; Super+O again: the workspace view, as it was.
 XTEST(LubanOs, XdeskCanvasShowsEveryWindowInItsOverviewAClickSelectsTwiceGoesIn, .area = "luban",
-      .covers = {"XDESK-COMPOSITOR", "XDESK-LAYOUT", "XDESK-CANVAS"}, .requires_ = {"linux", "xlings-bin"}) {
+      .covers = {"XDESK-COMPOSITOR", "XDESK-LAYOUT", "XDESK-CANVAS", "WUXIAN-VIEWS"}, .requires_ = {"linux", "xlings-bin"}) {
     if (!app_binary()) GTEST_SKIP() << "no luban-os beside the xlings under test";
     if (!xdesk_binary()) GTEST_SKIP() << "no xdesk beside luban-os (mcpp build -p xdesk-app)";
     auto home = tk::Home::isolated("luban-os-xdesk-canvas");
     ASSERT_EQ(home.xlings({"self", "init"}).exit_code, 0);
-    const auto all = home.root() / "overview.ppm", once = home.root() / "once.ppm", in = home.root() / "in.ppm";
-    auto r = xdesk_with(home, "canvas", std::format(R"(wait desktop
+    const auto start = home.root() / "start.ppm", all = home.root() / "wuxian.ppm", small = home.root() / "small.ppm",
+               once = home.root() / "once.ppm", in = home.root() / "in.ppm", back = home.root() / "back.ppm";
+    std::string out;
+    for (int k = 0; k < 6; ++k) out += "key Super+-\nsleep 200\n";
+    auto r = xdesk_with(home, "xdesk", std::format(R"(wait desktop
 waitfor desktop.texture.0 1100
 sleep 3000
+screenshot {}
 key Super+o
-sleep 1000
+sleep 1500
 screenshot {}
+screenshot {}
+{}sleep 800
 screenshot {}
 click desktop
 sleep 1000
@@ -245,23 +264,32 @@ click desktop
 click desktop
 sleep 1000
 screenshot {}
-)", all.string(), artifact("xdesk-canvas-overview.bmp").string(), once.string(), in.string()));
+key Super+o
+sleep 1500
+screenshot {}
+)", start.string(), all.string(), artifact("xdesk-wuxian-view.bmp").string(), out, small.string(), once.string(), in.string(),
+                                                     back.string()));
     ASSERT_EQ(r.exit_code, 0) << r.transcript();
-    // Zoomed out: the three side by side, the middle one in the middle.
+    const auto s0 = box_of(read_ppm(start), kGreen);
+    ASSERT_GE(s0[0], 0) << "no green window";
+    // The WuXian view: the three side by side, green in the middle, the
+    // workspace smaller than the screen (the plane around it).
     const auto a = read_ppm(all);
     std::set<std::array<int, 3>> seen;
-    for (int x = 0; x < 1100; x += 10) seen.insert(a.at(x, 350));
+    for (int x = 0; x < 1100; x += 6) seen.insert(a.at(x, 350));
     EXPECT_TRUE(seen.contains(kRed) && seen.contains(kGreen) && seen.contains(kBlue));
     EXPECT_EQ(a.at(550, 350), kGreen);
-    // One click selects it: the view stays (design 2026-10-20 §9.1, G11).
-    EXPECT_NE(read_ppm(once).at(150, 350), kGreen) << "a click does not zoom in";
-    EXPECT_EQ(read_ppm(once).at(550, 350), kGreen);
-    // Twice: back to 1, it in the middle of the view.
-    const auto b = read_ppm(in);
-    EXPECT_EQ(b.at(550, 350), kGreen);
-    EXPECT_EQ(b.at(150, 350), kGreen) << "still zoomed out (it is as wide as it was made)";
-    EXPECT_EQ(b.at(950, 350), kGreen);
-    EXPECT_NE(a.at(150, 350), kGreen) << "the overview did not zoom out";
+    EXPECT_NE(a.at(3, 350), kRed) << "the workspace is smaller than the screen";
+    // Below half: a click selects -- the view stays.
+    const auto g = box_of(read_ppm(small), kGreen);
+    EXPECT_LT(g[2] - g[0], (s0[2] - s0[0]) / 2) << "zoomed out below half";
+    EXPECT_EQ(box_of(read_ppm(once), kGreen), g) << "a click does not move the view";
+    // Twice: in at 100 %, green in the middle.
+    const auto i = box_of(read_ppm(in), kGreen);
+    EXPECT_EQ(read_ppm(in).at(550, 350), kGreen);
+    EXPECT_NEAR(i[2] - i[0], s0[2] - s0[0], 3) << "its own size";
+    // Back to the workspace view: as it was.
+    EXPECT_EQ(box_of(read_ppm(back), kGreen), s0);
 }
 
 XTEST(LubanOs, XdeskSwitchesArrangementsAndComesBackToTheSameLayout, .area = "luban",
@@ -272,8 +300,8 @@ XTEST(LubanOs, XdeskSwitchesArrangementsAndComesBackToTheSameLayout, .area = "lu
     ASSERT_EQ(home.xlings({"self", "init"}).exit_code, 0);
     const auto split = home.root() / "split.ppm", whole = home.root() / "whole.ppm", back = home.root() / "back.ppm";
     // Tiled: blue joins green's column (Super+[); stacked (Super+m): blue the
-    // whole output (Super+f), then free again; on to the canvas and back to
-    // tiling: the columns as they were.
+    // whole output (Super+f), then free again; back to tiling (Super+m): the
+    // columns as they were.
     auto r = xdesk_with(home, "classic", std::format(R"(wait desktop
 waitfor desktop.texture.0 1100
 sleep 3000
@@ -286,8 +314,6 @@ key Super+f
 sleep 1000
 screenshot {}
 key Super+f
-sleep 500
-key Super+m
 sleep 500
 key Super+m
 sleep 1000
@@ -381,7 +407,7 @@ XTEST(LubanOs, AWindowThatDrawsNoPointerGetsXdesksInItsFrames, .area = "luban",
 // was left (design 2026-10-19 §17.5, §17.12). A state.json that cannot be read
 // is said and never written over.
 XTEST(LubanOs, XdeskChoosesArrangementsHeldWithSuperAndKeepsThem, .area = "luban",
-      .covers = {"XDESK-ARRANGEMENTS", "XDESK-COMPOSITOR"}, .requires_ = {"linux", "xlings-bin"}) {
+      .covers = {"XDESK-ARRANGEMENTS", "XDESK-COMPOSITOR", "WUXIAN-STATE"}, .requires_ = {"linux", "xlings-bin"}) {
     if (!app_binary()) GTEST_SKIP() << "no luban-os beside the xlings under test";
     if (!xdesk_binary()) GTEST_SKIP() << "no xdesk beside luban-os (mcpp build -p xdesk-app)";
     auto home = tk::Home::isolated("luban-os-xdesk-chooser");
@@ -396,8 +422,9 @@ XTEST(LubanOs, XdeskChoosesArrangementsHeldWithSuperAndKeepsThem, .area = "luban
                            std::format("python3 {} c04040", client)},
                           {{"XDG_RUNTIME_DIR", runtime.string()}});
     };
-    const auto state = home.root() / ".config" / "xdesk" / "state.json";
-    auto arrangement = [&] { return Json::parse(tk::read_file(state))["arrangements"][0].get<std::string>(); };
+    // The workspace's rule as WuXian keeps it (wuxian.json, design 2026-10-20 WuXian §3.14).
+    const auto kept = home.root() / ".config" / "xdesk" / "wuxian.json";
+    auto rule = [&] { return Json::parse(tk::read_file(kept))["workspaces"][0]["rule"].get<std::string>(); };
     const auto held = home.root() / "held.ppm";
     auto r = session(std::format(R"(wait desktop
 waitfor desktop.texture.0 1100
@@ -407,33 +434,33 @@ key m
 sleep 800
 screenshot {}
 screenshot {}
-key m
 keyup Super
-sleep 800
+sleep 2000
 )", held.string(), artifact("xdesk-chooser.bmp").string()));
     ASSERT_EQ(r.exit_code, 0) << r.transcript();
     EXPECT_NE(read_ppm(held).at(550, 380), kRed) << "the chooser over the desktop while Super is held";
-    EXPECT_EQ(arrangement(), "canvas") << "tile, then stack, then canvas: chosen on letting Super go";
-    EXPECT_EQ(Json::parse(tk::read_file(state))["last"], "canvas");
-    // The next session starts as it was left: the next one from canvas is tile.
+    EXPECT_EQ(rule(), "stack") << "tile's other: chosen on letting Super go";
+    // The next session starts as it was left: stack's other is tile.
     r = session(R"(wait desktop
 waitfor desktop.texture.0 1100
 sleep 1500
 key Super+m
-sleep 800
+sleep 2000
 )");
     ASSERT_EQ(r.exit_code, 0) << r.transcript();
-    EXPECT_EQ(arrangement(), "tile");
-    // Unreadable: started as new, and the file is the person's still.
-    tk::write_file(state, "{\"arrangements\": [");
+    EXPECT_EQ(rule(), "tile");
+    // Unreadable: started as new, the file it could not read kept beside it.
+    tk::write_file(kept, "{\"wuxian\": [");
     r = session(R"(wait desktop
 waitfor desktop.texture.0 1100
-sleep 1500
-key Super+m
-sleep 800
+sleep 2500
 )");
     ASSERT_EQ(r.exit_code, 0) << r.transcript();
-    EXPECT_EQ(tk::read_file(state), "{\"arrangements\": [");
+    bool aside = false;
+    for (const auto& f : fs::directory_iterator(kept.parent_path()))
+        if (f.path().filename().string().starts_with("wuxian.json.before-") && tk::read_file(f.path()) == "{\"wuxian\": [") aside = true;
+    EXPECT_TRUE(aside) << "the file it could not read is kept";
+    EXPECT_TRUE(Json::parse(tk::read_file(kept)).is_object()) << "and WuXian is kept anew";
 }
 
 // A window's title bar, the other button: its menu (design 2026-10-19 §18.1).
@@ -449,7 +476,8 @@ XTEST(LubanOs, XdeskTitleBarMenuActsOnItsWindow, .area = "luban",
     const auto client = colour_client(home).string();
     const auto menu = home.root() / "menu.ppm", closed = home.root() / "closed.ppm";
     // One window, its title bar under the panel; the menu's last item closes it
-    // (4 items, a line, 4 workspaces, a line, Close: rows of 30, lines of 9).
+    // (4 items, a line, the one workspace and WuXian, a line, Close: rows of
+    // 30, lines of 9).
     auto r = run_script(home, std::format(R"(wait desktop
 waitfor desktop.texture.0 1100
 sleep 2500
@@ -457,7 +485,7 @@ click 300 50 right
 sleep 600
 screenshot {}
 screenshot {}
-click 420 331
+click 420 271
 sleep 1200
 screenshot {}
 )", menu.string(), artifact("xdesk-window-menu.bmp").string(), closed.string()),
@@ -488,11 +516,11 @@ screenshot {}
     EXPECT_EQ(read_ppm(two).at(550, 400), kRed) << "on the second, as its rule says";
 }
 
-// A window dragged by its title (design 2026-10-19 §17.9): a preview where it
-// would land, and there it goes when let go -- red over the top of green is
-// red above green in green's column.
+// A window dragged by its title (design 2026-10-20 WuXian §3.8): the
+// arrangement frozen, a preview where it would land, and there it goes when
+// let go -- red over the top of green is red above green in green's column.
 XTEST(LubanOs, XdeskDraggedWindowLandsWhereItsPreviewWas, .area = "luban",
-      .covers = {"XDESK-DRAG-SNAP", "XDESK-COMPOSITOR"}, .requires_ = {"linux", "xlings-bin"}) {
+      .covers = {"XDESK-DRAG-SNAP", "XDESK-COMPOSITOR", "WUXIAN-DRAG"}, .requires_ = {"linux", "xlings-bin"}) {
     if (!app_binary()) GTEST_SKIP() << "no luban-os beside the xlings under test";
     if (!xdesk_binary()) GTEST_SKIP() << "no xdesk beside luban-os (mcpp build -p xdesk-app)";
     auto home = tk::Home::isolated("luban-os-xdesk-drag");
@@ -520,10 +548,14 @@ screenshot {}
                          "--autostart", std::format("sh -c 'sleep 0.6; exec python3 {} 40c040'", client)},
                         {{"XDG_RUNTIME_DIR", runtime.string()}});
     ASSERT_EQ(r.exit_code, 0) << r.transcript();
-    // While dragged: green's top half shows where red would go (the accent over green).
-    EXPECT_NE(read_ppm(during).at(1000, 250), kGreen) << "a preview over the top of green";
-    // And green already where the drop leaves it: the whole width, below (design 2026-10-20 §7.5, G6).
-    EXPECT_EQ(read_ppm(during).at(300, 600), kGreen) << "the others move to where the drop leaves them";
+    // While dragged: green's top half shows where red would go (the accent
+    // over green, see-through); nothing moves -- green where it is, red's own
+    // place kept (design 2026-10-20 WuXian §3.8).
+    const auto d = read_ppm(during);
+    EXPECT_NE(d.at(1000, 250), kGreen) << "a preview over the top of green";
+    EXPECT_NE(d.at(300, 600), kGreen) << "green does not move while red is dragged";
+    EXPECT_NE(d.at(1000, 600), kRed) << "green's bottom half is green's still";
+    EXPECT_NE(d.at(150, 600), kGreen) << "red's place is kept";
     // Let go: one column, red above green.
     const auto a = read_ppm(after);
     EXPECT_EQ(a.at(550, 200), kRed);

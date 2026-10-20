@@ -53,7 +53,7 @@ XTEST(XdeskConfig, APersonsOwnFileWinsKeyByKeyOverTheProfiles, .area = "luban", 
 
 // state.json and keys.json (design 2026-10-19 §16.4, §17.12): the person's,
 // read and written whole; one that cannot be read is said and left as it is.
-XTEST(XdeskConfig, ThePersonsStateAndKeysAreKeptAndABrokenOneIsSaid, .area = "luban", .covers = {"XDESK-CONFIG", "XDESK-ARRANGEMENTS"}) {
+XTEST(XdeskConfig, ThePersonsStateAndKeysAreKeptAndABrokenOneIsSaid, .area = "luban", .covers = {"XDESK-CONFIG", "XDESK-ARRANGEMENTS", "WUXIAN-STATE"}) {
     const auto root = fs::temp_directory_path() / std::format("xdesk-state-{}", std::random_device{}());
     const std::map<std::string, std::string> env{{"XDG_CONFIG_HOME", root.string()}};
     // Nothing there: the defaults.
@@ -61,12 +61,30 @@ XTEST(XdeskConfig, ThePersonsStateAndKeysAreKeptAndABrokenOneIsSaid, .area = "lu
     ASSERT_TRUE(s);
     EXPECT_EQ(*s, config::State{});
     // Written and read back the same.
-    config::State st{.arrangements = {"tile", "", "canvas"}, .last = "canvas",
-                     .rules = {{"foot", {.floating = true, .workspace = 2, .rect = std::array{10, 20, 640, 480}}}}};
+    config::State st{.rules = {{"foot", {.floating = true, .workspace = 2, .rect = std::array{10, 20, 640, 480}}}}};
     ASSERT_TRUE(config::write_state(env, st));
     s = config::read_state(env);
     ASSERT_TRUE(s) << s.error();
     EXPECT_EQ(*s, st);
+    // The workspaces' arrangements of before (WuXian keeps its own): seen, not read.
+    std::ofstream(config::state_file(env)) << R"({"arrangements": ["stack"], "last": "stack", "hinted": true})";
+    s = config::read_state(env);
+    ASSERT_TRUE(s);
+    EXPECT_TRUE(s->old_arrangements);
+    EXPECT_TRUE(s->hinted);
+    const auto aside = config::keep_aside(config::state_file(env));
+    ASSERT_TRUE(aside) << aside.error();
+    EXPECT_TRUE(fs::exists(*aside));
+    EXPECT_TRUE(aside->filename().string().starts_with("state.json.before-"));
+    // wuxian.json beside it: nothing there is no text; written, read back as it was.
+    auto w = config::read_wuxian(env);
+    ASSERT_TRUE(w);
+    EXPECT_FALSE(*w);
+    ASSERT_TRUE(config::write_wuxian(env, "{\"wuxian\": 1}\n"));
+    w = config::read_wuxian(env);
+    ASSERT_TRUE(w && *w);
+    EXPECT_EQ(**w, "{\"wuxian\": 1}\n");
+    EXPECT_EQ(config::wuxian_file(env).parent_path(), config::state_file(env).parent_path());
     // Broken: why, with the file -- and the file is not touched.
     std::ofstream(config::state_file(env)) << "{\"arrangements\": [\"tile\",";
     s = config::read_state(env);

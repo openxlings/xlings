@@ -1,10 +1,12 @@
-// What every preset shares: the windows of a workspace and their place in
-// each arrangement, switching presets, focus, floating, workspaces, and the
-// arrangement handed to the compositor (layout.cppm). The presets' own rules
-// are tile.cpp, stack.cpp and canvas.cpp.
+// What every workspace shares: its windows and their place in each rule's
+// arrangement, switching rules, focus, floating, the workspaces themselves
+// and windows going between them and the plane (layout.cppm). The rules'
+// own arrangements are tile.cpp and stack.cpp; the plane, the camera and
+// the two views wuxian.cpp; dragging drag.cpp; the state state.cpp.
 module xdesk.layout;
 
 import std;
+import openwx;
 
 namespace xdesk::layout {
 
@@ -13,48 +15,18 @@ using detail::overlaps;
 
 namespace {
 
-std::size_t index_(Mode m) { return static_cast<std::size_t>(m); }
+std::size_t index_(Rule r) { return r == Rule::stack ? 1 : 0; }
 
 }  // namespace
 
-Mode next(Mode m) {
-    switch (m) {
-        case Mode::tile: return Mode::stack;
-        case Mode::stack: return Mode::canvas;
-        case Mode::canvas: return Mode::tile;
-    }
-    return Mode::tile;
+Rule other(Rule r) { return r == Rule::tile ? Rule::stack : Rule::tile; }
+
+Layout::Layout(Options o) : o_(o) {
+    o_.max_workspaces = std::clamp(o_.max_workspaces, 1, 99);
+    Space s;
+    s.meta = {.id = 1, .color = openwx::color_for(1), .rule = o_.rule, .flow = o_.flow};
+    spaces_.push_back(std::move(s));
 }
-
-std::string_view name(Mode m) {
-    switch (m) {
-        case Mode::tile: return "tile";
-        case Mode::stack: return "stack";
-        case Mode::canvas: return "canvas";
-    }
-    return "tile";
-}
-
-std::optional<Mode> mode_named(std::string_view n) {
-    for (const auto m : {Mode::tile, Mode::stack, Mode::canvas})
-        if (name(m) == n) return m;
-    return std::nullopt;
-}
-
-std::string_view name(Flow f) { return f == Flow::vertical ? "vertical" : "horizontal"; }
-
-std::optional<Flow> flow_named(std::string_view n) {
-    for (const auto f : {Flow::horizontal, Flow::vertical})
-        if (name(f) == n) return f;
-    return std::nullopt;
-}
-
-Layout::Layout(Options o) : o_(o), spaces_(static_cast<std::size_t>(std::max(1, o.workspaces))) {
-    for (auto& s : spaces_) s.mode = o.mode, s.flow = o.flow;
-}
-
-Flow Layout::flow() const { return space_().flow; }
-void Layout::set_flow(Flow f) { space_().flow = f; }
 
 void Layout::set_spacing(double inner_gap, double outer_gap, double min_column_width) {
     o_.inner_gap = std::clamp(inner_gap, 0.0, 64.0);
@@ -62,15 +34,25 @@ void Layout::set_spacing(double inner_gap, double outer_gap, double min_column_w
     o_.min_column_width = std::clamp(min_column_width, 120.0, 4096.0);
 }
 
+// ── finding things ───────────────────────────────────────────────────
+
+Layout::Space* Layout::space_(int id) {
+    for (auto& s : spaces_)
+        if (s.meta.id == id) return &s;
+    return nullptr;
+}
+const Layout::Space* Layout::space_(int id) const { return const_cast<Layout*>(this)->space_(id); }
+
 Layout::Window* Layout::window_(Id id) {
     for (auto& s : spaces_)
         for (auto& w : s.windows)
             if (w.id == id) return &w;
+    for (auto& f : free_)
+        if (f.w.id == id) return &f.w;
     for (auto& w : sticky_)
         if (w.id == id) return &w;
     return nullptr;
 }
-
 const Layout::Window* Layout::window_(Id id) const { return const_cast<Layout*>(this)->window_(id); }
 
 Layout::Space* Layout::space_of_(Id id) {
@@ -79,169 +61,265 @@ Layout::Space* Layout::space_of_(Id id) {
             if (w.id == id) return &s;
     return nullptr;
 }
+const Layout::Space* Layout::space_of_(Id id) const { return const_cast<Layout*>(this)->space_of_(id); }
+
+Layout::Free* Layout::free_of_(Id id) {
+    for (auto& f : free_)
+        if (f.w.id == id) return &f;
+    return nullptr;
+}
+const Layout::Free* Layout::free_of_(Id id) const { return const_cast<Layout*>(this)->free_of_(id); }
 
 Rect Layout::area_() const { return inset(output_, reserved_); }
 
 bool Layout::contains(Id id) const { return window_(id) != nullptr; }
 
-void Layout::toggle_pinned(Id id) {
-    auto* w = window_(id);
-    if (!w) return;
-    if (w->pinned) { w->pinned = false; return; }
-    if (!w->floating) toggle_floating(id);
-    if (auto* now = window_(id)) now->pinned = true;
-}
-
-bool Layout::pinned(Id id) const {
-    const auto* w = window_(id);
-    return w && w->pinned;
-}
-
-void Layout::toggle_sticky(Id id) {
-    if (auto it = std::ranges::find(sticky_, id, &Window::id); it != sticky_.end()) {
-        // Back to the workspace shown, floating where it is.
-        auto w = *it;
-        sticky_.erase(it);
-        space_().windows.push_back(w);
-        space_().focus = id;
-        return;
-    }
-    auto* s = space_of_(id);
-    if (!s) return;
-    if (!floating(id)) toggle_floating(id);
-    auto* w = window_(id);
-    if (!w) return;
-    auto copy = *w;
-    std::erase_if(s->windows, [&](const Window& x) { return x.id == id; });
-    if (s->focus == id) s->focus = s->windows.empty() ? std::nullopt : std::optional(s->windows.back().id);
-    sticky_.push_back(copy);
-    space_().focus = id;
-}
-
-bool Layout::sticky(Id id) const { return std::ranges::contains(sticky_, id, &Window::id); }
-bool Layout::floating(Id id) const {
-    const auto* w = window_(id);
-    return w && w->floating;
-}
-
 std::optional<int> Layout::workspace_of(Id id) const {
-    for (std::size_t i = 0; i < spaces_.size(); ++i)
-        for (const auto& w : spaces_[i].windows)
-            if (w.id == id) return static_cast<int>(i);
+    if (const auto* s = space_of_(id)) return s->meta.id;
     // On every workspace: on the one shown.
-    if (sticky(id)) return shown_;
+    if (sticky(id)) return current_;
     return std::nullopt;
 }
 
-// ── presets ──────────────────────────────────────────────────────────
+bool Layout::is_free(Id id) const { return free_of_(id) != nullptr; }
 
-Mode Layout::mode() const { return space_().mode; }
-
-Mode Layout::mode_of(int workspace) const {
-    if (workspace < 0 || workspace >= workspaces()) return o_.mode;
-    return spaces_[static_cast<std::size_t>(workspace)].mode;
+std::vector<openwx::Layer> Layout::layers_() const {
+    std::vector<openwx::Layer> out;
+    for (const auto& s : spaces_)
+        out.push_back({.kind = openwx::Layer::Kind::workspace, .workspace = s.meta.id, .world = world_of_(s), .z = s.meta.z});
+    for (const auto& f : free_) out.push_back({.kind = openwx::Layer::Kind::window, .window = f.w.id, .world = f.world, .z = f.z});
+    return out;
 }
 
-void Layout::preset(int workspace, Mode m) {
-    if (workspace < 0 || workspace >= workspaces()) return;
-    auto& s = spaces_[static_cast<std::size_t>(workspace)];
-    if (!s.windows.empty()) return;
-    s.mode = m;
+int Layout::top_z_() const {
+    const auto ls = layers_();
+    return openwx::top_z(ls);
 }
 
-void Layout::set_mode(Mode m) {
-    auto& s = space_();
-    if (s.mode == m) return;
-    // What is on the screen now is where a preset shown for the first time starts.
-    if (last_space_ != shown_) arrange(output_, reserved_);
-    s.shown[index_(s.mode)] = true;
-    if (!s.shown[index_(m)]) convert_(s, m);
-    s.mode = m;
-    s.shown[index_(m)] = true;
+// Right of everything on the plane, a gap from it, at the top of the first.
+Point Layout::right_of_all_() const {
+    double x = 0, y = 0;
+    bool any = false;
+    for (const auto& l : layers_()) {
+        if (!any || l.world.x + l.world.width > x) x = l.world.x + l.world.width;
+        if (!any) y = l.world.y;
+        any = true;
+    }
+    return {any ? x + 160 : 0, y};
 }
 
-void Layout::convert_(Space& s, Mode to) {
-    const Rect area = area_();
-    auto on_screen = [&](Id id) -> std::optional<Rect> {
-        for (const auto& p : last_)
-            if (p.id == id && !p.floating) return p.rect;
-        return std::nullopt;
-    };
-    if (to == Mode::tile) {
-        std::vector<Column> cols;
-        if (s.mode == Mode::canvas) {
-            // Left to right; a group's columns stay columns.
-            std::vector<const Group*> gs;
-            for (const auto& g : s.groups) gs.push_back(&g);
-            std::ranges::stable_sort(gs, {}, [](const Group* g) { return g->placed ? g->world.x : std::numeric_limits<double>::max(); });
-            for (const auto* g : gs)
-                for (auto c : g->columns) {
-                    c.width = 0;
-                    cols.push_back(std::move(c));
-                }
-        } else {
-            std::vector<std::pair<double, Id>> xs;
-            for (const auto& w : s.windows)
-                if (!w.floating) xs.push_back({on_screen(w.id).value_or(Rect{std::numeric_limits<double>::max()}).x, w.id});
-            std::ranges::stable_sort(xs, {}, &std::pair<double, Id>::first);
-            for (const auto& [x, id] : xs) cols.push_back({.cells = {{.id = id}}});
-        }
-        s.columns = std::move(cols);
-        s.scroll = 0;
+// ── workspaces ───────────────────────────────────────────────────────
+
+std::vector<int> Layout::workspaces() const {
+    std::vector<int> out;
+    for (const auto& s : spaces_) out.push_back(s.meta.id);
+    return out;
+}
+
+const openwx::Workspace* Layout::workspace_info(int id) const {
+    const auto* s = space_(id);
+    return s ? &s->meta : nullptr;
+}
+
+std::vector<Id> Layout::windows_in(int id) const {
+    std::vector<Id> out;
+    if (const auto* s = space_(id))
+        for (const auto& w : s->windows) out.push_back(w.id);
+    return out;
+}
+
+int Layout::add_workspace(Rule r, std::optional<int> id, std::optional<Point> world_at) {
+    std::vector<openwx::Workspace> metas;
+    for (const auto& s : spaces_) metas.push_back(s.meta);
+    int n = 0;
+    if (id) {
+        if (*id < 1 || *id > o_.max_workspaces || space_(*id)) return 0;
+        n = *id;
+    } else if (const auto free = openwx::next_id(metas, o_.max_workspaces)) {
+        n = *free;
+    } else {
+        return 0;
+    }
+    Space s;
+    s.meta = {.id = n, .color = openwx::color_for(n), .rule = r, .flow = o_.flow, .origin = world_at.value_or(right_of_all_()), .z = top_z_()};
+    const auto at = std::ranges::find_if(spaces_, [&](const Space& o) { return o.meta.id > n; });
+    spaces_.insert(at, std::move(s));
+    return n;
+}
+
+bool Layout::remove_workspace(int id) {
+    if (spaces_.size() <= 1 || !space_(id)) return false;
+    // Its windows free on the plane, where they are on it now.
+    for (const auto wid : windows_in(id)) to_wuxian(wid);
+    std::erase_if(spaces_, [&](const Space& s) { return s.meta.id == id; });
+    if (current_ == id) {
+        // The one before it, else the first.
+        int to = spaces_.front().meta.id;
+        for (const auto& s : spaces_)
+            if (s.meta.id < id) to = s.meta.id;
+        current_ = to;
+    }
+    return true;
+}
+
+void Layout::rename(int id, std::string name) {
+    if (auto* s = space_(id)) {
+        s->meta.name = std::move(name);
+        s->implicit = false;
+    }
+}
+
+void Layout::set_rule(int id, Rule r) {
+    auto* s = space_(id);
+    if (!s || s->meta.rule == r) return;
+    // What is on the screen now is where a rule shown for the first time starts.
+    if (s->meta.id == current_ && view_ == View::workspace) arrange(output_, reserved_);
+    s->shown[index_(s->meta.rule)] = true;
+    if (!s->shown[index_(r)]) convert_(*s, r);
+    s->meta.rule = r;
+    s->shown[index_(r)] = true;
+}
+
+void Layout::set_color(int id, std::uint32_t rgb) {
+    if (auto* s = space_(id)) s->meta.color = rgb & 0xffffff;
+}
+
+void Layout::set_flow(int id, Flow f) {
+    if (auto* s = space_(id)) s->meta.flow = f;
+}
+
+void Layout::set_scale(int id, double scale) {
+    if (auto* s = space_(id)) s->meta.scale = std::clamp(scale, openwx::kMinScale, openwx::kMaxScale);
+}
+
+void Layout::move_workspace(int id, Point world) {
+    if (auto* s = space_(id)) s->meta.origin = world;
+}
+
+void Layout::raise(int id) {
+    auto* s = space_(id);
+    if (!s) return;
+    const int z = top_z_();
+    if (s->meta.z < z - 1 || std::ranges::count_if(layers_(), [&](const openwx::Layer& l) { return l.z == s->meta.z; }) > 1) s->meta.z = z;
+}
+
+Rule Layout::rule() const { return cur_().meta.rule; }
+Flow Layout::flow() const { return cur_().meta.flow; }
+
+// A workspace made by going to its number, left as it was made: gone
+// (design 2026-10-20 WuXian §3.9) -- one made on purpose, named or that held
+// a window stays.
+void Layout::forget_implicit_(int leaving) {
+    if (leaving == current_ || spaces_.size() <= 1) return;
+    const auto* s = space_(leaving);
+    if (s && s->implicit && s->meta.name.empty() && s->windows.empty() && !s->had_windows)
+        std::erase_if(spaces_, [&](const Space& o) { return o.meta.id == leaving; });
+}
+
+void Layout::show(int id) {
+    if (!space_(id)) {
+        if (add_workspace(o_.rule, id) == 0) return;
+        space_(id)->implicit = true;
+    }
+    const int leaving = current_;
+    current_ = id;
+    forget_implicit_(leaving);
+    focus_ = cur_().focus;
+    if (view_ == View::wuxian) frame_workspace(id);
+}
+
+// ── windows in and out of workspaces ────────────────────────────────
+
+// A window that is not floating has a place in each rule's arrangement of
+// its workspace: a column (tile), a place in the order (stack).
+void Layout::enter_(Space& s, Window& w, std::optional<Id> after) {
+    if (w.floating) return;
+    insert_column_(s.columns, w.id, after);
+    s.order.push_back(w.id);
+}
+
+void Layout::leave_(Space& s, Id id) {
+    erase_(s.columns, id);
+    std::erase(s.order, id);
+}
+
+void Layout::into_(Space& s, Window w, std::optional<Id> after) {
+    w.stack_placed = false;
+    w.snapped = false;
+    s.windows.push_back(w);
+    enter_(s, s.windows.back(), after);
+    s.had_windows = true;
+    if (!s.focus) s.focus = w.id;
+}
+
+void Layout::send_to(Id id, int n) {
+    if (!space_(n) && add_workspace(o_.rule, n) == 0) return;
+    auto* to = space_(n);
+    auto* from = space_of_(id);
+    if (from == to) return;
+    auto* w = window_(id);
+    if (!w) return;
+    auto copy = *w;
+    if (sticky(id)) { std::erase_if(sticky_, [&](const Window& x) { return x.id == id; }); }
+    else if (from) {
+        leave_(*from, id);
+        std::erase_if(from->windows, [&](const Window& x) { return x.id == id; });
+        if (from->focus == id) from->focus = from->windows.empty() ? std::nullopt : std::optional(from->windows.back().id);
+    } else {
+        std::erase_if(free_, [&](const Free& f) { return f.w.id == id; });
+        copy.floating = false;
+    }
+    fullscreen_.erase(id);
+    into_(*space_(n), copy, std::nullopt);
+}
+
+void Layout::to_wuxian(Id id, std::optional<Rect> world) {
+    if (is_free(id)) {
+        if (world) free_of_(id)->world = *world;
         return;
     }
-    if (to == Mode::canvas) {
-        // The view where the screen was: what is placed stays where it is seen.
-        s.cx = 0;
-        s.cy = 0;
-        s.zoom = 1;
-        s.overview = false;
-        std::vector<Group> groups;
-        if (s.mode == Mode::tile && s.columns.size() > 1) {
-            Group g;
-            std::optional<Rect> box;
-            for (const auto& c : s.columns) {
-                auto col = c;
-                const auto r = c.cells.empty() ? std::nullopt : on_screen(c.cells.front().id);
-                col.width = r ? r->width : 400;
-                for (const auto& cell : c.cells)
-                    if (const auto cr = on_screen(cell.id)) {
-                        const Rect wr { cr->x - area.x, cr->y - area.y, cr->width, cr->height };
-                        if (!box) box = wr;
-                        else {
-                            const double x0 = std::min(box->x, wr.x), y0 = std::min(box->y, wr.y);
-                            box = Rect{x0, y0, std::max(box->x + box->width, wr.x + wr.width) - x0,
-                                       std::max(box->y + box->height, wr.y + wr.height) - y0};
-                        }
-                    }
-                g.columns.push_back(std::move(col));
-            }
-            if (box) {
-                g.world = *box;
-                g.placed = true;
-            }
-            refit_group_(g);
-            groups.push_back(std::move(g));
-        } else {
-            for (const auto& w : s.windows) {
-                if (w.floating) continue;
-                Group g { .columns = {{.cells = {{.id = w.id}}}} };
-                if (const auto r = on_screen(w.id)) {
-                    g.world = {r->x - area.x, r->y - area.y, r->width, r->height};
-                    g.placed = true;
-                    g.columns.front().width = r->width;
-                }
-                groups.push_back(std::move(g));
-            }
-        }
-        s.groups = std::move(groups);
+    auto* w = window_(id);
+    if (!w) return;
+    const auto where = world ? world : world_rect_of_(id);
+    auto copy = *w;
+    copy.floating = copy.pinned = false;
+    if (auto* s = space_of_(id)) {
+        leave_(*s, id);
+        std::erase_if(s->windows, [&](const Window& x) { return x.id == id; });
+        if (s->focus == id) s->focus = s->windows.empty() ? std::nullopt : std::optional(s->windows.back().id);
+    } else {
+        std::erase_if(sticky_, [&](const Window& x) { return x.id == id; });
+    }
+    fullscreen_.erase(id);
+    const Size size{std::max(120.0, copy.preferred.width), std::max(80.0, copy.preferred.height)};
+    free_.push_back({.w = copy, .world = where.value_or(free_place_(size, std::nullopt)), .z = top_z_()});
+}
+
+// ── rules ────────────────────────────────────────────────────────────
+
+void Layout::convert_(Space& s, Rule to) {
+    // Where each window is seen now, in the workspace view's pixels.
+    auto seen = [&](Id id) -> std::optional<Rect> {
+        for (const auto& p : last_)
+            if (p.id == id && !p.floating && p.workspace == s.meta.id) return view_ == View::workspace ? p.rect : to_space_(s, p.rect);
+        return std::nullopt;
+    };
+    if (to == Rule::tile) {
+        std::vector<std::pair<double, Id>> xs;
+        for (const auto& w : s.windows)
+            if (!w.floating) xs.push_back({seen(w.id).value_or(Rect{std::numeric_limits<double>::max()}).x, w.id});
+        std::ranges::stable_sort(xs, {}, &std::pair<double, Id>::first);
+        std::vector<Column> cols;
+        for (const auto& [x, id] : xs) cols.push_back({.cells = {{.id = id}}});
+        s.columns = std::move(cols);
+        s.scroll = 0;
         return;
     }
     // To stack: each window where it is seen, kept on the output.
     for (auto& w : s.windows) {
         if (w.floating) continue;
         w.snapped = false;
-        if (const auto r = on_screen(w.id)) {
+        if (const auto r = seen(w.id)) {
             w.stacked = *r;
             w.stack_placed = true;
         } else {
@@ -254,50 +332,53 @@ void Layout::convert_(Space& s, Mode to) {
     }
 }
 
-// ── membership ───────────────────────────────────────────────────────
+// ── adding and removing ──────────────────────────────────────────────
 
-// A window that is not floating has a place in every arrangement of its
-// workspace: a column (tile), a group (canvas), a place in the order (stack).
-void Layout::enter_(Space& s, Window& w, std::optional<Id> after) {
-    if (w.floating) return;
-    insert_column_(s.columns, w.id, after);
-    s.groups.push_back({.columns = {{.cells = {{.id = w.id}}}}});
-    s.order.push_back(w.id);
-}
-
-void Layout::leave_(Space& s, Id id) {
-    erase_(s.columns, id);
-    for (auto it = s.groups.begin(); it != s.groups.end(); ++it) {
-        if (!find_(it->columns, id)) continue;
-        erase_(it->columns, id);
-        if (it->columns.empty()) s.groups.erase(it);
-        else refit_group_(*it);
-        break;
-    }
-    std::erase(s.order, id);
-}
-
-void Layout::add(Id id, Size preferred, bool floating) {
+void Layout::add(Id id, Size preferred, bool floating, const Match& match) {
     if (contains(id)) return;
-    auto& s = space_();
-    // Placed by the next arrangement, which knows the output.
-    s.windows.push_back({.id = id, .preferred = preferred, .floating = floating, .beside = s.focus});
-    enter_(s, s.windows.back(), s.focus);
-    s.focus = id;
-    reveal_(s, id);
+    bool placed = false;
+    take_pending_(id, preferred, floating, match, placed);
+    if (placed) return;
+    Window w{.id = id, .preferred = preferred, .floating = floating};
+    openwx::Destination dest{.workspace = current_};
+    if (view_ == View::wuxian) {
+        const Rect area = area_();
+        const auto centre = openwx::to_world(camera_, {area.x + area.width / 2, area.y + area.height / 2}, {area.x, area.y});
+        const auto ls = layers_();
+        dest = openwx::new_window(View::wuxian, current_, ls, centre);
+    }
+    if (dest.plane) {
+        w.floating = false;
+        free_.push_back({.w = w, .world = free_place_(preferred, std::nullopt), .z = top_z_()});
+        focus_ = id;
+        reveal_(id);
+        return;
+    }
+    auto* s = space_(dest.workspace);
+    if (!s) s = &cur_();
+    into_(*s, w, s->focus);
+    s->focus = id;
+    focus_ = id;
+    current_ = s->meta.id;
+    reveal_(id);
 }
 
 void Layout::remove(Id id) {
     fullscreen_.erase(id);
     if (std::erase_if(sticky_, [&](const Window& w) { return w.id == id; }) > 0) {
-        if (space_().focus == id) space_().focus.reset();
+        if (cur_().focus == id) cur_().focus.reset();
+        if (focus_ == id) focus_ = cur_().focus;
+        return;
+    }
+    if (std::erase_if(free_, [&](const Free& f) { return f.w.id == id; }) > 0) {
+        if (focus_ == id) focus_ = cur_().focus;
         return;
     }
     auto* s = space_of_(id);
     if (!s) return;
     // The focus goes to a neighbour: in the column, else the next column (tile).
     std::optional<Id> next;
-    if (s->mode == Mode::tile)
+    if (s->meta.rule == Rule::tile)
         if (const auto at = find_(s->columns, id)) {
             const auto& col = s->columns[at->column];
             if (col.cells.size() > 1) next = col.cells[at->cell + 1 < col.cells.size() ? at->cell + 1 : at->cell - 1].id;
@@ -310,63 +391,82 @@ void Layout::remove(Id id) {
     leave_(*s, id);
     std::erase_if(s->windows, [&](const Window& w) { return w.id == id; });
     if (s->focus == id) {
-        if (!next && s->mode == Mode::stack && !s->order.empty()) next = s->order.back();
+        if (!next && s->meta.rule == Rule::stack && !s->order.empty()) next = s->order.back();
         if (!next && !s->windows.empty()) next = s->windows.back().id;
         s->focus = next;
-        if (next) focus(*next);
+    }
+    if (focus_ == id) {
+        focus_ = s->focus;
+        if (focus_) focus(*focus_);
     }
 }
 
 std::vector<Id> Layout::group_of(Id id) const {
-    auto* self = const_cast<Layout*>(this);
-    auto* s = self->space_of_(id);
-    if (!s) return {};
-    const std::vector<Column>* cols = nullptr;
-    if (s->mode == Mode::canvas) {
-        if (const auto* g = self->group_(*s, id)) cols = &g->columns;
-    } else if (s->mode == Mode::tile) {
-        if (const auto at = find_(s->columns, id)) {
-            std::vector<Id> out;
-            for (const auto& c : s->columns[at->column].cells) out.push_back(c.id);
-            return out;
-        }
+    const auto* s = space_of_(id);
+    if (!s || s->meta.rule != Rule::tile) return {id};
+    if (const auto at = find_(s->columns, id)) {
+        std::vector<Id> out;
+        for (const auto& c : s->columns[at->column].cells) out.push_back(c.id);
+        return out;
     }
-    if (!cols) return {id};
-    std::vector<Id> out;
-    for (const auto& c : *cols)
-        for (const auto& cell : c.cells) out.push_back(cell.id);
-    return out;
+    return {id};
 }
 
 // ── focus and moving ─────────────────────────────────────────────────
 
 void Layout::focus(Id id) {
-    if (sticky(id)) { space_().focus = id; return; }
+    if (sticky(id)) {
+        cur_().focus = id;
+        focus_ = id;
+        return;
+    }
+    if (auto* f = free_of_(id)) {
+        focus_ = id;
+        const int z = top_z_();
+        if (f->z < z - 1 || std::ranges::count_if(free_, [&](const Free& o) { return o.z == f->z; }) > 1) f->z = z;
+        reveal_(id);
+        return;
+    }
     auto* s = space_of_(id);
     if (!s) return;
     s->focus = id;
     if (const auto at = find_(s->columns, id)) s->columns[at->column].active = at->cell;
     s->scrolled = false;   // the focus moved: it is shown again
-    if (auto* g = group_(*s, id))
-        if (const auto at = find_(g->columns, id)) g->columns[at->column].active = at->cell;
     if (const auto* w = window_(id); w && !w->floating) {
         std::erase(s->order, id);
         s->order.push_back(id);
     }
-    reveal_(*s, id);
+    // The workspace view stays on its workspace: another's window is the one
+    // it gives the focus to when it is shown. In the WuXian view the
+    // workspace of the window focused is the current one.
+    if (view_ == View::workspace && current_ != s->meta.id) return;
+    focus_ = id;
+    if (current_ != s->meta.id) {
+        const int leaving = current_;
+        current_ = s->meta.id;
+        forget_implicit_(leaving);
+    }
+    reveal_(id);
 }
 
-std::optional<Id> Layout::focused() const { return space_().focus; }
+std::optional<Id> Layout::focused() const {
+    if (focus_ && contains(*focus_)) {
+        if (view_ == View::wuxian) return focus_;
+        if (sticky(*focus_) || (space_of_(*focus_) && space_of_(*focus_)->meta.id == current_)) return focus_;
+    }
+    return cur_().focus;
+}
 
 void Layout::move_focus(Direction d) {
-    auto& s = space_();
-    if (s.windows.empty()) return;
-    if (!s.focus) { focus(s.windows.back().id); return; }
-    const auto* current = window_(*s.focus);
-    if (!current) return;
-    if (s.mode == Mode::tile) {
+    const auto f = focused();
+    auto& s = cur_();
+    if (!f) {
+        if (view_ == View::workspace && !s.windows.empty()) focus(s.windows.back().id);
+        return;
+    }
+    if (view_ == View::workspace && s.meta.rule == Rule::tile && space_of_(*f) == &s) {
         d = turned_(s, d);
-        const auto at = find_(s.columns, *s.focus);
+        const auto at = find_(s.columns, *f);
         if (!at) {
             // A floating window: to the columns' first or last.
             if (s.columns.empty() || (d != Direction::left && d != Direction::right)) return;
@@ -386,72 +486,67 @@ void Layout::move_focus(Direction d) {
         focus(c.cells[std::min(c.active, c.cells.size() - 1)].id);
         return;
     }
-    // Stack and canvas: the nearest that way, by where each window is.
+    // Stacked, and the WuXian view: the nearest that way, by where each
+    // window is now -- across workspaces and the plane in the WuXian view.
     std::vector<std::pair<Id, Rect>> rs;
     std::optional<Rect> from;
-    const Rect area = area_();
-    for (const auto& w : s.windows) {
-        std::optional<Rect> r;
-        if (w.floating) r = w.placed ? std::optional(w.free) : std::nullopt;
-        else if (s.mode == Mode::stack) r = stack_rect_(w, area);
-        else r = world_rect_(s, w.id);
-        if (!r) continue;
-        if (w.id == current->id) from = r;
-        else if (!w.floating) rs.push_back({w.id, *r});
+    for (const auto& p : last_) {
+        if (p.id == *f) from = p.rect;
+        else if (!p.pinned) rs.push_back({p.id, p.rect});
     }
     if (!from) return;
     if (const auto best = detail::nearest(*from, rs, d)) focus(*best);
 }
 
 void Layout::move(Direction d) {
-    auto& s = space_();
-    if (!s.focus) return;
-    auto* w = window_(*s.focus);
+    const auto f = focused();
+    if (!f) return;
+    auto* w = window_(*f);
     if (!w) return;
     const Rect area = area_();
     const double sx = d == Direction::left ? -1 : d == Direction::right ? 1 : 0;
     const double sy = d == Direction::up ? -1 : d == Direction::down ? 1 : 0;
+    if (auto* fr = free_of_(*f)) {
+        // An eighth of the view (design 2026-10-20 WuXian §3.12).
+        const double z = view_ == View::wuxian ? camera_.zoom : 1;
+        fr->world.x += sx * area.width / 8 / z;
+        fr->world.y += sy * area.height / 8 / z;
+        reveal_(*f);
+        return;
+    }
     if (w->floating) {
         w->free.x += sx * area.width / 4;
         w->free.y += sy * area.height / 4;
         return;
     }
-    switch (s.mode) {
-        case Mode::tile: tile_move_(s, turned_(s, d)); return;
-        case Mode::stack: stack_move_(*w, d); return;
-        case Mode::canvas:
-            if (auto* g = group_(s, w->id)) {
-                g->world.x += sx * area.width / 4 / s.zoom;
-                g->world.y += sy * area.height / 4 / s.zoom;
-                reveal_(s, w->id);
-            }
-            return;
-    }
+    auto* s = space_of_(*f);
+    if (!s) return;
+    if (s->meta.rule == Rule::tile) tile_move_(*s, turned_(*s, d));
+    else stack_move_(*w, d);
 }
 
 void Layout::join() {
-    auto& s = space_();
-    if (s.mode == Mode::tile) tile_join_(s);
-    else if (s.mode == Mode::canvas) canvas_join_(s);
+    if (const auto f = focused())
+        if (auto* s = space_of_(*f); s && s->meta.rule == Rule::tile) tile_join_(*s);
 }
 
 void Layout::split() {
-    auto& s = space_();
-    if (s.mode == Mode::tile) tile_split_(s);
-    else if (s.mode == Mode::canvas) canvas_split_(s);
+    if (const auto f = focused())
+        if (auto* s = space_of_(*f); s && s->meta.rule == Rule::tile) tile_split_(*s);
 }
+
+// ── a window's state ─────────────────────────────────────────────────
 
 void Layout::toggle_floating(Id id) {
     auto* s = space_of_(id);
     auto* w = window_(id);
     if (!s || !w) return;
-    const Rect area = area_();
     if (!w->floating) {
         // Where it is on screen is where it floats; a tiled one is centred.
         std::optional<Rect> seen;
-        if (s->mode != Mode::tile && last_space_ == shown_ && s == &space_())
+        if (s->meta.rule != Rule::tile)
             for (const auto& p : last_)
-                if (p.id == id) seen = p.rect;
+                if (p.id == id) seen = view_ == View::workspace ? p.rect : to_space_(*s, p.rect);
         leave_(*s, id);
         w->floating = true;
         if (seen) {
@@ -464,31 +559,68 @@ void Layout::toggle_floating(Id id) {
         w->floating = false;
         const auto after = s->focus && *s->focus != id ? s->focus : std::nullopt;
         enter_(*s, *w, after);
-        // Floating it was on the screen: there it is in every arrangement.
+        // Floating it was on the screen: there it is stacked.
         if (w->placed) {
             w->stacked = w->free;
             w->stack_placed = true;
             w->snapped = false;
-            auto& g = s->groups.back();
-            g.world = {s->cx + (w->free.x - area.x) / s->zoom, s->cy + (w->free.y - area.y) / s->zoom, w->free.width / s->zoom,
-                       w->free.height / s->zoom};
-            g.columns.front().width = g.world.width;
-            g.placed = true;
         }
     }
     s->focus = id;
     focus(id);
 }
 
+bool Layout::floating(Id id) const {
+    const auto* w = window_(id);
+    return w && w->floating;
+}
+
+void Layout::toggle_pinned(Id id) {
+    auto* w = window_(id);
+    if (!w || is_free(id)) return;
+    if (w->pinned) { w->pinned = false; return; }
+    if (!w->floating) toggle_floating(id);
+    if (auto* now = window_(id)) now->pinned = true;
+}
+
+bool Layout::pinned(Id id) const {
+    const auto* w = window_(id);
+    return w && w->pinned;
+}
+
+void Layout::toggle_sticky(Id id) {
+    if (auto it = std::ranges::find(sticky_, id, &Window::id); it != sticky_.end()) {
+        // Back to the workspace shown, floating where it is.
+        auto w = *it;
+        sticky_.erase(it);
+        cur_().windows.push_back(w);
+        cur_().focus = id;
+        return;
+    }
+    auto* s = space_of_(id);
+    if (!s) return;
+    if (!floating(id)) toggle_floating(id);
+    auto* w = window_(id);
+    if (!w) return;
+    auto copy = *w;
+    std::erase_if(s->windows, [&](const Window& x) { return x.id == id; });
+    if (s->focus == id) s->focus = s->windows.empty() ? std::nullopt : std::optional(s->windows.back().id);
+    sticky_.push_back(copy);
+    cur_().focus = id;
+    focus_ = id;
+}
+
+bool Layout::sticky(Id id) const { return std::ranges::contains(sticky_, id, &Window::id); }
+
 void Layout::toggle_maximized(Id id) {
     auto* w = window_(id);
-    if (!w || w->floating) return;
-    if (auto* s = space_of_(id); s && s->mode == Mode::tile) {
+    if (!w || w->floating || is_free(id)) return;
+    if (auto* s = space_of_(id); s && s->meta.rule == Rule::tile) {
         if (const auto at = find_(s->columns, id)) {
             auto& col = s->columns[at->column];
             if (col.width >= 1.0) col.width = col.restore;
             else { col.restore = col.width; col.width = 1.0; }
-            reveal_(*s, id);
+            reveal_(id);
         }
         return;
     }
@@ -498,6 +630,16 @@ void Layout::toggle_maximized(Id id) {
         w->snapped = true;
         w->snap_x = w->snap_y = 0;
     }
+}
+
+bool Layout::maximized(Id id) const {
+    const auto* w = window_(id);
+    if (!w || w->floating || is_free(id)) return false;
+    if (const auto* s = space_of_(id); s && s->meta.rule == Rule::tile) {
+        const auto at = find_(s->columns, id);
+        return at && s->columns[at->column].width >= 1.0;
+    }
+    return w->snapped && w->snap_x == 0 && w->snap_y == 0;
 }
 
 void Layout::toggle_fullscreen(Id id) { set_fullscreen(id, !fullscreen(id)); }
@@ -513,15 +655,21 @@ void Layout::set_fullscreen(Id id, bool on) {
 
 bool Layout::fullscreen(Id id) const { return fullscreen_.contains(id); }
 
-bool Layout::maximized(Id id) const {
-    const auto* w = window_(id);
-    if (!w || w->floating) return false;
-    auto* self = const_cast<Layout*>(this);
-    if (auto* s = self->space_of_(id); s && s->mode == Mode::tile) {
-        const auto at = find_(s->columns, id);
-        return at && s->columns[at->column].width >= 1.0;
-    }
-    return w->snapped && w->snap_x == 0 && w->snap_y == 0;
+// A screen rect of the WuXian view in the workspace view's pixels of `s`
+// (what a floating or stacked window's frame is kept in).
+Rect Layout::to_space_(const Space& s, Rect screen) const {
+    if (view_ == View::workspace) return screen;
+    const auto f = frame_(s.meta.id);
+    if (!f || f->zoom <= 0) return screen;
+    const Rect area = area_();
+    return {area.x + (screen.x - f->screen.x) / f->zoom, area.y + (screen.y - f->screen.y) / f->zoom, screen.width / f->zoom,
+            screen.height / f->zoom};
+}
+
+std::optional<Frame> Layout::frame_(int id) const {
+    for (const auto& f : frames_)
+        if (f.id == id) return f;
+    return std::nullopt;
 }
 
 void Layout::place(Id id, Rect screen) {
@@ -530,73 +678,51 @@ void Layout::place(Id id, Rect screen) {
         it->placed = true;
         return;
     }
+    if (auto* f = free_of_(id)) {
+        if (view_ != View::wuxian) return;
+        const Rect area = area_();
+        const auto at = openwx::to_world(camera_, {screen.x, screen.y}, {area.x, area.y});
+        f->world = {at.x, at.y, screen.width / camera_.zoom, screen.height / camera_.zoom};
+        return;
+    }
     auto* s = space_of_(id);
     auto* w = window_(id);
     if (!s || !w) return;
-    const Rect area = area_();
+    const Rect r = to_space_(*s, screen);
     if (w->floating) {
-        w->free = screen;
+        w->free = r;
         w->placed = true;
         return;
     }
-    if (s->mode == Mode::stack) {
-        w->stacked = screen;
+    if (s->meta.rule == Rule::stack) {
+        w->stacked = r;
         w->stack_placed = true;
         w->snapped = false;
-        return;
     }
-    if (s->mode != Mode::canvas) return;
-    auto* g = group_(*s, id);
-    if (!g) return;
-    const Rect world { s->cx + (screen.x - area.x) / s->zoom, s->cy + (screen.y - area.y) / s->zoom, screen.width / s->zoom,
-                       screen.height / s->zoom };
-    if (g->columns.size() == 1 && g->columns.front().cells.size() == 1) {
-        g->world = world;
-        g->columns.front().width = world.width;
-    } else if (const auto now = world_rect_(*s, id)) {
-        // In a group: the group moves with it.
-        g->world.x += world.x - now->x;
-        g->world.y += world.y - now->y;
-    }
-    g->placed = true;
 }
 
 void Layout::cycle_width() {
-    auto& s = space_();
-    if (!s.focus) return;
+    const auto f = focused();
+    auto* s = f ? space_of_(*f) : nullptr;
+    if (!s || s->meta.rule != Rule::tile) return;
     static constexpr std::array<double, 4> kSteps { 1.0 / 3, 1.0 / 2, 2.0 / 3, 1.0 };
-    auto next_of = [](double now) {
-        for (double f : kSteps)
-            if (f > now + 1e-6) return f;
-        return kSteps.front();
-    };
-    if (s.mode == Mode::tile) {
-        const auto at = find_(s.columns, *s.focus);
-        if (!at) return;
-        auto& col = s.columns[at->column];
-        col.width = next_of(tile_fraction_(s, at->column));
-        reveal_(s, *s.focus);
-    } else if (s.mode == Mode::canvas) {
-        auto* g = group_(s, *s.focus);
-        if (!g || g->columns.size() < 2) return;
-        const auto at = find_(g->columns, *s.focus);
-        const double full = area_().width;
-        auto& col = g->columns[at->column];
-        col.width = next_of(col.width / std::max(1.0, full)) * full;
-        refit_group_(*g);
-    }
+    const auto at = find_(s->columns, *f);
+    if (!at) return;
+    const double now = tile_fraction_(*s, at->column);
+    double next = kSteps.front();
+    for (const double step : kSteps)
+        if (step > now + 1e-6) { next = step; break; }
+    s->columns[at->column].width = next;
+    reveal_(*f);
 }
 
 void Layout::cycle_height() {
-    auto& s = space_();
-    if (!s.focus) return;
-    std::vector<Column>* cols = s.mode == Mode::tile ? &s.columns : nullptr;
-    if (s.mode == Mode::canvas)
-        if (auto* g = group_(s, *s.focus)) cols = &g->columns;
-    if (!cols) return;
-    const auto at = find_(*cols, *s.focus);
+    const auto f = focused();
+    auto* s = f ? space_of_(*f) : nullptr;
+    if (!s || s->meta.rule != Rule::tile) return;
+    const auto at = find_(s->columns, *f);
     if (!at) return;
-    auto& col = (*cols)[at->column];
+    auto& col = s->columns[at->column];
     if (col.cells.size() < 2) return;
     // An equal part, 2/3, 1/3.
     auto& mine = col.cells[at->cell].share;
@@ -606,28 +732,24 @@ void Layout::cycle_height() {
 }
 
 void Layout::resize(double step) {
-    auto& s = space_();
-    if (!s.focus) return;
+    const auto f = focused();
+    if (!f) return;
     const Rect area = area_();
-    if (s.mode == Mode::tile) {
-        const auto at = find_(s.columns, *s.focus);
+    if (auto* fr = free_of_(*f)) {
+        fr->world.width = std::max(120.0, fr->world.width + step * area.width);
+        fr->world.height = std::max(80.0, fr->world.height + step * area.height);
+        return;
+    }
+    auto* s = space_of_(*f);
+    if (!s) return;
+    if (s->meta.rule == Rule::tile) {
+        const auto at = find_(s->columns, *f);
         if (!at) return;
-        auto& col = s.columns[at->column];
-        col.width = std::clamp(tile_fraction_(s, at->column) + step, 0.1, 1.0);
-        reveal_(s, *s.focus);
+        s->columns[at->column].width = std::clamp(tile_fraction_(*s, at->column) + step, 0.1, 1.0);
+        reveal_(*f);
         return;
     }
-    if (s.mode == Mode::canvas) {
-        auto* g = group_(s, *s.focus);
-        if (!g) return;
-        const auto at = find_(g->columns, *s.focus);
-        auto& col = g->columns[at->column];
-        col.width = std::max(120.0, col.width + step * area.width);
-        if (g->columns.size() == 1 && col.cells.size() == 1) g->world.height = std::max(80.0, g->world.height + step * area.height);
-        refit_group_(*g);
-        return;
-    }
-    auto* w = window_(*s.focus);
+    auto* w = window_(*f);
     if (!w || w->floating) return;
     Rect r = stack_rect_(*w, area);
     const double dw = step * area.width, dh = step * area.height;
@@ -637,84 +759,13 @@ void Layout::resize(double step) {
     w->snapped = false;
 }
 
-// ── workspaces ───────────────────────────────────────────────────────
-
-void Layout::show(int n) {
-    if (n >= 0 && n < workspaces()) shown_ = n;
-}
-
-void Layout::send_to(Id id, int n) {
-    if (n < 0 || n >= workspaces()) return;
-    auto* from = space_of_(id);
-    auto& to = spaces_[static_cast<std::size_t>(n)];
-    if (!from || from == &to) return;
-    auto w = *window_(id);
-    remove(id);
-    w.beside = to.focus;
-    w.stack_placed = false;
-    w.snapped = false;
-    to.windows.push_back(w);
-    enter_(to, to.windows.back(), std::nullopt);
-    if (!to.focus) to.focus = id;
-}
-
-// ── arranging ────────────────────────────────────────────────────────
-
-void Layout::place_new_float_(Window& w) {
-    // Floating: in the middle of the output, as big as it asked (or fits).
-    const Rect area = area_();
-    const double width = std::min(w.preferred.width, area.width - 2 * o_.inner_gap);
-    const double height = std::min(w.preferred.height, area.height - 2 * o_.inner_gap);
-    w.free = {area.x + (area.width - width) / 2, area.y + (area.height - height) / 2, width, height};
-    w.placed = true;
-}
-
-std::vector<Placement> Layout::arrange(Size output, Insets reserved) {
-    output_ = output;
-    reserved_ = reserved;
-    auto& s = space_();
-    s.shown[index_(s.mode)] = true;
-    const Rect area = area_();
-    std::vector<Placement> out;
-    switch (s.mode) {
-        case Mode::tile: out = tile_(s, area); break;
-        case Mode::stack: out = stack_(s, area); break;
-        case Mode::canvas: out = canvas_(s, area); break;
-    }
-    // Floating windows above, then those on every workspace, then those
-    // always on top (design 2026-10-19 §18.2).
-    for (const bool top : {false, true}) {
-        for (auto* list : {&s.windows, &sticky_})
-            for (auto& w : *list) {
-                if (!w.floating || w.pinned != top) continue;
-                if (!w.placed) place_new_float_(w);
-                out.push_back({.id = w.id, .rect = w.free, .visible = overlaps(w.free, area), .focused = s.focus == w.id,
-                               .floating = true, .pinned = w.pinned});
-            }
-    }
-    // Full screen: the whole output, last (above everything).
-    std::erase_if(fullscreen_, [&](Id id) { return !window_(id); });
-    if (auto it = std::ranges::find_if(out, [&](const Placement& p) { return fullscreen_.contains(p.id); }); it != out.end()) {
-        auto p = *it;
-        out.erase(it);
-        p.rect = {0, 0, output.width, output.height};
-        p.visible = true;
-        p.fullscreen = true;
-        p.tiled = true;
-        out.push_back(p);
-    }
-    last_ = out;
-    last_space_ = shown_;
-    return out;
-}
-
 std::optional<Id> Layout::at(double sx, double sy) const {
     for (auto it = last_.rbegin(); it != last_.rend(); ++it)
         if (it->visible && it->rect.contains(sx, sy)) return it->id;
     return std::nullopt;
 }
 
-// ── Spring ───────────────────────────────────────────────────────────
+// ── Spring, and the wheel ────────────────────────────────────────────
 
 void Spring::step(double seconds, double stiffness) {
     if (seconds <= 0) return;
@@ -727,5 +778,13 @@ void Spring::step(double seconds, double stiffness) {
 }
 
 bool Spring::settled() const { return std::abs(value - target) < 0.5 && std::abs(velocity) < 5; }
+
+double wheel_distance(const WheelSpeed& s, double steps, double ms) {
+    const double base = s.base * s.factor;
+    if (ms >= s.slow_ms || ms <= 0) return steps * base;
+    // Faster than slow: the step grows with the speed, up to six times.
+    const double speed = s.slow_ms / std::max(1.0, ms);
+    return steps * base * std::min(6.0, 1 + (speed - 1));
+}
 
 }  // namespace xdesk::layout

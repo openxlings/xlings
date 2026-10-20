@@ -1,17 +1,24 @@
-// xdesk.layout (Luban OS desktop part 2 §2.3): where windows go, in tile and
-// on the canvas, floating, on workspaces -- and the spring that moves them.
+// xdesk.layout (design 2026-10-20 WuXian §3): where windows go -- tiled and
+// stacked workspaces on one WuXian, free windows, the workspace view and the
+// WuXian view, dragging on a frozen arrangement, the state -- and the spring
+// that moves them. openwx's conformance cases run against it.
 #include <gtest/gtest.h>
 import xlings.testkit;
 #include "xlings/xtest.hpp"
 
 import std;
+import openwx;
+import openwx.conformance;
 import xdesk.layout;
 
 namespace layout = xdesk::layout;
+namespace wx = openwx;
 using layout::Direction;
 using layout::Layout;
-using layout::Mode;
 using layout::Rect;
+using layout::Rule;
+using layout::View;
+using K = layout::Drop::Kind;
 
 namespace {
 
@@ -27,10 +34,14 @@ const layout::Placement& of(const std::vector<layout::Placement>& ps, layout::Id
     throw std::runtime_error(std::format("no placement for {}", id));
 }
 
+bool shown_(const std::vector<layout::Placement>& ps, layout::Id id) { return std::ranges::contains(ps, id, &layout::Placement::id); }
+
+layout::Match match_(layout::Id id) { return {.app_id = std::format("app{}", id), .title = std::format("t{}", id)}; }
+
 }  // namespace
 
 XTEST(XdeskLayout, ColumnsShareTheOutputUntilTooNarrowThenScrollWithTheFocus, .area = "luban", .covers = {"XDESK-LAYOUT", "XDESK-TILE-SIZES"}) {
-    Layout l({.mode = Mode::tile, .inner_gap = 10, .outer_gap = 10, .min_column_width = 300});
+    Layout l({.rule = Rule::tile, .inner_gap = 10, .outer_gap = 10, .min_column_width = 300});
     l.add(1, {600, 400});
     auto ps = l.arrange(kOutput);
     ASSERT_EQ(ps.size(), 1u);
@@ -73,7 +84,7 @@ XTEST(XdeskLayout, ColumnsShareTheOutputUntilTooNarrowThenScrollWithTheFocus, .a
 
 XTEST(XdeskLayout, ColumnsGivenWidthsFillTheOutputInProportionAndScrollPastIt, .area = "luban",
       .covers = {"XDESK-LAYOUT", "XDESK-TILE-SIZES"}) {
-    Layout l({.mode = Mode::tile, .inner_gap = 4, .outer_gap = 0});
+    Layout l({.rule = Rule::tile, .inner_gap = 4, .outer_gap = 0});
     l.add(1, {600, 400});
     l.cycle_width();                                            // one column fills whatever its width says
     auto ps = l.arrange(kOutput);
@@ -109,7 +120,7 @@ XTEST(XdeskLayout, ColumnsGivenWidthsFillTheOutputInProportionAndScrollPastIt, .
 }
 
 XTEST(XdeskLayout, AVerticalFlowStacksColumnsAsRowsAndScrollsDown, .area = "luban", .covers = {"XDESK-TILE-SIZES"}) {
-    Layout l({.mode = Mode::tile, .inner_gap = 4, .outer_gap = 0, .min_column_width = 300, .flow = layout::Flow::vertical});
+    Layout l({.rule = Rule::tile, .inner_gap = 4, .outer_gap = 0, .min_column_width = 300, .flow = layout::Flow::vertical});
     constexpr layout::Size portrait { 800, 1200 };
     for (layout::Id id = 1; id <= 3; ++id) l.add(id, {600, 400});
     auto ps = l.arrange(portrait);
@@ -131,7 +142,7 @@ XTEST(XdeskLayout, AVerticalFlowStacksColumnsAsRowsAndScrollsDown, .area = "luba
 }
 
 XTEST(XdeskLayout, AFloatingWindowIsCentredAboveAndStaysWhereItIsPut, .area = "luban", .covers = {"XDESK-LAYOUT"}) {
-    Layout l({.mode = Mode::tile, .inner_gap = 10, .outer_gap = 10});
+    Layout l({.rule = Rule::tile, .inner_gap = 10, .outer_gap = 10});
     l.add(1, {600, 400});
     l.add(2, {400, 300}, true);
     auto ps = l.arrange(kOutput);
@@ -149,80 +160,6 @@ XTEST(XdeskLayout, AFloatingWindowIsCentredAboveAndStaysWhereItIsPut, .area = "l
     EXPECT_FALSE(l.floating(2));
     EXPECT_EQ(l.arrange(kOutput).size(), 2u);
     EXPECT_EQ(of(l.arrange(kOutput), 2).rect.width, 585);
-}
-
-XTEST(XdeskLayout, TheCanvasPlacesBesideAndPansAndZoomsAroundAPoint, .area = "luban", .covers = {"XDESK-LAYOUT"}) {
-    Layout l({.mode = Mode::canvas, .inner_gap = 10, .outer_gap = 10});
-    l.add(1, {600, 400});
-    auto ps = l.arrange(kOutput);
-    EXPECT_EQ(ps[0].rect, (Rect{300, 200, 600, 400}));          // the middle of the view
-    l.add(2, {500, 300});
-    ps = l.arrange(kOutput);
-    EXPECT_NEAR(of(ps, 2).rect.x - (of(ps, 1).rect.x + 600), 30, 1e-6);   // right of it, a gap between
-    EXPECT_EQ(of(ps, 2).rect.y, of(ps, 1).rect.y);
-    EXPECT_LE(of(ps, 2).rect.x + 500, kOutput.width);           // panned so it shows whole
-    // Panning moves everything by the same pixels.
-    const auto before = of(l.arrange(kOutput), 1).rect;
-    l.pan(-100, 50);
-    EXPECT_EQ(of(l.arrange(kOutput), 1).rect, (Rect{before.x - 100, before.y + 50, 600, 400}));
-    // Zooming out around a point keeps that point still.
-    const auto r1 = of(l.arrange(kOutput), 1).rect;
-    l.zoom_at(0.5, r1.x, r1.y);
-    const auto r2 = of(l.arrange(kOutput), 1).rect;
-    EXPECT_NEAR(r2.x, r1.x, 1e-6);
-    EXPECT_NEAR(r2.y, r1.y, 1e-6);
-    EXPECT_NEAR(r2.width, 300, 1e-6);
-    l.zoom_at(10, 0, 0);
-    EXPECT_EQ(l.zoom(), 1.0);                                   // never past 1
-    // Focus to the left finds window 1.
-    l.focus(2);
-    l.move_focus(Direction::left);
-    EXPECT_EQ(l.focused(), 1u);
-}
-
-XTEST(XdeskLayout, TheOverviewFitsEveryWindowAndLeavingItIsBackWhereItWas, .area = "luban", .covers = {"XDESK-LAYOUT"}) {
-    Layout l({.mode = Mode::canvas, .inner_gap = 10, .outer_gap = 10});
-    for (layout::Id id = 1; id <= 5; ++id) l.add(id, {800, 600});
-    l.pan(-123, 45);
-    const auto before = of(l.arrange(kOutput), 2).rect;
-    l.overview(true);
-    EXPECT_TRUE(l.in_overview());
-    const auto ps = l.arrange(kOutput);                          // fitted as it is arranged
-    EXPECT_LT(l.zoom(), 1.0);
-    for (const auto& p : ps) {
-        EXPECT_TRUE(p.visible);
-        EXPECT_GE(p.rect.x, 0);
-        EXPECT_LE(p.rect.x + p.rect.width, kOutput.width + 1e-6);
-    }
-    // Leaving it is back where it was, exactly.
-    l.overview(false);
-    EXPECT_EQ(of(l.arrange(kOutput), 2).rect, before);
-    // Going in to a window from it: zoom 1, that window in the middle.
-    l.overview(true);
-    l.arrange(kOutput);
-    l.center(3);
-    EXPECT_FALSE(l.in_overview());
-    EXPECT_EQ(l.zoom(), 1.0);
-    EXPECT_EQ(l.focused(), 3u);
-    const auto r = of(l.arrange(kOutput), 3).rect;
-    EXPECT_NEAR(r.x + r.width / 2, kOutput.width / 2, 1e-6);
-}
-
-XTEST(XdeskLayout, EachWorkspaceIsALayoutOfItsOwn, .area = "luban", .covers = {"XDESK-LAYOUT"}) {
-    Layout l({.mode = Mode::tile, .inner_gap = 10, .outer_gap = 10, .workspaces = 3});
-    l.add(1, {600, 400});
-    l.add(2, {600, 400});
-    l.send_to(2, 1);
-    EXPECT_EQ(l.workspace_of(2), 1);
-    EXPECT_EQ(l.arrange(kOutput).size(), 1u);
-    EXPECT_EQ(l.focused(), 1u);
-    l.show(1);
-    auto ps = l.arrange(kOutput);
-    ASSERT_EQ(ps.size(), 1u);
-    EXPECT_EQ(ps[0].id, 2u);
-    EXPECT_EQ(ps[0].rect.width, 1180);
-    l.show(7);                                                  // no such workspace: nothing changes
-    EXPECT_EQ(l.workspace(), 1);
 }
 
 XTEST(XdeskLayout, ASpringArrivesWithoutOvershootingAndBendsToANewTarget, .area = "luban", .covers = {"XDESK-LAYOUT"}) {
@@ -250,7 +187,7 @@ XTEST(XdeskLayout, ASpringArrivesWithoutOvershootingAndBendsToANewTarget, .area 
 // ── space x arrangement (design 2026-10-19 §17) ──────────────────────
 
 XTEST(XdeskLayout, AColumnHoldsWindowsOneAboveAnotherAndGivesThemBack, .area = "luban", .covers = {"XDESK-LAYOUT", "XDESK-ARRANGEMENTS"}) {
-    Layout l({.mode = Mode::tile, .inner_gap = 10, .outer_gap = 10});
+    Layout l({.rule = Rule::tile, .inner_gap = 10, .outer_gap = 10});
     for (layout::Id id = 1; id <= 3; ++id) l.add(id, {600, 400});
     l.join();                                                   // Super+[: 3 into 2's column
     auto ps = l.arrange(kOutput);
@@ -286,49 +223,8 @@ XTEST(XdeskLayout, AColumnHoldsWindowsOneAboveAnotherAndGivesThemBack, .area = "
     EXPECT_EQ(of(ps, 2).rect.height, 780);
 }
 
-XTEST(XdeskLayout, SwitchingArrangementsComesBackToTheSameLayout, .area = "luban", .covers = {"XDESK-LAYOUT", "XDESK-ARRANGEMENTS"}) {
-    Layout l({.mode = Mode::tile, .inner_gap = 10, .outer_gap = 10});
-    for (layout::Id id = 1; id <= 3; ++id) l.add(id, {600, 400});
-    l.join();
-    const auto tiled = l.arrange(kOutput);
-    // The canvas for the first time: the columns become one group, where they were.
-    l.set_mode(Mode::canvas);
-    EXPECT_EQ(l.mode(), Mode::canvas);
-    auto ps = l.arrange(kOutput);
-    for (const auto& t : tiled) {
-        EXPECT_NEAR(of(ps, t.id).rect.x, t.rect.x, 1e-6) << t.id;
-        EXPECT_NEAR(of(ps, t.id).rect.y, t.rect.y, 1e-6) << t.id;
-        EXPECT_NEAR(of(ps, t.id).rect.width, t.rect.width, 1e-6) << t.id;
-        EXPECT_NEAR(of(ps, t.id).rect.height, t.rect.height, 1e-6) << t.id;
-    }
-    EXPECT_EQ(l.group_of(1), (std::vector<layout::Id>{1, 2, 3}));
-    l.pan(-200, 0);
-    const auto panned = of(l.arrange(kOutput), 1).rect;
-    // Back to tile: exactly as it was; to the canvas again: as it was left.
-    l.set_mode(Mode::tile);
-    EXPECT_EQ(l.arrange(kOutput), tiled);
-    l.set_mode(Mode::canvas);
-    EXPECT_EQ(of(l.arrange(kOutput), 1).rect, panned);
-    // Stack for the first time: each where it is seen, on the output.
-    l.set_mode(Mode::stack);
-    ps = l.arrange(kOutput);
-    for (const auto& p : ps) {
-        EXPECT_GE(p.rect.x, 0) << p.id;
-        EXPECT_LE(p.rect.x + p.rect.width, kOutput.width) << p.id;
-    }
-    EXPECT_EQ(of(ps, 2).rect.y, panned.y);
-    l.set_mode(Mode::tile);
-    EXPECT_EQ(l.arrange(kOutput), tiled);
-    // Super+m's order, and the names a state file keeps.
-    EXPECT_EQ(layout::next(Mode::tile), Mode::stack);
-    EXPECT_EQ(layout::next(Mode::stack), Mode::canvas);
-    EXPECT_EQ(layout::next(Mode::canvas), Mode::tile);
-    EXPECT_EQ(layout::mode_named(layout::name(Mode::stack)), Mode::stack);
-    EXPECT_FALSE(layout::mode_named("cascade"));
-}
-
 XTEST(XdeskLayout, StackedWindowsOverlapOnTheOutputAndSnapToHalvesAndQuarters, .area = "luban", .covers = {"XDESK-ARRANGEMENTS"}) {
-    Layout l({.mode = Mode::stack, .inner_gap = 10, .outer_gap = 10});
+    Layout l({.rule = Rule::stack, .inner_gap = 10, .outer_gap = 10});
     l.add(1, {600, 400});
     l.add(2, {600, 400});
     auto ps = l.arrange(kOutput);
@@ -362,177 +258,8 @@ XTEST(XdeskLayout, StackedWindowsOverlapOnTheOutputAndSnapToHalvesAndQuarters, .
     EXPECT_TRUE(ps.back().floating);
 }
 
-XTEST(XdeskLayout, OnTheCanvasWindowsMakeTiledGroupsThatMoveAsOne, .area = "luban", .covers = {"XDESK-ARRANGEMENTS"}) {
-    Layout l({.mode = Mode::canvas, .inner_gap = 10, .outer_gap = 10});
-    l.add(1, {600, 400});
-    l.add(2, {500, 300});
-    l.arrange(kOutput);
-    // 2 put at 1's right edge: a group, columns side by side, one height.
-    l.group_with(2, 1, Direction::right);
-    auto ps = l.arrange(kOutput);
-    EXPECT_EQ(l.group_of(1), (std::vector<layout::Id>{1, 2}));
-    EXPECT_NEAR(of(ps, 2).rect.x - (of(ps, 1).rect.x + of(ps, 1).rect.width), 10, 1e-6);
-    EXPECT_EQ(of(ps, 2).rect.y, of(ps, 1).rect.y);
-    EXPECT_EQ(of(ps, 2).rect.height, 400);
-    EXPECT_EQ(of(ps, 2).rect.width, 500);
-    // Moving one moves the group.
-    const auto a = of(ps, 1).rect, b = of(ps, 2).rect;
-    l.place(1, {a.x + 100, a.y + 50, a.width, a.height});
-    ps = l.arrange(kOutput);
-    EXPECT_EQ(of(ps, 2).rect, (Rect{b.x + 100, b.y + 50, b.width, b.height}));
-    // A third, on its own beside them; Super+[ joins it to the group on its left.
-    l.add(3, {400, 300});
-    l.arrange(kOutput);
-    EXPECT_EQ(l.group_of(3), (std::vector<layout::Id>{3}));
-    l.join();
-    EXPECT_EQ(l.group_of(3), (std::vector<layout::Id>{1, 2, 3}));
-    // Super+]: free again, beside the group.
-    l.split();
-    ps = l.arrange(kOutput);
-    EXPECT_EQ(l.group_of(1), (std::vector<layout::Id>{1, 2}));
-    EXPECT_GT(of(ps, 3).rect.x, of(ps, 2).rect.x + of(ps, 2).rect.width);
-    // Put at 1's bottom edge: in 1's column, below it.
-    l.group_with(3, 1, Direction::down);
-    ps = l.arrange(kOutput);
-    EXPECT_EQ(of(ps, 3).rect.x, of(ps, 1).rect.x);
-    EXPECT_NEAR(of(ps, 1).rect.height + 10 + of(ps, 3).rect.height, 400, 1e-6);
-    // Tiled for the first time: the group's columns are columns.
-    l.set_mode(Mode::tile);
-    ps = l.arrange(kOutput);
-    EXPECT_EQ(of(ps, 3).rect.x, of(ps, 1).rect.x);
-    EXPECT_LT(of(ps, 1).rect.x, of(ps, 2).rect.x);
-}
-
-XTEST(XdeskLayout, EachWorkspaceKeepsItsOwnArrangement, .area = "luban", .covers = {"XDESK-ARRANGEMENTS"}) {
-    Layout l({.mode = Mode::tile, .inner_gap = 10, .outer_gap = 10, .workspaces = 2});
-    l.add(1, {600, 400});
-    l.arrange(kOutput);
-    l.set_mode(Mode::stack);
-    l.show(1);
-    EXPECT_EQ(l.mode(), Mode::tile);                            // the default until it is set
-    l.add(2, {600, 400});
-    EXPECT_EQ(of(l.arrange(kOutput), 2).rect.width, 1180);
-    l.show(0);
-    EXPECT_EQ(l.mode(), Mode::stack);
-    EXPECT_EQ(l.mode_of(1), Mode::tile);
-    // Sent to a stacked workspace, a window gets a place there.
-    l.send_to(2, 0);
-    const auto ps = l.arrange(kOutput);
-    EXPECT_EQ(ps.size(), 2u);
-    EXPECT_LE(of(ps, 2).rect.width, 1200);
-}
-
-XTEST(XdeskLayout, AlwaysOnTopIsAboveEverythingAndOnEveryWorkspaceGoesAlong, .area = "luban", .covers = {"XDESK-WINDOW-MENU"}) {
-    Layout l({.mode = Mode::tile, .inner_gap = 10, .outer_gap = 10, .workspaces = 2});
-    l.add(1, {600, 400});
-    l.add(2, {400, 300}, true);
-    l.add(3, {300, 200});
-    l.arrange(kOutput);
-    // Always on top: floating, drawn last -- above another floating window.
-    l.toggle_pinned(3);
-    EXPECT_TRUE(l.pinned(3));
-    EXPECT_TRUE(l.floating(3));
-    auto ps = l.arrange(kOutput);
-    EXPECT_EQ(ps.back().id, 3u);
-    EXPECT_TRUE(ps.back().pinned);
-    // On every workspace: shown on the other one too, where it was.
-    l.toggle_sticky(2);
-    const auto where = of(l.arrange(kOutput), 2).rect;
-    l.show(1);
-    ps = l.arrange(kOutput);
-    EXPECT_EQ(of(ps, 2).rect, where);
-    EXPECT_EQ(l.workspace_of(2), 1);
-    EXPECT_FALSE(std::ranges::contains(ps, layout::Id{1}, &layout::Placement::id));
-    // Back to one workspace: the one shown.
-    l.toggle_sticky(2);
-    l.show(0);
-    EXPECT_FALSE(std::ranges::contains(l.arrange(kOutput), layout::Id{2}, &layout::Placement::id));
-    // A session's arrangement given to an empty workspace before anything is on it.
-    l.preset(1, Mode::canvas);
-    EXPECT_EQ(l.mode_of(1), Mode::tile) << "a workspace with windows keeps its own";
-    Layout fresh({.mode = Mode::tile, .workspaces = 2});
-    fresh.preset(1, Mode::canvas);
-    EXPECT_EQ(fresh.mode_of(1), Mode::canvas);
-}
-
-// Dragging (design 2026-10-19 §17.9): where it lands is read off the
-// arrangement, and the preview is that very drop.
-XTEST(XdeskLayout, ADraggedWindowsPreviewIsWhereItLands, .area = "luban", .covers = {"XDESK-DRAG-SNAP"}) {
-    Layout l({.mode = Mode::tile, .inner_gap = 10, .outer_gap = 10});
-    for (layout::Id id = 1; id <= 2; ++id) l.add(id, {600, 400});
-    auto ps = l.arrange(kOutput);
-    const auto two = of(ps, 2).rect;
-    // Window 1 dragged over the top third of 2: into 2's column, above it.
-    auto d = l.drop_at(1, two.x + two.width / 2, two.y + 30);
-    EXPECT_EQ(d.kind, layout::Drop::Kind::above);
-    const auto seen = l.preview(1, d);
-    ASSERT_TRUE(seen);
-    l.drop(1, d);
-    ps = l.arrange(kOutput);
-    EXPECT_EQ(of(ps, 1).rect, *seen) << "the preview is where it went";
-    EXPECT_EQ(l.group_of(1), (std::vector<layout::Id>{1, 2}));
-    // At the screen's left edge: a column of its own, first; with a size chosen.
-    d = l.drop_at(1, 5, 400);
-    EXPECT_EQ(d.kind, layout::Drop::Kind::column);
-    EXPECT_EQ(d.column, 0u);
-    const auto narrow = l.preview(1, d, 1.0 / 3);
-    l.drop(1, d, 1.0 / 3);
-    ps = l.arrange(kOutput);
-    EXPECT_EQ(of(ps, 1).rect, *narrow);
-    EXPECT_LT(of(ps, 1).rect.x, of(ps, 2).rect.x);
-    EXPECT_NEAR(of(ps, 1).rect.width, (1200 - 10) / 3.0 - 10, 1e-6);
-    // The middle of another: they change places.
-    const auto mid = of(ps, 2).rect;
-    d = l.drop_at(1, mid.x + mid.width / 2, mid.y + mid.height / 2);
-    EXPECT_EQ(d.kind, layout::Drop::Kind::swap);
-    l.drop(1, d);
-    ps = l.arrange(kOutput);
-    EXPECT_GT(of(ps, 1).rect.x, of(ps, 2).rect.x);
-    // The gap between them: dragged, one wider and the other narrower; twice, equal again.
-    const auto gap = l.gap_at(of(ps, 2).rect.x + of(ps, 2).rect.width + 5, 300);
-    ASSERT_TRUE(gap);
-    const double before = of(ps, 2).rect.width;
-    l.drag_gap(*gap, 100);
-    ps = l.arrange(kOutput);
-    EXPECT_NEAR(of(ps, 2).rect.width, before + 100, 1.5);
-    l.even_widths();
-    ps = l.arrange(kOutput);
-    EXPECT_EQ(of(ps, 1).rect.width, of(ps, 2).rect.width);
-    // Shift: floating.
-    EXPECT_EQ(l.drop_at(1, 600, 400, true).kind, layout::Drop::Kind::floating);
-}
-
-XTEST(XdeskLayout, StackedEdgesSnapAndCanvasEdgesGroup, .area = "luban", .covers = {"XDESK-DRAG-SNAP"}) {
-    Layout s({.mode = Mode::stack, .inner_gap = 10, .outer_gap = 10});
-    s.add(1, {600, 400});
-    s.arrange(kOutput);
-    auto d = s.drop_at(1, 3, 400);
-    EXPECT_EQ(d.kind, layout::Drop::Kind::snap);
-    EXPECT_EQ(d.snap_x, -1);
-    EXPECT_EQ(*s.preview(1, d), (Rect{10, 10, 585, 780})) << "the left half";
-    d = s.drop_at(1, 1197, 3);
-    EXPECT_EQ(std::pair(d.snap_x, d.snap_y), std::pair(1, -1)) << "a corner: its quarter";
-    EXPECT_EQ(s.drop_at(1, 600, 3).snap_x, 0) << "the top: the whole";
-    EXPECT_EQ(s.drop_at(1, 600, 400).kind, layout::Drop::Kind::free);
-
-    Layout c({.mode = Mode::canvas, .inner_gap = 10, .outer_gap = 10});
-    c.add(1, {600, 400});
-    c.add(2, {500, 300});
-    auto ps = c.arrange(kOutput);
-    const auto r1 = of(ps, 1).rect;
-    d = c.drop_at(2, r1.x + r1.width - 10, r1.y + r1.height / 2);
-    EXPECT_EQ(d.kind, layout::Drop::Kind::right);
-    const auto seen = c.preview(2, d);
-    c.drop(2, d);
-    EXPECT_EQ(of(c.arrange(kOutput), 2).rect, *seen);
-    EXPECT_EQ(c.group_of(1), (std::vector<layout::Id>{1, 2}));
-    // Let go in the open: out of the group.
-    c.drop(2, {.kind = layout::Drop::Kind::free});
-    EXPECT_EQ(c.group_of(1), (std::vector<layout::Id>{1}));
-}
-
 XTEST(XdeskLayout, TheMaximizeButtonsLayoutsLayOutTheRecentWindows, .area = "luban", .covers = {"XDESK-DRAG-SNAP"}) {
-    Layout l({.mode = Mode::tile, .inner_gap = 10, .outer_gap = 10});
+    Layout l({.rule = Rule::tile, .inner_gap = 10, .outer_gap = 10});
     for (layout::Id id = 1; id <= 3; ++id) l.add(id, {600, 400});
     l.arrange(kOutput);
     l.arrange_as(layout::Pattern::one_and_two, {3, 2, 1});
@@ -542,7 +269,7 @@ XTEST(XdeskLayout, TheMaximizeButtonsLayoutsLayOutTheRecentWindows, .area = "lub
     l.arrange_as(layout::Pattern::two_thirds, {3, 2});
     ps = l.arrange(kOutput);
     EXPECT_GT(of(ps, 3).rect.width, of(ps, 2).rect.width);
-    Layout s({.mode = Mode::stack, .inner_gap = 10, .outer_gap = 10});
+    Layout s({.rule = Rule::stack, .inner_gap = 10, .outer_gap = 10});
     s.add(1, {600, 400});
     s.add(2, {600, 400});
     s.arrange(kOutput);
@@ -552,30 +279,8 @@ XTEST(XdeskLayout, TheMaximizeButtonsLayoutsLayOutTheRecentWindows, .area = "lub
     EXPECT_GT(of(ps, 1).rect.x, 590);
 }
 
-// Dragging in tile (design 2026-10-20 §7.5): the zones of a window, the
-// others where the drop leaves them, and a hand's scroll kept.
-XTEST(XdeskLayout, ADragsZonesAreQuartersAndThirdsAndThePreviewIsEveryWindow, .area = "luban", .covers = {"XDESK-DRAG-SNAP"}) {
-    Layout l({.mode = Mode::tile, .inner_gap = 4, .outer_gap = 0});
-    l.add(1, {600, 400});
-    l.add(2, {600, 400});
-    auto ps = l.arrange(kOutput);
-    const auto g = of(ps, 2).rect;   // the right half
-    using K = layout::Drop::Kind;
-    auto at = [&](double fx, double fy) { return l.drop_at(1, g.x + fx * g.width, g.y + fy * g.height).kind; };
-    EXPECT_EQ(at(0.5, 0.1), K::above);
-    EXPECT_EQ(at(0.5, 0.9), K::below);
-    EXPECT_EQ(at(0.5, 0.5), K::swap);
-    EXPECT_EQ(at(0.2, 0.5), K::column);
-    EXPECT_EQ(at(0.8, 0.5), K::column);
-    // The preview is every window: green below red's place, the whole width.
-    const auto all = l.preview_all(1, l.drop_at(1, g.x + g.width / 2, g.y + 10), 0);
-    EXPECT_EQ(of(all, 2).rect.width, 1200);
-    EXPECT_GT(of(all, 2).rect.y, of(all, 1).rect.y);
-    EXPECT_EQ(of(l.arrange(kOutput), 2).rect, g) << "a preview changes nothing";
-}
-
 XTEST(XdeskLayout, TheGapBetweenTwoWindowsOfAColumnResizesThem, .area = "luban", .covers = {"XDESK-RESIZE"}) {
-    Layout l({.mode = Mode::tile, .inner_gap = 4, .outer_gap = 0});
+    Layout l({.rule = Rule::tile, .inner_gap = 4, .outer_gap = 0});
     l.add(1, {600, 400});
     l.add(2, {600, 400});
     l.join();                                   // 2 under 1, one column
@@ -590,7 +295,7 @@ XTEST(XdeskLayout, TheGapBetweenTwoWindowsOfAColumnResizesThem, .area = "luban",
 }
 
 XTEST(XdeskLayout, ATiledStripScrolledByHandStaysUntilTheFocusMoves, .area = "luban", .covers = {"XDESK-LAYOUT"}) {
-    Layout l({.mode = Mode::tile, .inner_gap = 0, .outer_gap = 0, .min_column_width = 600});
+    Layout l({.rule = Rule::tile, .inner_gap = 0, .outer_gap = 0, .min_column_width = 600});
     for (layout::Id id = 1; id <= 3; ++id) l.add(id, {600, 400});
     auto ps = l.arrange(kOutput);
     ASSERT_FALSE(of(ps, 1).visible);            // the focused third shown, the first off the screen
@@ -602,43 +307,6 @@ XTEST(XdeskLayout, ATiledStripScrolledByHandStaysUntilTheFocusMoves, .area = "lu
     EXPECT_TRUE(of(ps, 3).visible);
 }
 
-// The canvas (design 2026-10-20 §9): a new window in the free place nearest
-// the focused one, in view; a moved frame snaps to an edge; the minimap.
-XTEST(XdeskLayout, OnTheCanvasANewWindowTakesTheNearestFreePlaceAndFramesSnap, .area = "luban", .covers = {"XDESK-CANVAS"}) {
-    Layout l({.mode = Mode::canvas, .inner_gap = 4, .outer_gap = 0});
-    l.add(1, {400, 300});
-    auto ps = l.arrange(kOutput);
-    const auto first = of(ps, 1).rect;
-    l.add(2, {400, 300});
-    ps = l.arrange(kOutput);
-    const auto second = of(ps, 2).rect, now = of(ps, 1).rect;
-    (void)first;
-    EXPECT_FALSE(overlap_(now, second));
-    EXPECT_GE(second.x, 0);
-    EXPECT_LE(second.x + second.width, kOutput.width) << "in view (the view panned to it)";
-    EXPECT_NEAR(second.x, now.x + now.width + 12, 1e-6) << "beside the focused one";
-    EXPECT_EQ(l.zoom(), 1.0) << "a new window never zooms the view";
-    // A third: beside isn't in view any more -- below, or the other side.
-    l.add(3, {400, 300});
-    ps = l.arrange(kOutput);
-    for (const auto id : {1u, 2u}) EXPECT_FALSE(overlap_(of(ps, 3).rect, of(ps, id).rect)) << id;
-    // A frame moved to within 16 pixels of another's edge sits against it
-    // (where the window is now: the view may have panned for the third).
-    const auto two = of(ps, 2).rect;
-    const auto sn = l.snap(3, {two.x + 7, two.y + two.height + 10, 400, 300});
-    EXPECT_EQ(sn.rect.x, two.x);
-    EXPECT_NEAR(sn.rect.y, two.y + two.height + 4, 1e-6);
-    EXPECT_TRUE(sn.guide_x && sn.guide_y);
-    const auto far = l.snap(3, {two.x + 40, two.y + two.height + 60, 400, 300});
-    EXPECT_FALSE(far.guide_x || far.guide_y) << "out of reach: where it was put";
-    const auto m = l.minimap();
-    EXPECT_EQ(m.boxes.size(), 3u);
-    l.look_at(5000, 5000);
-    EXPECT_NEAR(l.camera().first, 5000 - kOutput.width / 2, 1e-6);
-}
-
-// The overview's picture (design 2026-10-20 §10.3): windows where they are
-// to one another, fitted and never enlarged; a long strip folded into rows.
 XTEST(XdeskLayout, TheOverviewKeepsWhereWindowsAreAndFoldsALongStrip, .area = "luban", .covers = {"XDESK-SWITCHERS"}) {
     using xdesk::layout::Rect;
     const Rect area{0, 0, 1000, 600};
@@ -670,8 +338,6 @@ XTEST(XdeskLayout, TheOverviewKeepsWhereWindowsAreAndFoldsALongStrip, .area = "l
     EXPECT_TRUE(xdesk::layout::spread({}, area).empty());
 }
 
-// Full screen (design 2026-10-20 §12.2): the whole output, the panel's
-// part too, above everything on its workspace; one there at a time.
 XTEST(XdeskLayout, AFullScreenWindowTakesTheWholeOutputAboveTheRest, .area = "luban", .covers = {"XDESK-LAYOUT"}) {
     xdesk::layout::Layout l;
     l.add(1, {400, 300});
@@ -687,4 +353,367 @@ XTEST(XdeskLayout, AFullScreenWindowTakesTheWholeOutputAboveTheRest, .area = "lu
     l.remove(2);
     ps = l.arrange(kOutput, {.top = 30});
     for (const auto& p : ps) EXPECT_FALSE(p.fullscreen);
+}
+
+// ── workspaces on WuXian (design 2026-10-20 WuXian §3.1, §3.9) ───────
+
+XTEST(XdeskLayout, WorkspacesAreNumberedRegionsOfThePlaneMadeAndRemovedAsAsked, .area = "luban", .covers = {"XDESK-LAYOUT", "WUXIAN-WORKSPACES"}) {
+    Layout l({.inner_gap = 10, .outer_gap = 10});
+    EXPECT_EQ(l.workspaces(), (std::vector<int>{1})) << "a first start has one workspace";
+    l.add(1, {600, 400});
+    l.arrange(kOutput);
+    // Made on purpose: the smallest free number, right of the others on the plane.
+    EXPECT_EQ(l.add_workspace(Rule::stack), 2);
+    const auto* one = l.workspace_info(1);
+    const auto* two = l.workspace_info(2);
+    ASSERT_TRUE(one && two);
+    EXPECT_GT(two->origin.x, one->origin.x + kOutput.width) << "right of the first";
+    EXPECT_NE(two->color, one->color);
+    EXPECT_GT(two->z, one->z);
+    EXPECT_EQ(l.add_workspace(Rule::tile, 2), 0) << "a number taken";
+    EXPECT_EQ(l.add_workspace(Rule::tile, 12), 0) << "past the nine Super reaches";
+    // Gone to by a number it does not have: made with it; left as made -- empty, unnamed -- it goes again.
+    l.show(7);
+    EXPECT_EQ(l.current(), 7);
+    l.show(1);
+    EXPECT_EQ(l.workspaces(), (std::vector<int>{1, 2})) << "made by going to it, left empty: removed";
+    l.show(7);
+    l.rename(7, "notes");
+    l.show(1);
+    EXPECT_EQ(l.workspaces(), (std::vector<int>{1, 2, 7})) << "a named one stays";
+    // Removed: its windows free on the plane, where they were.
+    l.send_to(1, 7);
+    EXPECT_EQ(l.workspace_of(1), 7);
+    l.set_view(View::wuxian);
+    auto ps = l.arrange(kOutput);
+    const auto where = of(ps, 1).rect;
+    EXPECT_TRUE(l.remove_workspace(7));
+    EXPECT_TRUE(l.is_free(1));
+    EXPECT_FALSE(l.workspace_of(1));
+    ps = l.arrange(kOutput);
+    EXPECT_NEAR(of(ps, 1).rect.x, where.x, 1e-6) << "where it was";
+    EXPECT_NEAR(of(ps, 1).rect.width, where.width, 1e-6);
+    EXPECT_TRUE(l.remove_workspace(2));
+    EXPECT_FALSE(l.remove_workspace(1)) << "the last one stays";
+    // Super+M: its other rule; its colour, flow and scale.
+    l.set_rule(1, layout::other(Rule::tile));
+    EXPECT_EQ(l.rule(), Rule::stack);
+    l.set_scale(1, 5);
+    EXPECT_DOUBLE_EQ(l.workspace_info(1)->scale, wx::kMaxScale);
+}
+
+XTEST(XdeskLayout, TheWuXianViewShowsEveryWorkspaceScaledAndTheFreeWindowsBesideThem, .area = "luban",
+      .covers = {"XDESK-LAYOUT", "WUXIAN-VIEWS"}) {
+    Layout l({.inner_gap = 10, .outer_gap = 10});
+    l.add(1, {600, 400});
+    ASSERT_EQ(l.add_workspace(Rule::tile), 2);
+    l.show(2);
+    l.add(2, {600, 400});
+    l.set_scale(2, 0.5);
+    auto ps = l.arrange(kOutput);
+    EXPECT_TRUE(shown_(ps, 2) && !shown_(ps, 1)) << "the workspace view: the current workspace's only";
+    const auto full = of(ps, 2).rect;
+    EXPECT_EQ(of(ps, 2).zoom, 1.0) << "1:1, whatever its scale";
+    // The WuXian view: framed on the current workspace, every workspace
+    // there, each drawn at its scale times the camera's zoom.
+    l.set_view(View::wuxian);
+    ps = l.arrange(kOutput);
+    ASSERT_EQ(l.frames().size(), 2u);
+    EXPECT_TRUE(shown_(ps, 1) && shown_(ps, 2));
+    const auto cam = l.camera();
+    EXPECT_NEAR(of(ps, 2).zoom, 0.5 * cam.zoom, 1e-9);
+    EXPECT_NEAR(of(ps, 2).rect.width, full.width * 0.5 * cam.zoom, 1e-6);
+    EXPECT_EQ(l.workspace_at(of(ps, 2).rect.x + 5, of(ps, 2).rect.y + 5), 2);
+    // A new window with the view's centre on nothing: free on the plane, near it.
+    l.look({.at = {5000, 0}, .zoom = 1});
+    l.add(3, {500, 300});
+    EXPECT_TRUE(l.is_free(3));
+    ps = l.arrange(kOutput);
+    EXPECT_TRUE(of(ps, 3).visible) << "in view";
+    EXPECT_EQ(of(ps, 3).workspace, 0);
+    // Focused there, then back to the workspace view: the workspace it was,
+    // the window it had; the free window not shown.
+    l.focus(3);
+    l.set_view(View::workspace);
+    EXPECT_EQ(l.current(), 2);
+    EXPECT_EQ(l.focused(), 2u);
+    ps = l.arrange(kOutput);
+    EXPECT_FALSE(shown_(ps, 3));
+    // The workspace view stays on its workspace: another's window is what it focuses when shown.
+    l.focus(1);
+    EXPECT_EQ(l.current(), 2);
+    l.show(1);
+    EXPECT_EQ(l.focused(), 1u);
+    // The camera: panned, zoomed about a point, everything shown.
+    l.set_view(View::wuxian);
+    const auto before = l.camera();
+    l.pan(100, 0);
+    EXPECT_NEAR(l.camera().at.x, before.at.x - 100 / before.zoom, 1e-9);
+    l.zoom_at(2, 600, 400);
+    EXPECT_NEAR(l.zoom(), std::min(wx::kMaxZoom, before.zoom * 2), 1e-9);
+    l.show_all();
+    ps = l.arrange(kOutput);
+    for (const auto id : {1u, 2u, 3u}) EXPECT_TRUE(of(ps, id).visible) << id;
+    const auto m = l.minimap();
+    EXPECT_EQ(m.boxes.size(), 3u) << "two workspaces and a free window";
+}
+
+// The views' change starts and ends where the workspace view is: the
+// locked camera shows the workspace's content exactly as it does.
+XTEST(XdeskLayout, TheLockedCameraShowsTheWorkspaceAsTheWorkspaceViewDoes, .area = "luban", .covers = {"WUXIAN-VIEWS"}) {
+    Layout l({.inner_gap = 4, .outer_gap = 0, .min_column_width = 500});
+    for (layout::Id id = 1; id <= 4; ++id) l.add(id, {600, 400});
+    l.move_workspace(1, {300, -200});
+    l.set_scale(1, 0.75);
+    const auto shown = l.arrange(kOutput, {.top = 30});
+    const auto cam = l.locked_camera();
+    const auto through = l.arrange(kOutput, {.top = 30}, cam);
+    for (const auto& p : shown) {
+        EXPECT_NEAR(of(through, p.id).rect.x, p.rect.x, 1e-6) << p.id;
+        EXPECT_NEAR(of(through, p.id).rect.y, p.rect.y, 1e-6) << p.id;
+        EXPECT_NEAR(of(through, p.id).rect.width, p.rect.width, 1e-6) << p.id;
+        EXPECT_NEAR(of(through, p.id).zoom, 1, 1e-9) << p.id;
+    }
+}
+
+// ── dragging (design 2026-10-20 WuXian §3.7, §3.8) ───────────────────
+
+XTEST(XdeskLayout, ATiledDragIsReadOffTheFrozenArrangementItsOwnPlaceKept, .area = "luban", .covers = {"XDESK-DRAG-SNAP", "WUXIAN-DRAG"}) {
+    Layout l({.inner_gap = 4, .outer_gap = 0, .min_column_width = 300});
+    l.add(1, {600, 400});
+    l.add(2, {600, 400});
+    l.add(3, {600, 400});
+    auto ps = l.arrange(kOutput);
+    const auto one = of(ps, 1).rect, two = of(ps, 2).rect;
+    // Picked up on its own title: nothing (H19: it was a new last column).
+    const auto d = l.begin_drag(1, one.x + 50, one.y + 10);
+    EXPECT_EQ(l.drop_at(d, one.x + 50, one.y + 10).kind, K::none);
+    EXPECT_EQ(l.drop_at(d, one.x + one.width / 2, one.y + one.height / 2).kind, K::none) << "anywhere on its own place";
+    // Another's zones: quarters across, thirds along.
+    auto at = [&](double fx, double fy) { return l.drop_at(d, two.x + fx * two.width, two.y + fy * two.height); };
+    EXPECT_EQ(at(0.5, 0.1).kind, K::above);
+    EXPECT_EQ(at(0.5, 0.9).kind, K::below);
+    EXPECT_EQ(at(0.5, 0.5).kind, K::swap);
+    EXPECT_EQ(at(0.2, 0.5).kind, K::column);
+    EXPECT_EQ(at(0.8, 0.5).kind, K::column);
+    EXPECT_EQ(l.drop_at(d, 5, 400).kind, K::column) << "the screen's edge";
+    EXPECT_EQ(l.drop_at(d, 5, 400).column, 0u);
+    EXPECT_EQ(l.drop_at(d, 600, 400, true).kind, K::floating) << "Shift";
+    // The preview: its own place kept, the window it swaps with, and nothing moved.
+    const auto swap = at(0.5, 0.5);
+    const auto pv = l.preview(d, swap);
+    EXPECT_EQ(pv.placeholder, one);
+    EXPECT_EQ(pv.target, two);
+    ASSERT_TRUE(pv.box);
+    EXPECT_EQ(*pv.box, two) << "it would take the other's place";
+    EXPECT_EQ(l.arrange(kOutput), ps) << "a preview changes nothing";
+    const auto split = l.preview(d, at(0.5, 0.9));
+    ASSERT_TRUE(split.half);
+    EXPECT_NEAR(split.half->y, two.y + two.height / 2, 1e-6) << "the half below";
+    const auto col = l.preview(d, l.drop_at(d, 5, 400));
+    ASSERT_TRUE(col.line);
+    EXPECT_LT(col.line->x, one.x + 4) << "a line where the new column goes";
+    // Let go: once, to where the drop leaves everything.
+    l.drop(d, swap);
+    ps = l.arrange(kOutput);
+    EXPECT_EQ(of(ps, 1).rect, two);
+    EXPECT_EQ(of(ps, 2).rect, one);
+    // Into a column, with a size chosen for a new one.
+    const auto d2 = l.begin_drag(3, of(ps, 3).rect.x + 20, 10);
+    const auto narrow = l.drop_at(d2, 5, 400);
+    const auto seen = l.preview(d2, narrow, 1.0 / 3);
+    l.drop(d2, narrow, 1.0 / 3);
+    ps = l.arrange(kOutput);
+    ASSERT_TRUE(seen.box);
+    EXPECT_EQ(of(ps, 3).rect, *seen.box) << "the preview's frame is where it went";
+    EXPECT_NEAR(of(ps, 3).rect.width, (1200 + 4) / 3.0 - 4, 1e-6);
+    // The gap between two: dragged, one wider; twice, equal again.
+    const auto gap = l.gap_at(of(ps, 3).rect.x + of(ps, 3).rect.width + 2, 300);
+    ASSERT_TRUE(gap);
+    l.drag_gap(*gap, 100);
+    EXPECT_NEAR(of(l.arrange(kOutput), 3).rect.width, (1200 + 4) / 3.0 - 4 + 100, 1.5);
+    l.even_widths();
+    ps = l.arrange(kOutput);
+    EXPECT_EQ(of(ps, 1).rect.width, of(ps, 3).rect.width);
+}
+
+XTEST(XdeskLayout, StackedEdgesSnapAndAWindowLetGoStaysWhereItIs, .area = "luban", .covers = {"XDESK-DRAG-SNAP"}) {
+    Layout s({.rule = Rule::stack, .inner_gap = 10, .outer_gap = 10});
+    s.add(1, {600, 400});
+    const auto ps = s.arrange(kOutput);
+    const auto r = of(ps, 1).rect;
+    const auto d = s.begin_drag(1, r.x + 100, r.y + 10);
+    auto drop = s.drop_at(d, 3, 400);
+    EXPECT_EQ(drop.kind, K::snap);
+    EXPECT_EQ(drop.snap_x, -1);
+    EXPECT_EQ(s.preview(d, drop).box, (Rect{10, 10, 585, 780})) << "the left half";
+    drop = s.drop_at(d, 1197, 3);
+    EXPECT_EQ(std::pair(drop.snap_x, drop.snap_y), std::pair(1, -1)) << "a corner: its quarter";
+    EXPECT_EQ(s.drop_at(d, 600, 3).snap_x, 0) << "the top: the whole";
+    drop = s.drop_at(d, 500, 300);
+    EXPECT_EQ(drop.kind, K::free);
+    s.drop(d, drop);
+    EXPECT_EQ(of(s.arrange(kOutput), 1).rect, (Rect{400, 290, 600, 400})) << "where the pointer let it go";
+}
+
+XTEST(XdeskLayout, InTheWuXianViewAWindowGoesToAnotherWorkspaceOrThePlane, .area = "luban", .covers = {"WUXIAN-DRAG"}) {
+    Layout l({.inner_gap = 4, .outer_gap = 0});
+    l.add(1, {600, 400});
+    l.add(2, {600, 400});
+    ASSERT_EQ(l.add_workspace(Rule::stack), 2);
+    l.set_view(View::wuxian);
+    l.show_all();
+    auto ps = l.arrange(kOutput);
+    const auto f2 = *std::ranges::find(l.frames(), 2, &layout::Frame::id);
+    const auto one = of(ps, 1).rect;
+    // Onto the stacked workspace: in it, where it is let go.
+    auto d = l.begin_drag(1, one.x + 5, one.y + 5);
+    auto drop = l.drop_at(d, f2.screen.x + f2.screen.width / 2, f2.screen.y + f2.screen.height / 2);
+    EXPECT_EQ(drop.kind, K::free);
+    EXPECT_EQ(drop.workspace, 2);
+    const auto two_before = of(ps, 2).rect;
+    EXPECT_EQ(of(l.arrange(kOutput), 2).rect, two_before) << "nothing moves while it is dragged";
+    l.drop(d, drop);
+    EXPECT_EQ(l.workspace_of(1), 2);
+    EXPECT_EQ(l.windows_in(1), (std::vector<layout::Id>{2}));
+    // Onto the plane: free, its own size, its top-left where the pointer had it.
+    ps = l.arrange(kOutput);
+    const auto r = of(ps, 1).rect;
+    d = l.begin_drag(1, r.x + 5, r.y + 5);
+    drop = l.drop_at(d, f2.screen.x + f2.screen.width / 2, f2.screen.y + f2.screen.height + 300);
+    EXPECT_EQ(drop.kind, K::plane);
+    const auto box = l.preview(d, drop).box;
+    l.drop(d, drop);
+    EXPECT_TRUE(l.is_free(1));
+    ps = l.arrange(kOutput);
+    ASSERT_TRUE(box);
+    EXPECT_NEAR(of(ps, 1).rect.x, box->x, 1e-6);
+    EXPECT_NEAR(of(ps, 1).rect.width, box->width, 1e-6);
+    // From the plane onto the tiled workspace: a column of its own beside the window there.
+    const auto f1 = *std::ranges::find(l.frames(), 1, &layout::Frame::id);
+    d = l.begin_drag(1, of(ps, 1).rect.x + 5, of(ps, 1).rect.y + 5);
+    drop = l.drop_at(d, f1.screen.x + f1.screen.width / 2, f1.screen.y + f1.screen.height / 2);
+    EXPECT_EQ(drop.kind, K::column) << "no place to swap into: a column";
+    l.drop(d, drop);
+    EXPECT_EQ(l.workspace_of(1), 1);
+    EXPECT_EQ(l.windows_in(1).size(), 2u);
+    // Moving between workspaces and the plane by keys.
+    l.to_wuxian(2);
+    EXPECT_TRUE(l.is_free(2));
+    l.send_to(2, 2);
+    EXPECT_EQ(l.workspace_of(2), 2);
+}
+
+// ── the state (design 2026-10-20 WuXian §3.14) ───────────────────────
+
+XTEST(XdeskLayout, TheStateReadBackPutsEachWindowWhereItWasAsItComes, .area = "luban", .covers = {"WUXIAN-STATE", "XDESK-CONFIG"}) {
+    Layout a({.inner_gap = 4, .outer_gap = 0});
+    for (layout::Id id = 1; id <= 3; ++id) a.add(id, {600, 400}, false, match_(id));
+    a.join();                                   // 3 under 2
+    a.focus(1);
+    a.cycle_width();
+    ASSERT_EQ(a.add_workspace(Rule::stack), 2);
+    a.rename(2, "notes");
+    a.set_scale(2, 0.5);
+    a.set_view(View::wuxian);
+    a.look({.at = {90000, 0}, .zoom = 1});
+    a.add(4, {500, 300}, false, match_(4));
+    a.set_view(View::workspace);
+    const auto before = a.arrange(kOutput);
+    const auto st = a.state(match_);
+    EXPECT_TRUE(wx::validate(st).empty()) << wx::validate(st).front();
+    const auto text = wx::format(st);
+    const auto read = wx::parse(text);
+    ASSERT_TRUE(read) << read.error();
+    Layout b({.inner_gap = 4, .outer_gap = 0});
+    b.restore(*read);
+    EXPECT_EQ(b.workspaces(), (std::vector<int>{1, 2}));
+    EXPECT_EQ(b.workspace_info(2)->name, "notes");
+    // The windows come in another order: each goes where it was.
+    for (const layout::Id id : {4u, 3u, 1u, 2u}) b.add(id, {600, 400}, false, match_(id));
+    b.focus(1);
+    const auto after = b.arrange(kOutput);
+    for (const auto& p : before) EXPECT_EQ(of(after, p.id).rect, p.rect) << p.id;
+    EXPECT_TRUE(b.is_free(4));
+    // A window nobody named: a new one, as ever.
+    b.add(9, {600, 400}, false, match_(9));
+    EXPECT_EQ(b.workspace_of(9), 1);
+}
+
+// ── the wheel (design 2026-10-20 WuXian §4.4) ────────────────────────
+
+XTEST(XdeskLayout, TheWheelGoesAColumnAStepWhenSlowAndFurtherWhenFast, .area = "luban", .covers = {"XDESK-LAYOUT"}) {
+    const layout::WheelSpeed s;
+    EXPECT_DOUBLE_EQ(layout::wheel_distance(s, 1, 400), 60);
+    EXPECT_DOUBLE_EQ(layout::wheel_distance(s, 1, 0), 60) << "the first step";
+    EXPECT_GT(layout::wheel_distance(s, 1, 50), 60);
+    EXPECT_DOUBLE_EQ(layout::wheel_distance(s, 1, 1), 360) << "at most six times";
+    EXPECT_DOUBLE_EQ(layout::wheel_distance({.factor = 1.6}, -1, 400), -96);
+}
+
+// ── openwx: every rule of the specification ──────────────────────────
+
+namespace {
+
+class Adapter : public wx::conformance::Adapter {
+public:
+    void resize(wx::Size o) override { output_ = o; arrange_(); }
+    int create_workspace(Rule r, std::optional<int> id) override { const int n = l_.add_workspace(r, id); arrange_(); return n; }
+    bool remove_workspace(int id, wx::Removal how) override {
+        const auto ws = l_.windows_in(id);
+        if (!l_.remove_workspace(id)) return false;
+        // Asked to close, they close.
+        if (how == wx::Removal::close)
+            for (const auto w : ws) { closed_.push_back(w); l_.remove(w); }
+        arrange_();
+        return true;
+    }
+    void show(int id) override { l_.show(id); arrange_(); }
+    void set_view(View v) override { l_.set_view(v); arrange_(); }
+    void set_scale(int id, double s) override { l_.set_scale(id, s); arrange_(); }
+    void move_workspace(int id, wx::Point p) override { l_.move_workspace(id, p); arrange_(); }
+    void raise(int id) override { l_.raise(id); arrange_(); }
+    void look(const wx::Camera& c) override { l_.look(c); arrange_(); }
+    void add_window(wx::Id id, wx::Size s) override { l_.add(id, s, false, {std::to_string(id)}); arrange_(); }
+    std::vector<wx::Id> closed() override { return std::exchange(closed_, {}); }
+    void begin_drag(wx::Id id) override { dragging_ = id; session_.reset(); }
+    void drag_to(wx::Point p) override {
+        if (!session_) session_ = l_.begin_drag(dragging_, p.x, p.y);
+        pointer_ = p;
+    }
+    void end_drag() override {
+        if (!session_) session_ = l_.begin_drag(dragging_, pointer_.x, pointer_.y);
+        l_.drop(*session_, l_.drop_at(*session_, pointer_.x, pointer_.y));
+        session_.reset();
+        arrange_();
+    }
+    std::vector<std::pair<wx::Id, wx::Rect>> shown() override {
+        std::vector<std::pair<wx::Id, wx::Rect>> out;
+        for (const auto& p : l_.arrange(output_))
+            if (p.visible) out.push_back({p.id, p.rect});
+        return out;
+    }
+    std::optional<wx::Rect> frame(int id) override {
+        for (const auto& f : l_.frames())
+            if (f.id == id) return f.screen;
+        return std::nullopt;
+    }
+    wx::State state() override { return l_.state([](layout::Id id) { return layout::Match{std::to_string(id)}; }); }
+
+private:
+    void arrange_() { (void)l_.arrange(output_); }
+    Layout l_{{.inner_gap = 4, .outer_gap = 0}};
+    wx::Size output_{1200, 800};
+    std::vector<wx::Id> closed_;
+    wx::Id dragging_ { 0 };
+    std::optional<layout::DragSession> session_;
+    wx::Point pointer_;
+};
+
+}  // namespace
+
+XTEST(XdeskLayout, ItKeepsEveryRuleOfOpenwx, .area = "luban", .covers = {"WUXIAN-CONFORMANCE"}) {
+    const auto r = wx::conformance::run([] { return std::make_unique<Adapter>(); });
+    for (const auto& f : r.failed) ADD_FAILURE() << f;
+    EXPECT_GE(r.passed, 9);
 }

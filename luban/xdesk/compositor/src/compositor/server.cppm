@@ -197,8 +197,8 @@ struct Server {
     wlr_scene_tree* shell_layer { nullptr };    // the panel
     wlr_scene_tree* overlay_layer { nullptr };  // the launcher
     wlr_scene_rect* background { nullptr };
-    wlr_scene_buffer* canvas_dots { nullptr };  // canvas: the grid over the background
-    wlr_scene_buffer* minimap_node { nullptr }; // canvas: the minimap (design 2026-10-20 §9.6)
+    wlr_scene_buffer* wuxian_dots { nullptr };  // the WuXian view: the grid over the background
+    wlr_scene_buffer* minimap_node { nullptr }; // the WuXian view: the minimap (design 2026-10-20 §9.6)
     shell::MinimapPicture minimap_shown;
     std::string minimap_drawn;
     wlr_scene_rect* guide_x { nullptr };        // the lines a moved window snapped to
@@ -268,6 +268,11 @@ struct Server {
     Bindings keys;
     config::State state;
     bool state_broken { false };
+    // WuXian as it is kept (wuxian.json, design 2026-10-20 WuXian §3.14):
+    // written a moment after it changes, when what it says changed.
+    std::string wuxian_written;
+    bool wuxian_broken { false };
+    wl_event_source* wuxian_timer { nullptr };
     bool super_alone { false };                  // Super down and nothing else since: its release opens the apps
     // One overlay at a time (design 2026-10-19 §16.3, §17.5, §18.1): the
     // arrangements and the applications are held with Super and chosen on
@@ -276,7 +281,7 @@ struct Server {
     enum class Overlay { none, chooser, switcher, spread, sheet, menu, layouts, settings };
     Overlay overlay { Overlay::none };
     std::size_t overlay_at { 0 };
-    std::vector<layout::Mode> chooser_modes;
+    std::vector<layout::Rule> chooser_rules;
     // Super+Tab (design 2026-10-20 §10.1): the applications, the most recent
     // first, each with its windows the most recent first; its windows spread
     // below once one is held on (`switcher_open`), `switcher_window` of them chosen.
@@ -335,14 +340,20 @@ struct Server {
     wl_event_source* hint_timer { nullptr };
     std::map<std::string, std::string> app_names;   // app id -> its name (desktop entries)
     std::map<std::string, std::string> app_icons;   // app id -> its Icon=
-    // A window dragged (design 2026-10-19 §17.9): it follows the pointer and
-    // a preview shows where it lands -- the drop made on a copy of the layout.
-    bool drag_live { false };                    // the window itself moves (floating, stacked, a group with Super)
+    // A window dragged (design 2026-10-20 WuXian §3.7, §3.8): it follows the
+    // pointer; the arrangement is frozen -- its place kept, what it would do
+    // shown -- until it is let go.
+    bool drag_live { false };                    // the window itself moves (floating, stacked)
     double drag_dx { 0 }, drag_dy { 0 };         // the pointer from the frame's corner
+    std::optional<layout::DragSession> drag_session;
     layout::Drop drop;
     double drop_width { 0 };                     // a size chosen for a new column (0: as it comes)
     shell::Picture sizes_picture;
-    wlr_scene_rect* drop_box { nullptr };
+    wlr_scene_rect* drop_box { nullptr };        // the frame it would get
+    wlr_scene_rect* drop_place { nullptr };      // its own place, kept
+    wlr_scene_rect* drop_line { nullptr };       // where a new column goes in
+    wlr_scene_rect* drop_half { nullptr };       // the half of a window it would take
+    layout::Id drop_target { 0 };                // the window it would go with, see-through
     wlr_scene_buffer* sizes_node { nullptr };    // the new column's width, said in its box
     std::size_t gap_column { 0 };
     std::pair<std::size_t, std::size_t> row_gap {};   // a column's gap between two of its windows
@@ -356,8 +367,14 @@ struct Server {
     layout::Id layouts_for { 0 };
     std::chrono::steady_clock::time_point app_names_read {};
 
-    // The shown workspace's arrangement (the panel's look is the profile's).
-    bool canvas() const { return lay.mode() == layout::Mode::canvas; }
+    // The WuXian view (design 2026-10-20 WuXian §3.2).
+    bool wuxian() const { return lay.view() == layout::View::wuxian; }
+    // The rule of the workspace a window is in (none: free on the plane).
+    std::optional<layout::Rule> rule_of(layout::Id id) const {
+        const auto ws = lay.workspace_of(id);
+        const auto* info = ws ? lay.workspace_info(*ws) : nullptr;
+        return info ? std::optional(info->rule) : std::nullopt;
+    }
     draw::Fonts* ui() { return ui_font ? &*ui_font : nullptr; }
     layout::Insets reserved() const { return pill ? layout::Insets{} : layout::Insets{.top = shell::kPanelHeight}; }
     // The output in logical pixels: what windows and the shell are laid out in.
@@ -451,9 +468,9 @@ struct Server {
 
     void key(const opensal::Key& k);
 
-    // The canvas's zoom is a view, not a mode (design 2026-10-20 §9.1): at
-    // half or more windows take the pointer as at 100 %; below it they are
-    // pictures -- a click selects one, twice goes in.
+    // The WuXian view's zoom (design 2026-10-20 §9.1): at half or more
+    // windows take the pointer as at 100 %; below it they are pictures -- a
+    // click selects one, twice goes in.
     bool live() const { return lay.zoom() >= 0.5; }
 
     void pointer_moved();
@@ -474,7 +491,6 @@ struct Server {
     layout::Drop drop_with_hysteresis(bool shift) const;
     bool drag_width(int step, int digit);
     void show_guides(const layout::Snap& sn);
-    void show_group_edge();
     void drag_end();
     void show_drop();
     void hide_drop();
@@ -492,6 +508,7 @@ struct Server {
     void load_person();
     void save_state();
     void remember_arrangement();
+    void save_wuxian();
     void apply_rules(View& v);
     void act(Action a);
     void open_chooser();

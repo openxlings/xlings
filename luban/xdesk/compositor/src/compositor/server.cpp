@@ -7,6 +7,7 @@ import opensal.wire;
 import opensal.keys;
 import xdesk.os;
 import xdesk.layout;
+import openwx;
 import xdesk.draw;
 import xdesk.shell;
 import xdesk.apps;
@@ -27,12 +28,11 @@ namespace fs = std::filesystem;
 
 Server::Server(const Options& opts)
     : o(opts), size(opts.size),
-      lay({.mode = opts.profile == "canvas" ? layout::Mode::canvas : layout::Mode::tile,
+      lay({.rule = openwx::rule_named(opts.rule).value_or(layout::Rule::tile),
            .inner_gap = static_cast<double>(std::clamp(opts.inner_gap, 0, 64)),
            .outer_gap = static_cast<double>(std::clamp(opts.outer_gap, 0, 64)),
            .min_column_width = static_cast<double>(std::clamp(opts.min_column_width, 120, 4096)),
-           .flow = layout::flow_named(opts.flow).value_or(layout::Flow::horizontal),
-           .workspaces = std::clamp(opts.workspaces, 1, 9)}),
+           .flow = openwx::flow_named(opts.flow).value_or(layout::Flow::horizontal)}),
       theme(shell::theme(opts.profile)) {
     if (opts.accent) theme.accent = theme.selected = draw::Color::rgb(*opts.accent);
     if (opts.background) theme.background = draw::Color::rgb(*opts.background);
@@ -70,7 +70,7 @@ bool Server::start_() {
     overlay_layer = wlr_scene_tree_create(&scene->tree);
     const float bg[4] = {theme.background.r / 255.0f, theme.background.g / 255.0f, theme.background.b / 255.0f, 1.0f};
     background = wlr_scene_rect_create(background_layer, static_cast<int>(size.width), static_cast<int>(size.height), bg);
-    canvas_dots = wlr_scene_buffer_create(background_layer, nullptr);   // shown on a canvas workspace
+    wuxian_dots = wlr_scene_buffer_create(background_layer, nullptr);   // shown in the WuXian view
     minimap_node = wlr_scene_buffer_create(shell_layer, nullptr);
     wlr_scene_node_set_enabled(&minimap_node->node, false);
     {
@@ -90,10 +90,17 @@ bool Server::start_() {
     sizes_node = wlr_scene_buffer_create(overlay_layer, nullptr);
     wlr_scene_node_set_enabled(&sizes_node->node, false);
     {
-        // Where a dragged window would land: the accent, see-through.
-        const float c[4] = {theme.accent.r / 255.0f * 0.3f, theme.accent.g / 255.0f * 0.3f, theme.accent.b / 255.0f * 0.3f, 0.3f};
-        drop_box = wlr_scene_rect_create(window_layer, 1, 1, c);
-        wlr_scene_node_set_enabled(&drop_box->node, false);
+        // Where a dragged window would land, its place kept, the line a new
+        // column goes in at, the half it would take: the accent, see-through
+        // (premultiplied).
+        auto accent = [&](float a) {
+            return std::array<float, 4>{theme.accent.r / 255.0f * a, theme.accent.g / 255.0f * a, theme.accent.b / 255.0f * a, a};
+        };
+        drop_box = wlr_scene_rect_create(window_layer, 1, 1, accent(0.3f).data());
+        drop_place = wlr_scene_rect_create(window_layer, 1, 1, accent(0.15f).data());
+        drop_half = wlr_scene_rect_create(window_layer, 1, 1, accent(0.35f).data());
+        drop_line = wlr_scene_rect_create(overlay_layer, 1, 1, accent(0.9f).data());
+        for (auto* r : {drop_box, drop_place, drop_half, drop_line}) wlr_scene_node_set_enabled(&r->node, false);
     }
     zh = shell::chinese(os::environment());
     open_fonts();
@@ -227,6 +234,10 @@ bool Server::start_() {
         static_cast<Server*>(data)->switch_timer_fired();
         return 0;
     }, this);
+    wuxian_timer = wl_event_loop_add_timer(loop, [](void* data) -> int {
+        static_cast<Server*>(data)->save_wuxian();
+        return 0;
+    }, this);
     // The person's keys and state; each workspace's arrangement as they left it.
     load_person();
     draw_shell();
@@ -271,6 +282,10 @@ Server::~Server() {
     if (max_timer) wl_event_source_remove(max_timer);
     if (switch_timer) wl_event_source_remove(switch_timer);
     if (hold_timer) wl_event_source_remove(hold_timer);
+    if (wuxian_timer) {
+        wl_event_source_remove(wuxian_timer);
+        save_wuxian();
+    }
     for (int pid : children) os::terminate(pid);
     new_toplevel.disconnect(); new_popup.disconnect(); new_decoration.disconnect(); frame.disconnect();
     request_cursor.disconnect(); request_selection.disconnect(); set_selection.disconnect(); new_text_input.disconnect();

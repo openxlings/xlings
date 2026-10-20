@@ -227,10 +227,7 @@ std::expected<State, std::string> read_state(const std::map<std::string, std::st
     State s;
     if (!*j) return s;
     const auto& doc = **j;
-    if (const auto* a = doc.get("arrangements"))
-        if (const auto* list = std::get_if<Json::Array>(&a->v))
-            for (const auto& x : *list) s.arrangements.push_back(x.string_or(""));
-    if (const auto* l = doc.get("last")) s.last = l->string_or("");
+    s.old_arrangements = doc.get("arrangements") != nullptr || doc.get("last") != nullptr;
     if (const auto* h = doc.get("hinted")) s.hinted = h->bool_or(false);
     if (const auto* k = doc.get("keys_seen")) s.keys_seen = static_cast<int>(k->number_or(0));
     if (const auto* r = doc.get("rules"))
@@ -254,10 +251,6 @@ std::expected<void, std::string> write_state(const std::map<std::string, std::st
     const auto file = state_file(env);
     if (file.empty()) return std::unexpected(std::string("no home to keep the desktop's state in"));
     Json doc;
-    Json::Array arr;
-    for (const auto& a : s.arrangements) arr.push_back(Json{a});
-    doc.set("arrangements", Json{arr});
-    doc.set("last", Json{s.last});
     doc.set("hinted", Json{s.hinted});
     doc.set("keys_seen", Json{static_cast<double>(s.keys_seen)});
     Json rules{Json::Object{}};
@@ -281,6 +274,46 @@ std::expected<void, std::string> write_state(const std::map<std::string, std::st
     fs::rename(tmp, file, ec);
     if (ec) return std::unexpected(std::format("{}: {}", file.string(), ec.message()));
     return {};
+}
+
+fs::path wuxian_file(const std::map<std::string, std::string>& env) {
+    const auto home = config_home_(env);
+    return home.empty() ? fs::path{} : home / "xdesk" / "wuxian.json";
+}
+
+std::expected<std::optional<std::string>, std::string> read_wuxian(const std::map<std::string, std::string>& env) {
+    const auto file = wuxian_file(env);
+    std::error_code ec;
+    if (file.empty() || !fs::exists(file, ec)) return std::optional<std::string>{};
+    std::ifstream in(file, std::ios::binary);
+    if (!in) return std::unexpected(std::format("{}: cannot be read", file.string()));
+    return std::optional(std::string(std::istreambuf_iterator<char>(in), {}));
+}
+
+std::expected<void, std::string> write_wuxian(const std::map<std::string, std::string>& env, std::string_view text) {
+    const auto file = wuxian_file(env);
+    if (file.empty()) return std::unexpected(std::string("no home to keep WuXian in"));
+    std::error_code ec;
+    fs::create_directories(file.parent_path(), ec);
+    const auto tmp = fs::path(file.string() + ".tmp");
+    {
+        std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
+        out << text;
+        if (!out) return std::unexpected(std::format("{}: cannot be written", tmp.string()));
+    }
+    fs::rename(tmp, file, ec);
+    if (ec) return std::unexpected(std::format("{}: {}", file.string(), ec.message()));
+    return {};
+}
+
+std::expected<fs::path, std::string> keep_aside(const fs::path& file) {
+    const auto now = std::chrono::floor<std::chrono::days>(std::chrono::system_clock::now());
+    const auto aside = fs::path(std::format("{}.before-{:%Y-%m-%d}", file.string(), std::chrono::year_month_day{now}));
+    std::error_code ec;
+    if (fs::exists(aside, ec)) return aside;
+    fs::copy_file(file, aside, ec);
+    if (ec) return std::unexpected(std::format("{}: cannot be kept as {}: {}", file.string(), aside.filename().string(), ec.message()));
+    return aside;
 }
 
 std::expected<std::map<std::string, std::vector<std::string>>, std::string> read_keys(const std::map<std::string, std::string>& env) {

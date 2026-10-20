@@ -226,8 +226,8 @@ void Server::button(const opensal::PointerButton& b) {
     if (const auto a = shell::hit(panel_picture, cursor->x, cursor->y)) {
         if (b.down) {
             if (a->target == shell::Target::launcher) open_launcher();
-            else if (a->target == shell::Target::workspace) { lay.show(a->index); arrange(); follow_focus(); }
-            else if (a->target == shell::Target::overview) { lay.overview(!lay.in_overview()); arrange(); }
+            else if (a->target == shell::Target::workspace) { lay.show(a->index + 1); arrange(); follow_focus(); }
+            else if (a->target == shell::Target::overview) { lay.set_view(wuxian() ? layout::View::workspace : layout::View::wuxian); arrange(); follow_focus(); }
         }
         return;
     }
@@ -297,7 +297,7 @@ void Server::button(const opensal::PointerButton& b) {
             return;
         }
         if (!live() && v && b.button == opensal::Button::Left && !held(wlr_keyboard_modifier::WLR_MODIFIER_LOGO)) {
-            // Zoomed far out, windows are pictures (design 2026-10-20 §9.1):
+            // Zoomed far out (the WuXian view), windows are pictures (design 2026-10-20 §9.1):
             // a click selects one -- the view stays -- and a second goes in.
             const auto now = std::chrono::steady_clock::now();
             if (title_pressed_id == v->id && now - title_pressed < std::chrono::milliseconds(400)) {
@@ -344,8 +344,8 @@ void Server::button(const opensal::PointerButton& b) {
         if (v && (super || title) && b.button == opensal::Button::Left) {
             // A window moved by its title (or anywhere with Super held): it
             // follows the pointer, where it would land shown under it. A
-            // floating or stacked one, or a canvas group, moves itself.
-            drag_start(v, lay.floating(v->id) || lay.mode() == layout::Mode::stack || lay.mode() == layout::Mode::canvas);
+            // floating or stacked one moves itself in the workspace view.
+            drag_start(v, !wuxian() && (lay.floating(v->id) || rule_of(v->id) == layout::Rule::stack));
             return;
         }
         if (v) { focus(v); arrange(); }
@@ -360,14 +360,14 @@ void Server::wheel(const opensal::Wheel& w) {
     if (w.dy != 0 && drag_width(w.dy > 0 ? 1 : -1, 0)) return;
     const bool super = held(wlr_keyboard_modifier::WLR_MODIFIER_LOGO);
     const bool over_window = view_at(cursor->x, cursor->y) != nullptr;
-    if (lay.mode() == layout::Mode::canvas && super) {
-        // The canvas zooms only when asked (design 2026-10-20 §9.2): Super
-        // and the wheel, around the pointer, so the point under it stays put.
+    if (wuxian() && super) {
+        // The WuXian view zooms only when asked (design 2026-10-20 §9.2):
+        // Super and the wheel, around the pointer, so the point under it stays put.
         if (w.dy != 0) lay.zoom_at(w.dy > 0 ? 1.1 : 1 / 1.1, cursor->x, cursor->y);
         arrange();
         return;
     }
-    if (lay.mode() == layout::Mode::canvas && (!over_window || !live())) {
+    if (wuxian() && (!over_window || !live())) {
         // On its background (or over pictures): the wheel pans -- up and
         // down, Shift or a sideways wheel left and right.
         if (held(wlr_keyboard_modifier::WLR_MODIFIER_SHIFT)) lay.pan(w.dy * 60, 0);
@@ -375,7 +375,7 @@ void Server::wheel(const opensal::Wheel& w) {
         arrange();
         return;
     }
-    if (lay.mode() == layout::Mode::tile && super) {
+    if (!wuxian() && lay.rule() == layout::Rule::tile && super) {
         lay.pan(w.dy * 60, w.dy * 60);
         arrange();
         return;

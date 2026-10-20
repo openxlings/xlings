@@ -214,21 +214,24 @@ void Server::settings_rows() {
             break;
         }
         case SettingsPage::layout: {
-            const std::vector<layout::Mode> modes{layout::Mode::tile, layout::Mode::stack, layout::Mode::canvas};
-            choice(std::string(tr_(zh, "This workspace", "这个工作区")),
-                   {std::string(tr_(zh, "Tile", "平铺")), std::string(tr_(zh, "Stack", "层叠")), std::string(tr_(zh, "Canvas", "画布"))},
-                   pick(modes, lay.mode()), [this, modes](std::size_t k) {
-                       lay.set_mode(modes[k]);
-                       remember_arrangement();
-                       arrange();
-                       draw_shell();
-                   });
+            const std::vector<layout::Rule> rules{layout::Rule::tile, layout::Rule::stack};
+            const std::vector<std::string> rule_names{std::string(tr_(zh, "Tile", "平铺")), std::string(tr_(zh, "Stack", "层叠"))};
+            choice(std::string(tr_(zh, "This workspace", "这个工作区")), rule_names, pick(rules, lay.rule()), [this, rules](std::size_t k) {
+                lay.set_rule(lay.current(), rules[k]);
+                remember_arrangement();
+                arrange();
+                draw_shell();
+            });
+            choice(std::string(tr_(zh, "A new workspace", "新建的工作区")), rule_names, pick(rules, lay.options().rule), [this, rules](std::size_t k) {
+                setting("desktop", "rule", std::string(layout::name(rules[k])));
+                show_hint(tr_(zh, "From the next session", "下次会话起生效"), 3000);
+            });
             const auto& lo = lay.options();
             choice(std::string(tr_(zh, "Columns run", "列的方向")),
                    {std::string(tr_(zh, "Side by side", "左右并排")), std::string(tr_(zh, "Downwards", "上下排"))},
                    lay.flow() == layout::Flow::vertical ? 1 : 0, [this](std::size_t k) {
                        const auto f = k == 1 ? layout::Flow::vertical : layout::Flow::horizontal;
-                       lay.set_flow(f);
+                       lay.set_flow(lay.current(), f);
                        setting("desktop", "flow", std::string(layout::name(f)));
                        arrange();
                    });
@@ -259,11 +262,11 @@ void Server::settings_rows() {
                        setting("desktop", "min_column_width", std::to_string(columns[k]));
                        arrange();
                    });
-            heading(tr_(zh, "Canvas", "画布"));
-            toggle(std::string(tr_(zh, "A minimap when the canvas holds more than the view", "画布超出视野时显示小地图")), minimap_on,
-                   [this](bool on) { minimap_on = on; setting("canvas", "minimap", on ? "on" : "off"); draw_shell(); });
-            toggle(std::string(tr_(zh, "A moved window lines up with others and joins them", "移动的窗口与其他窗口对齐并成组")), snap_on,
-                   [this](bool on) { snap_on = on; setting("canvas", "snap", on ? "on" : "off"); });
+            heading(tr_(zh, "WuXian (the infinite canvas)", "WuXian（无限画布）"));
+            toggle(std::string(tr_(zh, "A minimap when WuXian holds more than the view", "WuXian 超出视野时显示小地图")), minimap_on,
+                   [this](bool on) { minimap_on = on; setting("wuxian", "minimap", on ? "on" : "off"); draw_shell(); });
+            toggle(std::string(tr_(zh, "A moved window lines up with others", "移动的窗口与其他窗口对齐")), snap_on,
+                   [this](bool on) { snap_on = on; setting("wuxian", "snap", on ? "on" : "off"); });
             break;
         }
         case SettingsPage::appearance: {

@@ -77,11 +77,13 @@ std::string Server::app_of(View& v) const {
     return std::format("window:{}", v.id);
 }
 
-// The shown workspace's windows, the most recently focused first (the views' order).
+// The windows shown, the most recently focused first (the views' order): the
+// current workspace's in the workspace view, every one in the WuXian view
+// (design 2026-10-20 WuXian §4.2).
 std::vector<layout::Id> Server::recent_windows() {
     std::vector<layout::Id> out;
     for (const auto& v : views)
-        if (v.mapped && lay.workspace_of(v.id) == lay.workspace()) out.push_back(v.id);
+        if (v.mapped && (wuxian() || lay.workspace_of(v.id) == lay.current())) out.push_back(v.id);
     return out;
 }
 
@@ -180,7 +182,7 @@ void Server::other_app_window(bool back) {
     const auto app = app_of(*f);
     std::vector<View*> same;
     for (auto& v : views)
-        if (&v != f && v.mapped && lay.workspace_of(v.id) == lay.workspace() && app_of(v) == app) same.push_back(&v);
+        if (&v != f && v.mapped && (wuxian() || lay.workspace_of(v.id) == lay.current()) && app_of(v) == app) same.push_back(&v);
     if (same.empty()) return;
     View* to = back ? same.front() : same.back();
     lay.focus(to->id);

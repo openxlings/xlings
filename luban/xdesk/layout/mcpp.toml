@@ -2,13 +2,15 @@
 # Wayland, so every arrangement and every operation is a unit test (design
 # 2026-10-19 §17, §21):
 #
-#   xdesk.layout  workspaces, each with its arrangement -- tile (scrolling
-#                 columns), stack (overlapping, snapped), canvas (pan, zoom,
-#                 overview, tiled groups) -- switched reversibly; floating,
-#                 focus moves and springs
+#   xdesk.layout  WuXian (openwx): one infinite plane, workspaces on it --
+#                 tile (scrolling columns) or stack (overlapping, snapped),
+#                 switched reversibly -- free windows beside them, the
+#                 workspace view and the WuXian view, drag and drop on a
+#                 frozen arrangement, wuxian.json; floating, focus, springs
 #
 # Any compositor can use it; xdesk-compositor does. Like every xdesk package
-# it imports nothing of xlings or Luban (tools/lint_layer_deps.sh).
+# it imports nothing of xlings or Luban (tools/lint_layer_deps.sh); it
+# implements openwx, a specification.
 [package]
 namespace = "xdesk"
 name      = "xdesk-layout"
@@ -16,3 +18,6 @@ version   = "0.1.0"
 
 [targets.xdesk-layout]
 kind = "lib"
+
+[dependencies]
+openwx = { path = "../../specs/openwx" }

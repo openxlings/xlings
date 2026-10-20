@@ -62,6 +62,8 @@ void Server::follow_focus() {
 void Server::arrange(bool instant) {
     placements = lay.arrange(output_size(), reserved());
     apply(placements, instant);
+    // Kept a moment later (what it says compared before it is written).
+    if (wuxian_timer) wl_event_source_timer_update(wuxian_timer, 1000);
 }
 
 void Server::apply(const std::vector<layout::Placement>& ps, bool instant, layout::Id skip) {
@@ -70,9 +72,9 @@ void Server::apply(const std::vector<layout::Placement>& ps, bool instant, layou
         const auto p = std::ranges::find(ps, v.id, &layout::Placement::id);
         wlr_scene_node_set_enabled(&v.frame->node, v.mapped && p != ps.end());
         if (p == ps.end()) continue;
-        // The canvas's zoom, and the overview's scale of it (switchers.cpp).
+        // Its scale in the WuXian view, and the overview's of it (switchers.cpp).
         const auto spread = spread_zoom.find(v.id);
-        const double zoom = lay.zoom() * (spread != spread_zoom.end() ? spread->second : 1);
+        const double zoom = p->zoom * (spread != spread_zoom.end() ? spread->second : 1);
         v.zoom = zoom;
         // Full screen: no title bar, all of the output the client's.
         const int bar = p->fullscreen ? 0 : kTitle;
@@ -85,7 +87,7 @@ void Server::apply(const std::vector<layout::Placement>& ps, bool instant, layou
             wlr_scene_buffer_set_dest_size(v.title, std::max(1, static_cast<int>(std::lround(p->rect.width))), title);
         }
         wlr_scene_node_set_position(&v.content->node, 0, title);
-        // The client is asked for its size at zoom 1 (the canvas scales it).
+        // The client is asked for its size at zoom 1 (the WuXian view scales it).
         const int cw = std::max(1, static_cast<int>(std::lround(p->rect.width / zoom)));
         const int ch = std::max(1, static_cast<int>(std::lround(p->rect.height / zoom)) - bar);
         if (v.toplevel->base->initialized) {
@@ -185,7 +187,7 @@ void Server::lay_out(View& v) {
     const bool floats = t->parent != nullptr || fixed;
     layout::Size preferred = kPreferred;
     if (fixed) preferred = {static_cast<double>(t->current.min_width), static_cast<double>(t->current.min_height + kTitle)};
-    lay.add(v.id, preferred, floats);
+    lay.add(v.id, preferred, floats, {t->app_id ? t->app_id : "", t->title ? t->title : ""});
     v.laid = true;
 }
 
@@ -227,7 +229,9 @@ void Server::add_view(wlr_xdg_toplevel* toplevel) {
         apply_rules(*self);
         lay.focus(self->id);
         arrange();
-        focus(self);
+        // Focused where it is shown (a rule may have sent it to another workspace).
+        if (lay.focused() == self->id) focus(self);
+        else follow_focus();
     });
     v.unmap.connect(&toplevel->base->surface->events.unmap, [this, self](void*) {
         self->mapped = false;
@@ -258,7 +262,7 @@ void Server::add_view(wlr_xdg_toplevel* toplevel) {
     // button it holds (design 2026-10-20 §8).
     v.request_move.connect(&toplevel->events.request_move, [this, self](void*) {
         if (drag == Drag::none && self->mapped && live())
-            drag_start(self, lay.floating(self->id) || lay.mode() != layout::Mode::tile);
+            drag_start(self, !wuxian() && (lay.floating(self->id) || rule_of(self->id) == layout::Rule::stack));
     });
     v.request_resize.connect(&toplevel->events.request_resize, [this, self](void* d) {
         const auto* ev = static_cast<wlr_xdg_toplevel_resize_event*>(d);
