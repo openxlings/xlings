@@ -38,22 +38,23 @@ void Server::draw_title(View& v, int width, bool active, bool rounded) {
 
 // The panel and (canvas) the grid, drawn again only when they changed.
 void Server::draw_shell() {
+    // The workspaces as the status bar shows them (design 2026-10-20 WuXian
+    // §3.13), the windows free on WuXian, the WuXian view's own.
     shell::PanelState st;
-    // The panel's workspaces by number (index n is workspace n + 1).
-    const auto ids = lay.workspaces();
-    st.workspace = lay.current() - 1;
-    st.workspaces = std::max(4, ids.empty() ? 1 : ids.back());
-    st.occupied.assign(static_cast<std::size_t>(st.workspaces), false);
+    st.workspaces = chips();
+    st.others = status_others;
     for (const auto& v : views)
-        if (v.mapped)
-            if (const auto w = lay.workspace_of(v.id); w && *w >= 1 && *w <= st.workspaces) st.occupied[static_cast<std::size_t>(*w - 1)] = true;
-    if (View* f = focused(); f && lay.workspace_of(f->id) == lay.current() && f->toplevel->title) st.title = f->toplevel->title;
+        if (v.mapped && lay.is_free(v.id)) ++st.free_windows;
+    if (View* f = focused(); f && (wuxian() || lay.workspace_of(f->id) == lay.current()) && f->toplevel->title) st.title = f->toplevel->title;
     st.clock = clock_text();
     st.zoom = lay.zoom();
-    st.overview = wuxian();
+    st.wuxian = wuxian();
+    st.minimap = minimap_on;
     st.zh = zh;
-    auto key = std::format("{} {} {} {} {} {} {}x{}@{}", st.workspace, st.occupied, st.title, st.clock, st.zoom, st.overview,
-                           size.width, size.height, scale);
+    std::string key = std::format("{} {} {} {} {} {} {} {}x{}@{}", st.title, st.clock, st.zoom, st.wuxian, st.free_windows, st.minimap, st.others,
+                                  size.width, size.height, scale);
+    for (const auto& c : st.workspaces)
+        key += std::format(" {}:{}:{:06x}:{}:{}:{}:{}:{}", c.id, c.name, c.color, c.stack, c.vertical, c.windows, c.current, c.morph);
     // A window full screen: no panel (nothing of it to click either).
     const bool full = std::ranges::any_of(placements, &layout::Placement::fullscreen);
     wlr_scene_node_set_enabled(&panel_node->node, !full);

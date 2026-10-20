@@ -40,6 +40,7 @@ Server::Server(const Options& opts)
     minimap_on = opts.minimap;
     snap_on = opts.snap;
     reduce_motion = opts.reduce_motion;
+    status_others = opts.status_others;
 }
 
 // ── start ────────────────────────────────────────────────────────
@@ -238,6 +239,38 @@ bool Server::start_() {
         static_cast<Server*>(data)->save_wuxian();
         return 0;
     }, this);
+    view_timer = wl_event_loop_add_timer(loop, [](void* data) -> int {
+        static_cast<Server*>(data)->view_step();
+        return 0;
+    }, this);
+    morph_timer = wl_event_loop_add_timer(loop, [](void* data) -> int {
+        auto* self = static_cast<Server*>(data);
+        self->panel_drawn.clear();
+        self->draw_shell();
+        for (auto& n : self->ws_nodes) n.drawn.clear();
+        if (self->wuxian()) self->update_frames(self->placements);
+        if (!self->rule_changed.empty()) wl_event_source_timer_update(self->morph_timer, 16);
+        return 0;
+    }, this);
+    removal_timer = wl_event_loop_add_timer(loop, [](void* data) -> int {
+        auto* self = static_cast<Server*>(data);
+        if (self->overlay != Overlay::dialog || !self->removal) return 0;
+        self->draw_overlay();
+        wl_event_source_timer_update(self->removal_timer, 250);
+        return 0;
+    }, this);
+    closing_timer = wl_event_loop_add_timer(loop, [](void* data) -> int {
+        // Asked to close with their workspace, still here: free on WuXian, and said.
+        auto* self = static_cast<Server*>(data);
+        int left = 0;
+        for (const auto id : self->closing)
+            if (const View* v = self->view_of(id); v && v->mapped) ++left;
+        self->closing.clear();
+        if (left > 0)
+            self->show_hint(self->zh ? std::format("{} 个窗口没有关闭，留在 WuXian 上", left)
+                                     : std::format("{} {} did not close: on WuXian", left, left == 1 ? "window" : "windows"), 5000);
+        return 0;
+    }, this);
     // The person's keys and state; each workspace's arrangement as they left it.
     load_person();
     draw_shell();
@@ -282,6 +315,8 @@ Server::~Server() {
     if (max_timer) wl_event_source_remove(max_timer);
     if (switch_timer) wl_event_source_remove(switch_timer);
     if (hold_timer) wl_event_source_remove(hold_timer);
+    for (auto* t : {view_timer, morph_timer, removal_timer, closing_timer})
+        if (t) wl_event_source_remove(t);
     if (wuxian_timer) {
         wl_event_source_remove(wuxian_timer);
         save_wuxian();

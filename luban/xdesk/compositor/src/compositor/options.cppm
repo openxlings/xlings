@@ -26,6 +26,7 @@ struct Options {
     bool minimap { true };                       // the WuXian view's minimap (design 2026-10-20 §9.6)
     bool snap { true };                          // a moved window snaps to others' edges (§9.4)
     bool reduce_motion { false };                // windows go at once, not by springs (§11.4)
+    bool status_others { true };                 // the status bar shows the other workspaces (design 2026-10-20 WuXian §3.13)
     std::string rule { "tile" };                 // a new workspace's: tile or stack (design 2026-10-20 WuXian §5.4)
     std::optional<std::uint32_t> accent;         // 0xrrggbb: the theme's, when absent
     std::optional<std::uint32_t> background;

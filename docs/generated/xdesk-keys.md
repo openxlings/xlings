@@ -10,7 +10,7 @@ Super alone: the applications. Super held a second: the keys used most.
 |  | Applications, the most recent first | `Super+Tab`, `Super+Shift+Tab` |
 |  | The application's other windows | `` Super+` ``, `` Super+Shift+` `` |
 |  | The windows, where they are | `Alt+Tab`, `Alt+Shift+Tab` |
-|  | Overview | `Super+O` |
+|  | The WuXian view (the infinite canvas), and back | `Super+O` |
 | Focus and move | Focus left | `Super+Left`, `Super+H` |
 |  | Focus right | `Super+Right`, `Super+L` |
 |  | Focus up | `Super+Up`, `Super+K` |
@@ -29,10 +29,11 @@ Super alone: the applications. Super held a second: the keys used most.
 |  | Close the window | `Super+Q`, `Alt+F4` |
 | Size | Column width: 1/3, 1/2, 2/3, all | `Super+R` |
 |  | Height in the column: equal, 2/3, 1/3 | `Super+Shift+R` |
-|  | Narrower (canvas: zoom out) | `Super+-` |
-|  | Wider (canvas: zoom in) | `Super+=`, `Super+Shift+Plus` |
-|  | Equal widths (canvas: 100 %, the focused window in the middle) | `Super+0` |
-| Arrangements | Tile, stack, canvas | `Super+M` |
+|  | Narrower (the WuXian view: zoom out) | `Super+-` |
+|  | Wider (the WuXian view: zoom in) | `Super+=`, `Super+Shift+Plus` |
+|  | Equal widths (the WuXian view: 100 %, the focused window in the middle) | `Super+0` |
+|  | The WuXian view: everything in view | `Super+Ctrl+0` |
+| Arrangements | The workspace's rule: tile or stack | `Super+M` |
 | Workspaces | Workspace 1 | `Super+1` |
 |  | Workspace 2 | `Super+2` |
 |  | Workspace 3 | `Super+3` |
@@ -51,6 +52,8 @@ Super alone: the applications. Super held a second: the keys used most.
 |  | To workspace 7 | `Super+Shift+7` |
 |  | To workspace 8 | `Super+Shift+8` |
 |  | To workspace 9 | `Super+Shift+9` |
+|  | Onto WuXian: a free window | `Super+Shift+0` |
+|  | A new workspace | `Super+Ctrl+N` |
 |  | The workspace before | `Super+Ctrl+Left`, `Super+PageUp` |
 |  | The workspace after | `Super+Ctrl+Right`, `Super+PageDown` |
 |  | To the workspace before, with the window | `Super+Ctrl+Shift+Left`, `Super+Shift+PageUp` |

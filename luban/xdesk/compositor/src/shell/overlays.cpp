@@ -264,6 +264,56 @@ MinimapPicture minimap(const Theme& t, const std::vector<draw::Rect>& boxes, dra
     return m;
 }
 
+Picture dialog(draw::Fonts* ui, draw::Fonts* big, const Theme& t, std::string_view title, std::string_view text,
+               const std::vector<DialogButton>& buttons, int width, int height, double scale) {
+    Picture p;
+    const double bh = 36, gap = 10;
+    double buttons_w = 0;
+    for (const auto& b : buttons) buttons_w += (ui ? ui->width(b.label) : 80) + 32 + gap;
+    const double w = std::clamp(std::max(buttons_w + 30, (ui ? ui->width(text) : 300) + 48), 360.0, std::max(360.0, width - 40.0));
+    const double h = 150;
+    p.x = std::round((width - w) / 2);
+    p.y = std::round((height - h) / 2);
+    p.image = image_(w, h, scale);
+    draw::Canvas c(p.image, scale);
+    c.fill({0, 0, w, h}, t.card, t.radius + 2);
+    c.frame({0, 0, w, h}, Color::rgb(0x3a4050), 1, t.radius + 2);
+    if (big) c.text(*big, title, 24, 38, t.text, w - 48);
+    if (ui) c.text(*ui, text, 24, 68, t.muted, w - 48);
+    double x = w - 24;
+    for (std::size_t k = buttons.size(); k-- > 0;) {
+        const auto& b = buttons[k];
+        const double bw = (ui ? ui->width(b.label) : 80) + 32;
+        x -= bw;
+        const Rect r{x, h - bh - 20, bw, bh};
+        const Color fill = !b.enabled ? Color::rgb(0x2a2e37) : b.danger ? Color::rgb(0xb8434e) : b.primary ? t.accent : t.title_idle;
+        c.fill(r, fill, 6);
+        if (ui) c.text(*ui, b.label, r.x + 16, std::round(r.y + 23), b.enabled ? (b.primary ? Color::rgb(0x0f1115) : t.text) : t.muted);
+        if (b.enabled) p.areas.push_back({.rect = {p.x + r.x, p.y + r.y, r.width, r.height}, .target = Target::item, .index = static_cast<int>(k)});
+        x -= gap;
+    }
+    return p;
+}
+
+Picture text_field(draw::Fonts* ui, const Theme& t, std::string_view prompt, std::string_view text, double x, double y, int width,
+                   int height, double scale) {
+    Picture p;
+    const double w = 320, h = 64;
+    p.x = std::clamp(x, 4.0, std::max(4.0, width - w - 4));
+    p.y = std::clamp(y, 4.0, std::max(4.0, height - h - 4));
+    p.image = image_(w, h, scale);
+    draw::Canvas c(p.image, scale);
+    c.fill({0, 0, w, h}, t.card, t.radius);
+    c.frame({0, 0, w, h}, t.accent, 1, t.radius);
+    if (ui) {
+        c.text(*ui, prompt, 14, 22, t.muted, w - 28);
+        const double end = 14 + c.text(*ui, text, 14, 48, t.text, w - 40);
+        c.fill({std::min(end + 1, w - 20), 34, 1.5, 18}, t.accent);
+    }
+    p.areas.push_back({.rect = {p.x, p.y, w, h}, .target = Target::item, .index = 0});
+    return p;
+}
+
 Picture hint(draw::Fonts* ui, const Theme& t, std::string_view text, int width, int height, double scale) {
     Picture p;
     const double w = ui ? std::min(width - 40.0, ui->width(text) + 40) : 300, h = 36;

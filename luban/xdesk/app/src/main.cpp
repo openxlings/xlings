@@ -118,6 +118,7 @@ int main(int argc, char* argv[]) {
     o.snap = settings.get("wuxian", "snap", settings.get("canvas", "snap", "on")) != "off";
     o.reduce_motion = settings.get("appearance", "reduce_motion", "off") == "on";
     o.rule = settings.get("desktop", "rule", o.rule);
+    o.status_others = settings.get("desktop", "status_others", "on") != "off";
     if (const auto c = settings.colour("theme", "accent", 0x1000000); c != 0x1000000) o.accent = c;
     if (const auto c = settings.colour("theme", "background", 0x1000000); c != 0x1000000) o.background = c;
     // Other windows of this desktop connect here (opensal-wlr's run_session says where).

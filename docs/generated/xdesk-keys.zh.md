@@ -10,7 +10,7 @@
 |  | 按应用切换 | `Super+Tab`, `Super+Shift+Tab` |
 |  | 同一应用的窗口间切换 | `` Super+` ``, `` Super+Shift+` `` |
 |  | 按窗口切换（空间总览） | `Alt+Tab`, `Alt+Shift+Tab` |
-|  | 总览 | `Super+O` |
+|  | WuXian 视图（无限画布）/ 返回 | `Super+O` |
 | 焦点与移动 | 焦点向左 | `Super+Left`, `Super+H` |
 |  | 焦点向右 | `Super+Right`, `Super+L` |
 |  | 焦点向上 | `Super+Up`, `Super+K` |
@@ -29,10 +29,11 @@
 |  | 关闭窗口 | `Super+Q`, `Alt+F4` |
 | 大小 | 列宽：1/3、1/2、2/3、全宽 | `Super+R` |
 |  | 列内高度：平分、2/3、1/3 | `Super+Shift+R` |
-|  | 变窄（画布：缩小） | `Super+-` |
-|  | 变宽（画布：放大） | `Super+=`, `Super+Shift+Plus` |
-|  | 平分（画布：回到 100% 并居中） | `Super+0` |
-| 排布 | 平铺、层叠、画布 | `Super+M` |
+|  | 变窄（WuXian 视图：缩小） | `Super+-` |
+|  | 变宽（WuXian 视图：放大） | `Super+=`, `Super+Shift+Plus` |
+|  | 平分（WuXian 视图：回到 100% 并居中） | `Super+0` |
+|  | WuXian 视图：显示全部 | `Super+Ctrl+0` |
+| 排布 | 工作区的规则：平铺或层叠 | `Super+M` |
 | 工作区 | 工作区 1 | `Super+1` |
 |  | 工作区 2 | `Super+2` |
 |  | 工作区 3 | `Super+3` |
@@ -51,6 +52,8 @@
 |  | 移到工作区 7 | `Super+Shift+7` |
 |  | 移到工作区 8 | `Super+Shift+8` |
 |  | 移到工作区 9 | `Super+Shift+9` |
+|  | 放到 WuXian 上（自由窗口） | `Super+Shift+0` |
+|  | 新建工作区 | `Super+Ctrl+N` |
 |  | 上一个工作区 | `Super+Ctrl+Left`, `Super+PageUp` |
 |  | 下一个工作区 | `Super+Ctrl+Right`, `Super+PageDown` |
 |  | 带着窗口去上一个工作区 | `Super+Ctrl+Shift+Left`, `Super+Shift+PageUp` |

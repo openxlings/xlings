@@ -227,20 +227,31 @@ void Server::act(Action a) {
         case Action::switch_apps: open_switcher(held(wlr_keyboard_modifier::WLR_MODIFIER_SHIFT)); return;
         case Action::app_windows: other_app_window(held(wlr_keyboard_modifier::WLR_MODIFIER_SHIFT)); return;
         case Action::windows: open_spread(held(wlr_keyboard_modifier::WLR_MODIFIER_SHIFT)); return;
-        case Action::overview:
+        case Action::wuxian:
             // Into the WuXian view, and back to the focused workspace
             // (design 2026-10-20 WuXian §3.2).
-            lay.set_view(wuxian() ? layout::View::workspace : layout::View::wuxian);
-            arrange();
-            follow_focus();
+            change_view();
+            return;
+        case Action::to_wuxian:
+            if (const auto f = lay.focused()) { lay.to_wuxian(*f); remember_arrangement(); arrange(); follow_focus(); }
+            return;
+        case Action::new_workspace: {
+            const int made = lay.add_workspace(lay.options().rule);
+            if (made == 0) { show_hint(tr_(zh, "Nine workspaces are as many as there are", "工作区最多 9 个"), 3000); return; }
+            if (wuxian()) { lay.frame_workspace(made); ws_selected = made; arrange(); }
+            else switch_workspace(made);
+            remember_arrangement();
+            return;
+        }
+        case Action::show_all:
+            if (wuxian()) { lay.show_all(); arrange(); }
             return;
         case Action::show1: case Action::show2: case Action::show3: case Action::show4: case Action::show5:
         case Action::show6: case Action::show7: case Action::show8: case Action::show9: {
             // Workspace n + 1, made when it is not there (design 2026-10-20 WuXian §3.9).
             const int n = static_cast<int>(a) - static_cast<int>(Action::show1) + 1;
-            lay.show(n);
-            arrange();
-            follow_focus();
+            if (wuxian()) { lay.show(n); arrange(); }
+            else switch_workspace(n);
             return;
         }
         case Action::send1: case Action::send2: case Action::send3: case Action::send4: case Action::send5:
@@ -260,6 +271,7 @@ void Server::act(Action a) {
             const int n = back ? *(at - 1) : *(at + 1);
             const auto f = lay.focused();
             if ((a == Action::carry_prev || a == Action::carry_next) && f) lay.send_to(*f, n);
+            if (!wuxian() && !((a == Action::carry_prev || a == Action::carry_next) && f)) { switch_workspace(n); return; }
             lay.show(n);
             if ((a == Action::carry_prev || a == Action::carry_next) && f) lay.focus(*f);
             arrange();
@@ -294,6 +306,7 @@ void Server::open_sheet() {
 void Server::open_menu(View* v, double x, double y) {
     if (!v) return;
     close_overlay(false);
+    menu_of = MenuOf::window;
     menu_for = v->id;
     overlay = Overlay::menu;
     overlay_at = 0;
@@ -349,7 +362,45 @@ void Server::draw_overlay() {
                                            w, h, zh, scale);
             break;
         }
+        case Overlay::dialog: draw_dialog(); break;
+        case Overlay::naming: draw_naming(); break;
         case Overlay::menu: {
+            std::vector<shell::MenuEntry> entries;
+            auto item = [&](std::string_view en, std::string_view cn, std::string act, bool checked = false) {
+                entries.push_back({.label = std::string(tr_(zh, en, cn)), .checked = checked});
+                menu_actions.push_back(std::move(act));
+            };
+            auto line = [&] { entries.push_back({.separator = true}); menu_actions.push_back(""); };
+            if (menu_of != MenuOf::window) {
+                // A workspace's, WuXian's, the workspace view's background (design 2026-10-20 WuXian §3.9, §3.11).
+                menu_actions.clear();
+                if (menu_of == MenuOf::workspace) {
+                    const auto* w = lay.workspace_info(menu_workspace);
+                    if (!w) { close_overlay(false); return; }
+                    item("Go in", "进入", "enter");
+                    item("Name…", "改名…", "rename");
+                    line();
+                    item("Tile", "平铺", "rule:tile", w->rule == layout::Rule::tile);
+                    item("Stack", "层叠", "rule:stack", w->rule == layout::Rule::stack);
+                    item("Another colour", "换一种颜色", "color");
+                    item("Half size on WuXian", "在 WuXian 上缩小一半", "scale:0.5", std::abs(w->scale - 0.5) < 1e-3);
+                    item("Full size on WuXian", "在 WuXian 上原大", "scale:1", std::abs(w->scale - 1) < 1e-3);
+                    line();
+                    item("Remove the workspace", "删除工作区", "delete");
+                } else if (menu_of == MenuOf::plane) {
+                    item("A tiled workspace here", "在这里新建平铺工作区", "new:tile");
+                    item("A stacked workspace here", "在这里新建层叠工作区", "new:stack");
+                    line();
+                    item("Tidy the workspaces up (one row)", "整理工作区（排成一行）", "tidy");
+                    item("Show everything", "显示全部", "show-all");
+                } else {
+                    item("Terminal", "终端", "terminal");
+                    item("Settings", "设置", "settings");
+                    item("The WuXian view", "WuXian 视图", "wuxian");
+                }
+                overlay_picture = shell::menu(ui(), theme, entries, overlay_picture.x, overlay_picture.y, w, h, scale);
+                break;
+            }
             View* v = view_of(menu_for);
             if (!v) { close_overlay(false); return; }
             const char* app = v->toplevel->app_id;
@@ -394,6 +445,8 @@ void Server::draw_overlay() {
 void Server::close_overlay(bool apply) {
     const auto was = overlay;
     overlay = Overlay::none;
+    if (was == Overlay::dialog) removal.reset();
+    if (was == Overlay::naming) naming = 0;
     wlr_scene_node_set_enabled(&overlay_node->node, false);
     if (was == Overlay::switcher || was == Overlay::spread) {
         // The windows back where they are, or the one chosen first.
@@ -416,6 +469,11 @@ void Server::close_overlay(bool apply) {
 void Server::menu_choose(std::size_t item) {
     if (item >= menu_actions.size()) return;
     const auto what = menu_actions[item];
+    if (menu_of != MenuOf::window) {
+        close_overlay(false);
+        if (!what.empty()) workspace_action(what);
+        return;
+    }
     View* v = view_of(menu_for);
     close_overlay(false);
     if (!v || what.empty()) return;
@@ -450,6 +508,8 @@ void Server::menu_choose(std::size_t item) {
 bool Server::overlay_key(xkb_keysym_t sym, bool down) {
     if (overlay == Overlay::none) return false;
     if (!down) return true;
+    if (overlay == Overlay::dialog) return dialog_key(sym);
+    if (overlay == Overlay::naming) return naming_key(sym, pressed_code);
     // The settings take every key (a key being given, text being typed).
     if (overlay == Overlay::settings) {
         if (sym == key::Escape && !settings_capture) {
@@ -474,7 +534,7 @@ bool Server::overlay_key(xkb_keysym_t sym, bool down) {
             // A key: it goes (and the key does what it does: input.cpp).
             close_overlay(false);
             return false;
-        case Overlay::menu: case Overlay::layouts:
+        case Overlay::menu: case Overlay::layouts: case Overlay::dialog: case Overlay::naming:
             return true;
         case Overlay::none: return false;
     }
@@ -485,6 +545,17 @@ bool Server::overlay_click(double x, double y) {
     if (overlay == Overlay::none) return false;
     if (overlay == Overlay::switcher || overlay == Overlay::spread) return switched_click(x, y);
     if (overlay == Overlay::settings) return settings_click(x, y);
+    if (overlay == Overlay::dialog) return dialog_click(x, y);
+    if (overlay == Overlay::naming) {
+        // Elsewhere than the field: what is typed is the name.
+        if (!shell::hit(overlay_picture, x, y)) {
+            lay.rename(naming, name_text);
+            close_overlay(false);
+            remember_arrangement();
+            arrange();
+        }
+        return true;
+    }
     // Hit areas are in output pixels.
     std::optional<shell::Area> hit;
     for (const auto& a : overlay_picture.areas)

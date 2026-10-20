@@ -159,8 +159,21 @@ struct Popup {
 // The settings' pages (design 2026-10-20 §11.4).
 enum class SettingsPage { displays, layout, appearance, keys, about };
 
-// What a held button is doing.
-enum class Drag { none, pan, move, gap, row_gap, resize };
+// What a held button is doing (workspace: a workspace's label carried;
+// scale: its corner, its scale).
+enum class Drag { none, pan, move, gap, row_gap, resize, workspace, scale };
+
+// A workspace in the WuXian view (design 2026-10-20 WuXian §3.3): its plate,
+// a border of its colour, its label above its top-left.
+struct WorkspaceNodes {
+    int id { 0 };
+    wlr_scene_rect* plate { nullptr };
+    std::array<wlr_scene_rect*, 4> border {};
+    wlr_scene_buffer* label { nullptr };
+    std::string drawn;
+    layout::Rect frame;                     // on the screen
+    layout::Rect label_at;
+};
 
 // A window showing the desktop (design 2026-10-20 §11): the first -- the
 // standard input and output -- is the primary, whose size and density the
@@ -278,7 +291,7 @@ struct Server {
     // arrangements and the applications are held with Super and chosen on
     // its release, the windows (spread) with Alt; the keys' sheet and a
     // window's menu stay until a key or a click.
-    enum class Overlay { none, chooser, switcher, spread, sheet, menu, layouts, settings };
+    enum class Overlay { none, chooser, switcher, spread, sheet, menu, layouts, settings, dialog, naming };
     Overlay overlay { Overlay::none };
     std::size_t overlay_at { 0 };
     std::vector<layout::Rule> chooser_rules;
@@ -334,6 +347,51 @@ struct Server {
     std::list<Control> controls;
     layout::Id menu_for { 0 };
     std::vector<std::string> menu_actions;       // by the menu's item
+    // Whose menu: a window's, a workspace's, WuXian's (its background), the
+    // workspace view's background.
+    enum class MenuOf { window, workspace, plane, desktop };
+    MenuOf menu_of { MenuOf::window };
+    int menu_workspace { 0 };
+    layout::Point menu_world;                    // WuXian's menu: where it was opened, on the plane
+    // The WuXian view (design 2026-10-20 WuXian §3): its workspaces' nodes;
+    // the one chosen (its label clicked: Enter goes in, Delete removes it);
+    // the one carried by its label or its corner.
+    std::vector<WorkspaceNodes> ws_nodes;
+    int ws_selected { 0 };
+    int ws_dragged { 0 };
+    layout::Point ws_drag_origin;
+    double ws_drag_scale { 1 };
+    double ws_drag_x { 0 }, ws_drag_y { 0 };
+    // The views' change (§3.2): the camera from one to the other, by a spring.
+    struct ViewMove {
+        layout::Camera from, to;
+        layout::Spring t;
+        bool leaving { false };                  // to the workspace view (the view changes at the end)
+    };
+    std::optional<ViewMove> view_move;
+    wl_event_source* view_timer { nullptr };
+    // A workspace's rule just changed: its shape on the status bar morphs.
+    std::map<int, std::chrono::steady_clock::time_point> rule_changed;
+    wl_event_source* morph_timer { nullptr };
+    // Removing a workspace that holds windows (§3.9): asked, its "close all" waiting 5 s.
+    struct Removal {
+        int id { 0 };
+        std::chrono::steady_clock::time_point since;
+        int windows { 0 };
+    };
+    std::optional<Removal> removal;
+    wl_event_source* removal_timer { nullptr };
+    std::vector<layout::Id> closing;             // asked to close with their workspace
+    wl_event_source* closing_timer { nullptr };
+    int naming { 0 };                            // a workspace being named
+    std::string name_text;
+    std::string hint_for;                        // the status bar's word shown for
+    // Super+Space held (§3.12): the pointer a hand -- a drag anywhere scrolls
+    // or pans; let go without one, the applications.
+    bool hand { false };
+    bool hand_used { false };
+    bool status_others { true };                 // the status bar shows the other workspaces
+    bool plane_focus { false };                  // the WuXian view: no window focused (WuXian, a label clicked)
     shell::Picture overlay_picture;
     wlr_scene_buffer* overlay_node { nullptr };
     wlr_scene_buffer* hint_node { nullptr };
@@ -538,6 +596,30 @@ struct Server {
     std::string control(std::string_view request);
     void set_accent(std::uint32_t rgb);
     std::string system_info();
+
+    // wuxian.cpp (design 2026-10-20 WuXian §3)
+    std::vector<shell::WorkspaceChip> chips();
+    void update_frames(const std::vector<layout::Placement>& ps);
+    void change_view(std::optional<int> into = std::nullopt);
+    void view_step();
+    void switch_workspace(int id);
+    void set_rule_of(int id, layout::Rule r);
+    bool wuxian_button(const opensal::PointerButton& b);
+    void workspace_motion();
+    void open_workspace_menu(int id, double x, double y);
+    void open_plane_menu(double x, double y);
+    void open_desktop_menu(double x, double y);
+    bool workspace_action(const std::string& what);
+    void ask_remove(int id);
+    void draw_dialog();
+    bool dialog_key(xkb_keysym_t s);
+    bool dialog_click(double x, double y);
+    void remove_with(int id, bool close_all);
+    void start_naming(int id);
+    void draw_naming();
+    bool naming_key(xkb_keysym_t s, std::uint32_t code);
+    void naming_type(std::string_view text);
+    void status_hover(double x, double y);
 
     // switchers.cpp
     std::string app_of(View& v) const;

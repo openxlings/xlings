@@ -128,8 +128,17 @@ void Layout::look(const Camera& c) {
     camera_.zoom = std::clamp(c.zoom, openwx::kMinZoom, openwx::kMaxZoom);
 }
 
-Camera Layout::locked_camera() const {
-    const auto& s = cur_();
+Camera Layout::locked_camera() const { return locked_camera(current_); }
+
+int Layout::focused_workspace() const {
+    if (focus_)
+        if (const auto* s = space_of_(*focus_)) return s->meta.id;
+    return current_;
+}
+
+Camera Layout::locked_camera(int id) const {
+    const auto* found = space_(id);
+    const auto& s = found ? *found : cur_();
     const double scale = s.meta.scale > 0 ? s.meta.scale : 1;
     Point at = s.meta.origin;
     if (s.meta.rule == Rule::tile) {

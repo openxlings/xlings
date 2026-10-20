@@ -192,6 +192,9 @@ public:
     void set_scale(int id, double scale);
     void move_workspace(int id, Point world);
     void raise(int id);
+    // Every workspace in a row by number, a gap apart, their tops in line
+    // with the first's (WuXian's menu: tidy up).
+    void line_up();
     // The current workspace's rule and flow.
     Rule rule() const;
     Flow flow() const;
@@ -217,6 +220,10 @@ public:
     // (its content 1:1 where it is on the screen): where the views' change of
     // camera starts and ends.
     Camera locked_camera() const;
+    Camera locked_camera(int id) const;
+    // The workspace the workspace view would show now: the focused window's
+    // (the WuXian view's), else the current one.
+    int focused_workspace() const;
     // The WuXian view's: moved by screen pixels; zoomed about a screen point.
     // In the workspace view a tiled workspace scrolls along its flow.
     void pan(double dx, double dy);

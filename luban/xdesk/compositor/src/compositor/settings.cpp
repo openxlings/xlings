@@ -75,7 +75,7 @@ std::string chord_spec_(const Chord& c) {
     if (c.ctrl) out += "Ctrl+";
     if (c.alt) out += "Alt+";
     if (c.shift) out += "Shift+";
-    if (c.digit) return out + std::to_string(c.digit);
+    if (c.digit) return out + std::to_string(c.digit % 10);
     std::array<char, 64> name{};
     xkb_keysym_get_name(c.sym, name.data(), name.size());
     return out + name.data();
@@ -436,7 +436,7 @@ bool Server::settings_key(xkb_keysym_t s) {
         if (s != key::Escape && settings_row < settings_items.size() && !settings_items[settings_row].action.empty()) {
             Chord c{.super = held(wlr_keyboard_modifier::WLR_MODIFIER_LOGO), .ctrl = held(wlr_keyboard_modifier::WLR_MODIFIER_CTRL),
                     .shift = held(wlr_keyboard_modifier::WLR_MODIFIER_SHIFT), .alt = held(wlr_keyboard_modifier::WLR_MODIFIER_ALT)};
-            if (pressed_code >= 2 && pressed_code <= 10) c.digit = static_cast<int>(pressed_code) - 1;
+            if (pressed_code >= 2 && pressed_code <= 11) c.digit = static_cast<int>(pressed_code) - 1;
             else c.sym = s == key::ISO_Left_Tab ? key::Tab : xkb_keysym_to_lower(s);
             if (!c.super && !c.alt && !c.ctrl) {
                 show_hint(tr_(zh, "A key for the desktop is held with Super (or Ctrl, Alt): alone it is the applications'",

@@ -39,6 +39,7 @@ View* Server::view_of(layout::Id id) {
 
 void Server::focus(View* v) {
     if (!v || !v->mapped) return;
+    plane_focus = false;
     if (View* was = focused(); was && was != v) wlr_xdg_toplevel_set_activated(was->toplevel, false);
     // To the front of the list and of the scene.
     for (auto it = views.begin(); it != views.end(); ++it)
@@ -112,9 +113,27 @@ void Server::apply(const std::vector<layout::Placement>& ps, bool instant, layou
         wlr_scene_node_set_position(&v.frame->node, static_cast<int>(std::lround(v.x.value)), static_cast<int>(std::lround(v.y.value)));
     }
     // Stacking as the layout orders them: stacked ones back to front, then
-    // floating ones, then those always on top (one carried by the pointer above all).
-    for (const auto& p : ps)
+    // floating ones, then those always on top (one carried by the pointer
+    // above all). In the WuXian view each workspace's plate goes just under
+    // its windows (an empty one's under everything).
+    update_frames(ps);
+    auto raise_plate = [&](int id) {
+        if (const auto n = std::ranges::find(ws_nodes, id, &WorkspaceNodes::id); n != ws_nodes.end()) {
+            wlr_scene_node_raise_to_top(&n->plate->node);
+            for (auto* b : n->border) wlr_scene_node_raise_to_top(&b->node);
+        }
+    };
+    for (const auto& n : ws_nodes)
+        if (std::ranges::none_of(ps, [&](const layout::Placement& p) { return p.workspace == n.id; })) raise_plate(n.id);
+    int plate_for = -1;
+    for (const auto& p : ps) {
+        if (!ws_nodes.empty() && p.workspace != 0 && p.workspace != plate_for && !p.pinned) {
+            plate_for = p.workspace;
+            raise_plate(p.workspace);
+        }
         if (View* v = view_of(p.id); v && v->id != skip) wlr_scene_node_raise_to_top(&v->frame->node);
+    }
+    for (auto* r : {drop_place, drop_half, drop_box}) wlr_scene_node_raise_to_top(&r->node);
     if (View* carried = skip ? view_of(skip) : nullptr) wlr_scene_node_raise_to_top(&carried->frame->node);
     zoom_surfaces();
     animate();

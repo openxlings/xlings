@@ -203,6 +203,16 @@ void Layout::raise(int id) {
     if (s->meta.z < z - 1 || std::ranges::count_if(layers_(), [&](const openwx::Layer& l) { return l.z == s->meta.z; }) > 1) s->meta.z = z;
 }
 
+void Layout::line_up() {
+    if (spaces_.empty()) return;
+    const auto top = spaces_.front().meta.origin;
+    double x = top.x;
+    for (auto& s : spaces_) {
+        s.meta.origin = {x, top.y};
+        x += world_of_(s).width + 160;
+    }
+}
+
 Rule Layout::rule() const { return cur_().meta.rule; }
 Flow Layout::flow() const { return cur_().meta.flow; }
 

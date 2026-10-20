@@ -402,10 +402,10 @@ XTEST(LubanOs, AWindowThatDrawsNoPointerGetsXdesksInItsFrames, .area = "luban",
     EXPECT_EQ(read_ppm(shot).at(203, 153), (std::array<int, 3>{0x00, 0xff, 0x00})) << "the pointer, drawn where it is";
 }
 
-// Super+m held: the arrangements as cards, the next one lit; m again for the
-// one after; Super let go chooses it -- and the session after starts as it
-// was left (design 2026-10-19 §17.5, §17.12). A state.json that cannot be read
-// is said and never written over.
+// Super+m held: the rules as cards, the other one lit; Super let go chooses
+// it -- and the session after starts as it was left (design 2026-10-19
+// §17.5; 2026-10-20 WuXian §3.14). A wuxian.json that cannot be read is kept
+// beside, and WuXian starts anew.
 XTEST(LubanOs, XdeskChoosesArrangementsHeldWithSuperAndKeepsThem, .area = "luban",
       .covers = {"XDESK-ARRANGEMENTS", "XDESK-COMPOSITOR", "WUXIAN-STATE"}, .requires_ = {"linux", "xlings-bin"}) {
     if (!app_binary()) GTEST_SKIP() << "no luban-os beside the xlings under test";
@@ -563,7 +563,7 @@ screenshot {}
 }
 
 XTEST(LubanOs, XdeskLauncherStartsWhatIsTypedAndThePanelSwitchesWorkspaces, .area = "luban",
-      .covers = {"XDESK-COMPOSITOR", "XDESK-SHELL", "XDESK-APPS"}, .requires_ = {"linux", "xlings-bin"}) {
+      .covers = {"XDESK-COMPOSITOR", "XDESK-SHELL", "XDESK-APPS", "WUXIAN-WORKSPACES"}, .requires_ = {"linux", "xlings-bin"}) {
     if (!app_binary()) GTEST_SKIP() << "no luban-os beside the xlings under test";
     if (!xdesk_binary()) GTEST_SKIP() << "no xdesk beside luban-os (mcpp build -p xdesk-app)";
     auto home = tk::Home::isolated("luban-os-xdesk-launcher");
@@ -576,8 +576,34 @@ XTEST(LubanOs, XdeskLauncherStartsWhatIsTypedAndThePanelSwitchesWorkspaces, .are
     tk::write_file(data / "applications" / "greenery.desktop",
                    std::format("[Desktop Entry]\nType=Application\nName=Greenery\nExec=python3 {} 40c040\n",
                                colour_client(home).string()));
-    const auto open = home.root() / "open.ppm", started = home.root() / "started.ppm", other = home.root() / "other.ppm";
+    const std::vector<std::string> args{"--desktop-exec", xdesk_binary()->string(), "--profile", "classic"};
+    const std::map<std::string, std::string> env{{"XDG_RUNTIME_DIR", runtime.string()}, {"XDG_DATA_DIRS", data.string()},
+                                                 {"HOME", home.root().string()}};
+    // A second workspace (Super+Ctrl+N), back to the first: the status bar
+    // shows it -- its shape in its colour (design 2026-10-20 WuXian §3.13).
+    const auto bar = home.root() / "bar.ppm";
     auto r = run_script(home, std::format(R"(wait desktop
+waitfor desktop.texture.0 1100
+sleep 500
+key Super+Ctrl+n
+sleep 500
+key Super+1
+sleep 1500
+screenshot {}
+screenshot {}
+)", bar.string(), artifact("xdesk-status-bar.bmp").string()), args, env);
+    ASSERT_EQ(r.exit_code, 0) << r.transcript();
+    const auto teal = std::array<int, 3>{0x3f, 0xbf, 0xb0};   // workspace 2's colour (openwx::color_for(2))
+    int chip = -1;
+    {
+        const auto img = read_ppm(bar);
+        for (int x = 0; x < img.width / 2 && chip < 0; ++x)
+            for (int y = 6; y < 24; ++y)
+                if (img.at(x, y) == teal) { chip = x + 3; break; }
+    }
+    ASSERT_GE(chip, 0) << "no shape of workspace 2's colour on the status bar";
+    const auto open = home.root() / "open.ppm", started = home.root() / "started.ppm", other = home.root() / "other.ppm";
+    r = run_script(home, std::format(R"(wait desktop
 waitfor desktop.texture.0 1100
 sleep 500
 key Super+space
@@ -590,13 +616,11 @@ key Return
 sleep 2500
 screenshot {}
 screenshot {}
-click 109 15
-sleep 500
+click {} 15
+sleep 800
 screenshot {}
-)", open.string(), artifact("xdesk-launcher.bmp").string(), started.string(), artifact("xdesk-launched.bmp").string(),
-                                          other.string()),
-                        {"--desktop-exec", xdesk_binary()->string(), "--profile", "classic"},
-                        {{"XDG_RUNTIME_DIR", runtime.string()}, {"XDG_DATA_DIRS", data.string()}, {"HOME", home.root().string()}});
+)", open.string(), artifact("xdesk-launcher.bmp").string(), started.string(), artifact("xdesk-launched.bmp").string(), chip,
+                                     other.string()), args, env);
     ASSERT_EQ(r.exit_code, 0) << r.transcript();
     // The launcher is up, its first row chosen (the accent's blue).
     const auto a = read_ppm(open);
@@ -604,7 +628,7 @@ screenshot {}
     // Enter started it: green fills the output under the panel.
     const auto b = read_ppm(started);
     EXPECT_EQ(b.at(550, 400), kGreen);
-    // Workspace 2 from the panel: empty.
+    // Workspace 2 from the status bar (kept from the session before): empty.
     const auto c = read_ppm(other);
     EXPECT_NE(c.at(550, 400), kGreen);
 }
@@ -891,9 +915,9 @@ state {}
     EXPECT_EQ(m["desktop"]["texture"][0], 1100) << m.dump();
     EXPECT_NE(m["window"]["title"].get<std::string>().find("mirroring display 1"), std::string::npos) << m["window"]["title"];
     EXPECT_GE(box_of(read_ppm(shot), kRed)[0], 0) << "the desktop's window, shown in the second";
-    // Its keys are the desktop's: Super+m there arranged the workspace.
-    const auto state = Json::parse(tk::read_file(first.root() / ".config" / "xdesk" / "state.json"));
-    EXPECT_EQ(state["arrangements"][0], "stack") << state.dump();
+    // Its keys are the desktop's: Super+m there arranged the workspace (WuXian keeps it).
+    const auto state = Json::parse(tk::read_file(first.root() / ".config" / "xdesk" / "wuxian.json"));
+    EXPECT_EQ(state["workspaces"][0]["rule"], "stack") << state.dump();
     // The first closed: the desktop went on, this window its primary at its own size.
     const auto p = Json::parse(tk::read_file(primary));
     EXPECT_NE(p["desktop"]["texture"][0], 1100) << p.dump();
@@ -1007,9 +1031,9 @@ sleep 400
     // The settings over the desktop.
     const auto s = read_ppm(settings);
     EXPECT_NE(s.at(550, 400), kBlue) << "a card over the windows";
-    // The layout page's first choice: this workspace stacked, kept.
-    const auto state = Json::parse(tk::read_file(home.root() / ".config" / "xdesk" / "state.json"));
-    EXPECT_EQ(state["arrangements"][0], "stack") << state.dump();
+    // The layout page's first choice: this workspace stacked, kept (wuxian.json).
+    const auto state = Json::parse(tk::read_file(home.root() / ".config" / "xdesk" / "wuxian.json"));
+    EXPECT_EQ(state["workspaces"][0]["rule"], "stack") << state.dump();
     // The keys page: maximize given Super+Shift+X, kept in keys.json.
     const auto keys = Json::parse(tk::read_file(home.root() / ".config" / "xdesk" / "keys.json"));
     EXPECT_EQ(keys["maximize"], Json::array({"Super+Shift+x"})) << keys.dump();

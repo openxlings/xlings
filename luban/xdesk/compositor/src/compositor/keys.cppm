@@ -15,7 +15,8 @@ enum class Action {
     focus_left, focus_right, focus_up, focus_down,
     move_left, move_right, move_up, move_down,
     join, split, width, height, smaller, larger, even,
-    maximize, fullscreen, toggle_float, pin, sticky, arrangements, switch_apps, app_windows, windows, overview,
+    maximize, fullscreen, toggle_float, pin, sticky, arrangements, switch_apps, app_windows, windows, wuxian,
+    to_wuxian, new_workspace, show_all,
     show1, show2, show3, show4, show5, show6, show7, show8, show9,
     send1, send2, send3, send4, send5, send6, send7, send8, send9,
     workspace_prev, workspace_next, carry_prev, carry_next,
@@ -41,8 +42,8 @@ struct ActionInfo {
     std::string_view name;                  // keys.json's
     std::string_view en, zh;                // what it does, for the sheet
     std::vector<std::string_view> chords;   // the desktop's own
-    // Where it means something: tile, stack, canvas (the sheet shows those).
-    bool tile { true }, stack { true }, canvas { true };
+    // Where it means something: tile, stack, the WuXian view (the sheet shows those).
+    bool tile { true }, stack { true }, wuxian { true };
     Group group { Group::window };
 };
 const std::vector<ActionInfo>& actions();

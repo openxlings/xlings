@@ -717,3 +717,24 @@ XTEST(XdeskLayout, ItKeepsEveryRuleOfOpenwx, .area = "luban", .covers = {"WUXIAN
     for (const auto& f : r.failed) ADD_FAILURE() << f;
     EXPECT_GE(r.passed, 9);
 }
+
+XTEST(XdeskLayout, TidyingUpPutsTheWorkspacesInARowAndTheViewGoesIntoTheOneAsked, .area = "luban", .covers = {"WUXIAN-WORKSPACES", "WUXIAN-VIEWS"}) {
+    Layout l({.inner_gap = 4, .outer_gap = 0});
+    l.add(1, {600, 400});
+    ASSERT_EQ(l.add_workspace(Rule::stack, std::nullopt, wx::Point{-5000, 3000}), 2);
+    ASSERT_EQ(l.add_workspace(Rule::tile, std::nullopt, wx::Point{900, -700}), 3);
+    l.arrange(kOutput);
+    l.line_up();
+    const auto *a = l.workspace_info(1), *b = l.workspace_info(2), *c = l.workspace_info(3);
+    EXPECT_EQ(b->origin.y, a->origin.y);
+    EXPECT_EQ(c->origin.y, a->origin.y);
+    EXPECT_GT(b->origin.x, a->origin.x + kOutput.width) << "in a row by number, apart";
+    EXPECT_GT(c->origin.x, b->origin.x + kOutput.width);
+    // The camera that ends the views' change is the workspace it goes into's.
+    l.set_view(View::wuxian);
+    l.focus(1);
+    EXPECT_EQ(l.focused_workspace(), 1);
+    const auto into = l.locked_camera(3);
+    EXPECT_EQ(into.at, c->origin);
+    EXPECT_DOUBLE_EQ(into.zoom, 1);
+}
