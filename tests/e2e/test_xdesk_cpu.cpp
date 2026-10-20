@@ -97,7 +97,7 @@ XTEST(XdeskPerf, TheOverviewTenTimesStaysWithinItsCpuBudget, .area = "luban", .c
 // however much changes meanwhile; restored, all of it at once (design
 // 2026-10-20 §13.2, §13.3).
 XTEST(XdeskPerf, AStillDesktopSendsNoFramesAndAHiddenWindowNone, .area = "luban", .cost = tk::Cost::Medium,
-      .covers = {"XDESK-PERF"}, .requires_ = {"linux", "xlings-bin"}) {
+      .covers = {"XDESK-PERF"}, .requires_ = {"linux", "xlings-bin"}, .resources = {"cpu"}) {
     if (!app_binary()) GTEST_SKIP() << "no luban-os beside the xlings under test";
     if (!xdesk_binary()) GTEST_SKIP() << "no xdesk beside luban-os (mcpp build -p xdesk-app)";
     auto home = tk::Home::isolated("xdesk-perf-still");
