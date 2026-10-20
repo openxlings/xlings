@@ -860,6 +860,10 @@ xim-pkgindex（一个 PR）：
 - 多显示器扩展（每块屏一个镜头、各锁一个工作区）；本轮仍只镜像。
 - WuXian 上框选多个自由窗口、"平铺这些"；应用规则"总在某工作区打开"。
 - WuXian 的 `wuxian-v1` 扩展协议与 `ext-workspace-v1` 的实现（规范里预留，§15.8）。
+- machine 的 3D（K9 实施时的取舍）：xlings 这边已经按 §7.5 选择（`luban.vm` 的 `machine_gpu`：宿主有 render node、找到的 qemu
+  有 `virtio-gpu-gl-pci` 时用 virgl，否则无 GPU 并在状态里写原因），内核 6.12.112-r3 已带 DRM 与 virtio-gpu。还缺两件：GL 版的 qemu
+  （`xim:qemu-system-gl`，动态链接 virglrenderer 与 epoxy）与带 `virgl` gallium 驱动的 `xim:mesa`（在 gfxbuild subos 里整套重编，数小时）。
+  两者发布前，machine 的桌面用软件绘制，关于页写明原因。沙箱的 `gpu` 授权仍绑定整个 `/dev/dri`（§7.4 的"只绑 render node"随之一起做）。
 - xdesk 自己画指针时（宿主不提供 `Cursor`：2026.10.19.2 之前的 Luban OS）的晃动放大：这时的指针图像已经来自 kit 生成的
   `luban:cursors`，检测留到那条路径还有用户时再接（K8 实施时的取舍）。
 - Luban 拆分时一并做：L3 依赖迁到 `Port`（§16.2 的 `migrating` 段）、`xim:xdesk` 改名、`libs/luban*` 搬目录、`luban:` 成为子索引。
