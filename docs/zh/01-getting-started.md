@@ -26,11 +26,12 @@ xlings config --mirror CN
 ## 第一个包
 
 ```bash
-xlings install gcc@16 node@24 cmake    # a version, or the latest
-xlings use gcc@16                       # which version is active
-xlings search python                    # what the indexes offer
-xlings list                             # what is installed here
-xlings remove cmake                     # uninstall
+xlings install mcpp luban node    # the latest
+xlings install node@20            # an older version, beside it
+xlings use node@20                # which version is active
+xlings search gcc                 # what the indexes offer
+xlings list                       # what is installed here
+xlings remove node@20             # uninstall
 ```
 
 不写版本时安装索引提供的最新版。各平台命令相同；没有为你的机器构建的包，在下载之前就会被拒绝。
