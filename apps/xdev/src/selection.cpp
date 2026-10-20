@@ -60,6 +60,13 @@ bool under(const fs::path& path, std::string_view prefix) {
     return value == prefix || value.starts_with(std::string(prefix) + "/");
 }
 
+// Which directory of a tests tree a test is in (tests/unit, luban/tests/unit):
+// the first part of its name, as mcpp names it -- the same for both trees.
+bool in_dir(const Test& test, std::string_view dir) {
+    const auto name = std::string_view(test.id).substr(test.member.empty() ? 0 : test.member.size() + 1);
+    return name.starts_with(std::string(dir) + "/");
+}
+
 bool platform_ok(std::span<const std::string> required, std::string_view platform) {
     for (const auto& cap : required)
         if ((cap == "linux" || cap == "macos" || cap == "windows") && cap != platform) return false;
@@ -169,7 +176,7 @@ std::set<std::string> affected(const std::vector<Test>& tests, const std::vector
     }
     std::set<std::string> impacted;
     for (const auto& test : tests)
-        if (global || dirty.contains(test.source) || (product && (under(test.source, "tests/e2e") || test.script)))
+        if (global || dirty.contains(test.source) || (product && (in_dir(test, "e2e") || test.script)))
             impacted.insert(test.id);
     return impacted;
 }
@@ -231,8 +238,8 @@ select(std::span<const Test> tests, const Options& options, const std::set<std::
         const bool perf = test.source.stem().string().ends_with("_perf");
         if (options.category.empty() && options.pattern.empty() && options.lane != "nightly" && perf) continue;
         if (!options.category.empty()) {
-            if ((options.category == "unit" && !under(test.source, "tests/unit"))
-                || (options.category == "e2e" && (!under(test.source, "tests/e2e") || perf))
+            if ((options.category == "unit" && !in_dir(test, "unit"))
+                || (options.category == "e2e" && (!in_dir(test, "e2e") || perf))
                 || (options.category == "perf" && !perf)) continue;
         }
         if (!options.platform.empty() && !test.platforms.empty() && !has(test.platforms, options.platform)) continue;
@@ -335,7 +342,7 @@ std::expected<std::vector<Test>, std::string> discovery(std::string_view ndjson,
             if (test.id.empty() || test.source.empty() || test.source.is_absolute() || *test.source.begin() == ".."
                 || !fs::is_regular_file(root / test.source) || !ids.insert(test.id).second)
                 return std::unexpected("discovery has an invalid, absent or duplicate test source: " + name);
-            test.duration_ms = under(test.source, "tests/unit") ? 1000 : 5000;
+            test.duration_ms = in_dir(test, "unit") ? 1000 : 5000;
             if (auto cases = row.find("cases"); cases != row.end()) {
                 if (!cases->is_array()) return std::unexpected("discovery cases must be an array");
                 test.metadata_known = true;

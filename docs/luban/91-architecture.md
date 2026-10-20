@@ -24,8 +24,8 @@ small on purpose.
 | `luban/os/window` | the Luban OS app's window (SDL3) and Dear ImGui |
 | `luban/os/compat` | what is kept only for a released older part, with when it goes |
 | `modules/image` | images, in-process: GPT, FAT, ISO 9660 with El Torito, qcow2 |
-| `apps/luban` | the binary: luban, or stage-0 when started as `luban-init` |
-| `apps/luban-os` | the Luban OS app: its windows, and its tray (`luban-os __tray`) |
+| `luban/host/luban` | the binary: luban, or stage-0 when started as `luban-init` |
+| `luban/host/luban-os` | the Luban OS app: its windows, and its tray (`luban-os __tray`) |
 | `src/core/subos/root` | the xlings side of a root: projection, generations, rollback, export |
 
 A specification imports only the standard library and itself; a kit never

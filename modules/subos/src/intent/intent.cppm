@@ -25,6 +25,9 @@ struct Grant {
     std::string inside;          // where it appears
     bool writable { true };
     std::optional<std::string> refused;   // a Must: the sandbox is not entered
+    // A device node (/dev/kvm): bound with its devices usable -- a plain bind
+    // in the sandbox's mount namespace is nodev, and opening it fails.
+    bool device { false };
 };
 
 struct Identity {
@@ -74,6 +77,7 @@ struct Intent {
     std::map<std::string, std::string> explicit_env;
     std::function<bool(std::string_view)> host_exists;
     std::function<std::string(std::string_view)> host_resolve;
+    std::function<bool(std::string_view)> host_device;
 
     // How hard a dimension is required: Must under --no-degrade, else the
     // policy's word, else Should.
@@ -85,6 +89,8 @@ struct Intent {
     [[nodiscard]] bool exists(std::string_view path) const;
     // Where it resolves, its symlinks followed (the same seam).
     [[nodiscard]] std::string resolve(std::string_view path) const;
+    // It is a character or block device (the same seam).
+    [[nodiscard]] bool device(std::string_view path) const;
 };
 
 Intent lower(const policy::Policy& policy, const HomeView& home, const spec::Request& request);

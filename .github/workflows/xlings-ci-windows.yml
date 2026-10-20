@@ -538,4 +538,4 @@ jobs:
       - name: "Luban OS on WSL 2: status, a system, a command, a machine as reported"
         shell: pwsh
         run: |
-          & "$env:GITHUB_WORKSPACE\tests\e2e\windows_luban_wsl2_test.ps1" "build\release.zip" "build\app\luban-os.exe"
+          & "$env:GITHUB_WORKSPACE\luban\tests\e2e\windows_luban_wsl2_test.ps1" "build\release.zip" "build\app\luban-os.exe"

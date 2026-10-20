@@ -4,7 +4,7 @@
 # downloads (esp. the CN path, which is GitCode-only for package binaries)
 # resolve for ALL platforms.
 #
-# Generic over <project> — currently `xlings` and `mcpp`. Tag scheme on
+# Generic over <project> (the list below). Tag scheme on
 # xlings-res/<project> is the BARE version (e.g. 0.4.63 / 0.0.82); the upstream
 # source tag is v<version>. Asset filenames are identical on both ends (the
 # xlings-res convention `<project>-<ver>-<platform>.<ext>` matches upstream).
@@ -26,7 +26,7 @@ case "$PROJ" in
     DEFAULT_ASSETS="${p}-linux-x86_64.tar.gz ${p}-linux-x86_64.tar.gz.sha256 ${p}-linux-aarch64.tar.gz ${p}-linux-aarch64.tar.gz.sha256 ${p}-macosx-arm64.tar.gz ${p}-macosx-arm64.tar.gz.sha256 ${p}-windows-x86_64.zip ${p}-windows-x86_64.zip.sha256"
     ;;
   luban)
-    # luban, released with xlings as its own payload (tools/luban_release.sh):
+    # luban, released with xlings as its own payload (luban/tools/luban_release.sh):
     # every platform xlings is released for.
     : "${SRC_REPO:=openxlings/xlings}"
     p="luban-${VER}"
@@ -45,6 +45,13 @@ case "$PROJ" in
     p="xdesk-${VER}"
     DEFAULT_ASSETS="${p}-linux-x86_64.tar.gz ${p}-linux-x86_64.tar.gz.sha256"
     ;;
+  luban-cursors)
+    # The Luban pointer theme (luban:cursors), released with xlings: data, one
+    # archive for every system (luban/tools/cursors_release.sh).
+    : "${SRC_REPO:=openxlings/xlings}"
+    p="luban-cursors-${VER}"
+    DEFAULT_ASSETS="${p}.tar.gz ${p}.tar.gz.sha256"
+    ;;
   mcpp)
     : "${SRC_REPO:=mcpp-community/mcpp}"
     # Mirror each archive and its authoritative checksum sidecar so resource
@@ -53,7 +60,7 @@ case "$PROJ" in
     DEFAULT_ASSETS="${p}-linux-x86_64.tar.gz ${p}-linux-x86_64.tar.gz.sha256 ${p}-linux-aarch64.tar.gz ${p}-linux-aarch64.tar.gz.sha256 ${p}-macosx-arm64.tar.gz ${p}-macosx-arm64.tar.gz.sha256 ${p}-windows-x86_64.zip ${p}-windows-x86_64.zip.sha256"
     ;;
   *)
-    echo "[mirror] unknown project '$PROJ' (expected xlings|luban|luban-os|xdesk|mcpp)" >&2
+    echo "[mirror] unknown project '$PROJ' (expected xlings|luban|luban-os|xdesk|luban-cursors|mcpp)" >&2
     exit 2
     ;;
 esac

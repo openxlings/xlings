@@ -43,6 +43,9 @@ luban config box --on-close background
 
 edition 可以给出这些设置的默认值；你设置的优先。
 
+按 machine 启动的系统，`luban run` 也在 machine 里执行，用它自己的内核：machine 没开时为这条命令启动、执行完关机；正在运行的保持运行。
+在 machine 里执行 `poweroff`，会话随之结束，machine 关机，不会再问。
+
 ## 升级
 
 ```bash

@@ -1,8 +1,10 @@
 // What a desktop keeps of a person's between sessions (design 2026-10-19
-// §16.4, §17.12): $XDG_CONFIG_HOME/xdesk/state.json -- each workspace's
-// arrangement, the one last chosen, the applications' rules -- and the keys
-// they bound, keys.json. Both are the person's: read; written whole and
-// atomically; one that cannot be read is said and never written over.
+// §16.4, §17.12; 2026-10-20 WuXian §3.14): $XDG_CONFIG_HOME/xdesk/state.json
+// -- the applications' rules, what was said once -- the keys they bound,
+// keys.json, and WuXian -- the workspaces, the view, where each window was --
+// wuxian.json (openwx's format, read and written by the desktop). All are
+// the person's: read; written whole and atomically; one that cannot be read
+// is said and never written over.
 //
 // JSON, read and written here: xdesk imports nothing of xlings.
 export module xdesk.config:state;
@@ -38,11 +40,12 @@ struct Rule {
 };
 
 struct State {
-    std::vector<std::string> arrangements;      // by workspace: tile, stack, canvas, or "" (not chosen)
-    std::string last;                           // the arrangement last chosen: where the xdesk session starts
     std::map<std::string, Rule> rules;          // by application id
     bool hinted { false };                      // the first session's word on the keys was said
     int keys_seen { 0 };                        // the version of the keys last told (2: design 2026-10-20 §12.2)
+    // Read: the workspaces' arrangements of before WuXian were there (they
+    // are wuxian.json's now; the file of before is kept aside once).
+    bool old_arrangements { false };
     bool operator==(const State&) const = default;
 };
 
@@ -52,6 +55,15 @@ std::filesystem::path keys_file(const std::map<std::string, std::string>& env);
 // Nothing there: the defaults. There and unreadable: why.
 std::expected<State, std::string> read_state(const std::map<std::string, std::string>& env);
 std::expected<void, std::string> write_state(const std::map<std::string, std::string>& env, const State& s);
+
+// wuxian.json, beside state.json: its text (nothing: none yet); there and
+// unreadable: why.
+std::filesystem::path wuxian_file(const std::map<std::string, std::string>& env);
+std::expected<std::optional<std::string>, std::string> read_wuxian(const std::map<std::string, std::string>& env);
+std::expected<void, std::string> write_wuxian(const std::map<std::string, std::string>& env, std::string_view text);
+// A file this desktop cannot use, kept beside it as <name>.before-<date>
+// (once: an earlier copy of that day stays); where it went.
+std::expected<std::filesystem::path, std::string> keep_aside(const std::filesystem::path& file);
 
 // keys.json: an action's chords ("Super+Return", "Ctrl+Alt+t"), each action
 // the person rebound; the rest keep the desktop's.

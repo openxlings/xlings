@@ -38,20 +38,23 @@ void Server::draw_title(View& v, int width, bool active, bool rounded) {
 
 // The panel and (canvas) the grid, drawn again only when they changed.
 void Server::draw_shell() {
+    // The workspaces as the status bar shows them (design 2026-10-20 WuXian
+    // §3.13), the windows free on WuXian, the WuXian view's own.
     shell::PanelState st;
-    st.workspace = lay.workspace();
-    st.workspaces = lay.workspaces();
-    st.occupied.assign(static_cast<std::size_t>(st.workspaces), false);
+    st.workspaces = chips();
+    st.others = status_others;
     for (const auto& v : views)
-        if (v.mapped)
-            if (const auto w = lay.workspace_of(v.id)) st.occupied[static_cast<std::size_t>(*w)] = true;
-    if (View* f = focused(); f && lay.workspace_of(f->id) == lay.workspace() && f->toplevel->title) st.title = f->toplevel->title;
+        if (v.mapped && lay.is_free(v.id)) ++st.free_windows;
+    if (View* f = focused(); f && (wuxian() || lay.workspace_of(f->id) == lay.current()) && f->toplevel->title) st.title = f->toplevel->title;
     st.clock = clock_text();
     st.zoom = lay.zoom();
-    st.overview = lay.in_overview();
+    st.wuxian = wuxian();
+    st.minimap = minimap_on;
     st.zh = zh;
-    auto key = std::format("{} {} {} {} {} {} {} {}x{}@{}", st.workspace, st.occupied, st.title, st.clock, st.zoom, st.overview,
-                           lay.mode() == layout::Mode::canvas, size.width, size.height, scale);
+    std::string key = std::format("{} {} {} {} {} {} {} {}x{}@{}", st.title, st.clock, st.zoom, st.wuxian, st.free_windows, st.minimap, st.others,
+                                  size.width, size.height, scale);
+    for (const auto& c : st.workspaces)
+        key += std::format(" {}:{}:{:06x}:{}:{}:{}:{}:{}", c.id, c.name, c.color, c.stack, c.vertical, c.windows, c.current, c.morph);
     // A window full screen: no panel (nothing of it to click either).
     const bool full = std::ranges::any_of(placements, &layout::Placement::fullscreen);
     wlr_scene_node_set_enabled(&panel_node->node, !full);
@@ -65,11 +68,11 @@ void Server::draw_shell() {
         show(panel_node, std::move(panel_picture.image), scale);
         panel_picture.image = {};
     }
-    wlr_scene_node_set_enabled(&canvas_dots->node, canvas());
-    // The minimap, while the canvas holds more than fits in the view.
+    wlr_scene_node_set_enabled(&wuxian_dots->node, wuxian());
+    // The minimap, while the plane holds more than fits in the view.
     {
         const auto m = lay.minimap();
-        const bool shown = canvas() && minimap_on && !lay.in_overview() && !m.boxes.empty()
+        const bool shown = wuxian() && minimap_on && !m.boxes.empty()
                            && (m.bounds.width > m.view.width + 1 || m.bounds.height > m.view.height + 1);
         wlr_scene_node_set_enabled(&minimap_node->node, shown);
         if (!shown) minimap_shown = {};
@@ -88,12 +91,12 @@ void Server::draw_shell() {
             }
         }
     }
-    if (canvas()) {
-        const auto [cx, cy] = lay.camera();
-        auto dots = std::format("{} {} {} {}x{}@{}", cx, cy, lay.zoom(), size.width, size.height, scale);
+    if (wuxian()) {
+        const auto cam = lay.camera();
+        auto dots = std::format("{} {} {} {}x{}@{}", cam.at.x, cam.at.y, cam.zoom, size.width, size.height, scale);
         if (dots != dots_drawn) {
             dots_drawn = std::move(dots);
-            show(canvas_dots, shell::canvas_background(theme, logical_w(), logical_h(), cx, cy, lay.zoom(), scale), scale);
+            show(wuxian_dots, shell::canvas_background(theme, logical_w(), logical_h(), cam.at.x, cam.at.y, cam.zoom, scale), scale);
         }
     }
 }
@@ -114,12 +117,13 @@ void Server::open_launcher() {
     for (const char* k : {"LC_ALL", "LC_MESSAGES", "LANG"})
         if (env.contains(k) && !env.at(k).empty()) { lang = env.at(k); break; }
     auto all = apps::scan(apps::dirs(env), lang);
-    std::erase_if(all, [](const apps::App& a) { return a.id == "xdesk-settings"; });   // its pages are here, one by one
+    // Its own settings are an application among the others (design 2026-10-20 WuXian §5.6);
+    // their pages and its actions are found when searched.
     // The desktop's own (design 2026-10-20 §12.5): its settings' pages and
     // its actions, each with its keys -- searched once, learnt.
     struct Page { std::string_view id, en, zh, words; };
     for (const auto& p : {Page{"displays", "Settings: displays", "设置：显示器", "monitor screen resolution mirror 分辨率 镜像 屏幕"},
-                          Page{"layout", "Settings: layout", "设置：布局", "tile stack canvas gap column 平铺 层叠 画布 间隔 列"},
+                          Page{"layout", "Settings: layout", "设置：布局", "tile stack wuxian canvas workspace gap column 平铺 层叠 无限画布 工作区 间隔 列"},
                           Page{"appearance", "Settings: appearance", "设置：外观", "accent colour background motion 颜色 背景 动画"},
                           Page{"keys", "Settings: keys", "设置：快捷键", "shortcut keyboard keys 按键 快捷键 键位"},
                           Page{"about", "Settings: about", "设置：关于", "version system about information 版本 系统 信息"}})
@@ -160,6 +164,7 @@ std::vector<std::string> Server::terminal_argv(const std::vector<std::string>& c
 }
 
 void Server::start_app(const apps::App& app) {
+    if (app.id == "xdesk-settings") { open_settings(SettingsPage::displays); return; }
     if (app.id.starts_with("xdesk:settings:")) {
         const auto page = app.id.substr(15);
         for (const auto p : {SettingsPage::displays, SettingsPage::layout, SettingsPage::appearance, SettingsPage::keys, SettingsPage::about})

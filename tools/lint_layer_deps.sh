@@ -14,7 +14,7 @@
 # upward is a build that compiles today and cannot be split tomorrow -- the
 # SubOS core reaching for the package manager is exactly what `Ports` exists
 # to prevent, and nothing else would notice until the split.
-# xtest: covers=LAYOUT-DEPS,LAYOUT-SPECS requires=
+# xtest: covers=LAYOUT-DEPS,LAYOUT-SPECS,LUBAN-ARCH-DEPS requires=
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -25,8 +25,8 @@ report() { echo "::error file=$1::$2"; bad=$((bad + 1)); }
 
 # `import x;` / `export import x;` at the start of a line, comments excluded.
 imports() {
-  grep -rnE --include='*.cppm' --include='*.cpp' '^[[:space:]]*(export[[:space:]]+)?import[[:space:]]+[A-Za-z_.:]+' "$@" 2>/dev/null \
-    | sed -E 's/^([^:]+):([0-9]+):[[:space:]]*(export[[:space:]]+)?import[[:space:]]+([A-Za-z_.]+).*/\1:\2 \4/' || true
+  grep -rnE --include='*.cppm' --include='*.cpp' '^[[:space:]]*(export[[:space:]]+)?import[[:space:]]+[A-Za-z0-9_.:]+' "$@" 2>/dev/null \
+    | sed -E 's/^([^:]+):([0-9]+):[[:space:]]*(export[[:space:]]+)?import[[:space:]]+([A-Za-z0-9_.]+).*/\1:\2 \4/' || true
 }
 
 # The frontend's module roots: everything src/ exports.
@@ -109,8 +109,46 @@ if [ -d luban/os/service ]; then
   done < <(imports luban/os/service)
 fi
 
+# What of xlings each Luban package may import: luban/DEPENDENCIES.toml
+# (design 2026-10-20 WuXian §16.2) -- its layers, base and shared; xlings'
+# domain only where [migrating] lists it, and nowhere new.
+if [ -f luban/DEPENDENCIES.toml ]; then
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    report "${line%%::*}" "${line#*::}"
+  done < <(imports luban | python3 -c '
+import fnmatch, sys, tomllib
+table = tomllib.load(open("luban/DEPENDENCIES.toml", "rb"))
+layers, packages = table["layers"], table["packages"]
+migrating = {m["module"]: m for m in table.get("migrating", [])}
+def matches(module, patterns):
+    return any(module == p or (p.endswith(".*") and (module == p[:-2] or module.startswith(p[:-1]))) for p in patterns)
+for row in sys.stdin:
+    parts = row.split()
+    if len(parts) != 2:
+        continue
+    where, module = parts
+    if not module.startswith("xlings"):
+        continue
+    path = where.split(":")[0]
+    owners = [d for d in packages if path.startswith(d + "/")]
+    if not owners:
+        continue
+    package = max(owners, key=len)
+    if any(matches(module, layers[l]) for l in packages[package]):
+        continue
+    m = migrating.get(module)
+    if m and any(path.startswith(w + "/") for w in m["where"]):
+        continue
+    if m:
+        print(f"{path}::{package} imports {module} ({where}): it is being moved behind {m["to"]}; no new use outside {", ".join(m["where"])}")
+    else:
+        print(f"{path}::{package} imports {module} ({where}), which luban/DEPENDENCIES.toml does not allow there: a base or shared module only, the xlings domain through a Port capability")
+')
+fi
+
 if [ "$bad" -gt 0 ]; then
   echo "layer dependency lint: FAIL ($bad import(s) across a boundary)"
   exit 1
 fi
-echo "layer dependency lint: PASS (luban -> modules, modules -/-> luban, src; src -/-> luban; specs -> std and themselves; kits, xdesk -/-> xlings, luban; the OS service -/-> presentation)"
+echo "layer dependency lint: PASS (luban -> modules, modules -/-> luban, src; src -/-> luban; specs -> std and themselves; kits, xdesk -/-> xlings, luban; the OS service -/-> presentation; Luban's xlings imports as luban/DEPENDENCIES.toml allows)"

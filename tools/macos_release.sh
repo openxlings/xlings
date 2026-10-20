@@ -148,7 +148,7 @@ chmod +x "$OUT_DIR/bin/"*
 # luban runs the Luban host machine (Virtualization.framework): signed, ad
 # hoc, with that framework's entitlement (part 4 §6.6). An ad-hoc signature
 # is what a downloaded binary without quarantine runs with.
-codesign --force --sign - --entitlements "$PROJECT_DIR/apps/luban/luban.entitlements" "$OUT_DIR/bin/luban" \
+codesign --force --sign - --entitlements "$PROJECT_DIR/luban/host/luban/luban.entitlements" "$OUT_DIR/bin/luban" \
   || fail "codesign bin/luban with the virtualization entitlement failed"
 
 # .xlings.json — release packages default to GLOBAL. Users can switch mirror

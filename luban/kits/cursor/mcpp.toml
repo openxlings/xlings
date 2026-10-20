@@ -1,0 +1,13 @@
+# cursorkit: pointers drawn from vector shapes at exactly the size asked --
+# a theme's text format, one rasterizer, Xcursor files, and the shake that
+# says someone is looking for the pointer (README.md). Nothing here knows a
+# desktop or a theme: the shapes and colours are given to it. A kit: the
+# standard library only (tools/lint_layer_deps.sh). Its tool, cursor-make,
+# is ./tool.
+[package]
+namespace = "cursorkit"
+name      = "cursorkit"
+version   = "0.1.0"
+
+[targets.cursorkit]
+kind = "lib"

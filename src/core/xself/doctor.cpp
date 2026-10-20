@@ -1002,11 +1002,18 @@ Scan detect_(const DoctorState& st, const CoordinateProbe& probe,
     // The subos this run is actually in. Other subos are not inspected from
     // here for the same reason their payloads are not repaired: a second
     // shell may be inside one right now.
-    for (auto&& f : detect_subos_manifest_(st.db, st.ws, p.subosDir,
-                                           p.activeSubos.empty() ? "default"
-                                                                 : p.activeSubos)) {
-        add(std::move(f));
-    }
+    // A user's view in a system that has no manifest of its own yet has
+    // nothing wrong: it inherits the system's, and writes its own the first
+    // time it needs one -- derived state (design 2026-10-20 WuXian §13.3, H25).
+    std::error_code viewEc;
+    const bool inheritingView = !p.systemLayer.empty()
+        && !fs::exists(xlings::subos::manifest::config_path(p.subosDir), viewEc);
+    if (!inheritingView)
+        for (auto&& f : detect_subos_manifest_(st.db, st.ws, p.subosDir,
+                                               p.activeSubos.empty() ? "default"
+                                                                     : p.activeSubos)) {
+            add(std::move(f));
+        }
 
     for (auto&& f : detect_entry_binary_(st)) add(std::move(f));
     for (auto&& f : detect_policy_clients_(p.homeDir,

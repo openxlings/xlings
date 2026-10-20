@@ -518,12 +518,7 @@ std::expected<NewPreview, int> preview_new(const Context& c, const NewOptions& o
 Outcome create(const Context& given_context, const NewOptions& o, const NewPreview* given) {
     // Every event in the one progress of the whole operation (design 2026-10-20 G22).
     Context c = given_context;
-    if (given_context.sink)
-        c.sink = [sink = given_context.sink, overall = std::make_shared<Overall>()](const Event& e) {
-            Event x = e;
-            overall->take(x);
-            sink(x);
-        };
+    c.sink = with_overall(given_context.sink, true, false, xlings::platform::is_linux && o.carrier.empty());
     if (o.name.empty()) {
         if (c.sink) c.sink(error("an environment needs a name", "luban new <name> --edition tiny"));
         return {.code = 2};
@@ -532,6 +527,18 @@ Outcome create(const Context& given_context, const NewOptions& o, const NewPrevi
     if (describe(c, o.name)) {
         if (c.sink) c.sink(error(std::format("'{}' already exists", o.name),
                                  std::format("luban rm {}, or choose another name", o.name)));
+        return {.code = 2};
+    }
+    // Only a record, left by a making that did not finish (H1).
+    if (name_left_over(c.home, o.name)) {
+        if (c.sink) c.sink(error(std::format("an unfinished '{}' left its record from a making before", o.name),
+                                 std::format("luban rm {}, then make it again (or choose another name)", o.name)));
+        return {.code = 2};
+    }
+    // Held while it is made: another making of the same name is said, not raced (WuXian §11).
+    auto held = reserve_name(c.home, o.name);
+    if (!held) {
+        if (c.sink) c.sink(error(held.error(), "wait for it, or choose another name"));
         return {.code = 2};
     }
     // What it would be, checked before anything is made (design §5.3): an
@@ -565,6 +572,15 @@ Outcome create(const Context& given_context, const NewOptions& o, const NewPrevi
     std::string passed_over;
     Context making = c;
     making.sink = [&](const Event& e) {
+        // xlings' words for the way out are luban's here: no xlings usage
+        // line, `luban rm` for what xlings removes (WuXian §11, H1).
+        if (e.kind == Event::Kind::Error) {
+            Event x = e;
+            if (x.hint.starts_with("usage: xlings")) x.hint.clear();
+            if (const auto at = x.hint.find("xlings subos remove "); at != std::string::npos) x.hint.replace(at, 20, "luban rm ");
+            if (c.sink) c.sink(x);
+            return;
+        }
         if (e.kind == Event::Kind::Data && (e.data_kind == "passed_over" || e.data_kind == "installed_only")) {
             const auto d = e.data.is_string() ? nlohmann::json::parse(e.data.get<std::string>(), nullptr, false) : e.data;
             if (d.is_object() && e.data_kind == "passed_over") passed_over = d.value("message", std::string{});
@@ -624,7 +640,7 @@ Outcome create(const Context& given_context, const NewOptions& o, const NewPrevi
         }
     }
     if (checked) {
-        if (const auto failed = unusable_(c, o.name, "check", std::format("{} is ready", o.name))) {
+        if (const auto failed = unusable_(c, o.name, "verify", std::format("{} is ready", o.name))) {
             if (c.sink) c.sink(error(std::format("{} is made, and not usable: {}", o.name, *failed),
                                      std::format("luban status {} --check", o.name)));
             return {.code = 1};
@@ -674,10 +690,23 @@ Outcome create(const Context& given_context, const NewOptions& o, const NewPrevi
     }
     // A desktop has its sound (design 2026-10-20 §20.1): played on this
     // computer, as the `audio` grant allows -- given here, withdrawn with
-    // `luban config <system> --disallow audio`.
+    // `luban config <system> --disallow audio`. It draws with this
+    // computer's GPU (`gpu`: its render nodes only; WuXian §7.4), and made
+    // in the window, by a person at it, its clipboard is this computer's
+    // (`clipboard`, `clipboard-paste`; §9) -- not for one made by an agent
+    // or a script: any program in a system can read a desktop's clipboard.
     if (needs_user(preview, &o)) {
-        if (auto granted = configure(c, o.name, {{"allow", "audio"}}); !granted.ok() && c.sink)
-            c.sink(notice(std::format("{}'s sound is not played here (luban config {} --allow audio)", o.name, o.name)));
+        if (auto granted = configure(c, o.name, {{"allow", "audio,gpu"}}); !granted.ok() && c.sink)
+            c.sink(notice(std::format("{}'s sound is not played here, nor does it draw with this computer's GPU "
+                                      "(luban config {} --allow audio,gpu)", o.name, o.name)));
+        if (o.from_window) {
+            if (auto granted = configure(c, o.name, {{"allow", "clipboard,clipboard-paste"}}); !granted.ok()) {
+                if (c.sink) c.sink(notice(std::format("{}'s clipboard is its own (luban config {} --allow clipboard,clipboard-paste)", o.name, o.name)));
+            } else if (c.sink) {
+                c.sink(notice(std::format("{} copies and pastes with this computer (its settings, or luban config {} "
+                                          "--disallow clipboard,clipboard-paste, turn it off)", o.name, o.name)));
+            }
+        }
     }
     // What luban config takes, given now (design §5.1): the same function.
     if (!o.settings.empty())
@@ -910,7 +939,7 @@ Outcome upgrade(const Context& c, std::string_view name, std::string_view to, bo
     // A new generation that is not usable is not kept (L §11): the previous
     // one is current again.
     if (rc == 0 && !dry_run && !upToDate && xlings::platform::is_linux) {
-        if (const auto failed = unusable_(c, name, "check", std::format("{} is upgraded", name))) {
+        if (const auto failed = unusable_(c, name, "verify", std::format("{} is upgraded", name))) {
             step_(c, "rollback", std::format("going back to {}'s previous generation", name), argv_({"rollback", name}));
             if (c.sink) c.sink(error(std::format("{}'s new generation is not usable ({}); it stays on the previous one",
                                                  name, *failed), std::format("luban history {}", name)));
@@ -999,6 +1028,14 @@ namespace {
 // `with_archive`: a person's removal takes the archive from before a move
 // with it; a move's own removal (it makes the system again) keeps it.
 Outcome remove_(const Context& c, std::string_view name, bool with_archive) {
+    // Only the record an unfinished making left: no root, no home -- derived,
+    // taken away without asking (WuXian §11).
+    if (!exists_(c, name) && name_left_over(c.home, name)) {
+        const int rc = step_(c, "remove", std::format("removing what was left of {}", name), argv_({"remove", name}), true);
+        std::error_code ec;
+        if (rc == 0) fs::remove(settings_file(c.home, name), ec);
+        return {.code = rc};
+    }
     if (!exists_(c, name)) return missing_(c, name);
     if (!c.yes) {
         if (c.sink) c.sink(error(std::format("removing {} deletes its home and every file in it", name),

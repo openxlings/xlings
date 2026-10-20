@@ -1,0 +1,13 @@
+# openwx (open WuXian): one infinite plane a desktop is -- WuXian -- with
+# workspaces on it as windows of a kind, free windows beside them, a camera
+# locked on a workspace or free over the plane; the rules every implementation
+# keeps, the state it reads and writes (wuxian.json) and the cases that check
+# an implementation. A specification: it depends on nothing but the standard
+# library, so any desktop may implement it.
+[package]
+namespace = "openwx"
+name      = "openwx"
+version   = "0.1.0"
+
+[targets.openwx]
+kind = "lib"

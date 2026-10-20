@@ -7,7 +7,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 python3 - <<'PY'
 import re, sys, pathlib
-src = pathlib.Path("apps/luban-os/src")
+src = pathlib.Path("luban/host/luban-os/src")
 entry = re.compile(r'\{\s*"([^"]+)",\s*"((?:[^"\\]|\\.)*)"\s*\}')
 def table(f): return dict(entry.findall((src / "i18n" / f).read_text()))
 en, zh = table("en.cpp"), table("zh.cpp")
@@ -18,7 +18,7 @@ for f in src.rglob("*.cpp*"):
     if f.parent.name == "i18n": continue
     text = f.read_text()
     for m in re.finditer(r'(?<![A-Za-z0-9_:.])tr\(\s*"([^"]*)"\s*,\s*"', text):
-        bad.append(f"{f}: tr(en, zh) -- the words belong in apps/luban-os/src/i18n by key")
+        bad.append(f"{f}: tr(en, zh) -- the words belong in luban/host/luban-os/src/i18n by key")
     used |= set(re.findall(r'"(luban\.os\.[a-z0-9_.]+)"', text))
 for k in sorted(used - en.keys()): bad.append(f"{k}: used, not in i18n/en.cpp")
 for k in sorted(zh.keys() - en.keys()): bad.append(f"{k}: in i18n/zh.cpp, not in English")

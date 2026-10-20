@@ -109,89 +109,214 @@ std::string_view tr_(bool zh, std::string_view en, std::string_view cn) { return
 
 }  // namespace
 
+// ── workspaces as shapes ─────────────────────────────────────────────
+
+namespace {
+
+Color mix_(Color a, Color b, double t) {
+    auto m = [&](std::uint8_t x, std::uint8_t y) { return static_cast<std::uint8_t>(std::lround(x + (y - x) * std::clamp(t, 0.0, 1.0))); };
+    return {m(a.r, b.r), m(a.g, b.g), m(a.b, b.b), m(a.a, b.a)};
+}
+
+Color faded_(Color c, double alpha) { return {c.r, c.g, c.b, static_cast<std::uint8_t>(std::lround(c.a * std::clamp(alpha, 0.0, 1.0)))}; }
+
+// One rule's shape at `alpha` (a morph draws both).
+void rule_shape_(draw::Canvas& c, Rect r, bool stack, bool vertical, bool filled, Color colour, Color ink, double alpha) {
+    if (alpha <= 0) return;
+    const Color col = faded_(colour, alpha), line = faded_(ink, alpha);
+    const double radius = std::max(1.5, std::min(r.width, r.height) * 0.18);
+    if (!stack) {
+        // Tile: a rounded square in three columns (rows for a downward flow).
+        if (filled) c.fill(r, col, radius);
+        else c.frame(r, col, 1.5, radius);
+        const Color sep = filled ? line : col;
+        for (int k = 1; k < 3; ++k) {
+            if (vertical) c.fill({r.x + 2, r.y + r.height * k / 3 - 0.6, r.width - 4, 1.2}, sep);
+            else c.fill({r.x + r.width * k / 3 - 0.6, r.y + 2, 1.2, r.height - 4}, sep);
+        }
+        return;
+    }
+    // Stack: two rounded squares, the front one over the back one's corner.
+    const double w = r.width * 0.68, h = r.height * 0.68;
+    const Rect back{r.x + r.width - w, r.y, w, h}, front{r.x, r.y + r.height - h, w, h};
+    c.frame(back, col, 1.5, radius * 0.8);
+    if (filled) {
+        c.fill({front.x - 1, front.y - 1, front.width + 2, front.height + 2}, faded_(ink, alpha), radius * 0.8);
+        c.fill(front, col, radius * 0.8);
+    } else {
+        c.fill({front.x, front.y, front.width, front.height}, faded_(ink, alpha), radius * 0.8);
+        c.frame(front, col, 1.5, radius * 0.8);
+    }
+}
+
+}  // namespace
+
+void rule_icon(draw::Canvas& c, Rect r, const WorkspaceChip& w, bool filled, Color ink) {
+    const Color colour = Color::rgb(w.color);
+    const double t = std::clamp(w.morph, 0.0, 1.0);
+    // The shape it had fades as the new one comes (a short morph, design 2026-10-20 WuXian §3.13).
+    if (t < 1) rule_shape_(c, r, !w.stack, w.vertical, filled, colour, ink, 1 - t);
+    rule_shape_(c, r, w.stack, w.vertical, filled, colour, ink, t);
+}
+
+Picture workspace_label(draw::Fonts* fonts, const Theme& t, const WorkspaceChip& w, bool small, double scale) {
+    Picture p;
+    const std::string number = std::to_string(w.id);
+    const std::string name = small ? std::string{} : w.name;
+    const double h = kLabelHeight;
+    const double number_w = fonts ? fonts->width(number) : 8, name_w = fonts && !name.empty() ? fonts->width(name) : 0;
+    const double sep_w = fonts ? fonts->width(" · ") : 10;
+    double width = 8 + 10 + 6 + number_w + 8;
+    if (!name.empty()) width += sep_w + name_w;
+    if (!small) width += sep_w + 16;
+    p.image = device_image_(std::ceil(width), h, scale);
+    draw::Canvas c(p.image, scale);
+    const Color colour = Color::rgb(w.color);
+    c.fill({0, 0, width, h}, w.current ? mix_(t.panel, colour, 0.35) : faded_(t.panel, 0.92), h / 2);
+    c.fill({8, h / 2 - 5, 10, 10}, colour, 5);
+    const double baseline = fonts ? std::round((h + fonts->ascent() - fonts->descent()) / 2) : 0;
+    double x = 8 + 10 + 6;
+    if (fonts) x += c.text(*fonts, number, x, baseline, t.text);
+    if (!name.empty() && fonts) {
+        x += c.text(*fonts, " · ", x, baseline, t.muted);
+        x += c.text(*fonts, name, x, baseline, t.text);
+    }
+    if (!small) {
+        if (fonts) x += c.text(*fonts, " · ", x, baseline, t.muted);
+        rule_icon(c, {x, h / 2 - 6, 14, 12}, w, false, t.panel);
+    }
+    p.areas.push_back({{0, 0, width, h}, Target::label, w.id});
+    return p;
+}
+
+// ── the status bar (design 2026-10-20 WuXian §3.13) ──────────────────
+
 Picture panel(draw::Fonts* fonts, const Theme& t, const PanelState& s, int output_width, int output_height, bool canvas,
               double scale) {
     Picture p;
-    const double text_w = fonts ? fonts->width(tr_(s.zh, "Apps", "应用")) : 30.0;
-    // The first four always; the rest while they hold windows or are shown.
-    auto listed = [&](int n) {
-        return n < 4 || n == s.workspace || (n < static_cast<int>(s.occupied.size()) && s.occupied[static_cast<std::size_t>(n)]);
+    const bool pill = canvas;
+    const double height = pill ? 40 : kPanelHeight;
+    const double pad = pill ? 6 : 4;
+    const double baseline = fonts ? std::round((height + fonts->ascent() - fonts->descent()) / 2) : 0;
+    auto width_of = [&](std::string_view text) { return fonts ? fonts->width(text) : 8.0 * static_cast<double>(text.size()); };
+    // What it holds, left to right; then laid out (a bar: the left and the
+    // right ends; a pill: one row in the middle at the bottom).
+    struct Item {
+        enum class Kind { button, chip, small_chip, text } kind;
+        std::string label;
+        Target target { Target::none };
+        int index { 0 };
+        bool lit { false };
+        const WorkspaceChip* chip { nullptr };
+        double width { 0 };
+        bool right { false };
     };
-    int count = 0;
-    for (int n = 0; n < s.workspaces; ++n) count += listed(n) ? 1 : 0;
-    if (!canvas) {
-        // Classic: a bar across the top -- applications and workspaces on the
-        // left, the focused window's title in the middle, the clock right.
-        p.image = device_image_(std::max(1, output_width), kPanelHeight, scale);
-        draw::Canvas c(p.image, scale);
-        c.clear(t.panel);
-        const double baseline = fonts ? std::round((kPanelHeight + fonts->ascent() - fonts->descent()) / 2) : 0;
-        double x = 6;
-        const Rect apps { x, 4, text_w + 24, kPanelHeight - 8.0 };
-        c.fill(apps, t.title_idle, 6);
-        if (fonts) c.text(*fonts, tr_(s.zh, "Apps", "应用"), x + 12, baseline, t.text);
-        p.areas.push_back({apps, Target::launcher});
-        x += apps.width + 10;
-        for (int n = 0; n < s.workspaces; ++n) {
-            if (!listed(n)) continue;
-            const Rect r { x, 5, 22, kPanelHeight - 10.0 };
-            const bool here = n == s.workspace;
-            if (here) c.fill(r, t.accent, 5);
-            else if (n < static_cast<int>(s.occupied.size()) && s.occupied[static_cast<std::size_t>(n)]) c.fill(r, t.title_idle, 5);
-            if (fonts) {
-                const auto label = std::to_string(n + 1);
-                c.text(*fonts, label, r.x + (r.width - fonts->width(label)) / 2, baseline, here ? Color::rgb(0x0f1115) : t.muted);
-            }
-            p.areas.push_back({r, Target::workspace, n});
-            x += r.width + 4;
+    std::vector<Item> items;
+    items.push_back({.kind = Item::Kind::button, .label = std::string(tr_(s.zh, "Apps", "应用")), .target = Target::launcher});
+    const WorkspaceChip* current = nullptr;
+    for (const auto& w : s.workspaces)
+        if (w.current) current = &w;
+    if (current) {
+        auto label = std::to_string(current->id);
+        if (!current->name.empty()) label += "  " + current->name;
+        items.push_back({.kind = Item::Kind::chip, .label = label, .target = Target::rule, .index = current->id, .chip = current});
+    }
+    if (s.others)
+        for (const auto& w : s.workspaces)
+            if (!w.current) items.push_back({.kind = Item::Kind::small_chip, .label = std::to_string(w.id), .target = Target::workspace, .index = w.id, .chip = &w});
+    if (s.wuxian) {
+        items.push_back({.kind = Item::Kind::text, .label = std::format("{}%", static_cast<int>(std::lround(s.zoom * 100))), .right = true});
+        items.push_back({.kind = Item::Kind::button, .label = std::string(tr_(s.zh, "Show all", "显示全部")), .target = Target::show_all, .right = true});
+        items.push_back({.kind = Item::Kind::button, .label = std::string(tr_(s.zh, "Minimap", "小地图")), .target = Target::minimap,
+                         .lit = s.minimap, .right = true});
+    } else if (s.free_windows > 0) {
+        items.push_back({.kind = Item::Kind::button,
+                         .label = s.zh ? std::format("WuXian 上 {} 个窗口", s.free_windows)
+                                       : std::format("{} {} on WuXian", s.free_windows, s.free_windows == 1 ? "window" : "windows"),
+                         .target = Target::free, .right = true});
+    }
+    items.push_back({.kind = Item::Kind::button, .label = s.wuxian ? std::string(tr_(s.zh, "Back", "返回")) : std::string("WuXian"),
+                     .target = Target::wuxian, .lit = s.wuxian, .right = true});
+    const double chip_icon = 16, small_w = 26;
+    for (auto& it : items) {
+        switch (it.kind) {
+            case Item::Kind::button: it.width = width_of(it.label) + 20; break;
+            case Item::Kind::chip: it.width = 8 + chip_icon + 6 + width_of(it.label) + 10; break;
+            case Item::Kind::small_chip: it.width = small_w; break;
+            case Item::Kind::text: it.width = width_of(it.label) + 8; break;
         }
-        if (fonts) {
-            const double clock_w = fonts->width(s.clock);
-            c.text(*fonts, s.clock, output_width - clock_w - 12, baseline, t.text);
-            const double room = output_width - 2 * (x + 20);
-            if (room > 40 && !s.title.empty()) {
-                const double w = std::min(fonts->width(s.title), room);
-                c.text(*fonts, s.title, (output_width - w) / 2, baseline, t.muted, room);
+    }
+    const double gap = 6;
+    double total = 0;
+    for (const auto& it : items) total += it.width + gap;
+    const double clock_w = pill ? 0 : width_of(s.clock) + 16;
+    if (pill) {
+        p.image = device_image_(std::ceil(total + 2 * pad), height, scale);
+        p.x = std::round((output_width - (total + 2 * pad)) / 2);
+        p.y = output_height - height - 14;
+    } else {
+        p.image = device_image_(std::max(1, output_width), height, scale);
+    }
+    draw::Canvas c(p.image, scale);
+    if (pill) c.fill({0, 0, total + 2 * pad, height}, t.panel, height / 2);
+    else c.clear(t.panel);
+    const double inner = height - 2 * pad;
+    auto place = [&](const Item& it, double x) {
+        const Rect r{x, pad, it.width, inner};
+        const double radius = pill ? inner / 2 : 6;
+        switch (it.kind) {
+            case Item::Kind::button: {
+                c.fill(r, it.lit ? t.accent : t.title_idle, radius);
+                if (fonts) c.text(*fonts, it.label, r.x + 10, baseline, it.lit ? Color::rgb(0x0f1115) : t.text);
+                break;
             }
+            case Item::Kind::chip: {
+                // The current workspace whole: its rule's shape in its colour, its number, its name.
+                c.fill(r, mix_(t.title_idle, Color::rgb(it.chip->color), 0.25), radius);
+                rule_icon(c, {r.x + 8, height / 2 - chip_icon / 2 + 1, chip_icon, chip_icon - 2}, *it.chip, true, t.panel);
+                if (fonts) c.text(*fonts, it.label, r.x + 8 + chip_icon + 6, baseline, t.text);
+                break;
+            }
+            case Item::Kind::small_chip: {
+                // Another: its shape and colour, its number in it.
+                const Rect icon{r.x + 4, height / 2 - 8, small_w - 8, 16};
+                rule_icon(c, icon, *it.chip, true, t.panel);
+                if (fonts) {
+                    const double w = fonts->width(it.label);
+                    c.text(*fonts, it.label, icon.x + (icon.width - w) / 2 + (it.chip->stack ? -2 : 0), baseline + (it.chip->stack ? 2 : 0),
+                           Color::rgb(0x0f1115));
+                }
+                break;
+            }
+            case Item::Kind::text:
+                if (fonts) c.text(*fonts, it.label, r.x + 4, baseline, t.muted);
+                break;
         }
+        if (it.target != Target::none) p.areas.push_back({{p.x + r.x, p.y + r.y, r.width, r.height}, it.target, it.index});
+    };
+    if (pill) {
+        double x = pad;
+        for (const auto& it : items) { place(it, x); x += it.width + gap; }
         return p;
     }
-    // Canvas: a pill at the bottom centre -- applications, workspaces, the
-    // zoom, the overview.
-    const std::string zoom = std::format("{}%", static_cast<int>(std::lround(s.zoom * 100)));
-    const auto overview = tr_(s.zh, s.overview ? "Back" : "Overview", s.overview ? "返回" : "全览");
-    const double zoom_w = fonts ? fonts->width(zoom) : 30, overview_w = fonts ? fonts->width(overview) : 50;
-    const double width = 8 + (text_w + 24) + 10 + count * 26.0 + 10 + zoom_w + 16 + (overview_w + 24) + 8;
-    const int height = 40;
-    p.image = device_image_(std::ceil(width), height, scale);
-    p.x = std::round((output_width - width) / 2);
-    p.y = output_height - height - 14;
-    draw::Canvas c(p.image, scale);
-    c.fill({0, 0, width, static_cast<double>(height)}, t.panel, height / 2.0);
-    const double baseline = fonts ? std::round((height + fonts->ascent() - fonts->descent()) / 2) : 0;
-    double x = 8;
-    auto button = [&](std::string_view label, double w, Target target, bool lit) {
-        const Rect r { x, 6, w, height - 12.0 };
-        c.fill(r, lit ? t.accent : t.title_idle, (height - 12) / 2.0);
-        if (fonts) c.text(*fonts, label, r.x + (r.width - fonts->width(label)) / 2, baseline, lit ? Color::rgb(0x0f1115) : t.text);
-        p.areas.push_back({{p.x + r.x, p.y + r.y, r.width, r.height}, target});
-        x += w + 10;
-    };
-    button(tr_(s.zh, "Apps", "应用"), text_w + 24, Target::launcher, false);
-    for (int n = 0; n < s.workspaces; ++n) {
-        if (!listed(n)) continue;
-        const bool here = n == s.workspace;
-        const bool used = n < static_cast<int>(s.occupied.size()) && s.occupied[static_cast<std::size_t>(n)];
-        const Rect dot { x + 7, height / 2.0 - 6, 12, 12 };
-        if (here || used) c.fill(dot, here ? t.accent : t.muted, 6);
-        else c.frame(dot, t.muted, 1.5, 6);     // empty: a ring
-        p.areas.push_back({{p.x + x, p.y, 26, static_cast<double>(height)}, Target::workspace, n});
-        x += 26;
+    // The bar: the workspaces left, the WuXian buttons right of the middle's
+    // title, the clock at the end.
+    double left = 6, right = output_width - clock_w - 6;
+    for (const auto& it : items)
+        if (it.right) right -= it.width + gap;
+    double x = right;
+    for (const auto& it : items) {
+        if (it.right) { place(it, x); x += it.width + gap; }
+        else { place(it, left); left += it.width + gap; }
     }
-    x += 10;
-    if (fonts) c.text(*fonts, zoom, x, baseline, t.muted);
-    x += zoom_w + 16;
-    button(overview, overview_w + 24, Target::overview, s.overview);
+    if (fonts) {
+        c.text(*fonts, s.clock, output_width - clock_w + 4, baseline, t.text);
+        const double room = right - left - 40;
+        if (room > 40 && !s.title.empty()) {
+            const double w = std::min(fonts->width(s.title), room);
+            c.text(*fonts, s.title, std::max(left + 20, (output_width - w) / 2), baseline, t.muted, room);
+        }
+    }
     return p;
 }
 

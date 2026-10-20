@@ -536,11 +536,11 @@ bool mount_kernel_fs(std::string_view type, const fs::path& target) {
     return errno == EBUSY;
 }
 
-bool mount_tmpfs(const fs::path& target, unsigned mode) {
+bool mount_tmpfs(const fs::path& target, unsigned mode, bool setuid) {
     std::error_code ec;
     fs::create_directories(target, ec);
     const auto options = std::format("mode={:o}", mode);
-    return ::mount("tmpfs", target.c_str(), "tmpfs", MS_NOSUID | MS_NODEV, options.c_str()) == 0;
+    return ::mount("tmpfs", target.c_str(), "tmpfs", (setuid ? 0 : MS_NOSUID) | MS_NODEV, options.c_str()) == 0;
 }
 
 bool remount_root_rw() {
@@ -646,7 +646,7 @@ std::optional<FileOwnership> file_ownership(const fs::path& path) {
 }
 
 bool mount_kernel_fs(std::string_view, const fs::path&) { return false; }
-bool mount_tmpfs(const fs::path&, unsigned) { return false; }
+bool mount_tmpfs(const fs::path&, unsigned, bool) { return false; }
 bool remount_root_rw() { return false; }
 bool is_pid1() { return false; }
 bool hold_across_exec(const fs::path&) { return false; }

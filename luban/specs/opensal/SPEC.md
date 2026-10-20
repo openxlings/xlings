@@ -1,4 +1,4 @@
-# opensal Specification, version 0.4
+# opensal Specification, version 0.5
 
 ## 1. Scope
 
@@ -58,6 +58,15 @@ provider draws it where the pointer is, with its own system's pointer, so a
 moving pointer costs no frame. A consumer that does not want `Cursor` draws
 its own. Exactly one pointer is ever shown.
 
+5.3.1.1 A consumer with `Cursor` may say how a pointer the provider draws is
+shown while someone shakes it to find it (`'p'`: off, bigger, or bigger and
+filled with a colour, up to 2 to 4 times its size). The provider tells a
+shake from a move (its direction turned back several times within a short
+time, fast and far), grows the pointer while it lasts and shrinks it back
+after; a provider never told uses its default (bigger and coloured, up to 4
+times). It does not grow while a button is held, the pointer is locked or it
+is hidden.
+
 5.3.2 `PointerLock`: the consumer asks (`'l'` 1) for the pointer to be held;
 the provider hides it, keeps it in place, gives relative motion instead of
 pointer motion, and releases it on its own chord or when the consumer asks
@@ -97,7 +106,7 @@ whether it paces).
 6.5 A version adds interfaces and messages; it changes none. 0.2 added
 `Shell`; 0.3 added `CursorImage` (`'C'`), `PointerLock` (`'l'`, relative
 motion) and the cursor names from grabbing on; 0.4 added shown and
-`Displays` (`'d'`).
+`Displays` (`'d'`); 0.5 added how a shaken pointer is shown (`'p'`).
 
 ## 7. Conformance
 

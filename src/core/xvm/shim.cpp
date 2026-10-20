@@ -22,6 +22,8 @@ import xlings.core.home_config;
 import xlings.core.home_identity;
 import xlings.subos.rootfs;
 import xlings.platform.target;
+import xlings.core.home.layers;
+import xlings.core.home;
 
 namespace xlings::xvm {
 
@@ -854,6 +856,30 @@ int shim_dispatch(const std::string& program_name, int argc, char* argv[]) {
 
     // Look up active version for this program
     auto version = get_active_version(workspace, program_name);
+    // A user's view in a system (its own ~/.xlings over the system's home)
+    // that has made nothing of its own active for this name runs the system
+    // default's (design 2026-10-20 §4.2: project > user view > system;
+    // WuXian §13.3, H25) -- a view that only inherits is not "not installed".
+    std::optional<std::filesystem::path> below;
+    if (version.empty() && !installed.contains(program_name)) {
+        if (!cfg.systemLayer.empty()) below = cfg.systemLayer;
+        else if (auto layer = home::system_layer(); layer) {
+            std::error_code same;
+            if (!std::filesystem::equivalent(*layer, cfg.homeDir, same)) below = *layer;
+        }
+    }
+    if (below) {
+        if (auto system = home::layers::read_snapshot(*below); system) {
+            if (auto inherited = get_active_version(system->workspace.active, program_name); !inherited.empty()) {
+                version = std::move(inherited);
+                if (auto info = system->versions.find(program_name); info != system->versions.end())
+                    db[program_name] = info->second;
+                log::debug("shim: {} from the system default ({}): {}", program_name, below->string(), version);
+            }
+        } else {
+            log::debug("shim: the system default could not be read: {}", system.error());
+        }
+    }
     if (version.empty()) {
         // Tri-state diagnostic, scoped to the CURRENT subos's installed[]
         // (NOT the global versions DB — pre-0.4.19 the "available" list

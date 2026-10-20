@@ -1,0 +1,131 @@
+R"PATH(# The Luban pointer theme (luban:cursors; design 2026-10-20 WuXian §8): the
+# shapes opensal names (kCursors, CSS names), on cursorkit's 24-unit grid
+# (luban/kits/cursor/README.md). The window draws its pointer from this file
+# at the screen's own density, and the release makes it the Xcursor theme a
+# Luban system installs (cursor-make), so the pointer is the same inside a
+# system and out. It is kept as a C++ raw string (its first and last lines)
+# so the window carries it; cursorkit's parser skips those two lines.
+# License: Apache-2.0.
+
+# The arrow: its left edge upright, its right 45 degrees, its tail from the middle of its base 27 degrees from upright (two rows to a column); the tail's end is the accent.
+shape default 2.4 1.6
+body M 2 1 L 13.8 13.2 L 9.21 15.22 L 12.1 20.9 L 8.54 22.72 L 5.54 16.84 L 2 18.4 Z
+accent M 10.92 18.59 L 12.55 21.8 L 8.99 23.61 L 7.36 20.4 Z
+
+# The I-beam.
+shape text 12 12
+body M 8 2.4 L 16 2.4 L 16 5.6 L 13.7 5.6 L 13.7 18.4 L 16 18.4 L 16 21.6 L 8 21.6 L 8 18.4 L 10.3 18.4 L 10.3 5.6 L 8 5.6 Z
+
+# A hand, its first finger up; its cuff is the accent.
+shape pointer 9.1 1.6
+body M 7 3.2 Q 7 1 9.1 1 Q 11.2 1 11.2 3.2 L 11.2 9.4 Q 11.2 8.4 12.8 8.4 Q 14.4 8.4 14.4 9.9 Q 14.4 9.2 16 9.2 Q 17.6 9.2 17.6 10.7 Q 17.6 10.2 19.1 10.2 Q 20.6 10.2 20.6 11.8 L 20.6 16.6 Q 20.6 22.4 15 22.4 L 11 22.4 Q 7.6 22.4 6 19.8 L 2.8 14.6 Q 2.2 13.4 3.2 12.8 Q 4.2 12.2 5.2 13.2 L 7 15 Z
+outline M 13.95 10.4 L 14.85 10.4 L 14.85 13.4 L 13.95 13.4 Z M 17.15 11.2 L 18.05 11.2 L 18.05 14 L 17.15 14 Z
+accent M 5 19.2 L 22 19.2 L 22 23.4 L 5 23.4 Z
+
+# An open hand.
+shape grab 12 11
+body M 5 11.4 L 5 7.4 Q 5 5.6 6.6 5.6 Q 8.2 5.6 8.2 7.4 L 8.2 5 Q 8.2 3.2 9.8 3.2 Q 11.4 3.2 11.4 5 L 11.4 4.4 Q 11.4 2.6 13 2.6 Q 14.6 2.6 14.6 4.4 L 14.6 5.6 Q 14.6 3.8 16.2 3.8 Q 17.8 3.8 17.8 5.6 L 17.8 12.4 L 19.4 10.4 Q 20.4 9.2 21.4 10 Q 22.4 10.8 21.6 12 L 18.4 17.4 Q 16.6 21 12.6 21 L 10.6 21 Q 5 21 5 15.4 Z
+outline M 7.75 7.6 L 8.65 7.6 L 8.65 11.4 L 7.75 11.4 Z M 10.95 5.4 L 11.85 5.4 L 11.85 11.4 L 10.95 11.4 Z M 14.15 5.8 L 15.05 5.8 L 15.05 11.4 L 14.15 11.4 Z
+
+# A closed hand: holding.
+shape grabbing 12 13
+body M 5 13.4 L 5 10.2 Q 5 8.4 6.6 8.4 Q 8.2 8.4 8.2 10 Q 8.2 7.8 9.8 7.8 Q 11.4 7.8 11.4 9.6 Q 11.4 7.6 13 7.6 Q 14.6 7.6 14.6 9.6 Q 14.6 8 16.2 8 Q 17.8 8 17.8 10 L 17.8 11 Q 19.8 11 19.8 13 L 19.4 15.6 Q 18.6 20.4 13.4 20.4 L 10.6 20.4 Q 5 20.4 5 15.2 Z
+outline M 7.75 10.2 L 8.65 10.2 L 8.65 12.4 L 7.75 12.4 Z M 10.95 9.8 L 11.85 9.8 L 11.85 12.4 L 10.95 12.4 Z M 14.15 9.8 L 15.05 9.8 L 15.05 12.4 L 14.15 12.4 Z
+
+# Four ways.
+shape move 12 12
+body M 12 1.4 L 16.2 6.4 L 13.7 6.4 L 13.7 10.3 L 17.6 10.3 L 17.6 7.8 L 22.6 12 L 17.6 16.2 L 17.6 13.7 L 13.7 13.7 L 13.7 17.6 L 16.2 17.6 L 12 22.6 L 7.8 17.6 L 10.3 17.6 L 10.3 13.7 L 6.4 13.7 L 6.4 16.2 L 1.4 12 L 6.4 7.8 L 6.4 10.3 L 10.3 10.3 L 10.3 6.4 L 7.8 6.4 Z
+
+# Two ways, across.
+shape ew-resize 12 12
+body M 1.4 12 L 6.8 7.4 L 6.8 10.3 L 17.2 10.3 L 17.2 7.4 L 22.6 12 L 17.2 16.6 L 17.2 13.7 L 6.8 13.7 L 6.8 16.6 Z
+
+# Two ways, up and down.
+shape ns-resize 12 12
+body M 12 1.4 L 16.6 6.8 L 13.7 6.8 L 13.7 17.2 L 16.6 17.2 L 12 22.6 L 7.4 17.2 L 10.3 17.2 L 10.3 6.8 L 7.4 6.8 Z
+
+# Two ways, top left to bottom right.
+shape nwse-resize 12 12
+body M 4.79 4.79 L 11.58 5.35 L 9.67 7.26 L 16.74 14.33 L 18.65 12.42 L 19.21 19.21 L 12.42 18.65 L 14.33 16.74 L 7.26 9.67 L 5.35 11.58 Z
+
+# Two ways, top right to bottom left.
+shape nesw-resize 12 12
+body M 4.79 19.21 L 5.35 12.42 L 7.26 14.33 L 14.33 7.26 L 12.42 5.35 L 19.21 4.79 L 18.65 11.58 L 16.74 9.67 L 9.67 16.74 L 11.58 18.65 Z
+
+# Cross hairs, the point between them.
+shape crosshair 12 12
+body M 10.5 1.5 L 13.5 1.5 L 13.5 9.4 L 10.5 9.4 Z M 10.5 14.6 L 13.5 14.6 L 13.5 22.5 L 10.5 22.5 Z M 1.5 10.5 L 9.4 10.5 L 9.4 13.5 L 1.5 13.5 Z M 14.6 10.5 L 22.5 10.5 L 22.5 13.5 L 14.6 13.5 Z
+outline M 11.2 11.2 L 12.8 11.2 L 12.8 12.8 L 11.2 12.8 Z
+
+# A ring turning: a quarter of it is the accent.
+shape wait 12 12
+body M 21.6 12 Q 21.6 15.98 18.79 18.79 Q 15.98 21.6 12 21.6 Q 8.02 21.6 5.21 18.79 Q 2.4 15.98 2.4 12 Q 2.4 8.02 5.21 5.21 Q 8.02 2.4 12 2.4 Q 15.98 2.4 18.79 5.21 Q 21.6 8.02 21.6 12 Z M 16.8 12 Q 16.8 10.01 15.39 8.61 Q 13.99 7.2 12 7.2 Q 10.01 7.2 8.61 8.61 Q 7.2 10.01 7.2 12 Q 7.2 13.99 8.61 15.39 Q 10.01 16.8 12 16.8 Q 13.99 16.8 15.39 15.39 Q 16.8 13.99 16.8 12 Z
+accent M 12 12 L 12 0 L 24 0 L 24 12 Z
+
+# The arrow, and a small ring turning: busy, still usable.
+shape progress 2.4 1.6
+body M 2 1 L 13.8 13.2 L 9.21 15.22 L 12.1 20.9 L 8.54 22.72 L 5.54 16.84 L 2 18.4 Z
+accent M 10.92 18.59 L 12.55 21.8 L 8.99 23.61 L 7.36 20.4 Z
+body M 23.4 18.6 Q 23.4 20.75 21.88 22.28 Q 20.35 23.8 18.2 23.8 Q 16.05 23.8 14.52 22.28 Q 13 20.75 13 18.6 Q 13 16.45 14.52 14.92 Q 16.05 13.4 18.2 13.4 Q 20.35 13.4 21.88 14.92 Q 23.4 16.45 23.4 18.6 Z M 20.2 18.6 Q 20.2 17.77 19.61 17.19 Q 19.03 16.6 18.2 16.6 Q 17.37 16.6 16.79 17.19 Q 16.2 17.77 16.2 18.6 Q 16.2 19.43 16.79 20.01 Q 17.37 20.6 18.2 20.6 Q 19.03 20.6 19.61 20.01 Q 20.2 19.43 20.2 18.6 Z
+accent M 18.2 18.6 L 18.2 12 L 25 12 L 25 18.6 Z
+
+# A ring and the bar across it: not here.
+shape not-allowed 12 12
+body M 21.6 12 Q 21.6 15.98 18.79 18.79 Q 15.98 21.6 12 21.6 Q 8.02 21.6 5.21 18.79 Q 2.4 15.98 2.4 12 Q 2.4 8.02 5.21 5.21 Q 8.02 2.4 12 2.4 Q 15.98 2.4 18.79 5.21 Q 21.6 8.02 21.6 12 Z M 9.17 6.48 L 17.52 14.83 L 17.56 14.74 L 17.73 14.37 L 17.87 13.99 L 17.99 13.6 L 18.08 13.21 L 18.15 12.81 L 18.19 12.41 L 18.2 12 L 18.19 11.59 L 18.15 11.19 L 18.08 10.79 L 17.99 10.4 L 17.87 10.01 L 17.73 9.63 L 17.56 9.26 L 17.37 8.9 L 17.16 8.56 L 16.92 8.23 L 16.66 7.91 L 16.38 7.62 L 16.09 7.34 L 15.77 7.08 L 15.44 6.84 L 15.1 6.63 L 14.74 6.44 L 14.37 6.27 L 13.99 6.13 L 13.6 6.01 L 13.21 5.92 L 12.81 5.85 L 12.41 5.81 L 12 5.8 L 11.59 5.81 L 11.19 5.85 L 10.79 5.92 L 10.4 6.01 L 10.01 6.13 L 9.63 6.27 L 9.26 6.44 Z M 14.83 17.52 L 6.48 9.17 L 6.44 9.26 L 6.27 9.63 L 6.13 10.01 L 6.01 10.4 L 5.92 10.79 L 5.85 11.19 L 5.81 11.59 L 5.8 12 L 5.81 12.41 L 5.85 12.81 L 5.92 13.21 L 6.01 13.6 L 6.13 13.99 L 6.27 14.37 L 6.44 14.74 L 6.63 15.1 L 6.84 15.44 L 7.08 15.77 L 7.34 16.09 L 7.62 16.38 L 7.91 16.66 L 8.23 16.92 L 8.56 17.16 L 8.9 17.37 L 9.26 17.56 L 9.63 17.73 L 10.01 17.87 L 10.4 17.99 L 10.79 18.08 L 11.19 18.15 L 11.59 18.19 L 12 18.2 L 12.41 18.19 L 12.81 18.15 L 13.21 18.08 L 13.6 17.99 L 13.99 17.87 L 14.37 17.73 L 14.74 17.56 Z
+
+# The arrow, and a badge with a question in it.
+shape help 2.4 1.6
+body M 2 1 L 13.8 13.2 L 9.21 15.22 L 12.1 20.9 L 8.54 22.72 L 5.54 16.84 L 2 18.4 Z
+accent M 10.92 18.59 L 12.55 21.8 L 8.99 23.61 L 7.36 20.4 Z
+body M 24.2 17.6 Q 24.2 20 22.5 21.7 Q 20.8 23.4 18.4 23.4 Q 16 23.4 14.3 21.7 Q 12.6 20 12.6 17.6 Q 12.6 15.2 14.3 13.5 Q 16 11.8 18.4 11.8 Q 20.8 11.8 22.5 13.5 Q 24.2 15.2 24.2 17.6 Z
+outline M 15.7 15.8 L 15.79 15.1 L 16.06 14.45 L 16.49 13.89 L 17.05 13.46 L 17.7 13.19 L 18.4 13.1 L 19.1 13.19 L 19.75 13.46 L 20.31 13.89 L 20.74 14.45 L 21.01 15.1 L 21.1 15.8 L 21.01 16.5 L 20.74 17.15 L 20.31 17.71 L 19.75 18.14 L 19.1 18.23 L 19.1 20.1 L 17.7 20.1 L 17.7 17.5 L 19.05 16.93 L 19.32 16.72 L 19.53 16.45 L 19.66 16.14 L 19.7 15.8 L 19.66 15.46 L 19.53 15.15 L 19.32 14.88 L 19.05 14.67 L 18.74 14.54 L 18.4 14.5 L 18.06 14.54 L 17.75 14.67 L 17.48 14.88 L 17.27 15.15 L 17.14 15.46 L 17.1 15.8 Z M 17.65 21 L 19.15 21 L 19.15 22.5 L 17.65 22.5 Z
+
+# What X clients and toolkits ask for, by its X name (opensal::cursor_named).
+alias left_ptr default
+alias arrow default
+alias top_left_arrow default
+alias xterm text
+alias ibeam text
+alias hand1 pointer
+alias hand2 pointer
+alias pointing_hand pointer
+alias openhand grab
+alias closedhand grabbing
+alias dnd-move grabbing
+alias fleur move
+alias all-scroll move
+alias size_all move
+alias sb_h_double_arrow ew-resize
+alias h_double_arrow ew-resize
+alias e-resize ew-resize
+alias w-resize ew-resize
+alias col-resize ew-resize
+alias sb_v_double_arrow ns-resize
+alias v_double_arrow ns-resize
+alias n-resize ns-resize
+alias s-resize ns-resize
+alias row-resize ns-resize
+alias bd_double_arrow nwse-resize
+alias size_fdiag nwse-resize
+alias nw-resize nwse-resize
+alias se-resize nwse-resize
+alias top_left_corner nwse-resize
+alias bottom_right_corner nwse-resize
+alias fd_double_arrow nesw-resize
+alias size_bdiag nesw-resize
+alias ne-resize nesw-resize
+alias sw-resize nesw-resize
+alias top_right_corner nesw-resize
+alias bottom_left_corner nesw-resize
+alias cross crosshair
+alias tcross crosshair
+alias watch wait
+alias left_ptr_watch progress
+alias half-busy progress
+alias crossed_circle not-allowed
+alias circle not-allowed
+alias forbidden not-allowed
+alias no-drop not-allowed
+alias question_arrow help
+alias whats_this help
+)PATH"

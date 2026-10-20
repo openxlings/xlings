@@ -33,7 +33,7 @@ mcpp build "${flags[@]}" || {
 }
 if [[ "$profile" == dev ]]; then
   # luban, the Luban OS app and xdesk beside the xlings the tests run
-  # (tests/e2e/test_luban*.cpp; the app's headless tests under SDL's offscreen
+  # (luban/tests/e2e/test_luban*.cpp; the app's headless tests under SDL's offscreen
   # driver; xdesk as luban-os's desktop).
   mcpp build -p luban-tool
   mcpp build -p luban-os

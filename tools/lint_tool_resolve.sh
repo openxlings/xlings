@@ -3,7 +3,8 @@
 # (xlings.subos.tools) and administrator rights through one door
 # (xlings.subos.elevation) -- SubOS design part 3 §6.4.
 #
-# In modules/subos, src/core/subos, src/core/home and luban/:
+# In modules/subos, src/core/subos, src/core/home and luban/ (its tests, in
+# luban/tests, as tests/ are not):
 #   1. no std::system( -- a shell line quotes a path wrong the day it has a
 #      quote in it, and names a tool by whatever PATH says;
 #   2. no argv that starts with a tool's literal name: resolve it
@@ -26,20 +27,20 @@ flag() { echo "::error::$1: $2"; bad=$((bad + 1)); }
 
 while IFS= read -r hit; do flag "shell line" "$hit"; done < <(
   grep -rnE --include='*.cpp' --include='*.cppm' 'std::system\(' "${dirs[@]}" \
-    | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' || true)
+    | grep -v '^luban/tests/' | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' || true)
 
 tools='bwrap|proot|pasta|tar|cp|mkfs\.ext4|truncate|mountpoint|wsl|wsl\.exe'
 while IFS= read -r hit; do flag "unresolved tool (use xlings.subos.tools)" "$hit"; done < <(
   grep -rnE --include='*.cpp' --include='*.cppm' "\{[[:space:]]*\"($tools)\"[[:space:]]*," "${dirs[@]}" \
     | grep -v '^modules/subos/src/sandbox/tools.cpp:' | grep -v 'tool-ok:' \
-    | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' || true)
+    | grep -v '^luban/tests/' | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' || true)
 
 admin='mount|umount|chown|install|apparmor_parser|sudo'
 while IFS= read -r hit; do flag "administrator command outside elevation::run" "$hit"; done < <(
   grep -rnE --include='*.cpp' --include='*.cppm' \
        "\{[[:space:]]*\"($admin)\"[[:space:]]*,[[:space:]]*(\"-|[A-Za-z_>.-]+\.string\(\)|[a-z_]+ \+ \")" "${dirs[@]}" \
     | grep -v 'elevation::run' | grep -v 'tool-ok:' \
-    | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' || true)
+    | grep -v '^luban/tests/' | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' || true)
 
 if [ "$bad" -gt 0 ]; then
   echo "tool resolution lint: FAIL ($bad finding(s))"

@@ -192,9 +192,10 @@ jobs:
         if: failure()
         run: bash tools/ci/diagnose_mcpp.sh
 
-  # The Luban OS app's and xdesk's release payloads, as release.yml makes
-  # them (a glibc program, the system's loader, no RPATH, its NEEDED
-  # checked): a release must not be the first to find the packaging broken.
+  # The Luban OS app's, xdesk's and the pointer theme's release payloads, as
+  # release.yml makes them (a glibc program, the system's loader, no RPATH,
+  # its NEEDED checked; every shape in the theme): a release must not be the
+  # first to find the packaging broken.
   # Its own optimized build, beside the others.
   desktop-payloads:
     needs: plan
@@ -209,13 +210,15 @@ jobs:
           mcpp-cache: mcpp-v4-ci-linux-desktop-
           sandbox: 'false'
 
-      - name: Luban OS and xdesk release payloads
+      - name: Luban OS, xdesk and pointer theme release payloads
         run: |
           bash tools/ci/xlings_tools.sh patchelf
           mcpp build -p luban-os --profile dist
-          bash tools/luban_os_release.sh
+          bash luban/tools/luban_os_release.sh
           mcpp build -p xdesk-app --profile dist
-          bash tools/xdesk_release.sh
+          bash luban/tools/xdesk_release.sh
+          mcpp build -p cursor-make --profile dist
+          bash luban/tools/cursors_release.sh
 
       - name: Diagnose a failed mcpp build
         if: failure()
@@ -955,14 +958,15 @@ jobs:
           chmod +x "$xdev"
           args=()
           for d in $(find runs -name lane.json -exec dirname {} \;); do args+=(--in "$d"); done
-          # --fail-uncovered: a `required` ID in tests/requirements.toml with
-          # no test, or a test naming an ID the file does not declare, fails.
+          # --fail-uncovered: a `required` ID in tests/requirements.toml (xlings')
+          # or luban/tests/requirements.toml (Luban's) with no test, or a test
+          # naming an ID neither declares, fails.
           history=()
           if [[ -f target/xdev/history/trend.json ]]; then history+=(--trend target/xdev/history/trend.json); fi
           mkdir -p target/xdev/current-report
           status=0
           "$xdev" report "${args[@]}" "${history[@]}" --summary \
-            --requirements tests/requirements.toml --fail-uncovered \
+            --requirements tests/requirements.toml --requirements luban/tests/requirements.toml --fail-uncovered \
             --write target/xdev/current-report --timings-out target/xdev/current-report/timings.json || status=$?
           python3 - <<'PY' || status=1
           import json

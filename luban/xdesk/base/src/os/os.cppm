@@ -25,6 +25,9 @@ bool write_all(int fd, std::string_view data);
 void close(int fd);
 // A file to append to (created owner-only), close-on-exec; -1 when it cannot be.
 int open_append(const fs::path& path);
+// A device to read and write (a GPU's render node), close-on-exec; -1 and
+// why (`error`) when it cannot be.
+int open_device(const fs::path& path, std::string* error = nullptr);
 // Two connected ends of a pipe, {read, write}, close-on-exec.
 std::optional<std::array<int, 2>> pipe();
 

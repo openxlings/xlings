@@ -38,10 +38,11 @@ irm https://raw.githubusercontent.com/openxlings/xlings/main/tools/other/quick_i
 ```
 
 ```bash
-xlings install gcc@16 node@24 cmake   # 安装（版本可省略）
-xlings use gcc@16                      # 切换当前版本
-xlings search python                   # 搜索包
-xlings list                            # 已安装的包
+xlings install mcpp luban node   # 安装（最新版本）
+xlings install node@20           # 再装一个老版本，与新版本并存
+xlings use node@20               # 切换当前版本
+xlings search gcc                # 搜索包
+xlings list                      # 已安装的包
 ```
 
 用 AI Agent？让它运行 `xlings agent usage` —— xlings 自带一份写给 Agent 的完整使用指南。

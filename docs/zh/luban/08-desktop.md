@@ -22,8 +22,8 @@ luban enter desk --display window
 | | |
 |---|---|
 | **控制台** — 精简，自己定制 | `nano`（只有 xlings 与 luban：自己定制 edition 的基础；没有 shell，因此只创建、不进入）、`tiny`（shell 与基础工具）、`tiny-musl`、`core`（开发用的控制台，默认选中）、`agent workspace` |
-| **xdesk** — Luban 自己的桌面 | `xdesk 经典` 与 `xdesk 画布 · 探索`：为这个窗口做的桌面（见下文） |
-| **传统桌面** — 轻 → 完整 | `luban-desktop` 类别里除 xdesk 外的每一个，按带来的多少排：Compositor（T1，只有窗口，Luban OS 窗口就是外壳）、labwc（T2）、LXQt（T3）、KDE Plasma（T4）；未分级的在最后 |
+| **xdesk** — Luban 自己的桌面 | `Luban 桌面`：WuXian 上的工作区，为这个窗口做的桌面（见下文） |
+| **传统桌面** — 轻 → 完整（默认折叠：点标题，或在标题上按 →） | `luban-desktop` 类别里除 xdesk 外的每一个，按带来的多少排（图标右上角的四格）：Compositor（T1，只有窗口，Luban OS 窗口就是外壳）、labwc（T2）、LXQt（T3）、KDE Plasma（T4）；未分级的在最后 |
 | **更多系统** | 窗口没有卡片的官方系统，以及你添加的 index 里的系统 |
 
 传统桌面的卡片写出它带来多少（四格，`T1`–`T4`，或*未分级*）、来自哪里（*官方*、*社区 · 它的 index*、*本地*）、
@@ -36,8 +36,9 @@ luban enter desk --display window
 
 每张卡片写着它是什么；面板说明选中的那个里面有什么，或者为什么这里不能创建——尚未发布、没有本机架构的版本，
 或者这台电脑暂时还不能运行 Luban 系统（`luban status` 给出的原因与下一步）。名字跟随卡片，直到你自己输入。
-**更多选项**还选择沙箱或机器，以及（控制台与 xdesk）用哪个桌面创建。面板可以滚动，**创建**固定在底部。创建时显示六步——
-准备、下载、解压、配置、自检、完成——当前一步的文字一直显示，然后进入。来自其他 index 的系统（或桌面）先经你同意才创建——Luban 不检查它做什么。
+**更多选项**还选择沙箱或机器，以及（控制台与 xdesk）用哪个桌面创建。面板可以滚动，**创建**固定在底部。创建时显示它有的阶段——
+获取、解包、配置、启动（机器）、自检——一条进度条是全部，一条是当前阶段（有度量时是多少，没有时是动画与已用时间），写着正在做什么，
+以及最近一行与"几秒前"；完成时显示"就绪"一会儿再进入。来自其他 index 的系统（或桌面）先经你同意才创建——Luban 不检查它做什么。
 
 同样的内容也有文字版：`luban search`（发行版、按 T 级排列的桌面）、`luban ls <模式>`（这里名字匹配的系统）。
 
@@ -83,47 +84,98 @@ luban enter desk --display window
 
 ## xdesk
 
-桌面 edition 启动 **xdesk**：为这个窗口做的桌面，合成器与外壳在一个程序里（wlroots，软件渲染），直接与窗口通信——
-不经桥、不截屏。
+桌面 edition 启动 **xdesk**：为这个窗口做的桌面，合成器与外壳在一个程序里（wlroots），直接与窗口通信——不经桥、不截屏。系统里有可用的
+GPU 时用 GPU 绘制（render node 上的 GLES），否则用软件；**关于**页写明用的是哪个、为什么。
 
-每个工作区用三种方式之一排布窗口，**Super+m** 切换：按住 Super 按 m——三张卡片显示这个工作区按每种方式排好的样子，再按 m 换下一个，
-松开 Super 确定，Esc 保持原样。每种方式各自记住自己的摆法，平铺 → 画布 → 平铺回到同样的列。
+### WuXian 与工作区
+
+桌面是一张无限的平面 **WuXian**。工作区是它上面的区域——编号 1–9，各有名字、颜色和规则——窗口在某个工作区里，或者作为**自由窗口**
+直接在 WuXian 上。平时在一个工作区里工作（**工作区视图**，总是 100%），需要处理工作区之间的事——把窗口移到别的工作区、摆放工作区、
+找东西——时退到整张平面（**WuXian 视图**，Super+O）。两者之间镜头连续滑动（**减少动态**时直接到位）。
+
+工作区的**规则**是它排布窗口的方式，**Super+M** 切换（按住 Super 按 M——两张卡片显示两种排法；松开 Super 确定，Esc 保持原样）：
 
 | | |
 |---|---|
-| **平铺** | 窗口按列并排，间隔 4 像素；各列平分屏幕，直到每列窄于 480 时开始滚动，焦点窗口始终可见；设过宽度的列合计不到一屏时按比例放大占满；一列里可以上下放多个；工作区也可以让列上下排（`flow = vertical`，竖屏用）。平铺的窗口会被告知它是平铺的，按给定的大小绘制（终端不再按字符格缩小） |
+| **平铺** | 窗口按列并排，间隔 4 像素；各列平分屏幕，直到每列窄于 480 时开始滚动，焦点窗口始终可见；一列里可以上下放多个；也可以让列上下排（`flow = vertical`）。平铺的窗口会被告知，并按给定的大小绘制 |
 | **层叠** | 窗口放在哪里就在哪里，可以重叠，限制在屏幕内；可以最大化，或吸附到半屏、四分之一屏 |
-| **画布** | 窗口在可平移、缩放的平面上；把一个窗口靠到另一个的边上，它们组成平铺组，作为整体移动与缩放 |
 
-| 按键（按住 Super） | 平铺 | 层叠 | 画布 |
-|---|---|---|---|
-| 单按 Super，或 Space | 应用——也能按名字找到设置的各页与每个操作，旁边写着它的键 | 同 | 同 |
-| ←→ ↑↓（或 H J K L） | 相邻的列 / 列内 | 那个方向最近的窗口 | 同 |
-| Shift+←→ ↑↓ | 移到相邻列 / 列内上下 | 半屏、四分之一屏、全屏、还原 | 移动四分之一视野 |
-| [ / ] | 并进左边一列 / 拆出成单独一列 | — | 并进旁边的组 / 拆出 |
-| R / Shift+R | 列宽（⅓、½、⅔、全宽）/ 列内高度（平分、⅔、⅓） | — | 组内同平铺 |
-| - / = | 变窄 / 变宽 | 缩小 / 放大 | 缩小 / 放大视野 |
-| F / Shift+F | 最大化，再按还原 / 全屏（没有面板与标题栏），再按退出 | 同 | 同 |
-| Shift+Space | 浮动，或放回 | 同 | 同 |
-| P / Shift+P | 置顶 / 在所有工作区显示 | 同 | 同，并固定在视野里 |
-| M | 平铺、层叠、画布（按住） | 同 | 同 |
-| Tab / Shift+Tab | 应用，最近用的在前（按住：Tab 下一个；↓ 或在一个上停一秒，展开它的窗口；松开即切过去） | 同 | 同 |
-| `（Tab 上方）/ Shift+` | 同一应用的另一个窗口 / 上一个 | 同 | 同 |
-| O | 按位置显示全部窗口，直到选中一个 | 同 | 全览；点击一个窗口进入 |
-| 1 … 9 / Shift+1 … 9 | 切换工作区 / 把窗口送过去（面板显示 1–4，5–9 用到时出现） | 同 | 同 |
-| Ctrl+← → 或 PageUp / PageDown（加 Shift：带着窗口） | 上一个、下一个工作区 | 同 | 同 |
-| Return 或 Ctrl+Alt+T / Q 或 Alt+F4 | 终端 / 关闭窗口 | 同 | 同 |
-| I / / | 设置 / 设置的快捷键页 | 同 | 同 |
+窗口可以在工作区里**浮动**（Super+Shift+空格：浮在排布上方，随工作区移动——对话框自动如此）；**自由窗口**在 WuXian 上、不属于任何
+工作区（Super+Shift+0，或拖到平面上放下）。
+
+WuXian 视图里每个工作区是一块带彩色边框的底板，上方有标签——`● 2 · 编码 · ▥`（颜色、编号、名字，▥ 平铺、❐ 层叠）。工作区可以移动
+（拖标签）、等比缩放（标签右下角的手柄，或标签菜单里的 50% / 100%；内容的排布不变），也可以重叠：命中最上面的那个。新窗口在工作区视图里
+进入当前工作区；在 WuXian 视图里进入视野中心所在的工作区，中心是空白时成为自由窗口。
+
+**新建工作区**：Super+Ctrl+N（最小的空号，放在最右边）、WuXian 视图空白处的右键菜单（在点击处新建平铺或层叠的），或者去一个还没有的编号
+（Super+5）——这样顺带建的、没有名字、仍然空着的，离开时自动删除。**删除**：标签菜单（或选中标签后按 Delete）：空的直接删除；有窗口的会问——
+变成自由窗口（回车）、关闭全部窗口（5 秒倒计时后可按）、取消。最后一个工作区不能删。
+
+状态栏显示当前工作区（颜色、编号、名字、规则），其他工作区是可点击的小图形（**其他工作区**可以关掉）；它的 WuXian 按钮进入 WuXian 视图，
+并写着有几个自由窗口。
+
+| 按键（按住 Super） | 工作区视图 | WuXian 视图 |
+|---|---|---|
+| 单按 Super，或 Space | 应用——也能按名字找到设置的各页与每个操作，旁边写着它的键 | 同 |
+| O | WuXian 视图 | 回到焦点所在的工作区（焦点不在窗口上时 Esc 也可以） |
+| 1 … 9 / Shift+1 … 9 | 那个工作区（没有就新建）/ 把窗口送过去 | 镜头框住它 / 同 |
+| Shift+0 | 把窗口放到 WuXian 上（自由窗口） | 同 |
+| Ctrl+N / Ctrl+0 | 新建工作区并进入 / — | 新建并框住它 / 显示全部 |
+| Ctrl+← → 或 PageUp / PageDown（加 Shift：带着窗口） | 上一个、下一个工作区 | 镜头框住它 |
+| M | 平铺或层叠（按住） | 焦点所在工作区的规则 |
+| ←→ ↑↓（或 H J K L） | 那个方向的下一个窗口（按规则） | 那个方向最近的窗口（任何地方） |
+| Shift+←→ ↑↓ | 按规则移动（平铺：列；层叠：半屏、四分之一屏、全屏） | 自由窗口每次移动 1/8 屏 |
+| [ / ] | 并进左边一列 / 拆出成单独一列 | — |
+| R / Shift+R | 列宽（⅓、½、⅔、全宽）/ 列内高度 | — |
+| - / = / 0 | 变窄 / 变宽 / 等宽 | 缩小 / 放大 / 以 100% 显示焦点窗口 |
+| F / Shift+F | 最大化，再按还原 / 全屏，再按退出 | 同 |
+| P / Shift+P | 置顶 / 在所有工作区显示 | 同 |
+| C / V | 复制 / 粘贴——终端里是 Ctrl+Shift+C/V，别处是 Ctrl+C/V | 同 |
+| Tab / Shift+Tab | 应用，最近用的在前（按住：Tab 下一个；在一个上停半秒，展开它的窗口） | 同 |
+| `（Tab 上方）/ Shift+` | 同一应用的另一个窗口 / 上一个 | 同 |
+| Return 或 Ctrl+Alt+T / Q 或 Alt+F4 | 终端 / 关闭窗口 | 同 |
+| I / / | 设置 / 设置的快捷键页 | 同 |
 
 全部按键见[生成的键位表](../../generated/xdesk-keys.zh.md)，与桌面的行为一致。**Super+/** 打开设置的快捷键页：按分组列出每个操作，
 输入即查找；在一项上按回车再按新的组合键即改为它（原属于别的操作的会从那里移走，并说明），Delete 恢复。键位按套提供——Luban，
-以及不用 hjkl 的 Luban（给需要这几个字母的应用）——你改的保存在 `~/.config/xdesk/keys.json`。按住 Super 一秒浮出最常用的键；
-第一次进入时底部一行说明最先要会的五个。
+以及不用 hjkl 的 Luban——你改的保存在 `~/.config/xdesk/keys.json`。按住 Super 一秒浮出最常用的键。
 
-**Super+I** 打开设置：显示器（显示这个桌面的每个窗口，见下）、布局（这个工作区的排布、列的方向、间隔、最窄的列、画布的小地图与吸附）、
-外观（强调色、背景、减少动态）、快捷键，以及"关于"——系统、xdesk、内核、渲染器、显示器、CPU 与内存、它保存的文件、构成它的开源项目，
-以及报告问题用的"复制"。修改立即生效，保存在你的设置文件（`~/.config/xdesk/<profile>.ini`）。启动器能按名字找到每一页，
-其他启动器经 `xdesk-settings.desktop` 也能。脚本与 agent 经 `xdesk msg`（在桌面里）做同样的事：
+**Alt+Tab** 按位置显示这个工作区的全部窗口，缩放到屏幕里，选中的更大、其余变暗：Tab 按最近使用的顺序（Shift：反向），方向键按位置，
+指针按指向；松开 Alt 即切过去，Esc 留在原处。快速按一下 Alt+Tab 直接回到上一个窗口。切到的窗口会亮一会儿、其余变暗，看清落在了哪里
+（设置的**切换器**：多久、多暗，或者关掉）。窗口锁住键盘时（Ctrl+Alt+K）Alt+Tab 归 xdesk，否则归宿主。
+
+两种视图里同样的手势：
+
+| | 工作区视图 | WuXian 视图 |
+|---|---|---|
+| 拖标题栏，或按住 Super 拖任意处 | 移动窗口 | 移动——到另一个工作区，或放到 WuXian 上 |
+| Super 加右键，或拖边框、角 | 调整大小（层叠、浮动） | 同，自由窗口也可以 |
+| 拖空白处，或按住 Super+空格在任意处拖（手形） | 平铺：滚动各列 | 平移 |
+| 空白处滚轮 / Super 加滚轮 | 平铺：滚动，转得越快走得越远，停在一列上 | 平移（Shift：横向）/ 以指针为中心缩放 |
+| 中键 | 交给应用（粘贴选中的文字） | 拖空白处：平移 |
+| 空白处右键 | 终端、设置、WuXian 视图 | 新建工作区、把工作区排成一行、显示全部 |
+| 工作区标签：拖 / 拖手柄 / 右键 / 双击 | — | 移动 / 缩放 / 菜单（名字、规则、颜色、比例、删除）/ 进入 |
+
+拖动平铺的窗口时布局冻结：拖动中什么都不动；虚线框标出窗口原来的位置，指针下的框显示松手后会怎样——自己的位置（不变）、另一个窗口的
+中间三分之一（交换）、两端（在它前后新建一列，宽度用滚轮或 1–4 选）、上下四分之一（在它所在列的上方或下方）、间隙或屏幕边缘（新建一列）。
+拖动时按住 Shift：松手处浮动。松手后所有窗口一次移到位。在 WuXian 视图里跨工作区拖动的窗口保持它在屏幕上的大小，落下后变到目标的比例；
+放在平面上就是原大的自由窗口；靠近别的自由窗口的边会对齐。
+
+宿主的输入法可以在桌面的窗口里输入，剪贴板也是共享的——每个方向按环境的授权：`clipboard`（从中复制出来）与 `clipboard-paste`
+（粘贴进去）。在 Luban OS 窗口里新建的桌面系统两者都有（它的设置里可以关）；用 `luban new` 或 Agent 建的默认没有，需要时给
+（`luban config <系统> --allow clipboard,clipboard-paste`）。**Super+C**、**Super+V** 在任何窗口里复制粘贴——终端的 Ctrl+Shift+C/V 还是
+别处的 Ctrl+C/V，xdesk 知道该用哪个；终端里 Ctrl+C 仍是中断。
+
+指针由窗口来画：Luban 指针主题，按你屏幕的实际密度从矢量画出。晃动鼠标找它时会放大——最多 4 倍，填上强调色——停下后缩回
+（**外观**：关、放大、放大并变色；最大 2、3 或 4 倍）。对不画指针的窗口（旧版 Luban OS），xdesk 把它画进画面。
+
+### 设置与会话
+
+**Super+I** 打开设置：显示器（显示这个桌面的每个窗口，见下）、布局（新工作区的规则、列的方向、间隔、最窄的列、状态栏的其他工作区、
+切换器、滚轮）、外观（强调色、背景、**减少动态**、晃动时的指针、渲染器）、快捷键，以及**关于**——系统、xdesk、内核、渲染器（及原因）、
+显示器、CPU 与内存、它保存的文件，**复制**生成一份报告。每一行写明是默认的、你改过的，还是系统设的；每页有**恢复本页默认**，设置的首页有
+**全部恢复默认**（10 秒内 Ctrl+Z 撤销）。修改立即生效，保存在 `~/.config/xdesk/xdesk.ini`。启动器能按名字找到每一页。脚本与 Agent
+经 `xdesk msg`（在桌面里）做同样的事：
 
 ```bash
 xdesk msg keys list                        # every action, its keys (JSON)
@@ -132,88 +184,54 @@ xdesk msg keys set luban-no-hjkl
 xdesk msg settings keys                    # the settings, at that page
 ```
 
-**Alt+Tab** 按真实的相对位置显示工作区的全部窗口，缩小到放得下（很长的平铺一排折成多行），选中的放大、其余变暗：
-Tab 按最近使用的顺序（Shift 反向），方向键按位置，鼠标指到哪个就是哪个；松开 Alt 切过去，Esc 不变。
-快按一下 Alt+Tab 直接回到上一个窗口，什么也不显示。窗口锁定键盘时（Ctrl+Alt+K）Alt+Tab 归 xdesk，否则归宿主。
-Super+Tab 的应用显示图标（图标主题里的 PNG），没有就显示首字母。
-
-三种排布里是同一套手势：
-
-| | |
-|---|---|
-| 拖标题栏，或按住 Super 拖窗口任意位置 | 移动窗口 |
-| Super+右键拖动，或拖边与角（层叠、浮动、画布） | 调整大小 |
-| 拖背景，或中键拖任意位置 | 平移（平铺：滚动各列；画布：移动视野） |
-| 单击 | 焦点 |
-| 双击标题栏 | 最大化或还原 |
-
-单独的 Alt 归应用（Alt+点击是应用的）；xdesk 的组合键都在 Super 上，另外只有 Alt+Tab、Alt+F4 与 Ctrl+Alt+T。
-
-拖动的窗口半透明地跟着指针；其他窗口实时移到落下后的位置，一个框显示它落在哪里——看到的就是结果。在另一个窗口上：
-上、下四分之一放到它所在列的上方或下方，中间三分之一与它交换位置，其余在它前或后新建一列；屏幕边缘新建第一列或最后一列
-（层叠：半屏、四分之一屏、全屏）；画布上靠到另一个窗口的边成组。判定区要越过边界 12 像素才切换。新列的宽度写在框里：
-滚轮或 1–4 选 ⅓、½、⅔ 或全宽。拖动时按住 Shift：在松开的地方浮动。拖动两列之间、或同一列两个窗口之间的缝隙同时调整两边；
-双击列间的缝隙恢复平分。自己画边框的窗口用它自己的边框移动与调整大小。把指针停在标题栏的最大化按钮上，会弹出它提供的布局——
-左右各半、⅔ 与 ⅓、一大两小、三列——作用于这个窗口与之前用过的窗口；点击则最大化。
-
-标题栏的另一个按钮（或右键）打开窗口菜单：最大化或还原、浮动或放回、置顶、在所有工作区显示、移到工作区，以及应用的规则——
-总是浮动、总在这个工作区打开、记住大小和位置——下次仍然生效。窗口的标题栏写着应用名（来自它的桌面条目），然后是它自己的标题。
-
-画布上的缩放只是从哪里看：一半大小及以上时窗口和 100% 一样能用（点击交给窗口，视野不变）；更小时窗口是缩略图——单击选中，
-双击（或 Super+0）回到 100% 进入它。只有 Super+滚轮、Super+= 与 Super+- 缩放（以指针为中心，指针下的东西不动）；
-背景上的滚轮平移（Shift：左右），拖动背景或中键也平移。移动的窗口靠近另一个时与它的边对齐（16 像素内，显示参考线）；
-靠到它的边上就并入它的组，那条边高亮；移动时按住 Shift 两者都不做。新窗口放到离焦点窗口最近的空位，有在视野里的就放在视野里——
-需要时视野平移过去，从不缩放。画布比视野大时，右下角的小地图显示全部与当前视野，点击即跳过去（`[canvas] minimap = off`
-关掉；`snap = off` 关掉对齐）。离开全览回到进入之前的位置。
-
-宿主的输入法可以在桌面的窗口里打字（组合中的文字显示在那里），剪贴板双向共享——各自受环境授权约束：`clipboard`（从里面复制出来）
-与 `clipboard-paste`（粘贴进去）；策略出现之前创建的环境两者都共享。labwc、LXQt、KDE 桌面里也一样（经 wlr-data-control）。
-在终端里——foot、qterminal、Konsole——复制是 Ctrl+Shift+C、粘贴是 Ctrl+Shift+V：那里的 Ctrl+C 是中断程序；qterminal 与 Konsole 的右键菜单里也有这两项。指针由窗口来画（见上文）；对不画指针的窗口（旧版 Luban OS），xdesk 把它画进画面。
-
-### 会话与设置
-
-| 会话 | |
-|---|---|
-| `xdesk`（`desktop` edition 的） | 每个工作区保持你离开时的样子；第一次是平铺 |
-| `xdesk-classic` | 还没设置过的工作区从平铺开始；顶部面板 |
-| `xdesk-canvas` | 还没设置过的工作区从画布开始；底部药丸，带缩放与全览 |
-
-xdesk 读取 `<会话>.ini`（`xdesk.ini`、`classic.ini`、`canvas.ini`）：先是它自带的默认，然后是系统的 `/etc/xdg/xdesk/`，最后是你的
-`~/.config/xdesk/`，后面的逐键覆盖前面的。
+会话是 `xdesk`（以前的名字 `xdesk-classic`、`xdesk-canvas` 启动的是同一个桌面）。它读 `xdesk.ini`：先是自带的默认，再是系统的
+`/etc/xdg/xdesk/`，最后是你的 `~/.config/xdesk/`，后读的按键覆盖。你以前的 `classic.ini`（或 `canvas.ini`）第一次会成为你的
+`xdesk.ini`，原文件保留。
 
 ```ini
 [desktop]
 terminal = foot
 autostart = foot
-inner_gap = 4          # between windows (gap of before is read as this)
+rule = tile            # a new workspace's: tile or stack
+inner_gap = 4          # between windows
 outer_gap = 0          # between windows and the screen's edges
 min_column_width = 480 # tiled columns share the screen until narrower than this, then scroll
 flow = horizontal      # tiled columns side by side; vertical: one under another
-workspaces = 9         # 1-4 always on the panel, 5-9 while used
+status_others = on     # the status bar shows the other workspaces
 
-[canvas]
-minimap = on
-snap = on
+[wuxian]
+minimap = on           # the WuXian view's map of everything
+snap = on              # a moved window lines up with another's edge
+
+[switchers]
+hold_ms = 500          # Super+Tab held this long on an application: its windows
+highlight_ms = 500     # the window chosen stays lit this long (0: not at all)
+dim = 0.5              # what the others are dimmed to meanwhile
+
+[scroll]
+speed = medium         # slow, medium or fast
+snap = on              # a tiled strip's scroll lands on a column
 
 [theme]
 accent = #5e9cff
 background = #1b1e25
 
 [appearance]
-reduce_motion = off    # on: windows go at once, without gliding
+reduce_motion = off
+renderer = auto        # auto (the GPU when there is one) or software
+pointer_locate = grow-color   # off, grow or grow-color
+pointer_max = 4
 
 [keyboard]
-layout = us        # another xkb layout needs xkeyboard-config
+layout = us            # another xkb layout needs xkeyboard-config
 repeat_rate = 30
 repeat_delay = 500
 ```
 
-不写 `terminal` 时用系统的默认终端（它的 `share/xdg-terminals` 条目）；两种情况下，在终端里运行的应用都带着自己的标题与身份打开
-（`foot --title=Neovim --app-id=nvim nvim`）。读不了的行记入日志并跳过；桌面照样启动。
+不写 `terminal` 时用系统的默认终端（它的 `share/xdg-terminals` 条目）。读不了的行记入日志并跳过；桌面照样启动。
 
-你设置的都是你的，在 `~/.config/xdesk/`：`state.json` 保存每个工作区的排布与应用的规则，`keys.json` 保存你改过的按键——
-一个动作的组合键（`{"terminal": ["Super+Return", "Ctrl+Alt+t"]}`）；动作名就是 Super+/ 列出的那些。升级从不改写它们；
-读不了时会说明，桌面按新的启动，文件保持原样。
+你设置的都是你的，在 `~/.config/xdesk/`：`wuxian.json` 保存工作区（位置、名字、颜色、规则、比例）与每个窗口在哪里，`state.json` 保存
+应用的规则，`keys.json` 保存你改过的按键。升级从不改写它们；读不了时会说明，桌面按新的启动，原文件原样留在旁边。
 
 ## 桌面
 
@@ -226,7 +244,7 @@ repeat_delay = 500
 | `luban:labwc` | `labwc` | labwc 加面板、启动器、背景——轻量 |
 | `luban:lxqt` | `lxqt` | labwc 上的 LXQt：面板、桌面与文件管理器、设置——传统桌面 |
 | `luban:kde` | `kde` | KDE Plasma，嵌套在 labwc 中（preview）——完整桌面 |
-| `luban:xdesk` | `xdesk`、`xdesk-classic`、`xdesk-canvas` | Luban 自己的：每个工作区平铺、层叠或画布（见上文） |
+| `luban:xdesk` | `xdesk`（`xdesk-classic`、`xdesk-canvas`：同一个） | Luban 自己的：WuXian 上的工作区，平铺或层叠（见上文） |
 
 每个桌面的终端都是默认终端（`luban:foot`），经 `xdg-terminal-exec` 找到；X11 程序运行在 `luban:xwayland` 上。LXQt 与 KDE
 共用一份 Qt（`luban:qt-runtime`），只装一次。
@@ -235,7 +253,7 @@ repeat_delay = 500
 ```bash
 luban new desk --edition desktop --desktop lxqt   # made with LXQt, and starting it
 luban enter desk --desktop kde                    # another desktop, this once (installed already)
-luban config desk --desktop xdesk-canvas          # which session it starts
+luban config desk --desktop xdesk                 # which session it starts
 luban config desk --desktop none                  # its console instead
 luban config desk --enter console                 # what going in shows first
 ```
@@ -316,7 +334,8 @@ graph LR
 
 ## 还不支持的
 
-- GPU：渲染用软件，所有宿主都一样。
+- 机器里、macOS 与 Windows 上的 GPU：机器的桌面用软件绘制。Linux 宿主上的沙箱用这台电脑的 GPU（它的 render node；`gpu` 授权），
+  没有时用软件。
 - xdesk 里的 X11 程序（Xwayland）；它们在 labwc 会话里运行。
 - 窗口在 Linux 上需要 X11（Xwayland 也算）；原生 Wayland 窗口还不支持。在 macOS 与 Windows 上，窗口从 Luban 宿主机里显示系统的控制台与桌面，
   无论它作为沙箱还是机器运行。

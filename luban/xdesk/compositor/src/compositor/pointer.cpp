@@ -74,6 +74,16 @@ void Server::send_pointer_image() {
     send(message);
 }
 
+void Server::send_locate(Link* only) {
+    auto p = locate;
+    p.color = (std::uint32_t(theme.accent.r) << 16) | (std::uint32_t(theme.accent.g) << 8) | theme.accent.b;
+    const auto message = opensal::wire::encode_pointer_locate(p);
+    for (auto& l : links) {
+        if (l.gone || !l.hello || !opensal::has(l.provided, opensal::Interface::Cursor) || (only && &l != only)) continue;
+        if (!os::write_all(l.out, message)) l.gone = true;
+    }
+}
+
 void Server::pointer_mode() {
     pointer_sent.clear();
     if (output && software_cursor == host_pointer()) {

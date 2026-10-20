@@ -38,10 +38,11 @@ irm https://raw.githubusercontent.com/openxlings/xlings/main/tools/other/quick_i
 ```
 
 ```bash
-xlings install gcc@16 node@24 cmake   # install (version optional)
-xlings use gcc@16                      # switch the active version
-xlings search python                   # search packages
-xlings list                            # what is installed
+xlings install mcpp luban node   # install (the latest)
+xlings install node@20           # an older version, beside it
+xlings use node@20               # switch the active version
+xlings search gcc                # search packages
+xlings list                      # what is installed
 ```
 
 Using an AI agent? Tell it to run `xlings agent usage` — a complete guide

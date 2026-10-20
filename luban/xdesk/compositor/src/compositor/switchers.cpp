@@ -29,9 +29,10 @@ namespace apps = xdesk::apps;
 
 namespace {
 
-constexpr int kHeldMs = 1000;        // on an application this long: its windows below
 constexpr int kQuickMs = 150;        // Alt+Tab let go sooner: the previous window, nothing shown
-constexpr double kChosenScale = 1.2;
+constexpr double kHoverScale = 1.04; // the window under the pointer, lifted (design 2026-10-20 WuXian §4.2)
+constexpr double kRing = 3;          // the chosen one's ring, in the accent
+constexpr int kFadeMs = 300;         // the others back from dimmed, after the chosen one was lit
 constexpr float kDimmed = 0.6f;
 constexpr double kMargin = 40;
 
@@ -77,20 +78,24 @@ std::string Server::app_of(View& v) const {
     return std::format("window:{}", v.id);
 }
 
-// The shown workspace's windows, the most recently focused first (the views' order).
+// The windows shown, the most recently focused first (the views' order): the
+// current workspace's in the workspace view, every one in the WuXian view
+// (design 2026-10-20 WuXian §4.2).
 std::vector<layout::Id> Server::recent_windows() {
     std::vector<layout::Id> out;
     for (const auto& v : views)
-        if (v.mapped && lay.workspace_of(v.id) == lay.workspace()) out.push_back(v.id);
+        if (v.mapped && (wuxian() || lay.workspace_of(v.id) == lay.current())) out.push_back(v.id);
     return out;
 }
 
 // ── the overview's picture ───────────────────────────────────────────
 
 // `ids` where the overview puts them in `area` (design 2026-10-20 §10.3):
-// where they are now to one another, the whole fitted; `chosen` larger
-// about its middle and above the rest, which are dimmed; any other window
-// is not shown. The windows glide there (the springs) and back.
+// where they are now to one another, the whole fitted; `chosen` ringed in
+// the accent and above the rest, which are dimmed; the one under the pointer
+// lifted a little (design 2026-10-20 WuXian §4.2: choosing and hovering are
+// two things); any other window is not shown. The windows glide there (the
+// springs) and back.
 void Server::show_spread(const std::vector<layout::Id>& ids, layout::Rect area, layout::Id chosen) {
     std::vector<layout::Placement> ps;
     std::vector<layout::Rect> real;
@@ -104,12 +109,21 @@ void Server::show_spread(const std::vector<layout::Id>& ids, layout::Rect area, 
     spread_zoom.clear();
     for (std::size_t k = 0; k < ps.size(); ++k) {
         auto r = rects[k];
+        if (ps[k].id == spread_hover) {
+            const double w = r.width * kHoverScale, h = r.height * kHoverScale;
+            r = {r.x - (w - r.width) / 2, r.y - (h - r.height) / 2, w, h};
+        }
         if (ps[k].id == chosen) {
-            // Larger about its middle, as far as the area lets it.
-            const double grow = std::max(1.0, std::min({kChosenScale, area.width / std::max(1.0, r.width), area.height / std::max(1.0, r.height)}));
-            const double w = r.width * grow, h = r.height * grow;
-            r = {std::clamp(r.x - (w - r.width) / 2, area.x, std::max(area.x, area.x + area.width - w)),
-                 std::clamp(r.y - (h - r.height) / 2, area.y, std::max(area.y, area.y + area.height - h)), w, h};
+            const std::array<layout::Rect, 4> ring{{{r.x - kRing, r.y - kRing, r.width + 2 * kRing, kRing},
+                                                    {r.x - kRing, r.y + r.height, r.width + 2 * kRing, kRing},
+                                                    {r.x - kRing, r.y, kRing, r.height},
+                                                    {r.x + r.width, r.y, kRing, r.height}}};
+            for (std::size_t e = 0; e < 4; ++e) {
+                wlr_scene_rect_set_size(chosen_ring[e], std::max(1, static_cast<int>(std::lround(ring[e].width))),
+                                        std::max(1, static_cast<int>(std::lround(ring[e].height))));
+                wlr_scene_node_set_position(&chosen_ring[e]->node, static_cast<int>(std::lround(ring[e].x)), static_cast<int>(std::lround(ring[e].y)));
+                wlr_scene_node_set_enabled(&chosen_ring[e]->node, true);
+            }
         }
         spread_rects.push_back({ps[k].id, r});
         spread_zoom[ps[k].id] = r.width / std::max(1.0, real[k].width);
@@ -127,6 +141,8 @@ void Server::show_spread(const std::vector<layout::Id>& ids, layout::Rect area, 
 
 // The windows as they were: their own scale, not dimmed (the caller arranges them).
 void Server::end_spread() {
+    for (auto* r : chosen_ring) wlr_scene_node_set_enabled(&r->node, false);
+    spread_hover = 0;
     if (spread_zoom.empty() && spread_rects.empty()) return;
     spread_zoom.clear();
     spread_rects.clear();
@@ -148,7 +164,7 @@ void Server::open_switcher(bool back) {
             end_spread();
             arrange();
         }
-        wl_event_source_timer_update(switch_timer, kHeldMs);
+        wl_event_source_timer_update(switch_timer, hold_ms);
         draw_overlay();
         return;
     }
@@ -168,7 +184,7 @@ void Server::open_switcher(bool back) {
     switcher_open = false;
     switcher_window = 0;
     overlay = Overlay::switcher;
-    wl_event_source_timer_update(switch_timer, kHeldMs);
+    wl_event_source_timer_update(switch_timer, hold_ms);
     draw_overlay();
 }
 
@@ -180,7 +196,7 @@ void Server::other_app_window(bool back) {
     const auto app = app_of(*f);
     std::vector<View*> same;
     for (auto& v : views)
-        if (&v != f && v.mapped && lay.workspace_of(v.id) == lay.workspace() && app_of(v) == app) same.push_back(&v);
+        if (&v != f && v.mapped && (wuxian() || lay.workspace_of(v.id) == lay.current()) && app_of(v) == app) same.push_back(&v);
     if (same.empty()) return;
     View* to = back ? same.front() : same.back();
     lay.focus(to->id);
@@ -313,6 +329,50 @@ bool Server::spread_key(xkb_keysym_t s) {
 
 // ── both ─────────────────────────────────────────────────────────────
 
+// The one chosen kept lit (design 2026-10-20 WuXian §4.3): the others stay
+// dimmed while the windows go where they go, then the time chosen, then
+// fade back in kFadeMs.
+void Server::start_highlight(layout::Id id) {
+    if (highlight_ms <= 0 || !view_of(id)) return;
+    lit = Lit::settling;
+    lit_id = id;
+    lit_at = std::chrono::steady_clock::now();
+    for (auto& v : views)
+        if (v.mapped) set_opacity(v, v.id == id ? 1.0f : static_cast<float>(dim_level));
+    if (lit_timer) wl_event_source_timer_update(lit_timer, 16);
+}
+
+void Server::highlight_step() {
+    using namespace std::chrono;
+    const auto now = steady_clock::now();
+    auto all = [&](float o) {
+        for (auto& v : views)
+            if (v.mapped && v.id != lit_id) set_opacity(v, o);
+    };
+    switch (lit) {
+        case Lit::none: return;
+        case Lit::settling:
+            // Until every window is where it goes (a second at most).
+            if (std::ranges::any_of(views, [](const View& v) { return v.moving; }) && now - lit_at < seconds(1)) break;
+            lit = Lit::holding;
+            lit_at = now;
+            break;
+        case Lit::holding:
+            if (now - lit_at < milliseconds(highlight_ms)) break;
+            lit = Lit::fading;
+            lit_at = now;
+            if (reduce_motion) { all(1.0f); lit = Lit::none; return; }
+            break;
+        case Lit::fading: {
+            const double t = duration<double, std::milli>(now - lit_at).count() / kFadeMs;
+            if (t >= 1) { all(1.0f); lit = Lit::none; return; }
+            all(static_cast<float>(dim_level + (1 - dim_level) * t));
+            break;
+        }
+    }
+    if (lit_timer) wl_event_source_timer_update(lit_timer, 16);
+}
+
 // What the switcher holds, focused (close_overlay, before the windows go back).
 void Server::choose_switched(Overlay was) {
     layout::Id id = 0;
@@ -325,6 +385,7 @@ void Server::choose_switched(Overlay was) {
     if (View* v = id ? view_of(id) : nullptr) {
         lay.focus(v->id);
         focus(v);
+        lit_id = v->id;
     }
 }
 
@@ -352,8 +413,17 @@ bool Server::switched_click(double x, double y) {
     return true;
 }
 
-// The pointer over a window shown chooses it (an application's tile, that application).
+// The pointer over a window shown lifts it and chooses it (an application's
+// tile, that application); leaving them all, it lifts none and the one
+// chosen stays chosen (H6).
 void Server::switched_hover(double x, double y) {
+    layout::Id over = 0;
+    for (const auto& [id, r] : spread_rects | std::views::reverse)
+        if (r.contains(x, y)) { over = id; break; }
+    if (over != spread_hover) {
+        spread_hover = over;
+        draw_overlay();
+    }
     for (const auto& [id, r] : spread_rects | std::views::reverse) {
         if (!r.contains(x, y)) continue;
         if (overlay == Overlay::spread) {
@@ -371,7 +441,7 @@ void Server::switched_hover(double x, double y) {
             if (x >= a.rect.x && y >= a.rect.y && x < a.rect.x + a.rect.width && y < a.rect.y + a.rect.height
                 && static_cast<std::size_t>(a.index) != overlay_at) {
                 overlay_at = static_cast<std::size_t>(a.index);
-                wl_event_source_timer_update(switch_timer, kHeldMs);
+                wl_event_source_timer_update(switch_timer, hold_ms);
                 draw_overlay();
                 return;
             }

@@ -80,12 +80,14 @@ void Layout::stack_move_(Window& w, Direction d) {
 std::vector<Placement> Layout::stack_(Space& s, Rect area) {
     std::vector<Placement> out;
     for (const Id id : s.order) {
-        auto* w = window_(id);
+        // Its own window (an arrangement of a copy is the copy's).
+        const auto it = std::ranges::find(s.windows, id, &Window::id);
+        auto* w = it == s.windows.end() ? nullptr : &*it;
         if (!w || w->floating) continue;
         if (!w->stack_placed) stack_place_new_(s, *w, area);
         const Rect r = stack_rect_(*w, area);
         out.push_back({.id = id, .rect = r, .visible = overlaps(r, area), .focused = s.focus == id,
-                       .maximized = w->snapped && w->snap_x == 0 && w->snap_y == 0});
+                       .maximized = w->snapped && w->snap_x == 0 && w->snap_y == 0, .workspace = s.meta.id});
     }
     return out;
 }

@@ -489,6 +489,20 @@ nlohmann::json extensions_json_(const mcpplibs::xpkg::Package& pkg) {
 // A plumbing step (a template of a `subos new --from`) says nothing per node:
 // the edition is named once by the command that asked for it.
 bool gNodeLinesQuiet = false;
+
+// Candidates for a name, nearest first and stably (design 2026-10-20 WuXian
+// §13.2): the name itself, names it begins, names holding it, the rest --
+// the order the index happened to list them in was no order at all.
+void sort_by_closeness(std::vector<PackageMatch>& candidates, std::string_view target) {
+    const auto rank = [&](const PackageMatch& m) {
+        const std::string_view n = m.name;
+        if (n == target) return 0;
+        if (n.starts_with(target)) return 1;
+        if (n.find(target) != std::string_view::npos) return 2;
+        return 3;
+    };
+    std::ranges::stable_sort(candidates, {}, rank);
+}
 }  // namespace
 
 int cmd_install_step(std::span<const std::string> targets, std::string_view subos,
@@ -761,7 +775,7 @@ int install_(std::span<const std::string> targets, bool yes, bool noDeps,
         // works without a manual `xlings update`. Debounced by a per-call guard
         // + a process-wide cooldown; ambiguous errors are not "missing".
         if (!match && !refreshedForMissing && Config::paths().systemLayer.empty()
-                && !match.error().contains("ambiguous")
+                && !match.error().contains("ambiguous") && !match.error().contains("could not be read")
                 && index_refresh_cooldown_elapsed()) {
             refreshedForMissing = true;
             log::info("'{}' not in current index; refreshing index...", target);
@@ -774,6 +788,17 @@ int install_(std::span<const std::string> targets, bool yes, bool noDeps,
             }
         }
         if (!match) {
+            // A recipe there and not readable: why, and where to look -- never
+            // a guess among other names (design 2026-10-20 WuXian §13.2, H26).
+            if (match.error().contains("could not be read")) {
+                stream.emit(ErrorEvent{
+                    .code = ErrorCode::InvalidInput,
+                    .message = match.error(),
+                    .recoverable = true,
+                    .hint = "xlings self doctor",
+                });
+                return 1;
+            }
             // Ambiguous matches: show error directly, don't fall through to fuzzy
             if (match.error().contains("ambiguous")) {
                 // #374: structured error on the wire (was a swallowed log::error)
@@ -811,13 +836,18 @@ int install_(std::span<const std::string> targets, bool yes, bool noDeps,
                 });
                 return 1;
             }
-            if (fuzzy.size() > 5) fuzzy.resize(5);
+            // Nearest first, stably (WuXian §13.2): the name itself, then
+            // names it begins, then names holding it, then the rest; ten at
+            // most, the others counted.
+            sort_by_closeness(fuzzy, target);
+            std::size_t more = 0;
+            if (fuzzy.size() > 10) {
+                more = fuzzy.size() - 10;
+                fuzzy.resize(10);
+            }
 
             if (fuzzy.size() == 1) {
                 // Single fuzzy match -- use it directly
-                match = fuzzy.front();
-            } else if (yes) {
-                // -y mode: auto-select first match
                 match = fuzzy.front();
             } else {
                 // A name that matches several packages. Ask when somebody is
@@ -854,18 +884,19 @@ int install_(std::span<const std::string> targets, bool yes, bool noDeps,
                         earlyRc = 0;
                     },
                     [&](EventStream::NobodyToAsk&&) {
+                        // Only a full coordinate: "take the first" (-y)
+                        // installed packages nobody named (H26).
+                        std::vector<diag::Action> actions{
+                            { "name one", std::format("xlings install {}", options.front()) }};
+                        if (more > 0)
+                            actions.push_back({ std::format("{} more", more), std::format("xlings search {}", target) });
                         diag::emit({
                             .code    = "xim.ambiguous_target",
                             .summary = std::format(
                                 "'{}' matches more than one package", target),
                             .facts   = { diag::candidates("candidates", options,
                                                           options.size()) },
-                            .actions = {
-                                { "name one",
-                                  std::format("xlings install {}", options.front()) },
-                                { "or take the first",
-                                  std::format("xlings install {} -y", target) },
-                            },
+                            .actions = std::move(actions),
                             .nothingChanged = true,
                         });
                         earlyRc = 2;
@@ -3199,7 +3230,12 @@ int cmd_info(const std::string& target, EventStream& stream, bool allVersions, c
         // that fails when copied.
         std::erase_if(fuzzy, [](const auto& f) { return f.version.empty(); });
         if (!fuzzy.empty()) {
-            if (fuzzy.size() > 5) fuzzy.resize(5);
+            sort_by_closeness(fuzzy, target);
+            std::size_t more = 0;
+            if (fuzzy.size() > 10) {
+                more = fuzzy.size() - 10;
+                fuzzy.resize(10);
+            }
             std::vector<std::string> names;
             for (const auto& f : fuzzy) {
                 names.push_back(f.canonicalName + "@" + f.version);
@@ -3229,11 +3265,18 @@ int cmd_info(const std::string& target, EventStream& stream, bool allVersions, c
                 .summary = std::format("'{}' matches more than one package",
                                        target),
                 .facts   = { diag::candidates("candidates", names, names.size()) },
-                .actions = { { "name one",
-                    std::format("xlings info {}", names.front()) } },
+                .actions = more > 0 ? std::vector<diag::Action>{ { "name one", std::format("xlings info {}", names.front()) },
+                                                                { std::format("{} more", more), std::format("xlings search {}", target) } }
+                                    : std::vector<diag::Action>{ { "name one", std::format("xlings info {}", names.front()) } },
                 .nothingChanged = true,
             });
             return 2;
+        }
+        // Its recipe could not be read: not "not found" (WuXian §13.2).
+        if (match.error().contains("could not be read")) {
+            stream.emit(ErrorEvent{.code = ErrorCode::InvalidInput, .message = match.error(), .recoverable = true,
+                                   .hint = "xlings self doctor"});
+            return 1;
         }
         // Not in the index: a fact a program asking (package_info) can tell
         // from a failure.

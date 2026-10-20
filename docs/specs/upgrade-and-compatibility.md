@@ -114,7 +114,7 @@ What moves forward on its own, without a layout change (2026.10.15):
 What Luban keeps only for a released older part lives in one package,
 `luban.compat`; nothing else in `luban/` or `apps/` names a frozen edition or a
 released version (`tools/lint_compat.sh`). Each entry has a test of the old
-behaviour (`tests/unit/test_luban_compat.cpp`) and goes with it:
+behaviour (`luban/tests/unit/test_luban_compat.cpp`) and goes with it:
 
 | Entry | Serves | Since | Removed when |
 |---|---|---|---|

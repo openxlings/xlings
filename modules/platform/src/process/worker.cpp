@@ -360,9 +360,10 @@ OutputCapture::OutputCapture(const std::filesystem::path& path)
     state_->saved_error = ::fcntl(2, F_DUPFD_CLOEXEC, 6);
     state_->destination =
         ::open(path.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW | O_CLOEXEC, 0600);
+    // Why, and where: "cannot capture" alone named nothing to look at (H26).
     if (state_->saved_out < 0 || state_->saved_error < 0 || state_->destination < 0 ||
         ::dup2(state_->destination, 1) < 0 || ::dup2(state_->destination, 2) < 0)
-        throw std::runtime_error("cannot capture recipe output");
+        throw std::runtime_error(std::format("cannot capture recipe output in {}: {}", path.string(), std::strerror(errno)));
 #endif
 }
 OutputCapture::~OutputCapture() = default;

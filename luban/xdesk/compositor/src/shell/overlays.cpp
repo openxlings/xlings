@@ -264,6 +264,56 @@ MinimapPicture minimap(const Theme& t, const std::vector<draw::Rect>& boxes, dra
     return m;
 }
 
+Picture dialog(draw::Fonts* ui, draw::Fonts* big, const Theme& t, std::string_view title, std::string_view text,
+               const std::vector<DialogButton>& buttons, int width, int height, double scale) {
+    Picture p;
+    const double bh = 36, gap = 10;
+    double buttons_w = 0;
+    for (const auto& b : buttons) buttons_w += (ui ? ui->width(b.label) : 80) + 32 + gap;
+    const double w = std::clamp(std::max(buttons_w + 30, (ui ? ui->width(text) : 300) + 48), 360.0, std::max(360.0, width - 40.0));
+    const double h = 150;
+    p.x = std::round((width - w) / 2);
+    p.y = std::round((height - h) / 2);
+    p.image = image_(w, h, scale);
+    draw::Canvas c(p.image, scale);
+    c.fill({0, 0, w, h}, t.card, t.radius + 2);
+    c.frame({0, 0, w, h}, Color::rgb(0x3a4050), 1, t.radius + 2);
+    if (big) c.text(*big, title, 24, 38, t.text, w - 48);
+    if (ui) c.text(*ui, text, 24, 68, t.muted, w - 48);
+    double x = w - 24;
+    for (std::size_t k = buttons.size(); k-- > 0;) {
+        const auto& b = buttons[k];
+        const double bw = (ui ? ui->width(b.label) : 80) + 32;
+        x -= bw;
+        const Rect r{x, h - bh - 20, bw, bh};
+        const Color fill = !b.enabled ? Color::rgb(0x2a2e37) : b.danger ? Color::rgb(0xb8434e) : b.primary ? t.accent : t.title_idle;
+        c.fill(r, fill, 6);
+        if (ui) c.text(*ui, b.label, r.x + 16, std::round(r.y + 23), b.enabled ? (b.primary ? Color::rgb(0x0f1115) : t.text) : t.muted);
+        if (b.enabled) p.areas.push_back({.rect = {p.x + r.x, p.y + r.y, r.width, r.height}, .target = Target::item, .index = static_cast<int>(k)});
+        x -= gap;
+    }
+    return p;
+}
+
+Picture text_field(draw::Fonts* ui, const Theme& t, std::string_view prompt, std::string_view text, double x, double y, int width,
+                   int height, double scale) {
+    Picture p;
+    const double w = 320, h = 64;
+    p.x = std::clamp(x, 4.0, std::max(4.0, width - w - 4));
+    p.y = std::clamp(y, 4.0, std::max(4.0, height - h - 4));
+    p.image = image_(w, h, scale);
+    draw::Canvas c(p.image, scale);
+    c.fill({0, 0, w, h}, t.card, t.radius);
+    c.frame({0, 0, w, h}, t.accent, 1, t.radius);
+    if (ui) {
+        c.text(*ui, prompt, 14, 22, t.muted, w - 28);
+        const double end = 14 + c.text(*ui, text, 14, 48, t.text, w - 40);
+        c.fill({std::min(end + 1, w - 20), 34, 1.5, 18}, t.accent);
+    }
+    p.areas.push_back({.rect = {p.x, p.y, w, h}, .target = Target::item, .index = 0});
+    return p;
+}
+
 Picture hint(draw::Fonts* ui, const Theme& t, std::string_view text, int width, int height, double scale) {
     Picture p;
     const double w = ui ? std::min(width - 40.0, ui->width(text) + 40) : 300, h = 36;
@@ -287,12 +337,23 @@ Picture settings(draw::Fonts* ui, draw::Fonts* big, const Theme& t, const Settin
     const Rect card { std::round((width - cw) / 2), std::round((height - ch) / 2), cw, ch };
     c.fill(card, t.card, t.radius + 6);
     c.frame(card, Color::rgb(0x3a4050), 1, t.radius + 6);
-    // The pages.
+    // The pages, on the card's own colour, a line between them and the page
+    // (design 2026-10-20 WuXian §5.1); its title the window's: an icon and
+    // "Settings", larger, nothing to click.
     const double side = 190;
-    c.fill({card.x, card.y, side, card.height}, Color::rgb(0x191c23), t.radius + 6);
+    c.fill({card.x + side, card.y + 14, 1, card.height - 28}, Color::rgb(0x2c313c));
     double y = card.y + 18;
-    if (ui) c.text(*ui, tr_(zh, "Settings", "设置"), card.x + 20, std::round(y + 14), t.muted);
-    y += 34;
+    {
+        const double cx = card.x + 30, cy = y + 10;
+        c.frame({cx - 8, cy - 8, 16, 16}, t.text, 2.5, 8);
+        for (int k = 0; k < 8; ++k) {
+            const double a = k * 3.14159265358979 / 4;
+            c.fill({cx + std::cos(a) * 9 - 1.75, cy + std::sin(a) * 9 - 1.75, 3.5, 3.5}, t.text, 1);
+        }
+        if (big) c.text(*big, tr_(zh, "Settings", "设置"), card.x + 46, std::round(y + 18), t.text);
+        else if (ui) c.text(*ui, tr_(zh, "Settings", "设置"), card.x + 46, std::round(y + 15), t.text);
+    }
+    y += 40;
     for (std::size_t k = 0; k < v.pages.size(); ++k) {
         const Rect r { card.x + 10, y, side - 20, 34 };
         if (k == v.page) c.fill(r, t.selected, 8);
@@ -315,11 +376,17 @@ Picture settings(draw::Fonts* ui, draw::Fonts* big, const Theme& t, const Settin
     for (std::size_t k = first; k < v.rows.size() && k < first + capacity; ++k) {
         const auto& r = v.rows[k];
         const Rect line { x0 - 10, y, x1 - x0 + 20, row_h - 4 };
-        const bool lit = v.selected == k;
+        const bool lit = v.selected == k && v.capturing;
+        const bool ring = v.selected == k && v.keyboard && !v.capturing;
+        const bool hovered = v.hover == k;
         const double base = std::round(y + 23);
         using K = SettingsRow::Kind;
-        if (lit && r.kind != K::heading) c.fill(line, v.capturing ? t.accent : t.selected, 8);
-        const Color text = lit && v.capturing ? Color::rgb(0x0f1115) : t.text;
+        if (r.kind != K::heading && r.kind != K::text && r.kind != K::search) {
+            if (lit) c.fill(line, t.accent, 8);
+            else if (hovered) c.fill(line, Color::rgb(0x262a33), 8);
+            if (ring) c.frame(line, t.accent, 2, 8);
+        }
+        const Color text = lit ? Color::rgb(0x0f1115) : t.text;
         switch (r.kind) {
             case K::heading:
                 if (ui) c.text(*ui, r.label, x0, std::round(y + 27), t.muted);
@@ -369,18 +436,28 @@ Picture settings(draw::Fonts* ui, draw::Fonts* big, const Theme& t, const Settin
                 break;
             }
             case K::button: {
+                // A button as a button: lighter under the pointer, never lit for being the only row.
                 const double w = (ui ? ui->width(r.label) : 60) + 28;
-                c.fill({x0, y + 4, w, row_h - 12}, lit ? t.accent : Color::rgb(0x2a2f3a), 8);
-                if (ui) c.text(*ui, r.label, x0 + 14, base, lit ? Color::rgb(0x0f1115) : t.text);
+                c.fill({x0, y + 4, w, row_h - 12}, hovered ? Color::rgb(0x353b48) : Color::rgb(0x2a2f3a), 8);
+                if (ui) c.text(*ui, r.label, x0 + 14, base, t.text);
                 if (ui && !r.value.empty()) c.text(*ui, r.value, x0 + w + 14, base, t.muted, x1 - x0 - w - 14);
                 break;
             }
             case K::search: {
+                // Always taking what is typed: its caret blinks; a ring only for the keyboard's focus.
                 const Rect field { x0, y + 3, x1 - x0, row_h - 10 };
                 c.fill(field, Color::rgb(0x14161c), 8);
-                c.frame(field, lit ? t.accent : Color::rgb(0x3a4050), 1, 8);
-                if (ui) c.text(*ui, r.value.empty() ? r.label : r.value, field.x + 12, base, r.value.empty() ? t.muted : t.text,
-                               field.width - 24);
+                c.frame(field, ring ? t.accent : Color::rgb(0x3a4050), ring ? 2 : 1, 8);
+                if (!ui) break;
+                double x = field.x + 12;
+                if (r.value.empty() && v.preedit.empty()) c.text(*ui, r.label, x, base, t.muted, field.width - 24);
+                else x += c.text(*ui, r.value, x, base, t.text, field.width - 24);
+                if (!v.preedit.empty()) {
+                    const double w = c.text(*ui, v.preedit, x, base, t.text, field.x + field.width - 12 - x);
+                    c.fill({x, base + 3, w, 1}, t.text);
+                    x += w;
+                }
+                if (v.caret) c.fill({std::min(x + 1, field.x + field.width - 12), field.y + 6, 1.5, field.height - 12}, t.accent);
                 break;
             }
         }

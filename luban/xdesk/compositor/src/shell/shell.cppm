@@ -54,18 +54,37 @@ draw::Rect maximize_button(int width);
 
 // ── the panel ────────────────────────────────────────────────────────
 
+// A workspace as the status bar and WuXian's labels show it (design
+// 2026-10-20 WuXian §3.13): its colour says which it is, its shape its rule.
+struct WorkspaceChip {
+    int id { 1 };
+    std::string name;
+    std::uint32_t color { 0x5e9cff };
+    bool stack { false };           // its rule: stack, else tile
+    bool vertical { false };        // a tiled one's columns one under another
+    int windows { 0 };
+    bool current { false };
+    // A rule just changed: how far its shape has gone from the other one's (1: there).
+    double morph { 1 };
+};
+
 struct PanelState {
-    int workspace { 0 };
-    int workspaces { 4 };
-    std::vector<bool> occupied;     // a workspace has windows
+    std::vector<WorkspaceChip> workspaces;   // by number
+    bool others { true };           // the other workspaces shown beside the current one
     std::string title;              // the focused window's
     std::string clock;              // "HH:MM"
     double zoom { 1 };
-    bool overview { false };
+    bool wuxian { false };          // the WuXian view
+    int free_windows { 0 };         // windows free on WuXian
+    bool minimap { true };
     bool zh { false };
 };
 
-enum class Target { none, launcher, workspace, overview, item, page, choice };
+// launcher; workspace (index: its number); rule (the current workspace's,
+// Super+M); wuxian (into the WuXian view, and back); free (WuXian's free
+// windows); show_all, minimap (the WuXian view's); label (a workspace's on
+// WuXian, index: its number); item, page, choice (overlays).
+enum class Target { none, launcher, workspace, rule, wuxian, free, show_all, minimap, label, item, page, choice };
 struct Area {
     draw::Rect rect;                // output pixels
     Target target { Target::none };
@@ -84,9 +103,22 @@ Picture panel(draw::Fonts* fonts, const Theme& t, const PanelState& s, int outpu
               double scale = 1);
 std::optional<Area> hit(const Picture& p, double x, double y);
 
-// The canvas's background: dots on a grid that pans and zooms with the view
+// WuXian's background: dots on a grid that pans and zooms with the view
 // (`cx`, `cy` the world point at the top-left).
 draw::Image canvas_background(const Theme& t, int width, int height, double cx, double cy, double zoom, double scale = 1);
+
+// A workspace's rule as a shape in `r`, in its colour (design 2026-10-20
+// WuXian §3.13): tile -- a rounded square in columns (rows when its columns
+// run downwards); stack -- two rounded squares, one over the other.
+// `filled`: the shape solid, its lines in `ink`; else outlined. Between the
+// two shapes while `w.morph` < 1 (from the other rule's).
+void rule_icon(draw::Canvas& c, draw::Rect r, const WorkspaceChip& w, bool filled, draw::Color ink);
+// A workspace's label on WuXian, drawn above its frame's top-left: a dot of
+// its colour, its number, its name, its rule's shape -- `small` (the
+// workspace shown small): the dot and the number. One area, the label
+// (Target::label, its number), in the picture's own pixels.
+Picture workspace_label(draw::Fonts* fonts, const Theme& t, const WorkspaceChip& w, bool small, double scale = 1);
+inline constexpr int kLabelHeight = 22;
 
 // ── the launcher ─────────────────────────────────────────────────────
 
@@ -199,17 +231,39 @@ struct SettingsRow {
     bool on { false };
     bool changed { false };         // keys: not the set's own
 };
+// Three states, each its own look (design 2026-10-20 WuXian §5.2): a
+// choice's value (filled, always), the row the pointer is on (a light
+// background, gone when it leaves), the keyboard's row (a ring, only while
+// the keyboard is what was used last).
 struct SettingsView {
     std::vector<std::string> pages;
     std::size_t page { 0 };
     std::string title;
     std::vector<SettingsRow> rows;
-    std::optional<std::size_t> selected;
+    std::optional<std::size_t> selected;    // the keyboard's row
+    std::optional<std::size_t> hover;       // the pointer's
+    bool keyboard { false };                // the last input was a key
     bool capturing { false };
+    bool caret { true };                    // the search field's caret, as it blinks
+    std::string preedit;                    // an input method's text not yet committed
     std::string hint;
 };
 Picture settings(draw::Fonts* ui, draw::Fonts* big, const Theme& t, const SettingsView& v, int width, int height, bool zh,
                  double scale = 1);
+// A question and its answers (design 2026-10-20 WuXian §3.9), in the middle:
+// a title, a line, buttons -- the default one lit; one that may not be
+// pressed yet dimmed (its label says when). Areas: the buttons (item, by index).
+struct DialogButton {
+    std::string label;
+    bool enabled { true };
+    bool primary { false };         // the default (Enter)
+    bool danger { false };          // it destroys something
+};
+Picture dialog(draw::Fonts* ui, draw::Fonts* big, const Theme& t, std::string_view title, std::string_view text,
+               const std::vector<DialogButton>& buttons, int width, int height, double scale = 1);
+// A line being typed (a workspace's name) at (x, y): its prompt, the text, a caret.
+Picture text_field(draw::Fonts* ui, const Theme& t, std::string_view prompt, std::string_view text, double x, double y, int width,
+                   int height, double scale = 1);
 // A line said for a while at the bottom (the first time: what the keys are).
 Picture hint(draw::Fonts* ui, const Theme& t, std::string_view text, int width, int height, double scale = 1);
 

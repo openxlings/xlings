@@ -101,7 +101,9 @@ int main(int argc, char* argv[]) {
     }
     // The profile's settings (a config: package's, then the person's own);
     // what the command line said stays.
-    const auto settings = xdesk::config::load(o.profile, xdesk::os::environment());
+    // One set of settings for every session (design 2026-10-20 WuXian §12.2):
+    // xdesk.ini, whatever the session was called.
+    const auto settings = xdesk::config::load(o.config_profile, xdesk::os::environment());
     for (const auto& p : settings.problems) o.log("settings: " + p);
     if (!terminal_given) {
         if (auto t = settings.get("desktop", "terminal"); !t.empty()) o.terminal = xdesk::apps::argv(t);
@@ -113,10 +115,22 @@ int main(int argc, char* argv[]) {
     o.outer_gap = settings.get_int("desktop", "outer_gap", o.outer_gap);
     o.min_column_width = settings.get_int("desktop", "min_column_width", o.min_column_width);
     o.flow = settings.get("desktop", "flow", o.flow);
-    o.minimap = settings.get("canvas", "minimap", "on") != "off";
-    o.snap = settings.get("canvas", "snap", "on") != "off";
+    // [wuxian] (design 2026-10-20 WuXian §3.16); [canvas] of before is read too.
+    o.minimap = settings.get("wuxian", "minimap", settings.get("canvas", "minimap", "on")) != "off";
+    o.snap = settings.get("wuxian", "snap", settings.get("canvas", "snap", "on")) != "off";
     o.reduce_motion = settings.get("appearance", "reduce_motion", "off") == "on";
-    o.workspaces = settings.get_int("desktop", "workspaces", o.workspaces);
+    o.rule = settings.get("desktop", "rule", o.rule);
+    o.status_others = settings.get("desktop", "status_others", "on") != "off";
+    o.switcher_hold_ms = std::clamp(settings.get_int("switchers", "hold_ms", o.switcher_hold_ms), 100, 3000);
+    o.highlight_ms = std::clamp(settings.get_int("switchers", "highlight_ms", o.highlight_ms), 0, 5000);
+    if (const auto d = settings.get("switchers", "dim", ""); !d.empty()) o.dim = std::clamp(std::atof(d.c_str()), 0.1, 1.0);
+    if (const auto s = settings.get("scroll", "speed", "medium"); s == "slow") o.wheel_speed = 0.6;
+    else if (s == "fast") o.wheel_speed = 1.6;
+    o.snap_columns = settings.get("scroll", "snap", "on") != "off";
+    o.renderer = settings.get("appearance", "renderer", o.renderer);
+    if (const auto m = settings.get("appearance", "pointer_locate", "grow-color"); m == "off") o.locate.mode = opensal::PointerLocate::Mode::off;
+    else if (m == "grow") o.locate.mode = opensal::PointerLocate::Mode::grow;
+    o.locate.max = std::clamp(settings.get_int("appearance", "pointer_max", 4), 2, 4);
     if (const auto c = settings.colour("theme", "accent", 0x1000000); c != 0x1000000) o.accent = c;
     if (const auto c = settings.colour("theme", "background", 0x1000000); c != 0x1000000) o.background = c;
     // Other windows of this desktop connect here (opensal-wlr's run_session says where).

@@ -1,7 +1,7 @@
 [Desktop Entry]
 Type=Application
 Name=xdesk (classic)
-Comment=Windows side by side, a panel and a launcher
+Comment=The xdesk session (its name of before): workspaces on WuXian
 Exec=xdesk --profile classic
 X-Opensal-Native=true
 X-Opensal-Interfaces=surface pointer keyboard mode

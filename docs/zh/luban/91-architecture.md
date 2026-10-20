@@ -23,8 +23,8 @@
 | `luban/os/window` | Luban OS 应用的窗口（SDL3）与 Dear ImGui |
 | `luban/os/compat` | 只为已发布的旧版本保留的东西，各自写明何时删除 |
 | `modules/image` | 进程内写出的镜像：GPT、FAT、带 El Torito 的 ISO 9660、qcow2 |
-| `apps/luban` | 二进制：luban，或以 `luban-init` 启动时的 stage-0 |
-| `apps/luban-os` | Luban OS 应用：它的窗口，以及托盘（`luban-os __tray`） |
+| `luban/host/luban` | 二进制：luban，或以 `luban-init` 启动时的 stage-0 |
+| `luban/host/luban-os` | Luban OS 应用：它的窗口，以及托盘（`luban-os __tray`） |
 | `src/core/subos/root` | 根的 xlings 一侧：投影、代、回滚、导出 |
 
 规范只引用标准库和它自己；kit 从不引用 xlings 或 Luban；OS 服务不引用任何呈现层；`luban/` 里的任何东西都不引用

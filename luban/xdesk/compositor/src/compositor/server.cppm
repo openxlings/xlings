@@ -159,8 +159,21 @@ struct Popup {
 // The settings' pages (design 2026-10-20 §11.4).
 enum class SettingsPage { displays, layout, appearance, keys, about };
 
-// What a held button is doing.
-enum class Drag { none, pan, move, gap, row_gap, resize };
+// What a held button is doing (workspace: a workspace's label carried;
+// scale: its corner, its scale).
+enum class Drag { none, pan, move, gap, row_gap, resize, workspace, scale };
+
+// A workspace in the WuXian view (design 2026-10-20 WuXian §3.3): its plate,
+// a border of its colour, its label above its top-left.
+struct WorkspaceNodes {
+    int id { 0 };
+    wlr_scene_rect* plate { nullptr };
+    std::array<wlr_scene_rect*, 4> border {};
+    wlr_scene_buffer* label { nullptr };
+    std::string drawn;
+    layout::Rect frame;                     // on the screen
+    layout::Rect label_at;
+};
 
 // A window showing the desktop (design 2026-10-20 §11): the first -- the
 // standard input and output -- is the primary, whose size and density the
@@ -189,6 +202,15 @@ struct Server {
     wlr_backend* backend { nullptr };
     wlr_renderer* renderer { nullptr };
     wlr_allocator* allocator { nullptr };
+    wlr_compositor* compositor { nullptr };
+    // The renderer (design 2026-10-20 WuXian §7.2): the GPU's (GLES on a
+    // render node) when one draws, else software (pixman) -- and why, as the
+    // About page says it.
+    bool gpu { false };
+    int render_fd { -1 };
+    std::string renderer_text;
+    std::vector<std::uint8_t> readback;          // a GPU frame's pixels, read back where they changed
+    Hook renderer_lost;
     wlr_scene* scene { nullptr };
     wlr_scene_output_layout* scene_layout { nullptr };
     wlr_output_layout* outputs { nullptr };
@@ -197,8 +219,8 @@ struct Server {
     wlr_scene_tree* shell_layer { nullptr };    // the panel
     wlr_scene_tree* overlay_layer { nullptr };  // the launcher
     wlr_scene_rect* background { nullptr };
-    wlr_scene_buffer* canvas_dots { nullptr };  // canvas: the grid over the background
-    wlr_scene_buffer* minimap_node { nullptr }; // canvas: the minimap (design 2026-10-20 §9.6)
+    wlr_scene_buffer* wuxian_dots { nullptr };  // the WuXian view: the grid over the background
+    wlr_scene_buffer* minimap_node { nullptr }; // the WuXian view: the minimap (design 2026-10-20 §9.6)
     shell::MinimapPicture minimap_shown;
     std::string minimap_drawn;
     wlr_scene_rect* guide_x { nullptr };        // the lines a moved window snapped to
@@ -268,15 +290,20 @@ struct Server {
     Bindings keys;
     config::State state;
     bool state_broken { false };
+    // WuXian as it is kept (wuxian.json, design 2026-10-20 WuXian §3.14):
+    // written a moment after it changes, when what it says changed.
+    std::string wuxian_written;
+    bool wuxian_broken { false };
+    wl_event_source* wuxian_timer { nullptr };
     bool super_alone { false };                  // Super down and nothing else since: its release opens the apps
     // One overlay at a time (design 2026-10-19 §16.3, §17.5, §18.1): the
     // arrangements and the applications are held with Super and chosen on
     // its release, the windows (spread) with Alt; the keys' sheet and a
     // window's menu stay until a key or a click.
-    enum class Overlay { none, chooser, switcher, spread, sheet, menu, layouts, settings };
+    enum class Overlay { none, chooser, switcher, spread, sheet, menu, layouts, settings, dialog, naming };
     Overlay overlay { Overlay::none };
     std::size_t overlay_at { 0 };
-    std::vector<layout::Mode> chooser_modes;
+    std::vector<layout::Rule> chooser_rules;
     // Super+Tab (design 2026-10-20 §10.1): the applications, the most recent
     // first, each with its windows the most recent first; its windows spread
     // below once one is held on (`switcher_open`), `switcher_window` of them chosen.
@@ -311,9 +338,22 @@ struct Server {
     std::size_t settings_row { 0 };
     bool settings_capture { false };
     std::string settings_search;
+    // Three states (design 2026-10-20 WuXian §5.2): the row the pointer is
+    // on; whether the keyboard was used last (its row ringed); the search's
+    // caret as it blinks, an input method's text not yet committed.
+    std::optional<std::size_t> settings_hover;
+    bool settings_keyboard { false };
+    bool settings_caret { true };
+    std::string settings_preedit;
+    wl_event_source* caret_timer { nullptr };
+    // A page put back to its defaults (§5.5): what was removed, for 10 s (Ctrl+Z).
+    std::vector<config::Setting> reset_undo;
+    std::chrono::steady_clock::time_point reset_at {};
+    bool asking_reset { false };                 // the dialog: every page back to its defaults
     std::map<std::string, std::vector<std::string>> key_overrides;   // keys.json, as the person keeps it
     std::uint32_t pressed_code { 0 };            // the evdev code of the key being handled
     bool reduce_motion { false };                // windows go at once, not by springs
+    opensal::PointerLocate locate;               // a shaken pointer, told to each window that draws it
     bool minimap_on { true }, snap_on { true };
     // The control socket (design 2026-10-20 §12.3): `xdesk msg`, scripts, agents.
     fs::path control_path;
@@ -329,20 +369,89 @@ struct Server {
     std::list<Control> controls;
     layout::Id menu_for { 0 };
     std::vector<std::string> menu_actions;       // by the menu's item
+    // Whose menu: a window's, a workspace's, WuXian's (its background), the
+    // workspace view's background.
+    enum class MenuOf { window, workspace, plane, desktop };
+    MenuOf menu_of { MenuOf::window };
+    int menu_workspace { 0 };
+    layout::Point menu_world;                    // WuXian's menu: where it was opened, on the plane
+    // The WuXian view (design 2026-10-20 WuXian §3): its workspaces' nodes;
+    // the one chosen (its label clicked: Enter goes in, Delete removes it);
+    // the one carried by its label or its corner.
+    std::vector<WorkspaceNodes> ws_nodes;
+    int ws_selected { 0 };
+    int ws_dragged { 0 };
+    layout::Point ws_drag_origin;
+    double ws_drag_scale { 1 };
+    double ws_drag_x { 0 }, ws_drag_y { 0 };
+    // The views' change (§3.2): the camera from one to the other, by a spring.
+    struct ViewMove {
+        layout::Camera from, to;
+        layout::Spring t;
+        bool leaving { false };                  // to the workspace view (the view changes at the end)
+    };
+    std::optional<ViewMove> view_move;
+    wl_event_source* view_timer { nullptr };
+    // A workspace's rule just changed: its shape on the status bar morphs.
+    std::map<int, std::chrono::steady_clock::time_point> rule_changed;
+    wl_event_source* morph_timer { nullptr };
+    // Removing a workspace that holds windows (§3.9): asked, its "close all" waiting 5 s.
+    struct Removal {
+        int id { 0 };
+        std::chrono::steady_clock::time_point since;
+        int windows { 0 };
+    };
+    std::optional<Removal> removal;
+    wl_event_source* removal_timer { nullptr };
+    std::vector<layout::Id> closing;             // asked to close with their workspace
+    wl_event_source* closing_timer { nullptr };
+    int naming { 0 };                            // a workspace being named
+    std::string name_text;
+    std::string hint_for;                        // the status bar's word shown for
+    // Super+Space held (§3.12): the pointer a hand -- a drag anywhere scrolls
+    // or pans; let go without one, the applications.
+    bool hand { false };
+    bool hand_used { false };
+    bool status_others { true };                 // the status bar shows the other workspaces
+    bool plane_focus { false };                  // the WuXian view: no window focused (WuXian, a label clicked)
+    // The switchers and the wheel (design 2026-10-20 WuXian §4): how long
+    // Super+Tab waits on an application; the window chosen kept lit, the
+    // others dimmed, for a while after; the wheel's speed and its columns.
+    int hold_ms { 500 };
+    int highlight_ms { 500 };
+    double dim_level { 0.5 };
+    double wheel_factor { 1 };
+    bool snap_columns { true };
+    layout::Id spread_hover { 0 };               // the window the pointer lifts
+    std::array<wlr_scene_rect*, 4> chosen_ring {};
+    enum class Lit { none, settling, holding, fading };
+    Lit lit { Lit::none };
+    layout::Id lit_id { 0 };
+    std::chrono::steady_clock::time_point lit_at {};
+    wl_event_source* lit_timer { nullptr };
+    std::optional<std::chrono::steady_clock::time_point> last_wheel;
+    wl_event_source* wheel_timer { nullptr };    // a free scroll ended: back on a column
+    double super_x { 0 }, super_y { 0 };         // the pointer when Super went down
     shell::Picture overlay_picture;
     wlr_scene_buffer* overlay_node { nullptr };
     wlr_scene_buffer* hint_node { nullptr };
     wl_event_source* hint_timer { nullptr };
     std::map<std::string, std::string> app_names;   // app id -> its name (desktop entries)
     std::map<std::string, std::string> app_icons;   // app id -> its Icon=
-    // A window dragged (design 2026-10-19 §17.9): it follows the pointer and
-    // a preview shows where it lands -- the drop made on a copy of the layout.
-    bool drag_live { false };                    // the window itself moves (floating, stacked, a group with Super)
+    // A window dragged (design 2026-10-20 WuXian §3.7, §3.8): it follows the
+    // pointer; the arrangement is frozen -- its place kept, what it would do
+    // shown -- until it is let go.
+    bool drag_live { false };                    // the window itself moves (floating, stacked)
     double drag_dx { 0 }, drag_dy { 0 };         // the pointer from the frame's corner
+    std::optional<layout::DragSession> drag_session;
     layout::Drop drop;
     double drop_width { 0 };                     // a size chosen for a new column (0: as it comes)
     shell::Picture sizes_picture;
-    wlr_scene_rect* drop_box { nullptr };
+    wlr_scene_rect* drop_box { nullptr };        // the frame it would get
+    wlr_scene_rect* drop_place { nullptr };      // its own place, kept
+    wlr_scene_rect* drop_line { nullptr };       // where a new column goes in
+    wlr_scene_rect* drop_half { nullptr };       // the half of a window it would take
+    layout::Id drop_target { 0 };                // the window it would go with, see-through
     wlr_scene_buffer* sizes_node { nullptr };    // the new column's width, said in its box
     std::size_t gap_column { 0 };
     std::pair<std::size_t, std::size_t> row_gap {};   // a column's gap between two of its windows
@@ -356,8 +465,14 @@ struct Server {
     layout::Id layouts_for { 0 };
     std::chrono::steady_clock::time_point app_names_read {};
 
-    // The shown workspace's arrangement (the panel's look is the profile's).
-    bool canvas() const { return lay.mode() == layout::Mode::canvas; }
+    // The WuXian view (design 2026-10-20 WuXian §3.2).
+    bool wuxian() const { return lay.view() == layout::View::wuxian; }
+    // The rule of the workspace a window is in (none: free on the plane).
+    std::optional<layout::Rule> rule_of(layout::Id id) const {
+        const auto ws = lay.workspace_of(id);
+        const auto* info = ws ? lay.workspace_info(*ws) : nullptr;
+        return info ? std::optional(info->rule) : std::nullopt;
+    }
     draw::Fonts* ui() { return ui_font ? &*ui_font : nullptr; }
     layout::Insets reserved() const { return pill ? layout::Insets{} : layout::Insets{.top = shell::kPanelHeight}; }
     // The output in logical pixels: what windows and the shell are laid out in.
@@ -451,9 +566,9 @@ struct Server {
 
     void key(const opensal::Key& k);
 
-    // The canvas's zoom is a view, not a mode (design 2026-10-20 §9.1): at
-    // half or more windows take the pointer as at 100 %; below it they are
-    // pictures -- a click selects one, twice goes in.
+    // The WuXian view's zoom (design 2026-10-20 §9.1): at half or more
+    // windows take the pointer as at 100 %; below it they are pictures -- a
+    // click selects one, twice goes in.
     bool live() const { return lay.zoom() >= 0.5; }
 
     void pointer_moved();
@@ -465,6 +580,8 @@ struct Server {
     // A client's: by name (cursor-shape-v1), or an image of its own.
     void client_pointer(wlr_surface* surface, std::int32_t hx, std::int32_t hy);
     void send_pointer_image();
+    // How a shaken pointer is shown ('p', the accent its colour): to `only`, or to every window that draws the pointer.
+    void send_locate(Link* only = nullptr);
     // The window said what it takes: draw the pointer here or leave it to it.
     void pointer_mode();
 
@@ -474,7 +591,6 @@ struct Server {
     layout::Drop drop_with_hysteresis(bool shift) const;
     bool drag_width(int step, int digit);
     void show_guides(const layout::Snap& sn);
-    void show_group_edge();
     void drag_end();
     void show_drop();
     void hide_drop();
@@ -492,6 +608,7 @@ struct Server {
     void load_person();
     void save_state();
     void remember_arrangement();
+    void save_wuxian();
     void apply_rules(View& v);
     void act(Action a);
     void open_chooser();
@@ -513,6 +630,14 @@ struct Server {
     bool settings_key(xkb_keysym_t s);
     bool settings_click(double x, double y);
     void setting(std::string_view section, std::string_view key, std::string value);
+    void apply_settings();
+    void reset_page(SettingsPage page);
+    void reset_all();
+    void undo_reset();
+    void settings_motion(double x, double y);
+    // Super+C / Super+V (design 2026-10-20 WuXian §9): Ctrl+C/V to the focused
+    // window -- Ctrl+Shift+C/V to a terminal's.
+    void copy_paste(bool paste);
     void save_keys();
     std::string rebind(const std::string& action, const Chord& c);
     // control.cpp
@@ -522,7 +647,33 @@ struct Server {
     void set_accent(std::uint32_t rgb);
     std::string system_info();
 
+    // wuxian.cpp (design 2026-10-20 WuXian §3)
+    std::vector<shell::WorkspaceChip> chips();
+    void update_frames(const std::vector<layout::Placement>& ps);
+    void change_view(std::optional<int> into = std::nullopt);
+    void view_step();
+    void switch_workspace(int id);
+    void set_rule_of(int id, layout::Rule r);
+    bool wuxian_button(const opensal::PointerButton& b);
+    void workspace_motion();
+    void open_workspace_menu(int id, double x, double y);
+    void open_plane_menu(double x, double y);
+    void open_desktop_menu(double x, double y);
+    bool workspace_action(const std::string& what);
+    void ask_remove(int id);
+    void draw_dialog();
+    bool dialog_key(xkb_keysym_t s);
+    bool dialog_click(double x, double y);
+    void remove_with(int id, bool close_all);
+    void start_naming(int id);
+    void draw_naming();
+    bool naming_key(xkb_keysym_t s, std::uint32_t code);
+    void naming_type(std::string_view text);
+    void status_hover(double x, double y);
+
     // switchers.cpp
+    void start_highlight(layout::Id id);
+    void highlight_step();
     std::string app_of(View& v) const;
     std::vector<layout::Id> recent_windows();
     void open_switcher(bool back);
@@ -567,6 +718,10 @@ struct Server {
     void open_fonts();
 
     void render();
+    void choose_renderer();
+    // The GPU is not there any more (lost, or a frame could not be read
+    // back): software from now on, every window drawn again, said once.
+    void fall_back(std::string why);
 
     bool start_();
 

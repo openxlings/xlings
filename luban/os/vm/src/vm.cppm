@@ -40,9 +40,26 @@ int enter(const service::Context& c, std::string_view name_or_image, const Enter
 // Whether `name` runs as a machine here, and its supervisor's pid.
 std::optional<int> running(const fs::path& home, std::string_view name);
 
+// A machine's GPU (design 2026-10-20 WuXian §7.5): virtio-gpu with 3D
+// through virgl, rendered on this host's render node, when there is one and
+// the qemu found is a GL build with the device; otherwise no GPU and why.
+// What qemu is given, and what is said of it.
+struct MachineGpu {
+    bool virgl { false };
+    std::vector<std::string> args;      // the display and its device
+    std::string summary;                // "virgl on /dev/dri/renderD128", or why not
+};
+MachineGpu machine_gpu(const std::optional<fs::path>& render_node, bool gl_qemu, bool has_device);
+
 // Starts `name` as a machine when it is not running (the events go to the
 // context's sink); 0 once it answers.
 int start(const service::Context& c, std::string_view name, const EnterOptions& o);
+
+// One command in the machine `name` (luban run of a system that starts as a
+// machine): on this terminal when there is one, else on pipes, as `user`
+// (empty: its login user); its exit code. A machine that was not running is
+// started for it and powered off after.
+int run(const service::Context& c, std::string_view name, std::span<const std::string> argv, std::string_view user);
 
 // One connection to a running machine's supervisor: sessions on channels
 // (luban.vm.protocol), what the terminal relay and the Luban OS window use.
@@ -69,8 +86,9 @@ public:
     bool open_display(std::uint32_t channel, std::string_view session, int width, int height);
     // A command instead of the login shell: on a terminal of rows x cols, or
     // on pipes (`pipes`: its output as D, its standard error as E).
+    // `user`: who runs it (empty: the root's login user).
     bool open_command(std::uint32_t channel, const std::vector<std::string>& argv, int rows, int cols,
-                      const nlohmann::json& env, bool pipes);
+                      const nlohmann::json& env, bool pipes, std::string_view user = {});
     // The end of a piped command's input.
     bool end_input(std::uint32_t channel);
     bool send(std::uint32_t channel, std::string_view bytes);

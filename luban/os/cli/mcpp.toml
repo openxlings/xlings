@@ -1,6 +1,6 @@
 # The luban command (Luban OS architecture design §6): its tree (help by level,
 # completion, suggestions) and its terminal rendering of the service's events.
-# A library so that tests drive it; apps/luban is the binary.
+# A library so that tests drive it; luban/host/luban is the binary.
 [package]
 namespace = "luban"
 name      = "luban-cli"

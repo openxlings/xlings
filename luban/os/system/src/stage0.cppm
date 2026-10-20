@@ -27,7 +27,7 @@ export namespace luban::stage0 {
 namespace fs = std::filesystem;
 
 inline constexpr std::string_view kName = "xlings-init";        // xlings itself, under this name
-inline constexpr std::string_view kStandalone = "luban-init";   // apps/luban-init
+inline constexpr std::string_view kStandalone = "luban-init";   // luban/host/luban (as luban-init)
 inline constexpr std::string_view kAnchor = "/etc/xlings/root.json";
 
 // What a SubOS boots into: the `init` its instance.json declares, else the

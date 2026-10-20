@@ -30,12 +30,16 @@ luban new mine --xpkg myindex:myos      # any index's system (02)
 luban search                            # what the index offers: distributions, desktops by what they bring
 ```
 
-One is enough. You see `▸ making box (core)`, the download, then `✓ box is
-ready`, what it is (`box  core@… · N packages · generation N`) and the next
-step (`enter  luban enter box`). The first `luban new` on a host may ask for a
+One is enough. You see two lines while it runs — `▸ making box (core)  58%
+fetch ✓ · unpack ✓ · configure ● · verify`, and under it the stage's own
+progress, what it is doing and how long it has taken — then `✓ box is ready`,
+what it is (`box  core@… · N packages · generation N`) and the next step
+(`enter  luban enter box`). The first `luban new` on a host may ask for a
 one-time setup first (below). Luban Core is the default: a whole working
 system with compilers and build tools; `tiny` is the small one, `desktop` has a
-desktop. If it stops halfway, the same command again finishes it.
+desktop. If it stops halfway, `luban new` says what it left (`luban rm box`
+clears it, then make it again); a name being made by another `luban new` is
+said, not taken twice.
 `nano` has no shell: it says so, and its next step is `luban run box -- …`.
 
 ## 2. Work in it
@@ -154,7 +158,7 @@ then `p` powers it off. `luban stop box` powers it off from anywhere.
 ## 7. A desktop
 
 ```bash
-luban new desk --edition desktop         # xdesk: tile, stack or a canvas, a panel, a launcher, a terminal
+luban new desk --edition desktop         # xdesk: workspaces on WuXian, a status bar, a launcher, a terminal
 xlings install luban-os                  # the Luban OS window
 luban enter desk --display window
 ```

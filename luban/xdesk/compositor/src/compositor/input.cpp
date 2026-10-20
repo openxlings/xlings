@@ -39,8 +39,8 @@ bool Server::shortcut(std::uint32_t code) {
     if (!super && !alt) return false;
     Chord pressed{.super = super, .ctrl = held(wlr_keyboard_modifier::WLR_MODIFIER_CTRL), .shift = held(wlr_keyboard_modifier::WLR_MODIFIER_SHIFT),
                   .alt = alt};
-    // A digit by its place (Shift changes what it types): evdev 2-10 are 1-9.
-    if (code >= 2 && code <= 10) pressed.digit = static_cast<int>(code) - 1;
+    // A digit by its place (Shift changes what it types): evdev 2-10 are 1-9, 11 is 0 (10 here).
+    if (code >= 2 && code <= 11) pressed.digit = static_cast<int>(code) - 1;
     const xkb_keysym_t* syms = nullptr;
     const int n = xkb_state_key_get_syms(keyboard.xkb_state, code + 8, &syms);
     // Shift turns Tab into ISO_Left_Tab: the chord is still Shift+Tab.
@@ -51,6 +51,14 @@ bool Server::shortcut(std::uint32_t code) {
         found = keys.match(pressed);
     }
     if (!found) return false;
+    // Super+Space is held as a hand (design 2026-10-20 WuXian §3.12): let go
+    // without a drag, it is the applications.
+    if (*found == Action::apps && pressed.sym == key::space) {
+        hand = true;
+        hand_used = false;
+        pointer_shape("grab");
+        return true;
+    }
     act(*found);
     return true;
 }
@@ -82,8 +90,26 @@ void Server::key(const opensal::Key& k) {
         }
         if (down) {
             super_alone = super_key;
-            // Held a second alone: the keys used most (design 2026-10-20 §12.4).
+            if (super_key) { super_x = cursor->x; super_y = cursor->y; }
+            // Held a second alone: the keys used most (design 2026-10-20 §12.4);
+            // any other key meanwhile: not.
             if (super_key && hold_timer) wl_event_source_timer_update(hold_timer, 1000);
+            else if (hold_timer) wl_event_source_timer_update(hold_timer, 0);
+        }
+        // Super+Space held as a hand: let go, the applications unless it dragged.
+        if (hand && !down && (sym == key::space || super_key)) {
+            hand = false;
+            if (!hand_used && overlay == Overlay::none) act(Action::apps);
+            pointer_moved();
+            if (sym == key::space) return;
+        }
+        // The WuXian view with no window focused (design 2026-10-20 WuXian
+        // §3.12): Esc back to a workspace, Enter into the one chosen, Delete removes it.
+        if (down && overlay == Overlay::none && !launcher.is_open() && wuxian() && plane_focus
+            && !held(wlr_keyboard_modifier::WLR_MODIFIER_LOGO)) {
+            if (sym == key::Escape) { change_view(); return; }
+            if (ws_selected && (sym == key::Return || sym == key::KP_Enter)) { change_view(ws_selected); return; }
+            if (ws_selected && sym == key::Delete) { ask_remove(ws_selected); return; }
         }
         // Dragged onto a new column: 1-4 is its width (evdev 2-5).
         if (down && code >= 2 && code <= 5 && drag_width(0, static_cast<int>(code) - 1)) return;
@@ -110,6 +136,7 @@ void Server::key(const opensal::Key& k) {
 
 void Server::pointer_moved() {
     if (drag == Drag::move) { drag_motion(); return; }
+    if (drag == Drag::workspace || drag == Drag::scale) { workspace_motion(); return; }
     if (drag == Drag::resize) { resize_motion(); return; }
     if (drag != Drag::none) {
         const double dx = cursor->x - drag_x, dy = cursor->y - drag_y;
@@ -130,12 +157,36 @@ void Server::pointer_moved() {
         arrange(true);
         return;
     }
+    // The settings: the row under the pointer has its own look.
+    if (overlay == Overlay::settings) {
+        settings_motion(cursor->x, cursor->y);
+        pointer_shape("default");
+        wlr_seat_pointer_clear_focus(seat);
+        return;
+    }
     // The switchers: the pointer chooses among what they show.
     if (overlay == Overlay::spread || overlay == Overlay::switcher) {
         switched_hover(cursor->x, cursor->y);
         pointer_shape("default");
         wlr_seat_pointer_clear_focus(seat);
         return;
+    }
+    status_hover(cursor->x, cursor->y);
+    if (hand) {
+        pointer_shape("grab");
+        wlr_seat_pointer_clear_focus(seat);
+        return;
+    }
+    // The WuXian view: a label is moved, a corner scales.
+    if (wuxian() && overlay == Overlay::none) {
+        for (const auto& n : ws_nodes) {
+            const layout::Rect corner{n.frame.x + n.frame.width - 18, n.frame.y + n.frame.height - 18, 27, 27};
+            if (n.label_at.contains(cursor->x, cursor->y) || corner.contains(cursor->x, cursor->y)) {
+                pointer_shape(n.label_at.contains(cursor->x, cursor->y) ? "grab" : "se-resize");
+                wlr_seat_pointer_clear_focus(seat);
+                return;
+            }
+        }
     }
     if (const auto hover = close_under_pointer(); hover != close_hover) {
         close_hover = hover;
@@ -208,6 +259,10 @@ void Server::button(const opensal::PointerButton& b) {
         // Let go: a window lands where its preview was; the window under the
         // pointer says its pointer again.
         if (drag == Drag::move) drag_end();
+        if (drag == Drag::workspace || drag == Drag::scale) {
+            ws_dragged = 0;
+            remember_arrangement();
+        }
         drag = Drag::none;
         wlr_seat_pointer_clear_focus(seat);
         pointer_moved();
@@ -225,9 +280,21 @@ void Server::button(const opensal::PointerButton& b) {
     // The panel's buttons.
     if (const auto a = shell::hit(panel_picture, cursor->x, cursor->y)) {
         if (b.down) {
-            if (a->target == shell::Target::launcher) open_launcher();
-            else if (a->target == shell::Target::workspace) { lay.show(a->index); arrange(); follow_focus(); }
-            else if (a->target == shell::Target::overview) { lay.overview(!lay.in_overview()); arrange(); }
+            using T = shell::Target;
+            if (a->target == T::launcher) open_launcher();
+            else if (a->target == T::workspace) {
+                if (wuxian()) { lay.show(a->index); arrange(); }
+                else switch_workspace(a->index);
+            } else if (a->target == T::rule) open_chooser();
+            else if (a->target == T::wuxian) change_view();
+            else if (a->target == T::free) {
+                if (!wuxian()) change_view();
+            } else if (a->target == T::show_all) { lay.show_all(); arrange(); }
+            else if (a->target == T::minimap) {
+                minimap_on = !minimap_on;
+                setting("wuxian", "minimap", minimap_on ? "on" : "off");
+                draw_shell();
+            }
         }
         return;
     }
@@ -244,6 +311,18 @@ void Server::button(const opensal::PointerButton& b) {
         }
         return;
     }
+    // Super+Space held: a drag anywhere scrolls or pans (design 2026-10-20 WuXian §3.12).
+    if (hand && overlay == Overlay::none && b.button == opensal::Button::Left) {
+        if (b.down) {
+            hand_used = true;
+            drag = Drag::pan;
+            drag_x = cursor->x;
+            drag_y = cursor->y;
+        }
+        return;
+    }
+    // The WuXian view: a workspace's label, its corner, its plate, WuXian itself.
+    if (overlay == Overlay::none && wuxian_button(b)) return;
     // A border: dragged, the window's size.
     if (overlay == Overlay::none && b.button == opensal::Button::Left && b.down)
         if (View* v = view_at(cursor->x, cursor->y))
@@ -297,7 +376,7 @@ void Server::button(const opensal::PointerButton& b) {
             return;
         }
         if (!live() && v && b.button == opensal::Button::Left && !held(wlr_keyboard_modifier::WLR_MODIFIER_LOGO)) {
-            // Zoomed far out, windows are pictures (design 2026-10-20 §9.1):
+            // Zoomed far out (the WuXian view), windows are pictures (design 2026-10-20 §9.1):
             // a click selects one -- the view stays -- and a second goes in.
             const auto now = std::chrono::steady_clock::now();
             if (title_pressed_id == v->id && now - title_pressed < std::chrono::milliseconds(400)) {
@@ -332,7 +411,15 @@ void Server::button(const opensal::PointerButton& b) {
             title_pressed_id = v->id;
             title_pressed = now;
         }
-        if (b.button == opensal::Button::Middle || (!v && b.button == opensal::Button::Left)) {
+        // The background's other button: its menu (the workspace view).
+        if (!v && b.button == opensal::Button::Right && !wuxian()) {
+            open_desktop_menu(cursor->x, cursor->y);
+            return;
+        }
+        // The background (or the middle button there, or with Super): it
+        // scrolls; the middle button on a window is the application's (H10).
+        if ((!v && (b.button == opensal::Button::Left || b.button == opensal::Button::Middle))
+            || (b.button == opensal::Button::Middle && super)) {
             drag = Drag::pan;
             drag_x = cursor->x;
             drag_y = cursor->y;
@@ -344,8 +431,8 @@ void Server::button(const opensal::PointerButton& b) {
         if (v && (super || title) && b.button == opensal::Button::Left) {
             // A window moved by its title (or anywhere with Super held): it
             // follows the pointer, where it would land shown under it. A
-            // floating or stacked one, or a canvas group, moves itself.
-            drag_start(v, lay.floating(v->id) || lay.mode() == layout::Mode::stack || lay.mode() == layout::Mode::canvas);
+            // floating or stacked one moves itself in the workspace view.
+            drag_start(v, !wuxian() && (lay.floating(v->id) || rule_of(v->id) == layout::Rule::stack));
             return;
         }
         if (v) { focus(v); arrange(); }
@@ -356,27 +443,46 @@ void Server::button(const opensal::PointerButton& b) {
 }
 
 void Server::wheel(const opensal::Wheel& w) {
+    // The wheel with Super is not Super alone: nothing opens when it is let
+    // go, and its keys' sheet does not come (H8).
+    super_alone = false;
+    if (hold_timer) wl_event_source_timer_update(hold_timer, 0);
     // Dragged onto a new column: the wheel is its width.
     if (w.dy != 0 && drag_width(w.dy > 0 ? 1 : -1, 0)) return;
     const bool super = held(wlr_keyboard_modifier::WLR_MODIFIER_LOGO);
     const bool over_window = view_at(cursor->x, cursor->y) != nullptr;
-    if (lay.mode() == layout::Mode::canvas && super) {
-        // The canvas zooms only when asked (design 2026-10-20 §9.2): Super
-        // and the wheel, around the pointer, so the point under it stays put.
+    // How far (design 2026-10-20 WuXian §4.4): a wheel's step slow is a
+    // column, faster ones further; a touchpad's scroll is as it comes.
+    const auto now = std::chrono::steady_clock::now();
+    const double since = last_wheel ? std::chrono::duration<double, std::milli>(now - *last_wheel).count() : 0;
+    last_wheel = now;
+    const bool continuous = w.dy != std::round(w.dy) || w.dx != std::round(w.dx);
+    const layout::WheelSpeed speed{.factor = wheel_factor};
+    auto distance = [&](double steps) { return continuous ? steps * 60 * wheel_factor : layout::wheel_distance(speed, steps, since); };
+    if (wuxian() && super) {
+        // The WuXian view zooms only when asked (design 2026-10-20 §9.2):
+        // Super and the wheel, around the pointer, so the point under it stays put.
         if (w.dy != 0) lay.zoom_at(w.dy > 0 ? 1.1 : 1 / 1.1, cursor->x, cursor->y);
         arrange();
         return;
     }
-    if (lay.mode() == layout::Mode::canvas && (!over_window || !live())) {
+    if (wuxian() && (!over_window || !live())) {
         // On its background (or over pictures): the wheel pans -- up and
         // down, Shift or a sideways wheel left and right.
-        if (held(wlr_keyboard_modifier::WLR_MODIFIER_SHIFT)) lay.pan(w.dy * 60, 0);
-        else lay.pan(-w.dx * 60, w.dy * 60);
+        if (held(wlr_keyboard_modifier::WLR_MODIFIER_SHIFT)) lay.pan(distance(w.dy), 0);
+        else lay.pan(-distance(w.dx), distance(w.dy));
         arrange();
         return;
     }
-    if (lay.mode() == layout::Mode::tile && super) {
-        lay.pan(w.dy * 60, w.dy * 60);
+    if (!wuxian() && lay.rule() == layout::Rule::tile && (super || !over_window)) {
+        // A tiled strip: a slow step a column, landing on it; faster, further,
+        // and back on a column once it stops.
+        if (!continuous && since >= speed.slow_ms && snap_columns) lay.scroll_columns(w.dy > 0 ? -1 : 1);
+        else {
+            const double d = distance(w.dy != 0 ? w.dy : -w.dx);
+            lay.pan(d, d);
+            if (snap_columns && !continuous && wheel_timer) wl_event_source_timer_update(wheel_timer, 220);
+        }
         arrange();
         return;
     }
@@ -396,6 +502,11 @@ void Server::input(Link& from, const opensal::Event& ev) {
         key(*k);
     } else if (const auto* m = std::get_if<opensal::PointerMotion>(&ev)) {
         wlr_cursor_warp_closest(cursor, nullptr, m->x / scale, m->y / scale);   // device pixels to logical
+        // Super held while the pointer goes more than a little: not Super alone (H8).
+        if (super_alone && std::hypot(cursor->x - super_x, cursor->y - super_y) > 4) {
+            super_alone = false;
+            if (hold_timer) wl_event_source_timer_update(hold_timer, 0);
+        }
         pointer_moved();
         wlr_seat_pointer_notify_frame(seat);
     } else if (const auto* b = std::get_if<opensal::PointerButton>(&ev)) {
@@ -411,9 +522,24 @@ void Server::input(Link& from, const opensal::Event& ev) {
         if (primary_link) set_scale(d->scale);
     } else if (const auto* t = std::get_if<opensal::TextCommit>(&ev)) {
         if (launcher.is_open()) { launcher.type(t->text); draw_launcher(); }
+        else if (overlay == Overlay::naming) naming_type(t->text);
+        else if (overlay == Overlay::settings) {
+            // An input method's text: the keys page's search takes it (H14); elsewhere nothing does.
+            settings_preedit.clear();
+            if (settings_page == SettingsPage::keys) {
+                settings_search += t->text;
+                settings_row = 0;
+            }
+            draw_overlay();
+        }
         else text_commit(t->text);
     } else if (const auto* p = std::get_if<opensal::Preedit>(&ev)) {
-        preedit(*p);
+        if (overlay == Overlay::settings) {
+            settings_preedit = settings_page == SettingsPage::keys ? p->text : std::string{};
+            draw_overlay();
+        } else {
+            preedit(*p);
+        }
     } else if (const auto* c = std::get_if<opensal::ClipboardText>(&ev)) {
         host_clipboard(c->text);
     } else if (const auto* sh = std::get_if<opensal::Shown>(&ev)) {
@@ -463,6 +589,7 @@ void Server::provider(Link& l, std::string_view bytes) {
                 l.provided = bits;
                 l.hello = true;
                 l.whole = true;
+                send_locate(&l);
                 if (&l == primary()) {
                     provided = bits;
                     pointer_mode();

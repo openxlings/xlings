@@ -47,14 +47,6 @@ status = "required"
 text = "a pty with nothing typed exposes a program that waits for input"
 status = "required"
 
-[LUBAN-FHS-PATHS]
-text = "inside a Luban system every directory a person can cd into has its FHS path: /usr is the generation mounted, a generation's directories are mount points, an exported tar keeps the link; a package's lib/<dir> and libexec/ reach /usr/lib/<dir> and /usr/libexec (a name one package has, whole; a name several have, merged; a clash reported)"
-status = "required"
-
-[LUBAN-SHARE-PROJECTION]
-text = "a payload's share/ reaches /usr/share: directories many packages write into are merged file by file, one package's directory is claimed whole, and a link never has a link above or below it"
-status = "required"
-
 [XIM-INDEX-DIR-STORE]
 text = "an index_repos entry's dir and store place its data and the payloads it serves; payload_status says what a target is here without installing; sync_index syncs one index into a directory"
 status = "required"
@@ -67,112 +59,8 @@ status = "required"
 text = "interface --version reports the version, protocol, capabilities, home layouts and features"
 status = "required"
 
-[LUBAN-OS-PERF]
-text = "the Luban OS app shows a choice the frame after it is made (no wait after input), its own work per frame stays within a few milliseconds (no disk read per frame), a frame fits its budget on a software renderer, and a still window waits instead of drawing; a pointer moving over a still desktop draws nothing, without a GPU a desktop is shown at most 30 times a second, and the renderer is recorded and, software when nobody asked, said with its remedy"
-status = "required"
-
-[LUBAN-OS-VISUAL]
-text = "the Luban OS app's key pages are captured at three scales and in both languages, held to their reviewed layout baselines, and put on one contact sheet"
-status = "required"
-
-[LUBAN-OS-TRAY]
-text = "Luban OS has an icon in the system's status area -- StatusNotifierItem and DBusMenu on Linux, the notification area on Windows, the menu bar on macOS -- with its systems in its menu, and the system's notifications; what is chosen reaches the app"
-status = "required"
-
-[LUBAN-SELF-CHECK]
-text = "a Luban system checks itself when made, upgraded, booted and entered, and on demand: a critical failure stops it (not ready, not switched, not booted, not entered) and the rest is reported"
-status = "required"
-
-[LUBAN-COMPLETION]
-text = "every user of a Luban system has tab completion for xlings and luban in bash and fish (profile.d/xlings-complete.sh, fish/conf.d/xlings-complete.fish), each program answering `<program> __complete <words>` from its own command tree"
-status = "required"
-
-[LUBAN-SUDO]
-text = "a Luban system's user given no password has the default one (lubanoser), said when it is made and by luban status until changed; --no-password is a choice: no password and a sudo that asks nothing; sudo's rules (sudoers, sudoers.d/luban) are the wheel group with its password, asked again after 15 minutes, a secure_path with xlings and the proxy variables kept; a machine's sudo program and rules are made root's at boot"
-status = "required"
-
-[LUBAN-USER-VIEW]
-text = "inside a Luban system a regular user's xlings is a view of the system's store: it reads the system's index and packages without copying them, never fetches an index or runs a recipe of its own, says what the system already provides instead of installing it, sees the system's versions in use and list, adds a version the store lacks once through the elevation door (sudo xlings __store-add), and with nobody to ask fails with E_NEEDS_ROOT and the exact sudo command"
-status = "required"
-
-[LUBAN-USER-LAYER]
-text = "inside a Luban system a regular user's xlings uses ~/.xlings with the system's home as the layer below it; a sandbox keeps the system's home (its broker installs there)"
-status = "required"
-
-[LUBAN-CURRENT-SYSTEM]
-text = "inside a Luban system, in a sandbox and a machine alike, the current subos is the system itself; an explicit XLINGS_ACTIVE_SUBOS still wins"
-status = "required"
-
-[LUBAN-EDITION-MIN-CLIENT]
-text = "an edition whose manifest names a min_client newer than this xlings is refused before anything is fetched, with xlings self update; one passed over for an older version this xlings can use is said by luban new, with xlings self update, and recorded in its result"
-status = "required"
-
-[LUBAN-EDITION-RECORD]
-text = "a root made from an edition records its edition layer in instance.json: the resolved ref, the from chain, each declared package as installed, the declared policy"
-status = "required"
-
-[LUBAN-BOOT-PROFILE]
-text = "an image boots by a boot profile (--boot, else the edition's boot.profile): it is installed into the root, and its kernel release and command line are the image's; --boot and --kernel together are refused"
-status = "required"
-
-[LUBAN-UPGRADE]
-text = "subos upgrade / luban upgrade moves an environment made from an edition to a newer version: what the edition brought follows it, what the user moved stays theirs, what it dropped stays installed; one new generation; nothing changes without confirmation (agent: exit 2 with -y)"
-status = "required"
-
-[LUBAN-UPGRADE-PLAN]
-text = "luban upgrade shows what moves (the edition, packages added, upgraded and kept, the policy) before anything moves; --dry-run says it planned, not moved, and names the command that applies it; one already newest is said to be up to date"
-status = "required"
-
-[LUBAN-EXPORT-STAGE0]
-text = "an export is made with the client's stage-0 (luban-init): a bootable image (.img, .iso) is refused without it, naming the fix; a root (a directory, a tar) is made and says a machine cannot boot it"
-status = "required"
-
-[LUBAN-SETUP-ONE-STEP]
-text = "luban setup (self doctor --isolation --fix) on a host with no bwrap installs it from the index first and goes on: the one-time setup is one step, never 'install this, then run it again'"
-status = "required"
-
-[LUBAN-WELCOME]
-text = "a console of an environment (luban enter, the window's console; sandbox or machine) says first, in the user's language: Luban OS and its version, the edition and its version, the environment, how it runs and what it keeps, how to see it and leave; xlings' own line is not said there"
-status = "required"
-
-[LUBAN-ROLLBACK-PACKAGES]
-text = "a rollback takes an environment's packages back with its root (each generation records what it was built from), so the next entry does not rebuild the newer one; a generation from before the record is rolled back to its root and says so"
-status = "required"
-
-[LUBAN-HOST-STATUS]
-text = "luban status on the host answers whether a Luban system can be made here: on Linux the isolation, elsewhere the carrier (wsl2, vz) and why not, with its way forward; ready exits 0, not ready 1, on every platform"
-status = "required"
-
-[LUBAN-UPGRADE-NEVER-LOOSENS]
-text = "an upgrade applies the edition's policy only when it allows nothing more than the one in force; a looser one is kept out and named, with the subos config command that switches to it"
-status = "required"
-
-[LUBAN-CLI-LEVELS]
-text = "a command tree is declared once; help shows the common commands and says how to see more, then everything"
-status = "required"
-
-[LUBAN-CLI-SUGGEST]
-text = "a mistyped command or option is answered with the nearest names"
-status = "required"
-
-[LUBAN-TOOL-SHIPPED]
-text = "the release ships luban (one static binary, also luban-init), versioned as the xlings beside it"
-status = "required"
-
-[LUBAN-CLI-MAP]
-text = "a luban command line is its object as a word and its attributes as options (new <n> --edition E, enter <n> --mode M); each command is one luban.service operation over xlings; edition short names and image formats are luban's"
-status = "required"
-
-[LUBAN-CLI-E2E]
-text = "luban against a real xlings: where it is, a new environment from a template, listed and described, removed"
-status = "required"
-
 [UX-AGENT-NO-PROMPT]
 text = "in agent mode a question nobody can answer is exit 2 with the answer spelled; nothing waits for input"
-status = "required"
-
-[LUBAN-WS-POLICY-AT-NEW]
-text = "a template's declared policy and `new --proxy` are selected and locked when the environment is made, before its first entry"
 status = "required"
 
 [PRIVACY-PERSONA-STABLE]
@@ -185,26 +73,6 @@ status = "required"
 
 [PRIVACY-LEAK-PROBE]
 text = "inside a private environment nothing of the host's identity planted as a sentinel is visible: locale, secrets, host name, machine-id, devices"
-status = "required"
-
-[LUBAN-ISO]
-text = "an environment exports as a live ISO (limine, the root as initramfs) that boots to its init; BIOS in-process, BIOS+UEFI with xorriso"
-status = "required"
-
-[LUBAN-WRITE-SAFE]
-text = "luban write refuses a partition, a mounted or held drive (the system's own) and anything that is not a drive; an agent must name the drive's serial"
-status = "required"
-
-[LUBAN-TRY]
-text = "luban enter <image> boots an image as it is in a local virtual machine with its console on the terminal; an environment entered as a machine whose policy is proxy-only has the proxy as its only network"
-status = "required"
-
-[LUBAN-DRIVE]
-text = "an environment exports as a drive image (GPT, a FAT system partition with limine, an ext4 root by PARTUUID) that boots on BIOS and UEFI"
-status = "required"
-
-[LUBAN-ABI]
-text = "an edition declares its ABI (arch, kernel, libc, libc floor); one this machine cannot run is refused before anything is fetched; a kernel is a hint for images, never installed into the root"
 status = "required"
 
 [PRIVATE-USERNS-RESTRICTED-HOST]
@@ -781,22 +649,6 @@ status = "required"
 text = "subos boot --now switches user space where the init supports it, refuses elsewhere"
 status = "required"
 
-[LUBAN-TINY]
-text = "luban-tiny: created from its xpkg, exported, booted, installs inside"
-status = "required"
-
-[LUBAN-CORE]
-text = "luban-core: compiles and runs a program inside"
-status = "required"
-
-[LUBAN-DESKTOP-RENDER]
-text = "luban-desktop: a GL program compiled inside renders a frame offscreen, every GL object from the payloads"
-status = "required"
-
-[LUBAN-FROM-CHAIN]
-text = "an xpkg's from chain merges workspaces, the upper one winning; subos new --dry-run says each layer (its index, its manifest as written) and the packages merged, making nothing; an instance records the index of each layer"
-status = "required"
-
 [ROOT-LDCACHE]
 text = "a root's own /etc/ld.so.cache (ldconfig) is read by programs that enter through /lib64"
 status = "required"
@@ -938,10 +790,6 @@ why = "needs a real guest kernel (WSL2 or a VZ VM): hosted runners have no neste
 text = "a vz carrier VM is created per home on first need through its helper's contract, started when stopped, reached through it, and grants are the helper's virtiofs shares"
 status = "required"
 
-[CARRIER-VZ-HELPER]
-text = "the vz carrier's helper is the release's luban (`luban __vm`, Virtualization.framework through luban.vm.native.vz, signed with its entitlement): its agent runs a command on pipes (bytes as written, standard error apart, input closed on request, the exit code) or on a terminal; its framework binding is validated on macOS; a VM boots on a Mac (real Apple silicon, the maintainers' lane)"
-status = "required"
-
 [SESSION-NATIVE-SUPERVISED]
 text = "a native SubOS on macOS runs under the supervisor (start, join, stop, --timeout, the exit-code table); on Windows its command runs in a Job Object (tree ended at --timeout, the command's exit code); joining a running session on Windows needs a CreateProcess supervisor and is part 3 §6.3's next step"
 status = "required"
@@ -951,28 +799,12 @@ text = "openkal-linux links and runs beside xlings' C and C++ runtimes (glibc an
 status = "deferred"
 why = "evidence, not a product behaviour: the xlings-ci-linux step 'openkal coexistence' builds and runs tools/openkal-coexistence for both targets on every PR; nothing of xlings links openkal yet (part 3 §19, C53)"
 
-[LUBAN-INIT]
-text = "stage-0 is its own static binary and reads no Config"
-status = "required"
-
 [TOOLS-PROVENANCE]
 text = "every external tool is a package of the index, for every architecture it is released for, unless the operating system itself is the tool (and the table says why); a missing tool's remedy is `xlings install <package>`, never a machine's package manager"
 status = "required"
 
 [HOST-DEPS-T0]
 text = "what xlings and its tests take from the machine is the T0 list (kernel, sudo, apparmor_parser, mount, the OS's own tools); CI and tests install everything else through xlings (tools/lint_host_deps.sh)"
-status = "required"
-
-[LUBAN-ISO-UEFI]
-text = "an exported ISO boots on UEFI without xorriso: an El Torito EFI entry written in-process (beside the BIOS default where the machine has a BIOS, as the default where it does not)"
-status = "required"
-
-[LUBAN-ISO-HYBRID]
-text = "an exported ISO written to a drive boots it too: a hybrid GPT whose EFI system partition is the El Torito image, the backup table appended, still an ISO 9660 image"
-status = "required"
-
-[LUBAN-QCOW2]
-text = "--qcow2 is written in-process (qcow2 v3, zero clusters unallocated) and reads back as the raw disk"
 status = "required"
 
 [CARRIER-WSL-SETUP]
@@ -1013,14 +845,6 @@ status = "required"
 text = "in a home of thousands of targets and several known projects, use / install --use / remove / remove --older-than / list / self doctor of one package stay within their budgets: their cost is what the change moves, not what the home holds"
 status = "required"
 
-[LUBAN-NEW-OUTPUT]
-text = "luban new / subos new --from names the edition and its chain once, prints no per-template or per-generation lines, and reports packages that failed only because a dependency did as one line under that cause"
-status = "required"
-
-[LUBAN-NEW-RERUN]
-text = "an environment a failure left unfinished is finished by running the same luban new / subos new --from again; another edition under the same name is refused with the command that finishes it"
-status = "required"
-
 # ── upgrade and fault isolation (docs/specs/upgrade-and-compatibility.md) ──
 
 [UPGRADE-LADDER]
@@ -1055,60 +879,8 @@ status = "required"
 text = "every command writes one operation journal (logs/ops/<date>/<trace>.ndjson) that the processes it runs join under the trace they inherit; credentials never reach it; `self log` lists and shows operations and bundles one without the home's paths or the user's name"
 status = "required"
 
-[LUBAN-PERSIST]
-text = "an environment's persist setting decides what a session keeps of a root's own state: all, only /home, or nothing (a memory overlay, gone when the session ends); a backend without a mount namespace refuses it with the route"
-status = "required"
-
-[LUBAN-SETTINGS]
-text = "an environment's machine settings (mode, persist, desktop, on-close, enter) are checked values in its machine.json, over its edition's (usr/share/luban/settings.json) and its manifest's (luban.settings); luban new takes the same ones as luban config; every key another luban wrote survives a change, and a file that cannot be read is an error, never the defaults"
-status = "required"
-
-[LUBAN-ARCHIVE]
-text = "`luban export <n> x.luban` writes the manifest (edition, packages, policy, settings) and the root's own state, links as links, nothing of /usr, no persona; import refuses a path that leaves the environment, an existing name, and a policy looser than the edition's without -y"
-status = "required"
-
-[LUBAN-OUTPUT]
-text = "luban's default output is one line per phase, the conclusion and the next step in luban's own commands; a step's own lines are -v's; --json is one event per line and the result"
-status = "required"
-
-[LUBAN-PROGRESS]
-text = "making a system is one progress from 0 to 100 % over its stages (prepare, download, unpack, configure, start, check), never going back: an install after it is made stays in the stage reached, and a machine starting is a stage of its own with its console's latest line; the luban command and the window show the same (events carry overall and stage)"
-status = "required"
-
-[LUBAN-PROGRESS-WIDTH]
-text = "on a terminal the running phase's line is cut to the terminal's width less one column (the detail first, then the phase, the cut marked with an ellipsis), so rewriting it in place never wraps and never adds a line"
-status = "required"
-
-[LUBAN-SHELL]
-text = "an environment's login shell is its passwd's: a root made now gets the best shell its /usr has once its packages are in (fish, bash, else sh), or the one its edition names (login_shell) when it has it, and its login user the same; luban config --shell changes it, a shell the root lacks is refused with the install that brings it, and every way in reads the same answer -- a terminal joining a running session included"
-status = "required"
-
 [SUBOS-INSTANCES-APART]
 text = "a sandboxed SubOS shares the home's common part (payloads, indexes, shims) read-only and never another instance: other instances' trees and their config (policy, persona, record) are out of sight; its own config is read-only; a backend that cannot hide them (proot) says so as a degradation and a policy that requires the file-system gate refuses it"
-status = "required"
-
-[LUBAN-MACHINE]
-text = "luban enter <n> --mode machine boots the environment itself with its own kernel: its tree and the home are shared with the guest (9p), a supervisor outlives the terminal and serves every session over one socket, each session a pty with the root's login shell and the terminal's size; persist home/none and --temp boot a copy that goes with the machine; an image file boots as it is with its console on the terminal; closing follows the environment's on-close setting"
-status = "required"
-
-[LUBAN-TERM]
-text = "the Luban OS window's console is a terminal whose screen follows what shells and full-screen programs write (cursor motion, erase, scroll regions, the alternate screen, SGR in three colour depths, wide characters, bracketed paste, the title), answers what a shell asks, keeps history, and sends keys as xterm does"
-status = "required"
-
-[LUBAN-CONSOLE-MOUSE]
-text = "the console's pointer: a program that takes the mouse is sent its buttons, wheel and motion as xterm does (SGR when it asked, else X10); with Shift, or for a program that does not, a drag selects and copies, two clicks a word, three a line, the middle button pastes the last selection, the right one opens Copy and Paste, and the wheel scrolls back"
-status = "required"
-
-[LUBAN-DESKTOP-WIRE]
-text = "opensal.wire carries a surface across an address space: damaged rectangles of pixels and every opensal event, whole whatever the cut of the stream, refusing what is not the protocol"
-status = "required"
-
-[LUBAN-OS-APP]
-text = "the Luban OS app is a window that is a display: no system yet is quick start, one or more is the launcher (one list, the default first, a countdown that any input cancels, 0 for none), the system's console or desktop fills the window, the management panel holds everything else; it reaches environments and machines only through luban.service and luban.vm"
-status = "required"
-
-[LUBAN-AUDIO]
-text = "sound is existing standards, no new protocol: a sandbox's audio grant maps the host's PipeWire / PulseAudio socket; a machine whose policy grants audio reaches it through a forwarded port relayed by luban (__pipe-unix), its sessions told PULSE_SERVER"
 status = "required"
 
 [ELEVATION-NOBODY-TO-ASK]
@@ -1127,100 +899,8 @@ status = "required"
 text = "an unreadable SubOS state stops nothing else: the other SubOS and the commands that do not need it carry on"
 status = "required"
 
-[LUBAN-DESKTOP-WLR]
-text = "opensal-wlr shows a wlroots compositor's output as an opensal surface through its standard protocols only: screencopy into shared memory (the whole output first, then what it says changed, opaque), keys as evdev codes on a US keymap with the modifiers beside them (a host's repeat is not repeated), the pointer absolute on the output, the window's size as a custom mode; a compositor without screencopy is said so; a session is a wayland-sessions file with X-Opensal-Interfaces"
-status = "required"
-
-[XDESK-COMPOSITOR]
-text = "xdesk is a wlroots compositor that speaks opensal.wire itself (a session file's X-Opensal-Native=true: it is given the stream, nothing is bridged): headless and software-rendered, no GPU; it shows its desktop at the size the window asks, takes the window's keys and pointer, opens a terminal (Alt+Return), arranges and decorates windows itself, and ends when the stream does; to a window that paces (its hello says so) it sends the next frame only once the last is shown (a second at most), so a slow channel does not pile frames up"
-status = "required"
-
-[XDESK-TILE-SIZES]
-text = "xdesk's tiled columns tell their clients they are tiled (they draw to the size given; what a client draws short of it shows the frame), sit inner_gap apart and outer_gap from the edges (gap of before is the inner one), share the output equally until each would be narrower than min_column_width and then scroll with the focused column in view, fill the output in proportion when the widths they were given add up to less, and run sideways or, a workspace set vertical, downwards with the directions turned"
-status = "required"
-
-[XDESK-RESIZE]
-text = "an xdesk window is resized the same way in every arrangement where it can be: a stacked, floating or canvas window by its borders and corners or with Super and the right button anywhere, keeping the size the client allows, and by the client asking (request_resize) as its own frame is dragged; tiled windows by the gaps between columns and between the windows of a column"
-status = "required"
-
-[XDESK-CANVAS]
-text = "on xdesk's canvas the zoom is a view, not a mode: from half up windows take the pointer as at 100 % (its coordinates scaled), below it a click selects a window and keeps the view and two go in (Super+0 too); only Super and the wheel (and Super+= / Super+-) zoom, the wheel elsewhere pans; a moved window snaps to others' edges within 16 pixels with the lines drawn and joins a group against an edge (Shift: neither); a new window takes the free place nearest the focused one, in view when there is one, never zooming; a minimap shows the whole and the view and takes a click"
-status = "required"
-
-[XDESK-SWITCHERS]
-text = "xdesk has two switchers: Super+Tab by application (the most recent first, a window count, its windows spread below after a second or Down; let Super go: chosen), Super+` among the focused application's windows, and Alt+Tab, the windows of the workspace where they are to one another, fitted on the output (a long strip folded into rows), the selected one larger and the rest dimmed; Tab goes by recency, arrows by place, a quick Alt+Tab goes to the previous window without showing anything; Escape leaves things as they were"
-status = "required"
-
-[LUBAN-DISPLAYS]
-text = "a second Luban OS window on a running desktop is another display of it (opensal Displays): it mirrors the first -- the same frames at the first's size, its own size not the desktop's, its shape kept, said in its title -- its input is the desktop's; when the first window closes the desktop goes on (xdesk) and the next window is the primary at its own size; a bridged desktop (labwc, KDE, LXQt) ends with its first window"
-status = "required"
-
-[XDESK-KEYS]
-text = "xdesk's keys are the Luban set (design 2026-10-20 §12.2: the Super layer, Alt+Tab, Alt+F4, Ctrl+Alt+T; Super+F maximizes, Super+Shift+F full screen, Super+1-9 workspaces) or Luban without hjkl; a key is changed at the keys page (Super+/: search, Enter then the chord, Delete back to the set's; one taken from another action is said) or with `xdesk msg keys`, kept in keys.json; Super held a second shows the keys used most; docs/generated/xdesk-keys.md is generated from the table"
-status = "required"
-
-[XDESK-SETTINGS]
-text = "xdesk's settings (Super+I, the launcher, `xdesk msg settings PAGE`) has pages for the displays, the layout (this workspace's arrangement, flow, gaps, the narrowest column, the canvas's minimap and snap), the appearance (accent, background, reduce motion), the keys and about (the system, xdesk, kernel, renderer, displays, CPU, memory, the files, the projects; copied as text); a change takes effect at once and is kept in the person's settings file; the launcher finds its pages and every action, with its keys"
-status = "required"
-
-[LUBAN-SOUND]
-text = "a system's sound plays on this computer (openhal 0.2 audio): in a machine, what its sound server writes into the `luban` sink's named pipe is relayed by `luban __audio` as an openhal stream over the machine's channel and played by the window through SDL (PipeWire, PulseAudio or ALSA; Core Audio; WASAPI), as its `audio` grant allows -- a system with a desktop is made with it; the same samples arrive"
-status = "required"
-
-[XDESK-PERF]
-text = "xdesk keeps within its CPU budgets on the software renderer: the overview toggled ten times costs at most 2 s of CPU (xdesk and the window together, beyond a still session of the same length); a still desktop sends no frames"
-status = "required"
-
-[XDESK-LAYOUT]
-text = "xdesk.layout places windows without drawing anything: tile (one or two windows share the output, more scroll with the focused one in view, a new one beside the focus, widths through thirds, halves and the whole), floating (centred above, where it is put), the canvas (beside the focus, panned, zoomed around a point up to 1, an overview that fits every window, left back exactly where the view was, or into a chosen window), a layout per workspace; motion by a critically damped spring"
-status = "required"
-
-[XDESK-APPS]
-text = "xdesk.apps reads freedesktop desktop entries (localized Name/Comment by the user's language, hidden and non-application entries skipped, the more specific directory's entry of an id winning), turns Exec into argv without field codes, and searches as a person types (a name's prefix first, then words, then generic names, keywords and comments)"
-status = "required"
-
-[XDESK-SHELL]
-text = "xdesk draws its own shell with no GPU and no toolkit: windows' title bars (the title, a close button), a panel (classic: applications, workspaces, the focused title, a clock across the top; canvas: a pill at the bottom with the zoom and the overview), a launcher that searches the system's applications as one types and starts the chosen one, text shaped from the system's fonts (CJK by a fallback face); English or Chinese by the user's language"
-status = "required"
-
-[XDESK-TEXT-CLIPBOARD]
-text = "the host's input method and clipboard reach a desktop's windows: xdesk asks the Luban OS window for the caret of the focused text field (text-input-v3) and gives it what the input method commits and composes (a character is not also sent as a key); the host's clipboard becomes the windows' selection as the desktop opens and whenever it changes, and a window's copy becomes the host's clipboard -- each way only as far as the environment's grants allow (clipboard, clipboard-paste; an environment without a policy as before)"
-status = "required"
-
-[LUBAN-OS-FIRST-USE]
-text = "a first-time user, with nothing yet, makes a system from the Luban OS quick start and uses it without leaving the window: the quick start is what opens, the chosen edition is made for real (downloaded, set up) with its progress shown, the system's console opens by itself and runs what is typed, and the next start shows it in the list"
-status = "required"
-
-[LUBAN-OS-QUICK-START]
-text = "the Luban OS quick start shows two groups -- consoles to shape (nano, tiny, core) and desktops ready to use (classic, the xdesk canvas) -- each with what it is, its standing (base, stable, preview, explore) and what is in it; whether it can be made here comes from the index (published, built for this machine's architecture) and, on a computer that cannot run Luban systems, is said before anything is tried; nano says it has no shell and is made without going in; what else the indexes offer is read from them (design 2026-10-18 §6.4): an official system it has no card for and another index's (said where it comes from) under More, a desktop edition's line in its index's words, the desktop it is made with from the luban-desktop packages, and a third party's part agreed to before it is made"
-status = "required"
-
-[LUBAN-OS-IMPORT]
-text = "a system someone exported (.luban) is imported from the quick start, the launcher or by dropping the file on the window: a preview shows its edition, its packages and its isolation, lists in plain words what it may do beyond a new system's default (grants, host mounts, no isolation, a policy this version cannot read) and needs that agreed to; the import makes it from its edition, restores what it carried, and goes in"
-status = "required"
-
-[XDESK-CONFIG]
-text = "a desktop's settings are the profile's defaults ($XDG_DATA_DIRS/xdesk/<profile>.ini, shipped with xdesk), a system's ($XDG_CONFIG_DIRS/xdesk/<profile>.ini, what an edition sets) and a person's own ($XDG_CONFIG_HOME/xdesk/<profile>.ini) over them key by key (a repeated key's list replaced whole); the terminal, what starts with it, gaps, workspaces, colours and the keyboard layout and repeat are set there, the command line winning; what a file gets wrong is said by line and skipped"
-status = "required"
-
-[LUBAN-MACHINE-DESKTOP]
-text = "a machine whose root declares a desktop session shows it to the Luban OS window: the guest starts the session headless with its /run and /tmp its own, bridges it on a channel of the machine (opensal.wire), at the size the window asks; what is typed into it runs there"
-status = "required"
-
 [SUBOS-CMD-STDOUT]
 text = "`subos use <n> --cmd <c>` is a script: its standard output is the command's alone, byte for byte -- no announcement of the entry"
-status = "required"
-
-[LUBAN-BOOT-ENTRIES]
-text = "`luban boot` shows a machine's boot entries -- default, fallback, the next boot once -- and what this boot was (the entry, how it was chosen, whether it was marked good), as stage-0 recorded it"
-status = "required"
-
-[LUBAN-OS-INTERACTION]
-text = "the Luban OS window is used as a person uses it -- keys (arrows, Enter, F2, the Host key), the pointer, text, the window's size and close -- tested headless with input injected as the window system delivers it: every view is reached, the highlight follows the choice, a desktop gets its input in its own pixels"
-status = "required"
-
-[LUBAN-OS-LAYOUT]
-text = "every control of the Luban OS window is on screen, apart from the others and big enough to hit, at small, usual and large window sizes, in English and Chinese; what moves (the countdown) changes what is drawn; the screenshots are kept for people to look at"
 status = "required"
 
 [DOCTOR-LADDER]
@@ -1251,149 +931,19 @@ status = "required"
 text = "a runtime is pinned as configuration (xlings config --runtime glibc@V, luban config <n> --runtime glibc@V) and followed again with @latest; a pin to a version not installed is refused with the install command; each switch is one rename, recorded in logs/abi.ndjson with its reason, and the state is abi.json"
 status = "required"
 
-[USER-PASSWORD]
-text = "a Luban system user's password is typed hidden, confirmed, and stored only as its SHA-512 crypt hash ($6$) in the system's /etc/shadow, computed in-process; it never reaches a log, an argv or a file in clear"
-status = "required"
-
-[USER-LOGIN]
-text = "a Luban system says who logs in (its etc/luban/login, root unless set): luban new --user makes that user (passwd, its group, wheel, shadow, its home), a desktop asks for one (lubanoser with -y; agent mode names the flags), luban config --login changes it, --user on enter and run chooses for one session, sandbox and machine alike"
-status = "required"
-
-[ID-HOSTNAME]
-text = "a Luban system's host name is its name, sandbox and machine alike, unless its /etc/hostname names another (the edition's placeholder `luban` is not a name); a neutral identity keeps its persona's"
-status = "required"
-
-[ID-PROMPT]
-text = "the prompt marks where you are: [luban] a system sharing the host's kernel, <luban> one with its own, :temp / :home when it keeps less; ANSI 16 colours only on a known terminal, none with NO_COLOR; the same from a login shell and after su - (etc/profile.d/luban.sh, written when missing, never rewritten)"
-status = "required"
-
-[ID-WELCOME]
-text = "the welcome is two columns without a frame, at most 72 columns, ASCII when the locale is not UTF-8, colour only where it shows and never needed to read it; it names the system, how it runs (shared or its own kernel), what it keeps, who logs in, what xlings manages and the time, and how to leave"
-status = "required"
-
 [RECIPE-ADMIN-STEP]
 text = "a recipe never runs sudo: it declares a step only an administrator may take (libxpkg system.admin_step: the command and why); xlings asks once after the install where somebody can answer and runs the steps through subos::elevation, recorded; where nobody can, the install finishes, the steps are kept in state/admin-steps.json and said with their commands, and self doctor reports them until --fix takes them at a terminal"
-status = "required"
-
-[HAL-DEVICES]
-text = "openhal lists a machine's GPUs, displays, audio endpoints and input devices on Linux, macOS and Windows; what it cannot read it says with a reason, never as an empty list; every source passes the conformance check"
 status = "required"
 
 [PLATFORM-CAPS]
 text = "luban status (and its --json, and the Luban OS app) says per way of running -- sandbox, machine, desktop -- whether it is ready on this computer, how it runs, and when not why and the next step; Linux, macOS and Windows alike"
 status = "required"
 
-[CONTROL-DESCRIBE]
-text = "luban describes its verbs in openas (luban interface --describe): effect, arguments, options, what answers each; the description passes openas's conformance check; a verb runs from JSON arguments and is reported in openas's envelope ending with its result"
-status = "required"
-
-[CONTROL-PRINCIPAL]
-text = "every operation's journal names its actor (openas: kind, name, the chain it acts for), inherited by what it starts, and each process's parent step"
-status = "required"
-
-[CARRIER-WSL2-LUBAN]
-text = "on a Windows PC a Luban system lives in the Luban host machine (WSL 2): luban makes it there, describes it from the luban there, runs commands in it, removes it; a machine runs on the host machine's KVM or is refused with why and the next step"
-status = "required"
-
 [CARRIER-GUEST-CURRENT]
 text = "a carrier's machine (WSL 2, a Mac's host machine) that reports another release is brought to the client's once per release (xlings self update there), never on every command"
 status = "required"
 
-# ── Luban OS distribution (design 2026-10-18) ──────────────────────
-
-[LUBAN-DIST-XPKG]
-text = "luban new takes any system and any components by --xpkg (repeatable, any index): it finds what each is (a system, a desktop, a package) from the fields and conventions it already has, says the right way when one is given where the other belongs, asks once for a third party's (with what it does beyond Luban), records the answer, and in agent mode fails with --yes"
-status = "required"
-
-[LUBAN-DIST-LINEAGE]
-text = "a system says what it is in one way everywhere: its name and version, then the Luban edition it is built on (`myos 2026.11.1 (Luban desktop)`), its direct parent with its source, and its os-release (ID_LIKE=luban, LUBAN_BASE)"
-status = "required"
-
-[LUBAN-NAMESPACE]
-text = "a namespace an index reserves is taken from that index only (another index's recipe in it is refused, naming the index and the file); luban's short names are the names in the luban: namespace, none listed in its code; replaces is honoured within one index"
-status = "required"
-
-[LUBAN-CAPS]
-text = "luban, the Luban OS app, a machine's agent, a system and a component declare what they provide and need as named capabilities with integer levels (luban/specs/opencaps); a need is met by a provision at that level or above, an unknown name is not met and is said so, and a mismatch names which side is too old and its update"
-status = "required"
-
-[LUBAN-DESKTOP-KDE-ADAPTER]
-text = "a KDE session is shown through opensal by an adapter for KWin: its picture from a virtual monitor the window's size, input injected, the pointer drawn by the host, the clipboard shared, a resize followed"
-status = "planned"
-
-[LUBAN-DESKTOP-SHELL]
-text = "a desktop without a shell of its own (its session file's X-Luban-Shell=none) is given the Luban OS window's, through opensal Shell: the applications its session lists (share/applications in its XDG data dirs, field codes dropped, Terminal=true in the default terminal) and its windows (wlr foreign-toplevel), listed whole as they change; the window starts one by its id and brings one forward; a session with its own shell is not given one"
-status = "required"
-
-[LUBAN-ENTER-QUIET]
-text = "a frontend that greets for itself (luban's welcome) asks xlings for no entering line with XLINGS_ENTER_QUIET=1, and a root entered through its private prefix domain is asked the same"
-status = "required"
-
-[LUBAN-SESSION-PEERS]
-text = "terminals entering one environment are peers: the first starts its session in the background and joins it as later ones do, any of them leaves at once, Ctrl-C reaches only its own program, and the session ends a moment after the last; a session keeping only /home (or nothing) is joined by an entry keeping as much"
-status = "required"
-
-[LUBAN-DESKTOP-SWITCH]
-text = "several desktops live in one system: luban config --desktop changes the default, luban enter --desktop opens another once, the Luban OS app's bar lists them; one desktop's defaults and autostart never reach another, and removing the one in use falls back to the console and says so"
-status = "required"
-
-[LUBAN-DESKTOP-CLASSIC]
-text = "labwc, LXQt and KDE open in a machine and in a sandbox and can be used: drawn, a pointer, a terminal that shows the program it runs"
-status = "planned"
-
-[LUBAN-APP-WINDOW]
-text = "luban run --display window shows one graphical program of a system as its own window on the host, titled as the program: run alone by the first session that says how (X-Luban-App-Exec, luban:compositor's labwc -S), without the window's shell, the window gone when the program ends; --display takes terminal (the default) or window, and a system with nothing to run it says what to install"
-status = "required"
-
-[LUBAN-PACKAGE-FORM]
-text = "a package that changes form under its name (a bundle becoming a composite of atomic packages, or back) upgrades a system without changing its settings or sessions"
-status = "planned"
-
 # ── Luban OS: one tray, pointer and keyboard, arrangements, versions (design 2026-10-19 §23) ──
-
-[LUBAN-OS-TRAY-PROCESS]
-text = "one tray process per home (luban-os __tray, no display), each window its own process; liveness is a lock, never a pid; every behaviour of the tray before it (icon states, tooltip, menu, notifications, quit confirmation, no status bar, keep_in_tray, a hidden window finishing its job) holds"
-status = "required"
-
-[LUBAN-OS-LATENCY]
-text = "the interactions of design 2026-10-19 §4.1 stay within their budgets (p95 on the luban-os lane), and a step that may take over 2 s says its first line within 2 s and something at least every 10 s"
-status = "required"
-
-[LUBAN-OS-POINTER]
-text = "the host draws the pointer with the system's cursor (no frame when it moves): a shape name ('c') and an image ('C') from the desktop, the Luban theme, drawn into the frame only when the host does not take Cursor, the pointer lock released with the keyboard's chord, and an old xdesk session shown the default arrow"
-status = "required"
-
-[LUBAN-OS-KEYBOARD]
-text = "entering a desktop grabs the keyboard; Ctrl+Alt+K toggles it; Ctrl+Alt alone opens the menu; the setting is honoured; an input method with nothing composed never swallows a non-character key"
-status = "required"
-
-[XDESK-ARRANGEMENTS]
-text = "xdesk's space x arrangement: tiling, stacking and canvas (with tiled groups on it) per workspace, switched reversibly (back to the same layout), Super+m's chooser, splitting a column"
-status = "required"
-
-[XDESK-DRAG-SNAP]
-text = "dragging a window previews exactly where it lands in each arrangement, offers sizes when it rests on a target, gaps resize what is either side, and the maximize button offers layouts"
-status = "required"
-
-[XDESK-WINDOW-MENU]
-text = "a window's title-bar menu (maximize, float, always on top, on every workspace, to a workspace, app rules, close); on top stays above and on a canvas in view; rules are kept and applied; windows are named by their application"
-status = "required"
-
-[LUBAN-OS-WINDOW-TITLE]
-text = "the Luban OS window's title is `Luban OS (<system>)` when it shows a system and `Luban OS` otherwise, in every view"
-status = "required"
-
-[LUBAN-VERSIONS]
-text = "luban status says the versions of xlings, luban, luban-os (installed and running) and the index in one line, opens it with the next step when they disagree, and --json has versions with mismatches[].next"
-status = "required"
-
-[LUBAN-EDITION-PINNED]
-text = "the version shown before a system is made is the version made (luban new, the quick start, --dry-run --json), and a newer one passed over is said"
-status = "required"
-
-[LUBAN-LS-SEARCH]
-text = "luban ls without arguments is unchanged and takes a name pattern; luban search lists what the index offers (distributions, desktops) as the quick start groups it"
-status = "required"
 
 [SUBOS-FROM-NO-SILENT-INSTALLED]
 text = "subos new --from without a version stops when the index cannot be read, and says so when it uses an installed version the index does not list"
@@ -1411,25 +961,9 @@ status = "required"
 text = "inside a system, a user's read-only xlings commands neither switch home nor make anything; the first write makes the user's view without asking (it installs nothing)"
 status = "required"
 
-[LUBAN-UPGRADE-REVERSIBLE]
-text = "an upgrade is never forced and is undone by rollback: a frozen name to luban:, and a relayout through its archive (rollback --to relayout)"
-status = "required"
-
-[LUBAN-OS-QUICK-START-DESKTOPS]
-text = "the quick start's four groups, with source, status, tier (unrated last), an index it cannot read said, the panel scrolling with Create in view, and six stages"
-status = "required"
-
-[LUBAN-OS-APP-CAPABILITIES]
-text = "luban-os __capabilities answers without a display; an app that cannot be asked is not taken as compatible"
-status = "required"
-
 [XPKG-EXTENSIONS]
 text = "a recipe's extensions are kept and handed on unchanged (package_info, search), within their type and size rules"
 status = "required"
-
-[LUBAN-CORE-TOOLS]
-text = "core has cmake, yazi and procps-ng (and xmake on x86_64), each starting, and ps is procps-ng's"
-status = "planned"
 
 [I18N-DOMAINS]
 text = "catalogues register by domain; English is complete in each; no key without English; arguments agree; the fallback chain and pick(); no tr(en, zh) in luban-os"
@@ -1437,18 +971,18 @@ status = "required"
 
 # ── a system's network, a user's own home, the prompt (design 2026-10-19 §27) ──
 
-[LUBAN-MACHINE-NETWORK]
-text = "a machine has an address, a route and name servers from the kernel's lease (not written into its tree) and the system's name, whatever its init does; a non-fatal network item in the self-check"
-status = "required"
-
-[LUBAN-NETWORK-PROXY]
-text = "the host's proxy reaches a machine: read from the environment that starts it, a loopback address mapped to the host's NAT address, in /run/luban/network.env, in every session and the desktop; the network line of luban status and the banner says it"
-status = "required"
-
 [SUBOS-USER-HOME-SEED]
 text = "a system user's view takes the system home's settings and reads its index in place (no copy, no network); a package the system already provides is not installed again and is said so; a network failure is said once with the next step"
 status = "required"
 
-[LUBAN-PROMPT-MARK]
-text = "every login shell (sh, bash, fish) shows the [luban]/<luban> mark; a system made before gets the fish script on its next entry"
+[XIM-UNREADABLE-RECIPE]
+text = "a recipe the index has and that cannot be read (its Lua worker not starting, the file broken or gone) is said as that, with why and xlings self doctor -- never as not found, and never answered by a guess among other names"
+status = "required"
+
+[XIM-FUZZY-ORDER]
+text = "a name that matches several packages lists them nearest first and stably (the name itself, names it begins, names holding it, the rest), ten at most with the others counted (xlings search); with nobody to ask only a full coordinate is offered, never taking the first"
+status = "required"
+
+[SUBOS-USER-VIEW-INHERITS]
+text = "a user's view in a system that has made nothing of its own active for a name runs the system default's (the system's shim reaches the system's program); a view without a manifest of its own is not a defect (self doctor reports none: it is written when first needed)"
 status = "required"

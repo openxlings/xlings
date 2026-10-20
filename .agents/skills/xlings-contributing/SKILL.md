@@ -295,7 +295,7 @@ After feature PRs merge, if a release is planned:
 # On main:
 # Edit ALL THREE: mcpp.toml `version`, src/core/config.cppm VERSION and
 # luban/src/cli/cli.cppm kVersion (luban is released as the xlings it drives;
-# tests/unit/test_luban_cli.cpp fails when they differ).
+# tests/unit/test_luban_contract.cpp fails when they differ).
 # (mcpp's target fingerprint includes the package version, so a bump moves
 #  the build output to a new target/<triple>/<fp>/bin/xlings — check
 #  `./that/binary --version` before concluding anything from a manual test.)
@@ -317,6 +317,9 @@ not a finished release:
 #    The GitHub runner cannot push large assets to GitCode: the upload stalls
 #    on the cross-border OBS wall, the job logs it and moves on green.
 bash tools/mirror-latest.sh xlings
+#    and the payloads released beside it (AGENTS.md: luban, luban-os, xdesk,
+#    luban-cursors).
+for p in luban luban-os xdesk luban-cursors; do bash tools/mirror-latest.sh $p; done
 
 #    Verify with GET, never HEAD: GitCode answers 401 to HEAD and
 #    302 -> CDN 200 to GET, so a HEAD check reports a healthy asset missing

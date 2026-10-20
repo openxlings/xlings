@@ -215,6 +215,27 @@ std::string tail_(const fs::path& file, std::size_t lines) {
 }
 
 // Starts the machine's supervisor and waits for its agent.
+// The first render node this host has (/dev/dri/renderD128 on).
+std::optional<fs::path> render_node_() {
+    std::error_code ec;
+    for (int n = 128; n < 192; ++n)
+        if (const fs::path p = std::format("/dev/dri/renderD{}", n); fs::exists(p, ec)) return p;
+    return std::nullopt;
+}
+
+}  // namespace
+
+MachineGpu machine_gpu(const std::optional<fs::path>& render_node, bool gl_qemu, bool has_device) {
+    if (!render_node) return {.args = {"-display", "none"}, .summary = "no GPU: this host has no render node"};
+    if (!gl_qemu) return {.args = {"-display", "none"}, .summary = "no GPU: this qemu is not a GL build (virgl)"};
+    if (!has_device) return {.args = {"-display", "none"}, .summary = "no GPU: this qemu has no virtio-gpu-gl-pci"};
+    return {.virgl = true,
+            .args = {"-device", "virtio-gpu-gl-pci", "-display", std::format("egl-headless,rendernode={}", render_node->string())},
+            .summary = std::format("virgl on {}", render_node->string())};
+}
+
+namespace {
+
 int start_impl_(const service::Context& c, std::string_view name, const EnterOptions& o) {
     const auto& arch = xlings::image::native_arch();
     const xlings::subos::HomeView view{c.home};
@@ -222,7 +243,7 @@ int start_impl_(const service::Context& c, std::string_view name, const EnterOpt
         say_(c, service::error(std::format("a machine runs on x86_64 and aarch64 hosts (this one is {})", platform::build_arch())));
         return 1;
     }
-    say_(c, service::phase("check", "begin", "checking this host"));
+    say_(c, service::phase("preflight", "begin", "checking this host"));
     // In the table's order, the first that can share a directory with the
     // machine (9p, asked of the device itself: its properties name the fsdev
     // it shares) -- a host's qemu without it does not hide the index's.
@@ -230,7 +251,7 @@ int start_impl_(const service::Context& c, std::string_view name, const EnterOpt
     if (all.empty()) {
         // Its monitor is a package of the index, installed the first time as
         // its kernel is (a Windows PC's host machine has nobody to type it).
-        say_(c, service::phase("check", "done", "checking this host"));
+        say_(c, service::phase("preflight", "done", "checking this host"));
         say_(c, service::phase("vmm", "begin", "installing the virtual machine monitor"));
         const int rc = c.port.capability("install_packages", {{"targets", Json::array({"xim:qemu-system"})}, {"yes", true}}, c.sink);
         all = xlings::subos::tools::candidates(arch.qemu, view, xlings::subos::Ports{});
@@ -239,7 +260,7 @@ int start_impl_(const service::Context& c, std::string_view name, const EnterOpt
             say_(c, service::error("a machine needs a virtual machine monitor here", xlings::subos::tools::install_hint(arch.qemu)));
             return 1;
         }
-        say_(c, service::phase("check", "begin", "checking this host"));
+        say_(c, service::phase("preflight", "begin", "checking this host"));
     }
     std::optional<xlings::subos::tools::Found> qemu;
     std::string refused;
@@ -253,20 +274,20 @@ int start_impl_(const service::Context& c, std::string_view name, const EnterOpt
         }
     }
     if (!qemu) {
-        say_(c, service::phase("check", "failed", "checking this host"));
+        say_(c, service::phase("preflight", "failed", "checking this host"));
         say_(c, service::error(refused, "xlings install qemu-system@latest (revision 3 or later)"));
         return 1;
     }
     auto kernel = kernel_(c.home);
     if (!kernel) {
-        say_(c, service::phase("check", "done", "checking this host"));
+        say_(c, service::phase("preflight", "done", "checking this host"));
         say_(c, service::phase("kernel", "begin", "installing the machine kernel"));
         const int rc = c.port.capability("install_packages", {{"targets", Json::array({"xim:linux-kernel-virt"})}, {"yes", true}}, c.sink);
         kernel = kernel_(c.home);
         say_(c, service::phase("kernel", kernel ? "done" : "failed", "installing the machine kernel"));
         if (rc != 0 || !kernel) return rc != 0 ? rc : 1;
     } else {
-        say_(c, service::phase("check", "done", "checking this host"));
+        say_(c, service::phase("preflight", "done", "checking this host"));
     }
     std::error_code ec;
     const auto dir = run_dir(c.home, name);
@@ -328,6 +349,11 @@ int start_impl_(const service::Context& c, std::string_view name, const EnterOpt
     }
     const bool kvm = kvm_();
     const auto memory = o.memory.empty() ? default_memory_mb_() : o.memory;
+    // Its GPU (WuXian §7.5): virgl when the qemu found has the device and
+    // this host a render node -- the index's qemu is static and has none yet.
+    const auto node = render_node_();
+    const bool has_device = node && capture_({qemu->bin.string(), "-M", "none", "-device", "help"}).find("\"virtio-gpu-gl-pci\"") != std::string::npos;
+    const auto gpu = machine_gpu(node, has_device, has_device);
     std::vector<std::string> q{qemu->bin.string()};
     if (!arch.machine.empty()) q.insert(q.end(), {"-M", std::string(arch.machine)});
     q.insert(q.end(), {"-m", memory, "-smp", default_cpus_()});
@@ -341,7 +367,7 @@ int start_impl_(const service::Context& c, std::string_view name, const EnterOpt
                                    // name the system's (design 2026-10-19 §27.2): nothing in
                                    // the system has to bring either up, whatever its init is.
                                    net.args.size() == 2 && net.args[1] != "none" ? std::format(" ip=::::{}::dhcp", name) : std::string{}),
-                       "-display", "none", "-no-reboot",
+                       "-no-reboot",
                        "-serial", std::format("file:{}", (log_dir(c.home, name) / "console.log").string()),
                        "-virtfs", std::format("local,path={},mount_tag=root,security_model=none,id=root", share.string()),
                        "-virtfs", std::format("local,path={},mount_tag=home,security_model=none,readonly=on,id=home", home_files),
@@ -352,9 +378,11 @@ int start_impl_(const service::Context& c, std::string_view name, const EnterOpt
     if (userhome)
         q.insert(q.end(), {"-virtfs", std::format("local,path={},mount_tag=userhome,security_model=none,id=userhome",
                                                   (*root / "home").string())});
+    q.insert(q.end(), gpu.args.begin(), gpu.args.end());
     q.insert(q.end(), net.args.begin(), net.args.end());
     Json state{{"name", name}, {"qemu", q}, {"persist", persist}, {"temp", o.temp}, {"scratch", persist == "all" ? "" : share.string()},
-               {"env", net.env}, {"started", xlings::observe::utc_now()}, {"accel", kvm ? "kvm" : "tcg"}, {"memory", memory}};
+               {"env", net.env}, {"started", xlings::observe::utc_now()}, {"accel", kvm ? "kvm" : "tcg"}, {"memory", memory},
+               {"gpu", gpu.summary}};
     platform::write_file_atomic(state_file_(c.home, name).string(), state.dump(2));
     fs::remove(client_socket_(c.home, name), ec);
     const auto self = luban_(c.home).string();
@@ -413,7 +441,8 @@ int start_impl_(const service::Context& c, std::string_view name, const EnterOpt
     return 1;
 }
 
-enum class Ending { Exited, Detached, PowerOff, Lost };
+// Killed: its shell ended by a signal -- the machine powering itself off.
+enum class Ending { Exited, Killed, Detached, PowerOff, Lost };
 
 // One session of a running machine on this terminal.
 // What the welcome says of a machine that only its host knows: the kernel
@@ -478,7 +507,7 @@ std::pair<Ending, int> session_(const service::Context& c, std::string_view name
                 else if (frame.type == 'X') {
                     auto j = Json::parse(frame.payload, nullptr, false);
                     code = j.is_object() ? j.value("code", 0) : 0;
-                    ending = Ending::Exited;
+                    ending = j.is_object() && j.contains("signal") ? Ending::Killed : Ending::Exited;
                     done = true;
                 }
             }
@@ -684,7 +713,10 @@ int start_in_carrier_(const service::Context& c, std::string_view name, const En
     return rc;
 }
 
-int start(const service::Context& c, std::string_view name, const EnterOptions& o) {
+int start(const service::Context& given, std::string_view name, const EnterOptions& o) {
+    // Its one progress: the stage of starting (design 2026-10-20 WuXian §10).
+    service::Context c = given;
+    c.sink = service::with_overall(given.sink, false, true, false);
     if constexpr (platform::is_windows) return start_in_carrier_(c, name, o);
     if (running(c.home, name)) return 0;
     if constexpr (platform::is_macos) return start_vz_(c, name, o);
@@ -759,8 +791,9 @@ bool Client::write_(std::string_view frame) {
 }
 
 bool Client::open_command(std::uint32_t channel, const std::vector<std::string>& argv, int rows, int cols,
-                          const nlohmann::json& env, bool pipes) {
+                          const nlohmann::json& env, bool pipes, std::string_view user) {
     Json open{{"argv", argv}, {"env", env}};
+    if (!user.empty()) open["user"] = std::string(user);
     if (pipes) open["pipes"] = true;
     else {
         const char* term = std::getenv("TERM");
@@ -1054,9 +1087,16 @@ int enter(const service::Context& c, std::string_view name_or_image, const Enter
         std::println("{} keeps running: luban enter {} · luban stop {}", name, name, name);
         return 0;
     }
-    if (ending == Ending::Lost && !running(c.home, name)) {
-        std::println("{} is off", name);
-        return code;
+    // A machine powering itself off (`poweroff` inside) ends the session
+    // first -- its shell killed, or the connection gone -- while it is still
+    // going down: wait for it to be off rather than ask whether to keep
+    // running what is stopping.
+    if (ending == Ending::Lost || ending == Ending::Killed) {
+        for (int k = 0; k < 100 && running(c.home, name); ++k) std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        if (!running(c.home, name)) {
+            std::println("{} is off", name);
+            return ending == Ending::Lost ? code : 0;
+        }
     }
     bool off = ending == Ending::PowerOff;
     if (!off && state.value("temp", false)) off = true;
@@ -1078,6 +1118,63 @@ int enter(const service::Context& c, std::string_view name_or_image, const Enter
     }
     if (off) return vm::stop(c, name).code ? 1 : code;
     std::println("{} keeps running: luban enter {} · luban stop {}", name, name, name);
+    return code;
+}
+
+int run(const service::Context& c, std::string_view name, std::span<const std::string> argv, std::string_view user) {
+    if (argv.empty()) return 2;
+    const bool was_running = running(c.home, name).has_value();
+    if (!was_running)
+        if (const int rc = start(c, name, EnterOptions{}); rc != 0) return rc;
+    auto client = Client::connect(c.home, name);
+    if (!client || client->fd() < 0) {
+        say_(c, service::error(std::format("{} does not answer: {}", name, client ? std::string("no connection") : client.error()),
+                               std::format("luban status {}", name)));
+        if (!was_running) (void)vm::stop(c, name);
+        return 125;
+    }
+    // A terminal on both ends: the command on one there (its size, raw), so
+    // what asks a question can; otherwise pipes, its output as it was written.
+    const bool tty = platform::stdin_is_terminal() && platform::stdout_is_terminal();
+    const auto size = platform::terminal_size(0).value_or(std::pair<unsigned short, unsigned short>{24, 80});
+    const std::vector<std::string> words(argv.begin(), argv.end());
+    int code = 125;
+    if (client->open_command(1, words, size.first, size.second, session_env(c.home, name), !tty, user)) {
+        const auto saved = tty ? platform::make_terminal_raw(0) : std::nullopt;
+        std::array<char, 65536> buf{};
+        bool input = true;
+        for (bool done = false; !done;) {
+            std::array<platform::PollFd, 2> p{{{.fd = input ? 0 : -1}, {.fd = client->fd()}}};
+            platform::poll_fds(p, 200);
+            if (p[1].readable || p[1].closed) {
+                auto frames = client->poll(0);
+                if (!frames) break;
+                for (const auto& [type, body] : *frames) {
+                    if (body.first != 1) continue;
+                    if (type == 'D') (void)platform::write_all(1, body.second);
+                    else if (type == 'E') (void)platform::write_all(2, body.second);
+                    else if (type == 'X') {
+                        const auto j = Json::parse(body.second, nullptr, false);
+                        code = j.is_object() ? j.value("code", 0) : 0;
+                        if (j.is_object() && j.contains("error"))
+                            say_(c, service::error(std::format("{}: {}", words.front(), j.value("error", std::string{}))));
+                        done = true;
+                    }
+                }
+            }
+            if (input && (p[0].readable || p[0].closed)) {
+                auto n = platform::read_some(0, buf);
+                if (!n || *n == 0) {
+                    input = false;
+                    if (!tty) (void)client->end_input(1);
+                } else {
+                    (void)client->send(1, std::string_view(buf.data(), *n));
+                }
+            }
+        }
+        if (saved) platform::restore_terminal(0, *saved);
+    }
+    if (!was_running) (void)vm::stop(c, name);
     return code;
 }
 

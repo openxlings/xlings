@@ -137,9 +137,19 @@ public:
     // does not say it hands the pointer back to the interface (imgui's
     // shapes). The system's cursor objects are made once a shape.
     void surface_pointer(std::string_view shape, const opensal::CursorImage* image = nullptr);
-    // What it shows now: a shape's name, "custom", "none", or "ui".
+    // How a pointer shaken to find it is shown (opensal 'p'; design
+    // 2026-10-20 WuXian §8.3), as the surface said -- the default until it
+    // does -- and whether motion is reduced (it grows at once). While it is
+    // shaken it grows, up to `max` times, and shrinks back after.
+    void pointer_locate(const opensal::PointerLocate& locate, bool reduce_motion);
+    // Growing or shrinking: frames are wanted until it is done.
+    bool pointer_animating() const;
+    // What it shows now: a shape's name, "custom", "none", "layer" (drawn
+    // in the window: grown past what the host takes), or "ui".
     std::string pointer_shown() const;
     std::pair<int, int> pointer_image_size() const;
+    // Tests: what is drawn over the surface and how big ("default@1.5"), or "".
+    std::string pointer_drawn() const;
 
     // Tests: what the window last drew, as BGRA rows.
     std::vector<std::uint8_t> read_pixels(int& width, int& height) const;
@@ -175,6 +185,7 @@ private:
     std::unique_ptr<Pointer, void (*)(Pointer*)> pointer_ { nullptr, nullptr };
     void pointer_frame_();
     void release_pointer_();
+    void pointer_moved_(float x, float y, bool pressed);
     std::vector<opensal::Event> events_;
     std::vector<KeyPress> keys_;
     bool host_key_ { false };

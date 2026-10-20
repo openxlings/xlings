@@ -20,6 +20,7 @@ import openhal;
 import openhal.audio;
 import openas;
 import xlings.carrier;
+import :render;
 
 namespace luban::cli {
 
@@ -81,230 +82,6 @@ fs::path home_dir_() {
     if (const char* u = std::getenv("HOME"); u && *u) return fs::path(u) / ".xlings";
     return ".xlings";
 }
-
-// ── Display width (the progress line, design 2026-10-20 §3) ──────────
-//
-// Columns a code point takes on a terminal: 2 for the East Asian wide and
-// full-width ranges and emoji, 0 for combining marks, 1 otherwise.
-int columns_of_(char32_t c) {
-    if ((c >= 0x0300 && c <= 0x036F) || (c >= 0x200B && c <= 0x200F) || (c >= 0xFE00 && c <= 0xFE0F)) return 0;
-    if ((c >= 0x1100 && c <= 0x115F) || (c >= 0x2E80 && c <= 0x303E) || (c >= 0x3041 && c <= 0x33FF)
-        || (c >= 0x3400 && c <= 0x4DBF) || (c >= 0x4E00 && c <= 0x9FFF) || (c >= 0xA000 && c <= 0xA4CF)
-        || (c >= 0xAC00 && c <= 0xD7A3) || (c >= 0xF900 && c <= 0xFAFF) || (c >= 0xFE30 && c <= 0xFE4F)
-        || (c >= 0xFF00 && c <= 0xFF60) || (c >= 0xFFE0 && c <= 0xFFE6) || (c >= 0x1F300 && c <= 0x1FAFF)
-        || (c >= 0x20000 && c <= 0x3FFFD))
-        return 2;
-    return 1;
-}
-
-// The next code point of `s` from `i` (advanced); a stray byte is one column.
-char32_t next_code_point_(std::string_view s, std::size_t& i) {
-    const auto b = static_cast<unsigned char>(s[i]);
-    const std::size_t n = b < 0x80 ? 1 : (b >> 5) == 0x6 ? 2 : (b >> 4) == 0xE ? 3 : (b >> 3) == 0x1E ? 4 : 1;
-    if (n == 1 || i + n > s.size()) return ++i, b;
-    char32_t c = b & (0x7F >> n);
-    for (std::size_t k = 1; k < n; ++k) c = (c << 6) | (static_cast<unsigned char>(s[i + k]) & 0x3F);
-    i += n;
-    return c;
-}
-
-int display_width_(std::string_view s) {
-    int w = 0;
-    for (std::size_t i = 0; i < s.size();) w += columns_of_(next_code_point_(s, i));
-    return w;
-}
-
-// `s` cut to at most `cols` columns, the cut marked with `…`.
-std::string fit_(std::string_view s, int cols) {
-    if (cols <= 0) return {};
-    if (display_width_(s) <= cols) return std::string(s);
-    std::string out;
-    int w = 0;
-    for (std::size_t i = 0; i < s.size();) {
-        const auto from = i;
-        const int c = columns_of_(next_code_point_(s, i));
-        if (w + c > cols - 1) break;
-        w += c;
-        out.append(s.substr(from, i - from));
-    }
-    return out + "…";
-}
-
-std::string human_size_(std::uintmax_t bytes) {
-    const char* units[] = {"B", "KB", "MB", "GB", "TB"};
-    double v = static_cast<double>(bytes);
-    int u = 0;
-    while (v >= 1000 && u < 4) { v /= 1000; ++u; }
-    return std::format("{:.1f} {}", v, units[u]);
-}
-
-struct Globals {
-    std::string as;           // --as: who this is (openas), given by whoever ran it
-    bool json { false };
-    bool agent { false };
-    bool yes { false };
-    bool verbose { false };
-    bool quiet { false };
-};
-
-// ── The terminal's rendering of the service's events (design §5.2) ─────
-//
-// One line per phase: `▸` while it runs (rewritten in place on a terminal,
-// with its progress), `✓` / `✗` when it ends. A step's own log lines are
-// shown with -v only; warnings and errors always, errors with their way out.
-// --json prints the events as they are.
-class Renderer {
-public:
-    explicit Renderer(const Globals& g)
-        : g_(g),
-          tty_(!g.json && !g.agent && xlings::platform::stdout_is_terminal()),
-          color_(tty_ && !std::getenv("NO_COLOR")) {}
-    ~Renderer() { close_(); }
-
-    void operator()(const svc::Event& e) {
-        using K = svc::Event::Kind;
-        if (g_.json) {
-            Json j{{"event", kind_(e.kind)}};
-            if (!e.phase.empty()) j["phase"] = e.phase;
-            if (!e.state.empty()) j["state"] = e.state;
-            if (!e.text.empty()) j["text"] = e.text;
-            if (!e.hint.empty()) j["hint"] = e.hint;
-            if (!e.level.empty()) j["level"] = e.level;
-            if (e.percent >= 0) j["percent"] = e.percent;
-            if (e.overall >= 0) j["overall"] = e.overall, j["stage"] = e.stage;
-            if (!e.data_kind.empty()) { j["data_kind"] = e.data_kind; j["data"] = e.data; }
-            std::println("{}", j.dump());
-            return;
-        }
-        switch (e.kind) {
-        case K::Phase:
-            if (e.state == "begin") {
-                close_();
-                open_ = e.text;
-                if (tty_) live_({}, {});
-                else if (!g_.quiet) std::println("▸ {}", open_);
-            } else {
-                const bool ok = e.state == "done";
-                const auto text = e.text.empty() ? open_ : e.text;
-                if (tty_) std::print("\r\033[K");
-                if (!ok || !g_.quiet) std::println("{} {}", ok ? paint_("✓", 32) : paint_("✗", 31), text);
-                open_.clear();
-            }
-            break;
-        case K::Progress:
-            // The whole operation's progress when it has one (design 2026-10-20 G22).
-            if (tty_ && !open_.empty()) {
-                const double pct = e.overall >= 0 ? e.overall : e.percent;
-                live_(pct >= 0 ? std::format("  {:3.0f}%", pct * 100) : std::string{}, e.text);
-            }
-            break;
-        case K::Log:
-            if (e.level == "warn") above_(std::format("{} {}", paint_("!", 33), e.text));
-            else if (e.level == "error") above_(std::format("{} {}", paint_("✗", 31), e.text));
-            else if (g_.verbose) above_(paint_("  " + e.text, 2));
-            break;
-        case K::Notice:
-            above_(std::format("  {}", e.text));
-            if (!e.hint.empty()) above_(std::format("    {}", paint_(e.hint, 1)));
-            break;
-        case K::Error:
-            close_();
-            std::println(std::cerr, "{} {}", paint_("✗", 31), e.text);
-            if (!e.hint.empty()) std::println(std::cerr, "    {}", paint_(e.hint, 1));
-            break;
-        case K::Data:
-            // Downloads are the batch's state as data (protocol 1.3): drawn
-            // under the open phase as the bytes so far, the share of them and
-            // the file being fetched -- making a system spends most of its
-            // time here, and it used to show nothing.
-            if (tty_ && !open_.empty() && e.data_kind == "download_progress" && e.data.is_object()) {
-                double total = 0, done = 0;
-                std::string current;
-                for (const auto& f : e.data.value("files", Json::array())) {
-                    total += f.value("totalBytes", 0.0);
-                    done += f.value("downloadedBytes", 0.0);
-                    if (f.value("started", false) && !f.value("finished", false) && current.empty())
-                        current = f.value("name", std::string{});
-                }
-                std::string detail = std::format("{:.1f} MB", done / 1e6);
-                if (total > 0) detail += std::format(" / {:.1f} MB", total / 1e6);
-                if (!current.empty()) detail += "  " + current;
-                const double pct = e.overall >= 0 ? e.overall : total > 0 ? done / total : -1;
-                live_(pct >= 0 ? std::format("  {:3.0f}%", pct * 100) : std::string{}, detail);
-            }
-            break;
-        }
-    }
-
-    // A conclusion line, after the phases.
-    void say(std::string_view text) {
-        close_();
-        if (!g_.json) std::println("{}", text);
-    }
-    void next(std::string_view label, std::string_view command) {
-        close_();
-        if (!g_.json && !g_.quiet) std::println("  {:<8} {}", label, paint_(command, 1));
-    }
-    void value(const Json& j) {
-        if (g_.json) std::println("{}", Json{{"result", j}}.dump());
-    }
-    std::string paint(std::string_view s, int code) const { return paint_(s, code); }
-
-private:
-    static std::string kind_(svc::Event::Kind k) {
-        switch (k) {
-        case svc::Event::Kind::Phase: return "phase";
-        case svc::Event::Kind::Progress: return "progress";
-        case svc::Event::Kind::Log: return "log";
-        case svc::Event::Kind::Notice: return "notice";
-        case svc::Event::Kind::Error: return "error";
-        case svc::Event::Kind::Data: return "data";
-        }
-        return "log";
-    }
-    std::string paint_(std::string_view s, int code) const {
-        if (!color_) return std::string(s);
-        return std::format("\033[{}m{}\033[0m", code, s);
-    }
-    // A line above the running phase.
-    void above_(std::string_view line) {
-        if (tty_ && !open_.empty()) {
-            std::print("\r\033[K{}\n", line);
-            live_({}, {});
-        } else {
-            std::println("{}", line);
-        }
-    }
-    // The running phase's line, rewritten in place: `▸ <phase><percent>  <detail>`
-    // cut to the terminal's width less one column (some terminals wrap on
-    // writing the last), the detail first, then the phase. A line that wraps
-    // is one `\r` can no longer return over, and every refresh added a line.
-    void live_(const std::string& percent, std::string_view detail) {
-        const auto size = xlings::platform::terminal_size(1);
-        const int cols = (size && size->second > 0 ? size->second : 80) - 1;
-        const int head = 2 + display_width_(open_) + display_width_(percent);
-        std::string line;
-        if (head <= cols) {
-            line = std::format("{} {}{}", paint_("▸", 36), open_, percent);
-            if (const int room = cols - head - 2; !detail.empty() && room >= 4)
-                line += "  " + paint_(fit_(detail, room), 2);
-        } else {
-            line = std::format("{} {}", paint_("▸", 36), fit_(open_, cols - 2));
-        }
-        std::print("\r\033[K{}", line);
-        std::cout.flush();
-    }
-    void close_() {
-        if (tty_ && !open_.empty()) {
-            std::println("");
-            open_.clear();
-        }
-    }
-    const Globals& g_;
-    bool tty_;
-    bool color_;
-    std::string open_;
-};
 
 int usage(std::string_view message, const Globals& g) {
     if (g.json) std::println("{}", Json{{"error", "usage"}, {"message", message}}.dump());
@@ -837,7 +614,16 @@ int cmd_run(const svc::Context& c, const Parsed& p, const Globals& g) {
     if (p.words.size() != 1 || p.after.empty()) return usage("`luban run <name> [--display window] -- <command...>`", g);
     const auto display = p.option("--display").value_or("terminal");
     if (display != "terminal" && display != "window") return usage("--display terminal|window", g);
-    if (display == "terminal") return svc::run_command(c, p.words[0], p.after, p.option("--user").value_or(""));
+    if (display == "terminal") {
+        // A system that starts as a machine (or runs as one) runs it there,
+        // with its own kernel -- not in a sandbox beside it.
+        if constexpr (!xlings::platform::is_windows) {
+            const auto settings = svc::read_settings(c.home, p.words[0]);
+            if (vm::running(c.home, p.words[0]) || (settings && settings->mode == "machine"))
+                return vm::run(c, p.words[0], p.after, p.option("--user").value_or(""));
+        }
+        return svc::run_command(c, p.words[0], p.after, p.option("--user").value_or(""));
+    }
     if (p.option("--user")) return usage("--user is the terminal's: a window runs as the system's login user", g);
     const auto app = svc::window_app(c, p.words[0]);
     if (!app) {

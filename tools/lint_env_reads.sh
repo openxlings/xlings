@@ -7,7 +7,7 @@
 # comes from luban.service (describe, Environment, enter_plan), which reads
 # where the links lead (xlings.subos.located). The settings page once walked
 # usr/share/wayland-sessions itself and showed no desktop (design 2026-10-18
-# §10, E11). A line in apps/luban-os that takes a system's /usr or root
+# §10, E11). A line in luban/host/luban-os that takes a system's /usr or root
 # (usr_of, root_of) needs an `env-read-ok: <why>` marker.
 set -euo pipefail
 
@@ -21,10 +21,10 @@ while IFS= read -r hit; do
     echo "::error::the Luban OS app reads a system's tree itself (ask luban.service): $hit"
     bad=$((bad + 1)) ;;
   esac
-done < <(grep -rnE '\b(usr_of|root_of)\(' apps/luban-os/src || true)
+done < <(grep -rnE '\b(usr_of|root_of)\(' luban/host/luban-os/src || true)
 
 if [ "$bad" -gt 0 ]; then
-  echo "env reads lint: $bad line(s) in apps/luban-os read a system's tree; use luban.service, or mark $MARK <why>"
+  echo "env reads lint: $bad line(s) in luban/host/luban-os read a system's tree; use luban.service, or mark $MARK <why>"
   exit 1
 fi
 echo "env reads lint: PASS (the Luban OS app reads systems through the service)"

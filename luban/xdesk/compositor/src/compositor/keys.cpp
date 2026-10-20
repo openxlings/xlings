@@ -31,7 +31,7 @@ const std::vector<ActionInfo>& actions() {
             {Action::switch_apps, "switch-apps", "Applications, the most recent first", "按应用切换", {"Super+Tab", "Super+Shift+Tab"}, true, true, true, G::find},
             {Action::app_windows, "app-windows", "The application's other windows", "同一应用的窗口间切换", {"Super+grave", "Super+Shift+grave"}, true, true, true, G::find},
             {Action::windows, "windows", "The windows, where they are", "按窗口切换（空间总览）", {"Alt+Tab", "Alt+Shift+Tab"}, true, true, true, G::find},
-            {Action::overview, "overview", "Overview", "总览", {"Super+o"}, true, true, true, G::find},
+            {Action::wuxian, "wuxian", "The WuXian view (the infinite canvas), and back", "WuXian 视图（无限画布）/ 返回", {"Super+o"}, true, true, true, G::find},
             {Action::focus_left, "focus-left", "Focus left", "焦点向左", {"Super+Left", "Super+h"}, true, true, true, G::focus},
             {Action::focus_right, "focus-right", "Focus right", "焦点向右", {"Super+Right", "Super+l"}, true, true, true, G::focus},
             {Action::focus_up, "focus-up", "Focus up", "焦点向上", {"Super+Up", "Super+k"}, true, true, true, G::focus},
@@ -48,12 +48,15 @@ const std::vector<ActionInfo>& actions() {
             {Action::pin, "pin", "Always on top", "置顶", {"Super+p"}, true, true, true, G::window},
             {Action::sticky, "sticky", "On every workspace", "在所有工作区显示", {"Super+Shift+p"}, true, true, true, G::window},
             {Action::close, "close", "Close the window", "关闭窗口", {"Super+q", "Alt+F4"}, true, true, true, G::window},
+            {Action::copy, "copy", "Copy (in a terminal too)", "复制（终端里也可以）", {"Super+c"}, true, true, true, G::window},
+            {Action::paste, "paste", "Paste (in a terminal too)", "粘贴（终端里也可以）", {"Super+v"}, true, true, true, G::window},
             {Action::width, "width", "Column width: 1/3, 1/2, 2/3, all", "列宽：1/3、1/2、2/3、全宽", {"Super+r"}, true, false, true, G::size},
             {Action::height, "height", "Height in the column: equal, 2/3, 1/3", "列内高度：平分、2/3、1/3", {"Super+Shift+r"}, true, false, true, G::size},
-            {Action::smaller, "smaller", "Narrower (canvas: zoom out)", "变窄（画布：缩小）", {"Super+minus"}, true, true, true, G::size},
-            {Action::larger, "larger", "Wider (canvas: zoom in)", "变宽（画布：放大）", {"Super+equal", "Super+Shift+plus"}, true, true, true, G::size},
-            {Action::even, "even", "Equal widths (canvas: 100 %, the focused window in the middle)", "平分（画布：回到 100% 并居中）", {"Super+0"}, true, true, true, G::size},
-            {Action::arrangements, "arrangements", "Tile, stack, canvas", "平铺、层叠、画布", {"Super+m"}, true, true, true, G::arrangement},
+            {Action::smaller, "smaller", "Narrower (the WuXian view: zoom out)", "变窄（WuXian 视图：缩小）", {"Super+minus"}, true, true, true, G::size},
+            {Action::larger, "larger", "Wider (the WuXian view: zoom in)", "变宽（WuXian 视图：放大）", {"Super+equal", "Super+Shift+plus"}, true, true, true, G::size},
+            {Action::even, "even", "Equal widths (the WuXian view: 100 %, the focused window in the middle)", "平分（WuXian 视图：回到 100% 并居中）", {"Super+0"}, true, true, true, G::size},
+            {Action::show_all, "show-all", "The WuXian view: everything in view", "WuXian 视图：显示全部", {"Super+Ctrl+0"}, false, false, true, G::size},
+            {Action::arrangements, "arrangements", "The workspace's rule: tile or stack", "工作区的规则：平铺或层叠", {"Super+m"}, true, true, true, G::arrangement},
         };
         static constexpr std::array<std::string_view, 9> kShow{"workspace-1", "workspace-2", "workspace-3", "workspace-4", "workspace-5",
                                                                "workspace-6", "workspace-7", "workspace-8", "workspace-9"};
@@ -77,6 +80,8 @@ const std::vector<ActionInfo>& actions() {
             a.push_back({static_cast<Action>(static_cast<int>(Action::send1) + n), kSend[static_cast<std::size_t>(n)],
                          kSendEn[static_cast<std::size_t>(n)], kSendZh[static_cast<std::size_t>(n)], {kSendKey[static_cast<std::size_t>(n)]},
                          true, true, true, G::workspace});
+        a.push_back({Action::to_wuxian, "to-wuxian", "Onto WuXian: a free window", "放到 WuXian 上（自由窗口）", {"Super+Shift+0"}, true, true, true, G::workspace});
+        a.push_back({Action::new_workspace, "new-workspace", "A new workspace", "新建工作区", {"Super+Ctrl+n"}, true, true, true, G::workspace});
         a.push_back({Action::workspace_prev, "workspace-previous", "The workspace before", "上一个工作区", {"Super+Ctrl+Left", "Super+Page_Up"}, true, true, true, G::workspace});
         a.push_back({Action::workspace_next, "workspace-next", "The workspace after", "下一个工作区", {"Super+Ctrl+Right", "Super+Page_Down"}, true, true, true, G::workspace});
         a.push_back({Action::carry_prev, "carry-previous", "To the workspace before, with the window", "带着窗口去上一个工作区", {"Super+Ctrl+Shift+Left", "Super+Shift+Page_Up"}, true, true, true, G::workspace});
@@ -107,6 +112,7 @@ std::optional<Chord> parse_chord(std::string_view text) {
             continue;
         }
         if (part.size() == 1 && part[0] >= '1' && part[0] <= '9') { c.digit = part[0] - '0'; continue; }
+        if (part == "0") { c.digit = 10; continue; }   // the key after 9, by its place
         const std::string name(part == "/" ? "slash" : part == "[" ? "bracketleft" : part == "]" ? "bracketright"
                                : part == "-" ? "minus" : part == "=" ? "equal" : part == "`" ? "grave" : std::string(part));
         c.sym = xkb_keysym_to_lower(xkb_keysym_from_name(name.c_str(), XKB_KEYSYM_CASE_INSENSITIVE));
@@ -122,7 +128,7 @@ std::string chord_text(const Chord& c) {
     if (c.ctrl) out += "Ctrl+";
     if (c.alt) out += "Alt+";
     if (c.shift) out += "Shift+";
-    if (c.digit) return out + std::to_string(c.digit);
+    if (c.digit) return out + std::to_string(c.digit % 10);
     std::array<char, 64> name{};
     xkb_keysym_get_name(c.sym, name.data(), name.size());
     std::string n = name.data();
@@ -157,7 +163,13 @@ std::vector<std::string> default_chords(const ActionInfo& a, std::string_view se
     return chords;
 }
 
-void Bindings::load(const std::map<std::string, std::vector<std::string>>& overrides) {
+void Bindings::load(const std::map<std::string, std::vector<std::string>>& given) {
+    // An action's name of before, read as its name now (design 2026-10-20 WuXian §3.16).
+    auto overrides = given;
+    if (const auto it = overrides.find("overview"); it != overrides.end()) {
+        if (!overrides.contains("wuxian")) overrides["wuxian"] = it->second;
+        overrides.erase("overview");
+    }
     table_.clear();
     problems.clear();
     set = "luban";
@@ -166,7 +178,7 @@ void Bindings::load(const std::map<std::string, std::vector<std::string>>& overr
         else problems.push_back(std::format("keys.json: no set of keys '{}' (luban, luban-no-hjkl)", it->second.front()));
     }
     for (const auto& [name, chords] : overrides)
-        if (name != "set" && std::ranges::none_of(actions(), [&](const ActionInfo& a) { return a.name == name; }))
+        if (name != "set" && name != "terminals" && std::ranges::none_of(actions(), [&](const ActionInfo& a) { return a.name == name; }))
             problems.push_back(std::format("keys.json: no action '{}'", name));
     for (const auto& a : actions()) {
         auto chords = default_chords(a, set);

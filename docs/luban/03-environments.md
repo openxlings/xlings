@@ -45,6 +45,11 @@ luban config box --on-close background
 
 An edition may set their defaults; what you set wins.
 
+A system that starts as a machine runs `luban run` there too, on its own
+kernel: a machine that was off starts for the command and powers off after it;
+one that is running keeps running. `poweroff` inside a machine ends its session
+and it is off — nothing is asked.
+
 ## Upgrading
 
 ```bash

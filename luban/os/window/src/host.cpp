@@ -403,10 +403,14 @@ bool Window::begin_frame(int timeout_ms) {
         case SDL_EVENT_MOUSE_MOTION:
             // Held (pointer lock): how far it moved, not where it is.
             if (SDL_GetWindowRelativeMouseMode(im.window)) events_.push_back(opensal::PointerRelative{e.motion.xrel, e.motion.yrel});
-            else events_.push_back(opensal::PointerMotion{e.motion.x, e.motion.y});
+            else {
+                events_.push_back(opensal::PointerMotion{e.motion.x, e.motion.y});
+                pointer_moved_(e.motion.x, e.motion.y, e.motion.state != 0);
+            }
             break;
         case SDL_EVENT_MOUSE_BUTTON_DOWN:
         case SDL_EVENT_MOUSE_BUTTON_UP:
+            if (e.type == SDL_EVENT_MOUSE_BUTTON_DOWN) pointer_moved_(e.button.x, e.button.y, true);
             if (e.button.button >= 1 && e.button.button <= 3)
                 events_.push_back(opensal::PointerButton{static_cast<opensal::Button>(e.button.button == 2 ? 2 : e.button.button == 3 ? 3 : 1),
                                                          e.type == SDL_EVENT_MOUSE_BUTTON_DOWN, mods_(SDL_GetModState())});
