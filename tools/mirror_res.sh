@@ -26,7 +26,7 @@ case "$PROJ" in
     DEFAULT_ASSETS="${p}-linux-x86_64.tar.gz ${p}-linux-x86_64.tar.gz.sha256 ${p}-linux-aarch64.tar.gz ${p}-linux-aarch64.tar.gz.sha256 ${p}-macosx-arm64.tar.gz ${p}-macosx-arm64.tar.gz.sha256 ${p}-windows-x86_64.zip ${p}-windows-x86_64.zip.sha256"
     ;;
   luban)
-    # luban, released with xlings as its own payload (tools/luban_release.sh):
+    # luban, released with xlings as its own payload (luban/tools/luban_release.sh):
     # every platform xlings is released for.
     : "${SRC_REPO:=openxlings/xlings}"
     p="luban-${VER}"

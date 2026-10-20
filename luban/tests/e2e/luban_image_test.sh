@@ -14,8 +14,8 @@
 #
 # xtest: covers=LUBAN-ISO,LUBAN-DRIVE,LUBAN-TRY,LUBAN-BOOT-PROFILE,LUBAN-ISO-UEFI,LUBAN-ISO-HYBRID,LUBAN-QCOW2,LUBAN-MACHINE-DESKTOP,LAYER-BOUNDARY-IN-SYSTEM,LUBAN-MACHINE-NETWORK requires=linux,qemu,bwrap,network
 set -euo pipefail
-source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/project_test_lib.sh"
-source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/rootfs_lib.sh"
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../tests/e2e" && pwd)/project_test_lib.sh"
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../tests/e2e" && pwd)/rootfs_lib.sh"
 
 BIN="$(find_xlings_bin)"
 LUBAN="$(dirname "$BIN")/luban"

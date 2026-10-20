@@ -2,7 +2,7 @@
 
 Where a desktop puts its windows: pure logic -- no drawing, no Wayland, no
 system calls -- so every arrangement and every operation is tested as a unit
-(`tests/unit/test_xdesk_layout.cpp`).
+(`luban/tests/unit/test_xdesk_layout.cpp`).
 
 | Module | What |
 |---|---|

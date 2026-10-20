@@ -16,9 +16,9 @@ kind = "bin"
 main = "src/main.cpp"
 
 [dependencies]
-luban-system = { path = "../../luban/os/system" }
-luban-cli = { path = "../../luban/os/cli" }
-luban-vm = { path = "../../luban/os/vm" }
+luban-system = { path = "../../os/system" }
+luban-cli = { path = "../../os/cli" }
+luban-vm = { path = "../../os/vm" }
 
 [build]
-include_dirs = ["../../modules/libs/src/json"]
+include_dirs = ["../../../modules/libs/src/json"]

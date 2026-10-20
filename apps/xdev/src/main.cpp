@@ -1,7 +1,7 @@
 // xdev -- the project's development tool (design §24.3).
 //
 //   xdev test   [pattern] [--suite NAME]... [--no-mcpp] [--out DIR] [--tarball F]
-//   xdev report [--in DIR]... [--summary] [--requirements FILE] [--fail-uncovered]
+//   xdev report [--in DIR]... [--summary] [--requirements FILE]... [--fail-uncovered]
 //   xdev ci plan
 //   xdev doctor
 //
@@ -488,7 +488,7 @@ int run_suites(const TestArgs& a, const fs::path& out, const fs::path& root,
 }
 
 int cmd_report_dirs(const std::vector<fs::path>& dirs, bool summary,
-                    const fs::path& requirements, bool fail_uncovered, bool fail_unverified, const fs::path& write_to,
+                    const std::vector<fs::path>& requirements, bool fail_uncovered, bool fail_unverified, const fs::path& write_to,
                     const fs::path& trend_from = {}, const fs::path& timings_out = {});
 
 int cmd_test(const TestArgs& a) {
@@ -733,7 +733,7 @@ struct Requirement {
 };
 
 int cmd_report_dirs(const std::vector<fs::path>& dirs, bool summary,
-                    const fs::path& requirements, bool fail_uncovered, bool fail_unverified, const fs::path& write_to,
+                    const std::vector<fs::path>& requirements, bool fail_uncovered, bool fail_unverified, const fs::path& write_to,
                     const fs::path& trend_from, const fs::path& timings_out) {
     std::vector<Record> records;
     std::vector<json> lanes;
@@ -866,31 +866,39 @@ int cmd_report_dirs(const std::vector<fs::path>& dirs, bool summary,
     int coverage_errors = 0;
     json coverage = json::object();
     if (!requirements.empty()) {
-        auto doc = toml::parse_file(requirements);
-        if (!doc) {
-            std::println(std::cerr, "xdev: {}", doc.error());
-            return 2;
-        }
+        // Several files (xlings' tests/requirements.toml, Luban's
+        // luban/tests/requirements.toml) are one set: an ID is declared once.
         std::vector<Requirement> reqs;
-        for (auto& name : doc->order) {
-            if (name.empty()) continue;
-            auto& t = doc->tables[name];
-            Requirement r{ .id = name };
-            if (auto it = t.find("text"); it != t.end() && it->second.str()) r.text = *it->second.str();
-            r.kind = "flow";
-            if (auto it = t.find("kind"); it != t.end() && it->second.str()) r.kind = *it->second.str();
-            r.status = "required";
-            if (auto it = t.find("status"); it != t.end() && it->second.str()) r.status = *it->second.str();
-            if (auto it = t.find("why"); it != t.end() && it->second.str()) r.why = *it->second.str();
-            if (r.status != "required" && r.status != "planned" && r.status != "deferred") {
-                std::println(std::cerr, "xdev: {}: unknown status '{}'", r.id, r.status);
+        for (const auto& file : requirements) {
+            auto doc = toml::parse_file(file);
+            if (!doc) {
+                std::println(std::cerr, "xdev: {}", doc.error());
                 return 2;
             }
-            if (r.kind != "flow" && r.kind != "isolation") {
-                std::println(std::cerr, "xdev: {}: unknown kind '{}'", r.id, r.kind);
-                return 2;
+            for (auto& name : doc->order) {
+                if (name.empty()) continue;
+                if (std::ranges::find(reqs, name, &Requirement::id) != reqs.end()) {
+                    std::println(std::cerr, "xdev: {}: {} is declared in another requirements file too", file.generic_string(), name);
+                    return 2;
+                }
+                auto& t = doc->tables[name];
+                Requirement r{ .id = name };
+                if (auto it = t.find("text"); it != t.end() && it->second.str()) r.text = *it->second.str();
+                r.kind = "flow";
+                if (auto it = t.find("kind"); it != t.end() && it->second.str()) r.kind = *it->second.str();
+                r.status = "required";
+                if (auto it = t.find("status"); it != t.end() && it->second.str()) r.status = *it->second.str();
+                if (auto it = t.find("why"); it != t.end() && it->second.str()) r.why = *it->second.str();
+                if (r.status != "required" && r.status != "planned" && r.status != "deferred") {
+                    std::println(std::cerr, "xdev: {}: unknown status '{}'", r.id, r.status);
+                    return 2;
+                }
+                if (r.kind != "flow" && r.kind != "isolation") {
+                    std::println(std::cerr, "xdev: {}: unknown kind '{}'", r.id, r.kind);
+                    return 2;
+                }
+                reqs.push_back(std::move(r));
             }
-            reqs.push_back(std::move(r));
         }
         std::map<std::string, std::vector<std::string>> covered_by;   // id -> tests
         std::map<std::string, std::vector<std::string>> verified_by;
@@ -948,7 +956,7 @@ int cmd_report_dirs(const std::vector<fs::path>& dirs, bool summary,
             for (auto* r : deferred) md += std::format("- `{}` {} — {}\n", r->id, r->text, r->why);
         }
         if (!unknown.empty()) {
-            md += "\nTests naming an ID that tests/requirements.toml does not declare:\n\n";
+            md += "\nTests naming an ID no requirements file declares:\n\n";
             for (auto& u : unknown) md += "- " + u + "\n";
         }
         if (fail_uncovered) coverage_errors = static_cast<int>(uncovered.size() + unknown.size());
@@ -1043,7 +1051,7 @@ int usage() {
         "usage: xdev <command>\n"
         "  test   [unit|e2e|perf|pattern] [--lane pr|main|nightly] [--shard i/n] [--changed BASE]\n"
         "         [-j N] [--lane-config NAME] [--fixture DIR] [--lock-dir DIR] [--suite NAME]... [--no-mcpp|--no-build] [--out DIR] [--tarball FILE] [-- mcpp args]\n"
-        "  report [--in DIR]... [--summary] [--requirements FILE] [--fail-uncovered] [--fail-unverified]\n"
+        "  report [--in DIR]... [--summary] [--requirements FILE]... [--fail-uncovered] [--fail-unverified]\n"
         "         [--trend PREVIOUS.json] [--write DIR] [--timings-out FILE]\n"
         "  ci plan [--lane pr|main|nightly] [--shards N] [--platform OS] [--changed BASE..HEAD]\n"
         "          [--suite NAME]... [--discovery FILE] [--timings FILE] [--write-discovery FILE] [--require-metadata]\n"
@@ -1117,12 +1125,13 @@ int main(int argc, char** argv) {
     if (cmd == "report") {
         std::vector<fs::path> dirs;
         bool summary = false, fail_uncovered = false, fail_unverified = false;
-        fs::path requirements, write_to, trend_from, timings_out;
+        std::vector<fs::path> requirements;
+        fs::path write_to, trend_from, timings_out;
         for (std::size_t i = 1; i < args.size(); ++i) {
             const auto& x = args[i];
             if (x == "--in" && i + 1 < args.size()) dirs.emplace_back(args[++i]);
             else if (x == "--summary") summary = true;
-            else if (x == "--requirements" && i + 1 < args.size()) requirements = args[++i];
+            else if (x == "--requirements" && i + 1 < args.size()) requirements.emplace_back(args[++i]);
             else if (x == "--fail-uncovered") fail_uncovered = true;
             else if (x == "--fail-unverified") fail_unverified = true;
             else if (x == "--write" && i + 1 < args.size()) write_to = args[++i];

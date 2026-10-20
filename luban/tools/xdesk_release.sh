@@ -12,13 +12,13 @@
 # libexec/lib to its RPATH. The sessions it is (classic, canvas) are in
 # share/wayland-sessions.
 #
-#   tools/xdesk_release.sh [binary]   # default: the newest dist build
+#   luban/tools/xdesk_release.sh [binary]   # default: the newest dist build
 #
 # Needs patchelf (xlings install patchelf; CI: tools/ci/xlings_tools.sh patchelf).
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-project="$(cd "$here/.." && pwd)"
+project="$(cd "$here/../.." && pwd)"
 fail() { echo "[xdesk] $*" >&2; exit 1; }
 
 version="$(sed -n 's/.*VERSION = "\([^"]*\)".*/\1/p' "$project/src/core/config.cppm" | head -1)"

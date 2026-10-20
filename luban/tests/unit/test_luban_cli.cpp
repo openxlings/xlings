@@ -9,7 +9,6 @@ import luban.cli;
 import luban.service;
 import luban.service.archive;
 import xlings.libs.json;
-import xlings.core.config;
 
 namespace cli = luban::cli;
 namespace svc = luban::service;
@@ -141,11 +140,6 @@ XTEST(LubanCli, AnArchiveCarriesTheManifestAndTheRootsStateAndNothingThatLeaves,
     EXPECT_EQ(manifest->value("name", ""), "box");
     tk::write_file(home.root() / "plain.tar", std::string(1024, '\0'));
     EXPECT_FALSE(archive::read(home.root() / "plain.tar")) << "no manifest, not an archive";
-}
-
-XTEST(LubanCli, LubanIsReleasedAsTheXlingsItDrives, .area = "luban", .covers = {"LUBAN-TOOL-SHIPPED"}) {
-    EXPECT_EQ(cli::kVersion, xlings::Info::VERSION)
-        << "bump luban/os/cli/src/cli.cppm kVersion with mcpp.toml and src/core/config.cppm";
 }
 
 XTEST(LubanCli, ADriveIsWrittenOnlyWhenItIsAWholeDriveNobodyUses, .area = "luban", .covers = {"LUBAN-WRITE-SAFE"}) {

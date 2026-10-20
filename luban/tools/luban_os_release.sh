@@ -11,13 +11,13 @@
 # the index's glibc and X11 libraries, which an install patches it onto, as it
 # does every glibc payload. Its desktop entry and icon are in share/.
 #
-#   tools/luban_os_release.sh [binary]   # default: the newest dist build
+#   luban/tools/luban_os_release.sh [binary]   # default: the newest dist build
 #
 # Needs patchelf (xlings install patchelf; CI: tools/ci/xlings_tools.sh patchelf).
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-project="$(cd "$here/.." && pwd)"
+project="$(cd "$here/../.." && pwd)"
 fail() { echo "[luban-os] $*" >&2; exit 1; }
 
 version="$(sed -n 's/.*VERSION = "\([^"]*\)".*/\1/p' "$project/src/core/config.cppm" | head -1)"
@@ -44,8 +44,8 @@ if [[ "$(uname -s)" == Darwin ]]; then
       *) fail "luban-os links $lib, which a Mac does not have" ;;
     esac
   done < <(otool -L "$out/bin/luban-os" | tail -n +2 | awk '{print $1}')
-  cp "$project/apps/luban-os/share/luban-os.svg" "$out/share/icons/hicolor/scalable/apps/"
-  printf 'luban-os %s (openxlings/xlings, apps/luban-os): the Luban OS window for macOS; the system frameworks only\n' \
+  cp "$project/luban/host/luban-os/share/luban-os.svg" "$out/share/icons/hicolor/scalable/apps/"
+  printf 'luban-os %s (openxlings/xlings, luban/host/luban-os): the Luban OS window for macOS; the system frameworks only\n' \
     "$version" > "$out/README.provenance"
   file="$project/build/$name.tar.gz"
   tar -czf "$file" -C "$project/build" "$name"
@@ -85,9 +85,9 @@ done
 readelf -l "$out/bin/luban-os" | grep -q "interpreter: $loader" || fail "the loader is not $loader"
 ! readelf -d "$out/bin/luban-os" | grep -qE 'RPATH|RUNPATH' || fail "an RPATH is left (the build's own paths)"
 
-cp "$project/apps/luban-os/share/luban-os.desktop" "$out/share/applications/"
-cp "$project/apps/luban-os/share/luban-os.svg" "$out/share/icons/hicolor/scalable/apps/"
-printf 'luban-os %s (openxlings/xlings, apps/luban-os): the Luban OS window; glibc and X11 linked, loader %s, no RPATH -- an xlings install patches it onto the index'"'"'s glibc\n' \
+cp "$project/luban/host/luban-os/share/luban-os.desktop" "$out/share/applications/"
+cp "$project/luban/host/luban-os/share/luban-os.svg" "$out/share/icons/hicolor/scalable/apps/"
+printf 'luban-os %s (openxlings/xlings, luban/host/luban-os): the Luban OS window; glibc and X11 linked, loader %s, no RPATH -- an xlings install patches it onto the index'"'"'s glibc\n' \
   "$version" "$loader" > "$out/README.provenance"
 
 file="$project/build/$name.tar.gz"

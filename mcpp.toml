@@ -20,10 +20,11 @@
 #   image     -> platform: disk and disc image formats, written in-process
 #   luban/*   -> modules: Luban OS -- system (stage-0), service (environments
 #                and machines as operations), vm (a machine run here), cli (the
-#                luban command; apps/luban is its binary); xlings never imports
-#                them (tools/lint_layer_deps.sh)
+#                luban command), host (the programs on the host: luban/host/luban
+#                is the luban binary, luban/host/luban-os the app); xlings never
+#                imports them (tools/lint_layer_deps.sh)
 #   testkit   -> libs: end-to-end test library (dev-dependency only)
-#   apps/gui  the GUI binary's library half
+#   apps/gui  the GUI binary's library half (apps/ is xlings' programs)
 #   apps/xdev the development tool (never linked into xlings)
 #
 # `apps/` holds what becomes a binary; `modules/` holds what gets linked into
@@ -60,8 +61,8 @@ members = [
     "luban/xdesk/layout",
     "luban/xdesk/compositor",
     "luban/os/window",
-    "apps/luban",
-    "apps/luban-os",
+    "luban/host/luban",
+    "luban/host/luban-os",
     "luban/xdesk/app",
     "modules/testkit",
     "apps/gui",
@@ -107,6 +108,12 @@ files = ["docs/res/xlings.rc"]
 # equivalent numeric resource type (`24`) used in docs/res/xlings.rc, so the
 # manifest is declared here as well to make sure editing it relinks.
 extra-inputs = ["docs/res/xlings.exe.manifest"]
+
+# Luban's tests are Luban's (luban/tests, design 2026-10-20 WuXian §16.3):
+# found beside xlings' and named the same way (unit/test_luban_cli), so a
+# test's name does not say which directory holds it.
+[test]
+discover = ["tests/**/*.cpp", "luban/tests/**/*.cpp"]
 
 [targets.xlings]
 kind = "bin"

@@ -17,7 +17,7 @@ pkg="$(find "$work" -maxdepth 1 -type d -name 'xlings-*-linux-*' | head -1)"
 mkdir -p "$work/wsl"
 run() {
   env -u XLINGS_ACTIVE_SUBOS -u XLINGS_SUBOS_MODE -u XLINGS_TRACE_ID \
-    XLINGS_HOME="$pkg" HOME="$work" XLINGS_WSL_EXE="$here/../fixtures/carrier/fake-wsl.sh" FAKE_WSL_ROOT="$work/wsl" \
+    XLINGS_HOME="$pkg" HOME="$work" XLINGS_WSL_EXE="$here/../../../tests/fixtures/carrier/fake-wsl.sh" FAKE_WSL_ROOT="$work/wsl" \
     XLINGS_CARRIER_GUEST_XLINGS="$pkg/bin/xlings" "$@"
 }
 fail() { echo "FAIL: $*"; exit 1; }

@@ -1,0 +1,76 @@
+# What of xlings each Luban package may import (design 2026-10-20 WuXian §16.2).
+#
+# Luban is kept here until it has a repository of its own; moving it is then a
+# directory split and changed dependency lines, not new logic. So what it uses
+# of xlings is three layers, and this file says which a package may use
+# (tools/lint_layer_deps.sh checks every `import xlings.*` under luban/):
+#
+#   base     libraries that know nothing of packages -- the platform, json and
+#            sha, words, the journal, the command-line model, the test kit.
+#            They become a base package both depend on.
+#   shared   what xlings and Luban both read, and the one door to each thing
+#            both do: a system root's format, the home's layout, images,
+#            carriers, the table of external programs, the administrator's
+#            door. Each has its format written down; they become a shared
+#            "system format" package.
+#   (xlings' domain -- packages, indexes, the store, isolation policy,
+#   sessions, and everything in src/ -- is reached only through a protocol:
+#   the Port capabilities and xlings' JSON events. Nothing here allows it.)
+#
+# A module is named exactly, or `name.*` for it and everything under it.
+# [migrating] lists what still crosses into xlings' domain: where, and what
+# replaces it before the split. Those imports are allowed only where they are
+# listed; a new one fails.
+
+[layers]
+base = [
+    "xlings.platform", "xlings.platform.*",
+    "xlings.libs.*",
+    "xlings.i18n",
+    "xlings.observe",
+    "xlings.cli.model",
+    "xlings.runtime.cancellation",
+    "xlings.testkit", "xlings.testkit.*",
+]
+shared = [
+    "xlings.subos.root_etc", "xlings.subos.rootfs", "xlings.subos.boot", "xlings.subos.root_check",
+    "xlings.subos.library_cache", "xlings.subos.edition",
+    "xlings.subos.home_view", "xlings.subos.located",
+    "xlings.image",
+    "xlings.carrier", "xlings.carrier.*",
+    "xlings.subos.tools", "xlings.subos.ports",
+    "xlings.subos.elevation",
+]
+
+# The package directory (the longest that holds a file wins) and its layers.
+[packages]
+"luban/os/system"  = ["base", "shared"]
+"luban/os/compat"  = ["base"]
+"luban/os/service" = ["base", "shared"]
+"luban/os/vm"      = ["base", "shared"]
+"luban/os/cli"     = ["base", "shared"]
+"luban/os/window"  = ["base"]
+"luban/host/luban"    = ["base", "shared"]
+"luban/host/luban-os" = ["base", "shared"]
+"luban/apps"       = ["base", "shared"]
+"luban/tests"      = ["base", "shared"]
+
+[[migrating]]
+module = "xlings.subos.policy"
+where = ["luban/os/service", "luban/host/luban-os", "luban/tests"]
+to = "Port capabilities policy_get and policy_set (xlings implements them)"
+
+[[migrating]]
+module = "xlings.subos.policy_store"
+where = ["luban/os/service", "luban/host/luban-os", "luban/tests"]
+to = "Port capabilities policy_get and policy_set"
+
+[[migrating]]
+module = "xlings.subos.session"
+where = ["luban/os/service", "luban/tests"]
+to = "Port capabilities session_*"
+
+[[migrating]]
+module = "xlings.store"
+where = ["luban/os/service", "luban/tests"]
+to = "Port capability store_query"

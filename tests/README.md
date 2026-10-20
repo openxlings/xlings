@@ -9,6 +9,7 @@ Design: `.agents/docs/2026-10-05-subos-architecture-design.md` §24.
 | `tests/unit/test_*.cpp` | gtest unit tests (and testkit's own tests) | `mcpp test` |
 | `tests/e2e/test_*.cpp` | end-to-end tests in C++: drive the built binary through `modules/testkit` | `mcpp test` |
 | `tests/e2e/*_test.sh`, `*.ps1` | legacy end-to-end scripts | `tests/e2e/run_all.sh`, or `xdev test --suite e2e-shell` |
+| `luban/tests/{unit,e2e}/` | Luban's tests, the same kinds, named the same way (`unit/test_luban_cli`); its requirements in `luban/tests/requirements.toml` | `mcpp test` (`[test] discover`) |
 | `tests/scripts/` | contract scripts (Python / shell) | `xdev test --suite contract-scripts` |
 | `tests/suites.toml` | the legacy suites xdev knows | `xdev test --suite <name>` |
 | `tests/fresh-install/`, `tests/candidate-install/` | install-path suites | their workflows |
@@ -49,7 +50,7 @@ XTEST(SubosExec, ExitCodeIsTheCommands,
 
 A GUI is tested in two halves.
 
-**Automated, headless** (`tests/e2e/test_luban_os.cpp`, xdesk in `test_luban_os_xdesk.cpp`). The app renders for
+**Automated, headless** (`luban/tests/e2e/test_luban_os.cpp`, xdesk in `test_luban_os_xdesk.cpp`). The app renders for
 real under SDL's offscreen driver, and `luban-os --script <file>` drives it
 between frames with input injected as SDL delivers a person's:
 
@@ -86,7 +87,7 @@ a machine without a GPU has. They check:
 **By eye, key frames.** Proportion, hierarchy, density and finish are judged
 by a person. The tests keep every key frame in
 `target/xtest-artifacts/luban-os/` (CI: the `luban-os-screenshots` artifact),
-and `python3 tools/luban_os_keyframes.py` puts them on one page. Look at it
+and `python3 luban/tools/luban_os_keyframes.py` puts them on one page. Look at it
 before a change to the window is merged.
 
 ## Luban, as a person meets it (fresh install)
@@ -166,7 +167,7 @@ dropped and built from nothing: reuse makes a round faster, never wrong.
 - Network is opt-in: `XDEV_NETWORK=1`.
 
 
-`xdev report --requirements tests/requirements.toml --fail-uncovered` 检查需求的测试声明。
+`xdev report --requirements tests/requirements.toml --requirements luban/tests/requirements.toml --fail-uncovered` 检查需求的测试声明。
 报告另外列出执行证据，跳过的测试不能证明需求已验证。发布验收使用 `--fail-unverified`
 检查合并后的各车道记录；隔离需求还要求 `proves=isolation`。JSON 报告中的
 `requirements.<id>.declared_by` 与 `passed_by` 分别给出两种证据。

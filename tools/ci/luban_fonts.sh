@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # The fonts Luban OS ships, as the layout baselines were recorded with them
-# (tests/luban-os/baseline/fonts.txt): fetched, checked against their
+# (luban/tests/luban-os/baseline/fonts.txt): fetched, checked against their
 # digest, unpacked, and named to later steps as LUBAN_OS_FONTS.
 #
 #   tools/ci/luban_fonts.sh [dir]     (default $RUNNER_TEMP/luban-fonts)
@@ -10,7 +10,7 @@
 set -euo pipefail
 root="$(cd "$(dirname "$0")/../.." && pwd)"
 dir="${1:-${RUNNER_TEMP:-/tmp}/luban-fonts}"
-read -r version url sha < <(grep -v '^#' "$root/tests/luban-os/baseline/fonts.txt" | head -1)
+read -r version url sha < <(grep -v '^#' "$root/luban/tests/luban-os/baseline/fonts.txt" | head -1)
 fonts="$dir/luban-fonts-$version/share/fonts/luban"
 if [[ ! -f "$fonts/JetBrainsMono-Regular.ttf" ]]; then
   mkdir -p "$dir"

@@ -95,7 +95,7 @@ constexpr Rows kUnknown0{
 // §14.1) -- ready (the hammer high behind his head), the swing (arm forward,
 // the hammer coming over), the strike (on the anvil, sparks, his body down a
 // pixel), the rebound -- each for its own time (kCraftTimes). The ready one is
-// also the app's icon (share/luban-os.svg, tools/luban_os_icon.py).
+// also the app's icon (share/luban-os.svg, luban/tools/luban_os_icon.py).
 constexpr Rows kCraft0{
     ".KKKK...........", ".KWGKb..........", ".KggK.bK........", "..KKKK.YK.......", ".KOOOOKK........", ".KYYYYKSK.......",
     ".KYKYKKSK.......", "..KYYK.SK.......", ".KSSSSSK........", "KSSSSSSK........", "KSKSSK..........", "KYKSSK..........",

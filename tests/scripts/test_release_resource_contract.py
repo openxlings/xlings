@@ -82,7 +82,7 @@ def test_luban_is_released_as_its_own_payload():
     """xim:luban installs luban-<ver>-<platform>: made from the xlings archives,
     uploaded with the release and mirrored to xlings-res/luban with sidecars."""
     workflow = (ROOT / ".github/workflows/release.yml").read_text()
-    assert "tools/luban_release.sh artifacts artifacts/luban" in workflow
+    assert "luban/tools/luban_release.sh artifacts artifacts/luban" in workflow
     for plat in ("linux-x86_64.tar.gz", "linux-aarch64.tar.gz",
                  "macosx-arm64.tar.gz", "windows-x86_64.zip"):
         assert f"artifacts/luban/luban-*-{plat}" in workflow
@@ -131,7 +131,7 @@ def test_luban_payload_is_the_luban_of_the_xlings_archive():
         _xlings_archive(artifacts / "a", "windows-x86_64",
                         {"bin/xlings.exe": b"xlings", "bin/luban.exe": b"luban-win"})
         out = temp / "out"
-        subprocess.run(["bash", str(ROOT / "tools/luban_release.sh"), str(artifacts), str(out)],
+        subprocess.run(["bash", str(ROOT / "luban/tools/luban_release.sh"), str(artifacts), str(out)],
                        check=True, capture_output=True, text=True,
                        env={**os.environ,
                             "LUBAN_RELEASE_PLATFORMS": "linux-x86_64 windows-x86_64"})
@@ -153,7 +153,7 @@ def test_luban_payload_refuses_an_archive_without_luban():
         temp = Path(temp)
         (temp / "artifacts").mkdir()
         _xlings_archive(temp / "artifacts", "linux-x86_64", {"bin/xlings": b"xlings"})
-        result = subprocess.run(["bash", str(ROOT / "tools/luban_release.sh"),
+        result = subprocess.run(["bash", str(ROOT / "luban/tools/luban_release.sh"),
                                  str(temp / "artifacts"), str(temp / "out")],
                                 capture_output=True, text=True,
                                 env={**os.environ,

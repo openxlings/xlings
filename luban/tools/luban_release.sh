@@ -4,7 +4,7 @@
 # the binary that archive was built and checked with (static, stripped), so
 # xim:luban installs the luban an xlings of that version ships beside itself.
 #
-#   tools/luban_release.sh <artifacts-dir> <out-dir>
+#   luban/tools/luban_release.sh <artifacts-dir> <out-dir>
 #
 # Every platform in LUBAN_RELEASE_PLATFORMS (default: the four xlings is
 # released for) must have its xlings archive under <artifacts-dir>, and that
@@ -37,7 +37,7 @@ for plat in platforms:
     version = src.name[len("xlings-"):-len(f"-{plat}.{ext}")]
     exe = "luban.exe" if windows else "luban"
     top = f"luban-{version}-{plat}"
-    provenance = (f"luban {version} (openxlings/xlings, apps/luban): bin/{exe} of "
+    provenance = (f"luban {version} (openxlings/xlings, luban/host/luban): bin/{exe} of "
                   f"{src.name}, as released beside xlings\n").encode()
 
     if windows:

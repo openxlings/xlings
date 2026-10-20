@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """The Luban OS window's key frames on one page, to look at.
 
-The headless tests (tests/e2e/test_luban_os.cpp) check what can be checked --
+The headless tests (luban/tests/e2e/test_luban_os.cpp) check what can be checked --
 every view reached by keys and pointer, every control on screen, apart and big
 enough at three sizes in two languages, a desktop drawn and given its input --
 and keep a screenshot of each key frame. What they cannot judge (proportion,
 hierarchy, density, whether it looks finished) is judged by a person, here:
 
     mcpp test test_luban_os
-    python3 tools/luban_os_keyframes.py [dir]     # default target/xtest-artifacts/luban-os
+    python3 luban/tools/luban_os_keyframes.py [dir]     # default target/xtest-artifacts/luban-os
 
 writes <dir>/index.html: the frames grouped by view, each size and language
 side by side. CI keeps the same directory as the `luban-os-screenshots`

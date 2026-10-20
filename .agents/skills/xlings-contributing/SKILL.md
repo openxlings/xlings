@@ -295,7 +295,7 @@ After feature PRs merge, if a release is planned:
 # On main:
 # Edit ALL THREE: mcpp.toml `version`, src/core/config.cppm VERSION and
 # luban/src/cli/cli.cppm kVersion (luban is released as the xlings it drives;
-# tests/unit/test_luban_cli.cpp fails when they differ).
+# tests/unit/test_luban_contract.cpp fails when they differ).
 # (mcpp's target fingerprint includes the package version, so a bump moves
 #  the build output to a new target/<triple>/<fp>/bin/xlings — check
 #  `./that/binary --version` before concluding anything from a manual test.)

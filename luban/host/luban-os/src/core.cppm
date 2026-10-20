@@ -37,7 +37,7 @@ namespace platform = xlings::platform;
 namespace host = luban::desktop::host;
 using Json = nlohmann::json;
 
-// The words of the interface, by key (apps/luban-os/src/i18n, the domain
+// The words of the interface, by key (luban/host/luban-os/src/i18n, the domain
 // `luban.os`), through the shared mechanism (xlings.i18n): the app's
 // language setting, else LUBAN_OS_LANG and the system's.
 inline std::string_view tr(std::string_view key) { return xlings::i18n::tr(key); }
@@ -345,7 +345,7 @@ enum class View { Launcher, QuickStart, Job, Console, Off, Admin, Desktop, Impor
 struct Edition {
     std::string_view name;                  // `luban new --edition`
     bool desktop;                           // the desktop group
-    // Its words, by key (apps/luban-os/src/i18n): its title, one line about
+    // Its words, by key (luban/host/luban-os/src/i18n): its title, one line about
     // it, and what is in it and for whom.
     std::string_view title, about, detail;
     std::string_view size;                  // about what it downloads

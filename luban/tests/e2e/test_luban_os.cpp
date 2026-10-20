@@ -1119,7 +1119,7 @@ state {}
 // Visual verification (design 2026-10-16 L §13.8): the key pages at three
 // scales and in both languages -- every control on the screen, apart, whole
 // and big enough to hit; where each lies matches its baseline
-// (tests/luban-os/baseline, the layout reviewed and kept); and one contact
+// (luban/tests/luban-os/baseline, the layout reviewed and kept); and one contact
 // sheet of them all for a person (and the review) to look at. A baseline
 // that is not there yet is recorded into the artifacts, to be reviewed and
 // committed.
@@ -1279,7 +1279,7 @@ screenshot {0}/app-settings.ppm
         }
     contact_sheet_(shots, artifact("contact-sheet.ppm"));
     if (!recorded.empty())
-        std::println(std::cerr, "luban-os: {} layout baselines recorded into {} (review, then commit to tests/luban-os/baseline)",
+        std::println(std::cerr, "luban-os: {} layout baselines recorded into {} (review, then commit to luban/tests/luban-os/baseline)",
                      recorded.size(), (tk::artifacts_dir() / "luban-os" / "baseline").string());
     if (unchecked)
         std::println(std::cerr, "luban-os: drawn with this machine's fonts, held to no baseline "

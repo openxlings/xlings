@@ -34,7 +34,7 @@ commands = [
   "bash tools/lint_layer_deps.sh",
   "bash tools/lint_compat.sh",
   "bash tools/lint_i18n.sh",
-  "python3 tools/luban_os_icon.py --check",
+  "python3 luban/tools/luban_os_icon.py --check",
   "bash tools/lint_tool_resolve.sh",
   "bash tools/lint_host_deps.sh",
   "bash tools/lint_tools_provenance.sh",
@@ -46,8 +46,8 @@ commands = [
 platforms = ["linux"]
 commands = [
   "bash tests/e2e/run_all.sh {tarball}",
-  "bash tests/e2e/luban_init_test.sh {tarball}",
-  "bash tests/e2e/luban_carrier_test.sh {tarball}",
+  "bash luban/tests/e2e/luban_init_test.sh {tarball}",
+  "bash luban/tests/e2e/luban_carrier_test.sh {tarball}",
 ]
 
 # What needs root on a stock Ubuntu 24.04 (CI-only: it uses sudo): the
@@ -69,7 +69,7 @@ commands = [
   "bash tests/e2e/rootfs_instance_test.sh",
   "bash tests/e2e/rootfs_image_test.sh",
   "bash tests/e2e/rootfs_boot_test.sh",
-  "bash tests/e2e/luban_image_test.sh",
+  "bash luban/tests/e2e/luban_image_test.sh",
 ]
 
 # Deployment S as a distribution packages it: the AUR recipe built from the

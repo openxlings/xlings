@@ -10,11 +10,12 @@ Design records live in `.agents/docs/` (the current architecture:
 
 ```
 modules/   shared libraries (libs, runtime, platform, home, i18n, ui, cli, subos, confine, carrier, image, testkit)
-luban/     specs/ (opensal, openhal, openas, opencaps), kits/ (their implementations, reusable
-           components), xdesk/ (the desktop: base, layout, compositor, app) -- independent projects
-           kept here -- apps/ (programs inside a system) and os/ (Luban OS: stage-0, service, vm,
-           the luban command, compat, the app's window)
-apps/      programs on the host (luban, luban-os, gui, xdev)
+luban/     specs/ (opensal, openhal, openas, opencaps), kits/ (their implementations,
+           reusable components), xdesk/ (the desktop: base, layout, compositor, app) -- independent
+           projects kept here -- apps/ (programs inside a system), os/ (Luban OS: stage-0, service,
+           vm, the luban command, compat, the app's window), host/ (luban and luban-os, the programs
+           on the host), tests/ (Luban's tests and requirements.toml), tools/ (Luban's release scripts)
+apps/      xlings' programs on the host (gui, xdev)
 src/       the xlings frontend and core still being moved into modules/
 tests/     unit/ and e2e/ (C++, XTEST + testkit), legacy e2e/*.sh, requirements.toml
 ```
@@ -24,6 +25,8 @@ Imports go downward only (`tools/lint_layer_deps.sh`): `luban/` -> `modules/`;
 a spec imports only the standard library and itself; a kit (and xdesk) never imports `xlings.*` or
 `luban.*`; `os/service` imports no presentation (`luban/README.md`).
 What xlings and Luban both read (boot.json, a root's /etc, image formats) is a module.
+Luban is kept here until it has its own repository: what of xlings each Luban package may
+import is `luban/DEPENDENCIES.toml` (base and shared modules; xlings' domain through `Port`).
 
 ## Build and test
 
@@ -34,7 +37,7 @@ XLINGS_TEST_MIRROR=CN mcpp test [pattern]   # set the mirror when testing from C
 ```
 
 New tests are C++ (`modules/testkit`, `XTEST`, `Home::isolated`); every test
-`covers` a requirement ID in `tests/requirements.toml`. Tests use an isolated
+`covers` a requirement ID in `tests/requirements.toml` (Luban's: `luban/tests/`). Tests use an isolated
 home and never touch the user's. Release builds: `tools/{linux,macos}_release.sh`,
 `tools/windows_release.ps1`. How CI splits the tests over machines (shards, workers,
 one build reused per round) is `tests/lanes.toml`; `xdev test -j N --shard i/n` does

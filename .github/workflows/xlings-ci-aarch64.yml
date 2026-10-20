@@ -113,7 +113,7 @@ jobs:
           package_root=$(mktemp -d)
           tar -xzf candidate/*.tar.gz -C "$package_root"
           bin=$(find "$package_root" -path '*/bin/xlings' -type f | head -1)
-          XLINGS_BIN="$bin" bash tests/e2e/luban_image_test.sh
+          XLINGS_BIN="$bin" bash luban/tests/e2e/luban_image_test.sh
       - name: Attach the boots
         if: always()
         uses: actions/upload-artifact@v4

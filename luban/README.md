@@ -11,10 +11,35 @@ directory; every package is its own `mcpp.toml` (design 2026-10-19 §28).
 | `xdesk/` | The xdesk desktop, one project: its libraries and its program (`base/`, `layout/`, `compositor/`, `app/`) | as a kit | as a whole |
 | `apps/` | Programs that run inside a Luban system and are not a project of their own (made with its first member) | `modules/`, specifications, kits | stays |
 | `os/` | Luban OS itself: stage-0, the service, machines, the `luban` command, the Luban OS app's window, compatibility | `modules/`, specifications, kits | stays |
+| `host/` | Luban's programs on the host: `luban` (and stage-0 as `luban-init`), `luban-os` (the app) | as `os/` | stays |
+| `tests/` | Luban's tests (`unit/`, `e2e/`, the app's layout baselines in `luban-os/`) and its `requirements.toml` | as `os/` | stays |
+| `tools/` | Luban's release scripts (luban, luban-os, xdesk) and the app's icon and keyframe tools | -- | stays |
 
-Programs that run on the host are in the top-level `apps/` (luban, luban-os,
-gui, xdev). A package with one module keeps its files in `src/`; one with
-several has a directory per module (`native/` for C bindings).
+A package with one module keeps its files in `src/`; one with several has a
+directory per module (`native/` for C bindings). xlings' own programs on the
+host (gui, xdev) are in the top-level `apps/`.
+
+## Luban and xlings
+
+Luban is kept in this repository until it has its own (design 2026-10-20
+WuXian §16): `luban/` with its tests, tools and documents (`docs/luban`) moves
+as a whole, a directory split and changed dependency lines. What it uses of
+xlings is in three layers, and `DEPENDENCIES.toml` says which each package may
+import (`tools/lint_layer_deps.sh`):
+
+- **base** -- libraries that know nothing of packages: the platform, json and
+  sha, words, the journal, the command-line model, the test kit;
+- **shared** -- what both read and the one door to what both do: a system
+  root's format, the home's layout, images, carriers, the external programs'
+  table, the administrator's door;
+- **xlings' domain** -- packages, indexes, the store, isolation policy,
+  sessions -- only through a protocol: the `Port` capabilities and xlings' JSON
+  events. What still imports it is listed under `[migrating]` with what replaces
+  it; a new use fails.
+
+Luban's tests are found with xlings' (`mcpp.toml` `[test] discover`) and named
+the same way (`unit/test_luban_cli`); `xdev report` reads both requirements
+files.
 
 `specs/` and `kits/` are kept as independent projects: their names do not say
 Luban, their comments and documents do not point into this repository, their

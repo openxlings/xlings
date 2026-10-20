@@ -213,9 +213,9 @@ jobs:
         run: |
           bash tools/ci/xlings_tools.sh patchelf
           mcpp build -p luban-os --profile dist
-          bash tools/luban_os_release.sh
+          bash luban/tools/luban_os_release.sh
           mcpp build -p xdesk-app --profile dist
-          bash tools/xdesk_release.sh
+          bash luban/tools/xdesk_release.sh
 
       - name: Diagnose a failed mcpp build
         if: failure()
@@ -955,14 +955,15 @@ jobs:
           chmod +x "$xdev"
           args=()
           for d in $(find runs -name lane.json -exec dirname {} \;); do args+=(--in "$d"); done
-          # --fail-uncovered: a `required` ID in tests/requirements.toml with
-          # no test, or a test naming an ID the file does not declare, fails.
+          # --fail-uncovered: a `required` ID in tests/requirements.toml (xlings')
+          # or luban/tests/requirements.toml (Luban's) with no test, or a test
+          # naming an ID neither declares, fails.
           history=()
           if [[ -f target/xdev/history/trend.json ]]; then history+=(--trend target/xdev/history/trend.json); fi
           mkdir -p target/xdev/current-report
           status=0
           "$xdev" report "${args[@]}" "${history[@]}" --summary \
-            --requirements tests/requirements.toml --fail-uncovered \
+            --requirements tests/requirements.toml --requirements luban/tests/requirements.toml --fail-uncovered \
             --write target/xdev/current-report --timings-out target/xdev/current-report/timings.json || status=$?
           python3 - <<'PY' || status=1
           import json

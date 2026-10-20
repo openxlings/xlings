@@ -13,7 +13,7 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-. "$PSScriptRoot\release_test_lib.ps1"
+. "$PSScriptRoot\..\..\..\tests\e2e\release_test_lib.ps1"
 
 $ARCHIVE_PATH = if ($args.Count -ge 1) { $args[0] } else { Join-Path $ROOT_DIR 'build\release.zip' }
 $ARCHIVE_PATH = Require-ReleaseArchive $ARCHIVE_PATH

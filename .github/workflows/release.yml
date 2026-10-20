@@ -301,11 +301,11 @@ jobs:
         run: |
           bash tools/ci/xlings_tools.sh patchelf
           mcpp build -p luban-os --profile dist
-          bash tools/luban_os_release.sh
+          bash luban/tools/luban_os_release.sh
           # xdesk, the desktop compositor of the desktop editions: its own
           # payload too (xim:xdesk).
           mcpp build -p xdesk-app --profile dist
-          bash tools/xdesk_release.sh
+          bash luban/tools/xdesk_release.sh
 
       - name: Upload the Luban OS app
         uses: actions/upload-artifact@v4
@@ -668,13 +668,13 @@ jobs:
           path: build/xlings-*-macosx-arm64.tar.gz
 
       # The Luban OS app for macOS (part 4 §8.1): its own payload, the
-      # system's frameworks only (tools/luban_os_release.sh checks).
+      # system's frameworks only (luban/tools/luban_os_release.sh checks).
       - name: Build the Luban OS app (luban_os_release, macOS)
         env:
           MACOSX_DEPLOYMENT_TARGET: '14.0'
         run: |
           mcpp build -p luban-os --profile dist
-          bash tools/luban_os_release.sh
+          bash luban/tools/luban_os_release.sh
 
       - name: Upload the Luban OS app (macOS)
         uses: actions/upload-artifact@v4
@@ -878,7 +878,7 @@ jobs:
         run: |
           mcpp build -p luban-os --profile dist
           if ($LASTEXITCODE -ne 0) { throw "mcpp build -p luban-os failed" }
-          & "$env:GITHUB_WORKSPACE\tools\luban_os_release.ps1"
+          & "$env:GITHUB_WORKSPACE\luban\tools\luban_os_release.ps1"
 
       - name: Upload the Luban OS app (Windows)
         uses: actions/upload-artifact@v4
@@ -899,7 +899,7 @@ jobs:
       # luban as its own payload (xim:luban): bin/luban of each xlings
       # archive, before the sidecars so it gets its own.
       - name: luban's payloads (luban_release)
-        run: bash tools/luban_release.sh artifacts artifacts/luban
+        run: bash luban/tools/luban_release.sh artifacts artifacts/luban
       - name: Generate source-bound sidecars
         run: bash tools/gen_release_sidecars.sh artifacts sidecars
       - uses: actions/upload-artifact@v4

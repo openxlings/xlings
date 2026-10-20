@@ -1,6 +1,6 @@
 # Luban's system side (Luban OS architecture design §16): what runs as a
 # machine's own -- stage-0, the first process, before /proc and before any home
-# or Config is read (apps/luban started as luban-init).
+# or Config is read (luban/host/luban started as luban-init).
 #
 # Its own package so that "nothing on stage-0's path reads Config" is a build
 # fact: it links modules/ only (tools/lint_layer_deps.sh).
