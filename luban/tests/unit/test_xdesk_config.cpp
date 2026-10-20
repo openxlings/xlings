@@ -51,6 +51,28 @@ XTEST(XdeskConfig, APersonsOwnFileWinsKeyByKeyOverTheProfiles, .area = "luban", 
     fs::remove_all(root, ec);
 }
 
+// One settings file for every session (design 2026-10-20 WuXian §12.2): what
+// a person kept in their session's file of before becomes their xdesk.ini,
+// once, and the old file stays as it was.
+XTEST(XdeskConfig, APersonsSessionFileOfBeforeBecomesTheirXdeskIniOnce, .area = "luban", .covers = {"XDESK-CONFIG"}) {
+    const auto root = fs::temp_directory_path() / std::format("xdesk-ini-{}", std::random_device{}());
+    fs::create_directories(root / "xdesk");
+    std::ofstream(root / "xdesk" / "classic.ini") << "[theme]\naccent = #123456\n";
+    std::ofstream(root / "xdesk" / "canvas.ini") << "[theme]\naccent = #654321\n";
+    const std::map<std::string, std::string> env{{"XDG_CONFIG_HOME", root.string()}, {"XDG_DATA_DIRS", (root / "none").string()},
+                                                 {"XDG_CONFIG_DIRS", (root / "none").string()}};
+    const auto s = config::load("xdesk", env);
+    EXPECT_EQ(s.colour("theme", "accent", 0), 0x123456u) << "the default session's of before";
+    EXPECT_TRUE(fs::is_regular_file(root / "xdesk" / "xdesk.ini"));
+    EXPECT_TRUE(fs::is_regular_file(root / "xdesk" / "classic.ini")) << "the old file is kept";
+    // Once: what is set now is xdesk.ini's, the old file not read again.
+    ASSERT_TRUE(config::set_value("xdesk", env, "theme", "accent", "#abcdef"));
+    std::ofstream(root / "xdesk" / "classic.ini") << "[theme]\naccent = #000000\n";
+    EXPECT_EQ(config::load("xdesk", env).colour("theme", "accent", 0), 0xabcdefu);
+    std::error_code ec;
+    fs::remove_all(root, ec);
+}
+
 // state.json and keys.json (design 2026-10-19 §16.4, §17.12): the person's,
 // read and written whole; one that cannot be read is said and left as it is.
 XTEST(XdeskConfig, ThePersonsStateAndKeysAreKeptAndABrokenOneIsSaid, .area = "luban", .covers = {"XDESK-CONFIG", "XDESK-ARRANGEMENTS", "WUXIAN-STATE"}) {

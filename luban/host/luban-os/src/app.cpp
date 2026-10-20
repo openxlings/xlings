@@ -407,6 +407,11 @@ int run(int argc, char* argv[]) {
         // Without a GPU every frame is the CPU's: what animates runs at 30 a
         // second (the frame after an input still comes at once).
         if (a.perf.renderer == "software" && pending == 0) scheduled = std::max(scheduled, 33);
+        // Done well: "ready" shown its moment, then what comes next.
+        if (a.view == View::Job && a.job && a.job->done && a.job->code == 0 && a.after_job && !a.job->ready_shown())
+            scheduled = std::clamp(static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                       a.job->done_at + std::chrono::milliseconds(700) - std::chrono::steady_clock::now()).count()) + 1,
+                                   1, scheduled);
         if (a.present_due)   // a desktop is to be told its frame was shown
             scheduled = std::clamp(static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(
                                        *a.present_due - std::chrono::steady_clock::now()).count()) + 1, 1, scheduled);
@@ -643,7 +648,7 @@ int run(int argc, char* argv[]) {
                 a.view = View::Import;
             }
         }
-        if (a.view == View::Job && a.job && a.job->done && a.job->code == 0 && a.after_job) {
+        if (a.view == View::Job && a.job && a.job->done && a.job->code == 0 && a.after_job && a.job->ready_shown()) {
             auto then = std::move(a.after_job);
             a.after_job = nullptr;
             then(a);

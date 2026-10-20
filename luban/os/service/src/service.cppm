@@ -349,6 +349,9 @@ struct NewOptions {
     bool no_password { false };
     // A third party's part was shown and agreed to (the caller asked).
     bool agreed { false };
+    // Made in the Luban OS window, by a person at its desktop: a desktop
+    // system's clipboard is this computer's (design 2026-10-20 WuXian §9).
+    bool from_window { false };
 };
 
 // What `luban new` would make, before anything is (design 2026-10-18 §5.3):
@@ -381,7 +384,31 @@ inline constexpr std::string_view kDefaultPassword = "lubanoser";
 bool default_password_in_use(const fs::path& root, std::string_view user);
 // Makes it. A third party's part not confirmed before is made only with
 // Context::yes (the caller asked, or was told to); otherwise code 2, with how.
+// The name is held while it is made (`reserve_name`); one an unfinished
+// making left only a record of is said with `luban rm` (design 2026-10-20
+// WuXian §11).
 Outcome create(const Context& c, const NewOptions& o, const NewPreview* preview = nullptr);
+
+// A name being made, held for the making: <home>/run/luban/names/<name>,
+// made exclusively (its process and when it began), gone when the making
+// ends. Held by a process that is no longer: taken over.
+class NameReservation {
+public:
+    NameReservation() = default;
+    NameReservation(NameReservation&& o) noexcept : file_(std::exchange(o.file_, {})) {}
+    NameReservation& operator=(NameReservation&&) = delete;
+    ~NameReservation();
+    const fs::path& file() const { return file_; }
+private:
+    friend std::expected<NameReservation, std::string> reserve_name(const fs::path& home, std::string_view name);
+    explicit NameReservation(fs::path f) : file_(std::move(f)) {}
+    fs::path file_;
+};
+std::expected<NameReservation, std::string> reserve_name(const fs::path& home, std::string_view name);
+// Whether a name is being made now (an automatic name skips it), or an
+// unfinished making left only its record (`luban rm` clears it).
+bool name_reserved(const fs::path& home, std::string_view name);
+bool name_left_over(const fs::path& home, std::string_view name);
 
 // Changes, in the order given: machine settings (mode, persist, desktop,
 // on-close), the login shell, and xlings's isolation settings (policy, proxy,

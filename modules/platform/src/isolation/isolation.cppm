@@ -93,8 +93,10 @@ std::string kernel_release();
 // already mounted is success. And `/` read-write, which the kernel mounts
 // read-only unless told otherwise.
 bool mount_kernel_fs(std::string_view type, const std::filesystem::path& target);
-// A tmpfs at `target` with permissions `mode` (0755, 01777).
-bool mount_tmpfs(const std::filesystem::path& target, unsigned mode);
+// A tmpfs at `target` with permissions `mode` (0755, 01777): no devices,
+// and no set-user-ID programs unless `setuid` (a machine's root-owned sudo
+// lives on one; design 2026-10-20 WuXian §13.1).
+bool mount_tmpfs(const std::filesystem::path& target, unsigned mode, bool setuid = false);
 bool remount_root_rw();
 bool is_pid1();
 // `dir` opened and left open across exec (no close-on-exec): the init that

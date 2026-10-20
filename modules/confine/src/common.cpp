@@ -26,12 +26,22 @@ void host_userland(std::vector<sp::MountOp>& m, const in::Intent& i, sp::Storage
     // their programs name those loaders by these paths.
     for (const auto* top : {"/bin", "/sbin", "/lib", "/lib32", "/lib64", "/libx32"})
         if (i.exists(top)) m.push_back({MountKind::RoBind, i.resolve(top), top});
-    try_ro("/etc/resolv.conf", "/etc/resolv.conf");
-    try_ro("/etc/ld.so.cache", "/etc/ld.so.cache");
+    // A file of /etc: by where it really is, and only a regular file -- a
+    // link into a mount the sandbox does not see (a Luban system's cache in
+    // its /run) was bound as the link and could not be found (H26).
+    auto try_ro_file = [&](const char* src, const char* dst) {
+        if (!i.exists(src)) return;
+        const auto real = i.resolve(src);
+        std::error_code ec;
+        if (!i.host_exists && !std::filesystem::is_regular_file(real, ec)) return;
+        m.push_back({MountKind::RoBind, real, dst});
+    };
+    try_ro_file("/etc/resolv.conf", "/etc/resolv.conf");
+    try_ro_file("/etc/ld.so.cache", "/etc/ld.so.cache");
     try_ro("/etc/ssl", "/etc/ssl");
     try_ro("/etc/pki", "/etc/pki");
     try_ro("/etc/alternatives", "/etc/alternatives");
-    if (host_time) try_ro("/etc/localtime", "/etc/localtime");
+    if (host_time) try_ro_file("/etc/localtime", "/etc/localtime");
 }
 
 namespace {

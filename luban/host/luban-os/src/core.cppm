@@ -80,7 +80,23 @@ struct Job {
     double percent { -1 };
     double overall { -1 };          // the whole operation's progress, when it has one (never back)
     std::atomic<bool> done { false };
-    std::string stage;              // the stage it is in (prepare .. check), or the last progress phase
+    std::string stage;              // the stage it is in (fetch .. verify), or the last progress phase
+    // Its stages, the one it is in, how far (-1: no measure) and what it
+    // does (WuXian design §10); when the stage began, when it last said
+    // something, when it began and ended.
+    std::vector<std::string> stages;
+    double stage_percent { -1 };
+    std::string stage_detail;
+    std::chrono::steady_clock::time_point stage_since = std::chrono::steady_clock::now();
+    std::chrono::steady_clock::time_point said_at = std::chrono::steady_clock::now();
+    std::chrono::steady_clock::time_point started = std::chrono::steady_clock::now();
+    std::chrono::steady_clock::time_point done_at {};
+    // Done well, shown as ready a moment (0.7 s) before what comes next;
+    // at once when the whole took less than 2 s.
+    bool ready_shown() const {
+        return std::chrono::steady_clock::now() - done_at >= std::chrono::milliseconds(700)
+               || done_at - started < std::chrono::seconds(2);
+    }
     std::shared_ptr<std::atomic<bool>> cancel;   // set: what runs is stopped
     std::function<void()> retry;    // the same operation again
     int code { 0 };
@@ -359,14 +375,15 @@ struct Edition {
     std::string_view edition() const { return makes.empty() ? name : makes; }
 };
 
-constexpr std::array<Edition, 7> kEditions{{
+constexpr std::array<Edition, 6> kEditions{{
     {"nano", false, "luban.os.edition.nano.title", "luban.os.edition.nano.about", "luban.os.edition.nano.detail", "~15 MB", "xlings · luban", false},
     {"tiny", false, "luban.os.edition.tiny.title", "luban.os.edition.tiny.about", "luban.os.edition.tiny.detail", "~25 MB", "busybox · xlings · luban", true},
     {"tiny-musl", false, "luban.os.edition.tiny_musl.title", "luban.os.edition.tiny_musl.about", "luban.os.edition.tiny_musl.detail", "~25 MB", "busybox · musl · xlings", true},
     {"core", false, "luban.os.edition.core.title", "luban.os.edition.core.about", "luban.os.edition.core.detail", "~400 MB", "fish · gcc · git · mcpp", true},
     {"agent-workspace", false, "luban.os.edition.agent_workspace.title", "luban.os.edition.agent_workspace.about", "luban.os.edition.agent_workspace.detail", "~700 MB", "core · node · python · agents", true},
-    {"desktop", true, "luban.os.edition.desktop.title", "luban.os.edition.desktop.about", "luban.os.edition.desktop.detail", "~1.2 GB", "xdesk · foot · nvim · node", true},
-    {"desktop-xdesk", true, "luban.os.edition.desktop_xdesk.title", "luban.os.edition.desktop_xdesk.about", "luban.os.edition.desktop_xdesk.detail", "~1.2 GB", "xdesk · foot · nvim · node", true, "desktop", "xdesk-canvas"},
+    // xdesk: workspaces on WuXian, one card (design 2026-10-20 WuXian §12.1);
+    // its size with the graphics stack (Mesa) it draws with.
+    {"desktop", true, "luban.os.edition.desktop.title", "luban.os.edition.desktop.about", "luban.os.edition.desktop.detail", "~1.4 GB", "xdesk · foot · nvim · node", true},
 }};
 
 int edition_index_(std::string_view name);
@@ -490,6 +507,11 @@ struct App {
     std::chrono::steady_clock::time_point page_at;
     std::vector<std::string> page_desktops;
     ClipboardGrant page_grant;
+    bool page_gpu { false };
+    // The new page's traditional desktops: folded until opened (WuXian
+    // §12.1); the keyboard on its heading while it is folded.
+    bool trad_open { false };
+    bool trad_heading { false };
     std::vector<std::pair<std::string, std::string>> activity_rows;   // when, what
     std::vector<std::string> activity_refs;
     std::chrono::steady_clock::time_point activity_at;
@@ -642,6 +664,8 @@ struct App {
     // policy that cannot be read lets nothing cross.
     ClipboardGrant clipboard_grant(const std::string& name) const;
     bool sound_grant(const std::string& name) const;
+    // It draws with this computer's GPU (the `gpu` grant; WuXian §7.4).
+    bool gpu_grant(const std::string& name) const;
 
     void close_display();
 
@@ -735,7 +759,6 @@ std::string chosen_card_(const App& a);
 void choose_card_(App& a, const QuickCard& c);
 void quick_keys_(App& a);
 void import_view_(App& a);
-int stage_of_(const Job& j);
 void job_(App& a);
 void off_(App& a);
 ImVec2 overlay_(ImDrawList* dl, ImVec2 size);

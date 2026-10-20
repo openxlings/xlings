@@ -703,6 +703,22 @@ int remove(const std::string& name, bool yes, std::string_view yesSpelling,
 
     if (!read_home_config(p.homeDir).value("subos", nlohmann::json::object())
              .contains(name)) {
+        // Only the record a `subos new` that did not finish left (no root, no
+        // home, not registered): derived state, removed without asking (design
+        // 2026-10-20 WuXian §11, H1).
+        std::error_code ec;
+        const auto record = home_view().config_dir(name);
+        if (!fs::exists(Config::subos_dir(name), ec) && fs::is_directory(record, ec)) {
+            fs::remove_all(record, ec);  // subos-remove-all-ok: a record only -- no root and no home, nothing of a person's
+            if (ec) {
+                stream.emit(ErrorEvent{.code = ErrorCode::InvalidInput,
+                                       .message = std::format("cannot remove {}: {}", record.string(), ec.message()),
+                                       .recoverable = true});
+                return 1;
+            }
+            stream.emit(LogEvent{LogLevel::info, std::format("removed the record an unfinished 'subos new {}' left", name)});
+            return 0;
+        }
         stream.emit(ErrorEvent{
             .code = ErrorCode::NotFound,
             .message = "subos '" + name + "' not found",
@@ -1074,6 +1090,18 @@ int run(int argc, char* argv[], EventStream& stream) {
     // (U17: it used to read "control registry is invalid or already claims
     // this name" followed by the usage line).
     auto taken_or_usage = [&](std::string_view detail) {
+        // A record left by a `new` that did not finish (H1): what it is, and the way out.
+        if (detail.starts_with("output already exists: ") && argc > 3) {
+            const std::string name = argv[3];
+            stream.emit(ErrorEvent{
+                .code = ErrorCode::InvalidInput,
+                .message = std::format("an unfinished '{}' left its record ({})", name,
+                                       detail.substr(std::string_view("output already exists: ").size())),
+                .recoverable = true,
+                .hint = std::format("xlings subos remove {} clears it; or choose another name", name),
+            });
+            return;
+        }
         if (detail.ends_with("already exists")) {
             const auto first = detail.find('\'');
             const auto last = detail.rfind('\'');

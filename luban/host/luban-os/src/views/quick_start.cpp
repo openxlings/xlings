@@ -195,6 +195,8 @@ std::string chosen_card_(const App& a) {
 void choose_card_(App& a, const QuickCard& c) {
     a.new_trad.clear();
     a.new_offer.clear();
+    a.trad_heading = false;
+    if (c.kind == QuickCard::Kind::Desktop) a.trad_open = true;
     if (c.kind == QuickCard::Kind::Edition) a.new_edition = c.edition;
     else if (c.kind == QuickCard::Kind::Desktop) a.new_trad = c.offer.ref;
     else a.new_offer = c.offer.ref;
@@ -208,22 +210,37 @@ void quick_keys_(App& a) {
     for (std::size_t i = 0; i < groups.size(); ++i)
         for (std::size_t j = 0; j < groups[i].cards.size(); ++j)
             if (groups[i].cards[j].id == id) g = i, k = j;
+    // The folded traditional desktops: one stop, its heading (WuXian §12.1).
+    const auto folded = [&](std::size_t i) { return groups[i].key == "desktops" && !a.trad_open && !groups[i].cards.empty(); };
+    if (a.trad_heading)
+        for (std::size_t i = 0; i < groups.size(); ++i)
+            if (groups[i].key == "desktops") g = i, k = 0;
     for (const auto& key : a.window->keys()) {
-        if (key.name == "Right" || key.name == "Left") {
+        if (a.trad_heading && (key.name == "Right" || key.name == "Enter")) {
+            // Opened, its first card chosen.
+            a.trad_open = true;
+            choose_card_(a, groups[g].cards.front());
+            a.keyboard = true;
+        } else if (key.name == "Right" || key.name == "Left") {
             const auto n = groups[g].cards.size();
-            if (n == 0) continue;
+            if (n == 0 || a.trad_heading) continue;
             k = (k + (key.name == "Right" ? 1 : n - 1)) % n;
             choose_card_(a, groups[g].cards[k]);
             a.keyboard = true;
         } else if (key.name == "Down" || key.name == "Up") {
-            // The next group that has cards, at the same place (or its last).
+            // The next group that has cards, at the same place (or its last);
+            // a folded one stops on its heading.
             for (std::size_t step = 1; step < groups.size(); ++step) {
                 const auto h = key.name == "Down" ? (g + step) % groups.size() : (g + groups.size() - step) % groups.size();
                 if (groups[h].cards.empty()) continue;
                 g = h;
+                a.keyboard = true;
+                if (folded(h)) {
+                    a.trad_heading = true;
+                    break;
+                }
                 k = std::min(k, groups[h].cards.size() - 1);
                 choose_card_(a, groups[g].cards[k]);
-                a.keyboard = true;
                 break;
             }
         } else if (key.name == "Enter" && a.quick_can_make && a.new_name[0]) {
@@ -245,7 +262,7 @@ void make_(App& a, bool agreed) {
             if (auto it = std::ranges::find(a.offers->desktops, a.new_trad, &service::Offer::ref); it != a.offers->desktops.end()) trad = *it;
     }
     service::NewOptions o{.name = a.new_name, .edition = std::string(chosen.edition()), .proxy = a.new_proxy, .user = a.new_user,
-                          .agreed = agreed};
+                          .agreed = agreed, .from_window = true};
     if (trad) {
         // A traditional desktop on its base (design 2026-10-19 §5.2): the
         // same as `luban new --edition <base> --desktop <it>`, entered as a desktop.
@@ -364,7 +381,9 @@ float panel_body_(App& a, float x, float y, float w) {
         if (const auto colon = stem.find(':'); colon != std::string::npos) stem = stem.substr(colon + 1);
         for (int k = 1; k < 100; ++k) {
             const auto candidate = std::format("{}-{}", stem, k);
-            if (std::ranges::none_of(a.systems, [&](const auto& s2) { return s2.name == candidate; })) {
+            // Not one there is, nor one being made now or left half made (design 2026-10-20 WuXian §11).
+            if (std::ranges::none_of(a.systems, [&](const auto& s2) { return s2.name == candidate; })
+                && !service::name_reserved(a.ctx.home, candidate) && !service::name_left_over(a.ctx.home, candidate)) {
                 std::snprintf(a.new_name, sizeof a.new_name, "%s", candidate.c_str());
                 a.auto_name = candidate;
                 break;
@@ -551,8 +570,25 @@ void quick_start_(App& a) {
         const std::string_view head = g.key == "console" ? tr("luban.os.quick.console_small_yours_shape")
                                       : g.key == "xdesk" ? tr("luban.os.quick.group.xdesk")
                                       : g.key == "desktops" ? tr("luban.os.quick.group.desktops") : tr("luban.os.quick.group.more");
-        imkit::text(cdl, ImVec2(co.x + x0, co.y + y), head, th_().text_faint, 13, true);
-        if (g.key == "desktops") {
+        if (g.key == "desktops" && !g.cards.empty()) {
+            // Folded until opened: "Traditional desktops · N ▸" (WuXian §12.1).
+            const auto label = std::format("{} · {} {}", head, g.cards.size(), a.trad_open ? "▾" : "▸");
+            const auto ts = imkit::text_size(label, 13, true);
+            ImGui::SetCursorPos(ImVec2(x0, y - px(2)));
+            if (ImGui::InvisibleButton("group:desktops", ImVec2(std::max(1.0f, ts.x + px(8)), ts.y + px(4)))) {
+                a.trad_open = !a.trad_open;
+                a.trad_heading = !a.trad_open;
+            }
+            mark_(a, "group:desktops");
+            const bool lit = a.trad_heading || ImGui::IsItemHovered();
+            if (a.trad_heading && a.keyboard)
+                cdl->AddRect(ImVec2(co.x + x0 - px(4), co.y + y - px(3)), ImVec2(co.x + x0 + ts.x + px(6), co.y + y + ts.y + px(2)), th_().accent, 0, 0,
+                             std::max(1.0f, std::round(px(1.5f))));
+            imkit::text(cdl, ImVec2(co.x + x0, co.y + y), label, lit ? th_().text : th_().text_faint, 13, true);
+        } else {
+            imkit::text(cdl, ImVec2(co.x + x0, co.y + y), head, th_().text_faint, 13, true);
+        }
+        if (g.key == "desktops" && (a.trad_open || g.cards.empty())) {
             const auto scale = std::string(tr("luban.os.quick.light_to_full"));
             imkit::text(cdl, ImVec2(co.x + x0 + inner - imkit::text_size(scale, 12).x, co.y + y + px(1)), scale, th_().text_faint, 12);
         }
@@ -561,6 +597,10 @@ void quick_start_(App& a) {
         if (g.key == "desktops" && g.cards.empty()) {
             imkit::text(cdl, ImVec2(co.x + x0, co.y + y), index_error ? *index_error : *reading, index_error ? th_().warn : th_().text_dim, 14);
             y += px(40);
+            continue;
+        }
+        if (g.key == "desktops" && !a.trad_open) {
+            y += px(8);
             continue;
         }
         int col = 0;
@@ -594,12 +634,19 @@ void quick_start_(App& a) {
             if (ImGui::IsItemHovered())
                 if (const auto why = explained_(title)) ImGui::SetTooltip("%.*s", static_cast<int>(why->size()), why->data());
             if (c.kind == QuickCard::Kind::Desktop && c.offer.tier) {
-                // How much it brings: four marks beside its picture, the tier's filled.
+                // How much it brings: four marks on its picture's top right
+                // corner, on a translucent rounded ground, the tier's filled --
+                // the same on every card that has a tier (WuXian §12.1).
                 const ImVec2 r0 = ImGui::GetItemRectMin();
-                const float s = std::round(px(6)), sp = std::round(px(3));
+                const float u = imkit::unit() / 3.0f, cell = std::max(1.0f, std::round(px(2)));
+                const float side = static_cast<float>(art::picture(art_name, 0).size) * cell;
+                const float s = std::round(px(5)), sp = std::round(px(2)), bw = 4 * s + 3 * sp + px(8), bh = s * 1.6f + px(8);
+                const ImVec2 b1(r0.x + px(14) + side + px(6), r0.y + u * 2 + (on ? -u * 2 : 0) + px(14) - px(4));
+                const ImVec2 b0(b1.x - bw, b1.y);
+                cdl->AddRectFilled(b0, ImVec2(b0.x + bw, b0.y + bh), (th_().bg_deep & 0x00ffffffu) | 0xb0000000u, px(4));
                 for (int k = 0; k < 4; ++k) {
-                    const ImVec2 p0(r0.x + px(52) + k * (s + sp), r0.y + px(22));
-                    cdl->AddRectFilled(p0, ImVec2(p0.x + s, p0.y + s * 1.6f), k < *c.offer.tier ? th_().accent : th_().bg_deep);
+                    const ImVec2 p0(b0.x + px(4) + k * (s + sp), b0.y + px(4));
+                    cdl->AddRectFilled(p0, ImVec2(p0.x + s, p0.y + s * 1.6f), k < *c.offer.tier ? th_().accent : th_().text_faint);
                 }
             }
             mark_(a, c.id);

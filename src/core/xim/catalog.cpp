@@ -492,7 +492,8 @@ PackageCatalog::RepoState PackageCatalog::make_state_(const RepoIndexSpec& spec)
     return state;
 }
 
-std::vector<PackageMatch> PackageCatalog::build_matches_(const RepoState& state, const detail_::ParsedTarget_& parsed, const std::string& platform, bool forSearch) {
+std::vector<PackageMatch> PackageCatalog::build_matches_(const RepoState& state, const detail_::ParsedTarget_& parsed, const std::string& platform, bool forSearch,
+                                                         std::vector<Unreadable>* unreadable) {
     std::optional<std::string_view> namespaceName;
     if (parsed.explicitNamespace) namespaceName = parsed.namespaceName;
 
@@ -513,7 +514,10 @@ std::vector<PackageMatch> PackageCatalog::build_matches_(const RepoState& state,
         auto* entry = state.index.find_entry(*matched);
         if (!entry) continue;
         auto pkg = state.index.load_package(*matched);
-        if (!pkg) continue;
+        if (!pkg) {
+            if (unreadable) unreadable->push_back({entry->canonicalName, pkg.error()});
+            continue;
+        }
 
         std::string passedOver;
         auto version = detail_::select_version_(*pkg, platform, parsed.version, {}, &passedOver);
@@ -567,9 +571,10 @@ std::vector<PackageMatch> PackageCatalog::collect_matches_(const std::string& ta
     std::vector<PackageMatch> primaryMatches;
     std::vector<PackageMatch> subMatches;
 
+    unreadable_.clear();
     auto collect = [&](const std::vector<RepoState>& repos) {
         for (const auto& repo : repos) {
-            auto matches = build_matches_(repo, parsed, platform);
+            auto matches = build_matches_(repo, parsed, platform, false, &unreadable_);
             if (repo.spec.subIndex) {
                 for (auto& match : matches) {
                     subMatches.push_back(std::move(match));
@@ -898,6 +903,12 @@ std::expected<PackageMatch, std::string> PackageCatalog::resolve_target(const st
         // It also made two commands contradict each other: `xlings search
         // msvc` listed `xim:msvc` while `xlings info msvc` on the same Linux
         // box answered "not found" — measured, not hypothetical.
+        // Its recipe is there and could not be read: that, and why -- not
+        // "not found", which sent people looking for what is in the index.
+        if (!unreadable_.empty()) {
+            const auto& u = unreadable_.front();
+            return std::unexpected(std::format("the recipe of '{}' could not be read: {}", u.name, u.error));
+        }
         if (auto elsewhere = platforms_offering_(target); !elsewhere.empty()) {
             std::string list;
             for (auto& p : elsewhere) {

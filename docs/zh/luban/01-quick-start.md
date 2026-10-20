@@ -25,10 +25,11 @@ luban new mine --xpkg myindex:myos      # any index's system (02)
 luban search                            # what the index offers: distributions, desktops by what they bring
 ```
 
-一条就够。你会看到 `▸ making box (core)`、下载过程，然后是 `✓ box is ready`、它是什么（`box  core@… · N packages ·
-generation N`）以及下一步（`enter  luban enter box`）。宿主上第一次 `luban new` 可能先询问一次性设置（见下文）。
-默认是 Luban Core：一个带编译器和构建工具的完整系统；`tiny` 是小的那个，`desktop` 带桌面。中途停下时，再运行同一条命令就会补全。`nano` 没有 shell：
-它会这样说，下一步是 `luban run box -- …`。
+一条就够。运行时有两行——`▸ making box (core)  58%  fetch ✓ · unpack ✓ · configure ● · verify`，下面一行是当前阶段自己的进度、
+正在做什么、用了多久——然后是 `✓ box is ready`、它是什么（`box  core@… · N packages · generation N`）以及下一步（`enter  luban enter box`）。
+宿主上第一次 `luban new` 可能先询问一次性设置（见下文）。默认是 Luban Core：一个带编译器和构建工具的完整系统；`tiny` 是小的那个，
+`desktop` 带桌面。中途停下时，`luban new` 会说明留下了什么（`luban rm box` 清掉后再建）；另一个 `luban new` 正在建的名字会被说明，
+不会被建两次。`nano` 没有 shell：它会这样说，下一步是 `luban run box -- …`。
 
 ## 2. 在里面工作
 

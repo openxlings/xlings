@@ -656,7 +656,8 @@ XTEST(LubanOs, ItSaysWhatItCanDoWithoutADisplay, .area = "luban",
 // real (downloaded, unpacked, set up), and then used -- what a new user sees,
 // end to end, as they would do it.
 XTEST(LubanOs, AFirstTimeUserMakesASystemFromTheQuickStartAndUsesIt, .area = "luban",
-      .covers = {"LUBAN-OS-APP", "LUBAN-OS-FIRST-USE", "LUBAN-WELCOME"}, .requires_ = {"linux", "xlings-bin", "static-xlings", "sandbox", "network"}) {
+      .covers = {"LUBAN-OS-APP", "LUBAN-OS-FIRST-USE", "LUBAN-WELCOME", "LUBAN-OS-PROGRESS"},
+      .requires_ = {"linux", "xlings-bin", "static-xlings", "sandbox", "network"}) {
     if (!app_binary()) GTEST_SKIP() << "no luban-os beside the xlings under test";
     auto home = tk::Home::isolated("luban-os-first-use");
     ASSERT_EQ(home.xlings({"self", "init"}).exit_code, 0);
@@ -691,6 +692,9 @@ state {}
     EXPECT_EQ(s["view"], "console");
     EXPECT_EQ(s["current"], "tiny-1");
     EXPECT_EQ(s["job"]["code"], 0) << s["job"].dump();
+    // Its progress was the operation's own stages, and all of it (WuXian §10).
+    EXPECT_EQ(s["job"]["stages"], Json::array({"fetch", "unpack", "configure", "verify"})) << s["job"].dump();
+    EXPECT_GE(s["job"]["overall"].get<double>(), 0.99) << s["job"].dump();
     // It is in the list from now on: the next start shows the launcher.
     auto again = run_script(home, "wait launcher\nexpect systems.0 tiny-1\n");
     EXPECT_EQ(again.exit_code, 0) << again.transcript();
@@ -789,8 +793,10 @@ expect edition tiny
     }
     // Both groups are on the screen.
     const auto s = read_state(core);
-    for (const auto* card : {"card:nano", "card:tiny", "card:core", "card:desktop", "card:desktop-xdesk", "make", "import"})
+    for (const auto* card : {"card:nano", "card:tiny", "card:core", "card:desktop", "make", "import"})
         EXPECT_TRUE(s["anchors"].contains(card)) << card;
+    // One xdesk card (design 2026-10-20 WuXian §12.1).
+    EXPECT_FALSE(s["anchors"].contains("card:desktop-xdesk"));
 }
 
 // What the quick start offers besides its cards comes from the indexes
@@ -895,13 +901,19 @@ package = {{ spec = '1', name = '{}', namespace = '{}', description = 'the {} re
     tk::write_file(home.dir() / ".xlings.json", config.dump());
     ASSERT_EQ(home.xlings({"self", "init"}).exit_code, 0);
     const auto groups = home.root() / "groups.json", lxqt = home.root() / "lxqt.json", keys = home.root() / "keys.json";
-    const auto small = home.root() / "small.json";
+    const auto small = home.root() / "small.json", heading = home.root() / "heading.json";
     auto r = run_script(home, std::format(R"(wait quick-start
 resize 1300 1000
 waitfor quick_start.offers present 60
 frames 2
 state {0}
 screenshot {4}
+click card:desktop
+key Down
+frames 2
+state {5}
+click group:desktops
+frames 2
 click card:luban:lxqt
 frames 2
 state {1}
@@ -915,7 +927,7 @@ click more
 resize 1000 560
 frames 4
 state {3}
-)", groups.string(), lxqt.string(), keys.string(), small.string(), artifact("quick-start-groups.bmp").string()), {},
+)", groups.string(), lxqt.string(), keys.string(), small.string(), artifact("quick-start-groups.bmp").string(), heading.string()), {},
                         {{"LUBAN_OS_LANG", "en_US.UTF-8"}});
     ASSERT_EQ(r.exit_code, 0) << r.transcript();
     // Four groups: consoles, xdesk, the traditional desktops by tier (the
@@ -923,7 +935,14 @@ state {3}
     const auto qs = read_state(groups)["quick_start"];
     std::map<std::string, Json> by;
     for (const auto& g : qs["groups"]) by[g["key"].get<std::string>()] = g["cards"];
-    EXPECT_EQ(by["xdesk"], Json::array({"card:desktop", "card:desktop-xdesk"}));
+    EXPECT_EQ(by["xdesk"], Json::array({"card:desktop"}));
+    // The traditional desktops folded (WuXian §12.1): their heading, not their cards,
+    // until opened; the keyboard going down stops on the heading.
+    const auto folded = read_state(groups);
+    EXPECT_TRUE(folded["anchors"].contains("group:desktops")) << folded["anchors"].dump();
+    EXPECT_FALSE(folded["anchors"].contains("card:luban:lxqt")) << folded["anchors"].dump();
+    EXPECT_FALSE(folded["quick_start"]["traditional_open"].get<bool>());
+    EXPECT_TRUE(read_state(heading)["quick_start"]["on_heading"].get<bool>()) << read_state(heading)["quick_start"].dump();
     EXPECT_EQ(by["desktops"], Json::array({"card:luban:compositor", "card:luban:labwc", "card:luban:lxqt", "card:other:fancy"}));
     EXPECT_TRUE(by["console"].size() >= 5u);
     // A traditional desktop chosen: made on core as a machine, named after it.

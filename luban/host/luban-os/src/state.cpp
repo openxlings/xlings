@@ -95,6 +95,7 @@ void App::start_job(std::string title, std::function<void(Job&, service::Context
     job->retry = [this, title = job->title, body, then] { start_job(title, body, then); };
     job->worker = std::thread([j, w, c, body = std::move(body)] {
         body(*j, c);
+        j->done_at = std::chrono::steady_clock::now();
         j->done = true;
         w->wake();
     });
@@ -210,6 +211,11 @@ bool App::sound_grant(const std::string& name) const {
     auto p = xlings::subos::policy_store::read(xlings::subos::HomeView{home}, name);
     if (!p) return false;
     return !*p || (*p)->grants.contains("audio");
+}
+
+bool App::gpu_grant(const std::string& name) const {
+    auto p = xlings::subos::policy_store::read(xlings::subos::HomeView{home}, name);
+    return p && *p && (*p)->grants.contains("gpu");
 }
 
 void App::close_display() {

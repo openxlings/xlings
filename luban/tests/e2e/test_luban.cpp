@@ -501,11 +501,48 @@ XTEST(Luban, NewSaysWhatItMadeAndHowToGoInAndNotItsSteps,
     EXPECT_GT(measured, 0) << "no event carried the whole progress\n" << json.out;
 }
 
+// A name while it is made, and what an unfinished making left (design
+// 2026-10-20 WuXian §11, H1): a record alone is said as that, with `luban
+// rm`, which clears it; a name held by a making that runs is said, one held
+// by a process that is gone is taken over.
+XTEST(Luban, ANameIsHeldWhileItIsMadeAndAHalfMadeOneIsSaidAndCleared,
+      .area = "luban", .cost = tk::Cost::Medium, .covers = {"LUBAN-NEW-NAME"}, .requires_ = {"linux", "xlings-bin"}) {
+    if constexpr (!tk::is_linux) GTEST_SKIP() << "a Luban root is a Linux root";
+    const auto bin = luban_binary();
+    if (!bin) GTEST_SKIP() << "no luban beside the xlings under test";
+    auto home = luban_home("luban-new-names", *bin);
+    // What a `new` that stopped half way leaves: its record, no root.
+    const auto record = home.dir() / "config" / "subos" / "half";
+    tk::write_file(record / "instance.json", R"({"kind":"rootfs"})");
+    auto refused = luban(home, {"new", "half", "--xpkg", "fixture:my-os@1.0.0", "-y"});
+    EXPECT_EQ(refused.exit_code, 2) << refused.transcript();
+    EXPECT_NE(refused.err.find("an unfinished 'half' left its record"), std::string::npos) << refused.transcript();
+    EXPECT_NE(refused.err.find("luban rm half"), std::string::npos) << refused.transcript();
+    EXPECT_EQ(refused.transcript().find("usage: xlings"), std::string::npos) << refused.transcript();
+    auto cleared = luban(home, {"rm", "half"});
+    EXPECT_EQ(cleared.exit_code, 0) << "a record only is removed without asking\n" << cleared.transcript();
+    EXPECT_FALSE(fs::exists(record)) << cleared.transcript();
+    auto made = luban(home, {"new", "half", "--xpkg", "fixture:my-os@1.0.0", "-y"});
+    EXPECT_EQ(made.exit_code, 0) << made.transcript();
+    // Held by a making that runs (this test, as far as luban can tell): said.
+    const auto names = home.dir() / "run" / "luban" / "names";
+    tk::write_file(names / "held", std::format("{} 0\n", static_cast<int>(xlings::platform::get_pid())));
+    auto busy = luban(home, {"new", "held", "--xpkg", "fixture:my-os@1.0.0", "-y"});
+    EXPECT_EQ(busy.exit_code, 2) << busy.transcript();
+    EXPECT_NE(busy.err.find("'held' is being made"), std::string::npos) << busy.transcript();
+    // Held by one that is gone: taken over, and let go when it is made.
+    tk::write_file(names / "stale", "2147483646 0\n");
+    auto stale = luban(home, {"new", "stale", "--xpkg", "fixture:my-os@1.0.0", "-y"});
+    EXPECT_EQ(stale.exit_code, 0) << stale.transcript();
+    EXPECT_FALSE(fs::exists(names / "stale")) << "the making let it go";
+    EXPECT_FALSE(fs::exists(names / "half"));
+}
+
 // The running phase's line is rewritten in place with `\r`; a line wider
 // than the terminal wraps, `\r` returns only to the wrapped part, and every
 // refresh added a line (2026.10.19.2, an 80-column terminal).
 XTEST(Luban, TheRunningPhaseLineFitsTheTerminal,
-      .area = "luban", .cost = tk::Cost::Medium, .covers = {"LUBAN-PROGRESS-WIDTH"},
+      .area = "luban", .cost = tk::Cost::Medium, .covers = {"LUBAN-PROGRESS-WIDTH", "LUBAN-PROGRESS"},
       .requires_ = {"linux", "xlings-bin", "pty"}) {
     if constexpr (!tk::is_linux) GTEST_SKIP() << "a Luban root is a Linux root";
     const auto bin = luban_binary();
@@ -525,7 +562,7 @@ XTEST(Luban, TheRunningPhaseLineFitsTheTerminal,
     ASSERT_EQ(made.exit_code, 0) << made.transcript();
     // Each piece the terminal draws between two `\r` / `\n`, its escapes
     // removed; one holding `▸` is the running phase's line.
-    int running = 0;
+    int running = 0, staged = 0;
     std::string piece;
     auto check = [&] {
         std::string plain;
@@ -537,7 +574,10 @@ XTEST(Luban, TheRunningPhaseLineFitsTheTerminal,
             plain += piece[i];
         }
         piece.clear();
-        if (plain.find("▸") == std::string::npos) return;
+        // The running phase's line, or the stage's under it (WuXian design §10).
+        const bool stage_line = plain.starts_with("    ") && plain.find(" · ") != std::string::npos && plain.ends_with(" s");
+        staged += stage_line;
+        if (plain.find("▸") == std::string::npos && !stage_line) return;
         ++running;
         int cols = 0;
         for (unsigned char c : plain) cols += (c & 0xC0) != 0x80;
@@ -549,6 +589,7 @@ XTEST(Luban, TheRunningPhaseLineFitsTheTerminal,
     }
     check();
     EXPECT_GT(running, 0) << made.out;
+    EXPECT_GT(staged, 0) << "the stage's own line under the phase's\n" << made.out;
     EXPECT_NE(made.out.find("…"), std::string::npos) << "the cut is marked\n" << made.out;
 }
 
@@ -785,7 +826,7 @@ XTEST(Luban, WhatASystemNeedsThatThisLubanLacksIsSaid,
 // agreed to once and remembered; what luban config takes, given at once; the
 // official desktop --desktop names, brought; its name and os-release its own.
 XTEST(Luban, AnyIndexsSystemAndComponentsAreMadeByXpkg,
-      .area = "luban", .cost = tk::Cost::Medium, .covers = {"LUBAN-DIST-XPKG", "LUBAN-DIST-LINEAGE", "LUBAN-NAMESPACE"},
+      .area = "luban", .cost = tk::Cost::Medium, .covers = {"LUBAN-DIST-XPKG", "LUBAN-DIST-LINEAGE", "LUBAN-NAMESPACE", "LUBAN-DESKTOP-GRANTS"},
       .requires_ = {"linux", "xlings-bin"}) {
     if constexpr (!tk::is_linux) GTEST_SKIP() << "a Luban root is a Linux root";
     const auto bin = luban_binary();
@@ -829,6 +870,15 @@ XTEST(Luban, AnyIndexsSystemAndComponentsAreMadeByXpkg,
     auto again = luban(home, {"new", "box2", "--xpkg", "fixture:myos@1.0.0", "--xpkg", "fixture:hyper", "--user", "alice",
                               "--no-password"});
     EXPECT_EQ(again.exit_code, 0) << again.transcript();
+    // A desktop's grants (design 2026-10-20 WuXian §7.4, §9): its sound and
+    // this computer's GPU; the clipboard only for one made in the window by a
+    // person at it -- not by a command, which an agent may be.
+    const auto policy = Json::parse(tk::read_file(home.dir() / "config/subos/box2/policy.json"), nullptr, false);
+    ASSERT_TRUE(policy.is_object()) << tk::read_file(home.dir() / "config/subos/box2/policy.json");
+    const auto granted = policy.dump();
+    EXPECT_NE(granted.find("\"audio\""), std::string::npos) << granted;
+    EXPECT_NE(granted.find("\"gpu\""), std::string::npos) << granted;
+    EXPECT_EQ(granted.find("\"clipboard\""), std::string::npos) << granted;
     // The official desktop --desktop names, brought and said.
     auto fancy = luban(home, {"new", "box3", "--xpkg", "fixture:my-os@1.0.0", "--desktop", "fancy", "-y"});
     ASSERT_EQ(fancy.exit_code, 0) << fancy.transcript();

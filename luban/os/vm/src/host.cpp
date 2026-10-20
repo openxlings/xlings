@@ -222,7 +222,7 @@ int start_impl_(const service::Context& c, std::string_view name, const EnterOpt
         say_(c, service::error(std::format("a machine runs on x86_64 and aarch64 hosts (this one is {})", platform::build_arch())));
         return 1;
     }
-    say_(c, service::phase("check", "begin", "checking this host"));
+    say_(c, service::phase("preflight", "begin", "checking this host"));
     // In the table's order, the first that can share a directory with the
     // machine (9p, asked of the device itself: its properties name the fsdev
     // it shares) -- a host's qemu without it does not hide the index's.
@@ -230,7 +230,7 @@ int start_impl_(const service::Context& c, std::string_view name, const EnterOpt
     if (all.empty()) {
         // Its monitor is a package of the index, installed the first time as
         // its kernel is (a Windows PC's host machine has nobody to type it).
-        say_(c, service::phase("check", "done", "checking this host"));
+        say_(c, service::phase("preflight", "done", "checking this host"));
         say_(c, service::phase("vmm", "begin", "installing the virtual machine monitor"));
         const int rc = c.port.capability("install_packages", {{"targets", Json::array({"xim:qemu-system"})}, {"yes", true}}, c.sink);
         all = xlings::subos::tools::candidates(arch.qemu, view, xlings::subos::Ports{});
@@ -239,7 +239,7 @@ int start_impl_(const service::Context& c, std::string_view name, const EnterOpt
             say_(c, service::error("a machine needs a virtual machine monitor here", xlings::subos::tools::install_hint(arch.qemu)));
             return 1;
         }
-        say_(c, service::phase("check", "begin", "checking this host"));
+        say_(c, service::phase("preflight", "begin", "checking this host"));
     }
     std::optional<xlings::subos::tools::Found> qemu;
     std::string refused;
@@ -253,20 +253,20 @@ int start_impl_(const service::Context& c, std::string_view name, const EnterOpt
         }
     }
     if (!qemu) {
-        say_(c, service::phase("check", "failed", "checking this host"));
+        say_(c, service::phase("preflight", "failed", "checking this host"));
         say_(c, service::error(refused, "xlings install qemu-system@latest (revision 3 or later)"));
         return 1;
     }
     auto kernel = kernel_(c.home);
     if (!kernel) {
-        say_(c, service::phase("check", "done", "checking this host"));
+        say_(c, service::phase("preflight", "done", "checking this host"));
         say_(c, service::phase("kernel", "begin", "installing the machine kernel"));
         const int rc = c.port.capability("install_packages", {{"targets", Json::array({"xim:linux-kernel-virt"})}, {"yes", true}}, c.sink);
         kernel = kernel_(c.home);
         say_(c, service::phase("kernel", kernel ? "done" : "failed", "installing the machine kernel"));
         if (rc != 0 || !kernel) return rc != 0 ? rc : 1;
     } else {
-        say_(c, service::phase("check", "done", "checking this host"));
+        say_(c, service::phase("preflight", "done", "checking this host"));
     }
     std::error_code ec;
     const auto dir = run_dir(c.home, name);
@@ -685,7 +685,10 @@ int start_in_carrier_(const service::Context& c, std::string_view name, const En
     return rc;
 }
 
-int start(const service::Context& c, std::string_view name, const EnterOptions& o) {
+int start(const service::Context& given, std::string_view name, const EnterOptions& o) {
+    // Its one progress: the stage of starting (design 2026-10-20 WuXian §10).
+    service::Context c = given;
+    c.sink = service::with_overall(given.sink, false, true, false);
     if constexpr (platform::is_windows) return start_in_carrier_(c, name, o);
     if (running(c.home, name)) return 0;
     if constexpr (platform::is_macos) return start_vz_(c, name, o);

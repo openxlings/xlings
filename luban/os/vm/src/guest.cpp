@@ -51,6 +51,10 @@ std::optional<fs::path> port_() {
     return std::nullopt;
 }
 
+// Why this system's sudo cannot be used, said at the start of every login
+// (WuXian design §13.1): /run/luban/sudo.problem, written when a step fails.
+constexpr std::string_view kSudoProblem = "/run/luban/sudo.problem";
+
 // A session: a shell on a pty (`read` and `write` the master), or a desktop
 // bridged on two pipes.
 struct Session {
@@ -292,6 +296,11 @@ Json hello_() { return Json{{"agent", 1}, {"provides", Json{{"agent-display", 1}
                         if (auto a = open.find("argv"); a != open.end() && a->is_array() && !a->empty()) {
                             argv.clear();
                             for (const auto& w : *a) argv.push_back(w.get<std::string>());
+                        } else if (std::ifstream problem{std::string(kSudoProblem)}; problem) {
+                            // A login is told its sudo cannot be used, and why.
+                            std::string why;
+                            std::getline(problem, why);
+                            (void)platform::write_all(1, std::format("this system's sudo is not usable: {}\r\n", why));
                         }
                         platform::exec_program(argv, session_env_(open, shell, who));
                         platform::exit_now(127);
@@ -395,18 +404,26 @@ void root_owned_sudo_() {
     std::error_code ec;
     if (!fs::exists("/usr/bin/sudo", ec)) return;
     const fs::path dir = "/run/luban/root";
-    fs::create_directories(dir, ec);
+    bool failed = false;
+    const auto fail = [&](const std::string& why) {
+        console_("sudo: " + why);
+        if (!failed) platform::write_file_atomic(std::string(kSudoProblem), why + "\n");
+        failed = true;
+    };
+    // Its own tmpfs: /run is nosuid, and a bind keeps its source's nosuid --
+    // a set-user-ID sudo there is not one (H24).
+    if (!platform::mount_tmpfs(dir, 0755, true)) return fail(std::format("cannot mount a tmpfs for it at {}", dir.string()));
     const auto place = [&](const fs::path& from, const fs::path& copy, unsigned mode) {
         std::error_code e;
         fs::copy(fs::canonical(from, e), copy, fs::copy_options::overwrite_existing | fs::copy_options::recursive, e);
-        if (e) return console_(std::format("sudo: cannot copy {}: {}", from.string(), e.message()));
+        if (e) return fail(std::format("cannot copy {}: {}", from.string(), e.message()));
         if (fs::is_directory(copy, e)) {
             for (const auto& f : fs::recursive_directory_iterator(copy, e)) (void)platform::own_by_root(f.path(), 0440);
             (void)platform::own_by_root(copy, 0750);
         } else if (!platform::own_by_root(copy, mode)) {
-            return console_(std::format("sudo: cannot make {} root's", from.string()));
+            return fail(std::format("cannot make {} root's", from.string()));
         }
-        if (!platform::bind_mount(copy, from)) console_(std::format("sudo: cannot place {}", from.string()));
+        if (!platform::bind_mount(copy, from)) fail(std::format("cannot place {}", from.string()));
     };
     // Only sudo itself: a program reached through a shim is not bound over
     // (that would replace the shim's program).

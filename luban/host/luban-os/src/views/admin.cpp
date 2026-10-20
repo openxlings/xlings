@@ -199,6 +199,7 @@ void system_pages_(App& a, ImVec2 o, float x0, float y0, float width, float heig
             // walk of the root from here (E11: a root's /usr is a mount point).
             a.page_desktops = e.desktops;
             a.page_grant = a.clipboard_grant(e.name);
+            a.page_gpu = a.gpu_grant(e.name);
         }
         {
             // The desktop: the sessions its root declares, or none (its console).
@@ -233,6 +234,15 @@ void system_pages_(App& a, ImVec2 o, float x0, float y0, float width, float heig
             if (imkit::toggle("setting:clipboard-paste", tr("luban.os.admin.paste_into"), paste))
                 set(paste ? "allow" : "disallow", "clipboard-paste");
             mark_(a, "setting:clipboard-paste");
+            r.y += px(52);
+        }
+        if (!e.desktops.empty()) {
+            // Its desktop drawn with this computer's GPU (WuXian §7.4).
+            bool gpu = a.page_gpu;
+            r.label(tr("luban.os.admin.gpu"));
+            ImGui::SetCursorPos(ImVec2(x0 + px(200), r.y + px(4)));
+            if (imkit::toggle("setting:gpu", tr("luban.os.admin.gpu_draws"), gpu)) set(gpu ? "allow" : "disallow", "gpu");
+            mark_(a, "setting:gpu");
             r.y += px(52);
         }
         {

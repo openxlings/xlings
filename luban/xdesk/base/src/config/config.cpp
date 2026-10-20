@@ -102,6 +102,18 @@ std::vector<fs::path> files(std::string_view profile, const std::map<std::string
 Settings load(std::string_view profile, const std::map<std::string, std::string>& env) {
     Settings out;
     std::error_code ec;
+    // One file for every session now (design 2026-10-20 WuXian §12.2): a
+    // person's settings of before, in the file of the session they used
+    // (classic.ini, else canvas.ini), become their xdesk.ini once; the old
+    // file stays as it was.
+    if (profile == "xdesk")
+        if (const auto mine = person_file(profile, env); !mine.empty() && !fs::exists(mine, ec))
+            for (const auto* before : {"classic.ini", "canvas.ini"})
+                if (const auto old = mine.parent_path() / before; fs::is_regular_file(old, ec)) {
+                    fs::copy_file(old, mine, fs::copy_options::skip_existing, ec);
+                    if (ec) out.problems.push_back(std::format("{} could not be taken into {}: {}", old.string(), mine.string(), ec.message()));
+                    break;
+                }
     for (const auto& f : files(profile, env)) {
         if (!fs::is_regular_file(f, ec)) continue;
         std::ifstream in(f, std::ios::binary);

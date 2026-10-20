@@ -12,7 +12,7 @@
 # profile's); aarch64 exports with --boot virt. The firmware is
 # xim:edk2-firmware, installed into the test's home as a user would.
 #
-# xtest: covers=LUBAN-ISO,LUBAN-DRIVE,LUBAN-TRY,LUBAN-BOOT-PROFILE,LUBAN-ISO-UEFI,LUBAN-ISO-HYBRID,LUBAN-QCOW2,LUBAN-MACHINE-DESKTOP,LAYER-BOUNDARY-IN-SYSTEM,LUBAN-MACHINE-NETWORK,LUBAN-RUN-MACHINE,LUBAN-MACHINE-POWEROFF requires=linux,qemu,bwrap,network
+# xtest: covers=LUBAN-ISO,LUBAN-DRIVE,LUBAN-TRY,LUBAN-BOOT-PROFILE,LUBAN-ISO-UEFI,LUBAN-ISO-HYBRID,LUBAN-QCOW2,LUBAN-MACHINE-DESKTOP,LAYER-BOUNDARY-IN-SYSTEM,LUBAN-MACHINE-NETWORK,LUBAN-RUN-MACHINE,LUBAN-MACHINE-POWEROFF,LUBAN-MACHINE-SUDO requires=linux,qemu,bwrap,network
 set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../tests/e2e" && pwd)/project_test_lib.sh"
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../tests/e2e" && pwd)/rootfs_lib.sh"
@@ -268,6 +268,12 @@ grep -q "RUN-" <<<"$ran" || fail "luban run t: no output: $ran"
 [[ "$ran" != *"RUN-$(uname -r)"* ]] || fail "luban run t ran on this host's kernel, not the machine's: $ran"
 grep -q "RUN-ERR" "$RUNTIME_DIR/run.err" || fail "luban run t: its standard error is not the command's: $(cat "$RUNTIME_DIR/run.err")"
 [[ ! -S "$H/run/machines/t/luban.sock" ]] || fail "luban run t: the machine started for it is still running"
+log "sudo in t, a machine (design 2026-10-20 WuXian §13.1, H24): root's copy on a tmpfs of its own, set-user-ID honoured"
+retry X install -y --subos t xim:sudo >"$RUNTIME_DIR/sudo.log" 2>&1 || { tail -20 "$RUNTIME_DIR/sudo.log"; fail "install sudo into t"; }
+mounts="$(L run t -- sh -c 'grep " /run/luban/root " /proc/mounts; cat /run/luban/sudo.problem 2>/dev/null' 2>&1 || true)"
+printf '%s\n' "$mounts" > "$RUNTIME_DIR/machine-sudo.log"
+grep -q "/run/luban/root tmpfs" <<<"$mounts" || fail "sudo: no tmpfs of its own at /run/luban/root: $mounts"
+! grep " /run/luban/root " <<<"$mounts" | grep -q nosuid || fail "sudo: its tmpfs is nosuid (set-user-ID ignored): $mounts"
 log "poweroff inside t: the session ends with it, nothing asked"
 off="$( { (sleep 120; printf 'poweroff\n'; sleep 60) 2>/dev/null || true; } \
   | timeout 600 script -qfec "env XLINGS_HOME=$H DISPLAY= WAYLAND_DISPLAY= $H/bin/luban enter t" /dev/null 2>&1 | tr -d '\r' || true)"

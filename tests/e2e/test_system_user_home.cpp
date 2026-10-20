@@ -98,6 +98,73 @@ function config() xvm.add('hello', { bindir = path.join(pkginfo.install_dir(), '
     EXPECT_FALSE(fs::exists(user / ".xlings/data/xpkgs/xim-x-hello")) << "a second copy for one user";
 }
 
+// A user's view that has made nothing of its own active runs what the
+// system default has (design 2026-10-20 §4.2; WuXian §13.3, H25): the
+// system's program through the system's shim, not "not installed in this
+// subos"; and self doctor finds nothing wrong with a view that only inherits.
+XTEST(SystemUserHome, AViewWithNothingOfItsOwnRunsTheSystemDefaults,
+      .area = "subos", .covers = {"SUBOS-USER-VIEW-INHERITS"}, .requires_ = {"linux", "xlings-bin"}) {
+    if constexpr (!tk::is_linux) GTEST_SKIP() << "a Luban system is Linux";
+    if (xlings::platform::is_root()) GTEST_SKIP() << "root writes the system's home itself";
+    auto home = tk::Home::isolated("system-user-inherits");
+    const auto repo = home.root() / "index";
+    tk::write_file(repo / "xim-indexrepos.lua", "xim_indexrepos = {}\n");
+    tk::write_file(repo / "pkgs/h/hello.lua", R"LUA(
+package = { spec = '1', name = 'hello', archs = {'x86_64', 'aarch64'}, programs = {'hello'}, xvm_enable = true,
+            xpm = { linux = { ['1.0.0'] = {} } } }
+import('xim.libxpkg.pkginfo')
+import('xim.libxpkg.xvm')
+function install()
+    local dir = pkginfo.install_dir()
+    os.mkdir(path.join(dir, 'bin'))
+    io.writefile(path.join(dir, 'bin', 'hello'), '#!/bin/sh\necho hello-from-the-system\n')
+    os.exec('chmod +x ' .. path.join(dir, 'bin', 'hello'))
+    return true
+end
+function config() xvm.add('hello', { bindir = path.join(pkginfo.install_dir(), 'bin') }); return true end
+)LUA");
+    const Json config{{"mirror", "GLOBAL"}, {"xim", {{"index-repo", repo.generic_string()}}},
+                      {"index_repos", Json::array({{{"name", "xim"}, {"url", repo.generic_string()}, {"source", "git"}}})}};
+    tk::write_file(home.dir() / ".xlings.json", config.dump());
+    // Its entry, which the shims are of.
+    fs::create_directories(home.dir() / "bin");
+    fs::copy_file(tk::xlings_binary(), home.dir() / "bin" / "xlings");
+    ASSERT_EQ(home.xlings({"self", "init"}).exit_code, 0);
+    const auto installed = home.xlings({"install", "hello@1.0.0", "-y"});
+    ASSERT_EQ(installed.exit_code, 0) << installed.transcript();
+    std::optional<fs::path> shim;
+    for (const auto& dir : {home.dir() / "subos" / "default" / "bin", home.dir() / "bin"})
+        if (fs::exists(dir / "hello")) { shim = dir / "hello"; break; }
+    if (!shim)
+        for (const auto& e : fs::recursive_directory_iterator(home.dir()))
+            if (e.path().filename() == "hello") std::println(stderr, "hello at {}", e.path().string());
+    ASSERT_TRUE(shim) << "no shim for hello\n" << installed.transcript();
+    fs::permissions(home.dir(), fs::perms::owner_read | fs::perms::owner_exec | fs::perms::group_read
+                    | fs::perms::group_exec | fs::perms::others_read | fs::perms::others_exec,
+                    fs::perm_options::replace);
+    const auto user = home.root() / "alice";
+    fs::create_directories(user);
+    const std::map<std::string, std::string> inside{{"XLINGS_ROOT_INSTANCE", "box"}, {"HOME", user.string()}};
+    // The view made (a first write), with nothing of its own.
+    EXPECT_EQ(home.xlings({"config", "--lang", "en"}, inside).exit_code, 0);
+    ASSERT_TRUE(fs::exists(user / ".xlings"));
+    tk::RunOptions o;
+    o.argv = {shim->string()};
+    o.env = home.env();
+    for (const auto& [k, v] : inside) o.env[k] = v;
+    // As a session has it once the view is made: its own home named, the
+    // system's below it.
+    o.env["XLINGS_HOME"] = (user / ".xlings").string();
+    o.env["XLINGS_SYSTEM_LAYER"] = home.dir().string();
+    const auto ran = tk::run(o);
+    const auto doctor = home.xlings({"self", "doctor"}, inside);
+    fs::permissions(home.dir(), fs::perms::owner_all, fs::perm_options::add);
+    EXPECT_EQ(ran.exit_code, 0) << ran.transcript();
+    EXPECT_NE(ran.out.find("hello-from-the-system"), std::string::npos) << ran.transcript();
+    EXPECT_EQ(ran.transcript().find("not installed"), std::string::npos) << ran.transcript();
+    EXPECT_EQ(doctor.transcript().find("subos manifest"), std::string::npos) << doctor.transcript();
+}
+
 // No network inside a system: the index cannot be fetched, said once with
 // where to look -- the host, for a Luban system -- and quickly: no clone, no
 // git bootstrapped to clone with (design 2026-10-19 §27.4, F25: the same

@@ -13,7 +13,7 @@ directory; every package is its own `mcpp.toml` (design 2026-10-19 §28).
 | `os/` | Luban OS itself: stage-0, the service, machines, the `luban` command, the Luban OS app's window, compatibility | `modules/`, specifications, kits | stays |
 | `host/` | Luban's programs on the host: `luban` (and stage-0 as `luban-init`), `luban-os` (the app) | as `os/` | stays |
 | `tests/` | Luban's tests (`unit/`, `e2e/`, the app's layout baselines in `luban-os/`) and its `requirements.toml` | as `os/` | stays |
-| `tools/` | Luban's release scripts (luban, luban-os, xdesk) and the app's icon and keyframe tools | -- | stays |
+| `tools/` | Luban's release scripts (luban, luban-os, xdesk, the pointer theme) and the app's icon and keyframe tools | -- | stays |
 
 A package with one module keeps its files in `src/`; one with several has a
 directory per module (`native/` for C bindings). xlings' own programs on the
@@ -68,6 +68,7 @@ reference one another; implementations connect them.
 - `openhal-host` -- openhal's provider on Linux, macOS and Windows.
 - `imkit` -- immediate-mode widgets over Dear ImGui.
 - `tray` -- a status-area icon and its menu (StatusNotifierItem, the macOS menu bar, the Windows notification area).
+- `cursor` (cursorkit) -- pointers drawn from vector shapes at exactly the size asked, Xcursor themes, and the shake that says someone is looking for the pointer; its tool `cursor-make` makes the Luban pointer theme (`os/window/cursors/luban.path`).
 
 ## xdesk/
 

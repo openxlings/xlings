@@ -300,6 +300,14 @@ class PackageCatalog {
     // is const and the announcement is a property of the process, not of the
     // catalog's contents.
     mutable std::unordered_set<std::string> demotionsAnnounced_;
+    // The candidates of the last resolution whose recipe could not be read
+    // (its Lua worker not starting, a broken file): "could not read" is
+    // never "not found" (design 2026-10-20 WuXian §13.2, H26).
+    struct Unreadable {
+        std::string name;       // its canonical name
+        std::string error;
+    };
+    mutable std::vector<Unreadable> unreadable_;
     bool loaded_ { false };
 
     static std::vector<RepoIndexSpec> repo_specs_();
@@ -316,7 +324,8 @@ private:
     build_matches_(const RepoState& state,
                    const detail_::ParsedTarget_& parsed,
                    const std::string& platform,
-                   bool forSearch = false);
+                   bool forSearch = false,
+                   std::vector<Unreadable>* unreadable = nullptr);
 
     std::vector<PackageMatch> collect_matches_(const std::string& target,
                                                const std::string& platform) const;

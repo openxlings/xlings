@@ -92,12 +92,17 @@ void Server::apply(const std::vector<layout::Placement>& ps, bool instant, layou
         const int cw = std::max(1, static_cast<int>(std::lround(p->rect.width / zoom)));
         const int ch = std::max(1, static_cast<int>(std::lround(p->rect.height / zoom)) - bar);
         if (v.toplevel->base->initialized) {
-            wlr_xdg_toplevel_set_size(v.toplevel, cw, ch);
+            // Only what changed: each of these sends a configure, and a
+            // client draws again for one -- every frame of a glide or of the
+            // view's change otherwise.
+            const auto& was = v.toplevel->scheduled;
+            if (was.width != cw || was.height != ch) wlr_xdg_toplevel_set_size(v.toplevel, cw, ch);
             // Tiled (design 2026-10-20 §7.1): the client takes the size as
             // given -- foot, told nothing, rounds down to its cells.
-            wlr_xdg_toplevel_set_tiled(v.toplevel, p->tiled || p->maximized ? kAllEdges : 0);
-            wlr_xdg_toplevel_set_maximized(v.toplevel, p->maximized);
-            wlr_xdg_toplevel_set_fullscreen(v.toplevel, p->fullscreen);
+            const std::uint32_t tiled = p->tiled || p->maximized ? kAllEdges : 0;
+            if (was.tiled != tiled) wlr_xdg_toplevel_set_tiled(v.toplevel, tiled);
+            if (was.maximized != p->maximized) wlr_xdg_toplevel_set_maximized(v.toplevel, p->maximized);
+            if (was.fullscreen != p->fullscreen) wlr_xdg_toplevel_set_fullscreen(v.toplevel, p->fullscreen);
         }
         if (v.backdrop) {
             wlr_scene_rect_set_size(v.backdrop, std::max(1, static_cast<int>(std::lround(p->rect.width))),
@@ -159,18 +164,29 @@ bool Server::on_title(const View& v, double y) const {
 // Each window's zoom on its surfaces (a surface's own commit sets its size
 // back, so this runs before each frame while one is zoomed).
 void Server::zoom_surfaces() {
+    // While the view changes, scaled by the nearest pixel (a frame shown for
+    // 16 ms; in software, filtering is most of its cost -- design 2026-10-20
+    // §13.2); once still, filtered.
+    struct Zoom {
+        double z;
+        bool moving;
+    };
     for (auto& v : views) {
         if (v.zoom == 1 && v.zoom_shown == 1) continue;
-        double zoom = v.zoom;
+        Zoom zoom{v.zoom, view_move.has_value()};
+        wlr_scene_buffer_set_filter_mode(v.title, zoom.moving && zoom.z != 1 ? wlr_scale_filter_mode::WLR_SCALE_FILTER_NEAREST
+                                                                             : wlr_scale_filter_mode::WLR_SCALE_FILTER_BILINEAR);
         wlr_scene_node_for_each_buffer(&v.content->node, [](wlr_scene_buffer* b, int, int, void* data) {
-            const double z = *static_cast<double*>(data);
+            const auto& [z, moving] = *static_cast<Zoom*>(data);
             auto* s = wlr_scene_surface_try_from_buffer(b);
             if (!s) return;
+            wlr_scene_buffer_set_filter_mode(b, moving && z != 1 ? wlr_scale_filter_mode::WLR_SCALE_FILTER_NEAREST
+                                                                 : wlr_scale_filter_mode::WLR_SCALE_FILTER_BILINEAR);
             if (z == 1) wlr_scene_buffer_set_dest_size(b, s->surface->current.width, s->surface->current.height);
             else wlr_scene_buffer_set_dest_size(b, std::max(1, static_cast<int>(s->surface->current.width * z)),
                                                 std::max(1, static_cast<int>(s->surface->current.height * z)));
         }, &zoom);
-        v.zoom_shown = zoom;
+        v.zoom_shown = zoom.z;
     }
 }
 

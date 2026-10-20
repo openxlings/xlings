@@ -201,11 +201,23 @@ text = "luban's default output is one line per phase, the conclusion and the nex
 status = "required"
 
 [LUBAN-PROGRESS]
-text = "making a system is one progress from 0 to 100 % over its stages (prepare, download, unpack, configure, start, check), never going back: an install after it is made stays in the stage reached, and a machine starting is a stage of its own with its console's latest line; the luban command and the window show the same (events carry overall and stage)"
+text = "making a system is one progress from 0 to 100 % over the stages it has (fetch, unpack, configure, start for a machine, verify), never going back: an install after it is made stays in the stage reached, fetch's share is smaller when little is fetched, and each stage has its own progress and what it is doing (a measure, or a moving bar and the time); the luban command (two lines) and the window show the same (events carry overall, stage, stage_percent, stage_detail and stages); check of before is read as preflight before a machine starts and verify after"
+status = "required"
+
+[LUBAN-OS-PROGRESS]
+text = "the window's progress page shows the operation's own stages (only those it has), the whole's bar and the stage's own (a measure, or a moving bar and the time), what it is doing, the latest line and how long ago; done well it says ready a moment (0.7 s) before going in, at once when it took under 2 s"
+status = "required"
+
+[LUBAN-DESKTOP-GRANTS]
+text = "a system with a desktop is made with its sound and this computer's GPU (audio, gpu: render nodes only); made in the Luban OS window by a person at it, with the clipboard both ways too (said, and turned off in its settings); a system made by a command or an agent is not given the clipboard"
+status = "required"
+
+[LUBAN-NEW-NAME]
+text = "a name is held while it is made (<home>/run/luban/names, taken over from a process that is gone): a second making of it is told it is being made, an automatic name skips it; a record an unfinished making left is said as that with luban rm, which clears it without asking (it is not a person's data); xlings' own words for it (usage, xlings subos remove) are luban's"
 status = "required"
 
 [LUBAN-PROGRESS-WIDTH]
-text = "on a terminal the running phase's line is cut to the terminal's width less one column (the detail first, then the phase, the cut marked with an ellipsis), so rewriting it in place never wraps and never adds a line"
+text = "on a terminal the running phase's lines (the phase's, and the stage's under it) are cut to the terminal's width less one column (the detail first, then the phase, the cut marked with an ellipsis), so rewriting them in place never wraps and never adds a line"
 status = "required"
 
 [LUBAN-SHELL]
@@ -494,6 +506,10 @@ status = "required"
 
 [LUBAN-RUN-MACHINE]
 text = "luban run of a system that starts as a machine runs the command in the machine (its own kernel), its output, standard error and exit code as the command's; a machine started for it is powered off after"
+status = "required"
+
+[LUBAN-MACHINE-SUDO]
+text = "sudo in a machine works: root's copy of it is on a tmpfs of its own at /run/luban/root that honours set-user-ID (not /run's, which is nosuid), bound over the system's sudo; a step that fails is written to the console and said at the start of every login"
 status = "required"
 
 [LUBAN-MACHINE-POWEROFF]

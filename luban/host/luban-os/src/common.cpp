@@ -72,10 +72,16 @@ void Job::take(const service::Event& e) {
     using K = service::Event::Kind;
     // The operation's one progress, when it has one (design 2026-10-20 G22):
     // the bar and the stage follow it and never go back.
+    const auto now = std::chrono::steady_clock::now();
     if (e.overall >= 0) {
         overall = std::max(overall, e.overall);
+        if (!e.stage.empty() && e.stage != stage) stage_since = now;
         if (!e.stage.empty()) stage = e.stage;
+        stages = e.stages;
+        stage_percent = e.stage_percent;
+        stage_detail = e.stage_detail;
     }
+    if (!e.text.empty() && (e.kind == K::Phase || e.kind == K::Progress || e.kind == K::Log)) said_at = now;
     switch (e.kind) {
     case K::Phase: {
         auto it = std::ranges::find(phases, e.phase, &Phase::name);

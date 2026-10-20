@@ -232,23 +232,11 @@ void import_view_(App& a) {
     ImGui::End();
 }
 
-// The stages of making a system, as a person reads them, and which one the
-// events are in.
-// Six steps (design 2026-10-19 §5.7): preparing (the plan, what is agreed
-// to, the system's own home), then the payload's four, then done.
-// The stages of making a system (design 2026-10-20 G23): a machine starting
-// is one of its own, before its check -- it used to read as "prepare" at 0 %.
-constexpr std::array<std::string_view, 7> kStages{{
-    "luban.os.quick.stage.prepare", "luban.os.quick.stage.download", "luban.os.quick.stage.unpack",
-    "luban.os.quick.stage.configure", "luban.os.quick.stage.start", "luban.os.quick.stage.check", "luban.os.quick.stage.done"}};
-int stage_of_(const Job& j) {
-    const auto& s = j.stage;
-    if (s == "check") return 5;
-    if (s == "start" || s == "boot") return 4;
-    if (s.find("config") != std::string::npos || s == "hook" || s == "configure") return 3;
-    if (s.find("extract") != std::string::npos || s == "unpack") return 2;
-    if (s.find("download") != std::string::npos) return 1;
-    return 0;
+// The stages of an operation, as a person reads them (design 2026-10-20
+// WuXian §10): only those it has -- fetch, unpack, configure, start (a
+// machine), verify -- as its events say them.
+std::string stage_label_(std::string_view stage) {
+    return std::string(tr(std::format("luban.os.quick.stage.{}", stage)));
 }
 
 void job_(App& a) {
@@ -267,32 +255,70 @@ void job_(App& a) {
     y += 16 * cell + px(16);
     centred_(dl, y, j.title, th_().text, 26, true);
     y += px(44);
-    // Its stages, the one it is in lit.
-    const int at = j.done && j.code == 0 ? 7 : stage_of_(j);
-    constexpr int kChips = static_cast<int>(kStages.size());
-    const float chipW = std::floor((width - px(8) * (kChips - 1)) / kChips);
-    for (int k = 0; k < kChips; ++k) {
-        const ImVec2 c0(o.x + x + k * (chipW + px(8)), o.y + y), c1(c0.x + chipW, c0.y + px(30));
-        const bool done = k < at, now = k == at && !failed;
-        imkit::panel(dl, c0, c1, now ? imkit::Bevel::Raised : imkit::Bevel::Flat,
-                     done ? imkit::theme().accent_lo : now ? imkit::theme().panel : imkit::theme().bg_deep);
-        const std::string label(tr(kStages[static_cast<std::size_t>(k)]));
-        const auto ts = imkit::text_size(label, 13);
-        imkit::text(dl, ImVec2(c0.x + (chipW - ts.x) / 2, c0.y + (px(30) - ts.y) / 2), label,
-                    done || now ? th_().text : th_().text_faint, 13);
-        if (done) imkit::icon(dl, imkit::Icon::Check, ImVec2(c0.x + px(6), c0.y + px(8)), 1.0f * std::max(1.0f, std::round(px(1))), th_().good);
+    // Its stages, the one it is in lit; done well, all of them, and "ready".
+    const bool ready = j.done && j.code == 0;
+    const auto at_stage = std::ranges::find(j.stages, j.stage);
+    const int at = ready ? static_cast<int>(j.stages.size()) : static_cast<int>(at_stage - j.stages.begin());
+    if (!j.stages.empty()) {
+        const int chips = static_cast<int>(j.stages.size());
+        const float chipW = std::floor((width - px(8) * (chips - 1)) / chips);
+        for (int k = 0; k < chips; ++k) {
+            const ImVec2 c0(o.x + x + k * (chipW + px(8)), o.y + y), c1(c0.x + chipW, c0.y + px(30));
+            const bool done = k < at, now = k == at && !failed;
+            imkit::panel(dl, c0, c1, now ? imkit::Bevel::Raised : imkit::Bevel::Flat,
+                         done ? imkit::theme().accent_lo : now ? imkit::theme().panel : imkit::theme().bg_deep);
+            const std::string label = stage_label_(j.stages[static_cast<std::size_t>(k)]);
+            const auto ts = imkit::text_size(label, 13);
+            imkit::text(dl, ImVec2(c0.x + (chipW - ts.x) / 2, c0.y + (px(30) - ts.y) / 2), label,
+                        done || now ? th_().text : th_().text_faint, 13);
+            if (done) imkit::icon(dl, imkit::Icon::Check, ImVec2(c0.x + px(6), c0.y + px(8)), 1.0f * std::max(1.0f, std::round(px(1))), th_().good);
+        }
+        y += px(46);
     }
-    y += px(46);
-    // The whole operation's progress when it has one (one bar for all of it), else the step's.
+    // The whole: one bar for all of it (the step's when it has no stages).
     const double shown = j.overall >= 0 ? j.overall : j.percent;
     imkit::progress(dl, ImVec2(o.x + x, o.y + y), ImVec2(o.x + x + width, o.y + y + px(22)), failed ? 0 : j.done ? 1.0 : shown);
     y += px(30);
-    if (shown >= 0 && !j.done) {
-        const auto pct = std::format("{:.0f} %", shown * 100);
-        imkit::text(dl, ImVec2(o.x + x + width - imkit::text_size(pct, 13).x, o.y + y), pct, th_().text_dim, 13);
+    const auto now = std::chrono::steady_clock::now();
+    const auto ago = [&](std::chrono::steady_clock::time_point t) {
+        return static_cast<int>(std::chrono::duration_cast<std::chrono::seconds>(now - t).count());
+    };
+    if (ready) {
+        const std::string text(tr("luban.os.quick.ready"));
+        imkit::icon(dl, imkit::Icon::Check, ImVec2(o.x + x, o.y + y + px(3)), 1.0f * std::max(1.0f, std::round(px(1))), th_().good);
+        imkit::text(dl, ImVec2(o.x + x + px(20), o.y + y), text, th_().good, 15, true);
+        y += px(30);
+    } else if (!j.stages.empty() && !failed) {
+        // The stage's own: how far, or a moving bar and the time; what it is doing.
+        if (shown >= 0) {
+            const auto pct = std::format("{:.0f} %", shown * 100);
+            imkit::text(dl, ImVec2(o.x + x + width - imkit::text_size(pct, 13).x, o.y + y - px(30) - imkit::text_size(pct, 13).y - px(2)), pct,
+                        th_().text_dim, 13);
+        }
+        std::string line = stage_label_(j.stage);
+        if (j.stage_percent >= 0) line += std::format("  {:.0f} %", j.stage_percent * 100);
+        if (!j.stage_detail.empty()) line += " · " + j.stage_detail;
+        const int in_stage = ago(j.stage_since);
+        line += " · " + std::vformat(tr("luban.os.quick.seconds"), std::make_format_args(in_stage));
+        imkit::text(dl, ImVec2(o.x + x, o.y + y), imkit::fit(line, width, 14), th_().text_dim, 14);
+        y += px(22);
+        imkit::progress(dl, ImVec2(o.x + x, o.y + y), ImVec2(o.x + x + width, o.y + y + px(12)), j.stage_percent);
+        y += px(20);
+        // The latest line it said, and how long ago.
+        const int since = ago(j.said_at);
+        const auto when = std::vformat(tr("luban.os.quick.ago"), std::make_format_args(since));
+        const float ww = imkit::text_size(when, 13).x;
+        imkit::text(dl, ImVec2(o.x + x + px(12), o.y + y), imkit::fit("└ " + j.current, width - ww - px(24), 13), th_().text_faint, 13);
+        imkit::text(dl, ImVec2(o.x + x + width - ww, o.y + y), when, th_().text_faint, 13);
+        y += px(26);
+    } else {
+        if (shown >= 0 && !j.done) {
+            const auto pct = std::format("{:.0f} %", shown * 100);
+            imkit::text(dl, ImVec2(o.x + x + width - imkit::text_size(pct, 13).x, o.y + y), pct, th_().text_dim, 13);
+        }
+        imkit::text(dl, ImVec2(o.x + x, o.y + y), imkit::fit(j.current, width - px(70), 14), th_().text_dim, 14);
+        y += px(30);
     }
-    imkit::text(dl, ImVec2(o.x + x, o.y + y), imkit::fit(j.current, width - px(70), 14), th_().text_dim, 14);
-    y += px(30);
     for (const auto& e : j.errors) y += paragraph_(dl, ImVec2(o.x + x, o.y + y), e, width, th_().bad, 14) + px(6);
     y += px(8);
     ImGui::SetCursorPos(ImVec2(x, y));

@@ -26,8 +26,8 @@ in four groups:
 | | |
 |---|---|
 | **Console** — small, yours to shape | `nano` (xlings and luban only: the base an edition of your own is built on; it has no shell, so it is made without going in), `tiny` (a shell and the basic tools), `tiny-musl`, `core` (a console to develop in, chosen by default), `agent workspace` |
-| **xdesk** — Luban's own desktop | `xdesk classic` and `xdesk canvas · explore`: the desktop made for this window (below) |
-| **Traditional desktops** — light → full | every desktop of the `luban-desktop` category but xdesk, by what it brings: Compositor (T1, windows only, the Luban OS window its shell), labwc (T2), LXQt (T3), KDE Plasma (T4); one without a tier last |
+| **xdesk** — Luban's own desktop | `Luban desktop`: workspaces on WuXian, the desktop made for this window (below) |
+| **Traditional desktops** — light → full (folded until opened: click its heading, or → on it) | every desktop of the `luban-desktop` category but xdesk, by what it brings (the four marks on its picture): Compositor (T1, windows only, the Luban OS window its shell), labwc (T2), LXQt (T3), KDE Plasma (T4); one without a tier last |
 | **More systems** | an official system the window has no card for, and the systems of indexes you added |
 
 A traditional desktop's card says how much it brings (four marks, `T1`–`T4`,
@@ -52,8 +52,11 @@ architecture, or a computer that cannot run Luban systems yet (what `luban
 status` says: the reason and the next step). A name follows the card until you
 type your own. **More options** also chooses sandbox or machine and, for a
 console or xdesk, the desktop it is made with. The panel scrolls; **Create**
-stays at its foot. Making it shows six steps — prepare, download, unpack,
-configure, check, done — each one's current line as it goes, then goes in. A
+stays at its foot. Making it shows the stages it has — fetch, unpack,
+configure, start (a machine) and verify — with one bar for all of it, a second
+for the stage it is in (how far, or a moving bar and the time when it has no
+measure), what it is doing, and its latest line with how long ago; it says
+*Ready* a moment, then goes in. A
 system (or desktop) from another index is agreed to before it is made — Luban
 does not check what it does.
 
@@ -125,40 +128,76 @@ is not carried yet.
 ## xdesk
 
 The desktop editions start **xdesk**, a desktop made for this window: a
-compositor and its shell in one program (wlroots, rendering in software), which
-speaks to the window directly — no bridge, no screen capture.
+compositor and its shell in one program (wlroots), which speaks to the window
+directly — no bridge, no screen capture. It draws with the GPU when the system
+has one it can use (GLES on a render node) and in software otherwise; its
+*About* page says which and why.
 
-Each workspace arranges its windows one of three ways, and **Super+m** changes
-it: hold Super, press m — three cards show the workspace laid out each way, m
-again for the next, let Super go to take it, Esc to keep it as it was. Each way
-remembers its own layout, so tile → canvas → tile comes back to the same
-columns.
+### WuXian and its workspaces
+
+The desktop is one infinite plane, **WuXian**. Workspaces are regions on it —
+numbered 1–9, each with a name, a colour and a rule — and windows live in a
+workspace or, as *free windows*, on WuXian itself. You work in one workspace at
+a time (the **workspace view**, always at 100 %) and step back to the whole
+plane (the **WuXian view**, Super+O) for what happens between them: moving a
+window to another workspace, laying workspaces out, finding something. The
+camera glides from one to the other (at once with *reduce motion*).
+
+A workspace's **rule** is how it arranges its windows; **Super+M** changes it
+(hold Super, press M — two cards show the workspace each way; let Super go to
+take it, Esc to keep it):
 
 | | |
 |---|---|
-| **Tile** | windows in columns side by side, 4 pixels apart; the columns share the screen equally until each would be narrower than 480, then they scroll with the focused one in view; columns given widths that add up to less than the screen widen in proportion to fill it; a column can hold several, one above another; a workspace can run its columns downwards instead (`flow = vertical`, for a portrait screen). A tiled window is told so and takes its size exactly (a terminal no longer rounds itself short) |
+| **Tile** | windows in columns side by side, 4 pixels apart; the columns share the screen equally until each would be narrower than 480, then they scroll with the focused one in view; a column can hold several, one above another; a workspace can run its columns downwards (`flow = vertical`). A tiled window is told so and takes its size exactly |
 | **Stack** | windows where you put them, overlapping, kept on the screen; maximized, or snapped to a half or a quarter |
-| **Canvas** | windows on a plane that pans and zooms; put one against another's edge and they become a tiled group, moved and zoomed as one |
 
-| Keys (with Super) | Tile | Stack | Canvas |
-|---|---|---|---|
-| Super alone, or Space | the applications — and the settings' pages and every action, by name, with its keys | the same | the same |
-| ←→ ↑↓ (or H J K L) | the next column / in the column | the nearest window that way | the same |
-| Shift+←→ ↑↓ | move to the next column / up and down in it | halves, quarters, the whole, back | move by a quarter of the view |
-| [ / ] | into the column on the left / out to a column of its own | — | into the group beside / out of it |
-| R / Shift+R | the column's width (⅓, ½, ⅔, all) / the window's height in it (equal, ⅔, ⅓) | — | the same in a group |
-| - / = | narrower / wider | smaller / larger | zoom out / in |
-| F / Shift+F | maximize, and back / full screen (no panel, no title bar), and back | the same | the same |
-| Shift+Space | float, or put back | the same | the same |
-| P / Shift+P | always on top / on every workspace | the same | the same, and fixed in the view |
-| M | tile, stack, canvas (held) | the same | the same |
-| Tab / Shift+Tab | the applications, the most recent first (held: Tab for the next; ↓, or a second on one, spreads its windows; let go to go there) | the same | the same |
-| ` (above Tab) / Shift+` | the application's other window / the one before | the same | the same |
-| O | every window where it is, until one is chosen | the same | the overview; a click goes in to a window |
-| 1 … 9 / Shift+1 … 9 | a workspace / send the window there (the panel shows 1–4, and 5–9 while used) | the same | the same |
-| Ctrl+← → or PageUp / PageDown (with Shift: the window too) | the workspace before or after | the same | the same |
-| Return, or Ctrl+Alt+T / Q, or Alt+F4 | a terminal / close the window | the same | the same |
-| I / / | the settings / its keys page | the same | the same |
+A window **floats** in its workspace (Super+Shift+Space: above the
+arrangement, moving with it — dialogs do by themselves); a **free window** is
+on WuXian, outside every workspace (Super+Shift+0, or dropped on the plane).
+
+In the WuXian view each workspace is a plate with a coloured border and a label
+above it — `● 2 · code · ▥` (its colour, number, name, and ▥ tiled or ❐
+stacked). Workspaces can be moved (drag the label), scaled (the label's
+corner handle, or 50 % / 100 % on its menu; their contents keep their layout)
+and can overlap: the one on top is the one hit. A new window goes to the
+current workspace in the workspace view; in the WuXian view, to the workspace
+in the middle of the view, or onto WuXian when the middle is empty.
+
+**Workspaces are made** with Super+Ctrl+N (the lowest free number, at the far
+right), from the WuXian view's right-click menu (a tiled or stacked one where
+you clicked), or by going to a number that has none (Super+5) — one made that
+way, left unnamed and empty, goes again when you leave it. **Removed** from its
+label's menu (or Delete on a selected label): an empty one at once; one with
+windows asks — make them free windows (Enter), close them all (after a
+five-second countdown), or cancel. The last workspace stays.
+
+The status bar shows the current workspace (its colour, number, name and
+rule) and the others as small marks you can click (*the others* can be
+turned off); its WuXian button goes to the WuXian view and says how many free
+windows there are.
+
+| Keys (with Super) | Workspace view | WuXian view |
+|---|---|---|
+| Super alone, or Space | the applications — and the settings' pages and every action, by name, with its keys | the same |
+| O | the WuXian view | back to the workspace in focus (Esc too, when no window has the focus) |
+| 1 … 9 / Shift+1 … 9 | that workspace (made if there is none) / send the window there | the camera on it / the same |
+| Shift+0 | the window onto WuXian, free | the same |
+| Ctrl+N / Ctrl+0 | a new workspace, and into it / — | a new one, framed / everything in view |
+| Ctrl+← → or PageUp / PageDown (with Shift: the window too) | the workspace before or after | the camera on it |
+| M | tile or stack (held) | the rule of the workspace in focus |
+| ←→ ↑↓ (or H J K L) | the next window that way, by the rule | the nearest window that way, anywhere |
+| Shift+←→ ↑↓ | move it, by the rule (tile: columns; stack: halves, quarters, the whole) | a free window by an eighth of the screen |
+| [ / ] | into the column on the left / out to a column of its own | — |
+| R / Shift+R | the column's width (⅓, ½, ⅔, all) / the window's height in it | — |
+| - / = / 0 | narrower / wider / equal widths | zoom out / in / the focused window at 100 % |
+| F / Shift+F | maximize, and back / full screen, and back | the same |
+| P / Shift+P | always on top / on every workspace | the same |
+| C / V | copy / paste — Ctrl+Shift+C/V in a terminal, Ctrl+C/V elsewhere | the same |
+| Tab / Shift+Tab | the applications, the most recent first (held: Tab for the next; held half a second on one, its windows spread) | the same |
+| ` (above Tab) / Shift+` | the application's other window / the one before | the same |
+| Return, or Ctrl+Alt+T / Q, or Alt+F4 | a terminal / close the window | the same |
+| I / / | the settings / its keys page | the same |
 
 Every key, as the desktop has it, is in [the generated table](../generated/xdesk-keys.md).
 **Super+/** opens the settings at their keys page: every action by group,
@@ -166,19 +205,71 @@ searched as you type; Enter on one, then the new chord, gives it that chord
 (one another action had is taken from it, and said so); Delete puts it back.
 The keys come as a set — Luban, or Luban without hjkl, for those whose
 applications want those letters — and what you change is kept in
-`~/.config/xdesk/keys.json`. Hold Super a second for the keys used most. The
-first time, a line at the bottom says the five to start with.
+`~/.config/xdesk/keys.json`. Hold Super a second for the keys used most.
+
+**Alt+Tab** shows every window of the workspace where it is to the others,
+scaled to fit the screen, the chosen one larger and the rest dimmed: Tab goes
+by how recently you used them (Shift: back), the arrows by place, the pointer
+by pointing; let Alt go to go there, Esc to stay. A quick Alt+Tab goes straight
+to the window used before. The window you go to stays lit a moment while the
+others are dimmed, so you see where you landed (*Switchers* in the settings:
+how long, how dim, or not at all). Alt+Tab is xdesk's while the window holds
+the keyboard (Ctrl+Alt+K), the host's otherwise.
+
+The same gestures in both views:
+
+| | Workspace view | WuXian view |
+|---|---|---|
+| drag the title bar, or anywhere with Super held | move the window | move it — into another workspace, or onto WuXian |
+| Super with the right button, or a border or corner | resize it (stacked, floating) | the same, free windows too |
+| drag the background, or hold Super+Space and drag anywhere (a hand) | tile: scroll the columns | pan |
+| the wheel on the background / Super with the wheel | tile: scroll, faster the faster you turn it, landing on a column | pan (Shift: sideways) / zoom around the pointer |
+| the middle button | the application's (it pastes the selection) | drag the background: pan |
+| right-click the background | terminal, settings, the WuXian view | new workspace, line the workspaces up, show everything |
+| a workspace's label: drag / its handle / right-click / double-click | — | move / scale / menu (name, rule, colour, scale, remove) / go in |
+
+Dragging a tiled window freezes the layout: nothing moves while you drag; a
+dashed box marks where the window was, and the box under the pointer shows
+what letting go will do — its own place (nothing), the middle third of
+another window (swap), the ends (a new column before or after, its width
+picked with the wheel or 1–4), the top or bottom quarter (above or below it in
+its column), a gap or the screen's edge (a new column). Shift while dragging:
+it floats where you let go. Then everything moves once to where it goes. A
+window dragged across workspaces in the WuXian view keeps its size on screen
+and settles at the target's scale; dropped on the plane it is a free window at
+its full size; another free window's edge lines it up.
+
+The input method of the host types into the desktop's windows, and the
+clipboard is shared — each way as far as the environment's grants allow:
+`clipboard` (copying out of it) and `clipboard-paste` (pasting into it). A
+desktop system made in the Luban OS window has both (its settings turn them
+off); one made by `luban new` or an agent has neither until given
+(`luban config <system> --allow clipboard,clipboard-paste`). **Super+C** and
+**Super+V** copy and paste in any window — a terminal's Ctrl+Shift+C/V or
+everyone else's Ctrl+C/V, xdesk knows which; in a terminal Ctrl+C still
+interrupts.
+
+The pointer is the window's to draw: the Luban pointer theme, drawn from
+vectors at exactly your screen's density. Shake the mouse to find it and it
+grows — up to four times, filled with the accent — then shrinks back
+(*Appearance*: off, bigger, or bigger and coloured; up to 2, 3 or 4 times).
+For a window that does not draw one (an older Luban OS), xdesk draws it into
+the picture.
+
+### Settings and sessions
 
 **Super+I** opens the settings: the displays (each window showing the
-desktop, below), the layout (this workspace's arrangement, which way columns
-run, the gaps, the narrowest column, the canvas's minimap and snapping), the
-appearance (the accent, the background, *reduce motion*), the keys, and
-*About* — the system, xdesk, the kernel, the renderer, the displays, CPU and
-memory, the files it keeps, the projects it is made of, and *Copy* for a
-report. A change takes effect at once and is kept in your settings file
-(`~/.config/xdesk/<profile>.ini`). The launcher finds each page by name, and
-so does any launcher through `xdesk-settings.desktop`. Scripts and agents
-use the same through `xdesk msg` (in the desktop):
+desktop, below), the layout (the new workspace's rule, which way columns run,
+the gaps, the narrowest column, the status bar's other workspaces, the
+switchers, the wheel), the appearance (the accent, the background, *reduce
+motion*, the shaken pointer, the renderer), the keys, and *About* — the
+system, xdesk, the kernel, the renderer (and why), the displays, CPU and
+memory, the files it keeps, and *Copy* for a report. A row says whether it is
+as it came, changed by you, or set by the system; each page has *as it came*,
+and the settings' first page *everything as it came* (undone with Ctrl+Z for
+ten seconds). A change takes effect at once and is kept in
+`~/.config/xdesk/xdesk.ini`. The launcher finds each page by name. Scripts and
+agents use the same through `xdesk msg` (in the desktop):
 
 ```bash
 xdesk msg keys list                        # every action, its keys (JSON)
@@ -187,123 +278,61 @@ xdesk msg keys set luban-no-hjkl
 xdesk msg settings keys                    # the settings, at that page
 ```
 
-**Alt+Tab** shows every window of the workspace where it is to the others,
-scaled to fit the screen (a long tiled row folded into rows), the chosen one
-larger and the rest dimmed: Tab goes by how recently you used them (Shift:
-back), the arrows by place, the pointer by pointing; let Alt go to go there,
-Esc to stay. A quick Alt+Tab goes straight to the window used before, showing
-nothing. Alt+Tab is xdesk's while the window holds the keyboard (Ctrl+Alt+K),
-the host's otherwise. Super+Tab's applications show their icons (a PNG in the
-icon themes) or their initial.
-
-The same gestures in every arrangement:
-
-| | |
-|---|---|
-| drag the title bar, or anywhere with Super held | move the window |
-| Super with the right button, or a border or corner (stacked, floating, canvas) | resize it |
-| drag the background, or the middle button anywhere | pan (tile: scroll the columns; canvas: move the view) |
-| click | focus |
-| click the title bar twice | maximize, and back |
-
-Alt alone is the applications' (Alt+click is theirs); xdesk's chords are on
-Super, and only Alt+Tab, Alt+F4 and Ctrl+Alt+T besides.
-
-A window dragged follows the pointer, see-through; the other windows move to
-where the drop would leave them, and a box shows where it lands — so what you
-see is what you get. Over another window: its first or last quarter puts it
-above or below it in its column, its middle third in its place, the rest a new
-column before or after it; the screen's edge a new first or last column
-(stacked: a half, a quarter, the whole); on the canvas, another window's edge a
-group. A zone holds until the pointer is 12 pixels into the next one. A new
-column's width is said in its box: the wheel or 1–4 picks ⅓, ½, ⅔ or all.
-Shift while dragging: it floats where you let go. Drag the gap between two
-columns, or between two windows of a column, to resize both; click a column
-gap twice to make them equal. A window that draws its own frame is moved and
-resized by it. Rest on the title bar's maximize button for the layouts it
-offers — halves, ⅔ and ⅓, one and two, thirds — of this window and the ones
-used before it; click it to maximize.
-
-The title bar's other button (or its right-click) opens the window's menu:
-maximize or restore, float or put back, always on top, on every workspace, to
-a workspace, and the application's rules — always floating, always on this
-workspace, remember its size and place — kept for next time. A window's title
-bar says its application's name (from its desktop entry), then its own title.
-
-On the canvas the zoom is only where you look from: at half size or more the
-windows work as at 100 % (a click goes to the window and the view stays);
-smaller, they are pictures — a click selects one, two clicks (or Super+0) go
-in to it at 100 %. Only Super with the wheel, or Super+= and Super+-, zoom
-(around the pointer, so what is under it stays put); the wheel on the
-background pans (Shift: sideways), and so does dragging it or the middle
-button. A window moved near another lines up with its edge (within 16 pixels,
-the line shown); against its edge it joins its group, the edge lit; Shift
-while moving does neither. A new window goes to the free place nearest the
-focused one, in view if there is one — the view pans to it, it never zooms.
-When the canvas holds more than the view, a minimap at the bottom right shows
-it all and where you are; click it to go there (`[canvas] minimap = off`, and
-`snap = off` for the edges). The overview leaves you exactly where you were.
-
-The input method of the host types into the desktop's windows (what it
-composes is shown there), and the clipboard is shared — each way as far as
-the environment's grants allow: `clipboard` (copying out of it) and
-`clipboard-paste` (pasting into it); an environment made before policies
-shares both. The same holds in a labwc, LXQt or KDE desktop (through
-wlr-data-control). In a terminal — foot, qterminal, Konsole — copy is
-Ctrl+Shift+C and paste Ctrl+Shift+V: Ctrl+C there interrupts the program;
-qterminal and Konsole also have both on their right-click menu. The pointer is the window's to draw (above); for a window that
-does not draw one (an older Luban OS), xdesk draws it into the picture.
-
-### Sessions and settings
-
-| Session | |
-|---|---|
-| `xdesk` (the `desktop` edition's) | each workspace as you left it; tile the first time |
-| `xdesk-classic` | a workspace not yet set starts tiled; a panel across the top |
-| `xdesk-canvas` | a workspace not yet set starts as a canvas; a pill at the bottom with the zoom and the overview |
-
-xdesk reads `<session>.ini` (`xdesk.ini`, `classic.ini`, `canvas.ini`): its own
-defaults, then a system's `/etc/xdg/xdesk/`, then yours in `~/.config/xdesk/`,
-each later one winning key by key.
+The session is `xdesk` (`xdesk-classic` and `xdesk-canvas`, the names of
+before, start the same desktop). It reads `xdesk.ini`: its own defaults, then
+a system's `/etc/xdg/xdesk/`, then yours in `~/.config/xdesk/`, each later one
+winning key by key. Your `classic.ini` (or `canvas.ini`) of before becomes your
+`xdesk.ini` the first time, and is left where it was.
 
 ```ini
 [desktop]
 terminal = foot
 autostart = foot
-inner_gap = 4          # between windows (gap of before is read as this)
+rule = tile            # a new workspace's: tile or stack
+inner_gap = 4          # between windows
 outer_gap = 0          # between windows and the screen's edges
 min_column_width = 480 # tiled columns share the screen until narrower than this, then scroll
 flow = horizontal      # tiled columns side by side; vertical: one under another
-workspaces = 9         # 1-4 always on the panel, 5-9 while used
+status_others = on     # the status bar shows the other workspaces
 
-[canvas]
-minimap = on
-snap = on
+[wuxian]
+minimap = on           # the WuXian view's map of everything
+snap = on              # a moved window lines up with another's edge
+
+[switchers]
+hold_ms = 500          # Super+Tab held this long on an application: its windows
+highlight_ms = 500     # the window chosen stays lit this long (0: not at all)
+dim = 0.5              # what the others are dimmed to meanwhile
+
+[scroll]
+speed = medium         # slow, medium or fast
+snap = on              # a tiled strip's scroll lands on a column
 
 [theme]
 accent = #5e9cff
 background = #1b1e25
 
 [appearance]
-reduce_motion = off    # on: windows go at once, without gliding
+reduce_motion = off
+renderer = auto        # auto (the GPU when there is one) or software
+pointer_locate = grow-color   # off, grow or grow-color
+pointer_max = 4
 
 [keyboard]
-layout = us        # another xkb layout needs xkeyboard-config
+layout = us            # another xkb layout needs xkeyboard-config
 repeat_rate = 30
 repeat_delay = 500
 ```
 
 With no `terminal` the system's default terminal is used (its
-`share/xdg-terminals` entry); either way an application that runs in a terminal
-opens with its own title and identity (`foot --title=Neovim --app-id=nvim nvim`).
-A line it cannot read is logged and skipped; the desktop still starts.
+`share/xdg-terminals` entry). A line it cannot read is logged and skipped; the
+desktop still starts.
 
-What you set is yours, in `~/.config/xdesk/`: `state.json` keeps each
-workspace's arrangement and the applications' rules, `keys.json` the keys you
-rebind — an action's chords (`{"terminal": ["Super+Return", "Ctrl+Alt+t"]}`);
-the action names are those Super+/ lists. An upgrade never rewrites them; one
-that cannot be read is said, the desktop starts as new, and the file is left as
-it is.
+What you set is yours, in `~/.config/xdesk/`: `wuxian.json` keeps the
+workspaces (where they are, their names, colours, rules and scale) and where
+each window was, `state.json` the applications' rules, `keys.json` the keys
+you rebind. An upgrade never rewrites them; one that cannot be read is said,
+the desktop starts as new, and the file is kept beside it as it was.
 
 ## Desktops
 
@@ -318,7 +347,7 @@ their categories), from the lightest to the fullest:
 | `luban:labwc` | `labwc` | labwc with a panel, a launcher, a background — light |
 | `luban:lxqt` | `lxqt` | LXQt on labwc: a panel, a desktop and file manager, settings — traditional |
 | `luban:kde` | `kde` | KDE Plasma, nested in labwc (preview) — the complete desktop |
-| `luban:xdesk` | `xdesk`, `xdesk-classic`, `xdesk-canvas` | Luban's own: each workspace tiled, stacked or a canvas (above) |
+| `luban:xdesk` | `xdesk` (`xdesk-classic`, `xdesk-canvas`: the same) | Luban's own: workspaces on WuXian, each tiled or stacked (above) |
 
 The terminal of each is the default one (`luban:foot`), found through
 `xdg-terminal-exec`; X11 programs run on `luban:xwayland`. Every one brings the
@@ -329,7 +358,7 @@ one Qt (`luban:qt-runtime`), installed once.
 ```bash
 luban new desk --edition desktop --desktop lxqt   # made with LXQt, and starting it
 luban enter desk --desktop kde                    # another desktop, this once (installed already)
-luban config desk --desktop xdesk-canvas          # which session it starts
+luban config desk --desktop xdesk                 # which session it starts
 luban config desk --desktop none                  # its console instead
 luban config desk --enter console                 # what going in shows first
 ```
@@ -433,7 +462,9 @@ graph LR
 
 ## What it does not do yet
 
-- A GPU: rendering is in software, the same on every host.
+- The GPU in a machine, and on macOS and Windows: a machine's desktop draws in
+  software. A sandbox on a Linux host draws with this computer's GPU (its
+  render node; the `gpu` grant), in software when there is none.
 - X11 programs in xdesk (Xwayland); they run in the labwc session.
 - The window on Linux needs X11 (Xwayland counts); a native Wayland window is
   not supported yet. On macOS and Windows the window shows a system's console

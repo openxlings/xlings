@@ -458,6 +458,18 @@ launch(const subos::policy::Policy& declared, const fs::path& package,
         w->audit_state->required = declared.preset == subos::policy::Preset::Locked;
         auto parent = home.run_dir(paths.activeSubos) / "lua";
         fs::create_directories(parent);
+        // In a machine the home is the system's tree over 9p, where the
+        // worker's private directory and its captured output cannot be made
+        // as they must be (design 2026-10-20 WuXian §13.2, H26): the
+        // session's own tmpfs instead.
+        if (Config::inside_root() && platform::fs_caps(parent).type == "9p")
+            if (const auto env = platform::environment(); env.contains("XDG_RUNTIME_DIR") && !env.at("XDG_RUNTIME_DIR").empty()) {
+                const auto& runtime = env.at("XDG_RUNTIME_DIR");
+                std::error_code ec;
+                const auto local = fs::path(runtime) / "xlings-lua" / paths.activeSubos;
+                fs::create_directories(local, ec);
+                if (!ec) parent = local;
+            }
         // The instance the worker is confined to: a view made a moment ago
         // has none yet (bwrap cannot bind what is not there).
         fs::create_directories(home.instance(paths.activeSubos));

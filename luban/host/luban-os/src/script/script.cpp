@@ -79,6 +79,7 @@ Json state_(const App& a) {
     if (a.view == View::QuickStart) {
         j["quick_start"] = {{"said", a.quick_said}, {"can_make", a.quick_can_make}, {"more", a.more}, {"offer", a.new_offer},
                             {"desktop", a.new_desktop}, {"card", chosen_card_(a)}, {"traditional", a.new_trad},
+                            {"traditional_open", a.trad_open}, {"on_heading", a.trad_heading},
                             {"base", std::string(std::array<std::string_view, 3>{"tiny", "core", "desktop"}[static_cast<std::size_t>(std::clamp(a.new_base, 0, 2))])}};
         // The groups as shown, each its cards (design 2026-10-19 §5.1).
         Json groups = Json::array();
@@ -176,7 +177,9 @@ Json state_(const App& a) {
         Json phases = Json::array();
         for (const auto& ph : a.job->phases) phases.push_back(ph.text + ": " + ph.state);
         j["job"] = {{"title", a.job->title}, {"done", a.job->done.load()}, {"code", a.job->code}, {"current", a.job->current},
-                    {"phases", phases}, {"errors", a.job->errors}, {"stage", a.job->stage}, {"percent", a.job->percent}};
+                    {"phases", phases}, {"errors", a.job->errors}, {"stage", a.job->stage}, {"percent", a.job->percent},
+                    {"overall", a.job->overall}, {"stages", a.job->stages}, {"stage_percent", a.job->stage_percent},
+                    {"stage_detail", a.job->stage_detail}};
     }
     j["anchors"] = Json::object();
     for (const auto& [k, r] : a.anchors) j["anchors"][k] = Json::array({r[0], r[1], r[2], r[3]});
