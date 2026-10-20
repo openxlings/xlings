@@ -354,9 +354,14 @@ Json hello_() { return Json{{"agent", 1}, {"provides", Json{{"agent-display", 1}
                 (void)platform::write_all(out, proto::encode('D', order[k], std::string_view(buf.data(), *n)));
                 continue;
             }
-            int code = 0;
-            if (auto st = platform::wait_process(s->second.pid, true)) code = platform::exit_code(*st);
-            (void)platform::write_all(out, proto::encode_json('X', order[k], Json{{"code", code}}));
+            Json ended{{"code", 0}};
+            if (auto st = platform::wait_process(s->second.pid, true)) {
+                ended["code"] = platform::exit_code(*st);
+                // Ended by a signal (the system going down kills it): the
+                // host waits for the machine to be off instead of asking.
+                if (!st->exited) ended["signal"] = st->signal;
+            }
+            (void)platform::write_all(out, proto::encode_json('X', order[k], ended));
             close_session_(s->second);
             sessions.erase(s);
         }

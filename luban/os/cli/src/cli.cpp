@@ -837,7 +837,16 @@ int cmd_run(const svc::Context& c, const Parsed& p, const Globals& g) {
     if (p.words.size() != 1 || p.after.empty()) return usage("`luban run <name> [--display window] -- <command...>`", g);
     const auto display = p.option("--display").value_or("terminal");
     if (display != "terminal" && display != "window") return usage("--display terminal|window", g);
-    if (display == "terminal") return svc::run_command(c, p.words[0], p.after, p.option("--user").value_or(""));
+    if (display == "terminal") {
+        // A system that starts as a machine (or runs as one) runs it there,
+        // with its own kernel -- not in a sandbox beside it.
+        if constexpr (!xlings::platform::is_windows) {
+            const auto settings = svc::read_settings(c.home, p.words[0]);
+            if (vm::running(c.home, p.words[0]) || (settings && settings->mode == "machine"))
+                return vm::run(c, p.words[0], p.after, p.option("--user").value_or(""));
+        }
+        return svc::run_command(c, p.words[0], p.after, p.option("--user").value_or(""));
+    }
     if (p.option("--user")) return usage("--user is the terminal's: a window runs as the system's login user", g);
     const auto app = svc::window_app(c, p.words[0]);
     if (!app) {

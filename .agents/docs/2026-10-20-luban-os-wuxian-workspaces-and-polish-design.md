@@ -83,6 +83,10 @@ xlings（`src/core/xim`、`src/core/xvm`、`modules/confine`：系统里的 Lua 
 | H30 | 指针尾巴仍然是歪的 | 两个原因：`default` 第 10–12 行尾巴每行右移一列（45°，与箭头右边平行），注释说"每两行一列"而画的不是；窗口在非整数密度（1.25）下对设备像素图做最近邻缩小，列被吞掉或重复 | `xim-pkgindex/tools/res/cursors/luban.cursors`、`luban/os/window/src/pointer.cpp:184-190` |
 | H31 | 系统里没有 GPU 可用 | xdesk 只有 pixman（H18）；machine 的 qemu 是静态构建、`--disable-opengl --disable-virglrenderer`；内核配置没有 DRM 与 virtio-gpu；`xim:mesa` 没有 virgl 驱动；沙箱的桌面会话不授予 `/dev/dri` | `xim-pkgindex/tools/res/build.sh:576-577`、`tools/res/kernel-virt.config`、`pkgs/m/mesa.lua:28` |
 | H32 | 有 GPU 也用不上的 Falkon | 启动脚本默认 `--disable-gpu` | `luban:falkon` 的 `libexec/falkon/env` |
+| H33 | machine 模式的系统，`luban run` 在宿主内核上执行（`uname -r` 是宿主的） | `run` 一律走 `xlings subos exec`（沙箱），不看系统按什么启动 | `luban/os/cli/src/cli.cpp` 的 `cmd_run`、`luban/os/service/src/service.cpp` 的 `run_command`；KVM 宿主上实测 |
+| H34 | 进 machine 时 `/bin/sh: /etc/profile.d/xlings-complete.sh: line 8: syntax error: unexpected "("` | bash 的补全脚本放在 `profile.d`；`BASH_VERSION` 的判断挡不住解析，busybox sh、dash 读到数组语法就报错 | `modules/subos/src/views/root/root_etc.cpp` 的 `complete_sh` |
+| H35 | machine 里 `poweroff` 之后，宿主问"kvmt 仍在运行，后台还是关机" | 关机时 shell 先被信号结束，会话以"退出"收场；宿主在 machine 还没停下时就问 | `luban/os/vm/src/host.cpp` 的 `session_` 与 `enter` 的结尾 |
+| H36 | 沙箱里 `--mount /dev/kvm` 后打不开 `/dev/kvm` | 用户的挂载一律 `--bind`，bwrap 在新的挂载命名空间里是 `nodev`；设备节点要 `--dev-bind` | `modules/confine/src/confine.cpp` 的挂载一节 |
 
 ## 2. 原则
 
@@ -580,6 +584,18 @@ class Layout {
 - 复现：machine 里新用户视图（没有自己的激活记录）运行系统默认里有的程序（`gcc --version`）。
 - 修：shim 与 `xlings info/use` 在用户视图里没有激活时落到系统默认；用户视图的清单在第一次需要时写出，缺失不算错误（派生状态，`self doctor` 不报）。
 - 一并看：`self doctor` 在系统里报的 `index copy`（`/xlings/data/scode`）若是系统层的正常形态则不报。
+
+### 13.4 machine 的实测（KVM，H33–H36）
+
+在有 `/dev/kvm` 的宿主上，用隔离的 home 新建 `luban:tiny` 的 machine：4 秒起来，内核 `6.12.112-virt`，dmesg 有 `Hypervisor detected: KVM`。由此改：
+
+- **`luban run` 进 machine**（H33）：系统按 machine 启动、或正以 machine 运行时，命令在 machine 里执行（`vm::run`：有终端时在 pty 上，
+  否则管道，stdout 与 stderr 分开，退出码原样）；本来没开的 machine 为它启动、执行完关掉；Windows 照旧（经 carrier 另行设计）。
+- **补全脚本**（H34）：bash 的语法作为文本读入、只由 bash `eval`，任何 sh 都能解析这个文件；2026.10.20.1–.3 写下且没改过的那份
+  在下一次换 generation 时替换，改过的保留（机器状态）。
+- **自己关机**（H35）：guest 报告 shell 是被信号结束的（`X` 帧带 `signal`）；宿主在这种情况与连接断开时先等 machine 停下（至多 10 秒），
+  停了就说"已关机"，不再问。旧的 guest 不带这个字段，行为不变。
+- **设备的挂载**（H36）：挂载源是字符或块设备时用 `--dev-bind`（`Intent::device`，与 `exists` 同一个可注入的接缝）。
 
 ## 14. Falkon（H23、H32）
 

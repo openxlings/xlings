@@ -12,7 +12,7 @@
 # profile's); aarch64 exports with --boot virt. The firmware is
 # xim:edk2-firmware, installed into the test's home as a user would.
 #
-# xtest: covers=LUBAN-ISO,LUBAN-DRIVE,LUBAN-TRY,LUBAN-BOOT-PROFILE,LUBAN-ISO-UEFI,LUBAN-ISO-HYBRID,LUBAN-QCOW2,LUBAN-MACHINE-DESKTOP,LAYER-BOUNDARY-IN-SYSTEM,LUBAN-MACHINE-NETWORK requires=linux,qemu,bwrap,network
+# xtest: covers=LUBAN-ISO,LUBAN-DRIVE,LUBAN-TRY,LUBAN-BOOT-PROFILE,LUBAN-ISO-UEFI,LUBAN-ISO-HYBRID,LUBAN-QCOW2,LUBAN-MACHINE-DESKTOP,LAYER-BOUNDARY-IN-SYSTEM,LUBAN-MACHINE-NETWORK,LUBAN-RUN-MACHINE,LUBAN-MACHINE-POWEROFF requires=linux,qemu,bwrap,network
 set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../tests/e2e" && pwd)/project_test_lib.sh"
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../tests/e2e" && pwd)/rootfs_lib.sh"
@@ -258,6 +258,22 @@ grep -qE "NS-[1-9]" <<<"$machine" || fail "machine: no name server from its leas
   || fail "machine: the lease's name servers were written into its tree"
 [[ ! -e "$(sysdir t)/rootfs/root/machine.txt" ]] || fail "machine --temp: what it wrote stayed"
 [[ ! -e "$H/run/machines/t/scratch" ]] || fail "machine --temp: its copy stayed"
+log "luban run t, a machine (design 2026-10-20 WuXian §13.4): the command runs there, on its own kernel -- started for it, off after"
+L config t --mode machine --on-close ask >/dev/null 2>&1 || fail "config t --mode machine"
+set +e
+ran="$(L run t -- sh -c 'echo RUN-$(uname -r); echo RUN-ERR >&2; exit 3' 2>"$RUNTIME_DIR/run.err")"; rc=$?
+set -e
+[[ $rc -eq 3 ]] || fail "luban run t: exit $rc, not the command's 3: $ran $(tail -5 "$RUNTIME_DIR/run.err")"
+grep -q "RUN-" <<<"$ran" || fail "luban run t: no output: $ran"
+[[ "$ran" != *"RUN-$(uname -r)"* ]] || fail "luban run t ran on this host's kernel, not the machine's: $ran"
+grep -q "RUN-ERR" "$RUNTIME_DIR/run.err" || fail "luban run t: its standard error is not the command's: $(cat "$RUNTIME_DIR/run.err")"
+[[ ! -S "$H/run/machines/t/luban.sock" ]] || fail "luban run t: the machine started for it is still running"
+log "poweroff inside t: the session ends with it, nothing asked"
+off="$( { (sleep 120; printf 'poweroff\n'; sleep 60) 2>/dev/null || true; } \
+  | timeout 600 script -qfec "env XLINGS_HOME=$H DISPLAY= WAYLAND_DISPLAY= $H/bin/luban enter t" /dev/null 2>&1 | tr -d '\r' || true)"
+printf '%s\n' "$off" > "$RUNTIME_DIR/machine-poweroff.log"
+grep -q "t is off" <<<"$off" || fail "poweroff inside: not said off: $(tail -10 <<<"$off")"
+grep -q "still running" <<<"$off" && fail "poweroff inside: asked whether to keep what is stopping: $(tail -5 <<<"$off")"
 log "the desktop: labwc-desktop in t, its session bridged by opensal-wlr to a client of the machine, as the Luban OS window is"
 CLIENT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/luban_desktop_client.py"
 retry X install -y --subos t xim:labwc-desktop >"$RUNTIME_DIR/labwc.log" 2>&1 \

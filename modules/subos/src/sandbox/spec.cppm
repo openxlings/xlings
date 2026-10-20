@@ -84,6 +84,8 @@ struct Request {
     std::function<bool(std::string_view)> host_exists;
     // Where a host path resolves (its symlinks followed), likewise.
     std::function<std::string(std::string_view)> host_resolve;
+    // Whether a host path is a device node, likewise.
+    std::function<bool(std::string_view)> host_device;
     std::vector<MountOp> root_mounts; // Owner-checked, private skeleton and exact RO leaves.
     Persist persist { Persist::All };     // a root's state after the session
     // Who logs in to a root (part 3 §6.1): its passwd's answer. root unless

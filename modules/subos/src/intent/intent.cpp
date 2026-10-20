@@ -45,6 +45,13 @@ bool Intent::exists(std::string_view path) const {
     return fs::exists(fs::path(path), ec);
 }
 
+bool Intent::device(std::string_view path) const {
+    if (host_device) return host_device(path);
+    std::error_code ec;
+    const auto s = fs::status(fs::path(path), ec);
+    return !ec && (fs::is_character_file(s) || fs::is_block_file(s));
+}
+
 std::string Intent::resolve(std::string_view path) const {
     if (host_resolve) return host_resolve(path);
     std::error_code ec;
@@ -89,12 +96,14 @@ Intent lower(const policy::Policy& policy, const HomeView& home, const spec::Req
     in.explicit_env = r.explicit_env;
     in.host_exists = r.host_exists;
     in.host_resolve = r.host_resolve;
+    in.host_device = r.host_device;
     in.needs = policy.needs;
     in.no_degrade = policy.no_degrade;
     for (const auto& m : policy.mounts) {
         Grant g{m.src, m.dst.empty() ? m.src : m.dst, m.rw, std::nullopt};
         if (auto why = mount_refusal(g.source, g.inside, home)) g.refused = g.source + ": " + *why;
         else if (!in.exists(g.source)) g.refused = g.source + ": does not exist on the host";
+        else g.device = in.device(g.source);
         in.mounts.push_back(std::move(g));
     }
     return in;

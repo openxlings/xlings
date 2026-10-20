@@ -413,7 +413,8 @@ int start_impl_(const service::Context& c, std::string_view name, const EnterOpt
     return 1;
 }
 
-enum class Ending { Exited, Detached, PowerOff, Lost };
+// Killed: its shell ended by a signal -- the machine powering itself off.
+enum class Ending { Exited, Killed, Detached, PowerOff, Lost };
 
 // One session of a running machine on this terminal.
 // What the welcome says of a machine that only its host knows: the kernel
@@ -478,7 +479,7 @@ std::pair<Ending, int> session_(const service::Context& c, std::string_view name
                 else if (frame.type == 'X') {
                     auto j = Json::parse(frame.payload, nullptr, false);
                     code = j.is_object() ? j.value("code", 0) : 0;
-                    ending = Ending::Exited;
+                    ending = j.is_object() && j.contains("signal") ? Ending::Killed : Ending::Exited;
                     done = true;
                 }
             }
@@ -759,8 +760,9 @@ bool Client::write_(std::string_view frame) {
 }
 
 bool Client::open_command(std::uint32_t channel, const std::vector<std::string>& argv, int rows, int cols,
-                          const nlohmann::json& env, bool pipes) {
+                          const nlohmann::json& env, bool pipes, std::string_view user) {
     Json open{{"argv", argv}, {"env", env}};
+    if (!user.empty()) open["user"] = std::string(user);
     if (pipes) open["pipes"] = true;
     else {
         const char* term = std::getenv("TERM");
@@ -1054,9 +1056,16 @@ int enter(const service::Context& c, std::string_view name_or_image, const Enter
         std::println("{} keeps running: luban enter {} · luban stop {}", name, name, name);
         return 0;
     }
-    if (ending == Ending::Lost && !running(c.home, name)) {
-        std::println("{} is off", name);
-        return code;
+    // A machine powering itself off (`poweroff` inside) ends the session
+    // first -- its shell killed, or the connection gone -- while it is still
+    // going down: wait for it to be off rather than ask whether to keep
+    // running what is stopping.
+    if (ending == Ending::Lost || ending == Ending::Killed) {
+        for (int k = 0; k < 100 && running(c.home, name); ++k) std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        if (!running(c.home, name)) {
+            std::println("{} is off", name);
+            return ending == Ending::Lost ? code : 0;
+        }
     }
     bool off = ending == Ending::PowerOff;
     if (!off && state.value("temp", false)) off = true;
@@ -1078,6 +1087,63 @@ int enter(const service::Context& c, std::string_view name_or_image, const Enter
     }
     if (off) return vm::stop(c, name).code ? 1 : code;
     std::println("{} keeps running: luban enter {} · luban stop {}", name, name, name);
+    return code;
+}
+
+int run(const service::Context& c, std::string_view name, std::span<const std::string> argv, std::string_view user) {
+    if (argv.empty()) return 2;
+    const bool was_running = running(c.home, name).has_value();
+    if (!was_running)
+        if (const int rc = start(c, name, EnterOptions{}); rc != 0) return rc;
+    auto client = Client::connect(c.home, name);
+    if (!client || client->fd() < 0) {
+        say_(c, service::error(std::format("{} does not answer: {}", name, client ? std::string("no connection") : client.error()),
+                               std::format("luban status {}", name)));
+        if (!was_running) (void)vm::stop(c, name);
+        return 125;
+    }
+    // A terminal on both ends: the command on one there (its size, raw), so
+    // what asks a question can; otherwise pipes, its output as it was written.
+    const bool tty = platform::stdin_is_terminal() && platform::stdout_is_terminal();
+    const auto size = platform::terminal_size(0).value_or(std::pair<unsigned short, unsigned short>{24, 80});
+    const std::vector<std::string> words(argv.begin(), argv.end());
+    int code = 125;
+    if (client->open_command(1, words, size.first, size.second, session_env(c.home, name), !tty, user)) {
+        const auto saved = tty ? platform::make_terminal_raw(0) : std::nullopt;
+        std::array<char, 65536> buf{};
+        bool input = true;
+        for (bool done = false; !done;) {
+            std::array<platform::PollFd, 2> p{{{.fd = input ? 0 : -1}, {.fd = client->fd()}}};
+            platform::poll_fds(p, 200);
+            if (p[1].readable || p[1].closed) {
+                auto frames = client->poll(0);
+                if (!frames) break;
+                for (const auto& [type, body] : *frames) {
+                    if (body.first != 1) continue;
+                    if (type == 'D') (void)platform::write_all(1, body.second);
+                    else if (type == 'E') (void)platform::write_all(2, body.second);
+                    else if (type == 'X') {
+                        const auto j = Json::parse(body.second, nullptr, false);
+                        code = j.is_object() ? j.value("code", 0) : 0;
+                        if (j.is_object() && j.contains("error"))
+                            say_(c, service::error(std::format("{}: {}", words.front(), j.value("error", std::string{}))));
+                        done = true;
+                    }
+                }
+            }
+            if (input && (p[0].readable || p[0].closed)) {
+                auto n = platform::read_some(0, buf);
+                if (!n || *n == 0) {
+                    input = false;
+                    if (!tty) (void)client->end_input(1);
+                } else {
+                    (void)client->send(1, std::string_view(buf.data(), *n));
+                }
+            }
+        }
+        if (saved) platform::restore_terminal(0, *saved);
+    }
+    if (!was_running) (void)vm::stop(c, name);
     return code;
 }
 

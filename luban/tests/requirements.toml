@@ -490,3 +490,12 @@ status = "required"
 text = "luban/ imports of xlings are as luban/DEPENDENCIES.toml allows each package: base and shared modules; xlings' domain only where [migrating] lists it, never somewhere new"
 status = "required"
 
+# ── machines on a KVM host (design 2026-10-20 WuXian §13.4) ─────────
+
+[LUBAN-RUN-MACHINE]
+text = "luban run of a system that starts as a machine runs the command in the machine (its own kernel), its output, standard error and exit code as the command's; a machine started for it is powered off after"
+status = "required"
+
+[LUBAN-MACHINE-POWEROFF]
+text = "poweroff inside a machine ends its session as off, without asking whether to keep it running"
+status = "required"

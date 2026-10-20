@@ -44,6 +44,12 @@ std::optional<int> running(const fs::path& home, std::string_view name);
 // context's sink); 0 once it answers.
 int start(const service::Context& c, std::string_view name, const EnterOptions& o);
 
+// One command in the machine `name` (luban run of a system that starts as a
+// machine): on this terminal when there is one, else on pipes, as `user`
+// (empty: its login user); its exit code. A machine that was not running is
+// started for it and powered off after.
+int run(const service::Context& c, std::string_view name, std::span<const std::string> argv, std::string_view user);
+
 // One connection to a running machine's supervisor: sessions on channels
 // (luban.vm.protocol), what the terminal relay and the Luban OS window use.
 // Sending is safe from more than one thread (a frame is written whole);
@@ -69,8 +75,9 @@ public:
     bool open_display(std::uint32_t channel, std::string_view session, int width, int height);
     // A command instead of the login shell: on a terminal of rows x cols, or
     // on pipes (`pipes`: its output as D, its standard error as E).
+    // `user`: who runs it (empty: the root's login user).
     bool open_command(std::uint32_t channel, const std::vector<std::string>& argv, int rows, int cols,
-                      const nlohmann::json& env, bool pipes);
+                      const nlohmann::json& env, bool pipes, std::string_view user = {});
     // The end of a piped command's input.
     bool end_input(std::uint32_t channel);
     bool send(std::uint32_t channel, std::string_view bytes);

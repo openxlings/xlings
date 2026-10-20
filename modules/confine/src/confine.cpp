@@ -196,7 +196,8 @@ std::expected<sp::SandboxSpec, sp::Refusal> compile(const policy::Policy& pol, c
         if (!m.writable && !kernel)
             unmet.push_back({"mount", m.source + ": read-only needs bwrap; mapped read-write",
                              "xlings self doctor --isolation", i.need("fs")});
-        s.mounts.push_back({m.writable ? MountKind::Bind : MountKind::RoBind, posix(m.source), posix(m.inside)});
+        s.mounts.push_back({m.device ? MountKind::DevBind : m.writable ? MountKind::Bind : MountKind::RoBind,
+                            posix(m.source), posix(m.inside)});
     }
     // Each grant opens exactly one thing: a socket file bound in, its
     // variable pointed at it -- never the host's whole runtime directory.

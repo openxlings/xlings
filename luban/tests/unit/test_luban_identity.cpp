@@ -129,6 +129,19 @@ XTEST(LubanIdentity, AUsersOwnPackagesComeBeforeTheSystemsAndEveryUserHasComplet
         EXPECT_NE(text.find("__complete"), std::string::npos) << file;
         EXPECT_NE(text.find("luban"), std::string::npos) << file;
     }
+    // Every shell reads profile.d: a plain sh parses it, bash defines the completion.
+    if constexpr (tk::is_linux) {
+        const auto sh = tk::run({.argv = {"/bin/sh", "-n", (e / "profile.d/xlings-complete.sh").string()},
+                                 .env = {{"PATH", "/usr/bin:/bin"}}});
+        EXPECT_EQ(sh.exit_code, 0) << sh.transcript();
+        if (std::filesystem::exists("/bin/bash")) {
+            const auto bash = tk::run({.argv = {"/bin/bash", "-c", ". '" + (e / "profile.d/xlings-complete.sh").string() +
+                                                                       "'; complete -p luban"},
+                                       .env = {{"PATH", "/usr/bin:/bin"}}});
+            EXPECT_EQ(bash.exit_code, 0) << bash.transcript();
+            EXPECT_NE(bash.out.find("_luban_os_complete"), std::string::npos) << bash.transcript();
+        }
+    }
     EXPECT_NE(tk::read_file(e / "profile.d/xlings-user.sh").find("$HOME/.xlings/subos/current/bin"), std::string::npos);
     EXPECT_NE(tk::read_file(e / "fish/conf.d/xlings-user.fish").find("$HOME/.xlings/subos/current/bin"), std::string::npos);
     tk::write_file(e / "profile.d/xlings-user.sh", "# mine\n");
@@ -136,4 +149,25 @@ XTEST(LubanIdentity, AUsersOwnPackagesComeBeforeTheSystemsAndEveryUserHasComplet
     ASSERT_TRUE(again);
     EXPECT_TRUE(again->empty());
     EXPECT_EQ(tk::read_file(e / "profile.d/xlings-user.sh"), "# mine\n") << "machine state: an edit stays";
+    // The completion 2026.10.20.1-.3 wrote, which a plain sh could not parse:
+    // ours, unedited, so replaced; an edited one stays.
+    const std::string stale = "# Tab completion for xlings and luban, every user (Luban OS): each program\n"
+        "# answers from its own command tree (`<program> __complete <words>`).\n"
+        "# Machine state: edit freely; an upgrade never rewrites it.\n"
+        "if [ -n \"${BASH_VERSION-}\" ] && command -v complete >/dev/null 2>&1; then\n"
+        "    _luban_os_complete() {\n"
+        "        local IFS=$'\n'\n"
+        "        COMPREPLY=($(compgen -W \"$(\"${COMP_WORDS[0]}\" __complete \"${COMP_WORDS[@]:1:COMP_CWORD}\" 2>/dev/null | cut -f1)\" -- \"${COMP_WORDS[COMP_CWORD]}\"))\n"
+        "    }\n"
+        "    complete -o default -F _luban_os_complete xlings luban\n"
+        "fi\n";
+    tk::write_file(e / "profile.d/xlings-complete.sh", stale);
+    auto fixed = etc::ensure_user_layer_scripts(e);
+    ASSERT_TRUE(fixed);
+    EXPECT_EQ(*fixed, (std::vector<std::string>{"profile.d/xlings-complete.sh"}));
+    EXPECT_NE(tk::read_file(e / "profile.d/xlings-complete.sh").find("XLINGS_COMPLETE"), std::string::npos);
+    tk::write_file(e / "profile.d/xlings-complete.sh", stale + "# mine\n");
+    auto edited = etc::ensure_user_layer_scripts(e);
+    ASSERT_TRUE(edited);
+    EXPECT_TRUE(edited->empty()) << "an edited one is the machine's";
 }

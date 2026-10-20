@@ -384,6 +384,25 @@ end
     // luban answer from their own command trees.
     static constexpr std::string_view complete_sh = R"SH(# Tab completion for xlings and luban, every user (Luban OS): each program
 # answers from its own command tree (`<program> __complete <words>`).
+# bash's syntax is read as text and run by bash only: another shell reading
+# this file (busybox sh, dash) stops at it even inside a test that is false.
+# Machine state: edit freely; an upgrade never rewrites it.
+if [ -n "${BASH_VERSION-}" ] && command -v complete >/dev/null 2>&1; then
+    eval "$(cat <<'XLINGS_COMPLETE'
+_luban_os_complete() {
+    local IFS=$'\n'
+    COMPREPLY=($(compgen -W "$("${COMP_WORDS[0]}" __complete "${COMP_WORDS[@]:1:COMP_CWORD}" 2>/dev/null | cut -f1)" -- "${COMP_WORDS[COMP_CWORD]}"))
+}
+complete -o default -F _luban_os_complete xlings luban
+XLINGS_COMPLETE
+)"
+fi
+)SH";
+    // What 2026.10.20.1-.3 wrote: bash's syntax a plain sh stops at on every
+    // login (busybox sh: `syntax error: unexpected "("`). Ours, never edited,
+    // so replaced; an edited one is the machine's and stays.
+    static constexpr std::string_view complete_sh_2026_10_20 = R"SH(# Tab completion for xlings and luban, every user (Luban OS): each program
+# answers from its own command tree (`<program> __complete <words>`).
 # Machine state: edit freely; an upgrade never rewrites it.
 if [ -n "${BASH_VERSION-}" ] && command -v complete >/dev/null 2>&1; then
     _luban_os_complete() {
@@ -408,7 +427,13 @@ end
                                     std::pair{fs::path("fish/conf.d/xlings-complete.fish"), complete_fish}}) {
         std::error_code ec;
         const auto file = etc / rel;
-        if (fs::exists(fs::symlink_status(file, ec))) continue;
+        if (fs::exists(fs::symlink_status(file, ec))) {
+            const bool stale = text == complete_sh && fs::is_regular_file(fs::symlink_status(file, ec)) && [&] {
+                std::ifstream in(file, std::ios::binary);
+                return std::string(std::istreambuf_iterator<char>(in), {}) == complete_sh_2026_10_20;
+            }();
+            if (!stale) continue;
+        }
         fs::create_directories(file.parent_path(), ec);
         if (ec) return std::unexpected(std::format("cannot make {}: {}", file.parent_path().string(), ec.message()));
         std::ofstream out(file, std::ios::trunc);

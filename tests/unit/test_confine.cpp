@@ -261,3 +261,32 @@ XTEST(Confine, TheHostsProgramAndLibraryDirectoriesAreWhereTheHostsResolve,
     const auto leap = mounts_on({"/bin", "/sbin", "/lib", "/lib64"}, {});
     EXPECT_EQ(leap.at("/lib64"), "/lib64") << "Leap 15's loader is in its own /lib64";
 }
+
+// A device mounted in (--mount /dev/kvm) is usable inside: a plain bind is
+// nodev in the sandbox's mount namespace, and opening the node failed.
+XTEST(Confine, AMountedDeviceNodeIsBoundWithItsDevicesUsable, .area = "subos", .covers = {"ISO-MOUNT"}) {
+    namespace policy = xlings::subos::policy;
+    sp::Request r;
+    r.instance = "box";
+    r.instance_dir = "/h/subos/box";
+    r.user = "u";
+    r.argv = {"make"};
+    r.host_exists = [](std::string_view) { return true; };
+    r.host_device = [](std::string_view p) { return p == "/dev/kvm"; };
+    const xlings::subos::HomeView home{"/h"};
+    auto p = policy::legacy();
+    p.mounts = {{.src = "/dev/kvm"}, {.src = "/data"}, {.src = "/ro", .rw = false}};
+    auto s = cf::compile(p, home, linux_host(true, false, 0), r);
+    ASSERT_TRUE(s);
+    const auto kind_of = [&](std::string_view dst) -> std::optional<sp::MountKind> {
+        for (const auto& m : s->mounts) if (m.dst == dst) return m.kind;
+        return std::nullopt;
+    };
+    EXPECT_EQ(kind_of("/dev/kvm"), sp::MountKind::DevBind);
+    EXPECT_EQ(kind_of("/data"), sp::MountKind::Bind) << "a directory stays a plain bind";
+    EXPECT_EQ(kind_of("/ro"), sp::MountKind::RoBind);
+    const auto argv = cf::launch_argv(*s, std::nullopt, "/self/xlings");
+    const auto at = std::ranges::find(argv, "--dev-bind");
+    ASSERT_NE(at, argv.end());
+    EXPECT_EQ(*(at + 1), "/dev/kvm");
+}
