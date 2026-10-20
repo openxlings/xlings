@@ -104,6 +104,8 @@ XTEST(XdeskPerf, AStillDesktopSendsNoFramesAndAHiddenWindowNone, .area = "luban"
     ASSERT_EQ(home.xlings({"self", "init"}).exit_code, 0);
     const auto a = home.root() / "a.json", b = home.root() / "b.json", c = home.root() / "c.json", d = home.root() / "d.json";
     // After the first session's hint has gone (8 s): then nothing changes.
+    // Minimized, a second for it to reach xdesk (a frame already on its way
+    // on a slow machine is not one sent to a hidden window).
     auto r = xdesk_with(home, "canvas", std::format(R"(wait desktop
 waitfor desktop.texture.0 1100
 sleep 9000
@@ -111,7 +113,7 @@ state {}
 sleep 2000
 state {}
 minimize
-sleep 300
+sleep 1000
 state {}
 key Super+o
 sleep 1500
