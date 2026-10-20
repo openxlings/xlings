@@ -1020,18 +1020,18 @@ sleep 600
 key Escape
 sleep 300
 key Super+/
-sleep 400
+sleep 800
 type maxim
-sleep 300
+sleep 1000
 key Down
 key Down
 key Down
 key Return
-sleep 300
-key Super+Shift+x
 sleep 600
+key Super+Shift+x
+sleep 1000
 key Escape
-sleep 400
+sleep 600
 )", maximized.string(), settings.string(), artifact("xdesk-settings.bmp").string()));
     });
     // The control socket, as `xdesk msg` uses it.
