@@ -158,7 +158,7 @@ then `p` powers it off. `luban stop box` powers it off from anywhere.
 ## 7. A desktop
 
 ```bash
-luban new desk --edition desktop         # xdesk: tile, stack or a canvas, a panel, a launcher, a terminal
+luban new desk --edition desktop         # xdesk: workspaces on WuXian, a status bar, a launcher, a terminal
 xlings install luban-os                  # the Luban OS window
 luban enter desk --display window
 ```

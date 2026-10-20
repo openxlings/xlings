@@ -23,7 +23,7 @@ Luban 的 edition 位于官方 index 的 `luban:` 命名空间；luban 中的短
 
 2026.10.18.1 之前发布的 edition（`subos:luban-core`、`subos:luban-desktop-xdesk` 等）冻结：保留、照常解析、不再更新。
 每个 `luban:` edition 声明它接替哪个，`luban upgrade` 把用旧 edition 创建的系统移到接替者，看到的内容不变
-（desktop-xdesk 的系统仍是画布）。
+（desktop-xdesk 的系统启动时在 WuXian 视图里）。
 
 ## 任何 index 的系统：`--xpkg`
 

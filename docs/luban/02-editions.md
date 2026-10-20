@@ -30,8 +30,8 @@ anything is made. A desktop is not an edition: an edition presets one, and
 The editions published before 2026.10.18.1 (`subos:luban-core`,
 `subos:luban-desktop-xdesk`, …) are frozen: kept, resolved, never updated. Each
 `luban:` edition says which it replaces, and `luban upgrade` moves a system made
-from one to its successor, keeping what it showed (a desktop-xdesk system keeps
-the canvas).
+from one to its successor, keeping what it showed (a desktop-xdesk system starts
+in the WuXian view).
 
 ## Any index's system: `--xpkg`
 
