@@ -40,6 +40,17 @@ int enter(const service::Context& c, std::string_view name_or_image, const Enter
 // Whether `name` runs as a machine here, and its supervisor's pid.
 std::optional<int> running(const fs::path& home, std::string_view name);
 
+// A machine's GPU (design 2026-10-20 WuXian §7.5): virtio-gpu with 3D
+// through virgl, rendered on this host's render node, when there is one and
+// the GL build of qemu (xim:qemu-system-gl) has the device; otherwise no GPU
+// and why. What qemu is given, and what is said of it.
+struct MachineGpu {
+    bool virgl { false };
+    std::vector<std::string> args;      // the display and its device
+    std::string summary;                // "virgl on /dev/dri/renderD128", or why not
+};
+MachineGpu machine_gpu(const std::optional<fs::path>& render_node, bool gl_qemu, bool has_device);
+
 // Starts `name` as a machine when it is not running (the events go to the
 // context's sink); 0 once it answers.
 int start(const service::Context& c, std::string_view name, const EnterOptions& o);

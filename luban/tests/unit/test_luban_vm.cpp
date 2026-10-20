@@ -103,3 +103,21 @@ XTEST(LubanVm, TheHostsProxyIsMappedForAMachine, .area = "luban", .covers = {"LU
     EXPECT_EQ(luban::service::network_line(host, in), "like the host · proxy http://10.0.2.2:7890 (the host's http://127.0.0.1:7890)");
     EXPECT_EQ(luban::service::network_line({}, {}), "like the host");
 }
+
+// A machine's GPU (design 2026-10-20 WuXian §7.5): virgl on this host's render
+// node with the GL build of qemu, which has the device; otherwise no GPU, and
+// why -- what the machine's About page and its state say.
+XTEST(LubanVm, AMachineHasVirglOnlyWithARenderNodeAndTheGlQemu, .area = "luban", .covers = {"LUBAN-MACHINE-GPU"}) {
+    const std::optional<std::filesystem::path> node{"/dev/dri/renderD128"};
+    const auto yes = luban::vm::machine_gpu(node, true, true);
+    EXPECT_TRUE(yes.virgl);
+    EXPECT_EQ(yes.args, (std::vector<std::string>{"-device", "virtio-gpu-gl-pci", "-display", "egl-headless,rendernode=/dev/dri/renderD128"}));
+    EXPECT_EQ(yes.summary, "virgl on /dev/dri/renderD128");
+    for (const auto& no : {luban::vm::machine_gpu(std::nullopt, true, true), luban::vm::machine_gpu(node, false, false),
+                           luban::vm::machine_gpu(node, true, false)}) {
+        EXPECT_FALSE(no.virgl);
+        EXPECT_EQ(no.args, (std::vector<std::string>{"-display", "none"}));
+        EXPECT_TRUE(no.summary.starts_with("no GPU: ")) << no.summary;
+    }
+    EXPECT_NE(luban::vm::machine_gpu(node, false, false).summary.find("xlings install xim:qemu-system-gl"), std::string::npos);
+}

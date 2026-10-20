@@ -215,6 +215,28 @@ std::string tail_(const fs::path& file, std::size_t lines) {
 }
 
 // Starts the machine's supervisor and waits for its agent.
+// The first render node this host has (/dev/dri/renderD128 on).
+std::optional<fs::path> render_node_() {
+    std::error_code ec;
+    for (int n = 128; n < 192; ++n)
+        if (const fs::path p = std::format("/dev/dri/renderD{}", n); fs::exists(p, ec)) return p;
+    return std::nullopt;
+}
+
+}  // namespace
+
+MachineGpu machine_gpu(const std::optional<fs::path>& render_node, bool gl_qemu, bool has_device) {
+    if (!render_node) return {.args = {"-display", "none"}, .summary = "no GPU: this host has no render node"};
+    if (!gl_qemu)
+        return {.args = {"-display", "none"}, .summary = "no GPU: the GL build of qemu is not installed (xlings install xim:qemu-system-gl)"};
+    if (!has_device) return {.args = {"-display", "none"}, .summary = "no GPU: this qemu has no virtio-gpu-gl-pci"};
+    return {.virgl = true,
+            .args = {"-device", "virtio-gpu-gl-pci", "-display", std::format("egl-headless,rendernode={}", render_node->string())},
+            .summary = std::format("virgl on {}", render_node->string())};
+}
+
+namespace {
+
 int start_impl_(const service::Context& c, std::string_view name, const EnterOptions& o) {
     const auto& arch = xlings::image::native_arch();
     const xlings::subos::HomeView view{c.home};
@@ -328,6 +350,14 @@ int start_impl_(const service::Context& c, std::string_view name, const EnterOpt
     }
     const bool kvm = kvm_();
     const auto memory = o.memory.empty() ? default_memory_mb_() : o.memory;
+    // Its GPU: the GL build of qemu when there is one that can (WuXian §7.5).
+    const auto node = render_node_();
+    auto gl = node ? xlings::subos::tools::candidates(std::string(arch.qemu) + "-gl", view, xlings::subos::Ports{})
+                   : std::vector<xlings::subos::tools::Found>{};
+    const bool has_device = !gl.empty()
+        && capture_({gl.front().bin.string(), "-M", "none", "-device", "help"}).find("\"virtio-gpu-gl-pci\"") != std::string::npos;
+    const auto gpu = machine_gpu(node, !gl.empty(), has_device);
+    if (gpu.virgl) qemu = gl.front();
     std::vector<std::string> q{qemu->bin.string()};
     if (!arch.machine.empty()) q.insert(q.end(), {"-M", std::string(arch.machine)});
     q.insert(q.end(), {"-m", memory, "-smp", default_cpus_()});
@@ -341,7 +371,7 @@ int start_impl_(const service::Context& c, std::string_view name, const EnterOpt
                                    // name the system's (design 2026-10-19 §27.2): nothing in
                                    // the system has to bring either up, whatever its init is.
                                    net.args.size() == 2 && net.args[1] != "none" ? std::format(" ip=::::{}::dhcp", name) : std::string{}),
-                       "-display", "none", "-no-reboot",
+                       "-no-reboot",
                        "-serial", std::format("file:{}", (log_dir(c.home, name) / "console.log").string()),
                        "-virtfs", std::format("local,path={},mount_tag=root,security_model=none,id=root", share.string()),
                        "-virtfs", std::format("local,path={},mount_tag=home,security_model=none,readonly=on,id=home", home_files),
@@ -352,9 +382,11 @@ int start_impl_(const service::Context& c, std::string_view name, const EnterOpt
     if (userhome)
         q.insert(q.end(), {"-virtfs", std::format("local,path={},mount_tag=userhome,security_model=none,id=userhome",
                                                   (*root / "home").string())});
+    q.insert(q.end(), gpu.args.begin(), gpu.args.end());
     q.insert(q.end(), net.args.begin(), net.args.end());
     Json state{{"name", name}, {"qemu", q}, {"persist", persist}, {"temp", o.temp}, {"scratch", persist == "all" ? "" : share.string()},
-               {"env", net.env}, {"started", xlings::observe::utc_now()}, {"accel", kvm ? "kvm" : "tcg"}, {"memory", memory}};
+               {"env", net.env}, {"started", xlings::observe::utc_now()}, {"accel", kvm ? "kvm" : "tcg"}, {"memory", memory},
+               {"gpu", gpu.summary}};
     platform::write_file_atomic(state_file_(c.home, name).string(), state.dump(2));
     fs::remove(client_socket_(c.home, name), ec);
     const auto self = luban_(c.home).string();
