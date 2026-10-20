@@ -18,7 +18,7 @@
 #      unit that makes the call, so they are parsed once, by one unit, and a
 #      partition's interface reads the same on every platform.
 #
-# modules/testkit and tests/ are outside the product (see
+# modules/testkit, tests/ and luban/tests/ are outside the product (see
 # lint_platform_headers.sh); modules/libs/src/json is vendored.
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -33,7 +33,7 @@ while IFS= read -r hit; do
     bad=$((bad + 1)) ;;
   esac
 done < <(grep -rnE --include='*.cpp' --include='*.cppm' "$branch" src modules apps luban 2>/dev/null \
-           | grep -v '^modules/platform/' | grep -v '^modules/testkit/' \
+           | grep -v '^modules/platform/' | grep -v '^modules/testkit/' | grep -v '^luban/tests/' \
            | grep -v '^modules/libs/src/json/' || true)
 
 while IFS= read -r hit; do

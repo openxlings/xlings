@@ -7,7 +7,8 @@
 #   - modules/testkit: the test harness, deliberately independent of the
 #     product's modules (a tool that measures the product must not share its
 #     failure modes);
-#   - tests/: a test may call the kernel directly to check what it does;
+#   - tests/ and luban/tests/: a test may call the kernel directly to check
+#     what it does;
 #   - the C library headers that only carry `stdout` / `stderr` / time
 #     functions (<cstdio>, <cstdlib>, <ctime>) -- standard C++, no OS in them.
 set -euo pipefail
@@ -19,7 +20,7 @@ pattern='#[[:space:]]*include[[:space:]]*<(unistd|fcntl|poll|sched|signal|csigna
 # its platform (luban/kits/*/src/native/) and a hypervisor's binding
 # (luban/os/vm/src/native/).
 hits="$(grep -rnE "$pattern" src modules apps luban --include='*.cpp' --include='*.cppm' \
-        | grep -v '^modules/platform/' | grep -v '^modules/testkit/' \
+        | grep -v '^modules/platform/' | grep -v '^modules/testkit/' | grep -v '^luban/tests/' \
         | grep -v '^luban/xdesk/base/src/os/' \
         | grep -vE '^luban/kits/[^/]+/src/native/' \
         | grep -v '^luban/os/vm/src/native/' || true)"
