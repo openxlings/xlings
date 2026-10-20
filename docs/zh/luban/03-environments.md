@@ -147,8 +147,8 @@ luban status box --check --json   # {"ok": ..., "failed": [...], "items": [...]}
 
 检查分关键与非关键。关键检查失败会中止正在进行的操作：新系统不就绪，升级不切换，机器不启动，进入不开始，并说明是哪一项失败。
 其余失败只报告，系统照常使用。检查项是任何 Linux 用户空间都需要的：`/usr` 是系统的这一代，`/usr/bin` 中每个程序都有其加载器、
-能找到它声明的库，每个包的程序都能启动，用户、登录 shell、主机名与 machine id、时区、证书机构、UTF-8 locale、终端描述，
-桌面系统还有应用列表和光标主题；再加上 edition 声明的检查。edition 在 `/usr/share/luban/checks.d/*.json` 中声明自己的检查：
+能找到它声明的库，每个包的程序都能启动，用户、登录 shell、主机名与 machine id、时区、证书机构、UTF-8 locale、终端描述、
+系统里 xlings 读的包索引（它的用户也读这一份），桌面系统还有应用列表和光标主题；再加上 edition 声明的检查。edition 在 `/usr/share/luban/checks.d/*.json` 中声明自己的检查：
 
 ```json
 {"checks": [{"id": "desk-session", "what": "its desktop session starts", "run": "xdesk --version", "critical": false, "timeout": 30}]}

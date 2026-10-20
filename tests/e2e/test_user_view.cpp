@@ -49,8 +49,10 @@ exit $rc
 }  // namespace
 
 XTEST(UserView, AUsersViewReadsTheSystemsStoreAndAsksOnceForWhatItLacks, .area = "subos",
-      .covers = {"LUBAN-USER-VIEW"}, .requires_ = {"linux", "xlings-bin"}) {
+      .covers = {"LUBAN-USER-VIEW"}, .requires_ = {"linux", "bwrap", "xlings-bin"}) {
     if constexpr (!tk::is_linux) GTEST_SKIP() << "Luban systems are Linux";
+    // A view reads the system's recipes in a worker of its own.
+    if (const auto why = tk::probe("bwrap")) GTEST_SKIP() << *why;
     if (xlings::platform::is_root()) GTEST_SKIP() << "root writes every home";
     auto home = tk::Home::isolated("user-view");
     // The system's home where a real one is visible to a sandboxed recipe
@@ -88,10 +90,19 @@ XTEST(UserView, AUsersViewReadsTheSystemsStoreAndAsksOnceForWhatItLacks, .area =
     tk::write_file(system / ".xlings-home", marker.dump());
     // The user has nothing of their own yet: the view is made on first write.
     fs::remove_all(home.dir());
+    // A policy around the system, as a desktop has (its sound): already in
+    // force around everything inside, so a recipe is read without another
+    // confinement -- one that needs the home written (design 2026-10-20
+    // §4.13 V12: a desktop's search found nothing).
+    tk::write_file(system / "config/subos/default/policy.json", R"({"extends":"private","isolation":{"net":"none"}})");
 
     ReadOnly guard(system);
     auto inSystem = asSystem;
     inSystem["XLINGS_ROOT_INSTANCE"] = "default";
+
+    r = home.xlings({"search", "fixture-tool"}, inSystem);
+    EXPECT_NE(r.out.find("xim:fixture-tool"), std::string::npos) << r.transcript();
+    fs::remove_all(home.dir());
 
     // What the system provides is the user's already: said, not installed.
     r = home.xlings({"install", "fixture-tool"}, inSystem);

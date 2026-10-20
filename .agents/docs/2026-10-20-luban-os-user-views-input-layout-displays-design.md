@@ -221,6 +221,7 @@ root_etc 给所有用户写补全钩子：`fish/conf.d/xlings-complete.fish`、`
 | V9 | 补全钩子写给所有用户（G17） | — |
 | V10 | 接口 1.15 | V2、V3、V6 |
 | V11 | sudo：`xim:sudo`、core 的新版本、sudoers、默认密码、`--no-password`、setuid 验证 | 跨仓库 |
+| V12 | 系统里读得到 index（2026.10.20.2，实测发现：桌面系统里 root 与 lubanoser 的 `xlings search/info/list` 都说"读不到"或"找不到"）。两个原因：① 目录缓存（`.xlings-index-cache.json`）按绝对路径记 recipe，随 index 带进系统的仍指向主人的 home，里面便要重建——沙箱的 `/xlings` 连 root 也只读；生产者在建系统时、以及每次经它进入系统时（`domain_producer::run`），把主人的缓存改写成系统里看到的路径（`logicalHome/data/...`），内容相同就不写，只对同一快照（index 版本标记相同）；② 有策略的系统（桌面有声音的授权）里读 recipe 又起一个受该策略约束的 worker，它要写 home——系统里该策略本就包在整个进程外，读 recipe（metadata、建目录）就按无策略的 home 读（`lua_boundary::read_policy`）；装包的 worker 不变。`__root check`（非 fast）多一项"package-index"。同批：主机没有声音服务时每次进入都警告 `audio`——默认授权、无可修复，改为 `-v` 与 status 里说；升级时托管分发器的版本问的是名为 `source` 的副本（多入口程序不答），每次升级都报"DOWNGRADED X -> "，改问原文件 | V1 |
 
 ## 5. 键盘锁定（G8）
 
@@ -818,6 +819,7 @@ Luban 的键位按需求与交互设计来定，不照搬某个系统：
 | C11 文档 | 08-desktop（中英）、生成的键位表、03-environments；设计记录 |
 | C13–C17 第二轮实测 | 完成：进度、默认用户、LXQt r4、KDE r2、Falkon、桥接会话的剪贴板（wlr-data-control） |
 | C18 声音 | 机器的声音输出完成（§20.1 实现）；麦克风、托盘在没有窗口时播放留到下一版 |
+| 系统里读 index（§4.13 V12） | 2026.10.20.2 修复 |
 | GPU 优先（§13.2 第 5 条） | **留到下一版**：要 index 里有 Mesa、mcpp 里的 wlroots 带 GLES2 渲染器；软件渲染的预算（§13.3）已达标 |
 
 ## 21. 安卓版

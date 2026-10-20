@@ -70,6 +70,17 @@ XTEST(DomainProducer, InstallsAtLogicalPrefixInsideANamespaceAndPreservesHostDat
     // A query inside answers from the index the system has (design
     // 2026-10-16 L §7), and never fetches one.
     EXPECT_TRUE(fs::is_directory(privateHome / "data/xim-pkgindex"));
+    // Its parsed index with it, naming its recipes where the system sees
+    // them (design 2026-10-20 §4): nothing inside has to rebuild it -- in a
+    // sandbox nothing inside can.
+    const auto cache = privateHome / "data/xim-pkgindex/.xlings-index-cache.json";
+    ASSERT_TRUE(fs::exists(cache));
+    const auto parsed = Json::parse(tk::read_file(cache), nullptr, false);
+    ASSERT_TRUE(parsed.is_object());
+    for (auto it = parsed["entries"].begin(); it != parsed["entries"].end(); ++it) {
+        const auto path = it.value().value("path", std::string{});
+        EXPECT_TRUE(path.empty() || path.starts_with("/xlings/data/xim-pkgindex/")) << it.key() << ": " << path;
+    }
     const auto outerBefore = Json::parse(before);
     const auto outerAfter = Json::parse(tk::read_file(home.dir() / ".xlings.json"));
     for (const auto* key : {"versions", "workspace", "configured", "activeSubos"})
