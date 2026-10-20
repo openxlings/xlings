@@ -49,8 +49,10 @@ exit $rc
 }  // namespace
 
 XTEST(UserView, AUsersViewReadsTheSystemsStoreAndAsksOnceForWhatItLacks, .area = "subos",
-      .covers = {"LUBAN-USER-VIEW"}, .requires_ = {"linux", "xlings-bin"}) {
+      .covers = {"LUBAN-USER-VIEW"}, .requires_ = {"linux", "bwrap", "xlings-bin"}) {
     if constexpr (!tk::is_linux) GTEST_SKIP() << "Luban systems are Linux";
+    // A view reads the system's recipes in a worker of its own.
+    if (const auto why = tk::probe("bwrap")) GTEST_SKIP() << *why;
     if (xlings::platform::is_root()) GTEST_SKIP() << "root writes every home";
     auto home = tk::Home::isolated("user-view");
     // The system's home where a real one is visible to a sandboxed recipe
