@@ -170,16 +170,80 @@ std::expected<void, std::string> follow_owner_config_(const Domain& domain) {
 // The owner's index, as a system is made (design 2026-10-16 L §7): a query
 // inside it answers from what is here and never fetches, so a system without
 // an index answered "package index not available" to its first `xlings list`.
-// Copied once, while the domain has none; `xlings update` there refreshes it.
 // The index snapshot a domain resolves with is the owner's, as it is now
 // (design 2026-10-19 §9.3): what luban chose a version from on the host is
-// what the domain resolves it in. Copied the first time, and again whenever
-// an index's version marker differs from the owner's -- never fetched there.
+// what the domain resolves it in. Carried as a system is made and whenever
+// one runs through the domain, when an index's version marker differs from
+// the owner's -- never fetched there.
 std::string index_marker_(const fs::path& dir) {
     std::ifstream in(dir / ".xlings-index-version");
     std::string line;
     std::getline(in, line);
     return line;
+}
+
+// The domain's copy brought to the owner's in place, a file at a time (each
+// written beside and renamed over), what the owner's no longer has removed,
+// the version markers last (design 2026-10-20 §4.13 V12): a running system
+// has the directory bound and moves to the new snapshot -- a copy swapped in
+// whole left it a deleted one, so it was carried only as a system was made.
+// The parsed cache stays the domain's own (carry_owner_caches_).
+bool copy_if_differs_(const fs::path& from, const fs::path& to) {
+    std::error_code ec;
+    if (fs::is_regular_file(to, ec) && fs::file_size(from, ec) == fs::file_size(to, ec)
+        && platform::read_file_to_string(from.string()) == platform::read_file_to_string(to.string()))
+        return true;
+    const auto staged = fs::path(to.string() + ".carry");
+    fs::copy_file(from, staged, fs::copy_options::overwrite_existing, ec);
+    if (!ec) fs::rename(staged, to, ec);
+    if (ec) fs::remove(staged, ec);
+    return !ec;
+}
+
+bool sync_index_(const fs::path& from, const fs::path& to) {
+    constexpr std::string_view kMarker = ".xlings-index-version", kCache = ".xlings-index-cache.json";
+    std::error_code ec;
+    fs::create_directories(to, ec);
+    if (ec) return false;
+    std::set<fs::path> wanted;
+    std::vector<fs::path> markers;
+    for (fs::recursive_directory_iterator it(from, ec), end; !ec && it != end; it.increment(ec)) {
+        const auto rel = it->path().lexically_relative(from);
+        const auto name = rel.filename().string();
+        if (name == kCache || name.ends_with(".carry")) continue;
+        wanted.insert(rel);
+        std::error_code e;
+        if (it->is_symlink(e)) {
+            const auto link = fs::read_symlink(it->path(), e);
+            if (!e && fs::read_symlink(to / rel, e) != link) {
+                fs::remove(to / rel, e);
+                fs::create_symlink(link, to / rel, e);
+            }
+            if (e) return false;
+        } else if (it->is_directory(e)) {
+            fs::create_directories(to / rel, e);
+            if (e) return false;
+        } else if (name == kMarker) {
+            markers.push_back(rel);
+        } else if (!copy_if_differs_(it->path(), to / rel)) {
+            return false;
+        }
+    }
+    if (ec) return false;
+    std::vector<fs::path> gone;
+    for (fs::recursive_directory_iterator it(to, ec), end; !ec && it != end; it.increment(ec)) {
+        const auto rel = it->path().lexically_relative(to);
+        if (rel.filename() == kCache || wanted.contains(rel)) continue;
+        gone.push_back(it->path());
+        if (std::error_code e; it->is_directory(e) && !it->is_symlink(e)) it.disable_recursion_pending();
+    }
+    for (const auto& path : gone) {
+        std::error_code e;
+        fs::remove_all(path, e);  // subos-remove-all-ok: what the owner's index no longer has, in the domain's copy of it
+    }
+    for (const auto& rel : markers)
+        if (!copy_if_differs_(from / rel, to / rel)) return false;
+    return !ec;
 }
 
 std::expected<void, std::string> carry_owner_index_(const Domain& domain) {
@@ -189,8 +253,7 @@ std::expected<void, std::string> carry_owner_index_(const Domain& domain) {
         if (!name.starts_with("xim-pkgindex") && name != "xim-index-repos") continue;
         if (!it->is_directory(ec) || it->is_symlink(ec)) continue;
         const auto target = domain.physicalHome / "data" / name;
-        const bool there = fs::exists(target, ec);
-        if (there) {
+        if (fs::exists(target, ec)) {
             // Sub-indexes keep their markers one level down.
             bool same = index_marker_(it->path()) == index_marker_(target);
             if (name == "xim-index-repos")
@@ -199,23 +262,8 @@ std::expected<void, std::string> carry_owner_index_(const Domain& domain) {
                         same = index_marker_(sub->path()) == index_marker_(target / sub->path().filename());
             if (same) continue;
         }
-        const auto staged = fs::path(target.string() + ".carry");
-        fs::remove_all(staged, ec);  // subos-remove-all-ok: this copy's own staging directory
-        fs::copy(it->path(), staged, fs::copy_options::recursive | fs::copy_options::copy_symlinks, ec);
-        if (!ec && there) {
-            const auto old = fs::path(target.string() + ".old");
-            fs::remove_all(old, ec);  // subos-remove-all-ok: the replaced copy of the owner's index
-            fs::rename(target, old, ec);
-            if (!ec) fs::rename(staged, target, ec);
-            std::error_code rec;
-            fs::remove_all(old, rec);  // subos-remove-all-ok: the replaced copy of the owner's index
-        } else if (!ec) {
-            fs::rename(staged, target, ec);
-        }
-        if (ec) {
-            fs::remove_all(staged, ec);  // subos-remove-all-ok: this copy's own staging directory
+        if (!sync_index_(it->path(), target))
             return std::unexpected(std::format("cannot carry the index {} into {}", name, domain.physicalHome.string()));
-        }
     }
     return {};
 }
@@ -418,6 +466,10 @@ std::expected<int, std::string> run(const Domain& domain, std::span<const std::s
     if (auto refreshed = refresh_entry(domain, platform::get_executable_path()); !refreshed)
         return std::unexpected(refreshed.error());
     if (auto synced = follow_owner_config_(domain); !synced) return std::unexpected(synced.error());
+    // The owner's index as it is now, with its parsed cache: a system made
+    // before kept the snapshot (and the cache) it was made with. Never a
+    // reason not to run: what it had is still there.
+    (void)carry_owner_index_(domain);
     carry_owner_caches_(domain);
     struct Stage {
         fs::path path;

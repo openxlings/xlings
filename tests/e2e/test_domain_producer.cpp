@@ -285,6 +285,32 @@ XTEST(DomainProducer, InstallsAtLogicalPrefixInsideANamespaceAndPreservesHostDat
         EXPECT_NE(joined.out.find("xlings "), std::string::npos);
         EXPECT_EQ(tk::read_file(producer.run_dir("domain-root") / "session.json"), sessionBefore);
     }
+    {
+        // The owner's index moves on (`xlings update`) while the system runs:
+        // the next call through the domain brings it, in place -- the same
+        // directory, which the running session has bound, not one swapped in
+        // and the old deleted (design 2026-10-20 §4.13 V12).
+        const auto index = home.dir() / "data/xim-pkgindex", carried = privateHome / "data/xim-pkgindex";
+        const auto inode = [&] { return tk::run({.argv = {"stat", "-c", "%i", carried.string()}}).out; };
+        const auto call = [&] {
+            auto r = home.xlings({"subos", "exec", "domain-root", "--", "/xlings/bin/xlings", "--version"});
+            EXPECT_EQ(r.exit_code, 0) << r.transcript();
+        };
+        const auto bound = inode();
+        tk::write_file(index / "pkgs/o/old-one.lua", "-- the first snapshot's\n");
+        tk::write_file(index / ".xlings-index-version", "snap-1\n");
+        call();
+        EXPECT_EQ(tk::read_file(carried / ".xlings-index-version"), "snap-1\n");
+        EXPECT_TRUE(fs::exists(carried / "pkgs/o/old-one.lua"));
+        fs::remove(index / "pkgs/o/old-one.lua");
+        tk::write_file(index / "pkgs/n/new-one.lua", "-- the second snapshot's\n");
+        tk::write_file(index / ".xlings-index-version", "snap-2\n");
+        call();
+        EXPECT_EQ(tk::read_file(carried / ".xlings-index-version"), "snap-2\n");
+        EXPECT_EQ(tk::read_file(carried / "pkgs/n/new-one.lua"), "-- the second snapshot's\n");
+        EXPECT_FALSE(fs::exists(carried / "pkgs/o/old-one.lua"));
+        EXPECT_EQ(inode(), bound) << "the carried index was replaced, not updated";
+    }
     auto running = home.xlings({"subos", "ps", "domain-root", "--json"});
     ASSERT_EQ(running.exit_code, 0) << running.transcript();
     EXPECT_EQ(Json::parse(running.out)["instance"], "domain-root");
