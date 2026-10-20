@@ -119,5 +119,5 @@ XTEST(LubanVm, AMachineHasVirglOnlyWithARenderNodeAndTheGlQemu, .area = "luban",
         EXPECT_EQ(no.args, (std::vector<std::string>{"-display", "none"}));
         EXPECT_TRUE(no.summary.starts_with("no GPU: ")) << no.summary;
     }
-    EXPECT_NE(luban::vm::machine_gpu(node, false, false).summary.find("xlings install xim:qemu-system-gl"), std::string::npos);
+    EXPECT_NE(luban::vm::machine_gpu(node, false, false).summary.find("not a GL build"), std::string::npos);
 }

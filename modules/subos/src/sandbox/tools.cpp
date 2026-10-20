@@ -83,11 +83,6 @@ const std::vector<Entry>& table() {
         {{"qemu-system-aarch64", "qemu-system"}, "xim-x-qemu-system",
          {{Source::Payload, "bin"}, {Source::Host, "/usr/bin/qemu-system-aarch64"},
           {Source::Host, "/usr/local/bin/qemu-system-aarch64"}}},
-        // Its GL build (design 2026-10-20 WuXian §7.5): virgl, rendered on
-        // the host's render node; a machine's GPU when it is here. Its own
-        // payload only: a host's qemu is not known to have the device.
-        {{"qemu-system-x86_64-gl", "qemu-system-gl"}, "xim-x-qemu-system-gl", {{Source::Payload, "bin"}}},
-        {{"qemu-system-aarch64-gl", "qemu-system-gl"}, "xim-x-qemu-system-gl", {{Source::Payload, "bin"}}},
     };
     return t;
 }

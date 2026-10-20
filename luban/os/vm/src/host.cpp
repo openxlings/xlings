@@ -227,8 +227,7 @@ std::optional<fs::path> render_node_() {
 
 MachineGpu machine_gpu(const std::optional<fs::path>& render_node, bool gl_qemu, bool has_device) {
     if (!render_node) return {.args = {"-display", "none"}, .summary = "no GPU: this host has no render node"};
-    if (!gl_qemu)
-        return {.args = {"-display", "none"}, .summary = "no GPU: the GL build of qemu is not installed (xlings install xim:qemu-system-gl)"};
+    if (!gl_qemu) return {.args = {"-display", "none"}, .summary = "no GPU: this qemu is not a GL build (virgl)"};
     if (!has_device) return {.args = {"-display", "none"}, .summary = "no GPU: this qemu has no virtio-gpu-gl-pci"};
     return {.virgl = true,
             .args = {"-device", "virtio-gpu-gl-pci", "-display", std::format("egl-headless,rendernode={}", render_node->string())},
@@ -350,14 +349,11 @@ int start_impl_(const service::Context& c, std::string_view name, const EnterOpt
     }
     const bool kvm = kvm_();
     const auto memory = o.memory.empty() ? default_memory_mb_() : o.memory;
-    // Its GPU: the GL build of qemu when there is one that can (WuXian §7.5).
+    // Its GPU (WuXian §7.5): virgl when the qemu found has the device and
+    // this host a render node -- the index's qemu is static and has none yet.
     const auto node = render_node_();
-    auto gl = node ? xlings::subos::tools::candidates(std::string(arch.qemu) + "-gl", view, xlings::subos::Ports{})
-                   : std::vector<xlings::subos::tools::Found>{};
-    const bool has_device = !gl.empty()
-        && capture_({gl.front().bin.string(), "-M", "none", "-device", "help"}).find("\"virtio-gpu-gl-pci\"") != std::string::npos;
-    const auto gpu = machine_gpu(node, !gl.empty(), has_device);
-    if (gpu.virgl) qemu = gl.front();
+    const bool has_device = node && capture_({qemu->bin.string(), "-M", "none", "-device", "help"}).find("\"virtio-gpu-gl-pci\"") != std::string::npos;
+    const auto gpu = machine_gpu(node, has_device, has_device);
     std::vector<std::string> q{qemu->bin.string()};
     if (!arch.machine.empty()) q.insert(q.end(), {"-M", std::string(arch.machine)});
     q.insert(q.end(), {"-m", memory, "-smp", default_cpus_()});

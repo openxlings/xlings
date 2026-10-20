@@ -42,8 +42,8 @@ std::optional<int> running(const fs::path& home, std::string_view name);
 
 // A machine's GPU (design 2026-10-20 WuXian §7.5): virtio-gpu with 3D
 // through virgl, rendered on this host's render node, when there is one and
-// the GL build of qemu (xim:qemu-system-gl) has the device; otherwise no GPU
-// and why. What qemu is given, and what is said of it.
+// the qemu found is a GL build with the device; otherwise no GPU and why.
+// What qemu is given, and what is said of it.
 struct MachineGpu {
     bool virgl { false };
     std::vector<std::string> args;      // the display and its device

@@ -575,5 +575,5 @@ text = "the desktop tells the window how a shaken pointer is shown (opensal 'p':
 status = "required"
 
 [LUBAN-MACHINE-GPU]
-text = "a machine has a GPU (virtio-gpu, 3D through virgl on this host's render node) when the host has a render node and the GL build of qemu with the device; otherwise none, the reason in its state; the machine's kernel has DRM and virtio-gpu built in"
+text = "a machine has a GPU (virtio-gpu, 3D through virgl on this host's render node) when the host has a render node and its qemu is a GL build with the device; otherwise none, the reason in its state; the machine's kernel has DRM and virtio-gpu built in"
 status = "required"
