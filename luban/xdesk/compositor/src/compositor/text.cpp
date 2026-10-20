@@ -17,6 +17,27 @@ import :server;
 
 namespace xdesk::compositor {
 
+void Server::copy_paste(bool paste) {
+    View* f = focused();
+    if (!f || !f->toplevel->base->surface) return;
+    const std::string id = f->toplevel->app_id ? f->toplevel->app_id : "";
+    static constexpr std::array<std::string_view, 9> kTerminals{"foot", "org.codeberg.dnkl.foot", "footclient", "kitty", "Alacritty",
+                                                              "org.wezfurlong.wezterm", "qterminal", "konsole", "org.kde.konsole"};
+    bool terminal = std::ranges::find(kTerminals, id) != kTerminals.end();
+    if (const auto it = key_overrides.find("terminals"); it != key_overrides.end()) terminal = terminal || std::ranges::find(it->second, id) != it->second.end();
+    const std::uint32_t code = paste ? 47 : 46;   // evdev's v and c
+    auto mods = keyboard.modifiers;
+    mods.depressed = static_cast<std::uint32_t>(wlr_keyboard_modifier::WLR_MODIFIER_CTRL)
+                     | (terminal ? static_cast<std::uint32_t>(wlr_keyboard_modifier::WLR_MODIFIER_SHIFT) : 0u);
+    wlr_seat_set_keyboard(seat, &keyboard);
+    wlr_seat_keyboard_notify_modifiers(seat, &mods);
+    for (const bool down : {true, false})
+        wlr_seat_keyboard_notify_key(seat, now_ms(), code,
+                                     static_cast<std::uint32_t>(down ? wl_keyboard_key_state::WL_KEYBOARD_KEY_STATE_PRESSED
+                                                                     : wl_keyboard_key_state::WL_KEYBOARD_KEY_STATE_RELEASED));
+    wlr_seat_keyboard_notify_modifiers(seat, &keyboard.modifiers);
+}
+
 namespace os = xdesk::os;
 namespace layout = xdesk::layout;
 namespace key = xdesk::native::key;

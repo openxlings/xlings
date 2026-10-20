@@ -227,6 +227,11 @@ public:
     // The WuXian view's: moved by screen pixels; zoomed about a screen point.
     // In the workspace view a tiled workspace scrolls along its flow.
     void pan(double dx, double dy);
+    // The workspace view's tiled strip: `n` columns along (each step lands a
+    // column's start at the output's), and back on the nearest column's
+    // start after a free scroll (design 2026-10-20 WuXian §4.4).
+    void scroll_columns(int n);
+    void snap_scroll();
     void zoom_at(double factor, double sx, double sy);
     double zoom() const;
     void frame_workspace(int id);

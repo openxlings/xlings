@@ -421,6 +421,15 @@ void Server::ask_remove(int id) {
 }
 
 void Server::draw_dialog() {
+    if (asking_reset) {
+        overlay_picture = shell::dialog(ui(), big_font ? &*big_font : nullptr, theme, tr_(zh, "Everything as it came?", "全部恢复默认？"),
+                                        tr_(zh, "The layout's, the switchers', the wheel's and the look's settings, and every key changed",
+                                            "布局、切换、滚动与外观的设置，以及改过的快捷键，都回到默认"),
+                                        {{.label = std::string(tr_(zh, "Put everything back (Enter)", "全部恢复（Enter）")), .primary = true},
+                                         {.label = std::string(tr_(zh, "Cancel (Esc)", "取消（Esc）"))}},
+                                        logical_w(), logical_h(), scale);
+        return;
+    }
     if (!removal) return;
     const auto* w = lay.workspace_info(removal->id);
     if (!w) { close_overlay(false); return; }
@@ -441,6 +450,11 @@ void Server::draw_dialog() {
 }
 
 bool Server::dialog_key(xkb_keysym_t s) {
+    if (asking_reset) {
+        if (s == key::Return || s == key::KP_Enter) { close_overlay(false); reset_all(); open_settings(SettingsPage::about); }
+        else if (s == key::Escape) { close_overlay(false); open_settings(SettingsPage::about); }
+        return true;
+    }
     if (!removal) { close_overlay(false); return true; }
     if (s == key::Escape) close_overlay(false);
     else if (s == key::Return || s == key::KP_Enter) remove_with(removal->id, false);
@@ -448,6 +462,13 @@ bool Server::dialog_key(xkb_keysym_t s) {
 }
 
 bool Server::dialog_click(double x, double y) {
+    if (asking_reset) {
+        const auto a = shell::hit(overlay_picture, x, y);
+        close_overlay(false);
+        if (a && a->index == 0) reset_all();
+        open_settings(SettingsPage::about);
+        return true;
+    }
     if (const auto a = shell::hit(overlay_picture, x, y); a && removal) {
         if (a->index == 0) remove_with(removal->id, false);
         else if (a->index == 1) remove_with(removal->id, true);

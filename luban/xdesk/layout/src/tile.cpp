@@ -134,6 +134,45 @@ std::vector<double> Layout::tile_widths_(const Space& s, double length) const {
     return out;
 }
 
+namespace {
+
+// Each column's start along the strip, from its widths (outer gap first).
+std::vector<double> starts_(const std::vector<double>& ws, double inner, double outer) {
+    std::vector<double> xs;
+    double x = outer;
+    for (const double w : ws) {
+        xs.push_back(x);
+        x += w + inner;
+    }
+    return xs;
+}
+
+}  // namespace
+
+void Layout::scroll_columns(int n) {
+    auto& s = cur_();
+    if (view_ != View::workspace || s.meta.rule != Rule::tile || s.columns.empty() || n == 0) return;
+    const auto xs = starts_(tile_widths_(s, tile_length_(s)), o_.inner_gap, o_.outer_gap);
+    // The column whose start is at (or just past) the output's start now.
+    std::size_t at = 0;
+    while (at + 1 < xs.size() && xs[at] - o_.outer_gap < s.scroll - 0.5) ++at;
+    const auto to = static_cast<std::size_t>(std::clamp<std::ptrdiff_t>(static_cast<std::ptrdiff_t>(at) + n, 0,
+                                                                        static_cast<std::ptrdiff_t>(xs.size()) - 1));
+    s.scroll = xs[to] - o_.outer_gap;
+    s.scrolled = true;
+}
+
+void Layout::snap_scroll() {
+    auto& s = cur_();
+    if (view_ != View::workspace || s.meta.rule != Rule::tile || s.columns.empty()) return;
+    const auto xs = starts_(tile_widths_(s, tile_length_(s)), o_.inner_gap, o_.outer_gap);
+    double best = xs.front() - o_.outer_gap;
+    for (const double x : xs)
+        if (std::abs(x - o_.outer_gap - s.scroll) < std::abs(best - s.scroll)) best = x - o_.outer_gap;
+    s.scroll = best;
+    s.scrolled = true;
+}
+
 Direction Layout::turned_(const Space& s, Direction d) {
     if (s.meta.flow != Flow::vertical) return d;
     switch (d) {

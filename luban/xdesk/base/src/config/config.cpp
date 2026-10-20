@@ -171,4 +171,52 @@ std::expected<void, std::string> set_value(std::string_view profile, const std::
     return {};
 }
 
+std::expected<std::vector<Setting>, std::string> unset_values(std::string_view profile, const std::map<std::string, std::string>& env,
+                                                               const std::vector<std::pair<std::string, std::string>>& keys) {
+    const auto file = person_file(profile, env);
+    std::vector<Setting> removed;
+    std::error_code ec;
+    if (file.empty() || !fs::exists(file, ec)) return removed;
+    std::vector<std::string> lines;
+    {
+        std::ifstream in(file);
+        if (!in) return std::unexpected(std::format("{}: cannot be read", file.string()));
+        for (std::string line; std::getline(in, line);) lines.push_back(line);
+    }
+    auto trim = [](std::string_view x) {
+        while (!x.empty() && (x.front() == ' ' || x.front() == '\t')) x.remove_prefix(1);
+        while (!x.empty() && (x.back() == ' ' || x.back() == '\t' || x.back() == '\r')) x.remove_suffix(1);
+        return x;
+    };
+    std::string section;
+    std::vector<std::string> kept;
+    for (const auto& line : lines) {
+        const auto x = trim(line);
+        if (x.starts_with("[") && x.ends_with("]")) {
+            section = std::string(x.substr(1, x.size() - 2));
+            kept.push_back(line);
+            continue;
+        }
+        const auto eq = x.find('=');
+        if (!x.empty() && x.front() != '#' && x.front() != ';' && eq != std::string_view::npos) {
+            const auto key = std::string(trim(x.substr(0, eq)));
+            if (std::ranges::any_of(keys, [&](const auto& k) { return k.first == section && k.second == key; })) {
+                removed.push_back({section, key, std::string(trim(x.substr(eq + 1)))});
+                continue;
+            }
+        }
+        kept.push_back(line);
+    }
+    if (removed.empty()) return removed;
+    const auto tmp = fs::path(file.string() + ".tmp");
+    {
+        std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
+        for (const auto& l : kept) out << l << "\n";
+        if (!out) return std::unexpected(std::format("{}: cannot be written", tmp.string()));
+    }
+    fs::rename(tmp, file, ec);
+    if (ec) return std::unexpected(std::format("{}: {}", file.string(), ec.message()));
+    return removed;
+}
+
 }  // namespace xdesk::config

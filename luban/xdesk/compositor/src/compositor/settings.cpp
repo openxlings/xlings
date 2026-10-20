@@ -97,16 +97,101 @@ void Server::open_settings(SettingsPage page) {
     settings_row = 0;
     settings_capture = false;
     settings_search.clear();
+    settings_preedit.clear();
+    settings_hover.reset();
+    settings_keyboard = false;
+    if (caret_timer) wl_event_source_timer_update(caret_timer, 530);
     overlay = Overlay::settings;
     draw_overlay();
 }
 
 // What is changed, kept: the person's settings file of the profile.
 void Server::setting(std::string_view section, std::string_view key, std::string value) {
-    if (auto r = config::set_value(o.profile, os::environment(), section, key, value); !r) {
+    if (auto r = config::set_value(o.config_profile, os::environment(), section, key, value); !r) {
         log("settings: " + r.error());
         show_hint(std::format("{}: {}", tr_(zh, "Not kept", "未能保存"), r.error()), 5000);
     }
+}
+
+namespace {
+
+// The keys each page sets (what its "back to the defaults" removes).
+std::vector<std::pair<std::string, std::string>> page_keys_(SettingsPage p) {
+    switch (p) {
+        case SettingsPage::layout:
+            return {{"desktop", "inner_gap"}, {"desktop", "gap"}, {"desktop", "outer_gap"}, {"desktop", "min_column_width"}, {"desktop", "flow"},
+                    {"desktop", "rule"}, {"desktop", "status_others"}, {"wuxian", "minimap"}, {"wuxian", "snap"}, {"canvas", "minimap"},
+                    {"canvas", "snap"}, {"switchers", "hold_ms"}, {"switchers", "highlight_ms"}, {"switchers", "dim"}, {"scroll", "speed"},
+                    {"scroll", "snap"}};
+        case SettingsPage::appearance:
+            return {{"theme", "accent"}, {"theme", "background"}, {"appearance", "reduce_motion"}, {"appearance", "renderer"},
+                    {"appearance", "pointer_locate"}, {"appearance", "pointer_max"}};
+        default: return {};
+    }
+}
+
+}  // namespace
+
+// The settings as the files now say them, taken at once (after a page went
+// back to its defaults, or that was undone).
+void Server::apply_settings() {
+    const auto s = config::load(o.config_profile, os::environment());
+    lay.set_spacing(s.get_int("desktop", "inner_gap", s.get_int("desktop", "gap", 4)), s.get_int("desktop", "outer_gap", 0),
+                    s.get_int("desktop", "min_column_width", 480));
+    minimap_on = s.get("wuxian", "minimap", s.get("canvas", "minimap", "on")) != "off";
+    snap_on = s.get("wuxian", "snap", s.get("canvas", "snap", "on")) != "off";
+    reduce_motion = s.get("appearance", "reduce_motion", "off") == "on";
+    status_others = s.get("desktop", "status_others", "on") != "off";
+    hold_ms = std::clamp(s.get_int("switchers", "hold_ms", 500), 100, 3000);
+    highlight_ms = std::clamp(s.get_int("switchers", "highlight_ms", 500), 0, 5000);
+    if (const auto d = s.get("switchers", "dim", "0.5"); !d.empty()) dim_level = std::clamp(std::atof(d.c_str()), 0.1, 1.0);
+    const auto speed = s.get("scroll", "speed", "medium");
+    wheel_factor = speed == "slow" ? 0.6 : speed == "fast" ? 1.6 : 1.0;
+    snap_columns = s.get("scroll", "snap", "on") != "off";
+    const auto base = shell::theme(o.profile);
+    set_accent(s.colour("theme", "accent", (std::uint32_t(base.accent.r) << 16) | (std::uint32_t(base.accent.g) << 8) | base.accent.b));
+    theme.background = draw::Color::rgb(s.colour("theme", "background",
+                                                 (std::uint32_t(base.background.r) << 16) | (std::uint32_t(base.background.g) << 8) | base.background.b));
+    const float bg[4] = {theme.background.r / 255.0f, theme.background.g / 255.0f, theme.background.b / 255.0f, 1.0f};
+    wlr_scene_rect_set_color(background, bg);
+    dots_drawn.clear();
+    panel_drawn.clear();
+    arrange();
+}
+
+void Server::reset_page(SettingsPage page) {
+    auto removed = config::unset_values(o.config_profile, os::environment(), page_keys_(page));
+    if (!removed) {
+        show_hint(std::format("{}: {}", tr_(zh, "Not put back", "未能恢复"), removed.error()), 5000);
+        return;
+    }
+    reset_undo = std::move(*removed);
+    reset_at = std::chrono::steady_clock::now();
+    apply_settings();
+    show_hint(tr_(zh, "This page is as it came  ·  Ctrl+Z: undo (10 s)", "已恢复本页默认  ·  Ctrl+Z 撤销（10 秒内）"), 10000);
+}
+
+// Every page and every key back to the defaults (asked first, the About page).
+void Server::reset_all() {
+    std::vector<std::pair<std::string, std::string>> all;
+    for (const auto p : {SettingsPage::layout, SettingsPage::appearance})
+        for (auto& k : page_keys_(p)) all.push_back(std::move(k));
+    if (auto removed = config::unset_values(o.config_profile, os::environment(), all)) reset_undo = std::move(*removed);
+    reset_at = std::chrono::steady_clock::now();
+    key_overrides.clear();
+    const auto set = keys.set;
+    keys.load({{"set", {set}}});
+    save_keys();
+    apply_settings();
+    show_hint(tr_(zh, "Every setting and key is as it came", "全部设置与快捷键已恢复默认"), 5000);
+}
+
+void Server::undo_reset() {
+    if (reset_undo.empty() || std::chrono::steady_clock::now() - reset_at > std::chrono::seconds(10)) return;
+    for (const auto& s : reset_undo) setting(s.section, s.key, s.value);
+    reset_undo.clear();
+    apply_settings();
+    show_hint(tr_(zh, "Put back as it was", "已撤销"), 2000);
 }
 
 void Server::save_keys() {
@@ -136,7 +221,9 @@ std::string Server::system_info() {
     line("Luban OS", release_value_("PRETTY_NAME"));
     line("System", release_value_("VERSION_ID"));
     std::error_code ec;
-    line("Runs as", fs::exists("/run/luban/network.env", ec) ? "a machine (its own kernel)" : "a sandbox (this computer's kernel)");
+    // A machine's kernel is started for it, with its name (H17: a proxy's file said nothing of it).
+    const bool machine = first_line_("/proc/cmdline").find("luban.name=") != std::string::npos;
+    line("Runs as", machine ? "a machine (its own kernel)" : "a sandbox (this computer's kernel)");
     std::string xdesk = "a development build";
     if (const auto exe = os::executable(); !exe.empty())
         if (const auto prov = first_line_(exe.parent_path().parent_path() / "README.provenance"); prov.starts_with("xdesk "))
@@ -262,11 +349,56 @@ void Server::settings_rows() {
                        setting("desktop", "min_column_width", std::to_string(columns[k]));
                        arrange();
                    });
+            toggle(std::string(tr_(zh, "The status bar shows the other workspaces", "状态栏显示其他工作区")), status_others, [this](bool on) {
+                status_others = on;
+                setting("desktop", "status_others", on ? "on" : "off");
+                draw_shell();
+            });
             heading(tr_(zh, "WuXian (the infinite canvas)", "WuXian（无限画布）"));
             toggle(std::string(tr_(zh, "A minimap when WuXian holds more than the view", "WuXian 超出视野时显示小地图")), minimap_on,
                    [this](bool on) { minimap_on = on; setting("wuxian", "minimap", on ? "on" : "off"); draw_shell(); });
             toggle(std::string(tr_(zh, "A moved window lines up with others", "移动的窗口与其他窗口对齐")), snap_on,
                    [this](bool on) { snap_on = on; setting("wuxian", "snap", on ? "on" : "off"); });
+            // The switchers and the wheel (design 2026-10-20 WuXian §4).
+            heading(tr_(zh, "Switching", "切换"));
+            const std::vector<int> holds{250, 500, 750, 1000}, lits{0, 500, 1000};
+            const std::vector<double> dims{0.3, 0.5, 0.7};
+            choice(std::string(tr_(zh, "Held on an application, its windows after", "停留多久展开应用的窗口")), {"0.25 s", "0.5 s", "0.75 s", "1 s"},
+                   pick(holds, hold_ms), [this, holds](std::size_t k) {
+                       hold_ms = holds[k];
+                       setting("switchers", "hold_ms", std::to_string(holds[k]));
+                   });
+            choice(std::string(tr_(zh, "The window chosen stays lit", "选中后突出")),
+                   {std::string(tr_(zh, "Off", "关")), "0.5 s", "1 s"}, pick(lits, highlight_ms), [this, lits](std::size_t k) {
+                       highlight_ms = lits[k];
+                       setting("switchers", "highlight_ms", std::to_string(lits[k]));
+                   });
+            {
+                std::size_t at = 1;
+                for (std::size_t k = 0; k < dims.size(); ++k)
+                    if (std::abs(dims[k] - dim_level) < 0.01) at = k;
+                choice(std::string(tr_(zh, "The others dimmed to", "其他窗口的暗度")), {"0.3", "0.5", "0.7"}, at, [this, dims](std::size_t k) {
+                    dim_level = dims[k];
+                    setting("switchers", "dim", std::format("{}", dims[k]));
+                });
+            }
+            heading(tr_(zh, "Scrolling", "滚动"));
+            {
+                const std::vector<double> speeds{0.6, 1.0, 1.6};
+                const std::vector<std::string> names{"slow", "medium", "fast"};
+                std::size_t at = 1;
+                for (std::size_t k = 0; k < speeds.size(); ++k)
+                    if (std::abs(speeds[k] - wheel_factor) < 0.01) at = k;
+                choice(std::string(tr_(zh, "The wheel's speed", "滚动速度")),
+                       {std::string(tr_(zh, "Slow", "慢")), std::string(tr_(zh, "Medium", "中")), std::string(tr_(zh, "Fast", "快"))}, at,
+                       [this, speeds, names](std::size_t k) {
+                           wheel_factor = speeds[k];
+                           setting("scroll", "speed", names[k]);
+                       });
+            }
+            toggle(std::string(tr_(zh, "A tiled strip's scroll lands on a column", "滚动对齐到列")), snap_columns,
+                   [this](bool on) { snap_columns = on; setting("scroll", "snap", on ? "on" : "off"); });
+            button(std::string(tr_(zh, "This page as it came", "恢复本页默认")), {}, [this] { reset_page(SettingsPage::layout); });
             break;
         }
         case SettingsPage::appearance: {
@@ -290,6 +422,7 @@ void Server::settings_rows() {
                    });
             toggle(std::string(tr_(zh, "Reduce motion: windows go at once, without gliding", "减少动态：窗口直接到位，不滑动")), reduce_motion,
                    [this](bool on) { reduce_motion = on; setting("appearance", "reduce_motion", on ? "on" : "off"); });
+            button(std::string(tr_(zh, "This page as it came", "恢复本页默认")), {}, [this] { reset_page(SettingsPage::appearance); });
             break;
         }
         case SettingsPage::keys: {
@@ -347,11 +480,17 @@ void Server::settings_rows() {
                                          "这个系统不能复制到电脑的剪贴板（luban config <系统> --allow clipboard）"), 5000);
                        }
                    });
+            button(std::string(tr_(zh, "Everything as it came", "全部恢复默认")),
+                   std::string(tr_(zh, "every page and every key, asked first", "所有页面与快捷键（先确认）")), [this] {
+                       asking_reset = true;
+                       overlay = Overlay::dialog;
+                       draw_overlay();
+                   });
             heading(tr_(zh, "Files", "文件"));
             const auto env = os::environment();
             text("keys.json", config::keys_file(env).string());
             text("state.json", config::state_file(env).string());
-            text(std::format("{}.ini", o.profile), config::person_file(o.profile, env).string());
+            text(std::format("{}.ini", o.config_profile), config::person_file(o.config_profile, env).string());
             heading(tr_(zh, "Upgrading", "升级"));
             text(std::string(tr_(zh, "On the computer: luban upgrade <system> (luban status <system> says what is new)",
                                  "在电脑上：luban upgrade <系统>（luban status <系统> 说明有什么新内容）")));
@@ -412,6 +551,10 @@ void Server::draw_settings() {
     v.title = std::string(page_label_(settings_page, zh));
     for (const auto& it : settings_items) v.rows.push_back(it.row);
     if (!settings_items.empty() && selectable(settings_row)) v.selected = settings_row;
+    if (settings_hover && *settings_hover < settings_items.size() && selectable(*settings_hover)) v.hover = settings_hover;
+    v.keyboard = settings_keyboard;
+    v.caret = settings_caret;
+    v.preedit = settings_preedit;
     v.capturing = settings_capture;
     v.hint = std::string(settings_page == SettingsPage::keys
         ? tr_(zh, "Enter: new keys for it  ·  Delete: back to the set's  ·  type to find  ·  Tab: the next page  ·  Esc: close",
@@ -426,7 +569,22 @@ void Server::draw_settings() {
     wlr_scene_node_set_enabled(&overlay_node->node, true);
 }
 
+// The pointer over the settings: the row it is on (its own look; the
+// keyboard's ring goes until a key is used again).
+void Server::settings_motion(double x, double y) {
+    std::optional<std::size_t> over;
+    for (const auto& a : overlay_picture.areas)
+        if (a.target == shell::Target::item && x >= a.rect.x && y >= a.rect.y && x < a.rect.x + a.rect.width && y < a.rect.y + a.rect.height)
+            over = static_cast<std::size_t>(a.index);
+    if (over == settings_hover && !settings_keyboard) return;
+    settings_hover = over;
+    settings_keyboard = false;
+    draw_overlay();
+}
+
 bool Server::settings_key(xkb_keysym_t s) {
+    settings_keyboard = true;
+    if (s == key::z && held(wlr_keyboard_modifier::WLR_MODIFIER_CTRL)) { undo_reset(); draw_overlay(); return true; }
     // A key given to an action (design 2026-10-20 §12.4): what is held with
     // it is the chord; one another action had is taken from it.
     if (settings_capture) {
@@ -525,16 +683,16 @@ bool Server::settings_click(double x, double y) {
     } else if (chosen->target == shell::Target::choice) {
         const auto row = static_cast<std::size_t>(chosen->index / 64), k = static_cast<std::size_t>(chosen->index % 64);
         if (row < settings_items.size() && settings_items[row].act) {
-            settings_row = row;
             const auto now = settings_items[row].row.chosen, n = settings_items[row].row.choices.size();
             // The choice clicked: as many steps from the one chosen.
             if (n > 0 && k != now) settings_items[row].act(static_cast<int>((k + n - now) % n));
         }
     } else {
+        // A click does what the row does; it does not make it the keyboard's row.
         const auto row = static_cast<std::size_t>(chosen->index);
-        if (row < settings_items.size()) {
-            settings_row = row;
-            if (settings_items[row].act) settings_items[row].act(0);
+        if (row < settings_items.size() && settings_items[row].act) {
+            if (!settings_items[row].action.empty()) settings_row = row;   // a key to give: it is the one
+            settings_items[row].act(0);
         }
     }
     draw_overlay();

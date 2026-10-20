@@ -1,7 +1,7 @@
 [Desktop Entry]
 Type=Application
 Name=xdesk (canvas)
-Comment=An infinite canvas to place windows on, pan and zoom
+Comment=The xdesk session (its name of before), starting in the WuXian view
 Exec=xdesk --profile canvas
 X-Opensal-Native=true
 X-Opensal-Interfaces=surface pointer keyboard mode

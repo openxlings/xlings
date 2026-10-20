@@ -101,7 +101,9 @@ int main(int argc, char* argv[]) {
     }
     // The profile's settings (a config: package's, then the person's own);
     // what the command line said stays.
-    const auto settings = xdesk::config::load(o.profile, xdesk::os::environment());
+    // One set of settings for every session (design 2026-10-20 WuXian §12.2):
+    // xdesk.ini, whatever the session was called.
+    const auto settings = xdesk::config::load(o.config_profile, xdesk::os::environment());
     for (const auto& p : settings.problems) o.log("settings: " + p);
     if (!terminal_given) {
         if (auto t = settings.get("desktop", "terminal"); !t.empty()) o.terminal = xdesk::apps::argv(t);
@@ -119,6 +121,12 @@ int main(int argc, char* argv[]) {
     o.reduce_motion = settings.get("appearance", "reduce_motion", "off") == "on";
     o.rule = settings.get("desktop", "rule", o.rule);
     o.status_others = settings.get("desktop", "status_others", "on") != "off";
+    o.switcher_hold_ms = std::clamp(settings.get_int("switchers", "hold_ms", o.switcher_hold_ms), 100, 3000);
+    o.highlight_ms = std::clamp(settings.get_int("switchers", "highlight_ms", o.highlight_ms), 0, 5000);
+    if (const auto d = settings.get("switchers", "dim", ""); !d.empty()) o.dim = std::clamp(std::atof(d.c_str()), 0.1, 1.0);
+    if (const auto s = settings.get("scroll", "speed", "medium"); s == "slow") o.wheel_speed = 0.6;
+    else if (s == "fast") o.wheel_speed = 1.6;
+    o.snap_columns = settings.get("scroll", "snap", "on") != "off";
     if (const auto c = settings.colour("theme", "accent", 0x1000000); c != 0x1000000) o.accent = c;
     if (const auto c = settings.colour("theme", "background", 0x1000000); c != 0x1000000) o.background = c;
     // Other windows of this desktop connect here (opensal-wlr's run_session says where).

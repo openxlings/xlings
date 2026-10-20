@@ -48,6 +48,8 @@ const std::vector<ActionInfo>& actions() {
             {Action::pin, "pin", "Always on top", "置顶", {"Super+p"}, true, true, true, G::window},
             {Action::sticky, "sticky", "On every workspace", "在所有工作区显示", {"Super+Shift+p"}, true, true, true, G::window},
             {Action::close, "close", "Close the window", "关闭窗口", {"Super+q", "Alt+F4"}, true, true, true, G::window},
+            {Action::copy, "copy", "Copy (in a terminal too)", "复制（终端里也可以）", {"Super+c"}, true, true, true, G::window},
+            {Action::paste, "paste", "Paste (in a terminal too)", "粘贴（终端里也可以）", {"Super+v"}, true, true, true, G::window},
             {Action::width, "width", "Column width: 1/3, 1/2, 2/3, all", "列宽：1/3、1/2、2/3、全宽", {"Super+r"}, true, false, true, G::size},
             {Action::height, "height", "Height in the column: equal, 2/3, 1/3", "列内高度：平分、2/3、1/3", {"Super+Shift+r"}, true, false, true, G::size},
             {Action::smaller, "smaller", "Narrower (the WuXian view: zoom out)", "变窄（WuXian 视图：缩小）", {"Super+minus"}, true, true, true, G::size},
@@ -176,7 +178,7 @@ void Bindings::load(const std::map<std::string, std::vector<std::string>>& given
         else problems.push_back(std::format("keys.json: no set of keys '{}' (luban, luban-no-hjkl)", it->second.front()));
     }
     for (const auto& [name, chords] : overrides)
-        if (name != "set" && std::ranges::none_of(actions(), [&](const ActionInfo& a) { return a.name == name; }))
+        if (name != "set" && name != "terminals" && std::ranges::none_of(actions(), [&](const ActionInfo& a) { return a.name == name; }))
             problems.push_back(std::format("keys.json: no action '{}'", name));
     for (const auto& a : actions()) {
         auto chords = default_chords(a, set);

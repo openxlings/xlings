@@ -329,6 +329,18 @@ struct Server {
     std::size_t settings_row { 0 };
     bool settings_capture { false };
     std::string settings_search;
+    // Three states (design 2026-10-20 WuXian §5.2): the row the pointer is
+    // on; whether the keyboard was used last (its row ringed); the search's
+    // caret as it blinks, an input method's text not yet committed.
+    std::optional<std::size_t> settings_hover;
+    bool settings_keyboard { false };
+    bool settings_caret { true };
+    std::string settings_preedit;
+    wl_event_source* caret_timer { nullptr };
+    // A page put back to its defaults (§5.5): what was removed, for 10 s (Ctrl+Z).
+    std::vector<config::Setting> reset_undo;
+    std::chrono::steady_clock::time_point reset_at {};
+    bool asking_reset { false };                 // the dialog: every page back to its defaults
     std::map<std::string, std::vector<std::string>> key_overrides;   // keys.json, as the person keeps it
     std::uint32_t pressed_code { 0 };            // the evdev code of the key being handled
     bool reduce_motion { false };                // windows go at once, not by springs
@@ -392,6 +404,24 @@ struct Server {
     bool hand_used { false };
     bool status_others { true };                 // the status bar shows the other workspaces
     bool plane_focus { false };                  // the WuXian view: no window focused (WuXian, a label clicked)
+    // The switchers and the wheel (design 2026-10-20 WuXian §4): how long
+    // Super+Tab waits on an application; the window chosen kept lit, the
+    // others dimmed, for a while after; the wheel's speed and its columns.
+    int hold_ms { 500 };
+    int highlight_ms { 500 };
+    double dim_level { 0.5 };
+    double wheel_factor { 1 };
+    bool snap_columns { true };
+    layout::Id spread_hover { 0 };               // the window the pointer lifts
+    std::array<wlr_scene_rect*, 4> chosen_ring {};
+    enum class Lit { none, settling, holding, fading };
+    Lit lit { Lit::none };
+    layout::Id lit_id { 0 };
+    std::chrono::steady_clock::time_point lit_at {};
+    wl_event_source* lit_timer { nullptr };
+    std::optional<std::chrono::steady_clock::time_point> last_wheel;
+    wl_event_source* wheel_timer { nullptr };    // a free scroll ended: back on a column
+    double super_x { 0 }, super_y { 0 };         // the pointer when Super went down
     shell::Picture overlay_picture;
     wlr_scene_buffer* overlay_node { nullptr };
     wlr_scene_buffer* hint_node { nullptr };
@@ -588,6 +618,14 @@ struct Server {
     bool settings_key(xkb_keysym_t s);
     bool settings_click(double x, double y);
     void setting(std::string_view section, std::string_view key, std::string value);
+    void apply_settings();
+    void reset_page(SettingsPage page);
+    void reset_all();
+    void undo_reset();
+    void settings_motion(double x, double y);
+    // Super+C / Super+V (design 2026-10-20 WuXian §9): Ctrl+C/V to the focused
+    // window -- Ctrl+Shift+C/V to a terminal's.
+    void copy_paste(bool paste);
     void save_keys();
     std::string rebind(const std::string& action, const Chord& c);
     // control.cpp
@@ -622,6 +660,8 @@ struct Server {
     void status_hover(double x, double y);
 
     // switchers.cpp
+    void start_highlight(layout::Id id);
+    void highlight_step();
     std::string app_of(View& v) const;
     std::vector<layout::Id> recent_windows();
     void open_switcher(bool back);

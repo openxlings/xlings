@@ -251,6 +251,8 @@ void Server::add_view(wlr_xdg_toplevel* toplevel) {
         // Focused where it is shown (a rule may have sent it to another workspace).
         if (lay.focused() == self->id) focus(self);
         else follow_focus();
+        // A new window among others: lit a moment, the rest dimmed (design 2026-10-20 WuXian §4.3).
+        if (lay.focused() == self->id && std::ranges::count_if(views, [](const View& o) { return o.mapped; }) > 1) start_highlight(self->id);
     });
     v.unmap.connect(&toplevel->base->surface->events.unmap, [this, self](void*) {
         self->mapped = false;

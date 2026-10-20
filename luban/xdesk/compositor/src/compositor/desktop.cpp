@@ -117,7 +117,8 @@ void Server::open_launcher() {
     for (const char* k : {"LC_ALL", "LC_MESSAGES", "LANG"})
         if (env.contains(k) && !env.at(k).empty()) { lang = env.at(k); break; }
     auto all = apps::scan(apps::dirs(env), lang);
-    std::erase_if(all, [](const apps::App& a) { return a.id == "xdesk-settings"; });   // its pages are here, one by one
+    // Its own settings are an application among the others (design 2026-10-20 WuXian §5.6);
+    // their pages and its actions are found when searched.
     // The desktop's own (design 2026-10-20 §12.5): its settings' pages and
     // its actions, each with its keys -- searched once, learnt.
     struct Page { std::string_view id, en, zh, words; };
@@ -163,6 +164,7 @@ std::vector<std::string> Server::terminal_argv(const std::vector<std::string>& c
 }
 
 void Server::start_app(const apps::App& app) {
+    if (app.id == "xdesk-settings") { open_settings(SettingsPage::displays); return; }
     if (app.id.starts_with("xdesk:settings:")) {
         const auto page = app.id.substr(15);
         for (const auto p : {SettingsPage::displays, SettingsPage::layout, SettingsPage::appearance, SettingsPage::keys, SettingsPage::about})

@@ -105,3 +105,23 @@ XTEST(XdeskConfig, ThePersonsStateAndKeysAreKeptAndABrokenOneIsSaid, .area = "lu
     std::error_code ec;
     fs::remove_all(root, ec);
 }
+
+XTEST(XdeskConfig, APagesSettingsGoBackToTheProfilesAndCanBePutBack, .area = "luban", .covers = {"XDESK-SETTINGS"}) {
+    const auto root = fs::temp_directory_path() / std::format("xdesk-unset-{}", std::random_device{}());
+    const std::map<std::string, std::string> env{{"XDG_CONFIG_HOME", root.string()}};
+    ASSERT_TRUE(config::set_value("xdesk", env, "desktop", "inner_gap", "12"));
+    ASSERT_TRUE(config::set_value("xdesk", env, "desktop", "terminal", "foot"));
+    ASSERT_TRUE(config::set_value("theme", env, "theme", "accent", "#ff0000"));
+    ASSERT_TRUE(config::set_value("xdesk", env, "theme", "accent", "#ff0000"));
+    const auto removed = config::unset_values("xdesk", env, {{"desktop", "inner_gap"}, {"theme", "accent"}, {"desktop", "nothing"}});
+    ASSERT_TRUE(removed) << removed.error();
+    EXPECT_EQ(*removed, (std::vector<config::Setting>{{"desktop", "inner_gap", "12"}, {"theme", "accent", "#ff0000"}}));
+    const auto now = config::load("xdesk", env);
+    EXPECT_EQ(now.get("desktop", "terminal"), "foot") << "another key of the page stays";
+    EXPECT_EQ(now.get("desktop", "inner_gap", "default"), "default");
+    // Put back (undo): as it was.
+    for (const auto& s : *removed) ASSERT_TRUE(config::set_value("xdesk", env, s.section, s.key, s.value));
+    EXPECT_EQ(config::load("xdesk", env).get("desktop", "inner_gap"), "12");
+    std::error_code ec;
+    fs::remove_all(root, ec);
+}

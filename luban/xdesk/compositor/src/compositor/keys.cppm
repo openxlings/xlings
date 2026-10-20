@@ -16,7 +16,7 @@ enum class Action {
     move_left, move_right, move_up, move_down,
     join, split, width, height, smaller, larger, even,
     maximize, fullscreen, toggle_float, pin, sticky, arrangements, switch_apps, app_windows, windows, wuxian,
-    to_wuxian, new_workspace, show_all,
+    to_wuxian, new_workspace, show_all, copy, paste,
     show1, show2, show3, show4, show5, show6, show7, show8, show9,
     send1, send2, send3, send4, send5, send6, send7, send8, send9,
     workspace_prev, workspace_next, carry_prev, carry_next,

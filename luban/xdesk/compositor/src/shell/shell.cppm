@@ -231,13 +231,21 @@ struct SettingsRow {
     bool on { false };
     bool changed { false };         // keys: not the set's own
 };
+// Three states, each its own look (design 2026-10-20 WuXian §5.2): a
+// choice's value (filled, always), the row the pointer is on (a light
+// background, gone when it leaves), the keyboard's row (a ring, only while
+// the keyboard is what was used last).
 struct SettingsView {
     std::vector<std::string> pages;
     std::size_t page { 0 };
     std::string title;
     std::vector<SettingsRow> rows;
-    std::optional<std::size_t> selected;
+    std::optional<std::size_t> selected;    // the keyboard's row
+    std::optional<std::size_t> hover;       // the pointer's
+    bool keyboard { false };                // the last input was a key
     bool capturing { false };
+    bool caret { true };                    // the search field's caret, as it blinks
+    std::string preedit;                    // an input method's text not yet committed
     std::string hint;
 };
 Picture settings(draw::Fonts* ui, draw::Fonts* big, const Theme& t, const SettingsView& v, int width, int height, bool zh,

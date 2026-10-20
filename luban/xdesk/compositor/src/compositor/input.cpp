@@ -90,8 +90,11 @@ void Server::key(const opensal::Key& k) {
         }
         if (down) {
             super_alone = super_key;
-            // Held a second alone: the keys used most (design 2026-10-20 §12.4).
+            if (super_key) { super_x = cursor->x; super_y = cursor->y; }
+            // Held a second alone: the keys used most (design 2026-10-20 §12.4);
+            // any other key meanwhile: not.
             if (super_key && hold_timer) wl_event_source_timer_update(hold_timer, 1000);
+            else if (hold_timer) wl_event_source_timer_update(hold_timer, 0);
         }
         // Super+Space held as a hand: let go, the applications unless it dragged.
         if (hand && !down && (sym == key::space || super_key)) {
@@ -152,6 +155,13 @@ void Server::pointer_moved() {
             lay.drag_gap(gap_column, vertical ? dy : dx);
         }
         arrange(true);
+        return;
+    }
+    // The settings: the row under the pointer has its own look.
+    if (overlay == Overlay::settings) {
+        settings_motion(cursor->x, cursor->y);
+        pointer_shape("default");
+        wlr_seat_pointer_clear_focus(seat);
         return;
     }
     // The switchers: the pointer chooses among what they show.
@@ -433,10 +443,22 @@ void Server::button(const opensal::PointerButton& b) {
 }
 
 void Server::wheel(const opensal::Wheel& w) {
+    // The wheel with Super is not Super alone: nothing opens when it is let
+    // go, and its keys' sheet does not come (H8).
+    super_alone = false;
+    if (hold_timer) wl_event_source_timer_update(hold_timer, 0);
     // Dragged onto a new column: the wheel is its width.
     if (w.dy != 0 && drag_width(w.dy > 0 ? 1 : -1, 0)) return;
     const bool super = held(wlr_keyboard_modifier::WLR_MODIFIER_LOGO);
     const bool over_window = view_at(cursor->x, cursor->y) != nullptr;
+    // How far (design 2026-10-20 WuXian §4.4): a wheel's step slow is a
+    // column, faster ones further; a touchpad's scroll is as it comes.
+    const auto now = std::chrono::steady_clock::now();
+    const double since = last_wheel ? std::chrono::duration<double, std::milli>(now - *last_wheel).count() : 0;
+    last_wheel = now;
+    const bool continuous = w.dy != std::round(w.dy) || w.dx != std::round(w.dx);
+    const layout::WheelSpeed speed{.factor = wheel_factor};
+    auto distance = [&](double steps) { return continuous ? steps * 60 * wheel_factor : layout::wheel_distance(speed, steps, since); };
     if (wuxian() && super) {
         // The WuXian view zooms only when asked (design 2026-10-20 §9.2):
         // Super and the wheel, around the pointer, so the point under it stays put.
@@ -447,13 +469,20 @@ void Server::wheel(const opensal::Wheel& w) {
     if (wuxian() && (!over_window || !live())) {
         // On its background (or over pictures): the wheel pans -- up and
         // down, Shift or a sideways wheel left and right.
-        if (held(wlr_keyboard_modifier::WLR_MODIFIER_SHIFT)) lay.pan(w.dy * 60, 0);
-        else lay.pan(-w.dx * 60, w.dy * 60);
+        if (held(wlr_keyboard_modifier::WLR_MODIFIER_SHIFT)) lay.pan(distance(w.dy), 0);
+        else lay.pan(-distance(w.dx), distance(w.dy));
         arrange();
         return;
     }
-    if (!wuxian() && lay.rule() == layout::Rule::tile && super) {
-        lay.pan(w.dy * 60, w.dy * 60);
+    if (!wuxian() && lay.rule() == layout::Rule::tile && (super || !over_window)) {
+        // A tiled strip: a slow step a column, landing on it; faster, further,
+        // and back on a column once it stops.
+        if (!continuous && since >= speed.slow_ms && snap_columns) lay.scroll_columns(w.dy > 0 ? -1 : 1);
+        else {
+            const double d = distance(w.dy != 0 ? w.dy : -w.dx);
+            lay.pan(d, d);
+            if (snap_columns && !continuous && wheel_timer) wl_event_source_timer_update(wheel_timer, 220);
+        }
         arrange();
         return;
     }
@@ -473,6 +502,11 @@ void Server::input(Link& from, const opensal::Event& ev) {
         key(*k);
     } else if (const auto* m = std::get_if<opensal::PointerMotion>(&ev)) {
         wlr_cursor_warp_closest(cursor, nullptr, m->x / scale, m->y / scale);   // device pixels to logical
+        // Super held while the pointer goes more than a little: not Super alone (H8).
+        if (super_alone && std::hypot(cursor->x - super_x, cursor->y - super_y) > 4) {
+            super_alone = false;
+            if (hold_timer) wl_event_source_timer_update(hold_timer, 0);
+        }
         pointer_moved();
         wlr_seat_pointer_notify_frame(seat);
     } else if (const auto* b = std::get_if<opensal::PointerButton>(&ev)) {
@@ -489,9 +523,23 @@ void Server::input(Link& from, const opensal::Event& ev) {
     } else if (const auto* t = std::get_if<opensal::TextCommit>(&ev)) {
         if (launcher.is_open()) { launcher.type(t->text); draw_launcher(); }
         else if (overlay == Overlay::naming) naming_type(t->text);
+        else if (overlay == Overlay::settings) {
+            // An input method's text: the keys page's search takes it (H14); elsewhere nothing does.
+            settings_preedit.clear();
+            if (settings_page == SettingsPage::keys) {
+                settings_search += t->text;
+                settings_row = 0;
+            }
+            draw_overlay();
+        }
         else text_commit(t->text);
     } else if (const auto* p = std::get_if<opensal::Preedit>(&ev)) {
-        preedit(*p);
+        if (overlay == Overlay::settings) {
+            settings_preedit = settings_page == SettingsPage::keys ? p->text : std::string{};
+            draw_overlay();
+        } else {
+            preedit(*p);
+        }
     } else if (const auto* c = std::get_if<opensal::ClipboardText>(&ev)) {
         host_clipboard(c->text);
     } else if (const auto* sh = std::get_if<opensal::Shown>(&ev)) {

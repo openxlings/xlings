@@ -525,3 +525,7 @@ status = "required"
 [WUXIAN-CONFORMANCE]
 text = "xdesk.layout passes every case of openwx.conformance"
 status = "required"
+
+[XDESK-HIGHLIGHT]
+text = "a window chosen in a switcher (or a new one among others) is lit while the others are dimmed, until the windows are where they go and the time chosen has passed, then they fade back; the time and the dimming are settings, off included"
+status = "required"

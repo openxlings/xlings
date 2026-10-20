@@ -337,12 +337,23 @@ Picture settings(draw::Fonts* ui, draw::Fonts* big, const Theme& t, const Settin
     const Rect card { std::round((width - cw) / 2), std::round((height - ch) / 2), cw, ch };
     c.fill(card, t.card, t.radius + 6);
     c.frame(card, Color::rgb(0x3a4050), 1, t.radius + 6);
-    // The pages.
+    // The pages, on the card's own colour, a line between them and the page
+    // (design 2026-10-20 WuXian §5.1); its title the window's: an icon and
+    // "Settings", larger, nothing to click.
     const double side = 190;
-    c.fill({card.x, card.y, side, card.height}, Color::rgb(0x191c23), t.radius + 6);
+    c.fill({card.x + side, card.y + 14, 1, card.height - 28}, Color::rgb(0x2c313c));
     double y = card.y + 18;
-    if (ui) c.text(*ui, tr_(zh, "Settings", "设置"), card.x + 20, std::round(y + 14), t.muted);
-    y += 34;
+    {
+        const double cx = card.x + 30, cy = y + 10;
+        c.frame({cx - 8, cy - 8, 16, 16}, t.text, 2.5, 8);
+        for (int k = 0; k < 8; ++k) {
+            const double a = k * 3.14159265358979 / 4;
+            c.fill({cx + std::cos(a) * 9 - 1.75, cy + std::sin(a) * 9 - 1.75, 3.5, 3.5}, t.text, 1);
+        }
+        if (big) c.text(*big, tr_(zh, "Settings", "设置"), card.x + 46, std::round(y + 18), t.text);
+        else if (ui) c.text(*ui, tr_(zh, "Settings", "设置"), card.x + 46, std::round(y + 15), t.text);
+    }
+    y += 40;
     for (std::size_t k = 0; k < v.pages.size(); ++k) {
         const Rect r { card.x + 10, y, side - 20, 34 };
         if (k == v.page) c.fill(r, t.selected, 8);
@@ -365,11 +376,17 @@ Picture settings(draw::Fonts* ui, draw::Fonts* big, const Theme& t, const Settin
     for (std::size_t k = first; k < v.rows.size() && k < first + capacity; ++k) {
         const auto& r = v.rows[k];
         const Rect line { x0 - 10, y, x1 - x0 + 20, row_h - 4 };
-        const bool lit = v.selected == k;
+        const bool lit = v.selected == k && v.capturing;
+        const bool ring = v.selected == k && v.keyboard && !v.capturing;
+        const bool hovered = v.hover == k;
         const double base = std::round(y + 23);
         using K = SettingsRow::Kind;
-        if (lit && r.kind != K::heading) c.fill(line, v.capturing ? t.accent : t.selected, 8);
-        const Color text = lit && v.capturing ? Color::rgb(0x0f1115) : t.text;
+        if (r.kind != K::heading && r.kind != K::text && r.kind != K::search) {
+            if (lit) c.fill(line, t.accent, 8);
+            else if (hovered) c.fill(line, Color::rgb(0x262a33), 8);
+            if (ring) c.frame(line, t.accent, 2, 8);
+        }
+        const Color text = lit ? Color::rgb(0x0f1115) : t.text;
         switch (r.kind) {
             case K::heading:
                 if (ui) c.text(*ui, r.label, x0, std::round(y + 27), t.muted);
@@ -419,18 +436,28 @@ Picture settings(draw::Fonts* ui, draw::Fonts* big, const Theme& t, const Settin
                 break;
             }
             case K::button: {
+                // A button as a button: lighter under the pointer, never lit for being the only row.
                 const double w = (ui ? ui->width(r.label) : 60) + 28;
-                c.fill({x0, y + 4, w, row_h - 12}, lit ? t.accent : Color::rgb(0x2a2f3a), 8);
-                if (ui) c.text(*ui, r.label, x0 + 14, base, lit ? Color::rgb(0x0f1115) : t.text);
+                c.fill({x0, y + 4, w, row_h - 12}, hovered ? Color::rgb(0x353b48) : Color::rgb(0x2a2f3a), 8);
+                if (ui) c.text(*ui, r.label, x0 + 14, base, t.text);
                 if (ui && !r.value.empty()) c.text(*ui, r.value, x0 + w + 14, base, t.muted, x1 - x0 - w - 14);
                 break;
             }
             case K::search: {
+                // Always taking what is typed: its caret blinks; a ring only for the keyboard's focus.
                 const Rect field { x0, y + 3, x1 - x0, row_h - 10 };
                 c.fill(field, Color::rgb(0x14161c), 8);
-                c.frame(field, lit ? t.accent : Color::rgb(0x3a4050), 1, 8);
-                if (ui) c.text(*ui, r.value.empty() ? r.label : r.value, field.x + 12, base, r.value.empty() ? t.muted : t.text,
-                               field.width - 24);
+                c.frame(field, ring ? t.accent : Color::rgb(0x3a4050), ring ? 2 : 1, 8);
+                if (!ui) break;
+                double x = field.x + 12;
+                if (r.value.empty() && v.preedit.empty()) c.text(*ui, r.label, x, base, t.muted, field.width - 24);
+                else x += c.text(*ui, r.value, x, base, t.text, field.width - 24);
+                if (!v.preedit.empty()) {
+                    const double w = c.text(*ui, v.preedit, x, base, t.text, field.x + field.width - 12 - x);
+                    c.fill({x, base + 3, w, 1}, t.text);
+                    x += w;
+                }
+                if (v.caret) c.fill({std::min(x + 1, field.x + field.width - 12), field.y + 6, 1.5, field.height - 12}, t.accent);
                 break;
             }
         }

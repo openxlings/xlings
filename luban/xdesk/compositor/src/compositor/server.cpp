@@ -41,6 +41,11 @@ Server::Server(const Options& opts)
     snap_on = opts.snap;
     reduce_motion = opts.reduce_motion;
     status_others = opts.status_others;
+    hold_ms = opts.switcher_hold_ms;
+    highlight_ms = opts.highlight_ms;
+    dim_level = opts.dim;
+    wheel_factor = opts.wheel_speed;
+    snap_columns = opts.snap_columns;
 }
 
 // ── start ────────────────────────────────────────────────────────
@@ -239,6 +244,32 @@ bool Server::start_() {
         static_cast<Server*>(data)->save_wuxian();
         return 0;
     }, this);
+    caret_timer = wl_event_loop_add_timer(loop, [](void* data) -> int {
+        // The keys page's search: its caret blinks while the settings are up.
+        auto* self = static_cast<Server*>(data);
+        if (self->overlay != Overlay::settings) return 0;
+        self->settings_caret = !self->settings_caret;
+        if (self->settings_page == SettingsPage::keys) self->draw_overlay();
+        wl_event_source_timer_update(self->caret_timer, 530);
+        return 0;
+    }, this);
+    lit_timer = wl_event_loop_add_timer(loop, [](void* data) -> int {
+        static_cast<Server*>(data)->highlight_step();
+        return 0;
+    }, this);
+    wheel_timer = wl_event_loop_add_timer(loop, [](void* data) -> int {
+        auto* self = static_cast<Server*>(data);
+        self->lay.snap_scroll();
+        self->arrange();
+        return 0;
+    }, this);
+    {
+        const float c[4] = {theme.accent.r / 255.0f, theme.accent.g / 255.0f, theme.accent.b / 255.0f, 1.0f};
+        for (auto& r : chosen_ring) {
+            r = wlr_scene_rect_create(overlay_layer, 1, 1, c);
+            wlr_scene_node_set_enabled(&r->node, false);
+        }
+    }
     view_timer = wl_event_loop_add_timer(loop, [](void* data) -> int {
         static_cast<Server*>(data)->view_step();
         return 0;
@@ -315,7 +346,7 @@ Server::~Server() {
     if (max_timer) wl_event_source_remove(max_timer);
     if (switch_timer) wl_event_source_remove(switch_timer);
     if (hold_timer) wl_event_source_remove(hold_timer);
-    for (auto* t : {view_timer, morph_timer, removal_timer, closing_timer})
+    for (auto* t : {view_timer, morph_timer, removal_timer, closing_timer, lit_timer, wheel_timer, caret_timer})
         if (t) wl_event_source_remove(t);
     if (wuxian_timer) {
         wl_event_source_remove(wuxian_timer);

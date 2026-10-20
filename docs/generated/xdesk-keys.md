@@ -27,6 +27,8 @@ Super alone: the applications. Super held a second: the keys used most.
 |  | Always on top | `Super+P` |
 |  | On every workspace | `Super+Shift+P` |
 |  | Close the window | `Super+Q`, `Alt+F4` |
+|  | Copy (in a terminal too) | `Super+C` |
+|  | Paste (in a terminal too) | `Super+V` |
 | Size | Column width: 1/3, 1/2, 2/3, all | `Super+R` |
 |  | Height in the column: equal, 2/3, 1/3 | `Super+Shift+R` |
 |  | Narrower (the WuXian view: zoom out) | `Super+-` |

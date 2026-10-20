@@ -677,7 +677,8 @@ XTEST(LubanOs, XdeskTakesAPersonsSettingsOverItsProfiles, .area = "luban", .cove
     fs::create_directories(runtime);
     fs::permissions(runtime, fs::perms::owner_all, fs::perm_options::replace);
     fs::create_directories(config / "xdesk");
-    tk::write_file(config / "xdesk" / "classic.ini", "[theme]\nbackground = #203040\n[desktop]\ngap = 0\n");
+    // The person's xdesk.ini, which every session reads (the classic one of before too).
+    tk::write_file(config / "xdesk" / "xdesk.ini", "[theme]\nbackground = #203040\n[desktop]\ngap = 0\n");
     auto r = run_script(home, std::format("wait desktop\nwaitfor desktop.texture.0 1100\nsleep 500\nframes 2\nscreenshot {}\n", shot.string()),
                         {"--desktop-exec", xdesk_binary()->string(), "--profile", "classic"},
                         {{"XDG_RUNTIME_DIR", runtime.string()}, {"XDG_CONFIG_HOME", config.string()}});
@@ -741,17 +742,18 @@ bool tinted_(const Image& img, int channel) {
 // others, fitted, the chosen one as it is and the rest dimmed; Tab by
 // recency, and letting Alt go focuses it, the windows back in their places.
 XTEST(LubanOs, XdeskAltTabGoesBackQuicklyAndHeldShowsEveryWindowWhereItIs, .area = "luban",
-      .covers = {"XDESK-SWITCHERS"}, .requires_ = {"linux", "xlings-bin"}) {
+      .covers = {"XDESK-SWITCHERS", "XDESK-HIGHLIGHT"}, .requires_ = {"linux", "xlings-bin"}) {
     if (!app_binary()) GTEST_SKIP() << "no luban-os beside the xlings under test";
     if (!xdesk_binary()) GTEST_SKIP() << "no xdesk beside luban-os (mcpp build -p xdesk-app)";
     auto home = tk::Home::isolated("luban-os-xdesk-alt-tab");
     ASSERT_EQ(home.xlings({"self", "init"}).exit_code, 0);
-    const auto quick = home.root() / "quick.ppm", spread = home.root() / "spread.ppm", chosen = home.root() / "chosen.ppm";
+    const auto quick = home.root() / "quick.ppm", spread = home.root() / "spread.ppm", lit = home.root() / "lit.ppm",
+               chosen = home.root() / "chosen.ppm";
     auto r = xdesk_with(home, "classic", std::format(R"(wait desktop
 waitfor desktop.texture.0 1100
 sleep 3000
 key Alt+Tab
-sleep 600
+sleep 2000
 key Super+Left
 sleep 1000
 screenshot {}
@@ -762,9 +764,11 @@ screenshot {}
 screenshot {}
 key Tab
 keyup Alt
-sleep 1200
+sleep 300
 screenshot {}
-)", quick.string(), spread.string(), artifact("xdesk-alt-tab.bmp").string(), chosen.string()));
+sleep 2000
+screenshot {}
+)", quick.string(), spread.string(), artifact("xdesk-alt-tab.bmp").string(), lit.string(), chosen.string()));
     ASSERT_EQ(r.exit_code, 0) << r.transcript();
     // Blue was focused; Alt+Tab went to green, and left of green is red.
     const auto a = read_ppm(quick);
@@ -779,7 +783,11 @@ screenshot {}
     EXPECT_TRUE(tinted_(b, 0)) << "red shown";
     EXPECT_TRUE(tinted_(b, 2)) << "blue shown";
     EXPECT_EQ(box_of(b, kRed)[0], -1) << "the others dimmed";
-    // Tab: blue; Alt let go: blue focused, the strip scrolled to it.
+    // Tab: blue; Alt let go: blue focused and lit a moment, the others
+    // dimmed (design 2026-10-20 WuXian §4.3) -- then all as they are.
+    const auto l = read_ppm(lit);
+    EXPECT_EQ(l.at(825, 400), kBlue) << "the one chosen, lit";
+    EXPECT_NE(l.at(275, 400), kGreen) << "the others dimmed while it is";
     const auto c = read_ppm(chosen);
     EXPECT_EQ(c.at(275, 400), kGreen);
     EXPECT_EQ(c.at(825, 400), kBlue);

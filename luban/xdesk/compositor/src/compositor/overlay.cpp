@@ -243,6 +243,8 @@ void Server::act(Action a) {
             remember_arrangement();
             return;
         }
+        case Action::copy: copy_paste(false); return;
+        case Action::paste: copy_paste(true); return;
         case Action::show_all:
             if (wuxian()) { lay.show_all(); arrange(); }
             return;
@@ -445,15 +447,18 @@ void Server::draw_overlay() {
 void Server::close_overlay(bool apply) {
     const auto was = overlay;
     overlay = Overlay::none;
-    if (was == Overlay::dialog) removal.reset();
+    if (was == Overlay::dialog) { removal.reset(); asking_reset = false; }
     if (was == Overlay::naming) naming = 0;
     wlr_scene_node_set_enabled(&overlay_node->node, false);
     if (was == Overlay::switcher || was == Overlay::spread) {
-        // The windows back where they are, or the one chosen first.
+        // The windows back where they are, or the one chosen first -- and it
+        // kept lit a moment while the others are dimmed (design 2026-10-20 WuXian §4.3).
+        lit_id = 0;
         if (apply) choose_switched(was);
         end_spread();
         arrange();
         follow_focus();
+        if (apply && lit_id) start_highlight(lit_id);
         return;
     }
     if (!apply) return;

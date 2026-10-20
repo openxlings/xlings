@@ -738,3 +738,22 @@ XTEST(XdeskLayout, TidyingUpPutsTheWorkspacesInARowAndTheViewGoesIntoTheOneAsked
     EXPECT_EQ(into.at, c->origin);
     EXPECT_DOUBLE_EQ(into.zoom, 1);
 }
+
+XTEST(XdeskLayout, TheWheelScrollsAColumnAtATimeAndAFreeScrollLandsOnOne, .area = "luban", .covers = {"XDESK-LAYOUT"}) {
+    Layout l({.inner_gap = 0, .outer_gap = 0, .min_column_width = 500});
+    for (layout::Id id = 1; id <= 4; ++id) l.add(id, {600, 400});
+    l.focus(1);
+    auto ps = l.arrange(kOutput);
+    EXPECT_EQ(of(ps, 1).rect.x, 0);
+    l.scroll_columns(1);
+    ps = l.arrange(kOutput);
+    EXPECT_EQ(of(ps, 2).rect.x, 0) << "one step: the next column at the start";
+    l.scroll_columns(10);
+    ps = l.arrange(kOutput);
+    EXPECT_LE(of(ps, 4).rect.x + of(ps, 4).rect.width, kOutput.width + 1e-6) << "no further than the last";
+    l.scroll_columns(-10);
+    l.pan(-130, 0);                              // a free scroll, between columns
+    l.snap_scroll();
+    ps = l.arrange(kOutput);
+    EXPECT_EQ(of(ps, 1).rect.x, 0) << "back on the nearest column's start";
+}

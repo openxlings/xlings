@@ -51,5 +51,14 @@ Settings load(std::string_view profile, const std::map<std::string, std::string>
 fs::path person_file(std::string_view profile, const std::map<std::string, std::string>& env);
 std::expected<void, std::string> set_value(std::string_view profile, const std::map<std::string, std::string>& env,
                                            std::string_view section, std::string_view key, std::string_view value);
+// The person's own setting of these keys removed (the profile's comes back:
+// "back to the defaults", design 2026-10-20 WuXian §5.5); what was removed,
+// as section, key, value -- to put back (undo). Comments and other lines stay.
+struct Setting {
+    std::string section, key, value;
+    bool operator==(const Setting&) const = default;
+};
+std::expected<std::vector<Setting>, std::string> unset_values(std::string_view profile, const std::map<std::string, std::string>& env,
+                                                               const std::vector<std::pair<std::string, std::string>>& keys);
 
 }  // namespace xdesk::config
