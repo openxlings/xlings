@@ -313,6 +313,11 @@ void Display::provider_(std::string_view bytes) {
                 pointer_.image = std::move(*image);
                 changed = true;
             }
+        } else if (msg.kind == 'p') {
+            if (auto p = opensal::wire::decode_pointer_locate(msg.payload)) {
+                std::lock_guard l(m_);
+                pointer_.locate = *p;
+            }
         } else if (msg.kind == 'd') {
             if (auto r = opensal::wire::decode_display(msg.payload)) {
                 std::optional<opensal::Size> resend;

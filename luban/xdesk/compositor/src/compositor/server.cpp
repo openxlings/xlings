@@ -40,6 +40,7 @@ Server::Server(const Options& opts)
     minimap_on = opts.minimap;
     snap_on = opts.snap;
     reduce_motion = opts.reduce_motion;
+    locate = opts.locate;
     status_others = opts.status_others;
     hold_ms = opts.switcher_hold_ms;
     highlight_ms = opts.highlight_ms;

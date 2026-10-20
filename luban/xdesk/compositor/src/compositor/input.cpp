@@ -589,6 +589,7 @@ void Server::provider(Link& l, std::string_view bytes) {
                 l.provided = bits;
                 l.hello = true;
                 l.whole = true;
+                send_locate(&l);
                 if (&l == primary()) {
                     provided = bits;
                     pointer_mode();

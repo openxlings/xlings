@@ -1,0 +1,12 @@
+# cursor-make: a theme's text made into an Xcursor theme (../README.md).
+[package]
+namespace = "cursorkit"
+name      = "cursor-make"
+version   = "0.1.0"
+
+[targets.cursor-make]
+kind = "bin"
+main = "src/main.cpp"
+
+[dependencies]
+cursorkit = { path = ".." }

@@ -7,7 +7,8 @@
 # musl has no dlopen.
 #
 # SDL's and Dear ImGui's headers are read here for the backends only; an
-# application draws with imkit.imgui (luban/kits/imkit).
+# application draws with imkit.imgui (luban/kits/imkit). The pointer over a
+# desktop is the Luban theme (cursors/luban.path) drawn by cursorkit.
 [package]
 namespace = "luban"
 name      = "luban-desktop-host"
@@ -18,6 +19,7 @@ kind = "lib"
 
 [dependencies]
 opensal = { path = "../../specs/opensal" }
+cursorkit = { path = "../../kits/cursor" }
 
 [dependencies.compat]
 sdl3  = "3.4.2"

@@ -306,6 +306,10 @@ jobs:
           # payload too (xim:xdesk).
           mcpp build -p xdesk-app --profile dist
           bash luban/tools/xdesk_release.sh
+          # The Luban pointer theme (luban:cursors), made by cursor-make from
+          # the text the Luban OS window carries.
+          mcpp build -p cursor-make --profile dist
+          bash luban/tools/cursors_release.sh
 
       - name: Upload the Luban OS app
         uses: actions/upload-artifact@v4
@@ -316,6 +320,8 @@ jobs:
             build/luban-os-*-linux-x86_64.tar.gz.sha256
             build/xdesk-*-linux-x86_64.tar.gz
             build/xdesk-*-linux-x86_64.tar.gz.sha256
+            build/luban-cursors-*.tar.gz
+            build/luban-cursors-*.tar.gz.sha256
 
   # Cross-build the aarch64-linux-musl release artefact on an x86_64 runner via
   # mcpp's cross toolchain (xim:aarch64-linux-musl-gcc). Uses the latest mcpp
@@ -999,6 +1005,7 @@ jobs:
             artifacts/xlings-linux-x86_64/xlings-*-linux-x86_64.tar.gz
             artifacts/luban-os-linux-x86_64/luban-os-*-linux-x86_64.tar.gz
             artifacts/luban-os-linux-x86_64/xdesk-*-linux-x86_64.tar.gz
+            artifacts/luban-os-linux-x86_64/luban-cursors-*.tar.gz
             artifacts/luban-os-macosx-arm64/luban-os-*-macosx-arm64.tar.gz
             artifacts/luban-os-windows-x86_64/luban-os-*-windows-x86_64.zip
             artifacts/xlings-linux-aarch64/xlings-*-linux-aarch64.tar.gz
@@ -1145,11 +1152,12 @@ jobs:
           # their GitHub release, which only this job can create.
           rc=0
           bash tools/mirror_xlings_res.sh "${{ steps.version.outputs.version }}" || rc=1
-          # luban, the Luban OS app and xdesk beside it (xlings-res/luban,
-          # luban-os, xdesk).
+          # luban, the Luban OS app, xdesk and the pointer theme beside it
+          # (xlings-res/luban, luban-os, xdesk, luban-cursors).
           bash tools/mirror_res.sh luban "${{ steps.version.outputs.version }}" || rc=1
           bash tools/mirror_res.sh luban-os "${{ steps.version.outputs.version }}" || rc=1
           bash tools/mirror_res.sh xdesk "${{ steps.version.outputs.version }}" || rc=1
+          bash tools/mirror_res.sh luban-cursors "${{ steps.version.outputs.version }}" || rc=1
           exit $rc
 
       - name: Report mirror outcome

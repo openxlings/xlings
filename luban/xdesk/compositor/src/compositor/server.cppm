@@ -353,6 +353,7 @@ struct Server {
     std::map<std::string, std::vector<std::string>> key_overrides;   // keys.json, as the person keeps it
     std::uint32_t pressed_code { 0 };            // the evdev code of the key being handled
     bool reduce_motion { false };                // windows go at once, not by springs
+    opensal::PointerLocate locate;               // a shaken pointer, told to each window that draws it
     bool minimap_on { true }, snap_on { true };
     // The control socket (design 2026-10-20 §12.3): `xdesk msg`, scripts, agents.
     fs::path control_path;
@@ -579,6 +580,8 @@ struct Server {
     // A client's: by name (cursor-shape-v1), or an image of its own.
     void client_pointer(wlr_surface* surface, std::int32_t hx, std::int32_t hy);
     void send_pointer_image();
+    // How a shaken pointer is shown ('p', the accent its colour): to `only`, or to every window that draws the pointer.
+    void send_locate(Link* only = nullptr);
     // The window said what it takes: draw the pointer here or leave it to it.
     void pointer_mode();
 

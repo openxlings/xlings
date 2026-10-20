@@ -37,6 +37,8 @@ struct Options {
     std::string rule { "tile" };                 // a new workspace's: tile or stack (design 2026-10-20 WuXian §5.4)
     std::optional<std::uint32_t> accent;         // 0xrrggbb: the theme's, when absent
     std::optional<std::uint32_t> background;
+    // A shaken pointer, as the window draws it (opensal 'p'; design 2026-10-20 WuXian §8.3): its colour is the accent.
+    opensal::PointerLocate locate;
     std::string renderer { "auto" };             // auto (the GPU when there is one) or software (design 2026-10-20 WuXian §7.2)
     std::string keyboard_layout { "us" };        // an xkb layout (others need xkeyboard-config)
     int repeat_rate { 30 }, repeat_delay { 500 };

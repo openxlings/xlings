@@ -154,4 +154,16 @@ struct CursorImage {
     std::string bytes;            // size.width * 4 per row
 };
 
+// How a pointer the provider draws is shown while someone shakes it to find
+// it (0.5, part of Cursor): not at all differently, bigger, or bigger and
+// filled with `color` (0xRRGGBB), up to `max` times its size (2 to 4). A
+// provider that is never told does what the default says.
+struct PointerLocate {
+    enum class Mode { off, grow, grow_color };
+    Mode mode { Mode::grow_color };
+    double max { 4 };
+    std::uint32_t color { 0x5e9cff };
+    bool operator==(const PointerLocate&) const = default;
+};
+
 }  // namespace opensal

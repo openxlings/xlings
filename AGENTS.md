@@ -100,9 +100,10 @@ the same locally (`tests/README.md`).
   formal release. Bump `mcpp.toml`, `src/core/config.cppm` and
   `luban/os/service/src/service.cppm` (kVersion) together.
 - After `release.yml` is green: push the assets to the CN mirror from a CN machine
-  (`tools/mirror-latest.sh xlings`, then `luban`, `luban-os` and `xdesk`; verify with GET), then
+  (`tools/mirror-latest.sh xlings`, then `luban`, `luban-os`, `xdesk` and `luban-cursors`; verify with GET), then
   bump `xim-pkgindex/pkgs/x/xlings.lua` (every platform block and `latest`),
-  `pkgs/luban/luban.lua`, `pkgs/luban/luban-os.lua` and `pkgs/luban/xdesk.lua`.
+  `pkgs/luban/luban.lua`, `pkgs/luban/luban-os.lua`, `pkgs/luban/xdesk.lua` and, when the theme
+  changed, `pkgs/luban/cursors.lua`.
 - Never pin a released xlings version in CI (`tests/fresh-install/` follows `latest`).
 
 ## Contributing

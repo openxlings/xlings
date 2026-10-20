@@ -393,7 +393,8 @@ int run(int argc, char* argv[]) {
         const bool busy = a.countdown_until || (a.job && !a.job->done) || a.resize_at || a.run.busy;
         // What the scheduler chooses (tests run their own beat, and are told this).
         // Still: until the next step of an animation, at most a second.
-        int scheduled = (pending > 0 || busy || (wake >= 0 && wake < 0.016)) ? 16
+        // A shaken pointer growing or shrinking is an animation too.
+        int scheduled = (pending > 0 || busy || a.window->pointer_animating() || (wake >= 0 && wake < 0.016)) ? 16
                         : wake < 0 ? 1000 : std::clamp(static_cast<int>(wake * 1000), 16, 1000);
         if (a.toast_until)
             scheduled = std::clamp(static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(

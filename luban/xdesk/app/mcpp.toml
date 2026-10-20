@@ -1,6 +1,5 @@
-# xdesk: one desktop session -- the compositor, its shell and a profile
-# (classic: tile and a traditional desktop; canvas: an infinite canvas), an
-# opensal consumer whose standard input and output are opensal.wire (Luban OS
+# xdesk: one desktop session -- the compositor, its shell and its settings
+# (share/xdesk/xdesk.ini: WuXian's workspaces, tiled or free), an opensal consumer whose standard input and output are opensal.wire (Luban OS
 # desktop part 2 §2).
 [package]
 namespace = "xdesk"
@@ -17,6 +16,6 @@ opensal          = { path = "../../specs/opensal" }
 xdesk-base       = { path = "../base" }
 
 [build]
-# The GPU libraries wlroots' package links whether or not its GLES renderer is
-# built: unused here (headless, pixman), so they do not stay NEEDED.
+# What wlroots' package links and xdesk does not call stays out of NEEDED
+# (libEGL, libGLESv2 and libgbm stay: the GLES renderer, chosen at start).
 ldflags = ["-Wl,--as-needed"]

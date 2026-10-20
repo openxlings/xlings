@@ -192,9 +192,10 @@ jobs:
         if: failure()
         run: bash tools/ci/diagnose_mcpp.sh
 
-  # The Luban OS app's and xdesk's release payloads, as release.yml makes
-  # them (a glibc program, the system's loader, no RPATH, its NEEDED
-  # checked): a release must not be the first to find the packaging broken.
+  # The Luban OS app's, xdesk's and the pointer theme's release payloads, as
+  # release.yml makes them (a glibc program, the system's loader, no RPATH,
+  # its NEEDED checked; every shape in the theme): a release must not be the
+  # first to find the packaging broken.
   # Its own optimized build, beside the others.
   desktop-payloads:
     needs: plan
@@ -209,13 +210,15 @@ jobs:
           mcpp-cache: mcpp-v4-ci-linux-desktop-
           sandbox: 'false'
 
-      - name: Luban OS and xdesk release payloads
+      - name: Luban OS, xdesk and pointer theme release payloads
         run: |
           bash tools/ci/xlings_tools.sh patchelf
           mcpp build -p luban-os --profile dist
           bash luban/tools/luban_os_release.sh
           mcpp build -p xdesk-app --profile dist
           bash luban/tools/xdesk_release.sh
+          mcpp build -p cursor-make --profile dist
+          bash luban/tools/cursors_release.sh
 
       - name: Diagnose a failed mcpp build
         if: failure()

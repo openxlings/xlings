@@ -9,8 +9,8 @@
 # libraries -- and is otherwise an ordinary glibc program: its loader the
 # system's path, no RPATH. The index package (xim:xdesk) depends on the
 # index's glibc and gcc-runtime; an install patches it onto them and adds
-# libexec/lib to its RPATH. The sessions it is (classic, canvas) are in
-# share/wayland-sessions.
+# libexec/lib to its RPATH. Its sessions (xdesk; classic and canvas, the names
+# of before) are in share/wayland-sessions.
 #
 #   luban/tools/xdesk_release.sh [binary]   # default: the newest dist build
 #
@@ -73,7 +73,7 @@ readelf -l "$out/bin/xdesk" | grep -q "interpreter: $loader" || fail "the loader
 
 cp "$project"/luban/xdesk/app/share/wayland-sessions/*.desktop "$out/share/wayland-sessions/"
 cp "$project"/luban/xdesk/app/share/applications/*.desktop "$out/share/applications/"
-# The profiles' defaults (xdesk.config reads them from $XDG_DATA_DIRS/xdesk).
+# Its settings' defaults (xdesk.config reads them from $XDG_DATA_DIRS/xdesk).
 cp "$project"/luban/xdesk/app/share/xdesk/*.ini "$out/share/xdesk/"
 
 # Fonts of its own, so it has text in any root (a root's share/fonts is the

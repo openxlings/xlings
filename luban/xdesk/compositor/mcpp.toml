@@ -3,7 +3,7 @@
 #
 #   xdesk.compositor  a Wayland compositor whose output is an opensal surface
 #                     (no screencopy, no injected input): wlroots' headless
-#                     backend and pixman renderer, so it runs with no GPU
+#                     backend, GLES on a render node or pixman with no GPU
 #   xdesk.draw        2D drawing and text for what the compositor draws itself
 #   xdesk.shell       the desktop around the windows: panel, launcher,
 #                     notifications, canvas navigation
@@ -28,8 +28,9 @@ xdesk-layout = { path = "../layout" }
 opensal    = { path = "../../specs/opensal" }
 
 [dependencies.wlroots]
-# No DRM, libinput, session or GLES: headless and pixman are what a machine
-# or a sandbox without a GPU runs, and they are always built.
+# No DRM output, libinput or session: headless is the backend; GLES on a
+# render node (gbm) when a GPU draws, pixman when none does (design
+# 2026-10-20 §7).
 wlroots = { version = "0.20.2", default-features = false, features = ["gles2", "gbm"] }
 
 [dependencies.freedesktop]

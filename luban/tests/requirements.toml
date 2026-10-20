@@ -535,3 +535,25 @@ status = "required"
 [GPU-SELECT]
 text = "xdesk draws with GLES on the first render node where EGL starts, else in software (pixman) -- chosen, set by XDESK_RENDERER=pixman, or because no node, a node that cannot be opened, or EGL not starting -- the reason said in its log and its About page; a frame not read back, or the GPU lost, falls back to software"
 status = "required"
+
+# ── the pointer (design 2026-10-20 WuXian §8) ───────────────────────
+
+[CURSOR-THEME]
+text = "the Luban pointer theme is cursorkit text the window carries: it parses, draws every kCursors shape but none, every alias names one of them, and a malformed theme is refused with its line"
+status = "required"
+
+[CURSOR-RENDER]
+text = "a shape is drawn at exactly the size asked (24, 30, 36, 48, 60, 72 px and between) with no resampling: its hotspot scales with it, it covers the same share of its image at every size, and the arrow's tail leans 25 to 30 degrees from upright"
+status = "required"
+
+[CURSOR-XCURSOR]
+text = "cursor-make writes an Xcursor theme (one file a shape holding every size, premultiplied; a link an alias; index.theme, and the default theme inheriting it on request)"
+status = "required"
+
+[CURSOR-SHAKE]
+text = "a pointer shaken (four turns within 0.6 s, faster than 1800 px/s, over 700 px) is told apart from one moved, circled or trembling, and a press, a lock or a hidden pointer ends it"
+status = "required"
+
+[CURSOR-LOCATE]
+text = "the desktop tells the window how a shaken pointer is shown (opensal 'p': off, grow, or grow and colour, up to 2 to 4 times, the colour); the window grows its pointer while it is shaken and back after, and one that hears nothing does what the default says"
+status = "required"

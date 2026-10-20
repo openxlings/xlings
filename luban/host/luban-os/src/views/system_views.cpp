@@ -540,6 +540,7 @@ void desktop_view_(App& a) {
         // than the window -- the interface's.
         if (ImGui::IsItemHovered()) {
             const auto p = d.pointer();
+            a.window->pointer_locate(p.locate, a.settings.reduce_motion);
             a.window->surface_pointer(p.shape, p.image ? &*p.image : nullptr);
         }
         if (shell_h > 0) on_shell = shell_bar_(a, d, ImVec2(origin.x, origin.y + avail.y), avail.x, shell_h);

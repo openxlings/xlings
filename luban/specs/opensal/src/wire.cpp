@@ -107,6 +107,25 @@ std::optional<CursorImage> decode_cursor_image(std::string_view payload) {
     return c;
 }
 
+std::string encode_pointer_locate(const PointerLocate& p) {
+    const auto mode = p.mode == PointerLocate::Mode::off ? "off" : p.mode == PointerLocate::Mode::grow ? "grow" : "grow-color";
+    return encode('p', std::format("locate {} {} {:06x}", mode, p.max, p.color & 0xffffffu));
+}
+
+std::optional<PointerLocate> decode_pointer_locate(std::string_view payload) {
+    const auto w = words_(payload);
+    if (w.size() != 4 || w[0] != "locate" || w[3].size() != 6) return std::nullopt;
+    PointerLocate p;
+    if (w[1] == "off") p.mode = PointerLocate::Mode::off;
+    else if (w[1] == "grow") p.mode = PointerLocate::Mode::grow;
+    else if (w[1] == "grow-color") p.mode = PointerLocate::Mode::grow_color;
+    else return std::nullopt;
+    if (!num_(w[2], p.max) || !std::isfinite(p.max) || p.max < 1 || p.max > 8) return std::nullopt;
+    const auto r = std::from_chars(w[3].data(), w[3].data() + w[3].size(), p.color, 16);
+    if (r.ec != std::errc{} || r.ptr != w[3].data() + w[3].size()) return std::nullopt;
+    return p;
+}
+
 std::string encode_event(const Event& e) {
     return std::visit([](const auto& v) -> std::string {
         using T = std::decay_t<decltype(v)>;

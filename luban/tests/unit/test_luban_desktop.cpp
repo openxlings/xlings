@@ -221,6 +221,26 @@ XTEST(OpenhalAudio, AStreamsMessagesCrossWhole, .area = "luban", .covers = {"LUB
     EXPECT_EQ((audio::Format{48000, 2}.frame_bytes()), 4u);
 }
 
+XTEST(OpensalWire, HowAShakenPointerIsShownCrossesWhole, .area = "luban", .covers = {"LUBAN-DESKTOP-WIRE", "CURSOR-LOCATE"}) {
+    using M = opensal::PointerLocate::Mode;
+    for (const auto& p : {opensal::PointerLocate{}, opensal::PointerLocate{M::off, 2, 0}, opensal::PointerLocate{M::grow, 3, 0x00ff7f}}) {
+        wire::Decoder d;
+        d.feed(wire::encode_pointer_locate(p));
+        auto m = d.next();
+        ASSERT_TRUE(m && *m);
+        EXPECT_EQ((*m)->kind, 'p');
+        EXPECT_EQ(wire::decode_pointer_locate((*m)->payload), p) << (*m)->payload;
+    }
+    EXPECT_EQ(wire::encode_pointer_locate({}).substr(5), "locate grow-color 4 5e9cff");
+    EXPECT_FALSE(wire::decode_pointer_locate("locate sideways 4 5e9cff"));
+    EXPECT_FALSE(wire::decode_pointer_locate("locate grow 40 5e9cff")) << "bigger than 8 times";
+    EXPECT_FALSE(wire::decode_pointer_locate("locate grow 4 5e9c")) << "a colour is six digits";
+    EXPECT_FALSE(wire::decode_pointer_locate("locate grow 4"));
+    // The default, what a window never told does: bigger and coloured, up to 4 times.
+    EXPECT_EQ(opensal::PointerLocate{}.mode, M::grow_color);
+    EXPECT_EQ(opensal::PointerLocate{}.max, 4);
+}
+
 XTEST(OpensalWire, APointerImageAndALockCrossWhole, .area = "luban", .covers = {"LUBAN-DESKTOP-WIRE", "LUBAN-OS-POINTER"}) {
     opensal::CursorImage c{.size = {2, 3}, .hotspot_x = 1, .hotspot_y = 2, .bytes = std::string(2 * 3 * 4, '\x7f')};
     wire::Decoder d;

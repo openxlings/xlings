@@ -130,6 +130,15 @@ std::vector<std::pair<std::string, std::string>> page_keys_(SettingsPage p) {
     }
 }
 
+// [appearance] pointer_locate (off, grow, grow-color) and pointer_max (2 to 4).
+opensal::PointerLocate pointer_locate_(const config::Settings& s) {
+    opensal::PointerLocate p;
+    if (const auto m = s.get("appearance", "pointer_locate", "grow-color"); m == "off") p.mode = opensal::PointerLocate::Mode::off;
+    else if (m == "grow") p.mode = opensal::PointerLocate::Mode::grow;
+    p.max = std::clamp(s.get_int("appearance", "pointer_max", 4), 2, 4);
+    return p;
+}
+
 }  // namespace
 
 // The settings as the files now say them, taken at once (after a page went
@@ -148,6 +157,7 @@ void Server::apply_settings() {
     const auto speed = s.get("scroll", "speed", "medium");
     wheel_factor = speed == "slow" ? 0.6 : speed == "fast" ? 1.6 : 1.0;
     snap_columns = s.get("scroll", "snap", "on") != "off";
+    locate = pointer_locate_(s);
     const auto base = shell::theme(o.profile);
     set_accent(s.colour("theme", "accent", (std::uint32_t(base.accent.r) << 16) | (std::uint32_t(base.accent.g) << 8) | base.accent.b));
     theme.background = draw::Color::rgb(s.colour("theme", "background",
@@ -211,6 +221,7 @@ void Server::set_accent(std::uint32_t rgb) {
     const float c[4] = {theme.accent.r / 255.0f * 0.8f, theme.accent.g / 255.0f * 0.8f, theme.accent.b / 255.0f * 0.8f, 0.8f};
     wlr_scene_rect_set_color(guide_x, c);
     wlr_scene_rect_set_color(guide_y, c);
+    send_locate();
     arrange();
 }
 
@@ -422,6 +433,26 @@ void Server::settings_rows() {
                    });
             toggle(std::string(tr_(zh, "Reduce motion: windows go at once, without gliding", "减少动态：窗口直接到位，不滑动")), reduce_motion,
                    [this](bool on) { reduce_motion = on; setting("appearance", "reduce_motion", on ? "on" : "off"); });
+            {
+                using M = opensal::PointerLocate::Mode;
+                const std::vector<M> modes{M::off, M::grow, M::grow_color};
+                const std::vector<std::string> names{"off", "grow", "grow-color"};
+                choice(std::string(tr_(zh, "A shaken pointer, to find it", "晃动鼠标时的指针")),
+                       {std::string(tr_(zh, "As it is", "不变")), std::string(tr_(zh, "Bigger", "放大")),
+                        std::string(tr_(zh, "Bigger and coloured", "放大并变色"))},
+                       static_cast<std::size_t>(std::ranges::find(modes, locate.mode) - modes.begin()), [this, modes, names](std::size_t k) {
+                           locate.mode = modes[k];
+                           setting("appearance", "pointer_locate", names[k]);
+                           send_locate();
+                       });
+                if (locate.mode != M::off)
+                    choice(std::string(tr_(zh, "Up to", "最大")), {"2x", "3x", "4x"}, static_cast<std::size_t>(std::clamp(locate.max, 2.0, 4.0) - 2),
+                           [this](std::size_t k) {
+                               locate.max = static_cast<double>(k + 2);
+                               setting("appearance", "pointer_max", std::to_string(k + 2));
+                               send_locate();
+                           });
+            }
             choice(std::string(tr_(zh, "Drawing (from the next session)", "渲染（下次会话起）")),
                    {std::string(tr_(zh, "The GPU when there is one", "自动（有 GPU 就用）")), std::string(tr_(zh, "Software", "软件"))},
                    o.renderer == "software" ? 1 : 0, [this](std::size_t k) {

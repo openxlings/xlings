@@ -373,6 +373,45 @@ state {}
     EXPECT_EQ(c["shape"], "default") << c.dump();
 }
 
+XTEST(LubanOs, AShakenPointerGrowsInTheDesktopsAccentAndShrinksBack, .area = "luban",
+      .covers = {"CURSOR-LOCATE", "CURSOR-SHAKE"}, .requires_ = {"linux", "xlings-bin"}) {
+    if (!app_binary()) GTEST_SKIP() << "no luban-os beside the xlings under test";
+    if (!xdesk_binary()) GTEST_SKIP() << "no xdesk beside luban-os (mcpp build -p xdesk-app)";
+    auto home = tk::Home::isolated("luban-os-pointer-shake");
+    ASSERT_EQ(home.xlings({"self", "init"}).exit_code, 0);
+    const auto runtime = home.root() / "run";
+    fs::create_directories(runtime);
+    fs::permissions(runtime, fs::perms::owner_all, fs::perm_options::replace);
+    const auto still = home.root() / "still.json", shaken = home.root() / "shaken.json", after = home.root() / "after.json";
+    // Over xdesk's panel, back and forth 500 px a dozen times as fast as the
+    // script goes: shaken. Then still: back to its size within a second.
+    std::string strokes;
+    for (int k = 0; k < 12; ++k) strokes += std::format("move {} 8\n", k % 2 ? 800 : 300);
+    auto r = run_script(home, std::format(R"(wait desktop
+waitfor desktop.texture.0 1100
+sleep 2500
+move 550 8
+sleep 800
+state {}
+{}state {}
+sleep 1800
+state {}
+)", still.string(), strokes, shaken.string(), after.string()),
+                        {"--desktop-session", "xdesk", "--desktop-exec", xdesk_binary()->string(), "--profile", "xdesk"},
+                        {{"XDG_RUNTIME_DIR", runtime.string()}});
+    ASSERT_EQ(r.exit_code, 0) << r.transcript();
+    const auto a = read_state(still)["pointer"], b = read_state(shaken)["pointer"], c = read_state(after)["pointer"];
+    // xdesk said how (its settings' defaults: grow and colour, 4 times, the accent).
+    EXPECT_EQ(a["locate"]["mode"], "grow-color") << a.dump();
+    EXPECT_EQ(a["locate"]["max"], 4) << a.dump();
+    EXPECT_EQ(a["locate"]["color"], "5e9cff") << a.dump();
+    EXPECT_EQ(a["drawn"], "default@1") << a.dump();
+    const auto drawn = b["drawn"].get<std::string>();
+    ASSERT_TRUE(drawn.starts_with("default@")) << b.dump();
+    EXPECT_GT(std::stod(drawn.substr(8)), 1.0) << "shaken, it grows: " << b.dump();
+    EXPECT_EQ(c["drawn"], "default@1") << "still, it is its size again: " << c.dump();
+}
+
 XTEST(LubanOs, AWindowThatDrawsNoPointerGetsXdesksInItsFrames, .area = "luban",
       .covers = {"LUBAN-OS-POINTER", "XDESK-COMPOSITOR"}, .requires_ = {"linux", "xlings-bin"}) {
     if (!xdesk_binary()) GTEST_SKIP() << "no xdesk beside luban-os (mcpp build -p xdesk-app)";

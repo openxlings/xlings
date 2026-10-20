@@ -158,8 +158,11 @@ Json state_(const App& a) {
         // The pointer: what the desktop says, and what the window shows now.
         const auto p = a.display->pointer();
         const auto [iw, ih] = a.window->pointer_image_size();
+        using M = opensal::PointerLocate::Mode;
         j["pointer"] = {{"said", p.shape}, {"shape", a.window->pointer_shown()}, {"custom", p.image.has_value()},
-                        {"size", Json::array({iw, ih})}, {"host_arrow", p.host_arrow}};
+                        {"size", Json::array({iw, ih})}, {"host_arrow", p.host_arrow}, {"drawn", a.window->pointer_drawn()},
+                        {"locate", {{"mode", p.locate.mode == M::off ? "off" : p.locate.mode == M::grow ? "grow" : "grow-color"},
+                                    {"max", p.locate.max}, {"color", std::format("{:06x}", p.locate.color)}}}};
         if (a.display && a.display->shell()) {
             Json apps = Json::array(), windows = Json::array();
             for (const auto& app : a.display->applications()) apps.push_back(app.id);

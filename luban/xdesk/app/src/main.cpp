@@ -128,6 +128,9 @@ int main(int argc, char* argv[]) {
     else if (s == "fast") o.wheel_speed = 1.6;
     o.snap_columns = settings.get("scroll", "snap", "on") != "off";
     o.renderer = settings.get("appearance", "renderer", o.renderer);
+    if (const auto m = settings.get("appearance", "pointer_locate", "grow-color"); m == "off") o.locate.mode = opensal::PointerLocate::Mode::off;
+    else if (m == "grow") o.locate.mode = opensal::PointerLocate::Mode::grow;
+    o.locate.max = std::clamp(settings.get_int("appearance", "pointer_max", 4), 2, 4);
     if (const auto c = settings.colour("theme", "accent", 0x1000000); c != 0x1000000) o.accent = c;
     if (const auto c = settings.colour("theme", "background", 0x1000000); c != 0x1000000) o.background = c;
     // Other windows of this desktop connect here (opensal-wlr's run_session says where).

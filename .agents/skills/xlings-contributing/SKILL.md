@@ -317,6 +317,9 @@ not a finished release:
 #    The GitHub runner cannot push large assets to GitCode: the upload stalls
 #    on the cross-border OBS wall, the job logs it and moves on green.
 bash tools/mirror-latest.sh xlings
+#    and the payloads released beside it (AGENTS.md: luban, luban-os, xdesk,
+#    luban-cursors).
+for p in luban luban-os xdesk luban-cursors; do bash tools/mirror-latest.sh $p; done
 
 #    Verify with GET, never HEAD: GitCode answers 401 to HEAD and
 #    302 -> CDN 200 to GET, so a HEAD check reports a healthy asset missing

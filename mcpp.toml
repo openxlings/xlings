@@ -58,6 +58,8 @@ members = [
     "luban/kits/openhal-host",
     "luban/kits/tray",
     "luban/kits/opensal-wlr",
+    "luban/kits/cursor",
+    "luban/kits/cursor/tool",
     "luban/xdesk/base",
     "luban/xdesk/layout",
     "luban/xdesk/compositor",
@@ -208,6 +210,7 @@ opensal-wlr = { path = "luban/kits/opensal-wlr" }
 xdesk-base = { path = "luban/xdesk/base" }
 xdesk-layout = { path = "luban/xdesk/layout" }
 tray       = { path = "luban/kits/tray" }
+cursorkit  = { path = "luban/kits/cursor" }
 
 [dev-dependencies.compat]
 gtest = "1.15.2"

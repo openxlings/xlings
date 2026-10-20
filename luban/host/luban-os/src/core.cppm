@@ -195,6 +195,7 @@ public:
         std::string shape { "none" };                 // kCursors, or "custom" with `image`
         std::optional<opensal::CursorImage> image;
         bool host_arrow { false };
+        opensal::PointerLocate locate;               // a shaken pointer ('p'), the default until said
     };
     Pointer pointer() const { std::lock_guard l(m_); return pointer_; }
     // It asked to hold the pointer (opensal PointerLock: a game) or let it

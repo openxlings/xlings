@@ -22,6 +22,8 @@
 //                     change
 //     'w'  windows    Shell: all of them, likewise           (see encode_windows)
 //     'd'  display    Displays: what this display is         "<n> primary" | "<n> mirror <of> <w> <h>"
+//     'p'  pointer    Cursor: a shaken pointer shown how     "locate <off|grow|grow-color> <max> <rrggbb>"
+//                     (PointerLocate; 0.5)
 //   provider -> consumer
 //     'H'  hello      provided interfaces, size, density,    "<bits> <w> <h> <scale> [<paced>]"
 //                     and whether it paces (1: it says FramePresented once
@@ -56,6 +58,10 @@ std::optional<std::pair<FrameHeader, std::string_view>> decode_frame(std::string
 // 'C': a cursor image, bounded by kMaxCursorSide; nullopt when malformed.
 std::string encode_cursor_image(const CursorImage& c);
 std::optional<CursorImage> decode_cursor_image(std::string_view payload);
+
+// 'p': how a shaken pointer is shown; nullopt when malformed (max outside 1 to 8).
+std::string encode_pointer_locate(const PointerLocate& p);
+std::optional<PointerLocate> decode_pointer_locate(std::string_view payload);
 
 std::string encode_event(const Event& e);
 std::optional<Event> decode_event(std::string_view payload);

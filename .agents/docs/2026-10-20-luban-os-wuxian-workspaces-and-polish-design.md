@@ -478,6 +478,9 @@ class Layout {
   （与 xdesk 同一条发布流程）；源从 xim-pkgindex 移到这个 kit，`tools/res/cursors`（`luban.cursors`、`make.py`）删除。
 - 形状按常见比例重画：箭头左边竖直、右边约 45°，尾巴从箭头底边中部伸出、与竖直约 27°（约 2 行偏 1 列），深色描边、白色填充；保留 Luban
   的一处强调色（尾巴末端）。15 个形状全部重画。
+- 路径的画法（K8 实施时定下）：`body` 先以描边色画整个形状、再以填充色画内缩一个描边宽度的形状，所以一个形状只写一次、描边处处等宽，
+  放大并变色时描边加粗只是改宽度；`accent` 只画在上一个 body 的填充里；`outline`、`fill` 原样一种颜色（问号、手指的分隔）。
+  主题文件包在 C++ 原始字符串里（首尾两行解析器跳过），窗口直接 `#include` 带上它，不再从磁盘找主题。
 - 窗口（`luban/os/window/src/pointer.cpp`）按实际密度向 kit 要正好那个尺寸，不再重采样；客户端自带的指针图像（`'C'`）在非整数密度下
   用面积平均缩小，不用最近邻。
 - 新版本 `luban:cursors`（新的资源）；`luban:xdesk`、`luban:labwc` 随之更新。
@@ -857,6 +860,8 @@ xim-pkgindex（一个 PR）：
 - 多显示器扩展（每块屏一个镜头、各锁一个工作区）；本轮仍只镜像。
 - WuXian 上框选多个自由窗口、"平铺这些"；应用规则"总在某工作区打开"。
 - WuXian 的 `wuxian-v1` 扩展协议与 `ext-workspace-v1` 的实现（规范里预留，§15.8）。
+- xdesk 自己画指针时（宿主不提供 `Cursor`：2026.10.19.2 之前的 Luban OS）的晃动放大：这时的指针图像已经来自 kit 生成的
+  `luban:cursors`，检测留到那条路径还有用户时再接（K8 实施时的取舍）。
 - Luban 拆分时一并做：L3 依赖迁到 `Port`（§16.2 的 `migrating` 段）、`xim:xdesk` 改名、`libs/luban*` 搬目录、`luban:` 成为子索引。
 
 ## 22. 评审结论
