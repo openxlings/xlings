@@ -429,6 +429,9 @@ class Layout {
   memfd 加 `F_SEAL_SHRINK`（对方缩小缓冲区不会让读的一方 SIGBUS），尺寸变化时换一块新的。
   这同时实现 2026-10-20 §13.2 第 3 条，pixman 也走它。连接中间有转发进程时，它原样转交 fd（`SCM_RIGHTS`）；转交不了就协商回 `'f'`。
 - **machine**：仍经 socket 发像素（`'f'`），加按行差分压缩（§13.2 第 3 条后半）。
+- **实施时的修正（本轮不做共享内存）**：窗口与系统之间的连接是 stdio 管道（中间有 bwrap 与转发进程），管道传不了 fd；共享内存需要宿主与系统之间
+  另开可传 fd 的 socket 或共享目录，牵动 opensal、窗口、xdesk 与沙箱挂载四处。它是性能优化，不影响 GPU 合成本身，移到以后（§21）；本轮 GPU
+  下只读回变化的矩形，经原来的 `'f'` 发出。
 - 窗口端：从共享内存更新 SDL 纹理（只更新变化的矩形），节流照旧（paced）。每个显示器窗口（镜像）各有自己的共享缓冲区。
 
 ### 7.4 沙箱：设备与驱动
@@ -603,9 +606,9 @@ class Layout {
 
 - 定因：`luban:qt-runtime` 的 `libicudata.so.78` 是 Alpine 拆包后的空壳（9 KB），数据在 `share/icu/78.1/icudt78l.dat`，qt-runtime 与 falkon
   都没带（`luban:kde` 带了）。Blink 创建断行器得到空指针，`setText` 时崩溃；渲染进程一个接一个崩，Falkon 退出。
-- 修（xim-pkgindex）：`tools/res/qt-runtime` 带上 `icu-data-full` 的 `icudt78l.dat`（中文的断词与排序要完整数据），放在
-  `libexec/qt-runtime/share/icu/78.1/`；runtime 的环境与 `libexec/falkon/env` 设 `ICU_DATA`；`luban:qt-runtime`、`luban:falkon` 各升 `revision`；
-  用到 qt-runtime 的 LXQt、labwc 桌面随之得到。
+- 修（xim-pkgindex）：`luban:falkon` 26.04.2-r1 带上 `icu-data-full` 的 `icudt78l.dat`（中文的断词与排序要完整数据），放在
+  `libexec/falkon/share/icu/78.1/`，`libexec/falkon/env` 设 `ICU_DATA`。实施时的修正：不放进 qt-runtime——升 qt-runtime 的版本要连带重建
+  LXQt 与 KDE（它们按 runtime 的版本构建），而需要完整数据的是 Blink 的断行器。
 - 启动脚本：有可用的 render node 时不加 `--disable-gpu`（§7.6）；没有 `WAYLAND_DISPLAY` 与 `DISPLAY` 时说"在桌面里打开它"，不落到 Qt 的 xcb 报错。
 - 验证：machine 与沙箱里打开中文页面、搜索结果页；`dmesg` 无 `QtWebEngineProc` 崩溃。
 
@@ -850,7 +853,7 @@ xim-pkgindex（一个 PR）：
 
 ## 21. 不做的与以后
 
-- 帧经 dmabuf 零拷贝交给宿主窗口；Venus（Vulkan）；macOS、Windows 宿主 machine 的 3D。
+- 帧经 dmabuf 零拷贝交给宿主窗口；帧经共享内存交给窗口（§7.3 的修正）；Venus（Vulkan）；macOS、Windows 宿主 machine 的 3D。
 - 多显示器扩展（每块屏一个镜头、各锁一个工作区）；本轮仍只镜像。
 - WuXian 上框选多个自由窗口、"平铺这些"；应用规则"总在某工作区打开"。
 - WuXian 的 `wuxian-v1` 扩展协议与 `ext-workspace-v1` 的实现（规范里预留，§15.8）。

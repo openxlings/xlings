@@ -48,17 +48,112 @@ Server::Server(const Options& opts)
     snap_columns = opts.snap_columns;
 }
 
+// ── the renderer (design 2026-10-20 WuXian §7.2) ─────────────────
+
+namespace {
+
+// A render node's kernel driver (i915, amdgpu, nvidia, virtio_gpu...).
+std::string driver_of_(const fs::path& node) {
+    std::error_code ec;
+    const auto link = fs::read_symlink(fs::path("/sys/class/drm") / node.filename() / "device" / "driver", ec);
+    if (!ec) return link.filename().string();
+    return "its driver unknown";
+}
+
+}  // namespace
+
+void Server::choose_renderer() {
+    const auto env = os::environment();
+    std::string why;
+    if (o.renderer == "software") why = "software is chosen in the settings";
+    else if (env.contains("XDESK_RENDERER") && env.at("XDESK_RENDERER") == "pixman") why = "XDESK_RENDERER=pixman";
+    else {
+        std::vector<fs::path> nodes;
+        std::error_code ec;
+        if (env.contains("XDESK_RENDER_NODES")) {
+            // The nodes to try, by name (a test's: each step's failure, said).
+            for (auto part : std::views::split(std::string_view(env.at("XDESK_RENDER_NODES")), ':'))
+                if (const fs::path n(std::string(part.begin(), part.end())); !n.empty() && fs::exists(n, ec)) nodes.push_back(n);
+        } else {
+            for (int k = 128; k < 192; ++k)
+                if (const fs::path n = std::format("/dev/dri/renderD{}", k); fs::exists(n, ec)) nodes.push_back(n);
+        }
+        if (nodes.empty()) why = "this system has no GPU it may use (no render node in /dev/dri)";
+        for (const auto& node : nodes) {
+            std::string err;
+            const int fd = os::open_device(node, &err);
+            if (fd < 0) { why = std::format("{} cannot be opened: {}", node.string(), err); continue; }
+            wlr_renderer* r = wlr_gles2_renderer_create_with_drm_fd(fd);
+            if (!r) {
+                os::close(fd);
+                const auto driver = driver_of_(node);
+                why = driver == "nvidia"
+                          ? std::format("EGL and GLES did not start on {} (nvidia: GBM needs NVIDIA's own EGL platform, nvidia-drm with modeset and its "
+                                        "libnvidia-egl-gbm, on the computer)", node.string())
+                          : std::format("EGL and GLES did not start on {} ({}: Mesa's driver for it is needed -- xlings install xim:graphics)",
+                                        node.string(), driver);
+                continue;
+            }
+            wlr_allocator* a = wlr_allocator_autocreate(backend, r);
+            if (!a) {
+                wlr_renderer_destroy(r);
+                os::close(fd);
+                why = std::format("{}: no buffers to draw into (GBM)", node.string());
+                continue;
+            }
+            renderer = r;
+            allocator = a;
+            render_fd = fd;
+            gpu = true;
+            renderer_text = std::format("GPU (GLES · {} · {})", driver_of_(node), node.filename().string());
+            log("renderer: " + renderer_text);
+            renderer_lost.connect(&renderer->events.lost, [this](void*) {
+                // Not inside the renderer's own signal: after it.
+                wl_event_loop_add_idle(loop, [](void* d) { static_cast<Server*>(d)->fall_back("the GPU was lost (reset)"); }, this);
+            });
+            return;
+        }
+    }
+    renderer = wlr_pixman_renderer_create();
+    allocator = renderer ? wlr_allocator_autocreate(backend, renderer) : nullptr;
+    gpu = false;
+    renderer_text = std::format("software (pixman): {}", why);
+    log("renderer: " + renderer_text);
+}
+
+void Server::fall_back(std::string why) {
+    if (!gpu) return;
+    renderer_lost.disconnect();
+    auto* old_renderer = renderer;
+    auto* old_allocator = allocator;
+    renderer = wlr_pixman_renderer_create();
+    allocator = renderer ? wlr_allocator_autocreate(backend, renderer) : nullptr;
+    if (!renderer || !allocator) { log("no software renderer to fall back to"); stop = true; return; }
+    wlr_output_init_render(output, allocator, renderer);
+    wlr_compositor_set_renderer(compositor, renderer);
+    wlr_allocator_destroy(old_allocator);
+    wlr_renderer_destroy(old_renderer);
+    if (render_fd >= 0) os::close(render_fd);
+    render_fd = -1;
+    gpu = false;
+    renderer_text = std::format("software (pixman): {}", why);
+    log("renderer: " + renderer_text);
+    show_hint(zh ? "GPU 不可用了，已改为软件渲染" : "The GPU is gone: drawing in software", 6000);
+    for (auto& l : links) l.whole = true;
+    wlr_output_schedule_frame(output);
+}
+
 // ── start ────────────────────────────────────────────────────────
 bool Server::start_() {
     display = wl_display_create();
     loop = wl_display_get_event_loop(display);
     backend = wlr_headless_backend_create(loop);
-    renderer = wlr_pixman_renderer_create();
-    if (!backend || !renderer) { log("no headless backend or software renderer"); return false; }
+    if (!backend) { log("no headless backend"); return false; }
+    choose_renderer();
+    if (!renderer || !allocator) { log("no software renderer"); return false; }
+    // Clients' buffers: shared memory, and the GPU's (linux-dmabuf) when it is there.
     wlr_renderer_init_wl_display(renderer, display);
-    allocator = wlr_allocator_autocreate(backend, renderer);
-    if (!allocator) { log("no allocator"); return false; }
-    wlr_compositor_create(display, 6, renderer);
+    compositor = wlr_compositor_create(display, 6, renderer);
     wlr_subcompositor_create(display);
     wlr_data_device_manager_create(display);
     wlr_primary_selection_v1_device_manager_create(display);
@@ -367,8 +462,10 @@ Server::~Server() {
     if (cursor) wlr_cursor_destroy(cursor);
     if (keyboard.impl) wlr_keyboard_finish(&keyboard);
     if (xkb) xkb_context_unref(xkb);
+    renderer_lost.disconnect();
     if (allocator) wlr_allocator_destroy(allocator);
     if (renderer) wlr_renderer_destroy(renderer);
+    if (render_fd >= 0) os::close(render_fd);
     if (backend) wlr_backend_destroy(backend);
     if (display) wl_display_destroy(display);
 }

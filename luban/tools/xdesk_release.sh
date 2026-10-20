@@ -58,10 +58,11 @@ for lib in $private; do
 done
 
 # What it may need: glibc's, libgcc's and libstdc++'s (the index's glibc and
-# gcc-runtime) and the libraries it carries. Anything else is a dependency
-# nobody declared.
+# gcc-runtime), the GPU's -- EGL, GLES, GBM, the system's graphics stack
+# (xim:graphics: glvnd and Mesa; design 2026-10-20 WuXian §7.4) -- and the
+# libraries it carries. Anything else is a dependency nobody declared.
 allowed="libc.so.6 libm.so.6 libdl.so.2 libpthread.so.0 librt.so.1 ld-linux-x86-64.so.2 ld-linux-aarch64.so.1
-libgcc_s.so.1 libstdc++.so.6 $private"
+libgcc_s.so.1 libstdc++.so.6 libEGL.so.1 libGLESv2.so.2 libgbm.so.1 $private"
 for f in "$out/bin/xdesk" "$out"/libexec/lib/*; do
   for lib in $(readelf -d "$f" | awk '/NEEDED/ { gsub(/[\[\]]/, "", $NF); print $NF }'); do
     grep -qw -- "$lib" <<<"$allowed" || fail "$(basename "$f") needs $lib, which its recipe does not declare"

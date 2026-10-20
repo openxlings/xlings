@@ -30,7 +30,7 @@ opensal    = { path = "../../specs/opensal" }
 [dependencies.wlroots]
 # No DRM, libinput, session or GLES: headless and pixman are what a machine
 # or a sandbox without a GPU runs, and they are always built.
-wlroots = { version = "0.20.2", default-features = false }
+wlroots = { version = "0.20.2", default-features = false, features = ["gles2", "gbm"] }
 
 [dependencies.freedesktop]
 wayland-server = "1.26.0"

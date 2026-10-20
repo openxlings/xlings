@@ -88,6 +88,12 @@ int open_append(const fs::path& path) {
     return fd;
 }
 
+int open_device(const fs::path& path, std::string* error) {
+    const int fd = ::open(path.c_str(), O_RDWR | O_CLOEXEC);
+    if (fd < 0 && error) *error = std::strerror(errno);
+    return fd;
+}
+
 std::optional<std::array<int, 2>> pipe() {
     int p[2];
     if (::pipe(p) != 0) return std::nullopt;

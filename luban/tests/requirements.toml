@@ -529,3 +529,9 @@ status = "required"
 [XDESK-HIGHLIGHT]
 text = "a window chosen in a switcher (or a new one among others) is lit while the others are dimmed, until the windows are where they go and the time chosen has passed, then they fade back; the time and the dimming are settings, off included"
 status = "required"
+
+# ── the GPU (design 2026-10-20 WuXian §7) ───────────────────────────
+
+[GPU-SELECT]
+text = "xdesk draws with GLES on the first render node where EGL starts, else in software (pixman) -- chosen, set by XDESK_RENDERER=pixman, or because no node, a node that cannot be opened, or EGL not starting -- the reason said in its log and its About page; a frame not read back, or the GPU lost, falls back to software"
+status = "required"

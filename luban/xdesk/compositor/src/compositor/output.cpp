@@ -102,24 +102,54 @@ void Server::render() {
         wlr_output_state_finish(&st);
         return;
     }
-    void* data = nullptr;
+    const int bw = st.buffer->width, bh = st.buffer->height;
+    const opensal::Size s{static_cast<std::uint32_t>(bw), static_cast<std::uint32_t>(bh)};
+    std::vector<opensal::Rect> damage;
+    bool whole = !(st.committed & static_cast<std::uint32_t>(wlr_output_state_field::WLR_OUTPUT_STATE_DAMAGE));
+    if (!whole) {
+        int n = 0;
+        const pixman_box32_t* boxes = pixman_region32_rectangles(&st.damage, &n);
+        for (int k = 0; k < n; ++k)
+            damage.push_back({boxes[k].x1, boxes[k].y1, static_cast<std::uint32_t>(boxes[k].x2 - boxes[k].x1),
+                              static_cast<std::uint32_t>(boxes[k].y2 - boxes[k].y1)});
+    }
+    if (whole || damage.size() > 8) damage = {opensal::Rect{0, 0, s.width, s.height}};
+    const std::vector<opensal::Rect> all{opensal::Rect{0, 0, s.width, s.height}};
+    // Who is sent what: all of it to a window that missed frames.
+    const bool any_whole = std::ranges::any_of(links, [&](const Link& l) { return !l.gone && l.hello && !l.hidden && l.whole; });
+    // The pixels: the buffer itself (software), or read back from the GPU --
+    // only where they changed, and all of them for a window that needs it.
+    const void* data = nullptr;
     std::uint32_t format = 0;
     std::size_t stride = 0;
-    const int bw = st.buffer->width, bh = st.buffer->height;
-    if (wlr_buffer_begin_data_ptr_access(st.buffer, wlr_buffer_data_ptr_access_flag::WLR_BUFFER_DATA_PTR_ACCESS_READ,
-                                         &data, &format, &stride)) {
-        const opensal::Size s{static_cast<std::uint32_t>(bw), static_cast<std::uint32_t>(bh)};
-        std::vector<opensal::Rect> damage;
-        bool whole = !(st.committed & static_cast<std::uint32_t>(wlr_output_state_field::WLR_OUTPUT_STATE_DAMAGE));
-        if (!whole) {
-            int n = 0;
-            const pixman_box32_t* boxes = pixman_region32_rectangles(&st.damage, &n);
-            for (int k = 0; k < n; ++k)
-                damage.push_back({boxes[k].x1, boxes[k].y1, static_cast<std::uint32_t>(boxes[k].x2 - boxes[k].x1),
-                                  static_cast<std::uint32_t>(boxes[k].y2 - boxes[k].y1)});
+    void* mapped = nullptr;
+    bool ok = false;
+    if (wlr_buffer_begin_data_ptr_access(st.buffer, wlr_buffer_data_ptr_access_flag::WLR_BUFFER_DATA_PTR_ACCESS_READ, &mapped, &format, &stride)) {
+        data = mapped;
+        ok = true;
+    } else if (gpu) {
+        if (wlr_texture* tex = wlr_texture_from_buffer(renderer, st.buffer)) {
+            stride = static_cast<std::size_t>(bw) * 4;
+            readback.resize(stride * static_cast<std::size_t>(bh));
+            format = kARGB8888;
+            ok = true;
+            for (const auto& r : any_whole ? all : damage) {
+                const wlr_texture_read_pixels_options opts{.data = readback.data(), .format = kARGB8888,
+                                                           .stride = static_cast<std::uint32_t>(stride),
+                                                           .dst_x = static_cast<std::uint32_t>(r.x), .dst_y = static_cast<std::uint32_t>(r.y),
+                                                           .src_box = {r.x, r.y, static_cast<int>(r.width), static_cast<int>(r.height)}};
+                if (!wlr_texture_read_pixels(tex, &opts)) { ok = false; break; }
+            }
+            wlr_texture_destroy(tex);
+            data = readback.data();
         }
-        if (whole || damage.size() > 8) damage = {opensal::Rect{0, 0, s.width, s.height}};
-        const std::vector<opensal::Rect> all{opensal::Rect{0, 0, s.width, s.height}};
+        if (!ok) {
+            wlr_output_state_finish(&st);
+            fall_back("a frame could not be read back from the GPU");
+            return;
+        }
+    }
+    if (ok) {
         const auto* px = static_cast<const std::uint8_t*>(data);
         // ARGB with an opaque background (start_): the rows are sent as they
         // are, in one message built in a buffer kept from frame to frame.
@@ -155,7 +185,7 @@ void Server::render() {
             }
             send_rects(l, std::exchange(l.whole, false) ? all : damage);
         }
-        wlr_buffer_end_data_ptr_access(st.buffer);
+        if (mapped) wlr_buffer_end_data_ptr_access(st.buffer);
     }
     wlr_output_commit_state(output, &st);
     wlr_output_state_finish(&st);

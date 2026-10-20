@@ -127,6 +127,7 @@ int main(int argc, char* argv[]) {
     if (const auto s = settings.get("scroll", "speed", "medium"); s == "slow") o.wheel_speed = 0.6;
     else if (s == "fast") o.wheel_speed = 1.6;
     o.snap_columns = settings.get("scroll", "snap", "on") != "off";
+    o.renderer = settings.get("appearance", "renderer", o.renderer);
     if (const auto c = settings.colour("theme", "accent", 0x1000000); c != 0x1000000) o.accent = c;
     if (const auto c = settings.colour("theme", "background", 0x1000000); c != 0x1000000) o.background = c;
     // Other windows of this desktop connect here (opensal-wlr's run_session says where).

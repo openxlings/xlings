@@ -232,7 +232,7 @@ std::string Server::system_info() {
     line("Kernel", first_line_("/proc/sys/kernel/osrelease"));
     const auto env = os::environment();
     line("User", env.contains("USER") ? env.at("USER") : "");
-    line("Renderer", "CPU (pixman): software, no GPU renderer in this build");
+    line("Renderer", renderer_text);
     std::string displays;
     for (const auto& l : links)
         displays += std::format("{}{} {}", displays.empty() ? "" : ", ", l.number, &l == &links.front() ? "primary" : "mirror");
@@ -422,6 +422,13 @@ void Server::settings_rows() {
                    });
             toggle(std::string(tr_(zh, "Reduce motion: windows go at once, without gliding", "减少动态：窗口直接到位，不滑动")), reduce_motion,
                    [this](bool on) { reduce_motion = on; setting("appearance", "reduce_motion", on ? "on" : "off"); });
+            choice(std::string(tr_(zh, "Drawing (from the next session)", "渲染（下次会话起）")),
+                   {std::string(tr_(zh, "The GPU when there is one", "自动（有 GPU 就用）")), std::string(tr_(zh, "Software", "软件"))},
+                   o.renderer == "software" ? 1 : 0, [this](std::size_t k) {
+                       setting("appearance", "renderer", k == 1 ? "software" : "auto");
+                       show_hint(tr_(zh, "From the next session", "下次会话起生效"), 3000);
+                   });
+            text(std::string(tr_(zh, "Drawn now", "现在的渲染器")), renderer_text);
             button(std::string(tr_(zh, "This page as it came", "恢复本页默认")), {}, [this] { reset_page(SettingsPage::appearance); });
             break;
         }

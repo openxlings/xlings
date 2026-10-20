@@ -1046,3 +1046,44 @@ sleep 400
     const auto keys = Json::parse(tk::read_file(home.root() / ".config" / "xdesk" / "keys.json"));
     EXPECT_EQ(keys["maximize"], Json::array({"Super+Shift+x"})) << keys.dump();
 }
+
+// The renderer (design 2026-10-20 WuXian §7.2): the GPU when one draws, else
+// software -- and every step that fails says why, as the log and the About
+// page say it. CI has no GPU: each failure is made to happen.
+XTEST(LubanOs, XdeskDrawsInSoftwareWhenNoGpuDrawsAndSaysWhy, .area = "luban", .covers = {"GPU-SELECT"},
+      .requires_ = {"linux", "xlings-bin"}) {
+    if (!xdesk_binary()) GTEST_SKIP() << "no xdesk beside luban-os (mcpp build -p xdesk-app)";
+    auto home = tk::Home::isolated("xdesk-renderer");
+    const auto runtime = home.root() / "run";
+    fs::create_directories(runtime);
+    fs::permissions(runtime, fs::perms::owner_all, fs::perm_options::replace);
+    auto start = [&](std::map<std::string, std::string> extra) {
+        tk::RunOptions o;
+        o.argv = {xdesk_binary()->string(), "--profile", "xdesk"};
+        o.env = {{"PATH", "/usr/bin:/bin"}, {"HOME", home.root().string()}, {"XDG_RUNTIME_DIR", runtime.string()},
+                 {"XDG_CONFIG_HOME", (home.root() / "config").string()}};
+        o.env.insert(extra.begin(), extra.end());
+        // Its window's hello, then the stream ends: xdesk starts, draws, ends.
+        const std::string hello = "65535 800 600 1 0";
+        o.stdin_data = std::string("H") + char(0) + char(0) + char(0) + char(hello.size()) + hello;
+        o.timeout = std::chrono::seconds(30);
+        return tk::run(o);
+    };
+    auto said = [](const tk::RunResult& r) {
+        const auto at = r.err.find("xdesk: renderer: ");
+        return at == std::string::npos ? std::string{} : r.err.substr(at, r.err.find('\n', at) - at);
+    };
+    const auto chosen = start({{"XDESK_RENDERER", "pixman"}});
+    EXPECT_NE(said(chosen).find("software (pixman): XDESK_RENDERER=pixman"), std::string::npos) << chosen.transcript();
+    const auto none = start({{"XDESK_RENDER_NODES", (home.root() / "no-such-node").string()}});
+    EXPECT_NE(said(none).find("no render node"), std::string::npos) << none.transcript();
+    // A node that opens and is no GPU: EGL and GLES do not start on it.
+    const auto not_gpu = start({{"XDESK_RENDER_NODES", "/dev/null"}});
+    EXPECT_NE(said(not_gpu).find("EGL and GLES did not start on /dev/null"), std::string::npos) << not_gpu.transcript();
+    // One that cannot be opened.
+    const auto closed = home.root() / "closed";
+    tk::write_file(closed, "");
+    fs::permissions(closed, fs::perms::none, fs::perm_options::replace);
+    const auto refused = start({{"XDESK_RENDER_NODES", closed.string()}});
+    if (!std::ifstream(closed)) EXPECT_NE(said(refused).find("cannot be opened"), std::string::npos) << refused.transcript();
+}

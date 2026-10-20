@@ -202,6 +202,15 @@ struct Server {
     wlr_backend* backend { nullptr };
     wlr_renderer* renderer { nullptr };
     wlr_allocator* allocator { nullptr };
+    wlr_compositor* compositor { nullptr };
+    // The renderer (design 2026-10-20 WuXian §7.2): the GPU's (GLES on a
+    // render node) when one draws, else software (pixman) -- and why, as the
+    // About page says it.
+    bool gpu { false };
+    int render_fd { -1 };
+    std::string renderer_text;
+    std::vector<std::uint8_t> readback;          // a GPU frame's pixels, read back where they changed
+    Hook renderer_lost;
     wlr_scene* scene { nullptr };
     wlr_scene_output_layout* scene_layout { nullptr };
     wlr_output_layout* outputs { nullptr };
@@ -706,6 +715,10 @@ struct Server {
     void open_fonts();
 
     void render();
+    void choose_renderer();
+    // The GPU is not there any more (lost, or a frame could not be read
+    // back): software from now on, every window drawn again, said once.
+    void fall_back(std::string why);
 
     bool start_();
 
