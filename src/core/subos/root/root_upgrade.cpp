@@ -442,8 +442,18 @@ int run_check_(int argc, char* argv[], EventStream& stream, const UsageError& us
         return 2;
     }
     namespace rc = xlings::subos::root_check;
-    const auto report = rc::check("/", fast ? rc::Depth::Fast : rc::Depth::Full,
-                                  {.term = env("TERM")});
+    auto report = rc::check("/", fast ? rc::Depth::Fast : rc::Depth::Full, {.term = env("TERM")});
+    // Its users read the system's package index (design 2026-10-20 §4): the
+    // catalog loaded -- built and kept here by root when it is not -- so a
+    // user's view, which cannot write it, finds it ready.
+    if (!fast) {
+        auto& catalog = xim::get_catalog();
+        rc::Item item{.id = "package-index", .what = "its package index can be read (its users' too)"};
+        if (!catalog.is_loaded()) (void)catalog.rebuild();
+        item.ok = catalog.is_loaded();
+        if (!item.ok) item.detail = "xlings update fetches it again";
+        report.items.push_back(std::move(item));
+    }
     if (json) {
         std::println("{}", rc::to_json(report).dump());
     } else {

@@ -298,7 +298,10 @@ std::expected<bool, std::string> refresh_mirror(const fs::path& selected, const 
     pending["pending_sha256"] = *sourceHash;
     pending["pending_staging"] = staging.generic_string();
     if (auto saved = publish_record_(proof, pending, record); !saved) return std::unexpected(saved.error());
-    if (!replace_with(pinned, entry, "managed domain dispatcher", version_of(pinned)))
+    // Its version asked of the original: the copy is named "source", and a
+    // multicall binary answers --version only as itself (an empty answer
+    // read as a downgrade on every upgrade).
+    if (!replace_with(pinned, entry, "managed domain dispatcher", version_of(source)))
         return std::unexpected(entry.string() + ": managed dispatcher publication failed; journal retained");
     auto published = digest_(entry);
     if (!published || *published != *sourceHash)

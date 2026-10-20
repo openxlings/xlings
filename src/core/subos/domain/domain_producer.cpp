@@ -220,6 +220,59 @@ std::expected<void, std::string> carry_owner_index_(const Domain& domain) {
     return {};
 }
 
+// The owner's parsed index, carried with it (design 2026-10-20 §4): a cache
+// names its recipes by absolute path, so the owner's names the owner's home
+// and is rebuilt inside -- where nobody can: a sandbox's /xlings is
+// read-only, a user's view writes nothing of the system's. Written here
+// instead, its paths where the domain sees them (logicalHome), whenever the
+// domain's differs (a system made before this carried the owner's as it
+// was). Only for the same snapshot of the index: whether it is current is
+// the reader's to judge, as for any cache (the head it records).
+void carry_owner_cache_(const fs::path& owner, const fs::path& target, const fs::path& logical) {
+    std::error_code ec;
+    const auto cacheName = ".xlings-index-cache.json";
+    if (!fs::is_regular_file(owner / cacheName, ec) || !fs::is_directory(target, ec)) return;
+    if (index_marker_(owner) != index_marker_(target)) return;
+    std::ifstream in(owner / cacheName);
+    auto cache = nlohmann::json::parse(in, nullptr, false);
+    if (!cache.is_object() || !cache.contains("entries") || !cache["entries"].is_object()) return;
+    const auto from = owner.lexically_normal().generic_string(), to = logical.lexically_normal().generic_string();
+    for (auto it = cache["entries"].begin(); it != cache["entries"].end(); ++it) {
+        auto& entry = it.value();
+        if (!entry.is_object()) return;
+        const auto path = entry.value("path", std::string{});
+        if (path.empty()) continue;
+        if (!path.starts_with(from + "/")) return;   // not the owner's own: not ours to move
+        entry["path"] = to + path.substr(from.size());
+    }
+    const auto text = cache.dump();
+    if (fs::is_regular_file(target / cacheName, ec) && platform::read_file_to_string((target / cacheName).string()) == text) return;
+    const auto staged = target / (std::string(cacheName) + ".carry");
+    {
+        std::ofstream out(staged, std::ios::trunc);
+        out << text;
+        if (!out) { fs::remove(staged, ec); return; }
+    }
+    fs::rename(staged, target / cacheName, ec);
+    if (ec) fs::remove(staged, ec);
+}
+
+void carry_owner_caches_(const Domain& domain) {
+    std::error_code ec;
+    for (fs::directory_iterator it(domain.ownerHome / "data", ec), end; !ec && it != end; it.increment(ec)) {
+        const auto name = it->path().filename().string();
+        if (!it->is_directory(ec) || it->is_symlink(ec)) continue;
+        if (name.starts_with("xim-pkgindex")) {
+            carry_owner_cache_(it->path(), domain.physicalHome / "data" / name, domain.logicalHome / "data" / name);
+        } else if (name == "xim-index-repos") {
+            for (fs::directory_iterator sub(it->path(), ec), send; !ec && sub != send; sub.increment(ec))
+                if (sub->is_directory(ec))
+                    carry_owner_cache_(sub->path(), domain.physicalHome / "data" / name / sub->path().filename(),
+                                       domain.logicalHome / "data" / name / sub->path().filename());
+        }
+    }
+}
+
 std::expected<void, std::string> prepare(const Domain& domain, const fs::path& entry) {
     if (!domain.privateHome) return std::unexpected("namespace producer requires an owner-private domain");
     if (auto reserved = prefix_domain::prepare_private(domain); !reserved) return reserved;
@@ -247,6 +300,7 @@ std::expected<void, std::string> prepare(const Domain& domain, const fs::path& e
         if (auto synced = follow_owner_config_(domain); !synced) return synced;
     }
     if (auto carried = carry_owner_index_(domain); !carried) return carried;
+    carry_owner_caches_(domain);
     return refresh_entry(domain, entry);
 }
 
@@ -364,6 +418,7 @@ std::expected<int, std::string> run(const Domain& domain, std::span<const std::s
     if (auto refreshed = refresh_entry(domain, platform::get_executable_path()); !refreshed)
         return std::unexpected(refreshed.error());
     if (auto synced = follow_owner_config_(domain); !synced) return std::unexpected(synced.error());
+    carry_owner_caches_(domain);
     struct Stage {
         fs::path path;
         ~Stage() {

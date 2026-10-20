@@ -394,10 +394,16 @@ void emit_refusal_(EventStream& stream, const spec::Refusal& refusal) {
 }
 
 // `! <dimension> not in effect: <reason>` -- entered, with less than asked.
+// A host with no sound server is not news at every entry: a desktop has
+// `audio` by default (design 2026-10-20 §20.1), its programs play into
+// nothing, and nothing here changes that -- said with -v, and by status.
 void report_degraded_(const spec::SandboxSpec& sb) {
-    for (const auto& d : sb.degraded)
-        log::warn("! {} not in effect: {}{}", d.dimension, d.reason,
-                  d.fix.empty() ? std::string{} : " (" + d.fix + ")");
+    for (const auto& d : sb.degraded) {
+        const auto text = std::format("! {} not in effect: {}{}", d.dimension, d.reason,
+                                      d.fix.empty() ? std::string{} : " (" + d.fix + ")");
+        if (d.dimension == "audio") log::debug("{}", text);
+        else log::warn("{}", text);
+    }
 }
 
 

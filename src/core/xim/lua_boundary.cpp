@@ -36,6 +36,17 @@ std::expected<std::optional<subos::policy::Policy>, std::string> policy() {
     const auto& p = Config::paths();
     return subos::policy_store::read({p.homeDir}, p.activeSubos, Info::VERSION);
 }
+// What reading a recipe runs under. Inside a Luban system its policy is the
+// one already around this process (design 2026-10-20 §4.13 V12): a worker
+// under it again needs the home written, which a sandbox's /xlings never is
+// -- a desktop's search found nothing. A read there is as in a home with no
+// policy.
+std::expected<std::optional<subos::policy::Policy>, std::string> read_policy() {
+    auto p = policy();
+    if (p && *p && Config::inside_root())
+        p->reset();
+    return p;
+}
 subos::policy::Policy minimum_layer_policy() {
     auto declared = subos::policy::preset(subos::policy::Preset::Dev);
     declared.needs["fs"] = subos::policy::Need::Must;
@@ -836,7 +847,7 @@ launch(const subos::policy::Policy& declared, const fs::path& package,
 std::expected<xpkg::Package, std::string> metadata(const fs::path& package,
                                                    const xpkg::LoaderContext& context,
                                                    const std::string& formal_provider) {
-    auto p = policy();
+    auto p = read_policy();
     if (!p)
         return std::unexpected(p.error());
     const auto layer_required = needs_layer_boundary(formal_provider);
@@ -876,7 +887,7 @@ std::expected<xpkg::PackageIndex, std::string> build_index(const fs::path& repo,
                                                            const std::string& ns,
                                                            const xpkg::LoaderContext& context,
                                                            const xpkg::BuildOutput& output) {
-    auto p = policy();
+    auto p = read_policy();
     if (!p)
         return std::unexpected(p.error());
     const auto layer_required = needs_layer_boundary();

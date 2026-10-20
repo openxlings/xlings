@@ -182,9 +182,9 @@ reported and the system is used. The checks are what any Linux userland needs
 -- `/usr` is the system's generation, every program in `/usr/bin` has its
 loader and finds the libraries it names, each package's programs start, its
 users, its login shell, its host name and machine id, a time zone, the
-certificate authorities, a UTF-8 locale, the terminal's description, and, for
-a desktop, its applications and a cursor theme -- and what the edition
-declares. An edition declares its own in `/usr/share/luban/checks.d/*.json`:
+certificate authorities, a UTF-8 locale, the terminal's description, the
+package index its xlings reads (its users' too), and, for a desktop, its
+applications and a cursor theme -- and what the edition declares. An edition declares its own in `/usr/share/luban/checks.d/*.json`:
 
 ```json
 {"checks": [{"id": "desk-session", "what": "its desktop session starts", "run": "xdesk --version", "critical": false, "timeout": 30}]}
