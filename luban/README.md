@@ -50,7 +50,8 @@ and system headers in the binding modules (`src/native/`, `xdesk.os`).
 
 The specifications are perspectives on one machine, not layers: openkal
 (a kernel's resources; its own repository, a dependency), openhal (which
-devices), opensal (a surface), openas (who did what, and who may). They do not
+devices), opensal (a surface), openas (who did what, and who may), opencaps (what
+parts provide and need), openwx (the plane a desktop is). They do not
 reference one another; implementations connect them.
 
 ## specs/
@@ -59,6 +60,7 @@ reference one another; implementations connect them.
 - `openhal` -- devices: which GPUs, displays, audio endpoints and input devices a machine has.
 - `openas` -- actors (people, agents, programs, services), what they did and what they may do: the envelope, the actor, the effect classes.
 - `opencaps` -- what the parts of a system provide and need, by name and level, so that parts released apart can tell whether they work together.
+- `openwx` -- open WuXian: one infinite plane a desktop is, workspaces on it as windows of a kind, two views; its state (`wuxian.json`) and conformance cases.
 
 ## kits/
 

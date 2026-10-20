@@ -3,7 +3,7 @@
 日期：2026-10-20　状态：修订 3，已评审（§22 各点已确认）　缘起：2026.10.20.1–.3 在 Linux 宿主（KVM）上的实测（`desktop-4`、`desktop-40`，
 machine 模式的 `luban:desktop 2026.10.20.1`），以及之后关于 xdesk 布局模型、交互、渲染、命名与 Luban 独立的讨论。
 
-范围：WuXian 规范（新 `luban/specs/wuxian`）；指针（新 `luban/kits/cursor`）；xdesk（`luban/xdesk/*`：布局模型、两种视图、拖放、切换器、滚轮、设置、关于、复制粘贴、渲染器）；opensal（`luban/specs/opensal`：
+范围：WuXian 规范 openwx（新 `luban/specs/openwx`）；指针（新 `luban/kits/cursor`）；xdesk（`luban/xdesk/*`：布局模型、两种视图、拖放、切换器、滚轮、设置、关于、复制粘贴、渲染器）；opensal（`luban/specs/opensal`：
 共享内存的帧）；Luban OS 应用与窗口（`apps/luban-os`、`luban/os/window`：进度页、新建页、剪贴板默认、帧与指针）；luban
 （`luban/os/service`、`luban/os/cli`：进度阶段、`luban new` 的名字、桌面系统的 GPU 授权）；machine（`luban/os/vm`：sudo、virtio-gpu）；
 xlings（`src/core/xim`、`src/core/xvm`、`modules/confine`：系统里的 Lua worker、名字解析的报错、shim）；xim-pkgindex（`luban:qt-runtime`、
@@ -27,7 +27,7 @@ xlings（`src/core/xim`、`src/core/xvm`、`modules/confine`：系统里的 Lua 
 6. **状态栏显示工作区指示**：颜色是工作区自己的（身份），形状是它的规则（平铺：分栏的方块；层叠：错开的两块）；当前工作区是完整的一块
    （颜色、编号、名字、规则），其他已有的工作区是带编号的小图形，点击切换；不显示工作区之间的拖放与管理（§3.13）。
 7. **WuXian 是名字，也是规范**：无限画布在界面、文档、配置、快捷键与代码里都叫 WuXian（`wuxian`、`WuXian`）；它的模型、视图、
-   状态格式与基本交互写成开放桌面的规范 `luban/specs/wuxian`（只依赖标准库），xdesk 是它的第一个实现（§15）。
+   状态格式与基本交互写成开放桌面的规范 openwx（open WuXian，`luban/specs/openwx`）（只依赖标准库），xdesk 是它的第一个实现（§15）。
 8. **为 Luban 独立出去做好架构**：Luban（`luban/`、`apps/luban*`、生态包）对 xlings 的依赖分三层——基础库、两边共读的格式、
    xlings 的领域只经协议（`Port` 与 xlings 的 JSON 协议）；lint 按允许表检查，本轮新代码遵守，现有的越层依赖列出清单与去处；
    版本、测试、文档、发布脚本、生态包（`luban:` 命名空间、它的库与资源）都按"整体可以搬走"放置（§16）。
@@ -284,9 +284,9 @@ Luban 是键盘优先、有 Super+1..9 的桌面，不显示就要靠记忆，�
 ### 3.15 `xdesk.layout` 的接口（要点）
 
 ```cpp
-using wuxian::Rule;   // tile | stack
-using wuxian::View;   // workspace | wuxian
-// 工作区、自由窗口、镜头、视图的类型是规范模块的（wuxian::Workspace 等，§15.6），这里不再定义一份。
+using openwx::Rule;   // tile | stack
+using openwx::View;   // workspace | wuxian
+// 工作区、自由窗口、镜头、视图的类型是规范模块的（openwx::Workspace 等，§15.6），这里不再定义一份。
 
 class Layout {
     int add_workspace(Rule, std::optional<int> id = {}, std::optional<Point> world_at = {});
@@ -305,7 +305,7 @@ class Layout {
 ```
 
 `Mode` 三选一与 `Space::groups` 去掉；`tile.cpp`、`stack.cpp` 按工作区复用；`canvas.cpp` 改名 `wuxian.cpp`，是镜头、世界坐标与工作区的变换。
-数据类型（工作区、自由窗口、镜头、视图、命中次序）与状态格式来自规范模块 `wuxian`（§15）；`xdesk.layout` 只加排布规则。
+数据类型（工作区、自由窗口、镜头、视图、命中次序）与状态格式来自规范模块 `openwx`（§15）；`xdesk.layout` 只加排布规则。
 
 ### 3.16 命名：WuXian
 
@@ -314,9 +314,11 @@ class Layout {
 | 地方 | 写法 |
 |---|---|
 | 界面（中英） | "WuXian"；第一次出现与设置里写"WuXian（无限画布）"/"WuXian (the infinite canvas)"；视图叫"WuXian 视图"/"WuXian view" |
-| 代码 | 模块与命名空间 `wuxian`（规范）、`xdesk::layout` 里的 `View::wuxian`、`to_wuxian()`、文件 `wuxian.cpp`；类型名 `WuXian…` 只用于专指它的类型 |
+| 代码 | 规范的模块与命名空间 `openwx`（open WuXian，与 opensal、openhal 同一种命名）、`xdesk::layout` 里的 `View::wuxian`、`to_wuxian()`、文件 `wuxian.cpp`；类型名 `WuXian…` 只用于专指它的类型 |
 | 配置 | 个人设置的节 `[wuxian]`（读入旧的 `[canvas]`）；`keys.json` 的动作 `wuxian`（读入旧的 `overview`）；状态文件 `wuxian.json`（§15.4） |
-| 文档 | "WuXian"，规范文档 `luban/specs/wuxian/SPEC.md` |
+| 文档 | "WuXian"，规范文档 `luban/specs/openwx/SPEC.md` |
+
+规范叫 **openwx**（open WuXian）：它是关于 WuXian 的规范，名字与其他规范一致；WuXian 是这张平面本身的名字，用在界面、文档与实现里（xdesk 的 WuXian 视图、`View::wuxian`）。状态文件仍叫 `wuxian.json`，版本键 `"wuxian"`：它记的是一张 WuXian。
 
 "画布"只在说历史（旧的画布预设）时出现；代码里的 `canvas` 标识符本轮全部改为 `wuxian`。
 
@@ -615,7 +617,7 @@ WuXian 要成为开放桌面的一种布局：别的合成器（以及以后别�
 面板与工具不必关心是谁实现的。规范定义**模型、视图与镜头、行为的不变量、状态格式、基本交互与一致性测试**；不定义平铺与层叠内部的排布算法
 （列宽、吸附细节是实现的事），也不定义绘制风格（颜色、阴影是建议）。
 
-位置：`luban/specs/wuxian`（`README.md`、`SPEC.md`、`src/`、`conformance/`），与 opensal 等同为规范：只依赖标准库与它自己，名字不说 Luban，
+位置：`luban/specs/openwx`（`README.md`、`SPEC.md`、`src/`、`conformance/`），与 opensal 等同为规范：只依赖标准库与它自己，名字不说 Luban，
 文档不指向本仓库，版本自己走；有第二个实现者或外部使用者时整体搬走（`luban/README.md` 的规则）。
 
 ### 15.2 模型（规范性）
@@ -660,7 +662,7 @@ WuXian 要成为开放桌面的一种布局：别的合成器（以及以后别�
 §3.11、§3.12 的手势与键位是推荐的基线（Super 层；Super+O 进出 WuXian 视图；Super+数字；Super+Shift+数字送走窗口；Super+M 改规则），
 实现可改键，但应提供每一个操作。状态栏的指示（颜色 = 身份，形状 = 规则，§3.13）是建议。
 
-### 15.6 模块 `wuxian`
+### 15.6 模块 `openwx`
 
 只依赖标准库：类型（`Workspace`、`FreeWindow`、`Camera`、`View`、`Rule`、`Flow`、`Placement` 的公共部分）、镜头变换（世界 ↔ 屏幕）、
 命中次序、新窗口去处与编号规则（纯函数）、状态的读写（标准库实现的 JSON 子集，只覆盖 §15.4 的形状）、`validate(state)`（不变量检查）。
@@ -736,7 +738,7 @@ Luban（`luban/`、宿主上的 `luban` 与 Luban OS 程序、它的测试与文
 
 - `docs/luban/` 与 `docs/zh/luban/`：桌面页重写"工作区与 WuXian"；设置页（新的项、恢复默认、渲染器、晃动找指针）；复制粘贴；
   GPU（沙箱与 machine 各需要什么、怎么确认）；`luban new` 的进度。`docs/generated/` 的键位表随快捷键更新。
-- `luban/specs/wuxian/`：`README.md`、`SPEC.md`（§15 的规范性内容）；`luban/kits/cursor/README.md`（源的格式、工具）。
+- `luban/specs/openwx/`：`README.md`、`SPEC.md`（§15 的规范性内容）；`luban/kits/cursor/README.md`（源的格式、工具）。
 - `luban/specs/opensal/SPEC.md`：`'m'`、`'r'`（共享内存的帧）、`'p'`（指针偏好）三个消息，opensal 小版本加一。
 - `Port` 的新能力（桌面系统的默认授权）写进 Luban 与 xlings 之间的能力表（`docs/luban/` 的架构页，§16.2）。
 - AGENTS.md 的发布一节：推到 CN 镜像的项目加上 `luban:cursors` 的资源（`tools/mirror-latest.sh` 加这个项目）。
@@ -772,7 +774,7 @@ xlings（一个 PR，每个检查点一个 commit，各跑一次完整 CI）：
 | 检查点 | 内容 |
 |---|---|
 | K0 | 搬动（§16.3）：`apps/luban*` → `luban/host/`、Luban 的测试 → `luban/tests/`、发布脚本的 Luban 部分 → `luban/tools/`；`luban/DEPENDENCIES.toml` 与 lint。发布产物的文件清单与搬动前逐一相同（对比两次构建的 tarball 列表）。不夹带逻辑改动 |
-| K1a | `luban/specs/wuxian`：SPEC、模块、一致性测试 |
+| K1a | `luban/specs/openwx`：SPEC、模块、一致性测试 |
 | K1 | `xdesk.layout`：在 `wuxian` 类型上实现工作区、镜头、两种视图、比例、层次、拖放快照与判定；去掉三选一与旧的组；`canvas` 全部改名 `wuxian`；通过一致性测试 |
 | K2 | compositor：两种视图与过渡、工作区的绘制、命中、跨工作区与到 WuXian 的拖放、平铺的占位预览、删除对话框 |
 | K3 | 快捷键、状态栏指示、右键菜单、Super+空格、中键 |
@@ -837,12 +839,13 @@ xim-pkgindex（一个 PR）：
 | 修订 3：交互 | "没名字的空工作区离开即删"会删掉刚在 WuXian 视图里明确新建、还没放窗口的工作区 | §3.9：只自动删除 Super+数字顺带建出的 |
 | 修订 3：规范 | 规范把编号写死成 1–9，是 xdesk 的产品选择 | §15.2：编号是正整数，上限由实现定（xdesk 为 9） |
 | 修订 3：规范 | 状态格式没有窗口的浮动、置顶等属性，恢复后会丢 | §15.4：`flags`，读者容忍未知值 |
-| 修订 3：重复定义 | `xdesk.layout` 的 `WorkspaceInfo` 与规范的类型重复 | §3.15：直接用 `wuxian::` 的类型 |
+| 修订 3：重复定义 | `xdesk.layout` 的 `WorkspaceInfo` 与规范的类型重复 | §3.15：直接用 `openwx::` 的类型 |
 | 修订 3：依赖 | xdesk 打开 GLES 后链接 EGL / GBM，没有 Mesa 的系统里会起不来 | §7.4：`luban:xdesk` 自己依赖 `xim:graphics`；缺库时的报错写明装什么 |
 | 修订 3：传输 | memfd 被对方缩小会 SIGBUS；中间有转发进程时 fd 过不去 | §7.3：`F_SEAL_SHRINK`、尺寸变化换新块；转发进程转交 fd，不行就回到 `'f'` |
 | 修订 3：测试 | 搬测试后 `covers` 只认 `tests/requirements.toml` | §16.3：`xdev test` 读两份需求文件 |
 | 修订 3：测试 | 改了已发布的输出文字（进度、报错），main 上的 fresh 套件会失败 | §18：同时更新 `tests/fresh-install/` |
 | 修订 3：发布 | 新的资源仓库（`qemu-system-gl`、`luban-cursors`）在 GitCode 上没有提交时建不了 release；CN 镜像要多推一个项目 | K12、§17：先提交一次内容；`mirror-latest.sh` 与 AGENTS 加 `luban:cursors` |
+| 修订 4：命名 | 规范与平面同名，与其他规范（opensal、openhal…）不一致 | §3.16：规范叫 openwx（`luban/specs/openwx`、模块 `openwx`），平面与实现里仍叫 WuXian |
 | 修订 3：范围 | 传统桌面是否也走 GPU | §7.1：拿到授权与 Mesa 时 labwc 自己用 GLES；它们的帧路径本轮不改 |
 
 ## 21. 不做的与以后

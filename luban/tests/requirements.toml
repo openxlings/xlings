@@ -499,3 +499,13 @@ status = "required"
 [LUBAN-MACHINE-POWEROFF]
 text = "poweroff inside a machine ends its session as off, without asking whether to keep it running"
 status = "required"
+
+# ── WuXian and openwx (design 2026-10-20 WuXian §3, §15) ────────────
+
+[WUXIAN-MODEL]
+text = "openwx's model: a workspace is its content times its scale on the plane; the free camera maps world and screen both ways, frames a rect whole, zooms about a point; a pinned window, then the highest layer, then the plane is hit; a new workspace takes the smallest free number; a new window goes to the current workspace (workspace view) or the workspace at the view's centre, else the plane (WuXian view)"
+status = "required"
+
+[WUXIAN-STATE]
+text = "wuxian.json version 1 reads back as written (the implementation's layout untouched, unknown fields ignored, unknown flags kept); another version or a malformed file is said, never an empty state; validate names every broken rule"
+status = "required"
