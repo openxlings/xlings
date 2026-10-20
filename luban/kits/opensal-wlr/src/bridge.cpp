@@ -59,19 +59,45 @@ constexpr std::uint16_t toplevel_unset_minimized = 3, toplevel_activate = 4, top
 constexpr std::uint16_t sources_create_source = 0;
 constexpr std::uint16_t copy_create_pointer_cursor_session = 1;
 constexpr std::uint16_t cursor_get_capture_session = 1;
-constexpr std::uint16_t cursor_leave = 1, cursor_hotspot = 3;
+constexpr std::uint16_t cursor_enter = 0, cursor_leave = 1, cursor_hotspot = 3;
 constexpr std::uint16_t session_create_frame = 0;
 constexpr std::uint16_t session_buffer_size = 0, session_shm_format = 1, session_done = 4, session_stopped = 5;
 constexpr std::uint16_t capture_destroy = 0, capture_attach_buffer = 1, capture_damage_buffer = 2, capture_capture = 3;
 constexpr std::uint16_t capture_ready = 3, capture_failed = 4;
 }  // namespace op
 
+// wlr-data-control (the clipboard, design 2026-10-20 §20 G27).
+namespace dc {
+constexpr std::uint16_t manager_create_source = 0, manager_get_device = 1;
+constexpr std::uint16_t device_set_selection = 0, device_data_offer = 0, device_selection = 1, device_finished = 2;
+constexpr std::uint16_t source_offer = 0, source_destroy = 1, source_send = 0, source_cancelled = 1;
+constexpr std::uint16_t offer_receive = 0, offer_destroy = 1, offer_offer = 0;
+// What the bridge's own selection also offers: one coming back is not read.
+constexpr std::string_view kOwn = "application/x-opensal-wlr";
+}  // namespace dc
+
 // A toplevel's states (zwlr_foreign_toplevel_handle_v1.state).
 constexpr std::uint32_t kStateMinimized = 1, kStateActivated = 2;
 
 constexpr std::uint32_t kShmArgb = 0, kShmXrgb = 1;
+// ext_image_copy_capture_frame_v1.failed: unknown, buffer_constraints, stopped.
+constexpr std::uint32_t kFailureUnknown = 0;
 
 struct Global { std::uint32_t name { 0 }; std::uint32_t version { 0 }; };
+
+// Another window of this desktop (design 2026-10-20 §11): it mirrors the
+// first -- the same frames, its input the desktop's (its size is its own
+// business). A bridged desktop ends with its first window.
+struct Mirror {
+    int fd { -1 };
+    opensal::wire::Decoder decoder;
+    opensal::Interfaces provided { 0 };
+    bool hello { false };
+    bool whole { true };            // the next frame it gets is all of it
+    opensal::Size told;
+    std::uint32_t number { 2 };
+    bool gone { false };
+};
 
 class Bridge {
 public:
@@ -103,6 +129,15 @@ private:
     void tell_windows_();
     void tell_applications_();
     bool send_(std::string_view bytes) { return os::write_all(o_.out, bytes); }
+    // To the first window and the mirrors (what is not a frame); whether the first took it.
+    bool tell_(std::string_view bytes) {
+        for (auto& m : mirrors_)
+            if (m.hello && !m.gone && !os::write_all(m.fd, bytes)) m.gone = true;
+        return send_(bytes);
+    }
+    void accept_mirror_();
+    bool mirror_(Mirror& m, std::string_view bytes);
+    void tell_roles_();
 
     const Options& o_;
     wl::Connection c_;
@@ -172,6 +207,20 @@ private:
     std::uint32_t cursor_pool_ { 0 }, cursor_buffer_ { 0 };
     opensal::Size cursor_buffer_size_;
     std::string cursor_sent_;
+
+    // The clipboard: the desktop's selection to the window, the window's to
+    // the desktop (wlr-data-control); a selection being read.
+    std::uint32_t dc_manager_ { 0 }, dc_device_ { 0 }, dc_source_ { 0 };
+    std::map<std::uint32_t, std::vector<std::string>> offers_;
+    std::string selection_set_, selection_told_;
+    int reading_ { -1 };
+    std::string read_;
+    void selection_(std::uint32_t offer);
+    void set_selection_(const std::string& text);
+
+    // The other windows (displays), at o_.displays.
+    int displays_ { -1 };
+    std::list<Mirror> mirrors_;
 };
 
 std::uint32_t Bridge::bind_(std::string_view iface, std::uint32_t max_version, std::uint32_t& version) {
@@ -208,6 +257,29 @@ void Bridge::handle_(const wl::Event& e) {
     // The callback's id is the server's to delete and ours to use again: it
     // is the sync only until it is done.
     if (sync_ && e.object == sync_ && e.opcode == op::callback_done) { synced_ = true; sync_ = 0; return; }
+    if (dc_device_ && e.object == dc_device_) {
+        if (e.opcode == dc::device_data_offer) offers_[r.u()] = {};
+        else if (e.opcode == dc::device_selection) selection_(r.u());
+        else if (e.opcode == dc::device_finished) dc_device_ = 0;
+        return;
+    }
+    if (auto it = offers_.find(e.object); it != offers_.end()) {
+        if (e.opcode == dc::offer_offer) it->second.push_back(r.str());
+        return;
+    }
+    if (dc_source_ && e.object == dc_source_) {
+        if (e.opcode == dc::source_send) {
+            (void)r.str();
+            if (const int fd = c_.take_fd(); fd >= 0) {
+                (void)os::write_all(fd, selection_set_);
+                os::close(fd);
+            }
+        } else if (e.opcode == dc::source_cancelled) {
+            c_.send(dc_source_, dc::source_destroy, wl::Args{});
+            dc_source_ = 0;
+        }
+        return;
+    }
     if (e.object == registry_) {
         if (e.opcode == op::registry_global) {
             const auto name = r.u();
@@ -265,7 +337,12 @@ void Bridge::handle_(const wl::Event& e) {
             cursor_.hotspot_y = static_cast<std::uint32_t>(std::max(0, y));
             if (!cursor_.bytes.empty()) cursor_ready_();
         } else if (e.opcode == op::cursor_leave) {
-            if (send_(opensal::wire::encode('c', "none"))) cursor_sent_ = "none";
+            if (tell_(opensal::wire::encode('c', "none"))) cursor_sent_ = "none";
+        } else if (e.opcode == op::cursor_enter) {
+            // Back over the output: its image again, unchanged as it may be
+            // (an image is captured only when it changes; design 2026-10-20
+            // G29: a nested KWin's pointer stayed hidden after it left once).
+            if (!cursor_.bytes.empty()) cursor_ready_();
         }
         return;
     }
@@ -287,9 +364,14 @@ void Bridge::handle_(const wl::Event& e) {
             cursor_ready_();
             capture_cursor_();
         } else if (e.opcode == op::capture_failed) {
-            // Its size changed (a new `done` follows) or it stopped (`stopped`).
+            // Its size changed (buffer constraints: a new `done` follows), it
+            // stopped (`stopped` follows), or it failed otherwise -- then the
+            // next image is asked for at once: a pointer whose capture is not
+            // asked again keeps the image it had (G29: a stuck text cursor).
+            const auto reason = r.u();
             c_.send(cursor_frame_, op::capture_destroy, wl::Args{});
             cursor_frame_ = 0;
+            if (reason == kFailureUnknown) capture_cursor_();
         }
         return;
     }
@@ -392,7 +474,7 @@ void Bridge::cursor_stop_() {
     first_ = true;
     cursor_capture_ = 0;
     cursor_frame_ = 0;
-    if (send_(opensal::wire::encode('c', "none"))) cursor_sent_ = "none";
+    if (tell_(opensal::wire::encode('c', "none"))) cursor_sent_ = "none";
 }
 
 void Bridge::capture_cursor_() {
@@ -429,7 +511,7 @@ void Bridge::cursor_ready_() {
     image.hotspot_y = std::min(image.hotspot_y, image.size.height - 1);
     auto message = opensal::wire::encode_cursor_image(image);
     if (message == cursor_sent_) return;
-    if (!send_(message)) { provider_gone_ = true; return; }
+    if (!tell_(message)) { provider_gone_ = true; return; }
     cursor_sent_ = std::move(message);
 }
 
@@ -489,6 +571,20 @@ void Bridge::frame_ready_() {
         const opensal::Pixels surface{f.size, f.stride, std::span<const std::byte>(px, shm_mem_.size)};
         if (!send_(opensal::wire::encode_frame(surface, d))) { provider_gone_ = true; break; }
     }
+    // The mirrors: the same picture (all of it to one that has not had it).
+    const opensal::Pixels surface{f.size, f.stride, std::span<const std::byte>(px, shm_mem_.size)};
+    bool resized = false;
+    for (auto& m : mirrors_) {
+        if (!m.hello || m.gone) continue;
+        if (m.told != f.size) {
+            m.gone = !os::write_all(m.fd, opensal::wire::encode('s', std::format("{} {}", f.size.width, f.size.height)));
+            m.told = f.size;
+            resized = true;
+        }
+        for (const auto& d : std::exchange(m.whole, false) ? std::vector{whole} : rects)
+            if (!m.gone && !os::write_all(m.fd, opensal::wire::encode_frame(surface, d))) m.gone = true;
+    }
+    if (resized) tell_roles_();
     first_ = false;
     c_.send(frame_, op::frame_destroy, wl::Args{});
     frame_ = 0;
@@ -509,6 +605,10 @@ void Bridge::modifiers_() {
 }
 
 void Bridge::input_(const opensal::Event& ev) {
+    if (const auto* clip = std::get_if<opensal::ClipboardText>(&ev)) {
+        set_selection_(clip->text);
+        return;
+    }
     if (const auto* k = std::get_if<opensal::Key>(&ev)) {
         if (k->repeat) return;                  // the compositor repeats a held key itself
         auto stroke = evdev_key(k->keysym);
@@ -580,7 +680,7 @@ void Bridge::tell_windows_() {
     if (!opensal::has(provided_, opensal::Interface::Shell)) return;
     std::vector<opensal::Window> all;
     for (const auto& [handle, w] : windows_) all.push_back(w);
-    if (!send_(opensal::wire::encode('w', opensal::wire::encode_windows(all)))) provider_gone_ = true;
+    if (!tell_(opensal::wire::encode('w', opensal::wire::encode_windows(all)))) provider_gone_ = true;
 }
 
 // What it can start: read again every few seconds (something installed
@@ -596,8 +696,105 @@ void Bridge::tell_applications_() {
     if (!opensal::has(provided_, opensal::Interface::Shell)) return;
     std::vector<opensal::Application> listed;
     for (const auto& a : apps_) listed.push_back({a.id, a.name});
-    apps_told_ = send_(opensal::wire::encode('a', opensal::wire::encode_applications(listed)));
+    apps_told_ = tell_(opensal::wire::encode('a', opensal::wire::encode_applications(listed)));
     if (!apps_told_) provider_gone_ = true;
+}
+
+// The desktop's selection, read when it is text and not this bridge's own
+// (its end: the main loop, reading_), then told the window ('b').
+void Bridge::selection_(std::uint32_t offer) {
+    // The offers before it are done with.
+    for (auto it = offers_.begin(); it != offers_.end();) {
+        if (it->first == offer) { ++it; continue; }
+        c_.send(it->first, dc::offer_destroy, wl::Args{});
+        it = offers_.erase(it);
+    }
+    if (!offer || !offers_.contains(offer)) return;
+    const auto& mimes = offers_[offer];
+    if (std::ranges::find(mimes, dc::kOwn) != mimes.end()) return;
+    std::string mime;
+    for (const auto* want : {"text/plain;charset=utf-8", "UTF8_STRING", "text/plain", "TEXT", "STRING"})
+        if (std::ranges::find(mimes, std::string_view(want)) != mimes.end()) { mime = want; break; }
+    if (mime.empty()) return;
+    auto ends = os::pipe();
+    if (!ends) return;
+    if (reading_ >= 0) os::close(reading_);
+    c_.send(offer, dc::offer_receive, wl::Args{}.str(mime).fd((*ends)[1]));
+    os::close((*ends)[1]);
+    reading_ = (*ends)[0];
+    read_.clear();
+}
+
+// The window's clipboard, the desktop's selection (offered as text).
+void Bridge::set_selection_(const std::string& text) {
+    if (!dc_manager_ || !dc_device_ || text == selection_set_ || text == selection_told_) return;
+    if (dc_source_) c_.send(dc_source_, dc::source_destroy, wl::Args{});
+    dc_source_ = c_.new_id();
+    c_.send(dc_manager_, dc::manager_create_source, wl::Args{}.u(dc_source_));
+    for (const auto* mime : {"text/plain;charset=utf-8", "UTF8_STRING", "text/plain", "TEXT", "STRING"})
+        c_.send(dc_source_, dc::source_offer, wl::Args{}.str(mime));
+    c_.send(dc_source_, dc::source_offer, wl::Args{}.str(dc::kOwn));
+    c_.send(dc_device_, dc::device_set_selection, wl::Args{}.u(dc_source_));
+    selection_set_ = text;
+}
+
+void Bridge::accept_mirror_() {
+    const int fd = os::accept(displays_);
+    if (fd < 0) return;
+    std::uint32_t n = 2;
+    while (std::ranges::any_of(mirrors_, [&](const Mirror& m) { return m.number == n; })) ++n;
+    auto& m = mirrors_.emplace_back();
+    m.fd = fd;
+    m.number = n;
+    log_(std::format("display {} joined (a mirror of display 1)", n));
+    using I = opensal::Interface;
+    opensal::Interfaces wanted = I::Surface | I::Mode;
+    if (vkbd_) wanted |= static_cast<opensal::Interfaces>(I::Keyboard);
+    if (vptr_) wanted |= static_cast<opensal::Interfaces>(I::Pointer);
+    if (dc_device_) wanted |= static_cast<opensal::Interfaces>(I::Clipboard);
+    if (host_cursor_ || cursor_session_) wanted |= I::Cursor | I::CursorImage;
+    if (o_.shell) wanted |= static_cast<opensal::Interfaces>(I::Shell);
+    if (!os::write_all(fd, opensal::wire::encode('h', std::to_string(wanted)))) m.gone = true;
+}
+
+// A mirror's stream: its hello (then what it is told, and what the others
+// have), and its input -- the desktop's, but its size, which is its own.
+bool Bridge::mirror_(Mirror& m, std::string_view bytes) {
+    m.decoder.feed(bytes);
+    for (;;) {
+        auto next = m.decoder.next();
+        if (!next) return false;
+        if (!*next) return true;
+        const auto& msg = **next;
+        if (msg.kind == 'H') {
+            std::istringstream in(msg.payload);
+            in >> m.provided;
+            m.hello = true;
+            m.whole = true;
+            tell_roles_();
+            if (!cursor_sent_.empty())
+                (void)os::write_all(m.fd, cursor_sent_ == "none" ? opensal::wire::encode('c', "none") : cursor_sent_);
+            windows_changed_ = true;
+            apps_told_ = false;
+            if (o_.shell) tell_applications_();
+        } else if (msg.kind == 'E') {
+            auto e = opensal::wire::decode_event(msg.payload);
+            if (!e || std::holds_alternative<opensal::Resized>(*e) || std::holds_alternative<opensal::DensityChanged>(*e)) continue;
+            if (std::holds_alternative<opensal::Launch>(*e) || std::holds_alternative<opensal::Activate>(*e)) shell_(*e);
+            else input_(*e);
+        }
+    }
+}
+
+// Each window what it is ('d', to those that take it).
+void Bridge::tell_roles_() {
+    if (opensal::has(provided_, opensal::Interface::Displays) && !mirrors_.empty())
+        (void)send_(opensal::wire::encode('d', opensal::wire::encode_display({.number = 1})));
+    for (auto& m : mirrors_) {
+        if (!m.hello || m.gone || !opensal::has(m.provided, opensal::Interface::Displays) || told_.width == 0) continue;
+        const opensal::DisplayRole r{.number = m.number, .kind = opensal::DisplayRole::Kind::mirror, .of = 1, .size = told_};
+        if (!os::write_all(m.fd, opensal::wire::encode('d', opensal::wire::encode_display(r)))) m.gone = true;
+    }
 }
 
 bool Bridge::provider_(std::string_view bytes) {
@@ -619,6 +816,7 @@ bool Bridge::provider_(std::string_view bytes) {
             windows_changed_ = true;
             apps_told_ = false;
             if (o_.shell) tell_applications_();
+            tell_roles_();
         } else if (msg.kind == 'E') {
             if (auto e = opensal::wire::decode_event(msg.payload)) {
                 if (std::holds_alternative<opensal::Launch>(*e) || std::holds_alternative<opensal::Activate>(*e)) shell_(*e);
@@ -641,6 +839,7 @@ int Bridge::run() {
     std::uint32_t vptr_version = 0;
     vptr_manager_ = bind_("zwlr_virtual_pointer_manager_v1", 2, vptr_version);
     outman_ = bind_("zwlr_output_manager_v1", 2, v);
+    dc_manager_ = bind_("zwlr_data_control_manager_v1", 2, v);
     if (o_.shell) toplevels_ = bind_("zwlr_foreign_toplevel_manager_v1", 3, v);
     sources_ = bind_("ext_output_image_capture_source_manager_v1", 1, v);
     copy_capture_ = bind_("ext_image_copy_capture_manager_v1", 1, v);
@@ -666,11 +865,16 @@ int Bridge::run() {
         if (vptr_version >= 2) c_.send(vptr_manager_, op::vptr_manager_create_with_output, wl::Args{}.u(seat_).u(output_).u(vptr_));
         else c_.send(vptr_manager_, op::vptr_manager_create, wl::Args{}.u(seat_).u(vptr_));
     }
+    if (dc_manager_ && seat_) {
+        dc_device_ = c_.new_id();
+        c_.send(dc_manager_, dc::manager_get_device, wl::Args{}.u(dc_device_).u(seat_));
+    }
     if (!roundtrip_()) return 1;
     using I = opensal::Interface;
     opensal::Interfaces wanted = I::Surface | I::Mode;
     if (vkbd_) wanted |= static_cast<opensal::Interfaces>(I::Keyboard);
     if (vptr_) wanted |= static_cast<opensal::Interfaces>(I::Pointer);
+    if (dc_device_) wanted |= static_cast<opensal::Interfaces>(I::Clipboard);
     // The pointer apart from the frames: the provider draws it.
     if (sources_ && copy_capture_ && seat_) wanted |= I::Cursor | I::CursorImage;
     if (o_.shell) {
@@ -682,14 +886,56 @@ int Bridge::run() {
 
     const auto period = std::chrono::milliseconds(1000 / std::max(1, o_.max_fps));
     std::array<char, 65536> buf{};
+    if (!o_.displays.empty()) {
+        displays_ = os::listen_unix(o_.displays);
+        if (displays_ < 0) log_("no displays socket at " + o_.displays.string() + " (one window only)");
+    }
+    struct Closer {
+        Bridge& b;
+        ~Closer() {
+            for (auto& m : b.mirrors_) os::close(m.fd);
+            if (b.displays_ >= 0) {
+                os::close(b.displays_);
+                std::error_code ec;
+                fs::remove(b.o_.displays, ec);
+            }
+        }
+    } closer{*this};
     while (!provider_gone_) {
         if (o_.alive && !o_.alive()) { log_("the compositor ended"); return 1; }
         const auto now = std::chrono::steady_clock::now();
         if (!capturing_ && now >= last_frame_ + period && now >= retry_at_) capture_();
-        std::array<os::PollFd, 2> p{{{.fd = o_.in}, {.fd = c_.fd()}}};
+        std::vector<os::PollFd> p{{.fd = o_.in}, {.fd = c_.fd()}, {.fd = reading_}};
+        if (displays_ >= 0) p.push_back({.fd = displays_});
+        for (const auto& m : mirrors_) p.push_back({.fd = m.fd});
         const auto wait = capturing_ ? 500 : static_cast<int>(std::max<std::int64_t>(1,
             std::chrono::duration_cast<std::chrono::milliseconds>(last_frame_ + period - now).count()));
         os::poll(p, std::min(wait, 500));
+        // The desktop's selection, as it comes; told when it has all come.
+        if (reading_ >= 0 && (p[2].readable || p[2].closed)) {
+            const auto n = os::read_some(reading_, buf);
+            if (n && *n > 0 && read_.size() < (1u << 20)) read_.append(buf.data(), *n);
+            else {
+                os::close(reading_);
+                reading_ = -1;
+                if (!read_.empty() && read_ != selection_set_ && read_ != selection_told_) {
+                    selection_told_ = read_;
+                    if (!tell_(opensal::wire::encode('b', read_))) provider_gone_ = true;
+                }
+            }
+        }
+        std::size_t at = 3;
+        if (displays_ >= 0 && (p[at++].readable)) accept_mirror_();
+        for (auto& m : mirrors_) {
+            if (at >= p.size()) break;
+            const auto& q = p[at++];
+            if (!q.readable && !q.closed) continue;
+            auto n = os::read_some(m.fd, buf);
+            if (!n || *n == 0 || !mirror_(m, std::string_view(buf.data(), *n))) m.gone = true;
+        }
+        for (auto it = mirrors_.begin(); it != mirrors_.end();)
+            if (it->gone) { log_(std::format("display {} left", it->number)); os::close(it->fd); it = mirrors_.erase(it); }
+            else ++it;
         if (p[0].readable || p[0].closed) {
             auto n = os::read_some(o_.in, buf);
             if (!n || *n == 0) return 0;

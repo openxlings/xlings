@@ -61,7 +61,12 @@ namespace xlings::interface {
 // errors as events (feature `domain_relayed`); `subos new --from` without a
 // version that uses one only installed says so as an `installed_only` data
 // event (feature `installed_only`).
-export constexpr const char* kProtocolVersion = "1.14";
+// 1.15 (additive; Luban design 2026-10-20 §4.12): inside a Luban system a
+// user's xlings is a view of the system's store (feature `user_views`): an
+// error that needs the administrator with nobody to ask is E_NEEDS_ROOT with
+// the exact sudo command in its hint (feature `needs_root`); `list` rows of
+// what the system provides carry the status `system`.
+export constexpr const char* kProtocolVersion = "1.15";
 
 // Convert any Event variant to one NDJSON line (no trailing newline).
 // Returns "" for events not surfaced to wire (e.g. CompletedEvent — the

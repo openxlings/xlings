@@ -21,6 +21,7 @@
 //     'a'  apps       Shell: all of them, whenever they      (see encode_applications)
 //                     change
 //     'w'  windows    Shell: all of them, likewise           (see encode_windows)
+//     'd'  display    Displays: what this display is         "<n> primary" | "<n> mirror <of> <w> <h>"
 //   provider -> consumer
 //     'H'  hello      provided interfaces, size, density,    "<bits> <w> <h> <scale> [<paced>]"
 //                     and whether it paces (1: it says FramePresented once
@@ -63,6 +64,10 @@ std::optional<Event> decode_event(std::string_view payload);
 // (a tab or a line break in a name is a space).
 std::string encode_windows(std::span<const Window> windows);
 std::optional<std::vector<Window>> decode_windows(std::string_view payload);
+// 'd': a display's role.
+std::string encode_display(const DisplayRole& r);
+std::optional<DisplayRole> decode_display(std::string_view payload);
+
 // One line an application: "<id>\t<name>".
 std::string encode_applications(std::span<const Application> apps);
 std::optional<std::vector<Application>> decode_applications(std::string_view payload);

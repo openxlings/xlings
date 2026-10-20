@@ -70,6 +70,12 @@ void write_app_settings(const fs::path& home, const AppSettings& s) {
 void Job::take(const service::Event& e) {
     std::lock_guard l(m);
     using K = service::Event::Kind;
+    // The operation's one progress, when it has one (design 2026-10-20 G22):
+    // the bar and the stage follow it and never go back.
+    if (e.overall >= 0) {
+        overall = std::max(overall, e.overall);
+        if (!e.stage.empty()) stage = e.stage;
+    }
     switch (e.kind) {
     case K::Phase: {
         auto it = std::ranges::find(phases, e.phase, &Phase::name);
@@ -77,13 +83,13 @@ void Job::take(const service::Event& e) {
         else { it->state = e.state; if (!e.text.empty()) it->text = e.text; }
         current = e.text;
         if (e.state == "begin") percent = -1;
-        if (!e.phase.empty()) stage = e.phase;
+        if (!e.phase.empty() && e.overall < 0) stage = e.phase;
         break;
     }
     case K::Progress:
         if (e.percent >= 0) percent = e.percent;
         if (!e.text.empty()) current = e.text;
-        if (!e.phase.empty()) stage = e.phase;
+        if (!e.phase.empty() && e.overall < 0) stage = e.phase;
         log.push_back(e.text);
         break;
     case K::Log: log.push_back(e.text); break;
@@ -100,7 +106,10 @@ void Job::take(const service::Event& e) {
                 total += f.value("totalBytes", 0.0);
                 done_bytes += f.value("downloadedBytes", 0.0);
             }
-            if (total > 0) { percent = done_bytes / total; stage = "download"; }
+            if (total > 0) {
+                percent = done_bytes / total;
+                if (e.overall < 0) stage = "download";
+            }
         }
         break;
     }
@@ -111,14 +120,14 @@ void Job::take(const service::Event& e) {
 
 using imkit::px;
 
-void begin_full_(const char* id) {
+void begin_full_(const char* id, bool transparent) {
     const auto* vp = ImGui::GetMainViewport();
     ImGui::SetNextWindowPos(vp->WorkPos);
     ImGui::SetNextWindowSize(vp->WorkSize);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
     ImGui::Begin(id, nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings
                                   | ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoScrollbar
-                                  | ImGuiWindowFlags_NoScrollWithMouse);
+                                  | ImGuiWindowFlags_NoScrollWithMouse | (transparent ? ImGuiWindowFlags_NoBackground : 0));
     ImGui::PopStyleVar();
 }
 
@@ -354,7 +363,9 @@ void host_menu_(App& a) {
     if (a.view == View::Desktop) {
         items.push_back({std::string(tr("luban.os.common.menu.console")), "menu:console"});
         // The keyboard held or let go: the same as Ctrl+Alt+K.
-        items.push_back({std::string(tr(a.keyboard_wanted ? "luban.os.common.menu.release_keyboard" : "luban.os.common.menu.hold_keyboard")),
+        items.push_back({std::string(tr(a.window->keyboard_grabbed() ? "luban.os.common.menu.release_keyboard"
+                                        : a.keyboard_wanted              ? "luban.os.common.menu.keyboard_not_held"
+                                                                         : "luban.os.common.menu.hold_keyboard")),
                          "menu:keyboard"});
     }
     if (machine) items.push_back({std::string(tr("luban.os.common.close.power_off")), "menu:power-off"});
@@ -386,6 +397,7 @@ void host_menu_(App& a) {
     else if (picked == "menu:full-screen" || picked == "menu:leave-full-screen") a.window->set_fullscreen(!a.window->fullscreen());
     else if (picked == "menu:keyboard") {
         a.keyboard_wanted = !a.keyboard_wanted;
+        a.keyboard_told = true;
         if (!a.keyboard_wanted) a.pointer_lock_asked = false;
     }
     else if (picked == "menu:new-window") {

@@ -17,6 +17,7 @@ import luban.vm;
 import opensal.wlr;
 import opensal;
 import openhal;
+import openhal.audio;
 import openas;
 import xlings.carrier;
 
@@ -81,6 +82,54 @@ fs::path home_dir_() {
     return ".xlings";
 }
 
+// ── Display width (the progress line, design 2026-10-20 §3) ──────────
+//
+// Columns a code point takes on a terminal: 2 for the East Asian wide and
+// full-width ranges and emoji, 0 for combining marks, 1 otherwise.
+int columns_of_(char32_t c) {
+    if ((c >= 0x0300 && c <= 0x036F) || (c >= 0x200B && c <= 0x200F) || (c >= 0xFE00 && c <= 0xFE0F)) return 0;
+    if ((c >= 0x1100 && c <= 0x115F) || (c >= 0x2E80 && c <= 0x303E) || (c >= 0x3041 && c <= 0x33FF)
+        || (c >= 0x3400 && c <= 0x4DBF) || (c >= 0x4E00 && c <= 0x9FFF) || (c >= 0xA000 && c <= 0xA4CF)
+        || (c >= 0xAC00 && c <= 0xD7A3) || (c >= 0xF900 && c <= 0xFAFF) || (c >= 0xFE30 && c <= 0xFE4F)
+        || (c >= 0xFF00 && c <= 0xFF60) || (c >= 0xFFE0 && c <= 0xFFE6) || (c >= 0x1F300 && c <= 0x1FAFF)
+        || (c >= 0x20000 && c <= 0x3FFFD))
+        return 2;
+    return 1;
+}
+
+// The next code point of `s` from `i` (advanced); a stray byte is one column.
+char32_t next_code_point_(std::string_view s, std::size_t& i) {
+    const auto b = static_cast<unsigned char>(s[i]);
+    const std::size_t n = b < 0x80 ? 1 : (b >> 5) == 0x6 ? 2 : (b >> 4) == 0xE ? 3 : (b >> 3) == 0x1E ? 4 : 1;
+    if (n == 1 || i + n > s.size()) return ++i, b;
+    char32_t c = b & (0x7F >> n);
+    for (std::size_t k = 1; k < n; ++k) c = (c << 6) | (static_cast<unsigned char>(s[i + k]) & 0x3F);
+    i += n;
+    return c;
+}
+
+int display_width_(std::string_view s) {
+    int w = 0;
+    for (std::size_t i = 0; i < s.size();) w += columns_of_(next_code_point_(s, i));
+    return w;
+}
+
+// `s` cut to at most `cols` columns, the cut marked with `…`.
+std::string fit_(std::string_view s, int cols) {
+    if (cols <= 0) return {};
+    if (display_width_(s) <= cols) return std::string(s);
+    std::string out;
+    int w = 0;
+    for (std::size_t i = 0; i < s.size();) {
+        const auto from = i;
+        const int c = columns_of_(next_code_point_(s, i));
+        if (w + c > cols - 1) break;
+        w += c;
+        out.append(s.substr(from, i - from));
+    }
+    return out + "…";
+}
+
 std::string human_size_(std::uintmax_t bytes) {
     const char* units[] = {"B", "KB", "MB", "GB", "TB"};
     double v = static_cast<double>(bytes);
@@ -122,6 +171,7 @@ public:
             if (!e.hint.empty()) j["hint"] = e.hint;
             if (!e.level.empty()) j["level"] = e.level;
             if (e.percent >= 0) j["percent"] = e.percent;
+            if (e.overall >= 0) j["overall"] = e.overall, j["stage"] = e.stage;
             if (!e.data_kind.empty()) { j["data_kind"] = e.data_kind; j["data"] = e.data; }
             std::println("{}", j.dump());
             return;
@@ -131,7 +181,7 @@ public:
             if (e.state == "begin") {
                 close_();
                 open_ = e.text;
-                if (tty_) std::print("{} {}", paint_("▸", 36), open_), std::cout.flush();
+                if (tty_) live_({}, {});
                 else if (!g_.quiet) std::println("▸ {}", open_);
             } else {
                 const bool ok = e.state == "done";
@@ -142,12 +192,10 @@ public:
             }
             break;
         case K::Progress:
+            // The whole operation's progress when it has one (design 2026-10-20 G22).
             if (tty_ && !open_.empty()) {
-                std::string detail = e.text;
-                if (detail.size() > 60) detail = detail.substr(0, 57) + "...";
-                std::print("\r\033[K{} {}{}  {}", paint_("▸", 36), open_,
-                           e.percent >= 0 ? std::format("  {:3.0f}%", e.percent * 100) : std::string{}, paint_(detail, 2));
-                std::cout.flush();
+                const double pct = e.overall >= 0 ? e.overall : e.percent;
+                live_(pct >= 0 ? std::format("  {:3.0f}%", pct * 100) : std::string{}, e.text);
             }
             break;
         case K::Log:
@@ -181,10 +229,8 @@ public:
                 std::string detail = std::format("{:.1f} MB", done / 1e6);
                 if (total > 0) detail += std::format(" / {:.1f} MB", total / 1e6);
                 if (!current.empty()) detail += "  " + current;
-                if (detail.size() > 60) detail = detail.substr(0, 57) + "...";
-                std::print("\r\033[K{} {}{}  {}", paint_("▸", 36), open_,
-                           total > 0 ? std::format("  {:3.0f}%", done / total * 100) : std::string{}, paint_(detail, 2));
-                std::cout.flush();
+                const double pct = e.overall >= 0 ? e.overall : total > 0 ? done / total : -1;
+                live_(pct >= 0 ? std::format("  {:3.0f}%", pct * 100) : std::string{}, detail);
             }
             break;
         }
@@ -223,11 +269,30 @@ private:
     // A line above the running phase.
     void above_(std::string_view line) {
         if (tty_ && !open_.empty()) {
-            std::print("\r\033[K{}\n{} {}", line, paint_("▸", 36), open_);
-            std::cout.flush();
+            std::print("\r\033[K{}\n", line);
+            live_({}, {});
         } else {
             std::println("{}", line);
         }
+    }
+    // The running phase's line, rewritten in place: `▸ <phase><percent>  <detail>`
+    // cut to the terminal's width less one column (some terminals wrap on
+    // writing the last), the detail first, then the phase. A line that wraps
+    // is one `\r` can no longer return over, and every refresh added a line.
+    void live_(const std::string& percent, std::string_view detail) {
+        const auto size = xlings::platform::terminal_size(1);
+        const int cols = (size && size->second > 0 ? size->second : 80) - 1;
+        const int head = 2 + display_width_(open_) + display_width_(percent);
+        std::string line;
+        if (head <= cols) {
+            line = std::format("{} {}{}", paint_("▸", 36), open_, percent);
+            if (const int room = cols - head - 2; !detail.empty() && room >= 4)
+                line += "  " + paint_(fit_(detail, room), 2);
+        } else {
+            line = std::format("{} {}", paint_("▸", 36), fit_(open_, cols - 2));
+        }
+        std::print("\r\033[K{}", line);
+        std::cout.flush();
     }
     void close_() {
         if (tty_ && !open_.empty()) {
@@ -709,7 +774,7 @@ int cmd_new(const svc::Context& c, const Parsed& p, const Globals& g, Renderer& 
     // agent mode asks nothing and names the flags.
     if (auto x = p.option("--user")) o.user = *x;
     const auto shown = svc::display_name(preview->lineage);
-    if (o.user.empty() && svc::needs_user(*preview)) {
+    if (o.user.empty() && svc::needs_user(*preview, &o)) {
         if (g.yes) o.user = std::string(svc::kDefaultUser);
         else if (!can_ask_(g))
             return usage(std::format("{} needs a user to log in as: --user <name> (and --password-file <file> or --no-password), or -y for {}",
@@ -732,7 +797,8 @@ int cmd_new(const svc::Context& c, const Parsed& p, const Globals& g, Renderer& 
             std::getline(in, password);
         } else if (!p.flag("--no-password") && !g.yes && can_ask_(g)) {
             for (;;) {
-                const auto first = read_hidden_("  password (empty: none, log in without one): ");
+                // Empty: the default one, said once it is made (design 2026-10-20 §4.5).
+                const auto first = read_hidden_(std::format("  password (empty: {}, the default): ", svc::kDefaultPassword));
                 if (first.empty()) break;
                 if (read_hidden_("  again: ") == first) { password = first; break; }
                 std::println("  the two did not match; again");
@@ -740,6 +806,7 @@ int cmd_new(const svc::Context& c, const Parsed& p, const Globals& g, Renderer& 
         }
         if (!password.empty()) o.password_hash = xlings::sha512::crypt(password, xlings::sha512::random_salt());
         std::ranges::fill(password, '\0');
+        o.no_password = p.flag("--no-password");
     }
     if (auto x = p.option("--carrier")) o.carrier = *x;
     else o.carrier = default_carrier();
@@ -888,6 +955,13 @@ int cmd_status(const svc::Context& c, const Parsed& p, const Globals& g, Rendere
     j["unmet"] = Json::array();
     for (const auto& v : unmet) j["unmet"].push_back(v.why());
     auto notes = svc::notes(c, *e);
+    // Its user still on the default password, said until changed (design 2026-10-20 §4.5).
+    if (const auto root = svc::root_of(c.home, e->name)) {
+        const auto user = xlings::subos::root_etc::login_user(*root / "etc");
+        if (user != "root" && svc::default_password_in_use(*root, user))
+            notes.push_back(svc::Note{std::format("{}'s password is still the default ({})", user, svc::kDefaultPassword),
+                                      {std::format("luban run {} --user {} -- passwd", e->name, user)}});
+    }
     // Its network in one line, the same whatever it runs as (design 2026-10-19
     // §27.2): like the host -- the host's proxy, as a machine reaches it --
     // only its proxy, or none.
@@ -1347,7 +1421,7 @@ const spec::CommandSpec& tree() {
                          {"--dry-run", "What it would be made of, and nothing made", false, Level::More},
                          {"--user <NAME>", "Its login user (a desktop needs one; default lubanoser)"},
                          {"--password-file <FILE>", "Its user's password, the file's first line", false, Level::More},
-                         {"--no-password", "Its user logs in without a password", false, Level::More},
+                         {"--no-password", "Its user logs in without a password, and its sudo asks nothing (otherwise: the default password lubanoser)", false, Level::More},
                          {"--proxy <URL>", "Its network goes only through this SOCKS5h proxy", false, Level::More},
                          {"--carrier <CARRIER>", "Where it runs: local, wsl2, vz", false, Level::Expert}}, .effect = "reversible"},
             {.name = "enter", .description = "Go into an environment, or boot an image",
@@ -1590,6 +1664,53 @@ int desktop_(const std::vector<std::string>& rest) {
     return wlr::run_session(*session, 0, 1, o);
 }
 
+// `luban __audio [FIFO]`: a system's sound, out to the window that shows it
+// (design 2026-10-20 §20.1): the PCM its sound server writes into FIFO
+// (luban:audio's `luban` sink: /tmp/luban-audio.pcm, 48 kHz stereo, signed
+// 16-bit), as openhal.audio on standard output -- one output stream. Ends
+// when its standard input does (the window went).
+int audio_(const std::vector<std::string>& rest) {
+    namespace platform = xlings::platform;
+    namespace audio = openhal::audio;
+    const std::filesystem::path fifo = rest.size() > 1 ? rest[1] : "/tmp/luban-audio.pcm";
+    if (!platform::make_fifo(fifo, 0666)) {
+        std::println(std::cerr, "luban __audio: no named pipe at {}", fifo.string());
+        return 1;
+    }
+    // Read and write: no end of it while the sound server comes and goes.
+    const int fd = platform::open_device(fifo);
+    if (fd < 0) {
+        std::println(std::cerr, "luban __audio: cannot open {}", fifo.string());
+        return 1;
+    }
+    const audio::Format format{};
+    if (!platform::write_all(1, audio::encode(audio::Open{.stream = 1, .format = format}))) return 0;
+    std::array<char, 9600> buf{};      // 50 ms
+    std::string carry;                  // a frame cut short, until the rest comes
+    for (;;) {
+        std::array<platform::PollFd, 2> p{{{.fd = 0}, {.fd = fd}}};
+        platform::poll_fds(p, 1000);
+        // What the server wrote first, then whether the window is still there.
+        if (p[1].readable) {
+            if (auto n = platform::read_some(fd, buf); n && *n > 0) {
+                carry.append(buf.data(), *n);
+                const auto whole = carry.size() - carry.size() % format.frame_bytes();
+                if (whole > 0) {
+                    if (!platform::write_all(1, audio::encode(audio::Samples{.stream = 1, .bytes = carry.substr(0, whole)}))) break;
+                    carry.erase(0, whole);
+                }
+            }
+        }
+        if (p[0].closed || p[0].readable) {
+            auto n = platform::read_some(0, buf);
+            if (!n || *n == 0) break;
+        }
+    }
+    std::vector<int> fds{fd};
+    platform::close_fds(fds);
+    return 0;
+}
+
 int run(int argc, char* argv[]) {
     // Its words, before anything is said (design 2026-10-19 §7).
     svc::register_words();
@@ -1612,6 +1733,27 @@ int run(int argc, char* argv[]) {
     // A carrier's guest is brought to this release (luban and xlings are released together).
     xlings::carrier::set_client_version(std::string(kVersion));
 
+    // Tab completion (design 2026-10-20 §4.8, G17): the words before the
+    // cursor in, the candidates from the command tree out -- the systems'
+    // names for the arguments that take one. fish passes the program name.
+    if (!rest.empty() && rest.front() == "__complete") {
+        std::vector<std::string> words(rest.begin() + 1, rest.end());
+        if (!words.empty() && (words.front() == "luban" || words.front() == "luban.exe")) words.erase(words.begin());
+        const auto systems = [](const xlings::cli::completion::Request& r) {
+            std::vector<xlings::cli::completion::Candidate> out;
+            if (r.argument.empty()) return out;
+            std::error_code ec;
+            for (const auto& e : std::filesystem::directory_iterator(home_dir_() / "subos", ec))
+                if (e.is_directory(ec) && e.path().filename() != "current" && !e.path().filename().string().starts_with("."))
+                    out.push_back({e.path().filename().string(), {}});
+            return out;
+        };
+        for (const auto& c : xlings::cli::completion::complete_in(tree(), words, systems)) {
+            if (c.description.empty()) std::println("{}", c.value);
+            else std::println("{}\t{}", c.value, c.description);
+        }
+        return 0;
+    }
     // Plumbing first: what qemu, the drive writer and the docs tools run.
     if (!rest.empty() && rest.front() == "__write" && rest.size() == 3) return raw_write_(rest[1], rest[2]);
     if (!rest.empty() && rest.front() == "__pipe" && rest.size() == 3) return pipe_(rest[1], rest[2]);
@@ -1620,6 +1762,7 @@ int run(int argc, char* argv[]) {
     if (!rest.empty() && rest.front() == "__agent-stdio") vm::serve_stdio();
     if (!rest.empty() && rest.front() == "__pipe-unix" && rest.size() == 2) return pipe_unix_(rest[1]);
     if (!rest.empty() && rest.front() == "__desktop") return desktop_(rest);
+    if (!rest.empty() && rest.front() == "__audio") return audio_(rest);
     if (!rest.empty() && (rest.front() == "--version" || rest.front() == "-V")) {
         std::println("luban {}", kVersion);
         return 0;

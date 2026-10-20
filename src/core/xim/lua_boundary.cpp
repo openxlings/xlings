@@ -447,6 +447,9 @@ launch(const subos::policy::Policy& declared, const fs::path& package,
         w->audit_state->required = declared.preset == subos::policy::Preset::Locked;
         auto parent = home.run_dir(paths.activeSubos) / "lua";
         fs::create_directories(parent);
+        // The instance the worker is confined to: a view made a moment ago
+        // has none yet (bwrap cannot bind what is not there).
+        fs::create_directories(home.instance(paths.activeSubos));
         std::random_device random;
         for (int attempt = 0; attempt < 32; ++attempt) {
             auto candidate =
@@ -506,10 +509,22 @@ launch(const subos::policy::Policy& declared, const fs::path& package,
         const bool fence = platform::is_linux && layer_only && Config::inside_root() &&
                            !(capabilities.bwrap && capabilities.bwrap->usable) &&
                            capabilities.landlock_abi >= 1;
-        if (fence)
+        if (fence) {
             for (const auto dimension : {"fs", "pid"})
                 if (auto need = p.needs.find(dimension); need != p.needs.end())
                     need->second = subos::policy::Need::Should;
+            // What the worker writes, outside the instance the fence allows
+            // (design 2026-10-20 §4.10, G12): its private directory and the
+            // captured output in it, the recipe and hook logs, and this home's
+            // own store -- never the layer below or a borrowed payload.
+            for (const auto& dir : {w->scratch, w->recipe_logs, paths.homeDir / "logs", paths.dataDir / "xpkgs"}) {
+                std::error_code ec;
+                fs::create_directories(dir, ec);
+                if (!ec) p.mounts.push_back({.src = dir.string(), .dst = {}, .rw = true, .mode_given = true});
+            }
+            for (const auto& log : hook_logs)
+                if (!log.empty()) p.mounts.push_back({.src = log.parent_path().string(), .dst = {}, .rw = true, .mode_given = true});
+        }
         if (platform::is_linux)
             request.preferred = fence ? subos::spec::Backend::Landlock : subos::spec::Backend::Bwrap;
         auto compiled = xlings::confine::compile(p, home, capabilities, request);

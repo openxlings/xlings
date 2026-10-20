@@ -20,7 +20,7 @@ export namespace luban::service {
 // Luban is released with the xlings it drives: the same date version
 // (YYYY.M.D.N), bumped with mcpp.toml and src/core/config.cppm.
 // tests/unit/test_luban_cli.cpp holds them equal.
-inline constexpr std::string_view kVersion = "2026.10.19.2";
+inline constexpr std::string_view kVersion = "2026.10.20.1";
 
 namespace fs = std::filesystem;
 
@@ -343,6 +343,10 @@ struct NewOptions {
     // password's crypt hash ("" = logs in without one). Empty: root.
     std::string user;
     std::string password_hash;
+    // No password, chosen (--no-password): it logs in without one and its
+    // sudo asks nothing. Otherwise a user given none has the default one,
+    // kDefaultPassword, said (design 2026-10-20 §4.5).
+    bool no_password { false };
     // A third party's part was shown and agreed to (the caller asked).
     bool agreed { false };
 };
@@ -365,9 +369,16 @@ struct NewPreview {
 // official edition; what its manifests need of this luban. A failure is said
 // through the sink with its next step, and is the error's exit code.
 std::expected<NewPreview, int> preview_new(const Context& c, const NewOptions& o);
-// A system that cannot be used as root: a desktop (its browsers refuse it).
-bool needs_user(const NewPreview& p);
+// A system that cannot be used as root: one with a desktop -- its edition's,
+// one given with --xpkg, or asked for with --desktop (its browsers refuse root).
+bool needs_user(const NewPreview& p, const NewOptions* o = nullptr);
 inline constexpr std::string_view kDefaultUser = "lubanoser";
+// A user's password when the one who made the system gave none (design
+// 2026-10-20 §4.5): local to the system (its ssh takes no passwords), and
+// `luban status` says so until it is changed.
+inline constexpr std::string_view kDefaultPassword = "lubanoser";
+// Whether `user` of the root at `root` still has the default password.
+bool default_password_in_use(const fs::path& root, std::string_view user);
 // Makes it. A third party's part not confirmed before is made only with
 // Context::yes (the caller asked, or was told to); otherwise code 2, with how.
 Outcome create(const Context& c, const NewOptions& o, const NewPreview* preview = nullptr);

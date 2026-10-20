@@ -24,6 +24,7 @@ int open_append(const fs::path&) { return -1; }
 std::optional<std::array<int, 2>> pipe() { return std::nullopt; }
 int connect_unix(const fs::path&) { return -1; }
 bool send_with_fds(int, std::string_view, std::span<const int>) { return false; }
+std::optional<std::size_t> recv_with_fds(int, std::span<char>, std::vector<int>&) { return std::nullopt; }
 int listen_unix(const fs::path&) { return -1; }
 int accept(int) { return -1; }
 std::optional<SharedMemory> shared_memory(std::size_t) { return std::nullopt; }

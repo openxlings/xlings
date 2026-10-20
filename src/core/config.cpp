@@ -199,26 +199,11 @@ std::expected<void, std::string> Config::start_own_home() {
     if (ec) return std::unexpected(std::format("cannot make {}: {}", p.homeDir.string(), ec.message()));
     auto system = nlohmann::json::parse(platform::read_file_to_string((p.systemLayer / ".xlings.json").string()), nullptr, false);
     if (!system.is_object()) system = nlohmann::json::object();
-    std::set<std::string> indexes{"xim-pkgindex", "xim-index-repos"};
-    if (auto repos = system.find("index_repos"); repos != system.end() && repos->is_array())
-        for (const auto& r : *repos)
-            if (r.is_object() && !r.value("name", "").empty() && r.value("name", "") != "xim") indexes.insert(r.value("name", ""));
-    for (const auto& index : indexes) {
-        const auto from = p.systemLayer / "data" / index, to = p.homeDir / "data" / index;
-        if (!fs::is_directory(from, ec) || fs::exists(to, ec)) continue;
-        const auto staged = fs::path(to.string() + ".start");
-        fs::remove_all(staged, ec);
-        fs::copy(from, staged, fs::copy_options::recursive | fs::copy_options::copy_symlinks, ec);
-        if (!ec) fs::rename(staged, to, ec);
-        if (ec) {
-            fs::remove_all(staged, ec);
-            return std::unexpected(std::format("cannot start {} from the system's index {}", p.homeDir.string(), from.string()));
-        }
-    }
     const auto file = p.homeDir / ".xlings.json";
     if (!fs::exists(file, ec)) {
         auto own = nlohmann::json::object();
-        for (const auto* key : {"mirror", "lang", "index_repos", "resource_servers", "xim"})
+        // The view's own settings; its index is the system's (V1).
+        for (const auto* key : {"mirror", "lang"})
             if (system.contains(key)) own[key] = system[key];
         try {
             platform::write_file_atomic(file.string(), own.dump(2) + "\n");
@@ -1058,7 +1043,9 @@ void Config::ensure_index_config_() {
     // sorts AFTER `versions` and is therefore absent from the cheap
     // capture by design. The capture still skips `versions` itself, so an
     // oversized database costs a lex pass here, not a DOM.
-    auto configPath = paths_.homeDir / ".xlings.json";
+    // A user's view in a system (design 2026-10-20 §4.13 V1): the index and
+    // its settings are the system's -- one index, kept by root.
+    auto configPath = (paths_.systemLayer.empty() ? paths_.homeDir : paths_.systemLayer) / ".xlings.json";
     nlohmann::json json = nlohmann::json::object();
     if (auto cap = home_config_capture(configPath, HomeCaptureMode::SkipVersions);
         cap && cap->ok) {
@@ -1360,6 +1347,9 @@ void Config::load_ui_prefs_from_json_(const nlohmann::json& json) {
 [[nodiscard]] const xvm::VersionDB& Config::project_versions() { return instance_().projectVersions_; }
 
 [[nodiscard]] std::filesystem::path Config::global_data_dir() {
+    // A user's view in a system: the index and the store are the system's
+    // (design 2026-10-20 §4.13 V1); the view keeps only its own state.
+    if (const auto& layer = instance_().paths_.systemLayer; !layer.empty()) return layer / "data";
     return instance_().paths_.dataDir;
 }
 

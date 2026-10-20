@@ -41,8 +41,25 @@ std::optional<Mode> mode_named(std::string_view n) {
     return std::nullopt;
 }
 
+std::string_view name(Flow f) { return f == Flow::vertical ? "vertical" : "horizontal"; }
+
+std::optional<Flow> flow_named(std::string_view n) {
+    for (const auto f : {Flow::horizontal, Flow::vertical})
+        if (name(f) == n) return f;
+    return std::nullopt;
+}
+
 Layout::Layout(Options o) : o_(o), spaces_(static_cast<std::size_t>(std::max(1, o.workspaces))) {
-    for (auto& s : spaces_) s.mode = o.mode;
+    for (auto& s : spaces_) s.mode = o.mode, s.flow = o.flow;
+}
+
+Flow Layout::flow() const { return space_().flow; }
+void Layout::set_flow(Flow f) { space_().flow = f; }
+
+void Layout::set_spacing(double inner_gap, double outer_gap, double min_column_width) {
+    o_.inner_gap = std::clamp(inner_gap, 0.0, 64.0);
+    o_.outer_gap = std::clamp(outer_gap, 0.0, 64.0);
+    o_.min_column_width = std::clamp(min_column_width, 120.0, 4096.0);
 }
 
 Layout::Window* Layout::window_(Id id) {
@@ -271,6 +288,7 @@ void Layout::add(Id id, Size preferred, bool floating) {
 }
 
 void Layout::remove(Id id) {
+    fullscreen_.erase(id);
     if (std::erase_if(sticky_, [&](const Window& w) { return w.id == id; }) > 0) {
         if (space_().focus == id) space_().focus.reset();
         return;
@@ -328,6 +346,7 @@ void Layout::focus(Id id) {
     if (!s) return;
     s->focus = id;
     if (const auto at = find_(s->columns, id)) s->columns[at->column].active = at->cell;
+    s->scrolled = false;   // the focus moved: it is shown again
     if (auto* g = group_(*s, id))
         if (const auto at = find_(g->columns, id)) g->columns[at->column].active = at->cell;
     if (const auto* w = window_(id); w && !w->floating) {
@@ -346,6 +365,7 @@ void Layout::move_focus(Direction d) {
     const auto* current = window_(*s.focus);
     if (!current) return;
     if (s.mode == Mode::tile) {
+        d = turned_(s, d);
         const auto at = find_(s.columns, *s.focus);
         if (!at) {
             // A floating window: to the columns' first or last.
@@ -397,7 +417,7 @@ void Layout::move(Direction d) {
         return;
     }
     switch (s.mode) {
-        case Mode::tile: tile_move_(s, d); return;
+        case Mode::tile: tile_move_(s, turned_(s, d)); return;
         case Mode::stack: stack_move_(*w, d); return;
         case Mode::canvas:
             if (auto* g = group_(s, w->id)) {
@@ -480,6 +500,19 @@ void Layout::toggle_maximized(Id id) {
     }
 }
 
+void Layout::toggle_fullscreen(Id id) { set_fullscreen(id, !fullscreen(id)); }
+
+void Layout::set_fullscreen(Id id, bool on) {
+    if (!window_(id)) return;
+    if (!on) { fullscreen_.erase(id); return; }
+    // One on a workspace: another there leaves it.
+    const auto ws = workspace_of(id);
+    std::erase_if(fullscreen_, [&](Id other) { return workspace_of(other) == ws; });
+    fullscreen_.insert(id);
+}
+
+bool Layout::fullscreen(Id id) const { return fullscreen_.contains(id); }
+
 bool Layout::maximized(Id id) const {
     const auto* w = window_(id);
     if (!w || w->floating) return false;
@@ -541,8 +574,7 @@ void Layout::cycle_width() {
         const auto at = find_(s.columns, *s.focus);
         if (!at) return;
         auto& col = s.columns[at->column];
-        const double now = col.width > 0 ? col.width : (s.columns.size() <= 2 ? 1.0 / static_cast<double>(s.columns.size()) : 0.5);
-        col.width = next_of(now);
+        col.width = next_of(tile_fraction_(s, at->column));
         reveal_(s, *s.focus);
     } else if (s.mode == Mode::canvas) {
         auto* g = group_(s, *s.focus);
@@ -581,8 +613,7 @@ void Layout::resize(double step) {
         const auto at = find_(s.columns, *s.focus);
         if (!at) return;
         auto& col = s.columns[at->column];
-        const double now = col.width > 0 ? col.width : (s.columns.size() <= 2 ? 1.0 / static_cast<double>(s.columns.size()) : 0.5);
-        col.width = std::clamp(now + step, 0.1, 1.0);
+        col.width = std::clamp(tile_fraction_(s, at->column) + step, 0.1, 1.0);
         reveal_(s, *s.focus);
         return;
     }
@@ -632,8 +663,8 @@ void Layout::send_to(Id id, int n) {
 void Layout::place_new_float_(Window& w) {
     // Floating: in the middle of the output, as big as it asked (or fits).
     const Rect area = area_();
-    const double width = std::min(w.preferred.width, area.width - 2 * o_.gap);
-    const double height = std::min(w.preferred.height, area.height - 2 * o_.gap);
+    const double width = std::min(w.preferred.width, area.width - 2 * o_.inner_gap);
+    const double height = std::min(w.preferred.height, area.height - 2 * o_.inner_gap);
     w.free = {area.x + (area.width - width) / 2, area.y + (area.height - height) / 2, width, height};
     w.placed = true;
 }
@@ -660,6 +691,17 @@ std::vector<Placement> Layout::arrange(Size output, Insets reserved) {
                 out.push_back({.id = w.id, .rect = w.free, .visible = overlaps(w.free, area), .focused = s.focus == w.id,
                                .floating = true, .pinned = w.pinned});
             }
+    }
+    // Full screen: the whole output, last (above everything).
+    std::erase_if(fullscreen_, [&](Id id) { return !window_(id); });
+    if (auto it = std::ranges::find_if(out, [&](const Placement& p) { return fullscreen_.contains(p.id); }); it != out.end()) {
+        auto p = *it;
+        out.erase(it);
+        p.rect = {0, 0, output.width, output.height};
+        p.visible = true;
+        p.fullscreen = true;
+        p.tiled = true;
+        out.push_back(p);
     }
     last_ = out;
     last_space_ = shown_;

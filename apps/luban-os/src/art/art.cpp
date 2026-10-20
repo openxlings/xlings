@@ -91,21 +91,27 @@ constexpr Rows kUnknown0{
     "................", "................", "...KKKKKKKKKK...", "..KBBBBBBBBBBK..", "..KbBBBBBBBBbK..", "..KBbBBBBBBbBK..",
     "..KBBbBBBBbBBK..", "..KBBBbBBbBBBK..", "..KBBBBbbBBBBK..", "..KBBBbBBbBBBK..", "..KBBbBBBBbBBK..", "..KBbBBBBBBbBK..",
     "..KbBBBBBBBBbK..", "..KKKKKKKKKKKK..", "................", "................"};
-// The craftsman: the builder of Luban, his hammer turning about his fist --
-// raised, level, struck (design 2026-10-19 §14). The raised one is also the
-// app's icon (share/luban-os.svg, tools/luban_os_icon.py).
+// The craftsman: the builder of Luban at his anvil (design 2026-10-20
+// §14.1) -- ready (the hammer high behind his head), the swing (arm forward,
+// the hammer coming over), the strike (on the anvil, sparks, his body down a
+// pixel), the rebound -- each for its own time (kCraftTimes). The ready one is
+// also the app's icon (share/luban-os.svg, tools/luban_os_icon.py).
 constexpr Rows kCraft0{
-    "................", "..KKKK..........", ".KOOOOK.........", ".KYYYYK.KKKKK...", ".KYKYKK.KWGGK...", "..KYYK..KKKKK...",
-    ".KSSSSK..KbK....", "KSSSSSSKKKbK....", "KSKSSKSSKYYK....", "KYKSSKKKKKK.....", "..KSSK..........", "..KBBK..........",
-    ".KBKKBK.........", ".KBK.KBK........", "KKK...KKK.......", "................"};
+    ".KKKK...........", ".KWGKb..........", ".KggK.bK........", "..KKKK.YK.......", ".KOOOOKK........", ".KYYYYKSK.......",
+    ".KYKYKKSK.......", "..KYYK.SK.......", ".KSSSSSK........", "KSSSSSSK........", "KSKSSK..........", "KYKSSK..........",
+    "..KBBK.....KKKKK", ".KBKKBK....KGGGK", ".KBK.KBK....KgK.", "KKK...KKK..KKKKK"};
 constexpr Rows kCraft1{
-    "................", "..KKKK..........", ".KOOOOK.........", ".KYYYYK.........", ".KYKYKK.........", "..KYYK..........",
-    ".KSSSSK.........", "KSSSSSSKKKK.....", "KSKSSKSSKYYK....", "KYKSSKKKKKKbK...", "..KSSK.....KbKK.", "..KBBK......KWGK",
-    ".KBKKBK.....KGgK", ".KBK.KBK.....KK.", "KKK...KKK.......", "................"};
+    "................", "................", ".........g......", "..KKKK.....g....", ".KOOOOK.........", ".KYYYYK.....KKKK",
+    ".KYKYKK.....KWGK", "..KYYK.....bKggK", ".KSSSSKKKKb.KKKK", "KSSSSSSSSYK.....", "KSKSSK.KKK......", "KYKSSK..........",
+    "..KBBK.....KKKKK", ".KBKKBK....KGGGK", ".KBK.KBK....KgK.", "KKK...KKK..KKKKK"};
 constexpr Rows kCraft2{
-    "................", "..KKKK..........", ".KOOOOK.........", ".KYYYYK.........", ".KYKYKK.........", "..KYYK..........",
-    ".KSSSSK......KKK", "KSSSSSSKKKKK.KWK", "KSKSSKSSKYYbbKGK", "KYKSSKKKKKKK.KgK", "..KSSK.......KKK", "..KBBK..........",
-    ".KBKKBK.........", ".KBK.KBK........", "KKK...KKK.......", "................"};
+    "................", "................", "................", "................", "..KKKK..........", ".KOOOOK.........",
+    ".KYYYYK.........", ".KYKYKK......Y..", "..KYYK.....Y...Y", ".KSSSSKKKK..KKKK", "KSSSSSSSSYb.KWGK", "KSKSSK..KK.bKggK",
+    "..KBBK.....KKKKK", ".KBKKBK....KGGGK", ".KBK.KBK....KgK.", "KKK...KKK..KKKKK"};
+constexpr Rows kCraft3{
+    "................", "................", "................", "..KKKK..........", ".KOOOOK.........", ".KYYYYK.........",
+    ".KYKYKK.........", "..KYYK......KKKK", ".KSSSSK.....KWGK", "KSSSSSSKKKbbKggK", "KSKSSK.SSY......", "KYKSSK..KK......",
+    "..KBBK.....KKKKK", ".KBKKBK....KGGGK", ".KBK.KBK....KgK.", "KKK...KKK..KKKKK"};
 
 std::uint32_t base_(std::string_view edition) {
     auto name = edition;
@@ -134,7 +140,7 @@ const Rows* rows_(Badge b, int frame) {
     case Badge::DesktopXdesk: return f ? &kXdesk1 : &kXdesk0;
     case Badge::Unknown: return &kUnknown0;
     case Badge::Craftsman: {
-        static constexpr std::array<const Rows*, 4> swing{&kCraft0, &kCraft2, &kCraft1, &kCraft2};
+        static constexpr std::array<const Rows*, 4> swing{&kCraft0, &kCraft1, &kCraft2, &kCraft3};
         return swing[static_cast<std::size_t>(frame % 4)];
     }
     }
@@ -148,6 +154,11 @@ imkit::Theme theme(void* ui_font, void* title_font) {
     t.font = ui_font;
     t.title_font = title_font;
     return t;
+}
+
+int craft_frame(double speed) {
+    static constexpr std::array<double, 4> kCraftTimes{0.32, 0.07, 0.20, 0.12};
+    return imkit::beats(kCraftTimes, speed);
 }
 
 ImU32 edition_color(std::string_view edition, int shade) {

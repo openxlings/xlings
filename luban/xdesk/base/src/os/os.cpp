@@ -106,6 +106,35 @@ int connect_unix(const fs::path& path) {
     return fd;
 }
 
+std::optional<std::size_t> recv_with_fds(int sock, std::span<char> buf, std::vector<int>& fds) {
+    iovec iov{buf.data(), buf.size()};
+    msghdr msg{};
+    msg.msg_iov = &iov;
+    msg.msg_iovlen = 1;
+    std::array<char, CMSG_SPACE(sizeof(int) * 16)> control{};
+    msg.msg_control = control.data();
+    msg.msg_controllen = control.size();
+#if defined(MSG_CMSG_CLOEXEC)
+    constexpr int flags = MSG_CMSG_CLOEXEC;
+#else
+    constexpr int flags = 0;        // macOS: each one is made close-on-exec below
+#endif
+    ssize_t n;
+    do { n = ::recvmsg(sock, &msg, flags); } while (n < 0 && errno == EINTR);
+    if (n < 0) return std::nullopt;
+    for (cmsghdr* cm = CMSG_FIRSTHDR(&msg); cm; cm = CMSG_NXTHDR(&msg, cm)) {
+        if (cm->cmsg_level != SOL_SOCKET || cm->cmsg_type != SCM_RIGHTS) continue;
+        const auto count = (cm->cmsg_len - CMSG_LEN(0)) / sizeof(int);
+        for (std::size_t k = 0; k < count; ++k) {
+            int fd = -1;
+            std::memcpy(&fd, CMSG_DATA(cm) + k * sizeof(int), sizeof(int));
+            if constexpr (flags == 0) cloexec_(fd);
+            fds.push_back(fd);
+        }
+    }
+    return static_cast<std::size_t>(n);
+}
+
 bool send_with_fds(int sock, std::string_view data, std::span<const int> fds) {
     iovec iov{const_cast<char*>(data.data()), data.size()};
     msghdr msg{};

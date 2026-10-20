@@ -15,6 +15,7 @@ import xlings.subos.edition;
 import xlings.subos.policy;
 import xlings.subos.policy_store;
 import xlings.subos.root_etc;
+import xlings.libs.sha512;
 import xlings.subos.rootfs;
 import xlings.subos.session;
 import luban.service.archive;
@@ -396,9 +397,16 @@ EnterPlan enter_plan(const Environment& e) {
                               setting, have, e.name)};
 }
 
-bool needs_user(const NewPreview& p) {
+bool needs_user(const NewPreview& p, const NewOptions* o) {
     const auto* base = p.lineage.base();
-    return base && (base->name() == "desktop" || base->name().starts_with("desktop-"));
+    if (base && (base->name() == "desktop" || base->name().starts_with("desktop-"))) return true;
+    // Any desktop, not only the desktop edition's (design 2026-10-20 G33): a
+    // desktop given with --xpkg, or asked for with --desktop.
+    if (std::ranges::any_of(p.extras, [](const Coordinate& e) { return e.role() == "desktop"; })) return true;
+    if (o)
+        for (const auto& [k, v] : o->settings)
+            if (k == "desktop" && !v.empty() && v != "none") return true;
+    return false;
 }
 
 Json NewPreview::value() const {
@@ -507,7 +515,15 @@ std::expected<NewPreview, int> preview_new(const Context& c, const NewOptions& o
     return p;
 }
 
-Outcome create(const Context& c, const NewOptions& o, const NewPreview* given) {
+Outcome create(const Context& given_context, const NewOptions& o, const NewPreview* given) {
+    // Every event in the one progress of the whole operation (design 2026-10-20 G22).
+    Context c = given_context;
+    if (given_context.sink)
+        c.sink = [sink = given_context.sink, overall = std::make_shared<Overall>()](const Event& e) {
+            Event x = e;
+            overall->take(x);
+            sink(x);
+        };
     if (o.name.empty()) {
         if (c.sink) c.sink(error("an environment needs a name", "luban new <name> --edition tiny"));
         return {.code = 2};
@@ -583,42 +599,8 @@ Outcome create(const Context& c, const NewOptions& o, const NewPreview* given) {
             return {.code = irc};
         }
     }
-    if (checked) {
-        if (const auto failed = unusable_(c, o.name, "check", std::format("{} is ready", o.name))) {
-            if (c.sink) c.sink(error(std::format("{} is made, and not usable: {}", o.name, *failed),
-                                     std::format("luban status {} --check", o.name)));
-            return {.code = 1};
-        }
-    }
-    // The login shell its edition declares (its manifest's luban.settings, or
-    // usr/share/luban/settings.json), before its user copies root's.
-    preset_login_shell_(c, o.name, preview.lineage.luban("settings").value("login_shell", std::string{}));
-    // Its login user (part 3 §6.1): in its passwd, its group and wheel, the
-    // password's hash in its shadow, and the one `luban enter` logs in as.
-    // A desktop is never root's: made from the window (no question asked
-    // there), it gets the default user, without a password.
-    const auto user = o.user.empty() && needs_user(preview) ? std::string(kDefaultUser) : o.user;
-    if (!user.empty()) {
-        const auto root = root_of(c.home, o.name);
-        if (!root) {
-            if (c.sink) c.sink(error(std::format("{} has no root to give a user", o.name)));
-            return {.code = 1};
-        }
-        const auto rootUser = xlings::subos::root_etc::find_user(*root / "etc", "root");
-        auto made = xlings::subos::root_etc::add_user(*root, user, rootUser ? rootUser->shell : std::string("/bin/sh"),
-                                                      o.password_hash, xlings::platform::user_ids().uid);
-        if (!made) {
-            if (c.sink) c.sink(error(made.error()));
-            return {.code = 1};
-        }
-        if (auto login = xlings::subos::root_etc::set_login_user(*root / "etc", user); !login) {
-            if (c.sink) c.sink(error(login.error()));
-            return {.code = 1};
-        }
-        if (c.sink) c.sink(notice(std::format("{} logs in as {}{}", o.name, user,
-                                              o.password_hash.empty() ? " (no password)" : "")));
-    }
-    // The desktop asked for (--desktop), when it does not have it: the
+    // The desktop asked for (--desktop), when it does not have it -- before
+    // the check, which then checks it too (and the stages run in order) -- the
     // official one of that name, installed -- the one thing luban new
     // installs unasked, and says (design §5.1).
     std::string desktop;
@@ -640,6 +622,62 @@ Outcome create(const Context& c, const NewOptions& o, const NewPreview* given) {
             if (drc != 0) return {.code = drc};
             if (c.sink) c.sink(notice(std::format("{} has {} as its desktop ({})", o.name, desktop, official->ref())));
         }
+    }
+    if (checked) {
+        if (const auto failed = unusable_(c, o.name, "check", std::format("{} is ready", o.name))) {
+            if (c.sink) c.sink(error(std::format("{} is made, and not usable: {}", o.name, *failed),
+                                     std::format("luban status {} --check", o.name)));
+            return {.code = 1};
+        }
+    }
+    // The login shell its edition declares (its manifest's luban.settings, or
+    // usr/share/luban/settings.json), before its user copies root's.
+    preset_login_shell_(c, o.name, preview.lineage.luban("settings").value("login_shell", std::string{}));
+    // Its login user (part 3 §6.1): in its passwd, its group and wheel, the
+    // password's hash in its shadow, and the one `luban enter` logs in as.
+    // A desktop is never root's: made from the window (no question asked
+    // there), it gets the default user, without a password.
+    const auto user = o.user.empty() && needs_user(preview, &o) ? std::string(kDefaultUser) : o.user;
+    if (!user.empty()) {
+        const auto root = root_of(c.home, o.name);
+        if (!root) {
+            if (c.sink) c.sink(error(std::format("{} has no root to give a user", o.name)));
+            return {.code = 1};
+        }
+        const auto rootUser = xlings::subos::root_etc::find_user(*root / "etc", "root");
+        // No password given and none chosen: the default one, said.
+        const bool defaulted = o.password_hash.empty() && !o.no_password;
+        const auto hash = defaulted ? xlings::sha512::crypt(std::string(kDefaultPassword), xlings::sha512::random_salt())
+                                    : o.password_hash;
+        auto made = xlings::subos::root_etc::add_user(*root, user, rootUser ? rootUser->shell : std::string("/bin/sh"),
+                                                      hash, xlings::platform::user_ids().uid);
+        if (!made) {
+            if (c.sink) c.sink(error(made.error()));
+            return {.code = 1};
+        }
+        if (auto login = xlings::subos::root_etc::set_login_user(*root / "etc", user); !login) {
+            if (c.sink) c.sink(error(login.error()));
+            return {.code = 1};
+        }
+        // Its sudo: with the user's password, or asking nothing for one who
+        // chose no password (design 2026-10-20 §4.5).
+        if (auto sudoers = xlings::subos::root_etc::ensure_sudoers(*root / "etc", o.no_password ? std::string_view(user) : std::string_view{});
+            !sudoers) {
+            if (c.sink) c.sink(error(sudoers.error()));
+            return {.code = 1};
+        }
+        if (c.sink)
+            c.sink(notice(defaulted ? std::format("{} logs in as {}, password {} (the default) -- passwd changes it", o.name, user,
+                                                  kDefaultPassword)
+                          : o.no_password ? std::format("{} logs in as {} without a password; its sudo asks nothing", o.name, user)
+                                          : std::format("{} logs in as {}", o.name, user)));
+    }
+    // A desktop has its sound (design 2026-10-20 §20.1): played on this
+    // computer, as the `audio` grant allows -- given here, withdrawn with
+    // `luban config <system> --disallow audio`.
+    if (needs_user(preview, &o)) {
+        if (auto granted = configure(c, o.name, {{"allow", "audio"}}); !granted.ok() && c.sink)
+            c.sink(notice(std::format("{}'s sound is not played here (luban config {} --allow audio)", o.name, o.name)));
     }
     // What luban config takes, given now (design §5.1): the same function.
     if (!o.settings.empty())
@@ -1423,6 +1461,21 @@ int run_command(const Context& c, std::string_view name, std::span<const std::st
     args.push_back("--");
     args.insert(args.end(), argv.begin(), argv.end());
     return c.port.terminal(args);
+}
+
+bool default_password_in_use(const fs::path& root, std::string_view user) {
+    std::ifstream in(root / "etc" / "shadow");
+    for (std::string line; std::getline(in, line);) {
+        if (!line.starts_with(std::string(user) + ":")) continue;
+        const auto from = user.size() + 1, to = line.find(':', from);
+        const auto hash = line.substr(from, to == std::string::npos ? std::string::npos : to - from);
+        // $6$<salt>$<digest>: the default password under the same salt.
+        if (!hash.starts_with("$6$")) return false;
+        const auto salt_end = hash.find('$', 3);
+        if (salt_end == std::string::npos) return false;
+        return xlings::sha512::crypt(std::string(kDefaultPassword), hash.substr(3, salt_end - 3)) == hash;
+    }
+    return false;
 }
 
 }  // namespace luban::service

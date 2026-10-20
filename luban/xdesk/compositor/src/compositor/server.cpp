@@ -28,11 +28,18 @@ namespace fs = std::filesystem;
 Server::Server(const Options& opts)
     : o(opts), size(opts.size),
       lay({.mode = opts.profile == "canvas" ? layout::Mode::canvas : layout::Mode::tile,
-           .gap = static_cast<double>(std::clamp(opts.gap, 0, 64)), .workspaces = std::clamp(opts.workspaces, 1, 9)}),
+           .inner_gap = static_cast<double>(std::clamp(opts.inner_gap, 0, 64)),
+           .outer_gap = static_cast<double>(std::clamp(opts.outer_gap, 0, 64)),
+           .min_column_width = static_cast<double>(std::clamp(opts.min_column_width, 120, 4096)),
+           .flow = layout::flow_named(opts.flow).value_or(layout::Flow::horizontal),
+           .workspaces = std::clamp(opts.workspaces, 1, 9)}),
       theme(shell::theme(opts.profile)) {
     if (opts.accent) theme.accent = theme.selected = draw::Color::rgb(*opts.accent);
     if (opts.background) theme.background = draw::Color::rgb(*opts.background);
     pill = opts.profile == "canvas";
+    minimap_on = opts.minimap;
+    snap_on = opts.snap;
+    reduce_motion = opts.reduce_motion;
 }
 
 // ── start ────────────────────────────────────────────────────────
@@ -64,6 +71,15 @@ bool Server::start_() {
     const float bg[4] = {theme.background.r / 255.0f, theme.background.g / 255.0f, theme.background.b / 255.0f, 1.0f};
     background = wlr_scene_rect_create(background_layer, static_cast<int>(size.width), static_cast<int>(size.height), bg);
     canvas_dots = wlr_scene_buffer_create(background_layer, nullptr);   // shown on a canvas workspace
+    minimap_node = wlr_scene_buffer_create(shell_layer, nullptr);
+    wlr_scene_node_set_enabled(&minimap_node->node, false);
+    {
+        const float c[4] = {theme.accent.r / 255.0f * 0.8f, theme.accent.g / 255.0f * 0.8f, theme.accent.b / 255.0f * 0.8f, 0.8f};
+        guide_x = wlr_scene_rect_create(overlay_layer, 1, 1, c);
+        guide_y = wlr_scene_rect_create(overlay_layer, 1, 1, c);
+        wlr_scene_node_set_enabled(&guide_x->node, false);
+        wlr_scene_node_set_enabled(&guide_y->node, false);
+    }
     panel_node = wlr_scene_buffer_create(shell_layer, nullptr);
     launcher_node = wlr_scene_buffer_create(overlay_layer, nullptr);
     wlr_scene_node_set_enabled(&launcher_node->node, false);
@@ -148,6 +164,9 @@ bool Server::start_() {
     wlr_output_state on;
     wlr_output_state_init(&on);
     wlr_output_state_set_enabled(&on, true);
+    // ARGB with an opaque background: every pixel sent is opaque as it is
+    // rendered (design 2026-10-20 §13.2: no pass over the pixels to say so).
+    wlr_output_state_set_render_format(&on, kARGB8888);
     wlr_output_commit_state(output, &on);
     wlr_output_state_finish(&on);
     wlr_output_layout_output* lo = wlr_output_layout_add_auto(outputs, output);
@@ -159,20 +178,19 @@ bool Server::start_() {
     if (!name) { log("no Wayland socket (XDG_RUNTIME_DIR?)"); return false; }
     socket = name;
     log("listening on " + socket);
+    control_start();
 
-    input_source = wl_event_loop_add_fd(loop, o.in, static_cast<std::uint32_t>(WL_EVENT_READABLE_),
-                                        [](int, std::uint32_t mask, void* data) -> int {
-                                            auto* self = static_cast<Server*>(data);
-                                            std::array<char, 65536> buf{};
-                                            auto n = os::read_some(self->o.in, buf);
-                                            if (!n || *n == 0 || (mask & static_cast<std::uint32_t>(WL_EVENT_HANGUP_))) {
-                                                self->stop = true;
-                                                return 0;
-                                            }
-                                            self->provider(std::string_view(buf.data(), *n));
-                                            return 0;
-                                        },
-                                        this);
+    // The first window, on the standard streams; the others at the displays socket.
+    add_link(o.in, o.out);
+    if (!o.displays.empty()) {
+        displays_listener = os::listen_unix(o.displays);
+        if (displays_listener < 0) log("no displays socket at " + o.displays.string() + " (one window only)");
+        else displays_source = wl_event_loop_add_fd(loop, displays_listener, static_cast<std::uint32_t>(WL_EVENT_READABLE_),
+                                                    [](int, std::uint32_t, void* data) -> int {
+                                                        static_cast<Server*>(data)->accept_display();
+                                                        return 0;
+                                                    }, this);
+    }
     tick = wl_event_loop_add_timer(loop, [](void* data) -> int { static_cast<Server*>(data)->step(); return 0; }, this);
     // The panel's clock, looked at every few seconds.
     clock = wl_event_loop_add_timer(loop, [](void* data) -> int {
@@ -184,7 +202,7 @@ bool Server::start_() {
     wl_event_source_timer_update(clock, 5000);
     pace_timer = wl_event_loop_add_timer(loop, [](void* data) -> int {
         auto* self = static_cast<Server*>(data);
-        self->in_flight.reset();
+        for (auto& l : self->links) l.in_flight.reset();
         wlr_output_schedule_frame(self->output);
         return 0;
     }, this);
@@ -193,25 +211,26 @@ bool Server::start_() {
         wlr_scene_node_set_enabled(&self->hint_node->node, false);
         return 0;
     }, this);
-    drop_timer = wl_event_loop_add_timer(loop, [](void* data) -> int {
-        auto* self = static_cast<Server*>(data);
-        if (self->drag == Drag::move && self->drop.kind == layout::Drop::Kind::column) {
-            self->sizes_shown = true;
-            self->show_drop();
-        }
-        return 0;
-    }, this);
     max_timer = wl_event_loop_add_timer(loop, [](void* data) -> int {
         auto* self = static_cast<Server*>(data);
         if (self->max_hover && self->overlay == Overlay::none && self->drag == Drag::none) self->open_layouts(self->max_hover);
         return 0;
     }, this);
+    hold_timer = wl_event_loop_add_timer(loop, [](void* data) -> int {
+        auto* self = static_cast<Server*>(data);
+        if (self->super_alone && self->overlay == Overlay::none && !self->launcher.is_open()
+            && self->held(wlr_keyboard_modifier::WLR_MODIFIER_LOGO))
+            self->open_sheet();
+        return 0;
+    }, this);
+    switch_timer = wl_event_loop_add_timer(loop, [](void* data) -> int {
+        static_cast<Server*>(data)->switch_timer_fired();
+        return 0;
+    }, this);
     // The person's keys and state; each workspace's arrangement as they left it.
     load_person();
     draw_shell();
-    using I = opensal::Interface;
-    send(opensal::wire::encode('h', std::to_string(I::Surface | I::Mode | I::Keyboard | I::Pointer | I::Text | I::Clipboard
-                                                   | I::Cursor | I::CursorImage)));
+    send(hello());
     for (const auto& a : o.autostart) launch(a);
     return true;
 }
@@ -227,13 +246,31 @@ int Server::run_() {
 }
 
 Server::~Server() {
-    if (input_source) wl_event_source_remove(input_source);
+    for (auto& l : links)
+        if (l.source) wl_event_source_remove(l.source);
+    if (displays_source) wl_event_source_remove(displays_source);
+    for (auto& c : controls) {
+        if (c.source) wl_event_source_remove(c.source);
+        os::close(c.fd);
+    }
+    if (control_source) wl_event_source_remove(control_source);
+    if (control_listener >= 0) {
+        os::close(control_listener);
+        std::error_code ec;
+        fs::remove(control_path, ec);
+    }
+    if (displays_listener >= 0) {
+        os::close(displays_listener);
+        std::error_code ec;
+        fs::remove(o.displays, ec);
+    }
     if (tick) wl_event_source_remove(tick);
     if (clock) wl_event_source_remove(clock);
     if (pace_timer) wl_event_source_remove(pace_timer);
     if (hint_timer) wl_event_source_remove(hint_timer);
-    if (drop_timer) wl_event_source_remove(drop_timer);
     if (max_timer) wl_event_source_remove(max_timer);
+    if (switch_timer) wl_event_source_remove(switch_timer);
+    if (hold_timer) wl_event_source_remove(hold_timer);
     for (int pid : children) os::terminate(pid);
     new_toplevel.disconnect(); new_popup.disconnect(); new_decoration.disconnect(); frame.disconnect();
     request_cursor.disconnect(); request_selection.disconnect(); set_selection.disconnect(); new_text_input.disconnect();

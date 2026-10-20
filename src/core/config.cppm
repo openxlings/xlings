@@ -11,7 +11,7 @@ import xlings.core.home;
 namespace xlings {
 
 export struct Info {
-    static constexpr std::string_view VERSION = "2026.10.19.2";
+    static constexpr std::string_view VERSION = "2026.10.20.1";
     static constexpr std::string_view REPO = "https://github.com/openxlings/xlings";
 };
 
@@ -149,9 +149,10 @@ public:
         // How homeDir was chosen; the rest of "what kind of home is this"
         // (mode, layout) is home_context().
         home::Source          homeSource = home::Source::Default;
-        // Inside a Luban system, a regular user's own home: homeDir is
-        // ~/.xlings and the system's home is the layer below it (design
-        // 2026-10-16 L §8).
+        // Inside a Luban system, a regular user's own home -- a view: homeDir
+        // is ~/.xlings (its choices, shims, logs) and the system's home is the
+        // layer below it, whose index and store it reads (design 2026-10-16
+        // L §8; 2026-10-20 §4).
         std::filesystem::path systemLayer;
         // Inside a Luban system: this command is the first write of a user
         // who has no home of their own yet -- main asks once and starts it
@@ -172,11 +173,10 @@ public:
     // nothing announced (design 2026-10-19 §19, F18).
     static void command_reads_only(bool readsOnly);
 
-    // A system user's own home, started from the system's (`paths().
-    // systemLayer`): its index snapshot and the settings that say where
-    // packages come from (mirror, lang, index_repos, resource_servers) -- so
-    // the first install needs no network for the index (design 2026-10-19
-    // §27.5, F25). Nothing is replaced that is there.
+    // A system user's own home -- a view of the system's (`paths().
+    // systemLayer`; design 2026-10-20 §4): its own settings (mirror, lang);
+    // the index and the store it reads are the system's. Nothing is replaced
+    // that is there.
     static std::expected<void, std::string> start_own_home();
 
     // Public because they ARE the public contract of repo_dir_for(): the

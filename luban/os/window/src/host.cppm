@@ -51,8 +51,15 @@ public:
     void set_title(const std::string& title);
     void set_fullscreen(bool on);
     bool fullscreen() const;
-    // While on, every key -- the host's chords too -- is the window's.
-    void grab_keyboard(bool on);
+    // While held, every key -- the host's chords too -- is the window's.
+    // Held is the host's answer (design 2026-10-20 §5): X11 refuses while
+    // another program holds the keyboard (its menu, its switcher) or the
+    // window is not shown, and SDL does not read that answer. Asked again
+    // while not held, it tries again on a focus change and at most every
+    // 500 ms; `why` says what the host answered when it refused.
+    enum class Grab { Released, Held, HeldByAnother, NotShown, Refused };
+    Grab grab_keyboard(bool on);
+    Grab keyboard_grab() const;
     bool keyboard_grabbed() const;
     // While on, the pointer stays in the window and its motion is relative
     // (opensal PointerRelative): a game's, a 3D program's.
@@ -102,6 +109,11 @@ public:
     // A texture for a remote surface's pixels (BGRA), drawn with imgui's Image.
     struct Texture { void* handle { nullptr }; int width { 0 }; int height { 0 }; };
     Texture texture(int width, int height);
+    // This frame's picture under the interface, at (x, y) sized w x h in
+    // the interface's coordinates: copied as one rectangle, not drawn as
+    // triangles (a desktop's frame; design 2026-10-20 §13.2: the software
+    // renderer's triangles cost the window most of a frame).
+    void backdrop(const Texture& t, float x, float y, float w, float h);
     void update(Texture& t, const opensal::Rect& rect, std::string_view rows);
     void destroy(Texture& t);
 
@@ -136,12 +148,23 @@ public:
     // take it the way they take a person's. A key by name ("Down", "Return",
     // "Escape", "F2", "Ctrl", "Alt", "Shift", "Super", or one character).
     bool inject_key(std::string_view name, bool down);
+    // Tests: the host refuses the next `times` grabs (as X11 does while it
+    // holds the keyboard).
+    void refuse_grabs(int times);
     void inject_text(std::string_view text);
     void inject_pointer(float x, float y);
     void inject_button(float x, float y, int button, bool down);
     void inject_close();
+    // Tests: minimized and restored, as the host's window manager says it.
+    void inject_shown(bool shown);
     void inject_drop(const std::filesystem::path& file);
     void set_size(int width, int height);
+    // A mirror (design 2026-10-20 §11.2): sized to show `width` x `height`
+    // device pixels one to one (the same shape, smaller, where the screen's
+    // usable area is smaller; a maximized or full-screen window stays), and
+    // that shape kept as it is resized. free_shape: any shape again.
+    void keep_shape(int width, int height);
+    void free_shape();
     std::string title() const;
 
 private:
@@ -181,5 +204,29 @@ std::optional<std::filesystem::path> shipped_font_dir();
 // The fonts this machine has for an interface and for a console, by path.
 std::vector<std::string> ui_font_candidates();
 std::vector<std::string> mono_font_candidates();
+
+// A system's sound on this computer (design 2026-10-20 §20.1): an openhal
+// audio output stream played by SDL -- PipeWire, PulseAudio or ALSA on
+// Linux, Core Audio on macOS, WASAPI on Windows -- on the default output.
+// Samples are queued; more than half a second behind, the oldest go (it keeps
+// up rather than lag). Safe from any thread.
+class Speaker {
+public:
+    // SDL's audio started, on the main thread (where SDL wants it): before
+    // open, which any thread may then call. Whether there is sound here.
+    static bool prepare();
+    static std::expected<std::unique_ptr<Speaker>, std::string> open(std::uint32_t rate, std::uint32_t channels);
+    ~Speaker();
+    // Signed 16-bit little-endian frames, interleaved.
+    void play(std::string_view samples);
+    void volume(double level, bool muted);
+    // Bytes waiting to be played.
+    std::size_t queued() const;
+
+private:
+    Speaker() = default;
+    struct Impl;
+    std::unique_ptr<Impl> impl_;
+};
 
 }  // namespace luban::desktop::host

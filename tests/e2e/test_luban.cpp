@@ -6,6 +6,8 @@ import xlings.testkit;
 #include "xlings/xtest.hpp"
 import std;
 import xlings.libs.json;
+import xlings.platform;
+import openhal.audio;
 
 namespace tk = xlings::testkit;
 namespace fs = std::filesystem;
@@ -456,7 +458,7 @@ XTEST(Luban, AWorkspaceIsPrivateWhenItIsMadeNotAfter,
 // line for what was made, how to go in, and none of the steps' own lines --
 // those are -v's.
 XTEST(Luban, NewSaysWhatItMadeAndHowToGoInAndNotItsSteps,
-      .area = "luban", .cost = tk::Cost::Medium, .covers = {"LUBAN-OUTPUT"}, .requires_ = {"linux", "xlings-bin"}) {
+      .area = "luban", .cost = tk::Cost::Medium, .covers = {"LUBAN-OUTPUT", "LUBAN-PROGRESS"}, .requires_ = {"linux", "xlings-bin"}) {
     if constexpr (!tk::is_linux) GTEST_SKIP() << "a Luban root is a Linux root";
     const auto bin = luban_binary();
     if (!bin) GTEST_SKIP() << "no luban beside the xlings under test";
@@ -481,13 +483,73 @@ XTEST(Luban, NewSaysWhatItMadeAndHowToGoInAndNotItsSteps,
     auto json = luban(home, {"--json", "new", "box3", "--xpkg", "fixture:my-os@1.0.0", "-y"});
     ASSERT_EQ(json.exit_code, 0) << json.transcript();
     bool result = false;
+    double overall = 0;
+    int measured = 0;
     std::istringstream in(json.out);
     for (std::string line; std::getline(in, line);) {
         auto j = Json::parse(line, nullptr, false);
         ASSERT_TRUE(j.is_object()) << "not an event: " << line;
         result = result || j.contains("result");
+        // One progress for the whole of it, never going back (design 2026-10-20 G22).
+        if (j.contains("overall")) {
+            EXPECT_GE(j["overall"].get<double>(), overall) << line;
+            overall = j["overall"].get<double>();
+            ++measured;
+        }
     }
     EXPECT_TRUE(result) << json.out;
+    EXPECT_GT(measured, 0) << "no event carried the whole progress\n" << json.out;
+}
+
+// The running phase's line is rewritten in place with `\r`; a line wider
+// than the terminal wraps, `\r` returns only to the wrapped part, and every
+// refresh added a line (2026.10.19.2, an 80-column terminal).
+XTEST(Luban, TheRunningPhaseLineFitsTheTerminal,
+      .area = "luban", .cost = tk::Cost::Medium, .covers = {"LUBAN-PROGRESS-WIDTH"},
+      .requires_ = {"linux", "xlings-bin", "pty"}) {
+    if constexpr (!tk::is_linux) GTEST_SKIP() << "a Luban root is a Linux root";
+    const auto bin = luban_binary();
+    if (!bin) GTEST_SKIP() << "no luban beside the xlings under test";
+    auto home = luban_home("luban-progress-width", *bin);
+    tk::RunOptions o;
+    o.argv = {(home.dir() / "bin/luban").string(), "new", "box-with-a-rather-long-name", "--xpkg",
+              "fixture:my-os@1.0.0", "-y"};
+    o.env = home.env();
+    o.env["XLINGS_TOOLS_SEARCH"] = "home";
+    o.env.erase("XLINGS_SUBOS_MODE");
+    o.env.erase("XLINGS_ACTIVE_SUBOS");
+    o.pty = true;
+    o.pty_columns = 30;
+    o.timeout = std::chrono::seconds(90);
+    const auto made = tk::run(o);
+    ASSERT_EQ(made.exit_code, 0) << made.transcript();
+    // Each piece the terminal draws between two `\r` / `\n`, its escapes
+    // removed; one holding `▸` is the running phase's line.
+    int running = 0;
+    std::string piece;
+    auto check = [&] {
+        std::string plain;
+        for (std::size_t i = 0; i < piece.size(); ++i) {
+            if (piece[i] == '\033') {
+                while (i < piece.size() && !std::isalpha(static_cast<unsigned char>(piece[i]))) ++i;
+                continue;
+            }
+            plain += piece[i];
+        }
+        piece.clear();
+        if (plain.find("▸") == std::string::npos) return;
+        ++running;
+        int cols = 0;
+        for (unsigned char c : plain) cols += (c & 0xC0) != 0x80;
+        EXPECT_LE(cols, 29) << "wider than the terminal less one: " << plain;
+    };
+    for (char c : made.out) {
+        if (c == '\r' || c == '\n') check();
+        else piece += c;
+    }
+    check();
+    EXPECT_GT(running, 0) << made.out;
+    EXPECT_NE(made.out.find("…"), std::string::npos) << "the cut is marked\n" << made.out;
 }
 
 XTEST(Luban, AnEnvironmentsSettingsAreItsAndItsShellIsItsPasswds,
@@ -540,6 +602,37 @@ XTEST(Luban, ARootsLoginShellIsTheBestItHasOnceMade,
     // Nothing to choose from: sh stays.
     ASSERT_EQ(luban(home, {"new", "plain", "--xpkg", "fixture:my-os@1.0.0", "-y"}).exit_code, 0);
     EXPECT_EQ(shell("plain", "root"), "/bin/sh");
+}
+
+// A system's user and sudo (design 2026-10-20 §4.5): given no password, the
+// default one, said, and said again by status until changed; --no-password is
+// a choice -- no password, and a sudo that asks nothing. sudo's rules are the
+// system's: the wheel group, 15 minutes, xlings on its path, the proxy kept.
+XTEST(Luban, AUserGivenNoPasswordHasTheDefaultOneAndNoPasswordIsAChoice,
+      .area = "luban", .cost = tk::Cost::Medium, .covers = {"LUBAN-SUDO"}, .requires_ = {"linux", "xlings-bin"}) {
+    if constexpr (!tk::is_linux) GTEST_SKIP() << "a Luban root is a Linux root";
+    const auto bin = luban_binary();
+    if (!bin) GTEST_SKIP() << "no luban beside the xlings under test";
+    auto home = luban_home("luban-sudo", *bin);
+    const auto etc = [&](std::string_view name) { return home.dir() / "subos" / name / "rootfs/etc"; };
+    auto made = luban(home, {"new", "box", "--xpkg", "fixture:shell-os@1.0.0", "--user", "alice", "-y"});
+    ASSERT_EQ(made.exit_code, 0) << made.transcript();
+    EXPECT_NE(made.transcript().find("password lubanoser (the default) -- passwd changes it"), std::string::npos) << made.transcript();
+    const auto rules = tk::read_file(etc("box") / "sudoers.d/luban");
+    for (const auto* line : {"%wheel ALL=(ALL:ALL) ALL", "timestamp_timeout=15", "/xlings/bin", "HTTPS_PROXY"})
+        EXPECT_NE(rules.find(line), std::string::npos) << line << "\n" << rules;
+    EXPECT_NE(tk::read_file(etc("box") / "sudoers").find("@includedir /etc/sudoers.d"), std::string::npos);
+    EXPECT_FALSE(fs::exists(etc("box") / "sudoers.d/luban-alice")) << "a password: sudo asks for it";
+    auto status = luban(home, {"status", "box"});
+    EXPECT_NE(status.out.find("alice's password is still the default"), std::string::npos) << status.transcript();
+    EXPECT_NE(status.out.find("luban run box --user alice -- passwd"), std::string::npos) << status.transcript();
+    // No password, chosen: none, and sudo asks nothing.
+    auto open = luban(home, {"new", "open", "--xpkg", "fixture:shell-os@1.0.0", "--user", "bob", "--no-password", "-y"});
+    ASSERT_EQ(open.exit_code, 0) << open.transcript();
+    EXPECT_NE(open.transcript().find("without a password; its sudo asks nothing"), std::string::npos) << open.transcript();
+    EXPECT_NE(tk::read_file(etc("open") / "sudoers.d/luban-bob").find("bob ALL=(ALL:ALL) NOPASSWD: ALL"), std::string::npos);
+    EXPECT_NE(tk::read_file(etc("open") / "shadow").find("bob::"), std::string::npos) << tk::read_file(etc("open") / "shadow");
+    EXPECT_EQ(luban(home, {"status", "open"}).out.find("still the default"), std::string::npos);
 }
 
 // A template named without a version is the index's; when the index has no
@@ -732,8 +825,9 @@ XTEST(Luban, AnyIndexsSystemAndComponentsAreMadeByXpkg,
     EXPECT_NE(status.out.find("system    MyOS 1.0.0 (Luban base)"), std::string::npos) << status.out;
     EXPECT_NE(status.out.find("desktop   hyper"), std::string::npos) << status.out;
     EXPECT_NE(status.out.find("enter     desktop · machine"), std::string::npos) << status.out;
-    // Kept: the same again is not asked.
-    auto again = luban(home, {"new", "box2", "--xpkg", "fixture:myos@1.0.0", "--xpkg", "fixture:hyper"});
+    // Kept: the same again is not asked (its user given: a desktop's system has one).
+    auto again = luban(home, {"new", "box2", "--xpkg", "fixture:myos@1.0.0", "--xpkg", "fixture:hyper", "--user", "alice",
+                              "--no-password"});
     EXPECT_EQ(again.exit_code, 0) << again.transcript();
     // The official desktop --desktop names, brought and said.
     auto fancy = luban(home, {"new", "box3", "--xpkg", "fixture:my-os@1.0.0", "--desktop", "fancy", "-y"});
@@ -1222,4 +1316,46 @@ XTEST(Luban, TheHostStatusIsWhatThisComputerCanMake,
         EXPECT_TRUE(r.out.find("Luban host machine") != std::string::npos || r.out.find("do it:") != std::string::npos)
             << r.transcript();
     }
+}
+
+// A system's sound to the window (design 2026-10-20 §20.1): what its sound
+// server writes into the `luban` sink's named pipe comes out as an openhal
+// audio stream -- 48 kHz stereo, whole frames, the same samples.
+XTEST(Luban, ASystemsSoundLeavesItAsAnOpenhalStream, .area = "luban", .covers = {"LUBAN-SOUND"}, .requires_ = {"linux", "xlings-bin"}) {
+    const auto bin = luban_binary();
+    if (!bin) GTEST_SKIP() << "no luban beside the xlings under test";
+    auto home = tk::Home::isolated("luban-sound");
+    const auto fifo = home.root() / "sink.pcm";
+    ASSERT_TRUE(xlings::platform::make_fifo(fifo, 0600));
+    const int fd = xlings::platform::open_device(fifo);
+    ASSERT_GE(fd, 0);
+    // A known wave: 1200 frames of a ramp, 4800 bytes.
+    std::string wave;
+    for (int k = 0; k < 1200; ++k)
+        for (int ch = 0; ch < 2; ++ch) {
+            const auto v = static_cast<std::uint16_t>(k * 37 + ch * 1000);
+            wave += static_cast<char>(v & 0xff);
+            wave += static_cast<char>(v >> 8);
+        }
+    ASSERT_TRUE(xlings::platform::write_all(fd, wave));
+    tk::RunOptions o;
+    o.argv = {bin->string(), "__audio", fifo.string()};
+    o.env = home.env();
+    o.timeout = std::chrono::seconds(20);
+    const auto r = tk::run(o);
+    std::vector<int> fds{fd};
+    xlings::platform::close_fds(fds);
+    EXPECT_EQ(r.exit_code, 0) << r.transcript();
+    openhal::audio::Decoder d;
+    d.feed(r.out);
+    std::optional<openhal::audio::Open> opened;
+    std::string samples;
+    for (auto m = d.next(); m && *m; m = d.next()) {
+        if (const auto* op = std::get_if<openhal::audio::Open>(&**m)) opened = *op;
+        if (const auto* s = std::get_if<openhal::audio::Samples>(&**m)) samples += s->bytes;
+    }
+    ASSERT_TRUE(opened);
+    EXPECT_EQ(opened->format, (openhal::audio::Format{48000, 2}));
+    EXPECT_EQ(opened->direction, openhal::audio::Direction::output);
+    EXPECT_EQ(samples, wave);
 }

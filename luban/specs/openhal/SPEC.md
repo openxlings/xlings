@@ -1,11 +1,11 @@
-# openhal Specification, version 0.1
+# openhal Specification, version 0.2
 
 ## 1. Scope
 
 openhal describes devices: which GPUs, displays, audio endpoints and input
 devices a machine has, and what each can do. It is the hardware's view: a
 program asks *which* device, and several are there at once. Version 0.1
-defines one interface, enumeration.
+defines enumeration; 0.2 adds audio streams.
 
 ## 2. Form of the contract
 
@@ -48,7 +48,24 @@ the concept, and when run, holds that:
 
 4.6 the same devices listed twice have the same ids.
 
-## 5. Matters this version does not settle
+## 5. Audio (0.2)
 
-Device events (arrival, removal), giving a device to a program, and any
-operation on a device beyond describing it.
+5.1 A stream carries sound one way between a program and an endpoint: out to
+an `audio-output`, in from an `audio-input`, the default one unless named.
+
+5.2 Its samples are signed 16-bit little-endian, the channels interleaved, at
+the stream's rate; a message holds whole frames.
+
+5.3 A stream is opened (its number, direction, format, endpoint), carries
+samples, may be given a volume (0 to 1, muted or not), and is closed. The
+side that cannot open it, or ends it, says so with its reason.
+
+5.4 The values cross a boundary as messages: a kind, a length (4 bytes, big
+endian), a payload (`openhal.audio`); a side skips a kind it does not know.
+What plays or records them -- a host's audio system, a system's sound server
+-- is the implementation's.
+
+## 6. Matters this version does not settle
+
+Device events (arrival, removal), giving a device other than an audio
+endpoint to a program, and any other operation on a device.

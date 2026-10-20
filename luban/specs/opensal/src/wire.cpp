@@ -124,6 +124,7 @@ std::string encode_event(const Event& e) {
         else if constexpr (std::is_same_v<T, Launch>) return "launch " + v.app;
         else if constexpr (std::is_same_v<T, Activate>) return std::format("activate {}", v.window);
         else if constexpr (std::is_same_v<T, PointerRelative>) return std::format("relative {} {}", v.dx, v.dy);
+        else if constexpr (std::is_same_v<T, Shown>) return std::format("shown {}", v.shown ? 1 : 0);
         else return "presented";
     }, e);
 }
@@ -186,6 +187,8 @@ std::optional<Event> decode_event(std::string_view p) {
     } else if (name == "relative" && w.size() == 2) {
         PointerRelative r;
         if (num_(w[0], r.dx) && num_(w[1], r.dy)) return r;
+    } else if (name == "shown" && w.size() == 1) {
+        return Shown{w[0] == "1"};
     }
     return std::nullopt;
 }
@@ -269,6 +272,23 @@ std::expected<std::optional<Message>, std::string> Decoder::next() {
     Message m{buffer_[0], buffer_.substr(5, length)};
     buffer_.erase(0, 5 + length);
     return std::optional<Message>{std::move(m)};
+}
+
+std::string encode_display(const DisplayRole& r) {
+    if (r.kind == DisplayRole::Kind::mirror) return std::format("{} mirror {} {} {}", r.number, r.of, r.size.width, r.size.height);
+    return std::format("{} primary", r.number);
+}
+
+std::optional<DisplayRole> decode_display(std::string_view payload) {
+    std::istringstream in{std::string(payload)};
+    DisplayRole r;
+    std::string kind;
+    if (!(in >> r.number >> kind) || r.number == 0) return std::nullopt;
+    if (kind == "primary") return r;
+    if (kind != "mirror") return std::nullopt;
+    r.kind = DisplayRole::Kind::mirror;
+    if (!(in >> r.of >> r.size.width >> r.size.height) || r.of == 0 || r.size.width == 0 || r.size.height == 0) return std::nullopt;
+    return r;
 }
 
 }  // namespace opensal::wire

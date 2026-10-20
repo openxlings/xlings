@@ -104,6 +104,24 @@ window still open is the old one until it is opened again.
 The window follows the screen's scale. Its console draws box and block
 characters itself, so they join at any font size.
 
+A second window on a desktop that is already shown (the menu's *New window*,
+then the same system) is another display of it: it mirrors the first — the
+same picture at the first window's size, whatever its own, its shape kept as
+you resize it; its title says `display 2 (mirroring display 1)`. Keys and the
+pointer in either window are the desktop's. When the first window closes, an
+xdesk desktop goes on in the others, and the next one is the primary: the
+desktop takes its size. A bridged desktop (labwc, KDE, LXQt) ends with its
+first window.
+
+A machine's sound plays on this computer. Its desktop starts a sound server
+with the session (luban:audio: PipeWire, and its Pulse server for programs
+that speak Pulse), whose default output, `luban`, the window plays through
+this computer's own (PipeWire, PulseAudio or ALSA; Core Audio; WASAPI). That
+is the system's `audio` grant: a system made with a desktop has it, and
+`luban config box --disallow audio` takes it back. A sandbox's programs use
+this computer's sound server directly, with the same grant. The microphone
+is not carried yet.
+
 ## xdesk
 
 The desktop editions start **xdesk**, a desktop made for this window: a
@@ -118,39 +136,93 @@ columns.
 
 | | |
 |---|---|
-| **Tile** | windows in columns side by side; one or two share the screen, more scroll with the focused one in view; a column can hold several, one above another |
+| **Tile** | windows in columns side by side, 4 pixels apart; the columns share the screen equally until each would be narrower than 480, then they scroll with the focused one in view; columns given widths that add up to less than the screen widen in proportion to fill it; a column can hold several, one above another; a workspace can run its columns downwards instead (`flow = vertical`, for a portrait screen). A tiled window is told so and takes its size exactly (a terminal no longer rounds itself short) |
 | **Stack** | windows where you put them, overlapping, kept on the screen; maximized, or snapped to a half or a quarter |
 | **Canvas** | windows on a plane that pans and zooms; put one against another's edge and they become a tiled group, moved and zoomed as one |
 
-| Keys (Super, or Alt where the host keeps Super) | Tile | Stack | Canvas |
+| Keys (with Super) | Tile | Stack | Canvas |
 |---|---|---|---|
-| Super alone, Space or D | the applications | the same | the same |
+| Super alone, or Space | the applications — and the settings' pages and every action, by name, with its keys | the same | the same |
 | ←→ ↑↓ (or H J K L) | the next column / in the column | the nearest window that way | the same |
 | Shift+←→ ↑↓ | move to the next column / up and down in it | halves, quarters, the whole, back | move by a quarter of the view |
 | [ / ] | into the column on the left / out to a column of its own | — | into the group beside / out of it |
 | R / Shift+R | the column's width (⅓, ½, ⅔, all) / the window's height in it (equal, ⅔, ⅓) | — | the same in a group |
 | - / = | narrower / wider | smaller / larger | zoom out / in |
-| F | float, or put back | the whole screen, and back | float, or put back |
-| Shift+T | always on top | the same | the same, and fixed in the view |
+| F / Shift+F | maximize, and back / full screen (no panel, no title bar), and back | the same | the same |
+| Shift+Space | float, or put back | the same | the same |
+| P / Shift+P | always on top / on every workspace | the same | the same, and fixed in the view |
 | M | tile, stack, canvas (held) | the same | the same |
-| Tab | the windows (held: Tab for the next, let go to go there) | the same | the same |
-| O | — | — | the overview; a click goes in to a window |
-| 1 … 4 / Shift+1 … 4 | a workspace / send the window there | the same | the same |
-| Return, or Ctrl+Alt+T / Q / / | a terminal / close the window / these keys | the same | the same |
+| Tab / Shift+Tab | the applications, the most recent first (held: Tab for the next; ↓, or a second on one, spreads its windows; let go to go there) | the same | the same |
+| ` (above Tab) / Shift+` | the application's other window / the one before | the same | the same |
+| O | every window where it is, until one is chosen | the same | the overview; a click goes in to a window |
+| 1 … 9 / Shift+1 … 9 | a workspace / send the window there (the panel shows 1–4, and 5–9 while used) | the same | the same |
+| Ctrl+← → or PageUp / PageDown (with Shift: the window too) | the workspace before or after | the same | the same |
+| Return, or Ctrl+Alt+T / Q, or Alt+F4 | a terminal / close the window | the same | the same |
+| I / / | the settings / its keys page | the same | the same |
 
-**Super+/** shows these keys, only those that mean something in the
-arrangement you are in. The first time, a line at the bottom says so.
+Every key, as the desktop has it, is in [the generated table](../generated/xdesk-keys.md).
+**Super+/** opens the settings at their keys page: every action by group,
+searched as you type; Enter on one, then the new chord, gives it that chord
+(one another action had is taken from it, and said so); Delete puts it back.
+The keys come as a set — Luban, or Luban without hjkl, for those whose
+applications want those letters — and what you change is kept in
+`~/.config/xdesk/keys.json`. Hold Super a second for the keys used most. The
+first time, a line at the bottom says the five to start with.
 
-Drag a window by its title (or anywhere with Super held): it follows the
-pointer, see-through, and a box shows where it will land — in a column, above
-or below another window, in its place, at the screen's edge (a new first or
-last column; stacked: a half, a quarter, the whole), against another window on
-the canvas (a group). Rest on a new column for a moment and its widths are
-offered (⅓, ½, ⅔, all); let go and it glides there. Shift while dragging: it
-floats where you let go. Drag the gap between two columns to resize both;
-click it twice to make them equal. Rest on the title bar's maximize button for
-the layouts it offers — halves, ⅔ and ⅓, one and two, thirds — of this window
-and the ones used before it; click it to maximize.
+**Super+I** opens the settings: the displays (each window showing the
+desktop, below), the layout (this workspace's arrangement, which way columns
+run, the gaps, the narrowest column, the canvas's minimap and snapping), the
+appearance (the accent, the background, *reduce motion*), the keys, and
+*About* — the system, xdesk, the kernel, the renderer, the displays, CPU and
+memory, the files it keeps, the projects it is made of, and *Copy* for a
+report. A change takes effect at once and is kept in your settings file
+(`~/.config/xdesk/<profile>.ini`). The launcher finds each page by name, and
+so does any launcher through `xdesk-settings.desktop`. Scripts and agents
+use the same through `xdesk msg` (in the desktop):
+
+```bash
+xdesk msg keys list                        # every action, its keys (JSON)
+xdesk msg keys bind maximize Super+Shift+m # and back: xdesk msg keys unbind maximize
+xdesk msg keys set luban-no-hjkl
+xdesk msg settings keys                    # the settings, at that page
+```
+
+**Alt+Tab** shows every window of the workspace where it is to the others,
+scaled to fit the screen (a long tiled row folded into rows), the chosen one
+larger and the rest dimmed: Tab goes by how recently you used them (Shift:
+back), the arrows by place, the pointer by pointing; let Alt go to go there,
+Esc to stay. A quick Alt+Tab goes straight to the window used before, showing
+nothing. Alt+Tab is xdesk's while the window holds the keyboard (Ctrl+Alt+K),
+the host's otherwise. Super+Tab's applications show their icons (a PNG in the
+icon themes) or their initial.
+
+The same gestures in every arrangement:
+
+| | |
+|---|---|
+| drag the title bar, or anywhere with Super held | move the window |
+| Super with the right button, or a border or corner (stacked, floating, canvas) | resize it |
+| drag the background, or the middle button anywhere | pan (tile: scroll the columns; canvas: move the view) |
+| click | focus |
+| click the title bar twice | maximize, and back |
+
+Alt alone is the applications' (Alt+click is theirs); xdesk's chords are on
+Super, and only Alt+Tab, Alt+F4 and Ctrl+Alt+T besides.
+
+A window dragged follows the pointer, see-through; the other windows move to
+where the drop would leave them, and a box shows where it lands — so what you
+see is what you get. Over another window: its first or last quarter puts it
+above or below it in its column, its middle third in its place, the rest a new
+column before or after it; the screen's edge a new first or last column
+(stacked: a half, a quarter, the whole); on the canvas, another window's edge a
+group. A zone holds until the pointer is 12 pixels into the next one. A new
+column's width is said in its box: the wheel or 1–4 picks ⅓, ½, ⅔ or all.
+Shift while dragging: it floats where you let go. Drag the gap between two
+columns, or between two windows of a column, to resize both; click a column
+gap twice to make them equal. A window that draws its own frame is moved and
+resized by it. Rest on the title bar's maximize button for the layouts it
+offers — halves, ⅔ and ⅓, one and two, thirds — of this window and the ones
+used before it; click it to maximize.
 
 The title bar's other button (or its right-click) opens the window's menu:
 maximize or restore, float or put back, always on top, on every workspace, to
@@ -158,15 +230,28 @@ a workspace, and the application's rules — always floating, always on this
 workspace, remember its size and place — kept for next time. A window's title
 bar says its application's name (from its desktop entry), then its own title.
 
-On the canvas, drag the background (or a window with Super) to pan; the wheel
-on the background (or anywhere with Super) zooms around the pointer, so what is
-under it stays put. The overview leaves you exactly where you were.
+On the canvas the zoom is only where you look from: at half size or more the
+windows work as at 100 % (a click goes to the window and the view stays);
+smaller, they are pictures — a click selects one, two clicks (or Super+0) go
+in to it at 100 %. Only Super with the wheel, or Super+= and Super+-, zoom
+(around the pointer, so what is under it stays put); the wheel on the
+background pans (Shift: sideways), and so does dragging it or the middle
+button. A window moved near another lines up with its edge (within 16 pixels,
+the line shown); against its edge it joins its group, the edge lit; Shift
+while moving does neither. A new window goes to the free place nearest the
+focused one, in view if there is one — the view pans to it, it never zooms.
+When the canvas holds more than the view, a minimap at the bottom right shows
+it all and where you are; click it to go there (`[canvas] minimap = off`, and
+`snap = off` for the edges). The overview leaves you exactly where you were.
 
 The input method of the host types into the desktop's windows (what it
 composes is shown there), and the clipboard is shared — each way as far as
 the environment's grants allow: `clipboard` (copying out of it) and
 `clipboard-paste` (pasting into it); an environment made before policies
-shares both. The pointer is the window's to draw (above); for a window that
+shares both. The same holds in a labwc, LXQt or KDE desktop (through
+wlr-data-control). In a terminal — foot, qterminal, Konsole — copy is
+Ctrl+Shift+C and paste Ctrl+Shift+V: Ctrl+C there interrupts the program;
+qterminal and Konsole also have both on their right-click menu. The pointer is the window's to draw (above); for a window that
 does not draw one (an older Luban OS), xdesk draws it into the picture.
 
 ### Sessions and settings
@@ -185,12 +270,22 @@ each later one winning key by key.
 [desktop]
 terminal = foot
 autostart = foot
-gap = 8
-workspaces = 4
+inner_gap = 4          # between windows (gap of before is read as this)
+outer_gap = 0          # between windows and the screen's edges
+min_column_width = 480 # tiled columns share the screen until narrower than this, then scroll
+flow = horizontal      # tiled columns side by side; vertical: one under another
+workspaces = 9         # 1-4 always on the panel, 5-9 while used
+
+[canvas]
+minimap = on
+snap = on
 
 [theme]
 accent = #5e9cff
 background = #1b1e25
+
+[appearance]
+reduce_motion = off    # on: windows go at once, without gliding
 
 [keyboard]
 layout = us        # another xkb layout needs xkeyboard-config

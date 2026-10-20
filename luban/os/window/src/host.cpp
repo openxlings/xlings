@@ -182,7 +182,14 @@ struct Window::Impl {
     std::uint32_t wake_event { 0 };
     bool ctrl_down { false }, alt_down { false }, chord_spoiled { false }, chord_armed { false };
     bool lock_k_held { false };                 // Ctrl+Alt+K's K, kept from the content until it is let go
-    bool grabbed { false };
+    Window::Grab grab { Window::Grab::Released };
+    struct Backdrop { void* texture { nullptr }; float x { 0 }, y { 0 }, w { 0 }, h { 0 }; int tw { 0 }, th { 0 }; };
+    std::optional<Backdrop> backdrop;           // this frame's picture under the interface
+    bool shown { true };                        // the window can be seen (minimized, hidden, covered: not)
+    std::chrono::steady_clock::time_point grab_tried {};
+    bool grab_again { true };                   // a focus change: try at once
+    int grabs_refused { 0 };                    // tests
+    void* x11 { nullptr };                      // libX11, for its answer to a grab
     SDL_Keymod injected_mods { SDL_KMOD_NONE };
     std::deque<std::string> injected_text;      // an SDL text event points at its text until it is taken
     bool imgui { false };                       // its context and backends are up (and to be shut down)
@@ -195,6 +202,8 @@ struct Window::Impl {
 };
 
 std::expected<std::unique_ptr<Window>, std::string> Window::open(const Options& o) {
+    // Held, Alt+Tab is the window's on Windows too (SDL leaves it the host's).
+    SDL_SetHint(SDL_HINT_ALLOW_ALT_TAB_WHILE_GRABBED, "0");
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS)) return std::unexpected(std::format("no display here: {}", SDL_GetError()));
     std::unique_ptr<Window> w(new Window());
     w->impl_ = std::make_unique<Impl>();
@@ -286,6 +295,7 @@ Window::~Window() {
     }
     if (impl_->renderer) SDL_DestroyRenderer(impl_->renderer);
     if (impl_->window) SDL_DestroyWindow(impl_->window);
+    if (impl_->x11) SDL_UnloadObject(static_cast<SDL_SharedObject*>(impl_->x11));
     SDL_Quit();
 }
 
@@ -302,6 +312,7 @@ bool Window::begin_frame(int timeout_ms) {
     host_key_ = false;
     lock_key_ = false;
     auto& im = *impl_;
+    im.backdrop.reset();
     SDL_Event e;
     bool got = SDL_WaitEventTimeout(&e, timeout_ms);
     while (got) {
@@ -328,8 +339,25 @@ bool Window::begin_frame(int timeout_ms) {
             events_.push_back(opensal::DensityChanged{density()});
             break;
         }
-        case SDL_EVENT_WINDOW_FOCUS_GAINED: events_.push_back(opensal::Focus{true}); break;
-        case SDL_EVENT_WINDOW_FOCUS_LOST: events_.push_back(opensal::Focus{false}); im.ctrl_down = im.alt_down = false; break;
+        // Seen or not (design 2026-10-20 §13.2): a desktop draws nothing while not.
+        case SDL_EVENT_WINDOW_MINIMIZED:
+        case SDL_EVENT_WINDOW_HIDDEN:
+        case SDL_EVENT_WINDOW_OCCLUDED:
+            if (std::exchange(im.shown, false)) events_.push_back(opensal::Shown{false});
+            break;
+        case SDL_EVENT_WINDOW_RESTORED:
+        case SDL_EVENT_WINDOW_SHOWN:
+        case SDL_EVENT_WINDOW_EXPOSED:
+            if (!std::exchange(im.shown, true)) events_.push_back(opensal::Shown{true});
+            break;
+        case SDL_EVENT_WINDOW_FOCUS_GAINED: events_.push_back(opensal::Focus{true}); im.grab_again = true; break;
+        case SDL_EVENT_WINDOW_FOCUS_LOST:
+            events_.push_back(opensal::Focus{false});
+            im.ctrl_down = im.alt_down = false;
+            // SDL lets a grab go with the focus; it is asked for again.
+            if (im.grab == Grab::Held) im.grab = Grab::Released;
+            im.grab_again = true;
+            break;
         case SDL_EVENT_KEY_DOWN:
         case SDL_EVENT_KEY_UP: {
             const bool down = e.type == SDL_EVENT_KEY_DOWN;
@@ -404,6 +432,18 @@ void Window::end_frame(bool present) {
     auto* r = impl_->renderer;
     SDL_SetRenderDrawColorFloat(r, 0.075f, 0.082f, 0.098f, 1.0f);
     SDL_RenderClear(r);
+    if (const auto& b = impl_->backdrop; b && b->texture) {
+        // In the renderer's pixels: the interface's coordinates times its framebuffer scale.
+        const auto scale = ImGui::GetIO().DisplayFramebufferScale;
+        float sx = 1, sy = 1;
+        SDL_GetRenderScale(r, &sx, &sy);
+        const SDL_FRect dst{b->x * scale.x / sx, b->y * scale.y / sy, b->w * scale.x / sx, b->h * scale.y / sy};
+        auto* t = static_cast<SDL_Texture*>(b->texture);
+        const bool exact = std::abs(dst.w - static_cast<float>(b->tw)) < 0.5f && std::abs(dst.h - static_cast<float>(b->th)) < 0.5f;
+        SDL_SetTextureScaleMode(t, exact ? SDL_SCALEMODE_NEAREST : SDL_SCALEMODE_LINEAR);
+        SDL_SetTextureBlendMode(t, SDL_BLENDMODE_NONE);
+        SDL_RenderTexture(r, t, nullptr, &dst);
+    }
     ImGui_ImplSDLRenderer3_RenderDrawData(ImGui::GetDrawData(), r);
     SDL_RenderPresent(r);
 }
@@ -416,11 +456,49 @@ std::string Window::renderer() const {
 void Window::set_title(const std::string& title) { SDL_SetWindowTitle(impl_->window, title.c_str()); }
 void Window::set_fullscreen(bool on) { SDL_SetWindowFullscreen(impl_->window, on); }
 bool Window::fullscreen() const { return (SDL_GetWindowFlags(impl_->window) & SDL_WINDOW_FULLSCREEN) != 0; }
-void Window::grab_keyboard(bool on) {
-    SDL_SetWindowKeyboardGrab(impl_->window, on);
-    impl_->grabbed = on;
+Window::Grab Window::grab_keyboard(bool on) {
+    auto& im = *impl_;
+    if (!on) {
+        if (im.grab != Grab::Released || SDL_GetWindowKeyboardGrab(im.window)) SDL_SetWindowKeyboardGrab(im.window, false);
+        im.grab = Grab::Released;
+        im.grab_again = true;   // asked for again, it is tried at once
+        return im.grab;
+    }
+    if (im.grab == Grab::Held) return im.grab;
+    const auto now = std::chrono::steady_clock::now();
+    if (!im.grab_again && now - im.grab_tried < std::chrono::milliseconds(500)) return im.grab;
+    im.grab_tried = now;
+    im.grab_again = false;
+    if (im.grabs_refused > 0) {
+        --im.grabs_refused;
+        return im.grab = Grab::HeldByAnother;
+    }
+    if (!SDL_SetWindowKeyboardGrab(im.window, true)) return im.grab = Grab::Refused;
+    // X11: XGrabKeyboard's own answer (SDL issues it and drops the answer).
+    // Asked again by the client that holds it, it answers GrabSuccess.
+    if (std::string_view(SDL_GetCurrentVideoDriver() ? SDL_GetCurrentVideoDriver() : "") == "x11") {
+        if (!im.x11) im.x11 = SDL_LoadObject("libX11.so.6");
+        using GrabFn = int (*)(void*, unsigned long, int, int, int, unsigned long);
+        const auto grab = im.x11 ? reinterpret_cast<GrabFn>(SDL_LoadFunction(static_cast<SDL_SharedObject*>(im.x11), "XGrabKeyboard"))
+                                 : nullptr;
+        const auto props = SDL_GetWindowProperties(im.window);
+        auto* display = SDL_GetPointerProperty(props, SDL_PROP_WINDOW_X11_DISPLAY_POINTER, nullptr);
+        const auto xwindow = static_cast<unsigned long>(SDL_GetNumberProperty(props, SDL_PROP_WINDOW_X11_WINDOW_NUMBER, 0));
+        if (grab && display && xwindow) {
+            // True (owner events), GrabModeAsync twice, CurrentTime.
+            const int answer = grab(display, xwindow, 1, 1, 1, 0);
+            if (answer != 0) {
+                SDL_SetWindowKeyboardGrab(im.window, false);
+                // AlreadyGrabbed, GrabInvalidTime, GrabNotViewable, GrabFrozen.
+                return im.grab = answer == 3 ? Grab::NotShown : answer == 1 || answer == 4 ? Grab::HeldByAnother : Grab::Refused;
+            }
+        }
+    }
+    return im.grab = Grab::Held;
 }
-bool Window::keyboard_grabbed() const { return impl_->grabbed; }
+Window::Grab Window::keyboard_grab() const { return impl_->grab; }
+bool Window::keyboard_grabbed() const { return impl_->grab == Grab::Held; }
+void Window::refuse_grabs(int times) { impl_->grabs_refused = times; }
 void Window::lock_pointer(bool on) { SDL_SetWindowRelativeMouseMode(impl_->window, on); }
 bool Window::pointer_locked() const { return SDL_GetWindowRelativeMouseMode(impl_->window); }
 
@@ -476,6 +554,10 @@ void Window::update(Texture& t, const opensal::Rect& r, std::string_view rows) {
     if (!t.handle) return;
     SDL_Rect rect{r.x, r.y, static_cast<int>(r.width), static_cast<int>(r.height)};
     SDL_UpdateTexture(static_cast<SDL_Texture*>(t.handle), &rect, rows.data(), static_cast<int>(r.width) * 4);
+}
+
+void Window::backdrop(const Texture& t, float x, float y, float w, float h) {
+    impl_->backdrop = Impl::Backdrop{t.handle, x, y, w, h, t.width, t.height};
 }
 
 void Window::destroy(Texture& t) {
@@ -612,10 +694,36 @@ void Window::inject_close() {
     SDL_PushEvent(&e);
 }
 
+void Window::inject_shown(bool shown) {
+    SDL_Event e{};
+    e.type = shown ? SDL_EVENT_WINDOW_RESTORED : SDL_EVENT_WINDOW_MINIMIZED;
+    e.window.windowID = SDL_GetWindowID(impl_->window);
+    SDL_PushEvent(&e);
+}
+
 void Window::set_size(int width, int height) {
     SDL_SetWindowSize(impl_->window, width, height);
     SDL_SyncWindow(impl_->window);
 }
+
+void Window::keep_shape(int width, int height) {
+    if (width <= 0 || height <= 0) return;
+    auto* win = impl_->window;
+    const double density = std::max(0.5, pixel_density());
+    double w = width / density, h = height / density;
+    SDL_Rect usable{};
+    if (SDL_GetDisplayUsableBounds(SDL_GetDisplayForWindow(win), &usable) && usable.w > 0 && usable.h > 0) {
+        const double k = std::min({1.0, usable.w * 0.95 / w, usable.h * 0.95 / h});
+        w *= k;
+        h *= k;
+    }
+    if (!(SDL_GetWindowFlags(win) & (SDL_WINDOW_MAXIMIZED | SDL_WINDOW_FULLSCREEN)))
+        SDL_SetWindowSize(win, static_cast<int>(std::lround(w)), static_cast<int>(std::lround(h)));
+    const float aspect = static_cast<float>(width) / static_cast<float>(height);
+    SDL_SetWindowAspectRatio(win, aspect, aspect);
+}
+
+void Window::free_shape() { SDL_SetWindowAspectRatio(impl_->window, 0.0f, 0.0f); }
 
 std::string Window::title() const {
     const char* t = SDL_GetWindowTitle(impl_->window);

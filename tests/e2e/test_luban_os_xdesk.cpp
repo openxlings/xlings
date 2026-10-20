@@ -14,18 +14,9 @@ namespace fs = std::filesystem;
 using Json = nlohmann::json;
 
 #include "luban_os_support.hpp"
+#include "xdesk_support.hpp"
 
 using namespace luban_os_e2e;
-
-// xdesk (luban/xdesk/app), built beside the app; XDESK_BIN names another.
-std::optional<fs::path> xdesk_binary() {
-    if (const char* forced = std::getenv("XDESK_BIN"); forced && *forced) return fs::path(forced);
-    const auto app = app_binary();
-    if (!app) return std::nullopt;
-    for (const auto& c : {app->parent_path() / "xdesk", app->parent_path().parent_path() / "xdesk-app" / "xdesk"})
-        if (fs::is_regular_file(c)) return c;
-    return std::nullopt;
-}
 
 XTEST(LubanOs, XdeskIsADesktopAtTheWindowsSize, .area = "luban",
       .covers = {"XDESK-COMPOSITOR", "LUBAN-OS-INTERACTION"}, .requires_ = {"linux", "xlings-bin"}) {
@@ -67,172 +58,6 @@ state {}
     }
 }
 
-// A Wayland client in one colour (xdg-shell over the plain wire, its pixels
-// in shared memory), so where xdesk puts a window is read off the picture;
-// with --log it also takes text (text-input-v3) and the clipboard, and says
-// what it got.
-fs::path colour_client(const tk::Home& home) {
-    const auto file = home.root() / "client.py";
-    tk::write_file(file, R"PY(# A Wayland client in one colour: xdg-shell over the plain wire, its pixels
-# in shared memory. Closes when asked. argv: RRGGBB [--log FILE] [--copy TEXT] [--cursor 1]
-#   --log   text-input-v3 on: what is committed, and the selection it is
-#           offered, written to FILE ("commit <text>", "paste <text>")
-#   --copy  then its own selection: TEXT
-#   --cursor  its own pointer over it: 8x8 in its colour, hotspot (3, 4)
-#   --app-id  its application id
-import os, socket, struct, sys, mmap, tempfile, array
-colour = int(sys.argv[1], 16)
-opts = dict(zip(sys.argv[2::2], sys.argv[3::2]))
-log = open(opts["--log"], "a", buffering=1) if "--log" in opts else None
-copy = opts.get("--copy")
-cursor = "--cursor" in opts
-sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-sock.connect(os.path.join(os.environ["XDG_RUNTIME_DIR"], os.environ["WAYLAND_DISPLAY"]))
-next_id = [2]
-def new():
-    i = next_id[0]; next_id[0] += 1; return i
-def string(s):
-    b = s.encode() + b"\0"
-    return struct.pack("<I", len(b)) + b + b"\0" * (-len(b) % 4)
-def read_string(body):
-    n, = struct.unpack("<I", body[:4])
-    return body[4:4 + n - 1].decode(errors="replace") if n else None, body[4 + n + (-n % 4):]
-def send(obj, op, args=b"", fds=()):
-    msg = struct.pack("<II", obj, ((8 + len(args)) << 16) | op) + args
-    if fds: sock.sendmsg([msg], [(socket.SOL_SOCKET, socket.SCM_RIGHTS, struct.pack("<%di" % len(fds), *fds))])
-    else: sock.sendall(msg)
-buf = b""
-fds = []
-def events():
-    global buf
-    while True:
-        while len(buf) >= 8:
-            obj, word = struct.unpack("<II", buf[:8])
-            size, op = word >> 16, word & 0xffff
-            if len(buf) < size: break
-            body, buf = buf[8:size], buf[size:]
-            yield obj, op, body
-        data, anc, _, _ = sock.recvmsg(65536, socket.CMSG_SPACE(16 * 4))
-        for level, kind, payload in anc:
-            if level == socket.SOL_SOCKET and kind == socket.SCM_RIGHTS:
-                a = array.array("i"); a.frombytes(payload[:len(payload) - len(payload) % 4]); fds.extend(a)
-        if not data: return
-        buf += data
-it = events()
-registry = new(); send(1, 1, struct.pack("<I", registry))
-sync = new(); send(1, 0, struct.pack("<I", sync))
-globals_ = {}
-for obj, op, body in it:
-    if obj == registry and op == 0:
-        name, = struct.unpack("<I", body[:4]); iface, rest = read_string(body[4:])
-        globals_[iface] = (name, struct.unpack("<I", rest[:4])[0])
-    elif obj == sync: break
-def bind(iface, ver):
-    name, have = globals_[iface]; i = new()
-    send(registry, 0, struct.pack("<I", name) + string(iface) + struct.pack("<II", min(ver, have), i))
-    return i
-compositor, shm, wm = bind("wl_compositor", 4), bind("wl_shm", 1), bind("xdg_wm_base", 1)
-surface = new(); send(compositor, 0, struct.pack("<I", surface))
-xdg_surface = new(); send(wm, 2, struct.pack("<II", xdg_surface, surface))
-toplevel = new(); send(xdg_surface, 1, struct.pack("<I", toplevel))
-send(toplevel, 2, string(sys.argv[1]))                      # set_title
-if "--app-id" in opts: send(toplevel, 3, string(opts["--app-id"]))   # set_app_id
-keyboard = text = device = source = pointer = cursor_surface = None
-seat = bind("wl_seat", 5) if log or cursor else None
-if cursor:
-    pointer = new(); send(seat, 0, struct.pack("<I", pointer))              # get_pointer
-    cursor_surface = new(); send(compositor, 0, struct.pack("<I", cursor_surface))
-if log:
-    keyboard = new(); send(seat, 1, struct.pack("<I", keyboard))            # get_keyboard
-    inputs = bind("zwp_text_input_manager_v3", 1)                         # ids in the order they are sent
-    text = new(); send(inputs, 1, struct.pack("<II", text, seat))
-    manager = bind("wl_data_device_manager", 3)
-    device = new(); send(manager, 1, struct.pack("<II", device, seat))     # get_data_device
-send(surface, 6)                                             # commit
-size = (0, 0); drawn = None; offers = {}; pasted = False; enter_serial = 0
-def draw(w, h, on=None):
-    on = on or surface
-    stride = w * 4
-    f = tempfile.TemporaryFile()          # unlinked: memory the compositor maps
-    fd = f.fileno()
-    os.ftruncate(fd, stride * h)
-    with mmap.mmap(fd, stride * h) as m:
-        m.write(struct.pack("<I", 0xff000000 | colour) * (w * h))
-    pool = new(); send(shm, 0, struct.pack("<Ii", pool, stride * h), [fd])
-    buffer = new(); send(pool, 0, struct.pack("<IiiiiI", buffer, 0, w, h, stride, 1))
-    f.close()
-    send(on, 1, struct.pack("<Iii", buffer, 0, 0))          # attach
-    send(on, 2, struct.pack("<iiii", 0, 0, w, h))           # damage
-    send(on, 6)
-for obj, op, body in it:
-    if obj == toplevel and op == 0:
-        w, h = struct.unpack("<ii", body[:8]); size = (w or 400, h or 300)
-    elif obj == toplevel and op == 1:
-        break                                                # close
-    elif obj == xdg_surface and op == 0:
-        send(xdg_surface, 4, body[:4])                       # ack_configure
-        if size != drawn: draw(*size); drawn = size
-    elif obj == wm and op == 0:
-        send(wm, 3, body[:4])                                # pong
-    elif obj == pointer and op == 0:                         # enter: its own pointer
-        serial, = struct.unpack("<I", body[:4])
-        send(pointer, 0, struct.pack("<IIii", serial, cursor_surface, 3, 4))   # set_cursor
-        draw(8, 8, cursor_surface)
-    elif obj == keyboard and op == 0:
-        os.close(fds.pop(0))                                 # the keymap: not needed
-    elif obj == keyboard and op == 1:
-        enter_serial, = struct.unpack("<I", body[:4])
-    elif obj == text and op == 0:                            # enter: on, a caret at 20,30
-        send(text, 1); send(text, 6, struct.pack("<iiii", 20, 30, 2, 18)); send(text, 7)
-    elif obj == text and op == 3:
-        s, _ = read_string(body)
-        if s: log.write("commit %s\n" % s)
-    elif obj == text and op == 5:
-        send(text, 7)                                        # done: commit the state again
-    elif obj == device and op == 0:
-        offers[struct.unpack("<I", body[:4])[0]] = []        # data_offer
-    elif obj in offers and op == 0:
-        offers[obj].append(read_string(body)[0])             # offer: a mime type
-    elif obj == device and op == 5:                          # selection
-        offer, = struct.unpack("<I", body[:4])
-        if offer and not pasted and "text/plain;charset=utf-8" in offers.get(offer, []):
-            r, w = os.pipe()
-            send(offer, 1, string("text/plain;charset=utf-8"), [w]); os.close(w)
-            got = b""
-            while True:
-                chunk = os.read(r, 65536)
-                if not chunk: break
-                got += chunk
-            os.close(r)
-            log.write("paste %s\n" % got.decode(errors="replace"))
-            pasted = True
-            if copy:
-                source = new(); send(manager, 0, struct.pack("<I", source))
-                send(source, 0, string("text/plain;charset=utf-8"))
-                send(device, 1, struct.pack("<II", source, enter_serial))
-    elif obj == source and op == 1:                          # send: the text into the fd
-        read_string(body)                                    # the mime type: there is one
-        fd = fds.pop(0); os.write(fd, copy.encode()); os.close(fd)
-)PY");
-    return file;
-}
-
-tk::RunResult xdesk_with(const tk::Home& home, std::string_view profile, std::string_view script) {
-    const auto runtime = home.root() / "run";
-    fs::create_directories(runtime);
-    fs::permissions(runtime, fs::perms::owner_all, fs::perm_options::replace);
-    const auto client = colour_client(home).string();
-    // Three windows, one after the other: red, green, blue.
-    return run_script(home, script,
-                      {"--desktop-exec", xdesk_binary()->string(), "--profile", std::string(profile),
-                       "--autostart", std::format("python3 {} c04040", client),
-                       "--autostart", std::format("sh -c 'sleep 0.6; exec python3 {} 40c040'", client),
-                       "--autostart", std::format("sh -c 'sleep 1.2; exec python3 {} 4040c0'", client)},
-                      {{"XDG_RUNTIME_DIR", runtime.string()}});
-}
-
-constexpr std::array<int, 3> kRed { 0xc0, 0x40, 0x40 }, kGreen { 0x40, 0xc0, 0x40 }, kBlue { 0x40, 0x40, 0xc0 };
-
 XTEST(LubanOs, XdeskClassicTilesWindowsAndScrollsToTheFocusedOne, .area = "luban",
       .covers = {"XDESK-COMPOSITOR", "XDESK-LAYOUT"}, .requires_ = {"linux", "xlings-bin"}) {
     if (!app_binary()) GTEST_SKIP() << "no luban-os beside the xlings under test";
@@ -245,8 +70,8 @@ waitfor desktop.texture.0 1100
 sleep 3000
 screenshot {}
 screenshot {}
-key Alt+Left
-key Alt+Left
+key Super+Left
+key Super+Left
 sleep 1000
 screenshot {}
 )", three.string(), artifact("xdesk-classic-three.bmp").string(), left.string()));
@@ -261,24 +86,166 @@ screenshot {}
     EXPECT_EQ(b.at(825, 400), kGreen);
 }
 
-XTEST(LubanOs, XdeskCanvasShowsEveryWindowInItsOverviewAndAClickGoesIn, .area = "luban",
-      .covers = {"XDESK-COMPOSITOR", "XDESK-LAYOUT"}, .requires_ = {"linux", "xlings-bin"}) {
+// A stacked window is resized by Super with the right button anywhere, and
+// by its border (design 2026-10-20 §8, G10: it could not be).
+XTEST(LubanOs, XdeskStackedWindowsResizeBySuperRightDragAndByTheirBorders, .area = "luban",
+      .covers = {"XDESK-RESIZE"}, .requires_ = {"linux", "xlings-bin"}) {
+    if (!app_binary()) GTEST_SKIP() << "no luban-os beside the xlings under test";
+    if (!xdesk_binary()) GTEST_SKIP() << "no xdesk beside luban-os (mcpp build -p xdesk-app)";
+    auto home = tk::Home::isolated("luban-os-xdesk-resize");
+    ASSERT_EQ(home.xlings({"self", "init"}).exit_code, 0);
+    const auto runtime = home.root() / "run";
+    fs::create_directories(runtime);
+    fs::permissions(runtime, fs::perms::owner_all, fs::perm_options::replace);
+    tk::write_file(home.root() / ".config" / "xdesk" / "state.json", R"({"arrangements":["stack"]})");
+    const auto client = colour_client(home).string();
+    const auto before = home.root() / "before.ppm", corner = home.root() / "corner.ppm", border = home.root() / "border.ppm";
+    auto r = run_script(home, std::format(R"(wait desktop
+waitfor desktop.texture.0 1100
+sleep 2500
+screenshot {}
+keydown Super
+press 600 400 right
+move 650 410
+move 700 420
+release 700 420 right
+keyup Super
+sleep 800
+screenshot {}
+)", before.string(), corner.string()),
+                        {"--desktop-exec", xdesk_binary()->string(), "--profile", "xdesk",
+                         "--autostart", std::format("python3 {} c04040", client)},
+                        {{"XDG_RUNTIME_DIR", runtime.string()}});
+    ASSERT_EQ(r.exit_code, 0) << r.transcript();
+    const auto a = box_of(read_ppm(before), kRed), b = box_of(read_ppm(corner), kRed);
+    ASSERT_GE(a[0], 0) << "no red window";
+    // Pressed right of and below its middle: the bottom-right corner follows.
+    EXPECT_EQ(b[0], a[0]);
+    EXPECT_EQ(b[1], a[1]);
+    EXPECT_NEAR(b[2] - a[2], 100, 2);
+    EXPECT_NEAR(b[3] - a[3], 20, 2);
+    // Its left border, dragged 80 to the left: 80 wider, the right edge kept.
+    r = run_script(home, std::format(R"(wait desktop
+waitfor desktop.texture.0 1100
+sleep 2500
+screenshot {}
+press {} {}
+move {} {}
+move {} {}
+release {} {}
+sleep 800
+screenshot {}
+)", before.string(), a[0] + 2, (a[1] + a[3]) / 2, a[0] - 40, (a[1] + a[3]) / 2, a[0] - 78, (a[1] + a[3]) / 2, a[0] - 78,
+                                          (a[1] + a[3]) / 2, border.string()),
+                   {"--desktop-exec", xdesk_binary()->string(), "--profile", "xdesk",
+                    "--autostart", std::format("python3 {} c04040", client)},
+                   {{"XDG_RUNTIME_DIR", runtime.string()}});
+    ASSERT_EQ(r.exit_code, 0) << r.transcript();
+    const auto c = box_of(read_ppm(before), kRed), d = box_of(read_ppm(border), kRed);
+    EXPECT_NEAR(c[0] - d[0], 80, 2) << "the left border followed the pointer";
+    EXPECT_EQ(d[2], c[2]) << "the right edge stayed";
+}
+
+// The canvas's zoom is a view (design 2026-10-20 §9.1, G11): at 91 % a
+// click reaches the window, in its own coordinates, and the view stays.
+XTEST(LubanOs, XdeskCanvasZoomedWindowsTakeClicksAndTheViewStays, .area = "luban",
+      .covers = {"XDESK-CANVAS"}, .requires_ = {"linux", "xlings-bin"}) {
+    if (!app_binary()) GTEST_SKIP() << "no luban-os beside the xlings under test";
+    if (!xdesk_binary()) GTEST_SKIP() << "no xdesk beside luban-os (mcpp build -p xdesk-app)";
+    auto home = tk::Home::isolated("luban-os-xdesk-canvas-zoom");
+    ASSERT_EQ(home.xlings({"self", "init"}).exit_code, 0);
+    const auto runtime = home.root() / "run";
+    fs::create_directories(runtime);
+    fs::permissions(runtime, fs::perms::owner_all, fs::perm_options::replace);
+    const auto client = colour_client(home).string();
+    const auto log = home.root() / "client.log", zoomed = home.root() / "zoomed.ppm", after = home.root() / "after.ppm";
+    tk::write_file(log, "");
+    auto r = run_script(home, std::format(R"(wait desktop
+waitfor desktop.texture.0 1100
+sleep 2500
+key Super+-
+sleep 800
+screenshot {}
+click 550 400
+sleep 800
+screenshot {}
+)", zoomed.string(), after.string()),
+                        {"--desktop-exec", xdesk_binary()->string(), "--profile", "canvas",
+                         "--autostart", std::format("python3 {} c04040 --log {}", client, log.string())},
+                        {{"XDG_RUNTIME_DIR", runtime.string()}});
+    ASSERT_EQ(r.exit_code, 0) << r.transcript();
+    const auto a = box_of(read_ppm(zoomed), kRed), b = box_of(read_ppm(after), kRed);
+    ASSERT_GE(a[0], 0) << "no red window";
+    EXPECT_EQ(a, b) << "a click changes nothing of the view";
+    const auto said = tk::read_file(log);
+    EXPECT_NE(said.find("button 272"), std::string::npos) << "the window got the click\n" << said;
+    // In its own coordinates: the point clicked, unzoomed (1 / 0.909).
+    std::istringstream in(said.substr(said.find("button 272")));
+    std::string word;
+    int code = 0;
+    double x = 0, y = 0;
+    in >> word >> code >> word >> x >> y;
+    EXPECT_NEAR(x, (550 - a[0]) * 1.1, 6) << said;
+}
+
+// A client that draws to whole cells (foot) is told it is tiled and takes
+// the size given (design 2026-10-20 §7.1, G4): side by side, two such windows
+// are the gap apart -- 4 pixels -- with nothing of their own between.
+XTEST(LubanOs, XdeskTiledClientsTakeTheirSizeAndSitTheGapApart, .area = "luban",
+      .covers = {"XDESK-TILE-SIZES"}, .requires_ = {"linux", "xlings-bin"}) {
+    if (!app_binary()) GTEST_SKIP() << "no luban-os beside the xlings under test";
+    if (!xdesk_binary()) GTEST_SKIP() << "no xdesk beside luban-os (mcpp build -p xdesk-app)";
+    auto home = tk::Home::isolated("luban-os-xdesk-cells");
+    ASSERT_EQ(home.xlings({"self", "init"}).exit_code, 0);
+    const auto runtime = home.root() / "run";
+    fs::create_directories(runtime);
+    fs::permissions(runtime, fs::perms::owner_all, fs::perm_options::replace);
+    const auto client = colour_client(home).string();
+    const auto two = home.root() / "two.ppm";
+    auto r = run_script(home, std::format(R"(wait desktop
+waitfor desktop.texture.0 1100
+sleep 2500
+screenshot {}
+)", two.string()),
+                        {"--desktop-exec", xdesk_binary()->string(), "--profile", "classic",
+                         "--autostart", std::format("python3 {} c04040 --cells 9x19", client),
+                         "--autostart", std::format("sh -c 'sleep 0.6; exec python3 {} 40c040 --cells 9x19'", client)},
+                        {{"XDG_RUNTIME_DIR", runtime.string()}});
+    ASSERT_EQ(r.exit_code, 0) << r.transcript();
+    const auto img = read_ppm(two);
+    const int y = 400;
+    int red_end = -1, green_start = -1;
+    for (int x = 0; x < img.width; ++x) {
+        if (img.at(x, y) == kRed) red_end = x;
+        if (img.at(x, y) == kGreen && green_start < 0) green_start = x;
+    }
+    ASSERT_GE(red_end, 0) << "no red window at row " << y;
+    ASSERT_GT(green_start, red_end) << "no green window right of it";
+    EXPECT_EQ(green_start - red_end - 1, 4) << "between them only the gap (a short client left its own strip)";
+}
+
+XTEST(LubanOs, XdeskCanvasShowsEveryWindowInItsOverviewAClickSelectsTwiceGoesIn, .area = "luban",
+      .covers = {"XDESK-COMPOSITOR", "XDESK-LAYOUT", "XDESK-CANVAS"}, .requires_ = {"linux", "xlings-bin"}) {
     if (!app_binary()) GTEST_SKIP() << "no luban-os beside the xlings under test";
     if (!xdesk_binary()) GTEST_SKIP() << "no xdesk beside luban-os (mcpp build -p xdesk-app)";
     auto home = tk::Home::isolated("luban-os-xdesk-canvas");
     ASSERT_EQ(home.xlings({"self", "init"}).exit_code, 0);
-    const auto all = home.root() / "overview.ppm", in = home.root() / "in.ppm";
+    const auto all = home.root() / "overview.ppm", once = home.root() / "once.ppm", in = home.root() / "in.ppm";
     auto r = xdesk_with(home, "canvas", std::format(R"(wait desktop
 waitfor desktop.texture.0 1100
 sleep 3000
-key Alt+o
+key Super+o
 sleep 1000
 screenshot {}
 screenshot {}
 click desktop
 sleep 1000
 screenshot {}
-)", all.string(), artifact("xdesk-canvas-overview.bmp").string(), in.string()));
+click desktop
+click desktop
+sleep 1000
+screenshot {}
+)", all.string(), artifact("xdesk-canvas-overview.bmp").string(), once.string(), in.string()));
     ASSERT_EQ(r.exit_code, 0) << r.transcript();
     // Zoomed out: the three side by side, the middle one in the middle.
     const auto a = read_ppm(all);
@@ -286,7 +253,10 @@ screenshot {}
     for (int x = 0; x < 1100; x += 10) seen.insert(a.at(x, 350));
     EXPECT_TRUE(seen.contains(kRed) && seen.contains(kGreen) && seen.contains(kBlue));
     EXPECT_EQ(a.at(550, 350), kGreen);
-    // A click on it: back to 1, it in the middle of the view.
+    // One click selects it: the view stays (design 2026-10-20 §9.1, G11).
+    EXPECT_NE(read_ppm(once).at(150, 350), kGreen) << "a click does not zoom in";
+    EXPECT_EQ(read_ppm(once).at(550, 350), kGreen);
+    // Twice: back to 1, it in the middle of the view.
     const auto b = read_ppm(in);
     EXPECT_EQ(b.at(550, 350), kGreen);
     EXPECT_EQ(b.at(150, 350), kGreen) << "still zoomed out (it is as wide as it was made)";
@@ -307,19 +277,19 @@ XTEST(LubanOs, XdeskSwitchesArrangementsAndComesBackToTheSameLayout, .area = "lu
     auto r = xdesk_with(home, "classic", std::format(R"(wait desktop
 waitfor desktop.texture.0 1100
 sleep 3000
-key Alt+[
+key Super+[
 sleep 1000
 screenshot {}
-key Alt+m
+key Super+m
 sleep 500
-key Alt+f
+key Super+f
 sleep 1000
 screenshot {}
-key Alt+f
+key Super+f
 sleep 500
-key Alt+m
+key Super+m
 sleep 500
-key Alt+m
+key Super+m
 sleep 1000
 screenshot {}
 screenshot {}
@@ -432,13 +402,13 @@ XTEST(LubanOs, XdeskChoosesArrangementsHeldWithSuperAndKeepsThem, .area = "luban
     auto r = session(std::format(R"(wait desktop
 waitfor desktop.texture.0 1100
 sleep 2500
-keydown Alt
+keydown Super
 key m
 sleep 800
 screenshot {}
 screenshot {}
 key m
-keyup Alt
+keyup Super
 sleep 800
 )", held.string(), artifact("xdesk-chooser.bmp").string()));
     ASSERT_EQ(r.exit_code, 0) << r.transcript();
@@ -449,7 +419,7 @@ sleep 800
     r = session(R"(wait desktop
 waitfor desktop.texture.0 1100
 sleep 1500
-key Alt+m
+key Super+m
 sleep 800
 )");
     ASSERT_EQ(r.exit_code, 0) << r.transcript();
@@ -459,7 +429,7 @@ sleep 800
     r = session(R"(wait desktop
 waitfor desktop.texture.0 1100
 sleep 1500
-key Alt+m
+key Super+m
 sleep 800
 )");
     ASSERT_EQ(r.exit_code, 0) << r.transcript();
@@ -506,7 +476,7 @@ screenshot {}
 waitfor desktop.texture.0 1100
 sleep 2500
 screenshot {}
-key Alt+2
+key Super+2
 sleep 1000
 screenshot {}
 )", one.string(), two.string()),
@@ -552,6 +522,8 @@ screenshot {}
     ASSERT_EQ(r.exit_code, 0) << r.transcript();
     // While dragged: green's top half shows where red would go (the accent over green).
     EXPECT_NE(read_ppm(during).at(1000, 250), kGreen) << "a preview over the top of green";
+    // And green already where the drop leaves it: the whole width, below (design 2026-10-20 §7.5, G6).
+    EXPECT_EQ(read_ppm(during).at(300, 600), kGreen) << "the others move to where the drop leaves them";
     // Let go: one column, red above green.
     const auto a = read_ppm(after);
     EXPECT_EQ(a.at(550, 200), kRed);
@@ -576,7 +548,7 @@ XTEST(LubanOs, XdeskLauncherStartsWhatIsTypedAndThePanelSwitchesWorkspaces, .are
     auto r = run_script(home, std::format(R"(wait desktop
 waitfor desktop.texture.0 1100
 sleep 500
-key Alt+space
+key Super+space
 sleep 300
 type gree
 sleep 300
@@ -691,4 +663,322 @@ screenshot {}
     EXPECT_EQ(a.at(550, 400), kRed);                                 // the window, at the window's size
     EXPECT_NE(a.at(550, 15), (std::array<int, 3>{0x1b, 0x1e, 0x25})) << "no panel across the top";
     EXPECT_NE(read_ppm(closed).at(550, 400), kRed) << "the click did not reach the close button";
+}
+
+namespace {
+// A window of a colour on the picture, dimmed or not: a good part of it
+// with its hue's channel well above the others (not a ring or a tile of the accent).
+bool tinted_(const Image& img, int channel) {
+    int n = 0;
+    for (int y = 0; y < img.height; y += 4)
+        for (int x = 0; x < img.width; x += 4) {
+            const auto c = img.at(x, y);
+            const int other = std::max(c[(channel + 1) % 3], c[(channel + 2) % 3]);
+            if (c[channel] > other + 60) ++n;
+        }
+    return n > 1500;
+}
+}  // namespace
+
+// Alt+Tab (design 2026-10-20 §10.2): a quick press is the previous window,
+// nothing shown; held, every window of the workspace where it is to the
+// others, fitted, the chosen one as it is and the rest dimmed; Tab by
+// recency, and letting Alt go focuses it, the windows back in their places.
+XTEST(LubanOs, XdeskAltTabGoesBackQuicklyAndHeldShowsEveryWindowWhereItIs, .area = "luban",
+      .covers = {"XDESK-SWITCHERS"}, .requires_ = {"linux", "xlings-bin"}) {
+    if (!app_binary()) GTEST_SKIP() << "no luban-os beside the xlings under test";
+    if (!xdesk_binary()) GTEST_SKIP() << "no xdesk beside luban-os (mcpp build -p xdesk-app)";
+    auto home = tk::Home::isolated("luban-os-xdesk-alt-tab");
+    ASSERT_EQ(home.xlings({"self", "init"}).exit_code, 0);
+    const auto quick = home.root() / "quick.ppm", spread = home.root() / "spread.ppm", chosen = home.root() / "chosen.ppm";
+    auto r = xdesk_with(home, "classic", std::format(R"(wait desktop
+waitfor desktop.texture.0 1100
+sleep 3000
+key Alt+Tab
+sleep 600
+key Super+Left
+sleep 1000
+screenshot {}
+keydown Alt
+key Tab
+sleep 1000
+screenshot {}
+screenshot {}
+key Tab
+keyup Alt
+sleep 1200
+screenshot {}
+)", quick.string(), spread.string(), artifact("xdesk-alt-tab.bmp").string(), chosen.string()));
+    ASSERT_EQ(r.exit_code, 0) << r.transcript();
+    // Blue was focused; Alt+Tab went to green, and left of green is red.
+    const auto a = read_ppm(quick);
+    EXPECT_EQ(a.at(275, 400), kRed);
+    EXPECT_EQ(a.at(825, 400), kGreen);
+    // Held: green (the one before red) as it is, smaller than its column;
+    // red and blue there too, dimmed.
+    const auto b = read_ppm(spread);
+    const auto g = box_of(b, kGreen);
+    ASSERT_GE(g[0], 0) << "the chosen window is shown as it is";
+    EXPECT_LT(g[2] - g[0], 540) << "fitted: smaller than its column";
+    EXPECT_TRUE(tinted_(b, 0)) << "red shown";
+    EXPECT_TRUE(tinted_(b, 2)) << "blue shown";
+    EXPECT_EQ(box_of(b, kRed)[0], -1) << "the others dimmed";
+    // Tab: blue; Alt let go: blue focused, the strip scrolled to it.
+    const auto c = read_ppm(chosen);
+    EXPECT_EQ(c.at(275, 400), kGreen);
+    EXPECT_EQ(c.at(825, 400), kBlue);
+}
+
+// Super+Tab by application (design 2026-10-20 §10.1): a press goes to the
+// application used before, its most recent window; Super+` to the
+// application's other window; held on one, its windows are spread below,
+// the others not shown, and an arrow chooses among them.
+XTEST(LubanOs, XdeskSuperTabGoesByApplicationAndSpreadsItsWindows, .area = "luban",
+      .covers = {"XDESK-SWITCHERS"}, .requires_ = {"linux", "xlings-bin"}) {
+    if (!app_binary()) GTEST_SKIP() << "no luban-os beside the xlings under test";
+    if (!xdesk_binary()) GTEST_SKIP() << "no xdesk beside luban-os (mcpp build -p xdesk-app)";
+    auto home = tk::Home::isolated("luban-os-xdesk-super-tab");
+    ASSERT_EQ(home.xlings({"self", "init"}).exit_code, 0);
+    const auto runtime = home.root() / "run";
+    fs::create_directories(runtime);
+    fs::permissions(runtime, fs::perms::owner_all, fs::perm_options::replace);
+    const auto client = colour_client(home).string();
+    const auto byapp = home.root() / "byapp.ppm", other = home.root() / "other.ppm", open = home.root() / "open.ppm",
+               chosen = home.root() / "chosen.ppm";
+    // Red and green are one application's, blue another's.
+    auto r = run_script(home, std::format(R"(wait desktop
+waitfor desktop.texture.0 1100
+sleep 3000
+key Super+Tab
+sleep 600
+key Super+Left
+sleep 1000
+screenshot {}
+key Super+`
+sleep 400
+key Super+Right
+sleep 1000
+screenshot {}
+keydown Super
+key Tab
+sleep 1800
+screenshot {}
+screenshot {}
+key Left
+keyup Super
+sleep 1200
+screenshot {}
+)", byapp.string(), other.string(), open.string(), artifact("xdesk-super-tab.bmp").string(), chosen.string()),
+                        {"--desktop-exec", xdesk_binary()->string(), "--profile", "classic",
+                         "--autostart", std::format("python3 {} c04040 --app-id term", client),
+                         "--autostart", std::format("sh -c 'sleep 0.6; exec python3 {} 40c040 --app-id term'", client),
+                         "--autostart", std::format("sh -c 'sleep 1.2; exec python3 {} 4040c0 --app-id files'", client)},
+                        {{"XDG_RUNTIME_DIR", runtime.string()}});
+    ASSERT_EQ(r.exit_code, 0) << r.transcript();
+    // From blue (files) to term's most recent, green; left of it, red.
+    const auto a = read_ppm(byapp);
+    EXPECT_EQ(a.at(275, 400), kRed);
+    EXPECT_EQ(a.at(825, 400), kGreen);
+    // Super+`: from red to term's other window, green; right of it, blue.
+    const auto b = read_ppm(other);
+    EXPECT_EQ(b.at(275, 400), kGreen);
+    EXPECT_EQ(b.at(825, 400), kBlue);
+    // Held on term: green and red spread below the row, blue not shown.
+    const auto c = read_ppm(open);
+    EXPECT_GE(box_of(c, kGreen)[0], 0) << "term's most recent window, as it is";
+    EXPECT_TRUE(tinted_(c, 0)) << "term's other window";
+    EXPECT_FALSE(tinted_(c, 2)) << "files' window is not shown";
+    // Left: red, chosen on letting Super go.
+    const auto d = read_ppm(chosen);
+    EXPECT_EQ(d.at(275, 400), kRed);
+    EXPECT_EQ(d.at(825, 400), kGreen);
+}
+
+// A second window on a running desktop is another display of it (design
+// 2026-10-20 §11): it mirrors the first -- the same picture at the first's
+// size, whatever its own, said in its title -- its input is the desktop's;
+// when the first goes the desktop goes on, this window the primary.
+XTEST(LubanOs, ASecondWindowMirrorsTheDesktopAndGoesOnWhenTheFirstCloses, .area = "luban",
+      .covers = {"LUBAN-DISPLAYS"}, .requires_ = {"linux", "xlings-bin"}) {
+    if (!app_binary()) GTEST_SKIP() << "no luban-os beside the xlings under test";
+    if (!xdesk_binary()) GTEST_SKIP() << "no xdesk beside luban-os (mcpp build -p xdesk-app)";
+    auto first = tk::Home::isolated("luban-os-display-1");
+    auto second = tk::Home::isolated("luban-os-display-2");
+    ASSERT_EQ(first.xlings({"self", "init"}).exit_code, 0);
+    ASSERT_EQ(second.xlings({"self", "init"}).exit_code, 0);
+    const auto runtime = first.root() / "run";
+    fs::create_directories(runtime);
+    fs::permissions(runtime, fs::perms::owner_all, fs::perm_options::replace);
+    const auto socket = runtime / "displays.sock";
+    // What run_session does for a second window: its stream joined to the socket.
+    const auto relay = second.root() / "relay.py";
+    tk::write_file(relay, R"PY(import os, select, socket, sys
+s = socket.socket(socket.AF_UNIX); s.connect(sys.argv[1])
+while True:
+    r, _, _ = select.select([0, s], [], [])
+    for f in r:
+        data = os.read(0, 65536) if f == 0 else s.recv(65536)
+        if not data: sys.exit(0)
+        if f == 0: s.sendall(data)
+        else: os.write(1, data)
+)PY");
+    const auto client = colour_client(first).string();
+    auto one = std::async(std::launch::async, [&] {
+        return run_script(first, R"(wait desktop
+waitfor desktop.texture.0 1100
+sleep 7000
+)", {"--desktop-exec", xdesk_binary()->string(), "--profile", "classic", "--autostart", std::format("python3 {} c04040", client)},
+                          {{"XDG_RUNTIME_DIR", runtime.string()}, {"OPENSAL_DISPLAYS", socket.string()}});
+    });
+    for (int k = 0; k < 100 && !fs::exists(socket); ++k) std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    ASSERT_TRUE(fs::exists(socket)) << "xdesk listens for other displays";
+    std::this_thread::sleep_for(std::chrono::seconds(2));
+    const auto mirror = second.root() / "mirror.json", shot = second.root() / "mirror.ppm", primary = second.root() / "primary.json";
+    auto two = run_script(second, std::format(R"(wait desktop
+waitfor desktop.texture.0 1100
+sleep 1000
+resize 800 500
+sleep 800
+state {}
+screenshot {}
+screenshot {}
+keydown Super
+key m
+keyup Super
+sleep 6000
+resize 900 600
+sleep 1500
+state {}
+)", mirror.string(), shot.string(), artifact("xdesk-mirror.bmp").string(), primary.string()),
+                          {"--desktop-exec", "python3", relay.string(), socket.string()});
+    const auto r1 = one.get();
+    ASSERT_EQ(two.exit_code, 0) << two.transcript();
+    ASSERT_EQ(r1.exit_code, 0) << r1.transcript();
+    // A mirror: the first window's picture (its red window), at its size, not this one's.
+    const auto m = Json::parse(tk::read_file(mirror));
+    EXPECT_EQ(m["desktop"]["texture"][0], 1100) << m.dump();
+    EXPECT_NE(m["window"]["title"].get<std::string>().find("mirroring display 1"), std::string::npos) << m["window"]["title"];
+    EXPECT_GE(box_of(read_ppm(shot), kRed)[0], 0) << "the desktop's window, shown in the second";
+    // Its keys are the desktop's: Super+m there arranged the workspace.
+    const auto state = Json::parse(tk::read_file(first.root() / ".config" / "xdesk" / "state.json"));
+    EXPECT_EQ(state["arrangements"][0], "stack") << state.dump();
+    // The first closed: the desktop went on, this window its primary at its own size.
+    const auto p = Json::parse(tk::read_file(primary));
+    EXPECT_NE(p["desktop"]["texture"][0], 1100) << p.dump();
+    EXPECT_EQ(p["window"]["title"].get<std::string>().find("mirroring"), std::string::npos) << p["window"]["title"];
+}
+
+// The keys the documents list are the desktop's own table (design
+// 2026-10-20 §12.4): generated, so they are what the desktop does.
+// XDESK_KEYS_WRITE=1 writes them again.
+XTEST(LubanOs, XdesksKeysDocumentIsItsOwnTable, .area = "luban", .covers = {"XDESK-KEYS"}, .requires_ = {"linux", "xlings-bin"}) {
+    if (!xdesk_binary()) GTEST_SKIP() << "no xdesk beside luban-os (mcpp build -p xdesk-app)";
+    for (const auto zh : {false, true}) {
+        tk::RunOptions o;
+        o.argv = {xdesk_binary()->string(), "--keys-markdown", zh ? "zh" : "en"};
+        const auto r = tk::run(o);
+        ASSERT_EQ(r.exit_code, 0) << r.transcript();
+        const auto doc = zh ? std::string("# xdesk 的快捷键\n\n<!-- 由 `xdesk --keys-markdown zh` 生成，请勿手改。键位测试在 XDESK_KEYS_WRITE=1 时重写它。 -->\n\n")
+                            : std::string("# xdesk's keys\n\n<!-- Generated from `xdesk --keys-markdown en`; do not edit by hand. The keys test rewrites it with XDESK_KEYS_WRITE=1. -->\n\n");
+        const auto file = fs::current_path() / "docs" / "generated" / (zh ? "xdesk-keys.zh.md" : "xdesk-keys.md");
+        if (const char* w = std::getenv("XDESK_KEYS_WRITE"); w && std::string_view(w) == "1") tk::write_file(file, doc + r.out);
+        EXPECT_EQ(tk::read_file(file), doc + r.out) << file << " is not the desktop's table: XDESK_KEYS_WRITE=1 writes it again";
+    }
+}
+
+// The settings and the control socket (design 2026-10-20 §11.4, §12.3,
+// §12.4): a key given to an action at the keys page, or by `xdesk msg`,
+// is what the desktop answers to and what keys.json keeps; a page's choice
+// takes effect at once.
+XTEST(LubanOs, XdesksSettingsAndControlSocketChangeWhatItDoes, .area = "luban", .covers = {"XDESK-KEYS", "XDESK-SETTINGS"},
+      .requires_ = {"linux", "xlings-bin"}) {
+    if (!app_binary()) GTEST_SKIP() << "no luban-os beside the xlings under test";
+    if (!xdesk_binary()) GTEST_SKIP() << "no xdesk beside luban-os (mcpp build -p xdesk-app)";
+    auto home = tk::Home::isolated("luban-os-xdesk-settings");
+    ASSERT_EQ(home.xlings({"self", "init"}).exit_code, 0);
+    const auto runtime = home.root() / "run";
+    const auto settings = home.root() / "settings.ppm", maximized = home.root() / "maximized.ppm";
+    auto session = std::async(std::launch::async, [&] {
+        return xdesk_with(home, "classic", std::format(R"(wait desktop
+waitfor desktop.texture.0 1100
+sleep 6000
+key Super+Shift+m
+sleep 1000
+screenshot {}
+key Super+Shift+m
+sleep 600
+key Super+i
+sleep 800
+screenshot {}
+screenshot {}
+key Tab
+key Right
+sleep 600
+key Escape
+sleep 300
+key Super+/
+sleep 400
+type maxim
+sleep 300
+key Down
+key Down
+key Down
+key Return
+sleep 300
+key Super+Shift+x
+sleep 600
+key Escape
+sleep 400
+)", maximized.string(), settings.string(), artifact("xdesk-settings.bmp").string()));
+    });
+    // The control socket, as `xdesk msg` uses it.
+    fs::path control;
+    for (int k = 0; k < 100 && control.empty(); ++k) {
+        std::error_code ec;
+        for (const auto& e : fs::directory_iterator(runtime, ec))
+            if (e.path().filename().string().starts_with("xdesk-") && e.path().extension() == ".sock") control = e.path();
+        if (control.empty()) std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+    ASSERT_FALSE(control.empty()) << "no control socket in " << runtime;
+    const auto display = control.stem().string().substr(6);
+    auto msg = [&](std::vector<std::string> args) {
+        tk::RunOptions o;
+        o.argv = {xdesk_binary()->string(), "msg"};
+        o.argv.insert(o.argv.end(), args.begin(), args.end());
+        o.env = {{"XDG_RUNTIME_DIR", runtime.string()}, {"WAYLAND_DISPLAY", display}};
+        return tk::run(o);
+    };
+    std::this_thread::sleep_for(std::chrono::seconds(2));
+    const auto bound = msg({"keys", "bind", "maximize", "Super+Shift+m"});
+    EXPECT_EQ(bound.exit_code, 0) << bound.transcript();
+    const auto bad = msg({"keys", "bind", "nothing", "Super+Shift+m"});
+    EXPECT_NE(bad.exit_code, 0);
+    EXPECT_NE(bad.out.find("no action 'nothing'"), std::string::npos) << bad.out;
+    const auto list = msg({"keys", "list"});
+    ASSERT_EQ(list.exit_code, 0) << list.transcript();
+    const auto listed = Json::parse(list.out, nullptr, false);
+    ASSERT_TRUE(listed.is_object()) << list.out;
+    bool found = false;
+    for (const auto& a : listed["actions"])
+        if (a["action"] == "maximize") {
+            found = true;
+            EXPECT_EQ(a["keys"], Json::array({"Super+Shift+M"})) << a.dump();
+            EXPECT_TRUE(a["changed"].get<bool>());
+        }
+    EXPECT_TRUE(found) << list.out;
+    const auto r = session.get();
+    ASSERT_EQ(r.exit_code, 0) << r.transcript();
+    // Super+Shift+M, as bound: blue (focused) over the whole width.
+    const auto m = read_ppm(maximized);
+    EXPECT_EQ(m.at(100, 400), kBlue);
+    EXPECT_EQ(m.at(1000, 400), kBlue);
+    // The settings over the desktop.
+    const auto s = read_ppm(settings);
+    EXPECT_NE(s.at(550, 400), kBlue) << "a card over the windows";
+    // The layout page's first choice: this workspace stacked, kept.
+    const auto state = Json::parse(tk::read_file(home.root() / ".config" / "xdesk" / "state.json"));
+    EXPECT_EQ(state["arrangements"][0], "stack") << state.dump();
+    // The keys page: maximize given Super+Shift+X, kept in keys.json.
+    const auto keys = Json::parse(tk::read_file(home.root() / ".config" / "xdesk" / "keys.json"));
+    EXPECT_EQ(keys["maximize"], Json::array({"Super+Shift+x"})) << keys.dump();
 }

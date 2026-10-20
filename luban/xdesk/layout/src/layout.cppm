@@ -50,6 +50,12 @@ struct Insets {
 
 enum class Mode { tile, canvas, stack };
 enum class Direction { left, right, up, down };
+// Which way a tiled workspace's columns run (design 2026-10-20 §7.4):
+// side by side scrolling sideways, or one under another scrolling down (a
+// portrait screen) -- the same rules turned.
+enum class Flow { horizontal, vertical };
+std::string_view name(Flow f);
+std::optional<Flow> flow_named(std::string_view name);
 
 // Super+m's order: tile, stack, canvas.
 Mode next(Mode m);
@@ -83,7 +89,15 @@ enum class Pattern { halves, two_thirds, one_and_two, thirds };
 
 struct Options {
     Mode mode { Mode::tile };   // a workspace's preset until it is given one
-    double gap { 8 };
+    // Between windows, and between them and the output's edges (logical
+    // pixels; design 2026-10-20 §7.2). A setting of before, `gap`, is read
+    // as the inner one.
+    double inner_gap { 4 };
+    double outer_gap { 0 };
+    // Tiled columns share the output equally until each would be narrower
+    // than this; then each is this wide and the strip scrolls (§7.3).
+    double min_column_width { 480 };
+    Flow flow { Flow::horizontal };
     int workspaces { 4 };
 };
 
@@ -97,7 +111,29 @@ struct Placement {
     bool floating { false };
     bool maximized { false };   // stack: the whole output
     bool pinned { false };      // always on top
+    // Laid out by the arrangement, every edge against another or the output
+    // (tile; a maximized stacked window): the client is told so, and draws
+    // to the size given rather than rounding to its own cells.
+    bool tiled { false };
+    // The whole output, above everything, no title bar (design 2026-10-20 §12.2).
+    bool fullscreen { false };
     bool operator==(const Placement&) const = default;
+};
+
+// A frame moved near others (canvas, stack; design 2026-10-20 §9.4): its
+// edges in line with theirs, or a gap from them, within reach; the lines it
+// snapped to, to be drawn.
+struct Snap {
+    Rect rect;
+    std::optional<double> guide_x, guide_y;
+};
+
+// The canvas in small (§9.6): every group's frame and the view, in world
+// coordinates, and what holds them all.
+struct Minimap {
+    std::vector<Rect> boxes;
+    Rect view;
+    Rect bounds;
 };
 
 class Layout {
@@ -112,6 +148,12 @@ public:
     Mode mode() const;
     void set_mode(Mode m);
     Mode mode_of(int workspace) const;
+    // The shown workspace's flow (tile): which way its columns run.
+    Flow flow() const;
+    void set_flow(Flow f);
+    const Options& options() const { return o_; }
+    // Gaps and the narrowest column, live (the settings' layout page).
+    void set_spacing(double inner_gap, double outer_gap, double min_column_width);
     // A workspace's preset before anything is on it (a session's state read back).
     void preset(int workspace, Mode m);
 
@@ -161,6 +203,11 @@ public:
     // whole width, and back to the width it had.
     void toggle_maximized(Id id);
     bool maximized(Id id) const;
+    // Full screen: the whole output (what is reserved for a panel too), over
+    // everything on its workspace; one at a time on a workspace.
+    void toggle_fullscreen(Id id);
+    void set_fullscreen(Id id, bool on);
+    bool fullscreen(Id id) const;
     // A floating, stacked or canvas window's frame was moved or resized by
     // hand (screen pixels). In a canvas group the group moves with it.
     void place(Id id, Rect screen);
@@ -179,11 +226,19 @@ public:
     // 0: as it would be); the drop.
     Drop drop_at(Id dragged, double sx, double sy, bool shift = false) const;
     std::optional<Rect> preview(Id dragged, const Drop& d, double width = 0) const;
+    // Every window as the drop would leave them (design 2026-10-20 §7.5):
+    // the others move there while it is dragged -- what is seen is the result.
+    std::vector<Placement> preview_all(Id dragged, const Drop& d, double width = 0) const;
     void drop(Id dragged, const Drop& d, double width = 0);
     // The gap a pointer is on between two columns (tile): the one left of it.
     std::optional<std::size_t> gap_at(double sx, double sy) const;
     // Dragged by `dx` pixels: the column left of it wider, the right one narrower.
     void drag_gap(std::size_t column, double dx);
+    // The gap a pointer is on between two windows of one column (tile): the
+    // column and the cell above it (design 2026-10-20 §8). Dragged by `dy`
+    // pixels: the one above taller, the one below shorter.
+    std::optional<std::pair<std::size_t, std::size_t>> row_gap_at(double sx, double sy) const;
+    void drag_row_gap(std::size_t column, std::size_t cell, double dy);
     // A gap clicked twice: every column an equal part again.
     void even_widths();
     // `windows`, the first the one asked for, laid out as `p`: columns in
@@ -208,6 +263,10 @@ public:
     void overview(bool on);
     bool in_overview() const;
     void center(Id id);
+    // The view's middle at a world point (the minimap clicked).
+    void look_at(double wx, double wy);
+    Snap snap(Id id, Rect screen, double reach = 16) const;
+    Minimap minimap() const;
 
     // Where everything of the shown workspace is, for this output.
     std::vector<Placement> arrange(Size output, Insets reserved = {});
@@ -246,12 +305,14 @@ private:
     };
     struct Space {
         Mode mode { Mode::tile };
+        Flow flow { Flow::horizontal };
         std::array<bool, 3> shown {};   // each preset has an arrangement of its own
         std::vector<Window> windows;    // in the order they came
         std::optional<Id> focus;
         // tile
         std::vector<Column> columns;
         double scroll { 0 };            // strip x at the output's left
+        bool scrolled { false };        // by hand: kept until the focus moves
         // stack, back to front
         std::vector<Id> order;
         // canvas
@@ -283,6 +344,13 @@ private:
     static void insert_column_(std::vector<Column>& cols, Id id, std::optional<Id> after);
     static void erase_(std::vector<Column>& cols, Id id);
     static std::vector<double> heights_(const Column& c, double total, double gap);
+    // Each column's width along the flow, in pixels, for `length` of output
+    // (§7.3); and the share of it a column has, as Column::width counts it.
+    std::vector<double> tile_widths_(const Space& s, double length) const;
+    double tile_fraction_(const Space& s, std::size_t column) const;
+    double tile_length_(const Space& s) const;
+    // A direction as the tiled columns see it: turned for a vertical flow.
+    static Direction turned_(const Space& s, Direction d);
     void tile_move_(Space& s, Direction d);
     void tile_join_(Space& s);
     void tile_split_(Space& s);
@@ -315,7 +383,16 @@ private:
     std::vector<Placement> last_;
     int last_space_ { -1 };
     std::vector<Window> sticky_;    // on every workspace: floating, screen pixels
+    std::set<Id> fullscreen_;
 };
+
+// The overview's picture of windows (design 2026-10-20 §10.3) -- Alt+Tab,
+// the arrangements' cards and an application's windows all show windows so:
+// where they are to one another, the whole scaled down to fit `area` (never
+// up) and centred in it. A strip more than about two areas wide (a long
+// tiled row) is folded into rows, the whole nearer the area's shape. The
+// rects in `windows`' order.
+std::vector<Rect> spread(const std::vector<Rect>& windows, Rect area, double gap = 24);
 
 // A value that follows its target as a critically damped spring: it never
 // overshoots and has no fixed duration -- a new target mid-way just bends

@@ -215,6 +215,20 @@ int run(int argc, char* argv[]) {
         std::println("{}", service::app_capabilities_json(service::kVersion, provides, {}).dump());
         return 0;
     }
+    // Quit from anywhere (design 2026-10-20 §3.1, G20): the tray and every
+    // window of this home end; the systems keep running. Not the icon's menu's
+    // to be the only way.
+    if (argc >= 2 && std::string_view(argv[1]) == "--quit") {
+        const auto home = home_dir_();
+        auto link = platform::LocalStream::connect(tray_dir(home) / "tray.sock", std::chrono::milliseconds(500));
+        if (!link) { std::println("luban-os: not running (no tray for {})", home.string()); return 0; }
+        if (!link->send_all(nlohmann::json{{"quit-all", nlohmann::json::object()}}.dump() + "\n", std::chrono::seconds(2))) {
+            std::println(std::cerr, "luban-os: the tray did not take the request");
+            return 1;
+        }
+        std::println("luban-os: the tray and its windows are closing; running systems keep running (luban ls)");
+        return 0;
+    }
     App a;
     host::Options o;
     int frames = -1;
@@ -261,6 +275,7 @@ int run(int argc, char* argv[]) {
         else if (arg == "--version") { std::println("luban-os {}", service::kVersion); return 0; }
         else if (arg == "--help" || arg == "-h") {
             std::println("luban-os [--attach <name> [--desktop <session> | --app <command>]]   Luban OS: the systems of this home, in a window");
+            std::println("luban-os --quit   the tray and every window of this home end (the systems keep running)");
             return 0;
         }
     }
@@ -380,6 +395,11 @@ int run(int argc, char* argv[]) {
         // Still: until the next step of an animation, at most a second.
         int scheduled = (pending > 0 || busy || (wake >= 0 && wake < 0.016)) ? 16
                         : wake < 0 ? 1000 : std::clamp(static_cast<int>(wake * 1000), 16, 1000);
+        if (a.toast_until)
+            scheduled = std::clamp(static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                       *a.toast_until - std::chrono::steady_clock::now()).count()) + 1, 16, scheduled);
+        // Wanted and not held: asked again (the window tries at most every 500 ms).
+        if (a.keyboard_wanted && a.view == View::Desktop && !a.window->keyboard_grabbed()) scheduled = std::min(scheduled, 500);
         if (a.notice_until)   // a notice over a system goes when its time is up
             scheduled = std::clamp(static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(
                                        *a.notice_until - std::chrono::steady_clock::now()).count()) + 1, 16, scheduled);
@@ -481,14 +501,36 @@ int run(int argc, char* argv[]) {
             a.was_in_desktop = in_desktop;
             if (in_desktop) {
                 if (const auto asked = a.display->take_pointer_lock()) a.pointer_lock_asked = *asked;
+                // Wanted or not: what is held is the host's answer (design 2026-10-20 §5).
                 if (a.window->lock_key()) {
-                    const bool release = a.window->keyboard_grabbed() || a.window->pointer_locked();
+                    const bool release = a.keyboard_wanted || a.window->pointer_locked();
                     a.keyboard_wanted = !release;
                     if (release) a.pointer_lock_asked = false;
+                    a.keyboard_told = true;
                 }
             }
             const bool grab = in_desktop && a.keyboard_wanted && !a.focus_out;
-            if (grab != a.window->keyboard_grabbed()) a.window->grab_keyboard(grab);
+            const auto held = a.window->grab_keyboard(grab);
+            if (held != a.keyboard_shown) {
+                // Said as it changes: the title while held; a moment at the top
+                // when the person asked (Ctrl+Alt+K, the menu) or the host let
+                // it go -- not on entering, nor on a focus change (a still
+                // desktop draws nothing).
+                using G = host::Window::Grab;
+                const bool refused = held == G::HeldByAnother || held == G::NotShown || held == G::Refused;
+                if ((held == G::Held && a.keyboard_told) || (held == G::Released && a.keyboard_shown == G::Held && !a.focus_out)
+                    || (refused && a.keyboard_told)) {
+                    const std::string why(tr(held == G::NotShown        ? "luban.os.app.keyboard_not_shown"
+                                             : held == G::HeldByAnother ? "luban.os.app.keyboard_host_holds"
+                                                                        : "luban.os.app.keyboard_host_refused"));
+                    a.toast(held == G::Held        ? std::string(tr("luban.os.app.keyboard_held"))
+                            : held == G::Released ? std::string(tr("luban.os.app.keyboard_let_go"))
+                                                  : std::vformat(tr("luban.os.app.keyboard_refused"), std::make_format_args(why)));
+                }
+                if (!refused) a.keyboard_told = false;   // a refusal is tried again: its success is said too
+                a.keyboard_shown = held;
+                if (in_desktop) a.window->set_title(a.title_for(a.current));
+            }
             const bool lock = in_desktop && a.pointer_lock_asked && !a.focus_out;
             if (lock != a.window->pointer_locked()) a.window->lock_pointer(lock);
         }
@@ -639,6 +681,19 @@ int run(int argc, char* argv[]) {
                 a.notice.clear();
             }
         }
+        // A moment's word at the top (the keyboard held or let go).
+        if (a.toast_until) {
+            if (std::chrono::steady_clock::now() < *a.toast_until) {
+                auto* dl = ImGui::GetForegroundDrawList();
+                const auto* vp = ImGui::GetMainViewport();
+                const auto ts = imkit::text_size(a.toast_text, 14);
+                const ImVec2 p(std::round(vp->Pos.x + (vp->Size.x - ts.x) / 2 - px(12)), std::round(vp->Pos.y + px(40)));
+                imkit::panel(dl, p, ImVec2(p.x + ts.x + px(24), p.y + ts.y + px(12)), imkit::Bevel::Raised, imkit::theme().panel);
+                imkit::text(dl, ImVec2(p.x + px(12), p.y + px(6)), a.toast_text, imkit::theme().text, 14);
+            } else {
+                a.toast_until.reset();
+            }
+        }
         if (a.menu) host_menu_(a);
         if (a.close_dialog) close_dialog_(a);
         if (a.confirm) confirm_(a);
@@ -647,7 +702,7 @@ int run(int argc, char* argv[]) {
         // A desktop frame that shows what the last one showed is not drawn
         // again: no new picture, no input but the pointer's, nothing over it.
         const bool still = over_desktop && a.view == View::Desktop && view_before == View::Desktop && !a.desktop_changed
-                           && (!input || only_motion) && !a.notice_until && !a.resize_at && a.perf.presented > 0;
+                           && (!input || only_motion) && !a.notice_until && !a.toast_until && !a.resize_at && a.perf.presented > 0;
         a.window->end_frame(!still);
         if (!still) {
             ++a.perf.presented;

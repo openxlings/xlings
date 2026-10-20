@@ -78,9 +78,12 @@ if [[ -n "$absent" ]]; then
     check "L4: n installed nothing ($absent)" -- test ! -d "$XLINGS_HOME/data/xpkgs/xim-x-$absent"
 fi
 if [[ "$user" != root ]]; then
-    # A regular user's install goes into their own home (design L §8): in a
-    # machine; a sandbox installs through its broker into the system.
-    step "L4: $user installs without root" ok 'INSTALL=0' -- \
-        L run "$name" --user "$user" -- /bin/sh -c 'xlings install -y ninja; echo INSTALL=$?'
+    # A regular user's xlings is a view of the system's store (design
+    # 2026-10-20 §4): what root added is theirs, not installed again; a
+    # sandbox installs through its broker into the system.
+    step "L4: root adds ninja for every user" ok 'INSTALL=0' -- \
+        L run "$name" --user root -- /bin/sh -c 'xlings install -y ninja; echo INSTALL=$?'
+    step "L4: $user has it from the system" ok 'provided by the system' -- \
+        L run "$name" --user "$user" -- /bin/sh -c 'xlings install ninja; echo INSTALL=$?'
 fi
 done_

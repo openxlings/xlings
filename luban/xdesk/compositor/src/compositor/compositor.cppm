@@ -30,4 +30,8 @@ std::expected<std::string, std::string> keymap_text(std::string_view layout);
 // The US keymap the program carries.
 std::string_view builtin_keymap();
 
+// The desktop's keys as a Markdown table, by group (English or Chinese):
+// what docs/generated/xdesk-keys.md is (design 2026-10-20 §12.4).
+std::string keys_markdown(bool zh);
+
 }  // namespace xdesk::compositor

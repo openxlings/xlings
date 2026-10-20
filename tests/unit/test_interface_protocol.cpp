@@ -197,7 +197,7 @@ TEST(InterfaceProtocol, VersionFlagPrintsProtocolVersion) {
     auto j = nlohmann::json::parse(out, nullptr, false);
     ASSERT_FALSE(j.is_discarded()) << "non-JSON output: " << out;
     ASSERT_TRUE(j.contains("protocol_version"));
-    EXPECT_EQ(j["protocol_version"].get<std::string>(), "1.14");
+    EXPECT_EQ(j["protocol_version"].get<std::string>(), "1.15");
     // 1.11: a client that relies on the currency fields or the binding-state
     // summary checks for them here before it uses this xlings.
     ASSERT_TRUE(j.contains("features"));
@@ -205,10 +205,11 @@ TEST(InterfaceProtocol, VersionFlagPrintsProtocolVersion) {
     // 1.12: a reader of index namespaces and of a system's plan, the same.
     // 1.13: diagnostics that read only. 1.14: a recipe's extensions and status
     // handed on; a domain's routed command answering in events; a template
-    // used only because it is installed, said.
+    // used only because it is installed, said. 1.15: a user's view of a
+    // system's store; the administrator needed and nobody to ask, E_NEEDS_ROOT.
     for (const char* feature : {"payload_currency", "binding_state", "reserved_namespaces", "subos_plan",
                                 "network_diagnostics", "download_socket_budgets", "read_only_queries",
-                                "package_extensions", "domain_relayed", "installed_only"})
+                                "package_extensions", "domain_relayed", "installed_only", "user_views", "needs_root"})
         EXPECT_NE(std::ranges::find(features, nlohmann::json(feature)), features.end()) << feature;
     std::filesystem::remove_all(home);
 }

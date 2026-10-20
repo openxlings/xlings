@@ -232,8 +232,42 @@ std::optional<Session> resolve_session(std::string_view id, const std::vector<fs
 
 // ── a session ────────────────────────────────────────────────────────
 
+fs::path displays_socket(const fs::path& runtime_root, std::string_view session_id) {
+    std::string id(session_id);
+    for (auto& c : id)
+        if (c == '/' || c == ' ' || c == ':') c = '_';
+    return runtime_root / std::format("displays-{}.sock", id);
+}
+
+namespace {
+
+// Another window's stream joined to a running desktop's displays socket,
+// both ways, until either side ends; nullopt when nothing listens there.
+std::optional<int> relay_(const fs::path& socket, int in, int out) {
+    const int fd = os::connect_unix(socket);
+    if (fd < 0) return std::nullopt;
+    std::array<char, 65536> buf{};
+    for (bool open = true; open;) {
+        std::array<os::PollFd, 2> p{{{.fd = in}, {.fd = fd}}};
+        os::poll(p, 1000);
+        for (int k = 0; k < 2 && open; ++k) {
+            if (!p[static_cast<std::size_t>(k)].readable && !p[static_cast<std::size_t>(k)].closed) continue;
+            const auto n = os::read_some(k == 0 ? in : fd, buf);
+            open = n && *n > 0 && os::write_all(k == 0 ? fd : out, std::string_view(buf.data(), *n));
+        }
+    }
+    os::close(fd);
+    return 0;
+}
+
+}  // namespace
+
 int run_session(const Session& s, int in, int out, const SessionOptions& o) {
     std::error_code ec;
+    // The desktop already runs: this window is another display of it.
+    fs::create_directories(o.runtime_root, ec);
+    const auto displays = displays_socket(o.runtime_root, s.id);
+    if (auto joined = relay_(displays, in, out)) return *joined;
     const auto runtime = o.runtime_root / std::format("display-{}", os::pid());
     fs::remove_all(runtime, ec);
     fs::create_directories(runtime, ec);
@@ -252,18 +286,57 @@ int run_session(const Session& s, int in, int out, const SessionOptions& o) {
     if (!env.contains("XCURSOR_SIZE")) env["XCURSOR_SIZE"] = "24";
     env.erase("WAYLAND_DISPLAY");
     env.erase("DISPLAY");
+    if (s.native) env["OPENSAL_DISPLAYS"] = displays.string();
     // A session starts at home, as a login does (its terminals open there).
     const int log = o.log.empty() ? -1 : os::open_append(o.log);
+    // Its sound (xlings design 2026-10-20 §20.1): a system with luban:audio
+    // runs it for the session -- unless the session already has the host's
+    // sound server (a sandbox granted it: PULSE_SERVER).
+    int sound = -1;
+    if (!env.contains("PULSE_SERVER") && env.contains("PATH")) {
+        for (const auto& dir : std::views::split(env.at("PATH"), ':')) {
+            const fs::path starter = fs::path(std::string_view(dir.begin(), dir.end())) / "luban-audio";
+            if (std::error_code e; !fs::is_regular_file(starter, e)) continue;
+            sound = os::spawn({.argv = {starter.string()}, .env = env, .stdio = {-1, log, log}});
+            break;
+        }
+    }
+    struct SoundStop {
+        int pid;
+        // It and what it started (its own process group).
+        ~SoundStop() { if (pid > 0) { os::terminate(-pid); (void)os::wait(pid); } }
+    } sound_stop{sound};
     const int pid = os::spawn({.argv = {"/bin/sh", "-c", "exec " + s.exec}, .env = env,
                                .cwd = env.contains("HOME") ? fs::path(env.at("HOME")) : fs::path{},
                                .stdio = {s.native ? in : -1, s.native ? out : log, log}});
     os::close(log);
     if (pid < 0) return 2;
     if (s.native) {
-        // It is the desktop and the stream's other end: done when it is.
-        const int status = os::wait(pid);
-        fs::remove_all(runtime, ec);
-        return status == 0 ? 0 : 1;
+        // It is the desktop and the stream's other end: done when it is --
+        // or, when this window's stream ends while it still runs, it serves
+        // other displays and goes on without this one.
+        for (;;) {
+            if (const auto st = os::exited(pid)) {
+                fs::remove_all(runtime, ec);
+                return *st == 0 ? 0 : 1;
+            }
+            // Its input is the desktop's to read: only its end is looked for.
+            std::array<os::PollFd, 1> p{{{.fd = in}}};
+            os::poll(p, 500);
+            if (!p[0].closed) {
+                if (p[0].readable) std::this_thread::sleep_for(std::chrono::milliseconds(200));
+                continue;
+            }
+            for (int k = 0; k < 40; ++k) {
+                if (const auto st = os::exited(pid)) {
+                    fs::remove_all(runtime, ec);
+                    return *st == 0 ? 0 : 1;
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            }
+            sound_stop.pid = -1;   // the sound stays with the desktop that goes on
+            return 0;
+        }
     }
     bool ended = false;
     auto alive = [&] {
@@ -281,7 +354,8 @@ int run_session(const Session& s, int in, int out, const SessionOptions& o) {
         auto launched = env;
         launched["WAYLAND_DISPLAY"] = socket->filename().string();
         code = bridge({.in = in, .out = out, .socket = *socket, .alive = alive,
-                       .shell = opensal::has(s.interfaces, opensal::Interface::Shell), .env = std::move(launched)});
+                       .shell = opensal::has(s.interfaces, opensal::Interface::Shell), .env = std::move(launched),
+                       .displays = displays});
     }
     if (alive()) {
         os::terminate(pid);

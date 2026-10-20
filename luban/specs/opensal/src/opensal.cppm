@@ -34,6 +34,11 @@ enum class Interface : std::uint32_t {
     // The pointer held in place, its movement given as relative motion: a
     // game, a 3D program (0.3). The provider releases it on its own chord.
     PointerLock = 1u << 11,
+    // One of several displays of a consumer (0.4): the provider takes what
+    // it is told it is ('d': the primary, or a mirror of another at that
+    // display's size) -- a mirror sizes itself to the source's picture and
+    // keeps its shape, and says no size of its own.
+    Displays = 1u << 12,
 };
 using Interfaces = std::uint32_t;
 constexpr Interfaces operator|(Interface a, Interface b) { return static_cast<Interfaces>(a) | static_cast<Interfaces>(b); }
@@ -76,12 +81,28 @@ struct Focus { bool in { true }; };
 struct CloseRequested {};
 struct ClipboardText { std::string text; };
 struct FramePresented {};   // pacing: the last frame is on screen, the next may be drawn
+// The window can be seen, or not (minimized, hidden, covered): a consumer
+// draws nothing while it cannot (design 2026-10-20 §13.2), and all of it again
+// when it can. An older consumer skips it.
+struct Shown { bool shown { true }; };
 // Shell: an application the consumer listed, to start; a window to bring forward.
 struct Launch { std::string app; };
 struct Activate { std::uint32_t window { 0 }; };
 
 using Event = std::variant<Resized, DensityChanged, Key, TextCommit, Preedit, PointerMotion, PointerButton, Wheel,
-                           Focus, CloseRequested, ClipboardText, FramePresented, Launch, Activate, PointerRelative>;
+                           Focus, CloseRequested, ClipboardText, FramePresented, Launch, Activate, PointerRelative, Shown>;
+
+// Displays: what one of a consumer's displays is (its number, from 1 in the
+// order they came; the first is the primary). A mirror shows display `of`,
+// whose picture is `size`.
+struct DisplayRole {
+    enum class Kind { primary, mirror };
+    std::uint32_t number { 1 };
+    Kind kind { Kind::primary };
+    std::uint32_t of { 0 };
+    Size size;
+    bool operator==(const DisplayRole&) const = default;
+};
 
 // Shell: an application of the consumer's session and a window, as the consumer tells them.
 struct Application {

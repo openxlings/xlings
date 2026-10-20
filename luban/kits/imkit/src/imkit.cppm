@@ -55,6 +55,9 @@ ImVec2 snap(ImVec2 p);
 // Which of `frames` an animation of `period` seconds shows now (0 under
 // reduced motion); `phase` staggers several.
 int beat(int frames = 2, double period = 0.6, int phase = 0);
+// The same with a duration of its own for each frame (seconds), the whole
+// cycle `speed` times as fast: a gesture's phases are not equal.
+int beats(std::span<const double> durations, double speed = 1.0);
 // Animations are running: the caller keeps drawing frames.
 bool animating();
 void set_animating();

@@ -83,6 +83,18 @@ status = "required"
 text = "a Luban system checks itself when made, upgraded, booted and entered, and on demand: a critical failure stops it (not ready, not switched, not booted, not entered) and the rest is reported"
 status = "required"
 
+[LUBAN-COMPLETION]
+text = "every user of a Luban system has tab completion for xlings and luban in bash and fish (profile.d/xlings-complete.sh, fish/conf.d/xlings-complete.fish), each program answering `<program> __complete <words>` from its own command tree"
+status = "required"
+
+[LUBAN-SUDO]
+text = "a Luban system's user given no password has the default one (lubanoser), said when it is made and by luban status until changed; --no-password is a choice: no password and a sudo that asks nothing; sudo's rules (sudoers, sudoers.d/luban) are the wheel group with its password, asked again after 15 minutes, a secure_path with xlings and the proxy variables kept; a machine's sudo program and rules are made root's at boot"
+status = "required"
+
+[LUBAN-USER-VIEW]
+text = "inside a Luban system a regular user's xlings is a view of the system's store: it reads the system's index and packages without copying them, never fetches an index or runs a recipe of its own, says what the system already provides instead of installing it, sees the system's versions in use and list, adds a version the store lacks once through the elevation door (sudo xlings __store-add), and with nobody to ask fails with E_NEEDS_ROOT and the exact sudo command"
+status = "required"
+
 [LUBAN-USER-LAYER]
 text = "inside a Luban system a regular user's xlings uses ~/.xlings with the system's home as the layer below it; a sandbox keeps the system's home (its broker installs there)"
 status = "required"
@@ -1059,6 +1071,14 @@ status = "required"
 text = "luban's default output is one line per phase, the conclusion and the next step in luban's own commands; a step's own lines are -v's; --json is one event per line and the result"
 status = "required"
 
+[LUBAN-PROGRESS]
+text = "making a system is one progress from 0 to 100 % over its stages (prepare, download, unpack, configure, start, check), never going back: an install after it is made stays in the stage reached, and a machine starting is a stage of its own with its console's latest line; the luban command and the window show the same (events carry overall and stage)"
+status = "required"
+
+[LUBAN-PROGRESS-WIDTH]
+text = "on a terminal the running phase's line is cut to the terminal's width less one column (the detail first, then the phase, the cut marked with an ellipsis), so rewriting it in place never wraps and never adds a line"
+status = "required"
+
 [LUBAN-SHELL]
 text = "an environment's login shell is its passwd's: a root made now gets the best shell its /usr has once its packages are in (fish, bash, else sh), or the one its edition names (login_shell) when it has it, and its login user the same; luban config --shell changes it, a shell the root lacks is refused with the install that brings it, and every way in reads the same answer -- a terminal joining a running session included"
 status = "required"
@@ -1113,6 +1133,42 @@ status = "required"
 
 [XDESK-COMPOSITOR]
 text = "xdesk is a wlroots compositor that speaks opensal.wire itself (a session file's X-Opensal-Native=true: it is given the stream, nothing is bridged): headless and software-rendered, no GPU; it shows its desktop at the size the window asks, takes the window's keys and pointer, opens a terminal (Alt+Return), arranges and decorates windows itself, and ends when the stream does; to a window that paces (its hello says so) it sends the next frame only once the last is shown (a second at most), so a slow channel does not pile frames up"
+status = "required"
+
+[XDESK-TILE-SIZES]
+text = "xdesk's tiled columns tell their clients they are tiled (they draw to the size given; what a client draws short of it shows the frame), sit inner_gap apart and outer_gap from the edges (gap of before is the inner one), share the output equally until each would be narrower than min_column_width and then scroll with the focused column in view, fill the output in proportion when the widths they were given add up to less, and run sideways or, a workspace set vertical, downwards with the directions turned"
+status = "required"
+
+[XDESK-RESIZE]
+text = "an xdesk window is resized the same way in every arrangement where it can be: a stacked, floating or canvas window by its borders and corners or with Super and the right button anywhere, keeping the size the client allows, and by the client asking (request_resize) as its own frame is dragged; tiled windows by the gaps between columns and between the windows of a column"
+status = "required"
+
+[XDESK-CANVAS]
+text = "on xdesk's canvas the zoom is a view, not a mode: from half up windows take the pointer as at 100 % (its coordinates scaled), below it a click selects a window and keeps the view and two go in (Super+0 too); only Super and the wheel (and Super+= / Super+-) zoom, the wheel elsewhere pans; a moved window snaps to others' edges within 16 pixels with the lines drawn and joins a group against an edge (Shift: neither); a new window takes the free place nearest the focused one, in view when there is one, never zooming; a minimap shows the whole and the view and takes a click"
+status = "required"
+
+[XDESK-SWITCHERS]
+text = "xdesk has two switchers: Super+Tab by application (the most recent first, a window count, its windows spread below after a second or Down; let Super go: chosen), Super+` among the focused application's windows, and Alt+Tab, the windows of the workspace where they are to one another, fitted on the output (a long strip folded into rows), the selected one larger and the rest dimmed; Tab goes by recency, arrows by place, a quick Alt+Tab goes to the previous window without showing anything; Escape leaves things as they were"
+status = "required"
+
+[LUBAN-DISPLAYS]
+text = "a second Luban OS window on a running desktop is another display of it (opensal Displays): it mirrors the first -- the same frames at the first's size, its own size not the desktop's, its shape kept, said in its title -- its input is the desktop's; when the first window closes the desktop goes on (xdesk) and the next window is the primary at its own size; a bridged desktop (labwc, KDE, LXQt) ends with its first window"
+status = "required"
+
+[XDESK-KEYS]
+text = "xdesk's keys are the Luban set (design 2026-10-20 §12.2: the Super layer, Alt+Tab, Alt+F4, Ctrl+Alt+T; Super+F maximizes, Super+Shift+F full screen, Super+1-9 workspaces) or Luban without hjkl; a key is changed at the keys page (Super+/: search, Enter then the chord, Delete back to the set's; one taken from another action is said) or with `xdesk msg keys`, kept in keys.json; Super held a second shows the keys used most; docs/generated/xdesk-keys.md is generated from the table"
+status = "required"
+
+[XDESK-SETTINGS]
+text = "xdesk's settings (Super+I, the launcher, `xdesk msg settings PAGE`) has pages for the displays, the layout (this workspace's arrangement, flow, gaps, the narrowest column, the canvas's minimap and snap), the appearance (accent, background, reduce motion), the keys and about (the system, xdesk, kernel, renderer, displays, CPU, memory, the files, the projects; copied as text); a change takes effect at once and is kept in the person's settings file; the launcher finds its pages and every action, with its keys"
+status = "required"
+
+[LUBAN-SOUND]
+text = "a system's sound plays on this computer (openhal 0.2 audio): in a machine, what its sound server writes into the `luban` sink's named pipe is relayed by `luban __audio` as an openhal stream over the machine's channel and played by the window through SDL (PipeWire, PulseAudio or ALSA; Core Audio; WASAPI), as its `audio` grant allows -- a system with a desktop is made with it; the same samples arrive"
+status = "required"
+
+[XDESK-PERF]
+text = "xdesk keeps within its CPU budgets on the software renderer: the overview toggled ten times costs at most 2 s of CPU (xdesk and the window together, beyond a still session of the same length); a still desktop sends no frames"
 status = "required"
 
 [XDESK-LAYOUT]
@@ -1352,7 +1408,7 @@ text = "a new system's home starts from a copy of the host's index snapshot; an 
 status = "required"
 
 [SUBOS-READONLY-USER]
-text = "inside a system, a user's read-only xlings commands neither switch home nor print the notice; the first write says it once, without sudo"
+text = "inside a system, a user's read-only xlings commands neither switch home nor make anything; the first write makes the user's view without asking (it installs nothing)"
 status = "required"
 
 [LUBAN-UPGRADE-REVERSIBLE]
@@ -1390,7 +1446,7 @@ text = "the host's proxy reaches a machine: read from the environment that start
 status = "required"
 
 [SUBOS-USER-HOME-SEED]
-text = "a system user's own home starts from the system home's index snapshot and settings without the network; the first write asks once at a terminal; a package the system already has at that version is not installed again; a network failure is said once with the next step"
+text = "a system user's view takes the system home's settings and reads its index in place (no copy, no network); a package the system already provides is not installed again and is said so; a network failure is said once with the next step"
 status = "required"
 
 [LUBAN-PROMPT-MARK]

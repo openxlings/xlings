@@ -25,6 +25,13 @@ namespace shell = xdesk::shell;
 namespace apps = xdesk::apps;
 namespace fs = std::filesystem;
 
+namespace {
+// The backdrop's colour: an idle title's, so a short client reads as its frame.
+std::array<float, 4> backdrop_colour_(const shell::Theme& t) {
+    return {t.title_idle.r / 255.0f, t.title_idle.g / 255.0f, t.title_idle.b / 255.0f, 1.0f};
+}
+}  // namespace
+
 View* Server::view_of(layout::Id id) {
     for (auto& v : views) if (v.id == id) return &v;
     return nullptr;
@@ -54,41 +61,86 @@ void Server::follow_focus() {
 // (at once when `instant`: a window dragged follows the pointer).
 void Server::arrange(bool instant) {
     placements = lay.arrange(output_size(), reserved());
-    const double zoom = lay.zoom();
+    apply(placements, instant);
+}
+
+void Server::apply(const std::vector<layout::Placement>& ps, bool instant, layout::Id skip) {
     for (auto& v : views) {
-        const auto p = std::ranges::find(placements, v.id, &layout::Placement::id);
-        wlr_scene_node_set_enabled(&v.frame->node, v.mapped && p != placements.end());
-        if (p == placements.end()) continue;
-        const int title = static_cast<int>(std::lround(kTitle * zoom));
-        draw_title(v, static_cast<int>(std::lround(p->rect.width / zoom)), p->focused);
-        wlr_scene_buffer_set_dest_size(v.title, std::max(1, static_cast<int>(std::lround(p->rect.width))), title);
+        if (v.id == skip) continue;
+        const auto p = std::ranges::find(ps, v.id, &layout::Placement::id);
+        wlr_scene_node_set_enabled(&v.frame->node, v.mapped && p != ps.end());
+        if (p == ps.end()) continue;
+        // The canvas's zoom, and the overview's scale of it (switchers.cpp).
+        const auto spread = spread_zoom.find(v.id);
+        const double zoom = lay.zoom() * (spread != spread_zoom.end() ? spread->second : 1);
+        v.zoom = zoom;
+        // Full screen: no title bar, all of the output the client's.
+        const int bar = p->fullscreen ? 0 : kTitle;
+        const int title = static_cast<int>(std::lround(bar * zoom));
+        wlr_scene_node_set_enabled(&v.title->node, bar > 0);
+        if (bar > 0) {
+            // Square where it fills the screen: maximized, or a tiled one as wide as it.
+            const bool fills = p->maximized || (p->tiled && lay.options().outer_gap == 0 && p->rect.width >= logical_w() - 1);
+            draw_title(v, static_cast<int>(std::lround(p->rect.width / zoom)), p->focused, !fills);
+            wlr_scene_buffer_set_dest_size(v.title, std::max(1, static_cast<int>(std::lround(p->rect.width))), title);
+        }
         wlr_scene_node_set_position(&v.content->node, 0, title);
         // The client is asked for its size at zoom 1 (the canvas scales it).
         const int cw = std::max(1, static_cast<int>(std::lround(p->rect.width / zoom)));
-        const int ch = std::max(1, static_cast<int>(std::lround(p->rect.height / zoom)) - kTitle);
-        if (v.toplevel->base->initialized) wlr_xdg_toplevel_set_size(v.toplevel, cw, ch);
+        const int ch = std::max(1, static_cast<int>(std::lround(p->rect.height / zoom)) - bar);
+        if (v.toplevel->base->initialized) {
+            wlr_xdg_toplevel_set_size(v.toplevel, cw, ch);
+            // Tiled (design 2026-10-20 §7.1): the client takes the size as
+            // given -- foot, told nothing, rounds down to its cells.
+            wlr_xdg_toplevel_set_tiled(v.toplevel, p->tiled || p->maximized ? kAllEdges : 0);
+            wlr_xdg_toplevel_set_maximized(v.toplevel, p->maximized);
+            wlr_xdg_toplevel_set_fullscreen(v.toplevel, p->fullscreen);
+        }
+        if (v.backdrop) {
+            wlr_scene_rect_set_size(v.backdrop, std::max(1, static_cast<int>(std::lround(p->rect.width))),
+                                    std::max(1, static_cast<int>(std::lround(p->rect.height)) - title));
+            wlr_scene_node_set_position(&v.backdrop->node, 0, title);
+        }
         // The first place is taken at once; after that the frame glides.
         v.x.target = p->rect.x;
         v.y.target = p->rect.y;
-        if (!v.placed || instant) { v.x.snap(); v.y.snap(); }
+        if (!v.placed || instant || reduce_motion) { v.x.snap(); v.y.snap(); }
         v.placed = v.placed || v.mapped;
         v.moving = v.x.value != v.x.target || v.y.value != v.y.target;
         wlr_scene_node_set_position(&v.frame->node, static_cast<int>(std::lround(v.x.value)), static_cast<int>(std::lround(v.y.value)));
     }
     // Stacking as the layout orders them: stacked ones back to front, then
-    // floating ones, then those always on top.
-    for (const auto& p : placements)
-        if (View* v = view_of(p.id)) wlr_scene_node_raise_to_top(&v->frame->node);
-    zoom_surfaces(zoom);
+    // floating ones, then those always on top (one carried by the pointer above all).
+    for (const auto& p : ps)
+        if (View* v = view_of(p.id); v && v->id != skip) wlr_scene_node_raise_to_top(&v->frame->node);
+    if (View* carried = skip ? view_of(skip) : nullptr) wlr_scene_node_raise_to_top(&carried->frame->node);
+    zoom_surfaces();
     animate();
     draw_shell();
 }
 
-// The canvas's zoom on each window's surfaces (a surface's own commit
-// sets its size back, so this runs before each frame while zoomed).
-void Server::zoom_surfaces(double zoom) {
-    if (zoom == 1 && zoom_shown == 1) return;
+View* Server::view_at(double x, double y) {
+    double sx = 0, sy = 0;
+    wlr_scene_node* node = wlr_scene_node_at(&window_layer->node, x, y, &sx, &sy);
+    // Up to the window's frame: a child of the window layer.
+    while (node && node->parent && node->parent != window_layer) node = &node->parent->node;
+    if (!node) return nullptr;
+    for (auto& v : views)
+        if (v.mapped && &v.frame->node == node) return &v;
+    return nullptr;
+}
+
+bool Server::on_title(const View& v, double y) const {
+    // Its title bar is drawn at its zoom.
+    return y - v.frame->node.y < kTitle * v.zoom;
+}
+
+// Each window's zoom on its surfaces (a surface's own commit sets its size
+// back, so this runs before each frame while one is zoomed).
+void Server::zoom_surfaces() {
     for (auto& v : views) {
+        if (v.zoom == 1 && v.zoom_shown == 1) continue;
+        double zoom = v.zoom;
         wlr_scene_node_for_each_buffer(&v.content->node, [](wlr_scene_buffer* b, int, int, void* data) {
             const double z = *static_cast<double*>(data);
             auto* s = wlr_scene_surface_try_from_buffer(b);
@@ -97,8 +149,8 @@ void Server::zoom_surfaces(double zoom) {
             else wlr_scene_buffer_set_dest_size(b, std::max(1, static_cast<int>(s->surface->current.width * z)),
                                                 std::max(1, static_cast<int>(s->surface->current.height * z)));
         }, &zoom);
+        v.zoom_shown = zoom;
     }
-    zoom_shown = zoom;
 }
 
 // Frames on their way: a step per tick until every spring has settled.
@@ -145,6 +197,10 @@ void Server::add_view(wlr_xdg_toplevel* toplevel) {
     v.frame = wlr_scene_tree_create(window_layer);
     wlr_scene_node_set_enabled(&v.frame->node, false);
     v.title = wlr_scene_buffer_create(v.frame, nullptr);
+    {
+        const auto c = backdrop_colour_(theme);
+        v.backdrop = wlr_scene_rect_create(v.frame, 1, 1, c.data());
+    }
     v.content = wlr_scene_xdg_surface_create(v.frame, toplevel->base);
     wlr_scene_node_set_position(&v.content->node, 0, kTitle);
     v.content->node.data = &v;
@@ -189,8 +245,24 @@ void Server::add_view(wlr_xdg_toplevel* toplevel) {
     v.request_maximize.connect(&toplevel->events.request_maximize, [self](void*) {
         if (self->toplevel->base->initialized) wlr_xdg_surface_schedule_configure(self->toplevel->base);
     });
-    v.request_fullscreen.connect(&toplevel->events.request_fullscreen, [self](void*) {
-        if (self->toplevel->base->initialized) wlr_xdg_surface_schedule_configure(self->toplevel->base);
+    // A client asking for full screen (a video, a game) gets it, and back.
+    v.request_fullscreen.connect(&toplevel->events.request_fullscreen, [this, self](void*) {
+        if (self->laid && self->mapped) {
+            lay.set_fullscreen(self->id, self->toplevel->requested.fullscreen);
+            arrange();
+        } else if (self->toplevel->base->initialized) {
+            wlr_xdg_surface_schedule_configure(self->toplevel->base);
+        }
+    });
+    // A client that draws its own frame asks to be moved or resized with the
+    // button it holds (design 2026-10-20 §8).
+    v.request_move.connect(&toplevel->events.request_move, [this, self](void*) {
+        if (drag == Drag::none && self->mapped && live())
+            drag_start(self, lay.floating(self->id) || lay.mode() != layout::Mode::tile);
+    });
+    v.request_resize.connect(&toplevel->events.request_resize, [this, self](void* d) {
+        const auto* ev = static_cast<wlr_xdg_toplevel_resize_event*>(d);
+        if (drag == Drag::none && self->mapped && live()) resize_start(self, ev->edges);
     });
     v.destroy.connect(&toplevel->events.destroy, [this, self](void*) {
         if (self->laid) lay.remove(self->id);
@@ -198,6 +270,7 @@ void Server::add_view(wlr_xdg_toplevel* toplevel) {
             if (&*it == self) {
                 it->map.disconnect(); it->unmap.disconnect(); it->commit.disconnect(); it->destroy.disconnect();
                 it->request_maximize.disconnect(); it->request_fullscreen.disconnect(); it->set_title.disconnect();
+                it->request_move.disconnect(); it->request_resize.disconnect();
                 wlr_scene_node_destroy(&it->frame->node);
                 views.erase(it);
                 break;

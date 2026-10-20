@@ -8,6 +8,7 @@ import std;
 import xlings.libs.json;
 import xlings.platform;
 import opensal;
+import openhal.audio;
 
 namespace tk = xlings::testkit;
 namespace platform = xlings::platform;
@@ -186,10 +187,10 @@ sleep 300
     const auto sent = tk::read_file(log);
     using I = opensal::Interface;
     const auto provided = I::Surface | I::Pointer | I::Keyboard | I::Mode | I::Text | I::Clipboard | I::Shell | I::Cursor | I::CursorImage
-                          | I::PointerLock;
+                          | I::PointerLock | I::Displays;
     EXPECT_NE(sent.find(std::format("H {} 1100 700 1 1", provided)), std::string::npos)
-        << "the window's interfaces (surface, pointer, keyboard, mode, text, clipboard, shell, the pointer's shapes, images and lock), "
-           "size, density and pacing, first\n" << sent;
+        << "the window's interfaces (surface, pointer, keyboard, mode, text, clipboard, shell, the pointer's shapes, images and lock, "
+           "one of several displays), size, density and pacing, first\n" << sent;
     // Pacing: once it has shown the frame, it says so (the next may come).
     EXPECT_NE(sent.find("E presented"), std::string::npos) << sent;
     // The click, in the desktop's own pixels (its middle), down and up.
@@ -235,6 +236,7 @@ while True:
     log.write("%s %s\n" % (chr(head[0]), body.decode(errors="replace")))
 )", I::Surface | I::Mode | I::Pointer | I::Keyboard | I::PointerLock));
     const auto held = home.root() / "held.json", gone = home.root() / "gone.json", again = home.root() / "again.json";
+    const auto refused = home.root() / "refused.json", retried = home.root() / "retried.json";
     auto r = run_script(home, std::format(R"(wait desktop
 waitfor desktop.texture.0 320
 frames 3
@@ -245,16 +247,35 @@ state {}
 key Ctrl+Alt+K
 frames 3
 state {}
-)", held.string(), gone.string(), again.string()),
+key Ctrl+Alt+K
+frames 3
+refuse-grabs 1000
+key Ctrl+Alt+K
+frames 3
+state {}
+refuse-grabs 0
+sleep 700
+frames 3
+state {}
+)", held.string(), gone.string(), again.string(), refused.string(), retried.string()),
                         {"--desktop-exec", "python3", fake.string(), log.string()});
     ASSERT_EQ(r.exit_code, 0) << r.transcript();
     const auto a = read_state(held)["window"], b = read_state(gone)["window"], c = read_state(again)["window"];
-    EXPECT_EQ(a["title"], "Luban OS (desktop)") << "the system it shows, in the title";
+    EXPECT_EQ(a["title"], "Luban OS (desktop) · keyboard held (Ctrl+Alt+K lets it go)") << "the system it shows, in the title";
     EXPECT_TRUE(a["keyboard_grabbed"].get<bool>()) << "a desktop entered holds the keyboard";
     EXPECT_FALSE(b["keyboard_grabbed"].get<bool>()) << "Ctrl+Alt+K lets it go";
+    EXPECT_EQ(b["title"], "Luban OS (desktop)") << "let go, the title says nothing of it";
+    EXPECT_EQ(b["toast"], "Keyboard: let go") << "and the change is said at the top";
     EXPECT_FALSE(b["pointer_locked"].get<bool>()) << "and the pointer the desktop held";
     EXPECT_TRUE(c["keyboard_grabbed"].get<bool>()) << "and holds it again";
     EXPECT_FALSE(c["pointer_locked"].get<bool>()) << "the pointer only when the desktop asks again";
+    // The host refusing (design 2026-10-20 §5, G8): not held, said, asked again.
+    const auto e = read_state(refused)["window"], f = read_state(retried)["window"];
+    EXPECT_TRUE(e["keyboard_wanted"].get<bool>()) << e.dump();
+    EXPECT_FALSE(e["keyboard_grabbed"].get<bool>()) << "a refusal is not held\n" << e.dump();
+    EXPECT_NE(e["toast"].get<std::string>().find("did not let it be held"), std::string::npos) << e.dump();
+    EXPECT_EQ(e["title"], "Luban OS (desktop)") << e.dump();
+    EXPECT_TRUE(f["keyboard_grabbed"].get<bool>()) << "held on the next try\n" << f.dump();
     // The chord is the window's: the desktop never sees its K.
     const auto sent = tk::read_file(log);
     EXPECT_EQ(sent.find(std::format("E key 1 {} ", static_cast<int>('k'))), std::string::npos) << sent;
@@ -1054,6 +1075,47 @@ state {}
     EXPECT_FALSE(fs::exists(proc)) << "the tray outlived what it was for";
 }
 
+// A tray kept with nothing running (design 2026-10-20 §3.1, G20, G21): still
+// it does next to nothing, and `luban-os --quit` ends it -- not only its menu.
+XTEST(LubanOs, AKeptTrayIsStillAndQuitEndsIt, .area = "luban", .covers = {"LUBAN-OS-TRAY-PROCESS"},
+      .requires_ = {"linux", "xlings-bin"}, .resources = {"cpu"}) {
+    if (!app_binary()) GTEST_SKIP() << "no luban-os beside the xlings under test";
+    auto home = home_with_two("luban-os-tray-quit");
+    tk::write_file(home.dir() / "config" / "luban-os.json", R"({"countdown":0,"keep_in_tray":true})");
+    const auto state = home.root() / "state.json";
+    auto r = run_script(home, std::format(R"(wait launcher
+tray open
+frames 3
+state {}
+)", state.string()));
+    ASSERT_EQ(r.exit_code, 0) << r.transcript();
+    const int pid = read_state(state)["tray"]["pid"].get<int>();
+    ASSERT_GT(pid, 0);
+    const auto proc = fs::path("/proc") / std::to_string(pid);
+    auto cpu_ticks = [&] {
+        std::istringstream in(tk::read_file(proc / "stat"));
+        std::string field;
+        long long ticks = 0;
+        for (int k = 1; k <= 15 && in >> field; ++k)
+            if (k == 14 || k == 15) ticks += std::stoll(field);
+        return ticks;
+    };
+    std::this_thread::sleep_for(std::chrono::seconds(1));
+    ASSERT_TRUE(fs::exists(proc)) << "kept: the tray stays with no window";
+    const auto before = cpu_ticks();
+    std::this_thread::sleep_for(std::chrono::seconds(5));
+    EXPECT_LE(cpu_ticks() - before, 10) << "a still tray took more than 100 ms of CPU in 5 s";
+    tk::RunOptions o;
+    o.argv = {app_binary()->string(), "--quit"};
+    o.env = home.env();
+    const auto quit = tk::run(o);
+    EXPECT_EQ(quit.exit_code, 0) << quit.transcript();
+    for (int k = 0; k < 50 && fs::exists(proc); ++k) std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    EXPECT_FALSE(fs::exists(proc)) << "luban-os --quit left the tray";
+    const auto again = tk::run(o);
+    EXPECT_NE(again.out.find("not running"), std::string::npos) << again.transcript();
+}
+
 // Visual verification (design 2026-10-16 L §13.8): the key pages at three
 // scales and in both languages -- every control on the screen, apart, whole
 // and big enough to hit; where each lies matches its baseline
@@ -1287,4 +1349,29 @@ state {}
     EXPECT_GE(p["frames"].get<int>(), 20);
     const auto q = read_state(idle)["perf"];
     EXPECT_GE(q["idle_wait_ms"].get<int>(), 100) << "a still window rests\n" << q.dump();
+}
+
+// A system's sound plays on this computer (design 2026-10-20 §20.1): its
+// openhal stream through the window's speaker -- SDL's, here its disk
+// driver, a file -- the same samples.
+XTEST(LubanOs, ASystemsSoundPlaysOnThisComputer, .area = "luban", .covers = {"LUBAN-SOUND"}, .requires_ = {"linux", "xlings-bin"}) {
+    if (!app_binary()) GTEST_SKIP() << "no luban-os beside the xlings under test";
+    auto home = tk::Home::isolated("luban-os-sound");
+    ASSERT_EQ(home.xlings({"self", "init"}).exit_code, 0);
+    std::string wave;
+    for (int k = 0; k < 4800; ++k)
+        for (int ch = 0; ch < 2; ++ch) {
+            const auto v = static_cast<std::uint16_t>((k * 53 + ch * 777) & 0x7fff);
+            wave += static_cast<char>(v & 0xff);
+            wave += static_cast<char>(v >> 8);
+        }
+    namespace audio = openhal::audio;
+    const auto stream = home.root() / "stream.oha";
+    tk::write_file(stream, audio::encode(audio::Open{.stream = 1, .format = {48000, 2}}) + audio::encode(audio::Samples{.stream = 1, .bytes = wave}));
+    const auto played = home.root() / "played.raw";
+    const auto r = run_script(home, std::format("play {}\n", stream.string()), {},
+                              {{"SDL_AUDIO_DRIVER", "disk"}, {"SDL_AUDIO_DISK_OUTPUT_FILE", played.string()}, {"SDL_AUDIO_DISK_TIMESCALE", "4"}});
+    ASSERT_EQ(r.exit_code, 0) << r.transcript();
+    const auto out = tk::read_file(played);
+    EXPECT_NE(out.find(wave.substr(0, 4096)), std::string::npos) << "the samples are what was played (" << out.size() << " bytes)";
 }

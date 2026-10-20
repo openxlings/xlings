@@ -112,4 +112,63 @@ Settings load(std::string_view profile, const std::map<std::string, std::string>
     return out;
 }
 
+fs::path person_file(std::string_view profile, const std::map<std::string, std::string>& env) {
+    const auto all = files(profile, env);
+    return all.empty() ? fs::path{} : all.back();
+}
+
+std::expected<void, std::string> set_value(std::string_view profile, const std::map<std::string, std::string>& env,
+                                           std::string_view section, std::string_view key, std::string_view value) {
+    const auto file = person_file(profile, env);
+    if (file.empty()) return std::unexpected(std::string("no home to keep the settings in"));
+    std::vector<std::string> lines;
+    {
+        std::ifstream in(file);
+        for (std::string line; std::getline(in, line);) lines.push_back(line);
+    }
+    auto trim = [](std::string_view t) {
+        while (!t.empty() && (t.front() == ' ' || t.front() == '\t')) t.remove_prefix(1);
+        while (!t.empty() && (t.back() == ' ' || t.back() == '\t' || t.back() == '\r')) t.remove_suffix(1);
+        return t;
+    };
+    const std::string wanted = std::format("{} = {}", key, value);
+    std::string current;
+    std::optional<std::size_t> section_end, replaced;
+    bool in_section = false;
+    for (std::size_t k = 0; k < lines.size(); ++k) {
+        const auto t = trim(lines[k]);
+        if (t.starts_with("[") && t.ends_with("]")) {
+            if (in_section && !section_end) section_end = k;
+            in_section = t.substr(1, t.size() - 2) == section;
+            continue;
+        }
+        if (!in_section || t.empty() || t.front() == '#' || t.front() == ';') continue;
+        const auto eq = t.find('=');
+        if (eq != std::string_view::npos && trim(t.substr(0, eq)) == key) {
+            lines[k] = wanted;
+            replaced = k;
+        }
+    }
+    if (!replaced) {
+        if (in_section) section_end = lines.size();
+        if (section_end) lines.insert(lines.begin() + static_cast<std::ptrdiff_t>(*section_end), wanted);
+        else {
+            if (!lines.empty() && !lines.back().empty()) lines.emplace_back();
+            lines.push_back(std::format("[{}]", section));
+            lines.push_back(wanted);
+        }
+    }
+    std::error_code ec;
+    fs::create_directories(file.parent_path(), ec);
+    const auto tmp = fs::path(file.string() + ".tmp");
+    {
+        std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
+        for (const auto& l : lines) out << l << "\n";
+        if (!out) return std::unexpected(std::format("{}: cannot be written", tmp.string()));
+    }
+    fs::rename(tmp, file, ec);
+    if (ec) return std::unexpected(std::format("{}: {}", file.string(), ec.message()));
+    return {};
+}
+
 }  // namespace xdesk::config

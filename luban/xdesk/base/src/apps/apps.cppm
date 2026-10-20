@@ -42,6 +42,13 @@ std::vector<const App*> search(const std::vector<App>& apps, std::string_view qu
 // ...) removed, %% a percent sign.
 std::vector<std::string> argv(std::string_view exec);
 
+// An icon's file, as the freedesktop icon theme specification finds one --
+// the PNG part of it (xdesk draws no SVG): an absolute path as it is; else
+// icons/<theme>/<N>x<N>/apps/<name>.png in the data dirs, hicolor and the
+// usual themes, the size nearest `px` at or above it first, then
+// pixmaps/<name>.png. nullopt: none.
+std::optional<fs::path> icon_file(const std::map<std::string, std::string>& env, std::string_view name, int px);
+
 // The default terminal, as the proposed freedesktop convention declares it
 // (xdg-terminal-exec): share/xdg-terminals/<id>.desktop in the data dirs,
 // chosen by the first id an xdg-terminals.list names (the desktop's own

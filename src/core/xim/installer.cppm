@@ -245,6 +245,12 @@ bool evict_invalid_archive_cache_(
         const std::filesystem::path& archive,
         const ExtractError& error);
 
+// The users of this system whose view has chosen `target@version` from this
+// home's store (design 2026-10-20 §4.7): read from each user's home in the
+// system's passwd (XLINGS_ETC_PASSWD names another file), never a shared
+// registry users could write. A home that is not a system's has none.
+std::vector<std::string> views_choosing(const std::string& target, const std::string& version);
+
 namespace detail_ {
 
 // `<hook> hook failed: <error>`, then the last lines of what the hook and its

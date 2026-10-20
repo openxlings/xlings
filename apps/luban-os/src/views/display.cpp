@@ -7,6 +7,8 @@ import xlings.libs.json;
 import xlings.platform;
 import opensal;
 import opensal.wire;
+import openhal.audio;
+import luban.desktop.host;
 import luban.service;
 import luban.vm;
 import luban.compat;
@@ -16,8 +18,9 @@ import :core;
 namespace luban::os {
 
 namespace {
-// The channel a window's desktop uses (its console is 1).
+// The channel a window's desktop uses (its console is 1), and its sound.
 constexpr std::uint32_t kDisplayChannel = 2;
+constexpr std::uint32_t kSoundChannel = 3;
 }  // namespace
 
 std::optional<std::string> desktop_session(const service::Environment& e) {
@@ -27,11 +30,18 @@ std::optional<std::string> desktop_session(const service::Environment& e) {
 }
 
 std::unique_ptr<Display> Display::machine(const fs::path& home, const std::string& name, const std::string& session,
-                                          opensal::Size size, ClipboardGrant clip, std::function<void()> wake, std::string& error) {
+                                          opensal::Size size, ClipboardGrant clip, bool sound, std::function<void()> wake,
+                                          std::string& error) {
     auto client = vm::Client::connect(home, name);
     if (!client) { error = client.error(); return nullptr; }
+    // Its sound, granted (design 2026-10-20 §20.1): the system's `luban`
+    // sink, relayed by `luban __audio` there, played here.
     return over_(std::move(*client), name, true, size, clip, std::move(wake), error,
-                 [session, size](vm::Client& cl) { return cl.open_display(kDisplayChannel, session, int(size.width), int(size.height)); },
+                 [session, size, sound](vm::Client& cl) {
+                     if (!cl.open_display(kDisplayChannel, session, int(size.width), int(size.height))) return false;
+                     if (sound) (void)cl.open_command(kSoundChannel, {"luban", "__audio"}, 0, 0, nlohmann::json::object(), true);
+                     return true;
+                 },
                  {}, session);
 }
 
@@ -58,6 +68,10 @@ std::unique_ptr<Display> Display::over_(vm::Client client, const std::string& na
             auto frames = self->client_->poll(100);
             if (!frames) break;
             for (auto& [type, body] : *frames) {
+                if (body.first == kSoundChannel) {
+                    if (type == 'D') self->sound_(body.second);
+                    continue;
+                }
                 if (body.first != kDisplayChannel) continue;
                 if (type == 'D') self->provider_(body.second);
                 else if (type == 'E' && !self->log_.empty()) {
@@ -161,7 +175,41 @@ std::unique_ptr<Display> Display::process(const std::vector<std::string>& argv, 
             self->provider_(std::string_view(buf.data(), *n));
             if (!self->alive_) break;
         }
-        if (auto st = platform::wait_process(self->pid_, true); st && platform::exit_code(*st) != 0) {
+        // Closed (stop_): the desktop ends at its input's end -- unless it is
+        // writing a frame nobody reads, which it finishes first. What it
+        // writes is drained until it ends; one that does not end in 3 s is
+        // ended (its session: it and what it started).
+        if (self->stop_) {
+            const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+            bool ended = false;
+            while (std::chrono::steady_clock::now() < deadline) {
+                std::array<platform::PollFd, 1> p{{{.fd = self->from_}}};
+                platform::poll_fds(p, 100);
+                if (!p[0].readable && !p[0].closed) continue;
+                auto n = platform::read_some(self->from_, buf);
+                if (!n || *n == 0) { ended = true; break; }
+            }
+            if (!ended) {
+                (void)platform::send_signal_group(self->pid_, platform::sig::terminate);
+                std::optional<platform::ExitStatus> st;
+                for (int k = 0; k < 20 && !(st = platform::wait_process(self->pid_, false)); ++k)
+                    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+                if (!st) (void)platform::send_signal_group(self->pid_, platform::sig::kill);
+                else {
+                    self->alive_ = false;
+                    if (self->wake_) self->wake_();
+                    return;
+                }
+            }
+        }
+        // Its end. Closed by this window, a desktop that other windows still
+        // show (design 2026-10-20 §11) goes on: it is waited for a moment, then left.
+        std::optional<platform::ExitStatus> st;
+        if (!self->stop_) st = platform::wait_process(self->pid_, true);
+        else
+            for (int k = 0; k < 60 && !(st = platform::wait_process(self->pid_, false)); ++k)
+                std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        if (st && platform::exit_code(*st) != 0) {
             std::lock_guard l(self->m_);
             if (self->error_.empty()) self->error_ = std::format("the desktop ended ({})", platform::exit_code(*st));
         }
@@ -173,7 +221,10 @@ std::unique_ptr<Display> Display::process(const std::vector<std::string>& argv, 
 
 Display::~Display() {
     stop_ = true;
-    if (client_ && alive_) client_->close(kDisplayChannel);
+    if (client_ && alive_) {
+        client_->close(kSoundChannel);
+        client_->close(kDisplayChannel);
+    }
     if (to_ >= 0) {
         // The stream's end stops the bridge, and it its compositor.
         std::vector<int> fds{to_};
@@ -188,6 +239,29 @@ bool Display::send_(std::string_view wire_bytes) {
     if (client_) return client_->send(kDisplayChannel, wire_bytes);
     std::lock_guard l(sending_);
     return to_ >= 0 && xlings::platform::write_all(to_, wire_bytes);
+}
+
+// The system's sound (openhal.audio): its stream played on this computer's
+// output; one that cannot be is said once in the log and left.
+void Display::sound_(std::string_view bytes) {
+    namespace audio = openhal::audio;
+    sound_decoder_.feed(bytes);
+    for (;;) {
+        auto m = sound_decoder_.next();
+        if (!m || !*m) return;
+        if (const auto* o = std::get_if<audio::Open>(&**m)) {
+            if (o->direction != audio::Direction::output) continue;
+            auto s = host::Speaker::open(o->format.rate, o->format.channels);
+            if (s) speaker_ = std::move(*s);
+            else if (!log_.empty()) std::ofstream(log_, std::ios::app) << "sound: " << s.error() << "\n";
+        } else if (const auto* p = std::get_if<audio::Samples>(&**m)) {
+            if (speaker_) speaker_->play(p->bytes);
+        } else if (const auto* v = std::get_if<audio::Volume>(&**m)) {
+            if (speaker_) speaker_->volume(v->level, v->muted);
+        } else {
+            speaker_.reset();
+        }
+    }
 }
 
 void Display::provider_(std::string_view bytes) {
@@ -209,7 +283,7 @@ void Display::provider_(std::string_view bytes) {
             // The shell, too, for a desktop without its own (it asks for it).
             using I = opensal::Interface;
             auto provided = I::Surface | I::Mode | I::Pointer | I::Keyboard | I::Text | I::Shell | I::Cursor | I::CursorImage
-                            | I::PointerLock;
+                            | I::PointerLock | I::Displays;
             if (clip_.copy || clip_.paste) provided = provided | I::Clipboard;
             opensal::Interfaces wanted = 0;
             std::from_chars(msg.payload.data(), msg.payload.data() + msg.payload.size(), wanted);
@@ -238,6 +312,24 @@ void Display::provider_(std::string_view bytes) {
                 pointer_.shape = "custom";
                 pointer_.image = std::move(*image);
                 changed = true;
+            }
+        } else if (msg.kind == 'd') {
+            if (auto r = opensal::wire::decode_display(msg.payload)) {
+                std::optional<opensal::Size> resend;
+                double density = 1;
+                {
+                    std::lock_guard l(m_);
+                    // Made the primary: the desktop takes this window's size again.
+                    if (role_ && role_->kind == opensal::DisplayRole::Kind::mirror && r->kind == opensal::DisplayRole::Kind::primary)
+                        resend = wanted_, density = density_;
+                    role_changed_ = role_ != *r;
+                    role_ = *r;
+                    changed = changed || role_changed_;
+                }
+                if (resend) {
+                    send_(opensal::wire::encode('E', opensal::wire::encode_event(opensal::DensityChanged{density})));
+                    send_(opensal::wire::encode('E', opensal::wire::encode_event(opensal::Resized{*resend})));
+                }
             }
         } else if (msg.kind == 'l') {
             std::lock_guard l(m_);
@@ -290,6 +382,11 @@ void Display::provider_(std::string_view bytes) {
 
 void Display::send(const opensal::Event& e) {
     if (!alive_) return;
+    bool mirror = false;
+    {
+        std::lock_guard l(m_);
+        mirror = role_ && role_->kind == opensal::DisplayRole::Kind::mirror;
+    }
     if (const auto* r = std::get_if<opensal::Resized>(&e)) {
         std::lock_guard l(m_);
         wanted_ = r->size;
@@ -299,6 +396,8 @@ void Display::send(const opensal::Event& e) {
         std::lock_guard l(m_);
         density_ = d->scale;
     }
+    // A mirror's size is its own: the desktop is the primary's.
+    if (mirror && (std::holds_alternative<opensal::Resized>(e) || std::holds_alternative<opensal::DensityChanged>(e))) return;
     send_(opensal::wire::encode('E', opensal::wire::encode_event(e)));
 }
 
@@ -310,6 +409,12 @@ std::optional<std::string> Display::take_text_input() {
 std::optional<std::string> Display::take_clipboard() {
     std::lock_guard l(m_);
     return std::exchange(clipboard_, std::nullopt);
+}
+
+std::optional<opensal::DisplayRole> Display::take_role() {
+    std::lock_guard l(m_);
+    if (!std::exchange(role_changed_, false)) return std::nullopt;
+    return role_;
 }
 
 std::optional<bool> Display::take_pointer_lock() {

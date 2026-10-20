@@ -99,6 +99,29 @@ std::vector<fs::path> dirs(const std::map<std::string, std::string>& env) {
     return out;
 }
 
+std::optional<fs::path> icon_file(const std::map<std::string, std::string>& env, std::string_view name, int px) {
+    std::error_code ec;
+    if (name.empty()) return std::nullopt;
+    if (const fs::path p(name); p.is_absolute())
+        return p.extension() == ".png" && fs::is_regular_file(p, ec) ? std::optional<fs::path>(p) : std::nullopt;
+    const std::string file = std::string(name) + ".png";
+    // Sizes from the one asked for up, then down: a larger one scales down well.
+    std::vector<int> sizes;
+    for (const int n : {16, 22, 24, 32, 48, 64, 96, 128, 256, 512})
+        if (n >= px) sizes.push_back(n);
+    for (const int n : {512, 256, 128, 96, 64, 48, 32, 24, 22, 16})
+        if (n < px) sizes.push_back(n);
+    std::vector<fs::path> shares;
+    for (const auto& d : dirs(env)) shares.push_back(d.parent_path());
+    for (const char* theme : {"hicolor", "breeze", "Adwaita", "Papirus"})
+        for (const int n : sizes)
+            for (const auto& share : shares)
+                if (auto p = share / "icons" / theme / std::format("{}x{}", n, n) / "apps" / file; fs::is_regular_file(p, ec)) return p;
+    for (const auto& share : shares)
+        if (auto p = share / "pixmaps" / file; fs::is_regular_file(p, ec)) return p;
+    return std::nullopt;
+}
+
 std::vector<App> scan(const std::vector<fs::path>& from, std::string_view lang) {
     std::map<std::string, std::optional<App>> by_id;   // nullopt: hidden by a more specific one
     std::error_code ec;

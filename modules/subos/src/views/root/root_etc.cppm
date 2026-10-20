@@ -85,5 +85,12 @@ std::expected<std::vector<std::string>, std::string> ensure_prompt_script(const 
 // §8): profile.d/xlings-user.sh and fish/conf.d/xlings-user.fish, written
 // once. The ones written, relative to etc.
 std::expected<std::vector<std::string>, std::string> ensure_user_layer_scripts(const fs::path& etc);
+// Who may act as root (design 2026-10-20 §4.5): etc/sudoers (root, and the
+// rules in sudoers.d) and sudoers.d/luban -- the wheel group with its
+// password, asked again after 15 minutes, a secure_path that finds xlings and
+// the proxy variables kept -- written when missing (machine state). With
+// `nopasswd`, sudoers.d/luban-<user>: that user's sudo asks nothing (a system
+// made with --no-password). The ones written, relative to etc.
+std::expected<std::vector<std::string>, std::string> ensure_sudoers(const fs::path& etc, std::string_view nopasswd = {});
 
 }  // namespace xlings::subos::root_etc

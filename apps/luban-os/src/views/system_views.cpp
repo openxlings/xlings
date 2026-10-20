@@ -480,13 +480,21 @@ bool shell_bar_(App& a, Display& d, ImVec2 at, float width, float height) {
 // window's input given to it -- the pointer in the surface's pixels.
 void desktop_view_(App& a) {
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
-    begin_full_("desktop");
+    // No background of its own: the desktop's picture is under it (backdrop).
+    begin_full_("desktop", true);
     ImGui::PopStyleVar();
     if (!a.display) { ImGui::End(); return; }
     auto& d = *a.display;
+    // A mirror keeps the source's shape; the primary any (design 2026-10-20 §11.2).
+    if (const auto r = d.take_role()) {
+        if (r->kind == opensal::DisplayRole::Kind::mirror) a.window->keep_shape(static_cast<int>(r->size.width), static_cast<int>(r->size.height));
+        else a.window->free_shape();
+        a.window->set_title(a.title_for(a.current));
+    }
     std::vector<Display::Update> updates;
     const auto size = d.take(updates);
     a.desktop_changed = !updates.empty();
+    a.perf.desktop_frames += static_cast<int>(updates.size());
     if (size.width && size.height
         && (a.texture.width != static_cast<int>(size.width) || a.texture.height != static_cast<int>(size.height))) {
         if (a.texture.handle) a.window->destroy(a.texture);
@@ -521,18 +529,10 @@ void desktop_view_(App& a) {
         const ImVec2 at(std::round(origin.x + (avail.x - shown.x) / 2), std::round(origin.y + (avail.y - shown.y) / 2));
         ImGui::SetCursorScreenPos(at);
         ImGui::Dummy(shown);
-        // Drawn in tiles: SDL's software renderer (no GPU, as in a VM) draws
-        // nothing of one triangle much bigger than about 1000x700.
-        const auto id = static_cast<ImTextureID>(reinterpret_cast<std::uintptr_t>(a.texture.handle));
-        constexpr int kTile = 512;
-        for (int ty = 0; ty < a.texture.height; ty += kTile)
-            for (int tx = 0; tx < a.texture.width; tx += kTile) {
-                const int tw = std::min(kTile, a.texture.width - tx), th = std::min(kTile, a.texture.height - ty);
-                const ImVec2 p0(at.x + tx * scale, at.y + ty * scale), p1(at.x + (tx + tw) * scale, at.y + (ty + th) * scale);
-                const ImVec2 uv0(static_cast<float>(tx) / a.texture.width, static_cast<float>(ty) / a.texture.height);
-                const ImVec2 uv1(static_cast<float>(tx + tw) / a.texture.width, static_cast<float>(ty + th) / a.texture.height);
-                ImGui::GetWindowDrawList()->AddImage(id, p0, p1, uv0, uv1);
-            }
+        // Under the interface, copied as one rectangle (design 2026-10-20
+        // §13.2): imgui's textured triangles were most of the window's work
+        // on a frame, and on the software renderer most of its CPU.
+        a.window->backdrop(a.texture, at.x, at.y, shown.x, shown.y);
         mark_(a, "desktop");
         // Over its picture the pointer is the desktop's: drawn by the host
         // as it says (design 2026-10-19 §15), or none where it draws its own
@@ -569,6 +569,9 @@ void desktop_view_(App& a) {
             d.send(opensal::ClipboardText{std::move(text)});
         };
         if (std::exchange(a.paste_on_open, false)) paste();
+        // Whether it can be seen, whatever is over it (it draws nothing while not).
+        for (const auto& e : a.window->events())
+            if (std::holds_alternative<opensal::Shown>(e)) d.send(e);
         if (!a.menu && !a.close_dialog) {
             for (const auto& e : a.window->events()) {
                 if (const auto* m = std::get_if<opensal::PointerMotion>(&e)) {
@@ -606,7 +609,7 @@ void desktop_view_(App& a) {
         auto* dl = ImGui::GetWindowDrawList();
         const float cell = std::round(px(4));
         art::badge(dl, art::Badge::Craftsman, "", ImVec2(origin.x + (avail.x - 16 * cell) / 2, origin.y + avail.y * 0.32f), cell,
-                   imkit::beat(4, 0.15));
+                   art::craft_frame(1.6));
         centred_(dl, avail.y * 0.32f + 16 * cell + px(20),
                  std::vformat(tr("luban.os.system.starting_desktop"), std::make_format_args(a.current)), th_().text_dim, 16);
     }

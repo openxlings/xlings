@@ -103,45 +103,100 @@ void Layout::tile_split_(Space& s) {
     s.columns.insert(s.columns.begin() + static_cast<std::ptrdiff_t>(at->column + 1), Column{.cells = {{.id = id}}});
 }
 
+// A column's share (Column::width) of `length`: f * (length - 2 outer +
+// inner) - inner, so shares summing to 1 fill it exactly, gaps included.
+std::vector<double> Layout::tile_widths_(const Space& s, double length) const {
+    const std::size_t n = s.columns.size();
+    std::vector<double> out(n, 0);
+    if (n == 0) return out;
+    const double gi = o_.inner_gap, go = o_.outer_gap;
+    const double room = std::max(1.0, length - 2 * go - gi * static_cast<double>(n - 1));
+    if (n == 1) return out[0] = room, out;   // one column fills the output
+    const double unit = std::max(1.0, length - 2 * go + gi);
+    const double narrowest = std::min(o_.min_column_width, room);
+    double set = 0;
+    std::size_t open = 0;
+    for (std::size_t i = 0; i < n; ++i) {
+        if (s.columns[i].width > 0) set += out[i] = std::max(1.0, s.columns[i].width * unit - gi);
+        else ++open;
+    }
+    // Those not given a width share what is left equally, none narrower
+    // than the narrowest (then the strip scrolls).
+    if (open > 0) {
+        const double each = std::max(narrowest, (room - set) / static_cast<double>(open));
+        for (std::size_t i = 0; i < n; ++i)
+            if (s.columns[i].width <= 0) out[i] = each;
+    }
+    // Less than the output: every column wider in proportion until it is filled.
+    const double total = std::accumulate(out.begin(), out.end(), 0.0);
+    if (total < room - 0.5)
+        for (auto& w : out) w *= room / total;
+    return out;
+}
+
+Direction Layout::turned_(const Space& s, Direction d) {
+    if (s.flow != Flow::vertical) return d;
+    switch (d) {
+        case Direction::up: return Direction::left;
+        case Direction::down: return Direction::right;
+        case Direction::left: return Direction::up;
+        case Direction::right: return Direction::down;
+    }
+    return d;
+}
+
+double Layout::tile_length_(const Space& s) const {
+    const Rect area = area_();
+    return s.flow == Flow::vertical ? area.height : area.width;
+}
+
+double Layout::tile_fraction_(const Space& s, std::size_t column) const {
+    const double length = tile_length_(s);
+    const auto ws = tile_widths_(s, length);
+    if (column >= ws.size()) return 0;
+    return (ws[column] + o_.inner_gap) / std::max(1.0, length - 2 * o_.outer_gap + o_.inner_gap);
+}
+
 std::vector<Placement> Layout::tile_(Space& s, Rect area) {
     std::vector<Placement> out;
-    const double g = o_.gap;
+    const bool vertical = s.flow == Flow::vertical;
+    const double gi = o_.inner_gap, go = o_.outer_gap;
+    // Along the flow (`along`) and across it, as if it ran sideways.
+    const double along = vertical ? area.height : area.width, across = vertical ? area.width : area.height;
     const std::size_t n = s.columns.size();
-    // Strip positions: one or two columns share the output, more are halves.
-    std::vector<double> xs, ws;
-    double x = g;
-    for (const auto& c : s.columns) {
-        const double f = c.width > 0 ? c.width : (n <= 2 ? 1.0 / static_cast<double>(n) : 0.5);
-        const double w = std::max(1.0, f * (area.width - g) - g);
+    const auto ws = tile_widths_(s, along);
+    std::vector<double> xs;
+    double x = go;
+    for (const double w : ws) {
         xs.push_back(x);
-        ws.push_back(w);
-        x += w + g;
+        x += w + gi;
     }
-    const double strip = x;
-    // The focused column in view; a strip narrower than the output centred.
+    const double strip = n == 0 ? 0 : x - gi + go;
+    // The focused column in view.
     const auto focused = s.focus ? find_(s.columns, *s.focus) : std::nullopt;
     double scroll = s.scroll;
-    if (strip <= area.width) {
-        scroll = -(area.width - strip) / 2;
+    if (strip <= along + 0.5) {
+        scroll = 0;
     } else {
-        if (focused) {
+        if (focused && !s.scrolled) {
             const auto i = focused->column;
-            if (xs[i] - g < scroll) scroll = xs[i] - g;
-            else if (xs[i] + ws[i] + g > scroll + area.width) scroll = xs[i] + ws[i] + g - area.width;
+            if (xs[i] - go < scroll) scroll = xs[i] - go;
+            else if (xs[i] + ws[i] + go > scroll + along) scroll = xs[i] + ws[i] + go - along;
         }
-        scroll = std::clamp(scroll, 0.0, strip - area.width);
+        scroll = std::clamp(scroll, 0.0, strip - along);
     }
     s.scroll = scroll;
-    const double height = std::max(1.0, area.height - 2 * g);
+    const double height = std::max(1.0, across - 2 * go);
     for (std::size_t i = 0; i < n; ++i) {
         const auto& col = s.columns[i];
-        const auto hs = heights_(col, height, g);
-        double y = area.y + g;
+        const auto hs = heights_(col, height, gi);
+        double y = go;
         for (std::size_t k = 0; k < col.cells.size(); ++k) {
-            const Rect r { area.x + xs[i] - scroll, y, ws[i], hs[k] };
+            const double a = xs[i] - scroll;
+            const Rect r = vertical ? Rect{area.x + y, area.y + a, hs[k], ws[i]} : Rect{area.x + a, area.y + y, ws[i], hs[k]};
             const Id id = col.cells[k].id;
-            out.push_back({.id = id, .rect = r, .visible = overlaps(r, area), .focused = s.focus == id});
-            y += hs[k] + g;
+            out.push_back({.id = id, .rect = r, .visible = overlaps(r, area), .focused = s.focus == id, .tiled = true});
+            y += hs[k] + gi;
         }
     }
     return out;

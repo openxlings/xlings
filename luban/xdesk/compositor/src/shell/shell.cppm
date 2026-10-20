@@ -43,8 +43,11 @@ bool chinese(const std::map<std::string, std::string>& env);
 // Every picture is drawn for a density (`scale` device pixels to a logical
 // one), its size and areas given in logical pixels.
 inline constexpr int kTitleHeight = 26;
+// Its top corners are round (design 2026-10-20 §14.3), the desktop showing
+// past them; `rounded` false for a window that fills the screen.
 draw::Image title_bar(draw::Fonts* fonts, const Theme& t, std::string_view title, int width, bool active, bool close_hover,
-                      double scale = 1, bool maximize_hover = false);
+                      double scale = 1, bool maximize_hover = false, bool rounded = true);
+inline constexpr double kTitleRadius = 8;
 // Its close button and its maximize button (left of it), in the bar's pixels.
 draw::Rect close_button(int width);
 draw::Rect maximize_button(int width);
@@ -62,7 +65,7 @@ struct PanelState {
     bool zh { false };
 };
 
-enum class Target { none, launcher, workspace, overview, item };
+enum class Target { none, launcher, workspace, overview, item, page, choice };
 struct Area {
     draw::Rect rect;                // output pixels
     Target target { Target::none };
@@ -131,9 +134,24 @@ struct ChooserCard {
 // (what choosing it gives), `selected` lit. Its areas are the cards (item).
 Picture chooser(draw::Fonts* ui, const Theme& t, const std::vector<ChooserCard>& cards, std::size_t selected, int width, int height,
                 bool zh, double scale = 1);
-// Super+Tab: the windows, the most recent first; areas are the rows.
-Picture switcher(draw::Fonts* ui, const Theme& t, const std::vector<std::string>& names, std::size_t selected, int width, int height,
-                 bool zh, double scale = 1);
+// Super+Tab (design 2026-10-20 §10.1): the applications in a row, the most
+// recent first -- each its icon (or its initial on a colour of its own), its
+// name, how many windows it has -- `selected` lit, what the keys do under
+// them; near the top of the output, its windows spread below once `open`.
+// Areas are the tiles (item, by index), in output pixels.
+struct AppTile {
+    std::string name;
+    std::string key;                // the colour of an initial is the key's
+    const draw::Image* icon { nullptr };   // drawn at kAppIcon (logical), or none
+    int windows { 1 };
+};
+inline constexpr int kAppIcon = 48;
+Picture app_switcher(draw::Fonts* ui, const Theme& t, const std::vector<AppTile>& apps, std::size_t selected, bool open, int width,
+                     int height, bool zh, double scale = 1);
+// Alt+Tab's word on the chosen window (§10.2): a ring around `rect` and its
+// name under it (above, at the bottom of the output). The picture is just those.
+Picture spread_label(draw::Fonts* ui, const Theme& t, draw::Rect rect, std::string_view name, int width, int height,
+                     double scale = 1);
 // Super+/: the keys that mean something here, a line each.
 struct SheetRow {
     std::string keys;
@@ -156,6 +174,42 @@ Picture sizes(draw::Fonts* ui, const Theme& t, const std::vector<std::string>& l
 // The maximize button's layouts (§17.10), small pictures of them below
 // (x, y): halves, 2/3 and 1/3, one and two, thirds; areas by index.
 Picture layouts(const Theme& t, double x, double y, int width, int height, double scale = 1);
+// The canvas in small at the bottom right (design 2026-10-20 §9.6): every
+// group's frame, the view as an outline; one area, the whole map, whose
+// point clicked is `to_world`'s.
+struct MinimapPicture {
+    Picture picture;
+    double origin_x { 0 }, origin_y { 0 }, per_pixel { 1 };   // world = origin + pixel * per_pixel
+};
+MinimapPicture minimap(const Theme& t, const std::vector<draw::Rect>& boxes, draw::Rect view, draw::Rect bounds, int width,
+                       int height, double scale = 1);
+// The settings (design 2026-10-20 §11.4): its pages down the left, the
+// chosen one's rows on the right -- a heading, a line of text, a switch, a
+// choice among a few, an action's keys, a button, a search field -- one row
+// lit (the keys' focus; `capturing`: a key being given to it), and what the
+// keys do at the bottom. Areas: a page (Target::page, its index), a row
+// (Target::item, its index), a row's choice (Target::choice, row * 64 + choice).
+struct SettingsRow {
+    enum class Kind { heading, text, toggle, choice, keys, button, search };
+    Kind kind { Kind::text };
+    std::string label;
+    std::string value;              // text: beside it; keys: the chords; search: what is typed
+    std::vector<std::string> choices;
+    std::size_t chosen { 0 };
+    bool on { false };
+    bool changed { false };         // keys: not the set's own
+};
+struct SettingsView {
+    std::vector<std::string> pages;
+    std::size_t page { 0 };
+    std::string title;
+    std::vector<SettingsRow> rows;
+    std::optional<std::size_t> selected;
+    bool capturing { false };
+    std::string hint;
+};
+Picture settings(draw::Fonts* ui, draw::Fonts* big, const Theme& t, const SettingsView& v, int width, int height, bool zh,
+                 double scale = 1);
 // A line said for a while at the bottom (the first time: what the keys are).
 Picture hint(draw::Fonts* ui, const Theme& t, std::string_view text, int width, int height, double scale = 1);
 

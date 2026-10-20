@@ -10,14 +10,23 @@ export namespace xdesk::compositor {
 struct Options {
     int in { 0 };                                // opensal.wire from the provider
     int out { 1 };                               // and to it
+    // Where other windows of the desktop connect, each a display mirroring
+    // the first (design 2026-10-20 §11; OPENSAL_DISPLAYS). Empty: none.
+    std::filesystem::path displays;
     opensal::Size size { 1280, 800 };            // until the provider says
     std::string profile { "classic" };
     // Super/Alt+Return, and what runs a Terminal=true application. Empty: the
     // default terminal (share/xdg-terminals, xdesk.apps::default_terminal).
     std::vector<std::string> terminal;
     std::vector<std::vector<std::string>> autostart;           // started once the socket is up
-    int gap { 8 };                               // between windows and the edges
-    int workspaces { 4 };
+    int inner_gap { 4 };                         // between windows (design 2026-10-20 §7.2)
+    int outer_gap { 0 };                         // between them and the output's edges
+    int min_column_width { 480 };                // tiled columns scroll below it (§7.3)
+    std::string flow { "horizontal" };           // tiled columns side by side, or "vertical"
+    bool minimap { true };                       // the canvas's minimap (design 2026-10-20 §9.6)
+    bool snap { true };                          // a moved window snaps to others' edges (§9.4)
+    bool reduce_motion { false };                // windows go at once, not by springs (§11.4)
+    int workspaces { 9 };                        // 1-4 always on the panel, 5-9 when used (design 2026-10-20 §12.2)
     std::optional<std::uint32_t> accent;         // 0xrrggbb: the theme's, when absent
     std::optional<std::uint32_t> background;
     std::string keyboard_layout { "us" };        // an xkb layout (others need xkeyboard-config)

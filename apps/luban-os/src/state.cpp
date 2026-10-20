@@ -60,13 +60,23 @@ std::string App::countdown_target() const {
 
 std::string App::title_for(std::string_view what) const {
     // A program alone in the window is its title.
+    // Held, the keyboard is said there too, and how to let it go (design 2026-10-20 §5.2).
+    const std::string held = window && window->keyboard_grabbed() ? std::string(tr("luban.os.app.keyboard_held_title")) : std::string{};
     if (!once_app.empty()) {
         const auto first = once_app.substr(0, once_app.find(' '));
-        return std::format("{} — {}", fs::path(first).filename().string(), what);
+        return std::format("{} — {}{}", fs::path(first).filename().string(), what, held);
     }
     // One title for a system in every view (design 2026-10-19 §18.3, F17):
-    // `Luban OS (<system>)`; the keys are said in the bar at the top.
-    return std::format("Luban OS ({})", what);
+    // `Luban OS (<system>)`; the keys are said in the bar at the top. A
+    // window that is not the desktop's first display says which it is (§11).
+    std::string shown;
+    if (const auto r = display && view == View::Desktop ? display->role() : std::nullopt) {
+        if (r->kind == opensal::DisplayRole::Kind::mirror)
+            shown = std::vformat(tr("luban.os.app.display_mirror_title"), std::make_format_args(r->number, r->of));
+        else if (r->number > 1)
+            shown = std::vformat(tr("luban.os.app.display_title"), std::make_format_args(r->number));
+    }
+    return std::format("Luban OS ({}){}{}", what, shown, held);
 }
 
 void App::start_job(std::string title, std::function<void(Job&, service::Context)> body, std::function<void(App&)> then) {
@@ -155,7 +165,9 @@ void App::open_machine(const std::string& name) {
         const auto [w, h] = window->size();
         desktop_size = device_size_(w, h);
         auto* win = window.get();
-        display = Display::machine(home, name, *session, desktop_size, clipboard_grant(name), [win] { win->wake(); }, error);
+        // Its sound is played here: SDL's audio is started on this, the main, thread.
+        const bool sound = sound_grant(name) && host::Speaker::prepare();
+        display = Display::machine(home, name, *session, desktop_size, clipboard_grant(name), sound, [win] { win->wake(); }, error);
         if (display) {
             shown_desktop = *session;
             view = View::Desktop;
@@ -190,6 +202,14 @@ ClipboardGrant App::clipboard_grant(const std::string& name) const {
     if (!p) return {};
     if (!*p) return {.copy = true, .paste = true};
     return {.copy = (*p)->grants.contains("clipboard"), .paste = (*p)->grants.contains("clipboard-paste")};
+}
+
+// Its sound out to this computer (design 2026-10-20 §20.1): the `audio`
+// grant; a system from before policies has it.
+bool App::sound_grant(const std::string& name) const {
+    auto p = xlings::subos::policy_store::read(xlings::subos::HomeView{home}, name);
+    if (!p) return false;
+    return !*p || (*p)->grants.contains("audio");
 }
 
 void App::close_display() {

@@ -200,11 +200,36 @@ struct Compositor {
     // when `cursor`: a 4x4 image, its hotspot (2, 3).
     bool cursor { false };
     std::uint32_t cursor_buffer { 0 };
+    std::uint32_t cursor_session { 0 };
     int frames { 0 };
     // Its windows, listed (wlr foreign-toplevel) when `toplevels`: one, minimized.
     bool toplevels { false };
     static constexpr std::uint32_t kWindow = 0xff000001;
     std::vector<std::uint32_t> activated, unminimized;
+    // The clipboard (wlr-data-control) when `clipboard`: the bridge's device,
+    // the sources it made and what each offers, the one it selected.
+    bool clipboard { false };
+    std::uint32_t dc_device { 0 }, selected { 0 };
+    std::map<std::uint32_t, std::vector<std::string>> source_mimes;
+    std::string desktop_text { "from the desktop" };
+
+    // An event with a descriptor beside it.
+    void send_fd(std::uint32_t object, std::uint16_t opcode, const wl::Args& a, int descriptor) {
+        const auto m = wl::message(object, opcode, a);
+        iovec iov{const_cast<char*>(m.data()), m.size()};
+        alignas(cmsghdr) char control[CMSG_SPACE(sizeof(int))];
+        msghdr msg{};
+        msg.msg_iov = &iov;
+        msg.msg_iovlen = 1;
+        msg.msg_control = control;
+        msg.msg_controllen = sizeof control;
+        cmsghdr* c = CMSG_FIRSTHDR(&msg);
+        c->cmsg_level = SOL_SOCKET;
+        c->cmsg_type = SCM_RIGHTS;
+        c->cmsg_len = CMSG_LEN(sizeof(int));
+        std::memcpy(CMSG_DATA(c), &descriptor, sizeof(int));
+        (void)::sendmsg(fd, &msg, MSG_NOSIGNAL);
+    }
 
     // The bridge may be gone (the end of a test): no SIGPIPE, nothing asserted.
     void send(std::uint32_t object, std::uint16_t opcode, const wl::Args& a) {
@@ -265,6 +290,7 @@ struct Compositor {
                 {5, "zwp_virtual_keyboard_manager_v1", 1}, {6, "zwlr_virtual_pointer_manager_v1", 2}}};
             for (const auto& [name, i, v] : globals) send(registry, 0, wl::Args{}.u(name).str(i).u(v));
             if (toplevels) send(registry, 0, wl::Args{}.u(7).str("zwlr_foreign_toplevel_manager_v1").u(3));
+            if (clipboard) send(registry, 0, wl::Args{}.u(10).str("zwlr_data_control_manager_v1").u(2));
             if (cursor) {
                 send(registry, 0, wl::Args{}.u(8).str("ext_output_image_capture_source_manager_v1").u(1));
                 send(registry, 0, wl::Args{}.u(9).str("ext_image_copy_capture_manager_v1").u(1));
@@ -288,6 +314,24 @@ struct Compositor {
                 const std::array<std::uint32_t, 1> minimized{1};
                 send(kWindow, 4, wl::Args{}.words(minimized));                    // state
                 send(kWindow, 5, wl::Args{});                                     // done
+            }
+        } else if (iface == "zwlr_data_control_manager_v1" && e.opcode == 1) {  // get_data_device
+            dc_device = r.u();
+            objects[dc_device] = "zwlr_data_control_device_v1";
+        } else if (iface == "zwlr_data_control_manager_v1" && e.opcode == 0) {  // create_data_source
+            const auto id = r.u();
+            objects[id] = "zwlr_data_control_source_v1";
+            source_mimes[id];
+        } else if (iface == "zwlr_data_control_source_v1" && e.opcode == 0) {   // offer
+            source_mimes[e.object].push_back(r.str());
+        } else if (iface == "zwlr_data_control_device_v1" && e.opcode == 0) {   // set_selection
+            selected = r.u();
+        } else if (iface == "zwlr_data_control_offer_v1" && e.opcode == 0) {    // receive: the desktop's text
+            (void)r.str();
+            if (const int out = take_fd(); out >= 0) {
+                (void)platform::write_all(out, desktop_text);
+                std::vector<int> done{out};
+                platform::close_fds(done);
             }
         } else if (iface == "zwlr_screencopy_manager_v1" && e.opcode == 0) {   // capture_output
             const auto frame = r.u();
@@ -313,6 +357,7 @@ struct Compositor {
             EXPECT_EQ(objects[source], "ext_image_capture_source_v1");
             EXPECT_EQ(objects[pointer], "wl_pointer");
             objects[session] = "ext_image_copy_capture_cursor_session_v1";
+            cursor_session = session;
             send(session, 0, wl::Args{});                          // enter
             send(session, 3, wl::Args{}.i(2).i(3));                // hotspot
         } else if (iface == "ext_image_copy_capture_cursor_session_v1" && e.opcode == 1) {   // get_capture_session
@@ -535,6 +580,16 @@ XTEST(LubanWlr, ACompositorsPointerCapturedApartIsTheWindowsToDraw, .area = "lub
     EXPECT_EQ(image->hotspot_y, 3u);
     EXPECT_EQ(static_cast<unsigned char>(image->bytes[5]), 5);
     EXPECT_EQ(c.overlays.back(), 0) << "frames without the pointer once the window draws it";
+    // The pointer leaves the output and comes back, its image unchanged: the
+    // window draws none, then the same image again (design 2026-10-20 G29: a
+    // nested KWin's pointer stayed hidden after leaving once).
+    const auto images = p.count('C');
+    c.send(c.cursor_session, 1, wl::Args{});                       // leave
+    ASSERT_TRUE(p.until([&] {
+        return std::ranges::any_of(p.got, [](const wire::Message& m) { return m.kind == 'c' && m.payload == "none"; });
+    }, c));
+    c.send(c.cursor_session, 0, wl::Args{});                       // enter
+    EXPECT_TRUE(p.until([&] { return p.count('C') > images; }, c)) << "the image again after it came back";
     std::vector<int> close{p.out};
     platform::close_fds(close);
     const auto end = std::chrono::steady_clock::now() + std::chrono::seconds(5);
@@ -697,3 +752,72 @@ XTEST(LubanWlr, ANativeSessionIsGivenTheStream, .area = "luban", .covers = {"LUB
     std::error_code ec;
     fs::remove_all(dir, ec);
 }
+
+#if !defined(_WIN32)   // the fake compositor is POSIX's (above)
+// The clipboard between a bridged desktop and the window (design 2026-10-20
+// §20 G27, wlr-data-control): text the desktop selects is the window's
+// ('b'), the window's is the desktop's selection -- and a selection that
+// came from the window is not sent back to it.
+XTEST(LubanWlr, TheDesktopsClipboardAndTheWindowsAreOne, .area = "luban", .covers = {"LUBAN-DESKTOP-WLR"}) {
+    if constexpr (!platform::is_linux) GTEST_SKIP() << "wl_shm needs memfd (Linux)";
+    const auto dir = temp_dir_("luban-wlr-clipboard");
+    const auto socket = dir / "wayland-0";
+    const int listener = platform::unix_listen_stream(socket);
+    ASSERT_GE(listener, 0);
+    auto to_bridge = platform::make_pipe(), from_bridge = platform::make_pipe();
+    ASSERT_TRUE(to_bridge && from_bridge);
+    std::atomic<int> code { -1 };
+    std::thread bridge([&] {
+        code = wlr::bridge({.in = (*to_bridge)[0], .out = (*from_bridge)[1], .socket = socket, .max_fps = 100});
+    });
+    Compositor c;
+    c.clipboard = true;
+    c.fd = platform::unix_accept(listener);
+    ASSERT_GE(c.fd, 0);
+    Provider p{(*from_bridge)[0], (*to_bridge)[1]};
+    ASSERT_TRUE(p.until([&] { return p.count('f') >= 1 && c.dc_device != 0; }, c));
+    using I = opensal::Interface;
+    EXPECT_TRUE(opensal::has(static_cast<opensal::Interfaces>(std::stoul(p.got[0].payload)), I::Clipboard)) << "it asks for the clipboard";
+    // The desktop selects text: the window gets it.
+    constexpr std::uint32_t kOffer = 0xff000010;
+    c.objects[kOffer] = "zwlr_data_control_offer_v1";
+    c.send(c.dc_device, 0, wl::Args{}.u(kOffer));                              // data_offer
+    c.send(kOffer, 0, wl::Args{}.str("text/plain;charset=utf-8"));              // offer
+    c.send(c.dc_device, 1, wl::Args{}.u(kOffer));                              // selection
+    ASSERT_TRUE(p.until([&] { return p.count('b') >= 1; }, c));
+    EXPECT_EQ(std::ranges::find(p.got, 'b', &wire::Message::kind)->payload, "from the desktop");
+    // The window's clipboard: the desktop's selection, offered as text.
+    ASSERT_TRUE(platform::write_all(p.out, wire::encode('E', wire::encode_event(opensal::ClipboardText{"from the window"}))));
+    ASSERT_TRUE(p.until([&] { return c.selected != 0; }, c));
+    const auto& mimes = c.source_mimes[c.selected];
+    EXPECT_NE(std::ranges::find(mimes, std::string("text/plain;charset=utf-8")), mimes.end());
+    // A program pastes: the source is asked, and writes the window's text.
+    auto pipe = platform::make_pipe();
+    ASSERT_TRUE(pipe);
+    c.send_fd(c.selected, 0, wl::Args{}.str("text/plain;charset=utf-8"), (*pipe)[1]);
+    std::vector<int> mine{(*pipe)[1]};
+    platform::close_fds(mine);
+    std::string pasted;
+    const auto end = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (std::chrono::steady_clock::now() < end) {
+        c.pump(10);
+        std::array<platform::PollFd, 1> rp{{{.fd = (*pipe)[0]}}};
+        platform::poll_fds(rp, 10);
+        if (!rp[0].readable && !rp[0].closed) continue;
+        std::array<char, 256> buf{};
+        auto n = platform::read_some((*pipe)[0], buf);
+        if (!n || *n == 0) break;
+        pasted.append(buf.data(), *n);
+    }
+    EXPECT_EQ(pasted, "from the window");
+    std::vector<int> close{p.out, (*pipe)[0]};
+    platform::close_fds(close);
+    const auto stop = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (code == -1 && std::chrono::steady_clock::now() < stop) c.pump(10);
+    bridge.join();
+    std::vector<int> rest{c.fd, listener, (*to_bridge)[0], (*from_bridge)[0], (*from_bridge)[1]};
+    platform::close_fds(rest);
+    std::error_code ec;
+    fs::remove_all(dir, ec);
+}
+#endif  // !defined(_WIN32)

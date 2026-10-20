@@ -114,6 +114,9 @@ bool move_mount(const std::filesystem::path& from, const std::filesystem::path& 
 // `from` seen again at `to` (an existing directory; links on the way are followed).
 bool bind_mount(const std::filesystem::path& from, const std::filesystem::path& to);
 bool switch_root(const std::filesystem::path& newroot);
+// `path` owned by root with `mode` (the setuid bit too): what a share that
+// shows the host's owner cannot give a file (sudo refuses anything else).
+bool own_by_root(const std::filesystem::path& path, unsigned mode);
 [[noreturn]] void power_off();
 bool set_hostname(std::string_view name);
 

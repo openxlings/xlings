@@ -11,6 +11,7 @@ import luban.vm;
 import xdesk.term;
 import opensal;
 import opensal.wire;
+import openhal.audio;
 import xlings.subos.home_view;
 import xlings.subos.located;
 import xlings.subos.policy_store;
@@ -54,6 +55,7 @@ Json state_(const App& a) {
         std::ranges::sort(ms);
         auto at = [&](double q) { return ms.empty() ? 0.0 : ms[std::min(ms.size() - 1, static_cast<std::size_t>(q * ms.size()))]; };
         j["perf"] = {{"frames", a.perf.frames}, {"presented", a.perf.presented}, {"renderer", a.perf.renderer},
+                     {"desktop_frames", a.perf.desktop_frames},
                      {"frame_ms_p50", at(0.5)}, {"frame_ms_p95", at(0.95)},
                      {"frame_ms_max", ms.empty() ? 0.0 : ms.back()}, {"input_to_next_frame_ms", a.perf.input_to_next_frame_ms},
                      {"input_to_next_frame_ms_max", a.perf.input_to_next_frame_max}, {"wait_after_input_ms", a.perf.wait_after_input_ms},
@@ -121,6 +123,7 @@ Json state_(const App& a) {
     for (const auto& [what, ms] : a.latency) j["latency"][what] = ms;
     if (a.window)
         j["window"] = {{"title", a.window->title()}, {"keyboard_grabbed", a.window->keyboard_grabbed()},
+                       {"keyboard_wanted", a.keyboard_wanted}, {"toast", a.toast_until ? a.toast_text : std::string{}},
                        {"pointer_locked", a.window->pointer_locked()}};
     j["admin_selected"] = a.admin_selected < static_cast<int>(a.systems.size()) ? a.systems[static_cast<std::size_t>(a.admin_selected)].name : std::string{};
     if (a.console) {
@@ -327,13 +330,23 @@ void script_step_(App& a, Script& sc) {
             for (auto it = keys.rbegin(); it != keys.rend(); ++it) app.window->inject_key(*it, false);
         });
         next();
+    } else if (cmd == "refuse-grabs") {
+        // The host refuses the next n keyboard grabs (X11 while it holds the
+        // keyboard); 0: no longer.
+        int times = 0;
+        words >> times;
+        a.window->refuse_grabs(times);
+        next();
     } else if (cmd == "press" || cmd == "release") {
         // The button held down where the pointer goes, and let go: a drag.
+        // `press <x> <y> right` (or middle): the other button.
         float x = 0, y = 0;
-        words >> x >> y;
+        std::string which;
+        words >> x >> y >> which;
         const bool down = cmd == "press";
+        const int button = which == "right" ? 3 : which == "middle" ? 2 : 1;
         sc.pending.push_back([x, y](App& app) { app.window->inject_pointer(x, y); });
-        sc.pending.push_back([x, y, down](App& app) { app.window->inject_button(x, y, 1, down); });
+        sc.pending.push_back([x, y, down, button](App& app) { app.window->inject_button(x, y, button, down); });
         next();
     } else if (cmd == "keydown" || cmd == "keyup") {
         // A key held down, or let go: what is pressed meanwhile is pressed with it.
@@ -432,6 +445,29 @@ void script_step_(App& a, Script& sc) {
         words >> w >> h;
         a.window->set_size(w, h);
         next();
+    } else if (cmd == "play") {
+        // An openhal audio stream from a file, played as a system's sound is
+        // (host::Speaker), to its end (design 2026-10-20 §20.1).
+        std::string file;
+        words >> file;
+        std::ifstream in(file, std::ios::binary);
+        const std::string bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        openhal::audio::Decoder d;
+        d.feed(bytes);
+        if (!host::Speaker::prepare()) { fail("no sound here"); return; }
+        std::unique_ptr<host::Speaker> speaker;
+        for (auto m = d.next(); m && *m; m = d.next()) {
+            if (const auto* o = std::get_if<openhal::audio::Open>(&**m)) {
+                auto sp = host::Speaker::open(o->format.rate, o->format.channels);
+                if (!sp) { fail(sp.error()); return; }
+                speaker = std::move(*sp);
+            } else if (const auto* p = std::get_if<openhal::audio::Samples>(&**m)) {
+                if (speaker) speaker->play(p->bytes);
+            }
+        }
+        for (int k = 0; k < 100 && speaker && speaker->queued() > 0; ++k) std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        next();
     } else if (cmd == "perf") {
         // `perf reset`: what follows is measured alone.
         a.perf = {.renderer = a.perf.renderer};
@@ -444,6 +480,9 @@ void script_step_(App& a, Script& sc) {
         next();
     } else if (cmd == "close") {
         a.window->inject_close();
+        next();
+    } else if (cmd == "minimize" || cmd == "restore") {
+        a.window->inject_shown(cmd == "restore");
         next();
     } else if (cmd == "quit") {
         a.quit = true;

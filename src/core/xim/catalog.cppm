@@ -303,6 +303,12 @@ class PackageCatalog {
     bool loaded_ { false };
 
     static std::vector<RepoIndexSpec> repo_specs_();
+public:
+    // Every configured index tree is here (its pkgs/): a catalog that still
+    // cannot be built failed locally -- a recipe, a sandbox, a cache -- and
+    // fetching the index again cannot help (design 2026-10-20 §4.9, G13).
+    static bool index_trees_present();
+private:
 
     static RepoState make_state_(const RepoIndexSpec& spec);
 

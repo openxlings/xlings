@@ -1,5 +1,5 @@
-// The shell's overlays (shell.cppm): the arrangement chooser, the window
-// switcher, the keys' sheet, a window's menu, a hint -- pictures and the
+// The shell's overlays (shell.cppm): the arrangement chooser, the
+// switchers' pictures (Super+Tab's applications, Alt+Tab's label), the keys' sheet, a window's menu, a hint -- pictures and the
 // areas a click finds in them.
 module xdesk.shell;
 
@@ -53,28 +53,85 @@ Picture chooser(draw::Fonts* ui, const Theme& t, const std::vector<ChooserCard>&
     return p;
 }
 
-Picture switcher(draw::Fonts* ui, const Theme& t, const std::vector<std::string>& names, std::size_t selected, int width, int height,
-                 bool zh, double scale) {
+Picture app_switcher(draw::Fonts* ui, const Theme& t, const std::vector<AppTile>& apps, std::size_t selected, bool open, int width,
+                     int height, bool zh, double scale) {
     Picture p;
-    p.image = image_(width, height, scale);
+    const double n = std::max<double>(1, double(apps.size()));
+    const auto hint = open ? tr_(zh, "Tab: the next  ·  ← →: its windows  ·  let Super go: this one  ·  Esc: as it was",
+                                 "Tab：下一个  ·  ← →：它的窗口  ·  松开 Super：就这个  ·  Esc：不变")
+                           : tr_(zh, "Tab: the next  ·  ↓: its windows  ·  let Super go: this one  ·  Esc: as it was",
+                                 "Tab：下一个  ·  ↓：它的窗口  ·  松开 Super：就这个  ·  Esc：不变");
+    // Tiles as wide as fit, at most 112 (names cut to them); the row as wide
+    // as what the keys do, centred in it.
+    const double tile = std::clamp((width - 80.0 - 24) / n, 64.0, 112.0), th = kAppIcon + 52;
+    const double bw = std::min(double(width), std::max(tile * n + 24, (ui ? ui->width(hint) : 0) + 32)), bh = th + 24 + 26;
+    const double left = std::round((bw - tile * n) / 2);
+    p.x = std::round(std::max(0.0, (width - bw) / 2));
+    p.y = std::round(height * 0.08);
+    p.image = image_(bw, bh, scale);
     draw::Canvas c(p.image, scale);
-    c.fill({0, 0, double(width), double(height)}, t.overlay);
-    const double row = 40, bw = std::min(520.0, width - 40.0), bh = std::max<double>(1, double(names.size())) * row + 46;
-    const double bx = std::round((width - bw) / 2), by = std::round(std::max(20.0, (height - bh) / 2));
-    c.fill({bx, by, bw, bh}, t.card, t.radius + 4);
-    c.frame({bx, by, bw, bh}, Color::rgb(0x3a4050), 1, t.radius + 4);
-    double y = by + 8;
-    if (names.empty() && ui) c.text(*ui, tr_(zh, "No windows", "没有窗口"), bx + 20, std::round(y + 25), t.muted);
-    for (std::size_t k = 0; k < names.size(); ++k) {
-        const Rect r { bx + 8, y, bw - 16, row };
-        if (k == selected) c.fill(r, t.selected, 8);
-        if (ui) c.text(*ui, names[k], r.x + 14, std::round(r.y + 25), t.text, r.width - 28);
-        p.areas.push_back({.rect = r, .target = Target::item, .index = static_cast<int>(k)});
-        y += row;
+    c.fill({0, 0, bw, bh}, t.card, t.radius + 4);
+    c.frame({0, 0, bw, bh}, Color::rgb(0x3a4050), 1, t.radius + 4);
+    if (apps.empty() && ui) c.text(*ui, tr_(zh, "No windows", "没有窗口"), 20, 40, t.muted);
+    for (std::size_t k = 0; k < apps.size(); ++k) {
+        const auto& a = apps[k];
+        const Rect r { left + double(k) * tile, 12, tile, th };
+        if (k == selected) c.fill({r.x + 2, r.y, r.width - 4, r.height}, t.selected, t.radius);
+        const double ix = std::round(r.x + (tile - kAppIcon) / 2), iy = r.y + 10;
+        if (a.icon && !a.icon->empty()) c.image(*a.icon, ix, iy);
+        else {
+            // No icon: its initial, on a colour its id always gets.
+            static constexpr std::array<std::uint32_t, 8> kColours { 0x3b6ea5, 0x8a5aa8, 0x3f8f6b, 0xa8673b,
+                                                                     0x9a4a5a, 0x4a7f8f, 0x6f7a3b, 0x5a5fa8 };
+            const Color bg = Color::rgb(kColours[std::hash<std::string>{}(a.key) % kColours.size()]);
+            c.fill({ix, iy, double(kAppIcon), double(kAppIcon)}, bg, 12);
+            if (ui && !a.name.empty()) {
+                std::size_t len = 1;
+                while (len < a.name.size() && (static_cast<unsigned char>(a.name[len]) & 0xc0) == 0x80) ++len;
+                auto initial = a.name.substr(0, len);
+                if (len == 1) initial[0] = static_cast<char>(std::toupper(static_cast<unsigned char>(initial[0])));
+                c.text(*ui, initial, std::round(ix + (kAppIcon - ui->width(initial)) / 2), std::round(iy + kAppIcon / 2.0 + 5), t.text);
+            }
+        }
+        if (a.windows > 1) {
+            // How many windows it has, on its icon's corner.
+            const auto count = std::to_string(a.windows);
+            const double cw = std::max(18.0, (ui ? ui->width(count) : 8) + 10);
+            const Rect badge { ix + kAppIcon - cw + 6, iy - 6, cw, 18 };
+            c.fill(badge, t.accent, 9);
+            if (ui) c.text(*ui, count, std::round(badge.x + (cw - ui->width(count)) / 2), std::round(badge.y + 13), Color::rgb(0xffffff));
+        }
+        if (ui) {
+            const double tw = std::min(ui->width(a.name), tile - 12);
+            c.text(*ui, a.name, std::round(r.x + (tile - tw) / 2), std::round(iy + kAppIcon + 24), k == selected ? t.text : t.muted, tile - 12);
+        }
+        p.areas.push_back({.rect = {p.x + r.x, p.y + r.y, r.width, r.height}, .target = Target::item, .index = static_cast<int>(k)});
     }
-    if (ui)
-        c.text(*ui, tr_(zh, "Tab: the next  ·  let Super go: this one  ·  Esc: as it was", "Tab：下一个  ·  松开 Super：就这个  ·  Esc：不变"),
-               bx + 20, std::round(by + bh - 12), Color::rgb(0x5c6370), bw - 40);
+    if (ui) c.text(*ui, hint, 16, std::round(bh - 12), Color::rgb(0x5c6370), bw - 32);
+    return p;
+}
+
+Picture spread_label(draw::Fonts* ui, const Theme& t, draw::Rect rect, std::string_view name, int width, int height, double scale) {
+    Picture p;
+    const double ring = 4, label_h = 28;
+    const double lw = std::min(std::max(rect.width, (ui ? ui->width(name) : 0) + 28), double(width));
+    const bool below = rect.y + rect.height + ring + 8 + label_h <= height;
+    const double x0 = std::max(0.0, std::min(rect.x - ring, rect.x + (rect.width - lw) / 2));
+    const double x1 = std::min(double(width), std::max(rect.x + rect.width + ring, rect.x + (rect.width + lw) / 2));
+    const double y0 = std::max(0.0, below ? rect.y - ring : rect.y - ring - 8 - label_h);
+    const double y1 = below ? rect.y + rect.height + ring + 8 + label_h : rect.y + rect.height + ring;
+    p.x = std::floor(x0);
+    p.y = std::floor(y0);
+    p.image = image_(x1 - p.x + 1, y1 - p.y + 1, scale);
+    draw::Canvas c(p.image, scale);
+    c.frame({rect.x - ring - p.x, rect.y - ring - p.y, rect.width + 2 * ring, rect.height + 2 * ring}, t.accent, 3, t.radius + 2);
+    if (ui) {
+        const double tw = std::min(ui->width(name), lw - 28);
+        const Rect pill { std::round(rect.x + (rect.width - tw) / 2 - 14 - p.x),
+                          below ? rect.y + rect.height + ring + 8 - p.y : rect.y - ring - 8 - label_h - p.y, tw + 28, label_h };
+        c.fill(pill, t.card, label_h / 2);
+        c.text(*ui, name, pill.x + 14, std::round(pill.y + 19), t.text, tw);
+    }
     return p;
 }
 
@@ -183,6 +240,30 @@ Picture layouts(const Theme& t, double x, double y, int width, int height, doubl
     return p;
 }
 
+MinimapPicture minimap(const Theme& t, const std::vector<draw::Rect>& boxes, draw::Rect view, draw::Rect bounds, int width,
+                       int height, double scale) {
+    MinimapPicture m;
+    auto& p = m.picture;
+    const double w = 180, h = 120, pad = 8;
+    p.x = width - w - 12;
+    p.y = height - h - 12;
+    p.image = image_(w, h, scale);
+    draw::Canvas c(p.image, scale);
+    c.fill({0, 0, w, h}, Color::rgb(0x11141a, 0xd8), 6);
+    c.frame({0, 0, w, h}, Color::rgb(0x3a4050), 1, 6);
+    // The whole, fitted with its proportions kept.
+    const double k = std::max(bounds.width / (w - 2 * pad), bounds.height / (h - 2 * pad));
+    const double ox = pad + ((w - 2 * pad) - bounds.width / k) / 2, oy = pad + ((h - 2 * pad) - bounds.height / k) / 2;
+    auto map = [&](draw::Rect r) { return draw::Rect{ox + (r.x - bounds.x) / k, oy + (r.y - bounds.y) / k, std::max(1.0, r.width / k), std::max(1.0, r.height / k)}; };
+    for (const auto& b : boxes) c.fill(map(b), t.title_active, 1);
+    c.frame(map(view), t.accent, 1, 0);
+    m.per_pixel = k;
+    m.origin_x = bounds.x - ox * k;
+    m.origin_y = bounds.y - oy * k;
+    p.areas.push_back({.rect = {p.x, p.y, w, h}, .target = Target::item, .index = 0});
+    return m;
+}
+
 Picture hint(draw::Fonts* ui, const Theme& t, std::string_view text, int width, int height, double scale) {
     Picture p;
     const double w = ui ? std::min(width - 40.0, ui->width(text) + 40) : 300, h = 36;
@@ -193,6 +274,124 @@ Picture hint(draw::Fonts* ui, const Theme& t, std::string_view text, int width, 
     c.fill({0, 0, w, h}, t.card, h / 2);
     c.frame({0, 0, w, h}, t.accent, 1, h / 2);
     if (ui) c.text(*ui, text, 20, std::round(h / 2 + 5), t.text, w - 40);
+    return p;
+}
+
+Picture settings(draw::Fonts* ui, draw::Fonts* big, const Theme& t, const SettingsView& v, int width, int height, bool zh,
+                 double scale) {
+    Picture p;
+    p.image = image_(width, height, scale);
+    draw::Canvas c(p.image, scale);
+    c.fill({0, 0, double(width), double(height)}, t.overlay);
+    const double cw = std::min(940.0, width - 40.0), ch = std::min(660.0, height - 40.0);
+    const Rect card { std::round((width - cw) / 2), std::round((height - ch) / 2), cw, ch };
+    c.fill(card, t.card, t.radius + 6);
+    c.frame(card, Color::rgb(0x3a4050), 1, t.radius + 6);
+    // The pages.
+    const double side = 190;
+    c.fill({card.x, card.y, side, card.height}, Color::rgb(0x191c23), t.radius + 6);
+    double y = card.y + 18;
+    if (ui) c.text(*ui, tr_(zh, "Settings", "设置"), card.x + 20, std::round(y + 14), t.muted);
+    y += 34;
+    for (std::size_t k = 0; k < v.pages.size(); ++k) {
+        const Rect r { card.x + 10, y, side - 20, 34 };
+        if (k == v.page) c.fill(r, t.selected, 8);
+        if (ui) c.text(*ui, v.pages[k], r.x + 12, std::round(r.y + 22), k == v.page ? t.text : t.muted, r.width - 20);
+        p.areas.push_back({.rect = r, .target = Target::page, .index = static_cast<int>(k)});
+        y += 38;
+    }
+    // The page.
+    const double x0 = card.x + side + 28, x1 = card.x + card.width - 28;
+    double top = card.y + 22;
+    if (big) c.text(*big, v.title, x0, std::round(top + 20), t.text, x1 - x0);
+    else if (ui) c.text(*ui, v.title, x0, std::round(top + 16), t.text, x1 - x0);
+    top += 44;
+    const double bottom = card.y + card.height - 40, row_h = 38;
+    const auto capacity = static_cast<std::size_t>(std::max(1.0, std::floor((bottom - top) / row_h)));
+    std::size_t first = 0;
+    if (v.selected && *v.selected >= capacity) first = *v.selected - capacity + 1;
+    if (v.rows.size() > capacity && first + capacity > v.rows.size()) first = v.rows.size() - capacity;
+    y = top;
+    for (std::size_t k = first; k < v.rows.size() && k < first + capacity; ++k) {
+        const auto& r = v.rows[k];
+        const Rect line { x0 - 10, y, x1 - x0 + 20, row_h - 4 };
+        const bool lit = v.selected == k;
+        const double base = std::round(y + 23);
+        using K = SettingsRow::Kind;
+        if (lit && r.kind != K::heading) c.fill(line, v.capturing ? t.accent : t.selected, 8);
+        const Color text = lit && v.capturing ? Color::rgb(0x0f1115) : t.text;
+        switch (r.kind) {
+            case K::heading:
+                if (ui) c.text(*ui, r.label, x0, std::round(y + 27), t.muted);
+                break;
+            case K::text: {
+                if (!ui) break;
+                const double lw = r.value.empty() ? x1 - x0 : std::min(ui->width(r.label), (x1 - x0) * 0.45);
+                c.text(*ui, r.label, x0, base, text, lw);
+                if (!r.value.empty()) {
+                    const double vw = std::min(ui->width(r.value), x1 - x0 - lw - 24);
+                    c.text(*ui, r.value, x1 - vw, base, t.muted, vw);
+                }
+                break;
+            }
+            case K::toggle: {
+                if (ui) c.text(*ui, r.label, x0, base, text, x1 - x0 - 70);
+                const Rect sw { x1 - 40, y + 8, 40, 20 };
+                c.fill(sw, r.on ? t.accent : Color::rgb(0x3a4050), 10);
+                c.fill({r.on ? sw.x + 22 : sw.x + 2, sw.y + 2, 16, 16}, Color::rgb(0xf0f2f5), 8);
+                break;
+            }
+            case K::choice: {
+                double cx = x1;
+                std::vector<Rect> chips(r.choices.size());
+                for (std::size_t j = r.choices.size(); j-- > 0;) {
+                    const double w = (ui ? ui->width(r.choices[j]) : 30) + 22;
+                    cx -= w;
+                    chips[j] = {cx, y + 5, w, row_h - 14};
+                    cx -= 6;
+                }
+                if (ui) c.text(*ui, r.label, x0, base, text, std::max(40.0, cx - x0 - 12));
+                for (std::size_t j = 0; j < chips.size(); ++j) {
+                    const bool on = j == r.chosen;
+                    c.fill(chips[j], on ? t.accent : Color::rgb(0x2a2f3a), 7);
+                    if (ui) c.text(*ui, r.choices[j], chips[j].x + 11, base, on ? Color::rgb(0x0f1115) : t.muted);
+                    p.areas.push_back({.rect = chips[j], .target = Target::choice, .index = static_cast<int>(k * 64 + j)});
+                }
+                break;
+            }
+            case K::keys: {
+                if (!ui) break;
+                const auto keys = lit && v.capturing ? std::string(tr_(zh, "Press the keys…", "按下新的组合键…")) : r.value;
+                const double kw = std::min(ui->width(keys), (x1 - x0) * 0.5);
+                c.text(*ui, r.label, x0 + (r.changed ? 12 : 0), base, text, x1 - x0 - kw - 30);
+                if (r.changed) c.fill({x0, y + 15, 6, 6}, t.accent, 3);
+                c.text(*ui, keys, x1 - kw, base, lit && v.capturing ? text : t.muted, kw);
+                break;
+            }
+            case K::button: {
+                const double w = (ui ? ui->width(r.label) : 60) + 28;
+                c.fill({x0, y + 4, w, row_h - 12}, lit ? t.accent : Color::rgb(0x2a2f3a), 8);
+                if (ui) c.text(*ui, r.label, x0 + 14, base, lit ? Color::rgb(0x0f1115) : t.text);
+                if (ui && !r.value.empty()) c.text(*ui, r.value, x0 + w + 14, base, t.muted, x1 - x0 - w - 14);
+                break;
+            }
+            case K::search: {
+                const Rect field { x0, y + 3, x1 - x0, row_h - 10 };
+                c.fill(field, Color::rgb(0x14161c), 8);
+                c.frame(field, lit ? t.accent : Color::rgb(0x3a4050), 1, 8);
+                if (ui) c.text(*ui, r.value.empty() ? r.label : r.value, field.x + 12, base, r.value.empty() ? t.muted : t.text,
+                               field.width - 24);
+                break;
+            }
+        }
+        if (r.kind != K::heading) p.areas.push_back({.rect = line, .target = Target::item, .index = static_cast<int>(k)});
+        y += row_h;
+    }
+    if (v.rows.size() > capacity && ui) {
+        const auto more = std::format("{}–{} / {}", first + 1, std::min(v.rows.size(), first + capacity), v.rows.size());
+        c.text(*ui, more, x1 - ui->width(more), std::round(card.y + 44), Color::rgb(0x5c6370));
+    }
+    if (ui) c.text(*ui, v.hint, x0, std::round(card.y + card.height - 16), Color::rgb(0x5c6370), x1 - x0);
     return p;
 }
 

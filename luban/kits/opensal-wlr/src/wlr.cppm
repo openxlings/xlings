@@ -95,6 +95,9 @@ struct Options {
     // is started with (the session's, WAYLAND_DISPLAY its compositor).
     bool shell { false };
     std::map<std::string, std::string> env;
+    // Displays (design 2026-10-20 §11): where other windows of the desktop
+    // connect, each a mirror of this one (empty: none).
+    fs::path displays;
 };
 
 // Bridges until the provider or the compositor goes away: 0 when the
@@ -114,6 +117,13 @@ struct SessionOptions {
 // (wlroots' headless backend, software rendering) in a runtime directory of
 // its own, stopped when the bridge ends. What a machine's agent runs for the
 // Luban OS window, and what a sandbox runs for it.
+//
+// A second window on the same session while it runs is another display of
+// that desktop (design 2026-10-20 §11): its stream is joined to the
+// session's displays socket (`displays_socket`) and nothing more is started.
+// A native session is told the socket in OPENSAL_DISPLAYS; one that serves
+// other displays outlives its first window's stream.
 int run_session(const Session& s, int in, int out, const SessionOptions& o);
+fs::path displays_socket(const fs::path& runtime_root, std::string_view session_id);
 
 }  // namespace opensal::wlr

@@ -654,6 +654,14 @@ int open_device(const std::filesystem::path& path) {
     return ::open(path.c_str(), O_RDWR | O_NOCTTY | O_CLOEXEC);
 }
 
+bool make_fifo(const std::filesystem::path& path, unsigned mode) {
+    struct stat st{};
+    if (::stat(path.c_str(), &st) == 0) return S_ISFIFO(st.st_mode);
+    if (::mkfifo(path.c_str(), static_cast<mode_t>(mode)) != 0) return false;
+    // Whatever the umask was: who may write is the mode's to say.
+    return ::chmod(path.c_str(), static_cast<mode_t>(mode)) == 0;
+}
+
 std::optional<std::pair<unsigned short, unsigned short>> terminal_size(int fd) {
     winsize w{};
     if (::ioctl(fd, TIOCGWINSZ, &w) != 0) return std::nullopt;
@@ -1029,7 +1037,17 @@ int unix_listen_stream(const std::filesystem::path&) { return -1; }
 std::optional<std::size_t> read_some(int, std::span<char>) { return std::nullopt; }
 bool write_all(int, std::string_view) { return false; }
 int open_device(const std::filesystem::path&) { return -1; }
-std::optional<std::pair<unsigned short, unsigned short>> terminal_size(int) { return std::nullopt; }
+bool make_fifo(const std::filesystem::path&, unsigned) { return false; }
+std::optional<std::pair<unsigned short, unsigned short>> terminal_size(int fd) {
+    // The console behind the C descriptor (1 = stdout): its visible window,
+    // not the scroll-back buffer.
+    const auto h = reinterpret_cast<HANDLE>(::_get_osfhandle(fd));
+    CONSOLE_SCREEN_BUFFER_INFO info{};
+    if (h == INVALID_HANDLE_VALUE || !::GetConsoleScreenBufferInfo(h, &info)) return std::nullopt;
+    return std::pair<unsigned short, unsigned short>{
+        static_cast<unsigned short>(info.srWindow.Bottom - info.srWindow.Top + 1),
+        static_cast<unsigned short>(info.srWindow.Right - info.srWindow.Left + 1)};
+}
 bool set_terminal_size(int, unsigned short, unsigned short) { return false; }
 bool process_alive(int) { return false; }
 bool can_list_processes() { return false; }

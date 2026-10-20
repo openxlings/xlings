@@ -14,6 +14,7 @@ import wlroots;
 import xdesk.native.wayland;
 import freedesktop.wayland.server;
 import :server;
+import :keys;
 
 namespace xdesk::compositor {
 
@@ -26,13 +27,13 @@ namespace apps = xdesk::apps;
 namespace fs = std::filesystem;
 
 // A window's title bar, drawn again only when what it shows changed.
-void Server::draw_title(View& v, int width, bool active) {
+void Server::draw_title(View& v, int width, bool active, bool rounded) {
     const std::string title = name_of(v);
     const bool hover = close_hover == v.id, max = max_hover == v.id;
-    auto key = std::format("{}\x1f{}\x1f{}\x1f{}\x1f{}\x1f{}", title, width, active, hover, scale, max);
+    auto key = std::format("{}\x1f{}\x1f{}\x1f{}\x1f{}\x1f{}\x1f{}", title, width, active, hover, scale, max, rounded);
     if (key == v.drawn) return;
     v.drawn = std::move(key);
-    show(v.title, shell::title_bar(ui(), theme, title, width, active, hover, scale, max));
+    show(v.title, shell::title_bar(ui(), theme, title, width, active, hover, scale, max, rounded));
 }
 
 // The panel and (canvas) the grid, drawn again only when they changed.
@@ -51,7 +52,13 @@ void Server::draw_shell() {
     st.zh = zh;
     auto key = std::format("{} {} {} {} {} {} {} {}x{}@{}", st.workspace, st.occupied, st.title, st.clock, st.zoom, st.overview,
                            lay.mode() == layout::Mode::canvas, size.width, size.height, scale);
-    if (key != panel_drawn) {
+    // A window full screen: no panel (nothing of it to click either).
+    const bool full = std::ranges::any_of(placements, &layout::Placement::fullscreen);
+    wlr_scene_node_set_enabled(&panel_node->node, !full);
+    if (full) {
+        panel_picture.areas.clear();
+        panel_drawn.clear();
+    } else if (key != panel_drawn) {
         panel_drawn = std::move(key);
         panel_picture = shell::panel(ui(), theme, st, logical_w(), logical_h(), pill, scale);
         wlr_scene_node_set_position(&panel_node->node, static_cast<int>(panel_picture.x), static_cast<int>(panel_picture.y));
@@ -59,6 +66,28 @@ void Server::draw_shell() {
         panel_picture.image = {};
     }
     wlr_scene_node_set_enabled(&canvas_dots->node, canvas());
+    // The minimap, while the canvas holds more than fits in the view.
+    {
+        const auto m = lay.minimap();
+        const bool shown = canvas() && minimap_on && !lay.in_overview() && !m.boxes.empty()
+                           && (m.bounds.width > m.view.width + 1 || m.bounds.height > m.view.height + 1);
+        wlr_scene_node_set_enabled(&minimap_node->node, shown);
+        if (!shown) minimap_shown = {};
+        if (shown) {
+            std::string key = std::format("{} {} {} {} {}x{}@{}", m.view.x, m.view.y, m.view.width, m.boxes.size(), size.width, size.height, scale);
+            for (const auto& b : m.boxes) key += std::format(" {} {} {} {}", b.x, b.y, b.width, b.height);
+            if (key != minimap_drawn) {
+                minimap_drawn = std::move(key);
+                std::vector<draw::Rect> boxes;
+                for (const auto& b : m.boxes) boxes.push_back({b.x, b.y, b.width, b.height});
+                minimap_shown = shell::minimap(theme, boxes, {m.view.x, m.view.y, m.view.width, m.view.height},
+                                               {m.bounds.x, m.bounds.y, m.bounds.width, m.bounds.height}, logical_w(), logical_h(), scale);
+                wlr_scene_node_set_position(&minimap_node->node, static_cast<int>(minimap_shown.picture.x), static_cast<int>(minimap_shown.picture.y));
+                show(minimap_node, std::move(minimap_shown.picture.image), scale);
+                minimap_shown.picture.image = {};
+            }
+        }
+    }
     if (canvas()) {
         const auto [cx, cy] = lay.camera();
         auto dots = std::format("{} {} {} {}x{}@{}", cx, cy, lay.zoom(), size.width, size.height, scale);
@@ -84,7 +113,25 @@ void Server::open_launcher() {
     std::string lang;
     for (const char* k : {"LC_ALL", "LC_MESSAGES", "LANG"})
         if (env.contains(k) && !env.at(k).empty()) { lang = env.at(k); break; }
-    launcher.open(apps::scan(apps::dirs(env), lang));
+    auto all = apps::scan(apps::dirs(env), lang);
+    std::erase_if(all, [](const apps::App& a) { return a.id == "xdesk-settings"; });   // its pages are here, one by one
+    // The desktop's own (design 2026-10-20 §12.5): its settings' pages and
+    // its actions, each with its keys -- searched once, learnt.
+    struct Page { std::string_view id, en, zh, words; };
+    for (const auto& p : {Page{"displays", "Settings: displays", "设置：显示器", "monitor screen resolution mirror 分辨率 镜像 屏幕"},
+                          Page{"layout", "Settings: layout", "设置：布局", "tile stack canvas gap column 平铺 层叠 画布 间隔 列"},
+                          Page{"appearance", "Settings: appearance", "设置：外观", "accent colour background motion 颜色 背景 动画"},
+                          Page{"keys", "Settings: keys", "设置：快捷键", "shortcut keyboard keys 按键 快捷键 键位"},
+                          Page{"about", "Settings: about", "设置：关于", "version system about information 版本 系统 信息"}})
+        all.push_back({.id = std::format("xdesk:settings:{}", p.id), .name = std::string(zh ? p.zh : p.en),
+                       .generic = p.id == "keys" ? std::string("Super+/") : std::string("Super+I"), .keywords = std::string(p.words)});
+    for (const auto& a : actions()) {
+        const auto chords = keys.chords(a.action);
+        all.push_back({.id = std::format("xdesk:action:{}", a.name), .name = std::string(zh ? a.zh : a.en),
+                       .generic = chords.empty() ? std::string{} : chord_text(chords.front()),
+                       .keywords = std::format("{} {}", a.name, zh ? a.en : a.zh)});
+    }
+    launcher.open(std::move(all));
     draw_launcher();
 }
 
@@ -113,6 +160,17 @@ std::vector<std::string> Server::terminal_argv(const std::vector<std::string>& c
 }
 
 void Server::start_app(const apps::App& app) {
+    if (app.id.starts_with("xdesk:settings:")) {
+        const auto page = app.id.substr(15);
+        for (const auto p : {SettingsPage::displays, SettingsPage::layout, SettingsPage::appearance, SettingsPage::keys, SettingsPage::about})
+            if (page == std::array{"displays", "layout", "appearance", "keys", "about"}[static_cast<std::size_t>(p)]) open_settings(p);
+        return;
+    }
+    if (app.id.starts_with("xdesk:action:")) {
+        const auto name = app.id.substr(13);
+        if (const auto it = std::ranges::find(actions(), name, &ActionInfo::name); it != actions().end()) act(it->action);
+        return;
+    }
     auto argv = apps::argv(app.exec);
     if (argv.empty()) return;
     if (app.terminal) argv = terminal_argv(argv, app.name, app.id);

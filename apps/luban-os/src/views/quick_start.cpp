@@ -411,7 +411,13 @@ float panel_body_(App& a, float x, float y, float w) {
         cy += px(48);
         label(tr("luban.os.quick.logs_optional"));
         ImGui::SetCursorPos(ImVec2(cx, cy));
-        imkit::text_field("user", a.new_user, sizeof a.new_user, (fw / 2 - px(6)) / imkit::scale(), 0, "root");
+        // Who logs in when none is given: a system with a desktop has the
+        // default user (design 2026-10-20 G33), a console root.
+        const auto& card = kEditions[static_cast<std::size_t>(a.new_edition)];
+        const bool with_desktop = !a.new_trad.empty() || a.new_desktop >= 0 || !card.session.empty()
+                                  || card.edition() == std::string_view("desktop");
+        imkit::text_field("user", a.new_user, sizeof a.new_user, (fw / 2 - px(6)) / imkit::scale(), 0,
+                          with_desktop ? service::kDefaultUser : std::string_view("root"));
         mark_(a, "user");
         ImGui::SetCursorPos(ImVec2(cx + fw / 2 + px(6), cy));
         imkit::text_field("password", a.new_password, sizeof a.new_password, (fw / 2 - px(6)) / imkit::scale(),

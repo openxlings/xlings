@@ -11,21 +11,28 @@ import xdesk.native.wayland;
 namespace xdesk::compositor {
 
 enum class Action {
-    apps, terminal, close, keys,
+    apps, terminal, close, keys, settings,
     focus_left, focus_right, focus_up, focus_down,
     move_left, move_right, move_up, move_down,
-    join, split, width, height, smaller, larger,
-    toggle_float, pin, arrangements, windows, overview,
-    show1, show2, show3, show4, send1, send2, send3, send4,
+    join, split, width, height, smaller, larger, even,
+    maximize, fullscreen, toggle_float, pin, sticky, arrangements, switch_apps, app_windows, windows, overview,
+    show1, show2, show3, show4, show5, show6, show7, show8, show9,
+    send1, send2, send3, send4, send5, send6, send7, send8, send9,
+    workspace_prev, workspace_next, carry_prev, carry_next,
 };
 
-// A chord: Super (or Alt, where the host keeps Super), Ctrl, Shift, and a
-// key -- a keysym, or a digit by its place on the keyboard (Shift changes
-// what a digit types).
+// Where an action is listed (design 2026-10-20 §12.2): the keys page, the
+// sheet and the generated table go by these, in this order.
+enum class Group { find, focus, window, size, arrangement, workspace, open };
+std::string_view group_label(Group g, bool zh);
+
+// A chord: Super, Alt, Ctrl, Shift, and a key -- a keysym, or a digit by
+// its place on the keyboard (Shift changes what a digit types).
 struct Chord {
     bool super { false }, ctrl { false }, shift { false };
     xkb_keysym_t sym { 0 };
     int digit { 0 };
+    bool alt { false };
     bool operator==(const Chord&) const = default;
 };
 
@@ -36,8 +43,14 @@ struct ActionInfo {
     std::vector<std::string_view> chords;   // the desktop's own
     // Where it means something: tile, stack, canvas (the sheet shows those).
     bool tile { true }, stack { true }, canvas { true };
+    Group group { Group::window };
 };
 const std::vector<ActionInfo>& actions();
+
+// The sets of keys (design 2026-10-20 §12.3): Luban's, and Luban's without
+// hjkl; an action's chords in one.
+const std::vector<std::string_view>& key_sets();
+std::vector<std::string> default_chords(const ActionInfo& a, std::string_view set);
 
 std::optional<Chord> parse_chord(std::string_view text);
 std::string chord_text(const Chord& c);
@@ -50,6 +63,7 @@ public:
     std::optional<Action> match(const Chord& pressed) const;
     std::vector<Chord> chords(Action a) const;
     std::vector<std::string> problems;
+    std::string set { "luban" };            // the set the desktop's own chords come from
 
 private:
     std::vector<std::pair<Action, Chord>> table_;

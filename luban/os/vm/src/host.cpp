@@ -21,6 +21,27 @@ namespace luban::vm {
 
 namespace {
 
+// A machine's size, from its host's (design 2026-10-20 G28): a desktop draws
+// with the CPU (llvmpipe, pixman), and 2 GB and 2 processors made LXQt and
+// KDE slow. Half the host's processors (2 to 8), a quarter of its memory
+// (2 to 8 GB); `luban config <n> --memory` still sets it.
+std::string default_memory_mb_() {
+    std::ifstream in("/proc/meminfo");
+    std::string key;
+    long long kb = 0;
+    while (in >> key >> kb) {
+        if (key == "MemTotal:") break;
+        in.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
+        kb = 0;
+    }
+    const long long quarter = kb / 1024 / 4;
+    return std::to_string(std::clamp<long long>(quarter, 2048, 8192));
+}
+std::string default_cpus_() {
+    const unsigned n = std::thread::hardware_concurrency();
+    return std::to_string(std::clamp(n / 2, 2u, 8u));
+}
+
 using Json = nlohmann::json;
 namespace platform = xlings::platform;
 namespace proto = luban::vm::protocol;
@@ -306,10 +327,10 @@ int start_impl_(const service::Context& c, std::string_view name, const EnterOpt
         }
     }
     const bool kvm = kvm_();
-    const auto memory = o.memory.empty() ? std::string("2048") : o.memory;
+    const auto memory = o.memory.empty() ? default_memory_mb_() : o.memory;
     std::vector<std::string> q{qemu->bin.string()};
     if (!arch.machine.empty()) q.insert(q.end(), {"-M", std::string(arch.machine)});
-    q.insert(q.end(), {"-m", memory, "-smp", "2"});
+    q.insert(q.end(), {"-m", memory, "-smp", default_cpus_()});
     if (kvm) q.insert(q.end(), {"-enable-kvm", "-cpu", "host"});
     else if (!arch.cpu.empty()) q.insert(q.end(), {"-cpu", std::string(arch.cpu)});
     const std::string console = arch.name == "aarch64" ? "ttyAMA0" : "ttyS0";
@@ -347,10 +368,27 @@ int start_impl_(const service::Context& c, std::string_view name, const EnterOpt
         say_(c, service::error("the machine's supervisor could not be started"));
         return 1;
     }
-    // Up when its agent answers through the supervisor.
+    // Up when its agent answers through the supervisor. Meanwhile, how far it
+    // is (design 2026-10-20 G23): the time against its last boot's (or a
+    // first guess), and the last line its console printed.
     const auto deadline = started + std::chrono::seconds(kvm ? 90 : 300);
+    const auto timing = log_dir(c.home, name) / "boot-ms";
+    double expected_ms = kvm ? 20000 : 90000;
+    if (std::ifstream in(timing); in) in >> expected_ms;
+    expected_ms = std::clamp(expected_ms, 2000.0, 300000.0);
+    auto said_at = started;
     while (std::chrono::steady_clock::now() < deadline) {
         if (!platform::process_alive(*pid)) break;
+        if (const auto now = std::chrono::steady_clock::now(); now - said_at >= std::chrono::milliseconds(800)) {
+            said_at = now;
+            const double spent = std::chrono::duration<double, std::milli>(now - started).count();
+            auto line = tail_(log_dir(c.home, name) / "console.log", 1);
+            while (!line.empty() && (line.front() == '\n' || line.front() == ' ')) line.erase(line.begin());
+            while (!line.empty() && (line.back() == '\n' || line.back() == '\r')) line.pop_back();
+            if (line.size() > 120) line = line.substr(0, 117) + "...";
+            say_(c, service::Event{.kind = service::Event::Kind::Progress, .phase = "boot",
+                                   .text = line.empty() ? text : line, .percent = std::min(0.95, spent / expected_ms)});
+        }
         const int fd = connect_client_(c.home, name);
         if (fd >= 0) {
             proto::Decoder d;
@@ -361,6 +399,7 @@ int start_impl_(const service::Context& c, std::string_view name, const EnterOpt
             if (hello) {
                 const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started).count();
                 say_(c, service::phase("boot", "done", std::format("{} is up ({:.1f} s)", name, ms / 1000.0)));
+                std::ofstream(timing, std::ios::trunc) << ms;
                 return 0;
             }
         }
@@ -501,7 +540,7 @@ int boot_image_(const service::Context& c, const fs::path& image, const EnterOpt
     const auto console = dir / "console.sock";
     std::vector<std::string> q{qemu->bin.string()};
     if (!arch.machine.empty()) q.insert(q.end(), {"-M", std::string(arch.machine)});
-    q.insert(q.end(), {"-m", o.memory.empty() ? std::string("2048") : o.memory, "-smp", "2"});
+    q.insert(q.end(), {"-m", o.memory.empty() ? default_memory_mb_() : o.memory, "-smp", default_cpus_()});
     if (kvm_()) q.insert(q.end(), {"-enable-kvm", "-cpu", "host"});
     else if (!arch.cpu.empty()) q.insert(q.end(), {"-cpu", std::string(arch.cpu)});
     if (arch.firmware_required) q.insert(q.end(), {"-bios", firmware->string()});

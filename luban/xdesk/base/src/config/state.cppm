@@ -42,6 +42,7 @@ struct State {
     std::string last;                           // the arrangement last chosen: where the xdesk session starts
     std::map<std::string, Rule> rules;          // by application id
     bool hinted { false };                      // the first session's word on the keys was said
+    int keys_seen { 0 };                        // the version of the keys last told (2: design 2026-10-20 §12.2)
     bool operator==(const State&) const = default;
 };
 
@@ -55,5 +56,9 @@ std::expected<void, std::string> write_state(const std::map<std::string, std::st
 // keys.json: an action's chords ("Super+Return", "Ctrl+Alt+t"), each action
 // the person rebound; the rest keep the desktop's.
 std::expected<std::map<std::string, std::vector<std::string>>, std::string> read_keys(const std::map<std::string, std::string>& env);
+// Written whole: the actions rebound (`set`, the set of keys chosen, a
+// string; design 2026-10-20 §12.3).
+std::expected<void, std::string> write_keys(const std::map<std::string, std::string>& env,
+                                            const std::map<std::string, std::vector<std::string>>& keys);
 
 }  // namespace xdesk::config

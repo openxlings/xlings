@@ -35,7 +35,7 @@ void launcher_(App& a) {
     // The bar: the craftsman and the name; the gear and "new" at the right.
     dl->AddRectFilled(o, ImVec2(o.x + W, o.y + px(72)), th_().bg_deep);
     art::badge(dl, art::Badge::Craftsman, "", ImVec2(o.x + px(20), o.y + px(12)), std::max(1.0f, std::round(px(3))),
-               imkit::beat(4, 0.25));
+               art::craft_frame());
     imkit::text(dl, ImVec2(o.x + px(76), o.y + px(22)), "Luban OS", th_().text, 26, true);
     ImGui::SetCursorPos(ImVec2(W - px(20) - px(48), px(16)));
     if (imkit::button("gear", "", ImVec2(48, 40), imkit::Look::Ghost, true, false, imkit::Icon::Gear)) {
@@ -114,7 +114,7 @@ void launcher_(App& a) {
         ImGui::Dummy(ImVec2(0, px(40)));
         const ImVec2 at = ImGui::GetCursorScreenPos();
         const float cell = std::round(px(5));
-        art::badge(ldl, art::Badge::Craftsman, "", ImVec2(at.x + (rowW - 16 * cell) / 2, at.y), cell, imkit::beat(4, 0.25));
+        art::badge(ldl, art::Badge::Craftsman, "", ImVec2(at.x + (rowW - 16 * cell) / 2, at.y), cell, art::craft_frame());
         ImGui::Dummy(ImVec2(0, 16 * cell + px(16)));
     }
     if (n == 0 && !a.systems.empty()) group(tr("luban.os.quick.nothing_matches"));
@@ -236,12 +236,15 @@ void import_view_(App& a) {
 // events are in.
 // Six steps (design 2026-10-19 §5.7): preparing (the plan, what is agreed
 // to, the system's own home), then the payload's four, then done.
-constexpr std::array<std::string_view, 6> kStages{{
+// The stages of making a system (design 2026-10-20 G23): a machine starting
+// is one of its own, before its check -- it used to read as "prepare" at 0 %.
+constexpr std::array<std::string_view, 7> kStages{{
     "luban.os.quick.stage.prepare", "luban.os.quick.stage.download", "luban.os.quick.stage.unpack",
-    "luban.os.quick.stage.configure", "luban.os.quick.stage.check", "luban.os.quick.stage.done"}};
+    "luban.os.quick.stage.configure", "luban.os.quick.stage.start", "luban.os.quick.stage.check", "luban.os.quick.stage.done"}};
 int stage_of_(const Job& j) {
     const auto& s = j.stage;
-    if (s == "check") return 4;
+    if (s == "check") return 5;
+    if (s == "start" || s == "boot") return 4;
     if (s.find("config") != std::string::npos || s == "hook" || s == "configure") return 3;
     if (s.find("extract") != std::string::npos || s == "unpack") return 2;
     if (s.find("download") != std::string::npos) return 1;
@@ -260,14 +263,15 @@ void job_(App& a) {
     const bool failed = j.done && j.code != 0;
     // The craftsman at work, or standing when it failed.
     const float cell = std::round(px(5));
-    art::badge(dl, art::Badge::Craftsman, "", ImVec2(o.x + (W - 16 * cell) / 2, o.y + y), cell, failed ? 0 : imkit::beat(4, 0.15));
+    art::badge(dl, art::Badge::Craftsman, "", ImVec2(o.x + (W - 16 * cell) / 2, o.y + y), cell, failed ? 0 : art::craft_frame(1.6));
     y += 16 * cell + px(16);
     centred_(dl, y, j.title, th_().text, 26, true);
     y += px(44);
     // Its stages, the one it is in lit.
-    const int at = j.done && j.code == 0 ? 6 : stage_of_(j);
-    const float chipW = std::floor((width - px(8) * 5) / 6);
-    for (int k = 0; k < 6; ++k) {
+    const int at = j.done && j.code == 0 ? 7 : stage_of_(j);
+    constexpr int kChips = static_cast<int>(kStages.size());
+    const float chipW = std::floor((width - px(8) * (kChips - 1)) / kChips);
+    for (int k = 0; k < kChips; ++k) {
         const ImVec2 c0(o.x + x + k * (chipW + px(8)), o.y + y), c1(c0.x + chipW, c0.y + px(30));
         const bool done = k < at, now = k == at && !failed;
         imkit::panel(dl, c0, c1, now ? imkit::Bevel::Raised : imkit::Bevel::Flat,
@@ -279,10 +283,12 @@ void job_(App& a) {
         if (done) imkit::icon(dl, imkit::Icon::Check, ImVec2(c0.x + px(6), c0.y + px(8)), 1.0f * std::max(1.0f, std::round(px(1))), th_().good);
     }
     y += px(46);
-    imkit::progress(dl, ImVec2(o.x + x, o.y + y), ImVec2(o.x + x + width, o.y + y + px(22)), failed ? 0 : j.done ? 1.0 : j.percent);
+    // The whole operation's progress when it has one (one bar for all of it), else the step's.
+    const double shown = j.overall >= 0 ? j.overall : j.percent;
+    imkit::progress(dl, ImVec2(o.x + x, o.y + y), ImVec2(o.x + x + width, o.y + y + px(22)), failed ? 0 : j.done ? 1.0 : shown);
     y += px(30);
-    if (j.percent >= 0 && !j.done) {
-        const auto pct = std::format("{:.0f} %", j.percent * 100);
+    if (shown >= 0 && !j.done) {
+        const auto pct = std::format("{:.0f} %", shown * 100);
         imkit::text(dl, ImVec2(o.x + x + width - imkit::text_size(pct, 13).x, o.y + y), pct, th_().text_dim, 13);
     }
     imkit::text(dl, ImVec2(o.x + x, o.y + y), imkit::fit(j.current, width - px(70), 14), th_().text_dim, 14);

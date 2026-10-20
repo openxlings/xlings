@@ -232,6 +232,7 @@ std::expected<State, std::string> read_state(const std::map<std::string, std::st
             for (const auto& x : *list) s.arrangements.push_back(x.string_or(""));
     if (const auto* l = doc.get("last")) s.last = l->string_or("");
     if (const auto* h = doc.get("hinted")) s.hinted = h->bool_or(false);
+    if (const auto* k = doc.get("keys_seen")) s.keys_seen = static_cast<int>(k->number_or(0));
     if (const auto* r = doc.get("rules"))
         if (const auto* o = std::get_if<Json::Object>(&r->v))
             for (const auto& [app, rule] : *o) {
@@ -258,6 +259,7 @@ std::expected<void, std::string> write_state(const std::map<std::string, std::st
     doc.set("arrangements", Json{arr});
     doc.set("last", Json{s.last});
     doc.set("hinted", Json{s.hinted});
+    doc.set("keys_seen", Json{static_cast<double>(s.keys_seen)});
     Json rules{Json::Object{}};
     for (const auto& [app, r] : s.rules) {
         Json one{Json::Object{}};
@@ -295,6 +297,33 @@ std::expected<std::map<std::string, std::vector<std::string>>, std::string> read
         out[action] = std::move(list);
     }
     return out;
+}
+
+std::expected<void, std::string> write_keys(const std::map<std::string, std::string>& env,
+                                            const std::map<std::string, std::vector<std::string>>& keys) {
+    const auto file = keys_file(env);
+    if (file.empty()) return std::unexpected(std::string("no home to keep the keys in"));
+    Json doc{Json::Object{}};
+    for (const auto& [action, chords] : keys) {
+        if (action == "set") {
+            if (!chords.empty()) doc.set("set", Json{chords.front()});
+            continue;
+        }
+        Json::Array list;
+        for (const auto& c : chords) list.push_back(Json{c});
+        doc.set(action, Json{list});
+    }
+    std::error_code ec;
+    fs::create_directories(file.parent_path(), ec);
+    const auto tmp = fs::path(file.string() + ".tmp");
+    {
+        std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
+        out << doc.dump(1) << "\n";
+        if (!out) return std::unexpected(std::format("{}: cannot be written", tmp.string()));
+    }
+    fs::rename(tmp, file, ec);
+    if (ec) return std::unexpected(std::format("{}: {}", file.string(), ec.message()));
+    return {};
 }
 
 }  // namespace xdesk::config

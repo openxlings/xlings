@@ -13,6 +13,7 @@ import luban.vm;
 import xdesk.term;
 import opensal;
 import opensal.wire;
+import openhal.audio;
 import xlings.subos.home_view;
 import xlings.subos.located;
 import xlings.subos.policy_store;
@@ -77,8 +78,9 @@ struct Job {
     std::vector<std::string> log;
     std::string current;
     double percent { -1 };
+    double overall { -1 };          // the whole operation's progress, when it has one (never back)
     std::atomic<bool> done { false };
-    std::string stage;              // the last progress phase (download, extract, configure, check)
+    std::string stage;              // the stage it is in (prepare .. check), or the last progress phase
     std::shared_ptr<std::atomic<bool>> cancel;   // set: what runs is stopped
     std::function<void()> retry;    // the same operation again
     int code { 0 };
@@ -150,8 +152,10 @@ struct ClipboardGrant {
 
 class Display {
 public:
+    // `sound`: the system's sound played here (its `audio` grant; design 2026-10-20 §20.1).
     static std::unique_ptr<Display> machine(const fs::path& home, const std::string& name, const std::string& session,
-                                            opensal::Size size, ClipboardGrant clip, std::function<void()> wake, std::string& error);
+                                            opensal::Size size, ClipboardGrant clip, bool sound, std::function<void()> wake,
+                                            std::string& error);
     // In a sandbox: `xlings subos use <name> --cmd 'luban __desktop <session>'`,
     // opensal.wire on its standard input and output.
     static std::unique_ptr<Display> sandbox(const fs::path& xlings, const fs::path& luban, const fs::path& home,
@@ -196,6 +200,10 @@ public:
     // It asked to hold the pointer (opensal PointerLock: a game) or let it
     // go: what it said since the last call.
     std::optional<bool> take_pointer_lock();
+    // What this window is to the desktop (opensal Displays; design 2026-10-20
+    // §11): said when it changed. A mirror says no size of its own.
+    std::optional<opensal::DisplayRole> take_role();
+    std::optional<opensal::DisplayRole> role() const { std::lock_guard l(m_); return role_; }
 
     struct Update { opensal::Rect rect; std::string rows; };
     // The surface's size (0 until the first frame) and the rectangles since the last call.
@@ -212,9 +220,14 @@ private:
     bool machine_ { false };
     fs::path log_;                    // a relayed desktop's standard error
     void provider_(std::string_view bytes);
+    void sound_(std::string_view bytes);
+    openhal::audio::Decoder sound_decoder_;
+    std::unique_ptr<host::Speaker> speaker_;
     std::string name_;
     std::string session_;             // the desktop session it started (empty: unknown)
     Pointer pointer_;
+    std::optional<opensal::DisplayRole> role_;
+    bool role_changed_ { false };
     mutable std::mutex m_;
     bool send_(std::string_view wire_bytes);
     std::optional<vm::Client> client_;
@@ -255,6 +268,9 @@ Badge badge_of(std::string_view edition);
 // A badge (16 x 16 art pixels), `cell` window pixels each; `frame` animates it.
 void badge(ImDrawList* dl, Badge b, std::string_view edition, ImVec2 at, float cell, int frame = 0);
 imkit::Picture picture(std::string_view edition, int frame = 0);
+// The craftsman's frame now (design 2026-10-20 §14.1): ready, swing,
+// strike, rebound, each for its own time; `speed` times as fast while work goes.
+int craft_frame(double speed = 1.0);
 // The status-area icon at its sizes: `running` systems, at work, or needing the person.
 std::vector<tray::Image> tray_images(int running, bool busy, bool error);
 }  // namespace art
@@ -435,6 +451,14 @@ struct App {
     // §16.1): wanted from the setting as it is entered, Ctrl+Alt+K flips it;
     // held only while the window has the focus.
     bool keyboard_wanted { false };
+    host::Window::Grab keyboard_shown { host::Window::Grab::Released };   // what the title and the toast said
+    bool keyboard_told { false };          // Ctrl+Alt+K or the menu asked: its answer is said
+    std::string toast_text;                // a moment's word at the top
+    std::optional<std::chrono::steady_clock::time_point> toast_until;
+    void toast(std::string text) {
+        toast_text = std::move(text);
+        toast_until = std::chrono::steady_clock::now() + std::chrono::milliseconds(1500);
+    }
     bool was_in_desktop { false };
     bool focus_out { false };
     bool pointer_lock_asked { false };
@@ -480,6 +504,7 @@ struct App {
         int idle_wait_ms { 0 };                       // and when nothing happens (not drawing for nothing)
         int frames { 0 };
         int presented { 0 };                          // of which drawn and shown (the rest changed nothing)
+        int desktop_frames { 0 };                     // a desktop's frames received (rectangles)
         std::string renderer;                         // SDL's: "software" is no GPU
         std::optional<std::chrono::steady_clock::time_point> input_at;
         int frames_since_input { 0 };
@@ -615,6 +640,7 @@ struct App {
     // environment without a policy file is as open as it always was, and a
     // policy that cannot be read lets nothing cross.
     ClipboardGrant clipboard_grant(const std::string& name) const;
+    bool sound_grant(const std::string& name) const;
 
     void close_display();
 
@@ -670,7 +696,7 @@ struct Script {
 
 // ── what one file calls in another ──────────────────────────────────────
 
-void begin_full_(const char* id);
+void begin_full_(const char* id, bool transparent = false);
 void mark_(App& a, std::string name);
 const imkit::Theme& th_();
 void centred_(ImDrawList* dl, float y, std::string_view s, ImU32 color, float size = 0, bool title = false);

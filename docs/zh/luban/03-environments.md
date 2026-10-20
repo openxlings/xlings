@@ -100,15 +100,33 @@ luban export box box.luban
 luban import box.luban
 ```
 
-## 普通用户自己的包
+## 用户、sudo 与软件包
 
-在系统里，普通用户原样读取系统的包——`xlings list`、`search`、`--version` 不问任何问题。第一次安装时问一次是否只为自己安装、
-装进 `~/.xlings`（`-y` 即同意）；他的 home 从系统的 index 与设置开始，不联网。系统里已有同一版本的包不会重复安装。
-要给系统的所有用户安装，从宿主以 root 安装：
+系统的用户随系统建出（`--user`，桌面默认 `lubanoser`）。不设密码时用默认密码 `lubanoser`：`luban new` 当场说明，
+`luban status` 在用 `passwd` 修改之前一直提示。`--no-password` 是明确的选择：完全没有密码，`sudo` 也不问。
+其余时候 `sudo` 与 Ubuntu、Fedora 一样：用户在 `wheel` 组里，sudo 问他的密码，15 分钟内不再问，找得到 `xlings`，
+并保留宿主的代理（`/etc/sudoers.d/luban`，用 `visudo` 修改）。core、desktop、agent-workspace 带 `sudo`；
+沙箱里不需要（它的写入经系统的 broker）。
 
 ```bash
-luban run box --user root -- xlings install --system nvim
+luban new box --user alice                  # asks for a password; empty: lubanoser
+luban new box --user alice --no-password    # no password, a sudo that asks nothing
+luban run box --user alice -- passwd        # change it
 ```
+
+系统里只有一份软件包存储，即系统的（`/xlings`）。用户的 `~/.xlings` 是它的一个视图：自己选择的版本、自己的 shim 与日志——
+没有自己的 index，也没有自己的包。自己没选过的就是系统的选择。`xlings list`、`info`、`use` 也显示系统的包，标为 `system`。
+
+| 普通用户 | 结果 |
+|---|---|
+| `xlings install codex`（系统已有） | 不安装："codex 2.1 is provided by the system" |
+| `xlings use node 22`（存储里已有） | 自己的选择，不影响别人 |
+| `xlings install node@22`（存储里没有） | 一行说明加一个问题：经 `sudo` 装进系统的存储，之后成为自己的选择 |
+| `xlings remove node` | 撤销自己的选择；存储里的包保留（root 为所有人删除） |
+| `sudo xlings ...` | 系统自己的：所有用户的默认与存储 |
+
+没有人回答时（agent、脚本）不问：命令以 `E_NEEDS_ROOT` 失败，并写出要运行的确切 `sudo xlings install ...`。
+root 删除某个用户正选择着的版本时会保留它，并说出是谁的选择。
 
 ## 删除
 
