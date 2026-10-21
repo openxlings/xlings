@@ -181,8 +181,23 @@ struct Router::Impl {
 
     // ── endpoints ────────────────────────────────────────────────────
 
+    // Who offers it: its node, also when it was learnt over a link (the
+    // offer carries the node and name it came from).
+    std::pair<std::string, std::string> origin(const Endpoint& e) const {
+        const auto it = clients.find(e.owner);
+        if (it != clients.end() && !it->second.peer.link) return {it->second.peer.node, it->second.peer.name};
+        if (const auto n = e.meta.get("node")) return {std::string(*n), e.meta.value("name", "node")};
+        if (it != clients.end()) return {it->second.peer.node, "router"};
+        return {id, "router"};
+    }
+
     Fields offer_fields(const std::string& path, const Endpoint& e) const {
         Fields f{{"path", path}, {"kind", std::string(openbus::name_of(e.kind))}};
+        if (!e.meta.get("node")) {
+            const auto [node, name] = origin(e);
+            f.add("node", node);
+            f.add("name", name);
+        }
         if (e.retained) f.add("retained", "1");
         for (const auto& [k, v] : e.meta.items())
             if (k != "path" && k != "kind" && k != "retained" && k != "via") f.add(k, v);
@@ -257,9 +272,8 @@ struct Router::Impl {
             if (!openbus::matches(pattern, path)) continue;
             // By what it does (SPEC.md §2.7): an interface it names.
             if (!wanted.empty() && !std::ranges::contains(e.meta.all("interface"), std::string_view(wanted))) continue;
-            const auto* owner = client(e.owner);
-            Fields r{{"path", path}, {"kind", std::string(openbus::name_of(e.kind))},
-                     {"node", owner ? owner->peer.node : id}, {"name", owner ? owner->peer.name : std::string("router")}};
+            const auto [node, name] = origin(e);
+            Fields r{{"path", path}, {"kind", std::string(openbus::name_of(e.kind))}, {"node", node}, {"name", name}};
             std::string via;
             for (const auto& v : e.via) via += (via.empty() ? "" : ",") + v;
             if (!via.empty()) r.add("via", via);
@@ -474,10 +488,8 @@ struct Router::Impl {
             else nodes.push_back(std::move(n));
         }
         for (const auto& [path, e] : endpoints) {
-            const auto it = clients.find(e.owner);
-            Json one{{"path", path}, {"kind", std::string(openbus::name_of(e.kind))},
-                     {"node", it == clients.end() ? id : it->second.peer.node},
-                     {"name", it == clients.end() ? std::string("router") : it->second.peer.name}};
+            const auto [node, name] = origin(e);
+            Json one{{"path", path}, {"kind", std::string(openbus::name_of(e.kind))}, {"node", node}, {"name", name}};
             if (!e.via.empty()) one["via"] = e.via;
             eps.push_back(std::move(one));
         }

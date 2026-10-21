@@ -61,6 +61,7 @@ computer can run, and why not ([07](07-host-support.md)).
 - [06 — The Machine](06-machine.md) — Luban as a machine's system: stage-0, boot entries, rollback at boot
 - [07 — Host Support](07-host-support.md) — which hosts, the one-time setup, what to do when it fails
 - [08 — The Desktop and the Luban OS Window](08-desktop.md) — the window, desktops, your own compositor
+- [09 — The Bus](09-bus.md) — what a system talks to: its objects, the host's, seen and used
 - [91 — Architecture](91-architecture.md) — for developers: how it is built
 
 Every luban command and option: [the generated reference](../generated/luban-command-reference.md).

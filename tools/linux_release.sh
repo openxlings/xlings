@@ -127,6 +127,13 @@ if command -v file &>/dev/null; then
 fi
 cp "$LUBAN_SRC"       "$OUT_DIR/bin/luban"
 cp "$LUBAN_SRC"       "$OUT_DIR/bin/luban-init"
+
+# xbus (design 2026-10-22 §8): what is on a bus, seen and used -- ls, call,
+# dump, profile, bench -- static, beside luban, whose systems' buses it reads.
+"$MCPP_BIN" build -p xbus-tool --profile dist --target "$MCPP_TARGET" 2>&1 || fail "mcpp build -p xbus-tool failed"
+XBUS_SRC="$(find "$PROJECT_DIR/target/$MCPP_TARGET" -path '*/bin/xbus-tool/xbus' -type f -perm -111 -exec ls -t {} + | head -1)"
+[[ -f "$XBUS_SRC" ]] || fail "xbus not found"
+cp "$XBUS_SRC"        "$OUT_DIR/bin/xbus"
 chmod +x "$OUT_DIR/bin/"*
 
 # .xlings.json — release packages default to GLOBAL. Users can switch mirror

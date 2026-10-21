@@ -49,7 +49,7 @@ Options: `--distributions` — Only the systems that can be made; `--desktops` �
 
 This host, or one environment
 
-Options: `--check` — Check that it is usable: its /usr, /etc, runtime closure, and programs; `--log` — What its latest operation did, its own record of it too
+Options: `--check` — Check that it is usable: its /usr, /etc, runtime closure, and programs; `--log` — What its latest operation did, its own record of it too; `--bus` — What is on its bus: what its programs offer; the host's: the systems linked under it
 
 ## `luban config <name>` (more)
 

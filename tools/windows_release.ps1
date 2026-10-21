@@ -98,6 +98,18 @@ $LUBAN_FILE = Get-ChildItem "$PROJECT_DIR\target" -Recurse -Filter "luban.exe" |
 if (-not $LUBAN_FILE) { Fail "luban.exe not found under target\*\bin\luban-tool" }
 Copy-Item $LUBAN_FILE.FullName "$OUT_DIR\bin\luban.exe"
 
+# xbus (design 2026-10-22 §8): what is on a bus, seen and used, beside luban.
+$xbusArgs = @("build", "-p", "xbus-tool", "--profile", "dist")
+if ($env:MCPP_TARGET) { $xbusArgs += @("--target", $env:MCPP_TARGET) }
+& $MCPP_BIN @xbusArgs
+if ($LASTEXITCODE -ne 0) { Fail "mcpp build -p xbus-tool failed" }
+$XBUS_FILE = Get-ChildItem "$PROJECT_DIR\target" -Recurse -Filter "xbus.exe" |
+  Where-Object { $_.FullName -match "[\\/]+bin[\\/]+xbus-tool[\\/]+xbus\.exe$" } |
+  Sort-Object LastWriteTime -Descending |
+  Select-Object -First 1
+if (-not $XBUS_FILE) { Fail "xbus.exe not found under target\*\bin\xbus-tool" }
+Copy-Item $XBUS_FILE.FullName "$OUT_DIR\bin\xbus.exe"
+
 # Release packages default to GLOBAL. Users can switch mirror locally after
 # install, and CI also keeps GLOBAL for github.com endpoints.
 $MIRROR = if ($env:XLINGS_RELEASE_MIRROR) { $env:XLINGS_RELEASE_MIRROR } else { "GLOBAL" }

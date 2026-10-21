@@ -150,3 +150,71 @@ XTEST(LubanBus, TheHostsRouterIsOneAHomeStartedByTheFirstThatNeedsIt, .area = "l
         if (std::ranges::find(p.argv, home.root().string()) != p.argv.end() && std::ranges::find(p.argv, "__bus-router") != p.argv.end())
             (void)xlings::platform::send_signal(p.pid, xlings::platform::sig::terminate);
 }
+
+// `luban status --bus` (design 2026-10-22 §7): the host's bus -- the systems
+// linked under it -- and one system's, what its programs offer, seen through
+// the link; a home whose bus is not running says so.
+XTEST(LubanBus, StatusSaysWhatIsOnTheBus, .area = "luban", .covers = {"LUBAN-STATUS-BUS"}, .requires_ = {"linux", "xlings-bin"}) {
+    const auto bin = luban_binary();
+    if (!bin) GTEST_SKIP() << "no luban beside the xlings under test (mcpp build -p luban-tool, or LUBAN_BIN)";
+    auto home = tk::Home::isolated("luban-status-bus");
+    const auto status = [&](std::vector<std::string> args) {
+        tk::RunOptions o;
+        o.argv = {bin->string(), "status"};
+        o.argv.insert(o.argv.end(), args.begin(), args.end());
+        o.env = home.env();
+        o.env["LUBAN_XLINGS"] = tk::xlings_binary().string();
+        o.timeout = 30s;
+        return tk::run(o);
+    };
+    // The answer of `--json`: its result.
+    const auto result = [](const tk::RunResult& r) {
+        const auto j = Json::parse(r.out, nullptr, false);
+        return j.is_object() && j.contains("result") ? j["result"] : j;
+    };
+    const auto off = status({"--bus", "--json"});
+    ASSERT_EQ(off.exit_code, 0) << off.transcript();
+    const auto off_j = result(off);
+    EXPECT_TRUE(off_j.contains("bus") && off_j["bus"].is_null()) << off.out;
+    EXPECT_NE(off_j.value("why", std::string{}).find("not running"), std::string::npos) << off.out;
+    // The home's router, and a system's linked under it over a pipe, as a machine's is.
+    RunningRouter host({.root = xbus::host_root(), .listen = {xbus::Address{"unix", luban::vm::bus_socket(home.dir()).string()}}});
+    fs::create_directories(home.root() / "m");
+    RunningRouter system({.root = luban::vm::system_bus_root("m"), .listen = {xbus::Address{"local", (home.root() / "m" / "bus.sock").string()}}});
+    std::shared_ptr<xbus::PipeEnd> to_host, to_system;
+    std::mutex wire;
+    to_host = host.router.adopt({.send = [&](std::string_view b) {
+        std::lock_guard l(wire);
+        if (to_system) to_system->feed(b);
+        return true;
+    }});
+    {
+        std::lock_guard l(wire);
+        to_system = system.router.link({.send = [&](std::string_view b) { to_host->feed(b); return true; }});
+    }
+    auto desk = xbus::Node::connect({.name = "xdesk", .router = xbus::Address{"local", (home.root() / "m" / "bus.sock").string()}});
+    ASSERT_TRUE(desk.has_value()) << desk.error();
+    ASSERT_TRUE((*desk)->offer("service/xdesk/state", {.interfaces = {"xdesk.state@1"}}, [](xbus::Call c) { c.reply("{}"); c.end(); }));
+    Json one;
+    for (int k = 0; k < 40; ++k) {
+        const auto r = status({"m", "--bus", "--json"});
+        one = result(r);
+        if (one.is_object() && one.value("linked", false) && !one["objects"].empty()) break;
+        std::this_thread::sleep_for(100ms);
+    }
+    ASSERT_TRUE(one.value("linked", false)) << one.dump();
+    EXPECT_TRUE(std::ranges::any_of(one["objects"], [](const Json& o) {
+        return o["path"] == "service/xdesk/state" && o["node"] == "xdesk" && o["via"].get<int>() > 0;
+    })) << one.dump();
+    const auto all = result(status({"--bus", "--json"}));
+    EXPECT_TRUE(std::ranges::any_of(all["systems"], [](const Json& l) { return l["root"] == luban::vm::system_bus_root("m"); }))
+        << all.dump();
+    const auto text = status({"m", "--bus"});
+    EXPECT_NE(text.out.find("service/xdesk/state"), std::string::npos) << text.transcript();
+    EXPECT_FALSE(result(status({"n", "--bus", "--json"})).value("linked", true)) << "a system not on the bus";
+    (*desk)->close();
+    for (auto* r : {&host, &system}) {
+        r->stop = true;
+        r->thread.join();
+    }
+}

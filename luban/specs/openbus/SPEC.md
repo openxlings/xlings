@@ -192,7 +192,8 @@ version: u32)`; the receiver reads the bytes in place.
 connect to each other by **links**. A link is a connection between routers
 over any transport: its `hello` names feature `link` and its root. On a link
 each side offers the other every endpoint it knows (absolute paths, field
-`via`: the routers it came through), and keeps offering and withdrawing as
+`via`: the routers it came through; fields `node` and `name`: the node that
+offers it, which a resolve on the far side reports), and keeps offering and withdrawing as
 they change; an endpoint is never offered back to a router in its `via`.
 Frames for a path learnt over a link are forwarded over it, subscriptions too.
 

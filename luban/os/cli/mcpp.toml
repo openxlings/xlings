@@ -25,3 +25,5 @@ opensal = { path = "../../specs/opensal" }
 openhal = { path = "../../specs/openhal" }
 openas  = { path = "../../specs/openas" }
 opensal-wlr = { path = "../../kits/opensal-wlr" }
+xbus        = { path = "../../services/xbus" }
+openbus     = { path = "../../specs/openbus" }

@@ -20,6 +20,8 @@ import openhal;
 import openhal.audio;
 import openas;
 import xlings.carrier;
+import openbus;
+import xbus.node;
 import :render;
 
 namespace luban::cli {
@@ -335,6 +337,60 @@ int pipe_unix_(const std::string& socket) {
 // What this computer can do with Luban (part 4 §6.3): one line per way of
 // running a system, and the devices -- the same report the Luban OS app and
 // an agent read. Exit 0 when a system can run here (a sandbox or a machine).
+// What is on a bus (design 2026-10-22 §7): the host's -- its router, the
+// systems linked under it, what its programs offer -- or one system's: what
+// its programs offer, seen through the link. Nothing started the home's
+// router yet: said, with what starts it.
+int bus_status(const svc::Context& c, const std::optional<std::string>& name, const Globals& g, Renderer& r) {
+    const xbus::Address at{"unix", vm::bus_socket(c.home).string()};
+    auto n = xbus::Node::connect({.name = "luban-status", .actor = "program:luban", .router = at,
+                                  .connect_wait = std::chrono::milliseconds(800), .telemetry = false});
+    if (!n) {
+        const auto why = std::string("this home's bus is not running: a machine starts it, or xbus router --listen ") + at.text();
+        if (g.json) { r.value(Json{{"bus", nullptr}, {"why", why}}); return 0; }
+        std::println("{}", why);
+        return 0;
+    }
+    auto& bus = **n;
+    const auto root = bus.root();
+    const auto under = name ? vm::system_bus_root(*name) : root;
+    auto found = bus.resolve(under + "/**").value_or(std::vector<xbus::Resolved>{});
+    // A system's own router endpoints are its bus, not what is on it.
+    std::erase_if(found, [&](const xbus::Resolved& e) {
+        return e.path.starts_with(under + "/bus/") || (!name && e.path.starts_with(root + "/system/"));
+    });
+    Json objects = Json::array();
+    for (const auto& e : found) {
+        objects.push_back({{"path", e.path.substr(under.size() + 1)}, {"kind", std::string(openbus::name_of(e.kind))}, {"node", e.name},
+                           {"interfaces", e.interfaces}, {"via", e.via.size()}});
+    }
+    Json links = Json::array();
+    if (const auto l = bus.call("bus/links"); l && !l->empty()) links = Json::parse(l->front(), nullptr, false);
+    if (!links.is_array()) links = Json::array();
+    const bool linked = !name || std::ranges::any_of(links, [&](const Json& x) { return x.value("root", std::string{}) == under; });
+    Json out{{"bus", at.text()}, {"root", under}, {"objects", objects}};
+    if (name) out["linked"] = linked;
+    else out["systems"] = links;
+    if (g.json) { r.value(out); return 0; }
+    if (name && !linked) {
+        std::println("{} is not on this home's bus (it is linked while it runs as a machine)", *name);
+        return 0;
+    }
+    std::println("{}  bus at {}", name ? *name : std::string("this host"), at.where);
+    if (!name) {
+        for (const auto& l : links) std::println("  system    {}", l.value("root", std::string{}).substr(root.size() + 1));
+    }
+    if (objects.empty()) std::println("  nothing offered on it");
+    for (const auto& o : objects) {
+        std::string ifs;
+        for (const auto& i : o["interfaces"]) ifs += (ifs.empty() ? "" : ", ") + i.get<std::string>();
+        std::println("  {:<8}  {:<40} {}{}", o.value("kind", std::string{}), o.value("path", std::string{}), o.value("node", std::string{}),
+                     ifs.empty() ? "" : "  (" + ifs + ")");
+    }
+    std::println("  more: xbus ls '{}/**' --router {}", under, at.text());
+    return 0;
+}
+
 int host_status(const svc::Context& c, const Globals& g) {
     const auto caps = svc::capabilities(svc::gather(c.home, c.port));
     const auto* sandbox = caps.mode("sandbox");
@@ -730,6 +786,7 @@ int cmd_status(const svc::Context& c, const Parsed& p, const Globals& g, Rendere
         if (g.json) log.push_back("--json");
         return c.port.terminal(log);
     }
+    if (p.flag("--bus")) return bus_status(c, p.words.empty() ? std::nullopt : std::optional<std::string>(p.words[0]), g, r);
     if (p.words.empty()) return host_status(c, g);
     auto e = svc::describe(c, p.words[0]);
     if (!e) return usage(e.error(), g);
@@ -1267,7 +1324,8 @@ const spec::CommandSpec& tree() {
                          {"--desktops", "Only the desktops a system can have"}}, .effect = "read"},
             {.name = "status", .description = "This host, or one environment", .arguments = {{"name", "Which"}},
              .options = {{"--check", "Check that it is usable: its /usr, /etc, runtime closure, and programs"},
-                         {"--log", "What its latest operation did, its own record of it too"}}, .effect = "read"},
+                         {"--log", "What its latest operation did, its own record of it too"},
+                         {"--bus", "What is on its bus: what its programs offer; the host's: the systems linked under it"}}, .effect = "read"},
             {.name = "config", .description = "Show or change an environment's settings",
              .arguments = {{"name", "Which", true}},
              .options = {{"--mode <MODE>", "sandbox or machine: how `luban enter` starts it"},

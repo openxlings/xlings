@@ -671,3 +671,7 @@ status = "required"
 [XBUS-REGION]
 text = "an XBus region is memory both sides of a stream map (memfd over a local socket): a reference is 24 bytes and the other side reads the bytes in place; where the way carries no memory (a link over a pipe) the region is inline, each reference carrying its bytes in pieces into the other side's copy, and the fallback is counted"
 status = "required"
+
+[LUBAN-STATUS-BUS]
+text = "`luban status --bus` says the host's bus (the systems linked under it) and `luban status <name> --bus` what that system's programs offer, seen through its link (path, kind, node, interfaces); a system not on the bus and a home whose bus is not running are said, not errors"
+status = "required"
