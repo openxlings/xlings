@@ -663,3 +663,11 @@ status = "required"
 [LUBAN-BUS-HOST]
 text = "the host's openbus router is one per home (<home>/run/openbus/router.sock, its log under <home>/logs/openbus/), started by the first that needs it (`luban __bus-router <home>`, detached); a second finds the first and leaves without replacing it"
 status = "required"
+
+[XBUS-STREAM]
+text = "an XBus stream carries bytes both ways in order with credit: a writer waits while the other side has granted nothing more, what is read is granted again, a side that reads nothing stops a writer at its window; opening what nobody offers fails and says so"
+status = "required"
+
+[XBUS-REGION]
+text = "an XBus region is memory both sides of a stream map (memfd over a local socket): a reference is 24 bytes and the other side reads the bytes in place; where the way carries no memory (a link over a pipe) the region is inline, each reference carrying its bytes in pieces into the other side's copy, and the fallback is counted"
+status = "required"

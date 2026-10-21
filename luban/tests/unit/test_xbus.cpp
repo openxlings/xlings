@@ -463,3 +463,150 @@ XTEST(Xbus, EveryNodeAndTheRouterTellTheirTelemetry, .area = "luban", .covers = 
     // A request it does not know is answered with the ones it does.
     EXPECT_TRUE(ask(server_path, "make coffee")["requests"].is_array());
 }
+
+namespace {
+
+// A stream's other side: each opening echoed on a thread of its own -- bytes
+// back upper-cased, a region's reference answered with the sum of its bytes.
+struct Echo {
+    std::mutex m;
+    std::vector<std::jthread> threads;
+    std::atomic<bool> read_nothing { false };
+    void operator()(xbus::Stream s) {
+        std::lock_guard l(m);
+        threads.emplace_back([this, s]() mutable {
+            if (read_nothing) { while (!s.ended()) std::this_thread::sleep_for(20ms); return; }
+            for (;;) {
+                auto c = s.read(5s);
+                if (!c) return;
+                if (c->ref) {
+                    auto r = s.region(c->ref->id);
+                    std::uint64_t sum = 0;
+                    if (r) for (std::uint64_t k = 0; k < c->ref->length; ++k) sum += static_cast<std::uint8_t>(r->bytes()[c->ref->offset + k]);
+                    (void)s.write(std::format("sum:{}:{}", c->ref->version, sum));
+                    continue;
+                }
+                std::ranges::transform(c->bytes, c->bytes.begin(), [](char ch) { return static_cast<char>(std::toupper(static_cast<unsigned char>(ch))); });
+                if (!s.write(c->bytes)) return;
+            }
+        });
+    }
+};
+
+std::string read_exactly(xbus::Stream& s, std::size_t n) {
+    std::string got;
+    while (got.size() < n) {
+        auto c = s.read(5s);
+        if (!c) break;
+        got += c->bytes;
+    }
+    return got;
+}
+
+}  // namespace
+
+XTEST(Xbus, AStreamCarriesBytesWithCreditAndARegionInPlace, .area = "luban", .covers = {"XBUS-STREAM", "XBUS-REGION"}) {
+    if constexpr (tk::is_windows) GTEST_SKIP() << "see above";
+    auto home = tk::Home::isolated("xbus-stream");
+    Running r(home.root());
+    auto server = node(r.at, "server");
+    auto client = node(r.at, "client");
+    Echo echo;
+    ASSERT_TRUE(server->offer_stream("service/demo/pipe", {}, std::ref(echo), {.window = 64u << 10}));
+    // A megabyte through a 64 KiB window: credit, granted as it is read.
+    auto st = client->open("service/demo/pipe", "hello", {.window = 64u << 10});
+    ASSERT_TRUE(st.has_value()) << st.error().message;
+    std::string sent(1u << 20, 'a');
+    for (std::size_t k = 0; k < sent.size(); k += 97) sent[k] = 'b';
+    std::jthread writer([&] { EXPECT_TRUE(st->write(sent, 10s)); });
+    const auto back = read_exactly(*st, sent.size());
+    writer.join();
+    std::string upper = sent;
+    std::ranges::transform(upper, upper.begin(), [](char c) { return static_cast<char>(std::toupper(c)); });
+    EXPECT_EQ(back.size(), sent.size());
+    EXPECT_TRUE(back == upper) << "every byte, in order";
+    // A region: 8 MiB both map; a reference is 24 bytes, the bytes read in place.
+    auto region = st->create_region(8u << 20);
+    ASSERT_TRUE(region.has_value()) << region.error();
+    EXPECT_TRUE(region->shared()) << "memfd over a local socket";
+    std::uint64_t sum = 0;
+    for (std::size_t k = 0; k < region->size(); ++k) {
+        region->bytes()[k] = static_cast<std::byte>(k % 251);
+        sum += k % 251;
+    }
+    ASSERT_TRUE(st->send_ref(*region, 0, region->size(), 7));
+    EXPECT_EQ(read_exactly(*st, std::format("sum:7:{}", sum).size()), std::format("sum:7:{}", sum));
+    st->close();
+    // Credit is kept: a side that reads nothing stops a writer at its window.
+    echo.read_nothing = true;
+    auto stuck = client->open("service/demo/pipe", {}, {});
+    ASSERT_TRUE(stuck.has_value());
+    EXPECT_FALSE(stuck->write(std::string(256u << 10, 'x'), 300ms)) << "past the 64 KiB granted";
+    stuck->close();
+    // Nothing offered there: the opening fails, said.
+    const auto none = client->open("service/demo/nothing", {}, {}, 2s);
+    ASSERT_FALSE(none.has_value());
+    std::lock_guard l(echo.m);
+    for (auto& t : echo.threads) t.join();
+}
+
+XTEST(Xbus, ARegionAcrossALinkIsCopiedInline, .area = "luban", .covers = {"XBUS-REGION"}) {
+    if constexpr (tk::is_windows) GTEST_SKIP() << "see above";
+    auto home = tk::Home::isolated("xbus-region-link");
+    fs::create_directories(home.root() / "host");
+    fs::create_directories(home.root() / "guest");
+    Running host(home.root() / "host", "host/test");
+    Running guest(home.root() / "guest", "host/test/system/m");
+    std::shared_ptr<xbus::PipeEnd> to_host, to_guest;
+    std::mutex wire;
+    to_guest = guest.router->adopt({.send = [&](std::string_view b) {
+        std::lock_guard l(wire);
+        if (to_host) to_host->feed(b);
+        return true;
+    }});
+    {
+        std::lock_guard l(wire);
+        to_host = host.router->link({.send = [&](std::string_view b) { to_guest->feed(b); return true; }});
+    }
+    auto inside = node(guest.at, "inside");
+    Echo echo;
+    ASSERT_TRUE(inside->offer_stream("service/demo/pipe", {}, std::ref(echo)));
+    auto outside = node(host.at, "outside");
+    std::expected<xbus::Stream, xbus::CallError> st = std::unexpected(xbus::CallError{});
+    for (int k = 0; k < 50 && !st; ++k) {
+        st = outside->open("host/test/system/m/service/demo/pipe", {}, {}, 1s);
+        if (!st) std::this_thread::sleep_for(50ms);
+    }
+    ASSERT_TRUE(st.has_value()) << st.error().message;
+    const auto before = telemetry::metrics().counter("xbus.node.region_fallbacks").value();
+    // A pipe carries no memory: the region is inline, each reference its bytes.
+    auto region = st->create_region(3u << 20);
+    ASSERT_TRUE(region.has_value()) << region.error();
+    EXPECT_FALSE(region->shared());
+    EXPECT_GT(telemetry::metrics().counter("xbus.node.region_fallbacks").value(), before) << "the fallback counted";
+    std::uint64_t sum = 0;
+    for (std::size_t k = 0; k < region->size(); ++k) {
+        region->bytes()[k] = static_cast<std::byte>((k * 7) % 256);
+        sum += (k * 7) % 256;
+    }
+    ASSERT_TRUE(st->send_ref(*region, 0, region->size(), 1));
+    // In pieces: one answer a piece; their sums add up to the whole.
+    std::uint64_t got = 0;
+    for (int k = 0; k < 6 && got < sum; ++k) {
+        auto c = st->read(5s);
+        ASSERT_TRUE(c.has_value());
+        const auto colon = c->bytes.rfind(':');
+        got += std::stoull(c->bytes.substr(colon + 1));
+    }
+    EXPECT_EQ(got, sum);
+    st->close();
+    {
+        std::lock_guard l(echo.m);
+        for (auto& t : echo.threads) t.join();
+    }
+    // The routers stop before the pipe they move bytes through goes.
+    for (auto* r : {&host, &guest}) {
+        r->stop = true;
+        r->thread.join();
+    }
+}

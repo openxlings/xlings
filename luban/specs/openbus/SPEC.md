@@ -69,7 +69,7 @@ broadcast and a discovery reach as far as their scope says.
 | call | `call` → `reply`... `reply-end`; `cancel` | A request and one or more replies. A call may carry a deadline; past it the router answers `error(deadline)`. |
 | publish/subscribe | `subscribe`, `unsubscribe`, `publish` | A topic's messages to every subscriber whose pattern matches. A topic offered `retained` keeps its last message for a new subscriber. |
 | broadcast | `broadcast` | To every node in the scope; delivery is not promised. |
-| stream | `stream-open`, `stream-data`, `credit`, `stream-close` | An ordered flow between two endpoints, both ways, with credit: a sender sends no more than it was granted. |
+| stream | `stream-open`, `stream-data`, `credit`, `stream-close` | An ordered flow between two endpoints, both ways, with credit: a sender sends no more than it was granted (payload bytes). The opener names its window in the envelope (field `credit`); the other side grants its own with a first `credit` frame (field `bytes`), which is the stream's acceptance, and each grants again what it has read. |
 | event | `event` | A 64-bit value; events not yet read may be merged into one (the last value, a count). |
 | region | `region-announce`, `region-attach`, `region-release` | Memory both sides map (§6). Messages refer into it by offset; nothing is copied. |
 
@@ -168,8 +168,12 @@ with the frame (descriptors) where the transport carries them.
 
 6.2 Kinds: `memfd`, `shm` (a named shared-memory object), `dmabuf`, `cuda-ipc`,
 `metal-shared`, `rdma`, `inline` (no shared memory: the data is copied in the
-reference frames). A side that cannot map a kind answers `error(region-kind)`
-and the sender falls back to `inline`; every fallback is counted (§8).
+reference frames, after the 24-byte reference, in pieces). A side that maps a
+region answers `region-attach` (field `id`); one that cannot (the kind is not
+its, or the handle did not travel: a link, a platform without descriptors)
+answers `region-release` with fields `id` and `error` = `region-kind` -- not an
+`error` frame, which would end the stream -- and the sender announces it again
+as `inline`; every fallback is counted (§8).
 
 6.3 `placement` is the path of the node or device whose memory it is;
 `coherence` is `owned` (one writer at a time; ownership moves with a

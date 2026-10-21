@@ -220,6 +220,21 @@ jobs:
           mcpp build -p cursor-make --profile dist
           bash luban/tools/cursors_release.sh
 
+      # XBus's numbers (design 2026-10-22 §9), reported, not yet a gate: a
+      # call, a stream's bytes, a region's references, on this runner.
+      - name: XBus performance (reported)
+        continue-on-error: true
+        run: |
+          mcpp build -p xbus-tool --profile release
+          xbus=$(ls -t target/*/*/bin/xbus-tool/xbus | head -1)
+          {
+            echo '### XBus performance (this runner, reported)'
+            echo '```'
+            for b in call ping pubsub stream region; do "$xbus" bench "$b"; done
+            echo '```'
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+          for b in call ping pubsub stream region; do "$xbus" bench "$b" --json; done > target/xbus-bench.ndjson
+
       - name: Diagnose a failed mcpp build
         if: failure()
         run: bash tools/ci/diagnose_mcpp.sh

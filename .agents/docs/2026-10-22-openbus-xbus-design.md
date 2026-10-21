@@ -327,6 +327,10 @@ XBus 自己用它：路由的日志改为 kit 的 `Log`（`component = xbus-rout
 | 跨 machine 链路 call 往返 | 实测后定，写进报告 |
 | 路由空闲 | 0 % CPU（无定时器空转） |
 
+实测（B4，本机 release，经路由）：call 往返 p50 32.8 µs、p99 65.5 µs；stream 1.8 GB/s（64 KB 一次写，4 MB 窗口）；
+region 引用 8 MB（1080p 一帧）往返 p50 65.5 µs，即单向约 33 µs、每秒 1.8 万帧——超出"≤ 20 µs/帧"的预算，差额是路由的一跳；
+`direct`（两节点直连、不经路由）留到下一轮，它正是为此。CI 的 `desktop-payloads` 作业每次报告这些数字（先只报告）。
+
 ## 10. 跨平台
 
 - **Linux**：全部功能（SOCK_STREAM + SCM_RIGHTS、memfd、SO_PEERCRED）。
@@ -438,7 +442,9 @@ part 1 的 K3（`Transport`）按 openbus 的传输绑定来定，K7 的帧以�
 
 | 内容 | 本轮 | 以后 |
 |---|---|---|
-| region 的 `placement`、`coherence`、`tier` | 规范写进 0.1；XBus 实现本机 memfd + `owned` 的所有权移交 | 远端缺页取回、远端交换层、`shared`（低延迟链路） |
+| region 的 `placement`、`coherence`、`tier` | 规范写进 0.1；XBus 实现 stream 上的 memfd 区域（`owned`）、不能映射时的 `inline` 退化（计数）、跨链路自动退化 | 所有权移交、远端缺页取回、远端交换层、`shared`（低延迟链路） |
+| stream 与 credit | XBus：双向有序、按读取量回授 credit、窗口满即阻塞写 | 分片标志 `more` 的大消息 |
+| direct | — | 两节点直连（路由交出一对连接），省掉 region 引用的那一跳 |
 | 资源视图 | openhal 的设备以端点上总线，带容量与链路属性 | 调度器 |
 | 动词描述、`bus/verbs`、任务状态、actor 链 | 规范写进 0.1；XBus 实现 `bus/verbs` 与任务状态事件 | MCP、A2A 桥 |
 | GPU 区域、GPU 转发 | 规范预留种类 | dmabuf、GPU 转发服务 |

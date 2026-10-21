@@ -8,7 +8,7 @@
 //   xbus monitor [PATTERN] [--count N]
 //   xbus top [--interval MS] [--count N]
 //   xbus stats [--json] | xbus topology
-//   xbus bench call|pubsub|ping [--n N] [--size B] [--subs K] [--json]
+//   xbus bench call|pubsub|ping|stream|region [--n N] [--size B] [--subs K] [--json]
 //   xbus dump [PATH] [--request R] [--out FILE]
 //   xbus profile [PATH] [--seconds S] [--out FILE]
 //
@@ -282,6 +282,7 @@ int profile(const Args& a) {
 struct Bench {
     std::string name;
     long n { 0 };
+    std::uint64_t bytes { 0 };      // what moved (stream, region)
     openbus::Histogram latency;
     double seconds { 0 };
 };
@@ -289,7 +290,9 @@ struct Bench {
 void report(const Bench& b, bool json) {
     const double rate = b.seconds > 0 ? static_cast<double>(b.n) / b.seconds : 0;
     if (json) {
-        std::println("{}", Json{{"bench", b.name}, {"n", b.n}, {"per_second", rate}, {"p50_ns", b.latency.percentile(0.5)},
+        std::println("{}", Json{{"bench", b.name}, {"n", b.n}, {"per_second", rate},
+                                {"bytes_per_second", b.seconds > 0 ? static_cast<double>(b.bytes) / b.seconds : 0.0},
+                                {"p50_ns", b.latency.percentile(0.5)},
                                 {"p99_ns", b.latency.percentile(0.99)}, {"p999_ns", b.latency.percentile(0.999)},
                                 {"max_ns", b.latency.percentile(1.0)}}.dump());
         return;
@@ -297,12 +300,13 @@ void report(const Bench& b, bool json) {
     std::println("{:<8} {:>9} ops  {:>12.0f}/s   p50 {:>9}  p99 {:>9}  p999 {:>9}  max {:>9}", b.name, b.n, rate,
                  human_ns(b.latency.percentile(0.5)), human_ns(b.latency.percentile(0.99)), human_ns(b.latency.percentile(0.999)),
                  human_ns(b.latency.percentile(1.0)));
+    if (b.bytes) std::println("{:<8} {:>12.1f} MB/s", "", static_cast<double>(b.bytes) / b.seconds / 1e6);
 }
 
 int bench(const Args& a) {
     const auto what = a.words.empty() ? std::string("call") : a.words[0];
-    const long n = a.number("--n", what == "pubsub" ? 100000 : 10000);
-    const auto size = static_cast<std::size_t>(a.number("--size", 64));
+    const long n = a.number("--n", what == "pubsub" ? 100000 : what == "region" ? 2000 : 10000);
+    const auto size = static_cast<std::size_t>(a.number("--size", what == "stream" ? 65536 : 64));
     // Its own router, unless one is named: what is measured is XBus, not whoever else is on a bus.
     // Its directory goes after it (declared first: removed last).
     struct Removed {
@@ -380,8 +384,48 @@ int bench(const Args& a) {
         while (got.load() < n * subs && std::chrono::steady_clock::now() < until) std::this_thread::sleep_for(1ms);
         b.seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
         b.n = got.load();
+    } else if (what == "stream" || what == "region") {
+        // A stream's bytes through credit (--size a write), or a region's
+        // references (--size the region: a 1080p frame is 8 MB) each answered.
+        std::vector<std::jthread> readers;
+        std::mutex rm;
+        (void)server->offer_stream("service/bench/sink", {}, [&](xbus::Stream st) {
+            std::lock_guard l(rm);
+            readers.emplace_back([st]() mutable {
+                while (auto c = st.read(5s))
+                    if (c->ref) (void)st.write("k");
+            });
+        });
+        auto st = client->open("service/bench/sink", {}, {.window = 4u << 20});
+        if (!st) { std::println(std::cerr, "xbus bench: {}", st.error().message); return 1; }
+        const auto t0 = std::chrono::steady_clock::now();
+        if (what == "stream") {
+            const std::string chunk(size, 'x');
+            for (long k = 0; k < n; ++k) {
+                const auto s0 = std::chrono::steady_clock::now();
+                if (!st->write(chunk, 10s)) return 1;
+                b.latency.add(static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - s0).count()));
+                b.bytes += size;
+            }
+        } else {
+            const auto region_size = a.option("--size") ? size : std::size_t{8u << 20};
+            auto r = st->create_region(region_size);
+            if (!r) { std::println(std::cerr, "xbus bench: {}", r.error()); return 1; }
+            for (long k = 0; k < n; ++k) {
+                const auto s0 = std::chrono::steady_clock::now();
+                r->bytes()[static_cast<std::size_t>(k) % region_size] = std::byte{1};
+                if (!st->send_ref(*r, 0, region_size, static_cast<std::uint32_t>(k)) || !st->read(5s)) return 1;
+                b.latency.add(static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - s0).count()));
+                b.bytes += region_size;
+            }
+            if (!r->shared()) std::println(std::cerr, "xbus bench: the region is inline here (no shared memory): its bytes were copied");
+        }
+        b.seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+        st->close();
+        std::lock_guard l(rm);
+        for (auto& t : readers) t.join();
     } else {
-        std::println(std::cerr, "xbus bench: call, ping or pubsub");
+        std::println(std::cerr, "xbus bench: call, ping, pubsub, stream or region");
         return 2;
     }
     report(b, a.flags.contains("--json"));
@@ -400,7 +444,7 @@ void usage() {
   pub PATH BODY | sub PATTERN [--count N]    publish, subscribe
   monitor [PATTERN] [--count N]              every frame routed, as it is
   top | stats [--json] | topology            what the router carries
-  bench call|ping|pubsub [--n N] [--size B] [--subs K] [--window W] [--json]
+  bench call|ping|pubsub|stream|region [--n N] [--size B] [--subs K] [--window W] [--json]
   dump [PATH] [--request R] [--out FILE]     a process's telemetry (default: the router's)
   profile [PATH] [--seconds S] [--out FILE]  a trace of what it did meanwhile
   ls --interface openbus.telemetry@0.1       every process that can be asked

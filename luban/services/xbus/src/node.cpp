@@ -35,6 +35,60 @@ CallError error_of_(const Frame& f) {
 
 }  // namespace
 
+// ── streams and regions: what a Stream and a Region hold ─────────────
+
+struct RegionState {
+    std::uint32_t id { 0 };
+    std::size_t size { 0 };
+    bool shared { false };
+    native::Shared mapped;               // shared: both sides map it
+    std::vector<std::byte> local;        // inline: this side's copy
+    std::byte* data() { return shared ? mapped.data : local.data(); }
+    ~RegionState() { if (shared) native::unmap(mapped); }
+};
+
+struct StreamState {
+    std::uint32_t channel { 0 };         // on this node's connection
+    std::string path, from, body;
+    std::uint64_t window { 1u << 20 };
+    std::function<bool(Frame, Handle)> send;   // through the node, while it lives
+    std::function<void()> forget;              // and out of its streams
+    mutable std::mutex m;
+    std::condition_variable cv;
+    std::uint64_t credit { 0 };          // what this side may still send
+    std::uint64_t unacked { 0 };         // read since the last grant
+    bool granted { false };              // the other side's first credit came
+    std::deque<std::pair<Chunk, std::uint64_t>> inbox;   // and what each cost
+    bool ended { false };
+    std::string error;
+    std::uint32_t next_region { 1 };
+    std::map<std::uint32_t, std::shared_ptr<RegionState>> mine, theirs;
+    std::map<std::uint32_t, int> answers;                  // a region of mine: 1 mapped, -1 refused
+
+    void end(std::string why = {}) {
+        std::lock_guard l(m);
+        if (ended) return;
+        ended = true;
+        error = std::move(why);
+        cv.notify_all();
+    }
+};
+
+namespace {
+
+Frame credit_frame_(std::uint32_t channel, std::uint64_t bytes) {
+    return control_(Kind::credit, channel, Fields{{"bytes", std::to_string(bytes)}});
+}
+
+std::uint64_t number_(const Fields& f, std::string_view key) {
+    const auto v = f.value(key);
+    std::uint64_t n = 0;
+    std::from_chars(v.data(), v.data() + v.size(), n);
+    return n;
+}
+
+}  // namespace
+
 struct Node::Impl {
     NodeOptions o;
     std::string id;
@@ -48,7 +102,11 @@ struct Node::Impl {
     std::string root, router;
     std::uint32_t next_channel { 1 };
 
-    struct Offered { OfferOptions o; CallHandler handler; };
+    struct Offered { OfferOptions o; CallHandler handler; StreamHandler stream; StreamOptions so; };
+    // Streams open on this node's connection, by its channel.
+    std::map<std::uint32_t, std::shared_ptr<StreamState>> streams;
+    telemetry::Counter& m_region_fallbacks = telemetry::metrics().counter("xbus.node.region_fallbacks");
+    telemetry::Counter& m_stream_bytes = telemetry::metrics().counter("xbus.node.stream_bytes");
     std::map<std::string, Offered> offered;                     // by the path as given
     std::map<std::string, std::string> absolute;                 // given -> absolute (the router's answer)
     struct Sub { std::string pattern; MessageHandler handler; };
@@ -82,6 +140,129 @@ struct Node::Impl {
 
     void kick() {
         if (wake[1].valid()) (void)native::write(wake[1], "w");
+    }
+
+    bool send_with(Frame f, Handle h) {
+        std::lock_guard l(m);
+        if (!conn || !welcomed) return false;
+        const bool idle = !conn->pending();
+        if (h.valid()) f.flags |= openbus::flag::descriptors;
+        conn->push(std::move(f), std::move(h));
+        if (idle) kick();
+        return true;
+    }
+
+    std::shared_ptr<StreamState> stream_state(std::uint32_t ch, std::string path, std::uint64_t window) {
+        auto st = std::make_shared<StreamState>();
+        st->channel = ch;
+        st->path = std::move(path);
+        st->window = window;
+        st->send = [w = self](Frame f, Handle h) {
+            auto n = w.lock();
+            return n && n->impl_->send_with(std::move(f), std::move(h));
+        };
+        st->forget = [w = self, ch] {
+            if (auto n = w.lock()) {
+                std::lock_guard l(n->impl_->m);
+                n->impl_->streams.erase(ch);
+            }
+        };
+        return st;
+    }
+
+    // A frame on a stream's channel (the node's thread).
+    void stream_frame(const std::shared_ptr<StreamState>& st, Incoming& in) {
+        auto& f = in.frame;
+        switch (f.known()) {
+        case Kind::credit: {
+            const auto fields = Fields::decode(f.payload);
+            std::lock_guard l(st->m);
+            st->credit += fields ? number_(*fields, "bytes") : 0;
+            st->granted = true;
+            st->cv.notify_all();
+            break;
+        }
+        case Kind::stream_data: {
+            Chunk c;
+            const std::uint64_t cost = f.payload.size();
+            if (f.flags & openbus::flag::region_ref) {
+                c.ref = openbus::decode_region_ref(f.payload);
+                if (!c.ref) break;
+                std::lock_guard l(st->m);
+                // An inline region's bytes come with the reference: into this side's copy.
+                if (auto r = st->theirs.find(c.ref->id); r != st->theirs.end() && !r->second->shared) {
+                    const auto bytes = std::string_view(f.payload).substr(24);
+                    if (c.ref->offset + bytes.size() <= r->second->size)
+                        std::memcpy(r->second->data() + c.ref->offset, bytes.data(), bytes.size());
+                }
+                st->inbox.emplace_back(std::move(c), cost);
+            } else {
+                c.bytes = std::move(f.payload);
+                std::lock_guard l(st->m);
+                st->inbox.emplace_back(std::move(c), cost);
+            }
+            m_stream_bytes.add(cost);
+            st->cv.notify_all();
+            break;
+        }
+        case Kind::region_announce: {
+            const auto fields = Fields::decode(f.payload);
+            if (!fields) break;
+            auto r = std::make_shared<RegionState>();
+            r->id = static_cast<std::uint32_t>(number_(*fields, "id"));
+            r->size = static_cast<std::size_t>(number_(*fields, "size"));
+            const auto kind = fields->value("kind");
+            bool ok = false;
+            if (kind == "inline") {
+                r->local.resize(r->size);
+                ok = true;
+            } else if (kind == "memfd" && in.handle.valid()) {
+                if (auto mapped = native::map_shared(std::move(in.handle), r->size)) {
+                    r->mapped = std::move(*mapped);
+                    r->shared = true;
+                    ok = true;
+                }
+            }
+            if (ok) {
+                {
+                    std::lock_guard l(st->m);
+                    st->theirs[r->id] = r;
+                }
+                (void)send_with(control_(Kind::region_attach, st->channel, Fields{{"id", std::to_string(r->id)}}), {});
+            } else {
+                // This side cannot map it (it came without its memory): the other side goes inline.
+                (void)send_with(control_(Kind::region_release, st->channel,
+                                         Fields{{"id", std::to_string(r->id)}, {"error", std::string(openbus::name_of(openbus::ErrorCode::region_kind))}}), {});
+            }
+            break;
+        }
+        case Kind::region_attach:
+        case Kind::region_release: {
+            const auto fields = Fields::decode(f.payload);
+            if (!fields) break;
+            const auto id = static_cast<std::uint32_t>(number_(*fields, "id"));
+            std::lock_guard l(st->m);
+            if (f.is(Kind::region_attach)) st->answers[id] = 1;
+            else if (fields->get("error")) st->answers[id] = -1;
+            else st->theirs.erase(id);   // its owner let it go
+            st->cv.notify_all();
+            break;
+        }
+        case Kind::stream_close: {
+            st->end();
+            std::lock_guard l(m);
+            streams.erase(st->channel);
+            break;
+        }
+        case Kind::error: {
+            st->end(error_of_(f).message);
+            std::lock_guard l(m);
+            streams.erase(st->channel);
+            break;
+        }
+        default:
+            break;
+        }
     }
 
     bool send(const Frame& f) {
@@ -155,6 +336,18 @@ struct Node::Impl {
 
     void handle(Incoming in) {
         auto& f = in.frame;
+        if (f.is(Kind::credit) || f.is(Kind::stream_data) || f.is(Kind::stream_close) || f.is(Kind::region_announce)
+            || f.is(Kind::region_attach) || f.is(Kind::region_release) || f.is(Kind::error)) {
+            std::shared_ptr<StreamState> st;
+            {
+                std::lock_guard l(m);
+                if (auto it = streams.find(f.channel); it != streams.end()) st = it->second;
+            }
+            if (st) {
+                stream_frame(st, in);
+                return;
+            }
+        }
         switch (f.known()) {
         case Kind::welcome: {
             const auto fields = Fields::decode(f.payload);
@@ -250,6 +443,38 @@ struct Node::Impl {
             if (auto it = answering.find(f.channel); it != answering.end()) it->second->store(true);
             break;
         }
+        case Kind::stream_open: {
+            const auto env = openbus::open_envelope(f.payload);
+            if (!env) break;
+            const auto path = env->fields.value("path");
+            StreamHandler handler;
+            StreamOptions so;
+            {
+                std::lock_guard l(m);
+                for (const auto& [given, of] : offered) {
+                    const auto a = absolute.find(given);
+                    const auto placed = a != absolute.end() ? a->second : given.starts_with("host/") ? given : root + "/" + given;
+                    if (placed == path || given == path) { handler = of.stream; so = of.so; break; }
+                }
+            }
+            if (!handler) {
+                (void)send_with(control_(Kind::error, f.channel, Fields{{"code", std::string(openbus::name_of(openbus::ErrorCode::not_found))},
+                                                                       {"message", "this node has no stream at " + path}}), {});
+                break;
+            }
+            auto st = stream_state(f.channel, path, so.window);
+            st->from = env->fields.value("from");
+            st->body = std::string(env->body);
+            st->credit = number_(env->fields, "credit");
+            st->granted = true;
+            {
+                std::lock_guard l(m);
+                streams[f.channel] = st;
+            }
+            (void)send_with(credit_frame_(f.channel, so.window), {});
+            handler(Stream(st));
+            break;
+        }
         case Kind::publish:
         case Kind::event: {
             const auto env = openbus::open_envelope(f.payload);
@@ -329,6 +554,8 @@ struct Node::Impl {
                     }
                     pending.clear();
                     answering.clear();
+                    for (auto& [ch, st] : streams) st->end("the router went away");
+                    streams.clear();
                     cv.notify_all();
                 }
             }
@@ -416,12 +643,21 @@ std::string Node::root() const { std::lock_guard l(impl_->m); return impl_->root
 std::string Node::router() const { std::lock_guard l(impl_->m); return impl_->router; }
 bool Node::connected() const { std::lock_guard l(impl_->m); return impl_->welcomed; }
 
+std::expected<void, CallError> Node::offer_stream(std::string path, OfferOptions o, StreamHandler handler, StreamOptions so) {
+    o.kind = openbus::EndpointKind::stream;
+    return offer_(std::move(path), std::move(o), {}, std::move(handler), so);
+}
+
 std::expected<void, CallError> Node::offer(std::string path, OfferOptions o, CallHandler handler) {
+    return offer_(std::move(path), std::move(o), std::move(handler), {}, {});
+}
+
+std::expected<void, CallError> Node::offer_(std::string path, OfferOptions o, CallHandler handler, StreamHandler stream, StreamOptions so) {
     const auto ch = impl_->channel() | 0x40000000u;
     auto p = std::make_shared<Impl::Pending>();
     {
         std::lock_guard l(impl_->m);
-        impl_->offered[path] = {o, std::move(handler)};
+        impl_->offered[path] = {o, std::move(handler), std::move(stream), so};
         // Said when the router answers (restore()).
         if (!impl_->welcomed) return {};
     }
@@ -444,6 +680,30 @@ void Node::withdraw(const std::string& path) {
         impl_->offered.erase(path);
     }
     impl_->send(control_(Kind::withdraw, 0, Fields{{"path", path}}));
+}
+
+std::expected<Stream, CallError> Node::open(std::string path, std::string_view body, StreamOptions so, std::chrono::milliseconds timeout) {
+    std::uint32_t ch;
+    { std::lock_guard l(impl_->m); ch = impl_->channel(); }
+    auto st = impl_->stream_state(ch, path, so.window);
+    st->body = std::string(body);
+    {
+        std::lock_guard l(impl_->m);
+        if (!impl_->welcomed) return std::unexpected(CallError{openbus::ErrorCode::gone, "not connected to an openbus router"});
+        impl_->streams[ch] = st;
+    }
+    Fields env{{"path", path}, {"credit", std::to_string(so.window)}};
+    if (!impl_->send_with(Frame{.kind = static_cast<std::uint8_t>(Kind::stream_open), .channel = ch, .payload = openbus::address(env, body)}, {}))
+        return std::unexpected(CallError{openbus::ErrorCode::gone, "not connected to an openbus router"});
+    // Open once the other side grants its first credit; not, when it answers an error.
+    std::unique_lock l(st->m);
+    if (!st->cv.wait_for(l, timeout, [&] { return st->granted || st->ended; })) {
+        l.unlock();
+        Stream(st).close();
+        return std::unexpected(CallError{openbus::ErrorCode::deadline, "the stream was not taken in time"});
+    }
+    if (st->ended) return std::unexpected(CallError{openbus::ErrorCode::not_found, st->error.empty() ? "the stream ended" : st->error});
+    return Stream(st);
 }
 
 std::expected<std::vector<std::string>, CallError> Node::call(std::string path, std::string_view body, std::chrono::milliseconds timeout,
@@ -535,6 +795,150 @@ std::expected<std::chrono::nanoseconds, CallError> Node::ping(std::chrono::milli
 }
 
 bool Node::send_frame(openbus::Frame f) { return impl_->send(f); }
+
+// ── streams and regions ─────────────────────────────────────────────
+
+std::uint32_t Region::id() const { return s_->id; }
+std::size_t Region::size() const { return s_->size; }
+std::span<std::byte> Region::bytes() const { return {s_->data(), s_->size}; }
+bool Region::shared() const { return s_->shared; }
+
+const std::string& Stream::path() const { return s_->path; }
+const std::string& Stream::from() const { return s_->from; }
+const std::string& Stream::body() const { return s_->body; }
+
+bool Stream::ended() const {
+    std::lock_guard l(s_->m);
+    return s_->ended;
+}
+
+std::string Stream::error() const {
+    std::lock_guard l(s_->m);
+    return s_->error;
+}
+
+bool Stream::write(std::string_view bytes, std::chrono::milliseconds timeout) {
+    constexpr std::size_t kPieceMax = 256u << 10;
+    const auto until = std::chrono::steady_clock::now() + timeout;
+    while (!bytes.empty()) {
+        std::size_t n = 0;
+        {
+            std::unique_lock l(s_->m);
+            if (!s_->cv.wait_until(l, until, [&] { return s_->credit > 0 || s_->ended; }) || s_->ended) return false;
+            n = static_cast<std::size_t>(std::min<std::uint64_t>({s_->credit, bytes.size(), kPieceMax}));
+            s_->credit -= n;
+        }
+        if (!s_->send(Frame{.kind = static_cast<std::uint8_t>(Kind::stream_data), .flags = openbus::with_priority(0, openbus::Priority::bulk),
+                            .channel = s_->channel, .payload = std::string(bytes.substr(0, n))}, {}))
+            return false;
+        bytes.remove_prefix(n);
+    }
+    return true;
+}
+
+std::optional<Chunk> Stream::read(std::chrono::milliseconds timeout) {
+    std::unique_lock l(s_->m);
+    if (!s_->cv.wait_for(l, timeout, [&] { return !s_->inbox.empty() || s_->ended; }) || s_->inbox.empty()) return std::nullopt;
+    auto [c, cost] = std::move(s_->inbox.front());
+    s_->inbox.pop_front();
+    // What was read is granted again, in halves of the window.
+    s_->unacked += cost;
+    if (s_->unacked >= s_->window / 2 && !s_->ended) {
+        const auto grant = std::exchange(s_->unacked, 0);
+        l.unlock();
+        (void)s_->send(credit_frame_(s_->channel, grant), {});
+    }
+    return std::move(c);
+}
+
+std::expected<Region, std::string> Stream::create_region(std::size_t size, std::chrono::milliseconds wait) {
+    auto r = std::make_shared<RegionState>();
+    r->size = size;
+    {
+        std::lock_guard l(s_->m);
+        if (s_->ended) return std::unexpected("the stream ended");
+        r->id = s_->next_region++;
+    }
+    const auto announce = [&](bool shared) {
+        Fields f{{"id", std::to_string(r->id)}, {"size", std::to_string(size)}, {"kind", shared ? "memfd" : "inline"},
+                 {"coherence", "owned"}, {"tier", "hot"}};
+        return s_->send(control_(Kind::region_announce, s_->channel, f), shared ? native::duplicate(r->mapped.handle) : Handle{});
+    };
+    const auto answered = [&]() -> int {
+        std::unique_lock l(s_->m);
+        s_->cv.wait_for(l, wait, [&] { return s_->answers.contains(r->id) || s_->ended; });
+        const auto it = s_->answers.find(r->id);
+        const int a = it == s_->answers.end() ? 0 : it->second;
+        s_->answers.erase(r->id);
+        return a;
+    };
+    if (auto mapped = native::create_shared("xbus-region", size)) {
+        r->mapped = std::move(*mapped);
+        r->shared = true;
+        if (!announce(true)) return std::unexpected("the stream ended");
+        if (const int a = answered(); a == 1) {
+            std::lock_guard l(s_->m);
+            s_->mine[r->id] = r;
+            return Region(r);
+        } else if (a == 0) {
+            return std::unexpected("the other side did not answer the region in time");
+        }
+        // Refused (it came without its memory): inline from here, the bytes kept where they are.
+        telemetry::metrics().counter("xbus.node.region_fallbacks").add();
+        r->local.assign(r->mapped.data, r->mapped.data + size);
+        native::unmap(r->mapped);
+        r->shared = false;
+    } else {
+        r->local.resize(size);
+    }
+    if (!announce(false)) return std::unexpected("the stream ended");
+    if (answered() != 1) return std::unexpected("the other side did not take the inline region");
+    std::lock_guard l(s_->m);
+    s_->mine[r->id] = r;
+    return Region(r);
+}
+
+std::optional<Region> Stream::region(std::uint32_t id) const {
+    std::lock_guard l(s_->m);
+    const auto it = s_->theirs.find(id);
+    if (it == s_->theirs.end()) return std::nullopt;
+    return Region(it->second);
+}
+
+bool Stream::send_ref(const Region& r, std::uint64_t offset, std::uint64_t length, std::uint32_t version, std::chrono::milliseconds timeout) {
+    if (offset + length > r.size()) return false;
+    const auto until = std::chrono::steady_clock::now() + timeout;
+    // A shared region's reference is 24 bytes; an inline one's carries the bytes, in pieces.
+    constexpr std::uint64_t kInlinePiece = 512u << 10;
+    std::uint64_t at = offset;
+    const std::uint64_t end = offset + length;
+    do {
+        const std::uint64_t n = r.shared() ? length : std::min(kInlinePiece, end - at);
+        auto payload = openbus::encode(openbus::RegionRef{r.id(), at, n, version});
+        if (!r.shared()) payload.append(reinterpret_cast<const char*>(r.bytes().data() + at), static_cast<std::size_t>(n));
+        {
+            std::unique_lock l(s_->m);
+            if (!s_->cv.wait_until(l, until, [&] { return s_->credit >= payload.size() || s_->ended; }) || s_->ended) return false;
+            s_->credit -= payload.size();
+        }
+        if (!s_->send(Frame{.kind = static_cast<std::uint8_t>(Kind::stream_data),
+                            .flags = static_cast<std::uint16_t>(openbus::flag::region_ref),
+                            .channel = s_->channel, .payload = std::move(payload)}, {}))
+            return false;
+        at += n;
+    } while (!r.shared() && at < end);
+    return true;
+}
+
+void Stream::close() {
+    {
+        std::lock_guard l(s_->m);
+        if (s_->ended) return;
+    }
+    (void)s_->send(Frame{.kind = static_cast<std::uint8_t>(Kind::stream_close), .channel = s_->channel}, {});
+    s_->end();
+    if (s_->forget) s_->forget();
+}
 
 // ── answering ───────────────────────────────────────────────────────
 

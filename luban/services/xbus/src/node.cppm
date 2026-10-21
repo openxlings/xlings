@@ -61,6 +61,66 @@ struct OfferOptions {
 
 class Node;
 
+// ── streams and regions (SPEC.md §3, §6) ─────────────────────────────
+
+struct StreamOptions {
+    // Bytes this side lets the other send before it has read them (its credit).
+    std::uint64_t window { 1u << 20 };
+};
+
+struct RegionState;   // XBus's own
+// Memory both sides of a stream see (SPEC.md §6): made by one side, announced
+// on the stream, mapped by the other (memfd); where the way between them
+// carries no memory (a link, a platform without descriptors) it is inline --
+// each reference carries the bytes, copied into the other side's region.
+class Region {
+public:
+    explicit Region(std::shared_ptr<RegionState> s) : s_(std::move(s)) {}
+    std::uint32_t id() const;
+    std::size_t size() const;
+    std::span<std::byte> bytes() const;
+    bool shared() const;          // false: inline
+private:
+    std::shared_ptr<RegionState> s_;
+};
+
+// What a stream brought: bytes, or a reference into one of the other side's
+// regions (its bytes are in that region; an inline one's were copied there).
+struct Chunk {
+    std::string bytes;
+    std::optional<openbus::RegionRef> ref;
+};
+
+struct StreamState;   // XBus's own
+// One side of a stream: ordered both ways, with credit -- a write waits
+// while the other side has granted nothing more. Used from any thread.
+class Stream {
+public:
+    explicit Stream(std::shared_ptr<StreamState> s) : s_(std::move(s)) {}
+    const std::string& path() const;
+    const std::string& from() const;         // who opened it (the offering side's view)
+    const std::string& body() const;         // what the opening said
+    // Waits at most `timeout` for credit; false when it ended or the time passed.
+    bool write(std::string_view bytes, std::chrono::milliseconds timeout = std::chrono::seconds(5));
+    // The next thing in order; nullopt when it ended and nothing is left, or nothing came in time.
+    std::optional<Chunk> read(std::chrono::milliseconds timeout = std::chrono::seconds(5));
+    // A region this side writes: announced, and mapped by the other side
+    // (`wait` for its answer); inline when the way carries no memory.
+    std::expected<Region, std::string> create_region(std::size_t size, std::chrono::milliseconds wait = std::chrono::seconds(2));
+    // The other side's region `id`, as this side sees it.
+    std::optional<Region> region(std::uint32_t id) const;
+    // `length` bytes at `offset` of `r` are ready (`version`: what the writer counts).
+    bool send_ref(const Region& r, std::uint64_t offset, std::uint64_t length, std::uint32_t version = 0,
+                  std::chrono::milliseconds timeout = std::chrono::seconds(5));
+    bool ended() const;
+    std::string error() const;               // why it ended, when not closed
+    void close();
+private:
+    std::shared_ptr<StreamState> s_;
+};
+
+using StreamHandler = std::function<void(Stream)>;
+
 // A call this node answers; answered from any thread, once ended no more.
 class Call {
 public:
@@ -109,7 +169,12 @@ public:
 
     // Not connected: kept, and offered when the router answers (a taken path is then only logged).
     std::expected<void, CallError> offer(std::string path, OfferOptions o = {}, CallHandler handler = {});
+    // A stream endpoint: each opening is handed to `handler` (on the node's thread).
+    std::expected<void, CallError> offer_stream(std::string path, OfferOptions o, StreamHandler handler, StreamOptions so = {});
     void withdraw(const std::string& path);
+    // Opens a stream at `path` (its body: what the other side reads in Stream::body).
+    std::expected<Stream, CallError> open(std::string path, std::string_view body = {}, StreamOptions so = {},
+                                          std::chrono::milliseconds timeout = std::chrono::seconds(5));
 
     // Every reply until the end (or the deadline).
     std::expected<std::vector<std::string>, CallError> call(std::string path, std::string_view body = {},
@@ -140,6 +205,7 @@ public:
 
 private:
     friend class Call;
+    std::expected<void, CallError> offer_(std::string path, OfferOptions o, CallHandler handler, StreamHandler stream, StreamOptions so);
     struct Impl;
     explicit Node(NodeOptions o);
     std::unique_ptr<Impl> impl_;
