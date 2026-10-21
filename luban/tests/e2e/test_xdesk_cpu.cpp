@@ -124,7 +124,8 @@ state {}
 )", a.string(), b.string(), c.string(), d.string(), (home.root() / "e.json").string()));
     ASSERT_EQ(r.exit_code, 0) << r.transcript();
     const auto frames = [](const fs::path& f) { return read_state(f)["perf"]["desktop_frames"].get<int>(); };
-    EXPECT_EQ(frames(b), frames(a)) << "a still desktop sent frames";
+    // At most one: the panel's clock may turn its minute in those two seconds.
+    EXPECT_LE(frames(b) - frames(a), 1) << "a still desktop sent frames";
     EXPECT_EQ(frames(d), frames(c)) << "a minimized window was sent frames (the overview opened meanwhile)";
     EXPECT_GT(frames(home.root() / "e.json"), frames(d)) << "restored: the desktop as it is now";
 }

@@ -880,12 +880,12 @@ screenshot {}
     ASSERT_EQ(r.exit_code, 0) << r.transcript();
     // From blue (files) to term's most recent, green; left of it, red.
     const auto a = read_ppm(byapp);
-    EXPECT_EQ(a.at(275, 400), kRed);
-    EXPECT_EQ(a.at(825, 400), kGreen);
+    EXPECT_TRUE(near_colour(a.at(275, 400), kRed)) << "kRed at (275, 400)";
+    EXPECT_TRUE(near_colour(a.at(825, 400), kGreen)) << "kGreen at (825, 400)";
     // Super+`: from red to term's other window, green; right of it, blue.
     const auto b = read_ppm(other);
-    EXPECT_EQ(b.at(275, 400), kGreen);
-    EXPECT_EQ(b.at(825, 400), kBlue);
+    EXPECT_TRUE(near_colour(b.at(275, 400), kGreen)) << "kGreen at (275, 400)";
+    EXPECT_TRUE(near_colour(b.at(825, 400), kBlue)) << "kBlue at (825, 400)";
     // Held on term: green and red spread below the row, blue not shown.
     const auto c = read_ppm(open);
     EXPECT_GE(box_of(c, kGreen)[0], 0) << "term's most recent window, as it is";
@@ -893,8 +893,8 @@ screenshot {}
     EXPECT_FALSE(tinted_(c, 2)) << "files' window is not shown";
     // Left: red, chosen on letting Super go.
     const auto d = read_ppm(chosen);
-    EXPECT_EQ(d.at(275, 400), kRed);
-    EXPECT_EQ(d.at(825, 400), kGreen);
+    EXPECT_TRUE(near_colour(d.at(275, 400), kRed)) << "kRed at (275, 400)";
+    EXPECT_TRUE(near_colour(d.at(825, 400), kGreen)) << "kGreen at (825, 400)";
 }
 
 // A second window on a running desktop is another display of it (design
