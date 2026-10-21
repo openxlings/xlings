@@ -11,7 +11,7 @@ import xlings.core.home;
 namespace xlings {
 
 export struct Info {
-    static constexpr std::string_view VERSION = "2026.10.21.1";
+    static constexpr std::string_view VERSION = "2026.10.21.2";
     static constexpr std::string_view REPO = "https://github.com/openxlings/xlings";
 };
 
@@ -229,6 +229,9 @@ private:
     std::string theme_;         // path reference, or a shipped theme's name
     std::optional<bool> tuiInteractive_;
     std::string globalActiveSubos_ = "default";
+    // The system this runs in (a user's view keeps it after it lets go of
+    // XLINGS_ROOT_INSTANCE): what system_instance() answers.
+    std::string systemInstance_;
     xvm::VersionDB globalVersions_;
     xvm::VersionDB projectVersions_;
     xvm::Workspace globalWorkspace_;
@@ -355,6 +358,9 @@ private:
     //
     // One answerer, so there is nothing left to disagree with.
     [[nodiscard]] std::string global_subos_name_() const;
+    // Inside a Luban system whose home this is: the system's instance name
+    // (XLINGS_ROOT_INSTANCE, else /etc/xlings/usr); empty elsewhere.
+    [[nodiscard]] std::string root_instance_name_() const;
 
     [[nodiscard]] std::filesystem::path global_subos_dir_() const;
 
@@ -806,6 +812,9 @@ public:
     // The same answer as a value: name and root together, so a caller that
     // needs both cannot pick them from two different resolutions.
     [[nodiscard]] static SubosScope subos_scope();
+    // The Luban system this runs inside, by its instance name -- for a user's
+    // view too, whose own subos is its own (empty outside a system).
+    [[nodiscard]] static std::string system_instance();
 
     static std::vector<std::string> list_subos_names();
 

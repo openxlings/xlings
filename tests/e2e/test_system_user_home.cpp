@@ -130,10 +130,12 @@ function config() xvm.add('hello', { bindir = path.join(pkginfo.install_dir(), '
     fs::create_directories(home.dir() / "bin");
     fs::copy_file(tk::xlings_binary(), home.dir() / "bin" / "xlings");
     ASSERT_EQ(home.xlings({"self", "init"}).exit_code, 0);
-    const auto installed = home.xlings({"install", "hello@1.0.0", "-y"});
+    // The system (box) has it, as a system's own subos does.
+    ASSERT_EQ(home.xlings({"subos", "new", "box"}).exit_code, 0);
+    const auto installed = home.xlings({"install", "hello@1.0.0", "-y"}, {{"XLINGS_ACTIVE_SUBOS", "box"}});
     ASSERT_EQ(installed.exit_code, 0) << installed.transcript();
     std::optional<fs::path> shim;
-    for (const auto& dir : {home.dir() / "subos" / "default" / "bin", home.dir() / "bin"})
+    for (const auto& dir : {home.dir() / "subos" / "box" / "bin", home.dir() / "bin"})
         if (fs::exists(dir / "hello")) { shim = dir / "hello"; break; }
     if (!shim)
         for (const auto& e : fs::recursive_directory_iterator(home.dir()))
@@ -163,6 +165,53 @@ function config() xvm.add('hello', { bindir = path.join(pkginfo.install_dir(), '
     EXPECT_NE(ran.out.find("hello-from-the-system"), std::string::npos) << ran.transcript();
     EXPECT_EQ(ran.transcript().find("not installed"), std::string::npos) << ran.transcript();
     EXPECT_EQ(doctor.transcript().find("subos manifest"), std::string::npos) << doctor.transcript();
+}
+
+// Inside a system its own subos is the system (design 2026-10-16 L §9): with
+// no XLINGS_ACTIVE_SUBOS -- a machine's session -- the workspace read is the
+// system's, not the home's `default`. 2026.10.21.1's machines said "dsh is
+// not installed in this subos (e-desktop)" of a program the system had.
+XTEST(SystemUserHome, AShimInASystemReadsTheSystemsOwnWorkspace,
+      .area = "subos", .covers = {"SUBOS-ROOT-INSTANCE-WORKSPACE"}, .requires_ = {"linux", "xlings-bin"}) {
+    if constexpr (!tk::is_linux) GTEST_SKIP() << "a Luban system is Linux";
+    auto home = tk::Home::isolated("system-own-workspace");
+    const auto repo = home.root() / "index";
+    tk::write_file(repo / "xim-indexrepos.lua", "xim_indexrepos = {}\n");
+    tk::write_file(repo / "pkgs/h/hello.lua", R"LUA(
+package = { spec = '1', name = 'hello', archs = {'x86_64', 'aarch64'}, programs = {'hello'}, xvm_enable = true,
+            xpm = { linux = { ['1.0.0'] = {} } } }
+import('xim.libxpkg.pkginfo')
+import('xim.libxpkg.xvm')
+function install()
+    local dir = pkginfo.install_dir()
+    os.mkdir(path.join(dir, 'bin'))
+    io.writefile(path.join(dir, 'bin', 'hello'), '#!/bin/sh\necho hello-from-box\n')
+    os.exec('chmod +x ' .. path.join(dir, 'bin', 'hello'))
+    return true
+end
+function config() xvm.add('hello', { bindir = path.join(pkginfo.install_dir(), 'bin') }); return true end
+)LUA");
+    const Json config{{"mirror", "GLOBAL"}, {"xim", {{"index-repo", repo.generic_string()}}},
+                      {"index_repos", Json::array({{{"name", "xim"}, {"url", repo.generic_string()}, {"source", "git"}}})}};
+    tk::write_file(home.dir() / ".xlings.json", config.dump());
+    fs::create_directories(home.dir() / "bin");
+    fs::copy_file(tk::xlings_binary(), home.dir() / "bin" / "xlings");
+    ASSERT_EQ(home.xlings({"self", "init"}).exit_code, 0);
+    ASSERT_EQ(home.xlings({"subos", "new", "box"}).exit_code, 0);
+    const auto installed = home.xlings({"install", "hello@1.0.0", "-y"}, {{"XLINGS_ACTIVE_SUBOS", "box"}});
+    ASSERT_EQ(installed.exit_code, 0) << installed.transcript();
+    const auto shim = home.dir() / "subos" / "box" / "bin" / "hello";
+    ASSERT_TRUE(fs::exists(shim)) << installed.transcript();
+    // The home's own choice stays `default`; the system names itself.
+    tk::RunOptions o;
+    o.argv = {shim.string()};
+    o.env = home.env();
+    o.env.erase("XLINGS_ACTIVE_SUBOS");
+    o.env["XLINGS_ROOT_INSTANCE"] = "box";
+    const auto ran = tk::run(o);
+    EXPECT_EQ(ran.exit_code, 0) << ran.transcript();
+    EXPECT_NE(ran.out.find("hello-from-box"), std::string::npos) << ran.transcript();
+    EXPECT_EQ(ran.transcript().find("not installed"), std::string::npos) << ran.transcript();
 }
 
 // No network inside a system: the index cannot be fetched, said once with

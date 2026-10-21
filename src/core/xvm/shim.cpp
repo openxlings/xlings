@@ -869,15 +869,25 @@ int shim_dispatch(const std::string& program_name, int argc, char* argv[]) {
         }
     }
     if (below) {
-        if (auto system = home::layers::read_snapshot(*below); system) {
+        // The system's default is the system's own subos (its instance
+        // name), else the one this view stands in, else the home's default.
+        std::vector<std::string> scopes;
+        for (auto name : {Config::system_instance(), Config::subos_scope().name, std::string("default")})
+            if (!name.empty() && std::ranges::find(scopes, name) == scopes.end()) scopes.push_back(std::move(name));
+        for (const auto& scope : scopes) {
+            if (scope.empty()) continue;
+            auto system = home::layers::read_snapshot(*below, scope);
+            if (!system) {
+                log::debug("shim: the system default ({}) could not be read: {}", scope, system.error());
+                continue;
+            }
             if (auto inherited = get_active_version(system->workspace.active, program_name); !inherited.empty()) {
                 version = std::move(inherited);
                 if (auto info = system->versions.find(program_name); info != system->versions.end())
                     db[program_name] = info->second;
-                log::debug("shim: {} from the system default ({}): {}", program_name, below->string(), version);
+                log::debug("shim: {} from the system default ({}, {}): {}", program_name, below->string(), scope, version);
+                break;
             }
-        } else {
-            log::debug("shim: the system default could not be read: {}", system.error());
         }
     }
     if (version.empty()) {

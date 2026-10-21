@@ -986,3 +986,7 @@ status = "required"
 [SUBOS-USER-VIEW-INHERITS]
 text = "a user's view in a system that has made nothing of its own active for a name runs the system default's (the system's shim reaches the system's program); a view without a manifest of its own is not a defect (self doctor reports none: it is written when first needed)"
 status = "required"
+
+[SUBOS-ROOT-INSTANCE-WORKSPACE]
+text = "inside a Luban system with no XLINGS_ACTIVE_SUBOS (a machine's session), the workspace xlings reads is the system's own subos (XLINGS_ROOT_INSTANCE, else /etc/xlings/usr), the one its scope names -- not the home's default"
+status = "required"
