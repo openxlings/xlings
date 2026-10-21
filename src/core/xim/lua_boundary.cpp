@@ -130,6 +130,20 @@ struct Worker {
             };
             // `walk`: a directory source is every file under it, checked; a
             // library's directory is only where its one file is (below).
+            auto system_library = [&](const fs::path& link) {
+                if constexpr (!platform::is_linux) return false;
+                std::error_code ec;
+                if (!fs::is_symlink(fs::symlink_status(link, ec))) return false;
+                const auto target = fs::canonical(link, ec);
+                if (ec || !fs::is_regular_file(target, ec)) return false;
+                const bool in_system = std::ranges::any_of(
+                    std::array<fs::path, 4>{"/usr/lib", "/usr/lib64", "/lib", "/lib64"},
+                    [&](const fs::path& dir) { return under(target, dir); });
+                const auto own = platform::file_ownership(target);
+                // Not this user's (root's; nobody's in a user namespace, which
+                // is root outside it) and not writable by others.
+                return in_system && own && own->uid != platform::user_ids().euid && !(own->mode & 022);
+            };
             auto source = [&](const std::string& text, const fs::path& base, bool walk = true) {
                 fs::path path(xvm::expand_path(text, Config::paths().homeDir.string()));
                 if (path.empty())
@@ -233,13 +247,20 @@ struct Worker {
                         if (relative.is_absolute())
                             throw std::runtime_error(
                                 "file asset source must be relative to its payload");
-                        (void)source(operation.src, base);
+                        // One file, the operating system's library (as below):
+                        // nvidia-gl-host-link's GBM backend.
+                        if (!system_library(base / relative)) (void)source(operation.src, base);
                     } else if (library) {
                         const fs::path relative(operation.filename.empty() ? operation.name
                                                                            : operation.filename);
                         if (relative.is_absolute())
                             throw std::runtime_error("artifact source name must be relative");
-                        (void)source(relative.string(), base);
+                        // A library of the operating system's own (T0: a host
+                        // link sentinel's -- the NVIDIA driver's userspace):
+                        // in a system library directory, not this user's to
+                        // change. Not a user's data; what the boundary keeps
+                        // out is that, and a recipe's own scratch.
+                        if (!system_library(base / relative)) (void)source(relative.string(), base);
                     } else if (operation.type != "group" && operation.alias.empty()) {
                         const auto name =
                             operation.filename.empty() ? operation.name : operation.filename;
