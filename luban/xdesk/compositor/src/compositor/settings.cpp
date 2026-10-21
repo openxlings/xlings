@@ -120,7 +120,7 @@ std::vector<std::pair<std::string, std::string>> page_keys_(SettingsPage p) {
     switch (p) {
         case SettingsPage::layout:
             return {{"desktop", "inner_gap"}, {"desktop", "gap"}, {"desktop", "outer_gap"}, {"desktop", "min_column_width"}, {"desktop", "flow"},
-                    {"desktop", "rule"}, {"desktop", "status_others"}, {"wuxian", "minimap"}, {"wuxian", "snap"}, {"canvas", "minimap"},
+                    {"desktop", "rule"}, {"desktop", "status_others"}, {"wuxian", "minimap"}, {"wuxian", "bookmarks"}, {"wuxian", "snap"}, {"canvas", "minimap"},
                     {"canvas", "snap"}, {"switchers", "hold_ms"}, {"switchers", "highlight_ms"}, {"switchers", "dim"}, {"scroll", "speed"},
                     {"scroll", "snap"}};
         case SettingsPage::appearance:
@@ -148,6 +148,7 @@ void Server::apply_settings() {
     lay.set_spacing(s.get_int("desktop", "inner_gap", s.get_int("desktop", "gap", 4)), s.get_int("desktop", "outer_gap", 0),
                     s.get_int("desktop", "min_column_width", 480));
     minimap_on = s.get("wuxian", "minimap", s.get("canvas", "minimap", "on")) != "off";
+    bookmarks_on = s.get("wuxian", "bookmarks", "on") != "off";
     snap_on = s.get("wuxian", "snap", s.get("canvas", "snap", "on")) != "off";
     reduce_motion = s.get("appearance", "reduce_motion", "off") == "on";
     status_others = s.get("desktop", "status_others", "on") != "off";
@@ -368,6 +369,8 @@ void Server::settings_rows() {
             heading(tr_(zh, "WuXian (the infinite canvas)", "WuXian（无限画布）"));
             toggle(std::string(tr_(zh, "A minimap when WuXian holds more than the view", "WuXian 超出视野时显示小地图")), minimap_on,
                    [this](bool on) { minimap_on = on; setting("wuxian", "minimap", on ? "on" : "off"); draw_shell(); });
+            toggle(std::string(tr_(zh, "Bookmarks for covered workspaces and windows", "被盖住的工作区和窗口显示书签")), bookmarks_on,
+                   [this](bool on) { bookmarks_on = on; setting("wuxian", "bookmarks", on ? "on" : "off"); update_bookmarks(); });
             toggle(std::string(tr_(zh, "A moved window lines up with others", "移动的窗口与其他窗口对齐")), snap_on,
                    [this](bool on) { snap_on = on; setting("wuxian", "snap", on ? "on" : "off"); });
             // The switchers and the wheel (design 2026-10-20 WuXian §4).

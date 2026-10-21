@@ -26,6 +26,7 @@ Super alone: the applications. Super held a second: the keys used most.
 |  | Float, or put back | `Super+Shift+Space` |
 |  | Always on top | `Super+P` |
 |  | On every workspace | `Super+Shift+P` |
+|  | Collapse, or expand: a free window to its title bar, a workspace to its label | `Super+S` |
 |  | Close the window | `Super+Q`, `Alt+F4` |
 |  | Copy (in a terminal too) | `Super+C` |
 |  | Paste (in a terminal too) | `Super+V` |

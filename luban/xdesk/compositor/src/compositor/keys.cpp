@@ -47,6 +47,7 @@ const std::vector<ActionInfo>& actions() {
             {Action::toggle_float, "float", "Float, or put back", "浮动 / 放回", {"Super+Shift+space"}, true, true, true, G::window},
             {Action::pin, "pin", "Always on top", "置顶", {"Super+p"}, true, true, true, G::window},
             {Action::sticky, "sticky", "On every workspace", "在所有工作区显示", {"Super+Shift+p"}, true, true, true, G::window},
+            {Action::collapse, "collapse", "Collapse, or expand: a free window to its title bar, a workspace to its label", "折叠 / 展开：自由窗口只留标题栏，工作区只留标签", {"Super+s"}, false, false, true, G::window},
             {Action::close, "close", "Close the window", "关闭窗口", {"Super+q", "Alt+F4"}, true, true, true, G::window},
             {Action::copy, "copy", "Copy (in a terminal too)", "复制（终端里也可以）", {"Super+c"}, true, true, true, G::window},
             {Action::paste, "paste", "Paste (in a terminal too)", "粘贴（终端里也可以）", {"Super+v"}, true, true, true, G::window},

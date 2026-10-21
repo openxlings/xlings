@@ -10,6 +10,7 @@
 //   {"state": true}                                   what the desktop is now (design 2026-10-21 §8.11)
 //   {"debug": "hud", "on": true|false}                the frames' parts drawn in the top left
 //   {"subscribe": true}                               what happens from now on, a line each
+//   {"bookmark": N}                                   bookmark N (state's "bookmarks"), as clicked: an agent's way to it
 //   {"telemetry": REQUEST}                            the process's telemetry: dump, metrics, recent [n], trace,
 //                                                     profile on|off, level L, reset (the telemetry kit)
 //
@@ -134,6 +135,8 @@ std::string Server::state_json() {
         w.set("rule", Json{std::string(c.stack ? "stack" : "tile")});
         w.set("windows", num_(c.windows));
         w.set("current", Json{c.current});
+        w.set("collapsed", Json{lay.workspace_collapsed(c.id)});
+        if (const auto f = std::ranges::find(lay.frames(), c.id, &layout::Frame::id); f != lay.frames().end()) w.set("frame", rect_(f->screen));
         workspaces.push_back(std::move(w));
     }
     out.set("workspaces", Json{workspaces});
@@ -150,6 +153,7 @@ std::string Server::state_json() {
             w.set("focused", Json{p->focused});
             w.set("visible", Json{p->visible});
             w.set("floating", Json{p->floating});
+            w.set("collapsed", Json{p->collapsed});
         }
         windows.push_back(std::move(w));
     }
@@ -209,6 +213,18 @@ std::string Server::state_json() {
     frames.set("whole", num_(whole));
     out.set("frames", frames);
     out.set("hud", Json{hud});
+    // Covered items' bookmarks (design 2026-10-21 §8.4): what each is for, where it is.
+    Json::Array marks;
+    for (const auto& b : bookmarks) {
+        Json m{Json::Object{}};
+        if (b.window) m.set("window", num_(static_cast<double>(b.window)));
+        if (b.workspace) m.set("workspace", num_(b.workspace));
+        if (!b.more.empty()) m.set("more", num_(static_cast<double>(b.more.size())));
+        m.set("label", Json{b.label});
+        m.set("tab", rect_(b.tab));
+        marks.push_back(std::move(m));
+    }
+    out.set("bookmarks", Json{marks});
     return out.dump();
 }
 
@@ -247,6 +263,14 @@ std::string Server::control(std::string_view request) {
     const auto& j = *parsed;
     auto str = [&](std::string_view k) { const auto* v = j.get(k); return v ? v->string_or("") : std::string{}; };
     if (const auto* st = j.get("state"); st && st->bool_or(false)) return state_json();
+    if (const auto* bm = j.get("bookmark")) {
+        const auto n = static_cast<std::size_t>(std::max(0.0, bm->number_or(-1)));
+        if (bm->number_or(-1) < 0 || n >= bookmarks.size()) return answer_(false, std::format("no bookmark {} ({} shown)", n, bookmarks.size()));
+        const auto b = bookmarks[n];
+        if (!b.more.empty()) bookmark_choose(b.more.front().first, b.more.front().second);
+        else bookmark_choose(b.window, b.workspace);
+        return answer_(true);
+    }
     if (const auto* t = j.get("telemetry")) {
         auto answer = telemetry::control(t->string_or("dump"));
         if (answer.is_object() && !answer.contains("error")) answer["ok"] = true;

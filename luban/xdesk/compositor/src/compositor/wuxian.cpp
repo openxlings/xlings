@@ -276,6 +276,7 @@ bool Server::wuxian_button(const opensal::PointerButton& b) {
         return true;
     }
     for (auto it = ws_nodes.rbegin(); it != ws_nodes.rend(); ++it) {
+        if (lay.workspace_collapsed(it->id)) continue;   // a label strip has no corner to scale by
         const auto& f = it->frame;
         const layout::Rect corner{f.x + f.width - kHandle, f.y + f.height - kHandle, kHandle * 1.5, kHandle * 1.5};
         if (!corner.contains(x, y) || b.button != B::Left) continue;
@@ -297,7 +298,12 @@ bool Server::wuxian_button(const opensal::PointerButton& b) {
         else open_plane_menu(x, y);
         return true;
     }
-    if (b.button == B::Left && ws && twice(*ws)) { change_view(*ws); return true; }
+    if (b.button == B::Left && ws && twice(*ws)) {
+        // A collapsed one's strip: expanded; else into it.
+        if (lay.workspace_collapsed(*ws)) collapse_workspace(*ws);
+        else change_view(*ws);
+        return true;
+    }
     if (b.button == B::Left || b.button == B::Middle) {
         if (ws) choose(*ws);
         else {
@@ -380,6 +386,14 @@ bool Server::workspace_action(const std::string& what) {
         }
     } else if (what == "scale:0.5") lay.set_scale(id, 0.5);
     else if (what == "scale:1") lay.set_scale(id, 1);
+    else if (what == "collapse") { collapse_workspace(id); return true; }
+    else if (what.starts_with("bm:")) {
+        // A covered item from a bookmark's "+N" list: bm:w:<window> or bm:s:<workspace>.
+        const auto n = std::strtoull(what.c_str() + 5, nullptr, 10);
+        if (what[3] == 'w') bookmark_choose(n, 0);
+        else bookmark_choose(0, static_cast<int>(n));
+        return true;
+    }
     else if (what == "delete") { ask_remove(id); return true; }
     else if (what == "new:tile" || what == "new:stack") {
         const auto rule = what == "new:stack" ? layout::Rule::stack : layout::Rule::tile;
@@ -545,6 +559,88 @@ void Server::naming_type(std::string_view text) {
     if (name_text.size() + text.size() > 64) return;
     name_text += text;
     draw_overlay();
+}
+
+// ── the minimap (design 2026-10-21 §8.9) ─────────────────────────────
+
+// Pressed on the minimap: a workspace or a free window there, else the view's
+// box, else the plane (the view goes there).
+void Server::minimap_press() {
+    const auto m = lay.minimap();
+    const auto w = minimap_world(cursor->x, cursor->y);
+    MinimapDrag d{.from = w};
+    if (const auto hit = openwx::hit(m.layers, w)) {
+        if (hit->kind == openwx::Layer::Kind::window) {
+            d.what = MinimapDrag::What::window;
+            d.window = hit->window;
+            d.origin = {hit->world.x, hit->world.y};
+        } else if (const auto* info = lay.workspace_info(hit->workspace)) {
+            d.what = MinimapDrag::What::workspace;
+            d.workspace = hit->workspace;
+            d.origin = info->origin;
+        }
+    } else if (m.view.contains(w.x, w.y)) {
+        d.what = MinimapDrag::What::view;
+        d.origin = lay.camera().at;
+    } else {
+        lay.look_at(w.x, w.y);
+        arrange();
+        return;
+    }
+    minimap_drag = d;
+    drag = Drag::minimap;
+}
+
+void Server::minimap_motion() {
+    if (!minimap_drag) { drag = Drag::none; return; }
+    auto& d = *minimap_drag;
+    const auto w = minimap_world(cursor->x, cursor->y);
+    const double dx = w.x - d.from.x, dy = w.y - d.from.y;
+    // A few pixels of the map before it is a drag, not a click.
+    if (!d.moved && std::hypot(dx, dy) < 3 * minimap_shown.per_pixel) return;
+    d.moved = true;
+    pointer_shape("grabbing");
+    using W = MinimapDrag::What;
+    view_moved();
+    if (d.what == W::view) lay.look({.at = {d.origin.x + dx, d.origin.y + dy}, .zoom = lay.camera().zoom});
+    else if (d.what == W::workspace) lay.move_workspace(d.workspace, {d.origin.x + dx, d.origin.y + dy});
+    else lay.move_free(d.window, {d.origin.x + dx, d.origin.y + dy});
+    arrange(true);
+}
+
+void Server::minimap_release() {
+    if (!minimap_drag) return;
+    const auto d = *minimap_drag;
+    minimap_drag.reset();
+    using W = MinimapDrag::What;
+    const auto m = lay.minimap();
+    if (!d.moved) {
+        // A click: that one focused and in the middle of the view, the zoom kept.
+        if (d.what == W::view) lay.look_at(d.from.x, d.from.y);
+        for (const auto& l : m.layers) {
+            const bool it = (d.what == W::window && l.kind == openwx::Layer::Kind::window && l.window == d.window)
+                            || (d.what == W::workspace && l.kind == openwx::Layer::Kind::workspace && l.workspace == d.workspace);
+            if (it) lay.look_at(l.world.x + l.world.width / 2, l.world.y + l.world.height / 2);
+        }
+        if (d.what == W::workspace) {
+            ws_selected = d.workspace;
+            lay.raise(d.workspace);
+        }
+        if (d.what == W::window)
+            if (View* v = view_of(d.window)) focus(v);
+        arrange();
+        return;
+    }
+    // A free window let go over a workspace: into it (openwx §3.5).
+    if (d.what == W::window) {
+        const auto w = minimap_world(cursor->x, cursor->y);
+        std::vector<openwx::Layer> others;
+        for (const auto& l : m.layers)
+            if (!(l.kind == openwx::Layer::Kind::window && l.window == d.window)) others.push_back(l);
+        if (const auto hit = openwx::hit(others, w); hit && hit->kind == openwx::Layer::Kind::workspace) lay.send_to(d.window, hit->workspace);
+    }
+    remember_arrangement();
+    arrange();
 }
 
 }  // namespace xdesk::compositor

@@ -246,6 +246,10 @@ std::expected<Workspace, std::string> workspace_(const Value& v, std::size_t k, 
         if (!z) return std::unexpected(z.error());
         w.z = *z;
     }
+    if (const auto* x = v.get("collapsed")) {
+        if (x->kind != Value::Kind::boolean) return std::unexpected(std::format("{} is not true or false", what("collapsed")));
+        w.collapsed = x->b;
+    }
     if (const auto* x = v.get("layout"); x && x->kind != Value::Kind::null) layout = x->raw;
     return w;
 }
@@ -388,6 +392,7 @@ std::string format(const State& s) {
                            "\"scale\": {}, \"z\": {}",
                            w.id, quoted_(w.name), w.color & 0xffffff, quoted_(name(w.rule)), quoted_(name(w.flow)), number_text_(w.origin.x),
                            number_text_(w.origin.y), number_text_(w.scale), w.z);
+        if (w.collapsed) out += ", \"collapsed\": true";
         if (const auto it = s.layouts.find(w.id); it != s.layouts.end() && !it->second.empty()) out += ", \"layout\": " + it->second;
         out += "}";
     }

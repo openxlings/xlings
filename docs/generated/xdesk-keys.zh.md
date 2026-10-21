@@ -26,6 +26,7 @@
 |  | 浮动 / 放回 | `Super+Shift+Space` |
 |  | 置顶 | `Super+P` |
 |  | 在所有工作区显示 | `Super+Shift+P` |
+|  | 折叠 / 展开：自由窗口只留标题栏，工作区只留标签 | `Super+S` |
 |  | 关闭窗口 | `Super+Q`, `Alt+F4` |
 |  | 复制（终端里也可以） | `Super+C` |
 |  | 粘贴（终端里也可以） | `Super+V` |

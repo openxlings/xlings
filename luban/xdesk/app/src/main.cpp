@@ -39,6 +39,7 @@ int main(int argc, char* argv[]) {
         else if (args.size() == 4 && args[1] == "debug" && args[2] == "hud" && (args[3] == "on" || args[3] == "off"))
             request = std::format("{{\"debug\": \"hud\", \"on\": {}}}", args[3] == "on" ? "true" : "false");
         else if (args.size() == 2 && args[1] == "subscribe") request = R"({"subscribe": true})";
+        else if (args.size() == 3 && args[1] == "bookmark") request = std::format("{{\"bookmark\": {}}}", std::atoi(std::string(args[2]).c_str()));
         else if (args.size() >= 2 && args[1] == "telemetry") {
             std::string what;
             for (std::size_t k = 2; k < args.size(); ++k) what += (what.empty() ? "" : " ") + std::string(args[k]);
@@ -46,7 +47,7 @@ int main(int argc, char* argv[]) {
         } else {
             std::println(std::cerr, "usage: xdesk msg keys list | keys bind ACTION CHORD | keys unbind ACTION | keys set luban|luban-no-hjkl\n"
                                     "       xdesk msg settings [displays|layout|appearance|keys|about]\n"
-                                    "       xdesk msg state | debug hud on|off | subscribe\n"
+                                    "       xdesk msg state | debug hud on|off | subscribe | bookmark N\n"
                                     "       xdesk msg telemetry [dump|metrics|recent N|trace|profile on|off|level L|reset]");
             return 2;
         }
@@ -143,6 +144,7 @@ int main(int argc, char* argv[]) {
     o.flow = settings.get("desktop", "flow", o.flow);
     // [wuxian] (design 2026-10-20 WuXian §3.16); [canvas] of before is read too.
     o.minimap = settings.get("wuxian", "minimap", settings.get("canvas", "minimap", "on")) != "off";
+    o.bookmarks = settings.get("wuxian", "bookmarks", "on") != "off";
     o.snap = settings.get("wuxian", "snap", settings.get("canvas", "snap", "on")) != "off";
     o.reduce_motion = settings.get("appearance", "reduce_motion", "off") == "on";
     o.rule = settings.get("desktop", "rule", o.rule);

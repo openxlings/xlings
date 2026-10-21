@@ -224,6 +224,7 @@ void Server::act(Action a) {
             return;
         case Action::pin: if (const auto f = lay.focused()) { lay.toggle_pinned(*f); arrange(); } return;
         case Action::sticky: if (const auto f = lay.focused()) { lay.toggle_sticky(*f); arrange(); } return;
+        case Action::collapse: collapse_focused(); return;
         case Action::settings: open_settings(SettingsPage::displays); return;
         case Action::arrangements: open_chooser(); return;
         case Action::switch_apps: open_switcher(held(wlr_keyboard_modifier::WLR_MODIFIER_SHIFT)); return;
@@ -394,8 +395,22 @@ void Server::draw_overlay() {
                     item("Another colour", "换一种颜色", "color");
                     item("Half size on WuXian", "在 WuXian 上缩小一半", "scale:0.5", std::abs(w->scale - 0.5) < 1e-3);
                     item("Full size on WuXian", "在 WuXian 上原大", "scale:1", std::abs(w->scale - 1) < 1e-3);
+                    item("Collapsed (its label only)", "折叠（只留标签）", "collapse", w->collapsed);
                     line();
                     item("Remove the workspace", "删除工作区", "delete");
+                } else if (menu_of == MenuOf::bookmarks) {
+                    // A bookmark's "+N": the covered items not shown.
+                    for (const auto& [window, ws] : menu_more) {
+                        if (window) {
+                            View* mv = view_of(window);
+                            const auto name = mv ? name_of(*mv) : std::string("?");
+                            item(name, name, std::format("bm:w:{}", window));
+                        } else if (const auto* w = lay.workspace_info(ws)) {
+                            const auto en = w->name.empty() ? std::format("Workspace {}", w->id) : std::format("{} · {}", w->id, w->name);
+                            const auto cn = w->name.empty() ? std::format("工作区 {}", w->id) : std::format("{} · {}", w->id, w->name);
+                            item(en, cn, std::format("bm:s:{}", ws));
+                        }
+                    }
                 } else if (menu_of == MenuOf::plane) {
                     item("A tiled workspace here", "在这里新建平铺工作区", "new:tile");
                     item("A stacked workspace here", "在这里新建层叠工作区", "new:stack");
@@ -429,6 +444,7 @@ void Server::draw_overlay() {
             for (const int k : lay.workspaces())
                 add(std::format("To workspace {}", k), std::format("移到工作区 {}", k), std::format("ws:{}", k), lay.workspace_of(v->id) == k);
             add("Onto WuXian (a free window)", "放到 WuXian 上（自由窗口）", "wuxian", lay.is_free(v->id));
+            if (lay.is_free(v->id) && wuxian()) add("Collapsed (its title bar only)", "折叠（只留标题栏）", "collapse", lay.collapsed(v->id));
             if (app) {
                 sep();
                 add("Always floating (this app)", "总是浮动（此应用）", "rule:float", rule.floating);
@@ -497,6 +513,7 @@ void Server::menu_choose(std::size_t item) {
     else if (what == "sticky") lay.toggle_sticky(id);
     else if (what.starts_with("ws:")) lay.send_to(id, std::atoi(what.c_str() + 3));
     else if (what == "wuxian") lay.to_wuxian(id);
+    else if (what == "collapse") { collapse_window(id); return; }
     else if (what == "close") { wlr_xdg_toplevel_send_close(v->toplevel); return; }
     else if (app && what.starts_with("rule:")) {
         auto& r = state.rules[app];

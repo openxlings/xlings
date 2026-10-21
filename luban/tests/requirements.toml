@@ -675,3 +675,11 @@ status = "required"
 [LUBAN-STATUS-BUS]
 text = "`luban status --bus` says the host's bus (the systems linked under it) and `luban status <name> --bus` what that system's programs offer, seen through its link (path, kind, node, interfaces); a system not on the bus and a home whose bus is not running are said, not errors"
 status = "required"
+
+[WUXIAN-COLLAPSE]
+text = "in the WuXian view a workspace collapses to its label strip (its windows neither shown nor hit) and a free window to its title bar at the camera's zoom (not hit below it, no input); openwx's state keeps a workspace's `collapsed` and a free window's `collapsed` flag, and both read back"
+status = "required"
+
+[WUXIAN-BOOKMARKS]
+text = "an item (a workspace or a free window on the plane; a stacked workspace's window) of which nothing shows on the screen is covered, an item off the screen is not; the top-most item over its centre carries its bookmark (at its right edge, at most five then +N); hovering outlines the covered item, clicking raises and focuses it; bookmarks are hidden while something is dragged or the view moves and can be turned off; computing them for a hundred items stays within a frame"
+status = "required"

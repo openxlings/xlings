@@ -189,6 +189,34 @@ Picture workspace_label(draw::Fonts* fonts, const Theme& t, const WorkspaceChip&
     return p;
 }
 
+Picture bookmark(draw::Fonts* fonts, const Theme& t, std::string_view label, std::optional<Color> colour, bool lit, double scale) {
+    Picture p;
+    // A short title: sixteen characters at most (whole code points).
+    std::string text;
+    int n = 0;
+    for (std::size_t k = 0; k < label.size(); ++k) {
+        const auto c = static_cast<unsigned char>(label[k]);
+        if ((c & 0xc0) != 0x80 && ++n > 16) { text += "…"; break; }
+        text += label[k];
+    }
+    const double h = kBookmarkHeight;
+    const double text_w = fonts ? fonts->width(text) : 8.0 * static_cast<double>(n);
+    const double width = 8 + (colour ? 16 : 0) + text_w + 10;
+    p.image = device_image_(std::ceil(width), h, scale);
+    draw::Canvas c(p.image, scale);
+    c.fill({0, 0, width, h}, lit ? mix_(t.panel, t.accent, 0.35) : faded_(t.panel, 0.95), 5);
+    c.frame({0, 0, width, h}, lit ? t.accent : Color::rgb(0x3a4050), 1, 5);
+    double x = 8;
+    if (colour) {
+        c.fill({x, h / 2 - 5, 10, 10}, *colour, 5);
+        x += 16;
+    }
+    const double baseline = fonts ? std::round((h + fonts->ascent() - fonts->descent()) / 2) : 0;
+    if (fonts) c.text(*fonts, text, x, baseline, t.text);
+    p.areas.push_back({{0, 0, width, h}, Target::item, 0});
+    return p;
+}
+
 // ── the status bar (design 2026-10-20 WuXian §3.13) ──────────────────
 
 Picture panel(draw::Fonts* fonts, const Theme& t, const PanelState& s, int output_width, int output_height, bool canvas,

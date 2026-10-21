@@ -1187,6 +1187,90 @@ sleep 2500
     EXPECT_NE(events.find(R"("event":"focus")"), std::string::npos) << "Alt+Tab focused another window\n" << events;
 }
 
+// Covered items and collapsing (design 2026-10-21 §8.4, §8.5): in a stacked
+// workspace a maximized window covers the others -- each has a bookmark on
+// it, and choosing one raises and focuses it; in the WuXian view Super+S
+// collapses the workspace to its label and back.
+XTEST(LubanOs, XdeskBookmarksCoveredWindowsAndCollapsesAWorkspace, .area = "luban",
+      .covers = {"WUXIAN-BOOKMARKS", "WUXIAN-COLLAPSE"}, .requires_ = {"linux", "xlings-bin"}) {
+    if (!app_binary()) GTEST_SKIP() << "no luban-os beside the xlings under test";
+    if (!xdesk_binary()) GTEST_SKIP() << "no xdesk beside luban-os (mcpp build -p xdesk-app)";
+    auto home = tk::Home::isolated("luban-os-xdesk-bookmarks");
+    ASSERT_EQ(home.xlings({"self", "init"}).exit_code, 0);
+    tk::write_file(home.root() / ".config" / "xdesk" / "wuxian.json", R"({"wuxian": 1, "workspaces": [{"id": 1, "rule": "stack"}]})");
+    const auto runtime = home.root() / "run";
+    auto session = std::async(std::launch::async, [&] {
+        return xdesk_with(home, "classic", R"(wait desktop
+waitfor desktop.texture.0 1100
+sleep 3000
+key Super+f
+sleep 6000
+key Super+o
+sleep 2500
+key Super+s
+sleep 4000
+key Super+s
+sleep 3000
+)");
+    });
+    fs::path control;
+    for (int k = 0; k < 100 && control.empty(); ++k) {
+        std::error_code ec;
+        for (const auto& e : fs::directory_iterator(runtime, ec))
+            if (e.path().filename().string().starts_with("xdesk-") && e.path().extension() == ".sock") control = e.path();
+        if (control.empty()) std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+    ASSERT_FALSE(control.empty()) << "no control socket in " << runtime;
+    const auto display = control.stem().string().substr(6);
+    auto msg = [&](std::vector<std::string> args) {
+        tk::RunOptions o;
+        o.argv = {xdesk_binary()->string(), "msg"};
+        o.argv.insert(o.argv.end(), args.begin(), args.end());
+        o.env = {{"XDG_RUNTIME_DIR", runtime.string()}, {"WAYLAND_DISPLAY", display}};
+        o.timeout = std::chrono::seconds(20);
+        return tk::run(o);
+    };
+    auto state = [&] { return Json::parse(msg({"state"}).out, nullptr, false); };
+    // The newest maximized over the two before it: both covered, each a bookmark on it.
+    std::this_thread::sleep_for(std::chrono::milliseconds(6500));
+    auto s = state();
+    ASSERT_TRUE(s.is_object());
+    ASSERT_EQ(s["windows"].size(), 3u) << s["windows"].dump();
+    ASSERT_EQ(s["bookmarks"].size(), 2u) << s["bookmarks"].dump() << "\n" << s["windows"].dump();
+    for (const auto& b : s["bookmarks"]) {
+        const auto t = b["tab"];
+        EXPECT_GE(t[0].get<double>(), 0);
+        EXPECT_LE(t[0].get<double>() + t[2].get<double>(), s["output"]["size"][0].get<double>()) << "on the output: " << b.dump();
+    }
+    const auto chosen = s["bookmarks"][0]["window"].get<double>();
+    // Chosen (as a click chooses it; `xdesk msg bookmark` is an agent's way): raised and focused.
+    const auto answer = msg({"bookmark", "0"});
+    EXPECT_EQ(answer.exit_code, 0) << answer.transcript();
+    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    s = state();
+    const auto focused = std::ranges::find_if(s["windows"], [](const Json& w) { return w.value("focused", false); });
+    ASSERT_NE(focused, s["windows"].end());
+    EXPECT_EQ((*focused)["id"].get<double>(), chosen) << "the bookmark's window, raised and focused";
+    // The WuXian view: Super+S collapses the workspace to its label, and back.
+    const auto until = [&](auto&& ok) {
+        for (int k = 0; k < 120; ++k) {
+            s = state();
+            if (s.is_object() && ok(s)) return true;
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+        return false;
+    };
+    const auto collapsed = [](const Json& j) {
+        return !j["workspaces"].empty() && j["workspaces"][0].value("collapsed", false);
+    };
+    ASSERT_TRUE(until(collapsed)) << s["workspaces"].dump();
+    EXPECT_EQ(s["view"], "wuxian");
+    EXPECT_TRUE(std::ranges::none_of(s["windows"], [](const Json& w) { return w.value("visible", false); })) << "its windows not shown";
+    EXPECT_TRUE(until([&](const Json& j) { return !collapsed(j); })) << s["workspaces"].dump();
+    const auto run = session.get();
+    ASSERT_EQ(run.exit_code, 0) << run.transcript();
+}
+
 // The desktop on the bus (design 2026-10-22 §7, B6): its state and its
 // control as the socket's, what happens as a topic, and its process's
 // telemetry -- the frames' parts as metrics, a profile of a frame's spans.

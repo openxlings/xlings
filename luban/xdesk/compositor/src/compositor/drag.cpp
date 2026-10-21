@@ -108,6 +108,7 @@ void Server::drag_motion() {
             layout::Rect r { cursor->x - drag_dx, cursor->y - drag_dy, p->width, p->height };
             layout::Snap sn{.rect = r};
             if (!shift && snap_on) sn = lay.snap(dragged, r);
+            sn.rect = kept_on_output(sn.rect);
             lay.place(dragged, sn.rect);
             show_guides(sn);
         }
@@ -126,6 +127,18 @@ void Server::drag_motion() {
         drop = d;
         show_drop();
     }
+}
+
+// A stacked or floating window moved (design 2026-10-21 §8.8): its title
+// bar never above the output's top nor under the status bar, nor below the
+// bottom, and at least 64 pixels of it (a quarter of it, if less) on the output.
+layout::Rect Server::kept_on_output(layout::Rect r) const {
+    const auto in = reserved();
+    const double top = in.top, bottom = logical_h() - in.bottom, left = in.left, right = logical_w() - in.right;
+    const double keep = std::min(64.0, r.width / 4);
+    r.x = std::clamp(r.x, left - r.width + keep, right - keep);
+    r.y = std::clamp(r.y, top, std::max(top, bottom - kTitle));
+    return r;
 }
 
 namespace {
@@ -231,11 +244,13 @@ constexpr std::uint32_t kTop = 1, kBottom = 2, kLeft = 4, kRight = 8;   // wlr_e
 constexpr double kBorder = 6;
 }  // namespace
 
-// The edges of `v` within the border's reach of the pointer (stacked,
-// floating and free windows: tiled ones are sized by their gaps; none in the
-// WuXian view, where a frame is moved).
+// The edges of `v` within the border's reach of the pointer -- 6 screen
+// pixels at any zoom (stacked, floating and free windows: tiled ones are
+// sized by their gaps; in the WuXian view a free window's, the others'
+// frames being moved; design 2026-10-21 §8.6).
 std::uint32_t Server::edges_at(const View& v) const {
-    if (!live() || wuxian() || (rule_of(v.id) == layout::Rule::tile && !lay.floating(v.id))) return 0;
+    if (!live() || lay.collapsed(v.id)) return 0;
+    if (wuxian() ? !lay.is_free(v.id) : (rule_of(v.id) == layout::Rule::tile && !lay.floating(v.id))) return 0;
     const auto r = placement_of(v.id);
     if (!r) return 0;
     const double x = cursor->x - v.frame->node.x, y = cursor->y - v.frame->node.y;
@@ -302,10 +317,12 @@ void Server::resize_motion() {
     if (!v) return;
     const double dx = cursor->x - drag_x, dy = cursor->y - drag_y;
     // What the client allows (its frame: the title bar added), else a floor.
+    // At its zoom (a free window in the WuXian view is drawn smaller).
     const auto& st = v->toplevel->current;
-    const double min_w = std::max(120.0, static_cast<double>(st.min_width));
-    const double min_h = std::max(80.0, static_cast<double>(st.min_height + kTitle));
-    const double max_w = st.max_width > 0 ? st.max_width : 1e9, max_h = st.max_height > 0 ? st.max_height + kTitle : 1e9;
+    const double z = v->zoom > 0 ? v->zoom : 1;
+    const double min_w = std::max(120.0, static_cast<double>(st.min_width)) * z;
+    const double min_h = std::max(80.0, static_cast<double>(st.min_height + kTitle)) * z;
+    const double max_w = st.max_width > 0 ? st.max_width * z : 1e9, max_h = st.max_height > 0 ? (st.max_height + kTitle) * z : 1e9;
     layout::Rect r = resize_from;
     if (resize_edges & kRight) r.width = std::clamp(resize_from.width + dx, min_w, max_w);
     if (resize_edges & kBottom) r.height = std::clamp(resize_from.height + dy, min_h, max_h);

@@ -72,6 +72,7 @@ struct Workspace {
     Point origin;                       // its top-left on the plane
     double scale { 1 };                 // its size on the plane: its content's times this
     int z { 0 };                        // its layer: higher is above
+    bool collapsed { false };           // the WuXian view: only its label (SPEC.md §2.2)
     bool operator==(const Workspace&) const = default;
 };
 
@@ -155,7 +156,7 @@ struct WindowState {
     std::optional<int> in;              // a workspace's number
     std::optional<Rect> free;           // on the plane (world)
     int z { 0 };                        // on the plane
-    std::vector<std::string> flags;     // floating, pinned, sticky, fullscreen; others kept as read
+    std::vector<std::string> flags;     // floating, pinned, sticky, fullscreen, collapsed; others kept as read
     bool operator==(const WindowState&) const = default;
 };
 
@@ -174,7 +175,7 @@ struct State {
 };
 
 // The flags a window may have (others are kept as read, and ignored).
-inline constexpr std::array<std::string_view, 4> kFlags{"floating", "pinned", "sticky", "fullscreen"};
+inline constexpr std::array<std::string_view, 5> kFlags{"floating", "pinned", "sticky", "fullscreen", "collapsed"};
 
 // Read: what is not this format (another version, malformed) is why, never
 // an empty state. Unknown fields are ignored; unknown flags are kept.

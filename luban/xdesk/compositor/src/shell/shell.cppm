@@ -119,6 +119,12 @@ void rule_icon(draw::Canvas& c, draw::Rect r, const WorkspaceChip& w, bool fille
 // (Target::label, its number), in the picture's own pixels.
 Picture workspace_label(draw::Fonts* fonts, const Theme& t, const WorkspaceChip& w, bool small, double scale = 1);
 inline constexpr int kLabelHeight = 22;
+// A covered item's bookmark (design 2026-10-21 §8.4), at an item's right
+// edge: a window's initial and short title, a workspace's colour and its
+// number and name, or "+N" for the rest; `lit` under the pointer.
+Picture bookmark(draw::Fonts* fonts, const Theme& t, std::string_view label, std::optional<draw::Color> colour, bool lit,
+                 double scale = 1);
+inline constexpr int kBookmarkHeight = 22;
 
 // ── the launcher ─────────────────────────────────────────────────────
 

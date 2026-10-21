@@ -87,6 +87,9 @@ struct Options {
     double min_column_width { 480 };
     Flow flow { Flow::horizontal };
     int max_workspaces { 9 };   // what Super+1..9 reaches
+    // A title bar's height (logical pixels): what a collapsed free window
+    // is, and a collapsed workspace's label strip (openwx §5.2).
+    double title { 26 };
 };
 
 // Where a window shown is: its frame (title included) in screen pixels, and
@@ -108,6 +111,9 @@ struct Placement {
     bool fullscreen { false };
     int workspace { 0 };        // the workspace it is in (0: free on the plane)
     double zoom { 1 };
+    // A free window collapsed (the WuXian view): `rect` is its title bar
+    // alone; its client keeps its size, unseen, and takes no input.
+    bool collapsed { false };
     bool operator==(const Placement&) const = default;
 };
 
@@ -118,6 +124,7 @@ struct Frame {
     Rect screen;
     double zoom { 1 };
     bool current { false };
+    bool collapsed { false };   // `screen` is its label strip; its windows are not placed
     bool operator==(const Frame&) const = default;
 };
 
@@ -133,6 +140,7 @@ struct Snap {
 // the view, in world coordinates, and what holds them all.
 struct Minimap {
     std::vector<Rect> boxes;
+    std::vector<openwx::Layer> layers;   // what each box is (in the same order): a workspace or a free window
     Rect view;
     Rect bounds;
 };
@@ -240,6 +248,8 @@ public:
     void center(Id id);
     // The view's middle at a world point (the minimap clicked).
     void look_at(double wx, double wy);
+    // A free window's top-left on the plane (the minimap moves it there).
+    void move_free(Id id, Point world);
     Minimap minimap() const;
     Snap snap(Id id, Rect screen, double reach = 16) const;
     // The WuXian view's frames, back to front, by the last arrangement.
@@ -294,6 +304,13 @@ public:
     // Full screen: the whole output (what is reserved for a panel too), over
     // everything on its workspace; one at a time on a workspace; in the
     // workspace view only (the WuXian view shows it where it is).
+    // Collapsed (openwx §5.2): a free window as its title bar, a workspace
+    // as its label -- the WuXian view's; nothing else changes.
+    void toggle_collapsed(Id id);
+    void toggle_workspace_collapsed(int id);
+    bool collapsed(Id id) const;
+    bool workspace_collapsed(int id) const;
+
     void toggle_fullscreen(Id id);
     void set_fullscreen(Id id, bool on);
     bool fullscreen(Id id) const;
@@ -393,6 +410,7 @@ private:
         Window w;
         Rect world;
         int z { 0 };
+        bool collapsed { false };
     };
     struct Spot {                       // where a window is in a list of columns
         std::size_t column { 0 };
@@ -422,6 +440,9 @@ private:
     Rect area_() const;
     Size content_(const Space& s) const;   // its content's size, laid out whole
     Rect world_of_(const Space& s) const;
+    // What a layer is on the plane: collapsed, its title bar or label strip at the camera's zoom.
+    Rect layer_world_(const Space& s) const;
+    Rect layer_world_(const Free& f) const;
     std::vector<openwx::Layer> layers_() const;
     int top_z_() const;
     Point right_of_all_() const;
@@ -517,10 +538,26 @@ struct WheelSpeed {
 // The pixels of `steps` steps, `ms` after the last one.
 double wheel_distance(const WheelSpeed& s, double steps, double ms);
 
+// Covered items (design 2026-10-21 §8.4, openwx §5.1): of `back_to_front`
+// (each item's frame, title bar or label included, in screen pixels), those
+// on the screen of which nothing shows, and for each the top-most item over
+// its centre -- the one that carries its bookmark. An item off the screen is
+// not covered; it is elsewhere. What shows of an item only as slivers under
+// 4 pixels across is nothing one could take hold of: covered.
+struct Covered {
+    std::size_t item { 0 };
+    std::size_t host { 0 };
+    bool operator==(const Covered&) const = default;
+};
+std::vector<Covered> covered(std::span<const Rect> back_to_front, Rect screen);
+
 }  // namespace xdesk::layout
 
 // Shared by the module's own units, not exported.
 namespace xdesk::layout::detail {
+
+// A collapsed workspace's label strip, at most this wide (screen pixels).
+inline constexpr double kLabelStrip = 220;
 
 inline bool overlaps(const Rect& a, const Rect& b) {
     return a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height;

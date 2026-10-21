@@ -167,7 +167,7 @@ enum class SettingsPage { displays, layout, appearance, keys, about };
 
 // What a held button is doing (workspace: a workspace's label carried;
 // scale: its corner, its scale).
-enum class Drag { none, pan, move, gap, row_gap, resize, workspace, scale };
+enum class Drag { none, pan, move, gap, row_gap, resize, workspace, scale, minimap };
 
 // A workspace in the WuXian view (design 2026-10-20 WuXian §3.3): its plate,
 // a border of its colour, its label above its top-left.
@@ -228,6 +228,48 @@ struct Server {
     wlr_scene_buffer* wuxian_dots { nullptr };  // the WuXian view: the grid over the background
     wlr_scene_buffer* minimap_node { nullptr }; // the WuXian view: the minimap (design 2026-10-20 §9.6)
     shell::MinimapPicture minimap_shown;
+    // A drag on the minimap (design 2026-10-21 §8.9): its view box (the
+    // camera), a workspace or a free window there; still: a click.
+    struct MinimapDrag {
+        enum class What { view, workspace, window } what { What::view };
+        int workspace { 0 };
+        layout::Id window { 0 };
+        layout::Point from;              // the world point pressed
+        layout::Point origin;            // what moves: the camera's top-left, a workspace's origin, a window's top-left
+        bool moved { false };
+    };
+    std::optional<MinimapDrag> minimap_drag;
+    // Bookmarks (design 2026-10-21 §8.4, openwx §5.1; bookmarks.cpp).
+    struct Bookmark {
+        layout::Id window { 0 };                        // what it is for: a window,
+        int workspace { 0 };                            // or a workspace
+        std::vector<std::pair<layout::Id, int>> more;   // "+N": the rest
+        layout::Rect tab, item;                         // where it is; the covered item's frame
+        std::string label;
+        std::optional<draw::Color> colour;
+    };
+    std::vector<Bookmark> bookmarks;
+    std::vector<wlr_scene_buffer*> bookmark_pool;
+    std::array<wlr_scene_rect*, 4> bookmark_outline {};
+    int bookmark_lit { -1 };
+    bool bookmarks_on { true };
+    std::chrono::steady_clock::time_point view_still {};   // the view moves until then (pan, zoom)
+    wl_event_source* bookmark_timer { nullptr };
+    bool live_bookmarks() const { return wuxian() || lay.rule() == layout::Rule::stack; }
+    void update_bookmarks();
+    void hide_bookmarks();
+    bool bookmark_hover(double x, double y);
+    bool bookmark_press(double x, double y);
+    void bookmark_choose(layout::Id window, int workspace);
+    // The view moved (a pan, a zoom): bookmarks hidden until it is still.
+    void view_moved() { view_still = std::chrono::steady_clock::now() + std::chrono::milliseconds(250); }
+    layout::Point minimap_world(double x, double y) const {
+        return {minimap_shown.origin_x + (x - minimap_shown.picture.x) * minimap_shown.per_pixel,
+                minimap_shown.origin_y + (y - minimap_shown.picture.y) * minimap_shown.per_pixel};
+    }
+    void minimap_press();
+    void minimap_motion();
+    void minimap_release();
     std::string minimap_drawn;
     wlr_scene_rect* guide_x { nullptr };        // the lines a moved window snapped to
     wlr_scene_rect* guide_y { nullptr };
@@ -418,7 +460,8 @@ struct Server {
     std::vector<std::string> menu_actions;       // by the menu's item
     // Whose menu: a window's, a workspace's, WuXian's (its background), the
     // workspace view's background.
-    enum class MenuOf { window, workspace, plane, desktop };
+    enum class MenuOf { window, workspace, plane, desktop, bookmarks };
+    std::vector<std::pair<layout::Id, int>> menu_more;   // MenuOf::bookmarks: the covered items not shown
     MenuOf menu_of { MenuOf::window };
     int menu_workspace { 0 };
     layout::Point menu_world;                    // WuXian's menu: where it was opened, on the plane
@@ -581,6 +624,11 @@ struct Server {
     // title bar or its content (design 2026-10-20 §6).
     View* view_at(double x, double y);
     bool on_title(const View& v, double y) const;
+    // Collapsed (design 2026-10-21 §8.5): the WuXian view's focused free
+    // window, else its selected or focused workspace; said where it is not.
+    void collapse_focused();
+    void collapse_window(layout::Id id);
+    void collapse_workspace(int id);
 
     void draw_title(View& v, int width, bool active, bool rounded = true);
 
@@ -640,6 +688,7 @@ struct Server {
 
     // drag.cpp
     void drag_start(View* v, bool live);
+    layout::Rect kept_on_output(layout::Rect r) const;
     void drag_motion();
     layout::Drop drop_with_hysteresis(bool shift) const;
     bool drag_width(int step, int digit);

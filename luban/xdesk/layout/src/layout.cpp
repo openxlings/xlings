@@ -86,9 +86,40 @@ bool Layout::is_free(Id id) const { return free_of_(id) != nullptr; }
 std::vector<openwx::Layer> Layout::layers_() const {
     std::vector<openwx::Layer> out;
     for (const auto& s : spaces_)
-        out.push_back({.kind = openwx::Layer::Kind::workspace, .workspace = s.meta.id, .world = world_of_(s), .z = s.meta.z});
-    for (const auto& f : free_) out.push_back({.kind = openwx::Layer::Kind::window, .window = f.w.id, .world = f.world, .z = f.z});
+        out.push_back({.kind = openwx::Layer::Kind::workspace, .workspace = s.meta.id, .world = layer_world_(s), .z = s.meta.z});
+    for (const auto& f : free_) out.push_back({.kind = openwx::Layer::Kind::window, .window = f.w.id, .world = layer_world_(f), .z = f.z});
     return out;
+}
+
+Rect Layout::layer_world_(const Space& s) const {
+    const Rect r = world_of_(s);
+    if (!s.meta.collapsed) return r;
+    const double z = camera_.zoom > 0 ? camera_.zoom : 1;
+    return {r.x, r.y, std::min(r.width, detail::kLabelStrip / z), o_.title / z};
+}
+
+Rect Layout::layer_world_(const Free& f) const {
+    if (!f.collapsed) return f.world;
+    const double z = camera_.zoom > 0 ? camera_.zoom : 1;
+    return {f.world.x, f.world.y, f.world.width, std::min(f.world.height, o_.title / z)};
+}
+
+void Layout::toggle_collapsed(Id id) {
+    if (auto* f = free_of_(id)) f->collapsed = !f->collapsed;
+}
+
+void Layout::toggle_workspace_collapsed(int id) {
+    if (auto* s = space_(id)) s->meta.collapsed = !s->meta.collapsed;
+}
+
+bool Layout::collapsed(Id id) const {
+    const auto* f = free_of_(id);
+    return f && f->collapsed;
+}
+
+bool Layout::workspace_collapsed(int id) const {
+    const auto* s = space_(id);
+    return s && s->meta.collapsed;
 }
 
 int Layout::top_z_() const {
@@ -795,6 +826,58 @@ double wheel_distance(const WheelSpeed& s, double steps, double ms) {
     // Faster than slow: the step grows with the speed, up to six times.
     const double speed = s.slow_ms / std::max(1.0, ms);
     return steps * base * std::min(6.0, 1 + (speed - 1));
+}
+
+// ── covered items (design 2026-10-21 §8.4) ───────────────────────────
+
+namespace {
+
+// `r` less `cut`: up to four rectangles.
+void subtract_(const Rect& r, const Rect& cut, std::vector<Rect>& out) {
+    if (!detail::overlaps(r, cut)) { out.push_back(r); return; }
+    const double x0 = std::max(r.x, cut.x), x1 = std::min(r.x + r.width, cut.x + cut.width);
+    const double y0 = std::max(r.y, cut.y), y1 = std::min(r.y + r.height, cut.y + cut.height);
+    if (y0 > r.y) out.push_back({r.x, r.y, r.width, y0 - r.y});                                  // above
+    if (y1 < r.y + r.height) out.push_back({r.x, y1, r.width, r.y + r.height - y1});              // below
+    if (x0 > r.x) out.push_back({r.x, y0, x0 - r.x, y1 - y0});                                   // left
+    if (x1 < r.x + r.width) out.push_back({x1, y0, r.x + r.width - x1, y1 - y0});                // right
+}
+
+constexpr double kSliver = 4;
+
+Rect clip_(const Rect& r, const Rect& to) {
+    const double x0 = std::max(r.x, to.x), y0 = std::max(r.y, to.y);
+    const double x1 = std::min(r.x + r.width, to.x + to.width), y1 = std::min(r.y + r.height, to.y + to.height);
+    return {x0, y0, std::max(0.0, x1 - x0), std::max(0.0, y1 - y0)};
+}
+
+}  // namespace
+
+std::vector<Covered> covered(std::span<const Rect> items, Rect screen) {
+    std::vector<Covered> out;
+    for (std::size_t k = 0; k < items.size(); ++k) {
+        const Rect shown = clip_(items[k], screen);
+        if (shown.width < 0.5 || shown.height < 0.5) continue;   // off the screen: elsewhere, not covered
+        std::vector<Rect> left{shown};
+        for (std::size_t a = k + 1; a < items.size() && !left.empty(); ++a) {
+            std::vector<Rect> next;
+            for (const auto& r : left) subtract_(r, items[a], next);
+            // A sliver narrower than a few pixels shows nothing one could take hold of.
+            std::erase_if(next, [](const Rect& r) { return r.width < kSliver || r.height < kSliver; });
+            left = std::move(next);
+        }
+        if (!left.empty()) continue;
+        // The top-most over its centre carries its bookmark.
+        // (Covered by several, none over its centre: the top-most over it.)
+        const auto c = items[k].centre();
+        std::optional<std::size_t> host;
+        for (std::size_t a = items.size(); a-- > k + 1 && !host;)
+            if (items[a].contains(c.x, c.y)) host = a;
+        for (std::size_t a = items.size(); a-- > k + 1 && !host;)
+            if (detail::overlaps(items[a], items[k])) host = a;
+        out.push_back({k, host.value_or(items.size() - 1)});
+    }
+    return out;
 }
 
 }  // namespace xdesk::layout

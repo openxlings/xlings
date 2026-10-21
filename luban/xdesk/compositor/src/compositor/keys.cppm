@@ -19,7 +19,7 @@ enum class Action {
     to_wuxian, new_workspace, show_all, copy, paste,
     show1, show2, show3, show4, show5, show6, show7, show8, show9,
     send1, send2, send3, send4, send5, send6, send7, send8, send9,
-    workspace_prev, workspace_next, carry_prev, carry_next,
+    workspace_prev, workspace_next, carry_prev, carry_next, collapse,
 };
 
 // Where an action is listed (design 2026-10-20 §12.2): the keys page, the

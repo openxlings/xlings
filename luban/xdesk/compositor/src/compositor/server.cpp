@@ -32,12 +32,14 @@ Server::Server(const Options& opts)
            .inner_gap = static_cast<double>(std::clamp(opts.inner_gap, 0, 64)),
            .outer_gap = static_cast<double>(std::clamp(opts.outer_gap, 0, 64)),
            .min_column_width = static_cast<double>(std::clamp(opts.min_column_width, 120, 4096)),
-           .flow = openwx::flow_named(opts.flow).value_or(layout::Flow::horizontal)}),
+           .flow = openwx::flow_named(opts.flow).value_or(layout::Flow::horizontal),
+           .title = static_cast<double>(kTitle)}),
       theme(shell::theme(opts.profile)) {
     if (opts.accent) theme.accent = theme.selected = draw::Color::rgb(*opts.accent);
     if (opts.background) theme.background = draw::Color::rgb(*opts.background);
     pill = opts.profile == "canvas";
     minimap_on = opts.minimap;
+    bookmarks_on = opts.bookmarks;
     snap_on = opts.snap;
     reduce_motion = opts.reduce_motion;
     locate = opts.locate;
@@ -385,6 +387,10 @@ bool Server::start_() {
         if (!self->rule_changed.empty()) wl_event_source_timer_update(self->morph_timer, 16);
         return 0;
     }, this);
+    bookmark_timer = wl_event_loop_add_timer(loop, [](void* data) -> int {
+        static_cast<Server*>(data)->update_bookmarks();
+        return 0;
+    }, this);
     removal_timer = wl_event_loop_add_timer(loop, [](void* data) -> int {
         auto* self = static_cast<Server*>(data);
         if (self->overlay != Overlay::dialog || !self->removal) return 0;
@@ -449,7 +455,7 @@ Server::~Server() {
     if (max_timer) wl_event_source_remove(max_timer);
     if (switch_timer) wl_event_source_remove(switch_timer);
     if (hold_timer) wl_event_source_remove(hold_timer);
-    for (auto* t : {view_timer, morph_timer, removal_timer, closing_timer, lit_timer, wheel_timer, caret_timer})
+    for (auto* t : {view_timer, morph_timer, removal_timer, closing_timer, lit_timer, wheel_timer, caret_timer, bookmark_timer})
         if (t) wl_event_source_remove(t);
     if (wuxian_timer) {
         wl_event_source_remove(wuxian_timer);

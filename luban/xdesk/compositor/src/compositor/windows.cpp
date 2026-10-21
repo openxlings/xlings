@@ -39,6 +39,8 @@ View* Server::view_of(layout::Id id) {
 
 void Server::focus(View* v) {
     if (!v || !v->mapped) return;
+    // Collapsed: no input -- the focus passes it by (design 2026-10-21 §8.5).
+    if (lay.collapsed(v->id)) return;
     plane_focus = false;
     if (View* was = focused(); was && was != v) wlr_xdg_toplevel_set_activated(was->toplevel, false);
     // To the front of the list and of the scene.
@@ -78,6 +80,9 @@ void Server::apply(const std::vector<layout::Placement>& ps, bool instant, layou
         const auto spread = spread_zoom.find(v.id);
         const double zoom = p->zoom * (spread != spread_zoom.end() ? spread->second : 1);
         v.zoom = zoom;
+        // Collapsed: its title bar alone, the client kept at its size, unseen.
+        wlr_scene_node_set_enabled(&v.content->node, !p->collapsed);
+        if (v.backdrop) wlr_scene_node_set_enabled(&v.backdrop->node, !p->collapsed);
         // Full screen: no title bar, all of the output the client's.
         const int bar = p->fullscreen ? 0 : kTitle;
         const int title = static_cast<int>(std::lround(bar * zoom));
@@ -92,7 +97,7 @@ void Server::apply(const std::vector<layout::Placement>& ps, bool instant, layou
         // The client is asked for its size at zoom 1 (the WuXian view scales it).
         const int cw = std::max(1, static_cast<int>(std::lround(p->rect.width / zoom)));
         const int ch = std::max(1, static_cast<int>(std::lround(p->rect.height / zoom)) - bar);
-        if (v.toplevel->base->initialized) {
+        if (v.toplevel->base->initialized && !p->collapsed) {
             // Only what changed: each of these sends a configure, and a
             // client draws again for one -- every frame of a glide or of the
             // view's change otherwise.
@@ -145,6 +150,7 @@ void Server::apply(const std::vector<layout::Placement>& ps, bool instant, layou
     zoom_surfaces();
     animate();
     draw_shell();
+    update_bookmarks();
 }
 
 View* Server::view_at(double x, double y) {
@@ -159,8 +165,43 @@ View* Server::view_at(double x, double y) {
 }
 
 bool Server::on_title(const View& v, double y) const {
-    // Its title bar is drawn at its zoom.
-    return y - v.frame->node.y < kTitle * v.zoom;
+    // Its title bar is drawn at its zoom; however small, at least 24 screen
+    // pixels of it are taken (design 2026-10-21 §8.7).
+    constexpr double kTitleReach = 24;
+    return y - v.frame->node.y < std::max(kTitle * v.zoom, kTitleReach);
+}
+
+void Server::collapse_window(layout::Id id) {
+    if (!lay.is_free(id)) return;
+    lay.toggle_collapsed(id);
+    const bool now = lay.collapsed(id);
+    publish("collapse", {{"id", std::to_string(id)}, {"collapsed", now ? "true" : "false"}});
+    // Collapsed, it lets the focus go; expanded, it takes it.
+    if (now && lay.focused() == id) {
+        if (View* v = view_of(id)) wlr_xdg_toplevel_set_activated(v->toplevel, false);
+        wlr_seat_keyboard_notify_clear_focus(seat);
+    }
+    remember_arrangement();
+    arrange();
+    if (!now)
+        if (View* v = view_of(id)) focus(v);
+}
+
+void Server::collapse_workspace(int id) {
+    if (!lay.workspace_info(id)) return;
+    lay.toggle_workspace_collapsed(id);
+    publish("collapse", {{"workspace", std::to_string(id)}, {"collapsed", lay.workspace_collapsed(id) ? "true" : "false"}});
+    remember_arrangement();
+    arrange();
+}
+
+void Server::collapse_focused() {
+    if (!wuxian()) {
+        show_hint(zh ? "折叠在 WuXian 视图里（Super+O）" : "Collapsing is the WuXian view's (Super+O)", 2500);
+        return;
+    }
+    if (const auto f = lay.focused(); f && lay.is_free(*f)) return collapse_window(*f);
+    collapse_workspace(ws_selected ? ws_selected : lay.focused_workspace());
 }
 
 // Each window's zoom on its surfaces (a surface's own commit sets its size
