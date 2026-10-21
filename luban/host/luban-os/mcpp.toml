@@ -34,6 +34,3 @@ opensal-wlr        = { path = "../../kits/opensal-wlr" }
 
 [dependencies.compat]
 imgui = "1.92.8-docking"
-
-[build]
-include_dirs = ["../../../modules/libs/src/json"]

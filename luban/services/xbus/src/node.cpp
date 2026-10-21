@@ -2,6 +2,7 @@ module xbus.node;
 
 import std;
 import openbus;
+import telemetry;
 import xbus.address;
 import xbus.detail.backend;
 import xbus.detail.conn;
@@ -22,6 +23,9 @@ Frame control_(Kind k, std::uint32_t channel, const Fields& f) {
     return Frame{.kind = static_cast<std::uint8_t>(k), .codec = static_cast<std::uint16_t>(openbus::Codec::fields), .channel = channel,
                  .payload = f.encode()};
 }
+
+constexpr std::size_t kPiece = 512u << 10;   // an answer larger than a frame comes as several replies
+constexpr auto kJson = static_cast<std::uint16_t>(openbus::Codec::json);
 
 CallError error_of_(const Frame& f) {
     const auto fields = Fields::decode(f.payload);
@@ -63,6 +67,16 @@ struct Node::Impl {
     std::map<std::uint32_t, std::shared_ptr<std::atomic<bool>>> answering;
     std::weak_ptr<Node> self;
     Node* raw { nullptr };
+    bool lost { false };   // the router went away once: the next welcome is a reconnection
+
+    telemetry::Counter& m_calls = telemetry::metrics().counter("xbus.node.calls");
+    telemetry::Counter& m_failed = telemetry::metrics().counter("xbus.node.calls_failed");
+    telemetry::Counter& m_answered = telemetry::metrics().counter("xbus.node.answered");
+    telemetry::Counter& m_published = telemetry::metrics().counter("xbus.node.published");
+    telemetry::Counter& m_delivered = telemetry::metrics().counter("xbus.node.delivered");
+    telemetry::Counter& m_reconnects = telemetry::metrics().counter("xbus.node.reconnects");
+    telemetry::Histogram& m_call = telemetry::metrics().histogram("xbus.node.call_ns");
+    telemetry::Histogram& m_handler = telemetry::metrics().histogram("xbus.node.handler_ns");
 
     std::uint32_t channel() { return next_channel++ & 0x7fffffffu; }
 
@@ -148,6 +162,11 @@ struct Node::Impl {
             welcomed = true;
             root = fields ? fields->value("root") : std::string{};
             router = fields ? fields->value("router") : std::string{};
+            if (lost) {
+                lost = false;
+                m_reconnects.add();
+                telemetry::log().info("xbus-reconnected", {{"node", id}, {"name", o.name}, {"router", router}});
+            }
             restore();
             cv.notify_all();
             break;
@@ -187,6 +206,11 @@ struct Node::Impl {
         case Kind::error: {
             std::lock_guard l(m);
             if (pending.contains(f.channel)) finish(f.channel, error_of_(f));
+            else if (f.channel == 0) {
+                // What restore() said again and the router refused (a path taken meanwhile).
+                const auto e = error_of_(f);
+                telemetry::log().warn("xbus-refused", {{"node", id}, {"name", o.name}, {"code", openbus::name_of(e.code)}, {"message", e.message}});
+            }
             break;
         }
         case Kind::call: {
@@ -199,7 +223,8 @@ struct Node::Impl {
                 std::lock_guard l(m);
                 for (const auto& [given, of] : offered) {
                     const auto a = absolute.find(given);
-                    if ((a != absolute.end() ? a->second : given) == path || given == path) { handler = of.handler; break; }
+                    const auto placed = a != absolute.end() ? a->second : given.starts_with("host/") ? given : root + "/" + given;
+                    if (placed == path || given == path) { handler = of.handler; break; }
                 }
                 answering[f.channel] = cancelled;
             }
@@ -214,6 +239,8 @@ struct Node::Impl {
             c.codec_ = f.codec;
             c.cancelled_ = cancelled;
             c.ended_ = std::make_shared<std::atomic<bool>>(false);
+            m_answered.add();
+            telemetry::Span span("answer", &m_handler, "xbus.node");
             if (handler) handler(std::move(c));
             else c.fail(openbus::ErrorCode::not_found, "this node answers nothing at " + path);
             break;
@@ -235,6 +262,7 @@ struct Node::Impl {
             if (!handler) break;
             Message msg{.path = env->fields.value("path"), .from = env->fields.value("from"), .actor = env->fields.value("actor"),
                         .body = std::string(env->body), .codec = f.codec, .event = f.is(Kind::event)};
+            m_delivered.add();
             if (msg.event && msg.body.size() >= 8)
                 for (int k = 7; k >= 0; --k) msg.value = (msg.value << 8) | static_cast<unsigned char>(msg.body[static_cast<std::size_t>(k)]);
             handler(msg);
@@ -259,6 +287,7 @@ struct Node::Impl {
     // The node's thread: read, dispatch, write; when the router goes away,
     // connect again (100 ms, doubling to 2 s) and say everything again.
     void loop(std::stop_token stop) {
+        telemetry::name_thread("xbus-node " + o.name);
         auto backoff = std::chrono::milliseconds(100);
         while (!stop.stop_requested() && !stopping.load()) {
             const Handle* h = nullptr;
@@ -292,6 +321,7 @@ struct Node::Impl {
                 if (!alive) {
                     conn.reset();
                     welcomed = false;
+                    lost = true;
                     // What was asked of the router that is gone is answered gone.
                     for (auto& [ch, pnd] : pending) {
                         pnd->error = CallError{openbus::ErrorCode::gone, "the router went away"};
@@ -318,9 +348,14 @@ struct Node::Impl {
             pending.erase(f.channel);
             conn->push(Frame{.kind = static_cast<std::uint8_t>(Kind::cancel), .channel = f.channel});
             kick();
+            if (f.is(Kind::call)) m_failed.add();
             return std::unexpected(CallError{openbus::ErrorCode::deadline, "no answer in time"});
         }
-        if (p->error) return std::unexpected(*p->error);
+        if (p->error) {
+            if (f.is(Kind::call)) m_failed.add();
+            return std::unexpected(*p->error);
+        }
+        if (f.is(Kind::call)) m_call.record(p->done_at - p->sent_at);
         return p;
     }
 };
@@ -340,11 +375,24 @@ std::expected<std::shared_ptr<Node>, std::string> Node::connect(NodeOptions o) {
     n->impl_->wake = std::move(*pair);
     n->impl_->self = n;
     n->impl_->raw = n.get();
-    if (auto opened = n->impl_->open(); !opened) return std::unexpected(opened.error());
+    const auto opened = n->impl_->open();
+    if (!opened && !n->impl_->o.patient) return std::unexpected(opened.error());
     n->impl_->io = std::jthread([impl = n->impl_.get()](std::stop_token stop) { impl->loop(stop); });
-    std::unique_lock l(n->impl_->m);
-    n->impl_->cv.wait_for(l, n->impl_->o.connect_wait, [&] { return n->impl_->welcomed; });
-    if (!n->impl_->welcomed) return std::unexpected("the openbus router did not answer its hello");
+    if (opened) {
+        std::unique_lock l(n->impl_->m);
+        n->impl_->cv.wait_for(l, n->impl_->o.connect_wait, [&] { return n->impl_->welcomed; });
+        if (!n->impl_->welcomed && !n->impl_->o.patient) return std::unexpected("the openbus router did not answer its hello");
+    }
+    if (n->impl_->o.telemetry) {
+        // Everything on the bus is observable the same way (SPEC.md §8.3).
+        OfferOptions t{.verb = "telemetry", .effect = "reversible", .interfaces = {"openbus.telemetry@0.1"},
+                       .properties = {{"name", n->impl_->o.name}}};
+        (void)n->offer("node/" + n->impl_->id + "/telemetry", std::move(t), [](Call c) {
+            const auto answer = telemetry::control(c.body()).dump(-1, ' ', false, telemetry::Json::error_handler_t::replace);
+            for (std::size_t at = 0; at < answer.size(); at += kPiece) c.reply(std::string_view(answer).substr(at, kPiece), kJson);
+            c.end();
+        });
+    }
     return n;
 }
 
@@ -374,9 +422,13 @@ std::expected<void, CallError> Node::offer(std::string path, OfferOptions o, Cal
     {
         std::lock_guard l(impl_->m);
         impl_->offered[path] = {o, std::move(handler)};
+        // Said when the router answers (restore()).
+        if (!impl_->welcomed) return {};
     }
     auto answer = impl_->ask(impl_->offer_frame(path, o, ch), p, std::chrono::seconds(5));
     if (!answer) {
+        // The router went away meanwhile: offered again when one answers.
+        if (answer.error().code == openbus::ErrorCode::gone) return {};
         std::lock_guard l(impl_->m);
         impl_->offered.erase(path);
         return std::unexpected(answer.error());
@@ -399,6 +451,7 @@ std::expected<std::vector<std::string>, CallError> Node::call(std::string path, 
     std::uint32_t ch;
     { std::lock_guard l(impl_->m); ch = impl_->channel(); }
     auto p = std::make_shared<Impl::Pending>();
+    impl_->m_calls.add();
     auto answer = impl_->ask(Frame{.kind = static_cast<std::uint8_t>(Kind::call), .codec = codec, .channel = ch,
                                    .payload = openbus::address(Fields{{"path", path}}, body)}, p, timeout);
     if (!answer) return std::unexpected(answer.error());
@@ -438,6 +491,7 @@ void Node::unsubscribe(std::uint32_t subscription) {
 }
 
 bool Node::publish(std::string path, std::string_view body, std::uint16_t codec, openbus::Reliability r) {
+    impl_->m_published.add();
     return impl_->send(Frame{.kind = static_cast<std::uint8_t>(Kind::publish), .flags = openbus::with_reliability(0, r), .codec = codec,
                              .payload = openbus::address(Fields{{"path", path}}, body)});
 }

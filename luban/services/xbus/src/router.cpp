@@ -3,6 +3,7 @@ module xbus.router;
 import std;
 import nlohmann.json;
 import openbus;
+import telemetry;
 import xbus.address;
 import xbus.detail.backend;
 import xbus.detail.conn;
@@ -21,6 +22,7 @@ using openbus::Frame;
 using openbus::Kind;
 
 constexpr std::uint32_t kRouterChannel = 0x80000000u;
+constexpr std::size_t kPiece = 512u << 10;
 
 std::string random_hex_(int bytes) {
     std::random_device rd;
@@ -28,8 +30,6 @@ std::string random_hex_(int bytes) {
     for (int k = 0; k < bytes; ++k) out += std::format("{:02x}", rd() & 0xff);
     return out;
 }
-
-std::string utc_now_() { return std::format("{:%FT%TZ}", std::chrono::floor<std::chrono::milliseconds>(std::chrono::system_clock::now())); }
 
 Frame control_(Kind k, std::uint32_t channel, const Fields& f) {
     return Frame{.kind = static_cast<std::uint8_t>(k), .codec = static_cast<std::uint16_t>(openbus::Codec::fields), .channel = channel,
@@ -98,7 +98,18 @@ struct Router::Impl {
     std::map<std::pair<int, std::uint32_t>, std::pair<int, std::uint32_t>> forwarded;
     std::uint64_t last_node_at = native::now_ns();
     std::uint64_t frames { 0 };
-    std::ofstream log;
+    // Its log (the file is RouterOptions::log), and what it measures of itself
+    // (telemetry: bus/telemetry, a dump's "xbus.router.<id>").
+    telemetry::Log log;
+    telemetry::Counter& m_frames = telemetry::metrics().counter("xbus.router.frames");
+    telemetry::Counter& m_drops = telemetry::metrics().counter("xbus.router.drops");
+    telemetry::Counter& m_fallbacks = telemetry::metrics().counter("xbus.router.fallbacks");
+    telemetry::Histogram& m_round = telemetry::metrics().histogram("xbus.router.round_ns");
+    telemetry::Histogram& m_frame = telemetry::metrics().histogram("xbus.router.frame_ns");
+    telemetry::Gauge& m_queued = telemetry::metrics().gauge("xbus.router.queued_bytes");
+    telemetry::Gauge& m_clients = telemetry::metrics().gauge("xbus.router.clients");
+    // What another thread may read of it (a dump's state): set each round.
+    std::atomic<std::size_t> seen_nodes { 0 }, seen_links { 0 }, seen_endpoints { 0 };
 
     std::string abs(std::string_view p) const {
         return p.starts_with("host/") || p == "host" ? std::string(p) : o.root + "/" + std::string(p);
@@ -109,11 +120,11 @@ struct Router::Impl {
     }
 
     void note(Json fields) {
-        if (!log.is_open()) return;
-        fields["ts"] = utc_now_();
+        const auto event = fields.value("event", std::string("event"));
+        fields.erase("event");
         fields["router"] = id;
-        log << fields.dump() << '\n';
-        log.flush();
+        const bool trouble = event == "denied" || event == "slow-consumer" || event == "fallback";
+        log.write(trouble ? telemetry::Level::warn : telemetry::Level::info, event, std::move(fields));
     }
 
     bool allowed(const Client& c, std::string_view op, std::string_view path) {
@@ -134,13 +145,17 @@ struct Router::Impl {
         if (c.conn->queued_bytes() > o.queue_limit) {
             if (openbus::reliability_of(f.flags) != openbus::Reliability::reliable) {
                 ++c.dropped;
+                m_drops.add();
                 return false;
             }
             note({{"event", "slow-consumer"}, {"node", c.peer.node}, {"name", c.peer.name}, {"queued", c.conn->queued_bytes()}});
             c.gone = true;
             return false;
         }
-        if (!c.conn->push(f, std::move(h))) note({{"event", "fallback"}, {"node", c.peer.node}, {"why", "this channel carries no handles"}});
+        if (!c.conn->push(f, std::move(h))) {
+            m_fallbacks.add();
+            note({{"event", "fallback"}, {"node", c.peer.node}, {"why", "this channel carries no handles"}});
+        }
         return true;
     }
 
@@ -514,6 +529,13 @@ struct Router::Impl {
         else if (what == "topology") body = topology();
         else if (what == "verbs") body = verbs();
         else if (what == "links") body = links_json();
+        else if (what == "telemetry") {
+            // The process's telemetry; a dump also carries what the router is.
+            auto answer = telemetry::control(body_in);
+            if (answer.contains("telemetry") && answer.contains("state"))
+                answer["state"]["xbus.router." + id] = {{"topology", Json::parse(topology())}, {"stats", Json::parse(stats())}};
+            body = answer.dump(-1, ' ', false, Json::error_handler_t::replace);
+        }
         else if (what == "link" || what == "unlink") {
             if (c.peer.link || !allowed(c, what, path)) {
                 send(c, error_(f.channel, openbus::ErrorCode::denied, "not allowed to " + what + " this bus"));
@@ -540,11 +562,15 @@ struct Router::Impl {
             }
         } else {
             send(c, error_(f.channel, openbus::ErrorCode::not_found,
-                           "the router offers bus/stats, bus/topology, bus/verbs, bus/links, bus/link, bus/unlink, bus/trace"));
+                           "the router offers bus/stats, bus/topology, bus/verbs, bus/links, bus/link, bus/unlink, bus/telemetry, bus/trace"));
             return;
         }
-        send(c, Frame{.kind = static_cast<std::uint8_t>(Kind::reply), .codec = static_cast<std::uint16_t>(openbus::Codec::json),
-                      .channel = f.channel, .payload = std::move(body)});
+        // An answer larger than a frame comes as several replies: their concatenation (SPEC.md §8.3).
+        for (std::size_t at = 0; at < body.size() || at == 0; at += kPiece) {
+            send(c, Frame{.kind = static_cast<std::uint8_t>(Kind::reply), .codec = static_cast<std::uint16_t>(openbus::Codec::json),
+                          .channel = f.channel, .payload = body.substr(at, kPiece)});
+            if (body.empty()) break;
+        }
         send(c, Frame{.kind = static_cast<std::uint8_t>(Kind::reply_end), .channel = f.channel});
     }
 
@@ -620,6 +646,8 @@ struct Router::Impl {
     void handle(Client& c, Incoming in) {
         auto& f = in.frame;
         ++frames;
+        m_frames.add();
+        telemetry::Span span(openbus::name_of(f.known()), &m_frame, "xbus.router");
         if (!c.hello && !f.is(Kind::hello) && !(c.initiated_link && f.is(Kind::welcome))) {
             send(c, error_(f.channel, openbus::ErrorCode::malformed, "the first frame is hello"));
             c.gone = true;
@@ -736,6 +764,9 @@ struct Router::Impl {
             }
         }
         native::wait(set, timeout_ms);
+        // What the round did, apart from waiting: its busy time.
+        telemetry::Span busy("round", &m_round, "xbus.router");
+        bool worked = fed;
         std::vector<int> ready;
         for (std::size_t k = 0; k < set.size(); ++k) {
             if (ids[k] == 0) {
@@ -749,6 +780,7 @@ struct Router::Impl {
                 if (!set[k].readable) continue;
                 auto& l = listeners[static_cast<std::size_t>(-ids[k] - 1)];
                 for (auto h = native::accept(l.handle); h.valid(); h = native::accept(l.handle)) add(socket_channel(std::move(h)), false);
+                worked = true;
                 continue;
             }
             if (set[k].readable || set[k].closed) ready.push_back(ids[k]);
@@ -782,7 +814,23 @@ struct Router::Impl {
             if (!it->second.gone) { ++it; continue; }
             drop(it->second);
             it = clients.erase(it);
+            worked = true;
         }
+        if (!worked && ready.empty()) {
+            busy.discard();
+            return;
+        }
+        std::int64_t queued = 0;
+        std::size_t n = 0, l = 0;
+        for (const auto& [cid, c] : clients) {
+            queued += static_cast<std::int64_t>(c.conn->queued_bytes());
+            if (c.hello) ++(c.peer.link ? l : n);
+        }
+        m_queued.set(queued);
+        m_clients.set(static_cast<std::int64_t>(clients.size()));
+        seen_nodes.store(n);
+        seen_links.store(l);
+        seen_endpoints.store(endpoints.size());
     }
 };
 
@@ -799,11 +847,11 @@ Router::Router(RouterOptions o) : impl_(std::make_unique<Impl>()) {
     impl_->o = std::move(o);
     if (auto w = native::pair()) impl_->wake = std::move(*w);
     if (impl_->o.root.empty()) impl_->o.root = host_root();
-    if (!impl_->o.log.empty()) {
-        std::error_code ec;
-        std::filesystem::create_directories(impl_->o.log.parent_path(), ec);
-        impl_->log.open(impl_->o.log, std::ios::app);
-    }
+    impl_->log.open({.file = impl_->o.log, .component = "xbus-router"});
+    telemetry::provide("xbus.router." + impl_->id, [impl = impl_.get()] {
+        return Json{{"root", impl->o.root}, {"nodes", impl->seen_nodes.load()}, {"links", impl->seen_links.load()},
+                    {"endpoints", impl->seen_endpoints.load()}};
+    });
     // The router's own endpoints: it is an object of its bus, openbus.router.
     const auto router_object = [](std::string verb, std::string effect) {
         return Fields{{"verb", std::move(verb)}, {"effect", std::move(effect)}, {"interface", "openbus.router@0.1"}};
@@ -816,9 +864,13 @@ Router::Router(RouterOptions o) : impl_(std::make_unique<Impl>()) {
                                                                     .meta = router_object(std::string("bus-") + what, "external")};
     impl_->endpoints[impl_->o.root + "/bus/trace"] = Endpoint{.owner = 0, .kind = openbus::EndpointKind::topic,
                                                               .meta = Fields{{"interface", "openbus.router@0.1"}}};
+    auto told = router_object("telemetry", "reversible");
+    told.add("interface", "openbus.telemetry@0.1");
+    impl_->endpoints[impl_->o.root + "/bus/telemetry"] = Endpoint{.owner = 0, .kind = openbus::EndpointKind::service, .meta = std::move(told)};
 }
 
 Router::~Router() {
+    telemetry::withdraw("xbus.router." + impl_->id);
     for (const auto& l : impl_->listeners) native::forget(l.address.scheme, l.address.where);
 }
 

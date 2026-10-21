@@ -24,6 +24,3 @@ libs     = { path = "../libs" }
 platform = { path = "../platform" }
 runtime  = { path = "../runtime" }
 subos    = { path = "../subos" }
-
-[build]
-include_dirs = ["../libs/src/json"]

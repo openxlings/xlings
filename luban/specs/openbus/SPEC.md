@@ -218,16 +218,36 @@ Every router offers, at `bus/` under its root:
   transport each actually uses.
 - `bus/verbs` (service): every endpoint's verb description (§9).
 
-8.2 **The router is an object of its own bus**: its endpoints implement
-`openbus.router@0.1` -- `bus/stats`, `bus/topology`, `bus/verbs` and `bus/links`
-(read), `bus/link` (its body an address: link this router to the router there;
-effect `external`) and `bus/unlink` (its body a router or a root), and the topic
-`bus/trace`. Joining two machines' buses is a call; who may make it is the
-router's authorization, like any call's.
-
 8.1 A latency histogram has 64 buckets; bucket `i` counts values in
 `[2^i, 2^(i+1))` nanoseconds (bucket 0 also counts 0). Its percentiles are
 reported as a bucket's upper bound.
+
+8.2 **The router is an object of its own bus**: its endpoints implement
+`openbus.router@0.1` -- `bus/stats`, `bus/topology`, `bus/verbs` and `bus/links`
+(read), `bus/telemetry` (§8.3), `bus/link` (its body an address: link this
+router to the router there; effect `external`) and `bus/unlink` (its body a router or a root), and the topic
+`bus/trace`. Joining two machines' buses is a call; who may make it is the
+router's authorization, like any call's.
+
+8.3 **Everything on the bus is observable the same way**: an endpoint that
+implements `openbus.telemetry@0.1` answers its process's telemetry. A router
+offers it at `bus/telemetry`; a node offers it at `node/<its id>/telemetry`
+(property `name`) unless it says otherwise. The call's body is one request:
+
+| Request | Answer (JSON) |
+|---|---|
+| `dump` (or empty) | `telemetry`, `program`, `started`, `uptime_ns`, `profiling`, `metrics`, `state` (what each part provides; a part that failed is named with why), `recent` (the flight recorder's last records), `recorded` |
+| `metrics` | `metrics`: `counters`, `gauges` (`value`, `high`), `histograms` (`unit`, `count`, `sum`, `p50`, `p90`, `p99`, `max`, `buckets` as `[i, n]` pairs in §8.1's layout) |
+| `recent [n]` | `recent`: the last `n` records (`t_ns`, `kind` log/span/mark, `level`, `thread`, `category`, `name`, `dur_ns`, `fields`) |
+| `trace` | the recorded spans and marks as Chrome trace events (`traceEvents`) |
+| `profile on`, `profile off` | `profiling`: while on, every span is recorded (effect `reversible`) |
+| `level <trace\|debug\|info\|warn\|error>` | `level`: the log file's level |
+| `reset` | `reset`: the metrics zeroed |
+| anything else | `error` and `requests` (the ones it knows) |
+
+An answer larger than a frame comes as several replies; the JSON is their
+concatenation. A router's `dump` also carries, under `state`, its topology and
+statistics (`xbus.router.<id>` in XBus).
 
 ## 9. Verbs, tasks, actors
 

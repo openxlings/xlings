@@ -609,7 +609,7 @@ text = "a router passes openbus.conformance: handshake, one node per path, resol
 status = "required"
 
 [XBUS-NODE]
-text = "an XBus node offers services and topics, calls with replies streamed or collected (who called and as whom told), resolves by pattern, subscribes (a retained topic's last word to a late subscriber), publishes, sends events and broadcasts, pings; a node that leaves takes its endpoints; a node finds its router again after a restart and offers and subscribes again by itself"
+text = "an XBus node offers services and topics, calls with replies streamed or collected (who called and as whom told), resolves by pattern, subscribes (a retained topic's last word to a late subscriber), publishes, sends events and broadcasts, pings; a node that leaves takes its endpoints; a node finds its router again after a restart and offers and subscribes again by itself; a patient node started before any router connects when one comes and offers and subscribes then"
 status = "required"
 
 [XBUS-LINK]
@@ -626,4 +626,28 @@ status = "required"
 
 [XBUS-BUS-OBJECT]
 text = "an XBus router is an object of its own bus (openbus.router@0.1: bus/stats, topology, verbs, links, link, unlink, trace): two machines' buses are joined and parted by a call, and across them an application finds a device of another machine by its interface and uses it (work given, its task state and result back)"
+status = "required"
+
+[TELEMETRY-METRICS]
+text = "the telemetry kit's counters, gauges (with their high-water mark) and 64-bucket histograms are exact under concurrent threads, one instrument a name, quantiles reported as a bucket's upper bound and never above the largest value seen; a snapshot is JSON and a reset zeroes them"
+status = "required"
+
+[TELEMETRY-RECORDER]
+text = "the flight recorder keeps the last N records in order whatever a log's level, so a dump shows the moments before it was asked for"
+status = "required"
+
+[TELEMETRY-LOG]
+text = "the telemetry log writes one JSON object a line (ts, level, component, event, fields), filters the file by a level set at run time, rotates at a size keeping a fixed number of files, records debug and up in the flight recorder, and says a file it cannot write on the recorder instead of failing the program"
+status = "required"
+
+[TELEMETRY-PROFILE]
+text = "a profiling span feeds its histogram always and, only while profiling is on, a record; spans, marks and thread names export as Chrome trace events (Perfetto)"
+status = "required"
+
+[TELEMETRY-DUMP]
+text = "a telemetry dump gathers the program, uptime, metrics, every provider's state and the recent records; a provider that throws is named with what it threw, never left out; a dump is written to a named file; `control` (dump, metrics, recent, trace, profile, level, reset, help) is the whole interface and an unknown request is answered with the requests it knows"
+status = "required"
+
+[XBUS-TELEMETRY]
+text = "every XBus node (unless it says otherwise) offers node/<id>/telemetry and the router bus/telemetry (openbus.telemetry@0.1): its process's metrics, profile, Chrome trace, recent records and dump through the telemetry kit, the router's dump carrying its topology and statistics; the router's log is the kit's (one object a line); an answer larger than a frame comes in pieces that join whole; `xbus dump` and `xbus profile` read them"
 status = "required"

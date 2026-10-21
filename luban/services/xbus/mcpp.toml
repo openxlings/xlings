@@ -1,7 +1,8 @@
 # XBus: a base service of Luban OS, openbus's implementation -- the router
 # (one per host and per system), the node library programs reach it with,
 # links between routers over any byte stream, and the `xbus` command (tool/).
-# The system calls are read only under src/native/ (xbus.native).
+# The system calls are read only under src/backend/ (xbus.detail.backend);
+# what it measures and logs is the telemetry kit's.
 [package]
 namespace = "xbus"
 name      = "xbus"
@@ -11,7 +12,8 @@ version   = "0.1.0"
 kind = "lib"
 
 [dependencies]
-openbus = { path = "../../specs/openbus" }
+openbus   = { path = "../../specs/openbus" }
+telemetry = { path = "../../kits/telemetry" }
 
 [dependencies.nlohmann]
 json = "3.12.0"

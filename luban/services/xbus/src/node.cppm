@@ -19,6 +19,12 @@ struct NodeOptions {
     // --detach --listen <the address>`) and wait for it a moment.
     std::filesystem::path router_program;
     std::chrono::milliseconds connect_wait { 2000 };
+    // Offers node/<id>/telemetry (openbus.telemetry@0.1, SPEC.md §8.3): this
+    // process's metrics, recent records, profile and dumps (the telemetry kit).
+    bool telemetry { true };
+    // Nobody answers yet: connect() returns a node that connects when a
+    // router comes (it keeps trying); what it offers and subscribes is said then.
+    bool patient { false };
 };
 
 struct Message {
@@ -101,6 +107,7 @@ public:
     std::string router() const;
     bool connected() const;
 
+    // Not connected: kept, and offered when the router answers (a taken path is then only logged).
     std::expected<void, CallError> offer(std::string path, OfferOptions o = {}, CallHandler handler = {});
     void withdraw(const std::string& path);
 

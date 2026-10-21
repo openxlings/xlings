@@ -1,5 +1,6 @@
 # xbus: the command of XBus -- a router (`xbus router`), and what is on the
-# bus, seen and used: ls, call, pub, sub, monitor, top, stats, topology, bench.
+# bus, seen and used: ls, call, pub, sub, monitor, top, stats, topology, bench;
+# a process's telemetry: dump, profile.
 [package]
 namespace = "xbus"
 name      = "xbus-tool"
@@ -12,6 +13,7 @@ main = "src/main.cpp"
 [dependencies]
 xbus = { path = ".." }
 openbus = { path = "../../../specs/openbus" }
+telemetry = { path = "../../../kits/telemetry" }
 
 [dependencies.nlohmann]
 json = "3.12.0"

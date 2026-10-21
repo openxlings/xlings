@@ -25,7 +25,7 @@ testkit = { path = "../../modules/testkit" }
 platform = { path = "../../modules/platform" }
 
 [build]
-include_dirs = ["../../modules/libs/src/json", "../../modules/testkit/include"]
+include_dirs = ["../../modules/testkit/include"]
 
 [dev-dependencies.compat]
 gtest = "1.15.2"

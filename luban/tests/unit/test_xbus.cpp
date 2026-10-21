@@ -2,7 +2,8 @@
 // its router passes openbus's conformance; its nodes offer, call,
 // subscribe, publish and get answers through the public interface only;
 // two routers linked over a pipe see each other's endpoints; a node finds
-// its router again after a restart; the router says what it carries.
+// its router again after a restart; the router says what it carries;
+// every node and the router answer their process's telemetry.
 #include <gtest/gtest.h>
 import xlings.testkit;
 #include "xlings/xtest.hpp"
@@ -14,6 +15,7 @@ import openbus.conformance;
 import xbus.router;
 import xbus.node;
 import xbus.raw;
+import telemetry;
 
 namespace tk = xlings::testkit;
 namespace fs = std::filesystem;
@@ -173,6 +175,36 @@ XTEST(Xbus, ANodeFindsItsRouterAgainAndSaysEverythingAgain, .area = "luban", .co
     EXPECT_EQ(answer->front(), "yes");
 }
 
+XTEST(Xbus, APatientNodeWaitsForItsRouter, .area = "luban", .covers = {"XBUS-NODE"}) {
+    if constexpr (tk::is_windows) GTEST_SKIP() << "see above";
+    auto home = tk::Home::isolated("xbus-patient");
+    const xbus::Address at{"local", (home.root() / "router.sock").string()};
+    // A program that starts before the bus: no router answers yet.
+    EXPECT_FALSE(xbus::Node::connect({.name = "eager", .router = at, .connect_wait = 200ms}).has_value());
+    auto waiting = xbus::Node::connect({.name = "desk", .router = at, .connect_wait = 200ms, .patient = true});
+    ASSERT_TRUE(waiting.has_value()) << waiting.error();
+    auto desk = *waiting;
+    EXPECT_FALSE(desk->connected());
+    ASSERT_TRUE(desk->offer("service/xdesk/state", {}, [](xbus::Call c) { c.reply("{}"); c.end(); }));
+    std::atomic<int> heard{0};
+    desk->subscribe("topic/luban/systems", [&](const xbus::Message&) { ++heard; });
+    Running r(home.root());   // the bus comes
+    auto client = node(r.at, "client");
+    std::expected<std::vector<std::string>, xbus::CallError> answer = std::unexpected(xbus::CallError{});
+    for (int k = 0; k < 60 && !answer; ++k) {
+        answer = client->call("service/xdesk/state", {}, 1s);
+        if (!answer) std::this_thread::sleep_for(100ms);
+    }
+    ASSERT_TRUE(answer.has_value()) << "what it offered while waiting, offered when the router came";
+    EXPECT_EQ(answer->front(), "{}");
+    EXPECT_TRUE(desk->connected());
+    for (int k = 0; k < 30 && heard == 0; ++k) {
+        client->publish("topic/luban/systems", "up");
+        std::this_thread::sleep_for(100ms);
+    }
+    EXPECT_GT(heard.load(), 0) << "and its subscription made then";
+}
+
 XTEST(Xbus, TwoRoutersLinkedOverAPipeSeeEachOther, .area = "luban", .covers = {"XBUS-LINK"}) {
     if constexpr (tk::is_windows) GTEST_SKIP() << "see above";
     auto home = tk::Home::isolated("xbus-link");
@@ -199,7 +231,10 @@ XTEST(Xbus, TwoRoutersLinkedOverAPipeSeeEachOther, .area = "luban", .covers = {"
     std::vector<xbus::Resolved> seen;
     for (int k = 0; k < 50 && seen.size() < 2; ++k) {
         seen = outside->resolve("host/test/system/m/**").value_or(std::vector<xbus::Resolved>{});
-        std::erase_if(seen, [](const xbus::Resolved& e) { return e.path.find("/bus/") != std::string::npos; });
+        // Apart from what every router and node offers of itself (bus/, node/<id>/telemetry).
+        std::erase_if(seen, [](const xbus::Resolved& e) {
+            return e.path.find("/bus/") != std::string::npos || e.path.find("/node/") != std::string::npos;
+        });
         if (seen.size() < 2) std::this_thread::sleep_for(50ms);
     }
     ASSERT_EQ(seen.size(), 2u) << "the guest's endpoints, offered over the link";
@@ -349,4 +384,82 @@ XTEST(Xbus, TwoBusesAreJoinedByACallAndAComputeDeviceIsUsedAcrossThem, .area = "
     ASSERT_TRUE(admin->call("bus/unlink", "host/b").has_value());
     std::this_thread::sleep_for(300ms);
     EXPECT_FALSE(app->call("host/b/device/gpu/0", "1", 1s).has_value());
+}
+
+XTEST(Xbus, EveryNodeAndTheRouterTellTheirTelemetry, .area = "luban", .covers = {"XBUS-TELEMETRY"}) {
+    if constexpr (tk::is_windows) GTEST_SKIP() << "see above";
+    auto home = tk::Home::isolated("xbus-telemetry");
+    Running r(home.root());
+    auto server = node(r.at, "server");
+    auto quiet = xbus::Node::connect({.name = "quiet", .router = r.at, .telemetry = false});
+    ASSERT_TRUE(quiet.has_value()) << quiet.error();
+    auto client = *quiet;
+    ASSERT_TRUE(server->offer("service/demo/echo", {}, [](xbus::Call c) { c.reply(c.body()); c.end(); }));
+
+    // Who can be asked: the router and every node that did not say otherwise.
+    const auto told = client->resolve("**", "openbus.telemetry@0.1");
+    ASSERT_TRUE(told.has_value());
+    std::string server_path;
+    bool router = false;
+    for (const auto& e : *told) {
+        if (e.name == "server") server_path = e.path;
+        router = router || e.path == "host/test/bus/telemetry";
+        EXPECT_NE(e.name, "quiet");
+    }
+    ASSERT_FALSE(server_path.empty());
+    EXPECT_TRUE(router);
+    EXPECT_EQ(server_path, "host/test/node/" + server->id() + "/telemetry");
+
+    const auto ask = [&](const std::string& path, std::string_view request) {
+        const auto replies = client->call(path, request);
+        if (!replies) throw std::runtime_error(replies.error().message);
+        std::string text;
+        for (const auto& p : *replies) text += p;
+        return Json::parse(text);
+    };
+    // A node's metrics, profile and trace.
+    EXPECT_EQ(ask(server_path, "profile on")["profiling"], true);
+    for (int k = 0; k < 20; ++k) ASSERT_TRUE(client->call("service/demo/echo", "x"));
+    const auto metrics = ask(server_path, "metrics")["metrics"];
+    EXPECT_GE(metrics["counters"]["xbus.node.answered"].get<std::uint64_t>(), 20u) << metrics.dump(1);
+    EXPECT_GE(metrics["histograms"]["xbus.node.call_ns"]["count"].get<std::uint64_t>(), 20u);
+    EXPECT_GT(metrics["histograms"]["xbus.router.frame_ns"]["count"].get<std::uint64_t>(), 40u);
+    const auto trace = ask(server_path, "trace");
+    const auto answers = std::ranges::count_if(trace["traceEvents"], [](const Json& e) {
+        return e["ph"] == "X" && e["name"] == "answer" && e["cat"] == "xbus.node";
+    });
+    const auto routed = std::ranges::count_if(trace["traceEvents"], [](const Json& e) {
+        return e["ph"] == "X" && e["name"] == "call" && e["cat"] == "xbus.router";
+    });
+    EXPECT_GE(answers, 20);
+    EXPECT_GE(routed, 20);
+    EXPECT_EQ(ask(server_path, "profile off")["profiling"], false);
+
+    // The router's dump carries what it is; its log is telemetry's, one object a line.
+    const auto dump = ask("bus/telemetry", "dump");
+    EXPECT_EQ(dump["telemetry"], "0.1");
+    const auto self = dump["state"]["xbus.router." + r.router->id()];
+    EXPECT_EQ(self["topology"]["root"], "host/test") << dump["state"].dump(1);
+    EXPECT_FALSE(self["stats"]["endpoints"].empty());
+    bool connect_logged = false;
+    for (const auto& line : std::views::split(tk::read_file(home.root() / "router.ndjson"), '\n')) {
+        const std::string text(line.begin(), line.end());
+        if (text.empty()) continue;
+        const auto j = Json::parse(text);
+        EXPECT_EQ(j["component"], "xbus-router");
+        connect_logged = connect_logged || (j["event"] == "connect" && j["level"] == "info");
+    }
+    EXPECT_TRUE(connect_logged);
+
+    // An answer larger than a frame (1 MiB) comes in pieces and is whole when joined.
+    const std::string pad(300, 'p');
+    for (int k = 0; k < 4096; ++k) telemetry::mark("filler", "test", {{"k", k}, {"pad", pad}});
+    const auto pieces = client->call(server_path, "recent 4096");
+    ASSERT_TRUE(pieces.has_value());
+    EXPECT_GE(pieces->size(), 3u);
+    std::string whole;
+    for (const auto& p : *pieces) whole += p;
+    EXPECT_EQ(Json::parse(whole)["recent"].size(), 4096u);
+    // A request it does not know is answered with the ones it does.
+    EXPECT_TRUE(ask(server_path, "make coffee")["requests"].is_array());
 }

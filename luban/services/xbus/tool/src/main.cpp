@@ -9,11 +9,14 @@
 //   xbus top [--interval MS] [--count N]
 //   xbus stats [--json] | xbus topology
 //   xbus bench call|pubsub|ping [--n N] [--size B] [--subs K] [--json]
+//   xbus dump [PATH] [--request R] [--out FILE]
+//   xbus profile [PATH] [--seconds S] [--out FILE]
 //
 // Every command takes --router ADDR (default: $OPENBUS_ROUTER, else local:router).
 import std;
 import nlohmann.json;
 import openbus;
+import telemetry;
 import xbus.router;
 import xbus.node;
 
@@ -62,7 +65,7 @@ std::shared_ptr<xbus::Node> join(const Args& a, std::string name) {
         std::println(std::cerr, "xbus: an address is scheme:where (local:router, unix:/path)");
         return nullptr;
     }
-    auto n = xbus::Node::connect({.name = std::move(name), .actor = "program:xbus", .router = *at});
+    auto n = xbus::Node::connect({.name = std::move(name), .actor = "program:xbus", .router = *at, .telemetry = false});
     if (!n) {
         std::println(std::cerr, "xbus: {}", n.error());
         std::println(std::cerr, "  start one: xbus router --listen {}", at->text());
@@ -89,6 +92,7 @@ int router(const Args& a) {
         o.listen.push_back(*at);
     }
     if (const auto log = a.option("--log")) o.log = *log;
+    telemetry::identify("xbus-router");
     if (const auto idle = a.option("--idle-exit")) o.idle_exit = std::chrono::seconds(std::stol(*idle));
     else if (a.flags.contains("--detach")) o.idle_exit = std::chrono::seconds(600);
     xbus::Router r(o);
@@ -213,6 +217,66 @@ int top(const Args& a) {
     return 0;
 }
 
+// ── telemetry (SPEC.md §8.3; the telemetry kit) ─────────────────────
+
+// A telemetry endpoint's answer: its replies joined, as JSON.
+std::optional<Json> ask_telemetry(xbus::Node& n, const std::string& path, std::string_view request) {
+    const auto r = n.call(path, request, std::chrono::seconds(10));
+    if (!r) {
+        std::println(std::cerr, "xbus: {}: {}", path, r.error().message);
+        return std::nullopt;
+    }
+    std::string text;
+    for (const auto& piece : *r) text += piece;
+    auto j = Json::parse(text, nullptr, false);
+    if (j.is_discarded()) {
+        std::println(std::cerr, "xbus: {} did not answer JSON (is it an openbus.telemetry@0.1 endpoint?)", path);
+        return std::nullopt;
+    }
+    return j;
+}
+
+bool write_out(const Json& j, const std::optional<std::string>& out) {
+    if (!out) {
+        std::println("{}", j.dump(1));
+        return true;
+    }
+    std::ofstream f(*out, std::ios::trunc | std::ios::binary);
+    f << j.dump() << '\n';
+    if (!f) std::println(std::cerr, "xbus: cannot write {}", *out);
+    return static_cast<bool>(f);
+}
+
+int dump(const Args& a) {
+    auto n = join(a, "xbus-dump");
+    if (!n) return 1;
+    const auto path = a.words.empty() ? std::string("bus/telemetry") : a.words[0];
+    const auto j = ask_telemetry(*n, path, a.option("--request").value_or("dump"));
+    if (!j) return 1;
+    if (j->contains("error")) {
+        std::println(std::cerr, "xbus: {}", (*j)["error"].get<std::string>());
+        return 1;
+    }
+    return write_out(*j, a.option("--out")) ? 0 : 1;
+}
+
+int profile(const Args& a) {
+    auto n = join(a, "xbus-profile");
+    if (!n) return 1;
+    const auto path = a.words.empty() ? std::string("bus/telemetry") : a.words[0];
+    const long seconds = a.number("--seconds", 5);
+    if (!ask_telemetry(*n, path, "profile on")) return 1;
+    std::println(std::cerr, "profiling {} for {} s", path, seconds);
+    std::this_thread::sleep_for(std::chrono::seconds(seconds));
+    const auto trace = ask_telemetry(*n, path, "trace");
+    (void)ask_telemetry(*n, path, "profile off");
+    if (!trace) return 1;
+    const auto out = a.option("--out").value_or("xbus-profile.json");
+    if (!write_out(*trace, out)) return 1;
+    std::println("{} events in {} (open it in a trace viewer: Perfetto, chrome://tracing)", (*trace)["traceEvents"].size(), out);
+    return 0;
+}
+
 // ── bench (design 2026-10-22 §9) ────────────────────────────────────
 
 struct Bench {
@@ -331,6 +395,9 @@ void usage() {
   monitor [PATTERN] [--count N]              every frame routed, as it is
   top | stats [--json] | topology            what the router carries
   bench call|ping|pubsub [--n N] [--size B] [--subs K] [--window W] [--json]
+  dump [PATH] [--request R] [--out FILE]     a process's telemetry (default: the router's)
+  profile [PATH] [--seconds S] [--out FILE]  a trace of what it did meanwhile
+  ls --interface openbus.telemetry@0.1       every process that can be asked
 
   --router ADDR   which router (default: $OPENBUS_ROUTER, else local:router))", openbus::kVersion);
 }
@@ -355,6 +422,8 @@ int main(int argc, char** argv) {
     if (cmd == "topology") return stats(a, "topology");
     if (cmd == "verbs") return stats(a, "verbs");
     if (cmd == "bench") return bench(a);
+    if (cmd == "dump") return dump(a);
+    if (cmd == "profile") return profile(a);
     usage();
     return 2;
 }

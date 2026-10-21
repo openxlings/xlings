@@ -16,6 +16,3 @@ kind = "lib"
 libs     = { path = "../../../modules/libs" }
 platform = { path = "../../../modules/platform" }
 subos    = { path = "../../../modules/subos" }
-
-[build]
-include_dirs = ["../../../modules/libs/src/json"]

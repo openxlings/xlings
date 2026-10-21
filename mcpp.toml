@@ -60,6 +60,7 @@ members = [
     "luban/kits/tray",
     "luban/kits/opensal-wlr",
     "luban/kits/cursor",
+    "luban/kits/telemetry",
     "luban/kits/cursor/tool",
     "luban/services/xbus",
     "luban/services/xbus/tool",
@@ -85,7 +86,7 @@ repo = "https://github.com/openxlings/xlings"
 [build]
 # modules/testkit/include holds xtest.hpp (the XTEST macro). Only test sources
 # include it; it is here because test TUs are compiled with the root's flags.
-include_dirs = ["modules/libs/src/json", "modules/testkit/include"]
+include_dirs = ["modules/testkit/include"]
 # Minimum supported macOS for produced binaries (mcpp 0.0.50+ honors
 # this; the MACOSX_DEPLOYMENT_TARGET env in CI/release remains as the
 # second line of assurance and covers older bootstrap mcpp versions).
@@ -215,6 +216,7 @@ xdesk-base = { path = "luban/xdesk/base" }
 xdesk-layout = { path = "luban/xdesk/layout" }
 tray       = { path = "luban/kits/tray" }
 cursorkit  = { path = "luban/kits/cursor" }
+telemetry  = { path = "luban/kits/telemetry" }
 xbus       = { path = "luban/services/xbus" }
 
 [dev-dependencies.compat]

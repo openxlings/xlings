@@ -194,16 +194,18 @@ magic "OB"(2) · version(1) · kind(1) · flags(2) · codec(2) · channel(4) · 
 
 ```
 luban/specs/openbus/     SPEC.md、src/（openbus：路径与通配、帧编解码、握手、kind、统计的格式）、conformance/
-luban/services/xbus/         src/
-                           native/   xbus.native：套接字、poll、传 fd、memfd/shm、对端凭据（唯一含系统头的地方）
-                           router    xbus.router：路由（单线程事件循环）
+luban/kits/telemetry/    telemetry：指标、飞行记录器、日志、剖析、转储（§8.1）
+luban/services/xbus/     src/
+                           address   xbus.address：地址（local:、unix:；vsock/tcp/quic 预留）、Pipe/PipeEnd——对上没有平台的东西
+                           backend/  xbus.detail.backend：套接字、poll、传句柄、共享内存、对端身份（POSIX、Windows；以后 openkal）
+                           conn      xbus.detail.conn：一条连接（套接字或管道）上的帧
+                           router    xbus.router：路由（单线程事件循环），含链路
                            node      xbus.node：节点库（C++ API）
-                           link      xbus.link：路由之间的链路（任意双向字节流）
-                           stats     xbus.stats：直方图与计数
-                         tool/       xbus：命令行（router、ls、call、pub、sub、monitor、top、stats、bench）
+                           raw       xbus.raw：原样收发帧（一致性检查、基准）
+                         tool/       xbus：命令行（router、ls、call、pub、sub、monitor、top、stats、bench、dump、profile）
 ```
 
-依赖：规范只依赖标准库；kit 依赖标准库、openbus 规范与它自己的 native 模块；不引用 `xlings.*`、`luban.*`。
+依赖：规范只依赖标准库；服务依赖标准库、openbus 规范、kits（telemetry）与 mcpp-index 的库；`xbus.detail.*` 只在 xbus 内部引用；不引用 `xlings.*`、`luban.*`。
 
 ### 6.2 路由
 
@@ -276,6 +278,34 @@ agent 的 virtio-serial 上只留一条 openbus 链路，取代越加越多的�
 - **日志**：路由的事件（连接、断开、授权拒绝、退化、慢消费者）写 `<home>/logs/openbus/router.ndjson`；默认输出只有结论，细节在 `-v`。
 - **基准**：`xbus bench call|pubsub|stream|region|link`：报告 p50/p99/p999、每秒消息数、吞吐；`--json` 进 L5；
   CI 跑相对回归（与 part 1 §5.6a 同一规则：先只报告，稳定后退步超过 25% 算失败）。
+
+### 8.1 观察的基础设施：telemetry kit（修订：先把地基做好）
+
+可观察性不是 XBus 独有的：xdesk、luban、Luban OS 应用、以后的设备服务和推理服务都要计数、日志、剖析与转储。
+所以它抽成一个独立、可复用的 kit：`luban/kits/telemetry`（模块 `telemetry`，只依赖标准库与 mcpp-index 的 nlohmann.json，不知道平台与传输）。
+
+| 部分 | 做什么 |
+|---|---|
+| 指标 | `Counter`、`Gauge`（带高水位）、`Histogram`（64 个 log2 桶，与 openbus §8.1 同一布局，无锁）；按名字登记，引用常驻，热路径不查表 |
+| 飞行记录器 | 内存里最近 4096 条记录（日志 debug 以上不论文件级别、剖析时的 span、mark）：转储时能看到出事前的那几秒 |
+| 日志 | 一行一个 JSON（`ts`、`level`、`component`、`event`、字段），运行时可调级别，按大小轮转；写不了文件记在记录器里，不抛、不打断程序 |
+| 剖析 | `Span`：平时只进直方图（两次读时钟）；`profile on` 时每个 span 也进记录器，导出 Chrome trace（Perfetto 直接打开），线程有名字 |
+| 转储 | 各部分 `provide` 自己的状态；`dump` 汇总程序、运行时长、指标、状态、最近记录；某个提供者失败就写明失败原因，绝不当作"空" |
+| 接口 | `telemetry::control(请求)`：`dump`、`metrics`、`recent [n]`、`trace`、`profile on|off`、`level <l>`、`reset`——传输只需转发这一句 |
+
+在总线上它是一个标准接口 `openbus.telemetry@0.1`（规范 §8.3）：路由在 `bus/telemetry`，**每个节点默认在
+`node/<id>/telemetry` 暴露自己进程的 telemetry**——总线上的每个程序都能用同一种方式查看、剖析与转储，跨链路也一样
+（`xbus ls --interface openbus.telemetry@0.1` 列出全部可观察的进程；`xbus dump`、`xbus profile` 读取）。
+超过一帧的回答分成多个 reply，拼接即完整 JSON。
+
+XBus 自己用它：路由的日志改为 kit 的 `Log`（`component = xbus-router`），计数 `xbus.router.frames/drops/fallbacks`、
+直方图 `xbus.router.round_ns`（一轮的忙碌时间，不含等待）与 `xbus.router.frame_ns`（每帧，span 名为帧的 kind）、
+队列与连接数的高水位；节点计 `xbus.node.calls/answered/published/delivered/reconnects` 与 `call_ns`、`handler_ns`。
+路由的 `dump` 带上自己的拓扑与统计。xdesk 的 FrameStat、luban 服务、Luban OS 应用接入时用同一个 kit（B6）。
+
+同时发现：xlings 自带一份 nlohmann/json（`modules/libs/src/json`），与 mcpp-index 的同版本副本略有差异，同一个编译单元
+同时看到两者会冲突（Luban 的程序既引用 xlings 的模块又引用 kit）。所以 `xlings.libs.json` 改为转出 mcpp-index 的
+`nlohmann.json`，删掉内置副本：整个构建只有一份。
 
 ## 9. 性能预算（本机，参考机器上本地验收；CI 比相对值）
 

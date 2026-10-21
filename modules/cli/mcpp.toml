@@ -16,6 +16,3 @@ kind = "lib"
 
 [dependencies]
 libs = { path = "../libs" }   # json
-
-[build]
-include_dirs = ["../libs/src/json"]

@@ -23,6 +23,3 @@ carrier  = { path = "../../../modules/carrier" }
 openhal      = { path = "../../specs/openhal" }
 opencaps     = { path = "../../specs/opencaps" }
 openhal-host = { path = "../../kits/openhal-host" }
-
-[build]
-include_dirs = ["../../../modules/libs/src/json"]

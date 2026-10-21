@@ -20,9 +20,6 @@ carrier  = { path = "../../../modules/carrier" }
 luban-service = { path = "../service" }
 opensal-wlr = { path = "../../kits/opensal-wlr" }
 
-[build]
-include_dirs = ["../../../modules/libs/src/json"]
-
 # A Mac's machines and its Luban host machine run on Virtualization.framework
 # (luban.vm.native.vz), called through the Objective-C runtime.
 [target.macos.build]
