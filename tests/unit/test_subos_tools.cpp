@@ -38,6 +38,16 @@ XTEST(SubosTools, APayloadComesFromTheHomeAndAnUnknownNameFromNowhere,
     auto fs_tool = tools::first("mkfs.ext4", view, Ports{});
     ASSERT_TRUE(fs_tool);
     EXPECT_EQ(fs_tool->bin, mkfs);
+
+    // A tool whose program has another name in its payload: the GL qemu is
+    // qemu-system-x86_64 in xim:qemu-system-gl, and only the package's.
+    EXPECT_TRUE(tools::candidates("qemu-system-gl", view, Ports{}).empty());
+    const auto gl = home.dir() / "data/xpkgs/xim-x-qemu-system-gl/9.2.4/bin/qemu-system-x86_64";
+    tk::write_file(gl, "#!/bin/sh\n");
+    auto gl_tool = tools::first("qemu-system-gl", view, Ports{});
+    ASSERT_TRUE(gl_tool);
+    EXPECT_EQ(gl_tool->bin, gl);
+    EXPECT_EQ(gl_tool->source, tools::Source::Payload);
 }
 
 XTEST(SubosTools, AMachineBinaryThatIsAnotherHomesShimIsNotATool,
@@ -66,8 +76,8 @@ XTEST(SubosTools, EveryToolIsAPackageOrTheOperatingSystemAndSaysWhich,
             EXPECT_TRUE(tool.os.empty()) << tool.name << ": a package and the OS's at once";
             EXPECT_EQ(tools::install_hint(tool.name), "xlings install " + std::string(tool.package)) << tool.name;
         }
-        EXPECT_TRUE(tool.platform.empty() || tool.platform == "linux" || tool.platform == "macos" ||
-                    tool.platform == "windows") << tool.name;
+        EXPECT_TRUE(tool.platform.empty() || tool.platform == "linux" || tool.platform == "linux-x86_64" ||
+                    tool.platform == "macos" || tool.platform == "windows") << tool.name;
     }
     for (const auto gone : {"cp", "xorriso", "qemu-img", "mksquashfs", "xclip"})
         EXPECT_TRUE(std::ranges::none_of(tools::known(), [&](const auto& t) { return t.name == gone; }))
@@ -75,6 +85,7 @@ XTEST(SubosTools, EveryToolIsAPackageOrTheOperatingSystemAndSaysWhich,
     EXPECT_EQ(tools::install_hint("qemu-system-x86_64"), "xlings install qemu-system");
     EXPECT_EQ(tools::install_hint("qemu-system-aarch64"), "xlings install qemu-system");
     EXPECT_EQ(tools::install_hint("wl-copy"), "xlings install wl-clipboard");
+    EXPECT_EQ(tools::install_hint("qemu-system-gl"), "xlings install qemu-system-gl");
 }
 
 XTEST(SubosTools, ATreeIsCopiedInProcessWithLinksModesAndTimes,

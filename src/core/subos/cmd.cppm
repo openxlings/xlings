@@ -457,6 +457,13 @@ inline void apply_subos_env_(const std::string& name) {
 
 }
 
+// The variables a SubOS declares for the programs run in it, resolved -- what
+// `subos use` and `subos exec` apply (the Port's subos_env: Luban starts a
+// machine's GL qemu with its graphics stack's).
+export inline std::vector<manifest::Resolved> declared_variables(const std::string& name) {
+    return use_detail_::subos_env_for_(name);
+}
+
 
 
 // Spawn a fresh interactive shell with XLINGS_ACTIVE_SUBOS set. Uses execvp

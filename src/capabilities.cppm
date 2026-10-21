@@ -179,6 +179,14 @@ public:
     auto execute(Params params, EventStream& stream) -> Result override;
 };
 
+// The variables a sub-OS declares for the programs run in it, resolved (its
+// packages' environment: GL driver and EGL vendor paths and the like).
+class SubosEnv : public Capability {
+public:
+    auto spec() const -> CapabilitySpec override;
+    auto execute(Params params, EventStream& stream) -> Result override;
+};
+
 class SubosEvents : public Capability {
 public:
     auto spec() const -> CapabilitySpec override;

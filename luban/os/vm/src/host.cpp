@@ -214,7 +214,6 @@ std::string tail_(const fs::path& file, std::size_t lines) {
     return out;
 }
 
-// Starts the machine's supervisor and waits for its agent.
 // The first render node this host has (/dev/dri/renderD128 on).
 std::optional<fs::path> render_node_() {
     std::error_code ec;
@@ -223,19 +222,75 @@ std::optional<fs::path> render_node_() {
     return std::nullopt;
 }
 
+// Its kernel driver (nvidia, amdgpu, i915), as sysfs names it; empty when unread.
+std::string render_driver_(const fs::path& node) {
+    std::error_code ec;
+    const auto link = fs::read_symlink(fs::path("/sys/class/drm") / node.filename() / "device" / "driver", ec);
+    return ec ? std::string{} : link.filename().string();
+}
+
+// The GL qemu (WuXian §7.5) and what its graphics stack declares -- the EGL
+// vendors, GBM backends and DRI drivers of the SubOS it is installed in (the
+// Port's subos_env), which qemu needs to find the host's driver.
+struct GlQemu {
+    fs::path bin;
+    Json env = Json::array();   // [{var, op, value}]
+};
+
+// Found, or installed the first time a machine may draw with this host's GPU
+// (T1, as the qemu is). Why not, said as the machine's state says it.
+std::expected<GlQemu, std::string> gl_qemu_(const service::Context& c, const xlings::subos::HomeView& view) {
+    auto found = xlings::subos::tools::first("qemu-system-gl", view, xlings::subos::Ports{});
+    if (!found) {
+        say_(c, service::phase("gpu", "begin", "installing 3D for machines (qemu with OpenGL)"));
+        const int rc = c.port.capability("install_packages", {{"targets", Json::array({"xim:qemu-system-gl"})}, {"yes", true}}, c.sink);
+        found = xlings::subos::tools::first("qemu-system-gl", view, xlings::subos::Ports{});
+        say_(c, service::phase("gpu", found ? "done" : "failed", "installing 3D for machines (qemu with OpenGL)"));
+        if (!found)
+            return std::unexpected(std::format("xim:qemu-system-gl {} (xlings install qemu-system-gl)",
+                                               rc != 0 ? "could not be installed" : "is not installed"));
+    }
+    if (capture_({found->bin.string(), "-M", "none", "-device", "help"}).find("\"virtio-gpu-gl-pci\"") == std::string::npos)
+        return std::unexpected(std::format("{} has no virtio-gpu-gl-pci", found->bin.string()));
+    GlQemu gl{found->bin};
+    (void)c.port.capability("subos_env", Json::object(), [&](const service::Event& e) {
+        if (e.kind == service::Event::Kind::Data && e.data_kind == "subos_env" && e.data.is_object())
+            gl.env = e.data.value("vars", Json::array());
+    });
+    return gl;
+}
+
+// What the supervisor runs qemu with: this environment and what the GL qemu's
+// stack declares (`prepend` before the value here, `set` only when unset, as
+// `subos use` applies them).
+std::map<std::string, std::string> qemu_env_(const Json& declared) {
+    auto env = platform::environment();
+    for (const auto& v : declared) {
+        if (!v.is_object()) continue;
+        const auto var = v.value("var", std::string{});
+        const auto value = v.value("value", std::string{});
+        if (var.empty() || value.empty()) continue;
+        if (v.value("op", std::string{}) == "prepend") env[var] = env[var].empty() ? value : value + ":" + env[var];
+        else env.try_emplace(var, value);
+    }
+    return env;
+}
+
 }  // namespace
 
-MachineGpu machine_gpu(const std::optional<fs::path>& render_node, bool gl_qemu, bool has_device) {
+MachineGpu machine_gpu(const std::optional<fs::path>& render_node, const std::expected<void, std::string>& gl,
+                       std::string_view driver) {
     if (!render_node) return {.args = {"-display", "none"}, .summary = "no GPU: this host has no render node"};
-    if (!gl_qemu) return {.args = {"-display", "none"}, .summary = "no GPU: this qemu is not a GL build (virgl)"};
-    if (!has_device) return {.args = {"-display", "none"}, .summary = "no GPU: this qemu has no virtio-gpu-gl-pci"};
+    if (!gl) return {.args = {"-display", "none"}, .summary = "no GPU: " + gl.error()};
     return {.virgl = true,
             .args = {"-device", "virtio-gpu-gl-pci", "-display", std::format("egl-headless,rendernode={}", render_node->string())},
-            .summary = std::format("virgl on {}", render_node->string())};
+            .summary = driver.empty() ? std::format("virgl on {}", render_node->string())
+                                      : std::format("virgl on {} ({})", render_node->string(), driver)};
 }
 
 namespace {
 
+// Starts the machine's supervisor and waits for its agent.
 int start_impl_(const service::Context& c, std::string_view name, const EnterOptions& o) {
     const auto& arch = xlings::image::native_arch();
     const xlings::subos::HomeView view{c.home};
@@ -349,12 +404,17 @@ int start_impl_(const service::Context& c, std::string_view name, const EnterOpt
     }
     const bool kvm = kvm_();
     const auto memory = o.memory.empty() ? default_memory_mb_() : o.memory;
-    // Its GPU (WuXian §7.5): virgl when the qemu found has the device and
-    // this host a render node -- the index's qemu is static and has none yet.
+    // Its GPU (WuXian §7.5): virgl -- the GL qemu, drawing on this host's
+    // render node -- for a system that may draw with this computer's GPU
+    // (the `gpu` grant, a desktop's); otherwise the qemu above, and no GPU.
     const auto node = render_node_();
-    const bool has_device = node && capture_({qemu->bin.string(), "-M", "none", "-device", "help"}).find("\"virtio-gpu-gl-pci\"") != std::string::npos;
-    const auto gpu = machine_gpu(node, has_device, has_device);
-    std::vector<std::string> q{qemu->bin.string()};
+    std::expected<GlQemu, std::string> gl = std::unexpected(std::string("it may not use this computer's GPU (luban config ") +
+                                                            std::string(name) + " --allow gpu)");
+    if (node && arch.name == "x86_64" && service::gpu_granted(c.home, name)) gl = gl_qemu_(c, view);
+    else if (node && arch.name != "x86_64") gl = std::unexpected(std::string("3D in a machine is on x86_64 hosts"));
+    const auto gpu = machine_gpu(node, gl ? std::expected<void, std::string>{} : std::unexpected(gl.error()),
+                                 node ? render_driver_(*node) : std::string{});
+    std::vector<std::string> q{gpu.virgl ? gl->bin.string() : qemu->bin.string()};
     if (!arch.machine.empty()) q.insert(q.end(), {"-M", std::string(arch.machine)});
     q.insert(q.end(), {"-m", memory, "-smp", default_cpus_()});
     if (kvm) q.insert(q.end(), {"-enable-kvm", "-cpu", "host"});
@@ -378,11 +438,21 @@ int start_impl_(const service::Context& c, std::string_view name, const EnterOpt
     if (userhome)
         q.insert(q.end(), {"-virtfs", std::format("local,path={},mount_tag=userhome,security_model=none,id=userhome",
                                                   (*root / "home").string())});
+    // Without its GPU, should the GL qemu not start (its driver refuses the
+    // render node): the same machine, drawn in software (supervise).
+    auto software = q;
+    software.front() = qemu->bin.string();
+    software.insert(software.end(), {"-display", "none"});
+    software.insert(software.end(), net.args.begin(), net.args.end());
     q.insert(q.end(), gpu.args.begin(), gpu.args.end());
     q.insert(q.end(), net.args.begin(), net.args.end());
     Json state{{"name", name}, {"qemu", q}, {"persist", persist}, {"temp", o.temp}, {"scratch", persist == "all" ? "" : share.string()},
                {"env", net.env}, {"started", xlings::observe::utc_now()}, {"accel", kvm ? "kvm" : "tcg"}, {"memory", memory},
                {"gpu", gpu.summary}};
+    if (gpu.virgl) {
+        state["gpu_env"] = gl->env;
+        state["qemu_software"] = software;
+    }
     platform::write_file_atomic(state_file_(c.home, name).string(), state.dump(2));
     fs::remove(client_socket_(c.home, name), ec);
     const auto self = luban_(c.home).string();
@@ -459,8 +529,9 @@ service::WelcomeFacts machine_facts_(const service::Context& c, std::string_view
     const auto state = read_json_(state_file_(c.home, name));
     int mb = 2048;
     try { mb = std::stoi(state.value("memory", std::string("2048"))); } catch (...) {}
-    f.machine = std::format("{} · 2 CPU · {}", state.value("accel", "kvm") == "kvm" ? "KVM" : "emulated",
-                            mb % 1024 == 0 ? std::format("{} GiB", mb / 1024) : std::format("{} MiB", mb));
+    f.machine = std::format("{} · 2 CPU · {}{}", state.value("accel", "kvm") == "kvm" ? "KVM" : "emulated",
+                            mb % 1024 == 0 ? std::format("{} GiB", mb / 1024) : std::format("{} MiB", mb),
+                            state.value("gpu", std::string{}).starts_with("virgl") ? " · GPU (virgl)" : "");
     // Its network as it was started (design 2026-10-19 §27.2).
     if (const auto started = started_env(c.home, name)) f.network = service::network_line(platform::environment(), *started);
     return f;
@@ -734,6 +805,13 @@ std::optional<std::map<std::string, std::string>> started_env(const fs::path& ho
     for (auto it = env.begin(); it != env.end(); ++it)
         if (it.value().is_string()) out[it.key()] = it.value().get<std::string>();
     return out;
+}
+
+std::optional<std::string> started_gpu(const fs::path& home, std::string_view name) {
+    if (!running(home, name)) return std::nullopt;
+    const auto gpu = read_json_(state_file_(home, name)).value("gpu", std::string{});
+    if (gpu.empty()) return std::nullopt;
+    return gpu;
 }
 
 std::expected<Client, std::string> Client::connect(const fs::path& home, std::string_view name) {
@@ -1399,16 +1477,37 @@ int supervise(const fs::path& home, std::string_view name) {
     std::error_code ec;
     fs::remove(dir / "agent.sock", ec);
     platform::ignore_signals({platform::sig::pipe, platform::sig::hangup});
-    const int qemu = platform::fork_process();
-    if (qemu == 0) {
-        platform::exec_path(q, platform::environment());
-        platform::exit_now(127);
-    }
+    const auto launch = [](const std::vector<std::string>& argv, const std::map<std::string, std::string>& env) {
+        const int pid = platform::fork_process();
+        if (pid == 0) {
+            platform::exec_path(argv, env);
+            platform::exit_now(127);
+        }
+        return pid;
+    };
+    int qemu = launch(q, qemu_env_(state.value("gpu_env", Json::array())));
     if (qemu < 0) return 1;
     int agent = -1;
     for (int i = 0; i < 100 && agent < 0; ++i) {
         agent = platform::unix_connect_stream(dir / "agent.sock");
-        if (agent < 0) std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        if (agent >= 0) break;
+        // The GL qemu ended before its machine was up -- its display could
+        // not draw on the render node (qemu said why, above in this log):
+        // the machine in software, its state saying so.
+        if (auto ended = platform::wait_process(qemu, false); ended && state.contains("qemu_software")) {
+            std::println(std::cerr, "luban: the GL qemu ended ({}); starting {} without its GPU", platform::exit_code(*ended), name);
+            q.clear();
+            for (const auto& a : state["qemu_software"]) q.push_back(a.get<std::string>());
+            state.erase("qemu_software");
+            state.erase("gpu_env");
+            state["qemu"] = q;
+            state["gpu"] = "no GPU: the GL qemu could not draw on this host's render node (supervisor.log)";
+            platform::write_file_atomic(state_file_(home, name).string(), state.dump(2));
+            qemu = launch(q, platform::environment());
+            if (qemu < 0) return 1;
+            i = 0;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
     const int listen = platform::unix_listen_stream(client_socket_(home, name));
     if (agent < 0 || listen < 0) {

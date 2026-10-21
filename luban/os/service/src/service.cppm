@@ -20,7 +20,7 @@ export namespace luban::service {
 // Luban is released with the xlings it drives: the same date version
 // (YYYY.M.D.N), bumped with mcpp.toml and src/core/config.cppm.
 // tests/unit/test_luban_contract.cpp holds them equal.
-inline constexpr std::string_view kVersion = "2026.10.21.2";
+inline constexpr std::string_view kVersion = "2026.10.21.3";
 
 namespace fs = std::filesystem;
 
@@ -416,6 +416,10 @@ bool name_left_over(const fs::path& home, std::string_view name);
 // settings as data.
 Outcome configure(const Context& c, std::string_view name,
                   const std::vector<std::pair<std::string, std::string>>& changes);
+// Whether `name` may draw with this computer's GPU: the `gpu` grant (a
+// desktop's, WuXian §7.4) -- its sandbox gets the render nodes, its machine
+// virgl (§7.5).
+bool gpu_granted(const fs::path& home, std::string_view name);
 
 Outcome upgrade(const Context& c, std::string_view name, std::string_view to, bool dry_run);
 Outcome rollback(const Context& c, std::string_view name, std::string_view to);

@@ -453,6 +453,19 @@ class Layout {
 - 系统里：`xim:mesa` 增加 gallium `virgl` 驱动（新 revision）。
 - 选择同 §7.2：系统里的 render node 是 virtio-gpu 的。
 - 关于页写"GPU（virgl · 宿主的 GPU 名）"；宿主没有 GPU、或 macOS / Windows：写原因。
+- **实施（2026.10.21.3）**：
+  - `xim:qemu-system-gl` 9.2.4-r1（`tools/res/build.sh qemu-system-gl`，Debian 12 上动态链接，virglrenderer 1.1.1 放在包的 `lib/`，
+    只有 x86_64：`xim:mesa` 只有 x86_64）；依赖 `xim:graphics` 与 `xim:nvidia-gl-host-link@>=0.1.4`。
+  - 是否用 virgl 跟沙箱同一个开关：系统有 `gpu` 授权（桌面默认有）。第一次需要时 luban 经 Port 的 `install_packages` 安装它（T1）。
+  - qemu 要找到图形栈（EGL vendor、GBM 后端、DRI 驱动）：xlings 加 Port 能力 `subos_env`（协议 1.16），返回 SubOS 声明的变量，
+    luban 存进机器状态（`gpu_env`），supervisor 启动 qemu 时按 `subos use` 的规则合并。
+  - NVIDIA：egl-headless 经 GBM 打开 render node，libgbm 按驱动名找 `nvidia-drm_gbm.so`；`nvidia-gl-host-link` 0.1.4 把宿主的
+    GBM 后端（libnvidia-allocator）链进 SubOS 的 `usr/lib/gbm`，与 Mesa 的 `dri_gbm.so` 并列。
+  - GL 版 qemu 在 render node 上起不来（驱动拒绝）时，supervisor 在 agent 连上之前看到它退出，改用静态 qemu、`-display none`
+    重新启动同一台机器，状态写原因；不会因为 GPU 让机器起不来。
+  - 系统里：`xim:mesa` 25.0.7.3 加 virgl（gfxbuild subos 里按 `tiers.sh` T5 重编，与 25.0.7.2 只差 `virtio_gpu_dri.so`），
+    `xim:xdesk` 依赖 `xim:mesa@>=25.0.7.3`；机器的 init 把 `/dev/dri/renderD*` 设成 0666（没有 udev / logind 交给座席）。
+  - 显示：`luban status <名字>` 的 `gpu` 行、进入时的欢迎行（`GPU (virgl)`）、xdesk 关于页"GPU（GLES · virgl, the host's GPU）"。
 
 ### 7.6 应用
 
@@ -860,10 +873,8 @@ xim-pkgindex（一个 PR）：
 - 多显示器扩展（每块屏一个镜头、各锁一个工作区）；本轮仍只镜像。
 - WuXian 上框选多个自由窗口、"平铺这些"；应用规则"总在某工作区打开"。
 - WuXian 的 `wuxian-v1` 扩展协议与 `ext-workspace-v1` 的实现（规范里预留，§15.8）。
-- machine 的 3D（K9 实施时的取舍）：xlings 这边已经按 §7.5 选择（`luban.vm` 的 `machine_gpu`：宿主有 render node、找到的 qemu
-  有 `virtio-gpu-gl-pci` 时用 virgl，否则无 GPU 并在状态里写原因），内核 6.12.112-r3 已带 DRM 与 virtio-gpu。还缺两件：GL 版的 qemu
-  （`xim:qemu-system-gl`，动态链接 virglrenderer 与 epoxy）与带 `virgl` gallium 驱动的 `xim:mesa`（在 gfxbuild subos 里整套重编，数小时）。
-  两者发布前，machine 的桌面用软件绘制，关于页写明原因。沙箱的 `gpu` 授权仍绑定整个 `/dev/dri`（§7.4 的"只绑 render node"随之一起做）。
+- machine 的 3D 已在 2026.10.21.3 实现（§7.5 的"实施"）。仍不做：aarch64 宿主与 macOS、Windows 宿主 machine 的 3D（Mesa 只有
+  x86_64；后两者没有 virgl 的宿主路径）；Venus（Vulkan）。沙箱的 `gpu` 授权仍绑定整个 `/dev/dri`（§7.4 的"只绑 render node"以后做）。
 - xdesk 自己画指针时（宿主不提供 `Cursor`：2026.10.19.2 之前的 Luban OS）的晃动放大：这时的指针图像已经来自 kit 生成的
   `luban:cursors`，检测留到那条路径还有用户时再接（K8 实施时的取舍）。
 - Luban 拆分时一并做：L3 依赖迁到 `Port`（§16.2 的 `migrating` 段）、`xim:xdesk` 改名、`libs/luban*` 搬目录、`luban:` 成为子索引。

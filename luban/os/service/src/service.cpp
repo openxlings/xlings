@@ -724,6 +724,12 @@ Outcome create(const Context& given_context, const NewOptions& o, const NewPrevi
     return {.code = 0, .value = std::move(value)};
 }
 
+bool gpu_granted(const fs::path& home, std::string_view name) {
+    const auto at = xlings::subos::locate(HomeView{home}, name);
+    auto p = xlings::subos::policy_store::read(at.home, name);
+    return p && *p && (*p)->grants.contains("gpu");
+}
+
 Outcome configure(const Context& c, std::string_view name, const std::vector<std::pair<std::string, std::string>>& changes) {
     if (!exists_(c, name)) return missing_(c, name);
     std::vector<std::string> isolation;

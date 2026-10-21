@@ -42,14 +42,17 @@ std::optional<int> running(const fs::path& home, std::string_view name);
 
 // A machine's GPU (design 2026-10-20 WuXian §7.5): virtio-gpu with 3D
 // through virgl, rendered on this host's render node, when there is one and
-// the qemu found is a GL build with the device; otherwise no GPU and why.
-// What qemu is given, and what is said of it.
+// the GL qemu (xim:qemu-system-gl) is here with the device; otherwise no GPU
+// and why (`gl`'s error: not granted, not installed, no device). What qemu
+// is given, and what is said of it; `driver` is the render node's kernel
+// driver (nvidia, amdgpu, i915), said with it.
 struct MachineGpu {
     bool virgl { false };
     std::vector<std::string> args;      // the display and its device
-    std::string summary;                // "virgl on /dev/dri/renderD128", or why not
+    std::string summary;                // "virgl on /dev/dri/renderD128 (amdgpu)", or why not
 };
-MachineGpu machine_gpu(const std::optional<fs::path>& render_node, bool gl_qemu, bool has_device);
+MachineGpu machine_gpu(const std::optional<fs::path>& render_node, const std::expected<void, std::string>& gl,
+                       std::string_view driver = {});
 
 // Starts `name` as a machine when it is not running (the events go to the
 // context's sink); 0 once it answers.
@@ -139,6 +142,9 @@ fs::path run_dir(const fs::path& home, std::string_view name);
 
 // A running machine's environment: what it was started with (its state), else nothing.
 std::optional<std::map<std::string, std::string>> started_env(const fs::path& home, std::string_view name);
+// A running machine's GPU as it was started: "virgl on /dev/dri/renderD128
+// (nvidia)", or why it has none (WuXian §7.5); nothing when it is not running.
+std::optional<std::string> started_gpu(const fs::path& home, std::string_view name);
 fs::path log_dir(const fs::path& home, std::string_view name);
 
 // A machine's sound (design §9.4): with the audio grant and a host

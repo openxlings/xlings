@@ -128,7 +128,25 @@ struct Worker {
                 return std::ranges::any_of(
                     roots, [&](const auto& root) { return under(canonical, root); });
             };
-            auto source = [&](const std::string& text, const fs::path& base) {
+            // A link to a library of the operating system's own (T0: a host
+            // link sentinel's -- the NVIDIA driver's userspace).
+            auto system_library = [&](const fs::path& link) {
+                if constexpr (!platform::is_linux) return false;
+                std::error_code ec;
+                if (!fs::is_symlink(fs::symlink_status(link, ec))) return false;
+                const auto target = fs::canonical(link, ec);
+                if (ec || !fs::is_regular_file(target, ec)) return false;
+                const bool in_system = std::ranges::any_of(
+                    std::array<fs::path, 4>{"/usr/lib", "/usr/lib64", "/lib", "/lib64"},
+                    [&](const fs::path& dir) { return under(target, dir); });
+                const auto own = platform::file_ownership(target);
+                // Not this user's (root's; nobody's in a user namespace, which
+                // is root outside it) and not writable by others.
+                return in_system && own && own->uid != platform::user_ids().euid && !(own->mode & 022);
+            };
+            // `walk`: a directory source is every file under it, checked; a
+            // registration's directory is only where its one file is (below).
+            auto source = [&](const std::string& text, const fs::path& base, bool walk = true) {
                 fs::path path(xvm::expand_path(text, Config::paths().homeDir.string()));
                 if (path.empty())
                     throw std::runtime_error("empty host effect source");
@@ -182,7 +200,7 @@ struct Worker {
                     throw std::runtime_error("cannot inspect host effect source: " + ec.message());
                 if (fs::is_symlink(status) && !fs::exists(lookup))
                     throw std::runtime_error("host effect source is a dangling symlink");
-                if (fs::is_directory(lookup)) {
+                if (walk && fs::is_directory(lookup)) {
                     for (const auto& entry : fs::recursive_directory_iterator(lookup)) {
                         if (!stable(entry.path()))
                             throw std::runtime_error(
@@ -210,17 +228,41 @@ struct Worker {
                             "only the xlings package may register the shared client");
                     if (effect_context.install_dir.empty())
                         throw std::runtime_error("host registration requires a package payload");
+                    // What a registration exposes is its own file (a program,
+                    // a library: bindir/filename) or asset (files: src, walked
+                    // below) -- not everything beside it. A payload may hold
+                    // links another package keeps there for this host
+                    // (libglvnd's lib/glx-vendor, filled by the graphics
+                    // stack), which are not its registrations' and refused
+                    // them in a scope that has not recorded those payloads.
+                    // Only a program run through its alias has its whole
+                    // directory on PATH: that directory is walked.
+                    const bool library = operation.type == "lib";
+                    const bool on_path = !operation.alias.empty() && !library && operation.type != "group";
                     const auto base =
                         source(operation.bindir.empty() ? effect_context.install_dir.string()
                                                         : operation.bindir,
-                               effect_context.install_dir);
+                               effect_context.install_dir, on_path);
                     operation.bindir = base.string();
                     if (operation.type == "files") {
                         const fs::path relative(operation.src);
                         if (relative.is_absolute())
                             throw std::runtime_error(
                                 "file asset source must be relative to its payload");
-                        (void)source(operation.src, base);
+                        // One file, the operating system's library (as below):
+                        // nvidia-gl-host-link's GBM backend.
+                        if (!system_library(base / relative)) (void)source(operation.src, base);
+                    } else if (library) {
+                        const fs::path relative(operation.filename.empty() ? operation.name
+                                                                           : operation.filename);
+                        if (relative.is_absolute())
+                            throw std::runtime_error("artifact source name must be relative");
+                        // A library of the operating system's own (T0: a host
+                        // link sentinel's -- the NVIDIA driver's userspace):
+                        // in a system library directory, not this user's to
+                        // change. Not a user's data; what the boundary keeps
+                        // out is that, and a recipe's own scratch.
+                        if (!system_library(base / relative)) (void)source(relative.string(), base);
                     } else if (operation.type != "group" && operation.alias.empty()) {
                         const auto name =
                             operation.filename.empty() ? operation.name : operation.filename;

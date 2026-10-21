@@ -91,6 +91,7 @@ capability::Registry build_registry() {
     reg.register_capability(std::make_unique<SubosStart>());
     reg.register_capability(std::make_unique<SubosStop>());
     reg.register_capability(std::make_unique<SubosEvents>());
+    reg.register_capability(std::make_unique<SubosEnv>());
     reg.register_capability(std::make_unique<Env>());
     // Index repo management (added 2026-04-26 per interface-api-v1-eval P1)
     reg.register_capability(std::make_unique<ListRepos>());
@@ -900,6 +901,34 @@ auto SubosExec::execute(Params params, EventStream& stream, CancellationToken* c
     for (auto& a : json.value("argv", nlohmann::json::array()))
         if (a.is_string()) args.push_back(a.get<std::string>());
     return exit_result(run_subos_child_(std::move(args), stream, "subos_exec_output", cancel));
+}
+
+auto SubosEnv::spec() const -> CapabilitySpec {
+    return {
+        .name = "subos_env",
+        .description = "The variables a sub-OS declares for the programs run in it (its packages' environment: GL driver and EGL vendor paths and the like), resolved as `subos use` applies them: a subos_env data event with vars [{var, op (set | prepend), value}]. Omit name for the active sub-OS",
+        .inputSchema = R"({"type":"object","properties":{"name":{"type":"string","description":"Sub-OS name; omit for the active one"}}})",
+        .outputSchema = R"({"type":"object","properties":{"exitCode":{"type":"integer"}}})",
+        .destructive = false,
+    };
+}
+
+auto SubosEnv::execute(Params params, EventStream& stream) -> Result {
+    auto json = nlohmann::json::parse(params, nullptr, false);
+    auto name = json.is_object() ? json.value("name", std::string{}) : std::string{};
+    if (name.empty()) name = Config::subos_scope().name;
+    if (!std::filesystem::is_directory(Config::subos_dir(name))) {
+        stream.emit(ErrorEvent{.code = ErrorCode::NotFound, .message = std::format("subos '{}' not found", name),
+                               .recoverable = true, .hint = "xlings subos list"});
+        return exit_result(1);
+    }
+    auto vars = nlohmann::json::array();
+    for (const auto& v : xlings::subos::declared_variables(name)) {
+        if (v.unresolved) continue;
+        vars.push_back({{"var", v.var}, {"op", v.op}, {"value", v.value}});
+    }
+    stream.emit(DataEvent{"subos_env", nlohmann::json{{"name", name}, {"vars", std::move(vars)}}.dump()});
+    return exit_result(0);
 }
 
 auto SubosStart::spec() const -> CapabilitySpec {

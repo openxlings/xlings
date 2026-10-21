@@ -1,12 +1,12 @@
-# NDJSON Interface Protocol v1.15
+# NDJSON Interface Protocol v1.16
 
-> Status: in force; protocol 1.15 since xlings 2026.10.20.1. Implemented in
+> Status: in force; protocol 1.16 since xlings 2026.10.21.3. Implemented in
 > `src/interface.cpp`; `xlings interface --list` is the authoritative schema.
 
 ## 1. Overview
 
 `xlings interface` is the structured API for programs: IDE plugins, CI scripts
-and AI agents talk to xlings over standard IO. The protocol is **1.15**, over NDJSON
+and AI agents talk to xlings over standard IO. The protocol is **1.16**, over NDJSON
 (newline-delimited JSON).
 
 | Protocol | xlings | Change |
@@ -27,6 +27,7 @@ and AI agents talk to xlings over standard IO. The protocol is **1.15**, over ND
 | 1.13 | 2026.10.19.1 | added: read-only `network_endpoints` and bounded `probe_url`; features `network_diagnostics` / `read_only_queries`; shortening connect/read budgets via environment (feature `download_socket_budgets`) |
 | 1.14 | 2026.10.19.2 | added: `package_info` and `search_packages` carry a package's `extensions`, `status` and `archs` (feature `package_extensions`, §7.6); `subos new --from` using a version only installed says so (feature `installed_only`, §7.7); a command routed into a prefix domain answers in events (feature `domain_relayed`, §10.1) |
 | 1.15 | 2026.10.20.1 | added: inside a Luban system a user's xlings is a view of the system's store (feature `user_views`); what needs the administrator with nobody to ask fails with `E_NEEDS_ROOT`, its hint the exact `sudo` command (feature `needs_root`, §8); `list` rows of what the system provides carry the status `system` |
+| 1.16 | 2026.10.21.3 | added: `subos_env`, the variables a SubOS declares for the programs run in it, resolved (feature `subos_env`): what Luban starts a machine's GL qemu with |
 
 A minor version only adds: a 1.0 client reads 1.1 output unchanged. 1.11 is the
 one exception in meaning, not in shape: 1.10's `complete` also required the
@@ -63,7 +64,7 @@ prints one line and exits -- the handshake a client checks before it uses this
 xlings (1.10+):
 
 ```json
-{"protocol_version":"1.15","version":"2026.10.20.1","capabilities":["search_packages","install_packages","..."],"home_layouts":[1,2],"features":["index_dir","index_store","upstreams","payload_status","sync_index","install_targets_complete","payload_currency","binding_state","reserved_namespaces","subos_plan","network_diagnostics","download_socket_budgets","read_only_queries","package_extensions","domain_relayed","installed_only","user_views","needs_root"]}
+{"protocol_version":"1.16","version":"2026.10.21.3","capabilities":["search_packages","install_packages","..."],"home_layouts":[1,2],"features":["index_dir","index_store","upstreams","payload_status","sync_index","install_targets_complete","payload_currency","binding_state","reserved_namespaces","subos_plan","network_diagnostics","download_socket_budgets","read_only_queries","package_extensions","domain_relayed","installed_only","user_views","needs_root","subos_env"]}
 ```
 
 | Field | Meaning |
@@ -512,6 +513,7 @@ Sent after 5 s of silence: the process is alive.
 | `subos_exec` | run one command in a SubOS from outside it, as argv (§10) | yes |
 | `subos_start` | start a SubOS session without a terminal, for a series of `subos_exec` calls (`ttl` ends it after that long idle) | no |
 | `subos_stop` | end a SubOS's running session; succeeds when none is running | no |
+| `subos_env` | the variables a SubOS declares for the programs run in it (its packages' environment: GL driver and EGL vendor paths), resolved as `subos use` applies them: a `subos_env` data event, `{name, vars: [{var, op, value}]}`; `name` omitted is the active SubOS (1.16) | no |
 | `subos_events` | a SubOS's audit events (sessions, commands, permission decisions), recorded outside its sandbox; variable values are never recorded, only names | no |
 | `env` | the current environment | no |
 | `list_repos` | list index repositories | no |

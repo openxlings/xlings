@@ -33,7 +33,8 @@ struct Found {
 // The tools this table knows. `package` is the xim package that provides it
 // -- every tool has one, except what the operating system itself is: `os`
 // says which and why (T0). `platform` limits a tool to one platform
-// ("linux", "macos", "windows"; empty: wherever it is asked for), and
+// ("linux", "macos", "windows", or "linux-x86_64" for a package built for
+// that architecture alone; empty: wherever it is asked for), and
 // `planned` names the requirement (tests/requirements.toml) that tracks a
 // package not yet in the index. tests/scripts/test_tools_provenance.py holds the table to the
 // index: each package exists, for each architecture xlings is released for.

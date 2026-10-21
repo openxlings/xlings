@@ -109,15 +109,17 @@ XTEST(LubanVm, TheHostsProxyIsMappedForAMachine, .area = "luban", .covers = {"LU
 // why -- what the machine's About page and its state say.
 XTEST(LubanVm, AMachineHasVirglOnlyWithARenderNodeAndTheGlQemu, .area = "luban", .covers = {"LUBAN-MACHINE-GPU"}) {
     const std::optional<std::filesystem::path> node{"/dev/dri/renderD128"};
-    const auto yes = luban::vm::machine_gpu(node, true, true);
+    const auto yes = luban::vm::machine_gpu(node, {}, "amdgpu");
     EXPECT_TRUE(yes.virgl);
     EXPECT_EQ(yes.args, (std::vector<std::string>{"-device", "virtio-gpu-gl-pci", "-display", "egl-headless,rendernode=/dev/dri/renderD128"}));
-    EXPECT_EQ(yes.summary, "virgl on /dev/dri/renderD128");
-    for (const auto& no : {luban::vm::machine_gpu(std::nullopt, true, true), luban::vm::machine_gpu(node, false, false),
-                           luban::vm::machine_gpu(node, true, false)}) {
+    EXPECT_EQ(yes.summary, "virgl on /dev/dri/renderD128 (amdgpu)");
+    EXPECT_EQ(luban::vm::machine_gpu(node, {}).summary, "virgl on /dev/dri/renderD128");
+    const std::expected<void, std::string> absent = std::unexpected(std::string("xim:qemu-system-gl is not installed"));
+    for (const auto& no : {luban::vm::machine_gpu(std::nullopt, {}), luban::vm::machine_gpu(node, absent)}) {
         EXPECT_FALSE(no.virgl);
         EXPECT_EQ(no.args, (std::vector<std::string>{"-display", "none"}));
         EXPECT_TRUE(no.summary.starts_with("no GPU: ")) << no.summary;
     }
-    EXPECT_NE(luban::vm::machine_gpu(node, false, false).summary.find("not a GL build"), std::string::npos);
+    EXPECT_EQ(luban::vm::machine_gpu(std::nullopt, absent).summary, "no GPU: this host has no render node");
+    EXPECT_EQ(luban::vm::machine_gpu(node, absent).summary, "no GPU: xim:qemu-system-gl is not installed");
 }

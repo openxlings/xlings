@@ -450,3 +450,86 @@ XTEST(LuaWorker, HostEffectsRejectHostSourcesTraversalAndSymlinksButAcceptOwnedP
     EXPECT_EQ(tk::read_file(secret), "never expose this host data through a recipe declaration");
     EXPECT_EQ(tk::read_file(sibling), "unrelated payload bytes");
 }
+
+// A library's registration is its one file: a directory beside it holding a
+// link into a payload this package does not record (libglvnd's
+// lib/glx-vendor, which the graphics stack fills per host) does not refuse it
+// -- a second Luban desktop on a host with the stack lost its desktop so --
+// while a library that is itself such a link still is. A link to the
+// operating system's own library (a host link sentinel's: NVIDIA's driver) is
+// the host's, not a user's data, and is taken.
+XTEST(LuaWorker, ALibraryIsItsOwnFileNotTheLinksBesideIt,
+      .area = "xim", .cost = tk::Cost::Medium, .covers = {"XIM-LIB-EFFECT-SOURCE"},
+      .requires_ = {"linux", "sandbox", "xlings-bin"}, .resources = {"sandbox"}) {
+    auto home = tk::Home::isolated("lua-worker-lib-effects");
+    ASSERT_TRUE(home.seed_sandbox_backend());
+    const auto sibling = home.dir() / "data/xpkgs/unrelated-x-payload/1.0.0/lib/libvendor.so.0";
+    tk::write_file(sibling, "a vendor another package links here");
+    // The C library this host runs, as a host link sentinel links a driver's.
+    fs::path system;
+    for (const auto* candidate : {"/usr/lib/x86_64-linux-gnu/libc.so.6", "/usr/lib/aarch64-linux-gnu/libc.so.6",
+                                  "/usr/lib64/libc.so.6", "/lib/x86_64-linux-gnu/libc.so.6", "/lib64/libc.so.6"})
+        if (std::error_code ec; fs::is_regular_file(candidate, ec)) { system = fs::canonical(candidate, ec); break; }
+    ASSERT_FALSE(system.empty()) << "no libc.so.6 in this host's system library directories";
+    const auto repo = home.root() / "index";
+    tk::write_file(repo / "xim-indexrepos.lua", "xim_indexrepos = {}\n");
+    tk::write_file(
+        repo / "pkgs" / "f" / "fixture.lua",
+        R"LUA(
+        package = {
+            spec = '1', name = 'fixture', type = 'package', archs = {'x86_64','aarch64'},
+            xpm = {linux = {['1.0.0']={}, ['2.0.0']={}, ['3.0.0']={}}}
+        }
+        import('xim.libxpkg.pkginfo')
+        import('xim.libxpkg.xvm')
+        function install()
+            local lib = path.join(pkginfo.install_dir(), 'lib')
+            os.mkdir(path.join(lib, 'vendor'))
+    )LUA" + std::string("local target = [[") + sibling.generic_string() + "]]\n" +
+            std::string("local system = [[") + system.generic_string() + "]]\n" + R"LUA(
+            os.execute('ln -s ' .. string.format('%q', target) .. ' ' .. string.format('%q', path.join(lib, 'vendor', 'libvendor.so.0')))
+            if pkginfo.version() == '1.0.0' then
+                io.writefile(path.join(lib, 'libfixture.so.1'), 'the library')
+            elseif pkginfo.version() == '2.0.0' then
+                os.execute('ln -s ' .. string.format('%q', target) .. ' ' .. string.format('%q', path.join(lib, 'libfixture.so.1')))
+            else
+                os.execute('ln -s ' .. string.format('%q', system) .. ' ' .. string.format('%q', path.join(lib, 'libfixture.so.1')))
+            end
+            return true
+        end
+        function config()
+            local lib = path.join(pkginfo.install_dir(), 'lib')
+            xvm.add('fixture', {type='group'})
+            xvm.add('libfixture.so.1', {type='lib', bindir=lib, filename='libfixture.so.1', alias='libfixture.so.1',
+                                        binding='fixture@' .. pkginfo.version()})
+            return true
+        end
+    )LUA");
+    const auto primary = home.root() / "empty-primary";
+    tk::write_file(primary / "xim-indexrepos.lua", "xim_indexrepos = {}\n");
+    fs::create_directories(primary / "pkgs");
+    nlohmann::json config = {
+        {"mirror", "GLOBAL"}, {"xim", {{"index-repo", primary.generic_string()}}},
+        {"index_repos", nlohmann::json::array({
+            {{"name", "xim"}, {"url", primary.generic_string()}, {"source", "git"}},
+            {{"name", "fixture"}, {"url", repo.generic_string()}, {"source", "git"}}})}};
+    tk::write_file(home.dir() / ".xlings.json", config.dump());
+    fs::create_directories(home.dir() / "bin");
+    fs::copy_file(tk::xlings_binary(), home.dir() / "bin" / "xlings");
+    const auto initialized = home.xlings({"self", "init"});
+    ASSERT_EQ(initialized.exit_code, 0) << initialized.transcript();
+    ASSERT_EQ(home.xlings({"subos", "new", "box"}).exit_code, 0);
+    ASSERT_EQ(home.xlings({"subos", "config", "box", "--sandbox=locked"}).exit_code, 0);
+    const auto own =
+        home.xlings({"install", "fixture:fixture@1.0.0", "-y"}, {{"XLINGS_ACTIVE_SUBOS", "box"}});
+    EXPECT_EQ(own.exit_code, 0) << own.transcript();
+    EXPECT_EQ(own.transcript().find("unsafe Lua host effect"), std::string::npos) << own.transcript();
+    const auto escaping =
+        home.xlings({"install", "fixture:fixture@2.0.0", "-y"}, {{"XLINGS_ACTIVE_SUBOS", "box"}});
+    EXPECT_NE(escaping.exit_code, 0) << escaping.transcript();
+    EXPECT_NE(escaping.transcript().find("unsafe Lua host effect"), std::string::npos) << escaping.transcript();
+    const auto host =
+        home.xlings({"install", "fixture:fixture@3.0.0", "-y"}, {{"XLINGS_ACTIVE_SUBOS", "box"}});
+    EXPECT_EQ(host.exit_code, 0) << host.transcript();
+    EXPECT_EQ(tk::read_file(sibling), "a vendor another package links here");
+}
