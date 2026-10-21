@@ -1024,3 +1024,7 @@ status = "required"
 [SUBOS-MACHINE-BROKER]
 text = "in a Luban machine reading this computer's store, `sudo xlings install/remove/update` and a user's store addition reach the host's broker through the agent (a channel of the guest's, the host's luban running `xlings subos __broker-serve`): the instance's policy decides, the audit names who asked, the caller's terminal or pipes carry the command, and /usr follows the new generation before the command returns"
 status = "required"
+
+[OPS-LINK]
+text = "an operation that runs part of itself in a system's own home (its domain) records a link line there; `xlings self log` shows the linked record in place, and `--subos <name>` (`luban status <name> --log`) shows the latest operation on that system; a cancel is recorded"
+status = "required"

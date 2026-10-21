@@ -111,6 +111,38 @@ int Port::capability(std::string_view name, const nlohmann::json& args, const Si
     return result;
 }
 
+bool Port::provides(std::string_view feature) const {
+    static std::mutex lock;
+    static std::map<fs::path, std::vector<std::string>> known;
+    std::scoped_lock guard(lock);
+    auto it = known.find(xlings_);
+    if (it == known.end()) {
+        std::string out;
+        (void)xlings::platform::stream::run({xlings_.string(), "interface", "--version"},
+                                            [&](std::string_view channel, std::string_view bytes) {
+                                                if (channel == "stdout") out.append(bytes);
+                                            });
+        std::vector<std::string> features;
+        if (auto j = nlohmann::json::parse(out, nullptr, false); j.is_object())
+            for (const auto& f : j.value("features", nlohmann::json::array()))
+                if (f.is_string()) features.push_back(f.get<std::string>());
+        it = known.emplace(xlings_, std::move(features)).first;
+    }
+    return std::ranges::find(it->second, feature) != it->second.end();
+}
+
+int Port::install(std::span<const std::string> packages, std::string_view name, const Sink& sink) const {
+    if (provides("install_into_subos")) {
+        nlohmann::json args{{"targets", nlohmann::json::array()}, {"subos", std::string(name)}, {"yes", true}};
+        for (const auto& p : packages) args["targets"].push_back(p);
+        return capability("install_packages", args, sink);
+    }
+    std::vector<std::string> argv{"install"};
+    argv.insert(argv.end(), packages.begin(), packages.end());
+    argv.insert(argv.end(), {"--subos", std::string(name), "-y", "--agent"});
+    return terminal(std::move(argv));
+}
+
 Port Port::cancellable(std::shared_ptr<std::atomic<bool>> flag) const {
     Port p = *this;
     p.cancel_ = std::move(flag);

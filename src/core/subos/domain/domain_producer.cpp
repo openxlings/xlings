@@ -9,6 +9,8 @@ import xlings.core.home.domain_producer_source;
 import xlings.libs.json;
 import xlings.platform;
 import xlings.platform.stream;
+import xlings.runtime.cancellation;
+import xlings.observe;
 import xlings.subos.home_view;
 import xlings.subos.rootfs;
 import xlings.subos.caps;
@@ -493,6 +495,12 @@ std::expected<int, std::string> run(const Domain& domain, std::span<const std::s
         if (!prepared) return std::unexpected(prepared.error());
         facade.emplace(std::move(*prepared));
     }
+    // Asked to stop (design 2026-10-21 §7.3): nothing more is started, and
+    // what runs there is asked to stop too.
+    if (xlings::stop_requested()) return std::unexpected(std::string("cancelled"));
+    // What it records goes to its own home's journal, under this operation's
+    // trace: the link says where (design 2026-10-21 §7.4).
+    observe::ops::event("link", {{"home", domain.physicalHome.string()}, {"trace", observe::ops::trace()}});
     auto argv = command(domain, arguments, output, facade ? &*facade : nullptr, runtime);
     if (!argv) return std::unexpected(argv.error());
     if (!lines) return platform::run_argv_with_timeout(*argv, std::chrono::minutes(30));
@@ -504,7 +512,7 @@ std::expected<int, std::string> run(const Domain& domain, std::span<const std::s
             lines(std::string_view(pending).substr(0, nl));
             pending.erase(0, nl + 1);
         }
-    });
+    }, [] { return xlings::stop_requested(); });
     if (!pending.empty()) lines(pending);
     return rc;
 }

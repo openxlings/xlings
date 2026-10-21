@@ -34,10 +34,11 @@ XTEST(LubanProgress, TheWholeOperationIsOneProgressThatNeverGoesBack, .area = "l
     EXPECT_NEAR(d.overall, 27.5 / 90, 1e-9);
     EXPECT_NEAR(d.stage_percent, 0.5, 1e-9);
     EXPECT_EQ(d.stage_detail, "200.0 / 400.0 MB");
+    // A stage's measure stops short of its end: the next stage fills it.
     auto x = progress_("extract", 1.0);
     o.take(x);
     EXPECT_EQ(x.stage, "unpack");
-    EXPECT_NEAR(x.overall, 70.0 / 90, 1e-9);
+    EXPECT_NEAR(x.overall, (55 + 15 * 0.99) / 90, 1e-9);
     auto c = progress_("configure", 0.5);
     c.text = "installed fontconfig";
     o.take(c);
@@ -79,7 +80,31 @@ XTEST(LubanProgress, AMachineStartsInAStageOfItsOwnAndTheOldCheckIsReadAsBefore,
     nlohmann::json few = nlohmann::json::array({{{"totalBytes", 3e6}, {"downloadedBytes", 3e6}}});
     auto d = svc::Event{.kind = svc::Event::Kind::Data, .data_kind = "download_progress", .data = {{"files", few}}};
     cached.take(d);
-    EXPECT_NEAR(d.overall, 55 * 0.15 / (55 * 0.15 + 35), 1e-9);
+    EXPECT_NEAR(d.overall, 55 * 0.15 * 0.99 / (55 * 0.15 + 35), 1e-9);
     EXPECT_EQ(svc::Overall::stage_of("check"), 4);
     EXPECT_EQ(svc::Overall::stage_of("preflight"), 3);
+}
+
+XTEST(LubanProgress, AStepEndingDoesNotFillItsStage, .area = "luban", .covers = {"LUBAN-PROGRESS"}) {
+    // J6: one configuration step done put "configure" at 100% for the 80
+    // seconds its desktop then took to install.
+    svc::Overall o;
+    auto begin = svc::phase("configure", "begin", "configuring box");
+    o.take(begin);
+    auto step = svc::phase("configure", "done", "configured");
+    o.take(step);
+    EXPECT_EQ(step.stage, "configure");
+    EXPECT_LT(step.stage_percent, 1.0);
+    auto desktop = progress_("install", 0.4);
+    desktop.text = "installing luban:xdesk";
+    o.take(desktop);
+    EXPECT_EQ(desktop.stage, "configure");
+    EXPECT_NEAR(desktop.stage_percent, 0.4, 1e-9);
+    EXPECT_EQ(desktop.stage_detail, "installing luban:xdesk");
+    auto verify = svc::phase("verify", "begin", "checking box");
+    o.take(verify);
+    EXPECT_NEAR(verify.overall, 85.0 / 90, 1e-9) << "the next stage fills the one before";
+    auto end = svc::phase("verify", "done", "box is ready");
+    o.take(end);
+    EXPECT_NEAR(end.overall, 1.0, 1e-9) << "the last stage's end is the operation's";
 }

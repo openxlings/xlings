@@ -14,6 +14,7 @@ import mcpplibs.cmdline;
 import xlings.libs.json;
 import xlings.platform;
 import xlings.runtime;
+import xlings.observe;
 import xlings.core.xim.index;
 import xlings.core.config;
 import xlings.core.home;
@@ -148,7 +149,7 @@ int run(const mcpplibs::cmdline::ParsedArgs& args,
                                                    "sync_index", "install_targets_complete",
                                                    "payload_currency", "binding_state", "reserved_namespaces",
                                                    "subos_plan", "network_diagnostics", "download_socket_budgets", "read_only_queries",
-                                                   "package_extensions", "domain_relayed", "installed_only", "user_views", "needs_root", "subos_env"}}}).dump()
+                                                   "package_extensions", "domain_relayed", "installed_only", "user_views", "needs_root", "subos_env", "install_into_subos"}}}).dump()
                   << "\n" << std::flush;
         return 0;
     }
@@ -254,6 +255,31 @@ int run(const mcpplibs::cmdline::ParsedArgs& args,
 
     CancellationToken token;
     InterfaceSession session(stream, token);
+    // A caller that stops the call (a window's cancel, design 2026-10-21
+    // §7.3) sends SIGTERM: the capability ends at its next safe point, says
+    // so (E_CANCELLED, 130), and what it made is left consistent -- the
+    // caller kills only what does not end in time.
+    std::atomic<bool> callDone{false};
+    std::jthread terminated;
+    if constexpr (!platform::is_windows) {
+        if (const int pipe = platform::route_signals({platform::sig::terminate}, {}); pipe >= 0)
+            terminated = std::jthread([&token, &callDone, pipe] {
+                while (!callDone.load()) {
+                    std::array<platform::PollFd, 1> p{{{.fd = pipe}}};
+                    platform::poll_fds(p, 200);
+                    for (const int s : platform::pending_signals())
+                        if (s == platform::sig::terminate) {
+                            observe::ops::event("cancelled", {{"by", "SIGTERM"}});
+                            xlings::request_stop();
+                            token.cancel();
+                        }
+                }
+            });
+    }
+    struct DoneOnExit_ {
+        std::atomic<bool>& done;
+        ~DoneOnExit_() { done.store(true); }
+    } doneOnExit{callDone};
     int listener_id = stream.on_event([&session](const Event& e) {
         session.emit_event(e);
     });

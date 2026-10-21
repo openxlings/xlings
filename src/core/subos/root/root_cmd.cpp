@@ -8,6 +8,7 @@ import xlings.core.config;
 import xlings.core.home;
 import xlings.core.home.prefix_domain;
 import xlings.core.home.domain_producer;
+import xlings.runtime.cancellation;
 import xlings.core.home.domain_producer_source;
 import xlings.core.subos.store_closure;
 import xlings.libs.json;
@@ -297,6 +298,20 @@ std::optional<int> produce_domain_at_creation_(const std::string& name, bool,
     auto produced = run_domain_relayed_(*selected, std::move(words), std::nullopt, false, stream, false,
                                         fellBack ? &held : nullptr);
     const auto release_held = [&] { for (auto& e : held) stream.emit(std::move(e)); held.clear(); };
+    // Its half in the domain, set aside: the name is free for the next
+    // attempt, and what was made stays to look at (design 2026-10-21 §7.3, J7).
+    const auto set_aside = [&] {
+        const auto half = HomeView{selected->physicalHome}.instance(name);
+        if (fs::exists(half, ec))
+            fs::rename(half, half.parent_path() / std::format(".unfinished-{}-{}", name, platform::get_pid()), ec);
+    };
+    if (xlings::stop_requested()) {
+        // Cancelled: nothing made another way, the half set aside, said once.
+        set_aside();
+        stream.emit(ErrorEvent{.code = ErrorCode::Cancelled, .message = std::format("making '{}' was cancelled", name),
+                               .recoverable = true});
+        return 130;
+    }
     if (!produced || *produced != 0) {
         // Asked to build it there only if this host can (luban new): what the
         // private namespace could not make is made in this home's prefix, said
@@ -304,9 +319,7 @@ std::optional<int> produce_domain_at_creation_(const std::string& name, bool,
         // for a later attempt. Nothing of it here yet, or this is not that.
         const HomeView owner{home_dir_()};
         if (fellBack && !fs::exists(owner.instance_file(name), ec) && !fs::exists(owner.instance(name), ec)) {
-            const auto half = HomeView{selected->physicalHome}.instance(name);
-            if (fs::exists(half, ec))
-                fs::rename(half, half.parent_path() / std::format(".unfinished-{}-{}", name, platform::get_pid()), ec);
+            set_aside();
             *fellBack = true;
             const auto said = std::ranges::find_if(held, [](const ErrorEvent& e) {
                 return e.message.find("with no error detail") == std::string::npos; });
@@ -317,7 +330,8 @@ std::optional<int> produce_domain_at_creation_(const std::string& name, bool,
             return std::nullopt;
         }
         release_held();
-        error_(stream, produced ? std::format("namespace producer failed (exit {}); private domain retained", *produced) : produced.error());
+        set_aside();
+        error_(stream, produced ? std::format("namespace producer failed (exit {}); what it made is set aside", *produced) : produced.error());
         return produced ? *produced : 1;
     }
     release_held();

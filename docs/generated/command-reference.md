@@ -236,7 +236,7 @@ Migrate old layout
 
 What an operation did: the latest ones, or one by its trace
 
-Options: `--bundle [FILE]` — The operation and its side files in one file, the home's paths and the user's name taken out; `--json` — The journal's lines as they are
+Options: `--bundle [FILE]` — The operation and its side files in one file, the home's paths and the user's name taken out; `--json` — The journal's lines as they are; `--subos <NAME>` — The latest operation on this subos (a system's own record followed where it links)
 
 ## `xlings self doctor`
 

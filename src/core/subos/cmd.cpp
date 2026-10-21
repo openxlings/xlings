@@ -1025,7 +1025,14 @@ std::expected<int, std::string> run_domain_relayed_(const xlings::home::prefix_d
     }
     nlohmann::json call{{"argv", words}};
     if (yes) call["yes"] = true;
-    const std::vector<std::string> args{"interface", "subos_command", "--args", call.dump()};
+    return relay_capability_(domain, "subos_command", call, output, stream, runtime, held);
+}
+
+std::expected<int, std::string> relay_capability_(const xlings::home::prefix_domain::Domain& domain,
+                                                 std::string_view capability, const nlohmann::json& call,
+                                                 std::optional<xlings::home::domain_producer::OutputBinding> output,
+                                                 EventStream& stream, bool runtime, std::vector<ErrorEvent>* held) {
+    const std::vector<std::string> args{"interface", std::string(capability), "--args", call.dump()};
     int answered = -1;
     auto rc = xlings::home::domain_producer::run(domain, args, output, runtime,
         [&](std::string_view text) {

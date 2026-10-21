@@ -577,3 +577,11 @@ status = "required"
 [LUBAN-MACHINE-GPU]
 text = "a machine has a GPU (virtio-gpu, 3D through virgl on this host's render node) when the host has a render node, the system the gpu grant and the GL qemu (xim:qemu-system-gl, installed the first time) has the device; otherwise none, the reason in its state (luban status, the welcome); a GL qemu that does not start leaves the machine in software; the machine's kernel has DRM and virtio-gpu built in, its render node is its users'"
 status = "required"
+
+[LUBAN-NAME-RESERVE]
+text = "a name being made is held until its making ends: another process, or another of the window's tasks in the same process, is told it is being made; a reservation whose process is gone (the old format: a process id alone) is taken over"
+status = "required"
+
+[LUBAN-CANCEL]
+text = "a cancelled making is asked to stop (SIGTERM) and killed only after 10 seconds: xlings ends at its next safe point and says E_CANCELLED, nothing is made another way, its half in the system's domain is set aside as .unfinished-<name>-<pid>, and the name can be made again at once"
+status = "required"

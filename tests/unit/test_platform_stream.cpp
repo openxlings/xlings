@@ -139,6 +139,20 @@ XTEST(PlatformStream, CancellationReapsAChildBlockedAfterItsFirstOutput,
     EXPECT_LT(std::chrono::steady_clock::now() - began, std::chrono::seconds(2));
 }
 
+XTEST(PlatformStream, ACancelledChildIsAskedToStopFirst,
+      .area = "platform", .covers = {"LUBAN-CANCEL"}) {
+    if constexpr (!tk::is_posix) GTEST_SKIP() << "a job object ends a Windows child";
+    auto home = tk::Home::isolated("stream-cancel-term");
+    const auto said = home.root() / "said";
+    bool started{};
+    const auto code = ps::run({"/bin/sh", "-c", "trap 'echo stopping > " + said.string() + "; exit 0' TERM; "
+                                                "echo started; while :; do sleep 0.1; done"},
+        [&](std::string_view, std::string_view bytes) { started = started || bytes.find("started") != std::string_view::npos; },
+        [&] { return started; });
+    EXPECT_EQ(code, 130);
+    EXPECT_EQ(tk::read_file(said), "stopping\n") << "it was killed without being asked to stop";
+}
+
 XTEST(PlatformStream, InvalidArgvAndMissingExecutablesHaveStableExitCodes,
       .area = "platform", .covers = {"IFACE-EXEC-STREAM"}) {
     const auto output = [](std::string_view, std::string_view) {};

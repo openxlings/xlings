@@ -40,6 +40,15 @@ public:
     // `xlings <argv...>` on this terminal; its exit code.
     int terminal(std::vector<std::string> argv) const;
 
+    // Whether this xlings names `feature` in its interface (`interface
+    // --version`'s features): asked once per xlings.
+    bool provides(std::string_view feature) const;
+
+    // `packages` installed into the system `name`: through the interface
+    // (events, cancellable) when this xlings installs into a subos there
+    // (feature install_into_subos), on this terminal otherwise.
+    int install(std::span<const std::string> packages, std::string_view name, const Sink& sink) const;
+
     // This port, with a flag that ends what it runs when set (a person
     // cancelling an operation from a window): the xlings it started is
     // stopped, and the call returns 130.

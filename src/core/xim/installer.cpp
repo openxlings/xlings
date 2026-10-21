@@ -2061,7 +2061,9 @@ std::expected<void, std::string> apply_subos_env_ops_(const std::vector<mcpplibs
     const auto recorded = mf::parse(*doc).envs;
     const auto already_recorded = [&](const mcpplibs::xpkg::XvmOp& op) {
         for (const auto& provider : recorded) {
-            if (provider.binding != op.binding) continue;
+            // The package's, whichever version recorded it: a new version
+            // declaring the same is not news (J27).
+            if (mf::binding_name(provider.binding) != mf::binding_name(op.binding)) continue;
             for (const auto& decl : provider.decls) {
                 if (decl.var == op.var && decl.op == op.mode
                     && decl.value == op.value) {
@@ -4614,8 +4616,8 @@ std::expected<Installer::UninstallOutcome, std::string> Installer::uninstall(con
     if (const auto pins = retention::generation_pins(installDir); pins.held()) {
         if (auto kept = retention::retain(installDir, detachTarget, detachVersion); !kept)
             log::warn("[xim] {}", kept.error());
-        log::info("{}@{} removed; its files stay for rollback until {} {} pruned",
-                  name, resolvedMatch ? resolvedMatch->version : detachVersion,
+        // The removal itself is said by the caller; why the files stay, in -v.
+        log::debug("{} removed; its files stay for rollback until {} {} pruned", name,
                   retention::describe(pins),
                   pins.holders.size() + pins.unreadable.size() == 1 ? "is" : "are");
     } else {

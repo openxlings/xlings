@@ -61,4 +61,10 @@ public:
     }
 };
 
+// This process was asked to stop (a caller's SIGTERM through the interface,
+// design 2026-10-21 §7.3): what starts a long step -- another process, a
+// fallback -- asks this first, and what was half made is set aside, said.
+export void request_stop();
+export bool stop_requested();
+
 } // namespace xlings

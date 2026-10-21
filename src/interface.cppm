@@ -66,7 +66,10 @@ namespace xlings::interface {
 // error that needs the administrator with nobody to ask is E_NEEDS_ROOT with
 // the exact sudo command in its hint (feature `needs_root`); `list` rows of
 // what the system provides carry the status `system`.
-export constexpr const char* kProtocolVersion = "1.16";
+// 1.17 (additive; design 2026-10-21 §7.2): `install_packages` takes `subos`
+// -- a Luban system's packages installed where it lives, with events and
+// cancellation (feature `install_into_subos`).
+export constexpr const char* kProtocolVersion = "1.17";
 
 // Convert any Event variant to one NDJSON line (no trailing newline).
 // Returns "" for events not surfaced to wire (e.g. CompletedEvent — the

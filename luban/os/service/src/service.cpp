@@ -607,7 +607,7 @@ Outcome create(const Context& given_context, const NewOptions& o, const NewPrevi
     // What was given besides the system: its desktops and packages (design §5.1).
     for (const auto& extra : preview.extras) {
         if (c.sink) c.sink(phase("install", "begin", std::format("installing {}", extra.ref())));
-        const int irc = c.port.terminal({"install", extra.ref(), "--subos", o.name, "-y", "--agent"});
+        const int irc = c.port.install(std::vector<std::string>{extra.ref()}, o.name, c.sink);
         if (c.sink) c.sink(phase("install", irc == 0 ? "done" : "failed", std::format("installing {}", extra.ref())));
         if (irc != 0) {
             if (c.sink) c.sink(error(std::format("{} is made; {} was not installed into it", o.name, extra.ref()),
@@ -633,7 +633,7 @@ Outcome create(const Context& given_context, const NewOptions& o, const NewPrevi
                 return {.code = 1};
             }
             if (c.sink) c.sink(phase("install", "begin", std::format("installing {} (its desktop)", official->ref())));
-            const int drc = c.port.terminal({"install", official->ref(), "--subos", o.name, "-y", "--agent"});
+            const int drc = c.port.install(std::vector<std::string>{official->ref()}, o.name, c.sink);
             if (c.sink) c.sink(phase("install", drc == 0 ? "done" : "failed", std::format("installing {} (its desktop)", official->ref())));
             if (drc != 0) return {.code = drc};
             if (c.sink) c.sink(notice(std::format("{} has {} as its desktop ({})", o.name, desktop, official->ref())));
@@ -783,7 +783,7 @@ Outcome configure(const Context& c, std::string_view name, const std::vector<std
             }
             const auto spec = value.find(':') == std::string::npos ? "xim:" + value : value;
             if (c.sink) c.sink(phase("runtime", "begin", std::format("moving {} to {}", name, value)));
-            const int rc = c.port.terminal({"install", spec, "--subos", std::string(name), "-y"});
+            const int rc = c.port.install(std::vector<std::string>{spec}, name, c.sink);
             if (c.sink) c.sink(phase("runtime", rc == 0 ? "done" : "failed", std::format("moving {} to {}", name, value)));
             if (rc != 0) return {.code = rc};
         } else if (isolation_keys_().contains(key)) {
@@ -1328,8 +1328,7 @@ Outcome import_environment(const Context& c, const fs::path& file, std::string n
             if (!version.is_string() || (have.contains(pkg) && have[pkg] == version)) continue;
             const auto spec = std::format("{}@{}", pkg, version.get<std::string>());
             if (c.sink) c.sink(phase("install", "begin", std::format("installing {}", spec)));
-            std::vector<std::string> install{"install", spec, "--subos", name, "-y", "--agent"};
-            const int rc = c.port.terminal(install);
+            const int rc = c.port.install(std::vector<std::string>{spec}, name, c.sink);
             if (c.sink) c.sink(phase("install", rc == 0 ? "done" : "failed", std::format("installing {}", spec)));
         }
     }

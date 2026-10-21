@@ -76,8 +76,21 @@ std::string display_(std::string_view text) {
     return out;
 }
 
-int show_(const fs::path& file, bool json) {
+// The journal a `link` line names: the same trace in another home (a
+// system's own, where its xlings recorded its part; design 2026-10-21 §7.4).
+std::optional<fs::path> linked_(const Json& link) {
+    const fs::path home = link.value("home", std::string{});
+    const auto trace = link.value("trace", std::string{});
+    if (home.empty() || trace.empty()) return std::nullopt;
+    std::error_code ec;
+    for (fs::directory_iterator it(home / "logs" / "ops", ec), end; !ec && it != end; it.increment(ec))
+        if (const auto f = it->path() / (trace + ".ndjson"); fs::exists(f, ec)) return f;
+    return std::nullopt;
+}
+
+int show_(const fs::path& file, bool json, int nested = 0) {
     const auto lines = lines_(file);
+    const std::string pad(static_cast<std::size_t>(4 * nested), ' ');
     if (json) {
         for (const auto& l : lines) std::println("{}", l.dump());
         return 0;
@@ -91,11 +104,11 @@ int show_(const fs::path& file, bool json) {
         auto& d = depth[proc];
         const std::string indent(static_cast<std::size_t>(2 * std::max(d, 0)), ' ');
         if (kind == "op" || kind == "child") {
-            std::println("{}  {}{} {}  [{}]", ts, indent, kind == "op" ? "▸" : "↳", display_(command_of_(l)),
+            std::println("{}{}  {}{} {}  [{}]", pad, ts, indent, kind == "op" ? "▸" : "↳", display_(command_of_(l)),
                          l.value("actor", "cli"));
         } else if (kind == "span") {
             if (l.value("at", "") == "begin") {
-                std::println("{}  {}  ▸ {}", ts, indent, l.value("span", ""));
+                std::println("{}{}  {}  ▸ {}", pad, ts, indent, l.value("span", ""));
                 open.insert({proc, l.value("span", "")});
                 ++d;
             } else {
@@ -105,21 +118,29 @@ int show_(const fs::path& file, bool json) {
                 d = std::max(d - 1, 0);
                 const std::string ind(static_cast<std::size_t>(2 * d), ' ');
                 const auto failed = l.value("failed", "");
-                std::println("{}  {}  {} {} ({} ms){}", ts, ind, failed.empty() ? "✓" : "✗", l.value("span", ""),
+                std::println("{}{}  {}  {} {} ({} ms){}", pad, ts, ind, failed.empty() ? "✓" : "✗", l.value("span", ""),
                              l.value("ms", 0), failed.empty() ? "" : ": " + failed);
             }
         } else if (kind == "end") {
-            std::println("{}  {}exit {}", ts, indent, l.value("exit", 0));
+            std::println("{}{}  {}exit {}", pad, ts, indent, l.value("exit", 0));
+        } else if (kind == "link") {
+            // Where the rest of it was recorded, shown in place.
+            if (const auto inner = linked_(l); inner && nested < 4) {
+                std::println("{}{}  {}  ↳ in {}", pad, ts, indent, display_(l.value("home", std::string{})));
+                show_(*inner, false, nested + 1);
+            } else {
+                std::println("{}{}  {}  ↳ in {} (no record there)", pad, ts, indent, display_(l.value("home", std::string{})));
+            }
         } else {
             Json rest = l;
             for (const auto* k : {"ts", "trace", "proc", "line"}) rest.erase(k);
-            std::println("{}  {}  · {} {}", ts, indent, kind, display_(rest.dump()));
+            std::println("{}{}  {}  · {} {}", pad, ts, indent, kind, display_(rest.dump()));
         }
     }
     std::error_code ec;
     const auto side = file.parent_path() / (file.stem().string() + ".d");
     for (fs::directory_iterator it(side, ec), end; !ec && it != end; it.increment(ec))
-        std::println("side file  {}", Config::display_path(it->path()));
+        std::println("{}side file  {}", pad, Config::display_path(it->path()));
     return 0;
 }
 
@@ -156,16 +177,30 @@ std::string redact_for_bundle(std::string text, const fs::path& home, const fs::
 }
 
 int cmd_log(const std::vector<std::string>& args) {
-    std::optional<std::string> trace, bundleTo;
+    std::optional<std::string> trace, bundleTo, subos;
     bool json = false, bundle = false;
     for (std::size_t i = 0; i < args.size(); ++i) {
         const auto& a = args[i];
         if (a == "--json") json = true;
+        else if (a == "--subos" && i + 1 < args.size()) subos = args[++i];
         else if (a == "--bundle") {
             bundle = true;
             if (i + 1 < args.size() && !args[i + 1].starts_with('-')) bundleTo = args[++i];
         } else if (!a.starts_with('-') && !trace) trace = a;
         else { log::error("unknown option for `xlings self log`: {}", a); return 2; }
+    }
+    // The latest operation that names a subos (a system: what `luban status
+    // <name> --log` shows).
+    if (subos && !trace) {
+        for (const auto& f : all_ops_()) {
+            const auto op = read_op_(f);
+            const auto argv = op.header.value("argv", Json::array());
+            if (std::ranges::any_of(argv, [&](const Json& w) { return w.is_string() && w.get<std::string>() == *subos; })) {
+                trace = op.trace;
+                break;
+            }
+        }
+        if (!trace) { std::println("no operation on '{}' recorded ({})", *subos, Config::display_path(ops_root_())); return 0; }
     }
     if (!trace) {
         if (bundle) { log::error("`xlings self log <trace> --bundle`: which operation?"); return 2; }

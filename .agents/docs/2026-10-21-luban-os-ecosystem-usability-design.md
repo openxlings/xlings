@@ -399,6 +399,9 @@ L4 覆盖以下几条路径：宿主 → foot（Ctrl+Shift+V）、foot（Ctrl+Sh
 ### 7.2 额外的包
 
 `create` 与 `configure` 里的安装改走能力 `install_packages`：有事件，能取消。
+- 实施：`install_packages` 加参数 `subos`（接口协议 1.17，特性 `install_into_subos`）；系统在它的域里时，同一能力在域里执行，事件经
+  `relay_capability_` 原样转发（`run_domain_relayed_` 也改用它，域里出来的事件只有一条路）。
+- luban 的 `Port::install` 在 xlings 声明了这个特性时用它，否则退回原来的终端方式（旧 xlings 不认识 `subos`，不能让它装错地方）。
 
 ### 7.3 取消与名字（J7）
 
@@ -410,6 +413,9 @@ L4 覆盖以下几条路径：宿主 → foot（Ctrl+Shift+V）、foot（Ctrl+Sh
 - **占用的判断要一致**：完整的系统、只有记录的残留、域里的半成品、名字预留，luban 和 xlings 认同同一组，每种都有明确的说法和对应的命令。
 - **清理**：`luban ls --all` 列出半成品；`luban rm <名字>`、`luban rm --unfinished` 确认后删除；`self doctor` 只报告不删除。
 - **测试**：在每个阶段取消，然后用同一个名字重建。
+- 实施：`platform::stream::run` 取消时先对进程组发 SIGTERM，10 秒后才 SIGKILL；`xlings interface` 把 SIGTERM 变成调用的取消，
+  并置进程级的 `stop_requested`：域里不再启动新的进程，不再改到别处去做，半成品移到 `.unfinished-<名字>-<pid>`，说一次 `E_CANCELLED`，以 130 退出。
+  名字预留另记本进程正持有的名字，同一进程里的第二个任务得到"正在被创建"。
 
 ### 7.4 记录
 

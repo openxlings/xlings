@@ -599,6 +599,14 @@ std::expected<int, std::string> run_domain_relayed_(const xlings::home::prefix_d
                                                    std::optional<xlings::home::domain_producer::OutputBinding> output,
                                                    bool yes, EventStream& stream, bool runtime = true,
                                                    std::vector<ErrorEvent>* held = nullptr);
+// Any interface capability, run where a system lives, its events relayed into
+// `stream` as they come (design 2026-10-21 §7.2): the one path an event takes
+// out of a domain -- run_domain_relayed_ is it for subos_command.
+export std::expected<int, std::string> relay_capability_(const xlings::home::prefix_domain::Domain& domain,
+                                                 std::string_view capability, const nlohmann::json& call,
+                                                 std::optional<xlings::home::domain_producer::OutputBinding> output,
+                                                 EventStream& stream, bool runtime = true,
+                                                 std::vector<ErrorEvent>* held = nullptr);
 // What `subos new --offline-from <dir>` carries -- payloads/<package dir>/
 // <version>/ and index/<index>/ (as a home keeps them under data/), what `luban import`
 // unpacks from an archive -- placed in `home` where it lacks them, before

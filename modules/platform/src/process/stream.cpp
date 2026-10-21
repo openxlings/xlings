@@ -210,6 +210,8 @@ int run(const std::vector<std::string>& argv,
     } child{pid};
     int status{};
     std::optional<std::chrono::steady_clock::time_point> drain_deadline;
+    std::chrono::steady_clock::time_point term_sent{};
+    constexpr auto kCancelGrace = std::chrono::seconds(10);
     for (;;) {
         for (auto [descriptor, name] : {std::pair{&out, "stdout"}, std::pair{&err, "stderr"}}) {
             for (int round = 0; descriptor->value >= 0 && round < 8; ++round) {
@@ -221,9 +223,18 @@ int run(const std::vector<std::string>& argv,
                 else return 125;
             }
         }
+        // Cancelled: asked to end first (SIGTERM: it finishes the step it is
+        // in and says so), killed only when it has not after a while (design
+        // 2026-10-21 §7.3, J7: a SIGKILL left a half-made system and no end).
         if (!child.reaped && cancelled && cancelled()) {
-            was_cancelled = true;
-            ::kill(-pid, SIGKILL);
+            const auto now = std::chrono::steady_clock::now();
+            if (!was_cancelled) {
+                was_cancelled = true;
+                term_sent = now;
+                ::kill(-pid, SIGTERM);
+            } else if (now - term_sent >= kCancelGrace) {
+                ::kill(-pid, SIGKILL);
+            }
         }
         if (!child.reaped) {
             const auto waited = ::waitpid(pid, &status, WNOHANG);

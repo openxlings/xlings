@@ -37,6 +37,8 @@ Options: `--user <NAME>` — As this user (root, or one of its users); `--displa
 
 List the environments, or those whose name matches
 
+Options: `--all` — And what cancelled makings set aside
+
 ## `luban search [keyword]` (common)
 
 What the index offers: systems to make, desktops to give one
@@ -47,7 +49,7 @@ Options: `--distributions` — Only the systems that can be made; `--desktops` �
 
 This host, or one environment
 
-Options: `--check` — Check that it is usable: its /usr, /etc, runtime closure, and programs
+Options: `--check` — Check that it is usable: its /usr, /etc, runtime closure, and programs; `--log` — What its latest operation did, its own record of it too
 
 ## `luban config <name>` (more)
 
@@ -93,9 +95,11 @@ Make a boot drive from an image or an environment
 
 Options: `--serial <SERIAL>` — The drive's serial (required with --agent)
 
-## `luban rm <name>` (more)
+## `luban rm [name]` (more)
 
 Remove an environment (asks first)
+
+Options: `--unfinished` — What cancelled or failed makings set aside
 
 ## `luban setup` (more)
 

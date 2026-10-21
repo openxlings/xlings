@@ -699,8 +699,9 @@ DownloadResult download_one(const DownloadTask& task, std::function<void(double 
         // thing holding the install together and nobody knew.
         if (!transferResult.sourceUrl.empty()
             && transferResult.sourceUrl != primaryUrl) {
-            log::info("[mirror] {} served by {}", task.name,
-                      transferResult.sourceUrl);
+            // In -v: the default output is the conclusion (design 2026-10-21 §3.5).
+            log::debug("[mirror] {} served by {}", task.name,
+                       transferResult.sourceUrl);
         }
     }
 
