@@ -597,3 +597,29 @@ status = "required"
 [XDESK-STATE]
 text = "`xdesk msg state` answers what the desktop is -- its output and renderer, view and camera, workspaces, windows (where, focused, their workspace), the overlays open and the hint's place, the launcher's applications, the channels and the frames' parts over ten seconds (compose, read back, send, bytes, whole frames); `debug hud on|off` draws the frames' parts on the output; `subscribe` writes what happens (focus, open, close, actions, overlays, the view) a line each"
 status = "required"
+
+# ── openbus and XBus (design 2026-10-22, part 2) ───────────────────
+
+[OPENBUS-MODEL]
+text = "openbus's paths (segments, `*` one, `**` any number), frames (a 24-byte header; whole however a stream is cut; not openbus, another wire version or larger than 1 MiB refused), the fields codec, addressed frames' envelopes, region references, task states, effect classes and the router's latency histogram are what SPEC.md says"
+status = "required"
+
+[OPENBUS-CONFORMANCE]
+text = "a router passes openbus.conformance: handshake, one node per path, resolve by pattern, calls with streamed replies and cancel, subscriptions by pattern and retained topics, events, broadcasts, streams with credit, unknown kinds answered, bus/stats, bus/topology and bus/verbs answered, a node's leaving answered gone and withdrawn, an oversized frame refused"
+status = "required"
+
+[XBUS-NODE]
+text = "an XBus node offers services and topics, calls with replies streamed or collected (who called and as whom told), resolves by pattern, subscribes (a retained topic's last word to a late subscriber), publishes, sends events and broadcasts, pings; a node that leaves takes its endpoints; a node finds its router again after a restart and offers and subscribes again by itself"
+status = "required"
+
+[XBUS-LINK]
+text = "two XBus routers linked over a pipe the program moves (a carrier's channel) offer each other their endpoints with where they came through, route calls and subscriptions across, and withdraw what came through a link that ends"
+status = "required"
+
+[XBUS-OBSERVE]
+text = "an XBus router answers bus/stats (per endpoint: calls, replies, publications, bytes, errors, drops, fallbacks and a latency histogram; per node: frames, bytes, queue), bus/topology (nodes with what their transport says, endpoints, links and the transport actually used) and bus/verbs, publishes every routed frame on bus/trace while somebody listens, and logs connects, offers, denials, slow consumers and fallbacks"
+status = "required"
+
+[XBUS-OBJECTS]
+text = "every node exposes and uses objects the same way; an object names the interfaces it implements and its properties, and is found by interface whoever offers it; a composite object (a virtual device of members on other nodes) implements its members' interface and is found as one of them"
+status = "required"

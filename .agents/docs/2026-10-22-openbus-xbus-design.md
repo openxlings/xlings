@@ -5,7 +5,7 @@ Luban OS 里已经出现了七套各自实现的通信（§1）；同时设备�
 
 范围：
 - **规范**：`luban/specs/openbus`——模型、线格式、交互方式、发现、路由、安全、可观察性的约定，以及一致性测试。只依赖标准库。
-- **实现**：`luban/kits/xbus`——路由器、节点库、跨跳的链路、命令行 `xbus`（含监视、统计、基准）。只依赖标准库、规范与它自己的系统绑定（`src/native/`）。
+- **实现**：`luban/services/xbus`——路由器、节点库、跨跳的链路、命令行 `xbus`（含监视、统计、基准）。依赖标准库、规范、mcpp-index 的库（nlohmann.json）与它自己的系统绑定（`src/native/`）。
 - **接入**（本轮）：machine 的 agent 与宿主之间的链路；xdesk 的状态与事件；luban 的系统生命周期事件；openhal 的设备发现；
   Luban OS 应用与 `luban status` 的观察入口。
 - **不在本轮**：网络传输（QUIC/TLS）、加密、GPU 内存区域的实际驱动、分布式调度、推理服务；它们在模型里有位置（§4、§13），本轮不实现。
@@ -73,6 +73,15 @@ DSoftBus 的发现/组网/传输分层与 QoS 选路、varlink 的简单与可�
 6. **小而稳**：路由单线程事件循环，不做数据之外的事；一个节点崩溃不影响别人；路由崩溃后节点自动重连并重新注册。
 
 ## 4. openbus 模型（规范 0.1）
+
+### 4.0 统一接入模型（修订：讨论后）
+
+- **没有上层下层、前端后端**：任何参与者都是节点——设备驱动、服务、应用、Luban OS 的窗口、guest 里的 xdesk、虚拟设备——接入方式完全一样：
+  连上并说出身份（openas actor）→ **暴露**对象 → **发现**对象（按路径、按接口）→ **使用**对象（调用、订阅、打开流、映射区域），都在授权之内。
+- **对象 = 路径 + 接口 + 属性 + 状态**：接口 `<规范>.<名字>@<版本>`（`openhal.display@0.3`、`openhal.memory@0.3`、`xlings.broker@1`）；
+  属性是资源描述（容量、带宽、位置）；状态是它下面的一个话题。消费者**按接口找对象**，不关心提供者是物理设备、虚拟设备还是组合设备。
+- **能力即授权**：能用一个对象就是一项能力，由路由按策略判断、可撤销；以后能力本身可以作为对象随消息移交（像 Zircon 的 handle）。
+- **分工**：openbus 只定义对象如何被暴露、发现、使用；某类设备的接口由 openhal 定义（openhal 0.3 = 总线上的设备接口），表面的消息由 opensal 定义。
 
 ### 4.1 节点与端点
 
@@ -167,11 +176,25 @@ magic "OB"(2) · version(1) · kind(1) · flags(2) · codec(2) · channel(4) · 
 
 ## 6. XBus（实现）
 
+### 6.0 目录的分类（修订：services 与 kits 分开）
+
+实施时发现 `luban/kits` 的定义不清：它同时放着"规范在进程内的实现"（openhal-host、opensal-wlr）、"可复用组件"（imkit、tray、cursor），
+而 XBus 是一个常驻、对外提供协议的基础服务。所以新增 `luban/services/`，判定标准：
+
+| 目录 | 判定 | 例子 |
+|---|---|---|
+| `specs/` | 契约与一致性检查；只依赖标准库 | openbus、openhal |
+| `kits/` | 库：链接进某个程序，没有自己的进程、端点和状态 | openhal-host、opensal-wlr、imkit、tray、cursor |
+| `services/` | 基础服务：自己一个进程（或由系统的 agent 承载），拥有端点和状态，有生命周期，报告统计与日志；程序经它的库访问它；实现一份规范 | xbus；以后：设备服务（openhal 上总线）、调度、推理 |
+
+两者的依赖规则相同：标准库、规范、kits、mcpp-index 的库（优先选质量高、平台依赖少的）；不依赖 `xlings.*`、`luban.*`。
+`tools/lint_layer_deps.sh`、`lint_platform_headers.sh`、`lint_c_headers.sh` 与 `luban/README.md` 按此更新。
+
 ### 6.1 包与模块
 
 ```
 luban/specs/openbus/     SPEC.md、src/（openbus：路径与通配、帧编解码、握手、kind、统计的格式）、conformance/
-luban/kits/xbus/         src/
+luban/services/xbus/         src/
                            native/   xbus.native：套接字、poll、传 fd、memfd/shm、对端凭据（唯一含系统头的地方）
                            router    xbus.router：路由（单线程事件循环）
                            node      xbus.node：节点库（C++ API）
@@ -229,6 +252,21 @@ node->subscribe("host/**/topic/luban/systems", [](const xbus::Message& m) { ... 
 | 观察入口 | `xbus ls/top/monitor/stats/bench`；`luban status <名字> --bus`；Luban OS 应用的"关于"页显示路由与链路 | |
 
 不迁移的：broker（它要传终端与 fd，下一轮改为 openbus 的 stream + 能力移交）、opensal 的帧（K7 之后再迁到 region）、声音。
+
+## 7a. Luban OS 与宿主的交互映射（修订：讨论后）
+
+| 现在 | 统一后（对象与接口） |
+|---|---|
+| agent 帧 O/D/X（终端会话） | guest 暴露 `system/<m>/service/session`（`luban.session@1`），使用者以 stream 打开 |
+| broker 的 B 通道 | 宿主暴露 `host/<id>/service/xlings.broker`（`xlings.broker@1`），guest 的 xlings 带 actor 调用 |
+| 桌面帧（opensal `f`） | Luban OS 窗口本身是一个虚拟显示设备：宿主暴露 `host/<id>/device/display/<n>`（`openhal.display@0.3`），guest 的 xdesk 使用它——帧走 region，输入走 stream |
+| 剪贴板、声音 | 宿主暴露 `device/clipboard`、`device/audio/out`，guest 按授权使用 |
+| 系统生命周期 | 宿主暴露 `service/luban/systems`（调用 + 保留值话题） |
+| xdesk 的状态与事件 | guest 暴露 `service/xdesk/state`、`topic/xdesk/events` |
+
+agent 的 virtio-serial 上只留一条 openbus 链路，取代越加越多的帧类型；旧 guest 的 hello 里没有 `openbus` 就照旧走帧。
+迁移顺序：链路与 xdesk（本轮）→ 系统生命周期（本轮）→ 会话 → broker → 显示设备（随 K7 的 region）→ 剪贴板、声音；每一项保留旧路径兼容，
+并有"新旧两条路径结果一致"的测试。xlings、luban、xdesk、Luban OS 应用的日志、剖析与追踪随之统一到总线（§8）。
 
 ## 8. 可观察性、剖析与调试
 
@@ -296,6 +334,79 @@ node->subscribe("host/**/topic/luban/systems", [](const xbus::Message& m) { ... 
 
 part 1 的 K3（`Transport`）按 openbus 的传输绑定来定，K7 的帧以后迁到 region。
 
+## 14a. 资源融合：分布式内存与 GPU（补充）
+
+### 先看物理约束
+
+| 访问 | 典型延迟 | 意味着 |
+|---|---|---|
+| 本地 DRAM | 约 100 ns | 基准 |
+| CXL 直连扩展 | 170–250 ns；经交换机或池化 600–750 ns | 可以当"内存"用（硬件维护一致性） |
+| RDMA 远端内存（缺页取回 4 KB） | 5–10 µs（Fastswap、Hermit）；userfaultfd 多线程并发时数百 µs | 只适合"容量层"，热数据放不起 |
+| 普通以太网、Wi-Fi | 数百 µs 到数 ms | 只适合"移动计算"，不适合透明共享 |
+
+结论：**透明的、多写者的分布式共享内存在普通网络上是性能陷阱**（Ivy、TreadMarks 的老问题，今天的 far memory 研究也只把远端当容量层）。
+所以"两台 Luban OS 的内存融合"分三层做，每层有明确的适用场景：
+
+### 三层融合
+
+1. **资源视图融合**（发现与描述）：每台设备的 CPU、内存、GPU、NPU、存储都经 openhal 作为 `device/…` 端点出现在总线上，
+   带容量、带宽、空闲量，以及到达它的链路代价（延迟、带宽、是否支持 RDMA/CXL）。调度与放置都基于这张视图。
+2. **数据融合**（区域）：openbus 的 region 带三个属性——
+   - `placement`：页在哪台设备上（本机、某个节点、某块 GPU）；
+   - `coherence`：`owned`（同一时刻一个写者，所有权随消息移交，像 Zircon 的 handle、Rust 的 move）、`snapshot`（只读版本，读者缓存）、
+     `shared`（多写者、按页失效，**只在链路声明为低延迟时允许**，例如 CXL、同机）；
+   - `tier`：`hot`（本地）、`far`（远端，缺页取回）、`cold`（远端，换出）。
+
+   应用有两种用法：显式用 region（像 AIFM 的远端对象，性能可控）；或者透明的"远端交换层"——一台设备把另一台的空闲内存当作交换或 zswap 的后端（Infiniswap、Fastswap 的思路），
+   程序不用改，只是容量变大、冷数据变慢。
+3. **计算融合**（把计算搬到数据旁边）：真正"用另一台设备的内存运行"的有效方式。
+   - 远程执行：一个任务按 openas 的动词放到另一台设备上跑（容器/系统就是 Luban 系统本身）；
+   - GPU API 转发：像 virgl/Venus（本机已在用）和 rCUDA，把 GPU 调用经总线发到另一台设备的 GPU，按依赖批量、异步（Gleam 的做法），否则每个调用一次往返会把性能拖垮；
+   - 模型按层切分：大模型的不同层放在不同设备的内存/显存里，设备之间只传激活值（流水线并行，1 GbE 就能跑，llama.cpp RPC、exo 已验证）；
+     张量并行只在高速链路（Thunderbolt、RDMA、NVLink）上启用。
+
+### GPU
+
+- 本机：region 的种类加 `dmabuf`（Linux）、`cuda-ipc`、`metal-shared`；同一台设备上的进程之间零拷贝。
+- 跨设备：`rdma`（GPUDirect）在有网卡时用，否则退化为经主机内存的拷贝；**实际选了哪条路必须在 `bus/topology` 里看得见**（NIXL 静默退回 TCP 的教训）。
+- 统一虚拟地址只在硬件支持的范围内（同机 UVM、NVLink 域）；跨普通网络不承诺统一地址，只承诺 region 的语义。
+
+### 融合设备 = 组合对象
+
+融合设备就是**基于总线、把几个成员设备组合成的另一个虚拟设备**：一个组合节点发现成员（A 的 `device/memory/0`、B 的 `device/memory/1`），
+按策略（分层、条带、复制）组合，对外暴露一个实现**同一接口**（`openhal.memory@0.3`）的新对象 `device/memory/fused0`，offer 里写明成员（`member`）与策略（`policy`）。
+使用者看到的是一块更大、更快或更可靠的设备，不需要改；总线本身不做融合，只提供发现、区域、链路与可观察性。GPU 池、存储池、算力池同理，组合策略可替换。
+
+## 14b. AI 时代：agent 的操作语义与交互语义（补充）
+
+- **操作语义**：每个端点可以带一份动词描述（openas：名字、效果等级 read/reversible/irreversible/external、输入输出的 schema、是否需要批准）。
+  路由汇总成 `bus/verbs`，agent 在任何一台设备上都能发现"这里能做什么、做了会怎样"。
+- **交互语义**：长时间的工作是"任务"：状态 submitted → working → input-required → completed/canceled/failed（与 A2A 的任务生命周期对齐），
+  经 call + stream 表达；`input-required` 路由到能回答的人（与 broker 的审批队列同一套）；随时可取消；中间结果流式返回。
+- **身份与委托**：每条消息的追踪上下文里带 actor 链（人 → agent → 程序），授权按 actor 判断，记录进 openas 的 journal——"谁、替谁、做了什么"跨设备也成立。
+- **互通**：MCP 桥（动词 → tools，状态与话题 → resources）、A2A 桥（agent 端点发布 Agent Card）。openbus 是系统内部的总线，MCP/A2A 是对外的协议，桥接而不是替代。
+
+## 14c. 分布式推理基础设施（补充）
+
+- **模型是包**：模型权重作为 xlings 的包分发、去重、校验（与软件同一套存放与升级）。
+- **推理是服务**：`…/service/infer/<model>`：call 提交请求，stream 回 token；KV cache 是 region（`placement` 可以在另一块 GPU 上）；
+  预填充与解码可以分到不同设备，KV 经 region 传输，选择链路并记录实际路径。
+- **放置**：调度器读资源视图（14a 第 1 层），按显存、带宽、链路代价决定流水线切分或张量并行。
+- **观察**：每次推理的排队、预填充、解码、传输各段时间进 `bus/stats`，与帧的分段测量同一种做法。
+
+## 14d. 本轮做到哪里
+
+| 内容 | 本轮 | 以后 |
+|---|---|---|
+| region 的 `placement`、`coherence`、`tier` | 规范写进 0.1；XBus 实现本机 memfd + `owned` 的所有权移交 | 远端缺页取回、远端交换层、`shared`（低延迟链路） |
+| 资源视图 | openhal 的设备以端点上总线，带容量与链路属性 | 调度器 |
+| 动词描述、`bus/verbs`、任务状态、actor 链 | 规范写进 0.1；XBus 实现 `bus/verbs` 与任务状态事件 | MCP、A2A 桥 |
+| GPU 区域、GPU 转发 | 规范预留种类 | dmabuf、GPU 转发服务 |
+| 推理服务 | — | 按 14c |
+
+所以本轮把模型定全、把地基（命名、发现、区域、身份、观察）做实；融合与推理在这个地基上逐层加，不需要推翻重来。
+
 ## 15. 自审
 
 | 视角 | 发现 | 处理 |
@@ -318,4 +429,9 @@ part 1 的 K3（`Transport`）按 openbus 的传输绑定来定，K7 的帧以�
 - [Rethinking the D-Bus Message Bus](https://dvdhrm.github.io/rethinking-the-dbus-message-bus/)、[Bus1 (LWN)](https://lwn.net/Articles/697191/)
 - [Zircon 基础](https://fuchsia.dev/fuchsia-src/get-started/learn/intro/zircon)、[FIDL](https://fuchsia.dev/fuchsia-src/get-started/learn/fidl)
 - [sd-varlink](https://man7.org/linux/man-pages/man3/sd-varlink.3.html)、[systemd 与 varlink](https://www.phoronix.com/news/Systemd-Varlink-D-Bus-Future)
+- 远端内存：[AIFM (OSDI 20)](https://cs.brown.edu/people/malte/pub/papers/2020-osdi-aifm.pdf)、[Hermit (NSDI 23)](https://www.usenix.org/system/files/nsdi23-qiao.pdf)、[Eden (NSDI 25)](https://www.usenix.org/system/files/nsdi25-yelam.pdf)、[Memory Disaggregation 综述](https://arxiv.org/pdf/2305.03943)
+- CXL：[CXL 3.0](https://computeexpresslink.org/wp-content/uploads/2023/12/CXL_3.0-Webinar_FINAL.pdf)、[A Case for CXL-Centric Server Processors](https://arxiv.org/pdf/2305.05033)
+- GPU 转发：[rCUDA](https://www.mcs.anl.gov/papers/P5137-0514.pdf)、[GPU API remoting 的网络需求](https://arxiv.org/pdf/2401.13354)、[Gleam](https://arxiv.org/pdf/2607.23115)
+- 分布式推理：[Prima.cpp](https://arxiv.org/pdf/2504.08791)、[llama.cpp RPC（Jetson）](https://wiki.seeedstudio.com/ai_robotics_distributed_llama_cpp_rpc_jetson/)
+- Agent 协议：[MCP 2026-07-28 RC](https://blog.modelcontextprotocol.io/posts/2026-07-28-release-candidate/)、[MCP 与 A2A](https://atlan.com/know/mcp/mcp-vs-a2a-protocol/)
 - [NIXL 与解耦推理](https://www.spheron.network/blog/nvidia-nixl-disaggregated-inference-guide/)、[vLLM NixlConnector](https://docs.vllm.ai/en/stable/features/nixl_connector_usage/)、[vLLM #62080（静默退回 TCP）](https://github.com/vllm-project/vllm/issues/62080)

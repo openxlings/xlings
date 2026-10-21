@@ -61,15 +61,20 @@ while read -r where module; do
 done < <(imports src)
 
 # luban/ holds four kinds of package (Luban OS part 4 §4; design 2026-10-19
-# §28): specs/, kits/ and xdesk/ are independent projects kept here until they
+# §28; part 2 2026-10-22 §6.0): specs/, kits/, services/ and xdesk/ are independent projects kept here until they
 # move to their own repositories, os/ is Luban OS itself.
 #
 #   luban/specs/<name>  a specification: the standard library and its own
 #                       modules (<name>, <name>.*). Specifications never import
 #                       one another; implementations connect them.
-#   luban/kits/<name>   an implementation or a reusable component: the standard
+#   luban/kits/<name>   a library linked into a program -- a specification's
+#                       in-process implementation or a reusable component: no
+#                       process, endpoint or state of its own. The standard
 #                       library, specifications, other kits and their C
 #                       libraries -- never xlings or Luban.
+#   luban/services/<name>  a base service: a process of its own (or hosted by a
+#                       system's agent) owning an endpoint and its state, its
+#                       library how programs reach it. As a kit, and kits.
 #   luban/xdesk/<part>  the xdesk desktop: as a kit -- never xlings or Luban.
 #   luban/os/service    the OS depends on no presentation: not the Luban OS
 #                       app's library (luban.desktop.*), not the desktop (xdesk.*).
@@ -86,7 +91,7 @@ if [ -d luban/specs ]; then
   done
 fi
 is_spec() { local m="${1%%.*}" r; for r in $spec_roots; do [ "$m" = "$r" ] && return 0; done; return 1; }
-for project in luban/kits luban/xdesk; do
+for project in luban/kits luban/services luban/xdesk; do
   [ -d "$project" ] || continue
   while read -r where module; do
     [ -z "${module:-}" ] && continue
@@ -101,6 +106,16 @@ for project in luban/kits luban/xdesk; do
     esac
   done < <(imports "$project")
 done
+# A service's own modules (<name>.detail.*) are its: what it shows above is
+# platform-free (part 2 2026-10-22 §6.0a), how it reaches the platform is not
+# for anyone else to import.
+while read -r where module; do
+  case "${module:-}" in
+    *.detail|*.detail.*)
+      owner="${module%%.*}"
+      case "${where%%:*}" in luban/services/"$owner"/*) ;; *) report "${where%%:*}" "imports $module ($where): a service's detail modules are its own" ;; esac ;;
+  esac
+done < <(imports luban src modules apps tests)
 if [ -d luban/os/service ]; then
   while read -r where module; do
     case "${module:-}" in
