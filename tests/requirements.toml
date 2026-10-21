@@ -998,3 +998,17 @@ status = "required"
 [SUBOS-ROOT-INSTANCE-WORKSPACE]
 text = "inside a Luban system with no XLINGS_ACTIVE_SUBOS (a machine's session), the workspace xlings reads is the system's own subos (XLINGS_ROOT_INSTANCE, else /etc/xlings/usr), the one its scope names -- not the home's default"
 status = "required"
+
+# ── 2026-10-21 ecosystem usability (design 2026-10-21) ──────────────
+
+[PLATFORM-FS-TYPE]
+text = "a filesystem's type is the mount table's name for its device (9p2000.L answers statfs with the far side's type); 9p, virtiofs, NFS, SMB and FUSE are another machine's; a private directory of a user's on this machine's filesystem is the runtime directory, /run/user/<uid>, then <temp>/xlings-<uid>, only the user's"
+status = "required"
+
+[PLATFORM-ENV-LIST-DEFAULT]
+text = "a directory put in front of an unset or empty XDG_DATA_DIRS / XDG_CONFIG_DIRS keeps what the empty list meant (/usr/local/share:/usr/share, /etc/xdg) -- in a program's shim, a SubOS's session and `subos use`, and a machine's qemu; a list that is set is left as the session's"
+status = "required"
+
+[XIM-WORKER-REMOTE-HOME]
+text = "a Lua worker whose home is on another machine's filesystem (a Luban machine's, over 9p or virtiofs) keeps its private directory and captured output on this machine's, and its Landlock fence holds its directories open so a filesystem that keeps no inodes does not forget them -- recipes are read, packages install"
+status = "required"

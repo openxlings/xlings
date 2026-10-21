@@ -462,6 +462,9 @@ std::optional<std::string> setup_envs(const VData& vdata,
             return vanishing;
         }
         auto existing = std::string(std::getenv(key.c_str()) ? std::getenv(key.c_str()) : "");
+        // An unset list that means something (XDG_DATA_DIRS: /usr/share)
+        // keeps its meaning behind what is put in front (J28).
+        if (existing.empty()) existing = platform::list_default(key);
         if (auto merged = merge_shim_env_value(expanded, existing))
             platform::set_env_variable(key, *merged);
     }

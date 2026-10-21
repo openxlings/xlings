@@ -44,6 +44,20 @@ bool is_quota_exceeded(std::error_code ec) {
 #endif
 }
 
+std::string_view list_default(std::string_view var) {
+    if constexpr (is_windows) return {};
+    if (var == "XDG_DATA_DIRS") return "/usr/local/share:/usr/share";
+    if (var == "XDG_CONFIG_DIRS") return "/etc/xdg";
+    return {};
+}
+
+std::string prepend_to_list(std::string_view var, std::string_view front, std::string_view existing, char separator) {
+    const auto rest = existing.empty() ? list_default(var) : existing;
+    if (rest.empty()) return std::string(front);
+    if (front.empty()) return std::string(rest);
+    return std::format("{}{}{}", front, separator, rest);
+}
+
 bool remove_empty_directory(const std::filesystem::path& path) {
 #if defined(_WIN32)
     return ::RemoveDirectoryW(path.c_str()) != 0;

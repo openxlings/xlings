@@ -14,8 +14,27 @@ struct FsCaps {
     bool hard_links { true };
     bool symlinks { true };
     bool case_sensitive { true };
+    // Another machine's: 9p, virtiofs, NFS, SMB, a FUSE mount. What such a
+    // filesystem keeps of a file (its inode, its cache) is not this kernel's
+    // to promise, and every access is a round trip.
+    bool remote { false };
     bool measured { false };          // false: the probe could not run here; the platform's native answers
 };
+
+// The type of the filesystem whose device is major:minor, as a Linux mount
+// table (/proc/self/mountinfo) names it; "" when no line has that device.
+// The mount table, not statfs: 9p2000.L answers statfs with the type of the
+// filesystem on the other side (design 2026-10-21 §3.4, J1).
+std::string mount_table_type(std::string_view mountinfo, unsigned major, unsigned minor);
+
+// A type that is another machine's (FsCaps::remote).
+bool remote_type(std::string_view type);
+
+// A directory of this user's on a filesystem of this machine, made if it is
+// not there, only the user's (0700, not a link): $XDG_RUNTIME_DIR, then
+// /run/user/<uid>, then <temp>/xlings-<uid> -- with `name` below it. Empty
+// when none of them can be.
+std::filesystem::path local_private_dir(std::string_view name);
 
 // The filesystem holding `dir` (an existing directory), measured once per
 // filesystem per process: a scratch entry in `dir`, removed after.
@@ -45,4 +64,8 @@ int exchange_native(const std::filesystem::path& a, const std::filesystem::path&
 bool unsupported(int error);    // the error says the filesystem lacks the operation
 std::uint64_t device_of(const std::filesystem::path& dir);   // 0: unknown
 std::string filesystem_type(const std::filesystem::path& dir);
+bool remote(const std::filesystem::path& dir, std::string_view type);
+// `dir` is a directory, not a link, this user's and only this user's.
+bool owner_only_dir(const std::filesystem::path& dir);
+std::vector<std::filesystem::path> runtime_dirs();   // this user's runtime directories, in order
 }  // namespace xlings::platform_impl

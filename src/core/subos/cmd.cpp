@@ -451,8 +451,8 @@ int use_emit_shell(const std::string& name,
             // because what is left is still a valid string.
             if (v.op == manifest::OP_PREPEND) {
                 std::println(std::cout,
-                    R"SH(if set -q {0}; set -gx {0} "{1}:${0}"; else; set -gx {0} "{1}"; end;)SH",
-                    v.var, v.value);
+                    R"SH(if set -q {0}; and test -n "${0}"; set -gx {0} "{1}:${0}"; else; set -gx {0} "{2}"; end;)SH",
+                    v.var, v.value, platform::prepend_to_list(v.var, v.value, "", ':'));
             } else {
                 std::println(std::cout, R"SH(if not set -q {0}; set -gx {0} "{1}"; end;)SH",
                              v.var, v.value);
@@ -496,7 +496,12 @@ int use_emit_shell(const std::string& name,
             // ${VAR:+:$VAR} appends the separator only when VAR is non-empty,
             // so an unset variable does not become a trailing ':' -- which an
             // empty PATH-list element reads as "the current directory".
-            std::println(std::cout, R"(export {0}="{1}${{{0}:+:${0}}}";)", v.var, v.value);
+            // A list that means something when empty (XDG_DATA_DIRS) keeps
+            // that meaning behind the new directory (J28).
+            if (const auto fallback = platform::list_default(v.var); !fallback.empty())
+                std::println(std::cout, R"(export {0}="{1}:${{{0}:-{2}}}";)", v.var, v.value, fallback);
+            else
+                std::println(std::cout, R"(export {0}="{1}${{{0}:+:${0}}}";)", v.var, v.value);
         } else {
             // `${VAR=v}`, NOT `${VAR:=v}`. The colon form also assigns when VAR
             // is set-but-empty, which would overwrite a value the user chose.

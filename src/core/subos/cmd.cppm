@@ -445,8 +445,7 @@ inline void apply_subos_env_(const std::string& name) {
         if (v.unresolved) continue;
         const auto existing = utils::get_env_or_default(v.var);
         if (v.op == manifest::OP_PREPEND) {
-            platform::set_env_variable(
-                v.var, existing.empty() ? v.value : v.value + ":" + existing);
+            platform::set_env_variable(v.var, platform::prepend_to_list(v.var, v.value, existing, ':'));
         } else if (!utils::env_is_set(v.var)) {
             // Not `existing.empty()`: an exported-but-empty variable is a value
             // the user chose, and `set` yields to the user's value.

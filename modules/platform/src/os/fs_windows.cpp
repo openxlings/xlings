@@ -40,5 +40,21 @@ std::string filesystem_type(const std::filesystem::path& dir) {
     return std::filesystem::path(name).string();
 }
 
+bool remote(const std::filesystem::path& dir, std::string_view) {
+    wchar_t root[MAX_PATH] {};
+    return ::GetVolumePathNameW(dir.wstring().c_str(), root, MAX_PATH) && ::GetDriveTypeW(root) == DRIVE_REMOTE;
+}
+
+// The user's temporary directory is the user's own (its ACL).
+bool owner_only_dir(const std::filesystem::path& dir) {
+    std::error_code ec;
+    return std::filesystem::is_directory(dir, ec) && !std::filesystem::is_symlink(dir, ec);
+}
+
+std::vector<std::filesystem::path> runtime_dirs() {
+    std::error_code ec;
+    return {std::filesystem::temp_directory_path(ec) / "xlings"};
+}
+
 }  // namespace xlings::platform_impl
 #endif

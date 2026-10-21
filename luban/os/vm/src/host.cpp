@@ -270,7 +270,7 @@ std::map<std::string, std::string> qemu_env_(const Json& declared) {
         const auto var = v.value("var", std::string{});
         const auto value = v.value("value", std::string{});
         if (var.empty() || value.empty()) continue;
-        if (v.value("op", std::string{}) == "prepend") env[var] = env[var].empty() ? value : value + ":" + env[var];
+        if (v.value("op", std::string{}) == "prepend") env[var] = platform::prepend_to_list(var, value, env[var], ':');
         else env.try_emplace(var, value);
     }
     return env;
