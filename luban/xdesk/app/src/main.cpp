@@ -39,6 +39,8 @@ int main(int argc, char* argv[]) {
         else if (args.size() == 4 && args[1] == "debug" && args[2] == "hud" && (args[3] == "on" || args[3] == "off"))
             request = std::format("{{\"debug\": \"hud\", \"on\": {}}}", args[3] == "on" ? "true" : "false");
         else if (args.size() == 2 && args[1] == "subscribe") request = R"({"subscribe": true})";
+        else if (args.size() == 2 && args[1].starts_with("{")) request = std::string(args[1]);   // a request as the socket takes it
+        else if (args.size() == 3 && args[1] == "input") request = std::format("{{\"input\": {}}}", args[2]);
         else if (args.size() == 3 && args[1] == "bookmark") request = std::format("{{\"bookmark\": {}}}", std::atoi(std::string(args[2]).c_str()));
         else if (args.size() >= 2 && args[1] == "telemetry") {
             std::string what;
@@ -47,7 +49,7 @@ int main(int argc, char* argv[]) {
         } else {
             std::println(std::cerr, "usage: xdesk msg keys list | keys bind ACTION CHORD | keys unbind ACTION | keys set luban|luban-no-hjkl\n"
                                     "       xdesk msg settings [displays|layout|appearance|keys|about]\n"
-                                    "       xdesk msg state | debug hud on|off | subscribe | bookmark N\n"
+                                    "       xdesk msg state | debug hud on|off | subscribe | bookmark N | input STEPS (JSON)\n"
                                     "       xdesk msg telemetry [dump|metrics|recent N|trace|profile on|off|level L|reset]");
             return 2;
         }

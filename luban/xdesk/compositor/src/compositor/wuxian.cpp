@@ -568,8 +568,16 @@ void Server::naming_type(std::string_view text) {
 void Server::minimap_press() {
     const auto m = lay.minimap();
     const auto w = minimap_world(cursor->x, cursor->y);
-    MinimapDrag d{.from = w};
-    if (const auto hit = openwx::hit(m.layers, w)) {
+    MinimapDrag d{.from = w, .press_x = cursor->x, .press_y = cursor->y, .per_pixel = minimap_shown.per_pixel};
+    // The view's box by its edge (3 map pixels): the camera; inside it, what is there.
+    const double pp = minimap_shown.per_pixel, reach = 3 * pp;
+    const layout::Rect outer{m.view.x - reach, m.view.y - reach, m.view.width + 2 * reach, m.view.height + 2 * reach};
+    const layout::Rect inner{m.view.x + reach, m.view.y + reach, m.view.width - 2 * reach, m.view.height - 2 * reach};
+    const bool on_edge = outer.contains(w.x, w.y) && !(inner.width > 0 && inner.height > 0 && inner.contains(w.x, w.y));
+    if (on_edge) {
+        d.what = MinimapDrag::What::view;
+        d.origin = lay.camera().at;
+    } else if (const auto hit = openwx::hit(m.layers, w)) {
         if (hit->kind == openwx::Layer::Kind::window) {
             d.what = MinimapDrag::What::window;
             d.window = hit->window;
@@ -594,10 +602,10 @@ void Server::minimap_press() {
 void Server::minimap_motion() {
     if (!minimap_drag) { drag = Drag::none; return; }
     auto& d = *minimap_drag;
-    const auto w = minimap_world(cursor->x, cursor->y);
-    const double dx = w.x - d.from.x, dy = w.y - d.from.y;
+    // In the map's pixels as it was pressed: what moves changes the map's scale.
+    const double dx = (cursor->x - d.press_x) * d.per_pixel, dy = (cursor->y - d.press_y) * d.per_pixel;
     // A few pixels of the map before it is a drag, not a click.
-    if (!d.moved && std::hypot(dx, dy) < 3 * minimap_shown.per_pixel) return;
+    if (!d.moved && std::hypot(cursor->x - d.press_x, cursor->y - d.press_y) < 3) return;
     d.moved = true;
     pointer_shape("grabbing");
     using W = MinimapDrag::What;

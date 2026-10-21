@@ -7,6 +7,7 @@ import opensal.wire;
 import opensal.keys;
 import xdesk.os;
 import xdesk.layout;
+import telemetry;
 import xdesk.draw;
 import xdesk.shell;
 import xdesk.apps;
@@ -261,6 +262,13 @@ layout::Id Server::close_under_pointer() {
 }
 
 void Server::button(const opensal::PointerButton& b) {
+    // What each press met, in the flight recorder (xdesk msg telemetry recent).
+    if (b.down) {
+        View* at = view_at(cursor->x, cursor->y);
+        telemetry::log().debug("pointer-button", {{"x", cursor->x}, {"y", cursor->y}, {"button", static_cast<int>(b.button)},
+                                                  {"window", at ? at->id : 0}, {"edges", at ? edges_at(*at) : 0u},
+                                                  {"overlay", static_cast<int>(overlay)}, {"wuxian", wuxian()}, {"live", live()}});
+    }
     // Super with a click (a drag, a pan) is not Super alone: its release opens nothing.
     if (b.down) super_alone = false;
     if (!b.down && drag != Drag::none) {

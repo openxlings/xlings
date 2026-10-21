@@ -73,5 +73,6 @@ inline constexpr xkb_keysym_t Return = XKB_KEY_Return, KP_Enter = XKB_KEY_KP_Ent
                               bracketleft = XKB_KEY_bracketleft, bracketright = XKB_KEY_bracketright, slash = XKB_KEY_slash,
                               Super_L = XKB_KEY_Super_L, Super_R = XKB_KEY_Super_R, Alt_L = XKB_KEY_Alt_L, Alt_R = XKB_KEY_Alt_R,
                               Meta_L = XKB_KEY_Meta_L, Meta_R = XKB_KEY_Meta_R,
+                              Shift_L = XKB_KEY_Shift_L, Control_L = XKB_KEY_Control_L,
                               NoSymbol = XKB_KEY_NoSymbol;
 }

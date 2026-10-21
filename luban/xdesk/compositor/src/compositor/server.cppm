@@ -236,6 +236,7 @@ struct Server {
         layout::Id window { 0 };
         layout::Point from;              // the world point pressed
         layout::Point origin;            // what moves: the camera's top-left, a workspace's origin, a window's top-left
+        double press_x { 0 }, press_y { 0 }, per_pixel { 1 };   // the map as it was pressed (its scale changes as things move)
         bool moved { false };
     };
     std::optional<MinimapDrag> minimap_drag;
@@ -440,6 +441,8 @@ struct Server {
     // What the desktop is now, for `xdesk msg state` (and `luban status
     // <name> --desktop`): one JSON document.
     std::string state_json();
+    // `{"input": [...]}`: the steps given as the window gives input; why not, when a step is not understood.
+    std::string inject(const config::Json& steps);
     // A frame's cost, by its parts (design 2026-10-21 §5.6a): composing it,
     // reading it back from the GPU, sending it; the last ten seconds kept.
     struct FrameStat {

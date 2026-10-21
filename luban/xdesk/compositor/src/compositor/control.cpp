@@ -11,6 +11,11 @@
 //   {"debug": "hud", "on": true|false}                the frames' parts drawn in the top left
 //   {"subscribe": true}                               what happens from now on, a line each
 //   {"bookmark": N}                                   bookmark N (state's "bookmarks"), as clicked: an agent's way to it
+//   {"input": [STEP...]}                              input as the window gives it, through the same path: each step
+//                                                     {"move": [x, y]}, {"button": "left"|"right"|"middle", "down": B},
+//                                                     {"click": [x, y], "button": B, "count": N}, {"key": "Super+s"},
+//                                                     {"keydown": "Super"}, {"keyup": "Super"}, {"wheel": [dx, dy]}
+//                                                     (logical pixels) -- what headless tests and agents drive the desktop by
 //   {"telemetry": REQUEST}                            the process's telemetry: dump, metrics, recent [n], trace,
 //                                                     profile on|off, level L, reset (the telemetry kit)
 //
@@ -121,6 +126,7 @@ std::string Server::state_json() {
     output.set("renderer_text", Json{renderer_text});
     out.set("output", output);
     out.set("view", Json{std::string(wuxian() ? "wuxian" : "workspace")});
+    out.set("view_moving", Json{view_move.has_value()});
     const auto cam = lay.camera();
     Json camera{Json::Object{}};
     camera.set("at", Json{Json::Array{num_(cam.at.x), num_(cam.at.y)}});
@@ -147,6 +153,8 @@ std::string Server::state_json() {
         w.set("id", num_(static_cast<double>(v.id)));
         w.set("app_id", Json{std::string(v.toplevel->app_id ? v.toplevel->app_id : "")});
         w.set("title", Json{std::string(v.toplevel->title ? v.toplevel->title : "")});
+        // On its way (a glide): where it is drawn is not yet its rect.
+        w.set("moving", Json{v.moving});
         if (const auto p = std::ranges::find(placements, v.id, &layout::Placement::id); p != placements.end()) {
             w.set("rect", rect_(p->rect));
             w.set("workspace", num_(p->workspace));
@@ -154,6 +162,10 @@ std::string Server::state_json() {
             w.set("visible", Json{p->visible});
             w.set("floating", Json{p->floating});
             w.set("collapsed", Json{p->collapsed});
+            w.set("maximized", Json{p->maximized});
+            w.set("fullscreen", Json{p->fullscreen});
+            w.set("pinned", Json{p->pinned});
+            w.set("sticky", Json{lay.sticky(v.id)});
         }
         windows.push_back(std::move(w));
     }
@@ -213,6 +225,10 @@ std::string Server::state_json() {
     frames.set("whole", num_(whole));
     out.set("frames", frames);
     out.set("hud", Json{hud});
+    // What the pointer is doing (a drag, a resize, a pan...), and where it is.
+    out.set("drag", Json{std::string(std::array<std::string_view, 9>{"none", "pan", "move", "gap", "row_gap", "resize", "workspace", "scale",
+                                                                  "minimap"}[static_cast<std::size_t>(drag)])});
+    out.set("pointer", Json{Json::Array{num_(cursor->x), num_(cursor->y)}});
     // Covered items' bookmarks (design 2026-10-21 §8.4): what each is for, where it is.
     Json::Array marks;
     for (const auto& b : bookmarks) {
@@ -222,9 +238,21 @@ std::string Server::state_json() {
         if (!b.more.empty()) m.set("more", num_(static_cast<double>(b.more.size())));
         m.set("label", Json{b.label});
         m.set("tab", rect_(b.tab));
+        m.set("lit", Json{static_cast<int>(&b - bookmarks.data()) == bookmark_lit});
         marks.push_back(std::move(m));
     }
     out.set("bookmarks", Json{marks});
+    // The minimap where it is shown: its rect, and world = origin + (pixel - rect's top-left) * per_pixel.
+    if (minimap_node && minimap_node->node.enabled && minimap_shown.per_pixel > 0 && !minimap_shown.picture.areas.empty()) {
+        Json mm{Json::Object{}};
+        const auto& a = minimap_shown.picture.areas.front().rect;
+        mm.set("rect", rect_({a.x, a.y, a.width, a.height}));
+        mm.set("origin", Json{Json::Array{num_(minimap_shown.origin_x), num_(minimap_shown.origin_y)}});
+        mm.set("per_pixel", num_(minimap_shown.per_pixel));
+        const auto m = lay.minimap();
+        mm.set("view", rect_(m.view));
+        out.set("minimap", mm);
+    }
     return out.dump();
 }
 
@@ -263,6 +291,11 @@ std::string Server::control(std::string_view request) {
     const auto& j = *parsed;
     auto str = [&](std::string_view k) { const auto* v = j.get(k); return v ? v->string_or("") : std::string{}; };
     if (const auto* st = j.get("state"); st && st->bool_or(false)) return state_json();
+    if (const auto* in = j.get("input")) {
+        if (!std::holds_alternative<Json::Array>(in->v)) return answer_(false, "input is a list of steps");
+        if (auto done = inject(*in); !done.empty()) return answer_(false, done);
+        return answer_(true);
+    }
     if (const auto* bm = j.get("bookmark")) {
         const auto n = static_cast<std::size_t>(std::max(0.0, bm->number_or(-1)));
         if (bm->number_or(-1) < 0 || n >= bookmarks.size()) return answer_(false, std::format("no bookmark {} ({} shown)", n, bookmarks.size()));
@@ -351,6 +384,82 @@ std::string Server::control(std::string_view request) {
     }
     return answer_(false, "asks: {\"keys\": \"list\"|\"bind\"|\"unbind\"|\"set\"}, {\"settings\": PAGE}, {\"state\": true}, "
                           "{\"debug\": \"hud\"}, {\"subscribe\": true}, {\"telemetry\": \"dump\"}");
+}
+
+// Input given through the control (`{"input": [...]}`): each step becomes
+// the event the window would send, handed to the same path. What it could
+// not read is said, and nothing after it is done.
+std::string Server::inject(const Json& steps) {
+    Link* via = primary();
+    if (!via) return "no window shows the desktop";
+    auto modifier_sym = [](std::string_view m) -> std::uint32_t {
+        if (m == "Super") return key::Super_L;
+        if (m == "Shift") return key::Shift_L;
+        if (m == "Ctrl" || m == "Control") return key::Control_L;
+        if (m == "Alt") return key::Alt_L;
+        return 0;
+    };
+    auto send = [&](const opensal::Event& e) { input(*via, e); };
+    auto key_named = [&](std::string_view name, bool down) -> bool {
+        if (const auto m = modifier_sym(name)) { send(opensal::Key{.down = down, .keysym = m}); return true; }
+        const auto c = parse_chord(std::string("Super+") + std::string(name));
+        if (!c || (c->sym == 0 && c->digit == 0)) return false;
+        // A digit by its place: 1..9, and 10 the key after 9 (0).
+        send(opensal::Key{.down = down, .keysym = c->sym ? c->sym : static_cast<std::uint32_t>(c->digit == 10 ? '0' : '0' + c->digit)});
+        return true;
+    };
+    auto point = [&](const Json& p, double& x, double& y) {
+        const auto* a = std::get_if<Json::Array>(&p.v);
+        if (!a || a->size() != 2) return false;
+        x = (*a)[0].number_or(0);
+        y = (*a)[1].number_or(0);
+        return true;
+    };
+    auto button_of = [](std::string_view b) {
+        return b == "right" ? opensal::Button::Right : b == "middle" ? opensal::Button::Middle : opensal::Button::Left;
+    };
+    std::size_t k = 0;
+    for (const auto& step : std::get<Json::Array>(steps.v)) {
+        ++k;
+        double x = 0, y = 0;
+        auto str = [&](std::string_view key) { const auto* v = step.get(key); return v ? v->string_or("") : std::string{}; };
+        if (const auto* m = step.get("move")) {
+            if (!point(*m, x, y)) return std::format("step {}: move takes [x, y]", k);
+            send(opensal::PointerMotion{x * scale, y * scale});
+        } else if (const auto* c = step.get("click")) {
+            if (!point(*c, x, y)) return std::format("step {}: click takes [x, y]", k);
+            send(opensal::PointerMotion{x * scale, y * scale});
+            const auto* n = step.get("count");
+            const int count = n ? static_cast<int>(n->number_or(1)) : 1;
+            for (int i = 0; i < std::clamp(count, 1, 3); ++i) {
+                send(opensal::PointerButton{.button = button_of(str("button")), .down = true});
+                send(opensal::PointerButton{.button = button_of(str("button")), .down = false});
+            }
+        } else if (step.get("button")) {
+            const auto* d = step.get("down");
+            send(opensal::PointerButton{.button = button_of(str("button")), .down = d ? d->bool_or(true) : true});
+        } else if (const auto* w = step.get("wheel")) {
+            if (!point(*w, x, y)) return std::format("step {}: wheel takes [dx, dy]", k);
+            send(opensal::Wheel{x, y});
+        } else if (!str("keydown").empty() || !str("keyup").empty()) {
+            const bool down = !str("keydown").empty();
+            if (!key_named(down ? str("keydown") : str("keyup"), down)) return std::format("step {}: no key '{}'", k, down ? str("keydown") : str("keyup"));
+        } else if (const auto chord = str("key"); !chord.empty()) {
+            // A chord: its modifiers held, the key pressed and let go, the modifiers let go.
+            std::vector<std::string> parts;
+            for (auto part : std::views::split(std::string_view(chord), '+')) parts.emplace_back(part.begin(), part.end());
+            if (parts.empty()) return std::format("step {}: no key", k);
+            for (std::size_t i = 0; i + 1 < parts.size(); ++i)
+                if (!modifier_sym(parts[i])) return std::format("step {}: '{}' is not Super, Shift, Ctrl or Alt", k, parts[i]);
+            for (std::size_t i = 0; i + 1 < parts.size(); ++i) key_named(parts[i], true);
+            const bool ok = key_named(parts.back(), true) && key_named(parts.back(), false);
+            for (std::size_t i = parts.size() - 1; i-- > 0;) key_named(parts[i], false);
+            if (!ok) return std::format("step {}: no key '{}'", k, parts.back());
+        } else {
+            return std::format("step {}: move, click, button, wheel, key, keydown or keyup", k);
+        }
+    }
+    return {};
 }
 
 }  // namespace xdesk::compositor

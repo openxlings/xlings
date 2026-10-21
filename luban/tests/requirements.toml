@@ -683,3 +683,19 @@ status = "required"
 [WUXIAN-BOOKMARKS]
 text = "an item (a workspace or a free window on the plane; a stacked workspace's window) of which nothing shows on the screen is covered, an item off the screen is not; the top-most item over its centre carries its bookmark (at its right edge, at most five then +N); hovering outlines the covered item, clicking raises and focuses it; bookmarks are hidden while something is dragged or the view moves and can be turned off; computing them for a hundred items stays within a frame"
 status = "required"
+
+[XDESK-HEADLESS]
+text = "xdesk's interactions are driven headless through its control: `{\"input\": [...]}` (move, click with a count, button, wheel, key, keydown, keyup) goes through the same path as the window's input, and tests read where to point and what happened from `xdesk msg state` (windows, workspaces' frames, bookmarks, the minimap)"
+status = "required"
+
+[XDESK-BOUNDS]
+text = "a stacked or floating window moved in the workspace view keeps at least 64 pixels (or a quarter) of its title bar on the output, never above the top nor under the status bar nor below the bottom"
+status = "required"
+
+[XDESK-WUXIAN-REACH]
+text = "in the WuXian view a free window's border (6 screen pixels) resizes it, a title bar is hit within at least 24 screen pixels, a double-click on a free window's title bar collapses and expands it, and zoomed far out (pictures) any part of a window moves it"
+status = "required"
+
+[XDESK-MINIMAP]
+text = "the minimap's view box dragged by its edge pans the camera by as much in the world; a workspace or window clicked there goes to the middle of the view (the zoom kept); a free window dragged there moves, into a workspace when let go over one"
+status = "required"

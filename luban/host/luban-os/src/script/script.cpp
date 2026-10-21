@@ -292,6 +292,15 @@ void script_step_(App& a, Script& sc) {
         const auto got = path_(state_(a), path);
         if (matches_(got, want)) next();
         else if (!waiting(seconds)) fail(std::format("{} is {}, not {}", path, got ? got->dump() : "absent", want));
+    } else if (cmd == "untilfile") {
+        // Held until a file is there -- a test driving the desktop by its
+        // control says it is done: `untilfile <path> [seconds]`.
+        std::string file;
+        double seconds = 180;
+        words >> file >> seconds;
+        std::error_code ec;
+        if (!file.empty() && std::filesystem::exists(file, ec)) next();
+        else if (!waiting(seconds)) fail("nothing at " + file);
     } else if (cmd == "see") {
         std::string text;
         std::getline(words >> std::ws, text);
