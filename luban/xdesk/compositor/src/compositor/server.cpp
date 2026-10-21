@@ -321,6 +321,7 @@ bool Server::start_() {
     hint_timer = wl_event_loop_add_timer(loop, [](void* data) -> int {
         auto* self = static_cast<Server*>(data);
         wlr_scene_node_set_enabled(&self->hint_node->node, false);
+        self->hint_text.clear();
         return 0;
     }, this);
     max_timer = wl_event_loop_add_timer(loop, [](void* data) -> int {

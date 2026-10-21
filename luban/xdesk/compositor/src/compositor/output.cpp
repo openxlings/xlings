@@ -36,6 +36,7 @@ void Server::resize(opensal::Size want) {
         wlr_scene_rect_set_size(background, logical_w(), logical_h());
         draw_launcher();
         arrange();
+        if (hint_node->node.enabled) redraw_hint();
         tell_roles();   // the mirrors: the picture's new size
     } else {
         log(std::format("the output did not take {}x{}", want.width, want.height));
@@ -61,6 +62,7 @@ void Server::set_scale(double want) {
         wlr_scene_rect_set_size(background, logical_w(), logical_h());
         draw_launcher();
         arrange();
+        if (hint_node->node.enabled) redraw_hint();
     } else {
         log(std::format("the output did not take scale {}", want));
     }

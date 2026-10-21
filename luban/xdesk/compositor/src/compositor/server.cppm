@@ -436,6 +436,7 @@ struct Server {
     wlr_scene_buffer* overlay_node { nullptr };
     wlr_scene_buffer* hint_node { nullptr };
     wl_event_source* hint_timer { nullptr };
+    std::string hint_text;      // what the hint shows, drawn again at a new size or density
     std::map<std::string, std::string> app_names;   // app id -> its name (desktop entries)
     std::map<std::string, std::string> app_icons;   // app id -> its Icon=
     // A window dragged (design 2026-10-20 WuXian §3.7, §3.8): it follows the
@@ -620,6 +621,8 @@ struct Server {
     bool overlay_key(xkb_keysym_t sym, bool down);
     bool overlay_click(double x, double y);
     void show_hint(std::string_view text, int ms);
+    // The hint still shown, at the output's size and density now (J10).
+    void redraw_hint();
     std::string name_of(View& v);
     std::string app_icon(const std::string& id);
 

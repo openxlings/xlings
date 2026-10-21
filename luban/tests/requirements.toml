@@ -585,3 +585,11 @@ status = "required"
 [LUBAN-CANCEL]
 text = "a cancelled making is asked to stop (SIGTERM) and killed only after 10 seconds: xlings ends at its next safe point and says E_CANCELLED, nothing is made another way, its half in the system's domain is set aside as .unfinished-<name>-<pid>, and the name can be made again at once"
 status = "required"
+
+[LUBAN-CONSOLE-PACED]
+text = "what a console's program writes wakes the window at most once a frame (60 a second): a flood of writes is drawn as it stands each frame, the last write always shown"
+status = "required"
+
+[LUBAN-OS-KEY-RECONCILE]
+text = "the keys a system was told are down are let go when the window loses the keyboard, and on X11 reconciled with the host's own key state while any is held (a window manager's grab took the release); with the keyboard held, Super down and the pointer in the window, the pointer is held so a host's Super+drag does not move the window; a Super key the host kept says Ctrl+Alt+K once"
+status = "required"

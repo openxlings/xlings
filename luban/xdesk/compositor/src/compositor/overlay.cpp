@@ -587,11 +587,20 @@ bool Server::overlay_click(double x, double y) {
 }
 
 void Server::show_hint(std::string_view text, int ms) {
-    auto pic = shell::hint(ui(), theme, text, logical_w(), logical_h(), scale);
-    wlr_scene_node_set_position(&hint_node->node, static_cast<int>(pic.x), static_cast<int>(pic.y));
-    show(hint_node, std::move(pic.image), scale);
+    hint_text = std::string(text);
+    redraw_hint();
     wlr_scene_node_set_enabled(&hint_node->node, true);
     if (hint_timer) wl_event_source_timer_update(hint_timer, ms);
+}
+
+// Placed by the output's size: a window that is resized right after the
+// desktop starts (the first entry) had it half under the bottom edge (design
+// 2026-10-21 §6.2, J10).
+void Server::redraw_hint() {
+    if (hint_text.empty()) return;
+    auto pic = shell::hint(ui(), theme, hint_text, logical_w(), logical_h(), scale);
+    wlr_scene_node_set_position(&hint_node->node, static_cast<int>(pic.x), static_cast<int>(pic.y));
+    show(hint_node, std::move(pic.image), scale);
 }
 
 }  // namespace xdesk::compositor
