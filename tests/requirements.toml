@@ -1028,3 +1028,7 @@ status = "required"
 [OPS-LINK]
 text = "an operation that runs part of itself in a system's own home (its domain) records a link line there; `xlings self log` shows the linked record in place, and `--subos <name>` (`luban status <name> --log`) shows the latest operation on that system; a cancel is recorded"
 status = "required"
+
+[LUBAN-PACKAGE-CHECKS]
+text = "a package's declared checks (share/luban/checks.d, written from a recipe's extensions.luban.checks) may be `run` (a command), `launcher` (an application id: its desktop entry in /usr/share/applications, not hidden) or `gui` and `sound` (a window that maps, a sound that is heard), the last two a desktop session's -- said as such by the self-check, never failed for want of one"
+status = "required"

@@ -250,7 +250,29 @@ std::vector<Item> declared_(const fs::path& root, const Options& o, std::set<std
             continue;
         }
         for (const auto& c : *checks) {
-            if (!c.is_object() || !c.contains("run") || !c["run"].is_string()) continue;
+            if (!c.is_object()) continue;
+            // The launcher lists it: its desktop entry is where launchers look, and shown.
+            if (c.contains("launcher") && c["launcher"].is_string()) {
+                const auto id = c.value("id", file.stem().string());
+                declaredIds.insert(id);
+                const auto app = c["launcher"].get<std::string>();
+                const auto entry = rootfs::in_root(root, "/usr/share/applications") / (app + ".desktop");
+                std::ifstream de(entry);
+                bool shown = de.good();
+                for (std::string line; shown && std::getline(de, line);)
+                    if (line == "NoDisplay=true" || line == "Hidden=true") shown = false;
+                out.push_back(item_(id, c.value("what", "the launcher lists " + app), c.value("critical", false), shown,
+                                    shown ? std::string{} : de.good() ? app + ".desktop is hidden" : "no " + app + ".desktop in /usr/share/applications"));
+                continue;
+            }
+            // A window, a sound: a desktop session's checks.
+            if ((c.contains("gui") || c.contains("sound")) && !o.session) {
+                const auto id = c.value("id", file.stem().string());
+                declaredIds.insert(id);
+                out.push_back(item_(id, c.value("what", id), false, true, "in a desktop session (luban-os-ci L3)"));
+                continue;
+            }
+            if (!c.contains("run") || !c["run"].is_string()) continue;
             const auto id = c.value("id", file.stem().string());
             declaredIds.insert(id);
             const auto what = c.value("what", id);
@@ -414,7 +436,15 @@ Report check(const fs::path& root, Depth depth, const Options& o) {
         r.items.push_back(item_("cursors", "its desktop has a cursor theme", false, cursors,
                                 cursors ? std::string{} : "no theme with cursors under /usr/share/icons"));
     }
-    if (!here) return r;
+    if (!here) {
+        // From outside: what is declared that a file says (a launcher's entry); nothing run.
+        std::set<std::string> ids;
+        auto files_only = o;
+        files_only.run = false;
+        for (auto& i : declared_(root, files_only, ids))
+            if (i.detail != "not run here" && !i.detail.starts_with("in a desktop session")) r.items.push_back(std::move(i));
+        return r;
+    }
     auto [loader, libraries] = closure_(usrBin);
     r.items.push_back(std::move(loader));
     r.items.push_back(std::move(libraries));

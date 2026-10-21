@@ -41,12 +41,18 @@ struct Options {
     // the root this process runs in ("/").
     bool run { true };
     std::chrono::seconds program_timeout { 10 };
+    // A desktop session runs the gui and sound checks (not this check).
+    bool session { false };
 };
 
 // Where editions and packages declare their checks: files of
 // {"checks": [{"id", "what", "run", "critical", "timeout"}]}, `run` a
 // /bin/sh command. A payload's share/luban/checks.d reaches here through the
-// share projection.
+// share projection (a recipe's extensions.luban.checks are written there).
+// Besides `run` (design 2026-10-21 §6.1): `launcher` -- an application id the
+// launcher lists (its desktop entry is there, shown); `gui` and `sound` -- a
+// window that maps, a sound that is heard -- need a desktop session and are
+// run where there is one (luban-os-ci L3), said as such here.
 inline constexpr std::string_view kDeclaredDir = "usr/share/luban/checks.d";
 
 Report check(const fs::path& root, Depth depth, const Options& options = {});
