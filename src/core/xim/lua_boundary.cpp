@@ -128,8 +128,8 @@ struct Worker {
                 return std::ranges::any_of(
                     roots, [&](const auto& root) { return under(canonical, root); });
             };
-            // `walk`: a directory source is every file under it, checked; a
-            // library's directory is only where its one file is (below).
+            // A link to a library of the operating system's own (T0: a host
+            // link sentinel's -- the NVIDIA driver's userspace).
             auto system_library = [&](const fs::path& link) {
                 if constexpr (!platform::is_linux) return false;
                 std::error_code ec;
@@ -144,6 +144,8 @@ struct Worker {
                 // is root outside it) and not writable by others.
                 return in_system && own && own->uid != platform::user_ids().euid && !(own->mode & 022);
             };
+            // `walk`: a directory source is every file under it, checked; a
+            // registration's directory is only where its one file is (below).
             auto source = [&](const std::string& text, const fs::path& base, bool walk = true) {
                 fs::path path(xvm::expand_path(text, Config::paths().homeDir.string()));
                 if (path.empty())

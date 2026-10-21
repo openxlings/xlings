@@ -290,6 +290,7 @@ MachineGpu machine_gpu(const std::optional<fs::path>& render_node, const std::ex
 
 namespace {
 
+// Starts the machine's supervisor and waits for its agent.
 int start_impl_(const service::Context& c, std::string_view name, const EnterOptions& o) {
     const auto& arch = xlings::image::native_arch();
     const xlings::subos::HomeView view{c.home};
