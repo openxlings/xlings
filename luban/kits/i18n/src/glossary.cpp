@@ -1,10 +1,10 @@
 // Terms written in English in every language, and where their explanations
 // are (design 2026-10-19 §7.5): what a person hovers over.
-module xlings.i18n;
+module i18n;
 
 import std;
 
-namespace xlings::i18n {
+namespace i18n {
 
 namespace {
 std::vector<std::pair<std::string, std::span<const Term>>>& glossaries_() {
@@ -34,4 +34,4 @@ std::optional<std::string_view> explain(std::string_view term) {
     return std::nullopt;
 }
 
-}  // namespace xlings::i18n
+}  // namespace i18n

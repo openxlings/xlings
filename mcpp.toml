@@ -61,6 +61,7 @@ members = [
     "luban/kits/opensal-wlr",
     "luban/kits/cursor",
     "luban/kits/telemetry",
+    "luban/kits/i18n",
     "luban/kits/cursor/tool",
     "luban/services/xbus",
     "luban/services/xbus/tool",
@@ -217,6 +218,7 @@ xdesk-layout = { path = "luban/xdesk/layout" }
 tray       = { path = "luban/kits/tray" }
 cursorkit  = { path = "luban/kits/cursor" }
 telemetry  = { path = "luban/kits/telemetry" }
+i18nkit    = { path = "luban/kits/i18n" }
 xbus       = { path = "luban/services/xbus" }
 
 [dev-dependencies.compat]

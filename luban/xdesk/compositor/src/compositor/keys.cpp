@@ -2,6 +2,7 @@
 module xdesk.compositor;
 
 import std;
+import xdesk.words;
 import xdesk.native.wayland;
 import :keys;
 
@@ -9,13 +10,13 @@ namespace xdesk::compositor {
 
 std::string_view group_label(Group g, bool zh) {
     switch (g) {
-        case Group::find: return zh ? "找" : "Find";
-        case Group::focus: return zh ? "焦点与移动" : "Focus and move";
-        case Group::window: return zh ? "窗口" : "Windows";
-        case Group::size: return zh ? "大小" : "Size";
-        case Group::arrangement: return zh ? "排布" : "Arrangements";
-        case Group::workspace: return zh ? "工作区" : "Workspaces";
-        case Group::open: return zh ? "打开" : "Open";
+        case Group::find: return i18n::tr("Find");
+        case Group::focus: return i18n::tr("Focus and move");
+        case Group::window: return i18n::tr("Windows");
+        case Group::size: return i18n::tr("Size");
+        case Group::arrangement: return i18n::tr("Arrangements");
+        case Group::workspace: return i18n::tr("Workspaces");
+        case Group::open: return i18n::tr("Open");
     }
     return "";
 }
@@ -27,37 +28,37 @@ const std::vector<ActionInfo>& actions() {
     using G = Group;
     static const std::vector<ActionInfo> all = [] {
         std::vector<ActionInfo> a{
-            {Action::apps, "apps", "Applications", "应用", {"Super+space"}, true, true, true, G::find},
-            {Action::switch_apps, "switch-apps", "Applications, the most recent first", "按应用切换", {"Super+Tab", "Super+Shift+Tab"}, true, true, true, G::find},
-            {Action::app_windows, "app-windows", "The application's other windows", "同一应用的窗口间切换", {"Super+grave", "Super+Shift+grave"}, true, true, true, G::find},
-            {Action::windows, "windows", "The windows, where they are", "按窗口切换（空间总览）", {"Alt+Tab", "Alt+Shift+Tab"}, true, true, true, G::find},
-            {Action::wuxian, "wuxian", "The WuXian view (the infinite canvas), and back", "WuXian 视图（无限画布）/ 返回", {"Super+o"}, true, true, true, G::find},
-            {Action::focus_left, "focus-left", "Focus left", "焦点向左", {"Super+Left", "Super+h"}, true, true, true, G::focus},
-            {Action::focus_right, "focus-right", "Focus right", "焦点向右", {"Super+Right", "Super+l"}, true, true, true, G::focus},
-            {Action::focus_up, "focus-up", "Focus up", "焦点向上", {"Super+Up", "Super+k"}, true, true, true, G::focus},
-            {Action::focus_down, "focus-down", "Focus down", "焦点向下", {"Super+Down", "Super+j"}, true, true, true, G::focus},
-            {Action::move_left, "move-left", "Move left (stacked: left half)", "左移（层叠：左半屏）", {"Super+Shift+Left", "Super+Shift+h"}, true, true, true, G::focus},
-            {Action::move_right, "move-right", "Move right (stacked: right half)", "右移（层叠：右半屏）", {"Super+Shift+Right", "Super+Shift+l"}, true, true, true, G::focus},
-            {Action::move_up, "move-up", "Move up (stacked: top, the whole)", "上移（层叠：上半、全屏）", {"Super+Shift+Up", "Super+Shift+k"}, true, true, true, G::focus},
-            {Action::move_down, "move-down", "Move down (stacked: bottom, back)", "下移（层叠：下半、还原）", {"Super+Shift+Down", "Super+Shift+j"}, true, true, true, G::focus},
-            {Action::join, "join", "Into the column (group) on the left", "并进左边一列（组）", {"Super+bracketleft"}, true, false, true, G::focus},
-            {Action::split, "split", "Out to a column of its own", "拆出成单独一列", {"Super+bracketright"}, true, false, true, G::focus},
-            {Action::maximize, "maximize", "Maximize, or restore", "最大化 / 还原", {"Super+f"}, true, true, true, G::window},
-            {Action::fullscreen, "fullscreen", "Full screen, or back", "全屏 / 退出全屏", {"Super+Shift+f"}, true, true, true, G::window},
-            {Action::toggle_float, "float", "Float, or put back", "浮动 / 放回", {"Super+Shift+space"}, true, true, true, G::window},
-            {Action::pin, "pin", "Always on top", "置顶", {"Super+p"}, true, true, true, G::window},
-            {Action::sticky, "sticky", "On every workspace", "在所有工作区显示", {"Super+Shift+p"}, true, true, true, G::window},
-            {Action::collapse, "collapse", "Collapse, or expand: a free window to its title bar, a workspace to its label", "折叠 / 展开：自由窗口只留标题栏，工作区只留标签", {"Super+s"}, false, false, true, G::window},
-            {Action::close, "close", "Close the window", "关闭窗口", {"Super+q", "Alt+F4"}, true, true, true, G::window},
-            {Action::copy, "copy", "Copy (in a terminal too)", "复制（终端里也可以）", {"Super+c"}, true, true, true, G::window},
-            {Action::paste, "paste", "Paste (in a terminal too)", "粘贴（终端里也可以）", {"Super+v"}, true, true, true, G::window},
-            {Action::width, "width", "Column width: 1/3, 1/2, 2/3, all", "列宽：1/3、1/2、2/3、全宽", {"Super+r"}, true, false, true, G::size},
-            {Action::height, "height", "Height in the column: equal, 2/3, 1/3", "列内高度：平分、2/3、1/3", {"Super+Shift+r"}, true, false, true, G::size},
-            {Action::smaller, "smaller", "Narrower (the WuXian view: zoom out)", "变窄（WuXian 视图：缩小）", {"Super+minus"}, true, true, true, G::size},
-            {Action::larger, "larger", "Wider (the WuXian view: zoom in)", "变宽（WuXian 视图：放大）", {"Super+equal", "Super+Shift+plus"}, true, true, true, G::size},
-            {Action::even, "even", "Equal widths (the WuXian view: 100 %, the focused window in the middle)", "平分（WuXian 视图：回到 100% 并居中）", {"Super+0"}, true, true, true, G::size},
-            {Action::show_all, "show-all", "The WuXian view: everything in view", "WuXian 视图：显示全部", {"Super+Ctrl+0"}, false, false, true, G::size},
-            {Action::arrangements, "arrangements", "The workspace's rule: tile or stack", "工作区的规则：平铺或层叠", {"Super+m"}, true, true, true, G::arrangement},
+            {Action::apps, "apps", "Applications", {"Super+space"}, true, true, true, G::find},
+            {Action::switch_apps, "switch-apps", "Applications, the most recent first", {"Super+Tab", "Super+Shift+Tab"}, true, true, true, G::find},
+            {Action::app_windows, "app-windows", "The application's other windows", {"Super+grave", "Super+Shift+grave"}, true, true, true, G::find},
+            {Action::windows, "windows", "The windows, where they are", {"Alt+Tab", "Alt+Shift+Tab"}, true, true, true, G::find},
+            {Action::wuxian, "wuxian", "The WuXian view (the infinite canvas), and back", {"Super+o"}, true, true, true, G::find},
+            {Action::focus_left, "focus-left", "Focus left", {"Super+Left", "Super+h"}, true, true, true, G::focus},
+            {Action::focus_right, "focus-right", "Focus right", {"Super+Right", "Super+l"}, true, true, true, G::focus},
+            {Action::focus_up, "focus-up", "Focus up", {"Super+Up", "Super+k"}, true, true, true, G::focus},
+            {Action::focus_down, "focus-down", "Focus down", {"Super+Down", "Super+j"}, true, true, true, G::focus},
+            {Action::move_left, "move-left", "Move left (stacked: left half)", {"Super+Shift+Left", "Super+Shift+h"}, true, true, true, G::focus},
+            {Action::move_right, "move-right", "Move right (stacked: right half)", {"Super+Shift+Right", "Super+Shift+l"}, true, true, true, G::focus},
+            {Action::move_up, "move-up", "Move up (stacked: top, the whole)", {"Super+Shift+Up", "Super+Shift+k"}, true, true, true, G::focus},
+            {Action::move_down, "move-down", "Move down (stacked: bottom, back)", {"Super+Shift+Down", "Super+Shift+j"}, true, true, true, G::focus},
+            {Action::join, "join", "Into the column (group) on the left", {"Super+bracketleft"}, true, false, true, G::focus},
+            {Action::split, "split", "Out to a column of its own", {"Super+bracketright"}, true, false, true, G::focus},
+            {Action::maximize, "maximize", "Maximize, or restore", {"Super+f"}, true, true, true, G::window},
+            {Action::fullscreen, "fullscreen", "Full screen, or back", {"Super+Shift+f"}, true, true, true, G::window},
+            {Action::toggle_float, "float", "Float, or put back", {"Super+Shift+space"}, true, true, true, G::window},
+            {Action::pin, "pin", "Always on top", {"Super+p"}, true, true, true, G::window},
+            {Action::sticky, "sticky", "On every workspace", {"Super+Shift+p"}, true, true, true, G::window},
+            {Action::collapse, "collapse", "Collapse, or expand: a free window to its title bar, a workspace to its label", {"Super+s"}, false, false, true, G::window},
+            {Action::close, "close", "Close the window", {"Super+q", "Alt+F4"}, true, true, true, G::window},
+            {Action::copy, "copy", "Copy (in a terminal too)", {"Super+c"}, true, true, true, G::window},
+            {Action::paste, "paste", "Paste (in a terminal too)", {"Super+v"}, true, true, true, G::window},
+            {Action::width, "width", "Column width: 1/3, 1/2, 2/3, all", {"Super+r"}, true, false, true, G::size},
+            {Action::height, "height", "Height in the column: equal, 2/3, 1/3", {"Super+Shift+r"}, true, false, true, G::size},
+            {Action::smaller, "smaller", "Narrower (the WuXian view: zoom out)", {"Super+minus"}, true, true, true, G::size},
+            {Action::larger, "larger", "Wider (the WuXian view: zoom in)", {"Super+equal", "Super+Shift+plus"}, true, true, true, G::size},
+            {Action::even, "even", "Equal widths (the WuXian view: 100 %, the focused window in the middle)", {"Super+0"}, true, true, true, G::size},
+            {Action::show_all, "show-all", "The WuXian view: everything in view", {"Super+Ctrl+0"}, false, false, true, G::size},
+            {Action::arrangements, "arrangements", "The workspace's rule: tile or stack", {"Super+m"}, true, true, true, G::arrangement},
         };
         static constexpr std::array<std::string_view, 9> kShow{"workspace-1", "workspace-2", "workspace-3", "workspace-4", "workspace-5",
                                                                "workspace-6", "workspace-7", "workspace-8", "workspace-9"};
@@ -65,31 +66,28 @@ const std::vector<ActionInfo>& actions() {
                                                                "send-to-6", "send-to-7", "send-to-8", "send-to-9"};
         static const std::array<std::string, 9> kShowEn{"Workspace 1", "Workspace 2", "Workspace 3", "Workspace 4", "Workspace 5",
                                                        "Workspace 6", "Workspace 7", "Workspace 8", "Workspace 9"};
-        static const std::array<std::string, 9> kShowZh{"工作区 1", "工作区 2", "工作区 3", "工作区 4", "工作区 5", "工作区 6", "工作区 7", "工作区 8", "工作区 9"};
         static const std::array<std::string, 9> kSendEn{"To workspace 1", "To workspace 2", "To workspace 3", "To workspace 4", "To workspace 5",
                                                        "To workspace 6", "To workspace 7", "To workspace 8", "To workspace 9"};
-        static const std::array<std::string, 9> kSendZh{"移到工作区 1", "移到工作区 2", "移到工作区 3", "移到工作区 4", "移到工作区 5",
-                                                       "移到工作区 6", "移到工作区 7", "移到工作区 8", "移到工作区 9"};
         static const std::array<std::string, 9> kShowKey{"Super+1", "Super+2", "Super+3", "Super+4", "Super+5", "Super+6", "Super+7", "Super+8", "Super+9"};
         static const std::array<std::string, 9> kSendKey{"Super+Shift+1", "Super+Shift+2", "Super+Shift+3", "Super+Shift+4", "Super+Shift+5",
                                                         "Super+Shift+6", "Super+Shift+7", "Super+Shift+8", "Super+Shift+9"};
         for (int n = 0; n < 9; ++n)
             a.push_back({static_cast<Action>(static_cast<int>(Action::show1) + n), kShow[static_cast<std::size_t>(n)],
-                         kShowEn[static_cast<std::size_t>(n)], kShowZh[static_cast<std::size_t>(n)], {kShowKey[static_cast<std::size_t>(n)]},
+                         kShowEn[static_cast<std::size_t>(n)], {kShowKey[static_cast<std::size_t>(n)]},
                          true, true, true, G::workspace});
         for (int n = 0; n < 9; ++n)
             a.push_back({static_cast<Action>(static_cast<int>(Action::send1) + n), kSend[static_cast<std::size_t>(n)],
-                         kSendEn[static_cast<std::size_t>(n)], kSendZh[static_cast<std::size_t>(n)], {kSendKey[static_cast<std::size_t>(n)]},
+                         kSendEn[static_cast<std::size_t>(n)], {kSendKey[static_cast<std::size_t>(n)]},
                          true, true, true, G::workspace});
-        a.push_back({Action::to_wuxian, "to-wuxian", "Onto WuXian: a free window", "放到 WuXian 上（自由窗口）", {"Super+Shift+0"}, true, true, true, G::workspace});
-        a.push_back({Action::new_workspace, "new-workspace", "A new workspace", "新建工作区", {"Super+Ctrl+n"}, true, true, true, G::workspace});
-        a.push_back({Action::workspace_prev, "workspace-previous", "The workspace before", "上一个工作区", {"Super+Ctrl+Left", "Super+Page_Up"}, true, true, true, G::workspace});
-        a.push_back({Action::workspace_next, "workspace-next", "The workspace after", "下一个工作区", {"Super+Ctrl+Right", "Super+Page_Down"}, true, true, true, G::workspace});
-        a.push_back({Action::carry_prev, "carry-previous", "To the workspace before, with the window", "带着窗口去上一个工作区", {"Super+Ctrl+Shift+Left", "Super+Shift+Page_Up"}, true, true, true, G::workspace});
-        a.push_back({Action::carry_next, "carry-next", "To the workspace after, with the window", "带着窗口去下一个工作区", {"Super+Ctrl+Shift+Right", "Super+Shift+Page_Down"}, true, true, true, G::workspace});
-        a.push_back({Action::terminal, "terminal", "Terminal", "终端", {"Super+Return", "Ctrl+Alt+t"}, true, true, true, G::open});
-        a.push_back({Action::settings, "settings", "Settings", "设置", {"Super+i"}, true, true, true, G::open});
-        a.push_back({Action::keys, "keys", "These keys", "快捷键", {"Super+slash"}, true, true, true, G::open});
+        a.push_back({Action::to_wuxian, "to-wuxian", "Onto WuXian: a free window", {"Super+Shift+0"}, true, true, true, G::workspace});
+        a.push_back({Action::new_workspace, "new-workspace", "New workspace", {"Super+Ctrl+n"}, true, true, true, G::workspace});
+        a.push_back({Action::workspace_prev, "workspace-previous", "The workspace before", {"Super+Ctrl+Left", "Super+Page_Up"}, true, true, true, G::workspace});
+        a.push_back({Action::workspace_next, "workspace-next", "The workspace after", {"Super+Ctrl+Right", "Super+Page_Down"}, true, true, true, G::workspace});
+        a.push_back({Action::carry_prev, "carry-previous", "To the workspace before, with the window", {"Super+Ctrl+Shift+Left", "Super+Shift+Page_Up"}, true, true, true, G::workspace});
+        a.push_back({Action::carry_next, "carry-next", "To the workspace after, with the window", {"Super+Ctrl+Shift+Right", "Super+Shift+Page_Down"}, true, true, true, G::workspace});
+        a.push_back({Action::terminal, "terminal", "Terminal", {"Super+Return", "Ctrl+Alt+t"}, true, true, true, G::open});
+        a.push_back({Action::settings, "settings", "Settings", {"Super+i"}, true, true, true, G::open});
+        a.push_back({Action::keys, "keys", "These keys", {"Super+slash"}, true, true, true, G::open});
         return a;
     }();
     return all;
@@ -216,8 +214,13 @@ std::vector<Chord> Bindings::chords(Action a) const {
 }
 
 std::string keys_markdown(bool zh) {
-    std::string out = zh ? "| 分组 | 操作 | 键 |\n|---|---|---|\n" : "| Group | Action | Keys |\n|---|---|---|\n";
-    out = std::string(zh ? "单按 Super：应用。按住 Super 一秒：最常用的键。\n\n" : "Super alone: the applications. Super held a second: the keys used most.\n\n") + out;
+    // The table in the language asked, whatever this process speaks.
+    xdesk::words::register_words();
+    const std::string was = i18n::language();
+    i18n::set_language(zh ? "zh" : "en");
+    struct Back { std::string lang; ~Back() { i18n::set_language(lang); } } back{was};
+    std::string out(i18n::tr("| Group | Action | Keys |\n|---|---|---|\n"));
+    out = std::string(i18n::tr("Super alone: the applications. Super held a second: the keys used most.\n\n")) + out;
     std::optional<Group> group;
     for (const auto& a : actions()) {
         std::string chords;
@@ -229,7 +232,7 @@ std::string keys_markdown(bool zh) {
             }
         const auto label = group == a.group ? std::string_view{} : group_label(a.group, zh);
         group = a.group;
-        out += std::format("| {} | {} | {} |\n", label, zh ? a.zh : a.en, chords);
+        out += std::format("| {} | {} | {} |\n", label, i18n::tr(a.en), chords);
     }
     return out;
 }

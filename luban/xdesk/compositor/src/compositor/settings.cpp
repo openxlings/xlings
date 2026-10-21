@@ -7,6 +7,7 @@
 module xdesk.compositor;
 
 import std;
+import xdesk.words;
 import opensal;
 import opensal.wire;
 import xdesk.os;
@@ -32,18 +33,16 @@ namespace fs = std::filesystem;
 
 namespace {
 
-std::string_view tr_(bool zh, std::string_view en, std::string_view cn) { return zh ? cn : en; }
-
 constexpr std::array<SettingsPage, 5> kPages{SettingsPage::displays, SettingsPage::layout, SettingsPage::appearance,
                                               SettingsPage::keys, SettingsPage::about};
 
 std::string_view page_label_(SettingsPage p, bool zh) {
     switch (p) {
-        case SettingsPage::displays: return tr_(zh, "Displays", "显示器");
-        case SettingsPage::layout: return tr_(zh, "Layout", "布局");
-        case SettingsPage::appearance: return tr_(zh, "Appearance", "外观");
-        case SettingsPage::keys: return tr_(zh, "Keys", "快捷键");
-        case SettingsPage::about: return tr_(zh, "About", "关于");
+        case SettingsPage::displays: return i18n::tr("Displays");
+        case SettingsPage::layout: return i18n::tr("Layout");
+        case SettingsPage::appearance: return i18n::tr("Appearance");
+        case SettingsPage::keys: return i18n::tr("Keys");
+        case SettingsPage::about: return i18n::tr("About");
     }
     return "";
 }
@@ -82,11 +81,11 @@ std::string chord_spec_(const Chord& c) {
 }
 
 // The accents offered, and the backgrounds.
-struct Swatch { std::string_view en, zh; std::uint32_t rgb; };
-constexpr std::array<Swatch, 6> kAccents{{{"Blue", "蓝", 0x5e9cff}, {"Teal", "青", 0x3fbfb0}, {"Green", "绿", 0x6cc070},
-                                          {"Orange", "橙", 0xf0a050}, {"Pink", "粉", 0xe07ab0}, {"Purple", "紫", 0xa58cf0}}};
-constexpr std::array<Swatch, 4> kBackgrounds{{{"Night", "夜", 0x1b1e25}, {"Black", "黑", 0x0e0f12}, {"Slate", "石板", 0x2a3140},
-                                              {"Forest", "林", 0x1d2a24}}};
+struct Swatch { std::string_view en; std::uint32_t rgb; };
+constexpr std::array<Swatch, 6> kAccents{{{"Blue", 0x5e9cff}, {"Teal", 0x3fbfb0}, {"Green", 0x6cc070},
+                                          {"Orange", 0xf0a050}, {"Pink", 0xe07ab0}, {"Purple", 0xa58cf0}}};
+constexpr std::array<Swatch, 4> kBackgrounds{{{"Night", 0x1b1e25}, {"Black", 0x0e0f12}, {"Slate", 0x2a3140},
+                                              {"Forest", 0x1d2a24}}};
 
 }  // namespace
 
@@ -109,7 +108,7 @@ void Server::open_settings(SettingsPage page) {
 void Server::setting(std::string_view section, std::string_view key, std::string value) {
     if (auto r = config::set_value(o.config_profile, os::environment(), section, key, value); !r) {
         log("settings: " + r.error());
-        show_hint(std::format("{}: {}", tr_(zh, "Not kept", "未能保存"), r.error()), 5000);
+        show_hint(std::format("{}: {}", i18n::tr("Not kept"), r.error()), 5000);
     }
 }
 
@@ -173,13 +172,13 @@ void Server::apply_settings() {
 void Server::reset_page(SettingsPage page) {
     auto removed = config::unset_values(o.config_profile, os::environment(), page_keys_(page));
     if (!removed) {
-        show_hint(std::format("{}: {}", tr_(zh, "Not put back", "未能恢复"), removed.error()), 5000);
+        show_hint(std::format("{}: {}", i18n::tr("Not put back"), removed.error()), 5000);
         return;
     }
     reset_undo = std::move(*removed);
     reset_at = std::chrono::steady_clock::now();
     apply_settings();
-    show_hint(tr_(zh, "This page is as it came  ·  Ctrl+Z: undo (10 s)", "已恢复本页默认  ·  Ctrl+Z 撤销（10 秒内）"), 10000);
+    show_hint(i18n::tr("This page is as it came  ·  Ctrl+Z: undo (10 s)"), 10000);
 }
 
 // Every page and every key back to the defaults (asked first, the About page).
@@ -194,7 +193,7 @@ void Server::reset_all() {
     keys.load({{"set", {set}}});
     save_keys();
     apply_settings();
-    show_hint(tr_(zh, "Every setting and key is as it came", "全部设置与快捷键已恢复默认"), 5000);
+    show_hint(i18n::tr("Every setting and key is as it came"), 5000);
 }
 
 void Server::undo_reset() {
@@ -202,7 +201,7 @@ void Server::undo_reset() {
     for (const auto& s : reset_undo) setting(s.section, s.key, s.value);
     reset_undo.clear();
     apply_settings();
-    show_hint(tr_(zh, "Put back as it was", "已撤销"), 2000);
+    show_hint(i18n::tr("Put back as it was"), 2000);
 }
 
 void Server::save_keys() {
@@ -211,7 +210,7 @@ void Server::save_keys() {
     else all.erase("set");
     if (auto r = config::write_keys(os::environment(), all); !r) {
         log("keys: " + r.error());
-        show_hint(std::format("{}: {}", tr_(zh, "Not kept", "未能保存"), r.error()), 5000);
+        show_hint(std::format("{}: {}", i18n::tr("Not kept"), r.error()), 5000);
     }
 }
 
@@ -298,36 +297,34 @@ void Server::settings_rows() {
     };
     switch (settings_page) {
         case SettingsPage::displays: {
-            heading(tr_(zh, "Connected", "已连接"));
+            heading(i18n::tr("Connected"));
             for (const auto& l : links) {
                 const bool primary = &l == &links.front();
-                text(std::format("{} {}", tr_(zh, "Display", "显示器"), l.number),
-                     primary ? std::format("{} · {}×{} · {}x", tr_(zh, "primary", "主屏"), size.width, size.height, scale)
-                             : std::format("{} {}", tr_(zh, "mirroring display", "镜像显示器"), links.front().number));
+                text(std::format("{} {}", i18n::tr("Display"), l.number),
+                     primary ? std::format("{} · {}×{} · {}x", i18n::tr("primary"), size.width, size.height, scale)
+                             : std::format("{} {}", i18n::tr("mirroring display"), links.front().number));
             }
-            heading(tr_(zh, "Another display", "再加一块"));
-            text(std::string(tr_(zh, "Open another Luban OS window on this system (its menu: New window): it mirrors this one.",
-                                 "在这个系统上再开一个 Luban OS 窗口（菜单：新窗口）：它镜像这一块。")));
-            text(std::string(tr_(zh, "The desktop's resolution is the first window's size: resize it, or make it full screen.",
-                                 "桌面的分辨率就是第一个窗口的大小：缩放它，或让它全屏。")));
+            heading(i18n::tr("Another display"));
+            text(std::string(i18n::tr("Open another Luban OS window on this system (its menu: New window): it mirrors this one.")));
+            text(std::string(i18n::tr("The desktop's resolution is the first window's size: resize it, or make it full screen.")));
             break;
         }
         case SettingsPage::layout: {
             const std::vector<layout::Rule> rules{layout::Rule::tile, layout::Rule::stack};
-            const std::vector<std::string> rule_names{std::string(tr_(zh, "Tile", "平铺")), std::string(tr_(zh, "Stack", "层叠"))};
-            choice(std::string(tr_(zh, "This workspace", "这个工作区")), rule_names, pick(rules, lay.rule()), [this, rules](std::size_t k) {
+            const std::vector<std::string> rule_names{std::string(i18n::tr("Tile")), std::string(i18n::tr("Stack"))};
+            choice(std::string(i18n::tr("This workspace")), rule_names, pick(rules, lay.rule()), [this, rules](std::size_t k) {
                 lay.set_rule(lay.current(), rules[k]);
                 remember_arrangement();
                 arrange();
                 draw_shell();
             });
-            choice(std::string(tr_(zh, "A new workspace", "新建的工作区")), rule_names, pick(rules, lay.options().rule), [this, rules](std::size_t k) {
+            choice(std::string(i18n::tr("A new workspace")), rule_names, pick(rules, lay.options().rule), [this, rules](std::size_t k) {
                 setting("desktop", "rule", std::string(layout::name(rules[k])));
-                show_hint(tr_(zh, "From the next session", "下次会话起生效"), 3000);
+                show_hint(i18n::tr("From the next session"), 3000);
             });
             const auto& lo = lay.options();
-            choice(std::string(tr_(zh, "Columns run", "列的方向")),
-                   {std::string(tr_(zh, "Side by side", "左右并排")), std::string(tr_(zh, "Downwards", "上下排"))},
+            choice(std::string(i18n::tr("Columns run")),
+                   {std::string(i18n::tr("Side by side")), std::string(i18n::tr("Downwards"))},
                    lay.flow() == layout::Flow::vertical ? 1 : 0, [this](std::size_t k) {
                        const auto f = k == 1 ? layout::Flow::vertical : layout::Flow::horizontal;
                        lay.set_flow(lay.current(), f);
@@ -340,50 +337,50 @@ void Server::settings_rows() {
                 for (int n : v) out.push_back(std::to_string(n));
                 return out;
             };
-            choice(std::string(tr_(zh, "Gap between windows", "窗口间隔")), numbers(inner), pick(inner, int(lo.inner_gap)),
+            choice(std::string(i18n::tr("Gap between windows")), numbers(inner), pick(inner, int(lo.inner_gap)),
                    [this, inner](std::size_t k) {
                        const auto& now = lay.options();
                        lay.set_spacing(inner[k], now.outer_gap, now.min_column_width);
                        setting("desktop", "inner_gap", std::to_string(inner[k]));
                        arrange();
                    });
-            choice(std::string(tr_(zh, "Gap at the edges", "边缘间隔")), numbers(outer), pick(outer, int(lo.outer_gap)),
+            choice(std::string(i18n::tr("Gap at the edges")), numbers(outer), pick(outer, int(lo.outer_gap)),
                    [this, outer](std::size_t k) {
                        const auto& now = lay.options();
                        lay.set_spacing(now.inner_gap, outer[k], now.min_column_width);
                        setting("desktop", "outer_gap", std::to_string(outer[k]));
                        arrange();
                    });
-            choice(std::string(tr_(zh, "Narrowest column", "最窄的列")), numbers(columns), pick(columns, int(lo.min_column_width)),
+            choice(std::string(i18n::tr("Narrowest column")), numbers(columns), pick(columns, int(lo.min_column_width)),
                    [this, columns](std::size_t k) {
                        const auto& now = lay.options();
                        lay.set_spacing(now.inner_gap, now.outer_gap, columns[k]);
                        setting("desktop", "min_column_width", std::to_string(columns[k]));
                        arrange();
                    });
-            toggle(std::string(tr_(zh, "The status bar shows the other workspaces", "状态栏显示其他工作区")), status_others, [this](bool on) {
+            toggle(std::string(i18n::tr("The status bar shows the other workspaces")), status_others, [this](bool on) {
                 status_others = on;
                 setting("desktop", "status_others", on ? "on" : "off");
                 draw_shell();
             });
-            heading(tr_(zh, "WuXian (the infinite canvas)", "WuXian（无限画布）"));
-            toggle(std::string(tr_(zh, "A minimap when WuXian holds more than the view", "WuXian 超出视野时显示小地图")), minimap_on,
+            heading(i18n::tr("WuXian (the infinite canvas)"));
+            toggle(std::string(i18n::tr("A minimap when WuXian holds more than the view")), minimap_on,
                    [this](bool on) { minimap_on = on; setting("wuxian", "minimap", on ? "on" : "off"); draw_shell(); });
-            toggle(std::string(tr_(zh, "Bookmarks for covered workspaces and windows", "被盖住的工作区和窗口显示书签")), bookmarks_on,
+            toggle(std::string(i18n::tr("Bookmarks for covered workspaces and windows")), bookmarks_on,
                    [this](bool on) { bookmarks_on = on; setting("wuxian", "bookmarks", on ? "on" : "off"); update_bookmarks(); });
-            toggle(std::string(tr_(zh, "A moved window lines up with others", "移动的窗口与其他窗口对齐")), snap_on,
+            toggle(std::string(i18n::tr("A moved window lines up with others")), snap_on,
                    [this](bool on) { snap_on = on; setting("wuxian", "snap", on ? "on" : "off"); });
             // The switchers and the wheel (design 2026-10-20 WuXian §4).
-            heading(tr_(zh, "Switching", "切换"));
+            heading(i18n::tr("Switching"));
             const std::vector<int> holds{250, 500, 750, 1000}, lits{0, 500, 1000};
             const std::vector<double> dims{0.3, 0.5, 0.7};
-            choice(std::string(tr_(zh, "Held on an application, its windows after", "停留多久展开应用的窗口")), {"0.25 s", "0.5 s", "0.75 s", "1 s"},
+            choice(std::string(i18n::tr("Held on an application, its windows after")), {"0.25 s", "0.5 s", "0.75 s", "1 s"},
                    pick(holds, hold_ms), [this, holds](std::size_t k) {
                        hold_ms = holds[k];
                        setting("switchers", "hold_ms", std::to_string(holds[k]));
                    });
-            choice(std::string(tr_(zh, "The window chosen stays lit", "选中后突出")),
-                   {std::string(tr_(zh, "Off", "关")), "0.5 s", "1 s"}, pick(lits, highlight_ms), [this, lits](std::size_t k) {
+            choice(std::string(i18n::tr("The window chosen stays lit")),
+                   {std::string(i18n::tr("Off")), "0.5 s", "1 s"}, pick(lits, highlight_ms), [this, lits](std::size_t k) {
                        highlight_ms = lits[k];
                        setting("switchers", "highlight_ms", std::to_string(lits[k]));
                    });
@@ -391,41 +388,41 @@ void Server::settings_rows() {
                 std::size_t at = 1;
                 for (std::size_t k = 0; k < dims.size(); ++k)
                     if (std::abs(dims[k] - dim_level) < 0.01) at = k;
-                choice(std::string(tr_(zh, "The others dimmed to", "其他窗口的暗度")), {"0.3", "0.5", "0.7"}, at, [this, dims](std::size_t k) {
+                choice(std::string(i18n::tr("The others dimmed to")), {"0.3", "0.5", "0.7"}, at, [this, dims](std::size_t k) {
                     dim_level = dims[k];
                     setting("switchers", "dim", std::format("{}", dims[k]));
                 });
             }
-            heading(tr_(zh, "Scrolling", "滚动"));
+            heading(i18n::tr("Scrolling"));
             {
                 const std::vector<double> speeds{0.6, 1.0, 1.6};
                 const std::vector<std::string> names{"slow", "medium", "fast"};
                 std::size_t at = 1;
                 for (std::size_t k = 0; k < speeds.size(); ++k)
                     if (std::abs(speeds[k] - wheel_factor) < 0.01) at = k;
-                choice(std::string(tr_(zh, "The wheel's speed", "滚动速度")),
-                       {std::string(tr_(zh, "Slow", "慢")), std::string(tr_(zh, "Medium", "中")), std::string(tr_(zh, "Fast", "快"))}, at,
+                choice(std::string(i18n::tr("The wheel's speed")),
+                       {std::string(i18n::tr("Slow")), std::string(i18n::tr("Medium")), std::string(i18n::tr("Fast"))}, at,
                        [this, speeds, names](std::size_t k) {
                            wheel_factor = speeds[k];
                            setting("scroll", "speed", names[k]);
                        });
             }
-            toggle(std::string(tr_(zh, "A tiled strip's scroll lands on a column", "滚动对齐到列")), snap_columns,
+            toggle(std::string(i18n::tr("A tiled strip's scroll lands on a column")), snap_columns,
                    [this](bool on) { snap_columns = on; setting("scroll", "snap", on ? "on" : "off"); });
-            button(std::string(tr_(zh, "This page as it came", "恢复本页默认")), {}, [this] { reset_page(SettingsPage::layout); });
+            button(std::string(i18n::tr("This page as it came")), {}, [this] { reset_page(SettingsPage::layout); });
             break;
         }
         case SettingsPage::appearance: {
             std::vector<std::string> accents, backgrounds;
             std::vector<std::uint32_t> accent_rgb, background_rgb;
-            for (const auto& a : kAccents) { accents.emplace_back(tr_(zh, a.en, a.zh)); accent_rgb.push_back(a.rgb); }
-            for (const auto& b : kBackgrounds) { backgrounds.emplace_back(tr_(zh, b.en, b.zh)); background_rgb.push_back(b.rgb); }
+            for (const auto& a : kAccents) { accents.emplace_back(i18n::tr(a.en)); accent_rgb.push_back(a.rgb); }
+            for (const auto& b : kBackgrounds) { backgrounds.emplace_back(i18n::tr(b.en)); background_rgb.push_back(b.rgb); }
             const auto rgb = [](draw::Color c) { return (std::uint32_t(c.r) << 16) | (std::uint32_t(c.g) << 8) | c.b; };
-            choice(std::string(tr_(zh, "Accent", "强调色")), accents, pick(accent_rgb, rgb(theme.accent)), [this, accent_rgb](std::size_t k) {
+            choice(std::string(i18n::tr("Accent")), accents, pick(accent_rgb, rgb(theme.accent)), [this, accent_rgb](std::size_t k) {
                 set_accent(accent_rgb[k]);
                 setting("theme", "accent", std::format("#{:06x}", accent_rgb[k]));
             });
-            choice(std::string(tr_(zh, "Background", "背景")), backgrounds, pick(background_rgb, rgb(theme.background)),
+            choice(std::string(i18n::tr("Background")), backgrounds, pick(background_rgb, rgb(theme.background)),
                    [this, background_rgb](std::size_t k) {
                        theme.background = draw::Color::rgb(background_rgb[k]);
                        const float bg[4] = {theme.background.r / 255.0f, theme.background.g / 255.0f, theme.background.b / 255.0f, 1.0f};
@@ -434,50 +431,49 @@ void Server::settings_rows() {
                        draw_shell();
                        setting("theme", "background", std::format("#{:06x}", background_rgb[k]));
                    });
-            toggle(std::string(tr_(zh, "Reduce motion: windows go at once, without gliding", "减少动态：窗口直接到位，不滑动")), reduce_motion,
+            toggle(std::string(i18n::tr("Reduce motion: windows go at once, without gliding")), reduce_motion,
                    [this](bool on) { reduce_motion = on; setting("appearance", "reduce_motion", on ? "on" : "off"); });
             {
                 using M = opensal::PointerLocate::Mode;
                 const std::vector<M> modes{M::off, M::grow, M::grow_color};
                 const std::vector<std::string> names{"off", "grow", "grow-color"};
-                choice(std::string(tr_(zh, "A shaken pointer, to find it", "晃动鼠标时的指针")),
-                       {std::string(tr_(zh, "As it is", "不变")), std::string(tr_(zh, "Bigger", "放大")),
-                        std::string(tr_(zh, "Bigger and coloured", "放大并变色"))},
+                choice(std::string(i18n::tr("A shaken pointer, to find it")),
+                       {std::string(i18n::tr("As it is")), std::string(i18n::tr("Bigger")),
+                        std::string(i18n::tr("Bigger and coloured"))},
                        static_cast<std::size_t>(std::ranges::find(modes, locate.mode) - modes.begin()), [this, modes, names](std::size_t k) {
                            locate.mode = modes[k];
                            setting("appearance", "pointer_locate", names[k]);
                            send_locate();
                        });
                 if (locate.mode != M::off)
-                    choice(std::string(tr_(zh, "Up to", "最大")), {"2x", "3x", "4x"}, static_cast<std::size_t>(std::clamp(locate.max, 2.0, 4.0) - 2),
+                    choice(std::string(i18n::tr("Up to")), {"2x", "3x", "4x"}, static_cast<std::size_t>(std::clamp(locate.max, 2.0, 4.0) - 2),
                            [this](std::size_t k) {
                                locate.max = static_cast<double>(k + 2);
                                setting("appearance", "pointer_max", std::to_string(k + 2));
                                send_locate();
                            });
             }
-            choice(std::string(tr_(zh, "Drawing (from the next session)", "渲染（下次会话起）")),
-                   {std::string(tr_(zh, "The GPU when there is one", "自动（有 GPU 就用）")), std::string(tr_(zh, "Software", "软件"))},
+            choice(std::string(i18n::tr("Drawing (from the next session)")),
+                   {std::string(i18n::tr("The GPU when there is one")), std::string(i18n::tr("Software"))},
                    o.renderer == "software" ? 1 : 0, [this](std::size_t k) {
                        setting("appearance", "renderer", k == 1 ? "software" : "auto");
-                       show_hint(tr_(zh, "From the next session", "下次会话起生效"), 3000);
+                       show_hint(i18n::tr("From the next session"), 3000);
                    });
-            text(std::string(tr_(zh, "Drawn now", "现在的渲染器")), renderer_text);
-            button(std::string(tr_(zh, "This page as it came", "恢复本页默认")), {}, [this] { reset_page(SettingsPage::appearance); });
+            text(std::string(i18n::tr("Drawn now")), renderer_text);
+            button(std::string(i18n::tr("This page as it came")), {}, [this] { reset_page(SettingsPage::appearance); });
             break;
         }
         case SettingsPage::keys: {
-            settings_items.push_back({.row = {.kind = K::search, .label = std::string(tr_(zh, "Type to find a key or what it does",
-                                                                                          "输入以查找按键或功能")),
+            settings_items.push_back({.row = {.kind = K::search, .label = std::string(i18n::tr("Type to find a key or what it does")),
                                               .value = settings_search}});
-            std::vector<std::string> sets{std::string(tr_(zh, "Luban", "Luban")), std::string(tr_(zh, "Luban without hjkl", "Luban（不用 hjkl）"))};
-            choice(std::string(tr_(zh, "Set of keys", "键位方案")), sets, keys.set == "luban-no-hjkl" ? 1 : 0, [this](std::size_t k) {
+            std::vector<std::string> sets{std::string(i18n::tr("Luban")), std::string(i18n::tr("Luban without hjkl"))};
+            choice(std::string(i18n::tr("Set of keys")), sets, keys.set == "luban-no-hjkl" ? 1 : 0, [this](std::size_t k) {
                 auto all = key_overrides;
                 all["set"] = {k == 1 ? "luban-no-hjkl" : "luban"};
                 keys.load(all);
                 save_keys();
             });
-            button(std::string(tr_(zh, "Every key as the set has it", "全部恢复为方案的默认")), {}, [this] {
+            button(std::string(i18n::tr("Every key as the set has it")), {}, [this] {
                 key_overrides.clear();
                 const auto set = keys.set;
                 keys.load({{"set", {set}}});
@@ -490,7 +486,7 @@ void Server::settings_rows() {
                 std::string chords;
                 for (const auto& c : keys.chords(a.action)) chords += (chords.empty() ? "" : "  ") + chord_text(c);
                 if (!query.empty()) {
-                    std::string hay = std::format("{} {} {} {}", a.name, a.en, a.zh, chords);
+                    std::string hay = std::format("{} {} {} {}", a.name, a.en, i18n::tr(a.en), chords);
                     for (auto& ch : hay) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
                     if (hay.find(query) == std::string::npos) continue;
                 }
@@ -498,7 +494,7 @@ void Server::settings_rows() {
                     group = a.group;
                     heading(group_label(a.group, zh));
                 }
-                settings_items.push_back({.row = {.kind = K::keys, .label = std::string(zh ? a.zh : a.en), .value = chords,
+                settings_items.push_back({.row = {.kind = K::keys, .label = std::string(i18n::tr(a.en)), .value = chords,
                                                   .changed = key_overrides.contains(std::string(a.name))},
                                           .act = [this](int dir) { if (dir == 0) settings_capture = true; },
                                           .action = std::string(a.name)});
@@ -510,36 +506,33 @@ void Server::settings_rows() {
                 const std::string l(line.begin(), line.end());
                 if (const auto colon = l.find(": "); colon != std::string::npos) text(l.substr(0, colon), l.substr(colon + 2));
             }
-            button(std::string(tr_(zh, "Copy", "复制")), std::string(tr_(zh, "what this system is, to paste where a problem is told",
-                                                                       "系统信息，报告问题时粘贴")),
+            button(std::string(i18n::tr("Copy")), std::string(i18n::tr("what this system is, to paste where a problem is told")),
                    [this] {
                        if (opensal::has(provided, opensal::Interface::Clipboard)) {
                            send(opensal::wire::encode('b', system_info()));
-                           show_hint(tr_(zh, "Copied", "已复制"), 2000);
+                           show_hint(i18n::tr("Copied"), 2000);
                        } else {
-                           show_hint(tr_(zh, "This system may not copy to the computer's clipboard (luban config <system> --allow clipboard)",
-                                         "这个系统不能复制到电脑的剪贴板（luban config <系统> --allow clipboard）"), 5000);
+                           show_hint(i18n::tr("This system may not copy to the computer's clipboard (luban config <system> --allow clipboard)"), 5000);
                        }
                    });
-            button(std::string(tr_(zh, "Everything as it came", "全部恢复默认")),
-                   std::string(tr_(zh, "every page and every key, asked first", "所有页面与快捷键（先确认）")), [this] {
+            button(std::string(i18n::tr("Everything as it came")),
+                   std::string(i18n::tr("every page and every key, asked first")), [this] {
                        asking_reset = true;
                        overlay = Overlay::dialog;
                        draw_overlay();
                    });
-            heading(tr_(zh, "Files", "文件"));
+            heading(i18n::tr("Files"));
             const auto env = os::environment();
             text("keys.json", config::keys_file(env).string());
             text("state.json", config::state_file(env).string());
             text(std::format("{}.ini", o.config_profile), config::person_file(o.config_profile, env).string());
-            heading(tr_(zh, "Upgrading", "升级"));
-            text(std::string(tr_(zh, "On the computer: luban upgrade <system> (luban status <system> says what is new)",
-                                 "在电脑上：luban upgrade <系统>（luban status <系统> 说明有什么新内容）")));
-            heading(tr_(zh, "Open source", "开源"));
+            heading(i18n::tr("Upgrading"));
+            text(std::string(i18n::tr("On the computer: luban upgrade <system> (luban status <system> says what is new)")));
+            heading(i18n::tr("Open source"));
             text("openxlings/xlings", "xlings, luban, Luban OS, xdesk · Apache-2.0");
-            text("openxlings/xim-pkgindex", tr_(zh, "the packages and the editions", "软件包与 edition").data());
-            text("openxlings/libxpkg", tr_(zh, "the package format", "软件包格式").data());
-            text(std::string(tr_(zh, "Built on", "基于")), "wlroots, Wayland, pixman, FreeType, HarfBuzz, libpng, xkbcommon");
+            text("openxlings/xim-pkgindex", i18n::tr("the packages and the editions").data());
+            text("openxlings/libxpkg", i18n::tr("the package format").data());
+            text(std::string(i18n::tr("Built on")), "wlroots, Wayland, pixman, FreeType, HarfBuzz, libpng, xkbcommon");
             break;
         }
     }
@@ -598,10 +591,8 @@ void Server::draw_settings() {
     v.preedit = settings_preedit;
     v.capturing = settings_capture;
     v.hint = std::string(settings_page == SettingsPage::keys
-        ? tr_(zh, "Enter: new keys for it  ·  Delete: back to the set's  ·  type to find  ·  Tab: the next page  ·  Esc: close",
-              "回车：改它的键  ·  Delete：恢复默认  ·  输入即查找  ·  Tab：下一页  ·  Esc：关闭")
-        : tr_(zh, "↑ ↓: a row  ·  ← →: change it  ·  Enter: switch, press  ·  Tab: the next page  ·  Esc: close",
-              "↑ ↓：选行  ·  ← →：修改  ·  回车：切换、按下  ·  Tab：下一页  ·  Esc：关闭"));
+        ? i18n::tr("Enter: new keys for it  ·  Delete: back to the set's  ·  type to find  ·  Tab: the next page  ·  Esc: close")
+        : i18n::tr("↑ ↓: a row  ·  ← →: change it  ·  Enter: switch, press  ·  Tab: the next page  ·  Esc: close"));
     const int w = logical_w(), h = logical_h();
     overlay_picture = shell::settings(ui(), big_font ? &*big_font : nullptr, theme, v, w, h, zh, scale);
     wlr_scene_node_set_position(&overlay_node->node, 0, 0);
@@ -638,11 +629,10 @@ bool Server::settings_key(xkb_keysym_t s) {
             if (pressed_code >= 2 && pressed_code <= 11) c.digit = static_cast<int>(pressed_code) - 1;
             else c.sym = s == key::ISO_Left_Tab ? key::Tab : xkb_keysym_to_lower(s);
             if (!c.super && !c.alt && !c.ctrl) {
-                show_hint(tr_(zh, "A key for the desktop is held with Super (or Ctrl, Alt): alone it is the applications'",
-                              "桌面的键要与 Super（或 Ctrl、Alt）一起按：单独的键是应用的"), 4000);
+                show_hint(i18n::tr("A key for the desktop is held with Super (or Ctrl, Alt): alone it is the applications'"), 4000);
             } else if (const auto taken = rebind(settings_items[settings_row].action, c); !taken.empty()) {
                 const auto* info = &*std::ranges::find(actions(), taken, &ActionInfo::name);
-                show_hint(std::format("{} {} {}", chord_text(c), tr_(zh, "was", "原属于"), zh ? info->zh : info->en), 4000);
+                show_hint(std::format("{} {} {}", chord_text(c), i18n::tr("was"), i18n::tr(info->en)), 4000);
             }
         }
         draw_overlay();

@@ -36,7 +36,7 @@ Theme theme(std::string_view profile);
 
 // The user's language from the environment (LC_ALL, LC_MESSAGES, LANG):
 // true when it is Chinese.
-bool chinese(const std::map<std::string, std::string>& env);
+// (Whether the person reads Chinese: xdesk::words::chinese, the i18n kit's language.)
 
 // ── title bars ───────────────────────────────────────────────────────
 

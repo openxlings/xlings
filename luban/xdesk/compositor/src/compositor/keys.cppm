@@ -40,7 +40,7 @@ struct Chord {
 struct ActionInfo {
     Action action;
     std::string_view name;                  // keys.json's
-    std::string_view en, zh;                // what it does, for the sheet
+    std::string_view en;                    // what it does, for the sheet (other languages: xdesk's words)
     std::vector<std::string_view> chords;   // the desktop's own
     // Where it means something: tile, stack, the WuXian view (the sheet shows those).
     bool tile { true }, stack { true }, wuxian { true };

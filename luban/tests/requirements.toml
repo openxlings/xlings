@@ -699,3 +699,7 @@ status = "required"
 [XDESK-MINIMAP]
 text = "the minimap's view box dragged by its edge pans the camera by as much in the world; a workspace or window clicked there goes to the middle of the view (the zoom kept); a free window dragged there moves, into a workspace when let go over one"
 status = "required"
+
+[XDESK-WORDS]
+text = "xdesk's words go through the i18n kit (the mechanism xlings.i18n is built on): its text is English where it is used, every word it shows has its Chinese in xdesk's catalogue (a scan of its sources finds none missing), the catalogues check clean, and the language is the kit's (Chinese read as Chinese, English as itself)"
+status = "required"

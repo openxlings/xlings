@@ -8,6 +8,7 @@
 module xdesk.compositor;
 
 import std;
+import xdesk.words;
 import opensal;
 import openwx;
 import xdesk.os;
@@ -28,8 +29,6 @@ namespace draw = xdesk::draw;
 namespace key = xdesk::native::key;
 
 namespace {
-
-std::string_view tr_(bool zh, std::string_view en, std::string_view cn) { return zh ? cn : en; }
 
 constexpr double kHandle = 18;      // a frame's corner that scales it, in screen pixels
 constexpr int kCloseWait = 5;       // seconds before "close all" may be pressed
@@ -99,9 +98,9 @@ void Server::status_hover(double x, double y) {
     const auto* w = lay.workspace_info(a->index);
     if (!w) return;
     const auto n = lay.windows_in(a->index).size();
-    const auto rule = w->rule == layout::Rule::stack ? tr_(zh, "stack", "层叠") : tr_(zh, "tile", "平铺");
-    show_hint(zh ? std::format("工作区 {} · {} · {} 个窗口", named_(w->id, w->name), rule, n)
-                 : std::format("Workspace {} · {} · {} {}", named_(w->id, w->name), rule, n, n == 1 ? "window" : "windows"),
+    const auto rule = w->rule == layout::Rule::stack ? i18n::tr("stack") : i18n::tr("tile");
+    show_hint(n == 1 ? i18n::trf("Workspace {} · {} · 1 window", named_(w->id, w->name), rule)
+                     : i18n::trf("Workspace {} · {} · {} windows", named_(w->id, w->name), rule, n),
               1500);
 }
 
@@ -399,7 +398,7 @@ bool Server::workspace_action(const std::string& what) {
         const auto rule = what == "new:stack" ? layout::Rule::stack : layout::Rule::tile;
         // Its label's top-left where the menu was opened.
         const int made = lay.add_workspace(rule, std::nullopt, layout::Point{menu_world.x, menu_world.y + shell::kLabelHeight / lay.zoom()});
-        if (made == 0) show_hint(tr_(zh, "Nine workspaces are as many as there are", "工作区最多 9 个"), 3000);
+        if (made == 0) show_hint(i18n::tr("Nine workspaces are as many as there are"), 3000);
         else ws_selected = made;
     } else if (what == "tidy") lay.line_up();
     else if (what == "show-all") lay.show_all();
@@ -417,7 +416,7 @@ bool Server::workspace_action(const std::string& what) {
 void Server::ask_remove(int id) {
     if (!lay.workspace_info(id)) return;
     if (lay.workspaces().size() <= 1) {
-        show_hint(tr_(zh, "The last workspace stays", "最后一个工作区不能删除"), 3000);
+        show_hint(i18n::tr("The last workspace stays"), 3000);
         return;
     }
     const auto n = lay.windows_in(id).size();
@@ -437,11 +436,10 @@ void Server::ask_remove(int id) {
 
 void Server::draw_dialog() {
     if (asking_reset) {
-        overlay_picture = shell::dialog(ui(), big_font ? &*big_font : nullptr, theme, tr_(zh, "Everything as it came?", "全部恢复默认？"),
-                                        tr_(zh, "The layout's, the switchers', the wheel's and the look's settings, and every key changed",
-                                            "布局、切换、滚动与外观的设置，以及改过的快捷键，都回到默认"),
-                                        {{.label = std::string(tr_(zh, "Put everything back (Enter)", "全部恢复（Enter）")), .primary = true},
-                                         {.label = std::string(tr_(zh, "Cancel (Esc)", "取消（Esc）"))}},
+        overlay_picture = shell::dialog(ui(), big_font ? &*big_font : nullptr, theme, i18n::tr("Everything as it came?"),
+                                        i18n::tr("The layout's, the switchers', the wheel's and the look's settings, and every key changed"),
+                                        {{.label = std::string(i18n::tr("Put everything back (Enter)")), .primary = true},
+                                         {.label = std::string(i18n::tr("Cancel (Esc)"))}},
                                         logical_w(), logical_h(), scale);
         return;
     }
@@ -451,15 +449,15 @@ void Server::draw_dialog() {
     const auto waited = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now() - removal->since).count();
     const int left = std::max(0, kCloseWait - static_cast<int>(waited));
     const auto name = named_(w->id, w->name);
-    const auto title = zh ? std::format("删除工作区 {}？", name) : std::format("Remove workspace {}?", name);
-    const auto text = zh ? std::format("工作区 {} 里有 {} 个窗口", name, removal->windows)
-                         : std::format("Workspace {} holds {} {}", name, removal->windows, removal->windows == 1 ? "window" : "windows");
+    const auto title = i18n::trf("Remove workspace {}?", name);
+    const auto text = removal->windows == 1 ? i18n::trf("Workspace {} holds 1 window", name)
+                                            : i18n::trf("Workspace {} holds {} windows", name, removal->windows);
     std::vector<shell::DialogButton> buttons{
-        {.label = std::string(tr_(zh, "Make them free windows (Enter)", "变成自由窗口（Enter）")), .primary = true},
-        {.label = left > 0 ? (zh ? std::format("关闭全部窗口（{}）", left) : std::format("Close them all ({})", left))
-                           : std::string(tr_(zh, "Close them all", "关闭全部窗口")),
+        {.label = std::string(i18n::tr("Make them free windows (Enter)")), .primary = true},
+        {.label = left > 0 ? i18n::trf("Close them all ({})", left)
+                           : std::string(i18n::tr("Close them all")),
          .enabled = left == 0, .danger = true},
-        {.label = std::string(tr_(zh, "Cancel (Esc)", "取消（Esc）"))},
+        {.label = std::string(i18n::tr("Cancel (Esc)"))},
     };
     overlay_picture = shell::dialog(ui(), big_font ? &*big_font : nullptr, theme, title, text, buttons, logical_w(), logical_h(), scale);
 }
@@ -527,8 +525,7 @@ void Server::draw_naming() {
     const auto n = std::ranges::find(ws_nodes, naming, &WorkspaceNodes::id);
     const double x = n != ws_nodes.end() ? n->label_at.x : logical_w() / 2.0 - 160;
     const double y = n != ws_nodes.end() ? n->label_at.y + shell::kLabelHeight + 4 : logical_h() / 2.0 - 32;
-    overlay_picture = shell::text_field(ui(), theme, zh ? std::format("工作区 {} 的名字（Enter 确定，Esc 取消）", naming)
-                                                         : std::format("Workspace {}'s name (Enter: keep, Esc: cancel)", naming),
+    overlay_picture = shell::text_field(ui(), theme, i18n::trf("Workspace {}'s name (Enter: keep, Esc: cancel)", naming),
                                         name_text, x, y, logical_w(), logical_h(), scale);
 }
 

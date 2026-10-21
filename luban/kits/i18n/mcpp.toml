@@ -1,0 +1,12 @@
+# i18n: words in a person's language -- catalogues by domain and language,
+# a fallback chain to English, a check of a domain's catalogues, words that
+# come with data, a glossary (README.md). A kit: the standard library only;
+# the system's language is the environment's unless the program gives its
+# own source. xlings.i18n and xdesk use it.
+[package]
+namespace = "i18nkit"
+name      = "i18nkit"
+version   = "0.1.0"
+
+[targets.i18nkit]
+kind = "lib"

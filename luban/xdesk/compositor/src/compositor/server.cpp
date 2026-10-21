@@ -2,6 +2,7 @@
 module xdesk.compositor;
 
 import std;
+import xdesk.words;
 import opensal;
 import opensal.wire;
 import opensal.keys;
@@ -144,7 +145,7 @@ void Server::fall_back(std::string why) {
     gpu = false;
     renderer_text = std::format("software (pixman): {}", why);
     log("renderer: " + renderer_text);
-    show_hint(zh ? "GPU 不可用了，已改为软件渲染" : "The GPU is gone: drawing in software", 6000);
+    show_hint(i18n::tr("The GPU is gone: drawing in software"), 6000);
     for (auto& l : links) l.whole = true;
     wlr_output_schedule_frame(output);
 }
@@ -217,7 +218,8 @@ bool Server::start_() {
         drop_line = wlr_scene_rect_create(overlay_layer, 1, 1, accent(0.9f).data());
         for (auto* r : {drop_box, drop_place, drop_half, drop_line}) wlr_scene_node_set_enabled(&r->node, false);
     }
-    zh = shell::chinese(os::environment());
+    xdesk::words::register_words();
+    zh = xdesk::words::chinese();
     open_fonts();
 
     xdg_shell = wlr_xdg_shell_create(display, 6);
@@ -406,8 +408,8 @@ bool Server::start_() {
             if (const View* v = self->view_of(id); v && v->mapped) ++left;
         self->closing.clear();
         if (left > 0)
-            self->show_hint(self->zh ? std::format("{} 个窗口没有关闭，留在 WuXian 上", left)
-                                     : std::format("{} {} did not close: on WuXian", left, left == 1 ? "window" : "windows"), 5000);
+            self->show_hint(left == 1 ? std::string(i18n::tr("1 window did not close: on WuXian"))
+                                      : i18n::trf("{} windows did not close: on WuXian", left), 5000);
         return 0;
     }, this);
     // The person's keys and state; each workspace's arrangement as they left it.

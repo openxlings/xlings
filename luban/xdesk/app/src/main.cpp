@@ -4,8 +4,10 @@ import xdesk.compositor;
 import xdesk.apps;
 import xdesk.config;
 import xdesk.os;
+import xdesk.words;
 
 int main(int argc, char* argv[]) {
+    xdesk::words::register_words();
     const std::vector<std::string_view> args(argv + 1, argv + argc);
     if (!args.empty() && args[0] == "--probe") {
         auto f = xdesk::compositor::probe({640, 400});

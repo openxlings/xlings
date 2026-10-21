@@ -56,7 +56,7 @@ Super alone: the applications. Super held a second: the keys used most.
 |  | To workspace 8 | `Super+Shift+8` |
 |  | To workspace 9 | `Super+Shift+9` |
 |  | Onto WuXian: a free window | `Super+Shift+0` |
-|  | A new workspace | `Super+Ctrl+N` |
+|  | New workspace | `Super+Ctrl+N` |
 |  | The workspace before | `Super+Ctrl+Left`, `Super+PageUp` |
 |  | The workspace after | `Super+Ctrl+Right`, `Super+PageDown` |
 |  | To the workspace before, with the window | `Super+Ctrl+Shift+Left`, `Super+Shift+PageUp` |

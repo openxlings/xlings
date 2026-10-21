@@ -8,6 +8,7 @@
 module xdesk.compositor;
 
 import std;
+import xdesk.words;
 import opensal;
 import xdesk.layout;
 import xdesk.draw;
@@ -176,8 +177,8 @@ void Server::show_drop() {
     if (drop.kind == K::column && (pv.line || pv.box)) {
         const auto& at = pv.line ? *pv.line : *pv.box;
         const auto it = std::ranges::find_if(kWidths, [&](double w) { return std::abs(w - drop_width) < 1e-6; });
-        const std::string label = std::format("{}{}", it == kWidths.end() ? (zh ? "自动" : "auto") : kWidthLabels[static_cast<std::size_t>(it - kWidths.begin())],
-                                              zh ? " · 滚轮或 1–4 切换宽度" : " · wheel or 1-4: its width");
+        const std::string label = std::format("{}{}", it == kWidths.end() ? (i18n::tr("auto")) : kWidthLabels[static_cast<std::size_t>(it - kWidths.begin())],
+                                              i18n::tr(" · wheel or 1-4: its width"));
         sizes_picture = shell::sizes(ui(), theme, {label}, 0, at.x + at.width / 2, at.y + 16, logical_w(), logical_h(), scale);
         wlr_scene_node_set_position(&sizes_node->node, static_cast<int>(sizes_picture.x), static_cast<int>(sizes_picture.y));
         show(sizes_node, std::move(sizes_picture.image), scale);

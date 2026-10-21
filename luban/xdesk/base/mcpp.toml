@@ -21,3 +21,6 @@ version   = "0.1.0"
 
 [targets.xdesk-base]
 kind = "lib"
+
+[dependencies]
+i18nkit = { path = "../../kits/i18n" }

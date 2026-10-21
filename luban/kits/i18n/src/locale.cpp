@@ -1,9 +1,8 @@
-module xlings.i18n;
+module i18n;
 
 import std;
-import xlings.platform;
 
-namespace xlings::i18n {
+namespace i18n {
 
 std::string normalize(std::string_view tag) {
     if (const auto at = tag.find_first_of(".@"); at != std::string_view::npos) tag = tag.substr(0, at);
@@ -36,8 +35,21 @@ namespace {
 std::string& setting_() { static std::string v; return v; }
 std::string& override_env_() { static std::string v; return v; }
 std::string& resolved_() { static std::string v; return v; }
+std::function<std::string()>& system_source_() { static std::function<std::string()> f; return f; }
+
+// The system's language as POSIX says it: LC_ALL, LC_MESSAGES, LANG.
+std::string environment_language_() {
+    for (const char* v : {"LC_ALL", "LC_MESSAGES", "LANG"})
+        if (const char* s = std::getenv(v); s && *s) return s;
+    return {};
+}
 
 }  // namespace
+
+void set_system_language_source(std::function<std::string()> source) {
+    system_source_() = std::move(source);
+    resolved_().clear();
+}
 
 void set_override_env(std::string variable) {
     override_env_() = std::move(variable);
@@ -46,7 +58,7 @@ void set_override_env(std::string variable) {
 
 void set_language(std::string lang) {
     // "auto" and "" both mean follow the system, spelled explicitly because
-    // `xlings config --lang auto` is how a user goes BACK to following it, and
+    // a program's "auto" setting is how a person goes BACK to following it, and
     // an unrecognised value must not silently pin.
     setting_() = normalize(lang);
     resolved_().clear();
@@ -60,7 +72,7 @@ const std::string& language() {
     if (!override_env_().empty())
         if (const char* v = std::getenv(override_env_().c_str()); v && *v) asked = normalize(v);
     if (asked.empty()) asked = setting_();
-    if (asked.empty()) asked = normalize(platform::get_system_language());
+    if (asked.empty()) asked = normalize(system_source_() ? system_source_()() : environment_language_());
     // The first of its chain some catalogue speaks. English is the base, so
     // it is a complete answer rather than a degraded one.
     for (const auto& t : fallback_chain(asked))
@@ -71,4 +83,4 @@ const std::string& language() {
 
 void forget_resolved_language() { resolved_().clear(); }
 
-}  // namespace xlings::i18n
+}  // namespace i18n

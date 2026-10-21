@@ -2,6 +2,7 @@
 module xdesk.compositor;
 
 import std;
+import xdesk.words;
 import opensal;
 import opensal.wire;
 import opensal.keys;
@@ -197,7 +198,7 @@ void Server::collapse_workspace(int id) {
 
 void Server::collapse_focused() {
     if (!wuxian()) {
-        show_hint(zh ? "折叠在 WuXian 视图里（Super+O）" : "Collapsing is the WuXian view's (Super+O)", 2500);
+        show_hint(i18n::tr("Collapsing is the WuXian view's (Super+O)"), 2500);
         return;
     }
     if (const auto f = lay.focused(); f && lay.is_free(*f)) return collapse_window(*f);

@@ -8,6 +8,7 @@
 module xdesk.compositor;
 
 import std;
+import xdesk.words;
 import openwx;
 import xdesk.layout;
 import xdesk.draw;
@@ -100,7 +101,7 @@ void Server::update_bookmarks() {
                     View* v = view_of(it.window);
                     b.label = v ? name_of(*v) : std::string("?");
                 } else if (const auto* w = lay.workspace_info(it.workspace)) {
-                    b.label = w->name.empty() ? std::format("{} {}", zh ? "工作区" : "Workspace", w->id) : std::format("{} · {}", w->id, w->name);
+                    b.label = w->name.empty() ? i18n::trf("Workspace {}", w->id) : std::format("{} · {}", w->id, w->name);
                     b.colour = draw::Color::rgb(w->color);
                 }
             }

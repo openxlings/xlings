@@ -1,6 +1,7 @@
 module xdesk.shell;
 
 import std;
+import xdesk.words;
 import xdesk.draw;
 import xdesk.apps;
 
@@ -42,12 +43,6 @@ Theme theme(std::string_view profile) {
         t.radius = 12;
     }
     return t;
-}
-
-bool chinese(const std::map<std::string, std::string>& env) {
-    for (const char* key : {"LC_ALL", "LC_MESSAGES", "LANG"})
-        if (const auto it = env.find(key); it != env.end() && !it->second.empty()) return it->second.starts_with("zh");
-    return false;
 }
 
 // ── title bars ───────────────────────────────────────────────────────
@@ -104,8 +99,6 @@ draw::Image title_bar(draw::Fonts* fonts, const Theme& t, std::string_view title
 // ── the panel ────────────────────────────────────────────────────────
 
 namespace {
-
-std::string_view tr_(bool zh, std::string_view en, std::string_view cn) { return zh ? cn : en; }
 
 }  // namespace
 
@@ -240,7 +233,7 @@ Picture panel(draw::Fonts* fonts, const Theme& t, const PanelState& s, int outpu
         bool right { false };
     };
     std::vector<Item> items;
-    items.push_back({.kind = Item::Kind::button, .label = std::string(tr_(s.zh, "Apps", "应用")), .target = Target::launcher});
+    items.push_back({.kind = Item::Kind::button, .label = std::string(i18n::tr("Apps")), .target = Target::launcher});
     const WorkspaceChip* current = nullptr;
     for (const auto& w : s.workspaces)
         if (w.current) current = &w;
@@ -254,16 +247,16 @@ Picture panel(draw::Fonts* fonts, const Theme& t, const PanelState& s, int outpu
             if (!w.current) items.push_back({.kind = Item::Kind::small_chip, .label = std::to_string(w.id), .target = Target::workspace, .index = w.id, .chip = &w});
     if (s.wuxian) {
         items.push_back({.kind = Item::Kind::text, .label = std::format("{}%", static_cast<int>(std::lround(s.zoom * 100))), .right = true});
-        items.push_back({.kind = Item::Kind::button, .label = std::string(tr_(s.zh, "Show all", "显示全部")), .target = Target::show_all, .right = true});
-        items.push_back({.kind = Item::Kind::button, .label = std::string(tr_(s.zh, "Minimap", "小地图")), .target = Target::minimap,
+        items.push_back({.kind = Item::Kind::button, .label = std::string(i18n::tr("Show all")), .target = Target::show_all, .right = true});
+        items.push_back({.kind = Item::Kind::button, .label = std::string(i18n::tr("Minimap")), .target = Target::minimap,
                          .lit = s.minimap, .right = true});
     } else if (s.free_windows > 0) {
         items.push_back({.kind = Item::Kind::button,
-                         .label = s.zh ? std::format("WuXian 上 {} 个窗口", s.free_windows)
-                                       : std::format("{} {} on WuXian", s.free_windows, s.free_windows == 1 ? "window" : "windows"),
+                         .label = s.free_windows == 1 ? std::string(i18n::tr("1 window on WuXian"))
+                                                      : i18n::trf("{} windows on WuXian", s.free_windows),
                          .target = Target::free, .right = true});
     }
-    items.push_back({.kind = Item::Kind::button, .label = s.wuxian ? std::string(tr_(s.zh, "Back", "返回")) : std::string("WuXian"),
+    items.push_back({.kind = Item::Kind::button, .label = s.wuxian ? std::string(i18n::tr("Back")) : std::string("WuXian"),
                      .target = Target::wuxian, .lit = s.wuxian, .right = true});
     const double chip_icon = 16, small_w = 26;
     for (auto& it : items) {
@@ -448,7 +441,7 @@ Picture Launcher::draw(draw::Fonts* ui, draw::Fonts* big, const Theme& t, int wi
     if (big) {
         const double baseline = std::round(by + (field_h + big->ascent() - big->descent()) / 2);
         if (query_.empty()) {
-            c.text(*big, tr_(zh, "Type to search applications, settings, actions", "输入以搜索应用、设置、操作"), bx + 20, baseline, t.muted, box_w - 40);
+            c.text(*big, i18n::tr("Type to search applications, settings, actions"), bx + 20, baseline, t.muted, box_w - 40);
         } else {
             const double w = c.text(*big, query_, bx + 20, baseline, t.text, box_w - 48);
             c.fill({bx + 22 + w, baseline - big->ascent() + 2, 2, big->ascent() + big->descent() - 2}, t.accent);
@@ -458,7 +451,7 @@ Picture Launcher::draw(draw::Fonts* ui, draw::Fonts* big, const Theme& t, int wi
     rows_.clear();
     double y = by + field_h + 8;
     if (rows == 0 && ui) {
-        c.text(*ui, tr_(zh, "Nothing matches", "没有匹配的应用"), bx + 20, std::round(y + 26), t.muted);
+        c.text(*ui, i18n::tr("Nothing matches"), bx + 20, std::round(y + 26), t.muted);
     }
     for (std::size_t k = 0; k < rows; ++k) {
         const Rect r { bx + 8, y, box_w - 16, row_h };
@@ -471,12 +464,12 @@ Picture Launcher::draw(draw::Fonts* ui, draw::Fonts* big, const Theme& t, int wi
             if (!detail.empty())
                 c.text(*ui, detail, r.x + 14 + name_w + 12, std::round(r.y + 19), t.muted, r.width - name_w - 40);
             if (!app->id.starts_with("xdesk:")) c.text(*ui, app->id, r.x + 14, std::round(r.y + 36), Color::rgb(0x5c6370), r.width - 28);
-            else c.text(*ui, tr_(zh, "the desktop", "桌面"), r.x + 14, std::round(r.y + 36), Color::rgb(0x5c6370), r.width - 28);
+            else c.text(*ui, i18n::tr("the desktop"), r.x + 14, std::round(r.y + 36), Color::rgb(0x5c6370), r.width - 28);
         }
         y += row_h;
     }
     if (ui)
-        c.text(*ui, tr_(zh, "Enter to open  ·  Esc to close  ·  ↑↓ to choose", "Enter 打开  ·  Esc 关闭  ·  ↑↓ 选择"), bx + 20,
+        c.text(*ui, i18n::tr("Enter to open  ·  Esc to close  ·  ↑↓ to choose"), bx + 20,
                std::round(by + box_h - 12), Color::rgb(0x5c6370), box_w - 40);
     return p;
 }

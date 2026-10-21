@@ -69,6 +69,7 @@ reference one another; implementations connect them.
 - `openhal-host` -- openhal's provider on Linux, macOS and Windows.
 - `imkit` -- immediate-mode widgets over Dear ImGui.
 - `tray` -- a status-area icon and its menu (StatusNotifierItem, the macOS menu bar, the Windows notification area).
+- `i18n` (i18nkit) -- words in a person's language: catalogues by domain and language, a fallback chain to English, a check of the catalogues; xlings.i18n and xdesk.words are built on it.
 - `telemetry` -- what a program says about itself: counters, gauges and histograms by name, a flight recorder, a structured log (one JSON object a line), profiling spans exported as a trace, and dumps; `telemetry::control` is the whole interface a bus or a control socket carries (openbus `openbus.telemetry@0.1`).
 - `cursor` (cursorkit) -- pointers drawn from vector shapes at exactly the size asked, Xcursor themes, and the shake that says someone is looking for the pointer; its tool `cursor-make` makes the Luban pointer theme (`os/window/cursors/luban.path`).
 

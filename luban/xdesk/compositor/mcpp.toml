@@ -24,6 +24,7 @@ kind = "lib"
 
 [dependencies]
 xdesk-base   = { path = "../base" }
+i18nkit      = { path = "../../kits/i18n" }
 xdesk-layout = { path = "../layout" }
 opensal    = { path = "../../specs/opensal" }
 openbus    = { path = "../../specs/openbus" }

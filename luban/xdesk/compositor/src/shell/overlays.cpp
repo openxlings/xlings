@@ -4,6 +4,7 @@
 module xdesk.shell;
 
 import std;
+import xdesk.words;
 import xdesk.draw;
 
 namespace xdesk::shell {
@@ -16,8 +17,6 @@ using draw::Rect;
 draw::Image image_(double width, double height, double scale) {
     return draw::Image(std::max(1, static_cast<int>(std::ceil(width * scale))), std::max(1, static_cast<int>(std::ceil(height * scale))));
 }
-
-std::string_view tr_(bool zh, std::string_view en, std::string_view cn) { return zh ? cn : en; }
 
 }  // namespace
 
@@ -48,7 +47,7 @@ Picture chooser(draw::Fonts* ui, const Theme& t, const std::vector<ChooserCard>&
         p.areas.push_back({.rect = r, .target = Target::item, .index = static_cast<int>(k)});
     }
     if (ui)
-        c.text(*ui, tr_(zh, "m: the next  ·  let Super go: this one  ·  Esc: as it was", "m：下一个  ·  松开 Super：就这个  ·  Esc：不变"),
+        c.text(*ui, i18n::tr("m: the next  ·  let Super go: this one  ·  Esc: as it was"),
                x0, std::round(y0 + ch + 30), t.muted, width - 2 * x0);
     return p;
 }
@@ -57,10 +56,8 @@ Picture app_switcher(draw::Fonts* ui, const Theme& t, const std::vector<AppTile>
                      int height, bool zh, double scale) {
     Picture p;
     const double n = std::max<double>(1, double(apps.size()));
-    const auto hint = open ? tr_(zh, "Tab: the next  ·  ← →: its windows  ·  let Super go: this one  ·  Esc: as it was",
-                                 "Tab：下一个  ·  ← →：它的窗口  ·  松开 Super：就这个  ·  Esc：不变")
-                           : tr_(zh, "Tab: the next  ·  ↓: its windows  ·  let Super go: this one  ·  Esc: as it was",
-                                 "Tab：下一个  ·  ↓：它的窗口  ·  松开 Super：就这个  ·  Esc：不变");
+    const auto hint = open ? i18n::tr("Tab: the next  ·  ← →: its windows  ·  let Super go: this one  ·  Esc: as it was")
+                           : i18n::tr("Tab: the next  ·  ↓: its windows  ·  let Super go: this one  ·  Esc: as it was");
     // Tiles as wide as fit, at most 112 (names cut to them); the row as wide
     // as what the keys do, centred in it.
     const double tile = std::clamp((width - 80.0 - 24) / n, 64.0, 112.0), th = kAppIcon + 52;
@@ -72,7 +69,7 @@ Picture app_switcher(draw::Fonts* ui, const Theme& t, const std::vector<AppTile>
     draw::Canvas c(p.image, scale);
     c.fill({0, 0, bw, bh}, t.card, t.radius + 4);
     c.frame({0, 0, bw, bh}, Color::rgb(0x3a4050), 1, t.radius + 4);
-    if (apps.empty() && ui) c.text(*ui, tr_(zh, "No windows", "没有窗口"), 20, 40, t.muted);
+    if (apps.empty() && ui) c.text(*ui, i18n::tr("No windows"), 20, 40, t.muted);
     for (std::size_t k = 0; k < apps.size(); ++k) {
         const auto& a = apps[k];
         const Rect r { left + double(k) * tile, 12, tile, th };
@@ -159,7 +156,7 @@ Picture sheet(draw::Fonts* ui, draw::Fonts* big, const Theme& t, std::string_vie
             c.text(*ui, rows[k].what, x + colw * 0.44, std::round(y + 16), t.text, colw * 0.54);
         }
     }
-    if (ui) c.text(*ui, tr_(zh, "Any key closes this", "任意键关闭"), bx + 20, std::round(by + bh - 12), Color::rgb(0x5c6370), bw - 40);
+    if (ui) c.text(*ui, i18n::tr("Any key closes this"), bx + 20, std::round(by + bh - 12), Color::rgb(0x5c6370), bw - 40);
     return p;
 }
 
@@ -366,8 +363,8 @@ Picture settings(draw::Fonts* ui, draw::Fonts* big, const Theme& t, const Settin
             const double a = k * 3.14159265358979 / 4;
             c.fill({cx + std::cos(a) * 9 - 1.75, cy + std::sin(a) * 9 - 1.75, 3.5, 3.5}, t.text, 1);
         }
-        if (big) c.text(*big, tr_(zh, "Settings", "设置"), card.x + 46, std::round(y + 18), t.text);
-        else if (ui) c.text(*ui, tr_(zh, "Settings", "设置"), card.x + 46, std::round(y + 15), t.text);
+        if (big) c.text(*big, i18n::tr("Settings"), card.x + 46, std::round(y + 18), t.text);
+        else if (ui) c.text(*ui, i18n::tr("Settings"), card.x + 46, std::round(y + 15), t.text);
     }
     y += 40;
     for (std::size_t k = 0; k < v.pages.size(); ++k) {
@@ -444,7 +441,7 @@ Picture settings(draw::Fonts* ui, draw::Fonts* big, const Theme& t, const Settin
             }
             case K::keys: {
                 if (!ui) break;
-                const auto keys = lit && v.capturing ? std::string(tr_(zh, "Press the keys…", "按下新的组合键…")) : r.value;
+                const auto keys = lit && v.capturing ? std::string(i18n::tr("Press the keys…")) : r.value;
                 const double kw = std::min(ui->width(keys), (x1 - x0) * 0.5);
                 c.text(*ui, r.label, x0 + (r.changed ? 12 : 0), base, text, x1 - x0 - kw - 30);
                 if (r.changed) c.fill({x0, y + 15, 6, 6}, t.accent, 3);
