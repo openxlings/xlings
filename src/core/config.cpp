@@ -534,7 +534,22 @@ std::vector<std::string> Config::workspace_targets_from_workspace_(const xvm::Wo
     if (!activeSubosOverride_.empty()) return activeSubosOverride_;
     auto env = utils::get_env_or_default("XLINGS_ACTIVE_SUBOS");
     if (!env.empty()) return env;
+    // Inside a Luban system, the system itself, as resolve_subos_scope_
+    // names it: the scope said "h25" while the workspace was read from the
+    // home's `default`, and in a machine (no XLINGS_ACTIVE_SUBOS) every
+    // program the system had placed was "not installed in this subos (h25)".
+    if (auto root = root_instance_name_(); !root.empty()) return root;
     return globalActiveSubos_;
+}
+
+[[nodiscard]] std::string Config::root_instance_name_() const {
+    // A user's own home is not the system's: its subos is its own.
+    if (!paths_.systemLayer.empty()) return {};
+    auto name = utils::get_env_or_default("XLINGS_ROOT_INSTANCE");
+    if (!name.empty()) return name;
+    std::error_code ec;
+    if (auto record = root_record_(); record && std::filesystem::equivalent(record->home, paths_.homeDir, ec)) return record->name;
+    return {};
 }
 
 [[nodiscard]] std::filesystem::path Config::global_subos_dir_() const {
@@ -660,12 +675,7 @@ double Config::probe_resource_server_latency_(const std::string& server) {
     // read it said "vim is not installed in this subos (default)" in a
     // machine whose generation had just placed vim.
     // A user's own home is not the system's: its subos is its own.
-    if (name.empty() && paths_.systemLayer.empty()) name = utils::get_env_or_default("XLINGS_ROOT_INSTANCE");
-    if (name.empty() && paths_.systemLayer.empty()) {
-        std::error_code ec;
-        if (auto record = root_record_(); record && std::filesystem::equivalent(record->home, paths_.homeDir, ec))
-            name = record->name;
-    }
+    if (name.empty()) name = root_instance_name_();
     if (name.empty()) name = globalActiveSubos_;
     return {name, paths_.homeDir / "subos" / name};
 }
@@ -754,6 +764,7 @@ Config::Config() {
             // What it and the xlings it starts act on is this home, not the
             // system's subos and runtime.
             platform::set_env_variable("XLINGS_HOME", own.string());
+            systemInstance_ = utils::get_env_or_default("XLINGS_ROOT_INSTANCE");
             platform::unset_env_variable("XLINGS_ROOT_INSTANCE");
         }
     }
@@ -1633,6 +1644,14 @@ std::filesystem::path Config::subos_dir(const std::string& name) {
 
 [[nodiscard]] SubosScope Config::subos_scope() {
     return instance_().resolve_subos_scope_();
+}
+
+[[nodiscard]] std::string Config::system_instance() {
+    auto& self = instance_();
+    if (!self.systemInstance_.empty()) return self.systemInstance_;
+    if (auto name = utils::get_env_or_default("XLINGS_ROOT_INSTANCE"); !name.empty()) return name;
+    if (auto record = root_record_()) return record->name;
+    return {};
 }
 
 std::vector<std::string> Config::list_subos_names() {
