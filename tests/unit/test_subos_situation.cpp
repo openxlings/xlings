@@ -90,7 +90,7 @@ XTEST(SubosSituation, OneTableSaysWhereAChangeGoes, .area = "subos", .covers = {
 XTEST(SubosSituation, TheRootRecordNamesTheStoreAndTheSystem, .area = "subos", .covers = {"SUBOS-SITUATION"}) {
     const auto r = sit::parse_root_record("/home/user/.xlings/subos/desk/root/usr\n");
     ASSERT_TRUE(r.has_value());
-    EXPECT_EQ(r->home, "/home/user/.xlings");
+    EXPECT_EQ(r->home.generic_string(), "/home/user/.xlings");
     EXPECT_EQ(r->name, "desk");
     EXPECT_FALSE(sit::parse_root_record("relative/subos/x/root/usr"));
     EXPECT_FALSE(sit::parse_root_record("/xlings/subos/x/usr"));

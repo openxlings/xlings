@@ -17,8 +17,10 @@ constexpr std::string_view kSocketEnv = "XLINGS_BROKER_SOCKET";
 
 std::optional<RootRecord> parse_root_record(std::string_view line) {
     while (!line.empty() && std::isspace(static_cast<unsigned char>(line.back()))) line.remove_suffix(1);
+    // A Linux root's path, read the same on every host (a test on Windows).
+    if (!line.starts_with('/')) return std::nullopt;
     const auto usr = fs::path(line).lexically_normal();
-    if (!usr.is_absolute() || usr.filename() != "usr" || usr.parent_path().filename() != "root") return std::nullopt;
+    if (usr.filename() != "usr" || usr.parent_path().filename() != "root") return std::nullopt;
     const auto instance = usr.parent_path().parent_path();
     if (instance.parent_path().filename() != "subos" || instance.filename().empty()) return std::nullopt;
     return RootRecord{instance.parent_path().parent_path(), instance.filename().string()};

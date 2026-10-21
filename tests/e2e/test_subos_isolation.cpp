@@ -156,7 +156,7 @@ XTEST(SubosIsolation, LandlockFencesWritesWithoutANamespace,
         "cat '" + (outside / "file").string() + "'; "
         // The fence's directories stay held across exec (J1): a filesystem
         // that keeps no inodes would forget a rule's directory otherwise.
-        "for f in /proc/self/fd/*; do [ \"$(readlink $f)\" = '" + mounted.string() + "' ] && echo HELD; done"});
+        "for f in /proc/self/fd/*; do [ \"$(readlink $f)\" = '" + mounted.string() + "' ] && echo HELD; done; true"});
     ASSERT_EQ(r.exit_code, 0) << r.transcript();
     for (auto want : {"RO-HOME", "RO-OUTSIDE", "RO-TMP", "OWN-HOME", "OWN-TMP", "MOUNTED", "keep", "HELD"})
         EXPECT_NE(r.out.find(want), std::string::npos) << want << "\n" << r.transcript();
