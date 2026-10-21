@@ -17,164 +17,16 @@
 //     is CI; run locally it is the only test that can catch this parser being
 //     self-consistently wrong.
 #include <gtest/gtest.h>
+import xlings.testkit;
 
 import std;
 import xlings.libs.elfread;
 import xlings.platform;
 
 namespace er = xlings::elfread;
+namespace tk = xlings::testkit;
 
 namespace {
-
-// ── a synthetic ELF64 ────────────────────────────────────────────────
-//
-// Built rather than checked in: a committed binary fixture cannot be read to
-// see what it is asserting, and the interesting cases here (RPATH *and*
-// RUNPATH present, a DT_STRTAB whose vaddr must be translated through PT_LOAD)
-// are exactly the ones a stock compiler will not produce on demand.
-
-constexpr std::uint64_t kLoadVaddr = 0x400000;
-
-struct Builder {
-    std::vector<std::uint8_t> bytes;
-
-    void u8(std::uint8_t v)  { bytes.push_back(v); }
-    void u16(std::uint16_t v) { for (int i = 0; i < 2; ++i) bytes.push_back((v >> (8 * i)) & 0xff); }
-    void u32(std::uint32_t v) { for (int i = 0; i < 4; ++i) bytes.push_back((v >> (8 * i)) & 0xff); }
-    void u64(std::uint64_t v) { for (int i = 0; i < 8; ++i) bytes.push_back((v >> (8 * i)) & 0xff); }
-    void pad(std::size_t n)  { bytes.insert(bytes.end(), n, 0); }
-    void at_u64(std::size_t off, std::uint64_t v) {
-        for (int i = 0; i < 8; ++i) bytes[off + i] = (v >> (8 * i)) & 0xff;
-    }
-};
-
-struct SyntheticOptions {
-    std::string interp;                  // empty => no PT_INTERP
-    std::optional<std::string> rpath;    // DT_RPATH
-    std::optional<std::string> runpath;  // DT_RUNPATH
-    bool omitStrtab { false };           // a .dynamic with no DT_STRTAB
-    std::vector<std::string> needed;     // DT_NEEDED, in order
-};
-
-// Writes a minimal but structurally valid ELF64 LE executable.
-//
-// Layout, fixed so the offsets below can be plain arithmetic:
-//   [0,64)      ELF header
-//   [64, ...)   program headers: PT_LOAD, PT_INTERP?, PT_DYNAMIC?
-//   then        interpreter string, .dynstr, .dynamic
-std::filesystem::path write_synthetic(const std::filesystem::path& path,
-                                      const SyntheticOptions& opt) {
-    const bool wantInterp  = !opt.interp.empty();
-    const bool wantDynamic = opt.rpath || opt.runpath || opt.omitStrtab || !opt.needed.empty();
-
-    std::uint16_t phnum = 1;                       // PT_LOAD always
-    if (wantInterp)  ++phnum;
-    if (wantDynamic) ++phnum;
-    constexpr std::uint16_t kPhentsize = 56;
-    const std::size_t phoff = 64;
-    const std::size_t bodyStart = phoff + std::size_t{kPhentsize} * phnum;
-
-    // Body: interpreter string, then .dynstr, then .dynamic.
-    std::vector<std::uint8_t> body;
-    const auto appendString = [&](std::string_view s) {
-        const auto off = body.size();
-        body.insert(body.end(), s.begin(), s.end());
-        body.push_back(0);
-        return off;
-    };
-
-    std::size_t interpOff = 0;
-    std::size_t interpLen = 0;
-    if (wantInterp) {
-        interpOff = appendString(opt.interp);
-        interpLen = opt.interp.size() + 1;
-    }
-
-    // .dynstr — index 0 is the empty string, as the ABI requires.
-    const std::size_t strtabOff = body.size();
-    body.push_back(0);
-    std::size_t rpathIdx = 0;
-    std::size_t runpathIdx = 0;
-    if (opt.rpath)   rpathIdx   = appendString(*opt.rpath)   - strtabOff;
-    if (opt.runpath) runpathIdx = appendString(*opt.runpath) - strtabOff;
-    std::vector<std::size_t> neededIdx;
-    for (const auto& n : opt.needed) neededIdx.push_back(appendString(n) - strtabOff);
-
-    // .dynamic — 16 bytes per entry (tag, value), DT_NULL terminated.
-    std::size_t dynOff = 0;
-    std::size_t dynSize = 0;
-    if (wantDynamic) {
-        while (body.size() % 8 != 0) body.push_back(0);
-        dynOff = body.size();
-        const auto entry = [&](std::uint64_t tag, std::uint64_t val) {
-            for (int i = 0; i < 8; ++i) body.push_back((tag >> (8 * i)) & 0xff);
-            for (int i = 0; i < 8; ++i) body.push_back((val >> (8 * i)) & 0xff);
-        };
-        if (!opt.omitStrtab) {
-            entry(5, kLoadVaddr + bodyStart + strtabOff);   // DT_STRTAB (a VADDR)
-        }
-        if (opt.rpath)   entry(15, rpathIdx);               // DT_RPATH
-        if (opt.runpath) entry(29, runpathIdx);             // DT_RUNPATH
-        for (const auto idx : neededIdx) entry(1, idx);      // DT_NEEDED
-        entry(0, 0);                                        // DT_NULL
-        dynSize = body.size() - dynOff;
-    }
-
-    Builder b;
-    // e_ident
-    b.u8(0x7f); b.u8('E'); b.u8('L'); b.u8('F');
-    b.u8(2);            // ELFCLASS64
-    b.u8(1);            // ELFDATA2LSB
-    b.u8(1);            // EV_CURRENT
-    b.u8(0);            // ELFOSABI_NONE
-    b.pad(8);
-    b.u16(2);           // e_type = ET_EXEC
-    b.u16(0x3e);        // e_machine = EM_X86_64
-    b.u32(1);           // e_version
-    b.u64(kLoadVaddr);  // e_entry
-    b.u64(phoff);       // e_phoff
-    b.u64(0);           // e_shoff — no section headers; the loader never needs them
-    b.u32(0);           // e_flags
-    b.u16(64);          // e_ehsize
-    b.u16(kPhentsize);  // e_phentsize
-    b.u16(phnum);       // e_phnum
-    b.u16(64);          // e_shentsize
-    b.u16(0);           // e_shnum
-    b.u16(0);           // e_shstrndx
-
-    const std::size_t total = bodyStart + body.size();
-
-    const auto phdr = [&](std::uint32_t type, std::uint64_t off,
-                          std::uint64_t vaddr, std::uint64_t size) {
-        b.u32(type);
-        b.u32(4);        // p_flags = PF_R
-        b.u64(off);
-        b.u64(vaddr);
-        b.u64(vaddr);    // p_paddr
-        b.u64(size);     // p_filesz
-        b.u64(size);     // p_memsz
-        b.u64(0x1000);   // p_align
-    };
-
-    phdr(1, 0, kLoadVaddr, total);                                   // PT_LOAD
-    if (wantInterp) {
-        phdr(3, bodyStart + interpOff,
-             kLoadVaddr + bodyStart + interpOff, interpLen);         // PT_INTERP
-    }
-    if (wantDynamic) {
-        phdr(2, bodyStart + dynOff,
-             kLoadVaddr + bodyStart + dynOff, dynSize);              // PT_DYNAMIC
-    }
-
-    b.bytes.insert(b.bytes.end(), body.begin(), body.end());
-
-    std::filesystem::create_directories(path.parent_path());
-    std::ofstream out(path, std::ios::binary);
-    out.write(reinterpret_cast<const char*>(b.bytes.data()),
-              static_cast<std::streamsize>(b.bytes.size()));
-    out.close();
-    return path;
-}
 
 struct TempDir {
     std::filesystem::path root =
@@ -189,7 +41,7 @@ struct TempDir {
 
 TEST(ElfRead, ReadsInterpreterAndRunpath) {
     TempDir tmp;
-    auto file = write_synthetic(tmp.root / "exe", {
+    auto file = tk::write_elf(tmp.root / "exe", {
         .interp  = "/store/glibc/2.39/lib64/ld-linux-x86-64.so.2",
         .runpath = "/store/node/18/lib:/store/glibc/2.39/lib64",
     });
@@ -211,7 +63,7 @@ TEST(ElfRead, ReadsInterpreterAndRunpath) {
 // search paths the loader never consults.
 TEST(ElfRead, RunpathWinsOverRpathAndDoesNotConcatenate) {
     TempDir tmp;
-    auto file = write_synthetic(tmp.root / "both", {
+    auto file = tk::write_elf(tmp.root / "both", {
         .interp  = "/store/glibc/2.39/lib64/ld-linux-x86-64.so.2",
         .rpath   = "/legacy/rpath",
         .runpath = "/modern/runpath",
@@ -226,7 +78,7 @@ TEST(ElfRead, RunpathWinsOverRpathAndDoesNotConcatenate) {
 
 TEST(ElfRead, FallsBackToRpathWhenNoRunpath) {
     TempDir tmp;
-    auto file = write_synthetic(tmp.root / "legacy", {
+    auto file = tk::write_elf(tmp.root / "legacy", {
         .interp = "/store/glibc/2.39/lib64/ld-linux-x86-64.so.2",
         .rpath  = "/legacy/a:/legacy/b",
     });
@@ -244,7 +96,7 @@ TEST(ElfRead, FallsBackToRpathWhenNoRunpath) {
 // interpreter and a change here would silently widen or narrow the audit.
 TEST(ElfRead, NoInterpreterIsReadNotAnError) {
     TempDir tmp;
-    auto file = write_synthetic(tmp.root / "lib.so", {
+    auto file = tk::write_elf(tmp.root / "lib.so", {
         .runpath = "/store/somewhere/lib",
     });
 
@@ -276,7 +128,7 @@ TEST(ElfRead, MissingFileIsNullopt) {
 // exist, which formats as a path and compares as a path and is not one.
 TEST(ElfRead, TruncatedFileDoesNotInventFields) {
     TempDir tmp;
-    auto file = write_synthetic(tmp.root / "truncated", {
+    auto file = tk::write_elf(tmp.root / "truncated", {
         .interp  = "/store/glibc/2.39/lib64/ld-linux-x86-64.so.2",
         .runpath = "/store/node/18/lib",
     });
@@ -297,7 +149,7 @@ TEST(ElfRead, TruncatedFileDoesNotInventFields) {
 
 TEST(ElfRead, DynamicWithoutStrtabYieldsNoPaths) {
     TempDir tmp;
-    auto file = write_synthetic(tmp.root / "nostrtab", {
+    auto file = tk::write_elf(tmp.root / "nostrtab", {
         .interp = "/store/glibc/2.39/lib64/ld-linux-x86-64.so.2",
         .omitStrtab = true,
     });
@@ -313,13 +165,13 @@ TEST(ElfRead, DynamicWithoutStrtabYieldsNoPaths) {
 TEST(ElfRead, NeededIsEveryLibraryInOrder) {
     const auto dir = std::filesystem::temp_directory_path() / std::format("elfread-needed-{}", ::testing::UnitTest::GetInstance()->random_seed());
     std::filesystem::create_directories(dir);
-    const auto file = write_synthetic(dir / "prog", {.interp = "/lib64/ld-linux-x86-64.so.2", .runpath = "$ORIGIN/../lib",
+    const auto file = tk::write_elf(dir / "prog", {.interp = "/lib64/ld-linux-x86-64.so.2", .runpath = "$ORIGIN/../lib",
                                                      .needed = {"libz.so.1", "libc.so.6"}});
     const auto info = er::read(file);
     ASSERT_TRUE(info);
     EXPECT_EQ(info->needed, (std::vector<std::string>{"libz.so.1", "libc.so.6"}));
     EXPECT_EQ(info->searchPaths, (std::vector<std::string>{"$ORIGIN/../lib"}));
-    const auto none = er::read(write_synthetic(dir / "static", {.interp = "/lib/ld-musl-x86_64.so.1"}));
+    const auto none = er::read(tk::write_elf(dir / "static", {.interp = "/lib/ld-musl-x86_64.so.1"}));
     ASSERT_TRUE(none);
     EXPECT_TRUE(none->needed.empty());
     std::error_code ec;

@@ -707,7 +707,7 @@ kind = "flow"
 status = "required"
 
 [ROOT-STORE-CLOSURE]
-text = "Root sessions expose only checked runtime payloads and immutable generations, with synchronous broker refresh"
+text = "Root sessions expose only checked runtime payloads and immutable generations, with synchronous broker refresh; a link one payload keeps into another (libglvnd's glx-vendor) is that payload's, checked when it is in the closure"
 kind = "isolation"
 status = "required"
 

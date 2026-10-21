@@ -199,6 +199,14 @@ inline tk::RunResult xdesk_with(const tk::Home& home, std::string_view profile, 
 
 inline constexpr std::array<int, 3> kRed { 0xc0, 0x40, 0x40 }, kGreen { 0x40, 0xc0, 0x40 }, kBlue { 0x40, 0x40, 0xc0 };
 
+// A window's colour as drawn: within a few steps of it per channel (a fade
+// that has not quite ended on a slow machine darkened 192 to 189).
+inline bool near_colour(const std::array<int, 3>& got, const std::array<int, 3>& want, int steps = 6) {
+    for (int i = 0; i < 3; ++i)
+        if (got[i] < want[i] - steps || got[i] > want[i] + steps) return false;
+    return true;
+}
+
 // Where a colour is on a picture: its bounding box (x0, y0, x1, y1), -1s for none.
 inline std::array<int, 4> box_of(const Image& img, const std::array<int, 3>& colour) {
     std::array<int, 4> b{-1, -1, -1, -1};

@@ -290,7 +290,13 @@ std::optional<int> produce_domain_at_creation_(const std::string& name, bool,
     // events (U1: `luban new` showed one line for minutes).
     std::vector<std::string> words(arguments.begin(), arguments.end());
     if (!words.empty() && words.front() == "subos") words.erase(words.begin());
-    auto produced = run_domain_relayed_(*selected, std::move(words), std::nullopt, false, stream, false);
+    // Where it may yet be made in this home's prefix, what the namespace said
+    // is kept until that is known: said with the one warning, not as errors
+    // of a making that then succeeds.
+    std::vector<ErrorEvent> held;
+    auto produced = run_domain_relayed_(*selected, std::move(words), std::nullopt, false, stream, false,
+                                        fellBack ? &held : nullptr);
+    const auto release_held = [&] { for (auto& e : held) stream.emit(std::move(e)); held.clear(); };
     if (!produced || *produced != 0) {
         // Asked to build it there only if this host can (luban new): what the
         // private namespace could not make is made in this home's prefix, said
@@ -302,14 +308,19 @@ std::optional<int> produce_domain_at_creation_(const std::string& name, bool,
             if (fs::exists(half, ec))
                 fs::rename(half, half.parent_path() / std::format(".unfinished-{}-{}", name, platform::get_pid()), ec);
             *fellBack = true;
-            log::warn("'{}' could not be built in its private namespace on this host ({}); it is made in this home's "
+            const auto said = std::ranges::find_if(held, [](const ErrorEvent& e) {
+                return e.message.find("with no error detail") == std::string::npos; });
+            log::warn("'{}' could not be built in its private namespace on this host ({}{}); it is made in this home's "
                       "prefix (xlings self doctor --isolation says why)", name,
-                      produced ? std::format("exit {}", *produced) : produced.error());
+                      produced ? std::format("exit {}", *produced) : produced.error(),
+                      said != held.end() ? ": " + said->message : std::string{});
             return std::nullopt;
         }
+        release_held();
         error_(stream, produced ? std::format("namespace producer failed (exit {}); private domain retained", *produced) : produced.error());
         return produced ? *produced : 1;
     }
+    release_held();
     if (auto published = xlings::home::domain_producer::publish_scope(*selected, name); !published) {
         error_(stream, published.error()); return 1;
     }

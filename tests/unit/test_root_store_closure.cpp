@@ -182,3 +182,52 @@ XTEST(RootStoreClosure, BorrowedHomeMetadataIsLimitedToTheCheckedScope, .area = 
     (*prepared)->close();
     EXPECT_EQ(tk::read_file(hidden / "private.txt"), "other source scope");
 }
+
+// A link into another payload is that payload's file (libglvnd's
+// lib/glx-vendor, which the graphics stack fills per host with Mesa's and
+// NVIDIA's vendors): not a reason to refuse the root it is not in -- a second
+// desktop system came out without its desktop so -- while the payload's own
+// ELF naming a search path outside the closure still is.
+XTEST(RootStoreClosure, ALinkIntoAnotherPayloadIsThatPayloadsNotThisOnes, .area = "subos",
+      .covers = {"ROOT-STORE-CLOSURE"}) {
+    if constexpr (!tk::is_posix)
+        GTEST_SKIP() << "root projection uses directory symlinks";
+    auto home = tk::Home::isolated("root-store-closure-links");
+    const auto visible = fs::canonical(home.dir()) / "data/xpkgs/fixture-x-visible/1.0.0";
+    const auto hidden = fs::canonical(home.dir()) / "data/xpkgs/fixture-x-hidden/2.0.0";
+    const auto scope = fs::canonical(home.dir()) / "subos/box";
+    tk::write_file(visible / "bin/visible", "visible program");
+    tk::write_elf(hidden / "lib/libvendor.so.0", {.rpath = (hidden / "lib").string()});
+    fs::create_directories(visible / "lib/glx-vendor");
+    fs::create_symlink(hidden / "lib/libvendor.so.0", visible / "lib/glx-vendor/libvendor.so.0");
+    tk::write_file(visible / ".xlings-resolution.json",
+                   R"({"package":"fixture:visible@1.0.0","deps":[]})");
+    Json versions = {
+        {"visible",
+         {{"type", "program"},
+          {"versions", {{"fixture:1.0.0", {{"path", visible.string() + "/bin"}}}}}}}};
+    tk::write_file(fs::canonical(home.dir()) / ".xlings.json", Json{{"versions", versions}}.dump());
+    tk::write_file(fs::canonical(home.dir()) / "bin/xlings", "entry");
+    tk::write_file(fs::canonical(home.dir()) / "bin/luban", "luban");
+    tk::write_file(
+        scope / ".xlings.json",
+        Json{{"workspace",
+              {{"visible", {{"active", "fixture:1.0.0"}, {"installed", {"fixture:1.0.0"}}}}}}}
+            .dump());
+    rf::Inputs generation;
+    generation.payloads = {visible};
+    generation.programs = {{"visible", visible / "bin/visible"}};
+    ASSERT_TRUE(rf::commit(scope, rf::plan(generation), "fixture"));
+    auto inputs = closure::read_scope(fs::canonical(home.dir()), "box", scope / "rootfs");
+    ASSERT_TRUE(inputs) << inputs.error();
+    {
+        auto prepared = view::prepare(*inputs);
+        ASSERT_TRUE(prepared) << prepared.error();
+        (*prepared)->close();
+    }
+    // Its own library with the same search path is still refused.
+    tk::write_elf(visible / "lib/libown.so.0", {.rpath = (hidden / "lib").string()});
+    auto refused = view::prepare(*inputs);
+    ASSERT_FALSE(refused);
+    EXPECT_NE(refused.error().find("outside its recorded root closure"), std::string::npos) << refused.error();
+}

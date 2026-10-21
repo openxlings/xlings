@@ -735,6 +735,153 @@ fs::path xlings_binary() {
 
 // ── Homes ────────────────────────────────────────────────────────────
 
+namespace {
+
+// ── a synthetic ELF64 ────────────────────────────────────────────────
+//
+// Built rather than checked in: a committed binary fixture cannot be read to
+// see what it is asserting, and the interesting cases here (RPATH *and*
+// RUNPATH present, a DT_STRTAB whose vaddr must be translated through PT_LOAD)
+// are exactly the ones a stock compiler will not produce on demand.
+
+constexpr std::uint64_t kLoadVaddr = 0x400000;
+
+struct Builder {
+    std::vector<std::uint8_t> bytes;
+
+    void u8(std::uint8_t v)  { bytes.push_back(v); }
+    void u16(std::uint16_t v) { for (int i = 0; i < 2; ++i) bytes.push_back((v >> (8 * i)) & 0xff); }
+    void u32(std::uint32_t v) { for (int i = 0; i < 4; ++i) bytes.push_back((v >> (8 * i)) & 0xff); }
+    void u64(std::uint64_t v) { for (int i = 0; i < 8; ++i) bytes.push_back((v >> (8 * i)) & 0xff); }
+    void pad(std::size_t n)  { bytes.insert(bytes.end(), n, 0); }
+    void at_u64(std::size_t off, std::uint64_t v) {
+        for (int i = 0; i < 8; ++i) bytes[off + i] = (v >> (8 * i)) & 0xff;
+    }
+};
+
+// Writes a minimal but structurally valid ELF64 LE executable.
+//
+// Layout, fixed so the offsets below can be plain arithmetic:
+//   [0,64)      ELF header
+//   [64, ...)   program headers: PT_LOAD, PT_INTERP?, PT_DYNAMIC?
+//   then        interpreter string, .dynstr, .dynamic
+std::filesystem::path write_elf_(const std::filesystem::path& path, const ElfOptions& opt) {
+    const bool wantInterp  = !opt.interp.empty();
+    const bool wantDynamic = opt.rpath || opt.runpath || opt.omitStrtab || !opt.needed.empty();
+
+    std::uint16_t phnum = 1;                       // PT_LOAD always
+    if (wantInterp)  ++phnum;
+    if (wantDynamic) ++phnum;
+    constexpr std::uint16_t kPhentsize = 56;
+    const std::size_t phoff = 64;
+    const std::size_t bodyStart = phoff + std::size_t{kPhentsize} * phnum;
+
+    // Body: interpreter string, then .dynstr, then .dynamic.
+    std::vector<std::uint8_t> body;
+    const auto appendString = [&](std::string_view s) {
+        const auto off = body.size();
+        body.insert(body.end(), s.begin(), s.end());
+        body.push_back(0);
+        return off;
+    };
+
+    std::size_t interpOff = 0;
+    std::size_t interpLen = 0;
+    if (wantInterp) {
+        interpOff = appendString(opt.interp);
+        interpLen = opt.interp.size() + 1;
+    }
+
+    // .dynstr — index 0 is the empty string, as the ABI requires.
+    const std::size_t strtabOff = body.size();
+    body.push_back(0);
+    std::size_t rpathIdx = 0;
+    std::size_t runpathIdx = 0;
+    if (opt.rpath)   rpathIdx   = appendString(*opt.rpath)   - strtabOff;
+    if (opt.runpath) runpathIdx = appendString(*opt.runpath) - strtabOff;
+    std::vector<std::size_t> neededIdx;
+    for (const auto& n : opt.needed) neededIdx.push_back(appendString(n) - strtabOff);
+
+    // .dynamic — 16 bytes per entry (tag, value), DT_NULL terminated.
+    std::size_t dynOff = 0;
+    std::size_t dynSize = 0;
+    if (wantDynamic) {
+        while (body.size() % 8 != 0) body.push_back(0);
+        dynOff = body.size();
+        const auto entry = [&](std::uint64_t tag, std::uint64_t val) {
+            for (int i = 0; i < 8; ++i) body.push_back((tag >> (8 * i)) & 0xff);
+            for (int i = 0; i < 8; ++i) body.push_back((val >> (8 * i)) & 0xff);
+        };
+        if (!opt.omitStrtab) {
+            entry(5, kLoadVaddr + bodyStart + strtabOff);   // DT_STRTAB (a VADDR)
+        }
+        if (opt.rpath)   entry(15, rpathIdx);               // DT_RPATH
+        if (opt.runpath) entry(29, runpathIdx);             // DT_RUNPATH
+        for (const auto idx : neededIdx) entry(1, idx);      // DT_NEEDED
+        entry(0, 0);                                        // DT_NULL
+        dynSize = body.size() - dynOff;
+    }
+
+    Builder b;
+    // e_ident
+    b.u8(0x7f); b.u8('E'); b.u8('L'); b.u8('F');
+    b.u8(2);            // ELFCLASS64
+    b.u8(1);            // ELFDATA2LSB
+    b.u8(1);            // EV_CURRENT
+    b.u8(0);            // ELFOSABI_NONE
+    b.pad(8);
+    b.u16(2);           // e_type = ET_EXEC
+    b.u16(0x3e);        // e_machine = EM_X86_64
+    b.u32(1);           // e_version
+    b.u64(kLoadVaddr);  // e_entry
+    b.u64(phoff);       // e_phoff
+    b.u64(0);           // e_shoff — no section headers; the loader never needs them
+    b.u32(0);           // e_flags
+    b.u16(64);          // e_ehsize
+    b.u16(kPhentsize);  // e_phentsize
+    b.u16(phnum);       // e_phnum
+    b.u16(64);          // e_shentsize
+    b.u16(0);           // e_shnum
+    b.u16(0);           // e_shstrndx
+
+    const std::size_t total = bodyStart + body.size();
+
+    const auto phdr = [&](std::uint32_t type, std::uint64_t off,
+                          std::uint64_t vaddr, std::uint64_t size) {
+        b.u32(type);
+        b.u32(4);        // p_flags = PF_R
+        b.u64(off);
+        b.u64(vaddr);
+        b.u64(vaddr);    // p_paddr
+        b.u64(size);     // p_filesz
+        b.u64(size);     // p_memsz
+        b.u64(0x1000);   // p_align
+    };
+
+    phdr(1, 0, kLoadVaddr, total);                                   // PT_LOAD
+    if (wantInterp) {
+        phdr(3, bodyStart + interpOff,
+             kLoadVaddr + bodyStart + interpOff, interpLen);         // PT_INTERP
+    }
+    if (wantDynamic) {
+        phdr(2, bodyStart + dynOff,
+             kLoadVaddr + bodyStart + dynOff, dynSize);              // PT_DYNAMIC
+    }
+
+    b.bytes.insert(b.bytes.end(), body.begin(), body.end());
+
+    std::filesystem::create_directories(path.parent_path());
+    std::ofstream out(path, std::ios::binary);
+    out.write(reinterpret_cast<const char*>(b.bytes.data()),
+              static_cast<std::streamsize>(b.bytes.size()));
+    out.close();
+    return path;
+}
+
+}  // namespace
+
+fs::path write_elf(const fs::path& path, const ElfOptions& options) { return write_elf_(path, options); }
+
 std::string current_user() {
 #if defined(_WIN32)
     return env_or("USERNAME", "user");
