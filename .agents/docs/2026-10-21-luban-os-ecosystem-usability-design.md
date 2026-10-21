@@ -320,6 +320,13 @@ Landlock 的规则挂在旧的 inode 上，于是允许写的目录也被拒绝�
   4. 按显示的节奏出帧：宿主显示完上一帧再要下一帧（已有 paced，检查它在 machine 里是否生效）；
   5. GPU 合成的默认由 §5.6 的对比决定。
 - 每一步做完后，记录 L5 的前后对比（数值写进 PR 描述与 luban-os-ci 的报告）。
+- **实施（K7，本轮）**：
+  - opensal 0.6 `Compressed`：窄通道（machine 的串口、PC 宿主机的中继）的提供方声明它，消费方（xdesk、opensal-wlr 的桥）把帧的行压成一个
+    LZ4 块（`'z'`），更短才发；LZ4 块格式在规范模块里自己实现（只依赖标准库，规范仍是一个），桌面画面压到十分之一以下（单测）。
+  - 损坏矩形：取消"超过 8 块就发整帧"，改为把相距最近的两块反复合并到 8 块（超过 64 块才整帧）；`xdesk.frame.compress_ns`、`bytes_saved` 进 telemetry。
+  - 宿主按矩形更新纹理、按显示节奏出帧：已经如此（`Display::take` 给出矩形，paced）。
+  - **共享区域**改走 openbus 的 region（part 2 §7a：Luban OS 窗口是总线上的显示设备，xdesk 以 stream 打开它，帧放进 memfd 区域、只发引用；
+    跨不了内存的一跳自动退化为 inline 并计数）——XBus 的 region 已就绪（B4），显示设备的接入是下一步，本轮不做 ivshmem。
 
 ### 5.7 设备模拟与依赖
 

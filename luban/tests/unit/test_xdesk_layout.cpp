@@ -540,6 +540,24 @@ XTEST(XdeskLayout, AnItemOfWhichNothingShowsIsCoveredAndTheOneOverItsCentreCarri
     EXPECT_LT(std::chrono::steady_clock::now() - t0, std::chrono::milliseconds(20));
 }
 
+// A frame's damage in a few rectangles (design 2026-10-21 §5.6a): the
+// nearest merged until eight are left, every damaged pixel still in one, and
+// far less than the whole output for a handful of small changes.
+XTEST(XdeskLayout, ManyDamagedRectanglesAreMergedNotSentWhole, .area = "luban", .covers = {"XDESK-DAMAGE"}) {
+    std::vector<Rect> rs;
+    for (int k = 0; k < 20; ++k) rs.push_back({double(30 + (k % 5) * 200), double(40 + (k / 5) * 150), 12, 10});
+    const auto merged = layout::merge_damage(rs, 8);
+    EXPECT_LE(merged.size(), 8u);
+    for (const auto& r : rs)
+        EXPECT_TRUE(std::ranges::any_of(merged, [&](const Rect& m) {
+            return r.x >= m.x && r.y >= m.y && r.x + r.width <= m.x + m.width && r.y + r.height <= m.y + m.height;
+        })) << "every damaged rectangle in one";
+    double area = 0;
+    for (const auto& m : merged) area += m.width * m.height;
+    EXPECT_LT(area, 1200.0 * 800 / 4) << "not the whole output";
+    EXPECT_EQ(layout::merge_damage(rs, 30).size(), rs.size()) << "few enough: as they are";
+}
+
 // The views' change starts and ends where the workspace view is: the
 // locked camera shows the workspace's content exactly as it does.
 XTEST(XdeskLayout, TheLockedCameraShowsTheWorkspaceAsTheWorkspaceViewDoes, .area = "luban", .covers = {"WUXIAN-VIEWS"}) {

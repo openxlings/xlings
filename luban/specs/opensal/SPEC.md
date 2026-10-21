@@ -1,4 +1,4 @@
-# opensal Specification, version 0.5
+# opensal Specification, version 0.6
 
 ## 1. Scope
 
@@ -12,7 +12,7 @@ It does not define how a surface is acquired.
 
 2.2 `Surface` is the core interface; `Pointer`, `Keyboard`, `Mode`, `Density`,
 `Capture`, `Cursor`, `CursorImage`, `PointerLock`, `Text`, `Clipboard`,
-`Shell` and `Displays` are optional.
+`Shell`, `Displays` and `Compressed` are optional.
 
 2.3 A consumer learns which interfaces it has by asking (the provided set),
 never by trying an operation.
@@ -106,7 +106,16 @@ whether it paces).
 6.5 A version adds interfaces and messages; it changes none. 0.2 added
 `Shell`; 0.3 added `CursorImage` (`'C'`), `PointerLock` (`'l'`, relative
 motion) and the cursor names from grabbing on; 0.4 added shown and
-`Displays` (`'d'`); 0.5 added how a shaken pointer is shown (`'p'`).
+`Displays` (`'d'`); 0.5 added how a shaken pointer is shown (`'p'`); 0.6 added
+`Compressed` (`'z'`).
+
+6.6 `Compressed`: a provider across a narrow channel (a machine's serial port)
+takes `'z'` frames -- the header of an `'f'` frame, then its rows as one LZ4
+block (the block format: no frame header, no checksum), which decompresses to
+exactly `stride` times the rectangle's height bytes. A consumer sends `'z'`
+where it is shorter than the `'f'` it stands for, `'f'` otherwise; a provider
+that did not say `Compressed` gets only `'f'`. A block that does not
+decompress to its size is malformed and skipped.
 
 ## 7. Conformance
 

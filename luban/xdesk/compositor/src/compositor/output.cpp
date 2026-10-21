@@ -39,6 +39,8 @@ struct FrameMeters {
     telemetry::Counter& whole = telemetry::metrics().counter("xdesk.frames.whole");
     telemetry::Counter& bytes = telemetry::metrics().counter("xdesk.frame.bytes");
     telemetry::Counter& rects = telemetry::metrics().counter("xdesk.frame.rects");
+    telemetry::Histogram& compress = telemetry::metrics().histogram("xdesk.frame.compress_ns");
+    telemetry::Counter& compressed_bytes = telemetry::metrics().counter("xdesk.frame.bytes_saved");
 };
 
 FrameMeters& meters_() {
@@ -151,7 +153,16 @@ void Server::render() {
             damage.push_back({boxes[k].x1, boxes[k].y1, static_cast<std::uint32_t>(boxes[k].x2 - boxes[k].x1),
                               static_cast<std::uint32_t>(boxes[k].y2 - boxes[k].y1)});
     }
-    if (whole || damage.size() > 8) damage = {opensal::Rect{0, 0, s.width, s.height}};
+    // Many rectangles: the nearest merged until eight are left -- not the whole frame (§5.6a).
+    if (whole || damage.size() > 64) damage = {opensal::Rect{0, 0, s.width, s.height}};
+    else if (damage.size() > 8) {
+        std::vector<layout::Rect> rs;
+        for (const auto& d : damage) rs.push_back({double(d.x), double(d.y), double(d.width), double(d.height)});
+        damage.clear();
+        for (const auto& r : layout::merge_damage(std::move(rs), 8))
+            damage.push_back({static_cast<std::int32_t>(r.x), static_cast<std::int32_t>(r.y), static_cast<std::uint32_t>(r.width),
+                              static_cast<std::uint32_t>(r.height)});
+    }
     const std::vector<opensal::Rect> all{opensal::Rect{0, 0, s.width, s.height}};
     // Who is sent what: all of it to a window that missed frames.
     const bool any_whole = std::ranges::any_of(links, [&](const Link& l) { return !l.gone && l.hello && !l.hidden && l.whole; });
@@ -215,9 +226,16 @@ void Server::render() {
                 }
                 const auto sending = std::chrono::steady_clock::now();
                 telemetry::Span sending_span("send", nullptr, "xdesk");
-                const bool sent = os::write_all(l.out, frame_buf);
+                // Across a narrow channel (the provider takes them): compressed where shorter (opensal 0.6).
+                std::optional<std::string> packed;
+                if (opensal::has(l.provided, opensal::Interface::Compressed)) {
+                    telemetry::Span s("compress", &meters_().compress, "xdesk");
+                    if (auto z = opensal::wire::encode_compressed(std::string_view(frame_buf).substr(5))) packed = opensal::wire::encode('z', *z);
+                }
+                const bool sent = os::write_all(l.out, packed ? std::string_view(*packed) : std::string_view(frame_buf));
+                if (packed) meters_().compressed_bytes.add(frame_buf.size() - packed->size());
                 stat.send_ms += ms(std::chrono::steady_clock::now() - sending).count();
-                stat.bytes += frame_buf.size();
+                stat.bytes += packed ? packed->size() : frame_buf.size();
                 ++stat.rects;
                 if (!sent) { l.gone = true; return; }
                 l.in_flight = now;

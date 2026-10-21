@@ -244,6 +244,7 @@ private:
                                           const std::function<bool(vm::Client&)>& open, const fs::path& log,
                                           const std::string& session);
     bool machine_ { false };
+    bool narrow_ { false };    // its channel is narrow (a machine's, a relay's): compressed frames
     fs::path log_;                    // a relayed desktop's standard error
     void provider_(std::string_view bytes);
     void sound_(std::string_view bytes);

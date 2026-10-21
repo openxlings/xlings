@@ -24,6 +24,8 @@
 //     'd'  display    Displays: what this display is         "<n> primary" | "<n> mirror <of> <w> <h>"
 //     'p'  pointer    Cursor: a shaken pointer shown how     "locate <off|grow|grow-color> <max> <rrggbb>"
 //                     (PointerLocate; 0.5)
+//     'z'  frame      Compressed: as 'f', the rows one LZ4   "x y w h stride\n" + lz4 block
+//                     block (0.6; sent where it is shorter)
 //   provider -> consumer
 //     'H'  hello      provided interfaces, size, density,    "<bits> <w> <h> <scale> [<paced>]"
 //                     and whether it paces (1: it says FramePresented once
@@ -54,6 +56,14 @@ struct FrameHeader { Rect rect; std::uint32_t stride { 0 }; };
 std::string encode_frame(const Pixels& surface, Rect damage);
 // The rectangle and its rows, packed (stride = width * 4).
 std::optional<std::pair<FrameHeader, std::string_view>> decode_frame(std::string_view payload);
+// 'z' (Compressed, 0.6): the header as 'f''s, the rows one LZ4 block.
+// `encode_compressed` takes an 'f' payload; nullopt when compressing does not
+// make it shorter (send the 'f'). `decode_compressed` gives back the 'f' payload.
+std::optional<std::string> encode_compressed(std::string_view frame_payload);
+std::optional<std::string> decode_compressed(std::string_view payload);
+// The LZ4 block format (no frame, no checksum): `size` is what it decompresses to.
+std::string lz4_compress(std::string_view in);
+std::optional<std::string> lz4_decompress(std::string_view in, std::size_t size);
 
 // 'C': a cursor image, bounded by kMaxCursorSide; nullopt when malformed.
 std::string encode_cursor_image(const CursorImage& c);

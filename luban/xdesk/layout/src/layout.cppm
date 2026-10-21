@@ -551,6 +551,11 @@ struct Covered {
 };
 std::vector<Covered> covered(std::span<const Rect> back_to_front, Rect screen);
 
+// A frame's damage in at most `limit` rectangles (design 2026-10-21 §5.6a):
+// the two whose bounding box adds the least area merged, again, until they
+// are few enough -- never the whole frame for a handful of small changes.
+std::vector<Rect> merge_damage(std::vector<Rect> rects, std::size_t limit);
+
 }  // namespace xdesk::layout
 
 // Shared by the module's own units, not exported.

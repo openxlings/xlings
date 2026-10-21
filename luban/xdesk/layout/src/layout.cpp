@@ -880,4 +880,21 @@ std::vector<Covered> covered(std::span<const Rect> items, Rect screen) {
     return out;
 }
 
+std::vector<Rect> merge_damage(std::vector<Rect> rects, std::size_t limit) {
+    limit = std::max<std::size_t>(limit, 1);
+    while (rects.size() > limit) {
+        std::size_t a = 0, b = 1;
+        double best = std::numeric_limits<double>::max();
+        for (std::size_t i = 0; i < rects.size(); ++i)
+            for (std::size_t j = i + 1; j < rects.size(); ++j) {
+                const auto u = detail::bounds(rects[i], rects[j]);
+                const double added = u.width * u.height - rects[i].width * rects[i].height - rects[j].width * rects[j].height;
+                if (added < best) { best = added; a = i; b = j; }
+            }
+        rects[a] = detail::bounds(rects[a], rects[b]);
+        rects.erase(rects.begin() + static_cast<std::ptrdiff_t>(b));
+    }
+    return rects;
+}
+
 }  // namespace xdesk::layout

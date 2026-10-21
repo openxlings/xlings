@@ -707,3 +707,11 @@ status = "required"
 [XDESK-TOUR]
 text = "the first session of a person's desktop gives the tour: ten steps (applications, a terminal, switching, workspaces, WuXian, moving between them, bookmarks, collapsing, every key, settings), each done by doing it (the events the desktop tells), each skippable, the whole endable; given once (state.json's toured), again from the launcher or `xdesk msg tour start`; ended early, the keys' one-line hint instead"
 status = "required"
+
+[OPENSAL-COMPRESSED]
+text = "opensal 0.6 Compressed: a provider across a narrow channel (a machine's, a relay's) takes 'z' frames, the rows as one LZ4 block; a desktop's frame is much shorter and decompresses exactly; what does not get shorter is sent as 'f'; a damaged block is refused; xdesk and the opensal-wlr bridge send 'z' where it is provided"
+status = "required"
+
+[XDESK-DAMAGE]
+text = "xdesk sends a frame's damage as at most eight rectangles, the nearest merged (every damaged pixel in one), not the whole frame for a handful of small changes"
+status = "required"
