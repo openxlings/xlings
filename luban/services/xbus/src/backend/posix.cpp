@@ -6,6 +6,7 @@ module;
 #if defined(__linux__) || defined(__APPLE__)   // platform-if-ok: xbus's POSIX backend; one per platform
 #define XBUS_POSIX 1
 #include <cerrno>
+#include <cstddef>
 #include <cstdlib>
 #include <cstring>
 #include <fcntl.h>
