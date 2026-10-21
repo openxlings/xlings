@@ -297,3 +297,56 @@ XTEST(Xbus, ObjectsAreFoundByWhatTheyDoAndACompositeIsOneOfThem, .area = "luban"
     ASSERT_TRUE(members.has_value());
     EXPECT_EQ(members->size(), 3u);
 }
+
+// openbus is an object of its own bus (SPEC.md §8.2): two machines' buses
+// are joined by a call, and then what one machine has the other uses -- an
+// application on A finds a compute device on B by its interface, gives it
+// work and gets the result back (design 2026-10-22 §14a).
+XTEST(Xbus, TwoBusesAreJoinedByACallAndAComputeDeviceIsUsedAcrossThem, .area = "luban", .covers = {"XBUS-BUS-OBJECT"}) {
+    if constexpr (tk::is_windows) GTEST_SKIP() << "see above";
+    auto home = tk::Home::isolated("xbus-join");
+    fs::create_directories(home.root() / "a");
+    fs::create_directories(home.root() / "b");
+    Running a(home.root() / "a", "host/a");
+    Running b(home.root() / "b", "host/b");
+    // On B: a GPU's driver offers what it computes (here: the sum of the numbers it is given).
+    auto gpu = node(b.at, "gpu-driver");
+    ASSERT_TRUE(gpu->offer("device/gpu/0",
+                           {.kind = openbus::EndpointKind::device, .verb = "launch", .effect = "external",
+                            .interfaces = {"openhal.compute@0.3"}, .properties = {{"memory", "24g"}}},
+                           [](xbus::Call c) {
+                               long sum = 0;
+                               std::istringstream in(c.body());
+                               for (long x; in >> x;) sum += x;
+                               c.state(openbus::TaskState::working);
+                               c.reply(std::to_string(sum));
+                               c.end();
+                           }));
+    // On A: the router is an object; joining B's bus is a call to it.
+    auto admin = node(a.at, "admin");
+    const auto router = admin->resolve("bus/*", "openbus.router@0.1");
+    ASSERT_TRUE(router.has_value());
+    EXPECT_GE(router->size(), 6u) << "stats, topology, verbs, links, link, unlink, trace";
+    const auto joined = admin->call("bus/link", b.at.text());
+    ASSERT_TRUE(joined.has_value()) << joined.error().message;
+    // An application on A: a compute device, whatever machine has it.
+    auto app = node(a.at, "app");
+    std::vector<xbus::Resolved> devices;
+    for (int k = 0; k < 50 && devices.empty(); ++k) {
+        devices = app->resolve("**", "openhal.compute@0.3").value_or(std::vector<xbus::Resolved>{});
+        if (devices.empty()) std::this_thread::sleep_for(50ms);
+    }
+    ASSERT_EQ(devices.size(), 1u);
+    EXPECT_EQ(devices.front().path, "host/b/device/gpu/0");
+    const auto result = app->call(devices.front().path, "1 2 3 4 5");
+    ASSERT_TRUE(result.has_value()) << result.error().message;
+    ASSERT_EQ(result->size(), 2u) << "its task state, then its result";
+    EXPECT_EQ(result->back(), "15");
+    const auto links = Json::parse(admin->call("bus/links")->front());
+    ASSERT_EQ(links.size(), 1u);
+    EXPECT_EQ(links[0]["root"], "host/b");
+    // And apart again, by a call.
+    ASSERT_TRUE(admin->call("bus/unlink", "host/b").has_value());
+    std::this_thread::sleep_for(300ms);
+    EXPECT_FALSE(app->call("host/b/device/gpu/0", "1", 1s).has_value());
+}

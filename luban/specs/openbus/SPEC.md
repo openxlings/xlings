@@ -145,7 +145,8 @@ uses only features both named.
 an endpoint; the router answers `resolved` or `error(taken)`: a path has one
 offering node. `withdraw` removes it. A path not starting with `host/` is
 relative to the router's root (the `root` field of `welcome`); a router stores
-and reports absolute paths.
+and reports absolute paths. A pattern starting with `*` or `**` asks everywhere
+the router knows of; any other is placed like a path.
 
 5.3 `resolve` (field `pattern`, and optionally `interface`) answers the endpoints
 matching it, in `resolved` frames (fields `path`, `kind`, `node`, `via`: the
@@ -216,6 +217,13 @@ Every router offers, at `bus/` under its root:
 - `bus/topology` (service and topic): nodes, endpoints, links and the
   transport each actually uses.
 - `bus/verbs` (service): every endpoint's verb description (§9).
+
+8.2 **The router is an object of its own bus**: its endpoints implement
+`openbus.router@0.1` -- `bus/stats`, `bus/topology`, `bus/verbs` and `bus/links`
+(read), `bus/link` (its body an address: link this router to the router there;
+effect `external`) and `bus/unlink` (its body a router or a root), and the topic
+`bus/trace`. Joining two machines' buses is a call; who may make it is the
+router's authorization, like any call's.
 
 8.1 A latency histogram has 64 buckets; bucket `i` counts values in
 `[2^i, 2^(i+1))` nanoseconds (bucket 0 also counts 0). Its percentiles are

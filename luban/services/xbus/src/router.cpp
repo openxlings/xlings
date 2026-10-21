@@ -103,6 +103,10 @@ struct Router::Impl {
     std::string abs(std::string_view p) const {
         return p.starts_with("host/") || p == "host" ? std::string(p) : o.root + "/" + std::string(p);
     }
+    // A pattern that begins with a wildcard asks everywhere (SPEC.md §5.2).
+    std::string abs_pattern(std::string_view p) const {
+        return p.starts_with("*") ? std::string(p) : abs(p);
+    }
 
     void note(Json fields) {
         if (!log.is_open()) return;
@@ -232,7 +236,7 @@ struct Router::Impl {
 
     void resolve(Client& c, const Frame& f) {
         const auto fields = Fields::decode(f.payload);
-        const auto pattern = abs(fields ? fields->value("pattern", "**") : std::string("**"));
+        const auto pattern = abs_pattern(fields ? fields->value("pattern", "**") : std::string("**"));
         const auto wanted = fields ? fields->value("interface") : std::string{};
         for (const auto& [path, e] : endpoints) {
             if (!openbus::matches(pattern, path)) continue;
@@ -391,7 +395,7 @@ struct Router::Impl {
 
     void subscribe(Client& c, const Frame& f) {
         auto env = openbus::open_envelope(f.payload);
-        const auto pattern = env ? abs(env->fields.value("pattern")) : std::string{};
+        const auto pattern = env ? abs_pattern(env->fields.value("pattern")) : std::string{};
         if (!env || !openbus::valid_pattern(pattern)) {
             send(c, error_(f.channel, openbus::ErrorCode::malformed, "a subscription names its pattern"));
             return;
@@ -499,20 +503,61 @@ struct Router::Impl {
         return out.dump();
     }
 
+    // The router is an object on its own bus (SPEC.md §8.2): it is managed
+    // the way everything on the bus is used.
     void own(Client& c, const Frame& f, const std::string& path) {
         const auto what = path.substr(o.root.size() + 5);
+        const auto env = openbus::open_envelope(f.payload);
+        const std::string body_in = env ? std::string(env->body) : std::string{};
         std::string body;
         if (what == "stats") body = stats();
         else if (what == "topology") body = topology();
         else if (what == "verbs") body = verbs();
-        else {
-            send(c, error_(f.channel, openbus::ErrorCode::not_found, "the router offers bus/stats, bus/topology, bus/verbs, bus/trace"));
+        else if (what == "links") body = links_json();
+        else if (what == "link" || what == "unlink") {
+            if (c.peer.link || !allowed(c, what, path)) {
+                send(c, error_(f.channel, openbus::ErrorCode::denied, "not allowed to " + what + " this bus"));
+                return;
+            }
+            if (what == "link") {
+                const auto to = Address::parse(body_in);
+                if (!to) {
+                    send(c, error_(f.channel, openbus::ErrorCode::malformed, "bus/link takes an address (local:..., unix:...)"));
+                    return;
+                }
+                if (auto linked = connect_link(*to); !linked) {
+                    send(c, error_(f.channel, openbus::ErrorCode::gone, linked.error()));
+                    return;
+                }
+                note({{"event", "link"}, {"to", to->text()}, {"by", c.peer.node}, {"actor", c.peer.actor}});
+                body = Json{{"linked", to->text()}}.dump();
+            } else {
+                int gone = 0;
+                for (auto& [cid, l] : clients)
+                    if (l.peer.link && (l.peer.node == body_in || l.peer.root == body_in)) { l.gone = true; ++gone; }
+                note({{"event", "unlink"}, {"which", body_in}, {"by", c.peer.node}, {"links", gone}});
+                body = Json{{"unlinked", gone}}.dump();
+            }
+        } else {
+            send(c, error_(f.channel, openbus::ErrorCode::not_found,
+                           "the router offers bus/stats, bus/topology, bus/verbs, bus/links, bus/link, bus/unlink, bus/trace"));
             return;
         }
         send(c, Frame{.kind = static_cast<std::uint8_t>(Kind::reply), .codec = static_cast<std::uint16_t>(openbus::Codec::json),
                       .channel = f.channel, .payload = std::move(body)});
         send(c, Frame{.kind = static_cast<std::uint8_t>(Kind::reply_end), .channel = f.channel});
     }
+
+    std::string links_json() const {
+        Json out = Json::array();
+        for (const auto& [cid, l] : clients)
+            if (l.peer.link && l.hello && !l.gone)
+                out.push_back({{"router", l.peer.node}, {"root", l.peer.root}, {"transport", l.conn->channel().transport()},
+                               {"frames_in", l.conn->frames_in}, {"frames_out", l.conn->frames_out}});
+        return out.dump();
+    }
+
+    std::expected<void, std::string> connect_link(const Address& to);
 
     // ── connections ──────────────────────────────────────────────────
 
@@ -741,6 +786,15 @@ struct Router::Impl {
     }
 };
 
+std::expected<void, std::string> Router::Impl::connect_link(const Address& to) {
+    auto h = native::connect(to.scheme, to.where);
+    if (!h) return std::unexpected(h.error());
+    auto& c = add(socket_channel(std::move(*h)), true);
+    c.conn->push(control_(Kind::hello, 0, hello_fields(true)));
+    knock();
+    return {};
+}
+
 Router::Router(RouterOptions o) : impl_(std::make_unique<Impl>()) {
     impl_->o = std::move(o);
     if (auto w = native::pair()) impl_->wake = std::move(*w);
@@ -750,11 +804,18 @@ Router::Router(RouterOptions o) : impl_(std::make_unique<Impl>()) {
         std::filesystem::create_directories(impl_->o.log.parent_path(), ec);
         impl_->log.open(impl_->o.log, std::ios::app);
     }
-    // The router's own endpoints.
-    for (const auto* what : {"stats", "topology", "verbs"})
+    // The router's own endpoints: it is an object of its bus, openbus.router.
+    const auto router_object = [](std::string verb, std::string effect) {
+        return Fields{{"verb", std::move(verb)}, {"effect", std::move(effect)}, {"interface", "openbus.router@0.1"}};
+    };
+    for (const auto* what : {"stats", "topology", "verbs", "links"})
         impl_->endpoints[impl_->o.root + "/bus/" + what] = Endpoint{.owner = 0, .kind = openbus::EndpointKind::service,
-                                                                    .meta = Fields{{"verb", std::string("bus-") + what}, {"effect", "read"}}};
-    impl_->endpoints[impl_->o.root + "/bus/trace"] = Endpoint{.owner = 0, .kind = openbus::EndpointKind::topic};
+                                                                    .meta = router_object(std::string("bus-") + what, "read")};
+    for (const auto* what : {"link", "unlink"})
+        impl_->endpoints[impl_->o.root + "/bus/" + what] = Endpoint{.owner = 0, .kind = openbus::EndpointKind::service,
+                                                                    .meta = router_object(std::string("bus-") + what, "external")};
+    impl_->endpoints[impl_->o.root + "/bus/trace"] = Endpoint{.owner = 0, .kind = openbus::EndpointKind::topic,
+                                                              .meta = Fields{{"interface", "openbus.router@0.1"}}};
 }
 
 Router::~Router() {
@@ -773,14 +834,7 @@ std::expected<void, std::string> Router::listen() {
 
 std::shared_ptr<PipeEnd> Router::adopt(Pipe p) { return impl_->add_pipe(std::move(p), false); }
 
-std::expected<void, std::string> Router::link(const Address& to) {
-    auto h = native::connect(to.scheme, to.where);
-    if (!h) return std::unexpected(h.error());
-    auto& c = impl_->add(socket_channel(std::move(*h)), true);
-    c.conn->push(control_(Kind::hello, 0, impl_->hello_fields(true)));
-    impl_->knock();
-    return {};
-}
+std::expected<void, std::string> Router::link(const Address& to) { return impl_->connect_link(to); }
 
 std::shared_ptr<PipeEnd> Router::link(Pipe p) { return impl_->add_pipe(std::move(p), true); }
 

@@ -62,6 +62,7 @@ members = [
     "luban/kits/cursor",
     "luban/kits/cursor/tool",
     "luban/services/xbus",
+    "luban/services/xbus/tool",
     "luban/xdesk/base",
     "luban/xdesk/layout",
     "luban/xdesk/compositor",

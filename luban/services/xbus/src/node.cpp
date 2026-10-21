@@ -73,8 +73,12 @@ struct Node::Impl {
     bool send(const Frame& f) {
         std::lock_guard l(m);
         if (!conn || !welcomed) return false;
+        // The thread is woken when there was nothing to write: while it has
+        // something it writes everything, and a knock per frame is a system
+        // call per frame.
+        const bool idle = !conn->pending();
         conn->push(f);
-        kick();
+        if (idle) kick();
         return true;
     }
 

@@ -1,0 +1,17 @@
+# xbus: the command of XBus -- a router (`xbus router`), and what is on the
+# bus, seen and used: ls, call, pub, sub, monitor, top, stats, topology, bench.
+[package]
+namespace = "xbus"
+name      = "xbus-tool"
+version   = "0.1.0"
+
+[targets.xbus]
+kind = "bin"
+main = "src/main.cpp"
+
+[dependencies]
+xbus = { path = ".." }
+openbus = { path = "../../../specs/openbus" }
+
+[dependencies.nlohmann]
+json = "3.12.0"

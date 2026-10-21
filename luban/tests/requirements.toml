@@ -623,3 +623,7 @@ status = "required"
 [XBUS-OBJECTS]
 text = "every node exposes and uses objects the same way; an object names the interfaces it implements and its properties, and is found by interface whoever offers it; a composite object (a virtual device of members on other nodes) implements its members' interface and is found as one of them"
 status = "required"
+
+[XBUS-BUS-OBJECT]
+text = "an XBus router is an object of its own bus (openbus.router@0.1: bus/stats, topology, verbs, links, link, unlink, trace): two machines' buses are joined and parted by a call, and across them an application finds a device of another machine by its interface and uses it (work given, its task state and result back)"
+status = "required"
