@@ -1584,6 +1584,7 @@ int run(int argc, char* argv[]) {
     if (!rest.empty() && rest.front() == "__write" && rest.size() == 3) return raw_write_(rest[1], rest[2]);
     if (!rest.empty() && rest.front() == "__pipe" && rest.size() == 3) return pipe_(rest[1], rest[2]);
     if (!rest.empty() && rest.front() == "__vm-supervise" && rest.size() == 3) return vm::supervise(rest[1], rest[2]);
+    if (!rest.empty() && rest.front() == "__bus-router" && rest.size() == 2) return vm::serve_bus(rest[1]);
     if (!rest.empty() && rest.front() == "__vm") return vm::host_machine(home_dir_(), std::span<const std::string>(rest).subspan(1));
     if (!rest.empty() && rest.front() == "__agent-stdio") vm::serve_stdio();
     if (!rest.empty() && rest.front() == "__pipe-unix" && rest.size() == 2) return pipe_unix_(rest[1]);

@@ -234,11 +234,20 @@ node->subscribe("host/**/topic/luban/systems", [](const xbus::Message& m) { ... 
 - part 1 的 agent 协议加一种通道用途"openbus 链路"：supervisor 收到 guest 的 hello 后，为链路打开一个通道，两端各接到本地路由。
   旧的一方没有这个通道就不连，其它功能不受影响。
 
+实现（B5）：agent 协议加一种帧 `L`（双向、通道 0）：guest 的路由在收到宿主的 `A`（`provides.openbus.root` =
+`host/<id>/system/<名字>`）后以链路身份（hello 带 `link`）发出字节，supervisor 收到第一段 `L` 时连接本 home 的宿主路由
+（不在就 `luban __bus-router <home>` 拉起），之后只搬字节——supervisor 里没有路由。空的 `L` 表示链路结束：宿主一侧断了，
+guest 3 秒后自己重连；新的 supervisor（agent 又说 hello）立即重连。旧 supervisor 不发 `openbus`，guest 就不建链路；
+旧 guest 不认识 `L`，按协议跳过。测试用 `luban __agent-stdio` 当 guest、测试自己当 supervisor，覆盖建链、跨链调用、断开撤回与重连。
+
 ### 6.5 路由在哪里运行
 
-- **宿主**：每个 xlings home 一个路由，socket 在 `<home>/run/openbus/router.sock`；由第一个需要它的节点自动拉起（`xbus router --detach`，
-  单实例锁），空闲 10 分钟且无节点时退出。luban、luban-os、xdesk（沙箱里经绑定的 socket）都是它的节点。
-- **Luban 系统（machine）**：guest agent 内置一个路由（agent 本来就常驻），socket 在 `/run/openbus/router.sock`，并通过链路连到宿主。
+- **宿主**：每个 xlings home 一个路由，socket 在 `<home>/run/openbus/router.sock`，日志在 `<home>/logs/openbus/`；由第一个需要它的
+  一方拉起（`luban __bus-router <home>`，分离运行）；监听前先试连接，已有路由在答就不替换它（第二个直接退出）；
+  没有节点也没有链路 10 分钟后退出。luban、luban-os、xdesk（沙箱里经绑定的 socket）都是它的节点。
+- **Luban 系统（machine）**：guest agent 内置一个路由（agent 本来就常驻，路由在它自己的线程上），socket 在 `/run/openbus/router.sock`
+  （系统内所有用户可连；`bus/link`、`bus/unlink` 只允许 uid 0），会话的环境里有 `OPENBUS_ROUTER=unix:/run/openbus/router.sock`
+  （xdesk 由此上总线），并通过链路连到宿主。
 - **沙箱系统**：沙箱里的 socket 绑定到宿主路由；沙箱里的节点身份是那个系统。
 - **真机**：系统自己的路由（由 init 启动），没有上游链路。
 

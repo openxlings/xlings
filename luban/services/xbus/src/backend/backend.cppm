@@ -33,7 +33,10 @@ private:
 };
 
 // A local channel's place, from an address's scheme and where (xbus.address).
-std::expected<Handle, std::string> listen(std::string_view scheme, std::string_view where);
+// A place nothing answers at yet (a live router there is refused, never
+// replaced); `shared`: every user of this machine may connect (a system's
+// router -- who may do what is the router's to decide), else its owner only.
+std::expected<Handle, std::string> listen(std::string_view scheme, std::string_view where, bool shared = false);
 std::expected<Handle, std::string> connect(std::string_view scheme, std::string_view where);
 Handle accept(const Handle& listener);
 std::optional<std::array<Handle, 2>> pair();

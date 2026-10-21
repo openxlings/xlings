@@ -106,18 +106,19 @@ void Handle::reset() {
     v_ = -1;
 }
 
-std::expected<Handle, std::string> listen(std::string_view scheme, std::string_view where) {
+std::expected<Handle, std::string> listen(std::string_view scheme, std::string_view where, bool shared) {
     const auto path = path_(scheme, where);
     if (!path) return std::unexpected(std::format("this backend has no {}: addresses", scheme));
+    if (connect(scheme, where)) return std::unexpected(std::format("a router already answers at {}", path->string()));
     std::error_code ec;
     fs::create_directories(path->parent_path(), ec);
-    ::chmod(path->parent_path().c_str(), 0700);
+    ::chmod(path->parent_path().c_str(), shared ? 0755 : 0700);
     Handle h(socket_());
     if (!h.valid()) return std::unexpected(std::format("no socket: {}", std::strerror(errno)));
     Address a;
     if (!address_(*path, a)) return std::unexpected("the path is too long: " + path->string());
     ::unlink(path->c_str());
-    const auto old = ::umask(0077);
+    const auto old = ::umask(shared ? 0 : 0077);
     const int rc = ::bind(fd_(h), reinterpret_cast<sockaddr*>(&a.addr), a.len);
     ::umask(old);
     if (rc != 0 || ::listen(fd_(h), 64) != 0) return std::unexpected(std::format("cannot listen at {}: {}", path->string(), std::strerror(errno)));

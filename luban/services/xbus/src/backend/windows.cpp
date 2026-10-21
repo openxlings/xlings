@@ -70,10 +70,12 @@ void Handle::reset() {
     v_ = -1;
 }
 
-std::expected<Handle, std::string> listen(std::string_view scheme, std::string_view where) {
+std::expected<Handle, std::string> listen(std::string_view scheme, std::string_view where, bool shared) {
+    (void)shared;   // a user's socket under the user's temporary place: the user's own
     if (!started_()) return std::unexpected("Winsock did not start");
     const auto path = path_(scheme, where);
     if (!path) return std::unexpected(std::format("this backend has no {}: addresses", scheme));
+    if (connect(scheme, where)) return std::unexpected("a router already answers at " + path->string());
     std::error_code ec;
     fs::create_directories(path->parent_path(), ec);
     const SOCKET s = ::socket(AF_UNIX, SOCK_STREAM, 0);

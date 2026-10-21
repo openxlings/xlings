@@ -98,6 +98,9 @@ public:
     bool resize(std::uint32_t channel, int rows, int cols);
     bool close(std::uint32_t channel);
     bool power_off();
+    // A frame as it is (luban.vm.protocol): what a carrier of the protocol
+    // moves for another side -- the host's half of an openbus link (L).
+    bool send_frame(char type, std::uint32_t channel, std::string_view payload);
     // The frames that arrived within `timeout_ms`; nullopt when the machine is gone.
     std::optional<std::vector<std::pair<char, std::pair<std::uint32_t, std::string>>>> poll(int timeout_ms);
     int fd() const { return fd_; }
@@ -152,6 +155,19 @@ fs::path log_dir(const fs::path& home, std::string_view name);
 // PULSE_SERVER its sessions use; nothing otherwise.
 struct SoundForward { std::string guestfwd; std::string pulse_server; };
 std::optional<SoundForward> sound_forward(bool granted, const fs::path& pulse_socket, const fs::path& luban);
+
+// The host's openbus router (design 2026-10-22 §6.5): one per home, at
+// bus_socket(home), its log under <home>/logs/openbus/; started by the first
+// that needs it (`luban __bus-router <home>`), gone after ten minutes with
+// nobody and no machine on it. A machine's router is linked to it through
+// its supervisor (the agent's L frames, luban.vm.protocol).
+fs::path bus_socket(const fs::path& home);
+// A byte stream to it, started when nothing answers; why not.
+std::expected<int, std::string> connect_bus(const fs::path& home);
+// `luban __bus-router <home>`: the router, until it is idle.
+int serve_bus(const fs::path& home);
+// Where a system's bus is under this host's: host/<id>/system/<name>.
+std::string system_bus_root(std::string_view name);
 
 // Whether `file` is an ELF that needs no loader (what an initramfs can run).
 bool is_static_elf(const fs::path& file);

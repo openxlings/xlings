@@ -304,6 +304,11 @@ int bench(const Args& a) {
     const long n = a.number("--n", what == "pubsub" ? 100000 : 10000);
     const auto size = static_cast<std::size_t>(a.number("--size", 64));
     // Its own router, unless one is named: what is measured is XBus, not whoever else is on a bus.
+    // Its directory goes after it (declared first: removed last).
+    struct Removed {
+        std::filesystem::path dir;
+        ~Removed() { std::error_code ec; if (!dir.empty()) std::filesystem::remove_all(dir, ec); }
+    } scratch;
     std::unique_ptr<xbus::Router> own;
     std::atomic<bool> stop{false};
     std::jthread running;
@@ -312,6 +317,7 @@ int bench(const Args& a) {
         std::error_code ec;
         const auto dir = std::filesystem::temp_directory_path(ec) / std::format("xbus-bench-{}", std::random_device{}());
         std::filesystem::create_directories(dir, ec);
+        scratch.dir = dir;
         const xbus::Address at{"local", (dir / "router.sock").string()};
         own = std::make_unique<xbus::Router>(xbus::RouterOptions{.root = "host/bench", .listen = {at}});
         if (auto l = own->listen(); !l) { std::println(std::cerr, "xbus bench: {}", l.error()); return 1; }

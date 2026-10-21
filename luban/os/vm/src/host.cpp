@@ -922,6 +922,7 @@ bool Client::resize(std::uint32_t channel, int rows, int cols) {
 }
 bool Client::close(std::uint32_t channel) { return write_(proto::encode('C', channel)); }
 bool Client::power_off() { return write_(proto::encode('P', 0)); }
+bool Client::send_frame(char type, std::uint32_t channel, std::string_view payload) { return write_(proto::encode(type, channel, payload)); }
 
 std::optional<std::vector<std::pair<char, std::pair<std::uint32_t, std::string>>>> Client::poll(int timeout_ms) {
     std::vector<std::pair<char, std::pair<std::uint32_t, std::string>>> out;
@@ -1365,6 +1366,18 @@ void bridge_(const fs::path& home, std::string_view name, int agent, int listen,
     std::array<char, 65536> buf{};
     auto powering_off = std::optional<std::chrono::steady_clock::time_point>{};
     std::map<std::uint32_t, Brokered> brokered;   // the guest's channel -> its command here
+    // The machine's openbus link (design 2026-10-22 §6.4): the guest's router
+    // speaks to this home's, its bytes carried as L frames; this side only
+    // moves them. -1: no link now.
+    int bus = -1;
+    const auto end_bus = [&](bool tell_guest) {
+        if (bus >= 0) {
+            std::vector<int> b{bus};
+            platform::close_fds(b);
+            bus = -1;
+        }
+        if (tell_guest) (void)platform::write_all(agent, proto::encode('L', 0));
+    };
     const auto close_brokered = [](Brokered& b) {
         std::vector<int> fds;
         if (b.in >= 0) fds.push_back(b.in);
@@ -1393,6 +1406,8 @@ void bridge_(const fs::path& home, std::string_view name, int agent, int listen,
             if (b.out >= 0) { p.push_back({.fd = b.out}); outputs.emplace_back(ch, 'D'); }
             if (b.err >= 0) { p.push_back({.fd = b.err}); outputs.emplace_back(ch, 'E'); }
         }
+        const std::size_t bus_at = p.size();
+        if (bus >= 0) p.push_back({.fd = bus});
         platform::poll_fds(p, 200);
         if (p[0].readable || p[0].closed) {
             auto n = platform::read_some(agent, buf);
@@ -1405,9 +1420,27 @@ void bridge_(const fs::path& home, std::string_view name, int agent, int listen,
                 if (frame.type == 'H') {
                     up = true;
                     hello = frame.payload;
-                    // This side's own: the broker (design 2026-10-21 §3.3).
-                    (void)platform::write_all(agent, proto::encode_json('A', 0, Json{{"provides", Json{{"broker", 1}}}}));
+                    // This side's own: the broker (design 2026-10-21 §3.3), and the
+                    // host's bus, under which the machine's is (design 2026-10-22 §6.4).
+                    end_bus(false);   // an agent that says hello again links again
+                    (void)platform::write_all(agent, proto::encode_json('A', 0, Json{{"provides", Json{
+                        {"broker", 1}, {"openbus", Json{{"root", system_bus_root(name)}}}}}}));
                     for (auto& cl : clients) (void)platform::write_all(cl.fd, proto::encode('H', 0, frame.payload));
+                    continue;
+                }
+                if (frame.type == 'L') {
+                    // The guest's router: its first bytes open the link to the host's.
+                    if (frame.payload.empty()) { end_bus(false); continue; }
+                    if (bus < 0) {
+                        auto fd = connect_bus(home);
+                        if (!fd) {
+                            std::println(std::cerr, "luban: openbus: {}", fd.error());
+                            end_bus(true);
+                            continue;
+                        }
+                        bus = *fd;
+                    }
+                    if (!platform::write_all(bus, frame.payload)) end_bus(true);
                     continue;
                 }
                 if (frame.channel & proto::kGuestChannel) {
@@ -1525,7 +1558,13 @@ void bridge_(const fs::path& home, std::string_view name, int agent, int listen,
             (void)platform::write_all(agent, proto::encode_json('X', b->first, Json{{"code", code}}));
             brokered.erase(b);
         }
+        if (bus >= 0 && bus_at < p.size() && (p[bus_at].readable || p[bus_at].closed)) {
+            auto n = platform::read_some(bus, buf);
+            if (n && *n > 0) (void)platform::write_all(agent, proto::encode('L', 0, std::string_view(buf.data(), *n)));
+            else end_bus(true);   // the host's router went: the guest links again
+        }
     }
+    end_bus(false);
     for (auto& [ch, b] : brokered) {
         platform::send_signal_group(b.pid, platform::sig::hangup);
         close_brokered(b);

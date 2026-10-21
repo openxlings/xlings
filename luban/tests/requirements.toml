@@ -655,3 +655,11 @@ status = "required"
 [XDESK-BUS]
 text = "xdesk is on the bus (a patient node: a router that comes after it is joined): service/xdesk/state and service/xdesk/control answer as the control socket does, topic/xdesk/events tells what happens, and its node's telemetry carries the frames' parts as metrics, a frame's spans while profiling and the desktop's state in a dump; `xdesk msg telemetry` asks the same over the socket"
 status = "required"
+
+[LUBAN-BUS-LINK]
+text = "a system's openbus router runs in its agent and is linked under the host's (root host/<id>/system/<name>) through the agent protocol's L frames once the host side provides openbus: the host sees the system's endpoints (via the link) and uses them; when the host's side ends the link the guest links again by itself and what came through is withdrawn meanwhile"
+status = "required"
+
+[LUBAN-BUS-HOST]
+text = "the host's openbus router is one per home (<home>/run/openbus/router.sock, its log under <home>/logs/openbus/), started by the first that needs it (`luban __bus-router <home>`, detached); a second finds the first and leaves without replacing it"
+status = "required"

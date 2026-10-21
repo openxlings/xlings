@@ -627,7 +627,7 @@ struct Router::Impl {
         note({{"event", "connect"}, {"node", c.peer.node}, {"name", c.peer.name}, {"actor", c.peer.actor}, {"identity", c.peer.identity},
               {"link", c.peer.link}});
         if (c.peer.link) link_up(c);
-        else last_node_at = native::now_ns();
+        last_node_at = native::now_ns();
     }
 
     void welcome(Client& c, const Frame& f) {
@@ -711,7 +711,7 @@ struct Router::Impl {
         for (const auto ch : mine) unsubscribe(c, ch);
         std::erase_if(forwarded, [&](const auto& kv) { return kv.first.first == c.id; });
         note({{"event", "disconnect"}, {"node", c.peer.node}, {"name", c.peer.name}, {"link", c.peer.link}});
-        if (!c.peer.link) last_node_at = native::now_ns();
+        last_node_at = native::now_ns();
     }
 
     // ── connections ──────────────────────────────────────────────────
@@ -723,6 +723,30 @@ struct Router::Impl {
     std::vector<Listening> listeners;
     std::array<Handle, 2> wake;              // a pipe's feeding thread knocks here
     std::vector<std::shared_ptr<PipeEnd>> pipe_ends;
+    // Connections given from another thread (adopt, link): taken in at the next round.
+    struct Given { std::unique_ptr<Channel> channel; bool initiated_link { false }; };
+    std::mutex given_m;
+    std::vector<Given> given;
+
+    void give(std::unique_ptr<Channel> ch, bool initiated_link) {
+        {
+            std::lock_guard l(given_m);
+            given.push_back({std::move(ch), initiated_link});
+        }
+        knock();
+    }
+
+    void take_given() {
+        std::vector<Given> taking;
+        {
+            std::lock_guard l(given_m);
+            taking.swap(given);
+        }
+        for (auto& g : taking) {
+            auto& c = add(std::move(g.channel), g.initiated_link);
+            if (g.initiated_link) c.conn->push(control_(Kind::hello, 0, hello_fields(true)));
+        }
+    }
 
     void knock() {
         if (wake[1].valid()) (void)native::write(wake[1], "w");
@@ -739,14 +763,12 @@ struct Router::Impl {
 
     std::shared_ptr<PipeEnd> add_pipe(Pipe p, bool initiated_link) {
         std::shared_ptr<PipeEnd> end;
-        auto ch = pipe_channel(std::move(p), [this] { knock(); }, &end);
-        auto& c = add(std::move(ch), initiated_link);
-        if (initiated_link) c.conn->push(control_(Kind::hello, 0, hello_fields(true)));
-        knock();
+        give(pipe_channel(std::move(p), [this] { knock(); }, &end), initiated_link);
         return end;
     }
 
     void round(int timeout_ms) {
+        take_given();
         std::vector<native::Ready> set;
         std::vector<int> ids;   // 0 the wake, -k a listener, else a client
         if (wake[0].valid()) { set.push_back({.handle = &wake[0]}); ids.push_back(0); }
@@ -767,6 +789,7 @@ struct Router::Impl {
         // What the round did, apart from waiting: its busy time.
         telemetry::Span busy("round", &m_round, "xbus.router");
         bool worked = fed;
+        take_given();
         std::vector<int> ready;
         for (std::size_t k = 0; k < set.size(); ++k) {
             if (ids[k] == 0) {
@@ -837,9 +860,7 @@ struct Router::Impl {
 std::expected<void, std::string> Router::Impl::connect_link(const Address& to) {
     auto h = native::connect(to.scheme, to.where);
     if (!h) return std::unexpected(h.error());
-    auto& c = add(socket_channel(std::move(*h)), true);
-    c.conn->push(control_(Kind::hello, 0, hello_fields(true)));
-    knock();
+    give(socket_channel(std::move(*h)), true);
     return {};
 }
 
@@ -867,6 +888,7 @@ Router::Router(RouterOptions o) : impl_(std::make_unique<Impl>()) {
     auto told = router_object("telemetry", "reversible");
     told.add("interface", "openbus.telemetry@0.1");
     impl_->endpoints[impl_->o.root + "/bus/telemetry"] = Endpoint{.owner = 0, .kind = openbus::EndpointKind::service, .meta = std::move(told)};
+    impl_->seen_endpoints.store(impl_->endpoints.size());
 }
 
 Router::~Router() {
@@ -876,7 +898,7 @@ Router::~Router() {
 
 std::expected<void, std::string> Router::listen() {
     for (const auto& a : impl_->o.listen) {
-        auto h = native::listen(a.scheme, a.where);
+        auto h = native::listen(a.scheme, a.where, impl_->o.shared);
         if (!h) return std::unexpected(h.error());
         impl_->note({{"event", "listen"}, {"address", a.text()}, {"at", native::location(a.scheme, a.where)}, {"root", impl_->o.root}});
         impl_->listeners.push_back({a, std::move(*h)});
@@ -895,7 +917,7 @@ void Router::run_once(int timeout_ms) { impl_->round(timeout_ms); }
 void Router::run(const std::atomic<bool>& stop) {
     while (!stop.load()) {
         impl_->round(200);
-        if (impl_->o.idle_exit && nodes() == 0
+        if (impl_->o.idle_exit && nodes() == 0 && links() == 0
             && native::now_ns() - impl_->last_node_at > static_cast<std::uint64_t>(impl_->o.idle_exit->count()) * 1'000'000'000ull)
             return;
     }
@@ -903,13 +925,9 @@ void Router::run(const std::atomic<bool>& stop) {
 
 const std::string& Router::root() const { return impl_->o.root; }
 const std::string& Router::id() const { return impl_->id; }
-std::size_t Router::nodes() const {
-    return static_cast<std::size_t>(std::ranges::count_if(impl_->clients, [](const auto& kv) { return kv.second.hello && !kv.second.peer.link; }));
-}
-std::size_t Router::links() const {
-    return static_cast<std::size_t>(std::ranges::count_if(impl_->clients, [](const auto& kv) { return kv.second.hello && kv.second.peer.link; }));
-}
-std::size_t Router::endpoints() const { return impl_->endpoints.size(); }
+std::size_t Router::nodes() const { return impl_->seen_nodes.load(); }
+std::size_t Router::links() const { return impl_->seen_links.load(); }
+std::size_t Router::endpoints() const { return impl_->seen_endpoints.load(); }
 std::string Router::topology_json() const { return impl_->topology(); }
 std::string Router::stats_json() const { return impl_->stats(); }
 

@@ -7,6 +7,8 @@ import xlings.subos.root_etc;
 import xlings.subos.rootfs;
 import xlings.subos.root_check;
 import luban.vm.protocol;
+import xbus.router;
+import telemetry;
 import opensal.wlr;
 
 namespace luban::vm {
@@ -95,6 +97,9 @@ std::map<std::string, std::string> session_env_(const Json& open, const std::str
         {"HOME", u.home}, {"USER", u.name}, {"LOGNAME", u.name}, {"SHELL", shell},
         {"PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"},
         {"TERM", open.value("term", std::string("xterm-256color"))}, {"LANG", "C.UTF-8"}};
+    // The system's bus, for its programs (xdesk): the agent's router (GuestBus).
+    std::error_code ec;
+    if (fs::exists(proto::kBusSocket, ec)) env["OPENBUS_ROUTER"] = "unix:" + std::string(proto::kBusSocket);
     if (auto e = open.find("env"); e != open.end() && e->is_object())
         for (auto it = e->begin(); it != e->end(); ++it)
             if (it.value().is_string()) env[it.key()] = it.value().get<std::string>();
@@ -198,6 +203,68 @@ std::expected<Session, std::string> desktop_(const Json& display, std::map<std::
 
 [[noreturn]] void serve_(int port, int out, bool init, bool machine);
 
+// The system's openbus router (design 2026-10-22 §6.4): in the agent, on a
+// thread of its own, at kBusSocket for the system's programs (a machine's);
+// linked to the host's through the supervisor -- what it sends for the host
+// is written by the agent's loop as L frames (one writer on the port), what
+// comes in L frames is fed to it.
+struct GuestBus {
+    std::unique_ptr<xbus::Router> router;
+    std::atomic<bool> stop { false };
+    std::jthread thread;
+    std::shared_ptr<xbus::PipeEnd> end;
+    std::mutex m;
+    std::string pending;                     // the router's bytes for the host
+    std::array<int, 2> wake { -1, -1 };
+    std::optional<std::chrono::steady_clock::time_point> relink_at;
+
+    bool start(const std::string& root, bool listen) {
+        auto w = platform::make_pipe();
+        if (!w) return false;
+        wake = *w;
+        telemetry::identify("luban-agent");
+        xbus::RouterOptions o{.root = root, .shared = true, .log = "/run/openbus/router.ndjson"};
+        if (listen) o.listen = {xbus::Address{"unix", std::string(proto::kBusSocket)}};
+        // Anyone in the system may use its bus; joining it to another is root's.
+        o.allow = [](const xbus::PeerInfo& peer, std::string_view op, std::string_view) {
+            return (op != "link" && op != "unlink") || peer.identity.starts_with("uid 0,");
+        };
+        router = std::make_unique<xbus::Router>(std::move(o));
+        if (auto l = router->listen(); !l) console_("the system's bus could not listen: " + l.error());
+        thread = std::jthread([this] { router->run(stop); });
+        link();
+        return true;
+    }
+    void link() {
+        relink_at.reset();
+        end = router->link(xbus::Pipe{.send = [this](std::string_view b) {
+            bool knock = false;
+            {
+                std::lock_guard l(m);
+                knock = pending.empty();
+                pending.append(b);
+            }
+            if (knock) (void)platform::write_all(wake[1], "k");
+            return true;
+        }});
+    }
+    // The link ended (the host's side said so, or a new supervisor): again, now or a little later.
+    void unlink(std::optional<std::chrono::seconds> again) {
+        if (end) end->closed();
+        end.reset();
+        {
+            std::lock_guard l(m);
+            pending.clear();
+        }
+        if (again) relink_at = std::chrono::steady_clock::now() + *again;
+        else link();
+    }
+    std::string take() {
+        std::lock_guard l(m);
+        return std::exchange(pending, {});
+    }
+};
+
 // A request root made of xlings inside (`sudo xlings install ...`) that
 // writes the shared store: relayed to the host's broker on a channel of its
 // own (design 2026-10-21 §3.3). The caller's standard descriptors are here;
@@ -260,6 +327,7 @@ Json hello_() { return Json{{"agent", 1}, {"provides", Json{{"agent-display", 1}
     // The broker's socket: made once the host says it has one (its A frame);
     // a host before it gets no requests it would drop unanswered.
     int broker = -1;
+    std::unique_ptr<GuestBus> bus;
     std::map<std::uint32_t, BrokerCall> calls;
     std::uint32_t next_call = 0;
     proto::Decoder d;
@@ -281,6 +349,9 @@ Json hello_() { return Json{{"agent", 1}, {"provides", Json{{"agent-display", 1}
         for (const auto& [ch, c] : calls) { p.push_back({.fd = c.sock}); callers.push_back(ch); }
         for (const auto& [ch, c] : calls)
             if (c.input_open) { p.push_back({.fd = c.io[0]}); inputs.push_back(ch); }
+        const std::size_t bus_at = p.size();
+        if (bus) p.push_back({.fd = bus->wake[0]});
+        if (bus && bus->relink_at && std::chrono::steady_clock::now() >= *bus->relink_at) bus->link();
         std::erase_if(ended, [](int pid) { return platform::wait_process(pid, false).has_value(); });
         platform::poll_fds(p, calls.empty() ? 500 : 200);
         if (p[0].readable) {
@@ -308,9 +379,26 @@ Json hello_() { return Json{{"agent", 1}, {"provides", Json{{"agent-display", 1}
                     }
                     continue;
                 }
+                if (frame.type == 'L') {
+                    // The host's router, through the supervisor; nothing: the link ended there.
+                    if (!bus) continue;
+                    if (frame.payload.empty()) bus->unlink(std::chrono::seconds(3));
+                    else if (bus->end) bus->end->feed(frame.payload);
+                    continue;
+                }
                 if (frame.type == 'A') {
                     // The host's side: a broker, offered to root inside from now on.
                     const auto a = Json::parse(frame.payload, nullptr, false);
+                    // And its bus: this system's router, linked under the host's.
+                    if (const auto ob = a.is_object() ? a.value("provides", Json::object()).value("openbus", Json()) : Json();
+                        ob.is_object() && ob.contains("root") && ob["root"].is_string()) {
+                        if (!bus) {
+                            bus = std::make_unique<GuestBus>();
+                            if (!bus->start(ob["root"].get<std::string>(), machine)) bus.reset();
+                        } else {
+                            bus->unlink(std::nullopt);   // a supervisor again: a link of its own
+                        }
+                    }
                     if (broker < 0 && machine && !init && a.is_object() && a.value("provides", Json::object()).contains("broker")) {
                         std::error_code ec;
                         fs::create_directories(fs::path(proto::kBrokerSocket).parent_path(), ec);
@@ -502,6 +590,14 @@ Json hello_() { return Json{{"agent", 1}, {"provides", Json{{"agent-display", 1}
                     c.size = *size;
                     (void)platform::write_all(out, proto::encode_json('R', ch, Json{{"rows", size->first}, {"cols", size->second}}));
                 }
+        // The bus's bytes for the host, as L frames.
+        if (bus && bus_at < p.size() && p[bus_at].readable) {
+            std::array<char, 256> drain{};
+            (void)platform::read_some(bus->wake[0], drain);
+            const auto bytes = bus->take();
+            for (std::size_t at = 0; at < bytes.size(); at += 60000)
+                (void)platform::write_all(out, proto::encode('L', 0, std::string_view(bytes).substr(at, 60000)));
+        }
     }
 }
 

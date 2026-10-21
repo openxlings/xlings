@@ -24,11 +24,12 @@ struct PeerInfo {
 struct RouterOptions {
     std::string root;                     // host/<id>, or host/<id>/system/<name>
     std::vector<Address> listen;          // where nodes connect; none: pipes and links only
+    bool shared { false };                // every user of the machine may connect (a system's router); else its owner
     std::filesystem::path log;            // its events, one JSON object a line; empty: none
     std::size_t queue_limit { 16u << 20 };
     // Whether `peer` may `op` ("offer", "call", "subscribe", "publish", "open") the path; unset: everyone may.
     std::function<bool(const PeerInfo& peer, std::string_view op, std::string_view path)> allow;
-    // Unset: a router that has been without nodes this long exits run().
+    // Unset: a router that has been without nodes and links this long exits run().
     std::optional<std::chrono::seconds> idle_exit;
 };
 
@@ -43,6 +44,7 @@ public:
     std::expected<void, std::string> listen();
     // A node, or a router whose hello says `link`, over a pipe the program
     // moves itself (a carrier's channel): feed what arrives into the end.
+    // These three may be called from any thread, the router running.
     std::shared_ptr<PipeEnd> adopt(Pipe p);
     // A link to another router: at an address, or over a pipe (this side says hello).
     std::expected<void, std::string> link(const Address& to);
