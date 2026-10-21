@@ -108,6 +108,68 @@ int run_requests_(std::string_view sub, int argc, char* argv[], EventStream& str
     return rc;
 }
 
+// `subos __broker-serve <name> [--actor <who>] -- <argv...>`: a machine's
+// broker (design 2026-10-21 §3.3). A Luban machine's supervisor runs it for
+// a request its guest agent took from root inside (`sudo xlings ...`), on the
+// terminal or pipes it relays to the caller: the verdict a sandbox's
+// supervisor gives (broker::judge, with the instance's policy), recorded in
+// the instance's audit with who asked, then the command run for the
+// instance, as the owner. Plumbing: in no help, no completion.
+int run_broker_serve_(int argc, char* argv[], const std::function<void(std::string_view)>& usageError) {
+    std::string name, actor;
+    std::vector<std::string> request;
+    for (int i = 3; i < argc; ++i) {
+        const std::string_view a = argv[i];
+        if (a == "--") {
+            for (int k = i + 1; k < argc; ++k) request.emplace_back(argv[k]);
+            break;
+        }
+        if (a == "--actor" && i + 1 < argc) actor = argv[++i];
+        else if (!a.empty() && a[0] != '-' && name.empty()) name = std::string(a);
+        else { usageError(std::format("unknown option for `xlings subos __broker-serve`: {}", a)); return 1; }
+    }
+    if (name.empty() || request.empty()) {
+        usageError("usage: xlings subos __broker-serve <name> [--actor <who>] -- <argv...>");
+        return 1;
+    }
+    const auto home = home_view();
+    const auto logfile = home.logs_dir(name) / "events.ndjson";
+    auto policy = subos::policy_store::effective(home, name, std::nullopt, {}, Info::VERSION);
+    if (!policy) {
+        std::println(std::cerr, "[xlings] E_PERMISSION: {}'s policy could not be read: {}", name, policy.error());
+        return subos::broker::kExitPermission;
+    }
+    auto verdict = subos::broker::judge(home, *policy, name, request, "on the host");
+    auto event = verdict.event;
+    event["instance"] = name;
+    event["via"] = "machine";
+    if (!actor.empty()) event["actor"] = actor;
+    if (!observe::append_checked(logfile, observe::Event{.kind = observe::Kind::Perm, .fields = event})
+        && policy->preset == subos::policy::Preset::Locked) {
+        std::println(std::cerr, "[xlings] E_AUDIT_WRITE: cannot write {}", logfile.string());
+        return subos::session::kExitSetup;
+    }
+    if (!verdict.run) {
+        if (!verdict.error.empty()) std::println(std::cerr, "[xlings] {}", verdict.error);
+        if (!verdict.hint.empty()) std::println(std::cerr, "[xlings] {}", verdict.hint);
+        return verdict.exit;
+    }
+    // As a sandbox's broker runs it: this host's environment, acting on this
+    // instance, from the home (never the caller's project).
+    std::vector<std::string> full{platform::get_executable_path().string()};
+    full.insert(full.end(), request.begin(), request.end());
+    platform::set_env_variable("XLINGS_ACTIVE_SUBOS", name);
+    for (const auto* k : {"XLINGS_SUBOS_MODE", "XLINGS_PROJECT_DIR"}) platform::unset_env_variable(k);
+    if (!platform::stdin_is_terminal()) platform::set_env_variable("XLINGS_NON_INTERACTIVE", "1");
+    std::error_code ec;
+    fs::current_path(home.home, ec);
+    const int rc = platform::run_argv(full);
+    observe::append(logfile, observe::Event{.kind = observe::Kind::Perm,
+        .fields = {{"event", "broker-done"}, {"instance", name}, {"via", "machine"}, {"actor", actor},
+                   {"program", request.front()}, {"exit", rc}}});
+    return rc;
+}
+
 // `subos report <name> [--session ID] [--json]`: the audit, summarised
 // (design §22) -- what an agent did in an instance, in one screen.
 int run_report_(int argc, char* argv[], EventStream& stream,

@@ -2668,13 +2668,26 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& requested
                 return std::unexpected(localPayload.string() + ": " + ec.message());
             auto sourceMount = home::domain_producer_source::borrowed_mount(localPayload);
             if (!sourceMount) return std::unexpected(sourceMount.error());
-            if (localStatus.type() != std::filesystem::file_type::not_found && !*sourceMount) continue;
+            // A view reads the system's store as its own (design 2026-10-20
+            // §4.13): a payload there is the system's, borrowed -- only one
+            // elsewhere is the view's.
+            const auto rel = localPayload.lexically_normal().lexically_relative(
+                (systemSnapshot->sourceHome / "data" / "xpkgs").lexically_normal());
+            const bool systems = !rel.empty() && *rel.begin() != "..";
+            if (localStatus.type() != std::filesystem::file_type::not_found && !*sourceMount && !systems) {
+                log::debug("{}@{}: this view has its own payload ({})", node.name, node.version, localPayload.string());
+                continue;
+            }
             const auto provider = node.canonicalName.empty()
                 ? canonical_package_name(node.namespaceName, node.name) : node.canonicalName;
             auto choice = home::layers::plan_borrow_package(
                 *systemSnapshot, Config::versions(), provider, node.version);
             if (!choice) return std::unexpected(choice.error());
-            if (!*choice) continue;
+            if (!*choice) {
+                log::debug("{}@{}: the system's store ({}) registers no {}@{}", node.name, node.version,
+                           systemSnapshot->home.string(), provider, node.version);
+                continue;
+            }
             auto& selected = **choice;
             if (const auto revision = payload_revision_verdict(selected.requestedPayload, node.revision);
                 revision.stale) {

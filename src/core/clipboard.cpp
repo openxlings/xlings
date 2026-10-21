@@ -137,7 +137,7 @@ int bridge(std::string_view tool, std::span<const std::string> args) {
     const std::string instance = env_("XLINGS_ACTIVE_SUBOS");
     const auto grant = std::format("outside this environment: xlings subos config {} --allow {}",
                                    instance.empty() ? "<name>" : instance, paste ? "clipboard-paste" : "clipboard");
-    if (!subos::broker::available()) {
+    if (!subos::situation::measure({}).broker) {
         std::println(std::cerr, "{}: no broker to reach the host's clipboard", tool);
         return 1;
     }

@@ -126,6 +126,38 @@
 
 ## 3. 系统里的 xlings
 
+### 3.0 分层：在哪里、谁、哪个仓库，以及变更去哪（修订 5）
+
+实施 K1、K2 时发现，"这个 xlings 在哪里运行、能不能写、该不该转交"分散在五处各自判断：
+- CLI 的 `home_is_ours` 加 `broker::available()`；
+- `Config` 判断用户视图；
+- `home::read_system_layer` 判断能借用的仓库（只认标了 `multi` 的仓库）；
+- 锁文件的报错；
+- `__store-add` 的拒绝。
+
+结果是同一台 machine 里，前一处说"这是系统的仓库"，后一处说"这不是"，用户的安装在两者之间失败。所以先把这件事收成一层：
+
+```
+决定            xlings.subos.situation    在哪里（host / sandbox / machine / system）× 谁（owner / admin / user）
+                                          × 哪个仓库（personal / shared / own）；系统的根记录（/etc/xlings/usr）
+                                          route(situation, touch) → here / broker / admin(sudo) / owner / no-broker
+命令表          xlings.subos.broker       classify：命令碰到什么（read / fetch / index / instance / home）与策略的 op；
+                                          judge：供应方的裁决（策略、审批队列），各个 carrier 共用
+客户端          broker::forward           请求 + 调用方的三个标准描述符；带上原样的全局参数（--agent、--json），
+                                          被转交的命令发出的事件流与在本地时一致
+传输（只搬字节） sandbox：会话 supervisor 直接拿到描述符
+                machine：guest agent 的 B 通道 ↔ luban.vm 的 bridge（qemu、vz 共用）↔ `xlings subos __broker-serve`
+                旧宿主：没有 A 帧就不开 socket，客户端只说一行
+执行            `subos __broker-serve`    judge、审计（谁、替谁、经哪里）、以 owner 身份为这个系统执行
+```
+
+规则：
+- **只有 situation 判断"在哪里、谁、哪个仓库"**：`Config` 的用户视图、安装器的借用（`read_system_layer`、快照的 scope）、CLI 的转交、锁的报错都读它，不再各自推断。
+- **只有 broker 的命令表知道"命令碰到什么"**；`route` 是一张表，单元测试逐格覆盖（`test_subos_situation`）。
+- **luban 不解释请求**：vm 的 bridge 与 guest agent 只按通道搬字节、管终端尺寸与挂断；裁决与执行都在 xlings（经 `__broker-serve` 这个 plumbing 命令，符合"luban 只经协议到达 xlings 的领域"）。
+- **用户视图读系统仓库**：系统的根记录指明它读哪个仓库与哪个 scope（系统自己的实例）；不论那个仓库自己的标记是 `personal` 还是 `multi`。
+- **真机与导出的镜像**：place 为 system，仓库可写即 own，命令都在本地执行；与 machine 的差别只在 situation 一处。
+
 ### 3.1 两种存放方式（D1、E6）
 
 | | `shared` | `own` |

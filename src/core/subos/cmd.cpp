@@ -1066,14 +1066,20 @@ int run(int argc, char* argv[], EventStream& stream) {
     // `-y` is recorded before it is dropped: for the commands that delete or
     // take over a directory (`remove`, and `new` onto one that exists) it is
     // the user's explicit answer to the question they would otherwise be asked.
+    // What follows `--` is another command's (`exec -- tool -y`, a broker's
+    // request): passed on as it is.
     bool yesGiven = false;
+    bool passthrough = false;
     std::vector<char*> filtered;
     filtered.reserve(static_cast<std::size_t>(argc));
     for (int i = 0; i < argc; ++i) {
-        if (i >= 3) {
+        if (i >= 3 && !passthrough) {
             const std::string_view a{argv[i]};
-            if (a == "-y" || a == "--yes") yesGiven = true;
-            if (cli::spec::is_global_option(argv[i])) continue;
+            if (a == "--") passthrough = true;
+            else {
+                if (a == "-y" || a == "--yes") yesGiven = true;
+                if (cli::spec::is_global_option(argv[i])) continue;
+            }
         }
         filtered.push_back(argv[i]);
     }
@@ -1130,7 +1136,8 @@ int run(int argc, char* argv[], EventStream& stream) {
     // A SubOS on another carrier: its xlings answers there (part 3 §5).
     static const std::set<std::string, std::less<>> kNamed{
         "use", "exec", "start", "stop", "remove", "info", "config", "status", "doctor", "cp", "log",
-        "report", "requests", "approve", "deny", "rollback", "boot", "__boot", "export", "__export", "diff", "pack"};
+        "report", "requests", "approve", "deny", "rollback", "boot", "__boot", "export", "__export", "diff", "pack",
+        "__broker-serve"};
     if (kNamed.contains(sub)) {
         for (int i = 3; i < argc; ++i) {
             const std::string a = argv[i];
@@ -1770,6 +1777,7 @@ int run(int argc, char* argv[], EventStream& stream) {
     if (sub == "report") return run_report_(argc, argv, stream, usageError);
     if (sub == "requests" || sub == "approve" || sub == "deny")
         return run_requests_(sub, argc, argv, stream, usageError);
+    if (sub == "__broker-serve") return run_broker_serve_(argc, argv, usageError);
     if (sub == "config") return run_config_(argc, argv, stream, usageError);
     if (sub == "status") return run_status_(argc, argv, stream, usageError);
     if (sub == "doctor") return run_doctor_(argc, argv, stream, usageError);

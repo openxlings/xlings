@@ -8,32 +8,36 @@ import xlings.subos.policy;
 
 namespace b = xlings::subos::broker;
 namespace pol = xlings::subos::policy;
+using T = xlings::subos::situation::Touch;
 using V = std::vector<std::string>;
 
 TEST(SubosBroker, ReadsStayLocal) {
     for (V argv : {V{"list"}, V{"info", "gcc"}, V{"search", "x"}, V{"use", "gcc"},
                    V{"subos", "list"}, V{"subos", "status", "box"}, V{"self", "doctor"},
                    V{"--version"}})
-        EXPECT_EQ(b::classify(argv, "box").route, b::Route::Local) << argv[0];
+        EXPECT_EQ(b::classify(argv, "box").touch, T::Read) << argv[0];
 }
 
 TEST(SubosBroker, ChangesToTheHomeGoToTheBroker) {
     auto install = b::classify(V{"install", "gcc", "-y", "cmake"}, "box");
-    EXPECT_EQ(install.route, b::Route::Broker);
+    EXPECT_EQ(install.touch, T::Fetch);
     ASSERT_EQ(install.ops.size(), 2u);
     EXPECT_EQ(install.ops[0].target, "gcc");
     EXPECT_TRUE(install.ops[0].from_inside);
     EXPECT_EQ(b::classify(V{"update"}, "box").ops.front().kind, "index_update");
-    EXPECT_EQ(b::classify(V{"remove", "gcc"}, "box").route, b::Route::Broker);
-    EXPECT_EQ(b::classify(V{"use", "gcc", "15.1.0"}, "box").route, b::Route::Broker);
+    EXPECT_EQ(b::classify(V{"update"}, "box").touch, T::Index);
+    EXPECT_EQ(b::classify(V{"update", "gcc"}, "box").touch, T::Fetch);
+    EXPECT_EQ(b::classify(V{"__store-add", "xim:gcc@15.1.0"}, "box").touch, T::Fetch);
+    EXPECT_EQ(b::classify(V{"remove", "gcc"}, "box").touch, T::Instance);
+    EXPECT_EQ(b::classify(V{"use", "gcc", "15.1.0"}, "box").touch, T::Instance);
 }
 
 TEST(SubosBroker, TheOwnersThingsAreRefusedInside) {
     for (V argv : {V{"self", "update"}, V{"self", "doctor", "--fix"}, V{"subos", "remove", "x"},
                    V{"subos", "config", "box", "--net", "host"}, V{"config", "--mirror", "CN"},
                    V{"install", "x", "--subos", "other"}})
-        EXPECT_EQ(b::classify(argv, "box").route, b::Route::Owner) << argv[0] << " " << argv[1];
-    EXPECT_EQ(b::classify(V{"install", "x", "--subos", "box"}, "box").route, b::Route::Broker);
+        EXPECT_EQ(b::classify(argv, "box").touch, T::Home) << argv[0] << " " << argv[1];
+    EXPECT_EQ(b::classify(V{"install", "x", "--subos", "box"}, "box").touch, T::Fetch);
 }
 
 // Activating a version of xlings rewrites the home's entry -- the binary
@@ -41,9 +45,9 @@ TEST(SubosBroker, TheOwnersThingsAreRefusedInside) {
 TEST(SubosBroker, XlingsItselfIsTheOwners) {
     for (V argv : {V{"install", "xlings@2026.9.30.1"}, V{"install", "gcc", "xim:xlings"},
                    V{"use", "xlings", "2026.9.30.1"}, V{"update", "xlings"}, V{"remove", "xlings"}})
-        EXPECT_EQ(b::classify(argv, "box").route, b::Route::Owner) << argv[0] << " " << argv[1];
-    EXPECT_EQ(b::classify(V{"use", "xlings"}, "box").route, b::Route::Local) << "listing versions";
-    EXPECT_EQ(b::classify(V{"install", "xlings-tools"}, "box").route, b::Route::Broker);
+        EXPECT_EQ(b::classify(argv, "box").touch, T::Home) << argv[0] << " " << argv[1];
+    EXPECT_EQ(b::classify(V{"use", "xlings"}, "box").touch, T::Read) << "listing versions";
+    EXPECT_EQ(b::classify(V{"install", "xlings-tools"}, "box").touch, T::Fetch);
 }
 
 TEST(SubosBroker, TheStrictestTargetDecides) {
@@ -59,13 +63,13 @@ TEST(SubosBroker, TheStrictestTargetDecides) {
 // own, decided outside; neither is implied by a preset.
 TEST(SubosBroker, TheClipboardIsAGrantOfItsOwnAndNeverImplied) {
     auto copy = b::classify(V{"__clipboard", "copy"}, "box");
-    EXPECT_EQ(copy.route, b::Route::Broker);
+    EXPECT_EQ(copy.touch, T::Instance);
     ASSERT_EQ(copy.ops.size(), 1u);
     EXPECT_EQ(copy.ops[0].kind, "grant");
     EXPECT_EQ(copy.ops[0].target, "clipboard");
     auto paste = b::classify(V{"__clipboard", "paste"}, "box");
     EXPECT_EQ(paste.ops.at(0).target, "clipboard-paste");
-    EXPECT_EQ(b::classify(V{"__clipboard"}, "box").route, b::Route::Local) << "nothing to do";
+    EXPECT_EQ(b::classify(V{"__clipboard"}, "box").touch, T::Read) << "nothing to do";
 
     auto p = pol::preset(pol::Preset::Private);
     EXPECT_EQ(b::decide(p, copy).action, pol::Action::Deny);

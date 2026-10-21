@@ -671,44 +671,16 @@ int supervise(const HomeView& home, Launch& L, Info& info, int listen_fd, std::a
                     drop(bit->fd);
                     continue;
                 }
-                // The decision that counts: the same function the client ran,
-                // with the policy file as the supervisor read it at start.
-                auto cls = broker::classify(argv, L.instance);
-                auto d = broker::decide(*L.broker_policy, cls);
-                nlohmann::json ev{{"event", "decision"}, {"session", info.id}, {"program", argv[0]},
-                                  {"argc", argv.size()},
-                                  {"action", std::string(policy::to_string(d.action))},
-                                  {"reason", d.reason}};
-                if (cls.route == broker::Route::Owner) d.action = policy::Action::Deny;
-                // Deny by default: the broker runs, as the owner, only what
-                // changes this instance on its behalf. Anything else -- what
-                // the client runs locally, or never heard of -- is refused
-                // here, whoever sent it: a process inside can talk to this
-                // socket without the client.
-                if (cls.route == broker::Route::Local) {
-                    d.action = policy::Action::Deny;
-                    d.reason = std::format("`{}` is not something the broker runs; it runs inside the sandbox",
-                                           argv[0]);
-                }
-                if (d.action == policy::Action::Deny) {
+                // The decision that counts (broker::judge): the same function
+                // the client ran, with the policy as the supervisor read it at start.
+                auto verdict = broker::judge(home, *L.broker_policy, L.instance, argv, "outside the sandbox");
+                auto ev = verdict.event;
+                ev["session"] = info.id;
+                if (!verdict.run) {
                     audit(ev, observe::Kind::Perm);
-                    send_msg(bit->fd, {{"exit", broker::kExitPermission},
-                                       {"error", "E_PERMISSION: " + d.reason},
-                                       {"hint", d.owner_command.empty() ? std::string{}
-                                                : "outside the sandbox: " + d.owner_command}});
-                    platform::close_fds(m->fds);
-                    drop(bit->fd);
-                    continue;
-                }
-                if (d.action == policy::Action::Ask) {
-                    auto id = broker::enqueue(home, L.instance, argv, d.reason);
-                    ev["request"] = id;
-                    audit(ev, observe::Kind::Perm);
-                    send_msg(bit->fd, {{"exit", broker::kExitPending},
-                                       {"error", "waiting for the owner's approval: request " + id},
-                                       {"hint", std::format("outside the sandbox: xlings subos approve {} {}",
-                                                            L.instance, id)},
-                                       {"request", id}});
+                    nlohmann::json reply{{"exit", verdict.exit}, {"error", verdict.error}, {"hint", verdict.hint}};
+                    if (!verdict.request.empty()) reply["request"] = verdict.request;
+                    send_msg(bit->fd, reply);
                     platform::close_fds(m->fds);
                     drop(bit->fd);
                     continue;

@@ -1012,3 +1012,15 @@ status = "required"
 [XIM-WORKER-REMOTE-HOME]
 text = "a Lua worker whose home is on another machine's filesystem (a Luban machine's, over 9p or virtiofs) keeps its private directory and captured output on this machine's, and its Landlock fence holds its directories open so a filesystem that keeps no inodes does not forget them -- recipes are read, packages install"
 status = "required"
+
+[SUBOS-SITUATION]
+text = "where xlings runs (host, sandbox, machine, a system booted as itself), who runs it (owner, the system's administrator, a user's view) and which store it reads (personal, shared, own) are measured in one place, and one table says where a change goes: here, the host's broker, `sudo`, the owner on the host, or one line when the host has no broker"
+status = "required"
+
+[SUBOS-SUDO-SCOPE]
+text = "in a Luban system a user's own packages, versions and settings need no sudo; updating the index (every user's) says `sudo xlings update` in one line and changes nothing"
+status = "required"
+
+[SUBOS-MACHINE-BROKER]
+text = "in a Luban machine reading this computer's store, `sudo xlings install/remove/update` and a user's store addition reach the host's broker through the agent (a channel of the guest's, the host's luban running `xlings subos __broker-serve`): the instance's policy decides, the audit names who asked, the caller's terminal or pipes carry the command, and /usr follows the new generation before the command returns"
+status = "required"

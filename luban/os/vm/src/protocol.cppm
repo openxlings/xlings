@@ -22,6 +22,15 @@
 //   S  share       client -> supervisor: {"grants": {name: [path, read-only]}},
 //                  the directories the Luban host machine sees at /grant
 //                  (a Mac's); answered with S {"ok"}
+//   A  host hello  supervisor -> guest, channel 0, on each H: what the host
+//                  side provides ({"provides": {"broker": 1}}); an older
+//                  supervisor sends none, and the guest offers nothing of it
+//   B  broker      guest -> supervisor, on a channel the guest numbers (the
+//                  high bit set): root inside asked xlings for what writes the
+//                  shared store ({"argv", "tty", "rows", "cols", "actor"});
+//                  then D (its input) and R, F, C as for a session from the
+//                  guest's side, D, E and X from the supervisor's
+//                  (design 2026-10-21 §3.3)
 //
 // Only additions: a side that gets a type it does not know skips the frame.
 export module luban.vm.protocol;
@@ -32,6 +41,12 @@ import xlings.libs.json;
 export namespace luban::vm::protocol {
 
 inline constexpr std::string_view kPort = "luban.agent";
+// Where xlings inside a system reaches its broker (xlings.subos.broker's
+// kSocketInside): one JSON request per datagram with the caller's three
+// standard descriptors, {"started"} then {"exit", "error", "hint"} back.
+inline constexpr std::string_view kBrokerSocket = "/run/xlings/broker.sock";
+// A channel the guest numbers (a broker request) has this bit; the host's do not.
+inline constexpr std::uint32_t kGuestChannel = 0x80000000u;
 inline constexpr std::size_t kMaxPayload = 1u << 20;
 
 struct Frame {

@@ -1296,6 +1296,62 @@ namespace {
 // whether the machine still runs, `kill` ends it when a power-off is not
 // heard; a client's `S` frame ({"grants": {name: [path, read-only]}}) is
 // handed to `grants` (a hypervisor that shares directories while running).
+// A broker request from root inside (design 2026-10-21 §3.3): xlings's
+// `subos __broker-serve <name>` -- the verdict and the run, recorded -- on a
+// terminal made here when the caller is at one, on pipes otherwise; its bytes
+// relayed on the guest's channel.
+struct Brokered {
+    int pid { -1 };
+    int in { -1 };
+    int out { -1 };
+    int err { -1 };
+    bool tty { false };
+};
+
+std::optional<Brokered> broker_start_(std::string_view name, const Json& req) {
+    std::vector<std::string> argv{service::xlings_path().string(), "subos", "__broker-serve", std::string(name)};
+    if (const auto actor = req.value("actor", std::string{}); !actor.empty()) argv.insert(argv.end(), {"--actor", actor});
+    argv.push_back("--");
+    for (const auto& w : req.value("argv", Json::array()))
+        if (w.is_string()) argv.push_back(w.get<std::string>());
+    Brokered b{.tty = req.value("tty", false)};
+    std::vector<int> child, mine;
+    if (b.tty) {
+        auto pty = platform::open_pty();
+        if (!pty) return std::nullopt;
+        platform::set_terminal_size((*pty)[0], req.value("rows", 24), req.value("cols", 80));
+        b.in = b.out = (*pty)[0];
+        child = {(*pty)[1], (*pty)[1], (*pty)[1]};
+        mine = {(*pty)[1]};
+    } else {
+        auto in = platform::make_pipe(), out = platform::make_pipe(), err = platform::make_pipe();
+        if (!in || !out || !err) return std::nullopt;
+        b.in = (*in)[1];
+        b.out = (*out)[0];
+        b.err = (*err)[0];
+        child = {(*in)[0], (*out)[1], (*err)[1]};
+        mine = child;
+    }
+    b.pid = platform::fork_process();
+    if (b.pid == 0) {
+        platform::reset_signals();
+        platform::new_session();
+        platform::redirect_stdio(child);
+        if (b.tty) (void)platform::take_controlling_terminal();
+        platform::exec_path(argv, platform::environment());
+        platform::exit_now(127);
+    }
+    platform::close_fds(mine);
+    if (b.pid < 0) {
+        std::vector<int> rest{b.in};
+        if (b.out != b.in) rest.push_back(b.out);
+        if (b.err >= 0) rest.push_back(b.err);
+        platform::close_fds(rest);
+        return std::nullopt;
+    }
+    return b;
+}
+
 void bridge_(const fs::path& home, std::string_view name, int agent, int listen, const std::function<bool()>& alive,
              const std::function<void()>& kill, const std::function<bool(const Json&)>& grants) {
     platform::route_signals({platform::sig::terminate, platform::sig::interrupt}, {});
@@ -1308,6 +1364,15 @@ void bridge_(const fs::path& home, std::string_view name, int agent, int listen,
     proto::Decoder from_agent;
     std::array<char, 65536> buf{};
     auto powering_off = std::optional<std::chrono::steady_clock::time_point>{};
+    std::map<std::uint32_t, Brokered> brokered;   // the guest's channel -> its command here
+    const auto close_brokered = [](Brokered& b) {
+        std::vector<int> fds;
+        if (b.in >= 0) fds.push_back(b.in);
+        if (b.out >= 0 && b.out != b.in) fds.push_back(b.out);
+        if (b.err >= 0) fds.push_back(b.err);
+        platform::close_fds(fds);
+        b.in = b.out = b.err = -1;
+    };
     for (;;) {
         if (!alive()) break;
         for (int s : platform::pending_signals()) {
@@ -1322,6 +1387,12 @@ void bridge_(const fs::path& home, std::string_view name, int agent, int listen,
         }
         std::vector<platform::PollFd> p{{.fd = agent}, {.fd = listen}};
         for (const auto& cl : clients) p.push_back({.fd = cl.fd});
+        // A brokered command's output (a terminal's, or its two pipes).
+        std::vector<std::pair<std::uint32_t, char>> outputs;
+        for (const auto& [ch, b] : brokered) {
+            if (b.out >= 0) { p.push_back({.fd = b.out}); outputs.emplace_back(ch, 'D'); }
+            if (b.err >= 0) { p.push_back({.fd = b.err}); outputs.emplace_back(ch, 'E'); }
+        }
         platform::poll_fds(p, 200);
         if (p[0].readable || p[0].closed) {
             auto n = platform::read_some(agent, buf);
@@ -1334,7 +1405,34 @@ void bridge_(const fs::path& home, std::string_view name, int agent, int listen,
                 if (frame.type == 'H') {
                     up = true;
                     hello = frame.payload;
+                    // This side's own: the broker (design 2026-10-21 §3.3).
+                    (void)platform::write_all(agent, proto::encode_json('A', 0, Json{{"provides", Json{{"broker", 1}}}}));
                     for (auto& cl : clients) (void)platform::write_all(cl.fd, proto::encode('H', 0, frame.payload));
+                    continue;
+                }
+                if (frame.channel & proto::kGuestChannel) {
+                    if (frame.type == 'B') {
+                        const auto req = Json::parse(frame.payload, nullptr, false);
+                        auto b = req.is_object() ? broker_start_(name, req) : std::nullopt;
+                        if (b) brokered[frame.channel] = *b;
+                        else (void)platform::write_all(agent, proto::encode_json('X', frame.channel,
+                                                           Json{{"code", 125}, {"error", "the host's broker could not start"}}));
+                        continue;
+                    }
+                    auto b = brokered.find(frame.channel);
+                    if (b == brokered.end()) continue;
+                    if (frame.type == 'D' && b->second.in >= 0) (void)platform::write_all(b->second.in, frame.payload);
+                    else if (frame.type == 'F' && !b->second.tty && b->second.in >= 0) {
+                        std::vector<int> in{b->second.in};
+                        platform::close_fds(in);
+                        b->second.in = -1;
+                    } else if (frame.type == 'R' && b->second.tty) {
+                        const auto j = Json::parse(frame.payload, nullptr, false);
+                        if (j.is_object()) platform::set_terminal_size(b->second.out, j.value("rows", 24), j.value("cols", 80));
+                    } else if (frame.type == 'C') {
+                        // The caller hung up: as a terminal's hang-up ends what runs on it.
+                        platform::send_signal_group(b->second.pid, platform::sig::hangup);
+                    }
                     continue;
                 }
                 auto owner = owners.find(frame.channel);
@@ -1397,6 +1495,40 @@ void bridge_(const fs::path& home, std::string_view name, int agent, int listen,
             }
         }
         std::erase_if(clients, [](const Client& cl) { return cl.fd < 0; });
+        for (std::size_t k = 0; k < outputs.size(); ++k) {
+            const auto& pf = p[2 + polled + k];
+            if (!pf.readable && !pf.closed) continue;
+            auto b = brokered.find(outputs[k].first);
+            if (b == brokered.end()) continue;
+            int& fd = outputs[k].second == 'D' ? b->second.out : b->second.err;
+            if (fd < 0) continue;
+            auto n = platform::read_some(fd, buf);
+            if (n && *n > 0) {
+                (void)platform::write_all(agent, proto::encode(outputs[k].second, b->first, std::string_view(buf.data(), *n)));
+                continue;
+            }
+            if (outputs[k].second == 'E') {
+                std::vector<int> e{fd};
+                platform::close_fds(e);
+                fd = -1;
+                continue;
+            }
+            // Its output ended: the command's end, said with its code.
+            int code = 125;
+            if (auto st = platform::wait_process(b->second.pid, true)) code = platform::exit_code(*st);
+            if (b->second.err >= 0)   // what it said last on standard error, first
+                while (auto rest = platform::read_some(b->second.err, buf)) {
+                    if (*rest == 0) break;
+                    (void)platform::write_all(agent, proto::encode('E', b->first, std::string_view(buf.data(), *rest)));
+                }
+            close_brokered(b->second);
+            (void)platform::write_all(agent, proto::encode_json('X', b->first, Json{{"code", code}}));
+            brokered.erase(b);
+        }
+    }
+    for (auto& [ch, b] : brokered) {
+        platform::send_signal_group(b.pid, platform::sig::hangup);
+        close_brokered(b);
     }
     std::vector<int> fds{agent, listen};
     for (auto& cl : clients) if (cl.fd >= 0) fds.push_back(cl.fd);

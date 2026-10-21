@@ -198,6 +198,43 @@ std::expected<Session, std::string> desktop_(const Json& display, std::map<std::
 
 [[noreturn]] void serve_(int port, int out, bool init, bool machine);
 
+// A request root made of xlings inside (`sudo xlings install ...`) that
+// writes the shared store: relayed to the host's broker on a channel of its
+// own (design 2026-10-21 §3.3). The caller's standard descriptors are here;
+// its socket says when it hangs up.
+struct BrokerCall {
+    int sock { -1 };
+    std::vector<int> io;            // stdin, stdout, stderr
+    bool tty { false };
+    bool input_open { true };
+    std::pair<unsigned short, unsigned short> size { 0, 0 };
+};
+
+// After a brokered command that succeeded: this system's /usr follows its
+// current generation, as a running sandbox's root view is refreshed (an
+// install made a new one) -- mounted over the old, so what runs keeps its
+// files and what starts sees the new.
+void follow_generation_() {
+    static const auto params = cmdline_();
+    static std::optional<fs::path> mounted;
+    if (!params.contains("luban.home") || !params.contains("luban.name")) return;
+    const auto subos = fs::path(params.at("luban.home")) / "subos" / params.at("luban.name");
+    std::error_code ec;
+    const auto now = fs::canonical(xlings::subos::rootfs::usr_of(subos), ec);
+    if (ec) return;
+    if (!mounted) mounted = now;   // the one booted with
+    if (now == *mounted) return;
+    if (auto done = xlings::subos::rootfs::mount_usr("/", subos); !done) console_("its /usr: " + done.error());
+    else mounted = now;
+}
+
+void end_call_(BrokerCall& c, const Json& reply) {
+    if (c.sock >= 0) (void)platform::send_message(c.sock, reply.dump());
+    std::vector<int> fds = c.io;
+    fds.push_back(c.sock);
+    platform::close_fds(fds);
+}
+
 [[noreturn]] void agent_(bool init = false) {
     if (!init) platform::new_session();
     std::optional<fs::path> dev;
@@ -220,6 +257,11 @@ Json hello_() { return Json{{"agent", 1}, {"provides", Json{{"agent-display", 1}
     (void)platform::write_all(out, proto::encode_json('H', 0, hello_()));
     std::map<std::uint32_t, Session> sessions;
     std::vector<int> ended;     // closed by the host, not yet reaped
+    // The broker's socket: made once the host says it has one (its A frame);
+    // a host before it gets no requests it would drop unanswered.
+    int broker = -1;
+    std::map<std::uint32_t, BrokerCall> calls;
+    std::uint32_t next_call = 0;
     proto::Decoder d;
     std::array<char, 65536> buf{};
     std::optional<std::chrono::steady_clock::time_point> powering_off;
@@ -232,8 +274,15 @@ Json hello_() { return Json{{"agent", 1}, {"provides", Json{{"agent-display", 1}
         std::vector<std::uint32_t> errs;
         for (const auto& [ch, s] : sessions)
             if (s.err >= 0) { p.push_back({.fd = s.err}); errs.push_back(ch); }
+        // The broker: its socket, each caller's socket and piped or terminal input.
+        const std::size_t first_broker = p.size();
+        if (broker >= 0) p.push_back({.fd = broker});
+        std::vector<std::uint32_t> callers, inputs;
+        for (const auto& [ch, c] : calls) { p.push_back({.fd = c.sock}); callers.push_back(ch); }
+        for (const auto& [ch, c] : calls)
+            if (c.input_open) { p.push_back({.fd = c.io[0]}); inputs.push_back(ch); }
         std::erase_if(ended, [](int pid) { return platform::wait_process(pid, false).has_value(); });
-        platform::poll_fds(p, 500);
+        platform::poll_fds(p, calls.empty() ? 500 : 200);
         if (p[0].readable) {
             auto n = platform::read_some(port, buf);
             if (n && *n > 0) d.feed(std::string_view(buf.data(), *n));
@@ -243,7 +292,33 @@ Json hello_() { return Json{{"agent", 1}, {"provides", Json{{"agent-display", 1}
                 if (!f) { d = proto::Decoder{}; break; }
                 if (!*f) break;
                 const auto& frame = **f;
-                if (frame.type == 'Q') {
+                if (frame.channel & proto::kGuestChannel) {
+                    // The host's answer to a broker request: its output, its end.
+                    auto c = calls.find(frame.channel);
+                    if (c == calls.end()) continue;
+                    if (frame.type == 'D') (void)platform::write_all(c->second.io[1], frame.payload);
+                    else if (frame.type == 'E') (void)platform::write_all(c->second.io[2], frame.payload);
+                    else if (frame.type == 'X') {
+                        auto x = Json::parse(frame.payload, nullptr, false);
+                        Json reply{{"exit", x.is_object() ? x.value("code", 13) : 13}};
+                        if (reply["exit"] == 0) follow_generation_();
+                        if (x.is_object() && x.contains("error")) reply["error"] = x["error"];
+                        end_call_(c->second, reply);
+                        calls.erase(c);
+                    }
+                    continue;
+                }
+                if (frame.type == 'A') {
+                    // The host's side: a broker, offered to root inside from now on.
+                    const auto a = Json::parse(frame.payload, nullptr, false);
+                    if (broker < 0 && machine && !init && a.is_object() && a.value("provides", Json::object()).contains("broker")) {
+                        std::error_code ec;
+                        fs::create_directories(fs::path(proto::kBrokerSocket).parent_path(), ec);
+                        broker = platform::unix_listen(proto::kBrokerSocket);   // owner-only: root's
+                        follow_generation_();   // the generation booted with, before anything changes it
+                        if (broker < 0) console_("the broker could not listen: sudo xlings cannot change the shared store");
+                    }
+                } else if (frame.type == 'Q') {
                     (void)platform::write_all(out, proto::encode_json('H', 0, hello_()));
                 } else if (frame.type == 'O') {
                     auto open = Json::parse(frame.payload, nullptr, false);
@@ -374,6 +449,59 @@ Json hello_() { return Json{{"agent", 1}, {"provides", Json{{"agent-display", 1}
             close_session_(s->second);
             sessions.erase(s);
         }
+        if (broker >= 0 && p[first_broker].readable) {
+            if (const int sock = platform::unix_accept(broker); sock >= 0) {
+                auto m = platform::receive_message(sock, 1 << 16);
+                const auto req = m ? Json::parse(m->data, nullptr, false) : Json();
+                BrokerCall c{.sock = sock};
+                if (m) c.io = m->fds;
+                if (!req.is_object() || !req.value("argv", Json()).is_array() || c.io.size() != 3) {
+                    end_call_(c, Json{{"exit", 13}, {"error", "malformed request"}});
+                } else {
+                    c.tty = req.value("tty", false);
+                    if (c.tty)
+                        if (auto size = platform::terminal_size(c.io[0])) c.size = *size;
+                    const auto channel = proto::kGuestChannel | (next_call++ & ~proto::kGuestChannel);
+                    (void)platform::write_all(out, proto::encode_json('B', channel,
+                        Json{{"argv", req["argv"]}, {"tty", c.tty}, {"rows", c.size.first}, {"cols", c.size.second},
+                             {"actor", req.value("actor", std::string{})}}));
+                    calls[channel] = std::move(c);
+                }
+            }
+        }
+        const auto broker_base = first_broker + (broker >= 0 ? 1 : 0);
+        for (std::size_t k = 0; k < callers.size(); ++k) {
+            const auto& pf = p[broker_base + k];
+            if (!pf.readable && !pf.closed) continue;
+            auto c = calls.find(callers[k]);
+            if (c == calls.end()) continue;
+            if (auto m = platform::receive_message(c->second.sock, 1 << 16)) { platform::close_fds(m->fds); continue; }
+            // The caller hung up (Ctrl-C at its terminal, its window closed):
+            // the command on the host ends as a hung-up terminal's does.
+            (void)platform::write_all(out, proto::encode('C', callers[k]));
+            c->second.sock = -1;
+            end_call_(c->second, Json::object());
+            calls.erase(c);
+        }
+        for (std::size_t k = 0; k < inputs.size(); ++k) {
+            const auto& pf = p[broker_base + callers.size() + k];
+            if (!pf.readable && !pf.closed) continue;
+            auto c = calls.find(inputs[k]);
+            if (c == calls.end()) continue;
+            auto n = platform::read_some(c->second.io[0], buf);
+            if (n && *n > 0) (void)platform::write_all(out, proto::encode('D', inputs[k], std::string_view(buf.data(), *n)));
+            else {
+                c->second.input_open = false;
+                if (!c->second.tty) (void)platform::write_all(out, proto::encode('F', inputs[k]));
+            }
+        }
+        // A caller's terminal resized: the command's terminal on the host follows.
+        for (auto& [ch, c] : calls)
+            if (c.tty)
+                if (auto size = platform::terminal_size(c.io[0]); size && *size != c.size) {
+                    c.size = *size;
+                    (void)platform::write_all(out, proto::encode_json('R', ch, Json{{"rows", size->first}, {"cols", size->second}}));
+                }
     }
 }
 

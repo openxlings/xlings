@@ -623,6 +623,7 @@ int run_status_(int argc, char* argv[], EventStream& stream, const UsageError& u
 int run_requests_(std::string_view sub, int argc, char* argv[], EventStream& stream,
                   const UsageError& usageError);
 int run_report_(int argc, char* argv[], EventStream& stream, const UsageError& usageError);
+int run_broker_serve_(int argc, char* argv[], const UsageError& usageError);
 int run_ps_(int argc, char* argv[], EventStream& stream);
 int run_log_(int argc, char* argv[], EventStream& stream, const UsageError& usageError);
 // src/core/subos/root/root_cmd.cpp: the root projection's commands.

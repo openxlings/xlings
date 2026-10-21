@@ -2,6 +2,7 @@ module xlings.core.home.layers;
 
 import std;
 import xlings.libs.json;
+import xlings.subos.situation;
 import xlings.core.home;
 import xlings.core.home.evidence;
 import xlings.core.home.domain_producer_source;
@@ -174,7 +175,11 @@ bool owns_source_payload(const fs::path& physicalHome, const fs::path& payload) 
 std::expected<Snapshot, std::string> read_source_snapshot(const fs::path& physicalHome, std::string_view scope) {
     auto view = domain_producer_source::execution_home(physicalHome);
     if (!view) return std::unexpected(view.error());
-    return read_snapshot(*view, scope);
+    std::string own = "default";
+    if (std::error_code ec; scope.empty())
+        if (const auto record = subos::situation::root_record(); record && fs::equivalent(record->home, physicalHome, ec))
+            own = record->name;
+    return read_snapshot(*view, scope.empty() ? std::string_view(own) : scope);
 }
 
 std::expected<Snapshot, std::string> read_snapshot(const fs::path& home, std::string_view scope) {
