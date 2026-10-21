@@ -593,10 +593,13 @@ std::optional<int> produce_domain_at_creation_(const std::string& name, bool roo
     bool* fellBack = nullptr);
 // A routed command, or the making of a system, where the system lives; its
 // events relayed when asked through the interface (design 2026-10-16 L §5).
+// `held`: its errors kept there instead, for a caller that may yet make it
+// another way (and then says so once).
 std::expected<int, std::string> run_domain_relayed_(const xlings::home::prefix_domain::Domain& domain,
                                                    std::vector<std::string> words,
                                                    std::optional<xlings::home::domain_producer::OutputBinding> output,
-                                                   bool yes, EventStream& stream, bool runtime = true);
+                                                   bool yes, EventStream& stream, bool runtime = true,
+                                                   std::vector<ErrorEvent>* held = nullptr);
 // What `subos new --offline-from <dir>` carries -- payloads/<package dir>/
 // <version>/ and index/<index>/ (as a home keeps them under data/), what `luban import`
 // unpacks from an archive -- placed in `home` where it lacks them, before

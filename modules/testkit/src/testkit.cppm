@@ -210,4 +210,15 @@ std::string read_file(const fs::path& path);
 void write_file(const fs::path& path, std::string_view content);
 std::string current_user();
 
+// A minimal ELF64 LE executable with what a test asks of its dynamic
+// section: built rather than checked in, so what a test asserts is readable.
+struct ElfOptions {
+    std::string interp;                  // empty => no PT_INTERP
+    std::optional<std::string> rpath;    // DT_RPATH
+    std::optional<std::string> runpath;  // DT_RUNPATH
+    bool omitStrtab { false };           // a .dynamic with no DT_STRTAB
+    std::vector<std::string> needed;     // DT_NEEDED, in order
+};
+fs::path write_elf(const fs::path& path, const ElfOptions& options);
+
 }  // namespace xlings::testkit

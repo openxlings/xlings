@@ -1010,7 +1010,8 @@ int declare_isolation_at_creation_(const std::string& name, std::optional<policy
 std::expected<int, std::string> run_domain_relayed_(const xlings::home::prefix_domain::Domain& domain,
                                                    std::vector<std::string> words,
                                                    std::optional<xlings::home::domain_producer::OutputBinding> output,
-                                                   bool yes, EventStream& stream, bool runtime) {
+                                                   bool yes, EventStream& stream, bool runtime,
+                                                   std::vector<ErrorEvent>* held) {
     if (stream.interactive()) {
         std::vector<std::string> args{"subos"};
         args.insert(args.end(), words.begin(), words.end());
@@ -1036,9 +1037,12 @@ std::expected<int, std::string> run_domain_relayed_(const xlings::home::prefix_d
                 stream.emit(LogEvent{level == "warn" ? LogLevel::warn : level == "error" ? LogLevel::error
                                      : level == "debug" ? LogLevel::debug : LogLevel::info,
                                      j.value("message", "")});
-            } else if (kind == "error")
-                stream.emit(ErrorEvent{error_code_from_wire(j.value("code", "")), j.value("message", ""),
-                                       j.value("recoverable", false), j.value("hint", "")});
+            } else if (kind == "error") {
+                ErrorEvent e{error_code_from_wire(j.value("code", "")), j.value("message", ""),
+                             j.value("recoverable", false), j.value("hint", "")};
+                if (held) held->push_back(std::move(e));
+                else stream.emit(std::move(e));
+            }
             else if (kind == "prompt")
                 stream.emit(ErrorEvent{ErrorCode::InvalidInput, j.value("question", ""), true,
                                        "answer it with -y"});

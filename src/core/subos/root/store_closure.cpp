@@ -252,6 +252,16 @@ std::expected<Closure, std::string> collect(const Inputs& inputs) {
                  !ec && it != fs::recursive_directory_iterator(); it.increment(ec)) {
                 if (!it->is_regular_file(ec))
                     continue;
+                // A link into another payload is that payload's file: checked
+                // as its own when it is in this closure, and not there in the
+                // root when it is not (libglvnd's lib/glx-vendor, which the
+                // graphics stack fills per host with Mesa's and NVIDIA's).
+                if (it->is_symlink(ec)) {
+                    const auto target = fs::canonical(it->path(), ec);
+                    if (!ec && !within(root, target))
+                        continue;
+                    ec.clear();
+                }
                 const auto file = it->path();
                 if (!elfread::is_elf(file))
                     continue;
