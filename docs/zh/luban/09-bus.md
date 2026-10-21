@@ -19,8 +19,8 @@ machine 运行时，它的总线链接在宿主的下面：在宿主上，它的
 ## 查看
 
 ```bash
-luban status --bus                 # 宿主的总线：链接在它下面的系统
-luban status box --bus             # 从宿主看 box 的程序暴露了什么
+luban status --bus                 # the host's bus: the systems linked under it
+luban status box --bus             # what box's programs offer, seen from the host
 luban status box --bus --json
 ```
 
