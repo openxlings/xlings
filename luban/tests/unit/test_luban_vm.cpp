@@ -121,5 +121,9 @@ XTEST(LubanVm, AMachineHasVirglOnlyWithARenderNodeAndTheGlQemu, .area = "luban",
         EXPECT_TRUE(no.summary.starts_with("no GPU: ")) << no.summary;
     }
     EXPECT_EQ(luban::vm::machine_gpu(std::nullopt, absent).summary, "no GPU: this host has no render node");
+    // WSL's GPU (K14): probed, said why, and software.
+    const auto wsl = luban::vm::machine_gpu(std::nullopt, {}, {}, true);
+    EXPECT_FALSE(wsl.virgl);
+    EXPECT_NE(wsl.summary.find("/dev/dxg"), std::string::npos) << wsl.summary;
     EXPECT_EQ(luban::vm::machine_gpu(node, absent).summary, "no GPU: xim:qemu-system-gl is not installed");
 }

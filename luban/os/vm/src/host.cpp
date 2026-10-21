@@ -279,7 +279,10 @@ std::map<std::string, std::string> qemu_env_(const Json& declared) {
 }  // namespace
 
 MachineGpu machine_gpu(const std::optional<fs::path>& render_node, const std::expected<void, std::string>& gl,
-                       std::string_view driver) {
+                       std::string_view driver, bool dxg) {
+    if (!render_node && dxg)
+        return {.args = {"-display", "none"},
+                .summary = "no GPU: WSL's GPU (/dev/dxg, Mesa's d3d12) has no render node, which qemu's virgl draws on -- software"};
     if (!render_node) return {.args = {"-display", "none"}, .summary = "no GPU: this host has no render node"};
     if (!gl) return {.args = {"-display", "none"}, .summary = "no GPU: " + gl.error()};
     return {.virgl = true,
@@ -413,7 +416,7 @@ int start_impl_(const service::Context& c, std::string_view name, const EnterOpt
     if (node && arch.name == "x86_64" && service::gpu_granted(c.home, name)) gl = gl_qemu_(c, view);
     else if (node && arch.name != "x86_64") gl = std::unexpected(std::string("3D in a machine is on x86_64 hosts"));
     const auto gpu = machine_gpu(node, gl ? std::expected<void, std::string>{} : std::unexpected(gl.error()),
-                                 node ? render_driver_(*node) : std::string{});
+                                 node ? render_driver_(*node) : std::string{}, !node && [] { std::error_code ec; return fs::exists("/dev/dxg", ec); }());
     std::vector<std::string> q{gpu.virgl ? gl->bin.string() : qemu->bin.string()};
     if (!arch.machine.empty()) q.insert(q.end(), {"-M", std::string(arch.machine)});
     q.insert(q.end(), {"-m", memory, "-smp", default_cpus_()});

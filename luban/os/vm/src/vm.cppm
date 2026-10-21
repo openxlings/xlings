@@ -51,8 +51,11 @@ struct MachineGpu {
     std::vector<std::string> args;      // the display and its device
     std::string summary;                // "virgl on /dev/dri/renderD128 (amdgpu)", or why not
 };
+// `dxg`: this host is WSL with the Windows GPU (/dev/dxg, Mesa's d3d12) and
+// no render node -- probed, said, and software (design 2026-10-21 §5.4, K14):
+// qemu's virgl draws on a render node.
 MachineGpu machine_gpu(const std::optional<fs::path>& render_node, const std::expected<void, std::string>& gl,
-                       std::string_view driver = {});
+                       std::string_view driver = {}, bool dxg = false);
 
 // Starts `name` as a machine when it is not running (the events go to the
 // context's sink); 0 once it answers.

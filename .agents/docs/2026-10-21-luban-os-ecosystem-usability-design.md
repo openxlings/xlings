@@ -286,6 +286,10 @@ Landlock 的规则挂在旧的 inode 上，于是允许写的目录也被拒绝�
   1. **macOS machine 的扫描输出**：移到 §15（E14 = B：托管 runner 起不了 vz，本轮没有能验证它的地方）。
   2. **Windows 嵌套 machine 的 virgl**：在宿主机里，GL 版的 qemu 用 d3d12 驱动的 surfaceless EGL。实现成"先探测、不行就软件渲染"：
      探测在 CI（WARP）上覆盖选择与退路，真 GPU 下的门槛（L4 的 GUI 场景通过，且 L5 不比软件渲染差）由维护者在发布后用自己的 Windows 电脑验证；不达标时默认关掉，写进能力报告。
+- **K14 实施**：探测与退路。WSL 的 GPU 是 `/dev/dxg`（Mesa 的 d3d12 驱动在它上面画），但 qemu 的 virgl（`egl-headless,rendernode=`）
+  与 wlroots 的 GLES 渲染器都要一个 DRM render node，WSL 没有；所以 machine 与 xdesk 都探测到 `/dev/dxg` 时如实说"没有 render node、用软件"，
+  而不是含糊的"没有 GPU"（`luban status`、关于页、`xdesk msg state` 的渲染器一行）。真要在 d3d12 上跑 virgl，需要 qemu 的 surfaceless EGL
+  路径（不经 GBM），写进 §15，由维护者在真 Windows GPU 上验证后再做。
 - **做不到的**（vz 下 Linux 的 3D、第二跳的共享内存）：写进能力报告（part 4 §6.3）与 CI 报告，原因与下一步都要写明。
 
 ### 5.5 帧
@@ -827,6 +831,7 @@ luban-os-ci（新仓库，一个初始 PR）：
 - aarch64 上用 KVM 跑全矩阵。
 - 上手应用支持英文、中文以外的语言。
 - WuXian 里层叠工作区窗口越出边框部分的裁切（§8.9a：先把窗口缩放改为整树变换）。
+- d3d12 上的嵌套 virgl：qemu 的 surfaceless EGL（不经 GBM 与 render node）；本轮只探测并说明（K14）。
 
 ## 16. 评审
 

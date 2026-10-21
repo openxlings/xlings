@@ -82,7 +82,11 @@ void Server::choose_renderer() {
             for (int k = 128; k < 192; ++k)
                 if (const fs::path n = std::format("/dev/dri/renderD{}", k); fs::exists(n, ec)) nodes.push_back(n);
         }
-        if (nodes.empty()) why = "this system has no GPU it may use (no render node in /dev/dri)";
+        if (nodes.empty())
+            // WSL's GPU is /dev/dxg, which Mesa's d3d12 driver draws with, but
+            // wlroots' GLES renderer takes a render node (design 2026-10-21 §5.4).
+            why = fs::exists("/dev/dxg", ec) ? "WSL's GPU (/dev/dxg, d3d12) has no render node, which the desktop's GLES renderer takes"
+                                             : "this system has no GPU it may use (no render node in /dev/dri)";
         for (const auto& node : nodes) {
             std::string err;
             const int fd = os::open_device(node, &err);
