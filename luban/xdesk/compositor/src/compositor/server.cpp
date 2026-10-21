@@ -198,6 +198,8 @@ bool Server::start_() {
     wlr_scene_node_set_enabled(&overlay_node->node, false);
     hint_node = wlr_scene_buffer_create(overlay_layer, nullptr);
     wlr_scene_node_set_enabled(&hint_node->node, false);
+    hud_node = wlr_scene_buffer_create(overlay_layer, nullptr);
+    wlr_scene_node_set_enabled(&hud_node->node, false);
     sizes_node = wlr_scene_buffer_create(overlay_layer, nullptr);
     wlr_scene_node_set_enabled(&sizes_node->node, false);
     {

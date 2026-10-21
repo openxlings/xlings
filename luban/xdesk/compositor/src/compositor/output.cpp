@@ -97,10 +97,15 @@ void Server::render() {
         wl_event_source_timer_update(pace_timer, 1000);   // held: sent anyway if no word comes
         return;
     }
+    using ms = std::chrono::duration<double, std::milli>;
+    FrameStat stat{.at = now};
     wlr_output_state st;
     wlr_output_state_init(&st);
     zoom_surfaces();
-    if (!wlr_scene_output_build_state(scene_output, &st, nullptr) || !st.buffer) {
+    const auto composing = std::chrono::steady_clock::now();
+    const bool built = wlr_scene_output_build_state(scene_output, &st, nullptr);
+    stat.compose_ms = ms(std::chrono::steady_clock::now() - composing).count();
+    if (!built || !st.buffer) {
         wlr_output_state_finish(&st);
         return;
     }
@@ -130,6 +135,9 @@ void Server::render() {
         data = mapped;
         ok = true;
     } else if (gpu) {
+        const auto reading = std::chrono::steady_clock::now();
+        struct Timed { FrameStat& s; std::chrono::steady_clock::time_point t; ~Timed() {
+            s.readback_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t).count(); } } timed{stat, reading};
         if (wlr_texture* tex = wlr_texture_from_buffer(renderer, st.buffer)) {
             stride = static_cast<std::size_t>(bw) * 4;
             readback.resize(stride * static_cast<std::size_t>(bh));
@@ -173,7 +181,12 @@ void Server::render() {
                     if (!opaque)
                         for (std::uint32_t x = 0; x < r.width; ++x) dst[x * 4 + 3] = static_cast<char>(0xff);
                 }
-                if (!os::write_all(l.out, frame_buf)) { l.gone = true; return; }
+                const auto sending = std::chrono::steady_clock::now();
+                const bool sent = os::write_all(l.out, frame_buf);
+                stat.send_ms += ms(std::chrono::steady_clock::now() - sending).count();
+                stat.bytes += frame_buf.size();
+                ++stat.rects;
+                if (!sent) { l.gone = true; return; }
                 l.in_flight = now;
             }
         };
@@ -185,10 +198,13 @@ void Server::render() {
                 if (!os::write_all(l.out, opensal::wire::encode('s', std::format("{} {}", s.width, s.height)))) { l.gone = true; continue; }
                 l.told = s;
             }
-            send_rects(l, std::exchange(l.whole, false) ? all : damage);
+            const bool all_of_it = std::exchange(l.whole, false);
+            stat.whole = stat.whole || all_of_it || (!damage.empty() && damage.front().width == s.width && damage.front().height == s.height);
+            send_rects(l, all_of_it ? all : damage);
         }
         if (mapped) wlr_buffer_end_data_ptr_access(st.buffer);
     }
+    keep_frame_stat(stat);
     wlr_output_commit_state(output, &st);
     wlr_output_state_finish(&st);
     if (std::ranges::any_of(links, &Link::gone)) wl_event_loop_add_idle(loop, [](void* d) { static_cast<Server*>(d)->drop_gone(); }, this);
@@ -198,6 +214,12 @@ void Server::render() {
     ts.tv_sec = static_cast<std::time_t>(std::chrono::duration_cast<std::chrono::seconds>(t).count());
     ts.tv_nsec = static_cast<long>(std::chrono::duration_cast<std::chrono::nanoseconds>(t).count() % 1'000'000'000);
     wlr_scene_output_send_frame_done(scene_output, &ts);
+}
+
+void Server::keep_frame_stat(FrameStat stat) {
+    frame_stats.push_back(stat);
+    while (!frame_stats.empty() && stat.at - frame_stats.front().at > std::chrono::seconds(10)) frame_stats.pop_front();
+    if (hud && stat.at - hud_drawn > std::chrono::milliseconds(500)) draw_hud();
 }
 
 }  // namespace xdesk::compositor

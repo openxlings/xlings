@@ -171,6 +171,8 @@ std::string Server::app_icon(const std::string& id) {
 // ── what each action does ────────────────────────────────────────────
 
 void Server::act(Action a) {
+    if (const auto info = std::ranges::find(actions(), a, &ActionInfo::action); info != actions().end())
+        publish("action", {{"name", std::string(info->name)}});
     auto way = [&](layout::Direction d, bool move) {
         if (move) lay.move(d); else lay.move_focus(d);
         arrange();
@@ -318,6 +320,11 @@ void Server::open_menu(View* v, double x, double y) {
 }
 
 void Server::draw_overlay() {
+    if (static Overlay said = Overlay::none; said != overlay) {
+        said = overlay;
+        publish("overlay", {{"open", std::string(std::array<std::string_view, 10>{"none", "chooser", "switcher", "spread", "sheet", "menu",
+                                                                             "layouts", "settings", "dialog", "naming"}[static_cast<std::size_t>(overlay)])}});
+    }
     if (overlay == Overlay::none) {
         wlr_scene_node_set_enabled(&overlay_node->node, false);
         return;

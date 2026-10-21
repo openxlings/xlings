@@ -266,5 +266,7 @@ Picture text_field(draw::Fonts* ui, const Theme& t, std::string_view prompt, std
                    int height, double scale = 1);
 // A line said for a while at the bottom (the first time: what the keys are).
 Picture hint(draw::Fonts* ui, const Theme& t, std::string_view text, int width, int height, double scale = 1);
+// The debug HUD (design 2026-10-21 §8.11): lines of figures in the top left.
+Picture debug_hud(draw::Fonts* ui, const Theme& t, const std::vector<std::string>& lines, double scale = 1);
 
 }  // namespace xdesk::shell

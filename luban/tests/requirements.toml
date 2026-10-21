@@ -593,3 +593,7 @@ status = "required"
 [LUBAN-OS-KEY-RECONCILE]
 text = "the keys a system was told are down are let go when the window loses the keyboard, and on X11 reconciled with the host's own key state while any is held (a window manager's grab took the release); with the keyboard held, Super down and the pointer in the window, the pointer is held so a host's Super+drag does not move the window; a Super key the host kept says Ctrl+Alt+K once"
 status = "required"
+
+[XDESK-STATE]
+text = "`xdesk msg state` answers what the desktop is -- its output and renderer, view and camera, workspaces, windows (where, focused, their workspace), the overlays open and the hint's place, the launcher's applications, the channels and the frames' parts over ten seconds (compose, read back, send, bytes, whole frames); `debug hud on|off` draws the frames' parts on the output; `subscribe` writes what happens (focus, open, close, actions, overlays, the view) a line each"
+status = "required"

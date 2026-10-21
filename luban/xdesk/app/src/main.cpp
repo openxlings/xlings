@@ -34,11 +34,18 @@ int main(int argc, char* argv[]) {
             request = std::format("{{\"keys\": \"bind\", \"action\": {}, \"chord\": {}}}", quoted(args[3]), quoted(args[4]));
         else if (args.size() == 4 && args[1] == "keys" && args[2] == "unbind") request = std::format("{{\"keys\": \"unbind\", \"action\": {}}}", quoted(args[3]));
         else if (args.size() == 4 && args[1] == "keys" && args[2] == "set") request = std::format("{{\"keys\": \"set\", \"set\": {}}}", quoted(args[3]));
+        else if (args.size() == 2 && args[1] == "state") request = R"({"state": true})";
+        else if (args.size() == 3 && args[1] == "state" && args[2] == "--json") request = R"({"state": true})";
+        else if (args.size() == 4 && args[1] == "debug" && args[2] == "hud" && (args[3] == "on" || args[3] == "off"))
+            request = std::format("{{\"debug\": \"hud\", \"on\": {}}}", args[3] == "on" ? "true" : "false");
+        else if (args.size() == 2 && args[1] == "subscribe") request = R"({"subscribe": true})";
         else {
             std::println(std::cerr, "usage: xdesk msg keys list | keys bind ACTION CHORD | keys unbind ACTION | keys set luban|luban-no-hjkl\n"
-                                    "       xdesk msg settings [displays|layout|appearance|keys|about]");
+                                    "       xdesk msg settings [displays|layout|appearance|keys|about]\n"
+                                    "       xdesk msg state | debug hud on|off | subscribe");
             return 2;
         }
+        const bool subscribe = request.find("subscribe") != std::string::npos;
         const auto path = std::filesystem::path(env.at("XDG_RUNTIME_DIR")) / std::format("xdesk-{}.sock", env.at("WAYLAND_DISPLAY"));
         const int fd = xdesk::os::connect_unix(path);
         if (fd < 0) { std::println(std::cerr, "xdesk msg: no xdesk answers at {}", path.string()); return 1; }
@@ -49,6 +56,20 @@ int main(int argc, char* argv[]) {
             const auto n = xdesk::os::read_some(fd, buf);
             if (!n || *n == 0) break;
             reply.append(buf.data(), *n);
+        }
+        // Subscribed: every line that follows, until the desktop goes.
+        const bool ok = reply.find("\"ok\": true") != std::string::npos || reply.find("\"ok\":true") != std::string::npos;
+        if (subscribe && ok) {
+            std::cout << reply;
+            std::cout.flush();
+            for (;;) {
+                const auto n = xdesk::os::read_some(fd, buf);
+                if (!n || *n == 0) break;
+                std::cout << std::string_view(buf.data(), *n);
+                std::cout.flush();
+            }
+            xdesk::os::close(fd);
+            return 0;
         }
         xdesk::os::close(fd);
         if (const auto nl = reply.find('\n'); nl != std::string::npos) reply.resize(nl);

@@ -369,8 +369,32 @@ struct Server {
         wl_event_source* source { nullptr };
         std::string buffer;
         bool gone { false };
+        bool subscribed { false };   // told what happens, a line each (`xdesk msg subscribe`)
     };
     std::list<Control> controls;
+    Control* asking { nullptr };                 // whose request control() answers
+    // What happened, to every subscriber (design 2026-10-21 §8.11): focus,
+    // windows opened and closed, the actions done, overlays, the view.
+    void publish(std::string_view event, std::vector<std::pair<std::string, std::string>> fields = {});
+    // What the desktop is now, for `xdesk msg state` (and `luban status
+    // <name> --desktop`): one JSON document.
+    std::string state_json();
+    // A frame's cost, by its parts (design 2026-10-21 §5.6a): composing it,
+    // reading it back from the GPU, sending it; the last ten seconds kept.
+    struct FrameStat {
+        std::chrono::steady_clock::time_point at;
+        double compose_ms { 0 }, readback_ms { 0 }, send_ms { 0 };
+        std::size_t bytes { 0 };
+        int rects { 0 };
+        bool whole { false };
+    };
+    std::deque<FrameStat> frame_stats;
+    void keep_frame_stat(FrameStat s);
+    // The debug HUD (`xdesk msg debug hud on|off`): the frames' parts on the output.
+    bool hud { false };
+    wlr_scene_buffer* hud_node { nullptr };
+    std::chrono::steady_clock::time_point hud_drawn {};
+    void draw_hud();
     layout::Id menu_for { 0 };
     std::vector<std::string> menu_actions;       // by the menu's item
     // Whose menu: a window's, a workspace's, WuXian's (its background), the

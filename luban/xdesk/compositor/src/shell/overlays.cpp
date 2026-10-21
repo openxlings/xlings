@@ -327,6 +327,22 @@ Picture hint(draw::Fonts* ui, const Theme& t, std::string_view text, int width, 
     return p;
 }
 
+Picture debug_hud(draw::Fonts* ui, const Theme& t, const std::vector<std::string>& lines, double scale) {
+    Picture p;
+    double w = 260;
+    if (ui)
+        for (const auto& l : lines) w = std::max(w, ui->width(l) + 24);
+    const double h = 12 + 18.0 * static_cast<double>(lines.size());
+    p.x = 8;
+    p.y = 40;
+    p.image = image_(w, h, scale);
+    draw::Canvas c(p.image, scale);
+    c.fill({0, 0, w, h}, t.card, 6);
+    if (ui)
+        for (std::size_t k = 0; k < lines.size(); ++k) c.text(*ui, lines[k], 12, 20 + 18.0 * static_cast<double>(k), t.text, w - 24);
+    return p;
+}
+
 Picture settings(draw::Fonts* ui, draw::Fonts* big, const Theme& t, const SettingsView& v, int width, int height, bool zh,
                  double scale) {
     Picture p;

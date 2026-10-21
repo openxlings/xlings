@@ -173,6 +173,7 @@ void Server::update_frames(const std::vector<layout::Placement>& ps) {
 // the workspace drawn smaller as it goes out, larger as it comes in.
 void Server::change_view(std::optional<int> into) {
     if (view_move) return;
+    publish("view", {{"to", wuxian() ? "workspace" : "wuxian"}});
     if (!wuxian()) {
         const auto from = lay.locked_camera();
         lay.set_view(layout::View::wuxian);

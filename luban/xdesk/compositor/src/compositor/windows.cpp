@@ -46,6 +46,7 @@ void Server::focus(View* v) {
         if (&*it == v) { views.splice(views.begin(), views, it); break; }
     wlr_scene_node_raise_to_top(&v->frame->node);
     wlr_xdg_toplevel_set_activated(v->toplevel, true);
+    publish("focus", {{"id", std::to_string(v->id)}, {"app_id", v->toplevel->app_id ? v->toplevel->app_id : ""}});
     wlr_seat_keyboard_notify_enter(seat, v->toplevel->base->surface, keyboard.keycodes, keyboard.num_keycodes,
                                    &keyboard.modifiers);
     if (v->laid && lay.focused() != v->id) lay.focus(v->id);
@@ -273,8 +274,9 @@ void Server::add_view(wlr_xdg_toplevel* toplevel) {
         // Focused where it is shown (a rule may have sent it to another workspace).
         if (lay.focused() == self->id) focus(self);
         else follow_focus();
-        // A new window among others: lit a moment, the rest dimmed (design 2026-10-20 WuXian §4.3).
+        // A new window among others: its outline lit a moment (design 2026-10-21 §8.2).
         if (lay.focused() == self->id && std::ranges::count_if(views, [](const View& o) { return o.mapped; }) > 1) start_highlight(self->id);
+        publish("open", {{"id", std::to_string(self->id)}, {"app_id", self->toplevel->app_id ? self->toplevel->app_id : ""}});
     });
     v.unmap.connect(&toplevel->base->surface->events.unmap, [this, self](void*) {
         self->mapped = false;
@@ -285,6 +287,7 @@ void Server::add_view(wlr_xdg_toplevel* toplevel) {
         arrange();
         follow_focus();
         if (!focused()) for (auto& other : views) if (other.mapped) { focus(&other); break; }
+        publish("close", {{"id", std::to_string(self->id)}, {"app_id", self->toplevel->app_id ? self->toplevel->app_id : ""}});
     });
     v.set_title.connect(&toplevel->events.set_title, [this, self](void*) {
         if (self->mapped) arrange();

@@ -7,6 +7,9 @@
 //   {"keys": "unbind", "action": A}                   A back to the set's keys
 //   {"keys": "set", "set": "luban"|"luban-no-hjkl"}   the set of keys
 //   {"settings": PAGE}                                the settings, at displays|layout|appearance|keys|about
+//   {"state": true}                                   what the desktop is now (design 2026-10-21 §8.11)
+//   {"debug": "hud", "on": true|false}                the frames' parts drawn in the top left
+//   {"subscribe": true}                               what happens from now on, a line each
 //
 // `xdesk msg` is its client; scripts and agents use it as people use the
 // settings: the same changes, kept the same way.
@@ -15,6 +18,9 @@ module xdesk.compositor;
 import std;
 import xdesk.os;
 import xdesk.config;
+import xdesk.apps;
+import xdesk.layout;
+import xdesk.shell;
 import wlroots;
 import xdesk.native.wayland;
 import freedesktop.wayland.server;
@@ -25,6 +31,9 @@ namespace xdesk::compositor {
 
 namespace os = xdesk::os;
 namespace config = xdesk::config;
+namespace apps = xdesk::apps;
+namespace layout = xdesk::layout;
+namespace shell = xdesk::shell;
 using Json = config::Json;
 
 namespace {
@@ -68,7 +77,10 @@ void Server::control_accept() {
                                         for (auto nl = c->buffer.find('\n'); !c->gone && nl != std::string::npos; nl = c->buffer.find('\n')) {
                                             const auto line = c->buffer.substr(0, nl);
                                             c->buffer.erase(0, nl + 1);
-                                            if (!os::write_all(c->fd, self->control(line) + "\n")) c->gone = true;
+                                            self->asking = c;
+                                            const auto answer = self->control(line);
+                                            self->asking = nullptr;
+                                            if (!os::write_all(c->fd, answer + "\n")) c->gone = true;
                                         }
                                         if (c->buffer.size() > 65536) c->gone = true;
                                         if (c->gone) {
@@ -81,11 +93,167 @@ void Server::control_accept() {
                                     &c);
 }
 
+namespace {
+
+Json num_(double v) { return Json{v}; }
+Json rect_(const layout::Rect& r) { return Json{Json::Array{num_(r.x), num_(r.y), num_(r.width), num_(r.height)}}; }
+
+std::string_view overlay_name_(int o) {
+    static constexpr std::array<std::string_view, 10> kNames{"none", "chooser", "switcher", "spread", "sheet", "menu",
+                                                            "layouts", "settings", "dialog", "naming"};
+    return o >= 0 && o < static_cast<int>(kNames.size()) ? kNames[static_cast<std::size_t>(o)] : "?";
+}
+
+}  // namespace
+
+std::string Server::state_json() {
+    Json out{Json::Object{}};
+    out.set("ok", Json{true});
+    // The output, its renderer and why, the view and its camera.
+    Json output{Json::Object{}};
+    output.set("size", Json{Json::Array{num_(size.width), num_(size.height)}});
+    output.set("scale", num_(scale));
+    output.set("renderer", Json{gpu ? std::string("gpu") : std::string("software")});
+    output.set("renderer_text", Json{renderer_text});
+    out.set("output", output);
+    out.set("view", Json{std::string(wuxian() ? "wuxian" : "workspace")});
+    const auto cam = lay.camera();
+    Json camera{Json::Object{}};
+    camera.set("at", Json{Json::Array{num_(cam.at.x), num_(cam.at.y)}});
+    camera.set("zoom", num_(cam.zoom));
+    out.set("camera", camera);
+    // The workspaces and the windows: where each is, focused, its workspace (0: free).
+    Json::Array workspaces;
+    for (const auto& c : chips()) {
+        Json w{Json::Object{}};
+        w.set("id", num_(c.id));
+        w.set("name", Json{c.name});
+        w.set("rule", Json{std::string(c.stack ? "stack" : "tile")});
+        w.set("windows", num_(c.windows));
+        w.set("current", Json{c.current});
+        workspaces.push_back(std::move(w));
+    }
+    out.set("workspaces", Json{workspaces});
+    Json::Array windows;
+    for (auto& v : views) {
+        if (!v.mapped) continue;
+        Json w{Json::Object{}};
+        w.set("id", num_(static_cast<double>(v.id)));
+        w.set("app_id", Json{std::string(v.toplevel->app_id ? v.toplevel->app_id : "")});
+        w.set("title", Json{std::string(v.toplevel->title ? v.toplevel->title : "")});
+        if (const auto p = std::ranges::find(placements, v.id, &layout::Placement::id); p != placements.end()) {
+            w.set("rect", rect_(p->rect));
+            w.set("workspace", num_(p->workspace));
+            w.set("focused", Json{p->focused});
+            w.set("visible", Json{p->visible});
+            w.set("floating", Json{p->floating});
+        }
+        windows.push_back(std::move(w));
+    }
+    out.set("windows", Json{windows});
+    // The overlays: which is open, and the hint (where it is drawn).
+    Json overlays{Json::Object{}};
+    overlays.set("open", Json{std::string(overlay_name_(static_cast<int>(overlay)))});
+    Json hint{Json::Object{}};
+    hint.set("shown", Json{hint_node && hint_node->node.enabled});
+    if (hint_node && hint_node->node.enabled) {
+        hint.set("text", Json{hint_text});
+        int w = 0, h = 0;
+        if (hint_node->buffer) { w = static_cast<int>(std::lround(hint_node->buffer->width / scale)); h = static_cast<int>(std::lround(hint_node->buffer->height / scale)); }
+        hint.set("rect", Json{Json::Array{num_(hint_node->node.x), num_(hint_node->node.y), num_(w), num_(h)}});
+    }
+    overlays.set("hint", hint);
+    out.set("overlays", overlays);
+    // What the launcher offers: the applications its directories have.
+    {
+        auto env = os::environment();
+        std::string lang;
+        for (const char* k : {"LC_ALL", "LC_MESSAGES", "LANG"})
+            if (env.contains(k) && !env.at(k).empty()) { lang = env.at(k); break; }
+        Json::Array listed;
+        for (const auto& a : apps::scan(apps::dirs(env), lang)) {
+            Json one{Json::Object{}};
+            one.set("id", Json{a.id});
+            one.set("name", Json{a.name});
+            listed.push_back(std::move(one));
+        }
+        out.set("apps", Json{listed});
+    }
+    // The channels to the windows that show it, and the frames' parts (the last ten seconds).
+    Json::Array channels;
+    for (const auto& l : links) {
+        if (l.gone) continue;
+        Json c{Json::Object{}};
+        c.set("display", num_(l.number));
+        c.set("paced", Json{l.paced});
+        c.set("hidden", Json{l.hidden});
+        c.set("transport", Json{std::string("stream")});
+        channels.push_back(std::move(c));
+    }
+    out.set("channels", Json{channels});
+    Json frames{Json::Object{}};
+    double compose = 0, readback = 0, send = 0, bytes = 0, whole = 0;
+    for (const auto& f : frame_stats) { compose += f.compose_ms; readback += f.readback_ms; send += f.send_ms; bytes += static_cast<double>(f.bytes); whole += f.whole; }
+    const double n = static_cast<double>(frame_stats.size());
+    const double span = frame_stats.size() > 1
+        ? std::max(0.001, std::chrono::duration<double>(frame_stats.back().at - frame_stats.front().at).count()) : 10.0;
+    frames.set("count", num_(n));
+    frames.set("fps", num_(frame_stats.size() > 1 ? (n - 1) / span : 0));
+    frames.set("compose_ms", num_(n > 0 ? compose / n : 0));
+    frames.set("readback_ms", num_(n > 0 ? readback / n : 0));
+    frames.set("send_ms", num_(n > 0 ? send / n : 0));
+    frames.set("bytes_per_s", num_(bytes / span));
+    frames.set("whole", num_(whole));
+    out.set("frames", frames);
+    out.set("hud", Json{hud});
+    return out.dump();
+}
+
+void Server::draw_hud() {
+    hud_drawn = std::chrono::steady_clock::now();
+    if (!hud_node) return;
+    wlr_scene_node_set_enabled(&hud_node->node, hud);
+    if (!hud) return;
+    const auto st = Json::parse(state_json());
+    const auto* f = st ? st->get("frames") : nullptr;
+    auto v = [&](std::string_view k) { const auto* x = f ? f->get(k) : nullptr; return x ? x->number_or(0) : 0.0; };
+    std::vector<std::string> lines{
+        std::format("{:.0f} frames/s · {} · {}", v("fps"), gpu ? "GPU" : "software", wuxian() ? "WuXian" : "workspace"),
+        std::format("compose {:.2f} ms  readback {:.2f} ms  send {:.2f} ms", v("compose_ms"), v("readback_ms"), v("send_ms")),
+        std::format("{:.1f} MB/s  whole frames {:.0f} of {:.0f} (10 s)", v("bytes_per_s") / 1e6, v("whole"), v("count"))};
+    auto pic = shell::debug_hud(ui(), theme, lines, scale);
+    wlr_scene_node_set_position(&hud_node->node, static_cast<int>(pic.x), static_cast<int>(pic.y));
+    show(hud_node, std::move(pic.image), scale);
+}
+
+void Server::publish(std::string_view event, std::vector<std::pair<std::string, std::string>> fields) {
+    if (std::ranges::none_of(controls, &Control::subscribed)) return;
+    Json j{Json::Object{}};
+    j.set("event", Json{std::string(event)});
+    for (auto& [k, v] : fields) j.set(k, Json{std::move(v)});
+    const auto line = j.dump() + "\n";
+    for (auto& c : controls)
+        if (c.subscribed && !c.gone && !os::write_all(c.fd, line)) c.gone = true;
+}
+
 std::string Server::control(std::string_view request) {
     auto parsed = Json::parse(request);
     if (!parsed || !parsed->is_object()) return answer_(false, "a request is one JSON object a line");
     const auto& j = *parsed;
     auto str = [&](std::string_view k) { const auto* v = j.get(k); return v ? v->string_or("") : std::string{}; };
+    if (const auto* st = j.get("state"); st && st->bool_or(false)) return state_json();
+    if (str("debug") == "hud") {
+        const auto* on = j.get("on");
+        hud = on ? on->bool_or(!hud) : !hud;
+        draw_hud();
+        return answer_(true);
+    }
+    if (const auto* sub = j.get("subscribe"); sub && sub->bool_or(false)) {
+        // The asker's connection: the answer, then a line for each thing that happens.
+        if (!asking) return answer_(false, "subscribe on the control socket");
+        asking->subscribed = true;
+        return answer_(true);
+    }
     if (const auto page = str("settings"); !page.empty()) {
         static constexpr std::array<std::pair<std::string_view, SettingsPage>, 5> kPages{{
             {"displays", SettingsPage::displays}, {"layout", SettingsPage::layout}, {"appearance", SettingsPage::appearance},
@@ -146,7 +314,8 @@ std::string Server::control(std::string_view request) {
         save_keys();
         return answer_(true);
     }
-    return answer_(false, "asks: {\"keys\": \"list\"|\"bind\"|\"unbind\"|\"set\"} or {\"settings\": PAGE}");
+    return answer_(false, "asks: {\"keys\": \"list\"|\"bind\"|\"unbind\"|\"set\"}, {\"settings\": PAGE}, {\"state\": true}, "
+                          "{\"debug\": \"hud\"}, {\"subscribe\": true}");
 }
 
 }  // namespace xdesk::compositor

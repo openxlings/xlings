@@ -1,6 +1,6 @@
 # Luban OS 的生态级可用性：系统里的 xlings 与真机一致、两种存放方式、各规范各管一件事的设备与传输、自带软件有保证、创建流程、xdesk 交互、独立的 Luban CI
 
-日期：2026-10-21　状态：修订 5，评审结束（§16），实施中；§9.5 依据 2026-10 的调研（§17）；任务依赖见 §13.1　缘起：2026.10.21.4 在 Linux 宿主（X11、NVIDIA、KVM）上的实测——Luban OS 应用新建
+日期：2026-10-21　状态：修订 5，评审结束（§16），实施中；通信的统一见 part 2（`2026-10-22-openbus-xbus-design.md`）；§9.5 依据 2026-10 的调研（§17）；任务依赖见 §13.1　缘起：2026.10.21.4 在 Linux 宿主（X11、NVIDIA、KVM）上的实测——Luban OS 应用新建
 `luban:desktop 2026.10.21.3`（`desktop-6` 中途取消、`desktop-7` 以 machine 运行，另有 LXQt 系统），以及之后关于系统里的 xlings、桌面交互、跨平台、CI 的讨论。
 
 范围：
@@ -500,7 +500,8 @@ L4 覆盖以下几条路径：宿主 → foot（Ctrl+Shift+V）、foot（Ctrl+Sh
   - 通道（传输、有没有共享区域、节奏）；
   - 近 10 秒的帧统计。
 - **`xdesk msg debug hud on|off`**：在屏幕上显示调试信息。
-- **宿主侧**：`luban status <名字> --desktop` 取回同一份数据。
+- **宿主侧**：经 openbus 取回同一份数据（part 2 §7：`…/service/xdesk/state`，`luban status <名字> --bus`），不再另开 `--desktop`。
+- **实施**：帧的分段测量（合成、读回、发送、字节、整帧）在 `render()` 里记录最近 10 秒，`state` 的 `frames` 与 HUD 都读它（§5.6a 的第一步）。
 - e2e 能断言状态的地方就断言状态。
 
 ### 8.12 控制台（J23）

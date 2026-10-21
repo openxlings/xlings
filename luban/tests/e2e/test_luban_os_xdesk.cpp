@@ -1120,6 +1120,71 @@ sleep 600
     EXPECT_EQ(keys["maximize"], Json::array({"Super+Shift+x"})) << keys.dump();
 }
 
+// What the desktop is (design 2026-10-21 §8.11): `xdesk msg state` -- its
+// output, view, workspaces and windows, the overlays (the hint where it is
+// drawn: inside the output after a resize, J10), the launcher's
+// applications, the frames' parts; `debug hud`; `subscribe` tells what
+// happens, a line each.
+XTEST(LubanOs, XdeskSaysWhatItIsAndWhatHappens, .area = "luban", .covers = {"XDESK-STATE"},
+      .requires_ = {"linux", "xlings-bin"}) {
+    if (!app_binary()) GTEST_SKIP() << "no luban-os beside the xlings under test";
+    if (!xdesk_binary()) GTEST_SKIP() << "no xdesk beside luban-os (mcpp build -p xdesk-app)";
+    auto home = tk::Home::isolated("luban-os-xdesk-state");
+    ASSERT_EQ(home.xlings({"self", "init"}).exit_code, 0);
+    const auto runtime = home.root() / "run";
+    auto session = std::async(std::launch::async, [&] {
+        return xdesk_with(home, "classic", R"(wait desktop
+waitfor desktop.texture.0 1100
+sleep 2500
+resize 900 520
+sleep 5000
+key Alt+Tab
+sleep 2500
+)");
+    });
+    fs::path control;
+    for (int k = 0; k < 100 && control.empty(); ++k) {
+        std::error_code ec;
+        for (const auto& e : fs::directory_iterator(runtime, ec))
+            if (e.path().filename().string().starts_with("xdesk-") && e.path().extension() == ".sock") control = e.path();
+        if (control.empty()) std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+    ASSERT_FALSE(control.empty()) << "no control socket in " << runtime;
+    const auto display = control.stem().string().substr(6);
+    auto msg = [&](std::vector<std::string> args, std::chrono::milliseconds timeout = std::chrono::seconds(20)) {
+        tk::RunOptions o;
+        o.argv = {xdesk_binary()->string(), "msg"};
+        o.argv.insert(o.argv.end(), args.begin(), args.end());
+        o.env = {{"XDG_RUNTIME_DIR", runtime.string()}, {"WAYLAND_DISPLAY", display}};
+        o.timeout = timeout;
+        return tk::run(o);
+    };
+    std::this_thread::sleep_for(std::chrono::milliseconds(4500));
+    auto subscribed = std::async(std::launch::async, [&] { return msg({"subscribe"}, std::chrono::seconds(6)); });
+    const auto st = msg({"state"});
+    ASSERT_EQ(st.exit_code, 0) << st.transcript();
+    const auto s = Json::parse(st.out, nullptr, false);
+    ASSERT_TRUE(s.is_object()) << st.out;
+    EXPECT_EQ(s["output"]["size"], Json::array({900, 520})) << s["output"].dump();
+    EXPECT_EQ(s["view"], "workspace");
+    EXPECT_EQ(s["windows"].size(), 3u) << s["windows"].dump();
+    EXPECT_EQ(std::ranges::count_if(s["windows"], [](const Json& w) { return w.value("focused", false); }), 1) << s["windows"].dump();
+    EXPECT_TRUE(s["apps"].is_array());
+    EXPECT_GT(s["frames"]["count"].get<double>(), 0) << s["frames"].dump();
+    const auto& hint = s["overlays"]["hint"];
+    ASSERT_TRUE(hint.value("shown", false)) << "the first session's hint\n" << s["overlays"].dump();
+    const auto r = hint["rect"];
+    EXPECT_LE(r[1].get<double>() + r[3].get<double>(), 520) << "the hint inside the output after the resize (J10)\n" << hint.dump();
+    EXPECT_LE(r[0].get<double>() + r[2].get<double>(), 900) << hint.dump();
+    const auto on = msg({"debug", "hud", "on"});
+    EXPECT_EQ(on.exit_code, 0) << on.transcript();
+    EXPECT_TRUE(Json::parse(msg({"state"}).out, nullptr, false)["hud"].get<bool>());
+    const auto run = session.get();
+    ASSERT_EQ(run.exit_code, 0) << run.transcript();
+    const auto events = subscribed.get().out;
+    EXPECT_NE(events.find(R"("event":"focus")"), std::string::npos) << "Alt+Tab focused another window\n" << events;
+}
+
 // The renderer (design 2026-10-20 WuXian §7.2): the GPU when one draws, else
 // software -- and every step that fails says why, as the log and the About
 // page say it. CI has no GPU: each failure is made to happen.
