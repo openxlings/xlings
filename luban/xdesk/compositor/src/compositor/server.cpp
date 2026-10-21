@@ -108,7 +108,7 @@ void Server::choose_renderer() {
             gpu = true;
             // In a Luban machine the GPU is virtio-gpu, drawn on its host's (virgl).
             const auto driver = driver_of_(node);
-            renderer_text = std::format("GPU (GLES · {} · {})", driver == "virtio_gpu" ? "virgl, the host's GPU" : driver,
+            renderer_text = std::format("GPU (GLES · {} · {})", driver == "virtio_gpu" || driver == "virtio-pci" ? "virgl, the host's GPU" : driver,
                                         node.filename().string());
             log("renderer: " + renderer_text);
             renderer_lost.connect(&renderer->events.lost, [this](void*) {
