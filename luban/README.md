@@ -9,7 +9,7 @@ directory; every package is its own `mcpp.toml` (design 2026-10-19 §28).
 | `specs/` | Specifications: a contract, its declarations, its conformance check (`README.md`, `SPEC.md`, `src/`, `conformance/`) | the standard library and itself; never another specification | with its second implementer, or a user outside this repository |
 | `kits/` | Libraries linked into a program: a specification's in-process implementation or a reusable component -- no process, endpoint or state of their own | the standard library, specifications, other kits, their C libraries and mcpp-index packages; never `xlings.*` or `luban.*` | with a user outside this repository |
 | `services/` | Base services: a process of its own (or one a system's agent hosts) that owns an endpoint and its state, has a lifecycle and says what it does (statistics, logs); its library is how programs reach it (`src/`), its program in `tool/` | as a kit, and kits | with a user outside this repository |
-| `xdesk/` | The xdesk desktop, one project: its libraries and its program (`base/`, `layout/`, `compositor/`, `app/`) | as a kit | as a whole |
+| `xdesk/` | The xdesk desktop, one project: its libraries and its program (`base/`, `layout/`, `compositor/`, `app/`) | as a kit, and services' libraries (how a program reaches a service: XBus) | as a whole |
 | `apps/` | Programs that run inside a Luban system and are not a project of their own (made with its first member) | `modules/`, specifications, kits | stays |
 | `os/` | Luban OS itself: stage-0, the service, machines, the `luban` command, the Luban OS app's window, compatibility | `modules/`, specifications, kits | stays |
 | `host/` | Luban's programs on the host: `luban` (and stage-0 as `luban-init`), `luban-os` (the app) | as `os/` | stays |

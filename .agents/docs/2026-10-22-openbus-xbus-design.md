@@ -248,7 +248,7 @@ node->subscribe("host/**/topic/luban/systems", [](const xbus::Message& m) { ... 
 |---|---|---|
 | 路由自身 | `bus/stats`、`bus/trace`、`bus/topology` | 规范要求 |
 | machine 链路 | 对面系统的全部端点 | 宿主上 `xbus ls` 能看到 machine 里的端点 |
-| xdesk | `…/service/xdesk/state`（call）、`…/topic/xdesk/events`（publish）、`…/service/xdesk/hud`（call） | 与控制 socket 共用实现；控制 socket 保留 |
+| xdesk | `…/service/xdesk/state`（call，`xdesk.state@1`）、`…/service/xdesk/control`（call，`xdesk.control@1`：与控制 socket 同样的请求与回答，HUD 也在这里）、`…/topic/xdesk/events`（publish）、节点自己的 telemetry（帧的各部分为指标，剖析时有 span，转储里带桌面状态） | 与控制 socket 共用实现（`Server::control`）；控制 socket 保留，`xdesk msg telemetry` 走 socket 得到同样的 telemetry。总线线程从不碰桌面：请求投递到 wayland 循环、在那里回答。xdesk 是"耐心"节点：系统的路由后来才有也能接上 |
 | luban 服务 | `host/<id>/topic/luban/systems` | 系统的创建、启动、停止、删除；保留最新值 |
 | openhal | `host/<id>/device/<class>/<n>` | 宿主的设备（openhal-host 的枚举）；以后加热插拔 |
 | 观察入口 | `xbus ls/top/monitor/stats/bench`；`luban status <名字> --bus`；Luban OS 应用的"关于"页显示路由与链路 | |

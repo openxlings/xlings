@@ -278,6 +278,22 @@ xdesk msg keys set luban-no-hjkl
 xdesk msg settings keys                    # the settings, at that page
 ```
 
+What the desktop is and does, for scripts, agents and a bug report:
+
+```bash
+xdesk msg state                            # output, view, workspaces, windows, overlays, the frames' cost (JSON)
+xdesk msg subscribe                        # what happens from now on, a line each (focus, open, close, ...)
+xdesk msg debug hud on                     # the frames' parts drawn in the top left
+xdesk msg telemetry metrics                # counters and histograms (xdesk.frame.compose_ns, ...)
+xdesk msg telemetry profile on             # then `telemetry trace`: a trace any trace viewer opens (Perfetto)
+xdesk msg telemetry dump                   # all of it, with the last moments recorded
+```
+
+When the system has an openbus router, the desktop is also on the bus: `xbus ls`
+shows `service/xdesk/state`, `service/xdesk/control` (the same requests as
+`xdesk msg`), `topic/xdesk/events` and its telemetry; `xbus dump PATH` and
+`xbus profile PATH` read it from anywhere the bus reaches.
+
 The session is `xdesk` (`xdesk-classic` and `xdesk-canvas`, the names of
 before, start the same desktop). It reads `xdesk.ini`: its own defaults, then
 a system's `/etc/xdg/xdesk/`, then yours in `~/.config/xdesk/`, each later one

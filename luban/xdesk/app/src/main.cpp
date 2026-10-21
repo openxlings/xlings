@@ -39,10 +39,15 @@ int main(int argc, char* argv[]) {
         else if (args.size() == 4 && args[1] == "debug" && args[2] == "hud" && (args[3] == "on" || args[3] == "off"))
             request = std::format("{{\"debug\": \"hud\", \"on\": {}}}", args[3] == "on" ? "true" : "false");
         else if (args.size() == 2 && args[1] == "subscribe") request = R"({"subscribe": true})";
-        else {
+        else if (args.size() >= 2 && args[1] == "telemetry") {
+            std::string what;
+            for (std::size_t k = 2; k < args.size(); ++k) what += (what.empty() ? "" : " ") + std::string(args[k]);
+            request = std::format("{{\"telemetry\": {}}}", quoted(what.empty() ? "dump" : what));
+        } else {
             std::println(std::cerr, "usage: xdesk msg keys list | keys bind ACTION CHORD | keys unbind ACTION | keys set luban|luban-no-hjkl\n"
                                     "       xdesk msg settings [displays|layout|appearance|keys|about]\n"
-                                    "       xdesk msg state | debug hud on|off | subscribe");
+                                    "       xdesk msg state | debug hud on|off | subscribe\n"
+                                    "       xdesk msg telemetry [dump|metrics|recent N|trace|profile on|off|level L|reset]");
             return 2;
         }
         const bool subscribe = request.find("subscribe") != std::string::npos;

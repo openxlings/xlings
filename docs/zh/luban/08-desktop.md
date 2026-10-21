@@ -184,6 +184,20 @@ xdesk msg keys set luban-no-hjkl
 xdesk msg settings keys                    # the settings, at that page
 ```
 
+桌面现在是什么、做了什么，给脚本、Agent 和问题报告用：
+
+```bash
+xdesk msg state                            # output, view, workspaces, windows, overlays, the frames' cost (JSON)
+xdesk msg subscribe                        # what happens from now on, a line each (focus, open, close, ...)
+xdesk msg debug hud on                     # the frames' parts drawn in the top left
+xdesk msg telemetry metrics                # counters and histograms (xdesk.frame.compose_ns, ...)
+xdesk msg telemetry profile on             # then `telemetry trace`: a trace any trace viewer opens (Perfetto)
+xdesk msg telemetry dump                   # all of it, with the last moments recorded
+```
+
+系统里有 openbus 路由时，桌面也在总线上：`xbus ls` 能看到 `service/xdesk/state`、`service/xdesk/control`（与 `xdesk msg`
+同样的请求）、`topic/xdesk/events` 和它的 telemetry；`xbus dump 路径`、`xbus profile 路径` 在总线能到的任何地方读取。
+
 会话是 `xdesk`（以前的名字 `xdesk-classic`、`xdesk-canvas` 启动的是同一个桌面）。它读 `xdesk.ini`：先是自带的默认，再是系统的
 `/etc/xdg/xdesk/`，最后是你的 `~/.config/xdesk/`，后读的按键覆盖。你以前的 `classic.ini`（或 `canvas.ini`）第一次会成为你的
 `xdesk.ini`，原文件保留。

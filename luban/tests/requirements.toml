@@ -651,3 +651,7 @@ status = "required"
 [XBUS-TELEMETRY]
 text = "every XBus node (unless it says otherwise) offers node/<id>/telemetry and the router bus/telemetry (openbus.telemetry@0.1): its process's metrics, profile, Chrome trace, recent records and dump through the telemetry kit, the router's dump carrying its topology and statistics; the router's log is the kit's (one object a line); an answer larger than a frame comes in pieces that join whole; `xbus dump` and `xbus profile` read them"
 status = "required"
+
+[XDESK-BUS]
+text = "xdesk is on the bus (a patient node: a router that comes after it is joined): service/xdesk/state and service/xdesk/control answer as the control socket does, topic/xdesk/events tells what happens, and its node's telemetry carries the frames' parts as metrics, a frame's spans while profiling and the desktop's state in a dump; `xdesk msg telemetry` asks the same over the socket"
+status = "required"

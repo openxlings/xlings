@@ -299,6 +299,7 @@ bool Server::start_() {
     socket = name;
     log("listening on " + socket);
     control_start();
+    bus_start();
 
     // The first window, on the standard streams; the others at the displays socket.
     add_link(o.in, o.out);
@@ -422,6 +423,7 @@ int Server::run_() {
 }
 
 Server::~Server() {
+    bus_stop();
     for (auto& l : links)
         if (l.source) wl_event_source_remove(l.source);
     if (displays_source) wl_event_source_remove(displays_source);

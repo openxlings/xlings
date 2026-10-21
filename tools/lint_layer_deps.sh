@@ -75,7 +75,10 @@ done < <(imports src)
 #   luban/services/<name>  a base service: a process of its own (or hosted by a
 #                       system's agent) owning an endpoint and its state, its
 #                       library how programs reach it. As a kit, and kits.
-#   luban/xdesk/<part>  the xdesk desktop: as a kit -- never xlings or Luban.
+#                       A kit never imports a service: a library does not
+#                       reach a running process; the program that links it does.
+#   luban/xdesk/<part>  the xdesk desktop: as a kit, and services' libraries
+#                       (how a program reaches a service) -- never xlings or Luban.
 #   luban/os/service    the OS depends on no presentation: not the Luban OS
 #                       app's library (luban.desktop.*), not the desktop (xdesk.*).
 spec_roots=""
@@ -106,6 +109,16 @@ for project in luban/kits luban/services luban/xdesk; do
     esac
   done < <(imports "$project")
 done
+if [ -d luban/services ] && [ -d luban/kits ]; then
+  service_roots=""
+  for d in luban/services/*/; do service_roots="$service_roots $(basename "$d")"; done
+  while read -r where module; do
+    [ -z "${module:-}" ] && continue
+    for r in $service_roots; do
+      case "$module" in "$r"|"$r".*) report "${where%%:*}" "a kit imports the service module $module ($where): a library never reaches a running service; the program that links it does" ;; esac
+    done
+  done < <(imports luban/kits)
+fi
 # A service's own modules (<name>.detail.*) are its: what it shows above is
 # platform-free (part 2 2026-10-22 §6.0a), how it reaches the platform is not
 # for anyone else to import.

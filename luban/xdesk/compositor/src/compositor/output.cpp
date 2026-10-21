@@ -10,6 +10,7 @@ import xdesk.layout;
 import xdesk.draw;
 import xdesk.shell;
 import xdesk.apps;
+import telemetry;
 import wlroots;
 import xdesk.native.wayland;
 import freedesktop.wayland.server;
@@ -24,6 +25,28 @@ namespace draw = xdesk::draw;
 namespace shell = xdesk::shell;
 namespace apps = xdesk::apps;
 namespace fs = std::filesystem;
+
+namespace {
+
+// A frame's cost by its parts, as telemetry (xdesk msg telemetry, the bus's
+// node/<id>/telemetry): what the HUD shows of the last ten seconds, kept whole.
+struct FrameMeters {
+    telemetry::Histogram& frame = telemetry::metrics().histogram("xdesk.frame_ns");
+    telemetry::Histogram& compose = telemetry::metrics().histogram("xdesk.frame.compose_ns");
+    telemetry::Histogram& readback = telemetry::metrics().histogram("xdesk.frame.readback_ns");
+    telemetry::Histogram& send = telemetry::metrics().histogram("xdesk.frame.send_ns");
+    telemetry::Counter& frames = telemetry::metrics().counter("xdesk.frames");
+    telemetry::Counter& whole = telemetry::metrics().counter("xdesk.frames.whole");
+    telemetry::Counter& bytes = telemetry::metrics().counter("xdesk.frame.bytes");
+    telemetry::Counter& rects = telemetry::metrics().counter("xdesk.frame.rects");
+};
+
+FrameMeters& meters_() {
+    static FrameMeters m;
+    return m;
+}
+
+}  // namespace
 
 // ── output ───────────────────────────────────────────────────────
 void Server::resize(opensal::Size want) {
@@ -99,13 +122,19 @@ void Server::render() {
     }
     using ms = std::chrono::duration<double, std::milli>;
     FrameStat stat{.at = now};
+    telemetry::Span frame_span("frame", &meters_().frame, "xdesk");
     wlr_output_state st;
     wlr_output_state_init(&st);
     zoom_surfaces();
     const auto composing = std::chrono::steady_clock::now();
-    const bool built = wlr_scene_output_build_state(scene_output, &st, nullptr);
+    bool built = false;
+    {
+        telemetry::Span s("compose", nullptr, "xdesk");
+        built = wlr_scene_output_build_state(scene_output, &st, nullptr);
+    }
     stat.compose_ms = ms(std::chrono::steady_clock::now() - composing).count();
     if (!built || !st.buffer) {
+        frame_span.discard();
         wlr_output_state_finish(&st);
         return;
     }
@@ -136,6 +165,7 @@ void Server::render() {
         ok = true;
     } else if (gpu) {
         const auto reading = std::chrono::steady_clock::now();
+        telemetry::Span reading_span("readback", nullptr, "xdesk");
         struct Timed { FrameStat& s; std::chrono::steady_clock::time_point t; ~Timed() {
             s.readback_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t).count(); } } timed{stat, reading};
         if (wlr_texture* tex = wlr_texture_from_buffer(renderer, st.buffer)) {
@@ -182,6 +212,7 @@ void Server::render() {
                         for (std::uint32_t x = 0; x < r.width; ++x) dst[x * 4 + 3] = static_cast<char>(0xff);
                 }
                 const auto sending = std::chrono::steady_clock::now();
+                telemetry::Span sending_span("send", nullptr, "xdesk");
                 const bool sent = os::write_all(l.out, frame_buf);
                 stat.send_ms += ms(std::chrono::steady_clock::now() - sending).count();
                 stat.bytes += frame_buf.size();
@@ -217,6 +248,15 @@ void Server::render() {
 }
 
 void Server::keep_frame_stat(FrameStat stat) {
+    auto& m = meters_();
+    const auto ns = [](double ms) { return static_cast<std::uint64_t>(ms * 1e6); };
+    m.frames.add();
+    m.compose.record(ns(stat.compose_ms));
+    if (stat.readback_ms > 0) m.readback.record(ns(stat.readback_ms));
+    if (stat.rects > 0) m.send.record(ns(stat.send_ms));
+    m.bytes.add(stat.bytes);
+    m.rects.add(static_cast<std::uint64_t>(stat.rects));
+    if (stat.whole) m.whole.add();
     frame_stats.push_back(stat);
     while (!frame_stats.empty() && stat.at - frame_stats.front().at > std::chrono::seconds(10)) frame_stats.pop_front();
     if (hud && stat.at - hud_drawn > std::chrono::milliseconds(500)) draw_hud();

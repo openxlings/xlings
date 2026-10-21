@@ -22,6 +22,8 @@ import xdesk.draw;
 import xdesk.shell;
 import xdesk.apps;
 import xdesk.config;
+import xbus.node;
+import telemetry;
 import wlroots;
 import xdesk.native.wayland;
 import freedesktop.wayland.server;
@@ -372,6 +374,23 @@ struct Server {
         bool subscribed { false };   // told what happens, a line each (`xdesk msg subscribe`)
     };
     std::list<Control> controls;
+    // On the bus (design 2026-10-22 §7, B6): the control above as
+    // service/xdesk/control, the state, the events as topic/xdesk/events, and
+    // the process's telemetry. Patient: a desktop started before its system's
+    // router joins the bus when one comes.
+    std::shared_ptr<xbus::Node> bus;
+    void bus_start();
+    void bus_stop();
+    // What another thread (the bus's) asks of the loop: run on the loop,
+    // answered from there.
+    std::array<int, 2> inbox_fds { -1, -1 };
+    wl_event_source* inbox_source { nullptr };
+    std::mutex inbox_m;
+    std::deque<std::function<void()>> inbox;
+    std::thread::id loop_thread;
+    void post(std::function<void()> f);
+    // The loop's answer to `f`, waited for at most `wait` (or run here on the loop).
+    std::optional<std::string> ask_loop(std::function<std::string()> f, std::chrono::milliseconds wait);
     Control* asking { nullptr };                 // whose request control() answers
     // What happened, to every subscriber (design 2026-10-21 §8.11): focus,
     // windows opened and closed, the actions done, overlays, the view.

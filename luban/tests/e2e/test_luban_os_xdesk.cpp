@@ -7,6 +7,8 @@ import xlings.testkit;
 import std;
 import xlings.libs.json;
 import xlings.platform;
+import xbus.router;
+import xbus.node;
 
 namespace tk = xlings::testkit;
 namespace platform = xlings::platform;
@@ -1183,6 +1185,86 @@ sleep 2500
     ASSERT_EQ(run.exit_code, 0) << run.transcript();
     const auto events = subscribed.get().out;
     EXPECT_NE(events.find(R"("event":"focus")"), std::string::npos) << "Alt+Tab focused another window\n" << events;
+}
+
+// The desktop on the bus (design 2026-10-22 §7, B6): its state and its
+// control as the socket's, what happens as a topic, and its process's
+// telemetry -- the frames' parts as metrics, a profile of a frame's spans.
+// A patient node: the router here comes after the desktop has started.
+XTEST(LubanOs, XdeskIsOnTheBus, .area = "luban", .covers = {"XDESK-BUS"}, .requires_ = {"linux", "xlings-bin"}) {
+    if (!app_binary()) GTEST_SKIP() << "no luban-os beside the xlings under test";
+    if (!xdesk_binary()) GTEST_SKIP() << "no xdesk beside luban-os (mcpp build -p xdesk-app)";
+    auto home = tk::Home::isolated("luban-os-xdesk-bus");
+    ASSERT_EQ(home.xlings({"self", "init"}).exit_code, 0);
+    const xbus::Address at{"local", (home.root() / "bus.sock").string()};
+    auto session = std::async(std::launch::async, [&] {
+        return xdesk_with(home, "classic", R"(wait desktop
+waitfor desktop.texture.0 1100
+sleep 9000
+key Alt+Tab
+sleep 4000
+)", {{"OPENBUS_ROUTER", at.text()}});
+    });
+    std::this_thread::sleep_for(std::chrono::milliseconds(2500));
+    xbus::Router router({.root = "host/test", .listen = {at}});
+    ASSERT_TRUE(router.listen().has_value());
+    std::atomic<bool> stop{false};
+    std::jthread loop([&] { router.run(stop); });
+    auto n = xbus::Node::connect({.name = "test", .router = at, .telemetry = false});
+    ASSERT_TRUE(n.has_value()) << n.error();
+    auto& bus = **n;
+    std::vector<xbus::Resolved> desk;
+    for (int k = 0; k < 80 && desk.empty(); ++k) {
+        desk = bus.resolve("**", "xdesk.state@1").value_or(std::vector<xbus::Resolved>{});
+        if (desk.empty()) std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+    ASSERT_EQ(desk.size(), 1u) << "xdesk joined the bus that came after it";
+    EXPECT_EQ(desk.front().path, "host/test/service/xdesk/state");
+    std::mutex m;
+    std::string events;
+    bus.subscribe("**/topic/xdesk/events", [&](const xbus::Message& msg) {
+        std::lock_guard l(m);
+        events += msg.body + "\n";
+    });
+    std::this_thread::sleep_for(std::chrono::milliseconds(2500));
+    const auto st = bus.call("service/xdesk/state");
+    ASSERT_TRUE(st.has_value()) << st.error().message;
+    const auto s = Json::parse(st->front(), nullptr, false);
+    ASSERT_TRUE(s.is_object()) << st->front();
+    EXPECT_EQ(s["windows"].size(), 3u) << s.dump();
+    // The socket's requests, the same answers.
+    const auto hud = bus.call("service/xdesk/control", R"({"debug": "hud", "on": true})");
+    ASSERT_TRUE(hud.has_value()) << hud.error().message;
+    EXPECT_NE(hud->front().find("true"), std::string::npos) << hud->front();
+    EXPECT_TRUE(Json::parse(bus.call("service/xdesk/state")->front())["hud"].get<bool>());
+    // Its telemetry: the frames by their parts, a profile, the state in a dump.
+    std::vector<xbus::Resolved> told;
+    for (const auto& e : bus.resolve("**", "openbus.telemetry@0.1").value_or(std::vector<xbus::Resolved>{}))
+        if (e.name == "xdesk") told.push_back(e);
+    ASSERT_EQ(told.size(), 1u);
+    auto ask = [&](std::string_view request) {
+        const auto r = bus.call(told.front().path, request);
+        std::string text;
+        if (r) for (const auto& p : *r) text += p;
+        return Json::parse(text, nullptr, false);
+    };
+    EXPECT_EQ(ask("profile on")["profiling"], true);
+    std::this_thread::sleep_for(std::chrono::milliseconds(1500));
+    const auto metrics = ask("metrics")["metrics"];
+    EXPECT_GT(metrics["counters"].value("xdesk.frames", 0u), 0u) << metrics.dump();
+    EXPECT_GT(metrics["histograms"]["xdesk.frame.compose_ns"].value("count", 0u), 0u) << metrics.dump();
+    const auto trace = ask("trace");
+    EXPECT_TRUE(std::ranges::any_of(trace["traceEvents"], [](const Json& e) { return e["name"] == "compose" && e["cat"] == "xdesk"; }))
+        << "a frame's spans while profiling";
+    (void)ask("profile off");
+    const auto dump = ask("dump");
+    EXPECT_EQ(dump["program"], "xdesk");
+    EXPECT_EQ(dump["state"]["xdesk.state"]["windows"].size(), 3u) << dump["state"].dump().substr(0, 400);
+    const auto run = session.get();
+    stop = true;
+    ASSERT_EQ(run.exit_code, 0) << run.transcript();
+    std::lock_guard l(m);
+    EXPECT_NE(events.find(R"("event":"focus")"), std::string::npos) << "Alt+Tab focused another window, told on the topic\n" << events;
 }
 
 // The renderer (design 2026-10-20 WuXian §7.2): the GPU when one draws, else

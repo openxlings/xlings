@@ -183,7 +183,8 @@ for obj, op, body in it:
     return file;
 }
 
-inline tk::RunResult xdesk_with(const tk::Home& home, std::string_view profile, std::string_view script) {
+inline tk::RunResult xdesk_with(const tk::Home& home, std::string_view profile, std::string_view script,
+                                std::map<std::string, std::string> env = {}) {
     const auto runtime = home.root() / "run";
     fs::create_directories(runtime);
     fs::permissions(runtime, fs::perms::owner_all, fs::perm_options::replace);
@@ -194,7 +195,10 @@ inline tk::RunResult xdesk_with(const tk::Home& home, std::string_view profile, 
                        "--autostart", std::format("python3 {} c04040", client),
                        "--autostart", std::format("sh -c 'sleep 0.6; exec python3 {} 40c040'", client),
                        "--autostart", std::format("sh -c 'sleep 1.2; exec python3 {} 4040c0'", client)},
-                      {{"XDG_RUNTIME_DIR", runtime.string()}});
+                      [&] {
+                          env["XDG_RUNTIME_DIR"] = runtime.string();
+                          return env;
+                      }());
 }
 
 inline constexpr std::array<int, 3> kRed { 0xc0, 0x40, 0x40 }, kGreen { 0x40, 0xc0, 0x40 }, kBlue { 0x40, 0x40, 0xc0 };

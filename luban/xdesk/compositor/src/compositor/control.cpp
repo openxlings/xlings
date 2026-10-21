@@ -10,6 +10,8 @@
 //   {"state": true}                                   what the desktop is now (design 2026-10-21 §8.11)
 //   {"debug": "hud", "on": true|false}                the frames' parts drawn in the top left
 //   {"subscribe": true}                               what happens from now on, a line each
+//   {"telemetry": REQUEST}                            the process's telemetry: dump, metrics, recent [n], trace,
+//                                                     profile on|off, level L, reset (the telemetry kit)
 //
 // `xdesk msg` is its client; scripts and agents use it as people use the
 // settings: the same changes, kept the same way.
@@ -20,6 +22,7 @@ import xdesk.os;
 import xdesk.config;
 import xdesk.apps;
 import xdesk.layout;
+import telemetry;
 import xdesk.shell;
 import wlroots;
 import xdesk.native.wayland;
@@ -227,11 +230,13 @@ void Server::draw_hud() {
 }
 
 void Server::publish(std::string_view event, std::vector<std::pair<std::string, std::string>> fields) {
-    if (std::ranges::none_of(controls, &Control::subscribed)) return;
+    const bool on_bus = bus && bus->connected();
+    if (!on_bus && std::ranges::none_of(controls, &Control::subscribed)) return;
     Json j{Json::Object{}};
     j.set("event", Json{std::string(event)});
     for (auto& [k, v] : fields) j.set(k, Json{std::move(v)});
     const auto line = j.dump() + "\n";
+    if (on_bus) bus->publish("topic/xdesk/events", std::string_view(line).substr(0, line.size() - 1));
     for (auto& c : controls)
         if (c.subscribed && !c.gone && !os::write_all(c.fd, line)) c.gone = true;
 }
@@ -242,6 +247,12 @@ std::string Server::control(std::string_view request) {
     const auto& j = *parsed;
     auto str = [&](std::string_view k) { const auto* v = j.get(k); return v ? v->string_or("") : std::string{}; };
     if (const auto* st = j.get("state"); st && st->bool_or(false)) return state_json();
+    if (const auto* t = j.get("telemetry")) {
+        auto answer = telemetry::control(t->string_or("dump"));
+        if (answer.is_object() && !answer.contains("error")) answer["ok"] = true;
+        else if (answer.is_object()) answer["ok"] = false;
+        return answer.dump(-1, ' ', false, telemetry::Json::error_handler_t::replace);
+    }
     if (str("debug") == "hud") {
         const auto* on = j.get("on");
         hud = on ? on->bool_or(!hud) : !hud;
@@ -315,7 +326,7 @@ std::string Server::control(std::string_view request) {
         return answer_(true);
     }
     return answer_(false, "asks: {\"keys\": \"list\"|\"bind\"|\"unbind\"|\"set\"}, {\"settings\": PAGE}, {\"state\": true}, "
-                          "{\"debug\": \"hud\"}, {\"subscribe\": true}");
+                          "{\"debug\": \"hud\"}, {\"subscribe\": true}, {\"telemetry\": \"dump\"}");
 }
 
 }  // namespace xdesk::compositor
