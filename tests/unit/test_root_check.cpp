@@ -84,7 +84,8 @@ XTEST(RootCheck, ADesktopListsApplicationsAndHasCursors, .area = "luban", .cover
 
 // A package's checks (design 2026-10-21 §6.1): `launcher` -- its desktop
 // entry where launchers look, and shown; `gui` and `sound` are a desktop
-// session's, said as such here, never failed for want of one.
+// session's -- from outside a system nothing is run, and only what a file
+// says (a launcher's entry) is checked.
 XTEST(RootCheck, APackagesLauncherCheckLooksWhereLaunchersLook, .area = "luban", .covers = {"LUBAN-PACKAGE-CHECKS"}) {
     if constexpr (!tk::is_posix) GTEST_SKIP() << "Luban roots are Linux";
     auto home = tk::Home::isolated("root-check-package");
