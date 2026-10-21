@@ -60,6 +60,7 @@ void Server::resize(opensal::Size want) {
         draw_launcher();
         arrange();
         if (hint_node->node.enabled) redraw_hint();
+        if (tour_at >= 0) draw_tour();
         tell_roles();   // the mirrors: the picture's new size
     } else {
         log(std::format("the output did not take {}x{}", want.width, want.height));
@@ -86,6 +87,7 @@ void Server::set_scale(double want) {
         draw_launcher();
         arrange();
         if (hint_node->node.enabled) redraw_hint();
+        if (tour_at >= 0) draw_tour();
     } else {
         log(std::format("the output did not take scale {}", want));
     }

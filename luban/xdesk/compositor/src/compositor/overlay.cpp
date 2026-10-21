@@ -90,11 +90,12 @@ void Server::load_person() {
         state.keys_seen = 2;
         save_state();
     }
-    if (!state.hinted) {
-        show_hint(i18n::tr("Super: apps  ·  Super+Tab: switch  ·  Super+Enter: a terminal  ·  Super+M: arrangements  ·  Super+/: every key, and changing them"), 10000);
+    // The first session: the tour (design 2026-10-21 §8.1); ended early, the keys' line instead.
+    if (!state.toured) {
         state.hinted = true;
         state.keys_seen = 2;
         save_state();
+        start_tour();
     }
 }
 

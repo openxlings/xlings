@@ -229,7 +229,12 @@ void Server::drag_end() {
     if (v) {
         set_opacity(*v, 1.0f);
         // Floating, or stacked in the workspace view: let go where it is.
-        if (!drag_live && drag_session) lay.drop(*drag_session, drop, drop_width);
+        if (!drag_live && drag_session) {
+            const auto from = lay.workspace_of(v->id);
+            lay.drop(*drag_session, drop, drop_width);
+            if (const auto to = lay.workspace_of(v->id); to != from)
+                publish("drop", {{"id", std::to_string(v->id)}, {"workspace", std::to_string(to.value_or(0))}});
+        }
     }
     drag = Drag::none;
     drag_session.reset();

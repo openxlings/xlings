@@ -194,6 +194,9 @@ xdesk msg keys set luban-no-hjkl
 xdesk msg settings keys                    # the settings, at that page
 ```
 
+第一次进入时桌面会给一个**导览**：右下角十步——应用、终端、切换、工作区、WuXian、在它们之间移动、书签、折叠、所有快捷键、设置——
+每一步都要真的做一次才往下走，每一步都可以跳过（或整个结束）。之后随时可以再看：应用里的"桌面导览"，或 `xdesk msg tour start`。
+
 桌面现在是什么、做了什么，给脚本、Agent 和问题报告用：
 
 ```bash

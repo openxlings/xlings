@@ -1173,8 +1173,16 @@ sleep 2500
     EXPECT_EQ(std::ranges::count_if(s["windows"], [](const Json& w) { return w.value("focused", false); }), 1) << s["windows"].dump();
     EXPECT_TRUE(s["apps"].is_array());
     EXPECT_GT(s["frames"]["count"].get<double>(), 0) << s["frames"].dump();
-    const auto& hint = s["overlays"]["hint"];
-    ASSERT_TRUE(hint.value("shown", false)) << "the first session's hint\n" << s["overlays"].dump();
+    // The first session's tour: inside the output after the resize (J10).
+    ASSERT_TRUE(s.contains("tour")) << "the first session's tour";
+    const auto tr = s["tour"]["rect"];
+    EXPECT_LE(tr[1].get<double>() + tr[3].get<double>(), 520) << s["tour"].dump();
+    EXPECT_LE(tr[0].get<double>() + tr[2].get<double>(), 900) << s["tour"].dump();
+    // Ended early: the keys' hint instead -- inside the output too.
+    ASSERT_EQ(msg({R"({"tour": "end"})"}).exit_code, 0);
+    const auto after = Json::parse(msg({"state"}).out, nullptr, false);
+    const auto& hint = after["overlays"]["hint"];
+    ASSERT_TRUE(hint.value("shown", false)) << "the keys' hint once the tour is ended\n" << after["overlays"].dump();
     const auto r = hint["rect"];
     EXPECT_LE(r[1].get<double>() + r[3].get<double>(), 520) << "the hint inside the output after the resize (J10)\n" << hint.dump();
     EXPECT_LE(r[0].get<double>() + r[2].get<double>(), 900) << hint.dump();

@@ -250,6 +250,17 @@ struct Server {
         std::optional<draw::Color> colour;
     };
     std::vector<Bookmark> bookmarks;
+    // The tour (design 2026-10-21 §8.1; tour.cpp): the step it is at, -1: none.
+    int tour_at { -1 };
+    wlr_scene_buffer* tour_node { nullptr };
+    shell::Picture tour_picture;
+    int tour_steps() const;
+    void start_tour();
+    void end_tour(bool done);
+    void tour_next();
+    void tour_event(std::string_view event, const std::vector<std::pair<std::string, std::string>>& fields);
+    void draw_tour();
+    bool tour_click(double x, double y);
     std::vector<wlr_scene_buffer*> bookmark_pool;
     std::array<wlr_scene_rect*, 4> bookmark_outline {};
     int bookmark_lit { -1 };

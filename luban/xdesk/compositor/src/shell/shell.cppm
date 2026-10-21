@@ -125,6 +125,11 @@ inline constexpr int kLabelHeight = 22;
 Picture bookmark(draw::Fonts* fonts, const Theme& t, std::string_view label, std::optional<draw::Color> colour, bool lit,
                  double scale = 1);
 inline constexpr int kBookmarkHeight = 22;
+// The desktop's tour (design 2026-10-21 §8.1): a card at the bottom right --
+// step `at` of `of`, what to do, why -- with two buttons: this step skipped
+// (area 0), the tour ended (area 1).
+Picture tour(draw::Fonts* ui, draw::Fonts* big, const Theme& t, int at, int of, std::string_view title, std::string_view text,
+             std::string_view skip, std::string_view end, int width, int height, double scale = 1);
 
 // ── the launcher ─────────────────────────────────────────────────────
 

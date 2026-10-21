@@ -130,6 +130,7 @@ void Server::open_launcher() {
                           Page{"about", "Settings: about", "version system about information 版本 系统 信息"}})
         all.push_back({.id = std::format("xdesk:settings:{}", p.id), .name = std::string(i18n::tr(p.en)),
                        .generic = p.id == "keys" ? std::string("Super+/") : std::string("Super+I"), .keywords = std::string(p.words)});
+    all.push_back({.id = "xdesk:tour", .name = std::string(i18n::tr("Tour of the desktop")), .keywords = "tour help start learn 上手 入门 教程"});
     for (const auto& a : actions()) {
         const auto chords = keys.chords(a.action);
         all.push_back({.id = std::format("xdesk:action:{}", a.name), .name = std::string(i18n::tr(a.en)),
@@ -137,6 +138,7 @@ void Server::open_launcher() {
                        .keywords = std::format("{} {}", a.name, a.en)});
     }
     launcher.open(std::move(all));
+    publish("launcher", {});
     draw_launcher();
 }
 
@@ -172,6 +174,7 @@ void Server::start_app(const apps::App& app) {
             if (page == std::array{"displays", "layout", "appearance", "keys", "about"}[static_cast<std::size_t>(p)]) open_settings(p);
         return;
     }
+    if (app.id == "xdesk:tour") { start_tour(); return; }
     if (app.id.starts_with("xdesk:action:")) {
         const auto name = app.id.substr(13);
         if (const auto it = std::ranges::find(actions(), name, &ActionInfo::name); it != actions().end()) act(it->action);

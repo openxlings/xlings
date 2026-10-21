@@ -43,6 +43,7 @@ struct State {
     std::map<std::string, Rule> rules;          // by application id
     bool hinted { false };                      // the first session's word on the keys was said
     int keys_seen { 0 };                        // the version of the keys last told (2: design 2026-10-20 §12.2)
+    bool toured { false };                      // the desktop's tour was given (done or ended; design 2026-10-21 §8.1)
     // Read: the workspaces' arrangements of before WuXian were there (they
     // are wuxian.json's now; the file of before is kept aside once).
     bool old_arrangements { false };

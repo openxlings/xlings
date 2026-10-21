@@ -432,6 +432,10 @@ L4 覆盖以下几条路径：宿主 → foot（Ctrl+Shift+V）、foot（Ctrl+Sh
 - **怎么推进**：每一步都要用户真的做一次，合成器通过 `xdesk msg subscribe` 推送事件来推进；每一步都可以跳过。
 - **步骤**：Super → Super+Enter → Super+Tab、Alt+Tab → Super+数字 → Super+O → 把窗口拖进工作区 → 点书签 → `Super+S` 折叠 → Super+/ → "设置"。
 - 一次性的提示保留为后备。
+- **实施（K13）**：导览由合成器自己画（右下角一张卡片），不另起 Wayland 客户端：它要看的正是合成器自己发出的事件（`launcher`、`action`、
+  `view`、`drop`、`bookmark`、`collapse`……），放在合成器里没有进程间的同步，也不必为一个客户端再带一套 Wayland 客户端库。
+  记录在每个人自己的 `state.json`（`toured`）：一个系统里的一个人一次；经 opensal hello 由 Luban OS 应用转达"这台电脑已看过"留到以后
+  （要先给 opensal 的 hello 加字段）。结束得早，就退回原来那一行按键提示。`xdesk msg tour start|skip|end`，状态里的 `tour`。
 
 ### 8.2 切换器的突出（J15）
 

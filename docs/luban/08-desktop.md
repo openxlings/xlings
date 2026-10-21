@@ -200,6 +200,12 @@ windows there are.
 | Return, or Ctrl+Alt+T / Q, or Alt+F4 | a terminal / close the window | the same |
 | I / / | the settings / its keys page | the same |
 
+The first time, the desktop gives a **tour**: ten steps at the bottom right —
+the applications, a terminal, switching, workspaces, WuXian, moving between
+them, bookmarks, collapsing, every key, the settings — each done by doing it,
+each skippable (or the whole ended). Again any time: *Tour of the desktop* in
+the applications, or `xdesk msg tour start`.
+
 Every key, as the desktop has it, is in [the generated table](../generated/xdesk-keys.md).
 **Super+/** opens the settings at their keys page: every action by group,
 searched as you type; Enter on one, then the new chord, gives it that chord

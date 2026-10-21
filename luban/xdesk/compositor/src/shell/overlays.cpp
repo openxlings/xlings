@@ -485,4 +485,34 @@ Picture settings(draw::Fonts* ui, draw::Fonts* big, const Theme& t, const Settin
     return p;
 }
 
+Picture tour(draw::Fonts* ui, draw::Fonts* big, const Theme& t, int at, int of, std::string_view title, std::string_view text,
+             std::string_view skip, std::string_view end, int width, int height, double scale) {
+    Picture p;
+    const double w = 380, h = 132, pad = 18;
+    p.x = width - w - 16;
+    p.y = height - h - 16;
+    p.image = image_(w, h, scale);
+    draw::Canvas c(p.image, scale);
+    c.fill({0, 0, w, h}, t.card, t.radius + 2);
+    c.frame({0, 0, w, h}, t.accent, 1, t.radius + 2);
+    // Where it is: a dot a step, the ones done lit.
+    for (int k = 0; k < of; ++k)
+        c.fill({pad + k * 12.0, 14, 7, 7}, k <= at ? t.accent : Color::rgb(0x3a4050), 3.5);
+    if (big) c.text(*big, title, pad, 50, t.text, w - 2 * pad);
+    if (ui) c.text(*ui, text, pad, 76, t.muted, w - 2 * pad);
+    // The two buttons, at the bottom right.
+    double x = w - pad;
+    for (int k = 1; k >= 0; --k) {
+        const auto label = k == 0 ? skip : end;
+        const double bw = (ui ? ui->width(label) : 80) + 24;
+        x -= bw;
+        const Rect r{x, h - 36, bw, 26};
+        c.fill(r, k == 0 ? t.title_idle : Color::rgb(0x2a2e37), 6);
+        if (ui) c.text(*ui, label, r.x + 12, std::round(r.y + 18), t.text);
+        p.areas.push_back({.rect = {p.x + r.x, p.y + r.y, r.width, r.height}, .target = Target::item, .index = k});
+        x -= 8;
+    }
+    return p;
+}
+
 }  // namespace xdesk::shell

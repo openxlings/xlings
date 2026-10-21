@@ -315,6 +315,10 @@ void Server::button(const opensal::PointerButton& b) {
         }
         return;
     }
+    // The tour's card: its buttons (design 2026-10-21 §8.1).
+    if (overlay == Overlay::none && b.button == opensal::Button::Left && tour_at >= 0) {
+        if (b.down && tour_click(cursor->x, cursor->y)) return;
+    }
     // A bookmark: what it is for (design 2026-10-21 §8.4).
     if (overlay == Overlay::none && b.button == opensal::Button::Left && !bookmarks.empty()) {
         bool on = false;

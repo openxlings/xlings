@@ -225,6 +225,14 @@ std::string Server::state_json() {
     frames.set("whole", num_(whole));
     out.set("frames", frames);
     out.set("hud", Json{hud});
+    if (tour_at >= 0) {
+        Json t{Json::Object{}};
+        t.set("step", num_(tour_at));
+        t.set("of", num_(tour_steps()));
+        if (tour_node) t.set("rect", Json{Json::Array{num_(tour_node->node.x), num_(tour_node->node.y), num_(380), num_(132)}});
+        out.set("tour", t);
+    }
+    out.set("toured", Json{state.toured});
     // What the pointer is doing (a drag, a resize, a pan...), and where it is.
     out.set("drag", Json{std::string(std::array<std::string_view, 9>{"none", "pan", "move", "gap", "row_gap", "resize", "workspace", "scale",
                                                                   "minimap"}[static_cast<std::size_t>(drag)])});
@@ -274,6 +282,7 @@ void Server::draw_hud() {
 }
 
 void Server::publish(std::string_view event, std::vector<std::pair<std::string, std::string>> fields) {
+    tour_event(event, fields);
     const bool on_bus = bus && bus->connected();
     if (!on_bus && std::ranges::none_of(controls, &Control::subscribed)) return;
     Json j{Json::Object{}};
@@ -294,6 +303,13 @@ std::string Server::control(std::string_view request) {
     if (const auto* in = j.get("input")) {
         if (!std::holds_alternative<Json::Array>(in->v)) return answer_(false, "input is a list of steps");
         if (auto done = inject(*in); !done.empty()) return answer_(false, done);
+        return answer_(true);
+    }
+    if (const auto t = str("tour"); !t.empty()) {
+        if (t == "start") start_tour();
+        else if (t == "end") end_tour(false);
+        else if (t == "skip") tour_next();
+        else return answer_(false, "tour: start, skip or end");
         return answer_(true);
     }
     if (const auto* bm = j.get("bookmark")) {

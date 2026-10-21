@@ -329,3 +329,42 @@ XTEST(XdeskInteraction, InTheWuXianViewWorkspacesMoveAndScaleAndTheViewPansAndZo
     const auto run = d.finish();
     EXPECT_EQ(run.exit_code, 0) << run.transcript();
 }
+
+// The tour (design 2026-10-21 §8.1): the first session gives it; doing a
+// step goes on to the next, a step may be skipped, the tour ended -- and it
+// is given once (the state keeps that); the launcher gives it again.
+XTEST(XdeskInteraction, TheFirstSessionGivesTheTourOnceStepsDoneByDoingThem, .area = "luban", .covers = {"XDESK-TOUR", "XDESK-HEADLESS"},
+      .requires_ = {"linux", "xlings-bin"}) {
+    if (!app_binary()) GTEST_SKIP() << "no luban-os beside the xlings under test";
+    if (!xdesk_binary()) GTEST_SKIP() << "no xdesk beside luban-os (mcpp build -p xdesk-app)";
+    auto home = tk::Home::isolated("xdesk-tour");
+    ASSERT_EQ(home.xlings({"self", "init"}).exit_code, 0);
+    {
+        XdeskSession d(home, "classic");
+        ASSERT_TRUE(d.ready());
+        auto s = settled(d);
+        ASSERT_TRUE(s.contains("tour")) << "the first session gives the tour";
+        EXPECT_EQ(s["tour"]["step"], 0);
+        // Step 1, done by doing it: Super alone, the applications.
+        ASSERT_TRUE(d.input(Json::array({Json{{"keydown", "Super"}}, Json{{"keyup", "Super"}}})));
+        s = d.until([](const Json& j) { return j.contains("tour") && j["tour"]["step"] == 1; });
+        EXPECT_EQ(s["tour"]["step"], 1);
+        (void)d.key("Escape");   // the launcher closed
+        // Skipped, then ended: given, and kept so.
+        EXPECT_TRUE(d.ask(Json{{"tour", "skip"}}).value("ok", false));
+        EXPECT_EQ(d.state()["tour"]["step"], 2);
+        EXPECT_TRUE(d.ask(Json{{"tour", "end"}}).value("ok", false));
+        s = d.state();
+        EXPECT_FALSE(s.contains("tour"));
+        EXPECT_TRUE(s.value("toured", false));
+        EXPECT_EQ(d.finish().exit_code, 0);
+    }
+    // The next session: no tour; asked for, there again.
+    XdeskSession d(home, "classic");
+    ASSERT_TRUE(d.ready());
+    auto s = settled(d);
+    EXPECT_FALSE(s.contains("tour")) << "given once";
+    EXPECT_TRUE(d.ask(Json{{"tour", "start"}}).value("ok", false));
+    EXPECT_EQ(d.state()["tour"]["step"], 0);
+    EXPECT_EQ(d.finish().exit_code, 0);
+}
