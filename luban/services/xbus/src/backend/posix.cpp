@@ -192,6 +192,8 @@ std::optional<Received> read(const Handle& h, std::span<char> buf) {
     return r;
 }
 
+bool handles_travel() { return true; }
+
 long write(const Handle& h, std::string_view bytes, std::span<const Handle* const> handles) {
     iovec iov{const_cast<char*>(bytes.data()), bytes.size()};
     msghdr msg{};

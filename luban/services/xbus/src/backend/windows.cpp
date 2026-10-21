@@ -147,6 +147,8 @@ std::optional<Received> read(const Handle& h, std::span<char> buf) {
     return Received{.bytes = static_cast<std::size_t>(n)};
 }
 
+bool handles_travel() { return false; }
+
 long write(const Handle& h, std::string_view bytes, std::span<const Handle* const> handles) {
     if (!handles.empty()) return -1;   // no handles travel here
     const int n = ::send(sock_(h), bytes.data(), static_cast<int>(bytes.size()), 0);

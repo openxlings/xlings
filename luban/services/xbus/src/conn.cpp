@@ -14,14 +14,23 @@ public:
     explicit SocketChannel(backend::Handle h) : h_(std::move(h)) {}
     const backend::Handle* waitable() const override { return &h_; }
     std::optional<backend::Received> read(std::span<char> buf) override { return backend::read(h_, buf); }
-    long write(std::string_view bytes, std::span<const backend::Handle* const> handles) override { return backend::write(h_, bytes, handles); }
+    // A handle the socket refuses (a platform that does not pass this kind):
+    // the bytes go without it, and no handle is tried here again -- the other
+    // side, given none, answers as for a way that carries no memory (inline).
+    long write(std::string_view bytes, std::span<const backend::Handle* const> handles) override {
+        if (!handles.empty() && carries_) {
+            if (const long n = backend::write(h_, bytes, handles); n >= 0) return n;
+            carries_ = false;
+        }
+        return backend::write(h_, bytes, {});
+    }
     bool carries_handles() const override { return carries_; }
     std::string identity() const override { return backend::identity(h_); }
     std::string transport() const override { return "local"; }
 private:
     backend::Handle h_;
     // Whether handles travel here: tried once, known after.
-    bool carries_ { true };
+    bool carries_ { backend::handles_travel() };
 };
 
 class PipeChannel final : public Channel, public PipeEnd {

@@ -51,6 +51,8 @@ struct Received {
 };
 // nullopt on an error; bytes == 0 without would_block at the end.
 std::optional<Received> read(const Handle& h, std::span<char> buf);
+// Whether this platform's local sockets pass handles at all (SCM_RIGHTS).
+bool handles_travel();
 // Bytes taken (the handles with the first of them); -1 on an error, 0 when full.
 long write(const Handle& h, std::string_view bytes, std::span<const Handle* const> handles = {});
 

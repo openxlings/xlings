@@ -528,7 +528,9 @@ XTEST(Xbus, AStreamCarriesBytesWithCreditAndARegionInPlace, .area = "luban", .co
     // A region: 8 MiB both map; a reference is 24 bytes, the bytes read in place.
     auto region = st->create_region(8u << 20);
     ASSERT_TRUE(region.has_value()) << region.error();
-    EXPECT_TRUE(region->shared()) << "memfd over a local socket";
+    // Shared over a local socket (memfd); a Mac whose socket refuses the
+    // handle goes inline by itself -- the reference reads the same either way.
+    if constexpr (!tk::is_macos) EXPECT_TRUE(region->shared()) << "memfd over a local socket";
     std::uint64_t sum = 0;
     for (std::size_t k = 0; k < region->size(); ++k) {
         region->bytes()[k] = static_cast<std::byte>(k % 251);
