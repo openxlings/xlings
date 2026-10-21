@@ -128,7 +128,9 @@ struct Worker {
                 return std::ranges::any_of(
                     roots, [&](const auto& root) { return under(canonical, root); });
             };
-            auto source = [&](const std::string& text, const fs::path& base) {
+            // `walk`: a directory source is every file under it, checked; a
+            // library's directory is only where its one file is (below).
+            auto source = [&](const std::string& text, const fs::path& base, bool walk = true) {
                 fs::path path(xvm::expand_path(text, Config::paths().homeDir.string()));
                 if (path.empty())
                     throw std::runtime_error("empty host effect source");
@@ -182,7 +184,7 @@ struct Worker {
                     throw std::runtime_error("cannot inspect host effect source: " + ec.message());
                 if (fs::is_symlink(status) && !fs::exists(lookup))
                     throw std::runtime_error("host effect source is a dangling symlink");
-                if (fs::is_directory(lookup)) {
+                if (walk && fs::is_directory(lookup)) {
                     for (const auto& entry : fs::recursive_directory_iterator(lookup)) {
                         if (!stable(entry.path()))
                             throw std::runtime_error(
@@ -210,10 +212,21 @@ struct Worker {
                             "only the xlings package may register the shared client");
                     if (effect_context.install_dir.empty())
                         throw std::runtime_error("host registration requires a package payload");
+                    // What a registration exposes is its own file (a program,
+                    // a library: bindir/filename) or asset (files: src, walked
+                    // below) -- not everything beside it. A payload may hold
+                    // links another package keeps there for this host
+                    // (libglvnd's lib/glx-vendor, filled by the graphics
+                    // stack), which are not its registrations' and refused
+                    // them in a scope that has not recorded those payloads.
+                    // Only a program run through its alias has its whole
+                    // directory on PATH: that directory is walked.
+                    const bool library = operation.type == "lib";
+                    const bool on_path = !operation.alias.empty() && !library && operation.type != "group";
                     const auto base =
                         source(operation.bindir.empty() ? effect_context.install_dir.string()
                                                         : operation.bindir,
-                               effect_context.install_dir);
+                               effect_context.install_dir, on_path);
                     operation.bindir = base.string();
                     if (operation.type == "files") {
                         const fs::path relative(operation.src);
@@ -221,6 +234,12 @@ struct Worker {
                             throw std::runtime_error(
                                 "file asset source must be relative to its payload");
                         (void)source(operation.src, base);
+                    } else if (library) {
+                        const fs::path relative(operation.filename.empty() ? operation.name
+                                                                           : operation.filename);
+                        if (relative.is_absolute())
+                            throw std::runtime_error("artifact source name must be relative");
+                        (void)source(relative.string(), base);
                     } else if (operation.type != "group" && operation.alias.empty()) {
                         const auto name =
                             operation.filename.empty() ? operation.name : operation.filename;
