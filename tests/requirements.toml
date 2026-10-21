@@ -443,6 +443,10 @@ status = "required"
 text = "subos_exec streams distinct stdout/stderr chunks before exit and reaps the command on cancellation"
 status = "required"
 
+[IFACE-SUBOS-ENV]
+text = "subos_env answers what a SubOS declares for its programs (the active versions' declarations), resolved as `subos use` applies them; an unknown SubOS is an error naming it"
+status = "required"
+
 [OBS-TRACE]
 text = "XLINGS_TRACE=<categories> prints the decision trace"
 status = "required"

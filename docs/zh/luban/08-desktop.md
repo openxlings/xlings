@@ -323,8 +323,12 @@ graph LR
     C --> B[opensal-wlr] -- screencopy, virtual keyboard and pointer --> D[another compositor, headless]
 ```
 
-- **作为机器**（`luban config desk --mode machine`，桌面 edition 的默认）：机器里的 agent 以无头、软件渲染的方式启动会话，
+- **作为机器**（`luban config desk --mode machine`，桌面 edition 的默认）：机器里的 agent 以无头方式启动会话，
   经机器的一个通道连接。机器的 `/run` 与 `/tmp` 是它自己的，停止时清空。
+- **机器的 GPU**：Linux x86_64 宿主有 render node 时，有 `gpu` 授权的系统（桌面的默认）得到一块 virtio-gpu，它的 OpenGL
+  在这台电脑的 GPU 上绘制（virgl）。第一台这样的机器安装 `qemu-system-gl`（带 OpenGL 的 qemu，基于图形栈：Mesa，或经
+  `nvidia-gl-host-link` 的 NVIDIA 驱动）；`luban status <名字>` 写 `virgl on /dev/dri/renderD128 (nvidia)`，或没有 GPU 的原因。
+  这个 qemu 在 render node 上起不来时，同一台机器改用软件绘制启动。
 - **在沙箱里**：同样的会话，用 `xlings subos use desk --cmd` 启动，经两条管道连接。桌面一样，只是运行的位置不同。
 - 窗口告诉它自己的尺寸；桌面跟随。窗口显示了上一帧之后才发下一帧，慢通道上画面不会堆积。
 - 指针由这台电脑来画：xdesk 告诉它形状或图像；opensal-wlr 在别的合成器能把指针与画面分开给出时（ext-image-copy-capture 的指针会话，
@@ -334,8 +338,8 @@ graph LR
 
 ## 还不支持的
 
-- 机器里、macOS 与 Windows 上的 GPU：机器的桌面用软件绘制。Linux 宿主上的沙箱用这台电脑的 GPU（它的 render node；`gpu` 授权），
-  没有时用软件。
+- macOS、Windows 与 aarch64 Linux 宿主上机器的 GPU：那里机器的桌面用软件绘制。Linux x86_64 宿主上机器有 virgl、沙箱有
+  render node（`gpu` 授权）；宿主没有 GPU 时两者都用软件。
 - xdesk 里的 X11 程序（Xwayland）；它们在 labwc 会话里运行。
 - 窗口在 Linux 上需要 X11（Xwayland 也算）；原生 Wayland 窗口还不支持。在 macOS 与 Windows 上，窗口从 Luban 宿主机里显示系统的控制台与桌面，
   无论它作为沙箱还是机器运行。

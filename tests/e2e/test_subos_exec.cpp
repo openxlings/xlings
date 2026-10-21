@@ -167,3 +167,36 @@ XTEST(SubosExec, TheInterfaceRunsArgvAndReturnsTheExitCode,
     ASSERT_TRUE(exitCode.has_value()) << r.transcript();
     EXPECT_EQ(*exitCode, 3);
 }
+
+XTEST(SubosExec, TheInterfaceSaysWhatASubosDeclaresForItsPrograms,
+      .area = "subos", .cost = tk::Cost::Medium, .covers = {"IFACE-SUBOS-ENV"},
+      .requires_ = {"posix", "xlings-bin"}) {
+    Box box;
+    // What a package's config declares (subos.env), as it is recorded: the
+    // active version's section counts, a dormant one's does not.
+    const auto file = box.home.dir() / "subos" / "box" / ".xlings.json";
+    auto doc = nlohmann::json::parse(tk::read_file(file), nullptr, false);
+    ASSERT_TRUE(doc.is_object()) << tk::read_file(file);
+    doc["workspace"]["probe"] = {{"active", "2.0"}};
+    doc["subos_info"]["envs"]["probe@2.0"] = nlohmann::json::array(
+        {{{"var", "XLINGS_PROBE_DIRS"}, {"op", "prepend"}, {"value", "${subosdir}/share/probe"}}});
+    doc["subos_info"]["envs"]["probe@1.0"] = nlohmann::json::array(
+        {{{"var", "XLINGS_PROBE_OLD"}, {"op", "set"}, {"value", "${subosdir}/old"}}});
+    tk::write_file(file, doc.dump(2));
+
+    auto r = box.home.xlings({"interface", "subos_env", "--args", nlohmann::json{{"name", "box"}}.dump()});
+    nlohmann::json vars;
+    for (auto& line : r.json_lines())
+        if (line.value("kind", "") == "data" && line.value("dataKind", "") == "subos_env")
+            vars = line["payload"].value("vars", nlohmann::json::array());
+    ASSERT_EQ(vars.size(), 1u) << r.transcript();
+    EXPECT_EQ(vars[0].value("var", ""), "XLINGS_PROBE_DIRS");
+    EXPECT_EQ(vars[0].value("op", ""), "prepend");
+    EXPECT_EQ(fs::path(vars[0].value("value", "")), box.home.dir() / "subos" / "box" / "share" / "probe");
+
+    auto missing = box.home.xlings({"interface", "subos_env", "--args", nlohmann::json{{"name", "nosuch"}}.dump()});
+    bool said = false;
+    for (auto& line : missing.json_lines())
+        said = said || (line.value("kind", "") == "error" && line.value("message", "").find("nosuch") != std::string::npos);
+    EXPECT_TRUE(said) << missing.transcript();
+}

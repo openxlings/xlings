@@ -525,6 +525,16 @@ int guest_init(int, char*[]) {
     // The agent's sessions are ptys before the environment's own start mounts
     // anything (its rcS mounting devpts again is harmless: already mounted).
     if (!platform::mount_kernel_fs("devpts", "/dev/pts")) console_("cannot mount devpts: sessions will fail");
+    // Its GPU (virtio-gpu, WuXian §7.5): the render node is its users', as a
+    // desktop's GPU is on any system -- there udev and logind give it to the
+    // seat; here is neither, and devtmpfs makes it root's alone. Only render
+    // nodes: nothing here sets a display mode.
+    for (int n = 128; n < 192; ++n) {
+        std::error_code ec;
+        if (const fs::path node = std::format("/dev/dri/renderD{}", n); fs::exists(node, ec))
+            fs::permissions(node, fs::perms::owner_read | fs::perms::owner_write | fs::perms::group_read | fs::perms::group_write
+                                      | fs::perms::others_read | fs::perms::others_write, ec);
+    }
 
     // sudo is root's (design 2026-10-20 §4.5): its program root-owned and
     // setuid, its rules root-owned -- a share shows the host's owner, which

@@ -15,6 +15,7 @@ namespace {
 struct Location {
     Source source;
     std::string_view where;   // a path (RootOwned, Host), a bin dir name (Payload)
+    std::string_view file = {};   // Payload: the program in it, when not the tool's name
 };
 struct Entry {
     Tool tool;
@@ -83,6 +84,12 @@ const std::vector<Entry>& table() {
         {{"qemu-system-aarch64", "qemu-system"}, "xim-x-qemu-system",
          {{Source::Payload, "bin"}, {Source::Host, "/usr/bin/qemu-system-aarch64"},
           {Source::Host, "/usr/local/bin/qemu-system-aarch64"}}},
+        // A machine's GPU (Luban WuXian §7.5): qemu-system-x86_64 with OpenGL
+        // -- virtio-gpu-gl-pci, virglrenderer, the egl-headless display -- on
+        // the index's graphics stack. Only the package: a host's qemu with GL
+        // would draw with the host's own libraries.
+        {{"qemu-system-gl", "qemu-system-gl", {}, "linux-x86_64"}, "xim-x-qemu-system-gl",
+         {{Source::Payload, "bin", "qemu-system-x86_64"}}},
     };
     return t;
 }
@@ -152,7 +159,8 @@ std::vector<Found> candidates(std::string_view tool, const HomeView& home, const
             break;
         }
         case Source::Payload:
-            if (auto bin = payload_bin(home.home / "data" / "xpkgs" / std::string(e->xpkgs_dir), loc.where, tool))
+            if (auto bin = payload_bin(home.home / "data" / "xpkgs" / std::string(e->xpkgs_dir), loc.where,
+                                       loc.file.empty() ? tool : loc.file))
                 if (std::ranges::none_of(out, [&](const Found& f) { return f.bin == *bin; }))
                     out.push_back({std::string(tool), *bin, Source::Payload});
             break;

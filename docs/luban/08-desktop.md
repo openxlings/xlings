@@ -444,9 +444,15 @@ graph LR
 ```
 
 - **As a machine** (`luban config desk --mode machine`, the desktop editions'
-  default): the machine's agent starts the session headless, with software
-  rendering, on a channel of the machine. A machine's `/run` and `/tmp` are its
-  own and go when it stops.
+  default): the machine's agent starts the session headless on a channel of the
+  machine. A machine's `/run` and `/tmp` are its own and go when it stops.
+- **Its GPU, as a machine**: on a Linux x86_64 host with a render node, a
+  system with the `gpu` grant (a desktop's) gets a virtio-gpu, its OpenGL drawn
+  on this computer's GPU (virgl). The first such machine installs
+  `qemu-system-gl` (qemu with OpenGL, on the graphics stack: Mesa, or NVIDIA's
+  driver through `nvidia-gl-host-link`); `luban status <name>` says
+  `virgl on /dev/dri/renderD128 (nvidia)`, or why there is no GPU. Should that
+  qemu not start on the render node, the same machine starts in software.
 - **In a sandbox**: the same session, started with `xlings subos use desk --cmd`,
   on two pipes. The desktop is the same; only where it runs differs.
 - The window asks for its own size; the desktop follows it. It sends the next
@@ -462,9 +468,10 @@ graph LR
 
 ## What it does not do yet
 
-- The GPU in a machine, and on macOS and Windows: a machine's desktop draws in
-  software. A sandbox on a Linux host draws with this computer's GPU (its
-  render node; the `gpu` grant), in software when there is none.
+- The GPU in a machine on macOS, on Windows and on an aarch64 Linux host: a
+  machine's desktop draws in software there. On a Linux x86_64 host a machine
+  has virgl and a sandbox the render node (the `gpu` grant); both draw in
+  software when the host has no GPU.
 - X11 programs in xdesk (Xwayland); they run in the labwc session.
 - The window on Linux needs X11 (Xwayland counts); a native Wayland window is
   not supported yet. On macOS and Windows the window shows a system's console

@@ -52,10 +52,11 @@ for fields, xpkgs_dir in rows:
     m = re.search(r'archs\s*=\s*\{([^}]*)\}', text)
     archs = set(re.findall(r'"([^"]+)"', m.group(1))) if m else set()
     plat = platform or "linux"
-    if plat == "linux":
+    if plat.startswith("linux"):
         if not re.search(r'\blinux\s*=\s*\{', text):
             bad.append(f"{name}: {package} has no linux block")
-        missing = {"x86_64", "aarch64"} - archs
+        # linux-<arch>: a package built for that architecture alone.
+        missing = ({plat.split("-", 1)[1]} if "-" in plat else {"x86_64", "aarch64"}) - archs
         if missing:
             bad.append(f"{name}: {package} is not built for {', '.join(sorted(missing))} (archs = {sorted(archs)})")
     print(f"  {name}: {package} ({', '.join(sorted(archs))})")
