@@ -292,6 +292,38 @@ screenshot {}
     EXPECT_EQ(box_of(read_ppm(back), kGreen), s0);
 }
 
+// Alt+Tab in the WuXian view (design 2026-10-21 §8.3, J14): every window
+// gathered on the switchers' own layer, over a dimmed output -- the
+// workspace's plate and label under them, not over them.
+XTEST(LubanOs, XdeskAltTabInWuxianGathersOverADimmedPlane, .area = "luban",
+      .covers = {"XDESK-HIGHLIGHT", "WUXIAN-VIEWS"}, .requires_ = {"linux", "xlings-bin"}) {
+    if (!app_binary()) GTEST_SKIP() << "no luban-os beside the xlings under test";
+    if (!xdesk_binary()) GTEST_SKIP() << "no xdesk beside luban-os (mcpp build -p xdesk-app)";
+    auto home = tk::Home::isolated("luban-os-xdesk-wuxian-tab");
+    ASSERT_EQ(home.xlings({"self", "init"}).exit_code, 0);
+    const auto plane = home.root() / "plane.ppm", held = home.root() / "held.ppm";
+    auto r = xdesk_with(home, "xdesk", std::format(R"(wait desktop
+waitfor desktop.texture.0 1100
+sleep 3000
+key Super+o
+sleep 1500
+screenshot {}
+keydown Alt
+key Tab
+sleep 1200
+screenshot {}
+screenshot {}
+keyup Alt
+sleep 1500
+)", plane.string(), held.string(), artifact("xdesk-wuxian-alt-tab.bmp").string()));
+    ASSERT_EQ(r.exit_code, 0) << r.transcript();
+    const auto a = read_ppm(plane), b = read_ppm(held);
+    for (const auto& c : {kRed, kGreen, kBlue}) EXPECT_GE(box_of(b, c)[0], 0) << "every window shown whole, as it is";
+    // Away from the windows: darker than the plane was.
+    const auto sum = [](const std::array<int, 3>& p) { return p[0] + p[1] + p[2]; };
+    EXPECT_LT(sum(b.at(4, 4)), sum(a.at(4, 4))) << "the output dimmed under the gathered windows";
+}
+
 XTEST(LubanOs, XdeskSwitchesArrangementsAndComesBackToTheSameLayout, .area = "luban",
       .covers = {"XDESK-COMPOSITOR", "XDESK-ARRANGEMENTS"}, .requires_ = {"linux", "xlings-bin"}) {
     if (!app_binary()) GTEST_SKIP() << "no luban-os beside the xlings under test";
@@ -813,23 +845,25 @@ screenshot {}
     const auto a = read_ppm(quick);
     EXPECT_EQ(a.at(275, 400), kRed);
     EXPECT_EQ(a.at(825, 400), kGreen);
-    // Held: green (the one before red) as it is, smaller than its column;
-    // red and blue there too, dimmed.
+    // Held: every window as it is, fitted, over a dimmed output; green (the
+    // one before red) chosen: its own outline lit, nothing drawn around it
+    // (design 2026-10-21 §8.2, J15).
     const auto b = read_ppm(spread);
     const auto g = box_of(b, kGreen);
     ASSERT_GE(g[0], 0) << "the chosen window is shown as it is";
     EXPECT_LT(g[2] - g[0], 540) << "fitted: smaller than its column";
-    EXPECT_TRUE(tinted_(b, 0)) << "red shown";
-    EXPECT_TRUE(tinted_(b, 2)) << "blue shown";
-    EXPECT_EQ(box_of(b, kRed)[0], -1) << "the others dimmed";
-    // Tab: blue; Alt let go: blue focused and lit a moment, the others
-    // dimmed (design 2026-10-20 WuXian §4.3) -- then all as they are.
+    EXPECT_GE(box_of(b, kRed)[0], 0) << "red shown as it is, not dimmed";
+    EXPECT_GE(box_of(b, kBlue)[0], 0) << "blue shown as it is, not dimmed";
+    EXPECT_NE(b.at(g[0] - 1, (g[1] + g[3]) / 2), kGreen) << "the chosen one's outline on its own edge";
+    // Tab: blue; Alt let go: blue focused, its outline lit where it is and
+    // faded -- the others never dimmed and lit again.
     const auto l = read_ppm(lit);
-    EXPECT_EQ(l.at(825, 400), kBlue) << "the one chosen, lit";
-    EXPECT_NE(l.at(275, 400), kGreen) << "the others dimmed while it is";
+    EXPECT_EQ(l.at(825, 400), kBlue) << "the one chosen";
+    EXPECT_EQ(l.at(275, 400), kGreen) << "the others as they are while it is lit";
     const auto c = read_ppm(chosen);
     EXPECT_EQ(c.at(275, 400), kGreen);
     EXPECT_EQ(c.at(825, 400), kBlue);
+    EXPECT_GT(box_of(l, kBlue)[0], box_of(c, kBlue)[0]) << "the outline lit over its edge, then faded";
 }
 
 // Super+Tab by application (design 2026-10-20 §10.1): a press goes to the

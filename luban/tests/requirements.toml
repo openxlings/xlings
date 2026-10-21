@@ -543,7 +543,7 @@ text = "xdesk.layout passes every case of openwx.conformance"
 status = "required"
 
 [XDESK-HIGHLIGHT]
-text = "a window chosen in a switcher (or a new one among others) is lit while the others are dimmed, until the windows are where they go and the time chosen has passed, then they fade back; the time and the dimming are settings, off included"
+text = "a window chosen in a switcher (or a new one among others) has its own outline lit in the accent where it is, until the windows are where they go and the time chosen has passed, then the outline fades in half a second -- the others are never dimmed and lit again; while choosing, the windows are shown as they are over a dimmed output on the switchers' own layer (above a workspace's plate and label), the one under the pointer's outline faint; with less motion, nothing is lit; the time and the dimming are settings, off included"
 status = "required"
 
 # ── the GPU (design 2026-10-20 WuXian §7) ───────────────────────────

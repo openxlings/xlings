@@ -172,6 +172,12 @@ bool Server::start_() {
     background_layer = wlr_scene_tree_create(&scene->tree);
     window_layer = wlr_scene_tree_create(&scene->tree);
     shell_layer = wlr_scene_tree_create(&scene->tree);
+    spread_layer = wlr_scene_tree_create(&scene->tree);
+    {
+        const float none[4] = {0, 0, 0, 0};
+        spread_dim = wlr_scene_rect_create(spread_layer, 1, 1, none);
+        wlr_scene_node_set_enabled(&spread_dim->node, false);
+    }
     overlay_layer = wlr_scene_tree_create(&scene->tree);
     const float bg[4] = {theme.background.r / 255.0f, theme.background.g / 255.0f, theme.background.b / 255.0f, 1.0f};
     background = wlr_scene_rect_create(background_layer, static_cast<int>(size.width), static_cast<int>(size.height), bg);
@@ -363,13 +369,6 @@ bool Server::start_() {
         self->arrange();
         return 0;
     }, this);
-    {
-        const float c[4] = {theme.accent.r / 255.0f, theme.accent.g / 255.0f, theme.accent.b / 255.0f, 1.0f};
-        for (auto& r : chosen_ring) {
-            r = wlr_scene_rect_create(overlay_layer, 1, 1, c);
-            wlr_scene_node_set_enabled(&r->node, false);
-        }
-    }
     view_timer = wl_event_loop_add_timer(loop, [](void* data) -> int {
         static_cast<Server*>(data)->view_step();
         return 0;

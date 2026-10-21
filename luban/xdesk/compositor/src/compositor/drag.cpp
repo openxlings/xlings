@@ -36,6 +36,31 @@ void Server::set_opacity(View& v, float opacity) {
     }, &opacity);
 }
 
+namespace {
+constexpr double kOutline = 2;   // its outline's width, in the frame's pixels
+}
+
+void Server::set_outline(View& v, const draw::Color& c, float alpha) {
+    const float rgba[4] = {c.r / 255.0f * alpha, c.g / 255.0f * alpha, c.b / 255.0f * alpha, alpha};
+    for (auto* r : v.outline) {
+        if (!r) continue;
+        wlr_scene_rect_set_color(r, rgba);
+        wlr_scene_node_set_enabled(&r->node, alpha > 0.01f);
+    }
+}
+
+void Server::lay_outline(View& v, double width, double height) {
+    if (!v.outline[0]) return;
+    const int w = std::max(1, static_cast<int>(std::lround(width))), h = std::max(1, static_cast<int>(std::lround(height)));
+    const int t = std::min({static_cast<int>(kOutline), w, h});
+    const std::array<std::array<int, 4>, 4> edges{{{0, 0, w, t}, {0, h - t, w, t}, {0, 0, t, h}, {w - t, 0, t, h}}};
+    for (std::size_t e = 0; e < 4; ++e) {
+        wlr_scene_rect_set_size(v.outline[e], edges[e][2], edges[e][3]);
+        wlr_scene_node_set_position(&v.outline[e]->node, edges[e][0], edges[e][1]);
+        wlr_scene_node_raise_to_top(&v.outline[e]->node);
+    }
+}
+
 void Server::drag_start(View* v, bool live) {
     const auto r = placement_of(v->id);
     if (!r) return;

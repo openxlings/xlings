@@ -31,9 +31,8 @@ namespace {
 
 constexpr int kQuickMs = 150;        // Alt+Tab let go sooner: the previous window, nothing shown
 constexpr double kHoverScale = 1.04; // the window under the pointer, lifted (design 2026-10-20 WuXian §4.2)
-constexpr double kRing = 3;          // the chosen one's ring, in the accent
-constexpr int kFadeMs = 300;         // the others back from dimmed, after the chosen one was lit
-constexpr float kDimmed = 0.6f;
+constexpr int kFadeMs = 500;         // the chosen one's outline fading where it is, after it was chosen
+constexpr float kHoverOutline = 0.55f;   // the one under the pointer: its outline, faint
 constexpr double kMargin = 40;
 
 // The nearest of `rs` from `from` that way (its middle that way, the
@@ -113,18 +112,6 @@ void Server::show_spread(const std::vector<layout::Id>& ids, layout::Rect area, 
             const double w = r.width * kHoverScale, h = r.height * kHoverScale;
             r = {r.x - (w - r.width) / 2, r.y - (h - r.height) / 2, w, h};
         }
-        if (ps[k].id == chosen) {
-            const std::array<layout::Rect, 4> ring{{{r.x - kRing, r.y - kRing, r.width + 2 * kRing, kRing},
-                                                    {r.x - kRing, r.y + r.height, r.width + 2 * kRing, kRing},
-                                                    {r.x - kRing, r.y, kRing, r.height},
-                                                    {r.x + r.width, r.y, kRing, r.height}}};
-            for (std::size_t e = 0; e < 4; ++e) {
-                wlr_scene_rect_set_size(chosen_ring[e], std::max(1, static_cast<int>(std::lround(ring[e].width))),
-                                        std::max(1, static_cast<int>(std::lround(ring[e].height))));
-                wlr_scene_node_set_position(&chosen_ring[e]->node, static_cast<int>(std::lround(ring[e].x)), static_cast<int>(std::lround(ring[e].y)));
-                wlr_scene_node_set_enabled(&chosen_ring[e]->node, true);
-            }
-        }
         spread_rects.push_back({ps[k].id, r});
         spread_zoom[ps[k].id] = r.width / std::max(1.0, real[k].width);
         ps[k].rect = r;
@@ -132,23 +119,38 @@ void Server::show_spread(const std::vector<layout::Id>& ids, layout::Rect area, 
         ps[k].visible = true;
     }
     std::ranges::stable_partition(ps, [&](const layout::Placement& p) { return p.id != chosen; });
-    apply(ps, false);
+    // Gathered on the switchers' own layer, over a dimmed output: above the
+    // workspaces' plates and labels (WuXian), every window shown whole.
+    const float dim[4] = {0, 0, 0, static_cast<float>(std::clamp(1.0 - dim_level, 0.2, 0.85))};
+    wlr_scene_rect_set_color(spread_dim, dim);
+    wlr_scene_rect_set_size(spread_dim, logical_w(), logical_h());
+    wlr_scene_node_set_enabled(&spread_dim->node, true);
     for (auto& v : views)
-        if (v.mapped) set_opacity(v, v.id == chosen || !spread_zoom.contains(v.id) ? 1.0f : kDimmed);
-    const float dim[4] = {theme.background.r / 255.0f * 0.55f, theme.background.g / 255.0f * 0.55f, theme.background.b / 255.0f * 0.55f, 1.0f};
-    wlr_scene_rect_set_color(background, dim);
+        if (v.mapped && spread_zoom.contains(v.id)) wlr_scene_node_reparent(&v.frame->node, spread_layer);
+    apply(ps, false);
+    for (const auto& p : ps)
+        if (View* v = view_of(p.id)) wlr_scene_node_raise_to_top(&v->frame->node);
+    // The window's own outline: the chosen one's in the accent, the one under
+    // the pointer's faint; nothing drawn around them (design 2026-10-21 §8.2).
+    for (auto& v : views) {
+        if (!v.mapped) continue;
+        if (v.id == chosen) set_outline(v, theme.accent, 1.0f);
+        else if (v.id == spread_hover) set_outline(v, theme.text, kHoverOutline);
+        else set_outline(v, theme.accent, 0);
+    }
 }
 
 // The windows as they were: their own scale, not dimmed (the caller arranges them).
 void Server::end_spread() {
-    for (auto* r : chosen_ring) wlr_scene_node_set_enabled(&r->node, false);
     spread_hover = 0;
+    wlr_scene_node_set_enabled(&spread_dim->node, false);
     if (spread_zoom.empty() && spread_rects.empty()) return;
     spread_zoom.clear();
     spread_rects.clear();
-    for (auto& v : views) set_opacity(v, 1.0f);
-    const float bg[4] = {theme.background.r / 255.0f, theme.background.g / 255.0f, theme.background.b / 255.0f, 1.0f};
-    wlr_scene_rect_set_color(background, bg);
+    for (auto& v : views) {
+        if (v.frame->node.parent == spread_layer) wlr_scene_node_reparent(&v.frame->node, window_layer);
+        if (v.id != lit_id || lit == Lit::none) set_outline(v, theme.accent, 0);
+    }
 }
 
 // ── Super+Tab, Super+` ───────────────────────────────────────────────
@@ -329,31 +331,37 @@ bool Server::spread_key(xkb_keysym_t s) {
 
 // ── both ─────────────────────────────────────────────────────────────
 
-// The one chosen kept lit (design 2026-10-20 WuXian §4.3): the others stay
-// dimmed while the windows go where they go, then the time chosen, then
-// fade back in kFadeMs.
+// The one chosen, its outline lit where it is (design 2026-10-21 §8.2, J15):
+// held while the windows go where they go, then for the time chosen, then
+// faded in kFadeMs -- the others are never dimmed and lit again. With less
+// motion asked for, it is not lit at all.
 void Server::start_highlight(layout::Id id) {
-    if (highlight_ms <= 0 || !view_of(id)) return;
+    View* v = view_of(id);
+    if (highlight_ms <= 0 || !v) return;
+    for (auto& o : views)
+        if (o.id != id) set_outline(o, theme.accent, 0);
+    if (reduce_motion) {
+        set_outline(*v, theme.accent, 0);
+        lit = Lit::none;
+        return;
+    }
     lit = Lit::settling;
     lit_id = id;
     lit_at = std::chrono::steady_clock::now();
-    for (auto& v : views)
-        if (v.mapped) set_opacity(v, v.id == id ? 1.0f : static_cast<float>(dim_level));
+    set_outline(*v, theme.accent, 1.0f);
     if (lit_timer) wl_event_source_timer_update(lit_timer, 16);
 }
 
 void Server::highlight_step() {
     using namespace std::chrono;
     const auto now = steady_clock::now();
-    auto all = [&](float o) {
-        for (auto& v : views)
-            if (v.mapped && v.id != lit_id) set_opacity(v, o);
-    };
+    View* v = view_of(lit_id);
+    if (!v) { lit = Lit::none; return; }
     switch (lit) {
         case Lit::none: return;
         case Lit::settling:
             // Until every window is where it goes (a second at most).
-            if (std::ranges::any_of(views, [](const View& v) { return v.moving; }) && now - lit_at < seconds(1)) break;
+            if (std::ranges::any_of(views, [](const View& o) { return o.moving; }) && now - lit_at < seconds(1)) break;
             lit = Lit::holding;
             lit_at = now;
             break;
@@ -361,12 +369,11 @@ void Server::highlight_step() {
             if (now - lit_at < milliseconds(highlight_ms)) break;
             lit = Lit::fading;
             lit_at = now;
-            if (reduce_motion) { all(1.0f); lit = Lit::none; return; }
             break;
         case Lit::fading: {
             const double t = duration<double, std::milli>(now - lit_at).count() / kFadeMs;
-            if (t >= 1) { all(1.0f); lit = Lit::none; return; }
-            all(static_cast<float>(dim_level + (1 - dim_level) * t));
+            if (t >= 1) { set_outline(*v, theme.accent, 0); lit = Lit::none; return; }
+            set_outline(*v, theme.accent, static_cast<float>(1 - t));
             break;
         }
     }

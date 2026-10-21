@@ -109,6 +109,7 @@ void Server::apply(const std::vector<layout::Placement>& ps, bool instant, layou
                                     std::max(1, static_cast<int>(std::lround(p->rect.height)) - title));
             wlr_scene_node_set_position(&v.backdrop->node, 0, title);
         }
+        lay_outline(v, p->rect.width, p->rect.height);
         // The first place is taken at once; after that the frame glides.
         v.x.target = p->rect.x;
         v.y.target = p->rect.y;
@@ -241,6 +242,11 @@ void Server::add_view(wlr_xdg_toplevel* toplevel) {
     v.content = wlr_scene_xdg_surface_create(v.frame, toplevel->base);
     wlr_scene_node_set_position(&v.content->node, 0, kTitle);
     v.content->node.data = &v;
+    for (auto& r : v.outline) {
+        const float none[4] = {0, 0, 0, 0};
+        r = wlr_scene_rect_create(v.frame, 1, 1, none);
+        wlr_scene_node_set_enabled(&r->node, false);
+    }
     toplevel->base->data = v.content;
     View* self = &v;
     v.commit.connect(&toplevel->base->surface->events.commit, [this, self](void*) {

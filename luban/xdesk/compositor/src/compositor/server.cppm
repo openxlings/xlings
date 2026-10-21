@@ -110,6 +110,10 @@ struct View {
     // Under the content, the frame's size: a client that draws smaller than
     // it was given (to its own cells) shows this, not the desktop (G4).
     wlr_scene_rect* backdrop { nullptr };
+    // Its own outline, over its edges: what the switchers light -- the one
+    // under the pointer faintly, the chosen one in the accent -- and what
+    // fades where the chosen one is (design 2026-10-21 §8.2, J15).
+    std::array<wlr_scene_rect*, 4> outline {};
     bool mapped { false };
     bool laid { false };                        // in the layout
     bool placed { false };                      // shown somewhere already (then it glides)
@@ -415,15 +419,20 @@ struct Server {
     bool status_others { true };                 // the status bar shows the other workspaces
     bool plane_focus { false };                  // the WuXian view: no window focused (WuXian, a label clicked)
     // The switchers and the wheel (design 2026-10-20 WuXian §4): how long
-    // Super+Tab waits on an application; the window chosen kept lit, the
-    // others dimmed, for a while after; the wheel's speed and its columns.
+    // Super+Tab waits on an application; the chosen window's outline held,
+    // then faded in place; how dim the rest is while choosing; the wheel's
+    // speed and its columns.
     int hold_ms { 500 };
     int highlight_ms { 500 };
     double dim_level { 0.5 };
     double wheel_factor { 1 };
     bool snap_columns { true };
     layout::Id spread_hover { 0 };               // the window the pointer lifts
-    std::array<wlr_scene_rect*, 4> chosen_ring {};
+    // The switchers' own layer, above the workspaces' plates and labels: a
+    // dimmed backdrop over the whole output, the windows gathered onto it
+    // (design 2026-10-21 §8.3, J14).
+    wlr_scene_tree* spread_layer { nullptr };
+    wlr_scene_rect* spread_dim { nullptr };
     enum class Lit { none, settling, holding, fading };
     Lit lit { Lit::none };
     layout::Id lit_id { 0 };
@@ -596,6 +605,9 @@ struct Server {
     void show_drop();
     void hide_drop();
     void set_opacity(View& v, float opacity);
+    // Its outline: in `c`, at `alpha` (0: not shown); laid at its frame's size.
+    void set_outline(View& v, const draw::Color& c, float alpha);
+    void lay_outline(View& v, double width, double height);
     layout::Id maximize_under_pointer();
     // Super with the right button, a border, or the client asking: its size
     // follows the pointer (edges as wlr_edges; 0: the corner nearest the pointer).
