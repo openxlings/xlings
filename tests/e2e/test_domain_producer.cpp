@@ -15,7 +15,7 @@ using Json = nlohmann::json;
 
 XTEST(DomainProducer, InstallsAtLogicalPrefixInsideANamespaceAndPreservesHostData,
       .area = "subos", .cost = tk::Cost::Medium,
-      .covers = {"DOM-BUILD-INSIDE", "DOM-LAYOUTS", "LUBAN-ENTER-QUIET"}, .requires_ = {"linux", "bwrap", "xlings-bin"},
+      .covers = {"DOM-BUILD-INSIDE", "DOM-LAYOUTS", "LUBAN-ENTER-QUIET", "PERM-FETCH-ASK"}, .requires_ = {"linux", "bwrap", "xlings-bin"},
       .resources = {"sandbox"}, .proves = "isolation") {
     if constexpr (!tk::is_linux) GTEST_SKIP() << "Linux namespaces";
     if (const auto why = tk::probe("bwrap")) GTEST_SKIP() << *why;
@@ -148,6 +148,19 @@ XTEST(DomainProducer, InstallsAtLogicalPrefixInsideANamespaceAndPreservesHostDat
     ASSERT_EQ(policy.exit_code, 0) << policy.transcript();
     EXPECT_EQ(Json::parse(policy.out)["observe"]["level"], "basic");
     EXPECT_EQ(Json::parse(policy.out)["source"], "file");
+
+    // What the system asked its owner for is queued where it lives (its
+    // supervisor's home is the domain's): the owner lists and answers it
+    // there (luban-os-ci L2-14: the owner found none).
+    tk::write_file(producer.requests_dir("domain-root") / "r0a1b2c.json",
+                   Json{{"id", "r0a1b2c"}, {"argv", {"install", "xim:fixture-tool"}},
+                        {"created", "2026-10-22T00:00:00Z"}, {"reason", "fetch=ask"}}.dump());
+    auto requests = home.xlings({"subos", "requests", "domain-root", "--json"});
+    ASSERT_EQ(requests.exit_code, 0) << requests.transcript();
+    EXPECT_NE(requests.out.find("\"r0a1b2c\""), std::string::npos) << requests.transcript();
+    auto denied = home.xlings({"subos", "deny", "domain-root", "r0a1b2c"});
+    EXPECT_EQ(denied.exit_code, 0) << denied.transcript();
+    EXPECT_FALSE(fs::exists(producer.requests_dir("domain-root") / "r0a1b2c.json")) << denied.transcript();
     auto invalidObserve = home.xlings({"subos", "exec", "domain-root", "--observe", "unknown", "--", "/bin/true"});
     EXPECT_EQ(invalidObserve.exit_code, 125) << invalidObserve.transcript();
     EXPECT_NE(invalidObserve.transcript().find("--observe expects"), std::string::npos);

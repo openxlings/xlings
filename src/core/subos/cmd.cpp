@@ -1211,6 +1211,27 @@ int run(int argc, char* argv[], EventStream& stream) {
         }
     }
 
+    // What a system in a prefix domain asked its owner for is queued where it
+    // lives (its supervisor's home is the domain's): the owner lists, approves
+    // and denies it there -- the approved command runs there too. What these
+    // print (the list, the command's own output) is passed through as it is.
+    if (static const std::set<std::string_view> queued{"requests", "approve", "deny"};
+        queued.contains(sub) && argc > 3 && argv[3][0] != '-') {
+        auto scope = xlings::home::domain_producer::read_scope(Config::paths().homeDir, argv[3]);
+        if (!scope) { usageError(scope.error()); return 1; }
+        if (*scope) {
+            std::vector<std::string> args;
+            for (int i = 1; i < argc; ++i) args.emplace_back(argv[i]);
+            if (yesGiven && std::ranges::find(args, std::string("-y")) == args.end()) args.push_back("-y");
+            auto rc = xlings::home::domain_producer::run((**scope).domain, args);
+            if (!rc) {
+                stream.emit(ErrorEvent{.code = ErrorCode::Internal, .message = rc.error(), .recoverable = true});
+                return 1;
+            }
+            return *rc;
+        }
+    }
+
     if (sub == "new") {
         if (argc < 4) { usageError("missing <name> for: xlings subos new"); return 1; }
         // Parse: xlings subos new <name> [--storage <mode>] [--image-size <size>] [--from <spec>]
