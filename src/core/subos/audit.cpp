@@ -31,6 +31,7 @@ import xlings.subos.policy_store;
 import xlings.subos.broker;
 import xlings.observe;
 import xlings.core.home;
+import xlings.core.home.domain_producer;
 import xlings.libs.sha256;
 import xlings.core.version_order;
 
@@ -131,6 +132,25 @@ int run_broker_serve_(int argc, char* argv[], const std::function<void(std::stri
     if (name.empty() || request.empty()) {
         usageError("usage: xlings subos __broker-serve <name> [--actor <who>] -- <argv...>");
         return 1;
+    }
+    // A system in a prefix domain is answered where it lives (part 3 §3.4):
+    // its policy, its audit and its store are its home's, not this one's --
+    // an install run here went into the owner's copy of it, which the
+    // machine never reads (luban-os-ci L2-02, a desktop in its own userland).
+    if (auto scope = xlings::home::domain_producer::read_scope(Config::paths().homeDir, name); !scope) {
+        std::println(std::cerr, "[xlings] {}", scope.error());
+        return subos::broker::kExitPermission;
+    } else if (*scope) {
+        std::vector<std::string> again{"subos", "__broker-serve", name};
+        if (!actor.empty()) again.insert(again.end(), {"--actor", actor});
+        again.emplace_back("--");
+        again.insert(again.end(), request.begin(), request.end());
+        auto rc = xlings::home::domain_producer::run((**scope).domain, again);
+        if (!rc) {
+            std::println(std::cerr, "[xlings] {}", rc.error());
+            return subos::broker::kExitPermission;
+        }
+        return *rc;
     }
     const auto home = home_view();
     const auto logfile = home.logs_dir(name) / "events.ndjson";
