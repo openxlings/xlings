@@ -574,6 +574,10 @@ status = "required"
 text = "the desktop tells the window how a shaken pointer is shown (opensal 'p': off, grow, or grow and colour, up to 2 to 4 times, the colour); the window grows its pointer while it is shaken and back after, and one that hears nothing does what the default says"
 status = "required"
 
+[LUBAN-MACHINE-USERS]
+text = "a machine with users besides its own (added with adduser) shares /home over 9p with mapped-xattr, whatever the rest uses, so each user's home is theirs (owners kept in the host file's xattrs); a home made before is given back to its user at boot; a machine with only its own user is unchanged"
+status = "required"
+
 [LUBAN-MACHINE-FILES]
 text = "a machine's files are shared over 9p or, asked (luban config <name> --files virtiofs), virtio-fs: a virtiofsd a share (installed the first time, read-only where 9p is), qemu's vhost-user-fs device on a shared memfd; a daemon that does not start leaves the machine on 9p, its state saying so"
 status = "required"

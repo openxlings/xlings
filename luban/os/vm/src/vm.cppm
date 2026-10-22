@@ -168,13 +168,20 @@ std::optional<SoundForward> sound_forward(bool granted, const fs::path& pulse_so
 // vhost-user-fs device, the
 // guest's memory a shared memfd as vhost-user needs. 9p is what is used
 // without it.
-struct Share { std::string tag; fs::path dir; bool read_only { false }; };
+// `mapped`: 9p's mapped-xattr, whatever the others use -- owners and modes
+// kept in the host file's xattrs (part 2 J32: a machine's users of their own).
+struct Share { std::string tag; fs::path dir; bool read_only { false }; bool mapped { false }; };
 struct VirtiofsPlan {
     std::vector<std::string> qemu;                    // qemu's arguments for every share
     std::vector<std::vector<std::string>> daemons;    // one virtiofsd each
 };
 VirtiofsPlan virtiofs_plan(const fs::path& virtiofsd, const std::vector<Share>& shares, const fs::path& run, std::string_view memory_mb);
 std::vector<std::string> nine_p_args(const std::vector<Share>& shares);
+
+// Users besides the system's own (its login user) with a home under /home
+// (part 2 J32): virtio-fs and 9p's `none` keep every file the host user's, so
+// their homes are theirs only when /home is shared with mapped-xattr.
+bool users_of_their_own(const fs::path& etc);
 
 // The host's openbus router (design 2026-10-22 §6.5): one per home, at
 // bus_socket(home), its log under <home>/logs/openbus/; started by the first

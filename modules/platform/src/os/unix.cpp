@@ -245,6 +245,22 @@ void lchown_path_(const std::filesystem::path& p,
         ::lchown(p.c_str(), static_cast<uid_t>(uid), static_cast<gid_t>(gid));
     }
 
+std::optional<unsigned int> owner_uid(const std::filesystem::path& p) {
+    struct stat st {};
+    if (::lstat(p.c_str(), &st) != 0) return std::nullopt;
+    return static_cast<unsigned int>(st.st_uid);
+}
+
+bool chown_tree(const std::filesystem::path& p, unsigned int uid, unsigned int gid) {
+    bool all = ::lchown(p.c_str(), static_cast<uid_t>(uid), static_cast<gid_t>(gid)) == 0;
+    std::error_code ec;
+    if (!std::filesystem::is_directory(std::filesystem::symlink_status(p, ec))) return all;
+    for (auto it = std::filesystem::recursive_directory_iterator(p, std::filesystem::directory_options::skip_permission_denied, ec);
+         !ec && it != std::filesystem::recursive_directory_iterator(); it.increment(ec))
+        all = ::lchown(it->path().c_str(), static_cast<uid_t>(uid), static_cast<gid_t>(gid)) == 0 && all;
+    return all && !ec;
+}
+
 std::string home_for_user_(const std::string& name) {
         if (name.empty()) return {};
         if (struct passwd* pw = ::getpwnam(name.c_str()); pw && pw->pw_dir)

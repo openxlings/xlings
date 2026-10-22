@@ -364,6 +364,10 @@ std::optional<std::filesystem::path> dir_link_target(const std::filesystem::path
         return target.lexically_normal();
     }
 
+// Owners are POSIX: nothing to read or change here.
+std::optional<unsigned int> owner_uid(const std::filesystem::path&) { return std::nullopt; }
+bool chown_tree(const std::filesystem::path&, unsigned int, unsigned int) { return false; }
+
 void lchown_path_(const std::filesystem::path&,
                              unsigned int, unsigned int) {
     }

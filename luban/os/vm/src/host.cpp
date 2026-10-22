@@ -285,6 +285,7 @@ VirtiofsPlan virtiofs_plan(const fs::path& virtiofsd, const std::vector<Share>& 
     p.qemu = {"-object", std::format("memory-backend-memfd,id=mem,size={}{},share=on", memory_mb, plain ? "M" : ""), "-numa",
               "node,memdev=mem"};
     for (const auto& s : shares) {
+        if (s.mapped) continue;   // 9p's, always
         const auto sock = (run / std::format("vfs-{}.sock", s.tag)).generic_string();
         // Its own namespaces (unprivileged); a host that refuses them gets `none` (supervise).
         // `auto` for all: the home's generations do not change, but the host
@@ -302,9 +303,28 @@ VirtiofsPlan virtiofs_plan(const fs::path& virtiofsd, const std::vector<Share>& 
 std::vector<std::string> nine_p_args(const std::vector<Share>& shares) {
     std::vector<std::string> out;
     for (const auto& s : shares)
-        out.insert(out.end(), {"-virtfs", std::format("local,path={},mount_tag={},security_model=none,{}id={}", s.dir.generic_string(), s.tag,
-                                                       s.read_only ? "readonly=on," : "", s.tag)});
+        out.insert(out.end(), {"-virtfs", std::format("local,path={},mount_tag={},security_model={},{}id={}", s.dir.generic_string(), s.tag,
+                                                       s.mapped ? "mapped-xattr" : "none", s.read_only ? "readonly=on," : "", s.tag)});
     return out;
+}
+
+bool users_of_their_own(const fs::path& etc) {
+    const auto own = xlings::subos::root_etc::login_user(etc);
+    std::ifstream in(etc / "passwd");
+    for (std::string line; std::getline(in, line);) {
+        std::vector<std::string> f;
+        for (std::size_t at = 0;;) {
+            const auto colon = line.find(':', at);
+            f.push_back(line.substr(at, colon == std::string::npos ? std::string::npos : colon - at));
+            if (colon == std::string::npos) break;
+            at = colon + 1;
+        }
+        if (f.size() < 7 || f[0] == own || !f[5].starts_with("/home/")) continue;
+        unsigned uid = 0;
+        if (std::from_chars(f[2].data(), f[2].data() + f[2].size(), uid).ec != std::errc{}) continue;
+        if (uid >= 1000 && uid < 65534) return true;
+    }
+    return false;
 }
 
 MachineGpu machine_gpu(const std::optional<fs::path>& render_node, const std::expected<void, std::string>& gl,
@@ -429,6 +449,9 @@ int start_impl_(const service::Context& c, std::string_view name, const EnterOpt
         }
         userhome = persist == "home";
     }
+    // Users of their own (part 2 J32): /home over 9p with mapped-xattr, so
+    // what they own stays theirs; the system's own user notices nothing.
+    const bool mapped_home = users_of_their_own(*root / "etc");
     const auto net = network_(c, name);
     // What its init and its login shells read for this boot (/run/luban/network.env,
     // design 2026-10-19 §27.3): under the home it mounts, never in its tree.
@@ -463,8 +486,8 @@ int start_impl_(const service::Context& c, std::string_view name, const EnterOpt
     else if (!arch.cpu.empty()) q.insert(q.end(), {"-cpu", std::string(arch.cpu)});
     const std::string console = arch.name == "aarch64" ? "ttyAMA0" : "ttyS0";
     q.insert(q.end(), {"-kernel", kernel->string(), "-initrd", initrd->string(), "-append",
-                       std::format("console={} quiet panic=-1 luban.home={} luban.name={} luban.userhome={}{}", console, home, name,
-                                   userhome ? 1 : 0,
+                       std::format("console={} quiet panic=-1 luban.home={} luban.name={} luban.userhome={}{}{}", console, home, name,
+                                   userhome || mapped_home ? 1 : 0, mapped_home ? " luban.homefs=9p" : "",
                                    // Its network is the kernel's own DHCP on the NAT, and its
                                    // name the system's (design 2026-10-19 §27.2): nothing in
                                    // the system has to bring either up, whatever its init is.
@@ -479,8 +502,10 @@ int start_impl_(const service::Context& c, std::string_view name, const EnterOpt
     // daemon is here (installed the first time); the 9p arguments kept, the
     // supervisor's way back should a daemon not start.
     std::vector<Share> shares{{"root", share, false}, {"home", home_files, true}};
-    if (userhome) shares.push_back({"userhome", *root / "home", false});
+    if (userhome || mapped_home) shares.push_back({"userhome", *root / "home", false, mapped_home});
     const auto nine_p = nine_p_args(shares);
+    std::vector<Share> always_9p;
+    for (const auto& s : shares) if (s.mapped) always_9p.push_back(s);
     std::optional<VirtiofsPlan> vfs;
     std::string files = "9p";
     // An emulated machine (no KVM) stays on 9p: programs read over
@@ -514,6 +539,9 @@ int start_impl_(const service::Context& c, std::string_view name, const EnterOpt
     }
     if (vfs) {
         q.insert(q.end(), vfs->qemu.begin(), vfs->qemu.end());
+        const auto mapped = nine_p_args(always_9p);
+        q.insert(q.end(), mapped.begin(), mapped.end());
+        vfs->qemu.insert(vfs->qemu.end(), mapped.begin(), mapped.end());
         // The guest mounts its shares with virtio-fs: on the kernel's command line.
         for (std::size_t k = 0; k + 1 < q.size(); ++k)
             if (q[k] == "-append") { q[k + 1] += " luban.fs=virtiofs"; break; }
@@ -530,7 +558,7 @@ int start_impl_(const service::Context& c, std::string_view name, const EnterOpt
     q.insert(q.end(), net.args.begin(), net.args.end());
     Json state{{"name", name}, {"qemu", q}, {"persist", persist}, {"temp", o.temp}, {"scratch", persist == "all" ? "" : share.string()},
                {"env", net.env}, {"started", xlings::observe::utc_now()}, {"accel", kvm ? "kvm" : "tcg"}, {"memory", memory},
-               {"gpu", gpu.summary}, {"files", files}};
+               {"gpu", gpu.summary}, {"files", mapped_home ? files + ", /home over 9p (users of their own)" : files}};
     if (vfs) {
         // Its way back, should a daemon not start: the same arguments, 9p's instead.
         state["virtiofsd"] = vfs->daemons;
