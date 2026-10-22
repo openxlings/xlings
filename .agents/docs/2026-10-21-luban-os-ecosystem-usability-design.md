@@ -823,6 +823,45 @@ luban-os-ci（新仓库，一个初始 PR）：
 - **合入与发布的顺序**：xlings PR 的 CI 全绿 → 自审 → squash 合入（Sunrisepeak）→ 取消 main 的 CI，先跑 release → 资源一出来就在本地推 GitCode →
   重新触发 main 的 CI → 合入 xim-pkgindex 的 PR（含 P7）→ 用发布的版本真实验证全部生态。
 
+### 13.2 发布后的验证轮（2026.10.22.2–.4）
+
+2026.10.22.1 发布后，用发布的版本、发布的索引、真实的桌面（d1、d7）与托管 runner 上的 luban-os-ci 验证，
+每发现一处就定因、修、测、发，直到全部生态通过。依赖链（每一步都要前一步发布并进了索引，才能被下一步验证）：
+
+```
+22.1 发布 ──► d7 升级桌面 ──► J34（xdesk 需要 GLIBCXX_3.4.35）
+               ├─► xim-pkgindex#1024：新装钉回 xdesk 2026.10.21.3（只保护新系统）
+               └─► xlings#694 = 22.2 ──► xim-pkgindex#1026：新版本 luban:xdesk、luban:desktop 2026.10.22.2
+                                         （只升 revision 移不动已装的系统：要发新版本）
+22.2 ──► d7 升级 ──► J35（第二次升级把包当成用户的）
+     ──► luban-os-ci L2-02（本地）──► J36（第二个系统的用户装不了）
+     ──► luban-os-ci L2-14（只在 runner）──► J37（私有域的请求主人看不到）
+     ──► main 的 asan ──► 测试自身的越界读、空路径
+         └─► xlings#695、#696 = 22.3 ──► xim-pkgindex#1029
+22.3 ──► d1 升级、d7 切换 ──► J38（重新登记的发布多出成员，锁住别的系统的根）
+     ──► luban-os-ci L2-02（只在 runner）──► J39（私有域 machine 的 broker 装错了 home）
+         └─► xlings#697 = 22.4 ──► xim-pkgindex#1030 ──► luban-os-ci 全绿、d7 可用 ──► luban-os-ci#1 合入
+```
+
+- **跨仓库联动**：
+  - 每个版本的顺序：xlings PR 全绿 → squash 合入 → 取消 main 的 CI → release → 本地 gtc 补 GitCode（xlings、luban 先推；luban-os、xdesk 等 CI 的镜像作业建好 GitHub 端的 release 再推）→ 重新触发 main 的 CI → xim-pkgindex PR（指针，必要时新的组合包版本）→ 发布后等 CDN → 真实验证。
+  - 一个修复若还没发布就又发现了下一个问题（J37），取消尚未发布的 release，把修复并进同一个版本号，省一整轮镜像与索引。
+  - luban-os-ci 的场景只在发现"它测的不是它说的"时改（L2-02 的 known 已失效；L2-14 与 L2-02 在失败时打印看到了什么）。
+- **为什么本地没发现 J37、J39**：这台机器建不了私有命名空间，系统都落在 home 自己的前缀里；runner 上 agent 工作区与桌面在私有域里。
+  本地 `./run.sh` 覆盖前缀路径，私有域路径只有 runner 覆盖——所以 luban-os-ci 在托管 runner 上跑是必要的，而不是重复。
+
+### 13.3 验证记录（2026.10.22.4）
+
+| 什么 | 在哪里 | 结果 |
+|---|---|---|
+| xlings 的全部 CI（Linux 含 asan 四片、macOS、Windows、aarch64、host matrix） | main（e88c2638） | 通过 |
+| 从发布的版本全新安装、luban 的 fresh 套件 | `xlings-ci-fresh-install`、`xlings-ci-luban-fresh`（22.3、22.4） | 通过 |
+| luban-os-ci L2（15 个场景，三类系统） | GitHub 托管 runner，最新发布 | 13 通过、0 失败、5 known（J32、J33、mcpp#831）、1 pending（K5） |
+| 升级旧桌面：edition、xdesk 自动切换、xdesk 在系统绑定的 C++ 运行时上运行 | 本机 d1（desktop 2026.10.21.3 → 2026.10.22.2） | 通过（`xdesk --probe` 出帧） |
+| 二次升级、手动降级后的恢复、`luban status --check` | 本机 d7 | 通过（可用，70 项 66 过；4 条非关键提示见 §15） |
+| 一个用户在两台系统里装同一个包 | 本机 L2-02（前缀）、runner L2-02（私有域） | 通过 |
+| agent 工作区的审批 | runner L2-14（私有域） | 通过 |
+
 ## 14. 自审（修订 2，按视角）
 
 | 视角 | 发现 | 处理 |
@@ -873,6 +912,17 @@ luban-os-ci（新仓库，一个初始 PR）：
 | 修订 4：架构 | 测试用的 qemu carrier 会不会成为特例 | 它是 carrier 接口的又一个实现，与 vz 共用除"启动虚拟机"以外的代码；只在测试里启用，不进用户的能力报告 |
 | 修订 4：稳定性 | 依赖环境能力的作业，可能"什么都没测却显示通过"（调研里别人踩过） | 每个作业第一步探测，探测失败就明确失败（§9.5） |
 | 修订 4：成本 | 真 GPU 与裸机 Mac 都要花钱，luban-os 组织是 Free 套餐 | E14、E15 列出费用与替代方案；默认不花钱也能覆盖全部功能 |
+| 修订 6：架构 | J36、J38 同源：一个 home 前缀里的系统共用一份版本库与存储，"存储里有"与"本系统选了"被混为一谈 | 两处都改为以本系统的登记为准：用户视图缺什么按登记判断（J36），根闭包只投影本系统选过的成员（J38）；K5 的 `own` 会从根上分开（§15） |
+| 修订 6：架构 | J37、J39 同源：私有域里的系统，有的命令在主人的 home 里执行 | 与 `upgrade`、`boot`、`export` 一样转到系统所在的域：`requests`/`approve`/`deny` 与 machine 的 `__broker-serve`；`log`/`report` 待查（§15） |
+| 修订 6：稳定性 | J38 让一个系统的每次根更新都失败，连 `self doctor` 的建议也用不了 | 不再拒绝而是不投影；单元测试先复现拒绝 |
+| 修订 6：稳定性 | `enqueue` 不检查写入是否成功，J37 里请求号照常返回 | 本轮修了写的位置；写失败要报错，列入 §15 |
+| 修订 6：用户体验 | 修之前，升过一次的桌面再升级会说"keep … (yours)"，用户并没有动过 | edition 记录 `brought`；`--dry-run` 能看到要换的包 |
+| 修订 6：用户体验 | 提示里的命令（`xlings subos approve agent <id>`）对私有域的系统不起作用 | J37 后提示与行为一致 |
+| 修订 6：兼容 | `brought` 是记录里的新字段 | 旧客户端忽略它；没有它的旧记录把"比记录版本旧的已装版本"当作 edition 以前带来的（edition 只往前走） |
+| 修订 6：无感升级 | revision 不能让已装的系统换版本（J34 的修复一开始只保护新系统） | 要让已装系统换版本，发新的组合包版本与 edition 版本；d1、d7 用发布的版本实测换上 |
+| 修订 6：跨平台 | J37、J39 只在能建私有命名空间的 Linux 上出现，本机测不到 | luban-os-ci 在托管 runner 上跑（§13.2）；DomainProducer 的 e2e 需要静态候选，在 PR CI 上跳过——覆盖靠 L2 |
+| 修订 6：一致性 | 同一件事（"系统有没有这个包"）在三处判断：用户视图、借用、根闭包 | 三处都以系统 scope 的登记为准 |
+| 修订 6：简洁优雅 | 修复都在原有的路径上：不加新命令、新配置 | 新增的只有 `brought` 一个字段 |
 | **风险** | 本轮的范围很大 | K1–K2 先交付可用性；每个检查点都跑完整 CI；每条新路径都有退路 |
 
 ## 15. 不做的与以后
@@ -891,6 +941,12 @@ luban-os-ci（新仓库，一个初始 PR）：
 - machine 里多用户的属主（J32）：9p 的 `mapped-xattr`，或 virtiofsd 的 subuid 映射；本轮只记录，luban-os-ci 的 L2-05 标为 known。
 - 存放方式 `own`（K5）：宿主上的系统都是单一布局，链接写的是建它的那个 home 的路径；`own` 要一种新的域（私有 home 在同一个逻辑路径上）、
   把系统的实例、闭包、ABI、版本登记在两个 home 之间搬动，并守住用户数据的规则；本轮不做，单独一个 PR（luban-os-ci 的 L2-13 为 pending）。
+- 私有域里系统的 `subos log`、`subos report`：事件日志也在域里，可能与 J37 同样读错 home；先确认再转发。
+- `broker::enqueue` 写请求失败时仍返回请求号：应报错。
+- 通用的"程序能启动"检查对 Qt 图形程序（falkon）没有显示时退出 134：对图形程序设 `QT_QPA_PLATFORM=offscreen`，或对声明了自有检查的程序跳过；目前是非关键提示。
+- DomainProducer 的 e2e 只在有私有命名空间且是静态候选的环境里跑：给 CI 一个这样的作业。
+- xim-pkgindex 的 gitee-sync 只在 push 时运行：GitHub 漏掉 push 事件时（2026-10-22 的 #1030）要等下一次 push 才同步。
+- mcpp 的正式发布（会通知 AUR、Homebrew、Nix）由维护者触发；core edition 里 mcpp 的版本随之更新。
 
 ## 16. 评审
 
