@@ -74,10 +74,10 @@ XTEST(Openwx, TheStateReadsBackAsItWasWrittenItsLayoutUntouched, .area = "luban"
     s.camera = {.at = {-120.5, 40}, .zoom = 0.5};
     s.workspaces = {{.id = 2, .name = "编码 \"x\"", .color = 0x5e9cff, .origin = {0, 0}, .scale = 1, .z = 3},
                     {.id = 4, .name = "", .color = 0x3fbfb0, .rule = wx::Rule::stack, .flow = wx::Flow::vertical,
-                     .origin = {1800, -20}, .scale = 0.75, .z = 1}};
+                     .origin = {1800, -20}, .scale = 0.75, .z = 1, .collapsed = true}};
     s.layouts[2] = R"({"columns": [[0, 1], [2]], "widths": [0.5, 0]})";
     s.windows = {{.app_id = "foot", .title = "build\tlog", .in = 2, .flags = {"floating", "made-up"}},
-                 {.app_id = "org.kde.falkon", .free = wx::Rect{1800, 200, 1200, 800}, .z = 4}};
+                 {.app_id = "org.kde.falkon", .free = wx::Rect{1800, 200, 1200, 800}, .z = 4, .flags = {"collapsed"}}};
     EXPECT_TRUE(wx::validate(s).empty()) << wx::validate(s).front();
     const auto text = wx::format(s);
     auto back = wx::parse(text);

@@ -8,6 +8,7 @@
 module xdesk.compositor;
 
 import std;
+import xdesk.words;
 import opensal;
 import openwx;
 import xdesk.os;
@@ -28,8 +29,6 @@ namespace draw = xdesk::draw;
 namespace key = xdesk::native::key;
 
 namespace {
-
-std::string_view tr_(bool zh, std::string_view en, std::string_view cn) { return zh ? cn : en; }
 
 constexpr double kHandle = 18;      // a frame's corner that scales it, in screen pixels
 constexpr int kCloseWait = 5;       // seconds before "close all" may be pressed
@@ -99,9 +98,9 @@ void Server::status_hover(double x, double y) {
     const auto* w = lay.workspace_info(a->index);
     if (!w) return;
     const auto n = lay.windows_in(a->index).size();
-    const auto rule = w->rule == layout::Rule::stack ? tr_(zh, "stack", "层叠") : tr_(zh, "tile", "平铺");
-    show_hint(zh ? std::format("工作区 {} · {} · {} 个窗口", named_(w->id, w->name), rule, n)
-                 : std::format("Workspace {} · {} · {} {}", named_(w->id, w->name), rule, n, n == 1 ? "window" : "windows"),
+    const auto rule = w->rule == layout::Rule::stack ? i18n::tr("stack") : i18n::tr("tile");
+    show_hint(n == 1 ? i18n::trf("Workspace {} · {} · 1 window", named_(w->id, w->name), rule)
+                     : i18n::trf("Workspace {} · {} · {} windows", named_(w->id, w->name), rule, n),
               1500);
 }
 
@@ -173,6 +172,7 @@ void Server::update_frames(const std::vector<layout::Placement>& ps) {
 // the workspace drawn smaller as it goes out, larger as it comes in.
 void Server::change_view(std::optional<int> into) {
     if (view_move) return;
+    publish("view", {{"to", wuxian() ? "workspace" : "wuxian"}});
     if (!wuxian()) {
         const auto from = lay.locked_camera();
         lay.set_view(layout::View::wuxian);
@@ -275,6 +275,7 @@ bool Server::wuxian_button(const opensal::PointerButton& b) {
         return true;
     }
     for (auto it = ws_nodes.rbegin(); it != ws_nodes.rend(); ++it) {
+        if (lay.workspace_collapsed(it->id)) continue;   // a label strip has no corner to scale by
         const auto& f = it->frame;
         const layout::Rect corner{f.x + f.width - kHandle, f.y + f.height - kHandle, kHandle * 1.5, kHandle * 1.5};
         if (!corner.contains(x, y) || b.button != B::Left) continue;
@@ -296,7 +297,12 @@ bool Server::wuxian_button(const opensal::PointerButton& b) {
         else open_plane_menu(x, y);
         return true;
     }
-    if (b.button == B::Left && ws && twice(*ws)) { change_view(*ws); return true; }
+    if (b.button == B::Left && ws && twice(*ws)) {
+        // A collapsed one's strip: expanded; else into it.
+        if (lay.workspace_collapsed(*ws)) collapse_workspace(*ws);
+        else change_view(*ws);
+        return true;
+    }
     if (b.button == B::Left || b.button == B::Middle) {
         if (ws) choose(*ws);
         else {
@@ -379,12 +385,20 @@ bool Server::workspace_action(const std::string& what) {
         }
     } else if (what == "scale:0.5") lay.set_scale(id, 0.5);
     else if (what == "scale:1") lay.set_scale(id, 1);
+    else if (what == "collapse") { collapse_workspace(id); return true; }
+    else if (what.starts_with("bm:")) {
+        // A covered item from a bookmark's "+N" list: bm:w:<window> or bm:s:<workspace>.
+        const auto n = std::strtoull(what.c_str() + 5, nullptr, 10);
+        if (what[3] == 'w') bookmark_choose(n, 0);
+        else bookmark_choose(0, static_cast<int>(n));
+        return true;
+    }
     else if (what == "delete") { ask_remove(id); return true; }
     else if (what == "new:tile" || what == "new:stack") {
         const auto rule = what == "new:stack" ? layout::Rule::stack : layout::Rule::tile;
         // Its label's top-left where the menu was opened.
         const int made = lay.add_workspace(rule, std::nullopt, layout::Point{menu_world.x, menu_world.y + shell::kLabelHeight / lay.zoom()});
-        if (made == 0) show_hint(tr_(zh, "Nine workspaces are as many as there are", "工作区最多 9 个"), 3000);
+        if (made == 0) show_hint(i18n::tr("Nine workspaces are as many as there are"), 3000);
         else ws_selected = made;
     } else if (what == "tidy") lay.line_up();
     else if (what == "show-all") lay.show_all();
@@ -402,7 +416,7 @@ bool Server::workspace_action(const std::string& what) {
 void Server::ask_remove(int id) {
     if (!lay.workspace_info(id)) return;
     if (lay.workspaces().size() <= 1) {
-        show_hint(tr_(zh, "The last workspace stays", "最后一个工作区不能删除"), 3000);
+        show_hint(i18n::tr("The last workspace stays"), 3000);
         return;
     }
     const auto n = lay.windows_in(id).size();
@@ -422,11 +436,10 @@ void Server::ask_remove(int id) {
 
 void Server::draw_dialog() {
     if (asking_reset) {
-        overlay_picture = shell::dialog(ui(), big_font ? &*big_font : nullptr, theme, tr_(zh, "Everything as it came?", "全部恢复默认？"),
-                                        tr_(zh, "The layout's, the switchers', the wheel's and the look's settings, and every key changed",
-                                            "布局、切换、滚动与外观的设置，以及改过的快捷键，都回到默认"),
-                                        {{.label = std::string(tr_(zh, "Put everything back (Enter)", "全部恢复（Enter）")), .primary = true},
-                                         {.label = std::string(tr_(zh, "Cancel (Esc)", "取消（Esc）"))}},
+        overlay_picture = shell::dialog(ui(), big_font ? &*big_font : nullptr, theme, i18n::tr("Everything as it came?"),
+                                        i18n::tr("The layout's, the switchers', the wheel's and the look's settings, and every key changed"),
+                                        {{.label = std::string(i18n::tr("Put everything back (Enter)")), .primary = true},
+                                         {.label = std::string(i18n::tr("Cancel (Esc)"))}},
                                         logical_w(), logical_h(), scale);
         return;
     }
@@ -436,15 +449,15 @@ void Server::draw_dialog() {
     const auto waited = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now() - removal->since).count();
     const int left = std::max(0, kCloseWait - static_cast<int>(waited));
     const auto name = named_(w->id, w->name);
-    const auto title = zh ? std::format("删除工作区 {}？", name) : std::format("Remove workspace {}?", name);
-    const auto text = zh ? std::format("工作区 {} 里有 {} 个窗口", name, removal->windows)
-                         : std::format("Workspace {} holds {} {}", name, removal->windows, removal->windows == 1 ? "window" : "windows");
+    const auto title = i18n::trf("Remove workspace {}?", name);
+    const auto text = removal->windows == 1 ? i18n::trf("Workspace {} holds 1 window", name)
+                                            : i18n::trf("Workspace {} holds {} windows", name, removal->windows);
     std::vector<shell::DialogButton> buttons{
-        {.label = std::string(tr_(zh, "Make them free windows (Enter)", "变成自由窗口（Enter）")), .primary = true},
-        {.label = left > 0 ? (zh ? std::format("关闭全部窗口（{}）", left) : std::format("Close them all ({})", left))
-                           : std::string(tr_(zh, "Close them all", "关闭全部窗口")),
+        {.label = std::string(i18n::tr("Make them free windows (Enter)")), .primary = true},
+        {.label = left > 0 ? i18n::trf("Close them all ({})", left)
+                           : std::string(i18n::tr("Close them all")),
          .enabled = left == 0, .danger = true},
-        {.label = std::string(tr_(zh, "Cancel (Esc)", "取消（Esc）"))},
+        {.label = std::string(i18n::tr("Cancel (Esc)"))},
     };
     overlay_picture = shell::dialog(ui(), big_font ? &*big_font : nullptr, theme, title, text, buttons, logical_w(), logical_h(), scale);
 }
@@ -512,8 +525,7 @@ void Server::draw_naming() {
     const auto n = std::ranges::find(ws_nodes, naming, &WorkspaceNodes::id);
     const double x = n != ws_nodes.end() ? n->label_at.x : logical_w() / 2.0 - 160;
     const double y = n != ws_nodes.end() ? n->label_at.y + shell::kLabelHeight + 4 : logical_h() / 2.0 - 32;
-    overlay_picture = shell::text_field(ui(), theme, zh ? std::format("工作区 {} 的名字（Enter 确定，Esc 取消）", naming)
-                                                         : std::format("Workspace {}'s name (Enter: keep, Esc: cancel)", naming),
+    overlay_picture = shell::text_field(ui(), theme, i18n::trf("Workspace {}'s name (Enter: keep, Esc: cancel)", naming),
                                         name_text, x, y, logical_w(), logical_h(), scale);
 }
 
@@ -544,6 +556,96 @@ void Server::naming_type(std::string_view text) {
     if (name_text.size() + text.size() > 64) return;
     name_text += text;
     draw_overlay();
+}
+
+// ── the minimap (design 2026-10-21 §8.9) ─────────────────────────────
+
+// Pressed on the minimap: a workspace or a free window there, else the view's
+// box, else the plane (the view goes there).
+void Server::minimap_press() {
+    const auto m = lay.minimap();
+    const auto w = minimap_world(cursor->x, cursor->y);
+    MinimapDrag d{.from = w, .press_x = cursor->x, .press_y = cursor->y, .per_pixel = minimap_shown.per_pixel};
+    // The view's box by its edge (3 map pixels): the camera; inside it, what is there.
+    const double pp = minimap_shown.per_pixel, reach = 3 * pp;
+    const layout::Rect outer{m.view.x - reach, m.view.y - reach, m.view.width + 2 * reach, m.view.height + 2 * reach};
+    const layout::Rect inner{m.view.x + reach, m.view.y + reach, m.view.width - 2 * reach, m.view.height - 2 * reach};
+    const bool on_edge = outer.contains(w.x, w.y) && !(inner.width > 0 && inner.height > 0 && inner.contains(w.x, w.y));
+    if (on_edge) {
+        d.what = MinimapDrag::What::view;
+        d.origin = lay.camera().at;
+    } else if (const auto hit = openwx::hit(m.layers, w)) {
+        if (hit->kind == openwx::Layer::Kind::window) {
+            d.what = MinimapDrag::What::window;
+            d.window = hit->window;
+            d.origin = {hit->world.x, hit->world.y};
+        } else if (const auto* info = lay.workspace_info(hit->workspace)) {
+            d.what = MinimapDrag::What::workspace;
+            d.workspace = hit->workspace;
+            d.origin = info->origin;
+        }
+    } else if (m.view.contains(w.x, w.y)) {
+        d.what = MinimapDrag::What::view;
+        d.origin = lay.camera().at;
+    } else {
+        lay.look_at(w.x, w.y);
+        arrange();
+        return;
+    }
+    minimap_drag = d;
+    drag = Drag::minimap;
+}
+
+void Server::minimap_motion() {
+    if (!minimap_drag) { drag = Drag::none; return; }
+    auto& d = *minimap_drag;
+    // In the map's pixels as it was pressed: what moves changes the map's scale.
+    const double dx = (cursor->x - d.press_x) * d.per_pixel, dy = (cursor->y - d.press_y) * d.per_pixel;
+    // A few pixels of the map before it is a drag, not a click.
+    if (!d.moved && std::hypot(cursor->x - d.press_x, cursor->y - d.press_y) < 3) return;
+    d.moved = true;
+    pointer_shape("grabbing");
+    using W = MinimapDrag::What;
+    view_moved();
+    if (d.what == W::view) lay.look({.at = {d.origin.x + dx, d.origin.y + dy}, .zoom = lay.camera().zoom});
+    else if (d.what == W::workspace) lay.move_workspace(d.workspace, {d.origin.x + dx, d.origin.y + dy});
+    else lay.move_free(d.window, {d.origin.x + dx, d.origin.y + dy});
+    arrange(true);
+}
+
+void Server::minimap_release() {
+    if (!minimap_drag) return;
+    const auto d = *minimap_drag;
+    minimap_drag.reset();
+    using W = MinimapDrag::What;
+    const auto m = lay.minimap();
+    if (!d.moved) {
+        // A click: that one focused and in the middle of the view, the zoom kept.
+        if (d.what == W::view) lay.look_at(d.from.x, d.from.y);
+        for (const auto& l : m.layers) {
+            const bool it = (d.what == W::window && l.kind == openwx::Layer::Kind::window && l.window == d.window)
+                            || (d.what == W::workspace && l.kind == openwx::Layer::Kind::workspace && l.workspace == d.workspace);
+            if (it) lay.look_at(l.world.x + l.world.width / 2, l.world.y + l.world.height / 2);
+        }
+        if (d.what == W::workspace) {
+            ws_selected = d.workspace;
+            lay.raise(d.workspace);
+        }
+        if (d.what == W::window)
+            if (View* v = view_of(d.window)) focus(v);
+        arrange();
+        return;
+    }
+    // A free window let go over a workspace: into it (openwx §3.5).
+    if (d.what == W::window) {
+        const auto w = minimap_world(cursor->x, cursor->y);
+        std::vector<openwx::Layer> others;
+        for (const auto& l : m.layers)
+            if (!(l.kind == openwx::Layer::Kind::window && l.window == d.window)) others.push_back(l);
+        if (const auto hit = openwx::hit(others, w); hit && hit->kind == openwx::Layer::Kind::workspace) lay.send_to(d.window, hit->workspace);
+    }
+    remember_arrangement();
+    arrange();
 }
 
 }  // namespace xdesk::compositor

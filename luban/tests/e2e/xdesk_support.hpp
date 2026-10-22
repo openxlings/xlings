@@ -183,7 +183,18 @@ for obj, op, body in it:
     return file;
 }
 
-inline tk::RunResult xdesk_with(const tk::Home& home, std::string_view profile, std::string_view script) {
+// A desktop whose tour was given (design 2026-10-21 §8.1): what a test starts
+// from unless it is the tour's -- the tour's card would cover what it looks at.
+inline void toured(const tk::Home& home) {
+    const auto state = home.root() / ".config" / "xdesk" / "state.json";
+    if (fs::exists(state)) return;
+    fs::create_directories(state.parent_path());
+    std::ofstream(state) << R"({"toured": true})";
+}
+
+inline tk::RunResult xdesk_with(const tk::Home& home, std::string_view profile, std::string_view script,
+                                std::map<std::string, std::string> env = {}, bool tour = false) {
+    if (!tour) toured(home);
     const auto runtime = home.root() / "run";
     fs::create_directories(runtime);
     fs::permissions(runtime, fs::perms::owner_all, fs::perm_options::replace);
@@ -194,7 +205,10 @@ inline tk::RunResult xdesk_with(const tk::Home& home, std::string_view profile, 
                        "--autostart", std::format("python3 {} c04040", client),
                        "--autostart", std::format("sh -c 'sleep 0.6; exec python3 {} 40c040'", client),
                        "--autostart", std::format("sh -c 'sleep 1.2; exec python3 {} 4040c0'", client)},
-                      {{"XDG_RUNTIME_DIR", runtime.string()}});
+                      [&] {
+                          env["XDG_RUNTIME_DIR"] = runtime.string();
+                          return env;
+                      }());
 }
 
 inline constexpr std::array<int, 3> kRed { 0xc0, 0x40, 0x40 }, kGreen { 0x40, 0xc0, 0x40 }, kBlue { 0x40, 0x40, 0xc0 };
@@ -221,5 +235,113 @@ inline std::array<int, 4> box_of(const Image& img, const std::array<int, 3>& col
     return b;
 }
 
+
+// A desktop driven by its control (design 2026-10-21 §8, headless): xdesk
+// under the Luban OS window with three windows, held until the test is
+// done; what it is read from `xdesk msg state`, input given through
+// `{"input": [...]}` -- the same path as the window's -- so a test takes
+// where to click from the state, not from pixels it guessed.
+class XdeskSession {
+public:
+    XdeskSession(const tk::Home& home, std::string profile, std::map<std::string, std::string> env = {}, bool tour = false)
+        : home_(home), runtime_(home.root() / "run"), done_(home.root() / "session.done") {
+        std::error_code ec;
+        fs::remove(done_, ec);
+        run_ = std::async(std::launch::async, [this, profile, env, tour] {
+            return xdesk_with(home_, profile, std::format("wait desktop\nwaitfor desktop.texture.0 1100\nuntilfile {} 240\n", done_.string()), env, tour);
+        });
+        for (int k = 0; k < 200 && control_.empty(); ++k) {
+            for (const auto& e : fs::directory_iterator(runtime_, ec))
+                if (e.path().filename().string().starts_with("xdesk-") && e.path().extension() == ".sock") control_ = e.path();
+            if (control_.empty()) std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+        if (!control_.empty()) display_ = control_.stem().string().substr(6);
+    }
+    ~XdeskSession() { (void)finish(); }
+    bool ready() const { return !control_.empty(); }
+    // The request as the socket takes it; its answer.
+    Json ask(const Json& request) const {
+        tk::RunOptions o;
+        o.argv = {xdesk_binary()->string(), "msg", request.dump()};
+        o.env = {{"XDG_RUNTIME_DIR", runtime_.string()}, {"WAYLAND_DISPLAY", display_}};
+        o.timeout = std::chrono::seconds(20);
+        const auto r = tk::run(o);
+        auto j = Json::parse(r.out, nullptr, false);
+        if (!j.is_object()) last_failure = r.transcript();
+        return j;
+    }
+    mutable std::string last_failure;   // what the last request that was not answered said
+    Json state() const { return ask(Json{{"state", true}}); }
+    // Input steps (move, click, button, key, keydown, keyup, wheel); whether they were taken.
+    bool input(const Json& steps) const { return ask(Json{{"input", steps}}).value("ok", false); }
+    bool key(std::string chord) const { return input(Json::array({Json{{"key", chord}}})); }
+    bool move(double x, double y) const { return input(Json::array({Json{{"move", {x, y}}}})); }
+    bool click(double x, double y, int count = 1, std::string button = "left") const {
+        return input(Json::array({Json{{"click", {x, y}}, {"count", count}, {"button", button}}}));
+    }
+    // The state once `ok` holds of it (the last one read, when it does not in time).
+    template <class F>
+    Json until(F&& ok, std::chrono::milliseconds within = std::chrono::seconds(10)) const {
+        Json s;
+        const auto end = std::chrono::steady_clock::now() + within;
+        do {
+            s = state();
+            if (s.is_object() && ok(s)) return s;
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        } while (std::chrono::steady_clock::now() < end);
+        return s;
+    }
+    // The state once nothing moves: windows, workspaces and the camera the
+    // same two reads in a row (a glide, the view's change, have ended).
+    Json still(std::chrono::milliseconds within = std::chrono::seconds(10)) const {
+        auto shape = [](const Json& s) {
+            Json k = Json::array();
+            if (!s.is_object()) return k;
+            for (const auto& w : s["windows"]) k.push_back(w.value("rect", Json()));
+            for (const auto& w : s["workspaces"]) k.push_back(w.value("frame", Json()));
+            k.push_back(s.value("camera", Json()));
+            return k;
+        };
+        Json before = state();
+        const auto end = std::chrono::steady_clock::now() + within;
+        while (std::chrono::steady_clock::now() < end) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(150));
+            Json now = state();
+            const bool gliding = now.is_object() && std::ranges::any_of(now["windows"], [](const Json& w) { return w.value("moving", false); });
+            if (now.is_object() && !gliding && !now.value("view_moving", false) && shape(now) == shape(before)) return now;
+            before = std::move(now);
+        }
+        return before;
+    }
+    // The session's end: the window closes, its run said.
+    tk::RunResult finish() {
+        if (finished_) return result_;
+        finished_ = true;
+        tk::write_file(done_, "done");
+        if (run_.valid()) result_ = run_.get();
+        return result_;
+    }
+
+private:
+    const tk::Home& home_;
+    fs::path runtime_, done_, control_;
+    std::string display_;
+    std::future<tk::RunResult> run_;
+    tk::RunResult result_;
+    bool finished_ { false };
+};
+
+// A window's entry in the state, by its title (the colour client's title is its colour).
+inline Json window_titled(const Json& state, std::string_view title) {
+    for (const auto& w : state["windows"])
+        if (w.value("title", std::string{}) == title) return w;
+    return Json();
+}
+
+inline std::array<double, 4> rect_of(const Json& w) {
+    if (!w.is_object() || !w.contains("rect")) throw std::runtime_error("no window, or no place for it: " + w.dump());
+    const auto& r = w["rect"];
+    return {r[0].get<double>(), r[1].get<double>(), r[2].get<double>(), r[3].get<double>()};
+}
 
 }  // namespace luban_os_e2e

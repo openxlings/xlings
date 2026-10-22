@@ -458,6 +458,106 @@ XTEST(XdeskLayout, TheWuXianViewShowsEveryWorkspaceScaledAndTheFreeWindowsBeside
     EXPECT_EQ(m.boxes.size(), 3u) << "two workspaces and a free window";
 }
 
+// Collapsed (design 2026-10-21 §8.5, openwx §5.2): a workspace is its label
+// strip, its windows neither shown nor hit; a free window is its title bar.
+// Both are kept by the state.
+XTEST(XdeskLayout, ACollapsedWorkspaceIsItsLabelAndAFreeWindowItsTitleBar, .area = "luban", .covers = {"WUXIAN-COLLAPSE"}) {
+    Layout l({.inner_gap = 4, .outer_gap = 0, .title = 26});
+    l.add(1, {600, 400}, false, match_(1));
+    ASSERT_EQ(l.add_workspace(Rule::stack), 2);
+    l.show(2);
+    l.add(2, {600, 400}, false, match_(2));
+    l.set_view(View::wuxian);
+    l.show_all();
+    l.look({.at = {l.camera().at.x, l.camera().at.y}, .zoom = 0.5});
+    l.add(3, {500, 300}, false, match_(3));
+    l.to_wuxian(3);
+    ASSERT_TRUE(l.is_free(3));
+    auto ps = l.arrange(kOutput);
+    const auto whole = *std::ranges::find(l.frames(), 2, &layout::Frame::id);
+    const auto two = of(ps, 2).rect;
+    ASSERT_TRUE(shown_(ps, 2));
+    l.toggle_workspace_collapsed(2);
+    EXPECT_TRUE(l.workspace_collapsed(2));
+    ps = l.arrange(kOutput);
+    const auto f2 = *std::ranges::find(l.frames(), 2, &layout::Frame::id);
+    EXPECT_TRUE(f2.collapsed);
+    EXPECT_EQ(f2.screen.height, 26) << "its label strip, in screen pixels";
+    EXPECT_LE(f2.screen.width, whole.screen.width);
+    EXPECT_FALSE(shown_(ps, 2)) << "its windows are not placed";
+    EXPECT_FALSE(l.at(two.x + two.width / 2, two.y + two.height / 2).has_value()) << "nor hit";
+    // A free window: its title bar, at the camera's zoom; below it is not it.
+    const auto three = of(ps, 3).rect;
+    l.toggle_collapsed(3);
+    ps = l.arrange(kOutput);
+    EXPECT_TRUE(of(ps, 3).collapsed);
+    EXPECT_NEAR(of(ps, 3).rect.height, 26 * 0.5, 1e-9);
+    EXPECT_EQ(of(ps, 3).rect.width, three.width);
+    EXPECT_EQ(l.at(three.x + 5, three.y + 5), 3u);
+    EXPECT_NE(l.at(three.x + 5, three.y + three.height - 5), std::optional<layout::Id>(3u));
+    // The state keeps both; read back, both are as they were.
+    const auto st = l.state(match_);
+    EXPECT_TRUE(std::ranges::find(st.workspaces, 2, &wx::Workspace::id)->collapsed);
+    const auto read = wx::parse(wx::format(st));
+    ASSERT_TRUE(read) << read.error();
+    Layout b({.inner_gap = 4, .outer_gap = 0, .title = 26});
+    b.restore(*read);
+    for (const layout::Id id : {1u, 2u, 3u}) b.add(id, {600, 400}, false, match_(id));
+    EXPECT_TRUE(b.workspace_collapsed(2));
+    EXPECT_TRUE(b.collapsed(3));
+    // Expanded: as before.
+    l.toggle_workspace_collapsed(2);
+    l.toggle_collapsed(3);
+    ps = l.arrange(kOutput);
+    EXPECT_EQ(of(ps, 2).rect, two);
+    EXPECT_EQ(of(ps, 3).rect, three);
+}
+
+// Covered items (design 2026-10-21 §8.4): nothing of it on the screen --
+// under one, or under several together -- and the top-most over its centre
+// carries its bookmark; one off the screen is elsewhere, not covered.
+XTEST(XdeskLayout, AnItemOfWhichNothingShowsIsCoveredAndTheOneOverItsCentreCarriesItsBookmark, .area = "luban",
+      .covers = {"WUXIAN-BOOKMARKS"}) {
+    const Rect screen{0, 0, 1200, 800};
+    // 0 under 2 entirely; 1 partly under 2; 3 under 4 and 5 together; 6 off the screen.
+    const std::vector<Rect> items{{100, 100, 200, 150}, {500, 100, 300, 200}, {50, 50, 500, 300},
+                                  {700, 400, 200, 200}, {650, 380, 160, 260}, {800, 380, 150, 260}, {5000, 0, 100, 100}};
+    const auto c = layout::covered(items, screen);
+    ASSERT_EQ(c.size(), 2u);
+    EXPECT_EQ(c[0], (layout::Covered{0, 2}));
+    EXPECT_EQ(c[1].item, 3u);
+    EXPECT_EQ(c[1].host, 5u) << "the top-most over its centre (800, 500)";
+    // A sliver (under 4 pixels) is not showing; a strip of 10 is.
+    EXPECT_EQ(layout::covered(std::vector<Rect>{{100, 100, 200, 200}, {50, 50, 300, 248}}, screen).size(), 1u);
+    EXPECT_TRUE(layout::covered(std::vector<Rect>{{100, 100, 200, 200}, {50, 50, 300, 240}}, screen).empty());
+    // Nothing above: nothing covered.
+    EXPECT_TRUE(layout::covered(std::vector<Rect>{{0, 0, 100, 100}}, screen).empty());
+    // A hundred windows, as many as a desktop has: well within a frame's time.
+    std::vector<Rect> many;
+    for (int k = 0; k < 100; ++k) many.push_back({double(k * 7 % 900), double(k * 13 % 500), 300, 200});
+    const auto t0 = std::chrono::steady_clock::now();
+    (void)layout::covered(many, screen);
+    EXPECT_LT(std::chrono::steady_clock::now() - t0, std::chrono::milliseconds(20));
+}
+
+// A frame's damage in a few rectangles (design 2026-10-21 §5.6a): the
+// nearest merged until eight are left, every damaged pixel still in one, and
+// far less than the whole output for a handful of small changes.
+XTEST(XdeskLayout, ManyDamagedRectanglesAreMergedNotSentWhole, .area = "luban", .covers = {"XDESK-DAMAGE"}) {
+    std::vector<Rect> rs;
+    for (int k = 0; k < 20; ++k) rs.push_back({double(30 + (k % 5) * 200), double(40 + (k / 5) * 150), 12, 10});
+    const auto merged = layout::merge_damage(rs, 8);
+    EXPECT_LE(merged.size(), 8u);
+    for (const auto& r : rs)
+        EXPECT_TRUE(std::ranges::any_of(merged, [&](const Rect& m) {
+            return r.x >= m.x && r.y >= m.y && r.x + r.width <= m.x + m.width && r.y + r.height <= m.y + m.height;
+        })) << "every damaged rectangle in one";
+    double area = 0;
+    for (const auto& m : merged) area += m.width * m.height;
+    EXPECT_LT(area, 1200.0 * 800 / 4) << "not the whole output";
+    EXPECT_EQ(layout::merge_damage(rs, 30).size(), rs.size()) << "few enough: as they are";
+}
+
 // The views' change starts and ends where the workspace view is: the
 // locked camera shows the workspace's content exactly as it does.
 XTEST(XdeskLayout, TheLockedCameraShowsTheWorkspaceAsTheWorkspaceViewDoes, .area = "luban", .covers = {"WUXIAN-VIEWS"}) {

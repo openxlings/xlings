@@ -75,6 +75,10 @@ struct Request {
     // `--env K=V`: set explicitly by the caller, not inherited. Bounded by
     // the policy (Policy::env_explicit_any).
     std::map<std::string, std::string> explicit_env;
+    // What xlings itself sets for a system's session (its prompt's facts:
+    // LUBAN_KIND, LUBAN_PERSIST, PS1): nothing of the host, so whatever the
+    // policy passes; a caller's own --env of the same name wins where allowed.
+    std::map<std::string, std::string> system_env;
     std::string cwd;                          // inside; empty = the user's home
     std::vector<std::string> publish;         // --publish HOST:SANDBOX (net=nat)
     // A rootfs instance (design part 2 §3.1): the tree that is `/` inside,

@@ -130,6 +130,7 @@ WuXian 视图里每个工作区是一块带彩色边框的底板，上方有标�
 | - / = / 0 | 变窄 / 变宽 / 等宽 | 缩小 / 放大 / 以 100% 显示焦点窗口 |
 | F / Shift+F | 最大化，再按还原 / 全屏，再按退出 | 同 |
 | P / Shift+P | 置顶 / 在所有工作区显示 | 同 |
+| S | — | 折叠与展开：自由窗口只留标题栏，否则焦点所在的工作区只留标签 |
 | C / V | 复制 / 粘贴——终端里是 Ctrl+Shift+C/V，别处是 Ctrl+C/V | 同 |
 | Tab / Shift+Tab | 应用，最近用的在前（按住：Tab 下一个；在一个上停半秒，展开它的窗口） | 同 |
 | `（Tab 上方）/ Shift+` | 同一应用的另一个窗口 / 上一个 | 同 |
@@ -154,12 +155,21 @@ WuXian 视图里每个工作区是一块带彩色边框的底板，上方有标�
 | 空白处滚轮 / Super 加滚轮 | 平铺：滚动，转得越快走得越远，停在一列上 | 平移（Shift：横向）/ 以指针为中心缩放 |
 | 中键 | 交给应用（粘贴选中的文字） | 拖空白处：平移 |
 | 空白处右键 | 终端、设置、WuXian 视图 | 新建工作区、把工作区排成一行、显示全部 |
-| 工作区标签：拖 / 拖手柄 / 右键 / 双击 | — | 移动 / 缩放 / 菜单（名字、规则、颜色、比例、删除）/ 进入 |
+| 工作区标签：拖 / 拖手柄 / 右键 / 双击 | — | 移动 / 缩放 / 菜单（名字、规则、颜色、比例、折叠、删除）/ 进入 |
+| 双击标题栏 | 最大化与还原 | 自由窗口：折叠与展开 |
+| 缩得很小（窗口显示为图片） | — | 拖窗口任意处移动它；双击：100% 显示它 |
+| 小地图 | — | 拖视口框：平移；点工作区或窗口：把它放到中间；拖它：移动（落在工作区上就进去） |
 
 拖动平铺的窗口时布局冻结：拖动中什么都不动；虚线框标出窗口原来的位置，指针下的框显示松手后会怎样——自己的位置（不变）、另一个窗口的
 中间三分之一（交换）、两端（在它前后新建一列，宽度用滚轮或 1–4 选）、上下四分之一（在它所在列的上方或下方）、间隙或屏幕边缘（新建一列）。
 拖动时按住 Shift：松手处浮动。松手后所有窗口一次移到位。在 WuXian 视图里跨工作区拖动的窗口保持它在屏幕上的大小，落下后变到目标的比例；
-放在平面上就是原大的自由窗口；靠近别的自由窗口的边会对齐。
+放在平面上就是原大的自由窗口；靠近别的自由窗口的边会对齐。层叠或浮动的窗口总会在屏幕上留一段标题栏（64 像素，或它宽度的四分之一），
+不会高过顶边，也不会压到状态栏下面。
+
+被盖住的东西不会丢：完全被盖住的工作区或自由窗口——以及层叠工作区里被别的窗口盖住的窗口——会在盖住它的那一项右边缘伸出**书签**
+（它的标题；工作区是颜色与名字；最多 5 个，其余合成"+N"，点开是列表）。指向书签会画出它所指的那一项的轮廓，点击就把它提到前面。
+拖动或平移时书签先隐藏；设置的 *WuXian* 一节（或 `[wuxian] bookmarks = off`）可以关掉；Agent 用 `xdesk msg bookmark N`（状态里列出有哪些）。
+折叠的工作区只剩标签，折叠的自由窗口只剩标题栏：双击（或 Super+S）再展开。
 
 宿主的输入法可以在桌面的窗口里输入，剪贴板也是共享的——每个方向按环境的授权：`clipboard`（从中复制出来）与 `clipboard-paste`
 （粘贴进去）。在 Luban OS 窗口里新建的桌面系统两者都有（它的设置里可以关）；用 `luban new` 或 Agent 建的默认没有，需要时给
@@ -183,6 +193,23 @@ xdesk msg keys bind maximize Super+Shift+m # and back: xdesk msg keys unbind max
 xdesk msg keys set luban-no-hjkl
 xdesk msg settings keys                    # the settings, at that page
 ```
+
+第一次进入时桌面会给一个**导览**：右下角十步——应用、终端、切换、工作区、WuXian、在它们之间移动、书签、折叠、所有快捷键、设置——
+每一步都要真的做一次才往下走，每一步都可以跳过（或整个结束）。之后随时可以再看：应用里的"桌面导览"，或 `xdesk msg tour start`。
+
+桌面现在是什么、做了什么，给脚本、Agent 和问题报告用：
+
+```bash
+xdesk msg state                            # output, view, workspaces, windows, overlays, the frames' cost (JSON)
+xdesk msg subscribe                        # what happens from now on, a line each (focus, open, close, ...)
+xdesk msg debug hud on                     # the frames' parts drawn in the top left
+xdesk msg telemetry metrics                # counters and histograms (xdesk.frame.compose_ns, ...)
+xdesk msg telemetry profile on             # then `telemetry trace`: a trace any trace viewer opens (Perfetto)
+xdesk msg telemetry dump                   # all of it, with the last moments recorded
+```
+
+系统里有 openbus 路由时，桌面也在总线上：`xbus ls` 能看到 `service/xdesk/state`、`service/xdesk/control`（与 `xdesk msg`
+同样的请求）、`topic/xdesk/events` 和它的 telemetry；`xbus dump 路径`、`xbus profile 路径` 在总线能到的任何地方读取。
 
 会话是 `xdesk`（以前的名字 `xdesk-classic`、`xdesk-canvas` 启动的是同一个桌面）。它读 `xdesk.ini`：先是自带的默认，再是系统的
 `/etc/xdg/xdesk/`，最后是你的 `~/.config/xdesk/`，后读的按键覆盖。你以前的 `classic.ini`（或 `canvas.ini`）第一次会成为你的

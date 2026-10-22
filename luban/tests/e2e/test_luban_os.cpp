@@ -568,6 +568,66 @@ state {}
     EXPECT_TRUE(red) << "no red in the first line";
 }
 
+// A terminal that floods is drawn at most once a frame (design 2026-10-21
+// §8.12, J23): thousands of writes in a second are not thousands of frames.
+XTEST(LubanOs, AFloodingConsoleIsDrawnOncePerFrame, .area = "luban",
+      .covers = {"LUBAN-CONSOLE-PACED"}, .requires_ = {"linux", "xlings-bin"}) {
+    auto home = tk::Home::isolated("luban-os-console-flood");
+    ASSERT_EQ(home.xlings({"self", "init"}).exit_code, 0);
+    const auto st = home.root() / "flood.json", began = home.root() / "began", ended = home.root() / "ended";
+    // Until the writer is done, however slow the computer: then two frames.
+    auto r = run_script(home, std::format(R"(wait console
+waitfor console.rows.0 ready 10
+perf
+untilfile {} 60
+frames 2
+state {}
+)", ended.string(), st.string()),
+                        {"--console-exec", "/bin/sh", "-c",
+                         // A trickle of small writes (an interactive shell's, a slow build's):
+                         // what a reader gets as many reads. Its start and end, in ms.
+                         std::format(R"(echo ready; sleep 0.3; date +%s%3N > {0}; i=0; while [ $i -lt 1500 ]; do echo "line $i"; sleep 0.001; i=$((i+1)); done; echo flooded; date +%s%3N > {1}.part; mv {1}.part {1}; exec cat)",
+                                     began.string(), ended.string())});
+    ASSERT_EQ(r.exit_code, 0) << r.transcript();
+    const auto s = read_state(st);
+    const int reads = s["console"]["reads"].get<int>(), wakes = s["console"]["wakes"].get<int>();
+    const auto ms = [](const fs::path& p) { return std::stoll(tk::read_file(p)); };
+    const auto took = ms(ended) - ms(began);
+    // At most a wake a frame (60 a second) while it wrote, however many reads;
+    // the last write is always shown.
+    EXPECT_TRUE(std::ranges::any_of(s["console"]["rows"], [](const auto& row) { return row == "flooded"; }))
+        << s["console"].dump();
+    EXPECT_LE(wakes, took * 60 / 1000 + 40) << "the writes woke the window " << wakes << " times for " << reads << " reads in " << took
+                                            << " ms\n" << s["console"].dump();
+    EXPECT_GT(s["perf"]["frames"].get<int>(), 10) << "and it was drawn while it ran\n" << s["perf"].dump(2);
+}
+
+// What the content was told is held is let go when the window loses the
+// keyboard (design 2026-10-21 §8.10, J16): a key whose release went to the
+// host (its window manager's grab) does not repeat in the system.
+XTEST(LubanOs, KeysHeldAreLetGoWhenTheFocusGoes, .area = "luban",
+      .covers = {"LUBAN-OS-KEY-RECONCILE"}, .requires_ = {"linux", "xlings-bin"}) {
+    auto home = tk::Home::isolated("luban-os-keys-held");
+    ASSERT_EQ(home.xlings({"self", "init"}).exit_code, 0);
+    const auto held = home.root() / "held.json", gone = home.root() / "gone.json";
+    auto r = run_script(home, std::format(R"(wait console
+waitfor console.rows.0 ready 10
+keydown Super
+keydown x
+frames 2
+state {}
+focus out
+frames 2
+state {}
+focus in
+frames 2
+)", held.string(), gone.string()),
+                        {"--console-exec", "/bin/sh", "-c", "echo ready; exec cat"});
+    ASSERT_EQ(r.exit_code, 0) << r.transcript();
+    EXPECT_EQ(read_state(held)["keys_held"], 2) << read_state(held).dump();
+    EXPECT_EQ(read_state(gone)["keys_held"], 0) << "the focus went and the keys stayed down\n" << read_state(gone).dump();
+}
+
 // The console's pointer (design 2026-10-18 §12, E16): a program that takes
 // the mouse is sent it; otherwise it selects -- a word, a line -- and the
 // middle button pastes what was selected, the right one has Copy and Paste.

@@ -94,6 +94,7 @@ Intent lower(const policy::Policy& policy, const HomeView& home, const spec::Req
     in.root_login = r.root_login;
     in.host_env = r.host_env;
     in.explicit_env = r.explicit_env;
+    in.system_env = r.system_env;
     in.host_exists = r.host_exists;
     in.host_resolve = r.host_resolve;
     in.host_device = r.host_device;

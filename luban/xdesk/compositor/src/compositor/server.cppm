@@ -22,6 +22,8 @@ import xdesk.draw;
 import xdesk.shell;
 import xdesk.apps;
 import xdesk.config;
+import xbus.node;
+import telemetry;
 import wlroots;
 import xdesk.native.wayland;
 import freedesktop.wayland.server;
@@ -110,6 +112,10 @@ struct View {
     // Under the content, the frame's size: a client that draws smaller than
     // it was given (to its own cells) shows this, not the desktop (G4).
     wlr_scene_rect* backdrop { nullptr };
+    // Its own outline, over its edges: what the switchers light -- the one
+    // under the pointer faintly, the chosen one in the accent -- and what
+    // fades where the chosen one is (design 2026-10-21 §8.2, J15).
+    std::array<wlr_scene_rect*, 4> outline {};
     bool mapped { false };
     bool laid { false };                        // in the layout
     bool placed { false };                      // shown somewhere already (then it glides)
@@ -161,7 +167,7 @@ enum class SettingsPage { displays, layout, appearance, keys, about };
 
 // What a held button is doing (workspace: a workspace's label carried;
 // scale: its corner, its scale).
-enum class Drag { none, pan, move, gap, row_gap, resize, workspace, scale };
+enum class Drag { none, pan, move, gap, row_gap, resize, workspace, scale, minimap };
 
 // A workspace in the WuXian view (design 2026-10-20 WuXian §3.3): its plate,
 // a border of its colour, its label above its top-left.
@@ -222,6 +228,60 @@ struct Server {
     wlr_scene_buffer* wuxian_dots { nullptr };  // the WuXian view: the grid over the background
     wlr_scene_buffer* minimap_node { nullptr }; // the WuXian view: the minimap (design 2026-10-20 §9.6)
     shell::MinimapPicture minimap_shown;
+    // A drag on the minimap (design 2026-10-21 §8.9): its view box (the
+    // camera), a workspace or a free window there; still: a click.
+    struct MinimapDrag {
+        enum class What { view, workspace, window } what { What::view };
+        int workspace { 0 };
+        layout::Id window { 0 };
+        layout::Point from;              // the world point pressed
+        layout::Point origin;            // what moves: the camera's top-left, a workspace's origin, a window's top-left
+        double press_x { 0 }, press_y { 0 }, per_pixel { 1 };   // the map as it was pressed (its scale changes as things move)
+        bool moved { false };
+    };
+    std::optional<MinimapDrag> minimap_drag;
+    // Bookmarks (design 2026-10-21 §8.4, openwx §5.1; bookmarks.cpp).
+    struct Bookmark {
+        layout::Id window { 0 };                        // what it is for: a window,
+        int workspace { 0 };                            // or a workspace
+        std::vector<std::pair<layout::Id, int>> more;   // "+N": the rest
+        layout::Rect tab, item;                         // where it is; the covered item's frame
+        std::string label;
+        std::optional<draw::Color> colour;
+    };
+    std::vector<Bookmark> bookmarks;
+    // The tour (design 2026-10-21 §8.1; tour.cpp): the step it is at, -1: none.
+    int tour_at { -1 };
+    wlr_scene_buffer* tour_node { nullptr };
+    shell::Picture tour_picture;
+    int tour_steps() const;
+    void start_tour();
+    void end_tour(bool done);
+    void tour_next();
+    void tour_event(std::string_view event, const std::vector<std::pair<std::string, std::string>>& fields);
+    void draw_tour();
+    bool tour_click(double x, double y);
+    std::vector<wlr_scene_buffer*> bookmark_pool;
+    std::array<wlr_scene_rect*, 4> bookmark_outline {};
+    int bookmark_lit { -1 };
+    bool bookmarks_on { true };
+    std::chrono::steady_clock::time_point view_still {};   // the view moves until then (pan, zoom)
+    wl_event_source* bookmark_timer { nullptr };
+    bool live_bookmarks() const { return wuxian() || lay.rule() == layout::Rule::stack; }
+    void update_bookmarks();
+    void hide_bookmarks();
+    bool bookmark_hover(double x, double y);
+    bool bookmark_press(double x, double y);
+    void bookmark_choose(layout::Id window, int workspace);
+    // The view moved (a pan, a zoom): bookmarks hidden until it is still.
+    void view_moved() { view_still = std::chrono::steady_clock::now() + std::chrono::milliseconds(250); }
+    layout::Point minimap_world(double x, double y) const {
+        return {minimap_shown.origin_x + (x - minimap_shown.picture.x) * minimap_shown.per_pixel,
+                minimap_shown.origin_y + (y - minimap_shown.picture.y) * minimap_shown.per_pixel};
+    }
+    void minimap_press();
+    void minimap_motion();
+    void minimap_release();
     std::string minimap_drawn;
     wlr_scene_rect* guide_x { nullptr };        // the lines a moved window snapped to
     wlr_scene_rect* guide_y { nullptr };
@@ -365,13 +425,57 @@ struct Server {
         wl_event_source* source { nullptr };
         std::string buffer;
         bool gone { false };
+        bool subscribed { false };   // told what happens, a line each (`xdesk msg subscribe`)
     };
     std::list<Control> controls;
+    // On the bus (design 2026-10-22 §7, B6): the control above as
+    // service/xdesk/control, the state, the events as topic/xdesk/events, and
+    // the process's telemetry. Patient: a desktop started before its system's
+    // router joins the bus when one comes.
+    std::shared_ptr<xbus::Node> bus;
+    void bus_start();
+    void bus_stop();
+    // What another thread (the bus's) asks of the loop: run on the loop,
+    // answered from there.
+    std::array<int, 2> inbox_fds { -1, -1 };
+    wl_event_source* inbox_source { nullptr };
+    std::mutex inbox_m;
+    std::deque<std::function<void()>> inbox;
+    std::thread::id loop_thread;
+    void post(std::function<void()> f);
+    // The loop's answer to `f`, waited for at most `wait` (or run here on the loop).
+    std::optional<std::string> ask_loop(std::function<std::string()> f, std::chrono::milliseconds wait);
+    Control* asking { nullptr };                 // whose request control() answers
+    // What happened, to every subscriber (design 2026-10-21 §8.11): focus,
+    // windows opened and closed, the actions done, overlays, the view.
+    void publish(std::string_view event, std::vector<std::pair<std::string, std::string>> fields = {});
+    // What the desktop is now, for `xdesk msg state` (and `luban status
+    // <name> --desktop`): one JSON document.
+    std::string state_json();
+    // `{"input": [...]}`: the steps given as the window gives input; why not, when a step is not understood.
+    std::string inject(const config::Json& steps);
+    // A frame's cost, by its parts (design 2026-10-21 §5.6a): composing it,
+    // reading it back from the GPU, sending it; the last ten seconds kept.
+    struct FrameStat {
+        std::chrono::steady_clock::time_point at;
+        double compose_ms { 0 }, readback_ms { 0 }, send_ms { 0 };
+        std::size_t bytes { 0 };
+        int rects { 0 };
+        bool whole { false };
+    };
+    std::deque<FrameStat> frame_stats;
+    void keep_frame_stat(FrameStat s);
+    // The debug HUD (`xdesk msg debug hud on|off`): the frames' parts on the output.
+    bool hud { false };
+    wlr_scene_buffer* hud_node { nullptr };
+    std::chrono::steady_clock::time_point hud_drawn {};
+    void draw_hud();
     layout::Id menu_for { 0 };
     std::vector<std::string> menu_actions;       // by the menu's item
     // Whose menu: a window's, a workspace's, WuXian's (its background), the
     // workspace view's background.
-    enum class MenuOf { window, workspace, plane, desktop };
+    enum class MenuOf { window, workspace, plane, desktop, bookmarks };
+    std::vector<std::pair<layout::Id, int>> menu_more;   // MenuOf::bookmarks: the covered items not shown
     MenuOf menu_of { MenuOf::window };
     int menu_workspace { 0 };
     layout::Point menu_world;                    // WuXian's menu: where it was opened, on the plane
@@ -415,15 +519,20 @@ struct Server {
     bool status_others { true };                 // the status bar shows the other workspaces
     bool plane_focus { false };                  // the WuXian view: no window focused (WuXian, a label clicked)
     // The switchers and the wheel (design 2026-10-20 WuXian §4): how long
-    // Super+Tab waits on an application; the window chosen kept lit, the
-    // others dimmed, for a while after; the wheel's speed and its columns.
+    // Super+Tab waits on an application; the chosen window's outline held,
+    // then faded in place; how dim the rest is while choosing; the wheel's
+    // speed and its columns.
     int hold_ms { 500 };
     int highlight_ms { 500 };
     double dim_level { 0.5 };
     double wheel_factor { 1 };
     bool snap_columns { true };
     layout::Id spread_hover { 0 };               // the window the pointer lifts
-    std::array<wlr_scene_rect*, 4> chosen_ring {};
+    // The switchers' own layer, above the workspaces' plates and labels: a
+    // dimmed backdrop over the whole output, the windows gathered onto it
+    // (design 2026-10-21 §8.3, J14).
+    wlr_scene_tree* spread_layer { nullptr };
+    wlr_scene_rect* spread_dim { nullptr };
     enum class Lit { none, settling, holding, fading };
     Lit lit { Lit::none };
     layout::Id lit_id { 0 };
@@ -436,6 +545,7 @@ struct Server {
     wlr_scene_buffer* overlay_node { nullptr };
     wlr_scene_buffer* hint_node { nullptr };
     wl_event_source* hint_timer { nullptr };
+    std::string hint_text;      // what the hint shows, drawn again at a new size or density
     std::map<std::string, std::string> app_names;   // app id -> its name (desktop entries)
     std::map<std::string, std::string> app_icons;   // app id -> its Icon=
     // A window dragged (design 2026-10-20 WuXian §3.7, §3.8): it follows the
@@ -528,6 +638,11 @@ struct Server {
     // title bar or its content (design 2026-10-20 §6).
     View* view_at(double x, double y);
     bool on_title(const View& v, double y) const;
+    // Collapsed (design 2026-10-21 §8.5): the WuXian view's focused free
+    // window, else its selected or focused workspace; said where it is not.
+    void collapse_focused();
+    void collapse_window(layout::Id id);
+    void collapse_workspace(int id);
 
     void draw_title(View& v, int width, bool active, bool rounded = true);
 
@@ -587,6 +702,7 @@ struct Server {
 
     // drag.cpp
     void drag_start(View* v, bool live);
+    layout::Rect kept_on_output(layout::Rect r) const;
     void drag_motion();
     layout::Drop drop_with_hysteresis(bool shift) const;
     bool drag_width(int step, int digit);
@@ -595,6 +711,9 @@ struct Server {
     void show_drop();
     void hide_drop();
     void set_opacity(View& v, float opacity);
+    // Its outline: in `c`, at `alpha` (0: not shown); laid at its frame's size.
+    void set_outline(View& v, const draw::Color& c, float alpha);
+    void lay_outline(View& v, double width, double height);
     layout::Id maximize_under_pointer();
     // Super with the right button, a border, or the client asking: its size
     // follows the pointer (edges as wlr_edges; 0: the corner nearest the pointer).
@@ -620,6 +739,8 @@ struct Server {
     bool overlay_key(xkb_keysym_t sym, bool down);
     bool overlay_click(double x, double y);
     void show_hint(std::string_view text, int ms);
+    // The hint still shown, at the output's size and density now (J10).
+    void redraw_hint();
     std::string name_of(View& v);
     std::string app_icon(const std::string& id);
 

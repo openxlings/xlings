@@ -87,6 +87,7 @@ constexpr xlings::i18n::Entry kWords[] = {
     { "luban.os.admin.version", "VERSION" },
     { "luban.os.admin.versions", "Versions" },
     { "luban.os.admin.what_would_upgrade_do", "What would an upgrade do?" },
+    { "luban.os.app.super_needs_hold", "Super keys went to this computer: Ctrl+Alt+K holds the keyboard, and they reach the system" },
     { "luban.os.app.keyboard_held", "Keyboard: held (Ctrl+Alt+K lets it go)" },
     { "luban.os.app.keyboard_let_go", "Keyboard: let go" },
     { "luban.os.app.keyboard_refused", "Keyboard: the host did not let it be held ({}) -- trying again" },

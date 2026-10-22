@@ -39,6 +39,9 @@ enum class Interface : std::uint32_t {
     // display's size) -- a mirror sizes itself to the source's picture and
     // keeps its shape, and says no size of its own.
     Displays = 1u << 12,
+    // Frames may come compressed ('z': the rows as one LZ4 block; 0.6): a
+    // provider across a narrow channel (a machine's serial port) takes them.
+    Compressed = 1u << 13,
 };
 using Interfaces = std::uint32_t;
 constexpr Interfaces operator|(Interface a, Interface b) { return static_cast<Interfaces>(a) | static_cast<Interfaces>(b); }

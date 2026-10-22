@@ -27,6 +27,3 @@ libs     = { path = "../libs" }
 platform = { path = "../platform" }
 home     = { path = "../home" }       # xlings.store: payload roots of a generation
 runtime  = { path = "../runtime" }   # guard, observe
-
-[build]
-include_dirs = ["../libs/src/json"]

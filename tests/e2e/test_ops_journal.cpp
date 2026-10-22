@@ -88,3 +88,37 @@ XTEST(OpsJournal, CredentialsAndPathsAreTakenOut, .area = "self", .covers = {"OP
                                                     "/home/someone", "someone");
     EXPECT_EQ(b, "$XLINGS_HOME/x ~/y user");  // privacy-ok: the fixture of the redaction itself
 }
+
+// What a system's own xlings recorded is found from the operation that made
+// it (design 2026-10-21 §7.4): `self log` follows a link line into the other
+// home's journal of the same trace, and `--subos` names the latest operation
+// on a subos (`luban status <name> --log`).
+XTEST(OpsJournal, ALinkLeadsToTheSystemsOwnRecord, .area = "self", .covers = {"OPS-LINK"},
+      .requires_ = {"xlings-bin"}) {
+    auto home = tk::Home::isolated("ops-link");
+    ASSERT_EQ(home.xlings({"self", "init"}).exit_code, 0);
+    const auto domain = home.root() / "domain-home";
+    const std::string trace = "feedfacecafe0002";
+    const auto outer = home.dir() / "logs" / "ops" / "2026-10-21" / (trace + ".ndjson");
+    const auto inner = domain / "logs" / "ops" / "2026-10-21" / (trace + ".ndjson");
+    fs::create_directories(outer.parent_path());
+    fs::create_directories(inner.parent_path());
+    tk::write_file(outer,
+        Json{{"line", "op"}, {"ts", "2026-10-21T10:00:00Z"}, {"trace", trace}, {"proc", "aaaaaaaa"},
+             {"argv", Json::array({"subos", "new", "desk"})}}.dump() + "\n" +
+        Json{{"line", "link"}, {"ts", "2026-10-21T10:00:01Z"}, {"trace", trace}, {"proc", "aaaaaaaa"},
+             {"home", domain.string()}}.dump() + "\n" +
+        Json{{"line", "end"}, {"ts", "2026-10-21T10:00:09Z"}, {"trace", trace}, {"proc", "aaaaaaaa"}, {"exit", 130}}.dump() + "\n");
+    tk::write_file(inner,
+        Json{{"line", "child"}, {"ts", "2026-10-21T10:00:02Z"}, {"trace", trace}, {"proc", "bbbbbbbb"},
+             {"argv", Json::array({"interface", "subos_command"})}}.dump() + "\n" +
+        Json{{"line", "cancelled"}, {"ts", "2026-10-21T10:00:05Z"}, {"trace", trace}, {"proc", "bbbbbbbb"},
+             {"by", "SIGTERM"}}.dump() + "\n");
+    auto shown = home.xlings({"self", "log", "--subos", "desk"});
+    ASSERT_EQ(shown.exit_code, 0) << shown.transcript();
+    EXPECT_NE(shown.out.find("subos new desk"), std::string::npos) << shown.out;
+    EXPECT_NE(shown.out.find("↳ in"), std::string::npos) << shown.out;
+    EXPECT_NE(shown.out.find("interface subos_command"), std::string::npos) << "the system's own part, shown in place\n" << shown.out;
+    EXPECT_NE(shown.out.find("cancelled"), std::string::npos) << shown.out;
+    EXPECT_NE(shown.out.find("exit 130"), std::string::npos) << shown.out;
+}

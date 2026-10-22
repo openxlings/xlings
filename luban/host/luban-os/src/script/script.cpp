@@ -50,6 +50,7 @@ Json state_(const App& a) {
     j["admin_page"] = a.admin_page;
     j["desktop_text"] = a.desktop_text;
     j["ended_why"] = a.ended_why;
+    j["keys_held"] = a.window ? a.window->keys_held() : 0;
     {
         auto ms = std::vector<double>(a.perf.frame_ms.begin(), a.perf.frame_ms.end());
         std::ranges::sort(ms);
@@ -145,7 +146,7 @@ Json state_(const App& a) {
         while (!rows.empty() && rows.back().get<std::string>().empty()) rows.erase(rows.size() - 1);
         j["console"] = {{"rows", rows}, {"alive", a.console->alive()}, {"size", Json::array({screen.rows(), screen.cols()})},
                         {"cell", Json::array({a.grid.cell_w, a.grid.cell_h})}, {"font_size", a.console_size(a.current)},
-                        {"scroll", a.console_scroll}};
+                        {"scroll", a.console_scroll}, {"reads", a.console->reads()}, {"wakes", a.console->wakes()}};
     }
     if (a.view == View::Run) {
         Json lines = Json::array();
@@ -291,6 +292,15 @@ void script_step_(App& a, Script& sc) {
         const auto got = path_(state_(a), path);
         if (matches_(got, want)) next();
         else if (!waiting(seconds)) fail(std::format("{} is {}, not {}", path, got ? got->dump() : "absent", want));
+    } else if (cmd == "untilfile") {
+        // Held until a file is there -- a test driving the desktop by its
+        // control says it is done: `untilfile <path> [seconds]`.
+        std::string file;
+        double seconds = 180;
+        words >> file >> seconds;
+        std::error_code ec;
+        if (!file.empty() && std::filesystem::exists(file, ec)) next();
+        else if (!waiting(seconds)) fail("nothing at " + file);
     } else if (cmd == "see") {
         std::string text;
         std::getline(words >> std::ws, text);
@@ -486,6 +496,11 @@ void script_step_(App& a, Script& sc) {
         next();
     } else if (cmd == "close") {
         a.window->inject_close();
+        next();
+    } else if (cmd == "focus") {
+        std::string how;
+        words >> how;
+        sc.pending.push_back([in = how != "out"](App& app) { app.window->inject_focus(in); });
         next();
     } else if (cmd == "minimize" || cmd == "restore") {
         a.window->inject_shown(cmd == "restore");

@@ -24,8 +24,12 @@ kind = "lib"
 
 [dependencies]
 xdesk-base   = { path = "../base" }
+i18nkit      = { path = "../../kits/i18n" }
 xdesk-layout = { path = "../layout" }
 opensal    = { path = "../../specs/opensal" }
+openbus    = { path = "../../specs/openbus" }
+telemetry  = { path = "../../kits/telemetry" }
+xbus       = { path = "../../services/xbus" }
 
 [dependencies.wlroots]
 # No DRM output, libinput or session: headless is the backend; GLES on a

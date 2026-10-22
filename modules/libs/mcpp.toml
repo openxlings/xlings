@@ -1,8 +1,7 @@
 # Self-contained libraries: what any program could use, nothing of xlings.
 #
-#   json        nlohmann/json wrapped as a module (`src/json/json.hpp` is the
-#               vendored header, with its LICENSE). Imports nothing, not even
-#               `std`.
+#   json        nlohmann/json: mcpp-index's `nlohmann.json`, re-exported, so
+#               xlings and the kits it shares a program with use one copy.
 #   sha256      SHA-256 in process: hashes are checked while a download is
 #               verified, and shelling out to `sha256sum` would make that
 #               depend on what the machine has installed.
@@ -26,5 +25,5 @@ kind = "lib"
 [dependencies.mcpplibs]
 tinyhttps = "0.2.9"
 
-[build]
-include_dirs = ["src/json"]
+[dependencies.nlohmann]
+json = "3.12.0"

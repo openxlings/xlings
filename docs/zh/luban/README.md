@@ -51,6 +51,7 @@ graph TD
 - [06 —— 机器](06-machine.md) —— Luban 作为一台机器的系统：stage-0、启动项、启动时回滚
 - [07 —— 宿主支持](07-host-support.md) —— 哪些宿主、一次性设置、失败时怎么办
 - [08 —— 桌面与 Luban OS 窗口](08-desktop.md) —— 窗口、桌面、你自己的合成器
+- [09 —— 总线](09-bus.md) —— 系统与谁说话：它的对象、宿主的对象，查看与使用
 - [91 —— 架构](91-architecture.md) —— 给开发者：它是怎样构建的
 
 全部 luban 命令和参数：[生成的参考](../../generated/luban-command-reference.md)。

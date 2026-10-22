@@ -85,6 +85,7 @@ constexpr xlings::i18n::Entry kWords[] = {
     { "luban.os.admin.version", "版本" },
     { "luban.os.admin.versions", "版本" },
     { "luban.os.admin.what_would_upgrade_do", "升级会做什么？" },
+    { "luban.os.app.super_needs_hold", "Super 键被这台电脑收走了：按 Ctrl+Alt+K 锁定键盘，它们就会送进系统" },
     { "luban.os.app.keyboard_held", "键盘：已锁定（Ctrl+Alt+K 释放）" },
     { "luban.os.app.keyboard_let_go", "键盘：已释放" },
     { "luban.os.app.keyboard_refused", "键盘：宿主未允许锁定（{}），稍后重试" },

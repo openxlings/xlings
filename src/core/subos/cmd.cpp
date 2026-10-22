@@ -451,8 +451,8 @@ int use_emit_shell(const std::string& name,
             // because what is left is still a valid string.
             if (v.op == manifest::OP_PREPEND) {
                 std::println(std::cout,
-                    R"SH(if set -q {0}; set -gx {0} "{1}:${0}"; else; set -gx {0} "{1}"; end;)SH",
-                    v.var, v.value);
+                    R"SH(if set -q {0}; and test -n "${0}"; set -gx {0} "{1}:${0}"; else; set -gx {0} "{2}"; end;)SH",
+                    v.var, v.value, platform::prepend_to_list(v.var, v.value, "", ':'));
             } else {
                 std::println(std::cout, R"SH(if not set -q {0}; set -gx {0} "{1}"; end;)SH",
                              v.var, v.value);
@@ -496,7 +496,12 @@ int use_emit_shell(const std::string& name,
             // ${VAR:+:$VAR} appends the separator only when VAR is non-empty,
             // so an unset variable does not become a trailing ':' -- which an
             // empty PATH-list element reads as "the current directory".
-            std::println(std::cout, R"(export {0}="{1}${{{0}:+:${0}}}";)", v.var, v.value);
+            // A list that means something when empty (XDG_DATA_DIRS) keeps
+            // that meaning behind the new directory (J28).
+            if (const auto fallback = platform::list_default(v.var); !fallback.empty())
+                std::println(std::cout, R"(export {0}="{1}:${{{0}:-{2}}}";)", v.var, v.value, fallback);
+            else
+                std::println(std::cout, R"(export {0}="{1}${{{0}:+:${0}}}";)", v.var, v.value);
         } else {
             // `${VAR=v}`, NOT `${VAR:=v}`. The colon form also assigns when VAR
             // is set-but-empty, which would overwrite a value the user chose.
@@ -1020,7 +1025,14 @@ std::expected<int, std::string> run_domain_relayed_(const xlings::home::prefix_d
     }
     nlohmann::json call{{"argv", words}};
     if (yes) call["yes"] = true;
-    const std::vector<std::string> args{"interface", "subos_command", "--args", call.dump()};
+    return relay_capability_(domain, "subos_command", call, output, stream, runtime, held);
+}
+
+std::expected<int, std::string> relay_capability_(const xlings::home::prefix_domain::Domain& domain,
+                                                 std::string_view capability, const nlohmann::json& call,
+                                                 std::optional<xlings::home::domain_producer::OutputBinding> output,
+                                                 EventStream& stream, bool runtime, std::vector<ErrorEvent>* held) {
+    const std::vector<std::string> args{"interface", std::string(capability), "--args", call.dump()};
     int answered = -1;
     auto rc = xlings::home::domain_producer::run(domain, args, output, runtime,
         [&](std::string_view text) {
@@ -1061,14 +1073,20 @@ int run(int argc, char* argv[], EventStream& stream) {
     // `-y` is recorded before it is dropped: for the commands that delete or
     // take over a directory (`remove`, and `new` onto one that exists) it is
     // the user's explicit answer to the question they would otherwise be asked.
+    // What follows `--` is another command's (`exec -- tool -y`, a broker's
+    // request): passed on as it is.
     bool yesGiven = false;
+    bool passthrough = false;
     std::vector<char*> filtered;
     filtered.reserve(static_cast<std::size_t>(argc));
     for (int i = 0; i < argc; ++i) {
-        if (i >= 3) {
+        if (i >= 3 && !passthrough) {
             const std::string_view a{argv[i]};
-            if (a == "-y" || a == "--yes") yesGiven = true;
-            if (cli::spec::is_global_option(argv[i])) continue;
+            if (a == "--") passthrough = true;
+            else {
+                if (a == "-y" || a == "--yes") yesGiven = true;
+                if (cli::spec::is_global_option(argv[i])) continue;
+            }
         }
         filtered.push_back(argv[i]);
     }
@@ -1125,7 +1143,8 @@ int run(int argc, char* argv[], EventStream& stream) {
     // A SubOS on another carrier: its xlings answers there (part 3 §5).
     static const std::set<std::string, std::less<>> kNamed{
         "use", "exec", "start", "stop", "remove", "info", "config", "status", "doctor", "cp", "log",
-        "report", "requests", "approve", "deny", "rollback", "boot", "__boot", "export", "__export", "diff", "pack"};
+        "report", "requests", "approve", "deny", "rollback", "boot", "__boot", "export", "__export", "diff", "pack",
+        "__broker-serve"};
     if (kNamed.contains(sub)) {
         for (int i = 3; i < argc; ++i) {
             const std::string a = argv[i];
@@ -1765,6 +1784,7 @@ int run(int argc, char* argv[], EventStream& stream) {
     if (sub == "report") return run_report_(argc, argv, stream, usageError);
     if (sub == "requests" || sub == "approve" || sub == "deny")
         return run_requests_(sub, argc, argv, stream, usageError);
+    if (sub == "__broker-serve") return run_broker_serve_(argc, argv, usageError);
     if (sub == "config") return run_config_(argc, argv, stream, usageError);
     if (sub == "status") return run_status_(argc, argv, stream, usageError);
     if (sub == "doctor") return run_doctor_(argc, argv, stream, usageError);

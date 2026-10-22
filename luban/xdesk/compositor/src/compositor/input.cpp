@@ -7,6 +7,7 @@ import opensal.wire;
 import opensal.keys;
 import xdesk.os;
 import xdesk.layout;
+import telemetry;
 import xdesk.draw;
 import xdesk.shell;
 import xdesk.apps;
@@ -138,6 +139,7 @@ void Server::pointer_moved() {
     if (drag == Drag::move) { drag_motion(); return; }
     if (drag == Drag::workspace || drag == Drag::scale) { workspace_motion(); return; }
     if (drag == Drag::resize) { resize_motion(); return; }
+    if (drag == Drag::minimap) { minimap_motion(); return; }
     if (drag != Drag::none) {
         const double dx = cursor->x - drag_x, dy = cursor->y - drag_y;
         drag_x = cursor->x;
@@ -145,6 +147,7 @@ void Server::pointer_moved() {
         if (drag == Drag::pan) {
             pointer_shape("grabbing");
             lay.pan(dx, dy);
+            view_moved();
         } else if (drag == Drag::row_gap) {
             const bool vertical = lay.flow() == layout::Flow::vertical;
             pointer_shape(vertical ? "ew-resize" : "ns-resize");
@@ -155,6 +158,12 @@ void Server::pointer_moved() {
             lay.drag_gap(gap_column, vertical ? dy : dx);
         }
         arrange(true);
+        return;
+    }
+    // A bookmark under the pointer: lit, the item it is for outlined.
+    if (overlay == Overlay::none && !bookmarks.empty() && bookmark_hover(cursor->x, cursor->y)) {
+        pointer_shape("default");
+        wlr_seat_pointer_clear_focus(seat);
         return;
     }
     // The settings: the row under the pointer has its own look.
@@ -253,12 +262,20 @@ layout::Id Server::close_under_pointer() {
 }
 
 void Server::button(const opensal::PointerButton& b) {
+    // What each press met, in the flight recorder (xdesk msg telemetry recent).
+    if (b.down) {
+        View* at = view_at(cursor->x, cursor->y);
+        telemetry::log().debug("pointer-button", {{"x", cursor->x}, {"y", cursor->y}, {"button", static_cast<int>(b.button)},
+                                                  {"window", at ? at->id : 0}, {"edges", at ? edges_at(*at) : 0u},
+                                                  {"overlay", static_cast<int>(overlay)}, {"wuxian", wuxian()}, {"live", live()}});
+    }
     // Super with a click (a drag, a pan) is not Super alone: its release opens nothing.
     if (b.down) super_alone = false;
     if (!b.down && drag != Drag::none) {
         // Let go: a window lands where its preview was; the window under the
         // pointer says its pointer again.
         if (drag == Drag::move) drag_end();
+        if (drag == Drag::minimap) minimap_release();
         if (drag == Drag::workspace || drag == Drag::scale) {
             ws_dragged = 0;
             remember_arrangement();
@@ -297,6 +314,19 @@ void Server::button(const opensal::PointerButton& b) {
             }
         }
         return;
+    }
+    // The tour's card: its buttons (design 2026-10-21 §8.1).
+    if (overlay == Overlay::none && b.button == opensal::Button::Left && tour_at >= 0) {
+        if (b.down && tour_click(cursor->x, cursor->y)) return;
+    }
+    // A bookmark: what it is for (design 2026-10-21 §8.4).
+    if (overlay == Overlay::none && b.button == opensal::Button::Left && !bookmarks.empty()) {
+        bool on = false;
+        for (const auto& bm : bookmarks) on = on || bm.tab.contains(cursor->x, cursor->y);
+        if (on) {
+            if (b.down) bookmark_press(cursor->x, cursor->y);
+            return;
+        }
     }
     // A title bar's close button; its maximize button.
     if (const auto id = close_under_pointer()) {
@@ -370,24 +400,25 @@ void Server::button(const opensal::PointerButton& b) {
         // The minimap: the view goes where it is clicked.
         if (minimap_shown.per_pixel > 0 && !minimap_shown.picture.areas.empty() && b.button == opensal::Button::Left
             && shell::hit(minimap_shown.picture, cursor->x, cursor->y)) {
-            lay.look_at(minimap_shown.origin_x + (cursor->x - minimap_shown.picture.x) * minimap_shown.per_pixel,
-                        minimap_shown.origin_y + (cursor->y - minimap_shown.picture.y) * minimap_shown.per_pixel);
-            arrange();
+            minimap_press();
             return;
         }
         if (!live() && v && b.button == opensal::Button::Left && !held(wlr_keyboard_modifier::WLR_MODIFIER_LOGO)) {
             // Zoomed far out (the WuXian view), windows are pictures (design 2026-10-20 §9.1):
-            // a click selects one -- the view stays -- and a second goes in.
+            // a click selects one -- the view stays -- a second shows it 1:1,
+            // and the whole picture moves it (design 2026-10-21 §8.7).
             const auto now = std::chrono::steady_clock::now();
             if (title_pressed_id == v->id && now - title_pressed < std::chrono::milliseconds(400)) {
                 title_pressed_id = 0;
                 lay.center(v->id);
-            } else {
-                title_pressed_id = v->id;
-                title_pressed = now;
+                focus(v);
+                arrange();
+                return;
             }
+            title_pressed_id = v->id;
+            title_pressed = now;
             focus(v);
-            arrange();
+            drag_start(v, false);
             return;
         }
         const bool super = held(wlr_keyboard_modifier::WLR_MODIFIER_LOGO);
@@ -398,11 +429,16 @@ void Server::button(const opensal::PointerButton& b) {
             open_menu(v, cursor->x, cursor->y);
             return;
         }
-        // Twice on a title bar: maximized, or back.
+        // Twice on a title bar: maximized, or back -- a free window in the
+        // WuXian view: collapsed, or expanded (design 2026-10-21 §8.5).
         if (title && b.button == opensal::Button::Left && !super) {
             const auto now = std::chrono::steady_clock::now();
             if (title_pressed_id == v->id && now - title_pressed < std::chrono::milliseconds(400)) {
                 title_pressed_id = 0;
+                if (wuxian() && lay.is_free(v->id)) {
+                    collapse_window(v->id);
+                    return;
+                }
                 lay.toggle_maximized(v->id);
                 arrange();
                 focus(v);
@@ -459,6 +495,7 @@ void Server::wheel(const opensal::Wheel& w) {
     const bool continuous = w.dy != std::round(w.dy) || w.dx != std::round(w.dx);
     const layout::WheelSpeed speed{.factor = wheel_factor};
     auto distance = [&](double steps) { return continuous ? steps * 60 * wheel_factor : layout::wheel_distance(speed, steps, since); };
+    if (wuxian()) view_moved();
     if (wuxian() && super) {
         // The WuXian view zooms only when asked (design 2026-10-20 §9.2):
         // Super and the wheel, around the pointer, so the point under it stays put.

@@ -10,6 +10,7 @@ import xlings.platform;
 namespace xlings::subos::broker {
 
 Classified classify(std::span<const std::string> argv, std::string_view instance) {
+    using situation::Touch;
     Classified c;
     if (argv.empty()) return c;
     const auto& cmd = argv[0];
@@ -21,10 +22,10 @@ Classified classify(std::span<const std::string> argv, std::string_view instance
                            .instance = std::string(instance) };
     };
 
-    // Another instance is never this sandbox's to change.
+    // Another instance is never this system's to change.
     for (std::size_t i = 1; i + 1 < argv.size(); ++i) {
         if (argv[i] == "--subos" && argv[i + 1] != instance) {
-            c.route = Route::Owner;
+            c.touch = Touch::Home;
             c.ops.push_back(op("instance_admin", argv[i + 1]));
             return c;
         }
@@ -40,56 +41,98 @@ Classified classify(std::span<const std::string> argv, std::string_view instance
     if ((cmd == "install" || cmd == "update" || cmd == "remove" || cmd == "use")
         && std::ranges::any_of(positional, names_xlings)
         && !(cmd == "use" && positional.size() < 2)) {
-        c.route = Route::Owner;
+        c.touch = Touch::Home;
         c.ops.push_back(op("instance_admin", "xlings"));
         return c;
     }
-    if (cmd == "install") {
-        c.route = Route::Broker;
+    // A user's view adding to the system's store (`sudo xlings __store-add`,
+    // design 2026-10-20 §4.4) fetches as an install does.
+    if (cmd == "install" || cmd == "__store-add") {
+        c.touch = Touch::Fetch;
         if (positional.empty()) c.ops.push_back(op("fetch", "*"));
         for (auto& t : positional) c.ops.push_back(op("fetch", t));
     } else if (cmd == "update") {
-        c.route = Route::Broker;
+        c.touch = positional.empty() ? Touch::Index : Touch::Fetch;
         c.ops.push_back(positional.empty() ? op("index_update", "") : op("fetch", positional[0]));
     } else if (cmd == "remove" || (cmd == "use" && positional.size() >= 2)) {
         // This instance's own state (design §8.1): allowed, but written by
         // the supervisor, because the ledger it updates lives in the home.
-        c.route = Route::Broker;
+        c.touch = Touch::Instance;
     } else if (cmd == "self") {
         const bool read = argv.size() >= 2 && (argv[1] == "doctor" || argv[1] == "config")
             && std::ranges::find(argv, std::string("--fix")) == argv.end();
-        if (!read) { c.route = Route::Owner; c.ops.push_back(op("instance_admin", "self")); }
+        if (!read) { c.touch = Touch::Home; c.ops.push_back(op("instance_admin", "self")); }
     } else if (cmd == "subos") {
         static const std::set<std::string> reads{"list", "ls", "info", "i", "status", "ps", "log", "__check"};
         const bool read = argv.size() < 2 || reads.contains(argv[1])
             || (argv[1] == "config" && argv.size() <= 3);
-        if (!read) { c.route = Route::Owner; c.ops.push_back(op("policy_change", argv[1])); }
+        if (!read) { c.touch = Touch::Home; c.ops.push_back(op("policy_change", argv[1])); }
     } else if (cmd == "config" && argv.size() > 1) {
-        c.route = Route::Owner;
+        c.touch = Touch::Home;
         c.ops.push_back(op("instance_admin", "config"));
     } else if (cmd == "index" && argv.size() > 1 && argv[1] == "use") {
-        c.route = Route::Owner;
+        c.touch = Touch::Home;
         c.ops.push_back(op("instance_admin", "index"));
     } else if (cmd == "profile" && argv.size() > 1 && argv[1] != "list") {
-        c.route = Route::Broker;
+        c.touch = Touch::Instance;
     } else if (cmd == "__clipboard" && argv.size() > 1 && (argv[1] == "copy" || argv[1] == "paste")) {
         // The clipboard bridge (wl-copy & co. inside): the host's clipboard,
         // and nothing else of the display, as the instance's policy grants
         // (`--allow clipboard` / `clipboard-paste`).
-        c.route = Route::Broker;
+        c.touch = Touch::Instance;
         c.ops.push_back(op("grant", argv[1] == "copy" ? "clipboard" : "clipboard-paste"));
     }
     return c;
 }
 
 policy::Decision decide(const policy::Policy& p, const Classified& c) {
-    if (c.route == Route::Local) return {policy::Action::Allow, "read-only"};
+    if (c.touch == situation::Touch::Read) return {policy::Action::Allow, "read-only"};
     policy::Decision worst{policy::Action::Allow, "this instance's own state"};
     for (const auto& op : c.ops) {
         auto d = policy::decide(p, op);
         if (static_cast<int>(d.action) > static_cast<int>(worst.action)) worst = std::move(d);
     }
     return worst;
+}
+
+Verdict judge(const HomeView& home, const policy::Policy& p, std::string_view instance,
+              std::span<const std::string> argv, std::string_view where) {
+    Verdict v;
+    if (argv.empty()) {
+        v.error = "malformed request";
+        return v;
+    }
+    // The decision that counts: the same function the client ran, with the
+    // policy as the supervisor read it.
+    const auto cls = classify(argv, instance);
+    auto d = decide(p, cls);
+    v.event = {{"event", "decision"}, {"program", argv[0]}, {"argc", argv.size()},
+               {"action", std::string(policy::to_string(d.action))}, {"reason", d.reason}};
+    if (cls.touch == situation::Touch::Home) d.action = policy::Action::Deny;
+    // Deny by default: the broker runs, as the owner, only what changes this
+    // instance on its behalf. Anything else -- what the client runs locally,
+    // or never heard of -- is refused here, whoever sent it: a process inside
+    // can talk to the socket without the client.
+    if (cls.touch == situation::Touch::Read) {
+        d.action = policy::Action::Deny;
+        d.reason = std::format("`{}` is not something the broker runs; it runs inside the system", argv[0]);
+    }
+    if (d.action == policy::Action::Deny) {
+        v.error = "E_PERMISSION: " + d.reason;
+        if (!d.owner_command.empty()) v.hint = std::format("{}: {}", where, d.owner_command);
+        return v;
+    }
+    if (d.action == policy::Action::Ask) {
+        v.request = enqueue(home, instance, argv, d.reason);
+        v.event["request"] = v.request;
+        v.exit = kExitPending;
+        v.error = "waiting for the owner's approval: request " + v.request;
+        v.hint = std::format("{}: xlings subos approve {} {}", where, instance, v.request);
+        return v;
+    }
+    v.run = true;
+    v.exit = 0;
+    return v;
 }
 
 // ── queue ────────────────────────────────────────────────────────────
@@ -145,15 +188,6 @@ std::string socket_path() {
 }
 }  // namespace
 
-bool available() {
-    if constexpr (!platform::is_linux) return false;
-    const auto env = platform::environment();
-    auto mode = env.find("XLINGS_SUBOS_MODE");
-    if (mode == env.end() || mode->second != "sandbox") return false;
-    std::error_code ec;
-    return fs::exists(socket_path(), ec);
-}
-
 int forward(std::span<const std::string> argv, std::span<const int> stdio_in, bool quiet_refusal) {
     const auto path = socket_path();
     const int fd = platform::unix_connect(path);
@@ -167,7 +201,13 @@ int forward(std::span<const std::string> argv, std::span<const int> stdio_in, bo
     // At a terminal the command runs on one of its own, relayed through this
     // terminal: raw here, so every key -- Ctrl-C included -- reaches it.
     const bool tty = platform::is_terminal(stdio[0]);
-    nlohmann::json req{{"op", "run"}, {"argv", std::vector<std::string>(argv.begin(), argv.end())}, {"tty", tty}};
+    // Who asked, for the record: the person behind sudo, else this user.
+    const auto env = platform::environment();
+    std::string actor;
+    for (const auto* k : {"SUDO_USER", "USER", "LOGNAME"})
+        if (auto it = env.find(k); it != env.end() && !it->second.empty()) { actor = it->second; break; }
+    nlohmann::json req{{"op", "run"}, {"argv", std::vector<std::string>(argv.begin(), argv.end())}, {"tty", tty},
+                       {"actor", actor}};
     if (!platform::send_message(fd, req.dump(), stdio)) {
         platform::close_fd(fd);
         return kExitPermission;

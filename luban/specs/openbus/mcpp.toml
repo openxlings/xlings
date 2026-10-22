@@ -1,0 +1,12 @@
+# openbus: one bus for what a system talks to -- devices, applications,
+# services, other systems, other machines: nodes offer endpoints at paths;
+# call, publish/subscribe, broadcast, stream, event and region travel as one
+# frame format over any ordered byte stream. A specification: declarations
+# and a conformance check; it depends on nothing but the standard library.
+[package]
+namespace = "openbus"
+name      = "openbus"
+version   = "0.1.0"
+
+[targets.openbus]
+kind = "lib"

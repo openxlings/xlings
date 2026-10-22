@@ -33,7 +33,7 @@ XTEST(Clipboard, TheGrantsAreTheirOwnNeverImpliedAndAPolicyHoldingOneSaysWhichCl
     namespace b = xlings::subos::broker;
     auto copy = b::classify(V{"__clipboard", "copy"}, "box");
     auto paste = b::classify(V{"__clipboard", "paste"}, "box");
-    ASSERT_EQ(copy.route, b::Route::Broker);
+    ASSERT_EQ(copy.touch, xlings::subos::situation::Touch::Instance);
     auto p = pol::preset(pol::Preset::Private);
     EXPECT_EQ(b::decide(p, copy).action, pol::Action::Deny);
     p.grants.insert("clipboard");

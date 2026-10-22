@@ -257,9 +257,17 @@ Minimap Layout::minimap() const {
     m.bounds = m.view;
     for (const auto& l : layers_()) {
         m.boxes.push_back(l.world);
+        m.layers.push_back(l);
         m.bounds = detail::bounds(m.bounds, l.world);
     }
     return m;
+}
+
+void Layout::move_free(Id id, Point world) {
+    if (auto* f = free_of_(id)) {
+        f->world.x = world.x;
+        f->world.y = world.y;
+    }
 }
 
 // ── arranging ────────────────────────────────────────────────────────
@@ -294,12 +302,21 @@ std::vector<Placement> Layout::wuxian_(Rect area, const Camera& cam) {
     const Point origin{area.x, area.y};
     for (const auto& it : items) {
         if (it.free) {
-            const auto r = openwx::to_screen(cam, it.free->world, origin);
-            out.push_back({.id = it.free->w.id, .rect = r, .visible = overlaps(r, area), .zoom = cam.zoom});
+            auto r = openwx::to_screen(cam, it.free->world, origin);
+            if (it.free->collapsed) r.height = std::min(r.height, o_.title * cam.zoom);
+            out.push_back({.id = it.free->w.id, .rect = r, .visible = overlaps(r, area), .zoom = cam.zoom, .collapsed = it.free->collapsed});
             continue;
         }
         auto& s = *it.space;
         const double z = s.meta.scale * cam.zoom;
+        // Collapsed: its label strip; its windows are not placed (not shown, not hit).
+        if (s.meta.collapsed) {
+            auto frame = openwx::to_screen(cam, world_of_(s), origin);
+            frame.width = std::min(frame.width, detail::kLabelStrip);
+            frame.height = o_.title;
+            frames_.push_back({.id = s.meta.id, .screen = frame, .zoom = z, .current = s.meta.id == current_, .collapsed = true});
+            continue;
+        }
         auto ps = arrange_space_(s, area, true);
         // Those on every workspace, where they are on the current one.
         if (s.meta.id == current_)

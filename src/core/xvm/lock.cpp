@@ -4,6 +4,7 @@ import std;
 import xlings.platform;
 import xlings.core.log;
 import xlings.core.utils;
+import xlings.subos.situation;
 
 namespace xlings::xvm {
 
@@ -153,6 +154,12 @@ std::expected<StateLock, std::string> acquire_state_lock(const std::filesystem::
         std::ofstream probe(path, std::ios::app);
         if (!probe) {
             const bool inside = utils::get_env_or_default("XLINGS_SUBOS_MODE") == "sandbox";
+            // A Luban machine whose host has no broker (an older luban there,
+            // design 2026-10-21 §3.3): one line, and what works.
+            if (!inside && subos::situation::in_machine())
+                return std::unexpected(std::string(
+                    "the shared store is this computer's, read-only in the machine: changing it for everyone "
+                    "needs a newer luban on the host (luban upgrade there); for yourself, run it without sudo"));
             return std::unexpected(std::format(
                 "{} cannot be written{}", path.string(),
                 inside ? " -- inside a SubOS sandbox the xlings home is read-only; run this "

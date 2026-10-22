@@ -4,8 +4,10 @@ import xdesk.compositor;
 import xdesk.apps;
 import xdesk.config;
 import xdesk.os;
+import xdesk.words;
 
 int main(int argc, char* argv[]) {
+    xdesk::words::register_words();
     const std::vector<std::string_view> args(argv + 1, argv + argc);
     if (!args.empty() && args[0] == "--probe") {
         auto f = xdesk::compositor::probe({640, 400});
@@ -34,11 +36,26 @@ int main(int argc, char* argv[]) {
             request = std::format("{{\"keys\": \"bind\", \"action\": {}, \"chord\": {}}}", quoted(args[3]), quoted(args[4]));
         else if (args.size() == 4 && args[1] == "keys" && args[2] == "unbind") request = std::format("{{\"keys\": \"unbind\", \"action\": {}}}", quoted(args[3]));
         else if (args.size() == 4 && args[1] == "keys" && args[2] == "set") request = std::format("{{\"keys\": \"set\", \"set\": {}}}", quoted(args[3]));
-        else {
+        else if (args.size() == 2 && args[1] == "state") request = R"({"state": true})";
+        else if (args.size() == 3 && args[1] == "state" && args[2] == "--json") request = R"({"state": true})";
+        else if (args.size() == 4 && args[1] == "debug" && args[2] == "hud" && (args[3] == "on" || args[3] == "off"))
+            request = std::format("{{\"debug\": \"hud\", \"on\": {}}}", args[3] == "on" ? "true" : "false");
+        else if (args.size() == 2 && args[1] == "subscribe") request = R"({"subscribe": true})";
+        else if (args.size() == 2 && args[1].starts_with("{")) request = std::string(args[1]);   // a request as the socket takes it
+        else if (args.size() == 3 && args[1] == "input") request = std::format("{{\"input\": {}}}", args[2]);
+        else if (args.size() == 3 && args[1] == "bookmark") request = std::format("{{\"bookmark\": {}}}", std::atoi(std::string(args[2]).c_str()));
+        else if (args.size() >= 2 && args[1] == "telemetry") {
+            std::string what;
+            for (std::size_t k = 2; k < args.size(); ++k) what += (what.empty() ? "" : " ") + std::string(args[k]);
+            request = std::format("{{\"telemetry\": {}}}", quoted(what.empty() ? "dump" : what));
+        } else {
             std::println(std::cerr, "usage: xdesk msg keys list | keys bind ACTION CHORD | keys unbind ACTION | keys set luban|luban-no-hjkl\n"
-                                    "       xdesk msg settings [displays|layout|appearance|keys|about]");
+                                    "       xdesk msg settings [displays|layout|appearance|keys|about]\n"
+                                    "       xdesk msg state | debug hud on|off | subscribe | bookmark N | input STEPS (JSON)\n"
+                                    "       xdesk msg telemetry [dump|metrics|recent N|trace|profile on|off|level L|reset]");
             return 2;
         }
+        const bool subscribe = request.find("subscribe") != std::string::npos;
         const auto path = std::filesystem::path(env.at("XDG_RUNTIME_DIR")) / std::format("xdesk-{}.sock", env.at("WAYLAND_DISPLAY"));
         const int fd = xdesk::os::connect_unix(path);
         if (fd < 0) { std::println(std::cerr, "xdesk msg: no xdesk answers at {}", path.string()); return 1; }
@@ -49,6 +66,20 @@ int main(int argc, char* argv[]) {
             const auto n = xdesk::os::read_some(fd, buf);
             if (!n || *n == 0) break;
             reply.append(buf.data(), *n);
+        }
+        // Subscribed: every line that follows, until the desktop goes.
+        const bool ok = reply.find("\"ok\": true") != std::string::npos || reply.find("\"ok\":true") != std::string::npos;
+        if (subscribe && ok) {
+            std::cout << reply;
+            std::cout.flush();
+            for (;;) {
+                const auto n = xdesk::os::read_some(fd, buf);
+                if (!n || *n == 0) break;
+                std::cout << std::string_view(buf.data(), *n);
+                std::cout.flush();
+            }
+            xdesk::os::close(fd);
+            return 0;
         }
         xdesk::os::close(fd);
         if (const auto nl = reply.find('\n'); nl != std::string::npos) reply.resize(nl);
@@ -117,6 +148,7 @@ int main(int argc, char* argv[]) {
     o.flow = settings.get("desktop", "flow", o.flow);
     // [wuxian] (design 2026-10-20 WuXian §3.16); [canvas] of before is read too.
     o.minimap = settings.get("wuxian", "minimap", settings.get("canvas", "minimap", "on")) != "off";
+    o.bookmarks = settings.get("wuxian", "bookmarks", "on") != "off";
     o.snap = settings.get("wuxian", "snap", settings.get("canvas", "snap", "on")) != "off";
     o.reduce_motion = settings.get("appearance", "reduce_motion", "off") == "on";
     o.rule = settings.get("desktop", "rule", o.rule);

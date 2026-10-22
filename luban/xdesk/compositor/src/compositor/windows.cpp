@@ -2,6 +2,7 @@
 module xdesk.compositor;
 
 import std;
+import xdesk.words;
 import opensal;
 import opensal.wire;
 import opensal.keys;
@@ -39,6 +40,8 @@ View* Server::view_of(layout::Id id) {
 
 void Server::focus(View* v) {
     if (!v || !v->mapped) return;
+    // Collapsed: no input -- the focus passes it by (design 2026-10-21 §8.5).
+    if (lay.collapsed(v->id)) return;
     plane_focus = false;
     if (View* was = focused(); was && was != v) wlr_xdg_toplevel_set_activated(was->toplevel, false);
     // To the front of the list and of the scene.
@@ -46,6 +49,7 @@ void Server::focus(View* v) {
         if (&*it == v) { views.splice(views.begin(), views, it); break; }
     wlr_scene_node_raise_to_top(&v->frame->node);
     wlr_xdg_toplevel_set_activated(v->toplevel, true);
+    publish("focus", {{"id", std::to_string(v->id)}, {"app_id", v->toplevel->app_id ? v->toplevel->app_id : ""}});
     wlr_seat_keyboard_notify_enter(seat, v->toplevel->base->surface, keyboard.keycodes, keyboard.num_keycodes,
                                    &keyboard.modifiers);
     if (v->laid && lay.focused() != v->id) lay.focus(v->id);
@@ -77,6 +81,9 @@ void Server::apply(const std::vector<layout::Placement>& ps, bool instant, layou
         const auto spread = spread_zoom.find(v.id);
         const double zoom = p->zoom * (spread != spread_zoom.end() ? spread->second : 1);
         v.zoom = zoom;
+        // Collapsed: its title bar alone, the client kept at its size, unseen.
+        wlr_scene_node_set_enabled(&v.content->node, !p->collapsed);
+        if (v.backdrop) wlr_scene_node_set_enabled(&v.backdrop->node, !p->collapsed);
         // Full screen: no title bar, all of the output the client's.
         const int bar = p->fullscreen ? 0 : kTitle;
         const int title = static_cast<int>(std::lround(bar * zoom));
@@ -91,7 +98,7 @@ void Server::apply(const std::vector<layout::Placement>& ps, bool instant, layou
         // The client is asked for its size at zoom 1 (the WuXian view scales it).
         const int cw = std::max(1, static_cast<int>(std::lround(p->rect.width / zoom)));
         const int ch = std::max(1, static_cast<int>(std::lround(p->rect.height / zoom)) - bar);
-        if (v.toplevel->base->initialized) {
+        if (v.toplevel->base->initialized && !p->collapsed) {
             // Only what changed: each of these sends a configure, and a
             // client draws again for one -- every frame of a glide or of the
             // view's change otherwise.
@@ -109,6 +116,7 @@ void Server::apply(const std::vector<layout::Placement>& ps, bool instant, layou
                                     std::max(1, static_cast<int>(std::lround(p->rect.height)) - title));
             wlr_scene_node_set_position(&v.backdrop->node, 0, title);
         }
+        lay_outline(v, p->rect.width, p->rect.height);
         // The first place is taken at once; after that the frame glides.
         v.x.target = p->rect.x;
         v.y.target = p->rect.y;
@@ -143,6 +151,7 @@ void Server::apply(const std::vector<layout::Placement>& ps, bool instant, layou
     zoom_surfaces();
     animate();
     draw_shell();
+    update_bookmarks();
 }
 
 View* Server::view_at(double x, double y) {
@@ -157,8 +166,43 @@ View* Server::view_at(double x, double y) {
 }
 
 bool Server::on_title(const View& v, double y) const {
-    // Its title bar is drawn at its zoom.
-    return y - v.frame->node.y < kTitle * v.zoom;
+    // Its title bar is drawn at its zoom; however small, at least 24 screen
+    // pixels of it are taken (design 2026-10-21 §8.7).
+    constexpr double kTitleReach = 24;
+    return y - v.frame->node.y < std::max(kTitle * v.zoom, kTitleReach);
+}
+
+void Server::collapse_window(layout::Id id) {
+    if (!lay.is_free(id)) return;
+    lay.toggle_collapsed(id);
+    const bool now = lay.collapsed(id);
+    publish("collapse", {{"id", std::to_string(id)}, {"collapsed", now ? "true" : "false"}});
+    // Collapsed, it lets the focus go; expanded, it takes it.
+    if (now && lay.focused() == id) {
+        if (View* v = view_of(id)) wlr_xdg_toplevel_set_activated(v->toplevel, false);
+        wlr_seat_keyboard_notify_clear_focus(seat);
+    }
+    remember_arrangement();
+    arrange();
+    if (!now)
+        if (View* v = view_of(id)) focus(v);
+}
+
+void Server::collapse_workspace(int id) {
+    if (!lay.workspace_info(id)) return;
+    lay.toggle_workspace_collapsed(id);
+    publish("collapse", {{"workspace", std::to_string(id)}, {"collapsed", lay.workspace_collapsed(id) ? "true" : "false"}});
+    remember_arrangement();
+    arrange();
+}
+
+void Server::collapse_focused() {
+    if (!wuxian()) {
+        show_hint(i18n::tr("Collapsing is the WuXian view's (Super+O)"), 2500);
+        return;
+    }
+    if (const auto f = lay.focused(); f && lay.is_free(*f)) return collapse_window(*f);
+    collapse_workspace(ws_selected ? ws_selected : lay.focused_workspace());
 }
 
 // Each window's zoom on its surfaces (a surface's own commit sets its size
@@ -241,6 +285,11 @@ void Server::add_view(wlr_xdg_toplevel* toplevel) {
     v.content = wlr_scene_xdg_surface_create(v.frame, toplevel->base);
     wlr_scene_node_set_position(&v.content->node, 0, kTitle);
     v.content->node.data = &v;
+    for (auto& r : v.outline) {
+        const float none[4] = {0, 0, 0, 0};
+        r = wlr_scene_rect_create(v.frame, 1, 1, none);
+        wlr_scene_node_set_enabled(&r->node, false);
+    }
     toplevel->base->data = v.content;
     View* self = &v;
     v.commit.connect(&toplevel->base->surface->events.commit, [this, self](void*) {
@@ -267,8 +316,9 @@ void Server::add_view(wlr_xdg_toplevel* toplevel) {
         // Focused where it is shown (a rule may have sent it to another workspace).
         if (lay.focused() == self->id) focus(self);
         else follow_focus();
-        // A new window among others: lit a moment, the rest dimmed (design 2026-10-20 WuXian §4.3).
+        // A new window among others: its outline lit a moment (design 2026-10-21 §8.2).
         if (lay.focused() == self->id && std::ranges::count_if(views, [](const View& o) { return o.mapped; }) > 1) start_highlight(self->id);
+        publish("open", {{"id", std::to_string(self->id)}, {"app_id", self->toplevel->app_id ? self->toplevel->app_id : ""}});
     });
     v.unmap.connect(&toplevel->base->surface->events.unmap, [this, self](void*) {
         self->mapped = false;
@@ -279,6 +329,7 @@ void Server::add_view(wlr_xdg_toplevel* toplevel) {
         arrange();
         follow_focus();
         if (!focused()) for (auto& other : views) if (other.mapped) { focus(&other); break; }
+        publish("close", {{"id", std::to_string(self->id)}, {"app_id", self->toplevel->app_id ? self->toplevel->app_id : ""}});
     });
     v.set_title.connect(&toplevel->events.set_title, [this, self](void*) {
         if (self->mapped) arrange();

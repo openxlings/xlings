@@ -35,6 +35,3 @@ kind = "lib"
 [dependencies]
 libs     = { path = "../libs" }       # json
 platform = { path = "../platform" }   # atomic writes
-
-[build]
-include_dirs = ["../libs/src/json"]

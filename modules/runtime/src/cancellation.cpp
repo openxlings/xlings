@@ -9,6 +9,13 @@ namespace xlings {
 
 CancelledException::CancelledException() : std::runtime_error("operation cancelled") {}
 
+namespace {
+std::atomic<bool> gStopRequested{false};
+}
+
+void request_stop() { gStopRequested.store(true); }
+bool stop_requested() { return gStopRequested.load(); }
+
 PausedException::PausedException() : std::runtime_error("operation paused") {}
 
 void CancellationToken::pause() {

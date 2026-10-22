@@ -569,7 +569,11 @@ void Bridge::frame_ready_() {
                     px[y * f.stride + x * 4 + 3] = std::byte{0xff};
         }
         const opensal::Pixels surface{f.size, f.stride, std::span<const std::byte>(px, shm_mem_.size)};
-        if (!send_(opensal::wire::encode_frame(surface, d))) { provider_gone_ = true; break; }
+        // A provider across a narrow channel takes the rows compressed (opensal 0.6).
+        auto frame = opensal::wire::encode_frame(surface, d);
+        if (opensal::has(provided_, opensal::Interface::Compressed))
+            if (auto z = opensal::wire::encode_compressed(std::string_view(frame).substr(5))) frame = opensal::wire::encode('z', *z);
+        if (!send_(frame)) { provider_gone_ = true; break; }
     }
     // The mirrors: the same picture (all of it to one that has not had it).
     const opensal::Pixels surface{f.size, f.stride, std::span<const std::byte>(px, shm_mem_.size)};

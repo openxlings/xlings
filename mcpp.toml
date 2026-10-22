@@ -54,12 +54,17 @@ members = [
     "luban/specs/openas",
     "luban/specs/opencaps",
     "luban/specs/openwx",
+    "luban/specs/openbus",
     "luban/kits/imkit",
     "luban/kits/openhal-host",
     "luban/kits/tray",
     "luban/kits/opensal-wlr",
     "luban/kits/cursor",
+    "luban/kits/telemetry",
+    "luban/kits/i18n",
     "luban/kits/cursor/tool",
+    "luban/services/xbus",
+    "luban/services/xbus/tool",
     "luban/xdesk/base",
     "luban/xdesk/layout",
     "luban/xdesk/compositor",
@@ -74,7 +79,7 @@ members = [
 
 [package]
 name = "xlings"
-version = "2026.10.21.4"
+version = "2026.10.22.1"
 description = "Universal package management infrastructure tool with SubOS isolation"
 license = "Apache-2.0"
 repo = "https://github.com/openxlings/xlings"
@@ -82,7 +87,7 @@ repo = "https://github.com/openxlings/xlings"
 [build]
 # modules/testkit/include holds xtest.hpp (the XTEST macro). Only test sources
 # include it; it is here because test TUs are compiled with the root's flags.
-include_dirs = ["modules/libs/src/json", "modules/testkit/include"]
+include_dirs = ["modules/testkit/include"]
 # Minimum supported macOS for produced binaries (mcpp 0.0.50+ honors
 # this; the MACOSX_DEPLOYMENT_TARGET env in CI/release remains as the
 # second line of assurance and covers older bootstrap mcpp versions).
@@ -205,12 +210,16 @@ openhal     = { path = "luban/specs/openhal" }
 openas      = { path = "luban/specs/openas" }
 opencaps    = { path = "luban/specs/opencaps" }
 openwx      = { path = "luban/specs/openwx" }
+openbus     = { path = "luban/specs/openbus" }
 openhal-host = { path = "luban/kits/openhal-host" }
 opensal-wlr = { path = "luban/kits/opensal-wlr" }
 xdesk-base = { path = "luban/xdesk/base" }
 xdesk-layout = { path = "luban/xdesk/layout" }
 tray       = { path = "luban/kits/tray" }
 cursorkit  = { path = "luban/kits/cursor" }
+telemetry  = { path = "luban/kits/telemetry" }
+i18nkit    = { path = "luban/kits/i18n" }
+xbus       = { path = "luban/services/xbus" }
 
 [dev-dependencies.compat]
 gtest = "1.15.2"

@@ -90,6 +90,10 @@ const std::vector<Entry>& table() {
         // would draw with the host's own libraries.
         {{"qemu-system-gl", "qemu-system-gl", {}, "linux-x86_64"}, "xim-x-qemu-system-gl",
          {{Source::Payload, "bin", "qemu-system-x86_64"}}},
+        // A machine's files over virtio-fs (design 2026-10-21 §4): the
+        // vhost-user daemon, static, unprivileged.
+        {{"virtiofsd", "virtiofsd", {}, "linux"}, "xim-x-virtiofsd",
+         {{Source::Payload, "bin"}, {Source::Host, "/usr/libexec/virtiofsd"}, {Source::Host, "/usr/lib/qemu/virtiofsd"}}},
     };
     return t;
 }

@@ -20,6 +20,8 @@ import openhal;
 import openhal.audio;
 import openas;
 import xlings.carrier;
+import openbus;
+import xbus.node;
 import :render;
 
 namespace luban::cli {
@@ -335,6 +337,60 @@ int pipe_unix_(const std::string& socket) {
 // What this computer can do with Luban (part 4 §6.3): one line per way of
 // running a system, and the devices -- the same report the Luban OS app and
 // an agent read. Exit 0 when a system can run here (a sandbox or a machine).
+// What is on a bus (design 2026-10-22 §7): the host's -- its router, the
+// systems linked under it, what its programs offer -- or one system's: what
+// its programs offer, seen through the link. Nothing started the home's
+// router yet: said, with what starts it.
+int bus_status(const svc::Context& c, const std::optional<std::string>& name, const Globals& g, Renderer& r) {
+    const xbus::Address at{"unix", vm::bus_socket(c.home).string()};
+    auto n = xbus::Node::connect({.name = "luban-status", .actor = "program:luban", .router = at,
+                                  .connect_wait = std::chrono::milliseconds(800), .telemetry = false});
+    if (!n) {
+        const auto why = std::string("this home's bus is not running: a machine starts it, or xbus router --listen ") + at.text();
+        if (g.json) { r.value(Json{{"bus", nullptr}, {"why", why}}); return 0; }
+        std::println("{}", why);
+        return 0;
+    }
+    auto& bus = **n;
+    const auto root = bus.root();
+    const auto under = name ? vm::system_bus_root(*name) : root;
+    auto found = bus.resolve(under + "/**").value_or(std::vector<xbus::Resolved>{});
+    // A system's own router endpoints are its bus, not what is on it.
+    std::erase_if(found, [&](const xbus::Resolved& e) {
+        return e.path.starts_with(under + "/bus/") || (!name && e.path.starts_with(root + "/system/"));
+    });
+    Json objects = Json::array();
+    for (const auto& e : found) {
+        objects.push_back({{"path", e.path.substr(under.size() + 1)}, {"kind", std::string(openbus::name_of(e.kind))}, {"node", e.name},
+                           {"interfaces", e.interfaces}, {"via", e.via.size()}});
+    }
+    Json links = Json::array();
+    if (const auto l = bus.call("bus/links"); l && !l->empty()) links = Json::parse(l->front(), nullptr, false);
+    if (!links.is_array()) links = Json::array();
+    const bool linked = !name || std::ranges::any_of(links, [&](const Json& x) { return x.value("root", std::string{}) == under; });
+    Json out{{"bus", at.text()}, {"root", under}, {"objects", objects}};
+    if (name) out["linked"] = linked;
+    else out["systems"] = links;
+    if (g.json) { r.value(out); return 0; }
+    if (name && !linked) {
+        std::println("{} is not on this home's bus (it is linked while it runs as a machine)", *name);
+        return 0;
+    }
+    std::println("{}  bus at {}", name ? *name : std::string("this host"), at.where);
+    if (!name) {
+        for (const auto& l : links) std::println("  system    {}", l.value("root", std::string{}).substr(root.size() + 1));
+    }
+    if (objects.empty()) std::println("  nothing offered on it");
+    for (const auto& o : objects) {
+        std::string ifs;
+        for (const auto& i : o["interfaces"]) ifs += (ifs.empty() ? "" : ", ") + i.get<std::string>();
+        std::println("  {:<8}  {:<40} {}{}", o.value("kind", std::string{}), o.value("path", std::string{}), o.value("node", std::string{}),
+                     ifs.empty() ? "" : "  (" + ifs + ")");
+    }
+    std::println("  more: xbus ls '{}/**' --router {}", under, at.text());
+    return 0;
+}
+
 int host_status(const svc::Context& c, const Globals& g) {
     const auto caps = svc::capabilities(svc::gather(c.home, c.port));
     const auto* sandbox = caps.mode("sandbox");
@@ -406,7 +462,7 @@ std::string edition_label_(const svc::Environment& e) {
     return svc::display_name(svc::lineage_of(e));
 }
 
-int overview(const svc::Context& c, const Globals& g, std::string_view pattern = {}) {
+int overview(const svc::Context& c, const Globals& g, std::string_view pattern = {}, bool all = false) {
     auto envs = svc::list(c);
     // A name pattern (design 2026-10-19 §6): `luban ls a`. Without one, the
     // output is what it always was.
@@ -448,6 +504,14 @@ int overview(const svc::Context& c, const Globals& g, std::string_view pattern =
     }
     for (const auto& e : *envs)
         std::println("  {:<16} {:<22} {}", e.name, edition_label_(e), e.running ? "running" : "");
+    // What cancelled makings set aside: with --all, each; else one line.
+    if (const auto left = svc::unfinished(c.home); !left.empty()) {
+        if (all)
+            for (const auto& u : left) std::println("  {:<16} {:<22}", u.name, "unfinished");
+        else
+            std::println("\n  {} unfinished making{}: luban ls --all", left.size(), left.size() == 1 ? "" : "s");
+        std::println("  clear   luban rm --unfinished");
+    }
     std::println("\n  enter   luban enter {}\n  more    luban --help", envs->front().name);
     return 0;
 }
@@ -714,6 +778,15 @@ int cmd_status(const svc::Context& c, const Parsed& p, const Globals& g, Rendere
         inside.insert(inside.end(), check.begin(), check.end());
         return svc::run_command(c, p.words[0], inside);
     }
+    // What its latest operation did, the system's own record of it too
+    // (design 2026-10-21 §7.4): xlings's journal, followed where it links.
+    if (p.flag("--log")) {
+        if (p.words.empty()) return usage("`luban status <name> --log`: which environment?", g);
+        std::vector<std::string> log{"self", "log", "--subos", p.words[0]};
+        if (g.json) log.push_back("--json");
+        return c.port.terminal(log);
+    }
+    if (p.flag("--bus")) return bus_status(c, p.words.empty() ? std::nullopt : std::optional<std::string>(p.words[0]), g, r);
     if (p.words.empty()) return host_status(c, g);
     auto e = svc::describe(c, p.words[0]);
     if (!e) return usage(e.error(), g);
@@ -772,6 +845,8 @@ int cmd_status(const svc::Context& c, const Parsed& p, const Globals& g, Rendere
     // A running machine's GPU, as it was started (WuXian §7.5).
     const auto gpu = e->settings.mode == "machine" ? vm::started_gpu(c.home, e->name) : std::nullopt;
     if (gpu) j["gpu"] = *gpu;
+    const auto files = e->settings.mode == "machine" ? vm::started_files(c.home, e->name) : std::nullopt;
+    if (files) j["files"] = *files;
     j["notes"] = Json::array();
     for (const auto& n : notes) j["notes"].push_back({{"text", n.text}, {"next", n.next}});
     if (g.json) { r.value(j); return 0; }
@@ -798,6 +873,7 @@ int cmd_status(const svc::Context& c, const Parsed& p, const Globals& g, Rendere
     if (e->carrier != "local") std::println("  carrier   {}", e->carrier);
     std::println("  {:<9} {}", xlings::i18n::tr("luban.status.network"), network);
     if (gpu) std::println("  gpu       {}", *gpu);
+    if (files) std::println("  files     {}", *files);
     std::println("  isolation luban config {}", e->name);
     for (const auto& v : unmet) std::println("  {} {}: this luban is older than it -- xlings update luban", r.paint("!", 33), v.why());
     // What may be done, never forced (design 2026-10-19 §12.2).
@@ -823,6 +899,7 @@ int cmd_config(const svc::Context& c, const Parsed& p, const Globals& g, Rendere
     if (!v.value("shell", std::string{}).empty()) std::println("  shell     {}", v.value("shell", ""));
     std::println("  desktop   {}", v.value("desktop", std::string{}).empty() ? "(the edition's)" : v.value("desktop", ""));
     std::println("  on-close  {}", v.value("on_close", ""));
+    if (v.value("mode", std::string{}) == "machine") std::println("  files     {}", v.value("files", std::string("virtiofs")));
     if (auto iso = v.find("isolation"); iso != v.end() && iso->is_object()) {
         std::println("  policy    {}", iso->value("extends", std::string("?")));
         if (auto in = iso->find("isolation"); in != iso->end() && in->is_object()) {
@@ -918,6 +995,22 @@ int cmd_import(const svc::Context& c, const Parsed& p, const Globals& g, Rendere
 }
 
 int cmd_rm(svc::Context c, const Parsed& p, const Globals& g) {
+    // What cancelled or failed makings set aside (design 2026-10-21 §7.3).
+    if (p.flag("--unfinished")) {
+        if (!p.words.empty()) return usage("`luban rm --unfinished` takes no name", g);
+        const auto left = svc::unfinished(c.home);
+        if (left.empty()) { std::println("nothing unfinished"); return 0; }
+        for (const auto& u : left) std::println("  {:<16} {}", u.name, u.path.string());
+        if (!c.yes) {
+            if (!can_ask_(g)) return usage("`luban rm --unfinished -y`: nobody to ask", g);
+            if (!ask_(std::format("remove these {} unfinished makings?", left.size()))) {
+                std::println("nothing removed");
+                return 1;
+            }
+        }
+        std::println("removed {}", svc::remove_unfinished(c.home));
+        return 0;
+    }
     if (p.words.size() != 1) return usage("`luban rm <name>`", g);
     if (!c.yes) {
         if (!can_ask_(g)) {
@@ -1227,13 +1320,16 @@ const spec::CommandSpec& tree() {
                          {"--display <DISPLAY>", "terminal (here) or window: a graphical program alone in a window of its own", false,
                           Level::More}}, .effect = "reversible"},
             {.name = "ls", .description = "List the environments, or those whose name matches", .aliases = {"list"},
-             .arguments = {{"pattern", "A name or part of one"}}, .effect = "read"},
+             .arguments = {{"pattern", "A name or part of one"}},
+             .options = {{"--all", "And what cancelled makings set aside"}}, .effect = "read"},
             {.name = "search", .description = "What the index offers: systems to make, desktops to give one",
              .arguments = {{"keyword", "Part of a name, title or description"}},
              .options = {{"--distributions", "Only the systems that can be made"},
                          {"--desktops", "Only the desktops a system can have"}}, .effect = "read"},
             {.name = "status", .description = "This host, or one environment", .arguments = {{"name", "Which"}},
-             .options = {{"--check", "Check that it is usable: its /usr, /etc, runtime closure, and programs"}}, .effect = "read"},
+             .options = {{"--check", "Check that it is usable: its /usr, /etc, runtime closure, and programs"},
+                         {"--log", "What its latest operation did, its own record of it too"},
+                         {"--bus", "What is on its bus: what its programs offer; the host's: the systems linked under it"}}, .effect = "read"},
             {.name = "config", .description = "Show or change an environment's settings",
              .arguments = {{"name", "Which", true}},
              .options = {{"--mode <MODE>", "sandbox or machine: how `luban enter` starts it"},
@@ -1244,6 +1340,7 @@ const spec::CommandSpec& tree() {
                          {"--desktop <SESSION>", "The desktop it starts, or none"},
                          {"--on-close <WHAT>", "ask, background or poweroff: closing its window"},
                          {"--enter <WHAT>", "console or desktop: what going in shows first"},
+                         {"--files <HOW>", "virtiofs (9p where it cannot) or 9p: how a machine shares its files", false, Level::More},
                          {"--policy <PRESET>", "dev, private, locked, or ns:name"},
                          {"--proxy <URL>", "Its only network is this SOCKS5h proxy; off for none"},
                          {"--tz <ZONE>", "utc, proxy, or Area/City"},
@@ -1280,7 +1377,9 @@ const spec::CommandSpec& tree() {
              .options = {{"--serial <SERIAL>", "The drive's serial (required with --agent)"}},
              .level = Level::More, .effect = "irreversible"},
             {.name = "rm", .description = "Remove an environment (asks first)", .aliases = {"remove"},
-             .arguments = {{"name", "Which", true}}, .level = Level::More, .effect = "irreversible"},
+             .arguments = {{"name", "Which"}},
+             .options = {{"--unfinished", "What cancelled or failed makings set aside"}},
+             .level = Level::More, .effect = "irreversible"},
             {.name = "setup", .description = "This host's one-time setup (isolation)", .level = Level::More, .effect = "external"},
             {.name = "help", .description = "Help; --all for every command",
              .options = {{"--all", "Every command"}, {"--expert", "And the expert ones"}}, .level = Level::More},
@@ -1548,6 +1647,7 @@ int run(int argc, char* argv[]) {
     if (!rest.empty() && rest.front() == "__write" && rest.size() == 3) return raw_write_(rest[1], rest[2]);
     if (!rest.empty() && rest.front() == "__pipe" && rest.size() == 3) return pipe_(rest[1], rest[2]);
     if (!rest.empty() && rest.front() == "__vm-supervise" && rest.size() == 3) return vm::supervise(rest[1], rest[2]);
+    if (!rest.empty() && rest.front() == "__bus-router" && rest.size() == 2) return vm::serve_bus(rest[1]);
     if (!rest.empty() && rest.front() == "__vm") return vm::host_machine(home_dir_(), std::span<const std::string>(rest).subspan(1));
     if (!rest.empty() && rest.front() == "__agent-stdio") vm::serve_stdio();
     if (!rest.empty() && rest.front() == "__pipe-unix" && rest.size() == 2) return pipe_unix_(rest[1]);
@@ -1616,8 +1716,8 @@ int run(int argc, char* argv[]) {
         if (p.command == "enter") return cmd_enter(c, p, g);
         if (p.command == "run") return cmd_run(c, p, g);
         if (p.command == "ls") {
-            if (p.words.size() > 1) return usage("`luban ls [<pattern>]`", g);
-            return overview(c, g, p.words.empty() ? std::string_view{} : std::string_view(p.words[0]));
+            if (p.words.size() > 1) return usage("`luban ls [<pattern>] [--all]`", g);
+            return overview(c, g, p.words.empty() ? std::string_view{} : std::string_view(p.words[0]), p.flag("--all"));
         }
         if (p.command == "search") {
             if (p.words.size() > 1) return usage("`luban search [<keyword>] [--distributions | --desktops]`", g);

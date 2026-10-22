@@ -7,8 +7,9 @@ directory; every package is its own `mcpp.toml` (design 2026-10-19 §28).
 | Directory | What | May import | Moves out |
 |---|---|---|---|
 | `specs/` | Specifications: a contract, its declarations, its conformance check (`README.md`, `SPEC.md`, `src/`, `conformance/`) | the standard library and itself; never another specification | with its second implementer, or a user outside this repository |
-| `kits/` | Implementations of specifications and reusable components | the standard library, specifications, other kits, their C libraries; never `xlings.*` or `luban.*` | with a user outside this repository |
-| `xdesk/` | The xdesk desktop, one project: its libraries and its program (`base/`, `layout/`, `compositor/`, `app/`) | as a kit | as a whole |
+| `kits/` | Libraries linked into a program: a specification's in-process implementation or a reusable component -- no process, endpoint or state of their own | the standard library, specifications, other kits, their C libraries and mcpp-index packages; never `xlings.*` or `luban.*` | with a user outside this repository |
+| `services/` | Base services: a process of its own (or one a system's agent hosts) that owns an endpoint and its state, has a lifecycle and says what it does (statistics, logs); its library is how programs reach it (`src/`), its program in `tool/` | as a kit, and kits | with a user outside this repository |
+| `xdesk/` | The xdesk desktop, one project: its libraries and its program (`base/`, `layout/`, `compositor/`, `app/`) | as a kit, and services' libraries (how a program reaches a service: XBus) | as a whole |
 | `apps/` | Programs that run inside a Luban system and are not a project of their own (made with its first member) | `modules/`, specifications, kits | stays |
 | `os/` | Luban OS itself: stage-0, the service, machines, the `luban` command, the Luban OS app's window, compatibility | `modules/`, specifications, kits | stays |
 | `host/` | Luban's programs on the host: `luban` (and stage-0 as `luban-init`), `luban-os` (the app) | as `os/` | stays |
@@ -41,7 +42,7 @@ Luban's tests are found with xlings' (`mcpp.toml` `[test] discover`) and named
 the same way (`unit/test_luban_cli`); `xdev report` reads both requirements
 files.
 
-`specs/` and `kits/` are kept as independent projects: their names do not say
+`specs/`, `kits/` and `services/` are kept as independent projects: their names do not say
 Luban, their comments and documents do not point into this repository, their
 versions move on their own. Moving one to its own repository is a subtree
 split and a changed dependency line. `tools/lint_layer_deps.sh` checks the
@@ -68,7 +69,19 @@ reference one another; implementations connect them.
 - `openhal-host` -- openhal's provider on Linux, macOS and Windows.
 - `imkit` -- immediate-mode widgets over Dear ImGui.
 - `tray` -- a status-area icon and its menu (StatusNotifierItem, the macOS menu bar, the Windows notification area).
+- `i18n` (i18nkit) -- words in a person's language: catalogues by domain and language, a fallback chain to English, a check of the catalogues; xlings.i18n and xdesk.words are built on it.
+- `telemetry` -- what a program says about itself: counters, gauges and histograms by name, a flight recorder, a structured log (one JSON object a line), profiling spans exported as a trace, and dumps; `telemetry::control` is the whole interface a bus or a control socket carries (openbus `openbus.telemetry@0.1`).
 - `cursor` (cursorkit) -- pointers drawn from vector shapes at exactly the size asked, Xcursor themes, and the shake that says someone is looking for the pointer; its tool `cursor-make` makes the Luban pointer theme (`os/window/cursors/luban.path`).
+
+## services/
+
+What tells a service from a kit: a kit is linked and does nothing on its own;
+a service runs -- one per host or per system -- and is reached, by its
+library, over its protocol. Every service is observable the same way (its
+statistics, its log, a command that shows both) and has a specification it
+implements.
+
+- `xbus` -- openbus's implementation: the router (one per host and per system), the node library, links between routers, the `xbus` command (`ls`, `call`, `pub`, `sub`, `monitor`, `top`, `stats`, `bench`, `router`).
 
 ## xdesk/
 

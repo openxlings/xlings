@@ -36,7 +36,7 @@ Theme theme(std::string_view profile);
 
 // The user's language from the environment (LC_ALL, LC_MESSAGES, LANG):
 // true when it is Chinese.
-bool chinese(const std::map<std::string, std::string>& env);
+// (Whether the person reads Chinese: xdesk::words::chinese, the i18n kit's language.)
 
 // ── title bars ───────────────────────────────────────────────────────
 
@@ -119,6 +119,17 @@ void rule_icon(draw::Canvas& c, draw::Rect r, const WorkspaceChip& w, bool fille
 // (Target::label, its number), in the picture's own pixels.
 Picture workspace_label(draw::Fonts* fonts, const Theme& t, const WorkspaceChip& w, bool small, double scale = 1);
 inline constexpr int kLabelHeight = 22;
+// A covered item's bookmark (design 2026-10-21 §8.4), at an item's right
+// edge: a window's initial and short title, a workspace's colour and its
+// number and name, or "+N" for the rest; `lit` under the pointer.
+Picture bookmark(draw::Fonts* fonts, const Theme& t, std::string_view label, std::optional<draw::Color> colour, bool lit,
+                 double scale = 1);
+inline constexpr int kBookmarkHeight = 22;
+// The desktop's tour (design 2026-10-21 §8.1): a card at the bottom right --
+// step `at` of `of`, what to do, why -- with two buttons: this step skipped
+// (area 0), the tour ended (area 1).
+Picture tour(draw::Fonts* ui, draw::Fonts* big, const Theme& t, int at, int of, std::string_view title, std::string_view text,
+             std::string_view skip, std::string_view end, int width, int height, double scale = 1);
 
 // ── the launcher ─────────────────────────────────────────────────────
 
@@ -266,5 +277,7 @@ Picture text_field(draw::Fonts* ui, const Theme& t, std::string_view prompt, std
                    int height, double scale = 1);
 // A line said for a while at the bottom (the first time: what the keys are).
 Picture hint(draw::Fonts* ui, const Theme& t, std::string_view text, int width, int height, double scale = 1);
+// The debug HUD (design 2026-10-21 §8.11): lines of figures in the top left.
+Picture debug_hud(draw::Fonts* ui, const Theme& t, const std::vector<std::string>& lines, double scale = 1);
 
 }  // namespace xdesk::shell

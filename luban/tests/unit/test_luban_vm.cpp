@@ -121,5 +121,29 @@ XTEST(LubanVm, AMachineHasVirglOnlyWithARenderNodeAndTheGlQemu, .area = "luban",
         EXPECT_TRUE(no.summary.starts_with("no GPU: ")) << no.summary;
     }
     EXPECT_EQ(luban::vm::machine_gpu(std::nullopt, absent).summary, "no GPU: this host has no render node");
+    // WSL's GPU (K14): probed, said why, and software.
+    const auto wsl = luban::vm::machine_gpu(std::nullopt, {}, {}, true);
+    EXPECT_FALSE(wsl.virgl);
+    EXPECT_NE(wsl.summary.find("/dev/dxg"), std::string::npos) << wsl.summary;
     EXPECT_EQ(luban::vm::machine_gpu(node, absent).summary, "no GPU: xim:qemu-system-gl is not installed");
+}
+
+// A machine's files over virtio-fs (design 2026-10-21 §4, K6): a virtiofsd
+// for each share, its socket in the machine's run directory, read-only where
+// 9p is; qemu's device per share on a
+// shared memfd of `-m`'s size. 9p's arguments, the way back, the same shares.
+XTEST(LubanVm, AMachinesFilesOverVirtiofsAreADaemonAShare, .area = "luban", .covers = {"LUBAN-MACHINE-FILES"}) {
+    const std::vector<luban::vm::Share> shares{{"root", "/r", false}, {"home", "/h", true}};
+    const auto p = luban::vm::virtiofs_plan("/bin/virtiofsd", shares, "/run/m", "2048");
+    ASSERT_EQ(p.daemons.size(), 2u);
+    EXPECT_EQ(p.daemons[0], (std::vector<std::string>{"/bin/virtiofsd", "--socket-path", "/run/m/vfs-root.sock", "--shared-dir", "/r",
+                                                      "--sandbox", "namespace", "--cache", "auto"}));
+    EXPECT_EQ(p.daemons[1].back(), "--readonly");
+    EXPECT_EQ(p.qemu[1], "memory-backend-memfd,id=mem,size=2048M,share=on");
+    EXPECT_EQ(luban::vm::virtiofs_plan("/v", shares, "/run/m", "4G").qemu[1], "memory-backend-memfd,id=mem,size=4G,share=on");
+    EXPECT_NE(std::ranges::find(p.qemu, "vhost-user-fs-pci,chardev=vfs-home,tag=home"), p.qemu.end());
+    EXPECT_NE(std::ranges::find(p.qemu, "socket,id=vfs-root,path=/run/m/vfs-root.sock"), p.qemu.end());
+    EXPECT_EQ(luban::vm::nine_p_args(shares),
+              (std::vector<std::string>{"-virtfs", "local,path=/r,mount_tag=root,security_model=none,id=root", "-virtfs",
+                                        "local,path=/h,mount_tag=home,security_model=none,readonly=on,id=home"}));
 }

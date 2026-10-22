@@ -445,8 +445,7 @@ inline void apply_subos_env_(const std::string& name) {
         if (v.unresolved) continue;
         const auto existing = utils::get_env_or_default(v.var);
         if (v.op == manifest::OP_PREPEND) {
-            platform::set_env_variable(
-                v.var, existing.empty() ? v.value : v.value + ":" + existing);
+            platform::set_env_variable(v.var, platform::prepend_to_list(v.var, v.value, existing, ':'));
         } else if (!utils::env_is_set(v.var)) {
             // Not `existing.empty()`: an exported-but-empty variable is a value
             // the user chose, and `set` yields to the user's value.
@@ -600,6 +599,14 @@ std::expected<int, std::string> run_domain_relayed_(const xlings::home::prefix_d
                                                    std::optional<xlings::home::domain_producer::OutputBinding> output,
                                                    bool yes, EventStream& stream, bool runtime = true,
                                                    std::vector<ErrorEvent>* held = nullptr);
+// Any interface capability, run where a system lives, its events relayed into
+// `stream` as they come (design 2026-10-21 §7.2): the one path an event takes
+// out of a domain -- run_domain_relayed_ is it for subos_command.
+export std::expected<int, std::string> relay_capability_(const xlings::home::prefix_domain::Domain& domain,
+                                                 std::string_view capability, const nlohmann::json& call,
+                                                 std::optional<xlings::home::domain_producer::OutputBinding> output,
+                                                 EventStream& stream, bool runtime = true,
+                                                 std::vector<ErrorEvent>* held = nullptr);
 // What `subos new --offline-from <dir>` carries -- payloads/<package dir>/
 // <version>/ and index/<index>/ (as a home keeps them under data/), what `luban import`
 // unpacks from an archive -- placed in `home` where it lacks them, before
@@ -624,6 +631,7 @@ int run_status_(int argc, char* argv[], EventStream& stream, const UsageError& u
 int run_requests_(std::string_view sub, int argc, char* argv[], EventStream& stream,
                   const UsageError& usageError);
 int run_report_(int argc, char* argv[], EventStream& stream, const UsageError& usageError);
+int run_broker_serve_(int argc, char* argv[], const UsageError& usageError);
 int run_ps_(int argc, char* argv[], EventStream& stream);
 int run_log_(int argc, char* argv[], EventStream& stream, const UsageError& usageError);
 // src/core/subos/root/root_cmd.cpp: the root projection's commands.

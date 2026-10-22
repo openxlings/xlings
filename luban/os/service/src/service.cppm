@@ -20,7 +20,7 @@ export namespace luban::service {
 // Luban is released with the xlings it drives: the same date version
 // (YYYY.M.D.N), bumped with mcpp.toml and src/core/config.cppm.
 // tests/unit/test_luban_contract.cpp holds them equal.
-inline constexpr std::string_view kVersion = "2026.10.21.4";
+inline constexpr std::string_view kVersion = "2026.10.22.1";
 
 namespace fs = std::filesystem;
 
@@ -409,6 +409,16 @@ std::expected<NameReservation, std::string> reserve_name(const fs::path& home, s
 // unfinished making left only its record (`luban rm` clears it).
 bool name_reserved(const fs::path& home, std::string_view name);
 bool name_left_over(const fs::path& home, std::string_view name);
+// What a cancelled or failed making set aside (design 2026-10-21 §7.3):
+// `.unfinished-<name>-<pid>` in the home's subos directory or its systems'
+// domain -- never used, kept to look at until removed.
+struct Unfinished {
+    std::string name;
+    fs::path path;
+};
+std::vector<Unfinished> unfinished(const fs::path& home);
+// Removes them (the caller asked first); how many.
+std::size_t remove_unfinished(const fs::path& home);
 
 // Changes, in the order given: machine settings (mode, persist, desktop,
 // on-close), the login shell, and xlings's isolation settings (policy, proxy,

@@ -94,6 +94,9 @@ public:
     bool host_key() const { return host_key_; }
     // Ctrl+Alt+K this frame: hold the keyboard or let it go (the content never sees it).
     bool lock_key() const { return lock_key_; }
+    // A Super combination pressed while the keyboard was not held (the host
+    // kept it), once: the app says Ctrl+Alt+K.
+    bool take_super_unlocked();
     bool close_requested() const { return close_requested_; }
     // Files dropped onto the window this frame.
     const std::vector<std::filesystem::path>& dropped() const { return dropped_; }
@@ -167,6 +170,10 @@ public:
     void inject_close();
     // Tests: minimized and restored, as the host's window manager says it.
     void inject_shown(bool shown);
+    // Tests: the focus given or taken, as the host's window manager does.
+    void inject_focus(bool in);
+    // The keys the content was told are down and not yet up.
+    std::size_t keys_held() const;
     void inject_drop(const std::filesystem::path& file);
     void set_size(int width, int height);
     // A mirror (design 2026-10-20 §11.2): sized to show `width` x `height`
@@ -184,6 +191,8 @@ private:
     struct Pointer;                                     // pointer.cpp
     std::unique_ptr<Pointer, void (*)(Pointer*)> pointer_ { nullptr, nullptr };
     void pointer_frame_();
+    void reconcile_keys_();
+    void hold_pointer_();
     void release_pointer_();
     void pointer_moved_(float x, float y, bool pressed);
     std::vector<opensal::Event> events_;

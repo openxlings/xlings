@@ -10,8 +10,9 @@ Design records live in `.agents/docs/` (the current architecture:
 
 ```
 modules/   shared libraries (libs, runtime, platform, home, i18n, ui, cli, subos, confine, carrier, image, testkit)
-luban/     specs/ (opensal, openhal, openas, opencaps, openwx), kits/ (their implementations,
-           reusable components), xdesk/ (the desktop: base, layout, compositor, app) -- independent
+luban/     specs/ (opensal, openhal, openas, opencaps, openwx, openbus), kits/ (libraries: their
+           in-process implementations, reusable components), services/ (base services with a process
+           and a protocol: xbus), xdesk/ (the desktop: base, layout, compositor, app) -- independent
            projects kept here -- apps/ (programs inside a system), os/ (Luban OS: stage-0, service,
            vm, the luban command, compat, the app's window), host/ (luban and luban-os, the programs
            on the host), tests/ (Luban's tests and requirements.toml), tools/ (Luban's release scripts)
@@ -25,6 +26,8 @@ Imports go downward only (`tools/lint_layer_deps.sh`): `luban/` -> `modules/`;
 a spec imports only the standard library and itself; a kit (and xdesk) never imports `xlings.*` or
 `luban.*`; `os/service` imports no presentation (`luban/README.md`).
 What xlings and Luban both read (boot.json, a root's /etc, image formats) is a module.
+A kit (`luban/kits/*`) is an independent project that xlings may build on too
+(`xlings.i18n` is the i18n kit; nlohmann.json comes from mcpp-index, one copy).
 Luban is kept here until it has its own repository: what of xlings each Luban package may
 import is `luban/DEPENDENCIES.toml` (base and shared modules; xlings' domain through `Port`).
 

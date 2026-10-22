@@ -149,6 +149,35 @@ XTEST(Confine, ARootSpeaksCUtf8WhateverTheHostsLocale, .area = "subos", .covers 
         EXPECT_FALSE(k.starts_with("LC_") || k == "LANGUAGE") << k << "=" << v;
 }
 
+// What xlings itself sets for a system's session (its prompt's facts) passes
+// whatever the policy, with no degradation said; a caller's own --env is
+// still held to the policy's env_pass (an agent workspace said
+// "! env not in effect: --env LUBAN_KIND" on every command).
+XTEST(Confine, ASystemsOwnSessionFactsPassWhateverThePolicy, .area = "subos", .covers = {"SUBOS-SYSTEM-ENV"}) {
+    auto home = xlings::testkit::Home::isolated("confine-system-env");
+    const auto root = home.dir() / "subos" / "box" / "rootfs";
+    std::filesystem::create_directories(root / "etc");
+    sp::Request r;
+    r.instance = "box";
+    r.instance_dir = home.dir() / "subos" / "box";
+    r.user = "u";
+    r.argv = {"sh"};
+    r.root = root;
+    r.root_mounts = {{sp::MountKind::RoBind, "/h/.xlings/data/xpkgs/x", "/h/.xlings/data/xpkgs/x"}};
+    r.host_exists = [](std::string_view) { return true; };
+    r.system_env = {{"LUBAN_KIND", "sandbox"}, {"LUBAN_PERSIST", "all"}, {"PS1", "[luban] $ "}};
+    r.explicit_env = {{"MY_SECRET", "x"}};
+    const xlings::subos::HomeView view{home.dir()};
+    auto strict = xlings::subos::policy::preset(xlings::subos::policy::Preset::Dev);
+    strict.env_explicit_any = false;   // a caller's --env only by name
+    auto spec = cf::compile(strict, view, linux_host(true, false, 0), r);
+    ASSERT_TRUE(spec) << (spec ? std::string{} : (spec.error().missing.empty() ? std::string("refused") : spec.error().missing.front().reason));
+    EXPECT_EQ(spec->env.at("LUBAN_KIND"), "sandbox");
+    EXPECT_EQ(spec->env.at("PS1"), "[luban] $ ");
+    EXPECT_FALSE(spec->env.contains("MY_SECRET")) << "a caller's --env is the policy's to pass";
+    for (const auto& d : spec->degraded) EXPECT_EQ(d.reason.find("LUBAN_"), std::string::npos) << d.reason;
+}
+
 // persist home / none (Luban OS architecture §10.1): a root's own state is seen
 // through bwrap's memory overlay, so a session leaves nothing behind; /home
 // stays only with `home`; a backend without a mount namespace refuses.

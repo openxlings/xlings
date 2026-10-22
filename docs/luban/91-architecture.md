@@ -7,15 +7,18 @@ small on purpose.
 
 ## Where the code is
 
-`luban/` holds three kinds of package (`luban/README.md`):
+`luban/` holds four kinds of package (`luban/README.md`): specifications, kits (libraries), services and the OS:
 
 | Package | What |
 |---|---|
 | `luban/specs/opensal` | a surface: given pixels, gives back events; `opensal.wire` across an address space |
 | `luban/specs/openhal` | devices: which GPUs, displays, audio endpoints and input devices a machine has |
 | `luban/specs/openas` | actors and what they do: the actor and its delegation, effect classes, the envelope of a run |
+| `luban/specs/openbus` | the bus: objects by path and interface, call, publish, stream, event, region, links between routers |
 | `luban/kits/openhal-host` | openhal's source on Linux, macOS and Windows |
 | `luban/kits/opensal-wlr`, `imkit`, `tray` | a wlroots compositor as an opensal surface; widgets; a status-area icon |
+| `luban/kits/telemetry` | what a program says of itself: metrics, a flight recorder, a structured log, profiles, dumps |
+| `luban/services/xbus` | XBus, openbus's implementation: the router, the node library, `xbus` (a service: a process with an endpoint, reached by its library) |
 | `luban/xdesk/{base,layout,compositor,app}` | the xdesk desktop: its libraries and its program |
 | `luban/os/system` | stage-0 (the first process), boot entries, a machine's `/etc`, archives |
 | `luban/os/service` | environments and machines as operations with events; what this computer can do (`luban status`) |
@@ -29,7 +32,7 @@ small on purpose.
 | `src/core/subos/root` | the xlings side of a root: projection, generations, rollback, export |
 
 A specification imports only the standard library and itself; a kit never
-imports xlings or Luban; the OS service imports no presentation; nothing in
+imports xlings, Luban or a service; the OS service imports no presentation; nothing in
 `luban/` imports the xlings frontend (what is on stage-0's path cannot read
 Config). `tools/lint_layer_deps.sh` checks each rule.
 

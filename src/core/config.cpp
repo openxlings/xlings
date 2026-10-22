@@ -14,31 +14,17 @@ import xlings.core.xvm.types;
 import xlings.core.xvm.db;
 import xlings.core.xvm.lock;
 import xlings.core.home_config;
+import xlings.subos.situation;
 
 namespace xlings {
 
 namespace {
 
 // What a Luban root records of the generation its /usr presents (design
-// 2026-10-16 L §6.2): <home>/subos/<name>/root/usr in /etc/xlings/usr. The
-// home and the system are read from it where no environment says them (a
-// `sudo` that reset the environment).
-struct RootRecord {
-    std::filesystem::path home;
-    std::string name;
-};
-std::optional<RootRecord> root_record_() {
-    if constexpr (!platform::is_linux) return std::nullopt;
-    std::ifstream in("/etc/xlings/usr");
-    std::string line;
-    if (!std::getline(in, line)) return std::nullopt;
-    while (!line.empty() && std::isspace(static_cast<unsigned char>(line.back()))) line.pop_back();
-    const auto usr = std::filesystem::path(line).lexically_normal();
-    if (!usr.is_absolute() || usr.filename() != "usr" || usr.parent_path().filename() != "root") return std::nullopt;
-    const auto instance = usr.parent_path().parent_path();
-    if (instance.parent_path().filename() != "subos" || instance.filename().empty()) return std::nullopt;
-    return RootRecord{instance.parent_path().parent_path(), instance.filename().string()};
-}
+// 2026-10-16 L §6.2): the home and the system are read from it where no
+// environment says them (a `sudo` that reset the environment) --
+// xlings.subos.situation reads it, for every part that asks.
+std::optional<subos::situation::RootRecord> root_record_() { return subos::situation::root_record(); }
 
 bool inside_root_() {
     return !utils::get_env_or_default("XLINGS_ROOT_INSTANCE").empty() || root_record_().has_value();
@@ -209,6 +195,23 @@ std::expected<void, std::string> Config::start_own_home() {
             platform::write_file_atomic(file.string(), own.dump(2) + "\n");
         } catch (const std::exception& e) {
             return std::unexpected(std::format("cannot write {}: {}", file.string(), e.what()));
+        }
+    }
+    // Its subos: the system's description (its runtime binding, its envs), a
+    // workspace of its own -- `self doctor` reads a subos with no subos_info
+    // block as broken.
+    const auto manifest = p.homeDir / "subos" / "default" / ".xlings.json";
+    if (!fs::exists(manifest, ec)) {
+        auto theirs = nlohmann::json::parse(
+            platform::read_file_to_string((p.systemLayer / "subos" / "default" / ".xlings.json").string()), nullptr, false);
+        auto view = nlohmann::json::object();
+        view["workspace"] = nlohmann::json::object();
+        if (theirs.is_object() && theirs.contains("subos_info")) view["subos_info"] = theirs["subos_info"];
+        fs::create_directories(manifest.parent_path(), ec);
+        try {
+            platform::write_file_atomic(manifest.string(), view.dump(2) + "\n");
+        } catch (const std::exception& e) {
+            return std::unexpected(std::format("cannot write {}: {}", manifest.string(), e.what()));
         }
     }
     return {};
@@ -746,9 +749,10 @@ Config::Config() {
     // install needs no root, and `sudo xlings install --system` installs for
     // everyone. Not in a sandbox (the broker installs into the system there),
     // and not for a shim, which runs what its owner home placed.
-    if (std::error_code lec; platform::is_linux && paths_.homeSource != home::Source::Anchored
-        && utils::get_env_or_default("XLINGS_SUBOS_MODE") != "sandbox" && inside_root_() && !platform::is_root()
-        && fs::is_directory(paths_.homeDir, lec) && !platform::can_write(paths_.homeDir)) {
+    // Who that is, and where, is the situation's (design 2026-10-21 §3.0).
+    if (std::error_code lec; paths_.homeSource != home::Source::Anchored && fs::is_directory(paths_.homeDir, lec)
+        && subos::situation::measure(paths_.homeDir).who == subos::situation::Who::User
+        && !platform::can_write(paths_.homeDir)) {
         const auto own = fs::path(platform::get_home_dir()) / ".xlings";
         // A command that only reads, by a user with no home of their own yet,
         // reads the system's as it is: no ~/.xlings made, nothing said.

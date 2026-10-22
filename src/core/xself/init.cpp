@@ -1039,10 +1039,11 @@ bool replace_entry_binary(const fs::path& payloadBinary, const fs::path& entry,
         return false;
     }
     // The binaries released with this xlings travel with its entry: luban
-    // (the Luban tool, which drives the xlings next to it) and luban-init
-    // (stage-0, which an export copies from beside the entry). Left behind,
-    // an upgraded home ran a luban older than the xlings it drives.
-    for (const auto* companion : {"luban", "luban-init"}) {
+    // (the Luban tool, which drives the xlings next to it), luban-init
+    // (stage-0, which an export copies from beside the entry) and xbus (what
+    // is on a bus, seen and used). Left behind, an upgraded home ran a luban
+    // older than the xlings it drives.
+    for (const auto* companion : {"luban", "luban-init", "xbus"}) {
         const auto name = std::string(companion) + std::string(platform::exe_suffix);
         const auto from = payloadBinary.parent_path() / name;
         std::error_code ec;

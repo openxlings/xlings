@@ -82,6 +82,32 @@ XTEST(RootCheck, ADesktopListsApplicationsAndHasCursors, .area = "luban", .cover
     EXPECT_TRUE(item(r, "cursors")->ok);
 }
 
+// A package's checks (design 2026-10-21 §6.1): `launcher` -- its desktop
+// entry where launchers look, and shown; `gui` and `sound` are a desktop
+// session's -- from outside a system nothing is run, and only what a file
+// says (a launcher's entry) is checked.
+XTEST(RootCheck, APackagesLauncherCheckLooksWhereLaunchersLook, .area = "luban", .covers = {"LUBAN-PACKAGE-CHECKS"}) {
+    if constexpr (!tk::is_posix) GTEST_SKIP() << "Luban roots are Linux";
+    auto home = tk::Home::isolated("root-check-package");
+    const auto root = a_root(home.root() / "tree");
+    tk::write_file(root / rc::kDeclaredDir / "falkon.json", R"({"checks": [
+        {"id": "falkon-listed", "what": "the launcher lists it", "launcher": "org.kde.falkon"},
+        {"id": "falkon-window", "what": "it opens a page", "gui": "falkon file:///x.html", "timeout": 30},
+        {"id": "falkon-sound", "what": "it is heard", "sound": "falkon --play x.ogg"}]})");
+    auto r = rc::check(root, rc::Depth::Full, {.run = false});
+    ASSERT_NE(item(r, "falkon-listed"), nullptr);
+    EXPECT_FALSE(item(r, "falkon-listed")->ok);
+    EXPECT_NE(item(r, "falkon-listed")->detail.find("org.kde.falkon.desktop"), std::string::npos) << item(r, "falkon-listed")->detail;
+    // From outside the system nothing is run: the session's checks are not listed here.
+    for (const auto* id : {"falkon-window", "falkon-sound"}) EXPECT_EQ(item(r, id), nullptr) << id;
+    tk::write_file(root / "usr/share/applications/org.kde.falkon.desktop", "[Desktop Entry]\nName=Falkon\n");
+    r = rc::check(root, rc::Depth::Full, {.run = false});
+    EXPECT_TRUE(item(r, "falkon-listed")->ok) << item(r, "falkon-listed")->detail;
+    tk::write_file(root / "usr/share/applications/org.kde.falkon.desktop", "[Desktop Entry]\nNoDisplay=true\n");
+    r = rc::check(root, rc::Depth::Full, {.run = false});
+    EXPECT_FALSE(item(r, "falkon-listed")->ok) << "hidden: not listed";
+}
+
 XTEST(RootCheck, TheCommandAnswersOnlyInsideASystem, .area = "luban", .covers = {"LUBAN-SELF-CHECK"}) {
     if constexpr (!tk::is_linux) GTEST_SKIP() << "Luban systems are Linux";
     if (fs::exists("/etc/xlings/usr")) GTEST_SKIP() << "this host is a Luban system";

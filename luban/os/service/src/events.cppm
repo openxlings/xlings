@@ -80,12 +80,16 @@ public:
         if (e.kind == Event::Kind::Phase || e.kind == Event::Kind::Progress) s = stage_of(e.phase, stage_);
         // `check` while a machine has not started: its preflight.
         if (e.phase == "check" && present_[3] && stage_ <= 3) s = 3;
+        // A stage is full when the next one begins or the operation ends --
+        // never because one step in it ended (design 2026-10-21 §7.1, J6:
+        // "configure" at 100% for 80 seconds while its packages installed).
+        // Until then its measure stops short of the end.
         if (e.kind == Event::Kind::Progress) {
-            within = e.percent;
+            within = e.percent < 0 ? e.percent : std::min(e.percent, kShort);
             detail = e.text;
         }
         if (e.kind == Event::Kind::Phase && e.state == "begin") detail = e.text;
-        if (e.kind == Event::Kind::Phase && e.state == "done") within = 1;
+        const bool ended = e.kind == Event::Kind::Phase && e.state == "done" && s >= 0;
         if (e.kind == Event::Kind::Data && e.data_kind == "download_progress" && e.data.is_object()) {
             double total = 0, got = 0;
             for (const auto& f : e.data.value("files", nlohmann::json::array())) {
@@ -94,7 +98,7 @@ public:
             }
             s = 0;
             if (total > 0) {
-                within = got / total;
+                within = std::min(got / total, kShort);
                 detail = std::format("{:.1f} / {:.1f} MB", got / 1e6, total / 1e6);
                 // Few bytes to fetch (most already here): fetching is not half the work.
                 if (!sized_) {
@@ -105,6 +109,7 @@ public:
         }
         // A later stage it was not said to have is added; an earlier one is not (it is passed).
         if (s >= stage_) present_[static_cast<std::size_t>(s)] = true;
+        if (ended && s == last_present_()) within = 1;   // the operation's end
         if (s > stage_) {
             stage_ = s;
             within_ = 0;
@@ -134,6 +139,12 @@ public:
             if (present_[k]) e.stages.emplace_back(kStages[k]);
     }
 private:
+    static constexpr double kShort = 0.99;
+    int last_present_() const {
+        for (int k = static_cast<int>(kStages.size()) - 1; k >= 0; --k)
+            if (present_[static_cast<std::size_t>(k)]) return k;
+        return 0;
+    }
     std::array<bool, 5> present_ {};
     std::array<double, 5> weights_ { 55, 15, 15, 10, 5 };
     bool sized_ { false };

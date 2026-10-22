@@ -634,15 +634,16 @@ void quick_start_(App& a) {
             if (ImGui::IsItemHovered())
                 if (const auto why = explained_(title)) ImGui::SetTooltip("%.*s", static_cast<int>(why->size()), why->data());
             if (c.kind == QuickCard::Kind::Desktop && c.offer.tier) {
-                // How much it brings: four marks on its picture's top right
-                // corner, on a translucent rounded ground, the tier's filled --
-                // the same on every card that has a tier (WuXian §12.1).
-                const ImVec2 r0 = ImGui::GetItemRectMin();
-                const float u = imkit::unit() / 3.0f, cell = std::max(1.0f, std::round(px(2)));
-                const float side = static_cast<float>(art::picture(art_name, 0).size) * cell;
+                // How much it brings: four marks in the card's top right
+                // corner, inside its padding, on a translucent rounded ground,
+                // the tier's filled -- the same on every card that has a tier;
+                // they rise with the card when it is chosen (design 2026-10-21
+                // §8.13, J29: they were placed by the picture's width and sat
+                // against the icon).
+                const ImVec2 r0 = ImGui::GetItemRectMin(), r1 = ImGui::GetItemRectMax();
+                const float u = imkit::unit() / 3.0f;
                 const float s = std::round(px(5)), sp = std::round(px(2)), bw = 4 * s + 3 * sp + px(8), bh = s * 1.6f + px(8);
-                const ImVec2 b1(r0.x + px(14) + side + px(6), r0.y + u * 2 + (on ? -u * 2 : 0) + px(14) - px(4));
-                const ImVec2 b0(b1.x - bw, b1.y);
+                const ImVec2 b0(r1.x - px(12) - bw, r0.y + u * 2 + (on ? -u * 2 : 0) + px(10));
                 cdl->AddRectFilled(b0, ImVec2(b0.x + bw, b0.y + bh), (th_().bg_deep & 0x00ffffffu) | 0xb0000000u, px(4));
                 for (int k = 0; k < 4; ++k) {
                     const ImVec2 p0(b0.x + px(4) + k * (s + sp), b0.y + px(4));

@@ -6,15 +6,18 @@
 
 ## 代码在哪里
 
-`luban/` 里有三类包（`luban/README.md`）：
+`luban/` 里有四类包（`luban/README.md`）：规范、kit（库）、服务与 OS：
 
 | 包 | 内容 |
 |---|---|
 | `luban/specs/opensal` | 表面：接收像素、返回事件；`opensal.wire` 跨地址空间传递 |
 | `luban/specs/openhal` | 设备：一台机器有哪些 GPU、显示器、音频端点和输入设备 |
 | `luban/specs/openas` | 主体与它们做的事：主体与委托、效果类别、一次运行的信封 |
+| `luban/specs/openbus` | 总线：按路径与接口的对象，call、发布、stream、event、region，路由之间的链路 |
 | `luban/kits/openhal-host` | openhal 在 Linux、macOS、Windows 上的设备源 |
 | `luban/kits/opensal-wlr`、`imkit`、`tray` | 把 wlroots 合成器接成 opensal 表面；控件；状态栏图标 |
+| `luban/kits/telemetry` | 程序说自己：指标、飞行记录器、结构化日志、剖析、转储 |
+| `luban/services/xbus` | XBus，openbus 的实现：路由、节点库、`xbus`（服务：有自己的进程与端点，经它的库访问） |
 | `luban/xdesk/{base,layout,compositor,app}` | xdesk 桌面：它的库与它的程序 |
 | `luban/os/system` | stage-0（第一个进程）、启动项、机器的 `/etc`、归档 |
 | `luban/os/service` | 环境与机器的操作与事件；这台电脑能做什么（`luban status`） |
@@ -27,7 +30,7 @@
 | `luban/host/luban-os` | Luban OS 应用：它的窗口，以及托盘（`luban-os __tray`） |
 | `src/core/subos/root` | 根的 xlings 一侧：投影、代、回滚、导出 |
 
-规范只引用标准库和它自己；kit 从不引用 xlings 或 Luban；OS 服务不引用任何呈现层；`luban/` 里的任何东西都不引用
+规范只引用标准库和它自己；kit 从不引用 xlings、Luban 或服务；OS 服务不引用任何呈现层；`luban/` 里的任何东西都不引用
 xlings 前端（stage-0 路径上的东西不能读 Config）。`tools/lint_layer_deps.sh` 逐条检查。
 
 ## 由 edition 创建环境

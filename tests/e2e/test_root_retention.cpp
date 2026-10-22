@@ -37,7 +37,8 @@ XTEST(RootRetention, RemoveKeepsWhatAnOlderGenerationLinksIntoAndRollbackFindsIt
     ASSERT_TRUE(with_tool);
     ASSERT_TRUE(fs::exists(box / "root/usr/bin/fixture-tool")) << installed.transcript();
 
-    auto removed = home.xlings({"remove", "fixture-tool", "-y"}, kBox);
+    // Why the files stay is said in -v (design 2026-10-21 §3.5).
+    auto removed = home.xlings({"remove", "fixture-tool", "-y", "-v"}, kBox);
     ASSERT_EQ(removed.exit_code, 0) << removed.transcript();
     EXPECT_NE(rf::current(box), with_tool);
     EXPECT_FALSE(fs::exists(box / "root/usr/bin/fixture-tool"));

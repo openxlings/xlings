@@ -9,6 +9,7 @@
 #   luban/xdesk/*/src/native/                  xdesk.native.wayland / .text (xkbcommon,
 #                                              pixman, FreeType, HarfBuzz, wlroots' missing two)
 #   luban/kits/*/src/native/                   a kit's binding to its platform (openhal-host)
+#   luban/services/*/src/backend/              a service's backends, the only place it meets a platform (xbus)
 #                                              or C library (imkit.imgui: Dear ImGui)
 #   luban/os/window/src/                       SDL and Dear ImGui's backends
 #   luban/os/vm/src/native/                    a hypervisor's binding (Virtualization.framework)
@@ -20,7 +21,7 @@ cd "$(dirname "$0")/.."
 hits="$(grep -rnE '^[[:space:]]*#[[:space:]]*(include|import)' luban apps --include='*.cpp' --include='*.cppm' --include='*.mm' \
         | grep -v '/tests/' \
         | grep -v '^luban/xdesk/base/src/os/' \
-        | grep -vE '^luban/kits/[^/]+/src/native/' \
+        | grep -vE '^luban/kits/[^/]+/src/native/' | grep -vE '^luban/services/[^/]+/src/backend/' \
         | grep -vE '^luban/xdesk/[^/]+/src/native/' \
         | grep -v '^luban/os/window/src/' \
         | grep -v '^luban/os/vm/src/native/' || true)"

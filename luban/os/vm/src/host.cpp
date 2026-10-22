@@ -270,7 +270,7 @@ std::map<std::string, std::string> qemu_env_(const Json& declared) {
         const auto var = v.value("var", std::string{});
         const auto value = v.value("value", std::string{});
         if (var.empty() || value.empty()) continue;
-        if (v.value("op", std::string{}) == "prepend") env[var] = env[var].empty() ? value : value + ":" + env[var];
+        if (v.value("op", std::string{}) == "prepend") env[var] = platform::prepend_to_list(var, value, env[var], ':');
         else env.try_emplace(var, value);
     }
     return env;
@@ -278,8 +278,40 @@ std::map<std::string, std::string> qemu_env_(const Json& declared) {
 
 }  // namespace
 
+VirtiofsPlan virtiofs_plan(const fs::path& virtiofsd, const std::vector<Share>& shares, const fs::path& run, std::string_view memory_mb) {
+    VirtiofsPlan p;
+    // `-m`'s size: a plain number is MiB there, bytes here.
+    const bool plain = !memory_mb.empty() && std::ranges::all_of(memory_mb, [](char ch) { return ch >= '0' && ch <= '9'; });
+    p.qemu = {"-object", std::format("memory-backend-memfd,id=mem,size={}{},share=on", memory_mb, plain ? "M" : ""), "-numa",
+              "node,memdev=mem"};
+    for (const auto& s : shares) {
+        const auto sock = (run / std::format("vfs-{}.sock", s.tag)).generic_string();
+        // Its own namespaces (unprivileged); a host that refuses them gets `none` (supervise).
+        // `auto` for all: the home's generations do not change, but the host
+        // installs into the same share and the machine sees it at once.
+        std::vector<std::string> d{virtiofsd.generic_string(), "--socket-path", sock, "--shared-dir", s.dir.generic_string(), "--sandbox", "namespace",
+                                   "--cache", "auto"};
+        if (s.read_only) d.push_back("--readonly");
+        p.daemons.push_back(std::move(d));
+        p.qemu.insert(p.qemu.end(), {"-chardev", std::format("socket,id=vfs-{},path={}", s.tag, sock), "-device",
+                                     std::format("vhost-user-fs-pci,chardev=vfs-{},tag={}", s.tag, s.tag)});
+    }
+    return p;
+}
+
+std::vector<std::string> nine_p_args(const std::vector<Share>& shares) {
+    std::vector<std::string> out;
+    for (const auto& s : shares)
+        out.insert(out.end(), {"-virtfs", std::format("local,path={},mount_tag={},security_model=none,{}id={}", s.dir.generic_string(), s.tag,
+                                                       s.read_only ? "readonly=on," : "", s.tag)});
+    return out;
+}
+
 MachineGpu machine_gpu(const std::optional<fs::path>& render_node, const std::expected<void, std::string>& gl,
-                       std::string_view driver) {
+                       std::string_view driver, bool dxg) {
+    if (!render_node && dxg)
+        return {.args = {"-display", "none"},
+                .summary = "no GPU: WSL's GPU (/dev/dxg, Mesa's d3d12) has no render node, which qemu's virgl draws on -- software"};
     if (!render_node) return {.args = {"-display", "none"}, .summary = "no GPU: this host has no render node"};
     if (!gl) return {.args = {"-display", "none"}, .summary = "no GPU: " + gl.error()};
     return {.virgl = true,
@@ -413,7 +445,7 @@ int start_impl_(const service::Context& c, std::string_view name, const EnterOpt
     if (node && arch.name == "x86_64" && service::gpu_granted(c.home, name)) gl = gl_qemu_(c, view);
     else if (node && arch.name != "x86_64") gl = std::unexpected(std::string("3D in a machine is on x86_64 hosts"));
     const auto gpu = machine_gpu(node, gl ? std::expected<void, std::string>{} : std::unexpected(gl.error()),
-                                 node ? render_driver_(*node) : std::string{});
+                                 node ? render_driver_(*node) : std::string{}, !node && [] { std::error_code ec; return fs::exists("/dev/dxg", ec); }());
     std::vector<std::string> q{gpu.virgl ? gl->bin.string() : qemu->bin.string()};
     if (!arch.machine.empty()) q.insert(q.end(), {"-M", std::string(arch.machine)});
     q.insert(q.end(), {"-m", memory, "-smp", default_cpus_()});
@@ -429,15 +461,55 @@ int start_impl_(const service::Context& c, std::string_view name, const EnterOpt
                                    net.args.size() == 2 && net.args[1] != "none" ? std::format(" ip=::::{}::dhcp", name) : std::string{}),
                        "-no-reboot",
                        "-serial", std::format("file:{}", (log_dir(c.home, name) / "console.log").string()),
-                       "-virtfs", std::format("local,path={},mount_tag=root,security_model=none,id=root", share.string()),
-                       "-virtfs", std::format("local,path={},mount_tag=home,security_model=none,readonly=on,id=home", home_files),
                        "-device", "virtio-serial-pci",
                        "-chardev", std::format("socket,id=agent,path={},server=on,wait=off", (dir / "agent.sock").string()),
                        "-device", std::format("virtserialport,chardev=agent,name={}", proto::kPort),
                        "-qmp", std::format("unix:{},server=on,wait=off", (dir / "qmp.sock").string())});
-    if (userhome)
-        q.insert(q.end(), {"-virtfs", std::format("local,path={},mount_tag=userhome,security_model=none,id=userhome",
-                                                  (*root / "home").string())});
+    // Its files (design 2026-10-21 §4): 9p, or virtio-fs when asked and its
+    // daemon is here (installed the first time); the 9p arguments kept, the
+    // supervisor's way back should a daemon not start.
+    std::vector<Share> shares{{"root", share, false}, {"home", home_files, true}};
+    if (userhome) shares.push_back({"userhome", *root / "home", false});
+    const auto nine_p = nine_p_args(shares);
+    std::optional<VirtiofsPlan> vfs;
+    std::string files = "9p";
+    // An emulated machine (no KVM) stays on 9p: programs read over
+    // vhost-user crashed its init (aarch64 TCG, CI), and the speed is KVM's.
+    const bool want_virtiofs = !settings || settings->files == "virtiofs";
+    if (want_virtiofs && !kvm) files = "9p (an emulated machine shares its files over 9p)";
+    if (want_virtiofs && kvm) {
+        auto found = xlings::subos::tools::first("virtiofsd", view, xlings::subos::Ports{});
+        // Installed the first time; one that could not be (an index without
+        // it, a host it is not built for) is tried again a day later, not at
+        // every start.
+        const auto tried = log_dir(c.home, name) / "virtiofsd-install-failed";
+        const auto recently = [&] {
+            std::error_code e;
+            const auto t = fs::last_write_time(tried, e);
+            return !e && fs::file_time_type::clock::now() - t < std::chrono::hours(24);
+        };
+        if (!found && !recently()) {
+            say_(c, service::phase("files", "begin", "installing virtio-fs for machines"));
+            (void)c.port.capability("install_packages", {{"targets", Json::array({"xim:virtiofsd"})}, {"yes", true}}, c.sink);
+            found = xlings::subos::tools::first("virtiofsd", view, xlings::subos::Ports{});
+            say_(c, service::phase("files", found ? "done" : "failed", "installing virtio-fs for machines"));
+            if (!found) platform::write_file_atomic(tried.string(), xlings::observe::utc_now() + "\n");
+        }
+        if (found) {
+            vfs = virtiofs_plan(found->bin, shares, dir, memory);
+            files = "virtiofs";
+        } else {
+            files = "9p (virtiofsd is not installed: xlings install virtiofsd)";
+        }
+    }
+    if (vfs) {
+        q.insert(q.end(), vfs->qemu.begin(), vfs->qemu.end());
+        // The guest mounts its shares with virtio-fs: on the kernel's command line.
+        for (std::size_t k = 0; k + 1 < q.size(); ++k)
+            if (q[k] == "-append") { q[k + 1] += " luban.fs=virtiofs"; break; }
+    } else {
+        q.insert(q.end(), nine_p.begin(), nine_p.end());
+    }
     // Without its GPU, should the GL qemu not start (its driver refuses the
     // render node): the same machine, drawn in software (supervise).
     auto software = q;
@@ -448,7 +520,13 @@ int start_impl_(const service::Context& c, std::string_view name, const EnterOpt
     q.insert(q.end(), net.args.begin(), net.args.end());
     Json state{{"name", name}, {"qemu", q}, {"persist", persist}, {"temp", o.temp}, {"scratch", persist == "all" ? "" : share.string()},
                {"env", net.env}, {"started", xlings::observe::utc_now()}, {"accel", kvm ? "kvm" : "tcg"}, {"memory", memory},
-               {"gpu", gpu.summary}};
+               {"gpu", gpu.summary}, {"files", files}};
+    if (vfs) {
+        // Its way back, should a daemon not start: the same arguments, 9p's instead.
+        state["virtiofsd"] = vfs->daemons;
+        state["files_virtiofs"] = vfs->qemu;
+        state["files_9p"] = nine_p;
+    }
     if (gpu.virgl) {
         state["gpu_env"] = gl->env;
         state["qemu_software"] = software;
@@ -814,6 +892,13 @@ std::optional<std::string> started_gpu(const fs::path& home, std::string_view na
     return gpu;
 }
 
+std::optional<std::string> started_files(const fs::path& home, std::string_view name) {
+    if (!running(home, name)) return std::nullopt;
+    const auto files = read_json_(state_file_(home, name)).value("files", std::string{});
+    if (files.empty()) return std::nullopt;
+    return files;
+}
+
 std::expected<Client, std::string> Client::connect(const fs::path& home, std::string_view name) {
     if constexpr (platform::is_windows) {
         const auto* carrier = xlings::carrier::find("wsl2");
@@ -922,6 +1007,7 @@ bool Client::resize(std::uint32_t channel, int rows, int cols) {
 }
 bool Client::close(std::uint32_t channel) { return write_(proto::encode('C', channel)); }
 bool Client::power_off() { return write_(proto::encode('P', 0)); }
+bool Client::send_frame(char type, std::uint32_t channel, std::string_view payload) { return write_(proto::encode(type, channel, payload)); }
 
 std::optional<std::vector<std::pair<char, std::pair<std::uint32_t, std::string>>>> Client::poll(int timeout_ms) {
     std::vector<std::pair<char, std::pair<std::uint32_t, std::string>>> out;
@@ -1116,6 +1202,40 @@ int start_vz_(const service::Context& c, std::string_view name, const EnterOptio
     return 1;
 }
 
+namespace {
+
+// The commands in a machine (`luban run`): each holds a lease while it runs
+// (<run>/commands/<pid>); a machine started for commands (<run>/for-commands)
+// powers off when the last of them ends -- not under another that joined it.
+// `luban enter` makes it a machine someone keeps running.
+fs::path commands_dir_(const fs::path& home, std::string_view name) { return run_dir(home, name) / "commands"; }
+fs::path for_commands_(const fs::path& home, std::string_view name) { return run_dir(home, name) / "for-commands"; }
+
+void lease_(const fs::path& home, std::string_view name) {
+    std::error_code ec;
+    fs::create_directories(commands_dir_(home, name), ec);
+    platform::write_file_atomic((commands_dir_(home, name) / std::to_string(platform::get_pid())).string(), "");
+}
+
+// This command's lease given back; whether it was the last one alive.
+bool release_(const fs::path& home, std::string_view name) {
+    std::error_code ec;
+    fs::remove(commands_dir_(home, name) / std::to_string(platform::get_pid()), ec);
+    bool others = false;
+    for (const auto& e : fs::directory_iterator(commands_dir_(home, name), ec)) {
+        int pid = 0;
+        const auto file = e.path().filename().string();
+        if (std::from_chars(file.data(), file.data() + file.size(), pid).ec != std::errc{} || !platform::is_process_alive(pid)) {
+            fs::remove(e.path(), ec);   // a command that ended without giving it back
+            continue;
+        }
+        others = true;
+    }
+    return !others;
+}
+
+}  // namespace
+
 int enter(const service::Context& c, std::string_view name_or_image, const EnterOptions& o) {
     if constexpr (platform::is_windows) {
         std::error_code ec;
@@ -1140,6 +1260,11 @@ int enter(const service::Context& c, std::string_view name_or_image, const Enter
             return 1;
         }
         return platform::run_argv({app->string(), "--attach", name});
+    }
+    // Entered: a machine someone keeps running, not one started for commands.
+    {
+        std::error_code rm;
+        fs::remove(for_commands_(c.home, name), rm);
     }
     if (!running(c.home, name)) {
         if (const int rc = platform::is_macos ? start_vz_(c, name, o) : start_impl_(c, name, o); rc != 0) return rc;
@@ -1199,16 +1324,39 @@ int enter(const service::Context& c, std::string_view name_or_image, const Enter
     return code;
 }
 
+
 int run(const service::Context& c, std::string_view name, std::span<const std::string> argv, std::string_view user) {
     if (argv.empty()) return 2;
-    const bool was_running = running(c.home, name).has_value();
-    if (!was_running)
-        if (const int rc = start(c, name, EnterOptions{}); rc != 0) return rc;
+    // Whether it runs and taking a lease, or giving one back and powering it
+    // off, each under one lock: a command joining as another leaves would
+    // otherwise find it running and lose it to that one's power-off.
+    const auto decide = [&] {
+        auto lock = std::make_unique<platform::FileLock>();
+        std::error_code ec;
+        fs::create_directories(run_dir(c.home, name), ec);
+        std::string why;
+        (void)lock->acquire(run_dir(c.home, name) / "commands.lock", std::chrono::minutes(5), {}, why);
+        return lock;
+    };
+    {
+        const auto lock = decide();
+        if (!running(c.home, name).has_value()) {
+            if (const int rc = start(c, name, EnterOptions{}); rc != 0) return rc;
+            platform::write_file_atomic(for_commands_(c.home, name).string(), "");
+        }
+        lease_(c.home, name);
+    }
+    // The last command out powers off a machine started for commands.
+    const auto done_with = [&] {
+        const auto lock = decide();
+        std::error_code ec;
+        if (release_(c.home, name) && fs::exists(for_commands_(c.home, name), ec)) (void)vm::stop(c, name);
+    };
     auto client = Client::connect(c.home, name);
     if (!client || client->fd() < 0) {
         say_(c, service::error(std::format("{} does not answer: {}", name, client ? std::string("no connection") : client.error()),
                                std::format("luban status {}", name)));
-        if (!was_running) (void)vm::stop(c, name);
+        done_with();
         return 125;
     }
     // A terminal on both ends: the command on one there (its size, raw), so
@@ -1226,7 +1374,12 @@ int run(const service::Context& c, std::string_view name, std::span<const std::s
             platform::poll_fds(p, 200);
             if (p[1].readable || p[1].closed) {
                 auto frames = client->poll(0);
-                if (!frames) break;
+                if (!frames) {
+                    // The machine went away under the command: said, never a silent end.
+                    say_(c, service::error(std::format("{} stopped while {} ran in it", name, words.front()),
+                                           std::format("luban status {} --log", name)));
+                    break;
+                }
                 for (const auto& [type, body] : *frames) {
                     if (body.first != 1) continue;
                     if (type == 'D') (void)platform::write_all(1, body.second);
@@ -1252,7 +1405,7 @@ int run(const service::Context& c, std::string_view name, std::span<const std::s
         }
         if (saved) platform::restore_terminal(0, *saved);
     }
-    if (!was_running) (void)vm::stop(c, name);
+    done_with();
     return code;
 }
 
@@ -1296,6 +1449,62 @@ namespace {
 // whether the machine still runs, `kill` ends it when a power-off is not
 // heard; a client's `S` frame ({"grants": {name: [path, read-only]}}) is
 // handed to `grants` (a hypervisor that shares directories while running).
+// A broker request from root inside (design 2026-10-21 §3.3): xlings's
+// `subos __broker-serve <name>` -- the verdict and the run, recorded -- on a
+// terminal made here when the caller is at one, on pipes otherwise; its bytes
+// relayed on the guest's channel.
+struct Brokered {
+    int pid { -1 };
+    int in { -1 };
+    int out { -1 };
+    int err { -1 };
+    bool tty { false };
+};
+
+std::optional<Brokered> broker_start_(std::string_view name, const Json& req) {
+    std::vector<std::string> argv{service::xlings_path().string(), "subos", "__broker-serve", std::string(name)};
+    if (const auto actor = req.value("actor", std::string{}); !actor.empty()) argv.insert(argv.end(), {"--actor", actor});
+    argv.push_back("--");
+    for (const auto& w : req.value("argv", Json::array()))
+        if (w.is_string()) argv.push_back(w.get<std::string>());
+    Brokered b{.tty = req.value("tty", false)};
+    std::vector<int> child, mine;
+    if (b.tty) {
+        auto pty = platform::open_pty();
+        if (!pty) return std::nullopt;
+        platform::set_terminal_size((*pty)[0], req.value("rows", 24), req.value("cols", 80));
+        b.in = b.out = (*pty)[0];
+        child = {(*pty)[1], (*pty)[1], (*pty)[1]};
+        mine = {(*pty)[1]};
+    } else {
+        auto in = platform::make_pipe(), out = platform::make_pipe(), err = platform::make_pipe();
+        if (!in || !out || !err) return std::nullopt;
+        b.in = (*in)[1];
+        b.out = (*out)[0];
+        b.err = (*err)[0];
+        child = {(*in)[0], (*out)[1], (*err)[1]};
+        mine = child;
+    }
+    b.pid = platform::fork_process();
+    if (b.pid == 0) {
+        platform::reset_signals();
+        platform::new_session();
+        platform::redirect_stdio(child);
+        if (b.tty) (void)platform::take_controlling_terminal();
+        platform::exec_path(argv, platform::environment());
+        platform::exit_now(127);
+    }
+    platform::close_fds(mine);
+    if (b.pid < 0) {
+        std::vector<int> rest{b.in};
+        if (b.out != b.in) rest.push_back(b.out);
+        if (b.err >= 0) rest.push_back(b.err);
+        platform::close_fds(rest);
+        return std::nullopt;
+    }
+    return b;
+}
+
 void bridge_(const fs::path& home, std::string_view name, int agent, int listen, const std::function<bool()>& alive,
              const std::function<void()>& kill, const std::function<bool(const Json&)>& grants) {
     platform::route_signals({platform::sig::terminate, platform::sig::interrupt}, {});
@@ -1308,6 +1517,27 @@ void bridge_(const fs::path& home, std::string_view name, int agent, int listen,
     proto::Decoder from_agent;
     std::array<char, 65536> buf{};
     auto powering_off = std::optional<std::chrono::steady_clock::time_point>{};
+    std::map<std::uint32_t, Brokered> brokered;   // the guest's channel -> its command here
+    // The machine's openbus link (design 2026-10-22 §6.4): the guest's router
+    // speaks to this home's, its bytes carried as L frames; this side only
+    // moves them. -1: no link now.
+    int bus = -1;
+    const auto end_bus = [&](bool tell_guest) {
+        if (bus >= 0) {
+            std::vector<int> b{bus};
+            platform::close_fds(b);
+            bus = -1;
+        }
+        if (tell_guest) (void)platform::write_all(agent, proto::encode('L', 0));
+    };
+    const auto close_brokered = [](Brokered& b) {
+        std::vector<int> fds;
+        if (b.in >= 0) fds.push_back(b.in);
+        if (b.out >= 0 && b.out != b.in) fds.push_back(b.out);
+        if (b.err >= 0) fds.push_back(b.err);
+        platform::close_fds(fds);
+        b.in = b.out = b.err = -1;
+    };
     for (;;) {
         if (!alive()) break;
         for (int s : platform::pending_signals()) {
@@ -1322,6 +1552,14 @@ void bridge_(const fs::path& home, std::string_view name, int agent, int listen,
         }
         std::vector<platform::PollFd> p{{.fd = agent}, {.fd = listen}};
         for (const auto& cl : clients) p.push_back({.fd = cl.fd});
+        // A brokered command's output (a terminal's, or its two pipes).
+        std::vector<std::pair<std::uint32_t, char>> outputs;
+        for (const auto& [ch, b] : brokered) {
+            if (b.out >= 0) { p.push_back({.fd = b.out}); outputs.emplace_back(ch, 'D'); }
+            if (b.err >= 0) { p.push_back({.fd = b.err}); outputs.emplace_back(ch, 'E'); }
+        }
+        const std::size_t bus_at = p.size();
+        if (bus >= 0) p.push_back({.fd = bus});
         platform::poll_fds(p, 200);
         if (p[0].readable || p[0].closed) {
             auto n = platform::read_some(agent, buf);
@@ -1334,7 +1572,52 @@ void bridge_(const fs::path& home, std::string_view name, int agent, int listen,
                 if (frame.type == 'H') {
                     up = true;
                     hello = frame.payload;
+                    // This side's own: the broker (design 2026-10-21 §3.3), and the
+                    // host's bus, under which the machine's is (design 2026-10-22 §6.4).
+                    end_bus(false);   // an agent that says hello again links again
+                    (void)platform::write_all(agent, proto::encode_json('A', 0, Json{{"provides", Json{
+                        {"broker", 1}, {"openbus", Json{{"root", system_bus_root(name)}}}}}}));
                     for (auto& cl : clients) (void)platform::write_all(cl.fd, proto::encode('H', 0, frame.payload));
+                    continue;
+                }
+                if (frame.type == 'L') {
+                    // The guest's router: its first bytes open the link to the host's.
+                    if (frame.payload.empty()) { end_bus(false); continue; }
+                    if (bus < 0) {
+                        auto fd = connect_bus(home);
+                        if (!fd) {
+                            std::println(std::cerr, "luban: openbus: {}", fd.error());
+                            end_bus(true);
+                            continue;
+                        }
+                        bus = *fd;
+                    }
+                    if (!platform::write_all(bus, frame.payload)) end_bus(true);
+                    continue;
+                }
+                if (frame.channel & proto::kGuestChannel) {
+                    if (frame.type == 'B') {
+                        const auto req = Json::parse(frame.payload, nullptr, false);
+                        auto b = req.is_object() ? broker_start_(name, req) : std::nullopt;
+                        if (b) brokered[frame.channel] = *b;
+                        else (void)platform::write_all(agent, proto::encode_json('X', frame.channel,
+                                                           Json{{"code", 125}, {"error", "the host's broker could not start"}}));
+                        continue;
+                    }
+                    auto b = brokered.find(frame.channel);
+                    if (b == brokered.end()) continue;
+                    if (frame.type == 'D' && b->second.in >= 0) (void)platform::write_all(b->second.in, frame.payload);
+                    else if (frame.type == 'F' && !b->second.tty && b->second.in >= 0) {
+                        std::vector<int> in{b->second.in};
+                        platform::close_fds(in);
+                        b->second.in = -1;
+                    } else if (frame.type == 'R' && b->second.tty) {
+                        const auto j = Json::parse(frame.payload, nullptr, false);
+                        if (j.is_object()) platform::set_terminal_size(b->second.out, j.value("rows", 24), j.value("cols", 80));
+                    } else if (frame.type == 'C') {
+                        // The caller hung up: as a terminal's hang-up ends what runs on it.
+                        platform::send_signal_group(b->second.pid, platform::sig::hangup);
+                    }
                     continue;
                 }
                 auto owner = owners.find(frame.channel);
@@ -1397,6 +1680,46 @@ void bridge_(const fs::path& home, std::string_view name, int agent, int listen,
             }
         }
         std::erase_if(clients, [](const Client& cl) { return cl.fd < 0; });
+        for (std::size_t k = 0; k < outputs.size(); ++k) {
+            const auto& pf = p[2 + polled + k];
+            if (!pf.readable && !pf.closed) continue;
+            auto b = brokered.find(outputs[k].first);
+            if (b == brokered.end()) continue;
+            int& fd = outputs[k].second == 'D' ? b->second.out : b->second.err;
+            if (fd < 0) continue;
+            auto n = platform::read_some(fd, buf);
+            if (n && *n > 0) {
+                (void)platform::write_all(agent, proto::encode(outputs[k].second, b->first, std::string_view(buf.data(), *n)));
+                continue;
+            }
+            if (outputs[k].second == 'E') {
+                std::vector<int> e{fd};
+                platform::close_fds(e);
+                fd = -1;
+                continue;
+            }
+            // Its output ended: the command's end, said with its code.
+            int code = 125;
+            if (auto st = platform::wait_process(b->second.pid, true)) code = platform::exit_code(*st);
+            if (b->second.err >= 0)   // what it said last on standard error, first
+                while (auto rest = platform::read_some(b->second.err, buf)) {
+                    if (*rest == 0) break;
+                    (void)platform::write_all(agent, proto::encode('E', b->first, std::string_view(buf.data(), *rest)));
+                }
+            close_brokered(b->second);
+            (void)platform::write_all(agent, proto::encode_json('X', b->first, Json{{"code", code}}));
+            brokered.erase(b);
+        }
+        if (bus >= 0 && bus_at < p.size() && (p[bus_at].readable || p[bus_at].closed)) {
+            auto n = platform::read_some(bus, buf);
+            if (n && *n > 0) (void)platform::write_all(agent, proto::encode('L', 0, std::string_view(buf.data(), *n)));
+            else end_bus(true);   // the host's router went: the guest links again
+        }
+    }
+    end_bus(false);
+    for (auto& [ch, b] : brokered) {
+        platform::send_signal_group(b.pid, platform::sig::hangup);
+        close_brokered(b);
     }
     std::vector<int> fds{agent, listen};
     for (auto& cl : clients) if (cl.fd >= 0) fds.push_back(cl.fd);
@@ -1410,6 +1733,11 @@ void cleanup_(const fs::path& home, std::string_view name, const Json& state) {
         fs::remove_all(scratch, ec);
     fs::remove(client_socket_(home, name), ec);
     fs::remove(state_file_(home, name), ec);
+    // What its commands held is this boot's (vm::run); so are its files' daemons' sockets.
+    fs::remove(dir / "for-commands", ec);
+    fs::remove_all(dir / "commands", ec);
+    for (const auto& e : fs::directory_iterator(dir, ec))
+        if (e.path().filename().string().starts_with("vfs-")) fs::remove(e.path(), ec);
 }
 
 // A Mac's machine (part 4 §6.6): Virtualization.framework in this process,
@@ -1485,8 +1813,76 @@ int supervise(const fs::path& home, std::string_view name) {
         }
         return pid;
     };
+    // Its files' daemons first (virtio-fs): each listening before qemu
+    // connects, and each serves one qemu -- a second (the software one)
+    // gets its own. One that does not start is 9p instead.
+    std::vector<int> daemons;
+    const auto stop_daemons = [&] {
+        for (const int d : daemons) (void)platform::send_signal(d, platform::sig::terminate);
+        for (const int d : daemons) (void)platform::wait_process(d, true);
+        daemons.clear();
+    };
+    // One daemon, listening (its socket there) within 3 s.
+    const auto start_one = [&](const std::vector<std::string>& a) {
+        const fs::path sock = a.size() > 2 ? fs::path(a[2]) : fs::path{};
+        fs::remove(sock, ec);
+        const int pid = launch(a, platform::environment());
+        if (pid < 0) return false;
+        for (int k = 0; k < 60; ++k) {
+            if (fs::exists(sock, ec)) {
+                daemons.push_back(pid);
+                return true;
+            }
+            if (platform::wait_process(pid, false)) return false;   // it ended: nothing to wait for
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        }
+        (void)platform::send_signal(pid, platform::sig::terminate);
+        (void)platform::wait_process(pid, true);
+        return false;
+    };
+    const auto start_daemons = [&] {
+        for (const auto& argv : state.value("virtiofsd", Json::array())) {
+            std::vector<std::string> a;
+            for (const auto& w : argv) a.push_back(w.get<std::string>());
+            if (start_one(a)) continue;
+            // A host that does not give it namespaces (user namespaces restricted): without its sandbox.
+            const auto how = std::ranges::find(a, "namespace");
+            if (how == a.end()) return false;
+            *how = "none";
+            std::println(std::cerr, "luban: virtiofsd did not start in its namespaces; {} again without its sandbox", a.size() > 4 ? a[4] : "");
+            if (!start_one(a)) return false;
+        }
+        return true;
+    };
+    const auto on_9p = [&](const Json& args) {
+        std::vector<std::string> out;
+        for (const auto& a : args) out.push_back(a.get<std::string>());
+        const auto vfs = state.value("files_virtiofs", Json::array());
+        if (vfs.empty()) return out;
+        for (std::size_t k = 0; k + vfs.size() <= out.size(); ++k)
+            if (std::equal(vfs.begin(), vfs.end(), out.begin() + static_cast<std::ptrdiff_t>(k),
+                           [](const Json& v, const std::string& a) { return v.get<std::string>() == a; })) {
+                out.erase(out.begin() + static_cast<std::ptrdiff_t>(k), out.begin() + static_cast<std::ptrdiff_t>(k + vfs.size()));
+                for (const auto& n : state.value("files_9p", Json::array()))
+                    out.insert(out.begin() + static_cast<std::ptrdiff_t>(k++), n.get<std::string>());
+                break;
+            }
+        for (auto& a : out)
+            if (const auto at = a.find(" luban.fs=virtiofs"); at != std::string::npos) a.erase(at, std::string_view(" luban.fs=virtiofs").size());
+        return out;
+    };
+    if (state.contains("virtiofsd") && !start_daemons()) {
+        std::println(std::cerr, "luban: a virtiofsd did not start; {} shares its files over 9p", name);
+        stop_daemons();
+        q = on_9p(state["qemu"]);
+        state["qemu"] = q;
+        if (state.contains("qemu_software")) state["qemu_software"] = on_9p(state["qemu_software"]);
+        state.erase("virtiofsd");
+        state["files"] = "9p (virtiofsd did not start: supervisor.log)";
+        platform::write_file_atomic(state_file_(home, name).string(), state.dump(2));
+    }
     int qemu = launch(q, qemu_env_(state.value("gpu_env", Json::array())));
-    if (qemu < 0) return 1;
+    if (qemu < 0) { stop_daemons(); return 1; }
     int agent = -1;
     for (int i = 0; i < 100 && agent < 0; ++i) {
         agent = platform::unix_connect_stream(dir / "agent.sock");
@@ -1503,8 +1899,15 @@ int supervise(const fs::path& home, std::string_view name) {
             state["qemu"] = q;
             state["gpu"] = "no GPU: the GL qemu could not draw on this host's render node (supervisor.log)";
             platform::write_file_atomic(state_file_(home, name).string(), state.dump(2));
+            if (state.contains("virtiofsd")) {
+                stop_daemons();
+                if (!start_daemons()) {
+                    stop_daemons();
+                    return 1;
+                }
+            }
             qemu = launch(q, platform::environment());
-            if (qemu < 0) return 1;
+            if (qemu < 0) { stop_daemons(); return 1; }
             i = 0;
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
@@ -1512,11 +1915,14 @@ int supervise(const fs::path& home, std::string_view name) {
     const int listen = platform::unix_listen_stream(client_socket_(home, name));
     if (agent < 0 || listen < 0) {
         platform::send_signal(qemu, platform::sig::terminate);
+        (void)platform::wait_process(qemu, true);
+        stop_daemons();
         return 1;
     }
     bridge_(home, name, agent, listen, [&] { return !platform::wait_process(qemu, false).has_value(); },
             [&] { platform::send_signal(qemu, platform::sig::terminate); }, {});
     (void)platform::wait_process(qemu, true);
+    stop_daemons();
     cleanup_(home, name, state);
     return 0;
 }

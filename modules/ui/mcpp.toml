@@ -22,6 +22,3 @@ kind = "lib"
 [dependencies]
 platform = { path = "../platform" }
 i18n     = { path = "../i18n" }
-
-[build]
-include_dirs = ["../libs/src/json"]

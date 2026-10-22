@@ -193,7 +193,7 @@ text = "an environment's machine settings (mode, persist, desktop, on-close, ent
 status = "required"
 
 [LUBAN-ARCHIVE]
-text = "`luban export <n> x.luban` writes the manifest (edition, packages, policy, settings) and the root's own state, links as links, nothing of /usr, no persona; import refuses a path that leaves the environment, an existing name, and a policy looser than the edition's without -y"
+text = "`luban export <n> x.luban` writes the manifest (edition, packages, policy, settings) and the root's own state, links as links, nothing of /usr, no persona; import refuses a path that leaves the environment, an existing name, and a policy looser than the edition's without -y; the packages it had beyond its edition's come along, each the package that provides it, at the versions it had, its active one active"
 status = "required"
 
 [LUBAN-OUTPUT]
@@ -225,7 +225,7 @@ text = "an environment's login shell is its passwd's: a root made now gets the b
 status = "required"
 
 [LUBAN-MACHINE]
-text = "luban enter <n> --mode machine boots the environment itself with its own kernel: its tree and the home are shared with the guest (9p), a supervisor outlives the terminal and serves every session over one socket, each session a pty with the root's login shell and the terminal's size; persist home/none and --temp boot a copy that goes with the machine; an image file boots as it is with its console on the terminal; closing follows the environment's on-close setting"
+text = "luban enter <n> --mode machine boots the environment itself with its own kernel: its tree and the home are shared with the guest (virtio-fs, or 9p), a supervisor outlives the terminal and serves every session over one socket, each session a pty with the root's login shell and the terminal's size; persist home/none and --temp boot a copy that goes with the machine; an image file boots as it is with its console on the terminal; closing follows the environment's on-close setting"
 status = "required"
 
 [LUBAN-TERM]
@@ -505,7 +505,7 @@ status = "required"
 # ── machines on a KVM host (design 2026-10-20 WuXian §13.4) ─────────
 
 [LUBAN-RUN-MACHINE]
-text = "luban run of a system that starts as a machine runs the command in the machine (its own kernel), its output, standard error and exit code as the command's; a machine started for it is powered off after"
+text = "luban run of a system that starts as a machine runs the command in the machine (its own kernel), its output, standard error and exit code as the command's; a machine started for it is powered off after; commands run in it at once each run to their end, and a machine started for commands powers off when the last of them ends; --user names one of its users, and a name it does not have is refused, never run as root"
 status = "required"
 
 [LUBAN-MACHINE-SUDO]
@@ -543,7 +543,7 @@ text = "xdesk.layout passes every case of openwx.conformance"
 status = "required"
 
 [XDESK-HIGHLIGHT]
-text = "a window chosen in a switcher (or a new one among others) is lit while the others are dimmed, until the windows are where they go and the time chosen has passed, then they fade back; the time and the dimming are settings, off included"
+text = "a window chosen in a switcher (or a new one among others) has its own outline lit in the accent where it is, until the windows are where they go and the time chosen has passed, then the outline fades in half a second -- the others are never dimmed and lit again; while choosing, the windows are shown as they are over a dimmed output on the switchers' own layer (above a workspace's plate and label), the one under the pointer's outline faint; with less motion, nothing is lit; the time and the dimming are settings, off included"
 status = "required"
 
 # ── the GPU (design 2026-10-20 WuXian §7) ───────────────────────────
@@ -574,6 +574,148 @@ status = "required"
 text = "the desktop tells the window how a shaken pointer is shown (opensal 'p': off, grow, or grow and colour, up to 2 to 4 times, the colour); the window grows its pointer while it is shaken and back after, and one that hears nothing does what the default says"
 status = "required"
 
+[LUBAN-MACHINE-FILES]
+text = "a machine's files are shared over 9p or, asked (luban config <name> --files virtiofs), virtio-fs: a virtiofsd a share (installed the first time, read-only where 9p is), qemu's vhost-user-fs device on a shared memfd; a daemon that does not start leaves the machine on 9p, its state saying so"
+status = "required"
+
 [LUBAN-MACHINE-GPU]
 text = "a machine has a GPU (virtio-gpu, 3D through virgl on this host's render node) when the host has a render node, the system the gpu grant and the GL qemu (xim:qemu-system-gl, installed the first time) has the device; otherwise none, the reason in its state (luban status, the welcome); a GL qemu that does not start leaves the machine in software; the machine's kernel has DRM and virtio-gpu built in, its render node is its users'"
+status = "required"
+
+[LUBAN-NAME-RESERVE]
+text = "a name being made is held until its making ends: another process, or another of the window's tasks in the same process, is told it is being made; a reservation whose process is gone (the old format: a process id alone) is taken over"
+status = "required"
+
+[LUBAN-CANCEL]
+text = "a cancelled making is asked to stop (SIGTERM) and killed only after 10 seconds: xlings ends at its next safe point and says E_CANCELLED, nothing is made another way, its half in the system's domain is set aside as .unfinished-<name>-<pid>, and the name can be made again at once"
+status = "required"
+
+[LUBAN-CONSOLE-PACED]
+text = "what a console's program writes wakes the window at most once a frame (60 a second): a flood of writes is drawn as it stands each frame, the last write always shown"
+status = "required"
+
+[LUBAN-OS-KEY-RECONCILE]
+text = "the keys a system was told are down are let go when the window loses the keyboard, and on X11 reconciled with the host's own key state while any is held (a window manager's grab took the release); with the keyboard held, Super down and the pointer in the window, the pointer is held so a host's Super+drag does not move the window; a Super key the host kept says Ctrl+Alt+K once"
+status = "required"
+
+[XDESK-STATE]
+text = "`xdesk msg state` answers what the desktop is -- its output and renderer, view and camera, workspaces, windows (where, focused, their workspace), the overlays open and the hint's place, the launcher's applications, the channels and the frames' parts over ten seconds (compose, read back, send, bytes, whole frames); `debug hud on|off` draws the frames' parts on the output; `subscribe` writes what happens (focus, open, close, actions, overlays, the view) a line each"
+status = "required"
+
+# ── openbus and XBus (design 2026-10-22, part 2) ───────────────────
+
+[OPENBUS-MODEL]
+text = "openbus's paths (segments, `*` one, `**` any number), frames (a 24-byte header; whole however a stream is cut; not openbus, another wire version or larger than 1 MiB refused), the fields codec, addressed frames' envelopes, region references, task states, effect classes and the router's latency histogram are what SPEC.md says"
+status = "required"
+
+[OPENBUS-CONFORMANCE]
+text = "a router passes openbus.conformance: handshake, one node per path, resolve by pattern, calls with streamed replies and cancel, subscriptions by pattern and retained topics, events, broadcasts, streams with credit, unknown kinds answered, bus/stats, bus/topology and bus/verbs answered, a node's leaving answered gone and withdrawn, an oversized frame refused"
+status = "required"
+
+[XBUS-NODE]
+text = "an XBus node offers services and topics, calls with replies streamed or collected (who called and as whom told), resolves by pattern, subscribes (a retained topic's last word to a late subscriber), publishes, sends events and broadcasts, pings; a node that leaves takes its endpoints; a node finds its router again after a restart and offers and subscribes again by itself; a patient node started before any router connects when one comes and offers and subscribes then"
+status = "required"
+
+[XBUS-LINK]
+text = "two XBus routers linked over a pipe the program moves (a carrier's channel) offer each other their endpoints with where they came through, route calls and subscriptions across, and withdraw what came through a link that ends"
+status = "required"
+
+[XBUS-OBSERVE]
+text = "an XBus router answers bus/stats (per endpoint: calls, replies, publications, bytes, errors, drops, fallbacks and a latency histogram; per node: frames, bytes, queue), bus/topology (nodes with what their transport says, endpoints, links and the transport actually used) and bus/verbs, publishes every routed frame on bus/trace while somebody listens, and logs connects, offers, denials, slow consumers and fallbacks"
+status = "required"
+
+[XBUS-OBJECTS]
+text = "every node exposes and uses objects the same way; an object names the interfaces it implements and its properties, and is found by interface whoever offers it; a composite object (a virtual device of members on other nodes) implements its members' interface and is found as one of them"
+status = "required"
+
+[XBUS-BUS-OBJECT]
+text = "an XBus router is an object of its own bus (openbus.router@0.1: bus/stats, topology, verbs, links, link, unlink, trace): two machines' buses are joined and parted by a call, and across them an application finds a device of another machine by its interface and uses it (work given, its task state and result back)"
+status = "required"
+
+[TELEMETRY-METRICS]
+text = "the telemetry kit's counters, gauges (with their high-water mark) and 64-bucket histograms are exact under concurrent threads, one instrument a name, quantiles reported as a bucket's upper bound and never above the largest value seen; a snapshot is JSON and a reset zeroes them"
+status = "required"
+
+[TELEMETRY-RECORDER]
+text = "the flight recorder keeps the last N records in order whatever a log's level, so a dump shows the moments before it was asked for"
+status = "required"
+
+[TELEMETRY-LOG]
+text = "the telemetry log writes one JSON object a line (ts, level, component, event, fields), filters the file by a level set at run time, rotates at a size keeping a fixed number of files, records debug and up in the flight recorder, and says a file it cannot write on the recorder instead of failing the program"
+status = "required"
+
+[TELEMETRY-PROFILE]
+text = "a profiling span feeds its histogram always and, only while profiling is on, a record; spans, marks and thread names export as Chrome trace events (Perfetto)"
+status = "required"
+
+[TELEMETRY-DUMP]
+text = "a telemetry dump gathers the program, uptime, metrics, every provider's state and the recent records; a provider that throws is named with what it threw, never left out; a dump is written to a named file; `control` (dump, metrics, recent, trace, profile, level, reset, help) is the whole interface and an unknown request is answered with the requests it knows"
+status = "required"
+
+[XBUS-TELEMETRY]
+text = "every XBus node (unless it says otherwise) offers node/<id>/telemetry and the router bus/telemetry (openbus.telemetry@0.1): its process's metrics, profile, Chrome trace, recent records and dump through the telemetry kit, the router's dump carrying its topology and statistics; the router's log is the kit's (one object a line); an answer larger than a frame comes in pieces that join whole; `xbus dump` and `xbus profile` read them"
+status = "required"
+
+[XDESK-BUS]
+text = "xdesk is on the bus (a patient node: a router that comes after it is joined): service/xdesk/state and service/xdesk/control answer as the control socket does, topic/xdesk/events tells what happens, and its node's telemetry carries the frames' parts as metrics, a frame's spans while profiling and the desktop's state in a dump; `xdesk msg telemetry` asks the same over the socket"
+status = "required"
+
+[LUBAN-BUS-LINK]
+text = "a system's openbus router runs in its agent and is linked under the host's (root host/<id>/system/<name>) through the agent protocol's L frames once the host side provides openbus: the host sees the system's endpoints (via the link) and uses them; when the host's side ends the link the guest links again by itself and what came through is withdrawn meanwhile"
+status = "required"
+
+[LUBAN-BUS-HOST]
+text = "the host's openbus router is one per home (<home>/run/openbus/router.sock, its log under <home>/logs/openbus/), started by the first that needs it (`luban __bus-router <home>`, detached); a second finds the first and leaves without replacing it"
+status = "required"
+
+[XBUS-STREAM]
+text = "an XBus stream carries bytes both ways in order with credit: a writer waits while the other side has granted nothing more, what is read is granted again, a side that reads nothing stops a writer at its window; opening what nobody offers fails and says so"
+status = "required"
+
+[XBUS-REGION]
+text = "an XBus region is memory both sides of a stream map (memfd over a local socket): a reference is 24 bytes and the other side reads the bytes in place; where the way carries no memory (a link over a pipe) the region is inline, each reference carrying its bytes in pieces into the other side's copy, and the fallback is counted"
+status = "required"
+
+[LUBAN-STATUS-BUS]
+text = "`luban status --bus` says the host's bus (the systems linked under it) and `luban status <name> --bus` what that system's programs offer, seen through its link (path, kind, node, interfaces); a system not on the bus and a home whose bus is not running are said, not errors"
+status = "required"
+
+[WUXIAN-COLLAPSE]
+text = "in the WuXian view a workspace collapses to its label strip (its windows neither shown nor hit) and a free window to its title bar at the camera's zoom (not hit below it, no input); openwx's state keeps a workspace's `collapsed` and a free window's `collapsed` flag, and both read back"
+status = "required"
+
+[WUXIAN-BOOKMARKS]
+text = "an item (a workspace or a free window on the plane; a stacked workspace's window) of which nothing shows on the screen is covered, an item off the screen is not; the top-most item over its centre carries its bookmark (at its right edge, at most five then +N); hovering outlines the covered item, clicking raises and focuses it; bookmarks are hidden while something is dragged or the view moves and can be turned off; computing them for a hundred items stays within a frame"
+status = "required"
+
+[XDESK-HEADLESS]
+text = "xdesk's interactions are driven headless through its control: `{\"input\": [...]}` (move, click with a count, button, wheel, key, keydown, keyup) goes through the same path as the window's input, and tests read where to point and what happened from `xdesk msg state` (windows, workspaces' frames, bookmarks, the minimap)"
+status = "required"
+
+[XDESK-BOUNDS]
+text = "a stacked or floating window moved in the workspace view keeps at least 64 pixels (or a quarter) of its title bar on the output, never above the top nor under the status bar nor below the bottom"
+status = "required"
+
+[XDESK-WUXIAN-REACH]
+text = "in the WuXian view a free window's border (6 screen pixels) resizes it, a title bar is hit within at least 24 screen pixels, a double-click on a free window's title bar collapses and expands it, and zoomed far out (pictures) any part of a window moves it"
+status = "required"
+
+[XDESK-MINIMAP]
+text = "the minimap's view box dragged by its edge pans the camera by as much in the world; a workspace or window clicked there goes to the middle of the view (the zoom kept); a free window dragged there moves, into a workspace when let go over one"
+status = "required"
+
+[XDESK-WORDS]
+text = "xdesk's words go through the i18n kit (the mechanism xlings.i18n is built on): its text is English where it is used, every word it shows has its Chinese in xdesk's catalogue (a scan of its sources finds none missing), the catalogues check clean, and the language is the kit's (Chinese read as Chinese, English as itself)"
+status = "required"
+
+[XDESK-TOUR]
+text = "the first session of a person's desktop gives the tour: ten steps (applications, a terminal, switching, workspaces, WuXian, moving between them, bookmarks, collapsing, every key, settings), each done by doing it (the events the desktop tells), each skippable, the whole endable; given once (state.json's toured), again from the launcher or `xdesk msg tour start`; ended early, the keys' one-line hint instead"
+status = "required"
+
+[OPENSAL-COMPRESSED]
+text = "opensal 0.6 Compressed: a provider across a narrow channel (a machine's, a relay's) takes 'z' frames, the rows as one LZ4 block; a desktop's frame is much shorter and decompresses exactly; what does not get shorter is sent as 'f'; a damaged block is refused; xdesk and the opensal-wlr bridge send 'z' where it is provided"
+status = "required"
+
+[XDESK-DAMAGE]
+text = "xdesk sends a frame's damage as at most eight rectangles, the nearest merged (every damaged pixel in one), not the whole frame for a handful of small changes"
 status = "required"

@@ -157,6 +157,50 @@ XTEST(OpensalWire, FramesAndEventsCrossTheBoundaryWhole, .area = "luban", .cover
     EXPECT_FALSE(wire::decode_event("key 1 x 0 0"));
 }
 
+// opensal 0.6 Compressed: a frame's rows as one LZ4 block -- a desktop's
+// frame (runs of one colour) much shorter, decompressed to exactly what was
+// sent; noise is sent as 'f'; a damaged block is refused, never half-read.
+XTEST(OpensalWire, ACompressedFrameIsShorterAndComesBackExactly, .area = "luban", .covers = {"OPENSAL-COMPRESSED"}) {
+    // 1080p-ish: a background, a window, text-like stripes.
+    const std::uint32_t w = 640, h = 360;
+    std::vector<std::byte> px(std::size_t(w) * h * 4);
+    for (std::uint32_t y = 0; y < h; ++y)
+        for (std::uint32_t x = 0; x < w; ++x) {
+            auto* p = px.data() + (std::size_t(y) * w + x) * 4;
+            const bool window = x > 100 && x < 500 && y > 50 && y < 300;
+            const bool stripe = window && (y % 16 < 2) && (x % 7 != 0);
+            p[0] = std::byte(window ? (stripe ? 0x20 : 0xf0) : 0x25);
+            p[1] = std::byte(window ? (stripe ? 0x20 : 0xf0) : 0x1e);
+            p[2] = std::byte(window ? (stripe ? 0x20 : 0xf0) : 0x1b);
+            p[3] = std::byte(0xff);
+        }
+    const opensal::Pixels surface{{w, h}, w * 4, px};
+    const auto f = wire::encode_frame(surface, {0, 0, w, h});
+    const auto z = wire::encode_compressed(std::string_view(f).substr(5));
+    ASSERT_TRUE(z.has_value());
+    EXPECT_LT(z->size() * 10, f.size()) << "a desktop's frame: less than a tenth";
+    const auto back = wire::decode_compressed(*z);
+    ASSERT_TRUE(back.has_value());
+    EXPECT_TRUE(*back == std::string_view(f).substr(5)) << "exactly the frame";
+    // Over the wire as a 'z' message.
+    wire::Decoder d;
+    d.feed(wire::encode('z', *z));
+    auto m = d.next();
+    ASSERT_TRUE(m && *m);
+    EXPECT_EQ((*m)->kind, 'z');
+    // Noise does not get shorter: sent as it is.
+    std::mt19937 rng(7);
+    std::string noise(4096, '\0');
+    for (auto& c : noise) c = static_cast<char>(rng());
+    EXPECT_FALSE(wire::encode_compressed("0 0 32 32 128\n" + noise).has_value());
+    // A block cut short, or claiming another size: refused.
+    EXPECT_FALSE(wire::decode_compressed(z->substr(0, z->size() - 3)).has_value());
+    EXPECT_FALSE(wire::lz4_decompress(wire::lz4_compress(std::string(1000, 'a')), 999).has_value());
+    EXPECT_EQ(*wire::lz4_decompress(wire::lz4_compress(std::string(1000, 'a')), 1000), std::string(1000, 'a'));
+    EXPECT_EQ(*wire::lz4_decompress(wire::lz4_compress("short"), 5), "short");
+    EXPECT_EQ(*wire::lz4_decompress(wire::lz4_compress(""), 0), "");
+}
+
 XTEST(OpensalWire, AShellsListsAndRequestsCrossWhole, .area = "luban", .covers = {"LUBAN-DESKTOP-WIRE", "LUBAN-DESKTOP-SHELL"}) {
     // Windows and applications, each list whole; a tab or a line break in a
     // name does not cut it.

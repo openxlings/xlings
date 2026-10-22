@@ -110,6 +110,14 @@ XTEST(UserView, AUsersViewReadsTheSystemsStoreAndAsksOnceForWhatItLacks, .area =
     EXPECT_NE(r.transcript().find("fixture-tool 1.0.0 is provided by the system"), std::string::npos) << r.transcript();
     EXPECT_FALSE(fs::exists(home.dir() / "data/xpkgs/xim-x-fixture-tool")) << "nothing installed in the view";
     EXPECT_FALSE(fs::exists(home.dir() / "data/xim-pkgindex")) << "the view has no index of its own";
+    // Its subos is the system's description with a workspace of its own:
+    // `self doctor` reads one with no subos_info as broken.
+    {
+        const auto mine = Json::parse(tk::read_file(home.dir() / "subos/default/.xlings.json"), nullptr, false);
+        const auto theirs = Json::parse(tk::read_file(system / "subos/default/.xlings.json"), nullptr, false);
+        ASSERT_TRUE(mine.is_object() && mine.contains("subos_info")) << mine.dump();
+        EXPECT_EQ(mine["subos_info"], theirs["subos_info"]);
+    }
 
     // The system's packages are in the user's list, marked.
     r = home.xlings({"list"}, inSystem);

@@ -539,6 +539,13 @@ int run(int argc, char* argv[]) {
             }
             const bool lock = in_desktop && a.pointer_lock_asked && !a.focus_out;
             if (lock != a.window->pointer_locked()) a.window->lock_pointer(lock);
+            // A Super key the host kept (the keyboard not held): Ctrl+Alt+K
+            // said, once for this person (design 2026-10-21 §8.10).
+            if (a.window->take_super_unlocked() && in_desktop && !a.settings.super_hint_said) {
+                a.toast(std::string(tr("luban.os.app.super_needs_hold")));
+                a.settings.super_hint_said = true;
+                write_app_settings(a.home, a.settings);
+            }
         }
         // The menu lists the system's desktops: read when it opens, not each frame.
         if (a.menu && a.menu_desktops.empty())

@@ -1,0 +1,15 @@
+# telemetry: what a program says about itself -- counters, gauges and
+# histograms by name, a flight recorder, a structured log, profiling spans
+# and dumps, one shape for every program (README.md). A kit: the standard
+# library and nlohmann.json only (tools/lint_layer_deps.sh); no platform,
+# no transport -- a bus or a control socket carries `telemetry::control`.
+[package]
+namespace = "telemetry"
+name      = "telemetry"
+version   = "0.1.0"
+
+[targets.telemetry]
+kind = "lib"
+
+[dependencies.nlohmann]
+json = "3.12.0"

@@ -64,6 +64,7 @@ struct AppSettings {
     bool minimize_to_tray { true };
     bool keep_in_tray { false };                    // the tray icon even with nothing running
     int close_choice { 0 };                         // the close dialog's last choice: 0 background, 1 power off
+    bool super_hint_said { false };                 // Ctrl+Alt+K said for a Super key the host kept (once per person)
 };
 AppSettings read_app_settings(const fs::path& home);
 void write_app_settings(const fs::path& home, const AppSettings& s);
@@ -152,6 +153,14 @@ private:
     int master_ { -1 };
     int pid_ { -1 };
     std::function<void()> wake_;
+    std::chrono::steady_clock::time_point last_wake_ {};
+    void paced_wake_();   // the reader's wake, at most once a frame
+    std::atomic<int> reads_ { 0 }, wakes_ { 0 };
+public:
+    // What the program wrote, read; how often that woke the window (tests).
+    int reads() const { return reads_.load(); }
+    int wakes() const { return wakes_.load(); }
+private:
     int rows_ { 24 }, cols_ { 80 };
 };
 
@@ -235,6 +244,7 @@ private:
                                           const std::function<bool(vm::Client&)>& open, const fs::path& log,
                                           const std::string& session);
     bool machine_ { false };
+    bool narrow_ { false };    // its channel is narrow (a machine's, a relay's): compressed frames
     fs::path log_;                    // a relayed desktop's standard error
     void provider_(std::string_view bytes);
     void sound_(std::string_view bytes);

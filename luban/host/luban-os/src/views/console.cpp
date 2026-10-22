@@ -97,7 +97,8 @@ std::unique_ptr<Console> Console::over_(vm::Client client, const std::string& na
                     self->alive_ = false;
                 }
             }
-            if ((changed || !self->alive_) && self->wake_) self->wake_();
+            if (changed && self->alive_) self->paced_wake_();
+            else if (!self->alive_ && self->wake_) self->wake_();
             if (!self->alive_) return;
         }
         self->alive_ = false;
@@ -173,13 +174,29 @@ std::unique_ptr<Console> Console::process(const std::vector<std::string>& argv, 
                 replies = self->screen_.take_replies();
             }
             if (!replies.empty()) (void)platform::write_all(self->master_, replies);
-            if (self->wake_) self->wake_();
+            self->paced_wake_();
         }
         if (auto st = platform::wait_process(self->pid_, true)) self->code_ = platform::exit_code(*st);
         self->alive_ = false;
         if (self->wake_) self->wake_();
     });
     return c;
+}
+
+// What arrives wakes the window at most 60 times a second: a terminal that
+// floods (a build, `yes`, typing in a slow shell) is drawn as it stands each
+// frame, not once per read (design 2026-10-21 §8.12, J23). The reader waits
+// out the rest of the frame first, so what follows is read in the same
+// frame, and the last read always wakes.
+void Console::paced_wake_() {
+    ++reads_;
+    if (!wake_) return;
+    const auto now = std::chrono::steady_clock::now();
+    constexpr auto kFrame = std::chrono::milliseconds(16);
+    if (const auto since = now - last_wake_; since < kFrame) std::this_thread::sleep_for(kFrame - since);
+    last_wake_ = std::chrono::steady_clock::now();
+    ++wakes_;
+    wake_();
 }
 
 Console::~Console() {

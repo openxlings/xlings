@@ -310,4 +310,32 @@ std::optional<DisplayRole> decode_display(std::string_view payload) {
     return r;
 }
 
+std::optional<std::string> encode_compressed(std::string_view frame_payload) {
+    const auto nl = frame_payload.find('\n');
+    if (nl == std::string_view::npos) return std::nullopt;
+    const auto rows = frame_payload.substr(nl + 1);
+    auto packed = lz4_compress(rows);
+    if (packed.size() + 16 >= rows.size()) return std::nullopt;
+    std::string out(frame_payload.substr(0, nl + 1));
+    out += packed;
+    return out;
+}
+
+std::optional<std::string> decode_compressed(std::string_view payload) {
+    const auto nl = payload.find('\n');
+    if (nl == std::string_view::npos) return std::nullopt;
+    const auto w = words_(payload.substr(0, nl));
+    FrameHeader h;
+    if (w.size() != 5 || !num_(w[0], h.rect.x) || !num_(w[1], h.rect.y) || !num_(w[2], h.rect.width) || !num_(w[3], h.rect.height)
+        || !num_(w[4], h.stride) || h.stride != h.rect.width * 4)
+        return std::nullopt;
+    const std::size_t size = std::size_t(h.stride) * h.rect.height;
+    if (size > kMaxMessage) return std::nullopt;
+    auto rows = lz4_decompress(payload.substr(nl + 1), size);
+    if (!rows) return std::nullopt;
+    std::string out(payload.substr(0, nl + 1));
+    out += *rows;
+    return out;
+}
+
 }  // namespace opensal::wire

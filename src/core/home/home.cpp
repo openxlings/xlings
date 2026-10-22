@@ -5,6 +5,7 @@ import xlings.libs.json;
 import xlings.platform;
 import xlings.core.home_identity;
 import xlings.core.home.domain_producer_source;
+import xlings.subos.situation;
 
 namespace xlings::home {
 
@@ -178,6 +179,12 @@ std::expected<std::optional<fs::path>, std::string> read_system_layer() {
     // borrowed payload where its declared consumer did not look.
     if (declares_upstreams(env_or_empty("XLINGS_HOME"))) return std::optional<fs::path>{};
     fs::path layer = env_or_empty("XLINGS_SYSTEM_LAYER");
+    // A user's view inside a Luban system: the store below it is the one the
+    // system's root names, whatever that store's own marker says -- a machine
+    // on a person's computer reads that person's home (design 2026-10-21 §3.0).
+    if (std::error_code ec; !layer.empty())
+        if (const auto record = subos::situation::root_record(); record && fs::equivalent(record->home, layer, ec))
+            return std::optional<fs::path>{fs::canonical(layer, ec)};
     if (layer.empty()) {
         if constexpr (platform::is_windows) layer = program_data() / "xlings" / "home";
         else layer = "/xlings";

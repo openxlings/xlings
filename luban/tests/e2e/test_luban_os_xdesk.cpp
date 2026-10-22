@@ -7,6 +7,8 @@ import xlings.testkit;
 import std;
 import xlings.libs.json;
 import xlings.platform;
+import xbus.router;
+import xbus.node;
 
 namespace tk = xlings::testkit;
 namespace platform = xlings::platform;
@@ -290,6 +292,38 @@ screenshot {}
     EXPECT_NEAR(i[2] - i[0], s0[2] - s0[0], 3) << "its own size";
     // Back to the workspace view: as it was.
     EXPECT_EQ(box_of(read_ppm(back), kGreen), s0);
+}
+
+// Alt+Tab in the WuXian view (design 2026-10-21 §8.3, J14): every window
+// gathered on the switchers' own layer, over a dimmed output -- the
+// workspace's plate and label under them, not over them.
+XTEST(LubanOs, XdeskAltTabInWuxianGathersOverADimmedPlane, .area = "luban",
+      .covers = {"XDESK-HIGHLIGHT", "WUXIAN-VIEWS"}, .requires_ = {"linux", "xlings-bin"}) {
+    if (!app_binary()) GTEST_SKIP() << "no luban-os beside the xlings under test";
+    if (!xdesk_binary()) GTEST_SKIP() << "no xdesk beside luban-os (mcpp build -p xdesk-app)";
+    auto home = tk::Home::isolated("luban-os-xdesk-wuxian-tab");
+    ASSERT_EQ(home.xlings({"self", "init"}).exit_code, 0);
+    const auto plane = home.root() / "plane.ppm", held = home.root() / "held.ppm";
+    auto r = xdesk_with(home, "xdesk", std::format(R"(wait desktop
+waitfor desktop.texture.0 1100
+sleep 3000
+key Super+o
+sleep 1500
+screenshot {}
+keydown Alt
+key Tab
+sleep 1200
+screenshot {}
+screenshot {}
+keyup Alt
+sleep 1500
+)", plane.string(), held.string(), artifact("xdesk-wuxian-alt-tab.bmp").string()));
+    ASSERT_EQ(r.exit_code, 0) << r.transcript();
+    const auto a = read_ppm(plane), b = read_ppm(held);
+    for (const auto& c : {kRed, kGreen, kBlue}) EXPECT_GE(box_of(b, c)[0], 0) << "every window shown whole, as it is";
+    // Away from the windows: darker than the plane was.
+    const auto sum = [](const std::array<int, 3>& p) { return p[0] + p[1] + p[2]; };
+    EXPECT_LT(sum(b.at(4, 4)), sum(a.at(4, 4))) << "the output dimmed under the gathered windows";
 }
 
 XTEST(LubanOs, XdeskSwitchesArrangementsAndComesBackToTheSameLayout, .area = "luban",
@@ -813,23 +847,25 @@ screenshot {}
     const auto a = read_ppm(quick);
     EXPECT_EQ(a.at(275, 400), kRed);
     EXPECT_EQ(a.at(825, 400), kGreen);
-    // Held: green (the one before red) as it is, smaller than its column;
-    // red and blue there too, dimmed.
+    // Held: every window as it is, fitted, over a dimmed output; green (the
+    // one before red) chosen: its own outline lit, nothing drawn around it
+    // (design 2026-10-21 §8.2, J15).
     const auto b = read_ppm(spread);
     const auto g = box_of(b, kGreen);
     ASSERT_GE(g[0], 0) << "the chosen window is shown as it is";
     EXPECT_LT(g[2] - g[0], 540) << "fitted: smaller than its column";
-    EXPECT_TRUE(tinted_(b, 0)) << "red shown";
-    EXPECT_TRUE(tinted_(b, 2)) << "blue shown";
-    EXPECT_EQ(box_of(b, kRed)[0], -1) << "the others dimmed";
-    // Tab: blue; Alt let go: blue focused and lit a moment, the others
-    // dimmed (design 2026-10-20 WuXian §4.3) -- then all as they are.
+    EXPECT_GE(box_of(b, kRed)[0], 0) << "red shown as it is, not dimmed";
+    EXPECT_GE(box_of(b, kBlue)[0], 0) << "blue shown as it is, not dimmed";
+    EXPECT_NE(b.at(g[0] - 1, (g[1] + g[3]) / 2), kGreen) << "the chosen one's outline on its own edge";
+    // Tab: blue; Alt let go: blue focused, its outline lit where it is and
+    // faded -- the others never dimmed and lit again.
     const auto l = read_ppm(lit);
-    EXPECT_EQ(l.at(825, 400), kBlue) << "the one chosen, lit";
-    EXPECT_NE(l.at(275, 400), kGreen) << "the others dimmed while it is";
+    EXPECT_EQ(l.at(825, 400), kBlue) << "the one chosen";
+    EXPECT_EQ(l.at(275, 400), kGreen) << "the others as they are while it is lit";
     const auto c = read_ppm(chosen);
     EXPECT_EQ(c.at(275, 400), kGreen);
     EXPECT_EQ(c.at(825, 400), kBlue);
+    EXPECT_GT(box_of(l, kBlue)[0], box_of(c, kBlue)[0]) << "the outline lit over its edge, then faded";
 }
 
 // Super+Tab by application (design 2026-10-20 §10.1): a press goes to the
@@ -1084,6 +1120,243 @@ sleep 600
     // The keys page: maximize given Super+Shift+X, kept in keys.json.
     const auto keys = Json::parse(tk::read_file(home.root() / ".config" / "xdesk" / "keys.json"));
     EXPECT_EQ(keys["maximize"], Json::array({"Super+Shift+x"})) << keys.dump();
+}
+
+// What the desktop is (design 2026-10-21 §8.11): `xdesk msg state` -- its
+// output, view, workspaces and windows, the overlays (the hint where it is
+// drawn: inside the output after a resize, J10), the launcher's
+// applications, the frames' parts; `debug hud`; `subscribe` tells what
+// happens, a line each.
+XTEST(LubanOs, XdeskSaysWhatItIsAndWhatHappens, .area = "luban", .covers = {"XDESK-STATE"},
+      .requires_ = {"linux", "xlings-bin"}) {
+    if (!app_binary()) GTEST_SKIP() << "no luban-os beside the xlings under test";
+    if (!xdesk_binary()) GTEST_SKIP() << "no xdesk beside luban-os (mcpp build -p xdesk-app)";
+    auto home = tk::Home::isolated("luban-os-xdesk-state");
+    ASSERT_EQ(home.xlings({"self", "init"}).exit_code, 0);
+    const auto runtime = home.root() / "run";
+    auto session = std::async(std::launch::async, [&] {
+        return xdesk_with(home, "classic", R"(wait desktop
+waitfor desktop.texture.0 1100
+sleep 2500
+resize 900 520
+sleep 5000
+key Alt+Tab
+sleep 2500
+)", {}, true);
+    });
+    fs::path control;
+    for (int k = 0; k < 100 && control.empty(); ++k) {
+        std::error_code ec;
+        for (const auto& e : fs::directory_iterator(runtime, ec))
+            if (e.path().filename().string().starts_with("xdesk-") && e.path().extension() == ".sock") control = e.path();
+        if (control.empty()) std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+    ASSERT_FALSE(control.empty()) << "no control socket in " << runtime;
+    const auto display = control.stem().string().substr(6);
+    auto msg = [&](std::vector<std::string> args, std::chrono::milliseconds timeout = std::chrono::seconds(20)) {
+        tk::RunOptions o;
+        o.argv = {xdesk_binary()->string(), "msg"};
+        o.argv.insert(o.argv.end(), args.begin(), args.end());
+        o.env = {{"XDG_RUNTIME_DIR", runtime.string()}, {"WAYLAND_DISPLAY", display}};
+        o.timeout = timeout;
+        return tk::run(o);
+    };
+    std::this_thread::sleep_for(std::chrono::milliseconds(4500));
+    auto subscribed = std::async(std::launch::async, [&] { return msg({"subscribe"}, std::chrono::seconds(6)); });
+    const auto st = msg({"state"});
+    ASSERT_EQ(st.exit_code, 0) << st.transcript();
+    const auto s = Json::parse(st.out, nullptr, false);
+    ASSERT_TRUE(s.is_object()) << st.out;
+    EXPECT_EQ(s["output"]["size"], Json::array({900, 520})) << s["output"].dump();
+    EXPECT_EQ(s["view"], "workspace");
+    EXPECT_EQ(s["windows"].size(), 3u) << s["windows"].dump();
+    EXPECT_EQ(std::ranges::count_if(s["windows"], [](const Json& w) { return w.value("focused", false); }), 1) << s["windows"].dump();
+    EXPECT_TRUE(s["apps"].is_array());
+    EXPECT_GT(s["frames"]["count"].get<double>(), 0) << s["frames"].dump();
+    // The first session's tour: inside the output after the resize (J10).
+    ASSERT_TRUE(s.contains("tour")) << "the first session's tour";
+    const auto tr = s["tour"]["rect"];
+    EXPECT_LE(tr[1].get<double>() + tr[3].get<double>(), 520) << s["tour"].dump();
+    EXPECT_LE(tr[0].get<double>() + tr[2].get<double>(), 900) << s["tour"].dump();
+    // Ended early: the keys' hint instead -- inside the output too.
+    ASSERT_EQ(msg({R"({"tour": "end"})"}).exit_code, 0);
+    const auto after = Json::parse(msg({"state"}).out, nullptr, false);
+    const auto& hint = after["overlays"]["hint"];
+    ASSERT_TRUE(hint.value("shown", false)) << "the keys' hint once the tour is ended\n" << after["overlays"].dump();
+    const auto r = hint["rect"];
+    EXPECT_LE(r[1].get<double>() + r[3].get<double>(), 520) << "the hint inside the output after the resize (J10)\n" << hint.dump();
+    EXPECT_LE(r[0].get<double>() + r[2].get<double>(), 900) << hint.dump();
+    const auto on = msg({"debug", "hud", "on"});
+    EXPECT_EQ(on.exit_code, 0) << on.transcript();
+    EXPECT_TRUE(Json::parse(msg({"state"}).out, nullptr, false)["hud"].get<bool>());
+    const auto run = session.get();
+    ASSERT_EQ(run.exit_code, 0) << run.transcript();
+    const auto events = subscribed.get().out;
+    EXPECT_NE(events.find(R"("event":"focus")"), std::string::npos) << "Alt+Tab focused another window\n" << events;
+}
+
+// Covered items and collapsing (design 2026-10-21 §8.4, §8.5): in a stacked
+// workspace a maximized window covers the others -- each has a bookmark on
+// it, and choosing one raises and focuses it; in the WuXian view Super+S
+// collapses the workspace to its label and back.
+XTEST(LubanOs, XdeskBookmarksCoveredWindowsAndCollapsesAWorkspace, .area = "luban",
+      .covers = {"WUXIAN-BOOKMARKS", "WUXIAN-COLLAPSE"}, .requires_ = {"linux", "xlings-bin"}) {
+    if (!app_binary()) GTEST_SKIP() << "no luban-os beside the xlings under test";
+    if (!xdesk_binary()) GTEST_SKIP() << "no xdesk beside luban-os (mcpp build -p xdesk-app)";
+    auto home = tk::Home::isolated("luban-os-xdesk-bookmarks");
+    ASSERT_EQ(home.xlings({"self", "init"}).exit_code, 0);
+    tk::write_file(home.root() / ".config" / "xdesk" / "wuxian.json", R"({"wuxian": 1, "workspaces": [{"id": 1, "rule": "stack"}]})");
+    const auto runtime = home.root() / "run";
+    auto session = std::async(std::launch::async, [&] {
+        return xdesk_with(home, "classic", R"(wait desktop
+waitfor desktop.texture.0 1100
+sleep 3000
+key Super+f
+sleep 6000
+key Super+o
+sleep 2500
+key Super+s
+sleep 4000
+key Super+s
+sleep 3000
+)");
+    });
+    fs::path control;
+    for (int k = 0; k < 100 && control.empty(); ++k) {
+        std::error_code ec;
+        for (const auto& e : fs::directory_iterator(runtime, ec))
+            if (e.path().filename().string().starts_with("xdesk-") && e.path().extension() == ".sock") control = e.path();
+        if (control.empty()) std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+    ASSERT_FALSE(control.empty()) << "no control socket in " << runtime;
+    const auto display = control.stem().string().substr(6);
+    auto msg = [&](std::vector<std::string> args) {
+        tk::RunOptions o;
+        o.argv = {xdesk_binary()->string(), "msg"};
+        o.argv.insert(o.argv.end(), args.begin(), args.end());
+        o.env = {{"XDG_RUNTIME_DIR", runtime.string()}, {"WAYLAND_DISPLAY", display}};
+        o.timeout = std::chrono::seconds(20);
+        return tk::run(o);
+    };
+    auto state = [&] { return Json::parse(msg({"state"}).out, nullptr, false); };
+    // The newest maximized over the two before it: both covered, each a bookmark on it.
+    std::this_thread::sleep_for(std::chrono::milliseconds(6500));
+    auto s = state();
+    ASSERT_TRUE(s.is_object());
+    ASSERT_EQ(s["windows"].size(), 3u) << s["windows"].dump();
+    ASSERT_EQ(s["bookmarks"].size(), 2u) << s["bookmarks"].dump() << "\n" << s["windows"].dump();
+    for (const auto& b : s["bookmarks"]) {
+        const auto t = b["tab"];
+        EXPECT_GE(t[0].get<double>(), 0);
+        EXPECT_LE(t[0].get<double>() + t[2].get<double>(), s["output"]["size"][0].get<double>()) << "on the output: " << b.dump();
+    }
+    const auto chosen = s["bookmarks"][0]["window"].get<double>();
+    // Chosen (as a click chooses it; `xdesk msg bookmark` is an agent's way): raised and focused.
+    const auto answer = msg({"bookmark", "0"});
+    EXPECT_EQ(answer.exit_code, 0) << answer.transcript();
+    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    s = state();
+    const auto focused = std::ranges::find_if(s["windows"], [](const Json& w) { return w.value("focused", false); });
+    ASSERT_NE(focused, s["windows"].end());
+    EXPECT_EQ((*focused)["id"].get<double>(), chosen) << "the bookmark's window, raised and focused";
+    // The WuXian view: Super+S collapses the workspace to its label, and back.
+    const auto until = [&](auto&& ok) {
+        for (int k = 0; k < 120; ++k) {
+            s = state();
+            if (s.is_object() && ok(s)) return true;
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+        return false;
+    };
+    const auto collapsed = [](const Json& j) {
+        return !j["workspaces"].empty() && j["workspaces"][0].value("collapsed", false);
+    };
+    ASSERT_TRUE(until(collapsed)) << s["workspaces"].dump();
+    EXPECT_EQ(s["view"], "wuxian");
+    EXPECT_TRUE(std::ranges::none_of(s["windows"], [](const Json& w) { return w.value("visible", false); })) << "its windows not shown";
+    EXPECT_TRUE(until([&](const Json& j) { return !collapsed(j); })) << s["workspaces"].dump();
+    const auto run = session.get();
+    ASSERT_EQ(run.exit_code, 0) << run.transcript();
+}
+
+// The desktop on the bus (design 2026-10-22 §7, B6): its state and its
+// control as the socket's, what happens as a topic, and its process's
+// telemetry -- the frames' parts as metrics, a profile of a frame's spans.
+// A patient node: the router here comes after the desktop has started.
+XTEST(LubanOs, XdeskIsOnTheBus, .area = "luban", .covers = {"XDESK-BUS"}, .requires_ = {"linux", "xlings-bin"}) {
+    if (!app_binary()) GTEST_SKIP() << "no luban-os beside the xlings under test";
+    if (!xdesk_binary()) GTEST_SKIP() << "no xdesk beside luban-os (mcpp build -p xdesk-app)";
+    auto home = tk::Home::isolated("luban-os-xdesk-bus");
+    ASSERT_EQ(home.xlings({"self", "init"}).exit_code, 0);
+    const xbus::Address at{"local", (home.root() / "bus.sock").string()};
+    auto session = std::async(std::launch::async, [&] {
+        return xdesk_with(home, "classic", R"(wait desktop
+waitfor desktop.texture.0 1100
+sleep 9000
+key Alt+Tab
+sleep 4000
+)", {{"OPENBUS_ROUTER", at.text()}});
+    });
+    std::this_thread::sleep_for(std::chrono::milliseconds(2500));
+    xbus::Router router({.root = "host/test", .listen = {at}});
+    ASSERT_TRUE(router.listen().has_value());
+    std::atomic<bool> stop{false};
+    std::jthread loop([&] { router.run(stop); });
+    auto n = xbus::Node::connect({.name = "test", .router = at, .telemetry = false});
+    ASSERT_TRUE(n.has_value()) << n.error();
+    auto& bus = **n;
+    std::vector<xbus::Resolved> desk;
+    for (int k = 0; k < 80 && desk.empty(); ++k) {
+        desk = bus.resolve("**", "xdesk.state@1").value_or(std::vector<xbus::Resolved>{});
+        if (desk.empty()) std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+    ASSERT_EQ(desk.size(), 1u) << "xdesk joined the bus that came after it";
+    EXPECT_EQ(desk.front().path, "host/test/service/xdesk/state");
+    std::mutex m;
+    std::string events;
+    bus.subscribe("**/topic/xdesk/events", [&](const xbus::Message& msg) {
+        std::lock_guard l(m);
+        events += msg.body + "\n";
+    });
+    std::this_thread::sleep_for(std::chrono::milliseconds(2500));
+    const auto st = bus.call("service/xdesk/state");
+    ASSERT_TRUE(st.has_value()) << st.error().message;
+    const auto s = Json::parse(st->front(), nullptr, false);
+    ASSERT_TRUE(s.is_object()) << st->front();
+    EXPECT_EQ(s["windows"].size(), 3u) << s.dump();
+    // The socket's requests, the same answers.
+    const auto hud = bus.call("service/xdesk/control", R"({"debug": "hud", "on": true})");
+    ASSERT_TRUE(hud.has_value()) << hud.error().message;
+    EXPECT_NE(hud->front().find("true"), std::string::npos) << hud->front();
+    EXPECT_TRUE(Json::parse(bus.call("service/xdesk/state")->front())["hud"].get<bool>());
+    // Its telemetry: the frames by their parts, a profile, the state in a dump.
+    std::vector<xbus::Resolved> told;
+    for (const auto& e : bus.resolve("**", "openbus.telemetry@0.1").value_or(std::vector<xbus::Resolved>{}))
+        if (e.name == "xdesk") told.push_back(e);
+    ASSERT_EQ(told.size(), 1u);
+    auto ask = [&](std::string_view request) {
+        const auto r = bus.call(told.front().path, request);
+        std::string text;
+        if (r) for (const auto& p : *r) text += p;
+        return Json::parse(text, nullptr, false);
+    };
+    EXPECT_EQ(ask("profile on")["profiling"], true);
+    std::this_thread::sleep_for(std::chrono::milliseconds(1500));
+    const auto metrics = ask("metrics")["metrics"];
+    EXPECT_GT(metrics["counters"].value("xdesk.frames", 0u), 0u) << metrics.dump();
+    EXPECT_GT(metrics["histograms"]["xdesk.frame.compose_ns"].value("count", 0u), 0u) << metrics.dump();
+    const auto trace = ask("trace");
+    EXPECT_TRUE(std::ranges::any_of(trace["traceEvents"], [](const Json& e) { return e["name"] == "compose" && e["cat"] == "xdesk"; }))
+        << "a frame's spans while profiling";
+    (void)ask("profile off");
+    const auto dump = ask("dump");
+    EXPECT_EQ(dump["program"], "xdesk");
+    EXPECT_EQ(dump["state"]["xdesk.state"]["windows"].size(), 3u) << dump["state"].dump().substr(0, 400);
+    const auto run = session.get();
+    stop = true;
+    ASSERT_EQ(run.exit_code, 0) << run.transcript();
+    std::lock_guard l(m);
+    EXPECT_NE(events.find(R"("event":"focus")"), std::string::npos) << "Alt+Tab focused another window, told on the topic\n" << events;
 }
 
 // The renderer (design 2026-10-20 WuXian §7.2): the GPU when one draws, else

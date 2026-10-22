@@ -190,6 +190,14 @@ struct Window::Impl {
     bool grab_again { true };                   // a focus change: try at once
     int grabs_refused { 0 };                    // tests
     void* x11 { nullptr };                      // libX11, for its answer to a grab
+    // Keys the content was told are down, by the host's raw keycode (X11's
+    // keycode there): what is reconciled with the host's own state, a
+    // release a host's grab swallowed sent after all (design 2026-10-21
+    // §8.10, J16).
+    std::map<std::uint16_t, opensal::Key> pressed;
+    bool super_down { false };
+    bool pointer_held { false };                // the pointer, held while Super is (the keyboard held)
+    bool super_unlocked { false };              // a Super combination while the keyboard was not held
     SDL_Keymod injected_mods { SDL_KMOD_NONE };
     std::deque<std::string> injected_text;      // an SDL text event points at its text until it is taken
     bool imgui { false };                       // its context and backends are up (and to be shut down)
@@ -354,6 +362,10 @@ bool Window::begin_frame(int timeout_ms) {
         case SDL_EVENT_WINDOW_FOCUS_LOST:
             events_.push_back(opensal::Focus{false});
             im.ctrl_down = im.alt_down = false;
+            // What it thought was held is let go: its releases go elsewhere now.
+            for (auto& [raw, k] : im.pressed) events_.push_back(opensal::Key{false, k.keysym, k.mods, false});
+            im.pressed.clear();
+            im.super_down = false;
             // SDL lets a grab go with the focus; it is asked for again.
             if (im.grab == Grab::Held) im.grab = Grab::Released;
             im.grab_again = true;
@@ -388,6 +400,13 @@ bool Window::begin_frame(int timeout_ms) {
             opensal::Key key{down, sym, mods_(e.key.mod), e.key.repeat};
             events_.push_back(key);
             if (down && !name.empty()) keys_.push_back({key, name});
+            // By the host's keycode; a key without one (injected) by its scancode, apart.
+            const std::uint16_t code = e.key.raw ? e.key.raw : static_cast<std::uint16_t>(0x8000 | e.key.scancode);
+            if (down) im.pressed[code] = key;
+            else im.pressed.erase(code);
+            if (k == SDLK_LGUI || k == SDLK_RGUI) im.super_down = down;
+            // A Super combination the host kept (the keyboard not held): said once by the app.
+            else if (down && !e.key.repeat && im.super_down && im.grab != Grab::Held) im.super_unlocked = true;
             break;
         }
         case SDL_EVENT_TEXT_INPUT:
@@ -423,11 +442,51 @@ bool Window::begin_frame(int timeout_ms) {
         }
         got = SDL_PollEvent(&e);
     }
+    reconcile_keys_();
+    hold_pointer_();
     ImGui_ImplSDLRenderer3_NewFrame();
     ImGui_ImplSDL3_NewFrame();
     ImGui::NewFrame();
     return !close_requested_;
 }
+
+// X11: the host's own word on what is held (XQueryKeymap), asked while the
+// content thinks a key is -- a window manager's grab (GNOME moving a window
+// on Super+drag) takes the release, and SDL drops the focus changes such a
+// grab makes (design 2026-10-21 §8.10, J16: the space repeated).
+void Window::reconcile_keys_() {
+    auto& im = *impl_;
+    if (im.pressed.empty() || std::string_view(SDL_GetCurrentVideoDriver() ? SDL_GetCurrentVideoDriver() : "") != "x11") return;
+    if (!im.x11) im.x11 = SDL_LoadObject("libX11.so.6");
+    using QueryFn = int (*)(void*, char*);
+    const auto query = im.x11 ? reinterpret_cast<QueryFn>(SDL_LoadFunction(static_cast<SDL_SharedObject*>(im.x11), "XQueryKeymap")) : nullptr;
+    auto* display = SDL_GetPointerProperty(SDL_GetWindowProperties(im.window), SDL_PROP_WINDOW_X11_DISPLAY_POINTER, nullptr);
+    if (!query || !display) return;
+    std::array<char, 32> keys{};
+    query(display, keys.data());
+    for (auto it = im.pressed.begin(); it != im.pressed.end();) {
+        const auto code = it->first;
+        if (code >= 256) { ++it; continue; }   // not the host's keycode: nothing to ask it
+        const bool held = (static_cast<unsigned char>(keys[code / 8]) >> (code % 8)) & 1;
+        if (held) { ++it; continue; }
+        events_.push_back(opensal::Key{false, it->second.keysym, it->second.mods, false});
+        it = im.pressed.erase(it);
+    }
+    if (!std::ranges::any_of(im.pressed, [](const auto& kv) { return kv.second.keysym == 0xffeb || kv.second.keysym == 0xffec; }))
+        im.super_down = false;
+}
+
+// The pointer held while the keyboard is held, Super is down and the pointer
+// is in the window: a window manager's passive Super+drag never starts then
+// (it moved the host's window). Let go with Super; never otherwise held.
+void Window::hold_pointer_() {
+    auto& im = *impl_;
+    const bool want = im.grab == Grab::Held && im.super_down && SDL_GetMouseFocus() == im.window;
+    if (want == im.pointer_held) return;
+    if (SDL_SetWindowMouseGrab(im.window, want) || !want) im.pointer_held = want;
+}
+
+bool Window::take_super_unlocked() { return std::exchange(impl_->super_unlocked, false); }
 
 void Window::end_frame(bool present) {
     pointer_frame_();
@@ -606,6 +665,8 @@ bool Window::inject_key(std::string_view name, bool down) {
     e.key.windowID = SDL_GetWindowID(im.window);
     e.key.key = k->first;
     e.key.scancode = SDL_GetScancodeFromKey(k->first, nullptr);
+    // A host's raw code, one per key (X11's keycode is the scancode's + 8).
+    e.key.raw = static_cast<Uint16>(e.key.scancode + 8);
     e.key.mod = im.injected_mods;
     e.key.down = down;
     SDL_PushEvent(&e);
@@ -704,6 +765,15 @@ void Window::inject_shown(bool shown) {
     e.window.windowID = SDL_GetWindowID(impl_->window);
     SDL_PushEvent(&e);
 }
+
+void Window::inject_focus(bool in) {
+    SDL_Event e{};
+    e.type = in ? SDL_EVENT_WINDOW_FOCUS_GAINED : SDL_EVENT_WINDOW_FOCUS_LOST;
+    e.window.windowID = SDL_GetWindowID(impl_->window);
+    SDL_PushEvent(&e);
+}
+
+std::size_t Window::keys_held() const { return impl_->pressed.size(); }
 
 void Window::set_size(int width, int height) {
     SDL_SetWindowSize(impl_->window, width, height);

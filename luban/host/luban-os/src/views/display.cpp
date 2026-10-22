@@ -53,6 +53,7 @@ std::unique_ptr<Display> Display::over_(vm::Client client, const std::string& na
     d->name_ = name;
     d->session_ = session;
     d->machine_ = machine;
+    d->narrow_ = true;   // a serial port, a relay's pipe: frames compressed (opensal 0.6)
     d->log_ = log;
     d->wake_ = std::move(wake);
     d->wanted_ = size;
@@ -285,6 +286,7 @@ void Display::provider_(std::string_view bytes) {
             auto provided = I::Surface | I::Mode | I::Pointer | I::Keyboard | I::Text | I::Shell | I::Cursor | I::CursorImage
                             | I::PointerLock | I::Displays;
             if (clip_.copy || clip_.paste) provided = provided | I::Clipboard;
+            if (narrow_) provided = provided | I::Compressed;
             opensal::Interfaces wanted = 0;
             std::from_chars(msg.payload.data(), msg.payload.data() + msg.payload.size(), wanted);
             shell_ = opensal::has(wanted, I::Shell);
@@ -370,8 +372,11 @@ void Display::provider_(std::string_view bytes) {
                 windows_ = std::move(*windows);
                 changed = true;
             }
-        } else if (msg.kind == 'f') {
-            if (auto f = opensal::wire::decode_frame(msg.payload)) {
+        } else if (msg.kind == 'f' || msg.kind == 'z') {
+            // 'z': the rows compressed (opensal 0.6), what came over a narrow channel.
+            std::optional<std::string> unpacked;
+            if (msg.kind == 'z' && !(unpacked = opensal::wire::decode_compressed(msg.payload))) continue;
+            if (auto f = opensal::wire::decode_frame(unpacked ? std::string_view(*unpacked) : std::string_view(msg.payload))) {
                 std::lock_guard l(m_);
                 // A frame over the whole surface makes everything before it moot.
                 if (f->first.rect.x == 0 && f->first.rect.y == 0 && f->first.rect.width == size_.width

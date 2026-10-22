@@ -2,6 +2,7 @@
 module xdesk.compositor;
 
 import std;
+import xdesk.words;
 import opensal;
 import opensal.wire;
 import opensal.keys;
@@ -32,12 +33,14 @@ Server::Server(const Options& opts)
            .inner_gap = static_cast<double>(std::clamp(opts.inner_gap, 0, 64)),
            .outer_gap = static_cast<double>(std::clamp(opts.outer_gap, 0, 64)),
            .min_column_width = static_cast<double>(std::clamp(opts.min_column_width, 120, 4096)),
-           .flow = openwx::flow_named(opts.flow).value_or(layout::Flow::horizontal)}),
+           .flow = openwx::flow_named(opts.flow).value_or(layout::Flow::horizontal),
+           .title = static_cast<double>(kTitle)}),
       theme(shell::theme(opts.profile)) {
     if (opts.accent) theme.accent = theme.selected = draw::Color::rgb(*opts.accent);
     if (opts.background) theme.background = draw::Color::rgb(*opts.background);
     pill = opts.profile == "canvas";
     minimap_on = opts.minimap;
+    bookmarks_on = opts.bookmarks;
     snap_on = opts.snap;
     reduce_motion = opts.reduce_motion;
     locate = opts.locate;
@@ -79,7 +82,11 @@ void Server::choose_renderer() {
             for (int k = 128; k < 192; ++k)
                 if (const fs::path n = std::format("/dev/dri/renderD{}", k); fs::exists(n, ec)) nodes.push_back(n);
         }
-        if (nodes.empty()) why = "this system has no GPU it may use (no render node in /dev/dri)";
+        if (nodes.empty())
+            // WSL's GPU is /dev/dxg, which Mesa's d3d12 driver draws with, but
+            // wlroots' GLES renderer takes a render node (design 2026-10-21 §5.4).
+            why = fs::exists("/dev/dxg", ec) ? "WSL's GPU (/dev/dxg, d3d12) has no render node, which the desktop's GLES renderer takes"
+                                             : "this system has no GPU it may use (no render node in /dev/dri)";
         for (const auto& node : nodes) {
             std::string err;
             const int fd = os::open_device(node, &err);
@@ -142,7 +149,7 @@ void Server::fall_back(std::string why) {
     gpu = false;
     renderer_text = std::format("software (pixman): {}", why);
     log("renderer: " + renderer_text);
-    show_hint(zh ? "GPU 不可用了，已改为软件渲染" : "The GPU is gone: drawing in software", 6000);
+    show_hint(i18n::tr("The GPU is gone: drawing in software"), 6000);
     for (auto& l : links) l.whole = true;
     wlr_output_schedule_frame(output);
 }
@@ -172,6 +179,12 @@ bool Server::start_() {
     background_layer = wlr_scene_tree_create(&scene->tree);
     window_layer = wlr_scene_tree_create(&scene->tree);
     shell_layer = wlr_scene_tree_create(&scene->tree);
+    spread_layer = wlr_scene_tree_create(&scene->tree);
+    {
+        const float none[4] = {0, 0, 0, 0};
+        spread_dim = wlr_scene_rect_create(spread_layer, 1, 1, none);
+        wlr_scene_node_set_enabled(&spread_dim->node, false);
+    }
     overlay_layer = wlr_scene_tree_create(&scene->tree);
     const float bg[4] = {theme.background.r / 255.0f, theme.background.g / 255.0f, theme.background.b / 255.0f, 1.0f};
     background = wlr_scene_rect_create(background_layer, static_cast<int>(size.width), static_cast<int>(size.height), bg);
@@ -192,6 +205,8 @@ bool Server::start_() {
     wlr_scene_node_set_enabled(&overlay_node->node, false);
     hint_node = wlr_scene_buffer_create(overlay_layer, nullptr);
     wlr_scene_node_set_enabled(&hint_node->node, false);
+    hud_node = wlr_scene_buffer_create(overlay_layer, nullptr);
+    wlr_scene_node_set_enabled(&hud_node->node, false);
     sizes_node = wlr_scene_buffer_create(overlay_layer, nullptr);
     wlr_scene_node_set_enabled(&sizes_node->node, false);
     {
@@ -207,7 +222,8 @@ bool Server::start_() {
         drop_line = wlr_scene_rect_create(overlay_layer, 1, 1, accent(0.9f).data());
         for (auto* r : {drop_box, drop_place, drop_half, drop_line}) wlr_scene_node_set_enabled(&r->node, false);
     }
-    zh = shell::chinese(os::environment());
+    xdesk::words::register_words();
+    zh = xdesk::words::chinese();
     open_fonts();
 
     xdg_shell = wlr_xdg_shell_create(display, 6);
@@ -291,6 +307,7 @@ bool Server::start_() {
     socket = name;
     log("listening on " + socket);
     control_start();
+    bus_start();
 
     // The first window, on the standard streams; the others at the displays socket.
     add_link(o.in, o.out);
@@ -321,6 +338,7 @@ bool Server::start_() {
     hint_timer = wl_event_loop_add_timer(loop, [](void* data) -> int {
         auto* self = static_cast<Server*>(data);
         wlr_scene_node_set_enabled(&self->hint_node->node, false);
+        self->hint_text.clear();
         return 0;
     }, this);
     max_timer = wl_event_loop_add_timer(loop, [](void* data) -> int {
@@ -362,13 +380,6 @@ bool Server::start_() {
         self->arrange();
         return 0;
     }, this);
-    {
-        const float c[4] = {theme.accent.r / 255.0f, theme.accent.g / 255.0f, theme.accent.b / 255.0f, 1.0f};
-        for (auto& r : chosen_ring) {
-            r = wlr_scene_rect_create(overlay_layer, 1, 1, c);
-            wlr_scene_node_set_enabled(&r->node, false);
-        }
-    }
     view_timer = wl_event_loop_add_timer(loop, [](void* data) -> int {
         static_cast<Server*>(data)->view_step();
         return 0;
@@ -380,6 +391,10 @@ bool Server::start_() {
         for (auto& n : self->ws_nodes) n.drawn.clear();
         if (self->wuxian()) self->update_frames(self->placements);
         if (!self->rule_changed.empty()) wl_event_source_timer_update(self->morph_timer, 16);
+        return 0;
+    }, this);
+    bookmark_timer = wl_event_loop_add_timer(loop, [](void* data) -> int {
+        static_cast<Server*>(data)->update_bookmarks();
         return 0;
     }, this);
     removal_timer = wl_event_loop_add_timer(loop, [](void* data) -> int {
@@ -397,8 +412,8 @@ bool Server::start_() {
             if (const View* v = self->view_of(id); v && v->mapped) ++left;
         self->closing.clear();
         if (left > 0)
-            self->show_hint(self->zh ? std::format("{} 个窗口没有关闭，留在 WuXian 上", left)
-                                     : std::format("{} {} did not close: on WuXian", left, left == 1 ? "window" : "windows"), 5000);
+            self->show_hint(left == 1 ? std::string(i18n::tr("1 window did not close: on WuXian"))
+                                      : i18n::trf("{} windows did not close: on WuXian", left), 5000);
         return 0;
     }, this);
     // The person's keys and state; each workspace's arrangement as they left it.
@@ -420,6 +435,7 @@ int Server::run_() {
 }
 
 Server::~Server() {
+    bus_stop();
     for (auto& l : links)
         if (l.source) wl_event_source_remove(l.source);
     if (displays_source) wl_event_source_remove(displays_source);
@@ -445,7 +461,7 @@ Server::~Server() {
     if (max_timer) wl_event_source_remove(max_timer);
     if (switch_timer) wl_event_source_remove(switch_timer);
     if (hold_timer) wl_event_source_remove(hold_timer);
-    for (auto* t : {view_timer, morph_timer, removal_timer, closing_timer, lit_timer, wheel_timer, caret_timer})
+    for (auto* t : {view_timer, morph_timer, removal_timer, closing_timer, lit_timer, wheel_timer, caret_timer, bookmark_timer})
         if (t) wl_event_source_remove(t);
     if (wuxian_timer) {
         wl_event_source_remove(wuxian_timer);

@@ -160,7 +160,7 @@ auto InstallPackages::spec() const -> CapabilitySpec {
     return {
         .name = "install_packages",
         .description = "Install one or more packages",
-        .inputSchema = R"({"type":"object","properties":{"targets":{"type":"array","items":{"type":"string"},"description":"Format: name, name@version, or namespace:name@version"},"yes":{"type":"boolean","description":"Auto-confirm without prompting"},"global":{"type":"boolean","description":"Install to global scope"},"useAfterInstall":{"type":"boolean","description":"Activate the installed version even if another version is currently active"},"reconfig":{"type":"boolean","description":"Run the configuration step again, even for packages already configured in this scope"}},"required":["targets"]})",
+        .inputSchema = R"({"type":"object","properties":{"targets":{"type":"array","items":{"type":"string"},"description":"Format: name, name@version, or namespace:name@version"},"yes":{"type":"boolean","description":"Auto-confirm without prompting"},"global":{"type":"boolean","description":"Install to global scope"},"useAfterInstall":{"type":"boolean","description":"Activate the installed version even if another version is currently active"},"reconfig":{"type":"boolean","description":"Run the configuration step again, even for packages already configured in this scope"},"subos":{"type":"string","description":"Install into this subos; a Luban system installs where it lives"}},"required":["targets"]})",
         .outputSchema = R"({"type":"object","properties":{"exitCode":{"type":"integer"}}})",
         .destructive = true,
     };
@@ -181,6 +181,31 @@ auto InstallPackages::execute(Params params, EventStream& stream, CancellationTo
     bool global = json.value("global", false);
     bool useAfter = json.value("useAfterInstall", false);
     bool reconfig = json.value("reconfig", false);
+    // `"subos"` (1.17, design 2026-10-21 §7.2): into that subos -- a Luban
+    // system in a prefix domain installs where it lives, its events relayed
+    // as they come, cancelled with this call.
+    if (const auto name = json.value("subos", std::string{}); !name.empty()) {
+        if (!std::filesystem::is_directory(Config::subos_dir(name))) {
+            stream.emit(ErrorEvent{.code = ErrorCode::NotFound, .message = std::format("no subos named '{}'", name),
+                                   .recoverable = false, .hint = "xlings subos list"});
+            return exit_result(1);
+        }
+        auto scope = home::domain_producer::read_scope(Config::paths().homeDir, name);
+        if (!scope) {
+            stream.emit(ErrorEvent{.code = ErrorCode::InvalidInput, .message = scope.error(), .recoverable = false});
+            return exit_result(1);
+        }
+        if (*scope) {
+            auto rc = subos::relay_capability_((**scope).domain, "install_packages", json, std::nullopt, stream);
+            if (!rc) {
+                stream.emit(ErrorEvent{.code = ErrorCode::InvalidInput, .message = rc.error(), .recoverable = false});
+                return exit_result(1);
+            }
+            return exit_result(*rc);
+        }
+        platform::set_env_variable("XLINGS_ACTIVE_SUBOS", name);
+        (void)Config::set_active_subos_override(name);
+    }
     return exit_result(xim::cmd_install(targets, yes, /*noDeps=*/false, stream, global,
                                          cancel, /*dryRun=*/false, useAfter,
                                          /*allInStore=*/nullptr, reconfig));

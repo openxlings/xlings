@@ -26,6 +26,7 @@ Super alone: the applications. Super held a second: the keys used most.
 |  | Float, or put back | `Super+Shift+Space` |
 |  | Always on top | `Super+P` |
 |  | On every workspace | `Super+Shift+P` |
+|  | Collapse, or expand: a free window to its title bar, a workspace to its label | `Super+S` |
 |  | Close the window | `Super+Q`, `Alt+F4` |
 |  | Copy (in a terminal too) | `Super+C` |
 |  | Paste (in a terminal too) | `Super+V` |
@@ -55,7 +56,7 @@ Super alone: the applications. Super held a second: the keys used most.
 |  | To workspace 8 | `Super+Shift+8` |
 |  | To workspace 9 | `Super+Shift+9` |
 |  | Onto WuXian: a free window | `Super+Shift+0` |
-|  | A new workspace | `Super+Ctrl+N` |
+|  | New workspace | `Super+Ctrl+N` |
 |  | The workspace before | `Super+Ctrl+Left`, `Super+PageUp` |
 |  | The workspace after | `Super+Ctrl+Right`, `Super+PageDown` |
 |  | To the workspace before, with the window | `Super+Ctrl+Shift+Left`, `Super+Shift+PageUp` |

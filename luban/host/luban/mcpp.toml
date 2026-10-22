@@ -19,6 +19,3 @@ main = "src/main.cpp"
 luban-system = { path = "../../os/system" }
 luban-cli = { path = "../../os/cli" }
 luban-vm = { path = "../../os/vm" }
-
-[build]
-include_dirs = ["../../../modules/libs/src/json"]

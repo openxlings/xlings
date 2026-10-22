@@ -12,6 +12,7 @@ namespace native = xlings::platform_impl;
 FsCaps probe_fs_caps(const fs::path& dir) {
     FsCaps caps;
     caps.type = native::filesystem_type(dir);
+    caps.remote = native::remote(dir, caps.type);
     std::error_code ec;
     std::random_device random;
     const auto scratch = dir / std::format(".xlings-fsprobe-{:08x}{:08x}", random(), random());
@@ -36,6 +37,42 @@ FsCaps probe_fs_caps(const fs::path& dir) {
     }
     fs::remove_all(scratch, ec);
     return caps;
+}
+
+std::string mount_table_type(std::string_view mountinfo, unsigned major, unsigned minor) {
+    // <id> <parent> <major:minor> <root> <mount point> <options> [<optional>...] - <type> <source> <options>
+    const auto device = std::format("{}:{}", major, minor);
+    std::string found;
+    for (const auto line : std::views::split(mountinfo, '\n')) {
+        std::vector<std::string_view> fields;
+        for (const auto field : std::views::split(std::string_view(line), ' '))
+            if (!std::string_view(field).empty()) fields.emplace_back(field);
+        if (fields.size() < 7 || fields[2] != device) continue;
+        const auto dash = std::ranges::find(fields.begin() + 6, fields.end(), std::string_view("-"));
+        if (dash == fields.end() || dash + 1 == fields.end()) continue;
+        found = std::string(*(dash + 1));   // the last: a mount over another of the same device
+    }
+    return found;
+}
+
+bool remote_type(std::string_view type) {
+    static constexpr std::array<std::string_view, 12> kRemote{
+        "9p", "virtiofs", "nfs", "nfs4", "cifs", "smb2", "smb3", "smbfs", "afpfs", "webdav", "ceph", "sshfs"};
+    return std::ranges::contains(kRemote, type) || type == "fuse" || type.starts_with("fuse.");
+}
+
+fs::path local_private_dir(std::string_view name) {
+    for (const auto& base : native::runtime_dirs()) {
+        std::error_code ec;
+        // <temp>/xlings-<uid> is made here, only the user's; one that is
+        // someone else's (made before, to be used) is passed over.
+        if (fs::create_directory(base, ec)) fs::permissions(base, fs::perms::owner_all, fs::perm_options::replace, ec);
+        if (!native::owner_only_dir(base) || native::remote(base, native::filesystem_type(base))) continue;
+        const auto dir = base / name;
+        fs::create_directories(dir, ec);
+        if (!ec && fs::is_directory(dir, ec)) return dir;
+    }
+    return {};
 }
 
 FsCaps fs_caps(const fs::path& dir) {

@@ -1,10 +1,10 @@
 // Words that come with data (design 2026-10-19 §7.4): a recipe's title or
 // summary as a table of languages, read along the same chain as a catalogue.
-module xlings.i18n;
+module i18n;
 
 import std;
 
-namespace xlings::i18n {
+namespace i18n {
 
 std::string pick(const std::map<std::string, std::string, std::less<>>& texts) {
     if (texts.empty()) return {};
@@ -16,4 +16,4 @@ std::string pick(const std::map<std::string, std::string, std::less<>>& texts) {
     return {};
 }
 
-}  // namespace xlings::i18n
+}  // namespace i18n

@@ -2,6 +2,7 @@
 module xdesk.compositor;
 
 import std;
+import xdesk.words;
 import opensal;
 import opensal.wire;
 import opensal.keys;
@@ -121,21 +122,23 @@ void Server::open_launcher() {
     // their pages and its actions are found when searched.
     // The desktop's own (design 2026-10-20 §12.5): its settings' pages and
     // its actions, each with its keys -- searched once, learnt.
-    struct Page { std::string_view id, en, zh, words; };
-    for (const auto& p : {Page{"displays", "Settings: displays", "设置：显示器", "monitor screen resolution mirror 分辨率 镜像 屏幕"},
-                          Page{"layout", "Settings: layout", "设置：布局", "tile stack wuxian canvas workspace gap column 平铺 层叠 无限画布 工作区 间隔 列"},
-                          Page{"appearance", "Settings: appearance", "设置：外观", "accent colour background motion 颜色 背景 动画"},
-                          Page{"keys", "Settings: keys", "设置：快捷键", "shortcut keyboard keys 按键 快捷键 键位"},
-                          Page{"about", "Settings: about", "设置：关于", "version system about information 版本 系统 信息"}})
-        all.push_back({.id = std::format("xdesk:settings:{}", p.id), .name = std::string(zh ? p.zh : p.en),
+    struct Page { std::string_view id, en, words; };
+    for (const auto& p : {Page{"displays", "Settings: displays", "monitor screen resolution mirror 分辨率 镜像 屏幕"},
+                          Page{"layout", "Settings: layout", "tile stack wuxian canvas workspace gap column 平铺 层叠 无限画布 工作区 间隔 列"},
+                          Page{"appearance", "Settings: appearance", "accent colour background motion 颜色 背景 动画"},
+                          Page{"keys", "Settings: keys", "shortcut keyboard keys 按键 快捷键 键位"},
+                          Page{"about", "Settings: about", "version system about information 版本 系统 信息"}})
+        all.push_back({.id = std::format("xdesk:settings:{}", p.id), .name = std::string(i18n::tr(p.en)),
                        .generic = p.id == "keys" ? std::string("Super+/") : std::string("Super+I"), .keywords = std::string(p.words)});
+    all.push_back({.id = "xdesk:tour", .name = std::string(i18n::tr("Tour of the desktop")), .keywords = "tour help start learn 上手 入门 教程"});
     for (const auto& a : actions()) {
         const auto chords = keys.chords(a.action);
-        all.push_back({.id = std::format("xdesk:action:{}", a.name), .name = std::string(zh ? a.zh : a.en),
+        all.push_back({.id = std::format("xdesk:action:{}", a.name), .name = std::string(i18n::tr(a.en)),
                        .generic = chords.empty() ? std::string{} : chord_text(chords.front()),
-                       .keywords = std::format("{} {}", a.name, zh ? a.en : a.zh)});
+                       .keywords = std::format("{} {}", a.name, a.en)});
     }
     launcher.open(std::move(all));
+    publish("launcher", {});
     draw_launcher();
 }
 
@@ -171,6 +174,7 @@ void Server::start_app(const apps::App& app) {
             if (page == std::array{"displays", "layout", "appearance", "keys", "about"}[static_cast<std::size_t>(p)]) open_settings(p);
         return;
     }
+    if (app.id == "xdesk:tour") { start_tour(); return; }
     if (app.id.starts_with("xdesk:action:")) {
         const auto name = app.id.substr(13);
         if (const auto it = std::ranges::find(actions(), name, &ActionInfo::name); it != actions().end()) act(it->action);

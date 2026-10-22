@@ -13,6 +13,7 @@ Design: `.agents/docs/2026-10-05-subos-architecture-design.md` §24.
 | `tests/scripts/` | contract scripts (Python / shell) | `xdev test --suite contract-scripts` |
 | `tests/suites.toml` | the legacy suites xdev knows | `xdev test --suite <name>` |
 | `tests/fresh-install/`, `tests/candidate-install/` | install-path suites | their workflows |
+| [luban-os/luban-os-ci](https://github.com/luban-os/luban-os-ci) | Luban's layers L2-L6: xlings in a system (machines), package checks, the desktop, budgets, released versions -- scenarios as data, driving the built programs only | `./run.sh <layer> --bin <a static build>` on a KVM Linux, or its `layers.yml` (xlings' Linux CI dispatches L2) |
 
 New tests are written in C++. A script leaves `tests/suites.toml` when it is
 ported.

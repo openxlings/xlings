@@ -37,6 +37,7 @@ unbounded in every direction.
 | `origin` | its top-left on the plane |
 | `scale` | 0.2–2: its size on the plane, its content's times this |
 | `z` | its layer: higher is above |
+| `collapsed` | the WuXian view shows only its label: its windows are not shown and are not hit (absent: false) |
 
 Its **content** is laid out as one screen: a stacked workspace is one output in
 size; a tiled one is one output high (along a vertical flow: wide) and as long
@@ -46,8 +47,9 @@ content's times its scale.
 2.3 **A window** is in exactly one place: a workspace (its frame in that
 workspace's content coordinates) or the plane (free: a world rectangle and a
 `z`). `floating` (above its workspace's arrangement, moving with it), `pinned`
-(above everything), `sticky` (shown in every workspace view) and `fullscreen`
-are a window's flags.
+(above everything), `sticky` (shown in every workspace view), `fullscreen` and
+`collapsed` (a free window shown as its title bar only: no input, the focus
+passes it by) are a window's flags.
 
 2.4 **The camera** is locked on a workspace -- its content 1:1 on the output,
 scrolling only along a tiled workspace's flow -- or free: a world point at the
@@ -137,6 +139,36 @@ it MAY change.
 A status area SHOULD show workspaces by their colour (identity) and a shape for
 their rule (tile: a square in columns; stack: two squares overlapping), not the
 rule by colour.
+
+5.1 **Covered items: bookmarks.** Workspaces and free windows share one order
+on the plane; a stacked workspace's windows have their own; the same rule holds
+in both. An item is covered when no part of its frame (its title bar or label
+included) is on the screen. The top-most item over a covered item's centre
+SHOULD show a bookmark for it at its right edge (a window: its icon and a short
+title; a workspace: its colour, number and name), at most five, the rest one
+"+N" that opens a list. Hovering a bookmark outlines the covered item; clicking
+it raises and focuses it. Bookmarks are not dragged, are hidden while the view
+moves, and MAY be turned off. They do not change what is hit (§3.3).
+
+5.2 **Collapsing.** A workspace (its label) or a free window (its title bar)
+SHOULD collapse and expand by a double-click, its menu, and a key (xdesk:
+Super+S). Collapsed, a workspace is its label, a free window its title bar
+(§2.2, §2.3).
+
+5.3 **Reach.** In the WuXian view a free window's borders SHOULD resize it,
+reachable within 6 screen pixels; a title bar SHOULD be hit within at least
+24 screen pixels of its top; where windows are drawn as pictures (zoomed far
+out) the whole window SHOULD move it and a double-click show it 1:1.
+
+5.4 **Bounds.** A stacked window SHOULD keep at least 64 pixels (or a quarter
+of its width, the smaller) of its title bar on the output, never above the top
+edge nor under a status area. A window moved in the WuXian view enters or
+leaves a workspace by where the pointer is let go (§3.5); a part of a stacked
+workspace's window outside its frame is not drawn.
+
+5.5 **The minimap.** Dragging the minimap's view box pans the camera; clicking
+a workspace or a window there focuses and centres it; dragging a window there
+moves it, landing as §3.5 says.
 
 ## 6. Conformance
 

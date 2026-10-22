@@ -58,8 +58,11 @@ struct BorrowPlan {
 // document is an error, while a genuinely absent document is observed empty.
 std::expected<Snapshot, std::string> read_snapshot(const fs::path& home,
                                                   std::string_view scope = "default");
+// No scope: the store's own for whoever reads it -- inside a Luban system
+// the system's instance, which its root names (design 2026-10-21 §3.0);
+// elsewhere "default".
 std::expected<Snapshot, std::string> read_source_snapshot(const fs::path& physicalHome,
-                                                         std::string_view scope = "default");
+                                                         std::string_view scope = {});
 bool owns_source_payload(const fs::path& physicalHome, const fs::path& payload);
 // Resolves every release and every recorded runtime dependency before the
 // caller changes state. Missing old evidence requires explicit --reconfig.

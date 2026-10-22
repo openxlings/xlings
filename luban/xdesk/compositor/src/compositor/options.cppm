@@ -25,6 +25,7 @@ struct Options {
     int min_column_width { 480 };                // tiled columns scroll below it (§7.3)
     std::string flow { "horizontal" };           // tiled columns side by side, or "vertical"
     bool minimap { true };                       // the WuXian view's minimap (design 2026-10-20 §9.6)
+    bool bookmarks { true };                     // covered items' bookmarks (design 2026-10-21 §8.4)
     bool snap { true };                          // a moved window snaps to others' edges (§9.4)
     bool reduce_motion { false };                // windows go at once, not by springs (§11.4)
     // The switchers and the wheel (design 2026-10-20 WuXian §4).

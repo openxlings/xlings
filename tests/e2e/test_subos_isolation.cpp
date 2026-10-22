@@ -135,7 +135,7 @@ XTEST(SubosIsolation, AFailedProbeQuotesBwrapAndNeverAdvisesASysctl,
 }
 
 XTEST(SubosIsolation, LandlockFencesWritesWithoutANamespace,
-      .area = "subos", .cost = tk::Cost::Medium, .covers = {"ISO-LANDLOCK"},
+      .area = "subos", .cost = tk::Cost::Medium, .covers = {"ISO-LANDLOCK", "XIM-WORKER-REMOTE-HOME"},
       .requires_ = {"linux", "xlings-bin", "landlock"}, .proves = "isolation") {
     auto home = tk::Home::isolated("landlock");
     ASSERT_EQ(home.xlings({"subos", "new", "box"}).exit_code, 0);
@@ -153,9 +153,12 @@ XTEST(SubosIsolation, LandlockFencesWritesWithoutANamespace,
         "touch \"$HOME/mine\" && echo OWN-HOME; "
         "t=$(mktemp) && echo OWN-TMP; "
         "echo y > '" + (mounted / "out").string() + "' && echo MOUNTED; "
-        "cat '" + (outside / "file").string() + "'"});
+        "cat '" + (outside / "file").string() + "'; "
+        // The fence's directories stay held across exec (J1): a filesystem
+        // that keeps no inodes would forget a rule's directory otherwise.
+        "for f in /proc/self/fd/*; do [ \"$(readlink $f)\" = '" + mounted.string() + "' ] && echo HELD; done; true"});
     ASSERT_EQ(r.exit_code, 0) << r.transcript();
-    for (auto want : {"RO-HOME", "RO-OUTSIDE", "RO-TMP", "OWN-HOME", "OWN-TMP", "MOUNTED", "keep"})
+    for (auto want : {"RO-HOME", "RO-OUTSIDE", "RO-TMP", "OWN-HOME", "OWN-TMP", "MOUNTED", "keep", "HELD"})
         EXPECT_NE(r.out.find(want), std::string::npos) << want << "\n" << r.transcript();
     EXPECT_EQ(tk::read_file(home.dir() / ".xlings.json"), cfg_before);
     EXPECT_EQ(tk::read_file(outside / "file"), "keep\n");

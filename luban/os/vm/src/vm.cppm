@@ -51,8 +51,11 @@ struct MachineGpu {
     std::vector<std::string> args;      // the display and its device
     std::string summary;                // "virgl on /dev/dri/renderD128 (amdgpu)", or why not
 };
+// `dxg`: this host is WSL with the Windows GPU (/dev/dxg, Mesa's d3d12) and
+// no render node -- probed, said, and software (design 2026-10-21 §5.4, K14):
+// qemu's virgl draws on a render node.
 MachineGpu machine_gpu(const std::optional<fs::path>& render_node, const std::expected<void, std::string>& gl,
-                       std::string_view driver = {});
+                       std::string_view driver = {}, bool dxg = false);
 
 // Starts `name` as a machine when it is not running (the events go to the
 // context's sink); 0 once it answers.
@@ -98,6 +101,9 @@ public:
     bool resize(std::uint32_t channel, int rows, int cols);
     bool close(std::uint32_t channel);
     bool power_off();
+    // A frame as it is (luban.vm.protocol): what a carrier of the protocol
+    // moves for another side -- the host's half of an openbus link (L).
+    bool send_frame(char type, std::uint32_t channel, std::string_view payload);
     // The frames that arrived within `timeout_ms`; nullopt when the machine is gone.
     std::optional<std::vector<std::pair<char, std::pair<std::uint32_t, std::string>>>> poll(int timeout_ms);
     int fd() const { return fd_; }
@@ -145,6 +151,9 @@ std::optional<std::map<std::string, std::string>> started_env(const fs::path& ho
 // A running machine's GPU as it was started: "virgl on /dev/dri/renderD128
 // (nvidia)", or why it has none (WuXian §7.5); nothing when it is not running.
 std::optional<std::string> started_gpu(const fs::path& home, std::string_view name);
+// How a running machine shares its files: "virtiofs", or "9p" and why
+// (design 2026-10-21 §4); nothing when it is not running.
+std::optional<std::string> started_files(const fs::path& home, std::string_view name);
 fs::path log_dir(const fs::path& home, std::string_view name);
 
 // A machine's sound (design §9.4): with the audio grant and a host
@@ -152,6 +161,33 @@ fs::path log_dir(const fs::path& home, std::string_view name);
 // PULSE_SERVER its sessions use; nothing otherwise.
 struct SoundForward { std::string guestfwd; std::string pulse_server; };
 std::optional<SoundForward> sound_forward(bool granted, const fs::path& pulse_socket, const fs::path& luban);
+
+// A machine's files over virtio-fs (design 2026-10-21 §4; `luban config
+// <name> --files virtiofs`): a virtiofsd for each share -- unprivileged, its
+// socket in the machine's run directory, its cache `auto` -- and qemu's
+// vhost-user-fs device, the
+// guest's memory a shared memfd as vhost-user needs. 9p is what is used
+// without it.
+struct Share { std::string tag; fs::path dir; bool read_only { false }; };
+struct VirtiofsPlan {
+    std::vector<std::string> qemu;                    // qemu's arguments for every share
+    std::vector<std::vector<std::string>> daemons;    // one virtiofsd each
+};
+VirtiofsPlan virtiofs_plan(const fs::path& virtiofsd, const std::vector<Share>& shares, const fs::path& run, std::string_view memory_mb);
+std::vector<std::string> nine_p_args(const std::vector<Share>& shares);
+
+// The host's openbus router (design 2026-10-22 §6.5): one per home, at
+// bus_socket(home), its log under <home>/logs/openbus/; started by the first
+// that needs it (`luban __bus-router <home>`), gone after ten minutes with
+// nobody and no machine on it. A machine's router is linked to it through
+// its supervisor (the agent's L frames, luban.vm.protocol).
+fs::path bus_socket(const fs::path& home);
+// A byte stream to it, started when nothing answers; why not.
+std::expected<int, std::string> connect_bus(const fs::path& home);
+// `luban __bus-router <home>`: the router, until it is idle.
+int serve_bus(const fs::path& home);
+// Where a system's bus is under this host's: host/<id>/system/<name>.
+std::string system_bus_root(std::string_view name);
 
 // Whether `file` is an ELF that needs no loader (what an initramfs can run).
 bool is_static_elf(const fs::path& file);

@@ -220,6 +220,21 @@ jobs:
           mcpp build -p cursor-make --profile dist
           bash luban/tools/cursors_release.sh
 
+      # XBus's numbers (design 2026-10-22 §9), reported, not yet a gate: a
+      # call, a stream's bytes, a region's references, on this runner.
+      - name: XBus performance (reported)
+        continue-on-error: true
+        run: |
+          mcpp build -p xbus-tool --profile release
+          xbus=$(ls -t target/*/*/bin/xbus-tool/xbus | head -1)
+          {
+            echo '### XBus performance (this runner, reported)'
+            echo '```'
+            for b in call ping pubsub stream region; do "$xbus" bench "$b"; done
+            echo '```'
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+          for b in call ping pubsub stream region; do "$xbus" bench "$b" --json; done > target/xbus-bench.ndjson
+
       - name: Diagnose a failed mcpp build
         if: failure()
         run: bash tools/ci/diagnose_mcpp.sh
@@ -915,6 +930,28 @@ jobs:
         with:
           name: xdev-linux-wsl
           path: target/xdev/
+
+  # Luban's own layers (luban-os/luban-os-ci, design 2026-10-21 §9.6): this
+  # build handed to its L2 -- a system's xlings in a machine -- which reports
+  # there. Dispatching another organization's workflow takes a token of the
+  # maintainer's (LUBAN_OS_CI_TOKEN: actions write on luban-os/luban-os-ci);
+  # without it the job says so and passes, as the layers only report yet (E4).
+  luban-os-ci:
+    needs: release
+    if: needs.release.outputs.release_ready == 'true'
+    runs-on: ubuntu-24.04
+    env:
+      GH_TOKEN: ${{ secrets.LUBAN_OS_CI_TOKEN }}
+    steps:
+      - name: Dispatch L2 with this build
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::notice::no LUBAN_OS_CI_TOKEN: luban-os-ci's L2 was not dispatched for this build (./run.sh L2 --bin <this build> runs it on a computer)"
+            exit 0
+          fi
+          gh workflow run layers.yml -R luban-os/luban-os-ci -f layer=L2 -f xlings_run="${{ github.run_id }}" \
+            -f index="${{ vars.XLINGS_INDEX_UNDER_TEST || '' }}"
+          echo "luban-os-ci L2 dispatched for run ${{ github.run_id }}: https://github.com/luban-os/luban-os-ci/actions" >> "$GITHUB_STEP_SUMMARY"
 
   # One report for the Linux lanes, in the step summary.
   report:

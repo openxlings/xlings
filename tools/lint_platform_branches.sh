@@ -19,7 +19,7 @@
 #      partition's interface reads the same on every platform.
 #
 # modules/testkit, tests/ and luban/tests/ are outside the product (see
-# lint_platform_headers.sh); modules/libs/src/json is vendored.
+# lint_platform_headers.sh).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -33,8 +33,7 @@ while IFS= read -r hit; do
     bad=$((bad + 1)) ;;
   esac
 done < <(grep -rnE --include='*.cpp' --include='*.cppm' "$branch" src modules apps luban 2>/dev/null \
-           | grep -v '^modules/platform/' | grep -v '^modules/testkit/' | grep -v '^luban/tests/' \
-           | grep -v '^modules/libs/src/json/' || true)
+           | grep -v '^modules/platform/' | grep -v '^modules/testkit/' | grep -v '^luban/tests/' || true)
 
 while IFS= read -r hit; do
   echo "::error::system header in a platform interface unit (move it to the .cpp that calls it): $hit"

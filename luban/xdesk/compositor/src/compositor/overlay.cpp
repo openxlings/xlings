@@ -5,6 +5,7 @@
 module xdesk.compositor;
 
 import std;
+import xdesk.words;
 import opensal;
 import xdesk.os;
 import xdesk.layout;
@@ -30,10 +31,8 @@ namespace config = xdesk::config;
 
 namespace {
 
-std::string_view tr_(bool zh, std::string_view en, std::string_view cn) { return zh ? cn : en; }
-
 std::string_view rule_label_(layout::Rule r, bool zh) {
-    return r == layout::Rule::stack ? tr_(zh, "Stack", "层叠") : tr_(zh, "Tile", "平铺");
+    return r == layout::Rule::stack ? i18n::tr("Stack") : i18n::tr("Tile");
 }
 
 }  // namespace
@@ -82,23 +81,21 @@ void Server::load_person() {
             const auto why = st ? openwx::validate(*st).front() : st.error();
             const auto kept = config::keep_aside(config::wuxian_file(env));
             log(std::format("wuxian: {} (started as new; {})", why, kept ? "the file is kept as " + kept->string() : kept.error()));
-            show_hint(tr_(zh, "The workspaces of before could not be read: started as new (the file is kept beside it)",
-                          "之前的工作区读不了：已重新开始（原文件保留在旁边）"), 8000);
+            show_hint(i18n::tr("The workspaces of before could not be read: started as new (the file is kept beside it)"), 8000);
         }
     }
     if (state.hinted && state.keys_seen < 2) {
         // Someone who knew the keys before (design 2026-10-20 §12.2): what changed, once.
-        show_hint(tr_(zh, "New keys: Super+F maximizes (float: Super+Shift+Space)  ·  Super+P on top  ·  Alt+Tab the windows  ·  Super+/ all of them",
-                      "新的键位：Super+F 最大化（浮动：Super+Shift+Space）  ·  Super+P 置顶  ·  Alt+Tab 切换窗口  ·  Super+/ 查看全部"), 12000);
+        show_hint(i18n::tr("New keys: Super+F maximizes (float: Super+Shift+Space)  ·  Super+P on top  ·  Alt+Tab the windows  ·  Super+/ all of them"), 12000);
         state.keys_seen = 2;
         save_state();
     }
-    if (!state.hinted) {
-        show_hint(tr_(zh, "Super: apps  ·  Super+Tab: switch  ·  Super+Enter: a terminal  ·  Super+M: arrangements  ·  Super+/: every key, and changing them",
-                      "Super：应用  ·  Super+Tab：切换  ·  Super+Enter：终端  ·  Super+M：排布  ·  Super+/：全部快捷键，以及修改"), 10000);
+    // The first session: the tour (design 2026-10-21 §8.1); ended early, the keys' line instead.
+    if (!state.toured) {
         state.hinted = true;
         state.keys_seen = 2;
         save_state();
+        start_tour();
     }
 }
 
@@ -171,6 +168,8 @@ std::string Server::app_icon(const std::string& id) {
 // ── what each action does ────────────────────────────────────────────
 
 void Server::act(Action a) {
+    if (const auto info = std::ranges::find(actions(), a, &ActionInfo::action); info != actions().end())
+        publish("action", {{"name", std::string(info->name)}});
     auto way = [&](layout::Direction d, bool move) {
         if (move) lay.move(d); else lay.move_focus(d);
         arrange();
@@ -222,6 +221,7 @@ void Server::act(Action a) {
             return;
         case Action::pin: if (const auto f = lay.focused()) { lay.toggle_pinned(*f); arrange(); } return;
         case Action::sticky: if (const auto f = lay.focused()) { lay.toggle_sticky(*f); arrange(); } return;
+        case Action::collapse: collapse_focused(); return;
         case Action::settings: open_settings(SettingsPage::displays); return;
         case Action::arrangements: open_chooser(); return;
         case Action::switch_apps: open_switcher(held(wlr_keyboard_modifier::WLR_MODIFIER_SHIFT)); return;
@@ -237,7 +237,7 @@ void Server::act(Action a) {
             return;
         case Action::new_workspace: {
             const int made = lay.add_workspace(lay.options().rule);
-            if (made == 0) { show_hint(tr_(zh, "Nine workspaces are as many as there are", "工作区最多 9 个"), 3000); return; }
+            if (made == 0) { show_hint(i18n::tr("Nine workspaces are as many as there are"), 3000); return; }
             if (wuxian()) { lay.frame_workspace(made); ws_selected = made; arrange(); }
             else switch_workspace(made);
             remember_arrangement();
@@ -318,6 +318,11 @@ void Server::open_menu(View* v, double x, double y) {
 }
 
 void Server::draw_overlay() {
+    if (static Overlay said = Overlay::none; said != overlay) {
+        said = overlay;
+        publish("overlay", {{"open", std::string(std::array<std::string_view, 10>{"none", "chooser", "switcher", "spread", "sheet", "menu",
+                                                                             "layouts", "settings", "dialog", "naming"}[static_cast<std::size_t>(overlay)])}});
+    }
     if (overlay == Overlay::none) {
         wlr_scene_node_set_enabled(&overlay_node->node, false);
         return;
@@ -353,14 +358,14 @@ void Server::draw_overlay() {
             // Super held a second (design 2026-10-20 §12.4): the keys used
             // most, the first chord of each; the rest are Super+/'s.
             std::vector<shell::SheetRow> rows;
-            rows.push_back({"Super", std::string(tr_(zh, "Applications", "应用"))});
+            rows.push_back({"Super", std::string(i18n::tr("Applications"))});
             for (const auto a : {Action::switch_apps, Action::windows, Action::terminal, Action::maximize, Action::close,
                                  Action::arrangements, Action::settings, Action::keys}) {
                 const auto chords = keys.chords(a);
                 const auto* info = &*std::ranges::find(actions(), a, &ActionInfo::action);
-                if (!chords.empty()) rows.push_back({chord_text(chords.front()), std::string(zh ? info->zh : info->en)});
+                if (!chords.empty()) rows.push_back({chord_text(chords.front()), std::string(i18n::tr(info->en))});
             }
-            overlay_picture = shell::sheet(ui(), big_font ? &*big_font : nullptr, theme, tr_(zh, "The keys used most", "最常用的键"), rows,
+            overlay_picture = shell::sheet(ui(), big_font ? &*big_font : nullptr, theme, i18n::tr("The keys used most"), rows,
                                            w, h, zh, scale);
             break;
         }
@@ -368,8 +373,9 @@ void Server::draw_overlay() {
         case Overlay::naming: draw_naming(); break;
         case Overlay::menu: {
             std::vector<shell::MenuEntry> entries;
-            auto item = [&](std::string_view en, std::string_view cn, std::string act, bool checked = false) {
-                entries.push_back({.label = std::string(tr_(zh, en, cn)), .checked = checked});
+            // `label` in the person's language (i18n::tr), or a name as it is.
+            auto item = [&](std::string_view label, std::string act, bool checked = false) {
+                entries.push_back({.label = std::string(label), .checked = checked});
                 menu_actions.push_back(std::move(act));
             };
             auto line = [&] { entries.push_back({.separator = true}); menu_actions.push_back(""); };
@@ -379,26 +385,38 @@ void Server::draw_overlay() {
                 if (menu_of == MenuOf::workspace) {
                     const auto* w = lay.workspace_info(menu_workspace);
                     if (!w) { close_overlay(false); return; }
-                    item("Go in", "进入", "enter");
-                    item("Name…", "改名…", "rename");
+                    item(i18n::tr("Go in"), "enter");
+                    item(i18n::tr("Name…"), "rename");
                     line();
-                    item("Tile", "平铺", "rule:tile", w->rule == layout::Rule::tile);
-                    item("Stack", "层叠", "rule:stack", w->rule == layout::Rule::stack);
-                    item("Another colour", "换一种颜色", "color");
-                    item("Half size on WuXian", "在 WuXian 上缩小一半", "scale:0.5", std::abs(w->scale - 0.5) < 1e-3);
-                    item("Full size on WuXian", "在 WuXian 上原大", "scale:1", std::abs(w->scale - 1) < 1e-3);
+                    item(i18n::tr("Tile"), "rule:tile", w->rule == layout::Rule::tile);
+                    item(i18n::tr("Stack"), "rule:stack", w->rule == layout::Rule::stack);
+                    item(i18n::tr("Another colour"), "color");
+                    item(i18n::tr("Half size on WuXian"), "scale:0.5", std::abs(w->scale - 0.5) < 1e-3);
+                    item(i18n::tr("Full size on WuXian"), "scale:1", std::abs(w->scale - 1) < 1e-3);
+                    item(i18n::tr("Collapsed (its label only)"), "collapse", w->collapsed);
                     line();
-                    item("Remove the workspace", "删除工作区", "delete");
+                    item(i18n::tr("Remove the workspace"), "delete");
+                } else if (menu_of == MenuOf::bookmarks) {
+                    // A bookmark's "+N": the covered items not shown.
+                    for (const auto& [window, ws] : menu_more) {
+                        if (window) {
+                            View* mv = view_of(window);
+                            const auto name = mv ? name_of(*mv) : std::string("?");
+                            item(name, std::format("bm:w:{}", window));
+                        } else if (const auto* w = lay.workspace_info(ws)) {
+                            item(w->name.empty() ? i18n::trf("Workspace {}", w->id) : std::format("{} · {}", w->id, w->name), std::format("bm:s:{}", ws));
+                        }
+                    }
                 } else if (menu_of == MenuOf::plane) {
-                    item("A tiled workspace here", "在这里新建平铺工作区", "new:tile");
-                    item("A stacked workspace here", "在这里新建层叠工作区", "new:stack");
+                    item(i18n::tr("A tiled workspace here"), "new:tile");
+                    item(i18n::tr("A stacked workspace here"), "new:stack");
                     line();
-                    item("Tidy the workspaces up (one row)", "整理工作区（排成一行）", "tidy");
-                    item("Show everything", "显示全部", "show-all");
+                    item(i18n::tr("Tidy the workspaces up (one row)"), "tidy");
+                    item(i18n::tr("Show everything"), "show-all");
                 } else {
-                    item("Terminal", "终端", "terminal");
-                    item("Settings", "设置", "settings");
-                    item("The WuXian view", "WuXian 视图", "wuxian");
+                    item(i18n::tr("Terminal"), "terminal");
+                    item(i18n::tr("Settings"), "settings");
+                    item(i18n::tr("The WuXian view"), "wuxian");
                 }
                 overlay_picture = shell::menu(ui(), theme, entries, overlay_picture.x, overlay_picture.y, w, h, scale);
                 break;
@@ -409,27 +427,28 @@ void Server::draw_overlay() {
             const auto rule = app && state.rules.contains(app) ? state.rules.at(app) : config::Rule{};
             std::vector<shell::MenuEntry> items;
             menu_actions.clear();
-            auto add = [&](std::string_view en, std::string_view cn, std::string act, bool checked = false) {
-                items.push_back({.label = std::string(tr_(zh, en, cn)), .checked = checked});
+            auto add = [&](std::string_view label, std::string act, bool checked = false) {
+                items.push_back({.label = std::string(label), .checked = checked});
                 menu_actions.push_back(std::move(act));
             };
             auto sep = [&] { items.push_back({.separator = true}); menu_actions.push_back(""); };
-            add("Maximize / restore", "最大化 / 还原", "maximize", lay.maximized(v->id));
-            add("Float / put back", "浮动 / 放回布局", "float", lay.floating(v->id));
-            add("Always on top", "置顶", "pin", lay.pinned(v->id));
-            add("On every workspace", "在所有工作区显示", "sticky", lay.sticky(v->id));
+            add(i18n::tr("Maximize / restore"), "maximize", lay.maximized(v->id));
+            add(i18n::tr("Float / put back"), "float", lay.floating(v->id));
+            add(i18n::tr("Always on top"), "pin", lay.pinned(v->id));
+            add(i18n::tr("On every workspace"), "sticky", lay.sticky(v->id));
             sep();
             for (const int k : lay.workspaces())
-                add(std::format("To workspace {}", k), std::format("移到工作区 {}", k), std::format("ws:{}", k), lay.workspace_of(v->id) == k);
-            add("Onto WuXian (a free window)", "放到 WuXian 上（自由窗口）", "wuxian", lay.is_free(v->id));
+                add(i18n::trf("To workspace {}", k), std::format("ws:{}", k), lay.workspace_of(v->id) == k);
+            add(i18n::tr("Onto WuXian (a free window)"), "wuxian", lay.is_free(v->id));
+            if (lay.is_free(v->id) && wuxian()) add(i18n::tr("Collapsed (its title bar only)"), "collapse", lay.collapsed(v->id));
             if (app) {
                 sep();
-                add("Always floating (this app)", "总是浮动（此应用）", "rule:float", rule.floating);
-                add("Always on this workspace (this app)", "总在此工作区打开（此应用）", "rule:workspace", rule.workspace.has_value());
-                add("Remember size and place (this app)", "记住大小和位置（此应用）", "rule:rect", rule.rect.has_value());
+                add(i18n::tr("Always floating (this app)"), "rule:float", rule.floating);
+                add(i18n::tr("Always on this workspace (this app)"), "rule:workspace", rule.workspace.has_value());
+                add(i18n::tr("Remember size and place (this app)"), "rule:rect", rule.rect.has_value());
             }
             sep();
-            add("Close", "关闭", "close");
+            add(i18n::tr("Close"), "close");
             overlay_picture = shell::menu(ui(), theme, items, overlay_picture.x, overlay_picture.y, w, h, scale);
             break;
         }
@@ -490,6 +509,7 @@ void Server::menu_choose(std::size_t item) {
     else if (what == "sticky") lay.toggle_sticky(id);
     else if (what.starts_with("ws:")) lay.send_to(id, std::atoi(what.c_str() + 3));
     else if (what == "wuxian") lay.to_wuxian(id);
+    else if (what == "collapse") { collapse_window(id); return; }
     else if (what == "close") { wlr_xdg_toplevel_send_close(v->toplevel); return; }
     else if (app && what.starts_with("rule:")) {
         auto& r = state.rules[app];
@@ -587,11 +607,20 @@ bool Server::overlay_click(double x, double y) {
 }
 
 void Server::show_hint(std::string_view text, int ms) {
-    auto pic = shell::hint(ui(), theme, text, logical_w(), logical_h(), scale);
-    wlr_scene_node_set_position(&hint_node->node, static_cast<int>(pic.x), static_cast<int>(pic.y));
-    show(hint_node, std::move(pic.image), scale);
+    hint_text = std::string(text);
+    redraw_hint();
     wlr_scene_node_set_enabled(&hint_node->node, true);
     if (hint_timer) wl_event_source_timer_update(hint_timer, ms);
+}
+
+// Placed by the output's size: a window that is resized right after the
+// desktop starts (the first entry) had it half under the bottom edge (design
+// 2026-10-21 §6.2, J10).
+void Server::redraw_hint() {
+    if (hint_text.empty()) return;
+    auto pic = shell::hint(ui(), theme, hint_text, logical_w(), logical_h(), scale);
+    wlr_scene_node_set_position(&hint_node->node, static_cast<int>(pic.x), static_cast<int>(pic.y));
+    show(hint_node, std::move(pic.image), scale);
 }
 
 }  // namespace xdesk::compositor

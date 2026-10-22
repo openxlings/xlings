@@ -193,11 +193,18 @@ windows there are.
 | - / = / 0 | narrower / wider / equal widths | zoom out / in / the focused window at 100 % |
 | F / Shift+F | maximize, and back / full screen, and back | the same |
 | P / Shift+P | always on top / on every workspace | the same |
+| S | — | collapse, and back: a free window to its title bar, else the workspace in focus to its label |
 | C / V | copy / paste — Ctrl+Shift+C/V in a terminal, Ctrl+C/V elsewhere | the same |
 | Tab / Shift+Tab | the applications, the most recent first (held: Tab for the next; held half a second on one, its windows spread) | the same |
 | ` (above Tab) / Shift+` | the application's other window / the one before | the same |
 | Return, or Ctrl+Alt+T / Q, or Alt+F4 | a terminal / close the window | the same |
 | I / / | the settings / its keys page | the same |
+
+The first time, the desktop gives a **tour**: ten steps at the bottom right —
+the applications, a terminal, switching, workspaces, WuXian, moving between
+them, bookmarks, collapsing, every key, the settings — each done by doing it,
+each skippable (or the whole ended). Again any time: *Tour of the desktop* in
+the applications, or `xdesk msg tour start`.
 
 Every key, as the desktop has it, is in [the generated table](../generated/xdesk-keys.md).
 **Super+/** opens the settings at their keys page: every action by group,
@@ -226,7 +233,10 @@ The same gestures in both views:
 | the wheel on the background / Super with the wheel | tile: scroll, faster the faster you turn it, landing on a column | pan (Shift: sideways) / zoom around the pointer |
 | the middle button | the application's (it pastes the selection) | drag the background: pan |
 | right-click the background | terminal, settings, the WuXian view | new workspace, line the workspaces up, show everything |
-| a workspace's label: drag / its handle / right-click / double-click | — | move / scale / menu (name, rule, colour, scale, remove) / go in |
+| a workspace's label: drag / its handle / right-click / double-click | — | move / scale / menu (name, rule, colour, scale, collapse, remove) / go in |
+| double-click a title bar | maximize, and back | a free window: collapse, and back |
+| zoomed far out (windows are pictures) | — | drag a window anywhere to move it; double-click: it at 100 % |
+| the minimap | — | drag its view box: pan; click a workspace or window: it in the middle; drag one: move it (into a workspace where it lands) |
 
 Dragging a tiled window freezes the layout: nothing moves while you drag; a
 dashed box marks where the window was, and the box under the pointer shows
@@ -237,7 +247,19 @@ its column), a gap or the screen's edge (a new column). Shift while dragging:
 it floats where you let go. Then everything moves once to where it goes. A
 window dragged across workspaces in the WuXian view keeps its size on screen
 and settles at the target's scale; dropped on the plane it is a free window at
-its full size; another free window's edge lines it up.
+its full size; another free window's edge lines it up. A stacked or floating
+window keeps at least a little of its title bar on the screen (64 pixels, or a
+quarter of it), never above the top or under the status bar.
+
+Nothing is lost under something else: a workspace or a free window that is
+entirely covered — or, in a stacked workspace, a window under another — has a
+**bookmark** on the right edge of what covers it (its title; a workspace's
+colour and name; five at most, then "+N" with the list). Point at one to see
+the outline of what it is for, click it to bring that forward. They are hidden
+while you drag or pan, and can be turned off (*WuXian* in the settings, or
+`[wuxian] bookmarks = off`); agents use `xdesk msg bookmark N` (the state says
+which there are). A collapsed workspace is only its label, a collapsed free
+window only its title bar: double-click (or Super+S) to open it again.
 
 The input method of the host types into the desktop's windows, and the
 clipboard is shared — each way as far as the environment's grants allow:
@@ -277,6 +299,22 @@ xdesk msg keys bind maximize Super+Shift+m # and back: xdesk msg keys unbind max
 xdesk msg keys set luban-no-hjkl
 xdesk msg settings keys                    # the settings, at that page
 ```
+
+What the desktop is and does, for scripts, agents and a bug report:
+
+```bash
+xdesk msg state                            # output, view, workspaces, windows, overlays, the frames' cost (JSON)
+xdesk msg subscribe                        # what happens from now on, a line each (focus, open, close, ...)
+xdesk msg debug hud on                     # the frames' parts drawn in the top left
+xdesk msg telemetry metrics                # counters and histograms (xdesk.frame.compose_ns, ...)
+xdesk msg telemetry profile on             # then `telemetry trace`: a trace any trace viewer opens (Perfetto)
+xdesk msg telemetry dump                   # all of it, with the last moments recorded
+```
+
+When the system has an openbus router, the desktop is also on the bus: `xbus ls`
+shows `service/xdesk/state`, `service/xdesk/control` (the same requests as
+`xdesk msg`), `topic/xdesk/events` and its telemetry; `xbus dump PATH` and
+`xbus profile PATH` read it from anywhere the bus reaches.
 
 The session is `xdesk` (`xdesk-classic` and `xdesk-canvas`, the names of
 before, start the same desktop). It reads `xdesk.ini`: its own defaults, then

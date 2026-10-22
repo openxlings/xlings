@@ -59,6 +59,15 @@ namespace platform {
     export bool is_quota_exceeded(std::error_code ec);
 
     export using platform_impl::PATH_SEPARATOR;
+    // What a directory-list variable means when it is unset or empty, where a
+    // specification says so (XDG Base Directory: XDG_DATA_DIRS,
+    // XDG_CONFIG_DIRS); "" for any other variable, and on Windows.
+    export std::string_view list_default(std::string_view var);
+    // `front` before the list in `existing` -- before the default it means
+    // when it is empty, so a directory put in front of an unset
+    // XDG_DATA_DIRS keeps /usr/share (design 2026-10-21 §6.2, J28).
+    export std::string prepend_to_list(std::string_view var, std::string_view front, std::string_view existing,
+                                       char separator = PATH_SEPARATOR);
     export using platform_impl::OS_NAME;
     export using platform_impl::clear_console;
     export using platform_impl::get_home_dir;

@@ -759,12 +759,12 @@ int enter(const std::string& name, EventStream& stream, const EnterOptions& opts
         // when missing; design 2026-10-19 F26).
         if (auto written = subos::root_etc::ensure_prompt_script(request.root / "etc"); !written)
             log::debug("the prompt's scripts: {}", written.error());
-        request.explicit_env.try_emplace("LUBAN_KIND", "sandbox");
-        request.explicit_env.try_emplace("LUBAN_PERSIST", persist);
+        request.system_env["LUBAN_KIND"] = "sandbox";
+        request.system_env["LUBAN_PERSIST"] = persist;
         if (cmd.empty() && opts.argv.empty()) {
             const char* term = std::getenv("TERM");
             const char* no_color = std::getenv("NO_COLOR");
-            request.explicit_env.try_emplace("PS1", subos::root_etc::prompt("sandbox", persist, term ? term : "",
+            request.system_env["PS1"] = (subos::root_etc::prompt("sandbox", persist, term ? term : "",
                                                                              no_color && *no_color));
         }
         // Who it is: the system's name, unless its /etc says otherwise.

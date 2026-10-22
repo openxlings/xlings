@@ -1723,6 +1723,62 @@ std::vector<std::string> journal_env_names_() {
     return out;
 }
 
+// Where a command that changes something runs (design 2026-10-21 §3.0):
+// here (-1: the caller goes on), or it was sent to the broker or refused,
+// and this is its exit code. `words` is the command without global flags;
+// what reaches the broker is the command as given, its global flags too, so
+// the events it emits (--agent, --json) are the ones the caller asked for.
+int route_(const std::vector<std::string>& words, int argc, char* argv[]) {
+    namespace where = subos::situation;
+    if (words.empty()) return -1;
+    const auto& paths = Config::paths();
+    const auto s = where::measure(paths.systemLayer.empty() ? paths.homeDir : paths.systemLayer);
+    if (s.place == where::Place::Host) return -1;
+    const char* active = std::getenv("XLINGS_ACTIVE_SUBOS");
+    const auto cls = subos::broker::classify(words, active ? active : s.system);
+    std::string line;
+    for (const auto& w : words) line += " " + w;
+    switch (where::route(s, cls.touch)) {
+        case where::Way::Here:
+            return -1;
+        case where::Way::Broker: {
+            std::vector<std::string> given;
+            for (int i = 1; i < argc; ++i) given.emplace_back(argv[i]);
+            if (given.empty() || given.front() != words.front()) given = words;
+            return subos::broker::forward(given);
+        }
+        case where::Way::Admin:
+            diag::emit({
+                .code    = "subos.needs_admin",
+                .summary = cls.touch == where::Touch::Index
+                    ? "updating the index changes it for every user of this system"
+                    : "this changes the system for every user",
+                .actions = { { "as the administrator", "sudo xlings" + line } },
+                .nothingChanged = true,
+            });
+            return 77;
+        case where::Way::Owner:
+            diag::emit({
+                .code    = "subos.owner_only",
+                .summary = s.place == where::Place::Sandbox
+                    ? "E_PERMISSION: only the owner, outside the sandbox, can do this"
+                    : "E_PERMISSION: this computer's store is its owner's: do it on the host",
+                .actions = { { s.place == where::Place::Sandbox ? "outside the sandbox" : "on the host", "xlings" + line } },
+            });
+            return subos::broker::kExitPermission;
+        case where::Way::NoBroker:
+            diag::emit({
+                .code    = "subos.no_broker",
+                .summary = "this computer's store is read-only here, and the host's luban has no broker for it",
+                .actions = { { "on the host, a newer luban", "luban upgrade" },
+                             { "for yourself, without sudo", "xlings" + line } },
+                .nothingChanged = true,
+            });
+            return subos::broker::kExitPermission;
+    }
+    return -1;
+}
+
 int dispatch_(int argc, char* argv[]) {
     // Tab completion. Handled before anything else so a Tab press does not pay
     // for the event stream, theme, i18n or the capability registry — its
@@ -1747,6 +1803,12 @@ int dispatch_(int argc, char* argv[]) {
             // Run where the store can be written: the administrator's, the
             // view's own process never (it is the layer above).
             if (!Config::paths().systemLayer.empty() || !platform::can_write(Config::paths().homeDir)) {
+                // A machine's shared store is the host's: its broker adds to it.
+                if (Config::paths().systemLayer.empty()) {
+                    std::vector<std::string> words{"__store-add"};
+                    for (int k = i + 1; k < argc; ++k) words.emplace_back(argv[k]);
+                    if (const int rc = route_(words, argc, argv); rc >= 0) return rc;
+                }
                 log::error("__store-add writes the system's store: the administrator's (sudo)");
                 return 77;
             }
@@ -1862,6 +1924,7 @@ int dispatch_(int argc, char* argv[]) {
     std::string uiModeFlag;
     for (int i = 1; i < argc; ++i) {
         std::string_view a { argv[i] };
+        if (a == "--") break;   // another command's flags from here
         if (a == "--verbose" || a == "-v") log::set_level(log::Level::Debug);
         else if (a == "--quiet" || a == "-q") log::set_level(log::Level::Error);
         else if (a == "--agent") agent_mode = true;
@@ -1977,10 +2040,16 @@ int dispatch_(int argc, char* argv[]) {
 
     // Build filtered argv without global flags for positional-arg handlers
     // (subos, self, script parse argv[2]/argv[3] positionally)
+    // What follows `--` is another command's (`subos exec box -- grep -v`),
+    // passed on as it is.
     std::vector<char*> fargv;
     fargv.push_back(argv[0]);
     for (int i = 1; i < argc; ++i) {
         std::string_view a { argv[i] };
+        if (a == "--") {
+            for (; i < argc; ++i) fargv.push_back(argv[i]);
+            break;
+        }
         if (a == "--verbose" || a == "-v" || a == "--quiet" || a == "-q"
             || a == "--agent" || a.starts_with("--ui-mode")) continue;
         // `--ui-mode tui` (space form): drop the value too.
@@ -2092,26 +2161,11 @@ int dispatch_(int argc, char* argv[]) {
         // family is that a machine reads its output.
         if (cmd == "agent") return agent::run(fargc, fargv.data());
 
-        // Inside a SubOS sandbox the home is read-only (design §8): what would
-        // change it goes to the broker, which decides with the instance's
-        // policy and runs it outside; what only the owner may do is refused
-        // here, with the command that does it outside.
-        //
-        // Only for the session's home, though. A home of the sandbox's own --
-        // mcpp's registry under /root/.mcpp, a test's -- is the user's to
-        // write in here, and a command for it runs here: `XLINGS_HOME=<that>
-        // xlings self init` was refused as owner-only (mcpp: "sandbox not
-        // initialized") and an install into it would have gone to the
-        // owner's home. The session's home is the one that is read-only here.
-        const auto home_is_ours = [] {
-            const auto home = Config::paths().homeDir;
-            std::error_code ec;
-            if (!std::filesystem::exists(home, ec)) return true;
-            std::ofstream probe(home / ".xlings.lock", std::ios::app);
-            return static_cast<bool>(probe);
-        };
-        // Nor for help, which changes nothing: forwarded, `remove --help`
-        // printed the HOST's xlings's help, whatever version that is.
+        // Where a change goes (design 2026-10-21 §3.0): this xlings's
+        // situation -- host, sandbox, machine, a system booted as itself; the
+        // owner, the system's administrator, a user's view; which store -- and
+        // what the command touches decide it in one table
+        // (xlings.subos.situation). Help changes nothing: it is answered here.
         const bool asksHelp = [&] {
             for (int i = 2; i < fargc; ++i) {
                 const std::string_view a{fargv[i]};
@@ -2120,23 +2174,10 @@ int dispatch_(int argc, char* argv[]) {
             }
             return false;
         }();
-        if (subos::broker::available() && !asksHelp && !home_is_ours()) {
-            std::vector<std::string> rest;
-            for (int i = 1; i < fargc; ++i) rest.emplace_back(fargv[i]);
-            const char* active = std::getenv("XLINGS_ACTIVE_SUBOS");
-            const std::string instance = active ? active : "";
-            const auto cls = subos::broker::classify(rest, instance);
-            if (cls.route == subos::broker::Route::Owner) {
-                std::string line;
-                for (auto& a : rest) line += " " + a;
-                diag::emit({
-                    .code    = "subos.owner_only",
-                    .summary = "E_PERMISSION: only the owner, outside the sandbox, can do this",
-                    .actions = { { "outside the sandbox", "xlings" + line } },
-                });
-                return subos::broker::kExitPermission;
-            }
-            if (cls.route == subos::broker::Route::Broker) return subos::broker::forward(rest);
+        if (!asksHelp) {
+            std::vector<std::string> words;
+            for (int i = 1; i < fargc; ++i) words.emplace_back(fargv[i]);
+            if (const int rc = route_(words, argc, argv); rc >= 0) return rc;
         }
 
         // Intercept subcommand help: xlings <cmd> -h/--help

@@ -37,6 +37,8 @@ Options: `--user <NAME>` — As this user (root, or one of its users); `--displa
 
 List the environments, or those whose name matches
 
+Options: `--all` — And what cancelled makings set aside
+
 ## `luban search [keyword]` (common)
 
 What the index offers: systems to make, desktops to give one
@@ -47,13 +49,13 @@ Options: `--distributions` — Only the systems that can be made; `--desktops` �
 
 This host, or one environment
 
-Options: `--check` — Check that it is usable: its /usr, /etc, runtime closure, and programs
+Options: `--check` — Check that it is usable: its /usr, /etc, runtime closure, and programs; `--log` — What its latest operation did, its own record of it too; `--bus` — What is on its bus: what its programs offer; the host's: the systems linked under it
 
 ## `luban config <name>` (more)
 
 Show or change an environment's settings
 
-Options: `--mode <MODE>` — sandbox or machine: how `luban enter` starts it; `--persist <WHAT>` — all, home (only /home stays) or none: what a session keeps; `--shell <SHELL>` — Its login shell (fish, bash, sh, or a path); `--login <NAME>` — Who luban enter logs in as: root, or one of its users; `--runtime <LIBC@VERSION>` — Its default runtime (glibc@2.44.3): a new generation runs on it; `--desktop <SESSION>` — The desktop it starts, or none; `--on-close <WHAT>` — ask, background or poweroff: closing its window; `--enter <WHAT>` — console or desktop: what going in shows first; `--policy <PRESET>` — dev, private, locked, or ns:name; `--proxy <URL>` — Its only network is this SOCKS5h proxy; off for none; `--tz <ZONE>` — utc, proxy, or Area/City; `--allow <GRANT>` — Grant a capability (clipboard, gpu, audio, ...); `--disallow <GRANT>` — Take a grant back; `--mount <HOST[:INSIDE][:ro|rw]>` — Map a host directory into it; `--unmount <INSIDE>` — Remove a mapping; `--fetch <ACTION>` — auto, ask or deny: installing from inside; `--observe <LEVEL>` — off, basic, standard or full
+Options: `--mode <MODE>` — sandbox or machine: how `luban enter` starts it; `--persist <WHAT>` — all, home (only /home stays) or none: what a session keeps; `--shell <SHELL>` — Its login shell (fish, bash, sh, or a path); `--login <NAME>` — Who luban enter logs in as: root, or one of its users; `--runtime <LIBC@VERSION>` — Its default runtime (glibc@2.44.3): a new generation runs on it; `--desktop <SESSION>` — The desktop it starts, or none; `--on-close <WHAT>` — ask, background or poweroff: closing its window; `--enter <WHAT>` — console or desktop: what going in shows first; `--files <HOW>` — virtiofs (9p where it cannot) or 9p: how a machine shares its files; `--policy <PRESET>` — dev, private, locked, or ns:name; `--proxy <URL>` — Its only network is this SOCKS5h proxy; off for none; `--tz <ZONE>` — utc, proxy, or Area/City; `--allow <GRANT>` — Grant a capability (clipboard, gpu, audio, ...); `--disallow <GRANT>` — Take a grant back; `--mount <HOST[:INSIDE][:ro|rw]>` — Map a host directory into it; `--unmount <INSIDE>` — Remove a mapping; `--fetch <ACTION>` — auto, ask or deny: installing from inside; `--observe <LEVEL>` — off, basic, standard or full
 
 ## `luban stop <name>` (more)
 
@@ -93,9 +95,11 @@ Make a boot drive from an image or an environment
 
 Options: `--serial <SERIAL>` — The drive's serial (required with --agent)
 
-## `luban rm <name>` (more)
+## `luban rm [name]` (more)
 
 Remove an environment (asks first)
+
+Options: `--unfinished` — What cancelled or failed makings set aside
 
 ## `luban setup` (more)
 

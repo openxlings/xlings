@@ -607,7 +607,7 @@ Outcome create(const Context& given_context, const NewOptions& o, const NewPrevi
     // What was given besides the system: its desktops and packages (design §5.1).
     for (const auto& extra : preview.extras) {
         if (c.sink) c.sink(phase("install", "begin", std::format("installing {}", extra.ref())));
-        const int irc = c.port.terminal({"install", extra.ref(), "--subos", o.name, "-y", "--agent"});
+        const int irc = c.port.install(std::vector<std::string>{extra.ref()}, o.name, c.sink);
         if (c.sink) c.sink(phase("install", irc == 0 ? "done" : "failed", std::format("installing {}", extra.ref())));
         if (irc != 0) {
             if (c.sink) c.sink(error(std::format("{} is made; {} was not installed into it", o.name, extra.ref()),
@@ -633,7 +633,7 @@ Outcome create(const Context& given_context, const NewOptions& o, const NewPrevi
                 return {.code = 1};
             }
             if (c.sink) c.sink(phase("install", "begin", std::format("installing {} (its desktop)", official->ref())));
-            const int drc = c.port.terminal({"install", official->ref(), "--subos", o.name, "-y", "--agent"});
+            const int drc = c.port.install(std::vector<std::string>{official->ref()}, o.name, c.sink);
             if (c.sink) c.sink(phase("install", drc == 0 ? "done" : "failed", std::format("installing {} (its desktop)", official->ref())));
             if (drc != 0) return {.code = drc};
             if (c.sink) c.sink(notice(std::format("{} has {} as its desktop ({})", o.name, desktop, official->ref())));
@@ -734,7 +734,7 @@ Outcome configure(const Context& c, std::string_view name, const std::vector<std
     if (!exists_(c, name)) return missing_(c, name);
     std::vector<std::string> isolation;
     for (const auto& [key, value] : changes) {
-        if (key == "mode" || key == "persist" || key == "desktop" || key == "on-close" || key == "enter") {
+        if (key == "mode" || key == "persist" || key == "desktop" || key == "on-close" || key == "enter" || key == "files") {
             auto s = set_setting(c.home, name, key, value);
             if (!s) {
                 if (c.sink) c.sink(error(s.error()));
@@ -783,7 +783,7 @@ Outcome configure(const Context& c, std::string_view name, const std::vector<std
             }
             const auto spec = value.find(':') == std::string::npos ? "xim:" + value : value;
             if (c.sink) c.sink(phase("runtime", "begin", std::format("moving {} to {}", name, value)));
-            const int rc = c.port.terminal({"install", spec, "--subos", std::string(name), "-y"});
+            const int rc = c.port.install(std::vector<std::string>{spec}, name, c.sink);
             if (c.sink) c.sink(phase("runtime", rc == 0 ? "done" : "failed", std::format("moving {} to {}", name, value)));
             if (rc != 0) return {.code = rc};
         } else if (isolation_keys_().contains(key)) {
@@ -809,7 +809,8 @@ Outcome configure(const Context& c, std::string_view name, const std::vector<std
     auto e = describe(c, name);
     if (!e) return {.code = 1};
     Json value{{"name", e->name}, {"mode", e->settings.mode}, {"persist", e->settings.persist},
-               {"desktop", e->settings.desktop}, {"on_close", e->settings.on_close}, {"shell", e->shell}};
+               {"desktop", e->settings.desktop}, {"on_close", e->settings.on_close}, {"shell", e->shell},
+               {"files", e->settings.files}};
     if (auto iso = c.port.json(argv_({"subos", "config", name, "--json"})); iso) value["isolation"] = *iso;
     return {.code = 0, .value = value};
 }
@@ -1211,6 +1212,25 @@ Outcome export_environment(const Context& c, const ExportOptions& o) {
         if (auto record = xlings::subos::edition::read(instance)) manifest["edition"] = xlings::subos::edition::to_json(*record);
         const auto workspace = read_json_(view.instance(o.name) / ".xlings.json");
         manifest["packages"] = workspace.contains("workspace") ? workspace["workspace"] : Json::object();
+        // Which package each of its programs' versions is (the home's version
+        // database: a program bound to another's package -- bash to fish --
+        // is that package), for the import to install packages, not programs.
+        {
+            const auto db = read_json_(view.home / "data" / "versions.json").value("versions", Json::object());
+            Json providers = Json::object();
+            for (auto it = manifest["packages"].begin(); it != manifest["packages"].end(); ++it) {
+                const auto program = db.find(it.key());
+                if (program == db.end() || !program->is_object()) continue;
+                const auto versions = program->value("versions", Json::object());
+                for (auto v = versions.begin(); v != versions.end(); ++v) {
+                    const auto group = v.value().value("bindingGroup", Json::object());
+                    const auto provider = group.value("provider", std::string{});
+                    const auto version = group.value("version", std::string{});
+                    if (!provider.empty() && !version.empty()) providers[it.key()][v.key()] = provider + "@" + version;
+                }
+            }
+            manifest["providers"] = providers;
+        }
         if (auto pol = xlings::subos::policy_store::read(view, o.name); pol && pol->has_value())
             manifest["policy"] = xlings::subos::policy::to_json(**pol);
         if (auto s = read_settings(c.home, o.name)) manifest["settings"] = s->document;
@@ -1319,18 +1339,42 @@ Outcome import_environment(const Context& c, const fs::path& file, std::string n
             c.sink(error(w.error()));
         }
     }
-    // The packages it had beyond its edition's, at their versions.
+    // The packages it had beyond its edition's, at their versions: its
+    // workspace's entries -- a version, or (since 2026.10.20) the active one
+    // and every one installed. The active first, so it is the active again.
     if (auto packages = manifest->find("packages"); packages != manifest->end() && packages->is_object()) {
         const auto have = read_json_(view.instance(name) / ".xlings.json").value("workspace", Json::object());
+        const auto versions_of = [](const Json& entry) {
+            std::vector<std::string> out;
+            if (entry.is_string()) out.push_back(entry.get<std::string>());
+            else if (entry.is_object()) {
+                if (const auto a = entry.value("active", std::string{}); !a.empty()) out.push_back(a);
+                for (const auto& v : entry.value("installed", Json::array()))
+                    if (v.is_string() && std::ranges::find(out, v.get<std::string>()) == out.end()) out.push_back(v.get<std::string>());
+            }
+            return out;
+        };
+        // A program's version as the package to install: the archive's
+        // providers (2026.10.22 on), else read from the version's key -- a
+        // namespace before it (`fixture:1.0.0`), the default index without.
+        const auto providers = manifest->value("providers", Json::object());
+        std::set<std::string> done;
         for (auto it = packages->begin(); it != packages->end(); ++it) {
             const auto pkg = it.key();
-            const auto& version = it.value();
-            if (!version.is_string() || (have.contains(pkg) && have[pkg] == version)) continue;
-            const auto spec = std::format("{}@{}", pkg, version.get<std::string>());
-            if (c.sink) c.sink(phase("install", "begin", std::format("installing {}", spec)));
-            std::vector<std::string> install{"install", spec, "--subos", name, "-y", "--agent"};
-            const int rc = c.port.terminal(install);
-            if (c.sink) c.sink(phase("install", rc == 0 ? "done" : "failed", std::format("installing {}", spec)));
+            const auto there = have.contains(pkg) ? versions_of(have[pkg]) : std::vector<std::string>{};
+            for (const auto& version : versions_of(it.value())) {
+                if (std::ranges::find(there, version) != there.end()) continue;
+                std::string spec = providers.contains(pkg) ? providers[pkg].value(version, std::string{}) : std::string{};
+                if (spec.empty()) {
+                    const auto colon = version.find(':');
+                    spec = colon == std::string::npos ? std::format("{}@{}", pkg, version)
+                                                      : std::format("{}:{}@{}", version.substr(0, colon), pkg, version.substr(colon + 1));
+                }
+                if (!done.insert(spec).second) continue;
+                if (c.sink) c.sink(phase("install", "begin", std::format("installing {}", spec)));
+                const int rc = c.port.install(std::vector<std::string>{spec}, name, c.sink);
+                if (c.sink) c.sink(phase("install", rc == 0 ? "done" : "failed", std::format("installing {}", spec)));
+            }
         }
     }
     // Its own state, over the fresh one; the persona stays the new one's.

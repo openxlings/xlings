@@ -1,8 +1,8 @@
-module xlings.i18n;
+module i18n;
 
 import std;
 
-namespace xlings::i18n {
+namespace i18n {
 
 namespace {
 
@@ -10,6 +10,11 @@ struct Registry {
     // domain -> language -> table, in the order domains were registered.
     std::vector<std::pair<std::string, std::map<std::string, std::span<const Entry>, std::less<>>>> domains;
 };
+
+std::string& default_domain_() {
+    static std::string d;
+    return d;
+}
 
 Registry& registry_() {
     static Registry r;
@@ -35,14 +40,14 @@ std::optional<std::string_view> find_(std::span<const Entry> tbl, std::string_vi
 }
 
 // The domain a key belongs to: the longest registered domain it starts with
-// ("luban.os.quick.create" -> "luban.os"), else xlings' own.
+// ("luban.os.quick.create" -> "luban.os"), else the program's default domain.
 std::string_view domain_of_(std::string_view key) {
     std::string_view best;
     for (const auto& [name, _] : registry_().domains)
-        if (name != "xlings" && name.size() > best.size() && key.size() > name.size() && key.starts_with(name)
+        if (name != default_domain_() && name.size() > best.size() && key.size() > name.size() && key.starts_with(name)
             && key[name.size()] == '.')
             best = name;
-    return best.empty() ? std::string_view("xlings") : best;
+    return best.empty() ? std::string_view(default_domain_()) : best;
 }
 
 // The `{}`/`{0}` arguments a text takes, counted as std::format reads them.
@@ -58,6 +63,8 @@ int arguments_(std::string_view text) {
 }
 
 }  // namespace
+
+void set_default_domain(std::string domain) { default_domain_() = std::move(domain); }
 
 void register_catalogue(std::string_view domain, std::string_view lang, std::span<const Entry> entries) {
     auto* d = domain_(domain);
@@ -98,7 +105,6 @@ std::string_view tr(std::string_view key) {
     return key;
 }
 
-std::span<const Entry> english_catalogue() { return catalogue("xlings", "en"); }
 
 std::vector<std::string> check(std::string_view domain) {
     std::vector<std::string> problems;
@@ -110,7 +116,7 @@ std::vector<std::string> check(std::string_view domain) {
     for (const auto& e : en->second) {
         if (e.text.empty()) problems.push_back(std::format("{}: {} is empty in English", domain, e.key));
         if (!keys.insert(e.key).second) problems.push_back(std::format("{}: {} twice in English", domain, e.key));
-        if (domain != "xlings" && !e.key.starts_with(std::string(domain) + "."))
+        if (domain != default_domain_() && !e.key.starts_with(std::string(domain) + "."))
             problems.push_back(std::format("{}: {} does not start with its domain", domain, e.key));
     }
     for (const auto& [lang, table] : *d) {
@@ -130,4 +136,4 @@ std::vector<std::string> check(std::string_view domain) {
     return problems;
 }
 
-}  // namespace xlings::i18n
+}  // namespace i18n

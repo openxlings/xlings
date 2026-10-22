@@ -8,6 +8,7 @@
 module xdesk.compositor;
 
 import std;
+import xdesk.words;
 import opensal;
 import xdesk.layout;
 import xdesk.draw;
@@ -34,6 +35,31 @@ void Server::set_opacity(View& v, float opacity) {
     wlr_scene_node_for_each_buffer(&v.frame->node, [](wlr_scene_buffer* b, int, int, void* data) {
         wlr_scene_buffer_set_opacity(b, *static_cast<float*>(data));
     }, &opacity);
+}
+
+namespace {
+constexpr double kOutline = 2;   // its outline's width, in the frame's pixels
+}
+
+void Server::set_outline(View& v, const draw::Color& c, float alpha) {
+    const float rgba[4] = {c.r / 255.0f * alpha, c.g / 255.0f * alpha, c.b / 255.0f * alpha, alpha};
+    for (auto* r : v.outline) {
+        if (!r) continue;
+        wlr_scene_rect_set_color(r, rgba);
+        wlr_scene_node_set_enabled(&r->node, alpha > 0.01f);
+    }
+}
+
+void Server::lay_outline(View& v, double width, double height) {
+    if (!v.outline[0]) return;
+    const int w = std::max(1, static_cast<int>(std::lround(width))), h = std::max(1, static_cast<int>(std::lround(height)));
+    const int t = std::min({static_cast<int>(kOutline), w, h});
+    const std::array<std::array<int, 4>, 4> edges{{{0, 0, w, t}, {0, h - t, w, t}, {0, 0, t, h}, {w - t, 0, t, h}}};
+    for (std::size_t e = 0; e < 4; ++e) {
+        wlr_scene_rect_set_size(v.outline[e], edges[e][2], edges[e][3]);
+        wlr_scene_node_set_position(&v.outline[e]->node, edges[e][0], edges[e][1]);
+        wlr_scene_node_raise_to_top(&v.outline[e]->node);
+    }
 }
 
 void Server::drag_start(View* v, bool live) {
@@ -83,6 +109,7 @@ void Server::drag_motion() {
             layout::Rect r { cursor->x - drag_dx, cursor->y - drag_dy, p->width, p->height };
             layout::Snap sn{.rect = r};
             if (!shift && snap_on) sn = lay.snap(dragged, r);
+            sn.rect = kept_on_output(sn.rect);
             lay.place(dragged, sn.rect);
             show_guides(sn);
         }
@@ -101,6 +128,18 @@ void Server::drag_motion() {
         drop = d;
         show_drop();
     }
+}
+
+// A stacked or floating window moved (design 2026-10-21 §8.8): its title
+// bar never above the output's top nor under the status bar, nor below the
+// bottom, and at least 64 pixels of it (a quarter of it, if less) on the output.
+layout::Rect Server::kept_on_output(layout::Rect r) const {
+    const auto in = reserved();
+    const double top = in.top, bottom = logical_h() - in.bottom, left = in.left, right = logical_w() - in.right;
+    const double keep = std::min(64.0, r.width / 4);
+    r.x = std::clamp(r.x, left - r.width + keep, right - keep);
+    r.y = std::clamp(r.y, top, std::max(top, bottom - kTitle));
+    return r;
 }
 
 namespace {
@@ -138,8 +177,8 @@ void Server::show_drop() {
     if (drop.kind == K::column && (pv.line || pv.box)) {
         const auto& at = pv.line ? *pv.line : *pv.box;
         const auto it = std::ranges::find_if(kWidths, [&](double w) { return std::abs(w - drop_width) < 1e-6; });
-        const std::string label = std::format("{}{}", it == kWidths.end() ? (zh ? "自动" : "auto") : kWidthLabels[static_cast<std::size_t>(it - kWidths.begin())],
-                                              zh ? " · 滚轮或 1–4 切换宽度" : " · wheel or 1-4: its width");
+        const std::string label = std::format("{}{}", it == kWidths.end() ? (i18n::tr("auto")) : kWidthLabels[static_cast<std::size_t>(it - kWidths.begin())],
+                                              i18n::tr(" · wheel or 1-4: its width"));
         sizes_picture = shell::sizes(ui(), theme, {label}, 0, at.x + at.width / 2, at.y + 16, logical_w(), logical_h(), scale);
         wlr_scene_node_set_position(&sizes_node->node, static_cast<int>(sizes_picture.x), static_cast<int>(sizes_picture.y));
         show(sizes_node, std::move(sizes_picture.image), scale);
@@ -190,7 +229,12 @@ void Server::drag_end() {
     if (v) {
         set_opacity(*v, 1.0f);
         // Floating, or stacked in the workspace view: let go where it is.
-        if (!drag_live && drag_session) lay.drop(*drag_session, drop, drop_width);
+        if (!drag_live && drag_session) {
+            const auto from = lay.workspace_of(v->id);
+            lay.drop(*drag_session, drop, drop_width);
+            if (const auto to = lay.workspace_of(v->id); to != from)
+                publish("drop", {{"id", std::to_string(v->id)}, {"workspace", std::to_string(to.value_or(0))}});
+        }
     }
     drag = Drag::none;
     drag_session.reset();
@@ -206,11 +250,13 @@ constexpr std::uint32_t kTop = 1, kBottom = 2, kLeft = 4, kRight = 8;   // wlr_e
 constexpr double kBorder = 6;
 }  // namespace
 
-// The edges of `v` within the border's reach of the pointer (stacked,
-// floating and free windows: tiled ones are sized by their gaps; none in the
-// WuXian view, where a frame is moved).
+// The edges of `v` within the border's reach of the pointer -- 6 screen
+// pixels at any zoom (stacked, floating and free windows: tiled ones are
+// sized by their gaps; in the WuXian view a free window's, the others'
+// frames being moved; design 2026-10-21 §8.6).
 std::uint32_t Server::edges_at(const View& v) const {
-    if (!live() || wuxian() || (rule_of(v.id) == layout::Rule::tile && !lay.floating(v.id))) return 0;
+    if (!live() || lay.collapsed(v.id)) return 0;
+    if (wuxian() ? !lay.is_free(v.id) : (rule_of(v.id) == layout::Rule::tile && !lay.floating(v.id))) return 0;
     const auto r = placement_of(v.id);
     if (!r) return 0;
     const double x = cursor->x - v.frame->node.x, y = cursor->y - v.frame->node.y;
@@ -277,10 +323,12 @@ void Server::resize_motion() {
     if (!v) return;
     const double dx = cursor->x - drag_x, dy = cursor->y - drag_y;
     // What the client allows (its frame: the title bar added), else a floor.
+    // At its zoom (a free window in the WuXian view is drawn smaller).
     const auto& st = v->toplevel->current;
-    const double min_w = std::max(120.0, static_cast<double>(st.min_width));
-    const double min_h = std::max(80.0, static_cast<double>(st.min_height + kTitle));
-    const double max_w = st.max_width > 0 ? st.max_width : 1e9, max_h = st.max_height > 0 ? st.max_height + kTitle : 1e9;
+    const double z = v->zoom > 0 ? v->zoom : 1;
+    const double min_w = std::max(120.0, static_cast<double>(st.min_width)) * z;
+    const double min_h = std::max(80.0, static_cast<double>(st.min_height + kTitle)) * z;
+    const double max_w = st.max_width > 0 ? st.max_width * z : 1e9, max_h = st.max_height > 0 ? (st.max_height + kTitle) * z : 1e9;
     layout::Rect r = resize_from;
     if (resize_edges & kRight) r.width = std::clamp(resize_from.width + dx, min_w, max_w);
     if (resize_edges & kBottom) r.height = std::clamp(resize_from.height + dy, min_h, max_h);

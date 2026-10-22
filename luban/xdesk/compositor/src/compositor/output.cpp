@@ -10,6 +10,7 @@ import xdesk.layout;
 import xdesk.draw;
 import xdesk.shell;
 import xdesk.apps;
+import telemetry;
 import wlroots;
 import xdesk.native.wayland;
 import freedesktop.wayland.server;
@@ -25,6 +26,30 @@ namespace shell = xdesk::shell;
 namespace apps = xdesk::apps;
 namespace fs = std::filesystem;
 
+namespace {
+
+// A frame's cost by its parts, as telemetry (xdesk msg telemetry, the bus's
+// node/<id>/telemetry): what the HUD shows of the last ten seconds, kept whole.
+struct FrameMeters {
+    telemetry::Histogram& frame = telemetry::metrics().histogram("xdesk.frame_ns");
+    telemetry::Histogram& compose = telemetry::metrics().histogram("xdesk.frame.compose_ns");
+    telemetry::Histogram& readback = telemetry::metrics().histogram("xdesk.frame.readback_ns");
+    telemetry::Histogram& send = telemetry::metrics().histogram("xdesk.frame.send_ns");
+    telemetry::Counter& frames = telemetry::metrics().counter("xdesk.frames");
+    telemetry::Counter& whole = telemetry::metrics().counter("xdesk.frames.whole");
+    telemetry::Counter& bytes = telemetry::metrics().counter("xdesk.frame.bytes");
+    telemetry::Counter& rects = telemetry::metrics().counter("xdesk.frame.rects");
+    telemetry::Histogram& compress = telemetry::metrics().histogram("xdesk.frame.compress_ns");
+    telemetry::Counter& compressed_bytes = telemetry::metrics().counter("xdesk.frame.bytes_saved");
+};
+
+FrameMeters& meters_() {
+    static FrameMeters m;
+    return m;
+}
+
+}  // namespace
+
 // ── output ───────────────────────────────────────────────────────
 void Server::resize(opensal::Size want) {
     if (want.width == 0 || want.height == 0 || want == size) return;
@@ -36,6 +61,8 @@ void Server::resize(opensal::Size want) {
         wlr_scene_rect_set_size(background, logical_w(), logical_h());
         draw_launcher();
         arrange();
+        if (hint_node->node.enabled) redraw_hint();
+        if (tour_at >= 0) draw_tour();
         tell_roles();   // the mirrors: the picture's new size
     } else {
         log(std::format("the output did not take {}x{}", want.width, want.height));
@@ -61,6 +88,8 @@ void Server::set_scale(double want) {
         wlr_scene_rect_set_size(background, logical_w(), logical_h());
         draw_launcher();
         arrange();
+        if (hint_node->node.enabled) redraw_hint();
+        if (tour_at >= 0) draw_tour();
     } else {
         log(std::format("the output did not take scale {}", want));
     }
@@ -95,10 +124,21 @@ void Server::render() {
         wl_event_source_timer_update(pace_timer, 1000);   // held: sent anyway if no word comes
         return;
     }
+    using ms = std::chrono::duration<double, std::milli>;
+    FrameStat stat{.at = now};
+    telemetry::Span frame_span("frame", &meters_().frame, "xdesk");
     wlr_output_state st;
     wlr_output_state_init(&st);
     zoom_surfaces();
-    if (!wlr_scene_output_build_state(scene_output, &st, nullptr) || !st.buffer) {
+    const auto composing = std::chrono::steady_clock::now();
+    bool built = false;
+    {
+        telemetry::Span s("compose", nullptr, "xdesk");
+        built = wlr_scene_output_build_state(scene_output, &st, nullptr);
+    }
+    stat.compose_ms = ms(std::chrono::steady_clock::now() - composing).count();
+    if (!built || !st.buffer) {
+        frame_span.discard();
         wlr_output_state_finish(&st);
         return;
     }
@@ -113,7 +153,16 @@ void Server::render() {
             damage.push_back({boxes[k].x1, boxes[k].y1, static_cast<std::uint32_t>(boxes[k].x2 - boxes[k].x1),
                               static_cast<std::uint32_t>(boxes[k].y2 - boxes[k].y1)});
     }
-    if (whole || damage.size() > 8) damage = {opensal::Rect{0, 0, s.width, s.height}};
+    // Many rectangles: the nearest merged until eight are left -- not the whole frame (§5.6a).
+    if (whole || damage.size() > 64) damage = {opensal::Rect{0, 0, s.width, s.height}};
+    else if (damage.size() > 8) {
+        std::vector<layout::Rect> rs;
+        for (const auto& d : damage) rs.push_back({double(d.x), double(d.y), double(d.width), double(d.height)});
+        damage.clear();
+        for (const auto& r : layout::merge_damage(std::move(rs), 8))
+            damage.push_back({static_cast<std::int32_t>(r.x), static_cast<std::int32_t>(r.y), static_cast<std::uint32_t>(r.width),
+                              static_cast<std::uint32_t>(r.height)});
+    }
     const std::vector<opensal::Rect> all{opensal::Rect{0, 0, s.width, s.height}};
     // Who is sent what: all of it to a window that missed frames.
     const bool any_whole = std::ranges::any_of(links, [&](const Link& l) { return !l.gone && l.hello && !l.hidden && l.whole; });
@@ -128,6 +177,10 @@ void Server::render() {
         data = mapped;
         ok = true;
     } else if (gpu) {
+        const auto reading = std::chrono::steady_clock::now();
+        telemetry::Span reading_span("readback", nullptr, "xdesk");
+        struct Timed { FrameStat& s; std::chrono::steady_clock::time_point t; ~Timed() {
+            s.readback_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t).count(); } } timed{stat, reading};
         if (wlr_texture* tex = wlr_texture_from_buffer(renderer, st.buffer)) {
             stride = static_cast<std::size_t>(bw) * 4;
             readback.resize(stride * static_cast<std::size_t>(bh));
@@ -171,7 +224,20 @@ void Server::render() {
                     if (!opaque)
                         for (std::uint32_t x = 0; x < r.width; ++x) dst[x * 4 + 3] = static_cast<char>(0xff);
                 }
-                if (!os::write_all(l.out, frame_buf)) { l.gone = true; return; }
+                const auto sending = std::chrono::steady_clock::now();
+                telemetry::Span sending_span("send", nullptr, "xdesk");
+                // Across a narrow channel (the provider takes them): compressed where shorter (opensal 0.6).
+                std::optional<std::string> packed;
+                if (opensal::has(l.provided, opensal::Interface::Compressed)) {
+                    telemetry::Span s("compress", &meters_().compress, "xdesk");
+                    if (auto z = opensal::wire::encode_compressed(std::string_view(frame_buf).substr(5))) packed = opensal::wire::encode('z', *z);
+                }
+                const bool sent = os::write_all(l.out, packed ? std::string_view(*packed) : std::string_view(frame_buf));
+                if (packed) meters_().compressed_bytes.add(frame_buf.size() - packed->size());
+                stat.send_ms += ms(std::chrono::steady_clock::now() - sending).count();
+                stat.bytes += packed ? packed->size() : frame_buf.size();
+                ++stat.rects;
+                if (!sent) { l.gone = true; return; }
                 l.in_flight = now;
             }
         };
@@ -183,10 +249,13 @@ void Server::render() {
                 if (!os::write_all(l.out, opensal::wire::encode('s', std::format("{} {}", s.width, s.height)))) { l.gone = true; continue; }
                 l.told = s;
             }
-            send_rects(l, std::exchange(l.whole, false) ? all : damage);
+            const bool all_of_it = std::exchange(l.whole, false);
+            stat.whole = stat.whole || all_of_it || (!damage.empty() && damage.front().width == s.width && damage.front().height == s.height);
+            send_rects(l, all_of_it ? all : damage);
         }
         if (mapped) wlr_buffer_end_data_ptr_access(st.buffer);
     }
+    keep_frame_stat(stat);
     wlr_output_commit_state(output, &st);
     wlr_output_state_finish(&st);
     if (std::ranges::any_of(links, &Link::gone)) wl_event_loop_add_idle(loop, [](void* d) { static_cast<Server*>(d)->drop_gone(); }, this);
@@ -196,6 +265,21 @@ void Server::render() {
     ts.tv_sec = static_cast<std::time_t>(std::chrono::duration_cast<std::chrono::seconds>(t).count());
     ts.tv_nsec = static_cast<long>(std::chrono::duration_cast<std::chrono::nanoseconds>(t).count() % 1'000'000'000);
     wlr_scene_output_send_frame_done(scene_output, &ts);
+}
+
+void Server::keep_frame_stat(FrameStat stat) {
+    auto& m = meters_();
+    const auto ns = [](double ms) { return static_cast<std::uint64_t>(ms * 1e6); };
+    m.frames.add();
+    m.compose.record(ns(stat.compose_ms));
+    if (stat.readback_ms > 0) m.readback.record(ns(stat.readback_ms));
+    if (stat.rects > 0) m.send.record(ns(stat.send_ms));
+    m.bytes.add(stat.bytes);
+    m.rects.add(static_cast<std::uint64_t>(stat.rects));
+    if (stat.whole) m.whole.add();
+    frame_stats.push_back(stat);
+    while (!frame_stats.empty() && stat.at - frame_stats.front().at > std::chrono::seconds(10)) frame_stats.pop_front();
+    if (hud && stat.at - hud_drawn > std::chrono::milliseconds(500)) draw_hud();
 }
 
 }  // namespace xdesk::compositor

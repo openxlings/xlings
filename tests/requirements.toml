@@ -919,6 +919,10 @@ status = "required"
 text = "a program whose recipe registered an environment (vim's $VIM, curl's CA bundle, tmux's terminfo) keeps its shim in a root's /usr/bin, so the environment is there when it runs; a program with nothing to add links straight to its payload"
 status = "required"
 
+[SUBOS-SYSTEM-ENV]
+text = "what xlings itself sets for a system's session (its prompt's facts: LUBAN_KIND, LUBAN_PERSIST, PS1) passes whatever the policy, with no degradation said; a caller's own --env is held to the policy's env_pass"
+status = "required"
+
 [ROOT-LOCALE]
 text = "a root is entered with LANG=C.UTF-8 and without the host's LC_* and LANGUAGE, sandbox and machine alike: the locale the root's glibc has"
 status = "required"
@@ -997,4 +1001,38 @@ status = "required"
 
 [SUBOS-ROOT-INSTANCE-WORKSPACE]
 text = "inside a Luban system with no XLINGS_ACTIVE_SUBOS (a machine's session), the workspace xlings reads is the system's own subos (XLINGS_ROOT_INSTANCE, else /etc/xlings/usr), the one its scope names -- not the home's default"
+status = "required"
+
+# ── 2026-10-21 ecosystem usability (design 2026-10-21) ──────────────
+
+[PLATFORM-FS-TYPE]
+text = "a filesystem's type is the mount table's name for its device (9p2000.L answers statfs with the far side's type); 9p, virtiofs, NFS, SMB and FUSE are another machine's; a private directory of a user's on this machine's filesystem is the runtime directory, /run/user/<uid>, then <temp>/xlings-<uid>, only the user's"
+status = "required"
+
+[PLATFORM-ENV-LIST-DEFAULT]
+text = "a directory put in front of an unset or empty XDG_DATA_DIRS / XDG_CONFIG_DIRS keeps what the empty list meant (/usr/local/share:/usr/share, /etc/xdg) -- in a program's shim, a SubOS's session and `subos use`, and a machine's qemu; a list that is set is left as the session's"
+status = "required"
+
+[XIM-WORKER-REMOTE-HOME]
+text = "a Lua worker whose home is on another machine's filesystem (a Luban machine's, over 9p or virtiofs) keeps its private directory and captured output on this machine's, and its Landlock fence holds its directories open so a filesystem that keeps no inodes does not forget them -- recipes are read, packages install"
+status = "required"
+
+[SUBOS-SITUATION]
+text = "where xlings runs (host, sandbox, machine, a system booted as itself), who runs it (owner, the system's administrator, a user's view) and which store it reads (personal, shared, own) are measured in one place, and one table says where a change goes: here, the host's broker, `sudo`, the owner on the host, or one line when the host has no broker"
+status = "required"
+
+[SUBOS-SUDO-SCOPE]
+text = "in a Luban system a user's own packages, versions and settings need no sudo; updating the index (every user's) says `sudo xlings update` in one line and changes nothing"
+status = "required"
+
+[SUBOS-MACHINE-BROKER]
+text = "in a Luban machine reading this computer's store, `sudo xlings install/remove/update` and a user's store addition reach the host's broker through the agent (a channel of the guest's, the host's luban running `xlings subos __broker-serve`): the instance's policy decides, the audit names who asked, the caller's terminal or pipes carry the command, and /usr follows the new generation before the command returns"
+status = "required"
+
+[OPS-LINK]
+text = "an operation that runs part of itself in a system's own home (its domain) records a link line there; `xlings self log` shows the linked record in place, and `--subos <name>` (`luban status <name> --log`) shows the latest operation on that system; a cancel is recorded"
+status = "required"
+
+[LUBAN-PACKAGE-CHECKS]
+text = "a package's declared checks (share/luban/checks.d, written from a recipe's extensions.luban.checks) may be `run` (a command), `launcher` (an application id: its desktop entry in /usr/share/applications, not hidden) or `gui` and `sound` (a window that maps, a sound that is heard), the last two a desktop session's -- said as such by the self-check, never failed for want of one"
 status = "required"

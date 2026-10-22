@@ -52,6 +52,7 @@ AppSettings read_app_settings(const fs::path& home) {
     s.minimize_to_tray = j.value("minimize_to_tray", true);
     s.keep_in_tray = j.value("keep_in_tray", false);
     s.close_choice = std::clamp(j.value("close_choice", 0), 0, 1);
+    s.super_hint_said = j.value("super_hint_said", false);
     return s;
 }
 
@@ -59,7 +60,7 @@ void write_app_settings(const fs::path& home, const AppSettings& s) {
     Json j{{"default_system", s.default_system}, {"countdown", s.countdown}, {"last_used", Json::object()},
            {"language", s.language}, {"reduce_motion", s.reduce_motion}, {"lock_keyboard", s.lock_keyboard}, {"console_size", s.console_size},
            {"console_sizes", Json::object()}, {"minimize_to_tray", s.minimize_to_tray}, {"keep_in_tray", s.keep_in_tray},
-           {"close_choice", s.close_choice}};
+           {"close_choice", s.close_choice}, {"super_hint_said", s.super_hint_said}};
     for (const auto& [k, v] : s.last_used) j["last_used"][k] = v;
     for (const auto& [k, v] : s.console_sizes) j["console_sizes"][k] = v;
     std::error_code ec;

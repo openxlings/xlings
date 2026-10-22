@@ -76,6 +76,12 @@ if [[ -n "${MCPP_TARGET:-}" ]]; then LUBAN_ARGS+=(--target "$MCPP_TARGET"); fi
 "$MCPP_BIN" "${LUBAN_ARGS[@]}" 2>&1 || fail "mcpp build -p luban-tool failed"
 LUBAN_SRC="$(find "$PROJECT_DIR/target" -path '*/bin/luban-tool/luban' -type f -perm -111 -exec ls -t {} + | head -1)"
 [[ -f "$LUBAN_SRC" ]] || fail "luban not found"
+# xbus (design 2026-10-22 §8): what is on a bus, seen and used, beside luban.
+XBUS_ARGS=(build -p xbus-tool --profile dist)
+if [[ -n "${MCPP_TARGET:-}" ]]; then XBUS_ARGS+=(--target "$MCPP_TARGET"); fi
+"$MCPP_BIN" "${XBUS_ARGS[@]}" 2>&1 || fail "mcpp build -p xbus-tool failed"
+XBUS_SRC="$(find "$PROJECT_DIR/target" -path '*/bin/xbus-tool/xbus' -type f -perm -111 -exec ls -t {} + | head -1)"
+[[ -f "$XBUS_SRC" ]] || fail "xbus not found"
 
 info "Verifying no LLVM toolchain dependency..."
 if otool -L "$BIN_SRC" | grep -q "llvm"; then
@@ -144,6 +150,7 @@ mkdir -p "$OUT_DIR/bin"
 
 cp "$BIN_SRC"          "$OUT_DIR/bin/xlings"
 cp "$LUBAN_SRC"        "$OUT_DIR/bin/luban"
+cp "$XBUS_SRC"         "$OUT_DIR/bin/xbus"
 chmod +x "$OUT_DIR/bin/"*
 # luban runs the Luban host machine (Virtualization.framework): signed, ad
 # hoc, with that framework's entitlement (part 4 §6.6). An ad-hoc signature

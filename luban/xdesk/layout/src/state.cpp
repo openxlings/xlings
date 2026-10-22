@@ -112,7 +112,8 @@ openwx::State Layout::state(const std::function<Match(Id)>& match) const {
     }
     for (const auto& f : free_) {
         const auto m = match ? match(f.w.id) : Match{};
-        st.windows.push_back({.app_id = m.app_id, .title = m.title, .free = f.world, .z = f.z});
+        st.windows.push_back({.app_id = m.app_id, .title = m.title, .free = f.world, .z = f.z,
+                              .flags = f.collapsed ? std::vector<std::string>{"collapsed"} : std::vector<std::string>{}});
     }
     for (const auto& s : spaces_) {
         if (s.columns.empty()) continue;
@@ -186,7 +187,7 @@ void Layout::take_pending_(Id id, Size preferred, bool floating, const Match& ma
     const Pending p = *it;
     pending_.erase(it);
     if (p.workspace == 0) {
-        free_.push_back({.w = {.id = id, .preferred = preferred}, .world = p.world, .z = p.z});
+        free_.push_back({.w = {.id = id, .preferred = preferred}, .world = p.world, .z = p.z, .collapsed = has_(p.flags, "collapsed")});
         focus_ = id;
         placed = true;
         return;

@@ -94,8 +94,15 @@ std::expected<void, std::string> restrict_writes(std::span<const fs::path> rw, b
     const int ruleset = static_cast<int>(scope ? ::syscall(kCreateRuleset, &scopedAttr, sizeof scopedAttr, 0)
                                                : ::syscall(kCreateRuleset, &attr, sizeof attr, 0));
     if (ruleset < 0) return std::unexpected(std::format("landlock_create_ruleset: {}", std::strerror(errno)));
+    // A rule is the directory's inode. A filesystem that keeps no inodes of
+    // its own (9p and virtiofs uncached, a Luban machine's home) forgets one
+    // as soon as nothing holds its directory, and the next lookup makes a new
+    // inode the rule does not name (design 2026-10-21 §3.4, J1): each
+    // directory stays open, across exec, for as long as the fenced process
+    // lives. An O_PATH descriptor reads and writes nothing.
+    std::vector<int> held;
     for (const auto& p : rw) {
-        const int fd = ::open(p.c_str(), O_PATH | O_CLOEXEC);
+        const int fd = ::open(p.c_str(), O_PATH);
         if (fd < 0) continue;   // a path that is not there grants nothing
         PathBeneathAttr rule{ handled, fd };
         // A file (not a directory) takes only the rights that apply to files.
@@ -104,8 +111,9 @@ std::expected<void, std::string> restrict_writes(std::span<const fs::path> rw, b
             rule.allowed_access = handled & ((1ull << 1) | kTruncate);
         const long r = ::syscall(kAddRule, ruleset, kRulePathBeneath, &rule, 0);
         const int err = errno;
-        ::close(fd);
+        held.push_back(fd);
         if (r < 0) {
+            for (const int h : held) ::close(h);
             ::close(ruleset);
             return std::unexpected(std::format("landlock_add_rule {}: {}", p.string(), std::strerror(err)));
         }
@@ -113,6 +121,7 @@ std::expected<void, std::string> restrict_writes(std::span<const fs::path> rw, b
     if (::prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0
         || ::syscall(kRestrictSelf, ruleset, 0) != 0) {
         const int err = errno;
+        for (const int h : held) ::close(h);
         ::close(ruleset);
         return std::unexpected(std::format("landlock_restrict_self: {}", std::strerror(err)));
     }
