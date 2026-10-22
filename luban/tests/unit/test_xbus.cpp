@@ -493,6 +493,13 @@ struct Echo {
     }
 };
 
+// What the nodes and the router said last (the flight recorder): why a stream ended.
+std::string recent() {
+    std::string out;
+    for (const auto& r : telemetry::recorder().last(40)) out += std::format("  {} {} {}\n", r.category, r.name, r.fields);
+    return out;
+}
+
 std::string read_exactly(xbus::Stream& s, std::size_t n) {
     std::string got;
     while (got.size() < n) {
@@ -527,7 +534,7 @@ XTEST(Xbus, AStreamCarriesBytesWithCreditAndARegionInPlace, .area = "luban", .co
     EXPECT_TRUE(back == upper) << "every byte, in order";
     // A region: 8 MiB both map; a reference is 24 bytes, the bytes read in place.
     auto region = st->create_region(8u << 20);
-    ASSERT_TRUE(region.has_value()) << region.error();
+    ASSERT_TRUE(region.has_value()) << region.error() << "\n" << recent();
     // Shared over a local socket (memfd); a Mac whose socket refuses the
     // handle goes inline by itself -- the reference reads the same either way.
     if constexpr (!tk::is_macos) EXPECT_TRUE(region->shared()) << "memfd over a local socket";

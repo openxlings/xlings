@@ -535,15 +535,18 @@ struct Node::Impl {
             }
             std::vector<Incoming> in;
             bool alive = true;
+            std::string why;
             {
                 std::lock_guard l(m);
-                if (p[0].readable || p[0].closed) alive = conn->read(in);
+                if (p[0].readable || p[0].closed) alive = conn->read(in, &why);
+                if (!alive && why.empty()) why = "the router closed the connection";
             }
             for (auto& i : in) handle(std::move(i));
             {
                 std::lock_guard l(m);
-                if (alive && conn->pending()) alive = conn->flush();
+                if (alive && conn->pending() && !(alive = conn->flush())) why = "a write to the router failed";
                 if (!alive) {
+                    telemetry::log().warn("xbus-lost", {{"node", id}, {"name", o.name}, {"why", why}});
                     conn.reset();
                     welcomed = false;
                     lost = true;
@@ -875,7 +878,7 @@ std::expected<Region, std::string> Stream::create_region(std::size_t size, std::
     if (auto mapped = native::create_shared("xbus-region", size)) {
         r->mapped = std::move(*mapped);
         r->shared = true;
-        if (!announce(true)) return std::unexpected("the stream ended");
+        if (!announce(true)) return std::unexpected("the stream ended announcing its shared region (the node is not connected)");
         if (const int a = answered(); a == 1) {
             std::lock_guard l(s_->m);
             s_->mine[r->id] = r;
@@ -891,7 +894,7 @@ std::expected<Region, std::string> Stream::create_region(std::size_t size, std::
     } else {
         r->local.resize(size);
     }
-    if (!announce(false)) return std::unexpected("the stream ended");
+    if (!announce(false)) return std::unexpected("the stream ended announcing its region inline (the node is not connected)");
     if (answered() != 1) return std::unexpected("the other side did not take the inline region");
     std::lock_guard l(s_->m);
     s_->mine[r->id] = r;
