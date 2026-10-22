@@ -29,6 +29,7 @@ import xlings.subos.session;
 import xlings.subos.policy;
 import xlings.subos.policy_store;
 import xlings.subos.broker;
+import xlings.subos.home_view;
 import xlings.observe;
 import xlings.core.home;
 import xlings.core.home.domain_producer;
