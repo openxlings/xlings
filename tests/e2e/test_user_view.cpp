@@ -196,6 +196,11 @@ XTEST(UserView, AUsersViewReadsTheSystemsStoreAndAsksOnceForWhatItLacks, .area =
     // it keeps the payload while a user has chosen it, and says who (§4.7).
     r = home.xlings({"use", "fixture-tool", "1.0.0"}, inSystem);
     EXPECT_EQ(r.exit_code, 0) << r.transcript();
+    // What a user chooses is what runs for them (part 2 J48): their view has
+    // its `current`, and a shim of its own -- through the system's xlings.
+    EXPECT_TRUE(fs::is_symlink(home.dir() / "subos/current")) << "no subos/current in the view";
+    EXPECT_TRUE(fs::exists(fs::symlink_status(home.dir() / "subos/default/bin/fixture-tool")))
+        << "no shim for the user's choice";
     const auto passwd = home.root() / "passwd";
     tk::write_file(passwd, std::format("root:x:0:0::/root:/bin/sh\nalice:x:1000:1000::{}:/bin/sh\n", home.root().string()));
     guard.set(true);

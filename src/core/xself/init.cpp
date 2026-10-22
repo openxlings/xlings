@@ -670,9 +670,19 @@ xvm::TableDiff plan_shim_table(
     return xvm::plan_table(desired, actual, reserved_shim_names_());
 }
 
+// What a shim runs: the home's xlings, or -- a user's view in a system, which
+// has none of its own -- the system's (part 2 J48: a user's own versions had
+// no shims, so what they chose was never what ran).
+fs::path shim_entry_() {
+    auto entry = xlings_binary_in_home(Config::paths().homeDir);
+    if (entry.empty() && !Config::paths().systemLayer.empty())
+        entry = xlings_binary_in_home(Config::paths().systemLayer);
+    return entry;
+}
+
 xvm::TableReport apply_shim_table(const fs::path& subos_dir,
                                   const xvm::TableDiff& diff) {
-    auto entry = xlings_binary_in_home(Config::paths().homeDir);
+    auto entry = shim_entry_();
     return xvm::apply_table(diff, subos_dir / "bin", entry);
 }
 
@@ -717,7 +727,7 @@ ShimSyncSummary sync_shim_tables() {
             }
         }
     }
-    auto entry = xlings_binary_in_home(Config::paths().homeDir);
+    auto entry = shim_entry_();
     std::error_code ec;
     if (entry.empty() || !fs::exists(entry, ec)) {
         // Pre-`self init` bootstrap: there is nothing to link to yet, and

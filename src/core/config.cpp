@@ -214,6 +214,10 @@ std::expected<void, std::string> Config::start_own_home() {
             return std::unexpected(std::format("cannot write {}: {}", manifest.string(), e.what()));
         }
     }
+    // `subos/current`, as a home has it: a user's PATH puts its bin first
+    // (profile.d/xlings-user.sh, and a machine's commands run for them).
+    if (const auto current = p.homeDir / "subos" / "current"; !fs::exists(fs::symlink_status(current, ec)))
+        platform::create_directory_link(current, manifest.parent_path());
     return {};
 }
 
@@ -768,6 +772,22 @@ Config::Config() {
             // What it and the xlings it starts act on is this home, not the
             // system's subos and runtime.
             platform::set_env_variable("XLINGS_HOME", own.string());
+            systemInstance_ = utils::get_env_or_default("XLINGS_ROOT_INSTANCE");
+            platform::unset_env_variable("XLINGS_ROOT_INSTANCE");
+        }
+    }
+    // A shim of a user's own view (part 2 J48): anchored at their ~/.xlings,
+    // it runs what they chose there -- the system's home the layer below, its
+    // subos their own -- as their xlings does. It read the system's subos and
+    // ran the system's choice (or none).
+    if (std::error_code lec; paths_.homeSource == home::Source::Anchored && paths_.systemLayer.empty()) {
+        const auto own = fs::path(platform::get_home_dir()) / ".xlings";
+        if (auto record = root_record_(); record && fs::is_directory(record->home, lec)
+            && fs::equivalent(own, paths_.homeDir, lec) && !fs::equivalent(own, record->home, lec)
+            && subos::situation::measure(record->home).who == subos::situation::Who::User) {
+            paths_.systemLayer = record->home;
+            if (utils::get_env_or_default("XLINGS_SYSTEM_LAYER").empty())
+                platform::set_env_variable("XLINGS_SYSTEM_LAYER", paths_.systemLayer.string());
             systemInstance_ = utils::get_env_or_default("XLINGS_ROOT_INSTANCE");
             platform::unset_env_variable("XLINGS_ROOT_INSTANCE");
         }

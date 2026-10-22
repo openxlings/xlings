@@ -97,6 +97,25 @@ resolve_owner_home(const std::filesystem::path& invoked) {
         if (!ec) {
             if (auto h = walk_up(abs)) return h;
         }
+    } else if (!invoked.empty()) {
+        // Found on PATH, as a shell finds it: argv[0] is the bare name, and
+        // the file the shell ran is the first of that name there. Its home --
+        // not the entry's -- is the owner: a user's view runs the system's
+        // xlings through shims of its own (part 2 J48), and the entry's home
+        // answered with the system's choice.
+        const auto path = std::getenv("PATH") ? std::string(std::getenv("PATH")) : std::string();
+        for (std::size_t start = 0; start <= path.size();) {
+            auto end = path.find(platform::PATH_SEPARATOR, start);
+            if (end == std::string::npos) end = path.size();
+            const auto dir = path.substr(start, end - start);
+            start = end + 1;
+            if (dir.empty()) continue;
+            std::error_code ec;
+            const auto candidate = fs::path(dir) / invoked;
+            if (!fs::exists(fs::symlink_status(candidate, ec))) continue;
+            if (auto h = walk_up(candidate)) return h;
+            break;
+        }
     }
 
     auto exe = platform::get_executable_path();
