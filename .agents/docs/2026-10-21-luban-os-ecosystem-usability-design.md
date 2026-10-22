@@ -233,6 +233,9 @@ Landlock 的规则挂在旧的 inode 上，于是允许写的目录也被拒绝�
 
 - Luban 系统里的 `/` 按"已声明的根"处理（依据 `/etc/os-release` 里的 Luban 标识与 `/usr/lib/xlings-abi`）。
 - 第一次 `mcpp run` 的规划时间由 L2 记录。
+- **实现（M1，mcpp#831，2026.10.22.1）**：新模块 `mcpp.luban`：`is_luban_root`（`ID=luban` 加 `/usr/lib/xlings-abi`）让 sysroot `/` 不再算"外来的"；
+  `system_store` 读根记录 `/etc/xlings/usr`（`<home>/subos/<name>/root/usr`），在 `/xlings` 不存在时把版本里的 `upstream = ["/xlings"]` 解释为它——
+  宿主上建的系统，home 在建它的那个 home 的路径上，不在 `/xlings`（J5 的第二条警告）。实机：`mcpp self doctor` 两条警告都没了，新项目第一次 `mcpp run` 4 s。
 
 ## 4. machine 的文件共享（D3）
 
@@ -729,7 +732,7 @@ xim-pkgindex（一个 PR）：
 | P1 | `xim:xdesk` 链接 `share/applications`，升 `revision` | 随时 |
 | P2 | 各包的 `extensions.luban.checks` 与 lint | 随时 |
 | P3 | `xim:virtiofsd`（加 xlings-res 的资源） | K6 之前 |
-| P4 | `xim:mesa` 加 d3d12 驱动（Windows） | K7 之前 |
+| P4 | `xim:mesa` 加 d3d12 驱动（Windows）——已在：25.0.7.2 起带 `d3d12_dri.so`（25.0.7.3 核对过）；wlroots 的 GLES 在 WSL 里仍要 GBM 设备，见 K14 与 §15 | K7 之前 |
 | P5 | Falkon 的修复 | 能复现之后 |
 | P5a | `luban:audacious`（打包在 qt-runtime 上，带检查）与 `luban:sample-music`（CC0 音乐，资源放 xlings-res，provenance 写明许可）；把二者加进 `luban:desktop` 的新版本 | 随时；版本指针随 P7 |
 | P6 | dispatch 到 luban-os-ci | 跟 C5 一起 |

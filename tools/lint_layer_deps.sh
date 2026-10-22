@@ -121,12 +121,13 @@ if [ -d luban/services ] && [ -d luban/kits ]; then
 fi
 # A service's own modules (<name>.detail.*) are its: what it shows above is
 # platform-free (part 2 2026-10-22 §6.0a), how it reaches the platform is not
-# for anyone else to import.
+# for anyone else to import. Its own unit tests (luban/tests/unit/test_<name>*)
+# are the service's: they may test what is inside.
 while read -r where module; do
   case "${module:-}" in
     *.detail|*.detail.*)
       owner="${module%%.*}"
-      case "${where%%:*}" in luban/services/"$owner"/*) ;; *) report "${where%%:*}" "imports $module ($where): a service's detail modules are its own" ;; esac ;;
+      case "${where%%:*}" in luban/services/"$owner"/*|luban/tests/unit/test_"$owner"*) ;; *) report "${where%%:*}" "imports $module ($where): a service's detail modules are its own" ;; esac ;;
   esac
 done < <(imports luban src modules apps tests)
 if [ -d luban/os/service ]; then
