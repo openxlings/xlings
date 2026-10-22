@@ -30,6 +30,14 @@ if [[ -z "$binary" ]]; then
 fi
 [[ -x "$binary" ]] || fail "no xdesk build (mcpp build -p xdesk-app --profile dist)"
 command -v patchelf >/dev/null || fail "patchelf is needed: xlings install patchelf"
+# The C++ runtime it may need is the one a Luban system binds (xim:gcc-runtime,
+# 15.1.0: GLIBCXX_3.4.34) -- not the build toolchain's. 2026.10.22.1 needed
+# GCC 16's 3.4.35 (a jthread's stop token) and could not start in any system.
+cxx_ceiling="3.4.34"
+needed="$(strings "$binary" | grep -oE 'GLIBCXX_3\.4\.[0-9]+' | sed 's/GLIBCXX_//' | sort -V | tail -1)"
+if [[ -n "$needed" && "$(printf '%s\n%s\n' "$needed" "$cxx_ceiling" | sort -V | tail -1)" != "$cxx_ceiling" ]]; then
+  fail "it needs GLIBCXX_$needed, newer than the runtime a Luban system binds (GLIBCXX_$cxx_ceiling, xim:gcc-runtime 15.1.0): $(objdump -T "$binary" 2>/dev/null | grep "GLIBCXX_$needed" | awk '{print $NF}' | head -3 | tr '\n' ' ')"
+fi
 built="$(dirname "$binary")/.."
 
 name="xdesk-$version-linux-$arch"

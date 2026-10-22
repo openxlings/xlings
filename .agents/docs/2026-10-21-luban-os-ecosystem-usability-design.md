@@ -113,6 +113,8 @@
 | J30 | 关掉 GPU 后桌面仍然很卡 | 帧通道是瓶颈（J11）；软件合成时，每帧在 guest 里用 pixman 合成，再整帧或成块经 virtio-serial 发出，宿主再上传成纹理，三段都没有测量。现在只有两项性能测试（J24），没有"拖动、滚动、刷屏的帧率与 CPU"预算 | `output.cpp` 的 `render()`、`test_xdesk_cpu.cpp` |
 | J31 | 桌面系统里没有音频播放器，也没有可以拿来测声音的素材 | 版本只带了声音的输出（`luban:audio`），声音这条路径除了"文件在不在"没有任何端到端的检查 | xim-pkgindex `pkgs/luban/desktop.lua` 的 `desktop-sound` |
 | J32 | machine 里新加的用户（`adduser`）写不了自己的 home；`luban-os-ci` L2-05 发现 | machine 的目录树是宿主上的文件：9p（`security_model=none`）与非特权 virtiofsd 都以宿主用户存每个文件，`chown` 得到 EINVAL，`/home/<新用户>` 的属主是宿主的 uid——也就是 guest 里的默认用户。多用户、多版本（§3.6）在 machine 里因此不成立；沙箱与导出后的真机不受影响。可选：9p 用 `security_model=mapped-xattr`（属主与权限存在宿主文件的 xattr 里，宿主文件仍归宿主用户，宿主管理不变，读写多一次 xattr）；或 virtiofsd 在用户命名空间里用 subuid 映射（宿主上的文件归 subuid，宿主管理要跟着改）。建议前者，作为 machine 有第二个用户时的方式，单独一个 PR（§15） | `luban/os/vm/src/host.cpp` 的 9p 参数与 virtiofs 计划 |
+| J33 | 用户视图里不加 sudo 的 `xlings install` 让包对所有用户生效；之后同一个用户 `xlings remove` 被拒绝（"is the system's"）；`luban-os-ci` L2-02 发现 | 仓库里没有的版本由 `__store-add` 以管理员身份执行 `install -y` 放进仓库，而 install 在系统的 workspace 里没有激活版本时会激活它（`activate_requested_targets`、注册计划、借用成员三处）。§3.2 要求不加 sudo 只给自己装。修法：`__store-add` 只放 payload、登记版本，不在系统 workspace 里激活；用户视图再借用并激活在自己那里。三处激活逻辑一起改，单独一个 PR，并补上 L2-02 的反向断言（另一个用户看不到） | `src/core/xim/commands.cpp`（`__store-add`、`activate_requested_targets`）、`src/core/xim/installer.cpp` |
+| J34 | 2026.10.22.1 的 xdesk 在任何 Luban 系统里都起不来：`GLIBCXX_3.4.35 not found`；发布后验证升级的桌面时发现 | XBus 的 node 用了 `std::jthread`，它的 stop token 在原子量上等待，GCC 16 的 libstdc++ 才有这个符号（`std::__detail::__notify_impl`）；Luban 系统绑定的 C++ 运行时是 `xim:gcc-runtime` 15.1.0（`GLIBCXX_3.4.34`）。CI 里 xdesk 的测试用的是构建工具链自己的 libstdc++，看不到。2026.10.22.2：node 改用普通线程加 `stopping` 与唤醒管道；`xdesk_release.sh` 拒绝需要更新运行时的二进制；索引先把 `luban:xdesk` 钉回 2026.10.21.3（xim-pkgindex#1024），再以新版本 `luban:xdesk`、`luban:desktop` 2026.10.22.2 让已升级的系统换上修好的 xdesk（版本号的 revision 不会让已经装好的系统换版本） | `luban/services/xbus/src/node.cpp`、`luban/tools/xdesk_release.sh` |
 
 ## 2. 原则
 
@@ -234,8 +236,9 @@ Landlock 的规则挂在旧的 inode 上，于是允许写的目录也被拒绝�
 
 - Luban 系统里的 `/` 按"已声明的根"处理（依据 `/etc/os-release` 里的 Luban 标识与 `/usr/lib/xlings-abi`）。
 - 第一次 `mcpp run` 的规划时间由 L2 记录。
-- **实现（M1，mcpp#831，2026.10.22.1）**：新模块 `mcpp.luban`：`is_luban_root`（`ID=luban` 加 `/usr/lib/xlings-abi`）让 sysroot `/` 不再算"外来的"；
-  `system_store` 读根记录 `/etc/xlings/usr`（`<home>/subos/<name>/root/usr`），在 `/xlings` 不存在时把版本里的 `upstream = ["/xlings"]` 解释为它——
+- **实现（M1，mcpp#831，2026.10.22.1）**：provider 的布局端口加两项（mcpp 不直接写 xlings 的路径，provider 边界）：`declared_system_root`
+  （`ID=luban` 加 `/usr/lib/xlings-abi`）让 sysroot `/` 不再算"外来的"；`system_home` 读根记录 `/etc/xlings/usr`
+  （`<home>/subos/<name>/root/usr`），在 `/xlings` 不存在时把版本里的 `upstream = ["/xlings"]` 解释为它——
   宿主上建的系统，home 在建它的那个 home 的路径上，不在 `/xlings`（J5 的第二条警告）。实机：`mcpp self doctor` 两条警告都没了，新项目第一次 `mcpp run` 4 s。
 
 ## 4. machine 的文件共享（D3）
@@ -652,6 +655,29 @@ L4 覆盖以下几条路径：宿主 → foot（Ctrl+Shift+V）、foot（Ctrl+Sh
 - **权限**：Sunrisepeak 在组织下建一个 GitHub App，只能读两个仓库的产物、写 commit status；密钥只放在 luban-os-ci。
 - **门禁**：先只报告；连续两周稳定后，把 L2 子集设为 xlings 的必需检查；发布必须通过 L6。
 
+### 9.6a 实现（C1–C5 的第一版）
+
+- **仓库**：`luban-os/luban-os-ci`（Sunrisepeak 新建）。harness 是一个只用 Python 标准库的程序（`harness/lci.py`），`./run.sh <层> [场景…]`
+  在一台有 KVM 的 Linux 上与 CI 跑出同样的结果；被测的是 `--release <版本>`（下载发布包）或 `--bin <目录>`（某次构建，例如 xlings CI 的
+  `xlings-linux-x86_64` 产物），索引可以是一个 checkout 或 xim-pkgindex 的分支（`--index`，按 §13 的规矩放进 home 里）。
+- **场景**是数据：`scenarios/<层>/<nn>-<名>.toml`，每步 `run`、`in`（system、host、luban-os）、`user`、`exit`、`has`、`lacks`、`matches`、
+  `max_lines`、`measure`、`read` + `limits`/`floors`（JSON 里的值，如 `perf.frames`）、`known`（有编号的已知失败：报告为 known，不算失败；
+  它不再失败时报告提醒去掉）；`pending` 说明为什么还不能跑。`fixtures.toml` 定义系统（`luban new` 的参数与之后的 `then`）。
+  `tests/test_scenarios.py` 检查格式、需求覆盖与 fixture 名。
+- **探测**：`needs`（kvm、luban-os、xdesk、network、proxy）先查，查不过就失败并说明，绝不显示为通过。场景要代理时 harness 自带一个
+  SOCKS5h 代理（这台电脑有 HTTP 代理时经它出去）。
+- **第一版的覆盖**：L2 的 15 个场景（13 为 pending：K5；新增 15：同时执行的命令），L3 的检查（外面与里面），L4（窗口画出桌面、启动器、
+  Falkon 打开页面；Audacious 等桌面版加入后），L5（virtio-fs 与 9p、空闲桌面的帧），L6（被测版本建系统、导出 ISO 并启动）。
+- **它在本地第一次跑就找到的**（都已在本 PR 修好或记录）：两个 `luban run` 同时执行时，先结束的那个把 machine 关掉、另一个没有任何输出地结束；
+  `--user` 写了系统里没有的用户时以 root 执行；系统的会话里 xlings 自己设的 `LUBAN_KIND` 等被当成 `--env` 检查、每次都 `[warn]`；
+  `/etc` 里某个文件在挂载下已被删除时 bwrap 整个失败、目录随之读不出；machine 里新用户的 home 不归他（J32，记录，L2-05 标 known）；
+  mcpp 的两条警告（mcpp#831，L2-06 标 known）。
+- **触发**：`layers.yml`：dispatch（层、发布版本或 xlings 的 CI run、索引分支）、每天（全部层，失败开 issue）、本仓库的 PR（场景格式 + L2）。
+  xlings 的 Linux CI 在发布候选构建好之后 dispatch L2（`luban-os-ci` 作业）；跨组织 dispatch 要维护者的 token（`LUBAN_OS_CI_TOKEN`），
+  没有时作业说明并通过。回报用 GitHub App 写 commit status 留待维护者建 App（E3）；第一版的结果在 luban-os-ci 的运行与报告里。
+- **还没有的**（下一步）：aarch64（TCG）、Windows（WSL2）、macOS（测试用 qemu carrier）各行；L6 的"从上一版升级"；L4 的剪贴板、
+  Super/Alt+Tab、书签与折叠、上手应用；按改动路径选子集。
+
 ### 9.7 成本与缓存
 
 payload 按"索引快照 + 版本 + 存放方式"缓存；PR 子集控制在 25 分钟以内。
@@ -856,6 +882,7 @@ luban-os-ci（新仓库，一个初始 PR）：
 - 上手应用支持英文、中文以外的语言。
 - WuXian 里层叠工作区窗口越出边框部分的裁切（§8.9a：先把窗口缩放改为整树变换）。
 - d3d12 上的嵌套 virgl：qemu 的 surfaceless EGL（不经 GBM 与 render node）；本轮只探测并说明（K14）。
+- 用户视图的安装只给自己（J33）：`__store-add` 只放 payload；本轮只记录，L2-02 标 known。
 - machine 里多用户的属主（J32）：9p 的 `mapped-xattr`，或 virtiofsd 的 subuid 映射；本轮只记录，luban-os-ci 的 L2-05 标为 known。
 - 存放方式 `own`（K5）：宿主上的系统都是单一布局，链接写的是建它的那个 home 的路径；`own` 要一种新的域（私有 home 在同一个逻辑路径上）、
   把系统的实例、闭包、ABI、版本登记在两个 home 之间搬动，并守住用户数据的规则；本轮不做，单独一个 PR（luban-os-ci 的 L2-13 为 pending）。
