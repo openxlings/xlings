@@ -114,6 +114,7 @@ void proxy_env(sp::SandboxSpec& s) {
 }
 
 void explicit_env(const in::Intent& i, sp::SandboxSpec& s, std::string_view config_name) {
+    for (auto& [k, v] : i.system_env) s.env[k] = v;
     for (auto& [k, v] : i.explicit_env) {
         if (i.env.explicit_any || policy::env_name_matches(k, i.env.pass)) s.env[k] = v;
         else s.degraded.push_back({"env", "--env " + k + " is not in the policy's env_pass",

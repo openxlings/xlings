@@ -919,6 +919,10 @@ status = "required"
 text = "a program whose recipe registered an environment (vim's $VIM, curl's CA bundle, tmux's terminfo) keeps its shim in a root's /usr/bin, so the environment is there when it runs; a program with nothing to add links straight to its payload"
 status = "required"
 
+[SUBOS-SYSTEM-ENV]
+text = "what xlings itself sets for a system's session (its prompt's facts: LUBAN_KIND, LUBAN_PERSIST, PS1) passes whatever the policy, with no degradation said; a caller's own --env is held to the policy's env_pass"
+status = "required"
+
 [ROOT-LOCALE]
 text = "a root is entered with LANG=C.UTF-8 and without the host's LC_* and LANGUAGE, sandbox and machine alike: the locale the root's glibc has"
 status = "required"
