@@ -231,3 +231,56 @@ XTEST(RootStoreClosure, ALinkIntoAnotherPayloadIsThatPayloadsNotThisOnes, .area 
     ASSERT_FALSE(refused);
     EXPECT_NE(refused.error().find("outside its recorded root closure"), std::string::npos) << refused.error();
 }
+
+XTEST(RootStoreClosure, AMemberTheScopeNeverTookIsNotProjectedNorABlock, .area = "subos",
+      .covers = {"ROOT-STORE-CLOSURE"}) {
+    // Systems sharing a home's store: another one installed a later revision
+    // of the same release, which has a member this scope never took (J38: a
+    // desktop's root could no longer be updated at all). The scope's root is
+    // what it opted into -- the member is not projected, and not a refusal.
+    if constexpr (!tk::is_posix)
+        GTEST_SKIP() << "root projection uses directory symlinks";
+    auto home = tk::Home::isolated("root-store-closure-member");
+    const auto payload = fs::canonical(home.dir()) / "data/xpkgs/fixture-x-visible/1.0.0";
+    const auto scope = fs::canonical(home.dir()) / "subos/box";
+    tk::write_file(payload / "bin/visible", "visible program");
+    tk::write_file(payload / "share/applications/visible.desktop", "[Desktop Entry]");
+    tk::write_file(payload / ".xlings-resolution.json", R"({"package":"fixture:visible@1.0.0","deps":[]})");
+    const Json group{{"group", "visible"}, {"provider", "fixture:visible"}, {"rootTarget", "visible"},
+                     {"rootVersion", "1.0.0"}, {"version", "1.0.0"}};
+    Json versions = {
+        {"visible",
+         {{"type", "program"}, {"filename", "visible"},
+          {"bindings", {{"visible.files.1", {{"1.0.0", "1.0.0"}}}}},
+          {"versions", {{"1.0.0", {{"bindingGroup", group},
+                                   {"bindingMembers", {{"visible", "1.0.0"}, {"visible.files.1", "1.0.0"}}},
+                                   {"kind", "program"}, {"path", payload.string() + "/bin"},
+                                   {"sourceName", "visible"}, {"destinationName", "visible"}}}}}}},
+        {"visible.files.1",
+         {{"type", "files"},
+          {"bindings", {{"visible", {{"1.0.0", "1.0.0"}}}}},
+          {"versions", {{"1.0.0", {{"bindingGroup", group}, {"kind", "files"}, {"path", payload.string()},
+                                   {"fileSrc", "share/applications"}, {"fileDst", "share/applications"}}}}}}}};
+    tk::write_file(fs::canonical(home.dir()) / ".xlings.json", Json{{"versions", versions}}.dump());
+    tk::write_file(fs::canonical(home.dir()) / "bin/xlings", "entry");
+    tk::write_file(scope / ".xlings.json",
+                   Json{{"workspace", {{"visible", {{"active", "1.0.0"}, {"installed", {"1.0.0"}}}}}}}.dump());
+    rf::Inputs generation;
+    generation.payloads = {payload};
+    generation.programs = {{"visible", payload / "bin/visible"}};
+    ASSERT_TRUE(rf::commit(scope, rf::plan(generation), "fixture"));
+    auto inputs = closure::read_scope(fs::canonical(home.dir()), "box", scope / "rootfs");
+    ASSERT_TRUE(inputs) << inputs.error();
+    auto collected = closure::collect(*inputs);
+    ASSERT_TRUE(collected) << collected.error();
+    auto prepared = view::prepare(*inputs);
+    ASSERT_TRUE(prepared) << prepared.error();
+    const auto primary = std::ranges::find_if((*prepared)->bindings(), [&](const auto& binding) {
+        return binding.destination == fs::canonical(home.dir()) / ".xlings.json";
+    });
+    ASSERT_NE(primary, (*prepared)->bindings().end());
+    const auto filtered = Json::parse(tk::read_file(primary->source));
+    EXPECT_TRUE(filtered["versions"].contains("visible"));
+    EXPECT_FALSE(filtered["versions"].contains("visible.files.1")) << "not this scope's: " << filtered.dump();
+    (*prepared)->close();
+}

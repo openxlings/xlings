@@ -161,6 +161,16 @@ XTEST(DomainProducer, InstallsAtLogicalPrefixInsideANamespaceAndPreservesHostDat
     auto denied = home.xlings({"subos", "deny", "domain-root", "r0a1b2c"});
     EXPECT_EQ(denied.exit_code, 0) << denied.transcript();
     EXPECT_FALSE(fs::exists(producer.requests_dir("domain-root") / "r0a1b2c.json")) << denied.transcript();
+    // A machine's broker request is served where the system lives too: its
+    // verdict and audit are the domain's (an install it ran used to go into
+    // the owner's copy, which the machine never reads: luban-os-ci L2-02).
+    auto served = home.xlings({"subos", "__broker-serve", "domain-root", "--actor", "probe", "--", "list"});
+    EXPECT_NE(served.exit_code, 0) << "a read is not the broker's: " << served.transcript();
+    const auto domainLog = producer.logs_dir("domain-root") / "events.ndjson";
+    ASSERT_TRUE(fs::exists(domainLog)) << served.transcript();
+    EXPECT_NE(tk::read_file(domainLog).find("\"actor\":\"probe\""), std::string::npos) << tk::read_file(domainLog);
+    const auto ownerLog = outer.logs_dir("domain-root") / "events.ndjson";
+    EXPECT_TRUE(!fs::exists(ownerLog) || tk::read_file(ownerLog).find("\"actor\":\"probe\"") == std::string::npos);
     auto invalidObserve = home.xlings({"subos", "exec", "domain-root", "--observe", "unknown", "--", "/bin/true"});
     EXPECT_EQ(invalidObserve.exit_code, 125) << invalidObserve.transcript();
     EXPECT_NE(invalidObserve.transcript().find("--observe expects"), std::string::npos);
