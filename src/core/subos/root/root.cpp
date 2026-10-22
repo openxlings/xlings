@@ -299,6 +299,9 @@ refresh(const fs::path& home, std::string_view name, const fs::path& subos_dir,
         if (auto written = xlings::subos::root_etc::ensure_sudoers(tree / "etc"); !written)
             return failed("machine /etc " + (tree / "etc").string() + ": " + written.error());
         else out.etc_added.insert(out.etc_added.end(), written->begin(), written->end());
+        if (auto written = xlings::subos::root_etc::ensure_machine_id(tree / "etc"); !written)
+            return failed("machine /etc " + (tree / "etc").string() + ": " + written.error());
+        else out.etc_added.insert(out.etc_added.end(), written->begin(), written->end());
         if (auto cache = refresh_cache(home, name); !cache)
             return failed(cache.error());
     } catch (const std::exception& error) {

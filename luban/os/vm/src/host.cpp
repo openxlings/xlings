@@ -322,10 +322,20 @@ MachineGpu machine_gpu(const std::optional<fs::path>& render_node, const std::ex
 
 namespace {
 
+// Who it is and when, before it boots (part 2 J43): its machine-id, and this
+// computer's time zone -- a machine cannot read the host's /etc.
+void stamp_identity_(const service::Context& c, std::string_view name) {
+    if (const auto root = service::root_of(c.home, name))
+        for (auto written : {xlings::subos::root_etc::ensure_machine_id(*root / "etc"),
+                             xlings::subos::root_etc::ensure_localtime(*root / "etc")})
+            if (!written) xlings::observe::ops::event("identity", {{"system", std::string(name)}, {"error", written.error()}});
+}
+
 // Starts the machine's supervisor and waits for its agent.
 int start_impl_(const service::Context& c, std::string_view name, const EnterOptions& o) {
     const auto& arch = xlings::image::native_arch();
     const xlings::subos::HomeView view{c.home};
+    stamp_identity_(c, name);
     if (arch.qemu.empty()) {
         say_(c, service::error(std::format("a machine runs on x86_64 and aarch64 hosts (this one is {})", platform::build_arch())));
         return 1;

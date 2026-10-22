@@ -50,7 +50,8 @@ struct Ran {
 
 // `argv` for nobody: its own session, the null device as input, stdout and
 // stderr into one file read back; ended whole when late.
-Ran run_(const std::vector<std::string>& argv, std::chrono::seconds limit) {
+Ran run_(const std::vector<std::string>& argv, std::chrono::seconds limit,
+         const std::map<std::string, std::string>& env = {}) {
     static std::atomic<unsigned> counter { 0 };
     const auto log = fs::temp_directory_path()
         / std::format("luban-check-{}-{}", platform::user_ids().uid,
@@ -70,7 +71,12 @@ Ran run_(const std::vector<std::string>& argv, std::chrono::seconds limit) {
         platform::reset_signals();
         const std::array<int, 3> stdio{in, out, out};
         platform::redirect_stdio(stdio);
-        platform::exec_program(argv, platform::environment());
+        auto vars = platform::environment();
+        for (const auto& [k, v] : env) {
+            if (v.empty()) vars.erase(k);
+            else vars[k] = v;
+        }
+        platform::exec_program(argv, vars);
         platform::exit_now(127);
     }
     {
@@ -249,6 +255,9 @@ std::vector<Item> declared_(const fs::path& root, const Options& o, std::set<std
                                 false, "not {\"checks\": [...]}"));
             continue;
         }
+        // A package that declares checks is checked by them: they know it
+        // better than its --version does (Falkon's is run offscreen).
+        declaredIds.insert(file.stem().string());
         for (const auto& c : *checks) {
             if (!c.is_object()) continue;
             // The launcher lists it: its desktop entry is where launchers look, and shown.
@@ -324,7 +333,9 @@ std::vector<Item> starts_(const fs::path& usrBin, const Options& o, const std::s
     std::vector<Item> out;
     for (const auto& [payload, c] : byPayload) {
         if (declaredIds.contains(c.package) || !executable_(c.program)) continue;
-        const auto r = run_({c.program.string(), "--version"}, o.program_timeout);
+        // Without a display: a graphical program answers offscreen or not at all.
+        const auto r = run_({c.program.string(), "--version"}, o.program_timeout,
+                            {{"QT_QPA_PLATFORM", "offscreen"}, {"WAYLAND_DISPLAY", ""}, {"DISPLAY", ""}});
         const bool ok = !loader_failed_(r);
         out.push_back(item_("starts:" + c.package, std::format("{} starts ({})", c.package, c.program.filename().string()),
                             false, ok, ok ? std::string{} : std::format("exit {}: {}", r.code, tail_(r.output))));
@@ -473,6 +484,14 @@ Report check(const fs::path& root, Depth depth, const Options& o) {
     if (o.run)
         for (auto& i : starts_(usrBin, o, declaredIds)) r.items.push_back(std::move(i));
     return r;
+}
+
+std::vector<Item> programs_start(const fs::path& root, const Options& o) {
+    std::set<std::string> declaredIds;
+    auto files_only = o;
+    files_only.run = false;
+    (void)declared_(root, files_only, declaredIds);
+    return starts_(rootfs::in_root(root, "/usr/bin"), o, declaredIds);
 }
 
 nlohmann::json to_json(const Report& report) {

@@ -134,3 +134,29 @@ XTEST(RootCheck, AProgramThatAnsweredStarted, .area = "luban", .covers = {"LUBAN
         << "a program's own -1 is not a signal: it ran";
     EXPECT_TRUE(rc::started(-1, true, "")) << "still running when the limit came: it started";
 }
+
+XTEST(RootCheck, AProgramIsCheckedByItsPackagesChecksOrWithoutADisplay, .area = "luban",
+      .covers = {"LUBAN-SELF-CHECK", "LUBAN-PACKAGE-CHECKS"}) {
+    // A desktop's check said "falkon starts -- exit 134" though Falkon runs
+    // (part 2 J42): it declares checks of its own, and Qt without a display aborts.
+    if constexpr (!tk::is_posix) GTEST_SKIP() << "Luban roots are Linux";
+    auto home = tk::Home::isolated("root-check-starts");
+    const auto root = a_root(home.root() / "tree");
+    const auto program = [&](std::string_view package, std::string_view body) {
+        const auto payload = home.root() / "xpkgs" / std::format("luban-x-{}", package) / "1.0" / "bin" / package;
+        tk::write_file(payload, std::format("#!/bin/sh\n{}\n", body));
+        fs::permissions(payload, fs::perms::owner_all, fs::perm_options::add);
+        fs::create_symlink(payload, root / "usr/bin" / package);
+    };
+    // Aborts as Qt does without a platform it can open.
+    const std::string qt = R"([ "$QT_QPA_PLATFORM" = offscreen ] && { echo "1.0"; exit 0; }
+echo "error while loading shared libraries: could not load the Qt platform plugin" >&2; exit 134)";
+    program("falkon", qt);
+    program("viewer", qt);
+    tk::write_file(root / rc::kDeclaredDir / "falkon.json",
+                   R"({"checks": [{"id": "falkon-listed", "launcher": "org.kde.falkon"}]})");
+    const rc::Report r{.items = rc::programs_start(root, {.run = true})};
+    EXPECT_EQ(item(r, "starts:falkon"), nullptr) << "checked by its own checks";
+    ASSERT_NE(item(r, "starts:viewer"), nullptr);
+    EXPECT_TRUE(item(r, "starts:viewer")->ok) << item(r, "starts:viewer")->detail;
+}
