@@ -112,6 +112,7 @@
 | J29 | 新建页里传统桌面卡片的 4 个小方块挨在图标的右上角 | 位置是按图片的宽度算的 | `quick_start.cpp:636-651` |
 | J30 | 关掉 GPU 后桌面仍然很卡 | 帧通道是瓶颈（J11）；软件合成时，每帧在 guest 里用 pixman 合成，再整帧或成块经 virtio-serial 发出，宿主再上传成纹理，三段都没有测量。现在只有两项性能测试（J24），没有"拖动、滚动、刷屏的帧率与 CPU"预算 | `output.cpp` 的 `render()`、`test_xdesk_cpu.cpp` |
 | J31 | 桌面系统里没有音频播放器，也没有可以拿来测声音的素材 | 版本只带了声音的输出（`luban:audio`），声音这条路径除了"文件在不在"没有任何端到端的检查 | xim-pkgindex `pkgs/luban/desktop.lua` 的 `desktop-sound` |
+| J32 | machine 里新加的用户（`adduser`）写不了自己的 home；`luban-os-ci` L2-05 发现 | machine 的目录树是宿主上的文件：9p（`security_model=none`）与非特权 virtiofsd 都以宿主用户存每个文件，`chown` 得到 EINVAL，`/home/<新用户>` 的属主是宿主的 uid——也就是 guest 里的默认用户。多用户、多版本（§3.6）在 machine 里因此不成立；沙箱与导出后的真机不受影响。可选：9p 用 `security_model=mapped-xattr`（属主与权限存在宿主文件的 xattr 里，宿主文件仍归宿主用户，宿主管理不变，读写多一次 xattr）；或 virtiofsd 在用户命名空间里用 subuid 映射（宿主上的文件归 subuid，宿主管理要跟着改）。建议前者，作为 machine 有第二个用户时的方式，单独一个 PR（§15） | `luban/os/vm/src/host.cpp` 的 9p 参数与 virtiofs 计划 |
 
 ## 2. 原则
 
@@ -855,6 +856,9 @@ luban-os-ci（新仓库，一个初始 PR）：
 - 上手应用支持英文、中文以外的语言。
 - WuXian 里层叠工作区窗口越出边框部分的裁切（§8.9a：先把窗口缩放改为整树变换）。
 - d3d12 上的嵌套 virgl：qemu 的 surfaceless EGL（不经 GBM 与 render node）；本轮只探测并说明（K14）。
+- machine 里多用户的属主（J32）：9p 的 `mapped-xattr`，或 virtiofsd 的 subuid 映射；本轮只记录，luban-os-ci 的 L2-05 标为 known。
+- 存放方式 `own`（K5）：宿主上的系统都是单一布局，链接写的是建它的那个 home 的路径；`own` 要一种新的域（私有 home 在同一个逻辑路径上）、
+  把系统的实例、闭包、ABI、版本登记在两个 home 之间搬动，并守住用户数据的规则；本轮不做，单独一个 PR（luban-os-ci 的 L2-13 为 pending）。
 
 ## 16. 评审
 
