@@ -730,6 +730,12 @@ ShimSyncSummary sync_shim_tables() {
     }
     auto entry = shim_entry_();
     std::error_code ec;
+    // A user's view made before it had `subos/current` (part 2 J48): what
+    // their PATH names, made by the first change since.
+    if (const auto& p = Config::paths(); !p.systemLayer.empty())
+        if (const auto current = p.homeDir / "subos" / "current";
+            !fs::exists(fs::symlink_status(current, ec)) && fs::is_directory(p.homeDir / "subos" / "default", ec))
+            platform::create_directory_link(current, p.homeDir / "subos" / "default");
     if (entry.empty() || !fs::exists(entry, ec)) {
         // Pre-`self init` bootstrap: there is nothing to link to yet, and
         // ensure_home_layout will build the table when it lands.

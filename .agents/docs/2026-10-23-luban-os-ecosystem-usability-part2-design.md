@@ -132,6 +132,20 @@
 | 可测性 | 私有域路径在本机测不到 | §3.4 的作业 + luban-os-ci 在 runner 上；harness 在有用户命名空间的 Linux 上本地也能跑 |
 | 隐私 | machine-id 是标识 | 每个系统随机生成、只在系统里；不上报 |
 
+### 5.1 实施后的自审（2026-10-23）
+
+| 视角 | 检查 | 结论 / 处理 |
+|---|---|---|
+| 正确性 | J33 的"收回"只收回本次安装新激活、之前没有激活的目标 | 管理员之前选过的不动；用户安装带进来的依赖也不在系统里激活——系统不需要它们在用 |
+| 正确性 | J48 的 shim 归属按 PATH 找：PATH 与 shell 当时的不同会怎样 | 子进程继承同一个 PATH；找不到时退回原来的入口归属，不比之前差 |
+| 无感升级 | 旧版本建的用户视图没有 `subos/current` | 第一次改动时（shim 同步）补上；旧视图复制来的系统 envs，doctor 不再当作孤儿 |
+| 无感升级 | 已有多用户的 machine | 下一次启动起 `/home` 走 mapped-xattr，旧 home 在启动时交还一次；默认用户无感 |
+| 稳定性 | 启动时的归属修正 | 不跟随链接（lchown）、只看 `/home/<名字>` 且属主不对的、只在多用户 machine 上 |
+| 隐私 | 时区与 machine-id | neutral 身份不写宿主时区；machine-id 每系统随机，不外传 |
+| 跨平台 | `owner_uid`、`chown_tree` | POSIX 实现，Windows 为空实现；PATH 查找用平台的分隔符 |
+| 可测性 | 本机测不了的（沙箱里的 bwrap、私有域） | test_user_view、DomainProducer 在 CI 执行；machine 路径在本机用 luban-os-ci 全部 L2 跑过（15 通过，L2-07 的回归已修） |
+| 一致性 | "用户的选择"在 shell、`luban run`、shim 三条路径上 | 三条都先找用户自己的 bin，再找系统的 |
+
 ## 6. 任务与依赖
 
 实施状态（2026-10-23）：T1–T6、T8–T10 已实现，另修 J48（§6b）（xlings PR #698、xim-pkgindex PR #1031、luban-os-ci 分支 `after-part2`，发布后合入）；T7 已存在；T11–T13 见下。
