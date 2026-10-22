@@ -1327,14 +1327,28 @@ int enter(const service::Context& c, std::string_view name_or_image, const Enter
 
 int run(const service::Context& c, std::string_view name, std::span<const std::string> argv, std::string_view user) {
     if (argv.empty()) return 2;
-    const bool was_running = running(c.home, name).has_value();
-    if (!was_running) {
-        if (const int rc = start(c, name, EnterOptions{}); rc != 0) return rc;
-        platform::write_file_atomic(for_commands_(c.home, name).string(), "");
+    // Whether it runs and taking a lease, or giving one back and powering it
+    // off, each under one lock: a command joining as another leaves would
+    // otherwise find it running and lose it to that one's power-off.
+    const auto decide = [&] {
+        auto lock = std::make_unique<platform::FileLock>();
+        std::error_code ec;
+        fs::create_directories(run_dir(c.home, name), ec);
+        std::string why;
+        (void)lock->acquire(run_dir(c.home, name) / "commands.lock", std::chrono::minutes(5), {}, why);
+        return lock;
+    };
+    {
+        const auto lock = decide();
+        if (!running(c.home, name).has_value()) {
+            if (const int rc = start(c, name, EnterOptions{}); rc != 0) return rc;
+            platform::write_file_atomic(for_commands_(c.home, name).string(), "");
+        }
+        lease_(c.home, name);
     }
-    lease_(c.home, name);
     // The last command out powers off a machine started for commands.
     const auto done_with = [&] {
+        const auto lock = decide();
         std::error_code ec;
         if (release_(c.home, name) && fs::exists(for_commands_(c.home, name), ec)) (void)vm::stop(c, name);
     };
