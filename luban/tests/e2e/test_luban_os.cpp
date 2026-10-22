@@ -574,25 +574,31 @@ XTEST(LubanOs, AFloodingConsoleIsDrawnOncePerFrame, .area = "luban",
       .covers = {"LUBAN-CONSOLE-PACED"}, .requires_ = {"linux", "xlings-bin"}) {
     auto home = tk::Home::isolated("luban-os-console-flood");
     ASSERT_EQ(home.xlings({"self", "init"}).exit_code, 0);
-    const auto st = home.root() / "flood.json";
+    const auto st = home.root() / "flood.json", began = home.root() / "began", ended = home.root() / "ended";
+    // Until the writer is done, however slow the computer: then two frames.
     auto r = run_script(home, std::format(R"(wait console
 waitfor console.rows.0 ready 10
 perf
-sleep 2500
+untilfile {} 60
+frames 2
 state {}
-)", st.string()),
+)", ended.string(), st.string()),
                         {"--console-exec", "/bin/sh", "-c",
                          // A trickle of small writes (an interactive shell's, a slow build's):
-                         // what a reader gets as many reads.
-                         R"(echo ready; sleep 0.3; i=0; while [ $i -lt 1500 ]; do echo "line $i"; sleep 0.001; i=$((i+1)); done; echo flooded; exec cat)"});
+                         // what a reader gets as many reads. Its start and end, in ms.
+                         std::format(R"(echo ready; sleep 0.3; date +%s%3N > {0}; i=0; while [ $i -lt 1500 ]; do echo "line $i"; sleep 0.001; i=$((i+1)); done; echo flooded; date +%s%3N > {1}.part; mv {1}.part {1}; exec cat)",
+                                     began.string(), ended.string())});
     ASSERT_EQ(r.exit_code, 0) << r.transcript();
     const auto s = read_state(st);
     const int reads = s["console"]["reads"].get<int>(), wakes = s["console"]["wakes"].get<int>();
-    // Over ~2.3 s since it began: at most a wake a frame, however many reads.
-    // The last write is always shown.
+    const auto ms = [](const fs::path& p) { return std::stoll(tk::read_file(p)); };
+    const auto took = ms(ended) - ms(began);
+    // At most a wake a frame (60 a second) while it wrote, however many reads;
+    // the last write is always shown.
     EXPECT_TRUE(std::ranges::any_of(s["console"]["rows"], [](const auto& row) { return row == "flooded"; }))
         << s["console"].dump();
-    EXPECT_LE(wakes, 160) << "the writes woke the window " << wakes << " times for " << reads << " reads\n" << s["console"].dump();
+    EXPECT_LE(wakes, took * 60 / 1000 + 40) << "the writes woke the window " << wakes << " times for " << reads << " reads in " << took
+                                            << " ms\n" << s["console"].dump();
     EXPECT_GT(s["perf"]["frames"].get<int>(), 10) << "and it was drawn while it ran\n" << s["perf"].dump(2);
 }
 

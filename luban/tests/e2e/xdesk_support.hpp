@@ -183,8 +183,18 @@ for obj, op, body in it:
     return file;
 }
 
+// A desktop whose tour was given (design 2026-10-21 §8.1): what a test starts
+// from unless it is the tour's -- the tour's card would cover what it looks at.
+inline void toured(const tk::Home& home) {
+    const auto state = home.root() / ".config" / "xdesk" / "state.json";
+    if (fs::exists(state)) return;
+    fs::create_directories(state.parent_path());
+    std::ofstream(state) << R"({"toured": true})";
+}
+
 inline tk::RunResult xdesk_with(const tk::Home& home, std::string_view profile, std::string_view script,
-                                std::map<std::string, std::string> env = {}) {
+                                std::map<std::string, std::string> env = {}, bool tour = false) {
+    if (!tour) toured(home);
     const auto runtime = home.root() / "run";
     fs::create_directories(runtime);
     fs::permissions(runtime, fs::perms::owner_all, fs::perm_options::replace);
@@ -233,12 +243,12 @@ inline std::array<int, 4> box_of(const Image& img, const std::array<int, 3>& col
 // where to click from the state, not from pixels it guessed.
 class XdeskSession {
 public:
-    XdeskSession(const tk::Home& home, std::string profile, std::map<std::string, std::string> env = {})
+    XdeskSession(const tk::Home& home, std::string profile, std::map<std::string, std::string> env = {}, bool tour = false)
         : home_(home), runtime_(home.root() / "run"), done_(home.root() / "session.done") {
         std::error_code ec;
         fs::remove(done_, ec);
-        run_ = std::async(std::launch::async, [this, profile, env] {
-            return xdesk_with(home_, profile, std::format("wait desktop\nwaitfor desktop.texture.0 1100\nuntilfile {} 240\n", done_.string()), env);
+        run_ = std::async(std::launch::async, [this, profile, env, tour] {
+            return xdesk_with(home_, profile, std::format("wait desktop\nwaitfor desktop.texture.0 1100\nuntilfile {} 240\n", done_.string()), env, tour);
         });
         for (int k = 0; k < 200 && control_.empty(); ++k) {
             for (const auto& e : fs::directory_iterator(runtime_, ec))

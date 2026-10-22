@@ -21,7 +21,7 @@ using namespace luban_os_e2e;
 
 namespace {
 
-constexpr std::string_view kBlueTitle = "4040c0";   // the colour client's title is its colour; blue is the newest
+const std::string kBlueTitle = "4040c0";   // the colour client's title is its colour; blue is the newest
 
 // Three windows there, and none still on its way.
 Json settled(const XdeskSession& d) {
@@ -340,7 +340,7 @@ XTEST(XdeskInteraction, TheFirstSessionGivesTheTourOnceStepsDoneByDoingThem, .ar
     auto home = tk::Home::isolated("xdesk-tour");
     ASSERT_EQ(home.xlings({"self", "init"}).exit_code, 0);
     {
-        XdeskSession d(home, "classic");
+        XdeskSession d(home, "classic", {}, true);
         ASSERT_TRUE(d.ready());
         auto s = settled(d);
         ASSERT_TRUE(s.contains("tour")) << "the first session gives the tour";
@@ -360,7 +360,7 @@ XTEST(XdeskInteraction, TheFirstSessionGivesTheTourOnceStepsDoneByDoingThem, .ar
         EXPECT_EQ(d.finish().exit_code, 0);
     }
     // The next session: no tour; asked for, there again.
-    XdeskSession d(home, "classic");
+    XdeskSession d(home, "classic", {}, true);
     ASSERT_TRUE(d.ready());
     auto s = settled(d);
     EXPECT_FALSE(s.contains("tour")) << "given once";

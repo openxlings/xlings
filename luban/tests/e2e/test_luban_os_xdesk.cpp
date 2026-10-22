@@ -1142,7 +1142,7 @@ resize 900 520
 sleep 5000
 key Alt+Tab
 sleep 2500
-)");
+)", {}, true);
     });
     fs::path control;
     for (int k = 0; k < 100 && control.empty(); ++k) {
