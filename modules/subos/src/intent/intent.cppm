@@ -75,6 +75,7 @@ struct Intent {
     spec::Request::RootLogin root_login;
     std::map<std::string, std::string> host_env;
     std::map<std::string, std::string> explicit_env;
+    std::map<std::string, std::string> system_env;   // Request::system_env
     std::function<bool(std::string_view)> host_exists;
     std::function<std::string(std::string_view)> host_resolve;
     std::function<bool(std::string_view)> host_device;

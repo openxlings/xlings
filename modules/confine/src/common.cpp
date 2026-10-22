@@ -29,11 +29,15 @@ void host_userland(std::vector<sp::MountOp>& m, const in::Intent& i, sp::Storage
     // A file of /etc: by where it really is, and only a regular file -- a
     // link into a mount the sandbox does not see (a Luban system's cache in
     // its /run) was bound as the link and could not be found (H26).
+    // On this host, a file deleted under its mount (a container's /etc file
+    // replaced on its host: no name left, link count 0) cannot be bound --
+    // bwrap fails the whole sandbox for it; it is left out, as an absent one is.
     auto try_ro_file = [&](const char* src, const char* dst) {
         if (!i.exists(src)) return;
         const auto real = i.resolve(src);
         std::error_code ec;
         if (!i.host_exists && !std::filesystem::is_regular_file(real, ec)) return;
+        if (!i.host_exists && std::filesystem::hard_link_count(real, ec) == 0 && !ec) return;
         m.push_back({MountKind::RoBind, real, dst});
     };
     try_ro_file("/etc/resolv.conf", "/etc/resolv.conf");
