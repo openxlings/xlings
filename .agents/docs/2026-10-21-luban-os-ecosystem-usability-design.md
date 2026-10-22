@@ -247,6 +247,8 @@ Landlock 的规则挂在旧的 inode 上，于是允许写的目录也被拒绝�
 - **设置 `files`**：`virtiofs`（默认）或 `9p`（`luban config <name> --files`）；`luban status` 与 `luban config` 的输出里各有一行 `files`。
 - **规划与执行分开**：`luban::vm::virtiofs_plan` 只算参数（每个共享一个 daemon 的 argv、qemu 的 memfd、`-numa`、chardev 与设备），`nine_p_args` 算 9p 的；启动时两套都写进 state.json（`virtiofsd`、`files_virtiofs`、`files_9p`），由 supervisor 先起 daemon、等它的 socket（3 秒），再起 qemu，qemu 退出后停掉 daemon。
 - **后备的层次**：`--sandbox namespace` 起不来（主机限制了用户命名空间）就以 `--sandbox none` 再试；还起不来，就把参数换成 9p、去掉内核命令行上的 `luban.fs=virtiofs`，state 里写 `9p (virtiofsd did not start: supervisor.log)`。GL qemu 退回软件渲染时 daemon 重新起一次（每个 virtiofsd 只服务一个 qemu）。
+- **只在硬件虚拟化下**：没有 KVM 的（模拟的）machine 留在 9p，state 里说明。CI 上 aarch64 的 TCG machine 经 virtiofs 读程序时 init（busybox）段错误；
+  virtiofs 的好处也只在 KVM 下才显著。
 - **安装时机**：第一次需要时装 `xim:virtiofsd`；装不上（索引里没有、这个架构没有构建）就写 `logs/machines/<name>/virtiofsd-install-failed`，一天之内不再试——否则每次启动都要多等约 8 秒。
 - **缓存与上面的不同**：所有共享都是 `cache=auto`。generation 与 `/xlings` 在同一个共享（home）里，宿主机往里安装的东西 machine 要马上看到；`always` 要到重启才看得到。9p 的挂载参数未改。
 - **权限语义**：在实机上对比过，非特权 virtiofsd 与 9p `security_model=none` 一样：`chown` 得到 EINVAL，`chmod` 成功，新文件的属主是宿主机用户。
@@ -388,6 +390,13 @@ extensions = { luban = { checks = {
   5. 9p 与 virtiofs 下的启动时间。
 
   验收：打开本地页面、新标签页，以及经测试代理打开一个外部网址，都不崩溃；启动时间纳入 L5。
+
+  **实现（P5）**：在 KVM machine 里复现（xdesk 用 wlroots 的 headless 后端，Falkon 开在上面）：主进程 exit 139，跳到 `0x9276`；
+  去掉 GPU、`--disable-gpu`、软件 GL 都一样。`QT_DEBUG_PLUGINS` 显示崩溃前最后加载的是 `vulkan`：Falkon 的树用自己的 musl 加载器，
+  musl 找不到库时退到默认的 `/lib:/usr/local/lib:/usr/lib`，而 Luban 系统的 `/usr/lib` 是 glibc 的（桌面版带 vulkan-loader），
+  glibc 的库进了 musl 进程。宿主上没有 libvulkan，所以宿主上不崩。修法在组件这一层：`luban_component.config` 在每个
+  `libexec/<name>/lib/ld-musl-<arch>.so.1` 旁写一个空的 `libexec/<name>/etc/ld-musl-<arch>.path`（musl 在那里读它，空表示没有系统路径），
+  所有带加载器的组件升 revision。修后本地页面 1.1 s 打开，两个标签页都不崩；9p、virtiofs 都一样。
 - **J10**：提示还在显示时，`resize` 与 `set_scale` 之后按新的尺寸重画。
 
 ### 6.3 音频播放器与测试用的音乐（J31）

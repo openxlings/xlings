@@ -29,7 +29,7 @@ luban boot box2 --now             # switch now, without restarting the kernel (w
 ## 它的文件
 
 机器的目录树和它读的 home 是共享给它的，不是复制的：走 virtio-fs，每个共享一个非特权的 `virtiofsd`
-（第一台机器会安装 `xim:virtiofsd`）；做不到时走 9p——这台主机没有它的构建，或守护进程起不来。
+（第一台机器会安装 `xim:virtiofsd`）；做不到时走 9p——没有硬件虚拟化的机器、这台主机没有它的构建，或守护进程起不来。
 `luban status <name>` 会说用的是哪个，以及原因：
 
 ```bash

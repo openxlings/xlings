@@ -36,8 +36,9 @@ one. A broken library cannot prevent the rollback — xlings is static.
 
 A machine's tree and the home it reads are shared with it, not copied:
 over virtio-fs, one unprivileged `virtiofsd` for each share (the first machine
-installs `xim:virtiofsd`), and over 9p where that cannot be -- a host it is
-not built for, a daemon that does not start. `luban status <name>` says which,
+installs `xim:virtiofsd`), and over 9p where that cannot be -- a machine
+without hardware virtualization, a host it is not built for, a daemon that
+does not start. `luban status <name>` says which,
 and why:
 
 ```bash

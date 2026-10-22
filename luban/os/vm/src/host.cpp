@@ -473,7 +473,11 @@ int start_impl_(const service::Context& c, std::string_view name, const EnterOpt
     const auto nine_p = nine_p_args(shares);
     std::optional<VirtiofsPlan> vfs;
     std::string files = "9p";
-    if (!settings || settings->files == "virtiofs") {
+    // An emulated machine (no KVM) stays on 9p: programs read over
+    // vhost-user crashed its init (aarch64 TCG, CI), and the speed is KVM's.
+    const bool want_virtiofs = !settings || settings->files == "virtiofs";
+    if (want_virtiofs && !kvm) files = "9p (an emulated machine shares its files over 9p)";
+    if (want_virtiofs && kvm) {
         auto found = xlings::subos::tools::first("virtiofsd", view, xlings::subos::Ports{});
         // Installed the first time; one that could not be (an index without
         // it, a host it is not built for) is tried again a day later, not at
