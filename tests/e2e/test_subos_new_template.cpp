@@ -228,11 +228,18 @@ end
                   {"packages", {"fixture:lib@1.0.0", "fixture:old@1.0.0"}}, {"workspace", Json::object()}};
     const Json v2{{"subos_kind", "rootfs"}, {"abi", host + "-linux-gnu"},
                   {"packages", {"fixture:lib@2.0.0", "fixture:added@1.0.0"}}, {"workspace", Json::object()}};
-    tk::write_file(repo / "pkgs/e/ed.lua", std::format(R"LUA(
+    // The edition, in the versions given (the last is its newest).
+    auto edition = [&](const std::vector<std::pair<std::string, Json>>& versions) {
+        std::string xpm, manifests;
+        for (const auto& [v, m] : versions) {
+            xpm += std::format("['{}'] = {{}}, ", v);
+            manifests += std::format("['{}'] = {}, ", v, Json(m.dump()).dump());
+        }
+        tk::write_file(repo / "pkgs/e/ed.lua", std::format(R"LUA(
 package = {{ spec = '1', name = 'ed', type = 'subos', archs = {{'x86_64', 'aarch64'}},
-            xpm = {{ linux = {{ ['latest'] = {{ ref = '2.0.0' }}, ['1.0.0'] = {{}}, ['2.0.0'] = {{}} }} }} }}
+            xpm = {{ linux = {{ ['latest'] = {{ ref = '{}' }}, {} }} }} }}
 import('xim.libxpkg.pkginfo')
-local manifests = {{ ['1.0.0'] = {}, ['2.0.0'] = {} }}
+local manifests = {{ {} }}
 function install()
     local dir = pkginfo.install_dir()
     os.mkdir(path.join(dir, 'usr', 'share', 'factory', 'etc'))
@@ -240,7 +247,9 @@ function install()
     io.writefile(path.join(dir, 'usr', 'share', 'factory', 'etc', 'motd'), 'ed ' .. pkginfo.version() .. '\n')
     return true
 end
-)LUA", Json(v1.dump()).dump(), Json(v2.dump()).dump()));
+)LUA", versions.back().first, xpm, manifests));
+    };
+    edition({{"1.0.0", v1}, {"2.0.0", v2}});
     const std::map<std::string, std::string> env{{"XLINGS_TOOLS_SEARCH", "home"}};
     auto made = home.xlings({"subos", "new", "u", "--from", "fixture:ed@1.0.0"}, env);
     ASSERT_EQ(made.exit_code, 0) << made.transcript();
@@ -273,6 +282,28 @@ end
     auto again = home.xlings({"subos", "upgrade", "u", "-y"}, env);
     ASSERT_EQ(again.exit_code, 0) << again.transcript();
     EXPECT_NE(again.out.find("up to date"), std::string::npos) << again.transcript();
+    EXPECT_EQ(record()["brought"]["fixture:lib"], Json::array({"1.0.0"})) << "what it moved on from: " << record().dump();
+
+    // The next edition moves lib again: lib 1.0.0, still here, is what the
+    // edition brought before -- not a version the user chose.
+    plain("lib", {"1.0.0", "2.0.0", "3.0.0"});
+    const Json v3{{"subos_kind", "rootfs"}, {"abi", host + "-linux-gnu"},
+                  {"packages", {"fixture:lib@3.0.0", "fixture:added@1.0.0"}}, {"workspace", Json::object()}};
+    edition({{"1.0.0", v1}, {"2.0.0", v2}, {"3.0.0", v3}});
+    auto second = home.xlings({"subos", "upgrade", "u", "--dry-run"}, env);
+    ASSERT_EQ(second.exit_code, 0) << second.transcript();
+    EXPECT_NE(second.out.find("upgrade  fixture:lib 2.0.0 -> 3.0.0"), std::string::npos) << second.transcript();
+    EXPECT_EQ(second.out.find("keep     fixture:lib"), std::string::npos) << second.transcript();
+    // A record from before the edition kept what it brought: the versions
+    // older than the one it last brought are taken for its own.
+    auto instance = Json::parse(tk::read_file(home.dir() / "config/subos/u/instance.json"));
+    instance["edition"].erase("brought");
+    tk::write_file(home.dir() / "config/subos/u/instance.json", instance.dump());
+    auto older = home.xlings({"subos", "upgrade", "u", "-y"}, env);
+    ASSERT_EQ(older.exit_code, 0) << older.transcript();
+    EXPECT_NE(older.out.find("upgrade  fixture:lib 2.0.0 -> 3.0.0"), std::string::npos) << older.transcript();
+    EXPECT_EQ(record()["packages"]["fixture:lib"], "3.0.0") << record().dump();
+    EXPECT_EQ(record()["brought"]["fixture:lib"], Json::array({"1.0.0", "2.0.0"})) << record().dump();
 
     // An unpinned package (an agent) is at the index's newest when made:
     // not an upgrade until the index has a newer one.
