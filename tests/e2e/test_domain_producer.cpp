@@ -171,6 +171,11 @@ XTEST(DomainProducer, InstallsAtLogicalPrefixInsideANamespaceAndPreservesHostDat
     EXPECT_NE(tk::read_file(domainLog).find("\"actor\":\"probe\""), std::string::npos) << tk::read_file(domainLog);
     const auto ownerLog = outer.logs_dir("domain-root") / "events.ndjson";
     EXPECT_TRUE(!fs::exists(ownerLog) || tk::read_file(ownerLog).find("\"actor\":\"probe\"") == std::string::npos);
+    // What it records there is read from here too (part 2 J40): its log and report.
+    auto logged_there = home.xlings({"subos", "log", "domain-root", "--json"});
+    EXPECT_NE(logged_there.out.find("\"actor\":\"probe\""), std::string::npos) << logged_there.transcript();
+    auto reported = home.xlings({"subos", "report", "domain-root"});
+    EXPECT_EQ(reported.exit_code, 0) << reported.transcript();
     auto invalidObserve = home.xlings({"subos", "exec", "domain-root", "--observe", "unknown", "--", "/bin/true"});
     EXPECT_EQ(invalidObserve.exit_code, 125) << invalidObserve.transcript();
     EXPECT_NE(invalidObserve.transcript().find("--observe expects"), std::string::npos);

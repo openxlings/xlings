@@ -73,7 +73,7 @@ struct Request {
     std::string reason;
 };
 
-std::string enqueue(const HomeView& home, std::string_view instance,
+std::expected<std::string, std::string> enqueue(const HomeView& home, std::string_view instance,
                     std::span<const std::string> argv, std::string_view reason);
 std::vector<Request> pending(const HomeView& home, std::string_view instance);
 // Removes it from the queue.

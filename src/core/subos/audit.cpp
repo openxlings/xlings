@@ -32,10 +32,32 @@ import xlings.subos.broker;
 import xlings.observe;
 import xlings.core.home;
 import xlings.core.home.domain_producer;
+import xlings.core.home.prefix_domain;
 import xlings.libs.sha256;
 import xlings.core.version_order;
 
 namespace xlings::subos {
+
+// The homes a system's records may be in (part 2 J40): this one, and the
+// domain's when the system lives in one -- a session started from here keeps
+// its requests, audit and session files here, one started where the system
+// lives (luban's) keeps them there. Read from both; nothing is entered.
+std::vector<std::pair<HomeView, std::optional<xlings::home::prefix_domain::Domain>>>
+record_homes_(std::string_view name) {
+    std::vector<std::pair<HomeView, std::optional<xlings::home::prefix_domain::Domain>>> out{{home_view(), std::nullopt}};
+    if (auto scope = xlings::home::domain_producer::read_scope(Config::paths().homeDir, name); scope && *scope)
+        out.push_back({HomeView{(**scope).domain.physicalHome}, (**scope).domain});
+    return out;
+}
+
+// A system's events, from every home it keeps them in, in time order.
+std::vector<nlohmann::json> events_of_(std::string_view name) {
+    std::vector<nlohmann::json> all;
+    for (const auto& [home, domain] : record_homes_(name))
+        for (auto& e : observe::read(home.logs_dir(name) / "events.ndjson")) all.push_back(std::move(e));
+    std::ranges::stable_sort(all, {}, [](const nlohmann::json& e) { return e.value("ts", std::string{}); });
+    return all;
+}
 
 // `subos requests / approve / deny <name> [id]`: what a sandbox asked for
 // under fetch=ask (design §8.2). Only from outside -- the sandbox cannot see
@@ -64,8 +86,12 @@ int run_requests_(std::string_view sub, int argc, char* argv[], EventStream& str
     }
     const auto home = home_view();
     const auto& name = pos[0];
+    const auto homes = record_homes_(name);
     if (sub == "requests") {
-        auto reqs = subos::broker::pending(home, name);
+        std::vector<subos::broker::Request> reqs;
+        for (const auto& [where, domain] : homes)
+            for (auto& r : subos::broker::pending(where, name)) reqs.push_back(std::move(r));
+        std::ranges::stable_sort(reqs, {}, &subos::broker::Request::created);
         if (json) {
             for (auto& r : reqs)
                 std::println(std::cout, "{}", nlohmann::json{{"id", r.id}, {"argv", r.argv}, {"created", r.created},
@@ -79,6 +105,20 @@ int run_requests_(std::string_view sub, int argc, char* argv[], EventStream& str
             std::println(std::cout, "{}  {}  xlings{}   ({})", r.id, r.created, line, r.reason);
         }
         return 0;
+    }
+    // Queued where the system lives: answered there, and what is approved runs
+    // there (J37).
+    for (const auto& [where, domain] : homes) {
+        if (!domain) continue;
+        const auto queued = subos::broker::pending(where, name);
+        if (std::ranges::none_of(queued, [&](const auto& q) { return q.id == pos[1]; })) continue;
+        std::vector<std::string> again{"subos", std::string(sub), name, pos[1]};
+        auto rc = xlings::home::domain_producer::run(*domain, again);
+        if (!rc) {
+            stream.emit(ErrorEvent{.code = ErrorCode::Internal, .message = rc.error(), .recoverable = true});
+            return 1;
+        }
+        return *rc;
     }
     auto r = subos::broker::take(home, name, pos[1]);
     if (!r) {
@@ -220,7 +260,7 @@ int run_report_(int argc, char* argv[], EventStream& stream,
     };
     std::map<std::string, Session> sessions;
     std::vector<std::string> order, policy_changes;
-    for (auto& e : observe::read(home_view().logs_dir(name) / "events.ndjson")) {
+    for (auto& e : events_of_(name)) {
         const auto ev = e.value("event", "");
         if (ev == "policy-change" || ev == "policy-reset") {
             policy_changes.push_back(e.value("ts", "") + " " + ev);
@@ -305,7 +345,12 @@ int run_report_(int argc, char* argv[], EventStream& stream,
 int run_ps_(int argc, char* argv[], EventStream& stream) {
     bool json = false;
     for (int i = 3; i < argc; ++i) if (std::string_view(argv[i]) == "--json") json = true;
+    // Every home sessions may run from: this one, and the private domain's
+    // (part 2 J40) -- one luban started where its system lives.
     auto sessions = session::list(home_view());
+    if (auto domain = xlings::home::prefix_domain::resolve(Config::paths().homeDir); domain && domain->privateHome)
+        if (std::error_code dec; fs::is_directory(domain->physicalHome / "run" / "subos", dec))
+            for (auto& i : session::list(HomeView{domain->physicalHome})) sessions.push_back(std::move(i));
     if (json) {
         for (auto& i : sessions) std::println(std::cout, "{}", session::to_json(i).dump());
         return 0;
@@ -354,7 +399,6 @@ int run_log_(int argc, char* argv[], EventStream& stream,
         name = pick_subos_or_fail_("log", stream, usageError, &rc);
         if (name.empty()) return rc;
     }
-    const auto file = home_view().logs_dir(name) / "events.ndjson";
     auto keep = [&](const nlohmann::json& e) {
         if (!kinds.empty() && !kinds.contains(e.value("kind", ""))) return false;
         if (!sessionId.empty() && e.value("session", "") != sessionId) return false;
@@ -370,28 +414,33 @@ int run_log_(int argc, char* argv[], EventStream& stream,
         std::println(std::cout, "{} {:<9} {:<14} {}{}", e.value("ts", ""), e.value("kind", ""),
                      e.value("event", ""), e.value("session", ""), detail);
     };
-    auto events = observe::read(file);
     std::vector<nlohmann::json> shown;
-    for (auto& e : events) if (keep(e)) shown.push_back(std::move(e));
+    for (auto& e : events_of_(name)) if (keep(e)) shown.push_back(std::move(e));
     const auto from = shown.size() > limit ? shown.size() - limit : 0;
     for (auto i = from; i < shown.size(); ++i) print(shown[i]);
     if (!follow) return 0;
-    // -f: keep reading what the supervisor appends.
+    // -f: keep reading what the supervisors append, in each home it keeps them.
     std::error_code ec;
-    auto offset = fs::exists(file, ec) ? fs::file_size(file, ec) : 0;
+    std::vector<std::pair<fs::path, std::uintmax_t>> files;
+    for (const auto& [where, domain] : record_homes_(name)) {
+        const auto file = where.logs_dir(name) / "events.ndjson";
+        files.push_back({file, fs::exists(file, ec) ? fs::file_size(file, ec) : 0});
+    }
     while (true) {
         std::this_thread::sleep_for(std::chrono::milliseconds(300));
-        auto size = fs::exists(file, ec) ? fs::file_size(file, ec) : 0;
-        if (size < offset) offset = 0;      // rotated
-        if (size == offset) continue;
-        std::ifstream in(file, std::ios::binary);
-        in.seekg(static_cast<std::streamoff>(offset));
-        std::string line;
-        while (std::getline(in, line)) {
-            auto e = nlohmann::json::parse(line, nullptr, false);
-            if (!e.is_discarded() && e.is_object() && keep(e)) print(e);
+        for (auto& [file, offset] : files) {
+            auto size = fs::exists(file, ec) ? fs::file_size(file, ec) : 0;
+            if (size < offset) offset = 0;      // rotated
+            if (size == offset) continue;
+            std::ifstream in(file, std::ios::binary);
+            in.seekg(static_cast<std::streamoff>(offset));
+            std::string line;
+            while (std::getline(in, line)) {
+                auto e = nlohmann::json::parse(line, nullptr, false);
+                if (!e.is_discarded() && e.is_object() && keep(e)) print(e);
+            }
+            offset = size;
         }
-        offset = size;
     }
 }
 
