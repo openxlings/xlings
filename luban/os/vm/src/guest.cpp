@@ -411,6 +411,13 @@ Json hello_() { return Json{{"agent", 1}, {"provides", Json{{"agent-display", 1}
                 } else if (frame.type == 'O') {
                     auto open = Json::parse(frame.payload, nullptr, false);
                     if (!open.is_object()) open = Json::object();
+                    // A user asked for by name is that user or nobody: never root instead.
+                    if (const auto asked = open.value("user", std::string{});
+                        !asked.empty() && !xlings::subos::root_etc::find_user("/etc", asked)) {
+                        (void)platform::write_all(out, proto::encode_json('X', frame.channel,
+                            Json{{"code", 126}, {"error", std::format("there is no user '{}' in this system", asked)}}));
+                        continue;
+                    }
                     if (auto display = open.find("display"); display != open.end() && display->is_object()) {
                         std::vector<int> inherited{port, out};
                         for (const auto& [ch, other] : sessions) {
