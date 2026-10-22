@@ -1202,6 +1202,40 @@ int start_vz_(const service::Context& c, std::string_view name, const EnterOptio
     return 1;
 }
 
+namespace {
+
+// The commands in a machine (`luban run`): each holds a lease while it runs
+// (<run>/commands/<pid>); a machine started for commands (<run>/for-commands)
+// powers off when the last of them ends -- not under another that joined it.
+// `luban enter` makes it a machine someone keeps running.
+fs::path commands_dir_(const fs::path& home, std::string_view name) { return run_dir(home, name) / "commands"; }
+fs::path for_commands_(const fs::path& home, std::string_view name) { return run_dir(home, name) / "for-commands"; }
+
+void lease_(const fs::path& home, std::string_view name) {
+    std::error_code ec;
+    fs::create_directories(commands_dir_(home, name), ec);
+    platform::write_file_atomic((commands_dir_(home, name) / std::to_string(platform::get_pid())).string(), "");
+}
+
+// This command's lease given back; whether it was the last one alive.
+bool release_(const fs::path& home, std::string_view name) {
+    std::error_code ec;
+    fs::remove(commands_dir_(home, name) / std::to_string(platform::get_pid()), ec);
+    bool others = false;
+    for (const auto& e : fs::directory_iterator(commands_dir_(home, name), ec)) {
+        int pid = 0;
+        const auto file = e.path().filename().string();
+        if (std::from_chars(file.data(), file.data() + file.size(), pid).ec != std::errc{} || !platform::is_process_alive(pid)) {
+            fs::remove(e.path(), ec);   // a command that ended without giving it back
+            continue;
+        }
+        others = true;
+    }
+    return !others;
+}
+
+}  // namespace
+
 int enter(const service::Context& c, std::string_view name_or_image, const EnterOptions& o) {
     if constexpr (platform::is_windows) {
         std::error_code ec;
@@ -1226,6 +1260,11 @@ int enter(const service::Context& c, std::string_view name_or_image, const Enter
             return 1;
         }
         return platform::run_argv({app->string(), "--attach", name});
+    }
+    // Entered: a machine someone keeps running, not one started for commands.
+    {
+        std::error_code rm;
+        fs::remove(for_commands_(c.home, name), rm);
     }
     if (!running(c.home, name)) {
         if (const int rc = platform::is_macos ? start_vz_(c, name, o) : start_impl_(c, name, o); rc != 0) return rc;
@@ -1285,16 +1324,25 @@ int enter(const service::Context& c, std::string_view name_or_image, const Enter
     return code;
 }
 
+
 int run(const service::Context& c, std::string_view name, std::span<const std::string> argv, std::string_view user) {
     if (argv.empty()) return 2;
     const bool was_running = running(c.home, name).has_value();
-    if (!was_running)
+    if (!was_running) {
         if (const int rc = start(c, name, EnterOptions{}); rc != 0) return rc;
+        platform::write_file_atomic(for_commands_(c.home, name).string(), "");
+    }
+    lease_(c.home, name);
+    // The last command out powers off a machine started for commands.
+    const auto done_with = [&] {
+        std::error_code ec;
+        if (release_(c.home, name) && fs::exists(for_commands_(c.home, name), ec)) (void)vm::stop(c, name);
+    };
     auto client = Client::connect(c.home, name);
     if (!client || client->fd() < 0) {
         say_(c, service::error(std::format("{} does not answer: {}", name, client ? std::string("no connection") : client.error()),
                                std::format("luban status {}", name)));
-        if (!was_running) (void)vm::stop(c, name);
+        done_with();
         return 125;
     }
     // A terminal on both ends: the command on one there (its size, raw), so
@@ -1312,7 +1360,12 @@ int run(const service::Context& c, std::string_view name, std::span<const std::s
             platform::poll_fds(p, 200);
             if (p[1].readable || p[1].closed) {
                 auto frames = client->poll(0);
-                if (!frames) break;
+                if (!frames) {
+                    // The machine went away under the command: said, never a silent end.
+                    say_(c, service::error(std::format("{} stopped while {} ran in it", name, words.front()),
+                                           std::format("luban status {} --log", name)));
+                    break;
+                }
                 for (const auto& [type, body] : *frames) {
                     if (body.first != 1) continue;
                     if (type == 'D') (void)platform::write_all(1, body.second);
@@ -1338,7 +1391,7 @@ int run(const service::Context& c, std::string_view name, std::span<const std::s
         }
         if (saved) platform::restore_terminal(0, *saved);
     }
-    if (!was_running) (void)vm::stop(c, name);
+    done_with();
     return code;
 }
 
@@ -1666,6 +1719,11 @@ void cleanup_(const fs::path& home, std::string_view name, const Json& state) {
         fs::remove_all(scratch, ec);
     fs::remove(client_socket_(home, name), ec);
     fs::remove(state_file_(home, name), ec);
+    // What its commands held is this boot's (vm::run); so are its files' daemons' sockets.
+    fs::remove(dir / "for-commands", ec);
+    fs::remove_all(dir / "commands", ec);
+    for (const auto& e : fs::directory_iterator(dir, ec))
+        if (e.path().filename().string().starts_with("vfs-")) fs::remove(e.path(), ec);
 }
 
 // A Mac's machine (part 4 §6.6): Virtualization.framework in this process,
