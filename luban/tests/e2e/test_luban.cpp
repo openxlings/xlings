@@ -965,6 +965,11 @@ XTEST(Luban, AnExportedEnvironmentIsImportedWithItsStateAndANewPersona,
     const auto tree = home.dir() / "subos/box/rootfs";
     ASSERT_TRUE(fs::is_directory(tree / "etc")) << "the fixture made no root";
     tk::write_file(tree / "root/notes.txt", "mine\n");
+    // A package beyond its edition's: it comes along (an archive's workspace
+    // entries are {active, installed} since 2026.10.20 -- read as versions,
+    // they were all skipped).
+    auto extra = home.xlings({"install", "-y", "--subos", "box", "fixture:fish@1.0.0"});
+    ASSERT_EQ(extra.exit_code, 0) << extra.transcript();
     // A link a package's configuration made into the home's store (as
     // ca-certificates' /etc/ssl one is): named by where it is, not where it points.
     // What a package's configuration makes (ca-certificates): an absolute link
@@ -987,6 +992,8 @@ XTEST(Luban, AnExportedEnvironmentIsImportedWithItsStateAndANewPersona,
     auto imported = luban(home, {"import", file.string(), "--name", "copy"});
     ASSERT_EQ(imported.exit_code, 0) << imported.transcript();
     EXPECT_EQ(tk::read_file(home.dir() / "subos/copy/rootfs/root/notes.txt"), "mine\n");
+    EXPECT_TRUE(Json::parse(tk::read_file(home.dir() / "subos/copy/.xlings.json"))["workspace"].contains("fish"))
+        << "the package beyond its edition's did not come along\n" << imported.transcript();
     // This host's link is not carried (the copy makes its own); the root's is.
     EXPECT_FALSE(fs::is_symlink(home.dir() / "subos/copy/rootfs/etc/ssl/cert.pem")
                  && fs::read_symlink(home.dir() / "subos/copy/rootfs/etc/ssl/cert.pem").string().find("/subos/box/")

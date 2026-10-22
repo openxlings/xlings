@@ -193,7 +193,7 @@ text = "an environment's machine settings (mode, persist, desktop, on-close, ent
 status = "required"
 
 [LUBAN-ARCHIVE]
-text = "`luban export <n> x.luban` writes the manifest (edition, packages, policy, settings) and the root's own state, links as links, nothing of /usr, no persona; import refuses a path that leaves the environment, an existing name, and a policy looser than the edition's without -y"
+text = "`luban export <n> x.luban` writes the manifest (edition, packages, policy, settings) and the root's own state, links as links, nothing of /usr, no persona; import refuses a path that leaves the environment, an existing name, and a policy looser than the edition's without -y; the packages it had beyond its edition's come along, each the package that provides it, at the versions it had, its active one active"
 status = "required"
 
 [LUBAN-OUTPUT]
