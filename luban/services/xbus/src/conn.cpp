@@ -141,23 +141,35 @@ bool Conn::push(openbus::Frame f, backend::Handle h) {
 }
 
 bool Conn::flush() {
-    for (auto& q : out_) {
-        while (!q.empty()) {
-            auto& o = q.front();
-            const backend::Handle* hs[1] = {&o.handle};
-            const bool with = o.at == 0 && o.handle.valid();
-            const long n = channel_->write(std::string_view(o.bytes).substr(o.at),
-                                           with ? std::span<const backend::Handle* const>(hs) : std::span<const backend::Handle* const>{});
-            if (n < 0) return false;
-            if (n == 0) return true;   // full: the rest when it is writable
-            if (with) o.handle.reset();
-            o.at += static_cast<std::size_t>(n);
-            bytes_out += static_cast<std::size_t>(n);
-            queued_ -= static_cast<std::size_t>(n);
-            if (o.at < o.bytes.size()) return true;
-            q.pop_front();
+    // The front of a queue, as much as the socket takes: 1 written whole, 0
+    // the socket is full, -1 it failed.
+    const auto front = [this](std::deque<Out>& q) {
+        auto& o = q.front();
+        const backend::Handle* hs[1] = {&o.handle};
+        const bool with = o.at == 0 && o.handle.valid();
+        const long n = channel_->write(std::string_view(o.bytes).substr(o.at),
+                                       with ? std::span<const backend::Handle* const>(hs) : std::span<const backend::Handle* const>{});
+        if (n < 0) return -1;
+        if (n == 0) return 0;   // full: the rest when it is writable
+        if (with) o.handle.reset();
+        o.at += static_cast<std::size_t>(n);
+        bytes_out += static_cast<std::size_t>(n);
+        queued_ -= static_cast<std::size_t>(n);
+        if (o.at < o.bytes.size()) return 0;
+        q.pop_front();
+        return 1;
+    };
+    // A frame begun is finished before any other, whatever its priority:
+    // another frame's bytes between its pieces would be out of frame for the
+    // reader (a small socket buffer -- macOS's 8 KiB -- writes in pieces).
+    for (auto& q : out_)
+        if (!q.empty() && q.front().at > 0) {
+            if (const int r = front(q); r <= 0) return r == 0;
+            break;
         }
-    }
+    for (auto& q : out_)
+        while (!q.empty())
+            if (const int r = front(q); r <= 0) return r == 0;
     return true;
 }
 

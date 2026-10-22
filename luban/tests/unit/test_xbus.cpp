@@ -15,6 +15,8 @@ import openbus.conformance;
 import xbus.router;
 import xbus.node;
 import xbus.raw;
+import xbus.detail.backend;
+import xbus.detail.conn;
 import telemetry;
 
 namespace tk = xlings::testkit;
@@ -618,4 +620,50 @@ XTEST(Xbus, ARegionAcrossALinkIsCopiedInline, .area = "luban", .covers = {"XBUS-
         r->stop = true;
         r->thread.join();
     }
+}
+
+// A frame begun is finished before any other (design 2026-10-22 §6.2): over
+// a socket that takes a few KiB a write (macOS's 8 KiB buffer), a control
+// frame queued while a bulk one is half written waits for it -- between its
+// pieces it would put the reader out of frame ("bad magic", a lost router).
+XTEST(Xbus, AFrameBegunIsFinishedBeforeAnyOther, .area = "luban", .covers = {"XBUS-STREAM"}) {
+    struct Trickle final : xbus::detail::Channel {
+        std::string* sink;
+        explicit Trickle(std::string* s) : sink(s) {}
+        const xbus::detail::backend::Handle* waitable() const override { return nullptr; }
+        std::optional<xbus::detail::backend::Received> read(std::span<char>) override { return std::nullopt; }
+        long write(std::string_view b, std::span<const xbus::detail::backend::Handle* const>) override {
+            const auto n = std::min<std::size_t>(b.size(), 3000);
+            sink->append(b.substr(0, n));
+            return static_cast<long>(n);
+        }
+        bool carries_handles() const override { return false; }
+        std::string identity() const override { return {}; }
+        std::string transport() const override { return "trickle"; }
+    };
+    std::string wire;
+    xbus::detail::Conn c(std::make_unique<Trickle>(&wire));
+    const auto frame = [](std::uint32_t ch, openbus::Priority p, std::size_t size) {
+        return openbus::Frame{.kind = static_cast<std::uint8_t>(openbus::Kind::stream_data), .flags = openbus::with_priority(0, p),
+                              .channel = ch, .payload = std::string(size, static_cast<char>('a' + ch))};
+    };
+    c.push(frame(1, openbus::Priority::bulk, 20000));
+    c.push(frame(2, openbus::Priority::bulk, 5000));
+    for (int k = 0; k < 2; ++k) ASSERT_TRUE(c.flush());   // the first bulk frame half written (the socket "full")
+    c.push(frame(3, openbus::Priority::control, 10));
+    for (int k = 0; k < 40 && c.pending(); ++k) ASSERT_TRUE(c.flush());
+    ASSERT_FALSE(c.pending());
+    openbus::Decoder d;
+    d.feed(wire);
+    std::vector<std::uint32_t> order;
+    for (;;) {
+        auto f = d.next();
+        ASSERT_TRUE(f.has_value()) << openbus::name_of(f.error());
+        if (!*f) break;
+        const char mine = static_cast<char>('a' + (*f)->channel);
+        EXPECT_TRUE(std::ranges::all_of((*f)->payload, [&](char ch) { return ch == mine; })) << "frame " << (*f)->channel << " holds another's bytes";
+        order.push_back((*f)->channel);
+    }
+    // The begun one whole, then control before the remaining bulk.
+    EXPECT_EQ(order, (std::vector<std::uint32_t>{1, 3, 2}));
 }
