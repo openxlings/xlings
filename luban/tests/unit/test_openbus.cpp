@@ -64,7 +64,7 @@ XTEST(Openbus, FieldsAndEnvelopes, .area = "luban", .covers = {"OPENBUS-MODEL"})
     EXPECT_EQ(back->value("path"), "service/x");
     EXPECT_EQ(back->all("feature").size(), 2u);
     EXPECT_EQ(back->number("n"), 42);
-    EXPECT_FALSE(ob::Fields::decode(std::string("\x05\x00ab", 4)).has_value()) << "a cut field is malformed";
+    EXPECT_FALSE(ob::Fields::decode(std::string("\x05\x00" "ab", 4)).has_value()) << "a cut field is malformed";
     const auto payload = ob::address(ob::Fields{{"path", "service/x"}}, std::string("\0body", 5));
     const auto env = ob::open_envelope(payload);
     ASSERT_TRUE(env.has_value());

@@ -27,6 +27,12 @@ std::optional<Record> read(const nlohmann::json& instance) {
     r.index = it->value("index", std::string());
     if (auto c = it->find("chain_index"); c != it->end() && c->is_array())
         for (const auto& v : *c) r.chain_index.push_back(v.is_string() ? v.get<std::string>() : std::string());
+    if (auto b = it->find("brought"); b != it->end() && b->is_object()) {
+        r.brought.emplace();
+        for (auto e = b->begin(); e != b->end(); ++e)
+            if (e.value().is_array())
+                for (const auto& v : e.value()) if (v.is_string()) (*r.brought)[e.key()].push_back(v.get<std::string>());
+    }
     return r;
 }
 
@@ -37,6 +43,10 @@ nlohmann::json to_json(const Record& r) {
     if (!r.policy.empty()) j["policy"] = r.policy;
     if (!r.index.empty()) j["index"] = r.index;
     if (!r.chain_index.empty()) j["chain_index"] = r.chain_index;
+    if (r.brought) {
+        auto& b = j["brought"] = nlohmann::json::object();
+        for (const auto& [k, versions] : *r.brought) b[k] = versions;
+    }
     return j;
 }
 
@@ -64,9 +74,17 @@ Plan plan(const Record& now, const std::vector<std::string>& declared,
             continue;
         }
         // The user moved it when the environment holds a version the edition
-        // did not bring (or no longer the one it did).
+        // did not bring (or no longer the one it did). What it brought before
+        // and an upgrade moved on from is still there, and is the edition's.
+        const auto brought_before = [&](const std::string& v) {
+            if (!now.brought) return false;
+            const auto b = now.brought->find(key);
+            return b != now.brought->end() && std::ranges::find(b->second, v) != b->second.end();
+        };
         const bool moved = present == has.end() || !present->second.contains(recorded->second)
-                           || present->second.size() > 1;
+                           || std::ranges::any_of(present->second, [&](const std::string& v) {
+                                  return v != recorded->second && !brought_before(v);
+                              });
         if (moved) { p.kept.push_back({key, current, spec}); continue; }
         // An unpinned package follows its newest; a pinned one, its pin.
         if (version.empty() || version != recorded->second) p.upgrade.push_back({key, recorded->second, spec});

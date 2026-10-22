@@ -64,7 +64,8 @@ luban upgrade box --to 2026.10.11.2
 An environment knows what its edition brought. An upgrade:
 
 - moves each package the edition brought **and you left alone** to the new
-  edition's version;
+  edition's version (the version an earlier upgrade moved it on from is still
+  installed, and is still the edition's, not yours);
 - leaves alone a package **you** installed or moved to another version;
 - installs what the new edition adds;
 - leaves installed what the new edition dropped, and says so;

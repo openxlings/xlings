@@ -504,6 +504,7 @@ int declare_root_at_creation_(const std::string& name, bool rootfs, const std::s
         if (const auto index = xim::index_repo_of(from); index) j["edition"]["index"] = *index;
         j["edition"]["chain_index"] = declared->chain_index;
         if (!declared->policy.empty()) j["edition"]["policy"] = declared->policy;
+        j["edition"]["brought"] = nlohmann::json::object();  // what upgrades move on from
         j.erase("making");
         if (auto written = write_json_(file, j); !written) {
             error_(stream, written.error(), {}, ErrorCode::Internal);

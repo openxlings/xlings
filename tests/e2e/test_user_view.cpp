@@ -150,6 +150,31 @@ XTEST(UserView, AUsersViewReadsTheSystemsStoreAndAsksOnceForWhatItLacks, .area =
     EXPECT_TRUE(fs::exists(system / "data/xpkgs/xim-x-fixture-data/1.0.0")) << r.transcript();
     EXPECT_FALSE(fs::exists(home.dir() / "data/xpkgs/xim-x-fixture-data/1.0.0")) << "borrowed, not copied";
 
+    // A payload in the store that the system does not register -- another
+    // system sharing the store (one home's) took it in: in the store means
+    // the system's, so it is added once more, through the same door, and
+    // then borrowed (luban-os-ci L2-02: a second system's user could not).
+    r = home.xlings({"remove", "fixture-data", "-y"}, inSystem);
+    ASSERT_EQ(r.exit_code, 0) << r.transcript();
+    guard.set(true);
+    {
+        const auto file = system / "subos/default/.xlings.json";
+        auto scope = Json::parse(tk::read_file(file));
+        for (auto* part : {&scope["workspace"], &scope["configured"]})
+            for (auto it = part->begin(); it != part->end();)
+                it = it.key().find("fixture-data") != std::string::npos ? part->erase(it) : std::next(it);
+        tk::write_file(file, scope.dump(2));
+    }
+    guard.set(false);
+    ASSERT_TRUE(fs::exists(system / "data/xpkgs/xim-x-fixture-data/1.0.0"));
+    r = home.xlings({"install", "fixture-data", "-y"}, asked);
+    EXPECT_EQ(r.exit_code, 0) << r.transcript();
+    const auto log = tk::read_file(sudo / "sudo.log");
+    EXPECT_NE(log.find("__store-add xim:fixture-data@1.0.0", log.find("__store-add xim:fixture-data@1.0.0") + 1),
+              std::string::npos) << "added again: " << log;
+    EXPECT_NE(tk::read_file(system / "subos/default/.xlings.json").find("fixture-data"), std::string::npos)
+        << "the system registers it";
+
     // The system's own is root's to remove, for everyone: said.
     r = home.xlings({"remove", "fixture-tool", "-y"}, inSystem);
     EXPECT_NE(r.transcript().find("sudo xlings remove fixture-tool"), std::string::npos) << r.transcript();

@@ -987,8 +987,16 @@ int install_(std::span<const std::string> targets, bool yes, bool noDeps,
                     provided.push_back(i);
                     continue;
                 }
+                // In the store is the system's registering it, not a payload
+                // being there: systems that share a store (one home's) each
+                // take a payload in for themselves, and a view borrows only
+                // what its system registers.
                 const auto payload = system->sourceHome / "data" / "xpkgs" / package_store_name(m.namespaceName, m.name) / m.version;
-                if (!(std::filesystem::is_directory(payload, ec) && payload_has_content(payload) && !stamped_incomplete(payload)))
+                const auto installed = system->workspace.installed.find(m.name);
+                const bool registered = installed != system->workspace.installed.end()
+                    && std::ranges::any_of(installed->second, [&](const std::string& v) { return xvm::version_key_matches(m.version, v); });
+                if (!(registered && std::filesystem::is_directory(payload, ec) && payload_has_content(payload)
+                      && !stamped_incomplete(payload)))
                     missing.push_back(m.canonicalName + "@" + m.version);
             }
             if (provided.size() == requestedMatches.size() - first) {

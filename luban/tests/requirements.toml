@@ -41,7 +41,7 @@ text = "a Luban system's user given no password has the default one (lubanoser),
 status = "required"
 
 [LUBAN-USER-VIEW]
-text = "inside a Luban system a regular user's xlings is a view of the system's store: it reads the system's index and packages without copying them, never fetches an index or runs a recipe of its own, says what the system already provides instead of installing it, sees the system's versions in use and list, adds a version the store lacks once through the elevation door (sudo xlings __store-add), and with nobody to ask fails with E_NEEDS_ROOT and the exact sudo command"
+text = "inside a Luban system a regular user's xlings is a view of the system's store: it reads the system's index and packages without copying them, never fetches an index or runs a recipe of its own, says what the system already provides instead of installing it, sees the system's versions in use and list, adds a version the store lacks once through the elevation door (sudo xlings __store-add) -- lacks meaning the system does not register it, a payload another system sharing the store took in included --, and with nobody to ask fails with E_NEEDS_ROOT and the exact sudo command"
 status = "required"
 
 [LUBAN-USER-LAYER]
@@ -65,7 +65,7 @@ text = "an image boots by a boot profile (--boot, else the edition's boot.profil
 status = "required"
 
 [LUBAN-UPGRADE]
-text = "subos upgrade / luban upgrade moves an environment made from an edition to a newer version: what the edition brought follows it, what the user moved stays theirs, what it dropped stays installed; one new generation; nothing changes without confirmation (agent: exit 2 with -y)"
+text = "subos upgrade / luban upgrade moves an environment made from an edition to a newer version: what the edition brought follows it (the versions earlier upgrades moved on from are the edition's, recorded as `brought`), what the user moved stays theirs, what it dropped stays installed; one new generation; nothing changes without confirmation (agent: exit 2 with -y)"
 status = "required"
 
 [LUBAN-UPGRADE-PLAN]

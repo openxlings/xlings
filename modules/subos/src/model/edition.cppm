@@ -6,7 +6,8 @@
 // was installed, its policy. An upgrade reads that record, the new edition's
 // declared packages and what the environment has now (its `configured`
 // keys, "<ns>:<name>@<version>"), and plans: a package the user left alone
-// follows the edition; one the user moved stays the user's; one the edition
+// follows the edition; one the user moved (a version the edition never
+// brought) stays the user's; one the edition
 // dropped stays installed (removing is the user's call). Data in, plan out --
 // nothing here installs anything.
 export module xlings.subos.edition;
@@ -25,6 +26,10 @@ struct Record {
     std::vector<std::string> chain_index;
     std::map<std::string, std::string, std::less<>> packages;  // ns:name -> version ("" = not found)
     std::string policy;                                      // ns:name@version, or empty
+    // The versions the edition brought before `packages`' -- an upgrade moved
+    // them on and the environment still has them: not the user's. nullopt for
+    // a record from before it was kept (xlings 2026.10.22.3).
+    std::optional<std::map<std::string, std::vector<std::string>, std::less<>>> brought;
 };
 
 // instance.json's `edition`; nullopt when the environment has none (made

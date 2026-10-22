@@ -74,6 +74,28 @@ XTEST(SubosEdition, AnUpgradeMovesWhatTheEditionBroughtAndLeavesWhatTheUserMoved
     EXPECT_TRUE(same.empty());
 }
 
+XTEST(SubosEdition, WhatTheEditionBroughtBeforeIsNotTheUsers, .area = "luban", .covers = {"LUBAN-UPGRADE"}) {
+    // A first upgrade moved openssl 3.1.5 -> 3.5.1 and left 3.1.5 installed;
+    // the user installed gcc 16.2.0 beside the edition's 16.1.0.
+    auto now = core_1();
+    now.packages["xim:openssl"] = "3.5.1";
+    now.brought = std::map<std::string, std::vector<std::string>, std::less<>>{{"xim:openssl", {"3.1.5"}}};
+    const std::vector<std::string> configured{"xim:gcc@16.1.0", "xim:gcc@16.2.0", "xim:openssl@3.1.5",
+                                              "xim:openssl@3.5.1", "xim:claude@2.1.281", "xim:vim@8.1.1045"};
+    const auto plan = ed::plan(now, {"xim:gcc@16.1.1", "xim:openssl@3.6.0"}, configured);
+    EXPECT_TRUE(has(plan.upgrade, "xim:openssl")) << "3.1.5 is the edition's past, not the user's";
+    EXPECT_TRUE(has(plan.kept, "xim:gcc")) << "16.2.0 the edition never brought: the user's";
+    // Without the record of it, 3.1.5 would be the user's.
+    now.brought.reset();
+    EXPECT_TRUE(has(ed::plan(now, {"xim:openssl@3.6.0"}, configured).kept, "xim:openssl"));
+    // The record keeps it; one from before has none.
+    now.brought = std::map<std::string, std::vector<std::string>, std::less<>>{{"xim:openssl", {"3.1.5"}}};
+    const auto back = ed::read(nlohmann::json{{"edition", ed::to_json(now)}});
+    ASSERT_TRUE(back && back->brought);
+    EXPECT_EQ(back->brought->at("xim:openssl"), std::vector<std::string>{"3.1.5"});
+    EXPECT_FALSE(ed::read(nlohmann::json{{"edition", ed::to_json(core_1())}})->brought);
+}
+
 XTEST(SubosEdition, APolicyThatAllowsMoreIsLooserAndOneThatAllowsLessIsNot, .area = "luban",
       .covers = {"LUBAN-UPGRADE-NEVER-LOOSENS"}) {
     const auto locked = policy::preset(policy::Preset::Locked);

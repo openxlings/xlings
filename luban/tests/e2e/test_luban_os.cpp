@@ -572,6 +572,7 @@ state {}
 // §8.12, J23): thousands of writes in a second are not thousands of frames.
 XTEST(LubanOs, AFloodingConsoleIsDrawnOncePerFrame, .area = "luban",
       .covers = {"LUBAN-CONSOLE-PACED"}, .requires_ = {"linux", "xlings-bin"}) {
+    if (!app_binary()) GTEST_SKIP() << "no luban-os beside the xlings under test";
     auto home = tk::Home::isolated("luban-os-console-flood");
     ASSERT_EQ(home.xlings({"self", "init"}).exit_code, 0);
     const auto st = home.root() / "flood.json", began = home.root() / "began", ended = home.root() / "ended";
@@ -607,6 +608,7 @@ state {}
 // host (its window manager's grab) does not repeat in the system.
 XTEST(LubanOs, KeysHeldAreLetGoWhenTheFocusGoes, .area = "luban",
       .covers = {"LUBAN-OS-KEY-RECONCILE"}, .requires_ = {"linux", "xlings-bin"}) {
+    if (!app_binary()) GTEST_SKIP() << "no luban-os beside the xlings under test";
     auto home = tk::Home::isolated("luban-os-keys-held");
     ASSERT_EQ(home.xlings({"self", "init"}).exit_code, 0);
     const auto held = home.root() / "held.json", gone = home.root() / "gone.json";

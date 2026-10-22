@@ -213,7 +213,22 @@ int run_upgrade_(int argc, char* argv[], EventStream& stream, const UsageError& 
             }
         declared.push_back(spec);
     }
-    const auto plan = subos::edition::plan(*now, declared, configured_keys_(home, name));
+    // A record from before the edition kept what it brought (2026.10.22.3):
+    // the versions older than the one it last brought are taken for what it
+    // brought before -- editions move forward, and every upgrade left the
+    // version it moved from installed.
+    auto record = *now;
+    if (!record.brought) {
+        record.brought.emplace();
+        for (const auto& c : configured_keys_(home, name)) {
+            const auto [ck, cv] = subos::edition::split(c);
+            const auto r = record.packages.find(ck);
+            if (r != record.packages.end() && !r->second.empty() && !cv.empty()
+                && version_order::compare(cv, r->second) < 0)
+                (*record.brought)[ck].push_back(cv);
+        }
+    }
+    const auto plan = subos::edition::plan(record, declared, configured_keys_(home, name));
 
     // The policy: applied when it allows nothing more than the one in force.
     std::vector<std::string> loosened;
@@ -308,7 +323,13 @@ int run_upgrade_(int argc, char* argv[], EventStream& stream, const UsageError& 
     }
     // The record: what the edition brought now, as installed.
     subos::edition::Record next{.ref = top.first, .chain = {}, .packages = {},
-                                .policy = apply_policy || now->policy.empty() ? chain->policy : now->policy};
+                                .policy = apply_policy || now->policy.empty() ? chain->policy : now->policy,
+                                .brought = record.brought};
+    // What it moved on from stays installed: the edition's, not the user's.
+    for (const auto& s : plan.upgrade) {
+        auto& before = (*next.brought)[s.key];
+        if (!s.from.empty() && std::ranges::find(before, s.from) == before.end()) before.push_back(s.from);
+    }
     for (std::size_t i = 1; i < chain->templates.size(); ++i) {
         next.chain.push_back(chain->templates[i].first);
         next.chain_index.push_back(xim::index_repo_of(chain->templates[i].first).value_or(""));

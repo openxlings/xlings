@@ -57,7 +57,7 @@ luban upgrade box --to 2026.10.11.2
 
 环境知道它的 edition 带来了什么。一次升级：
 
-- 把 edition 带来、**你没动过**的包升到新 edition 的版本；
+- 把 edition 带来、**你没动过**的包升到新 edition 的版本（之前的升级换下来的版本仍然装着，它仍属于 edition，不算你改过的）；
 - **你**自己装的、或改过版本的包保持不变；
 - 安装新 edition 新增的包；
 - 新 edition 去掉的包保持安装，并说明；
