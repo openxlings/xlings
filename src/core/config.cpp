@@ -207,6 +207,9 @@ std::expected<void, std::string> Config::start_own_home() {
         auto view = nlohmann::json::object();
         view["workspace"] = nlohmann::json::object();
         if (theirs.is_object() && theirs.contains("subos_info")) view["subos_info"] = theirs["subos_info"];
+        // Not what its packages export: they are the system's, exported from
+        // the layer below; here `self doctor` read them as orphans (part 2).
+        if (view.contains("subos_info") && view["subos_info"].is_object()) view["subos_info"]["envs"] = nlohmann::json::object();
         fs::create_directories(manifest.parent_path(), ec);
         try {
             platform::write_file_atomic(manifest.string(), view.dump(2) + "\n");

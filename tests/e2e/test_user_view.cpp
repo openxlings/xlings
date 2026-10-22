@@ -116,7 +116,10 @@ XTEST(UserView, AUsersViewReadsTheSystemsStoreAndAsksOnceForWhatItLacks, .area =
         const auto mine = Json::parse(tk::read_file(home.dir() / "subos/default/.xlings.json"), nullptr, false);
         const auto theirs = Json::parse(tk::read_file(system / "subos/default/.xlings.json"), nullptr, false);
         ASSERT_TRUE(mine.is_object() && mine.contains("subos_info")) << mine.dump();
-        EXPECT_EQ(mine["subos_info"], theirs["subos_info"]);
+        // Its description, not what the system's packages export (the layer below does).
+        auto described = theirs["subos_info"];
+        if (described.is_object()) described["envs"] = Json::object();
+        EXPECT_EQ(mine["subos_info"], described);
     }
 
     // The system's packages are in the user's list, marked.

@@ -373,9 +373,12 @@ std::vector<Finding> detect_subos_manifest_(const xvm::VersionDB& db,
         });
     };
 
-    // D2 — an envs section whose owner is not installed here.
+    // D2 — an envs section whose owner is not installed here. A user's view
+    // made before part 2 copied the system's (its packages export them from
+    // the layer below): not an orphan of the view's.
+    const bool view = !Config::paths().systemLayer.empty();
     for (const auto& provider : info.envs) {
-        if (installed(provider.binding)) continue;
+        if (installed(provider.binding) || view) continue;
         out.push_back({
             .kind    = FindingKind::SubosEnvOrphan,
             .level   = FindingLevel::Error,
