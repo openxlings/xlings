@@ -125,7 +125,7 @@ luban run box --user alice -- passwd        # change it
 |---|---|
 | `xlings install codex`（系统已有） | 不安装："codex 2.1 is provided by the system" |
 | `xlings use node 22`（存储里已有） | 自己的选择，不影响别人 |
-| `xlings install node@22`（存储里没有） | 一行说明加一个问题：经 `sudo` 装进系统的存储，之后成为自己的选择 |
+| `xlings install node@22`（存储里没有） | 一行说明加一个问题：经 `sudo` 装进系统的存储，之后成为自己的选择——存储里人人都有，只在你这里启用 |
 | `xlings remove node` | 撤销自己的选择；存储里的包保留（root 为所有人删除） |
 | `sudo xlings ...` | 系统自己的：所有用户的默认与存储 |
 
@@ -152,7 +152,9 @@ luban status box --check --json   # {"ok": ..., "failed": [...], "items": [...]}
 检查分关键与非关键。关键检查失败会中止正在进行的操作：新系统不就绪，升级不切换，机器不启动，进入不开始，并说明是哪一项失败。
 其余失败只报告，系统照常使用。检查项是任何 Linux 用户空间都需要的：`/usr` 是系统的这一代，`/usr/bin` 中每个程序都有其加载器、
 能找到它声明的库，每个包的程序都能启动，用户、登录 shell、主机名与 machine id、时区、证书机构、UTF-8 locale、终端描述、
-系统里 xlings 读的包索引（它的用户也读这一份），桌面系统还有应用列表和光标主题；再加上 edition 声明的检查。edition 在 `/usr/share/luban/checks.d/*.json` 中声明自己的检查：
+系统里 xlings 读的包索引（它的用户也读这一份），桌面系统还有应用列表和光标主题；再加上 edition 声明的检查。每个包的程序在没有显示的情况下启动
+（图形程序用 offscreen），声明了自有检查的包改由它自己的检查来查。系统在创建时（或升级后第一次进入时）得到 machine id，
+并用这台电脑的时区：沙箱里绑定进去，机器启动时写进去——你在里面自己设的时区不会被覆盖。edition 在 `/usr/share/luban/checks.d/*.json` 中声明自己的检查：
 
 ```json
 {"checks": [{"id": "desk-session", "what": "its desktop session starts", "run": "xdesk --version", "critical": false, "timeout": 30}]}

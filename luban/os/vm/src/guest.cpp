@@ -103,6 +103,13 @@ std::map<std::string, std::string> session_env_(const Json& open, const std::str
     if (auto e = open.find("env"); e != open.end() && e->is_object())
         for (auto it = e->begin(); it != e->end(); ++it)
             if (it.value().is_string()) env[it.key()] = it.value().get<std::string>();
+    // A regular user's own packages before the system's, as their login
+    // shell's profile has it (profile.d/xlings-user.sh): a command run for
+    // them reads no profile (part 2 J33 -- what they install is theirs only).
+    if (u.uid != 0) {
+        const auto own = u.home + "/.xlings/subos/current/bin";
+        if ((":" + env["PATH"] + ":").find(":" + own + ":") == std::string::npos) env["PATH"] = own + ":" + env["PATH"];
+    }
     return env;
 }
 

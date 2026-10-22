@@ -26,7 +26,7 @@
 | J42 | 桌面的 `luban status --check` 常驻"falkon starts — exit 134" | 通用的"能启动"检查只在"有同名 id 的自有检查"时跳过；Falkon 的自有检查叫 `falkon-runs`，于是被不带显示地运行 | 误报 |
 | J43 | "it has a machine id"、"it has a time zone" 两条常驻提示 | 只有 neutral 身份（agent 工作区）会写 machine-id、定时区；其他系统 `/etc` 里两样都没有。沙箱运行时会绑定宿主的 `/etc/localtime`（检查读的是根，所以误报）；machine 里什么都没有，程序按 UTC | machine-id：D-Bus 与依赖它的程序会告警；时区：machine 里的时间是 UTC |
 | J44 | "sudo is there and says its version — no new privileges" | 系统的检查在沙箱里执行，bwrap 设了 no-new-privileges，sudo 连 `--version` 都拒绝；而这台桌面平时是以 machine 运行的 | 误报；沙箱模式下 sudo 本来就不可用（特权走 broker） |
-| J45 | 私有域路径在本机测不到，xlings 的 PR CI 里 DomainProducer 也跳过 | 本机建不了私有命名空间；DomainProducer 要静态候选，PR CI 的构建带解释器 | J37、J39 只能靠 luban-os-ci 在 runner 上发现 |
+| J45 | 私有域路径在本机测不到 | 本机建不了私有命名空间。（更正：xlings CI 的 acceptance 作业已有 `static_domain` 一步，用发布候选跑 DomainProducer 并要求真正通过；第一部分加的 J37、J39 用例在那里执行过。单元、e2e 分片里的"跳过"是那些作业没有静态候选。） | 本机只能覆盖前缀路径；私有域路径由 acceptance 与 luban-os-ci 覆盖 |
 | J46 | xim-pkgindex 合入后 CN 镜像可能晚一天 | gitee-sync 只有 `on: push`；2026-10-22 GitHub 漏掉了 #1030 的 push 事件，发布靠手动触发补上，gitee 没补 | CN 用户的索引落后 |
 | — | `mcpp self doctor` 在系统里报错（mcpp#831） | 修复已合入 mcpp，未发布 | 等 mcpp 发布与 core edition 更新 |
 
@@ -62,9 +62,11 @@
 
 ### 3.2 私有域的一致（J40、J41）
 
-- 一条规则：`subos::locate(name)` 返回系统住的 home（`domain_producer::read_scope` 已经能答）；
-  `requests/approve/deny`（J37）、`__broker-serve`（J39）、`upgrade/boot/export` 已经按它转发；`log/report/ps` 也按它转发。
-- 不再逐个命令补：`subos` 子命令的分派处列一张"读写系统状态的子命令"表，表里的统一转发；新增子命令时 lint 检查它在不在表里。
+- 实施中发现：私有域里的系统，会话可能从两边起——`luban run` 在域里起监督进程（请求、事件记在域的 home），
+  主人在宿主上 `xlings subos exec <name>` 在主人的 home 里起（记在主人的 home）。所以"整条命令转到域里执行"（J37 的做法）会让后一种看不见。
+- 做法改为：**读两边、合起来**（`record_homes_`：主人的 home，和系统所在域的 home；都是宿主上的普通目录，不必进命名空间）。
+  `requests`、`log`（含 `-f` 同时跟两份）、`report`、`ps` 合并显示；`approve`/`deny` 在请求所在的那一边作答——域里的请求转到域里执行，批准的命令也在那里跑。
+  J37 的整条转发因此撤掉，换成这一条。`__broker-serve`（J39）仍然转到域里：machine 的写入必须进系统自己的存储。
 - J41：`enqueue` 写失败就返回错误（"请求没有记下：<原因>"），客户端照实说，不说"等待审批"。
 - 测试：DomainProducer 的 e2e 已有 requests、`__broker-serve` 的断言，补 `log`、`report`、`ps`；这些测试在 §3.4 的新作业里真正执行。
 
@@ -75,17 +77,17 @@
 - **J43**：
   - machine-id：每个系统在创建时生成一次，写进系统自己的 `/etc/machine-id`（与 neutral 身份的做法相同，只是不随 persona 变）；
     已有的系统在下一次进入或升级时补上一次（幂等，记录在 home 的格式步骤里）。
-  - 时区：沙箱模式照旧绑定宿主的 `/etc/localtime`，检查改为"运行时由宿主提供"——不报失败；
-    machine 模式在启动时由 guest agent 写入宿主时区的 TZif 内容（宿主 `/etc/localtime` 的字节，自带 POSIX TZ 规则，不需要 tzdata 包）；
-    用户在系统里自己设过的（`/etc/localtime` 已存在且不是我们写的）不覆盖。
-- **J44**：sudo 检查按系统的运行方式判断：以 machine 运行的系统，在 machine 里检查（`luban status --check` 已能在运行中的 machine 里执行检查时）；
-  machine 没在运行，就标"machine 运行时检查"；沙箱模式说明"沙箱里特权走 broker"，不报失败。
+  - 时区：系统的 `/etc/localtime` 写入宿主时区的 TZif 字节（自带 POSIX TZ 规则，不需要 tzdata 包）——沙箱进入时与 machine 启动前由宿主写
+    （guest 读不到宿主的 /etc）；写过的记下 sha256，宿主换了时区就跟着换；用户在系统里自己设的（别的文件或链接）不覆盖。
+    neutral 身份（agent 工作区）不写：它的时区是 persona 的，写宿主的会泄露宿主所在地。Mac 的 machine 的系统住在宿主机里，本轮不写。
+- **J44**：这条检查是 core edition 声明的（`core-sudo`），改在索引里：sudo 在；**能提权的地方**（machine）它说得出版本——
+  沙箱设了 no-new-privileges，sudo 连 `-V` 都拒绝，那里特权走 broker。只升 revision 到不了已装的系统，所以发
+  core、desktop、agent-workspace 的 2026.10.23.1（内容不变，只换了这条检查），`luban upgrade` 就会换上。
 - 结果：新建与升级后的桌面，`luban status --check` 没有常驻提示；提示只在真有问题时出现。
 
 ### 3.4 测试与生态流程（J45、J46、mcpp）
 
-- **私有域作业**（J45）：xlings 的 Linux CI 增加一个作业，用这一轮的静态构建（dist + musl）作为 `XLINGS_BIN`，在开放了用户命名空间的 runner 上
-  只跑 `requires static-xlings` 的 XTEST（DomainProducer 等）；它属于 main 与 `ci:asan` 一类的"合入前必须"作业，耗时约 10 分钟。
+- **私有域作业**（J45）：已存在（acceptance 的 `static_domain`），不新增；本篇的私有域用例（J40 的 log/report 合并）也在那里执行。
 - **gitee-sync**（J46）：xim-pkgindex 的 gitee-sync 增加 `workflow_dispatch` 与每日一次的 `schedule`；发布流程里"push 没触发"时手动补的一步写进 AGENTS.md 的发布说明。
 - **luban-os-ci**：
   - xlings CI 派发 L2 的 `LUBAN_OS_CI_TOKEN` 若未配置，补上（只读派发权限的 fine-grained token）；
@@ -132,6 +134,8 @@
 
 ## 6. 任务与依赖
 
+实施状态（2026-10-23）：T1–T6、T8–T10 已实现（xlings PR #698、xim-pkgindex `feat/part2`）；T7 已存在；T11–T13 见下。
+
 | 编号 | 任务 | 仓库 |
 |---|---|---|
 | T1 | J42 通用检查的跳过与 offscreen | xlings |
@@ -160,6 +164,13 @@ T10、T12 独立；T13 在 T8、T9 之后
 - 发布与验证按第一部分 §13.1 的顺序；验证用第一部分 §13.3 的表，加三行：多用户 machine（alice、bob 各自的版本与 home）、
   `luban status --check` 无常驻提示、私有域里 `subos log/report` 有记录。
 
+## 6a. 实施中的另一处发现
+
+- **J47（体验，未改）**：在建不了私有域的主机上，`luban upgrade` 把旧布局的系统"迁入自己的用户态"时，会先导出整台系统
+  （几 GB）、删除、再导入——导入又落回 home 的前缀，系统与之前一样，但导出的归档作为"回滚点"一直保留到系统被删除
+  （`state/luban/relayout/<name>.luban`，`.stays` 记下不再尝试）。每个系统只发生一次，是设计如此；但用户看不到这几 GB 在哪、
+  怎么释放。建议：迁移落回前缀时，说出归档的大小与 `luban rollback <name> --to relayout` / 删除的办法；或者先试建域、建不了就不导出。
+
 ## 7. 请你定
 
 | 编号 | 问题 | 选项 | 建议 |
@@ -168,4 +179,5 @@ T10、T12 独立；T13 在 T8、T9 之后
 | R2 | machine 的时区来源 | 宿主时区的 TZif 字节写入 / 装 tzdata 包并设 `TZ=<名字>` | **写入字节**：不加包、离线可用；要换时区的用户在系统里自己设，我们不覆盖 |
 | R3 | J33 已生效的包 | 不动 / 升级时改回只属于装它的人 | **不动**：记录里分不出是谁装的，猜错会让别人的命令消失 |
 | R4 | 交付切分 | T1–T9 一个 PR 一个版本 / T1–T7 先发，T8、T9 随后 | 若 R1 当场定，**一个 PR**；否则先发 T1–T7 |
+| R6 | J47 的处理 | 说出归档大小与释放办法 / 先试建域、建不了就不迁移 | **先试建域**：省一次几 GB 的导出与一次删除重建的风险 |
 | R5 | mcpp 发布与 K5 的时间 | mcpp 现在发 / 随下一次 mcpp 迭代；K5 第三部分现在写 / 本篇完成后 | mcpp 现在发（只差发布）；K5 在本篇完成后 |

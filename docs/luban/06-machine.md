@@ -49,6 +49,13 @@ luban config box --files 9p       # always 9p, from the next start
 Listing and reading many files is about ten times faster over virtio-fs; what
 the system may do with its files is the same on both.
 
+Both keep every file the host user's. A machine with users of its own besides
+the one it was made with (`adduser alice` inside) has its `/home` over 9p with
+`mapped-xattr` from its next start: each user's owner and modes are kept in the
+host file's extended attributes, and a home made before is given to its user
+at boot. Its own user notices nothing; `luban status` says
+`/home over 9p (users of their own)`.
+
 ## Where a machine's home is
 
 | Layout | The system home | |
