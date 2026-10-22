@@ -657,19 +657,6 @@ std::vector<xvm::ProjectContribution> project_contributions() {
     return out;
 }
 
-xvm::TableDiff plan_shim_table(
-        const fs::path& subos_dir,
-        const xvm::Workspace& active,
-        const xvm::VersionDB& db,
-        const std::vector<xvm::ProjectContribution>& projects) {
-    auto home = Config::paths().homeDir;
-    auto entry = xlings_binary_in_home(home);
-
-    auto desired = xvm::compute_desired(db, active, projects);
-    auto actual = xvm::scan_actual(subos_dir / "bin", entry);
-    return xvm::plan_table(desired, actual, reserved_shim_names_());
-}
-
 // What a shim runs: the home's xlings, or -- a user's view in a system, which
 // has none of its own -- the system's (part 2 J48: a user's own versions had
 // no shims, so what they chose was never what ran).
@@ -679,6 +666,20 @@ fs::path shim_entry_() {
         entry = xlings_binary_in_home(Config::paths().systemLayer);
     return entry;
 }
+
+xvm::TableDiff plan_shim_table(
+        const fs::path& subos_dir,
+        const xvm::Workspace& active,
+        const xvm::VersionDB& db,
+        const std::vector<xvm::ProjectContribution>& projects) {
+    // The same entry the table is applied with: a view's shims are ours too.
+    auto entry = shim_entry_();
+
+    auto desired = xvm::compute_desired(db, active, projects);
+    auto actual = xvm::scan_actual(subos_dir / "bin", entry);
+    return xvm::plan_table(desired, actual, reserved_shim_names_());
+}
+
 
 xvm::TableReport apply_shim_table(const fs::path& subos_dir,
                                   const xvm::TableDiff& diff) {
