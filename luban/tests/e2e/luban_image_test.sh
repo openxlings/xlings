@@ -268,6 +268,24 @@ grep -q "RUN-" <<<"$ran" || fail "luban run t: no output: $ran"
 [[ "$ran" != *"RUN-$(uname -r)"* ]] || fail "luban run t ran on this host's kernel, not the machine's: $ran"
 grep -q "RUN-ERR" "$RUNTIME_DIR/run.err" || fail "luban run t: its standard error is not the command's: $(cat "$RUNTIME_DIR/run.err")"
 [[ ! -S "$H/run/machines/t/luban.sock" ]] || fail "luban run t: the machine started for it is still running"
+log "luban run t, two at once: the one that started it ending does not cut the other short; the last powers it off"
+( L run t -- sh -c 'sleep 25; echo FIRST-DONE' >"$RUNTIME_DIR/run-first.log" 2>&1 ) &
+first=$!
+for _ in $(seq 1 120); do [[ -S "$H/run/machines/t/luban.sock" ]] && break; sleep 1; done
+sleep 5
+set +e
+second="$(L run t -- sh -c 'sleep 30; echo SECOND-DONE' 2>&1)"; rc=$?
+set -e
+wait "$first" || true
+grep -q "FIRST-DONE" "$RUNTIME_DIR/run-first.log" || fail "two runs: the first did not finish: $(tail -5 "$RUNTIME_DIR/run-first.log")"
+[[ $rc -eq 0 ]] && grep -q "SECOND-DONE" <<<"$second" || fail "two runs: the second was cut short (exit $rc): $(tail -5 <<<"$second")"
+for _ in $(seq 1 30); do [[ -S "$H/run/machines/t/luban.sock" ]] || break; sleep 1; done
+[[ ! -S "$H/run/machines/t/luban.sock" ]] || fail "two runs: the machine started for them is still running"
+log "luban run t --user <a name it does not have>: refused, never root"
+set +e
+who="$(L run t --user nobody-here -- id -u 2>&1)"; rc=$?
+set -e
+[[ $rc -ne 0 ]] && grep -q "no user 'nobody-here'" <<<"$who" || fail "--user nobody-here: exit $rc, ran as: $who"
 log "sudo in t, a machine (design 2026-10-20 WuXian §13.1, H24): root's copy on a tmpfs of its own, set-user-ID honoured"
 retry X install -y --subos t xim:sudo >"$RUNTIME_DIR/sudo.log" 2>&1 || { tail -20 "$RUNTIME_DIR/sudo.log"; fail "install sudo into t"; }
 mounts="$(L run t -- sh -c 'grep " /run/luban/root " /proc/mounts; cat /run/luban/sudo.problem 2>/dev/null' 2>&1 || true)"

@@ -44,7 +44,7 @@ luban config box --on-close background
 
 edition 可以给出这些设置的默认值；你设置的优先。
 
-按 machine 启动的系统，`luban run` 也在 machine 里执行，用它自己的内核：machine 没开时为这条命令启动、执行完关机；正在运行的保持运行。
+按 machine 启动的系统，`luban run` 也在 machine 里执行，用它自己的内核：machine 没开时为命令启动，其中最后一条命令结束时关机（同时执行的命令各自执行完）；正在运行的保持运行。`--user` 指它的某个用户——它没有的名字会被拒绝。
 在 machine 里执行 `poweroff`，会话随之结束，machine 关机，不会再问。
 
 ## 升级
