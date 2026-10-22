@@ -100,9 +100,12 @@ std::expected<Closure, std::string> collect(const Inputs& inputs) {
                 if (!selection)
                     return std::unexpected(selection.error().message);
                 for (const auto& [member, memberKey] : selection->members) {
+                    // A member this scope never took is not its: not projected.
+                    // Systems sharing a home's store see a release as its
+                    // latest registration has it -- one installed again at a
+                    // later revision may name a member this one never had.
                     if (!opted_in(installed, member, memberKey))
-                        return std::unexpected(member + "@" + memberKey +
-                                               ": root scope has not opted into this release");
+                        continue;
                     const auto* data = xvm::get_vdata(inputs.versions, member, memberKey);
                     const auto owner = xvm::recorded_owner(inputs.versions, member, memberKey);
                     if (!data || !owner)
