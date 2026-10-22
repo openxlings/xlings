@@ -65,7 +65,7 @@ text = "an image boots by a boot profile (--boot, else the edition's boot.profil
 status = "required"
 
 [LUBAN-UPGRADE]
-text = "subos upgrade / luban upgrade moves an environment made from an edition to a newer version: what the edition brought follows it, what the user moved stays theirs, what it dropped stays installed; one new generation; nothing changes without confirmation (agent: exit 2 with -y)"
+text = "subos upgrade / luban upgrade moves an environment made from an edition to a newer version: what the edition brought follows it (the versions earlier upgrades moved on from are the edition's, recorded as `brought`), what the user moved stays theirs, what it dropped stays installed; one new generation; nothing changes without confirmation (agent: exit 2 with -y)"
 status = "required"
 
 [LUBAN-UPGRADE-PLAN]
