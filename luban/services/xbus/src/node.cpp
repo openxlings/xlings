@@ -96,7 +96,11 @@ struct Node::Impl {
     std::condition_variable cv;
     std::unique_ptr<Conn> conn;
     std::array<Handle, 2> wake;
-    std::jthread io;
+    // A plain thread stopped by `stopping` and the wake pipe: a jthread's
+    // stop_token waits on an atomic, which GCC 16's libstdc++ alone carries
+    // (GLIBCXX_3.4.35) -- a program linking XBus then needs a C++ runtime no
+    // Luban system binds yet.
+    std::thread io;
     std::atomic<bool> stopping { false };
     bool welcomed { false };
     std::string root, router;
@@ -511,10 +515,10 @@ struct Node::Impl {
 
     // The node's thread: read, dispatch, write; when the router goes away,
     // connect again (100 ms, doubling to 2 s) and say everything again.
-    void loop(std::stop_token stop) {
+    void loop() {
         telemetry::name_thread("xbus-node " + o.name);
         auto backoff = std::chrono::milliseconds(100);
-        while (!stop.stop_requested() && !stopping.load()) {
+        while (!stopping.load()) {
             const Handle* h = nullptr;
             bool want_write = false;
             {
@@ -607,7 +611,7 @@ std::expected<std::shared_ptr<Node>, std::string> Node::connect(NodeOptions o) {
     n->impl_->raw = n.get();
     const auto opened = n->impl_->open();
     if (!opened && !n->impl_->o.patient) return std::unexpected(opened.error());
-    n->impl_->io = std::jthread([impl = n->impl_.get()](std::stop_token stop) { impl->loop(stop); });
+    n->impl_->io = std::thread([impl = n->impl_.get()] { impl->loop(); });
     if (opened) {
         std::unique_lock l(n->impl_->m);
         n->impl_->cv.wait_for(l, n->impl_->o.connect_wait, [&] { return n->impl_->welcomed; });
@@ -629,10 +633,7 @@ std::expected<std::shared_ptr<Node>, std::string> Node::connect(NodeOptions o) {
 void Node::close() {
     if (!impl_ || impl_->stopping.exchange(true)) return;
     impl_->kick();
-    if (impl_->io.joinable()) {
-        impl_->io.request_stop();
-        impl_->io.join();
-    }
+    if (impl_->io.joinable()) impl_->io.join();
     std::lock_guard l(impl_->m);
     if (impl_->conn) (void)impl_->conn->flush();
     impl_->conn.reset();
