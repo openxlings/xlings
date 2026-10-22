@@ -28,6 +28,7 @@
 | J44 | "sudo is there and says its version — no new privileges" | 系统的检查在沙箱里执行，bwrap 设了 no-new-privileges，sudo 连 `--version` 都拒绝；而这台桌面平时是以 machine 运行的 | 误报；沙箱模式下 sudo 本来就不可用（特权走 broker） |
 | J45 | 私有域路径在本机测不到 | 本机建不了私有命名空间。（更正：xlings CI 的 acceptance 作业已有 `static_domain` 一步，用发布候选跑 DomainProducer 并要求真正通过；第一部分加的 J37、J39 用例在那里执行过。单元、e2e 分片里的"跳过"是那些作业没有静态候选。） | 本机只能覆盖前缀路径；私有域路径由 acceptance 与 luban-os-ci 覆盖 |
 | J46 | xim-pkgindex 合入后 CN 镜像可能晚一天 | gitee-sync 只有 `on: push`；2026-10-22 GitHub 漏掉了 #1030 的 push 事件，发布靠手动触发补上，gitee 没补 | CN 用户的索引落后 |
+| J49 | （实施中发现，2026.10.22.3 起）用户在系统里装一个系统已有的库或数据包，每次都要 sudo | J36 判断"系统登记了没有"只看 workspace 的程序项；没有程序的包从不出现在那里 | 修：也看系统 scope 记下的 `configured`；test_user_view 断言第二次不再要 sudo |
 | — | `mcpp self doctor` 在系统里报错（mcpp#831） | 修复已合入 mcpp，未发布 | 等 mcpp 发布与 core edition 更新 |
 
 ## 2. 原则
