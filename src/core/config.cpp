@@ -197,6 +197,23 @@ std::expected<void, std::string> Config::start_own_home() {
             return std::unexpected(std::format("cannot write {}: {}", file.string(), e.what()));
         }
     }
+    // Its subos: the system's description (its runtime binding, its envs), a
+    // workspace of its own -- `self doctor` reads a subos with no subos_info
+    // block as broken.
+    const auto manifest = p.homeDir / "subos" / "default" / ".xlings.json";
+    if (!fs::exists(manifest, ec)) {
+        auto theirs = nlohmann::json::parse(
+            platform::read_file_to_string((p.systemLayer / "subos" / "default" / ".xlings.json").string()), nullptr, false);
+        auto view = nlohmann::json::object();
+        view["workspace"] = nlohmann::json::object();
+        if (theirs.is_object() && theirs.contains("subos_info")) view["subos_info"] = theirs["subos_info"];
+        fs::create_directories(manifest.parent_path(), ec);
+        try {
+            platform::write_file_atomic(manifest.string(), view.dump(2) + "\n");
+        } catch (const std::exception& e) {
+            return std::unexpected(std::format("cannot write {}: {}", manifest.string(), e.what()));
+        }
+    }
     return {};
 }
 
