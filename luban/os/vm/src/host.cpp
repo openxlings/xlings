@@ -285,11 +285,11 @@ VirtiofsPlan virtiofs_plan(const fs::path& virtiofsd, const std::vector<Share>& 
     p.qemu = {"-object", std::format("memory-backend-memfd,id=mem,size={}{},share=on", memory_mb, plain ? "M" : ""), "-numa",
               "node,memdev=mem"};
     for (const auto& s : shares) {
-        const auto sock = (run / std::format("vfs-{}.sock", s.tag)).string();
+        const auto sock = (run / std::format("vfs-{}.sock", s.tag)).generic_string();
         // Its own namespaces (unprivileged); a host that refuses them gets `none` (supervise).
         // `auto` for all: the home's generations do not change, but the host
         // installs into the same share and the machine sees it at once.
-        std::vector<std::string> d{virtiofsd.string(), "--socket-path", sock, "--shared-dir", s.dir.string(), "--sandbox", "namespace",
+        std::vector<std::string> d{virtiofsd.generic_string(), "--socket-path", sock, "--shared-dir", s.dir.generic_string(), "--sandbox", "namespace",
                                    "--cache", "auto"};
         if (s.read_only) d.push_back("--readonly");
         p.daemons.push_back(std::move(d));
@@ -302,7 +302,7 @@ VirtiofsPlan virtiofs_plan(const fs::path& virtiofsd, const std::vector<Share>& 
 std::vector<std::string> nine_p_args(const std::vector<Share>& shares) {
     std::vector<std::string> out;
     for (const auto& s : shares)
-        out.insert(out.end(), {"-virtfs", std::format("local,path={},mount_tag={},security_model=none,{}id={}", s.dir.string(), s.tag,
+        out.insert(out.end(), {"-virtfs", std::format("local,path={},mount_tag={},security_model=none,{}id={}", s.dir.generic_string(), s.tag,
                                                        s.read_only ? "readonly=on," : "", s.tag)});
     return out;
 }
