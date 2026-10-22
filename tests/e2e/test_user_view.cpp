@@ -149,6 +149,19 @@ XTEST(UserView, AUsersViewReadsTheSystemsStoreAndAsksOnceForWhatItLacks, .area =
         << tk::read_file(sudo / "sudo.log");
     EXPECT_TRUE(fs::exists(system / "data/xpkgs/xim-x-fixture-data/1.0.0")) << r.transcript();
     EXPECT_FALSE(fs::exists(home.dir() / "data/xpkgs/xim-x-fixture-data/1.0.0")) << "borrowed, not copied";
+    {
+        // The user's, not everyone's (part 2 J33): the system registers the
+        // version and uses none of it; the view uses it.
+        const auto ws = Json::parse(tk::read_file(system / "subos/default/.xlings.json"))["workspace"];
+        bool registered = false, active = false;
+        for (auto it = ws.begin(); it != ws.end(); ++it)
+            if (it.key().starts_with("fixture-data")) {
+                registered = registered || it.value().value("installed", Json::array()).dump().find("1.0.0") != std::string::npos;
+                active = active || it.value().contains("active");
+            }
+        EXPECT_TRUE(registered) << ws.dump();
+        EXPECT_FALSE(active) << "not in use for everyone: " << ws.dump();
+    }
 
     // A payload in the store that the system does not register -- another
     // system sharing the store (one home's) took it in: in the store means
