@@ -969,6 +969,13 @@ int install_(std::span<const std::string> targets, bool yes, bool noDeps,
                 return 1;
             }
             const auto first = static_cast<std::size_t>(injectedRelocationTool);
+            // What the system's scope took in, configuration included.
+            const auto configured = [&] {
+                auto doc = nlohmann::json::parse(platform::read_file_to_string(
+                    (system->home / "subos" / system->scope / ".xlings.json").string()), nullptr, false);
+                const auto c = doc.is_object() ? doc.value("configured", nlohmann::json::object()) : nlohmann::json::object();
+                return c.is_object() ? c : nlohmann::json::object();
+            }();
             std::vector<std::size_t> provided;
             std::vector<std::string> missing;
             for (std::size_t i = first; i < requestedMatches.size(); ++i) {
@@ -992,9 +999,12 @@ int install_(std::span<const std::string> targets, bool yes, bool noDeps,
                 // take a payload in for themselves, and a view borrows only
                 // what its system registers.
                 const auto payload = system->sourceHome / "data" / "xpkgs" / package_store_name(m.namespaceName, m.name) / m.version;
+                // Its programs in the system's workspace, or -- a package with
+                // none (a library, data) -- its configuration recorded there.
                 const auto installed = system->workspace.installed.find(m.name);
-                const bool registered = installed != system->workspace.installed.end()
-                    && std::ranges::any_of(installed->second, [&](const std::string& v) { return xvm::version_key_matches(m.version, v); });
+                const bool registered = (installed != system->workspace.installed.end()
+                    && std::ranges::any_of(installed->second, [&](const std::string& v) { return xvm::version_key_matches(m.version, v); }))
+                    || configured.contains(m.canonicalName + "@" + m.version);
                 if (!(registered && std::filesystem::is_directory(payload, ec) && payload_has_content(payload)
                       && !stamped_incomplete(payload)))
                     missing.push_back(m.canonicalName + "@" + m.version);

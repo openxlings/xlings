@@ -155,15 +155,19 @@ XTEST(UserView, AUsersViewReadsTheSystemsStoreAndAsksOnceForWhatItLacks, .area =
     {
         // The user's, not everyone's (part 2 J33): the system registers the
         // version and uses none of it; the view uses it.
-        const auto ws = Json::parse(tk::read_file(system / "subos/default/.xlings.json"))["workspace"];
-        bool registered = false, active = false;
-        for (auto it = ws.begin(); it != ws.end(); ++it)
-            if (it.key().starts_with("fixture-data")) {
-                registered = registered || it.value().value("installed", Json::array()).dump().find("1.0.0") != std::string::npos;
-                active = active || it.value().contains("active");
-            }
-        EXPECT_TRUE(registered) << ws.dump();
-        EXPECT_FALSE(active) << "not in use for everyone: " << ws.dump();
+        const auto scope = Json::parse(tk::read_file(system / "subos/default/.xlings.json"));
+        EXPECT_TRUE(scope.value("configured", Json::object()).contains("xim:fixture-data@1.0.0")) << scope.dump();
+        bool active = false;
+        for (auto it = scope["workspace"].begin(); it != scope["workspace"].end(); ++it)
+            if (it.key().starts_with("fixture-data")) active = active || it.value().contains("active");
+        EXPECT_FALSE(active) << "not in use for everyone: " << scope.dump();
+    }
+    {
+        // Already the system's: a second install by the user asks nothing more.
+        const auto before = tk::read_file(sudo / "sudo.log");
+        auto again = home.xlings({"install", "fixture-data", "-y"}, asked);
+        EXPECT_EQ(again.exit_code, 0) << again.transcript();
+        EXPECT_EQ(tk::read_file(sudo / "sudo.log"), before) << "asked for sudo again";
     }
 
     // A payload in the store that the system does not register -- another
@@ -200,10 +204,9 @@ XTEST(UserView, AUsersViewReadsTheSystemsStoreAndAsksOnceForWhatItLacks, .area =
     r = home.xlings({"use", "fixture-tool", "1.0.0"}, inSystem);
     EXPECT_EQ(r.exit_code, 0) << r.transcript();
     // What a user chooses is what runs for them (part 2 J48): their view has
-    // its `current`, and a shim of its own -- through the system's xlings.
+    // the `current` their PATH names (a version of their own gets a shim
+    // there; the system's own, chosen, runs from the system's /usr/bin).
     EXPECT_TRUE(fs::is_symlink(home.dir() / "subos/current")) << "no subos/current in the view";
-    EXPECT_TRUE(fs::exists(fs::symlink_status(home.dir() / "subos/default/bin/fixture-tool")))
-        << "no shim for the user's choice";
     const auto passwd = home.root() / "passwd";
     tk::write_file(passwd, std::format("root:x:0:0::/root:/bin/sh\nalice:x:1000:1000::{}:/bin/sh\n", home.root().string()));
     guard.set(true);
