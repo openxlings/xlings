@@ -72,7 +72,11 @@ XTEST(LubanCli, MachineSettingsAreCheckedAndEveryOtherKeySurvives, .area = "luba
     EXPECT_EQ(defaults->mode, "sandbox");
     EXPECT_EQ(defaults->persist, "all");
     EXPECT_EQ(defaults->on_close, "ask");
+    EXPECT_EQ(defaults->files, "virtiofs");
     ASSERT_TRUE(svc::set_setting(home.dir(), "box", "mode", "machine"));
+    ASSERT_TRUE(svc::set_setting(home.dir(), "box", "files", "9p"));
+    EXPECT_FALSE(svc::set_setting(home.dir(), "box", "files", "nfs")) << "not a value it takes";
+    EXPECT_EQ(svc::read_settings(home.dir(), "box")->files, "9p");
     ASSERT_TRUE(svc::set_setting(home.dir(), "box", "on-close", "background"));
     EXPECT_FALSE(svc::set_setting(home.dir(), "box", "persist", "some")) << "not a value it takes";
     EXPECT_FALSE(svc::set_setting(home.dir(), "box", "colour", "red"));

@@ -600,12 +600,13 @@ XTEST(Luban, AnEnvironmentsSettingsAreItsAndItsShellIsItsPasswds,
     if (!bin) GTEST_SKIP() << "no luban beside the xlings under test";
     auto home = luban_home("luban-config", *bin);
     ASSERT_EQ(luban(home, {"new", "box", "--xpkg", "fixture:my-os@1.0.0", "-y"}).exit_code, 0);
-    auto set = luban(home, {"config", "box", "--mode", "machine", "--persist", "home", "--on-close", "background"});
+    auto set = luban(home, {"config", "box", "--mode", "machine", "--persist", "home", "--on-close", "background", "--files", "9p"});
     ASSERT_EQ(set.exit_code, 0) << set.transcript();
     const auto doc = Json::parse(tk::read_file(home.dir() / "config/subos/box/machine.json"));
     EXPECT_EQ(doc["mode"], "machine");
     EXPECT_EQ(doc["persist"], "home");
     EXPECT_EQ(doc["on_close"], "background");
+    EXPECT_EQ(doc["files"], "9p");
     auto bad = luban(home, {"config", "box", "--persist", "sometimes"});
     EXPECT_EQ(bad.exit_code, 2) << bad.transcript();
     auto shown = luban(home, {"--json", "config", "box"});

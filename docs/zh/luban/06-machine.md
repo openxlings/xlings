@@ -26,6 +26,19 @@ luban boot box2 --now             # switch now, without restarting the kernel (w
 在机器里 xlings 就是包管理器：`xlings install` 以新的一代装进正在运行的系统；`luban rollback` 回到上一代。
 坏掉的库阻止不了回滚——xlings 是静态的。
 
+## 它的文件
+
+机器的目录树和它读的 home 是共享给它的，不是复制的：走 virtio-fs，每个共享一个非特权的 `virtiofsd`
+（第一台机器会安装 `xim:virtiofsd`）；做不到时走 9p——这台主机没有它的构建，或守护进程起不来。
+`luban status <name>` 会说用的是哪个，以及原因：
+
+```bash
+luban status box                  # files     virtiofs
+luban config box --files 9p       # always 9p, from the next start
+```
+
+在 virtio-fs 上列出和读取大量文件大约快十倍；系统能对文件做的事两者相同。
+
 ## 机器的 home 在哪里
 
 | 布局 | 系统 home | |

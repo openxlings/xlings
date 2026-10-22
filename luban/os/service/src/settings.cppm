@@ -19,6 +19,7 @@ struct Settings {
     std::string desktop;                 // a session name; empty: the edition's (or none)
     std::string on_close { "ask" };      // ask | background | poweroff
     std::string enter;                   // console | desktop: what going in shows first; empty: its desktop if it has one
+    std::string files { "virtiofs" };    // virtiofs | 9p: how a machine shares its files (design 2026-10-21 §4)
     nlohmann::json document = nlohmann::json::object();   // everything as read
 };
 
@@ -29,7 +30,7 @@ fs::path settings_file(const fs::path& home, std::string_view name);
 // a reason to boot a machine some other way than it was set up to).
 std::expected<Settings, std::string> read_settings(const fs::path& home, std::string_view name);
 
-// One key, checked: mode, persist, desktop, on-close. The file is rewritten
+// One key, checked: mode, persist, desktop, on-close, enter, files. The file is rewritten
 // atomically with every other key kept.
 std::expected<Settings, std::string> set_setting(const fs::path& home, std::string_view name,
                                                  std::string_view key, std::string_view value);

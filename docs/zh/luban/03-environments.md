@@ -40,6 +40,7 @@ luban config box --on-close background
 | `shell` | 它的登录 shell，取自它自己的 `/etc/passwd` |
 | `desktop` | 窗口显示的桌面会话，或 `none`（[桌面](08-desktop.md)） |
 | `on-close` | 关闭正在运行的机器的窗口时：`ask`、`background` 或 `poweroff` |
+| `files` | 机器怎样共享文件：`virtiofs`（默认；做不到时用 9p）或 `9p` |
 
 edition 可以给出这些设置的默认值；你设置的优先。
 

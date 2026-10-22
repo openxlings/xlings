@@ -18,6 +18,7 @@ const std::map<std::string_view, std::vector<std::string_view>, std::less<>>& al
         {"desktop", {}},
         {"on-close", {"ask", "background", "poweroff"}},
         {"enter", {"console", "desktop"}},
+        {"files", {"9p", "virtiofs"}},
     };
     return value;
 }
@@ -44,6 +45,7 @@ std::expected<Settings, std::string> read_settings(const fs::path& home, std::st
             else if (k == "desktop") s.desktop = v;
             else if (k == "on_close") s.on_close = v;
             else if (k == "enter") s.enter = v;
+            else if (k == "files") s.files = v;
         }
     };
     // Lowest: what its system package's manifest declares (luban.settings,
@@ -83,6 +85,7 @@ std::expected<Settings, std::string> read_settings(const fs::path& home, std::st
     s.desktop = j.value("desktop", s.desktop);
     s.on_close = j.value("on_close", s.on_close);
     s.enter = j.value("enter", s.enter);
+    if (const auto f = j.value("files", s.files); f == "9p" || f == "virtiofs") s.files = f;
     return s;
 }
 

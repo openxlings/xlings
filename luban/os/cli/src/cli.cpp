@@ -845,6 +845,8 @@ int cmd_status(const svc::Context& c, const Parsed& p, const Globals& g, Rendere
     // A running machine's GPU, as it was started (WuXian §7.5).
     const auto gpu = e->settings.mode == "machine" ? vm::started_gpu(c.home, e->name) : std::nullopt;
     if (gpu) j["gpu"] = *gpu;
+    const auto files = e->settings.mode == "machine" ? vm::started_files(c.home, e->name) : std::nullopt;
+    if (files) j["files"] = *files;
     j["notes"] = Json::array();
     for (const auto& n : notes) j["notes"].push_back({{"text", n.text}, {"next", n.next}});
     if (g.json) { r.value(j); return 0; }
@@ -871,6 +873,7 @@ int cmd_status(const svc::Context& c, const Parsed& p, const Globals& g, Rendere
     if (e->carrier != "local") std::println("  carrier   {}", e->carrier);
     std::println("  {:<9} {}", xlings::i18n::tr("luban.status.network"), network);
     if (gpu) std::println("  gpu       {}", *gpu);
+    if (files) std::println("  files     {}", *files);
     std::println("  isolation luban config {}", e->name);
     for (const auto& v : unmet) std::println("  {} {}: this luban is older than it -- xlings update luban", r.paint("!", 33), v.why());
     // What may be done, never forced (design 2026-10-19 §12.2).
@@ -896,6 +899,7 @@ int cmd_config(const svc::Context& c, const Parsed& p, const Globals& g, Rendere
     if (!v.value("shell", std::string{}).empty()) std::println("  shell     {}", v.value("shell", ""));
     std::println("  desktop   {}", v.value("desktop", std::string{}).empty() ? "(the edition's)" : v.value("desktop", ""));
     std::println("  on-close  {}", v.value("on_close", ""));
+    if (v.value("mode", std::string{}) == "machine") std::println("  files     {}", v.value("files", std::string("virtiofs")));
     if (auto iso = v.find("isolation"); iso != v.end() && iso->is_object()) {
         std::println("  policy    {}", iso->value("extends", std::string("?")));
         if (auto in = iso->find("isolation"); in != iso->end() && in->is_object()) {
@@ -1336,6 +1340,7 @@ const spec::CommandSpec& tree() {
                          {"--desktop <SESSION>", "The desktop it starts, or none"},
                          {"--on-close <WHAT>", "ask, background or poweroff: closing its window"},
                          {"--enter <WHAT>", "console or desktop: what going in shows first"},
+                         {"--files <HOW>", "virtiofs (9p where it cannot) or 9p: how a machine shares its files", false, Level::More},
                          {"--policy <PRESET>", "dev, private, locked, or ns:name"},
                          {"--proxy <URL>", "Its only network is this SOCKS5h proxy; off for none"},
                          {"--tz <ZONE>", "utc, proxy, or Area/City"},

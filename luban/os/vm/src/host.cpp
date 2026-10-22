@@ -278,6 +278,35 @@ std::map<std::string, std::string> qemu_env_(const Json& declared) {
 
 }  // namespace
 
+VirtiofsPlan virtiofs_plan(const fs::path& virtiofsd, const std::vector<Share>& shares, const fs::path& run, std::string_view memory_mb) {
+    VirtiofsPlan p;
+    // `-m`'s size: a plain number is MiB there, bytes here.
+    const bool plain = !memory_mb.empty() && std::ranges::all_of(memory_mb, [](char ch) { return ch >= '0' && ch <= '9'; });
+    p.qemu = {"-object", std::format("memory-backend-memfd,id=mem,size={}{},share=on", memory_mb, plain ? "M" : ""), "-numa",
+              "node,memdev=mem"};
+    for (const auto& s : shares) {
+        const auto sock = (run / std::format("vfs-{}.sock", s.tag)).string();
+        // Its own namespaces (unprivileged); a host that refuses them gets `none` (supervise).
+        // `auto` for all: the home's generations do not change, but the host
+        // installs into the same share and the machine sees it at once.
+        std::vector<std::string> d{virtiofsd.string(), "--socket-path", sock, "--shared-dir", s.dir.string(), "--sandbox", "namespace",
+                                   "--cache", "auto"};
+        if (s.read_only) d.push_back("--readonly");
+        p.daemons.push_back(std::move(d));
+        p.qemu.insert(p.qemu.end(), {"-chardev", std::format("socket,id=vfs-{},path={}", s.tag, sock), "-device",
+                                     std::format("vhost-user-fs-pci,chardev=vfs-{},tag={}", s.tag, s.tag)});
+    }
+    return p;
+}
+
+std::vector<std::string> nine_p_args(const std::vector<Share>& shares) {
+    std::vector<std::string> out;
+    for (const auto& s : shares)
+        out.insert(out.end(), {"-virtfs", std::format("local,path={},mount_tag={},security_model=none,{}id={}", s.dir.string(), s.tag,
+                                                       s.read_only ? "readonly=on," : "", s.tag)});
+    return out;
+}
+
 MachineGpu machine_gpu(const std::optional<fs::path>& render_node, const std::expected<void, std::string>& gl,
                        std::string_view driver, bool dxg) {
     if (!render_node && dxg)
@@ -432,15 +461,51 @@ int start_impl_(const service::Context& c, std::string_view name, const EnterOpt
                                    net.args.size() == 2 && net.args[1] != "none" ? std::format(" ip=::::{}::dhcp", name) : std::string{}),
                        "-no-reboot",
                        "-serial", std::format("file:{}", (log_dir(c.home, name) / "console.log").string()),
-                       "-virtfs", std::format("local,path={},mount_tag=root,security_model=none,id=root", share.string()),
-                       "-virtfs", std::format("local,path={},mount_tag=home,security_model=none,readonly=on,id=home", home_files),
                        "-device", "virtio-serial-pci",
                        "-chardev", std::format("socket,id=agent,path={},server=on,wait=off", (dir / "agent.sock").string()),
                        "-device", std::format("virtserialport,chardev=agent,name={}", proto::kPort),
                        "-qmp", std::format("unix:{},server=on,wait=off", (dir / "qmp.sock").string())});
-    if (userhome)
-        q.insert(q.end(), {"-virtfs", std::format("local,path={},mount_tag=userhome,security_model=none,id=userhome",
-                                                  (*root / "home").string())});
+    // Its files (design 2026-10-21 §4): 9p, or virtio-fs when asked and its
+    // daemon is here (installed the first time); the 9p arguments kept, the
+    // supervisor's way back should a daemon not start.
+    std::vector<Share> shares{{"root", share, false}, {"home", home_files, true}};
+    if (userhome) shares.push_back({"userhome", *root / "home", false});
+    const auto nine_p = nine_p_args(shares);
+    std::optional<VirtiofsPlan> vfs;
+    std::string files = "9p";
+    if (!settings || settings->files == "virtiofs") {
+        auto found = xlings::subos::tools::first("virtiofsd", view, xlings::subos::Ports{});
+        // Installed the first time; one that could not be (an index without
+        // it, a host it is not built for) is tried again a day later, not at
+        // every start.
+        const auto tried = log_dir(c.home, name) / "virtiofsd-install-failed";
+        const auto recently = [&] {
+            std::error_code e;
+            const auto t = fs::last_write_time(tried, e);
+            return !e && fs::file_time_type::clock::now() - t < std::chrono::hours(24);
+        };
+        if (!found && !recently()) {
+            say_(c, service::phase("files", "begin", "installing virtio-fs for machines"));
+            (void)c.port.capability("install_packages", {{"targets", Json::array({"xim:virtiofsd"})}, {"yes", true}}, c.sink);
+            found = xlings::subos::tools::first("virtiofsd", view, xlings::subos::Ports{});
+            say_(c, service::phase("files", found ? "done" : "failed", "installing virtio-fs for machines"));
+            if (!found) platform::write_file_atomic(tried.string(), xlings::observe::utc_now() + "\n");
+        }
+        if (found) {
+            vfs = virtiofs_plan(found->bin, shares, dir, memory);
+            files = "virtiofs";
+        } else {
+            files = "9p (virtiofsd is not installed: xlings install virtiofsd)";
+        }
+    }
+    if (vfs) {
+        q.insert(q.end(), vfs->qemu.begin(), vfs->qemu.end());
+        // The guest mounts its shares with virtio-fs: on the kernel's command line.
+        for (std::size_t k = 0; k + 1 < q.size(); ++k)
+            if (q[k] == "-append") { q[k + 1] += " luban.fs=virtiofs"; break; }
+    } else {
+        q.insert(q.end(), nine_p.begin(), nine_p.end());
+    }
     // Without its GPU, should the GL qemu not start (its driver refuses the
     // render node): the same machine, drawn in software (supervise).
     auto software = q;
@@ -451,7 +516,13 @@ int start_impl_(const service::Context& c, std::string_view name, const EnterOpt
     q.insert(q.end(), net.args.begin(), net.args.end());
     Json state{{"name", name}, {"qemu", q}, {"persist", persist}, {"temp", o.temp}, {"scratch", persist == "all" ? "" : share.string()},
                {"env", net.env}, {"started", xlings::observe::utc_now()}, {"accel", kvm ? "kvm" : "tcg"}, {"memory", memory},
-               {"gpu", gpu.summary}};
+               {"gpu", gpu.summary}, {"files", files}};
+    if (vfs) {
+        // Its way back, should a daemon not start: the same arguments, 9p's instead.
+        state["virtiofsd"] = vfs->daemons;
+        state["files_virtiofs"] = vfs->qemu;
+        state["files_9p"] = nine_p;
+    }
     if (gpu.virgl) {
         state["gpu_env"] = gl->env;
         state["qemu_software"] = software;
@@ -815,6 +886,13 @@ std::optional<std::string> started_gpu(const fs::path& home, std::string_view na
     const auto gpu = read_json_(state_file_(home, name)).value("gpu", std::string{});
     if (gpu.empty()) return std::nullopt;
     return gpu;
+}
+
+std::optional<std::string> started_files(const fs::path& home, std::string_view name) {
+    if (!running(home, name)) return std::nullopt;
+    const auto files = read_json_(state_file_(home, name)).value("files", std::string{});
+    if (files.empty()) return std::nullopt;
+    return files;
 }
 
 std::expected<Client, std::string> Client::connect(const fs::path& home, std::string_view name) {
@@ -1659,8 +1737,76 @@ int supervise(const fs::path& home, std::string_view name) {
         }
         return pid;
     };
+    // Its files' daemons first (virtio-fs): each listening before qemu
+    // connects, and each serves one qemu -- a second (the software one)
+    // gets its own. One that does not start is 9p instead.
+    std::vector<int> daemons;
+    const auto stop_daemons = [&] {
+        for (const int d : daemons) (void)platform::send_signal(d, platform::sig::terminate);
+        for (const int d : daemons) (void)platform::wait_process(d, true);
+        daemons.clear();
+    };
+    // One daemon, listening (its socket there) within 3 s.
+    const auto start_one = [&](const std::vector<std::string>& a) {
+        const fs::path sock = a.size() > 2 ? fs::path(a[2]) : fs::path{};
+        fs::remove(sock, ec);
+        const int pid = launch(a, platform::environment());
+        if (pid < 0) return false;
+        for (int k = 0; k < 60; ++k) {
+            if (fs::exists(sock, ec)) {
+                daemons.push_back(pid);
+                return true;
+            }
+            if (platform::wait_process(pid, false)) return false;   // it ended: nothing to wait for
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        }
+        (void)platform::send_signal(pid, platform::sig::terminate);
+        (void)platform::wait_process(pid, true);
+        return false;
+    };
+    const auto start_daemons = [&] {
+        for (const auto& argv : state.value("virtiofsd", Json::array())) {
+            std::vector<std::string> a;
+            for (const auto& w : argv) a.push_back(w.get<std::string>());
+            if (start_one(a)) continue;
+            // A host that does not give it namespaces (user namespaces restricted): without its sandbox.
+            const auto how = std::ranges::find(a, "namespace");
+            if (how == a.end()) return false;
+            *how = "none";
+            std::println(std::cerr, "luban: virtiofsd did not start in its namespaces; {} again without its sandbox", a.size() > 4 ? a[4] : "");
+            if (!start_one(a)) return false;
+        }
+        return true;
+    };
+    const auto on_9p = [&](const Json& args) {
+        std::vector<std::string> out;
+        for (const auto& a : args) out.push_back(a.get<std::string>());
+        const auto vfs = state.value("files_virtiofs", Json::array());
+        if (vfs.empty()) return out;
+        for (std::size_t k = 0; k + vfs.size() <= out.size(); ++k)
+            if (std::equal(vfs.begin(), vfs.end(), out.begin() + static_cast<std::ptrdiff_t>(k),
+                           [](const Json& v, const std::string& a) { return v.get<std::string>() == a; })) {
+                out.erase(out.begin() + static_cast<std::ptrdiff_t>(k), out.begin() + static_cast<std::ptrdiff_t>(k + vfs.size()));
+                for (const auto& n : state.value("files_9p", Json::array()))
+                    out.insert(out.begin() + static_cast<std::ptrdiff_t>(k++), n.get<std::string>());
+                break;
+            }
+        for (auto& a : out)
+            if (const auto at = a.find(" luban.fs=virtiofs"); at != std::string::npos) a.erase(at, std::string_view(" luban.fs=virtiofs").size());
+        return out;
+    };
+    if (state.contains("virtiofsd") && !start_daemons()) {
+        std::println(std::cerr, "luban: a virtiofsd did not start; {} shares its files over 9p", name);
+        stop_daemons();
+        q = on_9p(state["qemu"]);
+        state["qemu"] = q;
+        if (state.contains("qemu_software")) state["qemu_software"] = on_9p(state["qemu_software"]);
+        state.erase("virtiofsd");
+        state["files"] = "9p (virtiofsd did not start: supervisor.log)";
+        platform::write_file_atomic(state_file_(home, name).string(), state.dump(2));
+    }
     int qemu = launch(q, qemu_env_(state.value("gpu_env", Json::array())));
-    if (qemu < 0) return 1;
+    if (qemu < 0) { stop_daemons(); return 1; }
     int agent = -1;
     for (int i = 0; i < 100 && agent < 0; ++i) {
         agent = platform::unix_connect_stream(dir / "agent.sock");
@@ -1677,8 +1823,15 @@ int supervise(const fs::path& home, std::string_view name) {
             state["qemu"] = q;
             state["gpu"] = "no GPU: the GL qemu could not draw on this host's render node (supervisor.log)";
             platform::write_file_atomic(state_file_(home, name).string(), state.dump(2));
+            if (state.contains("virtiofsd")) {
+                stop_daemons();
+                if (!start_daemons()) {
+                    stop_daemons();
+                    return 1;
+                }
+            }
             qemu = launch(q, platform::environment());
-            if (qemu < 0) return 1;
+            if (qemu < 0) { stop_daemons(); return 1; }
             i = 0;
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
@@ -1686,11 +1839,14 @@ int supervise(const fs::path& home, std::string_view name) {
     const int listen = platform::unix_listen_stream(client_socket_(home, name));
     if (agent < 0 || listen < 0) {
         platform::send_signal(qemu, platform::sig::terminate);
+        (void)platform::wait_process(qemu, true);
+        stop_daemons();
         return 1;
     }
     bridge_(home, name, agent, listen, [&] { return !platform::wait_process(qemu, false).has_value(); },
             [&] { platform::send_signal(qemu, platform::sig::terminate); }, {});
     (void)platform::wait_process(qemu, true);
+    stop_daemons();
     cleanup_(home, name, state);
     return 0;
 }

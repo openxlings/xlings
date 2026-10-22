@@ -574,6 +574,10 @@ status = "required"
 text = "the desktop tells the window how a shaken pointer is shown (opensal 'p': off, grow, or grow and colour, up to 2 to 4 times, the colour); the window grows its pointer while it is shaken and back after, and one that hears nothing does what the default says"
 status = "required"
 
+[LUBAN-MACHINE-FILES]
+text = "a machine's files are shared over 9p or, asked (luban config <name> --files virtiofs), virtio-fs: a virtiofsd a share (installed the first time, read-only where 9p is), qemu's vhost-user-fs device on a shared memfd; a daemon that does not start leaves the machine on 9p, its state saying so"
+status = "required"
+
 [LUBAN-MACHINE-GPU]
 text = "a machine has a GPU (virtio-gpu, 3D through virgl on this host's render node) when the host has a render node, the system the gpu grant and the GL qemu (xim:qemu-system-gl, installed the first time) has the device; otherwise none, the reason in its state (luban status, the welcome); a GL qemu that does not start leaves the machine in software; the machine's kernel has DRM and virtio-gpu built in, its render node is its users'"
 status = "required"

@@ -734,7 +734,7 @@ Outcome configure(const Context& c, std::string_view name, const std::vector<std
     if (!exists_(c, name)) return missing_(c, name);
     std::vector<std::string> isolation;
     for (const auto& [key, value] : changes) {
-        if (key == "mode" || key == "persist" || key == "desktop" || key == "on-close" || key == "enter") {
+        if (key == "mode" || key == "persist" || key == "desktop" || key == "on-close" || key == "enter" || key == "files") {
             auto s = set_setting(c.home, name, key, value);
             if (!s) {
                 if (c.sink) c.sink(error(s.error()));
@@ -809,7 +809,8 @@ Outcome configure(const Context& c, std::string_view name, const std::vector<std
     auto e = describe(c, name);
     if (!e) return {.code = 1};
     Json value{{"name", e->name}, {"mode", e->settings.mode}, {"persist", e->settings.persist},
-               {"desktop", e->settings.desktop}, {"on_close", e->settings.on_close}, {"shell", e->shell}};
+               {"desktop", e->settings.desktop}, {"on_close", e->settings.on_close}, {"shell", e->shell},
+               {"files", e->settings.files}};
     if (auto iso = c.port.json(argv_({"subos", "config", name, "--json"})); iso) value["isolation"] = *iso;
     return {.code = 0, .value = value};
 }

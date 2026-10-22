@@ -42,6 +42,7 @@ luban config box --on-close background
 | `shell` | its login shell, from its own `/etc/passwd` |
 | `desktop` | the desktop session the window shows, or `none` ([The desktop](08-desktop.md)) |
 | `on-close` | closing the window of a running machine: `ask`, `background` or `poweroff` |
+| `files` | how a machine shares its files: `virtiofs` (default; 9p where it cannot) or `9p` |
 
 An edition may set their defaults; what you set wins.
 

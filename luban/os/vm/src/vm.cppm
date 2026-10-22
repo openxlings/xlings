@@ -151,6 +151,9 @@ std::optional<std::map<std::string, std::string>> started_env(const fs::path& ho
 // A running machine's GPU as it was started: "virgl on /dev/dri/renderD128
 // (nvidia)", or why it has none (WuXian §7.5); nothing when it is not running.
 std::optional<std::string> started_gpu(const fs::path& home, std::string_view name);
+// How a running machine shares its files: "virtiofs", or "9p" and why
+// (design 2026-10-21 §4); nothing when it is not running.
+std::optional<std::string> started_files(const fs::path& home, std::string_view name);
 fs::path log_dir(const fs::path& home, std::string_view name);
 
 // A machine's sound (design §9.4): with the audio grant and a host
@@ -158,6 +161,20 @@ fs::path log_dir(const fs::path& home, std::string_view name);
 // PULSE_SERVER its sessions use; nothing otherwise.
 struct SoundForward { std::string guestfwd; std::string pulse_server; };
 std::optional<SoundForward> sound_forward(bool granted, const fs::path& pulse_socket, const fs::path& luban);
+
+// A machine's files over virtio-fs (design 2026-10-21 §4; `luban config
+// <name> --files virtiofs`): a virtiofsd for each share -- unprivileged, its
+// socket in the machine's run directory, its cache `auto` -- and qemu's
+// vhost-user-fs device, the
+// guest's memory a shared memfd as vhost-user needs. 9p is what is used
+// without it.
+struct Share { std::string tag; fs::path dir; bool read_only { false }; };
+struct VirtiofsPlan {
+    std::vector<std::string> qemu;                    // qemu's arguments for every share
+    std::vector<std::vector<std::string>> daemons;    // one virtiofsd each
+};
+VirtiofsPlan virtiofs_plan(const fs::path& virtiofsd, const std::vector<Share>& shares, const fs::path& run, std::string_view memory_mb);
+std::vector<std::string> nine_p_args(const std::vector<Share>& shares);
 
 // The host's openbus router (design 2026-10-22 §6.5): one per home, at
 // bus_socket(home), its log under <home>/logs/openbus/; started by the first

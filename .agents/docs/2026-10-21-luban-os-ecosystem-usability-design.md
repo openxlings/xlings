@@ -242,6 +242,17 @@ Landlock 的规则挂在旧的 inode 上，于是允许写的目录也被拒绝�
 - **后备**：virtiofsd 不可用时退回 9p，只读的共享改用 `cache=loose`，`luban status` 里说一行。
 - **验收（L5）**：输入红字时的 CPU、`xlings search` 的耗时、`ls -R /usr` 的耗时、Falkon 的启动时间，9p 与 virtiofs 各测一组。
 
+### 4.1 实现（K6）
+
+- **设置 `files`**：`virtiofs`（默认）或 `9p`（`luban config <name> --files`）；`luban status` 与 `luban config` 的输出里各有一行 `files`。
+- **规划与执行分开**：`luban::vm::virtiofs_plan` 只算参数（每个共享一个 daemon 的 argv、qemu 的 memfd、`-numa`、chardev 与设备），`nine_p_args` 算 9p 的；启动时两套都写进 state.json（`virtiofsd`、`files_virtiofs`、`files_9p`），由 supervisor 先起 daemon、等它的 socket（3 秒），再起 qemu，qemu 退出后停掉 daemon。
+- **后备的层次**：`--sandbox namespace` 起不来（主机限制了用户命名空间）就以 `--sandbox none` 再试；还起不来，就把参数换成 9p、去掉内核命令行上的 `luban.fs=virtiofs`，state 里写 `9p (virtiofsd did not start: supervisor.log)`。GL qemu 退回软件渲染时 daemon 重新起一次（每个 virtiofsd 只服务一个 qemu）。
+- **安装时机**：第一次需要时装 `xim:virtiofsd`；装不上（索引里没有、这个架构没有构建）就写 `logs/machines/<name>/virtiofsd-install-failed`，一天之内不再试——否则每次启动都要多等约 8 秒。
+- **缓存与上面的不同**：所有共享都是 `cache=auto`。generation 与 `/xlings` 在同一个共享（home）里，宿主机往里安装的东西 machine 要马上看到；`always` 要到重启才看得到。9p 的挂载参数未改。
+- **权限语义**：在实机上对比过，非特权 virtiofsd 与 9p `security_model=none` 一样：`chown` 得到 EINVAL，`chmod` 成功，新文件的属主是宿主机用户。
+- **测得（实机 KVM，同一系统）**：`find /usr -type f`（14287 个文件）9p 3955 ms、virtiofs 359 ms；读 400 个共享库（27 MB）9p 1041 ms、virtiofs 130 ms；启动时间相同（4.4–4.6 s）。
+- **测试**：`LubanVm.AMachinesFilesOverVirtiofsAreADaemonAShare`（参数，LUBAN-MACHINE-FILES）；默认、未安装、daemon 起不来三条路径在实机上验证。
+
 ## 5. 设备、表面与传输：各规范各管一件事（D4、E5）
 
 ### 5.1 问题
