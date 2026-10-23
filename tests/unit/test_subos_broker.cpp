@@ -5,6 +5,7 @@
 import std;
 import xlings.subos.broker;
 import xlings.subos.policy;
+import xlings.subos.home_view;
 
 namespace b = xlings::subos::broker;
 namespace pol = xlings::subos::policy;
@@ -79,4 +80,21 @@ TEST(SubosBroker, TheClipboardIsAGrantOfItsOwnAndNeverImplied) {
     EXPECT_EQ(b::decide(p, paste).action, pol::Action::Deny) << "copying out does not let it read the host's";
     EXPECT_FALSE(pol::legacy().grants_allowed.contains("clipboard")) << "never implied by a preset";
     EXPECT_FALSE(pol::legacy().grants_allowed.contains("clipboard-paste"));
+}
+
+TEST(SubosBroker, ARequestThatCannotBeRecordedIsAnErrorNotAWait) {
+    // Part 2 J41: an id came back for a request written nowhere.
+    namespace fs = std::filesystem;
+    const auto dir = fs::temp_directory_path() / std::format("xtest-broker-queue-{}", std::random_device{}());
+    fs::create_directories(dir);
+    const xlings::subos::HomeView home{dir};
+    std::ofstream(dir / "state") << "a file where the state directory goes";
+    const auto blocked = b::enqueue(home, "box", V{"install", "jq"}, "fetch=ask");
+    EXPECT_FALSE(blocked.has_value());
+    fs::remove(dir / "state");
+    const auto queued = b::enqueue(home, "box", V{"install", "jq"}, "fetch=ask");
+    ASSERT_TRUE(queued.has_value()) << queued.error();
+    EXPECT_EQ(b::pending(home, "box").size(), 1u);
+    std::error_code ec;
+    fs::remove_all(dir, ec);
 }

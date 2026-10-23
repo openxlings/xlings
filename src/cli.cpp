@@ -40,6 +40,7 @@ import xlings.agent.text_renderer;
 import xlings.interface;
 import xlings.core.subos;
 import xlings.core.xself;
+import xlings.core.xself.init;
 import xlings.core.xim.commands;
 import xlings.core.xvm.types;
 import xlings.core.xvm.db;
@@ -1817,7 +1818,24 @@ int dispatch_(int argc, char* argv[]) {
             std::vector<char*> forwarded;
             for (auto& w : words) forwarded.push_back(w.data());
             forwarded.push_back(nullptr);
-            return dispatch_(static_cast<int>(words.size()), forwarded.data());
+            // Into the store for a user, not in use for everyone (part 2 J33):
+            // the version is the system's (registered), what this install made
+            // active where nothing was is taken back -- the user's view uses it.
+            const auto before = Config::workspace();
+            const int rc = dispatch_(static_cast<int>(words.size()), forwarded.data());
+            if (rc != 0) return rc;
+            Config::reload_state();
+            auto& active = Config::workspace_mut();
+            std::size_t taken = 0;
+            for (auto it = active.begin(); it != active.end();) {
+                if (!before.contains(it->first)) { it = active.erase(it); ++taken; }
+                else ++it;
+            }
+            if (taken > 0) {
+                Config::save_workspace();
+                if (const auto synced = xself::sync_shim_tables(); !synced.root_error.empty()) return 1;
+            }
+            return 0;
         }
         break;
     }

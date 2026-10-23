@@ -170,6 +170,29 @@ TEST(ShimAnchorOwner, OrphanShimHasNoOwner) {
     EXPECT_FALSE(owner.has_value());
 }
 
+TEST(ShimAnchorOwner, ABareNameIsTheShimOnPathNotTheEntrysHome) {
+    // Part 2 J48: a user's view runs the system's xlings through shims of its
+    // own; a shell gives argv[0] as the bare name, and the entry's home (the
+    // system's) answered for the shim.
+#if defined(_WIN32)
+    GTEST_SKIP() << "shims are links here";
+#else
+    TempDir tmp;
+    auto system = tmp.path / "system";
+    make_home(system);
+    auto view = tmp.path / "view";
+    auto viewBin = make_home(view);
+    fs::create_symlink(system / "bin" / kXlingsBin, viewBin / "tool");
+    const char* before = std::getenv("PATH");
+    const std::string saved = before ? before : "";
+    xlings::platform::set_env_variable("PATH", viewBin.string() + ":" + saved);
+    auto owner = xlings::xvm::resolve_owner_home("tool");
+    xlings::platform::set_env_variable("PATH", saved);
+    ASSERT_TRUE(owner.has_value());
+    EXPECT_EQ(fs::weakly_canonical(*owner), fs::weakly_canonical(view));
+#endif
+}
+
 // ── home_knows_program ───────────────────────────────────────────────
 
 TEST(ShimAnchorKnows, DirectKeyMatch) {

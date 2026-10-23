@@ -657,22 +657,33 @@ std::vector<xvm::ProjectContribution> project_contributions() {
     return out;
 }
 
+// What a shim runs: the home's xlings, or -- a user's view in a system, which
+// has none of its own -- the system's (part 2 J48: a user's own versions had
+// no shims, so what they chose was never what ran).
+fs::path shim_entry_() {
+    auto entry = xlings_binary_in_home(Config::paths().homeDir);
+    if (entry.empty() && !Config::paths().systemLayer.empty())
+        entry = xlings_binary_in_home(Config::paths().systemLayer);
+    return entry;
+}
+
 xvm::TableDiff plan_shim_table(
         const fs::path& subos_dir,
         const xvm::Workspace& active,
         const xvm::VersionDB& db,
         const std::vector<xvm::ProjectContribution>& projects) {
-    auto home = Config::paths().homeDir;
-    auto entry = xlings_binary_in_home(home);
+    // The same entry the table is applied with: a view's shims are ours too.
+    auto entry = shim_entry_();
 
     auto desired = xvm::compute_desired(db, active, projects);
     auto actual = xvm::scan_actual(subos_dir / "bin", entry);
     return xvm::plan_table(desired, actual, reserved_shim_names_());
 }
 
+
 xvm::TableReport apply_shim_table(const fs::path& subos_dir,
                                   const xvm::TableDiff& diff) {
-    auto entry = xlings_binary_in_home(Config::paths().homeDir);
+    auto entry = shim_entry_();
     return xvm::apply_table(diff, subos_dir / "bin", entry);
 }
 
@@ -717,8 +728,14 @@ ShimSyncSummary sync_shim_tables() {
             }
         }
     }
-    auto entry = xlings_binary_in_home(Config::paths().homeDir);
+    auto entry = shim_entry_();
     std::error_code ec;
+    // A user's view made before it had `subos/current` (part 2 J48): what
+    // their PATH names, made by the first change since.
+    if (const auto& p = Config::paths(); !p.systemLayer.empty())
+        if (const auto current = p.homeDir / "subos" / "current";
+            !fs::exists(fs::symlink_status(current, ec)) && fs::is_directory(p.homeDir / "subos" / "default", ec))
+            platform::create_directory_link(current, p.homeDir / "subos" / "default");
     if (entry.empty() || !fs::exists(entry, ec)) {
         // Pre-`self init` bootstrap: there is nothing to link to yet, and
         // ensure_home_layout will build the table when it lands.

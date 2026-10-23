@@ -39,6 +39,10 @@ luban config box --files 9p       # always 9p, from the next start
 
 在 virtio-fs 上列出和读取大量文件大约快十倍；系统能对文件做的事两者相同。
 
+两者都让每个文件归宿主上的用户。机器里除了建它时的用户、还有自己的用户（在里面 `adduser alice`）时，
+从下一次启动起它的 `/home` 走 9p 的 `mapped-xattr`：每个用户的属主与权限存在宿主文件的扩展属性里，
+之前建的 home 在启动时交给它的用户。原来的用户感觉不到变化；`luban status` 会写 `/home over 9p (users of their own)`。
+
 ## 机器的 home 在哪里
 
 | 布局 | 系统 home | |

@@ -170,6 +170,12 @@ namespace platform_impl {
     // Resolve a user's home dir from the passwd db. Empty on lookup miss.
     export std::string home_for_user_(const std::string& name);
 
+    // The uid that owns `p` (not followed), or nothing when it cannot be read.
+    export std::optional<unsigned int> owner_uid(const std::filesystem::path& p);
+    // `p` and everything under it owned by uid:gid (links not followed);
+    // false when any of it could not be.
+    export bool chown_tree(const std::filesystem::path& p, unsigned int uid, unsigned int gid);
+
 } // namespace platform_impl
 } // namespace xlings
 

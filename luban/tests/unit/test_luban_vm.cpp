@@ -147,3 +147,22 @@ XTEST(LubanVm, AMachinesFilesOverVirtiofsAreADaemonAShare, .area = "luban", .cov
               (std::vector<std::string>{"-virtfs", "local,path=/r,mount_tag=root,security_model=none,id=root", "-virtfs",
                                         "local,path=/h,mount_tag=home,security_model=none,readonly=on,id=home"}));
 }
+
+XTEST(LubanVm, UsersOfTheirOwnHaveTheirHomesOverMappedNineP, .area = "luban", .covers = {"LUBAN-MACHINE-USERS"}) {
+    // Part 2 J32: alice, added with adduser, could not write her home -- the
+    // share kept every file the host user's.
+    auto home = tk::Home::isolated("vm-users");
+    const auto etc = home.root() / "etc";
+    tk::write_file(etc / "passwd", "root:x:0:0:root:/root:/bin/sh\n"
+                                   "lubanoser:x:1000:1000::/home/lubanoser:/usr/bin/fish\n"
+                                   "nobody:x:65534:65534::/home/nobody:/bin/false\n"
+                                   "daemon:x:2:2::/home/daemon:/bin/false\n");
+    tk::write_file(etc / "luban" / "login", "lubanoser\n");
+    EXPECT_FALSE(luban::vm::users_of_their_own(etc)) << "the system's own user, and nobody's or a daemon's homes";
+    tk::write_file(etc / "passwd", tk::read_file(etc / "passwd") + "alice:x:1001:1001::/home/alice:/bin/sh\n");
+    EXPECT_TRUE(luban::vm::users_of_their_own(etc));
+    // Its /home: 9p with mapped-xattr, never a virtiofsd.
+    const std::vector<luban::vm::Share> shares{{"root", "/r", false}, {"userhome", "/r/home", false, true}};
+    EXPECT_EQ(luban::vm::virtiofs_plan("/v", shares, "/run/m", "2048").daemons.size(), 1u);
+    EXPECT_EQ(luban::vm::nine_p_args(shares)[3], "local,path=/r/home,mount_tag=userhome,security_model=mapped-xattr,id=userhome");
+}

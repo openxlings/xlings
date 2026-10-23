@@ -93,4 +93,15 @@ std::expected<std::vector<std::string>, std::string> ensure_user_layer_scripts(c
 // made with --no-password). The ones written, relative to etc.
 std::expected<std::vector<std::string>, std::string> ensure_sudoers(const fs::path& etc, std::string_view nopasswd = {});
 
+// Who it is (part 2 J43): /etc/machine-id, made once when missing (a
+// persona's stays its own). Machine state. The ones written, relative to etc.
+std::expected<std::vector<std::string>, std::string> ensure_machine_id(const fs::path& etc);
+
+// When it is (part 2 J43): /etc/localtime, this computer's zone (`host_zone`,
+// its TZif bytes: no tzdata needed), written when missing and kept in step
+// with the host while it is still the one written here -- a zone set inside is
+// theirs. Not for a neutral identity (its zone is its persona's). Machine state.
+std::expected<std::vector<std::string>, std::string> ensure_localtime(const fs::path& etc,
+                                                                      const fs::path& host_zone = "/etc/localtime");
+
 }  // namespace xlings::subos::root_etc

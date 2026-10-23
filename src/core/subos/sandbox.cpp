@@ -759,6 +759,14 @@ int enter(const std::string& name, EventStream& stream, const EnterOptions& opts
         // when missing; design 2026-10-19 F26).
         if (auto written = subos::root_etc::ensure_prompt_script(request.root / "etc"); !written)
             log::debug("the prompt's scripts: {}", written.error());
+        // Its machine-id and this computer's time zone, for one made before
+        // they were (part 2 J43); a neutral identity's are its persona's.
+        if (pol.identity != policy::Identity::Neutral) {
+            if (auto written = subos::root_etc::ensure_machine_id(request.root / "etc"); !written)
+                log::debug("its machine-id: {}", written.error());
+            if (auto written = subos::root_etc::ensure_localtime(request.root / "etc"); !written)
+                log::debug("its time zone: {}", written.error());
+        }
         request.system_env["LUBAN_KIND"] = "sandbox";
         request.system_env["LUBAN_PERSIST"] = persist;
         if (cmd.empty() && opts.argv.empty()) {

@@ -980,7 +980,9 @@ XTEST(Luban, AnExportedEnvironmentIsImportedWithItsStateAndANewPersona,
     fs::create_symlink(stored, home.dir() / "subos/box/etc/ssl/cert.pem");
     fs::create_directories(tree / "etc/ssl");
     fs::create_symlink(home.dir() / "subos/box/etc/ssl/cert.pem", tree / "etc/ssl/cert.pem");
-    // And one that means something inside the root.
+    // And one that means something inside the root: a zone set inside, in
+    // place of this computer's (part 2 J43) -- the system's own, kept.
+    fs::remove(tree / "etc/localtime");
     fs::create_symlink("/usr/share/zoneinfo/UTC", tree / "etc/localtime");
     ASSERT_EQ(luban(home, {"config", "box", "--persist", "home"}).exit_code, 0);
     const auto file = home.root() / "box.luban";

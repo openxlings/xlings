@@ -103,6 +103,13 @@ std::map<std::string, std::string> session_env_(const Json& open, const std::str
     if (auto e = open.find("env"); e != open.end() && e->is_object())
         for (auto it = e->begin(); it != e->end(); ++it)
             if (it.value().is_string()) env[it.key()] = it.value().get<std::string>();
+    // A regular user's own packages before the system's, as their login
+    // shell's profile has it (profile.d/xlings-user.sh): a command run for
+    // them reads no profile (part 2 J33 -- what they install is theirs only).
+    if (u.uid != 0) {
+        const auto own = u.home + "/.xlings/subos/current/bin";
+        if ((":" + env["PATH"] + ":").find(":" + own + ":") == std::string::npos) env["PATH"] = own + ":" + env["PATH"];
+    }
     return env;
 }
 
@@ -665,6 +672,27 @@ void root_owned_sudo_() {
     if (fs::is_directory("/etc/sudoers.d", ec)) place("/etc/sudoers.d", dir / "sudoers.d", 0750);
 }
 
+void homes_to_their_users_() {
+    std::ifstream in("/etc/passwd");
+    for (std::string line; std::getline(in, line);) {
+        std::vector<std::string> f;
+        for (std::size_t at = 0;;) {
+            const auto colon = line.find(':', at);
+            f.push_back(line.substr(at, colon == std::string::npos ? std::string::npos : colon - at));
+            if (colon == std::string::npos) break;
+            at = colon + 1;
+        }
+        unsigned uid = 0, gid = 0;
+        if (f.size() < 7 || !f[5].starts_with("/home/")
+            || std::from_chars(f[2].data(), f[2].data() + f[2].size(), uid).ec != std::errc{}
+            || std::from_chars(f[3].data(), f[3].data() + f[3].size(), gid).ec != std::errc{} || uid < 1000 || uid >= 65534)
+            continue;
+        const auto owner = platform::owner_uid(f[5]);
+        if (owner && *owner != uid && !platform::chown_tree(f[5], uid, gid))
+            console_(std::format("{}'s home could not be given to them", f[0]));
+    }
+}
+
 void resolv_from_lease_() {
     std::ifstream pnp("/proc/net/pnp");
     std::string text, line;
@@ -728,8 +756,11 @@ int guest_init(int, char*[]) {
     if (!platform::mount_tmpfs("/newroot/tmp", 01777)) console_("cannot mount /tmp");
     if (!share("home", fs::path("/newroot") / home.relative_path(), true))
         give_up_("the home (tag home) did not mount");
+    // Its /home on its own: kept when the rest is a copy (persist home), or
+    // over 9p with mapped-xattr for users of their own (part 2 J32).
+    const bool home_9p = params.contains("luban.homefs") && params.at("luban.homefs") == "9p";
     if (params.contains("luban.userhome") && params.at("luban.userhome") == "1"
-        && !share("userhome", "/newroot/home", false))
+        && !(home_9p ? platform::mount_9p("userhome", "/newroot/home", false) : share("userhome", "/newroot/home", false)))
         give_up_("its /home (tag userhome) did not mount");
     for (const auto* at : {"/dev", "/proc", "/sys"})
         if (!platform::move_mount(at, fs::path("/newroot") / fs::path(at).relative_path()))
@@ -771,6 +802,10 @@ int guest_init(int, char*[]) {
     // setuid, its rules root-owned -- a share shows the host's owner, which
     // sudo refuses. This boot's copies, on its /run, bound over them.
     root_owned_sudo_();
+    // Its users' homes are theirs (part 2 J32): over mapped-xattr an owner
+    // sticks, and one made before -- by adduser over a share that kept none --
+    // shows the host's user; given back once.
+    if (home_9p) homes_to_their_users_();
 
     // Its name servers: the kernel's lease (ip=dhcp, /proc/net/pnp), in this
     // boot's /run and bound over /etc/resolv.conf -- the host's NAT answers

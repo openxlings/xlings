@@ -61,6 +61,11 @@ Report check(const fs::path& root, Depth depth, const Options& options = {});
 // libraries), from its exit and what it said -- not whether it answered 0.
 bool started(int code, bool timed_out, std::string_view output);
 
+// Its programs start (a step of check(), run inside the system): one program of
+// each package in <root>/usr/bin asked for its version, without a display -- a
+// package that declares checks of its own is left to them.
+std::vector<Item> programs_start(const std::filesystem::path& root, const Options& o);
+
 nlohmann::json to_json(const Report& report);
 
 }  // namespace xlings::subos::root_check

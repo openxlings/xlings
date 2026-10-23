@@ -156,7 +156,7 @@ show the system's packages too, marked `system`.
 |---|---|
 | `xlings install codex` (the system has it) | nothing to install: "codex 2.1 is provided by the system" |
 | `xlings use node 22` (in the store) | your choice; nobody else's changes |
-| `xlings install node@22` (not in the store) | one line, one question: it goes into the system's store with `sudo`, then it is your choice |
+| `xlings install node@22` (not in the store) | one line, one question: it goes into the system's store with `sudo`, then it is your choice -- in the store for everyone, in use only for you |
 | `xlings remove node` | your choice goes; the store keeps it (root removes it for everyone) |
 | `sudo xlings ...` | the system's own: its default for every user, and its store |
 
@@ -193,7 +193,12 @@ loader and finds the libraries it names, each package's programs start, its
 users, its login shell, its host name and machine id, a time zone, the
 certificate authorities, a UTF-8 locale, the terminal's description, the
 package index its xlings reads (its users' too), and, for a desktop, its
-applications and a cursor theme -- and what the edition declares. An edition declares its own in `/usr/share/luban/checks.d/*.json`:
+applications and a cursor theme -- and what the edition declares. Each package's
+programs are started without a display (a graphical one offscreen), and a
+package that declares checks of its own is checked by those instead. A system
+gets its machine id when it is made (or first entered after an upgrade), and
+this computer's time zone: bound into a sandbox, written into a machine when it
+starts -- a zone you set inside stays yours. An edition declares its own in `/usr/share/luban/checks.d/*.json`:
 
 ```json
 {"checks": [{"id": "desk-session", "what": "its desktop session starts", "run": "xdesk --version", "critical": false, "timeout": 30}]}

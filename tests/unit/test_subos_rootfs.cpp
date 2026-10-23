@@ -678,3 +678,41 @@ XTEST(SubosRootfs, ARootsLayoutIsWhatItsTreeIs, .area = "subos", .covers = {"LUB
     EXPECT_EQ(rf::layout_of(now), rf::kLayout);
     EXPECT_EQ(rf::kLayout, 2);
 }
+
+XTEST(SubosRootfs, ASystemHasAMachineIdAndThisComputersZoneUnlessItSetItsOwn,
+      .area = "subos", .covers = {"ROOT-ETC-FACTORY"}) {
+    // Part 2 J43: no machine-id, and a machine ran on UTC.
+    if constexpr (!tk::is_posix) GTEST_SKIP() << "root trees are Linux";
+    namespace re = xlings::subos::root_etc;
+    Tmp t("identity");
+    const auto etc = t.dir / "etc";
+    fs::create_directories(etc);
+    const auto zone = t.dir / "host-zone";
+    tk::write_file(zone, "TZif2-shanghai");
+
+    ASSERT_EQ(re::ensure_machine_id(etc).value(), std::vector<std::string>{"machine-id"});
+    const auto id = tk::read_file(etc / "machine-id");
+    EXPECT_EQ(id.size(), 33u) << id;
+    EXPECT_TRUE(re::ensure_machine_id(etc).value().empty()) << "made once";
+    EXPECT_EQ(tk::read_file(etc / "machine-id"), id);
+
+    ASSERT_EQ(re::ensure_localtime(etc, zone).value(), std::vector<std::string>{"localtime"});
+    EXPECT_EQ(tk::read_file(etc / "localtime"), "TZif2-shanghai");
+    EXPECT_TRUE(re::ensure_localtime(etc, zone).value().empty());
+    // The computer moved: what was written here follows it.
+    tk::write_file(zone, "TZif2-berlin");
+    EXPECT_EQ(re::ensure_localtime(etc, zone).value(), std::vector<std::string>{"localtime"});
+    EXPECT_EQ(tk::read_file(etc / "localtime"), "TZif2-berlin");
+    // A zone set inside is the system's own.
+    fs::remove(etc / "localtime");
+    fs::create_symlink("/usr/share/zoneinfo/Asia/Tokyo", etc / "localtime");
+    tk::write_file(zone, "TZif2-paris");
+    EXPECT_TRUE(re::ensure_localtime(etc, zone).value().empty());
+    EXPECT_TRUE(fs::is_symlink(etc / "localtime"));
+    // Not a zone (a host without one): nothing is written.
+    const auto bare = t.dir / "bare";
+    fs::create_directories(bare);
+    tk::write_file(zone, "not a zone");
+    EXPECT_TRUE(re::ensure_localtime(bare, zone).value().empty());
+    EXPECT_FALSE(fs::exists(bare / "localtime"));
+}

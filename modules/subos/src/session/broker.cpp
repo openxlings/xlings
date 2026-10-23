@@ -123,7 +123,15 @@ Verdict judge(const HomeView& home, const policy::Policy& p, std::string_view in
         return v;
     }
     if (d.action == policy::Action::Ask) {
-        v.request = enqueue(home, instance, argv, d.reason);
+        // A request that could not be recorded is said so, never "waiting"
+        // for one nobody can see (part 2 J41).
+        auto queued = enqueue(home, instance, argv, d.reason);
+        if (!queued) {
+            v.error = "the request could not be recorded: " + queued.error();
+            v.event["error"] = queued.error();
+            return v;
+        }
+        v.request = *queued;
         v.event["request"] = v.request;
         v.exit = kExitPending;
         v.error = "waiting for the owner's approval: request " + v.request;
@@ -137,16 +145,20 @@ Verdict judge(const HomeView& home, const policy::Policy& p, std::string_view in
 
 // ── queue ────────────────────────────────────────────────────────────
 
-std::string enqueue(const HomeView& home, std::string_view instance,
-                    std::span<const std::string> argv, std::string_view reason) {
+std::expected<std::string, std::string> enqueue(const HomeView& home, std::string_view instance,
+                                                std::span<const std::string> argv, std::string_view reason) {
     std::random_device rd;
     const auto id = std::format("r{:06x}", rd() & 0xffffff);
     const auto dir = home.requests_dir(instance);
     std::error_code ec;
     fs::create_directories(dir, ec);
+    if (ec) return std::unexpected(std::format("cannot make {}: {}", dir.string(), ec.message()));
     nlohmann::json j{{"id", id}, {"argv", std::vector<std::string>(argv.begin(), argv.end())},
                      {"created", observe::utc_now()}, {"reason", std::string(reason)}};
-    std::ofstream(dir / (id + ".json")) << j.dump(2);
+    std::ofstream out(dir / (id + ".json"));
+    out << j.dump(2);
+    out.close();
+    if (!out) return std::unexpected("cannot write " + (dir / (id + ".json")).string());
     return id;
 }
 

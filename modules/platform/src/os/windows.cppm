@@ -131,6 +131,8 @@ namespace platform_impl {
     export void lchown_path_(const std::filesystem::path&,
                              unsigned int, unsigned int);
     export std::string home_for_user_(const std::string&);
+    export std::optional<unsigned int> owner_uid(const std::filesystem::path&);
+    export bool chown_tree(const std::filesystem::path&, unsigned int, unsigned int);
 
 
     // Atomically replace `dst` with the contents of `src`, even when `dst`

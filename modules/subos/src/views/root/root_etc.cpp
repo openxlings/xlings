@@ -2,6 +2,7 @@ module xlings.subos.root_etc;
 
 import std;
 import xlings.platform;
+import xlings.libs.sha256;
 import xlings.subos.rootfs;
 
 namespace xlings::subos::root_etc {
@@ -610,6 +611,63 @@ std::expected<void, std::string> set_login_user(const fs::path& etc, std::string
     out << name << "\n";
     if (!out) return std::unexpected("cannot write " + (etc / "luban" / "login").string());
     return {};
+}
+
+namespace {
+std::optional<std::string> read_bytes_(const fs::path& f) {
+    std::ifstream in(f, std::ios::binary);
+    if (!in) return std::nullopt;
+    return std::string(std::istreambuf_iterator<char>(in), {});
+}
+// Replaced, never followed: a factory's link becomes the system's own file.
+std::expected<void, std::string> replace_file_(const fs::path& f, std::string_view bytes) {
+    const auto tmp = fs::path(f.string() + ".luban-new");
+    {
+        std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
+        out << bytes;
+        if (!out) return std::unexpected("cannot write " + f.string());
+    }
+    std::error_code ec;
+    fs::remove(f, ec);
+    fs::rename(tmp, f, ec);
+    if (ec) return std::unexpected(std::format("cannot write {}: {}", f.string(), ec.message()));
+    return {};
+}
+}  // namespace
+
+std::expected<std::vector<std::string>, std::string> ensure_machine_id(const fs::path& etc) {
+    std::vector<std::string> written;
+    std::error_code ec;
+    if (!fs::is_directory(etc, ec)) return written;
+    if (const auto id = read_bytes_(etc / "machine-id"); id && id->find_first_not_of(" \n") != std::string::npos)
+        return written;
+    std::random_device rd;
+    std::string hex;
+    for (int i = 0; i < 4; ++i) hex += std::format("{:08x}", rd());
+    if (auto w = replace_file_(etc / "machine-id", hex + "\n"); !w) return std::unexpected(w.error());
+    written.push_back("machine-id");
+    return written;
+}
+
+std::expected<std::vector<std::string>, std::string> ensure_localtime(const fs::path& etc, const fs::path& host_zone) {
+    std::vector<std::string> written;
+    std::error_code ec;
+    if (!fs::is_directory(etc, ec)) return written;
+    const auto zone = read_bytes_(host_zone);
+    if (!zone || !zone->starts_with("TZif")) return written;
+    // What was written here is recorded (its sha256): another file or a link
+    // there was set inside, and stays.
+    const auto localtime = etc / "localtime";
+    const auto record = etc / ".luban-localtime";
+    const bool present = fs::exists(fs::symlink_status(localtime, ec));
+    const auto now = present && !fs::is_symlink(localtime, ec) ? read_bytes_(localtime) : std::nullopt;
+    const auto ours = read_bytes_(record);
+    if (present && !(now && ours && sha256::hex(*now) == *ours)) return written;
+    if (now && *now == *zone) return written;
+    if (auto w = replace_file_(localtime, *zone); !w) return std::unexpected(w.error());
+    if (auto w = replace_file_(record, sha256::hex(*zone)); !w) return std::unexpected(w.error());
+    written.push_back("localtime");
+    return written;
 }
 
 }  // namespace xlings::subos::root_etc
