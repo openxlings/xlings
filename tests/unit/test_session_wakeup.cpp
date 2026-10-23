@@ -123,9 +123,16 @@ XTEST(SessionWakeup, AColdChildExitsWithoutWaitingForTheControlPollTick,
       .area = "subos", .covers = {"SES-SUPERVISOR"}, .requires_ = {"linux"}, .resources = {"cpu"}) {
     if constexpr (!tk::is_linux) GTEST_SKIP() << "session-init is implemented on Linux";
     Init init{{"--", "/bin/sh", "-c", "/bin/sleep 0.025; exit 7"}};
+    // A /proc file of a process reaped between its open and its read is
+    // gone, as one that no longer opens: libstdc++ throws on the read's ESRCH
+    // ("basic_filebuf::underflow error reading the file: No such process").
     const auto read = [](const std::string& path) {
-        std::ifstream in(path);
-        return std::string(std::istreambuf_iterator<char>(in), {});
+        try {
+            std::ifstream in(path);
+            return std::string(std::istreambuf_iterator<char>(in), {});
+        } catch (const std::exception&) {
+            return std::string{};
+        }
     };
     const auto children = std::format("/proc/{0}/task/{0}/children", init.pid);
     int child = 0;
