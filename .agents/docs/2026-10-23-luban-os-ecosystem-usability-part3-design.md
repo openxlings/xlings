@@ -64,23 +64,24 @@ cancelled，bump-index 被跳过——发布其实成功了，但看起来像失
 
 ## 3. 设计
 
-### 3.1 发布产物的指针归发布流程（要你定，R1）
+### 3.1 发布产物的指针归发布流程（R1 已定：A）
 
 - xlings、luban、luban-os、xdesk 去掉 `extensions.autoupdate`，回到 #1027 所说的"手动维护"一类（#1027 的说明里也写了
   "Existing xlings-res versions remain intact"）：它们的版本只由 xlings 的发布流程写，资源先进 xlings-res 与 GitCode，再写 `XLINGS_RES`。
 - 索引加一条静态检查：`pkgs/x/xlings.lua` 等由发布流程拥有的包不得声明 `autoupdate`（列表写在一处，测试与说明都读它），
   避免以后再被自动加回。
-- 备选（R1-B）：改 `openxlings/xpkgindex-update`，让 verify 接受 `XLINGS_RES` 条目、对共享客户端跳过候选安装；
-  统一成一个机制，但 xlings 发布依赖另一个仓库的机器人跟上。
+- 已实施（xim-pkgindex #1031）：四个包去掉 `extensions.autoupdate`（与 #1027 之前逐字相同，只留 #1027 对 `ci` 的改动），
+  2026.10.23.1 的指针用 `XLINGS_RES`；`tests/test_release_owned.py` 守住"不声明 autoupdate、`latest` 是 `XLINGS_RES` 条目"。
+  #1027 的 verify 对这个 PR 不再有候选可查，索引自己的测试全部通过（除本机环境的两个 node 用例，main 上同样）。
 
-### 3.2 发布时自动写索引
+### 3.2 发布后写索引（R3 已定：镜像超时是已知的，资源一出来就本地 gtc 补）
 
-- xlings 仓库新增 `tools/index_pointers.py <version> <index-dir>`：从发布的 `.sha256` 资源写 xlings（三个平台）、luban（三个平台）、
-  luban-os（三个平台）、xim:xdesk（linux）的指针与 `latest`，形状与现在的条目完全一致；有单元测试（固定输入 → 固定输出）。
-  `bump_index.sh` 改用它，不再依赖索引里的脚本。
-- release.yml：mirror-binaries 按产物拆成四个作业、各自 30 分钟上限，失败不影响 release 的结论；bump-index 只依赖 create-release
-  与 xlings、luban 的镜像（索引只要求这两个在 GitCode 上就能解析）——发布不再"看起来失败"。
-- AGENTS.md 的发布说明随之更新：本地 gtc 补 GitCode 仍是第一步，索引 PR 由 release 自动开，人只审与合。
+- 镜像流程不改：release 的 mirror-binaries 超时照旧，本地 `tools/mirror-latest.sh` 用 gtc 补 GitCode。
+- 但"写索引指针"这一步要有一个正式的工具：release.yml 的 bump-index 调用的 `tools/bump_index.sh` 依赖索引里已被 #1027 删除的
+  `version-check.py`，而且它排在镜像作业之后，镜像一超时就被跳过——这个作业实际上从不起作用，留着只会误导。
+  做法：xlings 仓库新增 `tools/index_pointers.py <version> <index-dir>`，从发布的 `.sha256` 写 xlings、luban、luban-os（各三个平台）
+  与 xim:xdesk 的 `XLINGS_RES` 指针和 `latest`，形状与现有条目逐字相同，有单元测试；`bump_index.sh` 与 release 的 bump-index 作业删除。
+- AGENTS.md 的发布说明改为：本地 gtc 补 GitCode → 本地 `tools/index_pointers.py` 写指针 → 开 xim-pkgindex PR。
 
 ### 3.3 跨仓库契约：经客户端读数据，并在两边都测
 
@@ -105,14 +106,16 @@ cancelled，bump-index 被跳过——发布其实成功了，但看起来像失
 
 ### 3.5 剩下的功能与清理
 
-- **mcpp**：发布 mcpp（含 #831 的修复；会通知 AUR、Homebrew、Nix），索引 PR 把 core 的 mcpp 升到新版本（发 core 新版本，
-  因为 revision 移不动已装系统），luban-os-ci L2-06 去掉 known。
+- **mcpp**（与 xlings 仓库无关）：mcpp 仓库发布（含 #831 的修复）→ 索引的 `xim:mcpp` 由自动更新收进来（它有 autoupdate）→
+  索引发 core 的新版本把 `xim:mcpp@2026.10.16.3` 换成新版本（revision 移不动已装系统）→ luban-os-ci L2-06 去掉 known。
+  xlings 只是在 Luban 系统里提供 mcpp 要读的布局；这条链路只涉及 mcpp、xim-pkgindex、luban-os-ci。
 - **K5（`own`）**：第二部分 §3.5 的方向——`own` = 系统住在私有域，`shared` = 住在主人的前缀；切换即两种住处之间的迁移
   （复用迁入自己用户态的那段）。另写第四部分，先定迁移、回滚、用户数据与宿主管理。
 - **J47**：旧布局迁移前先试建私有域（`self doctor --isolation` 的同一个判断）；建不了就不导出、不删除，只记 `.stays`。
   已经导出的归档在 `luban status` 里说明大小与释放办法。
-- **luban-os-ci**：xlings 仓库配置 `LUBAN_OS_CI_TOKEN`（只有派发权限的 fine-grained token），main 的 CI 派发 L2；
-  每日任务跑 L2–L4，失败开 issue（已有）；L5、L6 在发布前。
+- **luban-os-ci**：每日任务已经在跑全部层（`layers.yml` 的 schedule，失败开 issue），不需要新增。
+  xlings 的 CI 里有一个 `luban-os-ci` 作业：配置了 `LUBAN_OS_CI_TOKEN` 时，把这次 PR 的构建交给 luban-os-ci 跑 L2（结果在 luban-os-ci 那边，
+  不回写 xlings 的 PR）；没配置就只打一行提示并通过——现在就是这样（R4）。
 
 ## 4. 兼容与无感升级
 
@@ -146,13 +149,13 @@ cancelled，bump-index 被跳过——发布其实成功了，但看起来像失
 | U1 | 四个包去掉 autoupdate + 归属静态检查；#1031 的指针改回 `XLINGS_RES`；合入 | xim-pkgindex |
 | U2 | #700 合入；#699 与 main 的失败作业重跑 | xlings |
 | U3 | `tools/index_pointers.py` + 测试；`bump_index.sh` 改用它 | xlings |
-| U4 | release.yml：镜像按产物拆分、bump-index 依赖调整；AGENTS.md 发布说明 | xlings |
+| U4 | 删除失效的 bump-index 作业与 `bump_index.sh`；AGENTS.md 发布说明（本地 gtc → `index_pointers.py` → 索引 PR） | xlings |
 | U5 | rootfs 测试经客户端读版本 | xlings |
 | U6 | 索引 consumers CI 跑 rootfs 自更新测试 | xim-pkgindex |
 | U7 | 2026.10.23.1 的验证（§3.4）+ luban-os-ci `after-part2` 合入 | 本机、luban-os-ci |
 | U8 | J47：迁移前先试建域 | xlings |
-| U9 | `LUBAN_OS_CI_TOKEN`、每日 L2–L4 | xlings（secret，需你配置）、luban-os-ci |
-| U10 | mcpp 发布（你触发）→ core 新版本的 mcpp → L2-06 去 known | mcpp、xim-pkgindex、luban-os-ci |
+| U9 | `LUBAN_OS_CI_TOKEN`（按 R4 的结论；每日任务已有） | xlings（secret，需你配置） |
+| U10 | mcpp 发布（mcpp 仓库）→ 索引收 `xim:mcpp` → core 新版本换 mcpp → L2-06 去 known | mcpp、xim-pkgindex、luban-os-ci（与 xlings 无关） |
 | U11 | 第四部分：K5 的设计 | xlings（文档） |
 
 ```
@@ -171,8 +174,8 @@ U10 独立（等你发 mcpp）；U11 在 U7 之后
 
 | 编号 | 问题 | 选项 | 建议 |
 |---|---|---|---|
-| R1 | 四个发布产物的版本由谁写 | A 发布流程（去掉 autoupdate）/ B 改 xpkgindex-update 接受 `XLINGS_RES` 并跳过客户端的候选安装 / C 全改为自动更新的形状（改索引测试与 xlings 的注册限制） | **A**：改动最小、与 #1027 "existing xlings-res versions remain intact" 一致；客户端本来就不能被候选安装；C 改的是不变量，不建议 |
+| R1 | 四个发布产物的版本由谁写 | **已定：A，发布流程** | 已在 #1031 实施 |
 | R2 | 跨仓库测试的数据来源 | 经客户端读实时索引 + 提供方测（§3.3）/ 固定索引版本 | **前者** |
-| R3 | 镜像超时 | 按产物拆分、放宽上限 / 维持现状、人工补 | **拆分**：发布不再显示失败，索引 PR 自动开 |
-| R4 | `LUBAN_OS_CI_TOKEN` | 配置（fine-grained，仅派发 luban-os-ci 的 workflow）/ 不配，只靠 luban-os-ci 的每日任务 | **配置**：xlings 的 PR 能看到 L2 的结果 |
-| R5 | mcpp 发布与 K5 | mcpp 现在发；K5 在 U7 之后写第四部分 | 同左 |
+| R3 | 镜像超时 | **已定：维持现状，本地 gtc 补** | 写指针改用仓库里的正式工具，删除失效的 bump-index（§3.2） |
+| R4 | `LUBAN_OS_CI_TOKEN` | 配置：每个 xlings PR 的构建都在 luban-os-ci 跑一次 L2（约 30 分钟托管 runner，结果在 luban-os-ci 的 Actions 页，不回写 PR）/ 不配：只有每日任务（最新发布）和人工派发 | 见讨论；若要配：在 GitHub 建一个 fine-grained token（资源所有者 luban-os，仓库只选 luban-os-ci，权限 Actions: Read and write），存为 openxlings/xlings 的 Actions secret `LUBAN_OS_CI_TOKEN` |
+| R5 | mcpp 与 K5 | **已定**：K5 等 xlings 新版本发布之后；mcpp 归 mcpp 仓库与索引，与 xlings 仓库无关（§3.5） | — |
