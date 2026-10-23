@@ -3352,12 +3352,14 @@ int cmd_info(const std::string& target, EventStream& stream, bool allVersions, c
 
     auto platform = infoPlatform;
     auto platformIt = pkg->xpm.entries.find(platform);
+    // The platform's concrete versions, newest first: rows here, and the
+    // `package` object's `versions` for a program (feature `package_versions`).
+    std::vector<std::string> versions;
     if (platformIt != pkg->xpm.entries.end()) {
         // Concrete versions and aliases used to share one comma-joined
         // `versions` row, so `latest` and the version it points at appeared
         // side by side — `latest -> 16.1.0, 16.1.0` reads as the list
         // repeating itself. They are two different facts; they get two rows.
-        std::vector<std::string> versions;
         std::vector<std::string> aliases;
         for (auto& [ver, res] : platformIt->second) {
             if (version_order::is_internal_key(ver)) continue;
@@ -3538,6 +3540,7 @@ int cmd_info(const std::string& target, EventStream& stream, bool allVersions, c
             {"status", pkg->status == mcpplibs::xpkg::PackageStatus::Stable       ? "stable"
                        : pkg->status == mcpplibs::xpkg::PackageStatus::Deprecated ? "deprecated" : "dev"}};
         if (!match->passedOver.empty()) infoPayload["package"]["passed_over"] = match->passedOver;
+        if (!versions.empty()) infoPayload["package"]["versions"] = versions;
         // Namespaced data for other programs (xpkg spec, "extensions"):
         // handed on as the recipe wrote it, never read here.
         if (auto ext = extensions_json_(*pkg); !ext.empty()) infoPayload["package"]["extensions"] = std::move(ext);

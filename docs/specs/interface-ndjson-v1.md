@@ -1,12 +1,12 @@
-# NDJSON Interface Protocol v1.16
+# NDJSON Interface Protocol v1.18
 
-> Status: in force; protocol 1.16 since xlings 2026.10.21.3. Implemented in
+> Status: in force; protocol 1.18 since xlings 2026.10.23.2. Implemented in
 > `src/interface.cpp`; `xlings interface --list` is the authoritative schema.
 
 ## 1. Overview
 
 `xlings interface` is the structured API for programs: IDE plugins, CI scripts
-and AI agents talk to xlings over standard IO. The protocol is **1.16**, over NDJSON
+and AI agents talk to xlings over standard IO. The protocol is **1.18**, over NDJSON
 (newline-delimited JSON).
 
 | Protocol | xlings | Change |
@@ -28,6 +28,8 @@ and AI agents talk to xlings over standard IO. The protocol is **1.16**, over ND
 | 1.14 | 2026.10.19.2 | added: `package_info` and `search_packages` carry a package's `extensions`, `status` and `archs` (feature `package_extensions`, §7.6); `subos new --from` using a version only installed says so (feature `installed_only`, §7.7); a command routed into a prefix domain answers in events (feature `domain_relayed`, §10.1) |
 | 1.15 | 2026.10.20.1 | added: inside a Luban system a user's xlings is a view of the system's store (feature `user_views`); what needs the administrator with nobody to ask fails with `E_NEEDS_ROOT`, its hint the exact `sudo` command (feature `needs_root`, §8); `list` rows of what the system provides carry the status `system` |
 | 1.16 | 2026.10.21.3 | added: `subos_env`, the variables a SubOS declares for the programs run in it, resolved (feature `subos_env`): what Luban starts a machine's GL qemu with |
+| 1.17 | 2026.10.22.1 | added: `install_packages` takes `subos`: a Luban system's packages installed where it lives, with events and cancellation (feature `install_into_subos`) |
+| 1.18 | 2026.10.23.2 | added: `package_info`'s `package` carries `versions`, the platform's concrete versions newest first (feature `package_versions`, §7.6); `subos __domain-check <home>` (plumbing) tries whether this host builds a private domain at `<home>`, as making a system there starts: exit 0 or an error saying why (feature `domain_check`) |
 
 A minor version only adds: a 1.0 client reads 1.1 output unchanged. 1.11 is the
 one exception in meaning, not in shape: 1.10's `complete` also required the
@@ -64,7 +66,7 @@ prints one line and exits -- the handshake a client checks before it uses this
 xlings (1.10+):
 
 ```json
-{"protocol_version":"1.16","version":"2026.10.21.3","capabilities":["search_packages","install_packages","..."],"home_layouts":[1,2],"features":["index_dir","index_store","upstreams","payload_status","sync_index","install_targets_complete","payload_currency","binding_state","reserved_namespaces","subos_plan","network_diagnostics","download_socket_budgets","read_only_queries","package_extensions","domain_relayed","installed_only","user_views","needs_root","subos_env"]}
+{"protocol_version":"1.18","version":"2026.10.23.2","capabilities":["search_packages","install_packages","..."],"home_layouts":[1,2],"features":["index_dir","index_store","upstreams","payload_status","sync_index","install_targets_complete","payload_currency","binding_state","reserved_namespaces","subos_plan","network_diagnostics","download_socket_budgets","read_only_queries","package_extensions","domain_relayed","installed_only","user_views","needs_root","subos_env","install_into_subos","package_versions","domain_check"]}
 ```
 
 | Field | Meaning |
@@ -577,6 +579,7 @@ version database is shared by every subos of the home.
 | `status` | `"dev"`, `"stable"` or `"deprecated"`: the recipe's (before 2026.10.19.2 a recipe read in the worker reported `"dev"`) |
 | `extensions` | the recipe's `extensions`, as written: an object keyed by namespace (`xpkg-manifest-v1.md` §3.1). Absent when it has none |
 | `passed_over` | the newest version was passed over because it needs a newer xlings, and why |
+| `versions` | `package_info` only: the platform's concrete versions, newest first, aliases left out (`version` is what `latest` resolves to). Absent when the platform has none (feature `package_versions`) |
 
 A client checks the handshake's feature `package_extensions` before it reads
 `extensions` or trusts `status` from a search.

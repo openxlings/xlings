@@ -80,3 +80,36 @@ package = { spec = '1', name = 'plain', description = 'nothing extra', type = 'p
     const auto verbose = home.xlings({"info", "luban:labwc", "-v"});
     EXPECT_NE(verbose.out.find("extensions"), std::string::npos) << verbose.out;
 }
+
+// A program reads which versions a package has as data (design 2026-10-23
+// part 3, U5: the rootfs self-update fixture picks the release before its
+// candidate this way, not by reading the recipe's text).
+XTEST(XpkgExtensions, PackageInfoListsThePlatformsVersionsNewestFirst, .area = "xim",
+      .covers = {"IFACE-PACKAGE-VERSIONS"}, .requires_ = {"xlings-bin"}) {
+    auto home = tk::Home::isolated("package-versions");
+    const auto primary = home.root() / "primary";
+    tk::write_file(primary / "xim-indexrepos.lua", "xim_indexrepos = {}\n");
+    tk::write_file(primary / "pkgs/t/tool.lua", R"LUA(
+package = { spec = '1', name = 'tool', description = 'a tool', type = 'package', archs = {'x86_64', 'aarch64'},
+            xpm = { linux = { ['latest'] = { ref = '2026.1.9.1' }, ['2026.1.9.1'] = {}, ['2026.1.10.2'] = {}, ['2026.1.10.1'] = {} },
+                    macosx = { ['latest'] = { ref = '2026.1.9.1' }, ['2026.1.9.1'] = {} },
+                    windows = { ['latest'] = { ref = '2026.1.9.1' }, ['2026.1.9.1'] = {} } } }
+)LUA");
+    const nlohmann::json config{
+        {"mirror", "GLOBAL"},
+        {"xim", {{"index-repo", primary.generic_string()}}},
+        {"index_repos", nlohmann::json::array(
+            {{{"name", std::string(xlings::Config::DEFAULT_INDEX_REPO_NAME)}, {"url", primary.generic_string()}, {"source", "git"}}})}};
+    tk::write_file(home.dir() / ".xlings.json", config.dump());
+    ASSERT_EQ(home.xlings({"self", "init"}).exit_code, 0);
+
+    const auto info = home.xlings({"interface", "package_info", "--args", R"({"target":"xim:tool","platform":"linux"})"});
+    ASSERT_EQ(info.exit_code, 0) << info.transcript();
+    const auto pkg = data_of(info, "info_panel")["package"];
+    EXPECT_EQ(pkg.value("version", ""), "2026.1.9.1") << "latest resolves to its ref: " << pkg.dump();
+    EXPECT_EQ(pkg["versions"], nlohmann::json::array({"2026.1.10.2", "2026.1.10.1", "2026.1.9.1"})) << pkg.dump();
+
+    const auto mac = home.xlings({"interface", "package_info", "--args", R"({"target":"xim:tool","platform":"macosx"})"});
+    ASSERT_EQ(mac.exit_code, 0) << mac.transcript();
+    EXPECT_EQ(data_of(mac, "info_panel")["package"]["versions"], nlohmann::json::array({"2026.1.9.1"}));
+}

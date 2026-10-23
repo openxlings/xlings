@@ -447,6 +447,10 @@ status = "required"
 text = "a library's registration is checked as its one file: links beside it into payloads its package does not record (libglvnd's glx-vendor, per host) do not refuse it; a library that is itself such a link does; one that is the operating system's own library (a host link sentinel's, in a system library directory, not the user's) is taken"
 status = "required"
 
+[IFACE-PACKAGE-VERSIONS]
+text = "package_info's package carries versions: the platform's concrete versions, newest first, aliases left out, beside version (what latest resolves to)"
+status = "required"
+
 [IFACE-SUBOS-ENV]
 text = "subos_env answers what a SubOS declares for its programs (the active versions' declarations), resolved as `subos use` applies them; an unknown SubOS is an error naming it"
 status = "required"
