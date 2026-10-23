@@ -1209,22 +1209,38 @@ XTEST(Luban, AMoveThisHostCannotMakeCarriesNothingAway,
     const auto bin = luban_binary();
     if (!bin) GTEST_SKIP() << "no luban beside the xlings under test";
     auto home = luban_home("luban-relayout-tried", *bin);
-    if (home.xlings({"subos", "__domain-check", "/xlings"}).exit_code == 0)
-        GTEST_SKIP() << "this host builds the domain: the move is made (tests/fresh-install/luban.sh)";
-    ASSERT_EQ(luban(home, {"new", "box", "--xpkg", "fixture:my-os@1.0.0", "-y"}).exit_code, 0);
+    // A host that cannot build the domain, on any host: its namespace backend
+    // fails (XDEV_BWRAP, the domain producer's explicit one). Where it builds,
+    // the move is made (tests/fresh-install/luban.sh).
+    const auto no_bwrap = home.root() / "no-bwrap";
+    tk::write_file(no_bwrap, "#!/bin/sh\nexit 1\n");
+    fs::permissions(no_bwrap, fs::perms::owner_all, fs::perm_options::add);
+    const auto luban = [&](std::vector<std::string> args) {
+        tk::RunOptions o;
+        o.argv = {(home.dir() / "bin/luban").string()};
+        o.argv.insert(o.argv.end(), args.begin(), args.end());
+        o.env = home.env();
+        o.env["XLINGS_TOOLS_SEARCH"] = "home";
+        o.env["XDEV_BWRAP"] = no_bwrap.string();
+        o.env.erase("XLINGS_SUBOS_MODE");
+        o.env.erase("XLINGS_ACTIVE_SUBOS");
+        o.timeout = std::chrono::seconds(90);
+        return tk::run(o);
+    };
+    ASSERT_EQ(luban({"new", "box", "--xpkg", "fixture:my-os@1.0.0", "-y"}).exit_code, 0);
     const auto relayout = home.dir() / "state/luban/relayout";
-    const auto up = luban(home, {"upgrade", "box", "-y"});
+    const auto up = luban({"upgrade", "box", "-y"});
     ASSERT_EQ(up.exit_code, 0) << up.transcript();
     EXPECT_NE(up.transcript().find("box stays in this home's prefix"), std::string::npos) << up.transcript();
     EXPECT_EQ(up.transcript().find("moving box into its own userland"), std::string::npos) << "not carried: " << up.transcript();
     EXPECT_FALSE(fs::exists(relayout / "box.luban"));
     EXPECT_TRUE(fs::exists(relayout / "box.stays"));
-    const auto again = luban(home, {"upgrade", "box", "-y"});
+    const auto again = luban({"upgrade", "box", "-y"});
     ASSERT_EQ(again.exit_code, 0) << again.transcript();
     EXPECT_EQ(again.transcript().find("stays in this home's prefix"), std::string::npos) << "said once: " << again.transcript();
     // An archive from such a move before this one (2026.10.23.1 and earlier made them).
-    ASSERT_EQ(luban(home, {"export", "box", (relayout / "box.luban").string()}).exit_code, 0);
-    const auto status = luban(home, {"--json", "status", "box"});
+    ASSERT_EQ(luban({"export", "box", (relayout / "box.luban").string()}).exit_code, 0);
+    const auto status = luban({"--json", "status", "box"});
     EXPECT_NE(status.out.find("lives in this home's prefix and runs without it"), std::string::npos) << status.out;
     EXPECT_NE(status.out.find("rm " + (relayout / "box.luban").string()), std::string::npos) << status.out;
 }

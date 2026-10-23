@@ -643,5 +643,15 @@ XTEST(DomainProducer, ADomainCheckTriesTheNamespaceAsMakingASystemThereStarts,
         EXPECT_NE(checked.transcript().find("/xlings"), std::string::npos) << "says which and why: " << checked.transcript();
         EXPECT_FALSE(fs::is_directory(inside));
     }
+    // Whatever this host is: a namespace backend that fails is a domain that
+    // does not build (XDEV_BWRAP, the producer's explicit backend).
+    const auto no_bwrap = home.root() / "no-bwrap";
+    tk::write_file(no_bwrap, "#!/bin/sh\nexit 1\n");
+    fs::permissions(no_bwrap, fs::perms::owner_all, fs::perm_options::add);
+    fs::remove_all(home.dir() / "domains");
+    const auto refused = home.xlings({.argv = {"subos", "__domain-check", "/xlings"}, .env = {{"XDEV_BWRAP", no_bwrap.string()}}});
+    EXPECT_EQ(refused.exit_code, 1) << refused.transcript();
+    EXPECT_NE(refused.transcript().find("cannot build the domain at /xlings"), std::string::npos) << refused.transcript();
+    EXPECT_FALSE(fs::is_directory(inside));
 }
 
