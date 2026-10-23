@@ -640,7 +640,8 @@ XTEST(DomainProducer, ADomainCheckTriesTheNamespaceAsMakingASystemThereStarts,
         EXPECT_TRUE(fs::is_directory(inside)) << "its home initialised inside";
     } else {
         EXPECT_EQ(checked.exit_code, 1) << checked.transcript();
-        EXPECT_NE(checked.transcript().find("/xlings"), std::string::npos) << "says which and why: " << checked.transcript();
+        EXPECT_NE(checked.transcript().find("cannot build the domain at /xlings"), std::string::npos)
+            << "says which and why: " << checked.transcript();
         EXPECT_FALSE(fs::is_directory(inside));
     }
     // Whatever this host is: a namespace backend that fails is a domain that

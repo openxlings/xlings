@@ -294,12 +294,14 @@ int run_domain_check_(int argc, char* argv[], EventStream& stream, const UsageEr
     auto selected = xlings::home::prefix_domain::resolve(home_dir_(), fs::path(argv[3]));
     if (!selected) { error_(stream, selected.error()); return 1; }
     if (!selected->privateHome) return 0;
+    std::string why;
     if (auto prepared = xlings::home::domain_producer::prepare(*selected, platform::get_executable_path()); !prepared) {
-        error_(stream, prepared.error()); return 1;
+        why = prepared.error();
+    } else {
+        const auto init = initialize_domain_(*selected, argv[3], stream);
+        if (domain_built_(*selected, init)) return 0;
+        why = !init ? init.error() : *init != 0 ? std::format("exit {}", *init) : std::string("it did nothing");
     }
-    const auto init = initialize_domain_(*selected, argv[3], stream);
-    if (domain_built_(*selected, init)) return 0;
-    auto why = !init ? init.error() : *init != 0 ? std::format("exit {}", *init) : std::string("it did nothing");
     while (!why.empty() && std::isspace(static_cast<unsigned char>(why.back()))) why.pop_back();
     error_(stream, std::format("this host cannot build the domain at {} in a private namespace ({})", argv[3], why));
     return 1;
