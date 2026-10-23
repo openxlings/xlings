@@ -202,6 +202,10 @@ export int doctor_isolation(bool fix, bool yes, bool json, EventStream& stream);
 // when it can (perhaps after the one-time setup, asked here); otherwise the
 // command stops with the cause and the route, nothing fetched.
 export int prepare_root_host(bool yes, EventStream& stream);
+// The same question, never asked: whether a root made in this home can be
+// entered now (bwrap installed first where there is none, as making one
+// does); otherwise why. `subos __domain-check` asks it inside the domain.
+export std::expected<void, std::string> root_host_ready(EventStream& stream);
 
 // Windows, before its first Linux SubOS: the wsl2 carrier's one-time setup
 // (WSL from the index, the Virtual Machine Platform), asked where it is

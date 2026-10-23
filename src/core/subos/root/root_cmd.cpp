@@ -31,6 +31,7 @@ import xlings.subos.roles;
 import xlings.subos.boot;
 import xlings.observe;
 import xlings.core.subos.ports;
+import xlings.core.subos.sandbox;
 import xlings.core.xself;
 import xlings.core.xim.extract;
 import xlings.core.xim.commands;
@@ -282,10 +283,13 @@ bool domain_built_(const xlings::home::prefix_domain::Domain& selected, const st
 
 // `subos __domain-check <home>`: whether this host builds the private domain
 // at <home> -- prepared and initialised in its namespace, as making a system
-// there starts. Luban asks before it moves a system into its own userland
-// (design 2026-10-23 part 3, J47): `self doctor --isolation` judging the tools
-// is not the namespace working. 0 when it does (or <home> is this home's own
-// prefix); otherwise 1, and why.
+// there starts, then asked there whether a root made in it can be entered (the
+// home's own bwrap is not the domain's: a domain whose only bwrap fails made
+// every system again in the prefix after the move). Luban asks before it moves
+// a system into its own userland (design 2026-10-23 part 3, J47): `self doctor
+// --isolation` judging the host's tools is not the namespace working. For this
+// home's own prefix -- what the domain is asked -- whether a root here can be
+// entered. 0 when it does; otherwise 1, and why.
 int run_domain_check_(int argc, char* argv[], EventStream& stream, const UsageError& usageError) {
     if (argc != 4 || std::string_view(argv[3]).starts_with("-")) {
         usageError("usage: xlings subos __domain-check <home>"); return 2;
@@ -293,14 +297,29 @@ int run_domain_check_(int argc, char* argv[], EventStream& stream, const UsageEr
     if constexpr (!platform::is_linux) { error_(stream, "a private domain needs Linux namespaces"); return 1; }
     auto selected = xlings::home::prefix_domain::resolve(home_dir_(), fs::path(argv[3]));
     if (!selected) { error_(stream, selected.error()); return 1; }
-    if (!selected->privateHome) return 0;
+    if (!selected->privateHome) {
+        if (auto ready = sandbox::root_host_ready(stream); !ready) { error_(stream, ready.error()); return 1; }
+        return 0;
+    }
     std::string why;
     if (auto prepared = xlings::home::domain_producer::prepare(*selected, platform::get_executable_path()); !prepared) {
         why = prepared.error();
-    } else {
-        const auto init = initialize_domain_(*selected, argv[3], stream);
-        if (domain_built_(*selected, init)) return 0;
+    } else if (const auto init = initialize_domain_(*selected, argv[3], stream); !domain_built_(*selected, init)) {
         why = !init ? init.error() : *init != 0 ? std::format("exit {}", *init) : std::string("it did nothing");
+    } else {
+        // Asked through the interface: its answer is an event, not words on
+        // a terminal.
+        std::string said;
+        const nlohmann::json ask{{"argv", nlohmann::json::array({"__domain-check", selected->logicalHome.string()})}};
+        const std::vector<std::string> inside{"interface", "subos_command", "--args", ask.dump()};
+        const auto ready = xlings::home::domain_producer::run(*selected, inside, std::nullopt, false,
+                                                              [&](std::string_view line) {
+            const auto event = nlohmann::json::parse(line, nullptr, false);
+            if (event.is_object() && event.value("kind", "") == "error" && said.empty())
+                said = event.value("message", "");
+        });
+        if (ready && *ready == 0) return 0;
+        why = !said.empty() ? said : !ready ? ready.error() : std::format("exit {}", *ready);
     }
     while (!why.empty() && std::isspace(static_cast<unsigned char>(why.back()))) why.pop_back();
     error_(stream, std::format("this host cannot build the domain at {} in a private namespace ({})", argv[3], why));

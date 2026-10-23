@@ -570,7 +570,7 @@ text = "searched locations (interp, rpath/runpath, .pc, .la, shebangs) name only
 status = "required"
 
 [DOM-CHECK-TRIED]
-text = "subos __domain-check <home> answers whether this host builds the private domain there by trying it, as making a system there starts: exit 0 when its home is initialised inside, otherwise an error saying why"
+text = "subos __domain-check <home> answers whether this host builds the private domain there by trying it, as making a system there starts: exit 0 when its home is initialised inside and, asked inside, a root made there can be entered (for this home's own prefix: whether a root made here can be entered, or why not); a private domain's every refusal is one error, 'this host cannot build the domain at <home> ... (why)'"
 status = "required"
 
 [DOM-BUILD-INSIDE]

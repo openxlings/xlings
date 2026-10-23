@@ -111,6 +111,11 @@ desktop 在私有域（`/xlings`），不受影响；本机跑 L2 用 `/tmp` 做
   以"域里的 home 有 default"判断）；成功 0，否则一条错误说原因（协议 1.18，feature `domain_check`，旧 xlings 没有它时 luban 照旧迁移）。
   luban 的迁移先问它：不行就写 `.stays`（原因写进去）、说一次、继续原地升级。`luban status` 对"住在前缀里却留着归档"的系统
   （迁移落回前缀，或回滚到迁移前）说它不需要这个归档，第一条提示是 `rm <归档>`。
+- 验证中发现（J51，§4 的本机验证）：2026.10.23.2 的检查只到 `self init`。主机自带的 bwrap 坏了、只有 home 自己装的
+  `xim:bwrap` 能用时，检查说可以；域里 `subos new --rootfs` 却只看得到主机那个坏的 bwrap（域不带 home 的 bwrap），落回前缀，
+  迁移照旧导出、删除、重建。改为检查在域里再问一步：在域自己的 home 里 `subos __domain-check /xlings`，即"这里做出的 root
+  进得去吗"（与做 root 时 `prepare_root_host` 同一步：没有 bwrap 先装 `xim:bwrap`；不问人），不行就把域里 bwrap 的原因带回来。
+  `__domain-check` 的每种拒绝（含准备域本身失败，如未标记的构建）都是同一句"this host cannot build the domain at … (原因)"。
 
 ### 3.5 #699（mcpp#832）
 
@@ -178,6 +183,7 @@ cherry-pick 那一个提交，保留作者；它的 e2e（第 14 节：路径含
 | U8 | J47 真试后再迁移；已有归档的说明 | xlings 合并 PR |
 | U12 | #699 cherry-pick | xlings 合并 PR |
 | J50 | 机器先挂 userhome 再挂 home（§2.5） | xlings 合并 PR |
+| J51 | 域检查在域里问 root 进不进得去；每种拒绝同一句原因（§3.4） | xlings #702（随下一个版本发布） |
 | U7 | 2026.10.23.2 的验证（§4）+ luban-os-ci `after-part2` | 本机、runner、luban-os-ci |
 | U10 | mcpp 发布 → 索引收 `xim:mcpp` → core 新版本换 mcpp → L2-06 去 known | mcpp、xim-pkgindex、luban-os-ci（与 xlings 无关） |
 | U11 | 第四部分：K5（`own` 建在私有域上） | 2026.10.23.2 发布之后 |

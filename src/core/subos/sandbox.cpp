@@ -1507,12 +1507,8 @@ int prepare_carrier_host(bool yes, EventStream& stream) {
     return wsl && wsl->probe(home).supported ? 0 : 3;
 }
 
-int prepare_root_host(bool yes, EventStream& stream) {
-    if constexpr (!platform::is_linux) return 0;   // a root elsewhere is refused where it is made
-    // root is not who the restriction is for (unprivileged user namespaces).
-    if (platform::user_ids().euid == 0) return 0;
-    const auto home = subos::home_view();
-    const auto ports = subos::make_ports(stream);
+namespace {
+std::vector<caps::Backend> root_candidates_(const HomeView& home, const Ports& ports, EventStream& stream) {
     auto candidates = caps::bwrap_candidates(home, ports);
     if (candidates.empty()) {
         // No bwrap at all. It is a package (T1) and a root cannot do without
@@ -1525,6 +1521,27 @@ int prepare_root_host(bool yes, EventStream& stream) {
         if (xim::cmd_install_step(bwrap, {}, stream, /*plumbing=*/true) == 0)
             candidates = caps::bwrap_candidates(home, ports);
     }
+    return candidates;
+}
+}  // namespace
+
+std::expected<void, std::string> root_host_ready(EventStream& stream) {
+    if constexpr (!platform::is_linux) return std::unexpected("a root needs Linux namespaces");
+    if (platform::user_ids().euid == 0) return {};
+    const auto candidates = root_candidates_(subos::home_view(), subos::make_ports(stream), stream);
+    if (std::ranges::any_of(candidates, [](const caps::Backend& b) { return b.usable; })) return {};
+    if (candidates.empty()) return std::unexpected("there is no bwrap (xlings install bwrap)");
+    const auto why = classify_bwrap_probe_error_(candidates.front().probe_output, candidates.front().bin);
+    return std::unexpected(why.substr(0, why.find('\n')));
+}
+
+int prepare_root_host(bool yes, EventStream& stream) {
+    if constexpr (!platform::is_linux) return 0;   // a root elsewhere is refused where it is made
+    // root is not who the restriction is for (unprivileged user namespaces).
+    if (platform::user_ids().euid == 0) return 0;
+    const auto home = subos::home_view();
+    const auto ports = subos::make_ports(stream);
+    auto candidates = root_candidates_(home, ports, stream);
     std::ifstream sysctl("/proc/sys/kernel/apparmor_restrict_unprivileged_userns");
     std::string restricted;
     std::getline(sysctl, restricted);
