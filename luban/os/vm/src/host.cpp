@@ -352,6 +352,20 @@ void stamp_identity_(const service::Context& c, std::string_view name) {
 }
 
 // Starts the machine's supervisor and waits for its agent.
+// Its monitor is a package of the index, installed the first time it is
+// needed -- as a machine's kernel is (a Windows PC's host machine has nobody to
+// type it), and for an image's boot alike. What this home then has; nothing
+// when the install failed.
+std::vector<xlings::subos::tools::Found> install_monitor_(const service::Context& c, const xlings::subos::HomeView& view,
+                                                          std::string_view qemu) {
+    say_(c, service::phase("vmm", "begin", "installing the virtual machine monitor"));
+    const int rc = c.port.capability("install_packages", {{"targets", Json::array({"xim:qemu-system"})}, {"yes", true}}, c.sink);
+    auto all = xlings::subos::tools::candidates(qemu, view, xlings::subos::Ports{});
+    if (rc != 0) all.clear();
+    say_(c, service::phase("vmm", all.empty() ? "failed" : "done", "installing the virtual machine monitor"));
+    return all;
+}
+
 int start_impl_(const service::Context& c, std::string_view name, const EnterOptions& o) {
     const auto& arch = xlings::image::native_arch();
     const xlings::subos::HomeView view{c.home};
@@ -366,14 +380,9 @@ int start_impl_(const service::Context& c, std::string_view name, const EnterOpt
     // it shares) -- a host's qemu without it does not hide the index's.
     auto all = xlings::subos::tools::candidates(arch.qemu, view, xlings::subos::Ports{});
     if (all.empty()) {
-        // Its monitor is a package of the index, installed the first time as
-        // its kernel is (a Windows PC's host machine has nobody to type it).
         say_(c, service::phase("preflight", "done", "checking this host"));
-        say_(c, service::phase("vmm", "begin", "installing the virtual machine monitor"));
-        const int rc = c.port.capability("install_packages", {{"targets", Json::array({"xim:qemu-system"})}, {"yes", true}}, c.sink);
-        all = xlings::subos::tools::candidates(arch.qemu, view, xlings::subos::Ports{});
-        say_(c, service::phase("vmm", all.empty() ? "failed" : "done", "installing the virtual machine monitor"));
-        if (rc != 0 || all.empty()) {
+        all = install_monitor_(c, view, arch.qemu);
+        if (all.empty()) {
             say_(c, service::error("a machine needs a virtual machine monitor here", xlings::subos::tools::install_hint(arch.qemu)));
             return 1;
         }
@@ -737,6 +746,11 @@ int boot_image_(const service::Context& c, const fs::path& image, const EnterOpt
     const auto& arch = xlings::image::native_arch();
     const xlings::subos::HomeView view{c.home};
     auto qemu = xlings::subos::tools::first(arch.qemu, view, xlings::subos::Ports{});
+    if (!qemu) {
+        // As a machine's start: installed the first time (luban-os-ci L6-02,
+        // a new home's `luban enter <image>` only said what to install).
+        if (auto all = install_monitor_(c, view, arch.qemu); !all.empty()) qemu = all.front();
+    }
     if (!qemu) {
         say_(c, service::error("booting an image needs a virtual machine monitor here", xlings::subos::tools::install_hint(arch.qemu)));
         return 1;

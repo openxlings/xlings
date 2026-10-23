@@ -58,8 +58,9 @@ boots the environment itself, not an image of it: its tree is shared with the
 machine, and the `virt` profile's kernel boots it. Its only network is the proxy
 when it has one. Both use KVM when this user may, and emulation otherwise; on
 aarch64, UEFI firmware on qemu's `virt` machine. What they need comes from the
-index — `xlings install qemu-system`, one package with both emulators, user
-networking, 9p and the UEFI firmware; luban names it when it is missing.
+index — `qemu-system`, one package with both emulators, user networking, 9p
+and the UEFI firmware. The first machine or image this home starts installs it;
+luban names it only when that fails.
 
 ## Writing a drive
 

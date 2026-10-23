@@ -225,6 +225,42 @@ std::string svc_settings_desktop(const tk::Home& home, std::string_view name) {
 
 }  // namespace
 
+// An image boots on the monitor its home installs the first time, as a
+// machine's start installs it (luban-os-ci L6-02: in a new home `luban enter
+// <iso>` only said "xlings install qemu-system").
+XTEST(Luban, AnImageBootsOnTheMonitorItsHomeInstallsTheFirstTime, .area = "luban",
+      .covers = {"LUBAN-IMAGE-VMM"}, .requires_ = {"linux", "xlings-bin"}) {
+    if constexpr (!tk::is_linux) GTEST_SKIP() << "a machine monitor on Linux";
+    const auto bin = luban_binary();
+    if (!bin) GTEST_SKIP() << "no luban beside the xlings under test (mcpp build -p luban-tool, or LUBAN_BIN)";
+    auto home = luban_home("luban-image-vmm", *bin, [](const fs::path& primary, const fs::path&) {
+        // A monitor that never opens a console, and the firmware an aarch64
+        // boot asks for.
+        tk::write_file(primary / "pkgs/q/qemu-system.lua", R"LUA(
+package = { spec = '1', name = 'qemu-system', archs = {'x86_64', 'aarch64'}, xpm = { linux = { ['1.0.0'] = {} } } }
+import('xim.libxpkg.pkginfo')
+function install()
+    local dir = pkginfo.install_dir()
+    os.mkdir(path.join(dir, 'bin'))
+    os.mkdir(path.join(dir, 'share', 'qemu'))
+    for _, name in ipairs({'qemu-system-x86_64', 'qemu-system-aarch64'}) do
+        io.writefile(path.join(dir, 'bin', name), '#!/bin/sh\nexit 1\n')
+    end
+    io.writefile(path.join(dir, 'share', 'qemu', 'edk2-aarch64-code.fd'), '')
+    return true
+end
+)LUA");
+    });
+    const auto image = home.root() / "t.iso";
+    tk::write_file(image, "not a real image");
+    auto booted = luban(home, {"enter", image.string()});
+    EXPECT_NE(booted.exit_code, 0) << booted.transcript();
+    EXPECT_NE(booted.transcript().find("installing the virtual machine monitor"), std::string::npos) << booted.transcript();
+    EXPECT_TRUE(fs::is_directory(home.dir() / "data/xpkgs/xim-x-qemu-system/1.0.0/bin")) << booted.transcript();
+    EXPECT_NE(booted.transcript().find("booting t.iso"), std::string::npos) << "booted with it: " << booted.transcript();
+    EXPECT_EQ(booted.transcript().find("needs a virtual machine monitor"), std::string::npos) << booted.transcript();
+}
+
 // What this computer can do: one line per way of running a system, ready
 // or why not and the next step -- on every platform the test runs on.
 XTEST(Luban, TheHostStatusSaysWhatThisComputerCanRun, .area = "luban",
