@@ -614,8 +614,9 @@ XTEST(DomainProducer, TwoSystemsOnTwoRuntimesShareOnePayload,
 
 // What luban asks before it moves a system into its own userland (design
 // 2026-10-23 part 3, J47): the domain tried, as making a system there starts
-// -- not the tools judged. Where the namespace runs the candidate (bwrap, a
-// static client) the domain's home is initialised; elsewhere an error says why.
+// -- not the tools judged. Where bwrap makes namespaces the domain's home is
+// initialised (the client's own `self init` runs there, static or not);
+// elsewhere an error says why.
 XTEST(DomainProducer, ADomainCheckTriesTheNamespaceAsMakingASystemThereStarts,
       .area = "subos", .cost = tk::Cost::Medium, .covers = {"DOM-CHECK-TRIED"}, .requires_ = {"linux", "xlings-bin"}) {
     if constexpr (!tk::is_linux) GTEST_SKIP() << "Linux namespaces";
@@ -631,9 +632,7 @@ XTEST(DomainProducer, ADomainCheckTriesTheNamespaceAsMakingASystemThereStarts,
     ASSERT_EQ(home.xlings({"self", "init"}).exit_code, 0);
     EXPECT_EQ(home.xlings({"subos", "__domain-check"}).exit_code, 2) << "which domain";
 
-    const auto executable = xlings::elfread::read(tk::xlings_binary());
-    ASSERT_TRUE(executable);
-    const bool builds = !tk::probe("bwrap") && executable->interpreter.empty();
+    const bool builds = !tk::probe("bwrap");
     const auto checked = home.xlings({"subos", "__domain-check", "/xlings"});
     const auto inside = home.dir() / "domains/xlings/private/subos/default";
     if (builds) {

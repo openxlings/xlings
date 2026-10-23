@@ -56,6 +56,17 @@ release.yml 的 bump-index 运行 `tools/bump_index.sh` → 索引的 `.github/s
 
 本机建不了私有命名空间，私有域路径（J37、J39 一类）只有托管 runner 能测；token 配好后，每个 xlings PR 都会在 luban-os-ci 跑 L2。
 
+### 2.5 J50：有自己用户的机器里没有 xlings（实现中发现）
+
+#701 第一次 CI 派发的 luban-os-ci L2 与 luban-os-ci#2 自己的 CI（都用 2026.10.23.1 的行为）：core-machine 的 12 个场景全部
+`xlings: exit 127`，desktop-machine 全过。原因：机器启动时 guest 先挂系统的 home（在前缀里的系统，是主机上的路径——runner 上
+`/home/runner/work/_temp/…`，普通主机上 `/home/<user>/.xlings`），再把 userhome 挂到 `/home`，后者把前者盖住了。J32
+（2026.10.23.1）让"有自己用户"的机器都挂 userhome，于是前缀里的机器只要有用户就没有 xlings；`persist home` 的机器早就有同样的问题。
+desktop 在私有域（`/xlings`），不受影响；本机跑 L2 用 `/tmp` 做工作目录，看不到。
+
+修复：先挂 userhome，再挂 home。两个 share 是主机上同一个目录（`<root>/home`），home 的挂载点就建在 J32 之前它所在的地方，
+行为与 J32 之前一致。验证：#701 的 L2 派发（initramfs 用被测的 luban）。
+
 ## 3. 设计
 
 ### 3.1 发布产物归发布流程（已在 #1031）
@@ -152,6 +163,7 @@ cherry-pick 那一个提交，保留作者；它的 e2e（第 14 节：路径含
 | 一致性 | 四个发布产物同一规则；luban-cursors 不在其中（它的条目随主题变化，人工） | 写进 AGENTS.md |
 | 无感升级 | §5 | — |
 | 可测性 | 私有域路径 | luban-os-ci 在每个 xlings PR 上跑 L2（token 已配） |
+| 可测性 | 前缀里的系统、home 在 `/home` 下（J50 只在 runner 上出现） | 同上；本机跑 L2 时工作目录放在 `/home` 下 |
 | 隐私 | 新工具与文档 | 无个人路径；lint 通过 |
 
 ## 7. 任务与依赖
@@ -165,6 +177,7 @@ cherry-pick 那一个提交，保留作者；它的 e2e（第 14 节：路径含
 | U6 | consumers CI 跑 rootfs 自更新测试 | xim-pkgindex #1031 |
 | U8 | J47 真试后再迁移；已有归档的说明 | xlings 合并 PR |
 | U12 | #699 cherry-pick | xlings 合并 PR |
+| J50 | 机器先挂 userhome 再挂 home（§2.5） | xlings 合并 PR |
 | U7 | 2026.10.23.2 的验证（§4）+ luban-os-ci `after-part2` | 本机、runner、luban-os-ci |
 | U10 | mcpp 发布 → 索引收 `xim:mcpp` → core 新版本换 mcpp → L2-06 去 known | mcpp、xim-pkgindex、luban-os-ci（与 xlings 无关） |
 | U11 | 第四部分：K5（`own` 建在私有域上） | 2026.10.23.2 发布之后 |

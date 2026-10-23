@@ -754,14 +754,17 @@ int guest_init(int, char*[]) {
     // there, refuse the next session). Before the home, which may be under one.
     if (!platform::mount_tmpfs("/newroot/run", 0755)) console_("cannot mount /run");
     if (!platform::mount_tmpfs("/newroot/tmp", 01777)) console_("cannot mount /tmp");
-    if (!share("home", fs::path("/newroot") / home.relative_path(), true))
-        give_up_("the home (tag home) did not mount");
     // Its /home on its own: kept when the rest is a copy (persist home), or
-    // over 9p with mapped-xattr for users of their own (part 2 J32).
+    // over 9p with mapped-xattr for users of their own (part 2 J32). Before
+    // the home: a system in this home's prefix has its home where the host
+    // has it, under /home on most hosts, and mounted after it /home would hide
+    // it -- no xlings in the machine (design 2026-10-23 part 3, J50).
     const bool home_9p = params.contains("luban.homefs") && params.at("luban.homefs") == "9p";
     if (params.contains("luban.userhome") && params.at("luban.userhome") == "1"
         && !(home_9p ? platform::mount_9p("userhome", "/newroot/home", false) : share("userhome", "/newroot/home", false)))
         give_up_("its /home (tag userhome) did not mount");
+    if (!share("home", fs::path("/newroot") / home.relative_path(), true))
+        give_up_("the home (tag home) did not mount");
     for (const auto* at : {"/dev", "/proc", "/sys"})
         if (!platform::move_mount(at, fs::path("/newroot") / fs::path(at).relative_path()))
             give_up_(std::format("cannot move {} into the environment", at));
