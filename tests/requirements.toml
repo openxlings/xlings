@@ -569,6 +569,10 @@ status = "required"
 text = "searched locations (interp, rpath/runpath, .pc, .la, shebangs) name only the prefix domain"
 status = "required"
 
+[DOM-CHECK-TRIED]
+text = "subos __domain-check <home> answers whether this host builds the private domain there by trying it, as making a system there starts: exit 0 when its home is initialised inside, otherwise an error saying why"
+status = "required"
+
 [DOM-BUILD-INSIDE]
 text = "a root's payloads are installed with its home at the path the root sees it at; no recipe changes (a multi image is built in /xlings and runs there)"
 status = "required"

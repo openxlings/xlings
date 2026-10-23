@@ -611,3 +611,38 @@ XTEST(DomainProducer, TwoSystemsOnTwoRuntimesShareOnePayload,
     EXPECT_EQ(fs::read_symlink(output / "xlings/subos/default/root/usr/lib/xlings-abi/linux-x86_64-glibc/libc.so.6").generic_string(),
               "/xlings/data/xpkgs/fixture-x-glibc/2.0.0/lib64/libc.so.6");
 }
+
+// What luban asks before it moves a system into its own userland (design
+// 2026-10-23 part 3, J47): the domain tried, as making a system there starts
+// -- not the tools judged. Where the namespace runs the candidate (bwrap, a
+// static client) the domain's home is initialised; elsewhere an error says why.
+XTEST(DomainProducer, ADomainCheckTriesTheNamespaceAsMakingASystemThereStarts,
+      .area = "subos", .cost = tk::Cost::Medium, .covers = {"DOM-CHECK-TRIED"}, .requires_ = {"linux", "xlings-bin"}) {
+    if constexpr (!tk::is_linux) GTEST_SKIP() << "Linux namespaces";
+    auto home = tk::Home::isolated("domain-check");
+    const auto primary = home.root() / "primary";
+    tk::write_file(primary / "xim-indexrepos.lua", "xim_indexrepos = {}\n");
+    fs::create_directories(primary / "pkgs");
+    Json config{{"mirror", "GLOBAL"}, {"xim", {{"index-repo", primary.generic_string()}}},
+        {"index_repos", Json::array({{{"name", "xim"}, {"url", primary.generic_string()}, {"source", "git"}}})}};
+    tk::write_file(home.dir() / ".xlings.json", config.dump());
+    fs::create_directories(home.dir() / "bin");
+    fs::copy_file(tk::xlings_binary(), home.dir() / "bin/xlings");
+    ASSERT_EQ(home.xlings({"self", "init"}).exit_code, 0);
+    EXPECT_EQ(home.xlings({"subos", "__domain-check"}).exit_code, 2) << "which domain";
+
+    const auto executable = xlings::elfread::read(tk::xlings_binary());
+    ASSERT_TRUE(executable);
+    const bool builds = !tk::probe("bwrap") && executable->interpreter.empty();
+    const auto checked = home.xlings({"subos", "__domain-check", "/xlings"});
+    const auto inside = home.dir() / "domains/xlings/private/subos/default";
+    if (builds) {
+        EXPECT_EQ(checked.exit_code, 0) << checked.transcript();
+        EXPECT_TRUE(fs::is_directory(inside)) << "its home initialised inside";
+    } else {
+        EXPECT_EQ(checked.exit_code, 1) << checked.transcript();
+        EXPECT_NE(checked.transcript().find("/xlings"), std::string::npos) << "says which and why: " << checked.transcript();
+        EXPECT_FALSE(fs::is_directory(inside));
+    }
+}
+

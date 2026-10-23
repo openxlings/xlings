@@ -73,6 +73,10 @@ luban upgrade box --to 2026.10.11.2
 luban rollback box --to relayout -y   # the system as it was before its move
 ```
 
+迁移前先试一次，与在那里创建系统的第一步相同。这台主机建不了系统自己的用户态（没有私有命名空间）时，什么都不搬走：
+系统留在 home 的前缀里，说一次，以后不再尝试。较早的版本为这种迁移留下的归档就是系统现在的样子；`luban status box`
+会说明，并给出删除它的命令。
+
 ## 代与回滚
 
 ```bash

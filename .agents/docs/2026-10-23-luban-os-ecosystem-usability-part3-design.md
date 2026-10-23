@@ -10,7 +10,7 @@
    xlings、luban、luban-os、xdesk，与发布流程互相否定，2026.10.23.1 因此进不了索引。#1031 已去掉这四个包的
    `autoupdate`，并用静态测试守住。
 2. **写索引指针要有正式的工具，由人在本地运行**（R3 已定：镜像超时是已知的，本地 gtc 补）。release 的 bump-index
-   依赖已被 #1027 删除的脚本、又排在必然超时的镜像之后，从不起作用——删除；新增 `tools/index_pointers.py`。
+   依赖已被 #1027 删除的脚本、又排在必然超时的镜像之后，从不起作用——删除；新增 `tools/bump_index.py`。
 3. **跨仓库契约在两边都测**：xlings 的 rootfs 测试改为经客户端读已发布版本（不再用正则读 Lua 文本，取代 #700 的补丁）；
    索引改动这几个 recipe 时，consumers CI 跑 xlings 的这条测试（U6）。
 4. **收敛**：xlings 一个 PR = #699（保留作者）+ U3/U4（指针工具、删失效作业、AGENTS.md）+ U5（契约测试）+ J47
@@ -64,23 +64,29 @@ release.yml 的 bump-index 运行 `tools/bump_index.sh` → 索引的 `.github/s
 - `tests/test_release_owned.py`：这四个包不得声明 autoupdate；各平台的 `latest` 必须是 `XLINGS_RES` 条目。在 main 的写法上失败，改后通过。
 - #1027 的 verify 对 #1031 不再有候选可查。
 
-### 3.2 写索引指针：`tools/index_pointers.py`（U3、U4）
+### 3.2 写索引条目：`tools/bump_index.py`（U3、U4）
 
-- `tools/index_pointers.py <version> <index-dir>`：从发布的 `.sha256` 资源写 xlings、luban、luban-os（linux x86_64/aarch64、macosx aarch64
+名字不用 `index_pointers`：仓库里"索引指针"已指 `xim-index-pointers.json`（`tools/push_index_pointers.sh`，索引 artifact 的清单）。
+
+- `tools/bump_index.py <version> <index-dir>`：从发布的 `.sha256` 资源写 xlings、luban、luban-os（linux x86_64/aarch64、macosx aarch64
   ← `macosx-arm64` 资源、windows x86_64）与 xim:xdesk（linux x86_64）的 `XLINGS_RES` 条目与 `latest`。
   形状与现有条目逐字相同；缺一个资源就整体失败（不写半套）；同一版本已存在就不重复写。
 - 单元测试：用固定的 recipe 片段与 sha256，输出逐字比对；再跑一遍不变（幂等）；缺资源时不写。
 - 删除 release.yml 的 bump-index 作业与 `tools/bump_index.sh`（它们从不起作用，留着误导）。
 - AGENTS.md 的发布说明：release 绿 → 本地 `tools/mirror-latest.sh` 用 gtc 补 GitCode（xlings、luban、luban-os、xdesk、luban-cursors；
-  luban-os、xdesk 等 CI 的镜像作业建好 GitHub 端的 release）→ 本地 `tools/index_pointers.py` → 开 xim-pkgindex PR。
+  luban-os、xdesk 等 CI 的镜像作业建好 GitHub 端的 release）→ 本地 `tools/bump_index.py` → 开 xim-pkgindex PR。
 
 ### 3.3 跨仓库契约：经客户端读，两边都测（U5、U6）
 
 - **U5（xlings，取代 #700）**：rootfs 测试的 fixture 不再用正则。它先让测试里的 xlings（被测的候选）在隔离 home 里读测试自己的索引副本，
-  用 `xlings interface package_info`（已有的结构化能力）得到 `xim:xlings` 已发布的版本，选出前一个版本，再在副本末尾追加候选条目。
-  recipe 怎么排版归客户端解析；测试只关心数据。
-- **U6（xim-pkgindex，并入 #1031）**：改动 `pkgs/x/xlings.lua`、`pkgs/luban/{luban,luban-os}.lua`、`pkgs/x/xdesk.lua` 时，consumers CI
-  用最新发布的 xlings 跑 xlings main 上的这条 rootfs 自更新测试。它依赖 U5 先进 xlings main，所以 #1031 在 xlings 的 PR 之后合入。
+  用 `xlings interface package_info` 得到 `xim:xlings` 已发布的版本，选出前一个版本，再在副本末尾追加候选条目。
+  recipe 怎么排版归客户端解析；测试只关心数据。`package_info` 原先只给 `version`（`latest` 解析到的那个），候选等于
+  `latest` 时（索引已指向本版本后重跑 main）选不出前一个——所以 `package` 加 `versions`：该平台的具体版本，新的在前，
+  不含别名（协议 1.18，feature `package_versions`；程序要列版本也用它）。
+- **U6（xim-pkgindex，并入 #1031）**：改动 `pkgs/x/xlings.lua`、`pkgs/luban/{luban,luban-os}.lua`、`pkgs/x/xdesk.lua` 时，索引的 CI
+  用最新发布的 xlings 做 fixture 做的那次读取（`interface package_info`，每个平台）：读得出、`latest` 在 `versions` 里、有前一个版本。
+  整条 rootfs 自更新测试要 docker 与候选构建，留在 xlings 的 CI；U5 之后它只依赖这次读取，索引一侧守住读取即守住契约。
+  它依赖 23.2（`versions`）发布，所以 #1031 在 xlings 的 PR 之后合入。
 - 不改为固定索引版本：固定版本会过时，别的测试也读实时索引。
 
 ### 3.4 J47：迁移前真的试一次（U8）
@@ -90,6 +96,10 @@ release.yml 的 bump-index 运行 `tools/bump_index.sh` → 索引的 `.github/s
 - 改为：迁移前在一个临时的私有域里真的初始化一次（与 `subos new --domain-if-possible` 判断"建不建得成"用同一条路径，几秒）；
   建不成就不导出、不删除，只记 `.stays`，说一次原因。`self doctor --isolation` 的结论不够：本机它说可以，域却建不成。
 - 已经导出的归档：`luban status <name>` 说出大小与释放办法（`luban rollback <name> --to relayout`，或确认后删除）。
+- 实现：xlings 加 plumbing `subos __domain-check <home>`，与 `subos new --domain-if-possible` 共用一段（准备域、在其中 `self init`、
+  以"域里的 home 有 default"判断）；成功 0，否则一条错误说原因（协议 1.18，feature `domain_check`，旧 xlings 没有它时 luban 照旧迁移）。
+  luban 的迁移先问它：不行就写 `.stays`（原因写进去）、说一次、继续原地升级。`luban status` 对"住在前缀里却留着归档"的系统
+  （迁移落回前缀，或回滚到迁移前）说它不需要这个归档，第一条提示是 `rm <归档>`。
 
 ### 3.5 #699（mcpp#832）
 
@@ -99,7 +109,7 @@ cherry-pick 那一个提交，保留作者；它的 e2e（第 14 节：路径含
 
 1. xlings PR：CI 全绿（Linux 含 asan、macOS、Windows、aarch64，以及 luban-os-ci 的 L2）→ 自审 → squash 合入 → 取消 main 的 CI → release。
 2. 资源一出来就本地 gtc 补 GitCode；重新触发 main 的 CI。
-3. `tools/index_pointers.py 2026.10.23.2` 写进 #1031（同时验证工具本身）；#1031 加入 U6；CI 绿后合入；发布后等 CDN。
+3. `tools/bump_index.py 2026.10.23.2` 写进 #1031（同时验证工具本身）；#1031 加入 U6；CI 绿后合入；发布后等 CDN。
 4. 真实验证：
 
 | 验证 | 在哪里 |
@@ -119,7 +129,7 @@ cherry-pick 那一个提交，保留作者；它的 e2e（第 14 节：路径含
 | 什么 | 影响 | 处理 |
 |---|---|---|
 | 四个包去掉 autoupdate | 只是不再由机器人写；已发布的条目不变 | 无 |
-| `tools/index_pointers.py` | 写出的条目与手写的逐字相同 | 单元测试逐字比对 |
+| `tools/bump_index.py` | 写出的条目与手写的逐字相同 | 单元测试逐字比对 |
 | 删除 bump-index | 它从未生效 | 无 |
 | rootfs 测试经客户端读 | 测试内部；用到的 `interface package_info` 在已发布的客户端里都有 | 无 |
 | #699 的引号 | 已记录的 alias 在重装前保持原样（#1035 已让 gcc 的 hook 不依赖 alias） | 无 |
@@ -149,7 +159,7 @@ cherry-pick 那一个提交，保留作者；它的 e2e（第 14 节：路径含
 | 编号 | 任务 | 仓库 / PR |
 |---|---|---|
 | U1 | 四个包去 autoupdate、`test_release_owned.py`、23.1 指针 | xim-pkgindex #1031（已做） |
-| U3 | `tools/index_pointers.py` + 单元测试 | xlings 合并 PR |
+| U3 | `tools/bump_index.py` + 单元测试 | xlings 合并 PR |
 | U4 | 删除 bump-index 与 `bump_index.sh`；AGENTS.md 发布说明 | xlings 合并 PR |
 | U5 | rootfs 测试经客户端读版本（取代 #700） | xlings 合并 PR |
 | U6 | consumers CI 跑 rootfs 自更新测试 | xim-pkgindex #1031 |
@@ -172,7 +182,7 @@ U10 独立；U11 在 U7 之后
 |---|---|
 | R1 | 四个发布产物的版本由 xlings 的发布流程写，不走自动更新 |
 | R2 | 跨仓库测试经客户端读实时索引，提供方的 CI 也跑 |
-| R3 | 镜像超时维持现状，资源一出来本地 gtc 补；写指针用 `tools/index_pointers.py` |
+| R3 | 镜像超时维持现状，资源一出来本地 gtc 补；写指针用 `tools/bump_index.py` |
 | R4 | `LUBAN_OS_CI_TOKEN` 已配置 |
 | R5 | K5 在 2026.10.23.2 之后；mcpp 归 mcpp 仓库与索引 |
 | C1 | #1031 等 2026.10.23.2 一起合入 |

@@ -1199,6 +1199,36 @@ XTEST(Luban, WhatASystemWasBeforeItsMoveIsKeptAndItsWayBack,
     EXPECT_FALSE(fs::exists(kept)) << "it goes with the system";
 }
 
+// A move this host cannot make carries nothing away (design 2026-10-23 part
+// 3, J47): the domain is tried first; where it does not build, the system is
+// not exported, removed and made again where it was -- it stays, said once and
+// not tried again. An archive such a move left is named as freeable.
+XTEST(Luban, AMoveThisHostCannotMakeCarriesNothingAway,
+      .area = "luban", .cost = tk::Cost::Medium, .covers = {"LUBAN-RELAYOUT-TRIED"}, .requires_ = {"linux", "xlings-bin"}) {
+    if constexpr (!tk::is_linux) GTEST_SKIP() << "a Luban root is a Linux root";
+    const auto bin = luban_binary();
+    if (!bin) GTEST_SKIP() << "no luban beside the xlings under test";
+    auto home = luban_home("luban-relayout-tried", *bin);
+    if (home.xlings({"subos", "__domain-check", "/xlings"}).exit_code == 0)
+        GTEST_SKIP() << "this host builds the domain: the move is made (tests/fresh-install/luban.sh)";
+    ASSERT_EQ(luban(home, {"new", "box", "--xpkg", "fixture:my-os@1.0.0", "-y"}).exit_code, 0);
+    const auto relayout = home.dir() / "state/luban/relayout";
+    const auto up = luban(home, {"upgrade", "box", "-y"});
+    ASSERT_EQ(up.exit_code, 0) << up.transcript();
+    EXPECT_NE(up.transcript().find("box stays in this home's prefix"), std::string::npos) << up.transcript();
+    EXPECT_EQ(up.transcript().find("moving box into its own userland"), std::string::npos) << "not carried: " << up.transcript();
+    EXPECT_FALSE(fs::exists(relayout / "box.luban"));
+    EXPECT_TRUE(fs::exists(relayout / "box.stays"));
+    const auto again = luban(home, {"upgrade", "box", "-y"});
+    ASSERT_EQ(again.exit_code, 0) << again.transcript();
+    EXPECT_EQ(again.transcript().find("stays in this home's prefix"), std::string::npos) << "said once: " << again.transcript();
+    // An archive from such a move before this one (2026.10.23.1 and earlier made them).
+    ASSERT_EQ(luban(home, {"export", "box", (relayout / "box.luban").string()}).exit_code, 0);
+    const auto status = luban(home, {"--json", "status", "box"});
+    EXPECT_NE(status.out.find("lives in this home's prefix and runs without it"), std::string::npos) << status.out;
+    EXPECT_NE(status.out.find("rm " + (relayout / "box.luban").string()), std::string::npos) << status.out;
+}
+
 XTEST(Luban, BootSaysWhatThisBootWas,
       .area = "luban", .cost = tk::Cost::Fast, .covers = {"LUBAN-BOOT-ENTRIES"}, .requires_ = {"linux", "xlings-bin"}) {
     if constexpr (!tk::is_linux) GTEST_SKIP() << "boot entries are a Linux machine's";

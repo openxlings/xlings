@@ -226,15 +226,12 @@ std::expected<void, std::string> preflight_domain_at_creation_(std::string_view 
     return {};
 }
 
-std::optional<int> produce_domain_at_creation_(const std::string& name, bool,
-    std::string_view domain, std::span<const std::string> arguments, EventStream& stream, bool* fellBack) {
-    auto selected = xlings::home::prefix_domain::resolve(home_dir_(), fs::path(domain));
-    if (!selected) { error_(stream, selected.error()); return 1; }
-    if (!selected->privateHome) return std::nullopt;
-    const auto entry = platform::get_executable_path();
-    if (auto prepared = xlings::home::domain_producer::prepare(*selected, entry); !prepared) {
-        error_(stream, prepared.error()); return 1;
-    }
+namespace {
+
+// `self init` in a private domain's own home, as making a system there and
+// `subos __domain-check` both start. Its exit, or why it did not run.
+std::expected<int, std::string> initialize_domain_(const xlings::home::prefix_domain::Domain& selected,
+                                                   std::string_view name, EventStream& stream) {
     const std::vector<std::string> initialize{"self", "init"};
     // Its own words are not the caller's (through the interface they would be
     // text in a stream of events), but what it is doing is: each line a step
@@ -261,7 +258,7 @@ std::optional<int> produce_domain_at_creation_(const std::string& name, bool,
                             std::chrono::duration_cast<std::chrono::seconds>(now - began).count()));
         }
     });
-    auto init = xlings::home::domain_producer::run(*selected, initialize, std::nullopt, false,
+    auto init = xlings::home::domain_producer::run(selected, initialize, std::nullopt, false,
                                                    [&](std::string_view line) {
                                                        std::string text(line);
                                                        while (!text.empty() && (text.back() == '\n' || text.back() == '\r')) text.pop_back();
@@ -271,10 +268,55 @@ std::optional<int> produce_domain_at_creation_(const std::string& name, bool,
                                                    });
     heartbeat.request_stop();
     heartbeat.join();
-    // The namespace is judged by what it did, not by its exit code: a home
-    // initialised inside has its default SubOS.
+    return init;
+}
+
+// The namespace is judged by what it did, not by its exit code: a home
+// initialised inside has its default SubOS.
+bool domain_built_(const xlings::home::prefix_domain::Domain& selected, const std::expected<int, std::string>& init) {
     std::error_code ec;
-    const bool built = init && *init == 0 && fs::is_directory(selected->physicalHome / "subos" / "default", ec);
+    return init && *init == 0 && fs::is_directory(selected.physicalHome / "subos" / "default", ec);
+}
+
+}  // namespace
+
+// `subos __domain-check <home>`: whether this host builds the private domain
+// at <home> -- prepared and initialised in its namespace, as making a system
+// there starts. Luban asks before it moves a system into its own userland
+// (design 2026-10-23 part 3, J47): `self doctor --isolation` judging the tools
+// is not the namespace working. 0 when it does (or <home> is this home's own
+// prefix); otherwise 1, and why.
+int run_domain_check_(int argc, char* argv[], EventStream& stream, const UsageError& usageError) {
+    if (argc != 4 || std::string_view(argv[3]).starts_with("-")) {
+        usageError("usage: xlings subos __domain-check <home>"); return 2;
+    }
+    if constexpr (!platform::is_linux) { error_(stream, "a private domain needs Linux namespaces"); return 1; }
+    auto selected = xlings::home::prefix_domain::resolve(home_dir_(), fs::path(argv[3]));
+    if (!selected) { error_(stream, selected.error()); return 1; }
+    if (!selected->privateHome) return 0;
+    if (auto prepared = xlings::home::domain_producer::prepare(*selected, platform::get_executable_path()); !prepared) {
+        error_(stream, prepared.error()); return 1;
+    }
+    const auto init = initialize_domain_(*selected, argv[3], stream);
+    if (domain_built_(*selected, init)) return 0;
+    auto why = !init ? init.error() : *init != 0 ? std::format("exit {}", *init) : std::string("it did nothing");
+    while (!why.empty() && std::isspace(static_cast<unsigned char>(why.back()))) why.pop_back();
+    error_(stream, std::format("this host cannot build the domain at {} in a private namespace ({})", argv[3], why));
+    return 1;
+}
+
+std::optional<int> produce_domain_at_creation_(const std::string& name, bool,
+    std::string_view domain, std::span<const std::string> arguments, EventStream& stream, bool* fellBack) {
+    auto selected = xlings::home::prefix_domain::resolve(home_dir_(), fs::path(domain));
+    if (!selected) { error_(stream, selected.error()); return 1; }
+    if (!selected->privateHome) return std::nullopt;
+    const auto entry = platform::get_executable_path();
+    if (auto prepared = xlings::home::domain_producer::prepare(*selected, entry); !prepared) {
+        error_(stream, prepared.error()); return 1;
+    }
+    const auto init = initialize_domain_(*selected, name, stream);
+    std::error_code ec;
+    const bool built = domain_built_(*selected, init);
     if (!built && fellBack) {
         *fellBack = true;
         log::warn("this host cannot build '{}' in a private namespace ({}); it is made in this home's prefix "
