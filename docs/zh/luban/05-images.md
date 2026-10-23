@@ -49,8 +49,8 @@ luban enter box --mode machine --temp   # the environment itself in a local VM; 
 
 镜像按原样启动，什么都不保留。`luban enter <name> --mode machine` 启动的是环境本身而不是它的镜像：它的文件树与机器共享，
 由 `virt` 启动层的内核启动；有代理时它唯一的网络就是代理。两者在这个用户能用 KVM 时用 KVM，否则纯模拟；aarch64 上是 qemu
-`virt` 机器上的 UEFI 固件。它们需要的东西来自索引——`xlings install qemu-system`，一个包含两个模拟器、用户态网络、9p
-和 UEFI 固件的包；缺失时 luban 会说明。
+`virt` 机器上的 UEFI 固件。它们需要的东西来自索引——`qemu-system`，一个包含两个模拟器、用户态网络、9p
+和 UEFI 固件的包；这个 home 第一次启动机器或镜像时自动安装，只有安装失败时 luban 才说明要装什么。
 
 ## 写入驱动器
 

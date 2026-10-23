@@ -640,9 +640,17 @@ XTEST(DomainProducer, ADomainCheckTriesTheNamespaceAsMakingASystemThereStarts,
         EXPECT_TRUE(fs::is_directory(inside)) << "its home initialised inside";
     } else {
         EXPECT_EQ(checked.exit_code, 1) << checked.transcript();
-        EXPECT_NE(checked.transcript().find("/xlings"), std::string::npos) << "says which and why: " << checked.transcript();
+        EXPECT_NE(checked.transcript().find("cannot build the domain at /xlings"), std::string::npos)
+            << "says which and why: " << checked.transcript();
         EXPECT_FALSE(fs::is_directory(inside));
     }
+    // Asked of this home's own prefix -- what the check asks inside the
+    // domain -- whether a root made here can be entered: the domain's bwrap,
+    // not the producer's (2026.10.23.2 said yes where only the producer's
+    // worked, and luban carried a system away to make it again in the prefix).
+    const auto own = home.xlings({"subos", "__domain-check", home.dir().string()});
+    if (builds) EXPECT_EQ(own.exit_code, 0) << own.transcript();
+    else if (own.exit_code != 0) EXPECT_NE(own.transcript().find("bwrap"), std::string::npos) << own.transcript();
     // Whatever this host is: a namespace backend that fails is a domain that
     // does not build (XDEV_BWRAP, the producer's explicit backend).
     const auto no_bwrap = home.root() / "no-bwrap";

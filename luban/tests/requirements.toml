@@ -124,6 +124,10 @@ status = "required"
 text = "an environment exports as a live ISO (limine, the root as initramfs) that boots to its init; BIOS in-process, BIOS+UEFI with xorriso"
 status = "required"
 
+[LUBAN-IMAGE-VMM]
+text = "luban enter <image> boots on the virtual machine monitor this home has, installed the first time (xim:qemu-system) as a machine's start installs it; only when that fails does it say what to install"
+status = "required"
+
 [LUBAN-WRITE-SAFE]
 text = "luban write refuses a partition, a mounted or held drive (the system's own) and anything that is not a drive; an agent must name the drive's serial"
 status = "required"

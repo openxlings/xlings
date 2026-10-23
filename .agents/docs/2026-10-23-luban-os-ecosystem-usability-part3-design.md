@@ -111,6 +111,11 @@ desktop 在私有域（`/xlings`），不受影响；本机跑 L2 用 `/tmp` 做
   以"域里的 home 有 default"判断）；成功 0，否则一条错误说原因（协议 1.18，feature `domain_check`，旧 xlings 没有它时 luban 照旧迁移）。
   luban 的迁移先问它：不行就写 `.stays`（原因写进去）、说一次、继续原地升级。`luban status` 对"住在前缀里却留着归档"的系统
   （迁移落回前缀，或回滚到迁移前）说它不需要这个归档，第一条提示是 `rm <归档>`。
+- 验证中发现（J51，§4 的本机验证）：2026.10.23.2 的检查只到 `self init`。主机自带的 bwrap 坏了、只有 home 自己装的
+  `xim:bwrap` 能用时，检查说可以；域里 `subos new --rootfs` 却只看得到主机那个坏的 bwrap（域不带 home 的 bwrap），落回前缀，
+  迁移照旧导出、删除、重建。改为检查在域里再问一步：在域自己的 home 里 `subos __domain-check /xlings`，即"这里做出的 root
+  进得去吗"（与做 root 时 `prepare_root_host` 同一步：没有 bwrap 先装 `xim:bwrap`；不问人），不行就把域里 bwrap 的原因带回来。
+  `__domain-check` 的每种拒绝（含准备域本身失败，如未标记的构建）都是同一句"this host cannot build the domain at … (原因)"。
 
 ### 3.5 #699（mcpp#832）
 
@@ -132,6 +137,14 @@ cherry-pick 那一个提交，保留作者；它的 e2e（第 14 节：路径含
 | 一个路径含空格的 home 里，gcc 的 `gcc-specs-config` 经 shim 运行（#699） | xlings CI（script 包 e2e） |
 
 5. 通过后合入 luban-os-ci `after-part2`。
+
+验证中发现（修在 xlings #702 与 luban-os-ci，随下一个版本发布）：
+
+| 编号 | 现象 | 改为 |
+|---|---|---|
+| J51 | 主机自带 bwrap 坏、只有 home 的 `xim:bwrap` 能用时，域检查说可以，迁移仍导出、重建、落回前缀 | 检查在域里再问 root 进不进得去（§3.4） |
+| J52 | 新 home 里 `luban enter <镜像>` 只说 `xlings install qemu-system`，而机器启动会自己装（luban-os-ci L6-02） | 镜像启动与机器启动共用一步：第一次自动装监视器，失败才给提示 |
+| J53 | luban-os-ci 把发布包里的 `luban-os` 二进制直接放进 `bin/`：它不是静态的，靠配方带来的 glibc 与图形栈，runner 上 `GLIBC_2.43 not found`（L4-01、L5-02） | harness 经 xlings 安装 `xim:luban-os`、`xim:xdesk`（被测版本，索引没有时取最新），与用户得到的一样 |
 
 期间：#1031 合入前用户仍在 2026.10.22.4（part2 的修复晚到几个小时）；自动更新若在此期间为这四个包开出 PR，直接关闭（#1031 合入后不会再开）。
 
@@ -178,6 +191,9 @@ cherry-pick 那一个提交，保留作者；它的 e2e（第 14 节：路径含
 | U8 | J47 真试后再迁移；已有归档的说明 | xlings 合并 PR |
 | U12 | #699 cherry-pick | xlings 合并 PR |
 | J50 | 机器先挂 userhome 再挂 home（§2.5） | xlings 合并 PR |
+| J51 | 域检查在域里问 root 进不进得去；每种拒绝同一句原因（§3.4） | xlings #702（随下一个版本发布） |
+| J52 | 镜像启动第一次自动装监视器（§4） | xlings #702 |
+| J53 | luban-os-ci 经 xlings 安装 luban-os、xdesk（§4） | luban-os-ci `after-part2` |
 | U7 | 2026.10.23.2 的验证（§4）+ luban-os-ci `after-part2` | 本机、runner、luban-os-ci |
 | U10 | mcpp 发布 → 索引收 `xim:mcpp` → core 新版本换 mcpp → L2-06 去 known | mcpp、xim-pkgindex、luban-os-ci（与 xlings 无关） |
 | U11 | 第四部分：K5（`own` 建在私有域上） | 2026.10.23.2 发布之后 |
