@@ -138,7 +138,7 @@ cherry-pick 那一个提交，保留作者；它的 e2e（第 14 节：路径含
 
 5. 通过后合入 luban-os-ci `after-part2`。
 
-验证中发现（修在 xlings #702 与 luban-os-ci，随下一个版本发布）：
+验证中发现（修在 xlings #702 与 luban-os-ci，xlings 随 2026.10.24.1 发布）：
 
 | 编号 | 现象 | 改为 |
 |---|---|---|
@@ -191,8 +191,8 @@ cherry-pick 那一个提交，保留作者；它的 e2e（第 14 节：路径含
 | U8 | J47 真试后再迁移；已有归档的说明 | xlings 合并 PR |
 | U12 | #699 cherry-pick | xlings 合并 PR |
 | J50 | 机器先挂 userhome 再挂 home（§2.5） | xlings 合并 PR |
-| J51 | 域检查在域里问 root 进不进得去；每种拒绝同一句原因（§3.4） | xlings #702（随下一个版本发布） |
-| J52 | 镜像启动第一次自动装监视器（§4） | xlings #702 |
+| J51 | 域检查在域里问 root 进不进得去；每种拒绝同一句原因（§3.4） | xlings #702（2026.10.24.1） |
+| J52 | 镜像启动第一次自动装监视器（§4） | xlings #702（2026.10.24.1） |
 | J53 | luban-os-ci 经 xlings 安装 luban-os、xdesk（§4） | luban-os-ci `after-part2` |
 | U7 | 2026.10.23.2 的验证（§4）+ luban-os-ci `after-part2` | 本机、runner、luban-os-ci |
 | U10 | mcpp 发布 → 索引收 `xim:mcpp` → core 新版本换 mcpp → L2-06 去 known | mcpp、xim-pkgindex、luban-os-ci（与 xlings 无关） |
