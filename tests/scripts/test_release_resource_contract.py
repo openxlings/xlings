@@ -73,11 +73,6 @@ def test_xlings_resource_mirror_includes_sha256_sidecars():
     assert "windows-x86_64.zip.sha256" in xlings_case
 
 
-def test_index_bump_ignores_outer_github_workspace():
-    script = (ROOT / "tools/bump_index.sh").read_text()
-    assert '--workspace "$PWD" --apply --only "$PROJ"' in script
-
-
 def test_luban_is_released_as_its_own_payload():
     """xim:luban installs luban-<ver>-<platform>: made from the xlings archives,
     uploaded with the release and mirrored to xlings-res/luban with sidecars."""

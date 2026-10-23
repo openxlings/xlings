@@ -149,7 +149,8 @@ int run(const mcpplibs::cmdline::ParsedArgs& args,
                                                    "sync_index", "install_targets_complete",
                                                    "payload_currency", "binding_state", "reserved_namespaces",
                                                    "subos_plan", "network_diagnostics", "download_socket_budgets", "read_only_queries",
-                                                   "package_extensions", "domain_relayed", "installed_only", "user_views", "needs_root", "subos_env", "install_into_subos"}}}).dump()
+                                                   "package_extensions", "domain_relayed", "installed_only", "user_views", "needs_root", "subos_env", "install_into_subos",
+                                                   "package_versions", "domain_check"}}}).dump()
                   << "\n" << std::flush;
         return 0;
     }

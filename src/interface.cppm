@@ -69,7 +69,11 @@ namespace xlings::interface {
 // 1.17 (additive; design 2026-10-21 §7.2): `install_packages` takes `subos`
 // -- a Luban system's packages installed where it lives, with events and
 // cancellation (feature `install_into_subos`).
-export constexpr const char* kProtocolVersion = "1.17";
+// 1.18 (additive; design 2026-10-23 part 3, U5): `package_info`'s `package`
+// carries `versions`, the platform's concrete versions newest first (feature
+// `package_versions`); `subos __domain-check <home>` tries whether this host
+// builds a private domain there (feature `domain_check`, J47).
+export constexpr const char* kProtocolVersion = "1.18";
 
 // Convert any Event variant to one NDJSON line (no trailing newline).
 // Returns "" for events not surfaced to wire (e.g. CompletedEvent — the

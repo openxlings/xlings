@@ -41,7 +41,12 @@ bool default_config(const PlanNode& node,
         / node.version
         / (node.name + ".lua");
 
-    auto alias = "xlings script " + targetScript.string();
+    // QUOTED: the shim reads this alias as words, and an unquoted path splits
+    // at every space -- a home under `/tmp/mc probe` ran
+    // `xlings script /tmp/mc` and failed with `package file not found`
+    // (mcpp-community/mcpp#832). A quoted alias is still plain words to the
+    // shim (`split_plain_words`), so it runs without a shell.
+    auto alias = "xlings script " + platform::shell_quote(targetScript.string());
     auto bindir = targetScript.parent_path().string();
 
     xvm::add_version(Config::versions_mut(),

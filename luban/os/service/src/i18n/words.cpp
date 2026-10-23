@@ -34,6 +34,7 @@ constexpr xlings::i18n::Entry kEnglish[] = {
     {"luban.status.proxy_changed", "it runs with the proxy it started with ({}); the host's now is the next start's"},
     // What may be done, never forced (design 2026-10-19 §12.2).
     {"luban.notes.relayout", "keeps what it was before its move into its own userland ({} MB)"},
+    {"luban.notes.relayout_stayed", "keeps an archive of itself from before a move into its own userland ({} MB); it lives in this home's prefix and runs without it"},
     {"luban.notes.no_cursor_theme", "its desktop has no cursor theme"},
 };
 

@@ -108,28 +108,32 @@ PY
     done
     [[ -s "$dir/port" ]] || fail "candidate HTTP server did not become ready"
     digest="$(sha256sum "$dir/$package_name.tar.gz" | awk '{ print $1 }')"
+    # The published versions as the client reads them (interface package_info,
+    # feature package_versions), not a regex over the recipe's text: how the
+    # index lays a recipe out is its own (design 2026-10-23 part 3, U5).
+    local RH="$home" info
+    info="$(X interface package_info --args '{"target":"xim:xlings","platform":"linux"}')" \
+        || fail "cannot read the published xlings versions: $info"
     ROOTFS_OLD_VERSION="$(python3 - "$dir/index/pkgs/x/xlings.lua" \
-        "$ROOTFS_CANDIDATE_VERSION" "$(cat "$dir/port")" "$package_name" "$digest" <<'PY'
+        "$ROOTFS_CANDIDATE_VERSION" "$(cat "$dir/port")" "$package_name" "$digest" "$info" <<'PY'
+import json
 import pathlib
-import re
 import sys
 
 recipe = pathlib.Path(sys.argv[1])
-candidate, port, package_name, digest = sys.argv[2:]
-text = recipe.read_text()
-linux = re.search(r'(?m)^([ \t]*)linux\s*=\s*\{', text)
-if not linux:
-    raise SystemExit("fixture needs the official Linux platform table")
-next_platform = re.search(r'(?m)^' + re.escape(linux[1]) + r'(?:macosx|windows)\s*=\s*\{', text[linux.end():])
-table = text[linux.end():linux.end() + next_platform.start()] if next_platform else text[linux.end():]
-published = set(re.findall(r'\["(\d+\.\d+\.\d+\.\d+)"\]\s*=\s*\{', table))
+candidate, port, package_name, digest, info = sys.argv[2:]
+events = [json.loads(line) for line in info.splitlines() if line.startswith("{")]
+package = next((e["payload"]["package"] for e in events if e.get("dataKind") == "info_panel"), None)
+if not package or not package.get("versions"):
+    raise SystemExit("package_info carries no versions of xim:xlings: " + info[-500:])
 number = lambda version: tuple(map(int, version.split('.')))
-older = [version for version in published if number(version) < number(candidate)]
+released = [v for v in package["versions"] if all(part.isdigit() for part in v.split('.'))]
+older = [version for version in released if number(version) < number(candidate)]
 if not older:
     raise SystemExit("fixture needs a distinct published predecessor")
-latest = re.search(r'\["latest"\]\s*=\s*\{\s*ref\s*=\s*"([^"]+)"', table)
-predecessor = latest[1] if latest and latest[1] in older else max(older, key=number)
-recipe.write_text(text + '\npackage.xpm.linux["' + candidate + '"] = {\n'
+latest = package.get("version", "")
+predecessor = latest if latest in older else max(older, key=number)
+recipe.write_text(recipe.read_text() + '\npackage.xpm.linux["' + candidate + '"] = {\n'
                   + '    url = "http://127.0.0.1:' + port + '/' + package_name + '.tar.gz",\n'
                   + '    sha256 = "' + digest + '",\n'
                   + '}\npackage.xpm.linux["latest"] = { ref = "' + candidate + '" }\n')

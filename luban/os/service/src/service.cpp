@@ -848,6 +848,24 @@ int relayout_(const Context& c, std::string_view name) {
     const auto keep = c.home / "state" / "luban" / "relayout" / std::format("{}.luban", name);
     std::error_code ec;
     fs::create_directories(keep.parent_path(), ec);
+    // Tried first, as making a system there starts: where this host cannot
+    // build the domain, nothing is carried away -- no archive of gigabytes for
+    // a system made again where it was (design 2026-10-23 part 3, J47).
+    // `self doctor --isolation` judging the tools is not the namespace working.
+    if (c.port.provides("domain_check")) {
+        std::string why;
+        const auto tried = c.port.subos(argv_({"__domain-check", "/xlings"}), false, [&](const Event& e) {
+            if (e.kind == Event::Kind::Error && why.empty()) why = e.text;
+        });
+        if (tried != 0) {
+            std::ofstream(stays_here_(c, name)) << (why.empty() ? std::string("this host could not build the system domain")
+                                                                : why) << "\n";
+            if (c.sink) c.sink(notice(std::format("{} stays in this home's prefix: this host cannot build it its own "
+                                                  "userland ({})", name, why.empty() ? std::format("exit {}", tried) : why),
+                                      "xlings self doctor --isolation"));
+            return 0;
+        }
+    }
     fs::remove(keep, ec);
     const auto text = std::format("moving {} into its own userland (/xlings)", name);
     if (c.sink) c.sink(phase("relayout", "begin", text));
@@ -903,8 +921,9 @@ Outcome upgrade(const Context& c, std::string_view name, std::string_view to, bo
     if (!exists_(c, name)) return missing_(c, name);
     if (old_layout_(c, name)) {
         if (dry_run) {
-            if (c.sink) c.sink(notice(std::format("{} first moves into its own userland (/xlings): its /etc, /home, "
-                                                  "/root, /var and its own packages come along", name)));
+            if (c.sink) c.sink(notice(std::format("{} first moves into its own userland (/xlings) where this host can build "
+                                                  "it (tried first): its /etc, /home, /root, /var and its own packages "
+                                                  "come along", name)));
         } else if (!c.yes) {
             if (c.sink) c.sink(error(std::format("{} moves into its own userland (/xlings) first; its files come along",
                                                  name), std::format("luban upgrade {} -y", name)));
@@ -1072,8 +1091,15 @@ std::vector<Note> notes(const Context& c, const Environment& e) {
     if (const auto kept = relayout_archive(c.home, e.name)) {
         std::error_code ec;
         const auto mb = fs::file_size(*kept, ec) / (1024 * 1024);
-        out.push_back({xlings::i18n::trf("luban.notes.relayout", mb),
-                       {std::format("luban rollback {} --to relayout", e.name)}});
+        // It lives in this home's prefix (made again there, or rolled back):
+        // the archive is what it still is (J47); deleting it frees the space
+        // and loses nothing it runs on.
+        if (fs::exists(stays_here_(c, e.name), ec))
+            out.push_back({xlings::i18n::trf("luban.notes.relayout_stayed", mb),
+                           {std::format("rm {}", kept->string()), std::format("luban rollback {} --to relayout", e.name)}});
+        else
+            out.push_back({xlings::i18n::trf("luban.notes.relayout", mb),
+                           {std::format("luban rollback {} --to relayout", e.name), std::format("rm {}", kept->string())}});
     }
     // A desktop with no cursor theme (a system from before the theme came
     // with every desktop): the package that brings it, or the upgrade that

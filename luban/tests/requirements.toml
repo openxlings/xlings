@@ -468,6 +468,10 @@ status = "required"
 text = "luban ls without arguments is unchanged and takes a name pattern; luban search lists what the index offers (distributions, desktops) as the quick start groups it"
 status = "required"
 
+[LUBAN-RELAYOUT-TRIED]
+text = "before a system moves into its own userland the domain is tried; where this host cannot build it nothing is exported or removed, the system stays in the home's prefix (said once, not tried again), and an archive kept from such a move is named as freeable"
+status = "required"
+
 [LUBAN-UPGRADE-REVERSIBLE]
 text = "an upgrade is never forced and is undone by rollback: a frozen name to luban:, and a relayout through its archive (rollback --to relayout)"
 status = "required"

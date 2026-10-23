@@ -87,6 +87,12 @@ going back to that is one command, asked first:
 luban rollback box --to relayout -y   # the system as it was before its move
 ```
 
+The move is tried first, as making a system there starts. Where this host cannot
+build a system its own userland (no private namespace), nothing is carried away: the
+system stays in the home's prefix, said once, and is not tried again. An archive an
+earlier release made of such a move is the system as it still is; `luban status box`
+says so, with the command that deletes it.
+
 ## Generations and rollback
 
 ```bash

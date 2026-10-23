@@ -113,4 +113,22 @@ env XLINGS_HOME="$HOME_DIR" "$HOME_DIR/bin/xlings" --verbose install xpkg-helper
 
 log "Regression PASS: canonical layout shim creation works"
 
+# ── 14. A home whose path holds a space: the SHIM runs the script ──
+# The alias a script package is registered with names the script's path; the
+# shim reads it as words, so the path is quoted there (mcpp-community/mcpp#832:
+# `failed to load script: package file not found: /tmp/mc`).
+SPACED="$(runtime_home_dir script_type_install_home) with space"
+rm -rf "$SPACED"
+write_home_config "$SPACED" "GLOBAL"
+run_xlings "$SPACED" "$ROOT_DIR" self init >/dev/null 2>&1
+run_xlings "$SPACED" "$ROOT_DIR" install xpkg-helper -y >/dev/null 2>&1 \
+  || fail "spaced home: xpkg-helper install failed"
+SPACED_OUT="$(cd /tmp && env -u XLINGS_PROJECT_DIR XLINGS_HOME="$SPACED" \
+  "$SPACED/subos/default/bin/xpkg-helper" 2>&1)" || true
+echo "$SPACED_OUT"
+assert_contains "$SPACED_OUT" "XPackage Helper Tools" \
+  "spaced home: the shim did not run the script"
+rm -rf "$SPACED"
+log "Spaced home PASS: the shim of a script package runs it"
+
 log "PASS: script-type package install/shim/uninstall flow"
