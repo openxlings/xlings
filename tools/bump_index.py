@@ -15,7 +15,8 @@ each platform block of each recipe gets
 from the release's `.sha256` sidecars (`gh release download`, or the files in
 --sha256-dir). Every digest is read before anything is written: a missing asset
 writes nothing, so no platform points at a file that is not there. A block that
-already has the version is left alone, so a second run changes nothing.
+already has the version is left alone, so a second run changes nothing; an
+older version than latest's is added without moving latest.
 Run it after the CN mirror is complete (`tools/mirror-latest.sh`), then open
 the index PR.
 """
@@ -52,6 +53,10 @@ LATEST = re.compile(r'(\n            \["latest"\] = \{ ref = ")([^"]+)(" \},\n)'
 DIGEST = re.compile(r"^[0-9a-f]{64}$")
 
 
+def number(version):
+    return tuple(int(part) for part in version.split("."))
+
+
 def asset_names(version):
     for _recipe, (prefix, blocks) in RELEASE.items():
         for arches in blocks.values():
@@ -81,7 +86,9 @@ def read_digests(version, sha256_dir):
 
 def block_span(text, platform):
     """The platform block of `xpm`: from its `<platform> = {` to the next platform's."""
-    xpm = text.index("\n    xpm = {\n")
+    xpm = text.find("\n    xpm = {\n")
+    if xpm < 0:
+        return None
     start = re.compile(rf"\n        {platform} = \{{\n").search(text, xpm)
     if not start:
         return None
@@ -93,16 +100,18 @@ def with_version(text, recipe, version, blocks, digests, prefix):
     for platform, arches in blocks.items():
         span = block_span(text, platform)
         if not span:
-            raise SystemExit(f"{recipe}: no {platform} block under xpm")
+            raise SystemExit(f"{recipe}: no {platform} block under xpm; nothing written")
         begin, end = span
         if f'\n            ["{version}"] = {{\n' in text[begin - 1:end]:
             continue
         latest = LATEST.search(text, begin - 1, end)
         if not latest:
-            raise SystemExit(f"{recipe}: no [\"latest\"] in {platform}")
+            raise SystemExit(f"{recipe}: no [\"latest\"] in {platform}; nothing written")
+        # A version older than the one latest names is added, latest stays.
+        moved = number(version) > number(latest.group(2)) if re.fullmatch(r"[\d.]+", latest.group(2)) else True
         entries = "".join(f'                    {arch} = "{digests[f"{prefix}-{version}-{suffix}"]}",\n'
                           for arch, suffix in sorted(arches.items()))
-        entry = (f'{latest.group(1)}{version}{latest.group(3)}'
+        entry = (f'{latest.group(1)}{version if moved else latest.group(2)}{latest.group(3)}'
                  f'            ["{version}"] = {{\n'
                  f'                url = "XLINGS_RES",\n'
                  f'                sha256 = {{\n{entries}'

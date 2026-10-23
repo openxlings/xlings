@@ -133,6 +133,17 @@ def test_macos_arm64_assets_are_the_index_aarch64():
         assert f'aarch64 = "{digest("luban-os", "macosx", "aarch64", NEW)}"' in mac, mac
 
 
+def test_an_older_version_is_added_without_moving_latest():
+    with tempfile.TemporaryDirectory() as tmp:
+        work = Path(tmp)
+        index_at(work / "idx", NEW)
+        older = "2026.1.1.9"
+        assert run(work, older, sidecars(work, older)).returncode == 0
+        text = (work / "idx/pkgs/x/xdesk.lua").read_text()
+        assert f'["latest"] = {{ ref = "{NEW}" }}' in text, text
+        assert f'["{older}"] = {{' in text, text
+
+
 if __name__ == "__main__":
     failures = 0
     for name, fn in sorted(globals().items()):

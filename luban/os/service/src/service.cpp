@@ -921,8 +921,9 @@ Outcome upgrade(const Context& c, std::string_view name, std::string_view to, bo
     if (!exists_(c, name)) return missing_(c, name);
     if (old_layout_(c, name)) {
         if (dry_run) {
-            if (c.sink) c.sink(notice(std::format("{} first moves into its own userland (/xlings): its /etc, /home, "
-                                                  "/root, /var and its own packages come along", name)));
+            if (c.sink) c.sink(notice(std::format("{} first moves into its own userland (/xlings) where this host can build "
+                                                  "it (tried first): its /etc, /home, /root, /var and its own packages "
+                                                  "come along", name)));
         } else if (!c.yes) {
             if (c.sink) c.sink(error(std::format("{} moves into its own userland (/xlings) first; its files come along",
                                                  name), std::format("luban upgrade {} -y", name)));
