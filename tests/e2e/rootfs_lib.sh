@@ -117,7 +117,10 @@ import sys
 recipe = pathlib.Path(sys.argv[1])
 candidate, port, package_name, digest = sys.argv[2:]
 text = recipe.read_text()
-linux = re.search(r'(?m)^([ \t]*)linux\s*=\s*\{', text)
+# The platform tables under `xpm`: an `extensions.autoupdate` block names
+# platforms too (its resource URLs), above them.
+xpm = re.search(r'(?m)^[ \t]*xpm\s*=\s*\{', text)
+linux = re.compile(r'(?m)^([ \t]*)linux\s*=\s*\{').search(text, xpm.end() if xpm else 0)
 if not linux:
     raise SystemExit("fixture needs the official Linux platform table")
 next_platform = re.search(r'(?m)^' + re.escape(linux[1]) + r'(?:macosx|windows)\s*=\s*\{', text[linux.end():])
