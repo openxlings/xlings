@@ -15,6 +15,7 @@ commands = [
   "bash tests/scripts/test_quick_install.sh",
   "python3 tests/scripts/test_release_candidate_gate.py",
   "python3 tests/scripts/test_index_pointer_history.py",
+  "python3 tests/scripts/test_bump_index.py",
   "python3 tests/scripts/test_version_consistency.py",
   "python3 tests/scripts/test_windows_header_hygiene.py",
   "python3 tests/scripts/test_selector_contrast.py",

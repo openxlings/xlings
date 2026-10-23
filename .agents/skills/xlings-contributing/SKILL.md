@@ -327,8 +327,10 @@ for p in luban luban-os xdesk luban-cursors; do bash tools/mirror-latest.sh $p; 
 curl -sSL -o /dev/null -w '%{http_code}\n' \
   https://gitcode.com/xlings-res/xlings/releases/download/<ver>/xlings-<ver>-linux-x86_64.tar.gz
 
-# 2. Bump xim-pkgindex/pkgs/x/xlings.lua — every platform block AND the
-#    ["latest"] ref, each with its sha256.
+# 2. Write the release into an xim-pkgindex checkout (xlings, luban, luban-os,
+#    xim:xdesk; every platform block and ["latest"], each with its sha256;
+#    all or nothing), then open the index PR.
+python3 tools/bump_index.py <ver> ../xim-pkgindex
 ```
 
 `2026.7.30.1` skipped step 1. CN users got `HTTP 404` for three hours while

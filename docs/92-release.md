@@ -23,7 +23,9 @@ are released with the xlings beside them.
    it (GET, not HEAD) and comparing its sha256.
 4. **The index**: `pkgs/x/xlings.lua` in xim-pkgindex gets the new version for
    every platform with its sha256, and `latest` points at it; so do
-   `pkgs/luban/luban.lua`, `luban-os.lua`, `xdesk.lua`, and `cursors.lua` when the pointer theme changed.
+   `pkgs/luban/luban.lua`, `luban-os.lua` and `pkgs/x/xdesk.lua` -- all four written by
+   `tools/bump_index.py <version> <index>`, or none -- and `cursors.lua` when the pointer theme
+   changed. These packages are not updated by the index's bot: their versions are the release's.
 5. CI runs on `main` again, and the published index artifact is rebuilt.
    What tests the published experience waits for it: `xlings-ci-luban-fresh`,
    started by the release, first waits until the published index's `xlings`

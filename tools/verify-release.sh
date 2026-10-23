@@ -9,7 +9,7 @@
 #     disagreed for minutes at a time -- REST is the one to trust
 #   * a gitcode asset answers 401 to HEAD and 206 to a ranged GET even when
 #     truncated, so presence is proved by downloading and hashing
-#   * `bump-index` opens a PR and merges nothing, so `latest` in the index is
+#   * the index is bumped by a PR (`tools/bump_index.py`), so `latest` is
 #     read directly, on main, in ALL THREE platform tables
 #
 # Usage: verify_release.sh 2026.8.17.1
@@ -53,7 +53,7 @@ if [ -z "$REC" ]; then bad "could not read pkgs/x/xlings.lua"; else
 fi
 OPEN=$(gh pr list -R openxlings/xim-pkgindex --state open --json number,title \
         --jq '.[] | "#\(.number) \(.title)"' 2>/dev/null)
-[ -n "$OPEN" ] && printf '  open index PRs (bump-index merges nothing):\n%s\n' \
+[ -n "$OPEN" ] && printf '  open index PRs (a bump is live once merged):\n%s\n' \
   "$(printf '%s\n' "$OPEN" | sed 's/^/    /')"
 
 note "4. CN mirror — full download and hash, not HEAD"

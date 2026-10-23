@@ -104,9 +104,10 @@ the same locally (`tests/README.md`).
   `luban/os/service/src/service.cppm` (kVersion) together.
 - After `release.yml` is green: push the assets to the CN mirror from a CN machine
   (`tools/mirror-latest.sh xlings`, then `luban`, `luban-os`, `xdesk` and `luban-cursors`; verify with GET), then
-  bump `xim-pkgindex/pkgs/x/xlings.lua` (every platform block and `latest`),
-  `pkgs/luban/luban.lua`, `pkgs/luban/luban-os.lua`, `pkgs/luban/xdesk.lua` and, when the theme
-  changed, `pkgs/luban/cursors.lua`.
+  write the release into an xim-pkgindex checkout with `tools/bump_index.py <version> <index>`
+  (xlings, luban, luban-os and xim:xdesk, every platform block and `latest`; all or nothing) and open
+  the index PR; bump `pkgs/luban/cursors.lua` by hand when the theme changed. These four packages have
+  no `autoupdate`: their versions are written by this release only.
 - Never pin a released xlings version in CI (`tests/fresh-install/` follows `latest`).
 
 ## Contributing
