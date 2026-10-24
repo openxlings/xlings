@@ -14,6 +14,7 @@ import xlings.observe;
 import xlings.subos.home_view;
 import xlings.subos.rootfs;
 import xlings.subos.caps;
+import xlings.subos.gpu;
 import xlings.subos.ports;
 
 namespace xlings::home::domain_producer {
@@ -424,7 +425,18 @@ std::expected<std::vector<std::string>, std::string> command(const Domain& domai
     const bool shareDownloads = fs::is_directory(downloads, ec)
                              && fs::is_directory(domain.physicalHome / "data" / "runtimedir", ec);
     argv.insert(argv.end(), {"--bind", domain.physicalHome.string(), domain.logicalHome.string(),
-        "--dev", "/dev", "--proc", "/proc", "--clearenv",
+        "--dev", "/dev", "--proc", "/proc"});
+    // A session run here (subos use, exec, start: a desktop) may draw with
+    // this computer's GPU when its system is granted it -- its sandbox
+    // decides, from devices it can see (J58: a desktop in a private domain
+    // composed in software, the domain's /dev having no render node). Only
+    // the device nodes; /sys is bound read-only above.
+    if (arguments.size() >= 2 && arguments[0] == "subos" && (arguments[1] == "use" || arguments[1] == "exec" || arguments[1] == "start")) {
+        const auto gpu = subos::gpu::passthrough_args();
+        for (std::size_t k = 0; k + 2 < gpu.size(); ++k)
+            if (gpu[k] == "--dev-bind") { argv.insert(argv.end(), {gpu[k], gpu[k + 1], gpu[k + 2]}); k += 2; }
+    }
+    argv.insert(argv.end(), {"--clearenv",
         "--setenv", "XLINGS_HOME", domain.logicalHome.string(), "--setenv", "HOME", domain.logicalHome.string(),
         "--setenv", "TMPDIR", (domain.logicalHome / "tmp").string(), "--setenv", "PATH",
         (domain.logicalHome / "subos/default/bin").string() + ":" +
