@@ -372,7 +372,11 @@ frames 2
 screenshot $shots/3-desktop.ppm
 screenshot $shots/3-desktop.bmp
 EOF
-    luban_os "$shots/desktop.script" || fail "the desktop did not show (screenshots in $shots)"
+    if ! luban_os "$shots/desktop.script"; then
+        # What the desktop said: its supervisor's and its session's logs, gathered.
+        luban logs desk --since 30m 2>&1 | tail -120 || true
+        fail "the desktop did not show (screenshots in $shots)"
+    fi
     local bg panel
     bg="$(pixel "$shots/3-desktop.ppm" 550 400)"
     panel="$(pixel "$shots/3-desktop.ppm" 550 12)"

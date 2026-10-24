@@ -315,6 +315,20 @@ std::optional<int> spawn_(const std::vector<std::string>& argv, const std::map<s
     return pid;
 }
 
+// The luban a system runs (as the Luban OS window's sandbox desktop did): a
+// system on a carrier has /xlings/bin/luban; a domain's, its own home's (seen
+// as its /xlings); else this home's.
+fs::path system_luban_(const fs::path& home, std::string_view name) {
+    std::error_code ec;
+    if (std::ifstream in(xlings::subos::HomeView{home}.instance_file(name)); in) {
+        const auto doc = Json::parse(in, nullptr, false);
+        if (doc.is_object() && doc.value("carrier", std::string("local")) != "local") return "/xlings/bin/luban";
+    }
+    if (const auto at = xlings::subos::locate(xlings::subos::HomeView{home}, name); at.domain && fs::is_regular_file(at.home.home / "bin" / "luban", ec))
+        return at.logical / "bin" / "luban";
+    return luban_binary(home);
+}
+
 std::string quoted_(std::string_view w) {
     std::string out = "'";
     for (char ch : w) out += ch == '\'' ? std::string("'\\''") : std::string(1, ch);
@@ -488,13 +502,19 @@ int desktop_supervise(const fs::path& home, std::string_view name, std::span<con
         }
         const auto xlings = service::xlings_path();
         const auto region = frames ? std::format("OPENSAL_REGION=/run/luban/frames OPENSAL_REGION_SIZE={} ", kFramesBytes) : std::string{};
+        // The luban the system reaches: a domain's own (its /xlings), else this
+        // home's -- a sandbox does not see the host's home.
         const auto inner = std::format("{}OPENBUS_ROUTER=unix:/run/openbus/router.sock exec {} __desktop {} --size {}x{} --display {} --role {}",
-                                       region, quoted_(luban_binary(home).string()), quoted_(session), mode.width, mode.height, quoted_(display),
-                                       quoted_(role));
+                                       region, quoted_(system_luban_(home, name).string()), quoted_(session), mode.width, mode.height,
+                                       quoted_(display), quoted_(role));
         std::vector<std::string> argv{xlings.string(), "subos", "use", std::string(name)};
         if (!persist.empty() && persist != "all") argv.insert(argv.end(), {"--persist", persist});
         argv.insert(argv.end(), {"--mount", socket + ":/run/openbus/router.sock"});
-        if (frames) argv.insert(argv.end(), {"--mount", frames_file.string() + ":/run/luban/frames:rw"});
+        // The frames file as the system's domain sees it (its home is /xlings there).
+        if (frames) {
+            const auto seen = at.domain ? at.logical / fs::relative(frames_file, at.home.home) : frames_file;
+            argv.insert(argv.end(), {"--mount", seen.string() + ":/run/luban/frames:rw"});
+        }
         argv.insert(argv.end(), {"--cmd", inner});
         auto env = platform::environment();
         env["XLINGS_HOME"] = home.string();
