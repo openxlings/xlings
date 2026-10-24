@@ -53,6 +53,8 @@ private:
 
 // A PNG file as an Image (premultiplied); what went wrong, said.
 std::expected<Image, std::string> read_png(const fs::path& file);
+// A scalable icon rendered at `px` x `px` (its shape kept, centred).
+std::expected<Image, std::string> read_svg(const fs::path& file, int px);
 // `src` at `width` x `height`: each pixel the average of what it covers
 // (an icon made smaller stays smooth).
 Image scaled(const Image& src, int width, int height);

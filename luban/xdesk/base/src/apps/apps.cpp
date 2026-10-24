@@ -103,7 +103,7 @@ std::optional<fs::path> icon_file(const std::map<std::string, std::string>& env,
     std::error_code ec;
     if (name.empty()) return std::nullopt;
     if (const fs::path p(name); p.is_absolute())
-        return p.extension() == ".png" && fs::is_regular_file(p, ec) ? std::optional<fs::path>(p) : std::nullopt;
+        return (p.extension() == ".png" || p.extension() == ".svg") && fs::is_regular_file(p, ec) ? std::optional<fs::path>(p) : std::nullopt;
     const std::string file = std::string(name) + ".png";
     // Sizes from the one asked for up, then down: a larger one scales down well.
     std::vector<int> sizes;
@@ -117,8 +117,15 @@ std::optional<fs::path> icon_file(const std::map<std::string, std::string>& env,
         for (const int n : sizes)
             for (const auto& share : shares)
                 if (auto p = share / "icons" / theme / std::format("{}x{}", n, n) / "apps" / file; fs::is_regular_file(p, ec)) return p;
+    // Scalable: drawn at the size it is shown (design 2026-10-24 §9.5).
+    const std::string svg = std::string(name) + ".svg";
+    for (const char* theme : {"hicolor", "breeze", "Adwaita", "Papirus"})
+        for (const auto& share : shares)
+            for (const char* dir : {"scalable/apps", "apps/48", "apps/64", "48x48/apps", "64x64/apps"})
+                if (auto p = share / "icons" / theme / dir / svg; fs::is_regular_file(p, ec)) return p;
     for (const auto& share : shares)
-        if (auto p = share / "pixmaps" / file; fs::is_regular_file(p, ec)) return p;
+        for (const auto& f : {file, svg})
+            if (auto p = share / "pixmaps" / f; fs::is_regular_file(p, ec)) return p;
     return std::nullopt;
 }
 

@@ -454,17 +454,26 @@ void Server::switched_hover(double x, double y) {
             }
 }
 
-// An application's icon at the switcher's size (design 2026-10-20 §10.1):
-// its desktop entry's Icon=, a PNG in the icon themes; none is an initial.
-const draw::Image* Server::icon_of(const std::string& app) {
-    if (const auto it = icons.find(app); it != icons.end()) return it->second.empty() ? nullptr : &it->second;
-    auto& img = icons[app];
+// An application's icon (design 2026-10-20 §10.1, 2026-10-24 §9.5): its
+// desktop entry's Icon=, a PNG in the icon themes, a scalable SVG drawn at the
+// size it is shown, the pixmaps; none is an initial. At `logical` pixels (the
+// switcher's by default), at this density.
+const draw::Image* Server::icon_of(const std::string& app, int logical) {
+    return icon_named(app, app_icon(app), logical);
+}
+
+const draw::Image* Server::icon_named(const std::string& app, const std::string& name, int logical) {
+    const int px = static_cast<int>(std::lround((logical > 0 ? logical : shell::kAppIcon) * scale));
+    const auto key = std::pair{app, px};
+    if (const auto it = icons.find(key); it != icons.end()) return it->second.empty() ? nullptr : &it->second;
+    if (name.empty()) return nullptr;   // its entry not read yet: asked again later, not remembered as none
+    auto& img = icons[key];
     const auto env = os::environment();
-    const int px = static_cast<int>(std::lround(shell::kAppIcon * scale));
-    if (const auto name = app_icon(app); !name.empty())
-        if (const auto file = apps::icon_file(env, name, px))
-            if (auto read = draw::read_png(*file)) img = draw::scaled(*read, px, px);
-            else log("icon " + file->string() + ": " + read.error());
+    if (const auto file = apps::icon_file(env, name, px)) {
+        auto read = file->extension() == ".svg" ? draw::read_svg(*file, px) : draw::read_png(*file);
+        if (read) img = read->width() == px && read->height() == px ? std::move(*read) : draw::scaled(*read, px, px);
+        else log("icon " + file->string() + ": " + read.error());
+    }
     return img.empty() ? nullptr : &img;
 }
 

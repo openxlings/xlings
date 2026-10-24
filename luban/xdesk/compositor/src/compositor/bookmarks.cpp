@@ -1,8 +1,10 @@
-// Bookmarks (server.cppm; design 2026-10-21 §8.4, openwx §5.1): an item of
-// which nothing shows -- a workspace or a free window on the plane, a window
-// of a stacked workspace -- is said by a bookmark at the right edge of the
-// top-most item over its centre: a window's title, a workspace's colour and
-// name; five at most, then "+N", whose list is a menu. Hovering one outlines
+// Bookmarks (server.cppm; design 2026-10-21 §8.4, 2026-10-24 §9.4, openwx
+// §5.1): an item of which nothing shows -- a workspace or a free window on the
+// plane, a window of a stacked workspace -- is said by a bookmark that comes
+// out from under the top-most item over its centre, at its right edge, as a
+// ribbon pressed under a book's cover: drawn under that item and over the
+// covered one, in its own colour with its icon and short title; five at
+// most, then "+N", whose list is a menu. Hovering one lights it and outlines
 // the covered item, clicking it raises and focuses it. Recomputed after each
 // still arrangement; hidden while something is dragged or the view moves.
 module xdesk.compositor;
@@ -105,27 +107,47 @@ void Server::update_bookmarks() {
                     b.colour = draw::Color::rgb(w->color);
                 }
             }
-            b.tab = {h.x + h.width, top + static_cast<double>(k) * (shell::kBookmarkHeight + 4), 0, double(shell::kBookmarkHeight)};
+            // Its colour and icon: a window's application's (its icon's colour).
+            if (b.window)
+                if (View* v = view_of(b.window); v && v->toplevel->app_id) {
+                    b.icon = icon_of(v->toplevel->app_id, 16);
+                    if (b.icon && !b.colour) b.colour = shell::icon_colour(*b.icon);
+                }
+            if (!b.colour && b.more.empty()) b.colour = draw::Color::rgb(0x3d4f6a);
+            // Under the item over it: a window's frame, a workspace's plate.
+            if (items[host].window) {
+                if (View* hv = view_of(items[host].window)) b.under = &hv->frame->node;
+            } else if (const auto n = std::ranges::find(ws_nodes, items[host].workspace, &WorkspaceNodes::id); n != ws_nodes.end()) {
+                b.under = &n->plate->node;
+            }
+            // Staggered down the edge, its root under the item.
+            b.tab = {h.x + h.width - shell::kBookmarkRoot, top + static_cast<double>(k) * (shell::kBookmarkHeight + 4), 0,
+                     double(shell::kBookmarkHeight)};
             next.push_back(std::move(b));
         }
     }
     // Drawn: one buffer each, from a pool kept.
+    // In the windows' layer: each goes just under the item over it.
     while (bookmark_pool.size() < next.size()) {
-        auto* n = wlr_scene_buffer_create(shell_layer, nullptr);
+        auto* n = wlr_scene_buffer_create(window_layer, nullptr);
         wlr_scene_node_set_enabled(&n->node, false);
         bookmark_pool.push_back(n);
     }
     for (std::size_t k = 0; k < next.size(); ++k) {
         auto& b = next[k];
-        auto pic = shell::bookmark(ui(), theme, b.label, b.colour, static_cast<int>(k) == bookmark_lit, scale);
+        auto pic = shell::bookmark(ui(), theme, b.label, b.colour, static_cast<int>(k) == bookmark_lit, scale, b.icon);
         b.tab.width = pic.image.width() / scale;
-        // Outside the item's right edge; inside it where the screen ends.
-        if (b.tab.x + b.tab.width > logical_w()) b.tab.x = std::max(0.0, b.tab.x - b.tab.width - 4);
+        // Past the item's right edge; inside it, over it, where the screen ends.
+        if (b.tab.x + b.tab.width > logical_w()) {
+            b.tab.x = std::max(0.0, b.tab.x + shell::kBookmarkRoot - b.tab.width - 4);
+            b.inside = true;
+        }
         auto* n = bookmark_pool[k];
         show(n, std::move(pic.image), scale);
         wlr_scene_node_set_position(&n->node, static_cast<int>(std::lround(b.tab.x)), static_cast<int>(std::lround(b.tab.y)));
         wlr_scene_node_set_enabled(&n->node, true);
-        wlr_scene_node_raise_to_top(&n->node);
+        if (b.under && !b.inside && b.under->parent == window_layer) wlr_scene_node_place_below(&n->node, b.under);
+        else wlr_scene_node_raise_to_top(&n->node);
     }
     for (std::size_t k = next.size(); k < bookmark_pool.size(); ++k) wlr_scene_node_set_enabled(&bookmark_pool[k]->node, false);
     bookmarks = std::move(next);
@@ -136,7 +158,7 @@ void Server::update_bookmarks() {
 bool Server::bookmark_hover(double x, double y) {
     int at = -1;
     for (std::size_t k = 0; k < bookmarks.size(); ++k)
-        if (bookmarks[k].tab.contains(x, y)) at = static_cast<int>(k);
+        if (bookmarks[k].shown().contains(x, y)) at = static_cast<int>(k);
     if (at == bookmark_lit) return at >= 0;
     bookmark_lit = at;
     if (!bookmark_outline[0]) {
@@ -159,7 +181,7 @@ bool Server::bookmark_hover(double x, double y) {
     // Lit or not: drawn again.
     for (std::size_t k = 0; k < bookmarks.size() && k < bookmark_pool.size(); ++k) {
         const auto& b = bookmarks[k];
-        auto pic = shell::bookmark(ui(), theme, b.label, b.colour, static_cast<int>(k) == bookmark_lit, scale);
+        auto pic = shell::bookmark(ui(), theme, b.label, b.colour, static_cast<int>(k) == bookmark_lit, scale, b.icon);
         show(bookmark_pool[k], std::move(pic.image), scale);
     }
     return at >= 0;
@@ -168,7 +190,7 @@ bool Server::bookmark_hover(double x, double y) {
 // Pressed on a bookmark: what it is for, raised and focused; "+N": the list.
 bool Server::bookmark_press(double x, double y) {
     for (const auto& b : bookmarks) {
-        if (!b.tab.contains(x, y)) continue;
+        if (!b.shown().contains(x, y)) continue;
         if (!b.more.empty()) {
             close_overlay(false);
             menu_of = MenuOf::bookmarks;

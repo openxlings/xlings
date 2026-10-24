@@ -779,3 +779,11 @@ status = "required"
 [LUBAN-OS-QUIET-TERMINAL]
 text = "the Luban OS window started from a terminal leaves nothing of its libraries' notes on it -- Xlib's input-method lines go to its log -- and hands its keys to a host's input method, the content drawing what it composes (design 2026-10-24 §8.4, J70)"
 status = "required"
+
+[XDESK-BOOKMARK-TABS]
+text = "a covered item's bookmark comes out from under the item over it at its right edge, its root pressed under it (about a third), drawn under that item and over the covered one, in its own colour with its icon and short title; hovering lights it and outlines the covered item; a click on the cover's edge stays the cover's (design 2026-10-24 §9.4, J65)"
+status = "required"
+
+[XDESK-ICONS]
+text = "applications show their icons in the launcher, title bars, bookmarks and switchers -- Icon=, a theme's PNG, a scalable SVG drawn at the size shown, the pixmaps -- and an initial on a colour when there is none (design 2026-10-24 §9.5, J66)"
+status = "required"

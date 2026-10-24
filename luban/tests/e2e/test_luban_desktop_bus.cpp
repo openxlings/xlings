@@ -89,8 +89,11 @@ surf = new(); send(comp, 0, struct.pack("<I", surf))
 xs = new(); send(wm, 2, struct.pack("<II", xs, surf))
 top = new(); send(xs, 1, struct.pack("<I", top))
 send(top, 2, string("colour"))
+w, h = (int(sys.argv[2]), int(sys.argv[3])) if len(sys.argv) > 3 else (400, 300)
+fixed = len(sys.argv) > 4 and sys.argv[4] == "fixed"
+if fixed:
+    send(top, 7, struct.pack("<ii", w, h)); send(top, 8, struct.pack("<ii", w, h))
 send(surf, 6)
-w, h = 400, 300
 for obj, op, body in it:
     if obj == top and op == 0:
         cw, ch = struct.unpack("<ii", body[:8])
@@ -106,6 +109,110 @@ for obj, op, body in it:
 )PY";
 
 }  // namespace
+
+// A desktop of this test's on a virtual display (--here): xdesk with the
+// colour clients asked for (colour, width, height, after how long), its
+// workspaces as `wuxian` says; ended when it goes.
+struct Client { std::string colour; int width { 400 }, height { 300 }; int after_ms { 0 }; bool fixed { false }; };
+struct Desk {
+    tk::Home home;
+    fs::path h;
+    std::map<std::string, std::string> env;
+    std::future<tk::RunResult> supervisor;
+    std::shared_ptr<xbus::Node> node;
+    std::string display;
+    Desk(std::string tag, const fs::path& luban, const fs::path& xdesk, const std::vector<Client>& clients, std::string mode,
+         std::string wuxian = {})
+        : home(tk::Home::isolated(tag)) {
+        const auto root = home.root();
+        tk::write_file(root / "client.py", std::string(kClient));
+        std::string extra;
+        for (const auto& c : clients)
+            extra += std::format(" --autostart 'sh -c \"sleep {}; exec python3 {} {} {} {}{}\"'", c.after_ms / 1000.0, (root / "client.py").string(),
+                                 c.colour, c.width, c.height, c.fixed ? " fixed" : "");
+        fs::create_directories(root / "share" / "wayland-sessions");
+        tk::write_file(root / "share" / "wayland-sessions" / "xdesk.desktop",
+                       std::format("[Desktop Entry]\nName=xdesk\nExec={} --profile classic{}\nX-Opensal-Native=true\n", xdesk.string(), extra));
+        fs::create_directories(root / ".config" / "xdesk");
+        tk::write_file(root / ".config" / "xdesk" / "state.json", R"({"toured": true})");
+        if (!wuxian.empty()) tk::write_file(root / ".config" / "xdesk" / "wuxian.json", wuxian);
+        fs::create_directories(root / "runtime");
+        fs::permissions(root / "runtime", fs::perms::owner_all, fs::perm_options::replace);
+        env = home.env();
+        env["LUBAN_BIN"] = luban.string();
+        env["LUBAN_XLINGS"] = tk::xlings_binary().string();
+        env["XDG_DATA_DIRS"] = (root / "share").string();
+        env["XDG_RUNTIME_DIR"] = (root / "runtime").string();
+        h = home.dir();
+        tk::RunOptions o{.argv = {luban.string(), "__desktop-session", h.string(), "box", "--here", "--mode", mode, "--session", "xdesk"},
+                         .env = env, .timeout = 180s};
+        supervisor = std::async(std::launch::async, [o] { return tk::run(o); });
+        for (int k = 0; k < 100 && display.empty(); ++k) {
+            std::this_thread::sleep_for(200ms);
+            if (auto st = luban::vm::desktop(h, "box", {{"op", "status"}})) display = (*st)["virtual"].get<std::string>();
+        }
+        if (auto n = xbus::Node::connect({.name = "test", .router = xbus::Address{"unix", luban::vm::bus_socket(h).string()}, .telemetry = false}))
+            node = *n;
+    }
+    ~Desk() {
+        (void)luban::vm::desktop(h, "box", {{"op", "end"}});
+        if (supervisor.valid()) (void)supervisor.get();
+    }
+    Json state() {
+        if (!node) return Json{};
+        auto got = node->call(luban::vm::system_bus_root("box") + "/service/xdesk/state", {}, 5s);
+        return got && !got->empty() ? Json::parse(got->front(), nullptr, false) : Json{};
+    }
+    // Waits until `ok` holds of the desktop's state (or the time is up); the last state.
+    Json until(const std::function<bool(const Json&)>& ok, int tenths = 100) {
+        Json s;
+        for (int k = 0; k < tenths; ++k) {
+            s = state();
+            if (s.is_object() && ok(s)) break;
+            std::this_thread::sleep_for(100ms);
+        }
+        return s;
+    }
+    std::string capture() {
+        if (!node) return {};
+        auto png = node->call(openhal::display::control_path(display), R"({"op": "capture"})", 20s);
+        std::string bytes;
+        if (png) for (const auto& p : *png) bytes += p;
+        return bytes;
+    }
+    bool input(std::string_view steps) {
+        return node && node->call(openhal::display::control_path(display), std::format(R"({{"op": "input", "events": {}}})", steps), 5s).has_value();
+    }
+};
+
+// A covered window's bookmark comes out from under the window over it, at
+// its right edge -- a ribbon under a book's cover, in its own colour (design
+// 2026-10-24 §9.4, S6): its root under the cover, the rest on the screen.
+XTEST(LubanDesktopBus, ACoveredWindowsBookmarkComesOutFromUnderTheWindowOverIt, .area = "luban", .covers = {"XDESK-BOOKMARK-TABS"},
+      .requires_ = {"linux", "xlings-bin"}) {
+    const auto luban = luban_bin_();
+    const auto xdesk = xdesk_bin_();
+    if (!luban || !xdesk) GTEST_SKIP() << "no luban or xdesk beside the xlings under test";
+    // Two of a fixed size: they float, in the middle, the newest above -- the small one wholly under the big one.
+    Desk d("luban-desktop-bookmark", *luban, *xdesk, {{"40c040", 200, 150, 0, true}, {"4040c0", 560, 380, 800, true}}, "1024x640",
+           R"({"wuxian": 1, "workspaces": [{"id": 1, "rule": "stack"}]})");
+    ASSERT_FALSE(d.display.empty()) << "the desktop did not come";
+    const auto s = d.until([](const Json& s) { return s.value("bookmarks", Json::array()).size() == 1; }, 150);
+    ASSERT_EQ(s.value("bookmarks", Json::array()).size(), 1u) << s.value("windows", Json::array()).dump();
+    Json cover;
+    for (const auto& w : s["windows"])
+        if (w["rect"][2].get<double>() > 500) cover = w;
+    ASSERT_FALSE(cover.is_null());
+    const auto tab = s["bookmarks"][0]["tab"];
+    const double right = cover["rect"][0].get<double>() + cover["rect"][2].get<double>();
+    // What shows of it begins at the cover's edge; its root is under the cover.
+    EXPECT_NEAR(tab[0].get<double>(), right, 1.5) << tab.dump() << " " << cover.dump();
+    EXPECT_GT(tab[2].get<double>(), 20);
+    std::this_thread::sleep_for(500ms);
+    const auto png = d.capture();
+    ASSERT_TRUE(png.starts_with("\x89PNG"));
+    tk::write_file(tk::artifacts_dir() / "desktop-bus-bookmark.png", png);
+}
 
 XTEST(LubanDesktopBus, ADesktopRunsOnAVirtualDisplayAndEverythingOfItIsOnTheBus, .area = "luban",
       .covers = {"LUBAN-DISPLAY-VIRTUAL", "LUBAN-BUS-DESKTOP", "LUBAN-DISPLAY-HOTPLUG", "LUBAN-DESKTOP-APP-LOGS", "LUBAN-DESKTOP-SESSION-END", "LUBAN-CLIPBOARD-SESSION"}, .requires_ = {"linux", "xlings-bin"}) {

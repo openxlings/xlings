@@ -34,10 +34,13 @@ void Server::draw_title(View& v, int width, bool active, bool rounded) {
     const int fold = wuxian() && lay.is_free(v.id) ? (lay.collapsed(v.id) ? 2 : 1) : 0;
     const std::string title = fold == 2 ? std::format("{} · {}", name_of(v), i18n::tr("collapsed")) : name_of(v);
     const bool hover = close_hover == v.id, max = max_hover == v.id;
-    auto key = std::format("{}\x1f{}\x1f{}\x1f{}\x1f{}\x1f{}\x1f{}\x1f{}", title, width, active, hover, scale, max, rounded, fold);
+    // Its application's icon (design 2026-10-24 §9.5).
+    const auto* icon = v.toplevel->app_id ? icon_of(v.toplevel->app_id, shell::kTitleIcon) : nullptr;
+    auto key = std::format("{}\x1f{}\x1f{}\x1f{}\x1f{}\x1f{}\x1f{}\x1f{}\x1f{}", title, width, active, hover, scale, max, rounded, fold,
+                           static_cast<const void*>(icon));
     if (key == v.drawn) return;
     v.drawn = std::move(key);
-    show(v.title, shell::title_bar(ui(), theme, title, width, active, hover, scale, max, rounded, fold));
+    show(v.title, shell::title_bar(ui(), theme, title, width, active, hover, scale, max, rounded, fold, icon));
 }
 
 // The panel and (canvas) the grid, drawn again only when they changed.
@@ -150,7 +153,10 @@ void Server::draw_launcher() {
         wlr_scene_node_set_enabled(&launcher_node->node, false);
         return;
     }
-    auto pic = launcher.draw(ui(), big_font ? &*big_font : nullptr, theme, logical_w(), logical_h(), zh, scale);
+    auto pic = launcher.draw(ui(), big_font ? &*big_font : nullptr, theme, logical_w(), logical_h(), zh, scale,
+                             [this](const apps::App& a) {
+                                 return a.id.starts_with("xdesk:") ? nullptr : icon_named(a.id, a.icon, shell::Launcher::kLauncherIcon);
+                             });
     show(launcher_node, std::move(pic.image), scale);
     wlr_scene_node_set_enabled(&launcher_node->node, true);
 }

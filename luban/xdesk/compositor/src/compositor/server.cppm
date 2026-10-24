@@ -270,6 +270,14 @@ struct Server {
         layout::Rect tab, item;                         // where it is; the covered item's frame
         std::string label;
         std::optional<draw::Color> colour;
+        const draw::Image* icon { nullptr };
+        wlr_scene_node* under { nullptr };              // the node of the item over it: the ribbon goes under it
+        bool inside { false };                          // no room past the screen's edge: drawn over the item instead
+        // What of it shows (and takes the pointer): past its root, which is under the item over it.
+        layout::Rect shown() const {
+            if (inside) return tab;
+            return {tab.x + shell::kBookmarkRoot, tab.y, std::max(0.0, tab.width - shell::kBookmarkRoot), tab.height};
+        }
     };
     std::vector<Bookmark> bookmarks;
     // The tour (design 2026-10-21 §8.1; tour.cpp): the step it is at, -1: none.
@@ -414,7 +422,7 @@ struct Server {
     std::map<layout::Id, double> spread_zoom;
     wl_event_source* switch_timer { nullptr };   // the quick press, the second held on an application
     wl_event_source* hold_timer { nullptr };     // Super held alone a second: the keys used most
-    std::map<std::string, draw::Image> icons;    // an application's icon as the switcher draws it (empty: none)
+    std::map<std::pair<std::string, int>, draw::Image> icons;   // an application's icon at a size in device pixels (empty: none)
     // The settings (design 2026-10-20 §11.4): a page, its rows and what each
     // does (act(0): the row's own action; act(-1 / +1): the choice before /
     // after), the row lit, a key being given to it, what is searched.
@@ -841,7 +849,10 @@ struct Server {
     bool spread_key(xkb_keysym_t s);
     bool switched_click(double x, double y);
     void switched_hover(double x, double y);
-    const draw::Image* icon_of(const std::string& app);
+    // Its icon at `logical` pixels (the switcher's size by default), drawn at this density.
+    const draw::Image* icon_of(const std::string& app, int logical = 0);
+    // By its entry's Icon= name, cached under the application's id.
+    const draw::Image* icon_named(const std::string& app, const std::string& name, int logical = 0);
 
     std::optional<layout::Rect> placement_of(layout::Id id) const;
 

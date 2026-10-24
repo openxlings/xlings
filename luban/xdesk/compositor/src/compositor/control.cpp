@@ -258,7 +258,7 @@ std::string Server::state_json() {
         if (b.workspace) m.set("workspace", num_(b.workspace));
         if (!b.more.empty()) m.set("more", num_(static_cast<double>(b.more.size())));
         m.set("label", Json{b.label});
-        m.set("tab", rect_(b.tab));
+        m.set("tab", rect_(b.shown()));
         m.set("lit", Json{static_cast<int>(&b - bookmarks.data()) == bookmark_lit});
         marks.push_back(std::move(m));
     }

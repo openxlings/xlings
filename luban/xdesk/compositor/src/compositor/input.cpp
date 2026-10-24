@@ -322,7 +322,7 @@ void Server::button(const opensal::PointerButton& b) {
     // A bookmark: what it is for (design 2026-10-21 §8.4).
     if (overlay == Overlay::none && b.button == opensal::Button::Left && !bookmarks.empty()) {
         bool on = false;
-        for (const auto& bm : bookmarks) on = on || bm.tab.contains(cursor->x, cursor->y);
+        for (const auto& bm : bookmarks) on = on || bm.shown().contains(cursor->x, cursor->y);
         if (on) {
             if (b.down) bookmark_press(cursor->x, cursor->y);
             return;
