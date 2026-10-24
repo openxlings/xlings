@@ -111,6 +111,11 @@ Paper Server::paper_of(int workspace) const {
                         (std::uint32_t(theme.background.r) << 16) | (std::uint32_t(theme.background.g) << 8) | theme.background.b);
     p.colour2 = s.colour(own.empty() || s.get(own, "colour2", "").empty() ? std::string("wallpaper") : own, "colour2", 0x0b0d12);
     p.image = get("image", "");
+    // `~/...`: in the home of whoever runs the desktop.
+    if (const auto text = p.image.string(); text.starts_with("~/")) {
+        const auto env = os::environment();
+        if (const auto home = env.find("HOME"); home != env.end()) p.image = std::filesystem::path(home->second) / text.substr(2);
+    }
     p.fit = get("fit", "fill");
     p.engine = s.get("wallpaper", "engine", "reaction-diffusion");
     p.own = !own.empty() && !s.get(own, "kind", "").empty();

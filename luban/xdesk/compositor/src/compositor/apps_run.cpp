@@ -37,9 +37,9 @@ std::string last_lines_(std::string_view text, int n) {
 
 }  // namespace
 
-void Server::apps_read(std::stop_token stop) {
+void Server::apps_read() {
     std::array<char, 65536> buf{};
-    while (!stop.stop_requested()) {
+    while (!apps_stop) {
         std::vector<os::PollFd> fds;
         {
             std::lock_guard l(apps_m);

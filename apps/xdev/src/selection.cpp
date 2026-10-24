@@ -235,6 +235,9 @@ select(std::span<const Test> tests, const Options& options, const std::set<std::
     std::vector<Selected> selected;
     for (const auto& test : tests) {
         if (!options.pattern.empty() && test.id.find(options.pattern) == std::string::npos) continue;
+        if (!options.patterns.empty()
+            && std::ranges::none_of(options.patterns, [&](const std::string& p) { return test.id.find(p) != std::string::npos; }))
+            continue;
         const bool perf = test.source.stem().string().ends_with("_perf");
         if (options.category.empty() && options.pattern.empty() && options.lane != "nightly" && perf) continue;
         if (!options.category.empty()) {
@@ -291,7 +294,9 @@ select(std::span<const Test> tests, const Options& options, const std::set<std::
             byMember[test.test.member].push_back(test.test.id.substr(test.test.member.empty() ? 0 : test.test.member.size() + 1));
             ++binaries;
         }
-    const auto cap = std::max<std::size_t>(1, (binaries + 2 * options.shards - 1) / (2 * options.shards));
+    // A lane of named tests builds just those (a shared prefix would build
+    // every binary that starts with it).
+    const auto cap = options.patterns.empty() ? std::max<std::size_t>(1, (binaries + 2 * options.shards - 1) / (2 * options.shards)) : 1;
     std::map<std::string, std::map<std::string, std::string>> familyOf;
     for (auto& [member, names] : byMember) {
         std::ranges::sort(names);

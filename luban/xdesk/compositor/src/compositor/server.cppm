@@ -410,8 +410,12 @@ struct Server {
     // The programs it started, their output and their ends (apps_run.cpp).
     std::mutex apps_m;
     std::list<AppRun> app_runs;
-    std::jthread apps_reader;
-    void apps_read(std::stop_token stop);
+    // A plain thread and a flag: a jthread's stop_token waits on an atomic,
+    // which only GCC 16's libstdc++ carries -- newer than the runtime a Luban
+    // system binds (xbus node.cpp says the same).
+    std::thread apps_reader;
+    std::atomic<bool> apps_stop { false };
+    void apps_read();
     void apps_reap();
     std::string apps_json();
     opensal::Size size;                          // the output, in device pixels

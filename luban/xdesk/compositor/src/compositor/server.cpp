@@ -447,7 +447,7 @@ bool Server::start_() {
     }, this);
     if (idle_timer) wl_event_source_timer_update(idle_timer, 30000);
     // What its programs say, read off the loop (design 2026-10-24 §6.1).
-    apps_reader = std::jthread([this](std::stop_token st) { apps_read(st); });
+    apps_reader = std::thread([this] { apps_read(); });
     for (const auto& a : o.autostart) launch(a);
     return true;
 }
@@ -463,6 +463,8 @@ int Server::run_() {
 }
 
 Server::~Server() {
+    apps_stop = true;
+    if (apps_reader.joinable()) apps_reader.join();
     bus_stop();
     for (auto& l : links)
         if (l.source) wl_event_source_remove(l.source);

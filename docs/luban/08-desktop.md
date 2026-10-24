@@ -301,7 +301,7 @@ engine = reaction-diffusion
 speed = normal             # slow, normal, fast
 [wallpaper.2]              # workspace 2's own
 kind = image
-image = /home/me/Pictures/sea.png
+image = ~/Pictures/sea.png
 fit = fill
 ```
 

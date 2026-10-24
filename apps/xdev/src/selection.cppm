@@ -46,6 +46,7 @@ struct Options {
     std::string lane { "main" };     // pr | main | nightly
     std::string platform;             // linux | macos | windows; empty = all
     std::string pattern;
+    std::vector<std::string> patterns; // a lane's tests: any of them (tests/lanes.toml `tests`)
     std::string category;             // unit | e2e | perf
     std::string area;                 // requires compiled metadata for every candidate
     std::size_t shards { 1 };

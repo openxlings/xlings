@@ -12,7 +12,7 @@ It does not define how a surface is acquired.
 
 2.2 `Surface` is the core interface; `Pointer`, `Keyboard`, `Mode`, `Density`,
 `Capture`, `Cursor`, `CursorImage`, `PointerLock`, `Text`, `Clipboard`,
-`Shell`, `Displays` and `Compressed` are optional.
+`ClipboardData`, `Shell`, `Displays`, `Compressed` and `Region` are optional.
 
 2.3 A consumer learns which interfaces it has by asking (the provided set),
 never by trying an operation.
@@ -111,8 +111,9 @@ whether it paces).
 `Shell`; 0.3 added `CursorImage` (`'C'`), `PointerLock` (`'l'`, relative
 motion) and the cursor names from grabbing on; 0.4 added shown and
 `Displays` (`'d'`); 0.5 added how a shaken pointer is shown (`'p'`); 0.6 added
-`Compressed` (`'z'`); 0.7 carries the wire on a bus (§6.7) and lets a display
-ask to be the primary.
+`Compressed` (`'z'`); 0.7 carries the wire on a bus (§6.7), lets a display
+ask to be the primary or to extend the consumer, and adds `Region` (§6.8) and
+`ClipboardData` (§6.9).
 
 6.6 `Compressed`: a provider across a narrow channel (a machine's serial port)
 takes `'z'` frames -- the header of an `'f'` frame, then its rows as one LZ4
@@ -141,6 +142,14 @@ and its stride as an `'f'` frame's header, then the offset in the region where
 its rows are. The consumer writes the rows there before it sends the message
 and, paced, writes there again only after the frame was shown; nothing of the
 pixels crosses the channel. A rectangle that would not fit is sent as `'f'`.
+
+6.9 **ClipboardData (0.7).** Clipboard content that is not text -- an image
+(`image/png`; another image format is converted to PNG on the side it comes
+from) -- crosses as `'B'` in either direction: its type, a newline, then its
+bytes, at most 64 MiB. A side sends it only to one that said `ClipboardData`,
+and under the same rule as text: the provider when the content is new and it
+has the input focus, the consumer when its selection changes. Content with a
+text form and an image (a browser's copied image) crosses as the image.
 
 ## 7. Conformance
 
