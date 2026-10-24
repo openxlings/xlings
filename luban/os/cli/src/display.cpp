@@ -75,9 +75,9 @@ int display(const svc::Context& c, std::string_view name, std::span<const std::s
         if (words.size() < 2 || words[1] != "window") return fail_(c, "attach takes window: the Luban OS window shows it");
         const auto app = svc::window_app(c, name);
         if (!app) { if (c.sink) c.sink(app.error()); return 1; }
-        std::vector<std::string> argv{app->string(), "--attach", std::string(name)};
-        if (as) argv.insert(argv.end(), {"--as", *as});
-        return xlings::platform::run_argv(argv);
+        // The window comes as the primary: the desktop takes its size (opensal 0.7).
+        if (as && *as != "primary") return fail_(c, "the Luban OS window comes as the primary (--role primary)");
+        return xlings::platform::run_argv({app->string(), "--attach", std::string(name)});
     }
     auto node = node_(c.home);
     if (!node) return fail_(c, node.error());

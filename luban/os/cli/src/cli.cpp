@@ -1385,7 +1385,7 @@ const spec::CommandSpec& tree() {
              .arguments = {{"name", "Which", true}, {"action", "list (default), capture FILE, record SECONDS DIR, attach window, detach PATH, mode WxH@S, input STEPS, end"},
                            {"args", "What the action takes", false, true}},
              .options = {{"--display <N>", "This display (its number in the list); default: the virtual one"},
-                         {"--as <ROLE>", "attach: primary (default) or mirror"}},
+                         {"--role <ROLE>", "attach: what the window is to the desktop (primary)", false, Level::Expert}},
              .level = Level::More, .effect = "reversible"},
             {.name = "run", .description = "Run one command in an environment",
              .arguments = {{"name", "Which", true}, {"command", "The command and its arguments, after --", true, true}},
@@ -1848,7 +1848,7 @@ int run(int argc, char* argv[]) {
         }
         if (p.command == "display") {
             if (p.words.empty()) return usage("`luban display <name> [list|capture FILE|record SECONDS DIR|attach window|detach PATH|mode WxH@S|input STEPS|end]`", g);
-            return display(c, p.words[0], std::span<const std::string>(p.words).subspan(1), p.option("--display"), p.option("--as"), g.json);
+            return display(c, p.words[0], std::span<const std::string>(p.words).subspan(1), p.option("--display"), p.option("--role"), g.json);
         }
         if (p.command == "run") return cmd_run(c, p, g);
         if (p.command == "ls") {
