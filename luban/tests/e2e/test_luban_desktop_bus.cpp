@@ -198,7 +198,10 @@ XTEST(LubanDesktopBus, ACoveredWindowsBookmarkComesOutFromUnderTheWindowOverIt, 
     Desk d("luban-desktop-bookmark", *luban, *xdesk, {{"40c040", 200, 150, 0, true}, {"4040c0", 560, 380, 800, true}}, "1024x640",
            R"({"wuxian": 1, "workspaces": [{"id": 1, "rule": "stack"}]})");
     ASSERT_FALSE(d.display.empty()) << "the desktop did not come";
-    const auto s = d.until([](const Json& s) { return s.value("bookmarks", Json::array()).size() == 1; }, 150);
+    // Both there and one covered (a slow machine maps the second a moment after its bookmark).
+    const auto s = d.until([](const Json& s) {
+        return s.value("bookmarks", Json::array()).size() == 1 && s.value("windows", Json::array()).size() == 2;
+    }, 150);
     ASSERT_EQ(s.value("bookmarks", Json::array()).size(), 1u) << s.value("windows", Json::array()).dump();
     // The cover: the widest of the two (the other is wholly under it).
     Json cover;
