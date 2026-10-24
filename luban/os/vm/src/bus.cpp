@@ -6,6 +6,9 @@ import std;
 import xlings.platform;
 import xbus.router;
 import telemetry;
+import xlings.libs.json;
+import xlings.observe;
+import luban.service;
 
 namespace luban::vm {
 
@@ -41,11 +44,48 @@ std::expected<int, std::string> connect_bus(const fs::path& home) {
     return std::unexpected("the host's openbus router did not answer at " + at.string() + " (" + log.string() + ")");
 }
 
+std::string bus_actor() {
+    if (const char* a = std::getenv("XLINGS_ACTOR"); a && *a) return a;
+    return "program:luban";
+}
+
+bool desktop_control_allowed(const fs::path& home, std::string_view actor, std::string_view path, std::string_view op) {
+    // The host's displays (a Luban OS window) are the person's at it.
+    const auto host = xbus::host_root() + "/";
+    const auto record = [&](std::string_view system, bool ok) {
+        // An openas run of its kind (who, on whose behalf, what): the record.
+        const auto log = home / "logs" / "openbus" / "desktop-control.ndjson";
+        std::error_code ec;
+        fs::create_directories(log.parent_path(), ec);
+        std::ofstream(log, std::ios::app) << nlohmann::json{{"t", xlings::observe::utc_now()}, {"actor", actor}, {"system", system},
+                                                            {"path", path}, {"op", op}, {"allowed", ok}}.dump() << "\n";
+        return ok;
+    };
+    if (actor.starts_with("agent") && (path.starts_with(host + "device/display/") || path.starts_with(host + "device/input/")))
+        return record("", false);
+    // host/<id>/system/<name>/<what>: what drives the desktop.
+    const auto prefix = host + "system/";
+    if (!path.starts_with(prefix)) return true;
+    const auto rest = path.substr(prefix.size());
+    const auto slash = rest.find('/');
+    if (slash == std::string_view::npos) return true;
+    const auto name = rest.substr(0, slash), what = rest.substr(slash + 1);
+    const bool drives = what.starts_with("device/input/") || what.starts_with("device/display/") || what == "service/xdesk/control" ||
+                        (what == "service/desktop" && !op.empty() && op != "status");
+    if (!drives || !actor.starts_with("agent")) return true;
+    return record(name, service::granted(home, name, "desktop-control"));
+}
+
 int serve_bus(const fs::path& home) {
     telemetry::identify("luban-bus-router");
     xbus::Router r({.root = xbus::host_root(),
                     .listen = {xbus::Address{"unix", bus_socket(home).string()}},
                     .log = home / "logs" / "openbus" / "router.ndjson",
+                    // An agent drives a desktop with the system's grant (design
+                    // 2026-10-24 §3.4); the supervisor's own ops it decides itself.
+                    .allow = [home](const xbus::PeerInfo& peer, std::string_view op, std::string_view path) {
+                        return (op != "call" && op != "open") || desktop_control_allowed(home, peer.actor, path);
+                    },
                     .idle_exit = std::chrono::seconds(600),
                     // A sandbox's programs reach it through their system's own
                     // socket (design 2026-10-24 §3.3: system_bus_socket).

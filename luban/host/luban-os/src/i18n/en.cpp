@@ -255,6 +255,7 @@ constexpr xlings::i18n::Entry kWords[] = {
     { "luban.os.system.grant.audio", "can play and record sound" },
     { "luban.os.system.grant.clipboard", "can copy to this computer's clipboard" },
     { "luban.os.system.grant.clipboard_paste", "can read this computer's clipboard" },
+    { "luban.os.system.grant.desktop_control", "an agent may drive its desktop (input, screenshots, displays) -- as much as running commands as its user" },
     { "luban.os.system.grant.display", "can show windows on this computer's screen" },
     { "luban.os.system.grant.gpu", "can use this computer's graphics card" },
     { "luban.os.system.grant.ssh_agent", "can use your SSH keys" },

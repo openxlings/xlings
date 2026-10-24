@@ -344,7 +344,20 @@ XTEST(LubanDesktopBus, ADesktopRunsOnAVirtualDisplayAndEverythingOfItIsOnTheBus,
     env["LUBAN_XLINGS"] = tk::xlings_binary().string();
     env["XDG_DATA_DIRS"] = (root / "share").string();
     env["XDG_RUNTIME_DIR"] = (root / "runtime").string();
-    for (const auto& [k, v] : env) xlings::platform::set_env_variable(k, v);
+    // This process's too (what it calls in-process reads them), as they were after.
+    struct Restore {
+        std::map<std::string, std::optional<std::string>> was;
+        ~Restore() {
+            for (const auto& [k, v] : was)
+                if (v) xlings::platform::set_env_variable(k, *v);
+                else xlings::platform::unset_env_variable(k);
+        }
+    } restore;
+    for (const auto& [k, v] : env) {
+        const char* before = std::getenv(k.c_str());
+        restore.was[k] = before ? std::optional<std::string>(before) : std::nullopt;
+        xlings::platform::set_env_variable(k, v);
+    }
     const fs::path h = home.dir();
 
     tk::RunOptions o{.argv = {luban->string(), "__desktop-session", h.string(), "box", "--here", "--mode", "800x600", "--session", "xdesk"},
@@ -532,4 +545,43 @@ print(" ".join(names))
     EXPECT_NE(events.find("\"ended\""), std::string::npos) << events;
     EXPECT_NE(events.find("the test"), std::string::npos) << events;
     EXPECT_FALSE(luban::vm::desktop(h, "box", {{"op", "status"}})) << "gone with it";
+}
+
+// An agent drives a desktop only with the system's grant (design 2026-10-24
+// §3.4, R7): its input, its displays and xdesk's control are refused without
+// `desktop-control` -- reading its state is not -- the supervisor's own ops
+// too but its status; with the grant they are done. Every decision on an
+// agent is recorded; the owner needs no grant.
+XTEST(LubanDesktopBus, AnAgentDrivesADesktopOnlyWithItsGrant, .area = "luban", .covers = {"LUBAN-DESKTOP-CONTROL-GRANT"},
+      .requires_ = {"linux", "xlings-bin"}) {
+    const auto luban = luban_bin_();
+    const auto xdesk = xdesk_bin_();
+    if (!luban || !xdesk) GTEST_SKIP() << "no luban or xdesk beside the xlings under test";
+    Desk d("luban-desktop-grant", *luban, *xdesk, {}, "1024x640");
+    ASSERT_FALSE(d.display.empty()) << "the desktop did not come";
+    auto agent = xbus::Node::connect({.name = "an-agent", .actor = "agent:test",
+                                      .router = xbus::Address{"unix", luban::vm::bus_socket(d.h).string()}, .telemetry = false});
+    ASSERT_TRUE(agent.has_value());
+    const auto control = openhal::display::control_path(d.display);
+    const auto root = luban::vm::system_bus_root("box");
+    const auto input = std::string(R"({"op": "input", "events": [{"move": [10, 10]}]})");
+    auto refused = (*agent)->call(control, input, 5s);
+    ASSERT_FALSE(refused.has_value());
+    EXPECT_EQ(refused.error().code, openbus::ErrorCode::denied) << refused.error().message;
+    EXPECT_FALSE((*agent)->call(root + "/service/xdesk/control", R"({"hud": "toggle"})", 5s).has_value());
+    auto ending = (*agent)->call(root + "/service/desktop", R"({"op": "end"})", 5s);
+    ASSERT_FALSE(ending.has_value());
+    EXPECT_NE(ending.error().message.find("--allow desktop-control"), std::string::npos) << ending.error().message;
+    // What it may: the desktop's state, the supervisor's status.
+    EXPECT_TRUE((*agent)->call(root + "/service/xdesk/state", {}, 5s).has_value());
+    EXPECT_TRUE((*agent)->call(root + "/service/desktop", R"({"op": "status"})", 5s).has_value());
+    // The owner needs none.
+    EXPECT_TRUE(d.input(R"([{"move": [20, 20]}])"));
+    // Granted: done.
+    tk::write_file(d.h / "config" / "subos" / "box" / "policy.json", R"({"min_client": "2026.10.10.1", "isolation": {"grants": ["desktop-control"]}})");
+    EXPECT_TRUE((*agent)->call(control, input, 5s).has_value());
+    const auto record = tk::read_file(d.h / "logs" / "openbus" / "desktop-control.ndjson");
+    EXPECT_NE(record.find(R"("allowed":false)"), std::string::npos) << record;
+    EXPECT_NE(record.find(R"("allowed":true)"), std::string::npos) << record;
+    EXPECT_NE(record.find("agent:test"), std::string::npos) << record;
 }

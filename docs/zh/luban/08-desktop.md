@@ -349,6 +349,10 @@ luban display box end
 
 这里的一切都是总线上的路径（[总线](09-bus.md)）：`luban display` 是它的一个客户端，`xbus call` 是另一个；测试与 Agent 用的是同样的路径。
 
+Agent（`--agent`、`XLINGS_AGENT_MODE=1`）操作桌面——输入、显示器（截图、录制、接入、拔下）、xdesk 的控制、结束桌面——需要系统的授权，
+因为能注入输入就等于以它的用户运行命令：`luban config box --allow desktop-control`。读状态、事件与日志不需要授权。对 Agent 的每次
+判定都记在 `<home>/logs/openbus/desktop-control.ndjson`（谁、替谁、做了什么、是否允许）。
+
 ## 出了问题时
 
 桌面里的程序说的话不会丢：它启动的每个程序都有自己的日志（系统里的 `~/.local/state/xdesk/apps/<应用>-<pid>.log`，每个应用保留最近五份），

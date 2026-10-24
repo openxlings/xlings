@@ -20,7 +20,7 @@ luban config box --mount ~/code/proj:/work          # a host directory inside
 | `proxy` | `socks5h://host:port`：环境的网络就是这个代理，别无其他 |
 | `tz` | 它显示的时区：`utc`、`proxy` 或一个时区名——除非你选择，从不用宿主的 |
 | `policy` | 一个策略包（`xim:agent-private`、`xim:agent-confined`、你自己的） |
-| `allow` | 一项授权：`display`、`audio`、`gpu`、`ssh-agent`、`clipboard`、`clipboard-paste` 等 |
+| `allow` | 一项授权：`display`、`audio`、`gpu`、`ssh-agent`、`clipboard`、`clipboard-paste`、`desktop-control` 等 |
 | `mount` | 映射进环境的宿主目录 |
 
 每一项都是同名的 `xlings subos config` 设置（[沙箱与策略](../11-sandbox-and-policy.md)）。下面这些是 luban 自己的：

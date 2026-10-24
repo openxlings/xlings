@@ -196,6 +196,8 @@ bool users_of_their_own(const fs::path& etc);
 // nobody and no machine on it. A machine's router is linked to it through
 // its supervisor (the agent's L frames, luban.vm.protocol).
 fs::path bus_socket(const fs::path& home);
+// The actor luban's own nodes connect as: whoever runs it (XLINGS_ACTOR).
+std::string bus_actor();
 // A byte stream to it, started when nothing answers; why not.
 std::expected<int, std::string> connect_bus(const fs::path& home);
 // `luban __bus-router <home>`: the router, until it is idle.
@@ -255,4 +257,9 @@ bool is_static_elf(const fs::path& file);
 namespace luban::vm {
 // The luban binary a host process starts others with ($LUBAN_BIN, itself, beside it, the home's).
 std::filesystem::path luban_binary(const std::filesystem::path& home);
+// Whether `actor` may do what `path` does to a system's desktop (design
+// 2026-10-24 §3.4): anyone but an agent; an agent with the system's
+// `desktop-control` grant. Paths that do not drive a desktop: always.
+// Every decision on an agent is recorded (logs/openbus/desktop-control.ndjson).
+bool desktop_control_allowed(const std::filesystem::path& home, std::string_view actor, std::string_view path, std::string_view op = {});
 }  // namespace luban::vm

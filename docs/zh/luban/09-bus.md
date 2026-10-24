@@ -16,14 +16,19 @@
 
 | 路径（在 `host/<宿主>/` 下） | 是什么 |
 |---|---|
-| `device/display/<n>`、`.../control` | 一个显示器：窗口、虚拟显示器（openhal 0.3）——描述、截图、录制、模式、输入 |
-| `device/input/<n>` | 它的输入：移动、点击、按键（`Super+s`）、文字 |
+| `device/display/<n>`、`.../control` | 作为显示器的 Luban OS 窗口（openhal 0.3）——描述、截图、录制、模式、输入 |
+| `system/<名字>/device/display/<n>`、`.../control` | 系统的虚拟显示器，操作相同 |
+| `system/<名字>/device/input/<n>` | 它的输入：移动、点击、按键（`Super+s`）、文字 |
 | `system/<名字>/service/desktop` | 一个运行中的桌面：状态、接入、断开、结束（`luban display`） |
 | `system/<名字>/topic/desktop/events` | 它开始了、一个显示器来了或走了、它结束了以及原因 |
 | `system/<名字>/service/xdesk/state`、`.../control`、`topic/xdesk/events` | xdesk 本身 |
 
 machine 运行时，它的总线链接在宿主的下面：在宿主上，它的对象位于 `host/<宿主>/system/<名字>/...`，用起来和本地的一样。
 总线上的一切都能用同一种方式观察：每个程序回答自己的 telemetry（计数、延迟直方图、最近的日志、剖析、转储）。
+
+谁能做什么：home 的所有者都可以；Agent（actor 为 `agent:...`）可以读状态、话题与日志，操作一个系统的桌面——它的显示器、输入、
+xdesk 的控制、桌面的接入、断开与结束——需要该系统的 `desktop-control` 授权；Luban OS 窗口这个显示器属于坐在它前面的人，Agent
+不能用。对 Agent 的每次判定都记在 `<home>/logs/openbus/desktop-control.ndjson`。
 
 ## 查看
 

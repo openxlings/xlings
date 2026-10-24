@@ -356,13 +356,14 @@ ImportPreview preview_import_(const fs::path& file, const std::vector<std::strin
             if (pol->preset == xlings::subos::policy::Preset::Legacy)
                 p.wider.push_back(std::string(tr("luban.os.system.no_isolation_preset_environment_made")));
             // A grant as what it lets the system do.
-            static constexpr std::array<std::array<std::string_view, 2>, 6> kGrants{{
+            static constexpr std::array<std::array<std::string_view, 2>, 7> kGrants{{
                 {"clipboard", "luban.os.system.grant.clipboard"},
                 {"clipboard-paste", "luban.os.system.grant.clipboard_paste"},
                 {"display", "luban.os.system.grant.display"},
                 {"audio", "luban.os.system.grant.audio"},
                 {"gpu", "luban.os.system.grant.gpu"},
                 {"ssh-agent", "luban.os.system.grant.ssh_agent"},
+                {"desktop-control", "luban.os.system.grant.desktop_control"},
             }};
             for (const auto& g : pol->grants) {
                 const auto known = std::ranges::find_if(kGrants, [&](const auto& k) { return k[0] == g; });

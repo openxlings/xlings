@@ -18,8 +18,9 @@ implementation.
 
 | Path (under `host/<host>/`) | What it is |
 |---|---|
-| `device/display/<n>`, `.../control` | a display: a window, a virtual display (openhal 0.3) -- describe, capture, record, mode, input |
-| `device/input/<n>` | its input: move, click, key (`Super+s`), text |
+| `device/display/<n>`, `.../control` | a Luban OS window as a display (openhal 0.3) -- describe, capture, record, mode, input |
+| `system/<name>/device/display/<n>`, `.../control` | the system's virtual display, the same operations |
+| `system/<name>/device/input/<n>` | its input: move, click, key (`Super+s`), text |
 | `system/<name>/service/desktop` | a running desktop: status, attach, detach, end (`luban display`) |
 | `system/<name>/topic/desktop/events` | it started, a display came or went, it ended and why |
 | `system/<name>/service/xdesk/state`, `.../control`, `topic/xdesk/events` | xdesk itself |
@@ -28,6 +29,13 @@ A machine's bus is linked under the host's while it runs: on the host, its
 objects are at `host/<host>/system/<name>/...`, used as if they were local.
 Everything on a bus is observable the same way: each program answers its own
 telemetry (counters, latency histograms, its recent log, a profile, a dump).
+
+Who may do what: the home's owner everything; an agent (its actor `agent:...`)
+reads states, topics and logs, and drives a system's desktop -- its displays,
+its input, xdesk's control, the desktop's attach, detach and end -- only with
+that system's `desktop-control` grant; a Luban OS window's display is the
+person's at it, never an agent's. Each decision on an agent is recorded in
+`<home>/logs/openbus/desktop-control.ndjson`.
 
 ## Seeing it
 

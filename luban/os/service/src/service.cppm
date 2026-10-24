@@ -430,6 +430,8 @@ Outcome configure(const Context& c, std::string_view name,
 // desktop's, WuXian §7.4) -- its sandbox gets the render nodes, its machine
 // virgl (§7.5).
 bool gpu_granted(const fs::path& home, std::string_view name);
+// Whether `name`'s policy grants `grant` (xlings.subos.policy: kGrants).
+bool granted(const fs::path& home, std::string_view name, std::string_view grant);
 
 Outcome upgrade(const Context& c, std::string_view name, std::string_view to, bool dry_run);
 Outcome rollback(const Context& c, std::string_view name, std::string_view to);

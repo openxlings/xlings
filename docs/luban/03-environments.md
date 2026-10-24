@@ -21,7 +21,7 @@ luban config box --mount ~/code/proj:/work          # a host directory inside
 | `proxy` | `socks5h://host:port`: the environment's network is that proxy and nothing else |
 | `tz` | the time zone it shows: `utc`, `proxy`, or a zone name — never the host's unless you choose it |
 | `policy` | a policy package (`xim:agent-private`, `xim:agent-confined`, your own) |
-| `allow` | a grant: `display`, `audio`, `gpu`, `ssh-agent`, `clipboard`, `clipboard-paste`, … |
+| `allow` | a grant: `display`, `audio`, `gpu`, `ssh-agent`, `clipboard`, `clipboard-paste`, `desktop-control`, … |
 | `mount` | a host directory inside the environment |
 
 Each is the `xlings subos config` setting of the same name

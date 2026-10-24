@@ -25,13 +25,20 @@ std::expected<std::shared_ptr<xbus::Node>, std::string> node_(const std::filesys
     if (!fd) return std::unexpected(fd.error());
     std::vector<int> close{*fd};
     xlings::platform::close_fds(close);
-    return xbus::Node::connect({.name = "luban", .actor = "program:luban",
+    return xbus::Node::connect({.name = "luban", .actor = vm::bus_actor(),
                                 .router = xbus::Address{"unix", vm::bus_socket(home).string()}, .telemetry = false});
 }
 
 int fail_(const svc::Context& c, std::string why, std::string next = {}) {
     if (c.sink) c.sink(svc::error(std::move(why), std::move(next)));
     return 1;
+}
+
+// A call the router refused: an agent without the system's grant (design 2026-10-24 §3.4).
+int refused_(const svc::Context& c, std::string_view name, const xbus::CallError& e) {
+    if (e.code == openbus::ErrorCode::denied)
+        return fail_(c, std::format("an agent drives {}'s desktop with its grant", name), std::format("luban config {} --allow desktop-control", name));
+    return fail_(c, e.message);
 }
 
 }  // namespace
@@ -85,7 +92,8 @@ int display(const svc::Context& c, std::string_view name, std::span<const std::s
     if (action == "capture") {
         if (words.size() < 2) return fail_(c, "capture takes a file: luban display " + std::string(name) + " capture shot.png");
         auto png = (*node)->call(control, Json{{"op", "capture"}}.dump(), std::chrono::seconds(20));
-        if (!png || png->empty()) return fail_(c, png ? std::string("no picture came") : png.error().message);
+        if (!png) return refused_(c, name, png.error());
+        if (png->empty()) return fail_(c, "no picture came");
         std::string bytes;
         for (const auto& part : *png) bytes += part;
         xlings::platform::write_file_atomic(words[1], bytes);
@@ -118,7 +126,7 @@ int display(const svc::Context& c, std::string_view name, std::span<const std::s
             frame += part;
         }, std::chrono::seconds(seconds + 20));
         flush();
-        if (!done) return fail_(c, done.error().message);
+        if (!done) return refused_(c, name, done.error());
         std::println("✓ {} frames in {}", n, words[2]);
         return 0;
     }
@@ -128,7 +136,7 @@ int display(const svc::Context& c, std::string_view name, std::span<const std::s
         if (action == "mode") req["mode"] = words[1];
         else req["events"] = Json::parse(words[1], nullptr, false);
         auto answer = (*node)->call(control, req.dump(), std::chrono::seconds(10));
-        if (!answer) return fail_(c, answer.error().message);
+        if (!answer) return refused_(c, name, answer.error());
         std::println("{}", answer->empty() ? std::string("{}") : answer->front());
         return 0;
     }

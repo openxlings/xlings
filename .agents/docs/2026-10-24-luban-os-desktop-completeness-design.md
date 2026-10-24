@@ -795,3 +795,5 @@ K27 全部场景、文档、版本号 ── 依赖以上全部
 | 可行性：设置应用（R6） | mcpp-index 的 `compat.sdl3` 在 Linux 只有 X11 后端；xdesk 不启动 Xwayland，桌面里没有 X 显示——基于 SDL 的设置应用显示不出来；给 SDL 加 Wayland 后端要改 mcpp-index 的 SDL 包（协议生成、wayland-scanner），代价远大于收益 | 设置是 `xdesk --panel settings` 持有的普通窗口，内容与输入由 xdesk 负责：窗口行为（移动、平铺、折叠、书签、焦点）与其它窗口一样；外观与桌面一致；不增加任何依赖（§9.6） |
 | 一致性：桌面接显示器 | 设计写"xdesk 打开显示设备"；实际由系统里的 `luban __desktop --display <路径>` 打开总线上的流，再接给会话（xdesk 或经 opensal-wlr 的其它合成器） | 所有合成器同一条路径；xdesk 的传输不变（§5.1 的意图不变：显示设备与桌面之间只有总线上的流） |
 | 根因：J69、J58 | 两个"未定因"的问题都在私有域：域内操作 30 分钟时限、域的 `/dev` 没有 GPU 节点 | 会话不限时、会话带上 GPU 设备节点（§1） |
+| 安全：`desktop-control`（R7） | 虚拟显示器原本挂在宿主的 `device/display/<n>`，路由按路径判定授权时分不出它属于哪个系统；Agent 的身份只能取它声明的 actor | 虚拟显示器与它的输入挂到系统下（`system/<名字>/device/display/<n>`）；路由按系统的 `desktop-control` 授权判定 Agent 对显示器、输入、xdesk 控制的调用，桌面服务自己判定 attach/detach/end（status 不需要）；Luban OS 窗口这个宿主显示器只属于坐在它前面的人，Agent 不能用；每次判定记在 `logs/openbus/desktop-control.ndjson`。授权是显式的（不随预设授予），持有它的策略文件要求 `2026.10.24.2` 起的客户端 |
+| 完整：machine 的虚拟显示器 | machine 系统 `--display virtual` 原先被拒绝 | 监督进程启动（或沿用）machine，经它的 agent 在系统里运行 `luban __desktop --display`；帧经 ivshmem（机内从 PCI 设备 `1af4:1110` 的 `resource2` 自动找到） |

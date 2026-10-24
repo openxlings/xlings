@@ -480,6 +480,13 @@ luban display box end
 Everything here is a path on the bus ([The bus](09-bus.md)): `luban display`
 is one client of it, `xbus call` another; tests and agents use the same paths.
 
+An agent (`--agent`, `XLINGS_AGENT_MODE=1`) drives a desktop -- its input, its
+displays (capture, record, attach, detach), xdesk's control, ending it -- only
+with the system's grant, since driving its input is running commands as its
+user: `luban config box --allow desktop-control`. Reading its state, its events
+and its logs needs none. Every decision on an agent is recorded in
+`<home>/logs/openbus/desktop-control.ndjson` (who, for whom, what, allowed or not).
+
 ## When something goes wrong
 
 Nothing a desktop's programs say is lost: each program it starts has its log

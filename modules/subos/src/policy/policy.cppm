@@ -47,13 +47,17 @@ std::expected<Mount, std::string> parse_mount(std::string_view spec, std::string
 // Named grants (design §21.2): each opens exactly one capability.
 // clipboard / clipboard-paste: `xlings clipboard copy|paste` reach the host's
 // clipboard through the broker -- the clipboard, not the whole display.
-inline constexpr std::array<std::string_view, 9> kGrants{
+// desktop-control: an agent may drive the system's desktop on the bus -- its
+// input, its displays (capture, record, attach), xdesk's control (Luban OS
+// design 2026-10-24 §3.4): as much as running commands as its user.
+inline constexpr std::array<std::string_view, 10> kGrants{
     "display", "audio", "camera", "gpu", "ssh-agent", "dbus", "host-loopback",
-    "clipboard", "clipboard-paste"};
+    "clipboard", "clipboard-paste", "desktop-control"};
 // Grants never implied (not in a preset's grants_allowed): only an explicit
 // `--allow`. A policy holding one needs a client that knows them.
-inline constexpr std::array<std::string_view, 2> kExplicitGrants{"clipboard", "clipboard-paste"};
+inline constexpr std::array<std::string_view, 3> kExplicitGrants{"clipboard", "clipboard-paste", "desktop-control"};
 inline constexpr std::string_view kClipboardMinClient = "2026.10.11.1";
+inline constexpr std::string_view kDesktopControlMinClient = "2026.10.24.2";
 // Where a sandbox granted the clipboard finds the clipboard tools' names
 // (links to the session's xlings, made by session-init; first on PATH).
 inline constexpr std::string_view kClipboardBridgeDir = "/run/xlings/bin";

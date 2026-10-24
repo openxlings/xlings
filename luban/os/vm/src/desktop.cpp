@@ -3,9 +3,11 @@
 // detached, as a machine's supervisor is -- that starts the system's desktop
 // on a virtual display of its own and lets other displays come and go:
 //
-//   host/<id>/device/display/<n>          the virtual display (openhal 0.3 §6.2):
-//   host/<id>/device/display/<n>/control  describe, capture, record, mode, input
-//   host/<id>/device/input/<n>            its input (openhal 0.3 §6.6)
+//   host/<id>/system/<bus>/device/display/<n>   the virtual display (openhal 0.3
+//                                            §6.2; a window's is the host's)
+//   host/<id>/system/<bus>/device/display/<n>/control  describe, capture,
+//                                            record, mode, input
+//   host/<id>/system/<bus>/device/input/<n>  its input (openhal 0.3 §6.6)
 //   host/<id>/system/<bus>/service/desktop   luban.desktop@1: status, attach,
 //                                            detach, end
 //   host/<id>/system/<bus>/topic/desktop/events   started, display-attach,
@@ -46,13 +48,13 @@ fs::path desktop_log_(const fs::path& home, std::string_view name) { return home
 std::string service_path_(std::string_view name) { return system_bus_root(name) + "/service/desktop"; }
 std::string events_path_(std::string_view name) { return system_bus_root(name) + "/topic/desktop/events"; }
 
-std::expected<std::shared_ptr<xbus::Node>, std::string> host_node_(const fs::path& home, std::string node_name) {
+std::expected<std::shared_ptr<xbus::Node>, std::string> host_node_(const fs::path& home, std::string node_name, std::string actor = bus_actor()) {
     // The router, started when nobody answers (connect_bus).
     auto fd = connect_bus(home);
     if (!fd) return std::unexpected(fd.error());
     std::vector<int> close{*fd};
     platform::close_fds(close);
-    return xbus::Node::connect({.name = std::move(node_name), .actor = "program:luban",
+    return xbus::Node::connect({.name = std::move(node_name), .actor = std::move(actor),
                                 .router = xbus::Address{"unix", bus_socket(home).string()}, .telemetry = false});
 }
 
@@ -107,7 +109,8 @@ std::expected<std::shared_ptr<VirtualOnBus>, std::string> offer_virtual_(std::sh
     auto v = std::make_shared<VirtualOnBus>();
     v->node = node;
     v->vd = std::make_shared<openhal::emu::VirtualDisplay>(mode);
-    const auto root = node->root();
+    // The system's own display: under the system (a window's is the host's).
+    const auto root = system_bus_root(system);
     std::weak_ptr<VirtualOnBus> weak = v;
     for (std::uint32_t n = 0; n < 64; ++n) {
         const auto path = hd::device_path(root, n);
@@ -304,7 +307,7 @@ int desktop_supervise(const fs::path& home, std::string_view name, std::span<con
         ++i;
     }
     const auto say = [&](std::string_view line) { std::println(std::cerr, "{} luban __desktop-session {}: {}", xlings::observe::utc_now(), name, line); };
-    auto node = host_node_(home, "luban-desktop-session");
+    auto node = host_node_(home, "luban-desktop-session", "service:luban-desktop");
     if (!node) { say(node.error()); return 1; }
     // Its system's socket: what its programs reach the bus through (§3.3).
     const auto bus_name = system_bus_root(name).substr(system_bus_root(name).rfind('/') + 1);
@@ -444,6 +447,10 @@ int desktop_supervise(const fs::path& home, std::string_view name, std::span<con
     const auto answer = [&](xbus::Call c) {
         const auto j = Json::parse(c.body(), nullptr, false);
         const auto op = j.is_object() ? j.value("op", std::string("status")) : std::string("status");
+        if (!desktop_control_allowed(home, c.actor(), c.path(), op)) {
+            c.fail(openbus::ErrorCode::denied, std::format("an agent drives {}'s desktop with its grant: luban config {} --allow desktop-control", name, name));
+            return;
+        }
         if (op == "status") {
             c.reply(status().dump(), static_cast<std::uint16_t>(openbus::Codec::json));
         } else if (op == "attach") {
