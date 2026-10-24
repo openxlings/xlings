@@ -49,17 +49,35 @@ Theme theme(std::string_view profile) {
 
 Rect close_button(int width) { return {static_cast<double>(width - kTitleHeight), 0, kTitleHeight, kTitleHeight}; }
 Rect maximize_button(int width) { return {static_cast<double>(width - 2 * kTitleHeight), 0, kTitleHeight, kTitleHeight}; }
+Rect fold_button() { return {0, 0, kTitleHeight, kTitleHeight}; }
 
 draw::Image title_bar(draw::Fonts* fonts, const Theme& t, std::string_view title, int width, bool active, bool close_hover,
-                      double scale, bool maximize_hover, bool rounded) {
+                      double scale, bool maximize_hover, bool rounded, int fold) {
     draw::Image img = device_image_(std::max(1, width), kTitleHeight, scale);
     draw::Canvas c(img, scale);
-    c.clear(active ? t.title_active : t.title_idle);
+    const Color bar = active ? t.title_active : t.title_idle;
+    // Folded: darker, a line under it -- the whole of the window now.
+    c.clear(fold == 2 ? Color{static_cast<std::uint8_t>(bar.r * 3 / 4), static_cast<std::uint8_t>(bar.g * 3 / 4),
+                              static_cast<std::uint8_t>(bar.b * 3 / 4), bar.a}
+                      : bar);
+    if (fold == 2) c.fill({0, kTitleHeight - 2.0, static_cast<double>(width), 2}, t.accent);
+    const Color ink = active ? t.title_text : t.title_text_idle;
+    double text_x = 10;
+    if (fold != 0) {
+        // ▸ folded, ▾ unfolded: a small triangle, drawn as rows (no font needed).
+        const Rect b = fold_button();
+        const double cx = b.x + b.width / 2, cy = b.height / 2;
+        for (int k = 0; k < 5; ++k) {
+            if (fold == 2) c.fill({cx - 2.5 + k, cy - 4.5 + k, 1, 9.0 - 2 * k}, ink);
+            else c.fill({cx - 4.5 + k, cy - 2.5 + k, 9.0 - 2 * k, 1}, ink);
+        }
+        text_x = b.x + b.width;
+    }
     const Rect close = close_button(width);
     if (close_hover) c.fill(close, t.close_hover);
     // The close mark: two strokes, drawn as a cross of small squares (no
     // font needed).
-    const Color mark = close_hover ? Color::rgb(0xffffff) : (active ? t.title_text : t.title_text_idle);
+    const Color mark = close_hover ? Color::rgb(0xffffff) : ink;
     const double cx = close.x + close.width / 2, cy = close.height / 2;
     for (int k = -4; k <= 4; ++k) {
         c.fill({cx + k - 0.75, cy + k - 0.75, 1.5, 1.5}, mark);
@@ -72,7 +90,7 @@ draw::Image title_bar(draw::Fonts* fonts, const Theme& t, std::string_view title
     c.frame({max.x + max.width / 2 - 5, max.height / 2 - 5, 10, 10}, box, 1.5);
     if (fonts) {
         const double baseline = (kTitleHeight + fonts->ascent() - fonts->descent()) / 2;
-        c.text(*fonts, title, 10, std::round(baseline), active ? t.title_text : t.title_text_idle, max.x - 16);
+        c.text(*fonts, title, text_x, std::round(baseline), ink, max.x - 6 - text_x);
     }
     if (rounded) {
         // The top corners cut round, smoothly: each pixel there keeps as

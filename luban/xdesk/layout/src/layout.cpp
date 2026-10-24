@@ -316,7 +316,8 @@ void Layout::send_to(Id id, int n) {
 
 void Layout::to_wuxian(Id id, std::optional<Rect> world) {
     if (is_free(id)) {
-        if (world) free_of_(id)->world = *world;
+        // Collapsed, it moves and keeps the size it unfolds to (openwx 0.2 §5.2, J63).
+        if (auto* f = free_of_(id); world) f->world = f->collapsed ? Rect{world->x, world->y, f->world.width, f->world.height} : *world;
         return;
     }
     auto* w = window_(id);
@@ -723,7 +724,9 @@ void Layout::place(Id id, Rect screen) {
         if (view_ != View::wuxian) return;
         const Rect area = area_();
         const auto at = openwx::to_world(camera_, {screen.x, screen.y}, {area.x, area.y});
-        f->world = {at.x, at.y, screen.width / camera_.zoom, screen.height / camera_.zoom};
+        // Collapsed: only where it is (its title bar is not its size, J63).
+        if (f->collapsed) f->world = {at.x, at.y, f->world.width, f->world.height};
+        else f->world = {at.x, at.y, screen.width / camera_.zoom, screen.height / camera_.zoom};
         return;
     }
     auto* s = space_of_(id);

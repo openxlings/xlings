@@ -25,9 +25,33 @@ Rect Layout::stack_rect_(const Window& w, Rect area) const {
     Rect r = w.stacked;
     r.width = std::min(r.width, area.width);
     r.height = std::min(r.height, area.height);
-    r.x = std::clamp(r.x, area.x, area.x + area.width - r.width);
-    r.y = std::clamp(r.y, area.y, area.y + area.height - r.height);
+    return kept_on(r, area, o_.title);
+}
+
+Rect kept_on(Rect r, Rect area, double title) {
+    const double keep = std::min(64.0, r.width / 4);
+    r.x = std::clamp(r.x, area.x - r.width + keep, area.x + area.width - keep);
+    r.y = std::clamp(r.y, area.y, std::max(area.y, area.y + area.height - title));
     return r;
+}
+
+std::optional<Rect> Layout::unsnap(Id id, double sx, double) {
+    auto* s = space_of_(id);
+    auto* w = window_(id);
+    if (!s || !w || w->floating || s->meta.rule != Rule::stack || !w->snapped) return std::nullopt;
+    Rect now{};
+    for (const auto& p : last_)
+        if (p.id == id) now = p.rect;
+    if (now.width <= 0) return std::nullopt;
+    const double fx = std::clamp((sx - now.x) / now.width, 0.0, 1.0);
+    w->snapped = false;
+    if (!w->stack_placed) {
+        w->stacked = {now.x, now.y, std::min(w->preferred.width, now.width), std::min(w->preferred.height, now.height)};
+        w->stack_placed = true;
+    }
+    const Rect back{sx - fx * w->stacked.width, now.y, w->stacked.width, w->stacked.height};
+    w->stacked = to_space_(*s, back);
+    return back;
 }
 
 // In the middle, as big as it asked (or fits); down and right of one that

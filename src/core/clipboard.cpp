@@ -142,8 +142,15 @@ int bridge(std::string_view tool, std::span<const std::string> args) {
         return 1;
     }
     if (paste) {
+        // Never on a terminal of the broker's (J60): its relay merges the
+        // command's standard error into what it prints, and a shell's Ctrl+V
+        // (fish's) would paste an error. Pipes: what is pasted is only the
+        // clipboard; what went wrong is on standard error, and nothing is pasted.
         const std::vector<std::string> argv{"__clipboard", "paste"};
-        const int rc = subos::broker::forward(argv, {}, /*quiet_refusal=*/true);
+        const int none = platform::open_for_read(std::string(platform::null_device));
+        const int stdio[3] = {none, 1, 2};
+        const int rc = subos::broker::forward(argv, none < 0 ? std::span<const int>{} : std::span<const int>(stdio), /*quiet_refusal=*/true);
+        if (none >= 0) platform::close_fd(none);
         if (rc == subos::broker::kExitPermission)
             std::println(std::cerr, "{}: reading the host's clipboard is not granted ({})", tool, grant);
         return rc;

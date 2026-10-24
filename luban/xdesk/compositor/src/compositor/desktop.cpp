@@ -29,12 +29,14 @@ namespace fs = std::filesystem;
 
 // A window's title bar, drawn again only when what it shows changed.
 void Server::draw_title(View& v, int width, bool active, bool rounded) {
-    const std::string title = name_of(v);
+    // A free window in the WuXian view folds: its mark, and folded, said (design 2026-10-24 §9.3).
+    const int fold = wuxian() && lay.is_free(v.id) ? (lay.collapsed(v.id) ? 2 : 1) : 0;
+    const std::string title = fold == 2 ? std::format("{} · {}", name_of(v), i18n::tr("collapsed")) : name_of(v);
     const bool hover = close_hover == v.id, max = max_hover == v.id;
-    auto key = std::format("{}\x1f{}\x1f{}\x1f{}\x1f{}\x1f{}\x1f{}", title, width, active, hover, scale, max, rounded);
+    auto key = std::format("{}\x1f{}\x1f{}\x1f{}\x1f{}\x1f{}\x1f{}\x1f{}", title, width, active, hover, scale, max, rounded, fold);
     if (key == v.drawn) return;
     v.drawn = std::move(key);
-    show(v.title, shell::title_bar(ui(), theme, title, width, active, hover, scale, max, rounded));
+    show(v.title, shell::title_bar(ui(), theme, title, width, active, hover, scale, max, rounded, fold));
 }
 
 // The panel and (canvas) the grid, drawn again only when they changed.

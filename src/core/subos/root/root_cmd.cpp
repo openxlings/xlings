@@ -184,7 +184,7 @@ std::optional<Declared> declared_by_template_(const fs::path& instance, EventStr
         }
         if (auto b = it->find("boot"); b != it->end() && b->is_object()) {
             if (auto init = b->value("init", std::string()); !init.empty()) d.init = init;
-            for (const auto* k : {"kernel", "kernel_min", "profile"})
+            for (const auto* k : {"kernel", "kernel_min", "profile", "virt"})
                 if (b->contains(k) && (*b)[k].is_string()) d.boot[k] = (*b)[k];
         }
         if (auto a = it->find("abi"); a != it->end()) d.abi = abi_of_(*a);

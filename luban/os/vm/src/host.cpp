@@ -68,14 +68,19 @@ std::string capture_(const std::vector<std::string>& argv) {
     return out;
 }
 
-// The kernel a machine boots: the virt profile's (linux-kernel-virt).
-std::optional<fs::path> kernel_(const fs::path& home) {
+// A kernel package's payload: its vmlinuz and the config beside it.
+std::optional<fs::path> kernel_payload_(const fs::path& home, std::string_view version) {
     std::error_code ec;
-    const auto root = home / "data" / "xpkgs" / "xim-x-linux-kernel-virt";
-    std::optional<fs::path> best;
-    for (fs::recursive_directory_iterator it(root, ec), end; !ec && it != end; it.increment(ec))
-        if (it->path().filename() == "vmlinuz" && it->is_regular_file(ec)) best = it->path();
-    return best;
+    const auto modules = home / "data" / "xpkgs" / "xim-x-linux-kernel-virt" / std::string(version) / "lib" / "modules";
+    for (fs::directory_iterator it(modules, ec), end; !ec && it != end; it.increment(ec))
+        if (fs::is_regular_file(it->path() / "vmlinuz", ec)) return it->path() / "vmlinuz";
+    return std::nullopt;
+}
+
+// The version a kernel ref names: "xim:linux-kernel-virt@6.12.112-r3" is 6.12.112-r3.
+std::string kernel_version_(std::string_view ref) {
+    const auto at = ref.rfind('@');
+    return at == std::string_view::npos ? std::string{} : std::string(ref.substr(at + 1));
 }
 
 // One answer to "is there hardware virtualization here": the capability
@@ -278,7 +283,63 @@ std::map<std::string, std::string> qemu_env_(const Json& declared) {
 
 }  // namespace
 
-VirtiofsPlan virtiofs_plan(const fs::path& virtiofsd, const std::vector<Share>& shares, const fs::path& run, std::string_view memory_mb) {
+std::set<std::string> kernel_caps(std::string_view config) {
+    std::set<std::string> on;
+    for (std::size_t at = 0; at < config.size();) {
+        auto end = config.find('\n', at);
+        if (end == std::string_view::npos) end = config.size();
+        const auto line = config.substr(at, end - at);
+        at = end + 1;
+        if (line.starts_with("CONFIG_") && line.ends_with("=y")) on.emplace(line.substr(7, line.size() - 9));
+    }
+    std::set<std::string> caps;
+    const auto all = [&](std::initializer_list<std::string_view> names) {
+        return std::ranges::all_of(names, [&](std::string_view n) { return on.contains(std::string(n)); });
+    };
+    if (all({"FUSE_FS", "VIRTIO_FS"})) caps.insert("virtio-fs");
+    if (all({"NET_9P_VIRTIO", "9P_FS"})) caps.insert("9p");
+    if (all({"DRM_VIRTIO_GPU"})) caps.insert("virtio-gpu");
+    if (all({"UDMABUF"})) caps.insert("udmabuf");
+    if (all({"PCI", "SYSFS"})) caps.insert("pci-sysfs-mmap");
+    if (all({"VIRTIO_VSOCKETS"})) caps.insert("virtio-vsock");
+    return caps;
+}
+
+std::expected<MachineKernel, std::string> machine_kernel(const fs::path& home, std::string_view name) {
+    MachineKernel k;
+    const auto settings = service::read_settings(home, name);
+    if (settings && !settings->kernel.empty()) {
+        k.version = settings->kernel;
+        k.overridden = true;
+    } else {
+        const auto at = xlings::subos::locate(xlings::subos::HomeView{home}, name);
+        const auto manifest = read_json_(at.home.instance(name) / ".xlings.json");
+        const auto boot = manifest.value("boot", Json::object());
+        const auto ref = boot.is_object() ? boot.value("virt", std::string{}) : std::string{};
+        k.version = kernel_version_(ref);
+        if (k.version.empty())
+            return std::unexpected(std::format("'{}' does not say which kernel it boots as a machine (its version is older than "
+                                               "systems carrying their own)", name));
+    }
+    k.ref = "xim:linux-kernel-virt@" + k.version;
+    if (const auto v = kernel_payload_(home, k.version)) {
+        k.vmlinuz = *v;
+        std::error_code ec;
+        if (const auto config = v->parent_path() / "config"; fs::is_regular_file(config, ec))
+            k.caps = kernel_caps(platform::read_file_to_string(config.string()));
+    }
+    return k;
+}
+
+bool unprivileged_userns() {
+    // Ubuntu's switch says it at once; a host without it is asked.
+    std::ifstream in("/proc/sys/kernel/apparmor_restrict_unprivileged_userns");
+    if (std::string v; in >> v && v == "1") return false;
+    return platform::userns_can_mount();
+}
+
+VirtiofsPlan virtiofs_plan(const fs::path& virtiofsd, const std::vector<Share>& shares, const fs::path& run, std::string_view memory_mb,
+                           bool sandboxed) {
     VirtiofsPlan p;
     // `-m`'s size: a plain number is MiB there, bytes here.
     const bool plain = !memory_mb.empty() && std::ranges::all_of(memory_mb, [](char ch) { return ch >= '0' && ch <= '9'; });
@@ -287,11 +348,12 @@ VirtiofsPlan virtiofs_plan(const fs::path& virtiofsd, const std::vector<Share>& 
     for (const auto& s : shares) {
         if (s.mapped) continue;   // 9p's, always
         const auto sock = (run / std::format("vfs-{}.sock", s.tag)).generic_string();
-        // Its own namespaces (unprivileged); a host that refuses them gets `none` (supervise).
+        // Its own namespaces (unprivileged); a host that refuses them
+        // (unprivileged_userns, design 2026-10-24 §7.3) gets `none` at once.
         // `auto` for all: the home's generations do not change, but the host
         // installs into the same share and the machine sees it at once.
-        std::vector<std::string> d{virtiofsd.generic_string(), "--socket-path", sock, "--shared-dir", s.dir.generic_string(), "--sandbox", "namespace",
-                                   "--cache", "auto"};
+        std::vector<std::string> d{virtiofsd.generic_string(), "--socket-path", sock, "--shared-dir", s.dir.generic_string(), "--sandbox",
+                                   sandboxed ? "namespace" : "none", "--cache", "auto"};
         if (s.read_only) d.push_back("--readonly");
         p.daemons.push_back(std::move(d));
         p.qemu.insert(p.qemu.end(), {"-chardev", std::format("socket,id=vfs-{},path={}", s.tag, sock), "-device",
@@ -404,17 +466,31 @@ int start_impl_(const service::Context& c, std::string_view name, const EnterOpt
         say_(c, service::error(refused, "xlings install qemu-system@latest (revision 3 or later)"));
         return 1;
     }
-    auto kernel = kernel_(c.home);
-    if (!kernel) {
+    // Its kernel is its system's (design 2026-10-24 §7.1), installed the
+    // first time, and checked for what this start needs of it (§7.2).
+    auto mk = machine_kernel(c.home, name);
+    if (!mk) {
+        say_(c, service::phase("preflight", "failed", "checking this host"));
+        say_(c, service::error(mk.error(), std::format("luban upgrade {}", name)));
+        return 1;
+    }
+    if (mk->vmlinuz.empty()) {
         say_(c, service::phase("preflight", "done", "checking this host"));
-        say_(c, service::phase("kernel", "begin", "installing the machine kernel"));
-        const int rc = c.port.capability("install_packages", {{"targets", Json::array({"xim:linux-kernel-virt"})}, {"yes", true}}, c.sink);
-        kernel = kernel_(c.home);
-        say_(c, service::phase("kernel", kernel ? "done" : "failed", "installing the machine kernel"));
-        if (rc != 0 || !kernel) return rc != 0 ? rc : 1;
+        say_(c, service::phase("kernel", "begin", "installing the machine kernel " + mk->version));
+        const int rc = c.port.capability("install_packages", {{"targets", Json::array({mk->ref})}, {"yes", true}}, c.sink);
+        mk = machine_kernel(c.home, name);
+        const bool got = mk && !mk->vmlinuz.empty();
+        say_(c, service::phase("kernel", got ? "done" : "failed", "installing the machine kernel"));
+        if (rc != 0 || !got) return rc != 0 ? rc : 1;
     } else {
         say_(c, service::phase("preflight", "done", "checking this host"));
     }
+    const auto kernel_fix = mk->overridden ? std::format("luban config {} --kernel default", name) : std::format("luban upgrade {}", name);
+    if (!mk->caps.contains("9p")) {
+        say_(c, service::error(std::format("the kernel {} cannot share files with a machine (no 9p)", mk->version), kernel_fix));
+        return 1;
+    }
+    const std::optional<fs::path> kernel = mk->vmlinuz;
     std::error_code ec;
     const auto dir = run_dir(c.home, name);
     fs::create_directories(dir, ec);
@@ -484,13 +560,16 @@ int start_impl_(const service::Context& c, std::string_view name, const EnterOpt
     const auto node = render_node_();
     std::expected<GlQemu, std::string> gl = std::unexpected(std::string("it may not use this computer's GPU (luban config ") +
                                                             std::string(name) + " --allow gpu)");
-    if (node && arch.name == "x86_64" && service::gpu_granted(c.home, name)) gl = gl_qemu_(c, view);
+    if (node && arch.name == "x86_64" && service::gpu_granted(c.home, name) && !mk->caps.contains("virtio-gpu"))
+        gl = std::unexpected(std::format("the kernel {} has no virtio-gpu ({})", mk->version, kernel_fix));
+    else if (node && arch.name == "x86_64" && service::gpu_granted(c.home, name)) gl = gl_qemu_(c, view);
     else if (node && arch.name != "x86_64") gl = std::unexpected(std::string("3D in a machine is on x86_64 hosts"));
     const auto gpu = machine_gpu(node, gl ? std::expected<void, std::string>{} : std::unexpected(gl.error()),
                                  node ? render_driver_(*node) : std::string{}, !node && [] { std::error_code ec; return fs::exists("/dev/dxg", ec); }());
     std::vector<std::string> q{gpu.virgl ? gl->bin.string() : qemu->bin.string()};
     if (!arch.machine.empty()) q.insert(q.end(), {"-M", std::string(arch.machine)});
-    q.insert(q.end(), {"-m", memory, "-smp", default_cpus_()});
+    const auto cpus = default_cpus_();
+    q.insert(q.end(), {"-m", memory, "-smp", cpus});
     if (kvm) q.insert(q.end(), {"-enable-kvm", "-cpu", "host"});
     else if (!arch.cpu.empty()) q.insert(q.end(), {"-cpu", std::string(arch.cpu)});
     const std::string console = arch.name == "aarch64" ? "ttyAMA0" : "ttyS0";
@@ -521,7 +600,9 @@ int start_impl_(const service::Context& c, std::string_view name, const EnterOpt
     // vhost-user crashed its init (aarch64 TCG, CI), and the speed is KVM's.
     const bool want_virtiofs = !settings || settings->files == "virtiofs";
     if (want_virtiofs && !kvm) files = "9p (an emulated machine shares its files over 9p)";
-    if (want_virtiofs && kvm) {
+    else if (want_virtiofs && !mk->caps.contains("virtio-fs"))
+        files = std::format("9p (the kernel {} has no virtio-fs: {})", mk->version, kernel_fix);
+    else if (want_virtiofs) {
         auto found = xlings::subos::tools::first("virtiofsd", view, xlings::subos::Ports{});
         // Installed the first time; one that could not be (an index without
         // it, a host it is not built for) is tried again a day later, not at
@@ -540,8 +621,9 @@ int start_impl_(const service::Context& c, std::string_view name, const EnterOpt
             if (!found) platform::write_file_atomic(tried.string(), xlings::observe::utc_now() + "\n");
         }
         if (found) {
-            vfs = virtiofs_plan(found->bin, shares, dir, memory);
-            files = "virtiofs";
+            const bool sandboxed = unprivileged_userns();
+            vfs = virtiofs_plan(found->bin, shares, dir, memory, sandboxed);
+            files = sandboxed ? "virtiofs" : "virtiofs (without its sandbox: this computer restricts unprivileged namespaces)";
         } else {
             files = "9p (virtiofsd is not installed: xlings install virtiofsd)";
         }
@@ -567,7 +649,8 @@ int start_impl_(const service::Context& c, std::string_view name, const EnterOpt
     q.insert(q.end(), net.args.begin(), net.args.end());
     Json state{{"name", name}, {"qemu", q}, {"persist", persist}, {"temp", o.temp}, {"scratch", persist == "all" ? "" : share.string()},
                {"env", net.env}, {"started", xlings::observe::utc_now()}, {"accel", kvm ? "kvm" : "tcg"}, {"memory", memory},
-               {"gpu", gpu.summary}, {"files", mapped_home ? files + ", /home over 9p (users of their own)" : files}};
+               {"gpu", gpu.summary}, {"files", mapped_home ? files + ", /home over 9p (users of their own)" : files},
+               {"kernel", mk->version}, {"cpus", cpus}};
     if (vfs) {
         // Its way back, should a daemon not start: the same arguments, 9p's instead.
         state["virtiofsd"] = vfs->daemons;
@@ -644,17 +727,12 @@ enum class Ending { Exited, Killed, Detached, PowerOff, Lost };
 // package it boots, how it is accelerated, its size.
 service::WelcomeFacts machine_facts_(const service::Context& c, std::string_view name) {
     service::WelcomeFacts f;
-    if (const auto k = kernel_(c.home)) {
-        for (auto it = k->begin(); it != k->end(); ++it)
-            if (it->string().find("linux-kernel") != std::string::npos && std::next(it) != k->end()) {
-                f.kernel = "Linux " + std::next(it)->string();
-                break;
-            }
-    }
     const auto state = read_json_(state_file_(c.home, name));
+    // What it was started with: its kernel's package version, its processors (J75).
+    if (const auto k = state.value("kernel", std::string{}); !k.empty()) f.kernel = "Linux " + k;
     int mb = 2048;
     try { mb = std::stoi(state.value("memory", std::string("2048"))); } catch (...) {}
-    f.machine = std::format("{} · 2 CPU · {}{}", state.value("accel", "kvm") == "kvm" ? "KVM" : "emulated",
+    f.machine = std::format("{} · {} CPU · {}{}", state.value("accel", "kvm") == "kvm" ? "KVM" : "emulated", state.value("cpus", std::string("2")),
                             mb % 1024 == 0 ? std::format("{} GiB", mb / 1024) : std::format("{} MiB", mb),
                             state.value("gpu", std::string{}).starts_with("virgl") ? " · GPU (virgl)" : "");
     // Its network as it was started (design 2026-10-19 §27.2).
@@ -1902,6 +1980,7 @@ int supervise(const fs::path& home, std::string_view name) {
             if (how == a.end()) return false;
             *how = "none";
             std::println(std::cerr, "luban: virtiofsd did not start in its namespaces; {} again without its sandbox", a.size() > 4 ? a[4] : "");
+            state["files"] = "virtiofs (without its sandbox: its namespaces were refused)";
             if (!start_one(a)) return false;
         }
         return true;

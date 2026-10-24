@@ -8,7 +8,8 @@
 //   {"keys": "set", "set": "luban"|"luban-no-hjkl"}   the set of keys
 //   {"settings": PAGE}                                the settings, at displays|layout|appearance|keys|about
 //   {"state": true}                                   what the desktop is now (design 2026-10-21 §8.11)
-//   {"debug": "hud", "on": true|false}                the frames' parts drawn in the top left
+//   {"debug": "hud", "on": true|false}                the frames' parts drawn in the top left (no "on": toggled);
+//                                                     the answer says it: {"ok": true, "hud": B}
 //   {"subscribe": true}                               what happens from now on, a line each
 //   {"bookmark": N}                                   bookmark N (state's "bookmarks"), as clicked: an agent's way to it
 //   {"input": [STEP...]}                              input as the window gives it, through the same path: each step
@@ -330,7 +331,11 @@ std::string Server::control(std::string_view request) {
         const auto* on = j.get("on");
         hud = on ? on->bool_or(!hud) : !hud;
         draw_hud();
-        return answer_(true);
+        // What it is now, said: a toggle without an argument (J76).
+        Json a{Json::Object{}};
+        a.set("ok", Json{true});
+        a.set("hud", Json{hud});
+        return a.dump();
     }
     if (const auto* sub = j.get("subscribe"); sub && sub->bool_or(false)) {
         // The asker's connection: the answer, then a line for each thing that happens.

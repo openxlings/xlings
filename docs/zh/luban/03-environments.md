@@ -41,6 +41,7 @@ luban config box --on-close background
 | `desktop` | 窗口显示的桌面会话，或 `none`（[桌面](08-desktop.md)） |
 | `on-close` | 关闭正在运行的机器的窗口时：`ask`、`background` 或 `poweroff` |
 | `files` | 机器怎样共享文件：`virtiofs`（默认；做不到时用 9p）或 `9p` |
+| `kernel` | 机器启动的内核：一个 `linux-kernel-virt` 的版本，或 `default`（它自己的） |
 
 edition 可以给出这些设置的默认值；你设置的优先。
 

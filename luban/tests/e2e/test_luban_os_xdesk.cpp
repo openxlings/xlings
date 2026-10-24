@@ -1189,6 +1189,13 @@ sleep 2500
     const auto on = msg({"debug", "hud", "on"});
     EXPECT_EQ(on.exit_code, 0) << on.transcript();
     EXPECT_TRUE(Json::parse(msg({"state"}).out, nullptr, false)["hud"].get<bool>());
+    // Alone, toggled and said (J76); a wrong request gets its own usage.
+    const auto toggled = msg({"debug", "hud"});
+    EXPECT_EQ(toggled.exit_code, 0) << toggled.transcript();
+    EXPECT_FALSE(Json::parse(toggled.out, nullptr, false)["hud"].get<bool>()) << toggled.out;
+    const auto wrong = msg({"debug"});
+    EXPECT_EQ(wrong.exit_code, 2);
+    EXPECT_TRUE(wrong.err.starts_with("usage: xdesk msg debug hud")) << wrong.err;
     const auto run = session.get();
     ASSERT_EQ(run.exit_code, 0) << run.transcript();
     const auto events = subscribed.get().out;

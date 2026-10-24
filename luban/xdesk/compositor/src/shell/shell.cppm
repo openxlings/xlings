@@ -45,12 +45,17 @@ Theme theme(std::string_view profile);
 inline constexpr int kTitleHeight = 26;
 // Its top corners are round (design 2026-10-20 §14.3), the desktop showing
 // past them; `rounded` false for a window that fills the screen.
+// `fold`: a window that can be collapsed (a free one in the WuXian view,
+// design 2026-10-24 §9.3) has its mark at the left -- 1 unfolded (▾), 2
+// folded (▸, the bar darker with a line under it: all there is of it).
 draw::Image title_bar(draw::Fonts* fonts, const Theme& t, std::string_view title, int width, bool active, bool close_hover,
-                      double scale = 1, bool maximize_hover = false, bool rounded = true);
+                      double scale = 1, bool maximize_hover = false, bool rounded = true, int fold = 0);
 inline constexpr double kTitleRadius = 8;
-// Its close button and its maximize button (left of it), in the bar's pixels.
+// Its close button and its maximize button (left of it), in the bar's
+// pixels; its fold mark (at the left), when it has one.
 draw::Rect close_button(int width);
 draw::Rect maximize_button(int width);
+draw::Rect fold_button();
 
 // ── the panel ────────────────────────────────────────────────────────
 

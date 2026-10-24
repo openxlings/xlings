@@ -43,6 +43,7 @@ luban config box --on-close background
 | `desktop` | the desktop session the window shows, or `none` ([The desktop](08-desktop.md)) |
 | `on-close` | closing the window of a running machine: `ask`, `background` or `poweroff` |
 | `files` | how a machine shares its files: `virtiofs` (default; 9p where it cannot) or `9p` |
+| `kernel` | the kernel a machine boots: a `linux-kernel-virt` version, or `default` (its own) |
 
 An edition may set their defaults; what you set wins.
 

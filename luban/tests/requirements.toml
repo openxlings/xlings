@@ -731,3 +731,23 @@ status = "required"
 [XDESK-DAMAGE]
 text = "xdesk sends a frame's damage as at most eight rectangles, the nearest merged (every damaged pixel in one), not the whole frame for a handful of small changes"
 status = "required"
+
+[LUBAN-OS-JOB-PAGE]
+text = "the Luban OS app's job page draws through every ending -- done, failed, cancelled -- at any window height, reading the job's end once per frame (J54)"
+status = "required"
+
+[LUBAN-MACHINE-KERNEL-CAPS]
+text = "a machine's kernel is its system's (boot.virt, or luban config --kernel), checked against what the start needs (virtio-fs, 9p, virtio-gpu, from the config beside it): a missing capability with a way back falls back and is said with its fix, one without refuses; a system that declares no kernel is told to upgrade (design 2026-10-24 §7, J55)"
+status = "required"
+
+[XDESK-STACK-OFFSCREEN]
+text = "a stacked window may be partly off the output -- its title bar on it and at least 64 pixels (a quarter of it, if less) across -- by one rule the arrangement and a drag share (design 2026-10-24 §9.1, J61)"
+status = "required"
+
+[XDESK-STACK-EDGE-SNAP]
+text = "a stacked window dragged into the output's edge band shows the half, the quarter or the whole output it would take and takes it when let go; picked up again it is free at the size it had before, under the pointer (design 2026-10-24 §9.2, J62)"
+status = "required"
+
+[XDESK-COLLAPSE-KEEPS-SIZE]
+text = "a collapsed free window (the WuXian view's) is moved without its size changing, unfolds to the size it had, and its title bar says it: a fold mark (▸ folded, ▾ unfolded) that toggles it, a darker bar with a line under it and 'collapsed' after its title (design 2026-10-24 §9.3, J63, J64)"
+status = "required"

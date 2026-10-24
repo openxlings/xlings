@@ -98,7 +98,7 @@ GPU 时用 GPU 绘制（render node 上的 GLES），否则用软件；**关于*
 | | |
 |---|---|
 | **平铺** | 窗口按列并排，间隔 4 像素；各列平分屏幕，直到每列窄于 480 时开始滚动，焦点窗口始终可见；一列里可以上下放多个；也可以让列上下排（`flow = vertical`）。平铺的窗口会被告知，并按给定的大小绘制 |
-| **层叠** | 窗口放在哪里就在哪里，可以重叠，限制在屏幕内；可以最大化，或吸附到半屏、四分之一屏 |
+| **层叠** | 窗口放在哪里就在哪里，可以重叠，可以部分移出屏幕（标题栏留在屏幕上）；可以最大化，或吸附到半屏、四分之一屏——拖到边或角上，拖开即回到原来的大小 |
 
 窗口可以在工作区里**浮动**（Super+Shift+空格：浮在排布上方，随工作区移动——对话框自动如此）；**自由窗口**在 WuXian 上、不属于任何
 工作区（Super+Shift+0，或拖到平面上放下）。
@@ -169,7 +169,8 @@ WuXian 视图里每个工作区是一块带彩色边框的底板，上方有标�
 被盖住的东西不会丢：完全被盖住的工作区或自由窗口——以及层叠工作区里被别的窗口盖住的窗口——会在盖住它的那一项右边缘伸出**书签**
 （它的标题；工作区是颜色与名字；最多 5 个，其余合成"+N"，点开是列表）。指向书签会画出它所指的那一项的轮廓，点击就把它提到前面。
 拖动或平移时书签先隐藏；设置的 *WuXian* 一节（或 `[wuxian] bookmarks = off`）可以关掉；Agent 用 `xdesk msg bookmark N`（状态里列出有哪些）。
-折叠的工作区只剩标签，折叠的自由窗口只剩标题栏：双击（或 Super+S）再展开。
+折叠的工作区只剩标签，折叠的自由窗口只剩标题栏，左侧标着 ▸（展开时 ▾），颜色更深，名字后写着"已折叠"：点这个标记、双击（或 Super+S）
+再展开，无论移到了哪里，都回到原来的大小。
 
 宿主的输入法可以在桌面的窗口里输入，剪贴板也是共享的——每个方向按环境的授权：`clipboard`（从中复制出来）与 `clipboard-paste`
 （粘贴进去）。在 Luban OS 窗口里新建的桌面系统两者都有（它的设置里可以关）；用 `luban new` 或 Agent 建的默认没有，需要时给
@@ -202,7 +203,7 @@ xdesk msg settings keys                    # the settings, at that page
 ```bash
 xdesk msg state                            # output, view, workspaces, windows, overlays, the frames' cost (JSON)
 xdesk msg subscribe                        # what happens from now on, a line each (focus, open, close, ...)
-xdesk msg debug hud on                     # the frames' parts drawn in the top left
+xdesk msg debug hud [on|off]               # the frames' parts drawn in the top left; alone, toggled
 xdesk msg telemetry metrics                # counters and histograms (xdesk.frame.compose_ns, ...)
 xdesk msg telemetry profile on             # then `telemetry trace`: a trace any trace viewer opens (Perfetto)
 xdesk msg telemetry dump                   # all of it, with the last moments recorded

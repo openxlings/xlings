@@ -175,7 +175,10 @@ struct VirtiofsPlan {
     std::vector<std::string> qemu;                    // qemu's arguments for every share
     std::vector<std::vector<std::string>> daemons;    // one virtiofsd each
 };
-VirtiofsPlan virtiofs_plan(const fs::path& virtiofsd, const std::vector<Share>& shares, const fs::path& run, std::string_view memory_mb);
+// `sandboxed`: in its own namespaces; a host that refuses them
+// (unprivileged_userns) runs it with `--sandbox none` from the start.
+VirtiofsPlan virtiofs_plan(const fs::path& virtiofsd, const std::vector<Share>& shares, const fs::path& run, std::string_view memory_mb,
+                           bool sandboxed = true);
 std::vector<std::string> nine_p_args(const std::vector<Share>& shares);
 
 // Users besides the system's own (its login user) with a home under /home
@@ -195,6 +198,30 @@ std::expected<int, std::string> connect_bus(const fs::path& home);
 int serve_bus(const fs::path& home);
 // Where a system's bus is under this host's: host/<id>/system/<name>.
 std::string system_bus_root(std::string_view name);
+
+// A machine's kernel belongs to its system (design 2026-10-24 §7.1): the
+// version its edition declares (`boot.virt`, "xim:linux-kernel-virt@6.12.112-r3"),
+// or the one `luban config <name> --kernel <version>` set. Every version's
+// release says 6.12.112-virt: the package version is its identity.
+struct MachineKernel {
+    std::string version;              // 6.12.112-r3
+    std::string ref;                  // xim:linux-kernel-virt@6.12.112-r3
+    bool overridden { false };        // set by luban config --kernel
+    fs::path vmlinuz;                 // empty: not installed yet
+    std::set<std::string> caps;       // kernel_caps of the config beside it
+};
+// Its kernel, or why it has none (a version from before systems carried one).
+std::expected<MachineKernel, std::string> machine_kernel(const fs::path& home, std::string_view name);
+// What a kernel can do (§7.2), as opencaps names, from its build config:
+// virtio-fs (FUSE_FS and VIRTIO_FS), 9p (NET_9P_VIRTIO and 9P_FS),
+// virtio-gpu, udmabuf, pci-sysfs-mmap (PCI and SYSFS), virtio-vsock.
+std::set<std::string> kernel_caps(std::string_view config);
+
+// Whether this host lets an unprivileged process make namespaces
+// (design 2026-10-24 §7.3): Ubuntu's AppArmor restricts them
+// (kernel.apparmor_restrict_unprivileged_userns), and a virtiofsd then
+// starts without its sandbox. Probed by making one.
+bool unprivileged_userns();
 
 // Whether `file` is an ELF that needs no loader (what an initramfs can run).
 bool is_static_elf(const fs::path& file);

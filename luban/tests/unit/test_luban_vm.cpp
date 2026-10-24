@@ -166,3 +166,75 @@ XTEST(LubanVm, UsersOfTheirOwnHaveTheirHomesOverMappedNineP, .area = "luban", .c
     EXPECT_EQ(luban::vm::virtiofs_plan("/v", shares, "/run/m", "2048").daemons.size(), 1u);
     EXPECT_EQ(luban::vm::nine_p_args(shares)[3], "local,path=/r/home,mount_tag=userhome,security_model=mapped-xattr,id=userhome");
 }
+
+// A machine kernel's capabilities are read from the config beside it
+// (design 2026-10-24 §7.2): the first linux-kernel-virt had no virtio-fs (J55).
+XTEST(LubanVm, AKernelsCapabilitiesComeFromItsConfig, .area = "luban", .covers = {"LUBAN-MACHINE-KERNEL-CAPS"}) {
+    const std::string first = "CONFIG_PCI=y\nCONFIG_SYSFS=y\nCONFIG_NET_9P_VIRTIO=y\nCONFIG_9P_FS=y\nCONFIG_DRM_VIRTIO_GPU=y\n"
+                              "# CONFIG_FUSE_FS is not set\n";
+    EXPECT_EQ(luban::vm::kernel_caps(first), (std::set<std::string>{"9p", "pci-sysfs-mmap", "virtio-gpu"}));
+    const auto r3 = luban::vm::kernel_caps(first + "CONFIG_FUSE_FS=y\nCONFIG_VIRTIO_FS=y\nCONFIG_UDMABUF=y\n");
+    EXPECT_TRUE(r3.contains("virtio-fs"));
+    EXPECT_TRUE(r3.contains("udmabuf"));
+    // Half of a pair is not the capability; a module (=m) is not built in.
+    EXPECT_FALSE(luban::vm::kernel_caps("CONFIG_FUSE_FS=y\nCONFIG_VIRTIO_FS=m\n").contains("virtio-fs"));
+    EXPECT_TRUE(luban::vm::kernel_caps("").empty());
+}
+
+// The kernel a machine boots is its system's (§7.1): the version it declares
+// (boot.virt), or the one luban config --kernel set; a system that declares
+// none is told to upgrade, never given whatever kernel the home has.
+XTEST(LubanVm, AMachinesKernelIsItsSystemsOrTheOneSet, .area = "luban", .covers = {"LUBAN-MACHINE-KERNEL-CAPS"}) {
+    auto home = tk::Home::isolated("vm-kernel");
+    const auto root = home.root();
+    auto payload = [&](std::string_view version, std::string_view config) {
+        const auto dir = root / "data" / "xpkgs" / "xim-x-linux-kernel-virt" / std::string(version) / "lib" / "modules" / "6.12.112-virt";
+        fs::create_directories(dir);
+        tk::write_file(dir / "vmlinuz", "kernel");
+        tk::write_file(dir / "config", config);
+    };
+    payload("6.12.112", "CONFIG_NET_9P_VIRTIO=y\nCONFIG_9P_FS=y\n");
+    payload("6.12.112-r3", "CONFIG_NET_9P_VIRTIO=y\nCONFIG_9P_FS=y\nCONFIG_FUSE_FS=y\nCONFIG_VIRTIO_FS=y\n");
+    fs::create_directories(root / "subos" / "box");
+    tk::write_file(root / "subos" / "box" / ".xlings.json",
+                   R"({"boot": {"virt": "xim:linux-kernel-virt@6.12.112-r3", "profile": "xim:luban-boot-virt@2026.10.11.1"}})");
+    auto k = luban::vm::machine_kernel(root, "box");
+    ASSERT_TRUE(k) << k.error();
+    EXPECT_EQ(k->version, "6.12.112-r3");
+    EXPECT_EQ(k->ref, "xim:linux-kernel-virt@6.12.112-r3");
+    EXPECT_FALSE(k->overridden);
+    EXPECT_TRUE(k->caps.contains("virtio-fs"));
+    // Set to the first one: it has no virtio-fs.
+    ASSERT_TRUE(luban::service::set_setting(root, "box", "kernel", "6.12.112"));
+    k = luban::vm::machine_kernel(root, "box");
+    ASSERT_TRUE(k);
+    EXPECT_TRUE(k->overridden);
+    EXPECT_FALSE(k->caps.contains("virtio-fs"));
+    EXPECT_TRUE(k->caps.contains("9p"));
+    // A version not installed has no payload yet: the start installs it.
+    ASSERT_TRUE(luban::service::set_setting(root, "box", "kernel", "6.12.112-r9"));
+    k = luban::vm::machine_kernel(root, "box");
+    ASSERT_TRUE(k);
+    EXPECT_TRUE(k->vmlinuz.empty());
+    EXPECT_FALSE(luban::service::set_setting(root, "box", "kernel", "../x"));
+    ASSERT_TRUE(luban::service::set_setting(root, "box", "kernel", "default"));
+    EXPECT_EQ(luban::vm::machine_kernel(root, "box")->version, "6.12.112-r3");
+    // One that declares none.
+    fs::create_directories(root / "subos" / "old");
+    tk::write_file(root / "subos" / "old" / ".xlings.json", R"({"boot": {"profile": "xim:luban-boot-generic@2026.10.11.1"}})");
+    const auto none = luban::vm::machine_kernel(root, "old");
+    ASSERT_FALSE(none);
+    EXPECT_NE(none.error().find("which kernel"), std::string::npos) << none.error();
+}
+
+// A virtiofsd on a host that refuses unprivileged namespaces starts without
+// its sandbox from the start, not after failing once (§7.3, J56).
+XTEST(LubanVm, AVirtiofsdWithoutNamespacesIsPlannedWithoutItsSandbox, .area = "luban", .covers = {"LUBAN-MACHINE-FILES"}) {
+    const std::vector<luban::vm::Share> shares{{"root", "/r", false}};
+    const auto p = luban::vm::virtiofs_plan("/bin/virtiofsd", shares, "/run/m", "2048", false);
+    ASSERT_EQ(p.daemons.size(), 1u);
+    EXPECT_NE(std::ranges::find(p.daemons[0], "none"), p.daemons[0].end());
+    EXPECT_EQ(std::ranges::find(p.daemons[0], "namespace"), p.daemons[0].end());
+    // The probe answers either way without failing the process.
+    (void)luban::vm::unprivileged_userns();
+}

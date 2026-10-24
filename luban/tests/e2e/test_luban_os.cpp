@@ -717,6 +717,40 @@ XTEST(LubanOs, ItSaysWhatItCanDoWithoutADisplay, .area = "luban",
 // A person's first time: nothing yet, the quick start, a system made for
 // real (downloaded, unpacked, set up), and then used -- what a new user sees,
 // end to end, as they would do it.
+// The job page ends well, badly or cancelled in a window too short for its
+// log, and draws on through every ending (J54: a position set with no item
+// after it ended the app when the job finished between two reads).
+XTEST(LubanOs, TheJobPageSurvivesEveryEndingInAShortWindow, .area = "luban", .covers = {"LUBAN-OS-JOB-PAGE"},
+      .requires_ = {"xlings-bin"}) {
+    if (!app_binary()) GTEST_SKIP() << "no luban-os beside the xlings under test";
+    auto home = tk::Home::isolated("luban-os-job-page");
+    ASSERT_EQ(home.xlings({"self", "init"}).exit_code, 0);
+    const auto st = home.root() / "job.json";
+    auto r = run_script(home, std::format(R"(wait quick-start
+resize 640 300
+frames 2
+job ok 150
+wait job
+waitfor job.done true 10
+frames 20
+job fail 150
+waitfor job.done true 10
+frames 20
+expect job.code 1
+job slow 0
+frames 3
+click job:cancel
+waitfor job.done true 10
+frames 20
+resize 640 220
+job ok 0
+frames 30
+state {}
+)", st.string()));
+    ASSERT_EQ(r.exit_code, 0) << r.transcript();
+    EXPECT_EQ(read_state(st)["job"]["code"], 0);
+}
+
 XTEST(LubanOs, AFirstTimeUserMakesASystemFromTheQuickStartAndUsesIt, .area = "luban",
       .covers = {"LUBAN-OS-APP", "LUBAN-OS-FIRST-USE", "LUBAN-WELCOME", "LUBAN-OS-PROGRESS"},
       .requires_ = {"linux", "xlings-bin", "static-xlings", "sandbox", "network"}) {

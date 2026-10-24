@@ -429,6 +429,17 @@ void Server::button(const opensal::PointerButton& b) {
             open_menu(v, cursor->x, cursor->y);
             return;
         }
+        // Its fold mark (a free window in the WuXian view, design 2026-10-24
+        // §9.3): folded, or unfolded, at once.
+        if (title && b.button == opensal::Button::Left && !super && wuxian() && lay.is_free(v->id)) {
+            const auto m = shell::fold_button();
+            const double x = (cursor->x - v->frame->node.x) / std::max(0.01, v->zoom);
+            if (x >= m.x && x < m.x + m.width) {
+                title_pressed_id = 0;
+                collapse_window(v->id);
+                return;
+            }
+        }
         // Twice on a title bar: maximized, or back -- a free window in the
         // WuXian view: collapsed, or expanded (design 2026-10-21 §8.5).
         if (title && b.button == opensal::Button::Left && !super) {

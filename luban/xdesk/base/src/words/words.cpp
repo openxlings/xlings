@@ -80,6 +80,7 @@ constexpr i18n::Entry kZh[] = {
     {"Close", "关闭"},
     {"Collapse, or expand: a free window to its title bar, a workspace to its label", "折叠 / 展开：自由窗口只留标题栏，工作区只留标签"},
     {"Collapsed (its label only)", "折叠（只留标签）"},
+    {"collapsed", "已折叠"},
     {"Collapsed (its title bar only)", "折叠（只留标题栏）"},
     {"Collapsing is the WuXian view's (Super+O)", "折叠在 WuXian 视图里（Super+O）"},
     {"Column width: 1/3, 1/2, 2/3, all", "列宽：1/3、1/2、2/3、全宽"},

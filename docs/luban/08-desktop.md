@@ -150,7 +150,7 @@ take it, Esc to keep it):
 | | |
 |---|---|
 | **Tile** | windows in columns side by side, 4 pixels apart; the columns share the screen equally until each would be narrower than 480, then they scroll with the focused one in view; a column can hold several, one above another; a workspace can run its columns downwards (`flow = vertical`). A tiled window is told so and takes its size exactly |
-| **Stack** | windows where you put them, overlapping, kept on the screen; maximized, or snapped to a half or a quarter |
+| **Stack** | windows where you put them, overlapping, partly off the screen if you like (the title bar stays on it); maximized, or snapped to a half or a quarter -- drag one to an edge or a corner, drag it away to have its size back |
 
 A window **floats** in its workspace (Super+Shift+Space: above the
 arrangement, moving with it — dialogs do by themselves); a **free window** is
@@ -259,7 +259,9 @@ the outline of what it is for, click it to bring that forward. They are hidden
 while you drag or pan, and can be turned off (*WuXian* in the settings, or
 `[wuxian] bookmarks = off`); agents use `xdesk msg bookmark N` (the state says
 which there are). A collapsed workspace is only its label, a collapsed free
-window only its title bar: double-click (or Super+S) to open it again.
+window only its title bar, marked ▸ (▾ when open) and darker, with *collapsed*
+after its name: click the mark, double-click (or Super+S) to open it again, at
+the size it had wherever it was moved.
 
 The input method of the host types into the desktop's windows, and the
 clipboard is shared — each way as far as the environment's grants allow:
@@ -305,7 +307,7 @@ What the desktop is and does, for scripts, agents and a bug report:
 ```bash
 xdesk msg state                            # output, view, workspaces, windows, overlays, the frames' cost (JSON)
 xdesk msg subscribe                        # what happens from now on, a line each (focus, open, close, ...)
-xdesk msg debug hud on                     # the frames' parts drawn in the top left
+xdesk msg debug hud [on|off]               # the frames' parts drawn in the top left; alone, toggled
 xdesk msg telemetry metrics                # counters and histograms (xdesk.frame.compose_ns, ...)
 xdesk msg telemetry profile on             # then `telemetry trace`: a trace any trace viewer opens (Perfetto)
 xdesk msg telemetry dump                   # all of it, with the last moments recorded

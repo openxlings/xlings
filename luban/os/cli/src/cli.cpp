@@ -847,6 +847,13 @@ int cmd_status(const svc::Context& c, const Parsed& p, const Globals& g, Rendere
     if (gpu) j["gpu"] = *gpu;
     const auto files = e->settings.mode == "machine" ? vm::started_files(c.home, e->name) : std::nullopt;
     if (files) j["files"] = *files;
+    // Its kernel as a machine (design 2026-10-24 §7.1): the package version is its identity.
+    std::string kernel;
+    if (e->settings.mode == "machine") {
+        if (const auto k = vm::machine_kernel(c.home, e->name)) kernel = k->version + (k->overridden ? " (set)" : "");
+        else kernel = std::format("none: luban upgrade {}", e->name);
+        j["kernel"] = kernel;
+    }
     j["notes"] = Json::array();
     for (const auto& n : notes) j["notes"].push_back({{"text", n.text}, {"next", n.next}});
     if (g.json) { r.value(j); return 0; }
@@ -874,6 +881,7 @@ int cmd_status(const svc::Context& c, const Parsed& p, const Globals& g, Rendere
     std::println("  {:<9} {}", xlings::i18n::tr("luban.status.network"), network);
     if (gpu) std::println("  gpu       {}", *gpu);
     if (files) std::println("  files     {}", *files);
+    if (!kernel.empty()) std::println("  kernel    {}", kernel);
     std::println("  isolation luban config {}", e->name);
     for (const auto& v : unmet) std::println("  {} {}: this luban is older than it -- xlings update luban", r.paint("!", 33), v.why());
     // What may be done, never forced (design 2026-10-19 §12.2).
@@ -899,7 +907,14 @@ int cmd_config(const svc::Context& c, const Parsed& p, const Globals& g, Rendere
     if (!v.value("shell", std::string{}).empty()) std::println("  shell     {}", v.value("shell", ""));
     std::println("  desktop   {}", v.value("desktop", std::string{}).empty() ? "(the edition's)" : v.value("desktop", ""));
     std::println("  on-close  {}", v.value("on_close", ""));
-    if (v.value("mode", std::string{}) == "machine") std::println("  files     {}", v.value("files", std::string("virtiofs")));
+    if (v.value("mode", std::string{}) == "machine") {
+        std::println("  files     {}", v.value("files", std::string("virtiofs")));
+        // Its kernel: the system's own, or the one set (design 2026-10-24 §7.1).
+        if (const auto k = vm::machine_kernel(c.home, p.words[0]))
+            std::println("  kernel    {}{}", k->version, k->overridden ? " (set)" : " (its own)");
+        else
+            std::println("  kernel    none: luban upgrade {}", p.words[0]);
+    }
     if (auto iso = v.find("isolation"); iso != v.end() && iso->is_object()) {
         std::println("  policy    {}", iso->value("extends", std::string("?")));
         if (auto in = iso->find("isolation"); in != iso->end() && in->is_object()) {
@@ -1341,6 +1356,7 @@ const spec::CommandSpec& tree() {
                          {"--on-close <WHAT>", "ask, background or poweroff: closing its window"},
                          {"--enter <WHAT>", "console or desktop: what going in shows first"},
                          {"--files <HOW>", "virtiofs (9p where it cannot) or 9p: how a machine shares its files", false, Level::More},
+                         {"--kernel <VERSION>", "The kernel it boots as a machine (a linux-kernel-virt version), or default: its own", false, Level::More},
                          {"--policy <PRESET>", "dev, private, locked, or ns:name"},
                          {"--proxy <URL>", "Its only network is this SOCKS5h proxy; off for none"},
                          {"--tz <ZONE>", "utc, proxy, or Area/City"},

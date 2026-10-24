@@ -95,6 +95,7 @@ void App::start_job(std::string title, std::function<void(Job&, service::Context
     job->retry = [this, title = job->title, body, then] { start_job(title, body, then); };
     job->worker = std::thread([j, w, c, body = std::move(body)] {
         body(*j, c);
+        std::lock_guard l(j->m);   // the page reads them under the same lock (J54)
         j->done_at = std::chrono::steady_clock::now();
         j->done = true;
         w->wake();

@@ -369,8 +369,9 @@ virtiofsd）、Luban OS 应用的日志；`--bundle out.tar.zst` 打包，附 `l
 ### 8.3 终端：保持 foot（J77，评审结论 C）
 
 - 选区按 Linux 的习惯分开：选中进 `primary`，中键粘贴；Ctrl+Shift+C/V 用 `clipboard`。
-- **右键粘贴 `clipboard`**：桌面包的 `/etc/xdg/foot/foot.ini`（xim-pkgindex）在 `[mouse-bindings]` 里把右键绑到 `clipboard-paste`（foot 1.27
-  有这个动作；K18a 先验证鼠标绑定接受它，不接受时给 `luban:foot` 打补丁让它接受）；原来右键的"扩展选区"改到 Shift+左键。
+- **右键粘贴 `clipboard`**：`luban:foot` 自带的 `/etc/xdg/foot/foot.ini`（xim-pkgindex `tools/res/luban/foot`，发 `1.27.0-r2`）在
+  `[mouse-bindings]` 里把右键绑到 `clipboard-paste`——K18a 已验证 foot 1.27 的鼠标绑定接受它（`foot --check-config`，构建时也检查）；
+  原来右键的"扩展选区"改到 Ctrl+右键（Shift 是 foot 的"越过程序的鼠标"修饰键，Shift+左键与它冲突）。
 - fish 的 Ctrl+V 经 `wl-paste` 走会话的剪贴板（§8.1）；粘贴多行时，fish 与 bash 的 bracketed paste 不会直接执行。
 - xdesk 的标题栏与桌面背景的菜单保持；不做通用的右键菜单。
 
@@ -738,3 +739,48 @@ xlings 与 xim-pkgindex 两个仓库。
 | 测试：剪贴板 | 第一版的 S3 断言不到"只有最新的一次" | 连复制三次再跨区域粘贴、来源窗口关闭后粘贴、内容不进日志（§11.2） |
 | 兼容 | 不考虑旧版本后，第一版的过渡路径都成了负担 | 去掉私有 socket、home 级内核、折叠状态的修复特例；只留索引 CI 需要的 `min_client`（§13） |
 | 右键粘贴的依赖 | foot 的鼠标绑定是否接受 `clipboard-paste` 未验证 | K18a 先验证，不接受时给 `luban:foot` 打补丁（§8.3） |
+
+## 19. 实施计划与依赖
+
+按视角拆成的任务、它们的先后，以及跨仓库的联动与联调。检查点仍是 §15 的编号，这里给出顺序与依据。
+
+### 19.1 依赖图
+
+```
+K18a 修复（无依赖，先落） ──────────────────────────────────────────────┐
+K18 测试地基（场景格式、runner、确定性钩子） ─┬─────────────────────────┤
+K19 规范（openhal 0.3 / opensal 0.7 / openbus 0.2 / opencaps / openwx 0.2）│
+  ├─ K20 openhal-emu + 路由生命周期 ─┬─ K21 xdesk 上总线 ─┬─ K22 命令（display、logs、virtual）
+  │                                  │                    ├─ K24 剪贴板服务、sandbox GPU、foot、输入法
+  │                                  │                    └─ K26 设置应用、壁纸（经 xdesk.control@1）
+  └─ K23 machine：内核属于系统（boot.virt）+ ivshmem 帧 ── 依赖 xim-pkgindex 的 boot.virt
+K25 书签与图标（只依赖 K18 的截图基线）
+K27 全部场景、文档、版本号 ── 依赖以上全部
+```
+
+### 19.2 每个视角看什么
+
+| 视角 | 落在哪里 | 怎么验证 |
+|---|---|---|
+| 架构 | 总线是唯一入口（§3）；规范只依赖标准库；kit 不引用 xlings | `tools/lint_layer_deps.sh`；规范的一致性用例 |
+| 稳定性 | 启动页不 abort（J54）；能力先校验（J55）；崩溃可见（§6） | e2e：短窗口三种结束；单元：能力映射；S13 |
+| 优雅简洁 | 一条规则只有一处（`kept_on` 同时给布局与拖动用）；控制 socket 退为后备 | 代码审阅；没有重复实现的同名逻辑 |
+| 用户体验 | 贴边、折叠标识、书签、图标、设置是窗口、壁纸 | 场景 S4–S8 的截图基线与状态断言 |
+| 兼容性 | 不考虑旧版本（§13）；只有索引 CI 的 `min_client` | 索引的安装测试 |
+| 跨平台 | §5.5 实现表；Windows/macOS 上的 Luban 宿主机 | CI 三平台；S3b |
+| 一致性 | 人与 Agent 同一条路径（虚拟输入）；命令树、`docs/generated/` 同步 | `test_generated_command_reference.py`；S14 |
+| 无感升级 | 系统带内核随 `luban upgrade` 前进；新 Falkon、`foot.ini` 经版本号 | S12：装上一版、升级、进入 |
+
+### 19.3 跨仓库的联动与联调
+
+1. **xim-pkgindex 第一部分（不依赖新客户端）**：Falkon `26.04.2-r2`（NSS）；桌面包的 `foot.ini`；各版本新增 `boot.virt`（旧客户端读到
+   `boot` 里不认识的键会忽略，不需要 `min_client`）。先合并，xlings 的 CI 才能在真实索引上测 machine 的内核。
+2. **xlings PR**：K18a → K27；每个检查点跑一次完整 CI。
+3. **xlings 发布**后：xim-pkgindex 第二部分（`xdesk-settings`、`xdesk-wallpaper`、新 xdesk 版本、`checks` 的新种类，带 `min_client`）。
+4. **luban-os-ci**：场景随检查点推进；未发布的修复以 `known` 标出，发布后去掉。
+5. 联调：本地隔离 home 里 `xlings config --index-repo` 指向索引分支，跑 S1–S3、S11、S12，再进 CI。
+
+### 19.4 本地资源
+
+本地构建与测试不超过机器的 80%（`-j 24`，同时只跑一组重的测试）；磁盘不足时删除项目的临时与过期缓存（`/tmp/xtest-*`、
+`mcpp clean --stale`）。
