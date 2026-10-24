@@ -227,6 +227,12 @@ namespace platform {
         std::thread reader_;
     };
 
+    // For the rest of the process: lines written to fd 2 that `divert`
+    // answers true for go to `sink` instead (a library's noise on a person's
+    // terminal -- Xlib's input-method notes, design 2026-10-24 J70); the rest
+    // reach fd 2 as before. POSIX; nothing elsewhere.
+    export void divert_stderr_lines(std::function<bool(std::string_view)> divert, std::function<void(std::string_view)> sink);
+
     export int exec(const std::string& cmd);
 
     export [[nodiscard]] std::string shell_quote(const std::string& arg);

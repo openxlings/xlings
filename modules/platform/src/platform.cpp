@@ -244,6 +244,40 @@ void close_fd(int fd) {
 #endif
     }
 
+void divert_stderr_lines(std::function<bool(std::string_view)> divert, std::function<void(std::string_view)> sink) {
+#if defined(_WIN32)
+        (void)divert;
+        (void)sink;
+#else
+        std::fflush(stderr);
+        const int saved = ::dup(2);
+        if (saved < 0) return;
+        int fds[2];
+        if (::pipe(fds) != 0) { ::close(saved); return; }
+        if (::dup2(fds[1], 2) < 0) { ::close(fds[0]); ::close(fds[1]); ::close(saved); return; }
+        ::close(fds[1]);
+        std::thread([read_end = fds[0], saved, divert = std::move(divert), sink = std::move(sink)] {
+            std::string pending;
+            char buf[4096];
+            for (;;) {
+                const auto n = ::read(read_end, buf, sizeof buf);
+                if (n < 0 && errno == EINTR) continue;
+                if (n <= 0) break;
+                pending.append(buf, static_cast<std::size_t>(n));
+                for (auto nl = pending.find('\n'); nl != std::string::npos; nl = pending.find('\n')) {
+                    const std::string line = pending.substr(0, nl + 1);
+                    pending.erase(0, nl + 1);
+                    if (divert(line)) sink(line);
+                    else (void)write_fd(saved, line);
+                }
+                // A line not yet ended and long: as it is.
+                if (pending.size() > 65536) { (void)write_fd(saved, pending); pending.clear(); }
+            }
+            if (!pending.empty()) (void)write_fd(saved, pending);
+        }).detach();
+#endif
+    }
+
 StdoutCapture::StdoutCapture(std::function<void(std::string_view)> onLine) {
         std::fflush(stdout);
         savedFd_ = dup_stdout_fd();

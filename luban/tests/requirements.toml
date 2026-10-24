@@ -775,3 +775,7 @@ status = "required"
 [LUBAN-CLIPBOARD-SESSION]
 text = "a desktop session's clipboard is its own and on the bus (luban.clipboard@1: read, write; changes said by type and size, never content); its command-line tools reach it through data-control (wl-copy, wl-paste run as the system's own, never the host's through the broker); only a copy made while its window is used crosses to the host, and the host's latest copy comes in when the window is used; a failure is said on standard error and nothing is pasted (design 2026-10-24 §8, J60)"
 status = "required"
+
+[LUBAN-OS-QUIET-TERMINAL]
+text = "the Luban OS window started from a terminal leaves nothing of its libraries' notes on it -- Xlib's input-method lines go to its log -- and hands its keys to a host's input method, the content drawing what it composes (design 2026-10-24 §8.4, J70)"
+status = "required"

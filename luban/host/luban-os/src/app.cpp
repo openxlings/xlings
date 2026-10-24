@@ -280,6 +280,16 @@ int run(int argc, char* argv[]) {
         }
     }
     set_language(a.settings.language);
+    // Xlib's notes from a host's input method ("imDefLkup.c ... disposed a key
+    // event") are its own, not the person's: kept in the app's log, off the
+    // terminal it was started from (design 2026-10-24 J70).
+    {
+        const auto log = a.home / "logs" / "luban-os.log";
+        platform::divert_stderr_lines([](std::string_view line) { return line.find("imDefLkup.c") != std::string_view::npos; },
+                                      [log](std::string_view line) {
+                                          std::ofstream(log, std::ios::app) << xlings::observe::utc_now() << " xlib: " << line;
+                                      });
+    }
     auto window = host::Window::open(o);
     if (!window) {
         std::println(std::cerr, "luban-os: {}", window.error());

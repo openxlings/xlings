@@ -212,6 +212,10 @@ struct Window::Impl {
 std::expected<std::unique_ptr<Window>, std::string> Window::open(const Options& o) {
     // Held, Alt+Tab is the window's on Windows too (SDL leaves it the host's).
     SDL_SetHint(SDL_HINT_ALLOW_ALT_TAB_WHILE_GRABBED, "0");
+    // A host's input method composes; what it composes is shown by the
+    // content (the desktop draws the preedit it is given): SDL is told so,
+    // and hands every key to the input method to filter (design 2026-10-24 §8.4).
+    SDL_SetHint(SDL_HINT_IME_IMPLEMENTED_UI, "composition");
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS)) return std::unexpected(std::format("no display here: {}", SDL_GetError()));
     std::unique_ptr<Window> w(new Window());
     w->impl_ = std::make_unique<Impl>();
