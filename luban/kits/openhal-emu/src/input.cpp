@@ -83,6 +83,21 @@ std::optional<Chord> parse_chord(std::string_view text) {
     return c;
 }
 
+// A character as a US keyboard types it: its key's keysym, and whether Shift is
+// held for it; nothing for one no key types (an input method's to give).
+std::optional<std::pair<std::uint32_t, bool>> typed_(char32_t c) {
+    static constexpr std::string_view kShifted = "!@#$%^&*()_+{}|:\"<>?~", kBase = "1234567890-=[]\\;',./`";
+    if (c == '\n') return std::pair{0xff0du, false};
+    if (c == '\t') return std::pair{0xff09u, false};
+    if (c >= 'a' && c <= 'z') return std::pair{std::uint32_t(c), false};
+    if (c >= 'A' && c <= 'Z') return std::pair{std::uint32_t(c - 'A' + 'a'), true};
+    if (c < 0x80) {
+        if (const auto k = kShifted.find(static_cast<char>(c)); k != std::string_view::npos) return std::pair{std::uint32_t(kBase[k]), true};
+        if (c >= 0x20 && c < 0x7f) return std::pair{std::uint32_t(c), false};
+    }
+    return std::nullopt;
+}
+
 std::expected<std::vector<opensal::Event>, std::string> input_events(std::string_view steps_json, double scale) {
     auto steps = Json::parse(steps_json, nullptr, false);
     if (steps.is_object() && steps.contains("events")) steps = steps["events"];
@@ -144,7 +159,26 @@ std::expected<std::vector<opensal::Event>, std::string> input_events(std::string
             if (const auto m = mod_(name)) held = down ? held | m : held & ~m;
             out.push_back(opensal::Key{.down = down, .keysym = c->keysym, .mods = held});
         } else if (s.contains("text")) {
-            out.push_back(opensal::TextCommit{s["text"].get<std::string>()});
+            // Typed as a window types it (openhal 0.3 §6.6): what a keyboard
+            // has as its keys (Shift around a shifted one), the rest as an
+            // input method's text.
+            const auto text = s["text"].get<std::string>();
+            std::string composed;
+            const auto flush = [&] { if (!composed.empty()) out.push_back(opensal::TextCommit{std::exchange(composed, {})}); };
+            for (std::size_t k = 0; k < text.size();) {
+                const auto lead = static_cast<unsigned char>(text[k]);
+                const std::size_t n = lead < 0x80 ? 1 : lead >> 5 == 6 ? 2 : lead >> 4 == 14 ? 3 : 4;
+                const auto typed = n == 1 ? typed_(static_cast<char32_t>(lead)) : std::nullopt;
+                if (!typed) { composed += text.substr(k, n); k += n; continue; }
+                flush();
+                const std::uint32_t mods = held | (typed->second ? opensal::Shift : 0u);
+                if (typed->second) out.push_back(opensal::Key{.down = true, .keysym = 0xffe1, .mods = held});
+                out.push_back(opensal::Key{.down = true, .keysym = typed->first, .mods = mods});
+                out.push_back(opensal::Key{.down = false, .keysym = typed->first, .mods = mods});
+                if (typed->second) out.push_back(opensal::Key{.down = false, .keysym = 0xffe1, .mods = held});
+                k += 1;
+            }
+            flush();
         } else {
             return std::unexpected("not a step: " + s.dump());
         }

@@ -102,8 +102,10 @@ logical pixel (`1920x1080@1.25`); `<width>x<height>` is scale 1.
 pointers, keys, text and wheels as steps -- `{"move": [x, y]}`, `{"button":
 "left|middle|right", "down": true|false}`, `{"click": [x, y], "button": B,
 "count": N}`, `{"wheel": [dx, dy]}`, `{"key": "<chord>"}` (`Super+s`,
-`Ctrl+Shift+v`, `Return`), `{"keydown": K}`, `{"keyup": K}`, `{"text": "..."}`,
-in logical pixels of the display they go to. A virtual display's input is
+`Ctrl+Shift+v`, `Return`), `{"keydown": K}`, `{"keyup": K}`, `{"text": "..."}`
+(typed as a window types it: a keyboard's characters as its keys, Shift
+around a shifted one, the rest as an input method's text), in logical pixels
+of the display they go to. A virtual display's input is
 this; a person's and an agent's input reach a desktop the same way.
 
 6.7 A clipboard is a service of its region (luban.clipboard@1, Luban OS

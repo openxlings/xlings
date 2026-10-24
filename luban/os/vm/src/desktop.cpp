@@ -436,6 +436,8 @@ int desktop_supervise(const fs::path& home, std::string_view name, std::span<con
                     if (type == 'E' || type == 'D') std::ofstream(log, std::ios::app) << body.second;
                     if (type == 'X') {
                         const auto j = Json::parse(body.second, nullptr, false);
+                        // Why, when it could not start there.
+                        if (j.is_object() && j.contains("error")) std::ofstream(log, std::ios::app) << "luban __desktop: " << j.value("error", std::string{}) << "\n";
                         run->code = j.is_object() ? j.value("code", 0) : 0;
                         return;
                     }

@@ -143,9 +143,28 @@ std::optional<Session> piped_(const Json& open, const std::vector<int>& inherite
     for (const auto& w : open.value("argv", Json::array()))
         if (w.is_string()) argv.push_back(w.get<std::string>());
     if (argv.empty()) return std::nullopt;
-    // `luban` is this program (the window's sound relay, design 2026-10-20 §20.1).
+    // `luban` is this program (the window's sound relay, design 2026-10-20 §20.1;
+    // a desktop's display, 2026-10-24 §4.2) -- by a name that is luban's (run
+    // as /init it would be the machine's init again), and a copy any user may
+    // run: the initramfs it came from is gone after switch_root, and a root
+    // process's /proc/<pid>/exe is not another user's to open.
     if (argv.front() == "luban")
-        if (const auto self = platform::get_executable_path(); !self.empty()) argv.front() = self.string();
+        if (const auto self = platform::get_executable_path(); !self.empty()) {
+            argv.front() = self.string();
+            if (!self.filename().string().starts_with("luban")) {
+                const std::filesystem::path named = "/run/luban/bin/luban";
+                std::error_code ec;
+                std::filesystem::create_directories(named.parent_path(), ec);
+                if (!std::filesystem::exists(named, ec)) {
+                    const auto partial = named.string() + ".part";
+                    if (std::filesystem::copy_file("/proc/self/exe", partial, std::filesystem::copy_options::overwrite_existing, ec)) {
+                        std::filesystem::permissions(partial, std::filesystem::perms(0755), ec);
+                        std::filesystem::rename(partial, named, ec);
+                    }
+                }
+                if (std::filesystem::exists(named, ec)) argv.front() = named.string();
+            }
+        }
     const int pid = platform::fork_process();
     if (pid == 0) {
         platform::new_session();

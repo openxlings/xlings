@@ -140,6 +140,15 @@ XTEST(OpenhalEmu, InputStepsAreTheEventsAWindowGives, .area = "luban", .covers =
     EXPECT_EQ(emu::input_events(R"([{"key": "Super"}])")->size(), 2u) << "a modifier alone: pressed and let go";
     EXPECT_FALSE(emu::input_events(R"([{"fly": 1}])"));
     EXPECT_FALSE(emu::input_events(R"({"no": "array"})"));
+    // Text a keyboard types is its keys; Shift around a shifted one.
+    const auto typed = emu::input_events(R"([{"text": "aB:"}])");
+    ASSERT_TRUE(typed);
+    ASSERT_EQ(typed->size(), 10u);
+    EXPECT_EQ(std::get<opensal::Key>((*typed)[0]).keysym, std::uint32_t{'a'});
+    EXPECT_EQ(std::get<opensal::Key>((*typed)[2]).keysym, 0xffe1u);
+    EXPECT_EQ(std::get<opensal::Key>((*typed)[3]).keysym, std::uint32_t{'b'});
+    EXPECT_EQ(std::get<opensal::Key>((*typed)[3]).mods, std::uint32_t{opensal::Shift});
+    EXPECT_EQ(std::get<opensal::Key>((*typed)[7]).keysym, std::uint32_t{';'});
     EXPECT_TRUE(emu::input_events(R"({"events": [{"text": "a"}]})"));
 }
 
