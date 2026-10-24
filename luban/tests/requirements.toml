@@ -751,3 +751,11 @@ status = "required"
 [XDESK-COLLAPSE-KEEPS-SIZE]
 text = "a collapsed free window (the WuXian view's) is moved without its size changing, unfolds to the size it had, and its title bar says it: a fold mark (▸ folded, ▾ unfolded) that toggles it, a darker bar with a line under it and 'collapsed' after its title (design 2026-10-24 §9.3, J63, J64)"
 status = "required"
+
+[LUBAN-BUS-DESKTOP]
+text = "a system's programs are on the host's bus through the system's own socket (bus/system), placed under host/<id>/system/<name> whatever they say -- they offer and publish only there, are never a link, and use what the host offers; the desktop, its displays, input, clipboard, logs and session are paths there (design 2026-10-24 §3)"
+status = "required"
+
+[LUBAN-DISPLAY-VIRTUAL]
+text = "a desktop runs on a virtual display (luban enter <n> --display virtual[=WxH@S]): an opensal provider nobody sees that keeps the picture, paces the frames, takes the desktop's size, role and clipboard, hands the picture out as PNG and gives input steps as the events a window gives (openhal 0.3 §6; design 2026-10-24 §4.2)"
+status = "required"

@@ -113,6 +113,10 @@ void close_fds(std::vector<int>& fds);
 bool set_inheritable(int fd, bool inheritable);
 // Close-on-exec unless asked otherwise.
 std::optional<std::array<int, 2>> make_pipe(bool cloexec = true);
+// A connected pair of local stream sockets, both ways (close-on-exec): what a
+// program hands a child as its stdin and stdout when it moves the bytes
+// itself (a bus stream). nullopt where there are none.
+std::optional<std::array<int, 2>> make_socket_pair();
 bool read_exact(int fd, void* buf, std::size_t size);
 
 // ── terminals ────────────────────────────────────────────────────────

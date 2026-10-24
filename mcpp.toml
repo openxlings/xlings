@@ -57,6 +57,7 @@ members = [
     "luban/specs/openbus",
     "luban/kits/imkit",
     "luban/kits/openhal-host",
+    "luban/kits/openhal-emu",
     "luban/kits/tray",
     "luban/kits/opensal-wlr",
     "luban/kits/cursor",
@@ -212,6 +213,7 @@ opencaps    = { path = "luban/specs/opencaps" }
 openwx      = { path = "luban/specs/openwx" }
 openbus     = { path = "luban/specs/openbus" }
 openhal-host = { path = "luban/kits/openhal-host" }
+openhal-emu = { path = "luban/kits/openhal-emu" }
 opensal-wlr = { path = "luban/kits/opensal-wlr" }
 xdesk-base = { path = "luban/xdesk/base" }
 xdesk-layout = { path = "luban/xdesk/layout" }

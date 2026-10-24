@@ -1,0 +1,20 @@
+# openhal-emu: devices nobody holds (openhal 0.3 §6; Luban OS design
+# 2026-10-24 §4.2) -- a virtual display that keeps the picture a desktop
+# draws (the provider side of opensal.wire), says what it is, gives it input
+# and hands its frames out as PNG; what tests, agents and a desktop without a
+# monitor run on. A kit: no xlings, no luban, no platform calls -- the bytes
+# come and go by whatever carries them (a bus stream).
+[package]
+namespace = "openhal"
+name      = "openhal-emu"
+version   = "0.1.0"
+
+[targets.openhal-emu]
+kind = "lib"
+
+[dependencies]
+openhal = { path = "../../specs/openhal" }
+opensal = { path = "../../specs/opensal" }
+
+[dependencies.nlohmann]
+json = "3.12.0"

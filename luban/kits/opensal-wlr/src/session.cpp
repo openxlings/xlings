@@ -288,7 +288,10 @@ int run_session(const Session& s, int in, int out, const SessionOptions& o) {
     env.erase("DISPLAY");
     if (s.native) env["OPENSAL_DISPLAYS"] = displays.string();
     // A session starts at home, as a login does (its terminals open there).
-    const int log = o.log.empty() ? -1 : os::open_append(o.log);
+    // Its errors: the log asked for, else this process's own standard error
+    // -- what the session's caller keeps (design 2026-10-24 §6.1: nothing it
+    // says is lost).
+    const int log = o.log.empty() ? 2 : os::open_append(o.log);
     // Its sound (xlings design 2026-10-20 §20.1): a system with luban:audio
     // runs it for the session -- unless the session already has the host's
     // sound server (a sandbox granted it: PULSE_SERVER).
@@ -309,7 +312,7 @@ int run_session(const Session& s, int in, int out, const SessionOptions& o) {
     const int pid = os::spawn({.argv = {"/bin/sh", "-c", "exec " + s.exec}, .env = env,
                                .cwd = env.contains("HOME") ? fs::path(env.at("HOME")) : fs::path{},
                                .stdio = {s.native ? in : -1, s.native ? out : log, log}});
-    os::close(log);
+    if (log != 2) os::close(log);
     if (pid < 0) return 2;
     if (s.native) {
         // It is the desktop and the stream's other end: done when it is --

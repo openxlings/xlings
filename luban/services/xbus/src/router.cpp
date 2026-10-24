@@ -50,6 +50,10 @@ struct Client {
     std::uint32_t next_channel { 1 };
     std::uint64_t dropped { 0 };
     bool gone { false };
+    // Where it is placed (design 2026-10-24 §3.3): the root of the listener
+    // it came through -- a system's socket places its nodes under
+    // host/<id>/system/<name>, whatever they say; empty: the router's root.
+    std::string scope;
     std::uint32_t channel() { return kRouterChannel | (next_channel++ & ~kRouterChannel); }
 };
 
@@ -111,12 +115,16 @@ struct Router::Impl {
     // What another thread may read of it (a dump's state): set each round.
     std::atomic<std::size_t> seen_nodes { 0 }, seen_links { 0 }, seen_endpoints { 0 };
 
-    std::string abs(std::string_view p) const {
-        return p.starts_with("host/") || p == "host" ? std::string(p) : o.root + "/" + std::string(p);
+    std::string abs(const Client& c, std::string_view p) const {
+        return p.starts_with("host/") || p == "host" ? std::string(p) : (c.scope.empty() ? o.root : c.scope) + "/" + std::string(p);
     }
     // A pattern that begins with a wildcard asks everywhere (SPEC.md §5.2).
-    std::string abs_pattern(std::string_view p) const {
-        return p.starts_with("*") ? std::string(p) : abs(p);
+    std::string abs_pattern(const Client& c, std::string_view p) const {
+        return p.starts_with("*") ? std::string(p) : abs(c, p);
+    }
+    // A scoped node offers and publishes only under its scope.
+    static bool within(const Client& c, std::string_view path) {
+        return c.scope.empty() || path == c.scope || (path.starts_with(c.scope) && path.size() > c.scope.size() && path[c.scope.size()] == '/');
     }
 
     void note(Json fields) {
@@ -238,10 +246,15 @@ struct Router::Impl {
 
     void offer(Client& c, const Frame& f) {
         auto fields = Fields::decode(f.payload);
-        const auto path = fields ? abs(fields->value("path")) : std::string{};
+        const auto path = fields ? abs(c, fields->value("path")) : std::string{};
         const auto kind = fields ? openbus::endpoint_kind(fields->value("kind", "service")) : std::nullopt;
         if (!fields || !openbus::valid_path(path) || !kind) {
             if (!c.peer.link) send(c, error_(f.channel, openbus::ErrorCode::malformed, "an offer names a path and a kind"));
+            return;
+        }
+        if (!within(c, path)) {
+            note({{"event", "denied"}, {"node", c.peer.node}, {"op", "offer"}, {"path", path}, {"scope", c.scope}});
+            send(c, error_(f.channel, openbus::ErrorCode::denied, "a node of " + c.scope + " offers under it, not " + path));
             return;
         }
         if (!allowed(c, "offer", path)) {
@@ -266,7 +279,7 @@ struct Router::Impl {
 
     void resolve(Client& c, const Frame& f) {
         const auto fields = Fields::decode(f.payload);
-        const auto pattern = abs_pattern(fields ? fields->value("pattern", "**") : std::string("**"));
+        const auto pattern = abs_pattern(c, fields ? fields->value("pattern", "**") : std::string("**"));
         const auto wanted = fields ? fields->value("interface") : std::string{};
         for (const auto& [path, e] : endpoints) {
             if (!openbus::matches(pattern, path)) continue;
@@ -304,7 +317,7 @@ struct Router::Impl {
 
     void open_route(Client& c, Frame f, Handle h) {
         auto env = openbus::open_envelope(f.payload);
-        const auto path = env ? abs(env->fields.value("path")) : std::string{};
+        const auto path = env ? abs(c, env->fields.value("path")) : std::string{};
         const bool stream = f.is(Kind::stream_open);
         if (!env || !openbus::valid_path(path)) {
             send(c, error_(f.channel, openbus::ErrorCode::malformed, "a call names its path in its envelope"));
@@ -401,12 +414,12 @@ struct Router::Impl {
                 }
                 return;
             }
-        const auto path = env ? abs(env->fields.value("path")) : std::string{};
+        const auto path = env ? abs(c, env->fields.value("path")) : std::string{};
         if (!env || !openbus::valid_path(path)) {
             send(c, error_(f.channel, openbus::ErrorCode::malformed, "a publication names its path"));
             return;
         }
-        if (!allowed(c, "publish", path)) {
+        if (!within(c, path) || !allowed(c, "publish", path)) {
             send(c, error_(f.channel, openbus::ErrorCode::denied, "not allowed to publish " + path));
             return;
         }
@@ -424,7 +437,7 @@ struct Router::Impl {
 
     void subscribe(Client& c, const Frame& f) {
         auto env = openbus::open_envelope(f.payload);
-        const auto pattern = env ? abs_pattern(env->fields.value("pattern")) : std::string{};
+        const auto pattern = env ? abs_pattern(c, env->fields.value("pattern")) : std::string{};
         if (!env || !openbus::valid_pattern(pattern)) {
             send(c, error_(f.channel, openbus::ErrorCode::malformed, "a subscription names its pattern"));
             return;
@@ -548,6 +561,36 @@ struct Router::Impl {
                 answer["state"]["xbus.router." + id] = {{"topology", Json::parse(topology())}, {"stats", Json::parse(stats())}};
             body = answer.dump(-1, ' ', false, Json::error_handler_t::replace);
         }
+        else if (what == "system") {
+            // A system's socket (design 2026-10-24 §3.3): its nodes are placed
+            // under host/<id>/system/<name>; asked by the owner's side only.
+            const auto name = body_in;
+            const bool fine = !name.empty() && name.size() <= 64 && std::ranges::all_of(name, [](char ch) {
+                return (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') || ch == '-' || ch == '_' || ch == '.';
+            });
+            if (c.peer.link || !c.scope.empty() || o.systems_dir.empty() || !allowed(c, "system", path)) {
+                send(c, error_(f.channel, openbus::ErrorCode::denied, "not allowed to open a system's socket here"));
+                return;
+            }
+            if (!fine) {
+                send(c, error_(f.channel, openbus::ErrorCode::malformed, "bus/system takes a system's bus name (a-z, 0-9, -, _, .)"));
+                return;
+            }
+            const auto at = (o.systems_dir / (name + ".sock")).string();
+            const auto scope = o.root + "/system/" + name;
+            if (std::ranges::none_of(listeners, [&](const Listening& l) { return l.scope == scope; })) {
+                std::error_code ec;
+                std::filesystem::create_directories(o.systems_dir, ec);
+                auto h = native::listen("unix", at, o.shared);
+                if (!h) {
+                    send(c, error_(f.channel, openbus::ErrorCode::gone, h.error()));
+                    return;
+                }
+                listeners.push_back({Address{"unix", at}, std::move(*h), scope});
+                note({{"event", "listen"}, {"address", "unix:" + at}, {"root", scope}, {"by", c.peer.node}});
+            }
+            body = Json{{"socket", at}, {"root", scope}}.dump();
+        }
         else if (what == "link" || what == "unlink") {
             if (c.peer.link || !allowed(c, what, path)) {
                 send(c, error_(f.channel, openbus::ErrorCode::denied, "not allowed to " + what + " this bus"));
@@ -599,9 +642,9 @@ struct Router::Impl {
 
     // ── connections ──────────────────────────────────────────────────
 
-    Fields hello_fields(bool as_link) const {
+    Fields hello_fields(bool as_link, const std::string& scope = {}) const {
         Fields f{{"openbus", std::string(openbus::kVersion)}, {"node", id}, {"name", "router"}, {"actor", "service:xbus-router"},
-                 {"root", o.root}, {"router", id}};
+                 {"root", scope.empty() ? o.root : scope}, {"router", id}};
         for (const auto* feature : {"descriptors", "regions", "retained"}) f.add("feature", feature);
         if (as_link) f.add("feature", "link");
         return f;
@@ -628,10 +671,13 @@ struct Router::Impl {
         c.peer.node = fields->value("node", random_hex_(16));
         c.peer.name = fields->value("name", "node");
         c.peer.actor = fields->value("actor", "program");
-        c.peer.link = std::ranges::contains(fields->all("feature"), "link");
+        // Through a system's socket nothing is a link: a router there would
+        // offer paths outside it.
+        c.peer.link = c.scope.empty() && std::ranges::contains(fields->all("feature"), "link");
         c.peer.root = fields->value("root");
+        c.peer.scope = c.scope;
         c.hello = true;
-        Fields w = hello_fields(false);
+        Fields w = hello_fields(false, c.scope);
         w.add("scope", c.peer.link ? "link" : "host");
         w.add("limit-payload", static_cast<std::int64_t>(openbus::kMaxPayload));
         w.add("limit-queue", static_cast<std::int64_t>(o.queue_limit));
@@ -675,7 +721,7 @@ struct Router::Impl {
         case Kind::offer: offer(c, f); break;
         case Kind::withdraw: {
             const auto fields = Fields::decode(f.payload);
-            const auto path = fields ? abs(fields->value("path")) : std::string{};
+            const auto path = fields ? abs(c, fields->value("path")) : std::string{};
             if (auto it = endpoints.find(path); it != endpoints.end() && it->second.owner == c.id) withdraw(path);
             break;
         }
@@ -731,6 +777,7 @@ struct Router::Impl {
     struct Listening {
         Address address;
         Handle handle;
+        std::string scope;   // a system's socket: where its nodes are placed
     };
     std::vector<Listening> listeners;
     std::array<Handle, 2> wake;              // a pipe's feeding thread knocks here
@@ -814,7 +861,7 @@ struct Router::Impl {
             if (ids[k] < 0) {
                 if (!set[k].readable) continue;
                 auto& l = listeners[static_cast<std::size_t>(-ids[k] - 1)];
-                for (auto h = native::accept(l.handle); h.valid(); h = native::accept(l.handle)) add(socket_channel(std::move(h)), false);
+                for (auto h = native::accept(l.handle); h.valid(); h = native::accept(l.handle)) add(socket_channel(std::move(h)), false).scope = l.scope;
                 worked = true;
                 continue;
             }
@@ -895,6 +942,9 @@ Router::Router(RouterOptions o) : impl_(std::make_unique<Impl>()) {
     for (const auto* what : {"link", "unlink"})
         impl_->endpoints[impl_->o.root + "/bus/" + what] = Endpoint{.owner = 0, .kind = openbus::EndpointKind::service,
                                                                     .meta = router_object(std::string("bus-") + what, "external")};
+    if (!impl_->o.systems_dir.empty())
+        impl_->endpoints[impl_->o.root + "/bus/system"] = Endpoint{.owner = 0, .kind = openbus::EndpointKind::service,
+                                                                   .meta = router_object("bus-system", "reversible")};
     impl_->endpoints[impl_->o.root + "/bus/trace"] = Endpoint{.owner = 0, .kind = openbus::EndpointKind::topic,
                                                               .meta = Fields{{"interface", "openbus.router@0.1"}}};
     auto told = router_object("telemetry", "reversible");

@@ -12,6 +12,15 @@
 |---|---|---|
 | 宿主 | 每个 xlings home 一个，在 `<home>/run/openbus/router.sock`；第一个需要它的一方拉起（machine 启动时），空闲十分钟后退出 | 链接在它下面的系统，以及宿主上的程序 |
 | machine | 在它的 agent 里，`/run/openbus/router.sock`；它的程序经 `OPENBUS_ROUTER` 找到 | 桌面（`service/xdesk/state`、`service/xdesk/control`、`topic/xdesk/events`），以及它的程序暴露的其它对象 |
+| sandbox 系统 | 没有自己的路由：宿主的路由为这个系统开一个 socket（`<home>/run/openbus/systems/<名字>.sock`，绑进系统里成为 `/run/openbus/router.sock`）；从它连上来的一切都放在 `host/<宿主>/system/<名字>/...` 下，也只能在那里暴露 | 桌面，同上 |
+
+| 路径（在 `host/<宿主>/` 下） | 是什么 |
+|---|---|
+| `device/display/<n>`、`.../control` | 一个显示器：窗口、虚拟显示器（openhal 0.3）——描述、截图、录制、模式、输入 |
+| `device/input/<n>` | 它的输入：移动、点击、按键（`Super+s`）、文字 |
+| `system/<名字>/service/desktop` | 一个运行中的桌面：状态、接入、断开、结束（`luban display`） |
+| `system/<名字>/topic/desktop/events` | 它开始了、一个显示器来了或走了、它结束了以及原因 |
+| `system/<名字>/service/xdesk/state`、`.../control`、`topic/xdesk/events` | xdesk 本身 |
 
 machine 运行时，它的总线链接在宿主的下面：在宿主上，它的对象位于 `host/<宿主>/system/<名字>/...`，用起来和本地的一样。
 总线上的一切都能用同一种方式观察：每个程序回答自己的 telemetry（计数、延迟直方图、最近的日志、剖析、转储）。
@@ -41,5 +50,4 @@ xbus bench call|stream|region                      # how fast, here
 
 ## 还不是什么
 
-跨网络的链路、两个程序之间的直连、以及把显示的帧做成共享区域，是下一步（设计 2026-10-22 §13、§14d）。旧版 luban 启动的
-machine、或旧系统的 agent 没有总线：其它一切照旧。
+跨网络的链路是下一步（设计 2026-10-22 §13）。旧版 luban 启动的 machine、或旧系统的 agent 没有总线：其它一切照旧。

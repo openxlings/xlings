@@ -22,6 +22,7 @@ import openas;
 import xlings.carrier;
 import openbus;
 import xbus.node;
+import openhal.display;
 import :render;
 
 namespace luban::cli {
@@ -707,12 +708,55 @@ int cmd_run(const svc::Context& c, const Parsed& p, const Globals& g) {
     return xlings::platform::run_argv({app->string(), "--attach", p.words[0], "--app", command});
 }
 
+// `luban enter <name> --display virtual[=WxH@S]`: its desktop on a virtual
+// display, in the background; what to do with it next.
+int enter_virtual_(const svc::Context& c, const std::string& name, std::string_view display, const Globals& g) {
+    vm::DesktopOptions o;
+    if (const auto eq = display.find('='); eq != std::string_view::npos) {
+        const auto m = openhal::display::parse_mode(display.substr(eq + 1));
+        if (!m) return usage("--display virtual=<width>x<height>[@<scale>], as 1920x1080@1.25", g);
+        o.mode = *m;
+    }
+    auto e = svc::describe(c, name);
+    if (!e) return usage(e.error(), g);
+    const auto plan = svc::enter_plan(*e);
+    if (plan.target != "desktop") {
+        if (c.sink) c.sink(svc::error(std::format("{} has no desktop to run{}", name, plan.why.empty() ? "" : ": " + plan.why),
+                                      std::format("luban enter {}", name)));
+        return 1;
+    }
+    o.session = plan.session;
+    o.persist = e->settings.persist;
+    if (e->settings.mode == "machine" || vm::running(c.home, name)) {
+        if (c.sink) c.sink(svc::error(std::format("{} runs as a machine: its desktop shows in a window for now", name),
+                                      std::format("luban enter {} --display window", name)));
+        return 1;
+    }
+    auto st = vm::desktop_start(c, name, o);
+    if (!st) {
+        if (c.sink) c.sink(svc::error(st.error()));
+        return 1;
+    }
+    if (g.json) {
+        std::println("{}", st->dump());
+        return 0;
+    }
+    std::println("✓ {}'s desktop runs on a virtual display ({})", name, st->value("mode", std::string{}));
+    std::println("  see it      luban display {} capture shot.png", name);
+    std::println("  show it     luban enter {} --display window", name);
+    std::println("  end it      luban display {} end", name);
+    return 0;
+}
+
 int cmd_enter(const svc::Context& c, const Parsed& p, const Globals& g) {
     if (p.words.size() != 1) return usage("`luban enter <name|image> [--mode sandbox|machine] [--temp]`", g);
     const auto& target = p.words[0];
     vm::EnterOptions o{.temp = p.flag("--temp")};
     if (auto d = p.option("--display")) {
-        if (*d != "terminal" && *d != "window") return usage("--display terminal|window", g);
+        // A virtual display (design 2026-10-24 §4.2): its desktop runs with no
+        // window, any display may come to it later (luban display).
+        if (*d == "virtual" || d->starts_with("virtual=")) return enter_virtual_(c, target, *d, g);
+        if (*d != "terminal" && *d != "window") return usage("--display terminal|window|virtual[=WxH@S]", g);
         o.display = *d;
     }
     // Its desktop this once (design 2026-10-18 §3): shown in a window.
@@ -1327,8 +1371,15 @@ const spec::CommandSpec& tree() {
              .options = {{"--mode <MODE>", "sandbox (this machine's kernel) or machine (its own); default: its setting"},
                          {"--temp", "Nothing it writes stays"},
                          {"--user <NAME>", "Log in as this user this once (root, or one of its users)", false, Level::More},
-                         {"--display <DISPLAY>", "terminal or window; default: its desktop decides", false, Level::More},
+                         {"--display <DISPLAY>", "terminal, window or virtual[=WxH@S] (its desktop with no window); default: its desktop decides",
+                          false, Level::More},
                          {"--desktop <SESSION>", "This desktop, this once, in a window", false, Level::More}}, .effect = "reversible"},
+            {.name = "display", .description = "The displays of a running desktop: list, capture, record, attach, detach, mode, input, end",
+             .arguments = {{"name", "Which", true}, {"action", "list (default), capture FILE, record SECONDS DIR, attach window, detach PATH, mode WxH@S, input STEPS, end"},
+                           {"args", "What the action takes", false, true}},
+             .options = {{"--display <N>", "This display (its number in the list); default: the virtual one"},
+                         {"--as <ROLE>", "attach: primary (default) or mirror"}},
+             .level = Level::More, .effect = "reversible"},
             {.name = "run", .description = "Run one command in an environment",
              .arguments = {{"name", "Which", true}, {"command", "The command and its arguments, after --", true, true}},
              .options = {{"--user <NAME>", "As this user (root, or one of its users)", false, Level::More},
@@ -1531,24 +1582,76 @@ Drive inspect_drive(const fs::path& dev, const fs::path& sys, const fs::path& mo
     return d;
 }
 
-// `luban __desktop <session | -> [--size WxH] [--socket PATH]`: a desktop
-// session headless (or a compositor already running at PATH), bridged by
-// opensal-wlr with opensal.wire on stdin and stdout -- what a sandbox runs for
-// the Luban OS window. `-` is the first session the environment declares.
+// A display on the bus, as a pair of descriptors (design 2026-10-24 §5.1):
+// the stream at `path` opened through this system's socket ($OPENBUS_ROUTER),
+// its bytes moved to and from one end of a socket pair; the other end is what
+// the session reads and writes, as it would a window's stdin and stdout.
+// Kept for the process's life; the pair's end closes when the stream does.
+std::expected<int, std::string> bus_display_(const std::string& path, const std::string& role) {
+    namespace platform = xlings::platform;
+    auto node = xbus::Node::connect({.name = "luban-desktop", .actor = "program:luban-desktop", .telemetry = false});
+    if (!node) return std::unexpected("not on the bus: " + node.error());
+    auto stream = (*node)->open(path, nlohmann::json{{"role", role}}.dump(), {.window = 8u << 20}, std::chrono::seconds(10));
+    if (!stream) return std::unexpected(std::format("cannot open the display {}: {}", path, stream.error().message));
+    auto pair = platform::make_socket_pair();
+    if (!pair) return std::unexpected(std::string("no socket pair for the display"));
+    struct Held { std::shared_ptr<xbus::Node> node; xbus::Stream stream; int fd; };
+    auto held = std::make_shared<Held>(Held{*node, *stream, (*pair)[1]});
+    // From the display: what it says, to the session.
+    std::thread([held] {
+        for (;;) {
+            auto chunk = held->stream.read(std::chrono::seconds(1));
+            if (!chunk) {
+                if (held->stream.ended()) break;
+                continue;
+            }
+            if (!platform::write_all(held->fd, chunk->bytes)) break;
+        }
+        // The display went: the session reads its end.
+        (void)platform::network::shutdown_write(held->fd);
+    }).detach();
+    // To the display: what the session draws.
+    std::thread([held] {
+        std::array<char, 1 << 16> buf{};
+        for (;;) {
+            auto n = platform::read_some(held->fd, buf);
+            if (!n || *n == 0) break;
+            if (!held->stream.write(std::string_view(buf.data(), *n), std::chrono::seconds(30))) break;
+        }
+        held->stream.close();
+    }).detach();
+    return (*pair)[0];
+}
+
+// `luban __desktop <session | -> [--size WxH] [--socket PATH] [--display BUS-PATH [--role ROLE]]`:
+// a desktop session headless (or a compositor already running at PATH),
+// bridged by opensal-wlr with opensal.wire on stdin and stdout -- what a
+// sandbox runs for the Luban OS window -- or on a display of the bus
+// (openhal 0.3 §6.2: a window, a virtual display), opened through this
+// system's socket. `-` is the first session the environment declares; a
+// session already running takes the display as another of its own.
 int desktop_(const std::vector<std::string>& rest) {
     namespace wlr = opensal::wlr;
     std::string id = rest.size() > 1 ? rest[1] : "-";
-    std::string socket;
+    std::string socket, display, role = "primary";
     opensal::Size size{1280, 800};
     for (std::size_t i = 2; i + 1 < rest.size(); i += 2) {
         if (rest[i] == "--socket") socket = rest[i + 1];
+        else if (rest[i] == "--display") display = rest[i + 1];
+        else if (rest[i] == "--role") role = rest[i + 1];
         else if (rest[i] == "--size") {
             unsigned w = 0, h = 0;
             if (std::sscanf(rest[i + 1].c_str(), "%ux%u", &w, &h) == 2 && w && h) size = {w, h};
         }
     }
     auto log = [](std::string_view line) { std::println(std::cerr, "luban __desktop: {}", line); };
-    if (!socket.empty()) return wlr::bridge({.in = 0, .out = 1, .socket = socket, .log = log});
+    int in = 0, out = 1;
+    if (!display.empty()) {
+        auto fd = bus_display_(display, role);
+        if (!fd) { log(fd.error()); return 1; }
+        in = out = *fd;
+    }
+    if (!socket.empty()) return wlr::bridge({.in = in, .out = out, .socket = socket, .log = log});
     auto env = xlings::platform::environment();
     const auto dirs = wlr::session_dirs(env);
     std::optional<wlr::Session> session;
@@ -1566,7 +1669,7 @@ int desktop_(const std::vector<std::string>& rest) {
     o.env = std::move(env);
     const fs::path runtime = o.env.contains("XDG_RUNTIME_DIR") ? fs::path(o.env.at("XDG_RUNTIME_DIR")) : fs::temp_directory_path();
     o.runtime_root = runtime / "luban";
-    return wlr::run_session(*session, 0, 1, o);
+    return wlr::run_session(*session, in, out, o);
 }
 
 // `luban __audio [FIFO]`: a system's sound, out to the window that shows it
@@ -1668,6 +1771,8 @@ int run(int argc, char* argv[]) {
     if (!rest.empty() && rest.front() == "__agent-stdio") vm::serve_stdio();
     if (!rest.empty() && rest.front() == "__pipe-unix" && rest.size() == 2) return pipe_unix_(rest[1]);
     if (!rest.empty() && rest.front() == "__desktop") return desktop_(rest);
+    if (!rest.empty() && rest.front() == "__desktop-session" && rest.size() >= 3)
+        return vm::desktop_supervise(rest[1], rest[2], std::span<const std::string>(rest).subspan(3));
     if (!rest.empty() && rest.front() == "__audio") return audio_(rest);
     if (!rest.empty() && (rest.front() == "--version" || rest.front() == "-V")) {
         std::println("luban {}", kVersion);
@@ -1730,6 +1835,10 @@ int run(int argc, char* argv[]) {
             if (auto refused = c.port.handshake()) return usage(*refused, g);
         if (p.command == "new") return cmd_new(c, p, g, render);
         if (p.command == "enter") return cmd_enter(c, p, g);
+        if (p.command == "display") {
+            if (p.words.empty()) return usage("`luban display <name> [list|capture FILE|record SECONDS DIR|attach window|detach PATH|mode WxH@S|input STEPS|end]`", g);
+            return display(c, p.words[0], std::span<const std::string>(p.words).subspan(1), p.option("--display"), p.option("--as"), g.json);
+        }
         if (p.command == "run") return cmd_run(c, p, g);
         if (p.command == "ls") {
             if (p.words.size() > 1) return usage("`luban ls [<pattern>] [--all]`", g);

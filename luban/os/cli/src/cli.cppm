@@ -78,4 +78,7 @@ int search(const luban::service::Context& c, std::string_view keyword, std::stri
 // Whether a name answers a pattern: it holds the pattern, or the pattern's
 // letters in order (`luban ls dk` finds desktop-4).
 bool name_matches(std::string_view name, std::string_view pattern);
+// `luban display <name> [action ...]` (design 2026-10-24 §4.3; display.cpp).
+int display(const luban::service::Context& c, std::string_view name, std::span<const std::string> words,
+            std::optional<std::string> which, std::optional<std::string> as, bool json);
 }  // namespace luban::cli

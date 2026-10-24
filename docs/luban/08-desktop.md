@@ -432,6 +432,26 @@ session can start (the `share/applications` entries of its data directories,
 yours included; one with `Terminal=true` opens in the default terminal), and a
 button for each of its windows brings that one forward.
 
+## A desktop with no monitor
+
+A desktop does not need a window: on a virtual display it runs in the
+background, and any display may come to it later -- the Luban OS window, as the
+primary (the desktop takes its size) or a mirror. Closing that window leaves
+the desktop running on its virtual display.
+
+```bash
+luban enter box --display virtual              # 1920x1080; or virtual=2560x1440@1.5
+luban display box                              # its displays: 0 virtual primary ...
+luban display box capture shot.png             # a picture of it, from the display itself
+luban display box record 10 frames/            # every frame for 10 seconds, as PNG
+luban display box input '[{"key": "Super"}]'   # input, as a window gives it (an agent's way)
+luban enter box --display window               # show it in the Luban OS window
+luban display box end
+```
+
+Everything here is a path on the bus ([The bus](09-bus.md)): `luban display`
+is one client of it, `xbus call` another; tests and agents use the same paths.
+
 ## One program in a window
 
 ```bash

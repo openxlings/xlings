@@ -14,6 +14,15 @@ implementation.
 |---|---|---|
 | The host | one per xlings home, at `<home>/run/openbus/router.sock`, started by the first that needs it (a machine starting), gone after ten idle minutes | the systems linked under it, and the host's programs |
 | A machine | in its agent, at `/run/openbus/router.sock`; its programs find it through `OPENBUS_ROUTER` | the desktop (`service/xdesk/state`, `service/xdesk/control`, `topic/xdesk/events`), and what else its programs offer |
+| A sandbox system | none of its own: the host's router opens a socket for the system (`<home>/run/openbus/systems/<name>.sock`, bound into it as `/run/openbus/router.sock`); whatever connects through it is placed at `host/<host>/system/<name>/...` and offers only there | the desktop, as above |
+
+| Path (under `host/<host>/`) | What it is |
+|---|---|
+| `device/display/<n>`, `.../control` | a display: a window, a virtual display (openhal 0.3) -- describe, capture, record, mode, input |
+| `device/input/<n>` | its input: move, click, key (`Super+s`), text |
+| `system/<name>/service/desktop` | a running desktop: status, attach, detach, end (`luban display`) |
+| `system/<name>/topic/desktop/events` | it started, a display came or went, it ended and why |
+| `system/<name>/service/xdesk/state`, `.../control`, `topic/xdesk/events` | xdesk itself |
 
 A machine's bus is linked under the host's while it runs: on the host, its
 objects are at `host/<host>/system/<name>/...`, used as if they were local.
@@ -46,7 +55,6 @@ line); a machine's is its `/run/openbus/router.ndjson`.
 
 ## What it is not (yet)
 
-Links over a network, direct connections between two programs and the
-display's frames as a shared region are the next steps (design 2026-10-22
-§13, §14d). A machine started by an older luban, or an older system's agent,
-has no bus: everything else works as before.
+Links over a network are the next step (design 2026-10-22 §13). A machine
+started by an older luban, or an older system's agent, has no bus: everything
+else works as before.

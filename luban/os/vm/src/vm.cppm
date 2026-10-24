@@ -20,6 +20,7 @@ import std;
 import xlings.libs.json;
 import luban.service;
 import xlings.platform.duplex;
+import openhal.display;
 
 export namespace luban::vm {
 
@@ -223,7 +224,32 @@ std::set<std::string> kernel_caps(std::string_view config);
 // starts without its sandbox. Probed by making one.
 bool unprivileged_userns();
 
+// A desktop that runs by itself (design 2026-10-24 §4, §6.2): its supervisor
+// (`luban __desktop-session`, detached) starts the system's desktop on a
+// virtual display of its own and serves host/<id>/system/<bus>/service/desktop
+// (luban.desktop@1): {"op": "status"}, {"op": "attach", "path": <a display on
+// the bus>, "role": "primary"|"mirror <n>"|"extend <n> <side>"}, {"op":
+// "detach", "path"}, {"op": "end"}; what happens on
+// .../topic/desktop/events. A window attached and gone, the desktop goes on.
+struct DesktopOptions {
+    openhal::display::Mode mode {};   // the virtual display's
+    std::string session;              // its session; empty: the system's first
+    std::string persist;              // what a session keeps (luban config --persist)
+    bool here { false };              // in this host's environment, not the system's (tests)
+};
+// Its supervisor's answer to `request`, or why there is none (not running).
+std::expected<nlohmann::json, std::string> desktop(const fs::path& home, std::string_view name, const nlohmann::json& request);
+// Started when it is not running; its status.
+std::expected<nlohmann::json, std::string> desktop_start(const service::Context& c, std::string_view name, const DesktopOptions& o);
+// `luban __desktop-session <home> <name> [--mode M] [--session S] [--persist P]`: the supervisor, until the desktop ends.
+int desktop_supervise(const fs::path& home, std::string_view name, std::span<const std::string> args);
+
 // Whether `file` is an ELF that needs no loader (what an initramfs can run).
 bool is_static_elf(const fs::path& file);
 
+}  // namespace luban::vm
+
+namespace luban::vm {
+// The luban binary a host process starts others with ($LUBAN_BIN, itself, beside it, the home's).
+std::filesystem::path luban_binary(const std::filesystem::path& home);
 }  // namespace luban::vm

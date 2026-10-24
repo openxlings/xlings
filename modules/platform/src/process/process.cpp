@@ -439,6 +439,12 @@ std::optional<std::array<int, 2>> make_pipe(bool close_on_exec) {
     return std::array<int, 2>{p[0], p[1]};
 }
 
+std::optional<std::array<int, 2>> make_socket_pair() {
+    int p[2];
+    if (::socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, p) != 0) return std::nullopt;
+    return std::array<int, 2>{p[0], p[1]};
+}
+
 bool read_exact(int fd, void* buf, std::size_t size) {
     auto* p = static_cast<char*>(buf);
     while (size > 0) {
@@ -1021,6 +1027,7 @@ std::map<std::string, std::string> environment() {
 void unset_env_variable(const std::string& name) { set_env_variable(name, ""); }
 bool set_inheritable(int, bool) { return false; }
 std::optional<std::array<int, 2>> make_pipe(bool) { return std::nullopt; }
+std::optional<std::array<int, 2>> make_socket_pair() { return std::nullopt; }
 bool read_exact(int, void*, std::size_t) { return false; }
 std::optional<std::array<int, 2>> open_pty(int) { return std::nullopt; }
 bool copy_window_size(int, int) { return false; }

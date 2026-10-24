@@ -1,11 +1,13 @@
-# openhal Specification, version 0.2
+# openhal Specification, version 0.3
 
 ## 1. Scope
 
 openhal describes devices: which GPUs, displays, audio endpoints and input
 devices a machine has, and what each can do. It is the hardware's view: a
 program asks *which* device, and several are there at once. Version 0.1
-defines enumeration; 0.2 adds audio streams.
+defines enumeration; 0.2 adds audio streams; 0.3 makes displays, input and
+clipboards devices on a bus -- a window, a virtual display and a physical one
+alike (§6).
 
 ## 2. Form of the contract
 
@@ -65,7 +67,51 @@ endian), a payload (`openhal.audio`); a side skips a kind it does not know.
 What plays or records them -- a host's audio system, a system's sound server
 -- is the implementation's.
 
-## 6. Matters this version does not settle
+## 6. Displays, input and clipboards on a bus (0.3)
 
-Device events (arrival, removal), giving a device other than an audio
-endpoint to a program, and any other operation on a device.
+6.1 A display is a device a desktop draws on: a machine's monitor
+(`physical`), a window that shows a desktop (`window`), memory that keeps the
+picture and is seen by nobody (`virtual`), another machine's display
+(`remote`). A desktop does not care which.
+
+6.2 On openbus a display is a stream endpoint at `device/display/<n>`
+(interface `openhal.display@0.3`), its properties `display-kind`, `mode`
+(`<w>x<h>@<scale>`, §6.4), `refresh` (frames a second), `input` (`1`: it gives
+input), `system` (the system it shows, when it shows one) and `name`.
+Opening it is attaching to it; the stream carries opensal.wire both ways --
+frames to it, input and events from it -- and the opening's body names the
+role asked (§6.3). Closing it is detaching; arriving and leaving is said on
+the bus as offers and withdrawals (hotplug).
+
+6.3 A role is `primary` (the desktop takes its size and density), `mirror <n>`
+(it shows display `n`'s picture at its own size), or `extend <n>
+<left|right|above|below>` (another output, beside display `n`).
+
+6.4 A mode is `<width>x<height>@<scale>` in device pixels and device pixels a
+logical pixel (`1920x1080@1.25`); `<width>x<height>` is scale 1.
+
+6.5 Beside it, `device/display/<n>/control` (interface
+`openhal.display-control@0.3`) answers one JSON request: `{"op": "describe"}`
+(its kind, mode, role, frames shown, when it last showed one); `{"op":
+"capture"}` (the picture as PNG, codec raw); `{"op": "record", "frames": N}`
+(the next N frames as PNG, one reply each, their times in a header line);
+`{"op": "mode", "mode": "<w>x<h>@<scale>"}` (a virtual display's own size);
+`{"op": "input", "events": [...]}` (§6.6, a display that gives input).
+
+6.6 Input is a device too, `device/input/<n>` (interface `openhal.input@0.3`):
+pointers, keys, text and wheels as steps -- `{"move": [x, y]}`, `{"button":
+"left|middle|right", "down": true|false}`, `{"click": [x, y], "button": B,
+"count": N}`, `{"wheel": [dx, dy]}`, `{"key": "<chord>"}` (`Super+s`,
+`Ctrl+Shift+v`, `Return`), `{"keydown": K}`, `{"keyup": K}`, `{"text": "..."}`,
+in logical pixels of the display they go to. A virtual display's input is
+this; a person's and an agent's input reach a desktop the same way.
+
+6.7 A clipboard is a service of its region (luban.clipboard@1, Luban OS
+design 2026-10-24 §8): read, write, changed. openhal names it; a platform's
+clipboard is one implementation, a desktop's another.
+
+## 7. Matters this version does not settle
+
+Device events of devices that are not on a bus, giving a device other than
+an audio endpoint or a display to a program, and any other operation on a
+device.

@@ -126,6 +126,17 @@ std::string Server::state_json() {
     output.set("renderer", Json{gpu ? std::string("gpu") : std::string("software")});
     output.set("renderer_text", Json{renderer_text});
     out.set("output", output);
+    // The displays showing it (design 2026-10-24 §4): the first the primary.
+    Json::Array displays;
+    for (const auto& l : links) {
+        Json d{Json::Object{}};
+        d.set("number", num_(l.number));
+        d.set("role", Json{std::string(&l == &links.front() ? "primary" : "mirror")});
+        d.set("hello", Json{l.hello});
+        d.set("hidden", Json{l.hidden});
+        displays.push_back(std::move(d));
+    }
+    out.set("displays", Json{std::move(displays)});
     out.set("view", Json{std::string(wuxian() ? "wuxian" : "workspace")});
     out.set("view_moving", Json{view_move.has_value()});
     const auto cam = lay.camera();
@@ -183,6 +194,7 @@ std::string Server::state_json() {
         hint.set("rect", Json{Json::Array{num_(hint_node->node.x), num_(hint_node->node.y), num_(w), num_(h)}});
     }
     overlays.set("hint", hint);
+    overlays.set("launcher", Json{launcher.is_open()});
     out.set("overlays", overlays);
     // What the launcher offers: the applications its directories have.
     {

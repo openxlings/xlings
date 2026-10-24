@@ -634,6 +634,16 @@ void Server::provider(Link& l, std::string_view bytes) {
             int pacing = 0;
             if (in >> bits >> w >> h) {
                 if (in >> density >> pacing) l.paced = pacing == 1;
+                // A display that comes to show the desktop at its own size
+                // (opensal 0.7: "primary" after its pacing -- a window come to
+                // a desktop that ran on a virtual display): it is the primary
+                // now, the one before it a mirror.
+                std::string asked;
+                if (in >> asked && asked == "primary" && &l != primary()) {
+                    for (auto it = links.begin(); it != links.end(); ++it)
+                        if (&*it == &l) { links.splice(links.begin(), links, it); break; }
+                    log(std::format("display {} is the primary (it asked)", l.number));
+                }
                 l.provided = bits;
                 l.hello = true;
                 l.whole = true;

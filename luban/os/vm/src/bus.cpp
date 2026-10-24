@@ -10,10 +10,10 @@ import telemetry;
 namespace luban::vm {
 
 namespace {
-
 namespace platform = xlings::platform;
+}  // namespace
 
-fs::path luban_self_(const fs::path& home) {
+fs::path luban_binary(const fs::path& home) {
     if (const char* forced = std::getenv("LUBAN_BIN"); forced && *forced) return forced;
     const auto self = platform::get_executable_path();
     std::error_code ec;
@@ -24,8 +24,6 @@ fs::path luban_self_(const fs::path& home) {
     return self;
 }
 
-}  // namespace
-
 fs::path bus_socket(const fs::path& home) { return home / "run" / "openbus" / "router.sock"; }
 
 std::expected<int, std::string> connect_bus(const fs::path& home) {
@@ -34,7 +32,7 @@ std::expected<int, std::string> connect_bus(const fs::path& home) {
     const auto log = home / "logs" / "openbus" / "router.out";
     std::error_code ec;
     fs::create_directories(log.parent_path(), ec);
-    if (!platform::spawn_detached({luban_self_(home).string(), "__bus-router", home.string()}, log))
+    if (!platform::spawn_detached({luban_binary(home).string(), "__bus-router", home.string()}, log))
         return std::unexpected("the host's openbus router could not be started (" + log.string() + ")");
     for (int k = 0; k < 40; ++k) {
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
@@ -48,7 +46,10 @@ int serve_bus(const fs::path& home) {
     xbus::Router r({.root = xbus::host_root(),
                     .listen = {xbus::Address{"unix", bus_socket(home).string()}},
                     .log = home / "logs" / "openbus" / "router.ndjson",
-                    .idle_exit = std::chrono::seconds(600)});
+                    .idle_exit = std::chrono::seconds(600),
+                    // A sandbox's programs reach it through their system's own
+                    // socket (design 2026-10-24 §3.3: system_bus_socket).
+                    .systems_dir = bus_socket(home).parent_path() / "systems"});
     // Another answers there already (two machines started at once): it is the one.
     if (auto l = r.listen(); !l) {
         std::println(std::cerr, "luban __bus-router: {}", l.error());

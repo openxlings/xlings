@@ -310,6 +310,23 @@ X-Luban-Shell=own
 把外壳交给窗口的会话（`X-Luban-Shell=none`，Luban 的 `compositor`）在桌面下方有一条栏：**应用**列出会话里能启动的程序
 （会话数据目录下的 `share/applications`，包括你自己的；`Terminal=true` 的在默认终端里打开），每个窗口一个按钮，点击即前置。
 
+## 没有显示器的桌面
+
+桌面不需要窗口：在虚拟显示器上，它在后台运行，之后任何显示器都可以接进来——Luban OS 窗口作为主屏（桌面采用它的大小）或镜像。
+关掉那个窗口，桌面继续在虚拟显示器上运行。
+
+```bash
+luban enter box --display virtual              # 1920x1080; or virtual=2560x1440@1.5
+luban display box                              # its displays: 0 virtual primary ...
+luban display box capture shot.png             # a picture of it, from the display itself
+luban display box record 10 frames/            # every frame for 10 seconds, as PNG
+luban display box input '[{"key": "Super"}]'   # input, as a window gives it (an agent's way)
+luban enter box --display window               # show it in the Luban OS window
+luban display box end
+```
+
+这里的一切都是总线上的路径（[总线](09-bus.md)）：`luban display` 是它的一个客户端，`xbus call` 是另一个；测试与 Agent 用的是同样的路径。
+
 ## 单个程序一个窗口
 
 ```bash
