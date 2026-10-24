@@ -212,11 +212,13 @@ XTEST(Xbus, TwoRoutersLinkedOverAPipeSeeEachOther, .area = "luban", .covers = {"
     auto home = tk::Home::isolated("xbus-link");
     fs::create_directories(home.root() / "host");
     fs::create_directories(home.root() / "guest");
-    Running host(home.root() / "host", "host/test");
-    Running guest(home.root() / "guest", "host/test/system/m");
-    // The pipe: what one router sends, the other is fed -- as a carrier's channel would.
+    // The pipe: what one router sends, the other is fed -- as a carrier's
+    // channel would. It outlives the routers (their threads send to it until
+    // they stop).
     std::shared_ptr<xbus::PipeEnd> to_host, to_guest;
     std::mutex wire;
+    Running host(home.root() / "host", "host/test");
+    Running guest(home.root() / "guest", "host/test/system/m");
     to_guest = guest.router->adopt({.send = [&](std::string_view b) {
         std::lock_guard l(wire);
         if (to_host) to_host->feed(b);
@@ -566,10 +568,10 @@ XTEST(Xbus, ARegionAcrossALinkIsCopiedInline, .area = "luban", .covers = {"XBUS-
     auto home = tk::Home::isolated("xbus-region-link");
     fs::create_directories(home.root() / "host");
     fs::create_directories(home.root() / "guest");
+    std::shared_ptr<xbus::PipeEnd> to_host, to_guest;   // outliving the routers, as above
+    std::mutex wire;
     Running host(home.root() / "host", "host/test");
     Running guest(home.root() / "guest", "host/test/system/m");
-    std::shared_ptr<xbus::PipeEnd> to_host, to_guest;
-    std::mutex wire;
     to_guest = guest.router->adopt({.send = [&](std::string_view b) {
         std::lock_guard l(wire);
         if (to_host) to_host->feed(b);
