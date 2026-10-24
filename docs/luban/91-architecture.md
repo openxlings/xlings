@@ -16,6 +16,7 @@ small on purpose.
 | `luban/specs/openas` | actors and what they do: the actor and its delegation, effect classes, the envelope of a run |
 | `luban/specs/openbus` | the bus: objects by path and interface, call, publish, stream, event, region, links between routers |
 | `luban/kits/openhal-host` | openhal's source on Linux, macOS and Windows |
+| `luban/kits/openhal-emu` | devices that are not there: a virtual display (an opensal provider nobody sees, its picture as PNG), input as steps |
 | `luban/kits/opensal-wlr`, `imkit`, `tray` | a wlroots compositor as an opensal surface; widgets; a status-area icon |
 | `luban/kits/telemetry` | what a program says of itself: metrics, a flight recorder, a structured log, profiles, dumps |
 | `luban/services/xbus` | XBus, openbus's implementation: the router, the node library, `xbus` (a service: a process with an endpoint, reached by its library) |
@@ -57,6 +58,25 @@ Config). `tools/lint_layer_deps.sh` checks each rule.
    ISO 9660 with El Torito entries (BIOS where the machine has one, UEFI always)
    and a hybrid GPT whose EFI system partition is the El Torito image.
 4. On x86_64, `limine bios-install` makes it boot on BIOS from a drive.
+
+## A desktop's displays
+
+A running desktop has one supervisor, `luban __desktop-session <home> <name>`,
+detached like a machine's. It offers the system's virtual display on the bus
+(`host/<host>/system/<name>/device/display/<n>`, openhal 0.3) and the
+desktop's own service (`.../service/desktop`: status, attach, detach, end),
+and starts the desktop in the system as `luban __desktop <session> --display
+<path>`: through the system's socket on the host's router (a sandbox) or the
+machine's agent (a machine), that command opens the display's stream and gives
+it to the session as a window's stdin and stdout would be (opensal.wire).
+Every display comes the same way -- a Luban OS window asks to be the primary
+(the desktop takes its size), another virtual display mirrors or extends it (an
+output of xdesk's own beside the primary). Frames go by reference where both
+sides map one region (opensal 0.7): a sandbox's frames file bound into it, a
+machine's ivshmem memory (the guest maps the PCI device's BAR); only where the
+rows are crosses the stream. What drives a desktop -- input, displays,
+xdesk's control -- is an agent's only with the system's `desktop-control`
+grant, decided by the host's router and recorded.
 
 ## The app's processes
 

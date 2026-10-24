@@ -15,6 +15,7 @@
 | `luban/specs/openas` | 主体与它们做的事：主体与委托、效果类别、一次运行的信封 |
 | `luban/specs/openbus` | 总线：按路径与接口的对象，call、发布、stream、event、region，路由之间的链路 |
 | `luban/kits/openhal-host` | openhal 在 Linux、macOS、Windows 上的设备源 |
+| `luban/kits/openhal-emu` | 不存在的设备：虚拟显示器（没有人看的 opensal 提供方，画面可取成 PNG）、以步骤表示的输入 |
 | `luban/kits/opensal-wlr`、`imkit`、`tray` | 把 wlroots 合成器接成 opensal 表面；控件；状态栏图标 |
 | `luban/kits/telemetry` | 程序说自己：指标、飞行记录器、结构化日志、剖析、转储 |
 | `luban/services/xbus` | XBus，openbus 的实现：路由、节点库、`xbus`（服务：有自己的进程与端点，经它的库访问） |
@@ -46,6 +47,16 @@ xlings 前端（stage-0 路径上的东西不能读 Config）。`tools/lint_laye
 3. 由 `luban.image` 在进程内写出镜像：驱动器是带 EFI 系统分区（FAT，在这里写出）和按 PARTUUID 挂载的 ext4 根的 GPT；
    ISO 是带 El Torito 启动项（机器有 BIOS 时有 BIOS 项，UEFI 项总有）和混合 GPT 的 ISO 9660，其 EFI 系统分区就是 El Torito 镜像。
 4. x86_64 上 `limine bios-install` 让它能从驱动器以 BIOS 启动。
+
+## 桌面的显示器
+
+运行中的桌面有一个监督进程 `luban __desktop-session <home> <名字>`，和 machine 的监督进程一样在后台。它在总线上提供系统的虚拟
+显示器（`host/<宿主>/system/<名字>/device/display/<n>`，openhal 0.3）与桌面自己的服务（`.../service/desktop`：状态、接入、断开、
+结束），并在系统里以 `luban __desktop <会话> --display <路径>` 启动桌面：这个命令经系统在宿主路由上的 socket（sandbox）或 machine
+的 agent（machine）打开显示器的流，像窗口的标准输入输出那样交给会话（opensal.wire）。所有显示器都这样接入——Luban OS 窗口要求做
+主屏（桌面采用它的大小），另一块虚拟显示器镜像或扩展它（xdesk 在主屏旁边的独立输出）。两边映射同一块区域时帧按引用传递（opensal
+0.7）：sandbox 绑进去的帧文件，machine 的 ivshmem 内存（客户机映射 PCI 设备的 BAR）；流上只走行在哪里。操作桌面的事——输入、
+显示器、xdesk 的控制——Agent 需要系统的 `desktop-control` 授权，由宿主的路由判定并记录。
 
 ## 应用的进程
 
