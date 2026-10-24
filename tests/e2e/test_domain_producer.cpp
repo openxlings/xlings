@@ -15,7 +15,7 @@ using Json = nlohmann::json;
 
 XTEST(DomainProducer, InstallsAtLogicalPrefixInsideANamespaceAndPreservesHostData,
       .area = "subos", .cost = tk::Cost::Medium,
-      .covers = {"DOM-BUILD-INSIDE", "DOM-LAYOUTS", "LUBAN-ENTER-QUIET", "PERM-FETCH-ASK"}, .requires_ = {"linux", "bwrap", "xlings-bin"},
+      .covers = {"DOM-BUILD-INSIDE", "DOM-LAYOUTS", "LUBAN-ENTER-QUIET", "PERM-FETCH-ASK", "SUBOS-DOMAIN-SESSION-GPU"}, .requires_ = {"linux", "bwrap", "xlings-bin"},
       .resources = {"sandbox"}, .proves = "isolation") {
     if constexpr (!tk::is_linux) GTEST_SKIP() << "Linux namespaces";
     if (const auto why = tk::probe("bwrap")) GTEST_SKIP() << *why;
@@ -122,6 +122,17 @@ XTEST(DomainProducer, InstallsAtLogicalPrefixInsideANamespaceAndPreservesHostDat
         xlings::platform::unset_env_variable("XLINGS_ENTER_QUIET");
         ASSERT_TRUE(quiet) << quiet.error();
         EXPECT_NE(std::ranges::search(*quiet, std::vector<std::string>{"--setenv", "XLINGS_ENTER_QUIET", "1"}).begin(), quiet->end());
+    }
+    {
+        // A session there sees this computer's GPU devices, which its own
+        // sandbox grants or not (J58); maintenance sees none.
+        const bool dri = fs::exists("/dev/dri");
+        auto session = xlings::home::domain_producer::command((**scope).domain, std::vector<std::string>{"subos", "use", "domain-root", "--cmd", "true"},
+                                                               std::nullopt, backendSource ? &*backendSource : nullptr, true);
+        ASSERT_TRUE(session) << session.error();
+        const std::vector<std::string> bind{"--dev-bind", "/dev/dri", "/dev/dri"};
+        EXPECT_EQ(std::ranges::search(*session, bind).begin() != session->end(), dri);
+        EXPECT_EQ(std::ranges::search(*backendCommand, bind).begin(), backendCommand->end());
     }
     auto backendDiagnosis = tk::run({.argv = *backendCommand, .env = home.env(), .cwd = home.root()});
     ASSERT_EQ(backendDiagnosis.exit_code, 0) << backendDiagnosis.transcript();

@@ -3,6 +3,7 @@ module xdesk.draw;
 import std;
 import xdesk.native.text;
 import xdesk.native.png;
+import xdesk.native.svg;
 
 namespace xdesk::draw {
 
@@ -150,6 +151,29 @@ std::expected<Image, std::string> read_png(const fs::path& file) {
         const std::uint32_t a = p >> 24;
         auto mul = [a](std::uint32_t c) { return (c * a + 127) / 255; };
         p = (a << 24) | (mul((p >> 16) & 0xff) << 16) | (mul((p >> 8) & 0xff) << 8) | mul(p & 0xff);
+    }
+    return out;
+}
+
+std::expected<Image, std::string> read_svg(const fs::path& file, int px) {
+    if (px <= 0 || px > 1024) return std::unexpected(std::format("{} is not an icon's size", px));
+    NSVGimage* svg = nsvgParseFromFile(file.string().c_str(), "px", 96.0f);
+    if (!svg) return std::unexpected(std::string("not an SVG it can read"));
+    if (svg->width <= 0 || svg->height <= 0) { nsvgDelete(svg); return std::unexpected(std::string("an SVG without a size")); }
+    NSVGrasterizer* r = nsvgCreateRasterizer();
+    if (!r) { nsvgDelete(svg); return std::unexpected(std::string("no rasterizer")); }
+    const float s = static_cast<float>(px) / std::max(svg->width, svg->height);
+    const float tx = (px - svg->width * s) / 2, ty = (px - svg->height * s) / 2;
+    std::vector<unsigned char> rgba(static_cast<std::size_t>(px) * px * 4);
+    nsvgRasterize(r, svg, tx, ty, s, rgba.data(), px, px, px * 4);
+    nsvgDeleteRasterizer(r);
+    nsvgDelete(svg);
+    // R G B A, straight -- into premultiplied ARGB words.
+    Image out(px, px);
+    for (int k = 0; k < px * px; ++k) {
+        const std::uint32_t r8 = rgba[k * 4], g8 = rgba[k * 4 + 1], b8 = rgba[k * 4 + 2], a = rgba[k * 4 + 3];
+        auto mul = [a](std::uint32_t c) { return (c * a + 127) / 255; };
+        out.data()[k] = (a << 24) | (mul(r8) << 16) | (mul(g8) << 8) | mul(b8);
     }
     return out;
 }

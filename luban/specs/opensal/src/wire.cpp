@@ -50,6 +50,110 @@ std::string encode(char kind, std::string_view payload) {
     return out;
 }
 
+std::string encode_region_frame(const RegionFrame& f) {
+    return encode('r', std::format("{} {} {} {} {} {}", f.rect.x, f.rect.y, f.rect.width, f.rect.height, f.stride, f.offset));
+}
+
+std::optional<RegionFrame> decode_region_frame(std::string_view payload) {
+    RegionFrame f;
+    long long x = 0, y = 0;
+    unsigned long long w = 0, h = 0, stride = 0, offset = 0;
+    const std::string text(payload);
+    if (std::sscanf(text.c_str(), "%lld %lld %llu %llu %llu %llu", &x, &y, &w, &h, &stride, &offset) != 6) return std::nullopt;
+    if (w == 0 || h == 0 || w > 16384 || h > 16384 || stride < w * 4) return std::nullopt;
+    f.rect = {static_cast<std::int32_t>(x), static_cast<std::int32_t>(y), static_cast<std::uint32_t>(w), static_cast<std::uint32_t>(h)};
+    f.stride = static_cast<std::uint32_t>(stride);
+    f.offset = offset;
+    return f;
+}
+
+std::string encode_clipboard_data(const ClipboardData& d) {
+    std::string payload = d.mime;
+    payload += '\n';
+    payload += d.bytes;
+    return encode('B', payload);
+}
+
+std::optional<ClipboardData> decode_clipboard_data(std::string_view payload) {
+    const auto nl = payload.find('\n');
+    if (nl == std::string_view::npos || nl == 0 || nl > 255) return std::nullopt;
+    const auto mime = payload.substr(0, nl);
+    // A type as RFC 6838 names one: type/subtype, no spaces.
+    if (mime.find('/') == std::string_view::npos || mime.find(' ') != std::string_view::npos) return std::nullopt;
+    if (payload.size() - nl - 1 > kMaxClipboard) return std::nullopt;
+    return ClipboardData{std::string(mime), std::string(payload.substr(nl + 1))};
+}
+
+std::string encode_files(std::span<const ClipboardFile> files) {
+    std::string out;
+    for (const auto& f : files) {
+        out += std::format("{} {}\n", f.bytes.size(), f.name);
+        out += f.bytes;
+    }
+    return out;
+}
+
+std::optional<std::vector<ClipboardFile>> decode_files(std::string_view bytes) {
+    std::vector<ClipboardFile> out;
+    while (!bytes.empty()) {
+        const auto nl = bytes.find('\n');
+        if (nl == std::string_view::npos) return std::nullopt;
+        const auto head = bytes.substr(0, nl);
+        const auto sp = head.find(' ');
+        std::size_t size = 0;
+        if (sp == std::string_view::npos || std::from_chars(head.data(), head.data() + sp, size).ec != std::errc{}) return std::nullopt;
+        const auto name = head.substr(sp + 1);
+        // Its own name only: nothing that climbs out of where it is written.
+        if (name.empty() || name == "." || name == ".." || name.find('/') != std::string_view::npos || name.find('\\') != std::string_view::npos)
+            return std::nullopt;
+        bytes.remove_prefix(nl + 1);
+        if (size > bytes.size()) return std::nullopt;
+        out.push_back({std::string(name), std::string(bytes.substr(0, size))});
+        bytes.remove_prefix(size);
+    }
+    return out;
+}
+
+std::vector<std::string> uri_list_paths(std::string_view list) {
+    std::vector<std::string> out;
+    while (!list.empty()) {
+        auto nl = list.find('\n');
+        auto line = list.substr(0, nl);
+        list = nl == std::string_view::npos ? std::string_view{} : list.substr(nl + 1);
+        while (!line.empty() && (line.back() == '\r' || line.back() == ' ')) line.remove_suffix(1);
+        if (line.empty() || line.front() == '#' || !line.starts_with("file://")) continue;
+        line.remove_prefix(7);
+        if (const auto slash = line.find('/'); slash != 0 && slash != std::string_view::npos) line.remove_prefix(slash);   // file://host/path
+        std::string path;
+        for (std::size_t k = 0; k < line.size(); ++k) {
+            if (line[k] == '%' && k + 2 < line.size()) {
+                unsigned v = 0;
+                if (std::from_chars(line.data() + k + 1, line.data() + k + 3, v, 16).ec == std::errc{}) {
+                    path += static_cast<char>(v);
+                    k += 2;
+                    continue;
+                }
+            }
+            path += line[k];
+        }
+        out.push_back(std::move(path));
+    }
+    return out;
+}
+
+std::string uri_list_of(std::span<const std::string> paths) {
+    std::string out;
+    for (const auto& p : paths) {
+        out += "file://";
+        for (const unsigned char c : p) {
+            if (std::isalnum(c) || c == '/' || c == '-' || c == '_' || c == '.' || c == '~') out += static_cast<char>(c);
+            else out += std::format("%{:02X}", c);
+        }
+        out += "\r\n";
+    }
+    return out;
+}
+
 std::string encode_frame(const Pixels& s, Rect d) {
     // Clipped to the surface.
     const auto x0 = std::clamp<std::int64_t>(d.x, 0, s.size.width), y0 = std::clamp<std::int64_t>(d.y, 0, s.size.height);
@@ -295,6 +399,7 @@ std::expected<std::optional<Message>, std::string> Decoder::next() {
 
 std::string encode_display(const DisplayRole& r) {
     if (r.kind == DisplayRole::Kind::mirror) return std::format("{} mirror {} {} {}", r.number, r.of, r.size.width, r.size.height);
+    if (r.kind == DisplayRole::Kind::extend) return std::format("{} extend {} {}", r.number, r.x, r.y);
     return std::format("{} primary", r.number);
 }
 
@@ -304,6 +409,11 @@ std::optional<DisplayRole> decode_display(std::string_view payload) {
     std::string kind;
     if (!(in >> r.number >> kind) || r.number == 0) return std::nullopt;
     if (kind == "primary") return r;
+    if (kind == "extend") {
+        r.kind = DisplayRole::Kind::extend;
+        if (!(in >> r.x >> r.y)) return std::nullopt;
+        return r;
+    }
     if (kind != "mirror") return std::nullopt;
     r.kind = DisplayRole::Kind::mirror;
     if (!(in >> r.of >> r.size.width >> r.size.height) || r.of == 0 || r.size.width == 0 || r.size.height == 0) return std::nullopt;

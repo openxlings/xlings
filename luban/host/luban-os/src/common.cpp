@@ -300,7 +300,9 @@ void close_dialog_(App& a) {
         write_app_settings(a.home, a.settings);
         if (a.close_remember) (void)service::set_setting(a.home, a.current, "on-close", off ? "poweroff" : "background");
         a.close_dialog = false;
-        if (off) {
+        if (off && a.display && a.display->on_bus() && !a.display->is_machine()) {
+            (void)vm::desktop(a.home, a.current, {{"op", "end"}, {"by", "its window closed (powered off)"}});
+        } else if (off) {
             service::Context c = a.ctx;
             (void)vm::stop(c, a.current);
         }

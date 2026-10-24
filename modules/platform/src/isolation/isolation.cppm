@@ -21,6 +21,12 @@ export namespace xlings::platform {
 // join, which it cannot do for one bwrap made.
 bool enter_private_network(unsigned uid, unsigned gid);
 
+// Whether an unprivileged process here can make a user namespace and mount
+// in it -- what a virtiofsd's namespace sandbox does. Ubuntu's AppArmor
+// (kernel.apparmor_restrict_unprivileged_userns) lets the namespace be made
+// and refuses the mount. Probed in a child; false off Linux.
+bool userns_can_mount();
+
 // ── Landlock: a write fence without namespaces ───────────────────────
 
 namespace landlock {

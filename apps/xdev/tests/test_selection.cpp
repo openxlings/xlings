@@ -145,6 +145,11 @@ XTEST(XdevSelection, AShardTakesWholeFamiliesSoItBuildsEachInOneCall,
         }
     }
     EXPECT_EQ(seen.size(), tests.size());
+    // A lane of named tests (tests/lanes.toml `tests`): just those, each built alone.
+    const auto lane = sel::select(tests, sel::Options{.platform = "linux", .patterns = {"test_subos_a", "test_luban_vm"}});
+    ASSERT_TRUE(lane.has_value());
+    ASSERT_EQ(lane->size(), 2u);
+    for (const auto& test : *lane) EXPECT_EQ(test.family, test.test.id) << "a lane's test builds alone";
 }
 
 XTEST(XdevSelection, InvalidSelectorsTimingsAndUnknownMetadataFailExplicitly,

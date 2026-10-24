@@ -141,6 +141,7 @@ void Server::fall_back(std::string why) {
     allocator = renderer ? wlr_allocator_autocreate(backend, renderer) : nullptr;
     if (!renderer || !allocator) { log("no software renderer to fall back to"); stop = true; return; }
     wlr_output_init_render(output, allocator, renderer);
+    for (auto& e : extends) wlr_output_init_render(e.output, allocator, renderer);
     wlr_compositor_set_renderer(compositor, renderer);
     wlr_allocator_destroy(old_allocator);
     wlr_renderer_destroy(old_renderer);
@@ -168,6 +169,10 @@ bool Server::start_() {
     wlr_subcompositor_create(display);
     wlr_data_device_manager_create(display);
     wlr_primary_selection_v1_device_manager_create(display);
+    // The session's clipboard for its command-line tools (design 2026-10-24
+    // §8.1): wl-copy, wl-paste and any clipboard manager speak data-control.
+    wlr_data_control_manager_v1_create(display);
+    wlr_ext_data_control_manager_v1_create(display, 1);
     wlr_viewporter_create(display);
     wlr_single_pixel_buffer_manager_v1_create(display);
     wlr_fractional_scale_manager_v1_create(display, 1);
@@ -226,6 +231,9 @@ bool Server::start_() {
     zh = xdesk::words::chinese();
     open_fonts();
 
+    // The background layer for wallpaper programs (design 2026-10-24 §9.7).
+    layer_shell = wlr_layer_shell_v1_create(display, 4);
+    new_layer_surface.connect(&layer_shell->events.new_surface, [this](void* d) { layer_surface_new(static_cast<wlr_layer_surface_v1*>(d)); });
     xdg_shell = wlr_xdg_shell_create(display, 6);
     new_toplevel.connect(&xdg_shell->events.new_toplevel, [this](void* d) { add_view(static_cast<wlr_xdg_toplevel*>(d)); });
     new_popup.connect(&xdg_shell->events.new_popup, [this](void* d) { add_popup(static_cast<wlr_xdg_popup*>(d)); });
@@ -297,7 +305,9 @@ bool Server::start_() {
     wlr_output_state_set_render_format(&on, kARGB8888);
     wlr_output_commit_state(output, &on);
     wlr_output_state_finish(&on);
-    wlr_output_layout_output* lo = wlr_output_layout_add_auto(outputs, output);
+    // At the screen's top-left: the outputs that extend it go right of it
+    // (an automatic place would move it right of them).
+    wlr_output_layout_output* lo = wlr_output_layout_add(outputs, output, 0, 0);
     scene_output = wlr_scene_output_create(scene, output);
     wlr_scene_output_layout_add_output(scene_layout, lo, scene_output);
     frame.connect(&output->events.frame, [this](void*) { render(); });
@@ -333,6 +343,7 @@ bool Server::start_() {
         auto* self = static_cast<Server*>(data);
         for (auto& l : self->links) l.in_flight.reset();
         wlr_output_schedule_frame(self->output);
+        for (auto& e : self->extends) wlr_output_schedule_frame(e.output);
         return 0;
     }, this);
     hint_timer = wl_event_loop_add_timer(loop, [](void* data) -> int {
@@ -419,7 +430,24 @@ bool Server::start_() {
     // The person's keys and state; each workspace's arrangement as they left it.
     load_person();
     draw_shell();
+    // A region the window maps too (a machine's frames: opensal 0.7 Region).
+    if (const auto env = os::environment(); env.contains("OPENSAL_REGION") && env.contains("OPENSAL_REGION_SIZE")) {
+        const auto size = static_cast<std::size_t>(std::strtoull(env.at("OPENSAL_REGION_SIZE").c_str(), nullptr, 10));
+        if (size >= (1u << 20)) region = os::map_file(env.at("OPENSAL_REGION"), size);
+        log(region ? std::format("frames go through a shared region ({} MiB)", size >> 20)
+                   : "the shared region for frames could not be mapped: frames go on the channel");
+    }
     send(hello());
+    // Nothing done for a while: the wallpaper paused (checked every half minute).
+    idle_timer = wl_event_loop_add_timer(loop, [](void* data) -> int {
+        auto* self = static_cast<Server*>(data);
+        self->wallpaper_pause_check();
+        wl_event_source_timer_update(self->idle_timer, 30000);
+        return 0;
+    }, this);
+    if (idle_timer) wl_event_source_timer_update(idle_timer, 30000);
+    // What its programs say, read off the loop (design 2026-10-24 §6.1).
+    apps_reader = std::thread([this] { apps_read(); });
     for (const auto& a : o.autostart) launch(a);
     return true;
 }
@@ -429,12 +457,14 @@ int Server::run_() {
     while (!stop) {
         wl_display_flush_clients(display);
         wl_event_loop_dispatch(loop, 100);
-        std::erase_if(children, [](int pid) { return os::exited(pid).has_value(); });
+        apps_reap();
     }
     return 0;
 }
 
 Server::~Server() {
+    apps_stop = true;
+    if (apps_reader.joinable()) apps_reader.join();
     bus_stop();
     for (auto& l : links)
         if (l.source) wl_event_source_remove(l.source);
@@ -470,7 +500,9 @@ Server::~Server() {
     for (int pid : children) os::terminate(pid);
     new_toplevel.disconnect(); new_popup.disconnect(); new_decoration.disconnect(); frame.disconnect();
     request_cursor.disconnect(); request_selection.disconnect(); set_selection.disconnect(); new_text_input.disconnect();
-    request_shape.disconnect(); cursor_commit.disconnect(); cursor_gone.disconnect();
+    request_shape.disconnect(); cursor_commit.disconnect(); cursor_gone.disconnect(); new_layer_surface.disconnect();
+    for (auto& b : background_clients) { b.commit.disconnect(); b.destroy.disconnect(); }
+    for (auto& e : extends) e.frame.disconnect();
     if (reading) { wl_event_source_remove(reading->source); os::close(reading->fd); }
     for (auto& t : text_inputs) { t.enable.disconnect(); t.commit.disconnect(); t.disable.disconnect(); t.destroy.disconnect(); }
     text_inputs.clear();

@@ -12,7 +12,7 @@ import std;
 
 export namespace openbus {
 
-inline constexpr std::string_view kVersion = "0.1";
+inline constexpr std::string_view kVersion = "0.2";
 inline constexpr std::uint8_t kWireVersion = 1;
 inline constexpr std::size_t kHeaderSize = 24;
 inline constexpr std::size_t kMaxPayload = 1u << 20;
@@ -132,7 +132,7 @@ std::optional<Envelope> open_envelope(std::string_view payload);
 
 // ── regions (SPEC.md §6) ────────────────────────────────────────────
 
-enum class RegionKind : std::uint8_t { memfd, shm, dmabuf, cuda_ipc, metal_shared, rdma, inline_copy };
+enum class RegionKind : std::uint8_t { memfd, shm, dmabuf, cuda_ipc, metal_shared, rdma, inline_copy, ivshmem };
 enum class Coherence : std::uint8_t { owned, snapshot, shared };
 enum class Tier : std::uint8_t { hot, far, cold };
 std::string_view name_of(RegionKind k);

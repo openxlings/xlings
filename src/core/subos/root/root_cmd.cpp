@@ -184,7 +184,7 @@ std::optional<Declared> declared_by_template_(const fs::path& instance, EventStr
         }
         if (auto b = it->find("boot"); b != it->end() && b->is_object()) {
             if (auto init = b->value("init", std::string()); !init.empty()) d.init = init;
-            for (const auto* k : {"kernel", "kernel_min", "profile"})
+            for (const auto* k : {"kernel", "kernel_min", "profile", "virt"})
                 if (b->contains(k) && (*b)[k].is_string()) d.boot[k] = (*b)[k];
         }
         if (auto a = it->find("abi"); a != it->end()) d.abi = abi_of_(*a);
@@ -444,7 +444,9 @@ std::optional<int> run_domain_operation_(const std::string& name,
         if (!relayed) { error_(stream, relayed.error()); return 1; }
         return *relayed;
     }
-    auto result = xlings::home::domain_producer::run((**scope).domain, arguments, std::nullopt, true);
+    // A session is as long as it is used (J69); anything else may take 30 minutes.
+    auto result = xlings::home::domain_producer::run((**scope).domain, arguments, std::nullopt, true, {},
+                                                     handsOverStdio ? std::nullopt : std::optional(std::chrono::milliseconds(std::chrono::minutes(30))));
     if (!result) { error_(stream, result.error()); return 1; }
     return *result;
 }

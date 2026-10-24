@@ -32,14 +32,35 @@ Inside a machine, xlings is the package manager: `xlings install` installs into
 the running system as a new generation; `luban rollback` returns to the previous
 one. A broken library cannot prevent the rollback — xlings is static.
 
+## Its kernel
+
+A machine boots its system's own kernel: the version its edition declares
+(`boot.virt`, a `linux-kernel-virt` version), installed the first time and
+moved by `luban upgrade` with the rest of the system. Every version calls itself
+`6.12.112-virt`; the package version is what tells them apart, and
+`luban status <name>` shows it. Another one, for this system only:
+
+```bash
+luban config box --kernel 6.12.112-r3     # this version, from the next start
+luban config box --kernel default         # its own again
+```
+
+Before it starts, the kernel is checked for what the start needs of it (read
+from the build config beside it): virtio-fs for its files, virtio-gpu for 3D.
+What has a way back falls back and says why -- `files 9p (the kernel 6.12.112
+has no virtio-fs: luban upgrade box)` -- and what has none (no 9p) refuses with
+the fix. A system whose version predates systems carrying their own kernel is
+told to `luban upgrade` it.
+
 ## Its files
 
 A machine's tree and the home it reads are shared with it, not copied:
 over virtio-fs, one unprivileged `virtiofsd` for each share (the first machine
 installs `xim:virtiofsd`), and over 9p where that cannot be -- a machine
 without hardware virtualization, a host it is not built for, a daemon that
-does not start. `luban status <name>` says which,
-and why:
+does not start, a kernel without virtio-fs. A host that restricts unprivileged
+namespaces (Ubuntu's AppArmor) runs `virtiofsd` without its own sandbox from the
+start, and says so. `luban status <name>` says which, and why:
 
 ```bash
 luban status box                  # files     virtiofs

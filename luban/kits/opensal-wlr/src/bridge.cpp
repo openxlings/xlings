@@ -97,6 +97,8 @@ struct Mirror {
     opensal::Size told;
     std::uint32_t number { 2 };
     bool gone { false };
+    bool primary { false };         // it asked to be the primary (opensal 0.7): the output is its size
+    opensal::Size own;              // its size, from its hello and its resizes
 };
 
 class Bridge {
@@ -138,6 +140,15 @@ private:
     void accept_mirror_();
     bool mirror_(Mirror& m, std::string_view bytes);
     void tell_roles_();
+    // Rows to a window: into the region both sides map when it takes them
+    // there (opensal 0.7 Region), else on its stream; whether it took them.
+    bool send_rects_(int fd, opensal::Interfaces provided, const opensal::Pixels& surface, std::span<const opensal::Rect> rects);
+    Mirror* primary_mirror_() {
+        Mirror* p = nullptr;
+        for (auto& m : mirrors_)
+            if (m.primary && !m.gone) p = &m;
+        return p;
+    }
 
     const Options& o_;
     wl::Connection c_;
@@ -221,6 +232,12 @@ private:
     // The other windows (displays), at o_.displays.
     int displays_ { -1 };
     std::list<Mirror> mirrors_;
+    opensal::Size provider_own_;    // the first window's size: the output's again when a primary that came goes
+
+    // Frames by reference (opensal 0.7 Region): the region the windows map
+    // too ($OPENSAL_REGION), and where the next rows go in it.
+    std::optional<os::SharedMemory> region_;
+    std::size_t region_at_ { 0 };
 };
 
 std::uint32_t Bridge::bind_(std::string_view iface, std::uint32_t max_version, std::uint32_t& version) {
@@ -569,11 +586,7 @@ void Bridge::frame_ready_() {
                     px[y * f.stride + x * 4 + 3] = std::byte{0xff};
         }
         const opensal::Pixels surface{f.size, f.stride, std::span<const std::byte>(px, shm_mem_.size)};
-        // A provider across a narrow channel takes the rows compressed (opensal 0.6).
-        auto frame = opensal::wire::encode_frame(surface, d);
-        if (opensal::has(provided_, opensal::Interface::Compressed))
-            if (auto z = opensal::wire::encode_compressed(std::string_view(frame).substr(5))) frame = opensal::wire::encode('z', *z);
-        if (!send_(frame)) { provider_gone_ = true; break; }
+        if (!send_rects_(o_.out, provided_, surface, std::span(&d, 1))) { provider_gone_ = true; break; }
     }
     // The mirrors: the same picture (all of it to one that has not had it).
     const opensal::Pixels surface{f.size, f.stride, std::span<const std::byte>(px, shm_mem_.size)};
@@ -585,8 +598,8 @@ void Bridge::frame_ready_() {
             m.told = f.size;
             resized = true;
         }
-        for (const auto& d : std::exchange(m.whole, false) ? std::vector{whole} : rects)
-            if (!m.gone && !os::write_all(m.fd, opensal::wire::encode_frame(surface, d))) m.gone = true;
+        const auto all = std::exchange(m.whole, false) ? std::vector{whole} : rects;
+        if (!m.gone && !send_rects_(m.fd, m.provided, surface, all)) m.gone = true;
     }
     if (resized) tell_roles_();
     first_ = false;
@@ -645,7 +658,8 @@ void Bridge::input_(const opensal::Event& ev) {
         if (w->dx != 0) c_.send(vptr_, op::vptr_axis, wl::Args{}.u(now_ms_()).u(1).fixed(w->dx * 15.0));
         c_.send(vptr_, op::vptr_frame, wl::Args{});
     } else if (const auto* r = std::get_if<opensal::Resized>(&ev)) {
-        resize_(r->size);
+        provider_own_ = r->size;
+        if (!primary_mirror_()) resize_(r->size);
     } else if (const auto* f = std::get_if<opensal::Focus>(&ev)) {
         // Focus left the window: nothing it holds stays pressed here.
         if (!f->in) {
@@ -756,6 +770,7 @@ void Bridge::accept_mirror_() {
     if (vkbd_) wanted |= static_cast<opensal::Interfaces>(I::Keyboard);
     if (vptr_) wanted |= static_cast<opensal::Interfaces>(I::Pointer);
     if (dc_device_) wanted |= static_cast<opensal::Interfaces>(I::Clipboard);
+    if (region_) wanted |= static_cast<opensal::Interfaces>(I::Region);
     if (host_cursor_ || cursor_session_) wanted |= I::Cursor | I::CursorImage;
     if (o_.shell) wanted |= static_cast<opensal::Interfaces>(I::Shell);
     if (!os::write_all(fd, opensal::wire::encode('h', std::to_string(wanted)))) m.gone = true;
@@ -773,6 +788,18 @@ bool Bridge::mirror_(Mirror& m, std::string_view bytes) {
         if (msg.kind == 'H') {
             std::istringstream in(msg.payload);
             in >> m.provided;
+            // "<bits> <w> <h> <scale> <paced> [primary]": one that comes to show
+            // the desktop at its own size is the primary (opensal 0.7).
+            std::uint32_t w = 0, h = 0;
+            double scale = 1;
+            int paced = 0;
+            std::string asked;
+            if (in >> w >> h) m.own = {w, h};
+            if (in >> scale >> paced >> asked && asked == "primary" && w > 0 && h > 0) {
+                m.primary = true;
+                log_(std::format("display {} is the primary (it asked)", m.number));
+                resize_(m.own);
+            }
             m.hello = true;
             m.whole = true;
             tell_roles_();
@@ -783,21 +810,57 @@ bool Bridge::mirror_(Mirror& m, std::string_view bytes) {
             if (o_.shell) tell_applications_();
         } else if (msg.kind == 'E') {
             auto e = opensal::wire::decode_event(msg.payload);
-            if (!e || std::holds_alternative<opensal::Resized>(*e) || std::holds_alternative<opensal::DensityChanged>(*e)) continue;
+            if (!e) continue;
+            // A mirror's size is its own business; the primary's is the output's.
+            if (const auto* r = std::get_if<opensal::Resized>(&*e)) {
+                m.own = r->size;
+                if (m.primary && primary_mirror_() == &m) resize_(r->size);
+                continue;
+            }
+            if (std::holds_alternative<opensal::DensityChanged>(*e)) continue;
             if (std::holds_alternative<opensal::Launch>(*e) || std::holds_alternative<opensal::Activate>(*e)) shell_(*e);
             else input_(*e);
         }
     }
 }
 
+bool Bridge::send_rects_(int fd, opensal::Interfaces provided, const opensal::Pixels& surface, std::span<const opensal::Rect> rects) {
+    for (const auto& d : rects) {
+        if (d.width == 0 || d.height == 0) continue;
+        const std::size_t row = std::size_t(d.width) * 4, rows = row * d.height;
+        if (region_ && opensal::has(provided, opensal::Interface::Region) && rows <= region_->size) {
+            if (region_at_ + rows > region_->size) region_at_ = 0;
+            auto* dst = reinterpret_cast<std::byte*>(region_->data) + region_at_;
+            for (std::uint32_t y = 0; y < d.height; ++y)
+                std::memcpy(dst + std::size_t(y) * row, surface.bytes.data() + (std::size_t(d.y) + y) * surface.stride + std::size_t(d.x) * 4, row);
+            const auto msg = opensal::wire::encode_region_frame({.rect = d, .stride = static_cast<std::uint32_t>(row), .offset = region_at_});
+            region_at_ += rows;
+            if (!os::write_all(fd, msg)) return false;
+            continue;
+        }
+        // A window across a narrow channel takes the rows compressed (opensal 0.6).
+        auto frame = opensal::wire::encode_frame(surface, d);
+        if (opensal::has(provided, opensal::Interface::Compressed))
+            if (auto z = opensal::wire::encode_compressed(std::string_view(frame).substr(5))) frame = opensal::wire::encode('z', *z);
+        if (!os::write_all(fd, frame)) return false;
+    }
+    return true;
+}
+
 // Each window what it is ('d', to those that take it).
 void Bridge::tell_roles_() {
-    if (opensal::has(provided_, opensal::Interface::Displays) && !mirrors_.empty())
-        (void)send_(opensal::wire::encode('d', opensal::wire::encode_display({.number = 1})));
+    // The primary: a window that asked to be (the last one), else the first.
+    const auto* p = primary_mirror_();
+    const std::uint32_t primary = p ? p->number : 1;
+    const auto role = [&](std::uint32_t n) {
+        return n == primary ? opensal::DisplayRole{.number = n}
+                            : opensal::DisplayRole{.number = n, .kind = opensal::DisplayRole::Kind::mirror, .of = primary, .size = told_};
+    };
+    if (opensal::has(provided_, opensal::Interface::Displays) && !mirrors_.empty() && (primary == 1 || told_.width > 0))
+        (void)send_(opensal::wire::encode('d', opensal::wire::encode_display(role(1))));
     for (auto& m : mirrors_) {
         if (!m.hello || m.gone || !opensal::has(m.provided, opensal::Interface::Displays) || told_.width == 0) continue;
-        const opensal::DisplayRole r{.number = m.number, .kind = opensal::DisplayRole::Kind::mirror, .of = 1, .size = told_};
-        if (!os::write_all(m.fd, opensal::wire::encode('d', opensal::wire::encode_display(r)))) m.gone = true;
+        if (!os::write_all(m.fd, opensal::wire::encode('d', opensal::wire::encode_display(role(m.number))))) m.gone = true;
     }
 }
 
@@ -812,7 +875,10 @@ bool Bridge::provider_(std::string_view bytes) {
             // "<bits> <w> <h> <scale>"
             std::istringstream in(msg.payload);
             std::uint32_t bits = 0, w = 0, h = 0;
-            if (in >> bits >> w >> h) resize_({w, h});
+            if (in >> bits >> w >> h) {
+                provider_own_ = {w, h};
+                if (!primary_mirror_()) resize_({w, h});
+            }
             provided_ = bits;
             if (!host_cursor_ && !cursor_session_ && opensal::has(provided_, opensal::Interface::CursorImage) && sources_
                 && copy_capture_ && seat_)
@@ -874,8 +940,16 @@ int Bridge::run() {
         c_.send(dc_manager_, dc::manager_get_device, wl::Args{}.u(dc_device_).u(seat_));
     }
     if (!roundtrip_()) return 1;
+    // A region the windows map too (a machine's frames: opensal 0.7 Region).
+    if (const auto env = os::environment(); env.contains("OPENSAL_REGION") && env.contains("OPENSAL_REGION_SIZE")) {
+        const auto size = static_cast<std::size_t>(std::strtoull(env.at("OPENSAL_REGION_SIZE").c_str(), nullptr, 10));
+        if (size >= (1u << 20)) region_ = os::map_file(env.at("OPENSAL_REGION"), size);
+        log_(region_ ? std::format("frames go through a shared region ({} MiB)", size >> 20)
+                     : std::string("the shared region for frames could not be mapped: frames go on the channel"));
+    }
     using I = opensal::Interface;
     opensal::Interfaces wanted = I::Surface | I::Mode;
+    if (region_) wanted |= static_cast<opensal::Interfaces>(I::Region);
     if (vkbd_) wanted |= static_cast<opensal::Interfaces>(I::Keyboard);
     if (vptr_) wanted |= static_cast<opensal::Interfaces>(I::Pointer);
     if (dc_device_) wanted |= static_cast<opensal::Interfaces>(I::Clipboard);
@@ -937,9 +1011,17 @@ int Bridge::run() {
             auto n = os::read_some(m.fd, buf);
             if (!n || *n == 0 || !mirror_(m, std::string_view(buf.data(), *n))) m.gone = true;
         }
+        const bool had_primary = primary_mirror_() != nullptr;
+        bool left = false;
         for (auto it = mirrors_.begin(); it != mirrors_.end();)
-            if (it->gone) { log_(std::format("display {} left", it->number)); os::close(it->fd); it = mirrors_.erase(it); }
+            if (it->gone) { log_(std::format("display {} left", it->number)); os::close(it->fd); it = mirrors_.erase(it); left = true; }
             else ++it;
+        // The primary that came went: the output is the first window's size again.
+        if (left && had_primary) {
+            if (const auto* p = primary_mirror_()) resize_(p->own);
+            else if (provider_own_.width > 0) resize_(provider_own_);
+            tell_roles_();
+        }
         if (p[0].readable || p[0].closed) {
             auto n = os::read_some(o_.in, buf);
             if (!n || *n == 0) return 0;

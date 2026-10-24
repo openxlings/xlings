@@ -267,3 +267,16 @@ XTEST(ProcessTerminal, AJoinedCommandsTerminalFollowsTheCallersWindowSize,
     ::close(caller_master);
 #endif
 }
+
+// No limit is no deadline (J69): milliseconds::max() in the clock's
+// nanoseconds overflowed into the past, and the child was ended at once with
+// 124 -- the way a session in a private domain (subos use, a desktop) runs.
+XTEST(ProcessTerminal, AChildWithoutALimitRunsToItsEnd, .area = "subos", .covers = {"SUBOS-DOMAIN-SESSION-UNLIMITED"},
+      .requires_ = {"posix"}) {
+#if defined(_WIN32)
+    GTEST_SKIP() << "POSIX process groups";
+#else
+    EXPECT_EQ(xlings::platform::run_argv_with_timeout({"/bin/sh", "-c", "sleep 1; exit 3"}, std::chrono::milliseconds::max()), 3);
+    EXPECT_EQ(xlings::platform::run_argv_with_timeout({"/bin/sh", "-c", "sleep 5"}, std::chrono::milliseconds(300)), 124);
+#endif
+}

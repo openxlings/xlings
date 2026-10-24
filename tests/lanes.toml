@@ -31,3 +31,11 @@ mcpp = ["--profile", "asan"]
 # Root scenarios (the distro suite), planned from measured durations.
 [distro]
 shards = 3
+
+# The Luban OS desktop's real scenarios (design 2026-10-24 §11), run locally
+# before a release on a machine with a display stack: a desktop on a virtual
+# display driven through the bus, xdesk's sessions, the displays and the
+# wire. CI runs the same tests in its e2e families; this lane is their set.
+[luban-desktop]
+jobs = 2
+tests = ["test_luban_desktop", "test_luban_os_xdesk", "test_xdesk_", "test_openhal_emu", "test_clipboard_bridge"]

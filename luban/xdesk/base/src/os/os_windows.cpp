@@ -28,6 +28,7 @@ std::optional<std::size_t> recv_with_fds(int, std::span<char>, std::vector<int>&
 int listen_unix(const fs::path&) { return -1; }
 int accept(int) { return -1; }
 std::optional<SharedMemory> shared_memory(std::size_t) { return std::nullopt; }
+std::optional<SharedMemory> map_file(const fs::path&, std::size_t) { return std::nullopt; }
 void release(SharedMemory& m) { m = {}; }
 int pid() { return ::_getpid(); }
 fs::path executable() { return {}; }

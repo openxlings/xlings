@@ -81,7 +81,8 @@ bool give_to(const std::filesystem::path& path, unsigned uid, unsigned gid);
 bool take_controlling_terminal();       // stdin's terminal, TIOCSCTTY
 // fds[0..2] become this process's stdin, stdout, stderr.
 void redirect_stdio(std::span<const int> fds);
-// argv with a deadline, its own process group, killed whole when late (124).
+// argv with a deadline, its own process group, killed whole when late (124);
+// milliseconds::max() (a year or more): no deadline.
 int run_argv_with_timeout(const std::vector<std::string>& argv, std::chrono::milliseconds limit);
 // A shell command run for nobody: its own session (no controlling terminal)
 // and the null device as input, so a question it asks -- a password, a
@@ -112,6 +113,10 @@ void close_fds(std::vector<int>& fds);
 bool set_inheritable(int fd, bool inheritable);
 // Close-on-exec unless asked otherwise.
 std::optional<std::array<int, 2>> make_pipe(bool cloexec = true);
+// A connected pair of local stream sockets, both ways (close-on-exec): what a
+// program hands a child as its stdin and stdout when it moves the bytes
+// itself (a bus stream). nullopt where there are none.
+std::optional<std::array<int, 2>> make_socket_pair();
 bool read_exact(int fd, void* buf, std::size_t size);
 
 // ── terminals ────────────────────────────────────────────────────────
@@ -220,6 +225,11 @@ struct SharedMemory {
     std::size_t size { 0 };
 };
 std::optional<SharedMemory> create_shared_memory(std::size_t size);
+// A file of `size` bytes at `path` (made when it is not there, owner-only),
+// mapped here read-write and shared with whoever maps it too: a machine's
+// ivshmem memory behind /dev/shm (design 2026-10-24 §5.4). nullopt where
+// there are no shared mappings.
+std::optional<SharedMemory> map_shared_file(const std::filesystem::path& path, std::size_t size);
 void release_shared_memory(SharedMemory& m);
 
 }  // namespace xlings::platform

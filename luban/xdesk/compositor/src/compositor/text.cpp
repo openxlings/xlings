@@ -122,6 +122,9 @@ void Server::preedit(const opensal::Preedit& p) {
 
 // The window's clipboard became the clients' selection.
 void Server::host_clipboard(std::string text) {
+    selection_text = text;
+    selection_mime.clear();
+    selection_data.clear();
     auto* sel = new HostSelection{};
     sel->text = std::move(text);
     wlr_data_source_init(&sel->base, &kHostSelection);
@@ -138,6 +141,41 @@ void Server::host_clipboard(std::string text) {
     wlr_seat_set_selection(seat, &sel->base, 0);
 }
 
+// The window's clipboard, an image (opensal 0.7 ClipboardData): the clients'
+// selection of that type.
+void Server::host_clipboard_data(std::string mime, std::string bytes) {
+    // Files (opensal 0.7): written where pasted files go, offered by their new paths.
+    if (mime == opensal::wire::kFilesType) {
+        auto files = opensal::wire::decode_files(bytes);
+        if (!files) { log("the files on the window's clipboard are not opensal's"); return; }
+        const auto env = os::environment();
+        const auto home = env.contains("HOME") ? fs::path(env.at("HOME")) : fs::temp_directory_path();
+        const auto dir = home / "Downloads" / "Clipboard";
+        std::error_code ec;
+        fs::create_directories(dir, ec);
+        std::vector<std::string> paths;
+        for (const auto& f : *files) {
+            auto at = dir / f.name;
+            for (int n = 2; fs::exists(at, ec); ++n) at = dir / std::format("{} ({}){}", fs::path(f.name).stem().string(), n, fs::path(f.name).extension().string());
+            std::ofstream(at, std::ios::binary) << f.bytes;
+            paths.push_back(at.string());
+        }
+        mime = "text/uri-list";
+        bytes = opensal::wire::uri_list_of(paths);
+        log(std::format("{} file(s) from the window's clipboard in {}", paths.size(), dir.string()));
+    }
+    selection_mime = mime;
+    selection_data = bytes;
+    auto* sel = new HostSelection{};
+    sel->text = std::move(bytes);
+    wlr_data_source_init(&sel->base, &kHostSelection);
+    if (auto* slot = static_cast<char**>(wl_array_add(&sel->base.mime_types, sizeof(char*)))) {
+        *slot = static_cast<char*>(std::malloc(mime.size() + 1));
+        if (*slot) std::memcpy(*slot, mime.c_str(), mime.size() + 1);
+    }
+    wlr_seat_set_selection(seat, &sel->base, 0);
+}
+
 // A client's selection, read and given to the window.
 void Server::selection_changed() {
     wlr_data_source* src = seat->selection_source;
@@ -145,12 +183,19 @@ void Server::selection_changed() {
     // Ours (the window's own clipboard, offered back): known by what it is,
     // not by an address a freed one's successor might have.
     if (src->impl == &kHostSelection) return;
-    if (!opensal::has(provided, opensal::Interface::Clipboard)) return;
     const char* chosen = nullptr;
+    char** m = static_cast<char**>(src->mime_types.data);
+    const std::size_t count = src->mime_types.size / sizeof(char*);
+    // An image first (a browser's copied image offers its address as text
+    // too: the image is what was copied), then text.
+    for (std::size_t k = 0; k < count && !chosen; ++k)
+        if (std::string_view(m[k]) == "image/png") chosen = m[k];
+    // Files, by their content (opensal 0.7).
+    for (std::size_t k = 0; k < count && !chosen; ++k)
+        if (std::string_view(m[k]) == "text/uri-list") chosen = m[k];
     for (const char* want : {"text/plain;charset=utf-8", "UTF8_STRING", "text/plain", "TEXT", "STRING"}) {
-        char** m = static_cast<char**>(src->mime_types.data);
-        for (std::size_t k = 0; k < src->mime_types.size / sizeof(char*); ++k)
-            if (std::string_view(m[k]) == want) { chosen = want; break; }
+        for (std::size_t k = 0; k < count && !chosen; ++k)
+            if (std::string_view(m[k]) == want) chosen = want;
         if (chosen) break;
     }
     if (!chosen) return;
@@ -159,6 +204,7 @@ void Server::selection_changed() {
     if (reading) { wl_event_source_remove(reading->source); os::close(reading->fd); }
     reading = std::make_unique<SelectionRead>();
     reading->fd = (*ends)[0];
+    reading->mime = std::string_view(chosen) == "image/png" || std::string_view(chosen) == "text/uri-list" ? chosen : "";
     wlr_data_source_send(src, chosen, (*ends)[1]);   // it closes the write end
     reading->source = wl_event_loop_add_fd(loop, reading->fd, WL_EVENT_READABLE_ | WL_EVENT_HANGUP_,
         [](int, std::uint32_t, void* data) -> int {
@@ -166,11 +212,45 @@ void Server::selection_changed() {
             auto& rd = *self->reading;
             std::array<char, 65536> buf{};
             const auto n = os::read_some(rd.fd, buf);
-            if (n && *n > 0 && rd.text.size() < (16u << 20)) { rd.text.append(buf.data(), *n); return 0; }
-            // The end (or an error): what was read is the selection.
+            const std::size_t limit = rd.mime.empty() ? (16u << 20) : opensal::wire::kMaxClipboard;
+            if (n && *n > 0 && rd.text.size() < limit) { rd.text.append(buf.data(), *n); return 0; }
+            // The end (or an error): what was read is the selection -- kept
+            // (the session's clipboard on the bus) and given to the window
+            // that takes it.
             wl_event_source_remove(rd.source);
             os::close(rd.fd);
-            if (!rd.text.empty()) self->send(opensal::wire::encode('b', rd.text));
+            if (!rd.text.empty() && rd.mime == "text/uri-list") {
+                // Files: their content, as long as it fits (opensal 0.7).
+                std::vector<opensal::wire::ClipboardFile> files;
+                std::size_t total = 0;
+                for (const auto& path : opensal::wire::uri_list_paths(rd.text)) {
+                    std::error_code ec;
+                    if (!fs::is_regular_file(path, ec)) continue;
+                    const auto size = fs::file_size(path, ec);
+                    if (ec || total + size > opensal::wire::kMaxClipboard - 4096) { files.clear(); break; }
+                    std::ifstream in(path, std::ios::binary);
+                    files.push_back({fs::path(path).filename().string(), std::string(std::istreambuf_iterator<char>(in), {})});
+                    total += size;
+                }
+                rd.mime = files.empty() ? "" : std::string(opensal::wire::kFilesType);
+                rd.text = files.empty() ? std::string{} : opensal::wire::encode_files(files);
+                if (files.empty()) self->log("the files copied are none, or more than the clipboard carries (64 MiB)");
+            }
+            if (!rd.text.empty() && !rd.mime.empty()) {
+                // An image, files: to each window that takes them.
+                self->selection_mime = rd.mime;
+                self->selection_data = rd.text;
+                self->publish("clipboard", {{"types", rd.mime}, {"bytes", std::to_string(rd.text.size())}});
+                const auto msg = opensal::wire::encode_clipboard_data({rd.mime, rd.text});
+                for (auto& l : self->links)
+                    if (!l.gone && opensal::has(l.provided, opensal::Interface::ClipboardData) && !os::write_all(l.out, msg)) l.gone = true;
+            } else if (!rd.text.empty()) {
+                self->selection_text = rd.text;
+                self->selection_mime.clear();
+                self->selection_data.clear();
+                self->publish("clipboard", {{"types", "text/plain"}, {"bytes", std::to_string(rd.text.size())}});
+                if (opensal::has(self->provided, opensal::Interface::Clipboard)) self->send(opensal::wire::encode('b', rd.text));
+            }
             self->reading.reset();
             return 0;
         }, this);

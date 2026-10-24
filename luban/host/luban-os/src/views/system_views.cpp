@@ -356,13 +356,14 @@ ImportPreview preview_import_(const fs::path& file, const std::vector<std::strin
             if (pol->preset == xlings::subos::policy::Preset::Legacy)
                 p.wider.push_back(std::string(tr("luban.os.system.no_isolation_preset_environment_made")));
             // A grant as what it lets the system do.
-            static constexpr std::array<std::array<std::string_view, 2>, 6> kGrants{{
+            static constexpr std::array<std::array<std::string_view, 2>, 7> kGrants{{
                 {"clipboard", "luban.os.system.grant.clipboard"},
                 {"clipboard-paste", "luban.os.system.grant.clipboard_paste"},
                 {"display", "luban.os.system.grant.display"},
                 {"audio", "luban.os.system.grant.audio"},
                 {"gpu", "luban.os.system.grant.gpu"},
                 {"ssh-agent", "luban.os.system.grant.ssh_agent"},
+                {"desktop-control", "luban.os.system.grant.desktop_control"},
             }};
             for (const auto& g : pol->grants) {
                 const auto known = std::ranges::find_if(kGrants, [&](const auto& k) { return k[0] == g; });
@@ -555,15 +556,89 @@ void desktop_view_(App& a) {
                                      std::max(1, static_cast<int>(w * scale)), std::max(1, static_cast<int>(h * scale)));
             else a.window->text_input(false);
         }
-        // What it copied is the host's clipboard (it is not pasted back).
-        if (auto c = d.take_clipboard()) {
+        // What it copied is the host's clipboard (it is not pasted back) --
+        // only what was copied while the window was being used: a program in
+        // the background copying puts nothing on this computer (design
+        // 2026-10-24 §8.2), and its region keeps it.
+        // An image is a copy just as text is (opensal 0.7 ClipboardData).
+        // Which one it was: its type, size and first bytes -- the same image
+        // offered again on focus is not a new copy (design 2026-10-24 §8.1).
+        const auto mark = [](const std::string& mime, const std::string& bytes) {
+            return std::format("{} {} {:x}", mime, bytes.size(), std::hash<std::string_view>{}(std::string_view(bytes).substr(0, 8u << 20)));
+        };
+        // Whether it is in use, by this frame's input too: a copy that comes in
+        // the same frame as the focus or a key is the person's.
+        const auto used = [](const opensal::Event& e) {
+            return std::holds_alternative<opensal::Key>(e) || std::holds_alternative<opensal::PointerButton>(e)
+                   || std::holds_alternative<opensal::Wheel>(e) || std::holds_alternative<opensal::TextCommit>(e);
+        };
+        if (!a.menu && !a.close_dialog)
+            for (const auto& e : a.window->events()) {
+                if (used(e)) a.desktop_in_use = true;
+                if (const auto* f = std::get_if<opensal::Focus>(&e)) a.desktop_in_use = f->in;
+            }
+        if (auto c = d.take_clipboard(); c && (a.window->focused() || a.desktop_in_use)) {
             a.window->set_clipboard(*c);
             a.pasted = *c;
+            a.pasted_data.clear();
+        }
+        if (auto c = d.take_clipboard_data(); c && (a.window->focused() || a.desktop_in_use)) {
+            a.pasted_data = mark(c->mime, c->bytes);
+            // Files: written where pasted files go on this computer, offered by their paths.
+            if (c->mime == opensal::wire::kFilesType) {
+                if (auto files = opensal::wire::decode_files(c->bytes)) {
+                    const auto dir = fs::path(xlings::platform::get_home_dir()) / "Downloads" / "Clipboard";
+                    std::error_code ec;
+                    fs::create_directories(dir, ec);
+                    std::vector<std::string> paths;
+                    for (const auto& f : *files) {
+                        auto at = dir / f.name;
+                        for (int n = 2; fs::exists(at, ec); ++n)
+                            at = dir / std::format("{} ({}){}", fs::path(f.name).stem().string(), n, fs::path(f.name).extension().string());
+                        std::ofstream(at, std::ios::binary) << f.bytes;
+                        paths.push_back(at.generic_string());
+                    }
+                    const auto list = opensal::wire::uri_list_of(paths);
+                    a.window->set_clipboard_data("text/uri-list", list);
+                    a.pasted_data = mark("text/uri-list", list);   // not given back as a new copy
+                }
+            } else {
+                a.window->set_clipboard_data(c->mime, std::move(c->bytes));
+            }
         }
         // The host's clipboard into it, when it is granted: as it opens,
-        // whenever it changes, and whenever the window comes back to it.
+        // whenever it changes, and whenever the window comes back to it --
+        // an image as an image (a copied image's address is text too).
         auto paste = [&] {
             if (!d.clipboard_grant().paste) return;
+            if (auto png = a.window->clipboard_data("image/png"); png && !png->empty()) {
+                const auto m = mark("image/png", *png);
+                if (m == a.pasted_data || png->size() > opensal::wire::kMaxClipboard) return;
+                a.pasted_data = m;
+                d.send_clipboard_data({"image/png", std::move(*png)});
+                return;
+            }
+            // Files copied on this computer: their content (what fits).
+            if (auto list = a.window->clipboard_data("text/uri-list"); list && !list->empty()) {
+                const auto m = mark("text/uri-list", *list);
+                if (m == a.pasted_data) return;
+                a.pasted_data = m;
+                std::vector<opensal::wire::ClipboardFile> files;
+                std::size_t total = 0;
+                for (const auto& path : opensal::wire::uri_list_paths(*list)) {
+                    std::error_code ec;
+                    if (!fs::is_regular_file(path, ec)) continue;
+                    const auto size = fs::file_size(path, ec);
+                    if (ec || total + size > opensal::wire::kMaxClipboard - 4096) return;
+                    std::ifstream in(path, std::ios::binary);
+                    files.push_back({fs::path(path).filename().string(), std::string(std::istreambuf_iterator<char>(in), {})});
+                    total += size;
+                }
+                if (!files.empty()) {
+                    d.send_clipboard_data({std::string(opensal::wire::kFilesType), opensal::wire::encode_files(files)});
+                    return;
+                }
+            }
             auto text = a.window->clipboard();
             if (text.empty() || text == a.pasted) return;
             a.pasted = text;

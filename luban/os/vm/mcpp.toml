@@ -19,6 +19,9 @@ image    = { path = "../../../modules/image" }
 carrier  = { path = "../../../modules/carrier" }
 luban-service = { path = "../service" }
 opensal-wlr = { path = "../../kits/opensal-wlr" }
+opensal   = { path = "../../specs/opensal" }
+openhal   = { path = "../../specs/openhal" }
+openhal-emu = { path = "../../kits/openhal-emu" }
 xbus      = { path = "../../services/xbus" }
 telemetry = { path = "../../kits/telemetry" }
 

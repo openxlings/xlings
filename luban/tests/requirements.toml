@@ -731,3 +731,87 @@ status = "required"
 [XDESK-DAMAGE]
 text = "xdesk sends a frame's damage as at most eight rectangles, the nearest merged (every damaged pixel in one), not the whole frame for a handful of small changes"
 status = "required"
+
+[LUBAN-OS-JOB-PAGE]
+text = "the Luban OS app's job page draws through every ending -- done, failed, cancelled -- at any window height, reading the job's end once per frame (J54)"
+status = "required"
+
+[LUBAN-MACHINE-KERNEL-CAPS]
+text = "a machine's kernel is its system's (boot.virt, or luban config --kernel), checked against what the start needs (virtio-fs, 9p, virtio-gpu, from the config beside it): a missing capability with a way back falls back and is said with its fix, one without refuses; a system that declares no kernel is told to upgrade (design 2026-10-24 §7, J55)"
+status = "required"
+
+[XDESK-STACK-OFFSCREEN]
+text = "a stacked window may be partly off the output -- its title bar on it and at least 64 pixels (a quarter of it, if less) across -- by one rule the arrangement and a drag share (design 2026-10-24 §9.1, J61)"
+status = "required"
+
+[XDESK-STACK-EDGE-SNAP]
+text = "a stacked window dragged into the output's edge band shows the half, the quarter or the whole output it would take and takes it when let go; picked up again it is free at the size it had before, under the pointer (design 2026-10-24 §9.2, J62)"
+status = "required"
+
+[XDESK-COLLAPSE-KEEPS-SIZE]
+text = "a collapsed free window (the WuXian view's) is moved without its size changing, unfolds to the size it had, and its title bar says it: a fold mark (▸ folded, ▾ unfolded) that toggles it, a darker bar with a line under it and 'collapsed' after its title (design 2026-10-24 §9.3, J63, J64)"
+status = "required"
+
+[LUBAN-BUS-DESKTOP]
+text = "a system's programs are on the host's bus through the system's own socket (bus/system), placed under host/<id>/system/<name> whatever they say -- they offer and publish only there, are never a link, and use what the host offers; the desktop, its displays, input, clipboard, logs and session are paths there (design 2026-10-24 §3)"
+status = "required"
+
+[LUBAN-DESKTOP-CONTROL-GRANT]
+text = "an agent drives a system's desktop on the bus -- its input, its displays (capture, record, attach), xdesk's control, the supervisor's attach, detach and end -- only with the system's desktop-control grant, the refusal naming `luban config <n> --allow desktop-control`; reading its state and status needs none, the owner needs none, and every decision on an agent is recorded in logs/openbus/desktop-control.ndjson (design 2026-10-24 §3.4)"
+status = "required"
+
+[XDESK-MULTI-OUTPUT]
+text = "a display that asks to extend the desktop (luban display <n> attach virtual[=WxH] --role extend, opensal 0.7 extend) is an output of its own right of the primary at its own size and density, sent its frames only, its pointer at that output; in the workspace view it shows a workspace nobody shows (made when there is none), a window carried across lands in its workspace, and when it goes its workspace is remembered by its name and shown on it again when it comes back (design 2026-10-24 §4.4, openwx 0.2 §2.6)"
+status = "required"
+
+[LUBAN-CLIPBOARD-IMAGE]
+text = "an image crosses the clipboard like text (opensal 0.7 ClipboardData, image/png): the host's image given as a window gives it is the session's selection of that type; a program in the session copying an image gives it to the display, and only a window that takes ClipboardData and is being used puts it on the host; its type and size are said on the bus, never its content (design 2026-10-24 §8.2)"
+status = "required"
+
+[LUBAN-CLIPBOARD-FILES]
+text = "files copied cross the clipboard by their content (opensal 0.7, application/vnd.opensal.files, at most what a message carries): the host's are written into the session's ~/Downloads/Clipboard/ and offered by their new paths (text/uri-list); the session's (text/uri-list) are read and given to the display, and the window writes them into the host's ~/Downloads/Clipboard/; a name never climbs out of that directory (design 2026-10-24 §8.2)"
+status = "required"
+
+[LUBAN-DISPLAY-VIRTUAL]
+text = "a desktop runs on a virtual display (luban enter <n> --display virtual[=WxH@S]): an opensal provider nobody sees that keeps the picture, paces the frames, takes the desktop's size, role and clipboard, hands the picture out as PNG and gives input steps as the events a window gives (openhal 0.3 §6; design 2026-10-24 §4.2)"
+status = "required"
+
+[LUBAN-DISPLAY-HOTPLUG]
+text = "a display comes to a running desktop and goes: one that asks to be the primary (a window) is, the desktop taking its size; when it goes, the desktop goes on at the next display's size (its virtual display); the desktop's session says its displays (design 2026-10-24 §4.3, opensal 0.7)"
+status = "required"
+
+[LUBAN-DESKTOP-APP-LOGS]
+text = "what a program the desktop started says is read off the desktop's loop within a budget into its log and its last mebibyte (a stream on the bus); its end is an event with its code or signal, its log and its last lines; an unexpected end is said on the desktop; luban logs gathers them with the desktop's, the machine's and the window's logs, and bundles them with the status (design 2026-10-24 §6, J71)"
+status = "required"
+
+[LUBAN-DESKTOP-SESSION-END]
+text = "a desktop's session says when it ends and why -- who ended it, its code, its log -- on its events and to the window that showed it (design 2026-10-24 §6.2, J69)"
+status = "required"
+
+[LUBAN-CLIPBOARD-SESSION]
+text = "a desktop session's clipboard is its own and on the bus (luban.clipboard@1: read, write; changes said by type and size, never content); its command-line tools reach it through data-control (wl-copy, wl-paste run as the system's own, never the host's through the broker); only a copy made while its window is used crosses to the host, and the host's latest copy comes in when the window is used; a failure is said on standard error and nothing is pasted (design 2026-10-24 §8, J60)"
+status = "required"
+
+[LUBAN-OS-QUIET-TERMINAL]
+text = "the Luban OS window started from a terminal leaves nothing of its libraries' notes on it -- Xlib's input-method lines go to its log -- and hands its keys to a host's input method, the content drawing what it composes (design 2026-10-24 §8.4, J70)"
+status = "required"
+
+[XDESK-BOOKMARK-TABS]
+text = "a covered item's bookmark comes out from under the item over it at its right edge, its root pressed under it (about a third), drawn under that item and over the covered one, in its own colour with its icon and short title; hovering lights it and outlines the covered item; a click on the cover's edge stays the cover's (design 2026-10-24 §9.4, J65)"
+status = "required"
+
+[XDESK-ICONS]
+text = "applications show their icons in the launcher, title bars, bookmarks and switchers -- Icon=, a theme's PNG, a scalable SVG drawn at the size shown, the pixmaps -- and an initial on a colour when there is none (design 2026-10-24 §9.5, J66)"
+status = "required"
+
+[XDESK-SETTINGS-APP]
+text = "the desktop's settings are a window of their own (xdesk --panel settings holds it open; the desktop draws in it and takes its input): laid out, moved, tiled, collapsed and bookmarked as any window, its keys its own, Esc closes it, opened again at the page asked (xdesk msg settings <page>, the control on the bus); its process gone is a window gone (design 2026-10-24 §9.6, J67)"
+status = "required"
+
+[XDESK-WALLPAPER]
+text = "the desktop has a wallpaper -- a colour, a gradient or a picture (fill, fit, tile, centre), for every workspace or one of its own; on the WuXian plane anchored on the plane and moved and scaled with the camera; any wallpaper program on the background layer (wlr-layer-shell); its camera and run/pause said on the bus (a window covering the screen, five minutes without input); and its own engine (xdesk --wallpaper-engine) drawing classic scenes of mathematics, physics and graphics on the CPU, following the pointer, paused when told (design 2026-10-24 §9.7, J68)"
+status = "required"
+
+[LUBAN-MACHINE-SHARED-FRAMES]
+text = "a desktop's frames go by reference through memory both sides map -- a machine's ivshmem device (its BAR mapped in the guest through sysfs, the file behind it on the host), a desktop's frames file bound into its sandbox -- only the rectangle and the offset crossing the channel (opensal 0.7 Region); without it, frames go on the channel as before (design 2026-10-24 §5.4, J57)"
+status = "required"

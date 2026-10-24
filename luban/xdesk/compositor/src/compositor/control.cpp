@@ -8,7 +8,8 @@
 //   {"keys": "set", "set": "luban"|"luban-no-hjkl"}   the set of keys
 //   {"settings": PAGE}                                the settings, at displays|layout|appearance|keys|about
 //   {"state": true}                                   what the desktop is now (design 2026-10-21 §8.11)
-//   {"debug": "hud", "on": true|false}                the frames' parts drawn in the top left
+//   {"debug": "hud", "on": true|false}                the frames' parts drawn in the top left (no "on": toggled);
+//                                                     the answer says it: {"ok": true, "hud": B}
 //   {"subscribe": true}                               what happens from now on, a line each
 //   {"bookmark": N}                                   bookmark N (state's "bookmarks"), as clicked: an agent's way to it
 //   {"input": [STEP...]}                              input as the window gives it, through the same path: each step
@@ -124,7 +125,33 @@ std::string Server::state_json() {
     output.set("scale", num_(scale));
     output.set("renderer", Json{gpu ? std::string("gpu") : std::string("software")});
     output.set("renderer_text", Json{renderer_text});
+    // Frames by reference: a region the displays map too (opensal 0.7).
+    output.set("region", Json{region.has_value()});
     out.set("output", output);
+    // The displays showing it (design 2026-10-24 §4): the first the primary.
+    Json::Array displays;
+    for (const auto& l : links) {
+        Json d{Json::Object{}};
+        d.set("number", num_(l.number));
+        d.set("role", Json{std::string(l.extend ? "extend" : &l == &links.front() ? "primary" : "mirror")});
+        d.set("hello", Json{l.hello});
+        d.set("hidden", Json{l.hidden});
+        displays.push_back(std::move(d));
+    }
+    out.set("displays", Json{std::move(displays)});
+    // The outputs extending it (design 2026-10-24 §4.4): where each is on the
+    // screen (logical pixels), its size, the workspace it shows.
+    Json::Array outputs;
+    for (const auto& e : extends) {
+        Json o{Json::Object{}};
+        o.set("name", Json{e.name});
+        const auto lw = e.logical();
+        o.set("rect", rect_({e.x, 0, lw.width, lw.height}));
+        o.set("size", Json{Json::Array{num_(e.size.width), num_(e.size.height)}});
+        o.set("workspace", num_(e.workspace));
+        outputs.push_back(std::move(o));
+    }
+    out.set("outputs", Json{std::move(outputs)});
     out.set("view", Json{std::string(wuxian() ? "wuxian" : "workspace")});
     out.set("view_moving", Json{view_move.has_value()});
     const auto cam = lay.camera();
@@ -182,6 +209,14 @@ std::string Server::state_json() {
         hint.set("rect", Json{Json::Array{num_(hint_node->node.x), num_(hint_node->node.y), num_(w), num_(h)}});
     }
     overlays.set("hint", hint);
+    overlays.set("launcher", Json{launcher.is_open()});
+    // The settings, a window of their own (design 2026-10-24 §9.6): its id and the page shown.
+    if (settings_view) {
+        Json st{Json::Object{}};
+        st.set("window", num_(static_cast<double>(settings_view)));
+        st.set("page", Json{std::string(settings_page_name(settings_page))});
+        overlays.set("settings", st);
+    }
     out.set("overlays", overlays);
     // What the launcher offers: the applications its directories have.
     {
@@ -245,7 +280,7 @@ std::string Server::state_json() {
         if (b.workspace) m.set("workspace", num_(b.workspace));
         if (!b.more.empty()) m.set("more", num_(static_cast<double>(b.more.size())));
         m.set("label", Json{b.label});
-        m.set("tab", rect_(b.tab));
+        m.set("tab", rect_(b.shown()));
         m.set("lit", Json{static_cast<int>(&b - bookmarks.data()) == bookmark_lit});
         marks.push_back(std::move(m));
     }
@@ -330,7 +365,11 @@ std::string Server::control(std::string_view request) {
         const auto* on = j.get("on");
         hud = on ? on->bool_or(!hud) : !hud;
         draw_hud();
-        return answer_(true);
+        // What it is now, said: a toggle without an argument (J76).
+        Json a{Json::Object{}};
+        a.set("ok", Json{true});
+        a.set("hud", Json{hud});
+        return a.dump();
     }
     if (const auto* sub = j.get("subscribe"); sub && sub->bool_or(false)) {
         // The asker's connection: the answer, then a line for each thing that happens.
@@ -339,12 +378,9 @@ std::string Server::control(std::string_view request) {
         return answer_(true);
     }
     if (const auto page = str("settings"); !page.empty()) {
-        static constexpr std::array<std::pair<std::string_view, SettingsPage>, 5> kPages{{
-            {"displays", SettingsPage::displays}, {"layout", SettingsPage::layout}, {"appearance", SettingsPage::appearance},
-            {"keys", SettingsPage::keys}, {"about", SettingsPage::about}}};
-        const auto it = std::ranges::find(kPages, page, &std::pair<std::string_view, SettingsPage>::first);
-        if (it == kPages.end()) return answer_(false, std::format("no settings page '{}' (displays, layout, appearance, keys, about)", page));
-        open_settings(it->second);
+        const auto named = settings_page_named(page);
+        if (!named) return answer_(false, std::format("no settings page '{}' (displays, layout, appearance, keys, apps, about)", page));
+        open_settings(*named);
         return answer_(true);
     }
     const auto what = str("keys");

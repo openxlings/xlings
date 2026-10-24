@@ -63,6 +63,7 @@ void Server::resize(opensal::Size want) {
         arrange();
         if (hint_node->node.enabled) redraw_hint();
         if (tour_at >= 0) draw_tour();
+        extends_place();   // right of it, wherever it ends now
         tell_roles();   // the mirrors: the picture's new size
     } else {
         log(std::format("the output did not take {}x{}", want.width, want.height));
@@ -86,6 +87,7 @@ void Server::set_scale(double want) {
         panel_drawn.clear();
         dots_drawn.clear();
         wlr_scene_rect_set_size(background, logical_w(), logical_h());
+        extends_place();
         draw_launcher();
         arrange();
         if (hint_node->node.enabled) redraw_hint();
@@ -113,11 +115,15 @@ void Server::open_fonts() {
 // every window showing it (design 2026-10-20 §11) -- rendered once. A window
 // that paces is sent the next frame once it has shown the last (a second at
 // most: a frame it lost does not stop the desktop); a mirror that has not is
-// skipped and later sent all of it.
-void Server::render() {
-    auto* first = primary();
+// skipped and later sent all of it. An extending output's frame goes to its
+// display alone (design 2026-10-24 §4.4).
+void Server::render_on(Extend* e) {
+    Link* first = e ? e->link : primary();
+    wlr_output* out = e ? e->output : output;
+    wlr_scene_output* so = e ? e->scene_output : scene_output;
+    const auto shows = [e](const Link& l) { return e ? l.extend == e : l.extend == nullptr; };
     // Not seen anywhere: no frame, and no frame done -- the clients' animations wait too.
-    if (!first || std::ranges::all_of(links, &Link::hidden)) return;
+    if (!first || std::ranges::all_of(links, [&](const Link& l) { return !shows(l) || l.hidden; })) return;
     const auto now = std::chrono::steady_clock::now();
     auto waiting = [&](const Link& l) { return l.paced && l.in_flight && now - *l.in_flight < std::chrono::seconds(1); };
     if (!first->hidden && waiting(*first)) {
@@ -134,7 +140,7 @@ void Server::render() {
     bool built = false;
     {
         telemetry::Span s("compose", nullptr, "xdesk");
-        built = wlr_scene_output_build_state(scene_output, &st, nullptr);
+        built = wlr_scene_output_build_state(so, &st, nullptr);
     }
     stat.compose_ms = ms(std::chrono::steady_clock::now() - composing).count();
     if (!built || !st.buffer) {
@@ -165,7 +171,7 @@ void Server::render() {
     }
     const std::vector<opensal::Rect> all{opensal::Rect{0, 0, s.width, s.height}};
     // Who is sent what: all of it to a window that missed frames.
-    const bool any_whole = std::ranges::any_of(links, [&](const Link& l) { return !l.gone && l.hello && !l.hidden && l.whole; });
+    const bool any_whole = std::ranges::any_of(links, [&](const Link& l) { return shows(l) && !l.gone && l.hello && !l.hidden && l.whole; });
     // The pixels: the buffer itself (software), or read back from the GPU --
     // only where they changed, and all of them for a window that needs it.
     const void* data = nullptr;
@@ -210,6 +216,29 @@ void Server::render() {
         auto send_rects = [&](Link& l, const std::vector<opensal::Rect>& rects) {
             for (const auto& r : rects) {
                 if (r.width == 0 || r.height == 0) continue;
+                // Into the region both sides map, when the window takes it: only
+                // where the rows are crosses the channel (opensal 0.7 'r').
+                const std::size_t rows = std::size_t(r.width) * 4 * r.height;
+                if (region && opensal::has(l.provided, opensal::Interface::Region) && rows <= region->size) {
+                    if (region_at + rows > region->size) region_at = 0;
+                    auto* dst = reinterpret_cast<std::uint8_t*>(region->data) + region_at;
+                    const std::size_t row = std::size_t(r.width) * 4;
+                    for (std::uint32_t y = 0; y < r.height; ++y) {
+                        std::memcpy(dst + std::size_t(y) * row, px + (std::size_t(r.y) + y) * stride + std::size_t(r.x) * 4, row);
+                        if (!opaque)
+                            for (std::uint32_t x = 0; x < r.width; ++x) dst[std::size_t(y) * row + x * 4 + 3] = 0xff;
+                    }
+                    const auto msg = opensal::wire::encode_region_frame({.rect = r, .stride = static_cast<std::uint32_t>(row), .offset = region_at});
+                    region_at += rows;
+                    const auto sending = std::chrono::steady_clock::now();
+                    const bool sent = os::write_all(l.out, msg);
+                    stat.send_ms += ms(std::chrono::steady_clock::now() - sending).count();
+                    stat.bytes += msg.size();
+                    ++stat.rects;
+                    if (!sent) { l.gone = true; return; }
+                    l.in_flight = now;
+                    continue;
+                }
                 const auto head = std::format("{} {} {} {} {}\n", r.x, r.y, r.width, r.height, r.width * 4);
                 const std::size_t row = std::size_t(r.width) * 4, size = head.size() + row * r.height;
                 frame_buf.resize(5 + size);
@@ -242,7 +271,7 @@ void Server::render() {
             }
         };
         for (auto& l : links) {
-            if (l.gone || !l.hello) continue;
+            if (l.gone || !l.hello || !shows(l)) continue;
             // Not seen, or not done with the last: it gets all of it later.
             if (l.hidden || (&l != first && waiting(l))) { l.whole = true; continue; }
             if (s != l.told) {
@@ -256,7 +285,7 @@ void Server::render() {
         if (mapped) wlr_buffer_end_data_ptr_access(st.buffer);
     }
     keep_frame_stat(stat);
-    wlr_output_commit_state(output, &st);
+    wlr_output_commit_state(out, &st);
     wlr_output_state_finish(&st);
     if (std::ranges::any_of(links, &Link::gone)) wl_event_loop_add_idle(loop, [](void* d) { static_cast<Server*>(d)->drop_gone(); }, this);
     // Frame callbacks are timed on the monotonic clock.
@@ -264,7 +293,7 @@ void Server::render() {
     std::timespec ts{};
     ts.tv_sec = static_cast<std::time_t>(std::chrono::duration_cast<std::chrono::seconds>(t).count());
     ts.tv_nsec = static_cast<long>(std::chrono::duration_cast<std::chrono::nanoseconds>(t).count() % 1'000'000'000);
-    wlr_scene_output_send_frame_done(scene_output, &ts);
+    wlr_scene_output_send_frame_done(so, &ts);
 }
 
 void Server::keep_frame_stat(FrameStat stat) {

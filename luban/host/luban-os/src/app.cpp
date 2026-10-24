@@ -280,6 +280,16 @@ int run(int argc, char* argv[]) {
         }
     }
     set_language(a.settings.language);
+    // Xlib's notes from a host's input method ("imDefLkup.c ... disposed a key
+    // event") are its own, not the person's: kept in the app's log, off the
+    // terminal it was started from (design 2026-10-24 J70).
+    {
+        const auto log = a.home / "logs" / "luban-os.log";
+        platform::divert_stderr_lines([](std::string_view line) { return line.find("imDefLkup.c") != std::string_view::npos; },
+                                      [log](std::string_view line) {
+                                          std::ofstream(log, std::ios::app) << xlings::observe::utc_now() << " xlib: " << line;
+                                      });
+    }
     auto window = host::Window::open(o);
     if (!window) {
         std::println(std::cerr, "luban-os: {}", window.error());
@@ -422,10 +432,11 @@ int run(int argc, char* argv[]) {
         // short, the one after it long; resting is the long one.
         if (pending == 0 && !busy) a.perf.idle_wait_ms = std::max(a.perf.idle_wait_ms, scheduled);
         if (!a.window->begin_frame(wait_ms) && !a.close_dialog) {
-            // The window is to close: a running machine's on-close decides.
-            // A sandbox's session ends with its window; only a machine has a choice.
+            // The window is to close: a running machine's on-close decides, and
+            // a desktop on the bus's (it runs without the window, design
+            // 2026-10-24 §4.3). A sandbox's console ends with its window.
             if ((a.view == View::Console && a.console && a.console->is_machine())
-                || (a.view == View::Desktop && a.display && a.display->is_machine())) {
+                || (a.view == View::Desktop && a.display && (a.display->is_machine() || a.display->on_bus()))) {
                 auto env = service::describe(a.ctx, a.current);
                 const auto on_close = env ? env->settings.on_close : std::string("ask");
                 if (on_close == "ask") {
@@ -434,7 +445,10 @@ int run(int argc, char* argv[]) {
                     a.close_choice = a.settings.close_choice;
                     a.close_remember = false;
                 } else if (on_close == "poweroff") {
-                    (void)vm::stop(a.ctx, a.current);
+                    if (a.display && a.display->on_bus() && !a.display->is_machine())
+                        (void)vm::desktop(a.home, a.current, {{"op", "end"}, {"by", "its window closed (on-close poweroff)"}});
+                    else
+                        (void)vm::stop(a.ctx, a.current);
                     break;
                 } else {
                     to_background_(a);

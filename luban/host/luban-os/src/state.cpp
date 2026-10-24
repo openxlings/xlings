@@ -95,6 +95,7 @@ void App::start_job(std::string title, std::function<void(Job&, service::Context
     job->retry = [this, title = job->title, body, then] { start_job(title, body, then); };
     job->worker = std::thread([j, w, c, body = std::move(body)] {
         body(*j, c);
+        std::lock_guard l(j->m);   // the page reads them under the same lock (J54)
         j->done_at = std::chrono::steady_clock::now();
         j->done = true;
         w->wake();
@@ -256,8 +257,15 @@ void App::open_console(const std::string& name, bool machine) {
         if (auto session = env ? session_now(*env) : std::nullopt; session && !luban.empty()) {
             const auto [ww, wh] = window->size();
             desktop_size = device_size_(ww, wh);
-            display = Display::sandbox(ctx.port.xlings(), luban, home, name, *session, env ? env->settings.persist : "all",
-                                       desktop_size, clipboard_grant(name), [w] { w->wake(); }, error);
+            // On the bus (design 2026-10-24 §4.3): the desktop runs on its own and
+            // this window is one of its displays; a program alone in the window
+            // (and a PC's host machine) still has a session of its own.
+            if (xlings::platform::is_linux && once_app.empty())
+                display = Display::bus(home, name, *session, env ? env->settings.persist : "all", desktop_size, clipboard_grant(name),
+                                       [w] { w->wake(); }, error);
+            else
+                display = Display::sandbox(ctx.port.xlings(), luban, home, name, *session, env ? env->settings.persist : "all",
+                                           desktop_size, clipboard_grant(name), [w] { w->wake(); }, error);
             if (display) {
                 shown_desktop = *session;
                 view = View::Desktop;

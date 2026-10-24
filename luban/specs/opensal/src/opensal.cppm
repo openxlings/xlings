@@ -42,6 +42,13 @@ enum class Interface : std::uint32_t {
     // Frames may come compressed ('z': the rows as one LZ4 block; 0.6): a
     // provider across a narrow channel (a machine's serial port) takes them.
     Compressed = 1u << 13,
+    // Frames by reference (0.7): both sides map one shared region -- a
+    // machine's ivshmem BAR, a bus region -- and an 'r' message says where in
+    // it a damaged rectangle's rows are; no pixels cross the channel.
+    Region = 1u << 14,
+    // Clipboard content that is not text (0.7): an image as image/png, as
+    // 'B' in either direction (wire.cppm).
+    ClipboardData = 1u << 15,
 };
 using Interfaces = std::uint32_t;
 constexpr Interfaces operator|(Interface a, Interface b) { return static_cast<Interfaces>(a) | static_cast<Interfaces>(b); }
@@ -97,13 +104,15 @@ using Event = std::variant<Resized, DensityChanged, Key, TextCommit, Preedit, Po
 
 // Displays: what one of a consumer's displays is (its number, from 1 in the
 // order they came; the first is the primary). A mirror shows display `of`,
-// whose picture is `size`.
+// whose picture is `size`; an extending display is an output of its own,
+// its top-left at `x`, `y` on the consumer's screen (logical pixels).
 struct DisplayRole {
-    enum class Kind { primary, mirror };
+    enum class Kind { primary, mirror, extend };
     std::uint32_t number { 1 };
     Kind kind { Kind::primary };
     std::uint32_t of { 0 };
     Size size;
+    std::int32_t x { 0 }, y { 0 };
     bool operator==(const DisplayRole&) const = default;
 };
 

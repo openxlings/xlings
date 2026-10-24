@@ -16,6 +16,7 @@ module;
 #include <sys/syscall.h>
 #include <sys/uio.h>
 #include <sys/utsname.h>
+#include <sys/wait.h>
 #include <unistd.h>
 #include "seccomp_abi.hpp"
 #elif defined(__APPLE__)
@@ -47,6 +48,32 @@ bool enter_private_network(unsigned uid, unsigned gid) {
     put("/proc/self/setgroups", "deny");
     return put("/proc/self/uid_map", std::format("{} {} 1\n", uid, uid))
         && put("/proc/self/gid_map", std::format("{} {} 1\n", gid, gid));
+}
+
+bool userns_can_mount() {
+    // Written before the fork: the child of a process with threads only
+    // makes system calls.
+    const auto uid_map = std::format("{} {} 1\n", ::getuid(), ::getuid());
+    const auto gid_map = std::format("{} {} 1\n", ::getgid(), ::getgid());
+    const pid_t child = ::fork();
+    if (child < 0) return false;
+    if (child == 0) {
+        auto put = [](const char* path, const char* text, std::size_t n) {
+            const int fd = ::open(path, O_WRONLY | O_CLOEXEC);
+            if (fd < 0) return false;
+            const bool ok = ::write(fd, text, n) == static_cast<ssize_t>(n);
+            ::close(fd);
+            return ok;
+        };
+        if (::unshare(CLONE_NEWUSER | CLONE_NEWNS) != 0) ::_exit(1);
+        put("/proc/self/setgroups", "deny", 4);
+        if (!put("/proc/self/uid_map", uid_map.data(), uid_map.size()) || !put("/proc/self/gid_map", gid_map.data(), gid_map.size()))
+            ::_exit(1);
+        ::_exit(::mount("none", "/", nullptr, MS_REC | MS_PRIVATE, nullptr) == 0 ? 0 : 1);
+    }
+    int status = 0;
+    while (::waitpid(child, &status, 0) < 0 && errno == EINTR) {}
+    return WIFEXITED(status) && WEXITSTATUS(status) == 0;
 }
 
 // ── Landlock ─────────────────────────────────────────────────────────
@@ -609,6 +636,7 @@ void power_off() {
 #else
 
 bool enter_private_network(unsigned, unsigned) { return false; }
+bool userns_can_mount() { return false; }
 
 namespace landlock {
 int abi() { return 0; }

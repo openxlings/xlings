@@ -68,16 +68,6 @@ std::string capture_(const std::vector<std::string>& argv) {
     return out;
 }
 
-// The kernel a machine boots: the virt profile's (linux-kernel-virt).
-std::optional<fs::path> kernel_(const fs::path& home) {
-    std::error_code ec;
-    const auto root = home / "data" / "xpkgs" / "xim-x-linux-kernel-virt";
-    std::optional<fs::path> best;
-    for (fs::recursive_directory_iterator it(root, ec), end; !ec && it != end; it.increment(ec))
-        if (it->path().filename() == "vmlinuz" && it->is_regular_file(ec)) best = it->path();
-    return best;
-}
-
 // One answer to "is there hardware virtualization here": the capability
 // report's (luban status).
 bool kvm_() { return service::kvm_usable(); }
@@ -278,68 +268,6 @@ std::map<std::string, std::string> qemu_env_(const Json& declared) {
 
 }  // namespace
 
-VirtiofsPlan virtiofs_plan(const fs::path& virtiofsd, const std::vector<Share>& shares, const fs::path& run, std::string_view memory_mb) {
-    VirtiofsPlan p;
-    // `-m`'s size: a plain number is MiB there, bytes here.
-    const bool plain = !memory_mb.empty() && std::ranges::all_of(memory_mb, [](char ch) { return ch >= '0' && ch <= '9'; });
-    p.qemu = {"-object", std::format("memory-backend-memfd,id=mem,size={}{},share=on", memory_mb, plain ? "M" : ""), "-numa",
-              "node,memdev=mem"};
-    for (const auto& s : shares) {
-        if (s.mapped) continue;   // 9p's, always
-        const auto sock = (run / std::format("vfs-{}.sock", s.tag)).generic_string();
-        // Its own namespaces (unprivileged); a host that refuses them gets `none` (supervise).
-        // `auto` for all: the home's generations do not change, but the host
-        // installs into the same share and the machine sees it at once.
-        std::vector<std::string> d{virtiofsd.generic_string(), "--socket-path", sock, "--shared-dir", s.dir.generic_string(), "--sandbox", "namespace",
-                                   "--cache", "auto"};
-        if (s.read_only) d.push_back("--readonly");
-        p.daemons.push_back(std::move(d));
-        p.qemu.insert(p.qemu.end(), {"-chardev", std::format("socket,id=vfs-{},path={}", s.tag, sock), "-device",
-                                     std::format("vhost-user-fs-pci,chardev=vfs-{},tag={}", s.tag, s.tag)});
-    }
-    return p;
-}
-
-std::vector<std::string> nine_p_args(const std::vector<Share>& shares) {
-    std::vector<std::string> out;
-    for (const auto& s : shares)
-        out.insert(out.end(), {"-virtfs", std::format("local,path={},mount_tag={},security_model={},{}id={}", s.dir.generic_string(), s.tag,
-                                                       s.mapped ? "mapped-xattr" : "none", s.read_only ? "readonly=on," : "", s.tag)});
-    return out;
-}
-
-bool users_of_their_own(const fs::path& etc) {
-    const auto own = xlings::subos::root_etc::login_user(etc);
-    std::ifstream in(etc / "passwd");
-    for (std::string line; std::getline(in, line);) {
-        std::vector<std::string> f;
-        for (std::size_t at = 0;;) {
-            const auto colon = line.find(':', at);
-            f.push_back(line.substr(at, colon == std::string::npos ? std::string::npos : colon - at));
-            if (colon == std::string::npos) break;
-            at = colon + 1;
-        }
-        if (f.size() < 7 || f[0] == own || !f[5].starts_with("/home/")) continue;
-        unsigned uid = 0;
-        if (std::from_chars(f[2].data(), f[2].data() + f[2].size(), uid).ec != std::errc{}) continue;
-        if (uid >= 1000 && uid < 65534) return true;
-    }
-    return false;
-}
-
-MachineGpu machine_gpu(const std::optional<fs::path>& render_node, const std::expected<void, std::string>& gl,
-                       std::string_view driver, bool dxg) {
-    if (!render_node && dxg)
-        return {.args = {"-display", "none"},
-                .summary = "no GPU: WSL's GPU (/dev/dxg, Mesa's d3d12) has no render node, which qemu's virgl draws on -- software"};
-    if (!render_node) return {.args = {"-display", "none"}, .summary = "no GPU: this host has no render node"};
-    if (!gl) return {.args = {"-display", "none"}, .summary = "no GPU: " + gl.error()};
-    return {.virgl = true,
-            .args = {"-device", "virtio-gpu-gl-pci", "-display", std::format("egl-headless,rendernode={}", render_node->string())},
-            .summary = driver.empty() ? std::format("virgl on {}", render_node->string())
-                                      : std::format("virgl on {} ({})", render_node->string(), driver)};
-}
-
 namespace {
 
 // Who it is and when, before it boots (part 2 J43): its machine-id, and this
@@ -404,17 +332,31 @@ int start_impl_(const service::Context& c, std::string_view name, const EnterOpt
         say_(c, service::error(refused, "xlings install qemu-system@latest (revision 3 or later)"));
         return 1;
     }
-    auto kernel = kernel_(c.home);
-    if (!kernel) {
+    // Its kernel is its system's (design 2026-10-24 §7.1), installed the
+    // first time, and checked for what this start needs of it (§7.2).
+    auto mk = machine_kernel(c.home, name);
+    if (!mk) {
+        say_(c, service::phase("preflight", "failed", "checking this host"));
+        say_(c, service::error(mk.error(), std::format("luban upgrade {}", name)));
+        return 1;
+    }
+    if (mk->vmlinuz.empty()) {
         say_(c, service::phase("preflight", "done", "checking this host"));
-        say_(c, service::phase("kernel", "begin", "installing the machine kernel"));
-        const int rc = c.port.capability("install_packages", {{"targets", Json::array({"xim:linux-kernel-virt"})}, {"yes", true}}, c.sink);
-        kernel = kernel_(c.home);
-        say_(c, service::phase("kernel", kernel ? "done" : "failed", "installing the machine kernel"));
-        if (rc != 0 || !kernel) return rc != 0 ? rc : 1;
+        say_(c, service::phase("kernel", "begin", "installing the machine kernel " + mk->version));
+        const int rc = c.port.capability("install_packages", {{"targets", Json::array({mk->ref})}, {"yes", true}}, c.sink);
+        mk = machine_kernel(c.home, name);
+        const bool got = mk && !mk->vmlinuz.empty();
+        say_(c, service::phase("kernel", got ? "done" : "failed", "installing the machine kernel"));
+        if (rc != 0 || !got) return rc != 0 ? rc : 1;
     } else {
         say_(c, service::phase("preflight", "done", "checking this host"));
     }
+    const auto kernel_fix = mk->overridden ? std::format("luban config {} --kernel default", name) : std::format("luban upgrade {}", name);
+    if (!mk->caps.contains("virtio-9p")) {
+        say_(c, service::error(std::format("the kernel {} cannot share files with a machine (no 9p)", mk->version), kernel_fix));
+        return 1;
+    }
+    const std::optional<fs::path> kernel = mk->vmlinuz;
     std::error_code ec;
     const auto dir = run_dir(c.home, name);
     fs::create_directories(dir, ec);
@@ -484,13 +426,16 @@ int start_impl_(const service::Context& c, std::string_view name, const EnterOpt
     const auto node = render_node_();
     std::expected<GlQemu, std::string> gl = std::unexpected(std::string("it may not use this computer's GPU (luban config ") +
                                                             std::string(name) + " --allow gpu)");
-    if (node && arch.name == "x86_64" && service::gpu_granted(c.home, name)) gl = gl_qemu_(c, view);
+    if (node && arch.name == "x86_64" && service::gpu_granted(c.home, name) && !mk->caps.contains("virtio-gpu"))
+        gl = std::unexpected(std::format("the kernel {} has no virtio-gpu ({})", mk->version, kernel_fix));
+    else if (node && arch.name == "x86_64" && service::gpu_granted(c.home, name)) gl = gl_qemu_(c, view);
     else if (node && arch.name != "x86_64") gl = std::unexpected(std::string("3D in a machine is on x86_64 hosts"));
     const auto gpu = machine_gpu(node, gl ? std::expected<void, std::string>{} : std::unexpected(gl.error()),
                                  node ? render_driver_(*node) : std::string{}, !node && [] { std::error_code ec; return fs::exists("/dev/dxg", ec); }());
     std::vector<std::string> q{gpu.virgl ? gl->bin.string() : qemu->bin.string()};
     if (!arch.machine.empty()) q.insert(q.end(), {"-M", std::string(arch.machine)});
-    q.insert(q.end(), {"-m", memory, "-smp", default_cpus_()});
+    const auto cpus = default_cpus_();
+    q.insert(q.end(), {"-m", memory, "-smp", cpus});
     if (kvm) q.insert(q.end(), {"-enable-kvm", "-cpu", "host"});
     else if (!arch.cpu.empty()) q.insert(q.end(), {"-cpu", std::string(arch.cpu)});
     const std::string console = arch.name == "aarch64" ? "ttyAMA0" : "ttyS0";
@@ -521,7 +466,9 @@ int start_impl_(const service::Context& c, std::string_view name, const EnterOpt
     // vhost-user crashed its init (aarch64 TCG, CI), and the speed is KVM's.
     const bool want_virtiofs = !settings || settings->files == "virtiofs";
     if (want_virtiofs && !kvm) files = "9p (an emulated machine shares its files over 9p)";
-    if (want_virtiofs && kvm) {
+    else if (want_virtiofs && !mk->caps.contains("virtio-fs"))
+        files = std::format("9p (the kernel {} has no virtio-fs: {})", mk->version, kernel_fix);
+    else if (want_virtiofs) {
         auto found = xlings::subos::tools::first("virtiofsd", view, xlings::subos::Ports{});
         // Installed the first time; one that could not be (an index without
         // it, a host it is not built for) is tried again a day later, not at
@@ -540,8 +487,9 @@ int start_impl_(const service::Context& c, std::string_view name, const EnterOpt
             if (!found) platform::write_file_atomic(tried.string(), xlings::observe::utc_now() + "\n");
         }
         if (found) {
-            vfs = virtiofs_plan(found->bin, shares, dir, memory);
-            files = "virtiofs";
+            const bool sandboxed = unprivileged_userns();
+            vfs = virtiofs_plan(found->bin, shares, dir, memory, sandboxed);
+            files = sandboxed ? "virtiofs" : "virtiofs (without its sandbox: this computer restricts unprivileged namespaces)";
         } else {
             files = "9p (virtiofsd is not installed: xlings install virtiofsd)";
         }
@@ -557,6 +505,19 @@ int start_impl_(const service::Context& c, std::string_view name, const EnterOpt
     } else {
         q.insert(q.end(), nine_p.begin(), nine_p.end());
     }
+    // Its desktop's frames through shared memory (design 2026-10-24 §5.4):
+    // an ivshmem device whose memory is a file under /dev/shm the Luban OS
+    // window maps too; the guest maps the device's BAR through sysfs (any
+    // kernel with PCI and sysfs). Only a system with a desktop.
+    std::string frames_region;
+    constexpr std::uintmax_t kFramesBytes = std::uintmax_t{128} << 20;
+    if (const auto e = service::describe(c, name); e && !e->desktops.empty() && mk->caps.contains("pci-sysfs-mmap")) {
+        std::error_code fe;
+        const fs::path shm = fs::is_directory("/dev/shm", fe) ? fs::path("/dev/shm") : dir;
+        frames_region = (shm / std::format("luban-{:016x}-frames", std::hash<std::string>{}(c.home.string() + "/" + std::string(name)))).string();
+        q.insert(q.end(), {"-object", std::format("memory-backend-file,id=frames,share=on,mem-path={},size={}", frames_region, kFramesBytes),
+                           "-device", "ivshmem-plain,memdev=frames"});
+    }
     // Without its GPU, should the GL qemu not start (its driver refuses the
     // render node): the same machine, drawn in software (supervise).
     auto software = q;
@@ -567,7 +528,12 @@ int start_impl_(const service::Context& c, std::string_view name, const EnterOpt
     q.insert(q.end(), net.args.begin(), net.args.end());
     Json state{{"name", name}, {"qemu", q}, {"persist", persist}, {"temp", o.temp}, {"scratch", persist == "all" ? "" : share.string()},
                {"env", net.env}, {"started", xlings::observe::utc_now()}, {"accel", kvm ? "kvm" : "tcg"}, {"memory", memory},
-               {"gpu", gpu.summary}, {"files", mapped_home ? files + ", /home over 9p (users of their own)" : files}};
+               {"gpu", gpu.summary}, {"files", mapped_home ? files + ", /home over 9p (users of their own)" : files},
+               {"kernel", mk->version}, {"cpus", cpus}};
+    if (!frames_region.empty()) {
+        state["frames_region"] = frames_region;
+        state["frames_size"] = kFramesBytes;
+    }
     if (vfs) {
         // Its way back, should a daemon not start: the same arguments, 9p's instead.
         state["virtiofsd"] = vfs->daemons;
@@ -644,17 +610,12 @@ enum class Ending { Exited, Killed, Detached, PowerOff, Lost };
 // package it boots, how it is accelerated, its size.
 service::WelcomeFacts machine_facts_(const service::Context& c, std::string_view name) {
     service::WelcomeFacts f;
-    if (const auto k = kernel_(c.home)) {
-        for (auto it = k->begin(); it != k->end(); ++it)
-            if (it->string().find("linux-kernel") != std::string::npos && std::next(it) != k->end()) {
-                f.kernel = "Linux " + std::next(it)->string();
-                break;
-            }
-    }
     const auto state = read_json_(state_file_(c.home, name));
+    // What it was started with: its kernel's package version, its processors (J75).
+    if (const auto k = state.value("kernel", std::string{}); !k.empty()) f.kernel = "Linux " + k;
     int mb = 2048;
     try { mb = std::stoi(state.value("memory", std::string("2048"))); } catch (...) {}
-    f.machine = std::format("{} · 2 CPU · {}{}", state.value("accel", "kvm") == "kvm" ? "KVM" : "emulated",
+    f.machine = std::format("{} · {} CPU · {}{}", state.value("accel", "kvm") == "kvm" ? "KVM" : "emulated", state.value("cpus", std::string("2")),
                             mb % 1024 == 0 ? std::format("{} GiB", mb / 1024) : std::format("{} MiB", mb),
                             state.value("gpu", std::string{}).starts_with("virgl") ? " · GPU (virgl)" : "");
     // Its network as it was started (design 2026-10-19 §27.2).
@@ -942,6 +903,14 @@ std::optional<std::string> started_gpu(const fs::path& home, std::string_view na
     const auto gpu = read_json_(state_file_(home, name)).value("gpu", std::string{});
     if (gpu.empty()) return std::nullopt;
     return gpu;
+}
+
+std::optional<std::pair<fs::path, std::uintmax_t>> started_frames(const fs::path& home, std::string_view name) {
+    if (!running(home, name)) return std::nullopt;
+    const auto state = read_json_(state_file_(home, name));
+    const auto path = state.value("frames_region", std::string{});
+    if (path.empty()) return std::nullopt;
+    return std::pair{fs::path(path), state.value("frames_size", std::uintmax_t{0})};
 }
 
 std::optional<std::string> started_files(const fs::path& home, std::string_view name) {
@@ -1902,6 +1871,7 @@ int supervise(const fs::path& home, std::string_view name) {
             if (how == a.end()) return false;
             *how = "none";
             std::println(std::cerr, "luban: virtiofsd did not start in its namespaces; {} again without its sandbox", a.size() > 4 ? a[4] : "");
+            state["files"] = "virtiofs (without its sandbox: its namespaces were refused)";
             if (!start_one(a)) return false;
         }
         return true;

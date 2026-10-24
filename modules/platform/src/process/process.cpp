@@ -320,10 +320,13 @@ int run_argv_with_timeout(const std::vector<std::string>& argv, std::chrono::mil
         int fd;
         ~Reclaim() { if (fd >= 0) give_terminal_(fd, ::getpgrp()); }
     } reclaim{terminal};
-    const auto deadline = std::chrono::steady_clock::now() + limit;
+    // No limit (a year or more, milliseconds::max()): never late -- the sum
+    // in the clock's nanoseconds would overflow into the past.
+    const bool limited = limit < std::chrono::hours(24 * 365);
+    const auto deadline = limited ? std::chrono::steady_clock::now() + limit : std::chrono::steady_clock::time_point::max();
     while (true) {
         if (auto s = wait_process(pid, false)) return exit_code(*s);
-        if (std::chrono::steady_clock::now() >= deadline) {
+        if (limited && std::chrono::steady_clock::now() >= deadline) {
             send_signal_group(pid, SIGTERM);
             std::this_thread::sleep_for(std::chrono::seconds(2));
             send_signal_group(pid, SIGKILL);
@@ -433,6 +436,14 @@ std::optional<std::array<int, 2>> make_pipe(bool close_on_exec) {
     int p[2];
     if (::pipe(p) != 0) return std::nullopt;
     if (close_on_exec) { cloexec(p[0]); cloexec(p[1]); }
+    return std::array<int, 2>{p[0], p[1]};
+}
+
+std::optional<std::array<int, 2>> make_socket_pair() {
+    int p[2];
+    if (::socketpair(AF_UNIX, SOCK_STREAM, 0, p) != 0) return std::nullopt;
+    cloexec(p[0]);   // macOS has no SOCK_CLOEXEC
+    cloexec(p[1]);
     return std::array<int, 2>{p[0], p[1]};
 }
 
@@ -908,6 +919,19 @@ std::optional<SharedMemory> create_shared_memory(std::size_t size) {
 #endif
 }
 
+std::optional<SharedMemory> map_shared_file(const std::filesystem::path& path, std::size_t size) {
+    const int fd = ::open(path.c_str(), O_RDWR | O_CREAT | O_CLOEXEC, 0600);
+    if (fd < 0) return std::nullopt;
+    struct stat st{};
+    if (::fstat(fd, &st) != 0 || (static_cast<std::size_t>(st.st_size) < size && ::ftruncate(fd, static_cast<off_t>(size)) != 0)) {
+        ::close(fd);
+        return std::nullopt;
+    }
+    void* at = ::mmap(nullptr, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    if (at == MAP_FAILED) { ::close(fd); return std::nullopt; }
+    return SharedMemory{fd, static_cast<std::byte*>(at), size};
+}
+
 void release_shared_memory(SharedMemory& m) {
     if (m.data) ::munmap(m.data, m.size);
     if (m.fd >= 0) ::close(m.fd);
@@ -1018,6 +1042,7 @@ std::map<std::string, std::string> environment() {
 void unset_env_variable(const std::string& name) { set_env_variable(name, ""); }
 bool set_inheritable(int, bool) { return false; }
 std::optional<std::array<int, 2>> make_pipe(bool) { return std::nullopt; }
+std::optional<std::array<int, 2>> make_socket_pair() { return std::nullopt; }
 bool read_exact(int, void*, std::size_t) { return false; }
 std::optional<std::array<int, 2>> open_pty(int) { return std::nullopt; }
 bool copy_window_size(int, int) { return false; }
@@ -1110,6 +1135,7 @@ std::optional<std::array<int, 2>> unix_stream_pair() { return std::nullopt; }
 bool send_message(int, std::string_view, std::span<const int>) { return false; }
 std::optional<Message> receive_message(int, std::size_t) { return std::nullopt; }
 std::optional<SharedMemory> create_shared_memory(std::size_t) { return std::nullopt; }
+std::optional<SharedMemory> map_shared_file(const std::filesystem::path&, std::size_t) { return std::nullopt; }
 void release_shared_memory(SharedMemory& m) { m = SharedMemory{}; }
 
 #endif

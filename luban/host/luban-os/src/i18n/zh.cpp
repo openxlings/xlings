@@ -249,6 +249,7 @@ constexpr xlings::i18n::Entry kWords[] = {
     { "luban.os.system.grant.audio", "可以播放和录制声音" },
     { "luban.os.system.grant.clipboard", "可以复制到这台电脑的剪贴板" },
     { "luban.os.system.grant.clipboard_paste", "可以读取这台电脑的剪贴板" },
+    { "luban.os.system.grant.desktop_control", "Agent 可以操作它的桌面（输入、截图、显示器），等同于以它的用户运行命令" },
     { "luban.os.system.grant.display", "可以在这台电脑的屏幕上显示窗口" },
     { "luban.os.system.grant.gpu", "可以使用这台电脑的显卡" },
     { "luban.os.system.grant.ssh_agent", "可以使用你的 SSH 密钥" },

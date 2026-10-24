@@ -3,6 +3,7 @@ module xdesk.compositor;
 
 import std;
 import xdesk.words;
+import openbus;
 import opensal;
 import opensal.wire;
 import opensal.keys;
@@ -29,12 +30,17 @@ namespace fs = std::filesystem;
 
 // A window's title bar, drawn again only when what it shows changed.
 void Server::draw_title(View& v, int width, bool active, bool rounded) {
-    const std::string title = name_of(v);
+    // A free window in the WuXian view folds: its mark, and folded, said (design 2026-10-24 §9.3).
+    const int fold = wuxian() && lay.is_free(v.id) ? (lay.collapsed(v.id) ? 2 : 1) : 0;
+    const std::string title = fold == 2 ? std::format("{} · {}", name_of(v), i18n::tr("collapsed")) : name_of(v);
     const bool hover = close_hover == v.id, max = max_hover == v.id;
-    auto key = std::format("{}\x1f{}\x1f{}\x1f{}\x1f{}\x1f{}\x1f{}", title, width, active, hover, scale, max, rounded);
+    // Its application's icon (design 2026-10-24 §9.5).
+    const auto* icon = v.toplevel->app_id ? icon_of(v.toplevel->app_id, shell::kTitleIcon) : nullptr;
+    auto key = std::format("{}\x1f{}\x1f{}\x1f{}\x1f{}\x1f{}\x1f{}\x1f{}\x1f{}", title, width, active, hover, scale, max, rounded, fold,
+                           static_cast<const void*>(icon));
     if (key == v.drawn) return;
     v.drawn = std::move(key);
-    show(v.title, shell::title_bar(ui(), theme, title, width, active, hover, scale, max, rounded));
+    show(v.title, shell::title_bar(ui(), theme, title, width, active, hover, scale, max, rounded, fold, icon));
 }
 
 // The panel and (canvas) the grid, drawn again only when they changed.
@@ -127,6 +133,7 @@ void Server::open_launcher() {
                           Page{"layout", "Settings: layout", "tile stack wuxian canvas workspace gap column 平铺 层叠 无限画布 工作区 间隔 列"},
                           Page{"appearance", "Settings: appearance", "accent colour background motion 颜色 背景 动画"},
                           Page{"keys", "Settings: keys", "shortcut keyboard keys 按键 快捷键 键位"},
+                          Page{"apps", "Settings: applications", "applications programs logs crash 应用 程序 日志 崩溃"},
                           Page{"about", "Settings: about", "version system about information 版本 系统 信息"}})
         all.push_back({.id = std::format("xdesk:settings:{}", p.id), .name = std::string(i18n::tr(p.en)),
                        .generic = p.id == "keys" ? std::string("Super+/") : std::string("Super+I"), .keywords = std::string(p.words)});
@@ -147,7 +154,10 @@ void Server::draw_launcher() {
         wlr_scene_node_set_enabled(&launcher_node->node, false);
         return;
     }
-    auto pic = launcher.draw(ui(), big_font ? &*big_font : nullptr, theme, logical_w(), logical_h(), zh, scale);
+    auto pic = launcher.draw(ui(), big_font ? &*big_font : nullptr, theme, logical_w(), logical_h(), zh, scale,
+                             [this](const apps::App& a) {
+                                 return a.id.starts_with("xdesk:") ? nullptr : icon_named(a.id, a.icon, shell::Launcher::kLauncherIcon);
+                             });
     show(launcher_node, std::move(pic.image), scale);
     wlr_scene_node_set_enabled(&launcher_node->node, true);
 }
@@ -169,9 +179,7 @@ std::vector<std::string> Server::terminal_argv(const std::vector<std::string>& c
 void Server::start_app(const apps::App& app) {
     if (app.id == "xdesk-settings") { open_settings(SettingsPage::displays); return; }
     if (app.id.starts_with("xdesk:settings:")) {
-        const auto page = app.id.substr(15);
-        for (const auto p : {SettingsPage::displays, SettingsPage::layout, SettingsPage::appearance, SettingsPage::keys, SettingsPage::about})
-            if (page == std::array{"displays", "layout", "appearance", "keys", "about"}[static_cast<std::size_t>(p)]) open_settings(p);
+        if (const auto page = settings_page_named(app.id.substr(15))) open_settings(*page);
         return;
     }
     if (app.id == "xdesk:tour") { start_tour(); return; }
@@ -183,7 +191,7 @@ void Server::start_app(const apps::App& app) {
     auto argv = apps::argv(app.exec);
     if (argv.empty()) return;
     if (app.terminal) argv = terminal_argv(argv, app.name, app.id);
-    launch(argv);
+    launch(argv, app.id, app.name);
 }
 
 // A key while the launcher is open: it is the launcher's.
@@ -205,7 +213,7 @@ void Server::launcher_key(std::uint32_t code) {
 }
 
 // ── programs ─────────────────────────────────────────────────────
-void Server::launch(const std::vector<std::string>& argv) {
+void Server::launch(const std::vector<std::string>& argv, std::string id, std::string name) {
     if (argv.empty()) return;
     auto env = os::environment();
     env["WAYLAND_DISPLAY"] = socket;
@@ -215,9 +223,62 @@ void Server::launch(const std::vector<std::string>& argv) {
     env["MOZ_ENABLE_WAYLAND"] = "1";
     env.erase("DISPLAY");
     const fs::path home = env.contains("HOME") ? fs::path(env.at("HOME")) : fs::path{};
-    const int pid = os::spawn({.argv = argv, .env = env, .cwd = home});
-    if (pid > 0) children.push_back(pid);
-    else log("cannot start " + argv[0]);
+    // What it says goes to a pipe the apps' reader takes (design 2026-10-24 §6.1).
+    const auto out = os::pipe();
+    const int pid = os::spawn({.argv = argv, .env = env, .cwd = home,
+                               .stdio = {-1, out ? (*out)[1] : -1, out ? (*out)[1] : -1}});
+    if (out) os::close((*out)[1]);
+    if (id.empty()) id = fs::path(argv[0]).filename().string();
+    if (name.empty()) name = id;
+    if (pid <= 0) {
+        if (out) os::close((*out)[0]);
+        log("cannot start " + argv[0]);
+        publish("app-exit", {{"id", id}, {"error", "it could not be started"}});
+        show_hint(std::format("{}: {}", name, i18n::tr("it could not be started")), 6000);
+        return;
+    }
+    children.push_back(pid);
+    // Its log: the state's apps/<id>-<pid>.log, the last five of each kept.
+    const fs::path dir = (env.contains("XDG_STATE_HOME") ? fs::path(env.at("XDG_STATE_HOME")) : home / ".local" / "state") / "xdesk" / "apps";
+    std::error_code ec;
+    fs::create_directories(dir, ec);
+    std::vector<fs::path> older;
+    for (fs::directory_iterator it(dir, ec), end; !ec && it != end; it.increment(ec))
+        if (it->path().filename().string().starts_with(id + "-")) older.push_back(it->path());
+    std::ranges::sort(older, [](const fs::path& a, const fs::path& b) {
+        std::error_code e;
+        return fs::last_write_time(a, e) < fs::last_write_time(b, e);
+    });
+    while (older.size() >= 5) { fs::remove(older.front(), ec); older.erase(older.begin()); }
+    AppRun r;
+    r.pid = pid;
+    r.id = id;
+    r.name = name;
+    r.log = dir / std::format("{}-{}.log", id, pid);
+    r.log_fd = os::open_append(r.log);
+    r.started = r.refilled = std::chrono::steady_clock::now();
+    r.out = out ? (*out)[0] : -1;
+    {
+        std::lock_guard l(apps_m);
+        app_runs.push_back(std::move(r));
+    }
+    publish("app-start", {{"id", id}, {"pid", std::to_string(pid)}, {"log", (dir / std::format("{}-{}.log", id, pid)).string()}});
+    // Its log as a stream on the bus: the last mebibyte, then what it says.
+    if (bus) {
+        (void)bus->offer_stream(std::format("service/xdesk/apps/{}/log", pid),
+                                {.kind = openbus::EndpointKind::stream, .interfaces = {"xdesk.log@1"}},
+                                [this, pid](xbus::Stream st) {
+                                    std::lock_guard l(apps_m);
+                                    for (auto& a : app_runs)
+                                        if (a.pid == pid) {
+                                            if (!a.tail.empty()) (void)st.write(a.tail, std::chrono::seconds(2));
+                                            if (a.ended && a.out < 0) st.close();
+                                            else a.followers.push_back(st);
+                                            return;
+                                        }
+                                    st.close();
+                                });
+    }
 }
 
 }  // namespace xdesk::compositor

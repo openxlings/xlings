@@ -212,11 +212,13 @@ XTEST(Xbus, TwoRoutersLinkedOverAPipeSeeEachOther, .area = "luban", .covers = {"
     auto home = tk::Home::isolated("xbus-link");
     fs::create_directories(home.root() / "host");
     fs::create_directories(home.root() / "guest");
-    Running host(home.root() / "host", "host/test");
-    Running guest(home.root() / "guest", "host/test/system/m");
-    // The pipe: what one router sends, the other is fed -- as a carrier's channel would.
+    // The pipe: what one router sends, the other is fed -- as a carrier's
+    // channel would. It outlives the routers (their threads send to it until
+    // they stop).
     std::shared_ptr<xbus::PipeEnd> to_host, to_guest;
     std::mutex wire;
+    Running host(home.root() / "host", "host/test");
+    Running guest(home.root() / "guest", "host/test/system/m");
     to_guest = guest.router->adopt({.send = [&](std::string_view b) {
         std::lock_guard l(wire);
         if (to_host) to_host->feed(b);
@@ -361,7 +363,7 @@ XTEST(Xbus, TwoBusesAreJoinedByACallAndAComputeDeviceIsUsedAcrossThem, .area = "
                            }));
     // On A: the router is an object; joining B's bus is a call to it.
     auto admin = node(a.at, "admin");
-    const auto router = admin->resolve("bus/*", "openbus.router@0.1");
+    const auto router = admin->resolve("bus/*", "openbus.router@0.2");
     ASSERT_TRUE(router.has_value());
     EXPECT_GE(router->size(), 6u) << "stats, topology, verbs, links, link, unlink, trace";
     const auto joined = admin->call("bus/link", b.at.text());
@@ -566,10 +568,10 @@ XTEST(Xbus, ARegionAcrossALinkIsCopiedInline, .area = "luban", .covers = {"XBUS-
     auto home = tk::Home::isolated("xbus-region-link");
     fs::create_directories(home.root() / "host");
     fs::create_directories(home.root() / "guest");
+    std::shared_ptr<xbus::PipeEnd> to_host, to_guest;   // outliving the routers, as above
+    std::mutex wire;
     Running host(home.root() / "host", "host/test");
     Running guest(home.root() / "guest", "host/test/system/m");
-    std::shared_ptr<xbus::PipeEnd> to_host, to_guest;
-    std::mutex wire;
     to_guest = guest.router->adopt({.send = [&](std::string_view b) {
         std::lock_guard l(wire);
         if (to_host) to_host->feed(b);
@@ -666,4 +668,54 @@ XTEST(Xbus, AFrameBegunIsFinishedBeforeAnyOther, .area = "luban", .covers = {"XB
     }
     // The begun one whole, then control before the remaining bulk.
     EXPECT_EQ(order, (std::vector<std::uint32_t>{1, 3, 2}));
+}
+
+// A system's socket (design 2026-10-24 §3.3): asked for by the owner's side
+// (bus/system), it places whoever connects through it under the system's
+// path -- what it says of itself does not count: it cannot offer or publish
+// as the host or another system, nor be a link; it may still use the host's.
+XTEST(Xbus, ASystemsSocketPlacesItsNodesUnderTheSystem, .area = "luban", .covers = {"LUBAN-BUS-DESKTOP"}) {
+    if constexpr (tk::is_windows) GTEST_SKIP() << "unix sockets for systems";
+    auto home = tk::Home::isolated("xbus-system-socket");
+    const auto at = xbus::Address{"local", (home.root() / "router.sock").string()};
+    auto router = std::make_unique<xbus::Router>(xbus::RouterOptions{.root = "host/test", .listen = {at}, .log = home.root() / "router.ndjson",
+                                                                     .systems_dir = home.root() / "systems"});
+    ASSERT_TRUE(router->listen());
+    std::atomic<bool> stop{false};
+    std::jthread running([&] { router->run(stop); });
+    struct Stop { std::atomic<bool>& s; ~Stop() { s = true; } } stop_at_end{stop};
+    auto host = node(at, "luban");
+    ASSERT_TRUE(host->offer("device/display/0", {.verb = "describe", .effect = "read"}, [](xbus::Call c) { c.reply("a display"); c.end(); }));
+    const auto opened = host->call("bus/system", "box");
+    ASSERT_TRUE(opened) << opened.error().message;
+    const auto answer = Json::parse(opened->front());
+    EXPECT_EQ(answer["root"], "host/test/system/box");
+    ASSERT_TRUE(fs::exists(answer["socket"].get<std::string>()));
+    // Again: the same socket.
+    EXPECT_EQ(Json::parse(host->call("bus/system", "box")->front())["socket"], answer["socket"]);
+    EXPECT_FALSE(host->call("bus/system", "../x")) << "a name that is not a path segment";
+
+    auto inside = node(xbus::Address{"unix", answer["socket"].get<std::string>()}, "xdesk");
+    EXPECT_EQ(inside->root(), "host/test/system/box");
+    ASSERT_TRUE(inside->offer("service/xdesk/state", {}, [](xbus::Call c) { c.reply("{}"); c.end(); }));
+    // Its own endpoints, its telemetry included, are under the system.
+    const auto found = host->resolve("host/test/system/box/**");
+    ASSERT_TRUE(found);
+    EXPECT_EQ(found->size(), 2u);
+    EXPECT_TRUE(std::ranges::any_of(*found, [](const xbus::Resolved& r) { return r.path == "host/test/system/box/service/xdesk/state"; }));
+    EXPECT_TRUE(std::ranges::all_of(*found, [](const xbus::Resolved& r) { return r.path.starts_with("host/test/system/box/"); }));
+    // Not the host's to offer from inside, nor another system's.
+    const auto evil = inside->offer("host/test/device/display/1");
+    ASSERT_FALSE(evil);
+    EXPECT_EQ(evil.error().code, openbus::ErrorCode::denied);
+    EXPECT_FALSE(inside->offer("host/test/system/other/service/x"));
+    // But it uses what the host offers, and the host what it offers.
+    const auto display = inside->call("host/test/device/display/0");
+    ASSERT_TRUE(display) << display.error().message;
+    EXPECT_EQ(display->front(), "a display");
+    EXPECT_TRUE(host->call("host/test/system/box/service/xdesk/state"));
+    // It cannot open sockets for others.
+    EXPECT_FALSE(inside->call("host/test/bus/system", "other"));
+    inside->close();
+    host->close();
 }

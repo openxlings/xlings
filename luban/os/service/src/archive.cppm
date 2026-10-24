@@ -57,6 +57,10 @@ std::expected<std::size_t, std::string> write(const fs::path& file, const nlohma
 
 // Places the entries of `file` under `prefix` ("payloads", "index") into
 // `into`, as they are (links stay links). How many.
+// Files as a POSIX tar (ustar, pax for long names), regular files 0644:
+// what `luban logs --bundle` writes. The bytes written.
+std::expected<std::size_t, std::string> write_files(const fs::path& file, const std::vector<std::pair<std::string, std::string>>& files);
+
 std::expected<std::size_t, std::string> extract_tree(const fs::path& file, std::string_view prefix, const fs::path& into);
 
 // Reads an archive: its manifest, and its state entries handed to `entry`

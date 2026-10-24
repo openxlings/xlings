@@ -144,7 +144,7 @@ xlings subos config work --allow clipboard       # copy into the host's clipboar
 xlings subos config work --allow clipboard-paste # read the host's clipboard
 ```
 
-授权有 `display`、`audio`、`camera`、`gpu`、`ssh-agent`、`dbus`、`host-loopback`、`clipboard`、`clipboard-paste`。
+授权有 `display`、`audio`、`camera`、`gpu`、`ssh-agent`、`dbus`、`host-loopback`、`clipboard`、`clipboard-paste`、`desktop-control`（Agent 可以经总线操作系统的 Luban 桌面：输入与显示器）。
 
 剪贴板不等于显示。授权后，沙箱里程序本来就会调用的 `wl-copy`、`wl-paste`、`xclip`、`xsel` 经 broker 到达宿主剪贴板，
 由 broker 运行宿主一侧的工具（来自索引：`wl-clipboard`、`xsel`）。没有授权时，复制经终端（OSC 52）生效于你所坐那台机器的剪贴板。

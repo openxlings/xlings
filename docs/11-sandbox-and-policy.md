@@ -165,7 +165,8 @@ xlings subos config work --allow clipboard-paste # read the host's clipboard
 ```
 
 The grants are `display`, `audio`, `camera`, `gpu`, `ssh-agent`, `dbus`,
-`host-loopback`, `clipboard`, `clipboard-paste`.
+`host-loopback`, `clipboard`, `clipboard-paste`, `desktop-control` (an agent
+may drive the system's Luban desktop on the bus: its input, its displays).
 
 The clipboard is not the display. Granted, the programs a sandbox already calls —
 `wl-copy`, `wl-paste`, `xclip`, `xsel` — reach the host's clipboard through the

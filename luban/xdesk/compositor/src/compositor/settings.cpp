@@ -33,19 +33,41 @@ namespace fs = std::filesystem;
 
 namespace {
 
-constexpr std::array<SettingsPage, 5> kPages{SettingsPage::displays, SettingsPage::layout, SettingsPage::appearance,
-                                              SettingsPage::keys, SettingsPage::about};
+constexpr std::array<SettingsPage, 7> kPages{SettingsPage::displays, SettingsPage::layout, SettingsPage::appearance,
+                                              SettingsPage::wallpaper, SettingsPage::keys, SettingsPage::apps, SettingsPage::about};
 
 std::string_view page_label_(SettingsPage p, bool zh) {
     switch (p) {
         case SettingsPage::displays: return i18n::tr("Displays");
         case SettingsPage::layout: return i18n::tr("Layout");
         case SettingsPage::appearance: return i18n::tr("Appearance");
+        case SettingsPage::wallpaper: return i18n::tr("Wallpaper");
         case SettingsPage::keys: return i18n::tr("Keys");
+        case SettingsPage::apps: return i18n::tr("Applications");
         case SettingsPage::about: return i18n::tr("About");
     }
     return "";
 }
+
+}  // namespace
+
+namespace {
+constexpr std::array<std::pair<std::string_view, SettingsPage>, 7> kPageNames{{
+    {"displays", SettingsPage::displays}, {"layout", SettingsPage::layout}, {"appearance", SettingsPage::appearance},
+    {"wallpaper", SettingsPage::wallpaper}, {"keys", SettingsPage::keys}, {"apps", SettingsPage::apps}, {"about", SettingsPage::about}}};
+}  // namespace
+
+std::optional<SettingsPage> settings_page_named(std::string_view name) {
+    const auto it = std::ranges::find(kPageNames, name, &std::pair<std::string_view, SettingsPage>::first);
+    return it == kPageNames.end() ? std::nullopt : std::optional(it->second);
+}
+
+std::string_view settings_page_name(SettingsPage p) {
+    const auto it = std::ranges::find(kPageNames, p, &std::pair<std::string_view, SettingsPage>::second);
+    return it == kPageNames.end() ? std::string_view("displays") : it->first;
+}
+
+namespace {
 
 // The first line of a file, or "".
 std::string first_line_(const fs::path& f) {
@@ -100,8 +122,56 @@ void Server::open_settings(SettingsPage page) {
     settings_hover.reset();
     settings_keyboard = false;
     if (caret_timer) wl_event_source_timer_update(caret_timer, 530);
-    overlay = Overlay::settings;
-    draw_overlay();
+    // A window of its own (design 2026-10-24 §9.6): there already, brought
+    // forward at the page asked; else the process that holds it is started.
+    if (View* v = settings_window()) {
+        lay.focus(v->id);
+        arrange();
+        focus(v);
+        draw_settings_window();
+        return;
+    }
+    if (settings_pid > 0 && !os::exited(settings_pid)) return;   // on its way
+    const auto self = os::executable();
+    if (self.empty()) { overlay = Overlay::settings; draw_overlay(); return; }
+    launch({self.string(), "--panel", "settings"}, "xdesk-settings", std::string(i18n::tr("Settings")));
+    settings_pid = children.empty() ? -1 : children.back();
+}
+
+View* Server::settings_window() {
+    return settings_view ? view_of(settings_view) : nullptr;
+}
+
+// The settings drawn into their window, at its size (its content: under its title bar).
+void Server::draw_settings_window() {
+    View* v = settings_window();
+    if (!v || !v->own) return;
+    const auto p = placement_of(v->id);
+    if (!p) return;
+    const int w = std::max(1, static_cast<int>(std::lround(p->width / std::max(0.01, v->zoom))));
+    const int h = std::max(1, static_cast<int>(std::lround(p->height / std::max(0.01, v->zoom))) - kTitle);
+    shell::SettingsView sv = settings_view_();
+    overlay_picture = shell::settings(ui(), big_font ? &*big_font : nullptr, theme, sv, w, h, zh, scale, true);
+    show(v->own, std::move(overlay_picture.image), scale);
+    overlay_picture.image = {};
+    wlr_scene_buffer_set_dest_size(v->own, static_cast<int>(std::lround(w * v->zoom)), static_cast<int>(std::lround(h * v->zoom)));
+    wlr_scene_node_set_position(&v->own->node, 0, static_cast<int>(std::lround(kTitle * v->zoom)));
+}
+
+// The pointer in the settings' window, in its content's own pixels.
+bool Server::settings_window_pointer(double x, double y, std::optional<opensal::PointerButton> b) {
+    View* v = settings_window();
+    if (!v) return false;
+    const auto p = placement_of(v->id);
+    if (!p) return false;
+    const double lx = (x - v->frame->node.x) / std::max(0.01, v->zoom), ly = (y - v->frame->node.y) / std::max(0.01, v->zoom) - kTitle;
+    if (lx < 0 || ly < 0 || lx >= p->width / std::max(0.01, v->zoom) || ly >= p->height / std::max(0.01, v->zoom) - kTitle) return false;
+    if (!b) { settings_motion(lx, ly); return true; }
+    if (b->button == opensal::Button::Left && b->down) {
+        if (lay.focused() != v->id) { lay.focus(v->id); arrange(); focus(v); }
+        settings_click(lx, ly);
+    }
+    return true;
 }
 
 // What is changed, kept: the person's settings file of the profile.
@@ -125,6 +195,11 @@ std::vector<std::pair<std::string, std::string>> page_keys_(SettingsPage p) {
         case SettingsPage::appearance:
             return {{"theme", "accent"}, {"theme", "background"}, {"appearance", "reduce_motion"}, {"appearance", "renderer"},
                     {"appearance", "pointer_locate"}, {"appearance", "pointer_max"}};
+        case SettingsPage::apps:
+            return {{"desktop", "crash_notice"}};
+        case SettingsPage::wallpaper:
+            return {{"wallpaper", "kind"}, {"wallpaper", "colour"}, {"wallpaper", "colour2"}, {"wallpaper", "image"}, {"wallpaper", "fit"},
+                    {"wallpaper", "engine"}, {"wallpaper", "speed"}};
         default: return {};
     }
 }
@@ -151,6 +226,7 @@ void Server::apply_settings() {
     snap_on = s.get("wuxian", "snap", s.get("canvas", "snap", "on")) != "off";
     reduce_motion = s.get("appearance", "reduce_motion", "off") == "on";
     status_others = s.get("desktop", "status_others", "on") != "off";
+    crash_notice = s.get("desktop", "crash_notice", "on") != "off";
     hold_ms = std::clamp(s.get_int("switchers", "hold_ms", 500), 100, 3000);
     highlight_ms = std::clamp(s.get_int("switchers", "highlight_ms", 500), 0, 5000);
     if (const auto d = s.get("switchers", "dim", "0.5"); !d.empty()) dim_level = std::clamp(std::atof(d.c_str()), 0.1, 1.0);
@@ -166,6 +242,7 @@ void Server::apply_settings() {
     wlr_scene_rect_set_color(background, bg);
     dots_drawn.clear();
     panel_drawn.clear();
+    wallpaper_drawn.clear();
     arrange();
 }
 
@@ -501,6 +578,93 @@ void Server::settings_rows() {
             }
             break;
         }
+        case SettingsPage::wallpaper: {
+            // What any desktop has, and the desktop's own engine (design 2026-10-24 §9.7).
+            const auto section = settings_paper_own ? std::format("wallpaper.{}", lay.current()) : std::string("wallpaper");
+            const auto paper = paper_of(settings_paper_own ? lay.current() : 0);
+            const auto set = [this, section](std::string key, std::string value) {
+                setting(section, key, std::move(value));
+                wallpaper_drawn.clear();
+                arrange();
+            };
+            choice(std::string(i18n::tr("For")), {std::string(i18n::tr("Every workspace")), std::string(i18n::tr("This workspace"))},
+                   settings_paper_own ? 1 : 0, [this](std::size_t k) { settings_paper_own = k == 1; });
+            static const std::array<std::string_view, 4> kinds{"solid", "gradient", "image", "engine"};
+            choice(std::string(i18n::tr("Wallpaper")),
+                   {std::string(i18n::tr("Colour")), std::string(i18n::tr("Gradient")), std::string(i18n::tr("Picture")), std::string(i18n::tr("Engine"))},
+                   pick(kinds, std::string_view(paper.kind)), [set](std::size_t k) { set("kind", std::string(kinds[k])); });
+            static const std::array<std::uint32_t, 8> palette{0x16181d, 0x1d2433, 0x22303c, 0x2b2238, 0x3a2a24, 0x203826, 0x6d7a8c, 0xe8e6e1};
+            std::vector<std::string> swatches;
+            for (const auto c : palette) swatches.push_back(std::format("#{:06x}", c));
+            if (paper.kind == "solid" || paper.kind == "gradient" || paper.kind == "image")
+                choice(std::string(i18n::tr("Colour")), swatches, pick(palette, paper.colour),
+                       [set](std::size_t k) { set("colour", std::format("#{:06x}", palette[k])); });
+            if (paper.kind == "gradient")
+                choice(std::string(i18n::tr("Its second colour")), swatches, pick(palette, paper.colour2),
+                       [set](std::size_t k) { set("colour2", std::format("#{:06x}", palette[k])); });
+            if (paper.kind == "image") {
+                // The pictures there are: ~/Pictures, the system's backgrounds.
+                std::vector<fs::path> found;
+                const auto env = os::environment();
+                std::vector<fs::path> dirs{"/usr/share/backgrounds", "/usr/share/wallpapers"};
+                if (env.contains("HOME")) dirs.insert(dirs.begin(), fs::path(env.at("HOME")) / "Pictures");
+                std::error_code ec;
+                for (const auto& d : dirs)
+                    for (fs::recursive_directory_iterator it(d, fs::directory_options::skip_permission_denied, ec), end; !ec && it != end && found.size() < 8;
+                         it.increment(ec))
+                        if (it->is_regular_file(ec) && (it->path().extension() == ".png" || it->path().extension() == ".svg")) found.push_back(it->path());
+                std::vector<std::string> names;
+                std::size_t chosen = 0;
+                for (std::size_t k = 0; k < found.size(); ++k) {
+                    names.push_back(found[k].stem().string());
+                    if (found[k] == paper.image) chosen = k;
+                }
+                if (names.empty()) text(std::string(i18n::tr("No picture found (PNG or SVG in ~/Pictures)")));
+                else choice(std::string(i18n::tr("Picture")), names, chosen, [set, found](std::size_t k) { set("image", found[k].string()); });
+                static const std::array<std::string_view, 4> fits{"fill", "fit", "tile", "center"};
+                choice(std::string(i18n::tr("Fit")), {std::string(i18n::tr("Fill")), std::string(i18n::tr("Fit")), std::string(i18n::tr("Tile")), std::string(i18n::tr("Centre"))},
+                       pick(fits, std::string_view(paper.fit)), [set](std::size_t k) { set("fit", std::string(fits[k])); });
+            }
+            if (paper.kind == "engine") {
+                static const std::array<std::string_view, 11> scenes{"reaction-diffusion", "mandelbrot", "julia", "lorenz", "flow-field", "boids",
+                                                                     "life", "double-pendulum", "n-body", "fluid", "raymarch"};
+                std::vector<std::string> names;
+                for (const auto sc : scenes) names.push_back(std::string(i18n::tr(sc)));
+                choice(std::string(i18n::tr("Scene")), names, pick(scenes, std::string_view(paper.engine)),
+                       [this](std::size_t k) { setting("wallpaper", "engine", std::string(scenes[k])); wallpaper_restart(); });
+                const auto speed = config::load(o.config_profile, os::environment()).get("wallpaper", "speed", "normal");
+                static const std::array<std::string_view, 3> speeds{"slow", "normal", "fast"};
+                choice(std::string(i18n::tr("Speed")), {std::string(i18n::tr("Slow")), std::string(i18n::tr("Normal")), std::string(i18n::tr("Fast"))},
+                       pick(speeds, std::string_view(speed)), [this](std::size_t k) { setting("wallpaper", "speed", std::string(speeds[k])); wallpaper_restart(); });
+                text(std::string(i18n::tr("It pauses while a window covers the screen and after five minutes without input")));
+            }
+            text(std::string(i18n::tr("Any wallpaper program works too: it draws on the background layer (swaybg -i <file>)")));
+            break;
+        }
+        case SettingsPage::apps: {
+            // The programs it started: their logs, how each ended (design 2026-10-24 §6.1).
+            toggle(std::string(i18n::tr("Say when a program ends unexpectedly")), crash_notice, [this](bool on) {
+                setting("desktop", "crash_notice", on ? "on" : "off");
+                crash_notice = on;
+            });
+            std::vector<AppRun> runs;
+            {
+                std::lock_guard l(apps_m);
+                for (const auto& a : app_runs) runs.push_back({.pid = a.pid, .id = a.id, .name = a.name, .log = a.log, .ended = a.ended, .code = a.code});
+            }
+            heading(i18n::tr("Running"));
+            for (const auto& a : runs)
+                if (!a.ended) text(std::format("{} ({})", a.name, a.pid), a.log.string());
+            heading(i18n::tr("Ended"));
+            for (auto it = runs.rbegin(); it != runs.rend(); ++it) {
+                if (!it->ended) continue;
+                const int c = it->code.value_or(0);
+                const auto how = c > 128 ? std::format("{} {}", i18n::tr("signal"), c - 128) : std::format("{} {}", i18n::tr("exit"), c);
+                text(std::format("{} ({}) · {}", it->name, it->pid, how), it->log.string());
+            }
+            text(std::string(i18n::tr("All of a system's: luban logs <system> on the computer")));
+            break;
+        }
         case SettingsPage::about: {
             for (auto line : std::views::split(system_info(), '\n')) {
                 const std::string l(line.begin(), line.end());
@@ -561,6 +725,17 @@ std::string Server::rebind(const std::string& action, const Chord& c) {
 }
 
 void Server::draw_settings() {
+    shell::SettingsView v = settings_view_();
+    const int w = logical_w(), h = logical_h();
+    overlay_picture = shell::settings(ui(), big_font ? &*big_font : nullptr, theme, v, w, h, zh, scale);
+    wlr_scene_node_set_position(&overlay_node->node, 0, 0);
+    show(overlay_node, std::move(overlay_picture.image), scale);
+    overlay_picture.image = {};
+    wlr_scene_node_set_enabled(&overlay_node->node, true);
+}
+
+// What the settings show now: their pages, the page's rows, what is lit.
+shell::SettingsView Server::settings_view_() {
     settings_rows();
     // The lit row: one that can be acted on (headings and text are skipped).
     auto selectable = [&](std::size_t k) {
@@ -593,12 +768,7 @@ void Server::draw_settings() {
     v.hint = std::string(settings_page == SettingsPage::keys
         ? i18n::tr("Enter: new keys for it  ·  Delete: back to the set's  ·  type to find  ·  Tab: the next page  ·  Esc: close")
         : i18n::tr("↑ ↓: a row  ·  ← →: change it  ·  Enter: switch, press  ·  Tab: the next page  ·  Esc: close"));
-    const int w = logical_w(), h = logical_h();
-    overlay_picture = shell::settings(ui(), big_font ? &*big_font : nullptr, theme, v, w, h, zh, scale);
-    wlr_scene_node_set_position(&overlay_node->node, 0, 0);
-    show(overlay_node, std::move(overlay_picture.image), scale);
-    overlay_picture.image = {};
-    wlr_scene_node_set_enabled(&overlay_node->node, true);
+    return v;
 }
 
 // The pointer over the settings: the row it is on (its own look; the

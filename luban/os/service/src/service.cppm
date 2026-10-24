@@ -20,7 +20,7 @@ export namespace luban::service {
 // Luban is released with the xlings it drives: the same date version
 // (YYYY.M.D.N), bumped with mcpp.toml and src/core/config.cppm.
 // tests/unit/test_luban_contract.cpp holds them equal.
-inline constexpr std::string_view kVersion = "2026.10.24.1";
+inline constexpr std::string_view kVersion = "2026.10.24.2";
 
 namespace fs = std::filesystem;
 
@@ -430,6 +430,8 @@ Outcome configure(const Context& c, std::string_view name,
 // desktop's, WuXian §7.4) -- its sandbox gets the render nodes, its machine
 // virgl (§7.5).
 bool gpu_granted(const fs::path& home, std::string_view name);
+// Whether `name`'s policy grants `grant` (xlings.subos.policy: kGrants).
+bool granted(const fs::path& home, std::string_view name, std::string_view grant);
 
 Outcome upgrade(const Context& c, std::string_view name, std::string_view to, bool dry_run);
 Outcome rollback(const Context& c, std::string_view name, std::string_view to);

@@ -23,6 +23,7 @@ luban-service = { path = "../service" }
 luban-vm = { path = "../vm" }
 opensal = { path = "../../specs/opensal" }
 openhal = { path = "../../specs/openhal" }
+openhal-emu = { path = "../../kits/openhal-emu" }
 openas  = { path = "../../specs/openas" }
 opensal-wlr = { path = "../../kits/opensal-wlr" }
 xbus        = { path = "../../services/xbus" }

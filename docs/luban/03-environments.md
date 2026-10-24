@@ -21,7 +21,7 @@ luban config box --mount ~/code/proj:/work          # a host directory inside
 | `proxy` | `socks5h://host:port`: the environment's network is that proxy and nothing else |
 | `tz` | the time zone it shows: `utc`, `proxy`, or a zone name — never the host's unless you choose it |
 | `policy` | a policy package (`xim:agent-private`, `xim:agent-confined`, your own) |
-| `allow` | a grant: `display`, `audio`, `gpu`, `ssh-agent`, `clipboard`, `clipboard-paste`, … |
+| `allow` | a grant: `display`, `audio`, `gpu`, `ssh-agent`, `clipboard`, `clipboard-paste`, `desktop-control`, … |
 | `mount` | a host directory inside the environment |
 
 Each is the `xlings subos config` setting of the same name
@@ -43,6 +43,7 @@ luban config box --on-close background
 | `desktop` | the desktop session the window shows, or `none` ([The desktop](08-desktop.md)) |
 | `on-close` | closing the window of a running machine: `ask`, `background` or `poweroff` |
 | `files` | how a machine shares its files: `virtiofs` (default; 9p where it cannot) or `9p` |
+| `kernel` | the kernel a machine boots: a `linux-kernel-virt` version, or `default` (its own) |
 
 An edition may set their defaults; what you set wins.
 

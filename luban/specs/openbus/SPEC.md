@@ -1,4 +1,4 @@
-# openbus Specification, version 0.1
+# openbus Specification, version 0.2
 
 ## 1. Scope
 
@@ -135,7 +135,7 @@ mapping back.
 
 ## 5. Connecting, discovery, liveness
 
-5.1 A node's first frame is `hello`: fields `openbus` (`0.1`), `node`, `name`,
+5.1 A node's first frame is `hello`: fields `openbus` (`0.2`), `node`, `name`,
 `actor`, `feature` (repeated), `transport` (what the connection can do:
 `descriptors`, `regions`). The router answers `welcome`: `router`, `host`,
 `scope`, `feature` (the intersection), `limit-payload`, `limit-queue`. Either side
@@ -167,8 +167,12 @@ resource: `capacity`, `free`, `bandwidth`, `latency` (§7.3).
 with the frame (descriptors) where the transport carries them.
 
 6.2 Kinds: `memfd`, `shm` (a named shared-memory object), `dmabuf`, `cuda-ipc`,
-`metal-shared`, `rdma`, `inline` (no shared memory: the data is copied in the
-reference frames, after the 24-byte reference, in pieces). A side that maps a
+`metal-shared`, `rdma`, `ivshmem` (memory a virtual machine and its host share
+through an inter-VM shared-memory device: the host maps a file, the guest the
+device's memory BAR; no handle travels -- both sides find it by `placement`,
+the device's path, and the region starts at offset 0 of it), `inline` (no
+shared memory: the data is copied in the reference frames, after the 24-byte
+reference, in pieces). A side that maps a
 region answers `region-attach` (field `id`); one that cannot (the kind is not
 its, or the handle did not travel: a link, a platform without descriptors)
 answers `region-release` with fields `id` and `error` = `region-kind` -- not an
@@ -209,6 +213,16 @@ second), `coherent` (memory shared over it is coherent in hardware),
 subscriber that does not keep up loses `latest` and `best-effort` messages
 (counted) and is disconnected for `reliable` ones after `limit-queue`.
 
+7.5 **A system's socket.** A host's router may open a socket for one system
+on it -- a sandbox that shares the host's kernel and has no router of its
+own: `bus/system` (its body the system's name) answers `socket` (where it
+listens) and `root` (`host/<host-id>/system/<name>`). A node that connects
+there is placed under that root whatever its `hello` says: its relative paths
+are taken from it, it offers and publishes only under it (`error(denied)`
+otherwise), and it is never a link (a router there could offer paths outside
+it). It calls, subscribes to and opens whatever the host's router offers, as
+far as it is allowed. Region handles cross the socket as on any other.
+
 ## 8. What a router tells
 
 Every router offers, at `bus/` under its root:
@@ -228,9 +242,10 @@ Every router offers, at `bus/` under its root:
 reported as a bucket's upper bound.
 
 8.2 **The router is an object of its own bus**: its endpoints implement
-`openbus.router@0.1` -- `bus/stats`, `bus/topology`, `bus/verbs` and `bus/links`
+`openbus.router@0.2` -- `bus/stats`, `bus/topology`, `bus/verbs` and `bus/links`
 (read), `bus/telemetry` (§8.3), `bus/link` (its body an address: link this
-router to the router there; effect `external`) and `bus/unlink` (its body a router or a root), and the topic
+router to the router there; effect `external`), `bus/unlink` (its body a router or a root),
+`bus/system` (§7.5, where the router opens systems' sockets), and the topic
 `bus/trace`. Joining two machines' buses is a call; who may make it is the
 router's authorization, like any call's.
 
@@ -254,6 +269,13 @@ An answer larger than a frame comes as several replies; the JSON is their
 concatenation. A router's `dump` also carries, under `state`, its topology and
 statistics (`xbus.router.<id>` in XBus).
 
+8.4 **Logs are streams.** A program's log is offered as a stream at `.../log`
+under the object whose log it is (an application a desktop started:
+`service/xdesk/apps/<pid>/log`). Opening it sends the last lines kept (at most
+a mebibyte), then each new line as it is written, until the program ends (then
+the stream ends) or the opener closes it. Its offer's properties say `bytes`
+(how much is kept) and `file` (where it is written, when it is a file).
+
 ## 9. Verbs, tasks, actors
 
 9.1 An endpoint may describe what calling it does: fields `verb` (a name),
@@ -268,6 +290,14 @@ is asked; the answer is a `call` on the same channel.
 with its delegation chain (openas). A router decides whether the actor may
 call, subscribe to or offer a path, and records what it decided.
 
+9.4 **Control.** What drives a system as its user would -- a desktop's input,
+its displays (capture, record, attach), its compositor's control -- is
+allowed to an `agent` actor only with the system's grant for it (opencaps
+`desktop-control`), and each decision on an agent is recorded with the actor,
+the path and the operation. A host's display that a person sits at (a window)
+is never an agent's. An endpoint whose operations differ (a desktop's
+`status` reads, its `end` drives) decides per operation itself.
+
 ## 10. Errors
 
 `error` frames carry fields `code` and `message`. Codes: `unknown-kind`,
@@ -278,6 +308,9 @@ call, subscribe to or offer a path, and records what it decided.
 
 0.x versions only add: kinds, flags, codecs, fields, features. A field a reader
 does not know is ignored; a kind it does not know is skipped (§4.2).
+
+0.2 adds the `ivshmem` region kind (§6.2), a system's socket and `bus/system`
+(§7.5), logs as streams (§8.4) and control (§9.4).
 
 ## 12. Conformance
 

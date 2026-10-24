@@ -317,6 +317,11 @@ public:
     // A floating, stacked or free window's frame was moved or resized by hand
     // (screen pixels).
     void place(Id id, Rect screen);
+    // A stacked window snapped to a half, a quarter or the whole output,
+    // picked up (design 2026-10-24 §9.2): free again at the size it had
+    // before, under the pointer at (sx, sy) where it was held (the same
+    // fraction of its width). Its frame now; nothing when it was not snapped.
+    std::optional<Rect> unsnap(Id id, double sx, double sy);
     // Tile: the focused column's width through 1/3, 1/2, 2/3 and the whole;
     // its height in a shared column through an equal part, 2/3 and 1/3.
     void cycle_width();
@@ -356,6 +361,10 @@ public:
     // Where everything shown is, for this output (`through`: the WuXian view
     // seen through this camera, not its own -- the views' change animated).
     std::vector<Placement> arrange(Size output, Insets reserved = {}, std::optional<Camera> through = std::nullopt);
+    // Workspace `id` as the workspace view shows it on another output of
+    // `output`'s size, at its top-left (openwx 0.2 §2.6: an extending
+    // output's own workspace); nothing for the current one or none.
+    std::vector<Placement> arrange_on(int id, Size output);
     // The window at a screen point, by the last arrangement (the top-most).
     std::optional<Id> at(double sx, double sy) const;
 
@@ -550,6 +559,12 @@ struct Covered {
     bool operator==(const Covered&) const = default;
 };
 std::vector<Covered> covered(std::span<const Rect> back_to_front, Rect screen);
+
+// Where a stacked or floating window's frame may be (design 2026-10-21 §8.8,
+// 2026-10-24 §9.1): partly off the area, its title bar never above the top
+// nor under the bottom, and at least 64 pixels of it (a quarter of it, if
+// less) across. The one rule: the arrangement and a drag both keep it.
+Rect kept_on(Rect r, Rect area, double title);
 
 // A frame's damage in at most `limit` rectangles (design 2026-10-21 §5.6a):
 // the two whose bounding box adds the least area merged, again, until they

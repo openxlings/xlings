@@ -54,6 +54,9 @@ struct SharedMemory {
     std::size_t size { 0 };
 };
 std::optional<SharedMemory> shared_memory(std::size_t size);
+// The file at `path` mapped here read-write, its first `size` bytes, shared
+// with whoever maps it too (a machine's ivshmem BAR: its PCI resource file).
+std::optional<SharedMemory> map_file(const fs::path& path, std::size_t size);
 void release(SharedMemory& m);
 
 // ── processes ─────────────────────────────────────────────────────────

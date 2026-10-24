@@ -45,12 +45,19 @@ Theme theme(std::string_view profile);
 inline constexpr int kTitleHeight = 26;
 // Its top corners are round (design 2026-10-20 §14.3), the desktop showing
 // past them; `rounded` false for a window that fills the screen.
+// `fold`: a window that can be collapsed (a free one in the WuXian view,
+// design 2026-10-24 §9.3) has its mark at the left -- 1 unfolded (▾), 2
+// folded (▸, the bar darker with a line under it: all there is of it).
+// `icon`: its application's, kTitleIcon logical pixels at this density (design 2026-10-24 §9.5).
 draw::Image title_bar(draw::Fonts* fonts, const Theme& t, std::string_view title, int width, bool active, bool close_hover,
-                      double scale = 1, bool maximize_hover = false, bool rounded = true);
+                      double scale = 1, bool maximize_hover = false, bool rounded = true, int fold = 0, const draw::Image* icon = nullptr);
+inline constexpr int kTitleIcon = 16;
 inline constexpr double kTitleRadius = 8;
-// Its close button and its maximize button (left of it), in the bar's pixels.
+// Its close button and its maximize button (left of it), in the bar's
+// pixels; its fold mark (at the left), when it has one.
 draw::Rect close_button(int width);
 draw::Rect maximize_button(int width);
+draw::Rect fold_button();
 
 // ── the panel ────────────────────────────────────────────────────────
 
@@ -119,12 +126,18 @@ void rule_icon(draw::Canvas& c, draw::Rect r, const WorkspaceChip& w, bool fille
 // (Target::label, its number), in the picture's own pixels.
 Picture workspace_label(draw::Fonts* fonts, const Theme& t, const WorkspaceChip& w, bool small, double scale = 1);
 inline constexpr int kLabelHeight = 22;
-// A covered item's bookmark (design 2026-10-21 §8.4), at an item's right
-// edge: a window's initial and short title, a workspace's colour and its
-// number and name, or "+N" for the rest; `lit` under the pointer.
+// A covered item's bookmark (design 2026-10-24 §9.4): a ribbon that comes
+// out from under the item over it -- its first kBookmarkRoot pixels lie under
+// that item's right edge, the rest shows -- in its own colour (a window's:
+// its icon's; a workspace's: its colour), with its icon and a short title (a
+// workspace: its number and name), or "+N" for the rest; `lit` under the
+// pointer: brighter, its border heavier.
 Picture bookmark(draw::Fonts* fonts, const Theme& t, std::string_view label, std::optional<draw::Color> colour, bool lit,
-                 double scale = 1);
+                 double scale = 1, const draw::Image* icon = nullptr);
 inline constexpr int kBookmarkHeight = 22;
+inline constexpr int kBookmarkRoot = 24;
+// The colour an icon reads as: its opaque pixels' average, a little deeper.
+std::optional<draw::Color> icon_colour(const draw::Image& icon);
 // The desktop's tour (design 2026-10-21 §8.1): a card at the bottom right --
 // step `at` of `of`, what to do, why -- with two buttons: this step skipped
 // (area 0), the tour ended (area 1).
@@ -144,7 +157,10 @@ public:
     // The application chosen (Enter), and the launcher closed.
     std::optional<apps::App> choose();
     std::optional<apps::App> choose_at(double x, double y);
-    Picture draw(draw::Fonts* ui, draw::Fonts* big, const Theme& t, int width, int height, bool zh, double scale = 1);
+    // `icon`: an application's icon at kLauncherIcon logical pixels, this density (none: its initial).
+    Picture draw(draw::Fonts* ui, draw::Fonts* big, const Theme& t, int width, int height, bool zh, double scale = 1,
+                 const std::function<const draw::Image*(const apps::App&)>& icon = {});
+    static constexpr int kLauncherIcon = 28;
     const std::string& query() const { return query_; }
     std::size_t selected() const { return selected_; }
     std::size_t shown() const { return std::min(results_.size(), kRows); }
@@ -259,8 +275,10 @@ struct SettingsView {
     std::string preedit;                    // an input method's text not yet committed
     std::string hint;
 };
+// `in_window`: the whole picture is the card (a window of its own, design
+// 2026-10-24 §9.6) -- no backdrop, no margin.
 Picture settings(draw::Fonts* ui, draw::Fonts* big, const Theme& t, const SettingsView& v, int width, int height, bool zh,
-                 double scale = 1);
+                 double scale = 1, bool in_window = false);
 // A question and its answers (design 2026-10-20 WuXian §3.9), in the middle:
 // a title, a line, buttons -- the default one lit; one that may not be
 // pressed yet dimmed (its label says when). Areas: the buttons (item, by index).

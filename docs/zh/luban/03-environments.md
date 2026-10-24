@@ -20,7 +20,7 @@ luban config box --mount ~/code/proj:/work          # a host directory inside
 | `proxy` | `socks5h://host:port`：环境的网络就是这个代理，别无其他 |
 | `tz` | 它显示的时区：`utc`、`proxy` 或一个时区名——除非你选择，从不用宿主的 |
 | `policy` | 一个策略包（`xim:agent-private`、`xim:agent-confined`、你自己的） |
-| `allow` | 一项授权：`display`、`audio`、`gpu`、`ssh-agent`、`clipboard`、`clipboard-paste` 等 |
+| `allow` | 一项授权：`display`、`audio`、`gpu`、`ssh-agent`、`clipboard`、`clipboard-paste`、`desktop-control` 等 |
 | `mount` | 映射进环境的宿主目录 |
 
 每一项都是同名的 `xlings subos config` 设置（[沙箱与策略](../11-sandbox-and-policy.md)）。下面这些是 luban 自己的：
@@ -41,6 +41,7 @@ luban config box --on-close background
 | `desktop` | 窗口显示的桌面会话，或 `none`（[桌面](08-desktop.md)） |
 | `on-close` | 关闭正在运行的机器的窗口时：`ask`、`background` 或 `poweroff` |
 | `files` | 机器怎样共享文件：`virtiofs`（默认；做不到时用 9p）或 `9p` |
+| `kernel` | 机器启动的内核：一个 `linux-kernel-virt` 的版本，或 `default`（它自己的） |
 
 edition 可以给出这些设置的默认值；你设置的优先。
 

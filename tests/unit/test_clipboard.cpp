@@ -51,6 +51,11 @@ XTEST(Clipboard, TheGrantsAreTheirOwnNeverImpliedAndAPolicyHoldingOneSaysWhichCl
     ASSERT_TRUE(xlings::subos::policy_store::write(view, "granted", p));
     auto granted = nlohmann::json::parse(tk::read_file(view.policy_file("granted")));
     EXPECT_EQ(granted["min_client"], std::string(pol::kClipboardMinClient));
+    // desktop-control (Luban OS design 2026-10-24 §3.4): explicit too, and newer.
+    EXPECT_FALSE(pol::legacy().grants_allowed.contains("desktop-control"));
+    p.grants.insert("desktop-control");
+    ASSERT_TRUE(xlings::subos::policy_store::write(view, "driven", p));
+    EXPECT_EQ(nlohmann::json::parse(tk::read_file(view.policy_file("driven")))["min_client"], std::string(pol::kDesktopControlMinClient));
 }
 
 XTEST(Clipboard, TheBridgeIsTheToolsNamesInAGrantedSandboxNeverAShim,

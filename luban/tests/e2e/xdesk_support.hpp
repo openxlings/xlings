@@ -26,7 +26,8 @@ inline fs::path colour_client(const tk::Home& home) {
 #   --log   text-input-v3 on: what is committed, and the selection it is
 #           offered, written to FILE ("commit <text>", "paste <text>"); and
 #           the pointer's presses ("button <code> at <x> <y>", its coordinates)
-#   --copy  then its own selection: TEXT
+#   --copy  then its own selection: TEXT (once it has the host's; with
+#           --copy-after commit: once it was given text -- the window in use)
 #   --cursor  its own pointer over it: 8x8 in its colour, hotspot (3, 4)
 #   --app-id  its application id
 #   --cells WxH  draws to whole cells of WxH pixels unless told it is tiled,
@@ -36,6 +37,15 @@ colour = int(sys.argv[1], 16)
 opts = dict(zip(sys.argv[2::2], sys.argv[3::2]))
 log = open(opts["--log"], "a", buffering=1) if "--log" in opts else None
 copy = opts.get("--copy")
+copy_after = opts.get("--copy-after", "paste")
+copied = False
+def copy_now():
+    global copied, source
+    if not copy or copied: return
+    copied = True
+    source = new(); send(manager, 0, struct.pack("<I", source))
+    send(source, 0, string("text/plain;charset=utf-8"))
+    send(device, 1, struct.pack("<II", source, enter_serial))
 cursor = "--cursor" in opts
 sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
 sock.connect(os.path.join(os.environ["XDG_RUNTIME_DIR"], os.environ["WAYLAND_DISPLAY"]))
@@ -153,6 +163,7 @@ for obj, op, body in it:
     elif obj == text and op == 3:
         s, _ = read_string(body)
         if s: log.write("commit %s\n" % s)
+        if s and copy_after == "commit": copy_now()
     elif obj == text and op == 5:
         send(text, 7)                                        # done: commit the state again
     elif obj == device and op == 0:
@@ -172,10 +183,7 @@ for obj, op, body in it:
             os.close(r)
             log.write("paste %s\n" % got.decode(errors="replace"))
             pasted = True
-            if copy:
-                source = new(); send(manager, 0, struct.pack("<I", source))
-                send(source, 0, string("text/plain;charset=utf-8"))
-                send(device, 1, struct.pack("<II", source, enter_serial))
+            if copy_after == "paste": copy_now()
     elif obj == source and op == 1:                          # send: the text into the fd
         read_string(body)                                    # the mime type: there is one
         fd = fds.pop(0); os.write(fd, copy.encode()); os.close(fd)

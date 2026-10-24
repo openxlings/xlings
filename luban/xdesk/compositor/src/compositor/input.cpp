@@ -123,6 +123,12 @@ void Server::key(const opensal::Key& k) {
             if (down) launcher_key(code);
             return;
         }
+        // The settings' window focused: its keys are the settings' (Esc closes it).
+        if (View* sw = settings_window(); sw && focused() == sw && !modifier) {
+            if (down && sym == key::Escape && !settings_capture) wlr_xdg_toplevel_send_close(sw->toplevel);
+            else if (down) settings_key(sym);
+            return;
+        }
         wlr_seat_set_keyboard(seat, &keyboard);
         wlr_seat_keyboard_notify_key(seat, ev.time_msec, code, static_cast<std::uint32_t>(ev.state));
         wlr_seat_keyboard_notify_modifiers(seat, &keyboard.modifiers);
@@ -137,6 +143,10 @@ void Server::key(const opensal::Key& k) {
 
 void Server::pointer_moved() {
     if (drag == Drag::move) { drag_motion(); return; }
+    // Over the settings' window: its rows lit (design 2026-10-24 §9.6).
+    if (drag == Drag::none && overlay == Overlay::none && settings_view)
+        if (View* v = view_at(cursor->x, cursor->y); v && v->id == settings_view && !on_title(*v, cursor->y))
+            (void)settings_window_pointer(cursor->x, cursor->y, std::nullopt);
     if (drag == Drag::workspace || drag == Drag::scale) { workspace_motion(); return; }
     if (drag == Drag::resize) { resize_motion(); return; }
     if (drag == Drag::minimap) { minimap_motion(); return; }
@@ -322,7 +332,7 @@ void Server::button(const opensal::PointerButton& b) {
     // A bookmark: what it is for (design 2026-10-21 §8.4).
     if (overlay == Overlay::none && b.button == opensal::Button::Left && !bookmarks.empty()) {
         bool on = false;
-        for (const auto& bm : bookmarks) on = on || bm.tab.contains(cursor->x, cursor->y);
+        for (const auto& bm : bookmarks) on = on || bm.shown().contains(cursor->x, cursor->y);
         if (on) {
             if (b.down) bookmark_press(cursor->x, cursor->y);
             return;
@@ -423,11 +433,24 @@ void Server::button(const opensal::PointerButton& b) {
         }
         const bool super = held(wlr_keyboard_modifier::WLR_MODIFIER_LOGO);
         const bool title = v && on_title(*v, cursor->y);
+        // In the settings' window (not its title bar): the settings' (design 2026-10-24 §9.6).
+        if (v && v->id == settings_view && !title && !super && settings_window_pointer(cursor->x, cursor->y, b)) return;
         // The title bar's other button: the window's menu (design 2026-10-19 §18.1).
         if (title && b.button == opensal::Button::Right && !super) {
             focus(v);
             open_menu(v, cursor->x, cursor->y);
             return;
+        }
+        // Its fold mark (a free window in the WuXian view, design 2026-10-24
+        // §9.3): folded, or unfolded, at once.
+        if (title && b.button == opensal::Button::Left && !super && wuxian() && lay.is_free(v->id)) {
+            const auto m = shell::fold_button();
+            const double x = (cursor->x - v->frame->node.x) / std::max(0.01, v->zoom);
+            if (x >= m.x && x < m.x + m.width) {
+                title_pressed_id = 0;
+                collapse_window(v->id);
+                return;
+            }
         }
         // Twice on a title bar: maximized, or back -- a free window in the
         // WuXian view: collapsed, or expanded (design 2026-10-21 §8.5).
@@ -535,10 +558,17 @@ void Server::wheel(const opensal::Wheel& w) {
 
 void Server::input(Link& from, const opensal::Event& ev) {
     const bool primary_link = &from == primary();
+    // Somebody is here: a paused wallpaper runs again (design 2026-10-24 §9.7).
+    if (!std::holds_alternative<opensal::FramePresented>(ev) && !std::holds_alternative<opensal::Shown>(ev)) {
+        last_input = std::chrono::steady_clock::now();
+        if (wallpaper_paused) wallpaper_pause_check();
+    }
     if (const auto* k = std::get_if<opensal::Key>(&ev)) {
         key(*k);
     } else if (const auto* m = std::get_if<opensal::PointerMotion>(&ev)) {
-        wlr_cursor_warp_closest(cursor, nullptr, m->x / scale, m->y / scale);   // device pixels to logical
+        // Device pixels to logical, on the output the display shows.
+        if (from.extend) wlr_cursor_warp_closest(cursor, nullptr, from.extend->x + m->x / from.extend->scale, m->y / from.extend->scale);
+        else wlr_cursor_warp_closest(cursor, nullptr, m->x / scale, m->y / scale);
         // Super held while the pointer goes more than a little: not Super alone (H8).
         if (super_alone && std::hypot(cursor->x - super_x, cursor->y - super_y) > 4) {
             super_alone = false;
@@ -553,14 +583,20 @@ void Server::input(Link& from, const opensal::Event& ev) {
         wheel(*w);
         wlr_seat_pointer_notify_frame(seat);
     } else if (const auto* r = std::get_if<opensal::Resized>(&ev)) {
-        // The primary's size is the output's; a mirror's is its own business.
-        if (primary_link) resize(r->size);
+        // The primary's size is the output's; a mirror's is its own business
+        // (kept, for when it is the primary).
+        from.own = r->size;
+        if (from.extend) extend_resize(*from.extend, r->size, from.density);
+        else if (primary_link) resize(r->size);
     } else if (const auto* d = std::get_if<opensal::DensityChanged>(&ev)) {
-        if (primary_link) set_scale(d->scale);
+        from.density = d->scale;
+        if (from.extend) extend_resize(*from.extend, from.own, d->scale);
+        else if (primary_link) set_scale(d->scale);
     } else if (const auto* t = std::get_if<opensal::TextCommit>(&ev)) {
+        View* sw = settings_window();
         if (launcher.is_open()) { launcher.type(t->text); draw_launcher(); }
         else if (overlay == Overlay::naming) naming_type(t->text);
-        else if (overlay == Overlay::settings) {
+        else if (overlay == Overlay::settings || (sw && focused() == sw && overlay == Overlay::none)) {
             // An input method's text: the keys page's search takes it (H14); elsewhere nothing does.
             settings_preedit.clear();
             if (settings_page == SettingsPage::keys) {
@@ -571,7 +607,7 @@ void Server::input(Link& from, const opensal::Event& ev) {
         }
         else text_commit(t->text);
     } else if (const auto* p = std::get_if<opensal::Preedit>(&ev)) {
-        if (overlay == Overlay::settings) {
+        if (overlay == Overlay::settings || (settings_window() && focused() == settings_window() && overlay == Overlay::none)) {
             settings_preedit = settings_page == SettingsPage::keys ? p->text : std::string{};
             draw_overlay();
         } else {
@@ -585,12 +621,12 @@ void Server::input(Link& from, const opensal::Event& ev) {
         from.hidden = !sh->shown;
         if (!from.hidden) {
             from.whole = true;
-            wlr_output_schedule_frame(output);
+            wlr_output_schedule_frame(from.extend ? from.extend->output : output);
         }
     } else if (std::holds_alternative<opensal::FramePresented>(ev)) {
         // Shown: what changed meanwhile goes now.
         from.in_flight.reset();
-        wlr_output_schedule_frame(output);
+        wlr_output_schedule_frame(from.extend ? from.extend->output : output);
     } else if (const auto* f = std::get_if<opensal::Focus>(&ev)) {
         // Focus left the window: nothing it holds stays pressed here.
         if (!f->in) {
@@ -623,10 +659,31 @@ void Server::provider(Link& l, std::string_view bytes) {
             int pacing = 0;
             if (in >> bits >> w >> h) {
                 if (in >> density >> pacing) l.paced = pacing == 1;
+                // A display that comes to show the desktop at its own size
+                // (opensal 0.7: "primary" after its pacing -- a window come to
+                // a desktop that ran on a virtual display): it is the primary
+                // now, the one before it a mirror.
+                std::string asked;
+                if (in >> asked && asked == "primary" && &l != primary()) {
+                    for (auto it = links.begin(); it != links.end(); ++it)
+                        if (&*it == &l) { links.splice(links.begin(), links, it); break; }
+                    log(std::format("display {} is the primary (it asked)", l.number));
+                }
                 l.provided = bits;
                 l.hello = true;
                 l.whole = true;
+                l.own = {w, h};
+                if (density > 0) l.density = density;
                 send_locate(&l);
+                // One that asks to extend the desktop (and is not all there
+                // is): an output of its own (design 2026-10-24 §4.4).
+                if (asked == "extend" && &l != primary()) {
+                    in >> l.name;
+                    if (!l.extend) extend_add(l);
+                    else extend_resize(*l.extend, l.own, l.density);
+                    wlr_output_schedule_frame(l.extend->output);
+                    continue;
+                }
                 if (&l == primary()) {
                     provided = bits;
                     pointer_mode();
@@ -638,6 +695,12 @@ void Server::provider(Link& l, std::string_view bytes) {
             }
         } else if (msg.kind == 'E') {
             if (auto e = opensal::wire::decode_event(msg.payload)) input(l, *e);
+        } else if (msg.kind == 'B') {
+            // The host's clipboard, an image (opensal 0.7 ClipboardData).
+            if (auto d = opensal::wire::decode_clipboard_data(msg.payload)) {
+                last_input = std::chrono::steady_clock::now();
+                host_clipboard_data(std::move(d->mime), std::move(d->bytes));
+            }
         }
     }
 }

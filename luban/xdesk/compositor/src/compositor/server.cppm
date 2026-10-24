@@ -124,6 +124,9 @@ struct View {
     double zoom { 1 };                          // its surfaces' scale: the canvas's, and the overview's
     double zoom_shown { 1 };                    // what they were last scaled to
     Hook map, unmap, commit, destroy, request_maximize, request_fullscreen, set_title, request_move, request_resize;
+    // A window of the desktop's own (its settings, design 2026-10-24 §9.6):
+    // the desktop draws its content here and takes its input.
+    wlr_scene_buffer* own { nullptr };
 };
 
 // A client's text-input-v3 object, and what it says.
@@ -135,7 +138,7 @@ struct TextInput {
 // The window's clipboard text, offered to the clients as their selection.
 struct HostSelection {
     wlr_data_source base;           // first: the wlr_data_source is the HostSelection
-    std::string text;
+    std::string text;               // its bytes: the text, or the image (its type is what it offers)
 };
 
 inline const wlr_data_source_impl kHostSelection {
@@ -155,6 +158,7 @@ struct SelectionRead {
     int fd { -1 };
     wl_event_source* source { nullptr };
     std::string text;
+    std::string mime;               // what is read: text, or an image's type (opensal 0.7 ClipboardData)
 };
 
 struct Popup {
@@ -163,7 +167,10 @@ struct Popup {
 };
 
 // The settings' pages (design 2026-10-20 §11.4).
-enum class SettingsPage { displays, layout, appearance, keys, about };
+enum class SettingsPage { displays, layout, appearance, wallpaper, keys, apps, about };
+// A page by the name requests and entries use (displays, layout, ...), and back: the one table.
+std::optional<SettingsPage> settings_page_named(std::string_view name);
+std::string_view settings_page_name(SettingsPage p);
 
 // What a held button is doing (workspace: a workspace's label carried;
 // scale: its corner, its scale).
@@ -181,10 +188,13 @@ struct WorkspaceNodes {
     layout::Rect label_at;
 };
 
+struct Extend;
+
 // A window showing the desktop (design 2026-10-20 §11): the first -- the
 // standard input and output -- is the primary, whose size and density the
 // output's are; one that comes to the displays socket mirrors it: the same
-// frames, its input the desktop's too.
+// frames, its input the desktop's too -- or, asking to extend it, has an
+// output of its own (Extend).
 struct Link {
     Server* server { nullptr };
     int in { -1 }, out { -1 };
@@ -197,8 +207,68 @@ struct Link {
     bool hidden { false };                         // it cannot be seen: it is sent nothing
     bool whole { true };                           // the next frame it gets is all of the output
     opensal::Size told;                            // the size it was last said ('s')
+    opensal::Size own;                             // its own size and density (its hello, then Resized):
+    double density { 1 };                          // what the output takes when it is the primary
     std::uint32_t number { 1 };
     bool gone { false };
+    Extend* extend { nullptr };                    // its own output, when it extends the desktop
+    std::string name;                              // what it said it is (`extend <name>`)
+};
+
+// An output that extends the desktop (design 2026-10-24 §4.4; opensal 0.7
+// §5.5, openwx 0.2 §2.6): a headless output of its own right of the others,
+// at its display's size and density, its frames that display's only; in the
+// workspace view it shows a workspace of its own.
+struct Extend {
+    Link* link { nullptr };
+    std::string name;
+    wlr_output* output { nullptr };
+    wlr_scene_output* scene_output { nullptr };
+    wlr_output_layout_output* layout_output { nullptr };
+    opensal::Size size;                            // device pixels
+    double scale { 1 };
+    double x { 0 };                                // its left on the screen (logical pixels)
+    int workspace { 0 };
+    wlr_scene_rect* background { nullptr };
+    Hook frame;
+    layout::Size logical() const { return {size.width / scale, size.height / scale}; }
+};
+
+// A program the desktop started (design 2026-10-24 §6.1): what it says is
+// read by a thread of its own (never the loop), within a budget, into its log
+// and its last mebibyte; its end is an event, an unexpected one is said.
+struct AppRun {
+    int pid { -1 };
+    std::string id, name;
+    std::filesystem::path log;
+    int log_fd { -1 };
+    std::uint64_t logged { 0 };                    // bytes in its log (a log stops at 8 MiB)
+    std::chrono::steady_clock::time_point started;
+    int out { -1 };                                // its standard output and error, read here
+    std::string tail;                              // the last 1 MiB it said
+    std::uint64_t dropped { 0 };                   // past its budget: 1 MiB a second
+    double budget { 1 << 20 };
+    std::chrono::steady_clock::time_point refilled;
+    std::vector<xbus::Stream> followers;           // its log's stream, opened on the bus
+    bool ended { false };
+    std::optional<int> code;                       // its end: the code, or 128 + its signal
+};
+
+// A wallpaper as the settings say it (design 2026-10-24 §9.7; wallpaper.cpp).
+struct Paper {
+    std::string kind { "solid" };       // solid, gradient, image, engine
+    std::uint32_t colour { 0 }, colour2 { 0 };
+    std::filesystem::path image;
+    std::string fit { "fill" };         // fill, fit, tile, center
+    std::string engine;                 // the engine's scene, when kind is engine
+    bool own { false };                 // a workspace's own ([wallpaper.<n>])
+};
+
+// A wallpaper program's surface on the background layer (wlr-layer-shell).
+struct BackgroundClient {
+    wlr_layer_surface_v1* surface { nullptr };
+    wlr_scene_layer_surface_v1* scene { nullptr };
+    Hook commit, destroy;
 };
 
 struct Server {
@@ -248,6 +318,14 @@ struct Server {
         layout::Rect tab, item;                         // where it is; the covered item's frame
         std::string label;
         std::optional<draw::Color> colour;
+        const draw::Image* icon { nullptr };
+        wlr_scene_node* under { nullptr };              // the node of the item over it: the ribbon goes under it
+        bool inside { false };                          // no room past the screen's edge: drawn over the item instead
+        // What of it shows (and takes the pointer): past its root, which is under the item over it.
+        layout::Rect shown() const {
+            if (inside) return tab;
+            return {tab.x + shell::kBookmarkRoot, tab.y, std::max(0.0, tab.width - shell::kBookmarkRoot), tab.height};
+        }
     };
     std::vector<Bookmark> bookmarks;
     // The tour (design 2026-10-21 §8.1; tour.cpp): the step it is at, -1: none.
@@ -299,13 +377,65 @@ struct Server {
     std::list<View> views;                       // front: focused most recently
     std::list<Popup> popups;
     std::vector<int> children;
+    std::string selection_text;                  // the session's clipboard as last read (design 2026-10-24 §8.1)
+    std::string selection_mime;                  // ... when it is not text: its type (an image), and its bytes
+    std::string selection_data;
+    // The wallpaper (design 2026-10-24 §9.7; wallpaper.cpp).
+    wlr_scene_buffer* wallpaper_node { nullptr };
+    std::string wallpaper_drawn;                 // what it was drawn as, and at what size
+    double wallpaper_zoom { 1 };
+    layout::Rect wallpaper_world;                // the plane's paper: the world it covers
+    int wallpaper_engine_pid { -1 };
+    bool wallpaper_paused { false };
+    std::string camera_said;                     // topic/xdesk/camera, as last published
+    bool settings_paper_own { false };           // the Wallpaper page sets this workspace's own
+    std::chrono::steady_clock::time_point last_input { std::chrono::steady_clock::now() };
+    wl_event_source* idle_timer { nullptr };
+    wlr_layer_shell_v1* layer_shell { nullptr };
+    std::list<BackgroundClient> background_clients;
+    bool background_client { false };            // a wallpaper program draws: the desktop's own paper is not shown
+    Hook new_layer_surface;
+    Paper paper_of(int workspace) const;
+    void wallpaper_update();
+    void wallpaper_pause_check();
+    void wallpaper_restart();                    // the engine started again (its settings changed)
+    void layer_surface_new(wlr_layer_surface_v1* s);
+    // The settings as a window (design 2026-10-24 §9.6; settings.cpp): the
+    // process holding it open, and its window once it is there.
+    int settings_pid { -1 };
+    layout::Id settings_view { 0 };
+    std::string settings_window_drawn;          // the size and scale it was drawn at
+    View* settings_window();
+    shell::SettingsView settings_view_();
+    void draw_settings_window();
+    // The pointer or a key in a window of the desktop's own: taken here.
+    bool settings_window_pointer(double x, double y, std::optional<opensal::PointerButton> b);
+    // The programs it started, their output and their ends (apps_run.cpp).
+    std::mutex apps_m;
+    std::list<AppRun> app_runs;
+    // A plain thread and a flag: a jthread's stop_token waits on an atomic,
+    // which only GCC 16's libstdc++ carries -- newer than the runtime a Luban
+    // system binds (xbus node.cpp says the same).
+    std::thread apps_reader;
+    std::atomic<bool> apps_stop { false };
+    void apps_read();
+    void apps_reap();
+    std::string apps_json();
     opensal::Size size;                          // the output, in device pixels
     double scale { 1 };                          // device pixels to a logical one (the window's density)
     bool stop { false };
     std::chrono::steady_clock::time_point start { std::chrono::steady_clock::now() };
     std::chrono::steady_clock::time_point last_tick { start };
     std::string frame_buf;                       // a frame message, its allocation kept (design 2026-10-20 §13.2)
+    // Frames by reference (opensal 0.7 Region; design 2026-10-24 §5.4): the
+    // region the window maps too ($OPENSAL_REGION: a machine's ivshmem BAR),
+    // and where the next rows go in it.
+    std::optional<os::SharedMemory> region;
+    std::size_t region_at { 0 };
     std::list<Link> links;                       // the windows showing it; front: the primary
+    std::list<Extend> extends;                   // the outputs beside the primary, left to right
+    std::map<std::string, int> extend_shown;     // the workspace each extending display showed, by its name
+    int arranged_current { 0 };                  // the current workspace at the last arrangement
     int displays_listener { -1 };
     wl_event_source* displays_source { nullptr };
     Hook new_toplevel, new_popup, new_decoration, frame, request_cursor, request_selection;
@@ -384,7 +514,7 @@ struct Server {
     std::map<layout::Id, double> spread_zoom;
     wl_event_source* switch_timer { nullptr };   // the quick press, the second held on an application
     wl_event_source* hold_timer { nullptr };     // Super held alone a second: the keys used most
-    std::map<std::string, draw::Image> icons;    // an application's icon as the switcher draws it (empty: none)
+    std::map<std::pair<std::string, int>, draw::Image> icons;   // an application's icon at a size in device pixels (empty: none)
     // The settings (design 2026-10-20 §11.4): a page, its rows and what each
     // does (act(0): the row's own action; act(-1 / +1): the choice before /
     // after), the row lit, a key being given to it, what is searched.
@@ -516,6 +646,7 @@ struct Server {
     // or pans; let go without one, the applications.
     bool hand { false };
     bool hand_used { false };
+    bool crash_notice { true };                  // a program's unexpected end said on the desktop (the Apps page)
     bool status_others { true };                 // the status bar shows the other workspaces
     bool plane_focus { false };                  // the WuXian view: no window focused (WuXian, a label clicked)
     // The switchers and the wheel (design 2026-10-20 WuXian §4): how long
@@ -625,6 +756,8 @@ struct Server {
     void preedit(const opensal::Preedit& p);
 
     void host_clipboard(std::string text);
+    // The window's clipboard when it is not text (opensal 0.7 ClipboardData: an image).
+    void host_clipboard_data(std::string mime, std::string bytes);
 
     void selection_changed();
 
@@ -673,7 +806,8 @@ struct Server {
 
     void add_popup(wlr_xdg_popup* popup);
 
-    void launch(const std::vector<std::string>& argv);
+    // `id`, `name`: what the program is (its desktop entry's), for its log and its end.
+    void launch(const std::vector<std::string>& argv, std::string id = {}, std::string name = {});
 
     bool held(wlr_keyboard_modifier m);
 
@@ -810,7 +944,10 @@ struct Server {
     bool spread_key(xkb_keysym_t s);
     bool switched_click(double x, double y);
     void switched_hover(double x, double y);
-    const draw::Image* icon_of(const std::string& app);
+    // Its icon at `logical` pixels (the switcher's size by default), drawn at this density.
+    const draw::Image* icon_of(const std::string& app, int logical = 0);
+    // By its entry's Icon= name, cached under the application's id.
+    const draw::Image* icon_named(const std::string& app, const std::string& name, int logical = 0);
 
     std::optional<layout::Rect> placement_of(layout::Id id) const;
 
@@ -831,6 +968,14 @@ struct Server {
     void drop_gone();
     void tell_roles();
     Link* primary() { return links.empty() ? nullptr : &links.front(); }
+    // Extending outputs (displays.cpp).
+    void extend_add(Link& l);
+    void extend_remove(Link& l);
+    void extend_resize(Extend& e, opensal::Size want, double density);
+    void extends_place();                        // their places right of the primary, again
+    Extend* extend_at(double x, double y);       // the output at a screen point: nullptr, the primary
+    // The arrangement with each extending output's workspace (workspace view).
+    void with_extends(std::vector<layout::Placement>& ps);
 
     void resize(opensal::Size want);
 
@@ -838,7 +983,8 @@ struct Server {
 
     void open_fonts();
 
-    void render();
+    void render() { render_on(nullptr); }
+    void render_on(Extend* e);                   // one output's frame: the primary's, or an extending one's
     void choose_renderer();
     // The GPU is not there any more (lost, or a frame could not be read
     // back): software from now on, every window drawn again, said once.

@@ -56,6 +56,20 @@ is behind.
 | `host-gpu` | 1 | The window that shows a system draws on the host's GPU | the Luban OS app | | Luban 2026.10.19 |
 | `app-capabilities` | 1 | The app answers `luban-os __capabilities --json` (version, provides, needs) before it opens a display | the Luban OS app | | Luban 2026.10.19.2 |
 | `tray-protocol` | 1 | One tray process per home; its windows register, report jobs and are raised over its socket (NDJSON) | the Luban OS tray and its windows | | Luban 2026.10.19.2 |
+| `virtio-fs` | 1 | The kernel mounts virtio-fs shares (`FUSE_FS`, `VIRTIO_FS`) | a machine's kernel | `xim:linux-kernel-virt` | Luban 2026.10.24.2 |
+| `virtio-9p` | 1 | The kernel mounts 9p shares over virtio (`NET_9P_VIRTIO`, `9P_FS`) | a machine's kernel | `xim:linux-kernel-virt` | Luban 2026.10.24.2 |
+| `virtio-gpu` | 1 | The kernel drives a virtio GPU (`DRM_VIRTIO_GPU`) | a machine's kernel | `xim:linux-kernel-virt` | Luban 2026.10.24.2 |
+| `udmabuf` | 1 | The kernel makes dma-bufs of memory (`UDMABUF`) | a machine's kernel | `xim:linux-kernel-virt` | Luban 2026.10.24.2 |
+| `pci-sysfs-mmap` | 1 | A PCI device's memory is mapped through sysfs (`PCI`, `SYSFS`): a desktop's frames by reference through ivshmem | a machine's kernel | `xim:linux-kernel-virt` | Luban 2026.10.24.2 |
+| `virtio-vsock` | 1 | The kernel speaks vsock to its host (`VIRTIO_VSOCKETS`) | a machine's kernel | `xim:linux-kernel-virt` | Luban 2026.10.24.2 |
+| `display-virtual` | 1 | A desktop runs on a virtual display, and displays come and go on the bus (openhal 0.3) | luban | | Luban 2026.10.24.2 |
+| `frames-region` | 1 | A desktop's frames by reference, in memory both sides map (opensal 0.7 Region) | xdesk, opensal-wlr; the Luban OS app, luban | | Luban 2026.10.24.2 |
+| `desktop-control` | 1 | An agent drives a system's desktop on the bus only with the system's `desktop-control` grant (openbus 0.2 §9.4) | luban (the host's router) | | Luban 2026.10.24.2 |
+
+A machine's kernel provides its capabilities by its build configuration (the
+`config` file beside it, `CONFIG_<X>=y`); a machine that needs one its kernel
+lacks says which, and the kernel that has it (`luban config <n> --kernel
+<version>`), before it starts.
 
 **Package**: for a capability a system has, the package that brings it to a
 system that lacks it -- what a reader offers besides upgrading the whole

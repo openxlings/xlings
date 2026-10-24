@@ -26,10 +26,26 @@ luban boot box2 --now             # switch now, without restarting the kernel (w
 在机器里 xlings 就是包管理器：`xlings install` 以新的一代装进正在运行的系统；`luban rollback` 回到上一代。
 坏掉的库阻止不了回滚——xlings 是静态的。
 
+## 它的内核
+
+机器启动的是它的系统自己的内核：版本声明的那个（`boot.virt`，一个 `linux-kernel-virt` 的版本），第一次用时安装，
+随 `luban upgrade` 和系统的其余部分一起前进。每个版本都自称 `6.12.112-virt`，区分它们的是包的版本，`luban status <name>`
+会显示。只给这个系统换一个：
+
+```bash
+luban config box --kernel 6.12.112-r3     # this version, from the next start
+luban config box --kernel default         # its own again
+```
+
+启动前按这次启动需要的能力检查内核（读它旁边的构建配置）：文件要 virtio-fs，3D 要 virtio-gpu。有退路的退回并说明原因——
+`files 9p (the kernel 6.12.112 has no virtio-fs: luban upgrade box)`——没有退路的（没有 9p）拒绝并给出修法。版本早于"系统自带内核"的
+系统会被提示 `luban upgrade`。
+
 ## 它的文件
 
 机器的目录树和它读的 home 是共享给它的，不是复制的：走 virtio-fs，每个共享一个非特权的 `virtiofsd`
-（第一台机器会安装 `xim:virtiofsd`）；做不到时走 9p——没有硬件虚拟化的机器、这台主机没有它的构建，或守护进程起不来。
+（第一台机器会安装 `xim:virtiofsd`）；做不到时走 9p——没有硬件虚拟化的机器、这台主机没有它的构建、守护进程起不来，或内核没有 virtio-fs。宿主限制非特权命名空间
+（Ubuntu 的 AppArmor）时，`virtiofsd` 从一开始就不用它自己的沙箱，并说明这一点。
 `luban status <name>` 会说用的是哪个，以及原因：
 
 ```bash

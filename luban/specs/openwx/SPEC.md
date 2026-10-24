@@ -1,4 +1,4 @@
-# openwx Specification, version 0.1
+# openwx Specification, version 0.2
 
 openwx (open WuXian) specifies WuXian: one infinite plane a desktop is, with
 workspaces on it as windows of a kind and free windows beside them.
@@ -57,6 +57,21 @@ view's top-left and a zoom of 0.05–4 screen pixels per world pixel.
 
 2.5 **The view** is `workspace` (the camera locked) or `wuxian` (the camera free).
 
+2.6 **Outputs.** A desktop may have several outputs. One is the primary: the
+status area is on it, and a workspace's content is laid out for its size. An
+output either mirrors another (the same picture) or extends the desktop: the
+extending outputs stand beside the primary, left to right in the order they
+came, and together they are one screen. In the WuXian view they are lenses
+side by side on the plane -- one camera, the plane continuing from one output
+to the next. In the workspace view each output shows a workspace of its own
+(the current one on the primary). An output is named by what it is (its
+display's path), and a window or workspace on it remembers the name.
+
+2.7 **Collapsed keeps the size.** Collapsing changes how an item is shown,
+never its frame: a collapsed free window keeps its world rectangle, a
+collapsed workspace its content and origin. Moved collapsed, it moves whole;
+expanded, it is as large as it was.
+
 ## 3. Behaviour
 
 3.1 Entering the workspace view shows the workspace's content 1:1, whatever its
@@ -92,6 +107,13 @@ workspace has makes that workspace, with that number.
 3.8 When the output's size changes, workspaces lay their content out again for
 it; their origins do not move.
 
+3.9 An extending output that goes: the workspace it showed stays, its windows
+in it (a key away on the primary); remembered by the output's name, it is
+shown on that output again when an output of that name comes back. Going on
+the primary to a workspace an extending output shows swaps the two. A window
+dragged across the edge between two outputs lands in the workspace of the
+output the pointer is let go on (§3.5).
+
 ## 4. State: `wuxian.json`, version 1
 
 ```json
@@ -103,6 +125,9 @@ it; their origins do not move.
   "windows": [ { "match": { "app_id": "foot", "title": "build" }, "in": 2, "flags": ["floating"] },
                { "match": { "app_id": "org.kde.falkon" }, "free": [1800, 200, 1200, 800], "z": 4 } ] }
 ```
+
+Optional: `"outputs": { "<name>": { "current": 3 } }` -- the workspace each
+extending output showed (§2.6); a window may carry `"output": "<name>"`.
 
 4.1 `wuxian` is the version; it rises only for a change a reader of the
 previous version would read wrongly. A reader of another version reads nothing
@@ -162,13 +187,20 @@ out) the whole window SHOULD move it and a double-click show it 1:1.
 
 5.4 **Bounds.** A stacked window SHOULD keep at least 64 pixels (or a quarter
 of its width, the smaller) of its title bar on the output, never above the top
-edge nor under a status area. A window moved in the WuXian view enters or
+edge nor under a status area. A stacked window dragged against an edge SHOULD
+show where it would go and, let go there, take it: the left or right edge half
+of the output, a corner a quarter, the top edge all of it; dragged away again,
+it takes back the size it had. A window moved in the WuXian view enters or
 leaves a workspace by where the pointer is let go (§3.5); a part of a stacked
 workspace's window outside its frame is not drawn.
 
 5.5 **The minimap.** Dragging the minimap's view box pans the camera; clicking
 a workspace or a window there focuses and centres it; dragging a window there
 moves it, landing as §3.5 says.
+
+5.6 **A collapsed item is marked.** A collapsed workspace's label and a
+collapsed window's title bar SHOULD carry a mark (a folded corner, a chevron)
+that says it is collapsed, and the window's icon.
 
 ## 6. Conformance
 

@@ -494,6 +494,21 @@ void script_step_(App& a, Script& sc) {
         words >> what;
         a.tray_injected.push_back(what);
         next();
+    } else if (cmd == "job") {
+        // A made-up operation, to drive the job page through its endings
+        // without making a system: `job ok|fail|slow [ms]` (J54).
+        std::string how;
+        double ms = 200;
+        words >> how >> ms;
+        a.start_job("job " + how, [how, ms](Job& j, service::Context) {
+            const auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(static_cast<long long>(ms));
+            while (std::chrono::steady_clock::now() < until || (how == "slow" && !j.cancel->load()))
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            std::lock_guard l(j.m);
+            j.code = how == "ok" ? 0 : 1;
+            if (how != "ok") j.errors.push_back(how == "slow" ? "cancelled" : "it failed, as asked");
+        }, nullptr);
+        next();
     } else if (cmd == "close") {
         a.window->inject_close();
         next();

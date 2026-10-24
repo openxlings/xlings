@@ -19,6 +19,7 @@ const std::map<std::string_view, std::vector<std::string_view>, std::less<>>& al
         {"on-close", {"ask", "background", "poweroff"}},
         {"enter", {"console", "desktop"}},
         {"files", {"9p", "virtiofs"}},
+        {"kernel", {}},
     };
     return value;
 }
@@ -86,6 +87,7 @@ std::expected<Settings, std::string> read_settings(const fs::path& home, std::st
     s.on_close = j.value("on_close", s.on_close);
     s.enter = j.value("enter", s.enter);
     if (const auto f = j.value("files", s.files); f == "9p" || f == "virtiofs") s.files = f;
+    s.kernel = j.value("kernel", s.kernel);
     return s;
 }
 
@@ -105,10 +107,13 @@ std::expected<Settings, std::string> set_setting(const fs::path& home, std::stri
     }
     if (key == "desktop" && value.find_first_of("/\\ ") != std::string_view::npos)
         return std::unexpected(std::format("--desktop {}: a session's name, or none", value));
+    if (key == "kernel" && (value.empty() || value.find_first_not_of("0123456789abcdefghijklmnopqrstuvwxyz.-") != std::string_view::npos))
+        return std::unexpected(std::format("--kernel {}: a linux-kernel-virt version (6.12.112-r3), or default", value));
     auto current = read_settings(home, name);
     if (!current) return std::unexpected(current.error());
     auto doc = current->document;
-    doc[json_key_(key)] = std::string(value);
+    if (key == "kernel" && value == "default") doc.erase("kernel");
+    else doc[json_key_(key)] = std::string(value);
     const auto file = settings_file(home, name);
     std::error_code ec;
     fs::create_directories(file.parent_path(), ec);

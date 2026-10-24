@@ -1,4 +1,4 @@
-# opensal Specification, version 0.6
+# opensal Specification, version 0.7
 
 ## 1. Scope
 
@@ -12,7 +12,7 @@ It does not define how a surface is acquired.
 
 2.2 `Surface` is the core interface; `Pointer`, `Keyboard`, `Mode`, `Density`,
 `Capture`, `Cursor`, `CursorImage`, `PointerLock`, `Text`, `Clipboard`,
-`Shell`, `Displays` and `Compressed` are optional.
+`ClipboardData`, `Shell`, `Displays`, `Compressed` and `Region` are optional.
 
 2.3 A consumer learns which interfaces it has by asking (the provided set),
 never by trying an operation.
@@ -81,12 +81,16 @@ application by its id, started by the consumer as it declares) and activate
 
 5.5 `Displays`: a consumer may be shown by several providers at once, each
 a display numbered from 1 in the order it came; the first is the primary. It
-tells each what it is (`'d'`): the primary, whose size is the consumer's, or a
-mirror of another display, with that display's size. A mirror shows the same
+tells each what it is (`'d'`): the primary, whose size is the consumer's, a
+mirror of another display, with that display's size (`<n> mirror <of> <w>
+<h>`), or an extending display (`<n> extend <x> <y>`). A mirror shows the same
 frames, sizes itself to them and keeps their shape, and says no size of its
-own; its input is the consumer's as the primary's is. When the primary goes,
-the next display is told it is the primary. A provider without `Displays` is
-only ever a primary.
+own; its input is the consumer's as the primary's is. An extending display is
+an output of the consumer's own at the display's size and density, its
+top-left at `x`, `y` on the consumer's screen (logical pixels): it is sent
+that output's frames only, and its input is at that output (its coordinates
+its own). When the primary goes, the next display that is not extending is
+told it is the primary. A provider without `Displays` is only ever a primary.
 
 ## 6. The wire
 
@@ -107,7 +111,9 @@ whether it paces).
 `Shell`; 0.3 added `CursorImage` (`'C'`), `PointerLock` (`'l'`, relative
 motion) and the cursor names from grabbing on; 0.4 added shown and
 `Displays` (`'d'`); 0.5 added how a shaken pointer is shown (`'p'`); 0.6 added
-`Compressed` (`'z'`).
+`Compressed` (`'z'`); 0.7 carries the wire on a bus (§6.7), lets a display
+ask to be the primary or to extend the consumer, and adds `Region` (§6.8) and
+`ClipboardData` (§6.9).
 
 6.6 `Compressed`: a provider across a narrow channel (a machine's serial port)
 takes `'z'` frames -- the header of an `'f'` frame, then its rows as one LZ4
@@ -116,6 +122,38 @@ exactly `stride` times the rectangle's height bytes. A consumer sends `'z'`
 where it is shorter than the `'f'` it stands for, `'f'` otherwise; a provider
 that did not say `Compressed` gets only `'f'`. A block that does not
 decompress to its size is malformed and skipped.
+
+6.7 **On a bus (0.7).** A display is an openbus stream endpoint (openhal 0.3
+§6.2); the stream carries this wire unchanged, the consumer opening it.
+Several displays of one consumer are several streams. A provider that comes
+to show the consumer at its own size -- a window come to a desktop that ran on
+a virtual display -- ends its hello with `primary`: the consumer makes it its
+primary (it takes its size and density) and says to the one before it that it
+is a mirror (`'d'`). When the primary goes, the next one is the primary and
+the consumer takes its size again. One that ends its hello with `extend`
+(optionally followed by a name, which the consumer remembers it by when it
+comes again) is an extending display (§5.5). A display nobody looks at (a mirror kept
+for capture) says `Shown false` and is sent nothing until it says `Shown true`.
+
+6.8 **Region (0.7).** Where both sides map one shared region -- a machine's
+ivshmem BAR (the guest maps its PCI resource, the host the file behind it), a
+bus region -- a provider that says `Region` takes `'r'` frames: the rectangle
+and its stride as an `'f'` frame's header, then the offset in the region where
+its rows are. The consumer writes the rows there before it sends the message
+and, paced, writes there again only after the frame was shown; nothing of the
+pixels crosses the channel. A rectangle that would not fit is sent as `'f'`.
+
+6.9 **ClipboardData (0.7).** Clipboard content that is not text -- an image
+(`image/png`; another image format is converted to PNG on the side it comes
+from) -- crosses as `'B'` in either direction: its type, a newline, then its
+bytes, at most 64 MiB. A side sends it only to one that said `ClipboardData`,
+and under the same rule as text: the provider when the content is new and it
+has the input focus, the consumer when its selection changes. Content with a
+text form and an image (a browser's copied image) crosses as the image.
+Files cross by content as type `application/vnd.opensal.files` -- for each,
+`<size> <name>\n` and its bytes (its own name, no directory); the receiving
+side writes them where its pasted files go (`~/Downloads/Clipboard/`) and
+offers their new paths as `text/uri-list`.
 
 ## 7. Conformance
 

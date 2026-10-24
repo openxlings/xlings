@@ -149,7 +149,12 @@ of it, and the workflow's matrix comes from the same file
 ```bash
 $XDEV test -j 8                           # this machine, 8 at a time
 $XDEV test --lane-config unit --shard 1/4 # what CI's first unit machine runs
+$XDEV test --lane-config luban-desktop    # the Luban OS desktop's scenarios, before a release
 ```
+
+A lane may name its own tests (`tests`: any of them in a test's id); the
+`luban-desktop` lane is the desktop's real scenarios (Luban OS design
+2026-10-24 §11), run locally before a release and in CI's e2e families.
 
 The Linux round (`xlings-ci-linux.yml`): `plan` (lints, the matrices) starts
 `release` (the one release build) and `build` (the development build); the

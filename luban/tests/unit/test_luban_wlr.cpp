@@ -543,6 +543,64 @@ XTEST(LubanWlr, TheBridgeShowsTheCompositorsOutputAndGivesItTheInput, .area = "l
     fs::remove_all(dir, ec);
 }
 
+// A bridged compositor's frames by reference too (opensal 0.7 Region, design
+// 2026-10-24 §5.4): where both sides map a region ($OPENSAL_REGION), the rows
+// are written there and only where they are crosses the stream.
+XTEST(LubanWlr, ABridgedCompositorsFramesGoThroughTheRegion, .area = "luban", .covers = {"LUBAN-MACHINE-SHARED-FRAMES"}) {
+    if constexpr (!platform::is_linux) GTEST_SKIP() << "wl_shm needs memfd (Linux)";
+    const auto dir = temp_dir_("luban-wlr-region");
+    const auto socket = dir / "wayland-0";
+    const auto frames = dir / "frames";
+    constexpr std::size_t kSize = 2u << 20;
+    {
+        std::ofstream f(frames, std::ios::binary);
+        f.seekp(kSize - 1);
+        f.put('\0');
+    }
+    platform::set_env_variable("OPENSAL_REGION", frames.string());
+    platform::set_env_variable("OPENSAL_REGION_SIZE", std::to_string(kSize));
+    const int listener = platform::unix_listen_stream(socket);
+    ASSERT_GE(listener, 0);
+    auto to_bridge = platform::make_pipe(), from_bridge = platform::make_pipe();
+    ASSERT_TRUE(to_bridge && from_bridge);
+    std::atomic<int> code { -1 };
+    std::thread bridge([&] { code = wlr::bridge({.in = (*to_bridge)[0], .out = (*from_bridge)[1], .socket = socket, .max_fps = 100}); });
+    Compositor c;
+    c.fd = platform::unix_accept(listener);
+    ASSERT_GE(c.fd, 0);
+    Provider p{(*from_bridge)[0], (*to_bridge)[1]};
+    ASSERT_TRUE(p.until([&] { return p.count('h') >= 1; }, c));
+    using I = opensal::Interface;
+    EXPECT_TRUE(opensal::has(static_cast<opensal::Interfaces>(std::stoul(p.got[0].payload)), I::Region)) << "it says it writes a region";
+    // The window takes the region: the rows go there.
+    ASSERT_TRUE(platform::write_all(p.out, wire::encode('H', std::format("{} 64 32 1 1", I::Surface | I::Mode | I::Region))));
+    ASSERT_TRUE(p.until([&] { return p.count('r') >= 1; }, c));
+    EXPECT_EQ(p.count('f'), 0u) << "no pixels on the stream";
+    const auto r = wire::decode_region_frame(std::ranges::find(p.got, 'r', &wire::Message::kind)->payload);
+    ASSERT_TRUE(r);
+    auto mapped = platform::map_shared_file(frames, kSize);
+    ASSERT_TRUE(mapped);
+    // Pixel (5, 3) of the compositor's picture: blue 5, green 3, red 7.
+    if (r->rect.x == 0 && r->rect.y == 0 && r->rect.width == 64) {
+        const auto* px = reinterpret_cast<const unsigned char*>(mapped->data) + r->offset + 3 * r->stride + 5 * 4;
+        EXPECT_EQ(px[0], 5);
+        EXPECT_EQ(px[1], 3);
+        EXPECT_EQ(px[2], 7);
+    }
+    platform::release_shared_memory(*mapped);
+    std::vector<int> close{p.out};
+    platform::close_fds(close);
+    const auto end = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (code == -1 && std::chrono::steady_clock::now() < end) c.pump(10);
+    bridge.join();
+    platform::unset_env_variable("OPENSAL_REGION");
+    platform::unset_env_variable("OPENSAL_REGION_SIZE");
+    std::vector<int> rest{c.fd, listener, (*to_bridge)[0], (*from_bridge)[0], (*from_bridge)[1]};
+    platform::close_fds(rest);
+    std::error_code ec;
+    fs::remove_all(dir, ec);
+}
+
 XTEST(LubanWlr, ACompositorsPointerCapturedApartIsTheWindowsToDraw, .area = "luban",
       .covers = {"LUBAN-DESKTOP-WLR", "LUBAN-OS-POINTER"}) {
     if constexpr (!platform::is_linux) GTEST_SKIP() << "wl_shm needs memfd (Linux)";

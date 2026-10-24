@@ -74,6 +74,9 @@ std::expected<void, std::string> write(const HomeView& home, std::string_view in
     if (explicit_grant(saved.grants) || explicit_grant(saved.grants_allowed))
         if (auto o = policy::compare_client_versions(saved.min_client, policy::kClipboardMinClient); o && *o < 0)
             saved.min_client = policy::kClipboardMinClient;
+    if (saved.grants.contains("desktop-control") || saved.grants_allowed.contains("desktop-control"))
+        if (auto o = policy::compare_client_versions(saved.min_client, policy::kDesktopControlMinClient); o && *o < 0)
+            saved.min_client = policy::kDesktopControlMinClient;
     nlohmann::json doc = policy::to_json(saved);
     if (*existing) {
         const auto& old = **existing;

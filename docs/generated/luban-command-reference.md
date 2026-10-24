@@ -25,7 +25,19 @@ Options: `--edition <EDITION>` — An official system by its short name: core (d
 
 Go into an environment, or boot an image
 
-Options: `--mode <MODE>` — sandbox (this machine's kernel) or machine (its own); default: its setting; `--temp` — Nothing it writes stays; `--user <NAME>` — Log in as this user this once (root, or one of its users); `--display <DISPLAY>` — terminal or window; default: its desktop decides; `--desktop <SESSION>` — This desktop, this once, in a window
+Options: `--mode <MODE>` — sandbox (this machine's kernel) or machine (its own); default: its setting; `--temp` — Nothing it writes stays; `--user <NAME>` — Log in as this user this once (root, or one of its users); `--display <DISPLAY>` — terminal, window or virtual[=WxH@S] (its desktop with no window); default: its desktop decides; `--desktop <SESSION>` — This desktop, this once, in a window
+
+## `luban logs <name>` (more)
+
+What a system's desktop, its programs and its machine said, gathered
+
+Options: `--app <ID>` — Only this program's (its desktop entry's id, as falkon); `--since <TIME>` — Only what changed in this time back: 30s, 10m, 2h, 1d; `--bundle <FILE>` — All of it, with its status, in one tar to share; `--with-screenshot` — The bundle also holds a picture of its desktop
+
+## `luban display <name> [action] [args]...` (more)
+
+The displays of a running desktop: list, capture, record, attach, detach, mode, input, end
+
+Options: `--display <N>` — This display (its number in the list); default: the virtual one; `--role <ROLE>` — attach: what the display is to the desktop (a window: primary; a virtual one: extend or mirror)
 
 ## `luban run <name> <command>...` (common)
 
@@ -55,7 +67,7 @@ Options: `--check` — Check that it is usable: its /usr, /etc, runtime closure,
 
 Show or change an environment's settings
 
-Options: `--mode <MODE>` — sandbox or machine: how `luban enter` starts it; `--persist <WHAT>` — all, home (only /home stays) or none: what a session keeps; `--shell <SHELL>` — Its login shell (fish, bash, sh, or a path); `--login <NAME>` — Who luban enter logs in as: root, or one of its users; `--runtime <LIBC@VERSION>` — Its default runtime (glibc@2.44.3): a new generation runs on it; `--desktop <SESSION>` — The desktop it starts, or none; `--on-close <WHAT>` — ask, background or poweroff: closing its window; `--enter <WHAT>` — console or desktop: what going in shows first; `--files <HOW>` — virtiofs (9p where it cannot) or 9p: how a machine shares its files; `--policy <PRESET>` — dev, private, locked, or ns:name; `--proxy <URL>` — Its only network is this SOCKS5h proxy; off for none; `--tz <ZONE>` — utc, proxy, or Area/City; `--allow <GRANT>` — Grant a capability (clipboard, gpu, audio, ...); `--disallow <GRANT>` — Take a grant back; `--mount <HOST[:INSIDE][:ro|rw]>` — Map a host directory into it; `--unmount <INSIDE>` — Remove a mapping; `--fetch <ACTION>` — auto, ask or deny: installing from inside; `--observe <LEVEL>` — off, basic, standard or full
+Options: `--mode <MODE>` — sandbox or machine: how `luban enter` starts it; `--persist <WHAT>` — all, home (only /home stays) or none: what a session keeps; `--shell <SHELL>` — Its login shell (fish, bash, sh, or a path); `--login <NAME>` — Who luban enter logs in as: root, or one of its users; `--runtime <LIBC@VERSION>` — Its default runtime (glibc@2.44.3): a new generation runs on it; `--desktop <SESSION>` — The desktop it starts, or none; `--on-close <WHAT>` — ask, background or poweroff: closing its window; `--enter <WHAT>` — console or desktop: what going in shows first; `--files <HOW>` — virtiofs (9p where it cannot) or 9p: how a machine shares its files; `--kernel <VERSION>` — The kernel it boots as a machine (a linux-kernel-virt version), or default: its own; `--policy <PRESET>` — dev, private, locked, or ns:name; `--proxy <URL>` — Its only network is this SOCKS5h proxy; off for none; `--tz <ZONE>` — utc, proxy, or Area/City; `--allow <GRANT>` — Grant a capability (clipboard, gpu, audio, ...); `--disallow <GRANT>` — Take a grant back; `--mount <HOST[:INSIDE][:ro|rw]>` — Map a host directory into it; `--unmount <INSIDE>` — Remove a mapping; `--fetch <ACTION>` — auto, ask or deny: installing from inside; `--observe <LEVEL>` — off, basic, standard or full
 
 ## `luban stop <name>` (more)
 

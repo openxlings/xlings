@@ -98,7 +98,7 @@ GPU 时用 GPU 绘制（render node 上的 GLES），否则用软件；**关于*
 | | |
 |---|---|
 | **平铺** | 窗口按列并排，间隔 4 像素；各列平分屏幕，直到每列窄于 480 时开始滚动，焦点窗口始终可见；一列里可以上下放多个；也可以让列上下排（`flow = vertical`）。平铺的窗口会被告知，并按给定的大小绘制 |
-| **层叠** | 窗口放在哪里就在哪里，可以重叠，限制在屏幕内；可以最大化，或吸附到半屏、四分之一屏 |
+| **层叠** | 窗口放在哪里就在哪里，可以重叠，可以部分移出屏幕（标题栏留在屏幕上）；可以最大化，或吸附到半屏、四分之一屏——拖到边或角上，拖开即回到原来的大小 |
 
 窗口可以在工作区里**浮动**（Super+Shift+空格：浮在排布上方，随工作区移动——对话框自动如此）；**自由窗口**在 WuXian 上、不属于任何
 工作区（Super+Shift+0，或拖到平面上放下）。
@@ -169,15 +169,42 @@ WuXian 视图里每个工作区是一块带彩色边框的底板，上方有标�
 被盖住的东西不会丢：完全被盖住的工作区或自由窗口——以及层叠工作区里被别的窗口盖住的窗口——会在盖住它的那一项右边缘伸出**书签**
 （它的标题；工作区是颜色与名字；最多 5 个，其余合成"+N"，点开是列表）。指向书签会画出它所指的那一项的轮廓，点击就把它提到前面。
 拖动或平移时书签先隐藏；设置的 *WuXian* 一节（或 `[wuxian] bookmarks = off`）可以关掉；Agent 用 `xdesk msg bookmark N`（状态里列出有哪些）。
-折叠的工作区只剩标签，折叠的自由窗口只剩标题栏：双击（或 Super+S）再展开。
+折叠的工作区只剩标签，折叠的自由窗口只剩标题栏，左侧标着 ▸（展开时 ▾），颜色更深，名字后写着"已折叠"：点这个标记、双击（或 Super+S）
+再展开，无论移到了哪里，都回到原来的大小。
 
 宿主的输入法可以在桌面的窗口里输入，剪贴板也是共享的——每个方向按环境的授权：`clipboard`（从中复制出来）与 `clipboard-paste`
 （粘贴进去）。在 Luban OS 窗口里新建的桌面系统两者都有（它的设置里可以关）；用 `luban new` 或 Agent 建的默认没有，需要时给
 （`luban config <系统> --allow clipboard,clipboard-paste`）。**Super+C**、**Super+V** 在任何窗口里复制粘贴——终端的 Ctrl+Shift+C/V 还是
 别处的 Ctrl+C/V，xdesk 知道该用哪个；终端里 Ctrl+C 仍是中断。
 
+跨过去的只有最新的一次复制，而且只有你在用这个窗口时的复制：后台程序的复制留在它的系统里，读宿主的剪贴板发生在窗口获得焦点时。
+文字和图片（PNG）一样能跨过去——在宿主浏览器里复制的图片在里面粘贴出来还是图片，在里面复制的截图也能在宿主上粘贴。复制的文件
+按内容跨过去（一次最多 64 MiB），落到另一边的 `~/Downloads/Clipboard/`，粘贴的程序从那里拿到（Linux 宿主上；别的系统上只有文字与图片）。
+
 指针由窗口来画：Luban 指针主题，按你屏幕的实际密度从矢量画出。晃动鼠标找它时会放大——最多 4 倍，填上强调色——停下后缩回
 （**外观**：关、放大、放大并变色；最大 2、3 或 4 倍）。对不画指针的窗口（旧版 Luban OS），xdesk 把它画进画面。
+
+### 壁纸
+
+纯色、渐变或图片（填充、适应、平铺或居中；`~/Pictures` 或系统背景目录里的 PNG、SVG），可以给所有工作区，也可以给某个工作区单独设定。
+在 WuXian 视图里壁纸在平面上：随平面一起移动和缩放。也可以用桌面自带的壁纸引擎——边看边画的经典画面：反应扩散（默认，缓慢）、
+曼德博集合放大、旋转的茱莉亚集合、洛伦兹吸引子、流场、躲开指针的鸟群、生命游戏（点一下播下细胞）、双摆、多体、可以搅动的流体、
+光线步进的场景。有窗口盖满屏幕、或五分钟没有操作时它会暂停。任何壁纸程序也能用（`swaybg -i <文件>`）：它画在背景层上。
+
+```ini
+# ~/.config/xdesk/xdesk.ini
+[wallpaper]
+kind = engine              # solid, gradient, image, engine
+engine = reaction-diffusion
+speed = normal             # slow, normal, fast
+[wallpaper.2]              # workspace 2's own
+kind = image
+image = ~/Pictures/sea.png
+fit = fill
+```
+
+设置（Super+I）是一个独立的窗口：可以像其它窗口一样移动、平铺、折叠、出书签，Esc 关闭；页里加了"壁纸"与"应用"（桌面启动的每个程序
+说过的话、怎么结束的、意外结束时要不要提示）。
 
 ### 设置与会话
 
@@ -202,7 +229,7 @@ xdesk msg settings keys                    # the settings, at that page
 ```bash
 xdesk msg state                            # output, view, workspaces, windows, overlays, the frames' cost (JSON)
 xdesk msg subscribe                        # what happens from now on, a line each (focus, open, close, ...)
-xdesk msg debug hud on                     # the frames' parts drawn in the top left
+xdesk msg debug hud [on|off]               # the frames' parts drawn in the top left; alone, toggled
 xdesk msg telemetry metrics                # counters and histograms (xdesk.frame.compose_ns, ...)
 xdesk msg telemetry profile on             # then `telemetry trace`: a trace any trace viewer opens (Perfetto)
 xdesk msg telemetry dump                   # all of it, with the last moments recorded
@@ -308,6 +335,46 @@ X-Luban-Shell=own
 
 把外壳交给窗口的会话（`X-Luban-Shell=none`，Luban 的 `compositor`）在桌面下方有一条栏：**应用**列出会话里能启动的程序
 （会话数据目录下的 `share/applications`，包括你自己的；`Terminal=true` 的在默认终端里打开），每个窗口一个按钮，点击即前置。
+
+## 没有显示器的桌面
+
+桌面不需要窗口：在虚拟显示器上，它在后台运行，之后任何显示器都可以接进来——Luban OS 窗口作为主屏（桌面采用它的大小）或镜像。
+关掉那个窗口，桌面继续在虚拟显示器上运行。
+
+```bash
+luban enter box --display virtual              # 1920x1080; or virtual=2560x1440@1.5
+luban display box                              # its displays: 0 virtual primary ...
+luban display box capture shot.png             # a picture of it, from the display itself
+luban display box record 10 frames/            # every frame for 10 seconds, as PNG
+luban display box input '[{"key": "Super"}]'   # input, as a window gives it (an agent's way)
+luban enter box --display window               # show it in the Luban OS window
+luban display box attach virtual=1280x800      # a second screen beside it (--role mirror: the same picture)
+luban display box end
+```
+
+以扩展方式接入的显示器是一块独立的屏幕，在主屏右边，用它自己的大小：在工作区视图里它显示一个别处没有显示的工作区（在主屏上
+用 Super+数字切到它时两者互换），在 WuXian 视图里平面延续到它上面。窗口拖过去，落在松开时所在屏幕的工作区里。拔下后它的工作区
+还在（窗口按一个键就能回到），再接上时又显示那个工作区。状态栏留在主屏。
+
+这里的一切都是总线上的路径（[总线](09-bus.md)）：`luban display` 是它的一个客户端，`xbus call` 是另一个；测试与 Agent 用的是同样的路径。
+
+Agent（`--agent`、`XLINGS_AGENT_MODE=1`）操作桌面——输入、显示器（截图、录制、接入、拔下）、xdesk 的控制、结束桌面——需要系统的授权，
+因为能注入输入就等于以它的用户运行命令：`luban config box --allow desktop-control`。读状态、事件与日志不需要授权。对 Agent 的每次
+判定都记在 `<home>/logs/openbus/desktop-control.ndjson`（谁、替谁、做了什么、是否允许）。
+
+## 出了问题时
+
+桌面里的程序说的话不会丢：它启动的每个程序都有自己的日志（系统里的 `~/.local/state/xdesk/apps/<应用>-<pid>.log`，每个应用保留最近五份），
+它的退出是一个事件——崩溃的、或十秒内就失败的，会在桌面上提示，并说出日志在哪里。在宿主上：
+
+```bash
+luban logs box                         # the desktop's, its programs', the machine's, the window's: the last lines of each
+luban logs box --app falkon            # one program's
+luban logs box --since 10m
+luban logs box --bundle box-logs.tar   # all of it with its status, to share (--with-screenshot adds a picture)
+```
+
+结束了的桌面会说出原因（"the desktop ended (124): a time limit ended it -- <它的日志>"）。
 
 ## 单个程序一个窗口
 

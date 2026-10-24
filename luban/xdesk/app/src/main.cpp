@@ -5,6 +5,9 @@ import xdesk.apps;
 import xdesk.config;
 import xdesk.os;
 import xdesk.words;
+import telemetry;
+import xdesk.panel;
+import xdesk.engine;
 
 int main(int argc, char* argv[]) {
     xdesk::words::register_words();
@@ -16,6 +19,11 @@ int main(int argc, char* argv[]) {
                      f->pixels[2], f->pixels[1], f->pixels[0]);
         return 0;
     }
+    // `xdesk --panel settings`: the desktop's settings as a window of their own
+    // (design 2026-10-24 §9.6) -- the desktop draws in it and takes its input.
+    if (args.size() == 2 && args[0] == "--panel" && args[1] == "settings") return xdesk::panel::run("xdesk-settings", i18n::tr("Settings"));
+    // `xdesk --wallpaper-engine`: the desktop's own wallpaper engine, on its background layer (design 2026-10-24 §9.7).
+    if (args.size() == 1 && args[0] == "--wallpaper-engine") return xdesk::engine::run();
     // `xdesk msg ...`: a request to the running desktop's control socket
     // (design 2026-10-20 §12.3), its answer printed (JSON).
     if (!args.empty() && args[0] == "msg") {
@@ -40,6 +48,7 @@ int main(int argc, char* argv[]) {
         else if (args.size() == 3 && args[1] == "state" && args[2] == "--json") request = R"({"state": true})";
         else if (args.size() == 4 && args[1] == "debug" && args[2] == "hud" && (args[3] == "on" || args[3] == "off"))
             request = std::format("{{\"debug\": \"hud\", \"on\": {}}}", args[3] == "on" ? "true" : "false");
+        else if (args.size() == 3 && args[1] == "debug" && args[2] == "hud") request = R"({"debug": "hud"})";   // toggled (J76)
         else if (args.size() == 2 && args[1] == "subscribe") request = R"({"subscribe": true})";
         else if (args.size() == 2 && args[1].starts_with("{")) request = std::string(args[1]);   // a request as the socket takes it
         else if (args.size() == 3 && args[1] == "input") request = std::format("{{\"input\": {}}}", args[2]);
@@ -49,10 +58,24 @@ int main(int argc, char* argv[]) {
             for (std::size_t k = 2; k < args.size(); ++k) what += (what.empty() ? "" : " ") + std::string(args[k]);
             request = std::format("{{\"telemetry\": {}}}", quoted(what.empty() ? "dump" : what));
         } else {
-            std::println(std::cerr, "usage: xdesk msg keys list | keys bind ACTION CHORD | keys unbind ACTION | keys set luban|luban-no-hjkl\n"
-                                    "       xdesk msg settings [displays|layout|appearance|keys|about]\n"
-                                    "       xdesk msg state | debug hud on|off | subscribe | bookmark N | input STEPS (JSON)\n"
-                                    "       xdesk msg telemetry [dump|metrics|recent N|trace|profile on|off|level L|reset]");
+            // The usage of what was asked, else every request (J76).
+            const std::vector<std::pair<std::string_view, std::string_view>> uses{
+                {"state", "xdesk msg state                       the desktop's state (JSON)"},
+                {"subscribe", "xdesk msg subscribe                   what happens from now on, a line each"},
+                {"settings", "xdesk msg settings [PAGE]             open the settings (displays, layout, appearance, keys, about)"},
+                {"keys", "xdesk msg keys list | bind ACTION CHORD | unbind ACTION | set luban|luban-no-hjkl"},
+                {"debug", "xdesk msg debug hud [on|off]          the frames' parts in the top left; alone, toggled"},
+                {"bookmark", "xdesk msg bookmark N                  bookmark N, as clicked"},
+                {"input", "xdesk msg input STEPS                 input as the window gives it (JSON steps)"},
+                {"telemetry", "xdesk msg telemetry [dump|metrics|recent N|trace|profile on|off|level L|reset]"}};
+            const auto asked = args.size() >= 2 ? args[1] : std::string_view{};
+            bool known = false;
+            for (const auto& [verb, use] : uses)
+                if (verb == asked) { std::println(std::cerr, "usage: {}", use); known = true; }
+            if (!known) {
+                std::println(std::cerr, "usage:");
+                for (const auto& [verb, use] : uses) std::println(std::cerr, "  {}", use);
+            }
             return 2;
         }
         const bool subscribe = request.find("subscribe") != std::string::npos;
@@ -100,7 +123,12 @@ int main(int argc, char* argv[]) {
     // shows it (Luban OS, a machine's display) is the provider.
     xdesk::compositor::Options o;
     bool terminal_given = false;
-    o.log = [](std::string_view line) { std::println(std::cerr, "xdesk: {}", line); };
+    // Said on its standard error (its session's log) and kept in its
+    // telemetry's recent records (design 2026-10-24 §6.2: xdesk msg telemetry recent).
+    o.log = [](std::string_view line) {
+        std::println(std::cerr, "xdesk: {}", line);
+        telemetry::log().info("xdesk", {{"line", std::string(line)}});
+    };
     for (std::size_t i = 0; i < args.size(); ++i) {
         const auto value = [&]() -> std::optional<std::string> {
             if (i + 1 >= args.size()) return std::nullopt;

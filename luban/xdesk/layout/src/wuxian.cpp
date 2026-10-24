@@ -338,6 +338,19 @@ std::vector<Placement> Layout::wuxian_(Rect area, const Camera& cam) {
     return out;
 }
 
+std::vector<Placement> Layout::arrange_on(int id, Size output) {
+    auto* s = space_(id);
+    if (!s || id == current_) return {};
+    // Laid out for that output (its size), the primary's kept.
+    const auto saved = std::exchange(output_, output);
+    const auto saved_reserved = std::exchange(reserved_, Insets{});
+    auto out = arrange_space_(*s, {0, 0, output.width, output.height}, false);
+    output_ = saved;
+    reserved_ = saved_reserved;
+    for (auto& p : out) p.focused = false;   // which window has the keys is the desktop's to say
+    return out;
+}
+
 std::vector<Placement> Layout::arrange(Size output, Insets reserved, std::optional<Camera> through) {
     output_ = output;
     reserved_ = reserved;

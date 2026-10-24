@@ -223,7 +223,7 @@ XTEST(XdeskLayout, AColumnHoldsWindowsOneAboveAnotherAndGivesThemBack, .area = "
     EXPECT_EQ(of(ps, 2).rect.height, 780);
 }
 
-XTEST(XdeskLayout, StackedWindowsOverlapOnTheOutputAndSnapToHalvesAndQuarters, .area = "luban", .covers = {"XDESK-ARRANGEMENTS"}) {
+XTEST(XdeskLayout, StackedWindowsOverlapOnTheOutputAndSnapToHalvesAndQuarters, .area = "luban", .covers = {"XDESK-ARRANGEMENTS", "XDESK-STACK-OFFSCREEN"}) {
     Layout l({.rule = Rule::stack, .inner_gap = 10, .outer_gap = 10});
     l.add(1, {600, 400});
     l.add(2, {600, 400});
@@ -248,9 +248,16 @@ XTEST(XdeskLayout, StackedWindowsOverlapOnTheOutputAndSnapToHalvesAndQuarters, .
     EXPECT_TRUE(of(ps, 1).maximized);
     l.toggle_maximized(1);
     EXPECT_EQ(of(l.arrange(kOutput), 1).rect, (Rect{300, 200, 600, 400}));
-    // Put off the output, it is kept on it.
+    // Put partly off the output, it stays there (J61): its title bar on it,
+    // and 64 pixels of it across; further, it is kept to that.
     l.place(1, {-100, 700, 600, 400});
-    EXPECT_EQ(of(l.arrange(kOutput), 1).rect, (Rect{0, 400, 600, 400}));
+    EXPECT_EQ(of(l.arrange(kOutput), 1).rect, (Rect{-100, 700, 600, 400}));
+    l.place(1, {-900, 900, 600, 400});
+    EXPECT_EQ(of(l.arrange(kOutput), 1).rect, (Rect{-536, 774, 600, 400}));
+    l.place(1, {1190, -50, 600, 400});
+    EXPECT_EQ(of(l.arrange(kOutput), 1).rect, (Rect{1136, 0, 600, 400}));
+    EXPECT_EQ(layout::kept_on({-900, 900, 600, 400}, {0, 0, 1200, 800}, 26), (Rect{-536, 774, 600, 400})) << "the drag's rule is the same";
+    l.place(1, {300, 200, 600, 400});
     // A floating window is above the stack too.
     l.add(3, {300, 200}, true);
     ps = l.arrange(kOutput);
@@ -654,6 +661,53 @@ XTEST(XdeskLayout, StackedEdgesSnapAndAWindowLetGoStaysWhereItIs, .area = "luban
     EXPECT_EQ(drop.kind, K::free);
     s.drop(d, drop);
     EXPECT_EQ(of(s.arrange(kOutput), 1).rect, (Rect{400, 290, 600, 400})) << "where the pointer let it go";
+}
+
+// Snapped, picked up (design 2026-10-24 §9.2, J62): free again at the size
+// it had before, under the pointer at the same fraction of its width.
+XTEST(XdeskLayout, ASnappedWindowPickedUpHasItsOwnSizeBack, .area = "luban", .covers = {"XDESK-STACK-EDGE-SNAP"}) {
+    Layout s({.rule = Rule::stack, .inner_gap = 10, .outer_gap = 10});
+    s.add(1, {600, 400});
+    auto r = of(s.arrange(kOutput), 1).rect;
+    auto d = s.begin_drag(1, r.x + 100, r.y + 10);
+    s.drop(d, s.drop_at(d, 3, 400));
+    r = of(s.arrange(kOutput), 1).rect;
+    EXPECT_EQ(r, (Rect{10, 10, 585, 780})) << "the left half";
+    // Held at its middle, carried away.
+    const auto back = s.unsnap(1, r.x + r.width / 2, r.y + 10);
+    ASSERT_TRUE(back);
+    EXPECT_EQ(back->width, 600);
+    EXPECT_EQ(back->height, 400);
+    EXPECT_DOUBLE_EQ(back->x, r.x + r.width / 2 - 300) << "the pointer at the same fraction of it";
+    EXPECT_EQ(of(s.arrange(kOutput), 1).rect.width, 600);
+    EXPECT_FALSE(s.unsnap(1, 10, 10)) << "not snapped: nothing to do";
+}
+
+// A collapsed free window moved keeps the size it unfolds to (openwx 0.2
+// §5.2, J63): only where it is changes.
+XTEST(XdeskLayout, ACollapsedWindowMovedUnfoldsToItsSize, .area = "luban", .covers = {"XDESK-COLLAPSE-KEEPS-SIZE"}) {
+    Layout l({.inner_gap = 4, .outer_gap = 0, .title = 26});
+    l.add(1, {500, 300}, false, match_(1));
+    l.set_view(View::wuxian);
+    l.to_wuxian(1);
+    auto ps = l.arrange(kOutput);
+    const auto open = of(ps, 1).rect;
+    l.toggle_collapsed(1);
+    ps = l.arrange(kOutput);
+    const auto bar = of(ps, 1).rect;
+    ASSERT_LT(bar.height, open.height);
+    // Dragged by hand (place), and dropped on the plane (a drag in the WuXian view).
+    l.place(1, {bar.x + 120, bar.y + 80, bar.width, bar.height});
+    const auto moved = of(l.arrange(kOutput), 1).rect;
+    EXPECT_DOUBLE_EQ(moved.x, bar.x + 120);
+    // And let go on the plane, as a drag in the WuXian view does.
+    const auto d = l.begin_drag(1, moved.x + 10, moved.y + 5);
+    l.drop(d, layout::Drop{.kind = K::plane, .at = {-2000, -1500}});
+    l.toggle_collapsed(1);
+    ps = l.arrange(kOutput);
+    EXPECT_EQ(of(ps, 1).rect.width, open.width);
+    EXPECT_EQ(of(ps, 1).rect.height, open.height) << "unfolded to its own size, not its title bar's";
+    EXPECT_NE(of(ps, 1).rect.x, open.x) << "where it was moved";
 }
 
 XTEST(XdeskLayout, InTheWuXianViewAWindowGoesToAnotherWorkspaceOrThePlane, .area = "luban", .covers = {"WUXIAN-DRAG"}) {

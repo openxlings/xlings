@@ -19,6 +19,7 @@ struct PeerInfo {
     std::string identity;    // what the transport says of it ("uid 1000, pid 42"), empty when nothing
     bool link { false };     // another router
     std::string root;        // a link's root
+    std::string scope;       // came through a system's socket: where it is placed (empty: the router's root)
 };
 
 struct RouterOptions {
@@ -31,6 +32,11 @@ struct RouterOptions {
     std::function<bool(const PeerInfo& peer, std::string_view op, std::string_view path)> allow;
     // Unset: a router that has been without nodes and links this long exits run().
     std::optional<std::chrono::seconds> idle_exit;
+    // Where `bus/system <name>` makes a system's socket (<dir>/<name>.sock):
+    // a node connecting there is placed under <root>/system/<name> whatever
+    // it says, offers and publishes only under it, and is never a link
+    // (design 2026-10-24 §3.3). Empty: no system sockets.
+    std::filesystem::path systems_dir;
 };
 
 class Router {

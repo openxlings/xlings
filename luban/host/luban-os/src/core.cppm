@@ -26,6 +26,7 @@ import xlings.platform;
 import xlings.platform.target;
 import luban.desktop.host;
 import opensal.wlr;
+import xbus.node;
 
 namespace luban::os {
 
@@ -130,6 +131,7 @@ public:
     bool alive() const { return alive_; }
     int exit_code() const { return code_; }
     bool is_machine() const { return machine_; }
+    bool on_bus() const { return static_cast<bool>(bus_node_); }
     std::mutex& lock() { return m_; }
     term::Screen& screen() { return screen_; }
     const std::string& name() const { return name_; }
@@ -150,6 +152,11 @@ private:
     std::atomic<bool> stop_ { false };
     int code_ { 0 };
     std::optional<vm::Client> client_;
+    std::shared_ptr<xbus::Node> bus_node_;     // on the bus: its node, its display, the stream the desktop opened
+    std::string bus_path_;
+    std::optional<xbus::Stream> bus_stream_;
+    std::condition_variable bus_opened_;
+    fs::path home_;
     int master_ { -1 };
     int pid_ { -1 };
     std::function<void()> wake_;
@@ -186,6 +193,14 @@ public:
     static std::unique_ptr<Display> sandbox(const fs::path& xlings, const fs::path& luban, const fs::path& home,
                                             const std::string& name, const std::string& session, const std::string& persist,
                                             opensal::Size size, ClipboardGrant clip, std::function<void()> wake, std::string& error);
+    // On the bus (design 2026-10-24 §4.3): this window is a display of the
+    // system's desktop -- offered at host/<id>/device/display/<n> (a window),
+    // the desktop (its supervisor, started when it is not running, on a
+    // virtual display of its own) asked to take it as its primary. Closing it
+    // leaves the desktop running on its virtual display.
+    static std::unique_ptr<Display> bus(const fs::path& home, const std::string& name, const std::string& session,
+                                        const std::string& persist, opensal::Size size, ClipboardGrant clip,
+                                        std::function<void()> wake, std::string& error);
     // Any program whose standard input and output are opensal.wire (what a
     // sandbox runs; tests run a desktop of their own the same way).
     static std::unique_ptr<Display> process(const std::vector<std::string>& argv, std::map<std::string, std::string> env,
@@ -199,12 +214,17 @@ public:
     std::string error() const { std::lock_guard l(m_); return error_; }
     const std::string& name() const { return name_; }
     bool is_machine() const { return machine_; }
+    bool on_bus() const { return static_cast<bool>(bus_node_); }
 
     // The desktop's caret for the input method ("1 x y w h" in its pixels,
     // or "0"), and its selection for the window's clipboard (granted copy
     // only): what it said since the last call.
     std::optional<std::string> take_text_input();
     std::optional<std::string> take_clipboard();
+    // ... when it was not text (an image; opensal 0.7 ClipboardData).
+    std::optional<opensal::wire::ClipboardData> take_clipboard_data();
+    // The host's clipboard into it when it is not text (granted paste only).
+    void send_clipboard_data(const opensal::wire::ClipboardData& d);
     const ClipboardGrant& clipboard_grant() const { return clip_; }
     // A desktop without a shell of its own asks the window to be it
     // (opensal Shell): its applications to start and its windows to bring forward.
@@ -242,10 +262,13 @@ private:
     static std::unique_ptr<Display> over_(vm::Client client, const std::string& name, bool machine, opensal::Size size,
                                           ClipboardGrant clip, std::function<void()> wake, std::string& error,
                                           const std::function<bool(vm::Client&)>& open, const fs::path& log,
-                                          const std::string& session);
+                                          const std::string& session, std::optional<xlings::platform::SharedMemory> region = std::nullopt);
+    // A machine's frames region, mapped (opensal 0.7 Region): its 'r' frames are read there.
+    std::optional<xlings::platform::SharedMemory> region_;
     bool machine_ { false };
     bool narrow_ { false };    // its channel is narrow (a machine's, a relay's): compressed frames
     fs::path log_;                    // a relayed desktop's standard error
+    fs::path log_file_;               // a local desktop's log (what its end points to)
     void provider_(std::string_view bytes);
     void sound_(std::string_view bytes);
     openhal::audio::Decoder sound_decoder_;
@@ -258,6 +281,11 @@ private:
     mutable std::mutex m_;
     bool send_(std::string_view wire_bytes);
     std::optional<vm::Client> client_;
+    std::shared_ptr<xbus::Node> bus_node_;     // on the bus: its node, its display, the stream the desktop opened
+    std::string bus_path_;
+    std::optional<xbus::Stream> bus_stream_;
+    std::condition_variable bus_opened_;
+    fs::path home_;
     int to_ { -1 }, from_ { -1 }, pid_ { -1 };   // a sandbox's process
     std::mutex sending_;
     std::thread io_;
@@ -269,6 +297,8 @@ private:
     opensal::Size size_;
     ClipboardGrant clip_;
     std::optional<std::string> text_input_, clipboard_;
+    std::optional<opensal::wire::ClipboardData> clipboard_data_;
+    std::atomic<bool> wants_data_ { false };   // the desktop takes ClipboardData (its hello)
     std::optional<bool> pointer_lock_;
     std::atomic<bool> shell_ { false };
     std::vector<opensal::Application> applications_;
@@ -472,6 +502,10 @@ struct App {
     int ended_code { 0 };
     bool paste_on_open { true };       // the host's clipboard, given once it shows
     std::string pasted;                // what crossed last (not sent back)
+    std::string pasted_data;           // ... an image's: its type, size and first bytes (opensal 0.7 ClipboardData)
+    // The desktop's window is being used (its focus, a key or a button given to
+    // it): what it copies then crosses to this computer (design 2026-10-24 §8.2).
+    bool desktop_in_use { false };
     std::optional<std::chrono::steady_clock::time_point> resize_at;
     std::string current;               // the system on screen
     bool menu { false };               // the Host key's menu

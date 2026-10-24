@@ -248,7 +248,10 @@ void job_(App& a) {
     const float W = ImGui::GetWindowWidth(), H = ImGui::GetWindowHeight();
     const float width = std::min(px(680), W - px(48)), x = std::round((W - width) / 2);
     float y = std::max(px(40), H * 0.12f);
-    const bool failed = j.done && j.code != 0;
+    // Read once: the worker may end between two reads (J54), and every
+    // branch below must agree on it.
+    const bool done = j.done.load();
+    const bool failed = done && j.code != 0;
     // The craftsman at work, or standing when it failed.
     const float cell = std::round(px(5));
     art::badge(dl, art::Badge::Craftsman, "", ImVec2(o.x + (W - 16 * cell) / 2, o.y + y), cell, failed ? 0 : art::craft_frame(1.6));
@@ -256,7 +259,7 @@ void job_(App& a) {
     centred_(dl, y, j.title, th_().text, 26, true);
     y += px(44);
     // Its stages, the one it is in lit; done well, all of them, and "ready".
-    const bool ready = j.done && j.code == 0;
+    const bool ready = done && j.code == 0;
     const auto at_stage = std::ranges::find(j.stages, j.stage);
     const int at = ready ? static_cast<int>(j.stages.size()) : static_cast<int>(at_stage - j.stages.begin());
     if (!j.stages.empty()) {
@@ -264,20 +267,20 @@ void job_(App& a) {
         const float chipW = std::floor((width - px(8) * (chips - 1)) / chips);
         for (int k = 0; k < chips; ++k) {
             const ImVec2 c0(o.x + x + k * (chipW + px(8)), o.y + y), c1(c0.x + chipW, c0.y + px(30));
-            const bool done = k < at, now = k == at && !failed;
+            const bool passed = k < at, now = k == at && !failed;
             imkit::panel(dl, c0, c1, now ? imkit::Bevel::Raised : imkit::Bevel::Flat,
-                         done ? imkit::theme().accent_lo : now ? imkit::theme().panel : imkit::theme().bg_deep);
+                         passed ? imkit::theme().accent_lo : now ? imkit::theme().panel : imkit::theme().bg_deep);
             const std::string label = stage_label_(j.stages[static_cast<std::size_t>(k)]);
             const auto ts = imkit::text_size(label, 13);
             imkit::text(dl, ImVec2(c0.x + (chipW - ts.x) / 2, c0.y + (px(30) - ts.y) / 2), label,
-                        done || now ? th_().text : th_().text_faint, 13);
-            if (done) imkit::icon(dl, imkit::Icon::Check, ImVec2(c0.x + px(6), c0.y + px(8)), 1.0f * std::max(1.0f, std::round(px(1))), th_().good);
+                        passed || now ? th_().text : th_().text_faint, 13);
+            if (passed) imkit::icon(dl, imkit::Icon::Check, ImVec2(c0.x + px(6), c0.y + px(8)), 1.0f * std::max(1.0f, std::round(px(1))), th_().good);
         }
         y += px(46);
     }
     // The whole: one bar for all of it (the step's when it has no stages).
     const double shown = j.overall >= 0 ? j.overall : j.percent;
-    imkit::progress(dl, ImVec2(o.x + x, o.y + y), ImVec2(o.x + x + width, o.y + y + px(22)), failed ? 0 : j.done ? 1.0 : shown);
+    imkit::progress(dl, ImVec2(o.x + x, o.y + y), ImVec2(o.x + x + width, o.y + y + px(22)), failed ? 0 : done ? 1.0 : shown);
     y += px(30);
     const auto now = std::chrono::steady_clock::now();
     const auto ago = [&](std::chrono::steady_clock::time_point t) {
@@ -312,7 +315,7 @@ void job_(App& a) {
         imkit::text(dl, ImVec2(o.x + x + width - ww, o.y + y), when, th_().text_faint, 13);
         y += px(26);
     } else {
-        if (shown >= 0 && !j.done) {
+        if (shown >= 0 && !done) {
             const auto pct = std::format("{:.0f} %", shown * 100);
             imkit::text(dl, ImVec2(o.x + x + width - imkit::text_size(pct, 13).x, o.y + y), pct, th_().text_dim, 13);
         }
@@ -322,7 +325,7 @@ void job_(App& a) {
     for (const auto& e : j.errors) y += paragraph_(dl, ImVec2(o.x + x, o.y + y), e, width, th_().bad, 14) + px(6);
     y += px(8);
     ImGui::SetCursorPos(ImVec2(x, y));
-    if (!j.done) {
+    if (!done) {
         if (imkit::button("job:cancel", tr("luban.os.common.cancel"), ImVec2(140, 38), imkit::Look::Normal, j.cancel && !j.cancel->load(),
                           false, imkit::Icon::Cross))
             if (j.cancel) j.cancel->store(true);
@@ -335,6 +338,8 @@ void job_(App& a) {
         mark_(a, "job:back");
         if (back) a.view = View::Launcher;
         if (retry && j.retry) a.later = j.retry;   // after the frame: it replaces this job
+    } else {
+        ImGui::Dummy(ImVec2(0, 0));   // a position set is followed by an item (J54)
     }
     // What it said, quietly, at the bottom.
     y += px(52);

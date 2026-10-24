@@ -2,9 +2,9 @@
 Type=Application
 Name=Settings
 Name[zh]=设置
-Comment=xdesk's displays, layout, appearance and keys
-Comment[zh]=xdesk 的显示器、布局、外观与快捷键
-Keywords=settings;displays;keys;shortcuts;layout;设置;显示器;快捷键;
+Comment=xdesk's displays, layout, appearance, wallpaper, keys and applications
+Comment[zh]=xdesk 的显示器、布局、外观、壁纸、快捷键与应用
+Keywords=settings;displays;keys;shortcuts;layout;wallpaper;applications;设置;显示器;快捷键;壁纸;应用;
 Exec=xdesk msg settings displays
 Icon=preferences-desktop
 Categories=Settings;DesktopSettings;

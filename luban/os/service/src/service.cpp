@@ -724,17 +724,20 @@ Outcome create(const Context& given_context, const NewOptions& o, const NewPrevi
     return {.code = 0, .value = std::move(value)};
 }
 
-bool gpu_granted(const fs::path& home, std::string_view name) {
+bool gpu_granted(const fs::path& home, std::string_view name) { return granted(home, name, "gpu"); }
+
+bool granted(const fs::path& home, std::string_view name, std::string_view grant) {
     const auto at = xlings::subos::locate(HomeView{home}, name);
     auto p = xlings::subos::policy_store::read(at.home, name);
-    return p && *p && (*p)->grants.contains("gpu");
+    return p && *p && (*p)->grants.contains(grant);
 }
 
 Outcome configure(const Context& c, std::string_view name, const std::vector<std::pair<std::string, std::string>>& changes) {
     if (!exists_(c, name)) return missing_(c, name);
     std::vector<std::string> isolation;
     for (const auto& [key, value] : changes) {
-        if (key == "mode" || key == "persist" || key == "desktop" || key == "on-close" || key == "enter" || key == "files") {
+        if (key == "mode" || key == "persist" || key == "desktop" || key == "on-close" || key == "enter" || key == "files" ||
+            key == "kernel") {
             auto s = set_setting(c.home, name, key, value);
             if (!s) {
                 if (c.sink) c.sink(error(s.error()));
@@ -810,7 +813,7 @@ Outcome configure(const Context& c, std::string_view name, const std::vector<std
     if (!e) return {.code = 1};
     Json value{{"name", e->name}, {"mode", e->settings.mode}, {"persist", e->settings.persist},
                {"desktop", e->settings.desktop}, {"on_close", e->settings.on_close}, {"shell", e->shell},
-               {"files", e->settings.files}};
+               {"files", e->settings.files}, {"kernel", e->settings.kernel}};
     if (auto iso = c.port.json(argv_({"subos", "config", name, "--json"})); iso) value["isolation"] = *iso;
     return {.code = 0, .value = value};
 }

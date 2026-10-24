@@ -75,6 +75,16 @@ void Server::drag_start(View* v, bool live) {
     drag_dy = cursor->y - r->y;
     drop = {};
     drop_width = 0;
+    // On an extending output's workspace (design 2026-10-24 §4.4): the frame
+    // follows the pointer, and where it is let go says which output's
+    // workspace it lands in.
+    if (!wuxian() && lay.workspace_of(v->id) && *lay.workspace_of(v->id) != lay.current()) {
+        drag_live = false;
+        drag_session.reset();
+        set_opacity(*v, 0.75f);
+        wlr_scene_node_raise_to_top(&v->frame->node);
+        return;
+    }
     drag_session = lay.begin_drag(v->id, cursor->x, cursor->y);
     if (!live) set_opacity(*v, 0.75f);
     wlr_scene_node_raise_to_top(&v->frame->node);
@@ -103,6 +113,12 @@ void Server::drag_motion() {
     pointer_shape("grabbing");
     const bool shift = held(wlr_keyboard_modifier::WLR_MODIFIER_SHIFT);
     if (drag_live) {
+        // Snapped, picked up: free again at its own size (design 2026-10-24 §9.2).
+        if (const auto back = lay.unsnap(dragged, cursor->x, cursor->y)) {
+            drag_dx = cursor->x - back->x;
+            drag_dy = cursor->y - back->y;
+            arrange(true);
+        }
         // Where the pointer carries it, snapped to the others' edges within
         // 16 pixels (Shift: not) -- the lines it snapped to drawn (design 2026-10-20 §9.4).
         if (const auto p = placement_of(dragged)) {
@@ -121,8 +137,22 @@ void Server::drag_motion() {
         v->moving = false;
         wlr_scene_node_set_position(&v->frame->node, static_cast<int>(std::lround(v->x.value)), static_cast<int>(std::lround(v->y.value)));
     }
-    // A floating window, a stacked one in the workspace view: they land where they are.
-    if (drag_live) { hide_drop(); return; }
+    // A floating window, a stacked one in the workspace view: they land where
+    // they are -- or, a stacked one at the output's edge, on the half, the
+    // quarter or the whole output the frame shown says (J62, §9.2).
+    if (drag_live) {
+        const auto d = drag_session ? lay.drop_at(*drag_session, cursor->x, cursor->y, shift) : layout::Drop{};
+        if (d.kind == layout::Drop::Kind::snap) {
+            if (!(d == drop)) {
+                drop = d;
+                show_drop();
+            }
+        } else if (drop.kind != layout::Drop::Kind::none) {
+            drop = {};
+            hide_drop();
+        }
+        return;
+    }
     const auto d = drop_with_hysteresis(shift);
     if (!(d == drop)) {
         drop = d;
@@ -135,11 +165,7 @@ void Server::drag_motion() {
 // bottom, and at least 64 pixels of it (a quarter of it, if less) on the output.
 layout::Rect Server::kept_on_output(layout::Rect r) const {
     const auto in = reserved();
-    const double top = in.top, bottom = logical_h() - in.bottom, left = in.left, right = logical_w() - in.right;
-    const double keep = std::min(64.0, r.width / 4);
-    r.x = std::clamp(r.x, left - r.width + keep, right - keep);
-    r.y = std::clamp(r.y, top, std::max(top, bottom - kTitle));
-    return r;
+    return layout::kept_on(r, {in.left, in.top, logical_w() - in.left - in.right, logical_h() - in.top - in.bottom}, kTitle);
 }
 
 namespace {
@@ -166,7 +192,7 @@ void Server::show_drop() {
         if (View* t = view_of(drop_target)) set_opacity(*t, 1.0f);
     drop_target = (drop.kind == K::swap || drop.kind == K::above || drop.kind == K::below) ? drop.target : 0;
     if (View* t = drop_target ? view_of(drop_target) : nullptr) set_opacity(*t, 0.5f);
-    place_rect_(drop_place, drop.kind == K::none ? std::nullopt : pv.placeholder);
+    place_rect_(drop_place, drop.kind == K::none || drag_live ? std::nullopt : pv.placeholder);
     place_rect_(drop_line, pv.line);
     place_rect_(drop_half, pv.half);
     // The frame it would get: shown where nothing else says it (a swap's is the target's).
@@ -226,9 +252,34 @@ void Server::show_guides(const layout::Snap& sn) {
 void Server::drag_end() {
     View* v = view_of(dragged);
     hide_drop();
+    // Let go on another output than its workspace's (the workspace view): the
+    // workspace that output shows takes it, where it was let go.
+    if (v && !wuxian() && lay.workspace_of(v->id)) {
+        auto* e = extend_at(cursor->x, cursor->y);
+        const int to = e ? e->workspace : lay.current();
+        const int from = *lay.workspace_of(v->id);
+        if (to && (to != from || from != lay.current())) {
+            set_opacity(*v, 1.0f);
+            const auto r = placement_of(v->id);
+            if (to != from) lay.send_to(v->id, to);
+            if (r) lay.place(v->id, {cursor->x - drag_dx - (e ? e->x : 0), cursor->y - drag_dy, r->width, r->height});
+            if (to != from) publish("drop", {{"id", std::to_string(v->id)}, {"workspace", std::to_string(to)}});
+            drag = Drag::none;
+            drag_session.reset();
+            drop = {};
+            drop_width = 0;
+            arrange();
+            return;
+        }
+    }
     if (v) {
         set_opacity(*v, 1.0f);
-        // Floating, or stacked in the workspace view: let go where it is.
+        // Floating, or stacked in the workspace view: let go where it is
+        // (at an edge: the part of the output shown).
+        if (drag_live && drag_session && drop.kind == layout::Drop::Kind::snap) {
+            lay.drop(*drag_session, drop, 0);
+            publish("snap", {{"id", std::to_string(v->id)}, {"x", std::to_string(drop.snap_x)}, {"y", std::to_string(drop.snap_y)}});
+        }
         if (!drag_live && drag_session) {
             const auto from = lay.workspace_of(v->id);
             lay.drop(*drag_session, drop, drop_width);

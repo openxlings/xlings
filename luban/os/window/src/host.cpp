@@ -212,6 +212,10 @@ struct Window::Impl {
 std::expected<std::unique_ptr<Window>, std::string> Window::open(const Options& o) {
     // Held, Alt+Tab is the window's on Windows too (SDL leaves it the host's).
     SDL_SetHint(SDL_HINT_ALLOW_ALT_TAB_WHILE_GRABBED, "0");
+    // A host's input method composes; what it composes is shown by the
+    // content (the desktop draws the preedit it is given): SDL is told so,
+    // and hands every key to the input method to filter (design 2026-10-24 §8.4).
+    SDL_SetHint(SDL_HINT_IME_IMPLEMENTED_UI, "composition");
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS)) return std::unexpected(std::format("no display here: {}", SDL_GetError()));
     std::unique_ptr<Window> w(new Window());
     w->impl_ = std::make_unique<Impl>();
@@ -582,6 +586,35 @@ std::string Window::clipboard() const {
     return out;
 }
 void Window::set_clipboard(const std::string& text) { SDL_SetClipboardText(text.c_str()); }
+
+std::optional<std::string> Window::clipboard_data(const std::string& mime) const {
+    if (!SDL_HasClipboardData(mime.c_str())) return std::nullopt;
+    std::size_t size = 0;
+    void* data = SDL_GetClipboardData(mime.c_str(), &size);
+    if (!data) return std::nullopt;
+    std::string out(static_cast<const char*>(data), size);
+    SDL_free(data);
+    return out;
+}
+
+namespace {
+// What this window put on the clipboard as data: its type and bytes, served
+// by SDL when a program pastes (one at a time: the next copy replaces it).
+struct Offered { std::string mime; std::string bytes; };
+}  // namespace
+
+void Window::set_clipboard_data(const std::string& mime, std::string bytes) {
+    auto* offered = new Offered{mime, std::move(bytes)};
+    const char* types[1] = {offered->mime.c_str()};
+    const auto serve = [](void* userdata, const char* asked, std::size_t* size) -> const void* {
+        auto* o = static_cast<Offered*>(userdata);
+        if (!asked || o->mime != asked) { *size = 0; return nullptr; }
+        *size = o->bytes.size();
+        return o->bytes.data();
+    };
+    const auto forget = [](void* userdata) { delete static_cast<Offered*>(userdata); };
+    if (!SDL_SetClipboardData(serve, forget, offered, types, 1)) delete offered;
+}
 double Window::pixel_density() const {
     const float d = SDL_GetWindowPixelDensity(impl_->window);
     return d > 0 ? d : 1.0;

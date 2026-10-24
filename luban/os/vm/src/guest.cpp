@@ -116,18 +116,55 @@ std::map<std::string, std::string> session_env_(const Json& open, const std::str
 // A command on pipes, not a terminal (`"pipes": true` with its argv): what a
 // program reads -- an NDJSON stream must not be echoed or have its line ends
 // changed. Its output comes back as D frames, its standard error as E.
+// The machine's frames region (design 2026-10-24 §5.4): the ivshmem device
+// (Red Hat, 0x1af4:0x1110) its host gave it, BAR 2 as sysfs shows it -- a
+// file the desktop maps; its size. Nothing when there is none.
+std::optional<std::pair<fs::path, std::uintmax_t>> frames_region_() {
+    std::error_code ec;
+    for (fs::directory_iterator it("/sys/bus/pci/devices", ec), end; !ec && it != end; it.increment(ec)) {
+        auto first = [](const fs::path& f) { std::ifstream in(f); std::string v; in >> v; return v; };
+        if (first(it->path() / "vendor") != "0x1af4" || first(it->path() / "device") != "0x1110") continue;
+        const auto bar = it->path() / "resource2";
+        std::error_code e;
+        const auto size = fs::file_size(bar, e);
+        if (!e && size > 0) return std::pair{bar, size};
+    }
+    return std::nullopt;
+}
+
 std::optional<Session> piped_(const Json& open, const std::vector<int>& inherited) {
     auto in = platform::make_pipe(), out = platform::make_pipe(), err = platform::make_pipe();
     if (!in || !out || !err) return std::nullopt;
     const auto who = login_(open);
     const auto shell = xlings::subos::root_etc::login_shell("/", who.name);
+    // A desktop it may start (luban __desktop) writes its frames in the region: its user's.
+    if (const auto region = frames_region_(); region && who.uid != 0) (void)platform::give_to(region->first, who.uid, who.gid);
     std::vector<std::string> argv;
     for (const auto& w : open.value("argv", Json::array()))
         if (w.is_string()) argv.push_back(w.get<std::string>());
     if (argv.empty()) return std::nullopt;
-    // `luban` is this program (the window's sound relay, design 2026-10-20 §20.1).
+    // `luban` is this program (the window's sound relay, design 2026-10-20 §20.1;
+    // a desktop's display, 2026-10-24 §4.2) -- by a name that is luban's (run
+    // as /init it would be the machine's init again), and a copy any user may
+    // run: the initramfs it came from is gone after switch_root, and a root
+    // process's /proc/<pid>/exe is not another user's to open.
     if (argv.front() == "luban")
-        if (const auto self = platform::get_executable_path(); !self.empty()) argv.front() = self.string();
+        if (const auto self = platform::get_executable_path(); !self.empty()) {
+            argv.front() = self.string();
+            if (!self.filename().string().starts_with("luban")) {
+                const std::filesystem::path named = "/run/luban/bin/luban";
+                std::error_code ec;
+                std::filesystem::create_directories(named.parent_path(), ec);
+                if (!std::filesystem::exists(named, ec)) {
+                    const auto partial = named.string() + ".part";
+                    if (std::filesystem::copy_file("/proc/self/exe", partial, std::filesystem::copy_options::overwrite_existing, ec)) {
+                        std::filesystem::permissions(partial, std::filesystem::perms(0755), ec);
+                        std::filesystem::rename(partial, named, ec);
+                    }
+                }
+                if (std::filesystem::exists(named, ec)) argv.front() = named.string();
+            }
+        }
     const int pid = platform::fork_process();
     if (pid == 0) {
         platform::new_session();
@@ -185,6 +222,12 @@ std::expected<Session, std::string> desktop_(const Json& display, std::map<std::
         (void)platform::give_to(o.runtime_root, who.uid, who.gid);
         { std::ofstream touch(o.log, std::ios::app); }
         (void)platform::give_to(o.log, who.uid, who.gid);
+    }
+    // Its frames through the region the window maps too, not the serial port.
+    if (const auto region = frames_region_()) {
+        if (who.uid != 0) (void)platform::give_to(region->first, who.uid, who.gid);
+        o.env["OPENSAL_REGION"] = region->first.string();
+        o.env["OPENSAL_REGION_SIZE"] = std::to_string(region->second);
     }
     const int pid = platform::fork_process();
     if (pid == 0) {

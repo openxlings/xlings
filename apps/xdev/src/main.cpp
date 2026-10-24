@@ -135,7 +135,8 @@ struct TestArgs {
 };
 
 // A lane of tests/lanes.toml: how many tests run at once on this machine
-// (`jobs`, 0 = one per processor) and what the build is given (`mcpp`).
+// (`jobs`, 0 = one per processor), what the build is given (`mcpp`) and,
+// for a lane of its own tests, which (`tests`: any of these in a test's id).
 // The command line wins over the file; `shards` is the workflow's (its matrix).
 std::expected<void, std::string> apply_lane_config(TestArgs& a, const fs::path& root) {
     const auto document = toml::parse_file(root / "tests/lanes.toml");
@@ -151,6 +152,11 @@ std::expected<void, std::string> apply_lane_config(TestArgs& a, const fs::path& 
     if (const auto mcpp = lane->second.find("mcpp"); mcpp != lane->second.end()) {
         if (!mcpp->second.list()) return std::unexpected(a.lane_config + ".mcpp must be a list of strings");
         a.mcpp_args.insert(a.mcpp_args.begin(), mcpp->second.list()->begin(), mcpp->second.list()->end());
+    }
+    if (const auto tests = lane->second.find("tests"); tests != lane->second.end()) {
+        if (!tests->second.list()) return std::unexpected(a.lane_config + ".tests must be a list of strings");
+        a.selection.patterns.assign(tests->second.list()->begin(), tests->second.list()->end());
+        a.selecting = true;
     }
     return {};
 }

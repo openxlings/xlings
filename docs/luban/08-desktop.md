@@ -150,7 +150,7 @@ take it, Esc to keep it):
 | | |
 |---|---|
 | **Tile** | windows in columns side by side, 4 pixels apart; the columns share the screen equally until each would be narrower than 480, then they scroll with the focused one in view; a column can hold several, one above another; a workspace can run its columns downwards (`flow = vertical`). A tiled window is told so and takes its size exactly |
-| **Stack** | windows where you put them, overlapping, kept on the screen; maximized, or snapped to a half or a quarter |
+| **Stack** | windows where you put them, overlapping, partly off the screen if you like (the title bar stays on it); maximized, or snapped to a half or a quarter -- drag one to an edge or a corner, drag it away to have its size back |
 
 A window **floats** in its workspace (Super+Shift+Space: above the
 arrangement, moving with it — dialogs do by themselves); a **free window** is
@@ -259,7 +259,9 @@ the outline of what it is for, click it to bring that forward. They are hidden
 while you drag or pan, and can be turned off (*WuXian* in the settings, or
 `[wuxian] bookmarks = off`); agents use `xdesk msg bookmark N` (the state says
 which there are). A collapsed workspace is only its label, a collapsed free
-window only its title bar: double-click (or Super+S) to open it again.
+window only its title bar, marked ▸ (▾ when open) and darker, with *collapsed*
+after its name: click the mark, double-click (or Super+S) to open it again, at
+the size it had wherever it was moved.
 
 The input method of the host types into the desktop's windows, and the
 clipboard is shared — each way as far as the environment's grants allow:
@@ -271,6 +273,15 @@ off); one made by `luban new` or an agent has neither until given
 everyone else's Ctrl+C/V, xdesk knows which; in a terminal Ctrl+C still
 interrupts.
 
+Only the latest copy crosses, and only one made while you use the window: a
+program copying in the background keeps it in its system, and reading the
+host's clipboard happens when the window gets the focus. Text and images
+(PNG) cross alike — a picture copied in a browser on the host pastes as a
+picture inside, and a screenshot copied inside pastes on the host. Files
+copied cross by their content (up to 64 MiB at once) into
+`~/Downloads/Clipboard/` on the other side, where what you paste them into
+finds them (on a Linux host; elsewhere text and images only).
+
 The pointer is the window's to draw: the Luban pointer theme, drawn from
 vectors at exactly your screen's density. Shake the mouse to find it and it
 grows — up to four times, filled with the accent — then shrinks back
@@ -278,13 +289,41 @@ grows — up to four times, filled with the accent — then shrinks back
 For a window that does not draw one (an older Luban OS), xdesk draws it into
 the picture.
 
+### The wallpaper
+
+A colour, a gradient or a picture (fill, fit, tile or centre; PNG or SVG from
+`~/Pictures` or the system's backgrounds), for every workspace or one of its
+own. In the WuXian view the wallpaper is on the plane: it moves and scales with
+it. Or the desktop's engine — classic scenes drawn as you watch: reaction and
+diffusion (the default, slow), a Mandelbrot zoom, a turning Julia set, the
+Lorenz attractor, a flow field, boids that keep away from the pointer, the game
+of life (click to sow cells), double pendulums, n bodies, a fluid you stir, a
+ray-marched scene. It pauses while a window covers the screen and after five
+minutes without input. Any wallpaper program works too (`swaybg -i <file>`): it
+draws on the background layer.
+
+```ini
+# ~/.config/xdesk/xdesk.ini
+[wallpaper]
+kind = engine              # solid, gradient, image, engine
+engine = reaction-diffusion
+speed = normal             # slow, normal, fast
+[wallpaper.2]              # workspace 2's own
+kind = image
+image = ~/Pictures/sea.png
+fit = fill
+```
+
 ### Settings and sessions
 
-**Super+I** opens the settings: the displays (each window showing the
-desktop, below), the layout (the new workspace's rule, which way columns run,
-the gaps, the narrowest column, the status bar's other workspaces, the
-switchers, the wheel), the appearance (the accent, the background, *reduce
-motion*, the shaken pointer, the renderer), the keys, and *About* — the
+**Super+I** opens the settings, a window of their own (moved, tiled,
+collapsed and bookmarked like any other; Esc closes it): the displays (each
+window showing the desktop, below), the layout (the new workspace's rule, which
+way columns run, the gaps, the narrowest column, the status bar's other
+workspaces, the switchers, the wheel), the appearance (the accent, the
+background, *reduce motion*, the shaken pointer, the renderer), the wallpaper
+(below), the keys, the applications (what each program it started said, how it
+ended; whether an unexpected end is said), and *About* — the
 system, xdesk, the kernel, the renderer (and why), the displays, CPU and
 memory, the files it keeps, and *Copy* for a report. A row says whether it is
 as it came, changed by you, or set by the system; each page has *as it came*,
@@ -305,7 +344,7 @@ What the desktop is and does, for scripts, agents and a bug report:
 ```bash
 xdesk msg state                            # output, view, workspaces, windows, overlays, the frames' cost (JSON)
 xdesk msg subscribe                        # what happens from now on, a line each (focus, open, close, ...)
-xdesk msg debug hud on                     # the frames' parts drawn in the top left
+xdesk msg debug hud [on|off]               # the frames' parts drawn in the top left; alone, toggled
 xdesk msg telemetry metrics                # counters and histograms (xdesk.frame.compose_ns, ...)
 xdesk msg telemetry profile on             # then `telemetry trace`: a trace any trace viewer opens (Perfetto)
 xdesk msg telemetry dump                   # all of it, with the last moments recorded
@@ -429,6 +468,59 @@ A session that leaves its shell to the window (`X-Luban-Shell=none`, Luban's
 session can start (the `share/applications` entries of its data directories,
 yours included; one with `Terminal=true` opens in the default terminal), and a
 button for each of its windows brings that one forward.
+
+## A desktop with no monitor
+
+A desktop does not need a window: on a virtual display it runs in the
+background, and any display may come to it later -- the Luban OS window, as the
+primary (the desktop takes its size) or a mirror. Closing that window leaves
+the desktop running on its virtual display.
+
+```bash
+luban enter box --display virtual              # 1920x1080; or virtual=2560x1440@1.5
+luban display box                              # its displays: 0 virtual primary ...
+luban display box capture shot.png             # a picture of it, from the display itself
+luban display box record 10 frames/            # every frame for 10 seconds, as PNG
+luban display box input '[{"key": "Super"}]'   # input, as a window gives it (an agent's way)
+luban enter box --display window               # show it in the Luban OS window
+luban display box attach virtual=1280x800      # a second screen beside it (--role mirror: the same picture)
+luban display box end
+```
+
+A display attached to extend the desktop is a screen of its own, right of the
+primary, at its own size: in the workspace view it shows a workspace nobody
+else shows (Super+number on the primary swaps with it when you go to that
+one), in the WuXian view the plane goes on across it. A window dragged across
+lands in the workspace of the screen it is let go on. Detached, its workspace
+stays (its windows a key away); attached again, it shows that workspace again.
+The status bar stays on the primary.
+
+Everything here is a path on the bus ([The bus](09-bus.md)): `luban display`
+is one client of it, `xbus call` another; tests and agents use the same paths.
+
+An agent (`--agent`, `XLINGS_AGENT_MODE=1`) drives a desktop -- its input, its
+displays (capture, record, attach, detach), xdesk's control, ending it -- only
+with the system's grant, since driving its input is running commands as its
+user: `luban config box --allow desktop-control`. Reading its state, its events
+and its logs needs none. Every decision on an agent is recorded in
+`<home>/logs/openbus/desktop-control.ndjson` (who, for whom, what, allowed or not).
+
+## When something goes wrong
+
+Nothing a desktop's programs say is lost: each program it starts has its log
+(`~/.local/state/xdesk/apps/<app>-<pid>.log` in the system, the last five of
+each), and its end is an event -- one that crashes, or fails within ten
+seconds, is said on the desktop with where its log is. From the host:
+
+```bash
+luban logs box                         # the desktop's, its programs', the machine's, the window's: the last lines of each
+luban logs box --app falkon            # one program's
+luban logs box --since 10m
+luban logs box --bundle box-logs.tar   # all of it with its status, to share (--with-screenshot adds a picture)
+```
+
+A desktop that ended says why ("the desktop ended (124): a time limit ended it
+-- <its log>").
 
 ## One program in a window
 

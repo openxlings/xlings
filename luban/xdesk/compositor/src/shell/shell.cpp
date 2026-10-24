@@ -49,17 +49,39 @@ Theme theme(std::string_view profile) {
 
 Rect close_button(int width) { return {static_cast<double>(width - kTitleHeight), 0, kTitleHeight, kTitleHeight}; }
 Rect maximize_button(int width) { return {static_cast<double>(width - 2 * kTitleHeight), 0, kTitleHeight, kTitleHeight}; }
+Rect fold_button() { return {0, 0, kTitleHeight, kTitleHeight}; }
 
 draw::Image title_bar(draw::Fonts* fonts, const Theme& t, std::string_view title, int width, bool active, bool close_hover,
-                      double scale, bool maximize_hover, bool rounded) {
+                      double scale, bool maximize_hover, bool rounded, int fold, const draw::Image* icon) {
     draw::Image img = device_image_(std::max(1, width), kTitleHeight, scale);
     draw::Canvas c(img, scale);
-    c.clear(active ? t.title_active : t.title_idle);
+    const Color bar = active ? t.title_active : t.title_idle;
+    // Folded: darker, a line under it -- the whole of the window now.
+    c.clear(fold == 2 ? Color{static_cast<std::uint8_t>(bar.r * 3 / 4), static_cast<std::uint8_t>(bar.g * 3 / 4),
+                              static_cast<std::uint8_t>(bar.b * 3 / 4), bar.a}
+                      : bar);
+    if (fold == 2) c.fill({0, kTitleHeight - 2.0, static_cast<double>(width), 2}, t.accent);
+    const Color ink = active ? t.title_text : t.title_text_idle;
+    double text_x = 10;
+    if (fold != 0) {
+        // ▸ folded, ▾ unfolded: a small triangle, drawn as rows (no font needed).
+        const Rect b = fold_button();
+        const double cx = b.x + b.width / 2, cy = b.height / 2;
+        for (int k = 0; k < 5; ++k) {
+            if (fold == 2) c.fill({cx - 2.5 + k, cy - 4.5 + k, 1, 9.0 - 2 * k}, ink);
+            else c.fill({cx - 4.5 + k, cy - 2.5 + k, 9.0 - 2 * k, 1}, ink);
+        }
+        text_x = b.x + b.width;
+    }
+    if (icon) {
+        c.image(*icon, text_x, (kTitleHeight - kTitleIcon) / 2.0);
+        text_x += kTitleIcon + 6;
+    }
     const Rect close = close_button(width);
     if (close_hover) c.fill(close, t.close_hover);
     // The close mark: two strokes, drawn as a cross of small squares (no
     // font needed).
-    const Color mark = close_hover ? Color::rgb(0xffffff) : (active ? t.title_text : t.title_text_idle);
+    const Color mark = close_hover ? Color::rgb(0xffffff) : ink;
     const double cx = close.x + close.width / 2, cy = close.height / 2;
     for (int k = -4; k <= 4; ++k) {
         c.fill({cx + k - 0.75, cy + k - 0.75, 1.5, 1.5}, mark);
@@ -72,7 +94,7 @@ draw::Image title_bar(draw::Fonts* fonts, const Theme& t, std::string_view title
     c.frame({max.x + max.width / 2 - 5, max.height / 2 - 5, 10, 10}, box, 1.5);
     if (fonts) {
         const double baseline = (kTitleHeight + fonts->ascent() - fonts->descent()) / 2;
-        c.text(*fonts, title, 10, std::round(baseline), active ? t.title_text : t.title_text_idle, max.x - 16);
+        c.text(*fonts, title, text_x, std::round(baseline), ink, max.x - 6 - text_x);
     }
     if (rounded) {
         // The top corners cut round, smoothly: each pixel there keeps as
@@ -182,7 +204,8 @@ Picture workspace_label(draw::Fonts* fonts, const Theme& t, const WorkspaceChip&
     return p;
 }
 
-Picture bookmark(draw::Fonts* fonts, const Theme& t, std::string_view label, std::optional<Color> colour, bool lit, double scale) {
+Picture bookmark(draw::Fonts* fonts, const Theme& t, std::string_view label, std::optional<Color> colour, bool lit, double scale,
+                 const draw::Image* icon) {
     Picture p;
     // A short title: sixteen characters at most (whole code points).
     std::string text;
@@ -192,22 +215,46 @@ Picture bookmark(draw::Fonts* fonts, const Theme& t, std::string_view label, std
         if ((c & 0xc0) != 0x80 && ++n > 16) { text += "…"; break; }
         text += label[k];
     }
-    const double h = kBookmarkHeight;
+    const double h = kBookmarkHeight, root = kBookmarkRoot;
     const double text_w = fonts ? fonts->width(text) : 8.0 * static_cast<double>(n);
-    const double width = 8 + (colour ? 16 : 0) + text_w + 10;
+    const double width = root + 6 + (icon ? 18 : 0) + text_w + 12;
     p.image = device_image_(std::ceil(width), h, scale);
     draw::Canvas c(p.image, scale);
-    c.fill({0, 0, width, h}, lit ? mix_(t.panel, t.accent, 0.35) : faded_(t.panel, 0.95), 5);
-    c.frame({0, 0, width, h}, lit ? t.accent : Color::rgb(0x3a4050), 1, 5);
-    double x = 8;
-    if (colour) {
-        c.fill({x, h / 2 - 5, 10, 10}, *colour, 5);
-        x += 16;
+    // The ribbon: its colour, deeper where it goes under (a shadow on its root).
+    const Color base = colour ? *colour : t.panel;
+    const Color body = lit ? mix_(base, Color::rgb(0xffffff), 0.25) : base;
+    c.fill({0, 0, width, h}, body, 5);
+    c.fill({0, 0, root, h}, mix_(body, Color::rgb(0x000000), 0.35));
+    c.fill({root - 2, 0, 2, h}, faded_(Color::rgb(0x000000), 0.4));
+    c.frame({0, 0, width, h}, lit ? t.accent : mix_(base, Color::rgb(0x000000), 0.4), lit ? 2 : 1, 5);
+    // Ink that reads on it.
+    const double luma = 0.299 * body.r + 0.587 * body.g + 0.114 * body.b;
+    const Color ink = luma > 150 ? Color::rgb(0x1a1c22) : Color::rgb(0xf2f4f8);
+    double x = root + 6;
+    if (icon) {
+        c.image(*icon, x, (h - 16) / 2);
+        x += 18;
     }
     const double baseline = fonts ? std::round((h + fonts->ascent() - fonts->descent()) / 2) : 0;
-    if (fonts) c.text(*fonts, text, x, baseline, t.text);
-    p.areas.push_back({{0, 0, width, h}, Target::item, 0});
+    if (fonts) c.text(*fonts, text, x, baseline, ink);
+    p.areas.push_back({{root, 0, width - root, h}, Target::item, 0});
     return p;
+}
+
+std::optional<Color> icon_colour(const draw::Image& icon) {
+    std::uint64_t r = 0, g = 0, b = 0, n = 0;
+    for (int k = 0; k < icon.width() * icon.height(); ++k) {
+        const auto px = icon.data()[k];
+        const std::uint32_t a = px >> 24;
+        if (a < 200) continue;
+        r += (px >> 16) & 0xff;
+        g += (px >> 8) & 0xff;
+        b += px & 0xff;
+        ++n;
+    }
+    if (n == 0) return std::nullopt;
+    return mix_(Color{static_cast<std::uint8_t>(r / n), static_cast<std::uint8_t>(g / n), static_cast<std::uint8_t>(b / n), 255},
+                Color::rgb(0x000000), 0.2);
 }
 
 // ── the status bar (design 2026-10-20 WuXian §3.13) ──────────────────
@@ -425,7 +472,8 @@ std::optional<apps::App> Launcher::choose_at(double x, double y) {
     return std::nullopt;
 }
 
-Picture Launcher::draw(draw::Fonts* ui, draw::Fonts* big, const Theme& t, int width, int height, bool zh, double scale) {
+Picture Launcher::draw(draw::Fonts* ui, draw::Fonts* big, const Theme& t, int width, int height, bool zh, double scale,
+                       const std::function<const draw::Image*(const apps::App&)>& icon) {
     Picture p;
     p.image = device_image_(std::max(1, width), std::max(1, height), scale);
     draw::Canvas c(p.image, scale);
@@ -458,13 +506,27 @@ Picture Launcher::draw(draw::Fonts* ui, draw::Fonts* big, const Theme& t, int wi
         if (k == selected_) c.fill(r, t.selected, 8);
         rows_.push_back(r);
         const auto* app = results_[k];
+        // Its icon, or its initial on its colour (design 2026-10-24 §9.5).
+        const double ix = r.x + 10, iy = r.y + (row_h - kLauncherIcon) / 2;
+        if (const auto* img = icon ? icon(*app) : nullptr) {
+            c.image(*img, ix, iy);
+        } else {
+            const auto h = std::hash<std::string>{}(app->id);
+            c.fill({ix, iy, double(kLauncherIcon), double(kLauncherIcon)},
+                   Color::rgb(app->id.starts_with("xdesk:") ? 0x3a4050 : 0x405070 + static_cast<std::uint32_t>(h % 0x40) * 0x010203), 7);
+            if (ui && !app->name.empty()) {
+                const auto first = app->name.substr(0, std::min<std::size_t>(app->name.size(), (static_cast<unsigned char>(app->name[0]) & 0x80) ? 3 : 1));
+                c.text(*ui, first, ix + kLauncherIcon / 2.0 - 4, std::round(iy + kLauncherIcon / 2.0 + 5), t.text);
+            }
+        }
+        const double tx = r.x + 14 + kLauncherIcon + 8;
         if (ui) {
-            const double name_w = c.text(*ui, app->name, r.x + 14, std::round(r.y + 19), t.text, r.width * 0.5);
+            const double name_w = c.text(*ui, app->name, tx, std::round(r.y + 19), t.text, r.width * 0.5);
             const auto& detail = !app->generic.empty() ? app->generic : app->comment;
             if (!detail.empty())
-                c.text(*ui, detail, r.x + 14 + name_w + 12, std::round(r.y + 19), t.muted, r.width - name_w - 40);
-            if (!app->id.starts_with("xdesk:")) c.text(*ui, app->id, r.x + 14, std::round(r.y + 36), Color::rgb(0x5c6370), r.width - 28);
-            else c.text(*ui, i18n::tr("the desktop"), r.x + 14, std::round(r.y + 36), Color::rgb(0x5c6370), r.width - 28);
+                c.text(*ui, detail, tx + name_w + 12, std::round(r.y + 19), t.muted, r.x + r.width - tx - name_w - 24);
+            if (!app->id.starts_with("xdesk:")) c.text(*ui, app->id, tx, std::round(r.y + 36), Color::rgb(0x5c6370), r.x + r.width - tx - 14);
+            else c.text(*ui, i18n::tr("the desktop"), tx, std::round(r.y + 36), Color::rgb(0x5c6370), r.x + r.width - tx - 14);
         }
         y += row_h;
     }
