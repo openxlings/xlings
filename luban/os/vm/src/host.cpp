@@ -297,7 +297,7 @@ std::set<std::string> kernel_caps(std::string_view config) {
         return std::ranges::all_of(names, [&](std::string_view n) { return on.contains(std::string(n)); });
     };
     if (all({"FUSE_FS", "VIRTIO_FS"})) caps.insert("virtio-fs");
-    if (all({"NET_9P_VIRTIO", "9P_FS"})) caps.insert("9p");
+    if (all({"NET_9P_VIRTIO", "9P_FS"})) caps.insert("virtio-9p");
     if (all({"DRM_VIRTIO_GPU"})) caps.insert("virtio-gpu");
     if (all({"UDMABUF"})) caps.insert("udmabuf");
     if (all({"PCI", "SYSFS"})) caps.insert("pci-sysfs-mmap");
@@ -491,7 +491,7 @@ int start_impl_(const service::Context& c, std::string_view name, const EnterOpt
         say_(c, service::phase("preflight", "done", "checking this host"));
     }
     const auto kernel_fix = mk->overridden ? std::format("luban config {} --kernel default", name) : std::format("luban upgrade {}", name);
-    if (!mk->caps.contains("9p")) {
+    if (!mk->caps.contains("virtio-9p")) {
         say_(c, service::error(std::format("the kernel {} cannot share files with a machine (no 9p)", mk->version), kernel_fix));
         return 1;
     }

@@ -19,7 +19,7 @@ import std;
 
 export namespace openwx {
 
-inline constexpr std::string_view kVersion = "0.1";
+inline constexpr std::string_view kVersion = "0.2";
 
 using Id = std::uint64_t;   // a window
 

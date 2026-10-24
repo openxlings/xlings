@@ -15,7 +15,7 @@ std::optional<E> lookup_(std::string_view s, const std::array<std::string_view, 
 
 constexpr std::array<std::string_view, 5> kEndpointKinds{"service", "topic", "device", "stream", "region"};
 constexpr std::array<std::string_view, 5> kScopes{"node", "host", "system", "link", "network"};
-constexpr std::array<std::string_view, 7> kRegionKinds{"memfd", "shm", "dmabuf", "cuda-ipc", "metal-shared", "rdma", "inline"};
+constexpr std::array<std::string_view, 8> kRegionKinds{"memfd", "shm", "dmabuf", "cuda-ipc", "metal-shared", "rdma", "inline", "ivshmem"};
 constexpr std::array<std::string_view, 3> kCoherences{"owned", "snapshot", "shared"};
 constexpr std::array<std::string_view, 3> kTiers{"hot", "far", "cold"};
 constexpr std::array<std::string_view, 12> kErrors{"unknown-kind", "malformed", "not-found", "taken", "denied", "deadline",

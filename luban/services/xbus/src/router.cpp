@@ -934,7 +934,7 @@ Router::Router(RouterOptions o) : impl_(std::make_unique<Impl>()) {
     });
     // The router's own endpoints: it is an object of its bus, openbus.router.
     const auto router_object = [](std::string verb, std::string effect) {
-        return Fields{{"verb", std::move(verb)}, {"effect", std::move(effect)}, {"interface", "openbus.router@0.1"}};
+        return Fields{{"verb", std::move(verb)}, {"effect", std::move(effect)}, {"interface", "openbus.router@0.2"}};
     };
     for (const auto* what : {"stats", "topology", "verbs", "links"})
         impl_->endpoints[impl_->o.root + "/bus/" + what] = Endpoint{.owner = 0, .kind = openbus::EndpointKind::service,
@@ -946,7 +946,7 @@ Router::Router(RouterOptions o) : impl_(std::make_unique<Impl>()) {
         impl_->endpoints[impl_->o.root + "/bus/system"] = Endpoint{.owner = 0, .kind = openbus::EndpointKind::service,
                                                                    .meta = router_object("bus-system", "reversible")};
     impl_->endpoints[impl_->o.root + "/bus/trace"] = Endpoint{.owner = 0, .kind = openbus::EndpointKind::topic,
-                                                              .meta = Fields{{"interface", "openbus.router@0.1"}}};
+                                                              .meta = Fields{{"interface", "openbus.router@0.2"}}};
     auto told = router_object("telemetry", "reversible");
     told.add("interface", "openbus.telemetry@0.1");
     impl_->endpoints[impl_->o.root + "/bus/telemetry"] = Endpoint{.owner = 0, .kind = openbus::EndpointKind::service, .meta = std::move(told)};

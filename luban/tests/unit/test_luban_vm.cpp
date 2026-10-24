@@ -10,6 +10,7 @@ import xlings.image;
 import luban.vm;
 import luban.service;
 import luban.vm.protocol;
+import opencaps;
 
 namespace tk = xlings::testkit;
 namespace proto = luban::vm::protocol;
@@ -172,13 +173,16 @@ XTEST(LubanVm, UsersOfTheirOwnHaveTheirHomesOverMappedNineP, .area = "luban", .c
 XTEST(LubanVm, AKernelsCapabilitiesComeFromItsConfig, .area = "luban", .covers = {"LUBAN-MACHINE-KERNEL-CAPS"}) {
     const std::string first = "CONFIG_PCI=y\nCONFIG_SYSFS=y\nCONFIG_NET_9P_VIRTIO=y\nCONFIG_9P_FS=y\nCONFIG_DRM_VIRTIO_GPU=y\n"
                               "# CONFIG_FUSE_FS is not set\n";
-    EXPECT_EQ(luban::vm::kernel_caps(first), (std::set<std::string>{"9p", "pci-sysfs-mmap", "virtio-gpu"}));
+    EXPECT_EQ(luban::vm::kernel_caps(first), (std::set<std::string>{"pci-sysfs-mmap", "virtio-9p", "virtio-gpu"}));
     const auto r3 = luban::vm::kernel_caps(first + "CONFIG_FUSE_FS=y\nCONFIG_VIRTIO_FS=y\nCONFIG_UDMABUF=y\n");
     EXPECT_TRUE(r3.contains("virtio-fs"));
     EXPECT_TRUE(r3.contains("udmabuf"));
     // Half of a pair is not the capability; a module (=m) is not built in.
     EXPECT_FALSE(luban::vm::kernel_caps("CONFIG_FUSE_FS=y\nCONFIG_VIRTIO_FS=m\n").contains("virtio-fs"));
     EXPECT_TRUE(luban::vm::kernel_caps("").empty());
+    // Each is a registered capability (opencaps §5).
+    for (const auto& c : luban::vm::kernel_caps(first + "CONFIG_FUSE_FS=y\nCONFIG_VIRTIO_FS=y\nCONFIG_UDMABUF=y\nCONFIG_VIRTIO_VSOCKETS=y\n"))
+        EXPECT_EQ(opencaps::known_level(c), 1) << c;
 }
 
 // The kernel a machine boots is its system's (§7.1): the version it declares
@@ -210,7 +214,7 @@ XTEST(LubanVm, AMachinesKernelIsItsSystemsOrTheOneSet, .area = "luban", .covers 
     ASSERT_TRUE(k);
     EXPECT_TRUE(k->overridden);
     EXPECT_FALSE(k->caps.contains("virtio-fs"));
-    EXPECT_TRUE(k->caps.contains("9p"));
+    EXPECT_TRUE(k->caps.contains("virtio-9p"));
     // A version not installed has no payload yet: the start installs it.
     ASSERT_TRUE(luban::service::set_setting(root, "box", "kernel", "6.12.112-r9"));
     k = luban::vm::machine_kernel(root, "box");

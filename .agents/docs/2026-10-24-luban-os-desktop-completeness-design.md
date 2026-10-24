@@ -298,7 +298,7 @@ virtiofsd）、Luban OS 应用的日志；`--bundle out.tar.zst` 打包，附 `l
 ### 7.2 能力校验（opencaps）
 
 - **内核提供什么**：读内核旁边的 `config`（每个版本都有，包括最早那一版），映射为能力名：`virtio-fs`（`FUSE_FS` 与 `VIRTIO_FS`）、
-  `9p`、`virtio-gpu`、`udmabuf`、`pci-sysfs-mmap`（`PCI` 与 `SYSFS`，所有版本都有）、`virtio-vsock`。
+  `virtio-9p`、`virtio-gpu`、`udmabuf`、`pci-sysfs-mmap`（`PCI` 与 `SYSFS`，所有版本都有）、`virtio-vsock`。
 - **启动要什么**：按设置与授权算出来：files=virtiofs 要 `virtio-fs`；virgl 要 `virtio-gpu`；KWin 软件渲染要 `udmabuf`；共享内存帧要
   `pci-sysfs-mmap`。
 - **对不上**：有退路的退回（virtio-fs → 9p，GPU → 软件，共享内存 → inline），`luban status` 写明"9p（这个内核没有 virtio-fs：

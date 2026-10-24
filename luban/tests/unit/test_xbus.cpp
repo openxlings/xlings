@@ -361,7 +361,7 @@ XTEST(Xbus, TwoBusesAreJoinedByACallAndAComputeDeviceIsUsedAcrossThem, .area = "
                            }));
     // On A: the router is an object; joining B's bus is a call to it.
     auto admin = node(a.at, "admin");
-    const auto router = admin->resolve("bus/*", "openbus.router@0.1");
+    const auto router = admin->resolve("bus/*", "openbus.router@0.2");
     ASSERT_TRUE(router.has_value());
     EXPECT_GE(router->size(), 6u) << "stats, topology, verbs, links, link, unlink, trace";
     const auto joined = admin->call("bus/link", b.at.text());

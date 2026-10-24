@@ -6,7 +6,7 @@ namespace opencaps {
 
 namespace {
 
-constexpr std::array<Level, 8> kRegistry{{
+constexpr std::array<Level, 17> kRegistry{{
     {"root-layout", 1, "a root's /usr is a link to its generation", "a system; luban, the Luban OS app"},
     {"root-layout", 2, "/usr is a mount point, its generation recorded in etc/xlings/usr", "a system; luban, the Luban OS app"},
     {"luban-manifest", 1, "a system package's manifest carries a luban object (settings, os, requires)", "luban"},
@@ -17,6 +17,19 @@ constexpr std::array<Level, 8> kRegistry{{
      "the Luban OS app"},
     {"tray-protocol", 1, "one tray process per home; windows register, report jobs and are raised over its socket",
      "the Luban OS tray and its windows"},
+    // What a machine's kernel can do, from its build configuration (design 2026-10-24 §7.2).
+    {"virtio-fs", 1, "the kernel mounts virtio-fs shares (FUSE_FS, VIRTIO_FS)", "a machine's kernel", "xim:linux-kernel-virt"},
+    {"virtio-9p", 1, "the kernel mounts 9p shares over virtio (NET_9P_VIRTIO, 9P_FS)", "a machine's kernel", "xim:linux-kernel-virt"},
+    {"virtio-gpu", 1, "the kernel drives a virtio GPU (DRM_VIRTIO_GPU)", "a machine's kernel", "xim:linux-kernel-virt"},
+    {"udmabuf", 1, "the kernel makes dma-bufs of memory (UDMABUF)", "a machine's kernel", "xim:linux-kernel-virt"},
+    {"pci-sysfs-mmap", 1, "a PCI device's memory is mapped through sysfs (frames by reference: ivshmem)", "a machine's kernel",
+     "xim:linux-kernel-virt"},
+    {"virtio-vsock", 1, "the kernel speaks vsock to its host (VIRTIO_VSOCKETS)", "a machine's kernel", "xim:linux-kernel-virt"},
+    {"display-virtual", 1, "a desktop runs on a virtual display and displays come and go on the bus (openhal 0.3)", "luban"},
+    {"frames-region", 1, "a desktop's frames by reference in memory both sides map (opensal 0.7 Region)",
+     "xdesk, opensal-wlr; the Luban OS app, luban"},
+    {"desktop-control", 1, "an agent drives a system's desktop on the bus only with its desktop-control grant (openbus 0.2 §9.4)",
+     "luban (the host's router)"},
 }};
 
 std::string_view trim_(std::string_view s) {
