@@ -555,8 +555,11 @@ void desktop_view_(App& a) {
                                      std::max(1, static_cast<int>(w * scale)), std::max(1, static_cast<int>(h * scale)));
             else a.window->text_input(false);
         }
-        // What it copied is the host's clipboard (it is not pasted back).
-        if (auto c = d.take_clipboard()) {
+        // What it copied is the host's clipboard (it is not pasted back) --
+        // only what was copied while the window was being used: a program in
+        // the background copying puts nothing on this computer (design
+        // 2026-10-24 §8.2), and its region keeps it.
+        if (auto c = d.take_clipboard(); c && a.window->focused()) {
             a.window->set_clipboard(*c);
             a.pasted = *c;
         }

@@ -168,6 +168,10 @@ bool Server::start_() {
     wlr_subcompositor_create(display);
     wlr_data_device_manager_create(display);
     wlr_primary_selection_v1_device_manager_create(display);
+    // The session's clipboard for its command-line tools (design 2026-10-24
+    // §8.1): wl-copy, wl-paste and any clipboard manager speak data-control.
+    wlr_data_control_manager_v1_create(display);
+    wlr_ext_data_control_manager_v1_create(display, 1);
     wlr_viewporter_create(display);
     wlr_single_pixel_buffer_manager_v1_create(display);
     wlr_fractional_scale_manager_v1_create(display, 1);

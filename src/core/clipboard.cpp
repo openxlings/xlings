@@ -134,6 +134,30 @@ int bridge(std::string_view tool, std::span<const std::string> args) {
     bool paste = tool == "wl-paste";
     if (tool == "xclip") paste = has({"-o", "-out"});
     if (tool == "xsel") paste = has({"-o", "--output"}) || (!has({"-i", "--input"}) && platform::stdin_is_terminal());
+    // In a desktop session the clipboard is the session's own (design
+    // 2026-10-24 §8.1): its compositor speaks data-control, and the system's
+    // own tool talks to it -- the host's is reached from there, through the
+    // window. Found on PATH past this bridge.
+    if (const auto display = env_("WAYLAND_DISPLAY"), runtime = env_("XDG_RUNTIME_DIR"); !display.empty() && !runtime.empty()) {
+        std::error_code ec;
+        const auto socket = display.starts_with('/') ? std::filesystem::path(display) : std::filesystem::path(runtime) / display;
+        if (std::filesystem::exists(socket, ec)) {
+            const auto bridge_dir = std::filesystem::path(env_("XLINGS_CLIPBOARD_BRIDGE"));
+            for (auto part : std::views::split(env_("PATH"), ':')) {
+                const std::filesystem::path dir(std::string_view(part.begin(), part.end()));
+                if (dir.empty() || dir == bridge_dir) continue;
+                const auto real = dir / std::string(tool);
+                if (!std::filesystem::is_regular_file(real, ec)) continue;
+                std::vector<std::string> argv{real.string()};
+                argv.insert(argv.end(), args.begin(), args.end());
+                const int e = platform::exec_program(argv, platform::environment());
+                std::println(std::cerr, "{}: cannot run {} ({})", tool, real.string(), e);
+                return 126;
+            }
+            std::println(std::cerr, "{}: this desktop has no {} of its own (xlings install wl-clipboard in it)", tool, tool);
+            return 1;
+        }
+    }
     const std::string instance = env_("XLINGS_ACTIVE_SUBOS");
     const auto grant = std::format("outside this environment: xlings subos config {} --allow {}",
                                    instance.empty() ? "<name>" : instance, paste ? "clipboard-paste" : "clipboard");

@@ -122,6 +122,7 @@ void Server::preedit(const opensal::Preedit& p) {
 
 // The window's clipboard became the clients' selection.
 void Server::host_clipboard(std::string text) {
+    selection_text = text;
     auto* sel = new HostSelection{};
     sel->text = std::move(text);
     wlr_data_source_init(&sel->base, &kHostSelection);
@@ -145,7 +146,6 @@ void Server::selection_changed() {
     // Ours (the window's own clipboard, offered back): known by what it is,
     // not by an address a freed one's successor might have.
     if (src->impl == &kHostSelection) return;
-    if (!opensal::has(provided, opensal::Interface::Clipboard)) return;
     const char* chosen = nullptr;
     for (const char* want : {"text/plain;charset=utf-8", "UTF8_STRING", "text/plain", "TEXT", "STRING"}) {
         char** m = static_cast<char**>(src->mime_types.data);
@@ -167,10 +167,16 @@ void Server::selection_changed() {
             std::array<char, 65536> buf{};
             const auto n = os::read_some(rd.fd, buf);
             if (n && *n > 0 && rd.text.size() < (16u << 20)) { rd.text.append(buf.data(), *n); return 0; }
-            // The end (or an error): what was read is the selection.
+            // The end (or an error): what was read is the selection -- kept
+            // (the session's clipboard on the bus) and given to the window
+            // that takes it.
             wl_event_source_remove(rd.source);
             os::close(rd.fd);
-            if (!rd.text.empty()) self->send(opensal::wire::encode('b', rd.text));
+            if (!rd.text.empty()) {
+                self->selection_text = rd.text;
+                self->publish("clipboard", {{"types", "text/plain"}, {"bytes", std::to_string(rd.text.size())}});
+                if (opensal::has(self->provided, opensal::Interface::Clipboard)) self->send(opensal::wire::encode('b', rd.text));
+            }
             self->reading.reset();
             return 0;
         }, this);

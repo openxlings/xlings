@@ -108,7 +108,7 @@ for obj, op, body in it:
 }  // namespace
 
 XTEST(LubanDesktopBus, ADesktopRunsOnAVirtualDisplayAndEverythingOfItIsOnTheBus, .area = "luban",
-      .covers = {"LUBAN-DISPLAY-VIRTUAL", "LUBAN-BUS-DESKTOP", "LUBAN-DISPLAY-HOTPLUG", "LUBAN-DESKTOP-APP-LOGS", "LUBAN-DESKTOP-SESSION-END"}, .requires_ = {"linux", "xlings-bin"}) {
+      .covers = {"LUBAN-DISPLAY-VIRTUAL", "LUBAN-BUS-DESKTOP", "LUBAN-DISPLAY-HOTPLUG", "LUBAN-DESKTOP-APP-LOGS", "LUBAN-DESKTOP-SESSION-END", "LUBAN-CLIPBOARD-SESSION"}, .requires_ = {"linux", "xlings-bin"}) {
     const auto luban = luban_bin_();
     const auto xdesk = xdesk_bin_();
     if (!luban) GTEST_SKIP() << "no luban beside the xlings under test (mcpp build -p luban-tool, or LUBAN_BIN)";
@@ -259,6 +259,42 @@ XTEST(LubanDesktopBus, ADesktopRunsOnAVirtualDisplayAndEverythingOfItIsOnTheBus,
     ASSERT_FALSE(crashed.is_null()) << "the program that crashed is listed";
     EXPECT_EQ(crashed["code"], 128 + 11) << crashed.dump();
     EXPECT_NE(tk::read_file(crashed["log"].get<std::string>()).find("hello-from-an-app"), std::string::npos) << crashed.dump();
+    // The session's clipboard on the bus (design 2026-10-24 §8.1): written
+    // (an agent's copy), read back; its command-line tools reach it through
+    // data-control, which the desktop offers.
+    const auto clipboard = luban::vm::system_bus_root("box") + "/service/clipboard";
+    ASSERT_TRUE((*node)->call(clipboard, R"({"op": "write", "text": "from the bus"})", 5s));
+    auto read = (*node)->call(clipboard, R"({"op": "read"})", 5s);
+    ASSERT_TRUE(read && !read->empty());
+    EXPECT_EQ(Json::parse(read->front())["text"], "from the bus");
+    {
+        fs::path sock;
+        for (const auto& e : fs::recursive_directory_iterator(root / "runtime"))
+            if (e.path().filename() == "wayland-0") sock = e.path();
+        ASSERT_FALSE(sock.empty());
+        tk::write_file(root / "globals.py", R"PY(import os, socket, struct, sys
+s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM); s.connect(sys.argv[1])
+s.sendall(struct.pack("<III", 1, (12 << 16) | 1, 2) + struct.pack("<III", 1, (12 << 16) | 0, 3))
+buf = b""; names = []
+while True:
+    data = s.recv(65536)
+    if not data: break
+    buf += data
+    done = False
+    while len(buf) >= 8:
+        obj, word = struct.unpack("<II", buf[:8]); size = word >> 16
+        if len(buf) < size: break
+        body, buf = buf[8:size], buf[size:]
+        if obj == 2 and (word & 0xffff) == 0:
+            n, = struct.unpack("<I", body[4:8]); names.append(body[8:8 + n - 1].decode())
+        if obj == 3: done = True
+    if done: break
+print(" ".join(names))
+)PY");
+        auto globals = tk::run({.argv = {"python3", (root / "globals.py").string(), sock.string()}, .timeout = 20s});
+        EXPECT_NE(globals.out.find("zwlr_data_control_manager_v1"), std::string::npos) << globals.transcript();
+        EXPECT_NE(globals.out.find("ext_data_control_manager_v1"), std::string::npos) << globals.transcript();
+    }
     // Gathered without copying it out by hand: luban logs.
     {
         auto told = tk::run({.argv = {luban->string(), "logs", "box", "--app", "sh"}, .env = env, .timeout = 60s});

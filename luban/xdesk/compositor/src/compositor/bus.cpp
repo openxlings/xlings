@@ -93,6 +93,24 @@ void Server::bus_start() {
     (void)bus->offer("topic/xdesk/events", {.kind = openbus::EndpointKind::topic, .codec = static_cast<std::uint16_t>(openbus::Codec::json)});
     // The programs it started: their logs and whether they run (design
     // 2026-10-24 §6.1); each one's log is a stream at service/xdesk/apps/<pid>/log.
+    // The session's clipboard (luban.clipboard@1, design 2026-10-24 §8.1):
+    // {"op": "read"} its text, {"op": "write", "text": T} (an agent's copy:
+    // with desktop-control). What changes is said on the events with its type
+    // and size -- never its content.
+    (void)bus->offer("service/clipboard", {.verb = "clipboard", .effect = "reversible", .interfaces = {"luban.clipboard@1"}},
+                     on_loop([this](const xbus::Call& c) {
+                         const auto j = xdesk::config::Json::parse(c.body());
+                         const auto* op = j ? j->get("op") : nullptr;
+                         xdesk::config::Json out{xdesk::config::Json::Object{}};
+                         if (op && op->string_or("") == "write") {
+                             const auto* t = j->get("text");
+                             host_clipboard(t ? t->string_or("") : std::string{});
+                             out.set("ok", xdesk::config::Json{true});
+                         } else {
+                             out.set("text", xdesk::config::Json{selection_text});
+                         }
+                         return out.dump();
+                     }));
     // {"op": "tail", "pid": N}: the last mebibyte it said, ended or not.
     (void)bus->offer("service/xdesk/apps", {.verb = "apps", .effect = "read", .interfaces = {"xdesk.apps@1"}}, [this](xbus::Call c) {
         const auto j = xdesk::config::Json::parse(c.body());

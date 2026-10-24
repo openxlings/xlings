@@ -321,6 +321,7 @@ struct Server {
     std::list<View> views;                       // front: focused most recently
     std::list<Popup> popups;
     std::vector<int> children;
+    std::string selection_text;                  // the session's clipboard as last read (design 2026-10-24 §8.1)
     // The programs it started, their output and their ends (apps_run.cpp).
     std::mutex apps_m;
     std::list<AppRun> app_runs;
