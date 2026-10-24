@@ -205,12 +205,20 @@ std::expected<std::shared_ptr<VirtualOnBus>, std::string> offer_virtual_(std::sh
     return v;
 }
 
-// A command started for the desktop (in the system): its process.
+// A command started for the desktop (in the system): its process -- or, in a
+// machine, the channel it runs on (its end said when it comes).
+struct InMachine {
+    std::optional<Client> client;
+    std::atomic<int> code { -1 };     // -1: running
+    std::thread waiting;
+    ~InMachine() { if (waiting.joinable()) waiting.join(); }
+};
 struct Started {
     int pid { -1 };
     std::string display;       // the bus path it shows on
     std::string role;
     std::string kind;          // virtual | window | ...
+    std::shared_ptr<InMachine> machine;
 };
 
 std::optional<int> spawn_(const std::vector<std::string>& argv, const std::map<std::string, std::string>& env, const fs::path& log) {
@@ -269,7 +277,10 @@ std::expected<Json, std::string> desktop_start(const fs::path& home, std::string
     std::error_code ec;
     fs::create_directories(log.parent_path(), ec);
     if (!platform::spawn_detached(argv, log)) return std::unexpected(std::format("the desktop's supervisor could not be started ({})", log.string()));
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(60);
+    // A machine boots first (minutes on a cold start, with no KVM).
+    const auto settings = service::read_settings(home, name);
+    const bool machine = !o.here && (running(home, name) || (settings && settings->mode == "machine"));
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(machine ? 300 : 60);
     while (std::chrono::steady_clock::now() < deadline) {
         std::this_thread::sleep_for(std::chrono::milliseconds(200));
         if (auto st = desktop(home, name, {{"op", "status"}})) return st;
@@ -303,15 +314,29 @@ int desktop_supervise(const fs::path& home, std::string_view name, std::span<con
     auto virt = offer_virtual_(*node, mode, std::string(name));
     if (!virt) { say(virt.error()); return 1; }
     say("its virtual display is " + (*virt)->path + " (" + hd::format_mode(mode) + ")");
-    // Its frames by reference (opensal 0.7 Region; design 2026-10-24 §5.1): a
-    // file the desktop writes its rows into and every display here reads --
-    // in the system's own home (writable where the system runs), bound into it.
-    constexpr std::size_t kFramesBytes = std::size_t{128} << 20;
+    // A machine's desktop is the machine's (started when it is not running):
+    // its programs reach the bus through its agent's router, linked to this one.
+    const auto settings = service::read_settings(home, name);
+    const bool machine = !here && (running(home, name) || (settings && settings->mode == "machine"));
+    if (machine && !running(home, name)) {
+        service::Context ctx{.home = home, .port = service::Port(service::xlings_path())};
+        ctx.sink = [&](const service::Event& e) { if (!e.text.empty()) say(e.text); };
+        if (start(ctx, name, EnterOptions{}) != 0) { say("the machine did not start"); return 1; }
+    }
+    // Its frames by reference (opensal 0.7 Region; design 2026-10-24 §5.1,
+    // §5.4): a file the desktop writes its rows into and every display here
+    // reads -- a machine's ivshmem memory, else a file in the system's own home
+    // (writable where the system runs), bound into it.
+    std::size_t kFramesBytes = std::size_t{128} << 20;
     const auto at = xlings::subos::locate(xlings::subos::HomeView{home}, name);
-    const auto frames_file = at.home.home / "run" / "desktops" / std::string(name) / "frames";
+    auto frames_file = at.home.home / "run" / "desktops" / std::string(name) / "frames";
+    if (machine) {
+        if (const auto f = started_frames(home, name)) { frames_file = f->first; kFramesBytes = static_cast<std::size_t>(f->second); }
+        else frames_file.clear();
+    }
     std::error_code fec;
-    fs::create_directories(frames_file.parent_path(), fec);
-    auto frames = platform::map_shared_file(frames_file, kFramesBytes);
+    if (!frames_file.empty()) fs::create_directories(frames_file.parent_path(), fec);
+    auto frames = frames_file.empty() ? std::nullopt : platform::map_shared_file(frames_file, kFramesBytes);
     struct Unmap { std::optional<platform::SharedMemory>& f; ~Unmap() { if (f) platform::release_shared_memory(*f); } } unmap{frames};
     if (frames) (*virt)->vd->set_region(std::span<const std::byte>(frames->data, frames->size));
     else say("no frames region (" + frames_file.string() + "): frames go on the stream");
@@ -326,7 +351,42 @@ int desktop_supervise(const fs::path& home, std::string_view name, std::span<con
     // A display of the system's desktop: `luban __desktop <session> --display
     // <path>` in the system, through its socket. The first starts the desktop;
     // the others join it (its displays socket, opensal-wlr).
+    std::uint32_t next_channel = 10;
+    std::vector<std::shared_ptr<InMachine>> machine_runs;
+    // In a machine: `luban __desktop` there, on a channel of its supervisor.
+    const auto start_in_machine = [&](const std::string& display, const std::string& role) -> std::expected<std::shared_ptr<InMachine>, std::string> {
+        auto run = std::make_shared<InMachine>();
+        auto client = Client::connect(home, name);
+        if (!client) return std::unexpected(client.error());
+        run->client.emplace(std::move(*client));
+        const auto ch = next_channel++;
+        if (!run->client->open_command(ch, {"luban", "__desktop", session, "--size", std::format("{}x{}", mode.width, mode.height), "--display",
+                                            display, "--role", role}, 0, 0, Json::object(), true))
+            return std::unexpected(std::string("the machine did not take the command"));
+        run->waiting = std::thread([run, ch, log] {
+            for (;;) {
+                auto frames = run->client->poll(500);
+                if (!frames) { run->code = 1; return; }
+                for (auto& [type, body] : *frames) {
+                    if (body.first != ch) continue;
+                    if (type == 'E' || type == 'D') std::ofstream(log, std::ios::app) << body.second;
+                    if (type == 'X') {
+                        const auto j = Json::parse(body.second, nullptr, false);
+                        run->code = j.is_object() ? j.value("code", 0) : 0;
+                        return;
+                    }
+                }
+            }
+        });
+        return run;
+    };
     const auto start_on = [&](const std::string& display, const std::string& role) -> std::expected<int, std::string> {
+        if (machine) {
+            auto run = start_in_machine(display, role);
+            if (!run) return std::unexpected(run.error());
+            machine_runs.push_back(*run);
+            return -static_cast<int>(machine_runs.size());   // its run, not a pid
+        }
         if (here) {
             auto env = platform::environment();
             env["OPENBUS_ROUTER"] = "unix:" + socket;
@@ -366,7 +426,7 @@ int desktop_supervise(const fs::path& home, std::string_view name, std::span<con
     {
         auto first = start_on((*virt)->path, "primary");
         if (!first) { say(first.error()); return 1; }
-        started.push_back({*first, (*virt)->path, "primary", "virtual"});
+        started.push_back({*first, (*virt)->path, "primary", "virtual", *first < 0 ? machine_runs.back() : nullptr});
     }
     const auto status = [&] {
         std::lock_guard l(m);
@@ -397,7 +457,7 @@ int desktop_supervise(const fs::path& home, std::string_view name, std::span<con
             if (!pid) { c.fail(openbus::ErrorCode::gone, pid.error()); return; }
             {
                 std::lock_guard l(m);
-                started.push_back({*pid, display, role, j.value("kind", std::string("window"))});
+                started.push_back({*pid, display, role, j.value("kind", std::string("window")), *pid < 0 ? machine_runs.back() : nullptr});
             }
             publish("display-attach", {{"path", display}, {"role", role}});
             c.reply(status().dump(), static_cast<std::uint16_t>(openbus::Codec::json));
@@ -409,8 +469,21 @@ int desktop_supervise(const fs::path& home, std::string_view name, std::span<con
                 for (const auto& s : started)
                     if (s.display == display && s.display != (*virt)->path) pid = s.pid;
             }
-            if (pid < 0) { c.fail(openbus::ErrorCode::not_found, "no display " + display + " to detach (the virtual one stays)"); return; }
-            (void)platform::send_signal_group(pid, platform::sig::terminate);
+            std::shared_ptr<InMachine> in_machine;
+            {
+                std::lock_guard l(m);
+                for (const auto& st : started)
+                    if (st.display == display && st.machine) in_machine = st.machine;
+            }
+            if (in_machine) {
+                // Its display gone: the command ends with its stream.
+                (void)in_machine->client->close(0);
+            } else if (pid < 0) {
+                c.fail(openbus::ErrorCode::not_found, "no display " + display + " to detach (the virtual one stays)");
+                return;
+            } else {
+                (void)platform::send_signal_group(pid, platform::sig::terminate);
+            }
             c.reply(status().dump(), static_cast<std::uint16_t>(openbus::Codec::json));
         } else if (op == "end") {
             {
@@ -440,7 +513,12 @@ int desktop_supervise(const fs::path& home, std::string_view name, std::span<con
         std::this_thread::sleep_for(std::chrono::milliseconds(200));
         std::lock_guard l(m);
         for (auto it = started.begin(); it != started.end();) {
-            const auto st = platform::wait_process(it->pid, false);
+            std::optional<platform::ExitStatus> st;
+            if (it->machine) {
+                if (const int code = it->machine->code.load(); code >= 0) st = platform::ExitStatus{.exited = true, .code = code};
+            } else {
+                st = platform::wait_process(it->pid, false);
+            }
             if (!st) { ++it; continue; }
             if (it->pid == first_pid) {
                 ended = *st;
@@ -455,11 +533,15 @@ int desktop_supervise(const fs::path& home, std::string_view name, std::span<con
     // Asked to end: every command it started, and their processes.
     {
         std::lock_guard l(m);
-        for (const auto& s : started) (void)platform::send_signal_group(s.pid, platform::sig::terminate);
+        for (const auto& s : started)
+            if (!s.machine) (void)platform::send_signal_group(s.pid, platform::sig::terminate);
         for (const auto& s : started) {
+            if (s.machine) continue;
             for (int k = 0; k < 30 && !platform::wait_process(s.pid, false); ++k) std::this_thread::sleep_for(std::chrono::milliseconds(100));
             (void)platform::send_signal_group(s.pid, platform::sig::kill);
         }
+        // A machine's: their channels closed; the machine stays (it is the system's, not the desktop's).
+        for (const auto& r : machine_runs) if (r->client) (void)r->client->close(0);
     }
     const int code = ended ? platform::exit_code(*ended) : 0;
     say(std::format("the desktop ended: {} ({})", ended_by, code));

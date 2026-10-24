@@ -727,11 +727,6 @@ int enter_virtual_(const svc::Context& c, const std::string& name, std::string_v
     }
     o.session = plan.session;
     o.persist = e->settings.persist;
-    if (e->settings.mode == "machine" || vm::running(c.home, name)) {
-        if (c.sink) c.sink(svc::error(std::format("{} runs as a machine: its desktop shows in a window for now", name),
-                                      std::format("luban enter {} --display window", name)));
-        return 1;
-    }
     auto st = vm::desktop_start(c.home, name, o);
     if (!st) {
         if (c.sink) c.sink(svc::error(st.error()));
@@ -1652,6 +1647,21 @@ int desktop_(const std::vector<std::string>& rest) {
         }
     }
     auto log = [](std::string_view line) { std::println(std::cerr, "luban __desktop: {}", line); };
+    // In a machine, its frames region (the ivshmem device's BAR, design
+    // 2026-10-24 §5.4) when nobody named one: the session writes its rows there.
+    if (!std::getenv("OPENSAL_REGION")) {
+        std::error_code ec;
+        for (std::filesystem::directory_iterator it("/sys/bus/pci/devices", ec), end; !ec && it != end; it.increment(ec)) {
+            auto first = [](const std::filesystem::path& f) { std::ifstream in(f); std::string v; in >> v; return v; };
+            if (first(it->path() / "vendor") != "0x1af4" || first(it->path() / "device") != "0x1110") continue;
+            const auto bar = it->path() / "resource2";
+            std::error_code e;
+            if (const auto size = std::filesystem::file_size(bar, e); !e && size > 0) {
+                xlings::platform::set_env_variable("OPENSAL_REGION", bar.string());
+                xlings::platform::set_env_variable("OPENSAL_REGION_SIZE", std::to_string(size));
+            }
+        }
+    }
     int in = 0, out = 1;
     if (!display.empty()) {
         auto fd = bus_display_(display, role);
