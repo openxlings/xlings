@@ -187,10 +187,13 @@ struct WorkspaceNodes {
     layout::Rect label_at;
 };
 
+struct Extend;
+
 // A window showing the desktop (design 2026-10-20 §11): the first -- the
 // standard input and output -- is the primary, whose size and density the
 // output's are; one that comes to the displays socket mirrors it: the same
-// frames, its input the desktop's too.
+// frames, its input the desktop's too -- or, asking to extend it, has an
+// output of its own (Extend).
 struct Link {
     Server* server { nullptr };
     int in { -1 }, out { -1 };
@@ -207,6 +210,27 @@ struct Link {
     double density { 1 };                          // what the output takes when it is the primary
     std::uint32_t number { 1 };
     bool gone { false };
+    Extend* extend { nullptr };                    // its own output, when it extends the desktop
+    std::string name;                              // what it said it is (`extend <name>`)
+};
+
+// An output that extends the desktop (design 2026-10-24 §4.4; opensal 0.7
+// §5.5, openwx 0.2 §2.6): a headless output of its own right of the others,
+// at its display's size and density, its frames that display's only; in the
+// workspace view it shows a workspace of its own.
+struct Extend {
+    Link* link { nullptr };
+    std::string name;
+    wlr_output* output { nullptr };
+    wlr_scene_output* scene_output { nullptr };
+    wlr_output_layout_output* layout_output { nullptr };
+    opensal::Size size;                            // device pixels
+    double scale { 1 };
+    double x { 0 };                                // its left on the screen (logical pixels)
+    int workspace { 0 };
+    wlr_scene_rect* background { nullptr };
+    Hook frame;
+    layout::Size logical() const { return {size.width / scale, size.height / scale}; }
 };
 
 // A program the desktop started (design 2026-10-24 §6.1): what it says is
@@ -402,6 +426,9 @@ struct Server {
     std::optional<os::SharedMemory> region;
     std::size_t region_at { 0 };
     std::list<Link> links;                       // the windows showing it; front: the primary
+    std::list<Extend> extends;                   // the outputs beside the primary, left to right
+    std::map<std::string, int> extend_shown;     // the workspace each extending display showed, by its name
+    int arranged_current { 0 };                  // the current workspace at the last arrangement
     int displays_listener { -1 };
     wl_event_source* displays_source { nullptr };
     Hook new_toplevel, new_popup, new_decoration, frame, request_cursor, request_selection;
@@ -932,6 +959,14 @@ struct Server {
     void drop_gone();
     void tell_roles();
     Link* primary() { return links.empty() ? nullptr : &links.front(); }
+    // Extending outputs (displays.cpp).
+    void extend_add(Link& l);
+    void extend_remove(Link& l);
+    void extend_resize(Extend& e, opensal::Size want, double density);
+    void extends_place();                        // their places right of the primary, again
+    Extend* extend_at(double x, double y);       // the output at a screen point: nullptr, the primary
+    // The arrangement with each extending output's workspace (workspace view).
+    void with_extends(std::vector<layout::Placement>& ps);
 
     void resize(opensal::Size want);
 
@@ -939,7 +974,8 @@ struct Server {
 
     void open_fonts();
 
-    void render();
+    void render() { render_on(nullptr); }
+    void render_on(Extend* e);                   // one output's frame: the primary's, or an extending one's
     void choose_renderer();
     // The GPU is not there any more (lost, or a frame could not be read
     // back): software from now on, every window drawn again, said once.

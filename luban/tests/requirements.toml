@@ -760,6 +760,10 @@ status = "required"
 text = "an agent drives a system's desktop on the bus -- its input, its displays (capture, record, attach), xdesk's control, the supervisor's attach, detach and end -- only with the system's desktop-control grant, the refusal naming `luban config <n> --allow desktop-control`; reading its state and status needs none, the owner needs none, and every decision on an agent is recorded in logs/openbus/desktop-control.ndjson (design 2026-10-24 §3.4)"
 status = "required"
 
+[XDESK-MULTI-OUTPUT]
+text = "a display that asks to extend the desktop (luban display <n> attach virtual[=WxH] --role extend, opensal 0.7 extend) is an output of its own right of the primary at its own size and density, sent its frames only, its pointer at that output; in the workspace view it shows a workspace nobody shows (made when there is none), a window carried across lands in its workspace, and when it goes its workspace is remembered by its name and shown on it again when it comes back (design 2026-10-24 §4.4, openwx 0.2 §2.6)"
+status = "required"
+
 [LUBAN-DISPLAY-VIRTUAL]
 text = "a desktop runs on a virtual display (luban enter <n> --display virtual[=WxH@S]): an opensal provider nobody sees that keeps the picture, paces the frames, takes the desktop's size, role and clipboard, hands the picture out as PNG and gives input steps as the events a window gives (openhal 0.3 §6; design 2026-10-24 §4.2)"
 status = "required"

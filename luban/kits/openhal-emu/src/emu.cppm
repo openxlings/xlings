@@ -28,7 +28,9 @@ std::expected<std::vector<opensal::Event>, std::string> input_events(std::string
 
 class VirtualDisplay {
 public:
-    explicit VirtualDisplay(display::Mode mode, bool wants_primary = false);
+    // `asks`: what its hello ends with (opensal 0.7 §6.7) -- nothing (it is
+    // what the consumer makes it), `primary`, or `extend [<name>]`.
+    explicit VirtualDisplay(display::Mode mode, std::string asks = {});
     // Frames by reference (opensal 0.7 Region): `bytes` is the region the
     // consumer maps too; its 'r' frames are read there. It must outlive this.
     void set_region(std::span<const std::byte> bytes);

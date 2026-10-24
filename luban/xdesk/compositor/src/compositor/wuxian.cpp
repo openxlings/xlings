@@ -203,6 +203,7 @@ void Server::view_step() {
     const layout::Camera cam{.at = {m.from.at.x + (m.to.at.x - m.from.at.x) * t, m.from.at.y + (m.to.at.y - m.from.at.y) * t},
                              .zoom = std::exp(std::log(m.from.zoom) + (std::log(m.to.zoom) - std::log(m.from.zoom)) * t)};
     placements = lay.arrange(output_size(), reserved(), cam);
+    with_extends(placements);
     apply(placements, true);
     if (!m.t.settled()) {
         if (view_timer) wl_event_source_timer_update(view_timer, 16);

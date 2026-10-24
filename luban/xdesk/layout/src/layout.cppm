@@ -361,6 +361,10 @@ public:
     // Where everything shown is, for this output (`through`: the WuXian view
     // seen through this camera, not its own -- the views' change animated).
     std::vector<Placement> arrange(Size output, Insets reserved = {}, std::optional<Camera> through = std::nullopt);
+    // Workspace `id` as the workspace view shows it on another output of
+    // `output`'s size, at its top-left (openwx 0.2 §2.6: an extending
+    // output's own workspace); nothing for the current one or none.
+    std::vector<Placement> arrange_on(int id, Size output);
     // The window at a screen point, by the last arrangement (the top-most).
     std::optional<Id> at(double sx, double sy) const;
 

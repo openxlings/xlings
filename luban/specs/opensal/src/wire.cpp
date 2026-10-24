@@ -312,6 +312,7 @@ std::expected<std::optional<Message>, std::string> Decoder::next() {
 
 std::string encode_display(const DisplayRole& r) {
     if (r.kind == DisplayRole::Kind::mirror) return std::format("{} mirror {} {} {}", r.number, r.of, r.size.width, r.size.height);
+    if (r.kind == DisplayRole::Kind::extend) return std::format("{} extend {} {}", r.number, r.x, r.y);
     return std::format("{} primary", r.number);
 }
 
@@ -321,6 +322,11 @@ std::optional<DisplayRole> decode_display(std::string_view payload) {
     std::string kind;
     if (!(in >> r.number >> kind) || r.number == 0) return std::nullopt;
     if (kind == "primary") return r;
+    if (kind == "extend") {
+        r.kind = DisplayRole::Kind::extend;
+        if (!(in >> r.x >> r.y)) return std::nullopt;
+        return r;
+    }
     if (kind != "mirror") return std::nullopt;
     r.kind = DisplayRole::Kind::mirror;
     if (!(in >> r.of >> r.size.width >> r.size.height) || r.of == 0 || r.size.width == 0 || r.size.height == 0) return std::nullopt;

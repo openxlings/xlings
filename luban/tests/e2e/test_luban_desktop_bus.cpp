@@ -430,7 +430,7 @@ XTEST(LubanDesktopBus, ADesktopRunsOnAVirtualDisplayAndEverythingOfItIsOnTheBus,
     // A window comes (here: a display of this test's, asking to be the
     // primary, as the Luban OS window does): the desktop takes its size; it
     // goes, and the desktop goes on on its virtual display (hotplug, §4.3).
-    auto window = std::make_shared<openhal::emu::VirtualDisplay>(openhal::display::Mode{1024, 640, 1.0}, true);
+    auto window = std::make_shared<openhal::emu::VirtualDisplay>(openhal::display::Mode{1024, 640, 1.0}, "primary");
     const auto window_path = openhal::display::device_path((*node)->root(), 50);
     std::optional<xbus::Stream> window_stream;
     std::mutex wm;
@@ -584,4 +584,74 @@ XTEST(LubanDesktopBus, AnAgentDrivesADesktopOnlyWithItsGrant, .area = "luban", .
     EXPECT_NE(record.find(R"("allowed":false)"), std::string::npos) << record;
     EXPECT_NE(record.find(R"("allowed":true)"), std::string::npos) << record;
     EXPECT_NE(record.find("agent:test"), std::string::npos) << record;
+}
+
+// A second virtual display extends the desktop (design 2026-10-24 §4.4,
+// openwx 0.2 §2.6, S9): an output of its own right of the primary at its own
+// size, showing a workspace nobody shows; its picture is that output's, its
+// pointer lands there; a window carried across lands in its workspace; gone,
+// its workspace is remembered and comes back with it.
+XTEST(LubanDesktopBus, AVirtualDisplayExtendsTheDesktopWithAWorkspaceOfItsOwn, .area = "luban", .covers = {"XDESK-MULTI-OUTPUT"},
+      .requires_ = {"linux", "xlings-bin"}) {
+    const auto luban = luban_bin_();
+    const auto xdesk = xdesk_bin_();
+    if (!luban || !xdesk) GTEST_SKIP() << "no luban or xdesk beside the xlings under test";
+    Desk d("luban-desktop-extend", *luban, *xdesk, {{"c04040", 300, 200, 0, true}}, "1024x640",
+           R"({"wuxian": 1, "workspaces": [{"id": 1, "rule": "stack"}, {"id": 2, "rule": "stack"}]})");
+    ASSERT_FALSE(d.display.empty()) << "the desktop did not come";
+    auto s = d.until([](const Json& s) { return s.value("windows", Json::array()).size() == 1; }, 150);
+    ASSERT_EQ(s.value("windows", Json::array()).size(), 1u);
+    auto st = luban::vm::desktop(d.h, "box", {{"op", "attach"}, {"kind", "virtual"}, {"mode", "800x600"}, {"role", "extend"}});
+    ASSERT_TRUE(st.has_value()) << st.error();
+    const auto extra = (*st)["displays"].back().value("path", std::string{});
+    ASSERT_NE(extra, d.display);
+    s = d.until([](const Json& s) { return s.value("outputs", Json::array()).size() == 1; }, 150);
+    ASSERT_EQ(s.value("outputs", Json::array()).size(), 1u) << s.dump();
+    const auto out = s["outputs"][0];
+    EXPECT_EQ(out["rect"], Json::parse("[1024, 0, 800, 600]")) << out.dump();
+    EXPECT_EQ(out["workspace"], 2) << out.dump();
+    // Its picture: its own output, at its size.
+    const auto control = openhal::display::control_path(extra);
+    std::string png;
+    for (int k = 0; k < 50; ++k) {
+        auto got = d.node->call(control, R"({"op": "capture"})", 20s);
+        png.clear();
+        if (got) for (const auto& p : *got) png += p;
+        if (png.size() > 24) break;
+        std::this_thread::sleep_for(100ms);
+    }
+    ASSERT_TRUE(png.starts_with("\x89PNG")) << png.size();
+    const auto be32 = [&](std::size_t at) {
+        return (std::uint32_t(std::uint8_t(png[at])) << 24) | (std::uint32_t(std::uint8_t(png[at + 1])) << 16) |
+               (std::uint32_t(std::uint8_t(png[at + 2])) << 8) | std::uint8_t(png[at + 3]);
+    };
+    EXPECT_EQ(be32(16), 800u);
+    EXPECT_EQ(be32(20), 600u);
+    tk::write_file(tk::artifacts_dir() / "desktop-bus-extend.png", png);
+    // Its pointer lands right of the primary.
+    ASSERT_TRUE(d.node->call(control, R"({"op": "input", "events": [{"move": [100, 100]}]})", 5s));
+    s = d.until([](const Json& s) { return s.contains("pointer") && s["pointer"][0].get<double>() > 1100; });
+    EXPECT_NEAR(s["pointer"][0].get<double>(), 1124, 2) << s["pointer"].dump();
+    // The window carried by its title bar from the primary onto it: in its workspace.
+    const auto r = s["windows"][0]["rect"];
+    const double tx = r[0].get<double>() + 40, ty = r[1].get<double>() + 10;
+    ASSERT_TRUE(d.input(std::format(R"([{{"move": [{}, {}]}}, {{"button": "left", "down": true}}, {{"move": [{}, {}]}}])", tx, ty, tx + 200, ty)));
+    std::this_thread::sleep_for(200ms);
+    ASSERT_TRUE(d.node->call(control, R"({"op": "input", "events": [{"move": [200, 150]}, {"move": [210, 160]}, {"button": "left", "down": false}]})", 5s));
+    s = d.until([](const Json& s) { return !s["windows"].empty() && s["windows"][0].value("workspace", 0.0) == 2; });
+    ASSERT_EQ(s["windows"][0].value("workspace", 0.0), 2) << s["windows"].dump();
+    EXPECT_GE(s["windows"][0]["rect"][0].get<double>(), 1024) << s["windows"].dump();
+    // Gone: the window stays in its workspace; back, the output shows it again.
+    ASSERT_TRUE(luban::vm::desktop(d.h, "box", {{"op", "detach"}, {"path", extra}}).has_value());
+    s = d.until([](const Json& s) { return s.value("outputs", Json::array()).empty(); }, 150);
+    ASSERT_TRUE(s.value("outputs", Json::array()).empty()) << s["outputs"].dump();
+    st = luban::vm::desktop(d.h, "box", {{"op", "attach"}, {"kind", "virtual"}, {"mode", "800x600"}, {"role", "extend"}});
+    ASSERT_TRUE(st.has_value()) << st.error();
+    s = d.until([](const Json& s) { return s.value("outputs", Json::array()).size() == 1; }, 150);
+    ASSERT_EQ(s.value("outputs", Json::array()).size(), 1u);
+    EXPECT_EQ(s["outputs"][0]["workspace"], 2);
+    s = d.until([](const Json& s) { return !s["windows"].empty() && s["windows"][0]["rect"][0].get<double>() >= 1024; });
+    ASSERT_FALSE(s["windows"].empty());
+    EXPECT_EQ(s["windows"][0].value("workspace", 0.0), 2) << s["windows"].dump();
+    EXPECT_GE(s["windows"][0]["rect"][0].get<double>(), 1024) << s["windows"].dump();
 }

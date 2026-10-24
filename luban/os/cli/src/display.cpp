@@ -79,7 +79,24 @@ int display(const svc::Context& c, std::string_view name, std::span<const std::s
         return 0;
     }
     if (action == "attach") {
-        if (words.size() < 2 || words[1] != "window") return fail_(c, "attach takes window: the Luban OS window shows it");
+        // Another virtual display (design 2026-10-24 §4.4): an output of the
+        // desktop's own beside the others by default (--role extend), or a mirror.
+        if (words.size() >= 2 && (words[1] == "virtual" || words[1].starts_with("virtual="))) {
+            Json req{{"op", "attach"}, {"kind", "virtual"}, {"role", as.value_or("extend")}};
+            if (const auto eq = words[1].find('='); eq != std::string::npos) {
+                if (!openhal::display::parse_mode(words[1].substr(eq + 1)))
+                    return fail_(c, "virtual=<width>x<height>[@<scale>], as virtual=1920x1080@1.25");
+                req["mode"] = words[1].substr(eq + 1);
+            }
+            auto done = vm::desktop(c.home, name, req);
+            if (!done) return fail_(c, done.error());
+            if (json) { std::println("{}", done->dump(2)); return 0; }
+            const auto& all = (*done)["displays"];
+            std::println("✓ display {} attached ({}): {}", all.size() - 1, as.value_or("extend"),
+                         all.empty() ? std::string{} : all.back().value("path", std::string{}));
+            return 0;
+        }
+        if (words.size() < 2 || words[1] != "window") return fail_(c, "attach takes window or virtual[=WxH]: the Luban OS window shows it");
         const auto app = svc::window_app(c, name);
         if (!app) { if (c.sink) c.sink(app.error()); return 1; }
         // The window comes as the primary: the desktop takes its size (opensal 0.7).

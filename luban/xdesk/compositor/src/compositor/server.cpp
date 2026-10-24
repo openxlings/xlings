@@ -141,6 +141,7 @@ void Server::fall_back(std::string why) {
     allocator = renderer ? wlr_allocator_autocreate(backend, renderer) : nullptr;
     if (!renderer || !allocator) { log("no software renderer to fall back to"); stop = true; return; }
     wlr_output_init_render(output, allocator, renderer);
+    for (auto& e : extends) wlr_output_init_render(e.output, allocator, renderer);
     wlr_compositor_set_renderer(compositor, renderer);
     wlr_allocator_destroy(old_allocator);
     wlr_renderer_destroy(old_renderer);
@@ -304,7 +305,9 @@ bool Server::start_() {
     wlr_output_state_set_render_format(&on, kARGB8888);
     wlr_output_commit_state(output, &on);
     wlr_output_state_finish(&on);
-    wlr_output_layout_output* lo = wlr_output_layout_add_auto(outputs, output);
+    // At the screen's top-left: the outputs that extend it go right of it
+    // (an automatic place would move it right of them).
+    wlr_output_layout_output* lo = wlr_output_layout_add(outputs, output, 0, 0);
     scene_output = wlr_scene_output_create(scene, output);
     wlr_scene_output_layout_add_output(scene_layout, lo, scene_output);
     frame.connect(&output->events.frame, [this](void*) { render(); });
@@ -340,6 +343,7 @@ bool Server::start_() {
         auto* self = static_cast<Server*>(data);
         for (auto& l : self->links) l.in_flight.reset();
         wlr_output_schedule_frame(self->output);
+        for (auto& e : self->extends) wlr_output_schedule_frame(e.output);
         return 0;
     }, this);
     hint_timer = wl_event_loop_add_timer(loop, [](void* data) -> int {
@@ -494,7 +498,9 @@ Server::~Server() {
     for (int pid : children) os::terminate(pid);
     new_toplevel.disconnect(); new_popup.disconnect(); new_decoration.disconnect(); frame.disconnect();
     request_cursor.disconnect(); request_selection.disconnect(); set_selection.disconnect(); new_text_input.disconnect();
-    request_shape.disconnect(); cursor_commit.disconnect(); cursor_gone.disconnect();
+    request_shape.disconnect(); cursor_commit.disconnect(); cursor_gone.disconnect(); new_layer_surface.disconnect();
+    for (auto& b : background_clients) { b.commit.disconnect(); b.destroy.disconnect(); }
+    for (auto& e : extends) e.frame.disconnect();
     if (reading) { wl_event_source_remove(reading->source); os::close(reading->fd); }
     for (auto& t : text_inputs) { t.enable.disconnect(); t.commit.disconnect(); t.disable.disconnect(); t.destroy.disconnect(); }
     text_inputs.clear();

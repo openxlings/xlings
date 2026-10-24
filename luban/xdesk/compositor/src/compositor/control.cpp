@@ -133,12 +133,25 @@ std::string Server::state_json() {
     for (const auto& l : links) {
         Json d{Json::Object{}};
         d.set("number", num_(l.number));
-        d.set("role", Json{std::string(&l == &links.front() ? "primary" : "mirror")});
+        d.set("role", Json{std::string(l.extend ? "extend" : &l == &links.front() ? "primary" : "mirror")});
         d.set("hello", Json{l.hello});
         d.set("hidden", Json{l.hidden});
         displays.push_back(std::move(d));
     }
     out.set("displays", Json{std::move(displays)});
+    // The outputs extending it (design 2026-10-24 §4.4): where each is on the
+    // screen (logical pixels), its size, the workspace it shows.
+    Json::Array outputs;
+    for (const auto& e : extends) {
+        Json o{Json::Object{}};
+        o.set("name", Json{e.name});
+        const auto lw = e.logical();
+        o.set("rect", rect_({e.x, 0, lw.width, lw.height}));
+        o.set("size", Json{Json::Array{num_(e.size.width), num_(e.size.height)}});
+        o.set("workspace", num_(e.workspace));
+        outputs.push_back(std::move(o));
+    }
+    out.set("outputs", Json{std::move(outputs)});
     out.set("view", Json{std::string(wuxian() ? "wuxian" : "workspace")});
     out.set("view_moving", Json{view_move.has_value()});
     const auto cam = lay.camera();

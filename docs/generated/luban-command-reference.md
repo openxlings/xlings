@@ -37,7 +37,7 @@ Options: `--app <ID>` — Only this program's (its desktop entry's id, as falkon
 
 The displays of a running desktop: list, capture, record, attach, detach, mode, input, end
 
-Options: `--display <N>` — This display (its number in the list); default: the virtual one; `--role <ROLE>` — attach: what the window is to the desktop (primary)
+Options: `--display <N>` — This display (its number in the list); default: the virtual one; `--role <ROLE>` — attach: what the display is to the desktop (a window: primary; a virtual one: extend or mirror)
 
 ## `luban run <name> <command>...` (common)
 

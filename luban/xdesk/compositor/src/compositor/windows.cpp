@@ -71,6 +71,7 @@ void Server::follow_focus() {
 // (at once when `instant`: a window dragged follows the pointer).
 void Server::arrange(bool instant) {
     placements = lay.arrange(output_size(), reserved());
+    with_extends(placements);
     apply(placements, instant);
     // Kept a moment later (what it says compared before it is written).
     if (wuxian_timer) wl_event_source_timer_update(wuxian_timer, 1000);

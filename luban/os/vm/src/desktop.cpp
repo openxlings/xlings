@@ -82,6 +82,14 @@ struct VirtualOnBus {
         const std::vector<opensal::Event> e{opensal::Shown{shown}};
         (void)send(openhal::emu::VirtualDisplay::encode(e));
     }
+    // Gone from the bus: the display, its control, its input.
+    void withdraw(const std::string& system) {
+        node->withdraw(path);
+        node->withdraw(hd::control_path(path));
+        node->withdraw(system_bus_root(system) + "/device/input/" + path.substr(path.rfind('/') + 1));
+        std::lock_guard l(m);
+        if (stream) stream->close();
+    }
     // A picture as it is now: shown again for a moment when it was hidden.
     std::string capture() {
         bool was_hidden = false;
@@ -105,15 +113,16 @@ void reply_bytes_(const xbus::Call& c, std::string_view bytes) {
 }
 
 std::expected<std::shared_ptr<VirtualOnBus>, std::string> offer_virtual_(std::shared_ptr<xbus::Node> node, hd::Mode mode,
-                                                                          const std::string& system) {
+                                                                          const std::string& system, std::string asks = {},
+                                                                          const std::set<std::string>& mine = {}) {
     auto v = std::make_shared<VirtualOnBus>();
     v->node = node;
-    v->vd = std::make_shared<openhal::emu::VirtualDisplay>(mode);
     // The system's own display: under the system (a window's is the host's).
     const auto root = system_bus_root(system);
     std::weak_ptr<VirtualOnBus> weak = v;
     for (std::uint32_t n = 0; n < 64; ++n) {
         const auto path = hd::device_path(root, n);
+        if (mine.contains(path)) continue;   // its own already (an offer again would take it over)
         xbus::OfferOptions o{.kind = openbus::EndpointKind::stream, .verb = "display", .effect = "reversible",
                              .interfaces = {std::string(hd::kInterface)},
                              .properties = {{"display-kind", "virtual"}, {"mode", hd::format_mode(mode)}, {"refresh", "60"},
@@ -152,6 +161,10 @@ std::expected<std::shared_ptr<VirtualOnBus>, std::string> offer_virtual_(std::sh
         break;
     }
     if (v->path.empty()) return std::unexpected(std::string("64 displays are offered here already"));
+    // What its hello asks; an extending one is named by its number (the
+    // desktop puts it back where it was when it comes again).
+    const auto number = v->path.substr(v->path.rfind('/') + 1);
+    v->vd = std::make_shared<openhal::emu::VirtualDisplay>(mode, asks == "extend" ? "extend virtual-" + number : asks);
     // Its control (openhal 0.3 §6.5) and its input (§6.6).
     const auto control = [weak](xbus::Call c) {
         auto self = weak.lock();
@@ -162,7 +175,9 @@ std::expected<std::shared_ptr<VirtualOnBus>, std::string> offer_virtual_(std::sh
             Json d{{"kind", "virtual"}, {"mode", hd::format_mode(self->vd->mode())}, {"frames", self->vd->frames()},
                    {"attached", static_cast<bool>(self->stream)}};
             if (const auto r = self->vd->role())
-                d["role"] = r->kind == opensal::DisplayRole::Kind::mirror ? std::format("mirror {}", r->of) : std::string("primary");
+                d["role"] = r->kind == opensal::DisplayRole::Kind::mirror   ? std::format("mirror {}", r->of)
+                            : r->kind == opensal::DisplayRole::Kind::extend ? std::format("extend {} {}", r->x, r->y)
+                                                                            : std::string("primary");
             c.reply(d.dump(), static_cast<std::uint16_t>(openbus::Codec::json));
         } else if (op == "capture") {
             reply_bytes_(c, self->capture());
@@ -197,7 +212,6 @@ std::expected<std::shared_ptr<VirtualOnBus>, std::string> offer_virtual_(std::sh
         }
         c.end();
     };
-    const auto number = v->path.substr(v->path.rfind('/') + 1);
     (void)node->offer(hd::control_path(v->path), {.verb = "display-control", .effect = "reversible", .interfaces = {std::string(hd::kControlInterface)}},
                       [control](xbus::Call c) { std::thread([control, c = std::move(c)]() mutable { control(std::move(c)); }).detach(); });
     (void)node->offer(root + "/device/input/" + number, {.verb = "input", .effect = "reversible", .interfaces = {std::string(hd::kInputInterface)}},
@@ -346,6 +360,7 @@ int desktop_supervise(const fs::path& home, std::string_view name, std::span<con
 
     std::mutex m;
     std::vector<Started> started;
+    std::vector<std::shared_ptr<VirtualOnBus>> virtuals;     // attached later (attach kind virtual)
     std::optional<platform::ExitStatus> ended;
     std::string ended_by;
     std::atomic<bool> stop{false};
@@ -454,10 +469,33 @@ int desktop_supervise(const fs::path& home, std::string_view name, std::span<con
         if (op == "status") {
             c.reply(status().dump(), static_cast<std::uint16_t>(openbus::Codec::json));
         } else if (op == "attach") {
-            const auto display = j.value("path", std::string{});
+            auto display = j.value("path", std::string{});
             const auto role = j.value("role", std::string("mirror"));
-            if (display.empty() || (role != "primary" && !role.starts_with("mirror") && !role.starts_with("extend"))) {
-                c.fail(openbus::ErrorCode::malformed, "attach takes a display's path and a role (primary, mirror, extend)");
+            if (role != "primary" && !role.starts_with("mirror") && !role.starts_with("extend")) {
+                c.fail(openbus::ErrorCode::malformed, "attach takes a role: primary, mirror or extend");
+                return;
+            }
+            // Another virtual display (design 2026-10-24 §4.4): offered here, of
+            // its mode, asking to be what the role says -- an output of its own
+            // when it extends the desktop.
+            if (display.empty() && j.value("kind", std::string{}) == "virtual") {
+                const auto vm_mode = hd::parse_mode(j.value("mode", hd::format_mode(mode)));
+                if (!vm_mode) { c.fail(openbus::ErrorCode::malformed, "a mode is <w>x<h>[@<scale>]"); return; }
+                const std::string asks = role == "primary" ? "primary" : role.starts_with("extend") ? "extend" : "";
+                std::set<std::string> mine{(*virt)->path};
+                {
+                    std::lock_guard l(m);
+                    for (const auto& v : virtuals) mine.insert(v->path);
+                }
+                auto more = offer_virtual_(*node, *vm_mode, std::string(name), asks, mine);
+                if (!more) { c.fail(openbus::ErrorCode::gone, more.error()); return; }
+                if (frames) (*more)->vd->set_region(std::span<const std::byte>(frames->data, frames->size));
+                display = (*more)->path;
+                std::lock_guard l(m);
+                virtuals.push_back(*more);
+            }
+            if (display.empty()) {
+                c.fail(openbus::ErrorCode::malformed, "attach takes a display's path, or kind virtual");
                 return;
             }
             auto pid = start_on(display, role);
@@ -481,6 +519,9 @@ int desktop_supervise(const fs::path& home, std::string_view name, std::span<con
                 std::lock_guard l(m);
                 for (const auto& st : started)
                     if (st.display == display && st.machine) in_machine = st.machine;
+                // One of its own virtual displays: gone from the bus too.
+                for (auto it = virtuals.begin(); it != virtuals.end(); ++it)
+                    if ((*it)->path == display) { (*it)->withdraw(std::string(name)); virtuals.erase(it); break; }
             }
             if (in_machine) {
                 // Its display gone: the command ends with its stream.

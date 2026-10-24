@@ -344,8 +344,13 @@ luban display box capture shot.png             # a picture of it, from the displ
 luban display box record 10 frames/            # every frame for 10 seconds, as PNG
 luban display box input '[{"key": "Super"}]'   # input, as a window gives it (an agent's way)
 luban enter box --display window               # show it in the Luban OS window
+luban display box attach virtual=1280x800      # a second screen beside it (--role mirror: the same picture)
 luban display box end
 ```
+
+以扩展方式接入的显示器是一块独立的屏幕，在主屏右边，用它自己的大小：在工作区视图里它显示一个别处没有显示的工作区（在主屏上
+用 Super+数字切到它时两者互换），在 WuXian 视图里平面延续到它上面。窗口拖过去，落在松开时所在屏幕的工作区里。拔下后它的工作区
+还在（窗口按一个键就能回到），再接上时又显示那个工作区。状态栏留在主屏。
 
 这里的一切都是总线上的路径（[总线](09-bus.md)）：`luban display` 是它的一个客户端，`xbus call` 是另一个；测试与 Agent 用的是同样的路径。
 

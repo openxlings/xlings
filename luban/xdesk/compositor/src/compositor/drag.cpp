@@ -75,6 +75,16 @@ void Server::drag_start(View* v, bool live) {
     drag_dy = cursor->y - r->y;
     drop = {};
     drop_width = 0;
+    // On an extending output's workspace (design 2026-10-24 §4.4): the frame
+    // follows the pointer, and where it is let go says which output's
+    // workspace it lands in.
+    if (!wuxian() && lay.workspace_of(v->id) && *lay.workspace_of(v->id) != lay.current()) {
+        drag_live = false;
+        drag_session.reset();
+        set_opacity(*v, 0.75f);
+        wlr_scene_node_raise_to_top(&v->frame->node);
+        return;
+    }
     drag_session = lay.begin_drag(v->id, cursor->x, cursor->y);
     if (!live) set_opacity(*v, 0.75f);
     wlr_scene_node_raise_to_top(&v->frame->node);
@@ -242,6 +252,26 @@ void Server::show_guides(const layout::Snap& sn) {
 void Server::drag_end() {
     View* v = view_of(dragged);
     hide_drop();
+    // Let go on another output than its workspace's (the workspace view): the
+    // workspace that output shows takes it, where it was let go.
+    if (v && !wuxian() && lay.workspace_of(v->id)) {
+        auto* e = extend_at(cursor->x, cursor->y);
+        const int to = e ? e->workspace : lay.current();
+        const int from = *lay.workspace_of(v->id);
+        if (to && (to != from || from != lay.current())) {
+            set_opacity(*v, 1.0f);
+            const auto r = placement_of(v->id);
+            if (to != from) lay.send_to(v->id, to);
+            if (r) lay.place(v->id, {cursor->x - drag_dx - (e ? e->x : 0), cursor->y - drag_dy, r->width, r->height});
+            if (to != from) publish("drop", {{"id", std::to_string(v->id)}, {"workspace", std::to_string(to)}});
+            drag = Drag::none;
+            drag_session.reset();
+            drop = {};
+            drop_width = 0;
+            arrange();
+            return;
+        }
+    }
     if (v) {
         set_opacity(*v, 1.0f);
         // Floating, or stacked in the workspace view: let go where it is

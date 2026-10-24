@@ -10,7 +10,7 @@ namespace openhal::emu {
 struct VirtualDisplay::State {
     mutable std::mutex m;
     display::Mode mode;
-    bool wants_primary { false };
+    std::string asks;
     std::vector<std::byte> pixels;      // mode.width x mode.height, B G R A
     opensal::wire::Decoder in;
     std::uint64_t frames { 0 };
@@ -47,30 +47,31 @@ struct VirtualDisplay::State {
     }
 };
 
-VirtualDisplay::VirtualDisplay(display::Mode mode, bool wants_primary) : s_(std::make_shared<State>()) {
+VirtualDisplay::VirtualDisplay(display::Mode mode, std::string asks) : s_(std::make_shared<State>()) {
     s_->mode = mode;
-    s_->wants_primary = wants_primary;
+    s_->asks = std::move(asks);
     s_->clear();
 }
 
 namespace {
 
-// "<bits> <w> <h> <scale> <paced> [primary]": its size in device pixels and
-// its density; it paces (FramePresented); it asks to be the primary when it is
-// to show the desktop at its size (opensal 0.7: a display that comes to a
-// desktop already running).
-std::string hello_(const display::Mode& mode, bool primary, bool region) {
+// "<bits> <w> <h> <scale> <paced> [primary | extend [<name>]]": its size in
+// device pixels and its density; it paces (FramePresented); it asks to be the
+// primary when it is to show the desktop at its size, or an output of its own
+// beside the others (opensal 0.7: a display that comes to a desktop already
+// running).
+std::string hello_(const display::Mode& mode, const std::string& asks, bool region) {
     using I = opensal::Interface;
     auto bits = I::Surface | I::Pointer | I::Keyboard | I::Mode | I::Density | I::Text | I::Clipboard | I::Displays;
     if (region) bits = bits | I::Region;
-    return opensal::wire::encode('H', std::format("{} {} {} {} 1{}", bits, mode.width, mode.height, mode.scale, primary ? " primary" : ""));
+    return opensal::wire::encode('H', std::format("{} {} {} {} 1{}", bits, mode.width, mode.height, mode.scale, asks.empty() ? "" : " " + asks));
 }
 
 }  // namespace
 
 std::string VirtualDisplay::hello() const {
     std::lock_guard l(s_->m);
-    return hello_(s_->mode, s_->wants_primary, !s_->region.empty());
+    return hello_(s_->mode, s_->asks, !s_->region.empty());
 }
 
 void VirtualDisplay::set_region(std::span<const std::byte> bytes) {
@@ -109,7 +110,7 @@ std::string VirtualDisplay::feed(std::string_view bytes) {
             break;
         }
         case 'h':
-            out += hello_(s_->mode, s_->wants_primary, !s_->region.empty());
+            out += hello_(s_->mode, s_->asks, !s_->region.empty());
             break;
         case 'r':
             // Its rows in the region both sides map (opensal 0.7).

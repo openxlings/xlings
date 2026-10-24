@@ -107,10 +107,11 @@ workspace has makes that workspace, with that number.
 3.8 When the output's size changes, workspaces lay their content out again for
 it; their origins do not move.
 
-3.9 An extending output that goes: the windows on it go to the primary, each
-remembering the output's name, and a workspace shown on it is shown on the
-primary when nothing else is; when an output of that name comes back, they go
-back to it. A window dragged across the edge between two outputs lands on the
+3.9 An extending output that goes: the workspace it showed stays, its windows
+in it (a key away on the primary); remembered by the output's name, it is
+shown on that output again when an output of that name comes back. Going on
+the primary to a workspace an extending output shows swaps the two. A window
+dragged across the edge between two outputs lands in the workspace of the
 output the pointer is let go on (§3.5).
 
 ## 4. State: `wuxian.json`, version 1

@@ -102,8 +102,11 @@ XTEST(OpenhalEmu, AVirtualDisplayKeepsWhatIsDrawnOnItAndPacesIt, .area = "luban"
     (void)bad.feed(std::string(8, '\xff'));
     EXPECT_FALSE(bad.error().empty());
     // Asked to be the primary: its hello says so.
-    emu::VirtualDisplay window({64, 64, 1.0}, true);
+    emu::VirtualDisplay window({64, 64, 1.0}, "primary");
     EXPECT_TRUE(window.hello().ends_with(" primary"));
+    // Asked to extend the desktop, by its name.
+    emu::VirtualDisplay beside({64, 64, 1.0}, "extend virtual-1");
+    EXPECT_TRUE(beside.hello().ends_with(" extend virtual-1"));
 }
 
 XTEST(OpenhalEmu, InputStepsAreTheEventsAWindowGives, .area = "luban", .covers = {"LUBAN-DISPLAY-VIRTUAL"}) {

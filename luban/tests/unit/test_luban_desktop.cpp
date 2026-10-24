@@ -236,7 +236,11 @@ XTEST(OpensalWire, ADisplaysRoleCrossesWhole, .area = "luban", .covers = {"LUBAN
     EXPECT_EQ(wire::decode_display("1 primary"), opensal::DisplayRole{});
     EXPECT_FALSE(wire::decode_display("0 primary")) << "displays count from 1";
     EXPECT_FALSE(wire::decode_display("2 mirror 1 0 900")) << "a mirror of nothing";
-    EXPECT_FALSE(wire::decode_display("2 extend")) << "not a role of this version";
+    // An extending display (0.7): an output of its own at x, y on the screen.
+    const opensal::DisplayRole extend{.number = 3, .kind = opensal::DisplayRole::Kind::extend, .x = 1024, .y = 0};
+    EXPECT_EQ(wire::encode_display(extend), "3 extend 1024 0");
+    EXPECT_EQ(wire::decode_display("3 extend 1024 0"), extend);
+    EXPECT_FALSE(wire::decode_display("2 extend")) << "an extending display says where it is";
     EXPECT_TRUE(opensal::has(static_cast<opensal::Interfaces>(opensal::Interface::Displays), opensal::Interface::Displays));
 }
 

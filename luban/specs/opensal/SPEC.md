@@ -81,12 +81,16 @@ application by its id, started by the consumer as it declares) and activate
 
 5.5 `Displays`: a consumer may be shown by several providers at once, each
 a display numbered from 1 in the order it came; the first is the primary. It
-tells each what it is (`'d'`): the primary, whose size is the consumer's, or a
-mirror of another display, with that display's size. A mirror shows the same
+tells each what it is (`'d'`): the primary, whose size is the consumer's, a
+mirror of another display, with that display's size (`<n> mirror <of> <w>
+<h>`), or an extending display (`<n> extend <x> <y>`). A mirror shows the same
 frames, sizes itself to them and keeps their shape, and says no size of its
-own; its input is the consumer's as the primary's is. When the primary goes,
-the next display is told it is the primary. A provider without `Displays` is
-only ever a primary.
+own; its input is the consumer's as the primary's is. An extending display is
+an output of the consumer's own at the display's size and density, its
+top-left at `x`, `y` on the consumer's screen (logical pixels): it is sent
+that output's frames only, and its input is at that output (its coordinates
+its own). When the primary goes, the next display that is not extending is
+told it is the primary. A provider without `Displays` is only ever a primary.
 
 ## 6. The wire
 
@@ -125,7 +129,9 @@ to show the consumer at its own size -- a window come to a desktop that ran on
 a virtual display -- ends its hello with `primary`: the consumer makes it its
 primary (it takes its size and density) and says to the one before it that it
 is a mirror (`'d'`). When the primary goes, the next one is the primary and
-the consumer takes its size again. A display nobody looks at (a mirror kept
+the consumer takes its size again. One that ends its hello with `extend`
+(optionally followed by a name, which the consumer remembers it by when it
+comes again) is an extending display (§5.5). A display nobody looks at (a mirror kept
 for capture) says `Shown false` and is sent nothing until it says `Shown true`.
 
 6.8 **Region (0.7).** Where both sides map one shared region -- a machine's

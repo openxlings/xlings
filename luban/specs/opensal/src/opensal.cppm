@@ -101,13 +101,15 @@ using Event = std::variant<Resized, DensityChanged, Key, TextCommit, Preedit, Po
 
 // Displays: what one of a consumer's displays is (its number, from 1 in the
 // order they came; the first is the primary). A mirror shows display `of`,
-// whose picture is `size`.
+// whose picture is `size`; an extending display is an output of its own,
+// its top-left at `x`, `y` on the consumer's screen (logical pixels).
 struct DisplayRole {
-    enum class Kind { primary, mirror };
+    enum class Kind { primary, mirror, extend };
     std::uint32_t number { 1 };
     Kind kind { Kind::primary };
     std::uint32_t of { 0 };
     Size size;
+    std::int32_t x { 0 }, y { 0 };
     bool operator==(const DisplayRole&) const = default;
 };
 

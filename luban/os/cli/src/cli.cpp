@@ -1377,10 +1377,10 @@ const spec::CommandSpec& tree() {
                          {"--with-screenshot", "The bundle also holds a picture of its desktop", false, Level::More}},
              .level = Level::More, .effect = "read"},
             {.name = "display", .description = "The displays of a running desktop: list, capture, record, attach, detach, mode, input, end",
-             .arguments = {{"name", "Which", true}, {"action", "list (default), capture FILE, record SECONDS DIR, attach window, detach PATH, mode WxH@S, input STEPS, end"},
+             .arguments = {{"name", "Which", true}, {"action", "list (default), capture FILE, record SECONDS DIR, attach window|virtual[=WxH], detach PATH, mode WxH@S, input STEPS, end"},
                            {"args", "What the action takes", false, true}},
              .options = {{"--display <N>", "This display (its number in the list); default: the virtual one"},
-                         {"--role <ROLE>", "attach: what the window is to the desktop (primary)", false, Level::Expert}},
+                         {"--role <ROLE>", "attach: what the display is to the desktop (a window: primary; a virtual one: extend or mirror)", false, Level::Expert}},
              .level = Level::More, .effect = "reversible"},
             {.name = "run", .description = "Run one command in an environment",
              .arguments = {{"name", "Which", true}, {"command", "The command and its arguments, after --", true, true}},
@@ -1857,7 +1857,7 @@ int run(int argc, char* argv[]) {
             return logs(c, p.words[0], p.option("--app"), p.option("--since"), p.option("--bundle"), p.flag("--with-screenshot"), g.json);
         }
         if (p.command == "display") {
-            if (p.words.empty()) return usage("`luban display <name> [list|capture FILE|record SECONDS DIR|attach window|detach PATH|mode WxH@S|input STEPS|end]`", g);
+            if (p.words.empty()) return usage("`luban display <name> [list|capture FILE|record SECONDS DIR|attach window|virtual[=WxH]|detach PATH|mode WxH@S|input STEPS|end]`", g);
             return display(c, p.words[0], std::span<const std::string>(p.words).subspan(1), p.option("--display"), p.option("--role"), g.json);
         }
         if (p.command == "run") return cmd_run(c, p, g);

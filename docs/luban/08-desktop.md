@@ -474,8 +474,17 @@ luban display box capture shot.png             # a picture of it, from the displ
 luban display box record 10 frames/            # every frame for 10 seconds, as PNG
 luban display box input '[{"key": "Super"}]'   # input, as a window gives it (an agent's way)
 luban enter box --display window               # show it in the Luban OS window
+luban display box attach virtual=1280x800      # a second screen beside it (--role mirror: the same picture)
 luban display box end
 ```
+
+A display attached to extend the desktop is a screen of its own, right of the
+primary, at its own size: in the workspace view it shows a workspace nobody
+else shows (Super+number on the primary swaps with it when you go to that
+one), in the WuXian view the plane goes on across it. A window dragged across
+lands in the workspace of the screen it is let go on. Detached, its workspace
+stays (its windows a key away); attached again, it shows that workspace again.
+The status bar stays on the primary.
 
 Everything here is a path on the bus ([The bus](09-bus.md)): `luban display`
 is one client of it, `xbus call` another; tests and agents use the same paths.
