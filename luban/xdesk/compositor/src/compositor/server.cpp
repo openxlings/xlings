@@ -420,6 +420,8 @@ bool Server::start_() {
     load_person();
     draw_shell();
     send(hello());
+    // What its programs say, read off the loop (design 2026-10-24 §6.1).
+    apps_reader = std::jthread([this](std::stop_token st) { apps_read(st); });
     for (const auto& a : o.autostart) launch(a);
     return true;
 }
@@ -429,7 +431,7 @@ int Server::run_() {
     while (!stop) {
         wl_display_flush_clients(display);
         wl_event_loop_dispatch(loop, 100);
-        std::erase_if(children, [](int pid) { return os::exited(pid).has_value(); });
+        apps_reap();
     }
     return 0;
 }

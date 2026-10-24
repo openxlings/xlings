@@ -327,6 +327,20 @@ luban display box end
 
 这里的一切都是总线上的路径（[总线](09-bus.md)）：`luban display` 是它的一个客户端，`xbus call` 是另一个；测试与 Agent 用的是同样的路径。
 
+## 出了问题时
+
+桌面里的程序说的话不会丢：它启动的每个程序都有自己的日志（系统里的 `~/.local/state/xdesk/apps/<应用>-<pid>.log`，每个应用保留最近五份），
+它的退出是一个事件——崩溃的、或十秒内就失败的，会在桌面上提示，并说出日志在哪里。在宿主上：
+
+```bash
+luban logs box                         # the desktop's, its programs', the machine's, the window's: the last lines of each
+luban logs box --app falkon            # one program's
+luban logs box --since 10m
+luban logs box --bundle box-logs.tar   # all of it with its status, to share (--with-screenshot adds a picture)
+```
+
+结束了的桌面会说出原因（"the desktop ended (124): a time limit ended it -- <它的日志>"）。
+
 ## 单个程序一个窗口
 
 ```bash

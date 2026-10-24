@@ -27,6 +27,12 @@ Go into an environment, or boot an image
 
 Options: `--mode <MODE>` — sandbox (this machine's kernel) or machine (its own); default: its setting; `--temp` — Nothing it writes stays; `--user <NAME>` — Log in as this user this once (root, or one of its users); `--display <DISPLAY>` — terminal, window or virtual[=WxH@S] (its desktop with no window); default: its desktop decides; `--desktop <SESSION>` — This desktop, this once, in a window
 
+## `luban logs <name>` (more)
+
+What a system's desktop, its programs and its machine said, gathered
+
+Options: `--app <ID>` — Only this program's (its desktop entry's id, as falkon); `--since <TIME>` — Only what changed in this time back: 30s, 10m, 2h, 1d; `--bundle <FILE>` — All of it, with its status, in one tar to share; `--with-screenshot` — The bundle also holds a picture of its desktop
+
 ## `luban display <name> [action] [args]...` (more)
 
 The displays of a running desktop: list, capture, record, attach, detach, mode, input, end

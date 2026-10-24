@@ -11,6 +11,7 @@ import xdesk.os;
 import openbus;
 import xbus.node;
 import telemetry;
+import xdesk.config;
 import wlroots;
 import xdesk.native.wayland;
 import freedesktop.wayland.server;
@@ -90,6 +91,27 @@ void Server::bus_start() {
     (void)bus->offer("service/xdesk/state", {.verb = "state", .effect = "read", .interfaces = {"xdesk.state@1"}},
                      on_loop([this](const xbus::Call&) { return state_json(); }));
     (void)bus->offer("topic/xdesk/events", {.kind = openbus::EndpointKind::topic, .codec = static_cast<std::uint16_t>(openbus::Codec::json)});
+    // The programs it started: their logs and whether they run (design
+    // 2026-10-24 §6.1); each one's log is a stream at service/xdesk/apps/<pid>/log.
+    // {"op": "tail", "pid": N}: the last mebibyte it said, ended or not.
+    (void)bus->offer("service/xdesk/apps", {.verb = "apps", .effect = "read", .interfaces = {"xdesk.apps@1"}}, [this](xbus::Call c) {
+        const auto j = xdesk::config::Json::parse(c.body());
+        const auto* op = j ? j->get("op") : nullptr;
+        if (op && op->string_or("") == "tail") {
+            const auto* pid = j->get("pid");
+            std::string tail;
+            {
+                std::lock_guard l(apps_m);
+                for (const auto& a : app_runs)
+                    if (pid && a.pid == static_cast<int>(pid->number_or(-1))) tail = a.tail;
+            }
+            constexpr std::size_t kPiece = 768u << 10;
+            for (std::size_t at = 0; at < tail.size(); at += kPiece) c.reply(std::string_view(tail).substr(at, kPiece));
+        } else {
+            c.reply(apps_json(), static_cast<std::uint16_t>(openbus::Codec::json));
+        }
+        c.end();
+    });
 }
 
 void Server::bus_stop() {

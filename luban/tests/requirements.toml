@@ -759,3 +759,15 @@ status = "required"
 [LUBAN-DISPLAY-VIRTUAL]
 text = "a desktop runs on a virtual display (luban enter <n> --display virtual[=WxH@S]): an opensal provider nobody sees that keeps the picture, paces the frames, takes the desktop's size, role and clipboard, hands the picture out as PNG and gives input steps as the events a window gives (openhal 0.3 §6; design 2026-10-24 §4.2)"
 status = "required"
+
+[LUBAN-DISPLAY-HOTPLUG]
+text = "a display comes to a running desktop and goes: one that asks to be the primary (a window) is, the desktop taking its size; when it goes, the desktop goes on at the next display's size (its virtual display); the desktop's session says its displays (design 2026-10-24 §4.3, opensal 0.7)"
+status = "required"
+
+[LUBAN-DESKTOP-APP-LOGS]
+text = "what a program the desktop started says is read off the desktop's loop within a budget into its log and its last mebibyte (a stream on the bus); its end is an event with its code or signal, its log and its last lines; an unexpected end is said on the desktop; luban logs gathers them with the desktop's, the machine's and the window's logs, and bundles them with the status (design 2026-10-24 §6, J71)"
+status = "required"
+
+[LUBAN-DESKTOP-SESSION-END]
+text = "a desktop's session says when it ends and why -- who ended it, its code, its log -- on its events and to the window that showed it (design 2026-10-24 §6.2, J69)"
+status = "required"

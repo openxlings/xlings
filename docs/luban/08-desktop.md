@@ -452,6 +452,23 @@ luban display box end
 Everything here is a path on the bus ([The bus](09-bus.md)): `luban display`
 is one client of it, `xbus call` another; tests and agents use the same paths.
 
+## When something goes wrong
+
+Nothing a desktop's programs say is lost: each program it starts has its log
+(`~/.local/state/xdesk/apps/<app>-<pid>.log` in the system, the last five of
+each), and its end is an event -- one that crashes, or fails within ten
+seconds, is said on the desktop with where its log is. From the host:
+
+```bash
+luban logs box                         # the desktop's, its programs', the machine's, the window's: the last lines of each
+luban logs box --app falkon            # one program's
+luban logs box --since 10m
+luban logs box --bundle box-logs.tar   # all of it with its status, to share (--with-screenshot adds a picture)
+```
+
+A desktop that ended says why ("the desktop ended (124): a time limit ended it
+-- <its log>").
+
 ## One program in a window
 
 ```bash

@@ -5,6 +5,7 @@ import xdesk.apps;
 import xdesk.config;
 import xdesk.os;
 import xdesk.words;
+import telemetry;
 
 int main(int argc, char* argv[]) {
     xdesk::words::register_words();
@@ -115,7 +116,12 @@ int main(int argc, char* argv[]) {
     // shows it (Luban OS, a machine's display) is the provider.
     xdesk::compositor::Options o;
     bool terminal_given = false;
-    o.log = [](std::string_view line) { std::println(std::cerr, "xdesk: {}", line); };
+    // Said on its standard error (its session's log) and kept in its
+    // telemetry's recent records (design 2026-10-24 §6.2: xdesk msg telemetry recent).
+    o.log = [](std::string_view line) {
+        std::println(std::cerr, "xdesk: {}", line);
+        telemetry::log().info("xdesk", {{"line", std::string(line)}});
+    };
     for (std::size_t i = 0; i < args.size(); ++i) {
         const auto value = [&]() -> std::optional<std::string> {
             if (i + 1 >= args.size()) return std::nullopt;

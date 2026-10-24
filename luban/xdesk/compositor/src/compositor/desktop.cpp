@@ -3,6 +3,7 @@ module xdesk.compositor;
 
 import std;
 import xdesk.words;
+import openbus;
 import opensal;
 import opensal.wire;
 import opensal.keys;
@@ -185,7 +186,7 @@ void Server::start_app(const apps::App& app) {
     auto argv = apps::argv(app.exec);
     if (argv.empty()) return;
     if (app.terminal) argv = terminal_argv(argv, app.name, app.id);
-    launch(argv);
+    launch(argv, app.id, app.name);
 }
 
 // A key while the launcher is open: it is the launcher's.
@@ -207,7 +208,7 @@ void Server::launcher_key(std::uint32_t code) {
 }
 
 // ── programs ─────────────────────────────────────────────────────
-void Server::launch(const std::vector<std::string>& argv) {
+void Server::launch(const std::vector<std::string>& argv, std::string id, std::string name) {
     if (argv.empty()) return;
     auto env = os::environment();
     env["WAYLAND_DISPLAY"] = socket;
@@ -217,9 +218,62 @@ void Server::launch(const std::vector<std::string>& argv) {
     env["MOZ_ENABLE_WAYLAND"] = "1";
     env.erase("DISPLAY");
     const fs::path home = env.contains("HOME") ? fs::path(env.at("HOME")) : fs::path{};
-    const int pid = os::spawn({.argv = argv, .env = env, .cwd = home});
-    if (pid > 0) children.push_back(pid);
-    else log("cannot start " + argv[0]);
+    // What it says goes to a pipe the apps' reader takes (design 2026-10-24 §6.1).
+    const auto out = os::pipe();
+    const int pid = os::spawn({.argv = argv, .env = env, .cwd = home,
+                               .stdio = {-1, out ? (*out)[1] : -1, out ? (*out)[1] : -1}});
+    if (out) os::close((*out)[1]);
+    if (id.empty()) id = fs::path(argv[0]).filename().string();
+    if (name.empty()) name = id;
+    if (pid <= 0) {
+        if (out) os::close((*out)[0]);
+        log("cannot start " + argv[0]);
+        publish("app-exit", {{"id", id}, {"error", "it could not be started"}});
+        show_hint(std::format("{}: {}", name, i18n::tr("it could not be started")), 6000);
+        return;
+    }
+    children.push_back(pid);
+    // Its log: the state's apps/<id>-<pid>.log, the last five of each kept.
+    const fs::path dir = (env.contains("XDG_STATE_HOME") ? fs::path(env.at("XDG_STATE_HOME")) : home / ".local" / "state") / "xdesk" / "apps";
+    std::error_code ec;
+    fs::create_directories(dir, ec);
+    std::vector<fs::path> older;
+    for (fs::directory_iterator it(dir, ec), end; !ec && it != end; it.increment(ec))
+        if (it->path().filename().string().starts_with(id + "-")) older.push_back(it->path());
+    std::ranges::sort(older, [](const fs::path& a, const fs::path& b) {
+        std::error_code e;
+        return fs::last_write_time(a, e) < fs::last_write_time(b, e);
+    });
+    while (older.size() >= 5) { fs::remove(older.front(), ec); older.erase(older.begin()); }
+    AppRun r;
+    r.pid = pid;
+    r.id = id;
+    r.name = name;
+    r.log = dir / std::format("{}-{}.log", id, pid);
+    r.log_fd = os::open_append(r.log);
+    r.started = r.refilled = std::chrono::steady_clock::now();
+    r.out = out ? (*out)[0] : -1;
+    {
+        std::lock_guard l(apps_m);
+        app_runs.push_back(std::move(r));
+    }
+    publish("app-start", {{"id", id}, {"pid", std::to_string(pid)}, {"log", (dir / std::format("{}-{}.log", id, pid)).string()}});
+    // Its log as a stream on the bus: the last mebibyte, then what it says.
+    if (bus) {
+        (void)bus->offer_stream(std::format("service/xdesk/apps/{}/log", pid),
+                                {.kind = openbus::EndpointKind::stream, .interfaces = {"xdesk.log@1"}},
+                                [this, pid](xbus::Stream st) {
+                                    std::lock_guard l(apps_m);
+                                    for (auto& a : app_runs)
+                                        if (a.pid == pid) {
+                                            if (!a.tail.empty()) (void)st.write(a.tail, std::chrono::seconds(2));
+                                            if (a.ended && a.out < 0) st.close();
+                                            else a.followers.push_back(st);
+                                            return;
+                                        }
+                                    st.close();
+                                });
+    }
 }
 
 }  // namespace xdesk::compositor

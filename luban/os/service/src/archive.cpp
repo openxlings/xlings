@@ -73,6 +73,22 @@ void put_(std::ostream& out, const std::string& name, char type, std::string_vie
     pad_(out, data.size());
 }
 
+}  // namespace
+
+std::expected<std::size_t, std::string> write_files(const fs::path& file, const std::vector<std::pair<std::string, std::string>>& files) {
+    std::ofstream out(file, std::ios::binary | std::ios::trunc);
+    if (!out) return std::unexpected("cannot write " + file.string());
+    for (const auto& [name, bytes] : files) put_(out, name, '0', bytes, 0644);
+    static const std::array<char, kBlock * 2> end{};
+    out.write(end.data(), end.size());
+    out.flush();
+    if (!out) return std::unexpected("cannot write " + file.string());
+    std::error_code ec;
+    return static_cast<std::size_t>(fs::file_size(file, ec));
+}
+
+namespace {
+
 std::string field_(const char* p, std::size_t width) {
     std::size_t n = 0;
     while (n < width && p[n]) ++n;

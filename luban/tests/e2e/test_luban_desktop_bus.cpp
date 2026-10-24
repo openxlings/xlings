@@ -108,7 +108,7 @@ for obj, op, body in it:
 }  // namespace
 
 XTEST(LubanDesktopBus, ADesktopRunsOnAVirtualDisplayAndEverythingOfItIsOnTheBus, .area = "luban",
-      .covers = {"LUBAN-DISPLAY-VIRTUAL", "LUBAN-BUS-DESKTOP"}, .requires_ = {"linux", "xlings-bin"}) {
+      .covers = {"LUBAN-DISPLAY-VIRTUAL", "LUBAN-BUS-DESKTOP", "LUBAN-DISPLAY-HOTPLUG", "LUBAN-DESKTOP-APP-LOGS", "LUBAN-DESKTOP-SESSION-END"}, .requires_ = {"linux", "xlings-bin"}) {
     const auto luban = luban_bin_();
     const auto xdesk = xdesk_bin_();
     if (!luban) GTEST_SKIP() << "no luban beside the xlings under test (mcpp build -p luban-tool, or LUBAN_BIN)";
@@ -119,7 +119,8 @@ XTEST(LubanDesktopBus, ADesktopRunsOnAVirtualDisplayAndEverythingOfItIsOnTheBus,
     tk::write_file(root / "client.py", std::string(kClient));
     fs::create_directories(root / "share" / "wayland-sessions");
     tk::write_file(root / "share" / "wayland-sessions" / "xdesk.desktop",
-                   std::format("[Desktop Entry]\nName=xdesk\nExec={} --profile classic --autostart 'python3 {} c04040'\n"
+                   std::format("[Desktop Entry]\nName=xdesk\nExec={} --profile classic --autostart 'python3 {} c04040'"
+                               " --autostart 'sh -c \"echo hello-from-an-app; sleep 3; kill -SEGV $$\"'\n"
                                "X-Opensal-Native=true\nX-Opensal-Interfaces=surface,keyboard,pointer\n",
                                xdesk->string(), (root / "client.py").string()));
     // State it as already toured: no first-session tour over the window.
@@ -129,6 +130,7 @@ XTEST(LubanDesktopBus, ADesktopRunsOnAVirtualDisplayAndEverythingOfItIsOnTheBus,
     fs::permissions(root / "runtime", fs::perms::owner_all, fs::perm_options::replace);
     auto env = home.env();
     env["LUBAN_BIN"] = luban->string();
+    env["LUBAN_XLINGS"] = tk::xlings_binary().string();
     env["XDG_DATA_DIRS"] = (root / "share").string();
     env["XDG_RUNTIME_DIR"] = (root / "runtime").string();
     for (const auto& [k, v] : env) xlings::platform::set_env_variable(k, v);
@@ -243,6 +245,33 @@ XTEST(LubanDesktopBus, ADesktopRunsOnAVirtualDisplayAndEverythingOfItIsOnTheBus,
     }
     EXPECT_TRUE(back) << "the desktop goes on on its virtual display\n" << now["displays"].dump() << now["output"].dump();
     EXPECT_TRUE(luban::vm::desktop(h, "box", {{"op", "status"}})->value("running", false));
+    // What a program it started said is kept, and its end: the crash is on
+    // the bus with its signal and its log (design 2026-10-24 §6.1, J71).
+    const auto apps_path = luban::vm::system_bus_root("box") + "/service/xdesk/apps";
+    Json crashed;
+    for (int k = 0; k < 100 && crashed.is_null(); ++k) {
+        std::this_thread::sleep_for(100ms);
+        auto got = (*node)->call(apps_path, {}, 5s);
+        if (!got || got->empty()) continue;
+        for (const auto& a : Json::parse(got->front(), nullptr, false))
+            if (a.value("id", std::string{}) == "sh" && !a.value("running", true)) crashed = a;
+    }
+    ASSERT_FALSE(crashed.is_null()) << "the program that crashed is listed";
+    EXPECT_EQ(crashed["code"], 128 + 11) << crashed.dump();
+    EXPECT_NE(tk::read_file(crashed["log"].get<std::string>()).find("hello-from-an-app"), std::string::npos) << crashed.dump();
+    // Gathered without copying it out by hand: luban logs.
+    {
+        auto told = tk::run({.argv = {luban->string(), "logs", "box", "--app", "sh"}, .env = env, .timeout = 60s});
+        EXPECT_EQ(told.exit_code, 0) << told.transcript();
+        EXPECT_NE(told.out.find("hello-from-an-app"), std::string::npos) << told.transcript();
+        const auto bundle = root / "box-logs.tar";
+        auto bundled = tk::run({.argv = {luban->string(), "logs", "box", "--bundle", bundle.string(), "--with-screenshot"}, .env = env, .timeout = 60s});
+        EXPECT_EQ(bundled.exit_code, 0) << bundled.transcript();
+        const auto tar = tk::read_file(bundle);
+        for (const auto* member : {"status.json", "desktop/session.log", "screenshot.png"})
+            EXPECT_NE(tar.find(member), std::string::npos) << member << "\n" << bundled.transcript();
+        EXPECT_NE(tar.find("hello-from-an-app"), std::string::npos);
+    }
     // Ended through its session: it says why.
     std::string events;
     auto sub = (*node)->subscribe(luban::vm::system_bus_root("box") + "/topic/desktop/events", [&](const xbus::Message& m) { events += m.body + "\n"; });

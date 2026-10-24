@@ -203,6 +203,26 @@ struct Link {
     bool gone { false };
 };
 
+// A program the desktop started (design 2026-10-24 §6.1): what it says is
+// read by a thread of its own (never the loop), within a budget, into its log
+// and its last mebibyte; its end is an event, an unexpected one is said.
+struct AppRun {
+    int pid { -1 };
+    std::string id, name;
+    std::filesystem::path log;
+    int log_fd { -1 };
+    std::uint64_t logged { 0 };                    // bytes in its log (a log stops at 8 MiB)
+    std::chrono::steady_clock::time_point started;
+    int out { -1 };                                // its standard output and error, read here
+    std::string tail;                              // the last 1 MiB it said
+    std::uint64_t dropped { 0 };                   // past its budget: 1 MiB a second
+    double budget { 1 << 20 };
+    std::chrono::steady_clock::time_point refilled;
+    std::vector<xbus::Stream> followers;           // its log's stream, opened on the bus
+    bool ended { false };
+    std::optional<int> code;                       // its end: the code, or 128 + its signal
+};
+
 struct Server {
     const Options& o;
     wl_display* display { nullptr };
@@ -301,6 +321,13 @@ struct Server {
     std::list<View> views;                       // front: focused most recently
     std::list<Popup> popups;
     std::vector<int> children;
+    // The programs it started, their output and their ends (apps_run.cpp).
+    std::mutex apps_m;
+    std::list<AppRun> app_runs;
+    std::jthread apps_reader;
+    void apps_read(std::stop_token stop);
+    void apps_reap();
+    std::string apps_json();
     opensal::Size size;                          // the output, in device pixels
     double scale { 1 };                          // device pixels to a logical one (the window's density)
     bool stop { false };
@@ -675,7 +702,8 @@ struct Server {
 
     void add_popup(wlr_xdg_popup* popup);
 
-    void launch(const std::vector<std::string>& argv);
+    // `id`, `name`: what the program is (its desktop entry's), for its log and its end.
+    void launch(const std::vector<std::string>& argv, std::string id = {}, std::string name = {});
 
     bool held(wlr_keyboard_modifier m);
 

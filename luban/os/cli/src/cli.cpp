@@ -1374,6 +1374,13 @@ const spec::CommandSpec& tree() {
                          {"--display <DISPLAY>", "terminal, window or virtual[=WxH@S] (its desktop with no window); default: its desktop decides",
                           false, Level::More},
                          {"--desktop <SESSION>", "This desktop, this once, in a window", false, Level::More}}, .effect = "reversible"},
+            {.name = "logs", .description = "What a system's desktop, its programs and its machine said, gathered",
+             .arguments = {{"name", "Which", true}},
+             .options = {{"--app <ID>", "Only this program's (its desktop entry's id, as falkon)"},
+                         {"--since <TIME>", "Only what changed in this time back: 30s, 10m, 2h, 1d"},
+                         {"--bundle <FILE>", "All of it, with its status, in one tar to share"},
+                         {"--with-screenshot", "The bundle also holds a picture of its desktop", false, Level::More}},
+             .level = Level::More, .effect = "read"},
             {.name = "display", .description = "The displays of a running desktop: list, capture, record, attach, detach, mode, input, end",
              .arguments = {{"name", "Which", true}, {"action", "list (default), capture FILE, record SECONDS DIR, attach window, detach PATH, mode WxH@S, input STEPS, end"},
                            {"args", "What the action takes", false, true}},
@@ -1835,6 +1842,10 @@ int run(int argc, char* argv[]) {
             if (auto refused = c.port.handshake()) return usage(*refused, g);
         if (p.command == "new") return cmd_new(c, p, g, render);
         if (p.command == "enter") return cmd_enter(c, p, g);
+        if (p.command == "logs") {
+            if (p.words.size() != 1) return usage("`luban logs <name> [--app ID] [--since 10m] [--bundle FILE.tar]`", g);
+            return logs(c, p.words[0], p.option("--app"), p.option("--since"), p.option("--bundle"), p.flag("--with-screenshot"), g.json);
+        }
         if (p.command == "display") {
             if (p.words.empty()) return usage("`luban display <name> [list|capture FILE|record SECONDS DIR|attach window|detach PATH|mode WxH@S|input STEPS|end]`", g);
             return display(c, p.words[0], std::span<const std::string>(p.words).subspan(1), p.option("--display"), p.option("--as"), g.json);
