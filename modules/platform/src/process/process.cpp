@@ -735,6 +735,10 @@ std::optional<int> spawn_detached(const std::vector<std::string>& argv, const st
         const int out = ::open(log.c_str(), O_WRONLY | O_CREAT | O_APPEND, 0600);
         if (in >= 0) ::dup2(in, 0);
         if (out >= 0) { ::dup2(out, 1); ::dup2(out, 2); }
+        // Detached: nothing of whoever started it beyond its own streams (a
+        // descriptor left open would keep a pipe its starter's reader waits on).
+        const long limit = std::min<long>(::sysconf(_SC_OPEN_MAX) > 0 ? ::sysconf(_SC_OPEN_MAX) : 1024, 65536);
+        for (int fd = 3; fd < limit; ++fd) ::close(fd);
         std::vector<char*> args;
         for (const auto& a : argv) args.push_back(const_cast<char*>(a.c_str()));
         args.push_back(nullptr);

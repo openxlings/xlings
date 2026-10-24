@@ -250,10 +250,15 @@ void divert_stderr_lines(std::function<bool(std::string_view)> divert, std::func
         (void)sink;
 #else
         std::fflush(stderr);
-        const int saved = ::dup(2);
+        // Close-on-exec, both: a program started after this (a machine's
+        // supervisor, detached) must not hold the original stderr -- whoever
+        // reads it would wait for it after this process is gone.
+        const int saved = ::fcntl(2, F_DUPFD_CLOEXEC, 3);
         if (saved < 0) return;
         int fds[2];
         if (::pipe(fds) != 0) { ::close(saved); return; }
+        (void)::fcntl(fds[0], F_SETFD, FD_CLOEXEC);
+        (void)::fcntl(fds[1], F_SETFD, FD_CLOEXEC);
         if (::dup2(fds[1], 2) < 0) { ::close(fds[0]); ::close(fds[1]); ::close(saved); return; }
         ::close(fds[1]);
         std::thread([read_end = fds[0], saved, divert = std::move(divert), sink = std::move(sink)] {
