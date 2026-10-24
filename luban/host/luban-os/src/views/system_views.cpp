@@ -566,6 +566,17 @@ void desktop_view_(App& a) {
         const auto mark = [](const std::string& mime, const std::string& bytes) {
             return std::format("{} {} {:x}", mime, bytes.size(), std::hash<std::string_view>{}(std::string_view(bytes).substr(0, 8u << 20)));
         };
+        // Whether it is in use, by this frame's input too: a copy that comes in
+        // the same frame as the focus or a key is the person's.
+        const auto used = [](const opensal::Event& e) {
+            return std::holds_alternative<opensal::Key>(e) || std::holds_alternative<opensal::PointerButton>(e)
+                   || std::holds_alternative<opensal::Wheel>(e) || std::holds_alternative<opensal::TextCommit>(e);
+        };
+        if (!a.menu && !a.close_dialog)
+            for (const auto& e : a.window->events()) {
+                if (used(e)) a.desktop_in_use = true;
+                if (const auto* f = std::get_if<opensal::Focus>(&e)) a.desktop_in_use = f->in;
+            }
         if (auto c = d.take_clipboard(); c && (a.window->focused() || a.desktop_in_use)) {
             a.window->set_clipboard(*c);
             a.pasted = *c;
@@ -639,9 +650,6 @@ void desktop_view_(App& a) {
             if (std::holds_alternative<opensal::Shown>(e)) d.send(e);
         if (!a.menu && !a.close_dialog) {
             for (const auto& e : a.window->events()) {
-                // Used: keys and buttons say so; the focus leaving says it is not.
-                if (std::holds_alternative<opensal::Key>(e) || std::holds_alternative<opensal::PointerButton>(e)) a.desktop_in_use = true;
-                if (const auto* f = std::get_if<opensal::Focus>(&e)) a.desktop_in_use = f->in;
                 if (const auto* m = std::get_if<opensal::PointerMotion>(&e)) {
                     d.send(opensal::PointerMotion{(m->x - at.x) / scale, (m->y - at.y) / scale});
                 } else if (const auto* k = std::get_if<opensal::Key>(&e)) {

@@ -186,10 +186,10 @@ sleep 300
     EXPECT_EQ(img.at(static_cast<int>(d[0]) + 20, static_cast<int>(d[1]) + 20), (std::array<int, 3>{0xC0, 0x80, 0x40}));
     const auto sent = tk::read_file(log);
     using I = opensal::Interface;
-    const auto provided = I::Surface | I::Pointer | I::Keyboard | I::Mode | I::Text | I::Clipboard | I::Shell | I::Cursor | I::CursorImage
+    const auto provided = I::Surface | I::Pointer | I::Keyboard | I::Mode | I::Text | I::Clipboard | I::ClipboardData | I::Shell | I::Cursor | I::CursorImage
                           | I::PointerLock | I::Displays;
     EXPECT_NE(sent.find(std::format("H {} 1100 700 1 1", provided)), std::string::npos)
-        << "the window's interfaces (surface, pointer, keyboard, mode, text, clipboard, shell, the pointer's shapes, images and lock, "
+        << "the window's interfaces (surface, pointer, keyboard, mode, text, clipboard (text and data), shell, the pointer's shapes, images and lock, "
            "one of several displays), size, density and pacing, first\n" << sent;
     // Pacing: once it has shown the frame, it says so (the next may come).
     EXPECT_NE(sent.find("E presented"), std::string::npos) << sent;
