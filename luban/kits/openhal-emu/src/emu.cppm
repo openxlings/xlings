@@ -8,6 +8,7 @@ export module openhal.emu;
 
 import std;
 import opensal;
+import opensal.wire;
 import openhal.display;
 
 export namespace openhal::emu {
@@ -51,6 +52,7 @@ public:
     std::optional<std::chrono::steady_clock::time_point> last_frame() const;
     std::optional<opensal::DisplayRole> role() const;                // what the consumer said it is
     std::string clipboard() const;                                   // what the consumer last offered
+    std::optional<opensal::wire::ClipboardData> clipboard_data() const;   // ... when it was not text (an image)
     opensal::Size consumer_size() const;                             // what it says it draws at
     std::string error() const;                                       // a stream that was not opensal.wire
 

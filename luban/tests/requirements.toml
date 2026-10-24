@@ -764,6 +764,14 @@ status = "required"
 text = "a display that asks to extend the desktop (luban display <n> attach virtual[=WxH] --role extend, opensal 0.7 extend) is an output of its own right of the primary at its own size and density, sent its frames only, its pointer at that output; in the workspace view it shows a workspace nobody shows (made when there is none), a window carried across lands in its workspace, and when it goes its workspace is remembered by its name and shown on it again when it comes back (design 2026-10-24 §4.4, openwx 0.2 §2.6)"
 status = "required"
 
+[LUBAN-CLIPBOARD-IMAGE]
+text = "an image crosses the clipboard like text (opensal 0.7 ClipboardData, image/png): the host's image given as a window gives it is the session's selection of that type; a program in the session copying an image gives it to the display, and only a window that takes ClipboardData and is being used puts it on the host; its type and size are said on the bus, never its content (design 2026-10-24 §8.2)"
+status = "required"
+
+[LUBAN-CLIPBOARD-FILES]
+text = "files copied cross the clipboard by their content (opensal 0.7, application/vnd.opensal.files, at most what a message carries): the host's are written into the session's ~/Downloads/Clipboard/ and offered by their new paths (text/uri-list); the session's (text/uri-list) are read and given to the display, and the window writes them into the host's ~/Downloads/Clipboard/; a name never climbs out of that directory (design 2026-10-24 §8.2)"
+status = "required"
+
 [LUBAN-DISPLAY-VIRTUAL]
 text = "a desktop runs on a virtual display (luban enter <n> --display virtual[=WxH@S]): an opensal provider nobody sees that keeps the picture, paces the frames, takes the desktop's size, role and clipboard, hands the picture out as PNG and gives input steps as the events a window gives (openhal 0.3 §6; design 2026-10-24 §4.2)"
 status = "required"

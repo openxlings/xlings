@@ -695,6 +695,12 @@ void Server::provider(Link& l, std::string_view bytes) {
             }
         } else if (msg.kind == 'E') {
             if (auto e = opensal::wire::decode_event(msg.payload)) input(l, *e);
+        } else if (msg.kind == 'B') {
+            // The host's clipboard, an image (opensal 0.7 ClipboardData).
+            if (auto d = opensal::wire::decode_clipboard_data(msg.payload)) {
+                last_input = std::chrono::steady_clock::now();
+                host_clipboard_data(std::move(d->mime), std::move(d->bytes));
+            }
         }
     }
 }

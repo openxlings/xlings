@@ -138,7 +138,7 @@ struct TextInput {
 // The window's clipboard text, offered to the clients as their selection.
 struct HostSelection {
     wlr_data_source base;           // first: the wlr_data_source is the HostSelection
-    std::string text;
+    std::string text;               // its bytes: the text, or the image (its type is what it offers)
 };
 
 inline const wlr_data_source_impl kHostSelection {
@@ -158,6 +158,7 @@ struct SelectionRead {
     int fd { -1 };
     wl_event_source* source { nullptr };
     std::string text;
+    std::string mime;               // what is read: text, or an image's type (opensal 0.7 ClipboardData)
 };
 
 struct Popup {
@@ -377,6 +378,8 @@ struct Server {
     std::list<Popup> popups;
     std::vector<int> children;
     std::string selection_text;                  // the session's clipboard as last read (design 2026-10-24 §8.1)
+    std::string selection_mime;                  // ... when it is not text: its type (an image), and its bytes
+    std::string selection_data;
     // The wallpaper (design 2026-10-24 §9.7; wallpaper.cpp).
     wlr_scene_buffer* wallpaper_node { nullptr };
     std::string wallpaper_drawn;                 // what it was drawn as, and at what size
@@ -753,6 +756,8 @@ struct Server {
     void preedit(const opensal::Preedit& p);
 
     void host_clipboard(std::string text);
+    // The window's clipboard when it is not text (opensal 0.7 ClipboardData: an image).
+    void host_clipboard_data(std::string mime, std::string bytes);
 
     void selection_changed();
 

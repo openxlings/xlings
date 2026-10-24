@@ -17,6 +17,7 @@ struct VirtualDisplay::State {
     std::optional<std::chrono::steady_clock::time_point> last;
     std::optional<opensal::DisplayRole> role;
     std::string clipboard;
+    std::optional<opensal::wire::ClipboardData> clipboard_data;
     opensal::Size consumer;
     std::string error;
     std::span<const std::byte> region;
@@ -62,7 +63,7 @@ namespace {
 // running).
 std::string hello_(const display::Mode& mode, const std::string& asks, bool region) {
     using I = opensal::Interface;
-    auto bits = I::Surface | I::Pointer | I::Keyboard | I::Mode | I::Density | I::Text | I::Clipboard | I::Displays;
+    auto bits = I::Surface | I::Pointer | I::Keyboard | I::Mode | I::Density | I::Text | I::Clipboard | I::ClipboardData | I::Displays;
     if (region) bits = bits | I::Region;
     return opensal::wire::encode('H', std::format("{} {} {} {} 1{}", bits, mode.width, mode.height, mode.scale, asks.empty() ? "" : " " + asks));
 }
@@ -133,6 +134,10 @@ std::string VirtualDisplay::feed(std::string_view bytes) {
             break;
         case 'b':
             s_->clipboard = msg.payload;
+            s_->clipboard_data.reset();
+            break;
+        case 'B':
+            if (auto d = opensal::wire::decode_clipboard_data(msg.payload)) s_->clipboard_data = std::move(*d);
             break;
         default:
             break;   // a cursor, a hello, the shell's lists: nothing it keeps
@@ -166,6 +171,7 @@ std::uint64_t VirtualDisplay::frames() const { std::lock_guard l(s_->m); return 
 std::optional<std::chrono::steady_clock::time_point> VirtualDisplay::last_frame() const { std::lock_guard l(s_->m); return s_->last; }
 std::optional<opensal::DisplayRole> VirtualDisplay::role() const { std::lock_guard l(s_->m); return s_->role; }
 std::string VirtualDisplay::clipboard() const { std::lock_guard l(s_->m); return s_->clipboard; }
+std::optional<opensal::wire::ClipboardData> VirtualDisplay::clipboard_data() const { std::lock_guard l(s_->m); return s_->clipboard_data; }
 opensal::Size VirtualDisplay::consumer_size() const { std::lock_guard l(s_->m); return s_->consumer; }
 std::string VirtualDisplay::error() const { std::lock_guard l(s_->m); return s_->error; }
 

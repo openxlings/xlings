@@ -28,12 +28,16 @@
 //                     block (0.6; sent where it is shorter)
 //     'r'  frame      Region: as 'f', its rows in the        "x y w h stride offset"
 //                     region both sides map, at offset (0.7)
+//     'B'  clipboard  ClipboardData: the consumer's selection "<mime>\n" + bytes
+//                     when it is not text (an image; 0.7)
 //   provider -> consumer
 //     'H'  hello      provided interfaces, size, density,    "<bits> <w> <h> <scale> [<paced>]"
 //                     and whether it paces (1: it says FramePresented once
 //                     it has shown what it was sent; a consumer then sends
 //                     the next frame only after it -- older providers: absent)
 //     'E'  event      one opensal::Event                     (see encode_event)
+//     'B'  clipboard  ClipboardData: the host's clipboard     "<mime>\n" + bytes
+//                     when it is not text, new, while focused (0.7)
 //
 // A side skips a kind it does not know; lengths are bounded (a frame by its
 // rectangle). Text payloads are space-separated numbers, or the UTF-8 itself.
@@ -67,6 +71,23 @@ std::optional<std::string> decode_compressed(std::string_view payload);
 struct RegionFrame { Rect rect; std::uint32_t stride { 0 }; std::uint64_t offset { 0 }; };
 std::string encode_region_frame(const RegionFrame& f);
 std::optional<RegionFrame> decode_region_frame(std::string_view payload);
+// 'B' (ClipboardData, 0.7): clipboard content of a type other than text, at
+// most kMaxClipboard bytes; the whole message.
+inline constexpr std::size_t kMaxClipboard = kMaxMessage - 256;   // its type and the newline fit
+struct ClipboardData { std::string mime; std::string bytes; bool operator==(const ClipboardData&) const = default; };
+std::string encode_clipboard_data(const ClipboardData& d);
+std::optional<ClipboardData> decode_clipboard_data(std::string_view payload);
+// Files on the clipboard (0.7): their content crosses, not their paths -- as
+// ClipboardData of type kFilesType: "<size> <name>\n" + bytes, each in turn.
+// A name is a file's own (no directory); the other side writes them where
+// its pasted files go and offers their new paths (text/uri-list).
+inline constexpr std::string_view kFilesType = "application/vnd.opensal.files";
+struct ClipboardFile { std::string name; std::string bytes; bool operator==(const ClipboardFile&) const = default; };
+std::string encode_files(std::span<const ClipboardFile> files);
+std::optional<std::vector<ClipboardFile>> decode_files(std::string_view bytes);
+// text/uri-list: the local paths of its file:// lines (percent-decoded); and back.
+std::vector<std::string> uri_list_paths(std::string_view list);
+std::string uri_list_of(std::span<const std::string> paths);
 // The LZ4 block format (no frame, no checksum): `size` is what it decompresses to.
 std::string lz4_compress(std::string_view in);
 std::optional<std::string> lz4_decompress(std::string_view in, std::size_t size);

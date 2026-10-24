@@ -655,3 +655,146 @@ XTEST(LubanDesktopBus, AVirtualDisplayExtendsTheDesktopWithAWorkspaceOfItsOwn, .
     EXPECT_EQ(s["windows"][0].value("workspace", 0.0), 2) << s["windows"].dump();
     EXPECT_GE(s["windows"][0]["rect"][0].get<double>(), 1024) << s["windows"].dump();
 }
+
+// An image crosses the clipboard both ways (design 2026-10-24 §8.2; opensal
+// 0.7 ClipboardData): the host's image, given as a window gives it, is the
+// session's selection as image/png; a program in the session copying an
+// image (data-control, as wl-copy does) gives it to the display -- its type
+// and size said, never its content.
+XTEST(LubanDesktopBus, AnImageCrossesTheClipboardBothWays, .area = "luban", .covers = {"LUBAN-CLIPBOARD-IMAGE", "LUBAN-CLIPBOARD-FILES"},
+      .requires_ = {"linux", "xlings-bin"}) {
+    const auto luban = luban_bin_();
+    const auto xdesk = xdesk_bin_();
+    if (!luban || !xdesk) GTEST_SKIP() << "no luban or xdesk beside the xlings under test";
+    Desk d("luban-desktop-clip-image", *luban, *xdesk, {}, "800x600");
+    ASSERT_FALSE(d.display.empty()) << "the desktop did not come";
+    // A picture of one pixel (a call carries at most a mebibyte).
+    const std::string png("\x89\x50\x4e\x47\x0d\x0a\x1a\x0a\x00\x00\x00\x0d\x49\x48\x44\x52\x00\x00\x00\x01\x00\x00\x00\x01\x08\x04"
+                          "\x00\x00\x00\xb5\x1c\x0c\x02\x00\x00\x00\x0b\x49\x44\x41\x54\x78\xda\x63\x64\x60\x00\x00\x00\x06\x00\x02"
+                          "\x30\x81\xd0\x2f\x00\x00\x00\x00\x49\x45\x4e\x44\xae\x42\x60\x82", 68);
+    const auto b64 = [](std::string_view in) {
+        static constexpr char kA[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        std::string out;
+        for (std::size_t k = 0; k < in.size(); k += 3) {
+            const std::uint32_t n = (std::uint32_t(std::uint8_t(in[k])) << 16) | (k + 1 < in.size() ? std::uint32_t(std::uint8_t(in[k + 1])) << 8 : 0)
+                                    | (k + 2 < in.size() ? std::uint8_t(in[k + 2]) : 0);
+            out += kA[(n >> 18) & 63];
+            out += kA[(n >> 12) & 63];
+            out += k + 1 < in.size() ? kA[(n >> 6) & 63] : '=';
+            out += k + 2 < in.size() ? kA[n & 63] : '=';
+        }
+        return out;
+    };
+    // The host's image into the session.
+    const auto control = openhal::display::control_path(d.display);
+    auto given = d.node->call(control, Json{{"op", "clipboard"}, {"mime", "image/png"}, {"base64", b64(png)}}.dump(), 10s);
+    ASSERT_TRUE(given.has_value()) << given.error().message;
+    const auto clipboard = luban::vm::system_bus_root("box") + "/service/clipboard";
+    std::string back;
+    for (int k = 0; k < 50 && back.empty(); ++k) {
+        std::this_thread::sleep_for(100ms);
+        auto got = d.node->call(clipboard, R"({"op": "read", "mime": "image/png"})", 5s);
+        if (got && !got->empty()) back = Json::parse(got->front(), nullptr, false).value("base64", std::string{});
+    }
+    EXPECT_EQ(back, b64(png)) << "the session's selection is the host's image";
+    // A program in the session copies an image: the display is given it.
+    fs::path sock;
+    for (const auto& e : fs::recursive_directory_iterator(d.home.root() / "runtime"))
+        if (e.path().filename() == "wayland-0") sock = e.path();
+    ASSERT_FALSE(sock.empty());
+    tk::write_file(d.home.root() / "copy.py", R"PY(import os, socket, struct, sys, array, time
+data = open(sys.argv[2], "rb").read()
+s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM); s.connect(sys.argv[1])
+nid = [2]
+def new():
+    i = nid[0]; nid[0] += 1; return i
+def string(t):
+    b = t.encode() + b"\0"
+    return struct.pack("<I", len(b)) + b + b"\0" * (-len(b) % 4)
+def send(obj, op, args=b""):
+    s.sendall(struct.pack("<II", obj, ((8 + len(args)) << 16) | op) + args)
+buf = b""; fds = []
+def events():
+    global buf
+    while True:
+        while len(buf) >= 8:
+            obj, word = struct.unpack("<II", buf[:8]); size, op = word >> 16, word & 0xffff
+            if len(buf) < size: break
+            body, buf = buf[8:size], buf[size:]
+            yield obj, op, body
+        msg, anc, _, _ = s.recvmsg(65536, socket.CMSG_LEN(16 * 4))
+        for level, kind, payload in anc:
+            if level == socket.SOL_SOCKET and kind == socket.SCM_RIGHTS:
+                a = array.array("i"); a.frombytes(payload[:len(payload) - len(payload) % 4]); fds.extend(a)
+        if not msg: return
+        buf += msg
+it = events()
+registry = new(); send(1, 1, struct.pack("<I", registry))
+sync = new(); send(1, 0, struct.pack("<I", sync))
+g = {}
+for obj, op, body in it:
+    if obj == registry and op == 0:
+        name, = struct.unpack("<I", body[:4]); n, = struct.unpack("<I", body[4:8])
+        g[body[8:8 + n - 1].decode()] = name
+    elif obj == sync: break
+def bind(iface, ver):
+    i = new(); send(registry, 0, struct.pack("<I", g[iface]) + string(iface) + struct.pack("<II", ver, i)); return i
+seat = bind("wl_seat", 1); mgr = bind("zwlr_data_control_manager_v1", 1)
+src = new(); send(mgr, 0, struct.pack("<I", src)); send(src, 0, string(sys.argv[3] if len(sys.argv) > 3 else "image/png"))
+dev = new(); send(mgr, 1, struct.pack("<II", dev, seat)); send(dev, 0, struct.pack("<I", src))
+end = time.time() + 15
+for obj, op, body in it:
+    if obj == src and op == 0 and fds:
+        fd = fds.pop(0); os.write(fd, data); os.close(fd)
+    if obj == src and op == 1 or time.time() > end: break
+)PY");
+    const auto image = d.home.root() / "copied.png";
+    tk::write_file(image, png);
+    auto copier = std::async(std::launch::async, [&] {
+        return tk::run({.argv = {"python3", (d.home.root() / "copy.py").string(), sock.string(), image.string()}, .timeout = 30s});
+    });
+    Json described;
+    for (int k = 0; k < 100; ++k) {
+        std::this_thread::sleep_for(100ms);
+        auto got = d.node->call(control, R"({"op": "describe"})", 5s);
+        if (!got || got->empty()) continue;
+        described = Json::parse(got->front(), nullptr, false);
+        if (described.contains("clipboard") && described["clipboard"].value("type", std::string{}) == "image/png") break;
+    }
+    EXPECT_EQ(described["clipboard"].value("type", std::string{}), "image/png") << described.dump();
+    EXPECT_EQ(described["clipboard"].value("bytes", std::size_t{0}), png.size()) << described.dump();
+    // Its content is not in the session's log.
+    EXPECT_EQ(tk::read_file(d.h / "logs" / "desktops" / "box" / "session.log").find(png.substr(0, 16)), std::string::npos);
+    // Files cross by their content: the host's, written where the session's
+    // pasted files go and offered by their new paths ...
+    const std::string note = "a note copied on the host\n";
+    const auto packed = std::format("{} note.txt\n{}", note.size(), note);
+    ASSERT_TRUE(d.node->call(control, Json{{"op", "clipboard"}, {"mime", "application/vnd.opensal.files"}, {"base64", b64(packed)}}.dump(), 10s));
+    const auto landed = fs::path(d.env.at("HOME")) / "Downloads" / "Clipboard" / "note.txt";
+    for (int k = 0; k < 50 && !fs::exists(landed); ++k) std::this_thread::sleep_for(100ms);
+    ASSERT_TRUE(fs::exists(landed)) << landed;
+    EXPECT_EQ(tk::read_file(landed), note);
+    (void)copier.get();   // its copy replaced: it ends
+    auto list = d.node->call(clipboard, R"({"op": "read", "mime": "text/uri-list"})", 5s);
+    ASSERT_TRUE(list && !list->empty());
+    EXPECT_EQ(Json::parse(list->front()).value("base64", std::string{}), b64("file://" + landed.string() + "\r\n"));
+    // ... and the session's, given to the display as their content.
+    const auto mine = d.home.root() / "report.txt";
+    tk::write_file(mine, "made in the session");
+    tk::write_file(d.home.root() / "list.txt", "file://" + mine.string() + "\r\n");
+    auto copier2 = std::async(std::launch::async, [&] {
+        return tk::run({.argv = {"python3", (d.home.root() / "copy.py").string(), sock.string(), (d.home.root() / "list.txt").string(), "text/uri-list"},
+                        .timeout = 30s});
+    });
+    for (int k = 0; k < 100; ++k) {
+        std::this_thread::sleep_for(100ms);
+        auto got = d.node->call(control, R"({"op": "describe"})", 5s);
+        if (!got || got->empty()) continue;
+        described = Json::parse(got->front(), nullptr, false);
+        if (described.contains("clipboard") && described["clipboard"].value("type", std::string{}) == "application/vnd.opensal.files") break;
+    }
+    EXPECT_EQ(described["clipboard"].value("type", std::string{}), "application/vnd.opensal.files") << described.dump();
+    EXPECT_EQ(described["clipboard"].value("bytes", std::size_t{0}), std::string_view("19 report.txt\nmade in the session").size()) << described.dump();
+    (void)luban::vm::desktop(d.h, "box", {{"op", "end"}});
+    (void)copier2.get();
+}

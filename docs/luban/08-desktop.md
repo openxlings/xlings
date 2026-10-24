@@ -273,6 +273,15 @@ off); one made by `luban new` or an agent has neither until given
 everyone else's Ctrl+C/V, xdesk knows which; in a terminal Ctrl+C still
 interrupts.
 
+Only the latest copy crosses, and only one made while you use the window: a
+program copying in the background keeps it in its system, and reading the
+host's clipboard happens when the window gets the focus. Text and images
+(PNG) cross alike — a picture copied in a browser on the host pastes as a
+picture inside, and a screenshot copied inside pastes on the host. Files
+copied cross by their content (up to 64 MiB at once) into
+`~/Downloads/Clipboard/` on the other side, where what you paste them into
+finds them (on a Linux host; elsewhere text and images only).
+
 The pointer is the window's to draw: the Luban pointer theme, drawn from
 vectors at exactly your screen's density. Shake the mouse to find it and it
 grows — up to four times, filled with the accent — then shrinks back

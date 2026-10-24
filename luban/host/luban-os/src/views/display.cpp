@@ -402,12 +402,13 @@ void Display::provider_(std::string_view bytes) {
             using I = opensal::Interface;
             auto provided = I::Surface | I::Mode | I::Pointer | I::Keyboard | I::Text | I::Shell | I::Cursor | I::CursorImage
                             | I::PointerLock | I::Displays;
-            if (clip_.copy || clip_.paste) provided = provided | I::Clipboard;
+            if (clip_.copy || clip_.paste) provided = provided | I::Clipboard | I::ClipboardData;
             if (narrow_) provided = provided | I::Compressed;
             if (region_) provided = provided | I::Region;
             opensal::Interfaces wanted = 0;
             std::from_chars(msg.payload.data(), msg.payload.data() + msg.payload.size(), wanted);
             shell_ = opensal::has(wanted, I::Shell);
+            wants_data_ = opensal::has(wanted, I::ClipboardData);
             {
                 // Who draws the pointer: it, when it asked; else the host's
                 // arrow for an old xdesk, or nothing (it is in the frames).
@@ -476,6 +477,12 @@ void Display::provider_(std::string_view bytes) {
             if (clip_.copy) {
                 std::lock_guard l(m_);
                 clipboard_ = msg.payload;
+                changed = true;
+            }
+        } else if (msg.kind == 'B') {
+            if (auto d = opensal::wire::decode_clipboard_data(msg.payload); d && clip_.copy) {
+                std::lock_guard l(m_);
+                clipboard_data_ = std::move(*d);
                 changed = true;
             }
         } else if (msg.kind == 'a') {
@@ -548,6 +555,16 @@ std::optional<std::string> Display::take_text_input() {
 std::optional<std::string> Display::take_clipboard() {
     std::lock_guard l(m_);
     return std::exchange(clipboard_, std::nullopt);
+}
+
+std::optional<opensal::wire::ClipboardData> Display::take_clipboard_data() {
+    std::lock_guard l(m_);
+    return std::exchange(clipboard_data_, std::nullopt);
+}
+
+void Display::send_clipboard_data(const opensal::wire::ClipboardData& d) {
+    if (!alive_ || !clip_.paste || !wants_data_) return;
+    send_(opensal::wire::encode_clipboard_data(d));
 }
 
 std::optional<opensal::DisplayRole> Display::take_role() {

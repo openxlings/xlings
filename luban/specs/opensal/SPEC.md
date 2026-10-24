@@ -150,6 +150,10 @@ bytes, at most 64 MiB. A side sends it only to one that said `ClipboardData`,
 and under the same rule as text: the provider when the content is new and it
 has the input focus, the consumer when its selection changes. Content with a
 text form and an image (a browser's copied image) crosses as the image.
+Files cross by content as type `application/vnd.opensal.files` -- for each,
+`<size> <name>\n` and its bytes (its own name, no directory); the receiving
+side writes them where its pasted files go (`~/Downloads/Clipboard/`) and
+offers their new paths as `text/uri-list`.
 
 ## 7. Conformance
 

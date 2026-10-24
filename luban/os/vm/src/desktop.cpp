@@ -105,6 +105,30 @@ struct VirtualOnBus {
     }
 };
 
+// RFC 4648 base64 (an image given to a virtual display's clipboard, in JSON).
+std::optional<std::string> base64_decode_(std::string_view in) {
+    std::string out;
+    std::uint32_t acc = 0;
+    int bits = 0;
+    for (const char c : in) {
+        int v = -1;
+        if (c >= 'A' && c <= 'Z') v = c - 'A';
+        else if (c >= 'a' && c <= 'z') v = c - 'a' + 26;
+        else if (c >= '0' && c <= '9') v = c - '0' + 52;
+        else if (c == '+') v = 62;
+        else if (c == '/') v = 63;
+        else if (c == '=' || c == '\n' || c == '\r') continue;
+        else return std::nullopt;
+        acc = (acc << 6) | static_cast<std::uint32_t>(v);
+        bits += 6;
+        if (bits >= 8) {
+            bits -= 8;
+            out += static_cast<char>((acc >> bits) & 0xff);
+        }
+    }
+    return out;
+}
+
 // Bytes larger than a frame's payload (openbus §4.6: 1 MiB), as replies of
 // at most 768 KiB in order; the caller puts them together.
 void reply_bytes_(const xbus::Call& c, std::string_view bytes) {
@@ -174,6 +198,9 @@ std::expected<std::shared_ptr<VirtualOnBus>, std::string> offer_virtual_(std::sh
         if (op == "describe") {
             Json d{{"kind", "virtual"}, {"mode", hd::format_mode(self->vd->mode())}, {"frames", self->vd->frames()},
                    {"attached", static_cast<bool>(self->stream)}};
+            // What the desktop last copied to it: its type and size, never its content.
+            if (const auto data = self->vd->clipboard_data()) d["clipboard"] = {{"type", data->mime}, {"bytes", data->bytes.size()}};
+            else if (const auto text = self->vd->clipboard(); !text.empty()) d["clipboard"] = {{"type", "text/plain"}, {"bytes", text.size()}};
             if (const auto r = self->vd->role())
                 d["role"] = r->kind == opensal::DisplayRole::Kind::mirror   ? std::format("mirror {}", r->of)
                             : r->kind == opensal::DisplayRole::Kind::extend ? std::format("extend {} {}", r->x, r->y)
@@ -206,8 +233,27 @@ std::expected<std::shared_ptr<VirtualOnBus>, std::string> offer_virtual_(std::sh
             if (!events) { c.fail(openbus::ErrorCode::malformed, events.error()); return; }
             if (!self->send(openhal::emu::VirtualDisplay::encode(*events))) { c.fail(openbus::ErrorCode::gone, "no desktop draws on it"); return; }
             c.reply(Json{{"events", events->size()}}.dump(), static_cast<std::uint16_t>(openbus::Codec::json));
+        } else if (op == "clipboard") {
+            // The host's clipboard as a window gives it (opensal: text, or an
+            // image as ClipboardData): what a person copied on the computer.
+            if (j.contains("text")) {
+                const std::vector<opensal::Event> e{opensal::ClipboardText{j.value("text", std::string{})}};
+                if (!self->send(openhal::emu::VirtualDisplay::encode(e))) { c.fail(openbus::ErrorCode::gone, "no desktop draws on it"); return; }
+            } else {
+                auto bytes = base64_decode_(j.value("base64", std::string{}));
+                const auto mime = j.value("mime", std::string{});
+                if (!bytes || mime.empty() || bytes->size() > opensal::wire::kMaxClipboard) {
+                    c.fail(openbus::ErrorCode::malformed, "clipboard takes {\"text\": T} or {\"mime\": T, \"base64\": B}");
+                    return;
+                }
+                if (!self->send(opensal::wire::encode_clipboard_data({mime, std::move(*bytes)}))) {
+                    c.fail(openbus::ErrorCode::gone, "no desktop draws on it");
+                    return;
+                }
+            }
+            c.reply(Json{{"ok", true}}.dump(), static_cast<std::uint16_t>(openbus::Codec::json));
         } else {
-            c.fail(openbus::ErrorCode::malformed, "describe, capture, record, mode or input");
+            c.fail(openbus::ErrorCode::malformed, "describe, capture, record, mode, input or clipboard");
             return;
         }
         c.end();

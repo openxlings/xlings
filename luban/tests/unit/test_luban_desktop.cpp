@@ -241,6 +241,21 @@ XTEST(OpensalWire, ADisplaysRoleCrossesWhole, .area = "luban", .covers = {"LUBAN
     EXPECT_EQ(wire::encode_display(extend), "3 extend 1024 0");
     EXPECT_EQ(wire::decode_display("3 extend 1024 0"), extend);
     EXPECT_FALSE(wire::decode_display("2 extend")) << "an extending display says where it is";
+    // Clipboard content that is not text (0.7 ClipboardData): its type, a newline, its bytes.
+    const wire::ClipboardData image{"image/png", std::string("\x89PNG\r\n\x1a\n\0\n", 10)};
+    const auto msg = wire::encode_clipboard_data(image);
+    EXPECT_EQ(msg[0], 'B');
+    EXPECT_EQ(wire::decode_clipboard_data(std::string_view(msg).substr(5)), image);
+    EXPECT_FALSE(wire::decode_clipboard_data("no type here"));
+    EXPECT_FALSE(wire::decode_clipboard_data("not a type\nbytes"));
+    // Files by their content: names never climb out of where they are written.
+    const std::vector<wire::ClipboardFile> files{{"a.txt", "one"}, {"b c.png", std::string("\0\n2", 3)}};
+    EXPECT_EQ(wire::decode_files(wire::encode_files(files)), files);
+    EXPECT_FALSE(wire::decode_files("3 ../x\nabc"));
+    EXPECT_FALSE(wire::decode_files("9 a.txt\nshort"));
+    const std::vector<std::string> paths{"/home/user/a b.txt", "/tmp/c%d"};
+    EXPECT_EQ(wire::uri_list_paths(wire::uri_list_of(paths)), paths);
+    EXPECT_EQ(wire::uri_list_paths("# comment\r\nfile://host/tmp/x\r\nhttps://example.com/\r\n"), std::vector<std::string>{"/tmp/x"});
     EXPECT_TRUE(opensal::has(static_cast<opensal::Interfaces>(opensal::Interface::Displays), opensal::Interface::Displays));
 }
 

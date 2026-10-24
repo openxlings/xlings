@@ -69,6 +69,10 @@ public:
     void text_input(bool on, int x = 0, int y = 0, int w = 1, int h = 1);
     std::string clipboard() const;
     void set_clipboard(const std::string& text);
+    // The clipboard as `mime` (an image: image/png), when it has that type;
+    // set as that type alone (kept until the next copy, served when asked).
+    std::optional<std::string> clipboard_data(const std::string& mime) const;
+    void set_clipboard_data(const std::string& mime, std::string bytes);
     // Device pixels per unit of the window's coordinates (2 on a Retina
     // display; 1 where the window's coordinates are pixels already).
     double pixel_density() const;

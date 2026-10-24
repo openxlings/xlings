@@ -46,6 +46,9 @@ enum class Interface : std::uint32_t {
     // machine's ivshmem BAR, a bus region -- and an 'r' message says where in
     // it a damaged rectangle's rows are; no pixels cross the channel.
     Region = 1u << 14,
+    // Clipboard content that is not text (0.7): an image as image/png, as
+    // 'B' in either direction (wire.cppm).
+    ClipboardData = 1u << 15,
 };
 using Interfaces = std::uint32_t;
 constexpr Interfaces operator|(Interface a, Interface b) { return static_cast<Interfaces>(a) | static_cast<Interfaces>(b); }

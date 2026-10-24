@@ -221,6 +221,10 @@ public:
     // only): what it said since the last call.
     std::optional<std::string> take_text_input();
     std::optional<std::string> take_clipboard();
+    // ... when it was not text (an image; opensal 0.7 ClipboardData).
+    std::optional<opensal::wire::ClipboardData> take_clipboard_data();
+    // The host's clipboard into it when it is not text (granted paste only).
+    void send_clipboard_data(const opensal::wire::ClipboardData& d);
     const ClipboardGrant& clipboard_grant() const { return clip_; }
     // A desktop without a shell of its own asks the window to be it
     // (opensal Shell): its applications to start and its windows to bring forward.
@@ -293,6 +297,8 @@ private:
     opensal::Size size_;
     ClipboardGrant clip_;
     std::optional<std::string> text_input_, clipboard_;
+    std::optional<opensal::wire::ClipboardData> clipboard_data_;
+    std::atomic<bool> wants_data_ { false };   // the desktop takes ClipboardData (its hello)
     std::optional<bool> pointer_lock_;
     std::atomic<bool> shell_ { false };
     std::vector<opensal::Application> applications_;
@@ -496,6 +502,7 @@ struct App {
     int ended_code { 0 };
     bool paste_on_open { true };       // the host's clipboard, given once it shows
     std::string pasted;                // what crossed last (not sent back)
+    std::string pasted_data;           // ... an image's: its type, size and first bytes (opensal 0.7 ClipboardData)
     // The desktop's window is being used (its focus, a key or a button given to
     // it): what it copies then crosses to this computer (design 2026-10-24 §8.2).
     bool desktop_in_use { false };
