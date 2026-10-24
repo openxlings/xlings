@@ -587,7 +587,9 @@ void desktop_view_(App& a) {
                         std::ofstream(at, std::ios::binary) << f.bytes;
                         paths.push_back(at.generic_string());
                     }
-                    a.window->set_clipboard_data("text/uri-list", opensal::wire::uri_list_of(paths));
+                    const auto list = opensal::wire::uri_list_of(paths);
+                    a.window->set_clipboard_data("text/uri-list", list);
+                    a.pasted_data = mark("text/uri-list", list);   // not given back as a new copy
                 }
             } else {
                 a.window->set_clipboard_data(c->mime, std::move(c->bytes));
