@@ -16,6 +16,8 @@ import luban.vm;
 import xbus.address;
 import xbus.node;
 import openhal.display;
+import openhal.emu;
+import openbus;
 
 namespace tk = xlings::testkit;
 namespace fs = std::filesystem;
@@ -197,6 +199,50 @@ XTEST(LubanDesktopBus, ADesktopRunsOnAVirtualDisplayAndEverythingOfItIsOnTheBus,
         if (now.is_object()) open = now["overlays"].value("launcher", false);
     }
     EXPECT_TRUE(open) << "the key reached the desktop: its launcher is open";
+    // A window comes (here: a display of this test's, asking to be the
+    // primary, as the Luban OS window does): the desktop takes its size; it
+    // goes, and the desktop goes on on its virtual display (hotplug, §4.3).
+    auto window = std::make_shared<openhal::emu::VirtualDisplay>(openhal::display::Mode{1024, 640, 1.0}, true);
+    const auto window_path = openhal::display::device_path((*node)->root(), 50);
+    std::optional<xbus::Stream> window_stream;
+    std::mutex wm;
+    ASSERT_TRUE((*node)->offer_stream(window_path, {.kind = openbus::EndpointKind::stream, .interfaces = {std::string(openhal::display::kInterface)}},
+                                      [&](xbus::Stream st) {
+                                          { std::lock_guard l(wm); window_stream = st; }
+                                          std::thread([window, st]() mutable {
+                                              while (auto chunk = st.read(5s)) {
+                                                  const auto back = window->feed(chunk->bytes);
+                                                  if (!back.empty() && !st.write(back)) break;
+                                              }
+                                          }).detach();
+                                      }));
+    auto attached = luban::vm::desktop(h, "box", {{"op", "attach"}, {"path", window_path}, {"role", "primary"}, {"kind", "window"}});
+    ASSERT_TRUE(attached) << attached.error();
+    const auto output_of = [&](Json& now) {
+        auto got = (*node)->call(xdesk_state, {}, 5s);
+        if (!got || got->empty()) return false;
+        now = Json::parse(got->front(), nullptr, false);
+        return now.is_object();
+    };
+    Json now;
+    bool primary = false;
+    for (int k = 0; k < 100 && !primary; ++k) {
+        std::this_thread::sleep_for(100ms);
+        primary = output_of(now) && now["displays"].size() == 2 && now["output"]["size"] == Json::array({1024, 640});
+    }
+    EXPECT_TRUE(primary) << "the window is the primary, the desktop its size\n" << now["displays"].dump() << now["output"].dump();
+    for (int k = 0; k < 50 && window->frames() == 0; ++k) std::this_thread::sleep_for(100ms);
+    EXPECT_GT(window->frames(), 0u) << "the window is drawn on";
+    EXPECT_EQ(luban::vm::desktop(h, "box", {{"op", "status"}})->value("displays", Json::array()).size(), 2u);
+    // It goes.
+    { std::lock_guard l(wm); if (window_stream) window_stream->close(); }
+    bool back = false;
+    for (int k = 0; k < 100 && !back; ++k) {
+        std::this_thread::sleep_for(100ms);
+        back = output_of(now) && now["displays"].size() == 1 && now["output"]["size"] == Json::array({800, 600});
+    }
+    EXPECT_TRUE(back) << "the desktop goes on on its virtual display\n" << now["displays"].dump() << now["output"].dump();
+    EXPECT_TRUE(luban::vm::desktop(h, "box", {{"op", "status"}})->value("running", false));
     // Ended through its session: it says why.
     std::string events;
     auto sub = (*node)->subscribe(luban::vm::system_bus_root("box") + "/topic/desktop/events", [&](const xbus::Message& m) { events += m.body + "\n"; });

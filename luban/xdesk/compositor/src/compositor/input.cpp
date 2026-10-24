@@ -564,9 +564,12 @@ void Server::input(Link& from, const opensal::Event& ev) {
         wheel(*w);
         wlr_seat_pointer_notify_frame(seat);
     } else if (const auto* r = std::get_if<opensal::Resized>(&ev)) {
-        // The primary's size is the output's; a mirror's is its own business.
+        // The primary's size is the output's; a mirror's is its own business
+        // (kept, for when it is the primary).
+        from.own = r->size;
         if (primary_link) resize(r->size);
     } else if (const auto* d = std::get_if<opensal::DensityChanged>(&ev)) {
+        from.density = d->scale;
         if (primary_link) set_scale(d->scale);
     } else if (const auto* t = std::get_if<opensal::TextCommit>(&ev)) {
         if (launcher.is_open()) { launcher.type(t->text); draw_launcher(); }
@@ -647,6 +650,8 @@ void Server::provider(Link& l, std::string_view bytes) {
                 l.provided = bits;
                 l.hello = true;
                 l.whole = true;
+                l.own = {w, h};
+                if (density > 0) l.density = density;
                 send_locate(&l);
                 if (&l == primary()) {
                     provided = bits;

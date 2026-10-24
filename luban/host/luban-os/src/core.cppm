@@ -26,6 +26,7 @@ import xlings.platform;
 import xlings.platform.target;
 import luban.desktop.host;
 import opensal.wlr;
+import xbus.node;
 
 namespace luban::os {
 
@@ -130,6 +131,7 @@ public:
     bool alive() const { return alive_; }
     int exit_code() const { return code_; }
     bool is_machine() const { return machine_; }
+    bool on_bus() const { return static_cast<bool>(bus_node_); }
     std::mutex& lock() { return m_; }
     term::Screen& screen() { return screen_; }
     const std::string& name() const { return name_; }
@@ -150,6 +152,11 @@ private:
     std::atomic<bool> stop_ { false };
     int code_ { 0 };
     std::optional<vm::Client> client_;
+    std::shared_ptr<xbus::Node> bus_node_;     // on the bus: its node, its display, the stream the desktop opened
+    std::string bus_path_;
+    std::optional<xbus::Stream> bus_stream_;
+    std::condition_variable bus_opened_;
+    fs::path home_;
     int master_ { -1 };
     int pid_ { -1 };
     std::function<void()> wake_;
@@ -186,6 +193,14 @@ public:
     static std::unique_ptr<Display> sandbox(const fs::path& xlings, const fs::path& luban, const fs::path& home,
                                             const std::string& name, const std::string& session, const std::string& persist,
                                             opensal::Size size, ClipboardGrant clip, std::function<void()> wake, std::string& error);
+    // On the bus (design 2026-10-24 §4.3): this window is a display of the
+    // system's desktop -- offered at host/<id>/device/display/<n> (a window),
+    // the desktop (its supervisor, started when it is not running, on a
+    // virtual display of its own) asked to take it as its primary. Closing it
+    // leaves the desktop running on its virtual display.
+    static std::unique_ptr<Display> bus(const fs::path& home, const std::string& name, const std::string& session,
+                                        const std::string& persist, opensal::Size size, ClipboardGrant clip,
+                                        std::function<void()> wake, std::string& error);
     // Any program whose standard input and output are opensal.wire (what a
     // sandbox runs; tests run a desktop of their own the same way).
     static std::unique_ptr<Display> process(const std::vector<std::string>& argv, std::map<std::string, std::string> env,
@@ -199,6 +214,7 @@ public:
     std::string error() const { std::lock_guard l(m_); return error_; }
     const std::string& name() const { return name_; }
     bool is_machine() const { return machine_; }
+    bool on_bus() const { return static_cast<bool>(bus_node_); }
 
     // The desktop's caret for the input method ("1 x y w h" in its pixels,
     // or "0"), and its selection for the window's clipboard (granted copy
@@ -259,6 +275,11 @@ private:
     mutable std::mutex m_;
     bool send_(std::string_view wire_bytes);
     std::optional<vm::Client> client_;
+    std::shared_ptr<xbus::Node> bus_node_;     // on the bus: its node, its display, the stream the desktop opened
+    std::string bus_path_;
+    std::optional<xbus::Stream> bus_stream_;
+    std::condition_variable bus_opened_;
+    fs::path home_;
     int to_ { -1 }, from_ { -1 }, pid_ { -1 };   // a sandbox's process
     std::mutex sending_;
     std::thread io_;

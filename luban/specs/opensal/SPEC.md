@@ -1,4 +1,4 @@
-# opensal Specification, version 0.6
+# opensal Specification, version 0.7
 
 ## 1. Scope
 
@@ -107,7 +107,8 @@ whether it paces).
 `Shell`; 0.3 added `CursorImage` (`'C'`), `PointerLock` (`'l'`, relative
 motion) and the cursor names from grabbing on; 0.4 added shown and
 `Displays` (`'d'`); 0.5 added how a shaken pointer is shown (`'p'`); 0.6 added
-`Compressed` (`'z'`).
+`Compressed` (`'z'`); 0.7 carries the wire on a bus (§6.7) and lets a display
+ask to be the primary.
 
 6.6 `Compressed`: a provider across a narrow channel (a machine's serial port)
 takes `'z'` frames -- the header of an `'f'` frame, then its rows as one LZ4
@@ -116,6 +117,16 @@ exactly `stride` times the rectangle's height bytes. A consumer sends `'z'`
 where it is shorter than the `'f'` it stands for, `'f'` otherwise; a provider
 that did not say `Compressed` gets only `'f'`. A block that does not
 decompress to its size is malformed and skipped.
+
+6.7 **On a bus (0.7).** A display is an openbus stream endpoint (openhal 0.3
+§6.2); the stream carries this wire unchanged, the consumer opening it.
+Several displays of one consumer are several streams. A provider that comes
+to show the consumer at its own size -- a window come to a desktop that ran on
+a virtual display -- ends its hello with `primary`: the consumer makes it its
+primary (it takes its size and density) and says to the one before it that it
+is a mirror (`'d'`). When the primary goes, the next one is the primary and
+the consumer takes its size again. A display nobody looks at (a mirror kept
+for capture) says `Shown false` and is sent nothing until it says `Shown true`.
 
 ## 7. Conformance
 

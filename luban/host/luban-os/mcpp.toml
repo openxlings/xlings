@@ -31,6 +31,8 @@ luban-desktop-host = { path = "../../os/window" }
 imkit              = { path = "../../kits/imkit" }
 tray               = { path = "../../kits/tray" }
 opensal-wlr        = { path = "../../kits/opensal-wlr" }
+xbus               = { path = "../../services/xbus" }
+openbus            = { path = "../../specs/openbus" }
 
 [dependencies.compat]
 imgui = "1.92.8-docking"

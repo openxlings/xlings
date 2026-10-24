@@ -257,21 +257,21 @@ std::expected<Json, std::string> desktop(const fs::path& home, std::string_view 
     return j;
 }
 
-std::expected<Json, std::string> desktop_start(const service::Context& c, std::string_view name, const DesktopOptions& o) {
-    if (auto running = desktop(c.home, name, {{"op", "status"}})) return running;
-    std::vector<std::string> argv{luban_binary(c.home).string(), "__desktop-session", c.home.string(), std::string(name),
+std::expected<Json, std::string> desktop_start(const fs::path& home, std::string_view name, const DesktopOptions& o) {
+    if (auto running = desktop(home, name, {{"op", "status"}})) return running;
+    std::vector<std::string> argv{luban_binary(home).string(), "__desktop-session", home.string(), std::string(name),
                                   "--mode", hd::format_mode(o.mode)};
     if (!o.session.empty()) argv.insert(argv.end(), {"--session", o.session});
     if (!o.persist.empty()) argv.insert(argv.end(), {"--persist", o.persist});
     if (o.here) argv.push_back("--here");
-    const auto log = desktop_log_(c.home, name) / "supervisor.log";
+    const auto log = desktop_log_(home, name) / "supervisor.log";
     std::error_code ec;
     fs::create_directories(log.parent_path(), ec);
     if (!platform::spawn_detached(argv, log)) return std::unexpected(std::format("the desktop's supervisor could not be started ({})", log.string()));
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(60);
     while (std::chrono::steady_clock::now() < deadline) {
         std::this_thread::sleep_for(std::chrono::milliseconds(200));
-        if (auto st = desktop(c.home, name, {{"op", "status"}})) return st;
+        if (auto st = desktop(home, name, {{"op", "status"}})) return st;
     }
     return std::unexpected(std::format("{}'s desktop did not come up; its log: {}", name, log.string()));
 }

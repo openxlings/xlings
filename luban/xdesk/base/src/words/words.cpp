@@ -11,6 +11,7 @@ namespace {
 // space nor a capital, which would read as a key -- said here as itself.
 constexpr i18n::Entry kEn[] = {
     {"auto", "auto"},
+    {"collapsed", "collapsed"},
     {"primary", "primary"},
     {"stack", "stack"},
     {"tile", "tile"},

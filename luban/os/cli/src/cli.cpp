@@ -732,7 +732,7 @@ int enter_virtual_(const svc::Context& c, const std::string& name, std::string_v
                                       std::format("luban enter {} --display window", name)));
         return 1;
     }
-    auto st = vm::desktop_start(c, name, o);
+    auto st = vm::desktop_start(c.home, name, o);
     if (!st) {
         if (c.sink) c.sink(svc::error(st.error()));
         return 1;

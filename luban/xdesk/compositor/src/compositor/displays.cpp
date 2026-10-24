@@ -81,6 +81,11 @@ void Server::drop_gone() {
         auto& p = links.front();
         provided = p.provided;
         pointer_mode();
+        // The output is its size now (a window gone, the virtual display's
+        // again: design 2026-10-24 §4.3).
+        if (p.own.width > 0 && p.own.height > 0) resize(p.own);
+        if (p.density > 0) set_scale(p.density);
+        p.whole = true;
         log(std::format("display {} is the primary", p.number));
     }
     tell_roles();

@@ -257,8 +257,15 @@ void App::open_console(const std::string& name, bool machine) {
         if (auto session = env ? session_now(*env) : std::nullopt; session && !luban.empty()) {
             const auto [ww, wh] = window->size();
             desktop_size = device_size_(ww, wh);
-            display = Display::sandbox(ctx.port.xlings(), luban, home, name, *session, env ? env->settings.persist : "all",
-                                       desktop_size, clipboard_grant(name), [w] { w->wake(); }, error);
+            // On the bus (design 2026-10-24 §4.3): the desktop runs on its own and
+            // this window is one of its displays; a program alone in the window
+            // (and a PC's host machine) still has a session of its own.
+            if (xlings::platform::is_linux && once_app.empty())
+                display = Display::bus(home, name, *session, env ? env->settings.persist : "all", desktop_size, clipboard_grant(name),
+                                       [w] { w->wake(); }, error);
+            else
+                display = Display::sandbox(ctx.port.xlings(), luban, home, name, *session, env ? env->settings.persist : "all",
+                                           desktop_size, clipboard_grant(name), [w] { w->wake(); }, error);
             if (display) {
                 shown_desktop = *session;
                 view = View::Desktop;

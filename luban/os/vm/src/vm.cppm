@@ -240,7 +240,7 @@ struct DesktopOptions {
 // Its supervisor's answer to `request`, or why there is none (not running).
 std::expected<nlohmann::json, std::string> desktop(const fs::path& home, std::string_view name, const nlohmann::json& request);
 // Started when it is not running; its status.
-std::expected<nlohmann::json, std::string> desktop_start(const service::Context& c, std::string_view name, const DesktopOptions& o);
+std::expected<nlohmann::json, std::string> desktop_start(const fs::path& home, std::string_view name, const DesktopOptions& o);
 // `luban __desktop-session <home> <name> [--mode M] [--session S] [--persist P]`: the supervisor, until the desktop ends.
 int desktop_supervise(const fs::path& home, std::string_view name, std::span<const std::string> args);
 

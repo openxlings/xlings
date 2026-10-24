@@ -197,6 +197,8 @@ struct Link {
     bool hidden { false };                         // it cannot be seen: it is sent nothing
     bool whole { true };                           // the next frame it gets is all of the output
     opensal::Size told;                            // the size it was last said ('s')
+    opensal::Size own;                             // its own size and density (its hello, then Resized):
+    double density { 1 };                          // what the output takes when it is the primary
     std::uint32_t number { 1 };
     bool gone { false };
 };

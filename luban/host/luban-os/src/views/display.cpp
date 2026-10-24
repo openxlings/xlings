@@ -13,6 +13,9 @@ import luban.service;
 import luban.vm;
 import luban.compat;
 import opensal.wlr;
+import openbus;
+import xbus.node;
+import openhal.display;
 import :core;
 
 namespace luban::os {
@@ -138,6 +141,82 @@ std::unique_ptr<Display> Display::sandbox(const fs::path& xlings, const fs::path
     return process(argv, std::move(env), home / "logs" / "luban-os.log", name, size, clip, std::move(wake), error, session);
 }
 
+std::unique_ptr<Display> Display::bus(const fs::path& home, const std::string& name, const std::string& session,
+                                      const std::string& persist, opensal::Size size, ClipboardGrant clip,
+                                      std::function<void()> wake, std::string& error) {
+    namespace hd = openhal::display;
+    // Its desktop, running on its own (started when it is not).
+    vm::DesktopOptions o{.mode = {std::max(64u, size.width), std::max(64u, size.height), 1.0}, .session = session, .persist = persist};
+    auto st = vm::desktop_start(home, name, o);
+    if (!st) { error = st.error(); return nullptr; }
+    auto fd = vm::connect_bus(home);
+    if (!fd) { error = fd.error(); return nullptr; }
+    { std::vector<int> close{*fd}; xlings::platform::close_fds(close); }
+    auto node = xbus::Node::connect({.name = "luban-os", .actor = "program:luban-os",
+                                     .router = xbus::Address{"unix", vm::bus_socket(home).string()}, .telemetry = false});
+    if (!node) { error = node.error(); return nullptr; }
+    std::unique_ptr<Display> d(new Display());
+    d->name_ = name;
+    d->session_ = session;
+    d->wake_ = std::move(wake);
+    d->wanted_ = size;
+    d->clip_ = clip;
+    d->home_ = home;
+    d->bus_node_ = *node;
+    auto* self = d.get();
+    // This window, as a display: the desktop opens it.
+    for (std::uint32_t n = 0; n < 64 && self->bus_path_.empty(); ++n) {
+        const auto path = hd::device_path((*node)->root(), n);
+        xbus::OfferOptions offer{.kind = openbus::EndpointKind::stream, .verb = "display", .effect = "reversible",
+                                 .interfaces = {std::string(hd::kInterface)},
+                                 .properties = {{"display-kind", "window"}, {"mode", hd::format_mode({size.width, size.height, 1.0})},
+                                                {"input", "1"}, {"system", name}, {"name", "Luban OS window"}}};
+        auto offered = (*node)->offer_stream(path, offer, [self](xbus::Stream s) {
+            std::lock_guard l(self->m_);
+            if (self->bus_stream_ && !self->bus_stream_->ended()) { s.close(); return; }
+            self->bus_stream_ = s;
+            self->bus_opened_.notify_all();
+        }, {.window = 8u << 20});
+        if (offered) self->bus_path_ = path;
+        else if (offered.error().code != openbus::ErrorCode::taken) { error = offered.error().message; return nullptr; }
+    }
+    if (self->bus_path_.empty()) { error = "no display path is free on the bus"; return nullptr; }
+    // The desktop takes it as its primary: the window shows it at its size.
+    auto attached = vm::desktop(home, name, {{"op", "attach"}, {"path", self->bus_path_}, {"role", "primary"}, {"kind", "window"}});
+    if (!attached) { error = attached.error(); return nullptr; }
+    d->io_ = std::thread([self] {
+        {
+            std::unique_lock l(self->m_);
+            self->bus_opened_.wait_for(l, std::chrono::seconds(60), [self] { return self->bus_stream_.has_value() || self->stop_; });
+            if (!self->bus_stream_) {
+                if (self->error_.empty() && !self->stop_) self->error_ = "the desktop did not open this window's display";
+                self->alive_ = false;
+                if (self->wake_) self->wake_();
+                return;
+            }
+        }
+        auto s = *self->bus_stream_;
+        while (!self->stop_) {
+            auto chunk = s.read(std::chrono::milliseconds(200));
+            if (!chunk) {
+                if (s.ended()) break;
+                continue;
+            }
+            self->provider_(chunk->bytes);
+            if (!self->alive_) break;
+        }
+        // Its end: the desktop's, said with why (its supervisor's word), or this window's.
+        if (!self->stop_) {
+            auto st = vm::desktop(self->home_, self->name_, {{"op", "status"}});
+            std::lock_guard l(self->m_);
+            if (self->error_.empty()) self->error_ = st ? std::string("the desktop let this window go") : std::string("the desktop ended");
+        }
+        self->alive_ = false;
+        if (self->wake_) self->wake_();
+    });
+    return d;
+}
+
 std::unique_ptr<Display> Display::process(const std::vector<std::string>& argv, std::map<std::string, std::string> env,
                                           const fs::path& log_file, const std::string& name, opensal::Size size,
                                           ClipboardGrant clip, std::function<void()> wake, std::string& error,
@@ -233,6 +312,17 @@ std::unique_ptr<Display> Display::process(const std::vector<std::string>& argv, 
 
 Display::~Display() {
     stop_ = true;
+    if (bus_node_) {
+        // This window goes: its display with it; the desktop goes on (its virtual display).
+        {
+            std::lock_guard l(m_);
+            if (bus_stream_) bus_stream_->close();
+            bus_opened_.notify_all();
+        }
+        if (io_.joinable()) io_.join();
+        bus_node_->close();
+        return;
+    }
     if (client_ && alive_) {
         client_->close(kSoundChannel);
         client_->close(kDisplayChannel);
@@ -249,6 +339,11 @@ Display::~Display() {
 
 bool Display::send_(std::string_view wire_bytes) {
     if (client_) return client_->send(kDisplayChannel, wire_bytes);
+    if (bus_node_) {
+        std::optional<xbus::Stream> s;
+        { std::lock_guard l(m_); s = bus_stream_; }
+        return s && s->write(wire_bytes, std::chrono::seconds(10));
+    }
     std::lock_guard l(sending_);
     return to_ >= 0 && xlings::platform::write_all(to_, wire_bytes);
 }
