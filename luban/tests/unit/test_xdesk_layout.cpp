@@ -223,7 +223,7 @@ XTEST(XdeskLayout, AColumnHoldsWindowsOneAboveAnotherAndGivesThemBack, .area = "
     EXPECT_EQ(of(ps, 2).rect.height, 780);
 }
 
-XTEST(XdeskLayout, StackedWindowsOverlapOnTheOutputAndSnapToHalvesAndQuarters, .area = "luban", .covers = {"XDESK-ARRANGEMENTS"}) {
+XTEST(XdeskLayout, StackedWindowsOverlapOnTheOutputAndSnapToHalvesAndQuarters, .area = "luban", .covers = {"XDESK-ARRANGEMENTS", "XDESK-STACK-OFFSCREEN"}) {
     Layout l({.rule = Rule::stack, .inner_gap = 10, .outer_gap = 10});
     l.add(1, {600, 400});
     l.add(2, {600, 400});
