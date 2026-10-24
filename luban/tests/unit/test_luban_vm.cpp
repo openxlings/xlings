@@ -219,6 +219,12 @@ XTEST(LubanVm, AMachinesKernelIsItsSystemsOrTheOneSet, .area = "luban", .covers 
     EXPECT_FALSE(luban::service::set_setting(root, "box", "kernel", "../x"));
     ASSERT_TRUE(luban::service::set_setting(root, "box", "kernel", "default"));
     EXPECT_EQ(luban::vm::machine_kernel(root, "box")->version, "6.12.112-r3");
+    // Declared down its edition's chain: what it was made with says it.
+    fs::create_directories(root / "subos" / "made");
+    tk::write_file(root / "subos" / "made" / ".xlings.json", R"({"from": "luban:tiny@2026.10.24.1"})");
+    fs::create_directories(root / "config" / "subos" / "made");
+    tk::write_file(root / "config" / "subos" / "made" / "instance.json", R"({"boot": {"virt": "xim:linux-kernel-virt@6.12.112-r3"}})");
+    EXPECT_EQ(luban::vm::machine_kernel(root, "made")->version, "6.12.112-r3");
     // One that declares none.
     fs::create_directories(root / "subos" / "old");
     tk::write_file(root / "subos" / "old" / ".xlings.json", R"({"boot": {"profile": "xim:luban-boot-generic@2026.10.11.1"}})");

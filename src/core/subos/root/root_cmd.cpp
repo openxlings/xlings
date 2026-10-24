@@ -444,7 +444,9 @@ std::optional<int> run_domain_operation_(const std::string& name,
         if (!relayed) { error_(stream, relayed.error()); return 1; }
         return *relayed;
     }
-    auto result = xlings::home::domain_producer::run((**scope).domain, arguments, std::nullopt, true);
+    // A session is as long as it is used (J69); anything else may take 30 minutes.
+    auto result = xlings::home::domain_producer::run((**scope).domain, arguments, std::nullopt, true, {},
+                                                     handsOverStdio ? std::nullopt : std::optional(std::chrono::milliseconds(std::chrono::minutes(30))));
     if (!result) { error_(stream, result.error()); return 1; }
     return *result;
 }

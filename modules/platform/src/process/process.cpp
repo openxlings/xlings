@@ -320,10 +320,13 @@ int run_argv_with_timeout(const std::vector<std::string>& argv, std::chrono::mil
         int fd;
         ~Reclaim() { if (fd >= 0) give_terminal_(fd, ::getpgrp()); }
     } reclaim{terminal};
-    const auto deadline = std::chrono::steady_clock::now() + limit;
+    // No limit (a year or more, milliseconds::max()): never late -- the sum
+    // in the clock's nanoseconds would overflow into the past.
+    const bool limited = limit < std::chrono::hours(24 * 365);
+    const auto deadline = limited ? std::chrono::steady_clock::now() + limit : std::chrono::steady_clock::time_point::max();
     while (true) {
         if (auto s = wait_process(pid, false)) return exit_code(*s);
-        if (std::chrono::steady_clock::now() >= deadline) {
+        if (limited && std::chrono::steady_clock::now() >= deadline) {
             send_signal_group(pid, SIGTERM);
             std::this_thread::sleep_for(std::chrono::seconds(2));
             send_signal_group(pid, SIGKILL);

@@ -246,6 +246,7 @@ private:
     bool machine_ { false };
     bool narrow_ { false };    // its channel is narrow (a machine's, a relay's): compressed frames
     fs::path log_;                    // a relayed desktop's standard error
+    fs::path log_file_;               // a local desktop's log (what its end points to)
     void provider_(std::string_view bytes);
     void sound_(std::string_view bytes);
     openhal::audio::Decoder sound_decoder_;

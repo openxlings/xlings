@@ -25,9 +25,13 @@ std::expected<std::vector<std::string>, std::string> command(const Domain& domai
     const domain_producer_source::Facade* source = nullptr, bool runtime = false);
 // `lines`: the command's stdout, a line at a time, instead of this
 // terminal's -- for a caller that relays what it says (an interface call).
+// `limit`: how long it may run on this terminal; none for a session
+// (`subos use`, `exec`, `start`, `log`: a desktop runs for days -- J69, a
+// desktop ended at 30 minutes with 124).
 std::expected<int, std::string> run(const Domain& domain, std::span<const std::string> arguments,
     std::optional<OutputBinding> output = std::nullopt, bool runtime = false,
-    const std::function<void(std::string_view)>& lines = {});
+    const std::function<void(std::string_view)>& lines = {},
+    std::optional<std::chrono::milliseconds> limit = std::chrono::minutes(30));
 std::expected<void, std::string> check_control_removal(const Scope& scope, std::string_view name);
 std::expected<void, std::string> remove_control(const Scope& scope, std::string_view name);
 std::expected<void, std::string> publish_scope(const Domain& domain, std::string_view name);

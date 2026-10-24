@@ -464,7 +464,8 @@ std::expected<std::vector<std::string>, std::string> command(const Domain& domai
 }
 std::expected<int, std::string> run(const Domain& domain, std::span<const std::string> arguments,
                                   std::optional<OutputBinding> output, bool runtime,
-                                  const std::function<void(std::string_view)>& lines) {
+                                  const std::function<void(std::string_view)>& lines,
+                                  std::optional<std::chrono::milliseconds> limit) {
     if (auto refreshed = refresh_entry(domain, platform::get_executable_path()); !refreshed)
         return std::unexpected(refreshed.error());
     if (auto synced = follow_owner_config_(domain); !synced) return std::unexpected(synced.error());
@@ -503,7 +504,7 @@ std::expected<int, std::string> run(const Domain& domain, std::span<const std::s
     observe::ops::event("link", {{"home", domain.physicalHome.string()}, {"trace", observe::ops::trace()}});
     auto argv = command(domain, arguments, output, facade ? &*facade : nullptr, runtime);
     if (!argv) return std::unexpected(argv.error());
-    if (!lines) return platform::run_argv_with_timeout(*argv, std::chrono::minutes(30));
+    if (!lines) return platform::run_argv_with_timeout(*argv, limit.value_or(std::chrono::milliseconds::max()));
     std::string pending;
     const int rc = platform::stream::run(*argv, [&](std::string_view channel, std::string_view bytes) {
         if (channel == "stderr") { std::cerr << bytes; return; }

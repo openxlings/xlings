@@ -23,6 +23,16 @@ constexpr std::uint32_t kDisplayChannel = 2;
 constexpr std::uint32_t kSoundChannel = 3;
 }  // namespace
 
+// Why a desktop ended, as far as its exit says it (design 2026-10-24 §6.2):
+// who ended it, and where its log is.
+std::string ended_why_(int code, const fs::path& log) {
+    std::string why;
+    if (code == 124) why = ": a time limit ended it";
+    else if (code == 127) why = ": its program was not found";
+    else if (code > 128 && code < 160) why = std::format(": signal {}", code - 128);
+    return std::format("the desktop ended ({}){}{}", code, why, log.empty() ? std::string{} : " -- " + log.string());
+}
+
 std::optional<std::string> desktop_session(const service::Environment& e) {
     const auto plan = service::enter_plan(e);
     if (plan.target != "desktop") return std::nullopt;
@@ -83,7 +93,7 @@ std::unique_ptr<Display> Display::over_(vm::Client client, const std::string& na
                     std::lock_guard l(self->m_);
                     self->error_ = j.is_object() ? j.value("error", std::string{}) : std::string{};
                     if (self->error_.empty() && j.is_object() && j.value("code", 0) != 0)
-                        self->error_ = std::format("the desktop ended ({})", j.value("code", 0));
+                        self->error_ = ended_why_(j.value("code", 0), self->log_);
                     self->alive_ = false;
                 }
             }
@@ -161,6 +171,7 @@ std::unique_ptr<Display> Display::process(const std::vector<std::string>& argv, 
     d->wake_ = std::move(wake);
     d->wanted_ = size;
     d->clip_ = clip;
+    d->log_file_ = log_file;
     d->to_ = (*to)[1];
     d->from_ = (*from)[0];
     d->pid_ = pid;
@@ -212,7 +223,7 @@ std::unique_ptr<Display> Display::process(const std::vector<std::string>& argv, 
                 std::this_thread::sleep_for(std::chrono::milliseconds(50));
         if (st && platform::exit_code(*st) != 0) {
             std::lock_guard l(self->m_);
-            if (self->error_.empty()) self->error_ = std::format("the desktop ended ({})", platform::exit_code(*st));
+            if (self->error_.empty()) self->error_ = ended_why_(platform::exit_code(*st), self->log_file_);
         }
         self->alive_ = false;
         if (self->wake_) self->wake_();

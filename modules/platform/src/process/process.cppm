@@ -81,7 +81,8 @@ bool give_to(const std::filesystem::path& path, unsigned uid, unsigned gid);
 bool take_controlling_terminal();       // stdin's terminal, TIOCSCTTY
 // fds[0..2] become this process's stdin, stdout, stderr.
 void redirect_stdio(std::span<const int> fds);
-// argv with a deadline, its own process group, killed whole when late (124).
+// argv with a deadline, its own process group, killed whole when late (124);
+// milliseconds::max() (a year or more): no deadline.
 int run_argv_with_timeout(const std::vector<std::string>& argv, std::chrono::milliseconds limit);
 // A shell command run for nobody: its own session (no controlling terminal)
 // and the null device as input, so a question it asks -- a password, a

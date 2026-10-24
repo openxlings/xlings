@@ -1044,3 +1044,7 @@ status = "required"
 [LUBAN-PACKAGE-CHECKS]
 text = "a package's declared checks (share/luban/checks.d, written from a recipe's extensions.luban.checks) may be `run` (a command), `launcher` (an application id: its desktop entry in /usr/share/applications, not hidden) or `gui` and `sound` (a window that maps, a sound that is heard), the last two a desktop session's -- said as such by the self-check, never failed for want of one"
 status = "required"
+
+[SUBOS-DOMAIN-SESSION-UNLIMITED]
+text = "a session run where a system lives -- subos use, exec, start, log inside a private domain (a desktop, a shell) -- has no time limit; other domain operations end at 30 minutes, and a child given no limit is never ended for being late (design 2026-10-24 J69: a desktop ended at 30 minutes with 124)"
+status = "required"

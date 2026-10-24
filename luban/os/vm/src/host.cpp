@@ -312,11 +312,16 @@ std::expected<MachineKernel, std::string> machine_kernel(const fs::path& home, s
         k.version = settings->kernel;
         k.overridden = true;
     } else {
+        // Its version's own manifest (what luban upgrade rewrites), else what
+        // its edition's chain declared when it was made (instance.json).
         const auto at = xlings::subos::locate(xlings::subos::HomeView{home}, name);
-        const auto manifest = read_json_(at.home.instance(name) / ".xlings.json");
-        const auto boot = manifest.value("boot", Json::object());
-        const auto ref = boot.is_object() ? boot.value("virt", std::string{}) : std::string{};
-        k.version = kernel_version_(ref);
+        for (const auto& file : {at.home.instance(name) / ".xlings.json", at.home.instance_file(name)}) {
+            const auto boot = read_json_(file).value("boot", Json::object());
+            if (const auto ref = boot.is_object() ? boot.value("virt", std::string{}) : std::string{}; !ref.empty()) {
+                k.version = kernel_version_(ref);
+                break;
+            }
+        }
         if (k.version.empty())
             return std::unexpected(std::format("'{}' does not say which kernel it boots as a machine (its version is older than "
                                                "systems carrying their own)", name));
