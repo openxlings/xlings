@@ -272,9 +272,19 @@ std::expected<std::shared_ptr<VirtualOnBus>, std::string> offer_virtual_(std::sh
 // machine, the channel it runs on (its end said when it comes).
 struct InMachine {
     std::optional<Client> client;
+    std::uint32_t channel { 0 };
     std::atomic<int> code { -1 };     // -1: running
+    std::atomic<bool> leaving { false };
     std::thread waiting;
-    ~InMachine() { if (waiting.joinable()) waiting.join(); }
+    // Its channel closed (the command ends with its stream); no longer waited on.
+    void close() {
+        leaving = true;
+        if (client) (void)client->close(channel);
+    }
+    ~InMachine() {
+        leaving = true;
+        if (waiting.joinable()) waiting.join();
+    }
 };
 struct Started {
     int pid { -1 };
@@ -423,12 +433,19 @@ int desktop_supervise(const fs::path& home, std::string_view name, std::span<con
         auto client = Client::connect(home, name);
         if (!client) return std::unexpected(client.error());
         run->client.emplace(std::move(*client));
-        const auto ch = next_channel++;
+        std::uint32_t ch = 0;
+        {
+            std::lock_guard l(m);
+            ch = next_channel++;
+        }
+        run->channel = ch;
         if (!run->client->open_command(ch, {"luban", "__desktop", session, "--size", std::format("{}x{}", mode.width, mode.height), "--display",
                                             display, "--role", role}, 0, 0, Json::object(), true))
             return std::unexpected(std::string("the machine did not take the command"));
-        run->waiting = std::thread([run, ch, log] {
-            for (;;) {
+        // The run outlives its thread (its destructor waits for it).
+        run->waiting = std::thread([raw = run.get(), ch, log] {
+            auto* run = raw;
+            while (!run->leaving) {
                 auto frames = run->client->poll(500);
                 if (!frames) { run->code = 1; return; }
                 for (auto& [type, body] : *frames) {
@@ -443,15 +460,19 @@ int desktop_supervise(const fs::path& home, std::string_view name, std::span<con
                     }
                 }
             }
+            if (run->code < 0) run->code = 0;   // let go of
         });
         return run;
     };
-    const auto start_on = [&](const std::string& display, const std::string& role) -> std::expected<int, std::string> {
+    // What started: a process, or a machine's run (its pid then -1).
+    struct Run { int pid { -1 }; std::shared_ptr<InMachine> machine; };
+    const auto start_on = [&](const std::string& display, const std::string& role) -> std::expected<Run, std::string> {
         if (machine) {
             auto run = start_in_machine(display, role);
             if (!run) return std::unexpected(run.error());
+            std::lock_guard l(m);
             machine_runs.push_back(*run);
-            return -static_cast<int>(machine_runs.size());   // its run, not a pid
+            return Run{-1, *run};
         }
         if (here) {
             auto env = platform::environment();
@@ -463,7 +484,7 @@ int desktop_supervise(const fs::path& home, std::string_view name, std::span<con
             const auto pid = spawn_({luban_binary(home).string(), "__desktop", session, "--size", std::format("{}x{}", mode.width, mode.height),
                                      "--display", display, "--role", role}, env, log);
             if (!pid) return std::unexpected(std::string("the desktop's command could not be started"));
-            return *pid;
+            return Run{*pid, nullptr};
         }
         const auto xlings = service::xlings_path();
         const auto region = frames ? std::format("OPENSAL_REGION=/run/luban/frames OPENSAL_REGION_SIZE={} ", kFramesBytes) : std::string{};
@@ -481,7 +502,7 @@ int desktop_supervise(const fs::path& home, std::string_view name, std::span<con
         env.erase("XLINGS_ACTIVE_SUBOS");
         const auto pid = spawn_(argv, env, log);
         if (!pid) return std::unexpected(std::string("the desktop's command could not be started"));
-        return *pid;
+        return Run{*pid, nullptr};
     };
     const auto publish = [&](std::string event, Json fields) {
         fields["event"] = std::move(event);
@@ -492,7 +513,7 @@ int desktop_supervise(const fs::path& home, std::string_view name, std::span<con
     {
         auto first = start_on((*virt)->path, "primary");
         if (!first) { say(first.error()); return 1; }
-        started.push_back({*first, (*virt)->path, "primary", "virtual", *first < 0 ? machine_runs.back() : nullptr});
+        started.push_back({first->pid, (*virt)->path, "primary", "virtual", first->machine});
     }
     const auto status = [&] {
         std::lock_guard l(m);
@@ -550,7 +571,7 @@ int desktop_supervise(const fs::path& home, std::string_view name, std::span<con
             if (!pid) { c.fail(openbus::ErrorCode::gone, pid.error()); return; }
             {
                 std::lock_guard l(m);
-                started.push_back({*pid, display, role, j.value("kind", std::string("window")), *pid < 0 ? machine_runs.back() : nullptr});
+                started.push_back({pid->pid, display, role, j.value("kind", std::string("window")), pid->machine});
             }
             publish("display-attach", {{"path", display}, {"role", role}});
             c.reply(status().dump(), static_cast<std::uint16_t>(openbus::Codec::json));
@@ -573,7 +594,7 @@ int desktop_supervise(const fs::path& home, std::string_view name, std::span<con
             }
             if (in_machine) {
                 // Its display gone: the command ends with its stream.
-                (void)in_machine->client->close(0);
+                in_machine->close();
             } else if (pid < 0) {
                 c.fail(openbus::ErrorCode::not_found, "no display " + display + " to detach (the virtual one stays)");
                 return;
@@ -604,7 +625,9 @@ int desktop_supervise(const fs::path& home, std::string_view name, std::span<con
     }
     publish("started", {{"virtual", (*virt)->path}, {"mode", hd::format_mode(mode)}});
     // Until the desktop (its first command) ends, or it is asked to end.
-    int first_pid = started.front().pid;
+    // The first: its process, or its run in a machine.
+    const int first_pid = started.front().pid;
+    const auto first_run = started.front().machine;
     while (!stop) {
         std::this_thread::sleep_for(std::chrono::milliseconds(200));
         std::lock_guard l(m);
@@ -616,7 +639,7 @@ int desktop_supervise(const fs::path& home, std::string_view name, std::span<con
                 st = platform::wait_process(it->pid, false);
             }
             if (!st) { ++it; continue; }
-            if (it->pid == first_pid) {
+            if (first_run ? it->machine == first_run : it->pid == first_pid) {
                 ended = *st;
                 if (ended_by.empty()) ended_by = platform::exit_code(*st) == 0 ? "it ended" : std::format("it ended ({})", platform::exit_code(*st));
                 stop = true;
@@ -637,7 +660,7 @@ int desktop_supervise(const fs::path& home, std::string_view name, std::span<con
             (void)platform::send_signal_group(s.pid, platform::sig::kill);
         }
         // A machine's: their channels closed; the machine stays (it is the system's, not the desktop's).
-        for (const auto& r : machine_runs) if (r->client) (void)r->client->close(0);
+        for (const auto& r : machine_runs) r->close();
     }
     const int code = ended ? platform::exit_code(*ended) : 0;
     say(std::format("the desktop ended: {} ({})", ended_by, code));
