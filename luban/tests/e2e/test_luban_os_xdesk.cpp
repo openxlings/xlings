@@ -725,10 +725,11 @@ commit abc
 waitfor clipboard from-the-guest
 state {}
 )", st.string()),
-                        // The client copies once the window is in use (design 2026-10-24 §8.2: a copy made
-                        // while nobody uses the window stays in the desktop).
+                        // The client copies once the window is in use -- given text (design 2026-10-24
+                        // §8.2: a copy made while nobody uses the window stays in the desktop).
                         {"--desktop-exec", xdesk_binary()->string(), "--profile", "classic", "--autostart",
-                         std::format("sh -c 'sleep 2; exec python3 {} c04040 --log {} --copy from-the-guest'", colour_client(home).string(), got.string())},
+                         std::format("sh -c 'sleep 2; exec python3 {} c04040 --log {} --copy from-the-guest --copy-after commit'",
+                                     colour_client(home).string(), got.string())},
                         {{"XDG_RUNTIME_DIR", runtime.string()}});
     ASSERT_EQ(r.exit_code, 0) << r.transcript() << tk::read_file(got);
     const auto log = tk::read_file(got);

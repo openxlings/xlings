@@ -200,10 +200,11 @@ XTEST(LubanDesktopBus, ACoveredWindowsBookmarkComesOutFromUnderTheWindowOverIt, 
     ASSERT_FALSE(d.display.empty()) << "the desktop did not come";
     const auto s = d.until([](const Json& s) { return s.value("bookmarks", Json::array()).size() == 1; }, 150);
     ASSERT_EQ(s.value("bookmarks", Json::array()).size(), 1u) << s.value("windows", Json::array()).dump();
+    // The cover: the widest of the two (the other is wholly under it).
     Json cover;
     for (const auto& w : s["windows"])
-        if (w["rect"][2].get<double>() > 500) cover = w;
-    ASSERT_FALSE(cover.is_null());
+        if (cover.is_null() || w["rect"][2].get<double>() > cover["rect"][2].get<double>()) cover = w;
+    ASSERT_FALSE(cover.is_null()) << s["windows"].dump();
     const auto tab = s["bookmarks"][0]["tab"];
     const double right = cover["rect"][0].get<double>() + cover["rect"][2].get<double>();
     // What shows of it begins at the cover's edge; its root is under the cover.
