@@ -341,15 +341,19 @@ Picture debug_hud(draw::Fonts* ui, const Theme& t, const std::vector<std::string
 }
 
 Picture settings(draw::Fonts* ui, draw::Fonts* big, const Theme& t, const SettingsView& v, int width, int height, bool zh,
-                 double scale) {
+                 double scale, bool in_window) {
     Picture p;
     p.image = image_(width, height, scale);
     draw::Canvas c(p.image, scale);
-    c.fill({0, 0, double(width), double(height)}, t.overlay);
-    const double cw = std::min(940.0, width - 40.0), ch = std::min(660.0, height - 40.0);
+    const double cw = in_window ? width : std::min(940.0, width - 40.0), ch = in_window ? height : std::min(660.0, height - 40.0);
     const Rect card { std::round((width - cw) / 2), std::round((height - ch) / 2), cw, ch };
-    c.fill(card, t.card, t.radius + 6);
-    c.frame(card, Color::rgb(0x3a4050), 1, t.radius + 6);
+    if (in_window) {
+        c.fill(card, t.card);
+    } else {
+        c.fill({0, 0, double(width), double(height)}, t.overlay);
+        c.fill(card, t.card, t.radius + 6);
+        c.frame(card, Color::rgb(0x3a4050), 1, t.radius + 6);
+    }
     // The pages, on the card's own colour, a line between them and the page
     // (design 2026-10-20 WuXian §5.1); its title the window's: an icon and
     // "Settings", larger, nothing to click.

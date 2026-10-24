@@ -559,7 +559,7 @@ void desktop_view_(App& a) {
         // only what was copied while the window was being used: a program in
         // the background copying puts nothing on this computer (design
         // 2026-10-24 §8.2), and its region keeps it.
-        if (auto c = d.take_clipboard(); c && a.window->focused()) {
+        if (auto c = d.take_clipboard(); c && (a.window->focused() || a.desktop_in_use)) {
             a.window->set_clipboard(*c);
             a.pasted = *c;
         }
@@ -578,6 +578,9 @@ void desktop_view_(App& a) {
             if (std::holds_alternative<opensal::Shown>(e)) d.send(e);
         if (!a.menu && !a.close_dialog) {
             for (const auto& e : a.window->events()) {
+                // Used: keys and buttons say so; the focus leaving says it is not.
+                if (std::holds_alternative<opensal::Key>(e) || std::holds_alternative<opensal::PointerButton>(e)) a.desktop_in_use = true;
+                if (const auto* f = std::get_if<opensal::Focus>(&e)) a.desktop_in_use = f->in;
                 if (const auto* m = std::get_if<opensal::PointerMotion>(&e)) {
                     d.send(opensal::PointerMotion{(m->x - at.x) / scale, (m->y - at.y) / scale});
                 } else if (const auto* k = std::get_if<opensal::Key>(&e)) {

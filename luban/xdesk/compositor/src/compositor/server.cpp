@@ -230,6 +230,9 @@ bool Server::start_() {
     zh = xdesk::words::chinese();
     open_fonts();
 
+    // The background layer for wallpaper programs (design 2026-10-24 §9.7).
+    layer_shell = wlr_layer_shell_v1_create(display, 4);
+    new_layer_surface.connect(&layer_shell->events.new_surface, [this](void* d) { layer_surface_new(static_cast<wlr_layer_surface_v1*>(d)); });
     xdg_shell = wlr_xdg_shell_create(display, 6);
     new_toplevel.connect(&xdg_shell->events.new_toplevel, [this](void* d) { add_view(static_cast<wlr_xdg_toplevel*>(d)); });
     new_popup.connect(&xdg_shell->events.new_popup, [this](void* d) { add_popup(static_cast<wlr_xdg_popup*>(d)); });
@@ -424,6 +427,14 @@ bool Server::start_() {
     load_person();
     draw_shell();
     send(hello());
+    // Nothing done for a while: the wallpaper paused (checked every half minute).
+    idle_timer = wl_event_loop_add_timer(loop, [](void* data) -> int {
+        auto* self = static_cast<Server*>(data);
+        self->wallpaper_pause_check();
+        wl_event_source_timer_update(self->idle_timer, 30000);
+        return 0;
+    }, this);
+    if (idle_timer) wl_event_source_timer_update(idle_timer, 30000);
     // What its programs say, read off the loop (design 2026-10-24 §6.1).
     apps_reader = std::jthread([this](std::stop_token st) { apps_read(st); });
     for (const auto& a : o.autostart) launch(a);

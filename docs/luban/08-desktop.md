@@ -280,13 +280,41 @@ grows — up to four times, filled with the accent — then shrinks back
 For a window that does not draw one (an older Luban OS), xdesk draws it into
 the picture.
 
+### The wallpaper
+
+A colour, a gradient or a picture (fill, fit, tile or centre; PNG or SVG from
+`~/Pictures` or the system's backgrounds), for every workspace or one of its
+own. In the WuXian view the wallpaper is on the plane: it moves and scales with
+it. Or the desktop's engine — classic scenes drawn as you watch: reaction and
+diffusion (the default, slow), a Mandelbrot zoom, a turning Julia set, the
+Lorenz attractor, a flow field, boids that keep away from the pointer, the game
+of life (click to sow cells), double pendulums, n bodies, a fluid you stir, a
+ray-marched scene. It pauses while a window covers the screen and after five
+minutes without input. Any wallpaper program works too (`swaybg -i <file>`): it
+draws on the background layer.
+
+```ini
+# ~/.config/xdesk/xdesk.ini
+[wallpaper]
+kind = engine              # solid, gradient, image, engine
+engine = reaction-diffusion
+speed = normal             # slow, normal, fast
+[wallpaper.2]              # workspace 2's own
+kind = image
+image = /home/me/Pictures/sea.png
+fit = fill
+```
+
 ### Settings and sessions
 
-**Super+I** opens the settings: the displays (each window showing the
-desktop, below), the layout (the new workspace's rule, which way columns run,
-the gaps, the narrowest column, the status bar's other workspaces, the
-switchers, the wheel), the appearance (the accent, the background, *reduce
-motion*, the shaken pointer, the renderer), the keys, and *About* — the
+**Super+I** opens the settings, a window of their own (moved, tiled,
+collapsed and bookmarked like any other; Esc closes it): the displays (each
+window showing the desktop, below), the layout (the new workspace's rule, which
+way columns run, the gaps, the narrowest column, the status bar's other
+workspaces, the switchers, the wheel), the appearance (the accent, the
+background, *reduce motion*, the shaken pointer, the renderer), the wallpaper
+(below), the keys, the applications (what each program it started said, how it
+ended; whether an unexpected end is said), and *About* — the
 system, xdesk, the kernel, the renderer (and why), the displays, CPU and
 memory, the files it keeps, and *Copy* for a report. A row says whether it is
 as it came, changed by you, or set by the system; each page has *as it came*,

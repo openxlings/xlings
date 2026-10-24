@@ -494,6 +494,9 @@ struct App {
     int ended_code { 0 };
     bool paste_on_open { true };       // the host's clipboard, given once it shows
     std::string pasted;                // what crossed last (not sent back)
+    // The desktop's window is being used (its focus, a key or a button given to
+    // it): what it copies then crosses to this computer (design 2026-10-24 §8.2).
+    bool desktop_in_use { false };
     std::optional<std::chrono::steady_clock::time_point> resize_at;
     std::string current;               // the system on screen
     bool menu { false };               // the Host key's menu

@@ -122,7 +122,7 @@ void Server::apps_reap() {
                              {"log", ended->log.string()}, {"last", last_lines_(ended->tail, 20)}});
         if (bus) bus->withdraw(std::format("service/xdesk/apps/{}/log", pid));
         // Unexpected: a signal, or failing soon -- said, with where its log is.
-        if (signal || (*code != 0 && ms < 10000)) {
+        if (crash_notice && (signal || (*code != 0 && ms < 10000))) {
             const auto how = signal ? std::format("{} {}", i18n::tr("signal"), *code - 128) : std::format("{} {}", i18n::tr("exit"), *code);
             show_hint(std::format("{} {} ({}) -- {}", ended->name, i18n::tr("ended unexpectedly"), how, ended->log.string()), 8000);
             log(std::format("{} ended unexpectedly ({}), its log: {}", ended->name, how, ended->log.string()));

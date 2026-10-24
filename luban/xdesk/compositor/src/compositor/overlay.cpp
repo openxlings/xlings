@@ -325,6 +325,8 @@ void Server::draw_overlay() {
     }
     if (overlay == Overlay::none) {
         wlr_scene_node_set_enabled(&overlay_node->node, false);
+        // The settings in their own window: drawn there (design 2026-10-24 §9.6).
+        if (settings_window()) draw_settings_window();
         return;
     }
     const int w = logical_w(), h = logical_h();

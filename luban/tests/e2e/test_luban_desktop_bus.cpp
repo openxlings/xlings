@@ -122,7 +122,7 @@ struct Desk {
     std::shared_ptr<xbus::Node> node;
     std::string display;
     Desk(std::string tag, const fs::path& luban, const fs::path& xdesk, const std::vector<Client>& clients, std::string mode,
-         std::string wuxian = {})
+         std::string wuxian = {}, std::string ini = {})
         : home(tk::Home::isolated(tag)) {
         const auto root = home.root();
         tk::write_file(root / "client.py", std::string(kClient));
@@ -136,6 +136,7 @@ struct Desk {
         fs::create_directories(root / ".config" / "xdesk");
         tk::write_file(root / ".config" / "xdesk" / "state.json", R"({"toured": true})");
         if (!wuxian.empty()) tk::write_file(root / ".config" / "xdesk" / "wuxian.json", wuxian);
+        if (!ini.empty()) tk::write_file(root / ".config" / "xdesk" / "xdesk.ini", ini);
         fs::create_directories(root / "runtime");
         fs::permissions(root / "runtime", fs::perms::owner_all, fs::perm_options::replace);
         env = home.env();
@@ -212,6 +213,109 @@ XTEST(LubanDesktopBus, ACoveredWindowsBookmarkComesOutFromUnderTheWindowOverIt, 
     const auto png = d.capture();
     ASSERT_TRUE(png.starts_with("\x89PNG"));
     tk::write_file(tk::artifacts_dir() / "desktop-bus-bookmark.png", png);
+}
+
+// The settings are a window of their own (design 2026-10-24 §9.6, S7): opened
+// at a page, it is laid out as any window, its page is clicked, its keys are
+// its own, Esc closes it, and it comes back at the page asked.
+XTEST(LubanDesktopBus, TheSettingsAreAWindowOfTheirOwn, .area = "luban", .covers = {"XDESK-SETTINGS-APP"}, .requires_ = {"linux", "xlings-bin"}) {
+    const auto luban = luban_bin_();
+    const auto xdesk = xdesk_bin_();
+    if (!luban || !xdesk) GTEST_SKIP() << "no luban or xdesk beside the xlings under test";
+    Desk d("luban-desktop-settings", *luban, *xdesk, {}, "1024x640");
+    ASSERT_FALSE(d.display.empty()) << "the desktop did not come";
+    const auto control = luban::vm::system_bus_root("box") + "/service/xdesk/control";
+    ASSERT_TRUE(d.node->call(control, R"({"settings": "layout"})", 5s));
+    auto s = d.until([](const Json& s) { return s["overlays"].contains("settings"); });
+    ASSERT_TRUE(s["overlays"].contains("settings")) << s["overlays"].dump();
+    EXPECT_EQ(s["overlays"]["open"], "none") << "not an overlay";
+    EXPECT_EQ(s["overlays"]["settings"]["page"], "layout");
+    const auto id = s["overlays"]["settings"]["window"].get<double>();
+    Json win;
+    for (const auto& w : s["windows"])
+        if (w["id"].get<double>() == id) win = w;
+    ASSERT_FALSE(win.is_null()) << s["windows"].dump();
+    EXPECT_EQ(win["app_id"], "xdesk-settings");
+    EXPECT_TRUE(win["focused"].get<bool>());
+    std::this_thread::sleep_for(500ms);
+    tk::write_file(tk::artifacts_dir() / "desktop-bus-settings.png", d.capture());
+    // Its pages are on its left: Tab goes to the next one (its keys are its own).
+    ASSERT_TRUE(d.input(R"([{"key": "Tab"}])"));
+    s = d.until([](const Json& s) { return s["overlays"].contains("settings") && s["overlays"]["settings"]["page"] == "appearance"; }, 30);
+    EXPECT_EQ(s["overlays"]["settings"]["page"], "appearance");
+    // Esc: closed, the window gone; asked again, it comes at the page asked.
+    ASSERT_TRUE(d.input(R"([{"key": "Escape"}])"));
+    s = d.until([](const Json& s) { return !s["overlays"].contains("settings") && s["windows"].empty(); }, 50);
+    EXPECT_FALSE(s["overlays"].contains("settings")) << s["overlays"].dump();
+    ASSERT_TRUE(d.node->call(control, R"({"settings": "about"})", 5s));
+    s = d.until([](const Json& s) { return s["overlays"].contains("settings"); });
+    EXPECT_EQ(s["overlays"]["settings"]["page"], "about");
+}
+
+// A pixel of a PNG of ours (stored rows, filter 0, RGB): its colour.
+std::array<int, 3> png_at_(const std::string& png, int width, int x, int y) {
+    // Past the signature (8), IHDR (25), IDAT's length and type (8), zlib's 2:
+    // stored blocks of at most 65535 bytes, each after a 5-byte header.
+    const std::size_t row = std::size_t(width) * 3 + 1;
+    const std::size_t offset = std::size_t(y) * row + 1 + std::size_t(x) * 3;
+    std::size_t at = 8 + 25 + 8 + 2, left = offset;
+    for (;;) {
+        const std::size_t len = std::uint8_t(png[at + 1]) | (std::size_t(std::uint8_t(png[at + 2])) << 8);
+        if (left < len) { at += 5 + left; break; }
+        left -= len;
+        at += 5 + len;
+    }
+    auto byte = [&](std::size_t k) {
+        // A pixel may straddle two blocks.
+        std::size_t a = 8 + 25 + 8 + 2, l = offset + k;
+        for (;;) {
+            const std::size_t len = std::uint8_t(png[a + 1]) | (std::size_t(std::uint8_t(png[a + 2])) << 8);
+            if (l < len) return int(std::uint8_t(png[a + 5 + l]));
+            l -= len;
+            a += 5 + len;
+        }
+    };
+    (void)at;
+    return {byte(0), byte(1), byte(2)};
+}
+
+// The wallpaper (design 2026-10-24 §9.7, S8): a colour of the settings', a
+// workspace's own; the engine on the background layer, moving; paused while
+// a window covers the screen.
+XTEST(LubanDesktopBus, TheWallpaperIsAColourAPictureOrTheEngine, .area = "luban", .covers = {"XDESK-WALLPAPER"}, .requires_ = {"linux", "xlings-bin"}) {
+    const auto luban = luban_bin_();
+    const auto xdesk = xdesk_bin_();
+    if (!luban || !xdesk) GTEST_SKIP() << "no luban or xdesk beside the xlings under test";
+    {
+        Desk d("luban-desktop-paper", *luban, *xdesk, {}, "800x500", {}, "[wallpaper]\nkind = solid\ncolour = #203826\n");
+        ASSERT_FALSE(d.display.empty());
+        std::this_thread::sleep_for(1500ms);
+        const auto png = d.capture();
+        ASSERT_TRUE(png.starts_with("\x89PNG"));
+        EXPECT_EQ(png_at_(png, 800, 400, 300), (std::array<int, 3>{0x20, 0x38, 0x26})) << "the colour asked for, under nothing";
+        tk::write_file(tk::artifacts_dir() / "desktop-bus-wallpaper-solid.png", png);
+    }
+    {
+        // The engine: a background-layer client, its picture moving.
+        Desk d("luban-desktop-engine", *luban, *xdesk, {}, "800x500", {}, "[wallpaper]\nkind = engine\nengine = life\nspeed = fast\n");
+        ASSERT_FALSE(d.display.empty());
+        const auto apps = luban::vm::system_bus_root("box") + "/service/xdesk/apps";
+        bool running = false;
+        for (int k = 0; k < 50 && !running; ++k) {
+            std::this_thread::sleep_for(200ms);
+            if (auto got = d.node->call(apps, {}, 5s); got && !got->empty())
+                for (const auto& a : Json::parse(got->front(), nullptr, false))
+                    if (a.value("id", std::string{}) == "xdesk-wallpaper" && a.value("running", false)) running = true;
+        }
+        ASSERT_TRUE(running) << "the engine is one of the desktop's programs";
+        std::this_thread::sleep_for(2000ms);
+        const auto first = d.capture();
+        std::this_thread::sleep_for(1500ms);
+        const auto second = d.capture();
+        tk::write_file(tk::artifacts_dir() / "desktop-bus-wallpaper-engine.png", second);
+        EXPECT_NE(first, second) << "it moves";
+        EXPECT_NE(png_at_(second, 800, 400, 300), (std::array<int, 3>{0x16, 0x18, 0x1d})) << "not the plain background";
+    }
 }
 
 XTEST(LubanDesktopBus, ADesktopRunsOnAVirtualDisplayAndEverythingOfItIsOnTheBus, .area = "luban",

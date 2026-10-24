@@ -27,6 +27,11 @@ namespace apps = xdesk::apps;
 namespace fs = std::filesystem;
 
 namespace {
+// A client's credentials' types, as libwayland names them (no system header here).
+template <class> struct CredentialTypes;
+template <class C, class P, class U, class G> struct CredentialTypes<void (*)(C, P*, U*, G*)> { using pid = P; using uid = U; using gid = G; };
+using Credentials = CredentialTypes<decltype(&wl_client_get_credentials)>;
+
 // The backdrop's colour: an idle title's, so a short client reads as its frame.
 std::array<float, 4> backdrop_colour_(const shell::Theme& t) {
     return {t.title_idle.r / 255.0f, t.title_idle.g / 255.0f, t.title_idle.b / 255.0f, 1.0f};
@@ -82,7 +87,9 @@ void Server::apply(const std::vector<layout::Placement>& ps, bool instant, layou
         const double zoom = p->zoom * (spread != spread_zoom.end() ? spread->second : 1);
         v.zoom = zoom;
         // Collapsed: its title bar alone, the client kept at its size, unseen.
-        wlr_scene_node_set_enabled(&v.content->node, !p->collapsed);
+        // A window of the desktop's own shows what the desktop draws instead.
+        wlr_scene_node_set_enabled(&v.content->node, !p->collapsed && !v.own);
+        if (v.own) wlr_scene_node_set_enabled(&v.own->node, !p->collapsed);
         if (v.backdrop) wlr_scene_node_set_enabled(&v.backdrop->node, !p->collapsed);
         // Full screen: no title bar, all of the output the client's.
         const int bar = p->fullscreen ? 0 : kTitle;
@@ -152,6 +159,16 @@ void Server::apply(const std::vector<layout::Placement>& ps, bool instant, layou
     animate();
     draw_shell();
     update_bookmarks();
+    wallpaper_update();
+    // The settings' window drawn again at a new size or scale.
+    if (View* sw = settings_window())
+        if (const auto r = placement_of(sw->id)) {
+            auto key = std::format("{}x{}@{}*{}", std::lround(r->width), std::lround(r->height), sw->zoom, scale);
+            if (key != settings_window_drawn) {
+                settings_window_drawn = std::move(key);
+                draw_settings_window();
+            }
+        }
 }
 
 View* Server::view_at(double x, double y) {
@@ -302,6 +319,18 @@ void Server::add_view(wlr_xdg_toplevel* toplevel) {
     });
     v.map.connect(&toplevel->base->surface->events.map, [this, self](void*) {
         self->mapped = true;
+        // The settings' window, held by the process this desktop started for
+        // it: its content is the desktop's to draw (design 2026-10-24 §9.6).
+        if (settings_pid > 0 && !settings_view) {
+            Credentials::pid pid = 0;
+            Credentials::uid uid = 0;
+            Credentials::gid gid = 0;
+            wl_client_get_credentials(wl_resource_get_client(self->toplevel->base->resource), &pid, &uid, &gid);
+            if (static_cast<int>(pid) == settings_pid) {
+                settings_view = self->id;
+                self->own = wlr_scene_buffer_create(self->frame, nullptr);
+            }
+        }
         lay_out(*self);
         // A floating window keeps the size it drew, centred where the layout put it.
         if (lay.floating(self->id)) {
@@ -357,6 +386,7 @@ void Server::add_view(wlr_xdg_toplevel* toplevel) {
         if (drag == Drag::none && self->mapped && live()) resize_start(self, ev->edges);
     });
     v.destroy.connect(&toplevel->events.destroy, [this, self](void*) {
+        if (self->id == settings_view) { settings_view = 0; settings_pid = -1; }
         if (self->laid) lay.remove(self->id);
         for (auto it = views.begin(); it != views.end(); ++it)
             if (&*it == self) {

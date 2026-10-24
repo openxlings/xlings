@@ -195,6 +195,13 @@ std::string Server::state_json() {
     }
     overlays.set("hint", hint);
     overlays.set("launcher", Json{launcher.is_open()});
+    // The settings, a window of their own (design 2026-10-24 §9.6): its id and the page shown.
+    if (settings_view) {
+        Json st{Json::Object{}};
+        st.set("window", num_(static_cast<double>(settings_view)));
+        st.set("page", Json{std::string(settings_page_name(settings_page))});
+        overlays.set("settings", st);
+    }
     out.set("overlays", overlays);
     // What the launcher offers: the applications its directories have.
     {
@@ -356,12 +363,9 @@ std::string Server::control(std::string_view request) {
         return answer_(true);
     }
     if (const auto page = str("settings"); !page.empty()) {
-        static constexpr std::array<std::pair<std::string_view, SettingsPage>, 5> kPages{{
-            {"displays", SettingsPage::displays}, {"layout", SettingsPage::layout}, {"appearance", SettingsPage::appearance},
-            {"keys", SettingsPage::keys}, {"about", SettingsPage::about}}};
-        const auto it = std::ranges::find(kPages, page, &std::pair<std::string_view, SettingsPage>::first);
-        if (it == kPages.end()) return answer_(false, std::format("no settings page '{}' (displays, layout, appearance, keys, about)", page));
-        open_settings(it->second);
+        const auto named = settings_page_named(page);
+        if (!named) return answer_(false, std::format("no settings page '{}' (displays, layout, appearance, keys, apps, about)", page));
+        open_settings(*named);
         return answer_(true);
     }
     const auto what = str("keys");

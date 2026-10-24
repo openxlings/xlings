@@ -15,6 +15,7 @@ xdesk-compositor = { path = "../compositor" }
 opensal          = { path = "../../specs/opensal" }
 xdesk-base       = { path = "../base" }
 telemetry        = { path = "../../kits/telemetry" }
+xbus             = { path = "../../services/xbus" }
 
 [build]
 # What wlroots' package links and xdesk does not call stays out of NEEDED

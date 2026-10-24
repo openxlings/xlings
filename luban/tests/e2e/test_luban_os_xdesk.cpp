@@ -707,7 +707,7 @@ screenshot {}
 }
 
 XTEST(LubanOs, XdeskGivesTheHostsInputMethodAndClipboardToItsWindows, .area = "luban",
-      .covers = {"XDESK-COMPOSITOR", "XDESK-TEXT-CLIPBOARD"}, .requires_ = {"linux", "xlings-bin"}) {
+      .covers = {"XDESK-COMPOSITOR", "XDESK-TEXT-CLIPBOARD", "LUBAN-CLIPBOARD-SESSION"}, .requires_ = {"linux", "xlings-bin"}) {
     if (!app_binary()) GTEST_SKIP() << "no luban-os beside the xlings under test";
     if (!xdesk_binary()) GTEST_SKIP() << "no xdesk beside luban-os (mcpp build -p xdesk-app)";
     auto home = tk::Home::isolated("luban-os-xdesk-text");
@@ -717,6 +717,7 @@ XTEST(LubanOs, XdeskGivesTheHostsInputMethodAndClipboardToItsWindows, .area = "l
     fs::permissions(runtime, fs::perms::owner_all, fs::perm_options::replace);
     auto r = run_script(home, std::format(R"(clipboard from-the-host
 wait desktop
+focus in
 waitfor desktop.texture.0 1100
 waitfor desktop_text true
 commit 你好
@@ -724,8 +725,10 @@ commit abc
 waitfor clipboard from-the-guest
 state {}
 )", st.string()),
+                        // The client copies once the window is in use (design 2026-10-24 §8.2: a copy made
+                        // while nobody uses the window stays in the desktop).
                         {"--desktop-exec", xdesk_binary()->string(), "--profile", "classic", "--autostart",
-                         std::format("python3 {} c04040 --log {} --copy from-the-guest", colour_client(home).string(), got.string())},
+                         std::format("sh -c 'sleep 2; exec python3 {} c04040 --log {} --copy from-the-guest'", colour_client(home).string(), got.string())},
                         {{"XDG_RUNTIME_DIR", runtime.string()}});
     ASSERT_EQ(r.exit_code, 0) << r.transcript() << tk::read_file(got);
     const auto log = tk::read_file(got);
@@ -737,6 +740,21 @@ state {}
     EXPECT_EQ(log.find("commit a\n"), std::string::npos) << "a character arrived twice (as a key too)\n" << log;
     // ...and what it copied is the host's clipboard.
     EXPECT_EQ(read_state(st)["clipboard"], "from-the-guest");
+    // A copy made while the window is not in use (a program in the
+    // background) stays in the desktop: the host's clipboard is as it was (§8.2).
+    const auto st2 = home.root() / "text2.json";
+    r = run_script(home, std::format(R"(clipboard from-the-host
+wait desktop
+focus out
+waitfor desktop.texture.0 1100
+sleep 4000
+state {}
+)", st2.string()),
+                   {"--desktop-exec", xdesk_binary()->string(), "--profile", "classic", "--autostart",
+                    std::format("sh -c 'sleep 2; exec python3 {} c04040 --copy from-the-background'", colour_client(home).string())},
+                   {{"XDG_RUNTIME_DIR", runtime.string()}});
+    ASSERT_EQ(r.exit_code, 0) << r.transcript();
+    EXPECT_EQ(read_state(st2)["clipboard"], "from-the-host");
 }
 
 
@@ -1047,16 +1065,16 @@ screenshot {}
 key Super+Shift+m
 sleep 600
 key Super+i
-sleep 800
+sleep 2500
 screenshot {}
 screenshot {}
 key Tab
 key Right
 sleep 600
 key Escape
-sleep 300
+sleep 1500
 key Super+/
-sleep 800
+sleep 2500
 type maxim
 sleep 1000
 key Down
@@ -1111,9 +1129,14 @@ sleep 600
     const auto m = read_ppm(maximized);
     EXPECT_EQ(m.at(100, 400), kBlue);
     EXPECT_EQ(m.at(1000, 400), kBlue);
-    // The settings over the desktop.
+    // The settings, a window of their own (design 2026-10-24 §9.6): their
+    // card's colour on the screen, beside the windows.
     const auto s = read_ppm(settings);
-    EXPECT_NE(s.at(550, 400), kBlue) << "a card over the windows";
+    int card = 0;
+    for (int y = 100; y < s.height; y += 7)
+        for (int x = 0; x < s.width; x += 7)
+            if (s.at(x, y) == std::array<int, 3>{0x1e, 0x22, 0x2b}) ++card;   // the classic theme's card
+    EXPECT_GT(card, 200) << "the settings' window is shown";
     // The layout page's first choice: this workspace stacked, kept (wuxian.json).
     const auto state = Json::parse(tk::read_file(home.root() / ".config" / "xdesk" / "wuxian.json"));
     EXPECT_EQ(state["workspaces"][0]["rule"], "stack") << state.dump();

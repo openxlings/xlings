@@ -275,8 +275,10 @@ struct SettingsView {
     std::string preedit;                    // an input method's text not yet committed
     std::string hint;
 };
+// `in_window`: the whole picture is the card (a window of its own, design
+// 2026-10-24 §9.6) -- no backdrop, no margin.
 Picture settings(draw::Fonts* ui, draw::Fonts* big, const Theme& t, const SettingsView& v, int width, int height, bool zh,
-                 double scale = 1);
+                 double scale = 1, bool in_window = false);
 // A question and its answers (design 2026-10-20 WuXian §3.9), in the middle:
 // a title, a line, buttons -- the default one lit; one that may not be
 // pressed yet dimmed (its label says when). Areas: the buttons (item, by index).

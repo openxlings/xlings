@@ -787,3 +787,11 @@ status = "required"
 [XDESK-ICONS]
 text = "applications show their icons in the launcher, title bars, bookmarks and switchers -- Icon=, a theme's PNG, a scalable SVG drawn at the size shown, the pixmaps -- and an initial on a colour when there is none (design 2026-10-24 §9.5, J66)"
 status = "required"
+
+[XDESK-SETTINGS-APP]
+text = "the desktop's settings are a window of their own (xdesk --panel settings holds it open; the desktop draws in it and takes its input): laid out, moved, tiled, collapsed and bookmarked as any window, its keys its own, Esc closes it, opened again at the page asked (xdesk msg settings <page>, the control on the bus); its process gone is a window gone (design 2026-10-24 §9.6, J67)"
+status = "required"
+
+[XDESK-WALLPAPER]
+text = "the desktop has a wallpaper -- a colour, a gradient or a picture (fill, fit, tile, centre), for every workspace or one of its own; on the WuXian plane anchored on the plane and moved and scaled with the camera; any wallpaper program on the background layer (wlr-layer-shell); its camera and run/pause said on the bus (a window covering the screen, five minutes without input); and its own engine (xdesk --wallpaper-engine) drawing classic scenes of mathematics, physics and graphics on the CPU, following the pointer, paused when told (design 2026-10-24 §9.7, J68)"
+status = "required"

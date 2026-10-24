@@ -133,6 +133,7 @@ void Server::open_launcher() {
                           Page{"layout", "Settings: layout", "tile stack wuxian canvas workspace gap column 平铺 层叠 无限画布 工作区 间隔 列"},
                           Page{"appearance", "Settings: appearance", "accent colour background motion 颜色 背景 动画"},
                           Page{"keys", "Settings: keys", "shortcut keyboard keys 按键 快捷键 键位"},
+                          Page{"apps", "Settings: applications", "applications programs logs crash 应用 程序 日志 崩溃"},
                           Page{"about", "Settings: about", "version system about information 版本 系统 信息"}})
         all.push_back({.id = std::format("xdesk:settings:{}", p.id), .name = std::string(i18n::tr(p.en)),
                        .generic = p.id == "keys" ? std::string("Super+/") : std::string("Super+I"), .keywords = std::string(p.words)});
@@ -178,9 +179,7 @@ std::vector<std::string> Server::terminal_argv(const std::vector<std::string>& c
 void Server::start_app(const apps::App& app) {
     if (app.id == "xdesk-settings") { open_settings(SettingsPage::displays); return; }
     if (app.id.starts_with("xdesk:settings:")) {
-        const auto page = app.id.substr(15);
-        for (const auto p : {SettingsPage::displays, SettingsPage::layout, SettingsPage::appearance, SettingsPage::keys, SettingsPage::about})
-            if (page == std::array{"displays", "layout", "appearance", "keys", "about"}[static_cast<std::size_t>(p)]) open_settings(p);
+        if (const auto page = settings_page_named(app.id.substr(15))) open_settings(*page);
         return;
     }
     if (app.id == "xdesk:tour") { start_tour(); return; }

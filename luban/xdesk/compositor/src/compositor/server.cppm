@@ -124,6 +124,9 @@ struct View {
     double zoom { 1 };                          // its surfaces' scale: the canvas's, and the overview's
     double zoom_shown { 1 };                    // what they were last scaled to
     Hook map, unmap, commit, destroy, request_maximize, request_fullscreen, set_title, request_move, request_resize;
+    // A window of the desktop's own (its settings, design 2026-10-24 §9.6):
+    // the desktop draws its content here and takes its input.
+    wlr_scene_buffer* own { nullptr };
 };
 
 // A client's text-input-v3 object, and what it says.
@@ -163,7 +166,10 @@ struct Popup {
 };
 
 // The settings' pages (design 2026-10-20 §11.4).
-enum class SettingsPage { displays, layout, appearance, keys, about };
+enum class SettingsPage { displays, layout, appearance, wallpaper, keys, apps, about };
+// A page by the name requests and entries use (displays, layout, ...), and back: the one table.
+std::optional<SettingsPage> settings_page_named(std::string_view name);
+std::string_view settings_page_name(SettingsPage p);
 
 // What a held button is doing (workspace: a workspace's label carried;
 // scale: its corner, its scale).
@@ -221,6 +227,23 @@ struct AppRun {
     std::vector<xbus::Stream> followers;           // its log's stream, opened on the bus
     bool ended { false };
     std::optional<int> code;                       // its end: the code, or 128 + its signal
+};
+
+// A wallpaper as the settings say it (design 2026-10-24 §9.7; wallpaper.cpp).
+struct Paper {
+    std::string kind { "solid" };       // solid, gradient, image, engine
+    std::uint32_t colour { 0 }, colour2 { 0 };
+    std::filesystem::path image;
+    std::string fit { "fill" };         // fill, fit, tile, center
+    std::string engine;                 // the engine's scene, when kind is engine
+    bool own { false };                 // a workspace's own ([wallpaper.<n>])
+};
+
+// A wallpaper program's surface on the background layer (wlr-layer-shell).
+struct BackgroundClient {
+    wlr_layer_surface_v1* surface { nullptr };
+    wlr_scene_layer_surface_v1* scene { nullptr };
+    Hook commit, destroy;
 };
 
 struct Server {
@@ -330,6 +353,36 @@ struct Server {
     std::list<Popup> popups;
     std::vector<int> children;
     std::string selection_text;                  // the session's clipboard as last read (design 2026-10-24 §8.1)
+    // The wallpaper (design 2026-10-24 §9.7; wallpaper.cpp).
+    wlr_scene_buffer* wallpaper_node { nullptr };
+    std::string wallpaper_drawn;                 // what it was drawn as, and at what size
+    double wallpaper_zoom { 1 };
+    layout::Rect wallpaper_world;                // the plane's paper: the world it covers
+    int wallpaper_engine_pid { -1 };
+    bool wallpaper_paused { false };
+    std::string camera_said;                     // topic/xdesk/camera, as last published
+    bool settings_paper_own { false };           // the Wallpaper page sets this workspace's own
+    std::chrono::steady_clock::time_point last_input { std::chrono::steady_clock::now() };
+    wl_event_source* idle_timer { nullptr };
+    wlr_layer_shell_v1* layer_shell { nullptr };
+    std::list<BackgroundClient> background_clients;
+    bool background_client { false };            // a wallpaper program draws: the desktop's own paper is not shown
+    Hook new_layer_surface;
+    Paper paper_of(int workspace) const;
+    void wallpaper_update();
+    void wallpaper_pause_check();
+    void wallpaper_restart();                    // the engine started again (its settings changed)
+    void layer_surface_new(wlr_layer_surface_v1* s);
+    // The settings as a window (design 2026-10-24 §9.6; settings.cpp): the
+    // process holding it open, and its window once it is there.
+    int settings_pid { -1 };
+    layout::Id settings_view { 0 };
+    std::string settings_window_drawn;          // the size and scale it was drawn at
+    View* settings_window();
+    shell::SettingsView settings_view_();
+    void draw_settings_window();
+    // The pointer or a key in a window of the desktop's own: taken here.
+    bool settings_window_pointer(double x, double y, std::optional<opensal::PointerButton> b);
     // The programs it started, their output and their ends (apps_run.cpp).
     std::mutex apps_m;
     std::list<AppRun> app_runs;
@@ -554,6 +607,7 @@ struct Server {
     // or pans; let go without one, the applications.
     bool hand { false };
     bool hand_used { false };
+    bool crash_notice { true };                  // a program's unexpected end said on the desktop (the Apps page)
     bool status_others { true };                 // the status bar shows the other workspaces
     bool plane_focus { false };                  // the WuXian view: no window focused (WuXian, a label clicked)
     // The switchers and the wheel (design 2026-10-20 WuXian §4): how long

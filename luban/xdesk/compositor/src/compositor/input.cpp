@@ -123,6 +123,12 @@ void Server::key(const opensal::Key& k) {
             if (down) launcher_key(code);
             return;
         }
+        // The settings' window focused: its keys are the settings' (Esc closes it).
+        if (View* sw = settings_window(); sw && focused() == sw && !modifier) {
+            if (down && sym == key::Escape && !settings_capture) wlr_xdg_toplevel_send_close(sw->toplevel);
+            else if (down) settings_key(sym);
+            return;
+        }
         wlr_seat_set_keyboard(seat, &keyboard);
         wlr_seat_keyboard_notify_key(seat, ev.time_msec, code, static_cast<std::uint32_t>(ev.state));
         wlr_seat_keyboard_notify_modifiers(seat, &keyboard.modifiers);
@@ -137,6 +143,10 @@ void Server::key(const opensal::Key& k) {
 
 void Server::pointer_moved() {
     if (drag == Drag::move) { drag_motion(); return; }
+    // Over the settings' window: its rows lit (design 2026-10-24 §9.6).
+    if (drag == Drag::none && overlay == Overlay::none && settings_view)
+        if (View* v = view_at(cursor->x, cursor->y); v && v->id == settings_view && !on_title(*v, cursor->y))
+            (void)settings_window_pointer(cursor->x, cursor->y, std::nullopt);
     if (drag == Drag::workspace || drag == Drag::scale) { workspace_motion(); return; }
     if (drag == Drag::resize) { resize_motion(); return; }
     if (drag == Drag::minimap) { minimap_motion(); return; }
@@ -423,6 +433,8 @@ void Server::button(const opensal::PointerButton& b) {
         }
         const bool super = held(wlr_keyboard_modifier::WLR_MODIFIER_LOGO);
         const bool title = v && on_title(*v, cursor->y);
+        // In the settings' window (not its title bar): the settings' (design 2026-10-24 §9.6).
+        if (v && v->id == settings_view && !title && !super && settings_window_pointer(cursor->x, cursor->y, b)) return;
         // The title bar's other button: the window's menu (design 2026-10-19 §18.1).
         if (title && b.button == opensal::Button::Right && !super) {
             focus(v);
@@ -546,6 +558,11 @@ void Server::wheel(const opensal::Wheel& w) {
 
 void Server::input(Link& from, const opensal::Event& ev) {
     const bool primary_link = &from == primary();
+    // Somebody is here: a paused wallpaper runs again (design 2026-10-24 §9.7).
+    if (!std::holds_alternative<opensal::FramePresented>(ev) && !std::holds_alternative<opensal::Shown>(ev)) {
+        last_input = std::chrono::steady_clock::now();
+        if (wallpaper_paused) wallpaper_pause_check();
+    }
     if (const auto* k = std::get_if<opensal::Key>(&ev)) {
         key(*k);
     } else if (const auto* m = std::get_if<opensal::PointerMotion>(&ev)) {
@@ -572,9 +589,10 @@ void Server::input(Link& from, const opensal::Event& ev) {
         from.density = d->scale;
         if (primary_link) set_scale(d->scale);
     } else if (const auto* t = std::get_if<opensal::TextCommit>(&ev)) {
+        View* sw = settings_window();
         if (launcher.is_open()) { launcher.type(t->text); draw_launcher(); }
         else if (overlay == Overlay::naming) naming_type(t->text);
-        else if (overlay == Overlay::settings) {
+        else if (overlay == Overlay::settings || (sw && focused() == sw && overlay == Overlay::none)) {
             // An input method's text: the keys page's search takes it (H14); elsewhere nothing does.
             settings_preedit.clear();
             if (settings_page == SettingsPage::keys) {
@@ -585,7 +603,7 @@ void Server::input(Link& from, const opensal::Event& ev) {
         }
         else text_commit(t->text);
     } else if (const auto* p = std::get_if<opensal::Preedit>(&ev)) {
-        if (overlay == Overlay::settings) {
+        if (overlay == Overlay::settings || (settings_window() && focused() == settings_window() && overlay == Overlay::none)) {
             settings_preedit = settings_page == SettingsPage::keys ? p->text : std::string{};
             draw_overlay();
         } else {
