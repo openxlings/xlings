@@ -125,6 +125,8 @@ std::string Server::state_json() {
     output.set("scale", num_(scale));
     output.set("renderer", Json{gpu ? std::string("gpu") : std::string("software")});
     output.set("renderer_text", Json{renderer_text});
+    // Frames by reference: a region the displays map too (opensal 0.7).
+    output.set("region", Json{region.has_value()});
     out.set("output", output);
     // The displays showing it (design 2026-10-24 §4): the first the primary.
     Json::Array displays;

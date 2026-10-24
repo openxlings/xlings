@@ -47,22 +47,29 @@ std::unique_ptr<Display> Display::machine(const fs::path& home, const std::strin
                                           std::string& error) {
     auto client = vm::Client::connect(home, name);
     if (!client) { error = client.error(); return nullptr; }
+    // Its frames through the memory its ivshmem device shares (design
+    // 2026-10-24 §5.4): mapped here before the desktop says hello.
+    std::optional<xlings::platform::SharedMemory> region;
+    if (const auto frames = vm::started_frames(home, name); frames && frames->second > 0)
+        region = xlings::platform::map_shared_file(frames->first, frames->second);
     // Its sound, granted (design 2026-10-20 §20.1): the system's `luban`
     // sink, relayed by `luban __audio` there, played here.
-    return over_(std::move(*client), name, true, size, clip, std::move(wake), error,
+    auto d = over_(std::move(*client), name, true, size, clip, std::move(wake), error,
                  [session, size, sound](vm::Client& cl) {
                      if (!cl.open_display(kDisplayChannel, session, int(size.width), int(size.height))) return false;
                      if (sound) (void)cl.open_command(kSoundChannel, {"luban", "__audio"}, 0, 0, nlohmann::json::object(), true);
                      return true;
                  },
-                 {}, session);
+                 {}, session, std::move(region));
+    return d;
 }
 
 std::unique_ptr<Display> Display::over_(vm::Client client, const std::string& name, bool machine, opensal::Size size,
                                         ClipboardGrant clip, std::function<void()> wake, std::string& error,
                                         const std::function<bool(vm::Client&)>& open, const fs::path& log,
-                                        const std::string& session) {
+                                        const std::string& session, std::optional<xlings::platform::SharedMemory> region) {
     std::unique_ptr<Display> d(new Display());
+    d->region_ = std::move(region);
     d->name_ = name;
     d->session_ = session;
     d->machine_ = machine;
@@ -163,6 +170,9 @@ std::unique_ptr<Display> Display::bus(const fs::path& home, const std::string& n
     d->clip_ = clip;
     d->home_ = home;
     d->bus_node_ = *node;
+    // Its frames by reference: the desktop's frames file, mapped here too (opensal 0.7).
+    if (const auto f = st->find("frames"); f != st->end() && f->is_object())
+        d->region_ = xlings::platform::map_shared_file(f->value("file", std::string{}), f->value("size", std::size_t{0}));
     auto* self = d.get();
     // This window, as a display: the desktop opens it.
     for (std::uint32_t n = 0; n < 64 && self->bus_path_.empty(); ++n) {
@@ -312,6 +322,7 @@ std::unique_ptr<Display> Display::process(const std::vector<std::string>& argv, 
 
 Display::~Display() {
     stop_ = true;
+    struct Unmap { std::optional<xlings::platform::SharedMemory>& r; ~Unmap() { if (r) xlings::platform::release_shared_memory(*r); } } unmap{region_};
     if (bus_node_) {
         // This window goes: its display with it; the desktop goes on (its virtual display).
         {
@@ -393,6 +404,7 @@ void Display::provider_(std::string_view bytes) {
                             | I::PointerLock | I::Displays;
             if (clip_.copy || clip_.paste) provided = provided | I::Clipboard;
             if (narrow_) provided = provided | I::Compressed;
+            if (region_) provided = provided | I::Region;
             opensal::Interfaces wanted = 0;
             std::from_chars(msg.payload.data(), msg.payload.data() + msg.payload.size(), wanted);
             shell_ = opensal::has(wanted, I::Shell);
@@ -478,6 +490,17 @@ void Display::provider_(std::string_view bytes) {
                 windows_ = std::move(*windows);
                 changed = true;
             }
+        } else if (msg.kind == 'r') {
+            // Its rows in the region both sides map (opensal 0.7): read in place.
+            const auto f = opensal::wire::decode_region_frame(msg.payload);
+            if (!f || !region_) continue;
+            const std::size_t bytes = std::size_t(f->stride) * f->rect.height;
+            if (f->offset + bytes > region_->size) continue;
+            std::string rows(reinterpret_cast<const char*>(region_->data) + f->offset, bytes);
+            std::lock_guard l(m_);
+            if (f->rect.x == 0 && f->rect.y == 0 && f->rect.width == size_.width && f->rect.height == size_.height) updates_.clear();
+            updates_.push_back({f->rect, std::move(rows)});
+            changed = true;
         } else if (msg.kind == 'f' || msg.kind == 'z') {
             // 'z': the rows compressed (opensal 0.6), what came over a narrow channel.
             std::optional<std::string> unpacked;

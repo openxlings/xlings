@@ -210,6 +210,29 @@ void Server::render() {
         auto send_rects = [&](Link& l, const std::vector<opensal::Rect>& rects) {
             for (const auto& r : rects) {
                 if (r.width == 0 || r.height == 0) continue;
+                // Into the region both sides map, when the window takes it: only
+                // where the rows are crosses the channel (opensal 0.7 'r').
+                const std::size_t rows = std::size_t(r.width) * 4 * r.height;
+                if (region && opensal::has(l.provided, opensal::Interface::Region) && rows <= region->size) {
+                    if (region_at + rows > region->size) region_at = 0;
+                    auto* dst = reinterpret_cast<std::uint8_t*>(region->data) + region_at;
+                    const std::size_t row = std::size_t(r.width) * 4;
+                    for (std::uint32_t y = 0; y < r.height; ++y) {
+                        std::memcpy(dst + std::size_t(y) * row, px + (std::size_t(r.y) + y) * stride + std::size_t(r.x) * 4, row);
+                        if (!opaque)
+                            for (std::uint32_t x = 0; x < r.width; ++x) dst[std::size_t(y) * row + x * 4 + 3] = 0xff;
+                    }
+                    const auto msg = opensal::wire::encode_region_frame({.rect = r, .stride = static_cast<std::uint32_t>(row), .offset = region_at});
+                    region_at += rows;
+                    const auto sending = std::chrono::steady_clock::now();
+                    const bool sent = os::write_all(l.out, msg);
+                    stat.send_ms += ms(std::chrono::steady_clock::now() - sending).count();
+                    stat.bytes += msg.size();
+                    ++stat.rects;
+                    if (!sent) { l.gone = true; return; }
+                    l.in_flight = now;
+                    continue;
+                }
                 const auto head = std::format("{} {} {} {} {}\n", r.x, r.y, r.width, r.height, r.width * 4);
                 const std::size_t row = std::size_t(r.width) * 4, size = head.size() + row * r.height;
                 frame_buf.resize(5 + size);

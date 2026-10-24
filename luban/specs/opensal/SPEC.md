@@ -128,6 +128,14 @@ is a mirror (`'d'`). When the primary goes, the next one is the primary and
 the consumer takes its size again. A display nobody looks at (a mirror kept
 for capture) says `Shown false` and is sent nothing until it says `Shown true`.
 
+6.8 **Region (0.7).** Where both sides map one shared region -- a machine's
+ivshmem BAR (the guest maps its PCI resource, the host the file behind it), a
+bus region -- a provider that says `Region` takes `'r'` frames: the rectangle
+and its stride as an `'f'` frame's header, then the offset in the region where
+its rows are. The consumer writes the rows there before it sends the message
+and, paced, writes there again only after the frame was shown; nothing of the
+pixels crosses the channel. A rectangle that would not fit is sent as `'f'`.
+
 ## 7. Conformance
 
 An implementation conforms when every value it sends round-trips through

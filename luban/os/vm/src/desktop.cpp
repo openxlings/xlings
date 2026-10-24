@@ -22,6 +22,7 @@ import xlings.libs.json;
 import xlings.observe;
 import xlings.platform;
 import xlings.subos.home_view;
+import xlings.subos.located;
 import luban.service;
 import luban.vm.protocol;
 import openbus;
@@ -302,6 +303,18 @@ int desktop_supervise(const fs::path& home, std::string_view name, std::span<con
     auto virt = offer_virtual_(*node, mode, std::string(name));
     if (!virt) { say(virt.error()); return 1; }
     say("its virtual display is " + (*virt)->path + " (" + hd::format_mode(mode) + ")");
+    // Its frames by reference (opensal 0.7 Region; design 2026-10-24 §5.1): a
+    // file the desktop writes its rows into and every display here reads --
+    // in the system's own home (writable where the system runs), bound into it.
+    constexpr std::size_t kFramesBytes = std::size_t{128} << 20;
+    const auto at = xlings::subos::locate(xlings::subos::HomeView{home}, name);
+    const auto frames_file = at.home.home / "run" / "desktops" / std::string(name) / "frames";
+    std::error_code fec;
+    fs::create_directories(frames_file.parent_path(), fec);
+    auto frames = platform::map_shared_file(frames_file, kFramesBytes);
+    struct Unmap { std::optional<platform::SharedMemory>& f; ~Unmap() { if (f) platform::release_shared_memory(*f); } } unmap{frames};
+    if (frames) (*virt)->vd->set_region(std::span<const std::byte>(frames->data, frames->size));
+    else say("no frames region (" + frames_file.string() + "): frames go on the stream");
 
     std::mutex m;
     std::vector<Started> started;
@@ -317,18 +330,25 @@ int desktop_supervise(const fs::path& home, std::string_view name, std::span<con
         if (here) {
             auto env = platform::environment();
             env["OPENBUS_ROUTER"] = "unix:" + socket;
+            if (frames) {
+                env["OPENSAL_REGION"] = frames_file.string();
+                env["OPENSAL_REGION_SIZE"] = std::to_string(kFramesBytes);
+            }
             const auto pid = spawn_({luban_binary(home).string(), "__desktop", session, "--size", std::format("{}x{}", mode.width, mode.height),
                                      "--display", display, "--role", role}, env, log);
             if (!pid) return std::unexpected(std::string("the desktop's command could not be started"));
             return *pid;
         }
         const auto xlings = service::xlings_path();
-        const auto inner = std::format("OPENBUS_ROUTER=unix:/run/openbus/router.sock exec {} __desktop {} --size {}x{} --display {} --role {}",
-                                       quoted_(luban_binary(home).string()), quoted_(session), mode.width, mode.height, quoted_(display),
+        const auto region = frames ? std::format("OPENSAL_REGION=/run/luban/frames OPENSAL_REGION_SIZE={} ", kFramesBytes) : std::string{};
+        const auto inner = std::format("{}OPENBUS_ROUTER=unix:/run/openbus/router.sock exec {} __desktop {} --size {}x{} --display {} --role {}",
+                                       region, quoted_(luban_binary(home).string()), quoted_(session), mode.width, mode.height, quoted_(display),
                                        quoted_(role));
         std::vector<std::string> argv{xlings.string(), "subos", "use", std::string(name)};
         if (!persist.empty() && persist != "all") argv.insert(argv.end(), {"--persist", persist});
-        argv.insert(argv.end(), {"--mount", socket + ":/run/openbus/router.sock", "--cmd", inner});
+        argv.insert(argv.end(), {"--mount", socket + ":/run/openbus/router.sock"});
+        if (frames) argv.insert(argv.end(), {"--mount", frames_file.string() + ":/run/luban/frames:rw"});
+        argv.insert(argv.end(), {"--cmd", inner});
         auto env = platform::environment();
         env["XLINGS_HOME"] = home.string();
         env.erase("XLINGS_SUBOS_MODE");
@@ -354,6 +374,7 @@ int desktop_supervise(const fs::path& home, std::string_view name, std::span<con
         for (const auto& s : started) displays.push_back({{"path", s.display}, {"role", s.role}, {"kind", s.kind}, {"pid", s.pid}});
         Json j{{"name", name}, {"running", !ended}, {"since", when}, {"session", session}, {"virtual", (*virt)->path},
                {"mode", hd::format_mode(mode)}, {"displays", displays}, {"log", log.string()}, {"socket", socket}};
+        if (frames) j["frames"] = {{"file", frames_file.string()}, {"size", kFramesBytes}};
         if (ended) {
             j["code"] = platform::exit_code(*ended);
             j["ended_by"] = ended_by;

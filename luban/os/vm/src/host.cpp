@@ -644,6 +644,19 @@ int start_impl_(const service::Context& c, std::string_view name, const EnterOpt
     } else {
         q.insert(q.end(), nine_p.begin(), nine_p.end());
     }
+    // Its desktop's frames through shared memory (design 2026-10-24 §5.4):
+    // an ivshmem device whose memory is a file under /dev/shm the Luban OS
+    // window maps too; the guest maps the device's BAR through sysfs (any
+    // kernel with PCI and sysfs). Only a system with a desktop.
+    std::string frames_region;
+    constexpr std::uintmax_t kFramesBytes = std::uintmax_t{128} << 20;
+    if (const auto e = service::describe(c, name); e && !e->desktops.empty() && mk->caps.contains("pci-sysfs-mmap")) {
+        std::error_code fe;
+        const fs::path shm = fs::is_directory("/dev/shm", fe) ? fs::path("/dev/shm") : dir;
+        frames_region = (shm / std::format("luban-{:016x}-frames", std::hash<std::string>{}(c.home.string() + "/" + std::string(name)))).string();
+        q.insert(q.end(), {"-object", std::format("memory-backend-file,id=frames,share=on,mem-path={},size={}", frames_region, kFramesBytes),
+                           "-device", "ivshmem-plain,memdev=frames"});
+    }
     // Without its GPU, should the GL qemu not start (its driver refuses the
     // render node): the same machine, drawn in software (supervise).
     auto software = q;
@@ -656,6 +669,10 @@ int start_impl_(const service::Context& c, std::string_view name, const EnterOpt
                {"env", net.env}, {"started", xlings::observe::utc_now()}, {"accel", kvm ? "kvm" : "tcg"}, {"memory", memory},
                {"gpu", gpu.summary}, {"files", mapped_home ? files + ", /home over 9p (users of their own)" : files},
                {"kernel", mk->version}, {"cpus", cpus}};
+    if (!frames_region.empty()) {
+        state["frames_region"] = frames_region;
+        state["frames_size"] = kFramesBytes;
+    }
     if (vfs) {
         // Its way back, should a daemon not start: the same arguments, 9p's instead.
         state["virtiofsd"] = vfs->daemons;
@@ -1025,6 +1042,14 @@ std::optional<std::string> started_gpu(const fs::path& home, std::string_view na
     const auto gpu = read_json_(state_file_(home, name)).value("gpu", std::string{});
     if (gpu.empty()) return std::nullopt;
     return gpu;
+}
+
+std::optional<std::pair<fs::path, std::uintmax_t>> started_frames(const fs::path& home, std::string_view name) {
+    if (!running(home, name)) return std::nullopt;
+    const auto state = read_json_(state_file_(home, name));
+    const auto path = state.value("frames_region", std::string{});
+    if (path.empty()) return std::nullopt;
+    return std::pair{fs::path(path), state.value("frames_size", std::uintmax_t{0})};
 }
 
 std::optional<std::string> started_files(const fs::path& home, std::string_view name) {

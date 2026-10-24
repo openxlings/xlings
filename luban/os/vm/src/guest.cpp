@@ -153,6 +153,22 @@ std::optional<Session> piped_(const Json& open, const std::vector<int>& inherite
     return Session{.read = (*out)[0], .write = (*in)[1], .pid = pid, .err = (*err)[0]};
 }
 
+// The machine's frames region (design 2026-10-24 §5.4): the ivshmem device
+// (Red Hat, 0x1af4:0x1110) its host gave it, BAR 2 as sysfs shows it -- a
+// file the desktop maps; its size. Nothing when there is none.
+std::optional<std::pair<fs::path, std::uintmax_t>> frames_region_() {
+    std::error_code ec;
+    for (fs::directory_iterator it("/sys/bus/pci/devices", ec), end; !ec && it != end; it.increment(ec)) {
+        auto first = [](const fs::path& f) { std::ifstream in(f); std::string v; in >> v; return v; };
+        if (first(it->path() / "vendor") != "0x1af4" || first(it->path() / "device") != "0x1110") continue;
+        const auto bar = it->path() / "resource2";
+        std::error_code e;
+        const auto size = fs::file_size(bar, e);
+        if (!e && size > 0) return std::pair{bar, size};
+    }
+    return std::nullopt;
+}
+
 // A desktop for the Luban OS window: the session `display.session` names
 // (or the first one declared), headless, bridged on two pipes (opensal-wlr).
 std::expected<Session, std::string> desktop_(const Json& display, std::map<std::string, std::string> env,
@@ -185,6 +201,12 @@ std::expected<Session, std::string> desktop_(const Json& display, std::map<std::
         (void)platform::give_to(o.runtime_root, who.uid, who.gid);
         { std::ofstream touch(o.log, std::ios::app); }
         (void)platform::give_to(o.log, who.uid, who.gid);
+    }
+    // Its frames through the region the window maps too, not the serial port.
+    if (const auto region = frames_region_()) {
+        if (who.uid != 0) (void)platform::give_to(region->first, who.uid, who.gid);
+        o.env["OPENSAL_REGION"] = region->first.string();
+        o.env["OPENSAL_REGION_SIZE"] = std::to_string(region->second);
     }
     const int pid = platform::fork_process();
     if (pid == 0) {

@@ -426,6 +426,13 @@ bool Server::start_() {
     // The person's keys and state; each workspace's arrangement as they left it.
     load_person();
     draw_shell();
+    // A region the window maps too (a machine's frames: opensal 0.7 Region).
+    if (const auto env = os::environment(); env.contains("OPENSAL_REGION") && env.contains("OPENSAL_REGION_SIZE")) {
+        const auto size = static_cast<std::size_t>(std::strtoull(env.at("OPENSAL_REGION_SIZE").c_str(), nullptr, 10));
+        if (size >= (1u << 20)) region = os::map_file(env.at("OPENSAL_REGION"), size);
+        log(region ? std::format("frames go through a shared region ({} MiB)", size >> 20)
+                   : "the shared region for frames could not be mapped: frames go on the channel");
+    }
     send(hello());
     // Nothing done for a while: the wallpaper paused (checked every half minute).
     idle_timer = wl_event_loop_add_timer(loop, [](void* data) -> int {

@@ -205,6 +205,14 @@ std::optional<SharedMemory> shared_memory(std::size_t size) {
     return SharedMemory{fd, static_cast<std::byte*>(at), size};
 }
 
+std::optional<SharedMemory> map_file(const fs::path& path, std::size_t size) {
+    const int fd = ::open(path.c_str(), O_RDWR | O_CLOEXEC);
+    if (fd < 0) return std::nullopt;
+    void* at = ::mmap(nullptr, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    if (at == MAP_FAILED) { ::close(fd); return std::nullopt; }
+    return SharedMemory{fd, static_cast<std::byte*>(at), size};
+}
+
 void release(SharedMemory& m) {
     if (m.data) ::munmap(m.data, m.size);
     if (m.fd >= 0) ::close(m.fd);

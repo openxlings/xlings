@@ -795,3 +795,7 @@ status = "required"
 [XDESK-WALLPAPER]
 text = "the desktop has a wallpaper -- a colour, a gradient or a picture (fill, fit, tile, centre), for every workspace or one of its own; on the WuXian plane anchored on the plane and moved and scaled with the camera; any wallpaper program on the background layer (wlr-layer-shell); its camera and run/pause said on the bus (a window covering the screen, five minutes without input); and its own engine (xdesk --wallpaper-engine) drawing classic scenes of mathematics, physics and graphics on the CPU, following the pointer, paused when told (design 2026-10-24 §9.7, J68)"
 status = "required"
+
+[LUBAN-MACHINE-SHARED-FRAMES]
+text = "a desktop's frames go by reference through memory both sides map -- a machine's ivshmem device (its BAR mapped in the guest through sysfs, the file behind it on the host), a desktop's frames file bound into its sandbox -- only the rectangle and the offset crossing the channel (opensal 0.7 Region); without it, frames go on the channel as before (design 2026-10-24 §5.4, J57)"
+status = "required"

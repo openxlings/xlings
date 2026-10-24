@@ -383,6 +383,8 @@ XTEST(LubanDesktopBus, ADesktopRunsOnAVirtualDisplayAndEverythingOfItIsOnTheBus,
     ASSERT_TRUE(state.is_object()) << "xdesk is not on the bus at " << xdesk_state;
     EXPECT_EQ(state["windows"].size(), 1u) << state.dump();
     EXPECT_EQ(state["output"]["size"], Json::array({800, 600})) << state["output"].dump();
+    // Its frames by reference: rows in the region the virtual display maps too (opensal 0.7).
+    EXPECT_TRUE(state["output"].value("region", false)) << state["output"].dump();
     ASSERT_EQ(state["displays"].size(), 1u);
     EXPECT_EQ(state["displays"][0]["role"], "primary");
     auto described = (*node)->call(control, R"({"op": "describe"})", 5s);

@@ -29,6 +29,9 @@ std::expected<std::vector<opensal::Event>, std::string> input_events(std::string
 class VirtualDisplay {
 public:
     explicit VirtualDisplay(display::Mode mode, bool wants_primary = false);
+    // Frames by reference (opensal 0.7 Region): `bytes` is the region the
+    // consumer maps too; its 'r' frames are read there. It must outlive this.
+    void set_region(std::span<const std::byte> bytes);
 
     // What it says first: its interfaces, its size and density, that it paces.
     std::string hello() const;

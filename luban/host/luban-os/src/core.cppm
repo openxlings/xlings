@@ -258,7 +258,9 @@ private:
     static std::unique_ptr<Display> over_(vm::Client client, const std::string& name, bool machine, opensal::Size size,
                                           ClipboardGrant clip, std::function<void()> wake, std::string& error,
                                           const std::function<bool(vm::Client&)>& open, const fs::path& log,
-                                          const std::string& session);
+                                          const std::string& session, std::optional<xlings::platform::SharedMemory> region = std::nullopt);
+    // A machine's frames region, mapped (opensal 0.7 Region): its 'r' frames are read there.
+    std::optional<xlings::platform::SharedMemory> region_;
     bool machine_ { false };
     bool narrow_ { false };    // its channel is narrow (a machine's, a relay's): compressed frames
     fs::path log_;                    // a relayed desktop's standard error

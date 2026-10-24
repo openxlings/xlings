@@ -21,7 +21,7 @@ namespace os = xdesk::os;
 std::string Server::hello() const {
     using I = opensal::Interface;
     return opensal::wire::encode('h', std::to_string(I::Surface | I::Mode | I::Keyboard | I::Pointer | I::Text | I::Clipboard
-                                                     | I::Cursor | I::CursorImage));
+                                                     | I::Cursor | I::CursorImage | (region ? static_cast<opensal::Interfaces>(I::Region) : 0)));
 }
 
 Link& Server::add_link(int in, int out) {

@@ -396,6 +396,11 @@ struct Server {
     std::chrono::steady_clock::time_point start { std::chrono::steady_clock::now() };
     std::chrono::steady_clock::time_point last_tick { start };
     std::string frame_buf;                       // a frame message, its allocation kept (design 2026-10-20 §13.2)
+    // Frames by reference (opensal 0.7 Region; design 2026-10-24 §5.4): the
+    // region the window maps too ($OPENSAL_REGION: a machine's ivshmem BAR),
+    // and where the next rows go in it.
+    std::optional<os::SharedMemory> region;
+    std::size_t region_at { 0 };
     std::list<Link> links;                       // the windows showing it; front: the primary
     int displays_listener { -1 };
     wl_event_source* displays_source { nullptr };

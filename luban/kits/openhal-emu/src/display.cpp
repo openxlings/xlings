@@ -19,6 +19,7 @@ struct VirtualDisplay::State {
     std::string clipboard;
     opensal::Size consumer;
     std::string error;
+    std::span<const std::byte> region;
 
     void clear() {
         pixels.assign(std::size_t{mode.width} * mode.height * 4, std::byte{0});
@@ -58,9 +59,10 @@ namespace {
 // its density; it paces (FramePresented); it asks to be the primary when it is
 // to show the desktop at its size (opensal 0.7: a display that comes to a
 // desktop already running).
-std::string hello_(const display::Mode& mode, bool primary) {
+std::string hello_(const display::Mode& mode, bool primary, bool region) {
     using I = opensal::Interface;
-    const auto bits = I::Surface | I::Pointer | I::Keyboard | I::Mode | I::Density | I::Text | I::Clipboard | I::Displays;
+    auto bits = I::Surface | I::Pointer | I::Keyboard | I::Mode | I::Density | I::Text | I::Clipboard | I::Displays;
+    if (region) bits = bits | I::Region;
     return opensal::wire::encode('H', std::format("{} {} {} {} 1{}", bits, mode.width, mode.height, mode.scale, primary ? " primary" : ""));
 }
 
@@ -68,7 +70,12 @@ std::string hello_(const display::Mode& mode, bool primary) {
 
 std::string VirtualDisplay::hello() const {
     std::lock_guard l(s_->m);
-    return hello_(s_->mode, s_->wants_primary);
+    return hello_(s_->mode, s_->wants_primary, !s_->region.empty());
+}
+
+void VirtualDisplay::set_region(std::span<const std::byte> bytes) {
+    std::lock_guard l(s_->m);
+    s_->region = bytes;
 }
 
 std::string VirtualDisplay::feed(std::string_view bytes) {
@@ -102,7 +109,18 @@ std::string VirtualDisplay::feed(std::string_view bytes) {
             break;
         }
         case 'h':
-            out += hello_(s_->mode, s_->wants_primary);
+            out += hello_(s_->mode, s_->wants_primary, !s_->region.empty());
+            break;
+        case 'r':
+            // Its rows in the region both sides map (opensal 0.7).
+            if (const auto f = opensal::wire::decode_region_frame(msg.payload);
+                f && f->offset + std::size_t(f->stride) * f->rect.height <= s_->region.size()) {
+                s_->blit({f->rect, f->stride},
+                         std::string_view(reinterpret_cast<const char*>(s_->region.data()) + f->offset, std::size_t(f->stride) * f->rect.height));
+                ++s_->frames;
+                s_->last = std::chrono::steady_clock::now();
+                out += opensal::wire::encode('E', opensal::wire::encode_event(opensal::FramePresented{}));
+            }
             break;
         case 's': {
             unsigned w = 0, h = 0;

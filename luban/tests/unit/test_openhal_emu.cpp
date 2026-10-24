@@ -139,3 +139,30 @@ XTEST(OpenhalEmu, InputStepsAreTheEventsAWindowGives, .area = "luban", .covers =
     EXPECT_FALSE(emu::input_events(R"({"no": "array"})"));
     EXPECT_TRUE(emu::input_events(R"({"events": [{"text": "a"}]})"));
 }
+
+// Frames by reference (opensal 0.7 Region): the rows in a region both sides
+// map, an 'r' message saying where -- what a machine's ivshmem BAR and a
+// desktop's frames file carry; the hello says it is taken.
+XTEST(OpenhalEmu, AFrameByReferenceIsReadInTheRegion, .area = "luban", .covers = {"LUBAN-MACHINE-SHARED-FRAMES"}) {
+    const auto f = wire::encode_region_frame({.rect = {2, 1, 3, 2}, .stride = 12, .offset = 64});
+    const auto back = wire::decode_region_frame(std::string_view(f).substr(5));
+    ASSERT_TRUE(back);
+    EXPECT_EQ(back->offset, 64u);
+    EXPECT_EQ(back->stride, 12u);
+    EXPECT_FALSE(wire::decode_region_frame("1 2 3"));
+    EXPECT_FALSE(wire::decode_region_frame("0 0 4 4 8 0")) << "a stride shorter than a row";
+    std::vector<std::byte> region(256, std::byte{0});
+    for (std::size_t k = 64; k < 64 + 24; k += 4) { region[k + 1] = std::byte{0xff}; region[k + 3] = std::byte{0xff}; }   // green
+    emu::VirtualDisplay v({16, 8, 1.0});
+    v.set_region(region);
+    const auto hello = messages_(v.feed(wire::encode('h', "1")));
+    ASSERT_EQ(hello.size(), 1u);
+    opensal::Interfaces bits = 0;
+    std::from_chars(hello[0].payload.data(), hello[0].payload.data() + hello[0].payload.size(), bits);
+    EXPECT_TRUE(opensal::has(bits, opensal::Interface::Region));
+    const auto shown = messages_(v.feed(f));
+    ASSERT_EQ(shown.size(), 1u) << "the frame was shown";
+    EXPECT_EQ(v.frames(), 1u);
+    // Out of the region: nothing, not a crash.
+    EXPECT_TRUE(v.feed(wire::encode_region_frame({.rect = {0, 0, 16, 8}, .stride = 64, .offset = 200})).empty());
+}

@@ -42,6 +42,10 @@ enum class Interface : std::uint32_t {
     // Frames may come compressed ('z': the rows as one LZ4 block; 0.6): a
     // provider across a narrow channel (a machine's serial port) takes them.
     Compressed = 1u << 13,
+    // Frames by reference (0.7): both sides map one shared region -- a
+    // machine's ivshmem BAR, a bus region -- and an 'r' message says where in
+    // it a damaged rectangle's rows are; no pixels cross the channel.
+    Region = 1u << 14,
 };
 using Interfaces = std::uint32_t;
 constexpr Interfaces operator|(Interface a, Interface b) { return static_cast<Interfaces>(a) | static_cast<Interfaces>(b); }

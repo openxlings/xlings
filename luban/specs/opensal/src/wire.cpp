@@ -50,6 +50,23 @@ std::string encode(char kind, std::string_view payload) {
     return out;
 }
 
+std::string encode_region_frame(const RegionFrame& f) {
+    return encode('r', std::format("{} {} {} {} {} {}", f.rect.x, f.rect.y, f.rect.width, f.rect.height, f.stride, f.offset));
+}
+
+std::optional<RegionFrame> decode_region_frame(std::string_view payload) {
+    RegionFrame f;
+    long long x = 0, y = 0;
+    unsigned long long w = 0, h = 0, stride = 0, offset = 0;
+    const std::string text(payload);
+    if (std::sscanf(text.c_str(), "%lld %lld %llu %llu %llu %llu", &x, &y, &w, &h, &stride, &offset) != 6) return std::nullopt;
+    if (w == 0 || h == 0 || w > 16384 || h > 16384 || stride < w * 4) return std::nullopt;
+    f.rect = {static_cast<std::int32_t>(x), static_cast<std::int32_t>(y), static_cast<std::uint32_t>(w), static_cast<std::uint32_t>(h)};
+    f.stride = static_cast<std::uint32_t>(stride);
+    f.offset = offset;
+    return f;
+}
+
 std::string encode_frame(const Pixels& s, Rect d) {
     // Clipped to the surface.
     const auto x0 = std::clamp<std::int64_t>(d.x, 0, s.size.width), y0 = std::clamp<std::int64_t>(d.y, 0, s.size.height);

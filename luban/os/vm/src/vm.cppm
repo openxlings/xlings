@@ -155,6 +155,9 @@ std::optional<std::string> started_gpu(const fs::path& home, std::string_view na
 // How a running machine shares its files: "virtiofs", or "9p" and why
 // (design 2026-10-21 §4); nothing when it is not running.
 std::optional<std::string> started_files(const fs::path& home, std::string_view name);
+// A running machine's frames region (design 2026-10-24 §5.4): the file behind
+// its ivshmem device and its size -- what the window maps; nothing without one.
+std::optional<std::pair<fs::path, std::uintmax_t>> started_frames(const fs::path& home, std::string_view name);
 fs::path log_dir(const fs::path& home, std::string_view name);
 
 // A machine's sound (design §9.4): with the audio grant and a host

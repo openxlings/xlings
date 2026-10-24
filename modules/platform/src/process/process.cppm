@@ -225,6 +225,11 @@ struct SharedMemory {
     std::size_t size { 0 };
 };
 std::optional<SharedMemory> create_shared_memory(std::size_t size);
+// A file of `size` bytes at `path` (made when it is not there, owner-only),
+// mapped here read-write and shared with whoever maps it too: a machine's
+// ivshmem memory behind /dev/shm (design 2026-10-24 §5.4). nullopt where
+// there are no shared mappings.
+std::optional<SharedMemory> map_shared_file(const std::filesystem::path& path, std::size_t size);
 void release_shared_memory(SharedMemory& m);
 
 }  // namespace xlings::platform

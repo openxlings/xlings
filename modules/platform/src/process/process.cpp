@@ -919,6 +919,19 @@ std::optional<SharedMemory> create_shared_memory(std::size_t size) {
 #endif
 }
 
+std::optional<SharedMemory> map_shared_file(const std::filesystem::path& path, std::size_t size) {
+    const int fd = ::open(path.c_str(), O_RDWR | O_CREAT | O_CLOEXEC, 0600);
+    if (fd < 0) return std::nullopt;
+    struct stat st{};
+    if (::fstat(fd, &st) != 0 || (static_cast<std::size_t>(st.st_size) < size && ::ftruncate(fd, static_cast<off_t>(size)) != 0)) {
+        ::close(fd);
+        return std::nullopt;
+    }
+    void* at = ::mmap(nullptr, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    if (at == MAP_FAILED) { ::close(fd); return std::nullopt; }
+    return SharedMemory{fd, static_cast<std::byte*>(at), size};
+}
+
 void release_shared_memory(SharedMemory& m) {
     if (m.data) ::munmap(m.data, m.size);
     if (m.fd >= 0) ::close(m.fd);
@@ -1122,6 +1135,7 @@ std::optional<std::array<int, 2>> unix_stream_pair() { return std::nullopt; }
 bool send_message(int, std::string_view, std::span<const int>) { return false; }
 std::optional<Message> receive_message(int, std::size_t) { return std::nullopt; }
 std::optional<SharedMemory> create_shared_memory(std::size_t) { return std::nullopt; }
+std::optional<SharedMemory> map_shared_file(const std::filesystem::path&, std::size_t) { return std::nullopt; }
 void release_shared_memory(SharedMemory& m) { m = SharedMemory{}; }
 
 #endif
