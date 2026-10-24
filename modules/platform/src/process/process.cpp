@@ -441,7 +441,9 @@ std::optional<std::array<int, 2>> make_pipe(bool close_on_exec) {
 
 std::optional<std::array<int, 2>> make_socket_pair() {
     int p[2];
-    if (::socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, p) != 0) return std::nullopt;
+    if (::socketpair(AF_UNIX, SOCK_STREAM, 0, p) != 0) return std::nullopt;
+    cloexec(p[0]);   // macOS has no SOCK_CLOEXEC
+    cloexec(p[1]);
     return std::array<int, 2>{p[0], p[1]};
 }
 
