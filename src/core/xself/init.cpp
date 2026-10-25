@@ -570,16 +570,60 @@ bool ensure_home_layout(const fs::path& home_dir) {
     return true;
 }
 
-int cmd_init() {
+int cmd_init(const InitOptions& opts) {
     auto& p = Config::paths();
+    fs::path home = p.homeDir;
+    if (opts.home) {
+        std::error_code ec;
+        home = fs::absolute(*opts.home, ec).lexically_normal();
+        const auto raw = fs::absolute(p.rawHomeDir, ec).lexically_normal();
+        const auto inside = [](const fs::path& a, const fs::path& b) {
+            const auto rel = a.lexically_relative(b);
+            return !rel.empty() && *rel.begin() != ".." && rel != ".";
+        };
+        if (home != raw && (inside(home, raw) || inside(raw, home))) {
+            log::error("{} and the raw home {} contain one another; choose a directory outside it",
+                       home.string(), raw.string());
+            return 2;
+        }
+        // A different home already selected is replaced only on request.
+        if (home != p.homeDir && p.homeDir != raw && !opts.force
+            && home_identity::has_marker(p.homeDir)) {
+            log::error("{} is already selected as this user's home; run `xlings self init --force "
+                       "--home {}` to select {} instead (nothing is moved or deleted)",
+                       p.homeDir.string(), home.string(), home.string());
+            return 1;
+        }
+        fs::create_directories(home, ec);
+        if (ec) {
+            log::error("cannot create {}: {}", home.string(), ec.message());
+            return 1;
+        }
+    }
     // Under the state lock: this rewrites shims in every subos, and a
     // concurrent install in another shell is writing the same directories.
-    auto lock = xvm::acquire_state_lock(p.homeDir);
+    auto lock = xvm::acquire_state_lock(home);
     if (!lock) {
         log::error("{}", lock.error());
         return 1;
     }
-    if (!ensure_home_layout(p.homeDir)) return 1;
+    if (!ensure_home_layout(home)) return 1;
+    if (opts.home) {
+        // Published after the home initialized, so a failed init leaves the
+        // previous selection in force (SPEC-010 §3).
+        const auto locator = Config::home_locator_path(p.rawHomeDir);
+        std::error_code ec;
+        if (home == fs::absolute(p.rawHomeDir, ec).lexically_normal()) {
+            fs::remove(locator, ec);
+            log::info("home: {} (the raw home; locator removed)", home.string());
+        } else {
+            fs::create_directories(p.rawHomeDir, ec);
+            nlohmann::json doc{{"home", home.string()}};
+            if (p.homeDir != home) doc["previous_home"] = p.homeDir.string();
+            platform::write_file_atomic(locator.string(), doc.dump(2) + "\n");
+            log::info("home: {} (selected by {})", home.string(), locator.string());
+        }
+    }
     log::info("init ok");
     return 0;
 }

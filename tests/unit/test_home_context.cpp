@@ -228,3 +228,37 @@ XTEST(Deployment, ThePackageRecipesInstallNothingWorldWritable,
     std::smatch m;
     EXPECT_FALSE(std::regex_search(text, m, world_writable)) << m.str();
 }
+
+// SPEC-010 for xlings (2026-10-26): `--home` is this run's home, exactly as
+// XLINGS_HOME; `self init --home` selects a home persistently through the raw
+// home's home.json, followed one hop; a locator naming nothing usable is
+// refused with the repair, never stepped over to another home.
+XTEST(HomeContext, HomeIsSelectedForOneRunByFlagAndPersistentlyByLocator, .area = "home",
+      .covers = {"HOME-SELECT"}, .requires_ = {"xlings-bin"}) {
+    auto home = tk::Home::isolated("home-select");
+    const auto actual = home.root() / "actual-home";
+    auto init = home.xlings({"self", "init", "--home", actual.string()}, {}, std::chrono::minutes(3));
+    ASSERT_EQ(init.exit_code, 0) << init.err;
+    const auto locator = nlohmann::json::parse(tk::read_file(home.dir() / "home.json"));
+    EXPECT_EQ(fs::path(locator.at("home").get<std::string>()), actual.lexically_normal());
+    EXPECT_TRUE(xlings::home_identity::has_marker(actual));
+
+    auto config = home.xlings({"self", "config"});
+    EXPECT_NE(config.out.find(actual.string()), std::string::npos) << config.out;
+    // A different directory than the selection, on the flag: this run only.
+    auto once = home.xlings({"--home", home.dir().string(), "self", "config"});
+    EXPECT_NE(once.out.find(actual.string()), std::string::npos)
+        << "the flag names the raw home, whose locator still selects: " << once.out;
+
+    auto nested = home.xlings({"self", "init", "--home", (home.dir() / "inner").string()});
+    EXPECT_EQ(nested.exit_code, 2) << nested.err;
+    auto clash = home.xlings({"--home", actual.string(), "self", "init", "--home", home.dir().string()});
+    EXPECT_EQ(clash.exit_code, 2) << clash.err;
+
+    tk::write_file(home.dir() / "home.json", R"({"home":"/nonexistent/xlings-home"})");
+    auto broken = home.xlings({"self", "config"});
+    EXPECT_EQ(broken.exit_code, 1);
+    EXPECT_NE(broken.err.find("self init --force --home"), std::string::npos) << broken.err;
+    auto repaired = home.xlings({"self", "init", "--force", "--home", actual.string()}, {}, std::chrono::minutes(3));
+    EXPECT_EQ(repaired.exit_code, 0) << repaired.err;
+}

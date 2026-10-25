@@ -158,7 +158,20 @@ public:
         // who has no home of their own yet -- main asks once and starts it
         // from the system's (design 2026-10-19 §27.5).
         bool ownHomeNew { false };
+        // THE HOME SELECTION (ecosystem SPEC-010, shared with mcpp): the raw
+        // home -- XLINGS_HOME, a self-contained root, or ~/.xlings -- may hold
+        // `home.json` naming the actual home, `self init --home` writes it, and
+        // it is followed one hop. rawHomeDir is where the locator is read;
+        // homeDir is the actual home; locatorError is a locator that names
+        // nothing usable, which main refuses rather than fall back from.
+        std::filesystem::path rawHomeDir;
+        std::filesystem::path previousHome;
+        std::string           locatorError;
     };
+
+    // Where a raw home keeps its locator: `home.json`, {"home": "<abs>",
+    // "previous_home": "<abs>"}.
+    static std::filesystem::path home_locator_path(const std::filesystem::path& raw);
 
     // Owner-anchored shim dispatch (0.4.48; see
     // .agents/docs/2026-06-04-shim-owner-anchoring-design.md): inject the

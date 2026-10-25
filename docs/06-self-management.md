@@ -171,6 +171,25 @@ xlings self migrate    # move an old layout into subos/default
 xlings self uninstall  # remove xlings, asking first
 ```
 
+## Choosing the home
+
+The home is chosen in two steps, the same ones mcpp uses (mcpp SPEC-010). The
+raw home is `XLINGS_HOME` when it is set, a self-contained installation's root,
+or `~/.xlings`. A raw home may hold `home.json`, which names the actual home;
+it is followed once, never twice.
+
+```bash
+xlings self init --home /data/xlings           # initialize /data/xlings and select it
+xlings self init --force --home /data/other    # replace that selection
+xlings self init --home ~/.xlings              # back to the raw home; home.json is removed
+xlings --home /tmp/h install gcc               # this run only, as XLINGS_HOME=/tmp/h
+```
+
+Selecting moves and deletes nothing. A locator that names no directory stops
+every command with the repair command rather than falling back to another
+home. `xlings self config` shows the actual home, the locator and the previous
+home. A Luban system's home is the administrator's and reads no locator.
+
 ## What a command did
 
 Every command writes one operation journal, `logs/ops/<date>/<trace>.ndjson`,

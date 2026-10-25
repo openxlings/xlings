@@ -195,6 +195,17 @@ bool ensure_home_layout(const fs::path& home_dir);
 // Thin wrapper over ensure_home_layout; kept here so the dispatcher in
 // xself.cppm can route by command name without pulling Config into a
 // separate translation unit.
-export int cmd_init();
+//
+// With `home`: select that directory as this user's home (ecosystem SPEC-010,
+// the semantics of `mcpp self init --home`). It is initialized, then named by
+// `home.json` in the raw home -- XLINGS_HOME, a self-contained root, or
+// ~/.xlings -- which every later command follows one hop. Naming the raw home
+// itself removes the locator. A locator that already names a different
+// initialized home is replaced only with `force`. Nothing is moved or deleted.
+export struct InitOptions {
+    std::optional<fs::path> home;
+    bool force { false };
+};
+export int cmd_init(const InitOptions& opts = {});
 
 } // namespace xlings::xself

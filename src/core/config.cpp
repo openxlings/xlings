@@ -750,6 +750,31 @@ Config::Config() {
             paths_.homeDir = fs::path(platform::get_home_dir()) / ".xlings";
         }
     }
+    // The locator (SPEC-010): one hop from the raw home to the actual home.
+    // Not for an anchored shim (it runs what its owner home placed, which is
+    // already an actual home) and not under a Luban system root, whose home
+    // is the administrator's and adopts no user's locator.
+    paths_.rawHomeDir = paths_.homeDir;
+    if (paths_.homeSource != home::Source::Anchored && !root_record_()) {
+        const auto locator = home_locator_path(paths_.homeDir);
+        std::error_code lec;
+        if (fs::exists(locator, lec)) {
+            nlohmann::json doc = nlohmann::json::parse(
+                platform::read_file_to_string(locator.string()), nullptr, false);
+            const auto target = !doc.is_discarded() && doc.is_object() && doc.contains("home")
+                && doc["home"].is_string() ? fs::path(doc["home"].get<std::string>()) : fs::path{};
+            if (target.empty() || !target.is_absolute())
+                paths_.locatorError = std::format("{}: unreadable home locator", locator.string());
+            else if (!fs::is_directory(target, lec))
+                paths_.locatorError = std::format("{}: names {}, which is not a directory",
+                                                  locator.string(), target.string());
+            else {
+                paths_.homeDir = target.lexically_normal();
+                if (doc.contains("previous_home") && doc["previous_home"].is_string())
+                    paths_.previousHome = doc["previous_home"].get<std::string>();
+            }
+        }
+    }
     // Inside a Luban system its home is root's. A regular user's xlings has
     // its own, ~/.xlings, with the system's as the layer below it
     // (deployment R, SubOS design part 2 §5; design 2026-10-16 L §8): an
@@ -2251,9 +2276,17 @@ bool Config::forget_configured_binding(std::string_view binding) {
     return any;
 }
 
+std::filesystem::path Config::home_locator_path(const std::filesystem::path& raw) {
+    return raw / "home.json";
+}
+
 void Config::print_paths() {
     auto& p = paths();
     std::println(stdout, "XLINGS_HOME:     {}", p.homeDir.string());
+    if (p.rawHomeDir != p.homeDir)
+        std::println(stdout, "  selected by:   {}", home_locator_path(p.rawHomeDir).string());
+    if (!p.previousHome.empty())
+        std::println(stdout, "  previous home: {}", p.previousHome.string());
     std::println(stdout, "XLINGS_DATA:     {}", display_path(p.dataDir));
     if (has_project_config() && !project_index_repos().empty()) {
         std::println(stdout, "XLINGS_DATA_PROJECT: {}", display_path(project_data_dir()));

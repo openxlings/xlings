@@ -16,6 +16,11 @@ int cmd_config(EventStream& stream) {
         fieldsJson.push_back({{"label", label}, {"value", value}, {"highlight", hl}});
     };
     addField("XLINGS_HOME", p.homeDir.string());
+    // The selection (SPEC-010): reported here and by doctor, never repeated
+    // on ordinary commands. The locator path is data, so it is not translated.
+    if (p.rawHomeDir != p.homeDir)
+        addField("home.json", Config::home_locator_path(p.rawHomeDir).string());
+    if (!p.previousHome.empty()) addField("previous home", p.previousHome.string());
     addField("XLINGS_DATA", p.dataDir.string());
     addField("XLINGS_SUBOS", p.subosDir.string());
     // Labels go through `tr`; the values do not. A path, a version and a

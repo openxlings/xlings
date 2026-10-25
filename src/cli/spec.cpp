@@ -17,6 +17,7 @@ const CommandSpec& root() {
             {"-v, --verbose", "Enable verbose output", true},
             {"-q, --quiet", "Suppress non-essential output", true},
             {"--ui-mode <MODE>", "Frontend for this run (cli/tui/auto)", true},
+            {"--home <DIR>", "Use this home for this run only, as XLINGS_HOME does"},
         },
         .children = {
             {"install", "Install packages", {}, {{"packages", "Package names", false, true}},
@@ -136,7 +137,7 @@ const CommandSpec& root() {
             {"self", "Manage xlings itself", {}, {}, {}, {
                 {"install", "Install xlings", {}, {}, {}, {}},
                 {"uninstall", "Uninstall xlings", {}, {}, {{"-y, --yes", "Skip confirmation"}, {"--keep-data", "Keep data"}, {"--dry-run", "Preview"}}, {}},
-                {"init", "Initialize directories", {}, {}, {}, {}},
+                {"init", "Initialize directories", {}, {}, {{"--home <DIR>", "Initialize DIR and select it as this user's home"}, {"--force", "Replace a home already selected (nothing is moved or deleted)"}}, {}},
                 {"update", "Update xlings", {}, {}, {{"--user", "Install into this home even when xlings is a system package's"}}, {}},
                 {"config", "Show configuration", {}, {}, {}, {}},
                 {"clean", "Clean cache", {}, {}, {{"--dry-run", "Preview"}}, {}},
