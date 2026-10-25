@@ -6821,6 +6821,20 @@ int run_xvm_registration_production_child_(
             | fs::perms::others_read
             | fs::perms::others_exec,
         fs::perm_options::replace);
+    // The project's subos holds the home's entry once a hook has run there
+    // (a hook runs `xlings` from its bin directory); what this step must not
+    // do is change it -- the force-global registration's shim belongs to the
+    // global root.
+    const auto projectEntry =
+        projectSubos / "bin" / ("xlings" + std::string(executableExtension));
+    const auto entryState = [&] {
+        std::error_code sec;
+        const auto st = fs::symlink_status(projectEntry, sec);
+        if (!fs::exists(st)) return std::string("absent");
+        if (fs::is_symlink(st)) return "link:" + fs::read_symlink(projectEntry, sec).string();
+        return "file:" + std::to_string(fs::file_size(projectEntry, sec));
+    };
+    const auto projectEntryBefore = entryState();
     if (!run_config(
             selfRecipe,
             "xlings",
@@ -6839,9 +6853,7 @@ int run_xvm_registration_production_child_(
     if (!fs::exists(
             globalSubos / "bin"
             / ("xlings" + std::string(executableExtension)))
-        || fs::exists(
-            projectSubos / "bin"
-            / ("xlings" + std::string(executableExtension)))) {
+        || entryState() != projectEntryBefore) {
         return fail(
             16,
             "force-global shim was written to the wrong artifact root");
