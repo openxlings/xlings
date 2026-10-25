@@ -847,30 +847,37 @@ XTEST(LubanOs, TheQuickStartSaysWhatEachSystemIsAndWhatThisComputerCanMake, .are
     // A computer that can run a system makes them (once the index has
     // answered); one that cannot says why before anything is tried.
     const bool can_run = app_can_run_(home);
-    const std::string can = can_run ? "true" : "false";
     auto r = run_script(home, std::format(R"(wait quick-start
 expect edition core
 expect name core-1
-waitfor quick_start.can_make {0} 30
 waitfor host.editions_known true 60
 frames 2
-state {1}
-screenshot {3}
+state {0}
+screenshot {2}
 click card:nano
 expect edition nano
 expect name nano-1
 frames 2
-state {2}
+state {1}
 click card:desktop
 expect edition desktop
 expect name desktop-1
 click card:tiny
 expect edition tiny
-)", can, core.string(), nano.string(), artifact(std::string("quick-start-") + std::string(platform::OS_NAME) + ".bmp").string()),
+)", core.string(), nano.string(), artifact(std::string("quick-start-") + std::string(platform::OS_NAME) + ".bmp").string()),
                         {}, {{"LUBAN_OS_LANG", "en_US.UTF-8"}});
     ASSERT_EQ(r.exit_code, 0) << r.transcript();
     const auto said_core = read_state(core)["quick_start"]["said"].get<std::string>();
     const auto said_nano = read_state(nano)["quick_start"]["said"].get<std::string>();
+    // Whether it can be made is read once the index has answered: before, an
+    // edition is "checking" and nothing stands in the way; after, an edition
+    // the index does not list cannot be made on any computer.
+    {
+        const auto st = read_state(core);
+        const auto answer = st.value("available", Json::object()).value("core", std::string("checking"));
+        const bool listed_here = answer != "unlisted" && answer != "not-here";
+        EXPECT_EQ(st["quick_start"]["can_make"].get<bool>(), can_run && listed_here) << answer;
+    }
     if (can_run) {
         // What it is -- or, as the index answered for this home, why it
         // cannot be made: never a card that fails only once clicked.
