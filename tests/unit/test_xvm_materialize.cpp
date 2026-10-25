@@ -380,3 +380,45 @@ XTEST(XvmMaterialize, AProjectionChangeMovesOnlyTheNamesThatMove,
     ASSERT_TRUE(placed->commit());
     EXPECT_TRUE(fs::exists(scope / "usr/include/big/a.h"));
 }
+
+// X2 (2026-10-26): a home initialized before the per-file ledger (2026.10.9.1)
+// holds projection links that the scope never recorded. A link to exactly the
+// file a registered release places there is xlings' own and is replaced on the
+// next switch; a regular file at the same place is still the user's.
+XTEST(XvmMaterialize, AnUnrecordedLinkToARegisteredPlacementIsOwnedAndAUserFileIsNot,
+      .area = "xvm", .covers = {"XVM-UNRECORDED-ADOPT"}, .requires_ = {"posix"}) {
+    auto home = tk::Home::isolated("unrecorded-projection");
+    const auto scope = home.dir() / "subos/default";
+    const auto gcc15 = home.dir() / "data/xpkgs/gcc/15", gcc16 = home.dir() / "data/xpkgs/gcc/16";
+    tk::write_file(gcc15 / "lib64/libatomic.so", "15");
+    tk::write_file(gcc16 / "lib64/libatomic.so", "16");
+    xlings::xvm::VersionDB db;
+    for (const auto& [version, payload] : std::vector<std::pair<std::string, fs::path>>{{"15", gcc15}, {"16", gcc16}}) {
+        xlings::xvm::add_version(db, "libatomic.so", version, (payload / "lib64").string());
+        db["libatomic.so"].versions[version].kind = "lib";
+    }
+    fs::create_directories(scope / "lib");
+    derived(gcc16 / "lib64/libatomic.so", scope / "lib/libatomic.so");
+    // The ledger knows nothing of 16's placement: the upgraded-home shape.
+    const xlings::xvm::Workspace before{};
+    const xlings::xvm::WorkspaceInstalled installedBefore{};
+    const xlings::xvm::Workspace after{{"libatomic.so", "15"}};
+    const xlings::xvm::WorkspaceInstalled installedAfter{{"libatomic.so", {"15"}}};
+
+    auto prepared = m::prepare_projection_change(db, installedBefore, before, db, installedAfter, after, {},
+                                                 scope, scope / "lib", home.dir().string());
+    ASSERT_TRUE(prepared) << prepared.error();
+    auto applied = prepared->execute();
+    ASSERT_TRUE(applied) << applied.error();
+    ASSERT_TRUE(applied->commit());
+    EXPECT_EQ(fs::read_symlink(scope / "lib/libatomic.so"), gcc15 / "lib64/libatomic.so");
+
+    // A regular file in the same place proves nothing and is preserved.
+    fs::remove(scope / "lib/libatomic.so");
+    tk::write_file(scope / "lib/libatomic.so", "mine");
+    auto refused = m::prepare_projection_change(db, installedBefore, before, db, installedAfter, after, {},
+                                                scope, scope / "lib", home.dir().string());
+    ASSERT_FALSE(refused);
+    EXPECT_NE(refused.error().find("move it aside"), std::string::npos) << refused.error();
+    EXPECT_EQ(tk::read_file(scope / "lib/libatomic.so"), "mine");
+}

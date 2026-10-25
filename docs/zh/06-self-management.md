@@ -148,6 +148,22 @@ xlings self migrate    # move an old layout into subos/default
 xlings self uninstall  # remove xlings, asking first
 ```
 
+## 选择 home
+
+home 分两步选定，与 mcpp 相同（mcpp SPEC-010）。原始 home 依次为已设置的 `XLINGS_HOME`、
+自包含安装的根目录、`~/.xlings`。原始 home 可以含有 `home.json`，指向实际 home；它只被跟随一次。
+
+```bash
+xlings self init --home /data/xlings           # initialize /data/xlings and select it
+xlings self init --force --home /data/other    # replace that selection
+xlings self init --home ~/.xlings              # back to the raw home; home.json is removed
+xlings --home /tmp/h install gcc               # this run only, as XLINGS_HOME=/tmp/h
+```
+
+选择不移动、不删除任何数据。定位文件指向的目录不存在时，每条命令都给出修复命令并停止，
+不回退到其他 home。`xlings self config` 显示实际 home、定位文件与前一个 home。
+Luban 系统的 home 属于管理员，不读取定位文件。
+
 ## 一条命令做了什么
 
 每条命令写一份操作日志 `logs/ops/<日期>/<trace>.ndjson`；它运行的每个进程（hook、修复、SubOS 里的命令）按继承的 trace

@@ -10,7 +10,7 @@
 
 Universal package management and SubOS environments
 
-Options: `-h, --help` — Show help for the selected command; `--version` — Show version; `-y, --yes` — Skip confirmation prompts; `--agent` — Use stable plain-text output; `-v, --verbose` — Enable verbose output; `-q, --quiet` — Suppress non-essential output; `--ui-mode <MODE>` — Frontend for this run (cli/tui/auto)
+Options: `-h, --help` — Show help for the selected command; `--version` — Show version; `-y, --yes` — Skip confirmation prompts; `--agent` — Use stable plain-text output; `-v, --verbose` — Enable verbose output; `-q, --quiet` — Suppress non-essential output; `--ui-mode <MODE>` — Frontend for this run (cli/tui/auto); `--home <DIR>` — Use this home for this run only, as XLINGS_HOME does
 
 ## `xlings install [packages]...`
 
@@ -211,6 +211,8 @@ Options: `-y, --yes` — Skip confirmation; `--keep-data` — Keep data; `--dry-
 ## `xlings self init`
 
 Initialize directories
+
+Options: `--home <DIR>` — Initialize DIR and select it as this user's home; `--force` — Replace a home already selected (nothing is moved or deleted)
 
 ## `xlings self update`
 

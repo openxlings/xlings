@@ -29,6 +29,23 @@ std::expected<std::vector<AssetClaim>, std::string> collect_claims(const Version
     const WorkspaceInstalled& installed, const fs::path& subosRoot,
     const fs::path& libraryRoot, const std::string& home,
     ClaimSource source = ClaimSource::Recorded);
+// THE PROOF FOR AN ENTRY THE LEDGER DOES NOT RECORD. Every release this
+// home has registered, in every version, as claims: an entry that is a link
+// to EXACTLY the file (or the header directory member) one of them places at
+// exactly that destination was made by xlings -- nothing else produces that
+// pair -- and is owned through it. Not "a link into a store": the target must
+// be the registered placement source, and every check stays `refers_`.
+//
+// Why it exists: the per-file ledger of a scope arrived in 2026.10.9.1, and a
+// home initialized before it holds projection links the ledger never saw.
+// Without this proof the first version switch after an upgrade refused every
+// one of them ("user-owned or unobserved entry preserved"). With it the switch
+// succeeds and the scope's ledger records the new state, so the home migrates
+// itself on its first change; a regular file, or a link to anything else,
+// stays the user's.
+std::expected<std::vector<AssetClaim>, std::string> registered_claims(const VersionDB& db,
+    const fs::path& subosRoot, const fs::path& libraryRoot, const std::string& home);
+
 std::expected<std::vector<AssetChange>, std::string> obsolete_assets(
     std::span<const AssetClaim> claims, std::span<const AssetClaim> desired);
 std::expected<void, std::string> append_headers(std::vector<AssetChange>& changes,

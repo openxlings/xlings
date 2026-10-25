@@ -105,8 +105,15 @@ int run(int argc, char* argv[], EventStream& stream) {
         return cmd_uninstall(opts);
     }
     if (action == "init") {
-        if (auto rc = reject_surplus(action); rc != 0) return rc;
-        return cmd_init();
+        InitOptions opts;
+        for (std::size_t i = 0; i < args.size(); ++i) {
+            const auto& a = args[i];
+            if (a == "--force") opts.force = true;
+            else if (a == "--home" && i + 1 < args.size()) opts.home = std::filesystem::path(args[++i]);
+            else if (a.starts_with("--home=")) opts.home = std::filesystem::path(a.substr(7));
+            else return reject("init", a);
+        }
+        return cmd_init(opts);
     }
     if (action == "update") {
         bool user = false;

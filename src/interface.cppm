@@ -118,6 +118,15 @@ private:
     int wireFd_ { -1 };
     std::atomic<bool> saw_error_ { false };
     std::atomic<std::chrono::steady_clock::time_point> last_emit_;
+    // WHAT ENDS THE TWO HELPER THREADS AT ONCE. The heartbeat waits on a
+    // condition variable bound to its stop token, and the stdin reader polls
+    // the read end of a pipe the destructor writes to beside stdin. Both used
+    // to sleep in fixed slices (500 ms and 100 ms), and the destructor joined
+    // them: every `xlings interface` call -- a 40 ms capability -- ended about
+    // half a second later (measured 517 ms for `payload_status`).
+    std::mutex wake_mtx_;
+    std::condition_variable_any wake_cv_;
+    std::array<int, 2> stopPipe_ { -1, -1 };
     std::jthread heartbeat_thread_;
     std::jthread stdin_thread_;
 };

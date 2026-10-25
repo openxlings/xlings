@@ -36,3 +36,11 @@ openbus            = { path = "../../specs/openbus" }
 
 [dependencies.compat]
 imgui = "1.92.8-docking"
+
+# A library the program does not call stays out of NEEDED, as xdesk's does: a
+# header-only compat package that the index builds as a shared anchor
+# (compat.xorgproto, 2025.1 revision 1) is linked through X11's dependencies
+# and would otherwise be a runtime dependency of the release binary, which
+# luban_os_release.sh refuses.
+[target.'cfg(os = "linux")'.build]
+ldflags = ["-Wl,--as-needed"]

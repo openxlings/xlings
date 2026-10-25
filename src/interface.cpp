@@ -260,14 +260,23 @@ int run(const mcpplibs::cmdline::ParsedArgs& args,
     // §7.3) sends SIGTERM: the capability ends at its next safe point, says
     // so (E_CANCELLED, 130), and what it made is left consistent -- the
     // caller kills only what does not end in time.
+    //
+    // The watcher also polls `callEnded`, which the end of the call writes
+    // to: polled alone in 200 ms slices, it held every call open for up to
+    // 200 ms after the capability had returned.
+    struct WakePipe_ {
+        std::array<int, 2> fds { -1, -1 };
+        ~WakePipe_() { for (int fd : fds) if (fd >= 0) platform::close_fd(fd); }
+    } callEnded;
     std::atomic<bool> callDone{false};
     std::jthread terminated;
     if constexpr (!platform::is_windows) {
+        if (auto p = platform::make_pipe()) callEnded.fds = *p;
         if (const int pipe = platform::route_signals({platform::sig::terminate}, {}); pipe >= 0)
-            terminated = std::jthread([&token, &callDone, pipe] {
+            terminated = std::jthread([&token, &callDone, pipe, wake = callEnded.fds[0]] {
                 while (!callDone.load()) {
-                    std::array<platform::PollFd, 1> p{{{.fd = pipe}}};
-                    platform::poll_fds(p, 200);
+                    std::array<platform::PollFd, 2> p{{{.fd = pipe}, {.fd = wake}}};
+                    platform::poll_fds(std::span(p.data(), wake >= 0 ? 2 : 1), wake >= 0 ? -1 : 200);
                     for (const int s : platform::pending_signals())
                         if (s == platform::sig::terminate) {
                             observe::ops::event("cancelled", {{"by", "SIGTERM"}});
@@ -279,8 +288,12 @@ int run(const mcpplibs::cmdline::ParsedArgs& args,
     }
     struct DoneOnExit_ {
         std::atomic<bool>& done;
-        ~DoneOnExit_() { done.store(true); }
-    } doneOnExit{callDone};
+        int wake;
+        ~DoneOnExit_() {
+            done.store(true);
+            if (wake >= 0) platform::write_fd(wake, "x");
+        }
+    } doneOnExit{callDone, callEnded.fds[1]};
     int listener_id = stream.on_event([&session](const Event& e) {
         session.emit_event(e);
     });
@@ -398,13 +411,23 @@ InterfaceSession::InterfaceSession(EventStream& stream, CancellationToken& token
     // capability's execution: this is the only fd every line this session
     // writes will ever use, so redirecting fd 1 later cannot affect it.
     wireFd_ = platform::dup_stdout_fd();
+    if constexpr (platform::is_posix) {
+        if (auto p = platform::make_pipe()) stopPipe_ = *p;
+    }
     heartbeat_thread_ = std::jthread([this](std::stop_token st) { heartbeat_loop_(st); });
     stdin_thread_     = std::jthread([this](std::stop_token st) { stdin_loop_(st); });
 }
 
 InterfaceSession::~InterfaceSession() {
+    // The stop request wakes the heartbeat through its condition variable;
+    // the byte on the pipe wakes a stdin reader blocked in poll. Joined here,
+    // before the pipe is closed, rather than by the members' destructors.
     if (heartbeat_thread_.joinable()) heartbeat_thread_.request_stop();
     if (stdin_thread_.joinable())     stdin_thread_.request_stop();
+    if (stopPipe_[1] >= 0) platform::write_fd(stopPipe_[1], "x");
+    if (heartbeat_thread_.joinable()) heartbeat_thread_.join();
+    if (stdin_thread_.joinable())     stdin_thread_.join();
+    for (int fd : stopPipe_) if (fd >= 0) platform::close_fd(fd);
     platform::close_fd(wireFd_);
 }
 
@@ -455,8 +478,11 @@ void InterfaceSession::emit_raw_line_(std::string_view s) {
 
 void InterfaceSession::heartbeat_loop_(std::stop_token st) {
     using namespace std::chrono;
+    std::unique_lock lock(wake_mtx_);
     while (!st.stop_requested()) {
-        std::this_thread::sleep_for(milliseconds(500));
+        // Returns at once when stop is requested: the stop token's callback
+        // notifies the condition variable.
+        wake_cv_.wait_for(lock, st, milliseconds(500), [] { return false; });
         if (st.stop_requested()) break;
         auto now = steady_clock::now();
         auto last = last_emit_.load(std::memory_order_acquire);
@@ -472,12 +498,14 @@ void InterfaceSession::heartbeat_loop_(std::stop_token st) {
 }
 
 void InterfaceSession::stdin_loop_(std::stop_token st) {
-    if constexpr (platform::is_linux) {
-        // Polled, so a stop request is seen within 100 ms rather than at
-        // the next line.
+    if (platform::is_posix && stopPipe_[0] >= 0) {
+        // Polled beside the stop pipe, so a stop request is seen at once
+        // rather than at the next line or the next timeout.
         while (!st.stop_requested()) {
-            platform::PollFd in{ 0 };
-            if (platform::poll_fds(std::span(&in, 1), 100) <= 0) continue;
+            std::array<platform::PollFd, 2> fds{ platform::PollFd{ 0 }, platform::PollFd{ stopPipe_[0] } };
+            if (platform::poll_fds(fds, -1) <= 0) continue;
+            if (fds[1].readable || fds[1].closed) return;
+            auto& in = fds[0];
             if (in.closed && !in.readable) return;
             if (!in.readable) continue;
             std::string line;

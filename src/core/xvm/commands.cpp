@@ -103,6 +103,9 @@ MaterializationResult apply_assets_(std::vector<materialize::AssetChange> change
             Config::paths().subosDir, Config::paths().libDir, Config::paths().homeDir.string());
         if (!recorded) return std::unexpected(recorded.error());
         claims = std::move(*recorded);
+        if (auto registered = materialize::registered_claims(Config::versions(),
+                Config::paths().subosDir, Config::paths().libDir, Config::paths().homeDir.string()))
+            claims.insert(claims.end(), registered->begin(), registered->end());
     }
     auto prepared = materialize::preflight_materialization(changes, claims, root);
     if (!prepared) return std::unexpected(prepared.error());

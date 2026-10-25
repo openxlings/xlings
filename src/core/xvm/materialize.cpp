@@ -18,6 +18,11 @@ fs::path normal_(const fs::path& path) {
         normalized = normalized.parent_path();
     return normalized;
 }
+// Said where an entry is in the way and is not provably xlings' own: what it
+// is, and what to do -- the entry is kept, so the next step is the user's.
+constexpr const char* unobserved_ =
+    "user-owned or unobserved entry preserved (neither recorded nor a link to a "
+    "registered package file); move it aside and retry";
 bool below_(const fs::path& root, const fs::path& path) {
     auto r = root.begin(), p = path.begin();
     for (; r != root.end(); ++r, ++p) if (p == path.end() || *r != *p) return false;
@@ -255,6 +260,14 @@ std::expected<std::vector<AssetClaim>, std::string> collect_claims(const Version
     return result;
 }
 
+std::expected<std::vector<AssetClaim>, std::string> registered_claims(const VersionDB& db,
+    const fs::path& subosRoot, const fs::path& libraryRoot, const std::string& home) {
+    WorkspaceInstalled every;
+    for (const auto& [target, info] : db)
+        for (const auto& [version, data] : info.versions) every[target].push_back(version);
+    return collect_claims(db, every, subosRoot, libraryRoot, home, ClaimSource::Recorded);
+}
+
 std::expected<std::vector<AssetChange>, std::string> obsolete_assets(
     std::span<const AssetClaim> claims, std::span<const AssetClaim> desired) {
     std::vector<AssetChange> result;
@@ -370,7 +383,7 @@ std::expected<Prepared, std::string> preflight_materialization(
                 if (fs::is_directory(entry, ec) && !fs::is_symlink(entry, ec) && !ec) {
                     auto checked = self(self, entry, depth + 1);
                     if (!checked) return checked;
-                } else return std::unexpected(entry.string() + ": user-owned or unobserved entry preserved");
+                } else return std::unexpected(entry.string() + ": " + unobserved_);
             }
             return {};
         };
@@ -449,7 +462,7 @@ std::expected<Prepared, std::string> preflight_materialization(
                 continue;
             }
             auto source = owner_(parent, parent, claims);
-            if (!source) return std::unexpected(parent.string() + ": user-owned or unobserved parent link preserved");
+            if (!source) return std::unexpected(parent.string() + ": parent link " + unobserved_);
             if (!fs::is_directory(*source, ec) || ec)
                 return std::unexpected(parent.string() + ": declared parent source is unreadable");
             if (!operations.contains(parent)) unwrapping.push_back({{*source, parent, false}, true, source});
@@ -463,7 +476,7 @@ std::expected<Prepared, std::string> preflight_materialization(
         if (*exists) {
             if (!operation.change.remove && refers_(destination, operation.change.source, destination) && !operation.unwrap) continue;
             auto owner = owner_(destination, destination, claims);
-            if (!owner) return std::unexpected(destination.string() + ": user-owned or unobserved entry preserved");
+            if (!owner) return std::unexpected(destination.string() + ": " + unobserved_);
             operation.previous = *owner;
         } else if (operation.change.remove) continue;
         result.state_->operations.push_back(std::move(operation));
@@ -672,6 +685,11 @@ std::expected<Prepared, std::string> prepare_projection_change(
 
     auto recorded = collect_claims(dbBefore, installedBefore, subosRoot, libraryRoot, home);
     if (!recorded) return std::unexpected(recorded.error());
+    // Ownership is proven against what the scope records AND what the home
+    // has registered (see registered_claims): an upgraded home's unrecorded
+    // projection links are xlings' own, and are replaced like recorded ones.
+    if (auto registered = registered_claims(dbBefore, subosRoot, libraryRoot, home))
+        recorded->insert(recorded->end(), registered->begin(), registered->end());
     auto leaving = collect_claims(dbBefore, oldMoved, subosRoot, libraryRoot, home);
     if (!leaving) return std::unexpected(leaving.error());
     for (const auto& released : releasedSources)

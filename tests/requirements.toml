@@ -55,6 +55,10 @@ status = "required"
 text = "a home's upstreams lend payloads of the same identity as link entries (a junction on Windows), never written; removing one removes the link; a payload its upstream let go is installed in place"
 status = "required"
 
+[IFACE-CALL-ENDS]
+text = "an interface call ends when its capability does: the heartbeat, stdin and signal threads wake on the call's end instead of sleeping out fixed slices"
+status = "required"
+
 [XIM-HANDSHAKE]
 text = "interface --version reports the version, protocol, capabilities, home layouts and features"
 status = "required"
@@ -461,6 +465,10 @@ status = "required"
 
 # ── home and deployment (design §3–§6) ─────────────────────────────
 
+[HOME-SELECT]
+text = "--home selects this run's home as XLINGS_HOME does; self init --home writes the raw home's home.json, which is followed one hop; an unusable locator is refused, not stepped over"
+status = "required"
+
 [HOME-CONTEXT]
 text = "one HomeContext answers which home and which mode"
 status = "required"
@@ -825,6 +833,10 @@ status = "required"
 
 [CARRIER-WSL-SETUP]
 text = "a Windows machine's first Linux SubOS gets its one-time setup from xlings -- WSL from the index (xim:wsl-installer, Microsoft's MSI) and the Virtual Machine Platform through the elevation door -- asked where it is needed, never a command to find and type"
+status = "required"
+
+[XVM-UNRECORDED-ADOPT]
+text = "a projection link the scope ledger does not record is owned when it links to exactly a registered release's placement source; a regular file in its place is preserved"
 status = "required"
 
 [XVM-PROJECTION-DELTA]

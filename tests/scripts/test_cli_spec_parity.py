@@ -125,9 +125,11 @@ def run(xlings, argv, env):
     try:
         # Closed stdin, so a probe that reaches an interactive shell -- which
         # `subos use` does when its subos exists -- reads EOF and exits instead
-        # of parking on the driver's inherited terminal.
+        # of parking on the driver's inherited terminal. Run in the throwaway
+        # directory, so a relative stand-in (`--home __parity_probe__`) names a
+        # directory there and never one in the checkout.
         result = subprocess.run([xlings, *argv], text=True, capture_output=True,
-                                env=env, timeout=90,
+                                env=env, cwd=Path(env["XLINGS_HOME"]).parent, timeout=90,
                                 stdin=subprocess.DEVNULL)
     except subprocess.TimeoutExpired:
         # Reaching a hang means the argv was accepted and the command started

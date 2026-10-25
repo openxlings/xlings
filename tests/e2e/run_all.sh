@@ -198,6 +198,7 @@ TESTS=(
     # this, a broken payload the index still provides read as "no package
     # in any index provides this entry" outside `--deep`/`--fix`.
     "E2E-103|doctor_remedy_mode_parity_test.sh||"
+    "E2E-104|project_hook_runs_xlings_test.sh||"
     # `--fix` walks every subos a finding names, in its own subprocess, so
     # the user never has to `subos use` first; an unclaimed registration is
     # pruned rather than re-downloaded (D2).

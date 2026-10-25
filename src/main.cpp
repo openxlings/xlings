@@ -148,6 +148,57 @@ int main(int argc, char* argv[]) {
 
     const bool is_cli = xlings::xvm::is_xlings_binary(program_name);
 
+    // `--home <DIR>`: this run's home, exactly as if XLINGS_HOME were set for
+    // this process (ecosystem SPEC-010; mcpp has the same flag). Taken out of
+    // argv here, before the first Config use, so nothing downstream sees it.
+    // After `self init` the flag is that command's own (the home to select
+    // persistently) and stays; a global one before it naming a different
+    // directory is a usage error.
+    std::vector<char*> args(argv, argv + argc);
+    if (is_cli) {
+        std::optional<std::string> global;
+        std::vector<char*> kept{ args.front() };
+        std::size_t word = 0;
+        bool initArgs = false;
+        for (std::size_t i = 1; i < args.size(); ++i) {
+            const std::string_view a = args[i];
+            if (a == "--") { kept.insert(kept.end(), args.begin() + i, args.end()); break; }
+            if (!a.starts_with("-")) {
+                initArgs = initArgs || (word == 1 && a == "init" && std::string_view(kept.back()) == "self");
+                ++word;
+            }
+            if (!initArgs && (a == "--home" || a.starts_with("--home="))) {
+                std::string value;
+                if (a == "--home") {
+                    if (i + 1 >= args.size()) {
+                        std::cerr << "xlings: --home needs a directory\n";
+                        return 2;
+                    }
+                    value = args[++i];
+                } else value = std::string(a.substr(7));
+                global = value;
+                continue;
+            }
+            kept.push_back(args[i]);
+        }
+        if (global) {
+            std::error_code ec;
+            const auto absolute = std::filesystem::absolute(*global, ec).lexically_normal();
+            for (std::size_t i = 1; initArgs && i + 1 < kept.size(); ++i)
+                if (std::string_view(kept[i]) == "--home"
+                    && std::filesystem::absolute(kept[i + 1], ec).lexically_normal() != absolute) {
+                    std::cerr << "xlings: --home names " << absolute.string()
+                              << " and `self init --home` names " << kept[i + 1]
+                              << "; give one of them\n";
+                    return 2;
+                }
+            xlings::platform::set_env_variable("XLINGS_HOME", absolute.string());
+            args = std::move(kept);
+            argc = static_cast<int>(args.size());
+            argv = args.data();
+        }
+    }
+
     // Everything below builds and narrows std::filesystem paths from argv[0]
     // and from the process's working directory (Config::paths(), the
     // owner-anchored home lookup, the profile auto-upgrade) before any
@@ -179,6 +230,18 @@ int main(int argc, char* argv[]) {
         }
 
         auto& p = xlings::Config::paths();
+        // A locator that names nothing usable is refused, never stepped over
+        // to another home (SPEC-010 §2). `self init --force --home` repairs it.
+        if (is_cli && !p.locatorError.empty()) {
+            std::vector<std::string_view> words(argv + 1, argv + argc);
+            const bool repairing = words.size() >= 2 && words[0] == "self" && words[1] == "init"
+                && std::ranges::find(words, std::string_view("--force")) != words.end();
+            if (!repairing) {
+                std::cerr << "xlings: " << p.locatorError
+                          << "\n  help: run `xlings self init --force --home <dir>` to select a home\n";
+                return 1;
+            }
+        }
         // Inside a Luban system, a user's first write makes their view of the
         // system's store (design 2026-10-20 §4.6): their own choices, shims
         // and logs -- no index, no store, so nothing to ask about. What needs
