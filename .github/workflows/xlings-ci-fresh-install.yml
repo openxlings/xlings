@@ -202,9 +202,10 @@ jobs:
   macos-fresh:
     name: macOS fresh (${{ matrix.suite }})
     if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success' }}
-    # macos-14 is the support floor — xlings ships minos=14.0 binaries, so a
-    # fresh install passing here is the continuous proof of that floor.
-    runs-on: macos-14
+    # macos-15 is the oldest image GitHub serves (macos-14 was retired on
+    # 2026-11-02). The support floor is macOS 14: xlings ships minos=14.0
+    # binaries, and the step after the suite asserts it of what was installed.
+    runs-on: macos-15
     timeout-minutes: 60
     strategy:
       fail-fast: false
@@ -215,3 +216,9 @@ jobs:
 
       - name: Run ${{ matrix.suite }} suite
         run: bash tests/fresh-install/smoke.sh ${{ matrix.suite }}
+
+      - name: The installed xlings declares the macOS 14 floor
+        run: |
+          bin=$(readlink -f "$HOME/.xlings/subos/current/bin/xlings")
+          otool -l "$bin" | grep -A4 LC_BUILD_VERSION | grep -q "minos 14.0" \
+            || { otool -l "$bin" | grep -A4 LC_BUILD_VERSION; echo "::error::$bin does not declare minos 14.0"; exit 1; }
