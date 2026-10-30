@@ -941,7 +941,7 @@ jobs:
 
   candidate-macos-arm64:
     needs: [prepare-candidates]
-    runs-on: macos-14
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
