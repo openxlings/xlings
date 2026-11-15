@@ -324,9 +324,8 @@ jobs:
             build/luban-cursors-*.tar.gz.sha256
 
   # Cross-build the aarch64-linux-musl release artefact on an x86_64 runner via
-  # mcpp's cross toolchain (xim:aarch64-linux-musl-gcc). Uses the latest mcpp
-  # (built from main) and a freshly-updated package index, so the produced
-  # binary tracks the current ecosystem. The ELF can't execute here, so the
+  # mcpp's cross toolchain (xim:aarch64-linux-musl-gcc), with the mcpp the
+  # bootstrap installs and a freshly-updated package index. The ELF can't execute here, so the
   # functional/network verify steps are skipped (SKIP_RUN_VERIFY/SKIP_NETWORK_VERIFY)
   # — self-init runs on the user's aarch64 device via `xlings self install`.
   build-linux-aarch64:
@@ -387,53 +386,20 @@ jobs:
           xlings install mcpp -y
           mcpp --version
 
-      - name: Build cross-capable mcpp from source (latest main)
-        run: |
-          git clone --depth 1 https://github.com/mcpp-community/mcpp /tmp/mcpp-src
-          cd /tmp/mcpp-src
-          # Avoid recursively resolving mcpp's development pin while the
-          # already-installed mcpp bootstraps the source tree.
-          mv .xlings.json .xlings.json.bootstrap
-          mcpp self config --mirror GLOBAL
-
-          # Force the index refresh, then ASSERT what landed.
-          #
-          # The prune above drops the resolved indexes, and mcpp's own
-          # re-fetch happily uses whatever it finds in the restored cache --
-          # so a freshly published dependency reads as "not found" against an
-          # index that demonstrably has it. Measured 2026-08-06:
-          # `mcpplibs.xpkg@0.0.53 not found`, while the index commit, the
-          # published artifact, the rolling pointer and releases/latest all
-          # carried the entry.
-          #
-          # `mcpp index update` is the refresh; `mcpp index status` prints the
-          # revision each index landed on, which is the one datum that makes a
-          # stale-index failure readable instead of surfacing two layers away
-          # as `<pkg>@<ver> not found`.
-          mcpp index update || true
-          mcpp index status || true
-          # PER PLATFORM, not a whole-file grep.
-          #
-          # A grep for `["0.0.53"]` passes on a file where the entry exists
-          # only under `xpm.linux` -- which is exactly the bug this assert was
-          # written to catch and did not: both bumps edited the linux section
-          # alone, linux CI went green, and macOS/Windows failed against a
-          # file that literally contains the string. Slice the section for
-          # THIS platform first.
-          mcpp build
-          MCPP=$(realpath "$(find target -type f -name mcpp -printf '%T@ %p\n' | sort -rn | head -1 | cut -d' ' -f2)")
-          test -x "$MCPP"
-          "$MCPP" self config --mirror GLOBAL
-          echo "MCPP=$MCPP" >> "$GITHUB_ENV"
-
       # The dist-profile artifact gate (stripped + no debug_info + size cap)
       # lives inside tools/linux_release.sh, the only build step for the
-      # artifact -- the mcpp source build above produces the cross build
-      # TOOL, not the release artifact, so the gate necessarily runs below.
+      # artifact.
+      #
+      # The cross build is driven by the mcpp installed above, as in
+      # xlings-ci-aarch64.yml: a released mcpp cross-compiles. This job built
+      # mcpp's main from source with it, and failed once main required a newer
+      # engine to build itself than the one installed (2026.11.16.1: "build.mcpp
+      # imports 'mcpp.libs.toml', and no dependency provides it as a host
+      # module"). A release artifact is built by a released tool.
       - name: Build (linux_release — aarch64 cross)
         run: |
           chmod +x ./tools/linux_release.sh
-          MCPP_BIN="$MCPP" MCPP_TARGET=aarch64-linux-musl \
+          MCPP_TARGET=aarch64-linux-musl \
             SKIP_RUN_VERIFY=1 SKIP_NETWORK_VERIFY=1 \
             ./tools/linux_release.sh
 
