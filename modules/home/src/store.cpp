@@ -75,9 +75,9 @@ std::expected<std::vector<Retained>, std::string> read_ledger(const fs::path& le
         if (ec) return std::unexpected(ledger.string() + ": " + ec.message());
         return std::vector<Retained>{};
     }
-    std::ifstream in(ledger, std::ios::binary);
-    if (!in) return std::unexpected(ledger.string() + ": cannot be read");
-    std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    auto read = platform::read_file(ledger);
+    if (!read) return std::unexpected(ledger.string() + ": cannot be read: " + read.error().message());
+    const std::string& text = *read;
     auto doc = nlohmann::json::parse(text, nullptr, false);
     if (doc.is_discarded() || !doc.is_object() || !doc.contains("retained") || !doc["retained"].is_array())
         return std::unexpected(ledger.string() + ": not a retained-payload ledger");

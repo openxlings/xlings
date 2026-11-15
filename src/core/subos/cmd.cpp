@@ -963,8 +963,8 @@ std::string pick_subos_or_fail_(std::string_view verb, EventStream& stream,
 // --proxy <url>`, in this process.
 int apply_declared_policy_(const std::string& name, const std::string& proxy, EventStream& stream,
                            const std::function<void(std::string_view)>& usageError) {
-    std::ifstream in(home_view().instance(name) / ".xlings.json");
-    auto manifest = nlohmann::json::parse(in, nullptr, false);
+    auto manifest = nlohmann::json::parse(
+        platform::read_file(home_view().instance(name) / ".xlings.json").value_or(""), nullptr, false);
     const std::string declared = manifest.is_object() && manifest.contains("policy") && manifest["policy"].is_string()
         ? manifest["policy"].get<std::string>() : std::string{};
     if (declared.empty() && proxy.empty()) return 0;

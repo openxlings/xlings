@@ -74,9 +74,9 @@ fs::path loader_path(const fs::path& logicalHome, std::string_view tag, const fs
 
 std::map<std::string, std::string> pins(const fs::path& home) {
     std::map<std::string, std::string> out;
-    std::ifstream in(home / ".xlings.json");
-    if (!in) return out;
-    const auto doc = nlohmann::json::parse(in, nullptr, false);
+    const auto text = platform::read_file(home / ".xlings.json");
+    if (!text) return out;
+    const auto doc = nlohmann::json::parse(*text, nullptr, false);
     if (!doc.is_object()) return out;
     if (auto r = doc.find("runtime"); r != doc.end() && r->is_object())
         for (auto it = r->begin(); it != r->end(); ++it)

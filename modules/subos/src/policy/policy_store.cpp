@@ -22,10 +22,9 @@ std::expected<std::optional<nlohmann::json>, std::string> read_document(const fs
     if (ec) return std::unexpected(path.string() + ": " + ec.message());
     if (!fs::is_regular_file(status))
         return std::unexpected(path.string() + ": policy must be a regular file, not a symlink or directory -- refusing to enter");
-    std::ifstream in(path, std::ios::binary);
-    if (!in) return std::unexpected(path.string() + ": cannot read policy -- refusing to enter");
-    std::string text{std::istreambuf_iterator<char>(in), {}};
-    if (in.bad()) return std::unexpected(path.string() + ": policy read failed -- refusing to enter");
+    auto read = platform::read_file(path);
+    if (!read) return std::unexpected(path.string() + ": cannot read policy -- refusing to enter");
+    const std::string& text = *read;
     auto doc = nlohmann::json::parse(text, nullptr, false);
     if (doc.is_discarded() || !doc.is_object())
         return std::unexpected(path.string() + ": not a valid JSON object -- refusing to enter rather than guess");

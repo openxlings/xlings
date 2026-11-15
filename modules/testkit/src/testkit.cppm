@@ -205,6 +205,34 @@ fs::path artifacts_dir();
 void record_result(std::string_view test, std::string_view status,
                    long long elapsed_ms, std::string_view message);
 
+// This process's arguments, argv[0] first, as the system split them: on
+// Windows CommandLineToArgvW over the command line it was created with (the
+// rules the MSVC C runtime splits by), in UTF-8; /proc/self/cmdline on Linux;
+// the C runtime's argv on macOS. A test binary run as a probe reports what a
+// program it stands in for would have received.
+std::vector<std::string> own_arguments();
+
+// A file held open for reading, the way another program holds one a test
+// replaces: with FILE_SHARE_READ | FILE_SHARE_WRITE, and FILE_SHARE_DELETE
+// only when `share_delete` (std::ifstream and _wfopen do not give it). On
+// POSIX a descriptor; sharing does not exist there. Closed when destroyed.
+class HeldFile {
+public:
+    static std::optional<HeldFile> open(const fs::path& path, bool share_delete);
+    HeldFile(HeldFile&& other) noexcept;
+    HeldFile& operator=(HeldFile&& other) noexcept;
+    HeldFile(const HeldFile&) = delete;
+    HeldFile& operator=(const HeldFile&) = delete;
+    ~HeldFile();
+    // The whole content of the file this handle opened, read from its start.
+    std::string read_all() const;
+    void close();
+
+private:
+    HeldFile() = default;
+    std::intptr_t handle_ { -1 };
+};
+
 // Small helpers shared by tests.
 std::string read_file(const fs::path& path);
 void write_file(const fs::path& path, std::string_view content);

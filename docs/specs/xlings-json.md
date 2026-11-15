@@ -16,6 +16,20 @@ decides its role: the home's configuration, a project's, or a SubOS workspace.
 
 A project's `mirror`, `lang`, `uiMode`, `theme` and `tui` override the home's.
 
+### Writing and reading it while others do
+
+xlings replaces the file whole: it writes a staging file beside it and renames
+it over the name, so a reader sees the old file or the new one. On Windows the
+rename uses POSIX semantics where the system offers it (Windows 10 1709 and
+later, NTFS): a reader that opened the file with `FILE_SHARE_DELETE` keeps
+reading the old content and the name is replaced at once. A reader that opened
+it without `FILE_SHARE_DELETE` (`std::ifstream`, `_wfopen`, most runtimes'
+default) blocks the replacement while it holds the file; xlings retries for up
+to about 2 seconds and then reports `Failed to write file`, leaving the old
+content. xlings opens the file with every share mode itself; a program that
+reads it on Windows should open it with `FILE_SHARE_READ | FILE_SHARE_WRITE |
+FILE_SHARE_DELETE` and close it promptly.
+
 ## The home's fields
 
 | Field | Type | Meaning |

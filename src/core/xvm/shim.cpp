@@ -654,22 +654,44 @@ void report_passthrough_(const std::string& program_name,
               program_name, Config::subos_scope().name, host.string());
 }
 
+// Windows has no exec: the program is created directly and waited for, its
+// exit code returned. Never through cmd.exe -- there `&` in an argument ran
+// the rest as a command and `"`, `%` and `^` were rewritten. A command script
+// (.bat, .cmd) can only be run by cmd.exe, so an argument that interpreter
+// would read as syntax is refused with its reason rather than escaped: `%`
+// has no escape on a command line.
+int run_windows_(std::vector<std::string> args) {
+    // A file without a suffix beside one with it (a payload's POSIX script
+    // `bin/gcc` next to `bin/gcc.exe`) is not what Windows runs: cmd.exe
+    // used to pick the suffixed one, so the program is the same here.
+    if (const std::filesystem::path program(args.front()); program.extension().empty()) {
+        for (const auto ext : executable_extensions_()) {
+            if (ext.empty()) continue;
+            std::error_code ec;
+            if (auto withExt = program.string() + std::string(ext); std::filesystem::is_regular_file(withExt, ec)) {
+                args.front() = withExt;
+                break;
+            }
+        }
+    }
+    if (auto problem = platform::command_script_problem(args); !problem.empty()) {
+        log::error("xlings: {}", problem);
+        return 126;
+    }
+    return platform::run_argv(args);
+}
+
 int exec_host_program_(const std::filesystem::path& host,
                        int argc, char* argv[]) {
     auto hostStr = host.string();
+    std::vector<std::string> args{hostStr};
+    for (int i = 1; i < argc; ++i) args.emplace_back(argv[i]);
     if constexpr (platform::is_posix) {
-        std::vector<std::string> args{hostStr};
-        for (int i = 1; i < argc; ++i) args.emplace_back(argv[i]);
         (void)platform::exec_program(args, platform::environment());
         log::error("xlings: failed to exec '{}'", hostStr);
         return 127;
     } else {
-        std::string cmd = platform::shell_quote(hostStr);
-        for (int i = 1; i < argc; ++i) {
-            cmd += " ";
-            cmd += platform::shell_quote(argv[i]);
-        }
-        return platform::exec(cmd);
+        return run_windows_(args);
     }
 }
 
@@ -1310,10 +1332,39 @@ int shim_dispatch(const std::string& program_name, int argc, char* argv[]) {
                 return 127;
             }
         }
+        // Windows: an alias without cmd.exe syntax whose first word is this
+        // payload's program runs directly, as on POSIX above. White space
+        // separates its words; a backslash is a path's, not an escape.
+        if constexpr (platform::is_windows) {
+            if (alias_cmd.find_first_of("\"%^&|<>()!\r\n") == std::string::npos) {
+                std::vector<std::string> words;
+                std::istringstream in(alias_cmd);
+                for (std::string w; in >> w;) words.push_back(w);
+                if (!words.empty()) {
+                    auto exe = resolve_executable(words.front(), vdata->path, xlings_home);
+                    if (!exe.empty()) {
+                        std::vector<std::string> args{exe.string()};
+                        args.insert(args.end(), words.begin() + 1, words.end());
+                        for (int i = 1; i < argc; ++i) args.emplace_back(argv[i]);
+                        return run_windows_(args);
+                    }
+                }
+            }
+        }
+        // The alias is a command for the shell (cmd.exe on Windows). The
+        // arguments appended to it pass through that shell's parser; on
+        // Windows one it would read as syntax is refused, not rewritten.
+        std::vector<std::string> appended(argv + 1, argv + argc);
+        if constexpr (platform::is_windows) {
+            if (auto problem = platform::command_interpreter_problem(appended); !problem.empty()) {
+                log::error("xlings: {}; the alias of '{}' runs through cmd.exe", problem, program_name);
+                return 126;
+            }
+        }
         std::string cmd = alias_cmd;
-        for (int i = 1; i < argc; ++i) {
+        for (const auto& arg : appended) {
             cmd += " ";
-            cmd += platform::shell_quote(argv[i]);
+            cmd += platform::shell_quote(arg);
         }
         return platform::exec(cmd);
     }
@@ -1379,12 +1430,9 @@ int shim_dispatch(const std::string& program_name, int argc, char* argv[]) {
                    Config::display_path(exe_path));
         return 1;
     } else {
-        std::string cmd = platform::shell_quote(exe_path.string());
-        for (int i = 1; i < argc; ++i) {
-            cmd += " ";
-            cmd += platform::shell_quote(argv[i]);
-        }
-        return platform::exec(cmd);
+        std::vector<std::string> args{exe_path.string()};
+        for (int i = 1; i < argc; ++i) args.emplace_back(argv[i]);
+        return run_windows_(args);
     }
 }
 

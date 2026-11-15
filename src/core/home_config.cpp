@@ -264,11 +264,9 @@ private:
 std::optional<std::string> read_versions_db_stamp_prefix(
         const std::filesystem::path& dbPath) {
     constexpr std::size_t kPrefix = 4096;
-    std::ifstream in(dbPath, std::ios::binary);
-    if (!in) return std::nullopt;
-    std::string head(kPrefix, '\0');
-    in.read(head.data(), static_cast<std::streamsize>(head.size()));
-    head.resize(static_cast<std::size_t>(in.gcount()));
+    auto read = platform::read_file(dbPath, kPrefix);
+    if (!read) return std::nullopt;
+    std::string head = std::move(*read);
     try {
         DbStampSax sax;
         nlohmann::json::sax_parse(head, &sax);

@@ -527,6 +527,10 @@ status = "required"
 text = "inside a Luban system, where bwrap cannot start, a home other than the system's builds its catalog and runs its hooks behind a Landlock write fence: the worker writes its scratch, its logs and what it installs, never the layer below or a borrowed payload; on a host without bwrap the boundary still refuses"
 status = "required"
 
+[ATOMIC-REPLACE-SHARED]
+text = "replacing a state file does not fail because another process reads it: xlings' own readers open it shared for deletion and the replacement is a POSIX-semantics rename on Windows; a reader without FILE_SHARE_DELETE is waited for up to about 2 s, then the failure is reported with the old content intact (#715)"
+status = "required"
+
 [ATOMIC-PUBLICATION]
 text = "an entry is published under its name atomically and never over an existing one; where the filesystem lacks the rename flag (NFSv3), a file or a link is published as a hard link with the same refusal, and a directory by rename onto a name that is not there; a home on NFSv3 installs packages whose configuration places files"
 status = "required"
@@ -603,6 +607,14 @@ status = "required"
 
 [SHIM-NO-SHELL]
 text = "a shim (aliases included) dispatches in a root with no /bin/sh"
+status = "required"
+
+[SHIM-ARGV-INTACT]
+text = "a shim hands every argument to its program as given -- quotes, `&`, `%`, `^`, white space, trailing backslashes, non-ASCII; on Windows the program is created directly (CreateProcessW, the argv quoted by the MSVC / CommandLineToArgvW rules), never through cmd.exe"
+status = "required"
+
+[SHIM-SCRIPT-ARGV]
+text = "a shim whose program is a .bat or .cmd script runs it through cmd.exe and refuses, naming it, an argument that interpreter reads as syntax (`%^&|<>\"`, a line break) instead of escaping it; nothing runs"
 status = "required"
 
 [ROOT-ROLE-TABLE]

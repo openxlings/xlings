@@ -37,9 +37,9 @@ std::string command(const Step& s) {
 
 std::vector<Step> pending(const fs::path& home) {
     std::vector<Step> out;
-    std::ifstream in(file_(home));
-    if (!in) return out;
-    const auto doc = nlohmann::json::parse(in, nullptr, false);
+    const auto text = platform::read_file(file_(home));
+    if (!text) return out;
+    const auto doc = nlohmann::json::parse(*text, nullptr, false);
     if (!doc.is_array()) return out;
     for (const auto& j : doc) {
         if (!j.is_object() || !j.contains("argv") || !j["argv"].is_array()) continue;
