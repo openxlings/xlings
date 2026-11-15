@@ -95,6 +95,14 @@ A SubOS's `bin/` holds a link per program, to the xlings binary itself. Run as
 `gcc`, xlings reads its own name, looks up the active version in the SubOS's
 workspace and runs that version's program from its payload.
 
+The arguments reach the program as they were given. On Windows the shim creates
+the program's process directly, quoting each argument by the rules Windows
+programs split their command line with; no command interpreter reads them, so
+`"`, `&`, `%`, `^`, spaces and trailing backslashes arrive unchanged. A program
+that is a `.bat` or `.cmd` script can only be run by `cmd.exe`, which reads
+`%^&|<>"` and line breaks as its own syntax whatever the quoting: the shim
+refuses such an argument, naming it, and runs nothing (exit code 126).
+
 ### Version views and reference counts
 
 Every SubOS shares the payloads in `~/.xlings/data/xpkgs/` and records only its

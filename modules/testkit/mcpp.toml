@@ -27,3 +27,7 @@ kind = "lib"
 [dependencies]
 libs = { path = "../libs" }
 platform = { path = "../platform" }
+
+# own_arguments() splits this process's command line with CommandLineToArgvW.
+[target.windows.build]
+ldflags = ["-lshell32"]

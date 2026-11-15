@@ -64,8 +64,8 @@ std::expected<CarrierBinding_, std::string> carrier_of_(const std::string& name)
         if (ec) return std::unexpected(file.string() + ": " + ec.message());
         return b;
     }
-    std::ifstream in(file);
-    auto j = in ? nlohmann::json::parse(in, nullptr, false) : nlohmann::json(nlohmann::json::value_t::discarded);
+    const auto text = platform::read_file(file);
+    auto j = text ? nlohmann::json::parse(*text, nullptr, false) : nlohmann::json(nlohmann::json::value_t::discarded);
     if (!j.is_object()) return std::unexpected(file.string() + ": unreadable; where this SubOS runs is not known");
     if (auto it = j.find("carrier"); it != j.end() && it->is_string()) b.carrier = it->get<std::string>();
     if (auto it = j.find("abi"); it != j.end() && it->is_string()) b.abi = it->get<std::string>();

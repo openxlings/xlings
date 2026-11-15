@@ -35,13 +35,10 @@ std::expected<nlohmann::json, std::string> read_json(const fs::path& p) {
     if (status.type() == fs::file_type::not_found) return nlohmann::json::object();
     if (!fs::is_regular_file(p, ec) || ec)
         return std::unexpected(p.string() + ": is not a readable regular file");
-    std::ifstream in(p, std::ios::binary);
-    if (!in) return std::unexpected(p.string() + ": cannot be read");
-    std::string bytes;
-    try { bytes.assign(std::istreambuf_iterator<char>(in), {}); }
-    catch (const std::exception& e) { return std::unexpected(p.string() + ": " + e.what()); }
-    auto j = nlohmann::json::parse(bytes, nullptr, false);
-    if (in.bad() || !j.is_object())
+    auto read = platform::read_file(p);
+    if (!read) return std::unexpected(p.string() + ": cannot be read: " + read.error().message());
+    auto j = nlohmann::json::parse(*read, nullptr, false);
+    if (!j.is_object())
         return std::unexpected(p.string() + ": could not be parsed as a JSON object");
     return j;
 }

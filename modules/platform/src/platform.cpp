@@ -573,16 +573,53 @@ int run_argv(const std::vector<std::string>& argv) {
         std::cout.flush();
         std::cerr.flush();
 #if defined(_WIN32)
-        std::string commandLine;
-        for (const auto& arg : argv) {
-            if (!commandLine.empty()) commandLine += ' ';
-            commandLine += shell_quote(arg);
+        // The program is created directly: its argv reaches it as given, by
+        // the rules it splits its command line with. Through cmd.exe (as
+        // std::system did for shims) `&` ran the rest as a command and `%`,
+        // `^` and `"` were rewritten. Only a command script needs cmd.exe,
+        // and gets what it can receive intact or nothing.
+        const auto wide = [](std::string_view s) {
+            std::wstring w;
+            if (s.empty()) return w;
+            const int n = ::MultiByteToWideChar(CP_UTF8, 0, s.data(), static_cast<int>(s.size()), nullptr, 0);
+            w.resize(static_cast<std::size_t>(n));
+            ::MultiByteToWideChar(CP_UTF8, 0, s.data(), static_cast<int>(s.size()), w.data(), n);
+            return w;
+        };
+        std::wstring application;
+        std::wstring commandLine;
+        if (is_command_script(argv.front())) {
+            if (!command_script_problem(argv).empty()) return 126;
+            std::error_code ec;
+            if (!std::filesystem::exists(std::filesystem::path(wide(argv.front())), ec)) return 127;
+            std::array<wchar_t, MAX_PATH> systemDir{};
+            const UINT n = ::GetSystemDirectoryW(systemDir.data(), static_cast<UINT>(systemDir.size()));
+            if (n == 0 || n >= systemDir.size()) return 126;
+            application = std::wstring(systemDir.data(), n) + L"\\cmd.exe";
+            commandLine = L"cmd.exe " + wide(windows_script_command_line(argv));
+        } else {
+            commandLine = wide(windows_command_line(argv));
+            // A path names the file to run, so nothing is searched for (and
+            // `/` separators are accepted); a bare name is searched as before.
+            if (const std::filesystem::path program(wide(argv.front())); program.is_absolute())
+                application = std::filesystem::path(program).make_preferred().wstring();
         }
-        STARTUPINFOA startup{};
+        // This process's standard handles, explicitly and inheritable (as
+        // handoff_exec does): a redirected stdout -- a pipe from CI or a
+        // caller capturing the output -- is otherwise not guaranteed to reach
+        // the child.
+        STARTUPINFOW startup{};
         startup.cb = sizeof(startup);
+        startup.dwFlags = STARTF_USESTDHANDLES;
+        startup.hStdInput = ::GetStdHandle(STD_INPUT_HANDLE);
+        startup.hStdOutput = ::GetStdHandle(STD_OUTPUT_HANDLE);
+        startup.hStdError = ::GetStdHandle(STD_ERROR_HANDLE);
+        for (HANDLE h : {startup.hStdInput, startup.hStdOutput, startup.hStdError})
+            if (h != nullptr && h != INVALID_HANDLE_VALUE)
+                ::SetHandleInformation(h, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT);
         PROCESS_INFORMATION process{};
-        if (!::CreateProcessA(nullptr, commandLine.data(), nullptr, nullptr,
-                              TRUE, 0, nullptr, nullptr, &startup, &process)) {
+        if (!::CreateProcessW(application.empty() ? nullptr : application.c_str(), commandLine.data(),
+                              nullptr, nullptr, TRUE, 0, nullptr, nullptr, &startup, &process)) {
             auto err = ::GetLastError();
             return (err == ERROR_FILE_NOT_FOUND || err == ERROR_PATH_NOT_FOUND) ? 127 : 126;
         }
@@ -695,19 +732,131 @@ int run_shell(std::string_view command, bool interactive) {
 #endif
     }
 
-[[nodiscard]] std::string read_file_to_string(const std::string& filepath) {
-        std::FILE* fp = std::fopen(filepath.c_str(), "rb");
-        if (!fp) {
-            throw std::runtime_error("Failed to open file: " + filepath);
-        }
-        std::fseek(fp, 0, SEEK_END);
-        long sz = std::ftell(fp);
-        std::fseek(fp, 0, SEEK_SET);
-        std::string content(static_cast<std::size_t>(sz), '\0');
-        std::fread(content.data(), 1, content.size(), fp);
-        std::fclose(fp);
-        return content;
+std::expected<std::string, std::error_code> read_file(const std::filesystem::path& path, std::size_t limit) {
+#if defined(_WIN32)
+    // Every share mode: a writer replacing the file (write_file_atomic) or
+    // deleting it is never refused because this reader has it open (#715).
+    HANDLE h = ::CreateFileW(path.c_str(), GENERIC_READ,
+                             FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                             nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h == INVALID_HANDLE_VALUE) {
+        const auto err = ::GetLastError();
+        if (err == ERROR_FILE_NOT_FOUND || err == ERROR_PATH_NOT_FOUND)
+            return std::unexpected(std::make_error_code(std::errc::no_such_file_or_directory));
+        return std::unexpected(std::error_code(static_cast<int>(err), std::system_category()));
     }
+    std::string content;
+    std::array<char, 65536> buffer{};
+    for (;;) {
+        const auto want = static_cast<DWORD>(std::min<std::size_t>(buffer.size(), limit - content.size()));
+        if (want == 0) break;
+        DWORD got = 0;
+        if (!::ReadFile(h, buffer.data(), want, &got, nullptr)) {
+            const auto err = ::GetLastError();
+            ::CloseHandle(h);
+            return std::unexpected(std::error_code(static_cast<int>(err), std::system_category()));
+        }
+        if (got == 0) break;
+        content.append(buffer.data(), got);
+    }
+    ::CloseHandle(h);
+    return content;
+#else
+    const int fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC);
+    if (fd < 0) return std::unexpected(std::error_code(errno, std::generic_category()));
+    std::string content;
+    std::array<char, 65536> buffer{};
+    for (;;) {
+        const auto want = std::min<std::size_t>(buffer.size(), limit - content.size());
+        if (want == 0) break;
+        const auto got = ::read(fd, buffer.data(), want);
+        if (got < 0) {
+            if (errno == EINTR) continue;
+            const int err = errno;
+            ::close(fd);
+            return std::unexpected(std::error_code(err, std::generic_category()));
+        }
+        if (got == 0) break;
+        content.append(buffer.data(), static_cast<std::size_t>(got));
+    }
+    ::close(fd);
+    return content;
+#endif
+}
+
+[[nodiscard]] std::string read_file_to_string(const std::string& filepath) {
+        auto content = read_file(std::filesystem::path(filepath));
+        if (!content) throw std::runtime_error("Failed to open file: " + filepath);
+        return std::move(*content);
+    }
+
+std::string windows_quote_arg(std::string_view arg) {
+    if (!arg.empty() && arg.find_first_of(" \t\n\v\"") == std::string_view::npos) return std::string(arg);
+    std::string quoted = "\"";
+    std::size_t backslashes = 0;
+    for (const char c : arg) {
+        if (c == '\\') { ++backslashes; continue; }
+        // Before a quote, each backslash doubles and one more escapes the quote.
+        quoted.append(c == '"' ? backslashes * 2 + 1 : backslashes, '\\');
+        backslashes = 0;
+        quoted += c;
+    }
+    // Before the closing quote they double, so it still closes.
+    quoted.append(backslashes * 2, '\\');
+    quoted += '"';
+    return quoted;
+}
+
+std::string windows_command_line(std::span<const std::string> argv) {
+    std::string line;
+    for (const auto& arg : argv) {
+        if (!line.empty()) line += ' ';
+        line += windows_quote_arg(arg);
+    }
+    return line;
+}
+
+bool is_command_script(const std::filesystem::path& program) {
+    auto ext = program.extension().string();
+    for (auto& c : ext) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return ext == ".bat" || ext == ".cmd";
+}
+
+std::string command_interpreter_problem(std::span<const std::string> args) {
+    constexpr std::string_view syntax = "%^&|<>\"\r\n";
+    for (std::size_t i = 0; i < args.size(); ++i)
+        if (const auto at = args[i].find_first_of(syntax); at != std::string::npos) {
+            const char c = args[i][at];
+            const auto shown = c == '\r' ? std::string("a carriage return")
+                             : c == '\n' ? std::string("a line feed")
+                             : std::format("`{}`", c);
+            return std::format("argument {} ('{}') holds {}, which the command interpreter reads as its own syntax",
+                               i + 1, args[i], shown);
+        }
+    return {};
+}
+
+std::string command_script_problem(std::span<const std::string> argv) {
+    if (argv.empty() || !is_command_script(argv.front())) return {};
+    auto problem = command_interpreter_problem(argv.subspan(1));
+    if (!problem.empty())
+        problem += std::format("; {} is a command script, which receives its arguments through cmd.exe",
+                               std::filesystem::path(argv.front()).filename().string());
+    return problem;
+}
+
+std::string windows_script_command_line(std::span<const std::string> argv) {
+    std::string inner;
+    for (std::size_t i = 0; i < argv.size(); ++i) {
+        if (i) inner += ' ';
+        const auto& arg = argv[i];
+        if (i == 0 || arg.empty() || arg.find_first_of(" \t,;=") != std::string::npos)
+            inner += '"' + arg + '"';
+        else
+            inner += arg;
+    }
+    return "/d /v:off /s /c \"" + inner + "\"";
+}
 
 std::expected<void, std::string> rename_no_replace(const std::filesystem::path& from,
                                                        const std::filesystem::path& to) {
@@ -723,6 +872,90 @@ std::filesystem::path read_symlink(const std::filesystem::path& path, std::error
     }
     return {};
 }
+
+#if defined(_WIN32)
+namespace {
+
+// FILE_RENAME_INFO as SetFileInformationByHandle reads it for
+// FileRenameInfoEx (winbase.h for _WIN32_WINNT >= WIN10_RS1; ntifs.h
+// FILE_RENAME_INFORMATION): a DWORD of flags in a union with the BOOLEAN
+// ReplaceIfExists, then RootDirectory, FileNameLength in bytes without a
+// terminator, and the name. Spelled here because the toolchain's headers
+// default to an older _WIN32_WINNT and then declare neither the union nor
+// the flags; the layout is the same either way (HANDLE alignment pads the
+// BOOLEAN to the DWORD's size).
+struct RenameInfoEx {
+    DWORD flags;
+    HANDLE root_directory;
+    DWORD file_name_length;
+    WCHAR file_name[1];
+};
+// FILE_INFO_BY_HANDLE_CLASS: FileRenameInfoEx is the 23rd enumerator (22),
+// after FileDispositionInfoEx (21) -- minwinbase.h.
+constexpr auto kFileRenameInfoEx = static_cast<FILE_INFO_BY_HANDLE_CLASS>(22);
+constexpr DWORD kRenameReplaceIfExists = 0x00000001;   // FILE_RENAME_FLAG_REPLACE_IF_EXISTS
+constexpr DWORD kRenamePosixSemantics = 0x00000002;    // FILE_RENAME_FLAG_POSIX_SEMANTICS
+
+// One rename of `from` over `to` with POSIX semantics: the name is replaced
+// even while other handles (opened with FILE_SHARE_DELETE) hold the old file,
+// and they keep reading the old content. nullopt when this system or file
+// system does not offer it (before Windows 10 1709: ERROR_INVALID_PARAMETER;
+// FAT, some network shares: ERROR_NOT_SUPPORTED, ERROR_INVALID_FUNCTION), so
+// the caller falls back to MoveFileExW; otherwise ERROR_SUCCESS or the error.
+std::optional<DWORD> posix_rename_(const std::filesystem::path& from, const std::filesystem::path& to) {
+    HANDLE h = ::CreateFileW(from.c_str(), DELETE | SYNCHRONIZE,
+                             FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                             nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h == INVALID_HANDLE_VALUE) return std::nullopt;
+    const auto name = std::filesystem::absolute(to).wstring();
+    const auto nameBytes = name.size() * sizeof(WCHAR);
+    std::vector<std::byte> buffer(sizeof(RenameInfoEx) + nameBytes);
+    auto* info = reinterpret_cast<RenameInfoEx*>(buffer.data());
+    info->flags = kRenameReplaceIfExists | kRenamePosixSemantics;
+    info->root_directory = nullptr;
+    info->file_name_length = static_cast<DWORD>(nameBytes);
+    std::memcpy(info->file_name, name.c_str(), nameBytes + sizeof(WCHAR));
+    const BOOL ok = ::SetFileInformationByHandle(h, kFileRenameInfoEx, info, static_cast<DWORD>(buffer.size()));
+    const DWORD err = ok ? ERROR_SUCCESS : ::GetLastError();
+    ::CloseHandle(h);
+    if (err == ERROR_INVALID_PARAMETER || err == ERROR_NOT_SUPPORTED || err == ERROR_INVALID_FUNCTION
+        || err == ERROR_CALL_NOT_IMPLEMENTED)
+        return std::nullopt;
+    return err;
+}
+
+DWORD replace_once_(const std::filesystem::path& from, const std::filesystem::path& to) {
+    if (auto done = posix_rename_(from, to)) return *done;
+    if (::MoveFileExW(from.c_str(), to.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
+        return ERROR_SUCCESS;
+    return ::GetLastError();
+}
+
+// Replace `to` with `from` (#715). Another process holding `to` open without
+// FILE_SHARE_DELETE -- a reader through std::ifstream or _wfopen, an
+// antivirus scan, the search indexer -- makes the replacement fail with a
+// sharing violation or access denied for as long as it holds it, usually
+// milliseconds. That is retried for a bounded time; a target that cannot be
+// replaced however long one waits (a directory, a read-only file) is not.
+DWORD windows_replace_(const std::filesystem::path& from, const std::filesystem::path& to) {
+    using namespace std::chrono;
+    const auto deadline = steady_clock::now() + seconds(2);
+    auto pause = milliseconds(1);
+    for (;;) {
+        const DWORD err = replace_once_(from, to);
+        if (err != ERROR_SHARING_VIOLATION && err != ERROR_ACCESS_DENIED) return err;
+        const DWORD attributes = ::GetFileAttributesW(to.c_str());
+        if (attributes != INVALID_FILE_ATTRIBUTES
+            && (attributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_READONLY)) != 0)
+            return err;
+        if (steady_clock::now() + pause > deadline) return err;
+        std::this_thread::sleep_for(pause);
+        pause = std::min(pause * 2, milliseconds(20));
+    }
+}
+
+}  // namespace
+#endif
 
 void write_file_atomic(const std::string& filepath, const std::string& content) {
         namespace fs = std::filesystem;
@@ -803,9 +1036,8 @@ void write_file_atomic(const std::string& filepath, const std::string& content) 
 
         ec.clear();
 #if defined(_WIN32)
-        if (!::MoveFileExW(staging.wstring().c_str(), target.wstring().c_str(),
-                          MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
-            ec = std::error_code(static_cast<int>(::GetLastError()), std::system_category());
+        if (const DWORD err = windows_replace_(staging, target); err != ERROR_SUCCESS)
+            ec = std::error_code(static_cast<int>(err), std::system_category());
 #else
         fs::rename(staging, target, ec);
 #endif

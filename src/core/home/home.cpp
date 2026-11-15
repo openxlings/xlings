@@ -41,9 +41,7 @@ std::optional<nlohmann::json> read_marker(const fs::path& home) {
     std::error_code ec;
     auto path = home_identity::marker_path(home);
     if (!fs::is_regular_file(path, ec)) return std::nullopt;
-    std::ifstream in(path, std::ios::binary);
-    std::string text{std::istreambuf_iterator<char>(in), {}};
-    auto j = nlohmann::json::parse(text, nullptr, false);
+    auto j = nlohmann::json::parse(platform::read_file(path).value_or(""), nullptr, false);
     if (j.is_discarded() || !j.is_object()) return std::nullopt;
     return j;
 }
@@ -112,8 +110,7 @@ nlohmann::json read_system_config() {
     std::error_code ec;
     const auto path = system_config_path();
     if (!fs::is_regular_file(path, ec)) return nlohmann::json::object();
-    std::ifstream in(path, std::ios::binary);
-    auto j = nlohmann::json::parse(in, nullptr, false);
+    auto j = nlohmann::json::parse(platform::read_file(path).value_or(""), nullptr, false);
     return j.is_object() ? j : nlohmann::json::object();
 }
 
@@ -159,8 +156,7 @@ bool declares_upstreams(const fs::path& home) {
     if (sizeError || timeError) return false;
     if (auto it = known.find(home); it != known.end() && it->second.size == size && it->second.mtime == mtime)
         return it->second.declared;
-    std::ifstream in(file);
-    auto config = nlohmann::json::parse(in, nullptr, false);
+    auto config = nlohmann::json::parse(platform::read_file(file).value_or(""), nullptr, false);
     const bool declared = !config.is_discarded() && config.is_object() && config.contains("upstreams")
                           && config["upstreams"].is_array() && !config["upstreams"].empty();
     known[home] = {size, mtime, declared};
@@ -279,10 +275,9 @@ std::expected<nlohmann::json, std::string> read_json_for_update(const fs::path& 
     if (ec) return std::unexpected(path.string() + ": " + ec.message());
     if (!fs::is_regular_file(path, ec) || ec)
         return std::unexpected(path.string() + ": not a readable regular JSON file");
-    std::ifstream in(path, std::ios::binary);
-    if (!in) return std::unexpected(path.string() + ": cannot be read");
-    std::string text{std::istreambuf_iterator<char>(in), {}};
-    if (in.bad()) return std::unexpected(path.string() + ": read failed");
+    auto read = platform::read_file(path);
+    if (!read) return std::unexpected(path.string() + ": cannot be read: " + read.error().message());
+    const std::string& text = *read;
     auto j = nlohmann::json::parse(text, nullptr, false);
     if (j.is_discarded() || !j.is_object())
         return std::unexpected(path.string() + ": could not be parsed as a JSON object");

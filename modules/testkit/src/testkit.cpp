@@ -6,6 +6,7 @@ module;
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <windows.h>
+#include <shellapi.h>
 #else
 #include <cerrno>
 #include <csignal>
@@ -666,6 +667,102 @@ RunResult run(const RunOptions& o) {
 }
 
 #endif
+
+std::optional<HeldFile> HeldFile::open(const fs::path& path, bool share_delete) {
+    HeldFile held;
+#if defined(_WIN32)
+    const DWORD share = FILE_SHARE_READ | FILE_SHARE_WRITE | (share_delete ? FILE_SHARE_DELETE : 0);
+    HANDLE h = ::CreateFileW(path.c_str(), GENERIC_READ, share, nullptr, OPEN_EXISTING,
+                             FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h == INVALID_HANDLE_VALUE) return std::nullopt;
+    held.handle_ = reinterpret_cast<std::intptr_t>(h);
+#else
+    (void)share_delete;
+    const int fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC);
+    if (fd < 0) return std::nullopt;
+    held.handle_ = fd;
+#endif
+    return held;
+}
+
+HeldFile::HeldFile(HeldFile&& other) noexcept : handle_(std::exchange(other.handle_, -1)) {}
+
+HeldFile& HeldFile::operator=(HeldFile&& other) noexcept {
+    if (this != &other) {
+        close();
+        handle_ = std::exchange(other.handle_, -1);
+    }
+    return *this;
+}
+
+HeldFile::~HeldFile() { close(); }
+
+void HeldFile::close() {
+    if (handle_ == -1) return;
+#if defined(_WIN32)
+    ::CloseHandle(reinterpret_cast<HANDLE>(handle_));
+#else
+    ::close(static_cast<int>(handle_));
+#endif
+    handle_ = -1;
+}
+
+std::string HeldFile::read_all() const {
+    std::string out;
+    if (handle_ == -1) return out;
+    std::array<char, 8192> buf{};
+#if defined(_WIN32)
+    HANDLE h = reinterpret_cast<HANDLE>(handle_);
+    LARGE_INTEGER zero{};
+    ::SetFilePointerEx(h, zero, nullptr, FILE_BEGIN);
+    DWORD n = 0;
+    while (::ReadFile(h, buf.data(), static_cast<DWORD>(buf.size()), &n, nullptr) && n > 0)
+        out.append(buf.data(), n);
+#else
+    off_t at = 0;
+    for (;;) {
+        const auto n = ::pread(static_cast<int>(handle_), buf.data(), buf.size(), at);
+        if (n <= 0) break;
+        out.append(buf.data(), static_cast<std::size_t>(n));
+        at += n;
+    }
+#endif
+    return out;
+}
+
+std::vector<std::string> own_arguments() {
+    std::vector<std::string> out;
+#if defined(_WIN32)
+    int count = 0;
+    LPWSTR* args = ::CommandLineToArgvW(::GetCommandLineW(), &count);
+    for (int i = 0; args && i < count; ++i) {
+        const std::wstring_view w(args[i]);
+        std::string narrow;
+        if (!w.empty()) {
+            const int n = ::WideCharToMultiByte(CP_UTF8, 0, w.data(), static_cast<int>(w.size()),
+                                                nullptr, 0, nullptr, nullptr);
+            narrow.resize(static_cast<std::size_t>(n));
+            ::WideCharToMultiByte(CP_UTF8, 0, w.data(), static_cast<int>(w.size()),
+                                  narrow.data(), n, nullptr, nullptr);
+        }
+        out.push_back(std::move(narrow));
+    }
+    if (args) ::LocalFree(args);
+#elif defined(__APPLE__)
+    char** argv = *_NSGetArgv();
+    for (int i = 0; i < *_NSGetArgc(); ++i) out.emplace_back(argv[i]);
+#else
+    std::ifstream in("/proc/self/cmdline", std::ios::binary);
+    std::string text{std::istreambuf_iterator<char>(in), {}};
+    for (std::size_t start = 0; start < text.size();) {
+        const auto end = text.find('\0', start);
+        out.push_back(text.substr(start, end - start));
+        if (end == std::string::npos) break;
+        start = end + 1;
+    }
+#endif
+    return out;
+}
 
 std::map<std::string, std::string> inherited_env() {
     std::map<std::string, std::string> e;

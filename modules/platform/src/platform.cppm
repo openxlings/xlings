@@ -284,7 +284,11 @@ namespace platform {
     // Run an argv -- no shell, nothing to quote for one -- with this process's
     // stdio and environment, and return its exit code: 127 when the program
     // is not found, 126 when it cannot be executed, 128+n for signal n (the
-    // `subos exec` exit-code table, design §12.2).
+    // `subos exec` exit-code table, design §12.2). On Windows the program is
+    // created directly (CreateProcessW) with `windows_command_line(argv)`,
+    // never through cmd.exe; a command script (`.bat`, `.cmd`) runs through
+    // cmd.exe as `windows_script_command_line` spells it, and 126 without
+    // running anything when `command_script_problem` refuses an argument.
     export int run_argv(const std::vector<std::string>& argv);
 
     // Run `argv` with administrator rights, waiting for it (SubOS design
@@ -315,6 +319,57 @@ namespace platform {
     // means that.
     export [[nodiscard]] std::optional<std::vector<std::string>> split_plain_words(std::string_view cmd);
 
+    // ── An argv for a Windows command line (host-independent) ─────────
+    //
+    // A Windows program receives one command line and splits it itself; the
+    // MSVC C runtime and CommandLineToArgvW split by the same rules: white
+    // space separates, a `"` toggles quoting, 2n backslashes before a `"` are
+    // n backslashes and the quote counts, 2n+1 are n backslashes and a
+    // literal `"`, and backslashes anywhere else are literal. `windows_quote_arg`
+    // spells one argument so that it splits back to itself: as it is when it
+    // holds no white space or quote and is not empty, else in quotes with the
+    // backslashes before a quote (and before the closing quote) doubled.
+    // Nothing else is special there: `&`, `%`, `^`, `|`, `<`, `>` are only
+    // syntax to cmd.exe, which a program started directly never passes through.
+    export [[nodiscard]] std::string windows_quote_arg(std::string_view arg);
+    export [[nodiscard]] std::string windows_command_line(std::span<const std::string> argv);
+
+    // Whether `program` is a script Windows runs through its command
+    // interpreter (`.bat`, `.cmd`, any case).
+    export [[nodiscard]] bool is_command_script(const std::filesystem::path& program);
+
+    // A script run through cmd.exe receives its arguments through cmd's
+    // parser, which expands `%`, escapes with `^`, chains with `&` and `|`,
+    // redirects with `<` and `>` and ends a quoted span at `"` whatever
+    // quoting the caller applied (the class of CVE-2024-24576). Such an
+    // argument is refused, not escaped: there is no escape for `%` on a
+    // command line. The first such argument of `argv` (argv[0] is the
+    // program), described for a refusal; empty when argv[0] is not a command
+    // script or every argument passes as written.
+    export [[nodiscard]] std::string command_script_problem(std::span<const std::string> argv);
+    // The same rule for arguments appended to a command cmd.exe reads (a
+    // recipe's alias that is a command line): the first of `args` holding
+    // `%^&|<>"`, a carriage return or a line feed, described; empty when none.
+    export [[nodiscard]] std::string command_interpreter_problem(std::span<const std::string> args);
+
+    // What follows `cmd.exe` to run a command script with arguments that
+    // passed `command_script_problem`: `/d /v:off /s /c ""<script>" <args>"`.
+    // /d skips AutoRun, /v:off keeps `!` literal, /s strips exactly the outer
+    // quote pair; an argument with white space or a cmd delimiter (`,;=`) is
+    // quoted, backslashes stay as they are (cmd does not read them).
+    export [[nodiscard]] std::string windows_script_command_line(std::span<const std::string> argv);
+
+    // The bytes of a file, opened so that another process may read, write,
+    // rename over or delete it meanwhile (FILE_SHARE_READ | FILE_SHARE_WRITE
+    // | FILE_SHARE_DELETE on Windows): a reader never makes an atomic
+    // replacement of the file fail (#715). At most `limit` bytes. The error
+    // is the system's, for a message; a missing file is
+    // std::errc::no_such_file_or_directory on every platform.
+    export [[nodiscard]] std::expected<std::string, std::error_code> read_file(
+        const std::filesystem::path& path,
+        std::size_t limit = std::numeric_limits<std::size_t>::max());
+
+    // read_file, throwing std::runtime_error("Failed to open file: ...").
     export [[nodiscard]] std::string read_file_to_string(const std::string& filepath);
 
     // ── Atomic state-file replace ────────────────────────────────────
@@ -362,6 +417,16 @@ namespace platform {
     export std::expected<void, std::string> rename_no_replace(
         const std::filesystem::path& from, const std::filesystem::path& to);
 
+    // On Windows the rename is SetFileInformationByHandle(FileRenameInfoEx)
+    // with FILE_RENAME_FLAG_REPLACE_IF_EXISTS | FILE_RENAME_FLAG_POSIX_SEMANTICS
+    // where the system and the file system support it (Windows 10 1709+,
+    // NTFS): the name is replaced while readers that opened the file with
+    // FILE_SHARE_DELETE keep their handles to the old content. Elsewhere it
+    // is MoveFileExW(MOVEFILE_REPLACE_EXISTING). Either is retried for up to
+    // 2 s, with a pause growing from 1 ms to 20 ms, while it fails with a
+    // sharing violation or access denied on a target that is a writable
+    // regular file -- a reader that opened it without FILE_SHARE_DELETE
+    // (#715); then the failure is reported.
     export void write_file_atomic(const std::string& filepath, const std::string& content);
     // Acquire a link target once; macOS may return EINVAL while its symlink
     // vnode is being replaced. Persistent errors remain errors.

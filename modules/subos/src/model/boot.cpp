@@ -57,13 +57,10 @@ std::expected<nlohmann::json, std::string> read_document(const fs::path& file) {
     if (status.type() == fs::file_type::not_found) return nlohmann::json::object();
     if (!fs::is_regular_file(file, ec) || ec)
         return std::unexpected(file.string() + ": is not a readable regular file");
-    std::ifstream in(file, std::ios::binary);
-    if (!in) return std::unexpected(file.string() + ": cannot be read");
-    std::string bytes;
-    try { bytes.assign(std::istreambuf_iterator<char>(in), {}); }
-    catch (const std::exception& e) { return std::unexpected(file.string() + ": " + e.what()); }
-    auto j = nlohmann::json::parse(bytes, nullptr, false);
-    if (in.bad() || j.is_discarded())
+    auto read = platform::read_file(file);
+    if (!read) return std::unexpected(file.string() + ": cannot be read: " + read.error().message());
+    auto j = nlohmann::json::parse(*read, nullptr, false);
+    if (j.is_discarded())
         return std::unexpected(file.string() + ": is not a boot configuration");
     if (auto ok = validate(j); !ok) return std::unexpected(file.string() + ": " + ok.error());
     return j;

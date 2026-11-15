@@ -801,8 +801,8 @@ int new_from(const std::string& name, const fs::path& customDir,
     // A template that declares a root: the host is checked now, before the
     // packages it declares are fetched.
     if (new_from_detail_::is_pkg_spec_(fromSpec)) {
-        std::ifstream manifestIn(baseDir / ".xlings.json");
-        auto manifest = nlohmann::json::parse(manifestIn, nullptr, false);
+        auto manifest = nlohmann::json::parse(
+            platform::read_file(baseDir / ".xlings.json").value_or(""), nullptr, false);
         // An edition that uses what a newer client reads says so (Luban
         // design part 2 §2.6): refused before anything is fetched.
         if (auto m = manifest.is_object() ? manifest.find("min_client") : manifest.end();
