@@ -907,7 +907,9 @@ jobs:
 
   candidate-macos-arm64:
     needs: [prepare-candidates]
-    runs-on: macos-14
+    # macos-15: GitHub no longer offers macos-14 (2026-11-16: "The configuration
+    # 'macos-14-arm64-us-default' is not supported"), and macos-15 is the oldest it does.
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
