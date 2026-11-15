@@ -202,9 +202,9 @@ jobs:
   macos-fresh:
     name: macOS fresh (${{ matrix.suite }})
     if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success' }}
-    # macos-14 is the support floor — xlings ships minos=14.0 binaries, so a
-    # fresh install passing here is the continuous proof of that floor.
-    runs-on: macos-14
+    # xlings ships minos=14.0 binaries. GitHub no longer offers macos-14
+    # (2026-11-16), so the fresh install runs on the oldest image it offers.
+    runs-on: macos-15
     timeout-minutes: 60
     strategy:
       fail-fast: false
