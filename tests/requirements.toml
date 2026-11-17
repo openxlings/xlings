@@ -535,6 +535,10 @@ status = "required"
 text = "a symbolic link of an archive whose text names a directory is traversed after extraction, whatever the order of the archive's entries: on Windows it is made as a directory link once the directory exists"
 status = "required"
 
+[HOME-OWN-NAME]
+text = "a home reached by another name (a symbolic link to it) is the home it was created as while that path still names it: the links of a runtime generation, a payload's interpreter and search path, and every path the run writes for later name the home's own path, so removing the other name leaves the home working; a home that was moved or copied has the name it is reached by"
+status = "required"
+
 [ATOMIC-PUBLICATION]
 text = "an entry is published under its name atomically and never over an existing one; where the filesystem lacks the rename flag (NFSv3), a file or a link is published as a hard link with the same refusal, and a directory by rename onto a name that is not there; a home on NFSv3 installs packages whose configuration places files"
 status = "required"

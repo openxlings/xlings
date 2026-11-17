@@ -6,6 +6,7 @@ import xlings.platform;
 import xlings.observe;
 import xlings.core.version_order;
 import xlings.core.home;
+import xlings.core.home_identity;
 import xlings.core.home.domain_producer_source;
 
 namespace xlings::abi {
@@ -161,9 +162,12 @@ std::vector<std::pair<fs::path, fs::path>> links(const std::vector<Family>& fami
     return out;
 }
 
-std::expected<Switched, std::string> refresh(const fs::path& home, std::string_view reason) {
+std::expected<Switched, std::string> refresh(const fs::path& reached, std::string_view reason) {
     Switched result;
     if constexpr (!platform::is_linux) return result;
+    // The links of a generation outlive this run: they name the home as it
+    // names itself, not as this run reached it (home_identity::own_name).
+    const fs::path home = home_identity::own_name(reached);
     const auto families = select(home, pins(home));
     const auto wanted = links(families);
     // What the current generation holds, to tell whether anything changes.

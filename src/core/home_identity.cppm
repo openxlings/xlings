@@ -79,6 +79,34 @@ bool is_home(const std::filesystem::path& dir) {
     return has_legacy_signature(dir) && !is_subos_of_a_home(dir);
 }
 
+// THE HOME'S OWN NAME. A home may be reached by another name: a symbolic link
+// to it, made by a tool for one run or by a user as a shorter path. What xlings
+// writes for later -- the links of a runtime generation, the interpreter and
+// the search path bound into a payload's programs, a shim's owner -- must not
+// go through a name that may be gone when it is read. (Measured, mcpp#949: a
+// test home whose `registry` was a link to the shared home installed LLVM; the
+// 52 links of the shared home's runtime generation and clang's interpreter
+// named the test home, and every compiler of the shared home stopped starting
+// when the test home was removed.)
+//
+// The marker records the path the home was created at. While that path still
+// names this directory, it is the home's name, whichever name this run was
+// given; a home that was moved or copied has only the name it is reached by.
+inline std::filesystem::path own_name(const std::filesystem::path& home) {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    std::ifstream in(marker_path(home));
+    if (!in) return home;
+    const auto doc = nlohmann::json::parse(in, nullptr, false);
+    if (!doc.is_object()) return home;
+    const auto it = doc.find("created_at");
+    if (it == doc.end() || !it->is_string()) return home;
+    const fs::path created = it->get<std::string>();
+    if (created.empty() || !created.is_absolute() || created == home) return home;
+    if (!fs::is_directory(created, ec) || !fs::equivalent(created, home, ec) || ec) return home;
+    return created;
+}
+
 // The nearest home at or above `start`, walking toward the root. The innermost
 // home wins, so a home nested inside another one answers for its own paths.
 inline std::optional<std::filesystem::path>
@@ -94,7 +122,7 @@ nearest_home(const std::filesystem::path& start) {
 
 // Write `<home>/.xlings-home`: a random id and the path at creation. The id
 // lets a copied or moved home be told apart from the one it came from; the path
-// is a record, not a key -- nothing compares it.
+// is the home's own name while it still names this directory (`own_name`).
 inline std::expected<void, std::string> write_marker(const std::filesystem::path& home) {
     std::random_device rd;
     std::string id;
