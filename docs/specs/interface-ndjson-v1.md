@@ -262,6 +262,13 @@ links (Android's app sandbox, FAT, exFAT) is no longer a failure: an archive's
 hard-link entry becomes a copy of the file it names, with the same permissions and
 modification time.
 
+A symbolic link whose text names a directory is made as a directory link
+(2026.11.17.1). A tar entry does not state what a link names, and Windows fixes the
+kind of a link when it is made, so a link written before the directory it names, or
+with no kind stated, was a file link that no path could pass through
+(`usr/include/machine -> amd64`). The links of an archive are settled once all of
+its entries are written, whatever their order; elsewhere nothing changes.
+
 When a node fails, the nodes of the plan that depend on it (directly or not)
 do not run their hooks and do not report "installed but registered none of its
 declared programs". Since 1.8 each is a data event, not an error:

@@ -1339,6 +1339,65 @@ TEST(Extract, AHardLinkToASymlinkIsNotCopiedThroughIt) {
     EXPECT_EQ(r.error().kind, xlings::xim::ExtractErrorKind::InvalidInputArchive);
 }
 
+// ── Links to directories ────────────────────────────────────────────
+//
+// A tar entry does not say whether a link names a directory, and Windows
+// fixes that when the link is made: `usr/include/machine -> amd64` of a NetBSD
+// sysroot was extracted as a file link, and no header under it could be
+// opened. The archive is written here byte by byte, so the fixture exists on
+// every host and holds the link BEFORE the directory it names.
+
+namespace {
+std::string ustar_entry_(std::string_view name, char type, std::string_view link, std::string_view data) {
+    std::string h(512, '\0');
+    auto put = [&](std::size_t at, std::string_view v) { std::copy(v.begin(), v.end(), h.begin() + static_cast<std::ptrdiff_t>(at)); };
+    put(0, name);
+    put(100, type == '5' ? "0000755" : "0000644");
+    put(108, "0000000"); put(116, "0000000");
+    put(124, std::format("{:011o}", data.size()));
+    put(136, "00000000000");
+    put(148, "        ");
+    h[156] = type;
+    put(157, link);
+    put(257, "ustar"); put(263, "00");
+    unsigned sum = 0;
+    for (unsigned char c : h) sum += c;
+    put(148, std::format("{:06o}", sum)); h[154] = '\0'; h[155] = ' ';
+    std::string out = h + std::string(data);
+    out.resize(512 + (data.size() + 511) / 512 * 512, '\0');
+    return out;
+}
+} // namespace
+
+TEST(Extract, ALinkToADirectoryIsTraversedWhateverTheOrderOfTheEntries) {
+    namespace fs = std::filesystem;
+    ExtractFixture fx;
+    const auto archive = fx.tmp / "links-to-directories.tar";
+    {
+        std::ofstream out(archive, std::ios::binary);
+        out << ustar_entry_("inc/", '5', "", "")
+            << ustar_entry_("inc/machine", '2', "amd64", "")       // before what it names
+            << ustar_entry_("inc/arch", '2', "machine", "")        // a link to that link
+            << ustar_entry_("inc/amd64/", '5', "", "")
+            << ustar_entry_("inc/amd64/types.h", '0', "", "typedef int t;\n")
+            << ustar_entry_("inc/alias.h", '2', "amd64/types.h", "")
+            << ustar_entry_("inc/nothing", '2', "absent", "")
+            << std::string(1024, '\0');
+    }
+    auto r = xlings::xim::extract_archive_detailed(archive, fx.tmp / "out_links");
+    ASSERT_TRUE(r.has_value()) << r.error().message;
+    if (!fs::is_symlink(*r / "inc/machine")) GTEST_SKIP() << "this host makes no symbolic links";
+    EXPECT_TRUE(file_has_(*r / "inc/machine/types.h", "typedef int t;"));
+    EXPECT_TRUE(file_has_(*r / "inc/arch/types.h", "typedef int t;"));
+    EXPECT_TRUE(file_has_(*r / "inc/alias.h", "typedef int t;"));
+    EXPECT_EQ(fs::read_symlink(*r / "inc/machine"), fs::path("amd64"));
+    std::error_code ec;
+    EXPECT_FALSE(fs::directory_iterator(*r / "inc/machine", ec) == fs::directory_iterator{});
+    EXPECT_FALSE(ec) << ec.message();
+    // A link that names nothing stays the link the archive holds.
+    EXPECT_TRUE(fs::is_symlink(*r / "inc/nothing"));
+}
+
 TEST(Extract, WriteFailuresAreClassifiedByErrno) {
     using K = xlings::xim::ExtractErrorKind;
     auto kind = [](std::errc e) { return xlings::xim::write_failure_kind(std::make_error_code(e)); };
