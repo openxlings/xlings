@@ -9,6 +9,7 @@ import xlings.core.log;
 import xlings.platform;
 import xlings.core.utils;
 import xlings.core.home;
+import xlings.core.home_identity;
 import xlings.libs.tinyhttps;
 import xlings.core.xvm.types;
 import xlings.core.xvm.db;
@@ -775,6 +776,9 @@ Config::Config() {
             }
         }
     }
+    // Reached by another name, the home is still the one it was created as
+    // (home_identity::own_name): what this run writes for later names it so.
+    paths_.homeDir = home_identity::own_name(paths_.homeDir);
     // Inside a Luban system its home is root's. A regular user's xlings has
     // its own, ~/.xlings, with the system's as the layer below it
     // (deployment R, SubOS design part 2 §5; design 2026-10-16 L §8): an

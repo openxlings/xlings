@@ -164,6 +164,11 @@ xlings --home /tmp/h install gcc               # this run only, as XLINGS_HOME=/
 不回退到其他 home。`xlings self config` 显示实际 home、定位文件与前一个 home。
 Luban 系统的 home 属于管理员，不读取定位文件。
 
+一个 home 只有一个名字：它创建时的路径，记录在 `.xlings-home` 中，且该路径仍指向这个目录
+（2026.11.17.2）。经另一个名字（例如指向它的符号链接）访问的 home 仍是同一个 home，使用它自己
+的名字：运行时链接、包内程序的解释器与搜索路径，以及命令为以后写下的每个路径，都使用 home
+自己的路径，另一个名字可以被移除。被移动或复制的 home 以访问它的路径为名。
+
 ## 一条命令做了什么
 
 每条命令写一份操作日志 `logs/ops/<日期>/<trace>.ndjson`；它运行的每个进程（hook、修复、SubOS 里的命令）按继承的 trace

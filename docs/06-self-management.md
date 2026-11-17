@@ -190,6 +190,14 @@ every command with the repair command rather than falling back to another
 home. `xlings self config` shows the actual home, the locator and the previous
 home. A Luban system's home is the administrator's and reads no locator.
 
+A home has one name: the path it was created at, recorded in `.xlings-home`,
+while that path still names the directory (2026.11.17.2). A home reached by
+another name, such as a symbolic link to it, is the same home under its own
+name: the runtime links, a payload's interpreter and search path, and every
+path a command writes for later use the home's own path, so the other name
+may be removed. A home that was moved or copied has the name it is reached
+by.
+
 ## What a command did
 
 Every command writes one operation journal, `logs/ops/<date>/<trace>.ndjson`,
