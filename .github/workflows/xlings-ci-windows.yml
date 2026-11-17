@@ -323,7 +323,7 @@ jobs:
               'SharedReplace.ConcurrentReadersAndAWriterNeverFail',
               'ShimArgv.EveryArgumentReachesTheProgramAsGiven',
               'ShimArgv.ACommandScriptGetsPlainArgumentsAndRefusesInterpreterSyntax',
-              'Extract.ALinkToADirectoryIsTraversedWhateverTheOrderOfTheEntries')) {
+              'ExtractLinks.ALinkToADirectoryIsTraversedWhateverTheOrderOfTheEntries')) {
             $hit = @($cases | Where-Object test -eq $name)
             if ($hit.Count -ne 1 -or $hit[0].status -ne 'pass') {
               throw "$name must have a passing Windows execution"

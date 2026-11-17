@@ -531,6 +531,10 @@ status = "required"
 text = "replacing a state file does not fail because another process reads it: xlings' own readers open it shared for deletion and the replacement is a POSIX-semantics rename on Windows; a reader without FILE_SHARE_DELETE is waited for up to about 2 s, then the failure is reported with the old content intact (#715)"
 status = "required"
 
+[EXTRACT-DIR-LINKS]
+text = "a symbolic link of an archive whose text names a directory is traversed after extraction, whatever the order of the archive's entries: on Windows it is made as a directory link once the directory exists"
+status = "required"
+
 [ATOMIC-PUBLICATION]
 text = "an entry is published under its name atomically and never over an existing one; where the filesystem lacks the rename flag (NFSv3), a file or a link is published as a hard link with the same refusal, and a directory by rename onto a name that is not there; a home on NFSv3 installs packages whose configuration places files"
 status = "required"
