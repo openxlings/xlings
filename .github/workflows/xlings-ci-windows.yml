@@ -312,7 +312,8 @@ jobs:
           if ($quoting.Count -ne 1 -or $quoting[0].status -ne 'pass') {
             throw 'SUBOS-CMD-WIN-QUOTING must have a passing Windows execution'
           }
-          # The Windows behaviours these tests exist for (#715, shim argv):
+          # The Windows behaviours these tests exist for (#715, shim argv, links to
+          # directories):
           # a skip here would leave them unproven, so each must have passed.
           $cases = @(Get-Content target/xdev/windows-unit/cases.ndjson | ForEach-Object { $_ | ConvertFrom-Json })
           foreach ($name in @(
@@ -321,7 +322,8 @@ jobs:
               'SharedReplace.AReaderThatNeverLetsGoFailsTheReplacementWithinItsBound',
               'SharedReplace.ConcurrentReadersAndAWriterNeverFail',
               'ShimArgv.EveryArgumentReachesTheProgramAsGiven',
-              'ShimArgv.ACommandScriptGetsPlainArgumentsAndRefusesInterpreterSyntax')) {
+              'ShimArgv.ACommandScriptGetsPlainArgumentsAndRefusesInterpreterSyntax',
+              'ExtractLinks.ALinkToADirectoryIsTraversedWhateverTheOrderOfTheEntries')) {
             $hit = @($cases | Where-Object test -eq $name)
             if ($hit.Count -ne 1 -or $hit[0].status -ne 'pass') {
               throw "$name must have a passing Windows execution"

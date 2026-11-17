@@ -209,6 +209,43 @@ bool hard_link_refused(std::error_code ec) {
         || ec == std::errc::function_not_supported;
 }
 
+namespace detail_ {
+// A SYMBOLIC LINK TO A DIRECTORY IS A DIRECTORY LINK.
+//
+// A tar entry states a link's text and not what the text names, and one
+// system -- Windows -- makes two kinds of symbolic link, fixed when the link is
+// made: a link made as a file link over a directory is not traversed
+// (`usr/include/machine -> amd64` of a NetBSD sysroot: every header under
+// `machine/` "cannot open file"). What a link names is known once the whole
+// archive is written, whatever the order of its entries, so the links are
+// settled here: one whose text names a directory and that does not itself
+// traverse is made again as a directory link. Where both kinds
+// are one (every other system) a link to a directory is already traversed,
+// and nothing is made again. A chain of links settles from its end, hence the
+// repetition; a link that names nothing is left as it is.
+void settle_directory_links_(const std::vector<std::filesystem::path>& links) {
+    namespace fs = std::filesystem;
+    for (bool settled = true; settled;) {
+        settled = false;
+        for (auto const& link : links) {
+            std::error_code ec;
+            if (!fs::is_symlink(link, ec)) continue;
+            const auto text = fs::read_symlink(link, ec);
+            if (ec || text.empty()) continue;
+            if (!fs::is_directory(text.is_absolute() ? text : link.parent_path() / text, ec)) continue;
+            // Traversal is the question, so traversal is asked: a file link
+            // over a directory may still answer `is_directory`.
+            if (fs::directory_iterator(link, ec); !ec) continue;
+            if (!fs::remove(link, ec) || ec) continue;
+            fs::create_directory_symlink(text, link, ec);
+            // Not to be left without the link the archive holds.
+            if (ec) { fs::create_symlink(text, link, ec); continue; }
+            settled = true;
+        }
+    }
+}
+} // namespace detail_
+
 std::expected<std::filesystem::path, ExtractError>
 extract_archive_detailed(const std::filesystem::path& archive,
                          const std::filesystem::path& destDir,
@@ -315,6 +352,8 @@ extract_archive_detailed(const std::filesystem::path& archive,
     // Hard links the filesystem refused and that were copied instead (X1).
     std::size_t copiedLinks = 0;
     std::string refusal;
+    // The symbolic links written, for `settle_directory_links_` below.
+    std::vector<fs::path> symlinks;
 
     for (;;) {
         report_progress();
@@ -425,9 +464,12 @@ extract_archive_detailed(const std::filesystem::path& archive,
             cleanup();
             return std::unexpected(std::move(err));
         }
+        if (::archive_entry_filetype(entry) == AE_IFLNK)
+            symlinks.push_back((canonicalDest / *safeRel).lexically_normal());
     }
 
     cleanup();
+    detail_::settle_directory_links_(symlinks);
     if (copiedLinks > 0 && options.onNote) {
         options.onNote(std::format(
             "the filesystem refused hard links ({}); {} linked file(s) were copied instead",
