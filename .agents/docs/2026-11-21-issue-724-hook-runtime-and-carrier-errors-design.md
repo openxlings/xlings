@@ -652,3 +652,46 @@ X15 ─────────────────────────�
 （`hook_runtime_`）；guest 的更新、userland 修订与 `relay` `modules/carrier/src/carrier.cpp`；转发与日志取回
 `src/core/subos/carriers.cpp`；共用的解码 `src/core/subos/cmd.cpp`（`relay_line_`）；安装器 `process_xvm_operations_`；
 系统根的检查 `modules/subos/src/views/root/root_check.cpp`（`runtime` 一格）。
+
+## 13. 发布、真实验证与实施后的自审（2026-11-22）
+
+合入与发布：
+
+| 仓库 | PR | 内容 |
+|---|---|---|
+| xlings | #726（2026.11.22.1） | §4 的全部，及 §11 的文档与 §7 的测试、CI |
+| xim-pkgindex | #1218 | §5：bun 的配方，`native-binary-hosts` 一道 CI，贡献文档 |
+| xlings | #728 | WSL 2 一道的"上一个版本的 guest"：发布之后 `latest` 就是本版本，取"不是本客户端的最新已发布版本"，带 CI 的 token 查询；luban-fresh 加 `luban-wsl2-agent` |
+| xlings | #729 | `luban-wsl2-agent` 先给系统一个代理：agent-workspace 的网络只有代理（`net=proxy`），没有时拒绝进入，与 quick start 所写相同 |
+
+发布 run 44939819557；五个项目的资源补到 GitCode 并逐个 GET 校验。main 上 #726、#728、#729 的合入提交在 Linux（含 asan）、macOS、
+aarch64、Windows（含 WSL 2 一道）全部通过。
+
+真实验证（已发布的 2026.11.22.1 与已发布的索引）：
+
+| 在哪里 | 做了什么 | 结果 |
+|---|---|---|
+| Windows、真实 WSL 2（luban-fresh `luban-wsl2-agent`） | 全新安装 → `luban new agent --edition agent-workspace` → `luban run agent -- bun --version` → `luban status` | 31 个包装好（#724 失败在其中的 bun）；bun 1.3.11；host machine 的 xlings 为 2026.11.22.1 |
+| Windows、真实 WSL 2（CI 的 WSL 2 一道） | guest 换回 2026.11.21.1、userland 修订回到 1 | 下一次使用把它带到本版本，`/lib64` 链接补上，`probe.json` 记下 `update` |
+| 同上 | 一个 hook 故意失败的系统 | Windows 上看到 guest 的错误、hook 输出的末尾、本机的日志路径与运行时的说明 |
+| Alpine x64/arm、Ubuntu 20.04、host machine 的根 x64/arm（索引 CI） | 装带原生二进制的配方，运行 bun | 全部安装；`bun --version` 正常 |
+| 本机，全新 home | `xlings install xim:bun` | 新配方：`bun.exe` 是选出的平台二进制，`bunx.exe -> bun.exe`，1.3.11 |
+| luban-fresh 其余各道 | console、archive、host（Windows、macOS）、window、machine、upgrade、lived-in | 全部通过 |
+
+实施后的自审：
+
+| 角度 | 结论 |
+|---|---|
+| 架构 | 契约只有一处判定（`xlings.subos.std_loader`，纯函数），carrier 的链接与 worker 的挂载都从它来；转发与私有域共用 `relay_line_`；层次检查通过，`modules/carrier` 不知道家族 |
+| 稳定性 | 起不了 worker：退回进程内并说明原因；guest 更新失败：拒绝这次调用并给出原因，下一次调用重试；替换 guest 的程序用改名，运行中的进程不受影响 |
+| 简洁 | 没有新事件、新接口、新的用户命令；日志路径从 xlings 自己写的错误文本里取；只加一个内部命令 `__carrier-adopt` |
+| 用户体验 | #724 的两处（失败、"no error detail"）都已消失；失败时的消息带着原因与下一步；`luban status` 说出 host machine 的版本与没成功的更新 |
+| 兼容 | 宿主已有 loader：行为不变；旧 guest（2026.11.21.1）被带到当前版本；比客户端新的 guest 不动；配方不提升 revision，之前装好的照常可用 |
+| 跨平台 | Linux x86_64/aarch64（含 musl、最旧的 glibc）、Windows（WSL 2）真实测到；macOS 的 vz 只有桩上的用例（`test_carrier_vz`），交付构建到真实的 vz guest 没有实测：runner 没有可用的虚拟化 |
+| 一致性 | carrier、Luban 系统、补上运行时的 worker 三处，标准路径上都是同一个运行时；Windows 上看到的事件与 Linux 私有域路径相同 |
+| 无感升级 | 用户什么都不做：下一次 luban 调用把 guest 带到客户端的版本并补上链接；home 的格式没有变 |
+| CI 覆盖 | 每个 PR：u-alpine 的 `hookrt` 与终端场景、acceptance 的 `test_hook_runtime`、真实 WSL 2；索引：五种宿主；发布后：`luban-wsl2-agent` |
+
+验证中看到、未改的：agent-workspace 里每次运行都打印一行 `[warn] time zone: UTC -- the proxy's exit cannot be asked without curl`。
+这是已有的行为（按代理出口推断时区，需要 curl），与 #724 无关；是否在 edition 里带上 curl 或降为 `-v` 时才显示，另行决定。
+§6 与 §9 记下的两项更统一的形状（carrier 也走 worker、私有域用同构根）按决定放到以后，重看的条件见 §9。
