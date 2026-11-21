@@ -154,7 +154,7 @@ tail -n 20 /tmp/x6.err
 
 'x7' {
     Use-Home
-    $json = '{"argv":["new","agent7","--from","luban:agent-workspace","--proxy","http://127.0.0.1:7890"]}'
+    $json = '{"argv":["new","agent7","--from","luban:agent-workspace","--carrier","wsl2","--proxy","http://127.0.0.1:7890"]}'
     Cap 'x7-host-interface.txt' 'X7 from Windows: xlings interface subos_command (relayed from the carrier)' {
         xlings interface subos_command --args $json } | Out-Null
     $lines = Get-Content (Join-Path $out 'x7-host-interface.txt')
