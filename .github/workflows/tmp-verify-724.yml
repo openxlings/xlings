@@ -1,0 +1,165 @@
+name: tmp-verify-724
+
+# TEMPORARY, never for merge: verifies and analyses issue #724 (`luban new
+# agent` fails installing xim:bun@1.3.11 in the xlings WSL carrier) against the
+# published release. The draft PR that carries this file targets a throwaway
+# base branch so the product CI does not run on it.
+#
+# Round 4 (a second glibc in a system only): the mechanisms the design proposes, measured before they are built.
+
+on:
+  pull_request:
+    branches: ['tmp/**']
+  workflow_dispatch:
+
+env:
+  XLINGS_NON_INTERACTIVE: '1'
+  GIT_TERMINAL_PROMPT: '0'
+
+jobs:
+  linux:
+    name: linux ${{ matrix.leg }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { leg: ubuntu-x64,  runner: ubuntu-24.04,     arch: x86_64,  image: '' }
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Fetch the released xlings
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          tag="$(gh release view -R openxlings/xlings --json tagName -q .tagName)"; ver="${tag#v}"
+          echo "release under test: $tag"
+          mkdir -p dl out
+          gh release download "$tag" -R openxlings/xlings -p "xlings-$ver-linux-${{ matrix.arch }}.tar.gz" -D dl
+          mv dl/*.tar.gz dl/rel.tar.gz
+
+      - name: Experiments
+        env:
+          IMAGE: ${{ matrix.image }}
+        run: |
+          set -u
+          sudo sysctl -q -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+          if [ -z "$IMAGE" ]; then
+            sudo bash .github/tmp-verify-724/linux.sh dl/rel.tar.gz out L8
+          else
+            docker run --rm --security-opt seccomp=unconfined --security-opt apparmor=unconfined \
+              --security-opt systempaths=unconfined --cap-add SYS_ADMIN \
+              -v "$PWD:/w" -w /w "$IMAGE" sh -c "(command -v bash >/dev/null || apk add -q bash) && bash tests/host-matrix/bare.sh && bash .github/tmp-verify-724/linux.sh dl/rel.tar.gz out"
+          fi
+          sudo chmod -R a+rX out || true
+
+      - name: Upload the outputs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: verify-724-linux-${{ matrix.leg }}
+          path: out
+          if-no-files-found: warn
+
+  wsl-carrier:
+    if: false
+    runs-on: windows-2025
+    timeout-minutes: 90
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Fetch the released xlings (Windows), its Linux build and the previous release's
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          tags="$(gh release list -R openxlings/xlings --exclude-drafts --exclude-pre-releases -L 2 --json tagName -q '.[].tagName')"
+          tag="$(echo "$tags" | sed -n 1p)"; old="$(echo "$tags" | sed -n 2p)"
+          ver="${tag#v}"; oldver="${old#v}"
+          echo "release under test: $tag (previous: $old)"
+          root="$RUNNER_TEMP/x724"
+          mkdir -p "$root/dl" "$root/gdl" "$root/odl" "$root/guest/x" "$root/oldguest/x"
+          gh release download "$tag" -R openxlings/xlings -p "xlings-$ver-windows-x86_64.zip" -D "$root/dl"
+          gh release download "$tag" -R openxlings/xlings -p "xlings-$ver-linux-x86_64.tar.gz" -D "$root/gdl"
+          gh release download "$old" -R openxlings/xlings -p "xlings-$oldver-linux-x86_64.tar.gz" -D "$root/odl"
+          # Only its two programs: a Windows file system takes no Linux links.
+          # relative paths: GNU tar reads "D:" as a remote host
+          (cd "$root/guest/x" && tar -xzf ../../gdl/*.tar.gz --wildcards '*/bin/xlings' '*/bin/luban')
+          (cd "$root/oldguest/x" && tar -xzf ../../odl/*.tar.gz --wildcards '*/bin/xlings' '*/bin/luban')
+          bin=$(find "$root/guest/x" -path '*/bin/xlings' -type f | head -1)
+          [ -n "$bin" ] || { echo "::error::no bin/xlings in the Linux build"; exit 1; }
+          echo "XLINGS_CARRIER_GUEST_XLINGS=$(cygpath -w "$bin")" >> "$GITHUB_ENV"
+          echo "X724_GUEST_DIR=$(cygpath -w "$root/guest/x")" >> "$GITHUB_ENV"
+          echo "X724_OLD_GUEST_DIR=$(cygpath -w "$root/oldguest/x")" >> "$GITHUB_ENV"
+
+      - name: WSL 2 (the runner's environment)
+        id: wsl
+        continue-on-error: true
+        timeout-minutes: 8
+        uses: Vampire/setup-wsl@v7
+        with:
+          distribution: Alpine-3.22
+          wsl-version: 2
+
+      - name: WSL 2 (the runner's environment, again)
+        id: wsl_again
+        if: steps.wsl.outcome != 'success'
+        continue-on-error: true
+        timeout-minutes: 8
+        uses: Vampire/setup-wsl@v7
+        with:
+          distribution: Alpine-3.22
+          wsl-version: 2
+
+      - name: The runner's WSL 2 is there
+        if: steps.wsl.outcome != 'success' && steps.wsl_again.outcome != 'success'
+        shell: pwsh
+        run: |
+          Write-Host "::error::the runner's WSL 2 could not be set up twice (the environment, not xlings)"
+          exit 1
+
+      - name: setup
+        shell: pwsh
+        run: ./.github/tmp-verify-724/verify.ps1 setup
+
+      - name: mk the carrier
+        shell: pwsh
+        timeout-minutes: 20
+        run: ./.github/tmp-verify-724/verify.ps1 mk
+
+      - name: W3 npm --ignore-scripts in the carrier
+        if: always()
+        shell: pwsh
+        timeout-minutes: 15
+        run: ./.github/tmp-verify-724/verify.ps1 w3
+
+      - name: W2 ending wsl.exe
+        if: always()
+        shell: pwsh
+        timeout-minutes: 5
+        run: ./.github/tmp-verify-724/verify.ps1 w2
+
+      - name: W1 guest self install from a mounted directory
+        if: always()
+        shell: pwsh
+        timeout-minutes: 10
+        run: ./.github/tmp-verify-724/verify.ps1 w1
+
+      - name: collect
+        if: always()
+        shell: pwsh
+        timeout-minutes: 5
+        run: ./.github/tmp-verify-724/verify.ps1 collect
+
+      - name: Upload the outputs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: verify-724-wsl
+          path: ${{ runner.temp }}/x724/out
+          if-no-files-found: warn
