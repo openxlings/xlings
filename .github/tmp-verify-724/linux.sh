@@ -233,8 +233,14 @@ if want L8 && [[ $arch == x86_64 && $HOSTFORM == C ]]; then
     probe='for p in /lib64/ld-linux-x86-64.so.2 /usr/lib/ld-linux-x86-64.so.2 /usr/lib/libc.so.6 /xlings/abi/linux-x86_64-glibc/ld-linux-x86-64.so.2 /xlings/abi/linux-x86_64-glibc/libc.so.6; do echo "$p => $(readlink -f $p)"; done; ls /xlings/data/xpkgs 2>/dev/null | grep -i glibc'
     run L8-new timeout 1500 "$L" new v6 --edition tiny -y
     run L8-before "$L" run v6 -- /bin/sh -c "$probe"
-    run L8-install-older timeout 900 "$L" run v6 -- xlings install -y xim:glibc@2.39
+    run L8-install-older timeout 900 "$L" run v6 -- xlings install -y xim:glibc@2.39; rec L8-install-older-exit "$(tail -n 3 "$out/L8-install-older.txt" | tr '\n' ' ')"
     run L8-after "$L" run v6 -- /bin/sh -c "$probe"
+    # a second glibc that IS relocated, then made the active one
+    run L8-install-2442 timeout 900 "$L" run v6 -- xlings install -y xim:glibc@2.44.2
+    run L8-after-2442 "$L" run v6 -- /bin/sh -c "$probe"
+    run L8-use-2442 timeout 600 "$L" run v6 -- xlings use glibc 2.44.2
+    run L8-after-use "$L" run v6 -- /bin/sh -c "$probe; ls -l /xlings/abi; /bin/sh -c 'echo shell-ok'; busybox true && echo busybox-ok"
+    run L8-status "$L" status v6
     run L8-check "$L" status v6 --check
 fi
 

@@ -5,7 +5,7 @@ name: tmp-verify-724
 # published release. The draft PR that carries this file targets a throwaway
 # base branch so the product CI does not run on it.
 #
-# Round 3: the mechanisms the design proposes, measured before they are built.
+# Round 4 (a second glibc in a system only): the mechanisms the design proposes, measured before they are built.
 
 on:
   pull_request:
@@ -26,10 +26,6 @@ jobs:
       matrix:
         include:
           - { leg: ubuntu-x64,  runner: ubuntu-24.04,     arch: x86_64,  image: '' }
-          - { leg: ubuntu-arm,  runner: ubuntu-24.04-arm, arch: aarch64, image: '' }
-          - { leg: alpine-x64,  runner: ubuntu-24.04,     arch: x86_64,  image: 'alpine:3.20' }
-          - { leg: alpine-arm,  runner: ubuntu-24.04-arm, arch: aarch64, image: 'alpine:3.20' }
-          - { leg: ubuntu1804-x64, runner: ubuntu-24.04,  arch: x86_64,  image: 'ubuntu:18.04' }
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -52,7 +48,7 @@ jobs:
           set -u
           sudo sysctl -q -w kernel.apparmor_restrict_unprivileged_userns=0 || true
           if [ -z "$IMAGE" ]; then
-            sudo bash .github/tmp-verify-724/linux.sh dl/rel.tar.gz out
+            sudo bash .github/tmp-verify-724/linux.sh dl/rel.tar.gz out L8
           else
             docker run --rm --security-opt seccomp=unconfined --security-opt apparmor=unconfined \
               --security-opt systempaths=unconfined --cap-add SYS_ADMIN \
@@ -69,6 +65,7 @@ jobs:
           if-no-files-found: warn
 
   wsl-carrier:
+    if: false
     runs-on: windows-2025
     timeout-minutes: 90
     steps:
