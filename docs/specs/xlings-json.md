@@ -363,12 +363,13 @@ writes to the same disk), demote nobody, `E_DISK_FULL` with the free space.
 | `XLINGS_ARCHIVES` | archive directories for this process, separated as `PATH` is (`:`, `;` on Windows); asked after `install --from` and before `archives` |
 | `XLINGS_NET_UNREACHABLE` | a reason, non-empty: the network is not used. Downloads take archives from the cache and the directories only, a recipe without a sha256 is served from a transaction-committed cache entry without a probe, and no resource server is probed. xlings sets it (and passes it to the processes it starts) when the index pointer finds no network; a caller sets it to say so beforehand |
 
-The archives of one install that no source has are reported together in one
-diagnostic (`xim.archives_unavailable`): each package, version, sha256 and URL,
-the directories asked, and the commands that supply them (`xlings download ...
---to <dir>` on a machine with a network, then `xlings install --from <dir>
-...`). Offline, each of those packages fails with `E_NETWORK`. The same
-report follows downloads that the network did not answer.
+Offline, the archives of one install that no source has are reported together
+in one diagnostic (`xim.archives_unavailable`): each package, version, sha256
+and URL, the directories asked, and the commands that supply them (`xlings
+download ... --to <dir> --with-index` on a machine with a network, then `xlings
+install --from <dir> ...`); each of those packages fails with `E_NETWORK`. A
+download the network was asked for and failed is reported by its package, once,
+with its reason (an HTTP status, a sha256 mismatch, a host not reached).
 
 ### `XLINGS_RES`
 

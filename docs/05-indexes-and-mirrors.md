@@ -178,8 +178,8 @@ A process for which `XLINGS_NET_UNREACHABLE` is set does not use the network:
 xlings sets it when the index pointer finds no network, and a caller sets it to
 say so beforehand. The archives no source has are then reported together, each
 with its package, version, sha256 and URL, with the directories that were
-asked and the commands that supply them; the same report follows downloads the
-network did not answer.
+asked and the commands that supply them. A download the network was asked for
+and failed is reported by its package, once, with what failed.
 
 ## Namespaced packages
 

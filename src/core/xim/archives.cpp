@@ -603,26 +603,25 @@ std::expected<void, std::string> write_bundle(const fs::path& dir, const Bundle&
 }
 
 void report_unavailable(std::span<const DownloadTask> tasks, std::span<const DownloadResult> results) {
-    std::vector<std::pair<const DownloadTask*, const DownloadResult*>> missing;
+    std::vector<const DownloadTask*> missing;
     for (const auto& r : results) {
         if (!r.unavailable) continue;
         const auto it = std::ranges::find(tasks, r.name, &DownloadTask::name);
-        if (it != tasks.end()) missing.emplace_back(&*it, &r);
+        if (it != tasks.end()) missing.push_back(&*it);
     }
     if (missing.empty()) return;
 
-    // Each archive with what the network said about it: offline nothing was
-    // asked; otherwise a 404, a digest every mirror got wrong and a host that
-    // could not be reached are different facts with different remedies.
+    // Only archives the network was not asked for: a download the network
+    // failed (a 404, a digest every mirror got wrong) is reported once, by its
+    // package, with that reason -- a second marker for it here was the same
+    // problem said twice (download_failure_report_test.sh, F1).
     const auto reason = offline_reason();
     std::vector<diag::Fact> facts;
     std::string keys;
-    for (const auto& [t, r] : missing) {
+    for (const auto* t : missing) {
         const auto key = t->package.empty() ? t->name : t->package + "@" + t->version;
         keys += (keys.empty() ? "" : " ") + key;
-        auto value = std::format("sha256 {}  {}", t->sha256.empty() ? "(none stated)" : lower_hex(t->sha256), t->url);
-        if (reason.empty()) value += "  (" + r->error + ")";
-        facts.push_back({key, std::move(value)});
+        facts.push_back({key, std::format("sha256 {}  {}", t->sha256.empty() ? "(none stated)" : lower_hex(t->sha256), t->url)});
     }
     const auto dirs = directories();
     std::string joined;
@@ -630,10 +629,8 @@ void report_unavailable(std::span<const DownloadTask> tasks, std::span<const Dow
     facts.push_back({"archive directories", joined.empty() ? std::string("(none)") : joined});
     diag::emit({
         .code = "xim.archives_unavailable",
-        .summary = std::format("{} archive{} in no source{}", missing.size(),
-                               missing.size() == 1 ? " is" : "s are",
-                               reason.empty() ? ", and the network did not provide them"
-                                              : ", and the network is not used (" + reason + ")"),
+        .summary = std::format("{} archive{} in no source, and the network is not used ({})", missing.size(),
+                               missing.size() == 1 ? " is" : "s are", reason),
         .facts = std::move(facts),
         .actions = {
             {"write them on a machine with a network",

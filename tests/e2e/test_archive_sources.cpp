@@ -536,8 +536,9 @@ XTEST(ArchiveSources, ArchivesNoSourceHasAreListedTogether, .area = "xim",
     EXPECT_NE(out.find(empty.string()), std::string::npos) << "the directories asked are named\n" << out;
 }
 
-// When the network was asked, the report says what it answered for each.
-XTEST(ArchiveSources, TheReportSaysWhatTheNetworkAnswered, .area = "xim",
+// A download the network was asked for and failed is reported once, by its
+// package, with what failed -- not again as an archive no source had.
+XTEST(ArchiveSources, ANetworkFailureIsReportedOnceWithItsReason, .area = "xim",
       .covers = {"ARCHIVE-UNAVAILABLE"}, .requires_ = {"xlings-bin"}) {
     auto home = tk::Home::isolated("archives-404");
     const auto root = home.root() / "fixture";
@@ -549,6 +550,7 @@ XTEST(ArchiveSources, TheReportSaysWhatTheNetworkAnswered, .area = "xim",
     const auto install = home.xlings({"install", "fixture:beta@1.0.0", "-y"});
     const auto out = install.transcript();
     EXPECT_NE(install.exit_code, 0) << out;
-    EXPECT_NE(out.find("1 archive is in no source, and the network did not provide them"), std::string::npos) << out;
     EXPECT_NE(out.find("404"), std::string::npos) << out;
+    EXPECT_EQ(count_(out, "download failed"), 1u) << out;
+    EXPECT_EQ(out.find("in no source"), std::string::npos) << out;
 }

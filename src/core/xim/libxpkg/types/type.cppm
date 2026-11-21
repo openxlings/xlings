@@ -251,9 +251,10 @@ struct DownloadResult {
     // InstallStatus. Empty means nothing more specific than E_INTERNAL.
     std::string errorCode;
     std::string hint;
-    // A failure because no source has the archive: no archive directory holds
-    // a file of its sha256 and the network was not used or did not answer.
-    // Reported together, once per batch (archives::report_unavailable).
+    // A failure because no source has the archive and the network is not used
+    // (XLINGS_NET_UNREACHABLE): reported together, once per batch
+    // (archives::report_unavailable). A download the network failed is not
+    // this: its own failure, with its reason, is its one report.
     bool unavailable { false };
 };
 

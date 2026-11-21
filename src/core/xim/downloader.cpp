@@ -779,10 +779,6 @@ DownloadResult download_one(const DownloadTask& task, std::function<void(double 
         if (!transferResult.success) {
             fs::remove(stagingFile, ec);
             result.error = transferResult.error;
-            // No source had it: not in a directory, and not served. A local
-            // write failure or a cancel is not that.
-            result.unavailable = transferResult.failure != tinyhttps::FailureKind::Local
-                && transferResult.failure != tinyhttps::FailureKind::Cancelled;
             // The same wire code an extraction that could not write carries
             // (#376): what the user does next is free space, not retry.
             if (transferResult.failure == tinyhttps::FailureKind::Local) {
