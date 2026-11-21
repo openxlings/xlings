@@ -11,7 +11,7 @@ luban 的在[它自己的参考](../generated/luban-command-reference.md)里。
 
 | 第一级 | 它指的是 |
 |---|---|
-| `install`、`remove`、`update`、`use`、`list`、`search`、`info`、`why` | 包与版本 |
+| `install`、`remove`、`update`、`use`、`list`、`search`、`info`、`why`、`download` | 包与版本 |
 | `config`、`index` | 包从哪里来，以及 xlings 的行为 |
 | `subos …` | 环境 |
 | `self …` | xlings 本身 |
@@ -33,6 +33,9 @@ luban 的在[它自己的参考](../generated/luban-command-reference.md)里。
 | 知道依赖为什么解析成这样 | `xlings why glibc` |
 | 卸载 | `xlings remove gcc`（`--all`、`--all-subos`、`--subos <n>`） |
 | 刷新索引 | `xlings update` |
+| 把一次安装所需之物带到没有网络的机器 | `xlings download gcc --to ./bundle --with-index` |
+| 在那台机器上安装 | `xlings install --from ./bundle gcc` |
+| 先从一个目录取归档 | `xlings config --add-archives /mnt/archives` |
 
 ## 环境
 

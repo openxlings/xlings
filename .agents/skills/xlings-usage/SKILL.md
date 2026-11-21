@@ -35,6 +35,9 @@ xlings remove gcc              # remove
 xlings search python           # search packages
 xlings update                  # update package index
 xlings list                    # list installed packages
+xlings download gcc --to ./bundle --with-index   # archives + index snapshots for a machine without a network
+xlings install --from ./bundle gcc               # there: no fetch; XLINGS_NET_UNREACHABLE=<why> also forbids the network
+xlings config --add-archives /mnt/archives       # archives taken by sha256, any file name (XLINGS_ARCHIVES per call)
 ```
 
 ## Multi-Version

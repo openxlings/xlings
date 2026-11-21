@@ -121,6 +121,65 @@ says whose fault it was: the source (wrong bytes, HTTP error — the next
 candidate is tried), the transfer (timeout, short read — retried), or this
 machine (a full disk — nothing else is tried, and nobody is blamed).
 
+## Archive sources and machines without a network
+
+An archive is identified by the sha256 its recipe states, not by its URL or
+its file name. Each download asks its sources in order, and the first file
+whose bytes have that digest is verified and installed as a downloaded one
+would be:
+
+1. the download cache (`data/runtimedir`, the file under the URL's name);
+2. the directory of `install --from <dir>`;
+3. the directories of `XLINGS_ARCHIVES` (separated like `PATH`);
+4. the directories of `.xlings.json` `archives`;
+5. the network: the recipe's URLs and the mirrors above.
+
+### Archive directories
+
+```bash
+xlings config --add-archives /mnt/archives
+xlings config --rm-archives /mnt/archives
+```
+
+An archive directory holds files under any names, at any depth. xlings keeps a
+sha256 index of each directory in the home, by path, size and modification
+time, so a file is hashed once and again only after it changes. A file whose
+bytes do not have the stated digest is never taken, whatever it is called.
+
+### Bundles
+
+```bash
+xlings download gcc@16.1.0 --to ./bundle --with-index   # on a machine with a network
+xlings install --from ./bundle gcc@16.1.0               # on the machine without one
+```
+
+`download` writes every archive the packages' closures download on this host
+(`--host <os>-<arch>` names another, such as `windows-x86_64`) into
+`archives/<sha256>-<file name>`; with `--with-index`, a snapshot of every index
+that resolved them into `index/<name>`; and the manifest `bundle.toml`. On
+Linux the closure includes `xim:patchelf`, which an install on a host without
+patchelf takes first. A directory that already holds a bundle is extended:
+archives and snapshots are added or replaced, and tables of the manifest that
+xlings does not know are kept.
+
+`install --from` makes the bundle the first archive directory and its
+snapshots the only indexes of that command: nothing is fetched to resolve or
+to install, and the home's own indexes are not read. A directory without
+snapshots is an archive directory only, resolved with the home's indexes. For
+a recipe that states no sha256, the sha256 the manifest records for that
+package, version and host names the archive. The manifest and its rules are
+[specs/bundle](specs/bundle.md); the directories and variables,
+[specs/xlings-json](specs/xlings-json.md).
+
+### Without a network
+
+A process for which `XLINGS_NET_UNREACHABLE` is set does not use the network:
+xlings sets it when the index pointer finds no network, and a caller sets it to
+say so beforehand. The archives no source has are then reported together, each
+with its package, version, sha256 and URL, with the directories that were
+asked and the commands that supply them; the same report follows downloads the
+network did not answer.
+
 ## Namespaced packages
 
 ```bash
@@ -148,3 +207,6 @@ your own is yours the same way.
 | `xlings info <pkg>` | a package's versions, platforms, source |
 | `xlings why <pkg>` | why a dependency resolved to the version it did |
 | `xlings install <ns>:<pkg>@<ver>` | a package of a given index |
+| `xlings download <pkg> --to <dir> --with-index` | its archives and indexes, for a machine without a network |
+| `xlings install --from <dir> <pkg>` | install from such a directory |
+| `xlings config --add-archives <dir>` | a directory whose archives are taken by content |

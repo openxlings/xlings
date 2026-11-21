@@ -16,7 +16,13 @@ Options: `-h, --help` — Show help for the selected command; `--version` — Sh
 
 Install packages
 
-Options: `-g, --global` — Use global scope; `-u, --use` — Activate installed version; `--reconfig` — Run the configuration step again, even where it already ran; `--subos <NAME>` — Install into this subos instead of the current one; `--system` — Install into the system layer (/xlings): every user of this machine gets it
+Options: `-g, --global` — Use global scope; `-u, --use` — Activate installed version; `--reconfig` — Run the configuration step again, even where it already ran; `--subos <NAME>` — Install into this subos instead of the current one; `--system` — Install into the system layer (/xlings): every user of this machine gets it; `--from <DIR>` — Take archives from DIR first and resolve with the index snapshots it carries (xlings download --to)
+
+## `xlings download [packages]...`
+
+Write the archives packages need, and the indexes that name them, to a directory
+
+Options: `--to <DIR>` — The directory they are written to (required); `--with-index` — Also write a snapshot of every index that resolved them; `--host <OS-ARCH>` — The host they are for (linux-x86_64, macosx-arm64, windows-x86_64); default this one
 
 ## `xlings remove <package> [version]`
 
@@ -60,7 +66,7 @@ Options: `-a, --all` — Show every subos; `--strict` — Require a coherent rel
 
 Show or modify configuration
 
-Options: `--lang <LANG>` — Set language; `--mirror <MIRROR>` — Set mirror; `--runtime <LIBC@VERSION>` — Pin this home's default runtime (glibc@2.44.3), or follow the newest installed (glibc@latest); `--ui-mode <MODE>` — Set UI mode (cli/tui/auto); `--theme <THEME>` — Set colour theme (name, path, or list); `--interactive <BOOL>` — Inline prompts in tui mode; `--add-xpkg <FILE>` — Add package recipe; `--list-xpkg` — List local recipes and how they relate to the synced index; `--remove-xpkg <NAME>` — Remove one local recipe; `--clear-xpkg <all|stale>` — Remove local recipes (all, or stale = identical/behind the synced index); `--index-repo <NS:URL>` — Add index repository; `--rm-index-repo <NAME>` — Remove index repository
+Options: `--lang <LANG>` — Set language; `--mirror <MIRROR>` — Set mirror; `--runtime <LIBC@VERSION>` — Pin this home's default runtime (glibc@2.44.3), or follow the newest installed (glibc@latest); `--ui-mode <MODE>` — Set UI mode (cli/tui/auto); `--theme <THEME>` — Set colour theme (name, path, or list); `--interactive <BOOL>` — Inline prompts in tui mode; `--add-xpkg <FILE>` — Add package recipe; `--list-xpkg` — List local recipes and how they relate to the synced index; `--remove-xpkg <NAME>` — Remove one local recipe; `--clear-xpkg <all|stale>` — Remove local recipes (all, or stale = identical/behind the synced index); `--index-repo <NS:URL>` — Add index repository; `--rm-index-repo <NAME>` — Remove index repository; `--add-archives <DIR>` — Add a directory whose files are taken by content before the network; `--rm-archives <DIR>` — Remove an archive directory
 
 ## `xlings subos`
 

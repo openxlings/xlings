@@ -13,6 +13,7 @@ Specifications are in English only.
 | [xpkg manifest v1](xpkg-manifest-v1.md) | a package recipe: fields, the platform–version matrix, revisions, hooks, dependencies, version constraints |
 | [xpkg resource resolution](xpkg-resource-resolution.md) | how a recipe's resources resolve to a URL, a mirror and a sha256 |
 | [`.xlings.json`](xlings-json.md) | the configuration file of a home, a project and a SubOS workspace |
+| [Bundles](bundle.md) | a directory of archives and index snapshots for a machine without a network: `bundle.toml`, `download --to`, `install --from` |
 | [NDJSON interface v1](interface-ndjson-v1.md) | `xlings interface`: transport, events, capabilities, errors |
 | [Diagnostics](diagnostics.md) | how a problem is reported: one marker, its evidence and its way out; severities and stable codes |
 | [Themes](themes.md) | colour themes: nine role slots, the file format, failure behaviour |

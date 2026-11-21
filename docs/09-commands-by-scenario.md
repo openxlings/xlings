@@ -13,7 +13,7 @@ noun is under it; options are the cheapest addition and the most numerous.
 
 | First level | What it names |
 |---|---|
-| `install`, `remove`, `update`, `use`, `list`, `search`, `info`, `why` | packages and versions |
+| `install`, `remove`, `update`, `use`, `list`, `search`, `info`, `why`, `download` | packages and versions |
 | `config`, `index` | where packages come from, and how xlings behaves |
 | `subos …` | environments |
 | `self …` | xlings itself |
@@ -36,6 +36,9 @@ commands is the `xlings subos` command it names ([Luban](luban/README.md)).
 | know why a dependency resolved so | `xlings why glibc` |
 | remove | `xlings remove gcc` (`--all`, `--all-subos`, `--subos <n>`) |
 | refresh the indexes | `xlings update` |
+| carry what an install needs to a machine without a network | `xlings download gcc --to ./bundle --with-index` |
+| install there | `xlings install --from ./bundle gcc` |
+| take archives from a directory first | `xlings config --add-archives /mnt/archives` |
 
 ## Environments
 
