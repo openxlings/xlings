@@ -13,8 +13,9 @@ name: xlings-ci-host-matrix
 #   U legs (userland): distribution containers, on a host whose restriction is
 #   lifted -- what they test is the distribution, not the runner's AppArmor.
 #
-# smoke: the PR's own build on the two legs most likely to break
-# (xlings-ci-linux.yml calls it); full: every leg, nightly on the published
+# smoke: the PR's own build on the legs most likely to break, and a host with
+# no glibc loader (Alpine: a hook's downloaded program gets the environment's
+# runtime there, #724) (xlings-ci-linux.yml calls it); full: every leg, nightly on the published
 # release and on demand; another repository (xim-pkgindex) calls it with its
 # index checkout.
 on:
@@ -61,7 +62,8 @@ jobs:
           set -euo pipefail
           smoke='[
             {"leg":"k-ubuntu-2404-restricted","kind":"runner","runner":"ubuntu-24.04","arch":"x86_64"},
-            {"leg":"u-fedora","kind":"container","runner":"ubuntu-24.04","arch":"x86_64","image":"fedora:latest","setup":"bash xlings/tests/host-matrix/bare.sh"}]'
+            {"leg":"u-fedora","kind":"container","runner":"ubuntu-24.04","arch":"x86_64","image":"fedora:latest","setup":"bash xlings/tests/host-matrix/bare.sh"},
+            {"leg":"u-alpine","kind":"container","runner":"ubuntu-24.04","arch":"x86_64","image":"alpine:3.20","setup":"bash xlings/tests/host-matrix/bare.sh"}]'
           full='[
             {"leg":"k-ubuntu-2404-restricted","kind":"runner","runner":"ubuntu-24.04","arch":"x86_64"},
             {"leg":"k-ubuntu-2404-open","kind":"runner","runner":"ubuntu-24.04","arch":"x86_64","sysctl":"0"},
