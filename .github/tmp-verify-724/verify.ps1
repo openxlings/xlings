@@ -191,6 +191,94 @@ echo "install rc=$rc"
         luban new agent8 --edition agent-workspace --proxy $PROXY -y -v } | Out-Null
 }
 
+# mk: the carrier itself, made the cheapest way (a tiny system on it).
+'mk' {
+    Use-Home
+    Cap 'mk.txt' 'mk xlings subos new diag --from subos:luban-tiny --carrier wsl2' {
+        xlings subos new diag --from subos:luban-tiny --carrier wsl2 -y } | Out-Null
+    Cr 'mk.txt' 'mk carrier facts' @'
+/xlings/bin/xlings --version
+ls -ld /lib /lib64 /grant 2>&1
+ls /sbin /bin | head -40
+cat /proc/mounts | head -30
+'@ | Out-Null
+}
+
+# W1: the guest's xlings handed over by the host -- a Windows directory
+# mounted read-only in the guest (what a grant is), `self install` run from it.
+# The guest is first set back to the previous release so a change is visible.
+'w1' {
+    Use-Home
+    $script = @'
+export XLINGS_HOME=/xlings XLINGS_NON_INTERACTIVE=1 NO_COLOR=1
+echo "--- before"; /xlings/bin/xlings --version
+mkdir -p /grant/old /grant/new
+mount -t drvfs '@OLD@' /grant/old -o ro; echo "mount old rc=$?"
+mount -t drvfs '@NEW@' /grant/new -o ro; echo "mount new rc=$?"
+find /grant/old /grant/new -maxdepth 4 | head -30
+old=$(find /grant/old -path '*/bin/xlings' | head -1); new=$(find /grant/new -path '*/bin/xlings' | head -1)
+ls -l "$old" "$new"
+echo "--- the previous release, run from the mount"; "$old" --version; echo "rc=$?"
+echo "--- set the guest back: the previous release installs itself"
+"$old" self install </dev/null; echo "self install (old) rc=$?"
+/xlings/bin/xlings --version
+echo "--- forward: this release installs itself from the mount"
+"$new" self install </dev/null; echo "self install (new) rc=$?"
+/xlings/bin/xlings --version
+ls -l /xlings/bin | head -20
+echo "--- the home still answers"
+/xlings/bin/xlings subos list 2>&1 | head -10
+umount /grant/old /grant/new 2>&1
+'@
+    $script = $script.Replace('@OLD@', $env:X724_OLD_GUEST_DIR).Replace('@NEW@', $env:X724_GUEST_DIR)
+    Cr 'w1-guest-self-install.txt' 'W1 guest self install from a mounted Windows directory' $script | Out-Null
+}
+
+# W2: ending wsl.exe on the host -- what becomes of the process it started in
+# the guest.
+'w2' {
+    Use-Home
+    $distro = Get-Distro
+    foreach ($how in 'kill', 'taskkill-tree') {
+        $tag = if ($how -eq 'kill') { '611' } else { '612' }
+        $p = Start-Process wsl.exe -ArgumentList @('-d', $distro, '-u', 'root', '--exec', '/bin/sh', '-c', "sleep $tag & sleep $tag; wait") -PassThru -WindowStyle Hidden
+        Start-Sleep 5
+        Cr 'w2-kill.txt' "W2 [$how] before: guest processes" "ps | grep 'sleep $tag' | grep -v grep; echo count=`$(ps | grep 'sleep $tag' | grep -v grep | wc -l)" | Out-Null
+        if ($how -eq 'kill') { Stop-Process -Id $p.Id -Force } else { taskkill.exe /PID $p.Id /T /F | Out-Host }
+        Start-Sleep 5
+        Cr 'w2-kill.txt' "W2 [$how] after: guest processes" "ps | grep 'sleep $tag' | grep -v grep; echo count=`$(ps | grep 'sleep $tag' | grep -v grep | wc -l)" | Out-Null
+    }
+    # A terminal-attached child (what stream::run starts): stdin closed by the host.
+    $psi = [Diagnostics.ProcessStartInfo]::new('wsl.exe', "-d $distro -u root --exec /bin/sh -c `"sleep 613; echo done`"")
+    $psi.RedirectStandardInput = $true; $psi.RedirectStandardOutput = $true; $psi.UseShellExecute = $false
+    $q = [Diagnostics.Process]::Start($psi)
+    Start-Sleep 5
+    $q.Kill()
+    Start-Sleep 5
+    Cr 'w2-kill.txt' 'W2 [piped, Kill()] after: guest processes' "ps | grep 'sleep 613' | grep -v grep; echo count=`$(ps | grep 'sleep 613' | grep -v grep | wc -l)" | Out-Null
+}
+
+# W3: in the carrier, what npm installs of bun without its lifecycle scripts.
+'w3' {
+    Use-Home
+    Cr 'w3-npm-ignore-scripts.txt' 'W3 npm install --ignore-scripts bun@1.3.11 in the carrier' @'
+export XLINGS_HOME=/xlings XLINGS_NON_INTERACTIVE=1 NO_COLOR=1 HOME=/root
+export PATH=/xlings/bin:/xlings/subos/current/bin:/usr/bin:/bin:/usr/sbin:/sbin
+/xlings/bin/xlings install -y xim:node 2>&1 | tail -5
+which node npm; node --version
+node -p 'process.report.getReport().header.glibcVersionRuntime'
+rm -rf /root/b; mkdir -p /root/b; cd /root/b
+npm install --prefix /root/b --ignore-scripts --no-fund --no-audit bun@1.3.11 2>&1 | tail -8; echo "npm rc=$?"
+ls /root/b/node_modules/@oven/
+ls -l /root/b/node_modules/bun/bin/
+bun=/root/b/node_modules/@oven/bun-linux-x64/bin/bun
+ls -l $bun; head -c 4096 $bun | tr -c '[:print:]' '\n' | grep -m1 'ld-'
+echo "--- run it as it is (no standard loader here)"; $bun --version; echo "rc=$?"
+echo "--- through the home's loader"; /xlings/abi/linux-x86_64-glibc/ld-linux-x86-64.so.2 $bun --version; echo "rc=$?"
+echo "--- with the standard directory linked"; ln -s /xlings/abi/linux-x86_64-glibc /lib64; $bun --version; echo "rc=$?"; rm -f /lib64
+'@ | Out-Null
+}
+
 'collect' {
     Use-Home
     Get-ChildItem "$RELEASE_HOME\logs" -Recurse -File -ErrorAction SilentlyContinue |
