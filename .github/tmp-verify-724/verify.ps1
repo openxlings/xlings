@@ -141,7 +141,7 @@ echo "rc=$rc"
     Use-Home
     Cr 'x6-carrier-interface.txt' 'X6 inside the carrier: interface subos_command (what the carrier answers)' @'
 export XLINGS_HOME=/xlings
-/xlings/bin/xlings interface subos_command --args '{"argv":["subos","new","agent6","--from","luban:agent-workspace","--proxy","http://127.0.0.1:7890"]}' > /tmp/x6.ndjson 2>/tmp/x6.err; rc=$?
+/xlings/bin/xlings interface subos_command --args '{"argv":["new","agent6","--from","luban:agent-workspace","--proxy","http://127.0.0.1:7890"]}' > /tmp/x6.ndjson 2>/tmp/x6.err; rc=$?
 echo "rc=$rc  lines=$(wc -l < /tmp/x6.ndjson)  stderr-bytes=$(wc -c < /tmp/x6.err)"
 echo "--- error events"
 grep -i '"kind":"error"\|"code":"E_' /tmp/x6.ndjson | cut -c1-600
@@ -154,7 +154,7 @@ tail -n 20 /tmp/x6.err
 
 'x7' {
     Use-Home
-    $json = '{"argv":["subos","new","agent7","--from","luban:agent-workspace","--proxy","http://127.0.0.1:7890"]}'
+    $json = '{"argv":["new","agent7","--from","luban:agent-workspace","--proxy","http://127.0.0.1:7890"]}'
     Cap 'x7-host-interface.txt' 'X7 from Windows: xlings interface subos_command (relayed from the carrier)' {
         xlings interface subos_command --args $json } | Out-Null
     $lines = Get-Content (Join-Path $out 'x7-host-interface.txt')
