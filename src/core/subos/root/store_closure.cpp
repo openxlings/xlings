@@ -277,8 +277,8 @@ std::expected<Closure, std::string> collect(const Inputs& inputs) {
                                             interpreter == "/lib/ld-linux-aarch64.so.1";
                     if (!rootLoader && !permitted_elf_path(interpreter))
                         return std::unexpected(
-                            file.string() +
-                            ": ELF interpreter is outside its checked root closure");
+                            file.string() + ": ELF interpreter " + info->interpreter +
+                            " is outside its checked root closure");
                 }
                 for (auto search : info->searchPaths) {
                     for (const auto token : {"${ORIGIN}", "$ORIGIN"}) {

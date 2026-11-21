@@ -110,3 +110,44 @@ XTEST(InstallFailure, ADependentOfAFailedPackageIsNotRunAndNotBlamed, .area = "x
     EXPECT_FALSE(fs::exists(home.dir() / "data" / "xpkgs" / "fixture-x-on-basebroken" / "1.0.0" / "ran"))
         << out;
 }
+
+// A package whose publish fails -- here the root of the SubOS it is installed
+// into cannot take a new generation -- is a failed install. The rollback put
+// the registrations back; that is not success: no "installed", no hint to
+// switch to a version that is not registered, a nonzero exit (#724 §4.5).
+XTEST(InstallFailure, APublishTheRootRefusesIsAFailedInstall, .area = "xim",
+      .covers = {"INSTALL-PUBLISH-FAILURE"}, .requires_ = {"xlings-bin", "linux"}) {
+    auto home = tk::Home::isolated("install-publish-failure");
+    const auto repo = home.root() / "index";
+    tk::write_file(repo / "xim-indexrepos.lua", "xim_indexrepos = {}\n");
+    write_pair(repo, "basegood", false);
+    tk::write_file(home.dir() / ".xlings.json", fixture_indexes(repo).dump());
+    fs::create_directories(home.dir() / "bin");
+    fs::copy_file(tk::xlings_binary(), home.dir() / "bin" / "xlings");
+    ASSERT_EQ(home.xlings({"self", "init"}).exit_code, 0);
+    const auto created = home.xlings({"subos", "new", "box", "--rootfs"});
+    ASSERT_EQ(created.exit_code, 0) << created.transcript();
+    const auto box = home.dir() / "subos/box";
+    const auto scopeBefore = nlohmann::json::parse(tk::read_file(box / ".xlings.json"));
+    // A foreign file where the root keeps its generations: every refresh of
+    // this root fails (test_subos_root_refresh does the same for `use`).
+    fs::rename(box / "root.gen", box / "saved-generations");
+    tk::write_file(box / "root.gen", "foreign file obstructing generation storage");
+
+    const std::map<std::string, std::string> env{{"XLINGS_ACTIVE_SUBOS", "box"}};
+    const auto failed = home.xlings({"install", "fixture:basegood@1.0.0", "-y"}, env);
+    const auto out = failed.transcript();
+    EXPECT_NE(failed.exit_code, 0) << out;
+    EXPECT_NE(out.find("was not updated"), std::string::npos) << out;
+    EXPECT_EQ(out.find("package(s) installed"), std::string::npos) << out;
+    EXPECT_EQ(out.find("to switch"), std::string::npos) << out;
+    const auto scopeAfter = nlohmann::json::parse(tk::read_file(box / ".xlings.json"));
+    EXPECT_EQ(scopeAfter.value("workspace", nlohmann::json()), scopeBefore.value("workspace", nlohmann::json()))
+        << scopeAfter.dump();
+
+    // The root repaired, the same install publishes.
+    fs::remove(box / "root.gen");
+    fs::rename(box / "saved-generations", box / "root.gen");
+    const auto repaired = home.xlings({"install", "fixture:basegood@1.0.0", "-y"}, env);
+    EXPECT_EQ(repaired.exit_code, 0) << repaired.transcript();
+}

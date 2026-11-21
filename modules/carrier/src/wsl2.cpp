@@ -110,16 +110,29 @@ std::vector<std::vector<std::string>> setup_steps(const fs::path& msi, const fs:
 
 namespace {
 
+std::expected<std::string, std::string> grant(const Endpoint& at, const fs::path& host, bool writable,
+                                              std::string_view name) {
+    const auto target = "/grant/" + std::string(name);
+    std::vector<std::string> argv = at.launcher;
+    argv.insert(argv.end(), {at.xlings, "__carrier-grant", host.string(), target, writable ? "rw" : "ro"});
+    if (const int rc = platform::run_argv(argv); rc != 0)
+        return std::unexpected(std::format("cannot grant {} to the carrier (exit {})", host.string(), rc));
+    return target;
+}
+
+std::expected<Endpoint, std::string> current(const subos::HomeView& home, Endpoint at) {
+    if (auto brought = bring_guest(home, at, carrier_dir(home) / "probe.json", grant); !brought)
+        return std::unexpected(brought.error());
+    return at;
+}
+
 std::expected<Endpoint, std::string> ensure(const subos::HomeView& home) {
     const auto wsl = wsl_exe();
     if (!wsl) return std::unexpected("WSL is not installed");
     const auto name = distro_name(home.home);
     Endpoint at{.carrier = "wsl2", .instance = name, .launcher = launcher(*wsl, name), .xlings = "/xlings/bin/xlings"};
     auto listed = run(*wsl, {"--list", "--quiet"});
-    if (listed.rc == 0 && std::ranges::contains(parse_list(listed.out), name)) {
-        refresh_guest(at, carrier_dir(home) / "probe.json");
-        return at;
-    }
+    if (listed.rc == 0 && std::ranges::contains(parse_list(listed.out), name)) return current(home, at);
 
     // First use for this home: its machine, imported once.
     if (!image_source()) return std::unexpected("this build cannot make a carrier image");
@@ -137,8 +150,7 @@ std::expected<Endpoint, std::string> ensure(const subos::HomeView& home) {
     check.insert(check.end(), {at.xlings, "--version"});
     if (const int rc = platform::run_argv(check); rc != 0)
         return std::unexpected(std::format("the carrier {} was imported but its xlings does not run (exit {})", name, rc));
-    refresh_guest(at, carrier_dir(home) / "probe.json");
-    return at;
+    return current(home, at);
 }
 
 }  // namespace
@@ -234,15 +246,7 @@ Carrier make() {
             return std::unexpected(std::format("wsl --terminate {} failed: {}", at.instance, first_lines(r.out, 2)));
         return {};
     };
-    c.grant = [](const Endpoint& at, const fs::path& host, bool writable,
-                 std::string_view name) -> std::expected<std::string, std::string> {
-        const auto target = "/grant/" + std::string(name);
-        std::vector<std::string> argv = at.launcher;
-        argv.insert(argv.end(), {at.xlings, "__carrier-grant", host.string(), target, writable ? "rw" : "ro"});
-        if (const int rc = platform::run_argv(argv); rc != 0)
-            return std::unexpected(std::format("cannot grant {} to the carrier (exit {})", host.string(), rc));
-        return target;
-    };
+    c.grant = grant;
     return c;
 }
 

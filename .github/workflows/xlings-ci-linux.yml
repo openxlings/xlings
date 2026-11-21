@@ -366,7 +366,7 @@ jobs:
         run: |
           # Built now, run on the release build once it is attached.
           for test in e2e/test_domain_source e2e/test_domain_producer e2e/test_subos_perf e2e/test_home_perf \
-                      unit/test_root_generation_perf e2e/test_luban; do
+                      unit/test_root_generation_perf e2e/test_luban e2e/test_hook_runtime; do
             mcpp test --no-run "$test"
           done
 
@@ -486,6 +486,17 @@ jobs:
           XDEV_LANE_CAPS: linux,posix,pty,xlings-bin,static-xlings,userns,bwrap,sandbox,network
         run: |
           "$XDEV" test e2e/test_luban --no-build --require-metadata --out target/xdev/linux-luban-os-first-use
+
+      # The Luban host machine's root on Linux (#724): the carrier image, a
+      # recipe whose hook starts a program it was given. What only Windows
+      # and macOS users met is here on every PR.
+      - name: A hook's runtime in the host machine's root, with the release client
+        id: hook_runtime
+        env:
+          XDEV_LANE: linux-hook-runtime
+          XDEV_LANE_CAPS: linux,posix,xlings-bin,static-xlings,userns,bwrap,network
+        run: |
+          "$XDEV" test e2e/test_hook_runtime --no-build --require-metadata --out target/xdev/linux-hook-runtime
 
       - name: Attach the runs
         uses: actions/upload-artifact@v4
@@ -617,8 +628,9 @@ jobs:
           if-no-files-found: ignore
 
   # The host matrix's smoke legs on this build (Luban OS design part 2 §5):
-  # Ubuntu 24.04 with its user-namespace restriction as shipped, and a
-  # Fedora userland -- each as an ordinary user without sudo. Every leg:
+  # Ubuntu 24.04 with its user-namespace restriction as shipped, a Fedora
+  # userland and an Alpine one (no glibc loader) -- each as an ordinary user
+  # without sudo. Every leg:
   # nightly and on demand (xlings-ci-host-matrix.yml).
   host-matrix:
     needs: release

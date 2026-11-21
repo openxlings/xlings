@@ -157,6 +157,11 @@ libnss_*……，或 musl）与 C++ 运行时（libgcc_s、libstdc++、libatomic
 | Luban 系统（沙箱、机器、真机） | 它的 generation：挂在 `/xlings/abi`，`/lib64/ld-linux…` 指向同一个；可锁定、可回滚 |
 | 系统里的视图 | 系统的 runtime；视图只选工具版本与 sysroot |
 
+> 后记（2026-11-22，#724）：系统里标准路径的 loader 与 `/xlings/abi` 同源，由根的闭包检查保证——不是运行时的
+> glibc payload 自带的程序 interpreter 是占位路径，那一代被拒绝，所以一个系统一个 glibc；`luban status --check`
+> 的 `runtime` 一格把它写下来。hook 运行的根在标准路径上同样要有运行时（根自己的，没有时是环境的）：见
+> `2026-11-21-issue-724-hook-runtime-and-carrier-errors-design.md` §4.1、§4.3。
+
 **规则 2：普通库按包绑定，永不原地改写。** 包对 openssl 等的绑定在安装时确定，写在解析记录里；作用域使用它时
 带上它记录的闭包，不让它重新绑定到作用域的选择。runtime 已不在普通库的绑定里，所以"重链"这条路径整体删除。
 

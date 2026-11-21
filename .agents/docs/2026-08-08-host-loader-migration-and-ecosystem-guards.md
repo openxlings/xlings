@@ -267,6 +267,12 @@ cmake 又静默链了宿主的 `libzstd`(home 里根本没有 zstd 包)。
   完全同构。过不了就是真的有宿主输入
 - 或解析 `meson-log.txt` / `config.log`,任何 `/usr/` 命中即 fail
 
+> 后记(2026-11-22,#724):同一个缺口在**安装期**的表现——hook 在宿主的 userland 里运行,假设了宿主有
+> glibc loader。"hook 一律在环境 userland(busybox 加环境的运行时,不带宿主 `/usr`)里运行"已实测可行
+> (五种宿主、18 个包),但索引里有面向宿主的配方,需要配方能声明"面向宿主"并在没有宿主的根里把整个索引
+> 装一遍才能作为统一模型。实测、前提与重看的信号见
+> `2026-11-21-issue-724-hook-runtime-and-carrier-errors-design.md` §2.2(L6、L9)与 §9。
+
 ### G3. 三态退出码规范(挡住 #2 #4)
 
 `skip() { exit 0; }` 让"没跑"打印成 `✓ S1-S4 pass`,这已经修了;但规范没写下来,

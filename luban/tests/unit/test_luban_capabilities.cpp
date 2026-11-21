@@ -88,6 +88,23 @@ XTEST(LubanCapabilities, APcRunsMachinesOnItsHostMachinesKvmWhenWindowsGivesIt, 
     EXPECT_EQ(c.mode("sandbox")->route, "luban setup");
 }
 
+// The host machine's xlings, and an update that did not take, are said
+// where the sandbox mode is (#724 §4.4): the next use tries it again.
+XTEST(LubanCapabilities, TheHostMachinesXlingsAndALastUpdateThatFailedAreSaid, .area = "luban",
+      .covers = {"PLATFORM-CAPS", "CARRIER-GUEST-CURRENT"}) {
+    auto f = facts_("windows", carrier_("wsl2", true));
+    auto c = svc::capabilities(f);
+    EXPECT_FALSE(c.mode("sandbox")->traits.contains("guest")) << "not started yet: nothing to say";
+    f.host_machine_xlings = "2026.11.21.1";
+    c = svc::capabilities(f);
+    EXPECT_EQ(c.mode("sandbox")->traits.at("guest"), "2026.11.21.1");
+    EXPECT_NE(c.mode("sandbox")->how.find("its xlings 2026.11.21.1"), std::string::npos) << c.mode("sandbox")->how;
+    f.host_machine_update = "cannot grant the build to the carrier";
+    c = svc::capabilities(f);
+    EXPECT_TRUE(c.mode("sandbox")->ready) << "tried again on its next use";
+    EXPECT_NE(c.mode("sandbox")->how.find("did not take: cannot grant"), std::string::npos) << c.mode("sandbox")->how;
+}
+
 XTEST(LubanCapabilities, WhatCouldNotBeAskedIsSaidAndTheJsonCarriesItAll, .area = "luban", .covers = {"PLATFORM-CAPS"}) {
     auto f = facts_("linux", Json());
     f.isolation.reset();

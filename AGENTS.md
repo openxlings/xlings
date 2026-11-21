@@ -83,7 +83,9 @@ the same locally (`tests/README.md`).
   `platform::stream::run`).
 - **The runtime is the environment's**: a package's libc and C++ runtime are bound through
   `<home>/abi/<family>` (`xlings.core.abi`), never rewritten per consumer; a Luban system
-  carries its own in its generation.
+  carries its own in its generation. The root a hook runs in has a runtime at the standard
+  loader path -- the root's own, else the environment's (`xlings.subos.std_loader`; design
+  `2026-11-21-issue-724-hook-runtime-and-carrier-errors-design.md`).
 - **The sandbox a policy compiles to is a golden** (`tests/fixtures/intent-eq`);
   regenerate with `XLINGS_INTENT_GOLDEN_WRITE=1` only on purpose.
 - **nlohmann::json brace-init**: `json{x}` of a single value makes an array; build

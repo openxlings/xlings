@@ -6,6 +6,7 @@ import xlings.libs.elfread;
 import xlings.platform;
 import xlings.subos.rootfs;
 import xlings.subos.root_etc;
+import xlings.subos.std_loader;
 
 namespace xlings::subos::root_check {
 
@@ -434,6 +435,21 @@ Report check(const fs::path& root, Depth depth, const Options& o) {
                          || exists_(usrLib / "locale/locale-archive");
         r.items.push_back(item_("locale", "a UTF-8 locale is there", false, locale,
                                 locale ? std::string{} : "no C.UTF-8 under /usr/lib/locale"));
+    }
+    // The loader at the standard path is the system's runtime, the one
+    // /xlings/abi binds (design 2026-11-21-issue-724 §4.3): the closure
+    // check keeps another glibc out of the root, and this says it held.
+    for (const auto& s : std_loader::standards()) {
+        const auto runtime = root / rootfs::kRuntimeDir / std::string(s.family) / std::string(s.loader);
+        if (!exists_(runtime)) continue;
+        const auto standard = rootfs::in_root(root, s.path());
+        std::error_code ec;
+        const bool same = exists_(standard) && fs::equivalent(standard, runtime, ec);
+        r.items.push_back(item_("runtime", std::format("{} is its runtime's loader ({})", s.path().generic_string(), s.family),
+                                false, same,
+                                same ? std::string{} : exists_(standard) ? std::format("{} is not the loader /xlings/abi binds",
+                                                                                       s.path().generic_string())
+                                                                         : std::format("no {}", s.path().generic_string())));
     }
     const auto share = rootfs::in_root(root, "/usr/share");
     if (nonempty_dir_(share / "wayland-sessions") || nonempty_dir_(share / "xsessions")) {

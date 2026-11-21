@@ -58,6 +58,11 @@ Luban 宿主机是每个 home 一台的小型 Linux 机器——xlings 和 luban
 系统的文件在它的 Linux 文件系统上，这台电脑的目录只有被授予时才进入某个系统。
 就绪（sandbox 或 machine 之一）退出码为 0，未就绪为 1，各平台一致。
 
+你不进入宿主机，所以那里发生的事会回到这里：创建系统时的失败（比如某个包的 hook）把宿主机给出的消息带给 `luban`，
+它指向的日志被复制到 `<home>/logs/carriers/<承载>/`。宿主机由这台电脑保持在当前版本——它得到随发布取得的 Linux 构建，
+自己不需要联网——`luban status` 显示它的 xlings 版本，以及没有成功的更新（下一次使用时再试）。包在那里的安装如同在一台
+只有 busybox 的 Linux 上：hook 需要发行版工具的配方会在错误里说明，而不是悄悄失败。
+
 ## 出问题时
 
 ```bash
@@ -75,3 +80,4 @@ xlings self doctor               # the home itself
 | 退出码 125 并附一个列表 | 策略要求这台宿主给不了的东西 | 列表逐项给出原因与修法 |
 | edition 在创建任何东西之前被拒绝 | 它没有为这台机器的架构构建 | 换一个 edition（[02](02-editions.md)） |
 | agent 模式下退出码 2 | agent 无法回答的问题 | 错误信息给出能回答它的参数 |
+| `the … host machine runs xlings X and was not brought to Y` | 宿主机没能接受本版本的 Linux 构建 | 看它指向的日志（`<home>/carriers/<承载>/update.log`）；下一次使用会再试 |

@@ -88,6 +88,23 @@ xlings config --remove-xpkg hello
   every environment, and an environment changes its runtime without rewriting it.
   A dependency on a runtime without a version is met by the runtime the environment
   already has.
+- **What a hook runs in.** A hook sees the system its package is installed into:
+  the machine in xlings' own use, the Luban host machine on Windows and macOS (a
+  static xlings, busybox and the environment's runtime -- none of the machine's
+  tools), a system inside it. Where that root has a glibc loader at its standard
+  path (`/lib64/ld-linux-x86-64.so.2`, `/lib/ld-linux-aarch64.so.1`), a program
+  the hook starts uses it; where it has none (the host machine, Alpine), xlings
+  gives the hook the environment's runtime there (`<home>/abi/<family>`), so a
+  program a hook downloads and starts before xlings rewrites it runs -- with
+  your package's runtime dependency declared (`deps = { runtime = { "xim:glibc" } }`).
+  Two things follow:
+  - On a machine whose glibc is older than such a program needs, it fails, and
+    the error says which glibc the hook saw. To run your own payload in a hook
+    regardless, rewrite it first (`elfpatch.set_interpreter(file, loader)`) or
+    start it through the environment's loader
+    (`<home>/abi/<family>/ld-linux-x86-64.so.2 <program>`).
+  - Prefer taking a prebuilt program's platform archive directly (esbuild, codex,
+    bun) over a package manager's install script that picks one at run time.
 - **Never run `sudo` in a hook.** An install nobody watches has no terminal to ask
   on. Declare the step instead, and xlings asks once after the install (or keeps it
   for `xlings self doctor --fix`):

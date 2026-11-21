@@ -60,6 +60,31 @@ fetches the Linux build of this release and the machine kernel. A Mac that
 cannot run a virtual machine (an Intel Mac, or one that is itself a virtual
 machine) is refused with the reason, and a native SubOS is unaffected.
 
+## What the host machine is, and what you see from here
+
+The Luban host machine (WSL2's distribution, the Mac's machine) is not a Linux
+distribution of its own: it holds a static xlings and luban, busybox, bwrap and the
+home's runtime (`/xlings/abi`; `/lib64` there points at it) -- none of this
+computer's tools. A package's hooks run there, so a recipe that assumes a
+distribution's tools behaves differently than on a Linux desktop.
+
+- **Errors come back here.** A command asked through the interface (luban, an
+  agent) runs there as `xlings interface`, and what it says reaches you as its
+  own events: a failed hook's message and the end of its output, not "no error
+  detail". The log it names is fetched into this home,
+  `<home>/logs/carriers/<carrier>/`, and the message names that copy; what the
+  host machine printed outside its events is kept in
+  `<home>/logs/carriers/<carrier>/stderr.log`.
+- **It stays at this release.** Before a call, a host machine that reports
+  another release is given this computer's Linux build of it (fetched with the
+  release, checked by its digest; granted read-only, its two programs replaced by
+  rename) -- no network in the host machine. It also brings what it holds besides
+  xlings to this release's revision (busybox's applets, the `/lib64` link). If that
+  fails, the call is refused with the reason and the log
+  (`<home>/carriers/<carrier>/update.log`), and it is tried again on the next call;
+  `luban status` says the host machine's xlings and an update that did not take. A
+  host machine newer than this client is left as it is.
+
 ## Choosing the carrier
 
 ```bash

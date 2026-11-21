@@ -1028,6 +1028,35 @@ std::expected<int, std::string> run_domain_relayed_(const xlings::home::prefix_d
     return relay_capability_(domain, "subos_command", call, output, stream, runtime, held);
 }
 
+void relay_line_(std::string_view text, EventStream& stream, int& answered, std::vector<ErrorEvent>* held,
+                 const std::function<void(ErrorEvent&)>& adjust) {
+    auto j = nlohmann::json::parse(text, nullptr, false);
+    if (!j.is_object()) return;
+    const auto kind = j.value("kind", "");
+    if (kind == "result") answered = j.value("exitCode", 1);
+    else if (kind == "data")
+        stream.emit(DataEvent{j.value("dataKind", ""), j.value("payload", nlohmann::json()).dump()});
+    else if (kind == "progress")
+        stream.emit(ProgressEvent{j.value("phase", ""), j.value("percent", 0.0f), j.value("message", "")});
+    else if (kind == "log") {
+        const auto level = j.value("level", "info");
+        stream.emit(LogEvent{level == "warn" ? LogLevel::warn : level == "error" ? LogLevel::error
+                             : level == "debug" ? LogLevel::debug : LogLevel::info,
+                             j.value("message", "")});
+    } else if (kind == "error") {
+        ErrorEvent e{error_code_from_wire(j.value("code", "")), j.value("message", ""),
+                     j.value("recoverable", false), j.value("hint", "")};
+        if (adjust) adjust(e);
+        if (held) held->push_back(std::move(e));
+        else stream.emit(std::move(e));
+    }
+    else if (kind == "prompt")
+        stream.emit(ErrorEvent{ErrorCode::InvalidInput, j.value("question", ""), true,
+                               "answer it with -y"});
+    else if (kind != "heartbeat")
+        log::debug("relayed an event this xlings does not know: {}", std::string(text));
+}
+
 std::expected<int, std::string> relay_capability_(const xlings::home::prefix_domain::Domain& domain,
                                                  std::string_view capability, const nlohmann::json& call,
                                                  std::optional<xlings::home::domain_producer::OutputBinding> output,
@@ -1035,30 +1064,7 @@ std::expected<int, std::string> relay_capability_(const xlings::home::prefix_dom
     const std::vector<std::string> args{"interface", std::string(capability), "--args", call.dump()};
     int answered = -1;
     auto rc = xlings::home::domain_producer::run(domain, args, output, runtime,
-        [&](std::string_view text) {
-            auto j = nlohmann::json::parse(text, nullptr, false);
-            if (!j.is_object()) return;
-            const auto kind = j.value("kind", "");
-            if (kind == "result") answered = j.value("exitCode", 1);
-            else if (kind == "data")
-                stream.emit(DataEvent{j.value("dataKind", ""), j.value("payload", nlohmann::json()).dump()});
-            else if (kind == "progress")
-                stream.emit(ProgressEvent{j.value("phase", ""), j.value("percent", 0.0f), j.value("message", "")});
-            else if (kind == "log") {
-                const auto level = j.value("level", "info");
-                stream.emit(LogEvent{level == "warn" ? LogLevel::warn : level == "error" ? LogLevel::error
-                                     : level == "debug" ? LogLevel::debug : LogLevel::info,
-                                     j.value("message", "")});
-            } else if (kind == "error") {
-                ErrorEvent e{error_code_from_wire(j.value("code", "")), j.value("message", ""),
-                             j.value("recoverable", false), j.value("hint", "")};
-                if (held) held->push_back(std::move(e));
-                else stream.emit(std::move(e));
-            }
-            else if (kind == "prompt")
-                stream.emit(ErrorEvent{ErrorCode::InvalidInput, j.value("question", ""), true,
-                                       "answer it with -y"});
-        });
+        [&](std::string_view text) { relay_line_(text, stream, answered, held); });
     if (rc && answered >= 0) rc = answered;
     return rc;
 }

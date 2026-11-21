@@ -5,8 +5,10 @@
 # A "distribution" is a directory under $FAKE_WSL_ROOT/distros/<name>: --import
 # extracts the image tarball there, --exec runs the guest's absolute program
 # from inside it (its own path, so the guest xlings finds its home at
-# <distro>/xlings), --terminate and --unregister do what they say. Every call
-# is appended to $FAKE_WSL_ROOT/calls.log.
+# <distro>/xlings), --terminate and --unregister do what they say. A grant is
+# a link where the mount would be, and a guest path in the arguments (/xlings,
+# /grant) is the distribution's. Every call is appended to
+# $FAKE_WSL_ROOT/calls.log.
 set -eu
 root="${FAKE_WSL_ROOT:?FAKE_WSL_ROOT}"
 mkdir -p "$root/distros"
@@ -32,6 +34,17 @@ case "${1:-}" in
     [ -d "$dir" ] || { echo "There is no distribution with the supplied name." >&2; exit 1; }
     prog="$1"; shift
     case "$prog" in /*) prog="$dir$prog" ;; esac
+    # A grant is a drvfs mount there; here the granted directory is linked
+    # where it would be mounted.
+    if [ "${1:-}" = "__carrier-grant" ]; then
+        mkdir -p "$dir/grant"; rm -f "$dir$3"; ln -s "$2" "$dir$3"; exit 0
+    fi
+    # A guest path among the arguments is read inside the distribution.
+    for a in "$@"; do
+        shift
+        case "$a" in /xlings|/xlings/*|/grant/*) a="$dir$a" ;; esac
+        set -- "$@" "$a"
+    done
     exec env -u XLINGS_HOME -u XLINGS_ACTIVE_SUBOS HOME="$dir/root" "$prog" "$@" ;;
   *) echo "fake wsl: unsupported $*" >&2; exit 2 ;;
 esac
