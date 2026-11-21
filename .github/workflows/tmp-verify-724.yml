@@ -52,7 +52,7 @@ jobs:
           else
             docker run --rm --security-opt seccomp=unconfined --security-opt apparmor=unconfined \
               --security-opt systempaths=unconfined --cap-add SYS_ADMIN \
-              -v "$PWD:/w" -w /w "$IMAGE" sh -c "(command -v bash >/dev/null || apk add -q bash) && bash tests/host-matrix/bare.sh && bash .github/tmp-verify-724/linux.sh dl/rel.tar.gz out"
+              -v "$PWD:/w" -w /w "$IMAGE" sh -c "apk add -q bash gcompat && bash tests/host-matrix/bare.sh && bash .github/tmp-verify-724/linux.sh dl/rel.tar.gz out 'L1 L2 L7'"
           fi
           sudo chmod -R a+rX out || true
 
