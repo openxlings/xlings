@@ -201,8 +201,10 @@ $prev = Join-Path $PKG_DIR 'prev'
 New-Item -ItemType Directory -Force $prev | Out-Null
 $rel = (Invoke-RestMethod 'https://api.github.com/repos/openxlings/xlings/releases/latest').tag_name.TrimStart('v')
 Invoke-WebRequest "https://github.com/openxlings/xlings/releases/download/v$rel/xlings-$rel-linux-x86_64.tar.gz" -OutFile "$prev\old.tar.gz"
-tar -xzf "$prev\old.tar.gz" -C $prev --wildcards '*/bin/xlings'
+# Windows' own tar (bsdtar): Git's GNU tar reads "D:\..." as a remote host.
+& "$env:SystemRoot\System32\tar.exe" -xzf "$prev\old.tar.gz" -C $prev '*/bin/xlings'
 $oldBin = Get-ChildItem $prev -Recurse -File -Filter xlings | Select-Object -First 1
+if (-not $oldBin) { Fail "the previous release's bin/xlings was not extracted" }
 $null = Guest @('/xlings/bin/xlings', '__carrier-grant', $oldBin.DirectoryName, '/grant/prev', 'ro')
 $null = Guest @('/bin/busybox', 'sh', '-c', 'cp /grant/prev/xlings /xlings/bin/.old && mv /xlings/bin/.old /xlings/bin/xlings && rm -f /lib64 && echo ''{"revision":1}'' > /xlings/state/carrier-userland.json')
 $oldV = Guest @('/xlings/bin/xlings', '--version')
