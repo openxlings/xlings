@@ -38,7 +38,7 @@ jobs:
           gh release download "$tag" -R openxlings/xlings -p "xlings-$ver-linux-x86_64.tar.gz" -D "$dl"
           mkdir -p "$RUNNER_TEMP/rel" && tar -xzf "$dl/xlings-$ver-linux-x86_64.tar.gz" -C "$RUNNER_TEMP/rel"
           export XLINGS_HOME="$(echo "$RUNNER_TEMP"/rel/xlings-*)"
-          export PATH="$XLINGS_HOME/bin:$PATH"
+          export PATH="$XLINGS_HOME/bin:$XLINGS_HOME/subos/current/bin:$PATH"
           xlings --version
           xlings self init
           echo "--- system loader"; ls -l /lib64/ld-linux-x86-64.so.2
@@ -74,7 +74,8 @@ jobs:
           gh release download "$tag" -R openxlings/xlings -p "xlings-$ver-linux-x86_64.tar.gz" -D "$root/gdl"
           # Only its two programs: a Windows file system takes no Linux links.
           mkdir -p "$root/guest/x"
-          tar -xzf "$root"/gdl/*.tar.gz -C "$root/guest/x" --wildcards '*/bin/xlings' '*/bin/luban'
+          # relative paths: GNU tar reads "D:" as a remote host
+          (cd "$root/guest/x" && tar -xzf ../../gdl/*.tar.gz --wildcards '*/bin/xlings' '*/bin/luban')
           bin=$(find "$root/guest/x" -path '*/bin/xlings' -type f | head -1)
           [ -n "$bin" ] || { echo "::error::no bin/xlings in the Linux build"; exit 1; }
           echo "XLINGS_CARRIER_GUEST_XLINGS=$(cygpath -w "$bin")" >> "$GITHUB_ENV"
