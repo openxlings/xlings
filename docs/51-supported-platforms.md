@@ -28,6 +28,16 @@ So a clean Linux machine needs `curl` (or a browser) to install xlings, and
 nothing else for any of its features. `xlings self doctor --isolation` shows what
 this machine gives and where each tool comes from.
 
+A Linux without a glibc loader at the standard path (Alpine and other musl
+distributions, without gcompat) is supported the same way: a package's hooks
+there run in an isolated worker that has the environment's glibc at
+`/lib64/ld-linux-x86-64.so.2` (`/lib/ld-linux-aarch64.so.1`), so a program a hook
+downloads and starts runs as on a glibc distribution. That worker needs a bwrap
+that can start (`xlings install bwrap`, and user namespaces); where none can, the
+hook runs as before, and a failure says that this machine has no such loader and
+what `xlings self doctor --isolation` lacks. On a glibc distribution the hook uses
+the machine's own glibc; a program that needs a newer one fails, naming both.
+
 ## Where a home can be
 
 xlings measures the filesystem a home is on, and writes there in the way that

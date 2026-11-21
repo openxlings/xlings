@@ -26,6 +26,12 @@ aarch64 镜像在虚拟机（`virt`）上启动；在 aarch64 真机上启动需
 所以一台干净的 Linux 机器只需要 `curl`（或浏览器）来安装 xlings，任何功能都不再需要别的。
 `xlings self doctor --isolation` 显示这台机器给了什么、每个工具来自哪里。
 
+标准路径上没有 glibc loader 的 Linux（Alpine 等 musl 发行版，没装 gcompat 时）以同样的方式支持：包的 hook 在那里于一个
+隔离的 worker 中运行，worker 在 `/lib64/ld-linux-x86-64.so.2`（`/lib/ld-linux-aarch64.so.1`）上有环境的 glibc，所以 hook
+下载后启动的程序如同在 glibc 发行版上一样运行。这个 worker 需要一个能启动的 bwrap（`xlings install bwrap`，以及 user
+namespace）；起不了时 hook 照旧运行，失败时说明这台机器没有这个 loader，以及 `xlings self doctor --isolation` 缺什么。
+在 glibc 发行版上 hook 用机器自己的 glibc；需要更新 glibc 的程序会失败，并同时写明两者的版本。
+
 ## home 可以放在哪里
 
 xlings 会实测 home 所在的文件系统，并按那个文件系统允许的方式写入，不按平台去假设。

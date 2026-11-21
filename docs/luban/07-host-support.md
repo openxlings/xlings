@@ -69,6 +69,16 @@ Linux file system, and a folder of this computer reaches one only when it is
 granted. Ready (a sandbox or a machine) exits 0, not ready 1, the same on
 every platform.
 
+You never enter it, so what happens there comes back here: a failure while a
+system is made (a package's hook, say) reaches `luban` with the message the
+host machine gave, and the log it names is copied to
+`<home>/logs/carriers/<carrier>/`. The host machine is kept at this release by
+this computer -- it is given the Linux build that came with the release, without
+network of its own -- and `luban status` names its xlings, and an update that
+did not take (tried again on the next use). Packages are installed there as on
+a Linux with nothing but busybox: a recipe that needs a distribution's tools
+in its hooks says so in its error, not silently.
+
 ## When something fails
 
 ```bash
@@ -86,3 +96,4 @@ xlings self doctor               # the home itself
 | exit 125 with a list | the policy asks for what this host cannot give | the list names each item and its fix |
 | an edition is refused before anything is made | it is not built for this machine's architecture | another edition ([02](02-editions.md)) |
 | exit 2 in agent mode | a question an agent cannot answer | the error names the option that answers it |
+| `the … host machine runs xlings X and was not brought to Y` | the host machine could not take this release's Linux build | the log it names (`<home>/carriers/<carrier>/update.log`); the next use tries again |

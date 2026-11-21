@@ -48,6 +48,22 @@ Windows 要求重启时，`subos new` 以退出码 3 结束：重启一次，然
 大小写敏感的 APFS 卷上（用系统自带的 `hdiutil` 创建并挂载），经 virtio-fs 交给机器；第一次使用时取回这个版本的 Linux 构建
 与机器内核。不能运行虚拟机的 Mac（Intel Mac，或者它本身就是虚拟机）会以这个原因被拒绝，本机原生的 SubOS 不受影响。
 
+## host machine 是什么，从这台电脑上看到什么
+
+Luban host machine（WSL2 的发行版、Mac 上的虚拟机）不是一个自成一体的 Linux 发行版：里面是静态的 xlings 与 luban、
+busybox、bwrap 和 home 的运行时（`/xlings/abi`；其中的 `/lib64` 指向它），没有这台电脑的任何工具。包的 hook 在那里
+运行，所以假设发行版工具的配方，表现会和在 Linux 桌面上不同。
+
+- **错误回到这里。** 经接口调用的命令（luban、Agent）在那里以 `xlings interface` 运行，它说的话作为它自己的事件
+  到达你这里：失败的 hook 的消息与输出末尾，而不是 "no error detail"。它指向的日志被取回到本 home 的
+  `<home>/logs/carriers/<承载>/`，消息里写的是这份副本；host machine 在事件之外打印的内容留在
+  `<home>/logs/carriers/<承载>/stderr.log`。
+- **它保持在这个版本。** 每次调用之前，报告了另一个版本的 host machine 会得到这台电脑上同版本的 Linux 构建
+  （随发布取得、按摘要校验；只读授予，两个程序以改名的方式替换）——host machine 不需要联网。它还会把 xlings 以外的
+  部分带到这个版本的修订（busybox 的 applet、`/lib64` 的链接）。失败时这次调用被拒绝，给出原因与日志
+  （`<home>/carriers/<承载>/update.log`），下一次调用再试；`luban status` 显示 host machine 的 xlings 版本与没有成功的更新。
+  比这个客户端新的 host machine 不动它。
+
 ## 选择承载
 
 ```bash

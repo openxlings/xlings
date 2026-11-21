@@ -71,6 +71,16 @@ xlings config --remove-xpkg hello
 - payload 里没有硬链接（Android 和 FAT 拒绝 `link(2)`）。
 - **运行时属于环境。** 依赖 `glibc`（或 `musl`、`gcc-runtime`）的包，经 `<home>/abi/<家族>` 绑定到它所在环境的运行时，
   而不是安装时那一份 glibc：一个 payload 服务所有环境，环境换运行时也不改写它。不带版本的运行时依赖，由环境已有的运行时满足。
+- **hook 在什么里运行。** hook 看到的是包所安装进的那个系统：xlings 自用时是这台机器，Windows、macOS 上是
+  Luban host machine（静态的 xlings、busybox 与环境的运行时，没有这台电脑的任何工具），系统里是那个系统。
+  这个根在标准 loader 路径（`/lib64/ld-linux-x86-64.so.2`、`/lib/ld-linux-aarch64.so.1`）上有 glibc 时，
+  hook 启动的程序用它；没有时（host machine、Alpine），xlings 在那里给 hook 补上环境的运行时
+  （`<home>/abi/<家族>`），所以 hook 下载后、xlings 改写之前就启动的程序也能运行——前提是包声明了运行时依赖
+  （`deps = { runtime = { "xim:glibc" } }`）。由此有两点：
+  - 机器的 glibc 比这个程序要求的旧时，它会失败，错误里说明 hook 看到的是哪个 glibc。要在 hook 里不依赖根的运行时
+    就运行自己的 payload，先改写它（`elfpatch.set_interpreter(file, loader)`），或经环境的 loader 启动
+    （`<home>/abi/<家族>/ld-linux-x86-64.so.2 <程序>`）。
+  - 预编译的程序优先直接取它的平台归档（esbuild、codex、bun），不要依赖包管理器在运行时挑选平台的安装脚本。
 - **hook 里不要运行 `sudo`。** 无人看守的安装没有终端可问。声明这一步，xlings 在安装结束后统一询问一次
   （没人可问时留给 `xlings self doctor --fix`）：
 
