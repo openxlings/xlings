@@ -98,12 +98,22 @@ jobs:
           # what a computer that cannot run Luban systems says
           - { suite: luban-host, os: macos-15 }
           - { suite: luban-host, os: windows-latest }
+          # the agent workspace in the Luban host machine (WSL 2), the #724 path
+          - { suite: luban-wsl2-agent, os: windows-2025 }
     steps:
       - uses: actions/checkout@v4
       # Deliberately no cache: a fresh install is the thing tested.
       - name: KVM
         if: runner.os == 'Linux'
         run: if [ -e /dev/kvm ]; then sudo chmod 666 /dev/kvm; ls -l /dev/kvm; else echo "no /dev/kvm on this runner"; fi
+      # The runner's WSL 2 for the host machine (the environment, not the code).
+      - name: WSL 2
+        if: matrix.suite == 'luban-wsl2-agent'
+        timeout-minutes: 10
+        uses: Vampire/setup-wsl@v7
+        with:
+          distribution: Alpine-3.22
+          wsl-version: 2
       - name: Run ${{ matrix.suite }}
         if: runner.os != 'Windows'
         env:

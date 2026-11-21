@@ -15,7 +15,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)]
-    [ValidateSet('core', 'gcc', 'llvm', 'luban-host')]
+    [ValidateSet('core', 'gcc', 'llvm', 'luban-host', 'luban-wsl2-agent')]
     [string]$Suite
 )
 
@@ -348,7 +348,29 @@ function Invoke-SuiteLubanHost {
     }
 }
 
+# ── luban-wsl2-agent: the agent workspace in the Luban host machine (#724) ──
+# Its packages' hooks run in the host machine: bun's started a program it
+# downloaded, which has no loader there; and a failure came back as "no error
+# detail". Made from the published release and index, used, removed.
+function Invoke-SuiteLubanWsl2Agent {
+    Write-Section 'luban: the agent workspace in the Luban host machine (WSL 2)'
+    Invoke-Step 'install luban' @('xlings', 'install', 'luban', '-y')
+    $status = (& luban status 2>&1 | Out-String)
+    Write-Host $status
+    if ($status -notmatch 'sandbox\s+ready') { Fail "this runner's WSL 2 is not ready for a Luban system: $status" }
+    Invoke-Step 'luban new agent --edition agent-workspace' @('luban', 'new', 'agent', '--edition', 'agent-workspace', '-y')
+    $bun = (& luban run agent -- bun --version 2>&1 | Out-String)
+    if ($LASTEXITCODE -ne 0 -or $bun -notmatch '\d+\.\d+\.\d+') { Fail "bun does not run in the agent workspace: $bun" }
+    Write-Ok "bun $($bun.Trim()) in the agent workspace"
+    $status = (& luban status 2>&1 | Out-String)
+    Write-Host $status
+    if ($status -notmatch "its xlings $([regex]::Escape((Get-ToolVersion xlings)))") { Fail "luban status does not name the host machine's xlings as this release" }
+    Write-Ok 'the host machine runs this release'
+    Invoke-Step 'removed' @('luban', 'rm', 'agent', '-y')
+}
+
 switch ($Suite) {
+    'luban-wsl2-agent' { Invoke-SuiteLubanWsl2Agent }
     'luban-host' { Invoke-SuiteLubanHost }
     'core' { Invoke-SuiteCore }
     'gcc'  { Invoke-SuiteGcc }

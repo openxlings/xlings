@@ -199,7 +199,18 @@ if (-not $echo.Out.Contains('--引号 \"q\" x')) {
 # 1: the next use brings both to this release, from this PC's build.
 $prev = Join-Path $PKG_DIR 'prev'
 New-Item -ItemType Directory -Force $prev | Out-Null
-$rel = (Invoke-RestMethod 'https://api.github.com/repos/openxlings/xlings/releases/latest').tag_name.TrimStart('v')
+# The newest published release before this one: once this one is published,
+# "latest" is this one itself.
+$v = [regex]::Match((Run @('xlings', '--version')).Out, '\d{4}\.\d+\.\d+\.\d+').Value
+# (Assigned first: Invoke-RestMethod hands a JSON array on as one object.
+# With CI's token: a runner's address shares the anonymous rate limit.)
+$api = @{}
+if ($env:GH_TOKEN) { $api.Authorization = "Bearer $env:GH_TOKEN" }
+$releases = @(Invoke-RestMethod 'https://api.github.com/repos/openxlings/xlings/releases?per_page=10' -Headers $api)
+$rel = ($releases | ForEach-Object { $_ } |
+        Where-Object { -not $_.draft -and -not $_.prerelease -and $_.tag_name.TrimStart('v') -ne $v } |
+        Select-Object -First 1).tag_name.TrimStart('v')
+if (-not $rel) { Fail "no published release before $v to go back to" }
 Invoke-WebRequest "https://github.com/openxlings/xlings/releases/download/v$rel/xlings-$rel-linux-x86_64.tar.gz" -OutFile "$prev\old.tar.gz"
 # Windows' own tar (bsdtar): Git's GNU tar reads "D:\..." as a remote host.
 & "$env:SystemRoot\System32\tar.exe" -xzf "$prev\old.tar.gz" -C $prev '*/bin/xlings'
@@ -212,9 +223,7 @@ Write-Host "the guest now reports: $($oldV.Out.Trim())"
 (Get-Item "$PKG_DIR\carriers\wsl2\probe.json").LastWriteTime = (Get-Date).AddHours(-1)
 $again = Run @('luban', 'run', 'box', '--', 'uname', '-s')
 if ($again.Code -ne 0) { Fail "the next use after the guest went back failed: $($again.Out)" }
-$mine = (Run @('xlings', '--version')).Out
 $theirs = (Guest @('/xlings/bin/xlings', '--version')).Out
-$v = [regex]::Match($mine, '\d{4}\.\d+\.\d+\.\d+').Value
 if ($theirs -notmatch [regex]::Escape($v)) { Fail "the guest was not brought to $v`: $theirs" }
 $lib64 = Guest @('/bin/busybox', 'readlink', '/lib64')
 if ($lib64.Out.Trim() -ne '/xlings/abi/linux-x86_64-glibc') { Fail "the userland was not brought forward: $($lib64.Out)" }
