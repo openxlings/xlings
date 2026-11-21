@@ -23,6 +23,7 @@ import xlings.subos.policy_store;
 import xlings.subos.caps;
 import xlings.subos.ports;
 import xlings.subos.spec;
+import xlings.subos.std_loader;
 import xlings.confine.provider;
 import xlings.confine;
 import xlings.subos.network;
@@ -469,11 +470,66 @@ struct Worker {
         }
     }
 };
+// The hook runtime contract (design 2026-11-21-issue-724 §4.1): the root a
+// hook runs in has, for the home's runtime family, a runtime at the family's
+// standard loader path -- the root's own, or the environment's. Decided for
+// this process's root, so a host, the host as a private domain shows it and
+// a worker over it get one answer. `mounts`: what a worker adds to give it.
+struct HookRuntime_ {
+    const subos::std_loader::Standard* standard {};
+    subos::std_loader::Need need { subos::std_loader::Need::Present };
+    std::vector<subos::spec::MountOp> mounts;
+    std::string envGlibc;
+};
+HookRuntime_ hook_runtime_() {
+    namespace sl = subos::std_loader;
+    HookRuntime_ r;
+    if constexpr (!platform::is_linux) return r;
+    r.standard = sl::of_arch(platform::build_arch());
+    if (!r.standard) return r;
+    const auto family = Config::paths().homeDir / "abi" / std::string(r.standard->family);
+    std::error_code ec;
+    const bool has = fs::exists(family / std::string(r.standard->loader), ec);
+    r.need = sl::decide("/", *r.standard, has);
+    if (has)
+        if (auto doc = platform::read_file(Config::paths().homeDir / "abi.json")) {
+            auto j = Json::parse(*doc, nullptr, false);
+            if (j.is_object() && j.contains("families") && j["families"].contains(r.standard->family)) {
+                auto libc = j["families"][std::string(r.standard->family)].value("libc", std::string{});
+                if (libc.starts_with("glibc@")) r.envGlibc = libc.substr(6);
+            }
+        }
+    if (r.need != sl::Need::Link && r.need != sl::Need::Merge) return r;
+    // The directory as the worker's root has it: a link to a real one
+    // (/lib -> usr/lib) is merged where it leads.
+    fs::path dir(r.standard->dir);
+    if (r.need == sl::Need::Merge) dir = fs::canonical(dir, ec);
+    if (ec) {
+        r.need = sl::Need::Unprovided;
+        return r;
+    }
+    const auto entries = sl::family_entries(family);
+    r.mounts = sl::mounts(r.need, dir, entries, r.need == sl::Need::Merge ? sl::names_in(dir) : std::set<std::string>{});
+    if (r.need == sl::Need::Merge)
+        for (const auto& [name, file] : entries)
+            if (fs::exists(dir / name, ec))
+                log::debug("hook runtime: {} keeps this machine's {} (the environment's is {})", dir.string(), name, file.string());
+    return r;
+}
+
+std::string hook_runtime_note_(const HookRuntime_& r, std::string unavailable) {
+    if (!r.standard) return {};
+    return subos::std_loader::note(*r.standard, {.need = r.need,
+                                                 .unavailable = std::move(unavailable),
+                                                 .rootGlibc = platform::host_glibc_version(),
+                                                 .envGlibc = r.envGlibc});
+}
+
 std::expected<std::shared_ptr<Worker>, std::string>
 launch(const subos::policy::Policy& declared, const fs::path& package,
        const xpkg::ExecutionContext& context, bool build = false,
        const std::vector<fs::path>& hook_logs = {}, bool readonly_payload = false,
-       bool layer_only = false) {
+       bool layer_only = false, const std::vector<subos::spec::MountOp>& runtime_mounts = {}) {
     try {
         const auto& paths = Config::paths();
         subos::HomeView home{paths.homeDir};
@@ -761,6 +817,11 @@ launch(const subos::policy::Policy& declared, const fs::path& package,
                 sandbox.mounts.push_back(
                     {subos::spec::MountKind::Bind, path.generic_string(), path.generic_string()});
             }
+            // After every compiled mount, for this hook only (as the
+            // worker's own runtime above): the standard loader path's
+            // runtime, from a pure function with its own fixtures.
+            for (const auto& mount : runtime_mounts)
+                sandbox.mounts.push_back(mount);
             command = xlings::confine::provider::bwrap_argv(sandbox);
         } else if (sandbox.backend == subos::spec::Backend::Landlock) {
             // The fence the worker puts up before it reads anything
@@ -976,22 +1037,37 @@ std::expected<xpkg::PackageIndex, std::string> build_index(const fs::path& repo,
 }
 std::expected<xpkg::PackageExecutor, std::string>
 create_executor(const fs::path& package, xpkg::ExecutionContext& context,
-                const std::vector<fs::path>& hook_logs, bool readonly_payload) {
+                const std::vector<fs::path>& hook_logs, bool readonly_payload, std::string* runtime_note) {
     auto p = policy();
     if (!p)
         return std::unexpected(p.error());
-    if (!*p && !readonly_payload)
+    const auto runtime = hook_runtime_();
+    if (runtime_note)
+        *runtime_note = hook_runtime_note_(runtime, {});
+    // A root without the runtime at its standard path: the hook runs in a
+    // worker that has it (#724 §4.1 (b)); where none can start, as before,
+    // and a failure says so.
+    const bool for_runtime = !*p && !readonly_payload && !runtime.mounts.empty();
+    if (!*p && !readonly_payload && !for_runtime)
         return xpkg::create_executor(package);
     const bool layer_only = !*p;
-    if (readonly_payload) {
+    if (readonly_payload || for_runtime) {
         if (!*p)
             p->emplace(minimum_layer_policy());
+    }
+    if (readonly_payload) {
         (**p).needs["fs"] = subos::policy::Need::Must;
         (**p).needs["pid"] = subos::policy::Need::Must;
     }
     const auto absolute_package = fs::absolute(package);
     auto worker =
-        launch(**p, absolute_package, context, false, hook_logs, readonly_payload, layer_only);
+        launch(**p, absolute_package, context, false, hook_logs, readonly_payload, layer_only, runtime.mounts);
+    if (!worker && for_runtime) {
+        log::debug("hook runtime: no worker for {} ({}); the hook runs here", package.string(), worker.error());
+        if (runtime_note)
+            *runtime_note = hook_runtime_note_(runtime, worker.error());
+        return xpkg::create_executor(package);
+    }
     if (!worker)
         return std::unexpected(worker.error());
     if (!context.install_file.empty()) {

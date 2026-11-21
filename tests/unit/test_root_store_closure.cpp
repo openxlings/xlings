@@ -232,6 +232,46 @@ XTEST(RootStoreClosure, ALinkIntoAnotherPayloadIsThatPayloadsNotThisOnes, .area 
     EXPECT_NE(refused.error().find("outside its recorded root closure"), std::string::npos) << refused.error();
 }
 
+// A system's root takes one glibc: the runtime selection's, whose programs
+// are rewritten to its own loader. Another glibc's programs keep the
+// placeholder interpreter its payload ships (/nonexistent/...), and the
+// closure check refuses the root that would take them, naming it -- what
+// keeps the standard loader path and /xlings/abi the same file (#724 §4.3).
+XTEST(RootStoreClosure, AGlibcThatIsNotTheRuntimeIsRefusedByItsInterpreter, .area = "subos",
+      .covers = {"ROOT-STORE-CLOSURE", "ROOT-STD-LOADER-RUNTIME"}) {
+    if constexpr (!tk::is_posix)
+        GTEST_SKIP() << "root projection uses directory symlinks";
+    auto home = tk::Home::isolated("root-store-closure-glibc");
+    const auto glibc = fs::canonical(home.dir()) / "data/xpkgs/xim-x-glibc/2.44.2";
+    const auto scope = fs::canonical(home.dir()) / "subos/box";
+    // The standard path is a root's own: a program naming it is in the closure.
+    tk::write_elf(glibc / "bin/getconf", {.interp = "/lib64/ld-linux-x86-64.so.2"});
+    tk::write_file(glibc / ".xlings-resolution.json", R"({"package":"xim:glibc@2.44.2","deps":[]})");
+    Json versions = {
+        {"glibc", {{"type", "program"}, {"versions", {{"xim:2.44.2", {{"path", glibc.string() + "/bin"}}}}}}}};
+    tk::write_file(fs::canonical(home.dir()) / ".xlings.json", Json{{"versions", versions}}.dump());
+    tk::write_file(fs::canonical(home.dir()) / "bin/xlings", "entry");
+    tk::write_file(fs::canonical(home.dir()) / "bin/luban", "luban");
+    tk::write_file(scope / ".xlings.json",
+                   Json{{"workspace", {{"glibc", {{"active", "xim:2.44.2"}, {"installed", {"xim:2.44.2"}}}}}}}.dump());
+    rf::Inputs generation;
+    generation.payloads = {glibc};
+    ASSERT_TRUE(rf::commit(scope, rf::plan(generation), "fixture"));
+    auto inputs = closure::read_scope(fs::canonical(home.dir()), "box", scope / "rootfs");
+    ASSERT_TRUE(inputs) << inputs.error();
+    {
+        auto taken = closure::collect(*inputs);
+        ASSERT_TRUE(taken) << taken.error();
+    }
+    // Its sbin/iconvconfig as the payload ships it, not rewritten.
+    constexpr auto placeholder = "/nonexistent/xlings-use-rpath-not-default-search/lib/ld-linux-x86-64.so.2";
+    tk::write_elf(glibc / "sbin/iconvconfig", {.interp = placeholder});
+    auto refused = closure::collect(*inputs);
+    ASSERT_FALSE(refused);
+    EXPECT_NE(refused.error().find("iconvconfig: ELF interpreter"), std::string::npos) << refused.error();
+    EXPECT_NE(refused.error().find(placeholder), std::string::npos) << refused.error();
+}
+
 XTEST(RootStoreClosure, AMemberTheScopeNeverTookIsNotProjectedNorABlock, .area = "subos",
       .covers = {"ROOT-STORE-CLOSURE"}) {
     // Systems sharing a home's store: another one installed a later revision

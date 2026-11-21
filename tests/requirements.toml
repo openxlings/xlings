@@ -761,6 +761,18 @@ status = "required"
 text = "workspace write commands fail when their root projection cannot be updated"
 status = "required"
 
+[INSTALL-PUBLISH-FAILURE]
+text = "an install whose publish fails (registration, routing or a root's refresh) ends as that package's failure: registrations as before the install, no 'installed', no hint to switch to it, a nonzero exit"
+status = "required"
+
+[HOOK-RUNTIME-CONTRACT]
+text = "the root a hook runs in has, for each runtime family the home has, a runtime at its standard loader path: the root's own when it has one, otherwise the environment's (<home>/abi/<family>) -- a link where the standard directory is absent, merged where it holds other things; where that cannot be given the hook runs as before and its failure says why"
+status = "required"
+
+[ROOT-STD-LOADER-RUNTIME]
+text = "in a system's root the loader at the standard path is the default runtime's loader (/xlings/abi), and a glibc payload that is not the selected runtime is refused by the root's closure check"
+status = "required"
+
 [POLICY-MIN-CLIENT]
 text = "policy declares a minimum client; unsupported clients refuse and doctor explains compatibility"
 status = "required"
@@ -1036,7 +1048,11 @@ text = "luban status (and its --json, and the Luban OS app) says per way of runn
 status = "required"
 
 [CARRIER-GUEST-CURRENT]
-text = "a carrier's machine (WSL 2, a Mac's host machine) that reports another release is brought to the client's once per release (xlings self update there), never on every command"
+text = "a carrier's machine (WSL 2, a Mac's host machine) that reports another release than the client's Linux build is given that build by the host (granted read-only, its files replaced by rename; no network there) before it is called; a failure is not recorded as tried, refuses the call with its reason, and is tried again next time; a newer guest is left as it is; the guest brings its userland to its revision when probed"
+status = "required"
+
+[CARRIER-RELAY-EVENTS]
+text = "an interface call forwarded to a carrier runs there as `xlings interface` and its events reach the caller (errors, progress, data; no 'no error detail' when the guest said why); commands that hand over the terminal stay terminal; a hook log the guest names is fetched into <home>/logs/carriers/<carrier>/ and the error names it there"
 status = "required"
 
 # ── Luban OS: one tray, pointer and keyboard, arrangements, versions (design 2026-10-19 §23) ──

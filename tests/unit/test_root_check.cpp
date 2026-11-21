@@ -160,3 +160,31 @@ echo "error while loading shared libraries: could not load the Qt platform plugi
     ASSERT_NE(item(r, "starts:viewer"), nullptr);
     EXPECT_TRUE(item(r, "starts:viewer")->ok) << item(r, "starts:viewer")->detail;
 }
+
+// The loader at the standard path is the one /xlings/abi binds (#724 §4.3):
+// said as an item, which a root whose two differ fails.
+XTEST(RootCheck, TheStandardLoaderIsTheRuntimes, .area = "luban", .covers = {"ROOT-STD-LOADER-RUNTIME"}) {
+    if constexpr (!tk::is_posix) GTEST_SKIP() << "Luban roots are Linux";
+    auto home = tk::Home::isolated("root-check-runtime");
+    const auto root = a_root(home.root() / "tree");
+    const auto payload = home.root() / "glibc/lib64";
+    tk::write_file(payload / "ld-linux-x86-64.so.2", "the runtime's loader");
+    tk::write_file(home.root() / "other/ld-linux-x86-64.so.2", "another glibc's loader");
+    fs::create_directories(root / "usr/lib/xlings-abi/linux-x86_64-glibc");
+    fs::create_symlink(payload / "ld-linux-x86-64.so.2", root / "usr/lib/xlings-abi/linux-x86_64-glibc/ld-linux-x86-64.so.2");
+    fs::create_directory_symlink("lib", root / "usr/lib64");
+    fs::create_symlink(payload / "ld-linux-x86-64.so.2", root / "usr/lib/ld-linux-x86-64.so.2");
+    auto r = rc::check(root, rc::Depth::Full, {.run = false});
+    ASSERT_NE(item(r, "runtime"), nullptr);
+    EXPECT_TRUE(item(r, "runtime")->ok) << item(r, "runtime")->detail;
+    fs::remove(root / "usr/lib/ld-linux-x86-64.so.2");
+    fs::create_symlink(home.root() / "other/ld-linux-x86-64.so.2", root / "usr/lib/ld-linux-x86-64.so.2");
+    r = rc::check(root, rc::Depth::Full, {.run = false});
+    ASSERT_NE(item(r, "runtime"), nullptr);
+    EXPECT_FALSE(item(r, "runtime")->ok);
+    EXPECT_NE(item(r, "runtime")->detail.find("not the loader"), std::string::npos) << item(r, "runtime")->detail;
+    // A root without a glibc runtime has nothing to say.
+    fs::remove_all(root / "usr/lib/xlings-abi");
+    r = rc::check(root, rc::Depth::Full, {.run = false});
+    EXPECT_EQ(item(r, "runtime"), nullptr);
+}

@@ -2401,7 +2401,12 @@ std::expected<void, std::string> process_xvm_operations_(const PlanNode& node, c
     if (!oldVersionDocument || !oldWorkspaceDocument) {
         return std::unexpected(std::format("cannot observe metadata before publishing {}", node.name));
     }
-    auto restore = [&]() {
+    // Rolling back is not succeeding: after the rollback the publish still
+    // fails with its own failure, the rollback's failures appended (the shape
+    // of the removal's publish above). Returning nothing here let an install
+    // whose root refused the new generation say "installed" (design
+    // 2026-11-21 #724 §4.5).
+    auto roll_back = [&](std::string failure) {
         Config::versions_mut() = dbBefore;
         Config::workspace_mut() = workspaceBefore;
         Config::workspace_installed_mut() = installedBefore;
@@ -2410,8 +2415,14 @@ std::expected<void, std::string> process_xvm_operations_(const PlanNode& node, c
             if (workspacePath != versionPath)
                 platform::write_file_atomic(workspacePath.string(), oldWorkspaceDocument->dump(2));
         } catch (const std::exception& error) {
-            log::error("metadata rollback failed: {}", error.what());
+            failure += "; metadata rollback failed: " + std::string(error.what());
         }
+        for (auto& changed : applied)
+            if (const auto rollback = changed.rollback(); !rollback)
+                failure += "; derived rollback failed: " + rollback.error();
+        if (const auto sync = xself::sync_shim_tables(); !sync.root_error.empty())
+            failure += "; root rollback refresh failed: " + sync.root_error;
+        return failure;
     };
     Config::versions_mut() = std::move(candidateDb);
     Config::workspace_mut() = std::move(candidateWorkspace);
@@ -2432,13 +2443,7 @@ std::expected<void, std::string> process_xvm_operations_(const PlanNode& node, c
         if (const auto sync = xself::sync_shim_tables(); !sync.root_error.empty())
             throw std::runtime_error(sync.root_error);
     } catch (const std::exception& error) {
-        restore();
-        for (auto& changed : applied) {
-            if (const auto rollback = changed.rollback(); !rollback)
-                log::error("derived rollback failed: {}", rollback.error());
-        }
-        if (const auto sync = xself::sync_shim_tables(); !sync.root_error.empty())
-            return std::unexpected(std::format("root rollback refresh failed: {}", sync.root_error));
+        return std::unexpected(roll_back(std::format("{}: not published: {}", node.name, error.what())));
     }
     // One copy of the database and workspace for every effect: both are
     // returned by value, and per effect that was a copy of the whole home's
@@ -2461,13 +2466,8 @@ std::expected<void, std::string> process_xvm_operations_(const PlanNode& node, c
             !xself::replace_entry_binary(source, entry, resolved->target + "@" + effect.version,
                                          effect.version,
                                          {registration->batch.provider, node.sourceHome})) {
-            restore();
-            for (auto& changed : applied) {
-                if (const auto rollback = changed.rollback(); !rollback)
-                    log::error("derived rollback failed: {}", rollback.error());
-            }
-            if (const auto sync = xself::sync_shim_tables(); !sync.root_error.empty())
-                return std::unexpected(std::format("root rollback refresh failed: {}", sync.root_error));
+            return std::unexpected(roll_back(std::format("{}: the entry binary {} was not replaced",
+                                                         node.name, entry.string())));
         }
     }
     for (auto& changed : applied) {
@@ -3328,7 +3328,14 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& requested
         // every reconfigure -- it registers, it does not write the payload --
         // so it needs no sandbox of its own (one would make borrowing depend
         // on user namespaces). A system-layer payload keeps its confinement.
-        auto execResult = lua_boundary::create_executor(node.pkgFile, ctx, hookLogs, borrowedPayload);
+        // What a failed hook adds about the runtime at the standard loader
+        // path it saw (#724 §4.1): empty when there is nothing to say.
+        std::string runtimeNote;
+        auto execResult = lua_boundary::create_executor(node.pkgFile, ctx, hookLogs, borrowedPayload, &runtimeNote);
+        const auto with_runtime_note = [&](std::string message) {
+            if (!runtimeNote.empty()) message += "\n  " + runtimeNote;
+            return message;
+        };
         if (!execResult) {
             log::error("failed to create executor for {}: {}",
                        node.name, execResult.error());
@@ -3704,8 +3711,8 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& requested
             }
 
             if (!hookResult.success) {
-                auto message = detail_::format_hook_failure(
-                    "install", hookResult, hookLog);
+                auto message = with_runtime_note(detail_::format_hook_failure(
+                    "install", hookResult, hookLog));
                 // Record the failure ON the payload. Without this the next
                 // `xlings install` finds a non-empty directory, concludes
                 // "already installed", skips the hook, and reports success
@@ -4008,6 +4015,8 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& requested
                 // its failure is exactly "payload on disk, ledger empty" --
                 // the state that used to be indistinguishable from a
                 // package that legitimately registers nothing.
+                if (configFailure.starts_with("config hook failed"))
+                    configFailure = with_runtime_note(std::move(configFailure));
                 if (!readOnlyPayload) {
                     write_payload_failure_marker(ctx.install_dir, node.version, configFailure);
                 }
