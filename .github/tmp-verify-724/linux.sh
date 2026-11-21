@@ -49,7 +49,7 @@ want() { [[ "$only" == all || " $only " == *" $1 "* ]]; }
 log "host"
 { . /etc/os-release; echo "os=$PRETTY_NAME"; echo "kernel=$(uname -r) arch=$arch"; id
   ls -ld /lib /lib64 /usr/lib /usr/lib64 2>&1; ls -l "$STD/$LOADER" 2>&1
-  echo "host libc: $( (ldd --version 2>&1 || true) | head -1)"
+  ls -l /lib/ld-musl-* /lib/libgcompat* 2>&1; echo "host libc: $( (ldd --version 2>&1 || true) | head -1)"
   echo "userns_restrict=$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns 2>/dev/null || echo absent)"
 } 2>&1 | tee "$out/host.txt"
 if [[ -e "$STD/$LOADER" ]]; then HOSTFORM=C; elif [[ -e "$STD" ]]; then HOSTFORM=B; else HOSTFORM=A; fi
@@ -149,6 +149,8 @@ if want L7 && [[ $HOSTFORM == C ]]; then
         local mode="$1"; shift
         local cmds=(
             "/usr/bin/true"
+            "/bin/busybox ls /"
+            "/usr/bin/tar --version"
             "/usr/bin/ls /"
             "/usr/bin/id"
             "/bin/sh -c 'echo ok'"

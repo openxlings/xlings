@@ -5,7 +5,7 @@ name: tmp-verify-724
 # published release. The draft PR that carries this file targets a throwaway
 # base branch so the product CI does not run on it.
 #
-# Round 4 (a second glibc in a system only): the mechanisms the design proposes, measured before they are built.
+# Round 5 (a musl host with gcompat at the standard path): the mechanisms the design proposes, measured before they are built.
 
 on:
   pull_request:
@@ -25,7 +25,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { leg: ubuntu-x64,  runner: ubuntu-24.04,     arch: x86_64,  image: '' }
+          - { leg: alpine-gcompat-x64, runner: ubuntu-24.04, arch: x86_64, image: 'alpine:3.20' }
     steps:
       - name: Checkout
         uses: actions/checkout@v4
