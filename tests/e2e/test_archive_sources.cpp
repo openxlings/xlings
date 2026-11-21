@@ -28,9 +28,9 @@ constexpr std::string_view kOffline = "offline (test)";
 std::string sha_(std::string_view bytes) { return xlings::sha256::hex(bytes); }
 
 // Bytes of a payload: distinct per name, and past the size an error stub has.
-std::string bytes_(std::string_view name) {
+std::string bytes_(std::string_view name, std::string_view salt) {
     std::string out;
-    while (out.size() < 4096) out += std::format("{} payload {};", name, out.size());
+    while (out.size() < 4096) out += std::format("{}{} payload {};", salt, name, out.size());
     return out;
 }
 
@@ -44,11 +44,12 @@ struct Fixture {
 // `name`'s recipe. Linux and macOS take `<name>-1.0.0.bin`, Windows
 // `<name>-1.0.0-windows.bin`; `stated` says whether the recipe states their
 // sha256.
-void write_recipe_(Fixture& f, std::string_view base, std::string_view name, std::string_view deps, bool stated) {
+void write_recipe_(Fixture& f, std::string_view base, std::string_view name, std::string_view deps, bool stated,
+                   std::string_view salt) {
     const auto host = std::format("{}-1.0.0.bin", name);
     const auto windows = std::format("{}-1.0.0-windows.bin", name);
-    f.files[host] = bytes_(host);
-    f.files[windows] = bytes_(windows);
+    f.files[host] = bytes_(host, salt);
+    f.files[windows] = bytes_(windows, salt);
     const auto entry = [&](const std::string& file) {
         return stated ? std::format("{{ url = '{}/{}', sha256 = '{}' }}", base, file, sha_(f.files[file]))
                       : std::format("{{ url = '{}/{}' }}", base, file);
@@ -72,7 +73,9 @@ function config() return true end
 )LUA", name, deps, entry(host), entry(windows)));
 }
 
-Fixture make_fixture_(const fs::path& root, std::string_view base) {
+// `salt` makes another index of the same packages, versions and URLs whose
+// bytes (and so sha256) differ.
+Fixture make_fixture_(const fs::path& root, std::string_view base, std::string_view salt = "") {
     Fixture f{root / "primary", root / "index", root / "served", {}};
     tk::write_file(f.primary / "xim-indexrepos.lua", "xim_indexrepos = {}\n");
     tk::write_file(f.index / "xim-indexrepos.lua", "xim_indexrepos = {}\n");
@@ -91,9 +94,9 @@ function install()
 end
 function config() return true end
 )LUA");
-    write_recipe_(f, base, "alpha", "'fixture:beta@1.0.0'", true);
-    write_recipe_(f, base, "beta", "", true);
-    write_recipe_(f, base, "gamma", "", false);
+    write_recipe_(f, base, "alpha", "'fixture:beta@1.0.0'", true, salt);
+    write_recipe_(f, base, "beta", "", true, salt);
+    write_recipe_(f, base, "gamma", "", false, salt);
     for (const auto& [name, content] : f.files) tk::write_file(f.served / name, content);
     return f;
 }
@@ -193,14 +196,15 @@ XTEST(ArchiveSources, TheDirectoryIndexFollowsAChangedFile, .area = "xim",
 }
 
 // The manifest: a reader ignores what it does not know, and a writer keeps
-// another program's tables (mcpp's [[git]]).
+// it -- another program's tables (mcpp's [[git]]) and the keys a later format
+// 1 adds to the tables it knows.
 XTEST(ArchiveSources, ABundleManifestKeepsWhatItDoesNotKnow, .area = "xim",
       .covers = {"ARCHIVE-BUNDLE-MANIFEST"}) {
     const std::string text = R"(# written by hand
 [bundle]
 format = 1
 created_by = "xlings 1"
-host = "linux-x86_64"
+host = 'linux-x86_64'
 future_key = [
   "[[not a header]]",
 ]
@@ -215,74 +219,179 @@ size = 3
 
 [[git]]
 url = "https://example.invalid/dep.git"
-commit = "0123"
+note = """
+[[index]]
+name = "not an index"
+"""
 paths = [
   "[[index]]",
 ]
 
-[[index]]
+[[index]]   # a header with a comment
 name = "fixture"
 revision = "artifact:1"
 path = "index/fixture"
 )";
     auto parsed = ar::parse_bundle(text);
     ASSERT_TRUE(parsed) << parsed.error();
+    EXPECT_EQ(parsed->host, "linux-x86_64");   // a literal string
     ASSERT_EQ(parsed->archives.size(), 1u);
     EXPECT_EQ(parsed->archives[0].file, "archives/ab-alpha \"quoted\".bin");
-    ASSERT_EQ(parsed->indexes.size(), 1u);
+    ASSERT_EQ(parsed->indexes.size(), 1u) << "a multi-line string or a commented header misread";
+    EXPECT_EQ(parsed->indexes[0].name, "fixture");
     EXPECT_EQ(parsed->indexes[0].revision, "artifact:1");
     EXPECT_NE(parsed->otherTables.find("[[git]]"), std::string::npos);
-    EXPECT_NE(parsed->otherTables.find("\"[[index]]\","), std::string::npos);
+    EXPECT_NE(parsed->otherTables.find("name = \"not an index\""), std::string::npos);
 
-    auto again = ar::parse_bundle(ar::render_bundle(*parsed));
+    const auto rendered = ar::render_bundle(*parsed);
+    EXPECT_NE(rendered.find("future_key = [\n  \"[[not a header]]\",\n]"), std::string::npos) << rendered;
+    EXPECT_NE(rendered.find("size = 3"), std::string::npos) << rendered;
+    auto again = ar::parse_bundle(rendered);
     ASSERT_TRUE(again) << again.error();
     EXPECT_EQ(again->archives[0].file, parsed->archives[0].file);
+    EXPECT_EQ(again->archives[0].extra, parsed->archives[0].extra);
+    EXPECT_EQ(again->extra, parsed->extra);
     EXPECT_EQ(again->indexes.size(), 1u);
     EXPECT_EQ(again->otherTables, parsed->otherTables);
 
     EXPECT_FALSE(ar::parse_bundle("[[archive]]\npackage = \"x\"\n"));   // no [bundle] format
+
+    // A format this client does not know is refused, with the way forward.
+    auto home = tk::Home::isolated("archives-format");
+    tk::write_file(home.root() / "newer" / "bundle.toml", "[bundle]\nformat = 2\n");
+    const auto newer = ar::read_bundle(home.root() / "newer");
+    ASSERT_FALSE(newer);
+    EXPECT_NE(newer.error().find("newer than this xlings reads"), std::string::npos) << newer.error();
+    EXPECT_NE(newer.error().find("xlings self update"), std::string::npos) << newer.error();
 }
 
-// X1: the download cache, then XLINGS_ARCHIVES, then `archives`, by content;
-// a file under the URL's own name whose bytes differ is not taken.
+// X1: XLINGS_ARCHIVES (several entries) before `archives` (one relative to
+// the home), by content; a file under the URL's own name whose bytes differ
+// is not taken.
 XTEST(ArchiveSources, DirectoriesAnswerInOrderAndOnlyByContent, .area = "xim",
       .covers = {"ARCHIVE-DIR-BY-CONTENT", "ARCHIVE-DIR-VERIFIED", "ARCHIVE-DIR-ORDER", "ARCHIVE-CONFIG"},
       .requires_ = {"xlings-bin"}) {
     auto home = tk::Home::isolated("archives-order");
     auto f = make_fixture_(home.root() / "fixture", "http://127.0.0.1:9");
-    init_home_(home, config_(f));
-    const auto first = home.root() / "first";    // XLINGS_ARCHIVES
-    const auto second = home.root() / "second";  // .xlings.json archives
+    auto config = config_(f);
+    config["archives"] = nlohmann::json::array({"second"});   // relative to the home
+    init_home_(home, config);
+    const auto absent = home.root() / "absent";
+    const auto first = home.root() / "first";       // XLINGS_ARCHIVES, after an absent entry
+    const auto second = home.dir() / "second";      // .xlings.json archives
     tk::write_file(first / "x" / "copy one", f.files[host_file_("alpha")]);
     tk::write_file(first / host_file_("beta"), "not beta's bytes, under beta's own file name");
     tk::write_file(second / "y" / "copy two", f.files[host_file_("alpha")]);
     tk::write_file(second / "deep" / "er" / "unrelated.name", f.files[host_file_("beta")]);
 
-    auto added = home.xlings({"config", "--add-archives", second.string()});
-    ASSERT_EQ(added.exit_code, 0) << added.transcript();
-    const auto config = nlohmann::json::parse(tk::read_file(home.dir() / ".xlings.json"));
-    ASSERT_TRUE(config.contains("archives")) << config.dump();
-    ASSERT_EQ(config["archives"].size(), 1u);
-    EXPECT_TRUE(fs::equivalent(fs::path(config["archives"][0].get<std::string>()), second));
-    const auto shown = home.xlings({"config"});
-    EXPECT_NE(shown.transcript().find(second.string()), std::string::npos) << shown.transcript();
-
+    const char sep = tk::is_windows ? ';' : ':';
     const auto install = home.xlings({"install", "fixture:alpha@1.0.0", "-y", "-v"},
-                                     {{"XLINGS_ARCHIVES", first.string()},
+                                     {{"XLINGS_ARCHIVES", absent.string() + sep + first.string()},
                                       {"XLINGS_NET_UNREACHABLE", std::string(kOffline)}});
     ASSERT_EQ(install.exit_code, 0) << install.transcript();
     EXPECT_EQ(payload_(home, "alpha"), f.files[host_file_("alpha")]);
     EXPECT_EQ(payload_(home, "beta"), f.files[host_file_("beta")]) << install.transcript();
-    // XLINGS_ARCHIVES before `archives`: alpha came from the first directory.
+    // XLINGS_ARCHIVES before `archives`: alpha came from the first directory,
+    // beta from the relative `archives` entry.
     EXPECT_NE(install.transcript().find((first / "x" / "copy one").string()), std::string::npos)
         << install.transcript();
     EXPECT_EQ(install.transcript().find((second / "y" / "copy two").string()), std::string::npos)
         << install.transcript();
+    EXPECT_NE(install.transcript().find((second / "deep" / "er" / "unrelated.name").string()), std::string::npos)
+        << install.transcript();
+    EXPECT_EQ(count_(install.transcript(), absent.string() + " is not a directory here"), 1u) << install.transcript();
+}
 
-    auto removed = home.xlings({"config", "--rm-archives", second.string()});
+// The configuration of `archives`.
+XTEST(ArchiveSources, ConfigAddsAndRemovesArchiveDirectories, .area = "xim",
+      .covers = {"ARCHIVE-CONFIG"}, .requires_ = {"xlings-bin"}) {
+    auto home = tk::Home::isolated("archives-config");
+    const auto dir = home.root() / "archives";
+    fs::create_directories(dir);
+    auto added = home.xlings({"config", "--add-archives", dir.string()});
+    ASSERT_EQ(added.exit_code, 0) << added.transcript();
+    const auto config = nlohmann::json::parse(tk::read_file(home.dir() / ".xlings.json"));
+    ASSERT_TRUE(config.contains("archives")) << config.dump();
+    ASSERT_EQ(config["archives"].size(), 1u);
+    EXPECT_TRUE(fs::equivalent(fs::path(config["archives"][0].get<std::string>()), dir));
+    const auto shown = home.xlings({"config"});
+    EXPECT_NE(shown.transcript().find(dir.string()), std::string::npos) << shown.transcript();
+    EXPECT_NE(home.xlings({"config", "--add-archives", (home.root() / "absent").string()}).exit_code, 0);
+
+    auto removed = home.xlings({"config", "--rm-archives", dir.string()});
     ASSERT_EQ(removed.exit_code, 0) << removed.transcript();
     EXPECT_FALSE(nlohmann::json::parse(tk::read_file(home.dir() / ".xlings.json")).contains("archives"));
-    EXPECT_NE(home.xlings({"config", "--rm-archives", second.string()}).exit_code, 0);
+    EXPECT_NE(home.xlings({"config", "--rm-archives", dir.string()}).exit_code, 0);
+}
+
+// The download cache before `install --from` before XLINGS_ARCHIVES.
+XTEST(ArchiveSources, TheCacheThenFromThenTheEnvironment, .area = "xim",
+      .covers = {"ARCHIVE-DIR-ORDER"}, .requires_ = {"xlings-bin"}) {
+    auto home = tk::Home::isolated("archives-cache-first");
+    auto f = make_fixture_(home.root() / "fixture", "http://127.0.0.1:9");
+    init_home_(home, config_(f));
+    const auto from = home.root() / "from";
+    const auto env = home.root() / "env";
+    tk::write_file(home.dir() / "data" / "runtimedir" / host_file_("beta"), f.files[host_file_("beta")]);
+    tk::write_file(from / "beta copy", f.files[host_file_("beta")]);
+    tk::write_file(from / "alpha copy", f.files[host_file_("alpha")]);
+    tk::write_file(env / "alpha copy", f.files[host_file_("alpha")]);
+    const auto install = home.xlings({"install", "--from", from.string(), "fixture:alpha@1.0.0", "-y", "-v"},
+                                     {{"XLINGS_ARCHIVES", env.string()},
+                                      {"XLINGS_NET_UNREACHABLE", std::string(kOffline)}});
+    const auto out = install.transcript();
+    ASSERT_EQ(install.exit_code, 0) << out;
+    EXPECT_EQ(payload_(home, "beta"), f.files[host_file_("beta")]);
+    EXPECT_EQ(out.find("[archives] fixture:beta@1.0.0 from"), std::string::npos) << "the cache answers first\n" << out;
+    EXPECT_NE(out.find((from / "alpha copy").string()), std::string::npos) << out;
+    EXPECT_EQ(out.find((env / "alpha copy").string()), std::string::npos) << out;
+}
+
+// A memo that claims a digest its file no longer has (same size and mtime,
+// other bytes) is caught when the file is taken, and the file is not used.
+XTEST(ArchiveSources, AStaleMemoEntryIsNotTrusted, .area = "xim",
+      .covers = {"ARCHIVE-DIR-VERIFIED", "ARCHIVE-DIR-INDEX"}, .requires_ = {"xlings-bin"}) {
+    auto home = tk::Home::isolated("archives-stale-memo");
+    auto f = make_fixture_(home.root() / "fixture", "http://127.0.0.1:9");
+    init_home_(home, config_(f));
+    const auto dir = home.root() / "archives";
+    const auto file = dir / "beta";
+    const auto& good = f.files[host_file_("beta")];
+    tk::write_file(file, good);
+    const auto memo = ar::memo_file_for(dir, home.dir() / "data");
+    ASSERT_TRUE(ar::find_in(dir, sha_(good), memo));   // the memo now names the good bytes
+    const auto mtime = fs::last_write_time(file);
+    std::string forged = good;
+    forged[0] = static_cast<char>(forged[0] ^ 1);
+    tk::write_file(file, forged);
+    fs::last_write_time(file, mtime);
+
+    const auto install = home.xlings({"install", "fixture:beta@1.0.0", "-y"},
+                                     {{"XLINGS_ARCHIVES", dir.string()},
+                                      {"XLINGS_NET_UNREACHABLE", std::string(kOffline)}});
+    EXPECT_NE(install.exit_code, 0) << install.transcript();
+    EXPECT_EQ(payload_(home, "beta"), "<absent>");
+    EXPECT_NE(install.transcript().find("1 archive is in no source"), std::string::npos) << install.transcript();
+    EXPECT_EQ(tk::read_file(memo).find(sha_(good)), std::string::npos) << "the stale entry was kept";
+}
+
+// A symbolic link in an archive directory is taken as the file it names: the
+// cache holds the bytes, not a link that dangles once it is beside them.
+XTEST(ArchiveSources, ALinkIsTakenAsTheFileItNames, .area = "xim",
+      .covers = {"ARCHIVE-DIR-BY-CONTENT"}, .requires_ = {"xlings-bin", "posix"}) {
+    auto home = tk::Home::isolated("archives-link");
+    auto f = make_fixture_(home.root() / "fixture", "http://127.0.0.1:9");
+    init_home_(home, config_(f));
+    const auto dir = home.root() / "archives";
+    tk::write_file(dir / "real" / "beta.bytes", f.files[host_file_("beta")]);
+    fs::create_symlink(fs::path("real") / "beta.bytes", dir / "beta-link");
+    const auto install = home.xlings({"install", "fixture:beta@1.0.0", "-y"},
+                                     {{"XLINGS_ARCHIVES", dir.string()},
+                                      {"XLINGS_NET_UNREACHABLE", std::string(kOffline)}});
+    ASSERT_EQ(install.exit_code, 0) << install.transcript();
+    const auto cached = home.dir() / "data" / "runtimedir" / host_file_("beta");
+    EXPECT_FALSE(fs::is_symlink(fs::symlink_status(cached))) << cached.string();
+    EXPECT_EQ(tk::read_file(cached), f.files[host_file_("beta")]);
 }
 
 // X2: `download --to --with-index` on a machine with a network, then
@@ -291,7 +400,7 @@ XTEST(ArchiveSources, DirectoriesAnswerInOrderAndOnlyByContent, .area = "xim",
 // server is gone by then). gamma states no sha256: the bundle's manifest
 // names its bytes.
 XTEST(ArchiveSources, ABundleInstallsWhereThereIsNoNetwork, .area = "xim", .cost = tk::Cost::Medium,
-      .covers = {"ARCHIVE-BUNDLE-ROUNDTRIP", "ARCHIVE-BUNDLE-MANIFEST", "ARCHIVE-BUNDLE-NO-SHA"},
+      .covers = {"ARCHIVE-BUNDLE-ROUNDTRIP", "ARCHIVE-BUNDLE-MANIFEST", "ARCHIVE-BUNDLE-NO-SHA", "ARCHIVE-BUNDLE-SNAPSHOTS"},
       .requires_ = {"xlings-bin"}) {
     auto online = tk::Home::isolated("archives-bundle-online");
     const auto root = online.root() / "fixture";
@@ -332,9 +441,11 @@ XTEST(ArchiveSources, ABundleInstallsWhereThereIsNoNetwork, .area = "xim", .cost
     }
     EXPECT_TRUE(indexes.contains("fixture")) << download.transcript();
 
-    // Another machine: a home that has never seen the fixture index.
+    // Another machine, whose own index has the same packages at the same
+    // versions with other bytes: the bundle's snapshots resolve, not it.
     auto offline = tk::Home::isolated("archives-bundle-offline");
-    init_home_(offline, std::nullopt);
+    const auto conflicting = make_fixture_(offline.root() / "fixture", "http://127.0.0.1:9", "other ");
+    init_home_(offline, config_(conflicting));
     const std::vector<std::string> args{"install", "--from", bundle.string(),
                                         "fixture:alpha@1.0.0", "fixture:gamma@1.0.0", "-y"};
     tk::RunResult install;
@@ -381,7 +492,25 @@ XTEST(ArchiveSources, ADownloadForAnotherHostTakesThatHostsArchives, .area = "xi
     EXPECT_EQ(sha, (std::map<std::string, std::string>{
                        {"fixture:alpha", sha_(f.files["alpha-1.0.0-windows.bin"])},
                        {"fixture:beta", sha_(f.files["beta-1.0.0-windows.bin"])}}));
-    EXPECT_NE(home.xlings({"download", "fixture:alpha@1.0.0", "--to", bundle.string(), "--host", "plan9"}).exit_code, 0);
+    const auto plan9 = home.xlings({"download", "fixture:alpha@1.0.0", "--to", bundle.string(), "--host", "plan9"});
+    EXPECT_NE(plan9.exit_code, 0);
+    EXPECT_NE(plan9.transcript().find("'plan9' is not a host: <os>-<arch>"), std::string::npos) << plan9.transcript();
+}
+
+// A manifest that cannot be read stops `download --to` before anything is
+// written into its directory.
+XTEST(ArchiveSources, AnUnreadableManifestStopsADownload, .area = "xim",
+      .covers = {"ARCHIVE-BUNDLE-MANIFEST"}, .requires_ = {"xlings-bin"}) {
+    auto home = tk::Home::isolated("archives-unreadable");
+    auto f = make_fixture_(home.root() / "fixture", "http://127.0.0.1:9");
+    init_home_(home, config_(f));
+    const auto bundle = home.root() / "bundle";
+    tk::write_file(bundle / "bundle.toml", "this is not a manifest\n");
+    const auto download = home.xlings({"download", "fixture:alpha@1.0.0", "--to", bundle.string()});
+    EXPECT_NE(download.exit_code, 0) << download.transcript();
+    EXPECT_NE(download.transcript().find("bundle.toml"), std::string::npos) << download.transcript();
+    EXPECT_FALSE(fs::exists(bundle / "archives"));
+    EXPECT_EQ(tk::read_file(bundle / "bundle.toml"), "this is not a manifest\n");
 }
 
 // X2: what no source has is said once, all of it, with the way out.
@@ -405,4 +534,21 @@ XTEST(ArchiveSources, ArchivesNoSourceHasAreListedTogether, .area = "xim",
     }
     EXPECT_NE(out.find("xlings download fixture:beta@1.0.0 fixture:alpha@1.0.0 --to"), std::string::npos) << out;
     EXPECT_NE(out.find(empty.string()), std::string::npos) << "the directories asked are named\n" << out;
+}
+
+// When the network was asked, the report says what it answered for each.
+XTEST(ArchiveSources, TheReportSaysWhatTheNetworkAnswered, .area = "xim",
+      .covers = {"ARCHIVE-UNAVAILABLE"}, .requires_ = {"xlings-bin"}) {
+    auto home = tk::Home::isolated("archives-404");
+    const auto root = home.root() / "fixture";
+    fs::create_directories(root / "nothing");
+    auto server = tk::fixture::Server::start(root / "nothing");   // serves no file at all
+    ASSERT_TRUE(server) << server.error();
+    auto f = make_fixture_(root, server->url());
+    init_home_(home, config_(f));
+    const auto install = home.xlings({"install", "fixture:beta@1.0.0", "-y"});
+    const auto out = install.transcript();
+    EXPECT_NE(install.exit_code, 0) << out;
+    EXPECT_NE(out.find("1 archive is in no source, and the network did not provide them"), std::string::npos) << out;
+    EXPECT_NE(out.find("404"), std::string::npos) << out;
 }

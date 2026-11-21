@@ -80,11 +80,15 @@ text = "download --to --with-index writes each archive of the closure under its 
 status = "required"
 
 [ARCHIVE-BUNDLE-MANIFEST]
-text = "a bundle.toml reader ignores tables and keys it does not know, and xlings rewriting the manifest keeps another program's tables"
+text = "a bundle.toml reader ignores tables and keys it does not know, and xlings rewriting the manifest keeps them; a newer format and an unreadable manifest are refused"
 status = "required"
 
 [ARCHIVE-BUNDLE-NO-SHA]
 text = "for a recipe that states no sha256, the sha256 a bundle's manifest records for that package, version and host names the archive"
+status = "required"
+
+[ARCHIVE-BUNDLE-SNAPSHOTS]
+text = "install --from a bundle with index snapshots resolves with them alone: a home index with other recipes for the same packages and versions is not read"
 status = "required"
 
 [ARCHIVE-BUNDLE-HOST]
@@ -92,7 +96,7 @@ text = "download --host <os>-<arch> writes the archives of that host's closure, 
 status = "required"
 
 [ARCHIVE-UNAVAILABLE]
-text = "the archives of an install that no source has are reported together, once, each with its package, version, sha256 and URL, with the directories asked and the download --to / install --from remedy"
+text = "the archives of an install that no source has are reported together, once, each with its package, version, sha256, URL and what the network answered (or that it was not used), with the directories asked and the download --to / install --from remedy"
 status = "required"
 
 [IFACE-CALL-ENDS]
