@@ -69,7 +69,7 @@ step "a hook starts a downloaded program (an ordinary home)" ok -- X install -y 
 
 # A SubOS with a policy: its hooks run in a worker already, given the same runtime.
 if out="$(X subos new hmhook --sandbox dev 2>&1)"; then
-    step "the same in a SubOS with a policy" ok -- env XLINGS_ACTIVE_SUBOS=hmhook X install -y hmfix:hookrt@1.0.1
+    step "the same in a SubOS with a policy" ok -- env XLINGS_ACTIVE_SUBOS=hmhook "$XLINGS_HOME/bin/xlings" install -y hmfix:hookrt@1.0.1
 else
     needs_setup "$out" || record "a SubOS with a policy could not be made here" true 0 "$out"
 fi

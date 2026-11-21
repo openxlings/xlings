@@ -671,9 +671,32 @@ launch(const subos::policy::Policy& declared, const fs::path& package,
             w->hook_logs.insert(path.lexically_normal());
             return {};
         };
+        // A worker that exists only to give the hook the runtime at the
+        // standard loader path (#724 §4.1 (b)) sees this machine as the
+        // hook in this process would -- every entry of / at its own path,
+        // writable as it is for this user -- and nothing else changed but
+        // that path: the root's own userland, plus the runtime.
+        const bool transparent = !runtime_mounts.empty() && layer_only && !readonly_payload && !build;
+        if (transparent && sandbox.backend != subos::spec::Backend::Bwrap)
+            return std::unexpected("no bwrap to give the hook the runtime at its standard path");
+        if (transparent) {
+            sandbox.mounts.clear();
+            std::error_code ec;
+            for (fs::directory_iterator it("/", ec), end; !ec && it != end; it.increment(ec)) {
+                const auto name = it->path().filename().string();
+                if (name == "proc" || name == "dev" || name == "sys") continue;
+                std::error_code rec;
+                const auto real = fs::canonical(it->path(), rec);
+                if (rec) continue;   // a link to nowhere: nothing to show
+                sandbox.mounts.push_back({subos::spec::MountKind::Bind, real.generic_string(), "/" + name});
+            }
+            sandbox.mounts.push_back({subos::spec::MountKind::DevBind, "/dev", "/dev"});
+            sandbox.mounts.push_back({subos::spec::MountKind::Proc, "", "/proc"});
+            sandbox.mounts.push_back({subos::spec::MountKind::RoBind, "/sys", "/sys"});
+        }
         if (sandbox.backend == subos::spec::Backend::Bwrap) {
             // No compiled instance mount is writable by default for a recipe.
-            for (auto& mount : sandbox.mounts) {
+            for (auto& mount : transparent ? std::span<subos::spec::MountOp>{} : std::span(sandbox.mounts)) {
                 if (mount.kind == subos::spec::MountKind::Bind)
                     mount.kind = subos::spec::MountKind::RoBind;
                 for (const auto file : {"passwd", "group", "hosts", "nsswitch.conf"})

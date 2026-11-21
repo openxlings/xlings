@@ -515,7 +515,8 @@ X15 ─────────────────────────�
 - 为什么是现在最好的：判定是按根做的，不是按包做的——xlings 无法事先知道哪个 hook 会启动下载来的程序。
   只给"需要的包"开 worker 就得让配方声明，而这类宿主上以前这些包本来就装不上。worker 是已有的、
   有 policy 的 SubOS 每天在走的路径。
-- 它的代价：这类宿主上 hook 的环境变了（home 只读、私有的 `HOME` 与 `/tmp`）；每个包多一次 worker 启动。
+- 它的代价：每个包多一次 worker 启动；hook 在一个 user namespace 里（`sudo` 一类不可用，而配方本就不得运行它）。
+  hook 看到的文件系统不变（§12：worker 呈现这台机器本来的样子）。
 - 什么时候重看：
   - host-matrix 的 u-alpine、u-alpine-arm 出现成批的退步，且原因是 worker 的限制而不是配方的假设。
   - 配方有了声明"hook 里要运行自己的 payload"的字段：那时可以只给声明了的包开 worker。
@@ -640,6 +641,8 @@ X15 ─────────────────────────�
 | 做不到时的提示 `xlings self doctor --isolation --fix` | `xlings self doctor --isolation`（说明这台机器缺什么） | `--fix` 只处理 AppArmor 的情形；Alpine 上缺的是 bwrap（`xlings install bwrap`） |
 | guest 的构建版本即客户端版本 | 取到的构建旁记 `.xlings-release`；客户端版本不在索引里时（候选、开发构建）取到的是最新发布的版本，与它相同的 guest 视为当前，记 `current_for` | 否则开发构建会每次都替换 guest |
 | Linux 的同构根用例另造一个根 | 用 carrier 真实的镜像：桩 `wsl.exe` 导入到目录，bwrap 进入（`e2e/test_hook_runtime`，acceptance 一道，静态的发布构建）；(a) 链接、(b) 去掉链接后经 worker。(b) 只在这个根里能再起 bwrap 时断言（Ubuntu runner 的 AppArmor 不一定允许），(b) 的真实覆盖是每个 PR 的 u-alpine 一道 | 同构即同一个镜像；不在测试里复制镜像的组成 |
+| (b) 的 worker 用 `minimum_layer_policy` 编译出的沙箱（home 只读、私有的 `HOME` 与 `/tmp`），再追加挂载 | 只为补运行时而起的 worker 看到的是这台机器本来的样子：`/` 的每个条目在原处、按这个用户原有的权限可写，再加 `/dev`、`/proc`、`/sys` 与标准路径的挂载；有 policy 的 SubOS（E3）仍是它编译出的沙箱加这条路径。取舍 2 的代价（hook 的环境变了）因此不存在 | PR 的 u-alpine 一道实测：按 policy 编译的 worker 里，ca-certificates 的 config hook 写不进正在造的系统的 sysroot（`luban new` 失败）。契约只要求"这个根的 userland 加上这条路径"，不要求隔离 |
+| bun 的配方只改为不跑 postinstall | 另外：aarch64 上只写 interpreter、不写 RPATH（`elfpatch.set_interpreter` 后 `elfpatch.skip()`） | 索引 CI 在 aarch64 的 host machine 根里运行改写后的 bun：SIGSEGV；本地 qemu-aarch64 复现，只写 interpreter 时运行、加 RPATH（任一顺序）时段错误（patchelf 移动了 `.dynamic`）。这是已有的问题（xim-pkgindex#1215 也遇到），与 postinstall 无关 |
 | u-alpine、u-alpine-arm 只在定时与手动的全矩阵里 | u-alpine 加入每个 PR 的 smoke；新场景 `hookrt`（普通 home、有 policy 的 SubOS；glibc 早于 2.34 的宿主断言失败的说明） | 没有 glibc loader 的宿主每个 PR 都测到 |
 | `luban status` 的 host machine 一行 | sandbox 一行的 how 带上 guest 的 xlings 版本与没有成功的更新；JSON 的 traits 有 `guest`、`guest_update` | 报告只有这一处说 host machine |
 | 安装的发布失败返回原始失败 | 消息为 `<包>: not published: <原因>`，回滚自身的失败接在后面；闭包检查的错误带上被拒绝的 interpreter | 同上文 |
