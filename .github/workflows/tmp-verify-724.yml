@@ -20,36 +20,6 @@ env:
   GIT_TERMINAL_PROMPT: '0'
 
 jobs:
-  # Control: a normal Linux host (it has /lib64/ld-linux-x86-64.so.2), the
-  # same recipe, the same release.
-  linux-control:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 30
-    steps:
-      - name: bun@1.3.11 on a host that has the system loader
-        env:
-          GH_TOKEN: ${{ github.token }}
-          WANT: ${{ inputs.version }}
-        run: |
-          set -u
-          tag="${WANT:+v$WANT}"; [ -n "$tag" ] || tag="$(gh release view -R openxlings/xlings --json tagName -q .tagName)"
-          ver="${tag#v}"
-          dl="$RUNNER_TEMP/dl"; mkdir -p "$dl"
-          gh release download "$tag" -R openxlings/xlings -p "xlings-$ver-linux-x86_64.tar.gz" -D "$dl"
-          mkdir -p "$RUNNER_TEMP/rel" && tar -xzf "$dl/xlings-$ver-linux-x86_64.tar.gz" -C "$RUNNER_TEMP/rel"
-          export XLINGS_HOME="$(echo "$RUNNER_TEMP"/rel/xlings-*)"
-          export PATH="$XLINGS_HOME/bin:$XLINGS_HOME/subos/current/bin:$PATH"
-          xlings --version
-          xlings self init
-          echo "--- system loader"; ls -l /lib64/ld-linux-x86-64.so.2
-          echo "--- install"
-          xlings install xim:bun@1.3.11 -y -v 2>&1 | tail -n 40
-          echo "install rc=${PIPESTATUS[0]}"
-          echo "--- run"
-          bun --version
-          echo "--- the hook log"
-          find "$XLINGS_HOME/logs" -name '*bun*' -type f -exec sh -c 'echo "--- $1"; tail -n 20 "$1"' _ {} \;
-
   wsl-carrier:
     runs-on: windows-2025
     timeout-minutes: 90
@@ -111,51 +81,17 @@ jobs:
         shell: pwsh
         run: ./.github/tmp-verify-724/verify.ps1 setup
 
-      - name: X3 what bun's own install.js does
-        shell: pwsh
-        timeout-minutes: 10
-        run: ./.github/tmp-verify-724/verify.ps1 x3
-
-      - name: X1 the report's command
-        shell: pwsh
-        timeout-minutes: 30
-        run: ./.github/tmp-verify-724/verify.ps1 x1
-
-      - name: X2 what the carrier has after X1
-        if: always()
-        shell: pwsh
-        timeout-minutes: 5
-        run: ./.github/tmp-verify-724/verify.ps1 x2
-
-      - name: X5 plain xlings CLI in the carrier
-        if: always()
-        shell: pwsh
-        timeout-minutes: 15
-        run: ./.github/tmp-verify-724/verify.ps1 x5
-
-      - name: X6 interface inside the carrier
-        if: always()
-        shell: pwsh
-        timeout-minutes: 20
-        run: ./.github/tmp-verify-724/verify.ps1 x6
-
       - name: X7 interface relayed to Windows
         if: always()
         shell: pwsh
         timeout-minutes: 20
         run: ./.github/tmp-verify-724/verify.ps1 x7
 
-      - name: X4 counterfactual, /lib64 linked to the abi family
+      - name: X6 interface inside the carrier
         if: always()
         shell: pwsh
-        timeout-minutes: 15
-        run: ./.github/tmp-verify-724/verify.ps1 x4
-
-      - name: X8 the report's command with that link
-        if: always()
-        shell: pwsh
-        timeout-minutes: 30
-        run: ./.github/tmp-verify-724/verify.ps1 x8
+        timeout-minutes: 20
+        run: ./.github/tmp-verify-724/verify.ps1 x6
 
       - name: collect
         if: always()
