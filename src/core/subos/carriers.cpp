@@ -98,8 +98,59 @@ carrier::Probe probe_carrier_(std::string_view name) {
                           .route = "xlings self update"};
 }
 
+namespace {
+
+// A hook's log the guest named ("full log: /xlings/logs/hooks/..."), fetched
+// into this home: the user never enters the host machine, so the file an
+// error points at is on this computer (#724 §4.2). Only under the guest
+// home's logs/. Its local path, or nothing when it could not be read.
+std::optional<fs::path> fetch_guest_log_(const carrier::Endpoint& at, std::string_view guestPath) {
+    const fs::path guest(guestPath);
+    const auto guestLogs = fs::path(at.xlings).parent_path().parent_path() / "logs";
+    const auto relative = guest.lexically_normal().lexically_relative(guestLogs);
+    if (relative.empty() || relative.is_absolute() || *relative.begin() == "..") return std::nullopt;
+    std::vector<std::string> argv = at.launcher;
+    argv.insert(argv.end(), {"/bin/busybox", "cat", guest.generic_string()});
+    std::string bytes;
+    if (platform::stream::run(argv, [&](std::string_view stream, std::string_view chunk) {
+            if (stream == "stdout") bytes.append(chunk);
+        }) != 0)
+        return std::nullopt;
+    const auto local = Config::paths().homeDir / "logs" / "carriers" / at.carrier / relative;
+    std::error_code ec;
+    fs::create_directories(local.parent_path(), ec);
+    try {
+        platform::write_file_atomic(local.string(), bytes);
+    } catch (const std::exception&) {
+        return std::nullopt;
+    }
+    return local;
+}
+
+// What the guest said, as said here: each "full log: <guest path>" names the
+// fetched copy, or says where the file is when it could not be fetched.
+void localize_guest_paths_(const carrier::Endpoint& at, std::string& text) {
+    static constexpr std::string_view kFullLog = "full log: ";
+    for (std::size_t at_ = text.find(kFullLog); at_ != std::string::npos; at_ = text.find(kFullLog, at_)) {
+        const auto start = at_ + kFullLog.size();
+        auto end = text.find_first_of("\r\n", start);
+        if (end == std::string::npos) end = text.size();
+        const auto guest = text.substr(start, end - start);
+        std::string replaced;
+        if (auto local = fetch_guest_log_(at, guest)) replaced = local->string();
+        else replaced = guest + " (in the Luban host machine)";
+        text.replace(start, end - start, replaced);
+        at_ = start + replaced.size();
+    }
+}
+
+}  // namespace
+
 // The SubOS is somewhere else: its own xlings answers this command there,
-// with this terminal attached, and its exit code is ours.
+// and its exit code is ours. At a terminal, with this terminal attached;
+// asked through the interface (luban, an agent), as `interface
+// subos_command` with its events relayed -- the private domain's rule, so a
+// failure there reaches the caller with what the guest said (#724 §4.2).
 int forward_to_carrier_(const CarrierBinding_& b, std::vector<std::string> args, EventStream& stream) {
     const auto* c = carrier::find(b.carrier);
     const auto probed = probe_carrier_(b.carrier);
@@ -118,7 +169,48 @@ int forward_to_carrier_(const CarrierBinding_& b, std::vector<std::string> args,
     std::map<std::string, std::string> env;
     for (const auto* k : {"XLINGS_AGENT_MODE", "XLINGS_NON_INTERACTIVE", "XLINGS_TRACE", "XLINGS_TRACE_ID", "XLINGS_ACTOR", "XLINGS_OPS_PARENT", "NO_COLOR", "TERM", "LANG"})
         if (const char* v = std::getenv(k)) env[k] = v;
-    return carrier::terminal(*at, args, env);
+    // The commands that hand over the terminal (the private domain's own
+    // exceptions, root_cmd.cpp).
+    static const std::set<std::string_view> kTerminal{"exec", "use", "start", "log", "boot", "__boot", "__broker-serve"};
+    if (!stream.structured() || args.size() < 2 || args[0] != "subos" || kTerminal.contains(args[1]))
+        return carrier::terminal(*at, args, env);
+    nlohmann::json words = nlohmann::json::array();
+    bool yes = false;
+    for (std::size_t i = 1; i < args.size(); ++i) {
+        if (args[i] == "-y" || args[i] == "--yes") { yes = true; continue; }
+        words.push_back(args[i]);
+    }
+    nlohmann::json call{{"argv", std::move(words)}};
+    if (yes) call["yes"] = true;
+    int answered = -1;
+    bool said = false;
+    std::string diagnostics;
+    const int rc = carrier::relay(*at, "subos_command", call, env,
+        [&](std::string_view line) {
+            relay_line_(line, stream, answered, nullptr, [&](ErrorEvent& e) {
+                said = true;
+                localize_guest_paths_(*at, e.message);
+                localize_guest_paths_(*at, e.hint);
+            });
+        },
+        &diagnostics);
+    if (!diagnostics.empty()) {
+        // Not events: kept here, for the failure that has nothing better.
+        const auto log = Config::paths().homeDir / "logs" / "carriers" / at->carrier / "stderr.log";
+        std::error_code ec;
+        fs::create_directories(log.parent_path(), ec);
+        std::ofstream(log, std::ios::app) << diagnostics;
+    }
+    if (answered >= 0) return answered;
+    if (!said) {
+        std::string tail = diagnostics;
+        if (tail.size() > 2000) tail = "..." + tail.substr(tail.size() - 2000);
+        stream.emit(ErrorEvent{.code = ErrorCode::Internal,
+                               .message = std::format("the {} host machine answered no result (exit {}){}{}", b.carrier,
+                                                      rc, tail.empty() ? "" : ": ", tail),
+                               .recoverable = true, .hint = "luban status"});
+    }
+    return rc == 0 ? 1 : rc;
 }
 
 int run_list_(EventStream& stream, bool listAll) {

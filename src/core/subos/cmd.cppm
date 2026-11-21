@@ -599,6 +599,12 @@ std::expected<int, std::string> run_domain_relayed_(const xlings::home::prefix_d
                                                    std::optional<xlings::home::domain_producer::OutputBinding> output,
                                                    bool yes, EventStream& stream, bool runtime = true,
                                                    std::vector<ErrorEvent>* held = nullptr);
+// One NDJSON line of an xlings that ran elsewhere (a domain, a carrier) as an
+// event of `stream`: the one decoder both relays use. `answered` takes the
+// result's exit code; `held` keeps errors instead of emitting them; `adjust`
+// rewrites an error as it is said here (a carrier's paths).
+void relay_line_(std::string_view text, EventStream& stream, int& answered, std::vector<ErrorEvent>* held = nullptr,
+                 const std::function<void(ErrorEvent&)>& adjust = {});
 // Any interface capability, run where a system lives, its events relayed into
 // `stream` as they come (design 2026-10-21 §7.2): the one path an event takes
 // out of a domain -- run_domain_relayed_ is it for subos_command.

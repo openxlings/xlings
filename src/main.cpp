@@ -73,6 +73,12 @@ int main(int argc, char* argv[]) {
         xlings::carrier::set_client_version(std::string(xlings::Info::VERSION));
         return xlings::carrier::guest_probe();
     }
+    // Run in a carrier's machine by the build the host granted it: this
+    // program becomes the guest's xlings (design 2026-11-21-issue-724 §4.4).
+    if (argc >= 2 && std::string_view(argv[1]) == "__carrier-adopt") {
+        std::vector<std::string> args(argv + 2, argv + argc);
+        return xlings::carrier::guest_adopt(args);
+    }
     if (argc >= 2 && std::string_view(argv[1]) == "__carrier-grant") {
         std::vector<std::string> args(argv + 2, argv + argc);
         return xlings::carrier::wsl2::guest_grant(args);

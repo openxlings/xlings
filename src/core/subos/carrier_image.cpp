@@ -28,6 +28,10 @@ std::optional<fs::path> find_binary(const fs::path& root) {
     return std::nullopt;
 }
 
+// The release a fetched build is, kept beside it: a client the index does
+// not have yet gets the latest published, under the client's own name.
+constexpr std::string_view kBuildVersion = ".xlings-release";
+
 std::expected<fs::path, std::string> download_linux_build(const fs::path& home) {
     const std::string version(Info::VERSION);
     const auto cache = home / "carriers" / "linux-xlings" / version;
@@ -62,7 +66,10 @@ std::expected<fs::path, std::string> download_linux_build(const fs::path& home) 
     fs::create_directories(cache, ec);
     if (auto extracted = xim::extract_archive(got.localFile, cache); !extracted)
         return std::unexpected(extracted.error());
-    if (auto found = find_binary(cache)) return *found;
+    if (auto found = find_binary(cache)) {
+        platform::write_string_to_file((cache / kBuildVersion).string(), match->version);
+        return *found;
+    }
     return std::unexpected("the linux artifact of xim:xlings@" + version + " holds no bin/xlings");
 }
 
@@ -198,8 +205,26 @@ std::expected<fs::path, std::string> linux_xlings(const fs::path& home) {
     return download_linux_build(home);
 }
 
+// What the guest is brought to (carrier::bring_guest): the same build an
+// image gets, the directory holding it, and the release it is.
+std::expected<carrier::GuestBuild, std::string> guest_build(const subos::HomeView& home) {
+    auto guest = linux_xlings(home.home);
+    if (!guest) return std::unexpected(guest.error());
+    std::string version(Info::VERSION);
+    for (auto dir = guest->parent_path(); auto i : {0, 1, 2}) {
+        (void)i;
+        if (auto recorded = platform::read_file(dir / kBuildVersion); recorded && !recorded->empty()) {
+            version = *recorded;
+            break;
+        }
+        dir = dir.parent_path();
+    }
+    return carrier::GuestBuild{guest->parent_path(), version};
+}
+
 void install() {
     carrier::set_image_source(image);
+    carrier::set_guest_build_source(guest_build);
     carrier::set_client_version(std::string(Info::VERSION));
 }
 

@@ -48,6 +48,8 @@ struct HostFacts {
     std::optional<Json> isolation;              // nullopt: xlings did not answer
     bool kvm { false };                         // /dev/kvm opens here
     std::optional<bool> host_machine_kvm;       // Windows: the Luban host machine's last answer
+    std::string host_machine_xlings;            // the release its xlings said it is
+    std::string host_machine_update;            // empty, or why bringing it to this release failed
     fs::path app;                               // the Luban OS app, if found
     std::vector<Devices> devices;
 };

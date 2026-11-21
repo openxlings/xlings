@@ -67,6 +67,16 @@ Probe probe(const subos::HomeView& home) {
     return {.supported = true, .reason = "Virtualization.framework", .evidence = trimmed(r.out)};
 }
 
+std::expected<std::string, std::string> grant(const Endpoint& at, const fs::path& host, bool writable,
+                                              std::string_view name) {
+    const auto h = helper(subos::HomeView{});
+    if (!h) return std::unexpected("there is no luban beside this xlings");
+    auto r = run(*h, {"share", "--name", at.instance, "--host", host.string(), "--tag",
+                                       std::string(name), "--mode", writable ? "rw" : "ro"});
+    if (r.rc != 0) return std::unexpected(std::format("cannot share {} with the carrier: {}", host.string(), trimmed(r.out)));
+    return trimmed(r.out);
+}
+
 std::expected<Endpoint, std::string> ensure(const subos::HomeView& home) {
     const auto h = helper(home);
     if (!h) return std::unexpected("there is no luban beside this xlings to run the Luban host machine");
@@ -94,7 +104,8 @@ std::expected<Endpoint, std::string> ensure(const subos::HomeView& home) {
     } else if (status.rc != 0) {
         return std::unexpected(std::format("the host machine {} answered {}: {}", name, status.rc, trimmed(status.out)));
     }
-    refresh_guest(at, home.home / "carriers" / "vz" / "probe.json");
+    if (auto brought = bring_guest(home, at, home.home / "carriers" / "vz" / "probe.json", grant); !brought)
+        return std::unexpected(brought.error());
     return at;
 }
 
@@ -148,15 +159,7 @@ Carrier make() {
             return std::unexpected(std::format("the host machine {} did not stop: {}", at.instance, trimmed(r.out)));
         return {};
     };
-    c.grant = [](const Endpoint& at, const fs::path& host, bool writable,
-                 std::string_view name) -> std::expected<std::string, std::string> {
-        const auto h = helper(subos::HomeView{});
-        if (!h) return std::unexpected("there is no luban beside this xlings");
-        auto r = run(*h, {"share", "--name", at.instance, "--host", host.string(), "--tag",
-                                           std::string(name), "--mode", writable ? "rw" : "ro"});
-        if (r.rc != 0) return std::unexpected(std::format("cannot share {} with the carrier: {}", host.string(), trimmed(r.out)));
-        return trimmed(r.out);
-    };
+    c.grant = grant;
     return c;
 }
 

@@ -63,6 +63,15 @@ Mode sandbox_(const HostFacts& f) {
     if (row && row->value("supported", false)) {
         m.ready = true;
         m.how = std::format("in the Luban host machine ({})", carrier_title_(carrier));
+        if (!f.host_machine_xlings.empty()) {
+            m.traits["guest"] = f.host_machine_xlings;
+            m.how += std::format("; its xlings {}", f.host_machine_xlings);
+        }
+        if (!f.host_machine_update.empty()) {
+            // Tried again on its next use; said until then.
+            m.traits["guest_update"] = f.host_machine_update;
+            m.how += std::format("; the last update did not take: {}", f.host_machine_update);
+        }
         return m;
     }
     m.reason = row ? row->value("reason", std::string("it is not available"))
@@ -178,6 +187,13 @@ HostFacts gather(const fs::path& home, const Port& port) {
     // The Luban host machine says what it found when it last started.
     if (const auto probe = read_json_(home / "carriers" / "wsl2" / "probe.json"); probe.is_object() && probe.contains("kvm"))
         f.host_machine_kvm = probe.value("kvm", false);
+    // Its xlings, and the last time it was brought to this release (#724 §4.4).
+    for (const auto* carrier : {"wsl2", "vz"})
+        if (const auto probe = read_json_(home / "carriers" / carrier / "probe.json"); probe.is_object()) {
+            f.host_machine_xlings = probe.value("version", std::string{});
+            if (const auto u = probe.find("update"); u != probe.end() && u->is_object() && !u->value("ok", true))
+                f.host_machine_update = u->value("error", std::string("it did not take"));
+        }
     f.app = luban_os_app(home);
     const openhal::host::Host here;
     for (const auto kind : openhal::kKinds) {
