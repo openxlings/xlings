@@ -359,6 +359,9 @@ function Invoke-SuiteLubanWsl2Agent {
     Write-Host $status
     if ($status -notmatch 'sandbox\s+ready') { Fail "this runner's WSL 2 is not ready for a Luban system: $status" }
     Invoke-Step 'luban new agent --edition agent-workspace' @('luban', 'new', 'agent', '--edition', 'agent-workspace', '-y')
+    # The edition's network is only a proxy (net=proxy), which a person names
+    # once; bun --version uses none, so one that answers nothing will do.
+    Invoke-Step 'luban config agent --proxy' @('luban', 'config', 'agent', '--proxy', 'socks5h://127.0.0.1:9')
     $bun = (& luban run agent -- bun --version 2>&1 | Out-String)
     if ($LASTEXITCODE -ne 0 -or $bun -notmatch '\d+\.\d+\.\d+') { Fail "bun does not run in the agent workspace: $bun" }
     Write-Ok "bun $($bun.Trim()) in the agent workspace"
