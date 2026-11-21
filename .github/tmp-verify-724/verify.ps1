@@ -219,19 +219,19 @@ find /grant/old /grant/new -maxdepth 4 | head -30
 old=$(find /grant/old -path '*/bin/xlings' | head -1); new=$(find /grant/new -path '*/bin/xlings' | head -1)
 ls -l "$old" "$new"
 echo "--- the previous release, run from the mount"; "$old" --version; echo "rc=$?"
-echo "--- set the guest back: the previous release installs itself"
-"$old" self install </dev/null; echo "self install (old) rc=$?"
-/xlings/bin/xlings --version
-echo "--- forward: this release installs itself from the mount"
-"$new" self install </dev/null; echo "self install (new) rc=$?"
-/xlings/bin/xlings --version
+echo "--- self install wants a whole release directory: the two programs are replaced as files instead"
+put() { cp "$1" /xlings/bin/.xlings.new && chmod 755 /xlings/bin/.xlings.new && mv -f /xlings/bin/.xlings.new /xlings/bin/xlings; echo "replace rc=$?"; }
+echo "--- back: the previous release"; put "$old"; /xlings/bin/xlings --version
+/xlings/bin/xlings subos list 2>&1 | head -6; echo "older client on this home rc=$?"
+echo "--- forward: this release"; put "$new"; cp "$(dirname "$new")/luban" /xlings/bin/.luban.new && chmod 755 /xlings/bin/.luban.new && mv -f /xlings/bin/.luban.new /xlings/bin/luban
+/xlings/bin/xlings --version; /xlings/bin/luban --version
 ls -l /xlings/bin | head -20
 echo "--- the home still answers"
 /xlings/bin/xlings subos list 2>&1 | head -10
 umount /grant/old /grant/new 2>&1
 '@
     $script = $script.Replace('@OLD@', $env:X724_OLD_GUEST_DIR).Replace('@NEW@', $env:X724_GUEST_DIR)
-    Cr 'w1-guest-self-install.txt' 'W1 guest self install from a mounted Windows directory' $script | Out-Null
+    Cr 'w1-guest-self-install.txt' 'W1 guest xlings replaced from a mounted Windows directory' $script | Out-Null
 }
 
 # W2: ending wsl.exe on the host -- what becomes of the process it started in
@@ -239,23 +239,35 @@ umount /grant/old /grant/new 2>&1
 'w2' {
     Use-Home
     $distro = Get-Distro
+    Cr 'w2-kill.txt' 'W2 the guest script' "printf 'sleep `$1 &\nsleep `$1\nwait\n' > /root/w2.sh; cat /root/w2.sh" | Out-Null
+    $count = { param($tag, $label) Cr 'w2-kill.txt' $label "ps -o pid,ppid,args | grep 'sleep $tag' | grep -v grep; echo count=`$(ps -o args | grep 'sleep $tag' | grep -v grep | wc -l)" | Out-Null }
     foreach ($how in 'kill', 'taskkill-tree') {
         $tag = if ($how -eq 'kill') { '611' } else { '612' }
-        $p = Start-Process wsl.exe -ArgumentList @('-d', $distro, '-u', 'root', '--exec', '/bin/sh', '-c', "sleep $tag & sleep $tag; wait") -PassThru -WindowStyle Hidden
+        $p = Start-Process wsl.exe -ArgumentList @('-d', $distro, '-u', 'root', '--exec', '/bin/sh', '/root/w2.sh', $tag) -PassThru -WindowStyle Hidden
         Start-Sleep 5
-        Cr 'w2-kill.txt' "W2 [$how] before: guest processes" "ps | grep 'sleep $tag' | grep -v grep; echo count=`$(ps | grep 'sleep $tag' | grep -v grep | wc -l)" | Out-Null
+        & $count $tag "W2 [$how] before: guest processes"
         if ($how -eq 'kill') { Stop-Process -Id $p.Id -Force } else { taskkill.exe /PID $p.Id /T /F | Out-Host }
         Start-Sleep 5
-        Cr 'w2-kill.txt' "W2 [$how] after: guest processes" "ps | grep 'sleep $tag' | grep -v grep; echo count=`$(ps | grep 'sleep $tag' | grep -v grep | wc -l)" | Out-Null
+        & $count $tag "W2 [$how] after: guest processes"
     }
-    # A terminal-attached child (what stream::run starts): stdin closed by the host.
-    $psi = [Diagnostics.ProcessStartInfo]::new('wsl.exe', "-d $distro -u root --exec /bin/sh -c `"sleep 613; echo done`"")
+    # A child with pipes (what stream::run starts), ended by the host.
+    $psi = [Diagnostics.ProcessStartInfo]::new('wsl.exe', "-d $distro -u root --exec /bin/sh /root/w2.sh 613")
     $psi.RedirectStandardInput = $true; $psi.RedirectStandardOutput = $true; $psi.UseShellExecute = $false
     $q = [Diagnostics.Process]::Start($psi)
     Start-Sleep 5
+    & $count 613 'W2 [piped, Kill()] before: guest processes'
     $q.Kill()
     Start-Sleep 5
-    Cr 'w2-kill.txt' 'W2 [piped, Kill()] after: guest processes' "ps | grep 'sleep 613' | grep -v grep; echo count=`$(ps | grep 'sleep 613' | grep -v grep | wc -l)" | Out-Null
+    & $count 613 'W2 [piped, Kill()] after: guest processes'
+    # The same, its stdin closed first (what a guest command reading stdin sees).
+    $psi = [Diagnostics.ProcessStartInfo]::new('wsl.exe', "-d $distro -u root --exec /bin/sh -c `"cat; sleep 614`"")
+    $psi.RedirectStandardInput = $true; $psi.RedirectStandardOutput = $true; $psi.UseShellExecute = $false
+    $q = [Diagnostics.Process]::Start($psi)
+    Start-Sleep 4
+    Cr 'w2-kill.txt' 'W2 [stdin] before: guest processes' "ps -o pid,args | grep -E ' cat|sleep 614' | grep -v grep" | Out-Null
+    $q.Kill()
+    Start-Sleep 5
+    Cr 'w2-kill.txt' 'W2 [stdin, Kill()] after: guest processes' "ps -o pid,args | grep -E ' cat|sleep 614' | grep -v grep; echo listed" | Out-Null
 }
 
 # W3: in the carrier, what npm installs of bun without its lifecycle scripts.
@@ -265,6 +277,7 @@ umount /grant/old /grant/new 2>&1
 export XLINGS_HOME=/xlings XLINGS_NON_INTERACTIVE=1 NO_COLOR=1 HOME=/root
 export PATH=/xlings/bin:/xlings/subos/current/bin:/usr/bin:/bin:/usr/sbin:/sbin
 /xlings/bin/xlings install -y xim:node 2>&1 | tail -5
+export PATH="$(dirname "$(find /xlings/data/xpkgs -path '*xim-x-node*/bin/node' | head -1)"):$PATH"
 which node npm; node --version
 node -p 'process.report.getReport().header.glibcVersionRuntime'
 rm -rf /root/b; mkdir -p /root/b; cd /root/b

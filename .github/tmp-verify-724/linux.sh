@@ -15,10 +15,12 @@ self="$(realpath "$0")"
 if [[ $EUID -eq 0 ]]; then
     id hm >/dev/null 2>&1 || useradd -m -s /bin/bash hm
     mkdir -p /x724 && cp "$tarball" /x724/rel.tar.gz && cp "$self" /x724/linux.sh
-    chown -R hm: /x724 "$out"
-    exec runuser -u hm -- env -i HOME=/home/hm USER=hm LOGNAME=hm LANG=C.UTF-8 TERM=dumb \
+    # the user's own directory for the outputs: a runner's work tree is not theirs to enter
+    mkdir -p /x724/out; chown -R hm: /x724
+    runuser -u hm -- env -i HOME=/home/hm USER=hm LOGNAME=hm LANG=C.UTF-8 TERM=dumb \
         PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
-        bash /x724/linux.sh /x724/rel.tar.gz "$out" "$only"
+        bash /x724/linux.sh /x724/rel.tar.gz /x724/out "$only"
+    cp -a /x724/out/. "$out"/; exit 0
 fi
 
 export XLINGS_NON_INTERACTIVE=1 NO_COLOR=1
@@ -47,6 +49,7 @@ want() { [[ "$only" == all || " $only " == *" $1 "* ]]; }
 log "host"
 { . /etc/os-release; echo "os=$PRETTY_NAME"; echo "kernel=$(uname -r) arch=$arch"; id
   ls -ld /lib /lib64 /usr/lib /usr/lib64 2>&1; ls -l "$STD/$LOADER" 2>&1
+  echo "host libc: $( (ldd --version 2>&1 || true) | head -1)"
   echo "userns_restrict=$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns 2>/dev/null || echo absent)"
 } 2>&1 | tee "$out/host.txt"
 if [[ -e "$STD/$LOADER" ]]; then HOSTFORM=C; elif [[ -e "$STD" ]]; then HOSTFORM=B; else HOSTFORM=A; fi
@@ -63,6 +66,10 @@ BWRAP="$(find "$HOME/.xlings/data/xpkgs" -type f -name bwrap 2>/dev/null | head 
 BB="$(find "$HOME/.xlings/data/xpkgs" -type f -name busybox 2>/dev/null | head -1)"
 echo "bwrap=$BWRAP busybox=$BB"; "$BWRAP" --version 2>&1 | head -1
 FAM="$HOME/.xlings/abi/$FAMTAG"
+# node by its own path: a package installed as a dependency has no command on PATH
+run setup-node timeout 900 "$X" install -y xim:node
+NODEBIN="$(dirname "$(find "$HOME/.xlings/data/xpkgs" -path '*xim-x-node*/bin/node' 2>/dev/null | head -1)")"
+export PATH="$NODEBIN:$PATH"; echo "node at $NODEBIN: $(node --version 2>&1)"
 
 # The host's root as a worker or the private domain presents it: each entry
 # of / at its own path, read-only. `$1` (a directory) is left out.
@@ -204,6 +211,20 @@ if want L6; then
         tail -n 12 "$out/L6b-$n.txt"; rec "L6b:$p" "$rc"
     done
     run L6-hooklogs H /bin/sh -c 'for f in /xlings/logs/hooks/*; do echo "--- $f"; tail -n 12 "$f"; done 2>/dev/null | tail -n 150'
+fi
+
+# ---------------------------------------------------------------- L9 env userland
+# A worker over THIS host's home whose userland is the environment's (busybox
+# and the home's runtime), none of the host's: bun's own postinstall in it,
+# without and with the standard loader directory.
+if want L9 && [[ -d "$HOME/hroot/bin" ]]; then
+    R="$HOME/hroot"
+    EU=(--unshare-user --tmpfs / --ro-bind "$R/bin" /bin --ro-bind "$R/sbin" /sbin --ro-bind "$R/usr" /usr
+        --ro-bind "$R/etc" /etc --dir /tmp --dev /dev --proc /proc --bind "$HOME" "$HOME"
+        --setenv HOME "$HOME" --setenv PATH "$NODEBIN:/bin:/usr/bin:/sbin:/usr/sbin")
+    post="rm -rf '$HOME/b9'; mkdir -p '$HOME/b9'; cd '$HOME/b9' && npm install --no-fund --no-audit bun@1.3.11 2>&1 | tail -n 12; ls node_modules/@oven/ 2>&1; node_modules/.bin/bun --version; echo bun-rc=\$?"
+    run L9a-env-userland-no-loader env -i "$BWRAP" "${EU[@]}" /bin/sh -c "$post"
+    run L9b-env-userland-linked    env -i "$BWRAP" "${EU[@]}" --symlink "$FAM" "$STD" /bin/sh -c "$post; ls -l $STD/$LOADER"
 fi
 
 # ---------------------------------------------------------------- L8 two glibc
