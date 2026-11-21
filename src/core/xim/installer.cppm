@@ -597,6 +597,18 @@ std::vector<std::string> unfulfilled_program_promises_(
 
 using InstallRequestHandler = std::function<void(const std::vector<mcpplibs::xpkg::InstallRequest>&)>;
 
+// The archive a plan node downloads on `platform` and `arch`: one answer for
+// the install's download phase and for `xlings download`. nullopt when the
+// recipe declares no download source (a payload-free package); an error when
+// the source it declares does not resolve here.
+std::expected<std::optional<DownloadTask>, std::string>
+archive_task_for(const PlanNode& node,
+                 const mcpplibs::xpkg::Package& pkg,
+                 std::string_view platform,
+                 std::string_view arch,
+                 const DownloaderConfig& dlConfig,
+                 const std::filesystem::path& dataDir);
+
 class Installer {
     IndexManager* index_ { nullptr };
     PackageCatalog* catalog_ { nullptr };

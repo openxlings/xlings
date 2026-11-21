@@ -111,6 +111,50 @@ xlings config --mirror GLOBAL   # GitHub first
 在一个区域下载失败会去另一个区域重试。下载失败时会说明是谁的问题：源（字节不对、HTTP 错误——换下一个候选）、
 传输（超时、读不全——重试）、还是本机（磁盘满——不再尝试其他候选，也不怪罪任何一方）。
 
+## 归档的来源与没有网络的机器
+
+一个归档的身份是其配方给出的 sha256，而不是它的 URL 或文件名。每次下载按顺序询问各来源，第一个字节具有该摘要的文件经校验后，
+按下载所得的文件安装：
+
+1. 下载缓存（`data/runtimedir`，以 URL 的文件名存放的文件）；
+2. `install --from <dir>` 的目录；
+3. `XLINGS_ARCHIVES` 中的目录（分隔方式与 `PATH` 相同）；
+4. `.xlings.json` 的 `archives` 中的目录；
+5. 网络：配方的 URL 与上述镜像。
+
+### 归档目录
+
+```bash
+xlings config --add-archives /mnt/archives
+xlings config --rm-archives /mnt/archives
+```
+
+归档目录中的文件可以使用任意名字、位于任意层级。xlings 在 home 中为每个目录保存 sha256 的索引，按路径、大小与修改时间记录，
+因此一个文件只计算一次，改变之后才再次计算。字节不具有所给摘要的文件，无论叫什么名字，都不会被采用。
+
+### Bundle
+
+```bash
+xlings download gcc@16.1.0 --to ./bundle --with-index   # on a machine with a network
+xlings install --from ./bundle gcc@16.1.0               # on the machine without one
+```
+
+`download` 把这些包的依赖闭包在本宿主上下载的每个归档（`--host <os>-<arch>` 指定另一个宿主，例如 `windows-x86_64`）
+写入 `archives/<sha256>-<文件名>`；给出 `--with-index` 时，把解析出它们的每个索引的快照写入 `index/<name>`；并写出清单
+`bundle.toml`。在 Linux 上，闭包包含 `xim:patchelf`，没有 patchelf 的宿主上的安装会先安装它。已含有 bundle 的目录会被扩充：
+归档与快照被加入或替换，清单中 xlings 不认识的表被保留。
+
+`install --from` 使 bundle 成为第一个归档目录，并使其中的快照成为这条命令唯一的索引：解析时不获取任何索引，
+也不读取 home 自己的索引。bundle 缺少的归档仍会被下载，除非不使用网络（见下）。没有快照的目录只是一个归档目录，由 home 的索引解析。对于没有给出 sha256 的配方，清单为该包、
+版本与宿主记录的 sha256 即是归档的身份。清单及其规则见 [specs/bundle](../specs/bundle.md)；目录与环境变量见
+[specs/xlings-json](../specs/xlings-json.md)。
+
+### 没有网络时
+
+设置了 `XLINGS_NET_UNREACHABLE` 的进程不使用网络：xlings 在索引的 pointer 发现没有网络时设置它，调用者也可以事先设置它。
+此时所有来源都没有的归档被一次列出，每个都给出包、版本、sha256 与 URL，并列出询问过的目录与提供它们的命令。
+询问过网络而失败的下载由它的包报告一次，并给出失败的原因。
+
 ## 带命名空间的包
 
 ```bash
@@ -135,3 +179,6 @@ xlings install gcc@14.2.0          # the official index: no namespace needed
 | `xlings info <pkg>` | 包的版本、平台、来源 |
 | `xlings why <pkg>` | 依赖为什么解析到这个版本 |
 | `xlings install <ns>:<pkg>@<ver>` | 安装指定索引的包 |
+| `xlings download <pkg> --to <dir> --with-index` | 它的归档与索引，供没有网络的机器使用 |
+| `xlings install --from <dir> <pkg>` | 从这样的目录安装 |
+| `xlings config --add-archives <dir>` | 一个按内容取归档的目录 |

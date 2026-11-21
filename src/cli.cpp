@@ -42,6 +42,7 @@ import xlings.core.subos;
 import xlings.core.xself;
 import xlings.core.xself.init;
 import xlings.core.xim.commands;
+import xlings.core.xim.bundle;
 import xlings.core.xvm.types;
 import xlings.core.xvm.db;
 import xlings.core.xvm.commands;
@@ -873,7 +874,8 @@ std::optional<int> run_in_domain_(const std::string& name, const std::vector<std
     return *rc;
 }
 
-int install_into_system_layer_(const std::vector<std::string>& targets, bool yes, bool reconfig) {
+int install_into_system_layer_(const std::vector<std::string>& targets, bool yes, bool reconfig,
+                               const std::string& from) {
     namespace fs = std::filesystem;
     const char* named = std::getenv("XLINGS_SYSTEM_LAYER");
     const auto layer = fs::path(named && *named ? named : "/xlings");
@@ -915,6 +917,7 @@ int install_into_system_layer_(const std::vector<std::string>& targets, bool yes
     std::vector<std::string> argv{entry.string(), std::string("install")};
     if (yes) argv.push_back("-y");
     if (reconfig) argv.push_back("--reconfig");
+    if (!from.empty()) argv.insert(argv.end(), {"--from", from});
     argv.insert(argv.end(), targets.begin(), targets.end());
     const int rc = platform::run_argv_with_timeout(argv, std::chrono::hours(6));
     if (rc == 0)
@@ -1462,6 +1465,49 @@ int cmd_config_(const mcpplibs::cmdline::ParsedArgs& args, EventStream& stream) 
         if (name == Config::DEFAULT_INDEX_REPO_NAME) {
             log::println("  the default index stays configured with its built-in source");
         }
+        return 0;
+    }
+
+    // --add-archives <DIR> / --rm-archives <DIR>: the home's archive
+    // directories (`archives`), kept absolute so the entry means the same
+    // directory from wherever the next command runs. Added at the end: the
+    // order is the order they are asked in.
+    if (auto dir = args.value("add-archives")) {
+        const auto abs = std::filesystem::absolute(std::string(*dir)).lexically_normal();
+        std::error_code ec;
+        if (!std::filesystem::is_directory(abs, ec)) {
+            log::error("{} is not a directory", abs.string());
+            return 1;
+        }
+        const auto value = abs.string();
+        edits.push_back([value](nlohmann::json& json) {
+            if (!json.contains("archives") || !json["archives"].is_array()) json["archives"] = nlohmann::json::array();
+            for (const auto& entry : json["archives"])
+                if (entry.is_string() && entry.get<std::string>() == value) return;
+            json["archives"].push_back(value);
+        });
+        log::println("archives += {}", value);
+    }
+    if (auto dir = args.value("rm-archives")) {
+        const auto raw = std::string(*dir);
+        const auto value = std::filesystem::absolute(raw).lexically_normal().string();
+        bool removed = false;
+        edits.push_back([raw, value, &removed](nlohmann::json& json) {
+            if (!json.contains("archives") || !json["archives"].is_array()) return;
+            auto& arr = json["archives"];
+            for (auto it = arr.begin(); it != arr.end();) {
+                const bool same = it->is_string() && (it->get<std::string>() == value || it->get<std::string>() == raw);
+                if (same) { it = arr.erase(it); removed = true; }
+                else ++it;
+            }
+            if (arr.empty()) json.erase("archives");
+        });
+        if (!commit_edits()) return 1;
+        if (!removed) {
+            log::error("{} is not an archive directory of this home (xlings config lists them)", value);
+            return 1;
+        }
+        log::println("archives -= {}", value);
         return 0;
     }
 
@@ -2465,6 +2511,7 @@ int dispatch_(int argc, char* argv[]) {
             .option(cmdline::Option("reconfig").help("Run the configuration step again, even for packages already configured here"))
             .option(cmdline::Option("subos").takes_value().value_name("NAME").help("Install into this subos instead of the current one"))
             .option(cmdline::Option("system").help("Install into the system layer (/xlings): every user of this machine gets it"))
+            .option(cmdline::Option("from").takes_value().value_name("DIR").help("Take archives from DIR first and resolve with the index snapshots it carries (xlings download --to)"))
             .arg("packages").help("Package names with optional version")
             .action(wrap_rc([&stream](const cmdline::ParsedArgs& args) -> int {
                 apply_global_opts_(args);
@@ -2492,8 +2539,12 @@ int dispatch_(int argc, char* argv[]) {
                 }
 
                 const bool reconfig = args.is_flag_set("reconfig");
+                // --from <dir>: absolute, so a forwarded install (a domain,
+                // the system layer) reads the same directory.
+                std::string from;
+                if (auto dir = args.value("from")) from = std::filesystem::absolute(std::string(*dir)).lexically_normal().string();
                 if (args.is_flag_set("system"))
-                    return install_into_system_layer_(targets, args.is_flag_set("yes"), reconfig);
+                    return install_into_system_layer_(targets, args.is_flag_set("yes"), reconfig, from);
                 // --subos <name> (design §9; remove already had it): act on
                 // that subos, set the way `subos runtime` does -- the override
                 // recomputes the cached paths, the variable is what the
@@ -2512,9 +2563,21 @@ int dispatch_(int argc, char* argv[]) {
                     if (args.is_flag_set("yes")) forwarded.push_back("-y");
                     if (reconfig) forwarded.push_back("--reconfig");
                     if (args.is_flag_set("use")) forwarded.push_back("--use");
+                    if (!from.empty()) forwarded.insert(forwarded.end(), {"--from", from});
                     if (auto rc = run_in_domain_(name, forwarded)) return *rc;
                     platform::set_env_variable("XLINGS_ACTIVE_SUBOS", name);
                     (void)Config::set_active_subos_override(name);
+                }
+                if (!from.empty()) {
+                    if (auto used = xim::use_bundle(from); !used) {
+                        stream.emit(ErrorEvent{
+                            .code = ErrorCode::InvalidInput,
+                            .message = used.error(),
+                            .recoverable = true,
+                            .hint = "a directory written by `xlings download <package>... --to <dir> --with-index`",
+                        });
+                        return 1;
+                    }
                 }
                 if (targets.empty()) return install_from_project_config_(stream, reconfig);
 
@@ -2525,6 +2588,26 @@ int dispatch_(int argc, char* argv[]) {
                                         /*cancel=*/nullptr, /*dryRun=*/false,
                                         useAfter, /*allInStore=*/nullptr,
                                         reconfig);
+            }))
+
+        // download -- what an install needs, into a directory a machine
+        // without a network installs from (install --from)
+        .subcommand("download")
+            .description("Write the archives packages need, and the indexes that name them, to a directory")
+            .option(cmdline::Option("to").takes_value().value_name("DIR").help("The directory they are written to (required)"))
+            .option(cmdline::Option("with-index").help("Also write a snapshot of every index that resolved them"))
+            .option(cmdline::Option("host").takes_value().value_name("OS-ARCH").help("The host they are for (linux-x86_64, macosx-arm64, windows-x86_64); default this one"))
+            .arg("packages").help("Package names with optional version")
+            .action(wrap_rc([&stream](const cmdline::ParsedArgs& args) -> int {
+                apply_global_opts_(args);
+                std::vector<std::string> targets;
+                for (std::size_t i = 0; i < args.positional_count(); ++i) {
+                    auto t = args.positional(i);
+                    if (!t.empty()) targets.emplace_back(t);
+                }
+                return xim::cmd_download(targets, std::string(args.value("to").value_or("")),
+                                         args.is_flag_set("with-index"),
+                                         args.value("host").value_or(""), stream);
             }))
 
         // remove
@@ -2722,6 +2805,8 @@ int dispatch_(int argc, char* argv[]) {
             .option(cmdline::Option("clear-xpkg").takes_value().value_name("all|stale").help("Remove local recipes (all, or stale = identical/behind the synced index)"))
             .option(cmdline::Option("index-repo").takes_value().value_name("NS:URL").help("Add/update index repo (e.g. myns:https://...git)"))
             .option(cmdline::Option("rm-index-repo").takes_value().value_name("NAME").help("Remove an index repo entry"))
+            .option(cmdline::Option("add-archives").takes_value().value_name("DIR").help("Add a directory whose files are taken by content before the network"))
+            .option(cmdline::Option("rm-archives").takes_value().value_name("DIR").help("Remove an archive directory"))
             .action(wrap_rc([&stream](const cmdline::ParsedArgs& args) -> int {
                 apply_global_opts_(args);
                 return cmd_config_(args, stream);

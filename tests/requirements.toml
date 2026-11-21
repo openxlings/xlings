@@ -55,6 +55,50 @@ status = "required"
 text = "a home's upstreams lend payloads of the same identity as link entries (a junction on Windows), never written; removing one removes the link; a payload its upstream let go is installed in place"
 status = "required"
 
+[ARCHIVE-DIR-BY-CONTENT]
+text = "an archive directory answers a download by the sha256 the recipe states, whatever the file is called and however deep it lies"
+status = "required"
+
+[ARCHIVE-DIR-VERIFIED]
+text = "a file whose sha256 is not the recipe's is never taken from an archive directory, not even under the URL's own file name"
+status = "required"
+
+[ARCHIVE-DIR-ORDER]
+text = "a download asks the download cache, then install --from, then XLINGS_ARCHIVES, then .xlings.json archives, and the network last; offline (XLINGS_NET_UNREACHABLE) the network is not asked"
+status = "required"
+
+[ARCHIVE-DIR-INDEX]
+text = "an archive directory's sha256 index is memoised by path, size and mtime: a changed file is hashed again, a removed one forgotten"
+status = "required"
+
+[ARCHIVE-CONFIG]
+text = "config --add-archives and --rm-archives edit .xlings.json archives with absolute paths; config lists them; removing one that is not there fails"
+status = "required"
+
+[ARCHIVE-BUNDLE-ROUNDTRIP]
+text = "download --to --with-index writes each archive of the closure under its sha256, a snapshot of each index that resolved it and bundle.toml; install --from installs from that directory with no network and no index of the home's"
+status = "required"
+
+[ARCHIVE-BUNDLE-MANIFEST]
+text = "a bundle.toml reader ignores tables and keys it does not know, and xlings rewriting the manifest keeps them; a newer format and an unreadable manifest are refused"
+status = "required"
+
+[ARCHIVE-BUNDLE-NO-SHA]
+text = "for a recipe that states no sha256, the sha256 a bundle's manifest records for that package, version and host names the archive"
+status = "required"
+
+[ARCHIVE-BUNDLE-SNAPSHOTS]
+text = "install --from a bundle with index snapshots resolves with them alone: a home index with other recipes for the same packages and versions is not read"
+status = "required"
+
+[ARCHIVE-BUNDLE-HOST]
+text = "download --host <os>-<arch> writes the archives of that host's closure, and refuses a host it does not know"
+status = "required"
+
+[ARCHIVE-UNAVAILABLE]
+text = "offline, the archives of an install that no source has are reported together, once, each with its package, version, sha256 and URL, with the directories asked and the download --to / install --from remedy; a download the network failed is reported once, by its package, with its reason"
+status = "required"
+
 [IFACE-CALL-ENDS]
 text = "an interface call ends when its capability does: the heartbeat, stdin and signal threads wake on the call's end instead of sleeping out fixed slices"
 status = "required"

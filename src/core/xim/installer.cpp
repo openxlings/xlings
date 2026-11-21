@@ -16,6 +16,7 @@ import xlings.core.xim.index;
 import xlings.core.xim.catalog;
 import xlings.core.xim.resolver;
 import xlings.core.xim.downloader;
+import xlings.core.xim.archives;
 import xlings.core.log;
 import xlings.platform;
 import xlings.platform.target;
@@ -2622,6 +2623,55 @@ std::filesystem::path Installer::locate_dep_install_dir_(const InstallPlan& plan
     return node_payload_path(*n, dataDir);
 }
 
+std::expected<std::optional<DownloadTask>, std::string>
+archive_task_for(const PlanNode& node, const mcpplibs::xpkg::Package& pkg, std::string_view platform,
+                 std::string_view arch, const DownloaderConfig& dlConfig, const std::filesystem::path& dataDir) {
+    auto resource = detail_::resolve_download_resource_(
+        pkg.xpm, node.name, node.version, platform, arch, dlConfig.preferredMirror);
+    if (!resource) {
+        // A payload-free package is not a failure, and saying it is was
+        // noise on every install of one. `declares_no_download_source`
+        // asks the recipe rather than reading libxpkg's error text; see
+        // the note on it in compatibility.cppm for why that distinction
+        // is load-bearing rather than cosmetic.
+        //
+        // Nothing else changes for an install: only the DOWNLOAD is skipped.
+        // The node still installs, its hooks still run, and the checks that
+        // would catch a recipe which merely FORGOT its url -- an empty
+        // payload, declared programs that never registered, a failed
+        // install hook recording itself -- all still run and all still
+        // report.
+        if (declares_no_download_source(pkg, find_entry(pkg, platform, node.version), platform))
+            return std::optional<DownloadTask>{};
+        return std::unexpected(resource.error());
+    }
+
+    DownloadTask task;
+    task.name = detail_::plan_key_(node);
+    task.url = resource->url;
+    task.sha256 = resource->sha256;
+    task.cacheIdentity = std::format(
+        "{}/{}/{}/{}/{}",
+        node.name, resource->version, platform, arch,
+        resource->useResFallbacks ? "xlings-res" : resource->url);
+    task.destDir = detail_::runtime_dir_(node, dataDir);
+    task.package = node.canonicalName.empty()
+        ? canonical_package_name(node.namespaceName, node.name) : node.canonicalName;
+    task.version = node.version;
+    task.host = std::format("{}-{}", platform, mcpplibs::xpkg::normalize_arch(std::string(arch)));
+
+    if (resource->useResFallbacks) {
+        task.fallbackUrls = detail_::build_xlings_res_fallback_urls_(
+            node.name, resource->version, platform);
+    }
+
+    // Add remaining mirrors as fallbacks
+    for (auto& [key, mirrorUrl] : resource->mirrors) {
+        if (mirrorUrl != resource->url) task.fallbackUrls.push_back(mirrorUrl);
+    }
+    return std::optional<DownloadTask>(std::move(task));
+}
+
 std::expected<void, std::string> Installer::execute(const InstallPlan& requestedPlan, const DownloaderConfig& dlConfig, std::function<void(const InstallStatus&)> onStatus, InstallRequestHandler onInstallRequests, DownloadProgressSink onProgressState, CancellationToken* cancel, bool useAfterInstall, bool reconfig) {
 
     auto plan = requestedPlan;
@@ -2857,56 +2907,18 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& requested
             log::warn("{}", compatibility.advisory);
         }
 
-        auto resource = detail_::resolve_download_resource_(
-            pkg->xpm, node.name, node.version, platform, hostArch,
-            dlConfig.preferredMirror);
-        if (!resource) {
-            // A payload-free package is not a failure, and saying it is was
-            // noise on every install of one. `declares_no_download_source`
-            // asks the recipe rather than reading libxpkg's error text; see
-            // the note on it in compatibility.cppm for why that distinction
-            // is load-bearing rather than cosmetic.
-            //
-            // Nothing else changes: the `continue` below only skips the
-            // DOWNLOAD. The node still installs, its hooks still run, and the
-            // checks that would catch a recipe which merely FORGOT its url --
-            // an empty payload, declared programs that never registered, a
-            // failed install hook recording itself -- all still run and all
-            // still report.
-            if (declares_no_download_source(*pkg, entry, platform)) {
-                log::debug("{}: no download source declared; "
-                           "install hooks only", node.name);
-            } else {
-                log::warn("skipping {}: {}", node.name, resource.error());
-            }
+        auto archive = archive_task_for(node, *pkg, platform, hostArch, dlConfig, dataDir);
+        if (!archive) {
+            log::warn("skipping {}: {}", node.name, archive.error());
             continue;
         }
-
-        DownloadTask task;
-        task.name = detail_::plan_key_(node);
-        task.url = resource->url;
-        task.sha256 = resource->sha256;
-        task.cacheIdentity = std::format(
-            "{}/{}/{}/{}/{}",
-            node.name, resource->version, platform, hostArch,
-            resource->useResFallbacks ? "xlings-res" : resource->url);
-        task.destDir = detail_::runtime_dir_(node, dataDir);
-
-        if (resource->useResFallbacks) {
-            task.fallbackUrls = detail_::build_xlings_res_fallback_urls_(
-                node.name, resource->version, platform);
+        if (!*archive) {
+            log::debug("{}: no download source declared; "
+                       "install hooks only", node.name);
+            continue;
         }
-
-        // Add remaining mirrors as fallbacks
-        if (!resource->mirrors.empty()) {
-            for (auto& [key, mirrorUrl] : resource->mirrors) {
-                if (mirrorUrl != resource->url) {
-                    task.fallbackUrls.push_back(mirrorUrl);
-                }
-            }
-        }
-        plannedDownloads.insert(task.name);
-        dlTasks.push_back(std::move(task));
+        plannedDownloads.insert((*archive)->name);
+        dlTasks.push_back(std::move(**archive));
     }
 
     std::unordered_map<std::string, DownloadResult> downloadResults;
@@ -2932,6 +2944,8 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& requested
                 }
             }, cancel);
 
+        // What no source had, once and together, before each node's failure.
+        archives::report_unavailable(dlTasks, results);
         for (auto& r : results) {
             if (!r.success) {
                 downloadFailed.insert(r.name);

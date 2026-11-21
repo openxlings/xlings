@@ -488,10 +488,14 @@ std::filesystem::path sub_repo_dir_for(const IndexRepo& repo, bool projectScope)
 }
 
 std::vector<IndexRepo> discovered_global_sub_repos() {
+    // A bundle's snapshots are the whole index (install --from): its
+    // sub-indexes are snapshots of their own, and the home's are not read.
+    if (Config::index_snapshots_in_use()) return {};
     return load_sub_repos_json(sub_repos_json_path(false));
 }
 
 std::vector<IndexRepo> discovered_project_sub_repos() {
+    if (Config::index_snapshots_in_use()) return {};
     auto path = sub_repos_json_path(true);
     if (path.empty()) return {};
     return load_sub_repos_json(path);
@@ -523,6 +527,9 @@ std::string declared_sub_index_url(std::string_view name) {
 
 IndexEntryKind classify_index_entry(const IndexRepo& repo) {
     if (repo.name == Config::DEFAULT_INDEX_REPO_NAME) return IndexEntryKind::Independent;
+    // Each snapshot of a bundle is its own tree, whatever the home's default
+    // index declares for its name.
+    if (Config::index_snapshots_in_use()) return IndexEntryKind::Independent;
     const auto declared = declared_sub_index_url(repo.name);
     if (declared.empty()) return IndexEntryKind::Independent;
     return url_matches_declared_source(repo.url, declared)
@@ -652,6 +659,12 @@ bool sync_one_repo(const IndexRepo& repo,
 
 bool sync_all_repos(bool force, RepoSyncProgress onProgress, BytesProgress onBytesProgress) {
     namespace fs = std::filesystem;
+    // install --from: the indexes are a bundle's snapshots, fixed by what
+    // wrote them, and there is nothing to fetch.
+    if (Config::index_snapshots_in_use()) {
+        log::debug("[index] the bundle's snapshots are the index; nothing is fetched");
+        return true;
+    }
     auto mirror = Config::mirror();
 
     auto mainDir = main_repo_dir();

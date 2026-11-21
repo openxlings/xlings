@@ -68,6 +68,8 @@ int cmd_config(EventStream& stream) {
                  ? std::string(*Config::tui_interactive() ? "true" : "false")
                  : std::format("false ({})", i18n::tr("config.default_marker")));
 
+    for (const auto& dir : Config::archives()) addField(L("config.archives"), dir.string());
+
     auto& repos = Config::global_index_repos();
     for (auto& repo : repos) {
         addField(L("config.index_repo"), repo.name + " : " + repo.url);

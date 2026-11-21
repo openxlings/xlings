@@ -120,6 +120,21 @@ std::vector<Upstream> parse_upstreams_json(const nlohmann::json& json) {
     return out;
 }
 
+std::vector<std::filesystem::path> parse_archives_json(const nlohmann::json& json,
+                                                      const std::filesystem::path& home) {
+    std::vector<std::filesystem::path> out;
+    const auto list = json.find("archives");
+    if (list == json.end() || !list->is_array()) return out;
+    for (const auto& entry : *list) {
+        if (!entry.is_string() || entry.get<std::string>().empty()) continue;
+        std::filesystem::path dir = entry.get<std::string>();
+        if (dir.is_relative()) dir = home / dir;
+        dir = dir.lexically_normal();
+        if (std::ranges::find(out, dir) == out.end()) out.push_back(std::move(dir));
+    }
+    return out;
+}
+
 std::vector<IndexRepo> parse_index_repos_json(const nlohmann::json& json,
                                                      const std::string& mirror) {
     std::vector<IndexRepo> out;
@@ -638,7 +653,10 @@ double Config::probe_resource_server_latency_(const std::string& server) {
     if (candidates.empty()) return {};
 
     auto selected = candidates.front();
-    if (candidates.size() > 1) {
+    // Without a network (XLINGS_NET_UNREACHABLE) a probe can only time out,
+    // and an archive taken from a directory needs no server at all.
+    const char* down = std::getenv("XLINGS_NET_UNREACHABLE");
+    if (candidates.size() > 1 && !(down && *down)) {
         double bestLatency = std::numeric_limits<double>::infinity();
         for (auto& candidate : candidates) {
             auto latency = probe_resource_server_latency_(candidate);
@@ -1125,6 +1143,7 @@ void Config::ensure_index_config_() {
     defaultIndexRepoUrl_ = resolve_default_index_repo_(json, mirror_);
     globalIndexRepos_ = parse_index_repos_json(json, mirror_);
     upstreams_ = parse_upstreams_json(json);
+    archives_ = parse_archives_json(json, paths_.homeDir);
     load_resource_servers_from_json_(json, globalResourceServers_);
     globalIndexBases_ = resolve_index_base_(json, mirror_);
 
@@ -1146,6 +1165,9 @@ void Config::ensure_index_config_() {
             }
         }
     }
+    // After the defaults: a bundle's snapshots are the whole list, and the
+    // default index is among them only when the bundle carries it.
+    if (indexSnapshots_) globalIndexRepos_ = *indexSnapshots_;
 }
 
 std::optional<xvm::VInfo> Config::find_vinfo_(const std::string& target) {
@@ -1450,12 +1472,25 @@ void Config::load_ui_prefs_from_json_(const nlohmann::json& json) {
 }
 
 [[nodiscard]] const std::vector<IndexRepo>& Config::project_index_repos() {
+    static const std::vector<IndexRepo> kNone;
+    if (instance_().indexSnapshots_) return kNone;
     return instance_().projectIndexRepos_;
+}
+
+void Config::use_index_snapshots(std::vector<IndexRepo> snapshots) {
+    auto& self = instance_();
+    self.indexSnapshots_ = std::move(snapshots);
+    self.indexConfigLoaded_ = false;
+    self.ensure_index_config_();
+}
+
+[[nodiscard]] bool Config::index_snapshots_in_use() {
+    return instance_().indexSnapshots_.has_value();
 }
 
 [[nodiscard]] const std::vector<IndexRepo>& Config::index_repos() {
     auto& self = instance_();
-    if (self.hasProjectConfig_ && !self.projectIndexRepos_.empty()) {
+    if (!self.indexSnapshots_ && self.hasProjectConfig_ && !self.projectIndexRepos_.empty()) {
         return self.projectIndexRepos_;
     }
     self.ensure_index_config_();
@@ -1501,6 +1536,12 @@ void Config::load_ui_prefs_from_json_(const nlohmann::json& json) {
     auto& self = instance_();
     self.ensure_index_config_();
     return self.upstreams_;
+}
+
+[[nodiscard]] const std::vector<std::filesystem::path>& Config::archives() {
+    auto& self = instance_();
+    self.ensure_index_config_();
+    return self.archives_;
 }
 
 [[nodiscard]] std::filesystem::path Config::resolve_repo_source(const IndexRepo& repo,

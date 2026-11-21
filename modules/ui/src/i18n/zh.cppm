@@ -279,6 +279,7 @@ inline constexpr Entry kEntries[] = {
     { "config.theme",            "主题" },
     { "config.interactive",      "交互模式" },
     { "config.index_repo",       "索引仓库" },
+    { "config.archives",         "归档目录" },
     { "config.project_data",     "项目数据" },
     { "config.project_repo",     "项目仓库" },
     { "config.default_marker",   "默认" },

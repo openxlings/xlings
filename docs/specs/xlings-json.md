@@ -45,6 +45,7 @@ FILE_SHARE_DELETE` and close it promptly.
 | `version` | `string` | the xlings version that made or last checked this home; written by a successful `self doctor --fix`, to tell whether records are in an older client's format |
 | `index_repos` | `array` | package index repositories, each with `name` and `url` |
 | `upstreams` | `array` | (2026.10.16.1+) read-only homes this one installs from by link; see below |
+| `archives` | `array` | (2026.11.21.1+) directories whose files are taken by content before the network; see below |
 | `xim` | `object` | where the default index itself comes from; see below |
 | `XLINGS_RES` | `object \| string \| array` | resource servers; see below |
 
@@ -268,6 +269,39 @@ here as for any installed payload, so its programs and links are this home's.
   payload (its owner's); a recipe judges such a payload by what it produces
   here rather than rewriting it.
 
+### `archives` (2026.11.21.1+)
+
+```json
+"archives": ["/mnt/archives", "/srv/bundles/2026-11"]
+```
+
+Each entry is a directory; a relative one is relative to the home. `xlings
+config --add-archives <dir>` appends the absolute path, `--rm-archives <dir>`
+removes it. A download whose archive is not in the download cache asks, in
+order, the directory of `install --from`, those of `XLINGS_ARCHIVES` and those
+of `archives`, and takes the first file whose sha256 is the archive's identity:
+
+- the identity is the sha256 the recipe states; for a recipe that states none,
+  the sha256 a bundle manifest in one of these directories records for that
+  package, version and host ([bundles](bundle.md));
+- a directory holds files under any names at any depth (a `.git` tree is not
+  read). Its index is kept in `data/archive-index/<hash of the path>.json`, one
+  digest per file keyed by its path, size and modification time; a file is
+  hashed only when it has no entry with its size and time, and one named
+  `<sha256>-...` is read first;
+- the file (a symbolic link's target, never the link) is placed beside the
+  download cache's entry, verified, and installed as a downloaded one is. It is
+  hard-linked only when it belongs to the user the cache belongs to and xlings
+  is not running as root; otherwise it is copied, so nobody else can change the
+  bytes after they were verified. A file whose bytes do not have the digest is
+  not taken, and its entry is dropped;
+- for a recipe that states no sha256, a file taken this way gets the cache's
+  sidecar (`<file>.meta`), so a later run without the directory serves it
+  from the cache as a downloaded one;
+- an entry that is not a directory on this machine is skipped with one warning.
+
+The network is asked after every directory, and not at all offline (below).
+
 ### `xim`
 
 Written by `xlings self install`; says where **the default index itself** comes
@@ -321,6 +355,21 @@ A failed download is handled by cause: wrong content (sha256 mismatch) or a
 refusing source — the next candidate, the host demoted; an incomplete transfer —
 retried on a later round; a local write failure — stop at once (another mirror
 writes to the same disk), demote nobody, `E_DISK_FULL` with the free space.
+
+### Archive sources and offline (environment, 2026.11.21.1+)
+
+| Variable | Effect |
+|---|---|
+| `XLINGS_ARCHIVES` | archive directories for this process, separated as `PATH` is (`:`, `;` on Windows); asked after `install --from` and before `archives` |
+| `XLINGS_NET_UNREACHABLE` | a reason, non-empty: the network is not used. Downloads take archives from the cache and the directories only, a recipe without a sha256 is served from a transaction-committed cache entry without a probe, and no resource server is probed. xlings sets it (and passes it to the processes it starts) when the index pointer finds no network; a caller sets it to say so beforehand |
+
+Offline, the archives of one install that no source has are reported together
+in one diagnostic (`xim.archives_unavailable`): each package, version, sha256
+and URL, the directories asked, and the commands that supply them (`xlings
+download ... --to <dir> --with-index` on a machine with a network, then `xlings
+install --from <dir> ...`); each of those packages fails with `E_NETWORK`. A
+download the network was asked for and failed is reported by its package, once,
+with its reason (an HTTP status, a sha256 mismatch, a host not reached).
 
 ### `XLINGS_RES`
 

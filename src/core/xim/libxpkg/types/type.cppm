@@ -233,6 +233,12 @@ struct DownloadTask {
     std::string cacheIdentity;
     std::filesystem::path destDir;
     std::vector<std::string> fallbackUrls;  // tried in order when url fails
+    // What the archive is of, for a report and a bundle's manifest:
+    // "<ns>:<name>", its version and "<os>-<arch>". Empty for a download
+    // that is not a package's (an image, a carrier's file).
+    std::string package;
+    std::string version;
+    std::string host;
 };
 
 // Result of a download
@@ -245,6 +251,11 @@ struct DownloadResult {
     // InstallStatus. Empty means nothing more specific than E_INTERNAL.
     std::string errorCode;
     std::string hint;
+    // A failure because no source has the archive and the network is not used
+    // (XLINGS_NET_UNREACHABLE): reported together, once per batch
+    // (archives::report_unavailable). A download the network failed is not
+    // this: its own failure, with its reason, is its one report.
+    bool unavailable { false };
 };
 
 // Downloader configuration
