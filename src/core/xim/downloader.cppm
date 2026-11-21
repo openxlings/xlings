@@ -39,9 +39,6 @@ bool looks_like_archive_filename_(const std::filesystem::path& path);
 // exitCode=0. See .agents/docs/2026-05-22-cmd-install-silent-failure-analysis.md
 constexpr std::uintmax_t kMinPlausibleArchiveBytes_ = 1024;
 
-// Lowercase a declared sha256 so it compares against our hex digests
-// regardless of the recipe author's casing.
-std::string lower_hex_(std::string_view s);
 
 // ── Sidecar (.meta) helpers for HEAD-based cache freshness ────────────
 //
@@ -71,6 +68,18 @@ bool commit_staging_file_(const std::filesystem::path& staging,
                           const std::filesystem::path& destination,
                           std::string& error,
                           bool failAfterBackupForTest = false);
+
+// `from`'s bytes at `destination`: the file a symlink names, hard-linked only
+// when this process's owner owns it and is not elevated, copied otherwise;
+// verified against `sha256`, then committed. How an archive directory's file
+// enters the cache and a cache file enters a bundle.
+struct PlaceFailure_ {
+    bool mismatch { false };   // the bytes are not the archive's
+    std::string error;
+};
+std::expected<void, PlaceFailure_> place_verified_(const std::filesystem::path& from,
+                                                   const std::filesystem::path& destination,
+                                                   std::string_view sha256);
 
 bool recover_download_transaction_(
         const std::filesystem::path& destination,

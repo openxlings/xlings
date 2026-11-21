@@ -21,23 +21,28 @@ struct MemoEntry {
     std::string sha256;
 };
 
-struct Memo {
+// One directory's memo, under its own lock: download_all asks from several
+// threads, and a memo is read, extended and written as one step -- but two
+// directories are hashed at once.
+struct DirState {
+    std::mutex mutex;
     fs::path dir;
     bool loaded { false };
     bool dirty { false };
-    std::map<std::string, MemoEntry> files;   // key: path relative to dir, '/'-separated
+    // Keyed by the sha256 of the file's path relative to the directory, as
+    // UTF-8 bytes: a name that is not valid UTF-8 (POSIX allows it) is still a
+    // key JSON can hold, and nothing is narrowed to a code page on Windows.
+    std::map<std::string, MemoEntry> files;
 };
 
 struct Seen {
-    std::string rel;
     fs::path path;
+    std::string key;
     std::uintmax_t size {};
     std::int64_t mtime {};
 };
 
-// One lock for the sources: download_all asks from several threads, and a
-// memo is read, extended and written as one step.
-std::mutex& lock_() {
+std::mutex& registry_lock_() {
     static std::mutex m;
     return m;
 }
@@ -47,16 +52,26 @@ std::vector<fs::path>& prepended_() {
     return dirs;
 }
 
-std::map<fs::path, Memo>& memos_() {
-    static std::map<fs::path, Memo> memos;
-    return memos;
+std::map<fs::path, std::unique_ptr<DirState>>& states_() {
+    static std::map<fs::path, std::unique_ptr<DirState>> states;
+    return states;
 }
 
-std::string lower_(std::string_view s) {
-    std::string out(s);
-    for (auto& c : out) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-    return out;
+DirState& state_(const fs::path& memoFile) {
+    std::lock_guard guard(registry_lock_());
+    auto& slot = states_()[memoFile];
+    if (!slot) slot = std::make_unique<DirState>();
+    return *slot;
 }
+
+// The UTF-8 bytes of a path: what is hashed and compared, never a
+// code-page narrowing.
+std::string u8_(const fs::path& p) {
+    const auto u = p.generic_u8string();
+    return std::string(u.begin(), u.end());
+}
+
+std::string key_of_(const fs::path& rel) { return sha256::hex(u8_(rel)); }
 
 fs::path absolute_(const fs::path& p) {
     std::error_code ec;
@@ -64,21 +79,20 @@ fs::path absolute_(const fs::path& p) {
     return (ec ? p : abs).lexically_normal();
 }
 
-Memo& memo_(const fs::path& memoFile, const fs::path& dir) {
-    auto& memo = memos_()[memoFile];
-    if (memo.loaded) return memo;
-    memo.loaded = true;
-    memo.dir = dir;
+void load_(const fs::path& memoFile, DirState& state, const fs::path& dir) {
+    if (state.loaded) return;
+    state.loaded = true;
+    state.dir = dir;
     std::error_code ec;
-    if (!fs::is_regular_file(memoFile, ec)) return memo;
+    if (!fs::is_regular_file(memoFile, ec)) return;
     try {
         auto doc = nlohmann::json::parse(platform::read_file_to_string(memoFile.string()), nullptr, false);
-        if (!doc.is_object() || doc.value("format", 0) != 1 || !doc.contains("files") || !doc["files"].is_object())
-            return memo;
+        if (!doc.is_object() || doc.value("format", 0) != 2 || !doc.contains("files") || !doc["files"].is_object())
+            return;
         for (auto it = doc["files"].begin(); it != doc["files"].end(); ++it) {
             const auto& v = it.value();
             if (!v.is_object() || !v.contains("sha256") || !v["sha256"].is_string()) continue;
-            memo.files[it.key()] = MemoEntry{
+            state.files[it.key()] = MemoEntry{
                 .size = v.value("size", std::uintmax_t{0}),
                 .mtime = v.value("mtime", std::int64_t{0}),
                 .sha256 = v["sha256"].get<std::string>(),
@@ -87,18 +101,17 @@ Memo& memo_(const fs::path& memoFile, const fs::path& dir) {
     } catch (...) {
         // A memo is a cache: one that cannot be read costs a hash, not a failure.
         log::debug("[archives] memo {} unreadable; rebuilding it", memoFile.string());
-        memo.files.clear();
+        state.files.clear();
     }
-    return memo;
 }
 
-void save_(const fs::path& memoFile, Memo& memo) {
-    if (!memo.dirty) return;
-    memo.dirty = false;
+void save_(const fs::path& memoFile, DirState& state) {
+    if (!state.dirty) return;
+    state.dirty = false;
     nlohmann::json files = nlohmann::json::object();
-    for (const auto& [rel, e] : memo.files)
-        files[rel] = {{"size", e.size}, {"mtime", e.mtime}, {"sha256", e.sha256}};
-    nlohmann::json doc = {{"format", 1}, {"dir", memo.dir.generic_string()}, {"files", std::move(files)}};
+    for (const auto& [key, e] : state.files)
+        files[key] = {{"size", e.size}, {"mtime", e.mtime}, {"sha256", e.sha256}};
+    const nlohmann::json doc = {{"format", 2}, {"files", std::move(files)}};
     try {
         std::error_code ec;
         fs::create_directories(memoFile.parent_path(), ec);
@@ -118,7 +131,7 @@ std::vector<Seen> scan_(const fs::path& dir) {
     fs::recursive_directory_iterator it(dir, fs::directory_options::skip_permission_denied, ec);
     for (; !ec && it != fs::recursive_directory_iterator(); it.increment(ec)) {
         std::error_code fec;
-        if (it->path().filename() == ".git") {
+        if (it->path().filename() == fs::path(".git")) {
             if (it->is_directory(fec)) it.disable_recursion_pending();
             continue;
         }
@@ -127,43 +140,45 @@ std::vector<Seen> scan_(const fs::path& dir) {
         if (fec) continue;
         const auto mtime = it->last_write_time(fec);
         if (fec) continue;
-        out.push_back({it->path().lexically_relative(dir).generic_string(), it->path(), size,
+        out.push_back({it->path(), key_of_(it->path().lexically_relative(dir)), size,
                        static_cast<std::int64_t>(mtime.time_since_epoch().count())});
     }
     if (ec) log::debug("[archives] walking {} stopped: {}", dir.string(), ec.message());
-    std::ranges::sort(out, {}, &Seen::rel);
+    std::ranges::sort(out, {}, &Seen::path);
     return out;
 }
 
-std::optional<fs::path> find_in_locked_(const fs::path& dir, std::string_view sha256,
-                                        const fs::path& memoFile) {
-    const auto want = lower_(sha256);
+// Called with `state.mutex` held.
+std::optional<fs::path> find_locked_(const fs::path& dir, std::string_view sha256,
+                                     const fs::path& memoFile, DirState& state) {
+    const auto want = lower_hex(sha256);
     if (want.empty()) return std::nullopt;
-    auto& memo = memo_(memoFile, dir);
+    load_(memoFile, state, dir);
     const auto files = scan_(dir);
 
     // What is gone is forgotten, so the memo does not grow with every file
     // that ever passed through the directory.
     std::set<std::string> present;
-    for (const auto& f : files) present.insert(f.rel);
-    std::erase_if(memo.files, [&](const auto& kv) {
+    for (const auto& f : files) present.insert(f.key);
+    std::erase_if(state.files, [&](const auto& kv) {
         const bool gone = !present.contains(kv.first);
-        if (gone) memo.dirty = true;
+        if (gone) state.dirty = true;
         return gone;
     });
 
     const auto known = [&](const Seen& f) -> const MemoEntry* {
-        auto it = memo.files.find(f.rel);
-        if (it == memo.files.end() || it->second.size != f.size || it->second.mtime != f.mtime) return nullptr;
+        auto it = state.files.find(f.key);
+        if (it == state.files.end() || it->second.size != f.size || it->second.mtime != f.mtime) return nullptr;
         return &it->second;
     };
     const auto hash = [&](const Seen& f) {
         auto digest = sha256::hex_file(f.path);
         if (!digest) return std::string{};
-        memo.files[f.rel] = MemoEntry{.size = f.size, .mtime = f.mtime, .sha256 = *digest};
-        memo.dirty = true;
+        state.files[f.key] = MemoEntry{.size = f.size, .mtime = f.mtime, .sha256 = *digest};
+        state.dirty = true;
         return *digest;
     };
+    const std::u8string wantU8(want.begin(), want.end());
 
     std::optional<fs::path> hit;
     // 1. What is already known: no file is read.
@@ -173,14 +188,14 @@ std::optional<fs::path> find_in_locked_(const fs::path& dir, std::string_view sh
     // 2. A file named by its content (a bundle's `<sha256>-<name>`): read first.
     for (const auto& f : files) {
         if (hit) break;
-        if (!known(f) && f.path.filename().string().starts_with(want) && hash(f) == want) hit = f.path;
+        if (!known(f) && f.path.filename().u8string().starts_with(wantU8) && hash(f) == want) hit = f.path;
     }
     // 3. The rest, until one matches; the others wait for a later question.
     for (const auto& f : files) {
         if (hit) break;
         if (!known(f) && hash(f) == want) hit = f.path;
     }
-    save_(memoFile, memo);
+    save_(memoFile, state);
     return hit;
 }
 
@@ -260,24 +275,48 @@ std::optional<std::string> toml_value_string_(std::string_view v) {
     return std::nullopt;
 }
 
-// How many '[' minus ']' a line opens, outside strings and comments: a
-// multi-line array's rows are values, not table headers.
-int bracket_delta_(std::string_view line) {
-    int depth = 0;
-    char quote = 0;
-    for (std::size_t i = 0; i < line.size(); ++i) {
-        const char c = line[i];
-        if (quote) {
-            if (c == '\\' && quote == '"') ++i;
-            else if (c == quote) quote = 0;
+// Where a TOML line leaves its value: inside brackets of a multi-line array or
+// a multi-line string. A line that starts inside one is a value's continuation,
+// never a table header.
+struct Scan {
+    int depth { 0 };
+    std::string_view open;   // the delimiter of an open multi-line string
+};
+
+constexpr std::string_view kTripleBasic = R"(""")";
+constexpr std::string_view kTripleLiteral = R"(''')";
+
+bool open_(const Scan& s) { return s.depth > 0 || !s.open.empty(); }
+
+// The scan state after `text`: strings (one-line and multi-line), comments and
+// brackets outside them.
+void advance_(std::string_view text, Scan& s) {
+    std::size_t i = 0;
+    while (i < text.size()) {
+        if (!s.open.empty()) {
+            const auto end = text.find(s.open, i);
+            if (end == std::string_view::npos) return;
+            i = end + s.open.size();
+            s.open = {};
             continue;
         }
-        if (c == '#') break;
-        if (c == '"' || c == '\'') quote = c;
-        else if (c == '[') ++depth;
-        else if (c == ']') --depth;
+        const char c = text[i];
+        if (c == '#') return;
+        if (text.substr(i, 3) == kTripleBasic || text.substr(i, 3) == kTripleLiteral) {
+            s.open = text.substr(i, 3) == kTripleBasic ? kTripleBasic : kTripleLiteral;
+            i += 3;
+            continue;
+        }
+        if (c == '"' || c == '\'') {
+            std::size_t j = i + 1;
+            while (j < text.size() && text[j] != c) j += (c == '"' && text[j] == '\\') ? 2 : 1;
+            i = j + 1;
+            continue;
+        }
+        if (c == '[') ++s.depth;
+        else if (c == ']') s.depth = std::max(0, s.depth - 1);
+        ++i;
     }
-    return depth;
 }
 
 std::string_view trim_(std::string_view s) {
@@ -286,14 +325,32 @@ std::string_view trim_(std::string_view s) {
     return s;
 }
 
+// A header line's table name, as `[name]` or `[[name]]`, without blanks and a
+// trailing comment.
 std::string header_name_(std::string_view line) {
     std::string out;
-    for (const char c : line)
+    char quote = 0;
+    for (const char c : line) {
+        if (quote) {
+            if (c == quote) quote = 0;
+            out += c;
+            continue;
+        }
+        if (c == '#') break;
+        if (c == '"' || c == '\'') quote = c;
         if (c != ' ' && c != '\t') out += c;
+    }
     return out;
 }
 
 }  // namespace
+
+std::string lower_hex(std::string_view sha256) {
+    std::string out(sha256);
+    for (auto& c : out)
+        if (c >= 'A' && c <= 'F') c = static_cast<char>(c - 'A' + 'a');
+    return out;
+}
 
 std::vector<fs::path> directories() {
     std::vector<fs::path> out;
@@ -303,7 +360,7 @@ std::vector<fs::path> directories() {
         if (std::ranges::find(out, abs) == out.end()) out.push_back(std::move(abs));
     };
     {
-        std::lock_guard guard(lock_());
+        std::lock_guard guard(registry_lock_());
         for (const auto& p : prepended_()) add(p);
     }
     if (const char* env = std::getenv("XLINGS_ARCHIVES"); env && *env) {
@@ -320,7 +377,7 @@ std::vector<fs::path> directories() {
 }
 
 void prepend_directory(const fs::path& dir) {
-    std::lock_guard guard(lock_());
+    std::lock_guard guard(registry_lock_());
     auto& dirs = prepended_();
     const auto abs = absolute_(dir);
     std::erase(dirs, abs);
@@ -332,90 +389,117 @@ std::string offline_reason() {
     return down && *down ? std::string(down) : std::string{};
 }
 
-fs::path memo_file_for(const fs::path& dir) {
-    const auto key = sha256::hex(absolute_(dir).generic_string()).substr(0, 16);
-    return Config::paths().dataDir / "archive-index" / (key + ".json");
+fs::path memo_file_for(const fs::path& dir, const fs::path& dataDir) {
+    const auto key = sha256::hex(u8_(absolute_(dir))).substr(0, 16);
+    return dataDir / "archive-index" / (key + ".json");
 }
 
 std::optional<fs::path> find_in(const fs::path& dir, std::string_view sha256, const fs::path& memoFile) {
-    std::lock_guard guard(lock_());
-    return find_in_locked_(dir, sha256, memoFile);
+    auto& state = state_(memoFile);
+    std::lock_guard guard(state.mutex);
+    return find_locked_(dir, sha256, memoFile, state);
 }
 
 std::optional<Hit> find(std::string_view sha256) {
+    static std::mutex warnedLock;
     static std::set<fs::path> warned;
     for (const auto& dir : directories()) {
         std::error_code ec;
         if (!fs::is_directory(dir, ec)) {
-            std::lock_guard guard(lock_());
+            std::lock_guard guard(warnedLock);
             if (warned.insert(dir).second)
                 log::warn("archive directory {} is not a directory here; it is skipped", dir.string());
             continue;
         }
-        std::lock_guard guard(lock_());
-        if (auto file = find_in_locked_(dir, sha256, memo_file_for(dir)))
+        if (auto file = find_in(dir, sha256, memo_file_for(dir, Config::paths().dataDir)))
             return Hit{.file = std::move(*file), .directory = dir};
     }
     return std::nullopt;
 }
 
 void forget(const fs::path& file) {
-    std::lock_guard guard(lock_());
-    for (auto& [memoFile, memo] : memos_()) {
-        const auto rel = file.lexically_normal().lexically_relative(memo.dir).generic_string();
-        if (rel.empty() || rel.starts_with("..")) continue;
-        if (memo.files.erase(rel) > 0) {
-            memo.dirty = true;
-            save_(memoFile, memo);
+    std::vector<std::pair<fs::path, DirState*>> states;
+    {
+        std::lock_guard guard(registry_lock_());
+        for (auto& [memoFile, state] : states_()) states.emplace_back(memoFile, state.get());
+    }
+    for (auto& [memoFile, state] : states) {
+        std::lock_guard guard(state->mutex);
+        const auto rel = file.lexically_normal().lexically_relative(state->dir);
+        if (rel.empty() || *rel.begin() == fs::path("..")) continue;
+        if (state->files.erase(key_of_(rel)) > 0) {
+            state->dirty = true;
+            save_(memoFile, *state);
         }
     }
 }
 
 std::optional<std::string> recorded_sha256(std::string_view package, std::string_view version,
                                            std::string_view host) {
+    static std::mutex warnedLock;
+    static std::set<std::string> warned;
     for (const auto& dir : directories()) {
         auto bundle = read_bundle(dir);
         if (!bundle) {
-            log::warn("{}", bundle.error());
+            // Said once per manifest, not once per archive asked about.
+            std::lock_guard guard(warnedLock);
+            if (warned.insert(bundle.error()).second) log::warn("{}", bundle.error());
             continue;
         }
         if (!*bundle) continue;
         for (const auto& a : (*bundle)->archives) {
             if (a.package == package && a.version == version && a.host == host && !a.sha256.empty())
-                return lower_(a.sha256);
+                return lower_hex(a.sha256);
         }
     }
     return std::nullopt;
 }
 
+namespace {
+
+using Field = std::pair<std::string_view, std::string*>;
+
+// A known key of a table takes a string value; one of another type is
+// dropped (the key is written again). nullptr: not a key of this table.
+std::string** field_(std::span<Field> fields, std::string_view key) {
+    const auto it = std::ranges::find(fields, key, &Field::first);
+    return it == fields.end() ? nullptr : &it->second;
+}
+
+}  // namespace
+
 std::expected<Bundle, std::string> parse_bundle(std::string_view text) {
     Bundle bundle;
     bundle.format = 0;
     enum class Table { None, Bundle, Archive, Index, Other } table = Table::None;
-    int depth = 0;   // open brackets of a multi-line value
+    Scan scan;
+    std::string* continuation = nullptr;   // where a multi-line value's lines go
     std::size_t lineNo = 0;
     while (!text.empty()) {
         const auto nl = text.find('\n');
         const auto raw = text.substr(0, nl);
         text.remove_prefix(nl == std::string_view::npos ? text.size() : nl + 1);
         ++lineNo;
+        const std::string rawLine = std::string(raw) + "\n";
+        if (open_(scan)) {
+            if (continuation) *continuation += rawLine;
+            advance_(raw, scan);
+            continue;
+        }
+        continuation = nullptr;
         const auto line = trim_(raw);
-        if (depth == 0 && line.starts_with('[')) {
+        if (line.starts_with('[')) {
             const auto name = header_name_(line);
             if (name == "[bundle]") table = Table::Bundle;
             else if (name == "[[archive]]") { table = Table::Archive; bundle.archives.emplace_back(); }
             else if (name == "[[index]]") { table = Table::Index; bundle.indexes.emplace_back(); }
-            else table = Table::Other;
-            if (table == Table::Other) bundle.otherTables += std::string(raw) + "\n";
+            else { table = Table::Other; bundle.otherTables += rawLine; }
             continue;
         }
         if (table == Table::Other) {
-            bundle.otherTables += std::string(raw) + "\n";
-            depth = std::max(0, depth + bracket_delta_(line));
-            continue;
-        }
-        if (depth > 0) {
-            depth = std::max(0, depth + bracket_delta_(line));
+            bundle.otherTables += rawLine;
+            continuation = &bundle.otherTables;
+            advance_(raw, scan);
             continue;
         }
         if (line.empty() || line.starts_with('#')) continue;
@@ -425,28 +509,35 @@ std::expected<Bundle, std::string> parse_bundle(std::string_view text) {
         auto key = trim_(line.substr(0, eq));
         if (key.size() >= 2 && (key.front() == '"' || key.front() == '\'')) key = key.substr(1, key.size() - 2);
         const auto value = trim_(line.substr(eq + 1));
-        depth = std::max(0, bracket_delta_(value));
-        const auto str = toml_value_string_(value);
-        if (table == Table::Bundle) {
-            if (key == "format") {
-                int v = 0;
-                auto [ptr, err] = std::from_chars(value.data(), value.data() + value.size(), v);
-                if (err != std::errc{}) return std::unexpected(std::format("line {}: format is not an integer", lineNo));
-                bundle.format = v;
-            } else if (key == "created_by" && str) bundle.createdBy = *str;
-            else if (key == "host" && str) bundle.host = *str;
-        } else if (table == Table::Archive && str) {
+        advance_(value, scan);
+        const auto str = open_(scan) ? std::nullopt : toml_value_string_(value);
+        std::string* extra = nullptr;   // an unknown key: kept as written
+        if (table == Table::Bundle && key == "format") {
+            int v = 0;
+            auto [ptr, err] = std::from_chars(value.data(), value.data() + value.size(), v);
+            if (err != std::errc{}) return std::unexpected(std::format("line {}: format is not an integer", lineNo));
+            bundle.format = v;
+        } else if (table == Table::Bundle) {
+            std::array<Field, 2> fields{{{"created_by", &bundle.createdBy}, {"host", &bundle.host}}};
+            if (auto* f = field_(fields, key); !f) extra = &bundle.extra;
+            else if (str) **f = *str;
+        } else if (table == Table::Archive) {
             auto& a = bundle.archives.back();
-            if (key == "package") a.package = *str;
-            else if (key == "version") a.version = *str;
-            else if (key == "host") a.host = *str;
-            else if (key == "sha256") a.sha256 = *str;
-            else if (key == "file") a.file = *str;
-        } else if (table == Table::Index && str) {
+            std::array<Field, 5> fields{{{"package", &a.package}, {"version", &a.version}, {"host", &a.host},
+                                         {"sha256", &a.sha256}, {"file", &a.file}}};
+            if (auto* f = field_(fields, key); !f) extra = &a.extra;
+            else if (str) **f = *str;
+        } else if (table == Table::Index) {
             auto& i = bundle.indexes.back();
-            if (key == "name") i.name = *str;
-            else if (key == "revision") i.revision = *str;
-            else if (key == "path") i.path = *str;
+            std::array<Field, 3> fields{{{"name", &i.name}, {"revision", &i.revision}, {"path", &i.path}}};
+            if (auto* f = field_(fields, key); !f) extra = &i.extra;
+            else if (str) **f = *str;
+        } else {
+            extra = &bundle.preamble;   // a key before any table
+        }
+        if (extra) {
+            *extra += rawLine;
+            if (open_(scan)) continuation = extra;
         }
     }
     if (bundle.format == 0) return std::unexpected("no [bundle] format");
@@ -454,11 +545,13 @@ std::expected<Bundle, std::string> parse_bundle(std::string_view text) {
 }
 
 std::string render_bundle(const Bundle& bundle) {
-    std::string out;
+    std::string out = bundle.preamble;
+    if (!out.empty()) out += "\n";
     out += "[bundle]\n";
     out += std::format("format = {}\n", bundle.format);
     out += "created_by = " + toml_string_(bundle.createdBy) + "\n";
     out += "host = " + toml_string_(bundle.host) + "\n";
+    out += bundle.extra;
     for (const auto& a : bundle.archives) {
         out += "\n[[archive]]\n";
         out += "package = " + toml_string_(a.package) + "\n";
@@ -466,12 +559,14 @@ std::string render_bundle(const Bundle& bundle) {
         out += "host = " + toml_string_(a.host) + "\n";
         out += "sha256 = " + toml_string_(a.sha256) + "\n";
         out += "file = " + toml_string_(a.file) + "\n";
+        out += a.extra;
     }
     for (const auto& i : bundle.indexes) {
         out += "\n[[index]]\n";
         out += "name = " + toml_string_(i.name) + "\n";
         out += "revision = " + toml_string_(i.revision) + "\n";
         out += "path = " + toml_string_(i.path) + "\n";
+        out += i.extra;
     }
     if (!bundle.otherTables.empty()) {
         out += "\n";
@@ -508,36 +603,41 @@ std::expected<void, std::string> write_bundle(const fs::path& dir, const Bundle&
 }
 
 void report_unavailable(std::span<const DownloadTask> tasks, std::span<const DownloadResult> results) {
-    std::vector<const DownloadTask*> missing;
+    std::vector<std::pair<const DownloadTask*, const DownloadResult*>> missing;
     for (const auto& r : results) {
         if (!r.unavailable) continue;
         const auto it = std::ranges::find(tasks, r.name, &DownloadTask::name);
-        if (it != tasks.end()) missing.push_back(&*it);
+        if (it != tasks.end()) missing.emplace_back(&*it, &r);
     }
     if (missing.empty()) return;
 
+    // Each archive with what the network said about it: offline nothing was
+    // asked; otherwise a 404, a digest every mirror got wrong and a host that
+    // could not be reached are different facts with different remedies.
+    const auto reason = offline_reason();
     std::vector<diag::Fact> facts;
     std::string keys;
-    for (const auto* t : missing) {
+    for (const auto& [t, r] : missing) {
         const auto key = t->package.empty() ? t->name : t->package + "@" + t->version;
         keys += (keys.empty() ? "" : " ") + key;
-        facts.push_back({key, std::format("sha256 {}  {}", t->sha256.empty() ? "(none stated)" : lower_(t->sha256), t->url)});
+        auto value = std::format("sha256 {}  {}", t->sha256.empty() ? "(none stated)" : lower_hex(t->sha256), t->url);
+        if (reason.empty()) value += "  (" + r->error + ")";
+        facts.push_back({key, std::move(value)});
     }
-    const auto reason = offline_reason();
     const auto dirs = directories();
-    facts.push_back({"archive directories", dirs.empty() ? std::string("(none)") : [&] {
-        std::string joined;
-        for (const auto& d : dirs) joined += (joined.empty() ? "" : ", ") + d.string();
-        return joined;
-    }()});
+    std::string joined;
+    for (const auto& d : dirs) joined += (joined.empty() ? "" : ", ") + d.string();
+    facts.push_back({"archive directories", joined.empty() ? std::string("(none)") : joined});
     diag::emit({
         .code = "xim.archives_unavailable",
-        .summary = std::format("{} archive{} in no source, and the network {}", missing.size(),
+        .summary = std::format("{} archive{} in no source{}", missing.size(),
                                missing.size() == 1 ? " is" : "s are",
-                               reason.empty() ? "did not answer" : "is not used (" + reason + ")"),
+                               reason.empty() ? ", and the network did not provide them"
+                                              : ", and the network is not used (" + reason + ")"),
         .facts = std::move(facts),
         .actions = {
-            {"write them on a machine with a network", std::format("xlings download {} --to ./xlings-bundle", keys)},
+            {"write them on a machine with a network",
+             std::format("xlings download {} --to ./xlings-bundle --with-index", keys)},
             {"then install from that directory here", std::format("xlings install --from ./xlings-bundle {}", keys)},
             {"or name a directory that holds them", "xlings config --add-archives ./xlings-bundle"},
         },

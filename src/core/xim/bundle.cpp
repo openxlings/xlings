@@ -8,6 +8,7 @@ import xlings.core.config;
 import xlings.core.diag;
 import xlings.core.log;
 import xlings.libs.sha256;
+import xlings.platform;
 import xlings.core.xim.libxpkg.types.type;
 import xlings.core.xim.catalog;
 import xlings.core.xim.compatibility;
@@ -27,15 +28,9 @@ namespace {
 
 constexpr std::array<std::string_view, 3> kHostSystems { "linux", "macosx", "windows" };
 
-std::string lower_(std::string_view s) {
-    std::string out(s);
-    for (auto& c : out) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-    return out;
-}
-
-// `<dest>`, named by its content, from `<from>`: linked when the two share a
-// filesystem, copied otherwise, verified, and moved into place, so a reader
-// of the directory never sees half a file.
+// `<dest>`, named by its content, from `<from>` (place_verified_: a reader
+// of the directory never sees half a file). One already there with the
+// right bytes is kept.
 std::expected<void, std::string> place_archive_(const fs::path& from, const fs::path& dest,
                                                 const std::string& sha) {
     std::error_code ec;
@@ -43,43 +38,29 @@ std::expected<void, std::string> place_archive_(const fs::path& from, const fs::
         if (auto have = sha256::hex_file(dest); have && *have == sha) return {};
     }
     fs::create_directories(dest.parent_path(), ec);
-    auto staging = unique_sibling_path_(dest, "part");
-    fs::create_hard_link(from, staging, ec);
-    if (ec) {
-        ec.clear();
-        fs::copy_file(from, staging, ec);
-    }
-    if (ec) return std::unexpected(std::format("cannot write {}: {}", dest.string(), ec.message()));
-    if (auto got = sha256::hex_file(staging); !got || *got != sha) {
-        fs::remove(staging, ec);
-        return std::unexpected(std::format("{} changed while it was written to {}", from.string(), dest.string()));
-    }
-    std::string error;
-    if (!commit_staging_file_(staging, dest, error)) {
-        fs::remove(staging, ec);
-        return std::unexpected(error);
-    }
+    if (auto placed = place_verified_(from, dest, sha); !placed) return std::unexpected(placed.error().error);
     return {};
 }
 
 // An index tree as it is, without what belongs to the copy it came from: its
 // git history, the parsed-index cache (which names that copy's paths) and a
-// sync's staging leftovers. Written beside `to` and swapped in whole.
-std::expected<void, std::string> snapshot_index_(const fs::path& from, const fs::path& to) {
+// sync's staging leftovers. Copied into a staging directory of its own beside
+// `to` (two downloads into one bundle do not share one); the caller swaps it
+// in under the bundle's lock.
+std::expected<fs::path, std::string> stage_index_(const fs::path& from, const fs::path& to) {
     std::error_code ec;
     const auto source = fs::weakly_canonical(from, ec);
     if (ec || !fs::is_directory(source / "pkgs", ec))
         return std::unexpected(std::format("the index {} has no pkgs/", from.string()));
     fs::create_directories(to.parent_path(), ec);
-    const auto staging = to.parent_path() / ("." + to.filename().string() + ".part");
-    fs::remove_all(staging, ec);
+    const auto staging = unique_sibling_path_(to.parent_path() / ("." + to.filename().string()), "part");
     fs::create_directories(staging, ec);
     if (ec) return std::unexpected(std::format("cannot write {}: {}", staging.string(), ec.message()));
     fs::recursive_directory_iterator it(source, ec);
     for (; !ec && it != fs::recursive_directory_iterator(); it.increment(ec)) {
-        const auto name = it->path().filename().string();
+        const auto name = it->path().filename().u8string();
         std::error_code eec;
-        if (name == ".git" || name == ".xlings-index-cache.json" || name.starts_with(".staging")) {
+        if (name == u8".git" || name == u8".xlings-index-cache.json" || name.starts_with(u8".staging")) {
             if (it->is_directory(eec)) it.disable_recursion_pending();
             continue;
         }
@@ -97,11 +78,7 @@ std::expected<void, std::string> snapshot_index_(const fs::path& from, const fs:
         fs::remove_all(staging, ec);
         return std::unexpected(std::format("cannot read {}: {}", source.string(), why));
     }
-    if (!atomic_swap_dir_(staging, to)) {
-        fs::remove_all(staging, ec);
-        return std::unexpected(std::format("cannot replace {}", to.string()));
-    }
-    return {};
+    return staging;
 }
 
 void upsert_archive_(archives::Bundle& bundle, archives::BundleArchive entry) {
@@ -268,9 +245,10 @@ int cmd_download(std::span<const std::string> targets, const fs::path& toArg, bo
         });
     }
 
+    // A manifest that cannot be read stops the command before anything is
+    // written into its directory (it is read again under the lock).
     const auto to = fs::absolute(toArg).lexically_normal();
-    auto existing = archives::read_bundle(to);
-    if (!existing) {
+    if (auto existing = archives::read_bundle(to); !existing) {
         stream.emit(ErrorEvent{
             .code = ErrorCode::InvalidInput,
             .message = existing.error(),
@@ -279,11 +257,6 @@ int cmd_download(std::span<const std::string> targets, const fs::path& toArg, bo
         });
         return 1;
     }
-    auto bundle = existing->value_or(archives::Bundle{});
-    bundle.format = archives::kBundleFormat;
-    bundle.createdBy = std::format("xlings {}", Info::VERSION);
-    bundle.host = host;
-
     static std::atomic<int> batches{0};
     auto results = download_all(collected.tasks, dlConfig,
                                 download_progress_sink(stream, std::format("download:{}", ++batches)), nullptr);
@@ -291,7 +264,7 @@ int cmd_download(std::span<const std::string> targets, const fs::path& toArg, bo
 
     int failed = 0;
     std::uintmax_t bytes = 0;
-    std::size_t written = 0;
+    std::vector<archives::BundleArchive> archived;
     for (std::size_t i = 0; i < results.size(); ++i) {
         const auto& task = collected.tasks[i];
         const auto& r = results[i];
@@ -300,42 +273,86 @@ int cmd_download(std::span<const std::string> targets, const fs::path& toArg, bo
             if (!r.unavailable) log::error("{}: {}", r.name, r.error);
             continue;
         }
-        std::string sha = lower_(task.sha256);
+        std::string sha = archives::lower_hex(task.sha256);
         if (sha.empty()) sha = sha256::hex_file(r.localFile).value_or("");
-        const auto rel = std::format("archives/{}-{}", sha, r.localFile.filename().string());
-        if (auto placed = place_archive_(r.localFile, to / rel, sha); !placed) {
+        // Named in UTF-8 from the path itself: a file name is never narrowed.
+        const auto fileU8 = std::u8string(u8"archives/") + std::u8string(sha.begin(), sha.end()) + u8"-"
+                            + r.localFile.filename().u8string();
+        if (auto placed = place_archive_(r.localFile, to / fs::path(fileU8), sha); !placed) {
             ++failed;
             log::error("{}: {}", r.name, placed.error());
             continue;
         }
         std::error_code ec;
-        bytes += fs::file_size(to / rel, ec);
-        ++written;
-        upsert_archive_(bundle, {.package = task.package, .version = task.version, .host = task.host,
-                                 .sha256 = sha, .file = rel});
+        bytes += fs::file_size(to / fs::path(fileU8), ec);
+        archived.push_back({.package = task.package, .version = task.version, .host = task.host,
+                            .sha256 = sha, .file = std::string(fileU8.begin(), fileU8.end())});
     }
 
-    std::size_t snapshots = 0;
+    struct Staged {
+        archives::BundleIndex entry;
+        fs::path staging;
+    };
+    std::vector<Staged> staged;
     if (withIndex) {
         std::set<std::string> used;
         for (const auto& node : plan->nodes) used.insert(node.repoName);
         for (const auto& spec : PackageCatalog::index_trees()) {
             if (!used.contains(spec.name)) continue;
             const auto rel = "index/" + spec.name;
-            if (auto copied = snapshot_index_(spec.dir, to / rel); !copied) {
+            auto copied = stage_index_(spec.dir, to / rel);
+            if (!copied) {
                 ++failed;
                 log::error("index {}: {}", spec.name, copied.error());
                 continue;
             }
-            upsert_index_(bundle, {.name = spec.name, .revision = get_repo_head_hash(spec.dir), .path = rel});
-            ++snapshots;
+            staged.push_back({{.name = spec.name, .revision = get_repo_head_hash(spec.dir), .path = rel}, *copied});
         }
     }
 
+    // The manifest is read, changed and written under the bundle's lock, and
+    // the snapshots swapped in under it: two downloads into one directory
+    // each add what they wrote and lose nothing of the other's.
+    const auto discard = [&] {
+        std::error_code ec;
+        for (const auto& s : staged) fs::remove_all(s.staging, ec);
+    };
+    platform::FileLock lock;
+    std::string lockError;
+    if (!lock.acquire(to / ".bundle.lock", std::chrono::minutes{10}, [] { return false; }, lockError)) {
+        discard();
+        log::error("{}: {}", to.string(), lockError);
+        return 1;
+    }
+    auto current = archives::read_bundle(to);
+    if (!current) {
+        discard();
+        log::error("{}", current.error());
+        return 1;
+    }
+    auto bundle = current->value_or(archives::Bundle{});
+    bundle.format = archives::kBundleFormat;
+    bundle.createdBy = std::format("xlings {}", Info::VERSION);
+    bundle.host = host;
+    for (auto& a : archived) upsert_archive_(bundle, std::move(a));
+    std::size_t snapshots = 0;
+    for (auto& s : staged) {
+        if (!atomic_swap_dir_(s.staging, to / s.entry.path)) {
+            ++failed;
+            std::error_code ec;
+            fs::remove_all(s.staging, ec);
+            log::error("index {}: cannot replace {}", s.entry.name, (to / s.entry.path).string());
+            continue;
+        }
+        upsert_index_(bundle, std::move(s.entry));
+        ++snapshots;
+    }
     if (auto saved = archives::write_bundle(to, bundle); !saved) {
         log::error("{}", saved.error());
         return 1;
     }
+    lock.release();
+    const auto written = archived.size();
     log::println("{} archive{} ({:.1f} MB) for {}{} in {}", written, written == 1 ? "" : "s",
                  static_cast<double>(bytes) / (1024.0 * 1024.0), host,
                  withIndex ? std::format(" and {} index snapshot{}", snapshots, snapshots == 1 ? "" : "s") : "",

@@ -255,9 +255,6 @@ struct DownloadResult {
     // a file of its sha256 and the network was not used or did not answer.
     // Reported together, once per batch (archives::report_unavailable).
     bool unavailable { false };
-    // Where a success came from: the download cache, an archive directory
-    // (its path) or the network (the URL).
-    std::string source;
 };
 
 // Downloader configuration

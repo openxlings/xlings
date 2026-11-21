@@ -53,8 +53,13 @@ std::optional<std::filesystem::path> find_in(const std::filesystem::path& dir,
                                              std::string_view sha256,
                                              const std::filesystem::path& memoFile);
 
-// Where a directory's memo lives: <home>/data/archive-index/<hash of its path>.json.
-std::filesystem::path memo_file_for(const std::filesystem::path& dir);
+// Where a directory's memo lives: <dataDir>/archive-index/<hash of its path>.json
+// (`find` passes the home's data directory).
+std::filesystem::path memo_file_for(const std::filesystem::path& dir,
+                                    const std::filesystem::path& dataDir);
+
+// A sha256 as it is compared: lower-case hex, whatever case a recipe wrote.
+std::string lower_hex(std::string_view sha256);
 
 // The sha256 a bundle's manifest in an archive directory records for this
 // package's archive on this host. Asked for a recipe that states no sha256:
@@ -68,28 +73,35 @@ std::optional<std::string> recorded_sha256(std::string_view package,
 inline constexpr int kBundleFormat = 1;
 inline constexpr std::string_view kBundleManifest = "bundle.toml";
 
+// `extra` in each table: the lines of the keys this reader does not know,
+// verbatim, written back after the known ones -- format 1 receives additions,
+// and a rewrite by an older client must not drop them.
 struct BundleArchive {
     std::string package;   // "<ns>:<name>"
     std::string version;
     std::string host;      // "<os>-<arch>"
     std::string sha256;
     std::string file;      // relative to the bundle, '/'-separated
+    std::string extra;
 };
 
 struct BundleIndex {
     std::string name;
     std::string revision;  // a git commit, "artifact:<version>", or empty
     std::string path;      // relative to the bundle, '/'-separated
+    std::string extra;
 };
 
 struct Bundle {
     int format { kBundleFormat };
     std::string createdBy;
     std::string host;
+    std::string extra;
     std::vector<BundleArchive> archives;
     std::vector<BundleIndex> indexes;
-    // Tables this reader does not know, verbatim, in their order: written
-    // back after the known ones.
+    // Keys before the first table, and the tables this reader does not know,
+    // verbatim, in their order: written back before and after the known ones.
+    std::string preamble;
     std::string otherTables;
 };
 

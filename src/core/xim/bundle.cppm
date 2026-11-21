@@ -6,8 +6,10 @@
 //       content (archives/<sha256>-<name>), the index snapshots that resolved
 //       them (index/<name>), and the manifest bundle.toml;
 //   xlings install --from <dir> <pkg>...
-//       the directory is the first archive source of the process and its
-//       snapshots are the index: nothing is fetched to resolve or install.
+//       the directory is the first archive directory of the process and its
+//       snapshots are the index: no index is fetched to resolve. An archive
+//       it lacks is still downloaded unless the network is not used
+//       (XLINGS_NET_UNREACHABLE).
 export module xlings.core.xim.bundle;
 
 import std;

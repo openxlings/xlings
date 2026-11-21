@@ -35,12 +35,6 @@ bool looks_like_archive_filename_(const std::filesystem::path& path) {
         || name.ends_with(".zip");
 }
 
-std::string lower_hex_(std::string_view s) {
-    std::string out(s);
-    for (auto& c : out)
-        if (c >= 'A' && c <= 'F') c = static_cast<char>(c - 'A' + 'a');
-    return out;
-}
 
 std::filesystem::path unique_sibling_path_(
         const std::filesystem::path& base,
@@ -100,6 +94,46 @@ bool commit_staging_file_(const std::filesystem::path& staging, const std::files
         fs::remove(backup, ec);
     }
     return true;
+}
+
+std::expected<void, PlaceFailure_> place_verified_(const std::filesystem::path& from,
+                                                   const std::filesystem::path& destination,
+                                                   std::string_view sha256) {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    // The file a symlink names, never the link: a relative link would dangle
+    // beside `destination`, an absolute one would travel into a bundle.
+    const auto source = fs::canonical(from, ec);
+    if (ec) return std::unexpected(PlaceFailure_{.error = std::format("cannot resolve {}: {}", from.string(), ec.message())});
+    auto staging = unique_sibling_path_(destination, "part");
+    // A hard link shares the inode, so whoever owns it may change the bytes
+    // after they were verified. Linked only when the file is this process's
+    // owner's -- the destination's -- and never elevated (a user's file under
+    // install --system); copied otherwise.
+    const auto owner = platform::owner_uid(source);
+    const bool mayLink = !platform::is_root() && owner && owner == platform::owner_uid(destination.parent_path());
+    if (mayLink) fs::create_hard_link(source, staging, ec);
+    if (!mayLink || ec) {
+        ec.clear();
+        fs::copy_file(source, staging, ec);
+    }
+    if (ec) {
+        const auto why = ec.message();
+        fs::remove(staging, ec);
+        return std::unexpected(PlaceFailure_{.error = std::format("cannot write {}: {}", destination.string(), why)});
+    }
+    const auto want = archives::lower_hex(sha256);
+    if (auto digest = sha256::hex_file(staging); !digest || *digest != want) {
+        fs::remove(staging, ec);
+        return std::unexpected(PlaceFailure_{
+            .mismatch = true, .error = std::format("{} does not have sha256 {}", source.string(), want)});
+    }
+    std::string error;
+    if (!commit_staging_file_(staging, destination, error)) {
+        fs::remove(staging, ec);
+        return std::unexpected(PlaceFailure_{.error = std::move(error)});
+    }
+    return {};
 }
 
 bool recover_download_transaction_(
@@ -510,7 +544,7 @@ DownloadResult download_one(const DownloadTask& task, std::function<void(double 
     // The archive's identity: the sha256 its recipe states, or -- for a
     // recipe that states none -- the one a bundle's manifest in an archive
     // directory records for this package's archive on this host.
-    std::string want = lower_hex_(task.sha256);
+    std::string want = archives::lower_hex(task.sha256);
     if (want.empty() && !task.package.empty()) {
         if (auto recorded = archives::recorded_sha256(task.package, task.version, task.host))
             want = *recorded;
@@ -528,8 +562,13 @@ DownloadResult download_one(const DownloadTask& task, std::function<void(double 
         auto digest = sha256::hex_file(destFile);
         if (digest && *digest == want) {
             log::debug("already downloaded (sha256): {}", destFile.string());
+            // Known through a bundle only: the sidecar is what serves it
+            // when that bundle is gone (path 2).
+            std::error_code sec;
+            if (task.sha256.empty() && !task.cacheIdentity.empty() && !fs::exists(sidecarPath, sec))
+                write_meta_sidecar_(sidecarPath, {}, static_cast<std::int64_t>(fs::file_size(destFile, sec)),
+                                    task.cacheIdentity, task.url);
             result.success = true;
-            result.source = "cache";
             return result;
         }
         // sha mismatch: stale/corrupt cache. Remove before falling through
@@ -539,57 +578,44 @@ DownloadResult download_one(const DownloadTask& task, std::function<void(double 
     }
 
     // ── The archive directories, by content ──
-    // A file there is linked (copied across filesystems) beside the cache
-    // entry, verified, and committed as a download would be; the install
-    // then proceeds as from the network. A candidate whose bytes no longer
-    // match (changed with its size and mtime kept) is forgotten and the next
-    // one is asked.
+    // A file there is placed beside the cache entry (place_verified_),
+    // verified, and committed as a download would be; the install then
+    // proceeds as from the network. A candidate whose bytes no longer match
+    // (changed with its size and mtime kept) is forgotten and the next one is
+    // asked.
     for (int attempt = 0; !want.empty() && attempt < 3; ++attempt) {
         auto hit = archives::find(want);
         if (!hit) break;
-        auto staging = unique_sibling_path_(destFile, "part");
-        std::error_code lec;
-        fs::create_hard_link(hit->file, staging, lec);
-        if (lec) {
-            lec.clear();
-            fs::copy_file(hit->file, staging, lec);
-        }
-        if (lec) {
-            log::warn("{}: {} could not be taken from {}: {}", task.name, hit->file.string(),
-                      hit->directory.string(), lec.message());
-            fs::remove(staging, ec);
-            break;
-        }
-        auto digest = sha256::hex_file(staging);
-        if (!digest || *digest != want) {
-            fs::remove(staging, ec);
+        auto placed = place_verified_(hit->file, destFile, want);
+        if (!placed && placed.error().mismatch) {
             archives::forget(hit->file);
             continue;
         }
-        std::string commitError;
-        if (!commit_staging_file_(staging, destFile, commitError)) {
-            fs::remove(staging, ec);
-            result.error = std::move(commitError);
-            return result;
+        if (!placed) {
+            log::warn("{}: {} could not be taken from {}: {}", task.name, hit->file.string(),
+                      hit->directory.string(), placed.error().error);
+            break;
         }
         log::debug("[archives] {} from {}", task.name, hit->file.string());
-        if (onProgress) {
-            std::error_code sec;
-            const auto size = static_cast<double>(fs::file_size(destFile, sec));
-            onProgress(size, size);
-        }
+        std::error_code sec;
+        const auto size = fs::file_size(destFile, sec);
+        if (onProgress) onProgress(static_cast<double>(size), static_cast<double>(size));
+        // A recipe that states no sha256 is served from the cache later only
+        // through its sidecar (path 2): without one, a run without this
+        // directory would download it again, or offline find nothing.
+        if (task.sha256.empty() && !sec && !task.cacheIdentity.empty())
+            write_meta_sidecar_(sidecarPath, {}, static_cast<std::int64_t>(size), task.cacheIdentity, task.url);
         result.success = true;
-        result.source = hit->directory.string();
         return result;
     }
 
     // ── Cache hit path 2: HEAD-based freshness (when sha256 is unset) ──
     // Trade a tiny HEAD round-trip for not re-downloading toolchain-sized
     // payloads on every `xlings install`. We only consult this when the
-    // recipe omits sha256 — otherwise path 1 already decided.
+    // archive's identity is unknown -- otherwise path 1 already decided.
     tinyhttps::RemoteFileMeta probedMeta;
     bool probedMetaValid = false;
-    if (fs::exists(destFile) && task.sha256.empty()) {
+    if (fs::exists(destFile) && want.empty()) {
         // Offline the probe is not made: its failure is the answer, and the
         // transaction-committed cache below is what may still serve.
         if (offline.empty()) probedMeta = query_remote_meta_(task.url, testHooks);
@@ -612,7 +638,6 @@ DownloadResult download_one(const DownloadTask& task, std::function<void(double 
                 log::debug("already downloaded (HEAD cache hit, size={}): {}",
                            localSize, destFile.string());
                 result.success = true;
-                result.source = "cache";
                 return result;
             }
             // Stale: retain the previous committed pair until the replacement
@@ -633,7 +658,6 @@ DownloadResult download_one(const DownloadTask& task, std::function<void(double 
                           probedMeta.error.empty() ? "unknown" : probedMeta.error,
                           destFile.string());
                 result.success = true;
-                result.source = "cache";
                 return result;
             }
         }
@@ -670,7 +694,7 @@ DownloadResult download_one(const DownloadTask& task, std::function<void(double 
     // original URL; without one the author-declared URL stays first unless
     // its host is unreachable/penalized. See
     // .agents/docs/2026-06-04-github-asset-adaptive-mirror.md.
-    urls = mirror::adaptive::reorder(std::move(urls), !task.sha256.empty());
+    urls = mirror::adaptive::reorder(std::move(urls), !want.empty());
 
     // Which sources are in play, in the order they will be tried. When a
     // download is slow or 404s, the first question is always "where is it
@@ -739,8 +763,8 @@ DownloadResult download_one(const DownloadTask& task, std::function<void(double 
         // bytes is rejected and the next candidate (ultimately the
         // author URL) is tried — previously a single mismatch failed the
         // whole download with the remaining candidates untried.
-        if (!task.sha256.empty()) {
-            auto want = lower_hex_(task.sha256);
+        // The identity a bundle recorded binds a network download too.
+        if (!want.empty()) {
             opts.onVerify = [stagingFile, want, &task](const std::string& u)
                 -> std::string {
                 auto digest = sha256::hex_file(stagingFile);
@@ -789,7 +813,7 @@ DownloadResult download_one(const DownloadTask& task, std::function<void(double 
     // the error message points at the actual problem instead of a
     // misleading libarchive "unrecognized format". Skip when sha256
     // is declared — that's a stronger check than size alone.
-    if (task.sha256.empty() && looks_like_archive_filename_(destFile)) {
+    if (want.empty() && looks_like_archive_filename_(destFile)) {
         auto sz = fs::file_size(stagingFile, ec);
         if (!ec && sz < kMinPlausibleArchiveBytes_) {
             result.error = std::format(
@@ -805,9 +829,9 @@ DownloadResult download_one(const DownloadTask& task, std::function<void(double 
     // Final SHA256 re-check (defense in depth — the per-candidate
     // onVerify above already gated acceptance; in-process hash, no
     // dependency on a host `sha256sum` binary, which stock macOS lacks).
-    if (!task.sha256.empty()) {
+    if (!want.empty()) {
         auto digest = sha256::hex_file(stagingFile);
-        if (!digest || *digest != lower_hex_(task.sha256)) {
+        if (!digest || *digest != want) {
             result.error = std::format("SHA256 mismatch for {}", task.name);
             fs::remove(stagingFile, ec);
             return result;
@@ -852,7 +876,6 @@ DownloadResult download_one(const DownloadTask& task, std::function<void(double 
     }
 
     result.success = true;
-    result.source = transferResult.sourceUrl.empty() ? task.url : transferResult.sourceUrl;
     return result;
 }
 
