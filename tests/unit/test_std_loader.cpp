@@ -140,7 +140,7 @@ XTEST(StdLoader, AFailedHookSaysWhatRuntimeItSaw, .area = "subos", .covers = {"H
     EXPECT_NE(worker.find("xlings self doctor --isolation"), std::string::npos) << worker;
     // Nothing to give: the recipe's dependency.
     const auto none = sl::note(s, {.need = sl::Need::Unprovided});
-    EXPECT_NE(none.find("runtime dependency"), std::string::npos) << none;
+    EXPECT_NE(none.find("declare that runtime as a dependency"), std::string::npos) << none;
     // The root's own, older or not glibc.
     const auto older = sl::note(s, {.need = sl::Need::Present, .rootGlibc = "2.27", .envGlibc = "2.44.3"});
     EXPECT_NE(older.find("glibc 2.27"), std::string::npos) << older;
