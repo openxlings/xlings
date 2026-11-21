@@ -144,8 +144,8 @@ xlings install --from ./bundle gcc@16.1.0               # on the machine without
 `bundle.toml`。在 Linux 上，闭包包含 `xim:patchelf`，没有 patchelf 的宿主上的安装会先安装它。已含有 bundle 的目录会被扩充：
 归档与快照被加入或替换，清单中 xlings 不认识的表被保留。
 
-`install --from` 使 bundle 成为第一个归档目录，并使其中的快照成为这条命令唯一的索引：解析与安装都不获取任何东西，
-也不读取 home 自己的索引。没有快照的目录只是一个归档目录，由 home 的索引解析。对于没有给出 sha256 的配方，清单为该包、
+`install --from` 使 bundle 成为第一个归档目录，并使其中的快照成为这条命令唯一的索引：解析时不获取任何索引，
+也不读取 home 自己的索引。bundle 缺少的归档仍会被下载，除非不使用网络（见下）。没有快照的目录只是一个归档目录，由 home 的索引解析。对于没有给出 sha256 的配方，清单为该包、
 版本与宿主记录的 sha256 即是归档的身份。清单及其规则见 [specs/bundle](../specs/bundle.md)；目录与环境变量见
 [specs/xlings-json](../specs/xlings-json.md)。
 

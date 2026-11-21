@@ -47,7 +47,9 @@ xlings download <package>[@<version>]... --to <dir> [--with-index] [--host <os>-
 - With `--with-index`, every index that answered a package of the closure is
   copied to `index/<name>` without its `.git` tree and parsed-index cache,
   replaced whole.
-- The manifest is replaced atomically. When `<dir>` already holds one, its
+- The manifest is read, changed and replaced atomically under a lock
+  (`<dir>/.bundle.lock`), and the index snapshots are swapped in under it, so
+  two downloads into one directory keep each other's entries. When `<dir>` already holds one, its
   entries are kept: an archive entry of the same package, version and host is
   replaced, an index entry of the same name is replaced, and the tables this
   client does not know are written back unchanged after the known ones. A
@@ -92,8 +94,10 @@ path = "index/xim"
 
 A reader ignores every table and every key it does not know. Other programs
 append their own tables to the same file (mcpp writes `[[git]]`); xlings keeps
-them when it rewrites the manifest. Values are TOML basic strings and integers;
-a value of another type in a known table is ignored.
+them when it rewrites the manifest, and it keeps the keys it does not know in
+the tables it does, after the keys it writes. The known keys take TOML basic or
+literal strings, and `format` an integer; a known key with a value of another
+type is ignored and written again with its known value.
 
 ## 4. Reading: `xlings install --from`
 

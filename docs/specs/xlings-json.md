@@ -289,9 +289,15 @@ of `archives`, and takes the first file whose sha256 is the archive's identity:
   digest per file keyed by its path, size and modification time; a file is
   hashed only when it has no entry with its size and time, and one named
   `<sha256>-...` is read first;
-- the file is linked (copied across file systems) beside the download cache's
-  entry, verified, and installed as a downloaded one is. A file whose bytes do
-  not have the digest is not taken, and its entry is dropped;
+- the file (a symbolic link's target, never the link) is placed beside the
+  download cache's entry, verified, and installed as a downloaded one is. It is
+  hard-linked only when it belongs to the user the cache belongs to and xlings
+  is not running as root; otherwise it is copied, so nobody else can change the
+  bytes after they were verified. A file whose bytes do not have the digest is
+  not taken, and its entry is dropped;
+- for a recipe that states no sha256, a file taken this way gets the cache's
+  sidecar (`<file>.meta`), so a later run without the directory serves it
+  from the cache as a downloaded one;
 - an entry that is not a directory on this machine is skipped with one warning.
 
 The network is asked after every directory, and not at all offline (below).

@@ -163,8 +163,9 @@ archives and snapshots are added or replaced, and tables of the manifest that
 xlings does not know are kept.
 
 `install --from` makes the bundle the first archive directory and its
-snapshots the only indexes of that command: nothing is fetched to resolve or
-to install, and the home's own indexes are not read. A directory without
+snapshots the only indexes of that command: no index is fetched to resolve,
+and the home's own indexes are not read. An archive the bundle lacks is still
+downloaded, unless the network is not used (below). A directory without
 snapshots is an archive directory only, resolved with the home's indexes. For
 a recipe that states no sha256, the sha256 the manifest records for that
 package, version and host names the archive. The manifest and its rules are
