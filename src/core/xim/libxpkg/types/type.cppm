@@ -233,6 +233,12 @@ struct DownloadTask {
     std::string cacheIdentity;
     std::filesystem::path destDir;
     std::vector<std::string> fallbackUrls;  // tried in order when url fails
+    // What the archive is of, for a report and a bundle's manifest:
+    // "<ns>:<name>", its version and "<os>-<arch>". Empty for a download
+    // that is not a package's (an image, a carrier's file).
+    std::string package;
+    std::string version;
+    std::string host;
 };
 
 // Result of a download
@@ -245,6 +251,13 @@ struct DownloadResult {
     // InstallStatus. Empty means nothing more specific than E_INTERNAL.
     std::string errorCode;
     std::string hint;
+    // A failure because no source has the archive: no archive directory holds
+    // a file of its sha256 and the network was not used or did not answer.
+    // Reported together, once per batch (archives::report_unavailable).
+    bool unavailable { false };
+    // Where a success came from: the download cache, an archive directory
+    // (its path) or the network (the URL).
+    std::string source;
 };
 
 // Downloader configuration

@@ -469,9 +469,10 @@ std::vector<RepoIndexSpec> PackageCatalog::repo_specs_() {
         }
     }
 
-    // Local xpkg repo (from add-xpkg command)
+    // Local xpkg repo (from add-xpkg command); a bundle's snapshots are the
+    // whole index (install --from), so the home's local recipes are not read.
     auto localRepoDir = Config::global_data_dir() / "xim-pkgindex-local";
-    if (std::filesystem::exists(localRepoDir / "pkgs")) {
+    if (!Config::index_snapshots_in_use() && std::filesystem::exists(localRepoDir / "pkgs")) {
         specs.push_back({
             .name = "local",
             .url = "",

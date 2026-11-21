@@ -17,6 +17,7 @@ import xlings.runtime.cancellation;
 import xlings.core.mirror;
 import xlings.libs.sha256;
 import xlings.core.xim.extract;
+import xlings.core.xim.archives;
 
 namespace xlings::xim {
 
@@ -506,23 +507,80 @@ DownloadResult download_one(const DownloadTask& task, std::function<void(double 
         return result;
     }
 
+    // The archive's identity: the sha256 its recipe states, or -- for a
+    // recipe that states none -- the one a bundle's manifest in an archive
+    // directory records for this package's archive on this host.
+    std::string want = lower_hex_(task.sha256);
+    if (want.empty() && !task.package.empty()) {
+        if (auto recorded = archives::recorded_sha256(task.package, task.version, task.host))
+            want = *recorded;
+    }
+    const auto offline = archives::offline_reason();
+
     // ── Cache hit path 1: sha256 verified (cheapest, most reliable) ──
-    // If the recipe declares a sha256 and the on-disk file matches, we're
-    // byte-identical to upstream — skip download outright.
-    if (fs::exists(destFile) && !task.sha256.empty()) {
+    // If the identity is known and the on-disk file matches, we're
+    // byte-identical to upstream — skip download outright. The download
+    // cache is the first of the sources.
+    if (fs::exists(destFile) && !want.empty()) {
         // In-process hash — `sha256sum` is a coreutils tool absent on
         // stock macOS, where shelling out made every pinned download
         // "mismatch" (see xlings.libs.sha256 header).
         auto digest = sha256::hex_file(destFile);
-        if (digest && *digest == lower_hex_(task.sha256)) {
+        if (digest && *digest == want) {
             log::debug("already downloaded (sha256): {}", destFile.string());
             result.success = true;
+            result.source = "cache";
             return result;
         }
         // sha mismatch: stale/corrupt cache. Remove before falling through
         // so the next download_to_file starts from a clean slate (defends
         // against a future tinyhttps that might enable Range/resume).
         // Keep the previous file until a verified replacement is ready.
+    }
+
+    // ── The archive directories, by content ──
+    // A file there is linked (copied across filesystems) beside the cache
+    // entry, verified, and committed as a download would be; the install
+    // then proceeds as from the network. A candidate whose bytes no longer
+    // match (changed with its size and mtime kept) is forgotten and the next
+    // one is asked.
+    for (int attempt = 0; !want.empty() && attempt < 3; ++attempt) {
+        auto hit = archives::find(want);
+        if (!hit) break;
+        auto staging = unique_sibling_path_(destFile, "part");
+        std::error_code lec;
+        fs::create_hard_link(hit->file, staging, lec);
+        if (lec) {
+            lec.clear();
+            fs::copy_file(hit->file, staging, lec);
+        }
+        if (lec) {
+            log::warn("{}: {} could not be taken from {}: {}", task.name, hit->file.string(),
+                      hit->directory.string(), lec.message());
+            fs::remove(staging, ec);
+            break;
+        }
+        auto digest = sha256::hex_file(staging);
+        if (!digest || *digest != want) {
+            fs::remove(staging, ec);
+            archives::forget(hit->file);
+            continue;
+        }
+        std::string commitError;
+        if (!commit_staging_file_(staging, destFile, commitError)) {
+            fs::remove(staging, ec);
+            result.error = std::move(commitError);
+            return result;
+        }
+        log::debug("[archives] {} from {}", task.name, hit->file.string());
+        if (onProgress) {
+            std::error_code sec;
+            const auto size = static_cast<double>(fs::file_size(destFile, sec));
+            onProgress(size, size);
+        }
+        result.success = true;
+        result.source = hit->directory.string();
+        return result;
     }
 
     // ── Cache hit path 2: HEAD-based freshness (when sha256 is unset) ──
@@ -532,7 +590,10 @@ DownloadResult download_one(const DownloadTask& task, std::function<void(double 
     tinyhttps::RemoteFileMeta probedMeta;
     bool probedMetaValid = false;
     if (fs::exists(destFile) && task.sha256.empty()) {
-        probedMeta = query_remote_meta_(task.url, testHooks);
+        // Offline the probe is not made: its failure is the answer, and the
+        // transaction-committed cache below is what may still serve.
+        if (offline.empty()) probedMeta = query_remote_meta_(task.url, testHooks);
+        else probedMeta = tinyhttps::RemoteFileMeta{.ok = false, .error = offline};
         probedMetaValid = true;
 
         if (probedMeta.ok) {
@@ -551,6 +612,7 @@ DownloadResult download_one(const DownloadTask& task, std::function<void(double 
                 log::debug("already downloaded (HEAD cache hit, size={}): {}",
                            localSize, destFile.string());
                 result.success = true;
+                result.source = "cache";
                 return result;
             }
             // Stale: retain the previous committed pair until the replacement
@@ -571,9 +633,19 @@ DownloadResult download_one(const DownloadTask& task, std::function<void(double 
                           probedMeta.error.empty() ? "unknown" : probedMeta.error,
                           destFile.string());
                 result.success = true;
+                result.source = "cache";
                 return result;
             }
         }
+    }
+
+    // No source so far had it, and the network is not one: said for every
+    // such archive together, by the caller (archives::report_unavailable).
+    if (!offline.empty()) {
+        result.error = std::format("in no archive source, and the network is not used ({})", offline);
+        result.errorCode = "E_NETWORK";
+        result.unavailable = true;
+        return result;
     }
 
     // Build ordered list of URLs to try:
@@ -683,6 +755,10 @@ DownloadResult download_one(const DownloadTask& task, std::function<void(double 
         if (!transferResult.success) {
             fs::remove(stagingFile, ec);
             result.error = transferResult.error;
+            // No source had it: not in a directory, and not served. A local
+            // write failure or a cancel is not that.
+            result.unavailable = transferResult.failure != tinyhttps::FailureKind::Local
+                && transferResult.failure != tinyhttps::FailureKind::Cancelled;
             // The same wire code an extraction that could not write carries
             // (#376): what the user does next is free space, not retry.
             if (transferResult.failure == tinyhttps::FailureKind::Local) {
@@ -776,6 +852,7 @@ DownloadResult download_one(const DownloadTask& task, std::function<void(double 
     }
 
     result.success = true;
+    result.source = transferResult.sourceUrl.empty() ? task.url : transferResult.sourceUrl;
     return result;
 }
 

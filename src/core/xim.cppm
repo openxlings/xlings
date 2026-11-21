@@ -8,6 +8,8 @@ export import xlings.core.xim.inventory;
 export import xlings.core.xim.compatibility;
 export import xlings.core.xim.resolver;
 export import xlings.core.xim.downloader;
+export import xlings.core.xim.archives;
 export import xlings.core.xim.installer;
 export import xlings.core.xim.overlay;
 export import xlings.core.xim.commands;
+export import xlings.core.xim.bundle;

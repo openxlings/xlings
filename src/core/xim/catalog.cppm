@@ -316,6 +316,9 @@ public:
     // cannot be built failed locally -- a recipe, a sandbox, a cache -- and
     // fetching the index again cannot help (design 2026-10-20 §4.9, G13).
     static bool index_trees_present();
+    // The index trees a catalog reads, in its order: what `xlings download
+    // --with-index` takes a snapshot of.
+    static std::vector<RepoIndexSpec> index_trees() { return repo_specs_(); }
 private:
 
     static RepoState make_state_(const RepoIndexSpec& spec);

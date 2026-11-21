@@ -116,6 +116,12 @@ export struct Upstream {
 
 export std::vector<Upstream> parse_upstreams_json(const nlohmann::json& json);
 
+// The home's archive directories (`.xlings.json` `archives`): local
+// directories whose files are taken by content, the sha256 a recipe states,
+// before the network is asked. A relative entry is relative to the home.
+export std::vector<std::filesystem::path> parse_archives_json(const nlohmann::json& json,
+                                                              const std::filesystem::path& home);
+
 using MirrorServerMap = std::unordered_map<std::string, std::vector<std::string>>;
 
 // Which subos a process is acting on: a name and the root of its tree.
@@ -291,6 +297,8 @@ private:
     std::filesystem::path projectDir_;      // directory containing project .xlings.json
     std::vector<IndexRepo> globalIndexRepos_;
     std::vector<Upstream> upstreams_;
+    std::vector<std::filesystem::path> archives_;
+    std::optional<std::vector<IndexRepo>> indexSnapshots_;
     std::vector<IndexRepo> projectIndexRepos_;
     MirrorServerMap globalResourceServers_;
     MirrorServerMap projectResourceServers_;
@@ -692,6 +700,17 @@ public:
 
     // The home's read-only upstreams (`.xlings.json` `upstreams`).
     [[nodiscard]] static const std::vector<Upstream>& upstreams();
+
+    // The home's archive directories (`.xlings.json` `archives`), in order.
+    [[nodiscard]] static const std::vector<std::filesystem::path>& archives();
+
+    // `install --from <dir>`: the bundle's index snapshots are the indexes of
+    // this process, each an entry whose `dir` is the snapshot. The home's own
+    // indexes, their sub-indexes, the project's and the local recipes are not
+    // read, and nothing is fetched: the resolution is the bundle's, whatever
+    // the home holds. Survives reload_state().
+    static void use_index_snapshots(std::vector<IndexRepo> snapshots);
+    [[nodiscard]] static bool index_snapshots_in_use();
 
     [[nodiscard]] static std::filesystem::path resolve_repo_source(const IndexRepo& repo,
                                                                    bool projectScope);

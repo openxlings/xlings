@@ -42,6 +42,10 @@ PackageCatalog& get_catalog(CatalogAccess access = CatalogAccess::LocalOnly);
 enum class CatalogNeed { Local, Synced };
 PackageCatalog* ensure_catalog(EventStream& stream, CatalogNeed need);
 
+// A batch's download state as `download_progress` data on the stream
+// (protocol 1.3), under `streamId`: how install and download draw theirs.
+DownloadProgressSink download_progress_sink(EventStream& stream, std::string streamId);
+
 // What version the index says a package is, without installing anything.
 //
 // Exists so that a decision which must agree with `xlings install <pkg>` can

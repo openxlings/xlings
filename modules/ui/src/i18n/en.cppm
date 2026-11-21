@@ -75,6 +75,7 @@ inline constexpr Entry kEntries[] = {
     { "config.theme",            "theme" },
     { "config.interactive",      "interactive" },
     { "config.index_repo",       "index-repo" },
+    { "config.archives",         "archives" },
     { "config.project_data",     "project data" },
     { "config.project_repo",     "project repo" },
     { "config.default_marker",   "default" },

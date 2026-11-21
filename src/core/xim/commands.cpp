@@ -539,6 +539,35 @@ int cmd_install_step(std::span<const std::string> targets, std::string_view subo
     return rc;
 }
 
+DownloadProgressSink download_progress_sink(EventStream& stream, std::string streamId) {
+    return [&stream, streamId = std::move(streamId)](std::span<const TaskProgress> state,
+                  std::size_t nameWidth, double elapsedSec, bool sizesReady) {
+        nlohmann::json files = nlohmann::json::array();
+        for (auto& p : state) {
+            files.push_back({
+                {"name", p.name},
+                {"totalBytes", p.totalBytes},
+                {"downloadedBytes", p.downloadedBytes},
+                {"started", p.started},
+                {"finished", p.finished},
+                {"success", p.success},
+                {"sourceHost", p.sourceHost},
+                {"sourceAttempt", p.sourceAttempt}
+            });
+        }
+        nlohmann::json payload;
+        payload["stream"] = streamId;
+        payload["files"] = std::move(files);
+        payload["nameWidth"] = nameWidth;
+        payload["elapsedSec"] = elapsedSec;
+        payload["sizesReady"] = sizesReady;
+        // Deprecated in 1.3 and always 0: a minor version only adds, so the
+        // field stays until 2.0, and it carries no renderer state any more.
+        payload["prevLines"] = 0;
+        stream.emit(DataEvent{"download_progress", payload.dump()});
+    };
+}
+
 int cmd_install(std::span<const std::string> targets, bool yes, bool noDeps, EventStream& stream, bool forceGlobal, CancellationToken* cancel, bool dryRun, bool useAfterInstall, bool* allInStore, bool reconfig) {
     std::vector<InstallTargetReport_> report;
     report.reserve(targets.size());
@@ -775,6 +804,7 @@ int install_(std::span<const std::string> targets, bool yes, bool noDeps,
         // works without a manual `xlings update`. Debounced by a per-call guard
         // + a process-wide cooldown; ambiguous errors are not "missing".
         if (!match && !refreshedForMissing && Config::paths().systemLayer.empty()
+                && !Config::index_snapshots_in_use()
                 && !match.error().contains("ambiguous") && !match.error().contains("could not be read")
                 && index_refresh_cooldown_elapsed()) {
             refreshedForMissing = true;
@@ -1367,33 +1397,7 @@ int install_(std::span<const std::string> targets, bool yes, bool noDeps,
     // is per batch rather than per command because a hook can start a nested
     // install, whose downloads are a second batch drawn as their own frame.
     static std::atomic<int> installBatches{0};
-    const std::string streamId = std::format("install:{}", ++installBatches);
-    DownloadProgressSink dlSink = [&stream, streamId](std::span<const TaskProgress> state,
-                  std::size_t nameWidth, double elapsedSec, bool sizesReady) {
-        nlohmann::json files = nlohmann::json::array();
-        for (auto& p : state) {
-            files.push_back({
-                {"name", p.name},
-                {"totalBytes", p.totalBytes},
-                {"downloadedBytes", p.downloadedBytes},
-                {"started", p.started},
-                {"finished", p.finished},
-                {"success", p.success},
-                {"sourceHost", p.sourceHost},
-                {"sourceAttempt", p.sourceAttempt}
-            });
-        }
-        nlohmann::json payload;
-        payload["stream"] = streamId;
-        payload["files"] = std::move(files);
-        payload["nameWidth"] = nameWidth;
-        payload["elapsedSec"] = elapsedSec;
-        payload["sizesReady"] = sizesReady;
-        // Deprecated in 1.3 and always 0: a minor version only adds, so the
-        // field stays until 2.0, and it carries no renderer state any more.
-        payload["prevLines"] = 0;
-        stream.emit(DataEvent{"download_progress", payload.dump()});
-    };
+    DownloadProgressSink dlSink = download_progress_sink(stream, std::format("install:{}", ++installBatches));
 
     observe::Timed executeTimed("install (download, hooks, registration)");
     // Steps its recipes declared only an administrator may take: settled
