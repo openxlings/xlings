@@ -202,7 +202,9 @@ New-Item -ItemType Directory -Force $prev | Out-Null
 # The newest published release before this one: once this one is published,
 # "latest" is this one itself.
 $v = [regex]::Match((Run @('xlings', '--version')).Out, '\d{4}\.\d+\.\d+\.\d+').Value
-$rel = (Invoke-RestMethod 'https://api.github.com/repos/openxlings/xlings/releases?per_page=10' |
+# (Assigned first: Invoke-RestMethod hands a JSON array on as one object.)
+$releases = @(Invoke-RestMethod 'https://api.github.com/repos/openxlings/xlings/releases?per_page=10')
+$rel = ($releases | ForEach-Object { $_ } |
         Where-Object { -not $_.draft -and -not $_.prerelease -and $_.tag_name.TrimStart('v') -ne $v } |
         Select-Object -First 1).tag_name.TrimStart('v')
 if (-not $rel) { Fail "no published release before $v to go back to" }
