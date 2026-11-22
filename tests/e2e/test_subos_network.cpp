@@ -174,34 +174,40 @@ XTEST(SubosNetworkE2E, NatAuditsConnectAndDnsPortRequestsBeforeContinuing,
 // nobody before it joins a namespace, and nobody cannot open the user
 // namespace root made -- `net=nat` exited 125 for every root supervisor (a
 // WSL 2 carrier runs everything as root). pasta now runs as the namespace's
-// owner. Run here as root through sudo when the lane is not root already.
+// owner. Run here as root through sudo when the lane is not root already, on a
+// home and a binary root owns, as a carrier's are: root inside the sandbox's
+// user namespace has no capability over the runner's own files.
 XTEST(SubosNetworkE2E, NatAsRootJoinsTheNamespaceAsItsOwner,
       .area = "subos", .cost = tk::Cost::Medium, .covers = {"ISO-NET-NAT-ROOT", "ISO-NET-NAT"},
       .requires_ = {"linux", "xlings-bin", "sandbox", "pasta", "sudo"}, .resources = {"sandbox"},
       .proves = "isolation") {
     Box box;
-    const auto as_root = [&](std::vector<std::string> args) {
-        if (platform::is_root()) return box.home.xlings(std::move(args));
-        tk::RunOptions o;
-        o.argv = {"sudo", "-n", "env"};
-        for (const auto& [key, value] : box.home.env()) o.argv.push_back(key + "=" + value);
-        o.argv.push_back(tk::xlings_binary().string());
-        o.argv.insert(o.argv.end(), args.begin(), args.end());
-        o.env = box.home.env();
-        o.cwd = box.home.root();
-        return tk::run(o);
-    };
-    const auto run = as_root({"subos", "exec", "box", "--sandbox=private", "--",
-                              "/bin/sh", "-c", "tail -n +3 /proc/net/dev"});
-    // What root left in the home goes back to the test's user, so the home is
-    // removed like any other.
-    if (!platform::is_root()) {
-        tk::RunOptions chown;
-        chown.argv = {"sudo", "-n", "chown", "-R", std::format("{}:{}", platform::user_ids().uid,
-                                                              platform::user_ids().gid),
-                      box.home.root().string()};
-        chown.env = box.home.env();
-        (void)tk::run(chown);
+    const auto args = std::vector<std::string>{"subos", "exec", "box", "--sandbox=private", "--",
+                                               "/bin/sh", "-c", "tail -n +3 /proc/net/dev"};
+    tk::RunResult run;
+    if (platform::is_root()) {
+        run = box.home.xlings(args);
+    } else {
+        const auto bin = box.home.dir() / "bin" / "xlings-under-test";
+        fs::create_directories(bin.parent_path());
+        fs::copy_file(tk::xlings_binary(), bin, fs::copy_options::overwrite_existing);
+        const auto sudo = [&](std::vector<std::string> argv) {
+            tk::RunOptions o;
+            o.argv = {"sudo", "-n"};
+            o.argv.insert(o.argv.end(), argv.begin(), argv.end());
+            o.env = box.home.env();
+            o.cwd = "/";
+            return tk::run(o);
+        };
+        const auto owner = std::format("{}:{}", platform::user_ids().uid, platform::user_ids().gid);
+        ASSERT_EQ(sudo({"chown", "-R", "0:0", box.home.root().string()}).exit_code, 0);
+        std::vector<std::string> argv{"env"};
+        for (const auto& [key, value] : box.home.env()) argv.push_back(key + "=" + value);
+        argv.push_back(bin.string());
+        argv.insert(argv.end(), args.begin(), args.end());
+        run = sudo(argv);
+        // Back to the test's user, so the home is removed like any other.
+        (void)sudo({"chown", "-R", owner, box.home.root().string()});
     }
     ASSERT_EQ(run.exit_code, 0) << run.transcript();
     EXPECT_EQ(run.transcript().find("pasta could not set up the network"), std::string::npos)

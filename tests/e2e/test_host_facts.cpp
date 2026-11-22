@@ -25,7 +25,7 @@ struct Fixture {
     fs::path payload = home.dir() / "data/xpkgs/fixture-x-hostlink/1.0.0";
 
     Fixture() {
-        tk::write_file(fact, "550.144.03\n");
+        tk::write_file(fact, "550.144.03");
         const auto repo = home.root() / "index";
         tk::write_file(repo / "xim-indexrepos.lua", "xim_indexrepos = {}\n");
         const auto factPath = fact.generic_string();
@@ -67,6 +67,8 @@ struct Fixture {
         fs::copy_file(tk::xlings_binary(), home.dir() / "bin" / (tk::is_windows ? "xlings.exe" : "xlings"));
         EXPECT_EQ(home.xlings({"self", "init"}).exit_code, 0);
     }
+    // The fact has no line end: a recipe's text-mode write turns one into
+    // CRLF on Windows, and the value is what is compared.
     std::string configured_with() const { return tk::read_file(payload / "configured-with"); }
 };
 
@@ -77,7 +79,7 @@ XTEST(HostFacts, TheRecordIsKeptAndAChangedFactIsConfiguredAgainWhereItIsUsed,
     Fixture f;
     auto installed = f.home.xlings({"install", "fixture:hostlink@1.0.0", "-y"});
     ASSERT_EQ(installed.exit_code, 0) << installed.transcript();
-    EXPECT_EQ(f.configured_with(), "550.144.03\n");
+    EXPECT_EQ(f.configured_with(), "550.144.03");
 
     // The scope records each declared file's digest beside `configured`.
     const auto state = nlohmann::json::parse(tk::read_file(f.home.dir() / "subos/default/.xlings.json"));
@@ -89,22 +91,22 @@ XTEST(HostFacts, TheRecordIsKeptAndAChangedFactIsConfiguredAgainWhereItIsUsed,
     // Nothing changed: an install has nothing to do.
     auto again = f.home.xlings({"install", "fixture:hostlink@1.0.0", "-y"});
     ASSERT_EQ(again.exit_code, 0) << again.transcript();
-    EXPECT_EQ(f.configured_with(), "550.144.03\n");
+    EXPECT_EQ(f.configured_with(), "550.144.03");
 
     // Activation: the host's driver was upgraded.
-    tk::write_file(f.fact, "580.178.04\n");
+    tk::write_file(f.fact, "580.178.04");
     auto used = f.home.xlings({"use", "hostlink", "1.0.0"});
     ASSERT_EQ(used.exit_code, 0) << used.transcript();
-    EXPECT_EQ(f.configured_with(), "580.178.04\n") << used.transcript();
+    EXPECT_EQ(f.configured_with(), "580.178.04") << used.transcript();
 
     // The doctor: reported, configured again by --fix, then clean.
-    tk::write_file(f.fact, "590.48.01\n");
+    tk::write_file(f.fact, "590.48.01");
     auto found = f.home.xlings({"self", "doctor"});
     EXPECT_NE(found.exit_code, 0) << found.transcript();
     EXPECT_NE(found.transcript().find("host facts changed"), std::string::npos) << found.transcript();
     auto fixed = f.home.xlings({"self", "doctor", "--fix", "-y"});
     EXPECT_EQ(fixed.exit_code, 0) << fixed.transcript();
-    EXPECT_EQ(f.configured_with(), "590.48.01\n") << fixed.transcript();
+    EXPECT_EQ(f.configured_with(), "590.48.01") << fixed.transcript();
     auto clean = f.home.xlings({"self", "doctor"});
     EXPECT_EQ(clean.exit_code, 0) << clean.transcript();
 
