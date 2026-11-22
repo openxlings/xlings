@@ -70,6 +70,21 @@ tk::Home seeded_home() {
     return home;
 }
 
+// The lines that say why, ahead of the whole transcript: a CI report keeps
+// the first lines of a failure's message.
+std::string why(const tk::RunResult& r) {
+    std::string lines;
+    std::istringstream in(r.transcript());
+    for (std::string line; std::getline(in, line);) {
+        for (const auto* needle : {"error", "failed", "cannot", "could not", "refus", "left the swept"}) {
+            if (line.find(needle) == std::string::npos) continue;
+            lines += line + "\n";
+            break;
+        }
+    }
+    return lines + "--- transcript\n" + r.transcript();
+}
+
 }  // namespace
 
 XTEST(DoctorSweptUnregistered, OneFixConvergesAndTheDirectoryIsAFreshInstall,
@@ -88,7 +103,7 @@ XTEST(DoctorSweptUnregistered, OneFixConvergesAndTheDirectoryIsAFreshInstall,
     ASSERT_NE(found.transcript().find("swept payload"), std::string::npos) << found.transcript();
 
     const auto fixed = home.xlings({"self", "doctor", "--fix", "-y"});
-    EXPECT_EQ(fixed.exit_code, 0) << fixed.transcript();
+    EXPECT_EQ(fixed.exit_code, 0) << why(fixed);
     // The directory is a fresh install's: the sweep's files are gone, the
     // package's own is back.
     EXPECT_FALSE(fs::exists(payload / "zlib-1.3.2.tar.gz")) << fixed.transcript();

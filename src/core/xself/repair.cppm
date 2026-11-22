@@ -146,6 +146,14 @@ using DependentsProvider =
 // would interleave with it. Its input is the null device too: a child that
 // reads the terminal from the background of it is stopped by the kernel.
 std::string quiet_suffix();
+
+// The command that runs this client: the running executable's path, quoted
+// for the platform's shell, or `xlings` when the path cannot be read. A repair
+// is carried out by the client that decided it, never by whatever `xlings`
+// PATH finds -- on Windows that was the client installed in the user's home,
+// an older release, every time: the path holds `\` and `:`, and a test for a
+// bare token sent every repair there (xlings#711, found on the Windows CI).
+std::string running_client();
 // The same for a repair, whose output is kept: appended to `log` (created
 // with its directory), the file a failure points to.
 std::string logged_suffix(const std::filesystem::path& log);

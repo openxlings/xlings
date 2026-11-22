@@ -15,6 +15,12 @@ bool is_shell_safe_token(std::string_view s) {
     });
 }
 
+std::string running_client() {
+    const auto self = platform::get_executable_path();
+    if (self.empty()) return "xlings";
+    return platform::shell_quote(self.string());
+}
+
 std::string quiet_suffix() {
     return std::format(" <{0} >{0} 2>&1", platform::null_device);
 }

@@ -4030,10 +4030,7 @@ void repair_payloads_(const DoctorState& st, const Scan& scan,
     // started by absolute path, and then the repair would be carried out by a
     // different client than the one that decided what needed repairing.
     RepairPolicy policy;
-    {
-        const auto self = platform::get_executable_path().string();
-        if (!self.empty() && is_shell_safe_token(self)) policy.client = self;
-    }
+    policy.client = running_client();
 
     for (const auto& [coord, covered] : toInstall) {
         if (onStep) {
@@ -5944,11 +5941,7 @@ int cmd_doctor(EventStream& stream, bool fix, bool resetMetadata, bool dryRun, b
     // One in-process probe cache for the whole command. The same candidate is
     // asked about once per finding it owns and again after repair passes.
     std::map<std::string, bool> probed;
-    std::string client = "xlings";
-    {
-        const auto self = platform::get_executable_path().string();
-        if (!self.empty() && is_shell_safe_token(self)) client = self;
-    }
+    const std::string client = running_client();
     const CoordinateProbe probe =
         [&](const xvm::InstallCoordinate& coord) {
             const auto key = coord.canonical();
