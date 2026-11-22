@@ -636,6 +636,12 @@ std::expected<Process, std::string> Process::launch(const std::vector<std::strin
                            read_all((*ready)[0], &byte, 1) && byte == 1;
         if (established && !network.proxy) {
             auto pasta = network.pasta;
+            // passt drops root to nobody when it starts as root in the init
+            // user namespace; the namespace it must join was made by this
+            // process (root in a carrier's machine), and nobody cannot open
+            // /proc/<pid>/ns/user. Join as the namespace owner instead.
+            if (ids.euid == 0)
+                pasta.insert(pasta.end(), {"--runas", std::format("{}:{}", ids.uid, ids.gid)});
             pasta.insert(pasta.end(), {"--pid", network.pid_file.string(), std::to_string(pid)});
             established = platform::run_argv_with_timeout(pasta, std::chrono::seconds(10)) == 0;
             if (established) {
