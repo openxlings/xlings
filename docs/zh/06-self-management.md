@@ -72,10 +72,12 @@ xlings self doctor --fix
 - 断掉的 sysroot 链接按版本数据库**重新指回去**，没有任何记录说明它该指向哪里时才删除；
 - 应该在却不在的链接放回去；
 - 被整体挪动过的 home，记录重新指向当前位置（见下文）；
+- 依据宿主文件配置、而这些文件此后变了的包（宿主驱动升级后，链接仍以旧版本命名），重新配置；
 - 任何东西都救不回来、也没有索引提供的记录被清除。
 
 结束后会再检查一遍：你看到的报告是修复**之后**的状态。修复是否成功，看发现项是否真的消失，而不是看命令的退出码；
-重装之后发现项仍在，报告为检查本身的问题。
+重装之后发现项仍在，报告为检查本身的问题。移除在包自己的卸载步骤之后由 xlings 删除包的目录，
+随后的重装从空目录开始（[派生状态](../specs/derived-state.md)）。
 
 修复另一个 SubOS 时执行的 `self doctor --fix` 没有终端：它启动的任何程序都不会停下来等密码，Ctrl-C 能结束它，
 它的输出在 `logs/doctor/<subos>.log`。包声明了需要管理员权限的步骤（`system.admin_step`）而当时没人能确认的，
@@ -135,6 +137,10 @@ xlings self doctor --reset-metadata
 xlings self clean            # caches, and payloads nothing references
 xlings self clean --dry-run  # what it would delete
 ```
+
+home 中任何东西引用的载荷都会保留：SubOS 的登记、SubOS 目录树中的链接、根代、使用者的安装记录所列的依赖，
+以及其他程序登记在 `data/roots/<所有者>/` 下的**根**（mcpp 为构建所用的每个载荷登记一个根）。其中任何一处读不到时，
+不删除任何东西，并说明是哪一处。根的格式见 [store roots](../specs/store-roots.md)。
 
 SubOS 的 home 是用户数据，从不被清理：只有用户发起并确认的删除（`subos remove`）才会删除它。
 

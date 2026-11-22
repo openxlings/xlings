@@ -82,11 +82,15 @@ One run repairs what can be repaired:
 - a broken sysroot link is **pointed back** where the version database says it belongs, and removed only when nothing says;
 - a link that should be there and is not is put back;
 - a home that was moved is re-pointed at where it is now (below);
+- a package configured from host files that changed since (a driver
+  upgrade under links named for the old one) is configured again;
 - a record nothing can restore and no index provides is removed.
 
 It checks again at the end: the report is the state **after** the repair. A
 repair is judged by whether the finding is gone, not by its command's exit code;
-one that outlives a reinstall is reported as the check's fault.
+one that outlives a reinstall is reported as the check's fault. A removal deletes
+the package's directory itself, after the package's own uninstall step, so a
+reinstall that follows starts from nothing ([derived state](specs/derived-state.md)).
 
 A repair that runs another SubOS's `self doctor --fix` runs it with no terminal:
 nothing it starts can wait for a password, Ctrl-C ends it, and its output is in
@@ -157,6 +161,13 @@ metadata is damaged and reinstalling does not help.
 xlings self clean            # caches, and payloads nothing references
 xlings self clean --dry-run  # what it would delete
 ```
+
+A payload is kept when anything in the home references it: a SubOS's
+registrations, a link in a SubOS's tree, a root generation, the dependencies its
+users' install records name, or a **root** another program registered under
+`data/roots/<owner>/` (mcpp registers one for each payload a build uses). When
+one of these cannot be read, nothing is removed and the command says which.
+The roots' format is in [store roots](specs/store-roots.md).
 
 A SubOS's home is user data and is never cleaned: only a deletion the user
 started and confirmed removes it (`subos remove`).

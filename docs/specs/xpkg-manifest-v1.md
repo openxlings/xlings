@@ -42,6 +42,7 @@ The libxpkg loader runs the file in a sandbox; xmake-style calls such as
 | `authors` | string[] | authors |
 | `programs` | string[] | the executable names the package provides |
 | `extensions` | table | namespaced data for other programs (§3.1) |
+| `host_facts` | table | the host files `config()` reads, per platform (§3.2) |
 
 ### 3.1 Extensions (xlings 2026.10.19.2, libxpkg 0.0.66)
 
@@ -78,6 +79,29 @@ the known fields by name and ignores `extensions`.
 | Namespace | Read by | Keys defined in |
 |---|---|---|
 | `luban` | luban, the Luban OS app | xim-pkgindex `docs/12-luban-packages.md` (`tier`, `gpu`, `title`, `summary`, `size`, `highlights`) |
+
+### 3.2 Host facts (xlings 2026.11.23.1, libxpkg 0.0.67)
+
+A package whose `config()` generates its configuration from the host -- links
+named for the driver version the host has loaded, a vendor file that names a
+host library -- states the host files that configuration depends on.
+`host_facts` holds, per platform, the absolute paths of those files:
+
+```lua
+host_facts = {
+    linux = { "/sys/module/nvidia/version" },
+},
+```
+
+| Rule | |
+|---|---|
+| Shape | a table keyed by platform name (`linux`, `macosx`, `windows`, as in `xpm`), each value a list of absolute paths (`/...`, `C:\...`, `C:/...`, `\\server\...`). The loader drops an entry that is not an absolute path, a value of another type, and a list in place of the table, each with a loader warning (`Package::host_facts`, `Package::warnings`) |
+| Data, not a hook | the paths are read by the client and never by the recipe's code: checking them runs nothing of the package (§1, the loader's sandbox) |
+| Record | when `config()` succeeds in a scope, the client records, beside the scope's `configured` record, each declared path of the host's platform and the state it read: `sha256:<hex>` of its contents, `absent`, or `unreadable` ([derived state](derived-state.md) §3) |
+| Use | the client compares the record with the files as they read now where the configuration is used: an install of the package, its activation (`xlings use`), entering a SubOS (`subos use`, `subos exec`, `subos start`), and `xlings self doctor`. A different state makes the configuration not current: `config()` runs again in that scope, and a client that cannot run it says so with the command that does. The comparison is never made on a shim's launch |
+| Generation | `config()` generates what depends on the fact from the fact as it reads at that time (a glob over the host's directory, not a list of file names): running it again is the whole repair |
+| Revision | adding or changing `host_facts` changes what a client does with an installed configuration, not what is installed; it raises no `revision` |
+| Older clients | a client before 2026.11.23.1 (libxpkg before 0.0.67) reads known fields by name and ignores `host_facts`; the package behaves as it did before the field existed |
 
 ## 4. Package types (`type`)
 

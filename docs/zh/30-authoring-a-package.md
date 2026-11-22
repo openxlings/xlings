@@ -94,6 +94,11 @@ xlings config --remove-xpkg hello
 - **`extensions`** 给另一个程序的数据，按那个程序登记的命名空间分开（`extensions = { luban = { tier = 2 } }`）：
   xlings 原样带出、从不解读，改它不需要提升 `revision`。xlings 自己需要理解的字段，应提进规范，而不是放进 `extensions`
   （`docs/specs/xpkg-manifest-v1.md` §3.1）。
+- **`host_facts`**：`config()` 依据宿主生成内容时（以宿主当前加载的驱动版本命名的链接），按平台列出它读取的宿主文件
+  （`host_facts = { linux = { "/sys/module/nvidia/version" } }`）。xlings 记录 `config()` 运行时这些文件的内容，
+  文件变化后重新运行 `config()`：安装时、`xlings use` 时、进入 SubOS 时，以及 `xlings self doctor --fix`。
+  按当时的宿主生成（用通配，不用文件名列表），重新运行 `config()` 即是完整的修复
+  （`docs/specs/xpkg-manifest-v1.md` §3.2）。
 
 ## 发布
 
