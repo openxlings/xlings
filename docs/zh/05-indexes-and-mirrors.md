@@ -111,6 +111,13 @@ xlings config --mirror GLOBAL   # GitHub first
 在一个区域下载失败会去另一个区域重试。下载失败时会说明是谁的问题：源（字节不对、HTTP 错误——换下一个候选）、
 传输（超时、读不全——重试）、还是本机（磁盘满——不再尝试其他候选，也不怪罪任何一方）。
 
+区域决定 xlings 自己的资源从哪里取。配方中的 GitHub 地址（发布资产、原始文件、源码归档、git 源）另行处理：候选是
+该地址本身与第三方 GitHub 代理（原始文件不超过 50 MB 时的 `cdn.jsdelivr.net`、`ghfast.top`、`ghproxy.net`、
+`kkgithub.com`；`~/.xlings/data/github-mirrors.json` 替换这份列表）。配方写明归档的 sha256 时，候选按测得的连接
+延迟排序，因此在任一区域代理都可能排在最前；没有 sha256 时地址本身保持在最前。传输停滞的主机在本进程余下的时间里
+排到最后。包索引从不经代理获取。`.xlings.json` 的 `mirror_fallback`（或 `XLINGS_MIRROR_FALLBACK`）设定这一行为：
+`auto`（缺省）、`off`（只用配方的地址）、`force`（只用代理）。
+
 ## 归档的来源与没有网络的机器
 
 一个归档的身份是其配方给出的 sha256，而不是它的 URL 或文件名。每次下载按顺序询问各来源，第一个字节具有该摘要的文件经校验后，

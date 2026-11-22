@@ -121,6 +121,18 @@ says whose fault it was: the source (wrong bytes, HTTP error — the next
 candidate is tried), the transfer (timeout, short read — retried), or this
 machine (a full disk — nothing else is tried, and nobody is blamed).
 
+The region selects where xlings' own resources come from. A recipe's GitHub
+URL (a release asset, a raw file, a source archive, a git source) is a
+separate case: its candidates are the URL itself and third-party GitHub proxies
+(`cdn.jsdelivr.net` for raw files up to 50 MB, `ghfast.top`, `ghproxy.net`,
+`kkgithub.com`; `~/.xlings/data/github-mirrors.json` replaces the list). When
+the recipe states the archive's sha256, the candidates are ordered by measured
+connect latency, so a proxy may come first in either region; without a sha256
+the URL itself stays first. A host whose transfer stalls is moved last for the
+rest of the process. The package index is never fetched through a proxy.
+`mirror_fallback` in `.xlings.json` (or `XLINGS_MIRROR_FALLBACK`) sets this:
+`auto` (the default), `off` (the recipe's URL only), `force` (the proxies only).
+
 ## Archive sources and machines without a network
 
 An archive is identified by the sha256 its recipe states, not by its URL or
