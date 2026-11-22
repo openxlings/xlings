@@ -176,11 +176,13 @@ XTEST(SubosNetworkE2E, NatAuditsConnectAndDnsPortRequestsBeforeContinuing,
 // WSL 2 carrier runs everything as root). pasta now runs as the namespace's
 // owner. Run here as root through sudo when the lane is not root already, on a
 // home and a binary root owns, as a carrier's are: root inside the sandbox's
-// user namespace has no capability over the runner's own files.
+// user namespace has no capability over the runner's own files -- which is
+// also why it needs the release client (static-xlings): a development build's
+// runtime is in the runner's home.
 XTEST(SubosNetworkE2E, NatAsRootJoinsTheNamespaceAsItsOwner,
       .area = "subos", .cost = tk::Cost::Medium, .covers = {"ISO-NET-NAT-ROOT", "ISO-NET-NAT"},
-      .requires_ = {"linux", "xlings-bin", "sandbox", "pasta", "sudo"}, .resources = {"sandbox"},
-      .proves = "isolation") {
+      .requires_ = {"linux", "xlings-bin", "static-xlings", "sandbox", "pasta", "sudo"},
+      .resources = {"sandbox"}, .proves = "isolation") {
     Box box;
     const auto args = std::vector<std::string>{"subos", "exec", "box", "--sandbox=private", "--",
                                                "/bin/sh", "-c", "tail -n +3 /proc/net/dev"};
