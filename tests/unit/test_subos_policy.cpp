@@ -179,7 +179,7 @@ XTEST(SubosPolicy, NatOpensNothingUnlessPublishedOrGranted,
     auto s = xlings::confine::compile(pol::preset(pol::Preset::Private), HomeView{"/h"}, bwrap_host(true), r);
     ASSERT_TRUE(s.has_value());
     EXPECT_TRUE(s->net_nat);
-    auto a = xlings::confine::provider::pasta_args(*s);
+    auto a = xlings::confine::provider::pasta_args(*s, {1000, 1000, 1000});
     auto has = [&](std::vector<std::string> seq) {
         return std::ranges::search(a, seq).begin() != a.end();
     };
@@ -194,9 +194,19 @@ XTEST(SubosPolicy, NatOpensNothingUnlessPublishedOrGranted,
     r.grants = {"host-loopback"};
     auto p = xlings::confine::compile(pol::preset(pol::Preset::Private), HomeView{"/h"}, bwrap_host(true), r);
     ASSERT_TRUE(p.has_value());
-    auto pa = xlings::confine::provider::pasta_args(*p);
+    auto pa = xlings::confine::provider::pasta_args(*p, {1000, 1000, 1000});
     EXPECT_NE(std::ranges::search(pa, std::vector<std::string>{"-t", "18080:80"}).begin(), pa.end());
     EXPECT_EQ(std::ranges::find(pa, "--no-map-gw"), pa.end());
+
+    // An unprivileged supervisor: pasta keeps its identity (no --runas). A
+    // root one: passt would drop to nobody before joining a namespace root
+    // made, so it runs as the namespace's owner (xlings#732).
+    EXPECT_EQ(std::ranges::find(a, "--runas"), a.end());
+    auto rooted = xlings::confine::provider::pasta_args(*s, {0, 0, 0});
+    EXPECT_NE(std::ranges::search(rooted, std::vector<std::string>{"--runas", "0:0"}).begin(), rooted.end());
+    auto sudoed = xlings::confine::provider::pasta_args(*s, {1000, 1000, 0});
+    EXPECT_NE(std::ranges::search(sudoed, std::vector<std::string>{"--runas", "1000:1000"}).begin(),
+              sudoed.end());
 
     // --publish without nat is a degradation dev reports, not silence.
     auto d = xlings::confine::compile(pol::preset(pol::Preset::Dev), HomeView{"/h"}, bwrap_host(true), r);

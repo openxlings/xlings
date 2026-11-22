@@ -1105,7 +1105,7 @@ int enter(const std::string& name, EventStream& stream, const EnterOptions& opts
             .detached = opts.detached,
             .persist = opts.persist,
             .timeout = opts.timeout,
-            .pasta = sb.net_nat ? xlings::confine::provider::pasta_args(sb) : std::vector<std::string>{},
+            .pasta = sb.net_nat ? xlings::confine::provider::pasta_args(sb, platform::user_ids()) : std::vector<std::string>{},
             .proxy_url = sb.net_proxy ? sb.proxy_url : std::string{},
             .trace_net = (sb.net_nat || sb.net_proxy) && (pol.observe == policy::Observe::Standard || pol.observe == policy::Observe::Full),
             .broker_policy = brokered ? std::optional(pol) : std::nullopt,

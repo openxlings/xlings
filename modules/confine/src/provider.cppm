@@ -1,6 +1,7 @@
 export module xlings.confine.provider;
 
 import std;
+import xlings.platform;
 import xlings.subos.spec;
 
 // Providers translate a SandboxSpec and decide nothing (design §16-§17).
@@ -27,8 +28,14 @@ std::vector<std::string> proot_argv(const spec::SandboxSpec& s);
 std::map<std::string, std::string> process_env(const spec::SandboxSpec& s,
                                                const std::map<std::string, std::string>& inherited);
 
-// `pasta --config-net ... ` without its target PID (session::host appends
-// it): the nat options the spec asks for.
-std::vector<std::string> pasta_args(const spec::SandboxSpec& s);
+// `pasta --config-net ... ` without its target PID (the host that starts it
+// appends `--pid`): the nat options the spec asks for, and the identity pasta
+// joins the namespace as. `supervisor` is the process that creates the
+// namespace and starts pasta. Started as root in the initial user namespace,
+// passt drops to nobody before it joins (isolate_user), and nobody cannot open
+// /proc/<pid>/ns/user of a namespace root made (xlings#732); a root supervisor
+// therefore runs it as the namespace's owner, `--runas <uid>:<gid>`.
+std::vector<std::string> pasta_args(const spec::SandboxSpec& s,
+                                    const xlings::platform::UserIds& supervisor);
 
 }  // namespace xlings::confine::provider

@@ -146,6 +146,14 @@ using DependentsProvider =
 // would interleave with it. Its input is the null device too: a child that
 // reads the terminal from the background of it is stopped by the kernel.
 std::string quiet_suffix();
+
+// The command that runs this client: the running executable's path, quoted
+// for the platform's shell, or `xlings` when the path cannot be read. A repair
+// is carried out by the client that decided it, never by whatever `xlings`
+// PATH finds -- on Windows that was the client installed in the user's home,
+// an older release, every time: the path holds `\` and `:`, and a test for a
+// bare token sent every repair there (xlings#711, found on the Windows CI).
+std::string running_client();
 // The same for a repair, whose output is kept: appended to `log` (created
 // with its directory), the file a failure points to.
 std::string logged_suffix(const std::filesystem::path& log);
@@ -222,6 +230,13 @@ std::optional<std::string> migration_hint(std::string_view recorded,
 // R2 therefore runs config() again (`--reconfig`); when the finding outlives
 // it, R3 follows; when it outlives R3 too, the check -- not the package -- is
 // the suspect, and that is what is reported.
+//
+// For a SweptPayload the finding is the directory's contents, so it is asked
+// after the removal as well: the removal deletes the directory (the installer
+// owns that deletion, xlings#711), and a finding that outlives it means the
+// install that would follow finds the same files and calls them installed.
+// That is reported as the failure it is, with the cause, and nothing is
+// reinstalled over it.
 using FindingCheck = std::function<bool()>;
 RepairResult repair_one(const RepairTask& task,
                         const RepairPolicy& policy,

@@ -415,7 +415,11 @@ auto UseVersion::spec() const -> CapabilitySpec {
 
 auto UseVersion::execute(Params params, EventStream& stream) -> Result {
     auto json = nlohmann::json::parse(params, nullptr, false);
-    return exit_result(xvm::cmd_use(json.value("target", ""), json.value("version", ""), stream));
+    const auto target = json.value("target", "");
+    const int rc = xvm::cmd_use(target, json.value("version", ""), stream);
+    // Activation is a use site of the package's configuration (xpkg host_facts).
+    if (rc == 0) xim::reconcile_host_facts({}, target, stream);
+    return exit_result(rc);
 }
 
 auto SystemStatus::spec() const -> CapabilitySpec {

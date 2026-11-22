@@ -121,6 +121,14 @@ xlings config --remove-xpkg hello
   on as written and never reads it, and changing it raises no `revision`. When
   xlings itself must understand a field, propose it for the specification
   instead (`docs/specs/xpkg-manifest-v1.md` §3.1).
+- **`host_facts`**: when `config()` generates something from the host -- links
+  named for the driver version the host has loaded -- list the host files it
+  reads, per platform (`host_facts = { linux = { "/sys/module/nvidia/version" } }`).
+  xlings records what they held when `config()` ran and runs `config()` again when
+  they change: at an install, at `xlings use`, on entering a SubOS, and in
+  `xlings self doctor --fix`. Generate from the host as it is then (a glob, not a
+  list of file names), so that running `config()` again is the whole repair
+  (`docs/specs/xpkg-manifest-v1.md` §3.2).
 
 ## Publishing
 

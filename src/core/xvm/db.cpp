@@ -1201,6 +1201,24 @@ nlohmann::json workspace_to_json(const Workspace& ws) {
     return j;
 }
 
+std::map<std::string, std::map<std::string, std::string>>
+subos_host_facts_from_json(const nlohmann::json& doc) {
+    std::map<std::string, std::map<std::string, std::string>> out;
+    auto it = doc.find("host_facts");
+    if (it == doc.end() || !it->is_object()) return out;
+    for (auto e = it->begin(); e != it->end(); ++e) {
+        if (e.key().empty() || !e->is_object()) continue;
+        std::map<std::string, std::string> facts;
+        bool readable = true;
+        for (auto f = e->begin(); f != e->end() && readable; ++f) {
+            readable = f->is_string();
+            if (readable) facts.emplace(f.key(), f->get<std::string>());
+        }
+        if (readable && !facts.empty()) out.emplace(e.key(), std::move(facts));
+    }
+    return out;
+}
+
 SubosWorkspace subos_workspace_from_json(const nlohmann::json& j) {
     SubosWorkspace sws;
     if (!j.is_object()) return sws;

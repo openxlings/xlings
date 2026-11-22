@@ -366,7 +366,8 @@ jobs:
         run: |
           # Built now, run on the release build once it is attached.
           for test in e2e/test_domain_source e2e/test_domain_producer e2e/test_subos_perf e2e/test_home_perf \
-                      unit/test_root_generation_perf e2e/test_luban e2e/test_hook_runtime; do
+                      unit/test_root_generation_perf e2e/test_luban e2e/test_hook_runtime \
+                      e2e/test_subos_network; do
             mcpp test --no-run "$test"
           done
 
@@ -497,6 +498,17 @@ jobs:
           XDEV_LANE_CAPS: linux,posix,xlings-bin,static-xlings,userns,bwrap,network
         run: |
           "$XDEV" test e2e/test_hook_runtime --no-build --require-metadata --out target/xdev/linux-hook-runtime
+
+      # net=nat under a root supervisor, as a WSL 2 carrier runs it (#732):
+      # root through sudo, with the release client. A development build's
+      # runtime lives in the runner's home, and root inside the sandbox's user
+      # namespace cannot read the runner's files.
+      - name: net=nat as root, with the release client
+        env:
+          XDEV_LANE: linux-nat-root
+          XDEV_LANE_CAPS: linux,posix,xlings-bin,static-xlings,userns,bwrap,sandbox,pasta,sudo,network
+        run: |
+          "$XDEV" test e2e/test_subos_network --no-build --require-metadata --out target/xdev/linux-nat-root
 
       - name: Attach the runs
         uses: actions/upload-artifact@v4

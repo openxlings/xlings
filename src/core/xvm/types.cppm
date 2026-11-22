@@ -140,6 +140,14 @@ struct SubosWorkspace {
     // never inside it: an older client reads every key of `workspace` as a
     // target name. Read and written by Config, not by the workspace codec.
     std::map<std::string, int> configured;
+    // The host facts a configuration depends on (xpkg `host_facts`), keyed
+    // like `configured`: each declared host file, and the digest of its
+    // contents when that package's config() ran in this subos
+    // ("sha256:<hex>", "absent", or "unreadable"). The configuration carries
+    // the fact it was derived from, so a use site can check it without
+    // loading the recipe. A top-level sibling of `configured` (`host_facts`),
+    // which older clients keep and do not read.
+    std::map<std::string, std::map<std::string, std::string>> hostFacts;
 };
 
 // How an entry is actually materialized, once defaults are applied.

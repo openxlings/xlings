@@ -73,7 +73,7 @@ namespace xlings::interface {
 // carries `versions`, the platform's concrete versions newest first (feature
 // `package_versions`); `subos __domain-check <home>` tries whether this host
 // builds a private domain there (feature `domain_check`, J47).
-export constexpr const char* kProtocolVersion = "1.18";
+export constexpr const char* kProtocolVersion = "1.19";
 
 // Convert any Event variant to one NDJSON line (no trailing newline).
 // Returns "" for events not surfaced to wire (e.g. CompletedEvent — the

@@ -1144,3 +1144,22 @@ status = "required"
 [SUBOS-DOMAIN-SESSION-GPU]
 text = "a session run where a system lives in a private domain (subos use, exec, start) sees this computer's GPU device nodes (DRM, NVIDIA, WSL's dxg), so the system's own gpu grant decides; a domain's maintenance operations see none (design 2026-10-24 J58: a desktop in a private domain composed in software)"
 status = "required"
+
+# ── Derived state and the store's references (design 2026-11-22, xlings#711 #712 #727 #732) ──
+
+[STORE-GC-REFERENCES]
+text = "`self clean` keeps every payload the home references: a workspace registration, a link in a SubOS view, a root generation or the environment's runtime, the dependency closure the payloads' install records state, and a root another program holds (`data/roots/<owner>/<store>@<version>`); a dangling root is removed; a part it cannot read refuses the collection"
+status = "required"
+
+[DOCTOR-SWEPT-UNREGISTERED]
+text = "a swept payload the version database does not know converges in one `self doctor --fix`: the removal deletes the directory after the uninstall hook, and the repair asks the disk after each step"
+status = "required"
+
+[XIM-HOST-FACTS]
+text = "a configuration derived from host facts (`host_facts`) records them in its scope; activation (`xlings use`), entering the SubOS and `self doctor --fix` configure it again when they changed, and say so when that fails"
+status = "required"
+
+[ISO-NET-NAT-ROOT]
+text = "net=nat started by a root supervisor runs pasta as the namespace's owner (`--runas <uid>:<gid>`), so it joins the namespace root made"
+kind = "isolation"
+status = "required"

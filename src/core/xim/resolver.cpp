@@ -420,14 +420,18 @@ resolve(PackageCatalog& catalog, std::span<const std::string> targets, const std
             // so the plan and the run cannot disagree about whether an
             // already-installed closure has anything left to do (#632). The
             // scope's own DB and installed[]: the scope is what config writes.
+            if (auto facts = pkg->host_facts.find(platform); facts != pkg->host_facts.end())
+                node.hostFacts = facts->second;
             if (node.alreadyInstalled) {
+                const auto identity = configured_identity(
+                    match.namespaceName, match.name, match.version);
                 node.configuredHere = configured_verdict(
-                    Config::configured_revision(configured_identity(
-                        match.namespaceName, match.name, match.version)),
+                    Config::configured_revision(identity),
                     node.revision, Config::versions_mut(),
                     Config::workspace_installed(),
                     Config::paths().homeDir.string(),
-                    match.namespaceName, match.name, match.version).configured;
+                    match.namespaceName, match.name, match.version,
+                    node.hostFacts, Config::host_facts_record(identity)).configured;
             }
             const auto compatibility = check_target_compatibility(
                 *pkg, entry, platform, hostArch);

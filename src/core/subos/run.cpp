@@ -230,6 +230,8 @@ int run_exec_(int argc, char* argv[], EventStream& stream) {
         domainArgs.insert(domainArgs.end(), argv + 3, argv + argc);
         for (const auto& [index, spec] : normalizedMounts) domainArgs[index - 1] = spec;
         if (auto result = run_domain_operation_(name, domainArgs, stream)) return *result;
+        // An entry like `use` (use_detail_::prepare_entry_).
+        (void)xim::reconcile_host_facts(name, {}, stream);
     }
 
     const auto started = std::chrono::steady_clock::now();
@@ -345,7 +347,7 @@ int run_start_(int argc, char* argv[], EventStream& stream,
         log::info("'{}' is already running (session {})", name, live->id);
         return 0;
     }
-    if (auto rc = use_detail_::validate_subos_(name, stream); rc != 0) return rc;
+    if (auto rc = use_detail_::prepare_entry_(name, stream); rc != 0) return rc;
     use_detail_::apply_subos_env_(name);
     auto rc = sandbox::enter(name, stream, sandbox::EnterOptions{
         .backend = iso.backend, .env = declared_env_(name), .ttl = ttl, .detached = true,

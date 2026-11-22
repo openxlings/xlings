@@ -319,7 +319,7 @@ void update_current_symlink_(EventStream& stream,
 // Internal — not exported. `xlings subos use --global <name>` and
 // the back-compat single-arg `use()` both route here.
 int use_global(const std::string& name, EventStream& stream) {
-    if (auto rc = use_detail_::validate_subos_(name, stream); rc != 0) return rc;
+    if (auto rc = use_detail_::prepare_entry_(name, stream); rc != 0) return rc;
     if (reject_unrouted_domain_(name, "global activation", stream)) return 1;
 
     auto& p = Config::paths();
@@ -416,7 +416,7 @@ void warn_storage_dormant_on_shell_(const std::string& name) {
 int use_emit_shell(const std::string& name,
                           std::string_view shell_kind,
                           EventStream& stream) {
-    if (auto rc = use_detail_::validate_subos_(name, stream); rc != 0) return rc;
+    if (auto rc = use_detail_::prepare_entry_(name, stream); rc != 0) return rc;
     warn_storage_dormant_on_shell_(name);
 
     auto& p = Config::paths();
@@ -575,7 +575,7 @@ int use_spawn_shell(const std::string& name, EventStream& stream, bool sandbox, 
         // through to the shell anyway. The home is bound at its own absolute
         // path, so the payload paths in these values mean the same thing on
         // both sides of the boundary.
-        if (auto rc = use_detail_::validate_subos_(name, stream); rc != 0) return rc;
+        if (auto rc = use_detail_::prepare_entry_(name, stream); rc != 0) return rc;
         use_detail_::apply_subos_env_(name);
         warn_sandbox_without_gpu_(name, gpu, stream);
         // Terminals are peers (Luban 2026-10-18 design §12, E4): an
@@ -600,7 +600,7 @@ int use_spawn_shell(const std::string& name, EventStream& stream, bool sandbox, 
     }
     warn_storage_dormant_on_shell_(name);
 
-    if (auto rc = use_detail_::validate_subos_(name, stream); rc != 0) return rc;
+    if (auto rc = use_detail_::prepare_entry_(name, stream); rc != 0) return rc;
 
     auto already = utils::get_env_or_default("XLINGS_ACTIVE_SUBOS");
     if (already == name) {
@@ -1699,7 +1699,7 @@ int run(int argc, char* argv[], EventStream& stream) {
         // --ttl change nothing and the shell below is the whole entry.
         if (!platform::is_windows && sandbox && !no_keep && (keep_forever || ttl_sec > 0)
             && !session::find(home_view(), name)) {
-            if (auto rc = use_detail_::validate_subos_(name, stream); rc != 0) return rc;
+            if (auto rc = use_detail_::prepare_entry_(name, stream); rc != 0) return rc;
             use_detail_::apply_subos_env_(name);
             auto rc = sandbox::enter(name, stream, sandbox::EnterOptions{
                 .backend = sandbox_backend, .gpu = gpu, .env = declared_env_(name),

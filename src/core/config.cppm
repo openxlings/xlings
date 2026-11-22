@@ -11,7 +11,7 @@ import xlings.core.home;
 namespace xlings {
 
 export struct Info {
-    static constexpr std::string_view VERSION = "2026.11.22.1";
+    static constexpr std::string_view VERSION = "2026.11.23.1";
     static constexpr std::string_view REPO = "https://github.com/openxlings/xlings";
 };
 
@@ -291,6 +291,11 @@ private:
     std::map<std::string, int> globalConfigured_;
     std::map<std::string, int> projectSubosConfigured_;
     std::map<std::string, int>& configured_mut_();
+    // The host facts beside each `configured` record (xpkg host_facts), kept
+    // and saved with it. See host_facts_record().
+    std::map<std::string, std::map<std::string, std::string>> globalHostFacts_;
+    std::map<std::string, std::map<std::string, std::string>> projectSubosHostFacts_;
+    std::map<std::string, std::map<std::string, std::string>>& host_facts_mut_();
     bool hasProjectConfig_ = false;
     std::string activeSubosOverride_;
     bool forceGlobalScope_ = false;
@@ -801,6 +806,15 @@ public:
     static bool forget_configured(std::string_view identity);
     // Every namespace's record of "<name>@<version>" (a manifest binding).
     static bool forget_configured_binding(std::string_view binding);
+    // The host facts the scope's configuration of a package was derived from
+    // (xpkg `host_facts`): each declared host file and the digest of its
+    // contents when config() ran (xim::host_facts). Written with
+    // mark_configured, erased with forget_configured; held and saved like it.
+    [[nodiscard]] static std::optional<std::map<std::string, std::string>>
+        host_facts_record(std::string_view identity);
+    [[nodiscard]] static std::map<std::string, std::map<std::string, std::string>> host_facts_records();
+    static void mark_host_facts(const std::string& identity,
+                                std::map<std::string, std::string> facts);
     [[nodiscard]] static bool has_project_config();
 
     // Force all version/workspace writes to go to global scope.

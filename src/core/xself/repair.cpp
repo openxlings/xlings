@@ -15,6 +15,12 @@ bool is_shell_safe_token(std::string_view s) {
     });
 }
 
+std::string running_client() {
+    const auto self = platform::get_executable_path();
+    if (self.empty()) return "xlings";
+    return platform::shell_quote(self.string());
+}
+
 std::string quiet_suffix() {
     return std::format(" <{0} >{0} 2>&1", platform::null_device);
 }
@@ -120,6 +126,12 @@ RepairResult repair_one(const RepairTask& task, const RepairPolicy& policy, cons
     // under `--force`. What decides whether R3 proceeds and what it reports
     // is entirely below: run the install regardless, then ask the verifier.
     run(remove);
+    if (task.kind == RepairKind::SweptPayload && !cleared()) {
+        return {false, "remove",
+                std::format("`xlings remove {} --force` left the swept files in place, so a "
+                            "reinstall would find them and call {} installed; run it to see why",
+                            coordinate, coordinate)};
+    }
     // Two independent questions follow, and the order they are asked in is
     // the whole safety property.
     //

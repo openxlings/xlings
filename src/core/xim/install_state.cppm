@@ -107,11 +107,14 @@ int count_ledger_registrations(const xvm::VersionDB& db,
 // another subos (whose new config would then never reach this one), and has no
 // evidence at all for a package that registers nothing.
 //
-// Configured only when BOTH hold:
+// Configured only when ALL hold:
 //   1. the scope's record names the recipe's current revision;
 //   2. every ledger entry this payload owns is claimed by the scope's
 //      installed[] -- vacuous for a package that registers nothing. This is
-//      the guard against a record that outlived its binding.
+//      the guard against a record that outlived its binding;
+//   3. the host files the recipe declares (`host_facts`) read as they did
+//      when config() ran in this scope (xim::host_facts): a configuration
+//      derived from a host fact is not current once the fact changed.
 // No record is "not configured": config runs and writes one. That is the safe
 // direction, and it is how a home from before the record migrates.
 struct ConfiguredVerdict {
@@ -126,7 +129,10 @@ ConfiguredVerdict configured_verdict(std::optional<int> recordedRevision,
                                      const std::string& xlingsHome,
                                      std::string_view namespaceName,
                                      std::string_view name,
-                                     std::string_view version);
+                                     std::string_view version,
+                                     std::span<const std::string> declaredHostFacts = {},
+                                     const std::optional<std::map<std::string, std::string>>&
+                                         recordedHostFacts = std::nullopt);
 
 // The record's key for a package: "<ns>:<name>@<version>".
 std::string configured_identity(std::string_view namespaceName,

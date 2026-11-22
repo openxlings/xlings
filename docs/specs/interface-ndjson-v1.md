@@ -1,12 +1,12 @@
-# NDJSON Interface Protocol v1.18
+# NDJSON Interface Protocol v1.19
 
-> Status: in force; protocol 1.18 since xlings 2026.10.23.2. Implemented in
+> Status: in force; protocol 1.19 since xlings 2026.11.23.1. Implemented in
 > `src/interface.cpp`; `xlings interface --list` is the authoritative schema.
 
 ## 1. Overview
 
 `xlings interface` is the structured API for programs: IDE plugins, CI scripts
-and AI agents talk to xlings over standard IO. The protocol is **1.18**, over NDJSON
+and AI agents talk to xlings over standard IO. The protocol is **1.19**, over NDJSON
 (newline-delimited JSON).
 
 | Protocol | xlings | Change |
@@ -30,6 +30,7 @@ and AI agents talk to xlings over standard IO. The protocol is **1.18**, over ND
 | 1.16 | 2026.10.21.3 | added: `subos_env`, the variables a SubOS declares for the programs run in it, resolved (feature `subos_env`): what Luban starts a machine's GL qemu with |
 | 1.17 | 2026.10.22.1 | added: `install_packages` takes `subos`: a Luban system's packages installed where it lives, with events and cancellation (feature `install_into_subos`) |
 | 1.18 | 2026.10.23.2 | added: `package_info`'s `package` carries `versions`, the platform's concrete versions newest first (feature `package_versions`, §7.6); `subos __domain-check <home>` (plumbing) tries whether this host builds a private domain at `<home>`, as making a system there starts: exit 0 or an error saying why (feature `domain_check`) |
+| 1.19 | 2026.11.23.1 | added: `self clean` keeps every payload a root under `<home>/data/roots/<owner>/` holds, and removes the dangling ones ([store roots](store-roots.md)); a program that registers roots requires this feature before it asks for a collection (feature `store_roots`) |
 
 A minor version only adds: a 1.0 client reads 1.1 output unchanged. 1.11 is the
 one exception in meaning, not in shape: 1.10's `complete` also required the
@@ -66,7 +67,7 @@ prints one line and exits -- the handshake a client checks before it uses this
 xlings (1.10+):
 
 ```json
-{"protocol_version":"1.18","version":"2026.10.23.2","capabilities":["search_packages","install_packages","..."],"home_layouts":[1,2],"features":["index_dir","index_store","upstreams","payload_status","sync_index","install_targets_complete","payload_currency","binding_state","reserved_namespaces","subos_plan","network_diagnostics","download_socket_budgets","read_only_queries","package_extensions","domain_relayed","installed_only","user_views","needs_root","subos_env","install_into_subos","package_versions","domain_check"]}
+{"protocol_version":"1.19","version":"2026.11.23.1","capabilities":["search_packages","install_packages","..."],"home_layouts":[1,2],"features":["index_dir","index_store","upstreams","payload_status","sync_index","install_targets_complete","payload_currency","binding_state","reserved_namespaces","subos_plan","network_diagnostics","download_socket_budgets","read_only_queries","package_extensions","domain_relayed","installed_only","user_views","needs_root","subos_env","install_into_subos","package_versions","domain_check","store_roots"]}
 ```
 
 | Field | Meaning |

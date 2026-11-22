@@ -287,6 +287,11 @@ enum class FindingKind {
     // down, nothing swept in beside them. See repair_incomplete_, which
     // this finding is routed through unchanged.
     SweptPayload,
+    // A configuration derived from host facts that changed since its config()
+    // ran (xpkg `host_facts`): the scope's record names a host file whose
+    // contents differ now -- links named for the driver the host had loaded
+    // then. `--fix` configures it again and checks the record afterwards.
+    HostFactsChanged,
     // A payload that carries a stamp from before the stamp recorded what it
     // registered, and that the version database does not reference at all.
     //
@@ -405,6 +410,7 @@ struct Finding {
     bool         unclaimed { false };
     std::vector<std::string> subos;
     fs::path     shimPath;      // shim-layer findings only
+    fs::path     payloadDir;    // store-derived findings: the payload directory
 };
 
 struct Scan {

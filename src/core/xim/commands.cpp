@@ -22,6 +22,7 @@ import mcpplibs.xpkg.loader;
 import xlings.core.xim.catalog;
 import xlings.core.xim.payload;
 import xlings.core.xim.install_state;
+import xlings.core.xim.host_facts;
 import xlings.core.xim.compatibility;
 import xlings.core.xim.inventory;
 import xlings.core.xim.repo;
@@ -537,6 +538,55 @@ int cmd_install_step(std::span<const std::string> targets, std::string_view subo
         platform::set_env_variable("XLINGS_ACTIVE_SUBOS", prevEnv);
     }
     return rc;
+}
+
+std::vector<std::pair<std::string, std::string>> drifted_host_facts(std::string_view subos) {
+    // The current scope's records as Config holds them; a named SubOS's as its
+    // file has them (the scope is not switched for a read).
+    std::map<std::string, std::map<std::string, std::string>> records;
+    if (subos.empty()) {
+        records = Config::host_facts_records();
+    } else {
+        for (auto& snapshot : profile::load_subos_snapshots(Config::paths().homeDir)) {
+            if (snapshot.name == subos) records = std::move(snapshot.workspace.hostFacts);
+        }
+    }
+    std::vector<std::pair<std::string, std::string>> drifted;
+    for (const auto& [identity, facts] : records) {
+        if (auto why = host_facts::drifted(facts)) drifted.emplace_back(identity, std::move(*why));
+    }
+    return drifted;
+}
+
+int reconcile_host_facts(std::string_view subos, std::string_view target, EventStream& stream) {
+    // "<ns>:<name>@<version>" -> "<name>".
+    const auto name_of = [](std::string_view identity) {
+        identity = identity.substr(0, identity.rfind('@'));
+        if (const auto colon = identity.find(':'); colon != std::string_view::npos)
+            identity.remove_prefix(colon + 1);
+        return identity;
+    };
+    std::vector<std::string> identities;
+    for (auto& [identity, why] : drifted_host_facts(subos)) {
+        if (!target.empty() && name_of(identity) != target) continue;
+        log::info("{}: {}; configuring it again", identity, why);
+        identities.push_back(identity);
+    }
+    if (identities.empty()) return 0;
+    const int rc = cmd_install_step(identities, subos, stream, /*plumbing=*/true);
+    // Checked again rather than read off the exit code: what matters is
+    // whether the configuration now matches the host, and a config() that
+    // succeeded without reading what it declared would still not.
+    int stale = 0;
+    for (auto& [identity, why] : drifted_host_facts(subos)) {
+        if (std::ranges::find(identities, identity) == identities.end()) continue;
+        ++stale;
+        log::warn("{}: its configuration depends on host files that changed ({}), and configuring "
+                  "it again {}; run `{}xlings install {} --reconfig`",
+                  identity, why, rc == 0 ? "did not bring it current" : "failed",
+                  subos.empty() ? std::string{} : std::format("XLINGS_ACTIVE_SUBOS={} ", subos), identity);
+    }
+    return stale;
 }
 
 DownloadProgressSink download_progress_sink(EventStream& stream, std::string streamId) {

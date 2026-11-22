@@ -889,7 +889,7 @@ launch(const subos::policy::Policy& declared, const fs::path& package,
         env.erase("XLINGS_SUBOS_MODE");
         platform::worker::Network network;
         if (sandbox.net_nat) {
-            network.pasta = xlings::confine::provider::pasta_args(sandbox);
+            network.pasta = xlings::confine::provider::pasta_args(sandbox, platform::user_ids());
             network.pid_file = w->scratch / "pasta.pid";
         }
         if (sandbox.net_proxy) {

@@ -5,6 +5,7 @@ import xlings.core.xim.payload;
 import xlings.core.xvm.owner;
 import xlings.core.xvm.types;
 import xlings.core.xvm.db;
+import xlings.core.xim.host_facts;
 
 namespace xlings::xim {
 
@@ -45,13 +46,19 @@ ConfiguredVerdict configured_verdict(std::optional<int> recordedRevision,
                                      const std::string& xlingsHome,
                                      std::string_view namespaceName,
                                      std::string_view name,
-                                     std::string_view version) {
+                                     std::string_view version,
+                                     std::span<const std::string> declaredHostFacts,
+                                     const std::optional<std::map<std::string, std::string>>&
+                                         recordedHostFacts) {
     if (!recordedRevision) {
         return { false, "no record of its configuration in this scope" };
     }
     if (*recordedRevision != recipeRevision) {
         return { false, std::format("configured at revision {}, recipe is at {}",
                                     *recordedRevision, recipeRevision) };
+    }
+    if (auto why = host_facts::changed(declaredHostFacts, recordedHostFacts)) {
+        return { false, *why };
     }
 
     // Same ownership test as count_ledger_registrations: the payload path the

@@ -21,6 +21,8 @@ Specifications are in English only.
 | [Index version contract](index-version-contract.md) | how a snapshot declares the clients it needs, and how clients are routed |
 | [Operation journal](operation-journal.md) | what a command did: one file per operation, its lines, the trace its processes share, what is never written |
 | [Upgrade and compatibility](upgrade-and-compatibility.md) | failure domains, the upgrade a new client runs by itself, what an older client does with newer state, releases |
+| [Derived state](derived-state.md) | state derived from a fact carries it and is checked where it is used: removal and repair, host facts |
+| [Store roots](store-roots.md) | what the store's collection counts as a reference, and the roots another program registers |
 
 The command reference is generated from the command tree:
 [xlings](../generated/command-reference.md),

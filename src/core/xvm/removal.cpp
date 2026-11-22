@@ -268,6 +268,16 @@ apply_removal_batch(VersionDB& db, Workspace& workspace, WorkspaceInstalled& ins
             // workspace selection (#578). Two versions are refused above as
             // ambiguous; zero is still not found.
             exactVersion = targetIt->second.versions.begin()->first;
+        } else if (targetIt == db.end() || targetIt->second.versions.empty()) {
+            // A versionless `xvm.remove(name)` for a name with no record at
+            // all: what it asks for -- no registration of that name -- already
+            // holds, so there is nothing to remove. Refusing it failed the
+            // whole removal of a package installed without a record (a swept
+            // payload a migrated home kept, xlings#711) before the installer
+            // could delete its directory.
+            log::debug("[xvm] recipe asked to remove '{}', which has no record -- nothing to remove",
+                       operation.name);
+            continue;
         }
         if (!exactVersion) {
             return std::unexpected(std::move(exactVersion.error()));
