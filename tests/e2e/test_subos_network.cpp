@@ -188,7 +188,9 @@ XTEST(SubosNetworkE2E, NatAsRootJoinsTheNamespaceAsItsOwner,
     if (platform::is_root()) {
         run = box.home.xlings(args);
     } else {
-        const auto bin = box.home.dir() / "bin" / "xlings-under-test";
+        // Named `xlings`: a binary of another name runs as the shim of that
+        // name. Outside the home's bin, which is the home's own entry.
+        const auto bin = box.home.root() / "under-test" / "xlings";
         fs::create_directories(bin.parent_path());
         fs::copy_file(tk::xlings_binary(), bin, fs::copy_options::overwrite_existing);
         const auto sudo = [&](std::vector<std::string> argv) {
