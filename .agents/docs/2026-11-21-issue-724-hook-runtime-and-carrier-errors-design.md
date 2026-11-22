@@ -687,7 +687,7 @@ aarch64、Windows（含 WSL 2 一道）全部通过。
 | 简洁 | 没有新事件、新接口、新的用户命令；日志路径从 xlings 自己写的错误文本里取；只加一个内部命令 `__carrier-adopt` |
 | 用户体验 | #724 的两处（失败、"no error detail"）都已消失；失败时的消息带着原因与下一步；`luban status` 说出 host machine 的版本与没成功的更新 |
 | 兼容 | 宿主已有 loader：行为不变；旧 guest（2026.11.21.1）被带到当前版本；比客户端新的 guest 不动；配方不提升 revision，之前装好的照常可用 |
-| 跨平台 | Linux x86_64/aarch64（含 musl、最旧的 glibc）、Windows（WSL 2）真实测到；macOS 的 vz 只有桩上的用例（`test_carrier_vz`），交付构建到真实的 vz guest 没有实测：runner 没有可用的虚拟化 |
+| 跨平台 | Linux x86_64/aarch64（含 musl、最旧的 glibc）、Windows（WSL 2）真实测到；macOS 的 vz：guest 的更新与 WSL 2 是同一段 `bring_guest`，经 vz 自己的 `grant`（helper 的 `share`）交付，在 helper 的桩上测到更旧、已是当前、更新的 guest 三种情形（`test_carrier_vz`，#731）；真实的 vz guest 没有实测：GitHub 的 macOS runner 自身是虚拟机，报告 "this Mac cannot run a virtual machine here"，要一台 Apple silicon 的实体 Mac |
 | 一致性 | carrier、Luban 系统、补上运行时的 worker 三处，标准路径上都是同一个运行时；Windows 上看到的事件与 Linux 私有域路径相同 |
 | 无感升级 | 用户什么都不做：下一次 luban 调用把 guest 带到客户端的版本并补上链接；home 的格式没有变 |
 | CI 覆盖 | 每个 PR：u-alpine 的 `hookrt` 与终端场景、acceptance 的 `test_hook_runtime`、真实 WSL 2；索引：五种宿主；发布后：`luban-wsl2-agent` |

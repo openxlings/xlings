@@ -32,7 +32,7 @@ XTEST(CarrierVz, WithoutItsHelperTheCarrierIsRefusedWithTheRoute,
 }
 
 XTEST(CarrierVz, AVmPerHomeIsCreatedOnceStartedWhenStoppedAndReachedThroughTheHelper,
-      .area = "subos", .covers = {"CARRIER-VZ-LIFECYCLE"}, .requires_ = {"linux", "xlings-bin"}) {
+      .area = "subos", .covers = {"CARRIER-VZ-LIFECYCLE", "CARRIER-GUEST-CURRENT"}, .requires_ = {"linux", "xlings-bin"}) {
     auto home = tk::Home::isolated("carrier-vz");
     const auto vms = home.root() / "vz";
     fs::create_directories(vms);
@@ -71,6 +71,50 @@ XTEST(CarrierVz, AVmPerHomeIsCreatedOnceStartedWhenStoppedAndReachedThroughTheHe
     ASSERT_TRUE(granted) << granted.error();
     EXPECT_EQ(*granted, "/grant/project");
     EXPECT_NE(read_or_empty(vm / "shares").find("project rw"), std::string::npos);
+
+    // An upgrade reaches the guest as on WSL 2 (#724 §4.4): an older release
+    // there is given the host's Linux build through a share and adopted by
+    // rename before the call; once; a newer guest is left as it is.
+    {
+        const auto guest = vm / "xlings/bin/xlings";
+        const auto real = vm / "xlings/bin/xlings.real";
+        const auto stand_in = [&](std::string_view version) {
+            fs::remove(guest);
+            tk::write_file(guest, std::format("#!/bin/sh\n"
+                                              "case \"$1\" in __carrier-probe) echo '{{\"kvm\":false,\"kernel\":\"6\",\"version\":\"{}\"}}'; exit 0 ;; esac\n"
+                                              "exec \"$(dirname \"$0\")/xlings.real\" \"$@\"\n", version));
+            fs::permissions(guest, fs::perms::owner_all);
+        };
+        fs::copy_file(guest, real);
+        const auto probe_file = home.dir() / "carriers/vz/probe.json";
+        const auto age = [&] { fs::last_write_time(probe_file, fs::file_time_type::clock::now() - std::chrono::hours(1)); };
+        const auto adoptions = [&] {
+            const auto log = read_or_empty(vms / "calls.log");
+            std::size_t n = 0;
+            for (std::size_t at = 0; (at = log.find("__carrier-adopt", at)) != std::string::npos; ++at) ++n;
+            return n;
+        };
+        ASSERT_TRUE(fs::exists(probe_file)) << read_or_empty(vms / "calls.log");
+
+        stand_in("2000.1.1.1");
+        age();
+        auto brought = home.xlings({"subos", "info", "box"}, env);
+        EXPECT_EQ(brought.exit_code, 0) << brought.transcript();
+        EXPECT_EQ(adoptions(), 1u) << read_or_empty(vms / "calls.log");
+        EXPECT_EQ(read_or_empty(guest), read_or_empty(tk::xlings_binary())) << "the guest's xlings was not replaced";
+        auto kept = nlohmann::json::parse(read_or_empty(probe_file), nullptr, false);
+        EXPECT_TRUE(kept["update"].value("ok", false)) << kept.dump();
+        age();
+        EXPECT_EQ(home.xlings({"subos", "info", "box"}, env).exit_code, 0);
+        EXPECT_EQ(adoptions(), 1u) << "not again: the guest is current";
+
+        stand_in("2099.1.1.1");
+        age();
+        EXPECT_EQ(home.xlings({"subos", "info", "box"}, env).exit_code, 0);
+        EXPECT_EQ(adoptions(), 1u) << "a newer guest is not replaced";
+        fs::remove(guest);
+        fs::rename(real, guest);
+    }
 
     auto removed = home.xlings({"subos", "remove", "box", "-y"}, env);
     EXPECT_EQ(removed.exit_code, 0) << removed.transcript();
