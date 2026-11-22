@@ -169,3 +169,44 @@ XTEST(SubosNetworkE2E, NatAuditsConnectAndDnsPortRequestsBeforeContinuing,
     EXPECT_TRUE(request);
     EXPECT_TRUE(executed) << "full observation must acknowledge bash's exec syscall";
 }
+
+// xlings#732: started as root in the initial user namespace, passt drops to
+// nobody before it joins a namespace, and nobody cannot open the user
+// namespace root made -- `net=nat` exited 125 for every root supervisor (a
+// WSL 2 carrier runs everything as root). pasta now runs as the namespace's
+// owner. Run here as root through sudo when the lane is not root already.
+XTEST(SubosNetworkE2E, NatAsRootJoinsTheNamespaceAsItsOwner,
+      .area = "subos", .cost = tk::Cost::Medium, .covers = {"ISO-NET-NAT-ROOT", "ISO-NET-NAT"},
+      .requires_ = {"linux", "xlings-bin", "sandbox", "pasta", "sudo"}, .resources = {"sandbox"},
+      .proves = "isolation") {
+    Box box;
+    const auto as_root = [&](std::vector<std::string> args) {
+        if (platform::is_root()) return box.home.xlings(std::move(args));
+        tk::RunOptions o;
+        o.argv = {"sudo", "-n", "env"};
+        for (const auto& [key, value] : box.home.env()) o.argv.push_back(key + "=" + value);
+        o.argv.push_back(tk::xlings_binary().string());
+        o.argv.insert(o.argv.end(), args.begin(), args.end());
+        o.env = box.home.env();
+        o.cwd = box.home.root();
+        return tk::run(o);
+    };
+    const auto run = as_root({"subos", "exec", "box", "--sandbox=private", "--",
+                              "/bin/sh", "-c", "tail -n +3 /proc/net/dev"});
+    // What root left in the home goes back to the test's user, so the home is
+    // removed like any other.
+    if (!platform::is_root()) {
+        tk::RunOptions chown;
+        chown.argv = {"sudo", "-n", "chown", "-R", std::format("{}:{}", platform::user_ids().uid,
+                                                              platform::user_ids().gid),
+                      box.home.root().string()};
+        chown.env = box.home.env();
+        (void)tk::run(chown);
+    }
+    ASSERT_EQ(run.exit_code, 0) << run.transcript();
+    EXPECT_EQ(run.transcript().find("pasta could not set up the network"), std::string::npos)
+        << run.transcript();
+    // pasta's interface is in the namespace beside the loopback: the network
+    // is there, not only `lo`.
+    EXPECT_GE(std::ranges::count(run.out, '\n'), 2) << run.transcript();
+}

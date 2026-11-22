@@ -1,6 +1,7 @@
 module xlings.confine.provider;
 
 import std;
+import xlings.platform;
 import xlings.subos.spec;
 import xlings.subos.session;
 
@@ -76,8 +77,11 @@ namespace xlings::confine::provider {
 
 
 
-std::vector<std::string> pasta_args(const spec::SandboxSpec& s) {
+std::vector<std::string> pasta_args(const spec::SandboxSpec& s,
+                                    const xlings::platform::UserIds& supervisor) {
     std::vector<std::string> a{ s.pasta_bin.string(), "--config-net", "--quiet" };
+    if (supervisor.euid == 0)
+        a.insert(a.end(), {"--runas", std::format("{}:{}", supervisor.uid, supervisor.gid)});
     // Nothing in, unless published; nothing from the sandbox to the host's
     // own loopback, unless granted (design §19, §21.2).
     if (s.publish.empty()) a.insert(a.end(), {"-t", "none"});

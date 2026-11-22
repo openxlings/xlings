@@ -131,7 +131,9 @@ nlohmann::json outcome(const pol::Policy& p, const caps::Caps& c, const sp::Requ
     j["backend_bin"] = s.backend_bin.generic_string();
     if (s.backend == sp::Backend::Bwrap || s.backend == sp::Backend::Fake) j["argv"] = pv::bwrap_argv(s, 7);
     if (s.backend == sp::Backend::Proot) j["argv"] = pv::proot_argv(s);
-    if (s.net_nat) j["pasta"] = pv::pasta_args(s);
+    // An unprivileged supervisor, the identity the goldens were written for:
+    // the runner's own (root in a container) would change them.
+    if (s.net_nat) j["pasta"] = pv::pasta_args(s, {1000, 1000, 1000});
     j["env"] = pv::process_env(s, {{"INHERITED", "1"}, {"PATH", "/usr/bin"}});
     j["landlock_rw"] = nlohmann::json::array();
     for (const auto& w : s.landlock_rw) j["landlock_rw"].push_back(w.generic_string());
