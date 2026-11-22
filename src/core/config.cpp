@@ -458,6 +458,7 @@ Config::read_workspace_file_(const std::filesystem::path& path) {
             sws = xvm::subos_workspace_from_json(*it);
         }
         sws.configured = configured_from_json_(json);
+        sws.hostFacts = xvm::subos_host_facts_from_json(json);
         return sws;
     } catch (...) {}
     return std::nullopt;
@@ -982,6 +983,7 @@ void Config::load_project_config_from_dir_(const std::filesystem::path& dir) {
                 projectSubosWorkspace_ = std::move(sws.active);
                 projectSubosInstalled_ = std::move(sws.installed);
                 projectSubosConfigured_ = std::move(sws.configured);
+                projectSubosHostFacts_ = std::move(sws.hostFacts);
             } else {
                 projectSubosMode_ = ProjectSubosMode::Anonymous;
                 if (hasProjectStateJson && projectStateJson.contains("workspace") &&
@@ -990,11 +992,13 @@ void Config::load_project_config_from_dir_(const std::filesystem::path& dir) {
                     projectSubosWorkspace_ = std::move(sws.active);
                     projectSubosInstalled_ = std::move(sws.installed);
                     projectSubosConfigured_ = configured_from_json_(projectStateJson);
+                    projectSubosHostFacts_ = xvm::subos_host_facts_from_json(projectStateJson);
                 } else {
                     auto sws = load_workspace_from_file_(project_subos_dir_() / ".xlings.json");
                     projectSubosWorkspace_ = std::move(sws.active);
                     projectSubosInstalled_ = std::move(sws.installed);
                     projectSubosConfigured_ = std::move(sws.configured);
+                    projectSubosHostFacts_ = std::move(sws.hostFacts);
                 }
             }
         }
@@ -1213,11 +1217,13 @@ void Config::load_global_workspace_() {
         globalWorkspace_.clear();
         globalInstalled_.clear();
         globalConfigured_.clear();
+        globalHostFacts_.clear();
         return;
     }
     globalWorkspace_ = std::move(sws->active);
     globalInstalled_ = std::move(sws->installed);
     globalConfigured_ = std::move(sws->configured);
+    globalHostFacts_ = std::move(sws->hostFacts);
 }
 
 void Config::reload_state_() {
@@ -2252,6 +2258,7 @@ void Config::save_workspace() {
         sws.active = self.projectSubosWorkspace_;
         sws.installed = self.projectSubosInstalled_;
         sws.configured = self.projectSubosConfigured_;
+        sws.hostFacts = self.projectSubosHostFacts_;
     } else if (useProject) {
         // Reachable only via the third save-path branch above (project
         // mode without a subos mode, currently unreachable in practice
@@ -2266,12 +2273,18 @@ void Config::save_workspace() {
         sws.active = self.globalWorkspace_;
         sws.installed = self.globalInstalled_;
         sws.configured = self.globalConfigured_;
+        sws.hostFacts = self.globalHostFacts_;
     }
     json["workspace"] = xvm::subos_workspace_to_json(sws);
     if (sws.configured.empty()) {
         json.erase("configured");
     } else {
         json["configured"] = sws.configured;
+    }
+    if (sws.hostFacts.empty()) {
+        json.erase("host_facts");
+    } else {
+        json["host_facts"] = sws.hostFacts;
     }
     platform::write_file_atomic(subosConfigPath.string(), json.dump(2));
 }
@@ -2301,7 +2314,36 @@ void Config::mark_configured(const std::string& identity, int revision) {
 }
 
 bool Config::forget_configured(std::string_view identity) {
+    instance_().host_facts_mut_().erase(std::string(identity));
     return instance_().configured_mut_().erase(std::string(identity)) > 0;
+}
+
+// The same scope selection as configured_mut_(): the facts sit beside the
+// record they qualify.
+std::map<std::string, std::map<std::string, std::string>>& Config::host_facts_mut_() {
+    if (forceGlobalScope_ || !hasProjectConfig_) {
+        ensure_global_workspace_();
+        return globalHostFacts_;
+    }
+    if (projectSubosMode_ == ProjectSubosMode::Named ||
+        projectSubosMode_ == ProjectSubosMode::Anonymous) return projectSubosHostFacts_;
+    ensure_global_workspace_();
+    return globalHostFacts_;
+}
+
+std::optional<std::map<std::string, std::string>> Config::host_facts_record(std::string_view identity) {
+    const auto& map = instance_().host_facts_mut_();
+    if (auto it = map.find(std::string(identity)); it != map.end()) return it->second;
+    return std::nullopt;
+}
+
+std::map<std::string, std::map<std::string, std::string>> Config::host_facts_records() {
+    return instance_().host_facts_mut_();
+}
+
+void Config::mark_host_facts(const std::string& identity, std::map<std::string, std::string> facts) {
+    if (facts.empty()) instance_().host_facts_mut_().erase(identity);
+    else instance_().host_facts_mut_()[identity] = std::move(facts);
 }
 
 bool Config::forget_configured_binding(std::string_view binding) {
@@ -2315,7 +2357,11 @@ bool Config::forget_configured_binding(std::string_view binding) {
         const auto colon = key.find(':');
         const std::string_view bare = colon == std::string::npos
             ? std::string_view(key) : std::string_view(key).substr(colon + 1);
-        if (bare == binding) { it = map.erase(it); any = true; }
+        if (bare == binding) {
+            instance_().host_facts_mut_().erase(key);
+            it = map.erase(it);
+            any = true;
+        }
         else ++it;
     }
     return any;

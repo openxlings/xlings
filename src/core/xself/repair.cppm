@@ -222,6 +222,13 @@ std::optional<std::string> migration_hint(std::string_view recorded,
 // R2 therefore runs config() again (`--reconfig`); when the finding outlives
 // it, R3 follows; when it outlives R3 too, the check -- not the package -- is
 // the suspect, and that is what is reported.
+//
+// For a SweptPayload the finding is the directory's contents, so it is asked
+// after the removal as well: the removal deletes the directory (the installer
+// owns that deletion, xlings#711), and a finding that outlives it means the
+// install that would follow finds the same files and calls them installed.
+// That is reported as the failure it is, with the cause, and nothing is
+// reinstalled over it.
 using FindingCheck = std::function<bool()>;
 RepairResult repair_one(const RepairTask& task,
                         const RepairPolicy& policy,

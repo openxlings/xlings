@@ -181,6 +181,22 @@ int cmd_install(std::span<const std::string> targets, bool yes, bool noDeps,
 int cmd_install_step(std::span<const std::string> targets, std::string_view subos,
                      EventStream& stream, bool plumbing);
 
+// The host facts check where a configuration is used (xpkg `host_facts`,
+// openxlings/xlings#727): `xlings use`, entering a SubOS, `self doctor --fix`.
+// A package configured in the scope whose recorded host files no longer read
+// as they did when its config() ran is configured again, in this process, in
+// that scope; one that cannot be is reported with the command that does it.
+// Reads only the recorded files -- no recipe is loaded unless one changed --
+// and is never asked on a shim's launch. `subos` names the scope (empty: the
+// current one); a non-empty `target` limits the check to that package's name.
+// Returns how many configurations it could not bring current.
+int reconcile_host_facts(std::string_view subos, std::string_view target, EventStream& stream);
+
+// The packages of a scope whose recorded host facts changed, with why
+// (xim::host_facts::drifted). The question `reconcile_host_facts` and
+// `self doctor` ask.
+std::vector<std::pair<std::string, std::string>> drifted_host_facts(std::string_view subos);
+
 // === remove command ===
 //
 // yes: skip the interactive confirmation. Recursive calls from install hooks

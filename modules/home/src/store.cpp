@@ -67,6 +67,105 @@ Pins pins(const fs::path& payload, std::span<const RootSet> roots,
     return out;
 }
 
+std::string payload_key(const fs::path& payloadRoot) {
+    return payloadRoot.parent_path().filename().string() + "/" + payloadRoot.filename().string();
+}
+
+LinkWalk walk_links(const fs::path& dir) {
+    LinkWalk out;
+    std::error_code ec;
+    const auto top = fs::symlink_status(dir, ec);
+    if (ec || !fs::exists(top)) {
+        if (ec && ec != std::errc::no_such_file_or_directory)
+            out.unreadable.push_back(dir.string() + " (" + ec.message() + ")");
+        return out;
+    }
+    if (auto target = platform::dir_link_target(dir)) {
+        out.links.push_back({dir, std::move(*target)});
+        return out;
+    }
+    if (!fs::is_directory(top)) return out;
+    // An explicit stack instead of recursive_directory_iterator: a directory
+    // that cannot be opened is named and skipped, and the walk goes on with
+    // its siblings -- the recursive iterator's state after such an error is
+    // the library's.
+    std::vector<std::pair<fs::path, int>> pending{{dir, 0}};
+    while (!pending.empty()) {
+        auto [current, depth] = std::move(pending.back());
+        pending.pop_back();
+        std::error_code dec;
+        for (auto it = fs::directory_iterator(current, dec); !dec && it != fs::directory_iterator();
+             it.increment(dec)) {
+            const auto& path = it->path();
+            if (auto target = platform::dir_link_target(path)) {
+                out.links.push_back({path, std::move(*target)});
+                continue;
+            }
+            std::error_code tec;
+            if (depth + 1 < 10 && it->is_directory(tec)) pending.emplace_back(path, depth + 1);
+        }
+        if (dec) out.unreadable.push_back(current.string() + " (" + dec.message() + ")");
+    }
+    return out;
+}
+
+fs::path roots_dir(const fs::path& data_dir) { return data_dir / "roots"; }
+
+std::expected<RootScan, std::string> read_roots(const fs::path& data_dir) {
+    RootScan scan;
+    const auto dir = roots_dir(data_dir);
+    std::error_code ec;
+    if (!fs::exists(fs::symlink_status(dir, ec))) {
+        if (ec && ec != std::errc::no_such_file_or_directory)
+            return std::unexpected(dir.string() + ": " + ec.message());
+        return scan;
+    }
+    // One level of owners, one level of roots: a flat walk of both.
+    std::vector<std::pair<std::string, fs::path>> entries;
+    for (auto owners = fs::directory_iterator(dir, ec); !ec && owners != fs::directory_iterator();
+         owners.increment(ec)) {
+        std::error_code tec;
+        if (!owners->is_directory(tec) || fs::is_symlink(owners->symlink_status(tec))) {
+            scan.ignored.push_back(owners->path());
+            continue;
+        }
+        const auto owner = owners->path().filename().string();
+        std::error_code rec;
+        for (auto it = fs::directory_iterator(owners->path(), rec); !rec && it != fs::directory_iterator();
+             it.increment(rec)) {
+            entries.emplace_back(owner, it->path());
+        }
+        if (rec) return std::unexpected(owners->path().string() + ": " + rec.message());
+    }
+    if (ec) return std::unexpected(dir.string() + ": " + ec.message());
+
+    for (auto& [owner, at] : entries) {
+        auto target = platform::dir_link_target(at);
+        if (!target) {
+            scan.ignored.push_back(at);
+            continue;
+        }
+        std::error_code sec;
+        const bool present = fs::exists(at, sec);
+        if (sec && sec != std::errc::no_such_file_or_directory)
+            return std::unexpected(at.string() + ": " + sec.message());
+        if (!present) {
+            scan.dangling.push_back(at);
+            continue;
+        }
+        // The payload directory itself, not a file inside it.
+        auto named = target->lexically_normal();
+        if (!named.has_filename()) named = named.parent_path();
+        auto payload = payload_root(named);
+        if (!payload || *payload != named) {
+            scan.ignored.push_back(at);
+            continue;
+        }
+        scan.live.push_back({owner, at, std::move(*payload)});
+    }
+    return scan;
+}
+
 fs::path ledger_path(const fs::path& data_dir) { return data_dir / "retained.json"; }
 
 std::expected<std::vector<Retained>, std::string> read_ledger(const fs::path& ledger) {

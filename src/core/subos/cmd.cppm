@@ -198,6 +198,17 @@ inline int validate_subos_(const std::string& name, EventStream& stream) {
     return 0;
 }
 
+// Entering a SubOS is a use site of its packages' configurations: one that was
+// derived from host facts which changed since (xpkg `host_facts`) is made
+// again before the entry, in that SubOS's scope (xim::reconcile_host_facts).
+// One that cannot be is reported and the entry goes on: the SubOS is usable,
+// and the report names what is stale and the command that refreshes it.
+inline int prepare_entry_(const std::string& name, EventStream& stream) {
+    if (auto rc = validate_subos_(name, stream); rc != 0) return rc;
+    (void)xim::reconcile_host_facts(name, {}, stream);
+    return 0;
+}
+
 // Build the new PATH for shell-level switching. The fresh subos bin goes to
 // the front; any *other* xlings-managed subos bin segments are removed so
 // repeated --shell / spawn calls don't pile up stale entries. The PATH

@@ -17,6 +17,8 @@ import xlings.platform;
 import xlings.core.utils;
 import xlings.core.xvm.db;
 import xlings.core.xvm.types;
+import xlings.store;
+import xlings.subos.rootfs;
 
 namespace xlings::profile {
 
@@ -185,10 +187,12 @@ std::vector<SubosSnapshot> load_subos_snapshots(const fs::path& xlingsHome,
                 mark_unreadable();
                 continue;
             }
+            auto workspace = xvm::subos_workspace_from_json(json["workspace"]);
+            workspace.hostFacts = xvm::subos_host_facts_from_json(json);
             snapshots.push_back({
                 .name = name,
                 .dir = entry.path(),
-                .workspace = xvm::subos_workspace_from_json(json["workspace"]),
+                .workspace = std::move(workspace),
             });
         } catch (...) {
             mark_unreadable();
@@ -230,19 +234,37 @@ bool save_subos_workspace(const fs::path& subosRoot,
     return true;
 }
 
-// Build a set of referenced xpkg "dirname/version" keys from all subos workspaces
-// by mapping workspace target names to xpkg directory paths via the versions DB.
-// Every `<store>/<version>` some subos still references -- or why that cannot
-// be answered. "Could not read" is not "references nothing": an unreadable
-// subos config or version DB used to contribute no references, and every
-// payload only it used was then collected (measured with `self clean
-// --dry-run`: one bad subos config, its package listed for removal). So a
-// reader that cannot see everything refuses, and says which part it could not
-// see. The refusal is binary on purpose -- see AGENTS.md on derived tables.
-std::expected<std::set<std::string>, std::string>
-collect_subos_references_(const fs::path& xlingsHome) {
-    std::set<std::string> referenced;
+// Every `<store>/<version>` something in this home still references -- or why
+// that cannot be answered. Four parts, the union (store design, xlings#712):
+//
+//   1. the workspace registrations: every SubOS's active and installed
+//      targets, mapped through the versions DB to their payloads;
+//   2. the views: every link a SubOS's trees (`usr`, `etc`, `share`, `lib`,
+//      `lib64`, `bin`), a root generation's record, or the environment's
+//      runtime (`abi.gen`) holds into a payload -- the measured case is
+//      `usr/include/linux` into scode-x-linux-headers, a payload no
+//      registration names because the registered package is its meta package;
+//   3. the closure of the runtime dependencies the install records
+//      (`.xlings-resolution.json`) of those payloads state;
+//   4. the roots other programs hold (`<data>/roots/<owner>/`, store::read_roots).
+//
+// "Could not read" is not "references nothing": an unreadable subos config or
+// version DB used to contribute no references, and every payload only it used
+// was then collected (measured with `self clean --dry-run`: one bad subos
+// config, its package listed for removal). So a reader that cannot see every
+// part refuses, and says which part it could not see. The refusal is binary on
+// purpose -- see AGENTS.md on derived tables.
+struct References {
+    std::set<std::string> keys;
+    std::vector<fs::path> danglingRoots;
+    std::vector<fs::path> ignoredRoots;
+};
 
+namespace {
+
+// Part 1: the workspace registrations.
+std::expected<void, std::string>
+add_registered_(const fs::path& xlingsHome, std::set<std::string>& referenced) {
     // Load global versions DB -- from the versions DB file when the home
     // has one, else the home config's `versions` field (load_versions_json
     // owns that choice). This collector REFUSES when neither source is
@@ -257,7 +279,6 @@ collect_subos_references_(const fs::path& xlingsHome) {
             "{} could not be read, so which packages are in use is unknown",
             configPath.string()));
     }
-
     // Build a map: xpkg_dir_name/version -> key, from versions DB paths
     // e.g., "xim-x-gcc/15.1.0" from path "/home/.../.xlings/data/xpkgs/xim-x-gcc/15.1.0/bin"
     //
@@ -317,7 +338,99 @@ collect_subos_references_(const fs::path& xlingsHome) {
             "are unknown", names));
     }
 
-    return referenced;
+    return {};
+}
+
+void add_link_target_(const fs::path& target, std::set<std::string>& referenced) {
+    if (auto root = store::payload_root(target)) referenced.insert(store::payload_key(*root));
+}
+
+// Part 2: the views.
+std::expected<void, std::string>
+add_view_links_(const fs::path& xlingsHome, std::set<std::string>& referenced) {
+    namespace rf = xlings::subos::rootfs;
+    std::vector<std::string> unreadable;
+    auto add_walk = [&](const fs::path& dir) {
+        auto walk = store::walk_links(dir);
+        for (const auto& link : walk.links) add_link_target_(link.target, referenced);
+        for (auto& u : walk.unreadable) unreadable.push_back(std::move(u));
+    };
+    const auto subosRoot = xlingsHome / "subos";
+    std::error_code ec;
+    for (auto it = fs::directory_iterator(subosRoot, ec); !ec && it != fs::directory_iterator();
+         it.increment(ec)) {
+        std::error_code sec;
+        // `current` is a link to one of the others.
+        if (fs::is_symlink(it->symlink_status(sec)) || !it->is_directory(sec)) continue;
+        for (const auto* sub : {"usr", "etc", "share", "lib", "lib64", "bin"}) add_walk(it->path() / sub);
+        for (const int k : rf::generations(it->path())) {
+            auto targets = rf::linked_targets(it->path(), k);
+            if (!targets) {
+                unreadable.push_back(std::format("generation {} of subos '{}' ({})", k,
+                                                 it->path().filename().string(), targets.error()));
+                continue;
+            }
+            for (const auto& target : *targets) add_link_target_(target, referenced);
+        }
+    }
+    if (ec && ec != std::errc::no_such_file_or_directory)
+        unreadable.push_back(subosRoot.string() + " (" + ec.message() + ")");
+    add_walk(xlingsHome / "abi.gen");
+    if (unreadable.empty()) return {};
+    return std::unexpected(std::format(
+        "{} could not be read, so the payloads its links name are unknown", unreadable.front()));
+}
+
+// Part 3: what the payloads referenced so far depend on, as their install
+// records state it, to the closure. A payload without a record (installed
+// before records existed) states nothing; a record that cannot be read
+// refuses, like any other part.
+std::expected<void, std::string>
+add_dependency_closure_(const fs::path& xlingsHome, std::set<std::string>& referenced) {
+    const auto store = xlingsHome / "data" / "xpkgs";
+    std::vector<std::string> pending(referenced.begin(), referenced.end());
+    while (!pending.empty()) {
+        const auto key = std::move(pending.back());
+        pending.pop_back();
+        const auto record = store / key / ".xlings-resolution.json";
+        std::error_code ec;
+        if (!fs::exists(fs::symlink_status(record, ec))) {
+            if (ec && ec != std::errc::no_such_file_or_directory)
+                return std::unexpected(std::format("{} could not be read ({})", record.string(), ec.message()));
+            continue;
+        }
+        auto doc = home::read_json_for_update(record);
+        if (!doc || !doc->is_object() || !doc->contains("deps") || !(*doc)["deps"].is_array())
+            return std::unexpected(std::format(
+                "{} could not be read, so what that payload depends on is unknown", record.string()));
+        for (const auto& dep : (*doc)["deps"]) {
+            const auto dir = dep.is_object() ? dep.value("install_dir", std::string{}) : std::string{};
+            auto root = store::payload_root(xvm::expand_path(dir, xlingsHome.string()));
+            if (!root) continue;
+            if (auto depKey = store::payload_key(*root); referenced.insert(depKey).second)
+                pending.push_back(depKey);
+        }
+    }
+    return {};
+}
+
+}  // namespace
+
+std::expected<References, std::string>
+collect_subos_references_(const fs::path& xlingsHome) {
+    References refs;
+    if (auto ok = add_registered_(xlingsHome, refs.keys); !ok) return std::unexpected(ok.error());
+    if (auto ok = add_view_links_(xlingsHome, refs.keys); !ok) return std::unexpected(ok.error());
+    auto roots = store::read_roots(xlingsHome / "data");
+    if (!roots)
+        return std::unexpected(std::format(
+            "the store's roots could not be read ({}), so the payloads other programs hold are unknown",
+            roots.error()));
+    for (const auto& root : roots->live) refs.keys.insert(store::payload_key(root.payload));
+    refs.danglingRoots = std::move(roots->dangling);
+    refs.ignoredRoots = std::move(roots->ignored);
+    if (auto ok = add_dependency_closure_(xlingsHome, refs.keys); !ok) return std::unexpected(ok.error());
+    return refs;
 }
 
 std::vector<std::string> find_subos_referencing(
@@ -384,7 +497,21 @@ int gc(const fs::path& xlingsHome, bool dryRun) {
                      "unreadable subos config, then run this again");
         return 1;
     }
-    const auto& referenced = *references;
+    const auto& referenced = references->keys;
+    // A root whose payload is gone holds nothing; it is the owner's
+    // bookkeeping left behind, and removing the link is all there is to do.
+    for (const auto& root : references->danglingRoots) {
+        if (dryRun) {
+            std::println("  would remove dangling root {}", root.string());
+            continue;
+        }
+        std::error_code ec;
+        fs::remove(root, ec);
+        if (ec) std::println("[xlings:store] dangling root {} could not be removed: {}", root.string(), ec.message());
+    }
+    for (const auto& entry : references->ignoredRoots)
+        std::println("[xlings:store] {} is not a root (a link to a payload directory) and holds nothing",
+                     entry.string());
 
     auto pkgDir = xlingsHome / "data" / "xpkgs";
     std::error_code inspected;

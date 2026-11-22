@@ -2767,13 +2767,21 @@ int dispatch_(int argc, char* argv[]) {
                 bool show_all = args.is_flag_set("all");
                 bool strict = args.is_flag_set("strict");
                 auto first = std::string(args.positional(0));
+                // Activation is a use site of the package's configuration:
+                // one derived from host facts that changed is made again
+                // (xpkg host_facts).
+                const auto activated = [&stream](const std::string& name, int rc) {
+                    if (rc == 0) xim::reconcile_host_facts({}, name, stream);
+                    return rc;
+                };
                 if (n == 1) {
                     auto at = first.find('@');
                     if (at == std::string::npos)
-                        return xvm::cmd_use_by_name(first, stream, show_all,
-                                                    strict);
-                    return xvm::cmd_use(first.substr(0, at),
-                                        first.substr(at + 1), stream, strict);
+                        return activated(first, xvm::cmd_use_by_name(first, stream, show_all,
+                                                                     strict));
+                    return activated(first.substr(0, at),
+                                     xvm::cmd_use(first.substr(0, at),
+                                                  first.substr(at + 1), stream, strict));
                 }
                 // n == 2: must be `<name> <version>`
                 if (first.find('@') != std::string::npos) {
@@ -2786,8 +2794,8 @@ int dispatch_(int argc, char* argv[]) {
                                first, bare, std::string(args.positional(1)));
                     return 1;
                 }
-                return xvm::cmd_use(first, std::string(args.positional(1)),
-                                    stream, strict);
+                return activated(first, xvm::cmd_use(first, std::string(args.positional(1)),
+                                                     stream, strict));
             }))
 
         // config

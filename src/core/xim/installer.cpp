@@ -12,6 +12,7 @@ import xlings.core.xim.compatibility;
 import xlings.core.xim.payload;
 import xlings.core.xim.retention;
 import xlings.core.xim.install_state;
+import xlings.core.xim.host_facts;
 import xlings.core.xim.index;
 import xlings.core.xim.catalog;
 import xlings.core.xim.resolver;
@@ -3602,13 +3603,15 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& requested
             && !node.migrateRecord && node.rebindReason.empty()) {
             bool done = node.kind == DepKind::Build;
             if (!done) {
+                const auto identity = configured_identity(
+                    node.namespaceName, node.name, node.version);
                 const auto verdict = configured_verdict(
-                    Config::configured_revision(configured_identity(
-                        node.namespaceName, node.name, node.version)),
+                    Config::configured_revision(identity),
                     node.revision, Config::versions_mut(),
                     Config::workspace_installed(),
                     Config::paths().homeDir.string(),
-                    node.namespaceName, node.name, node.version);
+                    node.namespaceName, node.name, node.version,
+                    node.hostFacts, Config::host_facts_record(identity));
                 done = verdict.configured;
                 if (!done) {
                     log::debug("[{}@{}] configuring in this scope: {}",
@@ -4114,8 +4117,12 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& requested
             // keeps what it finished, and whatever it did not record simply
             // configures again next time.
             if (node.kind != DepKind::Build) {
-                Config::mark_configured(configured_identity(
-                    node.namespaceName, node.name, node.version), node.revision);
+                const auto identity = configured_identity(
+                    node.namespaceName, node.name, node.version);
+                Config::mark_configured(identity, node.revision);
+                // The facts config() just read, as they read now: the record
+                // a use site checks them against (xim::host_facts).
+                Config::mark_host_facts(identity, host_facts::read(node.hostFacts));
                 Config::save_workspace();
             }
         }

@@ -135,6 +135,7 @@ Json pack(const xpkg::Package& v) {
     j["status"] = static_cast<int>(v.status);
     j["type"] = static_cast<int>(v.type);
     j["extensions"] = v.extensions;
+    j["host_facts"] = v.host_facts;
     j["warnings"] = v.warnings;
     return j;
 }
@@ -162,6 +163,7 @@ xpkg::Package unpack_Package(const Json& j) {
     if (j.contains("status")) v.status = static_cast<xpkg::PackageStatus>(j.at("status").get<int>());
     if (j.contains("type")) v.type = static_cast<xpkg::PackageType>(j.at("type").get<int>());
     if (j.contains("extensions")) j.at("extensions").get_to(v.extensions);
+    if (j.contains("host_facts")) j.at("host_facts").get_to(v.host_facts);
     if (j.contains("warnings")) j.at("warnings").get_to(v.warnings);
     return v;
 }

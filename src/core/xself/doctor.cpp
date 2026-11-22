@@ -1,6 +1,7 @@
 module xlings.core.xself.doctor;
 
 import xlings.home.format;
+import xlings.store;
 import xlings.core.xself.upgrade;
 import std;
 import xlings.core.xself.init;
@@ -2039,6 +2040,7 @@ Scan detect_(const DoctorState& st, const CoordinateProbe& probe,
                                     "archive privately (mcpp-community/mcpp#636)",
                                     coordinate, culprit),
                                 .remedy  = remedy,
+                                .payloadDir = verDir.path(),
                             });
                             continue;
                         }
@@ -2423,6 +2425,38 @@ Scan detect_(const DoctorState& st, const CoordinateProbe& probe,
             }
         }
 
+        // Configurations derived from host facts that changed (xpkg
+        // `host_facts`, xlings#727): the scope's record names each host file
+        // its config() read and the digest it had; one that reads differently
+        // now is a configuration made for a host that is no longer there.
+        // Every SubOS's records are read, the way a use site there would.
+        {
+            std::error_code aec;
+            const auto activeRoot = fs::weakly_canonical(p.subosDir, aec);
+            const auto report = [&](const std::string& scopeName) {
+                for (auto& [identity, why] : xim::drifted_host_facts(scopeName)) {
+                    add({
+                        .kind    = FindingKind::HostFactsChanged,
+                        .level   = FindingLevel::Error,
+                        .target  = identity,
+                        .detail  = std::format("{}{}: {}", scopeName.empty() ? std::string{}
+                                                   : std::format("[{}] ", scopeName), identity, why),
+                        .remedy  = scopeName.empty()
+                            ? std::format("xlings install {} --reconfig -y", identity)
+                            : std::format("xlings install --subos {} {} --reconfig -y", scopeName, identity),
+                        .subos   = scopeName.empty() ? std::vector<std::string>{}
+                                                     : std::vector<std::string>{scopeName},
+                    });
+                }
+            };
+            report({});
+            for (const auto& name : Config::list_subos_names()) {
+                std::error_code rec;
+                if (fs::weakly_canonical(p.homeDir / "subos" / name, rec) == activeRoot) continue;
+                report(name);
+            }
+        }
+
         // The whole subos tree, not four directories one level deep.
         //
         // This loop used to iterate `directory_iterator` over `usr/include`,
@@ -2460,29 +2494,19 @@ Scan detect_(const DoctorState& st, const CoordinateProbe& probe,
             // recorded the correct source all along, so the link was not
             // stale garbage but a repairable pointer nobody was looking at.
             for (const auto& sub : {"usr", "etc", "share", "lib", "lib64"}) {
-                const auto dir = scanRoot.root / sub;
-                std::error_code dec;
-                if (!fs::is_directory(dir, dec)) continue;
-                auto walker = fs::recursive_directory_iterator(
-                    dir, fs::directory_options::skip_permission_denied, dec);
-                if (dec) continue;
-                // `std::default_sentinel`, not a default-constructed
-                // iterator: libc++ gives the filesystem iterators only
-                // `operator==(default_sentinel_t)` under C++20, so the
-                // two-iterator spelling does not compile on macOS or Windows.
-                for (; walker != std::default_sentinel;
-                     walker.increment(dec)) {
-                    if (dec) break;
-                    if (walker.depth() >= 10) walker.disable_recursion_pending();
-                    const auto& path = walker->path();
+                // The store's walk (xlings.store): the collection reads the
+                // same trees for the payloads they hold. A directory it could
+                // not read holds nothing this check can report.
+                for (const auto& link : store::walk_links(scanRoot.root / sub).links) {
+                    const auto& path = link.at;
                     std::error_code lec;
-                    // Both halves are required. A dangling link IS a symlink
-                    // and is NOT `exists()`; testing only existence reads it
-                    // as "already gone" -- the mistake that let #423's test
-                    // pass while the links were still on disk.
-                    if (!fs::is_symlink(path, lec)) continue;
+                    // A dangling link IS a link and is NOT `exists()`;
+                    // testing only existence reads it as "already gone" --
+                    // the mistake that let #423's test pass while the links
+                    // were still on disk.
                     if (fs::exists(path, lec)) continue;
-                    auto target = fs::read_symlink(path, lec);
+                    lec.clear();
+                    const auto& target = link.target;
                     // A symptom of the move, not a finding of its own. It
                     // dangles because the home's address changed, its target
                     // is present here, and `--fix` re-points it -- so listing
@@ -4191,6 +4215,37 @@ void repair_inactive_(const Scan& scan, const std::string& client,
     }
 }
 
+// Configure again what was configured from host facts that changed (xpkg
+// `host_facts`). The remedy is the whole repair: the scope's record no longer
+// matches the host, so `install --reconfig` runs config() against the host as
+// it is and records what it read. Whether that brought it current is not taken
+// from the exit code: the re-detection after this phase reads the record and
+// the host again, and a finding that outlives it is reported as outstanding.
+void repair_host_facts_(const Scan& scan, const std::string& client,
+                        const CommandRunner& run, bool dryRun, RepairReport& out) {
+    for (const auto& f : scan.findings) {
+        if (f.kind != FindingKind::HostFactsChanged || f.remedy.empty()) continue;
+        if (!is_shell_safe_token(f.target)
+            || std::ranges::any_of(f.subos, [](const auto& n) { return !is_shell_safe_token(n); })) {
+            out.notes.emplace_back(glyph::mark(glyph::failed, "reconfigure skipped"),
+                                   std::format("{} — its name is not a safe shell token", f.target));
+            continue;
+        }
+        const auto cmd = client + f.remedy.substr(std::string_view("xlings").size());
+        if (dryRun) {
+            out.planned.push_back(f.remedy);
+            continue;
+        }
+        if (run(cmd + quiet_suffix()) == 0) {
+            out.notes.emplace_back(glyph::mark(glyph::bullet, "configured again"), f.target);
+        } else {
+            out.failedEntries.emplace_back(f.target, f.version);
+            out.notes.emplace_back(glyph::mark(glyph::failed, "reconfigure failed"),
+                                   std::format("{} — run `{}` to see why", f.target, f.remedy));
+        }
+    }
+}
+
 // Re-run the install of a payload whose own stamp records that it failed.
 //
 // Separate from repair_payloads_ and NOT routed through owning_coordinate_,
@@ -4366,7 +4421,11 @@ void repair_swept_(const Scan& scan, const std::string& client,
             .coordinate    = coordinate,
             .reinstallable = reinstallable,
         };
-        auto result = repair_one(task, policy, run, removalDone, dependentsOf);
+        // Asked of the disk after each rung: the fingerprint is the finding.
+        const FindingCheck swept = [dir = f.payloadDir] {
+            return !dir.empty() && !xim::swept_payload_marker(dir).empty();
+        };
+        auto result = repair_one(task, policy, run, removalDone, dependentsOf, swept);
         if (!result.healed) {
             out.failedEntries.emplace_back(f.target, f.version);
             // Same terminal-outcome check repair_payloads_ makes for R3: did
@@ -4944,6 +5003,11 @@ Counts count_(const Scan& scan) {
             case FindingKind::SweptPayload:
                 ++c.broken;
                 break;
+            // A configuration that no longer matches the host: counted like
+            // a broken payload, so it reaches the exit code and `healed`.
+            case FindingKind::HostFactsChanged:
+                ++c.broken;
+                break;
             case FindingKind::UnverifiedPayload:
                 // Counts as nothing, on purpose. It is a Notice about state we
                 // could not observe, not a defect we found -- and a home with
@@ -5345,6 +5409,11 @@ void render_(const Scan& scan, const RepairReport& repair, bool fix,
                     add("  " + glyph::mark(glyph::remedy, "run"), f.remedy);
                 if (!f.remedyNote.empty())
                     add("  " + glyph::mark(glyph::note, "note"), f.remedyNote);
+                break;
+            case FindingKind::HostFactsChanged:
+                add(glyph::mark(glyph::failed, "host facts changed"), f.detail);
+                if (!f.remedy.empty())
+                    add("  " + glyph::mark(glyph::remedy, "run"), f.remedy);
                 break;
             case FindingKind::SweptPayload:
                 add(glyph::mark(glyph::failed, "swept payload"), f.detail);
@@ -5987,6 +6056,7 @@ int cmd_doctor(EventStream& stream, bool fix, bool resetMetadata, bool dryRun, b
         repair_payloads_(state, scan, probe, /*dryRun=*/true, repair);
         repair_incomplete_(scan, client, run, /*dryRun=*/true, repair);
         repair_swept_(scan, client, run, /*dryRun=*/true, repair);
+        repair_host_facts_(scan, client, run, /*dryRun=*/true, repair);
         repair_inactive_(scan, client, run, /*dryRun=*/true, repair);
         if (!alreadyAnchored) {
             repair_other_subos_walk_(scan, client, /*dryRun=*/true,
@@ -6079,6 +6149,11 @@ int cmd_doctor(EventStream& stream, bool fix, bool resetMetadata, bool dryRun, b
     // anything downstream asks whether it is still there.
     repair_swept_(scan, client, run, /*dryRun=*/false, repair, announce,
                  localCatalog ? &*localCatalog : nullptr);
+    refresh();
+
+    // Phase 2d: configurations derived from host facts that changed. After
+    // the payload repairs, which may have configured some of them already.
+    repair_host_facts_(scan, client, run, /*dryRun=*/false, repair);
     refresh();
 
     // Phase 3: the cheap repairs again, on what the ladder left behind.
@@ -6189,7 +6264,10 @@ int cmd_doctor(EventStream& stream, bool fix, bool resetMetadata, bool dryRun, b
             // repair_swept_'s remove-then-reinstall: a failure there
             // leaves the sweep fingerprint on disk, re-detected the same
             // way.
-            || f.kind == FindingKind::SweptPayload) {
+            || f.kind == FindingKind::SweptPayload
+            // Its repair configures again; a record that still disagrees
+            // with the host afterwards is the configuration still stale.
+            || f.kind == FindingKind::HostFactsChanged) {
             stillFound.emplace(f.target, f.version);
         }
     }

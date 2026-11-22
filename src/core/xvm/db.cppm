@@ -435,6 +435,13 @@ nlohmann::json workspace_to_json(const Workspace& ws);
 // shapes can never collide.
 SubosWorkspace subos_workspace_from_json(const nlohmann::json& j);
 
+// The `host_facts` record of a subos file (SubosWorkspace::hostFacts), read
+// from the WHOLE document: identity -> {path -> digest}. An entry that is not
+// an object of strings is dropped -- a record that cannot be read proves
+// nothing, and a missing one only means "configure it", the safe direction.
+std::map<std::string, std::map<std::string, std::string>>
+subos_host_facts_from_json(const nlohmann::json& doc);
+
 // Subos workspace serializer. Always emits the C2 object form with
 // `active` and `installed` keys. The `installed` set is normalized to
 // always include the active version (write-time invariant: an active

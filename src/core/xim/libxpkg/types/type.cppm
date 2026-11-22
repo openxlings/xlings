@@ -135,6 +135,10 @@ struct PlanNode {
     // verify_declared_programs_. Empty means the recipe made no promise and
     // nothing is verified.
     std::vector<std::string> programs;
+    // The host files this platform's config() depends on (`host_facts`),
+    // recorded with the scope's `configured` record and checked by
+    // configured_verdict (xim::host_facts).
+    std::vector<std::string> hostFacts;
     bool alreadyInstalled { false };
     bool isSystemPM { false };
     PackageScope scope { PackageScope::Global };
