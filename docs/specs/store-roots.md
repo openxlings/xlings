@@ -63,6 +63,12 @@ payload; a payload whose root is created after it may be deleted, so an owner
 registers the root before it starts to use a payload and checks that the payload
 is still there afterwards.
 
+**An xlings before 2026.11.23.1 does not read roots**, and its collection removes
+what they hold. The handshake (`xlings interface --version`) names the feature
+`store_roots` from 2026.11.23.1 on (protocol 1.19); a program that registers
+roots requires it of the xlings it asks for a collection, and refuses the
+collection otherwise.
+
 A home written before 2026.11.23.1 has no roots; its collection behaves as
 before for every payload no root names. An owner that starts registering roots
 on such a home registers one for every payload it uses before its next
