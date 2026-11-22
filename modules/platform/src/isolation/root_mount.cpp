@@ -195,6 +195,14 @@ std::expected<void, std::string> normalize(std::array<int, 3>& target) {
         return std::unexpected("invalid captured root directory");
     Descriptors descriptors;
     const int owner = descriptors.own(::ioctl(target[1], NS_GET_USERNS));
+    // EPERM: the owner is outside this process's user namespaces (a user
+    // namespace nested under another process's), so the captured namespace's
+    // authority cannot be proved from here.
+    if (owner < 0 && errno == EPERM)
+        return std::unexpected(error("derive captured mount namespace owner")
+                               + " (its owner is outside this process's user namespaces, as in a user "
+                                 "namespace nested under another process's; update the root from a "
+                                 "process of the owner's namespace)");
     if (owner < 0)
         return std::unexpected(error("derive captured mount namespace owner"));
     int current = target[0];

@@ -20,6 +20,9 @@ module;
 #include <sys/wait.h>
 #include <termios.h>
 #include <unistd.h>
+#if defined(__linux__)
+#include <linux/nsfs.h>
+#endif
 #if defined(__APPLE__)
 #include <crt_externs.h>
 #define XTEST_ENVIRON (*_NSGetEnviron())
@@ -122,11 +125,12 @@ const std::map<std::string, Meta, std::less<>>& registry() { return registry_mut
 
 namespace {
 
-constexpr std::array<std::string_view, 18> kCapabilities {
+constexpr std::array<std::string_view, 19> kCapabilities {
     "linux", "macos", "windows", "posix",
     "xlings-bin",   // a built binary to drive
     "pty",          // pseudo-terminals (agent contract scan)
     "userns",       // unprivileged user namespaces
+    "mntns-owner",  // this process can name the user namespace that owns its mount namespace
     "bwrap",        // a bwrap that can create a sandbox here
     "sandbox",      // `subos use --sandbox` can enter (any backend)
     "network",      // the lane allows network access (opt-in)
@@ -220,6 +224,27 @@ std::optional<std::string> probe_uncached(std::string_view cap) {
         return "unprivileged user namespaces are not available "
                "(kernel.apparmor_restrict_unprivileged_userns or "
                "kernel.unprivileged_userns_clone)";
+    }
+    if (cap == "mntns-owner") {
+        // The root mount's authority is proved from the mount namespace's owner
+        // (NS_GET_USERNS). In a user namespace nested under another process's,
+        // the owner is outside this process's view and the kernel answers EPERM;
+        // GitHub's Linux runners answer it.
+#if defined(__linux__)
+        const int mnt = ::open("/proc/self/ns/mnt", O_RDONLY | O_CLOEXEC);
+        if (mnt < 0) return std::string("cannot open /proc/self/ns/mnt: ") + std::strerror(errno);
+        const int owner = ::ioctl(mnt, NS_GET_USERNS);
+        const int why = errno;
+        ::close(mnt);
+        if (owner >= 0) {
+            ::close(owner);
+            return std::nullopt;
+        }
+        return std::string("the owner of this process's mount namespace is not visible from it "
+                           "(NS_GET_USERNS: ") + std::strerror(why) + "), as in a user namespace nested under another process's";
+#else
+        return "mount namespaces are Linux-only";
+#endif
     }
     if (cap == "bwrap") {
         if constexpr (!is_linux) return "bwrap is Linux-only";

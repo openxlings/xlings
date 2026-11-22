@@ -280,7 +280,7 @@ jobs:
       # The capabilities this lane promises (tests/README.md): a test that
       # needs one of them and finds it missing FAILS instead of skipping.
       XDEV_LANE: linux-unit
-      XDEV_LANE_CAPS: linux,posix,pty,xlings-bin,userns,bwrap,sandbox,pasta,landlock,network
+      XDEV_LANE_CAPS: linux,posix,pty,xlings-bin,userns,mntns-owner,bwrap,sandbox,pasta,landlock,network
     steps:
       - name: Checkout
         uses: actions/checkout@v4
