@@ -366,6 +366,12 @@ int supervise(const HomeView& home, Launch& L, Info& info, int listen_fd, std::a
         int pasta_rc = -1;
         if (ready && nat) {
             auto pargv = L.pasta;
+            // passt drops root to nobody when it starts as root in the init
+            // user namespace; the namespace it must join was made by this
+            // process (root in a carrier's machine), and nobody cannot open
+            // /proc/<pid>/ns/user. Join as the namespace owner instead.
+            if (ids.euid == 0)
+                pargv.insert(pargv.end(), {"--runas", std::format("{}:{}", ids.uid, ids.gid)});
             pargv.insert(pargv.end(), {"--pid", pasta_pidfile.string(), std::to_string(pid)});
             const int pp = platform::fork_process();
             if (pp == 0) {
