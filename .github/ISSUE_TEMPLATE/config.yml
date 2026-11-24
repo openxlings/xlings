@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Forum | 论坛
+    url: https://forum.d2learn.org/category/9/xlings
+    about: Questions and discussion with the community | 社区提问与讨论
+  - name: Documentation | 文档
+    url: https://github.com/openxlings/xlings/blob/main/docs/README.md
+    about: How to use and extend xlings | 如何使用与扩展 xlings

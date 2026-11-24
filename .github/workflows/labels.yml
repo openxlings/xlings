@@ -1,0 +1,62 @@
+# Labels from what an issue or a pull request says about itself, so they exist even when the
+# author has no triage rights and when an agent files it from a CLI (which should not pass
+# --label). Adds only: a label a maintainer set is never removed or replaced.
+#
+#   Authorship: by-ai | human-and-ai | by-human    (a line in the body; the templates have it)
+#   issue title prefix: [xpkg-report]: [question]: [features]: [bug]:
+#
+# pull_request_target: a fork's token is read-only, so labelling needs it. The job does not
+# check out the pull request; it reads the title and the body from the event and never passes
+# them to a shell.
+name: Labels
+on:
+  issues:
+    types: [opened, edited]
+  pull_request_target:
+    types: [opened, edited, reopened]
+permissions:
+  issues: write
+  pull-requests: write
+concurrency:
+  group: labels-${{ github.event.issue.number || github.event.pull_request.number }}
+  cancel-in-progress: true
+jobs:
+  label:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            const AUTHORSHIP = ['by-ai', 'human-and-ai', 'by-human'];
+            const PREFIXES = {
+              '[xpkg-report]': 'xpkg-report',
+              '[question]': 'question | 问题',
+              '[features]': 'feature | 功能',
+              '[bug]': 'bug',
+            };
+            const pr = context.payload.pull_request;
+            const item = pr || context.payload.issue;
+            const { owner, repo } = context.repo;
+            const title = item.title || '';
+            const body = item.body || '';
+            const have = new Set((item.labels || []).map((l) => l.name));
+            const want = new Set();
+
+            const declared = body.match(/^[ \t]*Authorship:[ \t]*(by-ai|human-and-ai|by-human)[ \t]*$/im);
+            if (declared && !AUTHORSHIP.some((a) => have.has(a))) want.add(declared[1].toLowerCase());
+
+            if (!pr) {
+              const lower = title.toLowerCase();
+              for (const [prefix, label] of Object.entries(PREFIXES)) {
+                if (lower.startsWith(prefix)) want.add(label);
+              }
+            }
+
+            const add = [...want].filter((l) => !have.has(l));
+            if (add.length) {
+              await github.rest.issues.addLabels({ owner, repo, issue_number: item.number, labels: add });
+              core.info(`added: ${add.join(', ')}`);
+            } else {
+              core.info('nothing to add');
+            }
