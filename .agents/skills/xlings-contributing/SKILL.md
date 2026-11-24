@@ -67,7 +67,8 @@ tests/
   gh issue create --title "feat/fix: <description>" --body "<details>"
   ```
 - Reference the issue number in your PR
-- End the body with `Authorship: by-ai` (an agent), `human-and-ai` or `by-human`; `Agent:` and
+- End the body with `Authorship: ai-and-human` (an AI did most of the work; a person directed it and
+  interacted briefly) or `by-human` (a person led and decided; the AI assisted); `Agent:` and
   `Model:` are optional and may stay blank. A workflow turns them into labels (hints, not
   checks), so do not pass `--label`. Problems found while contributing an xpkg to
   openxlings/xim-pkgindex use the title prefix `[xpkg-report]: `.
