@@ -67,6 +67,14 @@ tests/
   gh issue create --title "feat/fix: <description>" --body "<details>"
   ```
 - Reference the issue number in your PR
+- End the body with `Authorship: by-ai` (an agent), `human-and-ai` or `by-human`; `Agent:` and
+  `Model:` are optional and may stay blank. A workflow turns them into labels (hints, not
+  checks), so do not pass `--label`. Problems found while contributing an xpkg to
+  openxlings/xim-pkgindex use the title prefix `[xpkg-report]: `.
+- **Remove private data before posting**: local absolute paths and user names
+  (`/home/<you>/`, `/Users/<you>/`, `C:\Users\<you>\`; write `~`, `<user>`, `<tmp>`), host names,
+  e-mail addresses, tokens, the contents of the user's config. An edit keeps the old text in the
+  history. `sed -e "s#$HOME#~#g" -e "s#$(id -un)#<user>#g" log.txt` handles the common case.
 
 ### Step 2: Branch
 
@@ -229,6 +237,8 @@ PR body should include:
 - **Summary** (what + why)
 - **Test plan** (which tests cover this)
 - Link to issue (`Closes #N` or `Refs #N`)
+- The `Authorship:` line (and the optional `Agent:` / `Model:`), and no private data in the body
+  or the logs (see Step 1)
 
 ### Step 8: CI verification
 
