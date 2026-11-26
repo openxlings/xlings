@@ -953,7 +953,7 @@ std::filesystem::path write_elf_(const std::filesystem::path& path, const ElfOpt
     b.u8(0);            // ELFOSABI_NONE
     b.pad(8);
     b.u16(2);           // e_type = ET_EXEC
-    b.u16(0x3e);        // e_machine = EM_X86_64
+    b.u16(opt.machine); // e_machine
     b.u32(1);           // e_version
     b.u64(kLoadVaddr);  // e_entry
     b.u64(phoff);       // e_phoff

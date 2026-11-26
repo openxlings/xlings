@@ -32,6 +32,8 @@ Json pack(const xpkg::PlatformResource& v) {
     j["is_res"] = v.is_res;
     j["revision"] = v.revision;
     j["min_client"] = v.min_client;
+    j["floor"] = v.floor;
+    j["strip"] = v.strip;
     j["archs"] = Json::object();
     for (const auto& [k, item] : v.archs)
         j["archs"][k] = pack(item);
@@ -48,6 +50,10 @@ xpkg::PlatformResource unpack_PlatformResource(const Json& j) {
     j.at("is_res").get_to(v.is_res);
     j.at("revision").get_to(v.revision);
     j.at("min_client").get_to(v.min_client);
+    // Later than the rest, read when there. Before, an entry read in the
+    // worker came back with no floor.
+    if (j.contains("floor")) j.at("floor").get_to(v.floor);
+    if (j.contains("strip")) j.at("strip").get_to(v.strip);
     for (auto it = j.at("archs").begin(); it != j.at("archs").end(); ++it)
         v.archs.emplace(it.key(), unpack_ArchResource(it.value()));
     return v;
@@ -86,6 +92,7 @@ Json pack(const xpkg::PlatformMatrix& v) {
     j["runtime_deps"] = v.runtime_deps;
     j["build_deps"] = v.build_deps;
     j["inherits"] = v.inherits;
+    j["platform_strip"] = v.platform_strip;
     j["entries"] = Json::object();
     for (const auto& [k, items] : v.entries) {
         j["entries"][k] = Json::object();
@@ -107,6 +114,7 @@ xpkg::PlatformMatrix unpack_PlatformMatrix(const Json& j) {
     j.at("runtime_deps").get_to(v.runtime_deps);
     j.at("build_deps").get_to(v.build_deps);
     j.at("inherits").get_to(v.inherits);
+    if (j.contains("platform_strip")) j.at("platform_strip").get_to(v.platform_strip);
     for (auto it = j.at("entries").begin(); it != j.at("entries").end(); ++it)
         for (auto entry = it.value().begin(); entry != it.value().end(); ++entry)
             v.entries[it.key()].emplace(entry.key(), unpack_PlatformResource(entry.value()));
@@ -318,6 +326,20 @@ Json pack(const xpkg::HookResult& v) {
     j["output"] = v.output;
     j["error"] = v.error;
     j["version"] = v.version;
+    // What a hook said and what it did not do (boundary protocol 2).
+    j["notices"] = Json::array();
+    for (const auto& n : v.notices)
+        j["notices"].push_back({{"level", n.level}, {"text", n.text}});
+    j["call_failures"] = Json::array();
+    for (const auto& f : v.call_failures)
+        j["call_failures"].push_back({{"call", f.call}, {"what", f.what}, {"why", f.why}});
+    if (v.elfpatch) {
+        const auto& e = *v.elfpatch;
+        j["elfpatch"] = {{"outcome", e.outcome}, {"reason", e.reason}, {"scanned", e.scanned},
+                         {"patched", e.patched}, {"failed", e.failed},
+                         {"skipped_foreign", e.skipped_foreign}, {"skipped_static", e.skipped_static},
+                         {"skipped_listed", e.skipped_listed}, {"tool_missing", e.tool_missing}};
+    }
     return j;
 }
 xpkg::HookResult unpack_HookResult(const Json& j) {
@@ -326,6 +348,26 @@ xpkg::HookResult unpack_HookResult(const Json& j) {
     j.at("output").get_to(v.output);
     j.at("error").get_to(v.error);
     j.at("version").get_to(v.version);
+    for (const auto& n : j.at("notices"))
+        v.notices.push_back({.level = n.at("level").get<std::string>(), .text = n.at("text").get<std::string>()});
+    for (const auto& f : j.at("call_failures"))
+        v.call_failures.push_back({.call = f.at("call").get<std::string>(),
+                                   .what = f.at("what").get<std::string>(),
+                                   .why = f.at("why").get<std::string>()});
+    if (j.contains("elfpatch")) {
+        const auto& e = j.at("elfpatch");
+        xpkg::ElfpatchResult r;
+        e.at("outcome").get_to(r.outcome);
+        e.at("reason").get_to(r.reason);
+        e.at("scanned").get_to(r.scanned);
+        e.at("patched").get_to(r.patched);
+        e.at("failed").get_to(r.failed);
+        e.at("skipped_foreign").get_to(r.skipped_foreign);
+        e.at("skipped_static").get_to(r.skipped_static);
+        e.at("skipped_listed").get_to(r.skipped_listed);
+        e.at("tool_missing").get_to(r.tool_missing);
+        v.elfpatch = std::move(r);
+    }
     return v;
 }
 } // namespace

@@ -64,6 +64,13 @@ struct DynamicInfo {
 
     // DT_NEEDED, in order: the libraries the loader must find for it.
     std::vector<std::string> needed;
+
+    // What machine the file is for: e_machine, and the ELF class as a width
+    // (32 or 64). A payload's files must be the host's (rule M, design
+    // 2026-11-27 §5.4); which name a pair of numbers has is libxpkg's table of
+    // architectures, not this module's.
+    std::uint16_t machine { 0 };
+    int bits { 0 };
 };
 
 // True when `file` begins with the ELF magic. The cheap gate: a payload is

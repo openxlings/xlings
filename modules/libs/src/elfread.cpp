@@ -199,6 +199,8 @@ std::optional<DynamicInfo> read(const std::filesystem::path& file) {
     const std::uint16_t phnum     = read_scalar<std::uint16_t>(header, is64 ? 56 : 44, le);
 
     DynamicInfo info;
+    info.machine = read_scalar<std::uint16_t>(header, 18, le);   // e_machine, both classes
+    info.bits    = is64 ? 64 : 32;
     // No program headers at all is a legitimate ELF (a relocatable object,
     // which is most of what a `lib` directory's .o files are). It has no
     // interpreter and no RUNPATH, and saying so is the correct answer.

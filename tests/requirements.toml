@@ -1169,3 +1169,13 @@ status = "required"
 [HOOK-CONTEXT-ONE]
 text = "every entry that runs a recipe's code (install, removal, script, probe) builds its context with one constructor: the same bin directory, SubOS root and architecture"
 status = "required"
+
+# ── libxpkg 0.0.68 in the client (design 2026-11-27 §5.1, §9) ─────────
+
+[ARCH-IDENTITY]
+text = "architectures have one table, libxpkg's: every architecture the client is built for is in it, and a file's e_machine and ELF class are read in-process and named by it"
+status = "required"
+
+[HOOK-BOUNDARY-RESULT]
+text = "a hook run in the Lua worker returns what one run in the client does: its notices, its failed compatibility calls and the patch result; an entry's strip and floor survive the boundary"
+status = "required"
