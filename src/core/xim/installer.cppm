@@ -312,6 +312,8 @@ private:
 bool dep_version_matches_(std::string_view nodeVersion,
                           std::string_view depVersion);
 
+// The context's pieces, now xlings.core.xim.hook_context's (#566); these
+// names forward to it.
 std::filesystem::path
 configure_xpkg_execution_artifact_paths_(
         mcpplibs::xpkg::ExecutionContext& context);

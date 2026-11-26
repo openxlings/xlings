@@ -1163,3 +1163,9 @@ status = "required"
 text = "net=nat started by a root supervisor runs pasta as the namespace's owner (`--runas <uid>:<gid>`), so it joins the namespace root made"
 kind = "isolation"
 status = "required"
+
+# ── the context of a recipe's code (#566) ─────────────────────────────
+
+[HOOK-CONTEXT-ONE]
+text = "every entry that runs a recipe's code (install, removal, script, probe) builds its context with one constructor: the same bin directory, SubOS root and architecture"
+status = "required"

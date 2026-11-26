@@ -1,6 +1,7 @@
 module xlings.core.xim.installer;
 
 import xlings.core.xim.lua_boundary;
+import xlings.core.xim.hook_context;
 import std;
 import xlings.observe;
 import mcpplibs.xpkg;
@@ -1086,77 +1087,20 @@ bool dep_version_matches_(std::string_view nodeVersion,
     return semver::satisfies_expr(nodeVersion, depVersion);
 }
 
-// A hook runs `xlings` from its bin directory (`system.bindir()`): gcc's
-// config hook rewrites the payload's specs through `xlings script`. A home's
-// own subos has that entry from `self init`; a project's subos holds only the
-// shims of what it installed, so a hook run there found no `xlings`
-// (`sh: <project>/.mcpp/.xlings/subos/_/bin/xlings: not found`) and the
-// install of the payload failed. The entry is linked beside those shims, to
-// the binary each of them names. `xlings` is a reserved name, so the shim
-// table neither adds nor removes it.
-void ensure_entry_in_bin_(const std::filesystem::path& bin) {
-    namespace fs = std::filesystem;
-    std::error_code ec;
-    const auto dst = bin / ("xlings" + std::string(platform::exe_suffix));
-    if (fs::exists(fs::symlink_status(dst, ec))) return;
-    auto entry = xself::xlings_binary_in_home(Config::paths().homeDir);
-    if (entry.empty() && !Config::paths().systemLayer.empty())
-        entry = xself::xlings_binary_in_home(Config::paths().systemLayer);
-    if (entry.empty()) return;
-    fs::create_directories(bin, ec);
-    if (xself::create_shim(entry, dst) == xself::LinkResult::Failed)
-        log::debug("hook bin directory {}: the xlings entry could not be linked", bin.string());
-}
-
 std::filesystem::path
 configure_xpkg_execution_artifact_paths_(
         mcpplibs::xpkg::ExecutionContext& context) {
-    auto subosDir = Config::xvm_artifact_subos_dir();
-    context.bin_dir = subosDir / "bin";
-    context.subos_sysrootdir = subosDir.string();
-    ensure_entry_in_bin_(context.bin_dir);
-    return subosDir;
+    return configure_hook_artifact_paths(context);
 }
 
 void configure_dependency_store_roots_(
         mcpplibs::xpkg::ExecutionContext& context,
         const std::filesystem::path& selectedStore) {
-    auto append = [&](std::filesystem::path root) {
-        if (root.empty()) return;
-        root = root.lexically_normal();
-        if (std::ranges::find(context.dependency_store_roots, root)
-            == context.dependency_store_roots.end()) {
-            context.dependency_store_roots.push_back(std::move(root));
-        }
-    };
-
-    append(selectedStore);
-    for (auto store : Config::stores()) append(std::move(store));
+    configure_hook_dependency_stores(context, selectedStore);
 }
 
 std::string pkgindex_root_for_(const std::filesystem::path& pkgFile, bool* outHasLibs) {
-    namespace fs = std::filesystem;
-    std::error_code ec;
-
-    auto derived = pkgFile.parent_path().parent_path().parent_path();
-    if (fs::is_directory(derived / "libs", ec)) {
-        if (outHasLibs) *outHasLibs = true;
-        return derived.string();
-    }
-
-    // Only the primary index. Not "any index that happens to have libs": picking
-    // between several would be a guess about which ecosystem a recipe belongs to,
-    // and `xim.pkgindex.*` is one shared namespace by construction.
-    auto primary = Config::global_data_dir() / "xim-pkgindex";
-    if (fs::is_directory(primary / "libs", ec)) {
-        log::debug("pkgindex modules: {} has no libs/, using {}",
-                   derived.string(), primary.string());
-        if (outHasLibs) *outHasLibs = true;
-        return primary.string();
-    }
-
-    if (outHasLibs) *outHasLibs = false;
-    return derived.string();
+    return pkgindex_root_for(pkgFile, outHasLibs);
 }
 
 bool executing_provider_owns_no_version(
@@ -3039,29 +2983,24 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& requested
             onStatus({ node.name, InstallPhase::Installing, 0.5f, "" });
         }
 
-        // Build execution context
-        mcpplibs::xpkg::ExecutionContext ctx;
-        ctx.pkg_name = node.name;
-        ctx.version = node.version;
-        ctx.platform = platform;
+        // Build execution context (the one constructor, #566); what only an
+        // install knows -- its dependencies and their exports -- is added below.
         auto targetRoot = node.storeRoot.empty() ? (dataDir / "xpkgs") : node.storeRoot;
-        ctx.install_dir = node_payload_path(node, dataDir);
+        auto ctx = make_execution_context({
+            .pkg_name = node.name,
+            .version = node.version,
+            .recipe = node.pkgFile,
+            .install_dir = node_payload_path(node, dataDir),
+            .xpkg_dir = node.pkgFile.parent_path(),
+            .store = targetRoot,
+        });
         const bool borrowedPayload = !node.sourceHome.empty();
         // Neither kind is this home's to write: no hook runs in it, nothing
         // is recorded in it.
         const bool linkedPayload = !node.upstreamPayload.empty();
         const bool readOnlyPayload = borrowedPayload || linkedPayload;
-        detail_::configure_xpkg_execution_artifact_paths_(
-            ctx);
-        detail_::configure_dependency_store_roots_(ctx, targetRoot);
-        ctx.xpkg_dir = node.pkgFile.parent_path();
-        ctx.project_data_dir = Config::project_data_dir();
-        // pkgindex_dir: package index repo root (for custom module loading).
-        // pkgFile layout: <pkgindex>/pkgs/<letter>/<name>.lua → 3 levels up.
-        bool pkgindexHasLibs = false;
-        ctx.pkgindex_dir =
-            detail_::pkgindex_root_for_(node.pkgFile, &pkgindexHasLibs);
-        if (!pkgindexHasLibs) {
+        std::error_code libsEc;
+        if (!std::filesystem::is_directory(std::filesystem::path(ctx.pkgindex_dir) / "libs", libsEc)) {
             // Loud, because the alternative is a package that installs
             // "successfully" with none of its sysroot assets declared.
             log::warn("{}: no pkgindex libs/ found -- every "
@@ -4466,13 +4405,12 @@ std::expected<Installer::UninstallOutcome, std::string> Installer::uninstall(con
         };
     }
 
-    mcpplibs::xpkg::ExecutionContext ctx;
-    ctx.platform = platform;
-    // Independent of whether a recipe was found: this is purely
-    // Config::xvm_artifact_subos_dir(), and the cleanup passes below (shim
-    // sync, subos env section, headers) need it regardless of the recipe.
-    const auto artifactSubosDir =
-        detail_::configure_xpkg_execution_artifact_paths_(ctx);
+    // The one constructor (#566). The artifact paths are there whether or not a
+    // recipe was found: they are purely Config::xvm_artifact_subos_dir(), and
+    // the cleanup passes below (shim sync, subos env section, headers) need
+    // them regardless of the recipe.
+    auto ctx = make_execution_context({});
+    const std::filesystem::path artifactSubosDir = ctx.subos_sysrootdir;
 
     bool useDefaultRemoval = recipeUnavailable;
     std::string hookFailure;
@@ -4484,17 +4422,19 @@ std::expected<Installer::UninstallOutcome, std::string> Installer::uninstall(con
             log::debug("using xpkg snapshot for uninstall: {}", executorPkgFile.string());
         }
 
-        ctx.pkg_name = resolvedMatch ? resolvedMatch->name : name;
-        ctx.version = resolvedMatch ? resolvedMatch->version : std::string{};
         auto selectedStore = resolvedMatch
             ? (resolvedMatch->storeRoot.empty()
                 ? Config::paths().dataDir / "xpkgs"
                 : resolvedMatch->storeRoot)
             : Config::paths().dataDir / "xpkgs";
-        detail_::configure_dependency_store_roots_(ctx, selectedStore);
-        ctx.install_dir = installDir;
-        ctx.xpkg_dir = pkgFile.parent_path();
-        ctx.pkgindex_dir = detail_::pkgindex_root_for_(pkgFile);
+        ctx = make_execution_context({
+            .pkg_name = resolvedMatch ? resolvedMatch->name : name,
+            .version = resolvedMatch ? resolvedMatch->version : std::string{},
+            .recipe = pkgFile,
+            .install_dir = installDir,
+            .xpkg_dir = pkgFile.parent_path(),
+            .store = selectedStore,
+        });
 
 
         auto execResult = lua_boundary::create_executor(executorPkgFile, ctx, {
