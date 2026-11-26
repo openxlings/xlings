@@ -43,6 +43,13 @@ struct ExtractOptions {
     // Called once per archive, after the last entry, when Auto copied files
     // because links were refused: the count and the refusal.
     std::function<void(std::string_view)> onNote;
+    // Components dropped from the front of every member's path (an entry's
+    // `strip`, design 2026-11-27 §9.7), and from a hard link's target. A
+    // directory that is wholly dropped is where the kept members were; any
+    // other member with no more than `strip` components is an error that
+    // names it -- the archive is not laid out as the recipe says, and
+    // nothing is dropped without a word.
+    int strip { 0 };
 };
 
 std::expected<std::filesystem::path, ExtractError>

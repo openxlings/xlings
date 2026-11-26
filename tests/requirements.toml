@@ -1179,3 +1179,21 @@ status = "required"
 [HOOK-BOUNDARY-RESULT]
 text = "a hook run in the Lua worker returns what one run in the client does: its notices, its failed compatibility calls and the patch result; an entry's strip and floor survive the boundary"
 status = "required"
+
+# ── spec "3": the host lands the download (design 2026-11-27 §9.7) ─────
+
+[LAND-BEFORE-INSTALL]
+text = "a package of spec \"3\": its download is in install_dir, laid out, when install() starts, and with no install() at all; a failed install() leaves no installed payload; a recipe of spec 2 with the same archive keeps the old path"
+status = "required"
+
+[LAND-STRIP]
+text = "an entry's strip drops the first n components of every member's path (and of a hard link's target), a tar and a zip land the same, and a member with no more than n components is an error naming it"
+status = "required"
+
+[FS-EXTRACT]
+text = "fs.extract in a hook is the client's extractor (a host port), in the client and in the Lua worker, with the same strip"
+status = "required"
+
+[SPEC-GATE]
+text = "the client runs recipes up to libxpkg's highest spec (3) and refuses a higher one package by package, naming the update"
+status = "required"

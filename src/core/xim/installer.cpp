@@ -1522,6 +1522,67 @@ std::filesystem::path private_stage_dir_(const std::filesystem::path& runtimeDir
         / std::format("{}-{}", sanitized, platform::get_pid());
 }
 
+// spec "3": the download's content in `installDir` before install() runs
+// (design 2026-11-27 §9.7). An archive is extracted in a private directory
+// under `runtimeDir` with the entry's `strip` components dropped, then moved
+// in -- the path a package without an install hook has always taken; any
+// other download is copied in under its own name. What `installDir` held is
+// the leftovers of an attempt that did not finish (a payload being replaced
+// was set aside before this) and goes first.
+std::expected<void, ExtractError> land_download_(const std::filesystem::path& download,
+                                                 const std::filesystem::path& installDir,
+                                                 const std::filesystem::path& runtimeDir,
+                                                 std::string_view planKey, int strip,
+                                                 ExtractOptions options) {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    const auto failed = [&](std::string what) {
+        return std::unexpected(ExtractError{write_failure_kind(ec), std::format("{}: {}", what, ec.message())});
+    };
+    const auto clear = [&]() -> std::expected<void, ExtractError> {
+        fs::remove_all(installDir, ec);
+        if (ec) return failed(std::format("cannot clear {}", installDir.string()));
+        fs::create_directories(installDir, ec);
+        if (ec) return failed(std::format("cannot create {}", installDir.string()));
+        return {};
+    };
+    if (!is_archive_(download)) {
+        if (strip > 0)
+            return std::unexpected(ExtractError{ExtractErrorKind::InvalidInputArchive,
+                std::format("strip = {} is for an archive, and {} is not one", strip,
+                            download.filename().string())});
+        if (auto cleared = clear(); !cleared) return cleared;
+        fs::copy_file(download, installDir / download.filename(), fs::copy_options::overwrite_existing, ec);
+        if (ec) return failed(std::format("cannot copy {} into {}", download.string(), installDir.string()));
+        return {};
+    }
+    const auto stageDir = private_stage_dir_(runtimeDir, planKey);
+    ScopedStageDir_ stageGuard(stageDir);
+    options.strip = strip;
+    auto extracted = extract_archive_detailed(download, stageDir, options);
+    if (!extracted) return std::unexpected(std::move(extracted).error());
+    if (auto cleared = clear(); !cleared) return cleared;
+    // Each top-level entry of the extraction is moved in (a rename on the
+    // same volume); an empty archive places nothing, and the empty payload
+    // is judged after install() like any other.
+    for (fs::directory_iterator it(*extracted, ec); !ec && it != std::default_sentinel; it.increment(ec)) {
+        const auto dest = installDir / it->path().filename();
+        std::error_code move;
+        fs::rename(it->path(), dest, move);
+        if (move) {
+            move.clear();
+            fs::copy(it->path(), dest, fs::copy_options::recursive | fs::copy_options::copy_symlinks, move);
+            if (move) {
+                ec = move;
+                return failed(std::format("cannot move {} into {}", it->path().filename().string(),
+                                          installDir.string()));
+            }
+        }
+    }
+    if (ec) return failed(std::format("cannot read {}", extracted->string()));
+    return {};
+}
+
 bool normalize_file_install_(const std::filesystem::path& installPath) {
     namespace fs = std::filesystem;
     std::error_code ec;
@@ -2801,6 +2862,12 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& requested
     // config() and ends up registered. This set is what makes a refusal
     // mean refused.
     std::unordered_set<std::string> refusedNodes;
+    // Nodes whose download the host lands in install_dir before install()
+    // runs -- the recipes of spec "3" (design 2026-11-27 §9.7) -- with the
+    // entry's `strip`. A recipe of spec 1 or 2 keeps the old path: extracted
+    // beside the archive for its hook, staged after it when the hook left
+    // install_dir empty.
+    std::unordered_map<std::string, int> landings;
     for (auto& node : plan.nodes) {
         currentPlanKey = detail_::plan_key_(node);
         if (node.alreadyInstalled || !node.borrowedPayload.empty() || !node.upstreamPayload.empty()) continue;
@@ -2863,6 +2930,12 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& requested
             continue;
         }
         plannedDownloads.insert((*archive)->name);
+        if (const auto spec = mcpplibs::xpkg::spec_number(pkg->spec); spec && *spec >= 3) {
+            const auto resolved = mcpplibs::xpkg::resolve_resource(pkg->xpm, {
+                .name = node.name, .version = node.version,
+                .platform = std::string(platform), .arch = hostArch});
+            landings[(*archive)->name] = resolved ? resolved->strip : 0;
+        }
         dlTasks.push_back(std::move(**archive));
     }
 
@@ -3301,8 +3374,11 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& requested
         // it receives.
         const bool hasInstallHook =
             executor.has_hook(mcpplibs::xpkg::HookType::Install);
+        // spec "3": the host lands the download, before install() (below).
+        const auto landing = landings.find(planKey);
+        const bool hostLands = landing != landings.end();
 
-        if (dlIt != downloadResults.end()) {
+        if (dlIt != downloadResults.end() && !hostLands) {
             if (hasInstallHook && detail_::is_archive_(dlIt->second.localFile)) {
                 if (onStatus) {
                     onStatus({ node.name, InstallPhase::Extracting, 0.35f, "" });
@@ -3571,6 +3647,39 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& requested
             }
         }
 
+        // spec "3": the download's content is in install_dir before
+        // install() runs, laid out as the entry's `strip` says (design
+        // 2026-11-27 §9.7). install() only adjusts it, and may be absent.
+        // The same private extraction and staging a package without an
+        // install hook has always had; a download that is not an archive
+        // is placed as it is, under its own name.
+        if (hostLands && !payloadInstalled && dlIt != downloadResults.end()) {
+            if (onStatus) onStatus({ node.name, InstallPhase::Extracting, 0.35f, "" });
+            auto landed = detail_::land_download_(dlIt->second.localFile, ctx.install_dir,
+                                                  detail_::runtime_dir_(node, dataDir), planKey,
+                                                  landing->second,
+                                                  detail_::extract_options_(onStatus, node.name));
+            if (!landed) {
+                if (landed.error().kind == ExtractErrorKind::InvalidInputArchive
+                    && evict_invalid_archive_cache_(dlIt->second.localFile, landed.error())) {
+                    log::warn("evicted invalid archive cache for {}: {}",
+                              node.name, dlIt->second.localFile.string());
+                }
+                log::error("cannot place the download of {}: {}", node.name, landed.error().message);
+                write_payload_failure_marker(ctx.install_dir, node.version, landed.error().message);
+                if (onStatus) {
+                    auto wire = extract_wire_error_(landed.error());
+                    onStatus({ .name = node.name,
+                               .phase = InstallPhase::Failed,
+                               .progress = 0.0f,
+                               .message = landed.error().message,
+                               .errorCode = std::move(wire.code),
+                               .hint = std::move(wire.hint) });
+                }
+                continue;
+            }
+        }
+
         // Run install hook
         if (!payloadInstalled && executor.has_hook(mcpplibs::xpkg::HookType::Install)) {
             log::debug("installing {}...", node.name);
@@ -3699,7 +3808,7 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& requested
         // directory holds every package's downloads and sidecars, and
         // stage_extracted_payload_ moves EVERY entry it is given
         // (xpkg-manifest-v1 §6).
-        if (!payloadInstalled && !detail_::has_directory_entries_(ctx.install_dir)
+        if (!payloadInstalled && !hostLands && !detail_::has_directory_entries_(ctx.install_dir)
             && dlIt != downloadResults.end()
             && detail_::is_archive_(dlIt->second.localFile)) {
             if (onStatus) {

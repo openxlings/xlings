@@ -109,10 +109,11 @@ struct XpkgRegistrationPlan {
     std::vector<XpkgFilesystemEffect> effects;
 };
 
-// The highest xpackage spec revision this build understands.
-//
-// Bump only together with the code that implements the new revision.
-inline constexpr int max_supported_xpkg_spec = 2;
+// The highest xpackage spec revision this build understands: the libxpkg it
+// is built with runs recipes up to this one (spec "3": the environment
+// without the compatibility layer, the host landing the download before
+// install(); design 2026-11-27 §9.6, §9.7).
+inline constexpr int max_supported_xpkg_spec = mcpplibs::xpkg::kHighestSpec;
 
 struct XpkgSpecSupport {
     bool supported { true };
@@ -476,6 +477,15 @@ bool stage_extracted_payload_(const std::filesystem::path& extractRoot,
 // path.
 std::filesystem::path private_stage_dir_(const std::filesystem::path& runtimeDir,
                                          std::string_view planKey);
+
+// spec "3": the download placed in `installDir` before install() runs --
+// extracted with `strip` components dropped, or copied in as it is when it
+// is not an archive (design 2026-11-27 §9.7).
+std::expected<void, ExtractError> land_download_(const std::filesystem::path& download,
+                                                 const std::filesystem::path& installDir,
+                                                 const std::filesystem::path& runtimeDir,
+                                                 std::string_view planKey, int strip,
+                                                 ExtractOptions options = {});
 
 bool normalize_file_install_(const std::filesystem::path& installPath);
 
