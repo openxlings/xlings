@@ -1201,3 +1201,17 @@ status = "required"
 [RESULT-OUTCOME]
 text = "every node of an install ends Done, Skipped (with why), Refused (nothing changed) or Failed; a command whose nodes were refused or failed exits non-zero and its summary counts them; a node whose recipe or download cannot be read fails and is not run"
 status = "required"
+
+[REMOVE-OLDER-THAN-STATE]
+text = "remove --older-than forgets a known project whose directory or state is gone and goes on, saying so; a project state that cannot be read stops the command before anything is removed, naming the file"
+status = "required"
+
+# ── the compatibility layer's results (design 2026-11-27 §9.6) ────────
+
+[HOOK-EMPTY-PAYLOAD]
+text = "an install() of spec 1 or 2 that reports success with a failed compatibility call and leaves install_dir empty is a failed install naming the calls (E16); an empty install_dir with no failed call installs as before"
+status = "required"
+
+[HOOK-COMPAT-FROZEN]
+text = "a recipe of spec 1 or 2 runs as before: its compatibility calls return what they returned, and each that did not do what it names is reported as the finding hook-call-failed"
+status = "required"

@@ -219,6 +219,7 @@ PackageCatalog& get_catalog(CatalogAccess access) {
                 // an older xlings, wiped cache) is repairable — resync and
                 // rebuild once before surfacing an error the user would have
                 // to fix by running `xlings update` themselves.
+                // warn-ok: a resync and rebuild follow; their result is the outcome
                 log::warn("catalog build failed ({}); resyncing indexes...",
                           result->error());
             } else {
@@ -582,6 +583,7 @@ int reconcile_host_facts(std::string_view subos, std::string_view target, EventS
     for (auto& [identity, why] : drifted_host_facts(subos)) {
         if (std::ranges::find(identities, identity) == identities.end()) continue;
         ++stale;
+        // warn-ok: counted in the return value, which the caller's outcome is
         log::warn("{}: its configuration depends on host files that changed ({}), and configuring "
                   "it again {}; run `{}xlings install {} --reconfig`",
                   identity, why, rc == 0 ? "did not bring it current" : "failed",
@@ -659,6 +661,7 @@ int install_(std::span<const std::string> targets, bool yes, bool noDeps,
     // decide to switch, and cannot decide if nobody says it. Said at install
     // time because that is when the cost is being incurred.
     if (platform::is_emulated()) {
+        // warn-ok: a fact about this machine, said once; nothing is decided by it
         log::warn("this xlings is a {} build running on {} hardware; packages "
                   "will match the build, not the machine. A native {} release "
                   "avoids the emulation.",
@@ -825,6 +828,7 @@ int install_(std::span<const std::string> targets, bool yes, bool noDeps,
                 // the disagreement is a fact about this machine that no later
                 // error message would mention.
                 declaredConflictReported_ = true;
+                // warn-ok: the declared version is used; this says why
                 log::warn("subos declares {} but {}@{} is active here; "
                           "resolving to the declared one. `xlings subos "
                           "runtime set <binding>` to change what this subos "
@@ -1183,6 +1187,7 @@ int install_(std::span<const std::string> targets, bool yes, bool noDeps,
             }
         }
         if (hasProjectOnly) {
+            // warn-ok: -g is dropped for the reason it names; the install goes on in its scope
             log::warn("-g disabled: cannot globally register project-only packages (uninstall would fail)");
         } else {
             Config::set_force_global_scope(true);
@@ -1288,6 +1293,8 @@ int install_(std::span<const std::string> targets, bool yes, bool noDeps,
     };
     record_report();
 
+    std::size_t notActivated = 0;
+    int findings = 0;   // the checks' findings over every node (design 2026-11-27 §4)
     auto activate_requested_targets = [&]() {
         auto db = Config::versions();
         for (auto& match : requestedMatches) {
@@ -1304,8 +1311,16 @@ int install_(std::span<const std::string> targets, bool yes, bool noDeps,
                 xvm::has_version(db, match.name, match.version)) {
                 auto useRet = xvm::cmd_use(match.name, match.version, stream);
                 if (useRet != 0) {
-                    log::warn("failed to activate {}@{} in current subos",
-                              match.name, match.version);
+                    // Installed, not activated (design 2026-11-27 §6.2): said
+                    // as that outcome; asked for with --use, it fails the
+                    // command.
+                    ++notActivated;
+                    stream.emit(ErrorEvent{
+                        .code = ErrorCode::Unsupported,
+                        .message = std::format("{}@{} is installed, not activated in this subos (see above)",
+                                               match.canonicalName, match.version),
+                        .recoverable = true,
+                    });
                 }
             } else if (!active.empty() && !xvm::version_key_matches(match.version, active)) {
                 // `active` is the stored key: another index's package keeps
@@ -1414,7 +1429,7 @@ int install_(std::span<const std::string> targets, bool yes, bool noDeps,
         record_report();
         activate_requested_targets();
         if (const auto sync = xself::sync_shim_tables(); !sync.root_error.empty()) return 1;
-        return 0;
+        return useAfterInstall && notActivated > 0 ? 1 : 0;
     }
 
     // One line per node that does something, numbered against the nodes that
@@ -1541,6 +1556,7 @@ int install_(std::span<const std::string> targets, bool yes, bool noDeps,
                                                  : NodeStatus::Installed,
                             {}, {}, {} };
                     }
+                    findings += status.findings;
                     break;
                 case InstallPhase::Failed:
                     // #374: structured per-package failure on the wire so
@@ -1604,6 +1620,7 @@ int install_(std::span<const std::string> targets, bool yes, bool noDeps,
             for (auto& req : reqs) {
                 if (req.op == "admin") {
                     if (auto step = admin_steps::parse(req.target)) adminSteps.push_back(std::move(*step));
+                    // warn-ok: a recipe's malformed declaration (a spec 3 recipe is refused at the call); nothing to run
                     else log::warn("a recipe declared an administrator step without a command: ignored");
                 } else if (req.op == "install") {
                     log::debug("installing sub-dependency: {}", req.target);
@@ -1662,7 +1679,12 @@ int install_(std::span<const std::string> targets, bool yes, bool noDeps,
             static_cast<int>(count_status(NodeStatus::Installed));
         summaryPayload["failed"] = static_cast<int>(failed_count());
         summaryPayload["refused"] = static_cast<int>(refused_count());   // 1.20
+        summaryPayload["findings"] = findings;                           // 1.20
         stream.emit(DataEvent{"install_summary", summaryPayload.dump()});
+        // One line, after the summary: the details are -v and the log.
+        if (findings > 0)
+            log::println("  {} finding(s) about the installed payloads: `-v`, or {}", findings,
+                         Config::display_path(Config::paths().homeDir / "logs" / "findings.ndjson"));
 
         // If this install ran via `sudo`, the downloaded payloads, version DB
         // and shims were written root-owned into the user's home. Hand the
@@ -1682,7 +1704,7 @@ int install_(std::span<const std::string> targets, bool yes, bool noDeps,
     //
     // A refused node is a failed command too (C1): a script that installs a
     // recipe this client cannot run learns it from the exit code.
-    return failed_count() > 0 || refused_count() > 0 ? 1 : 0;
+    return failed_count() > 0 || refused_count() > 0 || (useAfterInstall && notActivated > 0) ? 1 : 0;
 }
 
 std::expected<bool, std::string>
@@ -2465,6 +2487,7 @@ int cmd_remove_in_scope_(const std::string& target, bool yes,
                         });
                         return 1;
                     }
+                    // warn-ok: no version was named and nothing is registered: nothing would be removed either way
                     log::warn("xlings: cannot inspect an uninstall recipe for "
                               "'{}' ({}); treating it as absent",
                               target, reason);
@@ -2510,6 +2533,7 @@ int cmd_remove_in_scope_(const std::string& target, bool yes,
             }
 
             if (payloadOnDisk) {
+                // warn-ok: says why a payload with no registration is removed
                 log::warn("xlings: '{}' is not registered in subos '{}', but a "
                           "payload is on disk; removing it for real",
                           bareName, subos);
@@ -2590,6 +2614,7 @@ int cmd_remove_in_scope_(const std::string& target, bool yes,
                               "removes the ACTIVE one only",
                               bareName, versions.size(), subos);
                     for (const auto& v : versions) {
+                        // warn-ok: the list of what the user may name next
                         log::warn("  xlings remove {}@{}", target, v);
                     }
                 }
@@ -2724,14 +2749,45 @@ int cmd_remove_older_than(const std::string& name, const std::string& threshold,
             for (const auto& v : it->second) installedIn[xvm::strip_namespace(v)].push_back(snap.name);
         }
     }
+    // The projects this home knows (#708). One that is gone -- its directory
+    // or its state file -- uses nothing: its entry is derived state, dropped
+    // and said so. One whose state cannot be read is not "uses nothing"
+    // ("could not read" is never "empty"): what it uses is unknown, so the
+    // command stops before removing anything.
+    std::vector<std::string> gone;
     for (const auto& root : Config::known_projects()) {
-        auto state = nlohmann::json::parse(
-            platform::read_file_to_string((root / ".xlings" / ".xlings.json").string()),
-            nullptr, false);
-        if (state.is_discarded() || !state.is_object() || !state.contains("workspace")) continue;
+        const auto statePath = root / ".xlings" / ".xlings.json";
+        std::error_code ec;
+        if (!fs::exists(statePath, ec) && !ec) {
+            gone.push_back(root.string());
+            if (!dryRun) Config::forget_known_project(root);
+            continue;
+        }
+        nlohmann::json state(nlohmann::json::value_t::discarded);
+        try {
+            state = nlohmann::json::parse(platform::read_file_to_string(statePath.string()), nullptr, false);
+        } catch (const std::exception&) {}
+        if (state.is_discarded() || !state.is_object()) {
+            stream.emit(ErrorEvent{
+                .code = ErrorCode::InvalidInput,
+                .message = std::format("the state of project {} cannot be read ({}): what it uses is unknown, "
+                                       "so nothing was removed", root.string(), statePath.string()),
+                .recoverable = true,
+                .hint = std::format("repair {} (or delete the project's .xlings directory), then run this again",
+                                    statePath.string()),
+            });
+            return 1;
+        }
+        if (!state.contains("workspace")) continue;
         auto active = xvm::strip_namespace(xvm::get_active_version(
             xvm::subos_workspace_from_json(state["workspace"]).active, bareName));
         if (!active.empty()) inUse.try_emplace(active, std::format("used by project {}", root.string()));
+    }
+    if (!gone.empty()) {
+        log::println("{} known project(s) no longer exist{}: {}", gone.size(),
+                     dryRun ? " (they would be forgotten)" : " and were forgotten",
+                     gone.size() <= 3 ? [&] { std::string l; for (const auto& g : gone) l += (l.empty() ? "" : ", ") + g; return l; }()
+                                      : std::format("{}, and {} more", gone.front(), gone.size() - 1));
     }
     if (xvm::is_xlings_binary(bareName)) {
         inUse.try_emplace(std::string(Info::VERSION), "the running xlings");
@@ -2869,6 +2925,7 @@ int cmd_remove_impl_(const std::string& target, bool yes, EventStream& stream,
     // decide to switch, and cannot decide if nobody says it. Said at install
     // time because that is when the cost is being incurred.
     if (platform::is_emulated()) {
+        // warn-ok: a fact about this machine, said once; nothing is decided by it
         log::warn("this xlings is a {} build running on {} hardware; packages "
                   "will match the build, not the machine. A native {} release "
                   "avoids the emulation.",
@@ -3755,11 +3812,13 @@ int cmd_add_xpkg(const std::string& fileOrUrl, EventStream& stream) {
                              | fs::copy_options::overwrite_existing, lec);
             }
             if (lec) {
+                // warn-ok: said about a local recipe's environment; the install's own outcome follows
                 log::warn("could not provide libs/ to the local index: {} -- "
                           "`xim.pkgindex.*` calls in this recipe will be silent "
                           "no-ops", lec.message());
             }
         } else if (!fs::is_directory(primaryLibs, lec)) {
+            // warn-ok: said about a local recipe's environment; the install's own outcome follows
             log::warn("no primary index libs/ at {} -- `xim.pkgindex.*` calls in "
                       "this recipe will be silent no-ops (run `xlings update`)",
                       Config::display_path(primaryLibs));

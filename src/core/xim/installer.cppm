@@ -487,6 +487,10 @@ std::expected<void, ExtractError> land_download_(const std::filesystem::path& do
                                                  std::string_view planKey, int strip,
                                                  ExtractOptions options = {});
 
+// A finding about `node` (design 2026-11-27 §4): -v and <home>/logs/findings.ndjson.
+void record_finding_(const PlanNode& node, std::string_view rule, const std::string& text,
+                     const std::filesystem::path& payload);
+
 bool normalize_file_install_(const std::filesystem::path& installPath);
 
 class ScopedCurrentDir_ {
@@ -579,7 +583,8 @@ bool run_config_hook_(const PlanNode& node,
                       std::function<void(const InstallStatus&)> onStatus,
                       bool useAfterInstall,
                       std::string* failureMessage = nullptr,
-                      const home::layers::BorrowPlan* borrowed = nullptr);
+                      const home::layers::BorrowPlan* borrowed = nullptr,
+                      int* findings = nullptr);
 
 // A package that promised programs and delivered none of them.
 //

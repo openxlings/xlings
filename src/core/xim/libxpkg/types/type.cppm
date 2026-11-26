@@ -68,6 +68,13 @@ struct InstallStatus {
     // configured here (#632), which is what lets a frontend say nothing about
     // that node instead of narrating a no-op.
     bool configured { false };
+
+    // Done only: how many findings the checks of this node's payload made
+    // (the closure rules: a library nothing provides, a glibc above the
+    // host's, a dependency's library reached through its RUNPATH). A finding
+    // does not change the outcome; the command says how many there were, and
+    // each is in `-v` and in <home>/logs/findings.ndjson (design 2026-11-27 §4).
+    int findings { 0 };
 };
 
 // How a node was reached in the dep graph. Determines whether the

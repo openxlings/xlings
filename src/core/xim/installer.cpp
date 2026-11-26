@@ -1592,6 +1592,19 @@ std::expected<void, ExtractError> land_download_(const std::filesystem::path& do
     return {};
 }
 
+// A finding (design 2026-11-27 §4): what a check found about a node, which
+// does not change its outcome. Each is in `-v` and in
+// <home>/logs/findings.ndjson; the command says how many there were.
+void record_finding_(const PlanNode& node, std::string_view rule, const std::string& text,
+                     const std::filesystem::path& payload) {
+    log::debug("[{}@{}] {}: {}", node.name, node.version, rule, text);
+    observe::append_json(Config::paths().homeDir / "logs" / "findings.ndjson",
+        {{"ts", observe::utc_now()},
+         {"package", node.canonicalName.empty() ? node.name : node.canonicalName},
+         {"version", node.version}, {"rule", rule}, {"message", text},
+         {"payload", payload.generic_string()}});
+}
+
 bool normalize_file_install_(const std::filesystem::path& installPath) {
     namespace fs = std::filesystem;
     std::error_code ec;
@@ -2144,6 +2157,7 @@ std::expected<void, std::string> apply_subos_env_ops_(const std::vector<mcpplibs
         if (mf::is_privileged_env(op->var, op->value) && !already_recorded(*op)) {
             log::warn("[xim] {}@{} declares {} = {}", canonical, node.version,
                       op->var, op->value);
+            // warn-ok: the declaration is applied; this is its risk, said to the user
             log::warn("      This variable can load code from our payload into "
                       "processes we do not own, including host binaries running "
                       "under the host loader. Prefer RPATH on the consumer; use "
@@ -2501,7 +2515,7 @@ std::expected<void, std::string> process_xvm_operations_(const PlanNode& node, c
 }
 
 bool run_config_hook_(const PlanNode& node, const std::filesystem::path& dataDir, mcpplibs::xpkg::PackageExecutor& executor, mcpplibs::xpkg::ExecutionContext& ctx, std::function<void(const InstallStatus&)> onStatus, bool useAfterInstall, std::string* failureMessage,
-                      const home::layers::BorrowPlan* borrowed) {
+                      const home::layers::BorrowPlan* borrowed, int* findings) {
     if (!executor.has_hook(mcpplibs::xpkg::HookType::Config)) {
         auto processed = process_xvm_operations_(node, dataDir, executor, useAfterInstall, borrowed);
         if (!processed && failureMessage) *failureMessage = processed.error();
@@ -2522,6 +2536,12 @@ bool run_config_hook_(const PlanNode& node, const std::filesystem::path& dataDir
         hookResult = executor.run_hook(mcpplibs::xpkg::HookType::Config, ctx);
     }
     const auto hookLog = std::exchange(ctx.hook_log, {});
+    // The compatibility layer's calls that failed: findings (design 2026-11-27 §9.6).
+    for (const auto& f : hookResult.call_failures) {
+        record_finding_(node, "hook-call-failed",
+                        std::format("config(): {}({}) failed: {}", f.call, f.what, f.why), ctx.install_dir);
+        if (findings) ++*findings;
+    }
     if (!hookResult.success) {
         if (failureMessage) {
             *failureMessage = format_hook_failure("config", hookResult, hookLog);
@@ -2877,6 +2897,8 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& requested
     // beside the archive for its hook, staged after it when the hook left
     // install_dir empty.
     std::unordered_map<std::string, int> landings;
+    // Findings made before the node is installed, by plan key.
+    std::unordered_map<std::string, int> earlyFindings;
     // What a gate decided, as the node's outcome (design 2026-11-27 C1). A
     // refusal changed nothing; a failure here means the node is not run in
     // phase 2 and its dependents are reported failed because of it.
@@ -2942,8 +2964,11 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& requested
             refuse(node, compatibility_error(node.canonicalName, compatibility), {});
             continue;
         }
+        // A single artifact whose architecture the entry does not state:
+        // the finding `arch-unstated` (design 2026-11-27 §4), not a warn.
         if (!compatibility.advisory.empty()) {
-            log::warn("{}", compatibility.advisory);
+            ++earlyFindings[currentPlanKey];
+            detail_::record_finding_(node, "arch-unstated", compatibility.advisory, {});
         }
 
         auto archive = archive_task_for(node, *pkg, platform, hostArch, dlConfig, dataDir);
@@ -3105,6 +3130,7 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& requested
         if (!std::filesystem::is_directory(std::filesystem::path(ctx.pkgindex_dir) / "libs", libsEc)) {
             // Loud, because the alternative is a package that installs
             // "successfully" with none of its sysroot assets declared.
+            // warn-ok: the modules are what a recipe may call; a call of a missing one is what fails
             log::warn("{}: no pkgindex libs/ found -- every "
                       "`xim.pkgindex.*` call in this recipe will be a "
                       "silent no-op (sysroot assets, driver dirs and "
@@ -3166,6 +3192,7 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& requested
                     scopeBinding = true;
                     for (const auto& w : refreshed->what) log::info("runtime {}", w);
                 } else {
+                    // warn-ok: a fallback that works: the dependency is bound by its path
                     log::warn("{}: the home's runtime links could not be made ({}); binding by path",
                               node.name, refreshed.error());
                 }
@@ -3421,6 +3448,7 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& requested
                     auto error = std::move(extracted).error();
                     if (evict_invalid_archive_cache_(
                             dlIt->second.localFile, error)) {
+                        // warn-ok: said before the failure it belongs to (Failed, next)
                         log::warn(
                             "evicted invalid archive cache for {}: {}",
                             node.name, dlIt->second.localFile.string());
@@ -3455,6 +3483,7 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& requested
             // dir left by a prior `sudo` install) used to be swallowed,
             // surfacing later as a confusing hook failure. Surface it.
             if (ec && !std::filesystem::is_directory(ctx.install_dir)) {
+                // warn-ok: the hook's failure is the outcome; this names its cause first
                 log::warn("create install dir {} failed: {}",
                           ctx.install_dir.string(), ec.message());
             }
@@ -3476,6 +3505,7 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& requested
         if (foreignPayload) {
             log::warn("{}: installed payload is not for {} — reinstalling",
                       node.name, host_platform_tag());
+            // warn-ok: says why the reinstall that follows happens
             log::warn("  payload: {}",
                       Config::display_path(ctx.install_dir));
         }
@@ -3691,6 +3721,7 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& requested
             if (!landed) {
                 if (landed.error().kind == ExtractErrorKind::InvalidInputArchive
                     && evict_invalid_archive_cache_(dlIt->second.localFile, landed.error())) {
+                    // warn-ok: said before the failure it belongs to (Failed, next)
                     log::warn("evicted invalid archive cache for {}: {}",
                               node.name, dlIt->second.localFile.string());
                 }
@@ -3709,6 +3740,9 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& requested
             }
         }
 
+        // The compatibility layer's calls of install() that did not do what
+        // they name (design 2026-11-27 §9.6), for the empty-payload rule below.
+        std::vector<mcpplibs::xpkg::HookCallFailure> installCallFailures;
         // Run install hook
         if (!payloadInstalled && executor.has_hook(mcpplibs::xpkg::HookType::Install)) {
             log::debug("installing {}...", node.name);
@@ -3790,6 +3824,16 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& requested
                 }
             }
 
+            // Each failed call is a finding (`hook-call-failed`), whatever the
+            // outcome: the hook's behaviour is the frozen layer's.
+            for (const auto& f : hookResult.call_failures) {
+                ++earlyFindings[planKey];
+                detail_::record_finding_(node, "hook-call-failed",
+                                         std::format("install(): {}({}) failed: {}", f.call, f.what, f.why),
+                                         ctx.install_dir);
+            }
+            installCallFailures = hookResult.call_failures;
+
             if (!hookResult.success) {
                 auto message = with_runtime_note(detail_::format_hook_failure(
                     "install", hookResult, hookLog));
@@ -3854,6 +3898,7 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& requested
                 auto error = std::move(extracted).error();
                 if (evict_invalid_archive_cache_(
                         dlIt->second.localFile, error)) {
+                    // warn-ok: said before the failure it belongs to (Failed, next)
                     log::warn("evicted invalid archive cache for {}: {}",
                               node.name, dlIt->second.localFile.string());
                 }
@@ -3882,6 +3927,27 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& requested
                 }
                 continue;
             }
+        }
+
+        // E16 (design 2026-11-27 §9.6): install() reported success, some of
+        // its calls did not do what they name, and install_dir is still empty
+        // after the staging above -- the payload that was to be moved is not
+        // there. Failed, naming the calls. An empty payload with no failed
+        // call is a package whose payload lives elsewhere, as before.
+        if (!payloadInstalled && !installCallFailures.empty()
+            && !detail_::has_directory_entries_(ctx.install_dir)) {
+            std::string calls;
+            for (std::size_t i = 0; i < installCallFailures.size() && i < 5; ++i) {
+                const auto& f = installCallFailures[i];
+                calls += std::format("\n  {}({}): {}", f.call, f.what, f.why);
+            }
+            if (installCallFailures.size() > 5)
+                calls += std::format("\n  and {} more", installCallFailures.size() - 5);
+            const auto message = std::format(
+                "install() reported success, but its payload is empty and these calls failed:{}", calls);
+            write_payload_failure_marker(ctx.install_dir, node.version, message);
+            if (onStatus) onStatus({ node.name, InstallPhase::Failed, 0.0f, message });
+            continue;
         }
 
         if (!payloadInstalled && !detail_::normalize_file_install_(ctx.install_dir)) {
@@ -4089,7 +4155,8 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& requested
             if (!detail_::run_config_hook_(
                     node, dataDir, executor, ctx, onStatus,
                     useAfterInstall, &configFailure,
-                    borrowedPayload ? &borrowedPlans.at(planKey) : nullptr)) {
+                    borrowedPayload ? &borrowedPlans.at(planKey) : nullptr,
+                    &earlyFindings[planKey])) {
                 // Same reason as the install hook above, and this one
                 // matters more: config is where registration happens, so
                 // its failure is exactly "payload on disk, ledger empty" --
@@ -4143,22 +4210,23 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& requested
         // only -- a re-mapped payload was scanned when it first arrived,
         // and re-scanning a 400MB payload on every dependent install
         // would price the check out of existence.
+        // What they find is a finding, not a warn: it does not change the
+        // outcome (§15 item 6 of design 2026-11-27); the command counts them,
+        // `-v` shows each, and <home>/logs/findings.ndjson keeps them.
+        int nodeFindings = 0;
         if (!payloadInstalled && node.pkgType != 3 /* Config */) {
             const auto rep = closurecheck::scan_payload(
                 ctx.install_dir, dataDir / "xpkgs", host_glibc_recorded());
-            for (const auto& m : rep.missing) {
-                log::warn("[{}@{}] {}", node.name, node.version,
-                          closurecheck::describe_missing(m));
-            }
-            if (rep.floor) {
-                log::warn("[{}@{}] {}", node.name, node.version,
-                          closurecheck::describe_floor(*rep.floor));
-            }
-            if (rep.nonTransitive) {
-                log::warn("[{}@{}] {}", node.name, node.version,
-                          closurecheck::describe_non_transitive(
-                              *rep.nonTransitive));
-            }
+            const auto finding = [&](std::string_view rule, const std::string& text) {
+                ++nodeFindings;
+                detail_::record_finding_(node, rule, text, ctx.install_dir);
+            };
+            for (const auto& m : rep.missing)
+                finding("closure-missing", closurecheck::describe_missing(m));
+            if (rep.floor)
+                finding("closure-glibc-floor", closurecheck::describe_floor(*rep.floor));
+            if (rep.nonTransitive)
+                finding("closure-non-transitive", closurecheck::describe_non_transitive(*rep.nonTransitive));
         }
 
         // Re-stamp with what the install actually REGISTERED.
@@ -4243,7 +4311,8 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& requested
                        .progress = 1.0f,
                        .message = payloadInstalled ? "already installed" : "",
                        .payloadReused = payloadInstalled,
-                       .configured = node.kind != DepKind::Build });
+                       .configured = node.kind != DepKind::Build,
+                       .findings = nodeFindings + earlyFindings[planKey] });
         }
         if (payloadInstalled) {
             log::debug("{}@{} mapping to current subos", node.name, node.version);
@@ -4726,6 +4795,7 @@ std::expected<Installer::UninstallOutcome, std::string> Installer::uninstall(con
                     // going -- but it must be said. A stale section points
                     // at a directory that no longer exists, which doctor
                     // D2/D3 will report.
+                    // warn-ok: derived state: doctor reports and rebuilds a stale section
                     log::warn("[xim] could not clear subos env "
                               "declarations for {}: {}",
                               executingProvider, e.what());
@@ -4767,6 +4837,7 @@ std::expected<Installer::UninstallOutcome, std::string> Installer::uninstall(con
                   "still holding one (on Windows a compiler leaves vctip.exe / "
                   "mspdbsrv.exe running inside its own toolset for a while "
                   "after it exits)", installDir.string());
+        // warn-ok: the package is removed (unregistered, leftovers stamped incomplete); the disk is freed by a later run
         log::warn("  they are marked incomplete, so nothing will mistake them "
                   "for an install; re-run `xlings remove {}` once that process "
                   "has gone", name);
@@ -4806,6 +4877,7 @@ std::expected<Installer::UninstallOutcome, std::string> Installer::uninstall(con
         if (std::filesystem::remove(parent, rmEc)) {
             log::debug("swept empty package dir: {}", parent.string());
         } else if (rmEc) {
+            // warn-ok: an empty directory left behind; nothing reads it
             log::warn("failed to sweep empty package dir {}: {}",
                       parent.string(), rmEc.message());
         }

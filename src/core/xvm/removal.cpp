@@ -200,6 +200,7 @@ apply_removal_batch(VersionDB& db, Workspace& workspace, WorkspaceInstalled& ins
                 // Said out loud: a recipe naming something it does not own is
                 // worth knowing about, it is just not worth stopping for.
                 if (db.contains(operation.name)) {
+                    // warn-ok: a recipe naming what it does not own: skipped, and the removal is what it owned
                     log::warn("[xvm] recipe asked to remove '{}', which this "
                               "release does not own — skipped",
                               operation.name);

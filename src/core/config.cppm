@@ -624,6 +624,11 @@ public:
     // succeeds. Idempotent.
     static void register_known_project(const std::filesystem::path& dir);
 
+    // Drop `dir` from `knownProjects`: a project whose directory or state is
+    // gone uses nothing, and its entry is derived state (#708). A home config
+    // that cannot be read is left as it is.
+    static void forget_known_project(const std::filesystem::path& dir);
+
     [[nodiscard]] static std::vector<std::string> resource_servers(std::string_view mirror = {});
     // Same list, extended with the other regions' servers as a last resort.
     // Use this for download fallbacks; `resource_servers()` remains the

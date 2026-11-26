@@ -31,22 +31,6 @@ import xlings.i18n;
 
 namespace xlings::xvm {
 
-void create_link_(const fs::path& src, const fs::path& dst) {
-    std::error_code ec;
-    if constexpr (platform::is_windows) {
-        if (fs::is_directory(src)) {
-            // Use directory junction on Windows (no admin required)
-            platform::create_directory_link(dst.string(), src.string());
-        } else {
-            fs::create_hard_link(src, dst, ec);
-        }
-    } else {
-        fs::create_symlink(src, dst, ec);
-    }
-    if (ec) log::warn("[xvm] link failed: {} -> {}",
-                      Config::display_path(dst), Config::display_path(src));
-}
-
 fs::path header_destination_(const HeaderAsset& asset,
                              const fs::path& sysroot_include) {
     return asset.destinationPrefix.empty()
@@ -121,6 +105,7 @@ MaterializationResult apply_assets_(std::vector<materialize::AssetChange> change
 MaterializationResult install_headers(const HeaderAsset& asset, const fs::path& includeRoot,
     std::span<const materialize::AssetClaim> claims) {
     if (!asset.sourceDir.empty() && !sysroot_source_is_local_(asset.sourceDir)) {
+        // warn-ok: headers linked as asked; their origin is said
         log::warn("[xvm] linking headers from outside this home: {}", Config::display_path(asset.sourceDir));
     }
     std::vector<materialize::AssetChange> changes;
@@ -688,6 +673,7 @@ int cmd_use(const std::string& target, const std::string& version, EventStream& 
     if (is_xlings_binary(target)) {
         const auto layout = home::describe(p.homeDir, home::Source::Default).layout;
         if (auto note = home::format::switch_note(layout, strip_namespace(resolved)))
+            // warn-ok: the switch is done; this is how to go back
             log::warn("{}; back: xlings use xlings {}", note->text, Info::VERSION);
     }
 
@@ -751,6 +737,7 @@ int cmd_use(const std::string& target, const std::string& version, EventStream& 
         // depend on ui, which owns the width contract), so the only way these
         // stay inside a narrow terminal is to be written that way.
         if (!verbose) {
+            // warn-ok: the switch is done; what still runs from the old release is listed
             log::warn("{} name(s) not in {}@{} still run from {} — -v to list",
                       plan->stranded.size(), target, resolved, leftRelease);
         } else {
@@ -758,15 +745,18 @@ int cmd_use(const std::string& target, const std::string& version, EventStream& 
                       plan->stranded.size(), target, resolved);
             for (const auto& member : plan->stranded) {
                 if (member.kind == "program") {
+                    // warn-ok: the switch is done; what still runs from the old release is listed
                     log::warn("    {} (still {})", member.target,
                               member.version);
                 } else {
+                    // warn-ok: the switch is done; what still runs from the old release is listed
                     log::warn("    {} (still {}, {})", member.target,
                               member.version, member.kind);
                 }
             }
             log::warn("  move: xlings use {} <version>",
                       plan->stranded.front().target);
+            // warn-ok: the switch is done; the next steps for what it left
             log::warn("  drop: xlings remove {}@{}",
                       plan->stranded.front().target,
                       plan->stranded.front().version);
@@ -786,12 +776,15 @@ int cmd_use(const std::string& target, const std::string& version, EventStream& 
                   plan->retainedByOldPackage.size(), plan->fromProvider);
         for (const auto& member : plan->retainedByOldPackage) {
             if (member.kind == "program") {
+                // warn-ok: the switch is done; what the old package keeps is listed
                 log::warn("    {} ({})", member.target, member.version);
             } else {
+                // warn-ok: the switch is done; what the old package keeps is listed
                 log::warn("    {} ({}, {})", member.target, member.version,
                           member.kind);
             }
         }
+        // warn-ok: the switch is done; what the old package keeps is listed
         log::warn("  {} has no version of them to switch to.",
                   plan->toProvider);
     }

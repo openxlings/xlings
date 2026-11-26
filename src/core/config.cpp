@@ -2180,6 +2180,27 @@ void Config::register_known_project(const std::filesystem::path& dir) {
     }
 }
 
+void Config::forget_known_project(const std::filesystem::path& dir) {
+    namespace fs = std::filesystem;
+    auto& self = instance_();
+    auto configPath = self.paths_.homeDir / ".xlings.json";
+    if (!fs::exists(configPath)) return;
+    nlohmann::json json;
+    try {
+        json = nlohmann::json::parse(platform::read_file_to_string(configPath.string()), nullptr, false);
+    } catch (...) { return; }
+    // Never replace a document that could not be parsed (as register_known_project).
+    if (json.is_discarded() || !json.is_object()) return;
+    auto it = json.find("knownProjects");
+    if (it == json.end() || !it->is_object() || !it->contains(dir.string())) return;
+    it->erase(dir.string());
+    platform::write_string_to_file(configPath.string(), json.dump(2));
+    xlings::restamp_versions_db_if_equal(self.paths_.homeDir, json);
+    if (const auto after = file_stat_(configPath)) {
+        self.remember_known_projects_(json, after->first, after->second);
+    }
+}
+
 std::filesystem::path Config::workspace_config_path(bool createDirs) {
     namespace fs = std::filesystem;
     auto& self = instance_();
