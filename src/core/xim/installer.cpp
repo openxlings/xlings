@@ -1330,12 +1330,21 @@ save_xpkg_snapshot_(const std::filesystem::path& sourcePkgFile,
         if (fs::equivalent(sourcePkgFile, snapshotFile, ec) && !ec) return {};
     }
 
-    ec.clear();
-    fs::copy_file(sourcePkgFile, snapshotFile, fs::copy_options::overwrite_existing, ec);
-    if (ec) {
+    // The recipe as it ran: with the template its index declares appended
+    // (index-compat.json `recipes.template`, design 2026-11-27 §9.8), so a
+    // removal read from the payload has the hooks the install had.
+    auto text = mcpplibs::xpkg::recipe_text(sourcePkgFile);
+    if (!text) {
+        return std::unexpected(
+            std::format("failed to read the recipe {} for its snapshot: {}",
+                        sourcePkgFile.string(), text.error()));
+    }
+    try {
+        platform::write_file_atomic(snapshotFile.string(), *text);
+    } catch (const std::exception& e) {
         return std::unexpected(
             std::format("failed to save xpkg snapshot {}: {}",
-                        snapshotFile.string(), ec.message()));
+                        snapshotFile.string(), e.what()));
     }
     return {};
 }
