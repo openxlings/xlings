@@ -1195,5 +1195,9 @@ text = "fs.extract in a hook is the client's extractor (a host port), in the cli
 status = "required"
 
 [SPEC-GATE]
-text = "the client runs recipes up to libxpkg's highest spec (3) and refuses a higher one package by package, naming the update"
+text = "the client runs recipes up to libxpkg's highest spec (3) and refuses a higher one package by package, naming the update; a command with a refused package exits non-zero"
+status = "required"
+
+[RESULT-OUTCOME]
+text = "every node of an install ends Done, Skipped (with why), Refused (nothing changed) or Failed; a command whose nodes were refused or failed exits non-zero and its summary counts them; a node whose recipe or download cannot be read fails and is not run"
 status = "required"

@@ -106,6 +106,13 @@ end
     // The archive is not laid out as the entry says.
     recipe_(f, "badlayout", "3", "1",
             archive_(f, "badlayout", {{.path = "LICENSE", .content = "MIT\n"}}), kImports);
+    // A spec this client does not run: refused, nothing changed.
+    tk::write_file(f.index / "pkgs" / "n" / "newer.lua", R"LUA(
+package = {
+    spec = '4', name = 'newer', type = 'package', archs = { 'x86_64', 'aarch64' },
+    xpm = { linux = { ['1.0.0'] = {} }, macosx = { ['1.0.0'] = {} }, windows = { ['1.0.0'] = {} } },
+}
+)LUA");
     // spec "2", the same shape of archive: extracted beside it for the hook.
     recipe_(f, "oldpath", "2", "", archive_(f, "oldpath"), R"LUA(
 import('xim.libxpkg.pkginfo')
@@ -225,4 +232,21 @@ XTEST(XpkgSpec3, FsExtractIsTheClientsExtractor, .area = "xim",
               (std::set<std::string>{"bin/", "bin/extracting", "README", "again/", "again/bin/",
                                      "again/bin/extracting", "again/README"}))
         << r.transcript();
+}
+
+// A recipe of a spec above the client's is refused package by package, and a
+// command with a refused package fails (design 2026-11-27 C1, E14); the rest
+// of the command installs.
+XTEST(XpkgSpec3, ARefusedPackageFailsTheCommandAndTheRestInstalls, .area = "xim",
+      .covers = {"SPEC-GATE", "RESULT-OUTCOME"}, .requires_ = {"xlings-bin"}) {
+    auto s = serve_("spec3-refused");
+    const auto r = s->home.xlings({"install", "fixture:newer@1.0.0", "fixture:bare@1.0.0", "-y"});
+    const auto out = r.transcript();
+    EXPECT_NE(r.exit_code, 0) << out;
+    EXPECT_NE(out.find("refused"), std::string::npos) << out;
+    EXPECT_NE(out.find("spec \"4\" is newer than this xlings understands (max 3)"), std::string::npos) << out;
+    EXPECT_NE(out.find("self update"), std::string::npos) << out;
+    std::error_code ec;
+    EXPECT_FALSE(fs::exists(payload_(s->home, "newer"), ec)) << out;
+    EXPECT_EQ(tree_(payload_(s->home, "bare")), (std::set<std::string>{"bin/", "bin/bare", "README"})) << out;
 }

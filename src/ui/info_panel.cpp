@@ -402,7 +402,7 @@ void print_subos_nesting(const std::string& from, const std::string& to) {
                  bold(), from, reset(), amber(), reset());
 }
 
-void print_install_summary(int success, int failed) {
+void print_install_summary(int success, int failed, int refused) {
     using namespace ftxui;
 
     Elements rows;
@@ -419,6 +419,14 @@ void print_install_summary(int success, int failed) {
     }
     if (failed > 0) {
         auto msg = std::to_string(failed) + " package(s) failed";
+        measured.push_back(msg);
+        rows.push_back(hbox({
+            text("  " + std::string(theme::icon::failed) + " ") | color(theme::error()),
+            text(msg) | color(theme::error()) | bold,
+        }));
+    }
+    if (refused > 0) {
+        auto msg = std::to_string(refused) + " package(s) refused";
         measured.push_back(msg);
         rows.push_back(hbox({
             text("  " + std::string(theme::icon::failed) + " ") | color(theme::error()),

@@ -448,7 +448,7 @@ void dispatch_data_event(const DataEvent& e) {
         ui::print_install_plan(packages);
     }
     else if (e.kind == "install_summary") {
-        ui::print_install_summary(json.value("success", 0), json.value("failed", 0));
+        ui::print_install_summary(json.value("success", 0), json.value("failed", 0), json.value("refused", 0));
     }
     else if (e.kind == "remove_plan") {
         ui::print_remove_plan(

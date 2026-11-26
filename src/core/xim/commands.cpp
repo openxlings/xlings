@@ -1224,7 +1224,10 @@ int install_(std::span<const std::string> targets, bool yes, bool noDeps,
     // statement this function makes afterwards reads it: the activation
     // notice, the structured error, the summary and the exit code.
     // Re-deriving any of them from state would just be a seventh answerer.
-    enum class NodeStatus { Installed, AlreadyPresent, Failed };
+    // The outcomes of design 2026-11-27 C1, as this command records them:
+    // Installed is Done, AlreadyPresent is Skipped (already installed),
+    // Refused changed nothing, Failed did not finish.
+    enum class NodeStatus { Installed, AlreadyPresent, Refused, Failed };
     struct NodeOutcome {
         NodeStatus  status { NodeStatus::Installed };
         std::string message;
@@ -1247,7 +1250,8 @@ int install_(std::span<const std::string> targets, bool yes, bool noDeps,
     // silent rather than being narrated either way.
     const auto succeeded = [&](const PackageMatch& match) {
         auto it = outcomes.find(plan_key(match));
-        return it != outcomes.end() && it->second.status != NodeStatus::Failed;
+        return it != outcomes.end() && it->second.status != NodeStatus::Failed
+            && it->second.status != NodeStatus::Refused;
     };
     const auto count_status = [&](NodeStatus want) {
         return std::ranges::count_if(outcomes, [&](const auto& kv) {
@@ -1255,6 +1259,7 @@ int install_(std::span<const std::string> targets, bool yes, bool noDeps,
         });
     };
     const auto failed_count = [&] { return count_status(NodeStatus::Failed); };
+    const auto refused_count = [&] { return count_status(NodeStatus::Refused); };
 
     // The install_targets entries, read off the same record. A request with no
     // outcome was not satisfied by this run and reports `failed`.
@@ -1277,6 +1282,7 @@ int install_(std::span<const std::string> targets, bool yes, bool noDeps,
             entry.status = it == outcomes.end() ? "failed"
                 : it->second.status == NodeStatus::Installed ? "installed"
                 : it->second.status == NodeStatus::AlreadyPresent ? "already_present"
+                : it->second.status == NodeStatus::Refused ? "refused"
                 : "failed";
         }
     };
@@ -1572,6 +1578,22 @@ int install_(std::span<const std::string> targets, bool yes, bool noDeps,
                                                      status.hint };
                     }
                     break;
+                case InstallPhase::Refused:
+                    // Nothing was changed for it (C1): said as a refusal, with
+                    // what would let it through.
+                    stream.emit(ErrorEvent{
+                        .code = error_code_from_wire(status.errorCode),
+                        .message = "[" + status.name + "] refused: " + status.message,
+                        .recoverable = true,
+                        .hint = status.hint,
+                    });
+                    if (!status.planKey.empty()) {
+                        outcomes[status.planKey] = { NodeStatus::Refused,
+                                                     status.message,
+                                                     status.errorCode,
+                                                     status.hint };
+                    }
+                    break;
                 default:
                     break;
             }
@@ -1639,6 +1661,7 @@ int install_(std::span<const std::string> targets, bool yes, bool noDeps,
         summaryPayload["success"] =
             static_cast<int>(count_status(NodeStatus::Installed));
         summaryPayload["failed"] = static_cast<int>(failed_count());
+        summaryPayload["refused"] = static_cast<int>(refused_count());   // 1.20
         stream.emit(DataEvent{"install_summary", summaryPayload.dump()});
 
         // If this install ran via `sudo`, the downloaded payloads, version DB
@@ -1656,7 +1679,10 @@ int install_(std::span<const std::string> targets, bool yes, bool noDeps,
     // install` and `interface install_packages` would report exitCode=0
     // even when individual packages failed to install — see
     // .agents/docs/2026-05-22-cmd-install-silent-failure-analysis.md
-    return failed_count() > 0 ? 1 : 0;
+    //
+    // A refused node is a failed command too (C1): a script that installs a
+    // recipe this client cannot run learns it from the exit code.
+    return failed_count() > 0 || refused_count() > 0 ? 1 : 0;
 }
 
 std::expected<bool, std::string>

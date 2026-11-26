@@ -130,7 +130,7 @@ PYSTATE
 
 # ── Scenario 1: the refusal happens and says why ─────────────────────────
 log "scenario 1: a spec above the cap is refused"
-OUT="$(RUN install specfuture@1.0.0 -y 2>&1 || true)"
+RC=0; OUT="$(RUN install specfuture@1.0.0 -y 2>&1)" || RC=$?
 if ! grep -qi 'spec "4" is newer' <<<"$OUT"; then
   echo "$OUT" >&2
   fail "installing a spec-4 recipe was not refused with a spec message"
@@ -140,11 +140,13 @@ grep -qi 'self update' <<<"$OUT" \
 
 [[ "$(registered specfuture)" == "no" ]] \
   || fail "a refused package was registered anyway"
-log "  ✓ refused, and nothing was registered"
+# A refused package is a failed command (design 2026-11-27 C1, E14).
+[[ "$RC" -ne 0 ]] || fail "a refused install exited 0"
+log "  ✓ refused, nothing was registered, and the command failed"
 
 # ── Scenario 2: the refusal does not take the sibling down with it ───────
 log "scenario 2: a well-formed package installs alongside the refused one"
-OUT="$(RUN install specfuture2@1.0.0 specfine@1.0.0 -y 2>&1 || true)"
+RC=0; OUT="$(RUN install specfuture2@1.0.0 specfine@1.0.0 -y 2>&1)" || RC=$?
 if ! grep -qi 'spec "4" is newer' <<<"$OUT"; then
   echo "$OUT" >&2
   fail "the spec-4 recipe was not refused in the combined install"
@@ -155,6 +157,7 @@ fi
 }
 [[ "$(registered specfuture2)" == "no" ]] \
   || fail "the spec-4 recipe was registered despite being refused"
-log "  ✓ per-package skip, transaction survived"
+[[ "$RC" -ne 0 ]] || fail "an install with a refused package exited 0"
+log "  ✓ per-package refusal, the sibling installed, the command failed"
 
 log "E2E-35 xpkg spec gate: PASS"

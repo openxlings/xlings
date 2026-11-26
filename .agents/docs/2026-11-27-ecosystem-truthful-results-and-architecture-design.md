@@ -973,6 +973,13 @@ E_UNSUPPORTED_TARGET: xim:mesa@25.0.7.3 cannot be installed on linux-aarch64:
 - 迁移工具还没有写，能自动改写的比例未知。**先做一次探路**：libxpkg 的 draft PR 里实现 L5 到 L8，
   取十个有代表性的 recipe（只落地的、带 `chmod` 的、带 `tar` 的、Windows 分支多的、用 `try` 的）手工迁移并在 CI 里安装，
   用结果校正上表与规则里最可能要调的两条（`fs.move` 的目标规则、`strip` 的严格程度），再写工具。
+- **探路的结果**（2026-11-27，索引 draft PR #1477，xlings PR #742 的构建）：cmake、dash、fish、gh、go、kotlin、
+  kubectl、make、shfmt、zig 十个 recipe 迁到 `spec = "3"`，在 Linux x86_64 上安装、运行、移除通过。两条规则都不用调：
+  带顶层目录的归档都是一层（`strip = 1`），扁平的（fish）与不是归档的下载（kubectl、shfmt）是 0；`fs.move` 只有 shfmt
+  用到，把落下的上游文件名改成程序名，写最终路径是自然的写法。改写的量是减少：十个 recipe 增 132 行、删 279 行，
+  install hook 里的搬运、`tar`、对工作目录的依赖与 kotlin 里"两种落地方式都要找一遍"的代码全部消失。
+  gh 顶层按 `os.arch()` 拼 URL 的代码由条目的 `arch_alias` 取代；fish 顶层删条目的代码由 `sha256 = { x86_64 = … }` 取代。
+  其余平台与 aarch64 的结果在 #1477 的 CI 上（§19.6）。
 
 **基线的夹具**：`tests/host-matrix/scenarios/hookrt.sh` 的修复（X0）不等这一节：夹具改用 `system.exec`、把 `xim:patchelf`
 声明为构建依赖并检查 `set_interpreter` 确实改了一个文件，失败时把 hook 的日志打进 CI 的输出。
@@ -1638,3 +1645,14 @@ draft PR 只用来取得结果（§11）；结论写回本文，正式的 PR 仍
 
 | 日期 | 检查点 | 发现 | 处置 |
 |---|---|---|---|
+| 2026-11-27 | X2 | hook 的上下文从未填 `arch`（`_RUNTIME.arch` 为空），`os.arch` 在 hook 里没有绑定 | 单一构造函数填 `arch`（`platform::build_arch()`）；`pkginfo.arch()` 取代 `os.arch` |
+| 2026-11-27 | X2 | `system.xpkgdir()` 对包的 hook 是 recipe 所在目录，对脚本是载荷的 store：同一个名字两种含义 | 保持原样（兼容层冻结），`HookScope::xpkg_dir` 写明；规范里写明 |
+| 2026-11-27 | L6 | 兼容层的 `try` 读 `catch[1]`，索引里写的是 `catch = function`：出错时 `try` 自己报错 | 冻结不改；迁移把 `try` 换成 `pcall`（§9.6 的表） |
+| 2026-11-27 | L7 | 模块的实现运行在全局环境，可以用兼容层的名字 | 按 §19.1：实现细节，可以逐步收掉 |
+| 2026-11-27 | L5 | `fs` 的动作返回 `true`：旧 recipe 里 `if not fs.symlink(...)` 的写法仍然成立 | 规范写明动作的返回值没有含义 |
+| 2026-11-27 | X3 | 边界协议没有带条目的 `floor`：在 worker 里读的 recipe 丢了下限 | X3 补上，连同 `strip` 与 hook 的说明、失败调用、`elfpatch` 结果 |
+| 2026-11-27 | L8 | clang 拒绝 `"\x01absent"`（十六进制转义吃掉后面的字母），gcc 接受：L8 之后 libxpkg 的 macOS 与 Windows 任务没有真正跑过 | 改正；三平台通过（`406f3b2`） |
+| 2026-11-27 | X13 | 载荷里保存的 recipe（`.xpkg.lua`）是文件的拷贝：有模板声明的子索引，移除时没有模板里的 hook | 保存 `recipe_text`（文件加模板） |
+| 2026-11-27 | 探路 | 结果见 §9.6"探路的结果"；`strip` 与 `fs.move` 的规则不变 | — |
+| 2026-11-27 | 探路 | XLINGS_RES 的字符串条目（`["4.0.2"] = "XLINGS_RES"`）没有校验和，也不说明架构，检查器报 `arch-unstated` | P2、P3 取 res 资产的校验和写成按架构的形式 |
+| 2026-11-27 | 探路 | `spec = "3"` 的 `install()` 的工作目录仍是下载目录 | 规范不承诺工作目录，hook 只用 `pkginfo` 给出的路径 |

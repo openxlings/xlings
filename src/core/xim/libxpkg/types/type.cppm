@@ -18,7 +18,11 @@ enum class InstallPhase {
     Installing,
     Configuring,
     Done,
-    Failed
+    Failed,
+    // A gate refused the node and nothing was changed: a recipe of a spec
+    // newer than this client, a target its entry has no artifact for (the
+    // outcome `Refused`, design 2026-11-27 C1). Terminal, like Failed.
+    Refused
 };
 
 // Status of a single package during install

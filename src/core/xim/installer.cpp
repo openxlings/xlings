@@ -2877,6 +2877,27 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& requested
     // beside the archive for its hook, staged after it when the hook left
     // install_dir empty.
     std::unordered_map<std::string, int> landings;
+    // What a gate decided, as the node's outcome (design 2026-11-27 C1). A
+    // refusal changed nothing; a failure here means the node is not run in
+    // phase 2 and its dependents are reported failed because of it.
+    const auto refuse = [&](const PlanNode& node, std::string why, std::string hint) {
+        refusedNodes.insert(currentPlanKey);
+        if (onStatus) {
+            onStatus({ .name = node.name, .phase = InstallPhase::Refused, .progress = 0.0f,
+                       .message = std::move(why), .errorCode = "E_UNSUPPORTED", .hint = std::move(hint) });
+        } else {
+            log::error("{}: {}", node.name, why);
+        }
+    };
+    const auto fail_early = [&](const PlanNode& node, std::string why) {
+        failedThisRun.try_emplace(currentPlanKey, std::string{});
+        if (onStatus) {
+            onStatus({ .name = node.name, .phase = InstallPhase::Failed, .progress = 0.0f,
+                       .message = std::move(why) });
+        } else {
+            log::error("{}: {}", node.name, why);
+        }
+    };
     for (auto& node : plan.nodes) {
         currentPlanKey = detail_::plan_key_(node);
         if (node.alreadyInstalled || !node.borrowedPayload.empty() || !node.upstreamPayload.empty()) continue;
@@ -2885,7 +2906,9 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& requested
             mcpplibs::xpkg::normalize_arch(detail_::detect_arch_());
         auto pkg = load_native_recipe(node.pkgFile, node.canonicalName);
         if (!pkg) {
-            log::warn("skipping {}: {}", node.name, pkg.error());
+            // Failed, not skipped (design 2026-11-27 §6.2): the node cannot
+            // be installed, and phase 2 does not run it.
+            fail_early(node, std::format("its recipe could not be read: {}", pkg.error()));
             continue;
         }
 
@@ -2898,15 +2921,12 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& requested
         const auto specSupport = xpkg_spec_support(pkg->spec);
         if (!specSupport.supported) {
             if (specSupport.declared > 0) {
-                log::error("{}: xpackage spec \"{}\" is newer than this "
-                           "xlings understands (max {})",
-                           node.name, pkg->spec, max_supported_xpkg_spec);
-                log::info("try: xlings self update");
+                refuse(node, std::format("xpackage spec \"{}\" is newer than this xlings understands (max {})",
+                                   pkg->spec, max_supported_xpkg_spec),
+                       "xlings self update");
             } else {
-                log::error("{}: unreadable xpackage spec \"{}\"",
-                           node.name, pkg->spec);
+                refuse(node, std::format("unreadable xpackage spec \"{}\"", pkg->spec), {});
             }
-            refusedNodes.insert(detail_::plan_key_(node));
             continue;
         }
 
@@ -2919,9 +2939,7 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& requested
         const auto compatibility = check_target_compatibility(
             *pkg, entry, platform, hostArch);
         if (!compatibility.supported) {
-            log::error("{}", compatibility_error(node.canonicalName,
-                                                   compatibility));
-            refusedNodes.insert(detail_::plan_key_(node));
+            refuse(node, compatibility_error(node.canonicalName, compatibility), {});
             continue;
         }
         if (!compatibility.advisory.empty()) {
@@ -2930,7 +2948,9 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& requested
 
         auto archive = archive_task_for(node, *pkg, platform, hostArch, dlConfig, dataDir);
         if (!archive) {
-            log::warn("skipping {}: {}", node.name, archive.error());
+            // Its hooks would run with no download and could leave an empty
+            // payload recorded as installed (design 2026-11-27 §6.2).
+            fail_early(node, std::format("its download could not be resolved: {}", archive.error()));
             continue;
         }
         if (!*archive) {
@@ -3022,10 +3042,10 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& requested
     // Phase 2: Install each package in topological order
     for (auto& node : plan.nodes) {
         currentPlanKey = detail_::plan_key_(node);
-        // Refused by a gate in phase 1. Skipping here rather than there
-        // is what keeps the refusal per-package: the rest of the plan
-        // installs normally.
-        if (refusedNodes.contains(currentPlanKey)) continue;
+        // Refused by a gate in phase 1, or failed there. Skipping here rather
+        // than there is what keeps the refusal per-package: the rest of the
+        // plan installs normally.
+        if (refusedNodes.contains(currentPlanKey) || failedThisRun.contains(currentPlanKey)) continue;
         if (cancel && cancel->is_cancelled()) {
             return std::unexpected(std::string("cancelled"));
         }
