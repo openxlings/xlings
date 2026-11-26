@@ -154,6 +154,11 @@ struct Desk {
         }
         if (auto n = xbus::Node::connect({.name = "test", .router = xbus::Address{"unix", luban::vm::bus_socket(h).string()}, .telemetry = false}))
             node = *n;
+        // The desktop has come when its shell serves, not only its display: xdesk
+        // offers its services a moment after the display exists, and a call made
+        // in between is told the service is not there (an agent's read of the
+        // state, 2026-11-24 on main).
+        for (int k = 0; k < 100 && node && !state().is_object(); ++k) std::this_thread::sleep_for(100ms);
     }
     ~Desk() {
         (void)luban::vm::desktop(h, "box", {{"op", "end"}});

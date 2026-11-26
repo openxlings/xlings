@@ -17,25 +17,36 @@ case "$(uname -m)" in
 esac
 
 # The fixture: a recipe whose install hook copies glibc's getconf (it needs
-# glibc 2.34), points its PT_INTERP at the standard path, and runs it.
+# glibc 2.34), points its PT_INTERP at the standard path, and runs it. Each
+# step has to say when it did not happen: system.exec fails the hook when the
+# program fails (os.exec only returns a status), and the interpreter is
+# checked as rewritten -- without patchelf set_interpreter changes nothing and
+# the program would start with the payload's own loader.
 idx="$HM_STATE/hookrt-index"
 rm -rf "$idx"; mkdir -p "$idx/pkgs/h"
 echo 'xim_indexrepos = {}' > "$idx/xim-indexrepos.lua"
 cat > "$idx/pkgs/h/hookrt.lua" <<LUA
 package = {
     spec = "1", name = "hookrt", type = "package", archs = {"x86_64", "aarch64"},
-    xpm = { linux = { deps = { runtime = { "xim:glibc" } }, ["1.0.0"] = {}, ["1.0.1"] = {} } },
+    xpm = { linux = {
+        deps = { runtime = { "xim:glibc" }, build = { "xim:patchelf" } },
+        ["1.0.0"] = {}, ["1.0.1"] = {},
+    } },
 }
 import("xim.libxpkg.pkginfo")
 import("xim.libxpkg.elfpatch")
+import("xim.libxpkg.system")
 function install()
     local glibc = pkginfo.dep_install_dir("glibc")
     local dir = pkginfo.install_dir()
-    os.mkdir(path.join(dir, "bin"))
+    if not os.mkdir(path.join(dir, "bin")) then error("cannot create " .. path.join(dir, "bin")) end
     local program = path.join(dir, "bin", "hookrt-getconf")
-    os.cp(path.join(glibc, "bin", "getconf"), program)
-    elfpatch.set_interpreter(program, "$std")
-    os.exec(program .. " PAGESIZE")
+    if not os.cp(path.join(glibc, "bin", "getconf"), program) then error("cannot copy getconf from " .. tostring(glibc)) end
+    local patched = elfpatch.set_interpreter(program, "$std")
+    if patched.patched ~= 1 then
+        error("set_interpreter rewrote " .. tostring(patched.patched) .. " of " .. tostring(patched.scanned) .. " files")
+    end
+    system.exec(program .. " PAGESIZE")
     return true
 end
 LUA
@@ -48,6 +59,17 @@ repos.append({"name": "hmfix", "url": sys.argv[2]})
 cfg["index_repos"] = repos
 json.dump(cfg, open(p, "w"), indent=2)
 PY
+
+# What the hook itself wrote, for a step that did not go as expected: the
+# install's own output names the failure, the hook log says what led to it.
+hook_logs() {
+    local f
+    for f in "$XLINGS_HOME"/logs/hooks/*hookrt*; do
+        [[ -f "$f" ]] || continue
+        printf -- '--- %s\n' "${f#"$XLINGS_HOME"/}"
+        tail -n 40 "$f"
+    done
+}
 
 step "the fixture index is read" ok -- X update
 
@@ -62,10 +84,10 @@ record "this host's standard path: $form (glibc ${host_glibc:-none})" true 0 ""
 if [[ "$older" == true ]]; then
     # The host's own runtime, kept (取舍 1): the failure names it.
     step "a hook's program that needs a newer glibc fails, and says which it saw" nonzero \
-        "this machine's glibc $host_glibc" -- X install -y hmfix:hookrt@1.0.0
+        "this machine's glibc $host_glibc" -- X install -y hmfix:hookrt@1.0.0 || hook_logs
     done_
 fi
-step "a hook starts a downloaded program (an ordinary home)" ok -- X install -y hmfix:hookrt@1.0.0
+step "a hook starts a downloaded program (an ordinary home)" ok -- X install -y hmfix:hookrt@1.0.0 || hook_logs
 
 # A SubOS with a policy: its hooks run in a worker already, given the same runtime.
 if out="$(X subos new hmhook --sandbox dev 2>&1)"; then
