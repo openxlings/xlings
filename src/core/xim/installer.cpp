@@ -1556,10 +1556,12 @@ std::filesystem::path private_stage_dir_(const std::filesystem::path& runtimeDir
 // spec "3": the download's content in `installDir` before install() runs
 // (design 2026-11-27 §9.7). An archive is extracted in a private directory
 // under `runtimeDir` with the entry's `strip` components dropped, then moved
-// in -- the path a package without an install hook has always taken; any
-// other download is copied in under its own name. What `installDir` held is
-// the leftovers of an attempt that did not finish (a payload being replaced
-// was set aside before this) and goes first.
+// in -- the path a package without an install hook has always taken; a
+// repository's checkout (a git URL) is copied in without its .git, the clone
+// staying where downloads are kept for the next pull; any other download is
+// copied in under its own name. What `installDir` held is the leftovers of an
+// attempt that did not finish (a payload being replaced was set aside before
+// this) and goes first.
 std::expected<void, ExtractError> land_download_(const std::filesystem::path& download,
                                                  const std::filesystem::path& installDir,
                                                  const std::filesystem::path& runtimeDir,
@@ -1583,6 +1585,21 @@ std::expected<void, ExtractError> land_download_(const std::filesystem::path& do
                 std::format("strip = {} is for an archive, and {} is not one", strip,
                             download.filename().string())});
         if (auto cleared = clear(); !cleared) return cleared;
+        std::error_code kind;
+        if (fs::is_directory(download, kind)) {
+            for (fs::directory_iterator it(download, ec); !ec && it != std::default_sentinel; it.increment(ec)) {
+                if (it->path().filename() == ".git") continue;
+                std::error_code copy;
+                fs::copy(it->path(), installDir / it->path().filename(),
+                         fs::copy_options::recursive | fs::copy_options::copy_symlinks, copy);
+                if (copy) {
+                    ec = copy;
+                    return failed(std::format("cannot copy {} into {}", it->path().string(), installDir.string()));
+                }
+            }
+            if (ec) return failed(std::format("cannot read {}", download.string()));
+            return {};
+        }
         fs::copy_file(download, installDir / download.filename(), fs::copy_options::overwrite_existing, ec);
         if (ec) return failed(std::format("cannot copy {} into {}", download.string(), installDir.string()));
         return {};

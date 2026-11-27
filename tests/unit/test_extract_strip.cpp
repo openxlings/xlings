@@ -205,4 +205,15 @@ XTEST(LandDownload, TheContentIsInTheInstallDirectoryLaidOutAndLeftoversAreGone,
     landed = xim::detail_::land_download_(t.root / "probe.exe", install, t.root / "runtime", "xim:probe@1.0.0", 1);
     ASSERT_FALSE(landed.has_value());
     EXPECT_NE(landed.error().message.find("is not one"), std::string::npos) << landed.error().message;
+
+    // A repository's checkout (a git URL) is its working tree; the clone and
+    // its .git stay where they were, for the next pull.
+    const auto checkout = t.root / "runtime" / "templates";
+    tk::write_file(checkout / ".git" / "HEAD", "ref: refs/heads/main\n");
+    tk::write_file(checkout / "cpp" / "main.cpp", "int main() {}\n");
+    tk::write_file(checkout / "README", "templates");
+    landed = xim::detail_::land_download_(checkout, install, t.root / "runtime", "xim:templates@latest", 0);
+    ASSERT_TRUE(landed.has_value()) << landed.error().message;
+    EXPECT_EQ(tree(install), (std::set<std::string>{"cpp/", "cpp/main.cpp", "README"}));
+    EXPECT_TRUE(fs::exists(checkout / ".git" / "HEAD"));
 }
