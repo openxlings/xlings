@@ -232,9 +232,25 @@ std::expected<int, std::string> bring_userland(const fs::path& root, const fs::p
     if (at >= kUserlandRevision) return at;
     std::error_code ec;
     // 1: the image carries busybox and /bin/sh; the rest of its applets are
-    // linked where a Linux has them (/bin, /usr/bin, ...).
-    if (at < 1 && fs::is_regular_file(root / "bin/busybox", ec) && !fs::exists(root / "bin/ls", ec))
-        (void)platform::run_argv({(root / "bin/busybox").string(), "--install", "-s"});
+    // linked where a Linux has them (/bin, /usr/bin, ...) -- under `root`.
+    // Not `busybox --install -s`: that links into the root of the process
+    // that runs it, which is the machine's only when the probe runs in it.
+    if (at < 1 && fs::is_regular_file(root / "bin/busybox", ec) && !fs::exists(root / "bin/ls", ec)) {
+        std::string listed;
+        (void)platform::stream::run({(root / "bin/busybox").string(), "--list-full"},
+                                    [&](std::string_view stream, std::string_view chunk) {
+                                        if (stream == "stdout") listed.append(chunk);
+                                    });
+        std::istringstream lines(listed);
+        for (std::string relative; std::getline(lines, relative);) {
+            const fs::path applet(relative);
+            if (relative.empty() || applet.is_absolute() || relative.find("..") != std::string::npos) continue;
+            const auto link = root / applet;
+            if (fs::exists(fs::symlink_status(link, ec))) continue;
+            fs::create_directories(link.parent_path(), ec);
+            fs::create_symlink("/bin/busybox", link, ec);
+        }
+    }
     // 2: the standard loader directory is the home's runtime -- a program a
     // hook downloads and starts names /lib64/ld-linux-x86-64.so.2 (#724).
     // Constant: <home>/abi switches generations underneath it. A directory

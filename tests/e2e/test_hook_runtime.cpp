@@ -91,8 +91,11 @@ XTEST(HookRuntime, AHostMachineLikeRootRunsAHooksDownloadedProgram, .area = "xim
     auto made = home.xlings({"subos", "new", "box", "--carrier", "wsl2"}, env, std::chrono::minutes(5));
     ASSERT_EQ(made.exit_code, 0) << made.transcript();
     const auto root = wsl / "distros" / xlings::carrier::wsl2::distro_name(home.dir());
-    // (a) Its probe linked the standard directory to the home's runtime.
+    // (a) Its probe linked the standard directory to the home's runtime, and
+    // busybox's applets in the root (not in the root of the process that ran
+    // the probe, which here is this host's).
     ASSERT_TRUE(fs::is_symlink(root / stdDir)) << made.transcript();
+    EXPECT_EQ(fs::read_symlink(root / "bin/cp"), "/bin/busybox") << made.transcript();
     tk::write_file(root / "etc/resolv.conf", tk::read_file("/etc/resolv.conf"));
     write_fixture_index(root / "xlings/hmfix", standard);
 
