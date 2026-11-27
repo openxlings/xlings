@@ -18,7 +18,10 @@ XTEST(BuildPaths, ABuildMachinePathIsFoundAndThisHomesAreNot, .area = "xim", .co
     const auto payload = home.dir() / "data" / "xpkgs" / "xim-x-probe" / "1.0.0";
     tk::write_elf(payload / "bin" / "built-elsewhere", { .runpath = std::string("/home/builder/work/probe/lib") });
     tk::write_elf(payload / "bin" / "relative", { .runpath = std::string("$ORIGIN/../lib") });
-    tk::write_elf(payload / "bin" / "relocated", { .rpath = (payload / "lib").generic_string() });
+    // An ELF search path is colon-separated: it names a POSIX path, never a
+    // drive (on Windows the payload's own path cannot be written in one).
+    if (payload.generic_string().starts_with('/'))
+        tk::write_elf(payload / "bin" / "relocated", { .rpath = (payload / "lib").generic_string() });
     tk::write_elf(payload / "bin" / "system", { .runpath = std::string("/usr/lib/x86_64-linux-gnu") });
     tk::write_file(payload / "lib" / "pkgconfig" / "probe.pc",
                    "prefix=/tmp/build-1234/probe\nlibdir=${prefix}/lib\nLibs: -L${libdir} -lprobe\n");
@@ -40,4 +43,17 @@ XTEST(BuildPaths, ABuildMachinePathIsFoundAndThisHomesAreNot, .area = "xim", .co
     tk::write_elf(payload / "bin" / "padded", { .runpath = std::string("/nonexistent/xlings-use-rpath-not-default-search") });
     EXPECT_EQ(bp::scan(payload, {home.dir()}).files, 3u);
     EXPECT_TRUE(bp::describe({}, payload).empty());
+
+    // A drive path is one path, the build machine's (a Windows runner's
+    // checkout) found as such; this payload's, in either case, is not.
+    tk::write_file(payload / "lib" / "pkgconfig" / "win.pc",
+                   "prefix=D:/a/probe/install\nLibs: -LD:\\a\\probe\\install\\lib\n");
+    auto upper = payload.generic_string();
+    for (auto& c : upper) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+    tk::write_file(payload / "lib" / "pkgconfig" / "self.pc", "prefix=" + upper + "\n");
+    const auto drives = bp::scan(payload, {home.dir()});
+    EXPECT_EQ(drives.files, upper.starts_with('/') ? 5u : 4u);
+    std::set<std::string> named;
+    for (const auto& f : bp::scan(payload / "lib" / "pkgconfig", {home.dir()}).examples) named.insert(f.path);
+    EXPECT_TRUE(named.contains("D:/a/probe/install"));
 }
