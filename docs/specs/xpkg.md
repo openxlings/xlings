@@ -234,10 +234,13 @@ An entry with an artifact states which architectures it ships:
   closure names every package that has no artifact for it, at once.
 - "The same bytes" is a claim the payload rule checks on every listed
   architecture; a new host architecture adds a key to such entries.
+- A git repository (a URL ending in `.git`) is a source the hooks build, not
+  an artifact: it names no architecture.
 - **spec `"3"`**: an entry with an artifact enumerates its architectures (the
   first three rows) on a platform with more than one host architecture
-  (today: `linux`). On a platform with one (`macosx`, `windows`), an unstated
-  entry is that architecture's. A recipe of spec 1 or 2 may leave it unstated;
+  (today: `linux`). On a platform with one (`macosx`: aarch64, `windows`:
+  x86_64), an unstated entry is that architecture's, and counts as it in
+  `archs` (§3.3). A recipe of spec 1 or 2 may leave it unstated;
   the checker reports `arch-unstated` (§8.4).
 
 ### 4.5 `source` (libxpkg 0.0.44)
