@@ -1253,10 +1253,6 @@ std::filesystem::path runtime_dir_(const PlanNode& node,
     return dataRoot / "runtimedir";
 }
 
-std::filesystem::path xpkg_snapshot_file_(const std::filesystem::path& installDir) {
-    return installDir / ".xpkg.lua";
-}
-
 std::expected<void, std::string>
 save_resolution_(const PlanNode& node, const mcpplibs::xpkg::ExecutionContext& ctx) {
     namespace fs = std::filesystem;
@@ -1307,6 +1303,21 @@ save_resolution_(const PlanNode& node, const mcpplibs::xpkg::ExecutionContext& c
     }
 }
 
+// <dir>/<name>.lua of a recipe in an index: where its kept copy goes under
+// the payload's .xpkg/pkgs/ (kept_recipe).
+std::filesystem::path kept_recipe_rel_(const std::filesystem::path& recipe) {
+    const auto dir = recipe.parent_path().filename();
+    return (dir.empty() ? std::filesystem::path("x") : dir) / recipe.filename();
+}
+
+// The libs directory of the index a recipe is read from (the one its hooks
+// get), or empty when that index has none.
+std::filesystem::path index_libs_of_(const std::filesystem::path& recipe) {
+    bool hasLibs = false;
+    const auto root = pkgindex_root_for(recipe, &hasLibs);
+    return hasLibs ? std::filesystem::path(root) / "libs" : std::filesystem::path{};
+}
+
 std::expected<void, std::string>
 save_xpkg_snapshot_(const std::filesystem::path& sourcePkgFile,
                     const std::filesystem::path& installDir) {
@@ -1326,40 +1337,48 @@ save_xpkg_snapshot_(const std::filesystem::path& sourcePkgFile,
             std::format("failed to create install dir for xpkg snapshot: {}", ec.message()));
     }
 
-    auto snapshotFile = xpkg_snapshot_file_(installDir);
-    ec.clear();
-    if (fs::exists(snapshotFile, ec)) {
-        ec.clear();
-        if (fs::equivalent(sourcePkgFile, snapshotFile, ec) && !ec) return {};
-    }
+    // Run from the kept recipe itself: it is already what it keeps.
+    const auto keptRoot = installDir / std::string(kKeptIndexDir);
+    const auto rel = sourcePkgFile.lexically_relative(keptRoot);
+    if (!rel.empty() && *rel.begin() != "..") return {};
 
     // The recipe as it ran: with the template its index declares appended
-    // (index-compat.json `recipes.template`, design 2026-11-27 §9.8), so a
-    // removal read from the payload has the hooks the install had.
+    // (index-compat.json `recipes.template`, design 2026-11-27 §9.8), and the
+    // index libs it imports (§20.1), so a removal read from the payload has
+    // the hooks and the libs the install had.
     auto text = mcpplibs::xpkg::recipe_text(sourcePkgFile);
     if (!text) {
         return std::unexpected(
             std::format("failed to read the recipe {} for its snapshot: {}",
                         sourcePkgFile.string(), text.error()));
     }
-    try {
-        platform::write_file_atomic(snapshotFile.string(), *text);
-    } catch (const std::exception& e) {
-        return std::unexpected(
-            std::format("failed to save xpkg snapshot {}: {}",
-                        snapshotFile.string(), e.what()));
-    }
-    return {};
+    return keep_recipe(installDir, *text, kept_recipe_rel_(sourcePkgFile), index_libs_of_(sourcePkgFile));
 }
 
 std::filesystem::path uninstall_xpkg_file_(const std::filesystem::path& indexPkgFile,
                                            const std::filesystem::path& installDir) {
-    std::error_code ec;
-    auto snapshotFile = xpkg_snapshot_file_(installDir);
-    if (std::filesystem::exists(snapshotFile, ec)) {
-        return snapshotFile;
+    namespace fs = std::filesystem;
+    const auto kept = kept_recipe(installDir);
+    if (!kept) return indexPkgFile;
+    if (kept->filename() != kLegacyKeptRecipe) return *kept;
+    // A payload a client before §20.1 installed kept the recipe alone. Brought
+    // forward once, with the libs of the package's index now (the best this
+    // client can know of them); a payload it cannot write keeps the old file,
+    // whose missing libs now fail the hook that calls them instead of
+    // succeeding silently.
+    std::string text;
+    try {
+        text = platform::read_file_to_string(kept->string());
+    } catch (...) {
+        return *kept;
     }
-    return indexPkgFile;
+    const auto rel = indexPkgFile.empty() ? fs::path("x") / "recipe.lua" : kept_recipe_rel_(indexPkgFile);
+    if (auto moved = keep_recipe(installDir, text, rel, indexPkgFile.empty() ? fs::path{} : index_libs_of_(indexPkgFile));
+        !moved) {
+        log::debug("the kept recipe of {} stays in the previous layout: {}", installDir.string(), moved.error());
+        return *kept;
+    }
+    return kept_recipe(installDir).value_or(*kept);
 }
 
 bool is_archive_(const std::filesystem::path& path) {
@@ -1616,14 +1635,20 @@ void collect_hook_report_(std::string_view hook, const mcpplibs::xpkg::HookResul
 // A finding (design 2026-11-27 §4): what a check found about a node, which
 // does not change its outcome. Each is in `-v` and in
 // <home>/logs/findings.ndjson; the command says how many there were.
-void record_finding_(const PlanNode& node, std::string_view rule, const std::string& text,
-                     const std::filesystem::path& payload) {
-    log::debug("[{}@{}] {}: {}", node.name, node.version, rule, text);
+void record_finding_(std::string_view package, std::string_view version, std::string_view rule,
+                     const std::string& text, const std::filesystem::path& payload) {
+    log::debug("[{}@{}] {}: {}", package, version, rule, text);
     observe::append_json(Config::paths().homeDir / "logs" / "findings.ndjson",
         {{"ts", observe::utc_now()},
-         {"package", node.canonicalName.empty() ? node.name : node.canonicalName},
-         {"version", node.version}, {"rule", rule}, {"message", text},
+         {"package", package},
+         {"version", version}, {"rule", rule}, {"message", text},
          {"payload", payload.generic_string()}});
+}
+
+void record_finding_(const PlanNode& node, std::string_view rule, const std::string& text,
+                     const std::filesystem::path& payload) {
+    record_finding_(node.canonicalName.empty() ? node.name : node.canonicalName, node.version, rule, text,
+                    payload);
 }
 
 bool normalize_file_install_(const std::filesystem::path& installPath) {
@@ -4812,6 +4837,13 @@ std::expected<Installer::UninstallOutcome, std::string> Installer::uninstall(con
             auto result = executor.run_hook(
                 mcpplibs::xpkg::HookType::Uninstall, ctx);
             const auto hookLog = std::exchange(ctx.hook_log, {});
+            // The compatibility layer's calls that failed, as for config()
+            // and install() (design 2026-11-27 §9.6): findings.
+            for (const auto& f : result.call_failures)
+                detail_::record_finding_(
+                    resolvedMatch && !resolvedMatch->canonicalName.empty() ? resolvedMatch->canonicalName : name,
+                    ctx.version, "hook-call-failed",
+                    std::format("uninstall(): {}({}) failed: {}", f.call, f.what, f.why), installDir);
             if (!result.success) {
                 // The recipe's own cleanup failed. Before this change that
                 // was fatal HERE, before the version DB entry, the

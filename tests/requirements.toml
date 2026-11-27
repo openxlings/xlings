@@ -1272,6 +1272,18 @@ status = "required"
 text = "the environment of spec 3 has exactly the interface manifest's names; the generated hook interface reference (docs/generated/xpkg-hook-api.md) is not stale; docs/specs/xpkg.md is byte for byte the specification of the libxpkg xlings builds with"
 status = "required"
 
+[XPKG-SNAPSHOT-LIBS]
+text = "a payload keeps its recipe as an index of that recipe with the closure of the index libs it imports (<install>/.xpkg/pkgs, .xpkg/libs): a removal runs uninstall() with the libs the install had, whatever the index holds later; a payload kept as .xpkg.lua alone is brought forward with the index's libs at its first removal; a lib that is nowhere fails the hook that calls it, naming the call and the lib (#743)"
+status = "required"
+
+[PKG-COMPLETION]
+text = "a package's shell completion declared on xvm.add(name, { completion = { bash, zsh, fish, pwsh } }) is linked into the subos's usr/share (bash-completion/completions/<name>, zsh/site-functions/_<name>, fish/vendor_completions.d/<name>.fish, powershell/completions/<name>.ps1), follows `xlings use`, goes with the release, and the profile loads it (bash: complete -p <name>) (#744)"
+status = "required"
+
+[PROFILE-UPGRADE-KEEPS]
+text = "the shell profile is xlings' generated file: an upgrade to a new profile version rewrites it and keeps what it replaced at <home>/logs/profile-upgrades/<file>.v<old>; a profile of the current version is left as it is, edits included"
+status = "required"
+
 [XPKG-CONFORMANCE]
 text = "every conformance case of libxpkg that names an install ends, installed through xlings, as it says (installed, failed or refused), with the payload it states"
 status = "required"

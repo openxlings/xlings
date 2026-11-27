@@ -53,7 +53,11 @@ libxpkg reads what that libxpkg reads.
 A recipe defines the global `package` at its top level. Its top level is
 evaluated whenever the recipe is read (search, an index build, an install), so
 it only computes: a recipe of spec `"3"` may call only `pure` names there
-(§6.2); the host's work happens in hooks.
+(§6.2); the host's work happens in hooks. Each read is for a platform and an
+architecture -- the loader's for the target it reads, the hook runtime's for
+the install -- and a recipe of spec 1 or 2 that computes from them at its top
+level (`pkginfo.platform()`, `pkginfo.arch()`, `os.host()`) is told the same
+at every read.
 
 ### 3.1 Fields
 
@@ -423,13 +427,14 @@ its own:
 | `os.isfile`, `os.isdir`, `fs.is_directory` | `fs.is_file`, `fs.is_dir` |
 | `os.tryrm`, `fs.remove_all`, `os.remove` | `fs.remove` |
 | `os.mkdir`, `fs.mkdir_p` | `fs.mkdir` |
-| `os.mv`, `os.trymv`, `os.rename`, `os.cp`, `fs.copy_file` | `fs.move`, `fs.copy` (the destination is the final path) |
+| `os.mv`, `os.trymv`, `os.rename`, `os.cp`, `fs.copy_file` | `fs.move`, `fs.copy`: the destination is the final path (`path.join(dir, name)` where `os.mv` and `os.cp` went into a directory), and one already there is replaced only with `{ replace = true }` |
 | `io.readfile`, `io.writefile`, `io.open` | `fs.read`, `fs.write` |
 | `os.dirs`, `fs.files`, `fs.dirs`, `fs.entries` | `fs.list` |
 | running `chmod` | `fs.chmod` |
 | running `tar`, `unzip` | landing (§5.2), `fs.extract` |
-| `os.exec`, `os.execute` | `system.exec`; `system.run` where its result is used |
-| `os.iorun`, `io.popen` | `system.exec(cmd, { capture = true })`, `system.run` |
+| `os.exec` | `system.exec` (both fail the hook when the command fails) |
+| `os.execute` | `system.run` (neither fails on the command's status); `system.exec` when a failure should fail the hook |
+| `os.iorun`, `io.popen` | `system.run(cmd).out` (neither fails: a failed command's output is the answer); `system.exec(cmd, { capture = true })` when a failure should fail the hook |
 | `os.cd`, `os.setenv`, `os.addenv` | `system.exec`'s `cwd` and `env` |
 | `os.host()`, `is_host(x)`, `os.arch()` | `pkginfo.platform()`, `pkginfo.arch()` |
 | the global `path` | `import("xim.libxpkg.path")` |
@@ -456,6 +461,12 @@ a recipe written against it keeps working. Two things differ since libxpkg
    `os.exec`) still returns as before, and is reported with the hook's result
    (the call, its arguments, why). A host shows it as a finding, and §5.2's
    rule for an empty payload uses it.
+3. `import("xim.pkgindex.<lib>")` of a lib the index does not have, or one
+   that cannot be loaded, still answers with a stand-in, so the recipe can be
+   read; a call to it in a hook raises (the member, the lib, why): the hook
+   fails unless the recipe handles it, and what the stand-in would answer
+   never reaches the next action. A host keeps a payload's recipe with the
+   libs it imports (§8.1), so its hooks find the libs they ran with.
 
 A recipe written for every client probes a capability newer than the oldest
 it supports: a new function of a module an old client has, by its presence
@@ -470,6 +481,7 @@ unknown module is an error.
 |---|---|---|
 | `xvm.add`, `xvm.remove`, `xvm.use`, `xvm.setup`, `xvm.teardown` | programs, libraries and headers the home registers for the package, and which version is active | — |
 | `xvm.files` | a file of the payload placed into the SubOS | libxpkg 0.0.47 |
+| `xvm.add(name, { completion = { bash, zsh, fish, pwsh } })` | the program's shell completion: files of the payload (relative to its root), placed where each shell looks in the SubOS (`usr/share/bash-completion/completions/<name>`, `usr/share/zsh/site-functions/_<name>`, `usr/share/fish/vendor_completions.d/<name>.fish`, `usr/share/powershell/completions/<name>.ps1`) and bound to the program's release: they follow `use`, go with the package, and the host's shell profile loads them. A program that prints its completion writes it into the payload in `install()`. A package never edits the host's shell profiles | libxpkg 0.0.68 |
 | `subos.env` | a variable every process in the SubOS gets: `{ var, op = "set" or "prepend", value, binding }`; `value` uses `${pkgdir}`, `${subosdir}`, `${home}`, `${xlings_home}`, never an absolute path; removed with the package, never by `uninstall()` | libxpkg 0.0.48 |
 | `system.admin_step(argv, why)` | a step only an administrator may take; the host asks once after the install, through its one door for it, or keeps it for its repair command. A recipe never runs `sudo` | libxpkg 0.0.63 |
 | `elfpatch.set(opt)`, `elfpatch.skip()` | how the host patches the payload after `install()` (§5.3) | — |
@@ -502,6 +514,12 @@ libs/<lib>.lua                   libs the recipes import (xim.pkgindex.<lib>)
 index-compat.json                what the index says about itself (optional)
 xim-indexrepos.lua               sub-indexes it names (optional)
 ```
+
+A host that keeps an installed package's recipe for its later hooks (an
+uninstall) keeps it as an index of that one recipe: the recipe as it ran
+(with the template, §8.2) at the same `pkgs/` path, and under `libs/` the
+libs it imports, followed through the libs' own imports, as they were. Its
+hooks then find what they ran with, whatever the index has become.
 
 ### 8.2 `index-compat.json`
 

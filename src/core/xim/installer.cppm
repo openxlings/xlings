@@ -407,8 +407,6 @@ std::filesystem::path data_root_for_(const std::filesystem::path& targetRoot);
 std::filesystem::path runtime_dir_(const PlanNode& node,
                                    const std::filesystem::path& fallbackDataDir);
 
-std::filesystem::path xpkg_snapshot_file_(const std::filesystem::path& installDir);
-
 std::expected<void, std::string>
 save_xpkg_snapshot_(const std::filesystem::path& sourcePkgFile,
                     const std::filesystem::path& installDir);
@@ -496,6 +494,9 @@ void collect_hook_report_(std::string_view hook, const mcpplibs::xpkg::HookResul
 // A finding about `node` (design 2026-11-27 §4): -v and <home>/logs/findings.ndjson.
 void record_finding_(const PlanNode& node, std::string_view rule, const std::string& text,
                      const std::filesystem::path& payload);
+// The same, for a package named without a plan (a removal).
+void record_finding_(std::string_view package, std::string_view version, std::string_view rule,
+                     const std::string& text, const std::filesystem::path& payload);
 
 bool normalize_file_install_(const std::filesystem::path& installPath);
 

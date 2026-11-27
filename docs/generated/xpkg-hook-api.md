@@ -98,7 +98,7 @@ Libraries, whole: `string`, `table`, `math`, `utf8`; of `os`: `os.time`, `os.dat
 
 | Name | Kind | Holds after it / answers | Since | Platforms |
 |---|---|---|---|---|
-| `xvm.add(name [, opt])` | declaration | register a program, library or version | — | — |
+| `xvm.add(name [, opt])` | declaration | register a program, library or version; opt.completion: the program's shell completion files | — | — |
 | `xvm.files(opt)` | declaration | place a file of the payload into the SubOS | — | — |
 | `xvm.remove(name [, version])` | declaration | unregister it | — | — |
 | `xvm.use(name, version)` | declaration | make a version the active one | — | — |
@@ -164,24 +164,24 @@ Frozen: no name is added or changed. What a recipe of spec "3" writes instead:
 
 | Name | In spec 3 |
 |---|---|
-| `os.mv` | fs.move |
-| `os.trymv` | fs.move |
-| `os.cp` | fs.copy |
+| `os.mv` | fs.move(src, final_path) |
+| `os.trymv` | pcall(fs.move, src, final_path) |
+| `os.cp` | fs.copy(src, final_path) |
 | `os.mkdir` | fs.mkdir |
 | `os.tryrm` | fs.remove |
 | `os.isfile` | fs.is_file |
 | `os.isdir` | fs.is_dir |
 | `os.dirs` | fs.list |
 | `os.exec` | system.exec |
-| `os.execute` | system.exec |
-| `os.iorun` | system.exec(cmd, { capture = true }) |
+| `os.execute` | system.run |
+| `os.iorun` | system.run(cmd).out |
 | `os.cd` | system.exec's cwd option |
 | `os.setenv` | system.exec's env option |
 | `os.addenv` | system.exec's env option |
 | `os.host` | pkginfo.platform |
 | `os.sleep` | nothing: it is not needed |
 | `os.remove` | fs.remove |
-| `os.rename` | fs.move |
+| `os.rename` | fs.move(src, final_path) |
 | `os.tmpname` | nothing: it is not needed |
 | `io.readfile` | fs.read |
 | `io.writefile` | fs.write |

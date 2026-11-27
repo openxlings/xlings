@@ -94,7 +94,16 @@ xlings config --remove-xpkg hello
 - **Hooks**: `config()` registers programs (`xvm.add`), libraries and
   environment -- a package that lists `programs` registers them;
   `uninstall()` undoes what `config()` did that xlings does not undo itself.
-  A hook succeeds unless it returns `false` or raises.
+  A hook succeeds unless it returns `false` or raises. The payload keeps the
+  recipe as it was installed, with the index libs it imports, and the removal
+  runs that copy: `uninstall()` undoes what its own install did, whatever the
+  index holds by then.
+- **Shell completion is declared**, not written into a profile:
+  `xvm.add("tool", { bindir = ..., completion = { bash = "share/completion/tool.bash", zsh = "share/completion/_tool", fish = "share/completion/tool.fish", pwsh = "share/completion/tool.ps1" } })`.
+  Each file of the payload is linked where its shell looks, follows
+  `xlings use` and goes with the version; xlings' profile loads them. A
+  program that prints its own completion writes the files in `install()`. A
+  hook never edits a shell's rc file or xlings' profile.
 - **`log.warn` is for the user**: it is shown after the command's summary.
   Progress is `log.info` (shown with `-v`).
 - **Dependencies** are declared per platform (`deps = { runtime = {…}, build = {…} }`).

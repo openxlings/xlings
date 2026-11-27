@@ -73,6 +73,12 @@ xlings config --remove-xpkg hello
 - **`archs`** 是各条目所列架构的并集，用于搜索；索引会检查它。
 - **钩子**：`config()` 注册程序（`xvm.add`）、库和环境——声明了 `programs` 的包要注册它们；
   `uninstall()` 撤销 `config()` 做过而 xlings 不会自己撤销的事。hook 只要不返回 `false`、不报错就是成功。
+  载荷保存安装时的 recipe 以及它导入的索引 lib，卸载运行的就是这一份：`uninstall()` 撤销的是它自己那次安装
+  做过的事，不管索引那时是什么样。
+- **shell 补全用声明**，不写进 profile：
+  `xvm.add("tool", { bindir = ..., completion = { bash = "share/completion/tool.bash", zsh = "share/completion/_tool", fish = "share/completion/tool.fish", pwsh = "share/completion/tool.ps1" } })`。
+  载荷里的每个文件被链接到对应 shell 查找的位置，随 `xlings use` 切换、随版本卸载；xlings 的 profile 加载它们。
+  程序能自己打印补全的，在 `install()` 里生成这些文件。hook 从不修改 shell 的 rc 文件或 xlings 的 profile。
 - **`log.warn` 是给用户看的**：显示在命令的总结之后。进度用 `log.info`（`-v` 时显示）。
 - **依赖**按平台声明（`deps = { runtime = {…}, build = {…} }`）。不带命名空间的名字指同一索引里的同名包。
 - 版本上的 **`revision`**：已发布版本的 payload 或 `config()` 的效果变了就提升它——这是安装该版本时（在任何一个 scope）唯一会响应的信号。

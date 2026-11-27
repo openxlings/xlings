@@ -387,4 +387,31 @@ void remove_parked_payload_marker(const std::filesystem::path& parkedDir);
 // caller can log a count instead of nothing.
 int recover_parked_payloads(const std::filesystem::path& staleRoot);
 
+// ── the recipe a payload keeps for its later hooks ────────────────────
+//
+// An index of that one recipe (design 2026-11-27 §20.1): the recipe as it ran
+// (with its index's template) at .xpkg/pkgs/<dir>/<name>.lua, and the index
+// libs it imports, followed through the libs' own imports, under
+// .xpkg/libs/, as they were. libxpkg reads it as any index, so an uninstall
+// run from it has the libs the install had -- whatever the index has become
+// (#743). Before it, .xpkg.lua held the recipe alone, which found no libs.
+inline constexpr std::string_view kKeptIndexDir = ".xpkg";
+inline constexpr std::string_view kLegacyKeptRecipe = ".xpkg.lua";
+
+// The payload's kept recipe in either layout (the index first), or nothing.
+std::optional<std::filesystem::path> kept_recipe(const std::filesystem::path& payload);
+
+// The index libs `text` imports (`xim.pkgindex.<lib>`), with the ones those
+// import, as found under `indexLibs`; a name not there is left out.
+std::vector<std::string> imported_libs(std::string_view text, const std::filesystem::path& indexLibs);
+
+// Keeps `text` at .xpkg/pkgs/<rel> with its libs from `indexLibs` (empty: an
+// index without libs), replacing what the payload kept before in either
+// layout. Written beside and renamed into place: a payload never holds half
+// of one.
+std::expected<void, std::string> keep_recipe(const std::filesystem::path& payload,
+                                             std::string_view text,
+                                             const std::filesystem::path& rel,
+                                             const std::filesystem::path& indexLibs);
+
 }  // namespace xlings::xim

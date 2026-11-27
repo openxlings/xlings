@@ -1839,12 +1839,9 @@ selected_payloadless_config_has_uninstall_(
     const auto installDir = storeRoot
         / package_store_name(match.namespaceName, match.name)
         / match.version;
-    const auto snapshot = installDir / ".xpkg.lua";
+    // The recipe the payload kept (either layout), as the removal runs it.
+    const auto recipe = kept_recipe(installDir).value_or(match.pkgFile);
     std::error_code ec;
-    const auto recipe = std::filesystem::is_regular_file(snapshot, ec)
-        ? snapshot
-        : match.pkgFile;
-    ec.clear();
     if (!std::filesystem::is_regular_file(recipe, ec)) {
         return std::unexpected(std::format(
             "uninstall recipe is not a local file: {}", recipe.string()));

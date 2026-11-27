@@ -46,8 +46,14 @@ xpkg::HostPorts host_ports() {
         return std::nullopt;
     }};
 }
-std::expected<xpkg::PackageExecutor, std::string> in_process(const fs::path& package) {
-    auto executor = xpkg::create_executor(package);
+// What a recipe is read for: the install's platform and architecture, which
+// its top level is told as the loader tells it (libxpkg's ReadTarget).
+xpkg::ReadTarget read_target(const xpkg::ExecutionContext& context) {
+    return {context.platform, context.arch};
+}
+std::expected<xpkg::PackageExecutor, std::string> in_process(const fs::path& package,
+                                                             const xpkg::ExecutionContext& context) {
+    auto executor = xpkg::create_executor(package, read_target(context));
     if (executor) executor->set_host_ports(host_ports());
     return executor;
 }
@@ -1090,7 +1096,7 @@ create_executor(const fs::path& package, xpkg::ExecutionContext& context,
     // and a failure says so.
     const bool for_runtime = !*p && !readonly_payload && !runtime.mounts.empty();
     if (!*p && !readonly_payload && !for_runtime)
-        return in_process(package);
+        return in_process(package, context);
     const bool layer_only = !*p;
     if (readonly_payload || for_runtime) {
         if (!*p)
@@ -1107,7 +1113,7 @@ create_executor(const fs::path& package, xpkg::ExecutionContext& context,
         log::debug("hook runtime: no worker for {} ({}); the hook runs here", package.string(), worker.error());
         if (runtime_note)
             *runtime_note = hook_runtime_note_(runtime, worker.error());
-        return in_process(package);
+        return in_process(package, context);
     }
     if (!worker)
         return std::unexpected(worker.error());
@@ -1119,6 +1125,7 @@ create_executor(const fs::path& package, xpkg::ExecutionContext& context,
             return std::unexpected("cannot stage hook archive: " + ec.message());
         context.install_file = private_file;
     }
+    const auto target = read_target(context);
     return xpkg::create_executor(
         absolute_package,
         [worker = *worker](const xpkg::HookInvocation& original)
@@ -1193,7 +1200,8 @@ create_executor(const fs::path& package, xpkg::ExecutionContext& context,
                 worker->failure = e.what();
                 return std::unexpected(e.what());
             }
-        });
+        },
+        target);
 }
 int worker_main(int argc, char* argv[]) {
     if (argc != 4 && argc != 5)
