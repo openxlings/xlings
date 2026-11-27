@@ -1280,6 +1280,10 @@ status = "required"
 text = "`xlings index check <recipe|index>` gives each kind of malformed recipe its finding with the line, exits 1 on an error and 2 on a path that is neither, lists notes with -v, gives every finding with --json, and finds nothing in a recipe written as the format's example"
 status = "required"
 
+[PAYLOAD-RULES-CHECK]
+text = "`xlings __payload-check <dir> --arch <a>` judges rule M on a payload's static surface (bin/, sbin/, lib64/, lib/) against the named architecture on any host and rule P on its search paths, .pc and .la files, as docs/specs/payload-rules.md §5 lists; exit 1 on a broken rule, 2 on a bad path or architecture"
+status = "required"
+
 # ── the home contracts of 2026.9.12, once bash (E2E-100..110, #592) ──────
 
 [NOTICE-ONCE]

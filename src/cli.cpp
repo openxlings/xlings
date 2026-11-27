@@ -1893,6 +1893,19 @@ int dispatch_(int argc, char* argv[]) {
             continue;
         }
         if (token == "__complete") return run_completion_(argc, argv, i);
+        // An index's CI holds an asset to the payload rules (design
+        // 2026-11-27 §8.2, K2): plumbing, in no help, no completion.
+        if (token == "__payload-check") {
+            std::string dir, arch;
+            bool asJson = false;
+            for (int k = i + 1; k < argc; ++k) {
+                const std::string_view a{argv[k]};
+                if (a == "--json") asJson = true;
+                else if (a == "--arch" && k + 1 < argc) arch = argv[++k];
+                else if (!a.starts_with('-')) dir = std::string(a);
+            }
+            return xim::cmd_payload_check(dir, arch, asJson);
+        }
         // A user's view adding to the system's store, as the administrator
         // (design 2026-10-20 §4.4): an install that the elevation door ran;
         // it activates nothing another version already holds (install never

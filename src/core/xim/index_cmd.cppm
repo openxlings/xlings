@@ -61,6 +61,15 @@ int cmd_index_list(const std::string& filter, bool asJson, EventStream& stream);
 // error, 2 when the path is neither.
 int cmd_index_check(const std::string& path, bool asJson, EventStream& stream);
 
+// `xlings __payload-check <dir> [--arch <name>] [--json]` (plumbing, for an
+// index's CI: K2 of design 2026-11-27 §5.6): the payload rules a published
+// asset is held to, on a payload directory -- rule M (its bin/, sbin/ and
+// library directories are of `arch`, default this machine's) and rule P (no
+// build machine path in a search path, a .pc or a .la). docs/specs/
+// payload-rules.md. Exit 1 when one is broken, 2 on a path that is no
+// directory or an unknown architecture.
+int cmd_payload_check(const std::string& dir, const std::string& arch, bool asJson);
+
 // The hook interface of the libxpkg this xlings is built with, as JSON: its
 // modules and names, the part of standard Lua a recipe of spec "3" sees, and
 // the compatibility layer's table. `xlings --xpkg-api-json` prints it;

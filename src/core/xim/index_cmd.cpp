@@ -10,7 +10,10 @@ import xlings.core.xim.indexfetch;
 import xlings.core.xim.repo;
 import xlings.platform;
 import xlings.runtime;
+import mcpplibs.xpkg;
 import mcpplibs.xpkg.check;
+import xlings.core.xim.machine_rule;
+import xlings.core.xim.build_paths;
 
 namespace xlings::xim {
 
@@ -351,6 +354,49 @@ nlohmann::json xpkg_interface_json() {
     out["compat"] = std::move(compat);
     out["host"] = m.host;
     return out;
+}
+
+
+int cmd_payload_check(const std::string& dir, const std::string& arch, bool asJson) {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    const fs::path payload(dir);
+    if (dir.empty() || !fs::is_directory(payload, ec)) {
+        log::error("__payload-check: {} is no directory", dir);
+        return 2;
+    }
+    const auto machine = arch.empty() ? machine_rule::host_machine() : arch;
+    const auto* identity = mcpplibs::xpkg::find_arch(machine);
+    if (!identity) {
+        log::error("__payload-check: {} is no architecture of the format (docs/specs/xpkg.md §4.2)", machine);
+        return 2;
+    }
+    const auto foreign = machine_rule::foreign(machine_rule::of_payload(payload), identity->name);
+    const auto paths = build_paths::scan(payload, {});
+    const bool ok = foreign.empty() && paths.files == 0;
+    if (asJson) {
+        auto m = nlohmann::json::array();
+        for (const auto& f : foreign) m.push_back({{"file", f.file}, {"machine", f.machine}});
+        auto examples = nlohmann::json::array();
+        for (const auto& e : paths.examples) examples.push_back({{"file", e.file}, {"path", e.path}});
+        nlohmann::json out = nlohmann::json::object();
+        out["arch"] = std::string(identity->name);
+        out["ok"] = ok;
+        out["M"] = std::move(m);
+        out["P"] = {{"files", paths.files}, {"examples", std::move(examples)}};
+        std::println("{}", out.dump(2));
+        return ok ? 0 : 1;
+    }
+    if (!foreign.empty()) {
+        std::string line = std::format("rule M: {} file(s) the host runs or loads are not {}: {} is for {}",
+                                       foreign.size(), identity->name, foreign.front().file, foreign.front().machine);
+        for (std::size_t i = 1; i < foreign.size() && i < 3; ++i)
+            line += std::format("; {} is for {}", foreign[i].file, foreign[i].machine);
+        log::println("{}", line);
+    }
+    if (paths.files > 0) log::println("{}", build_paths::describe(paths, payload));
+    if (ok) log::println("{}: rules M and P hold for {}", payload.string(), identity->name);
+    return ok ? 0 : 1;
 }
 
 }

@@ -69,10 +69,29 @@ Surface of_database_entry(const xvm::VInfo& info, const xvm::VData& data,
 }
 
 std::vector<Foreign> foreign(const Surface& surface) {
+    if constexpr (!platform::is_linux) return {};
+    // A build of an architecture the table lacks: nothing to compare with.
+    return foreign(surface, platform::build_arch());
+}
+
+Surface of_payload(const fs::path& payload) {
+    Surface s;
+    for (const auto* dir : {"bin", "sbin"}) {
+        std::error_code ec;
+        std::vector<fs::path> files;
+        for (auto it = fs::directory_iterator(payload / dir, ec); !ec && it != fs::directory_iterator(); it.increment(ec))
+            files.push_back(it->path());
+        std::ranges::sort(files);
+        s.files.insert(s.files.end(), files.begin(), files.end());
+    }
+    s.libdirs = { payload / "lib64", payload / "lib" };
+    return s;
+}
+
+std::vector<Foreign> foreign(const Surface& surface, std::string_view machine) {
     std::vector<Foreign> out;
-    if constexpr (!platform::is_linux) return out;
-    const auto* host = mcpplibs::xpkg::find_arch(platform::build_arch());
-    if (!host) return out;   // a build of an architecture the table lacks: nothing to compare with
+    const auto* host = mcpplibs::xpkg::find_arch(machine);
+    if (!host) return out;
     std::set<fs::path> seen;
     const auto judge = [&](const fs::path& file) {
         std::error_code ec;

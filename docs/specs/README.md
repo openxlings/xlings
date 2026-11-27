@@ -11,6 +11,7 @@ Specifications are in English only.
 | Specification | What it governs |
 |---|---|
 | [The xpkg format](xpkg.md) | a package recipe: `spec`, the package table, the platform–version matrix and architectures, landing, hooks and their environment, declarations, the index's declarations, the checker. A byte copy of libxpkg's `docs/spec/xpkg.md` of the version xlings builds with |
+| [Payload rules](payload-rules.md) | what an installed payload may contain (rules A, B, D, E, M, P), where each is enforced, and the index's check `xlings __payload-check` |
 | [xpkg resource resolution](xpkg-resource-resolution.md) | how a recipe's resources resolve to a URL, a mirror and a sha256 |
 | [`.xlings.json`](xlings-json.md) | the configuration file of a home, a project and a SubOS workspace |
 | [Bundles](bundle.md) | a directory of archives and index snapshots for a machine without a network: `bundle.toml`, `download --to`, `install --from` |

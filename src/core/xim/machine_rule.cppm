@@ -50,6 +50,16 @@ Surface of_database_entry(const xvm::VInfo& info, const xvm::VData& data,
 // Empty when every one is the host's, and where the rule does not apply.
 std::vector<Foreign> foreign(const Surface& surface);
 
+// The same against `machine` (a name of the identity table): an artifact
+// judged for the architecture its entry lists it under, on any host. An
+// unknown name judges nothing.
+std::vector<Foreign> foreign(const Surface& surface, std::string_view machine);
+
+// The surface of a payload no registration has named yet (an index's asset
+// before it is published, K2 of design 2026-11-27 §5.6): the files directly
+// in its bin/ and sbin/, and lib64/ and lib/ as library directories.
+Surface of_payload(const std::filesystem::path& payload);
+
 // The host's machine, as the identity table names it.
 std::string host_machine();
 
