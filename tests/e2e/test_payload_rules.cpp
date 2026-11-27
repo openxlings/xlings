@@ -42,6 +42,28 @@ XTEST(PayloadRules, TheIndexCheckFindsRuleMAndRulePAsTheSpecSays, .area = "xim",
     EXPECT_EQ(j["M"][0].value("machine", ""), "x86_64");
     EXPECT_EQ(j["P"].value("files", -1), 0);
 
+    // An x86 (32-bit) program: an x86_64 machine runs it, an aarch64 one does not.
+    const auto x86 = home.root() / "x86";
+    {
+        // The ELF32 header alone (no program headers) -- what rule M reads.
+        std::string h(52, '\0');
+        h[0] = '\x7f'; h[1] = 'E'; h[2] = 'L'; h[3] = 'F';
+        h[4] = 1;   // ELFCLASS32
+        h[5] = 1;   // little-endian
+        h[6] = 1;   // EV_CURRENT
+        h[16] = 2;  // ET_EXEC
+        h[18] = 3;  // EM_386
+        h[20] = 1;  // e_version
+        h[40] = 52; // e_ehsize
+        tk::write_file(x86 / "bin" / "extlinux", h);
+    }
+    j = check(home, x86, "x86_64", rc);
+    EXPECT_EQ(rc, 0) << j.dump();
+    j = check(home, x86, "aarch64", rc);
+    EXPECT_EQ(rc, 1) << j.dump();
+    ASSERT_EQ(j["M"].size(), 1u) << j.dump();
+    EXPECT_EQ(j["M"][0].value("machine", ""), "x86");
+
     // Off the surface: firmware under share/, a library below a library directory.
     const auto two = home.root() / "two";
     tk::write_elf(two / "lib" / "libx.so", { .machine = kAarch64 });

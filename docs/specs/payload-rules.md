@@ -35,7 +35,9 @@ shared libraries directly in its exported runtime library directories
 (`exports.runtime.libdirs`, else `lib64` and `lib`), and its exported loader.
 Anything else -- a cross toolchain's target libraries, a sysroot, prebuilt
 binaries for several machines, firmware -- is the recipe's to answer for; the
-rule does not judge it. A payload not yet registered (an asset before it is
+rule does not judge it. A machine runs its own machine's programs, and an
+x86_64 one also x86 (32-bit) programs, which its kernel runs natively; no
+other pair is assumed (an aarch64 kernel may have no AArch32). A payload not yet registered (an asset before it is
 published) is judged on a static surface: the files directly in `bin/` and
 `sbin/`, and `lib64/` and `lib/`. Only ELF is judged: macOS and Windows have
 one host architecture each.
@@ -92,6 +94,8 @@ builds them with testkit's ELF writer):
 |---|---|---|
 | `bin/tool` an x86_64 ELF program | `--arch x86_64` | none |
 | the same | `--arch aarch64` | M: `bin/tool` is for x86_64 |
+| `bin/extlinux` an x86 (32-bit) ELF program | `--arch x86_64` | none |
+| the same | `--arch aarch64` | M: `bin/extlinux` is for x86 |
 | `lib/libx.so` an aarch64 ELF library, `share/firmware.bin` an x86_64 ELF | `--arch aarch64` | none (the firmware is off the surface) |
 | `lib/sub/libdeep.so` an x86_64 ELF | `--arch aarch64` | none (not directly in a library directory) |
 | `bin/tool` with `DT_RUNPATH=/srv/ci/work/lib` | any | P: names `/srv/ci/work/lib` |

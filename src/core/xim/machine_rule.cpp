@@ -25,6 +25,15 @@ void add_file(Surface& surface, const fs::path& file) {
     if (!file.empty()) surface.files.push_back(file);
 }
 
+// What a machine of `host` runs: its own, and on x86_64 also x86 (32-bit),
+// which the x86_64 kernel runs natively (syslinux's programs). Nothing else
+// is assumed: an aarch64 kernel may have no AArch32, and many have none.
+bool runs_(const mcpplibs::xpkg::ArchIdentity& host, std::uint16_t machine, int bits) {
+    if (machine == host.elf_machine && bits == host.elf_bits) return true;
+    const auto* x86 = mcpplibs::xpkg::find_arch("x86");
+    return host.name == "x86_64" && x86 && machine == x86->elf_machine && bits == x86->elf_bits;
+}
+
 }  // namespace
 
 Surface of_registration(const fs::path& payload, const xvm::RegistrationBatch& batch,
@@ -99,7 +108,7 @@ std::vector<Foreign> foreign(const Surface& surface, std::string_view machine) {
         if (ec || !fs::is_regular_file(real, ec) || !seen.insert(real).second) return;
         const auto info = elfread::read(real);
         if (!info) return;   // not ELF -- a script, an archive, data: nothing to judge
-        if (info->machine != host->elf_machine || info->bits != host->elf_bits)
+        if (!runs_(*host, info->machine, info->bits))
             out.push_back({ .file = file.string(), .machine = name_of(info->machine, info->bits) });
     };
     for (const auto& file : surface.files) judge(file);
