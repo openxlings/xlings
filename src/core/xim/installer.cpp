@@ -2764,7 +2764,7 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& requested
     auto plan = requestedPlan;
     if (plan.has_errors()) {
         return std::unexpected(
-            std::format("plan has errors: {}", plan.errors[0]));
+            std::format("plan has errors: {}", plan.first_error()));
     }
 
     // Every status this function forwards carries the plan key of the node it

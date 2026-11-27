@@ -31,7 +31,7 @@ and AI agents talk to xlings over standard IO. The protocol is **1.19**, over ND
 | 1.17 | 2026.10.22.1 | added: `install_packages` takes `subos`: a Luban system's packages installed where it lives, with events and cancellation (feature `install_into_subos`) |
 | 1.18 | 2026.10.23.2 | added: `package_info`'s `package` carries `versions`, the platform's concrete versions newest first (feature `package_versions`, §7.6); `subos __domain-check <home>` (plumbing) tries whether this host builds a private domain at `<home>`, as making a system there starts: exit 0 or an error saying why (feature `domain_check`) |
 | 1.19 | 2026.11.23.1 | added: `self clean` keeps every payload a root under `<home>/data/roots/<owner>/` holds, and removes the dangling ones ([store roots](store-roots.md)); a program that registers roots requires this feature before it asks for a collection (feature `store_roots`) |
-| 1.20 | (next) | added: a node a gate refuses (a recipe of a newer `spec`, a target with no artifact) is an `error` with `E_UNSUPPORTED`, `refused` in `install_targets` and `install_summary`, and fails the command (feature `step_outcomes`); `install_summary.findings` and the `install_notices` data event, what the packages' hooks said (feature `hook_notices`); `update_available` after `update_packages`' sync (feature `update_available`); `E_FOREIGN_MACHINE`, a payload of another machine (rule M; feature `machine_rule`) |
+| 1.20 | (next) | added: a node a gate refuses (a recipe of a newer `spec`, a target with no artifact) is an `error` with `E_UNSUPPORTED`, `refused` in `install_targets` and `install_summary`, and fails the command (feature `step_outcomes`); `install_summary.findings` and the `install_notices` data event, what the packages' hooks said (feature `hook_notices`); `update_available` after `update_packages`' sync (feature `update_available`); `E_FOREIGN_MACHINE`, a payload of another machine (rule M; feature `machine_rule`); a plan refused for nodes with no artifact for this machine is one `E_UNSUPPORTED` per request and the `install_unsupported` data event (was one `E_INVALID_INPUT` per node) |
 
 A minor version only adds: a 1.0 client reads 1.1 output unchanged. 1.11 is the
 one exception in meaning, not in shape: 1.10's `complete` also required the
@@ -350,6 +350,17 @@ command line shows it after the summary, at most eight lines per package.
 
 ```json
 {"kind":"data","dataKind":"install_notices","payload":{"packages":[{"package":"xim:mesa@25.0.7.3","notices":[{"level":"warn","text":"the GPU driver is older than 550","hook":"config"}],"logs":["/home/u/.xlings/logs/hooks/xim-mesa@25.0.7.3.config.log"]}]}}
+```
+
+**`install_unsupported`** (1.20): the plan was refused because nodes of the
+requests' closures have no artifact for this machine (their entries enumerate
+other architectures). One `error` with `E_UNSUPPORTED` per request, its
+message `E_UNSUPPORTED_TARGET: <request> cannot be installed on <target>: ...`;
+this event has every such node with its dependency chain and what its entry
+gives. Nothing was downloaded or installed.
+
+```json
+{"kind":"data","dataKind":"install_unsupported","payload":{"requests":[{"requested":"xim:mesa@25.0.7.3","target":"linux-aarch64","packages":[{"package":"xim:libllvm","chain":"xim:mesa@25.0.7.3 -> xim:libllvm@20.1.7","supported":["linux-x86_64"]}]}]}}
 ```
 
 **`update_available`** (1.20): after `update_packages` synced the index, when

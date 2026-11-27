@@ -492,6 +492,60 @@ nlohmann::json extensions_json_(const mcpplibs::xpkg::Package& pkg) {
 }
 // A plumbing step (a template of a `subos new --from`) says nothing per node:
 // the edition is named once by the command that asked for it.
+// The nodes of the requests' closures that have no artifact for this machine
+// (design 2026-11-27 §5.5), refused at plan time and said once per request:
+// the conclusion and the names, `-v` for each one's chain and what its entry
+// gives, the whole list as data (`install_unsupported`).
+void report_unsupported_(const std::vector<UnsupportedNode>& nodes, EventStream& stream) {
+    if (nodes.empty()) return;
+    std::vector<std::string> order;
+    std::map<std::string, std::vector<const UnsupportedNode*>> byRequest;
+    for (const auto& n : nodes) {
+        if (!byRequest.contains(n.requested)) order.push_back(n.requested);
+        byRequest[n.requested].push_back(&n);
+    }
+    const bool verbose = log::get_level() <= log::Level::Debug;
+    nlohmann::json data = nlohmann::json::array();
+    for (const auto& requested : order) {
+        const auto& list = byRequest.at(requested);
+        const auto& target = list.front()->target;
+        std::string message;
+        if (list.size() == 1 && list.front()->chain == requested) {
+            const auto& n = *list.front();
+            std::string supported;
+            for (const auto& t : n.supported) supported += (supported.empty() ? "" : ", ") + t;
+            message = std::format("E_UNSUPPORTED_TARGET: {} has no {} artifact; supported targets: {}",
+                                  n.package, target, supported.empty() ? "none" : supported);
+        } else {
+            std::string names;
+            for (std::size_t i = 0; i < list.size() && i < 6; ++i)
+                names += (names.empty() ? "" : ", ") + list[i]->package;
+            if (list.size() > 6) names += std::format(", and {} more", list.size() - 6);
+            message = std::format("E_UNSUPPORTED_TARGET: {} cannot be installed on {}: {} package(s) of its "
+                                  "closure have no {} artifact: {}{}", requested, target, list.size(), target, names,
+                                  verbose ? "" : " (-v lists each with its dependency chain)");
+        }
+        nlohmann::json packages = nlohmann::json::array();
+        for (const auto* n : list) {
+            packages.push_back({{"package", n->package}, {"chain", n->chain}, {"supported", n->supported}});
+            if (verbose) {
+                std::string supported;
+                for (const auto& t : n->supported) supported += (supported.empty() ? "" : ", ") + t;
+                log::println("  {}: has {}", n->chain, supported.empty() ? "no artifact" : supported);
+            }
+        }
+        data.push_back({{"requested", requested}, {"target", target}, {"packages", std::move(packages)}});
+        stream.emit(ErrorEvent{
+            .code = ErrorCode::Unsupported,
+            .message = std::move(message),
+            .recoverable = true,
+            .hint = "nothing was installed; a package is given an architecture by its index entry: "
+                    "https://github.com/openxlings/xim-pkgindex/issues",
+        });
+    }
+    stream.emit(DataEvent{"install_unsupported", nlohmann::json{{"requests", std::move(data)}}.dump()});   // 1.20
+}
+
 bool gNodeLinesQuiet = false;
 
 // Candidates for a name, nearest first and stably (design 2026-10-20 WuXian
@@ -1163,6 +1217,7 @@ int install_(std::span<const std::string> targets, bool yes, bool noDeps,
                 .recoverable = true,
             });
         }
+        report_unsupported_(plan.unsupported, stream);
         return 1;
     }
 

@@ -254,6 +254,9 @@ bool kind_is_interface_only_(std::string_view kind) {
         // terminal prints the notes after the summary, and the newer
         // release once a day at the end of the command.
         "install_notices", "update_available",
+        // The nodes with no artifact for this machine: the terminal says it
+        // per request, and -v each chain (protocol 1.20).
+        "install_unsupported",
     };
     return std::ranges::contains(kCapabilityOnly, kind)
         || std::ranges::contains(kWireDuplicate, kind);

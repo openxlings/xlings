@@ -1180,6 +1180,10 @@ status = "required"
 text = "architectures have one table, libxpkg's: every architecture the client is built for is in it, and a file's e_machine and ELF class are read in-process and named by it"
 status = "required"
 
+[ARCH-PLAN-REFUSAL]
+text = "entries that enumerate their architectures and leave this machine out refuse a request at plan time, before any download: one E_UNSUPPORTED_TARGET line per request naming every such node of its closure, -v each dependency chain and what its entry gives, an install_unsupported data event with the list"
+status = "required"
+
 [ARCH-MACHINE-RULE]
 text = "a payload whose host-facing files -- the programs and libraries it registers, the libraries directly in the runtime directories it exports (lib64 and lib when it exports none), its loader -- are ELF of another machine fails its install with E_FOREIGN_MACHINE before anything is registered, and is not kept; another machine's files elsewhere in the payload do not matter"
 status = "required"

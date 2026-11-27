@@ -436,13 +436,17 @@ resolve(PackageCatalog& catalog, std::span<const std::string> targets, const std
             const auto compatibility = check_target_compatibility(
                 *pkg, entry, platform, hostArch);
             if (!compatibility.supported) {
+                // Recorded, and the walk goes on with the siblings: the
+                // refusal names every node of the closure that has no
+                // artifact here, not the first one (design 2026-11-27 §5.5).
                 std::string chain;
                 for (const auto& item : path) {
                     if (!chain.empty()) chain += " -> ";
                     chain += item;
                 }
-                plan.errors.push_back(std::format("{}: {}", chain,
-                    compatibility_error(match.canonicalName, compatibility)));
+                plan.unsupported.push_back({ .requested = path.front(), .package = match.canonicalName,
+                                             .chain = std::move(chain), .target = compatibility.target,
+                                             .supported = compatibility.supportedTargets });
                 color[key] = Color_::Black;
                 path.pop_back();
                 return false;

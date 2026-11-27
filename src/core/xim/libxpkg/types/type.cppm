@@ -222,11 +222,24 @@ PlanNode& PlanNode::operator=(PlanNode&&) noexcept = default;
 #endif
 
 // DAG install plan (topologically sorted)
+// A node of a request's closure with no artifact for the target (design
+// 2026-11-27 §5.5): the plan is refused, and every such node is in one report.
+struct UnsupportedNode {
+    std::string requested;              // the request whose closure it is in
+    std::string package;                // its canonical name
+    std::string chain;                  // requested -> ... -> it
+    std::string target;                 // <os>-<arch>
+    std::vector<std::string> supported; // the targets its entry gives
+};
+
 struct InstallPlan {
     std::vector<PlanNode> nodes;
     std::vector<std::string> errors;
+    std::vector<UnsupportedNode> unsupported;
 
     bool has_errors() const;
+    // The first problem, as a line: an error, else an unsupported node.
+    std::string first_error() const;
     std::size_t pending_count() const;
 
     InstallPlan() = default;
