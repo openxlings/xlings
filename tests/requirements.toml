@@ -1188,6 +1188,10 @@ status = "required"
 text = "a SubOS declares the version its runtime request resolved to -- installed and active -- with the request kept as runtime_request when it is not that version; a declaration an older client left naming a version the store lacks while the view serves another is brought to what is served once, by a home format step"
 status = "required"
 
+[VERSION-ALIAS]
+text = "a key with a ref that is no version (lts, stable) installs the version it names, through a chain of aliases; the scope remembers the alias a package was asked for by, update moves the package along it (not along latest), and a version asked for afterwards ends it"
+status = "required"
+
 [ARCH-PLAN-REFUSAL]
 text = "entries that enumerate their architectures and leave this machine out refuse a request at plan time, before any download: one E_UNSUPPORTED_TARGET line per request naming every such node of its closure, -v each dependency chain and what its entry gives, an install_unsupported data event with the list"
 status = "required"

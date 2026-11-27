@@ -291,12 +291,15 @@ private:
     // the installed[] beside it. See configured_revision().
     std::map<std::string, int> globalConfigured_;
     std::map<std::string, int> projectSubosConfigured_;
+    std::map<std::string, std::string> globalAliases_;
+    std::map<std::string, std::string> projectSubosAliases_;
     std::map<std::string, int>& configured_mut_();
     // The host facts beside each `configured` record (xpkg host_facts), kept
     // and saved with it. See host_facts_record().
     std::map<std::string, std::map<std::string, std::string>> globalHostFacts_;
     std::map<std::string, std::map<std::string, std::string>> projectSubosHostFacts_;
     std::map<std::string, std::map<std::string, std::string>>& host_facts_mut_();
+    std::map<std::string, std::string>& aliases_mut_();
     bool hasProjectConfig_ = false;
     std::string activeSubosOverride_;
     bool forceGlobalScope_ = false;
@@ -829,6 +832,12 @@ public:
     [[nodiscard]] static std::map<std::string, std::map<std::string, std::string>> host_facts_records();
     static void mark_host_facts(const std::string& identity,
                                 std::map<std::string, std::string> facts);
+    // The alias the scope asked for a package by (`node@lts`, design
+    // 2026-11-27 §7.3), keyed by canonical name; `update` follows it. An
+    // empty alias forgets it -- the package was asked for by a version, or by
+    // none (it follows `latest`). Held and saved like `configured`.
+    [[nodiscard]] static std::string alias_of(std::string_view package);
+    static void mark_alias(const std::string& package, const std::string& alias);
     [[nodiscard]] static bool has_project_config();
 
     // Force all version/workspace writes to go to global scope.

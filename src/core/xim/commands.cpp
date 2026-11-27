@@ -1386,12 +1386,21 @@ int install_(std::span<const std::string> targets, bool yes, bool noDeps,
                              p.logs.empty() ? std::string{} : " in " + Config::display_path(p.logs.front()));
         }
     };
+    bool aliasesChanged = false;
     auto activate_requested_targets = [&]() {
         auto db = Config::versions();
         for (auto& match : requestedMatches) {
             // Nothing to say about a request that did not happen. The error
             // for it has already been emitted from the same record.
             if (!succeeded(match)) continue;
+            // The alias it was asked by is what `update` follows (design
+            // 2026-11-27 §7.3); a version asked for ends that, and a request
+            // with no version leaves the record as it is.
+            if (match.query.find('@') != std::string::npos
+                && Config::alias_of(match.canonicalName) != match.alias) {
+                Config::mark_alias(match.canonicalName, match.alias);
+                aliasesChanged = true;
+            }
 
             auto active = xvm::get_active_version(Config::effective_workspace(), match.name);
             // Only switch when nothing is active yet for this program OR the
@@ -1434,6 +1443,7 @@ int install_(std::span<const std::string> targets, bool yes, bool noDeps,
                 log::debug("{}@{} installed", match.canonicalName, match.version);
             }
         }
+        if (aliasesChanged) Config::save_workspace();
     };
 
     auto pending = plan.pending_count();
@@ -4173,6 +4183,21 @@ int cmd_update(const std::string& target, bool yes, EventStream& stream) {
         log::error("{}", match.error());
         return 1;
     }
+    // A package asked for by an alias moves along it (design 2026-11-27
+    // §7.3); one asked for by a version, or by none, along `latest`.
+    std::string following;
+    if (target.find('@') == std::string::npos) {
+        if (const auto alias = Config::alias_of(match->canonicalName); !alias.empty()) {
+            if (auto along = catalog.resolve_target(match->canonicalName + "@" + alias, detect_platform())) {
+                match = std::move(along);
+                following = alias;
+            } else {
+                // warn-ok: the alias is gone from the index; update follows latest
+                log::warn("{} was installed as {}@{}, which the index no longer has; following latest",
+                          match->canonicalName, match->canonicalName, alias);
+            }
+        }
+    }
 
     auto bareName = match->name;
     auto latest = match->version;
@@ -4183,6 +4208,7 @@ int cmd_update(const std::string& target, bool yes, EventStream& stream) {
     planPayload["name"]    = match->canonicalName;
     planPayload["current"] = currentActive;
     planPayload["latest"]  = latest;
+    if (!following.empty()) planPayload["alias"] = following;   // 1.20
     stream.emit(DataEvent{"update_plan", planPayload.dump()});
 
     if (currentActive.empty()) {
@@ -4194,7 +4220,8 @@ int cmd_update(const std::string& target, bool yes, EventStream& stream) {
     }
 
     if (currentActive == latest) {
-        log::println("{}@{} is already the latest", match->canonicalName, currentActive);
+        log::println("{}@{} is already the latest{}", match->canonicalName, currentActive,
+                     following.empty() ? std::string{} : " " + following);
         return 0;
     }
 
@@ -4223,6 +4250,12 @@ int cmd_update(const std::string& target, bool yes, EventStream& stream) {
                           /*forceGlobal=*/false, /*cancel=*/nullptr,
                           /*dryRun=*/false, /*useAfterInstall=*/true, &inStore);
     if (rc != 0) return rc;
+    // The install asked for a version, which ends an alias; this one moved
+    // along it, and goes on doing so.
+    if (!following.empty()) {
+        Config::mark_alias(match->canonicalName, following);
+        Config::save_workspace();
+    }
 
     nlohmann::json summaryPayload;
     summaryPayload["name"] = match->canonicalName;
