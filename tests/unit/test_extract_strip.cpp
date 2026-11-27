@@ -173,6 +173,41 @@ XTEST(ExtractStrip, AMemberWithNoMoreThanTheStrippedComponentsIsAnErrorThatNames
     EXPECT_NE(r.error().message.find("probe-1.0.0/README"), std::string::npos) << r.error().message;
 }
 
+XTEST(ExtractStrip, MembersUnderDifferentLeadingDirectoriesAreAnErrorNotAMerge,
+      .area = "xim", .covers = {"LAND-STRIP"}) {
+    Temp t;
+    // No single top-level directory: strip = 1 would merge bin/ and share/
+    // into one, and a README in each would leave one of them.
+    const std::vector<Member> flat{{.path = "bin/", .directory = true},
+                                   {.path = "bin/README", .data = "bin\n"},
+                                   {.path = "share/", .directory = true},
+                                   {.path = "share/README", .data = "share\n"}};
+    for (const auto& archive : {write_tar(t.root / "f.tar", flat), write_zip(t.root / "f.zip", flat)}) {
+        xim::ExtractOptions options;
+        options.strip = 1;
+        auto r = xim::extract_archive_detailed(archive, t.root / ("out-f" + archive.extension().string()), options);
+        ASSERT_FALSE(r.has_value()) << archive;
+        EXPECT_EQ(r.error().kind, xim::ExtractErrorKind::InvalidInputArchive);
+        EXPECT_NE(r.error().message.find("both bin/ and share/"), std::string::npos) << r.error().message;
+        EXPECT_NE(r.error().message.find("share/"), std::string::npos) << r.error().message;
+    }
+    // strip = 2 under one top-level directory: the second level is the same
+    // for every member too, or the archive is refused by it.
+    auto nested = release();
+    for (auto& m : nested) m.path = "outer/" + m.path;
+    nested.insert(nested.begin(), {.path = "outer/", .directory = true});
+    xim::ExtractOptions two;
+    two.strip = 2;
+    auto ok = xim::extract_archive_detailed(write_tar(t.root / "g.tar", nested), t.root / "out-g", two);
+    ASSERT_TRUE(ok.has_value()) << ok.error().message;
+    EXPECT_EQ(tree(*ok), (std::set<std::string>{"bin/", "bin/probe", "README"}));
+    nested.push_back({.path = "outer/other/NOTES", .data = "notes\n"});
+    auto bad = xim::extract_archive_detailed(write_tar(t.root / "h.tar", nested), t.root / "out-h", two);
+    ASSERT_FALSE(bad.has_value());
+    EXPECT_NE(bad.error().message.find("both outer/probe-1.0.0/ and outer/other/"), std::string::npos)
+        << bad.error().message;
+}
+
 XTEST(ExtractStrip, AHardLinksTargetIsStrippedWithIt, .area = "xim", .covers = {"LAND-STRIP"}) {
     Temp t;
     auto members = release();

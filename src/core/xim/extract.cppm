@@ -47,8 +47,10 @@ struct ExtractOptions {
     // `strip`, design 2026-11-27 §9.7), and from a hard link's target. A
     // directory that is wholly dropped is where the kept members were; any
     // other member with no more than `strip` components is an error that
-    // names it -- the archive is not laid out as the recipe says, and
-    // nothing is dropped without a word.
+    // names it, and so is a member that does not begin with the components
+    // the others do (several top-level directories would be merged into
+    // one) -- the archive is not laid out as the recipe says, and nothing is
+    // dropped without a word.
     int strip { 0 };
 };
 

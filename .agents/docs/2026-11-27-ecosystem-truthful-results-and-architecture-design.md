@@ -999,6 +999,8 @@ E_UNSUPPORTED_TARGET: xim:mesa@25.0.7.3 cannot be installed on linux-aarch64:
    生成包装脚本、打补丁），可以不写。没有"归档旁边的解压目录"这个概念。
 2. **布局由条目声明。** `strip = n`：去掉每个成员路径的前 n 段。默认是 0，即归档自己的布局，与今天没有 hook 的包相同。
    - 某个成员不足 n 段是错误（声明与归档不符），不是悄悄丢掉那个文件。
+   - 各成员的前 n 段必须相同：`strip` 去掉的是唯一的顶层目录（n 层），不把几个顶层目录合成一个
+     （合并时同名文件互相覆盖，同样是少了文件却报告成功）。
    - 写在版本条目里；一个平台的各个版本都一样时写在平台段（与 `source` 的位置规则相同）。
 3. **不是归档的下载**（单个可执行文件、安装器）原样放进安装目录，名字不变。
 4. **`fs.extract(archive, dir, { strip = n })`** 是同一个解压器，作为动作给 hook 用：归档里套着归档的（`.deb` 里的
@@ -1154,7 +1156,7 @@ E_UNSUPPORTED_TARGET: xim:mesa@25.0.7.3 cannot be installed on linux-aarch64:
 | `HOOK-EMPTY-PAYLOAD` | E16：hook 报告成功、有失败的动作调用、安装目录为空时这一步失败，不登记；没有失败调用的空目录包（载荷在别处的）照常 |
 | `SPEC-GATE` | 高于上限的 `spec` 被逐包拒绝，命令的退出码非零（E14；现有的 E2E-35 改为同时断言退出码） |
 | `LAND-BEFORE-INSTALL` | `spec = "3"`：`install()` 开始时内容已在安装目录；没有 `install()` 的包同样；`install()` 失败时不留载荷；`spec = "2"` 的同一个归档仍走旧路径 |
-| `LAND-STRIP` | `strip = 1` 去掉顶层目录；成员不足 n 段时失败并指出那个成员；tar 与 zip 结果相同 |
+| `LAND-STRIP` | `strip = 1` 去掉顶层目录；成员不足 n 段时失败并指出那个成员；成员的前 n 段不同时失败并指出两者；tar 与 zip 结果相同 |
 | `FS-EXTRACT` | `fs.extract` 在三个平台上解 tar.gz、tar.xz、zip；宿主没有给端口时报错 |
 | `EXEC-ARGV` | 列表形式：带空格、引号、`%`、`&` 的参数原样到达子进程，三个平台；Windows 上 `.bat` 被拒绝并提示 |
 | `INDEX-TEMPLATE` | 有模板声明时每个 recipe 带上模板的 hook，检出的文件不被改写，构建脚本不运行；没有声明时照旧 |

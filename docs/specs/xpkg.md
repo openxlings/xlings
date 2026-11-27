@@ -261,7 +261,9 @@ lands the download in the install directory (§5.2): an archive with one
 top-level directory is `strip = 1`. The entry's `strip` wins over its
 platform's; none is 0, the archive's own layout. A member with n components
 or fewer is an error that names it (the declaration and the archive disagree),
-never a file left out. A download that is no archive is placed as it is, and
+never a file left out; so is a member whose first n components are not the
+others' -- `strip` drops one top-level directory (a chain of n), it does not
+merge several into one. A download that is no archive is placed as it is, and
 `strip` does not apply. A recipe of spec 1 or 2 is landed by its hook; the
 host does not read its `strip`.
 
