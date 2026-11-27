@@ -327,7 +327,7 @@ Each `packages` entry is an array `[coordinate, note, revision]`:
 |---|---|---|
 | 0 | string | `<namespace>:<name>@<version>` |
 | 1 | string | the note: the reinstall reason when that version is on disk at another revision, otherwise empty |
-| 2 | integer | the packaging revision the recipe declares for that version (1.1+; [xpkg manifest](xpkg-manifest-v1.md), §5.1.1) |
+| 2 | integer | the packaging revision the recipe declares for that version (1.1+; [the xpkg format](xpkg.md), §4.3) |
 
 **`install_summary`**: this run's counts. Not emitted when every target is
 installed.
@@ -619,7 +619,7 @@ version database is shared by every subos of the home.
 | `package`, `namespace`, `name`, `version`, `index` | its coordinate and the index it resolves in |
 | `description`, `categories`, `keywords`, `archs` | the recipe's (`archs` and `keywords` in search results) |
 | `status` | `"dev"`, `"stable"` or `"deprecated"`: the recipe's (before 2026.10.19.2 a recipe read in the worker reported `"dev"`) |
-| `extensions` | the recipe's `extensions`, as written: an object keyed by namespace (`xpkg-manifest-v1.md` §3.1). Absent when it has none |
+| `extensions` | the recipe's `extensions`, as written: an object keyed by namespace (`xpkg.md` §3.4). Absent when it has none |
 | `passed_over` | the newest version was passed over because it needs a newer xlings, and why |
 | `versions` | `package_info` only: the platform's concrete versions, newest first, aliases left out (`version` is what `latest` resolves to). Absent when the platform has none (feature `package_versions`) |
 

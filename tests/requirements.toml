@@ -1268,6 +1268,18 @@ status = "required"
 text = "files to relocate and no relocation tool fail the install with how to get the tool (patchelf a package, install_name_tool the macOS command line tools); nothing to relocate passes without the tool; an explicit patch call naming files fails when the tool is missing"
 status = "required"
 
+[XPKG-API-MANIFEST]
+text = "the environment of spec 3 has exactly the interface manifest's names; the generated hook interface reference (docs/generated/xpkg-hook-api.md) is not stale; docs/specs/xpkg.md is byte for byte the specification of the libxpkg xlings builds with"
+status = "required"
+
+[XPKG-CONFORMANCE]
+text = "every conformance case of libxpkg that names an install ends, installed through xlings, as it says (installed, failed or refused), with the payload it states"
+status = "required"
+
+[INDEX-CHECK]
+text = "`xlings index check <recipe|index>` gives each kind of malformed recipe its finding with the line, exits 1 on an error and 2 on a path that is neither, lists notes with -v, gives every finding with --json, and finds nothing in a recipe written as the format's example"
+status = "required"
+
 [UPDATE-NOTICE]
 text = "when the index names a newer xlings, the command ends with one line naming it and `xlings self update`, at most once a day, in a terminal only (an agent, a program, a redirected output do not get it); `xlings config --update-notice false` turns it off"
 status = "required"

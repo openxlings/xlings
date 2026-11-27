@@ -53,6 +53,20 @@ nlohmann::json index_sources_json(const std::vector<IndexSourceView>& views);
 
 int cmd_index_list(const std::string& filter, bool asJson, EventStream& stream);
 
+// `xlings index check [path]`: what is wrong with recipes by the rules of the
+// xpkg format, as libxpkg's checker finds it (docs/specs/xpkg.md §8.4). The
+// path is one recipe or an index (a directory holding pkgs/); none is the
+// current directory. Errors and warnings are listed, notes (a recipe of an
+// older spec) with -v; --json gives every finding. Exit 1 when one is an
+// error, 2 when the path is neither.
+int cmd_index_check(const std::string& path, bool asJson, EventStream& stream);
+
+// The hook interface of the libxpkg this xlings is built with, as JSON: its
+// modules and names, the part of standard Lua a recipe of spec "3" sees, and
+// the compatibility layer's table. `xlings --xpkg-api-json` prints it;
+// docs/generated/xpkg-hook-api.md is rendered from it.
+nlohmann::json xpkg_interface_json();
+
 // Pin (or unpin) a source. Writes index_repos[].version so the choice is
 // visible in the config afterwards -- a one-shot flag would be reverted by the
 // next `xlings update` with nothing to show it ever applied.

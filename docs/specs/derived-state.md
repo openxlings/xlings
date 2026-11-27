@@ -59,7 +59,7 @@ repaired, and it reaches the exit code.
 ## 3. Host facts
 
 A package states the host files its configuration depends on in its recipe
-(`host_facts`, [xpkg manifest](xpkg-manifest-v1.md) §3.2).
+(`host_facts`, [the xpkg format](xpkg.md) §3.5).
 
 ### 3.1 The record
 

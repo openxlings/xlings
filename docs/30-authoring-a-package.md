@@ -5,7 +5,7 @@
 A package is a recipe: a Lua file that declares what it is, where its payload
 comes from for each platform and architecture (with a sha256), and what to do
 after the download. The exact rules are in the
-[xpkg manifest specification](specs/xpkg-manifest-v1.md); this chapter is the
+[xpkg format specification](specs/xpkg.md); this chapter is the
 path from nothing to an installed package.
 
 ## A first recipe
@@ -120,7 +120,7 @@ xlings config --remove-xpkg hello
   registered namespace (`extensions = { luban = { tier = 2 } }`): xlings hands it
   on as written and never reads it, and changing it raises no `revision`. When
   xlings itself must understand a field, propose it for the specification
-  instead (`docs/specs/xpkg-manifest-v1.md` §3.1).
+  instead (`docs/specs/xpkg.md` §3.4).
 - **`host_facts`**: when `config()` generates something from the host -- links
   named for the driver version the host has loaded -- list the host files it
   reads, per platform (`host_facts = { linux = { "/sys/module/nvidia/version" } }`).
@@ -128,7 +128,7 @@ xlings config --remove-xpkg hello
   they change: at an install, at `xlings use`, on entering a SubOS, and in
   `xlings self doctor --fix`. Generate from the host as it is then (a glob, not a
   list of file names), so that running `config()` again is the whole repair
-  (`docs/specs/xpkg-manifest-v1.md` §3.2).
+  (`docs/specs/xpkg.md` §3.5).
 
 ## Publishing
 

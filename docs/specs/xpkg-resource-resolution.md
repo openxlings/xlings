@@ -70,5 +70,5 @@ nobody, `E_DISK_FULL` with the free space).
 
 ## 5. Related
 
-- [xpkg manifest v1](xpkg-manifest-v1.md), §5.3
+- [the xpkg format](xpkg.md), §4.5 and §4.9
 - [Index distribution](index-distribution.md)

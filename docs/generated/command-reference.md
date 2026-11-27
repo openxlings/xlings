@@ -264,7 +264,7 @@ Options: `--args <JSON>` — Capability arguments; `--args-file <PATH>` — Read
 
 ## `xlings index`
 
-Inspect and select package index snapshots
+Inspect, select and check package indexes
 
 ## `xlings index list [name]`
 
@@ -275,6 +275,12 @@ Options: `--json` — Machine-readable output
 ## `xlings index use <name> <version>`
 
 Pin an index source to a snapshot
+
+## `xlings index check [path]`
+
+Check recipes against the xpkg format
+
+Options: `--json` — Every finding, machine-readable
 
 ## `xlings agent`
 

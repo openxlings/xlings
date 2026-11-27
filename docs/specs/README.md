@@ -10,7 +10,7 @@ Specifications are in English only.
 
 | Specification | What it governs |
 |---|---|
-| [xpkg manifest v1](xpkg-manifest-v1.md) | a package recipe: fields, the platform–version matrix, revisions, hooks, dependencies, version constraints |
+| [The xpkg format](xpkg.md) | a package recipe: `spec`, the package table, the platform–version matrix and architectures, landing, hooks and their environment, declarations, the index's declarations, the checker. A byte copy of libxpkg's `docs/spec/xpkg.md` of the version xlings builds with |
 | [xpkg resource resolution](xpkg-resource-resolution.md) | how a recipe's resources resolve to a URL, a mirror and a sha256 |
 | [`.xlings.json`](xlings-json.md) | the configuration file of a home, a project and a SubOS workspace |
 | [Bundles](bundle.md) | a directory of archives and index snapshots for a machine without a network: `bundle.toml`, `download --to`, `install --from` |
@@ -26,4 +26,9 @@ Specifications are in English only.
 
 The command reference is generated from the command tree:
 [xlings](../generated/command-reference.md),
-[luban](../generated/luban-command-reference.md).
+[luban](../generated/luban-command-reference.md). The hook interface's
+reference is generated from libxpkg's interface manifest:
+[xpkg hook API](../generated/xpkg-hook-api.md).
+
+"xpkg manifest v1" ([xpkg-manifest-v1.md](xpkg-manifest-v1.md)) is replaced by
+[the xpkg format](xpkg.md); the old address points there.

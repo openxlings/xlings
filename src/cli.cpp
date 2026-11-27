@@ -1941,6 +1941,11 @@ int dispatch_(int argc, char* argv[]) {
         std::println("{}", spec::reference_json().dump());
         return 0;
     }
+    if (argc == 2
+        && std::string_view{argv[1]} == "--xpkg-api-json") {
+        std::println("{}", xim::xpkg_interface_json().dump());
+        return 0;
+    }
     using namespace mcpplibs;
 
     // Bare `xlings` (no args) used to silently exit 0 because the
@@ -2393,6 +2398,16 @@ int dispatch_(int argc, char* argv[]) {
             if (sub == "use") {
                 return xim::cmd_index_use(fargc > 3 ? fargv[3] : "",
                                           fargc > 4 ? fargv[4] : "", stream);
+            }
+            if (sub == "check") {
+                std::string target;
+                bool asJson = false;
+                for (int i = 3; i < fargc; ++i) {
+                    std::string_view a{fargv[i]};
+                    if (a == "--json") asJson = true;
+                    else if (!a.starts_with('-')) target = std::string(a);
+                }
+                return xim::cmd_index_check(target, asJson, stream);
             }
             log::error("unknown subcommand for `xlings index`: {}", sub);
             return 2;
