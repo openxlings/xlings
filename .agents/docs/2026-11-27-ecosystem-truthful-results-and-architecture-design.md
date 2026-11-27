@@ -1676,3 +1676,8 @@ draft PR 只用来取得结果（§11）；结论写回本文，正式的 PR 仍
 | 2026-11-27 | P11 的规模 | 迁移工具在索引 `main`（602 个）上：192 个完整迁移，394 个部分（剩下的主要是 `install()`：485 个 hook 自己落地，346 种写法，许多经索引的 lib），16 个不动 | 按 §15 第 13 项：工具能完成的分批迁移、以全量安装为门槛，其余留在旧写法并列在覆盖表里；`libs/` 本轮迁完 |
 | 2026-11-27 | X15 | 索引的资产准入（K2）需要 xlings 的规则 M、P 实现 | `xlings __payload-check <dir> --arch <a>`（内部命令）：静态的面（`bin/`、`sbin/`、`lib64/`、`lib/`）按条目所列架构判断，任何宿主上都能判；规则 P 同安装时的实现（`docs/specs/payload-rules.md`） |
 | 2026-11-27 | X11 | #592 的十一个 bash 契约改写成 C++（`home_contract_support.hpp` 的种子 home），每个有自己的需求编号；macOS 工作流里跑 bash 版的那一步与 `run_all.sh` 的条目随之删除 | Windows 上 shim 运行 shell 脚本的那一步不做（没有 `/bin/sh`），挂起的子进程用 `ping` 睡眠 |
+| 2026-11-27 | X11（CI `5f33e69d`） | 契约第一次在 Windows 上跑，挂起子进程那一条没有"超时"：Windows 的 `run_shell_unattended` 一直忽略时限（`std::system`），doctor 跨 subos 修复的子进程在 Windows 上没有上限 | 有时限时用 cmd.exe 在 Job Object 里跑，过时整个结束并返回 124（与 POSIX 版同义） |
+| 2026-11-27 | X11（CI `5f33e69d`） | sysroot 刷新在 Windows 上把 `other` 的库条目当作"未观察到的用户文件"保留：Windows 的条目是硬链接，载荷重写、原文件删除后，没有什么能证明它是 xlings 的 | 测试按原脚本的范围限在 POSIX；Windows 的归属证明（记录文件标识）另开 issue，不在本轮 |
+| 2026-11-27 | X15（CI `5f33e69d`） | 命令规格的对等检查把 `__payload-check` 的 `--arch` 读成未写入规格的选项 | 内部命令的选项列入检查的豁免，注明理由 |
+| 2026-11-27 | P10 | `libs/` 改用模块的名字后，约 240 个静态测试失败：它们的 Lua 脚手架模拟的是 spec 1 的名字 | `tests/lua/module_names.lua` 经 `LUA_INIT` 为每个测试启动的 Lua 加载：脚手架没模拟的模块名在调用时由它模拟的 spec 1 名字回答；自带模块表的几个脚手架补上 lib 新导入的模块（索引 `5ba4df2c`） |
+| 2026-11-27 | P7 | musl flavor 只发布 `gcc`、`g++`、`c++`、`cpp`、`cc`；`gcc.lua` 的组里还有 `gcov`、`gcov-dump`、`gcov-tool`，同样随各自的 gcc（覆盖率数据的格式） | flavor 发布载荷里有的全部六个工具名，不带链接参数；版本条目的 `revision` 在架构车道合并后加 |

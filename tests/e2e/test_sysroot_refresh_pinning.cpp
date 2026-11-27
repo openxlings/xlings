@@ -81,8 +81,13 @@ std::vector<fs::path> dangling(const fs::path& dir) {
 
 }  // namespace
 
+// POSIX, where the script ran: a subos's library entry is a symbolic link
+// there, and after the payload is rewritten it still names the recorded
+// source. On Windows it is a hard link, which nothing proves xlings' once the
+// file it shared is deleted: the refresh preserves it as unobserved
+// (design 2026-11-27 §19.6, the row about this test).
 XTEST(SysrootRefreshPinning, ARewriteReachesEverySubosThatPinsTheVersionAndNoOther, .area = "xvm",
-      .covers = {"SYSROOT-REFRESH-PINNING"}, .requires_ = {"xlings-bin"}) {
+      .covers = {"SYSROOT-REFRESH-PINNING"}, .requires_ = {"xlings-bin", "posix"}) {
     auto home = hc::seeded("sysroot-refresh-pinning", {{"libfixture", std::string(kLibfixture)}});
     const auto marker = home.root() / "relocate-marker";
     {

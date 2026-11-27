@@ -90,7 +90,8 @@ int run_argv_with_timeout(const std::vector<std::string>& argv, std::chrono::mil
 // nobody can answer. Ctrl-C still reaches this process: it ends the child's
 // group, then is delivered here as usual; when this process dies, the child
 // does too (Linux). Past `limit` it is ended whole and 124 returned.
-// Windows: the shell, as std::system.
+// Windows: the shell std::system starts (cmd.exe); past `limit` the Job Object
+// it runs in ends it and what it started, and 124 is returned.
 int run_shell_unattended(const std::string& command,
                          std::optional<std::chrono::milliseconds> limit = std::nullopt);
 

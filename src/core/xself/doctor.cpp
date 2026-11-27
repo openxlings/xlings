@@ -3801,9 +3801,9 @@ void repair_other_subos_walk_(const Scan& scan, const std::string& client,
         if (onStep) onStep(std::format(
             "repairing subos {} — running `{}`", name, cmd));
 
-        // Bounded in process (POSIX): no timeout(1) that would put the
-        // child in a process group of its own. Its output goes to a log a
-        // failure names.
+        // Bounded in process (its session on POSIX, a Job Object on
+        // Windows): no timeout(1) that would put the child in a process
+        // group of its own. Its output goes to a log a failure names.
         const int timeoutSeconds = doctor_child_timeout_seconds_();
         const auto log = Config::paths().homeDir / "logs" / "doctor" / (name + ".log");
         const int rc = run_unattended(

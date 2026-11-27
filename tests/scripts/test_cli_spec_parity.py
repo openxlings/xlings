@@ -197,9 +197,11 @@ def parser_sources():
                 found.append(stem + ext)
     return found
 
-# Flags consumed and removed before any command sees them, or diagnostics-only
-# spellings that are deliberately undocumented.
-REVERSE_EXEMPT = {"--command-reference-json"}
+# Flags consumed and removed before any command sees them, diagnostics-only
+# spellings that are deliberately undocumented, and the options of plumbing
+# (a `__` command: in no help, no completion -- `__payload-check --arch`,
+# docs/specs/payload-rules.md §4).
+REVERSE_EXEMPT = {"--command-reference-json", "--arch"}
 
 
 def spec_flags(spec):
