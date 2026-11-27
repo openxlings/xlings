@@ -1280,6 +1280,48 @@ status = "required"
 text = "`xlings index check <recipe|index>` gives each kind of malformed recipe its finding with the line, exits 1 on an error and 2 on a path that is neither, lists notes with -v, gives every finding with --json, and finds nothing in a recipe written as the format's example"
 status = "required"
 
+# ── the home contracts of 2026.9.12, once bash (E2E-100..110, #592) ──────
+
+[NOTICE-ONCE]
+text = "an upgrade is announced once per home, not once per command; `self doctor --fix` stamps the verified version once the home converges (E2E-100)"
+status = "required"
+
+[LOCAL-OVERLAY]
+text = "the local index is an overlay with provenance: list, remove and clear its recipes, and the recipes the synced index has caught up with are collected (E2E-101)"
+status = "required"
+
+[REMOVE-FORCE]
+text = "remove withdraws state before the recipe's uninstall() runs; --force exits 0 over a failing hook or a recipe gone from the index; --all and --all-subos remove every version and every subos; an unreadable sibling subos keeps the payload and is named, --force does not override it; -y reaches the one subos that has the package (E2E-102)"
+status = "required"
+
+[DOCTOR-REMEDY-PARITY]
+text = "self doctor and self doctor --deep name the same remedy for the same finding (E2E-103)"
+status = "required"
+
+[DOCTOR-CROSS-SUBOS]
+text = "self doctor --fix walks every subos that owns a finding, each in its own process, and prunes an unclaimed registration instead of downloading it again; a child that hangs is a failure after XLINGS_DOCTOR_CHILD_TIMEOUT (E2E-104, E2E-110)"
+status = "required"
+
+[SYSROOT-REFRESH-PINNING]
+text = "a registration rewrite refreshes the sysroot of every subos that pins that version, and none that never had the package (E2E-105)"
+status = "required"
+
+[BROKEN-HOME-ISOLATION]
+text = "one broken package or subos -- an unreadable subos, a record of a package never installed, a deleted overlay recipe, a registration pointing at a missing directory -- changes nothing for an untouched package (E2E-106)"
+status = "required"
+
+[SECOND-SUBOS-INSTALL]
+text = "installing a payload already on disk into a second subos registers it there too (E2E-107)"
+status = "required"
+
+[DOCTOR-REMOVED-NOT-REINSTALLED]
+text = "a registration that --fix removed and could not reinstall fails the fix and withholds verifiedBy (E2E-108)"
+status = "required"
+
+[CURRENT-SUBOS-UNREADABLE]
+text = "the current subos's own unreadable .xlings.json is never overwritten by an ordinary write; commands survive it and name it (E2E-109)"
+status = "required"
+
 [UPDATE-NOTICE]
 text = "when the index names a newer xlings, the command ends with one line naming it and `xlings self update`, at most once a day, in a terminal only (an agent, a program, a redirected output do not get it); `xlings config --update-notice false` turns it off"
 status = "required"
