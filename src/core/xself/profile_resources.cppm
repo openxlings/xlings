@@ -259,14 +259,18 @@ if [ -n "${BASH_VERSION-}" ] && command -v complete >/dev/null 2>&1; then
         [ -f "$_xlings_c" ] && . "$_xlings_c"
     done
 elif [ -n "${ZSH_VERSION-}" ] && [ -d "$_xlings_share/zsh/site-functions" ]; then
-    eval 'fpath=("$_xlings_share/zsh/site-functions" ${fpath:#$_xlings_share/zsh/site-functions})'
-    if typeset -f compdef >/dev/null 2>&1; then
-        for _xlings_c in "$_xlings_share"/zsh/site-functions/_*; do
-            [ -f "$_xlings_c" ] || continue
-            _xlings_c="${_xlings_c##*/}"
-            eval 'autoload -Uz "$_xlings_c" && compdef "$_xlings_c" "${_xlings_c#_}"'
-        done
-    fi
+    # (N): a directory with nothing left in it is no "no matches found" at
+    # every shell start.
+    eval '
+        fpath=("$_xlings_share/zsh/site-functions" ${fpath:#$_xlings_share/zsh/site-functions})
+        if typeset -f compdef >/dev/null 2>&1; then
+            for _xlings_c in "$_xlings_share"/zsh/site-functions/_*(N); do
+                [[ -f $_xlings_c ]] || continue
+                _xlings_c=${_xlings_c:t}
+                autoload -Uz -- "$_xlings_c" && compdef "$_xlings_c" "${_xlings_c#_}"
+            done
+        fi
+    '
 fi
 unset _xlings_share _xlings_c
 )XPROFILE";
