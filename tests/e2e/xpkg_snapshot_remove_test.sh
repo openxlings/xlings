@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
-# E2E regression: uninstall must use the package description snapshot saved
-# under install_dir/.xpkg.lua instead of the current package index when present.
+# E2E regression: uninstall must use the recipe the payload kept
+# (install_dir/.xpkg/pkgs/<dir>/<name>.lua, with its index libs; .xpkg.lua
+# before 2026.11 -- design 2026-11-27 §20.1) instead of the current package
+# index when present.
 
 set -euo pipefail
 
@@ -93,7 +95,7 @@ printf '{}\n' > "$HOME_DIR/data/xim-index-repos/xim-indexrepos.json"
 
 STORE_DIR="$HOME_DIR/data/xpkgs/xim-x-snapshot-fixture"
 INSTALL_DIR="$STORE_DIR/1.0.0"
-SNAPSHOT_FILE="$INSTALL_DIR/.xpkg.lua"
+snapshot_file() { ls "$INSTALL_DIR"/.xpkg/pkgs/*/*.lua 2>/dev/null | head -1; }
 SNAPSHOT_MARKER="$STORE_DIR/SNAPSHOT_UNINSTALL_USED"
 CURRENT_MARKER="$STORE_DIR/CURRENT_INDEX_UNINSTALL_USED"
 
@@ -102,7 +104,9 @@ RUN install snapshot-fixture@1.0.0 -y >/dev/null 2>&1 \
   || fail "install snapshot-fixture@1.0.0 failed"
 
 [[ -f "$INSTALL_DIR/VERSION" ]] || fail "installed payload marker missing"
-[[ -f "$SNAPSHOT_FILE" ]] || fail "expected install snapshot at $SNAPSHOT_FILE"
+SNAPSHOT_FILE="$(snapshot_file)"
+[[ -n "$SNAPSHOT_FILE" && -f "$SNAPSHOT_FILE" ]] || fail "expected the kept recipe under $INSTALL_DIR/.xpkg/pkgs"
+[[ ! -e "$INSTALL_DIR/.xpkg.lua" ]] || fail "the previous layout's .xpkg.lua is still written"
 grep -q "SNAPSHOT_UNINSTALL_USED" "$SNAPSHOT_FILE" \
   || fail "snapshot should contain the original uninstall hook"
 
@@ -157,4 +161,4 @@ RUN remove snapshot-fixture -y >/dev/null 2>&1 \
 [[ ! -f "$CURRENT_MARKER" ]] \
   || fail "remove used the mutated current-index uninstall hook"
 
-log "PASS: remove prefers install_dir/.xpkg.lua over the current index"
+log "PASS: remove prefers the recipe the payload kept over the current index"
