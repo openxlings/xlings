@@ -11,6 +11,7 @@ import mcpplibs.xpkg.executor;
 import xlings.core.xim.libxpkg.types.type;
 import xlings.core.xim.compatibility;
 import xlings.core.xim.machine_rule;
+import xlings.core.xim.build_paths;
 import xlings.core.xim.payload;
 import xlings.core.xim.retention;
 import xlings.core.xim.install_state;
@@ -4312,6 +4313,12 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& requested
                 finding("closure-glibc-floor", closurecheck::describe_floor(*rep.floor));
             if (rep.nonTransitive)
                 finding("closure-non-transitive", closurecheck::describe_non_transitive(*rep.nonTransitive));
+            // Rule P (§8.2): no build machine path in what a consumer reads.
+            std::vector<std::filesystem::path> homes{Config::paths().homeDir, dataDir};
+            for (const auto& store : Config::stores()) homes.push_back(store);
+            if (!Config::paths().systemLayer.empty()) homes.push_back(Config::paths().systemLayer);
+            if (const auto paths = build_paths::scan(ctx.install_dir, homes); paths.files > 0)
+                finding("payload-build-path", build_paths::describe(paths, ctx.install_dir));
         }
 
         // Re-stamp with what the install actually REGISTERED.
