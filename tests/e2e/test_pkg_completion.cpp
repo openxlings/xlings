@@ -43,7 +43,7 @@ function install()
     io.writefile(path.join(dir, "share", "completion", "probe.bash"), "complete -W 'v" .. v .. "' probe\n")
     io.writefile(path.join(dir, "share", "completion", "_probe"), "#compdef probe\n_arguments '1: :(v" .. v .. ")'\n")
     io.writefile(path.join(dir, "share", "completion", "probe.fish"), "complete -c probe -a v" .. v .. "\n")
-    io.writefile(path.join(dir, "share", "completion", "probe.ps1"), "# v" .. v .. "\n")
+    io.writefile(path.join(dir, "share", "completion", "probe.ps1"), "$global:ProbeCompletion = 'v" .. v .. "'\n")
     return true
 end
 function config()
@@ -137,6 +137,18 @@ XTEST(PkgCompletion, DeclaredCompletionFollowsTheActiveVersionAndGoesWithTheRele
             EXPECT_EQ(fish.exit_code, 0) << fish.transcript();
             EXPECT_TRUE(hc::has(fish.transcript(), "v1.0.0")) << fish.transcript();
         }
+    }
+
+    // PowerShell dot-sources the active version's script.
+    if constexpr (tk::is_windows) {
+        auto penv = home.env();
+        penv["XLINGS_ACTIVE_SUBOS"] = "default";
+        const auto ps_profile = home.dir() / "config" / "shell" / "xlings-profile.ps1";
+        const auto ps = tk::run({.argv = {"powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command",
+                                          ". '" + ps_profile.string() + "'; Write-Output \"bound:$global:ProbeCompletion\""},
+                                 .env = std::move(penv)});
+        EXPECT_EQ(ps.exit_code, 0) << ps.transcript();
+        EXPECT_TRUE(hc::has(ps.transcript(), "bound:v1.0.0")) << ps.transcript();
     }
 
     const auto remove = home.xlings({"remove", "probe", "--all", "-y"});
