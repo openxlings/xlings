@@ -127,7 +127,7 @@ optional fields:
 |---|---|---|
 | `url` | string / table | the download URL; a table is a mirror table `{GLOBAL=..., CN=...}` |
 | `sha256` | string / nil | the checksum; nil means not yet computed |
-| `ref` | string | refers to another version (an alias), e.g. `latest` → a real version |
+| `ref` | string | refers to another version (an alias), e.g. `latest` → a real version; a `ref` naming its own version is no alias — the entry is itself (libxpkg 0.0.68) |
 | `revision` | integer | the packaging revision, a non-negative integer, 0 when absent; §5.1.1 |
 | `floor` | integer | the oldest installed revision still usable, `0 ≤ floor ≤ revision`, 0 when absent; §5.1.2 |
 
