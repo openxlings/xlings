@@ -1700,6 +1700,7 @@ draft PR 只用来取得结果（§11）；结论写回本文，正式的 PR 仍
 | 2026-11-27 | P11（第一批，全量安装） | 迁移工具没认出 `payload.unpack{...}` 这个落地调用（dart-sdk、nginx、redis），手工迁移的 libinput-quirks 把 `os.tryrm(安装目录)` 改成 `fs.remove`，删掉了宿主已落地的内容；rust 的 `rustup self uninstall` 没有 `-y`，在 spec 1 里静默失败 | 三个改为条目的 `strip = 1`（读过 zip 的目录，都只有一个顶层目录）；libinput-quirks 从落地的源码树里只留 quirks；rust 加 `-y` |
 | 2026-11-27 | X13 | `strip = 1` 遇到有几个顶层目录的归档时把它们合并成一个，同名文件互相覆盖，安装照样报告成功 | 各成员的前 n 段必须相同，否则失败并指出两者（§9.7 第 2 条，`LAND-STRIP`） |
 | 2026-11-27 | P4（索引 CI 的 consumer 任务） | 任务用 mcpp 2026.11.12.1 自带的 xlings 2026.10.26.1 读分支的 checkout，装不了 spec 3 的 patchelf；经发布的索引，这个客户端会被下限带回上一个快照，但直接读 checkout 不经过下限 | 任务改用索引 CI 指定的客户端（`xlings_sha` 或固定的发布，P12 改为 N），经 `MCPP_VENDORED_XLINGS` 交给 mcpp；mcpp 发布时把 `kXlingsVersion` 升到 N，否则它的用户停在下限前的快照 |
+| 2026-11-27 | P4（检查器全索引） | 检查器的 `arch-unstated` 落在不是版本的键上：23 个 CUDA/NVIDIA recipe 把 `arch_alias` 写在平台一级、dpcpp 写了平台一级的 `build`，加载器把它们读成名叫 `arch_alias`、`build` 的版本：aarch64 的 URL 因此是 `linux-aarch64`（上游叫 `sbsa`，404），dpcpp 的构建依赖从未安装 | 索引里移进条目（`arch_alias`）、改为 `deps.build`；检查器对"值不像条目的平台键"给出专门的发现，留作后续 |
 
 ## 20. 追加：#743 与 #744（第九版）
 

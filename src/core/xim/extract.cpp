@@ -411,8 +411,8 @@ extract_archive_detailed(const std::filesystem::path& archive,
         }
         if (options.strip > 0) {
             const auto parts = detail_::path_components_(*safeRel);
-            const auto lead = std::min(parts.size(), static_cast<std::size_t>(options.strip));
-            const auto common = std::min(lead, dropped.size());
+            const auto lead = std::min<std::size_t>(parts.size(), static_cast<std::size_t>(options.strip));
+            const auto common = std::min<std::size_t>(lead, dropped.size());
             if (!std::equal(parts.begin(), parts.begin() + static_cast<std::ptrdiff_t>(common), dropped.begin())) {
                 auto join = [](auto first, auto last) {
                     std::string s;
