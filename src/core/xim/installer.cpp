@@ -3182,13 +3182,21 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& requested
         std::error_code libsEc;
         if (!std::filesystem::is_directory(std::filesystem::path(ctx.pkgindex_dir) / "libs", libsEc)) {
             // Loud, because the alternative is a package that installs
-            // "successfully" with none of its sysroot assets declared.
-            // warn-ok: the modules are what a recipe may call; a call of a missing one is what fails
-            log::warn("{}: no pkgindex libs/ found -- every "
-                      "`xim.pkgindex.*` call in this recipe will be a "
-                      "silent no-op (sysroot assets, driver dirs and "
-                      "EGL/Vulkan manifests will NOT be declared)",
-                      node.name);
+            // "successfully" with none of its sysroot assets declared -- for
+            // a recipe of spec 1 or 2 that imports an index lib, whose import
+            // then answers with a stub. In spec 3 the import is an error, and
+            // a recipe importing none has nothing to miss.
+            const auto text = platform::read_file_to_string(node.pkgFile.string());
+            const bool importsLib = mcpplibs::xpkg::recipe_code(text).find("import(") != std::string::npos
+                && text.find("xim.pkgindex.") != std::string::npos;
+            if (importsLib && mcpplibs::xpkg::declared_spec(text).value_or("1") != "3") {
+                // warn-ok: the modules are what a recipe may call; a call of a missing one is what fails
+                log::warn("{}: no pkgindex libs/ found -- every "
+                          "`xim.pkgindex.*` call in this recipe will be a "
+                          "silent no-op (sysroot assets, driver dirs and "
+                          "EGL/Vulkan manifests will NOT be declared)",
+                          node.name);
+            }
         }
         ctx.deps_list = node.deps;                  // legacy union (compat)
         ctx.runtime_deps_list = node.runtime_deps;  // split form
