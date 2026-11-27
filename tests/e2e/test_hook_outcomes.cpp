@@ -52,6 +52,20 @@ function install()
     return true
 end
 )LUA");
+    // A recipe that tells the user something (log.warn), and logs progress.
+    recipe_(repo, "talker", R"LUA(
+import('xim.libxpkg.log')
+function install()
+    os.mkdir(pkginfo.install_dir())
+    io.writefile(path.join(pkginfo.install_dir(), 'payload'), 'x')
+    log.info('unpacking the talker')
+    return true
+end
+function config()
+    log.warn('the GPU driver is older than %s', '550')
+    return true
+end
+)LUA");
     // No failed call and nothing in install_dir: a payload that lives
     // elsewhere, installed as before.
     recipe_(repo, "elsewhere", R"LUA(
@@ -99,4 +113,27 @@ XTEST(HookOutcomes, AFailedCallIsAFindingAndTheInstallStands, .area = "xim",
     EXPECT_NE(log.find("\"rule\":\"hook-call-failed\""), std::string::npos) << log;
     EXPECT_NE(log.find("os.cp"), std::string::npos) << log;
     EXPECT_TRUE(fs::is_regular_file(home.dir() / "data" / "xpkgs" / "fixture-x-partly" / "1.0.0" / "payload"));
+}
+
+// E5 (design 2026-11-27 §9.2): a hook's log.warn is said to the user after the
+// summary, by package -- with the output not a terminal, with -v, and with
+// XLINGS_HOOK_OUTPUT=inherit. Before, the second and third lost it entirely.
+XTEST(HookOutcomes, ARecipesWarnIsShownAfterTheSummaryInEveryMode, .area = "xim",
+      .covers = {"HOOK-NOTICE"}, .requires_ = {"xlings-bin"}) {
+    auto home = home_("hook-outcomes-notice");
+    const std::vector<std::pair<std::vector<std::string>, std::map<std::string, std::string>>> modes{
+        {{"install", "fixture:talker@1.0.0", "-y"}, {}},
+        {{"install", "fixture:talker@1.0.0", "-y", "--reconfig", "-v"}, {}},
+        {{"install", "fixture:talker@1.0.0", "-y", "--reconfig"}, {{"XLINGS_HOOK_OUTPUT", "inherit"}}},
+    };
+    for (const auto& [args, env] : modes) {
+        const auto r = home.xlings(args, env);
+        const auto out = r.transcript();
+        EXPECT_EQ(r.exit_code, 0) << out;
+        const auto notes = out.find("notes from the packages:");
+        ASSERT_NE(notes, std::string::npos) << out;
+        EXPECT_NE(out.find("warn: the GPU driver is older than 550", notes), std::string::npos) << out;
+        // The progress line is log.info: not a notice.
+        EXPECT_EQ(out.find("unpacking the talker", notes), std::string::npos) << out;
+    }
 }

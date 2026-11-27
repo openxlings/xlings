@@ -90,6 +90,13 @@ const std::vector<Entry>& table() {
         // would draw with the host's own libraries.
         {{"qemu-system-gl", "qemu-system-gl", {}, "linux-x86_64"}, "xim-x-qemu-system-gl",
          {{Source::Payload, "bin", "qemu-system-x86_64"}}},
+        // What a payload's ELF files are relocated with (libxpkg's elfpatch,
+        // design 2026-11-27 §9.3): a package (T1). On macOS the system's
+        // install_name_tool (T0), from the command line tools.
+        {{"patchelf", "patchelf", {}, "linux"}, "xim-x-patchelf",
+         {{Source::Payload, "bin"}, {Source::Host, "/usr/bin/patchelf"}, {Source::Host, "/usr/local/bin/patchelf"}}},
+        {{"install_name_tool", "", "the operating system's (macOS command line tools: `xcode-select --install`)", "macos"}, "",
+         {{Source::Host, "/usr/bin/install_name_tool"}}},
         // A machine's files over virtio-fs (design 2026-10-21 §4): the
         // vhost-user daemon, static, unprivileged.
         {{"virtiofsd", "virtiofsd", {}, "linux"}, "xim-x-virtiofsd",
@@ -195,6 +202,13 @@ std::string install_hint(std::string_view tool) {
     const auto* e = entry(tool);
     if (!e || e->tool.package.empty()) return {};
     return "xlings install " + std::string(e->tool.package);
+}
+
+std::string how_to_get(std::string_view tool) {
+    const auto* e = entry(tool);
+    if (!e) return {};
+    if (!e->tool.package.empty()) return "xlings install " + std::string(e->tool.package);
+    return std::format("{} is {}", tool, e->tool.os);
 }
 
 std::optional<fs::path> payload_file(const HomeView& home, std::string_view package, const fs::path& relative) {

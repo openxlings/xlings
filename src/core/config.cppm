@@ -247,6 +247,7 @@ private:
     std::string uiMode_;        // "cli" | "tui" | "auto"/"" 
     std::string theme_;         // path reference, or a shipped theme's name
     std::optional<bool> tuiInteractive_;
+    std::optional<bool> updateNotice_;
     std::string globalActiveSubos_ = "default";
     // The system this runs in (a user's view keeps it after it lets go of
     // XLINGS_ROOT_INSTANCE): what system_instance() answers.
@@ -602,6 +603,14 @@ public:
     [[nodiscard]] static bool hint_seen(std::string_view id);
 
     static void mark_hint_seen(std::string_view id);
+
+    // The newer-xlings line at the end of a command (#425): on unless the
+    // home's config says `"updateNotice": false` (`xlings config
+    // --update-notice false`). `update_notice_said` is the one key it was
+    // last said under (version and day); one slot, not one entry per day.
+    [[nodiscard]] static bool update_notice();
+    [[nodiscard]] static std::string update_notice_said();
+    static void mark_update_notice_said(std::string_view key);
 
     // Projects this home has ever installed into, by absolute path.
     //

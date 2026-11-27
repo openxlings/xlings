@@ -56,6 +56,10 @@ std::optional<Found> first(std::string_view tool, const HomeView& home, const Po
 // "xlings install <package>" or empty.
 std::string install_hint(std::string_view tool);
 
+// What gets `tool`: "xlings install <package>" (T1), or what the operating
+// system provides it as (T0); empty for a name the table does not know.
+std::string how_to_get(std::string_view tool);
+
 // A data file a package carries (firmware, boot files): <relative> under the
 // newest installed version of xim:<package> in the home, if there is one.
 std::optional<fs::path> payload_file(const HomeView& home, std::string_view package, const fs::path& relative);

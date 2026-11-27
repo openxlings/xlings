@@ -45,6 +45,7 @@ import xlings.core.xvm.switch_plan;
 import xlings.core.xvm.errors;
 import xlings.core.xvm.inspect;
 import xlings.subos.manifest;
+import xlings.subos.tools;
 import xlings.core.profile;
 import xlings.core.xvm.commands;
 import xlings.core.xvm.shim;
@@ -1592,6 +1593,24 @@ std::expected<void, ExtractError> land_download_(const std::filesystem::path& do
     return {};
 }
 
+// What one hook run said to the user (design 2026-11-27 §9.2): its notices,
+// for the summary, and the log that has its whole output. With no log file
+// (-v, XLINGS_HOOK_OUTPUT=inherit) the output is printed here: before, it
+// reached neither the terminal nor a file (E5).
+void collect_hook_report_(std::string_view hook, const mcpplibs::xpkg::HookResult& result,
+                          const std::filesystem::path& hookLog,
+                          std::vector<HookNoticeLine>& notices, std::vector<std::string>& logs) {
+    for (const auto& n : result.notices)
+        notices.push_back({ .level = n.level, .text = n.text, .hook = std::string(hook) });
+    if (!hookLog.empty()) {
+        if (std::ranges::find(logs, hookLog.string()) == logs.end()) logs.push_back(hookLog.string());
+    } else if (!result.output.empty()) {
+        log::println("{}", result.output.ends_with('\n')
+            ? std::string_view(result.output).substr(0, result.output.size() - 1)
+            : std::string_view(result.output));
+    }
+}
+
 // A finding (design 2026-11-27 §4): what a check found about a node, which
 // does not change its outcome. Each is in `-v` and in
 // <home>/logs/findings.ndjson; the command says how many there were.
@@ -2515,7 +2534,8 @@ std::expected<void, std::string> process_xvm_operations_(const PlanNode& node, c
 }
 
 bool run_config_hook_(const PlanNode& node, const std::filesystem::path& dataDir, mcpplibs::xpkg::PackageExecutor& executor, mcpplibs::xpkg::ExecutionContext& ctx, std::function<void(const InstallStatus&)> onStatus, bool useAfterInstall, std::string* failureMessage,
-                      const home::layers::BorrowPlan* borrowed, int* findings) {
+                      const home::layers::BorrowPlan* borrowed, int* findings,
+                      std::vector<HookNoticeLine>* notices, std::vector<std::string>* hookLogs) {
     if (!executor.has_hook(mcpplibs::xpkg::HookType::Config)) {
         auto processed = process_xvm_operations_(node, dataDir, executor, useAfterInstall, borrowed);
         if (!processed && failureMessage) *failureMessage = processed.error();
@@ -2536,6 +2556,7 @@ bool run_config_hook_(const PlanNode& node, const std::filesystem::path& dataDir
         hookResult = executor.run_hook(mcpplibs::xpkg::HookType::Config, ctx);
     }
     const auto hookLog = std::exchange(ctx.hook_log, {});
+    if (notices && hookLogs) collect_hook_report_("config", hookResult, hookLog, *notices, *hookLogs);
     // The compatibility layer's calls that failed: findings (design 2026-11-27 §9.6).
     for (const auto& f : hookResult.call_failures) {
         record_finding_(node, "hook-call-failed",
@@ -3743,6 +3764,9 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& requested
         // The compatibility layer's calls of install() that did not do what
         // they name (design 2026-11-27 §9.6), for the empty-payload rule below.
         std::vector<mcpplibs::xpkg::HookCallFailure> installCallFailures;
+        // What the node's hooks said, and where their output is (§9.2).
+        std::vector<HookNoticeLine> nodeNotices;
+        std::vector<std::string> nodeHookLogs;
         // Run install hook
         if (!payloadInstalled && executor.has_hook(mcpplibs::xpkg::HookType::Install)) {
             log::debug("installing {}...", node.name);
@@ -3815,6 +3839,7 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& requested
                     mcpplibs::xpkg::HookType::Install, ctx);
             }
             const auto hookLog = std::exchange(ctx.hook_log, {});
+            detail_::collect_hook_report_("install", hookResult, hookLog, nodeNotices, nodeHookLogs);
 
             // Restore env regardless of hook outcome
             if (!setEnvKeys.empty()) {
@@ -3845,8 +3870,9 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& requested
                 write_payload_failure_marker(
                     ctx.install_dir, node.version, message);
                 if (onStatus) {
-                    onStatus({ node.name, InstallPhase::Failed, 0.0f,
-                               std::move(message) });
+                    onStatus({ .name = node.name, .phase = InstallPhase::Failed, .progress = 0.0f,
+                               .message = std::move(message), .notices = nodeNotices,
+                               .hookLogs = nodeHookLogs });
                 }
                 continue;
             }
@@ -3946,7 +3972,8 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& requested
             const auto message = std::format(
                 "install() reported success, but its payload is empty and these calls failed:{}", calls);
             write_payload_failure_marker(ctx.install_dir, node.version, message);
-            if (onStatus) onStatus({ node.name, InstallPhase::Failed, 0.0f, message });
+            if (onStatus) onStatus({ .name = node.name, .phase = InstallPhase::Failed, .progress = 0.0f,
+                                     .message = message, .notices = nodeNotices, .hookLogs = nodeHookLogs });
             continue;
         }
 
@@ -4032,21 +4059,34 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& requested
                 platform::set_env_variable("PATH", (ctx.install_dir / "bin").string()
                     + std::string(1, platform::PATH_SEPARATOR) + curPath);
             }
-            // Fail closed (part 2 §2.4 G1b): a payload that needs relocating
-            // and no patchelf to do it is not installed, whatever elfpatch
-            // would have said about skipping.
-            if (!ctx.resolved_deps.empty() && !xim::patchelf_reachable()
-                && std::ranges::any_of(ctx.resolved_deps, [](const auto& kv) {
-                       return kv.first.find("glibc") != std::string::npos; })) {
-                const std::string why = "it links the xlings glibc and must be relocated with "
-                                        "patchelf, which this host does not have (xlings install "
-                                        "xim:patchelf)";
+            // elfpatch decides what would change before it looks for a tool
+            // (design 2026-11-27 §9.3, libxpkg 0.0.68): files to relocate and
+            // no tool to do it is a failed install, said with how to get the
+            // tool (the tools table); nothing to relocate passes, tool or not.
+            // This replaces the fail-closed guess of part 2 §2.4 G1b, which
+            // refused a payload that linked the xlings glibc whether or not
+            // anything in it needed relocating.
+            auto epResult = executor.apply_elfpatch_auto();
+            if (epResult.elfpatch && epResult.elfpatch->outcome == "failed") {
+                const auto& ep = *epResult.elfpatch;
+                const auto why = std::format("its ELF files could not be relocated: {}", ep.reason);
                 write_payload_failure_marker(ctx.install_dir, node.version, why);
-                if (onStatus) onStatus({ node.name, InstallPhase::Failed, 0.0f, why });
+                if (onStatus) {
+                    onStatus({ .name = node.name, .phase = InstallPhase::Failed, .progress = 0.0f,
+                               .message = why,
+                               .hint = ep.tool_missing.empty() ? std::string{}
+                                                               : ::xlings::subos::tools::how_to_get(ep.tool_missing),
+                               .notices = nodeNotices, .hookLogs = nodeHookLogs });
+                }
                 continue;
             }
-            auto epResult = executor.apply_elfpatch_auto();
-            if (epResult.success && !epResult.output.empty()) {
+            if (epResult.elfpatch) {
+                const auto& ep = *epResult.elfpatch;
+                log::debug("{}: elfpatch: {} ({} scanned, {} patched, {} skipped for another machine, "
+                           "{} with nothing to resolve, {} listed){}", node.name, ep.outcome, ep.scanned,
+                           ep.patched, ep.skipped_foreign, ep.skipped_static, ep.skipped_listed,
+                           ep.reason.empty() ? std::string{} : ": " + ep.reason);
+            } else if (epResult.success && !epResult.output.empty()) {
                 log::debug("{}: elfpatch auto: {}", node.name, epResult.output);
             } else if (!epResult.success) {
                 log::debug("{}: elfpatch auto failed: {}", node.name, epResult.error);
@@ -4156,7 +4196,7 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& requested
                     node, dataDir, executor, ctx, onStatus,
                     useAfterInstall, &configFailure,
                     borrowedPayload ? &borrowedPlans.at(planKey) : nullptr,
-                    &earlyFindings[planKey])) {
+                    &earlyFindings[planKey], &nodeNotices, &nodeHookLogs)) {
                 // Same reason as the install hook above, and this one
                 // matters more: config is where registration happens, so
                 // its failure is exactly "payload on disk, ledger empty" --
@@ -4168,8 +4208,9 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& requested
                     write_payload_failure_marker(ctx.install_dir, node.version, configFailure);
                 }
                 if (onStatus) {
-                    onStatus({ node.name, InstallPhase::Failed, 0.0f,
-                               std::move(configFailure) });
+                    onStatus({ .name = node.name, .phase = InstallPhase::Failed, .progress = 0.0f,
+                               .message = std::move(configFailure), .notices = nodeNotices,
+                               .hookLogs = nodeHookLogs });
                 }
                 continue;
             }
@@ -4312,7 +4353,9 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& requested
                        .message = payloadInstalled ? "already installed" : "",
                        .payloadReused = payloadInstalled,
                        .configured = node.kind != DepKind::Build,
-                       .findings = nodeFindings + earlyFindings[planKey] });
+                       .findings = nodeFindings + earlyFindings[planKey],
+                       .notices = std::move(nodeNotices),
+                       .hookLogs = std::move(nodeHookLogs) });
         }
         if (payloadInstalled) {
             log::debug("{}@{} mapping to current subos", node.name, node.version);

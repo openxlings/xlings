@@ -1323,6 +1323,8 @@ void Config::load_ui_prefs_from_json_(const nlohmann::json& json) {
         if (tui.contains("interactive") && tui["interactive"].is_boolean())
             tuiInteractive_ = tui["interactive"].get<bool>();
     }
+    if (json.contains("updateNotice") && json["updateNotice"].is_boolean())
+        updateNotice_ = json["updateNotice"].get<bool>();
 }
 
 [[nodiscard]] const std::string& Config::lang() { return instance_().lang_; }
@@ -2024,6 +2026,31 @@ Config::record_verified_version(const std::string& version) {
                                        json["verifiedBy"] = version;
                                        return true;
                                    });
+}
+
+bool Config::update_notice() { return instance_().updateNotice_.value_or(true); }
+
+std::string Config::update_notice_said() {
+    namespace fs = std::filesystem;
+    const auto configPath = instance_().paths_.homeDir / ".xlings.json";
+    std::error_code ec;
+    if (!fs::exists(configPath, ec)) return {};
+    try {
+        const auto json = nlohmann::json::parse(platform::read_file_to_string(configPath.string()), nullptr, false);
+        if (json.is_object() && json.contains("updateNoticeSaid") && json["updateNoticeSaid"].is_string())
+            return json["updateNoticeSaid"].get<std::string>();
+    } catch (...) {}
+    return {};
+}
+
+void Config::mark_update_notice_said(std::string_view key) {
+    auto& self = instance_();
+    const auto configPath = self.paths_.homeDir / ".xlings.json";
+    std::string value(key);
+    (void)rmw_home_config_locked_(self.paths_.homeDir, configPath, [&](nlohmann::json& json) {
+        json["updateNoticeSaid"] = value;
+        return true;
+    });
 }
 
 void Config::mark_hint_seen(std::string_view id) {

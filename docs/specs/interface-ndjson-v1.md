@@ -31,6 +31,7 @@ and AI agents talk to xlings over standard IO. The protocol is **1.19**, over ND
 | 1.17 | 2026.10.22.1 | added: `install_packages` takes `subos`: a Luban system's packages installed where it lives, with events and cancellation (feature `install_into_subos`) |
 | 1.18 | 2026.10.23.2 | added: `package_info`'s `package` carries `versions`, the platform's concrete versions newest first (feature `package_versions`, §7.6); `subos __domain-check <home>` (plumbing) tries whether this host builds a private domain at `<home>`, as making a system there starts: exit 0 or an error saying why (feature `domain_check`) |
 | 1.19 | 2026.11.23.1 | added: `self clean` keeps every payload a root under `<home>/data/roots/<owner>/` holds, and removes the dangling ones ([store roots](store-roots.md)); a program that registers roots requires this feature before it asks for a collection (feature `store_roots`) |
+| 1.20 | (next) | added: a node a gate refuses (a recipe of a newer `spec`, a target with no artifact) is an `error` with `E_UNSUPPORTED`, `refused` in `install_targets` and `install_summary`, and fails the command (feature `step_outcomes`); `install_summary.findings` and the `install_notices` data event, what the packages' hooks said (feature `hook_notices`); `update_available` after `update_packages`' sync (feature `update_available`) |
 
 A minor version only adds: a 1.0 client reads 1.1 output unchanged. 1.11 is the
 one exception in meaning, not in shape: 1.10's `complete` also required the
@@ -67,7 +68,7 @@ prints one line and exits -- the handshake a client checks before it uses this
 xlings (1.10+):
 
 ```json
-{"protocol_version":"1.19","version":"2026.11.23.1","capabilities":["search_packages","install_packages","..."],"home_layouts":[1,2],"features":["index_dir","index_store","upstreams","payload_status","sync_index","install_targets_complete","payload_currency","binding_state","reserved_namespaces","subos_plan","network_diagnostics","download_socket_budgets","read_only_queries","package_extensions","domain_relayed","installed_only","user_views","needs_root","subos_env","install_into_subos","package_versions","domain_check","store_roots"]}
+{"protocol_version":"1.20","version":"2026.11.23.1","capabilities":["search_packages","install_packages","..."],"home_layouts":[1,2],"features":["index_dir","index_store","upstreams","payload_status","sync_index","install_targets_complete","payload_currency","binding_state","reserved_namespaces","subos_plan","network_diagnostics","download_socket_budgets","read_only_queries","package_extensions","domain_relayed","installed_only","user_views","needs_root","subos_env","install_into_subos","package_versions","domain_check","store_roots","step_outcomes","hook_notices","update_available"]}
 ```
 
 | Field | Meaning |
@@ -339,6 +340,24 @@ installed.
 |---|---|---|
 | success | integer | nodes this run actually installed; a node whose current payload was present does not count |
 | failed | integer | nodes that failed |
+| refused | integer | (1.20) nodes a gate refused; nothing was changed for them |
+| findings | integer | (1.20) what the checks found about the installed payloads (the closure rules, `arch-unstated`, `hook-call-failed`); each is in `<home>/logs/findings.ndjson` |
+
+**`install_notices`** (1.20): what the packages' hooks said to the user
+(`log.warn`, `log.error`), by package, in the order the nodes finished; the
+command line shows it after the summary, at most eight lines per package.
+`logs` are the hook logs with the whole output.
+
+```json
+{"kind":"data","dataKind":"install_notices","payload":{"packages":[{"package":"xim:mesa@25.0.7.3","notices":[{"level":"warn","text":"the GPU driver is older than 550","hook":"config"}],"logs":["/home/u/.xlings/logs/hooks/xim-mesa@25.0.7.3.config.log"]}]}}
+```
+
+**`update_available`** (1.20): after `update_packages` synced the index, when
+the index names a newer xlings than this one.
+
+```json
+{"kind":"data","dataKind":"update_available","payload":{"version":"2026.12.1.1","current":"2026.11.23.1"}}
+```
 
 **`install_targets`** (1.1+): the version and payload each requested target
 resolved to. A top-level install emits it once on **every path** — all installed,
@@ -362,7 +381,7 @@ resolved ones still carry `namespace`, `name`, `version`.
 | name | string | the package's name; empty when unresolved |
 | version | string | the version resolved; empty when unresolved |
 | revision | integer | the packaging revision the recipe declares for it |
-| status | string | `installed` (by this run) / `already_present` (its current payload was there) / `failed` |
+| status | string | `installed` (by this run) / `already_present` (its current payload was there) / `refused` (1.20: a gate refused it, nothing changed) / `failed` |
 | payload_dir | string | the payload directory, absolute; empty when `failed` |
 | complete | bool | (1.10+) the payload is there, holds something and records no failure: an install that reported success and left nothing is `false`. 1.10 also required the recipe's revision; 1.11 reports that as `current` |
 | origin | string | (1.10+) `local` / `upstream` (a link entry, [`.xlings.json` `upstreams`](xlings-json.md)) / `absent` |
@@ -475,6 +494,7 @@ running.
 | `E_PERMISSION` | not permitted |
 | `E_CANCELLED` | cancelled by the user |
 | `E_NEEDS_ROOT` | needs the administrator and nobody can be asked (1.15); the hint is the exact `sudo` command |
+| `E_UNSUPPORTED` | refused, nothing changed: a recipe of a `spec` newer than this client, a target its entry has no artifact for, a runtime that cannot be activated (1.20); the hint says what lets it through |
 | `E_INTERNAL` | an internal error |
 
 ### 6.6 `result`

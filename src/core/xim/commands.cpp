@@ -40,6 +40,7 @@ import xlings.subos.manifest;
 import xlings.subos.elevation;
 import xlings.subos.home_view;
 import xlings.core.log;
+import xlings.core.update_notice;
 import xlings.core.diag;
 import xlings.core.xvm.errors;
 import xlings.core.config;
@@ -1295,6 +1296,35 @@ int install_(std::span<const std::string> targets, bool yes, bool noDeps,
 
     std::size_t notActivated = 0;
     int findings = 0;   // the checks' findings over every node (design 2026-11-27 §4)
+    // What each node's hooks said to the user (§9.2), in the order the nodes
+    // finished: shown after the summary, at most kNoticeLines per package.
+    struct PackageNotices { std::string package; std::vector<HookNoticeLine> lines; std::vector<std::string> logs; };
+    std::vector<PackageNotices> notices;
+    const auto keep_notices = [&](const InstallStatus& status) {
+        if (status.notices.empty()) return;
+        notices.push_back({ status.planKey.empty() ? status.name : status.planKey, status.notices, status.hookLogs });
+    };
+    const auto show_notices = [&] {
+        if (notices.empty()) return;
+        nlohmann::json event = nlohmann::json::array();
+        for (const auto& p : notices) {
+            nlohmann::json lines = nlohmann::json::array();
+            for (const auto& n : p.lines)
+                lines.push_back({{"level", n.level}, {"text", n.text}, {"hook", n.hook}});
+            event.push_back({{"package", p.package}, {"notices", std::move(lines)}, {"logs", p.logs}});
+        }
+        stream.emit(DataEvent{"install_notices", nlohmann::json{{"packages", std::move(event)}}.dump()});   // 1.20
+        constexpr std::size_t kNoticeLines = 8;
+        log::println("  notes from the packages:");
+        for (const auto& p : notices) {
+            log::println("    {}", p.package);
+            for (std::size_t i = 0; i < p.lines.size() && i < kNoticeLines; ++i)
+                log::println("      {}: {}", p.lines[i].level, p.lines[i].text);
+            if (p.lines.size() > kNoticeLines)
+                log::println("      ... {} more{}", p.lines.size() - kNoticeLines,
+                             p.logs.empty() ? std::string{} : " in " + Config::display_path(p.logs.front()));
+        }
+    };
     auto activate_requested_targets = [&]() {
         auto db = Config::versions();
         for (auto& match : requestedMatches) {
@@ -1557,6 +1587,7 @@ int install_(std::span<const std::string> targets, bool yes, bool noDeps,
                             {}, {}, {} };
                     }
                     findings += status.findings;
+                    keep_notices(status);
                     break;
                 case InstallPhase::Failed:
                     // #374: structured per-package failure on the wire so
@@ -1593,6 +1624,7 @@ int install_(std::span<const std::string> targets, bool yes, bool noDeps,
                                                      status.errorCode,
                                                      status.hint };
                     }
+                    keep_notices(status);
                     break;
                 case InstallPhase::Refused:
                     // Nothing was changed for it (C1): said as a refusal, with
@@ -1662,6 +1694,7 @@ int install_(std::span<const std::string> targets, bool yes, bool noDeps,
             .message = "install failed: " + result.error(),
             .recoverable = false,
         });
+        show_notices();
         return 1;
     }
 
@@ -1685,7 +1718,10 @@ int install_(std::span<const std::string> targets, bool yes, bool noDeps,
         if (findings > 0)
             log::println("  {} finding(s) about the installed payloads: `-v`, or {}", findings,
                          Config::display_path(Config::paths().homeDir / "logs" / "findings.ndjson"));
-
+    }
+    // What the packages said, after the summary (design 2026-11-27 §9.2).
+    show_notices();
+    if (!allAlreadyInstalled) {
         // If this install ran via `sudo`, the downloaded payloads, version DB
         // and shims were written root-owned into the user's home. Hand the
         // home back to the invoking user so a later non-sudo `xlings install`
@@ -4061,6 +4097,11 @@ int cmd_update(const std::string& target, bool yes, EventStream& stream) {
     }
 
     log::println("index updated");
+    // A newer xlings, as an event for whoever reads them (1.20); a person's
+    // terminal gets the line at the end of the command (#425).
+    if (const auto newer = update_notice::pending())
+        stream.emit(DataEvent{"update_available",
+                              nlohmann::json{{"version", *newer}, {"current", std::string(Info::VERSION)}}.dump()});
 
     if (target.empty()) return 0;
 

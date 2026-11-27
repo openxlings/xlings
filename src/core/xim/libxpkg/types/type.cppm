@@ -10,6 +10,14 @@ enum class PackageScope {
 };
 
 // Install phase for UI status tracking
+// What a recipe said to the person installing it: a log.warn or log.error of
+// one of its hooks (design 2026-11-27 §9.2). Shown after the summary.
+struct HookNoticeLine {
+    std::string level;   // "warn" | "error"
+    std::string text;
+    std::string hook;    // "install", "config", ...
+};
+
 enum class InstallPhase {
     Pending,
     Downloading,
@@ -75,6 +83,11 @@ struct InstallStatus {
     // does not change the outcome; the command says how many there were, and
     // each is in `-v` and in <home>/logs/findings.ndjson (design 2026-11-27 §4).
     int findings { 0 };
+
+    // Done and Failed: what the node's hooks said to the user, in order.
+    std::vector<HookNoticeLine> notices;
+    // Where the hooks' whole output is, when it was written to a file.
+    std::vector<std::string> hookLogs;
 };
 
 // How a node was reached in the dep graph. Determines whether the

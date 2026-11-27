@@ -197,7 +197,7 @@ TEST(InterfaceProtocol, VersionFlagPrintsProtocolVersion) {
     auto j = nlohmann::json::parse(out, nullptr, false);
     ASSERT_FALSE(j.is_discarded()) << "non-JSON output: " << out;
     ASSERT_TRUE(j.contains("protocol_version"));
-    EXPECT_EQ(j["protocol_version"].get<std::string>(), "1.19");
+    EXPECT_EQ(j["protocol_version"].get<std::string>(), "1.20");
     // 1.11: a client that relies on the currency fields or the binding-state
     // summary checks for them here before it uses this xlings.
     ASSERT_TRUE(j.contains("features"));
@@ -212,10 +212,13 @@ TEST(InterfaceProtocol, VersionFlagPrintsProtocolVersion) {
     // 1.18: a package's published versions as data (package_versions); a
     // private domain tried before a system is moved into it (domain_check).
     // 1.19: `self clean` keeps what the roots under `data/roots` hold (store_roots).
+    // 1.20: refused nodes as outcomes, the packages' notices, a newer xlings
+    // as an event (design 2026-11-27).
     for (const char* feature : {"payload_currency", "binding_state", "reserved_namespaces", "subos_plan",
                                 "network_diagnostics", "download_socket_budgets", "read_only_queries",
                                 "package_extensions", "domain_relayed", "installed_only", "user_views", "needs_root", "subos_env", "install_into_subos",
-                                "package_versions", "domain_check", "store_roots"})
+                                "package_versions", "domain_check", "store_roots",
+                                "step_outcomes", "hook_notices", "update_available"})
         EXPECT_NE(std::ranges::find(features, nlohmann::json(feature)), features.end()) << feature;
     std::filesystem::remove_all(home);
 }

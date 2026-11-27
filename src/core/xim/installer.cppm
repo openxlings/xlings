@@ -487,6 +487,12 @@ std::expected<void, ExtractError> land_download_(const std::filesystem::path& do
                                                  std::string_view planKey, int strip,
                                                  ExtractOptions options = {});
 
+// What one hook run said (its notices) and where its output is; the output
+// itself is printed when no log file kept it (design 2026-11-27 §9.2, E5).
+void collect_hook_report_(std::string_view hook, const mcpplibs::xpkg::HookResult& result,
+                          const std::filesystem::path& hookLog,
+                          std::vector<HookNoticeLine>& notices, std::vector<std::string>& logs);
+
 // A finding about `node` (design 2026-11-27 §4): -v and <home>/logs/findings.ndjson.
 void record_finding_(const PlanNode& node, std::string_view rule, const std::string& text,
                      const std::filesystem::path& payload);
@@ -584,7 +590,9 @@ bool run_config_hook_(const PlanNode& node,
                       bool useAfterInstall,
                       std::string* failureMessage = nullptr,
                       const home::layers::BorrowPlan* borrowed = nullptr,
-                      int* findings = nullptr);
+                      int* findings = nullptr,
+                      std::vector<HookNoticeLine>* notices = nullptr,
+                      std::vector<std::string>* hookLogs = nullptr);
 
 // A package that promised programs and delivered none of them.
 //

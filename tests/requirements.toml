@@ -1215,3 +1215,15 @@ status = "required"
 [HOOK-COMPAT-FROZEN]
 text = "a recipe of spec 1 or 2 runs as before: its compatibility calls return what they returned, and each that did not do what it names is reported as the finding hook-call-failed"
 status = "required"
+
+[HOOK-NOTICE]
+text = "a hook's log.warn and log.error are shown after the command's summary, by package, with a line limit, and are events for --agent; with the output redirected, with -v and with XLINGS_HOOK_OUTPUT=inherit alike (E5)"
+status = "required"
+
+[ELFPATCH-OUTCOME]
+text = "files to relocate and no relocation tool fail the install with how to get the tool (patchelf a package, install_name_tool the macOS command line tools); nothing to relocate passes without the tool; an explicit patch call naming files fails when the tool is missing"
+status = "required"
+
+[UPDATE-NOTICE]
+text = "when the index names a newer xlings, the command ends with one line naming it and `xlings self update`, at most once a day, in a terminal only (an agent, a program, a redirected output do not get it); `xlings config --update-notice false` turns it off"
+status = "required"
