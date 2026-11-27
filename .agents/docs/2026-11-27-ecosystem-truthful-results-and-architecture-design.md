@@ -1666,3 +1666,13 @@ draft PR 只用来取得结果（§11）；结论写回本文，正式的 PR 仍
 | 2026-11-27 | CI（2fc66067） | X2 的单一构造函数把脚本当作 recipe 求索引根：`/tmp/x/script.lua` 往上三层是 `/`，worker 把它只读挂在自己的挂载之后，盖住了私有的 `/dev`、`/etc/passwd`，宿主的文件可见 | 索引根只认 `<index>/pkgs/<letter>/<file>`（与 libxpkg 的 `index_of` 同一规则），否则主索引的 libs，否则没有；脚本的范围不带 recipe（`HOOK-INDEX-ROOT`） |
 | 2026-11-27 | CI（2fc66067） | 验收用例"宿主机器那样的根"里 glibc 安装失败：索引的 glibc 修订 5（11-25）用 `cp` 重定位；载体的用户态第 1 步 `busybox --install -s` 链接到运行它的进程的根，探测不在机器里运行时（测试的 wsl.exe 替身）一个都没链接 | 第 1 步按 `busybox --list-full` 链接到传入的 `root` 下，与第 2 步一致；真实的来宾得到同样的链接 |
 | 2026-11-27 | CI（2fc66067） | `install_skipped`（1.8 起）在终端报"no renderer ... please report it"；1.20 新加的 `install_notices`、`update_available` 同样会报 | 三者都是终端已经自己打印的行，列为线上重复 |
+| 2026-11-27 | CI（c7a00576） | Windows 的单元：规则 P 把 `prefix=C:/Users/...` 从盘符冒号后的斜杠读起，读成 `/Users/...`，本机载荷自己的 `.pc` 被当成构建机路径 | 盘符、冒号、分隔符开始一条路径，按 `/` 与不分大小写比较；ELF 的搜索路径以冒号分隔，写不出盘符，用例只在 POSIX 路径上写那一条（`a0a9b7e6`） |
+| 2026-11-27 | L9 | 一致性用例做成 `tests/conformance/*.lua`，由 `build.mcpp` 嵌入，`mcpplibs.xpkg.conformance` 读出、写出用例的索引、判断期望；宿主经自己的安装跑同一组（xlings `test_xpkg_conformance`） | 期望的含义只在 libxpkg 判断一次 |
+| 2026-11-27 | X14 | 用例经 xlings 的安装跑出一条规范没写的规则：声明了 `programs` 的包必须登记它们，否则安装失败 | 规范 §3.1 写明；用例补上 `config()` 的登记（libxpkg `e74719e`） |
+| 2026-11-27 | X14 | 从没有 `libs/` 的索引（本地 recipe、第三方索引）安装任何包都打印"`xim.pkgindex.*` 的调用将是空操作" | 只在 spec 1、2 的 recipe 导入了索引 lib 时说（`322de1b0`） |
+| 2026-11-27 | L10 | 规范超过 MSVC 的字面量上限，按块嵌入；原有的嵌入在每个接缝加一个换行（对 Lua 无害），对文档就不是逐字相同 | 规范用单独的逐字嵌入，块边界不切开 UTF-8 序列 |
+| 2026-11-27 | L10 | hook 返回 nil 即成功（执行器把非布尔、非字符串的返回值都读作成功），探路里手工迁移的 recipe 删掉了 `return true` | 规范 §5.1 写明"不返回或返回 `true` 是成功，`false` 是失败" |
+| 2026-11-27 | L9（迁移工具） | 第一版把 cmake、fish 等标成 spec 3，而它们的 `install()` 仍自己落地下载：在 spec 3 里宿主已放好内容，这段代码会删掉它 | `install()` 里仍有 `install_file()`、删除或搬入安装目录的代码，以及顶层的非纯调用，都留给人；只有认出的落地写法换成 `strip = 1` |
+| 2026-11-27 | P11 的规模 | 迁移工具在索引 `main`（602 个）上：192 个完整迁移，394 个部分（剩下的主要是 `install()`：485 个 hook 自己落地，346 种写法，许多经索引的 lib），16 个不动 | 按 §15 第 13 项：工具能完成的分批迁移、以全量安装为门槛，其余留在旧写法并列在覆盖表里；`libs/` 本轮迁完 |
+| 2026-11-27 | X15 | 索引的资产准入（K2）需要 xlings 的规则 M、P 实现 | `xlings __payload-check <dir> --arch <a>`（内部命令）：静态的面（`bin/`、`sbin/`、`lib64/`、`lib/`）按条目所列架构判断，任何宿主上都能判；规则 P 同安装时的实现（`docs/specs/payload-rules.md`） |
+| 2026-11-27 | X11 | #592 的十一个 bash 契约改写成 C++（`home_contract_support.hpp` 的种子 home），每个有自己的需求编号；macOS 工作流里跑 bash 版的那一步与 `run_all.sh` 的条目随之删除 | Windows 上 shim 运行 shell 脚本的那一步不做（没有 `/bin/sh`），挂起的子进程用 `ping` 睡眠 |
