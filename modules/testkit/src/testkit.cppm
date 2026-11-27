@@ -246,6 +246,7 @@ struct ElfOptions {
     std::optional<std::string> runpath;  // DT_RUNPATH
     bool omitStrtab { false };           // a .dynamic with no DT_STRTAB
     std::vector<std::string> needed;     // DT_NEEDED, in order
+    std::uint16_t machine { 0x3e };      // e_machine (EM_X86_64)
 };
 fs::path write_elf(const fs::path& path, const ElfOptions& options);
 

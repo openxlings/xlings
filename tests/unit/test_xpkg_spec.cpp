@@ -137,7 +137,7 @@ TEST(XpkgSpecGate, AbsentSpecIsV1AndSupported) {
 }
 
 TEST(XpkgSpecGate, ImplementedRevisionsAreSupported) {
-    for (const auto* spec : {"1", "2"}) {
+    for (const auto* spec : {"1", "2", "3"}) {
         const auto support = xlings::xim::xpkg_spec_support(spec);
         EXPECT_TRUE(support.supported) << "spec " << spec;
     }
@@ -145,11 +145,11 @@ TEST(XpkgSpecGate, ImplementedRevisionsAreSupported) {
 }
 
 TEST(XpkgSpecGate, NewerRevisionIsRefusedNotDowngraded) {
-    const auto support = xlings::xim::xpkg_spec_support("3");
+    const auto support = xlings::xim::xpkg_spec_support("4");
     EXPECT_FALSE(support.supported);
     // Reported, not zero: the caller distinguishes "too new, go update" from
     // "we could not read this at all".
-    EXPECT_EQ(support.declared, 3);
+    EXPECT_EQ(support.declared, 4);
 }
 
 TEST(XpkgSpecGate, UnreadableSpecIsRefusedRatherThanAssumed) {
@@ -164,11 +164,13 @@ TEST(XpkgSpecGate, UnreadableSpecIsRefusedRatherThanAssumed) {
 
 TEST(XpkgSpecGate, TheCapMatchesWhatIsActuallyImplemented) {
     // A guard on the constant itself: bumping it without implementing the
-    // revision is the failure mode this whole gate exists to prevent, and
-    // the only mechanical trace of "implemented" is the arch enforcement
-    // that spec 2 introduced.
-    EXPECT_EQ(xlings::xim::max_supported_xpkg_spec, 2);
-    EXPECT_TRUE(xlings::xim::xpkg_spec_support("2").supported);
+    // revision is the failure mode this whole gate exists to prevent. The
+    // revisions are libxpkg's to run; the client's cap is the one libxpkg
+    // states, and the landing of spec "3" (the host's part) is tested with
+    // the installer.
+    EXPECT_EQ(xlings::xim::max_supported_xpkg_spec, mcpplibs::xpkg::kHighestSpec);
+    EXPECT_EQ(xlings::xim::max_supported_xpkg_spec, 3);
+    EXPECT_TRUE(xlings::xim::xpkg_spec_support("3").supported);
     EXPECT_FALSE(
         xlings::xim::xpkg_spec_support(
             std::to_string(xlings::xim::max_supported_xpkg_spec + 1)).supported);

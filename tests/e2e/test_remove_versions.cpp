@@ -167,3 +167,43 @@ XTEST(RemoveVersions, OlderThanRemovesWhatNothingUsesAndSaysWhatStays, .area = "
     const auto log = tk::read_file(home.dir() / "logs" / "destructive.ndjson");
     EXPECT_NE(log.find("--older-than 2.0.0"), std::string::npos) << log;
 }
+
+// #708: a known project whose directory is gone uses nothing -- its entry is
+// forgotten and the removal goes on; one whose state cannot be read stops the
+// command before anything is removed, naming the file (design 2026-11-27 §6.2).
+XTEST(RemoveVersions, OlderThanForgetsAGoneProjectAndStopsOnAnUnreadableOne, .area = "xim",
+      .covers = {"REMOVE-OLDER-THAN-STATE"}, .requires_ = {"xlings-bin"}) {
+    auto home = seeded_home("remove-older-than-projects", [](const fs::path& repo) {
+        write_pkg(repo, "tool", {"1.0.0", "2.0.0"}, false);
+    });
+    for (const auto* v : {"1.0.0", "2.0.0"}) {
+        auto r = home.xlings({"install", std::format("fixture:tool@{}", v), "-y"});
+        ASSERT_EQ(r.exit_code, 0) << v << "\n" << r.transcript();
+    }
+    ASSERT_EQ(home.xlings({"use", "tool", "2.0.0"}).exit_code, 0);
+    const auto gone = (home.root() / "gone-project").generic_string();
+    const auto broken = home.root() / "broken-project";
+    tk::write_file(broken / ".xlings" / ".xlings.json", "{ not json");
+    const auto config = home.dir() / ".xlings.json";
+    auto json = nlohmann::json::parse(tk::read_file(config));
+    json["knownProjects"] = {{gone, {{"lastSeen", "2026-01-01T00:00:00Z"}}},
+                             {broken.generic_string(), {{"lastSeen", "2026-01-01T00:00:00Z"}}}};
+    tk::write_file(config, json.dump(2));
+
+    auto stopped = home.xlings({"remove", "tool", "--older-than", "2.0.0", "-y"});
+    const auto out = stopped.transcript();
+    EXPECT_NE(stopped.exit_code, 0) << out;
+    EXPECT_NE(out.find("cannot be read"), std::string::npos) << out;
+    EXPECT_NE(out.find("broken-project"), std::string::npos) << out;
+    EXPECT_EQ(out.find("internal error"), std::string::npos) << out;
+    EXPECT_TRUE(fs::exists(payload(home, "tool", "1.0.0"))) << out;
+
+    fs::remove_all(broken);
+    auto done = home.xlings({"remove", "tool", "--older-than", "2.0.0", "-y"});
+    const auto doneOut = done.transcript();
+    EXPECT_EQ(done.exit_code, 0) << doneOut;
+    EXPECT_NE(doneOut.find("no longer exist and were forgotten"), std::string::npos) << doneOut;
+    EXPECT_FALSE(fs::exists(payload(home, "tool", "1.0.0"))) << doneOut;
+    const auto after = nlohmann::json::parse(tk::read_file(config));
+    EXPECT_FALSE(after.contains("knownProjects") && after["knownProjects"].contains(gone)) << after.dump(2);
+}

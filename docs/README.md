@@ -98,7 +98,7 @@ The first digit is the part; within a part the order is a reading order.
 | | where |
 |---|---|
 | `.xlings.json` (home, project, SubOS) | [04](04-projects.md), [spec](specs/xlings-json.md) |
-| an xpkg recipe (`pkgs/<x>/<name>.lua`) | [30](30-authoring-a-package.md), [spec](specs/xpkg-manifest-v1.md) |
+| an xpkg recipe (`pkgs/<x>/<name>.lua`) | [30](30-authoring-a-package.md), [spec](specs/xpkg.md) |
 | a SubOS policy (`policy.json`) | [11](11-sandbox-and-policy.md) |
 | the NDJSON interface | [50](50-agents-and-machine-interface.md), [spec](specs/interface-ndjson-v1.md) |
 | diagnostics and exit codes | [specs/diagnostics](specs/diagnostics.md), [10](10-subos.md) |

@@ -7,7 +7,7 @@
 > `tools/build_xim_index_artifact.sh` and `tools/publish_xim_index.sh`.
 
 How an index's content reaches a user's machine. What an index contains is
-[xpkg manifest v1](xpkg-manifest-v1.md); which snapshot a client may use is the
+[the xpkg format](xpkg.md); which snapshot a client may use is the
 [index version contract](index-version-contract.md).
 
 ## 1. An index is a versioned artefact, not a clone

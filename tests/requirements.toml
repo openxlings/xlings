@@ -1163,3 +1163,181 @@ status = "required"
 text = "net=nat started by a root supervisor runs pasta as the namespace's owner (`--runas <uid>:<gid>`), so it joins the namespace root made"
 kind = "isolation"
 status = "required"
+
+# ── the context of a recipe's code (#566) ─────────────────────────────
+
+[HOOK-CONTEXT-ONE]
+text = "every entry that runs a recipe's code (install, removal, script, probe) builds its context with one constructor: the same bin directory, SubOS root and architecture"
+status = "required"
+
+[HOOK-INDEX-ROOT]
+text = "a recipe's index root is <index> of <index>/pkgs/<letter>/<file> (else the primary index's libs): a script or a file in no index has none, never the directory that happens to be three levels up -- `/` for /tmp/x/script.lua, which the worker would show the hook"
+status = "required"
+
+# ── libxpkg 0.0.68 in the client (design 2026-11-27 §5.1, §9) ─────────
+
+[ARCH-IDENTITY]
+text = "architectures have one table, libxpkg's: every architecture the client is built for is in it, and a file's e_machine and ELF class are read in-process and named by it"
+status = "required"
+
+[VERSION-EXACT-KEY]
+text = "a request for a version that is a key of the package's index entries is that version: an active or a planned longer version (2.44.3 for 2.44) does not answer it, whether installed before or in the same command (#739); a range (~2.44) is still met by the active version"
+status = "required"
+
+[VERSION-DECLARED]
+text = "a SubOS declares the version its runtime request resolved to -- installed and active -- with the request kept as runtime_request when it is not that version; a declaration an older client left naming a version the store lacks while the view serves another is brought to what is served once, by a home format step"
+status = "required"
+
+[VERSION-ALIAS]
+text = "a key with a ref that is no version (lts, stable) installs the version it names, through a chain of aliases; the scope remembers the alias a package was asked for by, update moves the package along it (not along latest), and a version asked for afterwards ends it"
+status = "required"
+
+[ARCH-PLAN-REFUSAL]
+text = "entries that enumerate their architectures and leave this machine out refuse a request at plan time, before any download: one E_UNSUPPORTED_TARGET line per request naming every such node of its closure, -v each dependency chain and what its entry gives, an install_unsupported data event with the list"
+status = "required"
+
+[INTERFACE-CLI-VERBS]
+text = "the command line's remove --force/--all/--subos/--all-subos, config --list-xpkg/--remove-xpkg/--clear-xpkg and self doctor --fix/--subos/--show-ok are reachable through the interface: remove_package's fields, the local_recipes and self_doctor capabilities (#593)"
+status = "required"
+
+[FRESHNESS-GET]
+text = "a cached download with no sha256 is checked for freshness with HEAD, and where HEAD is refused by method (401, 403, 405, 501 -- GitCode's release assets) with the headers of a GET stopped after its first block; nothing is downloaded"
+status = "required"
+
+[EXTRACT-OWN-DIR]
+text = "a node's archive is extracted into a directory of its own beside it (runtimedir/<namespace>-<name>-<version>), install_file() names the archive there, and the directory is removed when the node ends: two flat archives installed one after the other do not see each other's files"
+status = "required"
+
+[PAYLOAD-BUILD-PATH]
+text = "an installed payload whose RPATH/RUNPATH, pkg-config files or libtool archives name a path of the machine it was built on (not this home, its stores, the payload, the system's directories, a variable or the /nonexistent placeholder) is a payload-build-path finding (rule P), counted, the files and paths in the record"
+status = "required"
+
+[ARCH-MACHINE-RULE]
+text = "a payload whose host-facing files -- the programs and libraries it registers, the libraries directly in the runtime directories it exports (lib64 and lib when it declares none, none when it declares libdirs = {}), its loader -- are ELF of another machine fails its install with E_FOREIGN_MACHINE before anything is registered, and is not kept; another machine's files elsewhere in the payload do not matter"
+status = "required"
+
+[ARCH-DOCTOR]
+text = "self doctor reports an installed program or library that is ELF of another machine (installed before rule M) with its file, its machine and the removal command, counts it in the exit code, and does not repair it"
+status = "required"
+
+[HOOK-BOUNDARY-RESULT]
+text = "a hook run in the Lua worker returns what one run in the client does: its notices, its failed compatibility calls and the patch result; an entry's strip and floor survive the boundary"
+status = "required"
+
+# ── spec "3": the host lands the download (design 2026-11-27 §9.7) ─────
+
+[LAND-BEFORE-INSTALL]
+text = "a package of spec \"3\": its download is in install_dir, laid out, when install() starts, and with no install() at all; a failed install() leaves no installed payload; a recipe of spec 2 with the same archive keeps the old path"
+status = "required"
+
+[LAND-STRIP]
+text = "an entry's strip drops the first n components of every member's path (and of a hard link's target), a tar and a zip land the same, and a member with no more than n components is an error naming it"
+status = "required"
+
+[FS-EXTRACT]
+text = "fs.extract in a hook is the client's extractor (a host port), in the client and in the Lua worker, with the same strip"
+status = "required"
+
+[SPEC-GATE]
+text = "the client runs recipes up to libxpkg's highest spec (3) and refuses a higher one package by package, naming the update; a command with a refused package exits non-zero"
+status = "required"
+
+[RESULT-OUTCOME]
+text = "every node of an install ends Done, Skipped (with why), Refused (nothing changed) or Failed; a command whose nodes were refused or failed exits non-zero and its summary counts them; a node whose recipe or download cannot be read fails and is not run"
+status = "required"
+
+[REMOVE-OLDER-THAN-STATE]
+text = "remove --older-than forgets a known project whose directory or state is gone and goes on, saying so; a project state that cannot be read stops the command before anything is removed, naming the file"
+status = "required"
+
+# ── the compatibility layer's results (design 2026-11-27 §9.6) ────────
+
+[HOOK-EMPTY-PAYLOAD]
+text = "an install() of spec 1 or 2 that reports success with a failed compatibility call and leaves install_dir empty is a failed install naming the calls (E16); an empty install_dir with no failed call installs as before"
+status = "required"
+
+[HOOK-COMPAT-FROZEN]
+text = "a recipe of spec 1 or 2 runs as before: its compatibility calls return what they returned, and each that did not do what it names is reported as the finding hook-call-failed"
+status = "required"
+
+[HOOK-NOTICE]
+text = "a hook's log.warn and log.error are shown after the command's summary, by package, with a line limit, and are events for --agent; with the output redirected, with -v and with XLINGS_HOOK_OUTPUT=inherit alike (E5)"
+status = "required"
+
+[ELFPATCH-OUTCOME]
+text = "files to relocate and no relocation tool fail the install with how to get the tool (patchelf a package, install_name_tool the macOS command line tools); nothing to relocate passes without the tool; an explicit patch call naming files fails when the tool is missing"
+status = "required"
+
+[XPKG-API-MANIFEST]
+text = "the environment of spec 3 has exactly the interface manifest's names; the generated hook interface reference (docs/generated/xpkg-hook-api.md) is not stale; docs/specs/xpkg.md is byte for byte the specification of the libxpkg xlings builds with"
+status = "required"
+
+[XPKG-SNAPSHOT-LIBS]
+text = "a payload keeps its recipe as an index of that recipe with the closure of the index libs it imports (<install>/.xpkg/pkgs, .xpkg/libs): a removal runs uninstall() with the libs the install had, whatever the index holds later; a payload kept as .xpkg.lua alone is brought forward with the index's libs at its first removal; a lib that is nowhere fails the hook that calls it, naming the call and the lib (#743)"
+status = "required"
+
+[PKG-COMPLETION]
+text = "a package's shell completion declared on xvm.add(name, { completion = { bash, zsh, fish, pwsh } }) is linked into the subos's usr/share (bash-completion/completions/<name>, zsh/site-functions/_<name>, fish/vendor_completions.d/<name>.fish, powershell/completions/<name>.ps1), follows `xlings use`, goes with the release, and the profile loads it (bash: complete -p <name>) (#744)"
+status = "required"
+
+[PROFILE-UPGRADE-KEEPS]
+text = "the shell profile is xlings' generated file: an upgrade to a new profile version rewrites it and keeps what it replaced at <home>/logs/profile-upgrades/<file>.v<old>; a profile of the current version is left as it is, edits included"
+status = "required"
+
+[XPKG-CONFORMANCE]
+text = "every conformance case of libxpkg that names an install ends, installed through xlings, as it says (installed, failed or refused), with the payload it states"
+status = "required"
+
+[INDEX-CHECK]
+text = "`xlings index check <recipe|index>` gives each kind of malformed recipe its finding with the line, exits 1 on an error and 2 on a path that is neither, lists notes with -v, gives every finding with --json, and finds nothing in a recipe written as the format's example"
+status = "required"
+
+[PAYLOAD-RULES-CHECK]
+text = "`xlings __payload-check <dir> --arch <a>` judges rule M on a payload's static surface (bin/, sbin/, lib64/, lib/) against the named architecture on any host and rule P on its search paths, .pc and .la files, as docs/specs/payload-rules.md §5 lists; exit 1 on a broken rule, 2 on a bad path or architecture"
+status = "required"
+
+# ── the home contracts of 2026.9.12, once bash (E2E-100..110, #592) ──────
+
+[NOTICE-ONCE]
+text = "an upgrade is announced once per home, not once per command; `self doctor --fix` stamps the verified version once the home converges (E2E-100)"
+status = "required"
+
+[LOCAL-OVERLAY]
+text = "the local index is an overlay with provenance: list, remove and clear its recipes, and the recipes the synced index has caught up with are collected (E2E-101)"
+status = "required"
+
+[REMOVE-FORCE]
+text = "remove withdraws state before the recipe's uninstall() runs; --force exits 0 over a failing hook or a recipe gone from the index; --all and --all-subos remove every version and every subos; an unreadable sibling subos keeps the payload and is named, --force does not override it; -y reaches the one subos that has the package (E2E-102)"
+status = "required"
+
+[DOCTOR-REMEDY-PARITY]
+text = "self doctor and self doctor --deep name the same remedy for the same finding (E2E-103)"
+status = "required"
+
+[DOCTOR-CROSS-SUBOS]
+text = "self doctor --fix walks every subos that owns a finding, each in its own process, and prunes an unclaimed registration instead of downloading it again; a child that hangs is a failure after XLINGS_DOCTOR_CHILD_TIMEOUT (E2E-104, E2E-110)"
+status = "required"
+
+[SYSROOT-REFRESH-PINNING]
+text = "a registration rewrite refreshes the sysroot of every subos that pins that version, and none that never had the package (E2E-105)"
+status = "required"
+
+[BROKEN-HOME-ISOLATION]
+text = "one broken package or subos -- an unreadable subos, a record of a package never installed, a deleted overlay recipe, a registration pointing at a missing directory -- changes nothing for an untouched package (E2E-106)"
+status = "required"
+
+[SECOND-SUBOS-INSTALL]
+text = "installing a payload already on disk into a second subos registers it there too (E2E-107)"
+status = "required"
+
+[DOCTOR-REMOVED-NOT-REINSTALLED]
+text = "a registration that --fix removed and could not reinstall fails the fix and withholds verifiedBy (E2E-108)"
+status = "required"
+
+[CURRENT-SUBOS-UNREADABLE]
+text = "the current subos's own unreadable .xlings.json is never overwritten by an ordinary write; commands survive it and name it (E2E-109)"
+status = "required"
+
+[UPDATE-NOTICE]
+text = "when the index names a newer xlings, the command ends with one line naming it and `xlings self update`, at most once a day, in a terminal only (an agent, a program, a redirected output do not get it); `xlings config --update-notice false` turns it off"
+status = "required"

@@ -10,6 +10,14 @@ enum class PackageScope {
 };
 
 // Install phase for UI status tracking
+// What a recipe said to the person installing it: a log.warn or log.error of
+// one of its hooks (design 2026-11-27 §9.2). Shown after the summary.
+struct HookNoticeLine {
+    std::string level;   // "warn" | "error"
+    std::string text;
+    std::string hook;    // "install", "config", ...
+};
+
 enum class InstallPhase {
     Pending,
     Downloading,
@@ -18,7 +26,11 @@ enum class InstallPhase {
     Installing,
     Configuring,
     Done,
-    Failed
+    Failed,
+    // A gate refused the node and nothing was changed: a recipe of a spec
+    // newer than this client, a target its entry has no artifact for (the
+    // outcome `Refused`, design 2026-11-27 C1). Terminal, like Failed.
+    Refused
 };
 
 // Status of a single package during install
@@ -64,6 +76,18 @@ struct InstallStatus {
     // configured here (#632), which is what lets a frontend say nothing about
     // that node instead of narrating a no-op.
     bool configured { false };
+
+    // Done only: how many findings the checks of this node's payload made
+    // (the closure rules: a library nothing provides, a glibc above the
+    // host's, a dependency's library reached through its RUNPATH). A finding
+    // does not change the outcome; the command says how many there were, and
+    // each is in `-v` and in <home>/logs/findings.ndjson (design 2026-11-27 §4).
+    int findings { 0 };
+
+    // Done and Failed: what the node's hooks said to the user, in order.
+    std::vector<HookNoticeLine> notices;
+    // Where the hooks' whole output is, when it was written to a file.
+    std::vector<std::string> hookLogs;
 };
 
 // How a node was reached in the dep graph. Determines whether the
@@ -79,6 +103,8 @@ enum class DepKind { Runtime, Build };
 struct ExportsRuntime {
     std::string loader;                       // relative path, e.g. "lib64/ld-linux-x86-64.so.2"
     std::vector<std::string> libdirs;         // relative paths
+    bool libdirs_declared { false };          // written, `{}` (none) included;
+                                              // undeclared is {lib64, lib}
     std::string abi;                          // e.g. "linux-x86_64-glibc"
 };
 
@@ -198,11 +224,24 @@ PlanNode& PlanNode::operator=(PlanNode&&) noexcept = default;
 #endif
 
 // DAG install plan (topologically sorted)
+// A node of a request's closure with no artifact for the target (design
+// 2026-11-27 §5.5): the plan is refused, and every such node is in one report.
+struct UnsupportedNode {
+    std::string requested;              // the request whose closure it is in
+    std::string package;                // its canonical name
+    std::string chain;                  // requested -> ... -> it
+    std::string target;                 // <os>-<arch>
+    std::vector<std::string> supported; // the targets its entry gives
+};
+
 struct InstallPlan {
     std::vector<PlanNode> nodes;
     std::vector<std::string> errors;
+    std::vector<UnsupportedNode> unsupported;
 
     bool has_errors() const;
+    // The first problem, as a line: an error, else an unsupported node.
+    std::string first_error() const;
     std::size_t pending_count() const;
 
     InstallPlan() = default;

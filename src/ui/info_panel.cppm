@@ -176,7 +176,7 @@ inline int message_width_(std::span<const std::string> lines) {
 }
 
 // Print install summary with success/fail counts
-void print_install_summary(int success, int failed);
+void print_install_summary(int success, int failed, int refused = 0);
 
 // Format "<name>[@<version>]" for display. Centralized so the plan and
 // summary lines stay aligned when version is absent.

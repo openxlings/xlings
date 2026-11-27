@@ -14,6 +14,7 @@ import xlings.platform;
 import xlings.home.format;
 import xlings.core.home;
 import xlings.core.home_identity;
+import xlings.subos.manifest;
 
 namespace xlings::xself::upgrade {
 
@@ -35,10 +36,46 @@ bool installed_(std::string_view version) {
     return false;
 }
 
+// A subos whose declared runtime is a version the store does not hold while
+// its view serves another (design 2026-11-27 §7.2): what `subos runtime` with
+// a version line used to leave (#607 item 1). Its directory, and the binding
+// the view serves. A declared version that IS installed is left alone: that
+// disagreement is a decision (doctor's runtime drift), not an older format.
+std::vector<std::pair<fs::path, std::string>> runtime_declarations_to_bring_(const fs::path& home) {
+    namespace mf = xlings::subos::manifest;
+    std::vector<std::pair<fs::path, std::string>> out;
+    std::error_code ec;
+    if (!fs::is_directory(home / "subos", ec)) return out;
+    const auto db = Config::versions();
+    const auto installed = [&](std::string_view binding) {
+        const auto* vi = xvm::get_vinfo(db, std::string(mf::binding_name(binding)));
+        if (!vi) return false;
+        for (const auto& [version, data] : vi->versions) {
+            if (!mf::version_is_active(mf::binding_version(binding), version) || data.path.empty()) continue;
+            std::error_code e;
+            if (fs::exists(xvm::expand_path(data.path, home.string()), e)) return true;
+        }
+        return false;
+    };
+    for (const auto& entry : fs::directory_iterator(home / "subos", ec)) {
+        if (!entry.is_directory(ec)) continue;
+        const auto doc = mf::read_document(entry.path());
+        if (!doc) continue;
+        const auto declared = mf::parse(*doc).runtime;
+        if (!mf::is_binding(declared) || mf::runtime_is_hosted(declared)) continue;
+        const auto served = mf::sysroot_runtime(entry.path());
+        if (served.empty() || served == declared || mf::binding_name(served) != mf::binding_name(declared))
+            continue;
+        if (installed(declared) || !installed(served)) continue;
+        out.emplace_back(entry.path(), served);
+    }
+    return out;
+}
+
 }  // namespace
 
 std::span<const home::format::Step> format_steps() {
-    static const std::array<home::format::Step, 2> value{{
+    static const std::array<home::format::Step, 3> value{{
         // The directories and the marker every home of this layout has
         // (ensure_home_layout, idempotent): a home an older client made lacks
         // the newer ones.
@@ -75,6 +112,32 @@ std::span<const home::format::Step> format_steps() {
              if (!ec) fs::rename(staged, link, ec);
              if (ec) return std::unexpected("boot/xlings-init could not be pointed at luban-init: " + ec.message());
              return std::string("boot/xlings-init is luban-init");
+         }},
+        // A declaration names the version installed and active (§7.2); one
+        // that names a version the store lacks while the view serves another
+        // becomes what is served, the old text kept as the request. Not a
+        // layout change: an older client reads it and does not undo it.
+        {"runtime-declaration",
+         [](const fs::path& h) { return !runtime_declarations_to_bring_(h).empty(); },
+         [](const fs::path& h) -> std::expected<std::string, std::string> {
+             namespace mf = xlings::subos::manifest;
+             std::string said;
+             for (const auto& [dir, served] : runtime_declarations_to_bring_(h)) {
+                 auto doc = mf::read_document(dir);
+                 if (!doc) return std::unexpected(dir.string() + ": the manifest could not be read");
+                 auto& block = (*doc)[std::string(mf::BLOCK)];
+                 const auto was = block.value("runtime", std::string{});
+                 block["runtime"] = served;
+                 if (!block.contains("runtime_request")) block["runtime_request"] = was;
+                 try {
+                     platform::write_file_atomic(mf::config_path(dir).string(), doc->dump(2));
+                 } catch (const std::exception& e) {
+                     return std::unexpected(mf::config_path(dir).string() + ": " + e.what());
+                 }
+                 said += std::format("{}subos '{}' declares {} (was {}, not installed)", said.empty() ? "" : "; ",
+                                     dir.filename().string(), served, was);
+             }
+             return said;
          }},
     }};
     return value;

@@ -12,6 +12,7 @@ module;
 module xlings.core.xim.commands;
 
 import xlings.core.xim.lua_boundary;
+import xlings.core.xim.hook_context;
 import std;
 import xlings.observe;
 import xlings.core.xim.index;
@@ -39,6 +40,7 @@ import xlings.subos.manifest;
 import xlings.subos.elevation;
 import xlings.subos.home_view;
 import xlings.core.log;
+import xlings.core.update_notice;
 import xlings.core.diag;
 import xlings.core.xvm.errors;
 import xlings.core.config;
@@ -218,6 +220,7 @@ PackageCatalog& get_catalog(CatalogAccess access) {
                 // an older xlings, wiped cache) is repairable — resync and
                 // rebuild once before surfacing an error the user would have
                 // to fix by running `xlings update` themselves.
+                // warn-ok: a resync and rebuild follow; their result is the outcome
                 log::warn("catalog build failed ({}); resyncing indexes...",
                           result->error());
             } else {
@@ -489,6 +492,60 @@ nlohmann::json extensions_json_(const mcpplibs::xpkg::Package& pkg) {
 }
 // A plumbing step (a template of a `subos new --from`) says nothing per node:
 // the edition is named once by the command that asked for it.
+// The nodes of the requests' closures that have no artifact for this machine
+// (design 2026-11-27 §5.5), refused at plan time and said once per request:
+// the conclusion and the names, `-v` for each one's chain and what its entry
+// gives, the whole list as data (`install_unsupported`).
+void report_unsupported_(const std::vector<UnsupportedNode>& nodes, EventStream& stream) {
+    if (nodes.empty()) return;
+    std::vector<std::string> order;
+    std::map<std::string, std::vector<const UnsupportedNode*>> byRequest;
+    for (const auto& n : nodes) {
+        if (!byRequest.contains(n.requested)) order.push_back(n.requested);
+        byRequest[n.requested].push_back(&n);
+    }
+    const bool verbose = log::get_level() <= log::Level::Debug;
+    nlohmann::json data = nlohmann::json::array();
+    for (const auto& requested : order) {
+        const auto& list = byRequest.at(requested);
+        const auto& target = list.front()->target;
+        std::string message;
+        if (list.size() == 1 && list.front()->chain == requested) {
+            const auto& n = *list.front();
+            std::string supported;
+            for (const auto& t : n.supported) supported += (supported.empty() ? "" : ", ") + t;
+            message = std::format("E_UNSUPPORTED_TARGET: {} has no {} artifact; supported targets: {}",
+                                  n.package, target, supported.empty() ? "none" : supported);
+        } else {
+            std::string names;
+            for (std::size_t i = 0; i < list.size() && i < 6; ++i)
+                names += (names.empty() ? "" : ", ") + list[i]->package;
+            if (list.size() > 6) names += std::format(", and {} more", list.size() - 6);
+            message = std::format("E_UNSUPPORTED_TARGET: {} cannot be installed on {}: {} package(s) of its "
+                                  "closure have no {} artifact: {}{}", requested, target, list.size(), target, names,
+                                  verbose ? "" : " (-v lists each with its dependency chain)");
+        }
+        nlohmann::json packages = nlohmann::json::array();
+        for (const auto* n : list) {
+            packages.push_back({{"package", n->package}, {"chain", n->chain}, {"supported", n->supported}});
+            if (verbose) {
+                std::string supported;
+                for (const auto& t : n->supported) supported += (supported.empty() ? "" : ", ") + t;
+                log::println("  {}: has {}", n->chain, supported.empty() ? "no artifact" : supported);
+            }
+        }
+        data.push_back({{"requested", requested}, {"target", target}, {"packages", std::move(packages)}});
+        stream.emit(ErrorEvent{
+            .code = ErrorCode::Unsupported,
+            .message = std::move(message),
+            .recoverable = true,
+            .hint = "nothing was installed; a package is given an architecture by its index entry: "
+                    "https://github.com/openxlings/xim-pkgindex/issues",
+        });
+    }
+    stream.emit(DataEvent{"install_unsupported", nlohmann::json{{"requests", std::move(data)}}.dump()});   // 1.20
+}
+
 bool gNodeLinesQuiet = false;
 
 // Candidates for a name, nearest first and stably (design 2026-10-20 WuXian
@@ -581,6 +638,7 @@ int reconcile_host_facts(std::string_view subos, std::string_view target, EventS
     for (auto& [identity, why] : drifted_host_facts(subos)) {
         if (std::ranges::find(identities, identity) == identities.end()) continue;
         ++stale;
+        // warn-ok: counted in the return value, which the caller's outcome is
         log::warn("{}: its configuration depends on host files that changed ({}), and configuring "
                   "it again {}; run `{}xlings install {} --reconfig`",
                   identity, why, rc == 0 ? "did not bring it current" : "failed",
@@ -658,6 +716,7 @@ int install_(std::span<const std::string> targets, bool yes, bool noDeps,
     // decide to switch, and cannot decide if nobody says it. Said at install
     // time because that is when the cost is being incurred.
     if (platform::is_emulated()) {
+        // warn-ok: a fact about this machine, said once; nothing is decided by it
         log::warn("this xlings is a {} build running on {} hardware; packages "
                   "will match the build, not the machine. A native {} release "
                   "avoids the emulation.",
@@ -824,6 +883,7 @@ int install_(std::span<const std::string> targets, bool yes, bool noDeps,
                 // the disagreement is a fact about this machine that no later
                 // error message would mention.
                 declaredConflictReported_ = true;
+                // warn-ok: the declared version is used; this says why
                 log::warn("subos declares {} but {}@{} is active here; "
                           "resolving to the declared one. `xlings subos "
                           "runtime set <binding>` to change what this subos "
@@ -835,7 +895,13 @@ int install_(std::span<const std::string> targets, bool yes, bool noDeps,
         return active;
     };
     auto pin_to_subos_if_satisfies_ = [&](const std::string& t) -> std::string {
-        return pin_target_to_subos(t, subos_version_of_);
+        return pin_target_to_subos(t, subos_version_of_, [&](const std::string& target) {
+            const auto at = target.find('@');
+            if (at == std::string::npos) return false;
+            const auto exact = catalog.resolve_target(target, platform);
+            return exact && xvm::strip_namespace(exact->version)
+                == xvm::strip_namespace(target.substr(at + 1));
+        });
     };
 
     for (auto& target : targetVec) {
@@ -1157,6 +1223,7 @@ int install_(std::span<const std::string> targets, bool yes, bool noDeps,
                 .recoverable = true,
             });
         }
+        report_unsupported_(plan.unsupported, stream);
         return 1;
     }
 
@@ -1182,6 +1249,7 @@ int install_(std::span<const std::string> targets, bool yes, bool noDeps,
             }
         }
         if (hasProjectOnly) {
+            // warn-ok: -g is dropped for the reason it names; the install goes on in its scope
             log::warn("-g disabled: cannot globally register project-only packages (uninstall would fail)");
         } else {
             Config::set_force_global_scope(true);
@@ -1223,7 +1291,10 @@ int install_(std::span<const std::string> targets, bool yes, bool noDeps,
     // statement this function makes afterwards reads it: the activation
     // notice, the structured error, the summary and the exit code.
     // Re-deriving any of them from state would just be a seventh answerer.
-    enum class NodeStatus { Installed, AlreadyPresent, Failed };
+    // The outcomes of design 2026-11-27 C1, as this command records them:
+    // Installed is Done, AlreadyPresent is Skipped (already installed),
+    // Refused changed nothing, Failed did not finish.
+    enum class NodeStatus { Installed, AlreadyPresent, Refused, Failed };
     struct NodeOutcome {
         NodeStatus  status { NodeStatus::Installed };
         std::string message;
@@ -1246,7 +1317,8 @@ int install_(std::span<const std::string> targets, bool yes, bool noDeps,
     // silent rather than being narrated either way.
     const auto succeeded = [&](const PackageMatch& match) {
         auto it = outcomes.find(plan_key(match));
-        return it != outcomes.end() && it->second.status != NodeStatus::Failed;
+        return it != outcomes.end() && it->second.status != NodeStatus::Failed
+            && it->second.status != NodeStatus::Refused;
     };
     const auto count_status = [&](NodeStatus want) {
         return std::ranges::count_if(outcomes, [&](const auto& kv) {
@@ -1254,6 +1326,7 @@ int install_(std::span<const std::string> targets, bool yes, bool noDeps,
         });
     };
     const auto failed_count = [&] { return count_status(NodeStatus::Failed); };
+    const auto refused_count = [&] { return count_status(NodeStatus::Refused); };
 
     // The install_targets entries, read off the same record. A request with no
     // outcome was not satisfied by this run and reports `failed`.
@@ -1276,17 +1349,58 @@ int install_(std::span<const std::string> targets, bool yes, bool noDeps,
             entry.status = it == outcomes.end() ? "failed"
                 : it->second.status == NodeStatus::Installed ? "installed"
                 : it->second.status == NodeStatus::AlreadyPresent ? "already_present"
+                : it->second.status == NodeStatus::Refused ? "refused"
                 : "failed";
         }
     };
     record_report();
 
+    std::size_t notActivated = 0;
+    int findings = 0;   // the checks' findings over every node (design 2026-11-27 §4)
+    // What each node's hooks said to the user (§9.2), in the order the nodes
+    // finished: shown after the summary, at most kNoticeLines per package.
+    struct PackageNotices { std::string package; std::vector<HookNoticeLine> lines; std::vector<std::string> logs; };
+    std::vector<PackageNotices> notices;
+    const auto keep_notices = [&](const InstallStatus& status) {
+        if (status.notices.empty()) return;
+        notices.push_back({ status.planKey.empty() ? status.name : status.planKey, status.notices, status.hookLogs });
+    };
+    const auto show_notices = [&] {
+        if (notices.empty()) return;
+        nlohmann::json event = nlohmann::json::array();
+        for (const auto& p : notices) {
+            nlohmann::json lines = nlohmann::json::array();
+            for (const auto& n : p.lines)
+                lines.push_back({{"level", n.level}, {"text", n.text}, {"hook", n.hook}});
+            event.push_back({{"package", p.package}, {"notices", std::move(lines)}, {"logs", p.logs}});
+        }
+        stream.emit(DataEvent{"install_notices", nlohmann::json{{"packages", std::move(event)}}.dump()});   // 1.20
+        constexpr std::size_t kNoticeLines = 8;
+        log::println("  notes from the packages:");
+        for (const auto& p : notices) {
+            log::println("    {}", p.package);
+            for (std::size_t i = 0; i < p.lines.size() && i < kNoticeLines; ++i)
+                log::println("      {}: {}", p.lines[i].level, p.lines[i].text);
+            if (p.lines.size() > kNoticeLines)
+                log::println("      ... {} more{}", p.lines.size() - kNoticeLines,
+                             p.logs.empty() ? std::string{} : " in " + Config::display_path(p.logs.front()));
+        }
+    };
+    bool aliasesChanged = false;
     auto activate_requested_targets = [&]() {
         auto db = Config::versions();
         for (auto& match : requestedMatches) {
             // Nothing to say about a request that did not happen. The error
             // for it has already been emitted from the same record.
             if (!succeeded(match)) continue;
+            // The alias it was asked by is what `update` follows (design
+            // 2026-11-27 §7.3); a version asked for ends that, and a request
+            // with no version leaves the record as it is.
+            if (match.query.find('@') != std::string::npos
+                && Config::alias_of(match.canonicalName) != match.alias) {
+                Config::mark_alias(match.canonicalName, match.alias);
+                aliasesChanged = true;
+            }
 
             auto active = xvm::get_active_version(Config::effective_workspace(), match.name);
             // Only switch when nothing is active yet for this program OR the
@@ -1297,8 +1411,16 @@ int install_(std::span<const std::string> targets, bool yes, bool noDeps,
                 xvm::has_version(db, match.name, match.version)) {
                 auto useRet = xvm::cmd_use(match.name, match.version, stream);
                 if (useRet != 0) {
-                    log::warn("failed to activate {}@{} in current subos",
-                              match.name, match.version);
+                    // Installed, not activated (design 2026-11-27 §6.2): said
+                    // as that outcome; asked for with --use, it fails the
+                    // command.
+                    ++notActivated;
+                    stream.emit(ErrorEvent{
+                        .code = ErrorCode::Unsupported,
+                        .message = std::format("{}@{} is installed, not activated in this subos (see above)",
+                                               match.canonicalName, match.version),
+                        .recoverable = true,
+                    });
                 }
             } else if (!active.empty() && !xvm::version_key_matches(match.version, active)) {
                 // `active` is the stored key: another index's package keeps
@@ -1321,6 +1443,7 @@ int install_(std::span<const std::string> targets, bool yes, bool noDeps,
                 log::debug("{}@{} installed", match.canonicalName, match.version);
             }
         }
+        if (aliasesChanged) Config::save_workspace();
     };
 
     auto pending = plan.pending_count();
@@ -1407,7 +1530,7 @@ int install_(std::span<const std::string> targets, bool yes, bool noDeps,
         record_report();
         activate_requested_targets();
         if (const auto sync = xself::sync_shim_tables(); !sync.root_error.empty()) return 1;
-        return 0;
+        return useAfterInstall && notActivated > 0 ? 1 : 0;
     }
 
     // One line per node that does something, numbered against the nodes that
@@ -1534,6 +1657,8 @@ int install_(std::span<const std::string> targets, bool yes, bool noDeps,
                                                  : NodeStatus::Installed,
                             {}, {}, {} };
                     }
+                    findings += status.findings;
+                    keep_notices(status);
                     break;
                 case InstallPhase::Failed:
                     // #374: structured per-package failure on the wire so
@@ -1570,6 +1695,23 @@ int install_(std::span<const std::string> targets, bool yes, bool noDeps,
                                                      status.errorCode,
                                                      status.hint };
                     }
+                    keep_notices(status);
+                    break;
+                case InstallPhase::Refused:
+                    // Nothing was changed for it (C1): said as a refusal, with
+                    // what would let it through.
+                    stream.emit(ErrorEvent{
+                        .code = error_code_from_wire(status.errorCode),
+                        .message = "[" + status.name + "] refused: " + status.message,
+                        .recoverable = true,
+                        .hint = status.hint,
+                    });
+                    if (!status.planKey.empty()) {
+                        outcomes[status.planKey] = { NodeStatus::Refused,
+                                                     status.message,
+                                                     status.errorCode,
+                                                     status.hint };
+                    }
                     break;
                 default:
                     break;
@@ -1581,6 +1723,7 @@ int install_(std::span<const std::string> targets, bool yes, bool noDeps,
             for (auto& req : reqs) {
                 if (req.op == "admin") {
                     if (auto step = admin_steps::parse(req.target)) adminSteps.push_back(std::move(*step));
+                    // warn-ok: a recipe's malformed declaration (a spec 3 recipe is refused at the call); nothing to run
                     else log::warn("a recipe declared an administrator step without a command: ignored");
                 } else if (req.op == "install") {
                     log::debug("installing sub-dependency: {}", req.target);
@@ -1622,6 +1765,7 @@ int install_(std::span<const std::string> targets, bool yes, bool noDeps,
             .message = "install failed: " + result.error(),
             .recoverable = false,
         });
+        show_notices();
         return 1;
     }
 
@@ -1638,8 +1782,17 @@ int install_(std::span<const std::string> targets, bool yes, bool noDeps,
         summaryPayload["success"] =
             static_cast<int>(count_status(NodeStatus::Installed));
         summaryPayload["failed"] = static_cast<int>(failed_count());
+        summaryPayload["refused"] = static_cast<int>(refused_count());   // 1.20
+        summaryPayload["findings"] = findings;                           // 1.20
         stream.emit(DataEvent{"install_summary", summaryPayload.dump()});
-
+        // One line, after the summary: the details are -v and the log.
+        if (findings > 0)
+            log::println("  {} finding(s) about the installed payloads: `-v`, or {}", findings,
+                         Config::display_path(Config::paths().homeDir / "logs" / "findings.ndjson"));
+    }
+    // What the packages said, after the summary (design 2026-11-27 §9.2).
+    show_notices();
+    if (!allAlreadyInstalled) {
         // If this install ran via `sudo`, the downloaded payloads, version DB
         // and shims were written root-owned into the user's home. Hand the
         // home back to the invoking user so a later non-sudo `xlings install`
@@ -1655,7 +1808,10 @@ int install_(std::span<const std::string> targets, bool yes, bool noDeps,
     // install` and `interface install_packages` would report exitCode=0
     // even when individual packages failed to install — see
     // .agents/docs/2026-05-22-cmd-install-silent-failure-analysis.md
-    return failed_count() > 0 ? 1 : 0;
+    //
+    // A refused node is a failed command too (C1): a script that installs a
+    // recipe this client cannot run learns it from the exit code.
+    return failed_count() > 0 || refused_count() > 0 || (useAfterInstall && notActivated > 0) ? 1 : 0;
 }
 
 std::expected<bool, std::string>
@@ -1683,18 +1839,19 @@ selected_payloadless_config_has_uninstall_(
     const auto installDir = storeRoot
         / package_store_name(match.namespaceName, match.name)
         / match.version;
-    const auto snapshot = installDir / ".xpkg.lua";
+    // The recipe the payload kept (either layout), as the removal runs it.
+    const auto kept = kept_recipe(installDir);
+    if (!kept) return std::unexpected(kept.error());
+    const auto recipe = kept->value_or(match.pkgFile);
     std::error_code ec;
-    const auto recipe = std::filesystem::is_regular_file(snapshot, ec)
-        ? snapshot
-        : match.pkgFile;
-    ec.clear();
     if (!std::filesystem::is_regular_file(recipe, ec)) {
         return std::unexpected(std::format(
             "uninstall recipe is not a local file: {}", recipe.string()));
     }
 
-    xpkg::ExecutionContext context;
+    // The index is the recipe's, also when the snapshot is what runs (as the
+    // removal itself does).
+    auto context = make_execution_context({ .recipe = match.pkgFile });
     auto executor = lua_boundary::create_executor(recipe, context);
     if (!executor) return std::unexpected(executor.error());
     return executor->has_hook(xpkg::HookType::Uninstall);
@@ -2438,6 +2595,7 @@ int cmd_remove_in_scope_(const std::string& target, bool yes,
                         });
                         return 1;
                     }
+                    // warn-ok: no version was named and nothing is registered: nothing would be removed either way
                     log::warn("xlings: cannot inspect an uninstall recipe for "
                               "'{}' ({}); treating it as absent",
                               target, reason);
@@ -2483,6 +2641,7 @@ int cmd_remove_in_scope_(const std::string& target, bool yes,
             }
 
             if (payloadOnDisk) {
+                // warn-ok: says why a payload with no registration is removed
                 log::warn("xlings: '{}' is not registered in subos '{}', but a "
                           "payload is on disk; removing it for real",
                           bareName, subos);
@@ -2563,6 +2722,7 @@ int cmd_remove_in_scope_(const std::string& target, bool yes,
                               "removes the ACTIVE one only",
                               bareName, versions.size(), subos);
                     for (const auto& v : versions) {
+                        // warn-ok: the list of what the user may name next
                         log::warn("  xlings remove {}@{}", target, v);
                     }
                 }
@@ -2697,14 +2857,45 @@ int cmd_remove_older_than(const std::string& name, const std::string& threshold,
             for (const auto& v : it->second) installedIn[xvm::strip_namespace(v)].push_back(snap.name);
         }
     }
+    // The projects this home knows (#708). One that is gone -- its directory
+    // or its state file -- uses nothing: its entry is derived state, dropped
+    // and said so. One whose state cannot be read is not "uses nothing"
+    // ("could not read" is never "empty"): what it uses is unknown, so the
+    // command stops before removing anything.
+    std::vector<std::string> gone;
     for (const auto& root : Config::known_projects()) {
-        auto state = nlohmann::json::parse(
-            platform::read_file_to_string((root / ".xlings" / ".xlings.json").string()),
-            nullptr, false);
-        if (state.is_discarded() || !state.is_object() || !state.contains("workspace")) continue;
+        const auto statePath = root / ".xlings" / ".xlings.json";
+        std::error_code ec;
+        if (!fs::exists(statePath, ec) && !ec) {
+            gone.push_back(root.string());
+            if (!dryRun) Config::forget_known_project(root);
+            continue;
+        }
+        nlohmann::json state(nlohmann::json::value_t::discarded);
+        try {
+            state = nlohmann::json::parse(platform::read_file_to_string(statePath.string()), nullptr, false);
+        } catch (const std::exception&) {}
+        if (state.is_discarded() || !state.is_object()) {
+            stream.emit(ErrorEvent{
+                .code = ErrorCode::InvalidInput,
+                .message = std::format("the state of project {} cannot be read ({}): what it uses is unknown, "
+                                       "so nothing was removed", root.string(), statePath.string()),
+                .recoverable = true,
+                .hint = std::format("repair {} (or delete the project's .xlings directory), then run this again",
+                                    statePath.string()),
+            });
+            return 1;
+        }
+        if (!state.contains("workspace")) continue;
         auto active = xvm::strip_namespace(xvm::get_active_version(
             xvm::subos_workspace_from_json(state["workspace"]).active, bareName));
         if (!active.empty()) inUse.try_emplace(active, std::format("used by project {}", root.string()));
+    }
+    if (!gone.empty()) {
+        log::println("{} known project(s) no longer exist{}: {}", gone.size(),
+                     dryRun ? " (they would be forgotten)" : " and were forgotten",
+                     gone.size() <= 3 ? [&] { std::string l; for (const auto& g : gone) l += (l.empty() ? "" : ", ") + g; return l; }()
+                                      : std::format("{}, and {} more", gone.front(), gone.size() - 1));
     }
     if (xvm::is_xlings_binary(bareName)) {
         inUse.try_emplace(std::string(Info::VERSION), "the running xlings");
@@ -2842,6 +3033,7 @@ int cmd_remove_impl_(const std::string& target, bool yes, EventStream& stream,
     // decide to switch, and cannot decide if nobody says it. Said at install
     // time because that is when the cost is being incurred.
     if (platform::is_emulated()) {
+        // warn-ok: a fact about this machine, said once; nothing is decided by it
         log::warn("this xlings is a {} build running on {} hardware; packages "
                   "will match the build, not the machine. A native {} release "
                   "avoids the emulation.",
@@ -3728,11 +3920,13 @@ int cmd_add_xpkg(const std::string& fileOrUrl, EventStream& stream) {
                              | fs::copy_options::overwrite_existing, lec);
             }
             if (lec) {
+                // warn-ok: said about a local recipe's environment; the install's own outcome follows
                 log::warn("could not provide libs/ to the local index: {} -- "
                           "`xim.pkgindex.*` calls in this recipe will be silent "
                           "no-ops", lec.message());
             }
         } else if (!fs::is_directory(primaryLibs, lec)) {
+            // warn-ok: said about a local recipe's environment; the install's own outcome follows
             log::warn("no primary index libs/ at {} -- `xim.pkgindex.*` calls in "
                       "this recipe will be silent no-ops (run `xlings update`)",
                       Config::display_path(primaryLibs));
@@ -3975,6 +4169,11 @@ int cmd_update(const std::string& target, bool yes, EventStream& stream) {
     }
 
     log::println("index updated");
+    // A newer xlings, as an event for whoever reads them (1.20); a person's
+    // terminal gets the line at the end of the command (#425).
+    if (const auto newer = update_notice::pending())
+        stream.emit(DataEvent{"update_available",
+                              nlohmann::json{{"version", *newer}, {"current", std::string(Info::VERSION)}}.dump()});
 
     if (target.empty()) return 0;
 
@@ -3982,6 +4181,21 @@ int cmd_update(const std::string& target, bool yes, EventStream& stream) {
     if (!match) {
         log::error("{}", match.error());
         return 1;
+    }
+    // A package asked for by an alias moves along it (design 2026-11-27
+    // §7.3); one asked for by a version, or by none, along `latest`.
+    std::string following;
+    if (target.find('@') == std::string::npos) {
+        if (const auto alias = Config::alias_of(match->canonicalName); !alias.empty()) {
+            if (auto along = catalog.resolve_target(match->canonicalName + "@" + alias, detect_platform())) {
+                match = std::move(along);
+                following = alias;
+            } else {
+                // warn-ok: the alias is gone from the index; update follows latest
+                log::warn("{} was installed as {}@{}, which the index no longer has; following latest",
+                          match->canonicalName, match->canonicalName, alias);
+            }
+        }
     }
 
     auto bareName = match->name;
@@ -3993,6 +4207,7 @@ int cmd_update(const std::string& target, bool yes, EventStream& stream) {
     planPayload["name"]    = match->canonicalName;
     planPayload["current"] = currentActive;
     planPayload["latest"]  = latest;
+    if (!following.empty()) planPayload["alias"] = following;   // 1.20
     stream.emit(DataEvent{"update_plan", planPayload.dump()});
 
     if (currentActive.empty()) {
@@ -4004,7 +4219,8 @@ int cmd_update(const std::string& target, bool yes, EventStream& stream) {
     }
 
     if (currentActive == latest) {
-        log::println("{}@{} is already the latest", match->canonicalName, currentActive);
+        log::println("{}@{} is already the latest{}", match->canonicalName, currentActive,
+                     following.empty() ? std::string{} : " " + following);
         return 0;
     }
 
@@ -4033,6 +4249,12 @@ int cmd_update(const std::string& target, bool yes, EventStream& stream) {
                           /*forceGlobal=*/false, /*cancel=*/nullptr,
                           /*dryRun=*/false, /*useAfterInstall=*/true, &inStore);
     if (rc != 0) return rc;
+    // The install asked for a version, which ends an alias; this one moved
+    // along it, and goes on doing so.
+    if (!following.empty()) {
+        Config::mark_alias(match->canonicalName, following);
+        Config::save_workspace();
+    }
 
     nlohmann::json summaryPayload;
     summaryPayload["name"] = match->canonicalName;

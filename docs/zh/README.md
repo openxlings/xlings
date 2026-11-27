@@ -95,7 +95,7 @@
 | | 位置 |
 |---|---|
 | `.xlings.json`（home、项目、SubOS） | [04](04-projects.md)、[规范](../specs/xlings-json.md) |
-| xpkg 配方（`pkgs/<x>/<name>.lua`） | [30](30-authoring-a-package.md)、[规范](../specs/xpkg-manifest-v1.md) |
+| xpkg 配方（`pkgs/<x>/<name>.lua`） | [30](30-authoring-a-package.md)、[规范](../specs/xpkg.md) |
 | SubOS 策略（`policy.json`） | [11](11-sandbox-and-policy.md) |
 | NDJSON 接口 | [50](50-agents-and-machine-interface.md)、[规范](../specs/interface-ndjson-v1.md) |
 | 诊断信息与退出码 | [specs/diagnostics](../specs/diagnostics.md)、[10](10-subos.md) |

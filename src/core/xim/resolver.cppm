@@ -59,8 +59,15 @@ using SubosVersionFn = std::function<std::string(const std::string&)>;
 // no answer or that answer does not satisfy: a pin never produces a version
 // the target excluded, so a package demanding a libc this subos does not have
 // still resolves normally and is caught downstream by runtime_status().
+//
+// `exactKey(target)` says the target's version is a key of its index entries
+// (design 2026-11-27 §7.1, Exact): then only that version answers it -- an
+// active 2.44.3 does not stand in for the entry 2.44 (#739). A range (`~2.44`,
+// `2`) is still met by what is active.
+using ExactKeyFn = std::function<bool(const std::string& target)>;
 std::string pin_target_to_subos(const std::string& target,
-                                const SubosVersionFn& subosVersionOf);
+                                const SubosVersionFn& subosVersionOf,
+                                const ExactKeyFn& exactKey = {});
 
 // Resolve targets into a full install plan.
 //

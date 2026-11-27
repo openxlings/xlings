@@ -18,10 +18,13 @@
 //     self-consistently wrong.
 #include <gtest/gtest.h>
 import xlings.testkit;
+#include "xlings/xtest.hpp"
 
 import std;
+import mcpplibs.xpkg;
 import xlings.libs.elfread;
 import xlings.platform;
+import xlings.platform.target;
 
 namespace er = xlings::elfread;
 namespace tk = xlings::testkit;
@@ -176,6 +179,46 @@ TEST(ElfRead, NeededIsEveryLibraryInOrder) {
     EXPECT_TRUE(none->needed.empty());
     std::error_code ec;
     std::filesystem::remove_all(dir, ec);
+}
+
+// The machine a file is for, and the one table that names it (design
+// 2026-11-27 §5.1): every architecture this client is built for is in
+// libxpkg's table, and on Linux this test binary's own header names the host.
+XTEST(ElfRead, ReadsTheMachineAndTheClassAndTheTableNamesThem,
+      .area = "xim", .covers = {"ARCH-IDENTITY"}) {
+    namespace xp = mcpplibs::xpkg;
+    TempDir tmp;
+    auto arm = er::read(tk::write_elf(tmp.root / "arm", {.machine = 183}));
+    ASSERT_TRUE(arm.has_value());
+    EXPECT_EQ(arm->machine, 183);
+    EXPECT_EQ(arm->bits, 64);
+    const auto* id = xp::find_arch_by_elf(arm->machine, arm->bits);
+    ASSERT_NE(id, nullptr);
+    EXPECT_EQ(id->name, "aarch64");
+
+    // A 32-bit header (ELFCLASS32, EM_ARM) with no program headers.
+    std::string header(52, '\0');
+    header[0] = 0x7f; header[1] = 'E'; header[2] = 'L'; header[3] = 'F';
+    header[4] = 1; header[5] = 1; header[6] = 1; header[18] = 40;
+    std::ofstream(tmp.root / "arm32", std::ios::binary) << header;
+    auto arm32 = er::read(tmp.root / "arm32");
+    ASSERT_TRUE(arm32.has_value());
+    EXPECT_EQ(arm32->bits, 32);
+    id = xp::find_arch_by_elf(arm32->machine, arm32->bits);
+    ASSERT_NE(id, nullptr);
+    EXPECT_EQ(id->name, "arm");
+
+    // Every spelling platform::build_arch() has.
+    for (std::string_view arch : {"x86_64", "aarch64", "arm64", "x86"})
+        EXPECT_NE(xp::find_arch(arch), nullptr) << arch;
+    EXPECT_NE(xp::find_arch(xlings::platform::build_arch()), nullptr);
+    if constexpr (xlings::platform::is_linux) {
+        auto self = er::read(xlings::platform::get_executable_path());
+        ASSERT_TRUE(self.has_value());
+        const auto* host = xp::find_arch_by_elf(self->machine, self->bits);
+        ASSERT_NE(host, nullptr);
+        EXPECT_EQ(std::string(host->name), xp::normalize_arch(xlings::platform::build_arch()));
+    }
 }
 
 // ── the oracle ───────────────────────────────────────────────────────

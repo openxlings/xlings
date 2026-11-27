@@ -47,6 +47,32 @@ check_safe_pathname_(const char* raw) {
     return std::string{sv};
 }
 
+// The components of `rel` ("." and empty ones are not components).
+std::vector<std::string_view> path_components_(std::string_view rel) {
+    std::vector<std::string_view> parts;
+    std::size_t start = 0;
+    for (std::size_t i = 0; i <= rel.size(); ++i) {
+        if (i == rel.size() || rel[i] == '/' || rel[i] == '\\') {
+            auto part = rel.substr(start, i - start);
+            if (!part.empty() && part != ".") parts.push_back(part);
+            start = i + 1;
+        }
+    }
+    return parts;
+}
+
+// `rel` without its first `n` components; nullopt when it has no more than `n`.
+std::optional<std::string> strip_components_(std::string_view rel, int n) {
+    const auto parts = path_components_(rel);
+    if (parts.size() <= static_cast<std::size_t>(n)) return std::nullopt;
+    std::string kept;
+    for (std::size_t i = static_cast<std::size_t>(n); i < parts.size(); ++i) {
+        if (!kept.empty()) kept += '/';
+        kept += parts[i];
+    }
+    return kept;
+}
+
 std::string path_from_wide_(const wchar_t* raw) {
     if (!raw || !*raw) return {};
     try {
@@ -354,6 +380,12 @@ extract_archive_detailed(const std::filesystem::path& archive,
     std::string refusal;
     // The symbolic links written, for `settle_directory_links_` below.
     std::vector<fs::path> symlinks;
+    // What `strip` drops, as far as the members read so far name it: every
+    // member begins with the same components. Archives with several top-level
+    // directories would be merged into one, a file of one replacing a file of
+    // another with the same name, so that is the archive disagreeing with the
+    // declaration too.
+    std::vector<std::string> dropped;
 
     for (;;) {
         report_progress();
@@ -377,6 +409,39 @@ extract_archive_detailed(const std::filesystem::path& archive,
                 ExtractErrorKind::InvalidInputArchive,
                 std::move(safeRel).error()});
         }
+        if (options.strip > 0) {
+            const auto parts = detail_::path_components_(*safeRel);
+            const auto lead = std::min<std::size_t>(parts.size(), static_cast<std::size_t>(options.strip));
+            const auto common = std::min<std::size_t>(lead, dropped.size());
+            if (!std::equal(parts.begin(), parts.begin() + static_cast<std::ptrdiff_t>(common), dropped.begin())) {
+                auto join = [](auto first, auto last) {
+                    std::string s;
+                    for (; first != last; ++first) s += std::string(*first) + "/";
+                    return s;
+                };
+                cleanup();
+                return std::unexpected(ExtractError{
+                    ExtractErrorKind::InvalidInputArchive,
+                    std::format("strip = {} drops the same first {} path component{} of every member, and the "
+                                "archive's members begin with both {} and {} ({}): the archive has no single "
+                                "top-level directory to drop",
+                                options.strip, options.strip, options.strip == 1 ? "" : "s",
+                                join(dropped.begin(), dropped.begin() + static_cast<std::ptrdiff_t>(common)),
+                                join(parts.begin(), parts.begin() + static_cast<std::ptrdiff_t>(common)), original)});
+            }
+            for (auto i = dropped.size(); i < lead; ++i) dropped.emplace_back(parts[i]);
+            auto kept = detail_::strip_components_(*safeRel, options.strip);
+            if (!kept) {
+                if (::archive_entry_filetype(entry) == AE_IFDIR) continue;
+                cleanup();
+                return std::unexpected(ExtractError{
+                    ExtractErrorKind::InvalidInputArchive,
+                    std::format("strip = {} drops the first {} path component{} of every member, and the "
+                                "archive's member {} has no more than that",
+                                options.strip, options.strip, options.strip == 1 ? "" : "s", original)});
+            }
+            *safeRel = std::move(*kept);
+        }
         auto rebased = (canonicalDest / *safeRel).lexically_normal().string();
         ::archive_entry_set_pathname(entry, rebased.c_str());
 
@@ -393,6 +458,17 @@ extract_archive_detailed(const std::filesystem::path& archive,
                 return std::unexpected(ExtractError{
                     ExtractErrorKind::InvalidInputArchive,
                     std::move(safeHl).error()});
+            }
+            if (options.strip > 0) {
+                auto kept = detail_::strip_components_(*safeHl, options.strip);
+                if (!kept) {
+                    cleanup();
+                    return std::unexpected(ExtractError{
+                        ExtractErrorKind::InvalidInputArchive,
+                        std::format("strip = {}: the hard link {} names {}, which is dropped",
+                                    options.strip, original, hardlink)});
+                }
+                *safeHl = std::move(*kept);
             }
             rebasedHl = (canonicalDest / *safeHl).lexically_normal().string();
             ::archive_entry_set_hardlink(entry, rebasedHl.c_str());

@@ -14,6 +14,7 @@ import xlings.libs.elfread;
 import xlings.core.log;
 import xlings.observe;
 import xlings.core.xim.payload;
+import xlings.core.xim.extract;
 import xlings.core.xim.lua_protocol;
 import xlings.core.xvm.db;
 import xlings.core.xvm.owner;
@@ -33,6 +34,31 @@ namespace xpkg = mcpplibs::xpkg;
 namespace fs = std::filesystem;
 using Json = nlohmann::json;
 namespace {
+// What the host does for a hook (libxpkg's HostPorts): `fs.extract` is this
+// client's extractor, the one that lands a download (design 2026-11-27
+// §9.7), in this process or in the worker -- which is this binary too.
+xpkg::HostPorts host_ports() {
+    return {.extract = [](const fs::path& archive, const fs::path& dir, int strip) -> std::optional<std::string> {
+        ExtractOptions options;
+        options.strip = strip;
+        auto extracted = extract_archive_detailed(archive, dir, options);
+        if (!extracted) return extracted.error().message;
+        return std::nullopt;
+    }};
+}
+// What a recipe is read for: the install's platform and architecture, which
+// its top level is told as the loader tells it, and the index whose libs a
+// recipe in no index of its own imports -- the one its hooks get
+// (libxpkg's ReadTarget).
+xpkg::ReadTarget read_target(const xpkg::ExecutionContext& context) {
+    return {context.platform, context.arch, context.pkgindex_dir};
+}
+std::expected<xpkg::PackageExecutor, std::string> in_process(const fs::path& package,
+                                                             const xpkg::ExecutionContext& context) {
+    auto executor = xpkg::create_executor(package, read_target(context));
+    if (executor) executor->set_host_ports(host_ports());
+    return executor;
+}
 std::expected<std::optional<subos::policy::Policy>, std::string> policy() {
     const auto& p = Config::paths();
     return subos::policy_store::read({p.homeDir}, p.activeSubos, Info::VERSION);
@@ -1072,7 +1098,7 @@ create_executor(const fs::path& package, xpkg::ExecutionContext& context,
     // and a failure says so.
     const bool for_runtime = !*p && !readonly_payload && !runtime.mounts.empty();
     if (!*p && !readonly_payload && !for_runtime)
-        return xpkg::create_executor(package);
+        return in_process(package, context);
     const bool layer_only = !*p;
     if (readonly_payload || for_runtime) {
         if (!*p)
@@ -1089,7 +1115,7 @@ create_executor(const fs::path& package, xpkg::ExecutionContext& context,
         log::debug("hook runtime: no worker for {} ({}); the hook runs here", package.string(), worker.error());
         if (runtime_note)
             *runtime_note = hook_runtime_note_(runtime, worker.error());
-        return xpkg::create_executor(package);
+        return in_process(package, context);
     }
     if (!worker)
         return std::unexpected(worker.error());
@@ -1101,6 +1127,7 @@ create_executor(const fs::path& package, xpkg::ExecutionContext& context,
             return std::unexpected("cannot stage hook archive: " + ec.message());
         context.install_file = private_file;
     }
+    const auto target = read_target(context);
     return xpkg::create_executor(
         absolute_package,
         [worker = *worker](const xpkg::HookInvocation& original)
@@ -1175,7 +1202,8 @@ create_executor(const fs::path& package, xpkg::ExecutionContext& context,
                 worker->failure = e.what();
                 return std::unexpected(e.what());
             }
-        });
+        },
+        target);
 }
 int worker_main(int argc, char* argv[]) {
     if (argc != 4 && argc != 5)
@@ -1205,6 +1233,7 @@ int worker_main(int argc, char* argv[]) {
         return 125;
     }
     xpkg::HookWorker worker;
+    worker.set_host_ports(host_ports());
     while (true) {
         auto input = platform::worker::receive(channel);
         if (!input)

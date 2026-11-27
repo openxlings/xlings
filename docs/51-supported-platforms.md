@@ -14,6 +14,30 @@
 An aarch64 image boots on a virtual machine (`virt`); booting aarch64 hardware
 needs a kernel for it, which is not in the index yet.
 
+## CPU architectures
+
+| Tier | Architectures | What it means |
+|---|---|---|
+| first | Linux x86_64 | the client, Luban and every package of the index; CI on every pull request |
+| second | Linux aarch64 | the client, Luban (without the desktop), the toolchains; native CI; the index's packages as its coverage table shows |
+| single | macOS arm64, Windows x86_64 | one architecture each |
+| target | riscv64, loongarch64, bare-metal arm and others | only as a cross-compilation target: no native client |
+
+A home has one machine: the architecture of the xlings binary it runs. An
+x86_64 xlings under emulation on an aarch64 machine installs x86_64 packages,
+everything in that home x86_64. A package entry names the architectures it
+ships; on one it does not list, the install is refused before the download,
+naming every package of the closure that lacks it
+([xpkg](specs/xpkg.md) §4.4), and what the host would run from a payload must
+be of its machine ([payload rules](specs/payload-rules.md), rule M).
+
+Adding a host architecture touches: libxpkg's architecture table (one row),
+the standard loader path and the image properties of that architecture, an
+xlings release build and a CI leg, the index's resource builds for it, the
+base closure's assets (glibc, the GCC runtime, the toolchains), and one key
+in each architecture-independent entry (a script does it). The index's
+coverage table then has a column for it.
+
 ## What a machine must provide
 
 Three layers decide where everything xlings runs comes from:

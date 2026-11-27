@@ -331,60 +331,12 @@ void ensure_subos_manifest_(const fs::path& subos_dir) {
     platform::write_string_to_file(path.string(), json.dump(2));
 }
 
-// Extract the value following `# xlings-profile-version: ` on any line of
-// `text`. Returns an empty string when the marker is absent, which we
-// interpret as "legacy v1" — anything older than the time we started
-// shipping a version marker.
-std::string extract_profile_version_(std::string_view text) {
-    constexpr std::string_view marker = "# xlings-profile-version:";
-    auto pos = text.find(marker);
-    if (pos == std::string_view::npos) return {};
-    auto value_start = pos + marker.size();
-    while (value_start < text.size() &&
-           (text[value_start] == ' ' || text[value_start] == '\t')) {
-        ++value_start;
-    }
-    auto eol = text.find_first_of("\r\n", value_start);
-    auto end = (eol == std::string_view::npos) ? text.size() : eol;
-    auto value = std::string{text.substr(value_start, end - value_start)};
-    while (!value.empty() &&
-           (value.back() == ' ' || value.back() == '\t')) {
-        value.pop_back();
-    }
-    return value;
-}
-
-// Profile-aware writer. Behavior:
-//
-//   1. Path doesn't exist  → write fresh.
-//   2. Path exists, version matches `target_version` → leave alone (we
-//      respect any user edits made after install).
-//   3. Path exists with older or missing version marker → overwrite, log
-//      the upgrade. This is how shell-level subos switching reaches users
-//      who installed before v2 of the profile shipped.
-//
-// The version of the bytes we're shipping comes from
-// xlings::xself::profile_resources::kVersion; the on-disk value comes from
-// the marker line we inject as the first comment of every profile.
-void write_or_upgrade_profile_(const fs::path& path,
-                                      std::string_view content,
-                                      std::string_view target_version) {
-    if (!fs::exists(path)) {
-        ensure_parent_dirs_(path);
-        platform::write_string_to_file(path.string(), std::string(content));
-        return;
-    }
-
-    auto existing = platform::read_file_to_string(path.string());
-    auto existing_version = extract_profile_version_(existing);
-    if (existing_version == target_version) return;
-
-    log::debug("upgrading {} (was: {}, now: {})",
-               path.filename().string(),
-               existing_version.empty() ? "<no marker, treated as v1>"
-                                        : existing_version,
-               target_version);
-    platform::write_string_to_file(path.string(), std::string(content));
+// Profiles are written by profile_resources::write_profile, the one writer
+// (a missing one is written; one of another version is replaced, what it
+// held kept in <home>/logs/profile-upgrades/; one of this version is left as
+// it is, edits included).
+void write_or_upgrade_profile_(const fs::path& home_dir, const fs::path& path, std::string_view content) {
+    (void)profile_resources::write_profile(home_dir, path, content);
 }
 
 // Read-modify-writes `<home>/.xlings.json` without taking the state lock
@@ -505,15 +457,12 @@ bool ensure_home_layout(const fs::path& home_dir) {
     // the version-aware writer so users who installed an older xlings get
     // their profile auto-upgraded on the next `self init` / `self update`,
     // while users on the current version preserve any local edits.
-    write_or_upgrade_profile_(home_dir / "config" / "shell" / "xlings-profile.sh",
-                              profile_resources::bash_sh,
-                              profile_resources::kVersion);
-    write_or_upgrade_profile_(home_dir / "config" / "shell" / "xlings-profile.fish",
-                              profile_resources::fish,
-                              profile_resources::kVersion);
-    write_or_upgrade_profile_(home_dir / "config" / "shell" / "xlings-profile.ps1",
-                              profile_resources::pwsh,
-                              profile_resources::kVersion);
+    write_or_upgrade_profile_(home_dir, home_dir / "config" / "shell" / "xlings-profile.sh",
+                              profile_resources::bash_sh);
+    write_or_upgrade_profile_(home_dir, home_dir / "config" / "shell" / "xlings-profile.fish",
+                              profile_resources::fish);
+    write_or_upgrade_profile_(home_dir, home_dir / "config" / "shell" / "xlings-profile.ps1",
+                              profile_resources::pwsh);
 
 
     ensure_home_config_defaults_(home_dir);

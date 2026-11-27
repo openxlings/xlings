@@ -4,6 +4,7 @@ module;
 module xlings.core.cmdprocessor;
 
 import xlings.core.xim.lua_boundary;
+import xlings.core.xim.hook_context;
 import std;
 import xlings.core.log;
 import xlings.libs.json;
@@ -268,15 +269,12 @@ CommandProcessor create_processor() {
                 }
                 namespace fs = std::filesystem;
                 fs::path scriptFile = argv[2];
-                mcpplibs::xpkg::ExecutionContext ctx;
-                ctx.platform = std::string(platform::OS_NAME);
-                ctx.bin_dir = Config::paths().binDir;
-                ctx.subos_sysrootdir = Config::paths().subosDir.string();
-                ctx.run_dir = fs::current_path();
-                ctx.xpkg_dir = Config::paths().dataDir / "xpkgs";
-                for (int i = 3; i < argc; ++i) {
-                    ctx.args.emplace_back(argv[i]);
-                }
+                std::vector<std::string> args;
+                for (int i = 3; i < argc; ++i) args.emplace_back(argv[i]);
+                auto ctx = xim::make_execution_context({
+                    .xpkg_dir = Config::paths().dataDir / "xpkgs",
+                    .args = std::move(args),
+                });
                 auto execResult = xim::lua_boundary::create_executor(scriptFile, ctx);
                 if (!execResult) {
                     log::error("failed to load script: {}", execResult.error());

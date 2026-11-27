@@ -148,6 +148,11 @@ struct SubosWorkspace {
     // loading the recipe. A top-level sibling of `configured` (`host_facts`),
     // which older clients keep and do not read.
     std::map<std::string, std::map<std::string, std::string>> hostFacts;
+    // The alias a package was asked for by in this subos (`node@lts`,
+    // design 2026-11-27 §7.3), keyed by its canonical name: `update` moves
+    // it along that alias. A top-level sibling of `configured` (`aliases`),
+    // which older clients keep and do not read.
+    std::map<std::string, std::string> aliases;
 };
 
 // How an entry is actually materialized, once defaults are applied.

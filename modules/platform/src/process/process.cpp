@@ -961,32 +961,11 @@ bool become_user(unsigned, unsigned) { return false; }
 bool give_to(const std::filesystem::path&, unsigned, unsigned) { return false; }
 bool take_controlling_terminal() { return false; }
 void redirect_stdio(std::span<const int>) {}
-int run_shell_unattended(const std::string& command, std::optional<std::chrono::milliseconds>) {
-    return std::system(command.c_str());
-}
+namespace {
 // The Windows process scope (design part 3 §6.3): the program and everything
 // it starts in one Job Object that dies with this process (kill-on-close) and
 // is ended whole when it runs past `limit` (124).
-int run_argv_with_timeout(const std::vector<std::string>& argv, std::chrono::milliseconds limit) {
-    if (argv.empty()) return 127;
-    std::wstring line;
-    for (const auto& a : argv) {
-        if (!line.empty()) line += L' ';
-        const auto w = std::filesystem::path(a).wstring();
-        const bool quote = w.empty() || w.find_first_of(L" \t\"") != std::wstring::npos;
-        if (!quote) { line += w; continue; }
-        line += L'"';
-        std::size_t slashes = 0;
-        for (wchar_t c : w) {
-            if (c == L'\\') { ++slashes; continue; }
-            if (c == L'"') line.append(slashes * 2 + 1, L'\\');
-            else line.append(slashes, L'\\');
-            slashes = 0;
-            line += c;
-        }
-        line.append(slashes * 2, L'\\');
-        line += L'"';
-    }
+int run_line_with_timeout_(std::wstring line, std::chrono::milliseconds limit) {
     HANDLE job = ::CreateJobObjectW(nullptr, nullptr);
     if (!job) return 126;
     JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};
@@ -1018,6 +997,39 @@ int run_argv_with_timeout(const std::vector<std::string>& argv, std::chrono::mil
     ::CloseHandle(process.hProcess);
     ::CloseHandle(job);   // kill-on-close: nothing it started outlives it
     return rc;
+}
+}  // namespace
+
+// With a limit, the shell std::system starts (cmd.exe), in the process scope
+// that ends it and everything it started past the limit (124) -- as the POSIX
+// version ends its session. Without one, std::system.
+int run_shell_unattended(const std::string& command, std::optional<std::chrono::milliseconds> limit) {
+    if (!limit) return std::system(command.c_str());
+    // /s: the line after /c, less its outer quotes, is the command as written.
+    return run_line_with_timeout_(L"cmd.exe /d /s /c \"" + std::filesystem::path(command).wstring() + L"\"",
+                                  *limit);
+}
+int run_argv_with_timeout(const std::vector<std::string>& argv, std::chrono::milliseconds limit) {
+    if (argv.empty()) return 127;
+    std::wstring line;
+    for (const auto& a : argv) {
+        if (!line.empty()) line += L' ';
+        const auto w = std::filesystem::path(a).wstring();
+        const bool quote = w.empty() || w.find_first_of(L" \t\"") != std::wstring::npos;
+        if (!quote) { line += w; continue; }
+        line += L'"';
+        std::size_t slashes = 0;
+        for (wchar_t c : w) {
+            if (c == L'\\') { ++slashes; continue; }
+            if (c == L'"') line.append(slashes * 2 + 1, L'\\');
+            else line.append(slashes, L'\\');
+            slashes = 0;
+            line += c;
+        }
+        line.append(slashes * 2, L'\\');
+        line += L'"';
+    }
+    return run_line_with_timeout_(std::move(line), limit);
 }
 UserIds user_ids() { return {}; }
 bool stdout_is_terminal() { return ::_isatty(1) != 0; }

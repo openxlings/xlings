@@ -24,7 +24,6 @@ export namespace xlings::xvm {
 namespace fs = std::filesystem;
 
 // Cross-platform link: symlink on Unix, directory junction or hard link on Windows
-void create_link_(const fs::path& src, const fs::path& dst);
 
 // Where a header asset lands: `<sysroot>/include/<destinationPrefix>`, or
 // `<sysroot>/include` when the asset declares no prefix.

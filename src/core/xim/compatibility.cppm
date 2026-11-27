@@ -2,6 +2,7 @@ export module xlings.core.xim.compatibility;
 
 import std;
 import mcpplibs.xpkg;
+import mcpplibs.xpkg.compat;
 import xlings.platform.target;
 
 // Whether a package can be installed on this OS and architecture.
@@ -39,12 +40,12 @@ import xlings.platform.target;
 // anyone shipping a new client.
 export namespace xlings::xim {
 
-enum class ArchEvidence {
-    None,    // package declares no archs and the entry carries none
-    Weak,    // single artifact; package-level `archs` is the only signal
-    Open,    // ${arch} template or XLINGS_RES: parametric, set unbounded
-    Strong,  // entry enumerates the architectures it ships
-};
+// The shapes, and the functions that read them, are libxpkg's (one table
+// and one classification for a host and the format's checker).
+using mcpplibs::xpkg::ArchEvidence;
+using mcpplibs::xpkg::classify_arch_evidence;
+using mcpplibs::xpkg::entry_architectures;
+using mcpplibs::xpkg::is_arch_templated;
 
 struct TargetCompatibility {
     bool supported { true };
@@ -92,7 +93,8 @@ const mcpplibs::xpkg::PlatformResource* find_entry(
 // libxpkg's wording into an interface xlings depends on, and the first upstream
 // rephrasing would silently re-classify a broken recipe as an intentional one.
 //
-// So this asks the recipe instead, over the same fields libxpkg reads, and
+// So this asks the recipe instead -- libxpkg answers it, over the fields its
+// resolver reads (mcpplibs.xpkg.compat) -- and
 // takes the `entry` the caller already resolved -- no second version lookup,
 // no second ref chase. It answers only the narrow question in its name;
 // "no entry for this version" is a different thing and is not this.
@@ -100,16 +102,6 @@ bool declares_no_download_source(
     const mcpplibs::xpkg::Package& package,
     const mcpplibs::xpkg::PlatformResource* entry,
     std::string_view os);
-
-// Architectures this entry names outright, canonicalised.
-std::set<std::string> entry_architectures(
-    const mcpplibs::xpkg::PlatformResource& entry);
-
-bool is_arch_templated(const mcpplibs::xpkg::PlatformResource& entry);
-
-ArchEvidence classify_arch_evidence(
-    const mcpplibs::xpkg::Package& package,
-    const mcpplibs::xpkg::PlatformResource* entry);
 
 // `entry` is the resolved `xpm[os][version]` resource, with `ref` already
 // followed. Pass nullptr when no entry could be selected -- the answer then

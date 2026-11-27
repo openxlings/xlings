@@ -16,6 +16,7 @@ import xlings.core.utils;
 import xlings.core.xself;
 import xlings.core.xvm.types;
 import xlings.core.xvm.db;
+import xlings.core.xvm.commands;
 import xlings.core.xim.commands;
 import xlings.subos.gpu;
 import xlings.subos.graphics;
@@ -1885,9 +1886,24 @@ int run(int argc, char* argv[], EventStream& stream) {
             return 1;
         }
 
+        // The declaration names what is installed and active: the version the
+        // request resolves to in the index -- glibc@2.44.3 for glibc@~2.44 --
+        // with the request kept beside it (design 2026-11-27 §7.2). A
+        // declaration of the request itself left the view on another version
+        // than the one declared (#607 item 1). Without an index the request
+        // is what can be declared.
+        const std::string requested = binding;
+        std::string resolved = binding;
+        if (!manifest::runtime_is_hosted(binding)) {
+            if (auto version = xim::index_version_of(
+                    manifest::runtime_query_for(binding) + "@" + std::string(manifest::binding_version(binding))))
+                resolved = std::string(manifest::binding_name(binding)) + "@" + *version;
+        }
+        const auto& declared = resolved;
+
         const auto previous = manifest::parse(*doc).runtime;
-        if (previous == binding) {
-            log::info("subos '{}' already declares {}", target, binding);
+        if (previous == declared) {
+            log::info("subos '{}' already declares {}", target, declared);
             return 0;
         }
 
@@ -1896,51 +1912,60 @@ int run(int argc, char* argv[], EventStream& stream) {
         // cached paths and the other is what the activation path re-reads,
         // and setting only one puts the payload in the right place while
         // reporting that it is not there.
-        if (!manifest::runtime_is_hosted(binding)) {
-            auto prevEnv = utils::get_env_or_default("XLINGS_ACTIVE_SUBOS");
+        const bool hosted = manifest::runtime_is_hosted(binding);
+        auto prevEnv = utils::get_env_or_default("XLINGS_ACTIVE_SUBOS");
+        std::optional<std::string> prevOverride;
+        const auto enter = [&] {
             platform::set_env_variable("XLINGS_ACTIVE_SUBOS", target);
-            auto prev = Config::set_active_subos_override(target);
-            std::vector<std::string> targets{binding};
-            // useAfterInstall TRUE here, unlike create().
-            //
-            // Rebinding is the one operation whose whole purpose is to change
-            // what this subos runs on, so the new payload has to become the
-            // ACTIVE one. Leaving it false installs the payload and leaves the
-            // old version active -- declared and active then disagree, which
-            // is precisely the state this change exists to make impossible,
-            // arrived at by the command meant to fix it.
-            //
-            // create() passes false for a reason that does not apply: there,
-            // activation would run before the registration for a subos being
-            // created has landed. This subos already exists and is registered.
+            prevOverride = Config::set_active_subos_override(target);
+        };
+        const auto leave = [&] {
+            if (!prevOverride) return;
+            (void)Config::set_active_subos_override(*prevOverride);
+            platform::set_env_variable("XLINGS_ACTIVE_SUBOS", prevEnv);
+            prevOverride.reset();
+        };
+        if (!hosted) {
+            enter();
+            std::vector<std::string> targets{declared};
+            // The payload only: it becomes the active one below, once this
+            // subos declares it. Activating here was judged against the OLD
+            // declaration, so a rebind to another installed version was
+            // refused ("nothing was changed") and the declaration was then
+            // written anyway (#607, design 2026-11-27 E3).
             const int rc = xim::cmd_install(targets, /*yes=*/true,
                                             /*noDeps=*/false, stream,
                                             /*forceGlobal=*/false,
                                             /*cancel=*/nullptr,
                                             /*dryRun=*/false,
-                                            /*useAfterInstall=*/true);
-            (void)Config::set_active_subos_override(prev);
-            platform::set_env_variable("XLINGS_ACTIVE_SUBOS", prevEnv);
+                                            /*useAfterInstall=*/false);
             if (rc != 0) {
+                leave();
                 // Nothing is rewritten. A subos still declaring a runtime it
                 // has is strictly better than one declaring a runtime that
                 // was never installed -- which is the exact state this whole
                 // change exists to make impossible.
                 stream.emit(ErrorEvent{
                     .code = ErrorCode::Internal,
-                    .message = "could not install " + binding
+                    .message = "could not install " + declared
                                + "; subos '" + target + "' still declares "
                                + (previous.empty() ? "nothing" : previous),
                     .recoverable = true,
-                    .hint = "xlings install " + binding,
+                    .hint = "xlings install " + declared,
                 });
                 return rc;
             }
         }
 
-        auto runtimeAbi = runtime_abi_for(binding);
+        // Read again: the install registered into this same file (its
+        // workspace), and the copy read before it would put the workspace
+        // back as it was -- the version just installed no longer installed
+        // here, and its activation below refused.
+        if (auto current = manifest::read_document(dir)) doc = std::move(current);
+        const auto before = *doc;
+        auto runtimeAbi = runtime_abi_for(declared);
         (*doc)[std::string(manifest::BLOCK)] = manifest::make_block({
-            .runtime   = binding,
+            .runtime   = declared,
             .by        = std::format("xlings {}", Info::VERSION),
             .hostGlibc = platform::host_glibc_version(),
             .intent    = manifest::Intent::Create,
@@ -1949,10 +1974,33 @@ int run(int argc, char* argv[], EventStream& stream) {
             // took a default.
             .runtimeSource = std::string(manifest::RUNTIME_SOURCE_EXPLICIT),
             .runtimeAbi    = std::move(runtimeAbi),
+            .runtimeRequest = requested != declared ? requested : std::string{},
         });
         write_config_json_(dir / ".xlings.json", *doc);
 
-        log::info("subos '{}' now declares {}{}", target, binding,
+        // Rebinding is the one operation whose whole purpose is to change
+        // what this subos runs on, so the new payload becomes the ACTIVE one:
+        // judged against the declaration just written. Refused, or failed,
+        // the declaration goes back -- the outcome is Refused, nothing
+        // changed, and the command fails (design 2026-11-27 §6.2).
+        if (!hosted) {
+            const int used = xvm::cmd_use(std::string(manifest::binding_name(declared)),
+                                          std::string(manifest::binding_version(declared)), stream);
+            leave();
+            if (used != 0) {
+                write_config_json_(dir / ".xlings.json", before);
+                stream.emit(ErrorEvent{
+                    .code = ErrorCode::Unsupported,
+                    .message = std::format("subos '{}' still declares {}: {} was not activated",
+                                           target, previous.empty() ? "nothing" : previous, declared),
+                    .recoverable = true,
+                });
+                return used;
+            }
+        }
+
+        log::info("subos '{}' now declares {}{}{}", target, declared,
+                  requested != declared ? std::format(" (asked {})", requested) : std::string{},
                   previous.empty() ? "" : std::format(" (was {})", previous));
         // Said at the moment it stops being true, not buried in a document.
         // Binaries already built in this subos have the OLD loader in their
@@ -1960,7 +2008,7 @@ int run(int argc, char* argv[], EventStream& stream) {
         // them, and they will keep running against the runtime they were
         // linked to until they are rebuilt.
         log::warn("programs already built in this subos still point at the "
-                  "previous runtime -- rebuild them to pick up {}", binding);
+                  "previous runtime -- rebuild them to pick up {}", declared);
         return 0;
     }
 

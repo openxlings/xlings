@@ -2,6 +2,7 @@ module xlings.core.xim.compatibility;
 
 import std;
 import mcpplibs.xpkg;
+import mcpplibs.xpkg.compat;
 import xlings.platform.target;
 
 namespace xlings::xim {
@@ -14,85 +15,14 @@ const mcpplibs::xpkg::PlatformResource* find_entry(
     const mcpplibs::xpkg::Package& package,
     std::string_view os,
     std::string_view version) {
-    const auto platform = package.xpm.entries.find(std::string(os));
-    if (platform == package.xpm.entries.end()) return nullptr;
-    std::string key(version);
-    // `latest -> 1.2.3 -> ...`. Bounded so a recipe with a cyclic alias
-    // returns "no entry" rather than spinning.
-    for (int hop = 0; hop < 8; ++hop) {
-        const auto found = platform->second.find(key);
-        if (found == platform->second.end()) return nullptr;
-        if (found->second.ref.empty()) return &found->second;
-        key = found->second.ref;
-    }
-    return nullptr;
+    return mcpplibs::xpkg::find_entry(package.xpm, os, version);
 }
 
 bool declares_no_download_source(
     const mcpplibs::xpkg::Package& package,
     const mcpplibs::xpkg::PlatformResource* entry,
     std::string_view os) {
-    // No entry at all is "this version is not described here", which is a
-    // different answer with a different remedy. Refusing to conflate them is
-    // the point of the narrow name.
-    if (entry == nullptr) return false;
-
-    // Mirrors the condition under which libxpkg lands on SourceKind::None,
-    // field for field. The order follows its resolution order so the two
-    // cannot disagree about which field wins.
-    if (entry->is_res) return false;
-    if (!entry->url.empty()) return false;
-    for (const auto& [arch, resource] : entry->archs) {
-        if (!resource.url.empty()) return false;
-    }
-
-    const auto& matrix = package.xpm;
-    if (auto it = matrix.platform_sources.find(std::string(os));
-            it != matrix.platform_sources.end()) {
-        return it->second.empty();
-    }
-    return matrix.source.empty();
-}
-
-std::set<std::string> entry_architectures(
-    const mcpplibs::xpkg::PlatformResource& entry) {
-    std::set<std::string> archs;
-    for (const auto& pair : entry.archs) {
-        archs.insert(mcpplibs::xpkg::normalize_arch(pair.first));
-    }
-    for (const auto& pair : entry.sha256_by_arch) {
-        archs.insert(mcpplibs::xpkg::normalize_arch(pair.first));
-    }
-    for (const auto& pair : entry.arch_alias) {
-        archs.insert(mcpplibs::xpkg::normalize_arch(pair.first));
-    }
-    return archs;
-}
-
-bool is_arch_templated(const mcpplibs::xpkg::PlatformResource& entry) {
-    const auto templated = [](std::string_view url) {
-        return url.find("${arch}") != std::string_view::npos
-            || url.find("${arch_alias}") != std::string_view::npos;
-    };
-    if (templated(entry.url)) return true;
-    for (const auto& pair : entry.mirrors) {
-        if (templated(pair.second)) return true;
-    }
-    return false;
-}
-
-ArchEvidence classify_arch_evidence(
-    const mcpplibs::xpkg::Package& package,
-    const mcpplibs::xpkg::PlatformResource* entry) {
-    if (entry != nullptr) {
-        if (!entry_architectures(*entry).empty()) return ArchEvidence::Strong;
-        // `res = true` is XLINGS_RES with per-arch checksums; when the loader
-        // has not populated them the resource is still arch-parametric.
-        if (entry->is_res || is_arch_templated(*entry)) {
-            return ArchEvidence::Open;
-        }
-    }
-    return package.archs.empty() ? ArchEvidence::None : ArchEvidence::Weak;
+    return mcpplibs::xpkg::declares_no_download_source(package.xpm, entry, os);
 }
 
 TargetCompatibility check_target_compatibility(

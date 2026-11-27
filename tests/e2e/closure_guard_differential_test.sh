@@ -155,12 +155,20 @@ cp "$REAL_PATCHELF" "$HOME_DIR/data/xpkgs/xim-x-patchelf/0.18.0/bin/patchelf"
 # `RC=0` then `|| RC=$?`, not `; RC=$?`: the shared lib sets -e, and a plain
 # assignment from a failing substitution kills the script before the next
 # statement -- silently, which is worse than the failure it hides.
+# The rules' reports are findings (design 2026-11-27 §4): one count line by
+# default, each finding with -v and in <home>/logs/findings.ndjson.
 RC=0
-OUT="$(x install closurefix@1.0.0 -y 2>&1)" || RC=$?
+OUT="$(x install closurefix@1.0.0 -y -v 2>&1)" || RC=$?
 printf '%s\n' "$OUT" | sed -n '1,40{s/^/      | /;p}'
 
 [ "$RC" = "0" ] || fail "1: guard is warn-only but install exited $RC"
 log "  ✓ 1: install succeeds (warn-only)"
+echo "$OUT" | strip_ansi | grep -q "finding(s) about the installed payloads" \
+  || fail "1b: the summary did not count the findings"
+grep -q '"rule":"closure-missing"' "$HOME_DIR/logs/findings.ndjson" 2>/dev/null \
+  && grep -q 'libnothere.so.9' "$HOME_DIR/logs/findings.ndjson" \
+  || fail "1c: logs/findings.ndjson does not keep rule D's finding"
+log "  ✓ 1b: counted in the summary, kept in logs/findings.ndjson"
 
 echo "$OUT" | strip_ansi | grep -q "closure gap.*libnothere\.so\.9\|libnothere\.so\.9.*closure gap" \
   || echo "$OUT" | strip_ansi | grep "libnothere.so.9" | grep -q "closure gap" \

@@ -924,6 +924,23 @@ TEST(XimPinToActive, RangeConstraintUsesSemverNotPrefix) {
     EXPECT_EQ(pin_target_to_subos("lib@1", active), "lib@1.10.0");
 }
 
+// #739 (design 2026-11-27 §7.1): an exact entry key of the index is that
+// version, so a longer active one does not answer it; a range still does. And
+// an active version of another index is that index's.
+TEST(XimPinToActive, AnExactEntryKeyIsNotAnsweredByALongerActiveVersion) {
+    auto active = active_map({{"glibc", "2.44.2"}});
+    const xlings::xim::ExactKeyFn exact = [](const std::string& t) { return t.ends_with("@2.44"); };
+    EXPECT_EQ(pin_target_to_subos("xim:glibc@2.44", active, exact), "xim:glibc@2.44");
+    EXPECT_EQ(pin_target_to_subos("xim:glibc@~2.44", active, exact), "xim:glibc@2.44.2");
+    // Without the index's answer: the old prefix reading.
+    EXPECT_EQ(pin_target_to_subos("xim:glibc@2.44", active), "xim:glibc@2.44.2");
+
+    auto namespaced = active_map({{"rt", "fixture:2.44.2"}});
+    EXPECT_EQ(pin_target_to_subos("fixture:rt@~2.44", namespaced), "fixture:rt@2.44.2");
+    EXPECT_EQ(pin_target_to_subos("rt@~2.44", namespaced), "rt@2.44.2");
+    EXPECT_EQ(pin_target_to_subos("other:rt@~2.44", namespaced), "other:rt@~2.44");
+}
+
 TEST(XimPinToActive, ExactPinIsNeverOverridden) {
     // An exact `@2.39` means 2.39. An active 2.38 does not satisfy it, so the
     // target survives untouched and the install goes ahead.

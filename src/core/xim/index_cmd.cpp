@@ -10,6 +10,10 @@ import xlings.core.xim.indexfetch;
 import xlings.core.xim.repo;
 import xlings.platform;
 import xlings.runtime;
+import mcpplibs.xpkg;
+import mcpplibs.xpkg.check;
+import xlings.core.xim.machine_rule;
+import xlings.core.xim.build_paths;
 
 namespace xlings::xim {
 
@@ -265,6 +269,134 @@ int cmd_index_use(const std::string& name, const std::string& version,
     }
     log::println("  run `xlings update` to apply");
     return 0;
+}
+
+
+int cmd_index_check(const std::string& path, bool asJson, EventStream& stream) {
+    (void)stream;
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    const fs::path target = path.empty() ? fs::current_path(ec) : fs::path(path);
+    std::map<std::string, std::vector<mcpplibs::xpkg::Finding>> found;
+    std::size_t checked = 0;
+    if (fs::is_regular_file(target, ec)) {
+        if (auto f = mcpplibs::xpkg::check_recipe(target); !f.empty()) found[target.string()] = std::move(f);
+        checked = 1;
+    } else if (fs::is_directory(target / "pkgs", ec)) {
+        found = mcpplibs::xpkg::check_index(target);
+        for (fs::recursive_directory_iterator it(target / "pkgs", ec), end; !ec && it != end; it.increment(ec))
+            if (it->is_regular_file() && it->path().extension() == ".lua") ++checked;
+    } else {
+        log::error("{} is neither a recipe nor an index (a directory with pkgs/)", target.string());
+        log::error("  `xlings index check <recipe.lua | index dir>`");
+        return 2;
+    }
+
+    std::size_t errors = 0, warnings = 0, notes = 0;
+    for (const auto& [_, findings] : found)
+        for (const auto& f : findings)
+            (f.severity == "error" ? errors : f.severity == "warning" ? warnings : notes) += 1;
+
+    if (asJson) {
+        auto list = nlohmann::json::array();
+        for (const auto& [file, findings] : found)
+            for (const auto& f : findings)
+                list.push_back({{"file", file}, {"line", f.line}, {"code", f.code},
+                                {"severity", f.severity}, {"message", f.message}});
+        nlohmann::json out = nlohmann::json::object();
+        out["checked"] = checked;
+        out["errors"] = errors;
+        out["warnings"] = warnings;
+        out["notes"] = notes;
+        out["findings"] = std::move(list);
+        std::println("{}", out.dump(2));
+        return errors > 0 ? 1 : 0;
+    }
+
+    const bool verbose = log::get_level() <= log::Level::Debug;
+    const auto shown = [&](const std::string& rel) {
+        return rel.empty() ? target.string() : rel;
+    };
+    for (const auto& [file, findings] : found) {
+        const auto rel = file.empty() ? (target / "index-compat.json").string()
+                                      : fs::path(file).lexically_relative(fs::is_directory(target) ? target : target.parent_path()).generic_string();
+        for (const auto& f : findings) {
+            if (f.severity == "info" && !verbose) continue;
+            const auto where = f.line > 0 ? std::format("{}:{}", shown(rel), f.line) : shown(rel);
+            log::println("{}: {} {}: {}", where, f.severity, f.code, f.message);
+        }
+    }
+    if (errors == 0 && warnings == 0)
+        log::println("{} recipe(s) checked: the xpkg format's rules hold{}", checked,
+                     notes > 0 ? std::format(" ({} note(s); -v lists them)", notes) : "");
+    else
+        log::println("{} recipe(s) checked: {} error(s), {} warning(s){}; docs/specs/xpkg.md §8.4 says what each one means",
+                     checked, errors, warnings, notes > 0 && !verbose ? std::format(", {} note(s) with -v", notes) : "");
+    return errors > 0 ? 1 : 0;
+}
+
+
+nlohmann::json xpkg_interface_json() {
+    const auto& m = mcpplibs::xpkg::interface_manifest();
+    auto modules = nlohmann::json::array();
+    for (const auto& mod : m.modules) {
+        auto names = nlohmann::json::array();
+        for (const auto& n : mod.names)
+            names.push_back({{"name", n.name}, {"kind", n.kind}, {"signature", n.signature},
+                             {"summary", n.summary}, {"since", n.since}, {"platforms", n.platforms}});
+        modules.push_back({{"name", mod.name}, {"summary", mod.summary}, {"names", std::move(names)}});
+    }
+    auto compat = nlohmann::json::array();
+    for (const auto& [name, instead] : m.compat) compat.push_back({{"name", name}, {"instead", instead}});
+    nlohmann::json out = nlohmann::json::object();
+    out["modules"] = std::move(modules);
+    out["stdlib"] = {{"globals", m.stdlib_globals}, {"libraries", m.stdlib_libraries}, {"os", m.stdlib_os}};
+    out["compat"] = std::move(compat);
+    out["host"] = m.host;
+    return out;
+}
+
+
+int cmd_payload_check(const std::string& dir, const std::string& arch, bool asJson) {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    const fs::path payload(dir);
+    if (dir.empty() || !fs::is_directory(payload, ec)) {
+        log::error("__payload-check: {} is no directory", dir);
+        return 2;
+    }
+    const auto machine = arch.empty() ? machine_rule::host_machine() : arch;
+    const auto* identity = mcpplibs::xpkg::find_arch(machine);
+    if (!identity) {
+        log::error("__payload-check: {} is no architecture of the format (docs/specs/xpkg.md §4.2)", machine);
+        return 2;
+    }
+    const auto foreign = machine_rule::foreign(machine_rule::of_payload(payload), identity->name);
+    const auto paths = build_paths::scan(payload, {});
+    const bool ok = foreign.empty() && paths.files == 0;
+    if (asJson) {
+        auto m = nlohmann::json::array();
+        for (const auto& f : foreign) m.push_back({{"file", f.file}, {"machine", f.machine}});
+        auto examples = nlohmann::json::array();
+        for (const auto& e : paths.examples) examples.push_back({{"file", e.file}, {"path", e.path}});
+        nlohmann::json out = nlohmann::json::object();
+        out["arch"] = std::string(identity->name);
+        out["ok"] = ok;
+        out["M"] = std::move(m);
+        out["P"] = {{"files", paths.files}, {"examples", std::move(examples)}};
+        std::println("{}", out.dump(2));
+        return ok ? 0 : 1;
+    }
+    if (!foreign.empty()) {
+        std::string line = std::format("rule M: {} file(s) the host runs or loads are not {}: {} is for {}",
+                                       foreign.size(), identity->name, foreign.front().file, foreign.front().machine);
+        for (std::size_t i = 1; i < foreign.size() && i < 3; ++i)
+            line += std::format("; {} is for {}", foreign[i].file, foreign[i].machine);
+        log::println("{}", line);
+    }
+    if (paths.files > 0) log::println("{}", build_paths::describe(paths, payload));
+    if (ok) log::println("{}: rules M and P hold for {}", payload.string(), identity->name);
+    return ok ? 0 : 1;
 }
 
 }

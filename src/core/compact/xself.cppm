@@ -25,45 +25,6 @@ namespace xlings::xself::compat {
 
 namespace fs = std::filesystem;
 
-// ───────────────────────────────────────────────────────────────────────
-// Internal: profile-version writer reused by v0_4_17::auto_upgrade_*.
-// Kept private to this module because it's an implementation detail
-// shared between init.cppm and the auto-upgrade hook.
-// ───────────────────────────────────────────────────────────────────────
-
-namespace detail_ {
-
-inline std::string extract_profile_version(std::string_view text) {
-    constexpr std::string_view marker = "# xlings-profile-version:";
-    auto pos = text.find(marker);
-    if (pos == std::string_view::npos) return {};
-    auto value_start = pos + marker.size();
-    while (value_start < text.size() &&
-           (text[value_start] == ' ' || text[value_start] == '\t')) {
-        ++value_start;
-    }
-    auto eol = text.find_first_of("\r\n", value_start);
-    auto end = (eol == std::string_view::npos) ? text.size() : eol;
-    auto value = std::string{text.substr(value_start, end - value_start)};
-    while (!value.empty() &&
-           (value.back() == ' ' || value.back() == '\t')) {
-        value.pop_back();
-    }
-    return value;
-}
-
-inline bool needs_profile_upgrade(const fs::path& path,
-                                  std::string_view target_version) {
-    if (!fs::exists(path)) return false;
-    try {
-        auto content = platform::read_file_to_string(path.string());
-        return extract_profile_version(content) != target_version;
-    } catch (...) {
-        return false;
-    }
-}
-
-} // namespace detail_
 
 // =======================================================================
 // COMPAT(0.4.8 → drop in 0.6.0)  removal_target: 0.6.0

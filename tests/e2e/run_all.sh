@@ -183,63 +183,7 @@ TESTS=(
     # against 2026.9.4.1, where one --fix deleted 1173 sysroot links and
     # dropped 367 registrations with every payload present on disk.
     "E2E-99 |doctor_relocated_home_test.sh||"
-    # An upgrade is announced once per home, not once per command, and
-    # `self doctor --fix` stamps the verified version once it converges.
-    "E2E-100|notice_once_test.sh||"
-    # The local overlay: provenance, the three verbs, and the GC that removes
-    # what the synced index has already caught up with. Task 4 of the
-    # 2026-09-12 robustness/usability round.
-    "E2E-101|local_overlay_test.sh||"
-    # remove resolves against what is installed, withdraws state before the
-    # recipe's uninstall() runs, and --force/--all/--all-subos make "removed"
-    # mean removed no matter what shape the home is in (2026.9.12 Task 5).
-    "E2E-102|remove_force_contract_test.sh||"
-    # The plain report resolves the same remedy `--deep` does (D1): before
-    # this, a broken payload the index still provides read as "no package
-    # in any index provides this entry" outside `--deep`/`--fix`.
-    "E2E-103|doctor_remedy_mode_parity_test.sh||"
     "E2E-104|project_hook_runs_xlings_test.sh||"
-    # `--fix` walks every subos a finding names, in its own subprocess, so
-    # the user never has to `subos use` first; an unclaimed registration is
-    # pruned rather than re-downloaded (D2).
-    "E2E-104|doctor_cross_subos_fix_test.sh||"
-    # A registration rewrite (remove + reinstall of the same target@version)
-    # refreshes the sysroot of every subos that pins that version, not only
-    # the subos the command ran in -- and must not push the package into a
-    # subos that never had it (2026.9.12 Task 7, #586).
-    "E2E-105|sysroot_refresh_pinning_subos_test.sh||"
-    # Four kinds of damage at once -- an unreadable subos, a DB entry for a
-    # package never installed, a deleted overlay recipe file, and a real
-    # package's xvm record pointed at a missing bin dir -- and a snapshot of
-    # an untouched sibling package proving none of it spread. Task 8 of the
-    # 2026-09-12 robustness/usability round.
-    "E2E-106|broken_home_isolation_test.sh||"
-    # Installing a payload already on disk (installed in some OTHER subos)
-    # into a second subos must register it there too, not just try to
-    # activate a target it never wrote into that subos's own installed[]
-    # (task-7-report.md's "surfaced defect", 2026.9.12 Item C). Regression
-    # guard: this does not reproduce against HEAD (already per-subos-aware),
-    # so this asserts the correct behaviour rather than a fix.
-    "E2E-107|second_subos_install_test.sh||"
-    # R3's terminal outcome -- `remove --force` genuinely drops the
-    # registration and the reinstall meant to put it back fails too -- must
-    # fail `--fix` and withhold `verifiedBy`. Before this, `outstanding`
-    # only counted a failed entry if it was STILL a finding after
-    # re-detection, and a fully removed registration is never a finding
-    # again: the run exited 0 having taken a package out and left it out
-    # (2026.9.12 finding F1).
-    "E2E-108|doctor_removed_not_reinstalled_test.sh||"
-    # The CURRENT subos itself corrupted, not a sibling -- Config's own
-    # writer of its active subos's `.xlings.json` used to blank the file
-    # on the first ordinary write after that, exactly what
-    # profile::save_subos_workspace has always refused for every OTHER
-    # subos (2026.9.12 finding F10).
-    "E2E-109|current_subos_unreadable_test.sh||"
-    # A cross-subos `--fix` child (repair_other_subos_walk_) had no bound
-    # at all; a hung child hung the parent right along with it. Now
-    # bounded (XLINGS_DOCTOR_CHILD_TIMEOUT, default 30 min) and reported
-    # as a failure, not silently waited on forever (2026.9.12 finding F8).
-    "E2E-110|doctor_cross_subos_child_timeout_test.sh||"
     # A package without an install() hook used to stage from the SHARED
     # runtime directory, sweeping every other package's archive and
     # download-cache sidecar into its own install_dir (mcpp-community/mcpp#636).

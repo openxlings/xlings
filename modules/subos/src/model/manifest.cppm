@@ -248,6 +248,11 @@ struct BlockSpec {
     // ⭐ It is also what makes a non-glibc runtime need no engine change: the
     // package declares its ABI and the subos writes down what it was told.
     std::string runtimeAbi;
+    // What was asked when it is not what `runtime` names (design 2026-11-27
+    // §7.2): `runtime` is the version the request resolved to, the one
+    // installed and active; `glibc@~2.44` is kept here for an explanation.
+    // Empty -> the key is omitted. Additive: an older client ignores it.
+    std::string runtimeRequest;
 };
 
 // Values for BlockSpec::runtimeSource / Info::runtime_source.

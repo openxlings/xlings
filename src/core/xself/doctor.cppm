@@ -220,6 +220,11 @@ enum class FindingKind {
     // message naming neither package nor version. Installs cannot produce it
     // any more; this finds the ones already on disk.
     LoaderLibcSplit,
+    // A registered program or library that is ELF of another machine than
+    // this host's (rule M, design 2026-11-27 §5.4): installed before the
+    // install refused such payloads. Reported with its remedy, never
+    // repaired -- see detect_foreign_machine_.
+    PayloadForeignMachine,
     // Executables registered in this subos that START on a runtime other than
     // the one the subos declares: their PT_INTERP points into another glibc
     // payload, and they run because their own RUNPATH lists that glibc ahead
@@ -502,6 +507,7 @@ struct AuditSelection {
 };
 
 std::vector<Finding> detect_policy_clients_(const fs::path& homeDir, std::string_view entryVersion);
+std::vector<Finding> detect_foreign_machine_(const DoctorState& st);
 
 Scan detect_(const DoctorState& st, const CoordinateProbe& probe,
              const AuditSelection& audit);

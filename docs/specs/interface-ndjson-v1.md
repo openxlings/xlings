@@ -31,6 +31,7 @@ and AI agents talk to xlings over standard IO. The protocol is **1.19**, over ND
 | 1.17 | 2026.10.22.1 | added: `install_packages` takes `subos`: a Luban system's packages installed where it lives, with events and cancellation (feature `install_into_subos`) |
 | 1.18 | 2026.10.23.2 | added: `package_info`'s `package` carries `versions`, the platform's concrete versions newest first (feature `package_versions`, §7.6); `subos __domain-check <home>` (plumbing) tries whether this host builds a private domain at `<home>`, as making a system there starts: exit 0 or an error saying why (feature `domain_check`) |
 | 1.19 | 2026.11.23.1 | added: `self clean` keeps every payload a root under `<home>/data/roots/<owner>/` holds, and removes the dangling ones ([store roots](store-roots.md)); a program that registers roots requires this feature before it asks for a collection (feature `store_roots`) |
+| 1.20 | (next) | added: a node a gate refuses (a recipe of a newer `spec`, a target with no artifact) is an `error` with `E_UNSUPPORTED`, `refused` in `install_targets` and `install_summary`, and fails the command (feature `step_outcomes`); `install_summary.findings` and the `install_notices` data event, what the packages' hooks said (feature `hook_notices`); `update_available` after `update_packages`' sync (feature `update_available`); `E_FOREIGN_MACHINE`, a payload of another machine (rule M; feature `machine_rule`); a plan refused for nodes with no artifact for this machine is one `E_UNSUPPORTED` per request and the `install_unsupported` data event (was one `E_INVALID_INPUT` per node); a package installed by an alias (`node@lts`) is updated along it, and `update_plan` carries the `alias`; the command line's remove, local-recipe and doctor verbs as `remove_package`'s `force`/`all`/`subos` and the `local_recipes` and `self_doctor` capabilities (#593) |
 
 A minor version only adds: a 1.0 client reads 1.1 output unchanged. 1.11 is the
 one exception in meaning, not in shape: 1.10's `complete` also required the
@@ -67,7 +68,7 @@ prints one line and exits -- the handshake a client checks before it uses this
 xlings (1.10+):
 
 ```json
-{"protocol_version":"1.19","version":"2026.11.23.1","capabilities":["search_packages","install_packages","..."],"home_layouts":[1,2],"features":["index_dir","index_store","upstreams","payload_status","sync_index","install_targets_complete","payload_currency","binding_state","reserved_namespaces","subos_plan","network_diagnostics","download_socket_budgets","read_only_queries","package_extensions","domain_relayed","installed_only","user_views","needs_root","subos_env","install_into_subos","package_versions","domain_check","store_roots"]}
+{"protocol_version":"1.20","version":"2026.11.23.1","capabilities":["search_packages","install_packages","..."],"home_layouts":[1,2],"features":["index_dir","index_store","upstreams","payload_status","sync_index","install_targets_complete","payload_currency","binding_state","reserved_namespaces","subos_plan","network_diagnostics","download_socket_budgets","read_only_queries","package_extensions","domain_relayed","installed_only","user_views","needs_root","subos_env","install_into_subos","package_versions","domain_check","store_roots","step_outcomes","hook_notices","update_available","machine_rule"]}
 ```
 
 | Field | Meaning |
@@ -326,7 +327,7 @@ Each `packages` entry is an array `[coordinate, note, revision]`:
 |---|---|---|
 | 0 | string | `<namespace>:<name>@<version>` |
 | 1 | string | the note: the reinstall reason when that version is on disk at another revision, otherwise empty |
-| 2 | integer | the packaging revision the recipe declares for that version (1.1+; [xpkg manifest](xpkg-manifest-v1.md), §5.1.1) |
+| 2 | integer | the packaging revision the recipe declares for that version (1.1+; [the xpkg format](xpkg.md), §4.3) |
 
 **`install_summary`**: this run's counts. Not emitted when every target is
 installed.
@@ -339,6 +340,35 @@ installed.
 |---|---|---|
 | success | integer | nodes this run actually installed; a node whose current payload was present does not count |
 | failed | integer | nodes that failed |
+| refused | integer | (1.20) nodes a gate refused; nothing was changed for them |
+| findings | integer | (1.20) what the checks found about the installed payloads (the closure rules, `arch-unstated`, `hook-call-failed`); each is in `<home>/logs/findings.ndjson` |
+
+**`install_notices`** (1.20): what the packages' hooks said to the user
+(`log.warn`, `log.error`), by package, in the order the nodes finished; the
+command line shows it after the summary, at most eight lines per package.
+`logs` are the hook logs with the whole output.
+
+```json
+{"kind":"data","dataKind":"install_notices","payload":{"packages":[{"package":"xim:mesa@25.0.7.3","notices":[{"level":"warn","text":"the GPU driver is older than 550","hook":"config"}],"logs":["/home/u/.xlings/logs/hooks/xim-mesa@25.0.7.3.config.log"]}]}}
+```
+
+**`install_unsupported`** (1.20): the plan was refused because nodes of the
+requests' closures have no artifact for this machine (their entries enumerate
+other architectures). One `error` with `E_UNSUPPORTED` per request, its
+message `E_UNSUPPORTED_TARGET: <request> cannot be installed on <target>: ...`;
+this event has every such node with its dependency chain and what its entry
+gives. Nothing was downloaded or installed.
+
+```json
+{"kind":"data","dataKind":"install_unsupported","payload":{"requests":[{"requested":"xim:mesa@25.0.7.3","target":"linux-aarch64","packages":[{"package":"xim:libllvm","chain":"xim:mesa@25.0.7.3 -> xim:libllvm@20.1.7","supported":["linux-x86_64"]}]}]}}
+```
+
+**`update_available`** (1.20): after `update_packages` synced the index, when
+the index names a newer xlings than this one.
+
+```json
+{"kind":"data","dataKind":"update_available","payload":{"version":"2026.12.1.1","current":"2026.11.23.1"}}
+```
 
 **`install_targets`** (1.1+): the version and payload each requested target
 resolved to. A top-level install emits it once on **every path** — all installed,
@@ -362,7 +392,7 @@ resolved ones still carry `namespace`, `name`, `version`.
 | name | string | the package's name; empty when unresolved |
 | version | string | the version resolved; empty when unresolved |
 | revision | integer | the packaging revision the recipe declares for it |
-| status | string | `installed` (by this run) / `already_present` (its current payload was there) / `failed` |
+| status | string | `installed` (by this run) / `already_present` (its current payload was there) / `refused` (1.20: a gate refused it, nothing changed) / `failed` |
 | payload_dir | string | the payload directory, absolute; empty when `failed` |
 | complete | bool | (1.10+) the payload is there, holds something and records no failure: an install that reported success and left nothing is `false`. 1.10 also required the recipe's revision; 1.11 reports that as `current` |
 | origin | string | (1.10+) `local` / `upstream` (a link entry, [`.xlings.json` `upstreams`](xlings-json.md)) / `absent` |
@@ -475,6 +505,8 @@ running.
 | `E_PERMISSION` | not permitted |
 | `E_CANCELLED` | cancelled by the user |
 | `E_NEEDS_ROOT` | needs the administrator and nobody can be asked (1.15); the hint is the exact `sudo` command |
+| `E_UNSUPPORTED` | refused, nothing changed: a recipe of a `spec` newer than this client, a target its entry has no artifact for, a runtime that cannot be activated (1.20); the hint says what lets it through |
+| `E_FOREIGN_MACHINE` | a package's payload gives this machine files of another machine -- a program or library it registers, a library in a runtime directory it exports, its loader (rule M, 1.20); nothing is registered and the payload is not kept; the message names the files and their machines |
 | `E_INTERNAL` | an internal error |
 
 ### 6.6 `result`
@@ -507,7 +539,7 @@ Sent after 5 s of silence: the process is alive.
 | `search_packages` | fuzzy search by keyword, or by a recipe's category (1.12+: `category`) | no |
 | `install_packages` | install one or more packages | yes |
 | `plan_install` | an install dry-run | no |
-| `remove_package` | remove a package | yes |
+| `remove_package` | remove a package; 1.20+: `force`, `all` (every installed version), `subos` (one subos, `"*"` every subos that has it; a subos in a prefix domain removes there) | yes |
 | `update_packages` | refresh indexes or upgrade a package | yes |
 | `list_packages` | list installed packages | no |
 | `package_info` | a package's details | no |
@@ -532,6 +564,8 @@ Sent after 5 s of silence: the process is alive.
 | `remove_repo` | remove an index repository | yes |
 | `payload_status` | (1.10+) what each target resolves to and what its payload is here, without installing (§7.4) | no |
 | `sync_index` | (1.10+) sync one configured index into a directory (§7.4) | yes |
+| `local_recipes` | (1.20+) the recipes `config --add-xpkg` keeps: `action` `list` (a `local_recipes` data event: `{recipes: [{name, version, status, source, tracked, path}]}`, status `unique`, `identical`, `modified`, `behind` or `missing`), `remove` (`name`), `clear` (`what`: `all` or `stale`) | yes |
+| `self_doctor` | (1.20+) `self doctor` with its scope: `fix`, `dry_run`, `deep`, `show_ok`, `subos` | yes |
 
 Each capability's `inputSchema` / `outputSchema` comes from
 `xlings interface --list`; its `required` is enforced since 2026.9.20.1 (§3.3.1).
@@ -585,7 +619,7 @@ version database is shared by every subos of the home.
 | `package`, `namespace`, `name`, `version`, `index` | its coordinate and the index it resolves in |
 | `description`, `categories`, `keywords`, `archs` | the recipe's (`archs` and `keywords` in search results) |
 | `status` | `"dev"`, `"stable"` or `"deprecated"`: the recipe's (before 2026.10.19.2 a recipe read in the worker reported `"dev"`) |
-| `extensions` | the recipe's `extensions`, as written: an object keyed by namespace (`xpkg-manifest-v1.md` §3.1). Absent when it has none |
+| `extensions` | the recipe's `extensions`, as written: an object keyed by namespace (`xpkg.md` §3.4). Absent when it has none |
 | `passed_over` | the newest version was passed over because it needs a newer xlings, and why |
 | `versions` | `package_info` only: the platform's concrete versions, newest first, aliases left out (`version` is what `latest` resolves to). Absent when the platform has none (feature `package_versions`) |
 

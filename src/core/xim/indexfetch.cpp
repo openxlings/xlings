@@ -5,6 +5,7 @@ import xlings.libs.json;
 import xlings.libs.tinyhttps;
 import xlings.libs.sha256;
 import xlings.core.log;
+import xlings.core.update_notice;
 import xlings.core.config;
 import xlings.core.mirror;
 import xlings.platform;
@@ -724,6 +725,11 @@ bool fetch_index_artifact(const std::filesystem::path& destIndexDir,
             !newer.empty() && version_order::compare(newer, Info::VERSION) > 0) {
             log::warn("[index]   upgrade to {}: xlings self update", newer);
         }
+    } else if (auto newer = client_latest_for("xlings", custom);
+               !newer.empty() && version_order::compare(newer, Info::VERSION) > 0) {
+        // A newer client exists and this one still reads the newest index:
+        // said once at the end of the command (#425).
+        update_notice::offer(newer);
     }
 
     std::error_code ec;

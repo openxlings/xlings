@@ -1,6 +1,7 @@
 module xlings.core.xim.installer;
 
 import xlings.core.xim.lua_boundary;
+import xlings.core.xim.hook_context;
 import std;
 import xlings.observe;
 import mcpplibs.xpkg;
@@ -9,6 +10,8 @@ import mcpplibs.xpkg.compat;
 import mcpplibs.xpkg.executor;
 import xlings.core.xim.libxpkg.types.type;
 import xlings.core.xim.compatibility;
+import xlings.core.xim.machine_rule;
+import xlings.core.xim.build_paths;
 import xlings.core.xim.payload;
 import xlings.core.xim.retention;
 import xlings.core.xim.install_state;
@@ -44,6 +47,7 @@ import xlings.core.xvm.switch_plan;
 import xlings.core.xvm.errors;
 import xlings.core.xvm.inspect;
 import xlings.subos.manifest;
+import xlings.subos.tools;
 import xlings.core.profile;
 import xlings.core.xvm.commands;
 import xlings.core.xvm.shim;
@@ -1086,77 +1090,20 @@ bool dep_version_matches_(std::string_view nodeVersion,
     return semver::satisfies_expr(nodeVersion, depVersion);
 }
 
-// A hook runs `xlings` from its bin directory (`system.bindir()`): gcc's
-// config hook rewrites the payload's specs through `xlings script`. A home's
-// own subos has that entry from `self init`; a project's subos holds only the
-// shims of what it installed, so a hook run there found no `xlings`
-// (`sh: <project>/.mcpp/.xlings/subos/_/bin/xlings: not found`) and the
-// install of the payload failed. The entry is linked beside those shims, to
-// the binary each of them names. `xlings` is a reserved name, so the shim
-// table neither adds nor removes it.
-void ensure_entry_in_bin_(const std::filesystem::path& bin) {
-    namespace fs = std::filesystem;
-    std::error_code ec;
-    const auto dst = bin / ("xlings" + std::string(platform::exe_suffix));
-    if (fs::exists(fs::symlink_status(dst, ec))) return;
-    auto entry = xself::xlings_binary_in_home(Config::paths().homeDir);
-    if (entry.empty() && !Config::paths().systemLayer.empty())
-        entry = xself::xlings_binary_in_home(Config::paths().systemLayer);
-    if (entry.empty()) return;
-    fs::create_directories(bin, ec);
-    if (xself::create_shim(entry, dst) == xself::LinkResult::Failed)
-        log::debug("hook bin directory {}: the xlings entry could not be linked", bin.string());
-}
-
 std::filesystem::path
 configure_xpkg_execution_artifact_paths_(
         mcpplibs::xpkg::ExecutionContext& context) {
-    auto subosDir = Config::xvm_artifact_subos_dir();
-    context.bin_dir = subosDir / "bin";
-    context.subos_sysrootdir = subosDir.string();
-    ensure_entry_in_bin_(context.bin_dir);
-    return subosDir;
+    return configure_hook_artifact_paths(context);
 }
 
 void configure_dependency_store_roots_(
         mcpplibs::xpkg::ExecutionContext& context,
         const std::filesystem::path& selectedStore) {
-    auto append = [&](std::filesystem::path root) {
-        if (root.empty()) return;
-        root = root.lexically_normal();
-        if (std::ranges::find(context.dependency_store_roots, root)
-            == context.dependency_store_roots.end()) {
-            context.dependency_store_roots.push_back(std::move(root));
-        }
-    };
-
-    append(selectedStore);
-    for (auto store : Config::stores()) append(std::move(store));
+    configure_hook_dependency_stores(context, selectedStore);
 }
 
 std::string pkgindex_root_for_(const std::filesystem::path& pkgFile, bool* outHasLibs) {
-    namespace fs = std::filesystem;
-    std::error_code ec;
-
-    auto derived = pkgFile.parent_path().parent_path().parent_path();
-    if (fs::is_directory(derived / "libs", ec)) {
-        if (outHasLibs) *outHasLibs = true;
-        return derived.string();
-    }
-
-    // Only the primary index. Not "any index that happens to have libs": picking
-    // between several would be a guess about which ecosystem a recipe belongs to,
-    // and `xim.pkgindex.*` is one shared namespace by construction.
-    auto primary = Config::global_data_dir() / "xim-pkgindex";
-    if (fs::is_directory(primary / "libs", ec)) {
-        log::debug("pkgindex modules: {} has no libs/, using {}",
-                   derived.string(), primary.string());
-        if (outHasLibs) *outHasLibs = true;
-        return primary.string();
-    }
-
-    if (outHasLibs) *outHasLibs = false;
-    return derived.string();
+    return pkgindex_root_for(pkgFile, outHasLibs);
 }
 
 bool executing_provider_owns_no_version(
@@ -1306,10 +1253,6 @@ std::filesystem::path runtime_dir_(const PlanNode& node,
     return dataRoot / "runtimedir";
 }
 
-std::filesystem::path xpkg_snapshot_file_(const std::filesystem::path& installDir) {
-    return installDir / ".xpkg.lua";
-}
-
 std::expected<void, std::string>
 save_resolution_(const PlanNode& node, const mcpplibs::xpkg::ExecutionContext& ctx) {
     namespace fs = std::filesystem;
@@ -1360,6 +1303,21 @@ save_resolution_(const PlanNode& node, const mcpplibs::xpkg::ExecutionContext& c
     }
 }
 
+// <dir>/<name>.lua of a recipe in an index: where its kept copy goes under
+// the payload's .xpkg/pkgs/ (kept_recipe).
+std::filesystem::path kept_recipe_rel_(const std::filesystem::path& recipe) {
+    const auto dir = recipe.parent_path().filename();
+    return (dir.empty() ? std::filesystem::path("x") : dir) / recipe.filename();
+}
+
+// The libs directory of the index a recipe is read from (the one its hooks
+// get), or empty when that index has none.
+std::filesystem::path index_libs_of_(const std::filesystem::path& recipe) {
+    bool hasLibs = false;
+    const auto root = pkgindex_root_for(recipe, &hasLibs);
+    return hasLibs ? std::filesystem::path(root) / "libs" : std::filesystem::path{};
+}
+
 std::expected<void, std::string>
 save_xpkg_snapshot_(const std::filesystem::path& sourcePkgFile,
                     const std::filesystem::path& installDir) {
@@ -1379,31 +1337,52 @@ save_xpkg_snapshot_(const std::filesystem::path& sourcePkgFile,
             std::format("failed to create install dir for xpkg snapshot: {}", ec.message()));
     }
 
-    auto snapshotFile = xpkg_snapshot_file_(installDir);
-    ec.clear();
-    if (fs::exists(snapshotFile, ec)) {
-        ec.clear();
-        if (fs::equivalent(sourcePkgFile, snapshotFile, ec) && !ec) return {};
-    }
+    // Run from the kept recipe itself: it is already what it keeps.
+    const auto keptRoot = installDir / std::string(kKeptIndexDir);
+    const auto rel = sourcePkgFile.lexically_relative(keptRoot);
+    if (!rel.empty() && *rel.begin() != "..") return {};
 
-    ec.clear();
-    fs::copy_file(sourcePkgFile, snapshotFile, fs::copy_options::overwrite_existing, ec);
-    if (ec) {
+    // The recipe as it ran: with the template its index declares appended
+    // (index-compat.json `recipes.template`, design 2026-11-27 §9.8), and the
+    // index libs it imports (§20.1), so a removal read from the payload has
+    // the hooks and the libs the install had.
+    auto text = mcpplibs::xpkg::recipe_text(sourcePkgFile);
+    if (!text) {
         return std::unexpected(
-            std::format("failed to save xpkg snapshot {}: {}",
-                        snapshotFile.string(), ec.message()));
+            std::format("failed to read the recipe {} for its snapshot: {}",
+                        sourcePkgFile.string(), text.error()));
     }
-    return {};
+    return keep_recipe(installDir, *text, kept_recipe_rel_(sourcePkgFile), index_libs_of_(sourcePkgFile));
 }
 
-std::filesystem::path uninstall_xpkg_file_(const std::filesystem::path& indexPkgFile,
-                                           const std::filesystem::path& installDir) {
-    std::error_code ec;
-    auto snapshotFile = xpkg_snapshot_file_(installDir);
-    if (std::filesystem::exists(snapshotFile, ec)) {
-        return snapshotFile;
+std::expected<std::filesystem::path, std::string>
+uninstall_xpkg_file_(const std::filesystem::path& indexPkgFile, const std::filesystem::path& installDir) {
+    namespace fs = std::filesystem;
+    const auto found = kept_recipe(installDir);
+    if (!found) return std::unexpected(found.error());
+    if (!*found) return indexPkgFile;
+    const auto kept = **found;
+    if (kept.filename() != kLegacyKeptRecipe) return kept;
+    // A payload a client before §20.1 installed kept the recipe alone. Brought
+    // forward once, with the libs of the package's index now (the best this
+    // client can know of them); a payload it cannot write keeps the old file,
+    // whose missing libs now fail the hook that calls them instead of
+    // succeeding silently.
+    std::string text;
+    try {
+        text = platform::read_file_to_string(kept.string());
+    } catch (const std::exception& e) {
+        return std::unexpected(std::format("cannot read the kept recipe at {}: {}", kept.string(), e.what()));
     }
-    return indexPkgFile;
+    const auto rel = indexPkgFile.empty() ? fs::path("x") / "recipe.lua" : kept_recipe_rel_(indexPkgFile);
+    if (auto moved = keep_recipe(installDir, text, rel, indexPkgFile.empty() ? fs::path{} : index_libs_of_(indexPkgFile));
+        !moved) {
+        log::debug("the kept recipe of {} stays in the previous layout: {}", installDir.string(), moved.error());
+        return kept;
+    }
+    const auto now = kept_recipe(installDir);
+    if (!now) return std::unexpected(now.error());
+    return now->value_or(kept);
 }
 
 bool is_archive_(const std::filesystem::path& path) {
@@ -1576,6 +1555,121 @@ std::filesystem::path private_stage_dir_(const std::filesystem::path& runtimeDir
     if (sanitized.empty()) sanitized = "pkg";
     return runtimeDir / ".stage"
         / std::format("{}-{}", sanitized, platform::get_pid());
+}
+
+// spec "3": the download's content in `installDir` before install() runs
+// (design 2026-11-27 §9.7). An archive is extracted in a private directory
+// under `runtimeDir` with the entry's `strip` components dropped, then moved
+// in -- the path a package without an install hook has always taken; a
+// repository's checkout (a git URL) is copied in without its .git, the clone
+// staying where downloads are kept for the next pull; any other download is
+// copied in under its own name. What `installDir` held is the leftovers of an
+// attempt that did not finish (a payload being replaced was set aside before
+// this) and goes first.
+std::expected<void, ExtractError> land_download_(const std::filesystem::path& download,
+                                                 const std::filesystem::path& installDir,
+                                                 const std::filesystem::path& runtimeDir,
+                                                 std::string_view planKey, int strip,
+                                                 ExtractOptions options) {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    const auto failed = [&](std::string what) {
+        return std::unexpected(ExtractError{write_failure_kind(ec), std::format("{}: {}", what, ec.message())});
+    };
+    const auto clear = [&]() -> std::expected<void, ExtractError> {
+        fs::remove_all(installDir, ec);
+        if (ec) return failed(std::format("cannot clear {}", installDir.string()));
+        fs::create_directories(installDir, ec);
+        if (ec) return failed(std::format("cannot create {}", installDir.string()));
+        return {};
+    };
+    if (!is_archive_(download)) {
+        if (strip > 0)
+            return std::unexpected(ExtractError{ExtractErrorKind::InvalidInputArchive,
+                std::format("strip = {} is for an archive, and {} is not one", strip,
+                            download.filename().string())});
+        if (auto cleared = clear(); !cleared) return cleared;
+        std::error_code kind;
+        if (fs::is_directory(download, kind)) {
+            for (fs::directory_iterator it(download, ec); !ec && it != std::default_sentinel; it.increment(ec)) {
+                if (it->path().filename() == ".git") continue;
+                std::error_code copy;
+                fs::copy(it->path(), installDir / it->path().filename(),
+                         fs::copy_options::recursive | fs::copy_options::copy_symlinks, copy);
+                if (copy) {
+                    ec = copy;
+                    return failed(std::format("cannot copy {} into {}", it->path().string(), installDir.string()));
+                }
+            }
+            if (ec) return failed(std::format("cannot read {}", download.string()));
+            return {};
+        }
+        fs::copy_file(download, installDir / download.filename(), fs::copy_options::overwrite_existing, ec);
+        if (ec) return failed(std::format("cannot copy {} into {}", download.string(), installDir.string()));
+        return {};
+    }
+    const auto stageDir = private_stage_dir_(runtimeDir, planKey);
+    ScopedStageDir_ stageGuard(stageDir);
+    options.strip = strip;
+    auto extracted = extract_archive_detailed(download, stageDir, options);
+    if (!extracted) return std::unexpected(std::move(extracted).error());
+    if (auto cleared = clear(); !cleared) return cleared;
+    // Each top-level entry of the extraction is moved in (a rename on the
+    // same volume); an empty archive places nothing, and the empty payload
+    // is judged after install() like any other.
+    for (fs::directory_iterator it(*extracted, ec); !ec && it != std::default_sentinel; it.increment(ec)) {
+        const auto dest = installDir / it->path().filename();
+        std::error_code move;
+        fs::rename(it->path(), dest, move);
+        if (move) {
+            move.clear();
+            fs::copy(it->path(), dest, fs::copy_options::recursive | fs::copy_options::copy_symlinks, move);
+            if (move) {
+                ec = move;
+                return failed(std::format("cannot move {} into {}", it->path().filename().string(),
+                                          installDir.string()));
+            }
+        }
+    }
+    if (ec) return failed(std::format("cannot read {}", extracted->string()));
+    return {};
+}
+
+// What one hook run said to the user (design 2026-11-27 §9.2): its notices,
+// for the summary, and the log that has its whole output. With no log file
+// (-v, XLINGS_HOOK_OUTPUT=inherit) the output is printed here: before, it
+// reached neither the terminal nor a file (E5).
+void collect_hook_report_(std::string_view hook, const mcpplibs::xpkg::HookResult& result,
+                          const std::filesystem::path& hookLog,
+                          std::vector<HookNoticeLine>& notices, std::vector<std::string>& logs) {
+    for (const auto& n : result.notices)
+        notices.push_back({ .level = n.level, .text = n.text, .hook = std::string(hook) });
+    if (!hookLog.empty()) {
+        if (std::ranges::find(logs, hookLog.string()) == logs.end()) logs.push_back(hookLog.string());
+    } else if (!result.output.empty()) {
+        log::println("{}", result.output.ends_with('\n')
+            ? std::string_view(result.output).substr(0, result.output.size() - 1)
+            : std::string_view(result.output));
+    }
+}
+
+// A finding (design 2026-11-27 §4): what a check found about a node, which
+// does not change its outcome. Each is in `-v` and in
+// <home>/logs/findings.ndjson; the command says how many there were.
+void record_finding_(std::string_view package, std::string_view version, std::string_view rule,
+                     const std::string& text, const std::filesystem::path& payload) {
+    log::debug("[{}@{}] {}: {}", package, version, rule, text);
+    observe::append_json(Config::paths().homeDir / "logs" / "findings.ndjson",
+        {{"ts", observe::utc_now()},
+         {"package", package},
+         {"version", version}, {"rule", rule}, {"message", text},
+         {"payload", payload.generic_string()}});
+}
+
+void record_finding_(const PlanNode& node, std::string_view rule, const std::string& text,
+                     const std::filesystem::path& payload) {
+    record_finding_(node.canonicalName.empty() ? node.name : node.canonicalName, node.version, rule, text,
+                    payload);
 }
 
 bool normalize_file_install_(const std::filesystem::path& installPath) {
@@ -2130,6 +2224,7 @@ std::expected<void, std::string> apply_subos_env_ops_(const std::vector<mcpplibs
         if (mf::is_privileged_env(op->var, op->value) && !already_recorded(*op)) {
             log::warn("[xim] {}@{} declares {} = {}", canonical, node.version,
                       op->var, op->value);
+            // warn-ok: the declaration is applied; this is its risk, said to the user
             log::warn("      This variable can load code from our payload into "
                       "processes we do not own, including host binaries running "
                       "under the host loader. Prefer RPATH on the consumer; use "
@@ -2486,9 +2581,39 @@ std::expected<void, std::string> process_xvm_operations_(const PlanNode& node, c
     return {};
 }
 
+// Rule M (design 2026-11-27 §5.4), before the registration is published:
+// what the host would run or load from this payload is of its machine. The
+// failure is the node's, E_FOREIGN_MACHINE; nothing is registered.
+std::optional<std::string> foreign_machine_(const PlanNode& node, const std::filesystem::path& dataDir,
+                                            mcpplibs::xpkg::PackageExecutor& executor, bool useAfterInstall) {
+    if constexpr (!platform::is_linux) return std::nullopt;
+    const auto payload = node_payload_path(node, dataDir);
+    auto registration = normalize_xpkg_registration_plan(
+        node, executor.xvm_operations(),
+        effective_version_namespace_(Config::versions(), node, dataDir), dataDir, useAfterInstall);
+    // A registration that cannot be normalized is refused by the publish
+    // that follows, with its own reason.
+    if (!registration) return std::nullopt;
+    const auto foreign = machine_rule::foreign(machine_rule::of_registration(
+        payload, registration->batch, node.exports.loader, node.exports.libdirs,
+        Config::paths().homeDir.string(), node.exports.libdirs_declared));
+    if (foreign.empty()) return std::nullopt;
+    return machine_rule::describe(std::format("{}@{}", node.name, node.version), foreign);
+}
+
 bool run_config_hook_(const PlanNode& node, const std::filesystem::path& dataDir, mcpplibs::xpkg::PackageExecutor& executor, mcpplibs::xpkg::ExecutionContext& ctx, std::function<void(const InstallStatus&)> onStatus, bool useAfterInstall, std::string* failureMessage,
-                      const home::layers::BorrowPlan* borrowed) {
+                      const home::layers::BorrowPlan* borrowed, int* findings,
+                      std::vector<HookNoticeLine>* notices, std::vector<std::string>* hookLogs,
+                      std::string* failureCode) {
+    const auto refuse_foreign = [&]() {
+        auto foreign = foreign_machine_(node, dataDir, executor, useAfterInstall);
+        if (!foreign) return false;
+        if (failureMessage) *failureMessage = std::move(*foreign);
+        if (failureCode) *failureCode = "E_FOREIGN_MACHINE";
+        return true;
+    };
     if (!executor.has_hook(mcpplibs::xpkg::HookType::Config)) {
+        if (refuse_foreign()) return false;
         auto processed = process_xvm_operations_(node, dataDir, executor, useAfterInstall, borrowed);
         if (!processed && failureMessage) *failureMessage = processed.error();
         return processed.has_value();
@@ -2508,12 +2633,20 @@ bool run_config_hook_(const PlanNode& node, const std::filesystem::path& dataDir
         hookResult = executor.run_hook(mcpplibs::xpkg::HookType::Config, ctx);
     }
     const auto hookLog = std::exchange(ctx.hook_log, {});
+    if (notices && hookLogs) collect_hook_report_("config", hookResult, hookLog, *notices, *hookLogs);
+    // The compatibility layer's calls that failed: findings (design 2026-11-27 §9.6).
+    for (const auto& f : hookResult.call_failures) {
+        record_finding_(node, "hook-call-failed",
+                        std::format("config(): {}({}) failed: {}", f.call, f.what, f.why), ctx.install_dir);
+        if (findings) ++*findings;
+    }
     if (!hookResult.success) {
         if (failureMessage) {
             *failureMessage = format_hook_failure("config", hookResult, hookLog);
         }
         return false;
     }
+    if (refuse_foreign()) return false;
     if (auto processed = process_xvm_operations_(node, dataDir, executor, useAfterInstall, borrowed); !processed) {
         if (failureMessage) *failureMessage = processed.error();
         return false;
@@ -2678,7 +2811,7 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& requested
     auto plan = requestedPlan;
     if (plan.has_errors()) {
         return std::unexpected(
-            std::format("plan has errors: {}", plan.errors[0]));
+            std::format("plan has errors: {}", plan.first_error()));
     }
 
     // Every status this function forwards carries the plan key of the node it
@@ -2857,6 +2990,35 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& requested
     // config() and ends up registered. This set is what makes a refusal
     // mean refused.
     std::unordered_set<std::string> refusedNodes;
+    // Nodes whose download the host lands in install_dir before install()
+    // runs -- the recipes of spec "3" (design 2026-11-27 §9.7) -- with the
+    // entry's `strip`. A recipe of spec 1 or 2 keeps the old path: extracted
+    // beside the archive for its hook, staged after it when the hook left
+    // install_dir empty.
+    std::unordered_map<std::string, int> landings;
+    // Findings made before the node is installed, by plan key.
+    std::unordered_map<std::string, int> earlyFindings;
+    // What a gate decided, as the node's outcome (design 2026-11-27 C1). A
+    // refusal changed nothing; a failure here means the node is not run in
+    // phase 2 and its dependents are reported failed because of it.
+    const auto refuse = [&](const PlanNode& node, std::string why, std::string hint) {
+        refusedNodes.insert(currentPlanKey);
+        if (onStatus) {
+            onStatus({ .name = node.name, .phase = InstallPhase::Refused, .progress = 0.0f,
+                       .message = std::move(why), .errorCode = "E_UNSUPPORTED", .hint = std::move(hint) });
+        } else {
+            log::error("{}: {}", node.name, why);
+        }
+    };
+    const auto fail_early = [&](const PlanNode& node, std::string why) {
+        failedThisRun.try_emplace(currentPlanKey, std::string{});
+        if (onStatus) {
+            onStatus({ .name = node.name, .phase = InstallPhase::Failed, .progress = 0.0f,
+                       .message = std::move(why) });
+        } else {
+            log::error("{}: {}", node.name, why);
+        }
+    };
     for (auto& node : plan.nodes) {
         currentPlanKey = detail_::plan_key_(node);
         if (node.alreadyInstalled || !node.borrowedPayload.empty() || !node.upstreamPayload.empty()) continue;
@@ -2865,7 +3027,9 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& requested
             mcpplibs::xpkg::normalize_arch(detail_::detect_arch_());
         auto pkg = load_native_recipe(node.pkgFile, node.canonicalName);
         if (!pkg) {
-            log::warn("skipping {}: {}", node.name, pkg.error());
+            // Failed, not skipped (design 2026-11-27 §6.2): the node cannot
+            // be installed, and phase 2 does not run it.
+            fail_early(node, std::format("its recipe could not be read: {}", pkg.error()));
             continue;
         }
 
@@ -2878,15 +3042,12 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& requested
         const auto specSupport = xpkg_spec_support(pkg->spec);
         if (!specSupport.supported) {
             if (specSupport.declared > 0) {
-                log::error("{}: xpackage spec \"{}\" is newer than this "
-                           "xlings understands (max {})",
-                           node.name, pkg->spec, max_supported_xpkg_spec);
-                log::info("try: xlings self update");
+                refuse(node, std::format("xpackage spec \"{}\" is newer than this xlings understands (max {})",
+                                   pkg->spec, max_supported_xpkg_spec),
+                       "xlings self update");
             } else {
-                log::error("{}: unreadable xpackage spec \"{}\"",
-                           node.name, pkg->spec);
+                refuse(node, std::format("unreadable xpackage spec \"{}\"", pkg->spec), {});
             }
-            refusedNodes.insert(detail_::plan_key_(node));
             continue;
         }
 
@@ -2899,18 +3060,21 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& requested
         const auto compatibility = check_target_compatibility(
             *pkg, entry, platform, hostArch);
         if (!compatibility.supported) {
-            log::error("{}", compatibility_error(node.canonicalName,
-                                                   compatibility));
-            refusedNodes.insert(detail_::plan_key_(node));
+            refuse(node, compatibility_error(node.canonicalName, compatibility), {});
             continue;
         }
+        // A single artifact whose architecture the entry does not state:
+        // the finding `arch-unstated` (design 2026-11-27 §4), not a warn.
         if (!compatibility.advisory.empty()) {
-            log::warn("{}", compatibility.advisory);
+            ++earlyFindings[currentPlanKey];
+            detail_::record_finding_(node, "arch-unstated", compatibility.advisory, {});
         }
 
         auto archive = archive_task_for(node, *pkg, platform, hostArch, dlConfig, dataDir);
         if (!archive) {
-            log::warn("skipping {}: {}", node.name, archive.error());
+            // Its hooks would run with no download and could leave an empty
+            // payload recorded as installed (design 2026-11-27 §6.2).
+            fail_early(node, std::format("its download could not be resolved: {}", archive.error()));
             continue;
         }
         if (!*archive) {
@@ -2919,6 +3083,12 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& requested
             continue;
         }
         plannedDownloads.insert((*archive)->name);
+        if (const auto spec = mcpplibs::xpkg::spec_number(pkg->spec); spec && *spec >= 3) {
+            const auto resolved = mcpplibs::xpkg::resolve_resource(pkg->xpm, {
+                .name = node.name, .version = node.version,
+                .platform = std::string(platform), .arch = hostArch});
+            landings[(*archive)->name] = resolved ? resolved->strip : 0;
+        }
         dlTasks.push_back(std::move(**archive));
     }
 
@@ -2996,10 +3166,10 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& requested
     // Phase 2: Install each package in topological order
     for (auto& node : plan.nodes) {
         currentPlanKey = detail_::plan_key_(node);
-        // Refused by a gate in phase 1. Skipping here rather than there
-        // is what keeps the refusal per-package: the rest of the plan
-        // installs normally.
-        if (refusedNodes.contains(currentPlanKey)) continue;
+        // Refused by a gate in phase 1, or failed there. Skipping here rather
+        // than there is what keeps the refusal per-package: the rest of the
+        // plan installs normally.
+        if (refusedNodes.contains(currentPlanKey) || failedThisRun.contains(currentPlanKey)) continue;
         if (cancel && cancel->is_cancelled()) {
             return std::unexpected(std::string("cancelled"));
         }
@@ -3039,36 +3209,40 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& requested
             onStatus({ node.name, InstallPhase::Installing, 0.5f, "" });
         }
 
-        // Build execution context
-        mcpplibs::xpkg::ExecutionContext ctx;
-        ctx.pkg_name = node.name;
-        ctx.version = node.version;
-        ctx.platform = platform;
+        // Build execution context (the one constructor, #566); what only an
+        // install knows -- its dependencies and their exports -- is added below.
         auto targetRoot = node.storeRoot.empty() ? (dataDir / "xpkgs") : node.storeRoot;
-        ctx.install_dir = node_payload_path(node, dataDir);
+        auto ctx = make_execution_context({
+            .pkg_name = node.name,
+            .version = node.version,
+            .recipe = node.pkgFile,
+            .install_dir = node_payload_path(node, dataDir),
+            .xpkg_dir = node.pkgFile.parent_path(),
+            .store = targetRoot,
+        });
         const bool borrowedPayload = !node.sourceHome.empty();
         // Neither kind is this home's to write: no hook runs in it, nothing
         // is recorded in it.
         const bool linkedPayload = !node.upstreamPayload.empty();
         const bool readOnlyPayload = borrowedPayload || linkedPayload;
-        detail_::configure_xpkg_execution_artifact_paths_(
-            ctx);
-        detail_::configure_dependency_store_roots_(ctx, targetRoot);
-        ctx.xpkg_dir = node.pkgFile.parent_path();
-        ctx.project_data_dir = Config::project_data_dir();
-        // pkgindex_dir: package index repo root (for custom module loading).
-        // pkgFile layout: <pkgindex>/pkgs/<letter>/<name>.lua → 3 levels up.
-        bool pkgindexHasLibs = false;
-        ctx.pkgindex_dir =
-            detail_::pkgindex_root_for_(node.pkgFile, &pkgindexHasLibs);
-        if (!pkgindexHasLibs) {
+        std::error_code libsEc;
+        if (!std::filesystem::is_directory(std::filesystem::path(ctx.pkgindex_dir) / "libs", libsEc)) {
             // Loud, because the alternative is a package that installs
-            // "successfully" with none of its sysroot assets declared.
-            log::warn("{}: no pkgindex libs/ found -- every "
-                      "`xim.pkgindex.*` call in this recipe will be a "
-                      "silent no-op (sysroot assets, driver dirs and "
-                      "EGL/Vulkan manifests will NOT be declared)",
-                      node.name);
+            // "successfully" with none of its sysroot assets declared -- for
+            // a recipe of spec 1 or 2 that imports an index lib, whose import
+            // then answers with a stub. In spec 3 the import is an error, and
+            // a recipe importing none has nothing to miss.
+            const auto text = platform::read_file_to_string(node.pkgFile.string());
+            const bool importsLib = mcpplibs::xpkg::recipe_code(text).find("import(") != std::string::npos
+                && text.find("xim.pkgindex.") != std::string::npos;
+            if (importsLib && mcpplibs::xpkg::declared_spec(text).value_or("1") != "3") {
+                // warn-ok: the modules are what a recipe may call; a call of a missing one is what fails
+                log::warn("{}: no pkgindex libs/ found -- every "
+                          "`xim.pkgindex.*` call in this recipe will be a "
+                          "silent no-op (sysroot assets, driver dirs and "
+                          "EGL/Vulkan manifests will NOT be declared)",
+                          node.name);
+            }
         }
         ctx.deps_list = node.deps;                  // legacy union (compat)
         ctx.runtime_deps_list = node.runtime_deps;  // split form
@@ -3080,6 +3254,7 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& requested
             ctx.self_exports.loader = (ctx.install_dir / node.exports.loader).string();
         }
         ctx.self_exports.abi = node.exports.abi;
+        ctx.self_exports.libdirs_declared = node.exports.libdirs_declared;
         for (auto& d : node.exports.libdirs) {
             ctx.self_exports.libdirs.push_back((ctx.install_dir / d).string());
         }
@@ -3125,6 +3300,7 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& requested
                     scopeBinding = true;
                     for (const auto& w : refreshed->what) log::info("runtime {}", w);
                 } else {
+                    // warn-ok: a fallback that works: the dependency is bound by its path
                     log::warn("{}: the home's runtime links could not be made ({}); binding by path",
                               node.name, refreshed.error());
                 }
@@ -3170,7 +3346,9 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& requested
                 r.source      = dep_ver.empty()            ? "plan-any"
                               : dep_ver == depNode.version ? "plan-exact"
                                                            : "plan-range";
-                if (!depNode.exports.libdirs.empty()) {
+                if (!depNode.exports.libdirs.empty() || depNode.exports.libdirs_declared) {
+                    // Declared: these, and `{}` is none (a sysroot's target
+                    // libraries are on no consumer's search path).
                     for (auto& d : depNode.exports.libdirs) {
                         r.libdirs.push_back((depInstallDir / d).string());
                     }
@@ -3362,14 +3540,61 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& requested
         // it receives.
         const bool hasInstallHook =
             executor.has_hook(mcpplibs::xpkg::HookType::Install);
+        // spec "3": the host lands the download, before install() (below).
+        const auto landing = landings.find(planKey);
+        const bool hostLands = landing != landings.end();
 
-        if (dlIt != downloadResults.end()) {
+        // #736 (design 2026-11-27 §8.4): the directory a node's archive is
+        // extracted into is its own, removed when the node ends -- whatever
+        // way it ends -- so nothing of it is left for the next package.
+        struct NodeExtractDir {
+            std::filesystem::path dir;
+            ~NodeExtractDir() {
+                std::error_code ec;
+                if (!dir.empty()) std::filesystem::remove_all(dir, ec);
+            }
+        } nodeExtract;
+        if (dlIt != downloadResults.end() && !hostLands) {
             if (hasInstallHook && detail_::is_archive_(dlIt->second.localFile)) {
                 if (onStatus) {
                     onStatus({ node.name, InstallPhase::Extracting, 0.35f, "" });
                 }
-                // Extract into the same runtime dir as the download.
-                auto runtimeDir = ctx.install_file.parent_path();
+                // Beside the download, in a directory of this node's own: a
+                // flat archive used to merge into one shared tree, and a
+                // recipe moving its `lib/` took every flat package's `lib/`
+                // installed before it. The archive is linked into the
+                // directory (copied where a link cannot be made) and
+                // install_file() names that one, so both of a recipe's
+                // readings hold: `install_file():replace(".tar.gz", "")` is the
+                // extracted directory of a wrapped archive, and
+                // `path.directory(install_file())` holds only this package's
+                // files.
+                // Beside install_file() as it is now: the download, or the
+                // private copy a hook worker was given (its scratch).
+                namespace fs = std::filesystem;
+                const auto archive = ctx.install_file;
+                const auto runtimeDir = archive.parent_path() / std::format(
+                    "{}-{}-{}", node.namespaceName.empty() ? std::string("xim") : node.namespaceName,
+                    node.name, node.version);
+                std::error_code dirEc;
+                fs::remove_all(runtimeDir, dirEc);
+                fs::create_directories(runtimeDir, dirEc);
+                nodeExtract.dir = runtimeDir;
+                const auto own = runtimeDir / archive.filename();
+                std::error_code linkEc;
+                fs::create_hard_link(archive, own, linkEc);
+                if (linkEc) {
+                    linkEc.clear();
+                    fs::copy_file(archive, own, fs::copy_options::overwrite_existing, linkEc);
+                }
+                if (dirEc || linkEc) {
+                    const auto why = std::format("cannot prepare the extraction directory {}: {}",
+                                                 runtimeDir.string(), (dirEc ? dirEc : linkEc).message());
+                    log::error("[{}] {}", node.name, why);
+                    if (onStatus) onStatus({ node.name, InstallPhase::Failed, 0.0f, why });
+                    continue;
+                }
+                ctx.install_file = own;
                 auto extracted = extract_archive_detailed(
                     ctx.install_file, runtimeDir,
                     detail_::extract_options_(onStatus, node.name));
@@ -3377,6 +3602,7 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& requested
                     auto error = std::move(extracted).error();
                     if (evict_invalid_archive_cache_(
                             dlIt->second.localFile, error)) {
+                        // warn-ok: said before the failure it belongs to (Failed, next)
                         log::warn(
                             "evicted invalid archive cache for {}: {}",
                             node.name, dlIt->second.localFile.string());
@@ -3411,6 +3637,7 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& requested
             // dir left by a prior `sudo` install) used to be swallowed,
             // surfacing later as a confusing hook failure. Surface it.
             if (ec && !std::filesystem::is_directory(ctx.install_dir)) {
+                // warn-ok: the hook's failure is the outcome; this names its cause first
                 log::warn("create install dir {} failed: {}",
                           ctx.install_dir.string(), ec.message());
             }
@@ -3432,6 +3659,7 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& requested
         if (foreignPayload) {
             log::warn("{}: installed payload is not for {} — reinstalling",
                       node.name, host_platform_tag());
+            // warn-ok: says why the reinstall that follows happens
             log::warn("  payload: {}",
                       Config::display_path(ctx.install_dir));
         }
@@ -3498,7 +3726,10 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& requested
         // from a broken payload via the obvious command.
         else if (!payloadInstalled) {
             auto db = Config::versions();
-            auto resolved = xvm::match_version(db, node.name, node.version);
+            // The node's version is the entry the plan chose: that version,
+            // not one it is a prefix of -- a 2.44.3 this command just
+            // installed is not the entry 2.44 (#739, design 2026-11-27 §7.1).
+            auto resolved = xvm::resolve_exact_version_key(db, node.name, node.version).value_or(std::string{});
             if (!resolved.empty()) {
                 bool payload_ok = true;
                 bool payload_is_ours = true;
@@ -3632,6 +3863,46 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& requested
             }
         }
 
+        // spec "3": the download's content is in install_dir before
+        // install() runs, laid out as the entry's `strip` says (design
+        // 2026-11-27 §9.7). install() only adjusts it, and may be absent.
+        // The same private extraction and staging a package without an
+        // install hook has always had; a download that is not an archive
+        // is placed as it is, under its own name.
+        if (hostLands && !payloadInstalled && dlIt != downloadResults.end()) {
+            if (onStatus) onStatus({ node.name, InstallPhase::Extracting, 0.35f, "" });
+            auto landed = detail_::land_download_(dlIt->second.localFile, ctx.install_dir,
+                                                  detail_::runtime_dir_(node, dataDir), planKey,
+                                                  landing->second,
+                                                  detail_::extract_options_(onStatus, node.name));
+            if (!landed) {
+                if (landed.error().kind == ExtractErrorKind::InvalidInputArchive
+                    && evict_invalid_archive_cache_(dlIt->second.localFile, landed.error())) {
+                    // warn-ok: said before the failure it belongs to (Failed, next)
+                    log::warn("evicted invalid archive cache for {}: {}",
+                              node.name, dlIt->second.localFile.string());
+                }
+                log::error("cannot place the download of {}: {}", node.name, landed.error().message);
+                write_payload_failure_marker(ctx.install_dir, node.version, landed.error().message);
+                if (onStatus) {
+                    auto wire = extract_wire_error_(landed.error());
+                    onStatus({ .name = node.name,
+                               .phase = InstallPhase::Failed,
+                               .progress = 0.0f,
+                               .message = landed.error().message,
+                               .errorCode = std::move(wire.code),
+                               .hint = std::move(wire.hint) });
+                }
+                continue;
+            }
+        }
+
+        // The compatibility layer's calls of install() that did not do what
+        // they name (design 2026-11-27 §9.6), for the empty-payload rule below.
+        std::vector<mcpplibs::xpkg::HookCallFailure> installCallFailures;
+        // What the node's hooks said, and where their output is (§9.2).
+        std::vector<HookNoticeLine> nodeNotices;
+        std::vector<std::string> nodeHookLogs;
         // Run install hook
         if (!payloadInstalled && executor.has_hook(mcpplibs::xpkg::HookType::Install)) {
             log::debug("installing {}...", node.name);
@@ -3704,6 +3975,7 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& requested
                     mcpplibs::xpkg::HookType::Install, ctx);
             }
             const auto hookLog = std::exchange(ctx.hook_log, {});
+            detail_::collect_hook_report_("install", hookResult, hookLog, nodeNotices, nodeHookLogs);
 
             // Restore env regardless of hook outcome
             if (!setEnvKeys.empty()) {
@@ -3712,6 +3984,16 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& requested
                     platform::set_env_variable(k, "");
                 }
             }
+
+            // Each failed call is a finding (`hook-call-failed`), whatever the
+            // outcome: the hook's behaviour is the frozen layer's.
+            for (const auto& f : hookResult.call_failures) {
+                ++earlyFindings[planKey];
+                detail_::record_finding_(node, "hook-call-failed",
+                                         std::format("install(): {}({}) failed: {}", f.call, f.what, f.why),
+                                         ctx.install_dir);
+            }
+            installCallFailures = hookResult.call_failures;
 
             if (!hookResult.success) {
                 auto message = with_runtime_note(detail_::format_hook_failure(
@@ -3724,8 +4006,9 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& requested
                 write_payload_failure_marker(
                     ctx.install_dir, node.version, message);
                 if (onStatus) {
-                    onStatus({ node.name, InstallPhase::Failed, 0.0f,
-                               std::move(message) });
+                    onStatus({ .name = node.name, .phase = InstallPhase::Failed, .progress = 0.0f,
+                               .message = std::move(message), .notices = nodeNotices,
+                               .hookLogs = nodeHookLogs });
                 }
                 continue;
             }
@@ -3760,7 +4043,7 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& requested
         // directory holds every package's downloads and sidecars, and
         // stage_extracted_payload_ moves EVERY entry it is given
         // (xpkg-manifest-v1 §6).
-        if (!payloadInstalled && !detail_::has_directory_entries_(ctx.install_dir)
+        if (!payloadInstalled && !hostLands && !detail_::has_directory_entries_(ctx.install_dir)
             && dlIt != downloadResults.end()
             && detail_::is_archive_(dlIt->second.localFile)) {
             if (onStatus) {
@@ -3777,6 +4060,7 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& requested
                 auto error = std::move(extracted).error();
                 if (evict_invalid_archive_cache_(
                         dlIt->second.localFile, error)) {
+                    // warn-ok: said before the failure it belongs to (Failed, next)
                     log::warn("evicted invalid archive cache for {}: {}",
                               node.name, dlIt->second.localFile.string());
                 }
@@ -3805,6 +4089,28 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& requested
                 }
                 continue;
             }
+        }
+
+        // E16 (design 2026-11-27 §9.6): install() reported success, some of
+        // its calls did not do what they name, and install_dir is still empty
+        // after the staging above -- the payload that was to be moved is not
+        // there. Failed, naming the calls. An empty payload with no failed
+        // call is a package whose payload lives elsewhere, as before.
+        if (!payloadInstalled && !installCallFailures.empty()
+            && !detail_::has_directory_entries_(ctx.install_dir)) {
+            std::string calls;
+            for (std::size_t i = 0; i < installCallFailures.size() && i < 5; ++i) {
+                const auto& f = installCallFailures[i];
+                calls += std::format("\n  {}({}): {}", f.call, f.what, f.why);
+            }
+            if (installCallFailures.size() > 5)
+                calls += std::format("\n  and {} more", installCallFailures.size() - 5);
+            const auto message = std::format(
+                "install() reported success, but its payload is empty and these calls failed:{}", calls);
+            write_payload_failure_marker(ctx.install_dir, node.version, message);
+            if (onStatus) onStatus({ .name = node.name, .phase = InstallPhase::Failed, .progress = 0.0f,
+                                     .message = message, .notices = nodeNotices, .hookLogs = nodeHookLogs });
+            continue;
         }
 
         if (!payloadInstalled && !detail_::normalize_file_install_(ctx.install_dir)) {
@@ -3889,21 +4195,34 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& requested
                 platform::set_env_variable("PATH", (ctx.install_dir / "bin").string()
                     + std::string(1, platform::PATH_SEPARATOR) + curPath);
             }
-            // Fail closed (part 2 §2.4 G1b): a payload that needs relocating
-            // and no patchelf to do it is not installed, whatever elfpatch
-            // would have said about skipping.
-            if (!ctx.resolved_deps.empty() && !xim::patchelf_reachable()
-                && std::ranges::any_of(ctx.resolved_deps, [](const auto& kv) {
-                       return kv.first.find("glibc") != std::string::npos; })) {
-                const std::string why = "it links the xlings glibc and must be relocated with "
-                                        "patchelf, which this host does not have (xlings install "
-                                        "xim:patchelf)";
+            // elfpatch decides what would change before it looks for a tool
+            // (design 2026-11-27 §9.3, libxpkg 0.0.68): files to relocate and
+            // no tool to do it is a failed install, said with how to get the
+            // tool (the tools table); nothing to relocate passes, tool or not.
+            // This replaces the fail-closed guess of part 2 §2.4 G1b, which
+            // refused a payload that linked the xlings glibc whether or not
+            // anything in it needed relocating.
+            auto epResult = executor.apply_elfpatch_auto();
+            if (epResult.elfpatch && epResult.elfpatch->outcome == "failed") {
+                const auto& ep = *epResult.elfpatch;
+                const auto why = std::format("its ELF files could not be relocated: {}", ep.reason);
                 write_payload_failure_marker(ctx.install_dir, node.version, why);
-                if (onStatus) onStatus({ node.name, InstallPhase::Failed, 0.0f, why });
+                if (onStatus) {
+                    onStatus({ .name = node.name, .phase = InstallPhase::Failed, .progress = 0.0f,
+                               .message = why,
+                               .hint = ep.tool_missing.empty() ? std::string{}
+                                                               : ::xlings::subos::tools::how_to_get(ep.tool_missing),
+                               .notices = nodeNotices, .hookLogs = nodeHookLogs });
+                }
                 continue;
             }
-            auto epResult = executor.apply_elfpatch_auto();
-            if (epResult.success && !epResult.output.empty()) {
+            if (epResult.elfpatch) {
+                const auto& ep = *epResult.elfpatch;
+                log::debug("{}: elfpatch: {} ({} scanned, {} patched, {} skipped for another machine, "
+                           "{} with nothing to resolve, {} listed){}", node.name, ep.outcome, ep.scanned,
+                           ep.patched, ep.skipped_foreign, ep.skipped_static, ep.skipped_listed,
+                           ep.reason.empty() ? std::string{} : ": " + ep.reason);
+            } else if (epResult.success && !epResult.output.empty()) {
                 log::debug("{}: elfpatch auto: {}", node.name, epResult.output);
             } else if (!epResult.success) {
                 log::debug("{}: elfpatch auto failed: {}", node.name, epResult.error);
@@ -4009,10 +4328,12 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& requested
             }
         } else {
             std::string configFailure;
+            std::string configCode;
             if (!detail_::run_config_hook_(
                     node, dataDir, executor, ctx, onStatus,
                     useAfterInstall, &configFailure,
-                    borrowedPayload ? &borrowedPlans.at(planKey) : nullptr)) {
+                    borrowedPayload ? &borrowedPlans.at(planKey) : nullptr,
+                    &earlyFindings[planKey], &nodeNotices, &nodeHookLogs, &configCode)) {
                 // Same reason as the install hook above, and this one
                 // matters more: config is where registration happens, so
                 // its failure is exactly "payload on disk, ledger empty" --
@@ -4020,12 +4341,22 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& requested
                 // package that legitimately registers nothing.
                 if (configFailure.starts_with("config hook failed"))
                     configFailure = with_runtime_note(std::move(configFailure));
-                if (!readOnlyPayload) {
+                std::string hint;
+                if (configCode == "E_FOREIGN_MACHINE") {
+                    // Rule M: another machine's payload is not kept. One this
+                    // run set aside comes back (`replacement`); one it found
+                    // installed is left to `self doctor`, which reports it.
+                    hint = machine_rule::hint();
+                    if (!payloadInstalled && !readOnlyPayload && !replacement)
+                        (void)remove_payload_dir(ctx.install_dir, node.version);
+                } else if (!readOnlyPayload) {
                     write_payload_failure_marker(ctx.install_dir, node.version, configFailure);
                 }
                 if (onStatus) {
-                    onStatus({ node.name, InstallPhase::Failed, 0.0f,
-                               std::move(configFailure) });
+                    onStatus({ .name = node.name, .phase = InstallPhase::Failed, .progress = 0.0f,
+                               .message = std::move(configFailure), .errorCode = configCode,
+                               .hint = std::move(hint), .notices = nodeNotices,
+                               .hookLogs = nodeHookLogs });
                 }
                 continue;
             }
@@ -4066,22 +4397,29 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& requested
         // only -- a re-mapped payload was scanned when it first arrived,
         // and re-scanning a 400MB payload on every dependent install
         // would price the check out of existence.
+        // What they find is a finding, not a warn: it does not change the
+        // outcome (§15 item 6 of design 2026-11-27); the command counts them,
+        // `-v` shows each, and <home>/logs/findings.ndjson keeps them.
+        int nodeFindings = 0;
         if (!payloadInstalled && node.pkgType != 3 /* Config */) {
             const auto rep = closurecheck::scan_payload(
                 ctx.install_dir, dataDir / "xpkgs", host_glibc_recorded());
-            for (const auto& m : rep.missing) {
-                log::warn("[{}@{}] {}", node.name, node.version,
-                          closurecheck::describe_missing(m));
-            }
-            if (rep.floor) {
-                log::warn("[{}@{}] {}", node.name, node.version,
-                          closurecheck::describe_floor(*rep.floor));
-            }
-            if (rep.nonTransitive) {
-                log::warn("[{}@{}] {}", node.name, node.version,
-                          closurecheck::describe_non_transitive(
-                              *rep.nonTransitive));
-            }
+            const auto finding = [&](std::string_view rule, const std::string& text) {
+                ++nodeFindings;
+                detail_::record_finding_(node, rule, text, ctx.install_dir);
+            };
+            for (const auto& m : rep.missing)
+                finding("closure-missing", closurecheck::describe_missing(m));
+            if (rep.floor)
+                finding("closure-glibc-floor", closurecheck::describe_floor(*rep.floor));
+            if (rep.nonTransitive)
+                finding("closure-non-transitive", closurecheck::describe_non_transitive(*rep.nonTransitive));
+            // Rule P (§8.2): no build machine path in what a consumer reads.
+            std::vector<std::filesystem::path> homes{Config::paths().homeDir, dataDir};
+            for (const auto& store : Config::stores()) homes.push_back(store);
+            if (!Config::paths().systemLayer.empty()) homes.push_back(Config::paths().systemLayer);
+            if (const auto paths = build_paths::scan(ctx.install_dir, homes); paths.files > 0)
+                finding("payload-build-path", build_paths::describe(paths, ctx.install_dir));
         }
 
         // Re-stamp with what the install actually REGISTERED.
@@ -4166,7 +4504,10 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& requested
                        .progress = 1.0f,
                        .message = payloadInstalled ? "already installed" : "",
                        .payloadReused = payloadInstalled,
-                       .configured = node.kind != DepKind::Build });
+                       .configured = node.kind != DepKind::Build,
+                       .findings = nodeFindings + earlyFindings[planKey],
+                       .notices = std::move(nodeNotices),
+                       .hookLogs = std::move(nodeHookLogs) });
         }
         if (payloadInstalled) {
             log::debug("{}@{} mapping to current subos", node.name, node.version);
@@ -4466,35 +4807,44 @@ std::expected<Installer::UninstallOutcome, std::string> Installer::uninstall(con
         };
     }
 
-    mcpplibs::xpkg::ExecutionContext ctx;
-    ctx.platform = platform;
-    // Independent of whether a recipe was found: this is purely
-    // Config::xvm_artifact_subos_dir(), and the cleanup passes below (shim
-    // sync, subos env section, headers) need it regardless of the recipe.
-    const auto artifactSubosDir =
-        detail_::configure_xpkg_execution_artifact_paths_(ctx);
+    // The one constructor (#566). The artifact paths are there whether or not a
+    // recipe was found: they are purely Config::xvm_artifact_subos_dir(), and
+    // the cleanup passes below (shim sync, subos env section, headers) need
+    // them regardless of the recipe.
+    auto ctx = make_execution_context({});
+    const std::filesystem::path artifactSubosDir = ctx.subos_sysrootdir;
 
-    bool useDefaultRemoval = recipeUnavailable;
-    std::string hookFailure;
+    // The recipe the removal runs: the one the payload kept (design §20.1).
+    // One that cannot be read fails the hook, named -- the live index's is
+    // not run in its place -- and the withdrawal below still runs.
+    std::filesystem::path executorPkgFile;
+    std::string keptFailure;
+    if (!recipeUnavailable) {
+        if (auto chosen = detail_::uninstall_xpkg_file_(pkgFile, installDir)) executorPkgFile = *chosen;
+        else keptFailure = std::move(chosen).error();
+    }
+    bool useDefaultRemoval = recipeUnavailable || !keptFailure.empty();
+    std::string hookFailure = keptFailure.empty() ? std::string{} : std::format("uninstall(): {}", keptFailure);
     std::vector<mcpplibs::xpkg::XvmOp> xvm_ops;
 
-    if (!recipeUnavailable) {
-        auto executorPkgFile = detail_::uninstall_xpkg_file_(pkgFile, installDir);
+    if (!recipeUnavailable && keptFailure.empty()) {
         if (executorPkgFile != pkgFile) {
             log::debug("using xpkg snapshot for uninstall: {}", executorPkgFile.string());
         }
 
-        ctx.pkg_name = resolvedMatch ? resolvedMatch->name : name;
-        ctx.version = resolvedMatch ? resolvedMatch->version : std::string{};
         auto selectedStore = resolvedMatch
             ? (resolvedMatch->storeRoot.empty()
                 ? Config::paths().dataDir / "xpkgs"
                 : resolvedMatch->storeRoot)
             : Config::paths().dataDir / "xpkgs";
-        detail_::configure_dependency_store_roots_(ctx, selectedStore);
-        ctx.install_dir = installDir;
-        ctx.xpkg_dir = pkgFile.parent_path();
-        ctx.pkgindex_dir = detail_::pkgindex_root_for_(pkgFile);
+        ctx = make_execution_context({
+            .pkg_name = resolvedMatch ? resolvedMatch->name : name,
+            .version = resolvedMatch ? resolvedMatch->version : std::string{},
+            .recipe = pkgFile,
+            .install_dir = installDir,
+            .xpkg_dir = pkgFile.parent_path(),
+            .store = selectedStore,
+        });
 
 
         auto execResult = lua_boundary::create_executor(executorPkgFile, ctx, {
@@ -4519,6 +4869,13 @@ std::expected<Installer::UninstallOutcome, std::string> Installer::uninstall(con
             auto result = executor.run_hook(
                 mcpplibs::xpkg::HookType::Uninstall, ctx);
             const auto hookLog = std::exchange(ctx.hook_log, {});
+            // The compatibility layer's calls that failed, as for config()
+            // and install() (design 2026-11-27 §9.6): findings.
+            for (const auto& f : result.call_failures)
+                detail_::record_finding_(
+                    resolvedMatch && !resolvedMatch->canonicalName.empty() ? resolvedMatch->canonicalName : name,
+                    ctx.version, "hook-call-failed",
+                    std::format("uninstall(): {}({}) failed: {}", f.call, f.what, f.why), installDir);
             if (!result.success) {
                 // The recipe's own cleanup failed. Before this change that
                 // was fatal HERE, before the version DB entry, the
@@ -4648,6 +5005,7 @@ std::expected<Installer::UninstallOutcome, std::string> Installer::uninstall(con
                     // going -- but it must be said. A stale section points
                     // at a directory that no longer exists, which doctor
                     // D2/D3 will report.
+                    // warn-ok: derived state: doctor reports and rebuilds a stale section
                     log::warn("[xim] could not clear subos env "
                               "declarations for {}: {}",
                               executingProvider, e.what());
@@ -4689,6 +5047,7 @@ std::expected<Installer::UninstallOutcome, std::string> Installer::uninstall(con
                   "still holding one (on Windows a compiler leaves vctip.exe / "
                   "mspdbsrv.exe running inside its own toolset for a while "
                   "after it exits)", installDir.string());
+        // warn-ok: the package is removed (unregistered, leftovers stamped incomplete); the disk is freed by a later run
         log::warn("  they are marked incomplete, so nothing will mistake them "
                   "for an install; re-run `xlings remove {}` once that process "
                   "has gone", name);
@@ -4728,6 +5087,7 @@ std::expected<Installer::UninstallOutcome, std::string> Installer::uninstall(con
         if (std::filesystem::remove(parent, rmEc)) {
             log::debug("swept empty package dir: {}", parent.string());
         } else if (rmEc) {
+            // warn-ok: an empty directory left behind; nothing reads it
             log::warn("failed to sweep empty package dir {}: {}",
                       parent.string(), rmEc.message());
         }

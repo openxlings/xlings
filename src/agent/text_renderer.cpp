@@ -76,11 +76,11 @@ void render_data_event(const DataEvent& e) {
     else if (e.kind == "install_summary") {
         auto ok = json.value("success", 0);
         auto fail = json.value("failed", 0);
-        if (fail > 0) {
-            std::println("Install complete: {} succeeded, {} failed", ok, fail);
-        } else {
-            std::println("Install complete: {} succeeded", ok);
-        }
+        auto refused = json.value("refused", 0);
+        std::string line = std::format("Install complete: {} succeeded", ok);
+        if (fail > 0) line += std::format(", {} failed", fail);
+        if (refused > 0) line += std::format(", {} refused", refused);
+        std::println("{}", line);
     }
     else if (e.kind == "remove_plan") {
         std::println("Remove: {} {} (subos: {})",

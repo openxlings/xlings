@@ -1,0 +1,3 @@
+# The xpkg specification is libxpkg's text byte for byte (tests/unit/test_xpkg_format_doc):
+# LF everywhere, as the literal that embeds it is.
+docs/specs/xpkg.md text eol=lf

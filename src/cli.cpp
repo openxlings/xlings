@@ -8,6 +8,7 @@ module;
 module xlings.cli;
 
 import xlings.core.xim.lua_boundary;
+import xlings.core.xim.hook_context;
 import std;
 import mcpplibs.cmdline;
 import mcpplibs.capi.lua;
@@ -17,6 +18,7 @@ import xlings.core.home;
 import xlings.core.abi;
 import xlings.core.home.domain_producer;
 import xlings.core.notice;
+import xlings.core.update_notice;
 import xlings.core.xself.upgrade;
 import xlings.core.home_health;
 import xlings.core.home_config;
@@ -86,7 +88,7 @@ std::vector<completion::Candidate> completion_live_values_(
             for (auto value : {"GLOBAL", "CN"}) add(value);
         } else if (option == "--ui-mode") {
             for (auto value : {"auto", "cli", "tui"}) add(value);
-        } else if (option == "--interactive") {
+        } else if (option == "--interactive" || option == "--update-notice") {
             for (auto value : {"true", "false"}) add(value);
         } else if (option == "--storage") {
             for (auto value : {"shared", "tmpfs", "image"}) add(value);
@@ -245,6 +247,16 @@ bool kind_is_interface_only_(std::string_view kind) {
         // shows the list. What `subos new --dry-run` read, said as lines too.
         // Why an older version was taken, logged where it was chosen.
         "packages", "subos_plan", "passed_over",
+        // A node not installed because a dependency failed: the terminal
+        // says it once, at the end, for every node of that dependency.
+        "install_skipped",
+        // What the hooks said, and a newer xlings (protocol 1.20): the
+        // terminal prints the notes after the summary, and the newer
+        // release once a day at the end of the command.
+        "install_notices", "update_available",
+        // The nodes with no artifact for this machine: the terminal says it
+        // per request, and -v each chain (protocol 1.20).
+        "install_unsupported",
     };
     return std::ranges::contains(kCapabilityOnly, kind)
         || std::ranges::contains(kWireDuplicate, kind);
@@ -447,7 +459,7 @@ void dispatch_data_event(const DataEvent& e) {
         ui::print_install_plan(packages);
     }
     else if (e.kind == "install_summary") {
-        ui::print_install_summary(json.value("success", 0), json.value("failed", 0));
+        ui::print_install_summary(json.value("success", 0), json.value("failed", 0), json.value("refused", 0));
     }
     else if (e.kind == "remove_plan") {
         ui::print_remove_plan(
@@ -644,6 +656,18 @@ void show_interactive_hint_once_() {
 // piping `xlings list` output must see only what it asked for. Excluded on
 // `self`/`interface`: `self doctor`/`self update` already say this as part of
 // their job, and `interface` is a machine's NDJSON stream.
+// Once a day per newer version, at the end of a command whose index sync saw
+// it, unless the home turned it off (`xlings config --update-notice false`).
+void show_update_notice_once_(bool agent) {
+    const auto newer = update_notice::pending();
+    if (!newer || agent || !Config::update_notice() || !palette::stdout_is_terminal()) return;
+    const auto key = std::format("{}@{:%F}", *newer,
+                                 std::chrono::floor<std::chrono::days>(std::chrono::system_clock::now()));
+    if (Config::update_notice_said() == key) return;
+    log::println("xlings {} is available (this is {}): xlings self update", *newer, Info::VERSION);
+    Config::mark_update_notice_said(key);
+}
+
 void show_upgrade_notice_once_() {
     // The upgrade itself (xself::upgrade): its steps run here, by the first
     // command of a new version, and are recorded. Silent when they all did
@@ -1269,6 +1293,33 @@ int cmd_config_(const mcpplibs::cmdline::ParsedArgs& args, EventStream& stream) 
         log::println("tui.interactive = {}", value);
     }
 
+    // --update-notice <BOOL>: the line that names a newer xlings at the end of
+    // a command (#425). On by default.
+    if (auto notice = args.value("update-notice")) {
+        std::string value(*notice);
+        if (value == kValueOmitted) {
+            int rc = 0;
+            auto picked = choose_setting_value_(stream, {
+                .key = "update-notice", .label = "newer-version notice",
+                .values = { "true", "false" },
+                .current = Config::update_notice() ? "true" : "false",
+            }, &rc);
+            if (!picked) return rc;
+            value = *picked;
+        }
+        if (value != "true" && value != "false") {
+            diag::emit({
+                .code    = "cli.bad_update_notice",
+                .summary = std::format("'{}' is not true or false", value),
+                .actions = { { "set one", "xlings config --update-notice false" } },
+            });
+            return 2;
+        }
+        const bool on = (value == "true");
+        edits.push_back([on](nlohmann::json& j) { j["updateNotice"] = on; });
+        log::println("updateNotice = {}", value);
+    }
+
     // --runtime <glibc@VERSION|glibc@latest>: the home's default runtime
     // (part 3 §4.6). A pin stays until changed; latest follows the newest
     // installed. The links switch after the edit lands.
@@ -1731,7 +1782,7 @@ void load_configured_theme_() {
 // library until that support exists.
 std::vector<std::string> inject_omitted_values_(int argc, char* argv[]) {
     static constexpr std::string_view kOptional[] = {
-        "--lang", "--mirror", "--ui-mode", "--theme", "--interactive",
+        "--lang", "--mirror", "--ui-mode", "--theme", "--interactive", "--update-notice",
     };
     std::vector<std::string> out;
     out.reserve(static_cast<std::size_t>(argc) + 2);
@@ -1842,6 +1893,19 @@ int dispatch_(int argc, char* argv[]) {
             continue;
         }
         if (token == "__complete") return run_completion_(argc, argv, i);
+        // An index's CI holds an asset to the payload rules (design
+        // 2026-11-27 §8.2, K2): plumbing, in no help, no completion.
+        if (token == "__payload-check") {
+            std::string dir, arch;
+            bool asJson = false;
+            for (int k = i + 1; k < argc; ++k) {
+                const std::string_view a{argv[k]};
+                if (a == "--json") asJson = true;
+                else if (a == "--arch" && k + 1 < argc) arch = argv[++k];
+                else if (!a.starts_with('-')) dir = std::string(a);
+            }
+            return xim::cmd_payload_check(dir, arch, asJson);
+        }
         // A user's view adding to the system's store, as the administrator
         // (design 2026-10-20 §4.4): an install that the elevation door ran;
         // it activates nothing another version already holds (install never
@@ -1888,6 +1952,11 @@ int dispatch_(int argc, char* argv[]) {
     if (argc == 2
         && std::string_view{argv[1]} == "--command-reference-json") {
         std::println("{}", spec::reference_json().dump());
+        return 0;
+    }
+    if (argc == 2
+        && std::string_view{argv[1]} == "--xpkg-api-json") {
+        std::println("{}", xim::xpkg_interface_json().dump());
         return 0;
     }
     using namespace mcpplibs;
@@ -2343,6 +2412,16 @@ int dispatch_(int argc, char* argv[]) {
                 return xim::cmd_index_use(fargc > 3 ? fargv[3] : "",
                                           fargc > 4 ? fargv[4] : "", stream);
             }
+            if (sub == "check") {
+                std::string target;
+                bool asJson = false;
+                for (int i = 3; i < fargc; ++i) {
+                    std::string_view a{fargv[i]};
+                    if (a == "--json") asJson = true;
+                    else if (!a.starts_with('-')) target = std::string(a);
+                }
+                return xim::cmd_index_check(target, asJson, stream);
+            }
             log::error("unknown subcommand for `xlings index`: {}", sub);
             return 2;
         }
@@ -2449,15 +2528,12 @@ int dispatch_(int argc, char* argv[]) {
             }
             namespace fs = std::filesystem;
             fs::path scriptFile = fargv[2];
-            mcpplibs::xpkg::ExecutionContext ctx;
-            ctx.platform = std::string(platform::OS_NAME);
-            ctx.bin_dir = Config::paths().binDir;
-            ctx.subos_sysrootdir = Config::paths().subosDir.string();
-            ctx.run_dir = fs::current_path();
-            ctx.xpkg_dir = Config::paths().dataDir / "xpkgs";
-            for (int i = 3; i < fargc; ++i) {
-                ctx.args.emplace_back(fargv[i]);
-            }
+            std::vector<std::string> args;
+            for (int i = 3; i < fargc; ++i) args.emplace_back(fargv[i]);
+            auto ctx = xim::make_execution_context({
+                .xpkg_dir = Config::paths().dataDir / "xpkgs",
+                .args = std::move(args),
+            });
             auto execResult = xim::lua_boundary::create_executor(scriptFile, ctx);
             if (!execResult) {
                 log::error("failed to load script: {}", execResult.error());
@@ -2807,6 +2883,7 @@ int dispatch_(int argc, char* argv[]) {
             .option(cmdline::Option("ui-mode").takes_value().value_name("MODE").help("Set UI mode (cli/tui/auto)"))
             .option(cmdline::Option("theme").takes_value().value_name("THEME").help("Set colour theme (name or path)"))
             .option(cmdline::Option("interactive").takes_value().value_name("BOOL").help("Inline prompts in tui mode (true/false)"))
+            .option(cmdline::Option("update-notice").takes_value().value_name("BOOL").help("Say when a newer xlings is published (true/false)"))
             .option(cmdline::Option("add-xpkg").takes_value().value_name("FILE").help("Add xpkg file to package index"))
             .option(cmdline::Option("list-xpkg").help("List local recipes and how they relate to the synced index"))
             .option(cmdline::Option("remove-xpkg").takes_value().value_name("NAME").help("Remove one local recipe"))
@@ -2893,6 +2970,15 @@ void after_command(int argc, char* argv[]) {
         return;
     try {
         show_upgrade_notice_once_();
+    } catch (...) {
+    }
+    // A newer xlings (#425, design 2026-11-27 §9.2): a person's terminal
+    // only -- an agent or a program reads it as `update`'s event.
+    bool agent = false;
+    if (const char* v = std::getenv("XLINGS_AGENT_MODE"); v && std::string_view(v) == "1") agent = true;
+    for (int i = 1; i < argc; ++i) if (std::string_view(argv[i]) == "--agent") agent = true;
+    try {
+        show_update_notice_once_(agent);
     } catch (...) {
     }
 }

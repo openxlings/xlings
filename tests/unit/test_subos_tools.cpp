@@ -88,6 +88,17 @@ XTEST(SubosTools, EveryToolIsAPackageOrTheOperatingSystemAndSaysWhich,
     EXPECT_EQ(tools::install_hint("qemu-system-gl"), "xlings install qemu-system-gl");
 }
 
+// What a failed relocation says (design 2026-11-27 §9.3): how to get the tool
+// elfpatch names, from this table -- a package, or what macOS provides.
+XTEST(SubosTools, TheRelocationToolsSayHowToGetThem,
+      .area = "subos", .covers = {"ELFPATCH-OUTCOME"}) {
+    EXPECT_EQ(tools::how_to_get("patchelf"), "xlings install patchelf");
+    const auto mac = tools::how_to_get("install_name_tool");
+    EXPECT_NE(mac.find("the operating system's"), std::string::npos) << mac;
+    EXPECT_NE(mac.find("xcode-select --install"), std::string::npos) << mac;
+    EXPECT_TRUE(tools::how_to_get("no-such-tool").empty());
+}
+
 XTEST(SubosTools, ATreeIsCopiedInProcessWithLinksModesAndTimes,
       .area = "subos", .covers = {"TOOLS-PROVENANCE"}, .requires_ = {"posix"}) {
     auto home = tk::Home::isolated("tools-copy-tree");

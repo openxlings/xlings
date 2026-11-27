@@ -111,16 +111,11 @@ void auto_upgrade_profiles_if_stale(const fs::path& home_dir) {
 
     for (auto& s : slots) {
         auto path = config_dir / s.filename;
-        if (!detail_::needs_profile_upgrade(path, profile_resources::kVersion))
-            continue;
-        try {
-            platform::write_string_to_file(path.string(), std::string(s.bytes));
-            log::debug("[compat] upgraded {} to profile version {}",
-                       path.string(), profile_resources::kVersion);
-        } catch (...) {
-            // Profile upgrade is opportunistic — failure shouldn't block
-            // the actual command the user invoked.
-        }
+        // Only a profile that is there: `self init` writes the missing ones.
+        // The one writer keeps what it replaces; a failure here does not
+        // block the command the user ran (the next run tries again).
+        if (!fs::exists(path, ec)) continue;
+        (void)profile_resources::write_profile(home_dir, path, s.bytes);
     }
 }
 

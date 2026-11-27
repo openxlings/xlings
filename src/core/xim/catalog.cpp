@@ -155,10 +155,20 @@ std::string select_version_(const xpkg::Package& pkg,
 
     auto& versions = platformIt->second;
     if (!versionHint.empty()) {
-        // Direct exact match (handles "latest" ref resolution too)
+        // Direct exact match (handles "latest" ref resolution too). An alias
+        // is followed to its end, as concrete_versions_ follows it: `lts` ->
+        // `22` -> `22.11.0` answers with a key the store can hold.
         auto directIt = versions.find(versionHint);
         if (directIt != versions.end()) {
-            return directIt->second.ref.empty() ? versionHint : directIt->second.ref;
+            std::string concrete = directIt->second.ref.empty() ? versionHint : directIt->second.ref;
+            std::unordered_set<std::string> visited{versionHint};
+            for (int hop = 0; hop < 8; ++hop) {
+                if (!visited.insert(concrete).second) break;  // cycle
+                auto it = versions.find(concrete);
+                if (it == versions.end() || it->second.ref.empty()) break;
+                concrete = it->second.ref;
+            }
+            return concrete;
         }
         // Semver range/prefix matching against CONCRETE versions only.
         //
@@ -531,6 +541,13 @@ std::vector<PackageMatch> PackageCatalog::build_matches_(const RepoState& state,
         match.name = entry->identity.name;
         match.version = version;
         match.passedOver = passedOver;
+        // An alias: a key with a `ref` that is no version (§7.3).
+        if (!parsed.version.empty() && parsed.version != "latest" && !semver::parse(parsed.version)) {
+            if (auto platformIt = pkg->xpm.entries.find(platform); platformIt != pkg->xpm.entries.end())
+                if (auto key = platformIt->second.find(parsed.version);
+                    key != platformIt->second.end() && !key->second.ref.empty())
+                    match.alias = parsed.version;
+        }
         match.namespaceName = entry->identity.namespaceName;
         match.canonicalName = entry->canonicalName;
         match.repoName = state.spec.name;

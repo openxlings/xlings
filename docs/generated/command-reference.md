@@ -66,7 +66,7 @@ Options: `-a, --all` — Show every subos; `--strict` — Require a coherent rel
 
 Show or modify configuration
 
-Options: `--lang <LANG>` — Set language; `--mirror <MIRROR>` — Set mirror; `--runtime <LIBC@VERSION>` — Pin this home's default runtime (glibc@2.44.3), or follow the newest installed (glibc@latest); `--ui-mode <MODE>` — Set UI mode (cli/tui/auto); `--theme <THEME>` — Set colour theme (name, path, or list); `--interactive <BOOL>` — Inline prompts in tui mode; `--add-xpkg <FILE>` — Add package recipe; `--list-xpkg` — List local recipes and how they relate to the synced index; `--remove-xpkg <NAME>` — Remove one local recipe; `--clear-xpkg <all|stale>` — Remove local recipes (all, or stale = identical/behind the synced index); `--index-repo <NS:URL>` — Add index repository; `--rm-index-repo <NAME>` — Remove index repository; `--add-archives <DIR>` — Add a directory whose files are taken by content before the network; `--rm-archives <DIR>` — Remove an archive directory
+Options: `--lang <LANG>` — Set language; `--mirror <MIRROR>` — Set mirror; `--runtime <LIBC@VERSION>` — Pin this home's default runtime (glibc@2.44.3), or follow the newest installed (glibc@latest); `--ui-mode <MODE>` — Set UI mode (cli/tui/auto); `--theme <THEME>` — Set colour theme (name, path, or list); `--interactive <BOOL>` — Inline prompts in tui mode; `--update-notice <BOOL>` — Say when a newer xlings is published; `--add-xpkg <FILE>` — Add package recipe; `--list-xpkg` — List local recipes and how they relate to the synced index; `--remove-xpkg <NAME>` — Remove one local recipe; `--clear-xpkg <all|stale>` — Remove local recipes (all, or stale = identical/behind the synced index); `--index-repo <NS:URL>` — Add index repository; `--rm-index-repo <NAME>` — Remove index repository; `--add-archives <DIR>` — Add a directory whose files are taken by content before the network; `--rm-archives <DIR>` — Remove an archive directory
 
 ## `xlings subos`
 
@@ -264,7 +264,7 @@ Options: `--args <JSON>` — Capability arguments; `--args-file <PATH>` — Read
 
 ## `xlings index`
 
-Inspect and select package index snapshots
+Inspect, select and check package indexes
 
 ## `xlings index list [name]`
 
@@ -275,6 +275,12 @@ Options: `--json` — Machine-readable output
 ## `xlings index use <name> <version>`
 
 Pin an index source to a snapshot
+
+## `xlings index check [path]`
+
+Check recipes against the xpkg format
+
+Options: `--json` — Every finding, machine-readable
 
 ## `xlings agent`
 

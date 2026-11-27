@@ -39,12 +39,14 @@ file "$D2X_BIN" | grep -q "dynamically linked" || fail "d2x is not dynamically l
 
 # ── Test 1: elfpatch result in install output ────────────────────────
 log "Test 1: elfpatch reported success"
-if echo "$INSTALL_OUT" | grep -qE "elfpatch auto: [0-9]+ [0-9]+ 0"; then
-    ELFPATCH_LINE="$(echo "$INSTALL_OUT" | grep "elfpatch auto:" | head -1)"
+# libxpkg's structured result (design 2026-11-27 §9.3): `done` with d2x's ELF
+# patched; a relocation that fails is a failed install, not a count.
+if echo "$INSTALL_OUT" | grep -qE "d2x: elfpatch: done \([0-9]+ scanned, [1-9][0-9]* patched"; then
+    ELFPATCH_LINE="$(echo "$INSTALL_OUT" | grep "d2x: elfpatch: done" | head -1)"
     log "  $ELFPATCH_LINE"
 else
     echo "$INSTALL_OUT" | grep "elfpatch" || true
-    fail "elfpatch did not report 0 failures"
+    fail "elfpatch did not report d2x relocated"
 fi
 
 # ── Test 2: interpreter points to local ld-linux (xpkgs or subos) ─────

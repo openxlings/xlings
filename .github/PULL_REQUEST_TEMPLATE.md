@@ -13,6 +13,6 @@ What you did not run, why, and the risk. -->
 
 <!-- Labels are hints added automatically; nothing checks them. | 标签是自动补的提示，不做检查。 -->
 
-Authorship: <by-human | human-and-ai | by-ai>
+Authorship: <by-human | ai-and-human>
 Agent: <optional | 可选>
 Model: <optional | 可选>

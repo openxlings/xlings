@@ -46,6 +46,17 @@ file_stat_(const std::filesystem::path& p) {
 // The `configured` record of a subos file (#632). Anything that is not a
 // non-negative integer is dropped: a record that cannot be read proves nothing,
 // and a missing entry only means "configure it", the safe direction.
+// The top-level `aliases` of a subos file: package -> alias (§7.3). A value
+// that is not a string is not an alias, and is dropped.
+std::map<std::string, std::string> aliases_from_json_(const nlohmann::json& doc) {
+    std::map<std::string, std::string> out;
+    auto it = doc.find("aliases");
+    if (it == doc.end() || !it->is_object()) return out;
+    for (auto entry = it->begin(); entry != it->end(); ++entry)
+        if (entry->is_string() && !entry->get<std::string>().empty()) out[entry.key()] = entry->get<std::string>();
+    return out;
+}
+
 std::map<std::string, int> configured_from_json_(const nlohmann::json& doc) {
     std::map<std::string, int> out;
     auto it = doc.find("configured");
@@ -459,6 +470,7 @@ Config::read_workspace_file_(const std::filesystem::path& path) {
         }
         sws.configured = configured_from_json_(json);
         sws.hostFacts = xvm::subos_host_facts_from_json(json);
+        sws.aliases = aliases_from_json_(json);
         return sws;
     } catch (...) {}
     return std::nullopt;
@@ -984,6 +996,7 @@ void Config::load_project_config_from_dir_(const std::filesystem::path& dir) {
                 projectSubosInstalled_ = std::move(sws.installed);
                 projectSubosConfigured_ = std::move(sws.configured);
                 projectSubosHostFacts_ = std::move(sws.hostFacts);
+                projectSubosAliases_ = std::move(sws.aliases);
             } else {
                 projectSubosMode_ = ProjectSubosMode::Anonymous;
                 if (hasProjectStateJson && projectStateJson.contains("workspace") &&
@@ -993,12 +1006,14 @@ void Config::load_project_config_from_dir_(const std::filesystem::path& dir) {
                     projectSubosInstalled_ = std::move(sws.installed);
                     projectSubosConfigured_ = configured_from_json_(projectStateJson);
                     projectSubosHostFacts_ = xvm::subos_host_facts_from_json(projectStateJson);
+                    projectSubosAliases_ = aliases_from_json_(projectStateJson);
                 } else {
                     auto sws = load_workspace_from_file_(project_subos_dir_() / ".xlings.json");
                     projectSubosWorkspace_ = std::move(sws.active);
                     projectSubosInstalled_ = std::move(sws.installed);
                     projectSubosConfigured_ = std::move(sws.configured);
                     projectSubosHostFacts_ = std::move(sws.hostFacts);
+                    projectSubosAliases_ = std::move(sws.aliases);
                 }
             }
         }
@@ -1218,12 +1233,14 @@ void Config::load_global_workspace_() {
         globalInstalled_.clear();
         globalConfigured_.clear();
         globalHostFacts_.clear();
+        globalAliases_.clear();
         return;
     }
     globalWorkspace_ = std::move(sws->active);
     globalInstalled_ = std::move(sws->installed);
     globalConfigured_ = std::move(sws->configured);
     globalHostFacts_ = std::move(sws->hostFacts);
+    globalAliases_ = std::move(sws->aliases);
 }
 
 void Config::reload_state_() {
@@ -1323,6 +1340,8 @@ void Config::load_ui_prefs_from_json_(const nlohmann::json& json) {
         if (tui.contains("interactive") && tui["interactive"].is_boolean())
             tuiInteractive_ = tui["interactive"].get<bool>();
     }
+    if (json.contains("updateNotice") && json["updateNotice"].is_boolean())
+        updateNotice_ = json["updateNotice"].get<bool>();
 }
 
 [[nodiscard]] const std::string& Config::lang() { return instance_().lang_; }
@@ -1912,12 +1931,15 @@ std::expected<void, std::string> rmw_home_config_locked_(
         const std::function<bool(nlohmann::json&)>& mutate) {
     constexpr auto kTimeout = std::chrono::seconds{2};
 
-    const auto savedTimeout =
-        utils::get_env_or_default(std::string(xvm::lock_timeout_env()));
-    platform::set_env_variable(std::string(xvm::lock_timeout_env()), "");
+    // Put back as it was: set to its value, or not set at all -- an unset
+    // variable must not come back as an empty one (#594).
+    const std::string timeoutEnv(xvm::lock_timeout_env());
+    const bool timeoutWasSet = utils::env_is_set(timeoutEnv);
+    const auto savedTimeout = utils::get_env_or_default(timeoutEnv);
+    platform::set_env_variable(timeoutEnv, "");
     auto lock = xvm::acquire_state_lock(homeDir, kTimeout);
-    platform::set_env_variable(std::string(xvm::lock_timeout_env()),
-                               savedTimeout);
+    if (timeoutWasSet) platform::set_env_variable(timeoutEnv, savedTimeout);
+    else platform::unset_env_variable(timeoutEnv);
     if (!lock) return std::unexpected(lock.error());
 
     nlohmann::json json = nlohmann::json::object();
@@ -2024,6 +2046,31 @@ Config::record_verified_version(const std::string& version) {
                                        json["verifiedBy"] = version;
                                        return true;
                                    });
+}
+
+bool Config::update_notice() { return instance_().updateNotice_.value_or(true); }
+
+std::string Config::update_notice_said() {
+    namespace fs = std::filesystem;
+    const auto configPath = instance_().paths_.homeDir / ".xlings.json";
+    std::error_code ec;
+    if (!fs::exists(configPath, ec)) return {};
+    try {
+        const auto json = nlohmann::json::parse(platform::read_file_to_string(configPath.string()), nullptr, false);
+        if (json.is_object() && json.contains("updateNoticeSaid") && json["updateNoticeSaid"].is_string())
+            return json["updateNoticeSaid"].get<std::string>();
+    } catch (...) {}
+    return {};
+}
+
+void Config::mark_update_notice_said(std::string_view key) {
+    auto& self = instance_();
+    const auto configPath = self.paths_.homeDir / ".xlings.json";
+    std::string value(key);
+    (void)rmw_home_config_locked_(self.paths_.homeDir, configPath, [&](nlohmann::json& json) {
+        json["updateNoticeSaid"] = value;
+        return true;
+    });
 }
 
 void Config::mark_hint_seen(std::string_view id) {
@@ -2180,6 +2227,27 @@ void Config::register_known_project(const std::filesystem::path& dir) {
     }
 }
 
+void Config::forget_known_project(const std::filesystem::path& dir) {
+    namespace fs = std::filesystem;
+    auto& self = instance_();
+    auto configPath = self.paths_.homeDir / ".xlings.json";
+    if (!fs::exists(configPath)) return;
+    nlohmann::json json;
+    try {
+        json = nlohmann::json::parse(platform::read_file_to_string(configPath.string()), nullptr, false);
+    } catch (...) { return; }
+    // Never replace a document that could not be parsed (as register_known_project).
+    if (json.is_discarded() || !json.is_object()) return;
+    auto it = json.find("knownProjects");
+    if (it == json.end() || !it->is_object() || !it->contains(dir.string())) return;
+    it->erase(dir.string());
+    platform::write_string_to_file(configPath.string(), json.dump(2));
+    xlings::restamp_versions_db_if_equal(self.paths_.homeDir, json);
+    if (const auto after = file_stat_(configPath)) {
+        self.remember_known_projects_(json, after->first, after->second);
+    }
+}
+
 std::filesystem::path Config::workspace_config_path(bool createDirs) {
     namespace fs = std::filesystem;
     auto& self = instance_();
@@ -2259,6 +2327,7 @@ void Config::save_workspace() {
         sws.installed = self.projectSubosInstalled_;
         sws.configured = self.projectSubosConfigured_;
         sws.hostFacts = self.projectSubosHostFacts_;
+        sws.aliases = self.projectSubosAliases_;
     } else if (useProject) {
         // Reachable only via the third save-path branch above (project
         // mode without a subos mode, currently unreachable in practice
@@ -2274,6 +2343,7 @@ void Config::save_workspace() {
         sws.installed = self.globalInstalled_;
         sws.configured = self.globalConfigured_;
         sws.hostFacts = self.globalHostFacts_;
+        sws.aliases = self.globalAliases_;
     }
     json["workspace"] = xvm::subos_workspace_to_json(sws);
     if (sws.configured.empty()) {
@@ -2285,6 +2355,11 @@ void Config::save_workspace() {
         json.erase("host_facts");
     } else {
         json["host_facts"] = sws.hostFacts;
+    }
+    if (sws.aliases.empty()) {
+        json.erase("aliases");
+    } else {
+        json["aliases"] = sws.aliases;
     }
     platform::write_file_atomic(subosConfigPath.string(), json.dump(2));
 }
@@ -2316,6 +2391,30 @@ void Config::mark_configured(const std::string& identity, int revision) {
 bool Config::forget_configured(std::string_view identity) {
     instance_().host_facts_mut_().erase(std::string(identity));
     return instance_().configured_mut_().erase(std::string(identity)) > 0;
+}
+
+// The same scope selection as configured_mut_(), for the same reason.
+std::map<std::string, std::string>& Config::aliases_mut_() {
+    if (forceGlobalScope_ || !hasProjectConfig_) {
+        ensure_global_workspace_();
+        return globalAliases_;
+    }
+    if (projectSubosMode_ == ProjectSubosMode::Named ||
+        projectSubosMode_ == ProjectSubosMode::Anonymous) return projectSubosAliases_;
+    ensure_global_workspace_();
+    return globalAliases_;
+}
+
+std::string Config::alias_of(std::string_view package) {
+    const auto& aliases = instance_().aliases_mut_();
+    const auto it = aliases.find(std::string(package));
+    return it == aliases.end() ? std::string{} : it->second;
+}
+
+void Config::mark_alias(const std::string& package, const std::string& alias) {
+    auto& aliases = instance_().aliases_mut_();
+    if (alias.empty()) aliases.erase(package);
+    else aliases[package] = alias;
 }
 
 // The same scope selection as configured_mut_(): the facts sit beside the

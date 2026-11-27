@@ -247,6 +247,7 @@ private:
     std::string uiMode_;        // "cli" | "tui" | "auto"/"" 
     std::string theme_;         // path reference, or a shipped theme's name
     std::optional<bool> tuiInteractive_;
+    std::optional<bool> updateNotice_;
     std::string globalActiveSubos_ = "default";
     // The system this runs in (a user's view keeps it after it lets go of
     // XLINGS_ROOT_INSTANCE): what system_instance() answers.
@@ -290,12 +291,15 @@ private:
     // the installed[] beside it. See configured_revision().
     std::map<std::string, int> globalConfigured_;
     std::map<std::string, int> projectSubosConfigured_;
+    std::map<std::string, std::string> globalAliases_;
+    std::map<std::string, std::string> projectSubosAliases_;
     std::map<std::string, int>& configured_mut_();
     // The host facts beside each `configured` record (xpkg host_facts), kept
     // and saved with it. See host_facts_record().
     std::map<std::string, std::map<std::string, std::string>> globalHostFacts_;
     std::map<std::string, std::map<std::string, std::string>> projectSubosHostFacts_;
     std::map<std::string, std::map<std::string, std::string>>& host_facts_mut_();
+    std::map<std::string, std::string>& aliases_mut_();
     bool hasProjectConfig_ = false;
     std::string activeSubosOverride_;
     bool forceGlobalScope_ = false;
@@ -603,6 +607,14 @@ public:
 
     static void mark_hint_seen(std::string_view id);
 
+    // The newer-xlings line at the end of a command (#425): on unless the
+    // home's config says `"updateNotice": false` (`xlings config
+    // --update-notice false`). `update_notice_said` is the one key it was
+    // last said under (version and day); one slot, not one entry per day.
+    [[nodiscard]] static bool update_notice();
+    [[nodiscard]] static std::string update_notice_said();
+    static void mark_update_notice_said(std::string_view key);
+
     // Projects this home has ever installed into, by absolute path.
     //
     // A project's tools are only reachable from PATH because the routing
@@ -623,6 +635,11 @@ public:
     // Record (or refresh) a project. Called after a project-scope install
     // succeeds. Idempotent.
     static void register_known_project(const std::filesystem::path& dir);
+
+    // Drop `dir` from `knownProjects`: a project whose directory or state is
+    // gone uses nothing, and its entry is derived state (#708). A home config
+    // that cannot be read is left as it is.
+    static void forget_known_project(const std::filesystem::path& dir);
 
     [[nodiscard]] static std::vector<std::string> resource_servers(std::string_view mirror = {});
     // Same list, extended with the other regions' servers as a last resort.
@@ -815,6 +832,12 @@ public:
     [[nodiscard]] static std::map<std::string, std::map<std::string, std::string>> host_facts_records();
     static void mark_host_facts(const std::string& identity,
                                 std::map<std::string, std::string> facts);
+    // The alias the scope asked for a package by (`node@lts`, design
+    // 2026-11-27 §7.3), keyed by canonical name; `update` follows it. An
+    // empty alias forgets it -- the package was asked for by a version, or by
+    // none (it follows `latest`). Held and saved like `configured`.
+    [[nodiscard]] static std::string alias_of(std::string_view package);
+    static void mark_alias(const std::string& package, const std::string& alias);
     [[nodiscard]] static bool has_project_config();
 
     // Force all version/workspace writes to go to global scope.

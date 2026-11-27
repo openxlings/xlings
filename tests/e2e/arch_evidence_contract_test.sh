@@ -88,8 +88,12 @@ set -e
   echo "$weak"
   fail "a package-level archs union refused an install on $host_arch"
 }
-grep -q "$host_arch" <<<"$weak" \
-  || fail "the mismatch was never mentioned: $weak"
+# A finding (design 2026-11-27 §5.3): one count line by default, the record
+# names the host's target.
+grep -q 'finding(s) about the installed payloads' <<<"$weak" \
+  || fail "the mismatch was not counted as a finding: $weak"
+grep '"rule":"arch-unstated"' "$home/logs/findings.ndjson" 2>/dev/null | grep -q "$host_arch" \
+  || fail "the arch-unstated finding does not name $host_arch: $(cat "$home/logs/findings.ndjson" 2>/dev/null)"
 if grep -q 'E_UNSUPPORTED_TARGET' <<<"$weak"; then
   fail "a package-level union must advise, never refuse: $weak"
 fi

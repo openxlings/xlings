@@ -1,4 +1,6 @@
 #include <gtest/gtest.h>
+import xlings.testkit;
+#include "xlings/xtest.hpp"
 
 import std;
 import mcpplibs.xpkg;
@@ -95,4 +97,42 @@ TEST(LuaProtocol, PreservesResolvedDependenciesLogsAndDeferredScopeEffects) {
     auto malformed = protocol::encode(response);
     malformed.erase("install_requests");
     EXPECT_THROW(protocol::response(malformed), nlohmann::json::exception);
+}
+
+// What libxpkg 0.0.68 adds to a hook's result and to an entry crosses the
+// worker boundary as it is: a hook run in a worker says the same as one run in
+// this process (design 2026-11-27 §9.2, §9.3, §9.6, §9.7).
+XTEST(LuaProtocol, CarriesNoticesFailedCallsThePatchResultAndStrip,
+      .area = "xim", .covers = {"HOOK-BOUNDARY-RESULT"}) {
+    xp::HookResponse response;
+    response.result = {.success = true, .output = "out"};
+    response.result.notices = {{.level = "warn", .text = "the GPU driver is old"},
+                               {.level = "error", .text = "路径 has no lib"}};
+    response.result.call_failures = {{.call = "os.mv", .what = "a -> b", .why = "No such file or directory"}};
+    response.result.elfpatch = xp::ElfpatchResult{.outcome = "skipped", .reason = "patchelf was not found",
+                                                  .scanned = 9, .patched = 0, .failed = 0,
+                                                  .skipped_foreign = 2, .skipped_static = 3,
+                                                  .skipped_listed = 1, .tool_missing = "patchelf"};
+    auto answer = protocol::response(protocol::encode(response));
+    ASSERT_EQ(answer.result.notices.size(), 2u);
+    EXPECT_EQ(answer.result.notices[1].level, "error");
+    EXPECT_EQ(answer.result.notices[1].text, "路径 has no lib");
+    ASSERT_EQ(answer.result.call_failures.size(), 1u);
+    EXPECT_EQ(answer.result.call_failures[0].what, "a -> b");
+    ASSERT_TRUE(answer.result.elfpatch.has_value());
+    EXPECT_EQ(answer.result.elfpatch->skipped_foreign, 2);
+    EXPECT_EQ(answer.result.elfpatch->tool_missing, "patchelf");
+    response.result.elfpatch.reset();
+    EXPECT_FALSE(protocol::response(protocol::encode(response)).result.elfpatch.has_value());
+
+    xp::Package package;
+    package.name = "tool";
+    package.xpm.platform_strip = {{"linux", 1}};
+    auto& entry = package.xpm.entries["linux"]["1.0.0"];
+    entry.strip = 0;
+    entry.floor = 3;
+    const auto restored = protocol::package(protocol::encode(package));
+    EXPECT_EQ(restored.xpm.platform_strip.at("linux"), 1);
+    EXPECT_EQ(restored.xpm.entries.at("linux").at("1.0.0").strip, 0);
+    EXPECT_EQ(restored.xpm.entries.at("linux").at("1.0.0").floor, 3);
 }

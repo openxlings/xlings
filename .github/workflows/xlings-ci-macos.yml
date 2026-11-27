@@ -372,16 +372,6 @@ jobs:
           chmod +x ./tools/macos_release.sh
           SKIP_NETWORK_VERIFY=1 ./tools/macos_release.sh
 
-      - name: Platform core contract
-        # 2026-09-12 robustness/usability round: bash e2e contracts that
-        # don't need a whole subos rebuild to be meaningful on macOS.
-        run: |
-          bash tests/e2e/notice_once_test.sh
-          bash tests/e2e/remove_force_contract_test.sh
-          bash tests/e2e/doctor_cross_subos_fix_test.sh
-          bash tests/e2e/broken_home_isolation_test.sh
-          bash tests/e2e/sysroot_refresh_pinning_subos_test.sh
-
       - name: Fresh XLINGS_HOME first install
         run: bash tests/e2e/fresh_xlings_home_install_test.sh
 

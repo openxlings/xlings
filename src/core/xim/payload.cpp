@@ -770,4 +770,135 @@ std::string PayloadReplacement::rollback() {
     return {};
 }
 
+std::expected<std::optional<std::filesystem::path>, std::string>
+kept_recipe(const std::filesystem::path& payload) {
+    namespace fs = std::filesystem;
+    const auto unreadable = [](const fs::path& at, const std::error_code& why) {
+        return std::unexpected(std::format("cannot read the kept recipe at {}: {}", at.string(), why.message()));
+    };
+    // What is not there is an answer (not_found); any other failure to read
+    // a status is not.
+    const auto type_of = [](const fs::path& at, std::error_code& why) {
+        const auto s = fs::status(at, why);
+        if (why && s.type() == fs::file_type::not_found) why.clear();
+        return s.type();
+    };
+    std::error_code ec;
+    const auto pkgs = payload / fs::path(kKeptIndexDir) / "pkgs";
+    std::vector<fs::path> found;
+    if (fs::exists(pkgs, ec)) {
+        for (auto dir = fs::directory_iterator(pkgs, ec); !ec && dir != fs::directory_iterator(); dir.increment(ec)) {
+            std::error_code inner;
+            const auto kind = type_of(dir->path(), inner);
+            if (inner) return unreadable(dir->path(), inner);
+            if (kind != fs::file_type::directory) continue;
+            for (auto f = fs::directory_iterator(dir->path(), inner); !inner && f != fs::directory_iterator();
+                 f.increment(inner)) {
+                std::error_code fileError;
+                const auto fileKind = type_of(f->path(), fileError);
+                if (fileError) return unreadable(f->path(), fileError);
+                if (f->path().extension() == ".lua" && fileKind == fs::file_type::regular) found.push_back(f->path());
+            }
+            if (inner) return unreadable(dir->path(), inner);
+        }
+    }
+    if (ec) return unreadable(pkgs, ec);
+    std::ranges::sort(found);
+    if (found.size() > 1)
+        return std::unexpected(std::format("the kept recipe at {} is an index of {} recipes ({} and {}), not one",
+                                           pkgs.string(), found.size(), found[0].string(), found[1].string()));
+    if (!found.empty()) return found.front();
+    const auto legacy = payload / fs::path(kLegacyKeptRecipe);
+    const auto legacyKind = type_of(legacy, ec);
+    if (ec) return unreadable(legacy, ec);
+    if (legacyKind == fs::file_type::regular) return legacy;
+    return std::optional<fs::path>{};
+}
+
+std::vector<std::string> imported_libs(std::string_view text, const std::filesystem::path& indexLibs) {
+    namespace fs = std::filesystem;
+    constexpr std::string_view prefix = "xim.pkgindex.";
+    std::vector<std::string> out;
+    std::set<std::string> seen;
+    std::vector<std::string> texts{std::string(text)};
+    while (!texts.empty()) {
+        const auto current = std::move(texts.back());
+        texts.pop_back();
+        for (auto at = current.find(prefix); at != std::string::npos; at = current.find(prefix, at + 1)) {
+            // The module's name runs to the end of the string it is in:
+            // import("xim.pkgindex.a.b") reads libs/a.b.lua.
+            auto end = at + prefix.size();
+            while (end < current.size() && (std::isalnum(static_cast<unsigned char>(current[end])) ||
+                                             current[end] == '_' || current[end] == '-' || current[end] == '.'))
+                ++end;
+            auto name = current.substr(at + prefix.size(), end - at - prefix.size());
+            while (!name.empty() && name.back() == '.') name.pop_back();
+            if (name.empty() || !seen.insert(name).second) continue;
+            const auto file = indexLibs / (name + ".lua");
+            std::error_code ec;
+            if (indexLibs.empty() || !fs::is_regular_file(file, ec)) continue;
+            out.push_back(name);
+            // Read, or the closure is not known: the failure is the caller's
+            // (a kept index with a hole would fail only at the removal).
+            texts.push_back(platform::read_file_to_string(file.string()));
+        }
+    }
+    std::ranges::sort(out);
+    return out;
+}
+
+std::expected<void, std::string> keep_recipe(const std::filesystem::path& payload,
+                                             std::string_view text,
+                                             const std::filesystem::path& rel,
+                                             const std::filesystem::path& indexLibs) {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    const auto kept = payload / fs::path(kKeptIndexDir);
+    const auto staging = payload / std::format("{}.new-{}", kKeptIndexDir, platform::get_pid());
+    fs::remove_all(staging, ec);
+    try {
+        const auto recipe = staging / "pkgs" / rel;
+        fs::create_directories(recipe.parent_path());
+        platform::write_file_atomic(recipe.string(), std::string(text));
+        for (const auto& lib : imported_libs(text, indexLibs)) {
+            const auto from = indexLibs / (lib + ".lua");
+            fs::create_directories(staging / "libs");
+            fs::copy_file(from, staging / "libs" / (lib + ".lua"), fs::copy_options::overwrite_existing);
+        }
+    } catch (const std::exception& e) {
+        fs::remove_all(staging, ec);
+        return std::unexpected(std::format("cannot keep the recipe in {}: {}", payload.string(), e.what()));
+    }
+    // Replaced by renames, so that a whole copy is in place at every step: the
+    // previous one is set aside, the new one takes its name, and only then is
+    // the previous one removed (what a failed removal leaves is a sibling).
+    const auto previous = payload / std::format("{}.old-{}", kKeptIndexDir, platform::get_pid());
+    fs::remove_all(previous, ec);
+    const bool had = fs::exists(kept, ec);
+    if (ec) {
+        const auto why = ec.message();
+        fs::remove_all(staging, ec);
+        return std::unexpected(std::format("cannot read {}: {}", kept.string(), why));
+    }
+    if (had) {
+        fs::rename(kept, previous, ec);
+        if (ec) {
+            const auto why = ec.message();
+            fs::remove_all(staging, ec);
+            return std::unexpected(std::format("cannot replace {}: {}", kept.string(), why));
+        }
+    }
+    fs::rename(staging, kept, ec);
+    if (ec) {
+        const auto why = ec.message();
+        std::error_code undo;
+        if (had) fs::rename(previous, kept, undo);
+        fs::remove_all(staging, undo);
+        return std::unexpected(std::format("cannot keep the recipe at {}: {}", kept.string(), why));
+    }
+    fs::remove_all(previous, ec);
+    fs::remove(payload / fs::path(kLegacyKeptRecipe), ec);
+    return {};
+}
+
 }

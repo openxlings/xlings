@@ -713,6 +713,11 @@ fs::path resolve_base_package_(const std::string& fromSpec, EventStream& stream)
             {"message", std::format("{} is not in the index; using version {} installed here", fromSpec, version)}}.dump()});
     }
 
+    // What is installed is the version chosen above: a bare spec is answered
+    // by the version active here, as `xlings install <pkg>` is, and that is
+    // the edition installed once, not the index's.
+    const auto chosenSpec = ref.ver.empty() || fromSpec.find('@') != std::string::npos
+        ? fromSpec : fromSpec + "@" + ref.ver;
     if (!baseDir.empty()) {
         auto borrowed = xlings::home::domain_producer_source::borrowed_mount(baseDir);
         if (!borrowed) {
@@ -724,7 +729,7 @@ fs::path resolve_base_package_(const std::string& fromSpec, EventStream& stream)
             return {};
         }
         if (*borrowed) {
-            const std::vector<std::string> targets{fromSpec};
+            const std::vector<std::string> targets{chosenSpec};
             if (xim::cmd_install(targets, /*yes=*/true, /*noDeps=*/false, stream) != 0)
                 return {};
             baseDir = new_from_detail_::locate_base_pkg_(ref);
@@ -735,15 +740,15 @@ fs::path resolve_base_package_(const std::string& fromSpec, EventStream& stream)
         // Auto-install (E5a): the template is plumbing -- the user named a
         // SubOS, not a package -- so it is installed in this process, its
         // progress and errors shown, its own plan and summary not.
-        log::debug("base subos pkg '{}' not installed; installing it", fromSpec);
-        const std::vector<std::string> targets{fromSpec};
+        log::debug("base subos pkg '{}' not installed; installing it", chosenSpec);
+        const std::vector<std::string> targets{chosenSpec};
         if (xim::cmd_install_step(targets, "", stream, /*plumbing=*/true) != 0) {
             stream.emit(ErrorEvent{
                 .code = ErrorCode::Internal,
-                .message = "auto-install of base '" + fromSpec
+                .message = "auto-install of base '" + chosenSpec
                            + "' failed",
                 .recoverable = true,
-                .hint = "run manually: xlings install " + fromSpec,
+                .hint = "run manually: xlings install " + chosenSpec,
             });
             return {};
         }

@@ -537,6 +537,10 @@ bool fetch_to_file(const std::string& url, const std::filesystem::path& dest) {
     return download_file(o).success;
 }
 
+bool head_refused(int statusCode) {
+    return statusCode == 401 || statusCode == 403 || statusCode == 405 || statusCode == 501;
+}
+
 RemoteFileMeta query_remote_meta(const std::string& url, int connectTimeoutSec) {
     RemoteFileMeta meta;
     global_init();
@@ -549,6 +553,29 @@ RemoteFileMeta query_remote_meta(const std::string& url, int connectTimeoutSec) 
 
     auto resp = client.send(req);
     meta.statusCode = resp.statusCode;
+
+    // A server that refuses HEAD for what GET serves -- GitCode's release
+    // assets answer 401 (#417) -- is asked with GET, stopped after its first
+    // block: the headers are the same facts, and nothing is downloaded.
+    if (head_refused(resp.statusCode)) {
+        static std::atomic<unsigned> probes{0};
+        const auto scratch = std::filesystem::temp_directory_path()
+            / std::format("xlings-probe-{:08x}-{}", std::random_device{}(), probes.fetch_add(1));
+        auto probed = client.download_to_file(url, scratch, nullptr, [] { return true; });
+        std::error_code ec;
+        std::filesystem::remove(scratch, ec);
+        meta.statusCode = probed.statusCode;
+        if (probed.statusCode >= 200 && probed.statusCode < 300) {
+            meta.contentLength = probed.expectedBytes.value_or(-1);
+            meta.lastModified = probed.lastModified;
+            meta.etag = probed.etag;
+            meta.ok = true;
+            return meta;
+        }
+        meta.error = probed.statusCode > 0 ? std::format("HTTP {} (HEAD refused, GET too)", probed.statusCode)
+                                           : std::format("HTTP {} to HEAD; GET: {}", resp.statusCode, probed.error);
+        return meta;
+    }
 
     if (!resp.ok()) {
         meta.error = resp.statusText.empty()

@@ -215,7 +215,7 @@ int cmd_download(std::span<const std::string> targets, const fs::path& toArg, bo
     if (!plan || plan->has_errors()) {
         stream.emit(ErrorEvent{
             .code = ErrorCode::InvalidInput,
-            .message = "dependency resolution failed: " + (plan ? plan->errors.front() : plan.error()),
+            .message = "dependency resolution failed: " + (plan ? plan->first_error() : plan.error()),
             .recoverable = true,
         });
         return 1;

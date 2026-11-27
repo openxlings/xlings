@@ -109,10 +109,11 @@ struct XpkgRegistrationPlan {
     std::vector<XpkgFilesystemEffect> effects;
 };
 
-// The highest xpackage spec revision this build understands.
-//
-// Bump only together with the code that implements the new revision.
-inline constexpr int max_supported_xpkg_spec = 2;
+// The highest xpackage spec revision this build understands: the libxpkg it
+// is built with runs recipes up to this one (spec "3": the environment
+// without the compatibility layer, the host landing the download before
+// install(); design 2026-11-27 §9.6, §9.7).
+inline constexpr int max_supported_xpkg_spec = mcpplibs::xpkg::kHighestSpec;
 
 struct XpkgSpecSupport {
     bool supported { true };
@@ -312,6 +313,8 @@ private:
 bool dep_version_matches_(std::string_view nodeVersion,
                           std::string_view depVersion);
 
+// The context's pieces, now xlings.core.xim.hook_context's (#566); these
+// names forward to it.
 std::filesystem::path
 configure_xpkg_execution_artifact_paths_(
         mcpplibs::xpkg::ExecutionContext& context);
@@ -404,14 +407,14 @@ std::filesystem::path data_root_for_(const std::filesystem::path& targetRoot);
 std::filesystem::path runtime_dir_(const PlanNode& node,
                                    const std::filesystem::path& fallbackDataDir);
 
-std::filesystem::path xpkg_snapshot_file_(const std::filesystem::path& installDir);
-
 std::expected<void, std::string>
 save_xpkg_snapshot_(const std::filesystem::path& sourcePkgFile,
                     const std::filesystem::path& installDir);
 
-std::filesystem::path uninstall_xpkg_file_(const std::filesystem::path& indexPkgFile,
-                                           const std::filesystem::path& installDir);
+// The recipe a removal runs: the payload's kept one (brought forward from the
+// legacy layout), else the index's; one that cannot be read is an error.
+std::expected<std::filesystem::path, std::string>
+uninstall_xpkg_file_(const std::filesystem::path& indexPkgFile, const std::filesystem::path& installDir);
 
 bool is_archive_(const std::filesystem::path& path);
 
@@ -474,6 +477,28 @@ bool stage_extracted_payload_(const std::filesystem::path& extractRoot,
 // path.
 std::filesystem::path private_stage_dir_(const std::filesystem::path& runtimeDir,
                                          std::string_view planKey);
+
+// spec "3": the download placed in `installDir` before install() runs --
+// extracted with `strip` components dropped, or copied in as it is when it
+// is not an archive (design 2026-11-27 §9.7).
+std::expected<void, ExtractError> land_download_(const std::filesystem::path& download,
+                                                 const std::filesystem::path& installDir,
+                                                 const std::filesystem::path& runtimeDir,
+                                                 std::string_view planKey, int strip,
+                                                 ExtractOptions options = {});
+
+// What one hook run said (its notices) and where its output is; the output
+// itself is printed when no log file kept it (design 2026-11-27 §9.2, E5).
+void collect_hook_report_(std::string_view hook, const mcpplibs::xpkg::HookResult& result,
+                          const std::filesystem::path& hookLog,
+                          std::vector<HookNoticeLine>& notices, std::vector<std::string>& logs);
+
+// A finding about `node` (design 2026-11-27 §4): -v and <home>/logs/findings.ndjson.
+void record_finding_(const PlanNode& node, std::string_view rule, const std::string& text,
+                     const std::filesystem::path& payload);
+// The same, for a package named without a plan (a removal).
+void record_finding_(std::string_view package, std::string_view version, std::string_view rule,
+                     const std::string& text, const std::filesystem::path& payload);
 
 bool normalize_file_install_(const std::filesystem::path& installPath);
 
@@ -567,7 +592,11 @@ bool run_config_hook_(const PlanNode& node,
                       std::function<void(const InstallStatus&)> onStatus,
                       bool useAfterInstall,
                       std::string* failureMessage = nullptr,
-                      const home::layers::BorrowPlan* borrowed = nullptr);
+                      const home::layers::BorrowPlan* borrowed = nullptr,
+                      int* findings = nullptr,
+                      std::vector<HookNoticeLine>* notices = nullptr,
+                      std::vector<std::string>* hookLogs = nullptr,
+                      std::string* failureCode = nullptr);
 
 // A package that promised programs and delivered none of them.
 //

@@ -35,15 +35,27 @@ std::string node_key_(const PackageMatch& match) {
 }
 
 std::string pin_target_to_subos(const std::string& target,
-                                 const SubosVersionFn& subosVersionOf) {
+                                 const SubosVersionFn& subosVersionOf,
+                                 const ExactKeyFn& exactKey) {
     if (!subosVersionOf) return target;
     auto [namePart, versionHint] = parse_target_(target);
     if (namePart.empty()) return target;
     auto bareName = namePart.substr(namePart.rfind(':') + 1);
     auto active = subosVersionOf(bareName);
     if (active.empty()) return target;
-    if (!semver::satisfies_expr(active, versionHint)) return target;
-    return namePart + "@" + active;
+    // The active version as the workspace records it: `<index>:<version>` for
+    // a package of an index other than the default one. That index's version
+    // answers a request for its package, or one that names none; the bare
+    // version is what is compared and pinned.
+    const auto [activeNs, activeVersion] = xvm::parse_ns_version(active);
+    const auto colon = namePart.rfind(':');
+    const auto targetNs = colon == std::string::npos ? std::string{} : namePart.substr(0, colon);
+    if (!activeNs.empty() && !targetNs.empty() && activeNs != targetNs) return target;
+    if (!semver::satisfies_expr(activeVersion, versionHint)) return target;
+    if (activeVersion != xvm::strip_namespace(versionHint) && !versionHint.empty()
+        && exactKey && exactKey(target))
+        return target;
+    return namePart + "@" + activeVersion;
 }
 
 std::expected<void, std::string> require_install_tool(InstallPlan& plan,
@@ -319,7 +331,11 @@ resolve(PackageCatalog& catalog, std::span<const std::string> targets, const std
                     spec += "@" + chosen->second;
             }
         }
-        const auto pinned = pin_target_to_subos(spec, subosVersionOf);
+        const auto pinned = pin_target_to_subos(spec, subosVersionOf, [&](const std::string& t) {
+            const auto hint = parse_target_(t).second;
+            const auto exact = lookup(t);
+            return exact && xvm::strip_namespace(exact->version) == xvm::strip_namespace(hint);
+        });
         auto resolved = lookup(pinned);
         if (!resolved && pinned != target) {
             resolved = lookup(target);
@@ -436,13 +452,17 @@ resolve(PackageCatalog& catalog, std::span<const std::string> targets, const std
             const auto compatibility = check_target_compatibility(
                 *pkg, entry, platform, hostArch);
             if (!compatibility.supported) {
+                // Recorded, and the walk goes on with the siblings: the
+                // refusal names every node of the closure that has no
+                // artifact here, not the first one (design 2026-11-27 §5.5).
                 std::string chain;
                 for (const auto& item : path) {
                     if (!chain.empty()) chain += " -> ";
                     chain += item;
                 }
-                plan.errors.push_back(std::format("{}: {}", chain,
-                    compatibility_error(match.canonicalName, compatibility)));
+                plan.unsupported.push_back({ .requested = path.front(), .package = match.canonicalName,
+                                             .chain = std::move(chain), .target = compatibility.target,
+                                             .supported = compatibility.supportedTargets });
                 color[key] = Color_::Black;
                 path.pop_back();
                 return false;
@@ -464,6 +484,7 @@ resolve(PackageCatalog& catalog, std::span<const std::string> targets, const std
             if (exIt != pkg->xpm.exports.end()) {
                 node.exports.loader  = exIt->second.runtime.loader;
                 node.exports.libdirs = exIt->second.runtime.libdirs;
+                node.exports.libdirs_declared = exIt->second.runtime.libdirs_declared;
                 node.exports.abi     = exIt->second.runtime.abi;
             }
 

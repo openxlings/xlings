@@ -73,6 +73,10 @@ struct PackageMatch {
     // see is a silent pick, which is the shape this rule was added to remove,
     // not to introduce.
     std::vector<DemotedCandidate> demoted;
+    // The alias the version was asked by (`lts` of `node@lts`): a key of the
+    // platform table with a `ref` that is not a version (design 2026-11-27
+    // §7.3). Empty for a version, a range or no version at all.
+    std::string alias;
 };
 
 // #374: a single index repo that could not be loaded during rebuild

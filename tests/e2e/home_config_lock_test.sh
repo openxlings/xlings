@@ -176,7 +176,7 @@ echo "  ok: versions and workspace survived subos new / rm / config"
 # way scenarios 1-4 above are deliberately pinned to avoid.
 #
 # The notice is TTY-gated (platform::supports_rewrite_output()), so this
-# needs a real pty -- see notice_once_test.sh, which solved the identical
+# needs a real pty -- see test_notice_once.cpp, which solved the identical
 # problem for the same notice.
 echo "--- 6: list (unrelated to config/subos) skips its own lock-protected write and stays fast"
 

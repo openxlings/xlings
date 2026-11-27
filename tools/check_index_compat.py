@@ -26,6 +26,11 @@ import sys
 # it fail loudly here instead of on a user's machine. Each pattern is matched
 # against recipe text, so keep them specific enough not to fire on prose.
 CAPABILITIES = [
+    # libxpkg 0.0.68: the hook interface of spec 3 and the landing model (with
+    # it, an entry's strip); an index's recipe template declared in
+    # index-compat.json (below).
+    (re.compile(r'\bspec\s*=\s*["\']3["\']'),    "2026.11.28.1",
+     "xpkg spec 3"),
     (re.compile(r'(?m)^local\s+\w+\s*=\s*\(os\.arch\s+and\s+os\.arch\(\)\)'),
      "2026.10.8.1", "process architecture in catalog metadata"),
     (re.compile(r'kind\s*=\s*["\']files["\']'),  "0.4.70",
@@ -80,6 +85,9 @@ def main() -> int:
             return 1
 
     needed, why = "", []
+    if compat.is_file() and "template" in (doc.get("recipes") or {}):
+        needed = "2026.11.28.1"
+        why.append((Path("index-compat.json"), "a recipe template (recipes.template)", needed))
     for recipe in sorted((tree / "pkgs").rglob("*.lua")):
         text = recipe.read_text(encoding="utf-8", errors="replace")
         for pattern, version, label in CAPABILITIES:
@@ -94,7 +102,11 @@ def main() -> int:
         return 0
 
     print(f"index compat: newest construct needs xlings >= {needed}")
-    for path, label, version in sorted(why)[:10]:
+    # The constructs that set the floor first.
+    import functools
+    why.sort(key=lambda w: str(w[0]))
+    why.sort(key=functools.cmp_to_key(lambda a, b: compare_versions(b[2], a[2])))
+    for path, label, version in why[:10]:
         print(f"  {path}: {label} (>= {version})")
     if len(why) > 10:
         print(f"  … {len(why) - 10} more")
