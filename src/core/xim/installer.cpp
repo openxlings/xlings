@@ -1355,12 +1355,14 @@ save_xpkg_snapshot_(const std::filesystem::path& sourcePkgFile,
     return keep_recipe(installDir, *text, kept_recipe_rel_(sourcePkgFile), index_libs_of_(sourcePkgFile));
 }
 
-std::filesystem::path uninstall_xpkg_file_(const std::filesystem::path& indexPkgFile,
-                                           const std::filesystem::path& installDir) {
+std::expected<std::filesystem::path, std::string>
+uninstall_xpkg_file_(const std::filesystem::path& indexPkgFile, const std::filesystem::path& installDir) {
     namespace fs = std::filesystem;
-    const auto kept = kept_recipe(installDir);
-    if (!kept) return indexPkgFile;
-    if (kept->filename() != kLegacyKeptRecipe) return *kept;
+    const auto found = kept_recipe(installDir);
+    if (!found) return std::unexpected(found.error());
+    if (!*found) return indexPkgFile;
+    const auto kept = **found;
+    if (kept.filename() != kLegacyKeptRecipe) return kept;
     // A payload a client before §20.1 installed kept the recipe alone. Brought
     // forward once, with the libs of the package's index now (the best this
     // client can know of them); a payload it cannot write keeps the old file,
@@ -1368,17 +1370,19 @@ std::filesystem::path uninstall_xpkg_file_(const std::filesystem::path& indexPkg
     // succeeding silently.
     std::string text;
     try {
-        text = platform::read_file_to_string(kept->string());
-    } catch (...) {
-        return *kept;
+        text = platform::read_file_to_string(kept.string());
+    } catch (const std::exception& e) {
+        return std::unexpected(std::format("cannot read the kept recipe at {}: {}", kept.string(), e.what()));
     }
     const auto rel = indexPkgFile.empty() ? fs::path("x") / "recipe.lua" : kept_recipe_rel_(indexPkgFile);
     if (auto moved = keep_recipe(installDir, text, rel, indexPkgFile.empty() ? fs::path{} : index_libs_of_(indexPkgFile));
         !moved) {
         log::debug("the kept recipe of {} stays in the previous layout: {}", installDir.string(), moved.error());
-        return *kept;
+        return kept;
     }
-    return kept_recipe(installDir).value_or(*kept);
+    const auto now = kept_recipe(installDir);
+    if (!now) return std::unexpected(now.error());
+    return now->value_or(kept);
 }
 
 bool is_archive_(const std::filesystem::path& path) {
@@ -3250,6 +3254,7 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& requested
             ctx.self_exports.loader = (ctx.install_dir / node.exports.loader).string();
         }
         ctx.self_exports.abi = node.exports.abi;
+        ctx.self_exports.libdirs_declared = node.exports.libdirs_declared;
         for (auto& d : node.exports.libdirs) {
             ctx.self_exports.libdirs.push_back((ctx.install_dir / d).string());
         }
@@ -4809,12 +4814,20 @@ std::expected<Installer::UninstallOutcome, std::string> Installer::uninstall(con
     auto ctx = make_execution_context({});
     const std::filesystem::path artifactSubosDir = ctx.subos_sysrootdir;
 
-    bool useDefaultRemoval = recipeUnavailable;
-    std::string hookFailure;
+    // The recipe the removal runs: the one the payload kept (design §20.1).
+    // One that cannot be read fails the hook, named -- the live index's is
+    // not run in its place -- and the withdrawal below still runs.
+    std::filesystem::path executorPkgFile;
+    std::string keptFailure;
+    if (!recipeUnavailable) {
+        if (auto chosen = detail_::uninstall_xpkg_file_(pkgFile, installDir)) executorPkgFile = *chosen;
+        else keptFailure = std::move(chosen).error();
+    }
+    bool useDefaultRemoval = recipeUnavailable || !keptFailure.empty();
+    std::string hookFailure = keptFailure.empty() ? std::string{} : std::format("uninstall(): {}", keptFailure);
     std::vector<mcpplibs::xpkg::XvmOp> xvm_ops;
 
-    if (!recipeUnavailable) {
-        auto executorPkgFile = detail_::uninstall_xpkg_file_(pkgFile, installDir);
+    if (!recipeUnavailable && keptFailure.empty()) {
         if (executorPkgFile != pkgFile) {
             log::debug("using xpkg snapshot for uninstall: {}", executorPkgFile.string());
         }

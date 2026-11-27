@@ -411,8 +411,10 @@ std::expected<void, std::string>
 save_xpkg_snapshot_(const std::filesystem::path& sourcePkgFile,
                     const std::filesystem::path& installDir);
 
-std::filesystem::path uninstall_xpkg_file_(const std::filesystem::path& indexPkgFile,
-                                           const std::filesystem::path& installDir);
+// The recipe a removal runs: the payload's kept one (brought forward from the
+// legacy layout), else the index's; one that cannot be read is an error.
+std::expected<std::filesystem::path, std::string>
+uninstall_xpkg_file_(const std::filesystem::path& indexPkgFile, const std::filesystem::path& installDir);
 
 bool is_archive_(const std::filesystem::path& path);
 

@@ -164,3 +164,23 @@ XTEST(KeptRecipe, ALibThatIsNowhereFailsTheHookByName, .area = "xim",
     EXPECT_EQ(marker(p, "uninstall"), "<none>");
     hc::expect_gone(home, "probe", "1.0.0", "nowhere");
 }
+
+XTEST(KeptRecipe, AKeptRecipeThatCannotBeReadFailsTheHookNotSwapped, .area = "xim",
+      .covers = {"XPKG-SNAPSHOT-LIBS"}, .requires_ = {"xlings-bin"}) {
+    auto p = make_home("kept-recipe-unreadable");
+    auto& home = p.home;
+    ASSERT_EQ(home.xlings({"install", "probe@1.0.0", "-y"}).exit_code, 0);
+    const auto payload = payload_of(home);
+    ASSERT_FALSE(payload.empty());
+
+    // The kept index cannot be read (its pkgs/ is no directory): the removal
+    // does not run the index's recipe in its place; the hook fails, naming
+    // it, and the package is still withdrawn (as for any failing uninstall()).
+    fs::remove_all(payload / ".xpkg" / "pkgs");
+    tk::write_file(payload / ".xpkg" / "pkgs", "not a directory\n");
+    const auto remove = home.xlings({"remove", "probe", "-y"});
+    EXPECT_EQ(remove.exit_code, 1) << remove.transcript();
+    EXPECT_TRUE(hc::has(remove.transcript(), "cannot read the kept recipe")) << remove.transcript();
+    EXPECT_EQ(marker(p, "uninstall"), "<none>");
+    hc::expect_gone(home, "probe", "1.0.0", "unreadable");
+}

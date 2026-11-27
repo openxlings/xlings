@@ -179,6 +179,7 @@ Frozen: no name is added or changed. What a recipe of spec "3" writes instead:
 | `os.setenv` | system.exec's env option |
 | `os.addenv` | system.exec's env option |
 | `os.host` | pkginfo.platform |
+| `os.arch` | pkginfo.arch |
 | `os.sleep` | nothing: it is not needed |
 | `os.remove` | fs.remove |
 | `os.rename` | fs.move(src, final_path) |
@@ -191,6 +192,8 @@ Frozen: no name is added or changed. What a recipe of spec "3" writes instead:
 | `format` | string.format |
 | `raise` | error |
 | `is_host` | pkginfo.platform |
+| `is_plat` | pkginfo.platform |
+| `is_arch` | pkginfo.arch |
 | `try` | pcall |
 | `cprint` | log.info |
 | `fs.is_directory` | fs.is_dir |

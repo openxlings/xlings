@@ -1840,7 +1840,9 @@ selected_payloadless_config_has_uninstall_(
         / package_store_name(match.namespaceName, match.name)
         / match.version;
     // The recipe the payload kept (either layout), as the removal runs it.
-    const auto recipe = kept_recipe(installDir).value_or(match.pkgFile);
+    const auto kept = kept_recipe(installDir);
+    if (!kept) return std::unexpected(kept.error());
+    const auto recipe = kept->value_or(match.pkgFile);
     std::error_code ec;
     if (!std::filesystem::is_regular_file(recipe, ec)) {
         return std::unexpected(std::format(

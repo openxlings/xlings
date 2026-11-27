@@ -484,21 +484,28 @@ export bool write_profile(const std::filesystem::path& home_dir, const std::file
     namespace fs = std::filesystem;
     std::error_code ec;
     try {
+        // Written whole or not at all (a shell or another run reads it at any
+        // time): staged and renamed over.
         if (!fs::exists(path, ec)) {
             fs::create_directories(path.parent_path(), ec);
-            platform::write_string_to_file(path.string(), std::string(content));
+            platform::write_file_atomic(path.string(), std::string(content));
             return true;
         }
         const auto existing = platform::read_file_to_string(path.string());
         const auto version = profile_version(existing);
         if (version == kVersion) return true;
+        // The marker is the file's own text: only its name characters name
+        // the kept copy, which stays in profile-upgrades/.
+        std::string tag;
+        for (const char c : version)
+            if (std::isalnum(static_cast<unsigned char>(c)) || c == '.' || c == '-' || c == '_') tag += c;
         const auto kept = home_dir / "logs" / "profile-upgrades" /
-                          std::format("{}.v{}", path.filename().string(), version.empty() ? "1" : version);
+                          std::format("{}.v{}", path.filename().string(), tag.empty() ? "1" : tag);
         if (existing != content) {
             fs::create_directories(kept.parent_path(), ec);
-            platform::write_string_to_file(kept.string(), existing);
+            platform::write_file_atomic(kept.string(), existing);
         }
-        platform::write_string_to_file(path.string(), std::string(content));
+        platform::write_file_atomic(path.string(), std::string(content));
         log::debug("upgraded {} to profile version {}; the previous one is kept at {}", path.string(), kVersion,
                    kept.string());
         return true;

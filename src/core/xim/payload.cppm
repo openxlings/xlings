@@ -398,8 +398,11 @@ int recover_parked_payloads(const std::filesystem::path& staleRoot);
 inline constexpr std::string_view kKeptIndexDir = ".xpkg";
 inline constexpr std::string_view kLegacyKeptRecipe = ".xpkg.lua";
 
-// The payload's kept recipe in either layout (the index first), or nothing.
-std::optional<std::filesystem::path> kept_recipe(const std::filesystem::path& payload);
+// The payload's kept recipe in either layout (the index first), or nothing
+// when it kept none. One that cannot be read, or an index of more than one
+// recipe, is an error naming it: "could not read" is not "kept none".
+std::expected<std::optional<std::filesystem::path>, std::string>
+kept_recipe(const std::filesystem::path& payload);
 
 // The index libs `text` imports (`xim.pkgindex.<lib>`), with the ones those
 // import, as found under `indexLibs`; a name not there is left out.
