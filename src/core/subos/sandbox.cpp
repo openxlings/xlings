@@ -508,7 +508,8 @@ std::string read_first_line_(const fs::path& file) {
 // nothing chosen, with a proxy for the network -- is the proxy's exit: asked
 // THROUGH the proxy (curl, from the tool table), cached in the persona per
 // proxy for a day. Anything that fails is UTC, never the host's zone.
-std::string resolve_zone_(const HomeView& home, const subos::Ports& ports, std::string_view name,
+std::string resolve_zone_(const HomeView& home, const subos::Ports& ports, EventStream& stream,
+                          std::string_view name,
                           const policy::Policy& pol, subos::persona::Persona& persona) {
     const bool via_proxy = pol.tz == "proxy" || (pol.tz.empty() && pol.net == policy::Net::Proxy);
     if (!via_proxy) {
@@ -527,10 +528,35 @@ std::string resolve_zone_(const HomeView& home, const subos::Ports& ports, std::
         return "UTC";
     }
     const auto url = pol.geo_lookup.empty() ? std::string("https://ipinfo.io/timezone") : pol.geo_lookup;
+    // The bundle the index's ca-certificates package carries: the question is
+    // asked from here, not from inside the system whose /etc/ssl that package
+    // set, and the machine here may have no /etc/ssl (a carrier's is minimal;
+    // not every distribution names a bundle the same way). A home that does
+    // not hold it yet installs it once, as a step of this entry -- a T1
+    // package, through the same installer `xlings install` uses. Failing to
+    // get it is the design's answer too: UTC, never the host's zone.
+    auto bundle = subos::tools::payload_file(home, "ca-certificates", "cacert.pem");
+    if (!bundle) {
+        std::vector<std::string> targets{"xim:ca-certificates"};
+        const int rc = xim::cmd_install_step(targets, /*subos=*/{}, stream, /*plumbing=*/true);
+        if (rc != 0) {
+            log::warn("time zone: UTC -- the CA bundle could not be installed (exit {}); "
+                      "manually: xlings install ca-certificates", rc);
+            return "UTC";
+        }
+        bundle = subos::tools::payload_file(home, "ca-certificates", "cacert.pem");
+    }
+    if (!bundle) {
+        log::warn("time zone: UTC -- the proxy's exit cannot be asked "
+                  "(no CA bundle; manually: xlings install ca-certificates)");
+        return "UTC";
+    }
+    std::vector<std::string> argv{curl->bin.string(), "-fsS", "--max-time", "8",
+                                  "--cacert", bundle->string(), "--proxy", pol.proxy, url};
     std::string out;
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
     const int rc = platform::stream::run(
-        {curl->bin.string(), "-fsS", "--max-time", "8", "--proxy", pol.proxy, url},
+        argv,
         [&](std::string_view channel, std::string_view bytes) { if (channel == "stdout") out.append(bytes); },
         [&] { return std::chrono::steady_clock::now() > deadline; });
     while (!out.empty() && std::isspace(static_cast<unsigned char>(out.back()))) out.pop_back();
@@ -789,7 +815,7 @@ int enter(const std::string& name, EventStream& stream, const EnterOptions& opts
             return kFail;
         }
         request.hostname = persona->hostname;
-        pol.tz = resolve_zone_(home, ports, name, pol, *persona);
+        pol.tz = resolve_zone_(home, ports, stream, name, pol, *persona);
         if (rootfs) {
             const auto machine_id = request.root / "etc" / "machine-id";
             std::error_code ec;
