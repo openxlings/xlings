@@ -213,12 +213,12 @@ TEST(InterfaceProtocol, VersionFlagPrintsProtocolVersion) {
     // private domain tried before a system is moved into it (domain_check).
     // 1.19: `self clean` keeps what the roots under `data/roots` hold (store_roots).
     // 1.20: refused nodes as outcomes, the packages' notices, a newer xlings
-    // as an event (design 2026-11-27).
+    // as an event, a payload of another machine refused (design 2026-11-27).
     for (const char* feature : {"payload_currency", "binding_state", "reserved_namespaces", "subos_plan",
                                 "network_diagnostics", "download_socket_budgets", "read_only_queries",
                                 "package_extensions", "domain_relayed", "installed_only", "user_views", "needs_root", "subos_env", "install_into_subos",
                                 "package_versions", "domain_check", "store_roots",
-                                "step_outcomes", "hook_notices", "update_available"})
+                                "step_outcomes", "hook_notices", "update_available", "machine_rule"})
         EXPECT_NE(std::ranges::find(features, nlohmann::json(feature)), features.end()) << feature;
     std::filesystem::remove_all(home);
 }

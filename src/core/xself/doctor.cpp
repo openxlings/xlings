@@ -1024,6 +1024,8 @@ Scan detect_(const DoctorState& st, const CoordinateProbe& probe,
             entry_binary::version_of(entry_binary::path_of(p.homeDir)))) add(std::move(f));
 
     for (auto&& f : detect_versions_sources_()) add(std::move(f));
+    // Rule M over what is installed: header reads of the registered files.
+    for (auto&& f : detect_foreign_machine_(st)) add(std::move(f));
 
     // The PATH an aliased command would inherit. Read once, and read from
     // THIS process: doctor is normally started from the user's shell, so this
@@ -4927,6 +4929,7 @@ Counts count_(const Scan& scan) {
                 // A Notice. The binaries work; this changes no exit code.
                 break;
             case FindingKind::LoaderLibcSplit:
+            case FindingKind::PayloadForeignMachine:
                 // Counted as broken, so it reaches the exit code. A finding
                 // that prints and then exits 0 is how a check gets ignored by
                 // every script that wraps it.
@@ -5389,6 +5392,13 @@ void render_(const Scan& scan, const RepairReport& repair, bool fix,
                 // has to reproduce the whole investigation this check exists
                 // to remove.
                 add(glyph::mark(glyph::failed, "loader/libc split"), f.detail);
+                if (!f.remedy.empty())
+                    add("  " + glyph::mark(glyph::remedy, "run"), f.remedy);
+                if (!f.remedyNote.empty())
+                    add("  " + glyph::mark(glyph::note, "note"), f.remedyNote);
+                break;
+            case FindingKind::PayloadForeignMachine:
+                add(glyph::mark(glyph::failed, "foreign machine"), f.detail);
                 if (!f.remedy.empty())
                     add("  " + glyph::mark(glyph::remedy, "run"), f.remedy);
                 if (!f.remedyNote.empty())

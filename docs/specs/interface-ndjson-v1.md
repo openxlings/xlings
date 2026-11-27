@@ -31,7 +31,7 @@ and AI agents talk to xlings over standard IO. The protocol is **1.19**, over ND
 | 1.17 | 2026.10.22.1 | added: `install_packages` takes `subos`: a Luban system's packages installed where it lives, with events and cancellation (feature `install_into_subos`) |
 | 1.18 | 2026.10.23.2 | added: `package_info`'s `package` carries `versions`, the platform's concrete versions newest first (feature `package_versions`, §7.6); `subos __domain-check <home>` (plumbing) tries whether this host builds a private domain at `<home>`, as making a system there starts: exit 0 or an error saying why (feature `domain_check`) |
 | 1.19 | 2026.11.23.1 | added: `self clean` keeps every payload a root under `<home>/data/roots/<owner>/` holds, and removes the dangling ones ([store roots](store-roots.md)); a program that registers roots requires this feature before it asks for a collection (feature `store_roots`) |
-| 1.20 | (next) | added: a node a gate refuses (a recipe of a newer `spec`, a target with no artifact) is an `error` with `E_UNSUPPORTED`, `refused` in `install_targets` and `install_summary`, and fails the command (feature `step_outcomes`); `install_summary.findings` and the `install_notices` data event, what the packages' hooks said (feature `hook_notices`); `update_available` after `update_packages`' sync (feature `update_available`) |
+| 1.20 | (next) | added: a node a gate refuses (a recipe of a newer `spec`, a target with no artifact) is an `error` with `E_UNSUPPORTED`, `refused` in `install_targets` and `install_summary`, and fails the command (feature `step_outcomes`); `install_summary.findings` and the `install_notices` data event, what the packages' hooks said (feature `hook_notices`); `update_available` after `update_packages`' sync (feature `update_available`); `E_FOREIGN_MACHINE`, a payload of another machine (rule M; feature `machine_rule`) |
 
 A minor version only adds: a 1.0 client reads 1.1 output unchanged. 1.11 is the
 one exception in meaning, not in shape: 1.10's `complete` also required the
@@ -68,7 +68,7 @@ prints one line and exits -- the handshake a client checks before it uses this
 xlings (1.10+):
 
 ```json
-{"protocol_version":"1.20","version":"2026.11.23.1","capabilities":["search_packages","install_packages","..."],"home_layouts":[1,2],"features":["index_dir","index_store","upstreams","payload_status","sync_index","install_targets_complete","payload_currency","binding_state","reserved_namespaces","subos_plan","network_diagnostics","download_socket_budgets","read_only_queries","package_extensions","domain_relayed","installed_only","user_views","needs_root","subos_env","install_into_subos","package_versions","domain_check","store_roots","step_outcomes","hook_notices","update_available"]}
+{"protocol_version":"1.20","version":"2026.11.23.1","capabilities":["search_packages","install_packages","..."],"home_layouts":[1,2],"features":["index_dir","index_store","upstreams","payload_status","sync_index","install_targets_complete","payload_currency","binding_state","reserved_namespaces","subos_plan","network_diagnostics","download_socket_budgets","read_only_queries","package_extensions","domain_relayed","installed_only","user_views","needs_root","subos_env","install_into_subos","package_versions","domain_check","store_roots","step_outcomes","hook_notices","update_available","machine_rule"]}
 ```
 
 | Field | Meaning |
@@ -495,6 +495,7 @@ running.
 | `E_CANCELLED` | cancelled by the user |
 | `E_NEEDS_ROOT` | needs the administrator and nobody can be asked (1.15); the hint is the exact `sudo` command |
 | `E_UNSUPPORTED` | refused, nothing changed: a recipe of a `spec` newer than this client, a target its entry has no artifact for, a runtime that cannot be activated (1.20); the hint says what lets it through |
+| `E_FOREIGN_MACHINE` | a package's payload gives this machine files of another machine -- a program or library it registers, a library in a runtime directory it exports, its loader (rule M, 1.20); nothing is registered and the payload is not kept; the message names the files and their machines |
 | `E_INTERNAL` | an internal error |
 
 ### 6.6 `result`

@@ -1180,6 +1180,14 @@ status = "required"
 text = "architectures have one table, libxpkg's: every architecture the client is built for is in it, and a file's e_machine and ELF class are read in-process and named by it"
 status = "required"
 
+[ARCH-MACHINE-RULE]
+text = "a payload whose host-facing files -- the programs and libraries it registers, the libraries directly in the runtime directories it exports (lib64 and lib when it exports none), its loader -- are ELF of another machine fails its install with E_FOREIGN_MACHINE before anything is registered, and is not kept; another machine's files elsewhere in the payload do not matter"
+status = "required"
+
+[ARCH-DOCTOR]
+text = "self doctor reports an installed program or library that is ELF of another machine (installed before rule M) with its file, its machine and the removal command, counts it in the exit code, and does not repair it"
+status = "required"
+
 [HOOK-BOUNDARY-RESULT]
 text = "a hook run in the Lua worker returns what one run in the client does: its notices, its failed compatibility calls and the patch result; an entry's strip and floor survive the boundary"
 status = "required"

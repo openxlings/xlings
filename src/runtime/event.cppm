@@ -58,6 +58,7 @@ export enum class ErrorCode {
     Internal,       // E_INTERNAL       — uncaught exception or invariant bug
     NeedsRoot,      // E_NEEDS_ROOT     — needs the administrator, and nobody can be asked (1.15)
     Unsupported,    // E_UNSUPPORTED    — refused, nothing changed: a recipe of a newer spec, a target with no artifact (1.20)
+    ForeignMachine, // E_FOREIGN_MACHINE — a payload whose host-facing files are another machine's (rule M, 1.20)
 };
 
 export constexpr std::string_view to_wire_string(ErrorCode c) {
@@ -71,6 +72,7 @@ export constexpr std::string_view to_wire_string(ErrorCode c) {
         case ErrorCode::Internal:     return "E_INTERNAL";
         case ErrorCode::NeedsRoot:    return "E_NEEDS_ROOT";
         case ErrorCode::Unsupported:  return "E_UNSUPPORTED";
+        case ErrorCode::ForeignMachine: return "E_FOREIGN_MACHINE";
     }
     return "E_INTERNAL";
 }
@@ -92,6 +94,7 @@ export constexpr ErrorCode error_code_from_wire(std::string_view s) {
     if (s == "E_CANCELLED")     return ErrorCode::Cancelled;
     if (s == "E_NEEDS_ROOT")    return ErrorCode::NeedsRoot;
     if (s == "E_UNSUPPORTED")   return ErrorCode::Unsupported;
+    if (s == "E_FOREIGN_MACHINE") return ErrorCode::ForeignMachine;
     return ErrorCode::Internal;
 }
 

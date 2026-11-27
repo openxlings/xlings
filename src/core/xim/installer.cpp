@@ -10,6 +10,7 @@ import mcpplibs.xpkg.compat;
 import mcpplibs.xpkg.executor;
 import xlings.core.xim.libxpkg.types.type;
 import xlings.core.xim.compatibility;
+import xlings.core.xim.machine_rule;
 import xlings.core.xim.payload;
 import xlings.core.xim.retention;
 import xlings.core.xim.install_state;
@@ -2533,10 +2534,39 @@ std::expected<void, std::string> process_xvm_operations_(const PlanNode& node, c
     return {};
 }
 
+// Rule M (design 2026-11-27 §5.4), before the registration is published:
+// what the host would run or load from this payload is of its machine. The
+// failure is the node's, E_FOREIGN_MACHINE; nothing is registered.
+std::optional<std::string> foreign_machine_(const PlanNode& node, const std::filesystem::path& dataDir,
+                                            mcpplibs::xpkg::PackageExecutor& executor, bool useAfterInstall) {
+    if constexpr (!platform::is_linux) return std::nullopt;
+    const auto payload = node_payload_path(node, dataDir);
+    auto registration = normalize_xpkg_registration_plan(
+        node, executor.xvm_operations(),
+        effective_version_namespace_(Config::versions(), node, dataDir), dataDir, useAfterInstall);
+    // A registration that cannot be normalized is refused by the publish
+    // that follows, with its own reason.
+    if (!registration) return std::nullopt;
+    const auto foreign = machine_rule::foreign(machine_rule::of_registration(
+        payload, registration->batch, node.exports.loader, node.exports.libdirs,
+        Config::paths().homeDir.string()));
+    if (foreign.empty()) return std::nullopt;
+    return machine_rule::describe(std::format("{}@{}", node.name, node.version), foreign);
+}
+
 bool run_config_hook_(const PlanNode& node, const std::filesystem::path& dataDir, mcpplibs::xpkg::PackageExecutor& executor, mcpplibs::xpkg::ExecutionContext& ctx, std::function<void(const InstallStatus&)> onStatus, bool useAfterInstall, std::string* failureMessage,
                       const home::layers::BorrowPlan* borrowed, int* findings,
-                      std::vector<HookNoticeLine>* notices, std::vector<std::string>* hookLogs) {
+                      std::vector<HookNoticeLine>* notices, std::vector<std::string>* hookLogs,
+                      std::string* failureCode) {
+    const auto refuse_foreign = [&]() {
+        auto foreign = foreign_machine_(node, dataDir, executor, useAfterInstall);
+        if (!foreign) return false;
+        if (failureMessage) *failureMessage = std::move(*foreign);
+        if (failureCode) *failureCode = "E_FOREIGN_MACHINE";
+        return true;
+    };
     if (!executor.has_hook(mcpplibs::xpkg::HookType::Config)) {
+        if (refuse_foreign()) return false;
         auto processed = process_xvm_operations_(node, dataDir, executor, useAfterInstall, borrowed);
         if (!processed && failureMessage) *failureMessage = processed.error();
         return processed.has_value();
@@ -2569,6 +2599,7 @@ bool run_config_hook_(const PlanNode& node, const std::filesystem::path& dataDir
         }
         return false;
     }
+    if (refuse_foreign()) return false;
     if (auto processed = process_xvm_operations_(node, dataDir, executor, useAfterInstall, borrowed); !processed) {
         if (failureMessage) *failureMessage = processed.error();
         return false;
@@ -4192,11 +4223,12 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& requested
             }
         } else {
             std::string configFailure;
+            std::string configCode;
             if (!detail_::run_config_hook_(
                     node, dataDir, executor, ctx, onStatus,
                     useAfterInstall, &configFailure,
                     borrowedPayload ? &borrowedPlans.at(planKey) : nullptr,
-                    &earlyFindings[planKey], &nodeNotices, &nodeHookLogs)) {
+                    &earlyFindings[planKey], &nodeNotices, &nodeHookLogs, &configCode)) {
                 // Same reason as the install hook above, and this one
                 // matters more: config is where registration happens, so
                 // its failure is exactly "payload on disk, ledger empty" --
@@ -4204,12 +4236,21 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& requested
                 // package that legitimately registers nothing.
                 if (configFailure.starts_with("config hook failed"))
                     configFailure = with_runtime_note(std::move(configFailure));
-                if (!readOnlyPayload) {
+                std::string hint;
+                if (configCode == "E_FOREIGN_MACHINE") {
+                    // Rule M: another machine's payload is not kept. One this
+                    // run set aside comes back (`replacement`); one it found
+                    // installed is left to `self doctor`, which reports it.
+                    hint = machine_rule::hint();
+                    if (!payloadInstalled && !readOnlyPayload && !replacement)
+                        (void)remove_payload_dir(ctx.install_dir, node.version);
+                } else if (!readOnlyPayload) {
                     write_payload_failure_marker(ctx.install_dir, node.version, configFailure);
                 }
                 if (onStatus) {
                     onStatus({ .name = node.name, .phase = InstallPhase::Failed, .progress = 0.0f,
-                               .message = std::move(configFailure), .notices = nodeNotices,
+                               .message = std::move(configFailure), .errorCode = configCode,
+                               .hint = std::move(hint), .notices = nodeNotices,
                                .hookLogs = nodeHookLogs });
                 }
                 continue;

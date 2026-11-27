@@ -151,7 +151,8 @@ int run(const mcpplibs::cmdline::ParsedArgs& args,
                                                    "subos_plan", "network_diagnostics", "download_socket_budgets", "read_only_queries",
                                                    "package_extensions", "domain_relayed", "installed_only", "user_views", "needs_root", "subos_env", "install_into_subos",
                                                    "package_versions", "domain_check", "store_roots",
-                                                   "step_outcomes", "hook_notices", "update_available"}}}).dump()
+                                                   "step_outcomes", "hook_notices", "update_available",
+                                                   "machine_rule"}}}).dump()
                   << "\n" << std::flush;
         return 0;
     }

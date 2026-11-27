@@ -592,7 +592,8 @@ bool run_config_hook_(const PlanNode& node,
                       const home::layers::BorrowPlan* borrowed = nullptr,
                       int* findings = nullptr,
                       std::vector<HookNoticeLine>* notices = nullptr,
-                      std::vector<std::string>* hookLogs = nullptr);
+                      std::vector<std::string>* hookLogs = nullptr,
+                      std::string* failureCode = nullptr);
 
 // A package that promised programs and delivered none of them.
 //
