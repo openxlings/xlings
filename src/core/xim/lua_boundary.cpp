@@ -47,9 +47,11 @@ xpkg::HostPorts host_ports() {
     }};
 }
 // What a recipe is read for: the install's platform and architecture, which
-// its top level is told as the loader tells it (libxpkg's ReadTarget).
+// its top level is told as the loader tells it, and the index whose libs a
+// recipe in no index of its own imports -- the one its hooks get
+// (libxpkg's ReadTarget).
 xpkg::ReadTarget read_target(const xpkg::ExecutionContext& context) {
-    return {context.platform, context.arch};
+    return {context.platform, context.arch, context.pkgindex_dir};
 }
 std::expected<xpkg::PackageExecutor, std::string> in_process(const fs::path& package,
                                                              const xpkg::ExecutionContext& context) {
