@@ -1662,3 +1662,7 @@ draft PR 只用来取得结果（§11）；结论写回本文，正式的 PR 仍
 | 2026-11-27 | 探路 | `jvm-build-tools.yml` 自己装客户端，不经 `setup-xlings` 的 `xlings_sha`，用已发布的客户端拒绝了 `spec = "3"` | P4：每个安装 recipe 的 workflow 都接被测客户端 |
 | 2026-11-27 | 探路 | kotlin 的 verify 测试要已安装的载荷，而它之前的那一步装完就移除了 | 与本方案无关的既有问题；P3 里一并修 |
 | 2026-11-27 | X4 | E3 的拒绝来自顺序：激活按旧的声明判断。改为先装载荷、写声明、再按新声明激活，激活被拒或失败时恢复声明、命令失败 | E3 的情形现在成功，声明与视图一致；`RESULT-OUTCOME` 的用例 |
+| 2026-11-27 | CI（2fc66067） | libxpkg 的 `create_executor` 为了读 `spec` 先调用 `load_package`：recipe 与脚本的顶层跑两遍，第一遍在加载器的环境里（顶层的 `io.open`、`os.execute` 发生两次） | `spec` 从文本读（`declared_spec`，与检查器共用 `recipe_code`），不运行 recipe；加载器在表里的 `spec` 与文本声明的不一致时报错，宿主与执行器不会分歧（libxpkg `e28a2a7`） |
+| 2026-11-27 | CI（2fc66067） | X2 的单一构造函数把脚本当作 recipe 求索引根：`/tmp/x/script.lua` 往上三层是 `/`，worker 把它只读挂在自己的挂载之后，盖住了私有的 `/dev`、`/etc/passwd`，宿主的文件可见 | 索引根只认 `<index>/pkgs/<letter>/<file>`（与 libxpkg 的 `index_of` 同一规则），否则主索引的 libs，否则没有；脚本的范围不带 recipe（`HOOK-INDEX-ROOT`） |
+| 2026-11-27 | CI（2fc66067） | 验收用例"宿主机器那样的根"里 glibc 安装失败：索引的 glibc 修订 5（11-25）用 `cp` 重定位；载体的用户态第 1 步 `busybox --install -s` 链接到运行它的进程的根，探测不在机器里运行时（测试的 wsl.exe 替身）一个都没链接 | 第 1 步按 `busybox --list-full` 链接到传入的 `root` 下，与第 2 步一致；真实的来宾得到同样的链接 |
+| 2026-11-27 | CI（2fc66067） | `install_skipped`（1.8 起）在终端报"no renderer ... please report it"；1.20 新加的 `install_notices`、`update_available` 同样会报 | 三者都是终端已经自己打印的行，列为线上重复 |
