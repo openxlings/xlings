@@ -400,6 +400,9 @@ its own:
   `string`, `table`, `math`, `utf8` whole; `os.time`, `os.date`, `os.clock`,
   `os.getenv`. No `io`, no `os.execute`, no `load`, no `require`: what
   changes the machine goes through a module.
+- `string` has three helpers every spec has, pure and on plain text:
+  `s:split(sep [, plain])` (a list), `s:trim()` (without the white space at
+  either end), `s:replace(old, new)` (every `old`, not a pattern).
 - `import("xim.libxpkg.<module>")` gives the module as a table of exactly its
   names in the interface (the generated reference lists them, with kind,
   signature, what holds after, the version that added it and what differs by
