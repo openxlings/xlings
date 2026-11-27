@@ -90,8 +90,12 @@ legacy=$(run install arm-legacy-v1@1.0.0 -y 2>&1)
   fail "a spec-V1 recipe was refused on its package-level archs union -- that \
 takes git, make, gcc and ~60 other index recipes off aarch64"
 }
-grep -q 'linux-aarch64' <<<"$legacy" \
-  || fail "the arch mismatch was not mentioned at all: $legacy"
+# A finding (design 2026-11-27 §5.3): one count line by default, the record
+# names the target.
+grep -q 'finding(s) about the installed payloads' <<<"$legacy" \
+  || fail "the arch mismatch was not counted as a finding: $legacy"
+grep '"rule":"arch-unstated"' "$home/logs/findings.ndjson" 2>/dev/null | grep -q 'linux-aarch64' \
+  || fail "the arch-unstated finding does not name linux-aarch64: $(cat "$home/logs/findings.ndjson" 2>/dev/null)"
 if grep -q 'E_UNSUPPORTED_TARGET' <<<"$legacy"; then
   fail "a package-level union must advise, never refuse: $legacy"
 fi
