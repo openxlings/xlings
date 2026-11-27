@@ -197,7 +197,7 @@ ftxui      = "6.1.9"
 libarchive = "3.8.7"
 
 [dependencies.mcpplibs]
-xpkg = { git = "https://github.com/speak-agent/libxpkg.git", rev = "e74719e957de814b655edce6cd8f5138b16c33e0" }
+xpkg = { git = "https://github.com/speak-agent/libxpkg.git", rev = "1f4252e18d95929131c802a95fc1ef722a89d5e6" }
 cmdline = "0.0.2"
 capi.lua = "0.0.3"
 
