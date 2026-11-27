@@ -4,7 +4,8 @@
   写入对五项风险的评审结论，§18；第四版：两处遗留问题实测后出方案，§2.8、§8.3、§9.6；
   第五版：§9.6 重写为 hook 接口的重新设计，§2.9 是它的证据，落地顺序随之改变，§12；
   第六版：落地模型、命令的列表形式、索引的模板声明、xpkg 规范化，§9.7 到 §9.9，全方案自审，§17；
-  第七版：写入对第六版五项的评审结论，§15 第 19 到 22 项；第八版：实施的拆分、依赖与联调，§19）。
+  第七版：写入对第六版五项的评审结论，§15 第 19 到 22 项；第八版：实施的拆分、依赖与联调，§19；
+  第九版：实施中报来的 #743（卸载时索引 lib 是沉默的桩）与 #744（包的 shell 补全），§20）。
   状态：**各项决定已评审（§15），实施中（§19）**。
 - 范围：xlings（解析、安装、doctor、规范）、libxpkg（架构身份表、hook 结果、elfpatch、hook 的接口与环境）、
   xim-pkgindex（架构声明迁移、mesa 的 aarch64 闭包、索引检查、规范文字、recipe 迁到 `spec = "3"`）、
@@ -97,6 +98,8 @@
 | #417 | CN 镜像上新鲜度探测恒失败 | §10 | xlings | 同上；#741 的 UP-G1 随之关闭 |
 | #741 UP-L1 | 缺补丁工具时跳过却报成功 | §9.3 | libxpkg | libxpkg 0.0.68 |
 | xim-pkgindex#1442 | mesa 的 aarch64 | §5.8 | 索引 | 资产发布且 recipe 合并 |
+| #743 | 从载荷快照运行的 `uninstall()` 里，`import("xim.pkgindex.*")` 是沉默的桩 | §20.1 | libxpkg、xlings | xlings 发布 |
+| #744 | 包没有登记 shell 补全的途径（profile 升级抹掉包写的块、脚本不跟版本） | §20.2 | libxpkg、xlings、索引 | xlings 发布 |
 | PR #738 | 作者标签改为两个值 | §10.2 | xlings | 已关闭，改动作为 X0 的一个 commit 带入 |
 | PR #710 | macOS 的 CI 改用 macos-15 | §10.2 | xlings | 已关闭；`main` 已是 macos-15，只带入"已安装的 xlings 声明 minos 14.0"这一步 |
 
@@ -1681,3 +1684,110 @@ draft PR 只用来取得结果（§11）；结论写回本文，正式的 PR 仍
 | 2026-11-27 | X15（CI `5f33e69d`） | 命令规格的对等检查把 `__payload-check` 的 `--arch` 读成未写入规格的选项 | 内部命令的选项列入检查的豁免，注明理由 |
 | 2026-11-27 | P10 | `libs/` 改用模块的名字后，约 240 个静态测试失败：它们的 Lua 脚手架模拟的是 spec 1 的名字 | `tests/lua/module_names.lua` 经 `LUA_INIT` 为每个测试启动的 Lua 加载：脚手架没模拟的模块名在调用时由它模拟的 spec 1 名字回答；自带模块表的几个脚手架补上 lib 新导入的模块（索引 `5ba4df2c`） |
 | 2026-11-27 | P7 | musl flavor 只发布 `gcc`、`g++`、`c++`、`cpp`、`cc`；`gcc.lua` 的组里还有 `gcov`、`gcov-dump`、`gcov-tool`，同样随各自的 gcc（覆盖率数据的格式） | flavor 发布载荷里有的全部六个工具名，不带链接参数；版本条目的 `revision` 在架构车道合并后加 |
+| 2026-11-27 | P5（mesa 车道合入） | 车道改了 libxshmfence 的条目，闭包检查（D1）因此第一次读它：它的库需要 `libc.so.6`，recipe 什么也没声明 | 声明 `xim:glibc`，与同组的 libXau、libXdmcp、libpciaccess 一样；版本条目不变（revision 检查通过） |
+| 2026-11-27 | P5（mesa 车道合入） | aarch64 资产复用工具把 recipe 的 revision 当作资产的：glibc 2.44.3 的 revision 5 只改 hook、装的是 r4 的资产，工具在这个 job 一跑就拒绝；车道把 glibc 的构建脚本移到 `tools/res/graphics` 后，"构建脚本与准入时相同"按路径比较，比的是一边不存在的路径 | 资产的 revision 从它的 URL 读；构建脚本与它应用的 glibc 补丁按内容比较，各取那个 commit 存放它们的位置（准入时的与 HEAD 的相同） |
+| 2026-11-27 | P10（mesa 车道的 CI，PR 客户端） | aarch64 上 `luban new core` 选了 x86_64 的包表：`libs/luban.lua` 的 `luban.arch()` 改用 `pkginfo.arch()` 后没有了 `uname` 的后备，而 hook 运行时读 recipe 的顶层时什么也不告诉它（加载器告诉它读的是哪个平台、哪个架构），`pkginfo.arch()` 在那里报错，后备答 x86_64 | 根因在 libxpkg：同一个 recipe 的顶层在加载器与 hook 运行时看到的事实不同。L12：`create_executor` 接受读的目标（安装的平台与架构），在宿主进程内与 worker 里（Load 的上下文带上它）都像加载器一样告诉顶层；每个 hook 仍得到完整的上下文；spec 3 的顶层规则不变。xlings 建执行器时传入（X17） |
+| 2026-11-27 | L11 复审 | 替身在 hook 里被调用时只记一次失败调用，hook 继续，拿着替身的回答（空字符串当路径）走到下一个动作 | 改为在 hook 里被调用即报错（成员、lib、原因），recipe 要容忍就写 `pcall`；读 recipe（不在 hook 里）时替身照旧不动作。卸载的失败调用与 config、install 一样记为发现 `hook-call-failed`（之前卸载丢掉了它们） |
+
+## 20. 追加：#743 与 #744（第九版）
+
+两条都是在审 xim-pkgindex 的 mcpp 补全 PR（xim-pkgindex#1507）时报的。按本方案的契约评估，两条都要修，
+且都不是给那个 PR 开一个口子：一条是快照没有覆盖 recipe 运行时依赖的东西、找不到时又沉默成功
+（§4 C1 的"读不到不是空"）；一条是 profile 这份派生文件被包当作写入面，而"程序的补全跟随活动版本"
+本是已有的派生状态机制（头文件、库链接、`files` 资产）就能表达的事。
+
+### 20.1 #743：从快照运行的 hook 里，索引 lib 是沉默的桩
+
+**事实**（读代码确认，与 issue 的分析一致）：
+
+- 安装时把 recipe（连同索引声明的模板，§9.8）存为载荷里的 `<install_dir>/.xpkg.lua`；卸载用它
+  （`Installer::uninstall` 的 `uninstall_xpkg_file_`）。
+- libxpkg 从被加载的文件往上三级推出索引根，只在那里有 `libs/` 时设置 `_PKGINDEX_DIR`；快照在载荷里，
+  推不出。hook 调用时才注入的 `_RUNTIME.pkgindex_dir` 对顶层的 `import` 来得太晚。
+- spec 1、2：兼容层的 `import` 找不到 lib 就返回一个桩，每个成员都是可调用的代理表；顶层导入把桩绑到全局，
+  之后 `uninstall()` 里的每个调用都"成功"而什么都不做，日志里也没有。lib 存在但加载出错时同样返回桩。
+- spec 3：`import` 在这里报"不在索引里"。P11 把导入索引 lib 的 recipe 迁到 spec 3 之后，它们的卸载会在
+  加载时就失败——比桩更明显，但同样卸不掉。
+
+**根因**：(1) 快照不是 recipe 运行时的闭包——模板写进去了，它导入的 lib 没有；(2) 找不到或读不了 lib 时，
+兼容层给出对每个调用都沉默成功的替身。
+
+**设计**：
+
+1. **快照是只含这个 recipe 的索引**。安装时写出 `<install_dir>/.xpkg/pkgs/<目录>/<文件>.lua`（recipe 加模板，
+   与今天的内容相同；路径的末两段沿用它在索引里的）与 `<install_dir>/.xpkg/libs/`：recipe 导入的
+   `xim.pkgindex.<lib>`，按 lib 之间的导入取传递闭包，安装时的字节。卸载（以及之后任何从载荷读 recipe 的流程）
+   用它；libxpkg 按索引布局推出的就是快照自己，不需要新参数，worker 的挂载也不变（快照在载荷里）。
+   这样卸载撤销的是**这次安装**的 `config()` 所做的事，用的是当时的 lib；索引之后改了 lib 或整个被删，都不影响。
+2. **旧布局向前走一次**（"home 的格式向前走"）：之前的客户端写的 `.xpkg.lua` 照旧可读；卸载遇到它时，
+   在载荷里写出新布局（lib 取这个包所在索引当前的，这是此时能得到的最好事实）并删掉旧文件。载荷不可写
+   （借来的上游载荷）就照旧用旧文件，此时第 3 条保证它不再沉默。
+3. **桩不再沉默**（libxpkg，spec 1、2）：`xim.pkgindex.<lib>` 找不到或加载失败时仍返回替身（顶层读——搜索、
+   建索引——不受影响），但替身在 **hook 里**被调用就报错（成员、lib、在哪里找过或加载错误）：hook 失败，
+   除非 recipe 用 `pcall` 处理。不是记一次失败调用后继续——替身的回答（空字符串当路径）不能走到下一个动作。
+   spec 3 在 `import` 处就报错，不变。
+4. **兼容**：旧客户端看不到 `.xpkg/`，找不到 `.xpkg.lua` 时用索引里的 recipe（它们一直有的后备）；载荷可以被
+   不同版本的客户端共享，互不影响。索引不需要改动。
+
+**不采用**：只在 hook 调用时解析 lib（顶层绑定的桩仍在；卸载用的是今天的 lib 而不是安装时的；索引删了仍失败）；
+给 libxpkg 加"索引根"参数（快照自成索引后不需要，接口不增加）。
+
+### 20.2 #744：包的 shell 补全
+
+**事实**：包只能往 `config/shell/xlings-profile.{sh,fish,ps1}` 里插块（不许碰用户的 rc 文件）。
+`write_or_upgrade_profile_` 在版本标记旧于客户端时重写整份文件，块随之消失；补全脚本写在一个与版本无关的位置，
+属于最后一次运行 `config()` 的版本，`xlings use` 不跟；卸载多个版本中的一个会剪掉另一个仍需要的块；
+每个包都要重写生成、校验、插入、剪除与各 shell 的保护。
+
+**评估**：profile 是 xlings 生成的派生文件，包写进去是越界，升级重写它是对的；但用户（或包）在里面的改动
+被静默丢掉不对。补全是**程序的属性**，应当跟随活动版本——与头文件、库链接是同一类派生状态，已有的
+`files` 资产（绑定到一个发行版，`use` 时移动、卸载时撤回、`self doctor --fix` 重建）正好表达它。缺的只是
+一个声明和 profile 里的加载。
+
+**设计**：
+
+1. **声明**（libxpkg 0.0.68，规范 §7）：
+   ```lua
+   xvm.add("mcpp", {
+       bindir = path.join(pkginfo.install_dir(), "bin"),
+       completion = {                       -- 载荷里的文件，相对载荷根；每个 shell 可选
+           bash = "share/completion/mcpp.bash",
+           zsh  = "share/completion/_mcpp",
+           fish = "share/completion/mcpp.fish",
+           pwsh = "share/completion/mcpp.ps1",
+       },
+   })
+   ```
+   宿主（libxpkg 的 `xvm.add`）把每一项展开成一个 `files` 资产：绑定到这个程序的发行版（程序自己有 `binding`
+   就用它的），目的地是 SubOS 根下各 shell 的惯例目录：bash `usr/share/bash-completion/completions/<name>`、
+   zsh `usr/share/zsh/site-functions/_<name>`、fish `usr/share/fish/vendor_completions.d/<name>.fish`、
+   PowerShell `usr/share/powershell/completions/<name>.ps1`。文件名由宿主按程序名定，包只说源文件。
+   于是 `use` 切换时随版本移动，卸载随登记撤回，`self doctor --fix` 重建，不需要新的机制。
+   程序自己能打印补全的（`mcpp self completion bash --print`），在 `install()` 里生成进载荷（按版本一次），再声明。
+   不认识的 shell 名是错误。
+2. **加载**：xlings 的 profile（版本 14）在 xlings 自己的补全之后加载活动 SubOS 的这四个目录：bash 逐个 `source`；
+   zsh 加进 `fpath`，`compinit` 已运行时逐个 `autoload` 并 `compdef`；fish 加进 `fish_complete_path`（按需加载）；
+   PowerShell 逐个 dot-source。只用 POSIX 语法（zsh 专有的写在 `eval` 里，dash 与 busybox 读得过）。
+   Luban 系统里这些目录就是系统自己的 `/usr/share/...`，系统里装了 bash-completion 也直接认。
+3. **profile 是派生文件**：文件头写明"由 xlings 生成，升级时重写；包的补全用声明"；升级重写前，现有内容与新内容
+   不同就把旧文件存到 `<home>/logs/profile-upgrades/<文件>.v<旧版本>`（`-v` 时说明存在哪里）——修改不静默丢失；
+   存不下时这次不升级，下次 init 再试。
+   索引的静态检查拒绝写 `config/shell/xlings-profile.*` 的 recipe。
+4. **兼容**：旧客户端的 `xvm.add` 忽略不认识的 `completion` 键——没有补全，也没有错误；包不需要探针。
+   旧 profile（13）在客户端升级时按已有的流程升到 14。
+
+**不采用**：`profile.d` 式的任意脚本落点（包把任意 shell 代码放进用户的每个 shell，绕过声明，与 SubOS 隔离相悖）；
+由宿主在注册时运行包的程序生成（注册时执行载荷里的程序有运行时与超时的问题，生成放在 `install()` 里按版本一次
+完成更简单）。将来需要时可以加 `completion = { command = {...} }`，由宿主生成到同样的位置——声明的形状不变。
+
+### 20.3 任务、验证与关闭
+
+| 编号 | 仓库 | 任务 | 完成的判据 |
+|---|---|---|---|
+| L11 | libxpkg | `xvm.add` 的 `completion` 展开为 `files` 资产；规范 §6.4、§7；替身在 hook 中被调用记为失败调用 | `test_spec3`/`test_api` 的新用例；全部测试通过 |
+| L12 | libxpkg | `create_executor` 接受读的目标（`ReadTarget`：平台、架构），宿主进程内与 worker 里都像加载器一样告诉 recipe 的顶层（§19.6 的 P10 记录） | `TheTopLevelIsReadForTheTarget`（两条路径）；全部测试通过 |
+| X17 | xlings | 快照的新布局与 lib 闭包；旧布局的向前迁移；建执行器时传入安装的平台与架构（L12）；卸载的失败调用记为发现 | e2e `XPKG-SNAPSHOT-LIBS`：顶层导入 lib 的 recipe 在 `config()` 与 `uninstall()` 得到同一模块；安装后改坏索引的 lib，卸载仍用安装时的；旧布局的快照卸载时带上索引当前的 lib；哪里都没有的 lib 让卸载的 hook 按名字失败 |
+| X18 | xlings | profile 14 加载补全目录；升级时保存不同的旧文件 | e2e `PKG-COMPLETION`：声明的补全链接在 SubOS 下、随 `use` 移动、随 `remove` 消失，bash 交互 shell 里 `complete -p <name>` 存在；`PROFILE-UPGRADE-KEEPS` |
+| P13 | 索引 | 静态检查拒绝写 xlings profile；xim-pkgindex#1507 改用声明 | 检查的测试；#1507 在本轮合并后改写 |
+
+关闭：#743、#744 在 xlings 发布并镜像、索引 PR 合并后关闭，评论写明落到了哪些 commit 与规范的哪一节。
