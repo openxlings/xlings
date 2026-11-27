@@ -1789,7 +1789,7 @@ draft PR 只用来取得结果（§11）；结论写回本文，正式的 PR 仍
 | 编号 | 仓库 | 任务 | 完成的判据 |
 |---|---|---|---|
 | L11 | libxpkg | `xvm.add` 的 `completion` 展开为 `files` 资产；规范 §6.4、§7；替身在 hook 中被调用记为失败调用 | `test_spec3`/`test_api` 的新用例；全部测试通过 |
-| L12 | libxpkg | `create_executor` 接受读的目标（`ReadTarget`：平台、架构），宿主进程内与 worker 里都像加载器一样告诉 recipe 的顶层（§19.6 的 P10 记录） | `TheTopLevelIsReadForTheTarget`（两条路径）；全部测试通过 |
+| L12 | libxpkg | `create_executor` 接受读的目标（`ReadTarget`：平台、架构，以及宿主给 hook 的索引），宿主进程内与 worker 里都像加载器一样告诉 recipe 的顶层（§19.6 的 P10 记录）；不在带 lib 的索引里的 recipe（脚本、按路径给出的 recipe）在顶层也从宿主的索引导入，recipe 自己的索引优先（载荷保存的 recipe 仍用它保存的 lib） | `TheTopLevelIsReadForTheTarget`、`ARecipeOutsideAnIndexReadsTheHostsIndexLibs`（两条路径）；全部测试通过 |
 | X17 | xlings | 快照的新布局与 lib 闭包；旧布局的向前迁移；建执行器时传入安装的平台与架构（L12）；卸载的失败调用记为发现 | e2e `XPKG-SNAPSHOT-LIBS`：顶层导入 lib 的 recipe 在 `config()` 与 `uninstall()` 得到同一模块；安装后改坏索引的 lib，卸载仍用安装时的；旧布局的快照卸载时带上索引当前的 lib；哪里都没有的 lib 让卸载的 hook 按名字失败 |
 | X18 | xlings | profile 14 加载补全目录；升级时保存不同的旧文件 | e2e `PKG-COMPLETION`：声明的补全链接在 SubOS 下、随 `use` 移动、随 `remove` 消失，bash 交互 shell 里 `complete -p <name>` 存在；`PROFILE-UPGRADE-KEEPS` |
 | P13 | 索引 | 静态检查拒绝写 xlings profile；xim-pkgindex#1507 改用声明 | 检查的测试；#1507 在本轮合并后改写 |
