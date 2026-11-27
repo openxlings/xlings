@@ -149,7 +149,13 @@ DownloadFileResult download_file(const DownloadOptions& opts);
 double probe_latency(const std::string& url, int timeoutMs = 2000);
 bool fetch_to_file(const std::string& url, const std::filesystem::path& dest);
 std::int64_t query_content_length(const std::string& url, int connectTimeoutSec = 10);
+// Size, ETag and Last-Modified of `url` without its body: HEAD, or -- where
+// HEAD is refused (head_refused) -- the headers of a GET stopped after its
+// first block (#417).
 RemoteFileMeta query_remote_meta(const std::string& url, int connectTimeoutSec = 10);
+// A HEAD answer that says "not by this method" rather than "not there":
+// 401, 403, 405, 501.
+bool head_refused(int statusCode);
 
 // Returns the proxy URL that would be used for `url` (libcurl-style env
 // resolution: HTTPS_PROXY / HTTP_PROXY / ALL_PROXY with NO_PROXY exemption,

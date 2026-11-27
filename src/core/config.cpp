@@ -1931,12 +1931,15 @@ std::expected<void, std::string> rmw_home_config_locked_(
         const std::function<bool(nlohmann::json&)>& mutate) {
     constexpr auto kTimeout = std::chrono::seconds{2};
 
-    const auto savedTimeout =
-        utils::get_env_or_default(std::string(xvm::lock_timeout_env()));
-    platform::set_env_variable(std::string(xvm::lock_timeout_env()), "");
+    // Put back as it was: set to its value, or not set at all -- an unset
+    // variable must not come back as an empty one (#594).
+    const std::string timeoutEnv(xvm::lock_timeout_env());
+    const bool timeoutWasSet = utils::env_is_set(timeoutEnv);
+    const auto savedTimeout = utils::get_env_or_default(timeoutEnv);
+    platform::set_env_variable(timeoutEnv, "");
     auto lock = xvm::acquire_state_lock(homeDir, kTimeout);
-    platform::set_env_variable(std::string(xvm::lock_timeout_env()),
-                               savedTimeout);
+    if (timeoutWasSet) platform::set_env_variable(timeoutEnv, savedTimeout);
+    else platform::unset_env_variable(timeoutEnv);
     if (!lock) return std::unexpected(lock.error());
 
     nlohmann::json json = nlohmann::json::object();

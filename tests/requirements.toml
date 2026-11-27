@@ -1196,6 +1196,10 @@ status = "required"
 text = "entries that enumerate their architectures and leave this machine out refuse a request at plan time, before any download: one E_UNSUPPORTED_TARGET line per request naming every such node of its closure, -v each dependency chain and what its entry gives, an install_unsupported data event with the list"
 status = "required"
 
+[FRESHNESS-GET]
+text = "a cached download with no sha256 is checked for freshness with HEAD, and where HEAD is refused by method (401, 403, 405, 501 -- GitCode's release assets) with the headers of a GET stopped after its first block; nothing is downloaded"
+status = "required"
+
 [EXTRACT-OWN-DIR]
 text = "a node's archive is extracted into a directory of its own beside it (runtimedir/<namespace>-<name>-<version>), install_file() names the archive there, and the directory is removed when the node ends: two flat archives installed one after the other do not see each other's files"
 status = "required"
