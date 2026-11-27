@@ -1196,6 +1196,10 @@ status = "required"
 text = "entries that enumerate their architectures and leave this machine out refuse a request at plan time, before any download: one E_UNSUPPORTED_TARGET line per request naming every such node of its closure, -v each dependency chain and what its entry gives, an install_unsupported data event with the list"
 status = "required"
 
+[INTERFACE-CLI-VERBS]
+text = "the command line's remove --force/--all/--subos/--all-subos, config --list-xpkg/--remove-xpkg/--clear-xpkg and self doctor --fix/--subos/--show-ok are reachable through the interface: remove_package's fields, the local_recipes and self_doctor capabilities (#593)"
+status = "required"
+
 [FRESHNESS-GET]
 text = "a cached download with no sha256 is checked for freshness with HEAD, and where HEAD is refused by method (401, 403, 405, 501 -- GitCode's release assets) with the headers of a GET stopped after its first block; nothing is downloaded"
 status = "required"

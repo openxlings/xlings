@@ -97,6 +97,9 @@ capability::Registry build_registry() {
     reg.register_capability(std::make_unique<ListRepos>());
     reg.register_capability(std::make_unique<AddRepo>());
     reg.register_capability(std::make_unique<RemoveRepo>());
+    // The CLI-only verbs of 2026.9.12.1 (#593, design 2026-11-27 X10)
+    reg.register_capability(std::make_unique<LocalRecipes>());
+    reg.register_capability(std::make_unique<SelfDoctor>());
     return reg;
 }
 
@@ -237,7 +240,7 @@ auto RemovePackage::spec() const -> CapabilitySpec {
     return {
         .name = "remove_package",
         .description = "Remove one package or one specific version; with older_than, every version older than it that nothing uses",
-        .inputSchema = R"JSON({"type":"object","properties":{"target":{"type":"string","description":"Format: name, name@version, or namespace:name@version"},"yes":{"type":"boolean","description":"Auto-confirm without prompting"},"older_than":{"type":"string","description":"Remove every installed version of target older than this one that nothing uses (target is a name)"},"dry_run":{"type":"boolean","description":"With older_than: report the remove_plan only"}},"required":["target"]})JSON",
+        .inputSchema = R"JSON({"type":"object","properties":{"target":{"type":"string","description":"Format: name, name@version, or namespace:name@version"},"yes":{"type":"boolean","description":"Auto-confirm without prompting"},"force":{"type":"boolean","description":"Remove even if packages depend on it, the recipe is gone, or its uninstall hook fails"},"all":{"type":"boolean","description":"Every installed version, not just the active one"},"subos":{"type":"string","description":"This subos only, instead of the current one; \"*\": every subos that has it"},"older_than":{"type":"string","description":"Remove every installed version of target older than this one that nothing uses (target is a name)"},"dry_run":{"type":"boolean","description":"With older_than: report the remove_plan only"}},"required":["target"]})JSON",
         .outputSchema = R"({"type":"object","properties":{"exitCode":{"type":"integer"}}})",
         .destructive = true,
     };
@@ -251,8 +254,36 @@ auto RemovePackage::execute(Params params, EventStream& stream) -> Result {
         return exit_result(xim::cmd_remove_older_than(
             json.value("target", ""), bound, yes, json.value("dry_run", false), stream));
     }
+    // `all`, `subos` (#593): what `remove --all`, `--subos <name>` and
+    // `--all-subos` say; a named subos in a prefix domain removes there,
+    // its events relayed (as install_packages does).
+    const bool all = json.value("all", false);
+    std::optional<std::string> subosScope;
+    if (const auto name = json.value("subos", std::string{}); name == "*") {
+        subosScope = "*";
+    } else if (!name.empty()) {
+        if (!std::filesystem::is_directory(Config::subos_dir(name))) {
+            stream.emit(ErrorEvent{.code = ErrorCode::NotFound, .message = std::format("no subos named '{}'", name),
+                                   .recoverable = false, .hint = "xlings subos list"});
+            return exit_result(1);
+        }
+        auto scope = home::domain_producer::read_scope(Config::paths().homeDir, name);
+        if (!scope) {
+            stream.emit(ErrorEvent{.code = ErrorCode::InvalidInput, .message = scope.error(), .recoverable = false});
+            return exit_result(1);
+        }
+        if (*scope) {
+            auto rc = subos::relay_capability_((**scope).domain, "remove_package", json, std::nullopt, stream);
+            if (!rc) {
+                stream.emit(ErrorEvent{.code = ErrorCode::InvalidInput, .message = rc.error(), .recoverable = false});
+                return exit_result(1);
+            }
+            return exit_result(*rc);
+        }
+        subosScope = name;
+    }
     return exit_result(
-        xim::cmd_remove(json.value("target", ""), yes, stream, force));
+        xim::cmd_remove(json.value("target", ""), yes, stream, force, all, subosScope));
 }
 
 auto UpdatePackages::spec() const -> CapabilitySpec {

@@ -31,7 +31,7 @@ and AI agents talk to xlings over standard IO. The protocol is **1.19**, over ND
 | 1.17 | 2026.10.22.1 | added: `install_packages` takes `subos`: a Luban system's packages installed where it lives, with events and cancellation (feature `install_into_subos`) |
 | 1.18 | 2026.10.23.2 | added: `package_info`'s `package` carries `versions`, the platform's concrete versions newest first (feature `package_versions`, §7.6); `subos __domain-check <home>` (plumbing) tries whether this host builds a private domain at `<home>`, as making a system there starts: exit 0 or an error saying why (feature `domain_check`) |
 | 1.19 | 2026.11.23.1 | added: `self clean` keeps every payload a root under `<home>/data/roots/<owner>/` holds, and removes the dangling ones ([store roots](store-roots.md)); a program that registers roots requires this feature before it asks for a collection (feature `store_roots`) |
-| 1.20 | (next) | added: a node a gate refuses (a recipe of a newer `spec`, a target with no artifact) is an `error` with `E_UNSUPPORTED`, `refused` in `install_targets` and `install_summary`, and fails the command (feature `step_outcomes`); `install_summary.findings` and the `install_notices` data event, what the packages' hooks said (feature `hook_notices`); `update_available` after `update_packages`' sync (feature `update_available`); `E_FOREIGN_MACHINE`, a payload of another machine (rule M; feature `machine_rule`); a plan refused for nodes with no artifact for this machine is one `E_UNSUPPORTED` per request and the `install_unsupported` data event (was one `E_INVALID_INPUT` per node); a package installed by an alias (`node@lts`) is updated along it, and `update_plan` carries the `alias` |
+| 1.20 | (next) | added: a node a gate refuses (a recipe of a newer `spec`, a target with no artifact) is an `error` with `E_UNSUPPORTED`, `refused` in `install_targets` and `install_summary`, and fails the command (feature `step_outcomes`); `install_summary.findings` and the `install_notices` data event, what the packages' hooks said (feature `hook_notices`); `update_available` after `update_packages`' sync (feature `update_available`); `E_FOREIGN_MACHINE`, a payload of another machine (rule M; feature `machine_rule`); a plan refused for nodes with no artifact for this machine is one `E_UNSUPPORTED` per request and the `install_unsupported` data event (was one `E_INVALID_INPUT` per node); a package installed by an alias (`node@lts`) is updated along it, and `update_plan` carries the `alias`; the command line's remove, local-recipe and doctor verbs as `remove_package`'s `force`/`all`/`subos` and the `local_recipes` and `self_doctor` capabilities (#593) |
 
 A minor version only adds: a 1.0 client reads 1.1 output unchanged. 1.11 is the
 one exception in meaning, not in shape: 1.10's `complete` also required the
@@ -539,7 +539,7 @@ Sent after 5 s of silence: the process is alive.
 | `search_packages` | fuzzy search by keyword, or by a recipe's category (1.12+: `category`) | no |
 | `install_packages` | install one or more packages | yes |
 | `plan_install` | an install dry-run | no |
-| `remove_package` | remove a package | yes |
+| `remove_package` | remove a package; 1.20+: `force`, `all` (every installed version), `subos` (one subos, `"*"` every subos that has it; a subos in a prefix domain removes there) | yes |
 | `update_packages` | refresh indexes or upgrade a package | yes |
 | `list_packages` | list installed packages | no |
 | `package_info` | a package's details | no |
@@ -564,6 +564,8 @@ Sent after 5 s of silence: the process is alive.
 | `remove_repo` | remove an index repository | yes |
 | `payload_status` | (1.10+) what each target resolves to and what its payload is here, without installing (§7.4) | no |
 | `sync_index` | (1.10+) sync one configured index into a directory (§7.4) | yes |
+| `local_recipes` | (1.20+) the recipes `config --add-xpkg` keeps: `action` `list` (a `local_recipes` data event: `{recipes: [{name, version, status, source, tracked, path}]}`, status `unique`, `identical`, `modified`, `behind` or `missing`), `remove` (`name`), `clear` (`what`: `all` or `stale`) | yes |
+| `self_doctor` | (1.20+) `self doctor` with its scope: `fix`, `dry_run`, `deep`, `show_ok`, `subos` | yes |
 
 Each capability's `inputSchema` / `outputSchema` comes from
 `xlings interface --list`; its `required` is enforced since 2026.9.20.1 (§3.3.1).

@@ -219,6 +219,24 @@ public:
     auto execute(Params, EventStream& stream) -> Result override;
 };
 
+// The recipes `config --add-xpkg` keeps (#593): list them with their
+// status against the index, remove one, clear a category.
+class LocalRecipes : public Capability {
+public:
+    auto spec() const -> CapabilitySpec override;
+    auto execute(Params params, EventStream& stream) -> Result override;
+};
+
+// `self doctor` (#593): the scan, with the scope a command line gives it.
+class SelfDoctor : public Capability {
+public:
+    auto spec() const -> CapabilitySpec override;
+    auto execute(Params params, EventStream& stream) -> Result override;
+};
+
+// The integer exit code as a capability's result.
+Result exit_result(int code);
+
 export capability::Registry build_registry();
 
 } // namespace xlings::capabilities
