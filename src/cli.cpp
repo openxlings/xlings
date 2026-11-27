@@ -247,6 +247,13 @@ bool kind_is_interface_only_(std::string_view kind) {
         // shows the list. What `subos new --dry-run` read, said as lines too.
         // Why an older version was taken, logged where it was chosen.
         "packages", "subos_plan", "passed_over",
+        // A node not installed because a dependency failed: the terminal
+        // says it once, at the end, for every node of that dependency.
+        "install_skipped",
+        // What the hooks said, and a newer xlings (protocol 1.20): the
+        // terminal prints the notes after the summary, and the newer
+        // release once a day at the end of the command.
+        "install_notices", "update_available",
     };
     return std::ranges::contains(kCapabilityOnly, kind)
         || std::ranges::contains(kWireDuplicate, kind);

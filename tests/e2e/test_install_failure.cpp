@@ -107,6 +107,8 @@ XTEST(InstallFailure, ADependentOfAFailedPackageIsNotRunAndNotBlamed, .area = "x
     EXPECT_NE(out.find("1 package(s) not installed because fixture:basebroken@1.0.0 failed"),
               std::string::npos) << out;
     EXPECT_EQ(out.find("registered none"), std::string::npos) << out;
+    // The skipped node is data for an interface client; the terminal said it.
+    EXPECT_EQ(out.find("no renderer"), std::string::npos) << out;
     EXPECT_FALSE(fs::exists(home.dir() / "data" / "xpkgs" / "fixture-x-on-basebroken" / "1.0.0" / "ran"))
         << out;
 }

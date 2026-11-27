@@ -135,5 +135,7 @@ XTEST(HookOutcomes, ARecipesWarnIsShownAfterTheSummaryInEveryMode, .area = "xim"
         EXPECT_NE(out.find("warn: the GPU driver is older than 550", notes), std::string::npos) << out;
         // The progress line is log.info: not a notice.
         EXPECT_EQ(out.find("unpacking the talker", notes), std::string::npos) << out;
+        // The notes are the terminal's rendering of install_notices.
+        EXPECT_EQ(out.find("no renderer"), std::string::npos) << out;
     }
 }
