@@ -1196,6 +1196,10 @@ status = "required"
 text = "entries that enumerate their architectures and leave this machine out refuse a request at plan time, before any download: one E_UNSUPPORTED_TARGET line per request naming every such node of its closure, -v each dependency chain and what its entry gives, an install_unsupported data event with the list"
 status = "required"
 
+[EXTRACT-OWN-DIR]
+text = "a node's archive is extracted into a directory of its own beside it (runtimedir/<namespace>-<name>-<version>), install_file() names the archive there, and the directory is removed when the node ends: two flat archives installed one after the other do not see each other's files"
+status = "required"
+
 [PAYLOAD-BUILD-PATH]
 text = "an installed payload whose RPATH/RUNPATH, pkg-config files or libtool archives name a path of the machine it was built on (not this home, its stores, the payload, the system's directories, a variable or the /nonexistent placeholder) is a payload-build-path finding (rule P), counted, the files and paths in the record"
 status = "required"

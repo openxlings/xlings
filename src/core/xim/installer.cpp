@@ -3487,13 +3487,57 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& requested
         const auto landing = landings.find(planKey);
         const bool hostLands = landing != landings.end();
 
+        // #736 (design 2026-11-27 §8.4): the directory a node's archive is
+        // extracted into is its own, removed when the node ends -- whatever
+        // way it ends -- so nothing of it is left for the next package.
+        struct NodeExtractDir {
+            std::filesystem::path dir;
+            ~NodeExtractDir() {
+                std::error_code ec;
+                if (!dir.empty()) std::filesystem::remove_all(dir, ec);
+            }
+        } nodeExtract;
         if (dlIt != downloadResults.end() && !hostLands) {
             if (hasInstallHook && detail_::is_archive_(dlIt->second.localFile)) {
                 if (onStatus) {
                     onStatus({ node.name, InstallPhase::Extracting, 0.35f, "" });
                 }
-                // Extract into the same runtime dir as the download.
-                auto runtimeDir = ctx.install_file.parent_path();
+                // Beside the download, in a directory of this node's own: a
+                // flat archive used to merge into one shared tree, and a
+                // recipe moving its `lib/` took every flat package's `lib/`
+                // installed before it. The archive is linked into the
+                // directory (copied where a link cannot be made) and
+                // install_file() names that one, so both of a recipe's
+                // readings hold: `install_file():replace(".tar.gz", "")` is the
+                // extracted directory of a wrapped archive, and
+                // `path.directory(install_file())` holds only this package's
+                // files.
+                // Beside install_file() as it is now: the download, or the
+                // private copy a hook worker was given (its scratch).
+                namespace fs = std::filesystem;
+                const auto archive = ctx.install_file;
+                const auto runtimeDir = archive.parent_path() / std::format(
+                    "{}-{}-{}", node.namespaceName.empty() ? std::string("xim") : node.namespaceName,
+                    node.name, node.version);
+                std::error_code dirEc;
+                fs::remove_all(runtimeDir, dirEc);
+                fs::create_directories(runtimeDir, dirEc);
+                nodeExtract.dir = runtimeDir;
+                const auto own = runtimeDir / archive.filename();
+                std::error_code linkEc;
+                fs::create_hard_link(archive, own, linkEc);
+                if (linkEc) {
+                    linkEc.clear();
+                    fs::copy_file(archive, own, fs::copy_options::overwrite_existing, linkEc);
+                }
+                if (dirEc || linkEc) {
+                    const auto why = std::format("cannot prepare the extraction directory {}: {}",
+                                                 runtimeDir.string(), (dirEc ? dirEc : linkEc).message());
+                    log::error("[{}] {}", node.name, why);
+                    if (onStatus) onStatus({ node.name, InstallPhase::Failed, 0.0f, why });
+                    continue;
+                }
+                ctx.install_file = own;
                 auto extracted = extract_archive_detailed(
                     ctx.install_file, runtimeDir,
                     detail_::extract_options_(onStatus, node.name));
