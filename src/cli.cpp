@@ -2493,7 +2493,6 @@ int dispatch_(int argc, char* argv[]) {
             std::vector<std::string> args;
             for (int i = 3; i < fargc; ++i) args.emplace_back(fargv[i]);
             auto ctx = xim::make_execution_context({
-                .recipe = scriptFile,
                 .xpkg_dir = Config::paths().dataDir / "xpkgs",
                 .args = std::move(args),
             });

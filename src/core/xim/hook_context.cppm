@@ -17,7 +17,7 @@ export namespace xlings::xim {
 struct HookScope {
     std::string pkg_name;               // empty for a script
     std::string version;
-    std::filesystem::path recipe;       // the recipe or script file that runs
+    std::filesystem::path recipe;       // the recipe, for its index; empty for a script
     std::filesystem::path install_dir;  // the payload's directory; empty for a script
     // What system.xpkgdir() answers. Two entries give it two meanings, kept as
     // they were: the recipe's directory for a package's hooks, the store of
@@ -46,8 +46,9 @@ void configure_hook_dependency_stores(mcpplibs::xpkg::ExecutionContext& context,
 // The index root a recipe's `xim.pkgindex.*` modules are loaded from: three
 // levels up from `<index>/pkgs/<letter>/<name>.lua`, or the primary index when
 // that root has no `libs/` (a recipe added with `xlings config --add-xpkg`
-// lives in an overlay that has none). `has_libs` says whether the answer has
-// modules at all.
+// lives in an overlay that has none) or the file is in no index. Empty when
+// neither has an answer: never a directory that only happens to be three
+// levels up. `has_libs` says whether the answer has modules at all.
 std::string pkgindex_root_for(const std::filesystem::path& recipe, bool* has_libs = nullptr);
 
 } // export namespace xlings::xim

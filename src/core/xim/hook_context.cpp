@@ -64,8 +64,14 @@ std::string pkgindex_root_for(const std::filesystem::path& pkgFile, bool* outHas
     namespace fs = std::filesystem;
     std::error_code ec;
 
-    auto derived = pkgFile.parent_path().parent_path().parent_path();
-    if (fs::is_directory(derived / "libs", ec)) {
+    // <index>/pkgs/<letter>/<name>.lua (libxpkg's index_of). A file elsewhere
+    // -- a script, a recipe given by path -- has no index of its own: three
+    // levels up from it is any directory, `/` for /tmp/x/script.lua, and the
+    // worker would show the hook that directory (read-only, and all of it).
+    const auto pkgs = pkgFile.parent_path().parent_path();
+    const bool inIndex = pkgs.filename() == "pkgs";
+    auto derived = pkgs.parent_path();
+    if (inIndex && fs::is_directory(derived / "libs", ec)) {
         if (outHasLibs) *outHasLibs = true;
         return derived.string();
     }
@@ -82,7 +88,7 @@ std::string pkgindex_root_for(const std::filesystem::path& pkgFile, bool* outHas
     }
 
     if (outHasLibs) *outHasLibs = false;
-    return derived.string();
+    return inIndex ? derived.string() : std::string{};
 }
 
 mcpplibs::xpkg::ExecutionContext make_execution_context(const HookScope& scope) {

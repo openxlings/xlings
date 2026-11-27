@@ -1170,6 +1170,10 @@ status = "required"
 text = "every entry that runs a recipe's code (install, removal, script, probe) builds its context with one constructor: the same bin directory, SubOS root and architecture"
 status = "required"
 
+[HOOK-INDEX-ROOT]
+text = "a recipe's index root is <index> of <index>/pkgs/<letter>/<file> (else the primary index's libs): a script or a file in no index has none, never the directory that happens to be three levels up -- `/` for /tmp/x/script.lua, which the worker would show the hook"
+status = "required"
+
 # ── libxpkg 0.0.68 in the client (design 2026-11-27 §5.1, §9) ─────────
 
 [ARCH-IDENTITY]

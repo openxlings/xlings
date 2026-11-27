@@ -1779,7 +1779,9 @@ selected_payloadless_config_has_uninstall_(
             "uninstall recipe is not a local file: {}", recipe.string()));
     }
 
-    auto context = make_execution_context({ .recipe = recipe });
+    // The index is the recipe's, also when the snapshot is what runs (as the
+    // removal itself does).
+    auto context = make_execution_context({ .recipe = match.pkgFile });
     auto executor = lua_boundary::create_executor(recipe, context);
     if (!executor) return std::unexpected(executor.error());
     return executor->has_hook(xpkg::HookType::Uninstall);

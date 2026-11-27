@@ -21,7 +21,7 @@ XTEST(HookContext, EveryEntryGetsTheSameArtifactPathsAndTheArchitecture,
         .xpkg_dir = "/index/pkgs/p",
     });
     const auto script = xlings::xim::make_execution_context({
-        .recipe = "/scripts/s.lua", .xpkg_dir = "/store", .args = {"a", "b"},
+        .xpkg_dir = "/store", .args = {"a", "b"},
     });
     const auto subos = xlings::Config::xvm_artifact_subos_dir();
     for (const auto* ctx : {&hook, &script}) {
@@ -35,4 +35,28 @@ XTEST(HookContext, EveryEntryGetsTheSameArtifactPathsAndTheArchitecture,
     }
     EXPECT_EQ(hook.install_dir, fs::path("/store/probe/1.0.0"));
     EXPECT_EQ(script.args, (std::vector<std::string>{"a", "b"}));
+}
+
+// The index root is the recipe's index, by its layout: three levels up from a
+// file in no index is any directory -- `/` for /tmp/x/script.lua -- and the
+// worker mounts the root it is given (read-only, all of it).
+XTEST(HookContext, AFileInNoIndexHasNoIndexRootOfItsOwn,
+      .area = "xim", .covers = {"HOOK-INDEX-ROOT"}) {
+    auto home = xlings::testkit::Home::isolated("hook-context-index-root");
+    const auto index = home.root() / "idx";
+    fs::create_directories(index / "pkgs" / "p");
+    fs::create_directories(index / "libs");
+    bool libs = false;
+    EXPECT_EQ(fs::path(xlings::xim::pkgindex_root_for(index / "pkgs" / "p" / "probe.lua", &libs)), index);
+    EXPECT_TRUE(libs);
+
+    const auto primary = xlings::Config::global_data_dir() / "xim-pkgindex";
+    for (const auto& file : {fs::path("/s.lua"), fs::path("/x/s.lua"), fs::path("/tmp/x/s.lua"),
+                             home.root() / "scripts" / "s.lua", index / "pkgs" / "s.lua"}) {
+        const auto root = xlings::xim::pkgindex_root_for(file);
+        EXPECT_TRUE(root.empty() || fs::path(root) == primary) << file << " -> " << root;
+    }
+    // A script's context has no index.
+    const auto script = xlings::xim::make_execution_context({ .xpkg_dir = "/store" });
+    EXPECT_TRUE(script.pkgindex_dir.empty()) << script.pkgindex_dir;
 }

@@ -272,7 +272,6 @@ CommandProcessor create_processor() {
                 std::vector<std::string> args;
                 for (int i = 3; i < argc; ++i) args.emplace_back(argv[i]);
                 auto ctx = xim::make_execution_context({
-                    .recipe = scriptFile,
                     .xpkg_dir = Config::paths().dataDir / "xpkgs",
                     .args = std::move(args),
                 });
