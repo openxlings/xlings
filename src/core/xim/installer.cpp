@@ -3624,7 +3624,10 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& requested
         // from a broken payload via the obvious command.
         else if (!payloadInstalled) {
             auto db = Config::versions();
-            auto resolved = xvm::match_version(db, node.name, node.version);
+            // The node's version is the entry the plan chose: that version,
+            // not one it is a prefix of -- a 2.44.3 this command just
+            // installed is not the entry 2.44 (#739, design 2026-11-27 §7.1).
+            auto resolved = xvm::resolve_exact_version_key(db, node.name, node.version).value_or(std::string{});
             if (!resolved.empty()) {
                 bool payload_ok = true;
                 bool payload_is_ours = true;

@@ -1180,6 +1180,10 @@ status = "required"
 text = "architectures have one table, libxpkg's: every architecture the client is built for is in it, and a file's e_machine and ELF class are read in-process and named by it"
 status = "required"
 
+[VERSION-EXACT-KEY]
+text = "a request for a version that is a key of the package's index entries is that version: an active or a planned longer version (2.44.3 for 2.44) does not answer it, whether installed before or in the same command (#739); a range (~2.44) is still met by the active version"
+status = "required"
+
 [ARCH-PLAN-REFUSAL]
 text = "entries that enumerate their architectures and leave this machine out refuse a request at plan time, before any download: one E_UNSUPPORTED_TARGET line per request naming every such node of its closure, -v each dependency chain and what its entry gives, an install_unsupported data event with the list"
 status = "required"

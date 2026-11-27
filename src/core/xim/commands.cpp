@@ -895,7 +895,13 @@ int install_(std::span<const std::string> targets, bool yes, bool noDeps,
         return active;
     };
     auto pin_to_subos_if_satisfies_ = [&](const std::string& t) -> std::string {
-        return pin_target_to_subos(t, subos_version_of_);
+        return pin_target_to_subos(t, subos_version_of_, [&](const std::string& target) {
+            const auto at = target.find('@');
+            if (at == std::string::npos) return false;
+            const auto exact = catalog.resolve_target(target, platform);
+            return exact && xvm::strip_namespace(exact->version)
+                == xvm::strip_namespace(target.substr(at + 1));
+        });
     };
 
     for (auto& target : targetVec) {
