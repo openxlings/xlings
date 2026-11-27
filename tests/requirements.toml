@@ -1184,6 +1184,10 @@ status = "required"
 text = "a request for a version that is a key of the package's index entries is that version: an active or a planned longer version (2.44.3 for 2.44) does not answer it, whether installed before or in the same command (#739); a range (~2.44) is still met by the active version"
 status = "required"
 
+[VERSION-DECLARED]
+text = "a SubOS declares the version its runtime request resolved to -- installed and active -- with the request kept as runtime_request when it is not that version; a declaration an older client left naming a version the store lacks while the view serves another is brought to what is served once, by a home format step"
+status = "required"
+
 [ARCH-PLAN-REFUSAL]
 text = "entries that enumerate their architectures and leave this machine out refuse a request at plan time, before any download: one E_UNSUPPORTED_TARGET line per request naming every such node of its closure, -v each dependency chain and what its entry gives, an install_unsupported data event with the list"
 status = "required"

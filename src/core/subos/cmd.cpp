@@ -1886,9 +1886,24 @@ int run(int argc, char* argv[], EventStream& stream) {
             return 1;
         }
 
+        // The declaration names what is installed and active: the version the
+        // request resolves to in the index -- glibc@2.44.3 for glibc@~2.44 --
+        // with the request kept beside it (design 2026-11-27 §7.2). A
+        // declaration of the request itself left the view on another version
+        // than the one declared (#607 item 1). Without an index the request
+        // is what can be declared.
+        const std::string requested = binding;
+        std::string resolved = binding;
+        if (!manifest::runtime_is_hosted(binding)) {
+            if (auto version = xim::index_version_of(
+                    manifest::runtime_query_for(binding) + "@" + std::string(manifest::binding_version(binding))))
+                resolved = std::string(manifest::binding_name(binding)) + "@" + *version;
+        }
+        const auto& declared = resolved;
+
         const auto previous = manifest::parse(*doc).runtime;
-        if (previous == binding) {
-            log::info("subos '{}' already declares {}", target, binding);
+        if (previous == declared) {
+            log::info("subos '{}' already declares {}", target, declared);
             return 0;
         }
 
@@ -1912,7 +1927,7 @@ int run(int argc, char* argv[], EventStream& stream) {
         };
         if (!hosted) {
             enter();
-            std::vector<std::string> targets{binding};
+            std::vector<std::string> targets{declared};
             // The payload only: it becomes the active one below, once this
             // subos declares it. Activating here was judged against the OLD
             // declaration, so a rebind to another installed version was
@@ -1932,20 +1947,25 @@ int run(int argc, char* argv[], EventStream& stream) {
                 // change exists to make impossible.
                 stream.emit(ErrorEvent{
                     .code = ErrorCode::Internal,
-                    .message = "could not install " + binding
+                    .message = "could not install " + declared
                                + "; subos '" + target + "' still declares "
                                + (previous.empty() ? "nothing" : previous),
                     .recoverable = true,
-                    .hint = "xlings install " + binding,
+                    .hint = "xlings install " + declared,
                 });
                 return rc;
             }
         }
 
+        // Read again: the install registered into this same file (its
+        // workspace), and the copy read before it would put the workspace
+        // back as it was -- the version just installed no longer installed
+        // here, and its activation below refused.
+        if (auto current = manifest::read_document(dir)) doc = std::move(current);
         const auto before = *doc;
-        auto runtimeAbi = runtime_abi_for(binding);
+        auto runtimeAbi = runtime_abi_for(declared);
         (*doc)[std::string(manifest::BLOCK)] = manifest::make_block({
-            .runtime   = binding,
+            .runtime   = declared,
             .by        = std::format("xlings {}", Info::VERSION),
             .hostGlibc = platform::host_glibc_version(),
             .intent    = manifest::Intent::Create,
@@ -1954,6 +1974,7 @@ int run(int argc, char* argv[], EventStream& stream) {
             // took a default.
             .runtimeSource = std::string(manifest::RUNTIME_SOURCE_EXPLICIT),
             .runtimeAbi    = std::move(runtimeAbi),
+            .runtimeRequest = requested != declared ? requested : std::string{},
         });
         write_config_json_(dir / ".xlings.json", *doc);
 
@@ -1963,22 +1984,23 @@ int run(int argc, char* argv[], EventStream& stream) {
         // the declaration goes back -- the outcome is Refused, nothing
         // changed, and the command fails (design 2026-11-27 §6.2).
         if (!hosted) {
-            const int used = xvm::cmd_use(std::string(manifest::binding_name(binding)),
-                                          std::string(manifest::binding_version(binding)), stream);
+            const int used = xvm::cmd_use(std::string(manifest::binding_name(declared)),
+                                          std::string(manifest::binding_version(declared)), stream);
             leave();
             if (used != 0) {
                 write_config_json_(dir / ".xlings.json", before);
                 stream.emit(ErrorEvent{
                     .code = ErrorCode::Unsupported,
                     .message = std::format("subos '{}' still declares {}: {} was not activated",
-                                           target, previous.empty() ? "nothing" : previous, binding),
+                                           target, previous.empty() ? "nothing" : previous, declared),
                     .recoverable = true,
                 });
                 return used;
             }
         }
 
-        log::info("subos '{}' now declares {}{}", target, binding,
+        log::info("subos '{}' now declares {}{}{}", target, declared,
+                  requested != declared ? std::format(" (asked {})", requested) : std::string{},
                   previous.empty() ? "" : std::format(" (was {})", previous));
         // Said at the moment it stops being true, not buried in a document.
         // Binaries already built in this subos have the OLD loader in their
@@ -1986,7 +2008,7 @@ int run(int argc, char* argv[], EventStream& stream) {
         // them, and they will keep running against the runtime they were
         // linked to until they are rebuilt.
         log::warn("programs already built in this subos still point at the "
-                  "previous runtime -- rebuild them to pick up {}", binding);
+                  "previous runtime -- rebuild them to pick up {}", declared);
         return 0;
     }
 

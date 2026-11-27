@@ -315,6 +315,7 @@ nlohmann::json make_block(const BlockSpec& spec) {
     // announce tomorrow's manifests as newer than they understand.
     if (!spec.runtimeSource.empty()) b["runtime_source"] = spec.runtimeSource;
     if (!spec.runtimeAbi.empty())    b["runtime_abi"]    = spec.runtimeAbi;
+    if (!spec.runtimeRequest.empty()) b["runtime_request"] = spec.runtimeRequest;
     b["envs"] = nlohmann::json::object();
     if (spec.intent == Intent::Create) {
         b["created_at"] = utc_now_iso();
