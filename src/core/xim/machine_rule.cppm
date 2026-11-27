@@ -35,11 +35,14 @@ struct Foreign {
 // The surface of a payload being installed: what `batch` registers (programs
 // through the same resolution the shim uses, libraries at their path), and
 // what the recipe exports, `loader` and `libdirs` relative to `payload`.
+// `libdirs` that were not declared are the {lib64, lib} convention; declared
+// as `{}` they are none (target content, a sysroot's).
 Surface of_registration(const std::filesystem::path& payload,
                         const xvm::RegistrationBatch& batch,
                         std::string_view loader,
                         const std::vector<std::string>& libdirs,
-                        const std::string& home);
+                        const std::string& home,
+                        bool libdirsDeclared = false);
 
 // The surface an installed release registers in `db`: its programs and
 // libraries (what `self doctor` judges, design §5.4).

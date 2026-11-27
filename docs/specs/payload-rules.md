@@ -32,10 +32,12 @@ of the rules; each place that enforces one says how hard.
 
 **The surface (rule M)**: the files the package registers as programs, the
 shared libraries directly in its exported runtime library directories
-(`exports.runtime.libdirs`, else `lib64` and `lib`), and its exported loader.
+(`exports.runtime.libdirs`, else `lib64` and `lib`; `libdirs = {}` exports
+none), and its exported loader.
 Anything else -- a cross toolchain's target libraries, a sysroot, prebuilt
 binaries for several machines, firmware -- is the recipe's to answer for; the
-rule does not judge it. A machine runs its own machine's programs, and an
+rule does not judge it. A package whose `lib/` holds such target libraries (a
+sysroot of another system or machine) declares `libdirs = {}`. A machine runs its own machine's programs, and an
 x86_64 one also x86 (32-bit) programs, which its kernel runs natively; no
 other pair is assumed (an aarch64 kernel may have no AArch32). A payload not yet registered (an asset before it is
 published) is judged on a static surface: the files directly in `bin/` and

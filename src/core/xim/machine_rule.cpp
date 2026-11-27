@@ -38,7 +38,7 @@ bool runs_(const mcpplibs::xpkg::ArchIdentity& host, std::uint16_t machine, int 
 
 Surface of_registration(const fs::path& payload, const xvm::RegistrationBatch& batch,
                         std::string_view loader, const std::vector<std::string>& libdirs,
-                        const std::string& home) {
+                        const std::string& home, bool libdirsDeclared) {
     Surface surface;
     for (const auto& node : batch.nodes) {
         if (node.kind == "program") {
@@ -51,7 +51,7 @@ Surface of_registration(const fs::path& payload, const xvm::RegistrationBatch& b
         }
     }
     if (!loader.empty()) add_file(surface, payload / loader);
-    if (libdirs.empty()) {
+    if (libdirs.empty() && !libdirsDeclared) {
         for (const auto* dir : {"lib64", "lib"}) surface.libdirs.push_back(payload / dir);
     } else {
         for (const auto& dir : libdirs) {

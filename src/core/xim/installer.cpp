@@ -2592,7 +2592,7 @@ std::optional<std::string> foreign_machine_(const PlanNode& node, const std::fil
     if (!registration) return std::nullopt;
     const auto foreign = machine_rule::foreign(machine_rule::of_registration(
         payload, registration->batch, node.exports.loader, node.exports.libdirs,
-        Config::paths().homeDir.string()));
+        Config::paths().homeDir.string(), node.exports.libdirs_declared));
     if (foreign.empty()) return std::nullopt;
     return machine_rule::describe(std::format("{}@{}", node.name, node.version), foreign);
 }
@@ -3341,7 +3341,9 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& requested
                 r.source      = dep_ver.empty()            ? "plan-any"
                               : dep_ver == depNode.version ? "plan-exact"
                                                            : "plan-range";
-                if (!depNode.exports.libdirs.empty()) {
+                if (!depNode.exports.libdirs.empty() || depNode.exports.libdirs_declared) {
+                    // Declared: these, and `{}` is none (a sysroot's target
+                    // libraries are on no consumer's search path).
                     for (auto& d : depNode.exports.libdirs) {
                         r.libdirs.push_back((depInstallDir / d).string());
                     }

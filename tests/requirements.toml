@@ -1213,7 +1213,7 @@ text = "an installed payload whose RPATH/RUNPATH, pkg-config files or libtool ar
 status = "required"
 
 [ARCH-MACHINE-RULE]
-text = "a payload whose host-facing files -- the programs and libraries it registers, the libraries directly in the runtime directories it exports (lib64 and lib when it exports none), its loader -- are ELF of another machine fails its install with E_FOREIGN_MACHINE before anything is registered, and is not kept; another machine's files elsewhere in the payload do not matter"
+text = "a payload whose host-facing files -- the programs and libraries it registers, the libraries directly in the runtime directories it exports (lib64 and lib when it declares none, none when it declares libdirs = {}), its loader -- are ELF of another machine fails its install with E_FOREIGN_MACHINE before anything is registered, and is not kept; another machine's files elsewhere in the payload do not matter"
 status = "required"
 
 [ARCH-DOCTOR]

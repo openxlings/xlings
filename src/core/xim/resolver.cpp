@@ -484,6 +484,7 @@ resolve(PackageCatalog& catalog, std::span<const std::string> targets, const std
             if (exIt != pkg->xpm.exports.end()) {
                 node.exports.loader  = exIt->second.runtime.loader;
                 node.exports.libdirs = exIt->second.runtime.libdirs;
+                node.exports.libdirs_declared = exIt->second.runtime.libdirs_declared;
                 node.exports.abi     = exIt->second.runtime.abi;
             }
 

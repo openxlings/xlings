@@ -103,6 +103,8 @@ enum class DepKind { Runtime, Build };
 struct ExportsRuntime {
     std::string loader;                       // relative path, e.g. "lib64/ld-linux-x86-64.so.2"
     std::vector<std::string> libdirs;         // relative paths
+    bool libdirs_declared { false };          // written, `{}` (none) included;
+                                              // undeclared is {lib64, lib}
     std::string abi;                          // e.g. "linux-x86_64-glibc"
 };
 

@@ -67,6 +67,13 @@ XTEST(MachineRule, TheSurfaceIsWhatTheHostRunsOrLoads, .area = "xim", .covers = 
         payload, {}, "lib64/ld-probe.so.2", {"sysroot/none"}, home.dir().string()));
     ASSERT_EQ(loader.size(), 1u);
     EXPECT_EQ(fs::path(loader[0].file).filename(), "ld-probe.so.2");
+
+    // `libdirs = {}` declared: the package exports no directory (a sysroot of
+    // another machine), so its lib is not the host's to load; only what it
+    // registers is judged.
+    const auto none = rule::foreign(rule::of_registration(
+        payload, {}, {}, {}, home.dir().string(), /*libdirsDeclared=*/true));
+    EXPECT_TRUE(none.empty()) << none.front().file;
 }
 
 XTEST(MachineRule, ThePayloadOfTheHostsMachinePasses, .area = "xim", .covers = {"ARCH-MACHINE-RULE"},

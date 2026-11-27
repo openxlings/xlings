@@ -506,7 +506,8 @@ Scheme B 认哪些键）、`elfpatch` 的 `_target_abi`、xlings 的规则 M。�
 **对宿主开放的面**，一个已安装载荷里宿主会直接执行或加载的文件：
 
 1. 这个包经 xvm 登记的每个程序所指向的文件；
-2. 它导出的运行时库目录（`exports.runtime.libdirs`，未声明时按约定的 `lib64`、`lib`）里直接放着的共享库，不递归；
+2. 它导出的运行时库目录（`exports.runtime.libdirs`，未声明时按约定的 `lib64`、`lib`；声明为 `{}` 即不导出任何目录，
+   另一种系统或机器的 sysroot 这样声明）里直接放着的共享库，不递归；
 3. 它导出的 loader。
 
 **规则**：面里的 ELF 文件，`e_machine` 与位宽等于宿主机器的。面以外的文件不裁决：交叉工具链的目标库、
@@ -1694,6 +1695,11 @@ draft PR 只用来取得结果（§11）；结论写回本文，正式的 PR 仍
 | 2026-11-27 | P5（mesa 车道合入） | aarch64 资产复用工具把 recipe 的 revision 当作资产的：glibc 2.44.3 的 revision 5 只改 hook、装的是 r4 的资产，工具在这个 job 一跑就拒绝；车道把 glibc 的构建脚本移到 `tools/res/graphics` 后，"构建脚本与准入时相同"按路径比较，比的是一边不存在的路径 | 资产的 revision 从它的 URL 读；构建脚本与它应用的 glibc 补丁按内容比较，各取那个 commit 存放它们的位置（准入时的与 HEAD 的相同） |
 | 2026-11-27 | P10（mesa 车道的 CI，PR 客户端） | aarch64 上 `luban new core` 选了 x86_64 的包表：`libs/luban.lua` 的 `luban.arch()` 改用 `pkginfo.arch()` 后没有了 `uname` 的后备，而 hook 运行时读 recipe 的顶层时什么也不告诉它（加载器告诉它读的是哪个平台、哪个架构），`pkginfo.arch()` 在那里报错，后备答 x86_64 | 根因在 libxpkg：同一个 recipe 的顶层在加载器与 hook 运行时看到的事实不同。L12：`create_executor` 接受读的目标（安装的平台与架构），在宿主进程内与 worker 里（Load 的上下文带上它）都像加载器一样告诉顶层；每个 hook 仍得到完整的上下文；spec 3 的顶层规则不变。xlings 建执行器时传入（X17） |
 | 2026-11-27 | L11 复审 | 替身在 hook 里被调用时只记一次失败调用，hook 继续，拿着替身的回答（空字符串当路径）走到下一个动作 | 改为在 hook 里被调用即报错（成员、lib、原因），recipe 要容忍就写 `pcall`；读 recipe（不在 hook 里）时替身照旧不动作。卸载的失败调用与 config、install 一样记为发现 `hook-call-failed`（之前卸载丢掉了它们） |
+| 2026-11-27 | P4（全量安装，PR 客户端 d06c196f） | 另一种系统或机器的 sysroot（x86_64-/aarch64-freebsd、-netbsd，x86_64-hurd）在另一种机器上被规则 M 拒绝：它们不声明 `libdirs`，约定的 `lib/` 就成了面，而 recipe 没有办法说"不导出"——空表与没写读成一样。上一行"规则 M 不判它们"的预期因此不成立 | libxpkg 区分"声明为空"与"未声明"（`libdirs_declared`），`{}` 即不导出；xlings 的规则 M 与依赖的约定都按它（§5.4 第 2 条）；这些 sysroot 声明 `libdirs = {}` |
+| 2026-11-27 | P4（全量安装） | 分片只把本片的 recipe 放进索引，依赖取已发布的索引：分支给 mesa 闭包、pnpm、uv 等加了 aarch64 条目，aarch64 腿装的却是已发布的 x86_64 依赖，被规则 M 拒绝——是两棵树混用的结果 | `ci-sweep.yml` 把整个 checkout 放进索引再装本片（ci-test 对分片计划本来就这样做） |
+| 2026-11-27 | P11（第一批，全量安装） | 迁移工具没认出 `payload.unpack{...}` 这个落地调用（dart-sdk、nginx、redis），手工迁移的 libinput-quirks 把 `os.tryrm(安装目录)` 改成 `fs.remove`，删掉了宿主已落地的内容；rust 的 `rustup self uninstall` 没有 `-y`，在 spec 1 里静默失败 | 三个改为条目的 `strip = 1`（读过 zip 的目录，都只有一个顶层目录）；libinput-quirks 从落地的源码树里只留 quirks；rust 加 `-y` |
+| 2026-11-27 | X13 | `strip = 1` 遇到有几个顶层目录的归档时把它们合并成一个，同名文件互相覆盖，安装照样报告成功 | 各成员的前 n 段必须相同，否则失败并指出两者（§9.7 第 2 条，`LAND-STRIP`） |
+| 2026-11-27 | P4（索引 CI 的 consumer 任务） | 任务用 mcpp 2026.11.12.1 自带的 xlings 2026.10.26.1 读分支的 checkout，装不了 spec 3 的 patchelf；经发布的索引，这个客户端会被下限带回上一个快照，但直接读 checkout 不经过下限 | 任务改用索引 CI 指定的客户端（`xlings_sha` 或固定的发布，P12 改为 N），经 `MCPP_VENDORED_XLINGS` 交给 mcpp；mcpp 发布时把 `kXlingsVersion` 升到 N，否则它的用户停在下限前的快照 |
 
 ## 20. 追加：#743 与 #744（第九版）
 
@@ -1792,6 +1798,7 @@ draft PR 只用来取得结果（§11）；结论写回本文，正式的 PR 仍
 |---|---|---|---|
 | L11 | libxpkg | `xvm.add` 的 `completion` 展开为 `files` 资产；规范 §6.4、§7；替身在 hook 中被调用记为失败调用 | `test_spec3`/`test_api` 的新用例；全部测试通过 |
 | L12 | libxpkg | `create_executor` 接受读的目标（`ReadTarget`：平台、架构，以及宿主给 hook 的索引），宿主进程内与 worker 里都像加载器一样告诉 recipe 的顶层（§19.6 的 P10 记录）；不在带 lib 的索引里的 recipe（脚本、按路径给出的 recipe）在顶层也从宿主的索引导入，recipe 自己的索引优先（载荷保存的 recipe 仍用它保存的 lib） | `TheTopLevelIsReadForTheTarget`、`ARecipeOutsideAnIndexReadsTheHostsIndexLibs`（两条路径）；全部测试通过 |
+| L13 | libxpkg | `exports.runtime.libdirs = {}` 是声明（`libdirs_declared`）：不导出任何目录，与未声明（约定的 `lib64`、`lib`）分开（§19.6 的 P4 记录、§5.4 第 2 条）；规范 §4.1 | `LoadPackage_ExportsNoLibdirs`（含 `inherits`）；xlings 的 `MachineRule` 单元与 e2e（`libdirs = {}` 的 sysroot 装得上，未声明的被拒） |
 | X17 | xlings | 快照的新布局与 lib 闭包；旧布局的向前迁移；建执行器时传入安装的平台与架构（L12）；卸载的失败调用记为发现 | e2e `XPKG-SNAPSHOT-LIBS`：顶层导入 lib 的 recipe 在 `config()` 与 `uninstall()` 得到同一模块；安装后改坏索引的 lib，卸载仍用安装时的；旧布局的快照卸载时带上索引当前的 lib；哪里都没有的 lib 让卸载的 hook 按名字失败 |
 | X18 | xlings | profile 14 加载补全目录；升级时保存不同的旧文件 | e2e `PKG-COMPLETION`：声明的补全链接在 SubOS 下、随 `use` 移动、随 `remove` 消失，bash 交互 shell 里 `complete -p <name>` 存在；`PROFILE-UPGRADE-KEEPS` |
 | P13 | 索引 | 静态检查拒绝写 xlings profile；xim-pkgindex#1507 改用声明 | 检查的测试；#1507 在本轮合并后改写 |

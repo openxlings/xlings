@@ -150,7 +150,7 @@ versions:
 |---|---|---|
 | `deps` | dependencies, §4.8 | — |
 | `inherits` | the name of a platform whose versions, `deps`, `exports` and `source` this one takes where it states none; a cycle or an unknown platform stops the chain | libxpkg 0.0.64 (`{ ref = "<platform>" }` reads the same) |
-| `exports` | what the package exposes to consumers at run time (`exports.runtime.loader`, `libdirs`, `abi`) | — |
+| `exports` | what the package exposes to consumers at run time (`exports.runtime.loader`, `libdirs`, `abi`). `libdirs` names the directories of shared libraries a consumer's search path and the host load from; none stated is `lib64` or `lib`, `{}` is none -- target content (a sysroot, a bare-metal C library) that no host loads | — (`{}` as none: libxpkg 0.0.68) |
 | `source` | the platform's default source, §4.5 | libxpkg 0.0.44 |
 | `strip` | the default of the entries' `strip`, §4.6 | spec 3, libxpkg 0.0.68 |
 

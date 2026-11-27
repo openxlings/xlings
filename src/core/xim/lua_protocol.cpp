@@ -62,6 +62,7 @@ Json pack(const xpkg::ExportsRuntime& v) {
     Json j = Json::object();
     j["loader"] = v.loader;
     j["libdirs"] = v.libdirs;
+    j["libdirs_declared"] = v.libdirs_declared;
     j["abi"] = v.abi;
     return j;
 }
@@ -69,6 +70,7 @@ xpkg::ExportsRuntime unpack_ExportsRuntime(const Json& j) {
     xpkg::ExportsRuntime v;
     j.at("loader").get_to(v.loader);
     j.at("libdirs").get_to(v.libdirs);
+    if (j.contains("libdirs_declared")) j.at("libdirs_declared").get_to(v.libdirs_declared);
     j.at("abi").get_to(v.abi);
     return v;
 }

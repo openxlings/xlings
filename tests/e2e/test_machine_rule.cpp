@@ -32,9 +32,10 @@ std::string elf_bytes_(const fs::path& scratch, std::uint16_t machine) {
 }
 
 // `<name>-1.0.0.tar.gz` with `<name>-1.0.0/` and the given files in it, served;
-// a recipe of spec "3" that lands it and registers `bin/<name>`.
+// a recipe of spec "3" that lands it and registers `bin/<name>`, with `linux`
+// (fields of its linux block) besides.
 void package_(const fs::path& index, const fs::path& served, const std::string& base, const std::string& name,
-              const std::vector<std::pair<std::string, std::string>>& files) {
+              const std::vector<std::pair<std::string, std::string>>& files, std::string_view linux = {}) {
     const auto top = name + "-1.0.0";
     std::vector<xim::TarEntry> entries{{.path = top, .mode = 0755, .directory = true}};
     std::set<std::string> dirs;
@@ -53,7 +54,7 @@ void package_(const fs::path& index, const fs::path& served, const std::string& 
     tk::write_file(index / "pkgs" / name.substr(0, 1) / (name + ".lua"), std::format(R"LUA(
 package = {{
     spec = '3', name = '{0}', type = 'package', archs = {{ 'x86_64', 'aarch64' }},
-    xpm = {{ linux = {{ strip = 1, ['1.0.0'] = {{ url = '{1}/{0}-1.0.0.tar.gz', sha256 = {{ x86_64 = '{2}', aarch64 = '{2}' }} }} }} }},
+    xpm = {{ linux = {{ strip = 1, {3} ['1.0.0'] = {{ url = '{1}/{0}-1.0.0.tar.gz', sha256 = {{ x86_64 = '{2}', aarch64 = '{2}' }} }} }} }},
 }}
 import('xim.libxpkg.path')
 import('xim.libxpkg.pkginfo')
@@ -61,7 +62,7 @@ import('xim.libxpkg.xvm')
 function config()
     xvm.add('{0}', {{ bindir = path.join(pkginfo.install_dir(), 'bin') }})
 end
-)LUA", name, base, sha));
+)LUA", name, base, sha, linux));
 }
 
 }  // namespace
@@ -98,6 +99,12 @@ end
     // toolchain's target sysroot), and a program of this machine.
     package_(index, served, server->url(), "crossish",
              {{"bin/crossish", ours}, {"target/lib/libc.so.6", theirs}});
+    // Another machine's libraries in lib/: what consumers and the host load
+    // when the package declares no libdirs; a sysroot of another machine says
+    // `libdirs = {}`, it exports none.
+    package_(index, served, server->url(), "liblike", {{"bin/liblike", ours}, {"lib/libc.so.6", theirs}});
+    package_(index, served, server->url(), "sysrootish", {{"bin/sysrootish", ours}, {"lib/libc.so.6", theirs}},
+             "exports = { runtime = { libdirs = {} } },");
     const nlohmann::json config = {
         {"mirror", "GLOBAL"},
         {"xim", {{"index-repo", primary.generic_string()}}},
@@ -134,6 +141,14 @@ end
     EXPECT_EQ(cross.exit_code, 0) << cross.transcript();
     EXPECT_TRUE(fs::is_regular_file(home.dir() / "data" / "xpkgs" / "fixture-x-crossish" / "1.0.0"
                                     / "target" / "lib" / "libc.so.6")) << cross.transcript();
+    const auto liblike = home.xlings({"install", "fixture:liblike@1.0.0", "-y"});
+    EXPECT_NE(liblike.exit_code, 0) << liblike.transcript();
+    EXPECT_NE(liblike.transcript().find("lib/libc.so.6 is for " + other_name()), std::string::npos)
+        << liblike.transcript();
+    const auto sysroot = home.xlings({"install", "fixture:sysrootish@1.0.0", "-y"});
+    EXPECT_EQ(sysroot.exit_code, 0) << sysroot.transcript();
+    EXPECT_TRUE(fs::is_regular_file(home.dir() / "data" / "xpkgs" / "fixture-x-sysrootish" / "1.0.0"
+                                    / "lib" / "libc.so.6")) << sysroot.transcript();
     const auto healthy = home.xlings({"self", "doctor"});
     EXPECT_EQ(healthy.transcript().find("foreign machine"), std::string::npos) << healthy.transcript();
 
