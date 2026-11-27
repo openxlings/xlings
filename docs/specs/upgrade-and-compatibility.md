@@ -79,6 +79,7 @@ work.
 | an edition (SubOS template) | `min_client` | refuses before anything is fetched, with `xlings self update` |
 | an index snapshot | the [index version contract](index-version-contract.md) | is routed to a snapshot it can read |
 | the NDJSON interface | `protocol_version`, additions only within 1.x ([interface](interface-ndjson-v1.md)) | sees fields it ignores; a client probes capabilities, never versions |
+| a recipe's format | `spec` ([the xpkg format](xpkg.md) §2): 1, 2, 3 (libxpkg 0.0.68) | refuses that package alone, naming the update that reads it; the command fails when it was asked for |
 | a recipe | `revision` and `floor` per version ([the xpkg format](xpkg.md) §4.3) | — a changed revision reconfigures every scope on its next install; an installed payload at or above `floor` stays usable (2026.10.17.1) |
 | the version records | `data/versions.json` stamped against the home config | falls back to the home config's field (the source every client writes) |
 | the runtime indirection (2026.10.15) | `<home>/abi` -> `abi.gen/<n>`, `abi.json`, the record's `source: "scope"` | a payload bound through it runs on any client (its loader is an ordinary path); an older client rebinds such a package by path when it reinstalls it, which is still correct for that home |
@@ -108,6 +109,34 @@ What moves forward on its own, without a layout change (2026.10.15):
 - **`/etc/hostname = luban`**, the editions' placeholder, is read as no name:
   the system's own is used. `etc/profile.d/luban.sh` is written when missing,
   never rewritten.
+
+What changes with the client of libxpkg 0.0.68 (design 2026-11-27): a
+command's result is computed from what its steps did -- done, skipped and
+said, refused, failed -- and a warning no longer stands in for a failure.
+For a script or a CI job that calls xlings:
+
+- a requested package that is refused or fails makes the command exit non-zero
+  (it could exit 0 before): `subos runtime` refused, a recipe that cannot be
+  read, an archive that cannot be fetched, a package of a `spec` this client
+  does not read, a hook that reported success with a failed call and an empty
+  install directory (spec 1 and 2);
+- `name@<key>`, where the key is a version of the index, is that version
+  only: a longer installed version no longer answers it;
+- a package whose files for the host to run are another machine's fails to
+  install (`E_FOREIGN_MACHINE`, [payload rules](payload-rules.md) rule M);
+  so does one with files to patch and no patch tool, or an explicit patch call
+  naming files without one;
+- `remove --older-than` stops at a project state it cannot read;
+- a hook's `log.warn` and `log.error` appear after the command's summary;
+- in recipes of spec 1 and 2, `fs.symlink` and `fs.remove` raise when not
+  done, and `fs.remove` removes a whole tree;
+- `docs/specs/xpkg-manifest-v1.md` is replaced by [the xpkg format](xpkg.md).
+
+What moves forward on its own: a SubOS whose declaration an older client left
+naming a version its store lacks, while its view serves another, is brought to
+the version served once and recorded (the home step `runtime-declaration`,
+no layout change). Installed packages are not reinstalled: their recipe and
+revision are what they were.
 
 ### 3.1 Luban's compatibility entries (`luban/os/compat`)
 

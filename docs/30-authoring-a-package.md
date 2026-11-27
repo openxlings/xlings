@@ -12,17 +12,17 @@ path from nothing to an installed package.
 
 ```lua
 package = {
-    spec = "1",
+    spec = "3",
     name = "hello",
     description = "Says hello",
     type = "package",
     archs = {"x86_64", "aarch64"},
     licenses = {"MIT"},
     programs = {"hello"},
-    xvm_enable = true,
 
     xpm = {
         linux = {
+            strip = 1,   -- the archive holds hello-1.0.0/: drop that level
             ["latest"] = { ref = "1.0.0" },
             ["1.0.0"] = {
                 url = "https://example.com/hello-1.0.0-linux-${arch}.tar.gz",
@@ -32,29 +32,28 @@ package = {
     },
 }
 
+import("xim.libxpkg.path")
 import("xim.libxpkg.pkginfo")
 import("xim.libxpkg.xvm")
 
-function install()
-    os.tryrm(pkginfo.install_dir())
-    os.mv(pkginfo.install_file():replace(".tar.gz", ""), pkginfo.install_dir())
-    return true
-end
-
 function config()
     xvm.add("hello", { bindir = path.join(pkginfo.install_dir(), "bin") })
-    return true
 end
 
 function uninstall()
     xvm.remove("hello")
-    return true
 end
 ```
+
+There is no `install()`: xlings downloads the archive, checks its sha256 and
+extracts it into `pkginfo.install_dir()` before any hook runs, laid out as
+`strip` says. An `install()` is for what is left to adjust -- a mode, a
+wrapper script, a patch.
 
 ## Try it
 
 ```bash
+xlings index check ./hello.lua           # the format's rules, before anything else
 xlings config --add-xpkg ./hello.lua     # into the local overlay index
 xlings install hello
 hello
@@ -63,13 +62,41 @@ xlings config --remove-xpkg hello
 
 ## What to know
 
-- **Every resource has a sha256**, per architecture when the files differ. A
-  recipe that lists builds per architecture and has none for a machine is refused
-  there before the download.
-- **`archs`** names the architectures the package is offered on.
-- **Hooks**: `install()` places files into `pkginfo.install_dir()`; `config()`
-  registers programs (`xvm.add`), libraries and environment; `uninstall()` undoes
-  `config()`. A package with no `install()` gets its archive's entries as they are.
+- **`spec = "3"`** is the current format. Its hooks see the standard Lua that
+  computes (`string`, `table`, `math`) and the modules they import --
+  [the hook interface](generated/xpkg-hook-api.md): `fs`, `system`, `pkginfo`,
+  `path`, `xvm`, `log` and the rest. A call is an **action** (`fs.move`,
+  `fs.write`, `system.exec`: when it cannot do what it says, the hook fails
+  with the action, the path and why), a **query** (`fs.is_file`,
+  `system.run`), or a **declaration** for xlings to carry out (`xvm.add`).
+  A failure the recipe tolerates is written with `pcall`. Recipes of spec 1
+  and 2 keep working as they did; to move one, `xpkg-migrate` (libxpkg's
+  `tools/`) rewrites what it can and lists the rest.
+- **The download is in place before `install()`.** An archive is extracted
+  into `pkginfo.install_dir()` with the entry's `strip` (`strip = 1` drops a
+  top-level directory; a member the declaration does not fit fails the
+  install, naming it); any other download is copied in under its name. An
+  archive inside the archive is `fs.extract`'s.
+- **The top level only computes**: it also runs when the recipe is merely
+  read (search, an index build), so it calls no `fs`, `system` or `pkginfo`;
+  what differs by platform or architecture goes in the entries or in a hook
+  (`pkginfo.platform()`, `pkginfo.arch()`).
+- **Every resource has a sha256, and an entry says which architectures it
+  ships.** Per architecture when the files differ; a fixed URL with one
+  architecture's key when there is only that one
+  (`sha256 = { x86_64 = "<h>" }`); the same hash under each key when the
+  bytes are the same everywhere (scripts, a jar). An architecture an entry
+  does not list is refused there before the download, and what the host
+  would run from a payload must be of its machine
+  ([payload rules](specs/payload-rules.md), rule M).
+- **`archs`** is the union of what the entries list, for search; the index
+  checks it.
+- **Hooks**: `config()` registers programs (`xvm.add`), libraries and
+  environment -- a package that lists `programs` registers them;
+  `uninstall()` undoes what `config()` did that xlings does not undo itself.
+  A hook succeeds unless it returns `false` or raises.
+- **`log.warn` is for the user**: it is shown after the command's summary.
+  Progress is `log.info` (shown with `-v`).
 - **Dependencies** are declared per platform (`deps = { runtime = {…}, build = {…} }`).
   A bare name means the package of that name in the same index.
 - **`revision`** on a version: raise it when the payload or what `config()` does
@@ -110,12 +137,12 @@ xlings config --remove-xpkg hello
   for `xlings self doctor --fix`):
 
   ```lua
-  if system.admin_step then  -- libxpkg 0.0.63
-      system.admin_step({"chown", "root:root", helper}, "its sandbox helper must be root's")
-  end
+  system.admin_step({"chown", "root:root", helper}, "its sandbox helper must be root's")
   ```
 
-  The index's static check refuses a hook that runs `sudo` unmarked.
+  (A recipe of spec 1 or 2 written for clients before libxpkg 0.0.63 probes it:
+  `if system.admin_step then ... end`.) The index's static check refuses a hook
+  that runs `sudo` unmarked.
 - **`extensions`** carries data for another program, keyed by that program's
   registered namespace (`extensions = { luban = { tier = 2 } }`): xlings hands it
   on as written and never reads it, and changing it raises no `revision`. When
@@ -131,6 +158,10 @@ xlings config --remove-xpkg hello
   (`docs/specs/xpkg.md` §3.5).
 
 ## Publishing
+
+Check it first: `xlings index check <recipe or index>` names what the format
+refuses, with the line. A client older than the format a recipe uses refuses
+that package alone and says which update reads it.
 
 To the official index: a pull request to
 [openxlings/xim-pkgindex](https://github.com/openxlings/xim-pkgindex), whose
