@@ -82,6 +82,11 @@ XTEST(AgentPrivacy, TheZoneIsTheProxysExitAskedThroughTheProxy,
     const auto curl = home.dir() / "data/xpkgs/xim-x-curl/8.0.0/bin/curl";
     tk::write_file(curl, std::format("#!/bin/sh\necho \"$@\" > {}\necho Asia/Tokyo\n", asked.string()));
     fs::permissions(curl, fs::perms::owner_all | fs::perms::group_read | fs::perms::group_exec);
+    // The bundle it is asked with: the index's ca-certificates payload. A home
+    // that holds none installs the package first (this home's fixture index
+    // carries no ca-certificates, so it holds one already).
+    const auto bundle = home.dir() / "data/xpkgs/xim-x-ca-certificates/1/cacert.pem";
+    tk::write_file(bundle, "a certificate\n");
     ASSERT_EQ(home.xlings({"subos", "new", "agent"}).exit_code, 0);
     auto set = home.xlings({"subos", "config", "agent", "--sandbox=private", "--proxy", "socks5h://127.0.0.1:9"});
     ASSERT_EQ(set.exit_code, 0) << set.transcript();
@@ -90,6 +95,7 @@ XTEST(AgentPrivacy, TheZoneIsTheProxysExitAskedThroughTheProxy,
     EXPECT_NE(r.out.find("TZ=Asia/Tokyo"), std::string::npos) << r.transcript();
     const auto how = tk::read_file(asked);
     EXPECT_NE(how.find("--proxy socks5h://127.0.0.1:9"), std::string::npos) << "asked around the proxy: " << how;
+    EXPECT_NE(how.find("--cacert " + bundle.string()), std::string::npos) << "asked with the home's bundle: " << how;
     // Answered once, then cached for this proxy.
     fs::remove(asked);
     auto again = home.xlings({"subos", "use", "agent", "--cmd", "echo TZ=$TZ"});
